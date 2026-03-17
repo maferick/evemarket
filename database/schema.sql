@@ -98,6 +98,74 @@ CREATE TABLE IF NOT EXISTS sync_runs (
     KEY idx_run_status (run_status)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+
+CREATE TABLE IF NOT EXISTS market_orders_current (
+    id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    source_type ENUM('market_hub', 'alliance_structure') NOT NULL,
+    source_id BIGINT UNSIGNED NOT NULL,
+    type_id INT UNSIGNED NOT NULL,
+    order_id BIGINT UNSIGNED NOT NULL,
+    is_buy_order TINYINT(1) NOT NULL,
+    price DECIMAL(20, 2) NOT NULL,
+    volume_remain INT UNSIGNED NOT NULL,
+    volume_total INT UNSIGNED NOT NULL,
+    min_volume INT UNSIGNED NOT NULL DEFAULT 1,
+    `range` VARCHAR(20) NOT NULL,
+    duration SMALLINT UNSIGNED NOT NULL,
+    issued DATETIME NOT NULL,
+    expires DATETIME NOT NULL,
+    observed_at DATETIME NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY unique_source_order_current (source_type, source_id, order_id),
+    KEY idx_market_orders_current_type_observed (source_type, source_id, type_id, observed_at),
+    KEY idx_market_orders_current_observed (source_type, source_id, observed_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS market_orders_history (
+    id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    source_type ENUM('market_hub', 'alliance_structure') NOT NULL,
+    source_id BIGINT UNSIGNED NOT NULL,
+    type_id INT UNSIGNED NOT NULL,
+    order_id BIGINT UNSIGNED NOT NULL,
+    is_buy_order TINYINT(1) NOT NULL,
+    price DECIMAL(20, 2) NOT NULL,
+    volume_remain INT UNSIGNED NOT NULL,
+    volume_total INT UNSIGNED NOT NULL,
+    min_volume INT UNSIGNED NOT NULL DEFAULT 1,
+    `range` VARCHAR(20) NOT NULL,
+    duration SMALLINT UNSIGNED NOT NULL,
+    issued DATETIME NOT NULL,
+    expires DATETIME NOT NULL,
+    observed_at DATETIME NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY unique_source_order_observed (source_type, source_id, order_id, observed_at),
+    KEY idx_market_orders_history_type_observed (source_type, source_id, type_id, observed_at),
+    KEY idx_market_orders_history_observed (source_type, source_id, observed_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS market_history_daily (
+    id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    source_type ENUM('market_hub', 'alliance_structure') NOT NULL,
+    source_id BIGINT UNSIGNED NOT NULL,
+    type_id INT UNSIGNED NOT NULL,
+    trade_date DATE NOT NULL,
+    open_price DECIMAL(20, 2) NOT NULL,
+    high_price DECIMAL(20, 2) NOT NULL,
+    low_price DECIMAL(20, 2) NOT NULL,
+    close_price DECIMAL(20, 2) NOT NULL,
+    average_price DECIMAL(20, 2) DEFAULT NULL,
+    volume BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    order_count INT UNSIGNED DEFAULT NULL,
+    source_label VARCHAR(40) NOT NULL DEFAULT 'esi',
+    observed_at DATETIME NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY unique_market_history_daily (source_type, source_id, type_id, trade_date),
+    KEY idx_market_history_daily_type_date (source_type, source_id, type_id, trade_date),
+    KEY idx_market_history_daily_observed (source_type, source_id, observed_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 INSERT INTO trading_stations (station_name, station_type) VALUES
     ('Jita IV - Moon 4 - Caldari Navy Assembly Plant', 'market'),
     ('Amarr VIII (Oris) - Emperor Family Academy', 'market'),
