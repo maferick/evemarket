@@ -283,3 +283,17 @@ function db_trading_station_by_id(int $stationId, string $stationType): ?array
         [$stationId, $stationType]
     );
 }
+
+function db_esi_structure_search_cache_get(int $characterId, string $query): ?array
+{
+    $cacheKey = $characterId . ':' . mb_strtolower(trim($query));
+
+    return db_esi_cache_get('cache.esi.structures.search', $cacheKey);
+}
+
+function db_esi_structure_search_cache_put(int $characterId, string $query, string $payloadJson, ?string $expiresAt = null): bool
+{
+    $cacheKey = $characterId . ':' . mb_strtolower(trim($query));
+
+    return db_esi_cache_put('cache.esi.structures.search', $cacheKey, $payloadJson, null, $expiresAt);
+}

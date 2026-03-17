@@ -130,6 +130,10 @@ function sanitize_station_selection(?string $value, string $stationType): string
         return '';
     }
 
+    if ($stationType === 'alliance') {
+        return (string) $stationId;
+    }
+
     try {
         $station = db_trading_station_by_id($stationId, $stationType);
     } catch (Throwable) {
@@ -296,6 +300,7 @@ function esi_default_scopes(): array
     return [
         'publicData',
         'esi-location.read_location.v1',
+        'esi-search.search_structures.v1',
         'esi-universe.read_structures.v1',
         'esi-markets.structure_markets.v1',
     ];
@@ -459,4 +464,144 @@ function esi_store_oauth_and_cache(array $tokenPayload, array $verifyPayload): v
             'scope' => $scopes,
         ], JSON_THROW_ON_ERROR), null, $expiresAt);
     });
+}
+
+
+function esi_lookup_context(array $requiredScopes = []): array
+{
+    $enabled = get_setting('esi_enabled', '0') === '1';
+    if (!$enabled) {
+        return ['ok' => false, 'status' => 403, 'error' => 'ESI login is disabled in settings.'];
+    }
+
+    $token = db_latest_esi_oauth_token();
+    if ($token === null) {
+        return ['ok' => false, 'status' => 401, 'error' => 'No connected ESI character token found.'];
+    }
+
+    $expiresAt = strtotime((string) ($token['expires_at'] ?? '')) ?: 0;
+    if ($expiresAt <= time()) {
+        return ['ok' => false, 'status' => 401, 'error' => 'Stored ESI token has expired. Reconnect the character.'];
+    }
+
+    $scopeSet = preg_split('/\s+/', trim((string) ($token['scopes'] ?? ''))) ?: [];
+    $scopeSet = array_values(array_filter($scopeSet, static fn ($scope) => $scope !== ''));
+    $missing = array_values(array_diff($requiredScopes, $scopeSet));
+
+    if ($missing !== []) {
+        return ['ok' => false, 'status' => 403, 'error' => 'Missing required ESI scopes: ' . implode(', ', $missing) . '.'];
+    }
+
+    return ['ok' => true, 'token' => $token, 'status' => 200, 'error' => null];
+}
+
+function esi_structure_result_shape(array $structure): array
+{
+    $result = [
+        'id' => (int) ($structure['id'] ?? 0),
+        'name' => (string) ($structure['name'] ?? ''),
+    ];
+
+    if (!empty($structure['system'])) {
+        $result['system'] = (string) $structure['system'];
+    }
+
+    if (!empty($structure['type'])) {
+        $result['type'] = (string) $structure['type'];
+    }
+
+    return $result;
+}
+
+function esi_structure_search(string $query, array $tokenContext): array
+{
+    $term = trim($query);
+    if ($term === '') {
+        return [];
+    }
+
+    $characterId = (int) ($tokenContext['character_id'] ?? 0);
+    $accessToken = (string) ($tokenContext['access_token'] ?? '');
+
+    if ($characterId <= 0 || $accessToken === '') {
+        return [];
+    }
+
+    $cached = db_esi_structure_search_cache_get($characterId, $term);
+    if ($cached !== null && isset($cached['payload_json'])) {
+        try {
+            $payload = json_decode((string) $cached['payload_json'], true, 512, JSON_THROW_ON_ERROR);
+            if (is_array($payload)) {
+                return $payload;
+            }
+        } catch (Throwable) {
+            // Continue to ESI fetch.
+        }
+    }
+
+    $searchResponse = http_get_json(
+        'https://esi.evetech.net/latest/characters/' . $characterId . '/search/?categories=structure&strict=false&search=' . rawurlencode($term),
+        [
+            'Authorization: Bearer ' . $accessToken,
+            'Accept: application/json',
+        ]
+    );
+
+    if (($searchResponse['status'] ?? 500) >= 400) {
+        throw new RuntimeException('Failed to search structures from ESI.');
+    }
+
+    $structureIds = $searchResponse['json']['structure'] ?? [];
+    if (!is_array($structureIds)) {
+        return [];
+    }
+
+    $results = [];
+    foreach (array_slice($structureIds, 0, 20) as $structureId) {
+        $id = (int) $structureId;
+        if ($id <= 0) {
+            continue;
+        }
+
+        try {
+            $structureResponse = http_get_json(
+                'https://esi.evetech.net/latest/universe/structures/' . $id . '/',
+                [
+                    'Authorization: Bearer ' . $accessToken,
+                    'Accept: application/json',
+                ]
+            );
+        } catch (Throwable) {
+            continue;
+        }
+
+        if (($structureResponse['status'] ?? 500) >= 400) {
+            continue;
+        }
+
+        $name = trim((string) ($structureResponse['json']['name'] ?? ''));
+        if ($name === '') {
+            continue;
+        }
+
+        if (mb_stripos($name, $term) === false) {
+            continue;
+        }
+
+        $results[] = esi_structure_result_shape([
+            'id' => $id,
+            'name' => $name,
+            'system' => isset($structureResponse['json']['solar_system_id']) ? (string) $structureResponse['json']['solar_system_id'] : null,
+            'type' => isset($structureResponse['json']['type_id']) ? (string) $structureResponse['json']['type_id'] : null,
+        ]);
+    }
+
+    db_esi_structure_search_cache_put(
+        $characterId,
+        $term,
+        json_encode($results, JSON_THROW_ON_ERROR),
+        gmdate('Y-m-d H:i:s', time() + 300)
+    );
+
+    return $results;
 }

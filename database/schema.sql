@@ -107,7 +107,7 @@ INSERT INTO app_settings (setting_key, setting_value) VALUES
     ('esi_client_id', '961316f6177d4a0283fef0bd72fbd224'),
     ('esi_client_secret', 'eat_iasVmhqov40Ud568JVAyctOErv5E6AgV_3S6eiZ'),
     ('esi_callback_url', 'http://192.168.178.47/callback'),
-    ('esi_scopes', 'publicData esi-location.read_location.v1 esi-universe.read_structures.v1 esi-markets.structure_markets.v1')
+    ('esi_scopes', 'publicData esi-location.read_location.v1 esi-search.search_structures.v1 esi-universe.read_structures.v1 esi-markets.structure_markets.v1')
 ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value);
 
 INSERT INTO esi_cache_namespaces (namespace_key, source_system, description) VALUES
@@ -167,5 +167,6 @@ INSERT INTO esi_cache_namespaces (namespace_key, source_system, description) VAL
     ('cache.esi.dogmaAttributeCategories', 'esi', 'ESI cache namespace mapped to dogmaAttributeCategories.jsonl'),
     ('cache.esi.groups', 'esi', 'ESI cache namespace mapped to groups.jsonl'),
     ('cache.esi.dynamicItemAttributes', 'esi', 'ESI cache namespace mapped to dynamicItemAttributes.jsonl'),
-    ('cache.esi.planetResources', 'esi', 'ESI cache namespace mapped to planetResources.jsonl')
+    ('cache.esi.planetResources', 'esi', 'ESI cache namespace mapped to planetResources.jsonl'),
+    ('cache.esi.structures.search', 'esi', 'Cached ESI alliance-structure search results')
 ON DUPLICATE KEY UPDATE description = VALUES(description), source_system = VALUES(source_system);

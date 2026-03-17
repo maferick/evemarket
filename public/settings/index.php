@@ -131,19 +131,125 @@ include __DIR__ . '/../../src/views/partials/header.php';
                         <?php endforeach; ?>
                     </select>
                 </label>
-                <label class="block space-y-2">
-                    <span class="text-sm text-muted">Alliance Station Selection</span>
-                    <select name="alliance_station_id" class="w-full rounded-lg border border-border bg-black/30 px-3 py-2 text-sm outline-none ring-accent focus:ring">
-                        <option value="">Select an alliance station</option>
-                        <?php foreach ($stations['alliance'] as $station): ?>
-                            <option value="<?= $station['id'] ?>" <?= ($settingValues['alliance_station_id'] ?? '') === (string) $station['id'] ? 'selected' : '' ?>>
-                                <?= htmlspecialchars($station['station_name'], ENT_QUOTES) ?>
-                            </option>
-                        <?php endforeach; ?>
-                    </select>
+                <label class="block space-y-2" id="alliance-structure-search-field">
+                    <span class="text-sm text-muted">Alliance Structure Selection</span>
+                    <?php $allianceStationId = trim((string) ($settingValues['alliance_station_id'] ?? '')); ?>
+                    <input type="hidden" name="alliance_station_id" id="alliance_station_id" value="<?= htmlspecialchars($allianceStationId, ENT_QUOTES) ?>">
+                    <input
+                        type="text"
+                        id="alliance_structure_search"
+                        autocomplete="off"
+                        value="<?= htmlspecialchars($allianceStationId === '' ? '' : ('Selected structure ID: ' . $allianceStationId), ENT_QUOTES) ?>"
+                        placeholder="Search structures by name"
+                        class="w-full rounded-lg border border-border bg-black/30 px-3 py-2 text-sm outline-none ring-accent focus:ring"
+                    />
+                    <p id="alliance_structure_status" class="text-xs text-muted">Search is scoped to the connected ESI character token.</p>
+                    <ul id="alliance_structure_results" class="hidden max-h-60 overflow-y-auto rounded-lg border border-border bg-black/40"></ul>
                 </label>
                 <button class="rounded-lg bg-accent px-4 py-2 text-sm font-medium">Save Trading Stations</button>
             </form>
+
+            <script>
+                (() => {
+                    const input = document.getElementById('alliance_structure_search');
+                    const hidden = document.getElementById('alliance_station_id');
+                    const results = document.getElementById('alliance_structure_results');
+                    const status = document.getElementById('alliance_structure_status');
+
+                    if (!input || !hidden || !results || !status) {
+                        return;
+                    }
+
+                    let debounceTimer = null;
+
+                    const clearResults = () => {
+                        results.innerHTML = '';
+                        results.classList.add('hidden');
+                    };
+
+                    const renderResults = (items) => {
+                        clearResults();
+
+                        if (!Array.isArray(items) || items.length === 0) {
+                            status.textContent = 'No matching structures found.';
+                            return;
+                        }
+
+                        const fragment = document.createDocumentFragment();
+
+                        items.forEach((item) => {
+                            const row = document.createElement('li');
+                            const button = document.createElement('button');
+                            const details = [];
+
+                            if (item.system) {
+                                details.push('System ' + item.system);
+                            }
+
+                            if (item.type) {
+                                details.push('Type ' + item.type);
+                            }
+
+                            button.type = 'button';
+                            button.className = 'flex w-full flex-col items-start gap-1 px-3 py-2 text-left text-sm hover:bg-white/5';
+                            button.innerHTML = '<span class="text-slate-100"></span><span class="text-xs text-muted"></span>';
+                            button.querySelector('span').textContent = item.name;
+                            button.querySelectorAll('span')[1].textContent = '#' + item.id + (details.length ? ' · ' + details.join(' · ') : '');
+                            button.addEventListener('click', () => {
+                                hidden.value = String(item.id);
+                                input.value = item.name;
+                                status.textContent = 'Selected structure #' + item.id + '.';
+                                clearResults();
+                            });
+
+                            row.appendChild(button);
+                            fragment.appendChild(row);
+                        });
+
+                        results.appendChild(fragment);
+                        results.classList.remove('hidden');
+                    };
+
+                    input.addEventListener('input', () => {
+                        const query = input.value.trim();
+
+                        hidden.value = '';
+
+                        if (debounceTimer !== null) {
+                            clearTimeout(debounceTimer);
+                        }
+
+                        if (query.length < 2) {
+                            status.textContent = 'Type at least 2 characters to search alliance structures.';
+                            clearResults();
+                            return;
+                        }
+
+                        debounceTimer = window.setTimeout(async () => {
+                            status.textContent = 'Searching…';
+
+                            try {
+                                const response = await fetch('/settings/esi-structures.php?q=' + encodeURIComponent(query), {
+                                    headers: { 'Accept': 'application/json' },
+                                });
+
+                                const payload = await response.json();
+                                if (!response.ok) {
+                                    status.textContent = payload.error || 'Lookup failed.';
+                                    clearResults();
+                                    return;
+                                }
+
+                                status.textContent = 'Select a structure from the list.';
+                                renderResults(payload.results || []);
+                            } catch (_error) {
+                                status.textContent = 'Unable to query ESI structures right now.';
+                                clearResults();
+                            }
+                        }, 250);
+                    });
+                })();
+            </script>
         <?php elseif ($section === 'esi-login'): ?>
             <form class="mt-6 space-y-4" method="post">
                 <input type="hidden" name="_token" value="<?= htmlspecialchars(csrf_token(), ENT_QUOTES) ?>">
