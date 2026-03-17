@@ -4308,11 +4308,21 @@ function killmail_resolve_tracked_entities(string $allianceText, string $corpora
 
 function killmail_r2z2_fetch_json(string $url): array
 {
+    $userAgent = trim((string) get_setting('app_name', 'EveMarket'));
+    if ($userAgent === '') {
+        $userAgent = 'EveMarket';
+    }
+
+    $headers = [
+        'Accept: application/json',
+        'User-Agent: ' . $userAgent . ' killmail-ingestion/1.0 (+https://github.com/cvweiss/evemarket)',
+    ];
+
     $ch = curl_init($url);
     curl_setopt_array($ch, [
         CURLOPT_RETURNTRANSFER => true,
         CURLOPT_TIMEOUT => 25,
-        CURLOPT_HTTPHEADER => ['Accept: application/json'],
+        CURLOPT_HTTPHEADER => $headers,
     ]);
     $body = curl_exec($ch);
     $status = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
