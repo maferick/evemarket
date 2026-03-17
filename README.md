@@ -105,6 +105,8 @@ EveMarket sync pipelines depend on the `cron` daemon being present and running o
 
 ## Production Cron Setup
 
+### Canonical crontab entry (single scheduler timer)
+
 1. Determine the final app path and PHP binary path:
    ```bash
    APP_PATH=$(realpath /var/www/evemarket)
@@ -113,17 +115,16 @@ EveMarket sync pipelines depend on the `cron` daemon being present and running o
    echo "$PHP_BIN"
    ```
 
-2. Add cron entries for the web/app user:
+2. Add the cron entry for the web/app user:
    ```bash
    crontab -e
    ```
 
-   Use a single timer-only scheduler entrypoint:
    ```cron
    * * * * * cd /var/www/evemarket && /usr/bin/php bin/cron_tick.php >> storage/logs/cron.log 2>&1
    ```
 
-3. Ensure log directory exists and is writable by the cron user:
+3. Ensure the log directory exists and is writable by the cron user:
    ```bash
    mkdir -p /var/www/evemarket/storage/logs
    chown -R www-data:www-data /var/www/evemarket/storage
@@ -134,6 +135,53 @@ EveMarket sync pipelines depend on the `cron` daemon being present and running o
    ```bash
    crontab -l
    ```
+
+### Scheduling model
+
+- Cron is **timer-only**: it triggers `bin/cron_tick.php` once per minute.
+- The scheduler (`bin/cron_tick.php`) decides which jobs are due and dispatches `bin/sync_runner.php`.
+- Interval and enable/disable controls are configured in **Settings → Data Sync** (`/settings?section=data_sync`) via settings such as:
+  - `alliance_current_pipeline_enabled` + `alliance_current_sync_interval_minutes`
+  - `hub_history_pipeline_enabled` + `hub_history_sync_interval_minutes`
+  - `alliance_history_pipeline_enabled` + `alliance_history_sync_interval_minutes`
+
+### Required cron runtime environment
+
+Cron must run with the same environment the app expects:
+
+- App config vars: `APP_ENV`, `APP_BASE_URL`, `APP_TIMEZONE`
+- Database vars: `DB_HOST`, `DB_PORT`, `DB_DATABASE`, `DB_USERNAME`, `DB_PASSWORD`
+- Pipeline source vars (when those pipelines are enabled):
+  - `EVEMARKET_ALLIANCE_SOURCE_ID` (for `alliance-current` and `alliance-history`)
+  - `EVEMARKET_HUB_SOURCE_ID` (for `hub-history`)
+
+The canonical log path for the cron tick is `storage/logs/cron.log` (relative to app root).
+
+### Troubleshooting
+
+Check cron service status:
+
+```bash
+systemctl status cron
+```
+
+Tail the cron tick log:
+
+```bash
+tail -f /var/www/evemarket/storage/logs/cron.log
+```
+
+Inspect scheduler state tables:
+
+```bash
+mysql -u "$DB_USERNAME" -p"$DB_PASSWORD" -h "$DB_HOST" -P "$DB_PORT" "$DB_DATABASE" -e "SELECT * FROM sync_schedules ORDER BY updated_at DESC LIMIT 20;"
+mysql -u "$DB_USERNAME" -p"$DB_PASSWORD" -h "$DB_HOST" -P "$DB_PORT" "$DB_DATABASE" -e "SELECT * FROM sync_runs ORDER BY started_at DESC LIMIT 20;"
+mysql -u "$DB_USERNAME" -p"$DB_PASSWORD" -h "$DB_HOST" -P "$DB_PORT" "$DB_DATABASE" -e "SELECT * FROM sync_state ORDER BY updated_at DESC LIMIT 20;"
+```
+
+### Migration note (old per-job crontabs)
+
+If you previously had one cron line per pipeline/job, remove those entries and keep only the single `bin/cron_tick.php` timer entry. Job-specific cadence is now managed in Data Sync settings, and due-job selection is centralized in the scheduler.
 
 ## Architecture Guidelines
 
@@ -149,28 +197,6 @@ EveMarket sync pipelines depend on the `cron` daemon being present and running o
   - delete policy (`none`, `soft_delete`, `reconcile`)
   - chunk size (100-10000)
 
-
-## Cron Scheduling for Sync Pipelines
-
-Run only the timer tick from crontab:
-
-```cron
-* * * * * cd /var/www/evemarket && /usr/bin/php bin/cron_tick.php >> storage/logs/cron.log 2>&1
-```
-
-`bin/cron_tick.php` is the single scheduler entrypoint. It decides which pipelines are due based on Data Sync settings and then dispatches `bin/sync_runner.php` internally.
-
-Environment variables used by `bin/cron_tick.php`:
-- `EVEMARKET_ALLIANCE_SOURCE_ID` (required for `alliance-current` and `alliance-history`)
-- `EVEMARKET_HUB_SOURCE_ID` (required for `hub-history`)
-
-Recommended mapping to Data Sync settings:
-- `alliance_current_sync_interval_minutes` + `alliance_current_pipeline_enabled`
-- `hub_history_sync_interval_minutes` + `hub_history_pipeline_enabled`
-- `alliance_history_sync_interval_minutes` + `alliance_history_pipeline_enabled`
-- `raw_order_snapshot_retention_days` for `market_orders_history` pruning (`market_history_daily` remains long-term analytics storage)
-
-The cron file should not contain provider/job-specific logic anymore; all job selection lives in `bin/cron_tick.php`.
 
 ## Next Suggested Steps
 
