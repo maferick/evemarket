@@ -74,6 +74,35 @@ README.md
 - Ensure `mod_rewrite` is enabled and `AllowOverride All` is set for the site directory.
 - Keep `.env`/secrets out of version control and supply config via environment variables.
 
+## Deployment / Operations
+
+### Ensure cron is installed and enabled
+
+EveMarket sync pipelines depend on the `cron` daemon being present and running on server boot.
+
+1. Install cron (if missing):
+   ```bash
+   sudo apt update && sudo apt install -y cron
+   ```
+2. Enable cron at boot:
+   ```bash
+   sudo systemctl enable cron
+   ```
+3. Start cron immediately:
+   ```bash
+   sudo systemctl start cron
+   ```
+4. Verify service health:
+   ```bash
+   systemctl status cron
+   ```
+5. Verify boot persistence (run after reboot):
+   ```bash
+   systemctl is-enabled cron && systemctl is-active cron
+   ```
+
+> Note: `systemctl` checks require a systemd-based host. In minimal containers, use `service cron status` for runtime validation.
+
 ## Architecture Guidelines
 
 - Keep **all raw SQL and PDO interactions** in `src/db.php` wrappers.
