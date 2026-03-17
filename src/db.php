@@ -816,3 +816,18 @@ function db_sync_schedule_upsert(string $jobKey, int $enabled, int $intervalSeco
         [$normalizedKey, $enabled, $intervalSeconds]
     );
 }
+
+function db_sync_schedule_force_due_all_enabled(): int
+{
+    $stmt = db()->prepare(
+        'UPDATE sync_schedules
+         SET next_run_at = UTC_TIMESTAMP(),
+             locked_until = NULL,
+             updated_at = CURRENT_TIMESTAMP
+         WHERE enabled = 1'
+    );
+
+    $stmt->execute();
+
+    return (int) $stmt->rowCount();
+}

@@ -140,10 +140,9 @@ EveMarket sync pipelines depend on the `cron` daemon being present and running o
 
 - Cron is **timer-only**: it triggers `bin/cron_tick.php` once per minute.
 - The scheduler (`bin/cron_tick.php`) decides which jobs are due and dispatches `bin/sync_runner.php`.
-- Interval and enable/disable controls are configured in **Settings → Data Sync** (`/settings?section=data_sync`) via settings such as:
-  - `alliance_current_pipeline_enabled` + `alliance_current_sync_interval_minutes`
-  - `hub_history_pipeline_enabled` + `hub_history_sync_interval_minutes`
-  - `alliance_history_pipeline_enabled` + `alliance_history_sync_interval_minutes`
+- Interval and enable/disable controls are configured in **Settings → Data Sync** (`/settings?section=data-sync`) via scheduler rows in `sync_schedules`.
+- The **Run now** button in Settings → Data Sync forces all enabled schedules due immediately and executes one scheduler tick.
+- Backfill start dates are automatic: each pipeline starts from the date sync automation was enabled (`sync_automation_enabled_since`).
 
 ### Required cron runtime environment
 
@@ -156,6 +155,7 @@ Cron must run with the same environment the app expects:
   - `EVEMARKET_HUB_SOURCE_ID` (for `hub-history`)
 
 The canonical log path for the cron tick is `storage/logs/cron.log` (relative to app root).
+Raw order snapshots are pruned according to `raw_order_snapshot_retention_days` from Settings → Data Sync.
 
 ### Troubleshooting
 

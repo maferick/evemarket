@@ -45,6 +45,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             break;
 
         case 'data-sync':
+            $dataSyncAction = trim((string) ($_POST['data_sync_action'] ?? 'save'));
+
+            if ($dataSyncAction === 'run-now') {
+                $runNow = run_data_sync_now();
+                $saved = (bool) ($runNow['ok'] ?? false);
+                flash('success', (string) ($runNow['message'] ?? 'Run now completed.'));
+                header('Location: /settings?section=' . urlencode($submittedSection));
+                exit;
+            }
+
             $settingsSaved = save_settings(data_sync_settings_from_request($_POST));
             $schedulesSaved = save_data_sync_schedule_settings($_POST);
             $saved = $settingsSaved && $schedulesSaved;
@@ -78,6 +88,7 @@ $settingValues = get_settings([
     'alliance_history_backfill_start_date',
     'hub_history_backfill_start_date',
     'raw_order_snapshot_retention_days',
+    'sync_automation_enabled_since',
 ]);
 
 $stations = grouped_station_options();
@@ -422,19 +433,9 @@ include __DIR__ . '/../../src/views/partials/header.php';
                 </div>
 
 
-                <div class="grid gap-4 md:grid-cols-3">
-                    <label class="block space-y-2">
-                        <span class="text-sm text-muted">Alliance Current Backfill Start</span>
-                        <input type="date" name="alliance_current_backfill_start_date" value="<?= htmlspecialchars($settingValues['alliance_current_backfill_start_date'] ?? '', ENT_QUOTES) ?>" class="w-full rounded-lg border border-border bg-black/30 px-3 py-2 text-sm outline-none ring-accent focus:ring" />
-                    </label>
-                    <label class="block space-y-2">
-                        <span class="text-sm text-muted">Alliance History Backfill Start</span>
-                        <input type="date" name="alliance_history_backfill_start_date" value="<?= htmlspecialchars($settingValues['alliance_history_backfill_start_date'] ?? '', ENT_QUOTES) ?>" class="w-full rounded-lg border border-border bg-black/30 px-3 py-2 text-sm outline-none ring-accent focus:ring" />
-                    </label>
-                    <label class="block space-y-2">
-                        <span class="text-sm text-muted">Hub History Backfill Start</span>
-                        <input type="date" name="hub_history_backfill_start_date" value="<?= htmlspecialchars($settingValues['hub_history_backfill_start_date'] ?? '', ENT_QUOTES) ?>" class="w-full rounded-lg border border-border bg-black/30 px-3 py-2 text-sm outline-none ring-accent focus:ring" />
-                    </label>
+                <div class="rounded-lg border border-border bg-black/20 p-3 text-sm text-muted">
+                    <?php $syncEnabledSince = sanitize_backfill_start_date($settingValues['sync_automation_enabled_since'] ?? '') ?: gmdate('Y-m-d'); ?>
+                    Backfill start is automatic. Pipelines begin from the date sync automation was enabled: <span class="font-medium text-slate-100"><?= htmlspecialchars($syncEnabledSince, ENT_QUOTES) ?></span>.
                 </div>
 
                 <label class="block space-y-2">
@@ -462,7 +463,10 @@ include __DIR__ . '/../../src/views/partials/header.php';
                 </div>
 
                 <p class="text-sm text-muted">When enabled, future import/sync jobs will only process changed rows for better scalability.</p>
-                <button class="rounded-lg bg-accent px-4 py-2 text-sm font-medium">Save Data Sync Settings</button>
+                <div class="flex flex-wrap gap-2">
+                    <button name="data_sync_action" value="save" class="rounded-lg bg-accent px-4 py-2 text-sm font-medium">Save Data Sync Settings</button>
+                    <button name="data_sync_action" value="run-now" class="rounded-lg border border-border px-4 py-2 text-sm font-medium text-slate-100 hover:bg-white/5">Run now</button>
+                </div>
             </form>
         <?php endif; ?>
     </section>

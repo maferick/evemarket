@@ -423,6 +423,62 @@ function sanitize_retention_days(mixed $value, int $defaultDays = 30): string
     return (string) $days;
 }
 
+
+function sync_automation_enabled_since_date(): string
+{
+    $stored = sanitize_backfill_start_date(get_setting('sync_automation_enabled_since', ''));
+
+    if ($stored !== '') {
+        return $stored;
+    }
+
+    return gmdate('Y-m-d');
+}
+
+function data_sync_backfill_start_date(string $settingKey, bool $pipelineEnabled, string $fallbackDate): string
+{
+    $existing = sanitize_backfill_start_date(get_setting($settingKey, ''));
+    if ($existing !== '') {
+        return $existing;
+    }
+
+    return $pipelineEnabled ? $fallbackDate : '';
+}
+
+function run_data_sync_now(): array
+{
+    $lockName = 'cron_tick_runner';
+    $lockAcquired = false;
+
+    try {
+        $lockAcquired = runner_lock_acquire($lockName, 0);
+        if (!$lockAcquired) {
+            return [
+                'ok' => false,
+                'message' => 'Data sync is already running from cron. Please wait a minute and try again.',
+            ];
+        }
+
+        $forcedJobs = db_sync_schedule_force_due_all_enabled();
+        $summary = cron_tick_run();
+
+        return [
+            'ok' => true,
+            'message' => 'Run now completed. Forced ' . $forcedJobs . ' schedule(s); processed ' . (int) ($summary['jobs_processed'] ?? 0) . ' job(s), with ' . (int) ($summary['jobs_failed'] ?? 0) . ' failure(s).',
+            'summary' => $summary,
+        ];
+    } catch (Throwable $exception) {
+        return [
+            'ok' => false,
+            'message' => 'Run now failed: ' . scheduler_normalize_error_message($exception->getMessage()),
+        ];
+    } finally {
+        if ($lockAcquired) {
+            runner_lock_release($lockName);
+        }
+    }
+}
+
 function data_sync_schedule_job_definitions(): array
 {
     return [
@@ -527,17 +583,24 @@ function save_data_sync_schedule_settings(array $request): bool
 
 function data_sync_settings_from_request(array $request): array
 {
+    $allianceCurrentEnabled = sanitize_pipeline_enabled($request['alliance_current_pipeline_enabled'] ?? null);
+    $allianceHistoryEnabled = sanitize_pipeline_enabled($request['alliance_history_pipeline_enabled'] ?? null);
+    $hubHistoryEnabled = sanitize_pipeline_enabled($request['hub_history_pipeline_enabled'] ?? null);
+
+    $baselineDate = sync_automation_enabled_since_date();
+
     return [
         'incremental_updates_enabled' => isset($request['incremental_updates_enabled']) ? '1' : '0',
         'incremental_strategy' => sanitize_incremental_strategy($request['incremental_strategy'] ?? null),
         'incremental_delete_policy' => sanitize_incremental_delete_policy($request['incremental_delete_policy'] ?? null),
         'incremental_chunk_size' => sanitize_incremental_chunk_size($request['incremental_chunk_size'] ?? null),
-        'alliance_current_pipeline_enabled' => sanitize_pipeline_enabled($request['alliance_current_pipeline_enabled'] ?? null),
-        'alliance_history_pipeline_enabled' => sanitize_pipeline_enabled($request['alliance_history_pipeline_enabled'] ?? null),
-        'hub_history_pipeline_enabled' => sanitize_pipeline_enabled($request['hub_history_pipeline_enabled'] ?? null),
-        'alliance_current_backfill_start_date' => sanitize_backfill_start_date($request['alliance_current_backfill_start_date'] ?? null),
-        'alliance_history_backfill_start_date' => sanitize_backfill_start_date($request['alliance_history_backfill_start_date'] ?? null),
-        'hub_history_backfill_start_date' => sanitize_backfill_start_date($request['hub_history_backfill_start_date'] ?? null),
+        'alliance_current_pipeline_enabled' => $allianceCurrentEnabled,
+        'alliance_history_pipeline_enabled' => $allianceHistoryEnabled,
+        'hub_history_pipeline_enabled' => $hubHistoryEnabled,
+        'sync_automation_enabled_since' => $baselineDate,
+        'alliance_current_backfill_start_date' => data_sync_backfill_start_date('alliance_current_backfill_start_date', $allianceCurrentEnabled === '1', $baselineDate),
+        'alliance_history_backfill_start_date' => data_sync_backfill_start_date('alliance_history_backfill_start_date', $allianceHistoryEnabled === '1', $baselineDate),
+        'hub_history_backfill_start_date' => data_sync_backfill_start_date('hub_history_backfill_start_date', $hubHistoryEnabled === '1', $baselineDate),
         'raw_order_snapshot_retention_days' => sanitize_retention_days($request['raw_order_snapshot_retention_days'] ?? null, 30),
     ];
 }
