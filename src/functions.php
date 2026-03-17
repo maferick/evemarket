@@ -44,15 +44,30 @@ function nav_items(): array
             'children' => [],
         ],
         [
+            'label' => 'Market Status',
+            'path' => '/market-status',
+            'icon' => '🛒',
+            'children' => [
+                ['label' => 'Current Alliance Structure', 'path' => '/market-status/current-alliance-structure'],
+                ['label' => 'Jita Comparison', 'path' => '/market-status/jita-comparison'],
+                ['label' => 'Missing Items', 'path' => '/market-status/missing-items'],
+                ['label' => 'Price Deviations', 'path' => '/market-status/price-deviations'],
+            ],
+        ],
+        [
+            'label' => 'History',
+            'path' => '/history',
+            'icon' => '🕰️',
+            'children' => [
+                ['label' => 'Alliance Structure Trends', 'path' => '/history/alliance-trends'],
+                ['label' => 'Module History', 'path' => '/history/module-history'],
+            ],
+        ],
+        [
             'label' => 'Settings',
             'path' => '/settings',
             'icon' => '⚙️',
-            'children' => [
-                ['label' => 'General', 'path' => '/settings?section=general'],
-                ['label' => 'Trading Stations', 'path' => '/settings?section=trading-stations'],
-                ['label' => 'ESI Login', 'path' => '/settings?section=esi-login'],
-                ['label' => 'Data Sync', 'path' => '/settings?section=data-sync'],
-            ],
+            'children' => [],
         ],
     ];
 }
