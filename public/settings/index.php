@@ -139,6 +139,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                 <label class="block space-y-2" id="alliance-structure-search-field">
                     <span class="text-sm text-muted">Alliance Structure Selection</span>
                     <?php $allianceStationId = trim((string) ($settingValues['alliance_station_id'] ?? '')); ?>
+                    <?php $allianceStationName = selected_station_name('alliance_station_id'); ?>
                     <input type="hidden" name="alliance_station_id" id="alliance_station_id" value="<?= htmlspecialchars($allianceStationId, ENT_QUOTES) ?>">
                     <input
                         type="text"
@@ -148,7 +149,11 @@ include __DIR__ . '/../../src/views/partials/header.php';
                         placeholder="Search structures by name"
                         class="w-full rounded-lg border border-border bg-black/30 px-3 py-2 text-sm outline-none ring-accent focus:ring"
                     />
-                    <p id="alliance_structure_status" class="text-xs text-muted">Search is scoped to the connected ESI character token and auto-refreshes OAuth when needed.</p>
+                    <p id="alliance_structure_status" class="text-xs text-muted">
+                        <?= htmlspecialchars($allianceStationId === ''
+                            ? 'Search is scoped to the connected ESI character token. OAuth access is auto-refreshed when needed.'
+                            : ('Selected structure: ' . ($allianceStationName ?? ('Structure #' . $allianceStationId)) . ' (#' . $allianceStationId . ').'), ENT_QUOTES) ?>
+                    </p>
                     <ul id="alliance_structure_results" class="hidden max-h-60 overflow-y-auto rounded-lg border border-border bg-black/40"></ul>
                 </label>
                 <?php if ($latestEsiToken !== null && $missingStructureScopes !== []): ?>
