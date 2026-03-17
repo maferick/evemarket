@@ -12,7 +12,10 @@ $tableColumns = [
     'alliance_price' => 'Alliance Price',
     'reference_price' => market_hub_reference_name() . ' Price',
     'deviation' => 'Deviation',
+    'score' => 'Risk Score',
+    'severity' => 'Severity',
 ];
+$highlights = $data['highlights'] ?? [];
 $tableRows = $data['rows'] ?? [];
 $emptyMessage = 'No deviation alerts at this time versus ' . market_hub_reference_name() . '.';
 

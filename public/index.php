@@ -20,7 +20,7 @@ include __DIR__ . '/../src/views/partials/header.php';
     <?php endforeach; ?>
 </section>
 
-<section class="mt-6 grid gap-4 xl:grid-cols-2">
+<section class="mt-6 grid gap-4 xl:grid-cols-3">
     <article class="rounded-xl border border-border bg-card p-6">
         <div class="flex items-center justify-between gap-3">
             <h2 class="text-lg font-medium">Top Opportunity Queue</h2>
@@ -53,6 +53,27 @@ include __DIR__ . '/../src/views/partials/header.php';
         <?php else: ?>
             <div class="mt-4 space-y-2">
                 <?php foreach ($risks as $row): ?>
+                    <div class="rounded-lg border border-border bg-black/20 px-4 py-3">
+                        <p class="text-sm font-medium"><?= htmlspecialchars((string) ($row['module'] ?? ''), ENT_QUOTES) ?></p>
+                        <p class="mt-1 text-xs text-muted"><?= htmlspecialchars((string) ($row['signal'] ?? ''), ENT_QUOTES) ?></p>
+                        <p class="mt-2 text-xs uppercase tracking-wide text-muted">Score: <?= htmlspecialchars((string) ($row['score'] ?? '0'), ENT_QUOTES) ?></p>
+                    </div>
+                <?php endforeach; ?>
+            </div>
+        <?php endif; ?>
+    </article>
+
+    <article class="rounded-xl border border-border bg-card p-6">
+        <div class="flex items-center justify-between gap-3">
+            <h2 class="text-lg font-medium">Top Missing Items</h2>
+            <span class="text-xs text-muted">Seed market first</span>
+        </div>
+        <?php $missing = $intel['priority_queues']['missing_items'] ?? []; ?>
+        <?php if ($missing === []): ?>
+            <p class="mt-4 rounded-lg border border-dashed border-border bg-black/20 p-4 text-sm text-muted">No missing-item priorities yet.</p>
+        <?php else: ?>
+            <div class="mt-4 space-y-2">
+                <?php foreach ($missing as $row): ?>
                     <div class="rounded-lg border border-border bg-black/20 px-4 py-3">
                         <p class="text-sm font-medium"><?= htmlspecialchars((string) ($row['module'] ?? ''), ENT_QUOTES) ?></p>
                         <p class="mt-1 text-xs text-muted"><?= htmlspecialchars((string) ($row['signal'] ?? ''), ENT_QUOTES) ?></p>

@@ -877,28 +877,30 @@ function market_compare_evaluate_row(array $row, array $thresholds): array
     $underpriced = $inBothMarkets && $deviationPercent <= -$thresholds['deviation_percent'];
     $weakAllianceStock = $allianceSellVolume < $thresholds['min_alliance_sell_volume'] || $allianceSellOrders < $thresholds['min_alliance_sell_orders'];
 
-    $opportunityScore = 0;
-    $riskScore = 0;
+    $stockScore = market_score_stock_urgency($allianceSellVolume, $allianceSellOrders, $thresholds, $missingInAlliance);
+    $priceDeltaScore = min(100, (int) round(abs($deviationPercent) * 2.2));
+    $volumeScore = market_score_reference_activity((int) ($row['reference_total_sell_volume'] ?? 0));
+    $freshnessScore = market_score_data_freshness((string) ($row['alliance_last_observed_at'] ?? ''), (string) ($row['reference_last_observed_at'] ?? ''));
+    $stalenessScore = 100 - $freshnessScore;
 
-    if ($underpriced) {
-        $opportunityScore += min(60, (int) round(abs($deviationPercent) * 3));
-    }
+    $opportunityPressure = $underpriced || $missingInAlliance ? $priceDeltaScore : (int) round($priceDeltaScore * 0.35);
+    $riskPressure = $overpriced ? $priceDeltaScore : (int) round($priceDeltaScore * 0.25);
+
+    $opportunityScore = (int) round(($stockScore * 0.35) + ($opportunityPressure * 0.35) + ($volumeScore * 0.2) + ($freshnessScore * 0.1));
+    $riskScore = (int) round(($stockScore * 0.4) + ($riskPressure * 0.3) + ($stalenessScore * 0.2) + ($volumeScore * 0.1));
+
     if ($missingInAlliance) {
-        $opportunityScore += 40;
+        $opportunityScore += 12;
+        $riskScore += 15;
     }
+
     if ($weakAllianceStock && !$missingInAlliance) {
-        $opportunityScore += 15;
+        $opportunityScore += 8;
+        $riskScore += 10;
     }
 
-    if ($overpriced) {
-        $riskScore += min(70, (int) round(abs($deviationPercent) * 3));
-    }
-    if ($weakAllianceStock) {
-        $riskScore += 25;
-    }
-    if ($missingInAlliance) {
-        $riskScore += 35;
-    }
+    $opportunityScore = min(100, max(0, $opportunityScore));
+    $riskScore = min(100, max(0, $riskScore));
 
     return [
         'type_id' => (int) ($row['type_id'] ?? 0),
@@ -923,9 +925,67 @@ function market_compare_evaluate_row(array $row, array $thresholds): array
         'underpriced_in_alliance' => $underpriced,
         'weak_alliance_stock' => $weakAllianceStock,
         'deviation_percent' => $deviationPercent,
-        'opportunity_score' => min(100, $opportunityScore),
-        'risk_score' => min(100, $riskScore),
+        'stock_score' => $stockScore,
+        'price_delta_score' => $priceDeltaScore,
+        'volume_score' => $volumeScore,
+        'freshness_score' => $freshnessScore,
+        'opportunity_score' => $opportunityScore,
+        'risk_score' => $riskScore,
+        'severity' => market_signal_severity(max($opportunityScore, $riskScore)),
+        'opportunity_tier' => market_signal_severity($opportunityScore),
     ];
+}
+
+function market_score_stock_urgency(int $sellVolume, int $sellOrders, array $thresholds, bool $missingInAlliance): int
+{
+    if ($missingInAlliance) {
+        return 100;
+    }
+
+    $volumeFloor = max(1, (int) ($thresholds['min_alliance_sell_volume'] ?? 50));
+    $orderFloor = max(1, (int) ($thresholds['min_alliance_sell_orders'] ?? 3));
+
+    $volumeCoverage = min(1.0, $sellVolume / ($volumeFloor * 2));
+    $orderCoverage = min(1.0, $sellOrders / ($orderFloor * 2));
+
+    return min(100, max(0, (int) round((1 - (($volumeCoverage * 0.7) + ($orderCoverage * 0.3))) * 100)));
+}
+
+function market_score_reference_activity(int $referenceVolume): int
+{
+    if ($referenceVolume <= 0) {
+        return 0;
+    }
+
+    return min(100, (int) round(log10($referenceVolume + 1) * 25));
+}
+
+function market_score_data_freshness(string $allianceObservedAt, string $referenceObservedAt): int
+{
+    $allianceUnix = strtotime($allianceObservedAt);
+    $referenceUnix = strtotime($referenceObservedAt);
+    $latestUnix = max($allianceUnix ?: 0, $referenceUnix ?: 0);
+
+    if ($latestUnix <= 0) {
+        return 20;
+    }
+
+    $ageHours = max(0.0, (time() - $latestUnix) / 3600);
+    $score = 100 - (int) round($ageHours * 8);
+
+    return min(100, max(10, $score));
+}
+
+function market_signal_severity(int $score): string
+{
+    if ($score >= 75) {
+        return 'High';
+    }
+    if ($score >= 45) {
+        return 'Medium';
+    }
+
+    return 'Low';
 }
 
 function market_comparison_outcomes(array $typeIds = []): array
@@ -1062,9 +1122,9 @@ function dashboard_intelligence_data(): array
     $coveragePercent = $rowCount > 0 ? ($inBothCount / $rowCount) * 100.0 : 0.0;
 
     $opportunities = $rows;
-    usort($opportunities, static fn (array $a, array $b): int => (($b['opportunity_score'] ?? 0) <=> ($a['opportunity_score'] ?? 0)) ?: (($b['reference_total_sell_volume'] ?? 0) <=> ($a['reference_total_sell_volume'] ?? 0)));
+    usort($opportunities, static fn (array $a, array $b): int => (($b['opportunity_score'] ?? 0) <=> ($a['opportunity_score'] ?? 0)) ?: (($b['volume_score'] ?? 0) <=> ($a['volume_score'] ?? 0)));
     $risks = $rows;
-    usort($risks, static fn (array $a, array $b): int => (($b['risk_score'] ?? 0) <=> ($a['risk_score'] ?? 0)) ?: (abs((float) ($b['deviation_percent'] ?? 0)) <=> abs((float) ($a['deviation_percent'] ?? 0))));
+    usort($risks, static fn (array $a, array $b): int => (($b['risk_score'] ?? 0) <=> ($a['risk_score'] ?? 0)) ?: (($b['stock_score'] ?? 0) <=> ($a['stock_score'] ?? 0)));
 
     $allianceSync = sync_status_from_prefix('alliance.structure.');
     $hubCurrentSync = sync_status_from_prefix('market.hub.');
@@ -1083,22 +1143,27 @@ function dashboard_intelligence_data(): array
 
     return [
         'kpis' => [
+            ['label' => 'Top Opportunities', 'value' => (string) count(array_filter($rows, static fn (array $row): bool => (int) ($row['opportunity_score'] ?? 0) >= 60)), 'context' => 'High-confidence import/reprice candidates'],
+            ['label' => 'Top Risks', 'value' => (string) count(array_filter($rows, static fn (array $row): bool => (int) ($row['risk_score'] ?? 0) >= 60)), 'context' => 'High-severity pricing or stock risk'],
+            ['label' => 'Missing Seed Targets', 'value' => (string) count($outcomes['missing_in_alliance']), 'context' => 'Items in ' . $comparisonContext['reference_hub'] . ' not listed in alliance'],
             ['label' => 'Overlap Coverage', 'value' => market_format_percentage($coveragePercent), 'context' => $rowCount > 0 ? ($inBothCount . ' of ' . $rowCount . ' items in both markets') : 'No market overlap data yet'],
-            ['label' => 'Missing Items', 'value' => (string) count($outcomes['missing_in_alliance']), 'context' => 'Items in ' . $comparisonContext['reference_hub'] . ' without alliance sell listing'],
-            ['label' => 'Over / Underpriced', 'value' => count($outcomes['overpriced_in_alliance']) . ' / ' . count($outcomes['underpriced_in_alliance']), 'context' => 'Outside configured deviation threshold'],
-            ['label' => 'Weak Stock', 'value' => (string) count($outcomes['weak_or_missing_alliance_stock']), 'context' => 'Low volume/order depth or missing listing'],
         ],
         'priority_queues' => [
             'opportunities' => array_map(static fn (array $row): array => [
                 'module' => $row['type_name'] !== '' ? $row['type_name'] : ('Type #' . $row['type_id']),
-                'signal' => (bool) ($row['missing_in_alliance'] ?? false) ? 'Missing in alliance' : sprintf('%+.1f%% vs %s', (float) ($row['deviation_percent'] ?? 0.0), (string) $comparisonContext['reference_hub']),
+                'signal' => (bool) ($row['missing_in_alliance'] ?? false) ? 'Import seed candidate' : sprintf('%+.1f%% vs hub', (float) ($row['deviation_percent'] ?? 0.0)),
                 'score' => (int) ($row['opportunity_score'] ?? 0),
             ], array_slice(array_values(array_filter($opportunities, static fn (array $row): bool => (int) ($row['opportunity_score'] ?? 0) > 0)), 0, 5)),
             'risks' => array_map(static fn (array $row): array => [
                 'module' => $row['type_name'] !== '' ? $row['type_name'] : ('Type #' . $row['type_id']),
-                'signal' => (bool) ($row['overpriced_in_alliance'] ?? false) ? sprintf('%+.1f%% overpriced', (float) ($row['deviation_percent'] ?? 0.0)) : 'Weak alliance stock',
+                'signal' => (bool) ($row['overpriced_in_alliance'] ?? false) ? sprintf('%+.1f%% overpriced', (float) ($row['deviation_percent'] ?? 0.0)) : 'Stock or freshness risk',
                 'score' => (int) ($row['risk_score'] ?? 0),
             ], array_slice(array_values(array_filter($risks, static fn (array $row): bool => (int) ($row['risk_score'] ?? 0) > 0)), 0, 5)),
+            'missing_items' => array_map(static fn (array $row): array => [
+                'module' => $row['type_name'] !== '' ? $row['type_name'] : ('Type #' . $row['type_id']),
+                'signal' => 'Volume ' . (string) ($row['reference_total_sell_volume'] ?? 0) . ' · score ' . (string) ($row['opportunity_score'] ?? 0),
+                'score' => (int) ($row['opportunity_score'] ?? 0),
+            ], array_slice(array_values(array_filter($opportunities, static fn (array $row): bool => (bool) ($row['missing_in_alliance'] ?? false))), 0, 5)),
         ],
         'health_panels' => [
             'alliance_freshness' => dashboard_sync_health_panel($allianceSync),
@@ -1118,11 +1183,16 @@ function current_alliance_market_status_data(): array
 {
     $outcomes = market_comparison_outcomes();
     $thresholds = $outcomes['thresholds'] ?? [];
-    $lowStockThreshold = max(1, (int) ($thresholds['min_alliance_stock'] ?? 25));
+    $lowStockThreshold = max(1, (int) ($thresholds['min_alliance_sell_volume'] ?? 25));
     $staleAfterSeconds = 6 * 3600;
 
     $search = trim((string) ($_GET['q'] ?? ''));
     $searchNeedle = mb_strtolower($search);
+    $sort = (string) ($_GET['sort'] ?? 'urgency');
+    $allowedSort = ['urgency', 'stock', 'price_delta', 'score'];
+    if (!in_array($sort, $allowedSort, true)) {
+        $sort = 'urgency';
+    }
 
     $allowedPageSizes = [25, 50, 100];
     $pageSize = (int) ($_GET['page_size'] ?? 25);
@@ -1141,12 +1211,17 @@ function current_alliance_market_status_data(): array
             return true;
         }
 
-        $name = mb_strtolower((string) ($row['type_name'] ?? ''));
-
-        return str_contains($name, $searchNeedle);
+        return str_contains(mb_strtolower((string) ($row['type_name'] ?? '')), $searchNeedle);
     }));
 
-    usort($rows, static fn (array $a, array $b): int => (($b['alliance_total_sell_volume'] ?? 0) <=> ($a['alliance_total_sell_volume'] ?? 0)) ?: strcmp((string) ($a['type_name'] ?? ''), (string) ($b['type_name'] ?? '')));
+    usort($rows, static function (array $a, array $b) use ($sort): int {
+        return match ($sort) {
+            'stock' => (($a['alliance_total_sell_volume'] ?? 0) <=> ($b['alliance_total_sell_volume'] ?? 0)) ?: (($b['risk_score'] ?? 0) <=> ($a['risk_score'] ?? 0)),
+            'price_delta' => (abs((float) ($b['deviation_percent'] ?? 0.0)) <=> abs((float) ($a['deviation_percent'] ?? 0.0))) ?: (($b['opportunity_score'] ?? 0) <=> ($a['opportunity_score'] ?? 0)),
+            'score', 'urgency' => (($b['risk_score'] ?? 0) <=> ($a['risk_score'] ?? 0)) ?: (($b['stock_score'] ?? 0) <=> ($a['stock_score'] ?? 0)),
+            default => strcmp((string) ($a['type_name'] ?? ''), (string) ($b['type_name'] ?? '')),
+        };
+    });
 
     $totalItems = count($rows);
     $totalPages = max(1, (int) ceil($totalItems / $pageSize));
@@ -1154,51 +1229,56 @@ function current_alliance_market_status_data(): array
     $offset = ($page - 1) * $pageSize;
     $pagedRows = array_slice($rows, $offset, $pageSize);
 
+    $criticalItems = array_slice(array_values(array_filter($rows, static fn (array $row): bool => (int) ($row['risk_score'] ?? 0) >= 70 || (int) ($row['stock_score'] ?? 0) >= 80)), 0, 5);
     $allListings = array_values(array_filter($outcomes['rows'], static fn (array $row): bool => ($row['alliance_best_sell_price'] ?? null) !== null));
     $listingsWithStock = count(array_filter($allListings, static fn (array $row): bool => (int) ($row['alliance_total_sell_volume'] ?? 0) > 0));
     $lowStockCount = count(array_filter($allListings, static fn (array $row): bool => (int) ($row['alliance_total_sell_volume'] ?? 0) > 0 && (int) ($row['alliance_total_sell_volume'] ?? 0) < $lowStockThreshold));
-
-    $lastObservedUnix = 0;
-    foreach ($allListings as $row) {
-        $observedAt = strtotime((string) ($row['alliance_last_observed_at'] ?? ''));
-        if ($observedAt !== false && $observedAt > $lastObservedUnix) {
-            $lastObservedUnix = $observedAt;
-        }
-    }
-
-    $lastSyncLabel = 'No sync data';
-    $lastSyncContext = 'Run an alliance current sync to populate operational freshness.';
-    if ($lastObservedUnix > 0) {
-        $secondsSince = max(0, time() - $lastObservedUnix);
-        $isStale = $secondsSince > $staleAfterSeconds;
-        $lastSyncLabel = gmdate('Y-m-d H:i:s', $lastObservedUnix) . ' UTC';
-        $lastSyncContext = ($isStale ? 'Stale' : 'Fresh') . ' · ' . human_duration_ago($secondsSince) . ' ago';
-    }
 
     return [
         'summary' => [
             ['label' => 'Tracked Modules', 'value' => (string) count($outcomes['rows']), 'context' => 'Items monitored in current sync'],
             ['label' => 'Listings with Stock', 'value' => (string) $listingsWithStock, 'context' => 'Items with active alliance destination volume'],
             ['label' => 'Low Stock Count', 'value' => (string) $lowStockCount, 'context' => 'Listings below operational threshold (' . $lowStockThreshold . ')'],
-            ['label' => 'Last Sync', 'value' => $lastSyncLabel, 'context' => $lastSyncContext],
+            ['label' => 'Critical Restocks', 'value' => (string) count($criticalItems), 'context' => 'High urgency restock signals'],
+        ],
+        'highlights' => [
+            'title' => 'Critical Items',
+            'rows' => array_map(static fn (array $row): array => [
+                'module' => $row['type_name'] !== '' ? $row['type_name'] : ('Type #' . $row['type_id']),
+                'signal' => 'Stock ' . (string) ($row['alliance_total_sell_volume'] ?? 0) . ' · urgency ' . (string) ($row['risk_score'] ?? 0),
+                'score' => (int) ($row['risk_score'] ?? 0),
+            ], $criticalItems),
         ],
         'rows' => array_map(static function (array $row) use ($lowStockThreshold, $staleAfterSeconds): array {
             $stock = (int) ($row['alliance_total_sell_volume'] ?? 0);
             $observedAtRaw = (string) ($row['alliance_last_observed_at'] ?? '');
             $observedUnix = strtotime($observedAtRaw);
             $isStale = $observedUnix === false || (time() - $observedUnix) > $staleAfterSeconds;
+            $riskScore = (int) ($row['risk_score'] ?? 0);
 
             return [
                 'module' => $row['type_name'] !== '' ? $row['type_name'] : ('Type #' . $row['type_id']),
                 'price' => market_format_isk($row['alliance_best_sell_price']),
-                'stock' => $stock,
+                'stock' => (string) $stock,
+                'restock_priority' => (string) $riskScore,
+                'price_delta' => sprintf('%+.1f%%', (float) ($row['deviation_percent'] ?? 0.0)),
+                'score' => (string) ((int) ($row['opportunity_score'] ?? 0)),
                 'updated_at' => $observedAtRaw !== '' ? $observedAtRaw : '—',
                 'stock_state' => $stock < $lowStockThreshold ? 'low' : 'healthy',
                 'freshness_state' => $isStale ? 'stale' : 'fresh',
+                'severity' => market_signal_severity($riskScore),
+                'row_tone' => $riskScore >= 75 ? 'risk_high' : ($riskScore >= 45 ? 'risk_medium' : 'risk_low'),
             ];
         }, $pagedRows),
         'pagination' => [
             'search' => $search,
+            'sort' => $sort,
+            'sort_options' => [
+                'urgency' => 'Urgency',
+                'score' => 'Score',
+                'price_delta' => 'Price delta',
+                'stock' => 'Stock',
+            ],
             'page_size' => $pageSize,
             'page_size_options' => $allowedPageSizes,
             'page' => $page,
@@ -1231,22 +1311,48 @@ function reference_hub_comparison_data(): array
 {
     $comparisonContext = market_comparison_context();
     $outcomes = market_comparison_outcomes();
-    $inBoth = $outcomes['in_both_markets'];
     $underpriced = $outcomes['underpriced_in_alliance'];
     $overpriced = $outcomes['overpriced_in_alliance'];
 
+    usort($underpriced, static fn (array $a, array $b): int => (($b['opportunity_score'] ?? 0) <=> ($a['opportunity_score'] ?? 0)) ?: (($b['volume_score'] ?? 0) <=> ($a['volume_score'] ?? 0)));
+    usort($overpriced, static fn (array $a, array $b): int => (($b['risk_score'] ?? 0) <=> ($a['risk_score'] ?? 0)) ?: (($b['price_delta_score'] ?? 0) <=> ($a['price_delta_score'] ?? 0)));
+
+    $top = array_slice(array_values(array_filter(array_merge($underpriced, $overpriced), static fn (array $row): bool => (int) max((int) ($row['risk_score'] ?? 0), (int) ($row['opportunity_score'] ?? 0)) >= 60)), 0, 5);
+
+    $rows = [];
+    foreach ([
+        ['label' => 'Underpriced vs Hub', 'items' => $underpriced, 'kind' => 'opportunity'],
+        ['label' => 'Overpriced vs Hub', 'items' => $overpriced, 'kind' => 'risk'],
+    ] as $group) {
+        $rows[] = ['is_group_header' => true, 'module' => $group['label']];
+        foreach (array_slice($group['items'], 0, 15) as $row) {
+            $rows[] = [
+                'module' => $row['type_name'] !== '' ? $row['type_name'] : ('Type #' . $row['type_id']),
+                'alliance_price' => market_format_isk($row['alliance_best_sell_price']),
+                'reference_price' => market_format_isk($row['reference_best_sell_price']),
+                'delta' => sprintf('%+.1f%%', (float) ($row['deviation_percent'] ?? 0.0)),
+                'score' => (string) ((int) ($group['kind'] === 'risk' ? ($row['risk_score'] ?? 0) : ($row['opportunity_score'] ?? 0))),
+                'severity' => (string) ($group['kind'] === 'risk' ? ($row['severity'] ?? 'Low') : ($row['opportunity_tier'] ?? 'Low')),
+                'row_tone' => $group['kind'] === 'risk' ? 'risk_high' : 'opp_high',
+            ];
+        }
+    }
+
     return [
         'summary' => [
-            ['label' => 'Compared Modules', 'value' => (string) count($inBoth), 'context' => 'Alliance vs ' . $comparisonContext['reference_hub'] . ' pairs'],
-            ['label' => 'Cheaper Than ' . $comparisonContext['reference_hub'], 'value' => (string) count($underpriced), 'context' => 'Alliance price advantage'],
-            ['label' => 'Pricier Than ' . $comparisonContext['reference_hub'], 'value' => (string) count($overpriced), 'context' => 'Candidate reprice opportunities'],
+            ['label' => 'Compared Modules', 'value' => (string) count($outcomes['in_both_markets']), 'context' => 'Alliance vs ' . $comparisonContext['reference_hub'] . ' pairs'],
+            ['label' => 'Best Underpriced', 'value' => (string) count($underpriced), 'context' => 'Alliance cheaper than ' . $comparisonContext['reference_hub']],
+            ['label' => 'Overpriced Risks', 'value' => (string) count($overpriced), 'context' => 'Alliance pricier than ' . $comparisonContext['reference_hub']],
         ],
-        'rows' => array_map(static fn (array $row): array => [
-            'module' => $row['type_name'] !== '' ? $row['type_name'] : ('Type #' . $row['type_id']),
-            'alliance_price' => market_format_isk($row['alliance_best_sell_price']),
-            'reference_price' => market_format_isk($row['reference_best_sell_price']),
-            'delta' => sprintf('%+.1f%%', (float) ($row['deviation_percent'] ?? 0.0)),
-        ], array_slice(array_merge($overpriced, $underpriced), 0, 25)),
+        'highlights' => [
+            'title' => 'Top Opportunities',
+            'rows' => array_map(static fn (array $row): array => [
+                'module' => $row['type_name'] !== '' ? $row['type_name'] : ('Type #' . $row['type_id']),
+                'signal' => sprintf('%+.1f%% · volume %d', (float) ($row['deviation_percent'] ?? 0.0), (int) ($row['reference_total_sell_volume'] ?? 0)),
+                'score' => (int) max((int) ($row['opportunity_score'] ?? 0), (int) ($row['risk_score'] ?? 0)),
+            ], $top),
+        ],
+        'rows' => $rows,
     ];
 }
 
@@ -1256,22 +1362,34 @@ function missing_items_data(): array
     $outcomes = market_comparison_outcomes();
     $missingRows = $outcomes['missing_in_alliance'];
 
+    usort($missingRows, static fn (array $a, array $b): int => (($b['opportunity_score'] ?? 0) <=> ($a['opportunity_score'] ?? 0)) ?: (($b['volume_score'] ?? 0) <=> ($a['volume_score'] ?? 0)));
+    $topRows = array_slice($missingRows, 0, 5);
+
     return [
         'summary' => [
             ['label' => 'Missing Modules', 'value' => (string) count($missingRows), 'context' => 'No active alliance listing'],
-            ['label' => 'High-Turnover Gaps', 'value' => (string) count(array_filter($missingRows, static fn (array $row): bool => (int) ($row['reference_total_sell_volume'] ?? 0) >= 100)), 'context' => 'Missing + strong ' . $comparisonContext['reference_hub'] . ' depth'],
-            ['label' => 'Restock Priority', 'value' => (string) count(array_filter($missingRows, static fn (array $row): bool => (int) ($row['opportunity_score'] ?? 0) >= 50)), 'context' => 'High opportunity score'],
+            ['label' => 'High-Turnover Gaps', 'value' => (string) count(array_filter($missingRows, static fn (array $row): bool => (int) ($row['volume_score'] ?? 0) >= 55)), 'context' => 'Strong ' . $comparisonContext['reference_hub'] . ' movement'],
+            ['label' => 'Top Seed Targets', 'value' => (string) count(array_filter($missingRows, static fn (array $row): bool => (int) ($row['opportunity_score'] ?? 0) >= 60)), 'context' => 'High opportunity score'],
+        ],
+        'highlights' => [
+            'title' => 'Top Missing Items to Seed Market',
+            'rows' => array_map(static fn (array $row): array => [
+                'module' => $row['type_name'] !== '' ? $row['type_name'] : ('Type #' . $row['type_id']),
+                'signal' => 'Volume ' . (string) ($row['reference_total_sell_volume'] ?? 0) . ' · impact ' . sprintf('%+.1f%%', (float) ($row['deviation_percent'] ?? 0.0)),
+                'score' => (int) ($row['opportunity_score'] ?? 0),
+            ], $topRows),
         ],
         'rows' => array_map(static function (array $row): array {
-            $priority = (int) ($row['opportunity_score'] ?? 0) >= 70 ? 'High' : ((int) ($row['opportunity_score'] ?? 0) >= 40 ? 'Medium' : 'Low');
-
             return [
                 'module' => $row['type_name'] !== '' ? $row['type_name'] : ('Type #' . $row['type_id']),
                 'reference_price' => market_format_isk($row['reference_best_sell_price']),
                 'daily_volume' => (string) ($row['reference_total_sell_volume'] ?? 0),
-                'priority' => $priority,
+                'price_delta' => sprintf('%+.1f%%', (float) ($row['deviation_percent'] ?? 0.0)),
+                'score' => (string) ((int) ($row['opportunity_score'] ?? 0)),
+                'priority' => (string) ($row['opportunity_tier'] ?? 'Low'),
+                'row_tone' => (int) ($row['opportunity_score'] ?? 0) >= 75 ? 'opp_high' : ((int) ($row['opportunity_score'] ?? 0) >= 45 ? 'opp_medium' : 'opp_low'),
             ];
-        }, array_slice($missingRows, 0, 25)),
+        }, array_slice($missingRows, 0, 30)),
     ];
 }
 
@@ -1281,18 +1399,38 @@ function price_deviations_data(): array
     $outcomes = market_comparison_outcomes();
     $alerts = array_values(array_filter($outcomes['rows'], static fn (array $row): bool => (bool) ($row['overpriced_in_alliance'] ?? false) || (bool) ($row['underpriced_in_alliance'] ?? false)));
 
+    $actionable = array_values(array_filter($alerts, static fn (array $row): bool => (int) ($row['price_delta_score'] ?? 0) >= 45 && (int) ($row['volume_score'] ?? 0) >= 35));
+    $noise = array_values(array_filter($alerts, static fn (array $row): bool => !in_array($row, $actionable, true)));
+
+    usort($actionable, static fn (array $a, array $b): int => (($b['risk_score'] ?? 0) <=> ($a['risk_score'] ?? 0)) ?: (($b['price_delta_score'] ?? 0) <=> ($a['price_delta_score'] ?? 0)));
+    usort($noise, static fn (array $a, array $b): int => (($b['price_delta_score'] ?? 0) <=> ($a['price_delta_score'] ?? 0)));
+
+    $rows = [];
+    foreach ([
+        ['label' => 'Actionable', 'items' => $actionable],
+        ['label' => 'Noise', 'items' => $noise],
+    ] as $group) {
+        $rows[] = ['is_group_header' => true, 'module' => $group['label']];
+        foreach (array_slice($group['items'], 0, 15) as $row) {
+            $rows[] = [
+                'module' => $row['type_name'] !== '' ? $row['type_name'] : ('Type #' . $row['type_id']),
+                'alliance_price' => market_format_isk($row['alliance_best_sell_price']),
+                'reference_price' => market_format_isk($row['reference_best_sell_price']),
+                'deviation' => sprintf('%+.1f%%', (float) ($row['deviation_percent'] ?? 0.0)),
+                'severity' => (string) ($row['severity'] ?? 'Low'),
+                'score' => (string) ((int) ($row['risk_score'] ?? 0)),
+                'row_tone' => $group['label'] === 'Actionable' ? 'risk_high' : 'risk_low',
+            ];
+        }
+    }
+
     return [
         'summary' => [
             ['label' => 'Deviation Alerts', 'value' => (string) count($alerts), 'context' => 'Outside configured threshold'],
-            ['label' => 'Overpriced', 'value' => (string) count($outcomes['overpriced_in_alliance']), 'context' => 'Alliance > ' . $comparisonContext['reference_hub'] . ' threshold'],
-            ['label' => 'Underpriced', 'value' => (string) count($outcomes['underpriced_in_alliance']), 'context' => 'Alliance < ' . $comparisonContext['reference_hub'] . ' threshold'],
+            ['label' => 'Actionable', 'value' => (string) count($actionable), 'context' => 'High deviation + meaningful volume'],
+            ['label' => 'Noise', 'value' => (string) count($noise), 'context' => 'Low relevance, monitor only'],
         ],
-        'rows' => array_map(static fn (array $row): array => [
-            'module' => $row['type_name'] !== '' ? $row['type_name'] : ('Type #' . $row['type_id']),
-            'alliance_price' => market_format_isk($row['alliance_best_sell_price']),
-            'reference_price' => market_format_isk($row['reference_best_sell_price']),
-            'deviation' => sprintf('%+.1f%%', (float) ($row['deviation_percent'] ?? 0.0)),
-        ], array_slice($alerts, 0, 25)),
+        'rows' => $rows,
     ];
 }
 

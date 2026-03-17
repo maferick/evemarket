@@ -11,8 +11,13 @@ $tableColumns = [
     'module' => 'Module',
     'price' => 'Alliance Price',
     'stock' => 'Stock',
+    'restock_priority' => 'Restock Priority',
+    'price_delta' => 'Price Delta',
+    'score' => 'Score',
+    'severity' => 'Severity',
     'updated_at' => 'Updated',
 ];
+$highlights = $data['highlights'] ?? [];
 $tableRows = $data['rows'] ?? [];
 $tableControls = $data['pagination'] ?? [];
 $emptyMessage = 'No alliance structure listings available.';

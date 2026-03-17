@@ -13,7 +13,10 @@ $tableColumns = [
     'alliance_price' => 'Alliance Price',
     'reference_price' => $referenceHubName . ' Price',
     'delta' => 'Delta',
+    'score' => 'Score',
+    'severity' => 'Tier',
 ];
+$highlights = $data['highlights'] ?? [];
 $tableRows = $data['rows'] ?? [];
 $emptyMessage = 'No comparison rows available for ' . $referenceHubName . '.';
 
