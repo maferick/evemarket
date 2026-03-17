@@ -199,16 +199,27 @@ include __DIR__ . '/../../src/views/partials/header.php';
             <form class="mt-6 space-y-4" method="post">
                 <input type="hidden" name="_token" value="<?= htmlspecialchars(csrf_token(), ENT_QUOTES) ?>">
                 <input type="hidden" name="section" value="trading-stations">
-                <label class="block space-y-2">
+                <label class="block space-y-2" id="market-station-search-field">
                     <span class="text-sm text-muted">Market Station Selection</span>
-                    <select name="market_station_id" class="w-full rounded-lg border border-border bg-black/30 px-3 py-2 text-sm outline-none ring-accent focus:ring">
-                        <option value="">Select a market station</option>
-                        <?php foreach ($stations['market'] as $station): ?>
-                            <option value="<?= $station['id'] ?>" <?= ($settingValues['market_station_id'] ?? '') === (string) $station['id'] ? 'selected' : '' ?>>
-                                <?= htmlspecialchars($station['station_name'], ENT_QUOTES) ?>
-                            </option>
-                        <?php endforeach; ?>
-                    </select>
+                    <?php
+                        $marketStationId = trim((string) ($settingValues['market_station_id'] ?? ''));
+                        $marketStationName = selected_station_name('market_station_id');
+                    ?>
+                    <input type="hidden" name="market_station_id" id="market_station_id" value="<?= htmlspecialchars($marketStationId, ENT_QUOTES) ?>">
+                    <input
+                        type="text"
+                        id="market_station_search"
+                        autocomplete="off"
+                        value="<?= htmlspecialchars($marketStationName ?? '', ENT_QUOTES) ?>"
+                        placeholder="Search market stations by name"
+                        class="w-full rounded-lg border border-border bg-black/30 px-3 py-2 text-sm outline-none ring-accent focus:ring"
+                    />
+                    <p id="market_station_status" class="text-xs text-muted">
+                        <?= htmlspecialchars($marketStationId === ''
+                            ? 'Type at least 2 characters to search market stations.'
+                            : ('Selected station: ' . ($marketStationName ?? ('Station #' . $marketStationId)) . ' (#' . $marketStationId . ').'), ENT_QUOTES) ?>
+                    </p>
+                    <ul id="market_station_results" class="hidden max-h-60 overflow-y-auto rounded-lg border border-border bg-black/40"></ul>
                 </label>
                 <label class="block space-y-2" id="alliance-structure-search-field">
                     <span class="text-sm text-muted">Alliance Structure Selection</span>
@@ -243,102 +254,157 @@ include __DIR__ . '/../../src/views/partials/header.php';
 
             <script>
                 (() => {
-                    const input = document.getElementById('alliance_structure_search');
-                    const hidden = document.getElementById('alliance_station_id');
-                    const results = document.getElementById('alliance_structure_results');
-                    const status = document.getElementById('alliance_structure_status');
+                    const marketItems = <?= json_encode(array_map(static function (array $station): array {
+                        return [
+                            'id' => (int) $station['id'],
+                            'name' => (string) ($station['station_name'] ?? ''),
+                            'system' => (string) ($station['system_name'] ?? ''),
+                            'type' => (string) ($station['station_type_name'] ?? ''),
+                        ];
+                    }, $stations['market']), JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;
 
-                    if (!input || !hidden || !results || !status) {
-                        return;
-                    }
+                    const initializeSearchField = ({
+                        inputId,
+                        hiddenId,
+                        resultsId,
+                        statusId,
+                        minimumQueryLength,
+                        searchingLabel,
+                        selectionStatusPrefix,
+                        emptyQueryMessage,
+                        noResultsMessage,
+                        fetchResults,
+                    }) => {
+                        const input = document.getElementById(inputId);
+                        const hidden = document.getElementById(hiddenId);
+                        const results = document.getElementById(resultsId);
+                        const status = document.getElementById(statusId);
 
-                    let debounceTimer = null;
-
-                    const clearResults = () => {
-                        results.innerHTML = '';
-                        results.classList.add('hidden');
-                    };
-
-                    const renderResults = (items) => {
-                        clearResults();
-
-                        if (!Array.isArray(items) || items.length === 0) {
-                            status.textContent = 'No matching structures found.';
+                        if (!input || !hidden || !results || !status) {
                             return;
                         }
 
-                        const fragment = document.createDocumentFragment();
+                        let debounceTimer = null;
 
-                        items.forEach((item) => {
-                            const row = document.createElement('li');
-                            const button = document.createElement('button');
-                            const details = [];
+                        const clearResults = () => {
+                            results.innerHTML = '';
+                            results.classList.add('hidden');
+                        };
 
-                            if (item.system) {
-                                details.push('System ' + item.system);
-                            }
-
-                            if (item.type) {
-                                details.push('Type ' + item.type);
-                            }
-
-                            button.type = 'button';
-                            button.className = 'flex w-full flex-col items-start gap-1 px-3 py-2 text-left text-sm hover:bg-white/5';
-                            button.innerHTML = '<span class="text-slate-100"></span><span class="text-xs text-muted"></span>';
-                            button.querySelector('span').textContent = item.name;
-                            button.querySelectorAll('span')[1].textContent = '#' + item.id + (details.length ? ' · ' + details.join(' · ') : '');
-                            button.addEventListener('click', () => {
-                                hidden.value = String(item.id);
-                                input.value = item.name;
-                                status.textContent = 'Selected structure: ' + item.name + ' (#' + item.id + ').';
-                                clearResults();
-                            });
-
-                            row.appendChild(button);
-                            fragment.appendChild(row);
-                        });
-
-                        results.appendChild(fragment);
-                        results.classList.remove('hidden');
-                    };
-
-                    input.addEventListener('input', () => {
-                        const query = input.value.trim();
-
-                        hidden.value = '';
-
-                        if (debounceTimer !== null) {
-                            clearTimeout(debounceTimer);
-                        }
-
-                        if (query.length < 2) {
-                            status.textContent = 'Type at least 2 characters to search alliance structures.';
+                        const renderResults = (items) => {
                             clearResults();
-                            return;
-                        }
 
-                        debounceTimer = window.setTimeout(async () => {
-                            status.textContent = 'Searching…';
+                            if (!Array.isArray(items) || items.length === 0) {
+                                status.textContent = noResultsMessage;
+                                return;
+                            }
 
-                            try {
-                                const response = await fetch('/settings/esi-structures.php?q=' + encodeURIComponent(query), {
-                                    headers: { 'Accept': 'application/json' },
-                                });
+                            const fragment = document.createDocumentFragment();
 
-                                const payload = await response.json();
-                                if (!response.ok) {
-                                    status.textContent = payload.error || 'Lookup failed.';
-                                    clearResults();
-                                    return;
+                            items.forEach((item) => {
+                                const row = document.createElement('li');
+                                const button = document.createElement('button');
+                                const details = [];
+
+                                if (item.system) {
+                                    details.push('System ' + item.system);
                                 }
 
-                                status.textContent = 'Select a structure from the list.';
-                                renderResults(payload.results || []);
-                            } catch (_error) {
-                                status.textContent = 'Unable to query ESI structures right now.';
-                                clearResults();
+                                if (item.type) {
+                                    details.push('Type ' + item.type);
+                                }
+
+                                button.type = 'button';
+                                button.className = 'flex w-full flex-col items-start gap-1 px-3 py-2 text-left text-sm hover:bg-white/5';
+                                button.innerHTML = '<span class="text-slate-100"></span><span class="text-xs text-muted"></span>';
+                                button.querySelector('span').textContent = item.name;
+                                button.querySelectorAll('span')[1].textContent = '#' + item.id + (details.length ? ' · ' + details.join(' · ') : '');
+                                button.addEventListener('click', () => {
+                                    hidden.value = String(item.id);
+                                    input.value = item.name;
+                                    status.textContent = selectionStatusPrefix + item.name + ' (#' + item.id + ').';
+                                    clearResults();
+                                });
+
+                                row.appendChild(button);
+                                fragment.appendChild(row);
+                            });
+
+                            results.appendChild(fragment);
+                            results.classList.remove('hidden');
+                        };
+
+                        input.addEventListener('input', () => {
+                            const query = input.value.trim();
+
+                            hidden.value = '';
+
+                            if (debounceTimer !== null) {
+                                clearTimeout(debounceTimer);
                             }
-                        }, 250);
+
+                            if (query.length < minimumQueryLength) {
+                                status.textContent = emptyQueryMessage;
+                                clearResults();
+                                return;
+                            }
+
+                            debounceTimer = window.setTimeout(async () => {
+                                status.textContent = searchingLabel;
+
+                                try {
+                                    const items = await fetchResults(query);
+                                    status.textContent = 'Select an option from the list.';
+                                    renderResults(items);
+                                } catch (error) {
+                                    status.textContent = error instanceof Error ? error.message : 'Lookup failed.';
+                                    clearResults();
+                                }
+                            }, 250);
+                        });
+                    };
+
+                    initializeSearchField({
+                        inputId: 'market_station_search',
+                        hiddenId: 'market_station_id',
+                        resultsId: 'market_station_results',
+                        statusId: 'market_station_status',
+                        minimumQueryLength: 2,
+                        searchingLabel: 'Searching…',
+                        selectionStatusPrefix: 'Selected station: ',
+                        emptyQueryMessage: 'Type at least 2 characters to search market stations.',
+                        noResultsMessage: 'No matching market stations found.',
+                        fetchResults: async (query) => {
+                            const normalizedQuery = query.toLowerCase();
+
+                            return marketItems
+                                .filter((item) => item.name.toLowerCase().includes(normalizedQuery))
+                                .slice(0, 20);
+                        },
+                    });
+
+                    initializeSearchField({
+                        inputId: 'alliance_structure_search',
+                        hiddenId: 'alliance_station_id',
+                        resultsId: 'alliance_structure_results',
+                        statusId: 'alliance_structure_status',
+                        minimumQueryLength: 2,
+                        searchingLabel: 'Searching…',
+                        selectionStatusPrefix: 'Selected structure: ',
+                        emptyQueryMessage: 'Type at least 2 characters to search alliance structures.',
+                        noResultsMessage: 'No matching structures found.',
+                        fetchResults: async (query) => {
+                            const response = await fetch('/settings/esi-structures.php?q=' + encodeURIComponent(query), {
+                                headers: { 'Accept': 'application/json' },
+                            });
+
+                            const payload = await response.json();
+                            if (!response.ok) {
+                                throw new Error(payload.error || 'Lookup failed.');
+                            }
+
+                            return payload.results || [];
+                        },
                     });
                 })();
             </script>
