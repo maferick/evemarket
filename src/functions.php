@@ -617,7 +617,29 @@ function data_sync_settings_from_request(array $request): array
         'alliance_history_backfill_start_date' => data_sync_backfill_start_date('alliance_history_backfill_start_date', $allianceHistoryEnabled === '1', $baselineDate),
         'hub_history_backfill_start_date' => data_sync_backfill_start_date('hub_history_backfill_start_date', $hubHistoryEnabled === '1', $baselineDate),
         'raw_order_snapshot_retention_days' => sanitize_retention_days($request['raw_order_snapshot_retention_days'] ?? null, 30),
+        'static_data_source_url' => sanitize_static_data_source_url($request['static_data_source_url'] ?? null),
     ];
+}
+
+function sanitize_static_data_source_url(mixed $value): string
+{
+    $default = 'https://www.fuzzwork.co.uk/dump/sqlite-latest.sqlite.bz2';
+    $candidate = trim((string) $value);
+
+    if ($candidate === '') {
+        return $default;
+    }
+
+    if (filter_var($candidate, FILTER_VALIDATE_URL) === false) {
+        return $default;
+    }
+
+    $scheme = (string) parse_url($candidate, PHP_URL_SCHEME);
+    if (!in_array(mb_strtolower($scheme), ['http', 'https'], true)) {
+        return $default;
+    }
+
+    return $candidate;
 }
 
 function sync_watermark(string $datasetKey): ?string
@@ -2005,6 +2027,10 @@ function static_data_ensure_local_sqlite(string $sourceUrl, string $buildId): st
         throw new RuntimeException('Unable to create static-data storage directory.');
     }
 
+    if (!str_ends_with(mb_strtolower($sourceUrl), '.sqlite.bz2') && !str_ends_with(mb_strtolower($sourceUrl), '.sqlite')) {
+        throw new RuntimeException('Unsupported static-data format. This importer supports SQLite dumps (.sqlite/.sqlite.bz2), such as the Fuzzwork sqlite feed.');
+    }
+
     if (!is_file($paths['archive_path'])) {
         $context = stream_context_create(['http' => ['timeout' => 120]]);
         $payload = @file_get_contents($sourceUrl, false, $context);
@@ -2018,6 +2044,14 @@ function static_data_ensure_local_sqlite(string $sourceUrl, string $buildId): st
     }
 
     if (!is_file($paths['sqlite_path'])) {
+        if (str_ends_with(mb_strtolower($sourceUrl), '.sqlite')) {
+            if (!copy($paths['archive_path'], $paths['sqlite_path'])) {
+                throw new RuntimeException('Failed to stage downloaded SQLite file.');
+            }
+
+            return $paths['sqlite_path'];
+        }
+
         $input = bzopen($paths['archive_path'], 'r');
         if ($input === false) {
             throw new RuntimeException('Failed to open compressed static-data archive.');

@@ -474,6 +474,12 @@ include __DIR__ . '/../../src/views/partials/header.php';
                     <input type="number" min="1" max="3650" step="1" name="raw_order_snapshot_retention_days" value="<?= htmlspecialchars($settingValues['raw_order_snapshot_retention_days'] ?? '30', ENT_QUOTES) ?>" class="w-full rounded-lg border border-border bg-black/30 px-3 py-2 text-sm outline-none ring-accent focus:ring" />
                 </label>
 
+                <label class="block space-y-2">
+                    <span class="text-sm text-muted">Static Data SQLite Source URL</span>
+                    <input type="url" name="static_data_source_url" value="<?= htmlspecialchars($settingValues['static_data_source_url'] ?? 'https://www.fuzzwork.co.uk/dump/sqlite-latest.sqlite.bz2', ENT_QUOTES) ?>" class="w-full rounded-lg border border-border bg-black/30 px-3 py-2 text-sm outline-none ring-accent focus:ring" />
+                    <p class="text-xs text-muted">Importer expects a SQLite payload (<span class="font-mono">.sqlite</span> or <span class="font-mono">.sqlite.bz2</span>). Official CCP latest URLs are JSONL/YAML zip archives and are not directly importable by this pipeline without a transform step.</p>
+                </label>
+
                 <div class="space-y-3">
                     <p class="text-sm text-muted">Pipeline toggles</p>
                     <label class="flex items-center gap-3 rounded-lg border border-border bg-black/20 p-3">

@@ -214,6 +214,7 @@ EveMarket includes a local reference-data pipeline for EVE static data exports.
 - Checks the current upstream static-data build from `static_data_source_url`
 - Compares upstream build metadata with `static_data_import_state.imported_build_id`
 - Downloads and caches the static package in `storage/static-data/`
+- Supports SQLite source payloads (`.sqlite` or `.sqlite.bz2`); default source is the Fuzzwork SQLite dump
 - Imports selected **reference-only** datasets into MySQL tables:
   - `ref_regions`
   - `ref_constellations`
@@ -239,6 +240,11 @@ php bin/static_data_import.php --mode=auto
 php bin/static_data_import.php --mode=full --force
 php bin/static_data_import.php --mode=incremental
 ```
+
+### Source format note
+
+The current importer opens a SQLite database directly and reads canonical tables (for example `mapRegions`, `mapSolarSystems`, and `invTypes`).
+Because of that, official CCP `latest-jsonl.zip` / `latest-yaml.zip` archives are not directly consumable by this pipeline without first transforming those exports into the expected SQLite schema.
 
 ### Data-boundary policy
 
