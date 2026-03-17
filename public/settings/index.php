@@ -410,7 +410,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                 <input type="hidden" name="section" value="data-sync">
                 <label class="flex items-center gap-3 rounded-lg border border-border bg-black/20 p-3">
                     <input type="checkbox" name="incremental_updates_enabled" value="1" <?= ($settingValues['incremental_updates_enabled'] ?? '1') === '1' ? 'checked' : '' ?> class="size-4 rounded border-border bg-black">
-                    <span class="text-sm">Enable incremental SQL database updates</span>
+                    <span class="text-sm">Enable incremental database updates</span>
                 </label>
                 <label class="block space-y-2">
                     <span class="text-sm text-muted">Incremental Strategy</span>
@@ -475,9 +475,9 @@ include __DIR__ . '/../../src/views/partials/header.php';
                 </label>
 
                 <label class="block space-y-2">
-                    <span class="text-sm text-muted">Static Data SQL Source URL</span>
-                    <input type="url" name="static_data_source_url" value="<?= htmlspecialchars($settingValues['static_data_source_url'] ?? 'https://www.everef.net/static-dumps/latest/eve-ref-static.sql.gz', ENT_QUOTES) ?>" class="w-full rounded-lg border border-border bg-black/30 px-3 py-2 text-sm outline-none ring-accent focus:ring" />
-                    <p class="text-xs text-muted">Importer expects an official SQL dump payload (<span class="font-mono">.sql</span>, <span class="font-mono">.sql.gz</span>, or <span class="font-mono">.sql.bz2</span>).</p>
+                    <span class="text-sm text-muted">Static Data JSONL ZIP Source URL</span>
+                    <input type="url" name="static_data_source_url" value="<?= htmlspecialchars($settingValues['static_data_source_url'] ?? 'https://developers.eveonline.com/static-data/eve-online-static-data-latest-jsonl.zip', ENT_QUOTES) ?>" class="w-full rounded-lg border border-border bg-black/30 px-3 py-2 text-sm outline-none ring-accent focus:ring" />
+                    <p class="text-xs text-muted">Importer expects the official CCP JSONL ZIP payload (<span class="font-mono">.zip</span>) from developers.eveonline.com.</p>
                 </label>
 
                 <div class="space-y-3">

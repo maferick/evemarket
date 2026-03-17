@@ -640,7 +640,7 @@ function sanitize_static_data_source_url(mixed $value): string
     }
 
     $normalized = mb_strtolower($candidate);
-    if (!str_ends_with($normalized, '.sql') && !str_ends_with($normalized, '.sql.gz') && !str_ends_with($normalized, '.sql.bz2')) {
+    if (!str_ends_with($normalized, '.zip')) {
         return $default;
     }
 
@@ -649,7 +649,7 @@ function sanitize_static_data_source_url(mixed $value): string
 
 function static_data_default_source_url(): string
 {
-    return 'https://www.everef.net/static-dumps/latest/eve-ref-static.sql.gz';
+    return 'https://developers.eveonline.com/static-data/eve-online-static-data-latest-jsonl.zip';
 }
 
 function sync_watermark(string $datasetKey): ?string
@@ -1962,7 +1962,7 @@ function runner_lock_release(string $lockName): bool
 
 function static_data_source_key(): string
 {
-    return 'official.sql';
+    return 'official.jsonl';
 }
 
 function static_data_source_url(): string
@@ -2026,12 +2026,11 @@ function static_data_storage_paths(string $buildId): array
 
     return [
         'base_dir' => $baseDir,
-        'archive_path' => $baseDir . '/' . $buildId . '.archive',
-        'sql_path' => $baseDir . '/' . $buildId . '.sql',
+        'archive_path' => $baseDir . '/' . $buildId . '.jsonl.zip',
     ];
 }
 
-function static_data_ensure_local_sql_dump(string $sourceUrl, string $buildId): string
+function static_data_ensure_local_jsonl_archive(string $sourceUrl, string $buildId): string
 {
     $paths = static_data_storage_paths($buildId);
     if (!is_dir($paths['base_dir']) && !mkdir($paths['base_dir'], 0775, true) && !is_dir($paths['base_dir'])) {
@@ -2039,8 +2038,8 @@ function static_data_ensure_local_sql_dump(string $sourceUrl, string $buildId): 
     }
 
     $normalizedSource = mb_strtolower($sourceUrl);
-    if (!str_ends_with($normalizedSource, '.sql') && !str_ends_with($normalizedSource, '.sql.gz') && !str_ends_with($normalizedSource, '.sql.bz2')) {
-        throw new RuntimeException('Unsupported static-data format. This importer supports SQL dumps (.sql/.sql.gz/.sql.bz2).');
+    if (!str_ends_with($normalizedSource, '.zip')) {
+        throw new RuntimeException('Unsupported static-data format. This importer supports JSONL ZIP archives (.zip).');
     }
 
     if (!is_file($paths['archive_path'])) {
@@ -2055,144 +2054,239 @@ function static_data_ensure_local_sql_dump(string $sourceUrl, string $buildId): 
         }
     }
 
-    if (!is_file($paths['sql_path'])) {
-        if (str_ends_with($normalizedSource, '.sql')) {
-            if (!copy($paths['archive_path'], $paths['sql_path'])) {
-                throw new RuntimeException('Failed to stage downloaded SQL file.');
-            }
-
-            return $paths['sql_path'];
-        }
-
-        $output = fopen($paths['sql_path'], 'wb');
-        if ($output === false) {
-            throw new RuntimeException('Failed to create local static-data SQL file.');
-        }
-
-        if (str_ends_with($normalizedSource, '.sql.gz')) {
-            $input = gzopen($paths['archive_path'], 'rb');
-            if ($input === false) {
-                fclose($output);
-                throw new RuntimeException('Failed to open gzipped static-data archive.');
-            }
-
-            while (!gzeof($input)) {
-                $chunk = gzread($input, 1024 * 1024);
-                if ($chunk === false) {
-                    fclose($output);
-                    gzclose($input);
-                    throw new RuntimeException('Failed while decompressing gzipped static-data archive.');
-                }
-
-                if ($chunk === '') {
-                    continue;
-                }
-
-                fwrite($output, $chunk);
-            }
-
-            gzclose($input);
-        } else {
-            $input = bzopen($paths['archive_path'], 'r');
-            if ($input === false) {
-                fclose($output);
-                throw new RuntimeException('Failed to open bzip2 static-data archive.');
-            }
-
-            while (!feof($input)) {
-                $chunk = bzread($input, 1024 * 1024);
-                if ($chunk === false) {
-                    fclose($output);
-                    bzclose($input);
-                    throw new RuntimeException('Failed while decompressing bzip2 static-data archive.');
-                }
-
-                if ($chunk === '') {
-                    continue;
-                }
-
-                fwrite($output, $chunk);
-            }
-
-            bzclose($input);
-        }
-
-        fclose($output);
-    }
-
-    return $paths['sql_path'];
+    return $paths['archive_path'];
 }
 
-function static_data_extract_reference_rows_from_database(string $databaseName): array
+function static_data_record_value(array $row, array $keys, mixed $default = null): mixed
 {
-    $regions = [];
-    foreach (db_select_from_database($databaseName, 'SELECT regionID, regionName FROM mapRegions') as $row) {
-        $regions[] = ['region_id' => (int) $row['regionID'], 'region_name' => (string) ($row['regionName'] ?? '')];
+    foreach ($keys as $key) {
+        if (array_key_exists($key, $row)) {
+            return $row[$key];
+        }
     }
 
-    $constellations = [];
-    foreach (db_select_from_database($databaseName, 'SELECT constellationID, regionID, constellationName FROM mapConstellations') as $row) {
-        $constellations[] = [
-            'constellation_id' => (int) $row['constellationID'],
-            'region_id' => (int) $row['regionID'],
-            'constellation_name' => (string) ($row['constellationName'] ?? ''),
-        ];
+    return $default;
+}
+
+function static_data_localized_text(mixed $value): ?string
+{
+    if (is_string($value)) {
+        $text = trim($value);
+
+        return $text === '' ? null : $text;
     }
 
-    $systems = [];
-    foreach (db_select_from_database($databaseName, 'SELECT solarSystemID, constellationID, regionID, solarSystemName, security FROM mapSolarSystems') as $row) {
-        $systems[] = [
-            'system_id' => (int) $row['solarSystemID'],
-            'constellation_id' => (int) $row['constellationID'],
-            'region_id' => (int) $row['regionID'],
-            'system_name' => (string) ($row['solarSystemName'] ?? ''),
-            'security' => (float) ($row['security'] ?? 0),
-        ];
+    if (!is_array($value)) {
+        return null;
     }
 
-    $stations = [];
-    foreach (db_select_from_database($databaseName, 'SELECT stationID, stationName, solarSystemID, constellationID, regionID, stationTypeID FROM staStations') as $row) {
-        $stations[] = [
-            'station_id' => (int) $row['stationID'],
-            'station_name' => (string) ($row['stationName'] ?? ''),
-            'system_id' => (int) $row['solarSystemID'],
-            'constellation_id' => (int) $row['constellationID'],
-            'region_id' => (int) $row['regionID'],
-            'station_type_id' => isset($row['stationTypeID']) ? (int) $row['stationTypeID'] : null,
-        ];
+    foreach (['en', 'en-us', 'EN'] as $key) {
+        if (isset($value[$key]) && is_string($value[$key]) && trim($value[$key]) !== '') {
+            return trim($value[$key]);
+        }
     }
 
-    $marketGroups = [];
-    foreach (db_select_from_database($databaseName, 'SELECT marketGroupID, parentGroupID, marketGroupName, description FROM invMarketGroups') as $row) {
-        $marketGroups[] = [
-            'market_group_id' => (int) $row['marketGroupID'],
-            'parent_group_id' => isset($row['parentGroupID']) ? (int) $row['parentGroupID'] : null,
-            'market_group_name' => (string) ($row['marketGroupName'] ?? ''),
-            'description' => isset($row['description']) ? (string) $row['description'] : null,
-        ];
+    foreach ($value as $candidate) {
+        if (is_string($candidate) && trim($candidate) !== '') {
+            return trim($candidate);
+        }
     }
 
-    $types = [];
-    foreach (db_select_from_database($databaseName, 'SELECT typeID, groupID, marketGroupID, typeName, description, published, volume FROM invTypes') as $row) {
-        $types[] = [
-            'type_id' => (int) $row['typeID'],
-            'group_id' => (int) $row['groupID'],
-            'market_group_id' => isset($row['marketGroupID']) ? (int) $row['marketGroupID'] : null,
-            'type_name' => (string) ($row['typeName'] ?? ''),
-            'description' => isset($row['description']) ? (string) $row['description'] : null,
-            'published' => (int) ($row['published'] ?? 0) === 1 ? 1 : 0,
-            'volume' => isset($row['volume']) ? (float) $row['volume'] : null,
-        ];
+    return null;
+}
+
+function static_data_parse_jsonl_entry(array $entry): ?array
+{
+    if (!isset($entry['name']) || !isset($entry['index'])) {
+        return null;
+    }
+
+    $fileName = basename((string) $entry['name']);
+    if (!str_ends_with(mb_strtolower($fileName), '.jsonl')) {
+        return null;
     }
 
     return [
-        'regions' => $regions,
-        'constellations' => $constellations,
-        'systems' => $systems,
-        'stations' => $stations,
-        'market_groups' => $marketGroups,
-        'types' => $types,
+        'file_name' => $fileName,
+        'index' => (int) $entry['index'],
     ];
+}
+
+function static_data_extract_reference_rows_from_jsonl_archive(string $archivePath): array
+{
+    if (!class_exists(ZipArchive::class)) {
+        throw new RuntimeException('PHP ZipArchive extension is required to import JSONL static data archives.');
+    }
+
+    $zip = new ZipArchive();
+    if ($zip->open($archivePath) !== true) {
+        throw new RuntimeException('Unable to open static-data ZIP archive.');
+    }
+
+    $entries = [];
+    for ($index = 0; $index < $zip->numFiles; $index++) {
+        $stat = $zip->statIndex($index);
+        if (!is_array($stat)) {
+            continue;
+        }
+
+        $parsed = static_data_parse_jsonl_entry(['name' => $stat['name'] ?? null, 'index' => $index]);
+        if ($parsed === null) {
+            continue;
+        }
+
+        $entries[mb_strtolower($parsed['file_name'])] = $parsed['index'];
+    }
+
+    $targets = [
+        'mapregions.jsonl' => 'regions',
+        'mapconstellations.jsonl' => 'constellations',
+        'mapsolarsystems.jsonl' => 'systems',
+        'npcstations.jsonl' => 'stations',
+        'stations.jsonl' => 'stations',
+        'marketgroups.jsonl' => 'market_groups',
+        'types.jsonl' => 'types',
+    ];
+
+    $records = [
+        'regions' => [],
+        'constellations' => [],
+        'systems' => [],
+        'stations' => [],
+        'market_groups' => [],
+        'types' => [],
+    ];
+
+    foreach ($targets as $fileName => $targetKey) {
+        if (!isset($entries[$fileName])) {
+            continue;
+        }
+
+        $stream = $zip->getStream($zip->getNameIndex($entries[$fileName]));
+        if (!is_resource($stream)) {
+            continue;
+        }
+
+        while (($line = fgets($stream)) !== false) {
+            $line = trim($line);
+            if ($line === '') {
+                continue;
+            }
+
+            try {
+                $row = json_decode($line, true, 512, JSON_THROW_ON_ERROR);
+            } catch (Throwable) {
+                continue;
+            }
+
+            if (!is_array($row)) {
+                continue;
+            }
+
+            if ($targetKey === 'regions') {
+                $regionId = (int) static_data_record_value($row, ['regionID', 'region_id', '_key']);
+                $regionName = static_data_localized_text(static_data_record_value($row, ['regionName', 'name']));
+                if ($regionId > 0 && $regionName !== null) {
+                    $records['regions'][] = ['region_id' => $regionId, 'region_name' => $regionName];
+                }
+                continue;
+            }
+
+            if ($targetKey === 'constellations') {
+                $constellationId = (int) static_data_record_value($row, ['constellationID', 'constellation_id', '_key']);
+                $regionId = (int) static_data_record_value($row, ['regionID', 'region_id', '_key']);
+                $name = static_data_localized_text(static_data_record_value($row, ['constellationName', 'name']));
+                if ($constellationId > 0 && $regionId > 0 && $name !== null) {
+                    $records['constellations'][] = [
+                        'constellation_id' => $constellationId,
+                        'region_id' => $regionId,
+                        'constellation_name' => $name,
+                    ];
+                }
+                continue;
+            }
+
+            if ($targetKey === 'systems') {
+                $systemId = (int) static_data_record_value($row, ['solarSystemID', 'system_id', '_key']);
+                $constellationId = (int) static_data_record_value($row, ['constellationID', 'constellation_id', '_key']);
+                $regionId = (int) static_data_record_value($row, ['regionID', 'region_id', '_key']);
+                $name = static_data_localized_text(static_data_record_value($row, ['solarSystemName', 'name']));
+                if ($systemId > 0 && $constellationId > 0 && $regionId > 0 && $name !== null) {
+                    $records['systems'][] = [
+                        'system_id' => $systemId,
+                        'constellation_id' => $constellationId,
+                        'region_id' => $regionId,
+                        'system_name' => $name,
+                        'security' => (float) static_data_record_value($row, ['securityStatus', 'security', 'security_status'], 0),
+                    ];
+                }
+                continue;
+            }
+
+            if ($targetKey === 'stations') {
+                $stationId = (int) static_data_record_value($row, ['stationID', 'station_id', '_key']);
+                $name = static_data_localized_text(static_data_record_value($row, ['stationName', 'name']));
+                if ($stationId > 0) {
+                    if ($name === null) {
+                        $name = 'Station ' . $stationId;
+                    }
+                    $records['stations'][] = [
+                        'station_id' => $stationId,
+                        'station_name' => $name,
+                        'system_id' => (int) static_data_record_value($row, ['solarSystemID', 'system_id', '_key']),
+                        'constellation_id' => (int) static_data_record_value($row, ['constellationID', 'constellation_id', '_key']),
+                        'region_id' => (int) static_data_record_value($row, ['regionID', 'region_id', '_key']),
+                        'station_type_id' => ($typeId = (int) static_data_record_value($row, ['stationTypeID', 'typeID', 'type_id'], 0)) > 0 ? $typeId : null,
+                    ];
+                }
+                continue;
+            }
+
+            if ($targetKey === 'market_groups') {
+                $groupId = (int) static_data_record_value($row, ['marketGroupID', 'market_group_id', '_key']);
+                $name = static_data_localized_text(static_data_record_value($row, ['marketGroupName', 'name']));
+                if ($groupId > 0 && $name !== null) {
+                    $parentId = (int) static_data_record_value($row, ['parentGroupID', 'parent_group_id'], 0);
+                    $records['market_groups'][] = [
+                        'market_group_id' => $groupId,
+                        'parent_group_id' => $parentId > 0 ? $parentId : null,
+                        'market_group_name' => $name,
+                        'description' => static_data_localized_text(static_data_record_value($row, ['description'])),
+                    ];
+                }
+                continue;
+            }
+
+            if ($targetKey === 'types') {
+                $typeId = (int) static_data_record_value($row, ['typeID', 'type_id', '_key']);
+                $groupId = (int) static_data_record_value($row, ['groupID', 'group_id']);
+                $name = static_data_localized_text(static_data_record_value($row, ['typeName', 'name']));
+                if ($typeId > 0 && $groupId > 0 && $name !== null) {
+                    $marketGroupId = (int) static_data_record_value($row, ['marketGroupID', 'market_group_id', '_key'], 0);
+                    $publishedRaw = static_data_record_value($row, ['published'], 0);
+                    $records['types'][] = [
+                        'type_id' => $typeId,
+                        'group_id' => $groupId,
+                        'market_group_id' => $marketGroupId > 0 ? $marketGroupId : null,
+                        'type_name' => $name,
+                        'description' => static_data_localized_text(static_data_record_value($row, ['description'])),
+                        'published' => ($publishedRaw === true || (int) $publishedRaw === 1) ? 1 : 0,
+                        'volume' => ($volume = static_data_record_value($row, ['volume'], null)) !== null ? (float) $volume : null,
+                    ];
+                }
+            }
+        }
+
+        fclose($stream);
+    }
+
+    $zip->close();
+
+    if ($records['regions'] === [] || $records['constellations'] === [] || $records['systems'] === [] || $records['market_groups'] === [] || $records['types'] === []) {
+        throw new RuntimeException('Static-data archive is missing one or more required JSONL datasets for import.');
+    }
+
+    return $records;
 }
 
 function static_data_import_reference_data(string $requestedMode = 'auto', bool $force = false): array
@@ -2240,44 +2334,10 @@ function static_data_import_reference_data(string $requestedMode = 'auto', bool 
         json_encode(['remote' => $remote], JSON_THROW_ON_ERROR)
     );
 
-    $stagingDatabase = 'evemarket_static_' . substr($remoteBuildId, 0, 16);
-    $fallbackImportIntoPrimary = false;
-
     try {
-        $sqlPath = static_data_ensure_local_sql_dump($sourceUrl, $remoteBuildId);
+        $archivePath = static_data_ensure_local_jsonl_archive($sourceUrl, $remoteBuildId);
+        $dataset = static_data_extract_reference_rows_from_jsonl_archive($archivePath);
 
-        try {
-            db_import_sql_dump_into_database($stagingDatabase, $sqlPath);
-            $dataset = static_data_extract_reference_rows_from_database($stagingDatabase);
-        } catch (Throwable $stagingImportException) {
-            $errorMessage = strtolower($stagingImportException->getMessage());
-            $accessDenied = str_contains($errorMessage, 'access denied') || str_contains($errorMessage, 'sqlstate[42000]');
-
-            if (!$accessDenied) {
-                throw $stagingImportException;
-            }
-
-            $fallbackImportIntoPrimary = true;
-            $expectedTables = ['invMarketGroups', 'invTypes', 'mapRegions', 'mapConstellations', 'mapSolarSystems', 'staStations'];
-            $existingTables = db_list_tables();
-            $backupTables = array_values(array_intersect($existingTables, $expectedTables));
-
-            if ($backupTables !== []) {
-                throw new RuntimeException(
-                    'Unable to create dedicated staging database with current MySQL privileges, and fallback import into the primary database is unsafe because required staging table names already exist: '
-                    . implode(', ', $backupTables)
-                    . '. Grant CREATE/DROP privileges for temporary staging databases or clean conflicting tables and retry.',
-                    previous: $stagingImportException
-                );
-            }
-
-            db_import_sql_dump_into_current_database($sqlPath);
-            try {
-                $dataset = static_data_extract_reference_rows_from_database((string) config('db.database'));
-            } finally {
-                db_drop_tables($expectedTables);
-            }
-        }
         $regions = $dataset['regions'];
         $constellations = $dataset['constellations'];
         $systems = $dataset['systems'];
@@ -2326,16 +2386,8 @@ function static_data_import_reference_data(string $requestedMode = 'auto', bool 
             ], JSON_THROW_ON_ERROR)
         );
 
-        if (!$fallbackImportIntoPrimary) {
-            db_drop_database_if_exists($stagingDatabase);
-        }
-
         return ['ok' => true, 'changed' => true, 'build_id' => $remoteBuildId, 'rows_written' => $rowsWritten, 'mode' => $mode];
     } catch (Throwable $exception) {
-        if (!$fallbackImportIntoPrimary) {
-            db_drop_database_if_exists($stagingDatabase);
-        }
-
         db_static_data_import_state_upsert(
             $sourceKey,
             $sourceUrl,

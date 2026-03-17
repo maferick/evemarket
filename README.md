@@ -12,7 +12,7 @@ This repository establishes a clean architecture that can scale from an initial 
   - General settings
   - Trading Stations (market + alliance station selection)
   - ESI Login settings
-  - Data Sync settings with incremental SQL update toggle
+  - Data Sync settings with incremental update toggle
 - `src/db.php` as the **single central database access layer**
 - `src/functions.php` as the **single shared helper/business utility layer**
 - ESI OAuth callback (`/callback`) with token verification and DB persistence
@@ -214,7 +214,7 @@ EveMarket includes a local reference-data pipeline for EVE static data exports.
 - Checks the current upstream static-data build from `static_data_source_url`
 - Compares upstream build metadata with `static_data_import_state.imported_build_id`
 - Downloads and caches the static package in `storage/static-data/`
-- Supports official SQL source payloads (`.sql`, `.sql.gz`, or `.sql.bz2`); default source is the official EVE Ref static SQL dump
+- Supports official CCP JSONL ZIP payloads (`.zip`); default source is `eve-online-static-data-latest-jsonl.zip`
 - Imports selected **reference-only** datasets into MySQL tables:
   - `ref_regions`
   - `ref_constellations`
@@ -243,8 +243,7 @@ php bin/static_data_import.php --mode=incremental
 
 ### Source format note
 
-The current importer stages an official SQL dump into a temporary MySQL database and reads canonical tables (for example `mapRegions`, `mapSolarSystems`, and `invTypes`).
-Because of that, non-SQL CCP archive formats such as `latest-jsonl.zip` / `latest-yaml.zip` are not directly consumable by this pipeline without first transforming those exports into SQL.
+The current importer reads required datasets directly from the official JSONL ZIP archive (for example `mapRegions.jsonl`, `mapSolarSystems.jsonl`, `types.jsonl`, and `marketGroups.jsonl`) and maps them into EveMarket reference tables.
 
 ### Data-boundary policy
 

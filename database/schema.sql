@@ -286,7 +286,7 @@ INSERT INTO app_settings (setting_key, setting_value) VALUES
     ('incremental_strategy', 'watermark_upsert'),
     ('incremental_delete_policy', 'reconcile'),
     ('incremental_chunk_size', '1000'),
-    ('static_data_source_url', 'https://www.everef.net/static-dumps/latest/eve-ref-static.sql.gz'),
+    ('static_data_source_url', 'https://developers.eveonline.com/static-data/eve-online-static-data-latest-jsonl.zip'),
     ('alliance_current_backfill_start_date', ''),
     ('alliance_history_backfill_start_date', ''),
     ('hub_history_backfill_start_date', ''),
