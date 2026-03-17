@@ -116,6 +116,84 @@ CREATE TABLE IF NOT EXISTS sync_schedules (
     KEY idx_job_key (job_key)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+CREATE TABLE IF NOT EXISTS killmail_events (
+    id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    sequence_id BIGINT UNSIGNED NOT NULL,
+    killmail_id BIGINT UNSIGNED NOT NULL,
+    killmail_hash VARCHAR(128) NOT NULL,
+    uploaded_at DATETIME DEFAULT NULL,
+    sequence_updated BIGINT UNSIGNED DEFAULT NULL,
+    killmail_time DATETIME DEFAULT NULL,
+    solar_system_id INT UNSIGNED DEFAULT NULL,
+    region_id INT UNSIGNED DEFAULT NULL,
+    victim_character_id BIGINT UNSIGNED DEFAULT NULL,
+    victim_corporation_id BIGINT UNSIGNED DEFAULT NULL,
+    victim_alliance_id BIGINT UNSIGNED DEFAULT NULL,
+    victim_ship_type_id INT UNSIGNED DEFAULT NULL,
+    zkb_json LONGTEXT NOT NULL,
+    raw_killmail_json LONGTEXT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY unique_sequence_id (sequence_id),
+    KEY idx_killmail_id (killmail_id),
+    KEY idx_uploaded_at (uploaded_at),
+    KEY idx_victim_alliance (victim_alliance_id),
+    KEY idx_victim_corporation (victim_corporation_id),
+    KEY idx_victim_ship_type (victim_ship_type_id),
+    KEY idx_system_region (solar_system_id, region_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS killmail_attackers (
+    id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    sequence_id BIGINT UNSIGNED NOT NULL,
+    attacker_index SMALLINT UNSIGNED NOT NULL,
+    character_id BIGINT UNSIGNED DEFAULT NULL,
+    corporation_id BIGINT UNSIGNED DEFAULT NULL,
+    alliance_id BIGINT UNSIGNED DEFAULT NULL,
+    ship_type_id INT UNSIGNED DEFAULT NULL,
+    weapon_type_id INT UNSIGNED DEFAULT NULL,
+    final_blow TINYINT(1) NOT NULL DEFAULT 0,
+    security_status DECIMAL(5,2) DEFAULT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY unique_sequence_attacker (sequence_id, attacker_index),
+    KEY idx_attacker_alliance (alliance_id),
+    KEY idx_attacker_corporation (corporation_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS killmail_items (
+    id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    sequence_id BIGINT UNSIGNED NOT NULL,
+    item_index INT UNSIGNED NOT NULL,
+    item_type_id INT UNSIGNED NOT NULL,
+    item_flag INT DEFAULT NULL,
+    quantity_dropped BIGINT DEFAULT NULL,
+    quantity_destroyed BIGINT DEFAULT NULL,
+    singleton TINYINT DEFAULT NULL,
+    item_role ENUM('fitted', 'dropped', 'destroyed', 'other') NOT NULL DEFAULT 'other',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY unique_sequence_item (sequence_id, item_index),
+    KEY idx_item_type (item_type_id),
+    KEY idx_item_role (item_role)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS killmail_tracked_alliances (
+    alliance_id BIGINT UNSIGNED PRIMARY KEY,
+    label VARCHAR(190) DEFAULT NULL,
+    is_active TINYINT(1) NOT NULL DEFAULT 1,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    KEY idx_active (is_active)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS killmail_tracked_corporations (
+    corporation_id BIGINT UNSIGNED PRIMARY KEY,
+    label VARCHAR(190) DEFAULT NULL,
+    is_active TINYINT(1) NOT NULL DEFAULT 1,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    KEY idx_active (is_active)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 
 CREATE TABLE IF NOT EXISTS market_orders_current (
     id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
@@ -290,6 +368,12 @@ INSERT INTO app_settings (setting_key, setting_value) VALUES
     ('alliance_current_backfill_start_date', ''),
     ('alliance_history_backfill_start_date', ''),
     ('hub_history_backfill_start_date', ''),
+    ('killmail_ingestion_enabled', '0'),
+    ('killmail_r2z2_sequence_url', 'https://r2z2.zkillboard.com/ephemeral/sequence.json'),
+    ('killmail_r2z2_base_url', 'https://r2z2.zkillboard.com/ephemeral'),
+    ('killmail_ingestion_poll_sleep_seconds', '6'),
+    ('killmail_ingestion_max_sequences_per_run', '120'),
+    ('killmail_demand_prediction_mode', 'baseline'),
     ('raw_order_snapshot_retention_days', '30'),
     ('market_compare_deviation_percent', '5'),
     ('market_compare_min_alliance_sell_volume', '50'),
@@ -306,7 +390,8 @@ INSERT INTO sync_schedules (job_key, enabled, interval_seconds, next_run_at, las
     ('alliance_current_sync', 1, 300, NULL, NULL, NULL, NULL, NULL),
     ('alliance_historical_sync', 1, 1800, NULL, NULL, NULL, NULL, NULL),
     ('market_hub_current_sync', 1, 300, NULL, NULL, NULL, NULL, NULL),
-    ('market_hub_historical_sync', 1, 1800, NULL, NULL, NULL, NULL, NULL)
+    ('market_hub_historical_sync', 1, 1800, NULL, NULL, NULL, NULL, NULL),
+    ('killmail_r2z2_sync', 0, 60, NULL, NULL, NULL, NULL, NULL)
 ON DUPLICATE KEY UPDATE
     enabled = VALUES(enabled),
     interval_seconds = VALUES(interval_seconds);

@@ -17,6 +17,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $submittedSection = $_POST['section'] ?? 'general';
 
     $saved = false;
+    $saveMessage = null;
 
     switch ($submittedSection) {
         case 'general':
@@ -44,6 +45,31 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             ]);
             break;
 
+
+        case 'killmail-intelligence':
+            $resolvedEntities = killmail_resolve_tracked_entities(
+                (string) ($_POST['tracked_alliance_names'] ?? ''),
+                (string) ($_POST['tracked_corporation_names'] ?? '')
+            );
+
+            $saved = save_settings([
+                'killmail_ingestion_enabled' => isset($_POST['killmail_ingestion_enabled']) ? '1' : '0',
+                'killmail_ingestion_poll_sleep_seconds' => (string) max(6, min(300, (int) ($_POST['killmail_ingestion_poll_sleep_seconds'] ?? 6))),
+                'killmail_ingestion_max_sequences_per_run' => (string) max(1, min(5000, (int) ($_POST['killmail_ingestion_max_sequences_per_run'] ?? 120))),
+                'killmail_demand_prediction_mode' => trim((string) ($_POST['killmail_demand_prediction_mode'] ?? 'baseline')),
+            ]);
+
+            if ($saved) {
+                $saved = db_killmail_tracked_alliances_replace(array_map(static fn (array $row): array => ['alliance_id' => $row['id'], 'label' => $row['label']], (array) ($resolvedEntities['alliances'] ?? [])))
+                    && db_killmail_tracked_corporations_replace(array_map(static fn (array $row): array => ['corporation_id' => $row['id'], 'label' => $row['label']], (array) ($resolvedEntities['corporations'] ?? [])));
+            }
+
+            $unresolved = array_slice((array) ($resolvedEntities['unresolved'] ?? []), 0, 8);
+            if ($unresolved !== []) {
+                $saveMessage = 'Some names were not resolved: ' . implode('; ', $unresolved);
+            }
+            break;
+
         case 'data-sync':
             $dataSyncAction = trim((string) ($_POST['data_sync_action'] ?? 'save'));
 
@@ -66,6 +92,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     flash('success', $message);
                 } catch (Throwable $exception) {
                     $saved = false;
+    $saveMessage = null;
                     flash('success', 'Static data import failed: ' . $exception->getMessage());
                 }
 
@@ -79,7 +106,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             break;
     }
 
-    flash('success', $saved ? 'Settings saved successfully.' : 'Database unavailable. Settings were not persisted.');
+    flash('success', $saveMessage ?? ($saved ? 'Settings saved successfully.' : 'Database unavailable. Settings were not persisted.'));
     header('Location: /settings?section=' . urlencode($submittedSection));
     exit;
 }
@@ -95,6 +122,10 @@ $settingValues = get_settings([
     'esi_callback_url',
     'esi_scopes',
     'esi_enabled',
+    'killmail_ingestion_enabled',
+    'killmail_ingestion_poll_sleep_seconds',
+    'killmail_ingestion_max_sequences_per_run',
+    'killmail_demand_prediction_mode',
     'incremental_updates_enabled',
     'incremental_strategy',
     'incremental_delete_policy',
@@ -141,6 +172,22 @@ if ($dbStatus['ok']) {
         ],
     ];
 
+}
+
+
+$trackedAlliances = [];
+$trackedCorporations = [];
+$killmailStatus = null;
+if ($dbStatus['ok']) {
+    try {
+        $trackedAlliances = db_killmail_tracked_alliances_active();
+        $trackedCorporations = db_killmail_tracked_corporations_active();
+        $killmailStatus = db_killmail_ingestion_status();
+    } catch (Throwable) {
+        $trackedAlliances = [];
+        $trackedCorporations = [];
+        $killmailStatus = null;
+    }
 }
 
 foreach ($syncScheduleCards as $schedule) {
@@ -403,6 +450,66 @@ include __DIR__ . '/../../src/views/partials/header.php';
                     });
                 })();
             </script>
+        <?php elseif ($section === 'killmail-intelligence'): ?>
+            <?php
+                $alliancesText = implode("
+", array_map(static fn (array $row): string => (string) ($row['label'] ?? $row['alliance_id']), $trackedAlliances));
+                $corporationsText = implode("
+", array_map(static fn (array $row): string => (string) ($row['label'] ?? $row['corporation_id']), $trackedCorporations));
+                $statusState = is_array($killmailStatus['state'] ?? null) ? $killmailStatus['state'] : [];
+            ?>
+            <form class="mt-6 space-y-4" method="post">
+                <input type="hidden" name="_token" value="<?= htmlspecialchars(csrf_token(), ENT_QUOTES) ?>">
+                <input type="hidden" name="section" value="killmail-intelligence">
+
+                <label class="flex items-center gap-3 rounded-lg border border-border bg-black/20 p-3">
+                    <input type="hidden" name="killmail_ingestion_enabled" value="0">
+                    <input type="checkbox" name="killmail_ingestion_enabled" value="1" <?= ($settingValues['killmail_ingestion_enabled'] ?? '0') === '1' ? 'checked' : '' ?> class="size-4 rounded border-border bg-black">
+                    <span class="text-sm">Enable zKillboard R2Z2 ingestion</span>
+                </label>
+
+                <div class="grid gap-4 md:grid-cols-2">
+                    <label class="block space-y-2">
+                        <span class="text-sm text-muted">Poll Sleep Seconds (min 6)</span>
+                        <input type="number" min="6" max="300" step="1" name="killmail_ingestion_poll_sleep_seconds" value="<?= htmlspecialchars($settingValues['killmail_ingestion_poll_sleep_seconds'] ?? '6', ENT_QUOTES) ?>" class="w-full rounded-lg border border-border bg-black/30 px-3 py-2 text-sm outline-none ring-accent focus:ring" />
+                    </label>
+                    <label class="block space-y-2">
+                        <span class="text-sm text-muted">Max Sequences Per Run</span>
+                        <input type="number" min="1" max="5000" step="1" name="killmail_ingestion_max_sequences_per_run" value="<?= htmlspecialchars($settingValues['killmail_ingestion_max_sequences_per_run'] ?? '120', ENT_QUOTES) ?>" class="w-full rounded-lg border border-border bg-black/30 px-3 py-2 text-sm outline-none ring-accent focus:ring" />
+                    </label>
+                </div>
+
+                <label class="block space-y-2">
+                    <span class="text-sm text-muted">Tracked Alliances (one per line, by name; numeric IDs still supported)</span>
+                    <textarea name="tracked_alliance_names" rows="6" class="w-full rounded-lg border border-border bg-black/30 px-3 py-2 text-sm outline-none ring-accent focus:ring"><?= htmlspecialchars($alliancesText, ENT_QUOTES) ?></textarea>
+                </label>
+
+                <label class="block space-y-2">
+                    <span class="text-sm text-muted">Tracked Corporations (one per line, by name; numeric IDs still supported)</span>
+                    <textarea name="tracked_corporation_names" rows="6" class="w-full rounded-lg border border-border bg-black/30 px-3 py-2 text-sm outline-none ring-accent focus:ring"><?= htmlspecialchars($corporationsText, ENT_QUOTES) ?></textarea>
+                </label>
+
+
+                <div class="rounded-lg border border-border bg-black/20 p-3 text-sm text-muted">
+                    Enter exact alliance/corporation names (for example: <span class="text-slate-100">Goonswarm Federation</span> or <span class="text-slate-100">KarmaFleet</span>). Names are resolved to IDs using ESI and stored locally.
+                </div>
+
+                <label class="block space-y-2">
+                    <span class="text-sm text-muted">Demand Prediction Mode (future-facing)</span>
+                    <input type="text" name="killmail_demand_prediction_mode" value="<?= htmlspecialchars($settingValues['killmail_demand_prediction_mode'] ?? 'baseline', ENT_QUOTES) ?>" class="w-full rounded-lg border border-border bg-black/30 px-3 py-2 text-sm outline-none ring-accent focus:ring" />
+                </label>
+
+                <div class="rounded-lg border border-border bg-black/20 p-3 text-sm text-muted space-y-1">
+                    <p><span class="text-slate-100">Last cursor:</span> <?= htmlspecialchars((string) ($statusState['last_cursor'] ?? '-'), ENT_QUOTES) ?></p>
+                    <p><span class="text-slate-100">Last success:</span> <?= htmlspecialchars((string) ($statusState['last_success_at'] ?? '-'), ENT_QUOTES) ?></p>
+                    <p><span class="text-slate-100">Last status:</span> <?= htmlspecialchars((string) ($statusState['status'] ?? 'idle'), ENT_QUOTES) ?></p>
+                    <p><span class="text-slate-100">Latest ingested sequence:</span> <?= htmlspecialchars((string) ($killmailStatus['max_sequence_id'] ?? '-'), ENT_QUOTES) ?></p>
+                    <p><span class="text-slate-100">Latest uploaded_at:</span> <?= htmlspecialchars((string) ($killmailStatus['max_uploaded_at'] ?? '-'), ENT_QUOTES) ?></p>
+                </div>
+
+                <p class="text-sm text-muted">Ingestion consumes R2Z2 as an ordered stream. Filtering for alliances/corporations happens after local persistence, enabling future module-demand prediction and restock analytics.</p>
+                <button class="rounded-lg bg-accent px-4 py-2 text-sm font-medium">Save Killmail Intelligence Settings</button>
+            </form>
         <?php elseif ($section === 'esi-login'): ?>
             <form class="mt-6 space-y-4" method="post">
                 <input type="hidden" name="_token" value="<?= htmlspecialchars(csrf_token(), ENT_QUOTES) ?>">

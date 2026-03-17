@@ -1399,3 +1399,236 @@ function db_ref_item_types_bulk_upsert(array $rows, ?int $chunkSize = null): int
 {
     return db_bulk_insert_or_upsert('ref_item_types', ['type_id', 'group_id', 'market_group_id', 'type_name', 'description', 'published', 'volume'], $rows, ['group_id', 'market_group_id', 'type_name', 'description', 'published', 'volume'], $chunkSize);
 }
+
+function db_killmail_event_upsert(array $event): bool
+{
+    return db_execute(
+        'INSERT INTO killmail_events (
+            sequence_id,
+            killmail_id,
+            killmail_hash,
+            uploaded_at,
+            sequence_updated,
+            killmail_time,
+            solar_system_id,
+            region_id,
+            victim_character_id,
+            victim_corporation_id,
+            victim_alliance_id,
+            victim_ship_type_id,
+            zkb_json,
+            raw_killmail_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON DUPLICATE KEY UPDATE
+            killmail_id = VALUES(killmail_id),
+            killmail_hash = VALUES(killmail_hash),
+            uploaded_at = VALUES(uploaded_at),
+            sequence_updated = VALUES(sequence_updated),
+            killmail_time = VALUES(killmail_time),
+            solar_system_id = VALUES(solar_system_id),
+            region_id = VALUES(region_id),
+            victim_character_id = VALUES(victim_character_id),
+            victim_corporation_id = VALUES(victim_corporation_id),
+            victim_alliance_id = VALUES(victim_alliance_id),
+            victim_ship_type_id = VALUES(victim_ship_type_id),
+            zkb_json = VALUES(zkb_json),
+            raw_killmail_json = VALUES(raw_killmail_json),
+            updated_at = CURRENT_TIMESTAMP',
+        [
+            (int) ($event['sequence_id'] ?? 0),
+            (int) ($event['killmail_id'] ?? 0),
+            (string) ($event['killmail_hash'] ?? ''),
+            $event['uploaded_at'] ?? null,
+            isset($event['sequence_updated']) ? (int) $event['sequence_updated'] : null,
+            $event['killmail_time'] ?? null,
+            isset($event['solar_system_id']) ? (int) $event['solar_system_id'] : null,
+            isset($event['region_id']) ? (int) $event['region_id'] : null,
+            isset($event['victim_character_id']) ? (int) $event['victim_character_id'] : null,
+            isset($event['victim_corporation_id']) ? (int) $event['victim_corporation_id'] : null,
+            isset($event['victim_alliance_id']) ? (int) $event['victim_alliance_id'] : null,
+            isset($event['victim_ship_type_id']) ? (int) $event['victim_ship_type_id'] : null,
+            (string) ($event['zkb_json'] ?? '{}'),
+            (string) ($event['raw_killmail_json'] ?? '{}'),
+        ]
+    );
+}
+
+function db_killmail_attackers_replace(int $sequenceId, array $rows): int
+{
+    return db_transaction(static function () use ($sequenceId, $rows): int {
+        db_execute('DELETE FROM killmail_attackers WHERE sequence_id = ?', [$sequenceId]);
+        if ($rows === []) {
+            return 0;
+        }
+
+        $written = 0;
+        foreach ($rows as $row) {
+            $ok = db_execute(
+                'INSERT INTO killmail_attackers (
+                    sequence_id,
+                    attacker_index,
+                    character_id,
+                    corporation_id,
+                    alliance_id,
+                    ship_type_id,
+                    weapon_type_id,
+                    final_blow,
+                    security_status
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON DUPLICATE KEY UPDATE
+                    character_id = VALUES(character_id),
+                    corporation_id = VALUES(corporation_id),
+                    alliance_id = VALUES(alliance_id),
+                    ship_type_id = VALUES(ship_type_id),
+                    weapon_type_id = VALUES(weapon_type_id),
+                    final_blow = VALUES(final_blow),
+                    security_status = VALUES(security_status)',
+                [
+                    $sequenceId,
+                    (int) ($row['attacker_index'] ?? 0),
+                    isset($row['character_id']) ? (int) $row['character_id'] : null,
+                    isset($row['corporation_id']) ? (int) $row['corporation_id'] : null,
+                    isset($row['alliance_id']) ? (int) $row['alliance_id'] : null,
+                    isset($row['ship_type_id']) ? (int) $row['ship_type_id'] : null,
+                    isset($row['weapon_type_id']) ? (int) $row['weapon_type_id'] : null,
+                    (int) (($row['final_blow'] ?? false) ? 1 : 0),
+                    isset($row['security_status']) ? (float) $row['security_status'] : null,
+                ]
+            );
+            if ($ok) {
+                $written++;
+            }
+        }
+
+        return $written;
+    });
+}
+
+function db_killmail_items_replace(int $sequenceId, array $rows): int
+{
+    return db_transaction(static function () use ($sequenceId, $rows): int {
+        db_execute('DELETE FROM killmail_items WHERE sequence_id = ?', [$sequenceId]);
+        if ($rows === []) {
+            return 0;
+        }
+
+        $written = 0;
+        foreach ($rows as $row) {
+            $ok = db_execute(
+                'INSERT INTO killmail_items (
+                    sequence_id,
+                    item_index,
+                    item_type_id,
+                    item_flag,
+                    quantity_dropped,
+                    quantity_destroyed,
+                    singleton,
+                    item_role
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON DUPLICATE KEY UPDATE
+                    item_type_id = VALUES(item_type_id),
+                    item_flag = VALUES(item_flag),
+                    quantity_dropped = VALUES(quantity_dropped),
+                    quantity_destroyed = VALUES(quantity_destroyed),
+                    singleton = VALUES(singleton),
+                    item_role = VALUES(item_role)',
+                [
+                    $sequenceId,
+                    (int) ($row['item_index'] ?? 0),
+                    (int) ($row['item_type_id'] ?? 0),
+                    isset($row['item_flag']) ? (int) $row['item_flag'] : null,
+                    isset($row['quantity_dropped']) ? (int) $row['quantity_dropped'] : null,
+                    isset($row['quantity_destroyed']) ? (int) $row['quantity_destroyed'] : null,
+                    isset($row['singleton']) ? (int) $row['singleton'] : null,
+                    (string) ($row['item_role'] ?? 'other'),
+                ]
+            );
+            if ($ok) {
+                $written++;
+            }
+        }
+
+        return $written;
+    });
+}
+
+function db_killmail_tracked_alliances_replace(array $rows): bool
+{
+    return db_transaction(static function () use ($rows): bool {
+        db_execute('DELETE FROM killmail_tracked_alliances');
+
+        foreach ($rows as $row) {
+            db_execute(
+                'INSERT INTO killmail_tracked_alliances (alliance_id, label, is_active) VALUES (?, ?, 1)
+                 ON DUPLICATE KEY UPDATE label = VALUES(label), is_active = 1, updated_at = CURRENT_TIMESTAMP',
+                [(int) ($row['alliance_id'] ?? 0), $row['label'] ?? null]
+            );
+        }
+
+        return true;
+    });
+}
+
+function db_killmail_tracked_corporations_replace(array $rows): bool
+{
+    return db_transaction(static function () use ($rows): bool {
+        db_execute('DELETE FROM killmail_tracked_corporations');
+
+        foreach ($rows as $row) {
+            db_execute(
+                'INSERT INTO killmail_tracked_corporations (corporation_id, label, is_active) VALUES (?, ?, 1)
+                 ON DUPLICATE KEY UPDATE label = VALUES(label), is_active = 1, updated_at = CURRENT_TIMESTAMP',
+                [(int) ($row['corporation_id'] ?? 0), $row['label'] ?? null]
+            );
+        }
+
+        return true;
+    });
+}
+
+function db_killmail_tracked_alliances_active(): array
+{
+    return db_select('SELECT alliance_id, label FROM killmail_tracked_alliances WHERE is_active = 1 ORDER BY alliance_id ASC');
+}
+
+function db_killmail_tracked_corporations_active(): array
+{
+    return db_select('SELECT corporation_id, label FROM killmail_tracked_corporations WHERE is_active = 1 ORDER BY corporation_id ASC');
+}
+
+function db_killmail_ingestion_status(): array
+{
+    $state = db_sync_state_get('killmail.r2z2.stream');
+    $latest = db_select_one('SELECT MAX(sequence_id) AS max_sequence_id, MAX(uploaded_at) AS max_uploaded_at FROM killmail_events');
+
+    return [
+        'state' => $state,
+        'max_sequence_id' => isset($latest['max_sequence_id']) ? (int) $latest['max_sequence_id'] : null,
+        'max_uploaded_at' => $latest['max_uploaded_at'] ?? null,
+    ];
+}
+
+function db_killmail_filtered_recent(int $limit = 50): array
+{
+    $limit = max(1, min(500, $limit));
+
+    return db_select(
+        "SELECT e.sequence_id, e.killmail_id, e.killmail_hash, e.uploaded_at, e.killmail_time,
+                e.victim_alliance_id, e.victim_corporation_id, e.victim_ship_type_id, e.solar_system_id, e.region_id
+         FROM killmail_events e
+         WHERE (
+            EXISTS (SELECT 1 FROM killmail_tracked_alliances ta WHERE ta.is_active = 1 AND ta.alliance_id = e.victim_alliance_id)
+            OR EXISTS (SELECT 1 FROM killmail_tracked_corporations tc WHERE tc.is_active = 1 AND tc.corporation_id = e.victim_corporation_id)
+            OR EXISTS (
+                SELECT 1 FROM killmail_attackers a
+                WHERE a.sequence_id = e.sequence_id
+                  AND (
+                      EXISTS (SELECT 1 FROM killmail_tracked_alliances ta2 WHERE ta2.is_active = 1 AND ta2.alliance_id = a.alliance_id)
+                      OR EXISTS (SELECT 1 FROM killmail_tracked_corporations tc2 WHERE tc2.is_active = 1 AND tc2.corporation_id = a.corporation_id)
+                  )
+            )
+         )
+         ORDER BY e.sequence_id DESC
+         LIMIT {$limit}"
+    );
+}

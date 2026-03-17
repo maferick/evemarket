@@ -13,6 +13,7 @@ This repository establishes a clean architecture that can scale from an initial 
   - Trading Stations (market + alliance station selection)
   - ESI Login settings
   - Data Sync settings with incremental update toggle
+  - Killmail Intelligence settings (R2Z2 ingestion toggle, tracked alliances/corporations, ingestion health)
 - `src/db.php` as the **single central database access layer**
 - `src/functions.php` as the **single shared helper/business utility layer**
 - ESI OAuth callback (`/callback`) with token verification and DB persistence
@@ -182,6 +183,46 @@ mysql -u "$DB_USERNAME" -p"$DB_PASSWORD" -h "$DB_HOST" -P "$DB_PORT" "$DB_DATABA
 ### Migration note (old per-job crontabs)
 
 If you previously had one cron line per pipeline/job, remove those entries and keep only the single `bin/cron_tick.php` timer entry. Job-specific cadence is now managed in Data Sync settings, and due-job selection is centralized in the scheduler.
+
+
+## Killmail Intelligence Foundation (zKillboard R2Z2)
+
+EveMarket now includes a first-pass killmail intelligence ingestion foundation built around the zKillboard **R2Z2 ordered sequence feed**.
+
+- Stream source:
+  - sequence pointer: `https://r2z2.zkillboard.com/ephemeral/sequence.json`
+  - sequence payloads: `https://r2z2.zkillboard.com/ephemeral/{sequence}.json`
+- Ingestion model:
+  - treat feed as an ordered stream (not query API)
+  - resume from last processed sequence cursor
+  - iterate forward until 404 (no new sequence yet)
+  - filtering happens **after** local storage
+- Local persistence tables:
+  - `killmail_events`
+  - `killmail_attackers`
+  - `killmail_items`
+  - `killmail_tracked_alliances`
+  - `killmail_tracked_corporations`
+
+### Operations
+
+- Scheduler job key: `killmail_r2z2_sync` (configured in `sync_schedules`)
+- One-shot/manual command:
+  ```bash
+  php bin/killmail_sync.php
+  ```
+- Continuous loop mode:
+  ```bash
+  php bin/killmail_sync.php --loop
+  ```
+- Generic sync runner job option:
+  ```bash
+  php bin/sync_runner.php --job=killmail-r2z2 --mode=incremental --source-id=1
+  ```
+
+Configure ingestion + tracked alliances/corporations at:
+`/settings?section=killmail-intelligence`
+
 
 ## Architecture Guidelines
 
