@@ -1594,6 +1594,49 @@ function scheduler_job_definitions(): array
     ];
 }
 
+
+function scheduler_job_type(string $jobKey): string
+{
+    return match ($jobKey) {
+        'alliance_current_sync', 'market_hub_current_sync' => 'sync.current',
+        'alliance_historical_sync', 'market_hub_historical_sync' => 'sync.history',
+        default => 'sync.generic',
+    };
+}
+
+function scheduler_job_status_from_sync_result(array $syncResult): string
+{
+    $rowsSeen = max(0, (int) ($syncResult['rows_seen'] ?? 0));
+    $rowsWritten = max(0, (int) ($syncResult['rows_written'] ?? 0));
+    $warnings = scheduler_normalize_messages((array) ($syncResult['warnings'] ?? []));
+
+    if ($rowsSeen === 0 && $rowsWritten === 0 && $warnings !== []) {
+        return 'skipped';
+    }
+
+    return 'success';
+}
+
+function scheduler_job_summary_message(array $result): string
+{
+    $status = (string) ($result['status'] ?? 'unknown');
+    $jobKey = (string) ($result['job_key'] ?? 'unknown_job');
+
+    if ($status === 'failed') {
+        return (string) ($result['error'] ?? ('Job ' . $jobKey . ' failed.'));
+    }
+
+    if ($status === 'skipped') {
+        $warnings = (array) ($result['warnings'] ?? []);
+
+        return (string) ($warnings[0] ?? ('Job ' . $jobKey . ' skipped.'));
+    }
+
+    $rowsSeen = max(0, (int) ($result['rows_seen'] ?? 0));
+    $rowsWritten = max(0, (int) ($result['rows_written'] ?? 0));
+
+    return 'Processed ' . $rowsSeen . ' records, wrote ' . $rowsWritten . ' records.';
+}
 function scheduler_due_jobs(): array
 {
     $definitions = scheduler_job_definitions();
@@ -1624,6 +1667,10 @@ function scheduler_run_job(array $job): array
     $definitions = scheduler_job_definitions();
     $definition = $definitions[$jobKey] ?? null;
     $datasetKey = scheduler_job_dataset_key($jobKey !== '' ? $jobKey : 'unknown');
+    $jobType = scheduler_job_type($jobKey);
+    $scheduledFor = (string) ($job['next_run_at'] ?? '');
+    $startedAtUnix = microtime(true);
+    $startedAtIso = gmdate(DATE_ATOM, (int) $startedAtUnix);
     $runId = db_sync_run_start($datasetKey, 'incremental', null);
 
     if ($definition === null || !isset($definition['handler']) || !is_callable($definition['handler'])) {
@@ -1635,12 +1682,20 @@ function scheduler_run_job(array $job): array
         }
 
         return [
+            'job_id' => $scheduleId,
             'job_key' => $jobKey,
+            'job_type' => $jobType,
+            'scheduled_for' => $scheduledFor,
+            'started_at' => $startedAtIso,
+            'finished_at' => gmdate(DATE_ATOM),
+            'duration_ms' => (int) round((microtime(true) - $startedAtUnix) * 1000),
             'status' => 'failed',
             'error' => $message,
             'rows_seen' => 0,
             'rows_written' => 0,
             'warnings' => [],
+            'meta' => [],
+            'summary' => $message,
         ];
     }
 
@@ -1662,6 +1717,7 @@ function scheduler_run_job(array $job): array
         $rowsSeen = max(0, (int) ($syncResult['rows_seen'] ?? 0));
         $rowsWritten = max(0, (int) ($syncResult['rows_written'] ?? 0));
         $warnings = scheduler_normalize_messages((array) ($syncResult['warnings'] ?? []));
+        $status = scheduler_job_status_from_sync_result($syncResult);
         $cursor = 'finished_at:' . gmdate('Y-m-d H:i:s') . ';duration_ms:' . $durationMs;
         $checksum = sync_checksum([
             'job_key' => $jobKey,
@@ -1676,15 +1732,24 @@ function scheduler_run_job(array $job): array
             db_sync_schedule_mark_success($scheduleId);
         }
 
-        return [
+        $result = [
+            'job_id' => $scheduleId,
             'job_key' => $jobKey,
-            'status' => 'success',
+            'job_type' => $jobType,
+            'scheduled_for' => $scheduledFor,
+            'started_at' => $startedAtIso,
+            'finished_at' => gmdate(DATE_ATOM),
+            'status' => $status,
             'error' => null,
             'rows_seen' => $rowsSeen,
             'rows_written' => $rowsWritten,
             'warnings' => $warnings,
             'duration_ms' => $durationMs,
+            'meta' => is_array($syncResult['meta'] ?? null) ? $syncResult['meta'] : [],
         ];
+        $result['summary'] = scheduler_job_summary_message($result);
+
+        return $result;
     } catch (Throwable $exception) {
         $message = scheduler_normalize_error_message($exception->getMessage());
         mark_sync_failure($datasetKey, 'incremental', $message);
@@ -1694,17 +1759,25 @@ function scheduler_run_job(array $job): array
         }
 
         return [
+            'job_id' => $scheduleId,
             'job_key' => $jobKey,
+            'job_type' => $jobType,
+            'scheduled_for' => $scheduledFor,
+            'started_at' => $startedAtIso,
+            'finished_at' => gmdate(DATE_ATOM),
+            'duration_ms' => (int) round((microtime(true) - $startedAtUnix) * 1000),
             'status' => 'failed',
             'error' => $message,
             'rows_seen' => 0,
             'rows_written' => 0,
             'warnings' => [],
+            'meta' => [],
+            'summary' => $message,
         ];
     }
 }
 
-function cron_tick_run(): array
+function cron_tick_run(?callable $logger = null): array
 {
     $jobs = scheduler_due_jobs();
     $results = [];
@@ -1712,15 +1785,57 @@ function cron_tick_run(): array
     $failureCount = 0;
 
     foreach ($jobs as $job) {
+        $jobId = (int) ($job['id'] ?? 0);
+        $jobKey = (string) ($job['job_key'] ?? 'unknown_job');
+        $jobType = scheduler_job_type($jobKey);
+        $scheduledFor = (string) ($job['next_run_at'] ?? '');
+
+        if ($logger !== null) {
+            $logger('job.started', [
+                'job_id' => $jobId,
+                'job' => $jobKey,
+                'job_type' => $jobType,
+                'scheduled_for' => $scheduledFor,
+            ]);
+        }
+
         $result = scheduler_run_job($job);
         $results[] = $result;
 
-        if (($result['status'] ?? 'failed') === 'success') {
+        if ($logger !== null) {
+            $jobEvent = ($result['status'] ?? 'failed') === 'failed' ? 'job.failed' : 'job.completed';
+            $logger($jobEvent, [
+                'job_id' => (int) ($result['job_id'] ?? $jobId),
+                'job' => (string) ($result['job_key'] ?? $jobKey),
+                'job_type' => (string) ($result['job_type'] ?? $jobType),
+                'scheduled_for' => (string) ($result['scheduled_for'] ?? $scheduledFor),
+                'actual_start_time' => (string) ($result['started_at'] ?? ''),
+                'finish_time' => (string) ($result['finished_at'] ?? ''),
+                'duration_ms' => (int) ($result['duration_ms'] ?? 0),
+                'status' => (string) ($result['status'] ?? 'failed'),
+                'summary' => (string) ($result['summary'] ?? ''),
+                'error' => ($result['status'] ?? '') === 'failed' ? (string) ($result['error'] ?? '') : null,
+            ]);
+
+            $meta = is_array($result['meta'] ?? null) ? $result['meta'] : [];
+            if ($meta !== []) {
+                $logger('job.' . str_replace('.', '_', $jobType) . '.outcome', [
+                    'job_id' => (int) ($result['job_id'] ?? $jobId),
+                    'job' => (string) ($result['job_key'] ?? $jobKey),
+                    'status' => (string) ($result['status'] ?? 'failed'),
+                ] + $meta);
+            }
+        }
+
+        $jobStatus = (string) ($result['status'] ?? 'failed');
+        if ($jobStatus === 'success') {
             $successCount++;
             continue;
         }
 
-        $failureCount++;
+        if ($jobStatus === 'failed') {
+            $failureCount++;
+        }
     }
 
     return [
@@ -1988,6 +2103,7 @@ function sync_result_shape(): array
         'cursor' => null,
         'checksum' => null,
         'warnings' => [],
+        'meta' => [],
     ];
 }
 
@@ -2150,6 +2266,7 @@ function sync_alliance_structure_orders(int $structureId, string $runMode = 'inc
     $page = 1;
     $maxPages = 1;
     $mappedOrders = [];
+    $pagesProcessed = 0;
 
     while ($page <= $maxPages) {
         $response = http_get_json_with_backoff(
@@ -2173,6 +2290,7 @@ function sync_alliance_structure_orders(int $structureId, string $runMode = 'inc
         }
 
         $result['rows_seen'] += count($payload);
+        $pagesProcessed++;
         foreach ($payload as $order) {
             if (!is_array($order)) {
                 continue;
@@ -2210,6 +2328,17 @@ function sync_alliance_structure_orders(int $structureId, string $runMode = 'inc
             sync_run_finalize_success($runIdHistory, $datasetKeyHistory, $syncMode, $result['rows_seen'], 0, $snapshotCursor, $checksum);
             $historyFinished = true;
             $result['checksum'] = $checksum;
+            $result['meta'] = [
+                'operational_market_id' => $structureId,
+                'operational_market' => selected_station_name('alliance_station_id') ?? ('Structure ' . $structureId),
+                'records_fetched' => (int) $result['rows_seen'],
+                'records_inserted' => 0,
+                'records_updated' => 0,
+                'records_skipped' => (int) $result['rows_seen'],
+                'records_deleted' => 0,
+                'api_pages_processed' => $pagesProcessed,
+                'no_changes' => true,
+            ];
 
             return $result;
         }
@@ -2224,6 +2353,18 @@ function sync_alliance_structure_orders(int $structureId, string $runMode = 'inc
 
         $result['rows_written'] = $writtenCurrent + $writtenHistory;
         $result['checksum'] = $checksum;
+        $result['meta'] = [
+            'operational_market_id' => $structureId,
+                'operational_market' => selected_station_name('alliance_station_id') ?? ('Structure ' . $structureId),
+            'records_fetched' => (int) $result['rows_seen'],
+            'records_inserted' => 0,
+            'records_updated' => (int) $writtenCurrent,
+            'records_skipped' => max(0, (int) $result['rows_seen'] - (int) $writtenCurrent),
+            'records_deleted' => 0,
+            'history_rows_generated' => (int) $writtenHistory,
+            'api_pages_processed' => $pagesProcessed,
+            'no_changes' => ((int) $writtenCurrent + (int) $writtenHistory) === 0,
+        ];
 
         return $result;
     } catch (Throwable $exception) {
@@ -2337,12 +2478,34 @@ function sync_market_hub_current_orders(string|int $hubRef, string $runMode = 'i
 
         if ($canonicalRows === []) {
             $result['warnings'][] = 'No canonical market hub current rows were mapped from provider payload.';
+            $result['meta'] = [
+                'reference_hub' => $hubKey,
+                'reference_market_hub' => market_hub_reference_name(),
+                'records_fetched' => (int) $result['rows_seen'],
+                'records_inserted' => 0,
+                'records_updated' => 0,
+                'records_skipped' => (int) $result['rows_seen'],
+                'records_deleted' => 0,
+                'api_pages_processed' => 1,
+                'no_changes' => true,
+            ];
             sync_run_finalize_success($runId, $datasetKey, $syncMode, $result['rows_seen'], 0, $result['cursor'], $result['checksum']);
 
             return $result;
         }
 
         $result['rows_written'] = db_market_orders_current_bulk_upsert($canonicalRows);
+        $result['meta'] = [
+            'reference_hub' => $hubKey,
+                'reference_market_hub' => market_hub_reference_name(),
+            'records_fetched' => (int) $result['rows_seen'],
+            'records_inserted' => 0,
+            'records_updated' => (int) $result['rows_written'],
+            'records_skipped' => max(0, (int) $result['rows_seen'] - (int) $result['rows_written']),
+            'records_deleted' => 0,
+            'api_pages_processed' => 1,
+            'no_changes' => (int) $result['rows_written'] === 0,
+        ];
         sync_run_finalize_success($runId, $datasetKey, $syncMode, $result['rows_seen'], $result['rows_written'], $result['cursor'], $result['checksum']);
 
         return $result;
@@ -2439,6 +2602,7 @@ function sync_market_hub_history(string|int $hubRef, string $runMode = 'incremen
         $response = http_get_json_with_backoff($endpoint, ['Accept: application/json']);
         $status = (int) ($response['status'] ?? 500);
         $providerRows = [];
+        $apiPagesProcessed = 1;
 
         if ($status < 400) {
             $providerRows = eve_tycoon_history_payload_rows($response['json'] ?? []);
@@ -2456,6 +2620,7 @@ function sync_market_hub_history(string|int $hubRef, string $runMode = 'incremen
             $rowsSeen = 0;
 
             foreach ($fallbackTypeIds as $typeId) {
+                $apiPagesProcessed++;
                 $fallbackEndpoint = 'https://evetycoon.com/api/v1/market/history/' . rawurlencode($hubKey) . '/' . rawurlencode((string) $typeId);
                 $fallbackResponse = http_get_json_with_backoff($fallbackEndpoint, ['Accept: application/json']);
                 $fallbackStatus = (int) ($fallbackResponse['status'] ?? 500);
@@ -2518,6 +2683,18 @@ function sync_market_hub_history(string|int $hubRef, string $runMode = 'incremen
             $result['warnings'][] = 'No canonical market history rows were mapped from provider payload.';
             $result['checksum'] = sync_checksum([]);
             $result['cursor'] = null;
+            $result['meta'] = [
+                'reference_hub' => $hubKey,
+                'reference_market_hub' => market_hub_reference_name(),
+                'records_fetched' => (int) $result['rows_seen'],
+                'records_inserted' => 0,
+                'records_updated' => 0,
+                'records_skipped' => (int) $result['rows_seen'],
+                'records_deleted' => 0,
+                'api_pages_processed' => $apiPagesProcessed,
+                'history_rows_generated' => 0,
+                'no_changes' => true,
+            ];
             sync_run_finalize_success($runId, $datasetKey, $syncMode, $result['rows_seen'], 0, $result['cursor'], $result['checksum']);
 
             return $result;
@@ -2527,6 +2704,18 @@ function sync_market_hub_history(string|int $hubRef, string $runMode = 'incremen
         $latestTradeDate = max(array_column($canonicalRows, 'trade_date'));
         $result['cursor'] = 'trade_date:' . $latestTradeDate;
         $result['checksum'] = sync_checksum($canonicalRows);
+        $result['meta'] = [
+            'reference_hub' => $hubKey,
+                'reference_market_hub' => market_hub_reference_name(),
+            'records_fetched' => (int) $result['rows_seen'],
+            'records_inserted' => 0,
+            'records_updated' => (int) $result['rows_written'],
+            'records_skipped' => max(0, (int) $result['rows_seen'] - (int) $result['rows_written']),
+            'records_deleted' => 0,
+            'api_pages_processed' => $apiPagesProcessed,
+            'history_rows_generated' => (int) $result['rows_written'],
+            'no_changes' => (int) $result['rows_written'] === 0,
+        ];
         sync_run_finalize_success($runId, $datasetKey, $syncMode, $result['rows_seen'], $result['rows_written'], $result['cursor'], $result['checksum']);
 
         return $result;
@@ -2558,6 +2747,16 @@ function sync_market_orders_history_prune(int $retentionDays, string $runMode = 
             'retention_days' => $safeRetentionDays,
             'cutoff_observed_at' => $cutoffObservedAt,
         ]);
+        $result['meta'] = [
+            'records_fetched' => $deletedRows,
+            'records_inserted' => 0,
+            'records_updated' => 0,
+            'records_skipped' => 0,
+            'records_deleted' => $deletedRows,
+            'history_rows_generated' => 0,
+            'retention_days' => $safeRetentionDays,
+            'no_changes' => $deletedRows === 0,
+        ];
 
         sync_run_finalize_success(
             $runId,
