@@ -1103,27 +1103,115 @@ function dashboard_intelligence_data(): array
 
 function current_alliance_market_status_data(): array
 {
-    $allianceStation = selected_station_name('alliance_station_id') ?? 'No operational destination selected';
     $outcomes = market_comparison_outcomes();
-    $rows = market_comparison_top_rows(
-        static fn (array $row): bool => ($row['alliance_best_sell_price'] ?? null) !== null,
-        'alliance_total_sell_volume',
-        25
-    );
+    $thresholds = $outcomes['thresholds'] ?? [];
+    $lowStockThreshold = max(1, (int) ($thresholds['min_alliance_stock'] ?? 25));
+    $staleAfterSeconds = 6 * 3600;
+
+    $search = trim((string) ($_GET['q'] ?? ''));
+    $searchNeedle = mb_strtolower($search);
+
+    $allowedPageSizes = [25, 50, 100];
+    $pageSize = (int) ($_GET['page_size'] ?? 25);
+    if (!in_array($pageSize, $allowedPageSizes, true)) {
+        $pageSize = 25;
+    }
+
+    $page = max(1, (int) ($_GET['page'] ?? 1));
+
+    $rows = array_values(array_filter($outcomes['rows'], static function (array $row) use ($searchNeedle): bool {
+        if (($row['alliance_best_sell_price'] ?? null) === null) {
+            return false;
+        }
+
+        if ($searchNeedle === '') {
+            return true;
+        }
+
+        $name = mb_strtolower((string) ($row['type_name'] ?? ''));
+
+        return str_contains($name, $searchNeedle);
+    }));
+
+    usort($rows, static fn (array $a, array $b): int => (($b['alliance_total_sell_volume'] ?? 0) <=> ($a['alliance_total_sell_volume'] ?? 0)) ?: strcmp((string) ($a['type_name'] ?? ''), (string) ($b['type_name'] ?? '')));
+
+    $totalItems = count($rows);
+    $totalPages = max(1, (int) ceil($totalItems / $pageSize));
+    $page = min($page, $totalPages);
+    $offset = ($page - 1) * $pageSize;
+    $pagedRows = array_slice($rows, $offset, $pageSize);
+
+    $allListings = array_values(array_filter($outcomes['rows'], static fn (array $row): bool => ($row['alliance_best_sell_price'] ?? null) !== null));
+    $listingsWithStock = count(array_filter($allListings, static fn (array $row): bool => (int) ($row['alliance_total_sell_volume'] ?? 0) > 0));
+    $lowStockCount = count(array_filter($allListings, static fn (array $row): bool => (int) ($row['alliance_total_sell_volume'] ?? 0) > 0 && (int) ($row['alliance_total_sell_volume'] ?? 0) < $lowStockThreshold));
+
+    $lastObservedUnix = 0;
+    foreach ($allListings as $row) {
+        $observedAt = strtotime((string) ($row['alliance_last_observed_at'] ?? ''));
+        if ($observedAt !== false && $observedAt > $lastObservedUnix) {
+            $lastObservedUnix = $observedAt;
+        }
+    }
+
+    $lastSyncLabel = 'No sync data';
+    $lastSyncContext = 'Run an alliance current sync to populate operational freshness.';
+    if ($lastObservedUnix > 0) {
+        $secondsSince = max(0, time() - $lastObservedUnix);
+        $isStale = $secondsSince > $staleAfterSeconds;
+        $lastSyncLabel = gmdate('Y-m-d H:i:s', $lastObservedUnix) . ' UTC';
+        $lastSyncContext = ($isStale ? 'Stale' : 'Fresh') . ' · ' . human_duration_ago($secondsSince) . ' ago';
+    }
 
     return [
         'summary' => [
-            ['label' => 'Operational Destination', 'value' => $allianceStation, 'context' => 'Current configured destination (NPC station or structure)'],
             ['label' => 'Tracked Modules', 'value' => (string) count($outcomes['rows']), 'context' => 'Items monitored in current sync'],
-            ['label' => 'Listings with Stock', 'value' => (string) count($rows), 'context' => 'Top active destination listings shown'],
+            ['label' => 'Listings with Stock', 'value' => (string) $listingsWithStock, 'context' => 'Items with active alliance destination volume'],
+            ['label' => 'Low Stock Count', 'value' => (string) $lowStockCount, 'context' => 'Listings below operational threshold (' . $lowStockThreshold . ')'],
+            ['label' => 'Last Sync', 'value' => $lastSyncLabel, 'context' => $lastSyncContext],
         ],
-        'rows' => array_map(static fn (array $row): array => [
-            'module' => $row['type_name'] !== '' ? $row['type_name'] : ('Type #' . $row['type_id']),
-            'price' => market_format_isk($row['alliance_best_sell_price']),
-            'stock' => (string) ($row['alliance_total_sell_volume'] ?? 0),
-            'updated_at' => (string) ($row['alliance_last_observed_at'] ?? '—'),
-        ], $rows),
+        'rows' => array_map(static function (array $row) use ($lowStockThreshold, $staleAfterSeconds): array {
+            $stock = (int) ($row['alliance_total_sell_volume'] ?? 0);
+            $observedAtRaw = (string) ($row['alliance_last_observed_at'] ?? '');
+            $observedUnix = strtotime($observedAtRaw);
+            $isStale = $observedUnix === false || (time() - $observedUnix) > $staleAfterSeconds;
+
+            return [
+                'module' => $row['type_name'] !== '' ? $row['type_name'] : ('Type #' . $row['type_id']),
+                'price' => market_format_isk($row['alliance_best_sell_price']),
+                'stock' => $stock,
+                'updated_at' => $observedAtRaw !== '' ? $observedAtRaw : '—',
+                'stock_state' => $stock < $lowStockThreshold ? 'low' : 'healthy',
+                'freshness_state' => $isStale ? 'stale' : 'fresh',
+            ];
+        }, $pagedRows),
+        'pagination' => [
+            'search' => $search,
+            'page_size' => $pageSize,
+            'page_size_options' => $allowedPageSizes,
+            'page' => $page,
+            'total_pages' => $totalPages,
+            'total_items' => $totalItems,
+            'showing_from' => $totalItems > 0 ? $offset + 1 : 0,
+            'showing_to' => min($offset + $pageSize, $totalItems),
+        ],
     ];
+}
+
+function human_duration_ago(int $seconds): string
+{
+    if ($seconds < 60) {
+        return $seconds . 's';
+    }
+
+    if ($seconds < 3600) {
+        return (int) floor($seconds / 60) . 'm';
+    }
+
+    if ($seconds < 86400) {
+        return (int) floor($seconds / 3600) . 'h';
+    }
+
+    return (int) floor($seconds / 86400) . 'd';
 }
 
 function reference_hub_comparison_data(): array

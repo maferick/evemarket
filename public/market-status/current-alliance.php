@@ -14,6 +14,7 @@ $tableColumns = [
     'updated_at' => 'Updated',
 ];
 $tableRows = $data['rows'] ?? [];
+$tableControls = $data['pagination'] ?? [];
 $emptyMessage = 'No alliance structure listings available.';
 
 include __DIR__ . '/../../src/views/partials/header.php';
