@@ -682,3 +682,97 @@ function db_esi_structure_search_cache_put(int $characterId, string $query, stri
 
     return db_esi_cache_put('cache.esi.structures.search', $cacheKey, $payloadJson, null, $expiresAt);
 }
+
+function db_runner_lock_acquire(string $lockName, int $timeoutSeconds = 0): bool
+{
+    $row = db_select_one('SELECT GET_LOCK(?, ?) AS lock_acquired', [$lockName, max(0, $timeoutSeconds)]);
+
+    return (int) ($row['lock_acquired'] ?? 0) === 1;
+}
+
+function db_runner_lock_release(string $lockName): bool
+{
+    $row = db_select_one('SELECT RELEASE_LOCK(?) AS lock_released', [$lockName]);
+
+    return (int) ($row['lock_released'] ?? 0) === 1;
+}
+
+function db_sync_schedule_fetch_due_jobs(int $limit = 20): array
+{
+    $safeLimit = max(1, min(200, $limit));
+
+    return db_select(
+        'SELECT id, job_key, enabled, interval_seconds, next_run_at, last_run_at, last_status, last_error, locked_until
+         FROM sync_schedules
+         WHERE enabled = 1
+           AND next_run_at IS NOT NULL
+           AND next_run_at <= UTC_TIMESTAMP()
+           AND (locked_until IS NULL OR locked_until <= UTC_TIMESTAMP())
+         ORDER BY next_run_at ASC, id ASC
+         LIMIT ' . $safeLimit
+    );
+}
+
+function db_sync_schedule_claim_job(int $scheduleId, int $lockTtlSeconds = 300): ?array
+{
+    $safeLockTtl = max(30, min(3600, $lockTtlSeconds));
+
+    $stmt = db()->prepare(
+        'UPDATE sync_schedules
+         SET locked_until = DATE_ADD(UTC_TIMESTAMP(), INTERVAL ? SECOND),
+             last_status = ?,
+             last_error = NULL,
+             updated_at = CURRENT_TIMESTAMP
+         WHERE id = ?
+           AND enabled = 1
+           AND next_run_at IS NOT NULL
+           AND next_run_at <= UTC_TIMESTAMP()
+           AND (locked_until IS NULL OR locked_until <= UTC_TIMESTAMP())
+         LIMIT 1'
+    );
+
+    $stmt->execute([$safeLockTtl, 'running', $scheduleId]);
+    if ($stmt->rowCount() !== 1) {
+        return null;
+    }
+
+    return db_select_one(
+        'SELECT id, job_key, enabled, interval_seconds, next_run_at, last_run_at, last_status, last_error, locked_until
+         FROM sync_schedules
+         WHERE id = ?
+         LIMIT 1',
+        [$scheduleId]
+    );
+}
+
+function db_sync_schedule_mark_success(int $scheduleId): bool
+{
+    return db_execute(
+        'UPDATE sync_schedules
+         SET last_run_at = UTC_TIMESTAMP(),
+             last_status = ?,
+             last_error = NULL,
+             next_run_at = DATE_ADD(UTC_TIMESTAMP(), INTERVAL interval_seconds SECOND),
+             locked_until = NULL,
+             updated_at = CURRENT_TIMESTAMP
+         WHERE id = ?
+         LIMIT 1',
+        ['success', $scheduleId]
+    );
+}
+
+function db_sync_schedule_mark_failure(int $scheduleId, string $errorMessage): bool
+{
+    return db_execute(
+        'UPDATE sync_schedules
+         SET last_run_at = UTC_TIMESTAMP(),
+             last_status = ?,
+             last_error = ?,
+             next_run_at = DATE_ADD(UTC_TIMESTAMP(), INTERVAL interval_seconds SECOND),
+             locked_until = NULL,
+             updated_at = CURRENT_TIMESTAMP
+         WHERE id = ?
+         LIMIT 1',
+        ['failed', mb_substr($errorMessage, 0, 500), $scheduleId]
+    );
+}

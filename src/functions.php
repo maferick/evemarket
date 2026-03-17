@@ -1442,3 +1442,13 @@ function esi_structure_search(string $query, array $tokenContext): array
 
     return $results;
 }
+
+function runner_lock_acquire(string $lockName, int $timeoutSeconds = 0): bool
+{
+    return db_runner_lock_acquire($lockName, $timeoutSeconds);
+}
+
+function runner_lock_release(string $lockName): bool
+{
+    return db_runner_lock_release($lockName);
+}
