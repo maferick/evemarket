@@ -991,6 +991,46 @@ function db_ref_npc_station_id_by_name(string $stationName): ?int
     return $stationId > 0 ? $stationId : null;
 }
 
+function db_ref_npc_station_by_id(int $stationId): ?array
+{
+    if ($stationId <= 0) {
+        return null;
+    }
+
+    return db_select_one(
+        'SELECT s.station_id, s.station_name, s.system_id, sys.system_name, s.station_type_id, t.type_name AS station_type_name
+         FROM ref_npc_stations s
+         LEFT JOIN ref_systems sys ON sys.system_id = s.system_id
+         LEFT JOIN ref_item_types t ON t.type_id = s.station_type_id
+         WHERE s.station_id = ?
+         LIMIT 1',
+        [$stationId]
+    );
+}
+
+function db_ref_npc_station_search(string $query, int $limit = 20): array
+{
+    $normalized = trim($query);
+    if ($normalized === '') {
+        return [];
+    }
+
+    $safeLimit = max(1, min(50, $limit));
+
+    return db_select(
+        'SELECT s.station_id, s.station_name, s.system_id, sys.system_name, s.station_type_id, t.type_name AS station_type_name
+         FROM ref_npc_stations s
+         LEFT JOIN ref_systems sys ON sys.system_id = s.system_id
+         LEFT JOIN ref_item_types t ON t.type_id = s.station_type_id
+         WHERE s.station_name LIKE ?
+         ORDER BY
+            CASE WHEN s.station_name LIKE ? THEN 0 ELSE 1 END,
+            s.station_name ASC
+         LIMIT ' . $safeLimit,
+        ['%' . $normalized . '%', $normalized . '%']
+    );
+}
+
 function db_alliance_structure_metadata_get(int $structureId): ?array
 {
     return db_select_one(

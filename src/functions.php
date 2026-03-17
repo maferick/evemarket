@@ -203,12 +203,17 @@ function sanitize_market_station_selection(?string $value): string
     }
 
     try {
-        $station = db_trading_station_by_id($stationId, 'market');
+        $station = db_ref_npc_station_by_id($stationId);
+        if ($station !== null) {
+            return (string) $stationId;
+        }
+
+        $legacyStation = db_trading_station_by_id($stationId, 'market');
     } catch (Throwable) {
         return '';
     }
 
-    return $station === null ? '' : (string) $station['id'];
+    return $legacyStation === null ? '' : (string) $legacyStation['id'];
 }
 
 function sanitize_alliance_station_selection(?string $value): string
@@ -269,12 +274,17 @@ function selected_station_name(string $settingKey): ?string
     }
 
     try {
-        $station = db_trading_station_by_id($stationId, $stationType);
+        $station = db_ref_npc_station_by_id($stationId);
+        if ($station !== null) {
+            return (string) ($station['station_name'] ?? '');
+        }
+
+        $legacyStation = db_trading_station_by_id($stationId, $stationType);
     } catch (Throwable) {
         return null;
     }
 
-    return $station['station_name'] ?? null;
+    return $legacyStation['station_name'] ?? null;
 }
 
 function grouped_station_options(): array

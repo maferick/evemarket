@@ -110,8 +110,6 @@ $settingValues = get_settings([
     'static_data_source_url',
 ]);
 
-$stations = grouped_station_options();
-
 $dbStatus = db_connection_status();
 $latestEsiToken = null;
 $requiredStructureScopes = esi_required_market_structure_scopes();
@@ -254,15 +252,6 @@ include __DIR__ . '/../../src/views/partials/header.php';
 
             <script>
                 (() => {
-                    const marketItems = <?= json_encode(array_map(static function (array $station): array {
-                        return [
-                            'id' => (int) $station['id'],
-                            'name' => (string) ($station['station_name'] ?? ''),
-                            'system' => (string) ($station['system_name'] ?? ''),
-                            'type' => (string) ($station['station_type_name'] ?? ''),
-                        ];
-                    }, $stations['market']), JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;
-
                     const initializeSearchField = ({
                         inputId,
                         hiddenId,
@@ -375,11 +364,16 @@ include __DIR__ . '/../../src/views/partials/header.php';
                         emptyQueryMessage: 'Type at least 2 characters to search market stations.',
                         noResultsMessage: 'No matching market stations found.',
                         fetchResults: async (query) => {
-                            const normalizedQuery = query.toLowerCase();
+                            const response = await fetch('/settings/market-stations.php?q=' + encodeURIComponent(query), {
+                                headers: { 'Accept': 'application/json' },
+                            });
 
-                            return marketItems
-                                .filter((item) => item.name.toLowerCase().includes(normalizedQuery))
-                                .slice(0, 20);
+                            const payload = await response.json();
+                            if (!response.ok) {
+                                throw new Error(payload.error || 'Lookup failed.');
+                            }
+
+                            return payload.results || [];
                         },
                     });
 
