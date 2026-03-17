@@ -103,6 +103,40 @@ EveMarket sync pipelines depend on the `cron` daemon being present and running o
 
 > Note: `systemctl` checks require a systemd-based host. In minimal containers, use `service cron status` for runtime validation.
 
+## Production Cron Setup
+
+1. Determine the final app path and PHP binary path:
+   ```bash
+   APP_PATH=$(realpath /var/www/evemarket)
+   PHP_BIN=$(command -v php)
+   echo "$APP_PATH"
+   echo "$PHP_BIN"
+   ```
+
+2. Add cron entries for the web/app user:
+   ```bash
+   crontab -e
+   ```
+
+   Use these exact schedule examples (replace placeholders as needed):
+   ```cron
+   */5 * * * * cd /var/www/evemarket && /usr/bin/php bin/sync_runner.php --job=alliance-current >> storage/logs/cron.log 2>&1
+   */15 * * * * cd /var/www/evemarket && /usr/bin/php bin/sync_runner.php --job=hub-history >> storage/logs/cron.log 2>&1
+   0 * * * * cd /var/www/evemarket && /usr/bin/php bin/sync_runner.php --job=alliance-history >> storage/logs/cron.log 2>&1
+   ```
+
+3. Ensure log directory exists and is writable by the cron user:
+   ```bash
+   mkdir -p /var/www/evemarket/storage/logs
+   chown -R www-data:www-data /var/www/evemarket/storage
+   chmod -R u+rwX /var/www/evemarket/storage
+   ```
+
+4. Validate the installed crontab:
+   ```bash
+   crontab -l
+   ```
+
 ## Architecture Guidelines
 
 - Keep **all raw SQL and PDO interactions** in `src/db.php` wrappers.
