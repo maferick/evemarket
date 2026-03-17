@@ -1938,6 +1938,12 @@ function scheduler_job_summary_message(array $result): string
         return (string) ($warnings[0] ?? ('Job ' . $jobKey . ' skipped.'));
     }
 
+    $meta = is_array($result['meta'] ?? null) ? $result['meta'] : [];
+    $outcomeReason = trim((string) ($meta['outcome_reason'] ?? ''));
+    if ($jobKey === 'killmail_r2z2_sync' && $outcomeReason !== '') {
+        return 'Killmail sync outcome: ' . $outcomeReason . '.';
+    }
+
     $rowsSeen = max(0, (int) ($result['rows_seen'] ?? 0));
     $rowsWritten = max(0, (int) ($result['rows_written'] ?? 0));
 
@@ -2125,11 +2131,16 @@ function cron_tick_run(?callable $logger = null): array
 
             $meta = is_array($result['meta'] ?? null) ? $result['meta'] : [];
             if ($meta !== []) {
-                $logger('job.' . str_replace('.', '_', $jobType) . '.outcome', [
+                $basePayload = [
                     'job_id' => (int) ($result['job_id'] ?? $jobId),
                     'job' => (string) ($result['job_key'] ?? $jobKey),
                     'status' => (string) ($result['status'] ?? 'failed'),
-                ] + $meta);
+                ];
+                $logger('job.' . str_replace('.', '_', $jobType) . '.outcome', $basePayload + $meta);
+
+                if ($jobKey === 'killmail_r2z2_sync') {
+                    $logger('job.killmail_r2z2_sync.outcome', $basePayload + $meta);
+                }
             }
         }
 
@@ -4522,6 +4533,42 @@ function killmail_region_id_from_system(?int $systemId): ?int
     return isset($row['region_id']) ? (int) $row['region_id'] : null;
 }
 
+
+function killmail_event_matches_tracked_entities(array $event, array $attackers, array $trackedAllianceIds, array $trackedCorporationIds): bool
+{
+    if ($trackedAllianceIds === [] && $trackedCorporationIds === []) {
+        return true;
+    }
+
+    $victimAllianceId = (int) ($event['victim_alliance_id'] ?? 0);
+    if ($victimAllianceId > 0 && isset($trackedAllianceIds[$victimAllianceId])) {
+        return true;
+    }
+
+    $victimCorporationId = (int) ($event['victim_corporation_id'] ?? 0);
+    if ($victimCorporationId > 0 && isset($trackedCorporationIds[$victimCorporationId])) {
+        return true;
+    }
+
+    foreach ($attackers as $attacker) {
+        if (!is_array($attacker)) {
+            continue;
+        }
+
+        $attackerAllianceId = (int) ($attacker['alliance_id'] ?? 0);
+        if ($attackerAllianceId > 0 && isset($trackedAllianceIds[$attackerAllianceId])) {
+            return true;
+        }
+
+        $attackerCorporationId = (int) ($attacker['corporation_id'] ?? 0);
+        if ($attackerCorporationId > 0 && isset($trackedCorporationIds[$attackerCorporationId])) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 function killmail_transform_r2z2_payload(array $payload): array
 {
     $killmail = is_array($payload['killmail'] ?? null) ? $payload['killmail'] : [];
@@ -4583,13 +4630,47 @@ function sync_killmail_r2z2_stream(string $runMode = 'incremental'): array
     $runId = db_sync_run_start($datasetKey, $runMode, db_sync_cursor_get($datasetKey));
 
     try {
+        $trackedAllianceRows = db_killmail_tracked_alliances_active();
+        $trackedCorporationRows = db_killmail_tracked_corporations_active();
+        $trackedAllianceIds = [];
+        foreach ($trackedAllianceRows as $row) {
+            $id = (int) ($row['alliance_id'] ?? 0);
+            if ($id > 0) {
+                $trackedAllianceIds[$id] = true;
+            }
+        }
+
+        $trackedCorporationIds = [];
+        foreach ($trackedCorporationRows as $row) {
+            $id = (int) ($row['corporation_id'] ?? 0);
+            if ($id > 0) {
+                $trackedCorporationIds[$id] = true;
+            }
+        }
+
         $sequenceProbe = killmail_r2z2_fetch_json(killmail_r2z2_sequence_url());
         $sequenceProbeStatus = (int) ($sequenceProbe['status'] ?? 0);
+        $cursor = db_sync_cursor_get($datasetKey);
+        $lastSavedSequence = $cursor !== null && preg_match('/^[0-9]+$/', $cursor) === 1 ? (int) $cursor : null;
+
         if ($sequenceProbeStatus === 403 || $sequenceProbeStatus === 429) {
-            $cursor = db_sync_cursor_get($datasetKey);
             $cursorEnd = $cursor !== null ? $cursor : '0';
             $checksum = sync_checksum([0, 0, $cursorEnd]);
             $warnings = ['R2Z2 sequence probe returned status ' . $sequenceProbeStatus . '; respecting feed backoff.'];
+            $meta = [
+                'last_saved_sequence_before_run' => $lastSavedSequence,
+                'latest_remote_sequence' => null,
+                'first_sequence_attempted' => null,
+                'last_sequence_attempted' => null,
+                'sequence_files_fetched' => 0,
+                'sequence_404s_encountered' => 0,
+                'killmails_fetched' => 0,
+                'killmails_skipped_duplicates' => 0,
+                'killmails_filtered_tracked_rules' => 0,
+                'killmails_inserted' => 0,
+                'outcome_reason' => 'sequence probe rate limited or forbidden',
+                'last_processed_sequence' => null,
+            ];
             sync_run_finalize_success($runId, $datasetKey, $runMode, 0, 0, $cursorEnd, $checksum, $warnings);
 
             return sync_result_shape() + [
@@ -4598,10 +4679,7 @@ function sync_killmail_r2z2_stream(string $runMode = 'incremental'): array
                 'cursor' => $cursorEnd,
                 'checksum' => $checksum,
                 'warnings' => $warnings,
-                'meta' => [
-                    'latest_sequence_probe' => null,
-                    'last_processed_sequence' => null,
-                ],
+                'meta' => $meta,
             ];
         }
 
@@ -4610,21 +4688,33 @@ function sync_killmail_r2z2_stream(string $runMode = 'incremental'): array
         }
 
         $latestSequence = (int) (($sequenceProbe['json']['sequence'] ?? 0));
-        $cursor = db_sync_cursor_get($datasetKey);
-        $nextSequence = $cursor !== null && preg_match('/^[0-9]+$/', $cursor) === 1 ? ((int) $cursor + 1) : $latestSequence;
+        $nextSequence = $lastSavedSequence !== null ? ($lastSavedSequence + 1) : $latestSequence;
         $maxSteps = killmail_max_sequences_per_run();
 
         $rowsSeen = 0;
         $rowsWritten = 0;
+        $sequenceFilesFetched = 0;
+        $sequence404s = 0;
+        $duplicateCount = 0;
+        $filteredCount = 0;
+        $killmailsFetched = 0;
         $lastProcessed = null;
         $warnings = [];
+        $firstSequenceAttempted = null;
+        $lastSequenceAttempted = null;
 
         for ($step = 0; $step < $maxSteps; $step++) {
+            if ($firstSequenceAttempted === null) {
+                $firstSequenceAttempted = $nextSequence;
+            }
+            $lastSequenceAttempted = $nextSequence;
+
             $url = killmail_r2z2_base_url() . '/' . $nextSequence . '.json';
             $response = killmail_r2z2_fetch_json($url);
             $status = (int) ($response['status'] ?? 0);
 
             if ($status === 404) {
+                $sequence404s++;
                 break;
             }
 
@@ -4637,11 +4727,33 @@ function sync_killmail_r2z2_stream(string $runMode = 'incremental'): array
                 throw new RuntimeException('R2Z2 sequence fetch failed for ' . $nextSequence . ' with status=' . $status);
             }
 
+            $sequenceFilesFetched++;
+            $killmailsFetched++;
             $rowsSeen++;
+
             $transformed = killmail_transform_r2z2_payload((array) ($response['json'] ?? []));
-            $sequenceId = (int) ($transformed['event']['sequence_id'] ?? 0);
+            $event = (array) ($transformed['event'] ?? []);
+            $sequenceId = (int) ($event['sequence_id'] ?? 0);
             if ($sequenceId <= 0) {
                 throw new RuntimeException('R2Z2 payload missing sequence_id for stream row ' . $nextSequence);
+            }
+
+            $killmailId = (int) ($event['killmail_id'] ?? 0);
+            $killmailHash = (string) ($event['killmail_hash'] ?? '');
+            if ($killmailId > 0 && $killmailHash !== '' && db_killmail_event_exists($sequenceId, $killmailId, $killmailHash)) {
+                $duplicateCount++;
+                $nextSequence = $sequenceId + 1;
+                $lastProcessed = $sequenceId;
+                usleep(100000);
+                continue;
+            }
+
+            if (!killmail_event_matches_tracked_entities($event, (array) ($transformed['attackers'] ?? []), $trackedAllianceIds, $trackedCorporationIds)) {
+                $filteredCount++;
+                $nextSequence = $sequenceId + 1;
+                $lastProcessed = $sequenceId;
+                usleep(100000);
+                continue;
             }
 
             db_transaction(static function () use ($transformed, $sequenceId, &$rowsWritten): void {
@@ -4658,7 +4770,22 @@ function sync_killmail_r2z2_stream(string $runMode = 'incremental'): array
 
         $cursorEnd = $lastProcessed !== null ? (string) $lastProcessed : ($cursor ?? (string) $latestSequence);
         $checksum = sync_checksum([$rowsSeen, $rowsWritten, $cursorEnd]);
-        sync_run_finalize_success($runId, $datasetKey, $runMode, $rowsSeen, $rowsWritten, $cursorEnd, $checksum);
+        sync_run_finalize_success($runId, $datasetKey, $runMode, $rowsSeen, $rowsWritten, $cursorEnd, $checksum, $warnings);
+
+        $outcomeReason = 'completed with inserts';
+        if ($rowsWritten === 0) {
+            if ($firstSequenceAttempted === null || ($lastSavedSequence !== null && $latestSequence <= $lastSavedSequence)) {
+                $outcomeReason = 'no new sequences available';
+            } elseif ($sequenceFilesFetched === 0 && $sequence404s > 0) {
+                $outcomeReason = 'sequence state already current';
+            } elseif ($killmailsFetched > 0 && $filteredCount === $killmailsFetched) {
+                $outcomeReason = 'all fetched killmails filtered out';
+            } elseif ($killmailsFetched > 0 && $duplicateCount === $killmailsFetched) {
+                $outcomeReason = 'all fetched killmails were duplicates';
+            } else {
+                $outcomeReason = 'no records inserted';
+            }
+        }
 
         return sync_result_shape() + [
             'rows_seen' => $rowsSeen,
@@ -4667,7 +4794,17 @@ function sync_killmail_r2z2_stream(string $runMode = 'incremental'): array
             'checksum' => $checksum,
             'warnings' => $warnings,
             'meta' => [
-                'latest_sequence_probe' => $latestSequence,
+                'last_saved_sequence_before_run' => $lastSavedSequence,
+                'latest_remote_sequence' => $latestSequence,
+                'first_sequence_attempted' => $firstSequenceAttempted,
+                'last_sequence_attempted' => $lastSequenceAttempted,
+                'sequence_files_fetched' => $sequenceFilesFetched,
+                'sequence_404s_encountered' => $sequence404s,
+                'killmails_fetched' => $killmailsFetched,
+                'killmails_skipped_duplicates' => $duplicateCount,
+                'killmails_filtered_tracked_rules' => $filteredCount,
+                'killmails_inserted' => $rowsWritten,
+                'outcome_reason' => $outcomeReason,
                 'last_processed_sequence' => $lastProcessed,
             ],
         ];
@@ -4676,3 +4813,4 @@ function sync_killmail_r2z2_stream(string $runMode = 'incremental'): array
         throw $exception;
     }
 }
+

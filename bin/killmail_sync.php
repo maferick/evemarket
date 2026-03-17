@@ -20,12 +20,14 @@ if (!killmail_ingestion_enabled()) {
 do {
     try {
         $result = sync_killmail_r2z2_stream('incremental');
+        $meta = is_array($result['meta'] ?? null) ? $result['meta'] : [];
         killmail_sync_log('killmail.sync.success', [
             'rows_seen' => (int) ($result['rows_seen'] ?? 0),
             'rows_written' => (int) ($result['rows_written'] ?? 0),
             'cursor' => (string) ($result['cursor'] ?? ''),
+            'outcome_reason' => (string) ($meta['outcome_reason'] ?? ''),
             'warnings' => $result['warnings'] ?? [],
-        ]);
+        ] + $meta);
     } catch (Throwable $exception) {
         killmail_sync_log('killmail.sync.error', ['error' => $exception->getMessage()]);
     }

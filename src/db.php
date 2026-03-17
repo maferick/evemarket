@@ -1453,6 +1453,20 @@ function db_killmail_event_upsert(array $event): bool
     );
 }
 
+function db_killmail_event_exists(int $sequenceId, int $killmailId, string $killmailHash): bool
+{
+    $row = db_select_one(
+        'SELECT sequence_id
+           FROM killmail_events
+          WHERE sequence_id = ?
+             OR (killmail_id = ? AND killmail_hash = ?)
+          LIMIT 1',
+        [$sequenceId, $killmailId, $killmailHash]
+    );
+
+    return $row !== null;
+}
+
 function db_killmail_attackers_replace(int $sequenceId, array $rows): int
 {
     return db_transaction(static function () use ($sequenceId, $rows): int {
