@@ -586,6 +586,18 @@ function db_sync_run_finish(
     );
 }
 
+function db_sync_run_latest_by_dataset(string $datasetKey): ?array
+{
+    return db_select_one(
+        'SELECT id, dataset_key, run_mode, run_status, source_rows, written_rows, error_message, started_at, finished_at
+         FROM sync_runs
+         WHERE dataset_key = ?
+         ORDER BY id DESC
+         LIMIT 1',
+        [$datasetKey]
+    );
+}
+
 function db_trading_station_options(): array
 {
     return db_select('SELECT id, station_name, station_type FROM trading_stations ORDER BY station_name ASC');
