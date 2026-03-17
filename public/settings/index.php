@@ -45,7 +45,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             break;
 
         case 'data-sync':
-            $saved = save_settings(data_sync_settings_from_request($_POST));
+            $settingsSaved = save_settings(data_sync_settings_from_request($_POST));
+            $schedulesSaved = save_data_sync_schedule_settings($_POST);
+            $saved = $settingsSaved && $schedulesSaved;
             break;
     }
 
@@ -69,9 +71,6 @@ $settingValues = get_settings([
     'incremental_strategy',
     'incremental_delete_policy',
     'incremental_chunk_size',
-    'alliance_current_sync_interval_minutes',
-    'alliance_history_sync_interval_minutes',
-    'hub_history_sync_interval_minutes',
     'alliance_current_pipeline_enabled',
     'alliance_history_pipeline_enabled',
     'hub_history_pipeline_enabled',
@@ -88,6 +87,7 @@ $latestEsiToken = null;
 $requiredStructureScopes = esi_required_market_structure_scopes();
 $missingStructureScopes = [];
 $syncStatusCards = [];
+$syncScheduleCards = sync_schedule_settings_view_model();
 if ($dbStatus['ok']) {
     $latestEsiToken = db_latest_esi_oauth_token();
     if ($latestEsiToken !== null) {
@@ -395,19 +395,30 @@ include __DIR__ . '/../../src/views/partials/header.php';
                     <input type="number" min="100" max="10000" step="100" name="incremental_chunk_size" value="<?= htmlspecialchars($settingValues['incremental_chunk_size'] ?? '1000', ENT_QUOTES) ?>" class="w-full rounded-lg border border-border bg-black/30 px-3 py-2 text-sm outline-none ring-accent focus:ring" />
                 </label>
 
-                <div class="grid gap-4 md:grid-cols-3">
-                    <label class="block space-y-2">
-                        <span class="text-sm text-muted">Alliance Current Interval (minutes)</span>
-                        <input type="number" min="1" max="1440" step="1" name="alliance_current_sync_interval_minutes" value="<?= htmlspecialchars($settingValues['alliance_current_sync_interval_minutes'] ?? '5', ENT_QUOTES) ?>" class="w-full rounded-lg border border-border bg-black/30 px-3 py-2 text-sm outline-none ring-accent focus:ring" />
-                    </label>
-                    <label class="block space-y-2">
-                        <span class="text-sm text-muted">Alliance History Interval (minutes)</span>
-                        <input type="number" min="1" max="1440" step="1" name="alliance_history_sync_interval_minutes" value="<?= htmlspecialchars($settingValues['alliance_history_sync_interval_minutes'] ?? '60', ENT_QUOTES) ?>" class="w-full rounded-lg border border-border bg-black/30 px-3 py-2 text-sm outline-none ring-accent focus:ring" />
-                    </label>
-                    <label class="block space-y-2">
-                        <span class="text-sm text-muted">Hub History Interval (minutes)</span>
-                        <input type="number" min="1" max="1440" step="1" name="hub_history_sync_interval_minutes" value="<?= htmlspecialchars($settingValues['hub_history_sync_interval_minutes'] ?? '15', ENT_QUOTES) ?>" class="w-full rounded-lg border border-border bg-black/30 px-3 py-2 text-sm outline-none ring-accent focus:ring" />
-                    </label>
+                <div class="space-y-3">
+                    <p class="text-sm text-muted">Per-job schedules</p>
+                    <?php foreach ($syncScheduleCards as $schedule): ?>
+                        <div class="grid gap-3 rounded-lg border border-border bg-black/20 p-3 md:grid-cols-[minmax(0,1fr)_auto_auto]">
+                            <label class="flex items-center gap-3">
+                                <input type="hidden" name="<?= htmlspecialchars($schedule['enabled_key'], ENT_QUOTES) ?>" value="0">
+                                <input type="checkbox" name="<?= htmlspecialchars($schedule['enabled_key'], ENT_QUOTES) ?>" value="1" <?= (int) $schedule['enabled'] === 1 ? 'checked' : '' ?> class="size-4 rounded border-border bg-black">
+                                <span class="text-sm">Enable <?= htmlspecialchars($schedule['label'], ENT_QUOTES) ?> job</span>
+                            </label>
+                            <input
+                                type="number"
+                                min="1"
+                                max="86400"
+                                step="1"
+                                name="<?= htmlspecialchars($schedule['interval_value_key'], ENT_QUOTES) ?>"
+                                value="<?= htmlspecialchars((string) $schedule['interval_value'], ENT_QUOTES) ?>"
+                                class="w-full rounded-lg border border-border bg-black/30 px-3 py-2 text-sm outline-none ring-accent focus:ring"
+                            />
+                            <select name="<?= htmlspecialchars($schedule['interval_unit_key'], ENT_QUOTES) ?>" class="rounded-lg border border-border bg-black/30 px-3 py-2 text-sm outline-none ring-accent focus:ring">
+                                <option value="seconds" <?= ($schedule['interval_unit'] ?? 'minutes') === 'seconds' ? 'selected' : '' ?>>seconds</option>
+                                <option value="minutes" <?= ($schedule['interval_unit'] ?? 'minutes') === 'minutes' ? 'selected' : '' ?>>minutes</option>
+                            </select>
+                        </div>
+                    <?php endforeach; ?>
                 </div>
 
 

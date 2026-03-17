@@ -344,16 +344,50 @@ function sanitize_incremental_chunk_size(mixed $value): string
     return (string) $chunk;
 }
 
-function sanitize_sync_interval_minutes(mixed $value, int $defaultMinutes): string
+function sanitize_sync_schedule_enabled(mixed $value): int
+{
+    return $value === '1' || $value === 1 || $value === true || $value === 'on' ? 1 : 0;
+}
+
+function sanitize_sync_interval_value(mixed $value, int $default): int
 {
     $interval = (int) $value;
     if ($interval <= 0) {
-        $interval = $defaultMinutes;
+        $interval = $default;
     }
 
-    $interval = max(1, min(1440, $interval));
+    return max(1, min(86400, $interval));
+}
 
-    return (string) $interval;
+function sanitize_sync_interval_unit(mixed $value): string
+{
+    $unit = mb_strtolower(trim((string) $value));
+
+    return in_array($unit, ['seconds', 'minutes'], true) ? $unit : 'minutes';
+}
+
+function sanitize_sync_schedule_interval_seconds(mixed $value, mixed $unit, int $defaultSeconds): int
+{
+    $safeUnit = sanitize_sync_interval_unit($unit);
+    $defaultValue = $safeUnit === 'minutes' ? max(1, intdiv($defaultSeconds, 60)) : $defaultSeconds;
+    $intervalValue = sanitize_sync_interval_value($value, $defaultValue);
+
+    if ($safeUnit === 'minutes') {
+        $intervalValue *= 60;
+    }
+
+    return max(1, min(86400, $intervalValue));
+}
+
+function sync_schedule_form_values(int $intervalSeconds): array
+{
+    $safeSeconds = max(1, $intervalSeconds);
+
+    if ($safeSeconds % 60 === 0) {
+        return ['value' => (string) intdiv($safeSeconds, 60), 'unit' => 'minutes'];
+    }
+
+    return ['value' => (string) $safeSeconds, 'unit' => 'seconds'];
 }
 
 function sanitize_pipeline_enabled(mixed $value): string
@@ -389,6 +423,108 @@ function sanitize_retention_days(mixed $value, int $defaultDays = 30): string
     return (string) $days;
 }
 
+function data_sync_schedule_job_definitions(): array
+{
+    return [
+        'alliance_current_sync' => [
+            'enabled_key' => 'alliance_current_sync_enabled',
+            'interval_value_key' => 'alliance_current_sync_interval_value',
+            'interval_unit_key' => 'alliance_current_sync_interval_unit',
+            'default_interval_seconds' => 300,
+            'label' => 'Alliance Current',
+        ],
+        'alliance_historical_sync' => [
+            'enabled_key' => 'alliance_historical_sync_enabled',
+            'interval_value_key' => 'alliance_historical_sync_interval_value',
+            'interval_unit_key' => 'alliance_historical_sync_interval_unit',
+            'default_interval_seconds' => 1800,
+            'label' => 'Alliance History',
+        ],
+        'market_hub_historical_sync' => [
+            'enabled_key' => 'market_hub_historical_sync_enabled',
+            'interval_value_key' => 'market_hub_historical_sync_interval_value',
+            'interval_unit_key' => 'market_hub_historical_sync_interval_unit',
+            'default_interval_seconds' => 1800,
+            'label' => 'Hub History',
+        ],
+    ];
+}
+
+function sync_schedule_settings_view_model(): array
+{
+    $definitions = data_sync_schedule_job_definitions();
+
+    try {
+        $rows = db_sync_schedule_fetch_by_job_keys(array_keys($definitions));
+    } catch (Throwable) {
+        $rows = [];
+    }
+
+    $byJobKey = [];
+
+    foreach ($rows as $row) {
+        $jobKey = (string) ($row['job_key'] ?? '');
+        if ($jobKey === '') {
+            continue;
+        }
+
+        $byJobKey[$jobKey] = $row;
+    }
+
+    $viewModel = [];
+
+    foreach ($definitions as $jobKey => $definition) {
+        $defaultInterval = (int) $definition['default_interval_seconds'];
+        $row = $byJobKey[$jobKey] ?? null;
+
+        $enabled = $row === null
+            ? 1
+            : sanitize_sync_schedule_enabled($row['enabled'] ?? 1);
+
+        $intervalSeconds = $row === null
+            ? $defaultInterval
+            : sanitize_sync_interval_value($row['interval_seconds'] ?? $defaultInterval, $defaultInterval);
+
+        $formValues = sync_schedule_form_values($intervalSeconds);
+
+        $viewModel[$jobKey] = [
+            'job_key' => $jobKey,
+            'label' => (string) ($definition['label'] ?? $jobKey),
+            'enabled' => $enabled,
+            'interval_seconds' => $intervalSeconds,
+            'interval_value' => $formValues['value'],
+            'interval_unit' => $formValues['unit'],
+            'enabled_key' => (string) $definition['enabled_key'],
+            'interval_value_key' => (string) $definition['interval_value_key'],
+            'interval_unit_key' => (string) $definition['interval_unit_key'],
+        ];
+    }
+
+    return $viewModel;
+}
+
+function save_data_sync_schedule_settings(array $request): bool
+{
+    try {
+        db_transaction(function () use ($request): void {
+            foreach (data_sync_schedule_job_definitions() as $jobKey => $definition) {
+                $enabled = sanitize_sync_schedule_enabled($request[$definition['enabled_key']] ?? null);
+                $intervalSeconds = sanitize_sync_schedule_interval_seconds(
+                    $request[$definition['interval_value_key']] ?? null,
+                    $request[$definition['interval_unit_key']] ?? null,
+                    (int) $definition['default_interval_seconds']
+                );
+
+                db_sync_schedule_upsert($jobKey, $enabled, $intervalSeconds);
+            }
+        });
+    } catch (Throwable) {
+        return false;
+    }
+
+    return true;
+}
+
 function data_sync_settings_from_request(array $request): array
 {
     return [
@@ -396,9 +532,6 @@ function data_sync_settings_from_request(array $request): array
         'incremental_strategy' => sanitize_incremental_strategy($request['incremental_strategy'] ?? null),
         'incremental_delete_policy' => sanitize_incremental_delete_policy($request['incremental_delete_policy'] ?? null),
         'incremental_chunk_size' => sanitize_incremental_chunk_size($request['incremental_chunk_size'] ?? null),
-        'alliance_current_sync_interval_minutes' => sanitize_sync_interval_minutes($request['alliance_current_sync_interval_minutes'] ?? null, 5),
-        'alliance_history_sync_interval_minutes' => sanitize_sync_interval_minutes($request['alliance_history_sync_interval_minutes'] ?? null, 60),
-        'hub_history_sync_interval_minutes' => sanitize_sync_interval_minutes($request['hub_history_sync_interval_minutes'] ?? null, 15),
         'alliance_current_pipeline_enabled' => sanitize_pipeline_enabled($request['alliance_current_pipeline_enabled'] ?? null),
         'alliance_history_pipeline_enabled' => sanitize_pipeline_enabled($request['alliance_history_pipeline_enabled'] ?? null),
         'hub_history_pipeline_enabled' => sanitize_pipeline_enabled($request['hub_history_pipeline_enabled'] ?? null),

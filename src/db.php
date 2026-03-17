@@ -776,3 +776,43 @@ function db_sync_schedule_mark_failure(int $scheduleId, string $errorMessage): b
         ['failed', mb_substr($errorMessage, 0, 500), $scheduleId]
     );
 }
+
+function db_sync_schedule_fetch_by_job_keys(array $jobKeys): array
+{
+    $keys = array_values(array_filter(array_map(static fn (mixed $jobKey): string => trim((string) $jobKey), $jobKeys), static fn (string $jobKey): bool => $jobKey !== ''));
+    if ($keys === []) {
+        return [];
+    }
+
+    $placeholders = implode(',', array_fill(0, count($keys), '?'));
+
+    return db_select(
+        "SELECT id, job_key, enabled, interval_seconds, next_run_at, last_run_at, last_status, last_error, locked_until
+         FROM sync_schedules
+         WHERE job_key IN ($placeholders)",
+        $keys
+    );
+}
+
+function db_sync_schedule_upsert(string $jobKey, int $enabled, int $intervalSeconds): bool
+{
+    $normalizedKey = trim($jobKey);
+    if ($normalizedKey === '') {
+        return false;
+    }
+
+    return db_execute(
+        'INSERT INTO sync_schedules (job_key, enabled, interval_seconds, next_run_at, last_run_at, last_status, last_error, locked_until)
+         VALUES (?, ?, ?, NULL, NULL, NULL, NULL, NULL)
+         ON DUPLICATE KEY UPDATE
+            enabled = VALUES(enabled),
+            interval_seconds = VALUES(interval_seconds),
+            next_run_at = CASE
+                WHEN VALUES(enabled) = 1 THEN COALESCE(next_run_at, DATE_ADD(UTC_TIMESTAMP(), INTERVAL VALUES(interval_seconds) SECOND))
+                ELSE NULL
+            END,
+            locked_until = CASE WHEN VALUES(enabled) = 1 THEN locked_until ELSE NULL END,
+            updated_at = CURRENT_TIMESTAMP',
+        [$normalizedKey, $enabled, $intervalSeconds]
+    );
+}
