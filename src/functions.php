@@ -451,6 +451,71 @@ function mark_sync_failure(string $datasetKey, string $syncMode, string $errorMe
 }
 
 
+
+function sync_status_from_prefix(string $datasetPrefix, int $recentRunsLimit = 5): array
+{
+    try {
+        $states = db_sync_state_by_dataset_prefix($datasetPrefix);
+        $runs = db_sync_runs_recent_by_dataset_prefix($datasetPrefix, $recentRunsLimit);
+    } catch (Throwable) {
+        return [
+            'states' => [],
+            'runs' => [],
+            'last_success_at' => null,
+            'last_error_message' => null,
+            'recent_rows_written' => 0,
+        ];
+    }
+
+    $lastSuccessAt = null;
+    foreach ($states as $state) {
+        $candidate = $state['last_success_at'] ?? null;
+        if (!is_string($candidate) || $candidate === '') {
+            continue;
+        }
+
+        if ($lastSuccessAt === null || strtotime($candidate) > strtotime($lastSuccessAt)) {
+            $lastSuccessAt = $candidate;
+        }
+    }
+
+    $lastErrorMessage = null;
+    foreach ($runs as $run) {
+        if (($run['run_status'] ?? '') !== 'failed') {
+            continue;
+        }
+
+        $message = trim((string) ($run['error_message'] ?? ''));
+        if ($message !== '') {
+            $lastErrorMessage = $message;
+            break;
+        }
+    }
+
+    if ($lastErrorMessage === null) {
+        foreach ($states as $state) {
+            $message = trim((string) ($state['last_error_message'] ?? ''));
+            if ($message !== '') {
+                $lastErrorMessage = $message;
+                break;
+            }
+        }
+    }
+
+    $recentRowsWritten = 0;
+    foreach ($runs as $run) {
+        $recentRowsWritten += max(0, (int) ($run['written_rows'] ?? 0));
+    }
+
+    return [
+        'states' => $states,
+        'runs' => $runs,
+        'last_success_at' => $lastSuccessAt,
+        'last_error_message' => $lastErrorMessage,
+        'recent_rows_written' => $recentRowsWritten,
+    ];
+}
+
 function esi_default_scopes(): array
 {
     return [

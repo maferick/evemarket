@@ -87,11 +87,27 @@ $dbStatus = db_connection_status();
 $latestEsiToken = null;
 $requiredStructureScopes = esi_required_market_structure_scopes();
 $missingStructureScopes = [];
+$syncStatusCards = [];
 if ($dbStatus['ok']) {
     $latestEsiToken = db_latest_esi_oauth_token();
     if ($latestEsiToken !== null) {
         $missingStructureScopes = esi_missing_scopes($latestEsiToken, $requiredStructureScopes);
     }
+
+    $syncStatusCards = [
+        [
+            'label' => 'Alliance Orders',
+            'status' => sync_status_from_prefix('alliance.structure.', 6),
+        ],
+        [
+            'label' => 'Hub History',
+            'status' => sync_status_from_prefix('market.hub.', 4),
+        ],
+        [
+            'label' => 'Maintenance',
+            'status' => sync_status_from_prefix('maintenance.', 3),
+        ],
+    ];
 }
 
 include __DIR__ . '/../../src/views/partials/header.php';
@@ -333,6 +349,20 @@ include __DIR__ . '/../../src/views/partials/header.php';
                 <?php endif; ?>
             </div>
         <?php else: ?>
+            <?php if ($syncStatusCards !== []): ?>
+                <div class="mt-6 grid gap-3 md:grid-cols-3">
+                    <?php foreach ($syncStatusCards as $syncCard): ?>
+                        <?php $status = $syncCard['status']; ?>
+                        <article class="rounded-lg border border-border bg-black/20 p-4 text-sm">
+                            <p class="text-xs uppercase tracking-[0.16em] text-muted"><?= htmlspecialchars($syncCard['label'], ENT_QUOTES) ?></p>
+                            <p class="mt-2 text-sm text-slate-100">Last success: <?= htmlspecialchars($status['last_success_at'] ?? 'Never', ENT_QUOTES) ?></p>
+                            <p class="mt-1 text-sm text-muted">Rows written (recent runs): <?= (int) ($status['recent_rows_written'] ?? 0) ?></p>
+                            <p class="mt-1 text-xs text-rose-200">Last error: <?= htmlspecialchars($status['last_error_message'] ?? 'None', ENT_QUOTES) ?></p>
+                        </article>
+                    <?php endforeach; ?>
+                </div>
+            <?php endif; ?>
+
             <form class="mt-6 space-y-4" method="post">
                 <input type="hidden" name="_token" value="<?= htmlspecialchars(csrf_token(), ENT_QUOTES) ?>">
                 <input type="hidden" name="section" value="data-sync">

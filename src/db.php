@@ -607,6 +607,31 @@ function db_sync_run_latest_by_dataset(string $datasetKey): ?array
     );
 }
 
+function db_sync_runs_recent_by_dataset_prefix(string $datasetPrefix, int $limit = 5): array
+{
+    $safeLimit = max(1, min(50, $limit));
+
+    return db_select(
+        'SELECT id, dataset_key, run_mode, run_status, source_rows, written_rows, error_message, started_at, finished_at
+         FROM sync_runs
+         WHERE dataset_key LIKE ?
+         ORDER BY id DESC
+         LIMIT ' . $safeLimit,
+        [$datasetPrefix . '%']
+    );
+}
+
+function db_sync_state_by_dataset_prefix(string $datasetPrefix): array
+{
+    return db_select(
+        'SELECT dataset_key, sync_mode, status, last_success_at, last_cursor, last_row_count, last_checksum, last_error_message, updated_at
+         FROM sync_state
+         WHERE dataset_key LIKE ?
+         ORDER BY updated_at DESC, dataset_key ASC',
+        [$datasetPrefix . '%']
+    );
+}
+
 function db_trading_station_options(): array
 {
     return db_select('SELECT id, station_name, station_type FROM trading_stations ORDER BY station_name ASC');
