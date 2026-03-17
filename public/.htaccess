@@ -8,4 +8,15 @@ RewriteRule ^ - [L]
 # Friendly routes
 RewriteRule ^settings/?$ settings/index.php [L,QSA]
 RewriteRule ^callback/?$ callback/index.php [L,QSA]
+
+RewriteRule ^market-status/?$ market-status/current-alliance.php [L,QSA]
+RewriteRule ^market-status/current-alliance/?$ market-status/current-alliance.php [L,QSA]
+RewriteRule ^market-status/jita-comparison/?$ market-status/jita-comparison.php [L,QSA]
+RewriteRule ^market-status/missing-items/?$ market-status/missing-items.php [L,QSA]
+RewriteRule ^market-status/price-deviations/?$ market-status/price-deviations.php [L,QSA]
+
+RewriteRule ^history/?$ history/alliance-trends.php [L,QSA]
+RewriteRule ^history/alliance-trends/?$ history/alliance-trends.php [L,QSA]
+RewriteRule ^history/module-history/?$ history/module-history.php [L,QSA]
+
 RewriteRule ^$ index.php [L,QSA]
