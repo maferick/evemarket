@@ -88,6 +88,36 @@ README.md
   - delete policy (`none`, `soft_delete`, `reconcile`)
   - chunk size (100-10000)
 
+
+## Cron Scheduling for Sync Pipelines
+
+You can run targeted sync jobs on independent cadences via cron:
+
+```bash
+*/5 * * * * php /path/to/bin/sync_runner.php --job=alliance-current
+*/15 * * * * php /path/to/bin/sync_runner.php --job=hub-history
+0 * * * * php /path/to/bin/sync_runner.php --job=alliance-history
+```
+
+Recommended mapping to Data Sync settings:
+- `alliance_current_sync_interval_minutes` + `alliance_current_pipeline_enabled`
+- `hub_history_sync_interval_minutes` + `hub_history_pipeline_enabled`
+- `alliance_history_sync_interval_minutes` + `alliance_history_pipeline_enabled`
+
+### Lock strategy (prevent overlapping runs)
+
+To avoid overlap when a previous run is still active, gate each job execution behind a lock keyed per pipeline.
+
+Preferred approaches:
+- **DB advisory lock** (single command host or shared DB):
+  - acquire `GET_LOCK('evemarket:sync:alliance-current', 0)` before starting
+  - if lock is not acquired, exit quickly
+  - release via `RELEASE_LOCK(...)` in shutdown/finally logic
+- **Lockfile** (single host scheduler):
+  - use `flock -n /var/lock/evemarket-alliance-current.lock php /path/to/bin/sync_runner.php --job=alliance-current`
+
+Use distinct lock keys/files for each pipeline (`alliance-current`, `hub-history`, `alliance-history`) so different jobs can run concurrently while the same job cannot overlap itself.
+
 ## Next Suggested Steps
 
 - Add authentication and role-based access

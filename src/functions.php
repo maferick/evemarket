@@ -344,6 +344,23 @@ function sanitize_incremental_chunk_size(mixed $value): string
     return (string) $chunk;
 }
 
+function sanitize_sync_interval_minutes(mixed $value, int $defaultMinutes): string
+{
+    $interval = (int) $value;
+    if ($interval <= 0) {
+        $interval = $defaultMinutes;
+    }
+
+    $interval = max(1, min(1440, $interval));
+
+    return (string) $interval;
+}
+
+function sanitize_pipeline_enabled(mixed $value): string
+{
+    return $value === '1' || $value === 1 || $value === true || $value === 'on' ? '1' : '0';
+}
+
 function data_sync_settings_from_request(array $request): array
 {
     return [
@@ -351,6 +368,12 @@ function data_sync_settings_from_request(array $request): array
         'incremental_strategy' => sanitize_incremental_strategy($request['incremental_strategy'] ?? null),
         'incremental_delete_policy' => sanitize_incremental_delete_policy($request['incremental_delete_policy'] ?? null),
         'incremental_chunk_size' => sanitize_incremental_chunk_size($request['incremental_chunk_size'] ?? null),
+        'alliance_current_sync_interval_minutes' => sanitize_sync_interval_minutes($request['alliance_current_sync_interval_minutes'] ?? null, 5),
+        'alliance_history_sync_interval_minutes' => sanitize_sync_interval_minutes($request['alliance_history_sync_interval_minutes'] ?? null, 60),
+        'hub_history_sync_interval_minutes' => sanitize_sync_interval_minutes($request['hub_history_sync_interval_minutes'] ?? null, 15),
+        'alliance_current_pipeline_enabled' => sanitize_pipeline_enabled($request['alliance_current_pipeline_enabled'] ?? null),
+        'alliance_history_pipeline_enabled' => sanitize_pipeline_enabled($request['alliance_history_pipeline_enabled'] ?? null),
+        'hub_history_pipeline_enabled' => sanitize_pipeline_enabled($request['hub_history_pipeline_enabled'] ?? null),
     ];
 }
 
