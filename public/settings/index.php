@@ -75,6 +75,10 @@ $settingValues = get_settings([
     'alliance_current_pipeline_enabled',
     'alliance_history_pipeline_enabled',
     'hub_history_pipeline_enabled',
+    'alliance_current_backfill_start_date',
+    'alliance_history_backfill_start_date',
+    'hub_history_backfill_start_date',
+    'raw_order_snapshot_retention_days',
 ]);
 
 $stations = grouped_station_options();
@@ -375,6 +379,27 @@ include __DIR__ . '/../../src/views/partials/header.php';
                         <input type="number" min="1" max="1440" step="1" name="hub_history_sync_interval_minutes" value="<?= htmlspecialchars($settingValues['hub_history_sync_interval_minutes'] ?? '15', ENT_QUOTES) ?>" class="w-full rounded-lg border border-border bg-black/30 px-3 py-2 text-sm outline-none ring-accent focus:ring" />
                     </label>
                 </div>
+
+
+                <div class="grid gap-4 md:grid-cols-3">
+                    <label class="block space-y-2">
+                        <span class="text-sm text-muted">Alliance Current Backfill Start</span>
+                        <input type="date" name="alliance_current_backfill_start_date" value="<?= htmlspecialchars($settingValues['alliance_current_backfill_start_date'] ?? '', ENT_QUOTES) ?>" class="w-full rounded-lg border border-border bg-black/30 px-3 py-2 text-sm outline-none ring-accent focus:ring" />
+                    </label>
+                    <label class="block space-y-2">
+                        <span class="text-sm text-muted">Alliance History Backfill Start</span>
+                        <input type="date" name="alliance_history_backfill_start_date" value="<?= htmlspecialchars($settingValues['alliance_history_backfill_start_date'] ?? '', ENT_QUOTES) ?>" class="w-full rounded-lg border border-border bg-black/30 px-3 py-2 text-sm outline-none ring-accent focus:ring" />
+                    </label>
+                    <label class="block space-y-2">
+                        <span class="text-sm text-muted">Hub History Backfill Start</span>
+                        <input type="date" name="hub_history_backfill_start_date" value="<?= htmlspecialchars($settingValues['hub_history_backfill_start_date'] ?? '', ENT_QUOTES) ?>" class="w-full rounded-lg border border-border bg-black/30 px-3 py-2 text-sm outline-none ring-accent focus:ring" />
+                    </label>
+                </div>
+
+                <label class="block space-y-2">
+                    <span class="text-sm text-muted">Raw Order Snapshot Retention (days)</span>
+                    <input type="number" min="1" max="3650" step="1" name="raw_order_snapshot_retention_days" value="<?= htmlspecialchars($settingValues['raw_order_snapshot_retention_days'] ?? '30', ENT_QUOTES) ?>" class="w-full rounded-lg border border-border bg-black/30 px-3 py-2 text-sm outline-none ring-accent focus:ring" />
+                </label>
 
                 <div class="space-y-3">
                     <p class="text-sm text-muted">Pipeline toggles</p>

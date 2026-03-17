@@ -94,15 +94,17 @@ README.md
 You can run targeted sync jobs on independent cadences via cron:
 
 ```bash
-*/5 * * * * php /path/to/bin/sync_runner.php --job=alliance-current
-*/15 * * * * php /path/to/bin/sync_runner.php --job=hub-history
-0 * * * * php /path/to/bin/sync_runner.php --job=alliance-history
+*/5 * * * * php /path/to/bin/sync_runner.php --job=alliance-current --source-id=<structure_id> --mode=incremental
+*/15 * * * * php /path/to/bin/sync_runner.php --job=hub-history --source-id=<hub_id> --mode=incremental
+0 * * * * php /path/to/bin/sync_runner.php --job=alliance-history --source-id=<structure_id> --mode=incremental
+30 2 * * * php /path/to/bin/sync_runner.php --job=maintenance-prune --mode=incremental
 ```
 
 Recommended mapping to Data Sync settings:
 - `alliance_current_sync_interval_minutes` + `alliance_current_pipeline_enabled`
 - `hub_history_sync_interval_minutes` + `hub_history_pipeline_enabled`
 - `alliance_history_sync_interval_minutes` + `alliance_history_pipeline_enabled`
+- `raw_order_snapshot_retention_days` for `market_orders_history` pruning (`market_history_daily` remains long-term analytics storage)
 
 ### Lock strategy (prevent overlapping runs)
 
@@ -116,7 +118,7 @@ Preferred approaches:
 - **Lockfile** (single host scheduler):
   - use `flock -n /var/lock/evemarket-alliance-current.lock php /path/to/bin/sync_runner.php --job=alliance-current`
 
-Use distinct lock keys/files for each pipeline (`alliance-current`, `hub-history`, `alliance-history`) so different jobs can run concurrently while the same job cannot overlap itself.
+Use distinct lock keys/files for each pipeline (`alliance-current`, `hub-history`, `alliance-history`, `maintenance-prune`) so different jobs can run concurrently while the same job cannot overlap itself.
 
 ## Next Suggested Steps
 

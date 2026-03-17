@@ -9,6 +9,7 @@ const SYNC_RUNNER_JOB_SEQUENCE = [
     'alliance-current',
     'alliance-history',
     'hub-history',
+    'maintenance-prune',
 ];
 
 function sync_runner_main(array $argv): int
@@ -18,7 +19,7 @@ function sync_runner_main(array $argv): int
     } catch (InvalidArgumentException $exception) {
         sync_runner_log_stderr('sync_runner.invalid_arguments', [
             'error' => $exception->getMessage(),
-            'usage' => 'php bin/sync_runner.php --job=alliance-current|alliance-history|hub-history|all --source-id=<id> --mode=incremental|full [--since=<ISO8601>]',
+            'usage' => 'php bin/sync_runner.php --job=alliance-current|alliance-history|hub-history|maintenance-prune|all --source-id=<id> --mode=incremental|full [--since=<ISO8601>]',
         ]);
 
         return 2;
@@ -50,13 +51,14 @@ function sync_runner_parse_arguments(array $argv): array
     $mode = trim((string) ($options['mode'] ?? ''));
     $sinceRaw = isset($options['since']) ? trim((string) $options['since']) : null;
 
-    $allowedJobs = ['alliance-current', 'alliance-history', 'hub-history', 'all'];
+    $allowedJobs = ['alliance-current', 'alliance-history', 'hub-history', 'maintenance-prune', 'all'];
     if ($job === '' || !in_array($job, $allowedJobs, true)) {
         throw new InvalidArgumentException('Argument --job must be one of: ' . implode(', ', $allowedJobs) . '.');
     }
 
-    if ($sourceIdValue === '' || preg_match('/^[1-9][0-9]*$/', $sourceIdValue) !== 1) {
-        throw new InvalidArgumentException('Argument --source-id must be a positive integer.');
+    $jobRequiresSourceId = !in_array($job, ['maintenance-prune'], true);
+    if ($jobRequiresSourceId && ($sourceIdValue === '' || preg_match('/^[1-9][0-9]*$/', $sourceIdValue) !== 1)) {
+        throw new InvalidArgumentException('Argument --source-id must be a positive integer for the selected job.');
     }
 
     $allowedModes = ['incremental', 'full'];
@@ -76,7 +78,7 @@ function sync_runner_parse_arguments(array $argv): array
 
     return [
         'job' => $job,
-        'source_id' => (int) $sourceIdValue,
+        'source_id' => $sourceIdValue === '' ? 1 : (int) $sourceIdValue,
         'mode' => $mode,
         'since' => $since,
     ];
@@ -150,8 +152,9 @@ function sync_runner_execute_job(string $jobKey, int $sourceId, string $runMode,
 
 function sync_runner_dispatch_job(string $jobKey, int $sourceId, string $runMode, ?string $since): array
 {
-    if ($since !== null) {
-        putenv('SYNC_SINCE=' . $since);
+    $effectiveSince = $since ?? sync_runner_backfill_start_for_job($jobKey);
+    if ($effectiveSince !== null) {
+        putenv('SYNC_SINCE=' . $effectiveSince);
     }
 
     if ($jobKey === 'alliance-current') {
@@ -164,6 +167,14 @@ function sync_runner_dispatch_job(string $jobKey, int $sourceId, string $runMode
     if ($jobKey === 'alliance-history') {
         $datasetKey = sync_dataset_key_alliance_structure_orders_history($sourceId);
         $result = sync_alliance_structure_orders($sourceId, $runMode);
+
+        return $result + ['dataset_key' => $datasetKey];
+    }
+
+    if ($jobKey === 'maintenance-prune') {
+        $datasetKey = sync_dataset_key_maintenance_history_prune();
+        $retentionDays = (int) get_setting('raw_order_snapshot_retention_days', '30');
+        $result = sync_market_orders_history_prune($retentionDays, $runMode);
 
         return $result + ['dataset_key' => $datasetKey];
     }
@@ -184,7 +195,37 @@ function sync_runner_dataset_key_for_job(string $jobKey, int $sourceId): string
         return sync_dataset_key_alliance_structure_orders_history($sourceId);
     }
 
+    if ($jobKey === 'maintenance-prune') {
+        return sync_dataset_key_maintenance_history_prune();
+    }
+
     return sync_dataset_key_market_hub_history_daily((string) $sourceId);
+}
+
+function sync_runner_backfill_start_for_job(string $jobKey): ?string
+{
+    $settingKey = match ($jobKey) {
+        'alliance-current' => 'alliance_current_backfill_start_date',
+        'alliance-history' => 'alliance_history_backfill_start_date',
+        'hub-history' => 'hub_history_backfill_start_date',
+        default => '',
+    };
+
+    if ($settingKey === '') {
+        return null;
+    }
+
+    $raw = trim((string) get_setting($settingKey, ''));
+    if ($raw === '') {
+        return null;
+    }
+
+    $timestamp = strtotime($raw . ' 00:00:00 UTC');
+    if ($timestamp === false) {
+        return null;
+    }
+
+    return gmdate(DATE_ATOM, $timestamp);
 }
 
 function sync_runner_latest_run_id_safe(string $datasetKey): ?int

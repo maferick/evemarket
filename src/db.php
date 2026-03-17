@@ -493,6 +493,15 @@ function db_market_orders_history_bulk_insert(array $orders, ?int $chunkSize = n
     );
 }
 
+
+function db_market_orders_history_prune_before(string $cutoffObservedAt): int
+{
+    $stmt = db()->prepare('DELETE FROM market_orders_history WHERE observed_at < ?');
+    $stmt->execute([$cutoffObservedAt]);
+
+    return $stmt->rowCount();
+}
+
 function db_market_history_daily_bulk_upsert(array $historyRows, ?int $chunkSize = null): int
 {
     return db_bulk_insert_or_upsert(

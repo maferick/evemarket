@@ -361,6 +361,34 @@ function sanitize_pipeline_enabled(mixed $value): string
     return $value === '1' || $value === 1 || $value === true || $value === 'on' ? '1' : '0';
 }
 
+function sanitize_backfill_start_date(mixed $value): string
+{
+    $raw = trim((string) $value);
+    if ($raw === '') {
+        return '';
+    }
+
+    $date = DateTimeImmutable::createFromFormat('Y-m-d', $raw, new DateTimeZone('UTC'));
+
+    if (!$date instanceof DateTimeImmutable || $date->format('Y-m-d') !== $raw) {
+        return '';
+    }
+
+    return $raw;
+}
+
+function sanitize_retention_days(mixed $value, int $defaultDays = 30): string
+{
+    $days = (int) $value;
+    if ($days <= 0) {
+        $days = $defaultDays;
+    }
+
+    $days = max(1, min(3650, $days));
+
+    return (string) $days;
+}
+
 function data_sync_settings_from_request(array $request): array
 {
     return [
@@ -374,6 +402,10 @@ function data_sync_settings_from_request(array $request): array
         'alliance_current_pipeline_enabled' => sanitize_pipeline_enabled($request['alliance_current_pipeline_enabled'] ?? null),
         'alliance_history_pipeline_enabled' => sanitize_pipeline_enabled($request['alliance_history_pipeline_enabled'] ?? null),
         'hub_history_pipeline_enabled' => sanitize_pipeline_enabled($request['hub_history_pipeline_enabled'] ?? null),
+        'alliance_current_backfill_start_date' => sanitize_backfill_start_date($request['alliance_current_backfill_start_date'] ?? null),
+        'alliance_history_backfill_start_date' => sanitize_backfill_start_date($request['alliance_history_backfill_start_date'] ?? null),
+        'hub_history_backfill_start_date' => sanitize_backfill_start_date($request['hub_history_backfill_start_date'] ?? null),
+        'raw_order_snapshot_retention_days' => sanitize_retention_days($request['raw_order_snapshot_retention_days'] ?? null, 30),
     ];
 }
 
@@ -629,6 +661,11 @@ function sync_dataset_key_alliance_structure_orders_history(int $structureId): s
 function sync_dataset_key_market_hub_history_daily(string $hubKey): string
 {
     return 'market.hub.' . $hubKey . '.history.daily';
+}
+
+function sync_dataset_key_maintenance_history_prune(): string
+{
+    return 'maintenance.history.prune';
 }
 
 function sync_run_finalize_success(int $runId, string $datasetKey, string $runMode, int $rowsSeen, int $rowsWritten, ?string $cursor, ?string $checksum): void
@@ -944,6 +981,46 @@ function sync_market_hub_history(string|int $hubRef, string $runMode = 'incremen
     } catch (Throwable $exception) {
         sync_run_finalize_failure($runId, $datasetKey, $syncMode, $exception->getMessage());
         $result['warnings'][] = $exception->getMessage();
+
+        return $result;
+    }
+}
+
+function sync_market_orders_history_prune(int $retentionDays, string $runMode = 'incremental'): array
+{
+    $result = sync_result_shape();
+    $datasetKey = sync_dataset_key_maintenance_history_prune();
+    $syncMode = sync_mode_normalize($runMode);
+    $runId = db_sync_run_start($datasetKey, $syncMode, sync_watermark($datasetKey));
+
+    try {
+        $safeRetentionDays = max(1, min(3650, $retentionDays));
+        $cutoffObservedAt = gmdate('Y-m-d H:i:s', strtotime('-' . $safeRetentionDays . ' days'));
+        $deletedRows = db_market_orders_history_prune_before($cutoffObservedAt);
+
+        $result['rows_seen'] = $deletedRows;
+        $result['rows_written'] = $deletedRows;
+        $result['cursor'] = 'cutoff:' . $cutoffObservedAt;
+        $result['checksum'] = sync_checksum([
+            'deleted_rows' => $deletedRows,
+            'retention_days' => $safeRetentionDays,
+            'cutoff_observed_at' => $cutoffObservedAt,
+        ]);
+
+        sync_run_finalize_success(
+            $runId,
+            $datasetKey,
+            $syncMode,
+            $result['rows_seen'],
+            $result['rows_written'],
+            $result['cursor'],
+            $result['checksum']
+        );
+
+        return $result;
+    } catch (Throwable $exception) {
+        sync_run_finalize_failure($runId, $datasetKey, $syncMode, $exception->getMessage());
+        $result['warnings'][] = 'History prune job failed: ' . $exception->getMessage();
 
         return $result;
     }
