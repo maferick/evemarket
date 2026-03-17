@@ -4768,7 +4768,7 @@ function sync_killmail_r2z2_stream(string $runMode = 'incremental'): array
             usleep(100000);
         }
 
-        $cursorEnd = $lastProcessed !== null ? (string) $lastProcessed : ($cursor ?? (string) $latestSequence);
+        $cursorEnd = $lastProcessed !== null ? (string) $lastProcessed : ($cursor ?? '0');
         $checksum = sync_checksum([$rowsSeen, $rowsWritten, $cursorEnd]);
         sync_run_finalize_success($runId, $datasetKey, $runMode, $rowsSeen, $rowsWritten, $cursorEnd, $checksum, $warnings);
 
@@ -4813,4 +4813,3 @@ function sync_killmail_r2z2_stream(string $runMode = 'incremental'): array
         throw $exception;
     }
 }
-
