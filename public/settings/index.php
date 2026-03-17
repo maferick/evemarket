@@ -28,8 +28,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         case 'trading-stations':
             $saved = save_settings([
-                'market_station_id' => (string) ($_POST['market_station_id'] ?? ''),
-                'alliance_station_id' => (string) ($_POST['alliance_station_id'] ?? ''),
+                'market_station_id' => sanitize_station_selection($_POST['market_station_id'] ?? null, 'market'),
+                'alliance_station_id' => sanitize_station_selection($_POST['alliance_station_id'] ?? null, 'alliance'),
             ]);
             break;
 

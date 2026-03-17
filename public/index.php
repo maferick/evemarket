@@ -8,9 +8,19 @@ $title = 'Dashboard';
 
 $dbStatus = db_connection_status();
 
+$marketStationName = selected_station_name('market_station_id');
+$allianceStationName = selected_station_name('alliance_station_id');
+$selectedStationsCount = 0;
+if ($marketStationName !== null) {
+    $selectedStationsCount++;
+}
+if ($allianceStationName !== null) {
+    $selectedStationsCount++;
+}
+
 $stats = [
     ['label' => 'Tracked Markets', 'value' => '12', 'context' => 'Regions with active pull schedules'],
-    ['label' => 'Trade Stations', 'value' => (string) count(station_options()), 'context' => 'Saved market + alliance stations'],
+    ['label' => 'Trade Stations', 'value' => (string) $selectedStationsCount . '/2', 'context' => 'Configured market + alliance selections'],
     ['label' => 'ESI Status', 'value' => get_setting('esi_enabled', 'disabled') === '1' ? 'Connected' : 'Pending', 'context' => 'SSO configuration health'],
     ['label' => 'Incremental SQL', 'value' => get_setting('incremental_updates_enabled', '1') === '1' ? 'Enabled' : 'Disabled', 'context' => 'Future sync/import optimizer'],
 ];
@@ -36,7 +46,8 @@ include __DIR__ . '/../src/views/partials/header.php';
                 <p class="text-sm font-medium">Setup checklist</p>
                 <ul class="mt-2 space-y-2 text-sm text-muted">
                     <li>• Configure general app behavior</li>
-                    <li>• Select market + alliance stations</li>
+                    <li>• Market station: <?= htmlspecialchars($marketStationName ?? 'Not selected', ENT_QUOTES) ?></li>
+                    <li>• Alliance station: <?= htmlspecialchars($allianceStationName ?? 'Not selected', ENT_QUOTES) ?></li>
                     <li>• Add ESI SSO credentials</li>
                     <li>• Choose incremental SQL strategy</li>
                 </ul>

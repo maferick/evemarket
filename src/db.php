@@ -270,3 +270,16 @@ function db_sync_run_finish(
         [$runStatus, $sourceRows, $writtenRows, $cursorEnd, $errorMessage, $runId]
     );
 }
+
+function db_trading_station_options(): array
+{
+    return db_select('SELECT id, station_name, station_type FROM trading_stations ORDER BY station_name ASC');
+}
+
+function db_trading_station_by_id(int $stationId, string $stationType): ?array
+{
+    return db_select_one(
+        'SELECT id, station_name, station_type FROM trading_stations WHERE id = ? AND station_type = ? LIMIT 1',
+        [$stationId, $stationType]
+    );
+}

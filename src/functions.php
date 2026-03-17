@@ -111,7 +111,7 @@ function save_settings(array $settings): bool
 function station_options(): array
 {
     try {
-        return db_select('SELECT id, station_name, station_type FROM trading_stations ORDER BY station_name ASC');
+        return db_trading_station_options();
     } catch (Throwable) {
         return [
             ['id' => 1, 'station_name' => 'Jita IV - Moon 4 - Caldari Navy Assembly Plant', 'station_type' => 'market'],
@@ -120,6 +120,41 @@ function station_options(): array
             ['id' => 4, 'station_name' => 'T5ZI-S Fortizar', 'station_type' => 'alliance'],
         ];
     }
+}
+
+function sanitize_station_selection(?string $value, string $stationType): string
+{
+    $stationId = (int) trim((string) $value);
+
+    if ($stationId <= 0) {
+        return '';
+    }
+
+    try {
+        $station = db_trading_station_by_id($stationId, $stationType);
+    } catch (Throwable) {
+        return '';
+    }
+
+    return $station === null ? '' : (string) $station['id'];
+}
+
+function selected_station_name(string $settingKey): ?string
+{
+    $stationType = $settingKey === 'alliance_station_id' ? 'alliance' : 'market';
+    $stationId = (int) get_setting($settingKey, '');
+
+    if ($stationId <= 0) {
+        return null;
+    }
+
+    try {
+        $station = db_trading_station_by_id($stationId, $stationType);
+    } catch (Throwable) {
+        return null;
+    }
+
+    return $station['station_name'] ?? null;
 }
 
 function grouped_station_options(): array
