@@ -204,16 +204,21 @@ function sanitize_market_station_selection(?string $value): string
 
     try {
         $station = db_ref_npc_station_by_id($stationId);
-        if ($station !== null) {
-            return (string) $stationId;
-        }
-
-        $legacyStation = db_trading_station_by_id($stationId, 'market');
     } catch (Throwable) {
-        return '';
+        $station = null;
     }
 
-    return $legacyStation === null ? '' : (string) $legacyStation['id'];
+    if ($station !== null) {
+        return (string) $stationId;
+    }
+
+    try {
+        $metadata = esi_npc_station_metadata($stationId);
+    } catch (Throwable) {
+        $metadata = null;
+    }
+
+    return $metadata === null ? '' : (string) $stationId;
 }
 
 function sanitize_alliance_station_selection(?string $value): string
@@ -317,16 +322,25 @@ function selected_station_name(string $settingKey): ?string
 
     try {
         $station = db_ref_npc_station_by_id($stationId);
-        if ($station !== null) {
-            return (string) ($station['station_name'] ?? '');
-        }
-
-        $legacyStation = db_trading_station_by_id($stationId, $stationType);
     } catch (Throwable) {
-        return null;
+        $station = null;
     }
 
-    return $legacyStation['station_name'] ?? null;
+    if ($station !== null) {
+        return (string) ($station['station_name'] ?? ('Station #' . $stationId));
+    }
+
+    try {
+        $metadata = esi_npc_station_metadata($stationId);
+    } catch (Throwable) {
+        $metadata = null;
+    }
+
+    if ($metadata !== null && trim((string) ($metadata['name'] ?? '')) !== '') {
+        return trim((string) $metadata['name']);
+    }
+
+    return null;
 }
 
 function grouped_station_options(): array
@@ -2852,7 +2866,7 @@ function esi_structure_search(string $query, array $tokenContext): array
             'id' => $id,
             'name' => $name,
             'system' => isset($structureResponse['json']['solar_system_id']) ? (string) $structureResponse['json']['solar_system_id'] : null,
-            'type' => isset($structureResponse['json']['type_id']) ? (string) $structureResponse['json']['type_id'] : null,
+            'type' => 'Structure',
         ]);
     }
 
@@ -2932,6 +2946,36 @@ function esi_npc_station_search(string $query, array $tokenContext): array
 
     return $results;
 }
+
+function esi_npc_station_metadata(int $stationId): ?array
+{
+    if ($stationId <= 0) {
+        return null;
+    }
+
+    $response = http_get_json(
+        'https://esi.evetech.net/latest/universe/stations/' . $stationId . '/',
+        ['Accept: application/json']
+    );
+
+    if (($response['status'] ?? 500) >= 400) {
+        return null;
+    }
+
+    $name = trim((string) ($response['json']['name'] ?? ''));
+    if ($name === '') {
+        return null;
+    }
+
+    return [
+        'id' => $stationId,
+        'name' => $name,
+        'system' => isset($response['json']['system_id']) ? (string) $response['json']['system_id'] : null,
+        'type' => 'NPC Station',
+    ];
+}
+
+
 
 function runner_lock_acquire(string $lockName, int $timeoutSeconds = 0): bool
 {

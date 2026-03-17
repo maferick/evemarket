@@ -14,20 +14,19 @@ if (mb_strlen($query) < 2) {
 }
 
 try {
-    $rows = db_ref_npc_station_search($query, 20);
+    $context = esi_lookup_context([
+        'esi-search.search_structures.v1',
+    ]);
+
+    if (($context['ok'] ?? false) !== true) {
+        http_response_code((int) ($context['status'] ?? 403));
+        echo json_encode(['error' => $context['error'] ?? 'ESI lookup unavailable.', 'results' => []], JSON_THROW_ON_ERROR);
+        exit;
+    }
+
+    $results = esi_npc_station_search($query, $context['token']);
+    echo json_encode(['results' => array_slice($results, 0, 20)], JSON_THROW_ON_ERROR);
 } catch (Throwable) {
     http_response_code(503);
     echo json_encode(['error' => 'Station lookup unavailable.', 'results' => []], JSON_THROW_ON_ERROR);
-    exit;
 }
-
-$results = array_map(static function (array $station): array {
-    return [
-        'id' => (int) ($station['station_id'] ?? 0),
-        'name' => (string) ($station['station_name'] ?? ''),
-        'system' => (string) ($station['system_name'] ?? ''),
-        'type' => (string) ($station['station_type_name'] ?? ''),
-    ];
-}, $rows);
-
-echo json_encode(['results' => $results], JSON_THROW_ON_ERROR);
