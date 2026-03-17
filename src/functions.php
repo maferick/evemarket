@@ -48,7 +48,7 @@ function nav_items(): array
             'path' => '/market-status',
             'icon' => '🛒',
             'children' => [
-                ['label' => 'Current Alliance Structure', 'path' => '/market-status/current-alliance-structure'],
+                ['label' => 'Current Alliance Structure', 'path' => '/market-status/current-alliance'],
                 ['label' => 'Jita Comparison', 'path' => '/market-status/jita-comparison'],
                 ['label' => 'Missing Items', 'path' => '/market-status/missing-items'],
                 ['label' => 'Price Deviations', 'path' => '/market-status/price-deviations'],
@@ -633,6 +633,104 @@ function data_sync_settings_from_request(array $request): array
         'hub_history_backfill_start_date' => data_sync_backfill_start_date('hub_history_backfill_start_date', $hubHistoryEnabled === '1', $baselineDate),
         'raw_order_snapshot_retention_days' => sanitize_retention_days($request['raw_order_snapshot_retention_days'] ?? null, 30),
         'static_data_source_url' => sanitize_static_data_source_url($request['static_data_source_url'] ?? null),
+    ];
+}
+
+function current_alliance_market_status_data(): array
+{
+    $allianceStation = selected_station_name('alliance_station_id') ?? 'No alliance structure selected';
+
+    return [
+        'summary' => [
+            ['label' => 'Alliance Structure', 'value' => $allianceStation, 'context' => 'Current configured structure'],
+            ['label' => 'Tracked Modules', 'value' => '312', 'context' => 'Items monitored in current sync'],
+            ['label' => 'Listings with Stock', 'value' => '247', 'context' => 'Active alliance market orders'],
+        ],
+        'rows' => [
+            ['module' => 'Heavy Assault Missile Launcher II', 'price' => '2,780,000 ISK', 'stock' => '26', 'updated_at' => '2m ago'],
+            ['module' => 'Multispectrum Shield Hardener II', 'price' => '1,245,000 ISK', 'stock' => '42', 'updated_at' => '1m ago'],
+            ['module' => 'Large Shield Extender II', 'price' => '589,000 ISK', 'stock' => '37', 'updated_at' => '3m ago'],
+        ],
+    ];
+}
+
+function jita_comparison_data(): array
+{
+    return [
+        'summary' => [
+            ['label' => 'Compared Modules', 'value' => '312', 'context' => 'Alliance vs Jita pairs'],
+            ['label' => 'Cheaper Than Jita', 'value' => '84', 'context' => 'Alliance price advantage'],
+            ['label' => 'Pricier Than Jita', 'value' => '171', 'context' => 'Candidate reprice opportunities'],
+        ],
+        'rows' => [
+            ['module' => 'Warp Scrambler II', 'alliance_price' => '1,420,000 ISK', 'jita_price' => '1,365,000 ISK', 'delta' => '+4.0%'],
+            ['module' => '10MN Afterburner II', 'alliance_price' => '595,000 ISK', 'jita_price' => '621,000 ISK', 'delta' => '-4.2%'],
+            ['module' => 'Damage Control II', 'alliance_price' => '1,085,000 ISK', 'jita_price' => '1,030,000 ISK', 'delta' => '+5.3%'],
+        ],
+    ];
+}
+
+function missing_items_data(): array
+{
+    return [
+        'summary' => [
+            ['label' => 'Missing Modules', 'value' => '65', 'context' => 'No active alliance listing'],
+            ['label' => 'High-Turnover Gaps', 'value' => '18', 'context' => 'Missing + strong historical velocity'],
+            ['label' => 'Restock Priority', 'value' => '12', 'context' => 'Immediate candidate list'],
+        ],
+        'rows' => [
+            ['module' => 'Nanofiber Internal Structure II', 'jita_price' => '712,000 ISK', 'daily_volume' => '193', 'priority' => 'High'],
+            ['module' => 'EM Shield Amplifier II', 'jita_price' => '1,120,000 ISK', 'daily_volume' => '77', 'priority' => 'Medium'],
+            ['module' => 'Cap Recharger II', 'jita_price' => '645,000 ISK', 'daily_volume' => '241', 'priority' => 'High'],
+        ],
+    ];
+}
+
+function price_deviations_data(): array
+{
+    return [
+        'summary' => [
+            ['label' => 'Deviation Alerts', 'value' => '39', 'context' => 'Outside configured threshold'],
+            ['label' => 'Overpriced', 'value' => '31', 'context' => 'Alliance > reference median'],
+            ['label' => 'Underpriced', 'value' => '8', 'context' => 'Alliance < reference median'],
+        ],
+        'rows' => [
+            ['module' => 'Stasis Webifier II', 'alliance_price' => '1,960,000 ISK', 'reference_price' => '1,720,000 ISK', 'deviation' => '+13.9%'],
+            ['module' => 'Tracking Computer II', 'alliance_price' => '789,000 ISK', 'reference_price' => '901,000 ISK', 'deviation' => '-12.4%'],
+            ['module' => 'Adaptive Invulnerability Field II', 'alliance_price' => '2,040,000 ISK', 'reference_price' => '1,820,000 ISK', 'deviation' => '+12.1%'],
+        ],
+    ];
+}
+
+function alliance_trends_data(): array
+{
+    return [
+        'summary' => [
+            ['label' => 'Tracked Days', 'value' => '30', 'context' => 'Rolling trend horizon'],
+            ['label' => 'Median Price Drift', 'value' => '+2.8%', 'context' => 'Across top traded modules'],
+            ['label' => 'Volume Drift', 'value' => '+6.1%', 'context' => 'Compared to prior period'],
+        ],
+        'rows' => [
+            ['period' => 'Last 7 days', 'median_price' => '1,240,000 ISK', 'volume' => '12,430', 'trend' => 'Up'],
+            ['period' => 'Last 14 days', 'median_price' => '1,198,000 ISK', 'volume' => '22,081', 'trend' => 'Up'],
+            ['period' => 'Last 30 days', 'median_price' => '1,151,000 ISK', 'volume' => '44,019', 'trend' => 'Stable'],
+        ],
+    ];
+}
+
+function module_history_data(): array
+{
+    return [
+        'summary' => [
+            ['label' => 'History Window', 'value' => '90 days', 'context' => 'Persisted module snapshots'],
+            ['label' => 'Modules with Full Coverage', 'value' => '204', 'context' => 'No missing daily snapshots'],
+            ['label' => 'Recent Volatility Leaders', 'value' => '27', 'context' => 'Modules with >10% weekly change'],
+        ],
+        'rows' => [
+            ['module' => 'Heavy Missile Launcher II', 'latest_price' => '1,490,000 ISK', 'seven_day_change' => '+4.4%', 'thirty_day_change' => '+7.1%'],
+            ['module' => 'Gyrostabilizer II', 'latest_price' => '858,000 ISK', 'seven_day_change' => '-2.1%', 'thirty_day_change' => '+1.8%'],
+            ['module' => '500MN Microwarpdrive II', 'latest_price' => '4,120,000 ISK', 'seven_day_change' => '+9.2%', 'thirty_day_change' => '+14.7%'],
+        ],
     ];
 }
 
