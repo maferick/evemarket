@@ -79,6 +79,7 @@ function setting_sections(): array
         'trading-stations' => ['title' => 'Trading Stations', 'description' => 'Configure your reference market hub and operational trading destination.'],
         'esi-login' => ['title' => 'ESI Login', 'description' => 'Configure EVE SSO credentials and callback behavior.'],
         'data-sync' => ['title' => 'Data Sync', 'description' => 'Control database import and incremental update policies.'],
+        'killmail-intelligence' => ['title' => 'Killmail Intelligence', 'description' => 'Manage zKillboard stream ingestion, tracked entities, and demand prediction foundation.'],
     ];
 }
 
@@ -690,6 +691,13 @@ function data_sync_schedule_job_definitions(): array
             'interval_unit_key' => 'market_hub_historical_sync_interval_unit',
             'default_interval_seconds' => 1800,
             'label' => 'Hub History',
+        ],
+        'killmail_r2z2_sync' => [
+            'enabled_key' => 'killmail_r2z2_sync_enabled',
+            'interval_value_key' => 'killmail_r2z2_sync_interval_value',
+            'interval_unit_key' => 'killmail_r2z2_sync_interval_unit',
+            'default_interval_seconds' => 60,
+            'label' => 'Killmail R2Z2 Stream',
         ],
     ];
 }
@@ -1734,6 +1742,17 @@ function scheduler_job_definitions(): array
                 return sync_market_hub_current_orders($hubRef, 'incremental');
             },
         ],
+        'killmail_r2z2_sync' => [
+            'timeout_seconds' => 90,
+            'lock_ttl_seconds' => 180,
+            'handler' => static function (): array {
+                if (!killmail_ingestion_enabled()) {
+                    return sync_result_shape() + ['warnings' => ['Killmail ingestion disabled in settings.']];
+                }
+
+                return sync_killmail_r2z2_stream('incremental');
+            },
+        ],
     ];
 }
 
@@ -1743,6 +1762,7 @@ function scheduler_job_type(string $jobKey): string
     return match ($jobKey) {
         'alliance_current_sync', 'market_hub_current_sync' => 'sync.current',
         'alliance_historical_sync', 'market_hub_historical_sync' => 'sync.history',
+        'killmail_r2z2_sync' => 'sync.killmail',
         default => 'sync.generic',
     };
 }
@@ -4057,6 +4077,415 @@ function static_data_import_reference_data(string $requestedMode = 'auto', bool 
             json_encode(['remote' => $remote], JSON_THROW_ON_ERROR)
         );
 
+        throw $exception;
+    }
+}
+
+function killmail_ingestion_enabled(): bool
+{
+    return sanitize_enabled_flag(get_setting('killmail_ingestion_enabled', '0')) === '1';
+}
+
+function killmail_sync_dataset_key(): string
+{
+    return 'killmail.r2z2.stream';
+}
+
+function sync_dataset_key_killmail_r2z2_stream(): string
+{
+    return killmail_sync_dataset_key();
+}
+
+function killmail_r2z2_sequence_url(): string
+{
+    $url = trim((string) get_setting('killmail_r2z2_sequence_url', 'https://r2z2.zkillboard.com/ephemeral/sequence.json'));
+
+    return $url !== '' ? $url : 'https://r2z2.zkillboard.com/ephemeral/sequence.json';
+}
+
+function killmail_r2z2_base_url(): string
+{
+    $url = rtrim(trim((string) get_setting('killmail_r2z2_base_url', 'https://r2z2.zkillboard.com/ephemeral')), '/');
+
+    return $url !== '' ? $url : 'https://r2z2.zkillboard.com/ephemeral';
+}
+
+function killmail_poll_sleep_seconds(): int
+{
+    return max(6, min(300, (int) get_setting('killmail_ingestion_poll_sleep_seconds', '6')));
+}
+
+function killmail_max_sequences_per_run(): int
+{
+    return max(1, min(5000, (int) get_setting('killmail_ingestion_max_sequences_per_run', '120')));
+}
+
+function killmail_parse_entity_lines(string $text): array
+{
+    $rows = [];
+    foreach (preg_split('/\R+/', $text) as $line) {
+        $line = trim((string) $line);
+        if ($line === '') {
+            continue;
+        }
+
+        if (preg_match('/^([0-9]{1,20})(?:\s*[|,:-]\s*(.+))?$/', $line, $m) !== 1) {
+            continue;
+        }
+
+        $rows[] = [
+            'id' => (int) $m[1],
+            'label' => isset($m[2]) ? trim($m[2]) : null,
+        ];
+    }
+
+    return $rows;
+}
+
+function killmail_parse_entity_name_lines(string $text): array
+{
+    $names = [];
+
+    foreach (preg_split('/\R+/', $text) as $line) {
+        $name = trim((string) $line);
+        if ($name === '') {
+            continue;
+        }
+
+        $names[$name] = true;
+    }
+
+    return array_keys($names);
+}
+
+function killmail_universe_ids_lookup(array $names): array
+{
+    $queryNames = array_values(array_filter(array_map(static fn (mixed $name): string => trim((string) $name), $names), static fn (string $name): bool => $name !== ''));
+    if ($queryNames === []) {
+        return [];
+    }
+
+    $ch = curl_init('https://esi.evetech.net/latest/universe/ids/?datasource=tranquility&language=en');
+    curl_setopt_array($ch, [
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_TIMEOUT => 25,
+        CURLOPT_POST => true,
+        CURLOPT_HTTPHEADER => ['Accept: application/json', 'Content-Type: application/json'],
+        CURLOPT_POSTFIELDS => json_encode($queryNames, JSON_UNESCAPED_SLASHES),
+    ]);
+
+    $body = curl_exec($ch);
+    $status = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    $error = curl_error($ch);
+    curl_close($ch);
+
+    if ($body === false) {
+        throw new RuntimeException('Failed resolving entity names from ESI: ' . $error);
+    }
+
+    if ($status !== 200) {
+        throw new RuntimeException('Failed resolving entity names from ESI. HTTP status=' . $status);
+    }
+
+    $decoded = json_decode($body, true);
+
+    return is_array($decoded) ? $decoded : [];
+}
+
+function killmail_resolve_tracked_entities(string $allianceText, string $corporationText): array
+{
+    $allianceLines = killmail_parse_entity_name_lines($allianceText);
+    $corporationLines = killmail_parse_entity_name_lines($corporationText);
+
+    $allianceById = [];
+    $corporationById = [];
+    $lookupNames = [];
+
+    foreach ($allianceLines as $line) {
+        if (preg_match('/^[1-9][0-9]{1,20}$/', $line) === 1) {
+            $allianceById[(int) $line] = ['id' => (int) $line, 'label' => null];
+            continue;
+        }
+
+        $lookupNames[$line] = true;
+    }
+
+    foreach ($corporationLines as $line) {
+        if (preg_match('/^[1-9][0-9]{1,20}$/', $line) === 1) {
+            $corporationById[(int) $line] = ['id' => (int) $line, 'label' => null];
+            continue;
+        }
+
+        $lookupNames[$line] = true;
+    }
+
+    $unresolved = [];
+
+    if ($lookupNames !== []) {
+        $resolved = killmail_universe_ids_lookup(array_keys($lookupNames));
+
+        foreach ((array) ($resolved['alliances'] ?? []) as $row) {
+            $name = trim((string) ($row['name'] ?? ''));
+            $id = (int) ($row['id'] ?? 0);
+            if ($id <= 0 || $name === '' || !in_array($name, $allianceLines, true)) {
+                continue;
+            }
+
+            $allianceById[$id] = ['id' => $id, 'label' => $name];
+        }
+
+        foreach ((array) ($resolved['corporations'] ?? []) as $row) {
+            $name = trim((string) ($row['name'] ?? ''));
+            $id = (int) ($row['id'] ?? 0);
+            if ($id <= 0 || $name === '' || !in_array($name, $corporationLines, true)) {
+                continue;
+            }
+
+            $corporationById[$id] = ['id' => $id, 'label' => $name];
+        }
+    }
+
+    foreach ($allianceLines as $line) {
+        if (preg_match('/^[1-9][0-9]{1,20}$/', $line) === 1) {
+            continue;
+        }
+
+        $found = false;
+        foreach ($allianceById as $row) {
+            if (($row['label'] ?? '') === $line) {
+                $found = true;
+                break;
+            }
+        }
+
+        if (!$found) {
+            $unresolved[] = 'Alliance not found: ' . $line;
+        }
+    }
+
+    foreach ($corporationLines as $line) {
+        if (preg_match('/^[1-9][0-9]{1,20}$/', $line) === 1) {
+            continue;
+        }
+
+        $found = false;
+        foreach ($corporationById as $row) {
+            if (($row['label'] ?? '') === $line) {
+                $found = true;
+                break;
+            }
+        }
+
+        if (!$found) {
+            $unresolved[] = 'Corporation not found: ' . $line;
+        }
+    }
+
+    return [
+        'alliances' => array_values($allianceById),
+        'corporations' => array_values($corporationById),
+        'unresolved' => $unresolved,
+    ];
+}
+
+function killmail_r2z2_fetch_json(string $url): array
+{
+    $ch = curl_init($url);
+    curl_setopt_array($ch, [
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_TIMEOUT => 25,
+        CURLOPT_HTTPHEADER => ['Accept: application/json'],
+    ]);
+    $body = curl_exec($ch);
+    $status = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    $error = curl_error($ch);
+    curl_close($ch);
+
+    if ($body === false) {
+        throw new RuntimeException('R2Z2 request failed: ' . $error);
+    }
+
+    $json = json_decode($body, true);
+    if (!is_array($json)) {
+        $json = [];
+    }
+
+    return ['status' => $status, 'json' => $json, 'body' => $body];
+}
+
+function killmail_extract_items(array $items, int &$index, string $role): array
+{
+    $rows = [];
+    foreach ($items as $item) {
+        if (!is_array($item)) {
+            continue;
+        }
+
+        $rows[] = [
+            'item_index' => $index++,
+            'item_type_id' => (int) ($item['item_type_id'] ?? 0),
+            'item_flag' => isset($item['flag']) ? (int) $item['flag'] : null,
+            'quantity_dropped' => isset($item['quantity_dropped']) ? (int) $item['quantity_dropped'] : null,
+            'quantity_destroyed' => isset($item['quantity_destroyed']) ? (int) $item['quantity_destroyed'] : null,
+            'singleton' => isset($item['singleton']) ? (int) $item['singleton'] : null,
+            'item_role' => $role,
+        ];
+
+        if (isset($item['items']) && is_array($item['items'])) {
+            foreach (killmail_extract_items($item['items'], $index, $role) as $nested) {
+                $rows[] = $nested;
+            }
+        }
+    }
+
+    return $rows;
+}
+
+function killmail_region_id_from_system(?int $systemId): ?int
+{
+    if ($systemId === null || $systemId <= 0) {
+        return null;
+    }
+
+    try {
+        $row = db_select_one('SELECT region_id FROM ref_systems WHERE system_id = ? LIMIT 1', [$systemId]);
+    } catch (Throwable) {
+        return null;
+    }
+
+    return isset($row['region_id']) ? (int) $row['region_id'] : null;
+}
+
+function killmail_transform_r2z2_payload(array $payload): array
+{
+    $killmail = is_array($payload['killmail'] ?? null) ? $payload['killmail'] : [];
+    $victim = is_array($killmail['victim'] ?? null) ? $killmail['victim'] : [];
+    $zkb = is_array($payload['zkb'] ?? null) ? $payload['zkb'] : [];
+    $sequenceId = (int) ($payload['sequence_id'] ?? 0);
+    $systemId = isset($killmail['solar_system_id']) ? (int) $killmail['solar_system_id'] : null;
+
+    $event = [
+        'sequence_id' => $sequenceId,
+        'killmail_id' => (int) ($payload['killmail_id'] ?? 0),
+        'killmail_hash' => (string) ($payload['hash'] ?? ''),
+        'uploaded_at' => isset($payload['uploaded_at']) ? gmdate('Y-m-d H:i:s', (int) $payload['uploaded_at']) : null,
+        'sequence_updated' => isset($payload['sequence_updated']) ? (int) $payload['sequence_updated'] : null,
+        'killmail_time' => isset($killmail['killmail_time']) ? gmdate('Y-m-d H:i:s', strtotime((string) $killmail['killmail_time'])) : null,
+        'solar_system_id' => $systemId,
+        'region_id' => killmail_region_id_from_system($systemId),
+        'victim_character_id' => isset($victim['character_id']) ? (int) $victim['character_id'] : null,
+        'victim_corporation_id' => isset($victim['corporation_id']) ? (int) $victim['corporation_id'] : null,
+        'victim_alliance_id' => isset($victim['alliance_id']) ? (int) $victim['alliance_id'] : null,
+        'victim_ship_type_id' => isset($victim['ship_type_id']) ? (int) $victim['ship_type_id'] : null,
+        'zkb_json' => json_encode($zkb, JSON_UNESCAPED_SLASHES),
+        'raw_killmail_json' => json_encode($killmail, JSON_UNESCAPED_SLASHES),
+    ];
+
+    $attackers = [];
+    foreach ((array) ($killmail['attackers'] ?? []) as $i => $attacker) {
+        if (!is_array($attacker)) {
+            continue;
+        }
+
+        $attackers[] = [
+            'attacker_index' => $i,
+            'character_id' => isset($attacker['character_id']) ? (int) $attacker['character_id'] : null,
+            'corporation_id' => isset($attacker['corporation_id']) ? (int) $attacker['corporation_id'] : null,
+            'alliance_id' => isset($attacker['alliance_id']) ? (int) $attacker['alliance_id'] : null,
+            'ship_type_id' => isset($attacker['ship_type_id']) ? (int) $attacker['ship_type_id'] : null,
+            'weapon_type_id' => isset($attacker['weapon_type_id']) ? (int) $attacker['weapon_type_id'] : null,
+            'final_blow' => (bool) ($attacker['final_blow'] ?? false),
+            'security_status' => isset($attacker['security_status']) ? (float) $attacker['security_status'] : null,
+        ];
+    }
+
+    $itemIndex = 0;
+    $items = killmail_extract_items((array) ($victim['items'] ?? []), $itemIndex, 'other');
+    foreach ($items as &$item) {
+        $hasDropped = (int) ($item['quantity_dropped'] ?? 0) > 0;
+        $hasDestroyed = (int) ($item['quantity_destroyed'] ?? 0) > 0;
+        $item['item_role'] = $hasDropped ? 'dropped' : ($hasDestroyed ? 'destroyed' : 'fitted');
+    }
+
+    return ['event' => $event, 'attackers' => $attackers, 'items' => $items];
+}
+
+function sync_killmail_r2z2_stream(string $runMode = 'incremental'): array
+{
+    $runMode = sync_mode_normalize($runMode);
+    $datasetKey = killmail_sync_dataset_key();
+    $runId = db_sync_run_start($datasetKey, $runMode, db_sync_cursor_get($datasetKey));
+
+    try {
+        $sequenceProbe = killmail_r2z2_fetch_json(killmail_r2z2_sequence_url());
+        if (($sequenceProbe['status'] ?? 500) !== 200) {
+            throw new RuntimeException('Unable to read killmail sequence.json, status=' . (int) ($sequenceProbe['status'] ?? 0));
+        }
+
+        $latestSequence = (int) (($sequenceProbe['json']['sequence'] ?? 0));
+        $cursor = db_sync_cursor_get($datasetKey);
+        $nextSequence = $cursor !== null && preg_match('/^[0-9]+$/', $cursor) === 1 ? ((int) $cursor + 1) : $latestSequence;
+        $maxSteps = killmail_max_sequences_per_run();
+
+        $rowsSeen = 0;
+        $rowsWritten = 0;
+        $lastProcessed = null;
+        $warnings = [];
+
+        for ($step = 0; $step < $maxSteps; $step++) {
+            $url = killmail_r2z2_base_url() . '/' . $nextSequence . '.json';
+            $response = killmail_r2z2_fetch_json($url);
+            $status = (int) ($response['status'] ?? 0);
+
+            if ($status === 404) {
+                break;
+            }
+
+            if ($status === 429 || $status === 403) {
+                $warnings[] = 'R2Z2 returned status ' . $status . '; respecting feed backoff.';
+                break;
+            }
+
+            if ($status !== 200) {
+                throw new RuntimeException('R2Z2 sequence fetch failed for ' . $nextSequence . ' with status=' . $status);
+            }
+
+            $rowsSeen++;
+            $transformed = killmail_transform_r2z2_payload((array) ($response['json'] ?? []));
+            $sequenceId = (int) ($transformed['event']['sequence_id'] ?? 0);
+            if ($sequenceId <= 0) {
+                throw new RuntimeException('R2Z2 payload missing sequence_id for stream row ' . $nextSequence);
+            }
+
+            db_transaction(static function () use ($transformed, $sequenceId, &$rowsWritten): void {
+                db_killmail_event_upsert($transformed['event']);
+                db_killmail_attackers_replace($sequenceId, $transformed['attackers']);
+                db_killmail_items_replace($sequenceId, $transformed['items']);
+                $rowsWritten++;
+            });
+
+            $lastProcessed = $sequenceId;
+            $nextSequence = $sequenceId + 1;
+            usleep(100000);
+        }
+
+        $cursorEnd = $lastProcessed !== null ? (string) $lastProcessed : ($cursor ?? (string) $latestSequence);
+        $checksum = sync_checksum([$rowsSeen, $rowsWritten, $cursorEnd]);
+        sync_run_finalize_success($runId, $datasetKey, $runMode, $rowsSeen, $rowsWritten, $cursorEnd, $checksum);
+
+        return sync_result_shape() + [
+            'rows_seen' => $rowsSeen,
+            'rows_written' => $rowsWritten,
+            'cursor' => $cursorEnd,
+            'checksum' => $checksum,
+            'warnings' => $warnings,
+            'meta' => [
+                'latest_sequence_probe' => $latestSequence,
+                'last_processed_sequence' => $lastProcessed,
+            ],
+        ];
+    } catch (Throwable $exception) {
+        sync_run_finalize_failure($runId, $datasetKey, $runMode, $exception->getMessage());
         throw $exception;
     }
 }

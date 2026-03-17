@@ -11,6 +11,7 @@ const SYNC_RUNNER_JOB_SEQUENCE = [
     'hub-current',
     'hub-history',
     'maintenance-prune',
+    'killmail-r2z2',
 ];
 
 function sync_runner_main(array $argv): int
@@ -20,7 +21,7 @@ function sync_runner_main(array $argv): int
     } catch (InvalidArgumentException $exception) {
         sync_runner_log_stderr('sync_runner.invalid_arguments', [
             'error' => $exception->getMessage(),
-            'usage' => 'php bin/sync_runner.php --job=alliance-current|alliance-history|hub-current|hub-history|maintenance-prune|all --source-id=<id> --mode=incremental|full [--since=<ISO8601>]',
+            'usage' => 'php bin/sync_runner.php --job=alliance-current|alliance-history|hub-current|hub-history|maintenance-prune|killmail-r2z2|all --source-id=<id> --mode=incremental|full [--since=<ISO8601>]',
         ]);
 
         return 2;
@@ -52,7 +53,7 @@ function sync_runner_parse_arguments(array $argv): array
     $mode = trim((string) ($options['mode'] ?? ''));
     $sinceRaw = isset($options['since']) ? trim((string) $options['since']) : null;
 
-    $allowedJobs = ['alliance-current', 'alliance-history', 'hub-current', 'hub-history', 'maintenance-prune', 'all'];
+    $allowedJobs = ['alliance-current', 'alliance-history', 'hub-current', 'hub-history', 'maintenance-prune', 'killmail-r2z2', 'all'];
     if ($job === '' || !in_array($job, $allowedJobs, true)) {
         throw new InvalidArgumentException('Argument --job must be one of: ' . implode(', ', $allowedJobs) . '.');
     }
@@ -176,6 +177,13 @@ function sync_runner_dispatch_job(string $jobKey, int $sourceId, string $runMode
         return $result + ['dataset_key' => $datasetKey];
     }
 
+    if ($jobKey === 'killmail-r2z2') {
+        $datasetKey = sync_dataset_key_killmail_r2z2_stream();
+        $result = sync_killmail_r2z2_stream($runMode);
+
+        return $result + ['dataset_key' => $datasetKey];
+    }
+
     if ($jobKey === 'hub-current') {
         $hubRef = market_hub_setting_reference();
         if ($hubRef === '') {
@@ -225,6 +233,10 @@ function sync_runner_dataset_key_for_job(string $jobKey, int $sourceId): string
 
     if ($jobKey === 'maintenance-prune') {
         return sync_dataset_key_maintenance_history_prune();
+    }
+
+    if ($jobKey === 'killmail-r2z2') {
+        return sync_dataset_key_killmail_r2z2_stream();
     }
 
     $hubRef = market_hub_setting_reference();
