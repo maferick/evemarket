@@ -998,7 +998,7 @@ function db_ref_npc_station_by_id(int $stationId): ?array
     }
 
     return db_select_one(
-        'SELECT s.station_id, s.station_name, s.system_id, sys.system_name, s.station_type_id, t.type_name AS station_type_name
+        'SELECT s.station_id, s.station_name, s.system_id, s.region_id, sys.system_name, s.station_type_id, t.type_name AS station_type_name
          FROM ref_npc_stations s
          LEFT JOIN ref_systems sys ON sys.system_id = s.system_id
          LEFT JOIN ref_item_types t ON t.type_id = s.station_type_id
@@ -1006,6 +1006,25 @@ function db_ref_npc_station_by_id(int $stationId): ?array
          LIMIT 1',
         [$stationId]
     );
+}
+
+function db_ref_npc_station_region_id(int $stationId): ?int
+{
+    if ($stationId <= 0) {
+        return null;
+    }
+
+    $row = db_select_one(
+        'SELECT region_id
+         FROM ref_npc_stations
+         WHERE station_id = ?
+         LIMIT 1',
+        [$stationId]
+    );
+
+    $regionId = (int) ($row['region_id'] ?? 0);
+
+    return $regionId > 0 ? $regionId : null;
 }
 
 function db_ref_npc_station_search(string $query, int $limit = 20): array
