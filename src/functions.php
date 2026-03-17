@@ -794,6 +794,152 @@ function market_format_isk(?float $price): string
     return number_format($price, 2, '.', ',') . ' ISK';
 }
 
+function market_format_percentage(float $value, int $precision = 1): string
+{
+    return number_format($value, $precision, '.', ',') . '%';
+}
+
+function dashboard_sync_health_panel(array $dataset): array
+{
+    $states = $dataset['states'] ?? [];
+    $runs = $dataset['runs'] ?? [];
+    $activeStateCount = count($states);
+    $failedRuns = array_values(array_filter($runs, static fn (array $run): bool => (string) ($run['run_status'] ?? '') === 'failed'));
+
+    $status = 'Not synced';
+    if ($activeStateCount > 0) {
+        $status = $failedRuns === [] ? 'Healthy' : 'Warning';
+    }
+
+    $lastSuccessAt = (string) ($dataset['last_success_at'] ?? '');
+    $lastError = trim((string) ($dataset['last_error_message'] ?? ''));
+
+    return [
+        'status' => $status,
+        'last_success_at' => $lastSuccessAt !== '' ? $lastSuccessAt : 'No successful sync yet',
+        'recent_rows_written' => (int) ($dataset['recent_rows_written'] ?? 0),
+        'last_error' => $lastError !== '' ? $lastError : 'None',
+        'state_count' => $activeStateCount,
+    ];
+}
+
+function dashboard_trend_snippets(array $rows): array
+{
+    $grouped = [];
+    foreach ($rows as $row) {
+        $typeId = (int) ($row['type_id'] ?? 0);
+        if ($typeId <= 0) {
+            continue;
+        }
+
+        if (!isset($grouped[$typeId])) {
+            $grouped[$typeId] = [
+                'type_id' => $typeId,
+                'type_name' => (string) ($row['type_name'] ?? ''),
+                'points' => [],
+            ];
+        }
+
+        $grouped[$typeId]['points'][] = [
+            'trade_date' => (string) ($row['trade_date'] ?? ''),
+            'close_price' => (float) ($row['close_price'] ?? 0),
+            'volume' => (int) ($row['volume'] ?? 0),
+        ];
+    }
+
+    $snippets = [];
+    foreach ($grouped as $series) {
+        $points = array_values(array_filter($series['points'], static fn (array $point): bool => $point['trade_date'] !== '' && $point['close_price'] > 0));
+        if (count($points) < 2) {
+            continue;
+        }
+
+        usort($points, static fn (array $a, array $b): int => strcmp($b['trade_date'], $a['trade_date']));
+        $latest = $points[0];
+        $previous = $points[1];
+        if ($previous['close_price'] <= 0) {
+            continue;
+        }
+
+        $changePercent = (($latest['close_price'] - $previous['close_price']) / $previous['close_price']) * 100.0;
+        $direction = $changePercent > 0.5 ? 'Up' : ($changePercent < -0.5 ? 'Down' : 'Flat');
+
+        $snippets[] = [
+            'module' => $series['type_name'] !== '' ? $series['type_name'] : ('Type #' . $series['type_id']),
+            'movement' => sprintf('%+.1f%%', $changePercent),
+            'direction' => $direction,
+            'latest_close' => market_format_isk($latest['close_price']),
+            'latest_volume' => (string) $latest['volume'],
+        ];
+    }
+
+    usort($snippets, static fn (array $a, array $b): int => abs((float) $b['movement']) <=> abs((float) $a['movement']));
+
+    return array_slice($snippets, 0, 6);
+}
+
+function dashboard_intelligence_data(): array
+{
+    $outcomes = market_comparison_outcomes();
+    $rows = $outcomes['rows'];
+
+    $rowCount = count($rows);
+    $inBothCount = count($outcomes['in_both_markets']);
+    $coveragePercent = $rowCount > 0 ? ($inBothCount / $rowCount) * 100.0 : 0.0;
+
+    $opportunities = $rows;
+    usort($opportunities, static fn (array $a, array $b): int => (($b['opportunity_score'] ?? 0) <=> ($a['opportunity_score'] ?? 0)) ?: (($b['jita_total_sell_volume'] ?? 0) <=> ($a['jita_total_sell_volume'] ?? 0)));
+    $risks = $rows;
+    usort($risks, static fn (array $a, array $b): int => (($b['risk_score'] ?? 0) <=> ($a['risk_score'] ?? 0)) ?: (abs((float) ($b['deviation_percent'] ?? 0)) <=> abs((float) ($a['deviation_percent'] ?? 0))));
+
+    $allianceSync = sync_status_from_prefix('alliance.structure.');
+    $hubCurrentSync = sync_status_from_prefix('market.hub.');
+    $historySync = sync_status_from_prefix('market.history.daily.');
+
+    $marketHubRef = market_hub_setting_reference();
+    $jitaSourceId = sync_source_id_from_hub_ref($marketHubRef);
+    $historyRows = [];
+    if ($jitaSourceId > 0) {
+        try {
+            $historyRows = db_market_history_daily_recent_window('market_hub', $jitaSourceId, 8, 80);
+        } catch (Throwable) {
+            $historyRows = [];
+        }
+    }
+
+    return [
+        'kpis' => [
+            ['label' => 'Overlap Coverage', 'value' => market_format_percentage($coveragePercent), 'context' => $rowCount > 0 ? ($inBothCount . ' of ' . $rowCount . ' items in both markets') : 'No market overlap data yet'],
+            ['label' => 'Missing Items', 'value' => (string) count($outcomes['missing_in_alliance']), 'context' => 'Items in Jita without alliance sell listing'],
+            ['label' => 'Over / Underpriced', 'value' => count($outcomes['overpriced_in_alliance']) . ' / ' . count($outcomes['underpriced_in_alliance']), 'context' => 'Outside configured deviation threshold'],
+            ['label' => 'Weak Stock', 'value' => (string) count($outcomes['weak_or_missing_alliance_stock']), 'context' => 'Low volume/order depth or missing listing'],
+        ],
+        'priority_queues' => [
+            'opportunities' => array_map(static fn (array $row): array => [
+                'module' => $row['type_name'] !== '' ? $row['type_name'] : ('Type #' . $row['type_id']),
+                'signal' => (bool) ($row['missing_in_alliance'] ?? false) ? 'Missing in alliance' : sprintf('%+.1f%% vs Jita', (float) ($row['deviation_percent'] ?? 0.0)),
+                'score' => (int) ($row['opportunity_score'] ?? 0),
+            ], array_slice(array_values(array_filter($opportunities, static fn (array $row): bool => (int) ($row['opportunity_score'] ?? 0) > 0)), 0, 5)),
+            'risks' => array_map(static fn (array $row): array => [
+                'module' => $row['type_name'] !== '' ? $row['type_name'] : ('Type #' . $row['type_id']),
+                'signal' => (bool) ($row['overpriced_in_alliance'] ?? false) ? sprintf('%+.1f%% overpriced', (float) ($row['deviation_percent'] ?? 0.0)) : 'Weak alliance stock',
+                'score' => (int) ($row['risk_score'] ?? 0),
+            ], array_slice(array_values(array_filter($risks, static fn (array $row): bool => (int) ($row['risk_score'] ?? 0) > 0)), 0, 5)),
+        ],
+        'health_panels' => [
+            'alliance_freshness' => dashboard_sync_health_panel($allianceSync),
+            'sync_health' => dashboard_sync_health_panel($hubCurrentSync),
+            'data_completeness' => [
+                'status' => $rowCount > 0 ? 'Tracked' : 'Awaiting sync',
+                'rows_compared' => $rowCount,
+                'history_points' => count($historyRows),
+                'history_sync' => dashboard_sync_health_panel($historySync),
+            ],
+        ],
+        'trend_snippets' => dashboard_trend_snippets($historyRows),
+    ];
+}
+
 function current_alliance_market_status_data(): array
 {
     $allianceStation = selected_station_name('alliance_station_id') ?? 'No alliance structure selected';

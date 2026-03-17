@@ -593,6 +593,48 @@ function db_market_history_daily_distinct_type_ids(string $sourceType, int $sour
     return array_values(array_map(static fn (array $row): int => (int) ($row['type_id'] ?? 0), $rows));
 }
 
+function db_market_history_daily_recent_window(string $sourceType, int $sourceId, int $days = 8, int $typeLimit = 120): array
+{
+    $safeDays = max(1, min($days, 60));
+    $safeTypeLimit = max(1, min($typeLimit, 500));
+
+    $typeRows = db_select(
+        "SELECT type_id
+         FROM market_history_daily
+         WHERE source_type = ? AND source_id = ?
+         GROUP BY type_id
+         ORDER BY MAX(trade_date) DESC, SUM(volume) DESC
+         LIMIT {$safeTypeLimit}",
+        [$sourceType, $sourceId]
+    );
+
+    $typeIds = array_values(array_filter(array_map(static fn (array $row): int => (int) ($row['type_id'] ?? 0), $typeRows), static fn (int $typeId): bool => $typeId > 0));
+    if ($typeIds === []) {
+        return [];
+    }
+
+    $placeholders = implode(',', array_fill(0, count($typeIds), '?'));
+    $params = array_merge([$sourceType, $sourceId], $typeIds);
+
+    return db_select(
+        "SELECT
+            mhd.type_id,
+            rit.type_name,
+            mhd.trade_date,
+            mhd.close_price,
+            mhd.volume,
+            mhd.observed_at
+         FROM market_history_daily mhd
+         LEFT JOIN ref_item_types rit ON rit.type_id = mhd.type_id
+         WHERE mhd.source_type = ?
+           AND mhd.source_id = ?
+           AND mhd.type_id IN ({$placeholders})
+           AND mhd.trade_date >= DATE_SUB(UTC_DATE(), INTERVAL {$safeDays} DAY)
+         ORDER BY mhd.type_id ASC, mhd.trade_date DESC",
+        $params
+    );
+}
+
 function db_market_orders_current_source_aggregates(string $sourceType, int $sourceId, array $typeIds = []): array
 {
     $params = [$sourceType, $sourceId];
