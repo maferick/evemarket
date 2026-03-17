@@ -1027,6 +1027,25 @@ function db_ref_npc_station_region_id(int $stationId): ?int
     return $regionId > 0 ? $regionId : null;
 }
 
+function db_ref_system_region_id(int $systemId): ?int
+{
+    if ($systemId <= 0) {
+        return null;
+    }
+
+    $row = db_select_one(
+        'SELECT region_id
+         FROM ref_systems
+         WHERE system_id = ?
+         LIMIT 1',
+        [$systemId]
+    );
+
+    $regionId = (int) ($row['region_id'] ?? 0);
+
+    return $regionId > 0 ? $regionId : null;
+}
+
 function db_ref_npc_station_search(string $query, int $limit = 20): array
 {
     $normalized = trim($query);
