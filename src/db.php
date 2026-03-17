@@ -861,3 +861,36 @@ function db_sync_schedule_force_due_all_enabled(): int
 
     return (int) $stmt->rowCount();
 }
+
+function db_sync_schedule_force_due_by_job_keys(array $jobKeys): int
+{
+    $normalized = [];
+
+    foreach ($jobKeys as $jobKey) {
+        $trimmed = trim((string) $jobKey);
+        if ($trimmed === '') {
+            continue;
+        }
+
+        $normalized[$trimmed] = $trimmed;
+    }
+
+    $keys = array_values($normalized);
+
+    if ($keys === []) {
+        return 0;
+    }
+
+    $placeholders = implode(', ', array_fill(0, count($keys), '?'));
+    $sql = "UPDATE sync_schedules
+            SET next_run_at = UTC_TIMESTAMP(),
+                locked_until = NULL,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE enabled = 1
+              AND job_key IN ($placeholders)";
+
+    $stmt = db()->prepare($sql);
+    $stmt->execute($keys);
+
+    return (int) $stmt->rowCount();
+}

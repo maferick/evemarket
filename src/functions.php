@@ -445,10 +445,19 @@ function data_sync_backfill_start_date(string $settingKey, bool $pipelineEnabled
     return $pipelineEnabled ? $fallbackDate : '';
 }
 
-function run_data_sync_now(): array
+function run_data_sync_now(?string $jobKey = null): array
 {
     $lockName = 'cron_tick_runner';
     $lockAcquired = false;
+    $definitions = data_sync_schedule_job_definitions();
+    $normalizedJobKey = $jobKey === null ? '' : trim($jobKey);
+
+    if ($normalizedJobKey !== '' && !isset($definitions[$normalizedJobKey])) {
+        return [
+            'ok' => false,
+            'message' => 'Run now failed: unknown sync job selected.',
+        ];
+    }
 
     try {
         $lockAcquired = runner_lock_acquire($lockName, 0);
@@ -459,12 +468,18 @@ function run_data_sync_now(): array
             ];
         }
 
-        $forcedJobs = db_sync_schedule_force_due_all_enabled();
+        $forcedJobs = $normalizedJobKey === ''
+            ? db_sync_schedule_force_due_all_enabled()
+            : db_sync_schedule_force_due_by_job_keys([$normalizedJobKey]);
         $summary = cron_tick_run();
+
+        $jobLabel = $normalizedJobKey === ''
+            ? 'all enabled jobs'
+            : ((string) ($definitions[$normalizedJobKey]['label'] ?? $normalizedJobKey) . ' job');
 
         return [
             'ok' => true,
-            'message' => 'Run now completed. Forced ' . $forcedJobs . ' schedule(s); processed ' . (int) ($summary['jobs_processed'] ?? 0) . ' job(s), with ' . (int) ($summary['jobs_failed'] ?? 0) . ' failure(s).',
+            'message' => 'Run now completed for ' . $jobLabel . '. Forced ' . $forcedJobs . ' schedule(s); processed ' . (int) ($summary['jobs_processed'] ?? 0) . ' job(s), with ' . (int) ($summary['jobs_failed'] ?? 0) . ' failure(s).',
             'summary' => $summary,
         ];
     } catch (Throwable $exception) {
