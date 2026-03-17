@@ -588,6 +588,39 @@ function sync_result_shape(): array
     ];
 }
 
+function sync_mode_normalize(string $runMode): string
+{
+    return in_array($runMode, ['incremental', 'full'], true) ? $runMode : 'incremental';
+}
+
+function sync_dataset_key_alliance_structure_orders_current(int $structureId): string
+{
+    return 'alliance.structure.' . $structureId . '.orders.current';
+}
+
+function sync_dataset_key_alliance_structure_orders_history(int $structureId): string
+{
+    return 'alliance.structure.' . $structureId . '.orders.history';
+}
+
+function sync_dataset_key_market_hub_history_daily(string $hubKey): string
+{
+    return 'market.hub.' . $hubKey . '.history.daily';
+}
+
+function sync_run_finalize_success(int $runId, string $datasetKey, string $runMode, int $rowsSeen, int $rowsWritten, ?string $cursor, ?string $checksum): void
+{
+    mark_sync_success($datasetKey, $runMode, $cursor, $rowsWritten, $checksum);
+    db_sync_run_finish($runId, 'success', $rowsSeen, $rowsWritten, $cursor, null);
+}
+
+function sync_run_finalize_failure(int $runId, string $datasetKey, string $runMode, string $errorMessage): void
+{
+    $message = mb_substr($errorMessage, 0, 500);
+    mark_sync_failure($datasetKey, $runMode, $message);
+    db_sync_run_finish($runId, 'failed', 0, 0, null, $message);
+}
+
 function sync_checksum(array $rows): string
 {
     return hash('sha256', json_encode($rows, JSON_THROW_ON_ERROR));
@@ -644,9 +677,12 @@ function canonicalize_esi_market_order(array $order, int $sourceId, string $obse
     ];
 }
 
-function sync_alliance_structure_orders(int $structureId): array
+function sync_alliance_structure_orders(int $structureId, string $runMode = 'incremental'): array
 {
     $result = sync_result_shape();
+    $syncMode = sync_mode_normalize($runMode);
+    $datasetKeyCurrent = sync_dataset_key_alliance_structure_orders_current($structureId);
+    $datasetKeyHistory = sync_dataset_key_alliance_structure_orders_history($structureId);
 
     if ($structureId <= 0) {
         $result['warnings'][] = 'Invalid alliance structure id.';
@@ -706,22 +742,56 @@ function sync_alliance_structure_orders(int $structureId): array
         }
 
         $maxPages = max(1, (int) $pagesHeader);
-        $result['cursor'] = 'page:' . $page;
         $page++;
     }
 
-    if ($mappedOrders === []) {
-        $result['checksum'] = sync_checksum([]);
+    $snapshotCursor = 'observed_at:' . $observedAt . ';page:' . max(1, $page - 1);
+    $result['cursor'] = $snapshotCursor;
+
+    $checksum = sync_checksum($mappedOrders);
+
+    $runIdCurrent = db_sync_run_start($datasetKeyCurrent, $syncMode, sync_watermark($datasetKeyCurrent));
+    $runIdHistory = db_sync_run_start($datasetKeyHistory, $syncMode, sync_watermark($datasetKeyHistory));
+    $currentFinished = false;
+    $historyFinished = false;
+
+    try {
+        if ($mappedOrders === []) {
+            sync_run_finalize_success($runIdCurrent, $datasetKeyCurrent, $syncMode, $result['rows_seen'], 0, $snapshotCursor, $checksum);
+            $currentFinished = true;
+            sync_run_finalize_success($runIdHistory, $datasetKeyHistory, $syncMode, $result['rows_seen'], 0, $snapshotCursor, $checksum);
+            $historyFinished = true;
+            $result['checksum'] = $checksum;
+
+            return $result;
+        }
+
+        $writtenCurrent = db_market_orders_current_bulk_upsert($mappedOrders);
+        sync_run_finalize_success($runIdCurrent, $datasetKeyCurrent, $syncMode, $result['rows_seen'], $writtenCurrent, $snapshotCursor, $checksum);
+        $currentFinished = true;
+
+        $writtenHistory = db_market_orders_history_bulk_insert($mappedOrders);
+        sync_run_finalize_success($runIdHistory, $datasetKeyHistory, $syncMode, $result['rows_seen'], $writtenHistory, $snapshotCursor, $checksum);
+        $historyFinished = true;
+
+        $result['rows_written'] = $writtenCurrent + $writtenHistory;
+        $result['checksum'] = $checksum;
+
+        return $result;
+    } catch (Throwable $exception) {
+        if (!$currentFinished) {
+            sync_run_finalize_failure($runIdCurrent, $datasetKeyCurrent, $syncMode, $exception->getMessage());
+        }
+
+        if (!$historyFinished) {
+            sync_run_finalize_failure($runIdHistory, $datasetKeyHistory, $syncMode, $exception->getMessage());
+        }
+
+        $result['warnings'][] = 'Alliance structure order sync failed: ' . $exception->getMessage();
+        $result['checksum'] = $checksum;
 
         return $result;
     }
-
-    $writtenCurrent = db_market_orders_current_bulk_upsert($mappedOrders);
-    $writtenHistory = db_market_orders_history_bulk_insert($mappedOrders);
-    $result['rows_written'] = $writtenCurrent + $writtenHistory;
-    $result['checksum'] = sync_checksum($mappedOrders);
-
-    return $result;
 }
 
 function eve_tycoon_history_payload_rows(array $payload): array
@@ -775,72 +845,85 @@ function eve_tycoon_history_to_canonical(array $row, int $sourceId, string $obse
     ];
 }
 
-function sync_market_hub_history(string|int $hubRef): array
+function sync_market_hub_history(string|int $hubRef, string $runMode = 'incremental'): array
 {
     $result = sync_result_shape();
+    $syncMode = sync_mode_normalize($runMode);
     $sourceId = sync_source_id_from_hub_ref($hubRef);
     $hubKey = trim((string) $hubRef);
+    $datasetKey = sync_dataset_key_market_hub_history_daily($hubKey);
     if ($hubKey === '') {
         $result['warnings'][] = 'Market hub reference is required.';
 
         return $result;
     }
 
-    $urlTemplate = trim((string) get_setting('eve_tycoon_history_url_template', 'https://evetycoon.com/api/v1/market/history/{hub}'));
-    $endpoint = str_replace('{hub}', rawurlencode($hubKey), $urlTemplate);
+    $runId = db_sync_run_start($datasetKey, $syncMode, sync_watermark($datasetKey));
 
-    $response = http_get_json_with_backoff($endpoint, ['Accept: application/json']);
-    $status = (int) ($response['status'] ?? 500);
-    if ($status >= 400) {
-        $result['warnings'][] = 'EVE Tycoon history sync failed with status ' . $status . '.';
+    try {
+        $urlTemplate = trim((string) get_setting('eve_tycoon_history_url_template', 'https://evetycoon.com/api/v1/market/history/{hub}'));
+        $endpoint = str_replace('{hub}', rawurlencode($hubKey), $urlTemplate);
 
-        return $result;
-    }
-
-    $providerRows = eve_tycoon_history_payload_rows($response['json'] ?? []);
-    $result['rows_seen'] = count($providerRows);
-    $observedAt = gmdate('Y-m-d H:i:s');
-    $canonicalRows = [];
-
-    foreach ($providerRows as $providerRow) {
-        if (!is_array($providerRow)) {
-            continue;
+        $response = http_get_json_with_backoff($endpoint, ['Accept: application/json']);
+        $status = (int) ($response['status'] ?? 500);
+        if ($status >= 400) {
+            throw new RuntimeException('EVE Tycoon history sync failed with status ' . $status . '.');
         }
 
-        if (isset($providerRow['history']) && is_array($providerRow['history'])) {
-            $parentTypeId = (int) ($providerRow['type_id'] ?? $providerRow['typeId'] ?? 0);
-            foreach ($providerRow['history'] as $historyRow) {
-                if (!is_array($historyRow)) {
-                    continue;
-                }
+        $providerRows = eve_tycoon_history_payload_rows($response['json'] ?? []);
+        $result['rows_seen'] = count($providerRows);
+        $observedAt = gmdate('Y-m-d H:i:s');
+        $canonicalRows = [];
 
-                $mapped = eve_tycoon_history_to_canonical($historyRow, $sourceId, $observedAt, $parentTypeId > 0 ? $parentTypeId : null);
-                if ($mapped !== null) {
-                    $canonicalRows[] = $mapped;
-                }
+        foreach ($providerRows as $providerRow) {
+            if (!is_array($providerRow)) {
+                continue;
             }
 
-            continue;
+            if (isset($providerRow['history']) && is_array($providerRow['history'])) {
+                $parentTypeId = (int) ($providerRow['type_id'] ?? $providerRow['typeId'] ?? 0);
+                foreach ($providerRow['history'] as $historyRow) {
+                    if (!is_array($historyRow)) {
+                        continue;
+                    }
+
+                    $mapped = eve_tycoon_history_to_canonical($historyRow, $sourceId, $observedAt, $parentTypeId > 0 ? $parentTypeId : null);
+                    if ($mapped !== null) {
+                        $canonicalRows[] = $mapped;
+                    }
+                }
+
+                continue;
+            }
+
+            $mapped = eve_tycoon_history_to_canonical($providerRow, $sourceId, $observedAt);
+            if ($mapped !== null) {
+                $canonicalRows[] = $mapped;
+            }
         }
 
-        $mapped = eve_tycoon_history_to_canonical($providerRow, $sourceId, $observedAt);
-        if ($mapped !== null) {
-            $canonicalRows[] = $mapped;
-        }
-    }
+        if ($canonicalRows === []) {
+            $result['warnings'][] = 'No canonical market history rows were mapped from provider payload.';
+            $result['checksum'] = sync_checksum([]);
+            $result['cursor'] = null;
+            sync_run_finalize_success($runId, $datasetKey, $syncMode, $result['rows_seen'], 0, $result['cursor'], $result['checksum']);
 
-    if ($canonicalRows === []) {
-        $result['warnings'][] = 'No canonical market history rows were mapped from provider payload.';
-        $result['checksum'] = sync_checksum([]);
+            return $result;
+        }
+
+        $result['rows_written'] = db_market_history_daily_bulk_upsert($canonicalRows);
+        $latestTradeDate = max(array_column($canonicalRows, 'trade_date'));
+        $result['cursor'] = 'trade_date:' . $latestTradeDate;
+        $result['checksum'] = sync_checksum($canonicalRows);
+        sync_run_finalize_success($runId, $datasetKey, $syncMode, $result['rows_seen'], $result['rows_written'], $result['cursor'], $result['checksum']);
+
+        return $result;
+    } catch (Throwable $exception) {
+        sync_run_finalize_failure($runId, $datasetKey, $syncMode, $exception->getMessage());
+        $result['warnings'][] = $exception->getMessage();
 
         return $result;
     }
-
-    $result['rows_written'] = db_market_history_daily_bulk_upsert($canonicalRows);
-    $result['cursor'] = 'hub:' . $hubKey . ';observed_at:' . $observedAt;
-    $result['checksum'] = sync_checksum($canonicalRows);
-
-    return $result;
 }
 
 function esi_exchange_oauth_code(string $code): array
