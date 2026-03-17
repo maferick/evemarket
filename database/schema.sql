@@ -98,6 +98,24 @@ CREATE TABLE IF NOT EXISTS sync_runs (
     KEY idx_run_status (run_status)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+CREATE TABLE IF NOT EXISTS sync_schedules (
+    id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    job_key VARCHAR(190) NOT NULL,
+    enabled TINYINT(1) NOT NULL DEFAULT 1,
+    interval_seconds INT UNSIGNED NOT NULL,
+    next_run_at DATETIME DEFAULT NULL,
+    last_run_at DATETIME DEFAULT NULL,
+    last_status VARCHAR(40) DEFAULT NULL,
+    last_error VARCHAR(500) DEFAULT NULL,
+    locked_until DATETIME DEFAULT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY unique_job_key (job_key),
+    KEY idx_enabled (enabled),
+    KEY idx_next_run_at (next_run_at),
+    KEY idx_job_key (job_key)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 
 CREATE TABLE IF NOT EXISTS market_orders_current (
     id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
@@ -193,6 +211,14 @@ INSERT INTO app_settings (setting_key, setting_value) VALUES
     ('esi_callback_url', 'http://192.168.178.47/callback'),
     ('esi_scopes', 'publicData esi-location.read_location.v1 esi-search.search_structures.v1 esi-universe.read_structures.v1 esi-markets.structure_markets.v1')
 ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value);
+
+INSERT INTO sync_schedules (job_key, enabled, interval_seconds, next_run_at, last_run_at, last_status, last_error, locked_until) VALUES
+    ('alliance_current_sync', 1, 300, NULL, NULL, NULL, NULL, NULL),
+    ('alliance_historical_sync', 1, 1800, NULL, NULL, NULL, NULL, NULL),
+    ('market_hub_historical_sync', 1, 1800, NULL, NULL, NULL, NULL, NULL)
+ON DUPLICATE KEY UPDATE
+    enabled = VALUES(enabled),
+    interval_seconds = VALUES(interval_seconds);
 
 INSERT INTO esi_cache_namespaces (namespace_key, source_system, description) VALUES
     ('cache.esi.controlTowerResources', 'esi', 'ESI cache namespace mapped to controlTowerResources.jsonl'),
