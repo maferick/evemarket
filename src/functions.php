@@ -488,10 +488,38 @@ function http_post_form(string $url, array $headers, array $formData): array
 function http_get_json(string $url, array $headers = []): array
 {
     $ch = curl_init($url);
+    $responseHeaders = [];
     curl_setopt_array($ch, [
         CURLOPT_RETURNTRANSFER => true,
         CURLOPT_HTTPHEADER => $headers,
         CURLOPT_TIMEOUT => 25,
+        CURLOPT_HEADERFUNCTION => static function ($curl, string $headerLine) use (&$responseHeaders): int {
+            $trimmed = trim($headerLine);
+            if ($trimmed === '' || !str_contains($trimmed, ':')) {
+                return strlen($headerLine);
+            }
+
+            [$name, $value] = explode(':', $trimmed, 2);
+            $normalizedName = mb_strtolower(trim($name));
+            $normalizedValue = trim($value);
+            if (!array_key_exists($normalizedName, $responseHeaders)) {
+                $responseHeaders[$normalizedName] = $normalizedValue;
+
+                return strlen($headerLine);
+            }
+
+            $existing = $responseHeaders[$normalizedName];
+            if (is_array($existing)) {
+                $existing[] = $normalizedValue;
+                $responseHeaders[$normalizedName] = $existing;
+
+                return strlen($headerLine);
+            }
+
+            $responseHeaders[$normalizedName] = [$existing, $normalizedValue];
+
+            return strlen($headerLine);
+        },
     ]);
 
     $response = curl_exec($ch);
@@ -508,7 +536,311 @@ function http_get_json(string $url, array $headers = []): array
         throw new RuntimeException('Invalid JSON response from ' . $url);
     }
 
-    return ['status' => $status, 'json' => $decoded];
+    return ['status' => $status, 'json' => $decoded, 'headers' => $responseHeaders];
+}
+
+function sync_http_retryable_status_codes(): array
+{
+    return [408, 420, 429, 500, 502, 503, 504];
+}
+
+function http_get_json_with_backoff(string $url, array $headers = [], int $maxAttempts = 4, int $baseDelayMs = 250): array
+{
+    $attempts = max(1, $maxAttempts);
+    $delayMs = max(50, $baseDelayMs);
+    $lastException = null;
+    $lastResponse = null;
+
+    for ($attempt = 1; $attempt <= $attempts; $attempt++) {
+        try {
+            $response = http_get_json($url, $headers);
+            $status = (int) ($response['status'] ?? 500);
+            $lastResponse = $response;
+
+            if (!in_array($status, sync_http_retryable_status_codes(), true) || $attempt === $attempts) {
+                return $response;
+            }
+        } catch (Throwable $exception) {
+            $lastException = $exception;
+            if ($attempt === $attempts) {
+                break;
+            }
+        }
+
+        usleep((int) (($delayMs * (2 ** ($attempt - 1))) * 1000));
+    }
+
+    if ($lastResponse !== null) {
+        return $lastResponse;
+    }
+
+    throw new RuntimeException('HTTP request failed after retries.', 0, $lastException);
+}
+
+function sync_result_shape(): array
+{
+    return [
+        'rows_seen' => 0,
+        'rows_written' => 0,
+        'cursor' => null,
+        'checksum' => null,
+        'warnings' => [],
+    ];
+}
+
+function sync_checksum(array $rows): string
+{
+    return hash('sha256', json_encode($rows, JSON_THROW_ON_ERROR));
+}
+
+function sync_source_id_from_hub_ref(string|int $hubRef): int
+{
+    if (is_int($hubRef) && $hubRef > 0) {
+        return $hubRef;
+    }
+
+    $hubString = trim((string) $hubRef);
+    if ($hubString !== '' && preg_match('/^[1-9][0-9]*$/', $hubString) === 1) {
+        return (int) $hubString;
+    }
+
+    return (int) sprintf('%u', crc32(mb_strtolower($hubString)));
+}
+
+function canonicalize_esi_market_order(array $order, int $sourceId, string $observedAt): ?array
+{
+    $orderId = (int) ($order['order_id'] ?? 0);
+    $typeId = (int) ($order['type_id'] ?? 0);
+    if ($orderId <= 0 || $typeId <= 0) {
+        return null;
+    }
+
+    $issuedAt = strtotime((string) ($order['issued'] ?? ''));
+    if ($issuedAt === false) {
+        $issuedAt = time();
+    }
+
+    $duration = max(1, (int) ($order['duration'] ?? 1));
+    $expiresAt = strtotime((string) ($order['expires'] ?? ''));
+    if ($expiresAt === false) {
+        $expiresAt = strtotime('+' . $duration . ' days', $issuedAt);
+    }
+
+    return [
+        'source_type' => 'alliance_structure',
+        'source_id' => $sourceId,
+        'type_id' => $typeId,
+        'order_id' => $orderId,
+        'is_buy_order' => !empty($order['is_buy_order']) ? 1 : 0,
+        'price' => (float) ($order['price'] ?? 0),
+        'volume_remain' => max(0, (int) ($order['volume_remain'] ?? 0)),
+        'volume_total' => max(0, (int) ($order['volume_total'] ?? 0)),
+        'min_volume' => max(1, (int) ($order['min_volume'] ?? 1)),
+        'range' => (string) ($order['range'] ?? 'region'),
+        'duration' => $duration,
+        'issued' => gmdate('Y-m-d H:i:s', $issuedAt),
+        'expires' => gmdate('Y-m-d H:i:s', $expiresAt),
+        'observed_at' => $observedAt,
+    ];
+}
+
+function sync_alliance_structure_orders(int $structureId): array
+{
+    $result = sync_result_shape();
+
+    if ($structureId <= 0) {
+        $result['warnings'][] = 'Invalid alliance structure id.';
+
+        return $result;
+    }
+
+    $context = esi_lookup_context(esi_required_market_structure_scopes());
+    if (($context['ok'] ?? false) !== true) {
+        $result['warnings'][] = (string) ($context['error'] ?? 'Missing ESI context for structure market sync.');
+
+        return $result;
+    }
+
+    $accessToken = (string) ($context['token']['access_token'] ?? '');
+    $observedAt = gmdate('Y-m-d H:i:s');
+    $page = 1;
+    $maxPages = 1;
+    $mappedOrders = [];
+
+    while ($page <= $maxPages) {
+        $response = http_get_json_with_backoff(
+            'https://esi.evetech.net/latest/markets/structures/' . $structureId . '/?page=' . $page,
+            [
+                'Authorization: Bearer ' . $accessToken,
+                'Accept: application/json',
+            ]
+        );
+
+        $status = (int) ($response['status'] ?? 500);
+        if ($status >= 400) {
+            $result['warnings'][] = 'ESI structure market sync failed on page ' . $page . ' with status ' . $status . '.';
+            break;
+        }
+
+        $payload = $response['json'] ?? [];
+        if (!is_array($payload)) {
+            $result['warnings'][] = 'ESI structure market page ' . $page . ' returned a non-array payload.';
+            break;
+        }
+
+        $result['rows_seen'] += count($payload);
+        foreach ($payload as $order) {
+            if (!is_array($order)) {
+                continue;
+            }
+
+            $mapped = canonicalize_esi_market_order($order, $structureId, $observedAt);
+            if ($mapped !== null) {
+                $mappedOrders[] = $mapped;
+            }
+        }
+
+        $pagesHeader = $response['headers']['x-pages'] ?? '1';
+        if (is_array($pagesHeader)) {
+            $pagesHeader = end($pagesHeader);
+        }
+
+        $maxPages = max(1, (int) $pagesHeader);
+        $result['cursor'] = 'page:' . $page;
+        $page++;
+    }
+
+    if ($mappedOrders === []) {
+        $result['checksum'] = sync_checksum([]);
+
+        return $result;
+    }
+
+    $writtenCurrent = db_market_orders_current_bulk_upsert($mappedOrders);
+    $writtenHistory = db_market_orders_history_bulk_insert($mappedOrders);
+    $result['rows_written'] = $writtenCurrent + $writtenHistory;
+    $result['checksum'] = sync_checksum($mappedOrders);
+
+    return $result;
+}
+
+function eve_tycoon_history_payload_rows(array $payload): array
+{
+    foreach (['items', 'data', 'results', 'history'] as $key) {
+        if (isset($payload[$key]) && is_array($payload[$key])) {
+            return $payload[$key];
+        }
+    }
+
+    if (array_is_list($payload)) {
+        return $payload;
+    }
+
+    if (isset($payload['type_id'], $payload['date'])) {
+        return [$payload];
+    }
+
+    return [];
+}
+
+function eve_tycoon_history_to_canonical(array $row, int $sourceId, string $observedAt, ?int $typeId = null): ?array
+{
+    $resolvedTypeId = $typeId ?? (int) ($row['type_id'] ?? $row['typeId'] ?? 0);
+    $tradeDateRaw = (string) ($row['date'] ?? $row['trade_date'] ?? $row['day'] ?? '');
+    $tradeDateTs = strtotime($tradeDateRaw);
+    if ($resolvedTypeId <= 0 || $tradeDateTs === false) {
+        return null;
+    }
+
+    $open = (float) ($row['open'] ?? $row['open_price'] ?? 0);
+    $high = (float) ($row['high'] ?? $row['high_price'] ?? $open);
+    $low = (float) ($row['low'] ?? $row['low_price'] ?? $open);
+    $close = (float) ($row['close'] ?? $row['close_price'] ?? $open);
+    $average = $row['average'] ?? $row['average_price'] ?? null;
+
+    return [
+        'source_type' => 'market_hub',
+        'source_id' => $sourceId,
+        'type_id' => $resolvedTypeId,
+        'trade_date' => gmdate('Y-m-d', $tradeDateTs),
+        'open_price' => $open,
+        'high_price' => $high,
+        'low_price' => $low,
+        'close_price' => $close,
+        'average_price' => $average !== null ? (float) $average : null,
+        'volume' => max(0, (int) ($row['volume'] ?? 0)),
+        'order_count' => isset($row['order_count']) ? max(0, (int) $row['order_count']) : (isset($row['orders']) ? max(0, (int) $row['orders']) : null),
+        'source_label' => 'eve_tycoon',
+        'observed_at' => $observedAt,
+    ];
+}
+
+function sync_market_hub_history(string|int $hubRef): array
+{
+    $result = sync_result_shape();
+    $sourceId = sync_source_id_from_hub_ref($hubRef);
+    $hubKey = trim((string) $hubRef);
+    if ($hubKey === '') {
+        $result['warnings'][] = 'Market hub reference is required.';
+
+        return $result;
+    }
+
+    $urlTemplate = trim((string) get_setting('eve_tycoon_history_url_template', 'https://evetycoon.com/api/v1/market/history/{hub}'));
+    $endpoint = str_replace('{hub}', rawurlencode($hubKey), $urlTemplate);
+
+    $response = http_get_json_with_backoff($endpoint, ['Accept: application/json']);
+    $status = (int) ($response['status'] ?? 500);
+    if ($status >= 400) {
+        $result['warnings'][] = 'EVE Tycoon history sync failed with status ' . $status . '.';
+
+        return $result;
+    }
+
+    $providerRows = eve_tycoon_history_payload_rows($response['json'] ?? []);
+    $result['rows_seen'] = count($providerRows);
+    $observedAt = gmdate('Y-m-d H:i:s');
+    $canonicalRows = [];
+
+    foreach ($providerRows as $providerRow) {
+        if (!is_array($providerRow)) {
+            continue;
+        }
+
+        if (isset($providerRow['history']) && is_array($providerRow['history'])) {
+            $parentTypeId = (int) ($providerRow['type_id'] ?? $providerRow['typeId'] ?? 0);
+            foreach ($providerRow['history'] as $historyRow) {
+                if (!is_array($historyRow)) {
+                    continue;
+                }
+
+                $mapped = eve_tycoon_history_to_canonical($historyRow, $sourceId, $observedAt, $parentTypeId > 0 ? $parentTypeId : null);
+                if ($mapped !== null) {
+                    $canonicalRows[] = $mapped;
+                }
+            }
+
+            continue;
+        }
+
+        $mapped = eve_tycoon_history_to_canonical($providerRow, $sourceId, $observedAt);
+        if ($mapped !== null) {
+            $canonicalRows[] = $mapped;
+        }
+    }
+
+    if ($canonicalRows === []) {
+        $result['warnings'][] = 'No canonical market history rows were mapped from provider payload.';
+        $result['checksum'] = sync_checksum([]);
+
+        return $result;
+    }
+
+    $result['rows_written'] = db_market_history_daily_bulk_upsert($canonicalRows);
+    $result['cursor'] = 'hub:' . $hubKey . ';observed_at:' . $observedAt;
+    $result['checksum'] = sync_checksum($canonicalRows);
+
+    return $result;
 }
 
 function esi_exchange_oauth_code(string $code): array
