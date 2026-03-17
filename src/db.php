@@ -224,6 +224,69 @@ function db_bulk_insert_or_upsert(string $table, array $columns, array $rows, ar
     });
 }
 
+
+function db_import_sql_dump_into_database(string $databaseName, string $sqlPath): void
+{
+    if (!is_file($sqlPath)) {
+        throw new RuntimeException('Static-data SQL dump is missing.');
+    }
+
+    $quotedDatabase = db_validate_identifier($databaseName);
+
+    db_execute('DROP DATABASE IF EXISTS ' . $quotedDatabase);
+    db_execute('CREATE DATABASE ' . $quotedDatabase . ' CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci');
+
+    $command = sprintf(
+        'mysql --host=%s --port=%d --user=%s --password=%s --default-character-set=utf8mb4 %s < %s 2>&1',
+        escapeshellarg((string) config('db.host')),
+        (int) config('db.port'),
+        escapeshellarg((string) config('db.username')),
+        escapeshellarg((string) config('db.password')),
+        escapeshellarg($databaseName),
+        escapeshellarg($sqlPath)
+    );
+
+    exec($command, $output, $exitCode);
+    if ($exitCode !== 0) {
+        db_execute('DROP DATABASE IF EXISTS ' . $quotedDatabase);
+        throw new RuntimeException('Failed to import static-data SQL dump: ' . trim(implode('\n', $output)));
+    }
+}
+
+function db_drop_database_if_exists(string $databaseName): void
+{
+    db_execute('DROP DATABASE IF EXISTS ' . db_validate_identifier($databaseName));
+}
+
+function db_select_from_database(string $databaseName, string $sql, array $params = []): array
+{
+    db_validate_identifier($databaseName);
+
+    $dsn = sprintf(
+        'mysql:host=%s;port=%d;dbname=%s;charset=%s',
+        config('db.host'),
+        config('db.port'),
+        $databaseName,
+        config('db.charset')
+    );
+
+    $pdo = new PDO(
+        $dsn,
+        config('db.username'),
+        config('db.password'),
+        [
+            PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+            PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+            PDO::ATTR_EMULATE_PREPARES => false,
+        ]
+    );
+
+    $stmt = $pdo->prepare($sql);
+    $stmt->execute($params);
+
+    return $stmt->fetchAll();
+}
+
 function db_upsert_esi_oauth_token(array $token): bool
 {
     return db_execute(

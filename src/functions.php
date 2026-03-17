@@ -623,7 +623,7 @@ function data_sync_settings_from_request(array $request): array
 
 function sanitize_static_data_source_url(mixed $value): string
 {
-    $default = 'https://www.fuzzwork.co.uk/dump/sqlite-latest.sqlite.bz2';
+    $default = static_data_default_source_url();
     $candidate = trim((string) $value);
 
     if ($candidate === '') {
@@ -639,7 +639,17 @@ function sanitize_static_data_source_url(mixed $value): string
         return $default;
     }
 
+    $normalized = mb_strtolower($candidate);
+    if (!str_ends_with($normalized, '.sql') && !str_ends_with($normalized, '.sql.gz') && !str_ends_with($normalized, '.sql.bz2')) {
+        return $default;
+    }
+
     return $candidate;
+}
+
+function static_data_default_source_url(): string
+{
+    return 'https://www.everef.net/static-dumps/latest/eve-ref-static.sql.gz';
 }
 
 function sync_watermark(string $datasetKey): ?string
@@ -1952,14 +1962,15 @@ function runner_lock_release(string $lockName): bool
 
 function static_data_source_key(): string
 {
-    return 'fuzzwork.sqlite';
+    return 'official.sql';
 }
 
 function static_data_source_url(): string
 {
-    $configured = trim((string) get_setting('static_data_source_url', 'https://www.fuzzwork.co.uk/dump/sqlite-latest.sqlite.bz2'));
+    $default = static_data_default_source_url();
+    $configured = trim((string) get_setting('static_data_source_url', $default));
 
-    return $configured !== '' ? $configured : 'https://www.fuzzwork.co.uk/dump/sqlite-latest.sqlite.bz2';
+    return $configured !== '' ? $configured : $default;
 }
 
 function static_data_import_mode(string $requestedMode = 'auto'): string
@@ -2015,20 +2026,21 @@ function static_data_storage_paths(string $buildId): array
 
     return [
         'base_dir' => $baseDir,
-        'archive_path' => $baseDir . '/' . $buildId . '.sqlite.bz2',
-        'sqlite_path' => $baseDir . '/' . $buildId . '.sqlite',
+        'archive_path' => $baseDir . '/' . $buildId . '.archive',
+        'sql_path' => $baseDir . '/' . $buildId . '.sql',
     ];
 }
 
-function static_data_ensure_local_sqlite(string $sourceUrl, string $buildId): string
+function static_data_ensure_local_sql_dump(string $sourceUrl, string $buildId): string
 {
     $paths = static_data_storage_paths($buildId);
     if (!is_dir($paths['base_dir']) && !mkdir($paths['base_dir'], 0775, true) && !is_dir($paths['base_dir'])) {
         throw new RuntimeException('Unable to create static-data storage directory.');
     }
 
-    if (!str_ends_with(mb_strtolower($sourceUrl), '.sqlite.bz2') && !str_ends_with(mb_strtolower($sourceUrl), '.sqlite')) {
-        throw new RuntimeException('Unsupported static-data format. This importer supports SQLite dumps (.sqlite/.sqlite.bz2), such as the Fuzzwork sqlite feed.');
+    $normalizedSource = mb_strtolower($sourceUrl);
+    if (!str_ends_with($normalizedSource, '.sql') && !str_ends_with($normalizedSource, '.sql.gz') && !str_ends_with($normalizedSource, '.sql.bz2')) {
+        throw new RuntimeException('Unsupported static-data format. This importer supports SQL dumps (.sql/.sql.gz/.sql.bz2).');
     }
 
     if (!is_file($paths['archive_path'])) {
@@ -2043,61 +2055,144 @@ function static_data_ensure_local_sqlite(string $sourceUrl, string $buildId): st
         }
     }
 
-    if (!is_file($paths['sqlite_path'])) {
-        if (str_ends_with(mb_strtolower($sourceUrl), '.sqlite')) {
-            if (!copy($paths['archive_path'], $paths['sqlite_path'])) {
-                throw new RuntimeException('Failed to stage downloaded SQLite file.');
+    if (!is_file($paths['sql_path'])) {
+        if (str_ends_with($normalizedSource, '.sql')) {
+            if (!copy($paths['archive_path'], $paths['sql_path'])) {
+                throw new RuntimeException('Failed to stage downloaded SQL file.');
             }
 
-            return $paths['sqlite_path'];
+            return $paths['sql_path'];
         }
 
-        $input = bzopen($paths['archive_path'], 'r');
-        if ($input === false) {
-            throw new RuntimeException('Failed to open compressed static-data archive.');
-        }
-
-        $output = fopen($paths['sqlite_path'], 'wb');
+        $output = fopen($paths['sql_path'], 'wb');
         if ($output === false) {
-            bzclose($input);
-            throw new RuntimeException('Failed to create local static-data sqlite file.');
+            throw new RuntimeException('Failed to create local static-data SQL file.');
         }
 
-        while (!feof($input)) {
-            $chunk = bzread($input, 1024 * 1024);
-            if ($chunk === false) {
+        if (str_ends_with($normalizedSource, '.sql.gz')) {
+            $input = gzopen($paths['archive_path'], 'rb');
+            if ($input === false) {
                 fclose($output);
-                bzclose($input);
-                throw new RuntimeException('Failed while decompressing static-data archive.');
+                throw new RuntimeException('Failed to open gzipped static-data archive.');
             }
 
-            if ($chunk === '') {
-                continue;
+            while (!gzeof($input)) {
+                $chunk = gzread($input, 1024 * 1024);
+                if ($chunk === false) {
+                    fclose($output);
+                    gzclose($input);
+                    throw new RuntimeException('Failed while decompressing gzipped static-data archive.');
+                }
+
+                if ($chunk === '') {
+                    continue;
+                }
+
+                fwrite($output, $chunk);
             }
 
-            fwrite($output, $chunk);
+            gzclose($input);
+        } else {
+            $input = bzopen($paths['archive_path'], 'r');
+            if ($input === false) {
+                fclose($output);
+                throw new RuntimeException('Failed to open bzip2 static-data archive.');
+            }
+
+            while (!feof($input)) {
+                $chunk = bzread($input, 1024 * 1024);
+                if ($chunk === false) {
+                    fclose($output);
+                    bzclose($input);
+                    throw new RuntimeException('Failed while decompressing bzip2 static-data archive.');
+                }
+
+                if ($chunk === '') {
+                    continue;
+                }
+
+                fwrite($output, $chunk);
+            }
+
+            bzclose($input);
         }
 
         fclose($output);
-        bzclose($input);
     }
 
-    return $paths['sqlite_path'];
+    return $paths['sql_path'];
 }
 
-function static_data_sqlite_query(SQLite3 $sqlite, string $sql): array
+function static_data_extract_reference_rows_from_database(string $databaseName): array
 {
-    $result = $sqlite->query($sql);
-    if (!$result instanceof SQLite3Result) {
-        return [];
+    $regions = [];
+    foreach (db_select_from_database($databaseName, 'SELECT regionID, regionName FROM mapRegions') as $row) {
+        $regions[] = ['region_id' => (int) $row['regionID'], 'region_name' => (string) ($row['regionName'] ?? '')];
     }
 
-    $rows = [];
-    while (($row = $result->fetchArray(SQLITE3_ASSOC)) !== false) {
-        $rows[] = $row;
+    $constellations = [];
+    foreach (db_select_from_database($databaseName, 'SELECT constellationID, regionID, constellationName FROM mapConstellations') as $row) {
+        $constellations[] = [
+            'constellation_id' => (int) $row['constellationID'],
+            'region_id' => (int) $row['regionID'],
+            'constellation_name' => (string) ($row['constellationName'] ?? ''),
+        ];
     }
 
-    return $rows;
+    $systems = [];
+    foreach (db_select_from_database($databaseName, 'SELECT solarSystemID, constellationID, regionID, solarSystemName, security FROM mapSolarSystems') as $row) {
+        $systems[] = [
+            'system_id' => (int) $row['solarSystemID'],
+            'constellation_id' => (int) $row['constellationID'],
+            'region_id' => (int) $row['regionID'],
+            'system_name' => (string) ($row['solarSystemName'] ?? ''),
+            'security' => (float) ($row['security'] ?? 0),
+        ];
+    }
+
+    $stations = [];
+    foreach (db_select_from_database($databaseName, 'SELECT stationID, stationName, solarSystemID, constellationID, regionID, stationTypeID FROM staStations') as $row) {
+        $stations[] = [
+            'station_id' => (int) $row['stationID'],
+            'station_name' => (string) ($row['stationName'] ?? ''),
+            'system_id' => (int) $row['solarSystemID'],
+            'constellation_id' => (int) $row['constellationID'],
+            'region_id' => (int) $row['regionID'],
+            'station_type_id' => isset($row['stationTypeID']) ? (int) $row['stationTypeID'] : null,
+        ];
+    }
+
+    $marketGroups = [];
+    foreach (db_select_from_database($databaseName, 'SELECT marketGroupID, parentGroupID, marketGroupName, description FROM invMarketGroups') as $row) {
+        $marketGroups[] = [
+            'market_group_id' => (int) $row['marketGroupID'],
+            'parent_group_id' => isset($row['parentGroupID']) ? (int) $row['parentGroupID'] : null,
+            'market_group_name' => (string) ($row['marketGroupName'] ?? ''),
+            'description' => isset($row['description']) ? (string) $row['description'] : null,
+        ];
+    }
+
+    $types = [];
+    foreach (db_select_from_database($databaseName, 'SELECT typeID, groupID, marketGroupID, typeName, description, published, volume FROM invTypes') as $row) {
+        $types[] = [
+            'type_id' => (int) $row['typeID'],
+            'group_id' => (int) $row['groupID'],
+            'market_group_id' => isset($row['marketGroupID']) ? (int) $row['marketGroupID'] : null,
+            'type_name' => (string) ($row['typeName'] ?? ''),
+            'description' => isset($row['description']) ? (string) $row['description'] : null,
+            'published' => (int) ($row['published'] ?? 0) === 1 ? 1 : 0,
+            'volume' => isset($row['volume']) ? (float) $row['volume'] : null,
+        ];
+    }
+
+    return [
+        'regions' => $regions,
+        'constellations' => $constellations,
+        'systems' => $systems,
+        'stations' => $stations,
+        'market_groups' => $marketGroups,
+        'types' => $types,
+    ];
 }
 
 function static_data_import_reference_data(string $requestedMode = 'auto', bool $force = false): array
@@ -2145,69 +2240,19 @@ function static_data_import_reference_data(string $requestedMode = 'auto', bool 
         json_encode(['remote' => $remote], JSON_THROW_ON_ERROR)
     );
 
+    $stagingDatabase = 'evemarket_static_' . substr($remoteBuildId, 0, 16);
+
     try {
-        $sqlitePath = static_data_ensure_local_sqlite($sourceUrl, $remoteBuildId);
-        $sqlite = new SQLite3($sqlitePath, SQLITE3_OPEN_READONLY);
+        $sqlPath = static_data_ensure_local_sql_dump($sourceUrl, $remoteBuildId);
+        db_import_sql_dump_into_database($stagingDatabase, $sqlPath);
 
-        $regions = [];
-        foreach (static_data_sqlite_query($sqlite, 'SELECT regionID, regionName FROM mapRegions') as $row) {
-            $regions[] = ['region_id' => (int) $row['regionID'], 'region_name' => (string) ($row['regionName'] ?? '')];
-        }
-
-        $constellations = [];
-        foreach (static_data_sqlite_query($sqlite, 'SELECT constellationID, regionID, constellationName FROM mapConstellations') as $row) {
-            $constellations[] = [
-                'constellation_id' => (int) $row['constellationID'],
-                'region_id' => (int) $row['regionID'],
-                'constellation_name' => (string) ($row['constellationName'] ?? ''),
-            ];
-        }
-
-        $systems = [];
-        foreach (static_data_sqlite_query($sqlite, 'SELECT solarSystemID, constellationID, regionID, solarSystemName, security FROM mapSolarSystems') as $row) {
-            $systems[] = [
-                'system_id' => (int) $row['solarSystemID'],
-                'constellation_id' => (int) $row['constellationID'],
-                'region_id' => (int) $row['regionID'],
-                'system_name' => (string) ($row['solarSystemName'] ?? ''),
-                'security' => (float) ($row['security'] ?? 0),
-            ];
-        }
-
-        $stations = [];
-        foreach (static_data_sqlite_query($sqlite, 'SELECT stationID, stationName, solarSystemID, constellationID, regionID, stationTypeID FROM staStations') as $row) {
-            $stations[] = [
-                'station_id' => (int) $row['stationID'],
-                'station_name' => (string) ($row['stationName'] ?? ''),
-                'system_id' => (int) $row['solarSystemID'],
-                'constellation_id' => (int) $row['constellationID'],
-                'region_id' => (int) $row['regionID'],
-                'station_type_id' => isset($row['stationTypeID']) ? (int) $row['stationTypeID'] : null,
-            ];
-        }
-
-        $marketGroups = [];
-        foreach (static_data_sqlite_query($sqlite, 'SELECT marketGroupID, parentGroupID, marketGroupName, description FROM invMarketGroups') as $row) {
-            $marketGroups[] = [
-                'market_group_id' => (int) $row['marketGroupID'],
-                'parent_group_id' => isset($row['parentGroupID']) ? (int) $row['parentGroupID'] : null,
-                'market_group_name' => (string) ($row['marketGroupName'] ?? ''),
-                'description' => isset($row['description']) ? (string) $row['description'] : null,
-            ];
-        }
-
-        $types = [];
-        foreach (static_data_sqlite_query($sqlite, 'SELECT typeID, groupID, marketGroupID, typeName, description, published, volume FROM invTypes') as $row) {
-            $types[] = [
-                'type_id' => (int) $row['typeID'],
-                'group_id' => (int) $row['groupID'],
-                'market_group_id' => isset($row['marketGroupID']) ? (int) $row['marketGroupID'] : null,
-                'type_name' => (string) ($row['typeName'] ?? ''),
-                'description' => isset($row['description']) ? (string) $row['description'] : null,
-                'published' => (int) ($row['published'] ?? 0) === 1 ? 1 : 0,
-                'volume' => isset($row['volume']) ? (float) $row['volume'] : null,
-            ];
-        }
+        $dataset = static_data_extract_reference_rows_from_database($stagingDatabase);
+        $regions = $dataset['regions'];
+        $constellations = $dataset['constellations'];
+        $systems = $dataset['systems'];
+        $stations = $dataset['stations'];
+        $marketGroups = $dataset['market_groups'];
+        $types = $dataset['types'];
 
         $rowsWritten = db_transaction(static function () use ($mode, $regions, $constellations, $systems, $stations, $marketGroups, $types): int {
             if ($mode === 'full') {
@@ -2250,8 +2295,12 @@ function static_data_import_reference_data(string $requestedMode = 'auto', bool 
             ], JSON_THROW_ON_ERROR)
         );
 
+        db_drop_database_if_exists($stagingDatabase);
+
         return ['ok' => true, 'changed' => true, 'build_id' => $remoteBuildId, 'rows_written' => $rowsWritten, 'mode' => $mode];
     } catch (Throwable $exception) {
+        db_drop_database_if_exists($stagingDatabase);
+
         db_static_data_import_state_upsert(
             $sourceKey,
             $sourceUrl,

@@ -475,9 +475,9 @@ include __DIR__ . '/../../src/views/partials/header.php';
                 </label>
 
                 <label class="block space-y-2">
-                    <span class="text-sm text-muted">Static Data SQLite Source URL</span>
-                    <input type="url" name="static_data_source_url" value="<?= htmlspecialchars($settingValues['static_data_source_url'] ?? 'https://www.fuzzwork.co.uk/dump/sqlite-latest.sqlite.bz2', ENT_QUOTES) ?>" class="w-full rounded-lg border border-border bg-black/30 px-3 py-2 text-sm outline-none ring-accent focus:ring" />
-                    <p class="text-xs text-muted">Importer expects a SQLite payload (<span class="font-mono">.sqlite</span> or <span class="font-mono">.sqlite.bz2</span>). Official CCP latest URLs are JSONL/YAML zip archives and are not directly importable by this pipeline without a transform step.</p>
+                    <span class="text-sm text-muted">Static Data SQL Source URL</span>
+                    <input type="url" name="static_data_source_url" value="<?= htmlspecialchars($settingValues['static_data_source_url'] ?? 'https://www.everef.net/static-dumps/latest/eve-ref-static.sql.gz', ENT_QUOTES) ?>" class="w-full rounded-lg border border-border bg-black/30 px-3 py-2 text-sm outline-none ring-accent focus:ring" />
+                    <p class="text-xs text-muted">Importer expects an official SQL dump payload (<span class="font-mono">.sql</span>, <span class="font-mono">.sql.gz</span>, or <span class="font-mono">.sql.bz2</span>).</p>
                 </label>
 
                 <div class="space-y-3">
