@@ -35,11 +35,12 @@ $stats = [
     ['label' => 'Trade Stations', 'value' => (string) $selectedStationsCount . '/2', 'context' => $tradeStationContext],
     ['label' => 'ESI Status', 'value' => get_setting('esi_enabled', 'disabled') === '1' ? 'Connected' : 'Pending', 'context' => 'SSO configuration health'],
     ['label' => 'Incremental SQL', 'value' => get_setting('incremental_updates_enabled', '1') === '1' ? 'Enabled' : 'Disabled', 'context' => 'Future sync/import optimizer'],
+    ['label' => 'Default Currency', 'value' => default_currency(), 'context' => 'Applied to market math defaults'],
 ];
 
 include __DIR__ . '/../src/views/partials/header.php';
 ?>
-<section class="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+<section class="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
     <?php foreach ($stats as $card): ?>
         <article class="rounded-xl border border-border bg-card p-5 shadow-lg shadow-black/20">
             <p class="text-xs uppercase tracking-[0.2em] text-muted"><?= htmlspecialchars($card['label'], ENT_QUOTES) ?></p>

@@ -4,11 +4,27 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/db.php';
 
-date_default_timezone_set(config('app.timezone', 'UTC'));
+date_default_timezone_set(app_timezone());
 
 function app_name(): string
 {
-    return (string) config('app.name', 'EveMarket');
+    $configured = trim((string) get_setting('app_name', config('app.name', 'EveMarket')));
+
+    return sanitize_app_name($configured);
+}
+
+function app_timezone(): string
+{
+    $timezone = trim((string) get_setting('app_timezone', config('app.timezone', 'UTC')));
+
+    return sanitize_timezone($timezone);
+}
+
+function default_currency(): string
+{
+    $currency = strtoupper(trim((string) get_setting('default_currency', 'ISK')));
+
+    return sanitize_currency($currency);
 }
 
 function current_path(): string
@@ -127,6 +143,40 @@ function sanitize_station_selection(?string $value, string $stationType): string
     return $stationType === 'alliance'
         ? sanitize_alliance_station_selection($value)
         : sanitize_market_station_selection($value);
+}
+
+
+function sanitize_app_name(string $name): string
+{
+    $name = trim($name);
+
+    if ($name === '') {
+        return 'EveMarket';
+    }
+
+    return mb_substr($name, 0, 120);
+}
+
+function sanitize_timezone(string $timezone): string
+{
+    $timezone = trim($timezone);
+
+    if ($timezone === '') {
+        return 'UTC';
+    }
+
+    return in_array($timezone, timezone_identifiers_list(), true) ? $timezone : 'UTC';
+}
+
+function sanitize_currency(string $currency): string
+{
+    $currency = strtoupper(trim($currency));
+
+    if ($currency === '' || !preg_match('/^[A-Z]{2,8}$/', $currency)) {
+        return 'ISK';
+    }
+
+    return $currency;
 }
 
 function sanitize_market_station_selection(?string $value): string

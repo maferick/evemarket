@@ -21,8 +21,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     switch ($submittedSection) {
         case 'general':
             $saved = save_settings([
-                'app_timezone' => trim($_POST['app_timezone'] ?? 'UTC'),
-                'default_currency' => trim($_POST['default_currency'] ?? 'ISK'),
+                'app_name' => sanitize_app_name((string) ($_POST['app_name'] ?? app_name())),
+                'app_timezone' => sanitize_timezone((string) ($_POST['app_timezone'] ?? 'UTC')),
+                'default_currency' => sanitize_currency((string) ($_POST['default_currency'] ?? 'ISK')),
             ]);
             break;
 
@@ -54,6 +55,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 }
 
 $settingValues = get_settings([
+    'app_name',
     'app_timezone',
     'default_currency',
     'market_station_id',
@@ -112,12 +114,16 @@ include __DIR__ . '/../../src/views/partials/header.php';
                 <input type="hidden" name="_token" value="<?= htmlspecialchars(csrf_token(), ENT_QUOTES) ?>">
                 <input type="hidden" name="section" value="general">
                 <label class="block space-y-2">
+                    <span class="text-sm text-muted">Application Name</span>
+                    <input name="app_name" value="<?= htmlspecialchars($settingValues['app_name'] ?? app_name(), ENT_QUOTES) ?>" class="w-full rounded-lg border border-border bg-black/30 px-3 py-2 text-sm outline-none ring-accent focus:ring" />
+                </label>
+                <label class="block space-y-2">
                     <span class="text-sm text-muted">Timezone</span>
-                    <input name="app_timezone" value="<?= htmlspecialchars($settingValues['app_timezone'] ?? 'UTC', ENT_QUOTES) ?>" class="w-full rounded-lg border border-border bg-black/30 px-3 py-2 text-sm outline-none ring-accent focus:ring" />
+                    <input name="app_timezone" value="<?= htmlspecialchars($settingValues['app_timezone'] ?? app_timezone(), ENT_QUOTES) ?>" class="w-full rounded-lg border border-border bg-black/30 px-3 py-2 text-sm outline-none ring-accent focus:ring" />
                 </label>
                 <label class="block space-y-2">
                     <span class="text-sm text-muted">Default Currency</span>
-                    <input name="default_currency" value="<?= htmlspecialchars($settingValues['default_currency'] ?? 'ISK', ENT_QUOTES) ?>" class="w-full rounded-lg border border-border bg-black/30 px-3 py-2 text-sm outline-none ring-accent focus:ring" />
+                    <input name="default_currency" value="<?= htmlspecialchars($settingValues['default_currency'] ?? default_currency(), ENT_QUOTES) ?>" class="w-full rounded-lg border border-border bg-black/30 px-3 py-2 text-sm outline-none ring-accent focus:ring" />
                 </label>
                 <button class="rounded-lg bg-accent px-4 py-2 text-sm font-medium">Save General Settings</button>
             </form>
