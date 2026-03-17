@@ -593,6 +593,121 @@ function db_market_history_daily_distinct_type_ids(string $sourceType, int $sour
     return array_values(array_map(static fn (array $row): int => (int) ($row['type_id'] ?? 0), $rows));
 }
 
+function db_market_orders_current_source_aggregates(string $sourceType, int $sourceId, array $typeIds = []): array
+{
+    $params = [$sourceType, $sourceId];
+    $typeFilterSql = '';
+
+    if ($typeIds !== []) {
+        $normalizedTypeIds = array_values(array_unique(array_filter(array_map('intval', $typeIds), static fn (int $typeId): bool => $typeId > 0)));
+        if ($normalizedTypeIds === []) {
+            return [];
+        }
+
+        $typePlaceholders = implode(',', array_fill(0, count($normalizedTypeIds), '?'));
+        $typeFilterSql = " AND moc.type_id IN ({$typePlaceholders})";
+        $params = array_merge($params, $normalizedTypeIds);
+    }
+
+    return db_select(
+        "SELECT
+            moc.type_id,
+            rit.type_name,
+            MIN(CASE WHEN moc.is_buy_order = 0 AND moc.volume_remain > 0 THEN moc.price END) AS best_sell_price,
+            MAX(CASE WHEN moc.is_buy_order = 1 AND moc.volume_remain > 0 THEN moc.price END) AS best_buy_price,
+            COALESCE(SUM(CASE WHEN moc.is_buy_order = 0 THEN moc.volume_remain ELSE 0 END), 0) AS total_sell_volume,
+            COALESCE(SUM(CASE WHEN moc.is_buy_order = 1 THEN moc.volume_remain ELSE 0 END), 0) AS total_buy_volume,
+            COALESCE(SUM(CASE WHEN moc.is_buy_order = 0 THEN 1 ELSE 0 END), 0) AS sell_order_count,
+            COALESCE(SUM(CASE WHEN moc.is_buy_order = 1 THEN 1 ELSE 0 END), 0) AS buy_order_count,
+            MAX(moc.observed_at) AS last_observed_at
+         FROM market_orders_current moc
+         LEFT JOIN ref_item_types rit ON rit.type_id = moc.type_id
+         WHERE moc.source_type = ?
+           AND moc.source_id = ?{$typeFilterSql}
+         GROUP BY moc.type_id, rit.type_name
+         ORDER BY moc.type_id ASC",
+        $params
+    );
+}
+
+function db_market_orders_current_alliance_vs_jita_aggregates(int $allianceStructureId, int $jitaSourceId, array $typeIds = []): array
+{
+    $allianceRows = db_market_orders_current_source_aggregates('alliance_structure', $allianceStructureId, $typeIds);
+    $jitaRows = db_market_orders_current_source_aggregates('market_hub', $jitaSourceId, $typeIds);
+
+    $normalized = [];
+
+    foreach ($allianceRows as $row) {
+        $typeId = (int) ($row['type_id'] ?? 0);
+        if ($typeId <= 0) {
+            continue;
+        }
+
+        $normalized[$typeId] = [
+            'type_id' => $typeId,
+            'type_name' => (string) ($row['type_name'] ?? ''),
+            'alliance_best_sell_price' => isset($row['best_sell_price']) ? (float) $row['best_sell_price'] : null,
+            'alliance_best_buy_price' => isset($row['best_buy_price']) ? (float) $row['best_buy_price'] : null,
+            'alliance_total_sell_volume' => (int) ($row['total_sell_volume'] ?? 0),
+            'alliance_total_buy_volume' => (int) ($row['total_buy_volume'] ?? 0),
+            'alliance_sell_order_count' => (int) ($row['sell_order_count'] ?? 0),
+            'alliance_buy_order_count' => (int) ($row['buy_order_count'] ?? 0),
+            'alliance_last_observed_at' => $row['last_observed_at'] ?? null,
+            'jita_best_sell_price' => null,
+            'jita_best_buy_price' => null,
+            'jita_total_sell_volume' => 0,
+            'jita_total_buy_volume' => 0,
+            'jita_sell_order_count' => 0,
+            'jita_buy_order_count' => 0,
+            'jita_last_observed_at' => null,
+        ];
+    }
+
+    foreach ($jitaRows as $row) {
+        $typeId = (int) ($row['type_id'] ?? 0);
+        if ($typeId <= 0) {
+            continue;
+        }
+
+        if (!isset($normalized[$typeId])) {
+            $normalized[$typeId] = [
+                'type_id' => $typeId,
+                'type_name' => (string) ($row['type_name'] ?? ''),
+                'alliance_best_sell_price' => null,
+                'alliance_best_buy_price' => null,
+                'alliance_total_sell_volume' => 0,
+                'alliance_total_buy_volume' => 0,
+                'alliance_sell_order_count' => 0,
+                'alliance_buy_order_count' => 0,
+                'alliance_last_observed_at' => null,
+                'jita_best_sell_price' => null,
+                'jita_best_buy_price' => null,
+                'jita_total_sell_volume' => 0,
+                'jita_total_buy_volume' => 0,
+                'jita_sell_order_count' => 0,
+                'jita_buy_order_count' => 0,
+                'jita_last_observed_at' => null,
+            ];
+        }
+
+        if (($normalized[$typeId]['type_name'] ?? '') === '' && isset($row['type_name'])) {
+            $normalized[$typeId]['type_name'] = (string) $row['type_name'];
+        }
+
+        $normalized[$typeId]['jita_best_sell_price'] = isset($row['best_sell_price']) ? (float) $row['best_sell_price'] : null;
+        $normalized[$typeId]['jita_best_buy_price'] = isset($row['best_buy_price']) ? (float) $row['best_buy_price'] : null;
+        $normalized[$typeId]['jita_total_sell_volume'] = (int) ($row['total_sell_volume'] ?? 0);
+        $normalized[$typeId]['jita_total_buy_volume'] = (int) ($row['total_buy_volume'] ?? 0);
+        $normalized[$typeId]['jita_sell_order_count'] = (int) ($row['sell_order_count'] ?? 0);
+        $normalized[$typeId]['jita_buy_order_count'] = (int) ($row['buy_order_count'] ?? 0);
+        $normalized[$typeId]['jita_last_observed_at'] = $row['last_observed_at'] ?? null;
+    }
+
+    ksort($normalized);
+
+    return array_values($normalized);
+}
+
 function db_sync_run_start(string $datasetKey, string $runMode, ?string $cursorStart): int
 {
     db_execute(

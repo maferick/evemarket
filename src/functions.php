@@ -636,69 +636,245 @@ function data_sync_settings_from_request(array $request): array
     ];
 }
 
+function market_compare_setting_float(string $key, float $default, float $min, float $max): float
+{
+    $raw = get_setting($key, (string) $default);
+    $value = (float) $raw;
+
+    return max($min, min($max, $value));
+}
+
+function market_compare_setting_int(string $key, int $default, int $min, int $max): int
+{
+    $raw = get_setting($key, (string) $default);
+    $value = (int) $raw;
+
+    return max($min, min($max, $value));
+}
+
+function market_compare_thresholds(): array
+{
+    return [
+        'deviation_percent' => market_compare_setting_float('market_compare_deviation_percent', 5.0, 0.1, 100.0),
+        'min_alliance_sell_volume' => market_compare_setting_int('market_compare_min_alliance_sell_volume', 50, 0, 5000000),
+        'min_alliance_sell_orders' => market_compare_setting_int('market_compare_min_alliance_sell_orders', 3, 0, 100000),
+    ];
+}
+
+function market_compare_aggregates(array $typeIds = []): array
+{
+    $allianceStructureId = (int) get_setting('alliance_station_id', '0');
+    $marketHubRef = trim((string) get_setting('market_station_id', ''));
+    $jitaSourceId = sync_source_id_from_hub_ref($marketHubRef);
+
+    if ($allianceStructureId <= 0 || $jitaSourceId <= 0) {
+        return [];
+    }
+
+    try {
+        return db_market_orders_current_alliance_vs_jita_aggregates($allianceStructureId, $jitaSourceId, $typeIds);
+    } catch (Throwable) {
+        return [];
+    }
+}
+
+function market_compare_evaluate_row(array $row, array $thresholds): array
+{
+    $alliancePrice = isset($row['alliance_best_sell_price']) ? (float) $row['alliance_best_sell_price'] : null;
+    $jitaPrice = isset($row['jita_best_sell_price']) ? (float) $row['jita_best_sell_price'] : null;
+    $allianceSellVolume = (int) ($row['alliance_total_sell_volume'] ?? 0);
+    $allianceSellOrders = (int) ($row['alliance_sell_order_count'] ?? 0);
+
+    $inBothMarkets = $alliancePrice !== null && $jitaPrice !== null;
+    $missingInAlliance = $alliancePrice === null && $jitaPrice !== null;
+
+    $deviationPercent = 0.0;
+    if ($inBothMarkets && $jitaPrice > 0) {
+        $deviationPercent = (($alliancePrice - $jitaPrice) / $jitaPrice) * 100.0;
+    }
+
+    $overpriced = $inBothMarkets && $deviationPercent >= $thresholds['deviation_percent'];
+    $underpriced = $inBothMarkets && $deviationPercent <= -$thresholds['deviation_percent'];
+    $weakAllianceStock = $allianceSellVolume < $thresholds['min_alliance_sell_volume'] || $allianceSellOrders < $thresholds['min_alliance_sell_orders'];
+
+    $opportunityScore = 0;
+    $riskScore = 0;
+
+    if ($underpriced) {
+        $opportunityScore += min(60, (int) round(abs($deviationPercent) * 3));
+    }
+    if ($missingInAlliance) {
+        $opportunityScore += 40;
+    }
+    if ($weakAllianceStock && !$missingInAlliance) {
+        $opportunityScore += 15;
+    }
+
+    if ($overpriced) {
+        $riskScore += min(70, (int) round(abs($deviationPercent) * 3));
+    }
+    if ($weakAllianceStock) {
+        $riskScore += 25;
+    }
+    if ($missingInAlliance) {
+        $riskScore += 35;
+    }
+
+    return [
+        'type_id' => (int) ($row['type_id'] ?? 0),
+        'type_name' => (string) ($row['type_name'] ?? ''),
+        'alliance_best_sell_price' => $alliancePrice,
+        'alliance_best_buy_price' => isset($row['alliance_best_buy_price']) ? (float) $row['alliance_best_buy_price'] : null,
+        'alliance_total_sell_volume' => $allianceSellVolume,
+        'alliance_total_buy_volume' => (int) ($row['alliance_total_buy_volume'] ?? 0),
+        'alliance_sell_order_count' => $allianceSellOrders,
+        'alliance_buy_order_count' => (int) ($row['alliance_buy_order_count'] ?? 0),
+        'alliance_last_observed_at' => $row['alliance_last_observed_at'] ?? null,
+        'jita_best_sell_price' => $jitaPrice,
+        'jita_best_buy_price' => isset($row['jita_best_buy_price']) ? (float) $row['jita_best_buy_price'] : null,
+        'jita_total_sell_volume' => (int) ($row['jita_total_sell_volume'] ?? 0),
+        'jita_total_buy_volume' => (int) ($row['jita_total_buy_volume'] ?? 0),
+        'jita_sell_order_count' => (int) ($row['jita_sell_order_count'] ?? 0),
+        'jita_buy_order_count' => (int) ($row['jita_buy_order_count'] ?? 0),
+        'jita_last_observed_at' => $row['jita_last_observed_at'] ?? null,
+        'in_both_markets' => $inBothMarkets,
+        'missing_in_alliance' => $missingInAlliance,
+        'overpriced_in_alliance' => $overpriced,
+        'underpriced_in_alliance' => $underpriced,
+        'weak_alliance_stock' => $weakAllianceStock,
+        'deviation_percent' => $deviationPercent,
+        'opportunity_score' => min(100, $opportunityScore),
+        'risk_score' => min(100, $riskScore),
+    ];
+}
+
+function market_comparison_outcomes(array $typeIds = []): array
+{
+    $thresholds = market_compare_thresholds();
+    $evaluatedRows = [];
+
+    foreach (market_compare_aggregates($typeIds) as $row) {
+        $evaluatedRows[] = market_compare_evaluate_row($row, $thresholds);
+    }
+
+    return [
+        'thresholds' => $thresholds,
+        'rows' => $evaluatedRows,
+        'in_both_markets' => array_values(array_filter($evaluatedRows, static fn (array $row): bool => (bool) $row['in_both_markets'])),
+        'missing_in_alliance' => array_values(array_filter($evaluatedRows, static fn (array $row): bool => (bool) $row['missing_in_alliance'])),
+        'overpriced_in_alliance' => array_values(array_filter($evaluatedRows, static fn (array $row): bool => (bool) $row['overpriced_in_alliance'])),
+        'underpriced_in_alliance' => array_values(array_filter($evaluatedRows, static fn (array $row): bool => (bool) $row['underpriced_in_alliance'])),
+        'weak_or_missing_alliance_stock' => array_values(array_filter($evaluatedRows, static fn (array $row): bool => (bool) $row['weak_alliance_stock'] || (bool) $row['missing_in_alliance'])),
+    ];
+}
+
+function market_comparison_top_rows(callable $predicate, string $sortKey, int $limit = 25): array
+{
+    $rows = array_values(array_filter(market_comparison_outcomes()['rows'], $predicate));
+    usort($rows, static function (array $a, array $b) use ($sortKey): int {
+        return ($b[$sortKey] ?? 0) <=> ($a[$sortKey] ?? 0);
+    });
+
+    return array_slice($rows, 0, max(1, $limit));
+}
+
+function market_format_isk(?float $price): string
+{
+    if ($price === null || $price <= 0) {
+        return '—';
+    }
+
+    return number_format($price, 2, '.', ',') . ' ISK';
+}
+
 function current_alliance_market_status_data(): array
 {
     $allianceStation = selected_station_name('alliance_station_id') ?? 'No alliance structure selected';
+    $outcomes = market_comparison_outcomes();
+    $rows = market_comparison_top_rows(
+        static fn (array $row): bool => ($row['alliance_best_sell_price'] ?? null) !== null,
+        'alliance_total_sell_volume',
+        25
+    );
 
     return [
         'summary' => [
             ['label' => 'Alliance Structure', 'value' => $allianceStation, 'context' => 'Current configured structure'],
-            ['label' => 'Tracked Modules', 'value' => '312', 'context' => 'Items monitored in current sync'],
-            ['label' => 'Listings with Stock', 'value' => '247', 'context' => 'Active alliance market orders'],
+            ['label' => 'Tracked Modules', 'value' => (string) count($outcomes['rows']), 'context' => 'Items monitored in current sync'],
+            ['label' => 'Listings with Stock', 'value' => (string) count($rows), 'context' => 'Top active alliance listings shown'],
         ],
-        'rows' => [
-            ['module' => 'Heavy Assault Missile Launcher II', 'price' => '2,780,000 ISK', 'stock' => '26', 'updated_at' => '2m ago'],
-            ['module' => 'Multispectrum Shield Hardener II', 'price' => '1,245,000 ISK', 'stock' => '42', 'updated_at' => '1m ago'],
-            ['module' => 'Large Shield Extender II', 'price' => '589,000 ISK', 'stock' => '37', 'updated_at' => '3m ago'],
-        ],
+        'rows' => array_map(static fn (array $row): array => [
+            'module' => $row['type_name'] !== '' ? $row['type_name'] : ('Type #' . $row['type_id']),
+            'price' => market_format_isk($row['alliance_best_sell_price']),
+            'stock' => (string) ($row['alliance_total_sell_volume'] ?? 0),
+            'updated_at' => (string) ($row['alliance_last_observed_at'] ?? '—'),
+        ], $rows),
     ];
 }
 
 function jita_comparison_data(): array
 {
+    $outcomes = market_comparison_outcomes();
+    $inBoth = $outcomes['in_both_markets'];
+    $underpriced = $outcomes['underpriced_in_alliance'];
+    $overpriced = $outcomes['overpriced_in_alliance'];
+
     return [
         'summary' => [
-            ['label' => 'Compared Modules', 'value' => '312', 'context' => 'Alliance vs Jita pairs'],
-            ['label' => 'Cheaper Than Jita', 'value' => '84', 'context' => 'Alliance price advantage'],
-            ['label' => 'Pricier Than Jita', 'value' => '171', 'context' => 'Candidate reprice opportunities'],
+            ['label' => 'Compared Modules', 'value' => (string) count($inBoth), 'context' => 'Alliance vs Jita pairs'],
+            ['label' => 'Cheaper Than Jita', 'value' => (string) count($underpriced), 'context' => 'Alliance price advantage'],
+            ['label' => 'Pricier Than Jita', 'value' => (string) count($overpriced), 'context' => 'Candidate reprice opportunities'],
         ],
-        'rows' => [
-            ['module' => 'Warp Scrambler II', 'alliance_price' => '1,420,000 ISK', 'jita_price' => '1,365,000 ISK', 'delta' => '+4.0%'],
-            ['module' => '10MN Afterburner II', 'alliance_price' => '595,000 ISK', 'jita_price' => '621,000 ISK', 'delta' => '-4.2%'],
-            ['module' => 'Damage Control II', 'alliance_price' => '1,085,000 ISK', 'jita_price' => '1,030,000 ISK', 'delta' => '+5.3%'],
-        ],
+        'rows' => array_map(static fn (array $row): array => [
+            'module' => $row['type_name'] !== '' ? $row['type_name'] : ('Type #' . $row['type_id']),
+            'alliance_price' => market_format_isk($row['alliance_best_sell_price']),
+            'jita_price' => market_format_isk($row['jita_best_sell_price']),
+            'delta' => sprintf('%+.1f%%', (float) ($row['deviation_percent'] ?? 0.0)),
+        ], array_slice(array_merge($overpriced, $underpriced), 0, 25)),
     ];
 }
 
 function missing_items_data(): array
 {
+    $outcomes = market_comparison_outcomes();
+    $missingRows = $outcomes['missing_in_alliance'];
+
     return [
         'summary' => [
-            ['label' => 'Missing Modules', 'value' => '65', 'context' => 'No active alliance listing'],
-            ['label' => 'High-Turnover Gaps', 'value' => '18', 'context' => 'Missing + strong historical velocity'],
-            ['label' => 'Restock Priority', 'value' => '12', 'context' => 'Immediate candidate list'],
+            ['label' => 'Missing Modules', 'value' => (string) count($missingRows), 'context' => 'No active alliance listing'],
+            ['label' => 'High-Turnover Gaps', 'value' => (string) count(array_filter($missingRows, static fn (array $row): bool => (int) ($row['jita_total_sell_volume'] ?? 0) >= 100)), 'context' => 'Missing + strong Jita depth'],
+            ['label' => 'Restock Priority', 'value' => (string) count(array_filter($missingRows, static fn (array $row): bool => (int) ($row['opportunity_score'] ?? 0) >= 50)), 'context' => 'High opportunity score'],
         ],
-        'rows' => [
-            ['module' => 'Nanofiber Internal Structure II', 'jita_price' => '712,000 ISK', 'daily_volume' => '193', 'priority' => 'High'],
-            ['module' => 'EM Shield Amplifier II', 'jita_price' => '1,120,000 ISK', 'daily_volume' => '77', 'priority' => 'Medium'],
-            ['module' => 'Cap Recharger II', 'jita_price' => '645,000 ISK', 'daily_volume' => '241', 'priority' => 'High'],
-        ],
+        'rows' => array_map(static function (array $row): array {
+            $priority = (int) ($row['opportunity_score'] ?? 0) >= 70 ? 'High' : ((int) ($row['opportunity_score'] ?? 0) >= 40 ? 'Medium' : 'Low');
+
+            return [
+                'module' => $row['type_name'] !== '' ? $row['type_name'] : ('Type #' . $row['type_id']),
+                'jita_price' => market_format_isk($row['jita_best_sell_price']),
+                'daily_volume' => (string) ($row['jita_total_sell_volume'] ?? 0),
+                'priority' => $priority,
+            ];
+        }, array_slice($missingRows, 0, 25)),
     ];
 }
 
 function price_deviations_data(): array
 {
+    $outcomes = market_comparison_outcomes();
+    $alerts = array_values(array_filter($outcomes['rows'], static fn (array $row): bool => (bool) ($row['overpriced_in_alliance'] ?? false) || (bool) ($row['underpriced_in_alliance'] ?? false)));
+
     return [
         'summary' => [
-            ['label' => 'Deviation Alerts', 'value' => '39', 'context' => 'Outside configured threshold'],
-            ['label' => 'Overpriced', 'value' => '31', 'context' => 'Alliance > reference median'],
-            ['label' => 'Underpriced', 'value' => '8', 'context' => 'Alliance < reference median'],
+            ['label' => 'Deviation Alerts', 'value' => (string) count($alerts), 'context' => 'Outside configured threshold'],
+            ['label' => 'Overpriced', 'value' => (string) count($outcomes['overpriced_in_alliance']), 'context' => 'Alliance > Jita threshold'],
+            ['label' => 'Underpriced', 'value' => (string) count($outcomes['underpriced_in_alliance']), 'context' => 'Alliance < Jita threshold'],
         ],
-        'rows' => [
-            ['module' => 'Stasis Webifier II', 'alliance_price' => '1,960,000 ISK', 'reference_price' => '1,720,000 ISK', 'deviation' => '+13.9%'],
-            ['module' => 'Tracking Computer II', 'alliance_price' => '789,000 ISK', 'reference_price' => '901,000 ISK', 'deviation' => '-12.4%'],
-            ['module' => 'Adaptive Invulnerability Field II', 'alliance_price' => '2,040,000 ISK', 'reference_price' => '1,820,000 ISK', 'deviation' => '+12.1%'],
-        ],
+        'rows' => array_map(static fn (array $row): array => [
+            'module' => $row['type_name'] !== '' ? $row['type_name'] : ('Type #' . $row['type_id']),
+            'alliance_price' => market_format_isk($row['alliance_best_sell_price']),
+            'reference_price' => market_format_isk($row['jita_best_sell_price']),
+            'deviation' => sprintf('%+.1f%%', (float) ($row['deviation_percent'] ?? 0.0)),
+        ], array_slice($alerts, 0, 25)),
     ];
 }
 
