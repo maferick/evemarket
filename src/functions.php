@@ -1934,7 +1934,28 @@ function market_hub_setting_reference(): string
 {
     $configuredHub = trim((string) get_setting('market_station_id', ''));
 
-    return $configuredHub !== '' ? $configuredHub : '60003760';
+    if ($configuredHub === '') {
+        return '60003760';
+    }
+
+    $configuredStationId = (int) $configuredHub;
+    if ($configuredStationId <= 0) {
+        return '60003760';
+    }
+
+    try {
+        $station = db_trading_station_by_id($configuredStationId, 'market');
+        if ($station !== null) {
+            $resolvedNpcStationId = db_ref_npc_station_id_by_name((string) ($station['station_name'] ?? ''));
+            if ($resolvedNpcStationId !== null) {
+                return (string) $resolvedNpcStationId;
+            }
+        }
+    } catch (Throwable) {
+        // Fall back to legacy behavior when DB lookups are unavailable.
+    }
+
+    return $configuredHub;
 }
 
 function sync_source_id_from_hub_ref(string|int $hubRef): int

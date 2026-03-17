@@ -971,6 +971,26 @@ function db_trading_station_by_id(int $stationId, string $stationType): ?array
     );
 }
 
+function db_ref_npc_station_id_by_name(string $stationName): ?int
+{
+    $normalized = trim($stationName);
+    if ($normalized === '') {
+        return null;
+    }
+
+    $row = db_select_one(
+        'SELECT station_id
+         FROM ref_npc_stations
+         WHERE station_name = ?
+         LIMIT 1',
+        [$normalized]
+    );
+
+    $stationId = (int) ($row['station_id'] ?? 0);
+
+    return $stationId > 0 ? $stationId : null;
+}
+
 function db_alliance_structure_metadata_get(int $structureId): ?array
 {
     return db_select_one(
