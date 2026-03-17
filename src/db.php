@@ -160,6 +160,28 @@ function db_latest_esi_oauth_token(): ?array
     return db_select_one('SELECT * FROM esi_oauth_tokens ORDER BY updated_at DESC, id DESC LIMIT 1');
 }
 
+function db_update_esi_oauth_token_refresh(
+    int $tokenId,
+    string $accessToken,
+    string $refreshToken,
+    string $tokenType,
+    string $scopes,
+    string $expiresAt
+): bool {
+    return db_execute(
+        'UPDATE esi_oauth_tokens
+         SET access_token = ?,
+             refresh_token = ?,
+             token_type = ?,
+             scopes = ?,
+             expires_at = ?,
+             updated_at = CURRENT_TIMESTAMP
+         WHERE id = ?
+         LIMIT 1',
+        [$accessToken, $refreshToken, $tokenType, $scopes, $expiresAt, $tokenId]
+    );
+}
+
 function db_esi_cache_put(string $namespace, string $cacheKey, string $payloadJson, ?string $etag = null, ?string $expiresAt = null): bool
 {
     return db_execute(

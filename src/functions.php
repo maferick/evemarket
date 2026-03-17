@@ -371,6 +371,26 @@ function esi_scope_list(): array
     return array_values(array_filter(array_unique($scopes), static fn ($scope) => $scope !== ''));
 }
 
+function esi_token_scope_list(array $token): array
+{
+    $scopes = preg_split('/\s+/', trim((string) ($token['scopes'] ?? ''))) ?: [];
+
+    return array_values(array_filter(array_unique($scopes), static fn ($scope) => $scope !== ''));
+}
+
+function esi_required_market_structure_scopes(): array
+{
+    return [
+        'esi-universe.read_structures.v1',
+        'esi-markets.structure_markets.v1',
+    ];
+}
+
+function esi_missing_scopes(array $token, array $requiredScopes): array
+{
+    return array_values(array_diff($requiredScopes, esi_token_scope_list($token)));
+}
+
 function esi_sso_authorize_url(): string
 {
     $state = bin2hex(random_bytes(24));
@@ -517,6 +537,93 @@ function esi_store_oauth_and_cache(array $tokenPayload, array $verifyPayload): v
     });
 }
 
+function esi_refresh_oauth_token(array $storedToken): array
+{
+    $clientId = trim((string) get_setting('esi_client_id', ''));
+    $clientSecret = trim((string) get_setting('esi_client_secret', ''));
+    $refreshToken = trim((string) ($storedToken['refresh_token'] ?? ''));
+
+    if ($clientId === '' || $clientSecret === '' || $refreshToken === '') {
+        throw new RuntimeException('ESI session is missing OAuth credentials. Please reconnect your character from Settings > ESI Login.');
+    }
+
+    $response = http_post_form(
+        'https://login.eveonline.com/v2/oauth/token',
+        [
+            'Authorization: Basic ' . base64_encode($clientId . ':' . $clientSecret),
+            'Content-Type: application/x-www-form-urlencoded',
+            'Accept: application/json',
+            'Host: login.eveonline.com',
+        ],
+        [
+            'grant_type' => 'refresh_token',
+            'refresh_token' => $refreshToken,
+        ]
+    );
+
+    if (($response['status'] ?? 500) >= 400) {
+        throw new RuntimeException('Unable to refresh ESI session. Please reconnect your character from Settings > ESI Login.');
+    }
+
+    $tokenPayload = $response['json'];
+    $expiresIn = (int) ($tokenPayload['expires_in'] ?? 0);
+    $expiresAt = (new DateTimeImmutable('now', new DateTimeZone('UTC')))->modify('+' . max(0, $expiresIn) . ' seconds')->format('Y-m-d H:i:s');
+    $nextAccessToken = trim((string) ($tokenPayload['access_token'] ?? ''));
+    $nextRefreshToken = trim((string) ($tokenPayload['refresh_token'] ?? $refreshToken));
+    $tokenType = trim((string) ($tokenPayload['token_type'] ?? ($storedToken['token_type'] ?? 'Bearer')));
+    $scopes = trim((string) ($tokenPayload['scope'] ?? ($storedToken['scopes'] ?? esi_scopes_string())));
+
+    if ($nextAccessToken === '' || (int) ($storedToken['id'] ?? 0) <= 0) {
+        throw new RuntimeException('ESI session refresh returned an invalid token payload. Please reconnect your character.');
+    }
+
+    db_update_esi_oauth_token_refresh(
+        (int) $storedToken['id'],
+        $nextAccessToken,
+        $nextRefreshToken,
+        $tokenType !== '' ? $tokenType : 'Bearer',
+        $scopes,
+        $expiresAt
+    );
+
+    db_esi_cache_put('cache.esi.oauth.token', 'latest', json_encode([
+        'token_type' => $tokenType !== '' ? $tokenType : 'Bearer',
+        'expires_in' => $tokenPayload['expires_in'] ?? null,
+        'scope' => $scopes,
+    ], JSON_THROW_ON_ERROR), null, $expiresAt);
+
+    $storedToken['access_token'] = $nextAccessToken;
+    $storedToken['refresh_token'] = $nextRefreshToken;
+    $storedToken['token_type'] = $tokenType !== '' ? $tokenType : 'Bearer';
+    $storedToken['scopes'] = $scopes;
+    $storedToken['expires_at'] = $expiresAt;
+
+    return $storedToken;
+}
+
+function esi_valid_access_token(int $refreshWindowSeconds = 120): string
+{
+    $storedToken = db_latest_esi_oauth_token();
+    if ($storedToken === null) {
+        throw new RuntimeException('No connected ESI character token found. Connect a character from Settings > ESI Login.');
+    }
+
+    $accessToken = trim((string) ($storedToken['access_token'] ?? ''));
+    if ($accessToken === '') {
+        throw new RuntimeException('Connected ESI token is invalid. Please reconnect your character.');
+    }
+
+    $expiresAt = strtotime((string) ($storedToken['expires_at'] ?? '')) ?: 0;
+    if ($expiresAt <= (time() + max(0, $refreshWindowSeconds))) {
+        $storedToken = esi_refresh_oauth_token($storedToken);
+        $accessToken = trim((string) ($storedToken['access_token'] ?? ''));
+        if ($accessToken === '') {
+            throw new RuntimeException('Unable to refresh ESI session. Please reconnect your character from Settings > ESI Login.');
+        }
+    }
+
+    return $accessToken;
+}
 
 function esi_lookup_context(array $requiredScopes = []): array
 {
@@ -530,17 +637,16 @@ function esi_lookup_context(array $requiredScopes = []): array
         return ['ok' => false, 'status' => 401, 'error' => 'No connected ESI character token found.'];
     }
 
-    $expiresAt = strtotime((string) ($token['expires_at'] ?? '')) ?: 0;
-    if ($expiresAt <= time()) {
-        return ['ok' => false, 'status' => 401, 'error' => 'Stored ESI token has expired. Reconnect the character.'];
+    try {
+        $token['access_token'] = esi_valid_access_token();
+    } catch (Throwable $exception) {
+        return ['ok' => false, 'status' => 401, 'error' => $exception->getMessage()];
     }
 
-    $scopeSet = preg_split('/\s+/', trim((string) ($token['scopes'] ?? ''))) ?: [];
-    $scopeSet = array_values(array_filter($scopeSet, static fn ($scope) => $scope !== ''));
-    $missing = array_values(array_diff($requiredScopes, $scopeSet));
+    $missing = esi_missing_scopes($token, $requiredScopes);
 
     if ($missing !== []) {
-        return ['ok' => false, 'status' => 403, 'error' => 'Missing required ESI scopes: ' . implode(', ', $missing) . '.'];
+        return ['ok' => false, 'status' => 403, 'error' => 'Missing required ESI scopes: ' . implode(', ', $missing) . '. Reconnect your character after updating scopes.'];
     }
 
     return ['ok' => true, 'token' => $token, 'status' => 200, 'error' => null];
@@ -571,8 +677,9 @@ function esi_alliance_structure_metadata(int $structureId, array $tokenContext):
         return null;
     }
 
-    $accessToken = (string) ($tokenContext['access_token'] ?? '');
-    if ($accessToken === '') {
+    try {
+        $accessToken = esi_valid_access_token();
+    } catch (Throwable) {
         return null;
     }
 
@@ -619,11 +726,11 @@ function esi_structure_search(string $query, array $tokenContext): array
     }
 
     $characterId = (int) ($tokenContext['character_id'] ?? 0);
-    $accessToken = (string) ($tokenContext['access_token'] ?? '');
-
-    if ($characterId <= 0 || $accessToken === '') {
+    if ($characterId <= 0) {
         return [];
     }
+
+    $accessToken = esi_valid_access_token();
 
     $cached = db_esi_structure_search_cache_get($characterId, $term);
     if ($cached !== null && isset($cached['payload_json'])) {

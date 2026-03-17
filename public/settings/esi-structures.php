@@ -15,7 +15,7 @@ if (mb_strlen($query) < 2) {
 
 $context = esi_lookup_context([
     'esi-search.search_structures.v1',
-    'esi-universe.read_structures.v1',
+    ...esi_required_market_structure_scopes(),
 ]);
 
 if (($context['ok'] ?? false) !== true) {

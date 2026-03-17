@@ -73,8 +73,13 @@ $stations = grouped_station_options();
 
 $dbStatus = db_connection_status();
 $latestEsiToken = null;
+$requiredStructureScopes = esi_required_market_structure_scopes();
+$missingStructureScopes = [];
 if ($dbStatus['ok']) {
     $latestEsiToken = db_latest_esi_oauth_token();
+    if ($latestEsiToken !== null) {
+        $missingStructureScopes = esi_missing_scopes($latestEsiToken, $requiredStructureScopes);
+    }
 }
 
 include __DIR__ . '/../../src/views/partials/header.php';
@@ -153,6 +158,12 @@ include __DIR__ . '/../../src/views/partials/header.php';
                     </p>
                     <ul id="alliance_structure_results" class="hidden max-h-60 overflow-y-auto rounded-lg border border-border bg-black/40"></ul>
                 </label>
+                <?php if ($latestEsiToken !== null && $missingStructureScopes !== []): ?>
+                    <div class="rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm text-amber-100">
+                        Missing required scopes for structure data: <span class="font-medium"><?= htmlspecialchars(implode(', ', $missingStructureScopes), ENT_QUOTES) ?></span>.
+                        Update scopes to include <span class="font-medium">esi-universe.read_structures.v1</span> and <span class="font-medium">esi-markets.structure_markets.v1</span>, then reconnect your ESI character.
+                    </div>
+                <?php endif; ?>
                 <button class="rounded-lg bg-accent px-4 py-2 text-sm font-medium">Save Trading Stations</button>
             </form>
 
@@ -297,6 +308,12 @@ include __DIR__ . '/../../src/views/partials/header.php';
                     <p class="mt-2">Connected character: <span class="text-slate-100"><?= htmlspecialchars($latestEsiToken['character_name'], ENT_QUOTES) ?></span> (<?= (int) $latestEsiToken['character_id'] ?>)</p>
                     <p class="mt-1">Token expires at (UTC): <?= htmlspecialchars($latestEsiToken['expires_at'], ENT_QUOTES) ?></p>
                     <p class="mt-1">Scopes: <?= htmlspecialchars($latestEsiToken['scopes'], ENT_QUOTES) ?></p>
+                    <?php if ($missingStructureScopes !== []): ?>
+                        <div class="mt-3 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-amber-100">
+                            Required scopes are missing: <span class="font-medium"><?= htmlspecialchars(implode(', ', $missingStructureScopes), ENT_QUOTES) ?></span>.
+                            Add <span class="font-medium">esi-universe.read_structures.v1</span> and <span class="font-medium">esi-markets.structure_markets.v1</span> in the scopes field, save, then reconnect your character.
+                        </div>
+                    <?php endif; ?>
                 <?php endif; ?>
             </div>
         <?php else: ?>
