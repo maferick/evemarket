@@ -8,6 +8,7 @@ require_once __DIR__ . '/../src/bootstrap.php';
 const SYNC_RUNNER_JOB_SEQUENCE = [
     'alliance-current',
     'alliance-history',
+    'hub-current',
     'hub-history',
     'maintenance-prune',
 ];
@@ -19,7 +20,7 @@ function sync_runner_main(array $argv): int
     } catch (InvalidArgumentException $exception) {
         sync_runner_log_stderr('sync_runner.invalid_arguments', [
             'error' => $exception->getMessage(),
-            'usage' => 'php bin/sync_runner.php --job=alliance-current|alliance-history|hub-history|maintenance-prune|all --source-id=<id> --mode=incremental|full [--since=<ISO8601>]',
+            'usage' => 'php bin/sync_runner.php --job=alliance-current|alliance-history|hub-current|hub-history|maintenance-prune|all --source-id=<id> --mode=incremental|full [--since=<ISO8601>]',
         ]);
 
         return 2;
@@ -51,7 +52,7 @@ function sync_runner_parse_arguments(array $argv): array
     $mode = trim((string) ($options['mode'] ?? ''));
     $sinceRaw = isset($options['since']) ? trim((string) $options['since']) : null;
 
-    $allowedJobs = ['alliance-current', 'alliance-history', 'hub-history', 'maintenance-prune', 'all'];
+    $allowedJobs = ['alliance-current', 'alliance-history', 'hub-current', 'hub-history', 'maintenance-prune', 'all'];
     if ($job === '' || !in_array($job, $allowedJobs, true)) {
         throw new InvalidArgumentException('Argument --job must be one of: ' . implode(', ', $allowedJobs) . '.');
     }
@@ -171,6 +172,13 @@ function sync_runner_dispatch_job(string $jobKey, int $sourceId, string $runMode
         return $result + ['dataset_key' => $datasetKey];
     }
 
+    if ($jobKey === 'hub-current') {
+        $datasetKey = sync_dataset_key_market_hub_current_orders((string) $sourceId);
+        $result = sync_market_hub_current_orders((string) $sourceId, $runMode);
+
+        return $result + ['dataset_key' => $datasetKey];
+    }
+
     if ($jobKey === 'maintenance-prune') {
         $datasetKey = sync_dataset_key_maintenance_history_prune();
         $retentionDays = (int) get_setting('raw_order_snapshot_retention_days', '30');
@@ -195,6 +203,10 @@ function sync_runner_dataset_key_for_job(string $jobKey, int $sourceId): string
         return sync_dataset_key_alliance_structure_orders_history($sourceId);
     }
 
+    if ($jobKey === 'hub-current') {
+        return sync_dataset_key_market_hub_current_orders((string) $sourceId);
+    }
+
     if ($jobKey === 'maintenance-prune') {
         return sync_dataset_key_maintenance_history_prune();
     }
@@ -207,6 +219,7 @@ function sync_runner_backfill_start_for_job(string $jobKey): ?string
     $settingKey = match ($jobKey) {
         'alliance-current' => 'alliance_current_backfill_start_date',
         'alliance-history' => 'alliance_history_backfill_start_date',
+        'hub-current' => 'hub_history_backfill_start_date',
         'hub-history' => 'hub_history_backfill_start_date',
         default => '',
     };

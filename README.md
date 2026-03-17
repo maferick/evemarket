@@ -152,7 +152,7 @@ Cron must run with the same environment the app expects:
 - Database vars: `DB_HOST`, `DB_PORT`, `DB_DATABASE`, `DB_USERNAME`, `DB_PASSWORD`
 - Pipeline source vars (when those pipelines are enabled):
   - `EVEMARKET_ALLIANCE_SOURCE_ID` (for `alliance-current` and `alliance-history`)
-  - `EVEMARKET_HUB_SOURCE_ID` (for `hub-history`)
+  - `EVEMARKET_HUB_SOURCE_ID` (for `hub-current` and `hub-history`)
 
 The canonical log path for the cron tick is `storage/logs/cron.log` (relative to app root).
 Raw order snapshots are pruned according to `raw_order_snapshot_retention_days` from Settings → Data Sync.

@@ -305,6 +305,7 @@ ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value);
 INSERT INTO sync_schedules (job_key, enabled, interval_seconds, next_run_at, last_run_at, last_status, last_error, locked_until) VALUES
     ('alliance_current_sync', 1, 300, NULL, NULL, NULL, NULL, NULL),
     ('alliance_historical_sync', 1, 1800, NULL, NULL, NULL, NULL, NULL),
+    ('market_hub_current_sync', 1, 300, NULL, NULL, NULL, NULL, NULL),
     ('market_hub_historical_sync', 1, 1800, NULL, NULL, NULL, NULL, NULL)
 ON DUPLICATE KEY UPDATE
     enabled = VALUES(enabled),

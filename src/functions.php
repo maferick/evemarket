@@ -526,6 +526,13 @@ function data_sync_schedule_job_definitions(): array
             'default_interval_seconds' => 1800,
             'label' => 'Alliance History',
         ],
+        'market_hub_current_sync' => [
+            'enabled_key' => 'market_hub_current_sync_enabled',
+            'interval_value_key' => 'market_hub_current_sync_interval_value',
+            'interval_unit_key' => 'market_hub_current_sync_interval_unit',
+            'default_interval_seconds' => 300,
+            'label' => 'Hub Current',
+        ],
         'market_hub_historical_sync' => [
             'enabled_key' => 'market_hub_historical_sync_enabled',
             'interval_value_key' => 'market_hub_historical_sync_interval_value',
@@ -664,7 +671,7 @@ function market_compare_thresholds(): array
 function market_compare_aggregates(array $typeIds = []): array
 {
     $allianceStructureId = (int) get_setting('alliance_station_id', '0');
-    $marketHubRef = trim((string) get_setting('market_station_id', ''));
+    $marketHubRef = market_hub_setting_reference();
     $jitaSourceId = sync_source_id_from_hub_ref($marketHubRef);
 
     if ($allianceStructureId <= 0 || $jitaSourceId <= 0) {
@@ -1044,12 +1051,24 @@ function scheduler_job_definitions(): array
             'timeout_seconds' => 300,
             'lock_ttl_seconds' => 420,
             'handler' => static function (): array {
-                $hubRef = trim((string) get_setting('market_station_id', ''));
+                $hubRef = market_hub_setting_reference();
                 if ($hubRef === '') {
                     throw new RuntimeException('Hub history sync skipped: configure a market hub/station first.');
                 }
 
                 return sync_market_hub_history($hubRef, 'full');
+            },
+        ],
+        'market_hub_current_sync' => [
+            'timeout_seconds' => 240,
+            'lock_ttl_seconds' => 360,
+            'handler' => static function (): array {
+                $hubRef = market_hub_setting_reference();
+                if ($hubRef === '') {
+                    throw new RuntimeException('Hub current sync skipped: configure a market hub/station first.');
+                }
+
+                return sync_market_hub_current_orders($hubRef, 'incremental');
             },
         ],
     ];
@@ -1472,6 +1491,11 @@ function sync_dataset_key_market_hub_history_daily(string $hubKey): string
     return 'market.hub.' . $hubKey . '.history.daily';
 }
 
+function sync_dataset_key_market_hub_current_orders(string $hubKey): string
+{
+    return 'market.hub.' . $hubKey . '.orders.current';
+}
+
 function sync_dataset_key_maintenance_history_prune(): string
 {
     return 'maintenance.history.prune';
@@ -1493,6 +1517,13 @@ function sync_run_finalize_failure(int $runId, string $datasetKey, string $runMo
 function sync_checksum(array $rows): string
 {
     return hash('sha256', json_encode($rows, JSON_THROW_ON_ERROR));
+}
+
+function market_hub_setting_reference(): string
+{
+    $configuredHub = trim((string) get_setting('market_station_id', ''));
+
+    return $configuredHub !== '' ? $configuredHub : '60003760';
 }
 
 function sync_source_id_from_hub_ref(string|int $hubRef): int
@@ -1658,6 +1689,118 @@ function sync_alliance_structure_orders(int $structureId, string $runMode = 'inc
 
         $result['warnings'][] = 'Alliance structure order sync failed: ' . $exception->getMessage();
         $result['checksum'] = $checksum;
+
+        return $result;
+    }
+}
+
+function eve_tycoon_current_orders_payload_rows(array $payload): array
+{
+    foreach (['items', 'data', 'results', 'orders'] as $key) {
+        if (isset($payload[$key]) && is_array($payload[$key])) {
+            return $payload[$key];
+        }
+    }
+
+    return array_is_list($payload) ? $payload : [];
+}
+
+function eve_tycoon_current_order_to_canonical(array $row, int $sourceId, string $observedAt): ?array
+{
+    $orderId = (int) ($row['order_id'] ?? $row['orderId'] ?? 0);
+    $typeId = (int) ($row['type_id'] ?? $row['typeId'] ?? 0);
+    if ($orderId <= 0 || $typeId <= 0) {
+        return null;
+    }
+
+    $issuedAt = strtotime((string) ($row['issued'] ?? $row['issued_at'] ?? ''));
+    if ($issuedAt === false) {
+        $issuedAt = time();
+    }
+
+    $duration = max(1, (int) ($row['duration'] ?? 90));
+    $expiresAt = strtotime((string) ($row['expires'] ?? $row['expires_at'] ?? ''));
+    if ($expiresAt === false) {
+        $expiresAt = strtotime('+' . $duration . ' days', $issuedAt);
+    }
+
+    return [
+        'source_type' => 'market_hub',
+        'source_id' => $sourceId,
+        'type_id' => $typeId,
+        'order_id' => $orderId,
+        'is_buy_order' => !empty($row['is_buy_order'] ?? $row['isBuyOrder'] ?? false) ? 1 : 0,
+        'price' => (float) ($row['price'] ?? 0),
+        'volume_remain' => max(0, (int) ($row['volume_remain'] ?? $row['volumeRemain'] ?? $row['volume'] ?? 0)),
+        'volume_total' => max(0, (int) ($row['volume_total'] ?? $row['volumeTotal'] ?? $row['volume'] ?? 0)),
+        'min_volume' => max(1, (int) ($row['min_volume'] ?? $row['minVolume'] ?? 1)),
+        'range' => (string) ($row['range'] ?? 'region'),
+        'duration' => $duration,
+        'issued' => gmdate('Y-m-d H:i:s', $issuedAt),
+        'expires' => gmdate('Y-m-d H:i:s', $expiresAt),
+        'observed_at' => $observedAt,
+    ];
+}
+
+function sync_market_hub_current_orders(string|int $hubRef, string $runMode = 'incremental'): array
+{
+    $result = sync_result_shape();
+    $syncMode = sync_mode_normalize($runMode);
+    $hubKey = trim((string) $hubRef);
+    if ($hubKey === '') {
+        $result['warnings'][] = 'Market hub reference is required.';
+
+        return $result;
+    }
+
+    $sourceId = sync_source_id_from_hub_ref($hubKey);
+    $datasetKey = sync_dataset_key_market_hub_current_orders($hubKey);
+    $runId = db_sync_run_start($datasetKey, $syncMode, sync_watermark($datasetKey));
+
+    try {
+        $urlTemplate = trim((string) get_setting('eve_tycoon_orders_url_template', 'https://evetycoon.com/api/v1/market/orders/{hub}'));
+        $endpoint = str_replace('{hub}', rawurlencode($hubKey), $urlTemplate);
+
+        $response = http_get_json_with_backoff($endpoint, ['Accept: application/json']);
+        $status = (int) ($response['status'] ?? 500);
+
+        if ($status >= 400) {
+            throw new RuntimeException('Market hub current sync failed with status ' . $status . '.');
+        }
+
+        $providerRows = eve_tycoon_current_orders_payload_rows($response['json'] ?? []);
+        $result['rows_seen'] = count($providerRows);
+
+        $observedAt = gmdate('Y-m-d H:i:s');
+        $canonicalRows = [];
+        foreach ($providerRows as $providerRow) {
+            if (!is_array($providerRow)) {
+                continue;
+            }
+
+            $mapped = eve_tycoon_current_order_to_canonical($providerRow, $sourceId, $observedAt);
+            if ($mapped !== null) {
+                $canonicalRows[] = $mapped;
+            }
+        }
+
+        $result['cursor'] = 'observed_at:' . $observedAt;
+        $result['checksum'] = sync_checksum($canonicalRows);
+
+        if ($canonicalRows === []) {
+            $result['warnings'][] = 'No canonical market hub current rows were mapped from provider payload.';
+            sync_run_finalize_success($runId, $datasetKey, $syncMode, $result['rows_seen'], 0, $result['cursor'], $result['checksum']);
+
+            return $result;
+        }
+
+        $result['rows_written'] = db_market_orders_current_bulk_upsert($canonicalRows);
+        sync_run_finalize_success($runId, $datasetKey, $syncMode, $result['rows_seen'], $result['rows_written'], $result['cursor'], $result['checksum']);
+
+        return $result;
+    } catch (Throwable $exception) {
+        sync_run_finalize_failure($runId, $datasetKey, $syncMode, $exception->getMessage());
+        $result['warnings'][] = 'Hub current sync failed: ' . $exception->getMessage();
 
         return $result;
     }
