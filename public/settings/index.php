@@ -48,7 +48,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $dataSyncAction = trim((string) ($_POST['data_sync_action'] ?? 'save'));
 
             if ($dataSyncAction === 'run-now') {
-                $runNow = run_data_sync_now();
+                $requestedJob = trim((string) ($_POST['run_now_job_key'] ?? ''));
+                $runNow = run_data_sync_now($requestedJob === '' ? null : $requestedJob);
                 $saved = (bool) ($runNow['ok'] ?? false);
                 flash('success', (string) ($runNow['message'] ?? 'Run now completed.'));
                 header('Location: /settings?section=' . urlencode($submittedSection));
@@ -99,6 +100,7 @@ $requiredStructureScopes = esi_required_market_structure_scopes();
 $missingStructureScopes = [];
 $syncStatusCards = [];
 $syncScheduleCards = sync_schedule_settings_view_model();
+$runNowJobOptions = [];
 if ($dbStatus['ok']) {
     $latestEsiToken = db_latest_esi_oauth_token();
     if ($latestEsiToken !== null) {
@@ -118,6 +120,14 @@ if ($dbStatus['ok']) {
             'label' => 'Maintenance',
             'status' => sync_status_from_prefix('maintenance.', 3),
         ],
+    ];
+
+}
+
+foreach ($syncScheduleCards as $schedule) {
+    $runNowJobOptions[] = [
+        'job_key' => (string) ($schedule['job_key'] ?? ''),
+        'label' => (string) ($schedule['label'] ?? ''),
     ];
 }
 
@@ -463,9 +473,14 @@ include __DIR__ . '/../../src/views/partials/header.php';
                 </div>
 
                 <p class="text-sm text-muted">When enabled, future import/sync jobs will only process changed rows for better scalability.</p>
-                <div class="flex flex-wrap gap-2">
+                <div class="flex flex-wrap items-center gap-2">
                     <button name="data_sync_action" value="save" class="rounded-lg bg-accent px-4 py-2 text-sm font-medium">Save Data Sync Settings</button>
-                    <button name="data_sync_action" value="run-now" class="rounded-lg border border-border px-4 py-2 text-sm font-medium text-slate-100 hover:bg-white/5">Run now</button>
+                    <select name="run_now_job_key" class="rounded-lg border border-border bg-black/30 px-3 py-2 text-sm outline-none ring-accent focus:ring">
+                        <?php foreach ($runNowJobOptions as $jobOption): ?>
+                            <option value="<?= htmlspecialchars($jobOption['job_key'], ENT_QUOTES) ?>"><?= htmlspecialchars($jobOption['label'], ENT_QUOTES) ?></option>
+                        <?php endforeach; ?>
+                    </select>
+                    <button name="data_sync_action" value="run-now" class="rounded-lg border border-border px-4 py-2 text-sm font-medium text-slate-100 hover:bg-white/5">Run selected now</button>
                 </div>
             </form>
         <?php endif; ?>
