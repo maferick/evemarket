@@ -69,6 +69,12 @@ $settingValues = get_settings([
     'incremental_strategy',
     'incremental_delete_policy',
     'incremental_chunk_size',
+    'alliance_current_sync_interval_minutes',
+    'alliance_history_sync_interval_minutes',
+    'hub_history_sync_interval_minutes',
+    'alliance_current_pipeline_enabled',
+    'alliance_history_pipeline_enabled',
+    'hub_history_pipeline_enabled',
 ]);
 
 $stations = grouped_station_options();
@@ -354,6 +360,41 @@ include __DIR__ . '/../../src/views/partials/header.php';
                     <span class="text-sm text-muted">Chunk Size</span>
                     <input type="number" min="100" max="10000" step="100" name="incremental_chunk_size" value="<?= htmlspecialchars($settingValues['incremental_chunk_size'] ?? '1000', ENT_QUOTES) ?>" class="w-full rounded-lg border border-border bg-black/30 px-3 py-2 text-sm outline-none ring-accent focus:ring" />
                 </label>
+
+                <div class="grid gap-4 md:grid-cols-3">
+                    <label class="block space-y-2">
+                        <span class="text-sm text-muted">Alliance Current Interval (minutes)</span>
+                        <input type="number" min="1" max="1440" step="1" name="alliance_current_sync_interval_minutes" value="<?= htmlspecialchars($settingValues['alliance_current_sync_interval_minutes'] ?? '5', ENT_QUOTES) ?>" class="w-full rounded-lg border border-border bg-black/30 px-3 py-2 text-sm outline-none ring-accent focus:ring" />
+                    </label>
+                    <label class="block space-y-2">
+                        <span class="text-sm text-muted">Alliance History Interval (minutes)</span>
+                        <input type="number" min="1" max="1440" step="1" name="alliance_history_sync_interval_minutes" value="<?= htmlspecialchars($settingValues['alliance_history_sync_interval_minutes'] ?? '60', ENT_QUOTES) ?>" class="w-full rounded-lg border border-border bg-black/30 px-3 py-2 text-sm outline-none ring-accent focus:ring" />
+                    </label>
+                    <label class="block space-y-2">
+                        <span class="text-sm text-muted">Hub History Interval (minutes)</span>
+                        <input type="number" min="1" max="1440" step="1" name="hub_history_sync_interval_minutes" value="<?= htmlspecialchars($settingValues['hub_history_sync_interval_minutes'] ?? '15', ENT_QUOTES) ?>" class="w-full rounded-lg border border-border bg-black/30 px-3 py-2 text-sm outline-none ring-accent focus:ring" />
+                    </label>
+                </div>
+
+                <div class="space-y-3">
+                    <p class="text-sm text-muted">Pipeline toggles</p>
+                    <label class="flex items-center gap-3 rounded-lg border border-border bg-black/20 p-3">
+                        <input type="hidden" name="alliance_current_pipeline_enabled" value="0">
+                        <input type="checkbox" name="alliance_current_pipeline_enabled" value="1" <?= ($settingValues['alliance_current_pipeline_enabled'] ?? '1') === '1' ? 'checked' : '' ?> class="size-4 rounded border-border bg-black">
+                        <span class="text-sm">Enable alliance current pipeline</span>
+                    </label>
+                    <label class="flex items-center gap-3 rounded-lg border border-border bg-black/20 p-3">
+                        <input type="hidden" name="alliance_history_pipeline_enabled" value="0">
+                        <input type="checkbox" name="alliance_history_pipeline_enabled" value="1" <?= ($settingValues['alliance_history_pipeline_enabled'] ?? '1') === '1' ? 'checked' : '' ?> class="size-4 rounded border-border bg-black">
+                        <span class="text-sm">Enable alliance history/backfill pipeline</span>
+                    </label>
+                    <label class="flex items-center gap-3 rounded-lg border border-border bg-black/20 p-3">
+                        <input type="hidden" name="hub_history_pipeline_enabled" value="0">
+                        <input type="checkbox" name="hub_history_pipeline_enabled" value="1" <?= ($settingValues['hub_history_pipeline_enabled'] ?? '1') === '1' ? 'checked' : '' ?> class="size-4 rounded border-border bg-black">
+                        <span class="text-sm">Enable market hub history pipeline</span>
+                    </label>
+                </div>
+
                 <p class="text-sm text-muted">When enabled, future import/sync jobs will only process changed rows for better scalability.</p>
                 <button class="rounded-lg bg-accent px-4 py-2 text-sm font-medium">Save Data Sync Settings</button>
             </form>
