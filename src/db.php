@@ -119,3 +119,76 @@ function db_transaction(callable $callback): mixed
         throw $exception;
     }
 }
+
+function db_upsert_esi_oauth_token(array $token): bool
+{
+    return db_execute(
+        'INSERT INTO esi_oauth_tokens (
+            character_id,
+            character_name,
+            owner_hash,
+            access_token,
+            refresh_token,
+            token_type,
+            scopes,
+            expires_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON DUPLICATE KEY UPDATE
+            character_name = VALUES(character_name),
+            owner_hash = VALUES(owner_hash),
+            access_token = VALUES(access_token),
+            refresh_token = VALUES(refresh_token),
+            token_type = VALUES(token_type),
+            scopes = VALUES(scopes),
+            expires_at = VALUES(expires_at),
+            updated_at = CURRENT_TIMESTAMP',
+        [
+            $token['character_id'],
+            $token['character_name'],
+            $token['owner_hash'],
+            $token['access_token'],
+            $token['refresh_token'],
+            $token['token_type'],
+            $token['scopes'],
+            $token['expires_at'],
+        ]
+    );
+}
+
+function db_latest_esi_oauth_token(): ?array
+{
+    return db_select_one('SELECT * FROM esi_oauth_tokens ORDER BY updated_at DESC, id DESC LIMIT 1');
+}
+
+function db_esi_cache_put(string $namespace, string $cacheKey, string $payloadJson, ?string $etag = null, ?string $expiresAt = null): bool
+{
+    return db_execute(
+        'INSERT INTO esi_cache_entries (namespace_key, cache_key, payload_json, etag, fetched_at, expires_at)
+         VALUES (?, ?, ?, ?, UTC_TIMESTAMP(), ?)
+         ON DUPLICATE KEY UPDATE
+            payload_json = VALUES(payload_json),
+            etag = VALUES(etag),
+            fetched_at = UTC_TIMESTAMP(),
+            expires_at = VALUES(expires_at),
+            updated_at = CURRENT_TIMESTAMP',
+        [$namespace, $cacheKey, $payloadJson, $etag, $expiresAt]
+    );
+}
+
+function db_esi_cache_get(string $namespace, string $cacheKey): ?array
+{
+    return db_select_one(
+        'SELECT namespace_key, cache_key, payload_json, etag, fetched_at, expires_at
+         FROM esi_cache_entries
+         WHERE namespace_key = ? AND cache_key = ?
+         LIMIT 1',
+        [$namespace, $cacheKey]
+    );
+}
+
+function db_esi_cache_namespace_keys(): array
+{
+    $rows = db_select('SELECT namespace_key FROM esi_cache_namespaces ORDER BY namespace_key ASC');
+
+    return array_column($rows, 'namespace_key');
+}

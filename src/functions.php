@@ -165,3 +165,174 @@ function base_url(string $path = ''): string
 {
     return rtrim((string) config('app.base_url', ''), '/') . $path;
 }
+
+
+function esi_default_scopes(): array
+{
+    return [
+        'publicData',
+        'esi-location.read_location.v1',
+        'esi-universe.read_structures.v1',
+        'esi-markets.structure_markets.v1',
+    ];
+}
+
+function esi_scopes_string(): string
+{
+    $stored = trim((string) get_setting('esi_scopes', ''));
+
+    return $stored !== '' ? $stored : implode(' ', esi_default_scopes());
+}
+
+function esi_scope_list(): array
+{
+    $scopes = preg_split('/\s+/', trim(esi_scopes_string())) ?: [];
+
+    return array_values(array_filter(array_unique($scopes), static fn ($scope) => $scope !== ''));
+}
+
+function esi_sso_authorize_url(): string
+{
+    $state = bin2hex(random_bytes(24));
+    $_SESSION['esi_oauth_state'] = $state;
+
+    $query = http_build_query([
+        'response_type' => 'code',
+        'redirect_uri' => (string) get_setting('esi_callback_url', base_url('/callback')),
+        'client_id' => (string) get_setting('esi_client_id', ''),
+        'scope' => implode(' ', esi_scope_list()),
+        'state' => $state,
+    ]);
+
+    return 'https://login.eveonline.com/v2/oauth/authorize/?' . $query;
+}
+
+function http_post_form(string $url, array $headers, array $formData): array
+{
+    $ch = curl_init($url);
+    curl_setopt_array($ch, [
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_POST => true,
+        CURLOPT_POSTFIELDS => http_build_query($formData),
+        CURLOPT_HTTPHEADER => $headers,
+        CURLOPT_TIMEOUT => 25,
+    ]);
+
+    $response = curl_exec($ch);
+    $status = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    $error = curl_error($ch);
+    curl_close($ch);
+
+    if ($response === false) {
+        throw new RuntimeException('HTTP request failed: ' . $error);
+    }
+
+    $decoded = json_decode($response, true);
+    if (!is_array($decoded)) {
+        throw new RuntimeException('Invalid JSON response from ' . $url);
+    }
+
+    return ['status' => $status, 'json' => $decoded];
+}
+
+function http_get_json(string $url, array $headers = []): array
+{
+    $ch = curl_init($url);
+    curl_setopt_array($ch, [
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_HTTPHEADER => $headers,
+        CURLOPT_TIMEOUT => 25,
+    ]);
+
+    $response = curl_exec($ch);
+    $status = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    $error = curl_error($ch);
+    curl_close($ch);
+
+    if ($response === false) {
+        throw new RuntimeException('HTTP request failed: ' . $error);
+    }
+
+    $decoded = json_decode($response, true);
+    if (!is_array($decoded)) {
+        throw new RuntimeException('Invalid JSON response from ' . $url);
+    }
+
+    return ['status' => $status, 'json' => $decoded];
+}
+
+function esi_exchange_oauth_code(string $code): array
+{
+    $clientId = trim((string) get_setting('esi_client_id', ''));
+    $clientSecret = trim((string) get_setting('esi_client_secret', ''));
+    $redirectUri = trim((string) get_setting('esi_callback_url', base_url('/callback')));
+
+    if ($clientId === '' || $clientSecret === '') {
+        throw new RuntimeException('Missing ESI client credentials. Save them in Settings > ESI Login first.');
+    }
+
+    $tokenResponse = http_post_form(
+        'https://login.eveonline.com/v2/oauth/token',
+        [
+            'Authorization: Basic ' . base64_encode($clientId . ':' . $clientSecret),
+            'Content-Type: application/x-www-form-urlencoded',
+            'Accept: application/json',
+            'Host: login.eveonline.com',
+        ],
+        [
+            'grant_type' => 'authorization_code',
+            'code' => $code,
+            'redirect_uri' => $redirectUri,
+        ]
+    );
+
+    if (($tokenResponse['status'] ?? 500) >= 400) {
+        throw new RuntimeException('ESI token exchange failed.');
+    }
+
+    $token = $tokenResponse['json'];
+    $verifyResponse = http_get_json(
+        'https://login.eveonline.com/oauth/verify',
+        [
+            'Authorization: Bearer ' . ($token['access_token'] ?? ''),
+            'Accept: application/json',
+            'Host: login.eveonline.com',
+        ]
+    );
+
+    if (($verifyResponse['status'] ?? 500) >= 400) {
+        throw new RuntimeException('ESI token verification failed.');
+    }
+
+    return [
+        'token' => $token,
+        'verify' => $verifyResponse['json'],
+    ];
+}
+
+function esi_store_oauth_and_cache(array $tokenPayload, array $verifyPayload): void
+{
+    $expiresIn = (int) ($tokenPayload['expires_in'] ?? 0);
+    $expiresAt = (new DateTimeImmutable('now', new DateTimeZone('UTC')))->modify('+' . max(0, $expiresIn) . ' seconds')->format('Y-m-d H:i:s');
+    $scopes = isset($tokenPayload['scope']) ? (string) $tokenPayload['scope'] : esi_scopes_string();
+
+    db_transaction(function () use ($tokenPayload, $verifyPayload, $expiresAt, $scopes): void {
+        db_upsert_esi_oauth_token([
+            'character_id' => (int) ($verifyPayload['CharacterID'] ?? 0),
+            'character_name' => (string) ($verifyPayload['CharacterName'] ?? 'Unknown'),
+            'owner_hash' => (string) ($verifyPayload['CharacterOwnerHash'] ?? ''),
+            'access_token' => (string) ($tokenPayload['access_token'] ?? ''),
+            'refresh_token' => (string) ($tokenPayload['refresh_token'] ?? ''),
+            'token_type' => (string) ($tokenPayload['token_type'] ?? 'Bearer'),
+            'scopes' => $scopes,
+            'expires_at' => $expiresAt,
+        ]);
+
+        db_esi_cache_put('cache.esi.oauth.verify', 'latest', json_encode($verifyPayload, JSON_THROW_ON_ERROR));
+        db_esi_cache_put('cache.esi.oauth.token', 'latest', json_encode([
+            'token_type' => $tokenPayload['token_type'] ?? 'Bearer',
+            'expires_in' => $tokenPayload['expires_in'] ?? null,
+            'scope' => $scopes,
+        ], JSON_THROW_ON_ERROR), null, $expiresAt);
+    });
+}

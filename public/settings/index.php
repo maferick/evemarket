@@ -36,7 +36,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         case 'esi-login':
             $saved = save_settings([
                 'esi_client_id' => trim($_POST['esi_client_id'] ?? ''),
+                'esi_client_secret' => trim($_POST['esi_client_secret'] ?? ''),
                 'esi_callback_url' => trim($_POST['esi_callback_url'] ?? ''),
+                'esi_scopes' => trim($_POST['esi_scopes'] ?? implode(' ', esi_default_scopes())),
                 'esi_enabled' => isset($_POST['esi_enabled']) ? '1' : '0',
             ]);
             break;
@@ -59,7 +61,9 @@ $settingValues = get_settings([
     'market_station_id',
     'alliance_station_id',
     'esi_client_id',
+    'esi_client_secret',
     'esi_callback_url',
+    'esi_scopes',
     'esi_enabled',
     'incremental_updates_enabled',
 ]);
@@ -67,6 +71,10 @@ $settingValues = get_settings([
 $stations = grouped_station_options();
 
 $dbStatus = db_connection_status();
+$latestEsiToken = null;
+if ($dbStatus['ok']) {
+    $latestEsiToken = db_latest_esi_oauth_token();
+}
 
 include __DIR__ . '/../../src/views/partials/header.php';
 ?>
@@ -144,15 +152,39 @@ include __DIR__ . '/../../src/views/partials/header.php';
                     <input name="esi_client_id" value="<?= htmlspecialchars($settingValues['esi_client_id'] ?? '', ENT_QUOTES) ?>" class="w-full rounded-lg border border-border bg-black/30 px-3 py-2 text-sm outline-none ring-accent focus:ring" />
                 </label>
                 <label class="block space-y-2">
+                    <span class="text-sm text-muted">ESI Client Secret</span>
+                    <input name="esi_client_secret" type="password" value="<?= htmlspecialchars($settingValues['esi_client_secret'] ?? '', ENT_QUOTES) ?>" class="w-full rounded-lg border border-border bg-black/30 px-3 py-2 text-sm outline-none ring-accent focus:ring" />
+                </label>
+                <label class="block space-y-2">
                     <span class="text-sm text-muted">Callback URL</span>
-                    <input name="esi_callback_url" value="<?= htmlspecialchars($settingValues['esi_callback_url'] ?? base_url('/auth/esi/callback'), ENT_QUOTES) ?>" class="w-full rounded-lg border border-border bg-black/30 px-3 py-2 text-sm outline-none ring-accent focus:ring" />
+                    <input name="esi_callback_url" value="<?= htmlspecialchars($settingValues['esi_callback_url'] ?? base_url('/callback'), ENT_QUOTES) ?>" class="w-full rounded-lg border border-border bg-black/30 px-3 py-2 text-sm outline-none ring-accent focus:ring" />
+                </label>
+                <label class="block space-y-2">
+                    <span class="text-sm text-muted">Enabled Scopes (space separated)</span>
+                    <textarea name="esi_scopes" rows="4" class="w-full rounded-lg border border-border bg-black/30 px-3 py-2 text-sm outline-none ring-accent focus:ring"><?= htmlspecialchars($settingValues['esi_scopes'] ?? implode(' ', esi_default_scopes()), ENT_QUOTES) ?></textarea>
                 </label>
                 <label class="flex items-center gap-3 rounded-lg border border-border bg-black/20 p-3">
                     <input type="checkbox" name="esi_enabled" value="1" <?= ($settingValues['esi_enabled'] ?? '0') === '1' ? 'checked' : '' ?> class="size-4 rounded border-border bg-black">
                     <span class="text-sm">Enable ESI OAuth login</span>
                 </label>
-                <button class="rounded-lg bg-accent px-4 py-2 text-sm font-medium">Save ESI Login Settings</button>
+                <div class="flex flex-wrap items-center gap-3">
+                    <button class="rounded-lg bg-accent px-4 py-2 text-sm font-medium">Save ESI Login Settings</button>
+                    <?php if (($settingValues['esi_enabled'] ?? '0') === '1' && ($settingValues['esi_client_id'] ?? '') !== ''): ?>
+                        <a class="rounded-lg border border-border px-4 py-2 text-sm hover:bg-white/5" href="<?= htmlspecialchars(esi_sso_authorize_url(), ENT_QUOTES) ?>">Connect ESI Character</a>
+                    <?php endif; ?>
+                </div>
             </form>
+
+            <div class="mt-6 rounded-lg border border-border bg-black/20 p-4 text-sm text-muted">
+                <p class="font-medium text-slate-200">ESI OAuth Status</p>
+                <?php if ($latestEsiToken === null): ?>
+                    <p class="mt-2">No ESI token is stored yet.</p>
+                <?php else: ?>
+                    <p class="mt-2">Connected character: <span class="text-slate-100"><?= htmlspecialchars($latestEsiToken['character_name'], ENT_QUOTES) ?></span> (<?= (int) $latestEsiToken['character_id'] ?>)</p>
+                    <p class="mt-1">Token expires at (UTC): <?= htmlspecialchars($latestEsiToken['expires_at'], ENT_QUOTES) ?></p>
+                    <p class="mt-1">Scopes: <?= htmlspecialchars($latestEsiToken['scopes'], ENT_QUOTES) ?></p>
+                <?php endif; ?>
+            </div>
         <?php else: ?>
             <form class="mt-6 space-y-4" method="post">
                 <input type="hidden" name="_token" value="<?= htmlspecialchars(csrf_token(), ENT_QUOTES) ?>">

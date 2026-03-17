@@ -15,6 +15,8 @@ This repository establishes a clean architecture that can scale from an initial 
   - Data Sync settings with incremental SQL update toggle
 - `src/db.php` as the **single central database access layer**
 - `src/functions.php` as the **single shared helper/business utility layer**
+- ESI OAuth callback (`/callback`) with token verification and DB persistence
+- ESI cache tables (`esi_cache_namespaces`, `esi_cache_entries`) for structured `cache.esi.*` namespaces
 - Secure CSRF-protected settings forms
 - Session-based flash messaging
 
@@ -84,6 +86,6 @@ README.md
 ## Next Suggested Steps
 
 - Add authentication and role-based access
-- Add ESI OAuth flow + token storage tables
+- ESI OAuth flow with callback endpoint and token persistence
 - Add sync job queue + import workers
 - Split section UI blocks into dedicated templates/components as settings grow

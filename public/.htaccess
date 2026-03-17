@@ -7,4 +7,5 @@ RewriteRule ^ - [L]
 
 # Friendly routes
 RewriteRule ^settings/?$ settings/index.php [L,QSA]
+RewriteRule ^callback/?$ callback/index.php [L,QSA]
 RewriteRule ^$ index.php [L,QSA]
