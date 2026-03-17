@@ -196,8 +196,12 @@ function sanitize_currency(string $currency): string
 
 function sanitize_market_station_selection(?string $value): string
 {
-    $stationId = (int) trim((string) $value);
+    $stationIdValue = trim((string) $value);
+    if ($stationIdValue === '') {
+        return '';
+    }
 
+    $stationId = (int) $stationIdValue;
     if ($stationId <= 0) {
         return '';
     }
@@ -218,7 +222,46 @@ function sanitize_market_station_selection(?string $value): string
         $metadata = null;
     }
 
-    return $metadata === null ? '' : (string) $stationId;
+    if ($metadata !== null) {
+        return (string) $stationId;
+    }
+
+    if (!preg_match('/^[1-9][0-9]{9,19}$/', $stationIdValue)) {
+        return '';
+    }
+
+    try {
+        $structureMetadata = db_alliance_structure_metadata_get($stationId);
+    } catch (Throwable) {
+        $structureMetadata = null;
+    }
+
+    if ($structureMetadata !== null) {
+        return (string) $stationId;
+    }
+
+    $context = esi_lookup_context(['esi-universe.read_structures.v1']);
+    if (!($context['ok'] ?? false)) {
+        return '';
+    }
+
+    try {
+        $resolved = esi_alliance_structure_metadata($stationId, $context['token']);
+    } catch (Throwable) {
+        return '';
+    }
+
+    if ($resolved === null) {
+        return '';
+    }
+
+    db_alliance_structure_metadata_upsert(
+        $stationId,
+        $resolved['name'] ?? null,
+        gmdate('Y-m-d H:i:s')
+    );
+
+    return (string) $stationId;
 }
 
 function sanitize_alliance_station_selection(?string $value): string
@@ -356,6 +399,18 @@ function selected_station_name(string $settingKey): ?string
 
     if ($metadata !== null && trim((string) ($metadata['name'] ?? '')) !== '') {
         return trim((string) $metadata['name']);
+    }
+
+    if (preg_match('/^[1-9][0-9]{9,19}$/', (string) $stationId) === 1) {
+        try {
+            $structureMetadata = db_alliance_structure_metadata_get($stationId);
+        } catch (Throwable) {
+            $structureMetadata = null;
+        }
+
+        $structureName = trim((string) ($structureMetadata['structure_name'] ?? ''));
+
+        return $structureName !== '' ? $structureName : ('Structure #' . $stationId);
     }
 
     return null;
@@ -2239,6 +2294,24 @@ function canonicalize_esi_market_order(array $order, int $sourceId, string $obse
     ];
 }
 
+function esi_market_request_headers(array $extraHeaders = []): array
+{
+    $headers = [
+        'Accept: application/json',
+        'X-Compatibility-Date: 2025-12-16',
+        'X-Tenant: tranquility',
+    ];
+
+    foreach ($extraHeaders as $header) {
+        $normalized = trim((string) $header);
+        if ($normalized !== '') {
+            $headers[] = $normalized;
+        }
+    }
+
+    return $headers;
+}
+
 function sync_alliance_structure_orders(int $structureId, string $runMode = 'incremental'): array
 {
     $result = sync_result_shape();
@@ -2269,10 +2342,9 @@ function sync_alliance_structure_orders(int $structureId, string $runMode = 'inc
     while ($page <= $maxPages) {
         $response = http_get_json_with_backoff(
             'https://esi.evetech.net/latest/markets/structures/' . $structureId . '/?page=' . $page,
-            [
+            esi_market_request_headers([
                 'Authorization: Bearer ' . $accessToken,
-                'Accept: application/json',
-            ]
+            ])
         );
 
         $status = (int) ($response['status'] ?? 500);
@@ -2429,6 +2501,58 @@ function eve_tycoon_current_order_to_canonical(array $row, int $sourceId, string
     ];
 }
 
+function market_hub_reference_context(string|int $hubRef): array
+{
+    $hubKey = trim((string) $hubRef);
+    $hubId = (int) $hubKey;
+    $fallbackName = market_hub_reference_name();
+
+    if ($hubId <= 0) {
+        return [
+            'hub_id' => $hubKey,
+            'hub_name' => $fallbackName,
+            'hub_type' => 'unknown',
+            'api_source' => 'unknown',
+            'region_id' => null,
+            'structure_id' => null,
+        ];
+    }
+
+    try {
+        $npcStation = db_ref_npc_station_by_id($hubId);
+    } catch (Throwable) {
+        $npcStation = null;
+    }
+
+    if ($npcStation !== null) {
+        try {
+            $regionId = db_ref_npc_station_region_id($hubId);
+        } catch (Throwable) {
+            $regionId = null;
+        }
+
+        $npcName = trim((string) ($npcStation['station_name'] ?? ''));
+
+        return [
+            'hub_id' => (string) $hubId,
+            'hub_name' => $npcName !== '' ? $npcName : $fallbackName,
+            'hub_type' => 'npc_station',
+            'api_source' => 'esi.region_orders',
+            'region_id' => $regionId,
+            'structure_id' => null,
+        ];
+    }
+
+    return [
+        'hub_id' => (string) $hubId,
+        'hub_name' => selected_station_name('market_station_id') ?? ('Structure #' . $hubId),
+        'hub_type' => 'structure',
+        'api_source' => 'esi.structure_orders',
+        'region_id' => null,
+        'structure_id' => $hubId,
+    ];
+}
+
 function sync_market_hub_current_orders(string|int $hubRef, string $runMode = 'incremental'): array
 {
     $result = sync_result_shape();
@@ -2440,51 +2564,139 @@ function sync_market_hub_current_orders(string|int $hubRef, string $runMode = 'i
         return $result;
     }
 
+    $hubContext = market_hub_reference_context($hubKey);
     $sourceId = sync_source_id_from_hub_ref($hubKey);
     $datasetKey = sync_dataset_key_market_hub_current_orders($hubKey);
     $runId = db_sync_run_start($datasetKey, $syncMode, sync_watermark($datasetKey));
 
     try {
-        $urlTemplate = trim((string) get_setting('eve_tycoon_orders_url_template', 'https://evetycoon.com/api/v1/market/orders/{hub}'));
-        $endpoint = str_replace('{hub}', rawurlencode($hubKey), $urlTemplate);
-
-        $response = http_get_json_with_backoff($endpoint, ['Accept: application/json']);
-        $status = (int) ($response['status'] ?? 500);
-
-        if ($status >= 400) {
-            throw new RuntimeException('Market hub current sync failed with status ' . $status . '.');
-        }
-
-        $providerRows = eve_tycoon_current_orders_payload_rows($response['json'] ?? []);
-        $result['rows_seen'] = count($providerRows);
-
         $observedAt = gmdate('Y-m-d H:i:s');
+        $page = 1;
+        $maxPages = 1;
         $canonicalRows = [];
-        foreach ($providerRows as $providerRow) {
-            if (!is_array($providerRow)) {
-                continue;
+        $pagesProcessed = 0;
+
+        $hubType = (string) ($hubContext['hub_type'] ?? 'unknown');
+        if ($hubType === 'structure') {
+            $structureId = (int) ($hubContext['structure_id'] ?? 0);
+            if ($structureId <= 0) {
+                throw new RuntimeException('Hub current sync requires a valid structure ID when the reference hub type is structure.');
             }
 
-            $mapped = eve_tycoon_current_order_to_canonical($providerRow, $sourceId, $observedAt);
-            if ($mapped !== null) {
-                $canonicalRows[] = $mapped;
+            $context = esi_lookup_context(esi_required_market_structure_scopes());
+            if (($context['ok'] ?? false) !== true) {
+                throw new RuntimeException((string) ($context['error'] ?? 'Missing ESI context for structure market sync.'));
             }
+
+            $accessToken = (string) ($context['token']['access_token'] ?? '');
+
+            while ($page <= $maxPages) {
+                $endpoint = 'https://esi.evetech.net/latest/markets/structures/' . $structureId . '/?page=' . $page;
+                $response = http_get_json_with_backoff(
+                    $endpoint,
+                    esi_market_request_headers([
+                        'Authorization: Bearer ' . $accessToken,
+                    ])
+                );
+                $status = (int) ($response['status'] ?? 500);
+
+                if ($status >= 400) {
+                    throw new RuntimeException('ESI structure market sync failed on page ' . $page . ' with status ' . $status . '.');
+                }
+
+                $payload = $response['json'] ?? [];
+                if (!is_array($payload)) {
+                    throw new RuntimeException('ESI structure market page ' . $page . ' returned a non-array payload.');
+                }
+
+                $pagesProcessed++;
+                foreach ($payload as $order) {
+                    if (!is_array($order)) {
+                        continue;
+                    }
+
+                    $result['rows_seen']++;
+                    $mapped = canonicalize_esi_market_order($order, $sourceId, $observedAt);
+                    if ($mapped !== null) {
+                        $canonicalRows[] = $mapped;
+                    }
+                }
+
+                $pagesHeader = $response['headers']['x-pages'] ?? '1';
+                if (is_array($pagesHeader)) {
+                    $pagesHeader = end($pagesHeader);
+                }
+
+                $maxPages = max(1, (int) $pagesHeader);
+                $page++;
+            }
+
+            $result['cursor'] = 'observed_at:' . $observedAt . ';source:structure;id:' . $structureId . ';page:' . max(1, $page - 1);
+        } else {
+            $regionId = (int) ($hubContext['region_id'] ?? 0);
+            $stationId = (int) $hubKey;
+            if ($regionId <= 0 || $stationId <= 0) {
+                throw new RuntimeException('Hub current sync requires a valid NPC station reference with region mapping.');
+            }
+
+            while ($page <= $maxPages) {
+                $endpoint = 'https://esi.evetech.net/latest/markets/' . $regionId . '/orders/?order_type=all&page=' . $page;
+                $response = http_get_json_with_backoff($endpoint, esi_market_request_headers());
+                $status = (int) ($response['status'] ?? 500);
+
+                if ($status >= 400) {
+                    throw new RuntimeException('ESI region market sync failed on page ' . $page . ' with status ' . $status . '.');
+                }
+
+                $payload = $response['json'] ?? [];
+                if (!is_array($payload)) {
+                    throw new RuntimeException('ESI region market page ' . $page . ' returned a non-array payload.');
+                }
+
+                $pagesProcessed++;
+                foreach ($payload as $order) {
+                    if (!is_array($order)) {
+                        continue;
+                    }
+
+                    if ((int) ($order['location_id'] ?? 0) !== $stationId) {
+                        continue;
+                    }
+
+                    $result['rows_seen']++;
+                    $mapped = canonicalize_esi_market_order($order, $sourceId, $observedAt);
+                    if ($mapped !== null) {
+                        $canonicalRows[] = $mapped;
+                    }
+                }
+
+                $pagesHeader = $response['headers']['x-pages'] ?? '1';
+                if (is_array($pagesHeader)) {
+                    $pagesHeader = end($pagesHeader);
+                }
+
+                $maxPages = max(1, (int) $pagesHeader);
+                $page++;
+            }
+
+            $result['cursor'] = 'observed_at:' . $observedAt . ';source:region;id:' . $regionId . ';page:' . max(1, $page - 1);
         }
 
-        $result['cursor'] = 'observed_at:' . $observedAt;
         $result['checksum'] = sync_checksum($canonicalRows);
 
         if ($canonicalRows === []) {
-            $result['warnings'][] = 'No canonical market hub current rows were mapped from provider payload.';
+            $result['warnings'][] = 'No canonical market hub current rows were mapped from ESI payload.';
             $result['meta'] = [
-                'reference_hub' => $hubKey,
-                'reference_market_hub' => market_hub_reference_name(),
+                'selected_hub_id' => (string) ($hubContext['hub_id'] ?? $hubKey),
+                'selected_hub_name' => (string) ($hubContext['hub_name'] ?? market_hub_reference_name()),
+                'selected_hub_type' => (string) ($hubContext['hub_type'] ?? 'unknown'),
+                'effective_api_source' => (string) ($hubContext['api_source'] ?? 'unknown'),
                 'records_fetched' => (int) $result['rows_seen'],
                 'records_inserted' => 0,
                 'records_updated' => 0,
                 'records_skipped' => (int) $result['rows_seen'],
                 'records_deleted' => 0,
-                'api_pages_processed' => 1,
+                'api_pages_processed' => $pagesProcessed,
                 'no_changes' => true,
             ];
             sync_run_finalize_success($runId, $datasetKey, $syncMode, $result['rows_seen'], 0, $result['cursor'], $result['checksum']);
@@ -2494,14 +2706,16 @@ function sync_market_hub_current_orders(string|int $hubRef, string $runMode = 'i
 
         $result['rows_written'] = db_market_orders_current_bulk_upsert($canonicalRows);
         $result['meta'] = [
-            'reference_hub' => $hubKey,
-                'reference_market_hub' => market_hub_reference_name(),
+            'selected_hub_id' => (string) ($hubContext['hub_id'] ?? $hubKey),
+            'selected_hub_name' => (string) ($hubContext['hub_name'] ?? market_hub_reference_name()),
+            'selected_hub_type' => (string) ($hubContext['hub_type'] ?? 'unknown'),
+            'effective_api_source' => (string) ($hubContext['api_source'] ?? 'unknown'),
             'records_fetched' => (int) $result['rows_seen'],
             'records_inserted' => 0,
             'records_updated' => (int) $result['rows_written'],
             'records_skipped' => max(0, (int) $result['rows_seen'] - (int) $result['rows_written']),
             'records_deleted' => 0,
-            'api_pages_processed' => 1,
+            'api_pages_processed' => $pagesProcessed,
             'no_changes' => (int) $result['rows_written'] === 0,
         ];
         sync_run_finalize_success($runId, $datasetKey, $syncMode, $result['rows_seen'], $result['rows_written'], $result['cursor'], $result['checksum']);
@@ -2572,10 +2786,42 @@ function market_hub_history_fallback_type_ids(int $sourceId, int $limit = 200): 
     $orderTypeIds = db_market_orders_current_distinct_type_ids('market_hub', $sourceId, $safeLimit);
     $historyTypeIds = db_market_history_daily_distinct_type_ids('market_hub', $sourceId, $safeLimit);
 
-    $typeIds = array_values(array_unique(array_filter(array_merge($orderTypeIds, $historyTypeIds), static fn (int $typeId): bool => $typeId > 0)));
+    $fallbackTypeIds = array_merge($orderTypeIds, $historyTypeIds);
+
+    $allianceSourceId = configured_structure_destination_id_for_esi_sync();
+    if ($allianceSourceId > 0) {
+        $fallbackTypeIds = array_merge(
+            $fallbackTypeIds,
+            db_market_orders_current_distinct_type_ids('alliance_structure', $allianceSourceId, $safeLimit),
+            db_market_history_daily_distinct_type_ids('alliance_structure', $allianceSourceId, $safeLimit)
+        );
+    }
+
+    $typeIds = array_values(array_unique(array_filter($fallbackTypeIds, static fn (int $typeId): bool => $typeId > 0)));
     sort($typeIds);
 
     return array_slice($typeIds, 0, $safeLimit);
+}
+
+function market_hub_history_api_reference(string $hubRef): string
+{
+    $normalized = trim($hubRef);
+    if ($normalized === '') {
+        return '';
+    }
+
+    $stationId = (int) $normalized;
+    if ($stationId <= 0) {
+        return $normalized;
+    }
+
+    try {
+        $regionId = db_ref_npc_station_region_id($stationId);
+    } catch (Throwable) {
+        $regionId = null;
+    }
+
+    return $regionId !== null ? (string) $regionId : $normalized;
 }
 
 function sync_market_hub_history(string|int $hubRef, string $runMode = 'incremental'): array
@@ -2584,6 +2830,7 @@ function sync_market_hub_history(string|int $hubRef, string $runMode = 'incremen
     $syncMode = sync_mode_normalize($runMode);
     $sourceId = sync_source_id_from_hub_ref($hubRef);
     $hubKey = trim((string) $hubRef);
+    $historyApiHubRef = market_hub_history_api_reference($hubKey);
     $datasetKey = sync_dataset_key_market_hub_history_daily($hubKey);
     if ($hubKey === '') {
         $result['warnings'][] = 'Market hub reference is required.';
@@ -2595,7 +2842,7 @@ function sync_market_hub_history(string|int $hubRef, string $runMode = 'incremen
 
     try {
         $urlTemplate = trim((string) get_setting('eve_tycoon_history_url_template', 'https://evetycoon.com/api/v1/market/history/{hub}'));
-        $endpoint = str_replace('{hub}', rawurlencode($hubKey), $urlTemplate);
+        $endpoint = str_replace('{hub}', rawurlencode($historyApiHubRef), $urlTemplate);
 
         $response = http_get_json_with_backoff($endpoint, ['Accept: application/json']);
         $status = (int) ($response['status'] ?? 500);
@@ -2619,7 +2866,7 @@ function sync_market_hub_history(string|int $hubRef, string $runMode = 'incremen
 
             foreach ($fallbackTypeIds as $typeId) {
                 $apiPagesProcessed++;
-                $fallbackEndpoint = 'https://evetycoon.com/api/v1/market/history/' . rawurlencode($hubKey) . '/' . rawurlencode((string) $typeId);
+                $fallbackEndpoint = 'https://evetycoon.com/api/v1/market/history/' . rawurlencode($historyApiHubRef) . '/' . rawurlencode((string) $typeId);
                 $fallbackResponse = http_get_json_with_backoff($fallbackEndpoint, ['Accept: application/json']);
                 $fallbackStatus = (int) ($fallbackResponse['status'] ?? 500);
 
@@ -2683,6 +2930,7 @@ function sync_market_hub_history(string|int $hubRef, string $runMode = 'incremen
             $result['cursor'] = null;
             $result['meta'] = [
                 'reference_hub' => $hubKey,
+                'reference_hub_history_api' => $historyApiHubRef,
                 'reference_market_hub' => market_hub_reference_name(),
                 'records_fetched' => (int) $result['rows_seen'],
                 'records_inserted' => 0,
@@ -2704,6 +2952,7 @@ function sync_market_hub_history(string|int $hubRef, string $runMode = 'incremen
         $result['checksum'] = sync_checksum($canonicalRows);
         $result['meta'] = [
             'reference_hub' => $hubKey,
+            'reference_hub_history_api' => $historyApiHubRef,
                 'reference_market_hub' => market_hub_reference_name(),
             'records_fetched' => (int) $result['rows_seen'],
             'records_inserted' => 0,
