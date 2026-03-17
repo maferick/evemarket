@@ -105,19 +105,123 @@ function db_execute(string $sql, array $params = []): bool
 function db_transaction(callable $callback): mixed
 {
     $pdo = db();
-    $pdo->beginTransaction();
+    $isRootTransaction = !$pdo->inTransaction();
+    $savepoint = 'sp_' . bin2hex(random_bytes(8));
+
+    if ($isRootTransaction) {
+        $pdo->beginTransaction();
+    } else {
+        $pdo->exec("SAVEPOINT {$savepoint}");
+    }
 
     try {
         $result = $callback($pdo);
-        $pdo->commit();
+
+        if ($isRootTransaction) {
+            $pdo->commit();
+        } else {
+            $pdo->exec("RELEASE SAVEPOINT {$savepoint}");
+        }
 
         return $result;
     } catch (Throwable $exception) {
-        if ($pdo->inTransaction()) {
+        if ($isRootTransaction && $pdo->inTransaction()) {
             $pdo->rollBack();
+        } elseif ($pdo->inTransaction()) {
+            $pdo->exec("ROLLBACK TO SAVEPOINT {$savepoint}");
         }
+
         throw $exception;
     }
+}
+
+function db_incremental_chunk_size(): int
+{
+    $row = db_select_one('SELECT setting_value FROM app_settings WHERE setting_key = ? LIMIT 1', ['incremental_chunk_size']);
+    $size = (int) ($row['setting_value'] ?? 1000);
+
+    return max(100, min(10000, $size));
+}
+
+function db_select_chunk(string $sql, array $params = [], ?int $chunkSize = null, int $offset = 0): array
+{
+    $limit = $chunkSize ?? db_incremental_chunk_size();
+    $limit = max(1, $limit);
+    $offset = max(0, $offset);
+
+    return db_select(
+        sprintf('%s LIMIT %d OFFSET %d', rtrim($sql), $limit, $offset),
+        $params
+    );
+}
+
+function db_select_all_chunked(string $sql, array $params = [], ?int $chunkSize = null): array
+{
+    $limit = $chunkSize ?? db_incremental_chunk_size();
+    $offset = 0;
+    $allRows = [];
+
+    do {
+        $rows = db_select_chunk($sql, $params, $limit, $offset);
+        $allRows = array_merge($allRows, $rows);
+        $offset += $limit;
+    } while (count($rows) === $limit);
+
+    return $allRows;
+}
+
+function db_validate_identifier(string $identifier): string
+{
+    if (!preg_match('/^[a-zA-Z_][a-zA-Z0-9_]*$/', $identifier)) {
+        throw new InvalidArgumentException('Invalid SQL identifier: ' . $identifier);
+    }
+
+    return sprintf('`%s`', $identifier);
+}
+
+function db_bulk_insert_or_upsert(string $table, array $columns, array $rows, array $upsertColumns = [], ?int $chunkSize = null): int
+{
+    if ($rows === []) {
+        return 0;
+    }
+
+    $chunk = $chunkSize ?? db_incremental_chunk_size();
+    $chunk = max(1, $chunk);
+    $quotedTable = db_validate_identifier($table);
+    $quotedColumns = array_map('db_validate_identifier', $columns);
+    $columnList = implode(', ', $quotedColumns);
+    $rowPlaceholders = '(' . implode(', ', array_fill(0, count($columns), '?')) . ')';
+    $upsertSql = '';
+
+    if ($upsertColumns !== []) {
+        $updates = array_map(
+            static fn (string $column): string => sprintf('%1$s = VALUES(%1$s)', db_validate_identifier($column)),
+            $upsertColumns
+        );
+        $upsertSql = ' ON DUPLICATE KEY UPDATE ' . implode(', ', $updates);
+    }
+
+    return db_transaction(function () use ($rows, $columns, $chunk, $quotedTable, $columnList, $rowPlaceholders, $upsertSql): int {
+        $written = 0;
+
+        foreach (array_chunk($rows, $chunk) as $chunkRows) {
+            $placeholders = implode(', ', array_fill(0, count($chunkRows), $rowPlaceholders));
+            $sql = sprintf('INSERT INTO %s (%s) VALUES %s%s', $quotedTable, $columnList, $placeholders, $upsertSql);
+
+            $params = [];
+            foreach ($chunkRows as $row) {
+                foreach ($columns as $column) {
+                    $params[] = $row[$column] ?? null;
+                }
+            }
+
+            $stmt = db()->prepare($sql);
+            $stmt->execute($params);
+            $written += count($chunkRows);
+        }
+
+        return $written;
+    });
 }
 
 function db_upsert_esi_oauth_token(array $token): bool
@@ -257,6 +361,195 @@ function db_sync_state_upsert(
             last_error_message = VALUES(last_error_message),
             updated_at = CURRENT_TIMESTAMP',
         [$datasetKey, $syncMode, $status, $lastSuccessAt, $lastCursor, $lastRowCount, $lastChecksum, $lastErrorMessage]
+    );
+}
+
+function db_sync_cursor_get(string $datasetKey): ?string
+{
+    $state = db_sync_state_get($datasetKey);
+
+    if ($state === null) {
+        return null;
+    }
+
+    return $state['last_cursor'] ?: null;
+}
+
+function db_sync_cursor_upsert(string $datasetKey, string $syncMode, ?string $cursor): bool
+{
+    $state = db_sync_state_get($datasetKey);
+
+    return db_sync_state_upsert(
+        $datasetKey,
+        $syncMode,
+        (string) ($state['status'] ?? 'idle'),
+        $state['last_success_at'] ?? null,
+        $cursor,
+        (int) ($state['last_row_count'] ?? 0),
+        $state['last_checksum'] ?? null,
+        $state['last_error_message'] ?? null
+    );
+}
+
+function db_sync_run_with_state(
+    string $datasetKey,
+    string $runMode,
+    ?string $cursorStart,
+    callable $callback
+): mixed {
+    return db_transaction(function () use ($datasetKey, $runMode, $cursorStart, $callback): mixed {
+        $runId = db_sync_run_start($datasetKey, $runMode, $cursorStart);
+
+        try {
+            $result = $callback($runId);
+            $sourceRows = (int) ($result['source_rows'] ?? 0);
+            $writtenRows = (int) ($result['written_rows'] ?? 0);
+            $cursorEnd = isset($result['cursor_end']) ? (string) $result['cursor_end'] : null;
+
+            db_sync_run_finish($runId, 'success', $sourceRows, $writtenRows, $cursorEnd, null);
+
+            if (array_key_exists('sync_mode', $result)) {
+                db_sync_state_upsert(
+                    $datasetKey,
+                    (string) $result['sync_mode'],
+                    'success',
+                    gmdate('Y-m-d H:i:s'),
+                    $cursorEnd,
+                    $writtenRows,
+                    isset($result['checksum']) ? (string) $result['checksum'] : null,
+                    null
+                );
+            }
+
+            return $result;
+        } catch (Throwable $exception) {
+            db_sync_run_finish($runId, 'failed', 0, 0, null, mb_substr($exception->getMessage(), 0, 500));
+            throw $exception;
+        }
+    });
+}
+
+function db_market_orders_current_bulk_upsert(array $orders, ?int $chunkSize = null): int
+{
+    return db_bulk_insert_or_upsert(
+        'market_orders_current',
+        [
+            'source_type',
+            'source_id',
+            'type_id',
+            'order_id',
+            'is_buy_order',
+            'price',
+            'volume_remain',
+            'volume_total',
+            'min_volume',
+            'range',
+            'duration',
+            'issued',
+            'expires',
+            'observed_at',
+        ],
+        $orders,
+        [
+            'type_id',
+            'is_buy_order',
+            'price',
+            'volume_remain',
+            'volume_total',
+            'min_volume',
+            'range',
+            'duration',
+            'issued',
+            'expires',
+            'observed_at',
+        ],
+        $chunkSize
+    );
+}
+
+function db_market_orders_history_bulk_insert(array $orders, ?int $chunkSize = null): int
+{
+    return db_bulk_insert_or_upsert(
+        'market_orders_history',
+        [
+            'source_type',
+            'source_id',
+            'type_id',
+            'order_id',
+            'is_buy_order',
+            'price',
+            'volume_remain',
+            'volume_total',
+            'min_volume',
+            'range',
+            'duration',
+            'issued',
+            'expires',
+            'observed_at',
+        ],
+        $orders,
+        [],
+        $chunkSize
+    );
+}
+
+function db_market_history_daily_bulk_upsert(array $historyRows, ?int $chunkSize = null): int
+{
+    return db_bulk_insert_or_upsert(
+        'market_history_daily',
+        [
+            'source_type',
+            'source_id',
+            'type_id',
+            'trade_date',
+            'open_price',
+            'high_price',
+            'low_price',
+            'close_price',
+            'average_price',
+            'volume',
+            'order_count',
+            'source_label',
+            'observed_at',
+        ],
+        $historyRows,
+        [
+            'open_price',
+            'high_price',
+            'low_price',
+            'close_price',
+            'average_price',
+            'volume',
+            'order_count',
+            'source_label',
+            'observed_at',
+        ],
+        $chunkSize
+    );
+}
+
+function db_market_history_daily_insert(array $historyRows, ?int $chunkSize = null): int
+{
+    return db_bulk_insert_or_upsert(
+        'market_history_daily',
+        [
+            'source_type',
+            'source_id',
+            'type_id',
+            'trade_date',
+            'open_price',
+            'high_price',
+            'low_price',
+            'close_price',
+            'average_price',
+            'volume',
+            'order_count',
+            'source_label',
+            'observed_at',
+        ],
+        $historyRows,
+        [],
+        $chunkSize
     );
 }
 
