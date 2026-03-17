@@ -14,6 +14,15 @@ CREATE TABLE IF NOT EXISTS trading_stations (
     UNIQUE KEY unique_station_name_type (station_name, station_type)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+CREATE TABLE IF NOT EXISTS alliance_structure_metadata (
+    structure_id BIGINT UNSIGNED PRIMARY KEY,
+    structure_name VARCHAR(255) DEFAULT NULL,
+    last_verified_at DATETIME NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    KEY idx_last_verified_at (last_verified_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 CREATE TABLE IF NOT EXISTS esi_oauth_tokens (
     id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
     character_id BIGINT UNSIGNED NOT NULL,

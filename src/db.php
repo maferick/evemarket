@@ -284,6 +284,30 @@ function db_trading_station_by_id(int $stationId, string $stationType): ?array
     );
 }
 
+function db_alliance_structure_metadata_get(int $structureId): ?array
+{
+    return db_select_one(
+        'SELECT structure_id, structure_name, last_verified_at
+         FROM alliance_structure_metadata
+         WHERE structure_id = ?
+         LIMIT 1',
+        [$structureId]
+    );
+}
+
+function db_alliance_structure_metadata_upsert(int $structureId, ?string $structureName, ?string $lastVerifiedAt = null): bool
+{
+    return db_execute(
+        'INSERT INTO alliance_structure_metadata (structure_id, structure_name, last_verified_at)
+         VALUES (?, ?, COALESCE(?, UTC_TIMESTAMP()))
+         ON DUPLICATE KEY UPDATE
+            structure_name = VALUES(structure_name),
+            last_verified_at = VALUES(last_verified_at),
+            updated_at = CURRENT_TIMESTAMP',
+        [$structureId, $structureName, $lastVerifiedAt]
+    );
+}
+
 function db_esi_structure_search_cache_get(int $characterId, string $query): ?array
 {
     $cacheKey = $characterId . ':' . mb_strtolower(trim($query));

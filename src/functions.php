@@ -124,23 +124,62 @@ function station_options(): array
 
 function sanitize_station_selection(?string $value, string $stationType): string
 {
+    return $stationType === 'alliance'
+        ? sanitize_alliance_station_selection($value)
+        : sanitize_market_station_selection($value);
+}
+
+function sanitize_market_station_selection(?string $value): string
+{
     $stationId = (int) trim((string) $value);
 
     if ($stationId <= 0) {
         return '';
     }
 
-    if ($stationType === 'alliance') {
-        return (string) $stationId;
-    }
-
     try {
-        $station = db_trading_station_by_id($stationId, $stationType);
+        $station = db_trading_station_by_id($stationId, 'market');
     } catch (Throwable) {
         return '';
     }
 
     return $station === null ? '' : (string) $station['id'];
+}
+
+function sanitize_alliance_station_selection(?string $value): string
+{
+    $structureIdValue = trim((string) $value);
+    if ($structureIdValue === '' || !preg_match('/^[1-9][0-9]{9,19}$/', $structureIdValue)) {
+        return '';
+    }
+
+    $structureId = (int) $structureIdValue;
+    if ($structureId <= 0) {
+        return '';
+    }
+
+    $context = esi_lookup_context(['esi-universe.read_structures.v1']);
+    if (!($context['ok'] ?? false)) {
+        return '';
+    }
+
+    try {
+        $metadata = esi_alliance_structure_metadata($structureId, $context['token']);
+    } catch (Throwable) {
+        return '';
+    }
+
+    if ($metadata === null) {
+        return '';
+    }
+
+    db_alliance_structure_metadata_upsert(
+        $structureId,
+        $metadata['name'] ?? null,
+        gmdate('Y-m-d H:i:s')
+    );
+
+    return (string) $structureId;
 }
 
 function selected_station_name(string $settingKey): ?string
@@ -150,6 +189,18 @@ function selected_station_name(string $settingKey): ?string
 
     if ($stationId <= 0) {
         return null;
+    }
+
+    if ($stationType === 'alliance') {
+        try {
+            $metadata = db_alliance_structure_metadata_get($stationId);
+        } catch (Throwable) {
+            $metadata = null;
+        }
+
+        $name = trim((string) ($metadata['structure_name'] ?? ''));
+
+        return $name !== '' ? $name : 'Structure #' . $stationId;
     }
 
     try {
@@ -513,6 +564,53 @@ function esi_structure_result_shape(array $structure): array
     return $result;
 }
 
+
+function esi_alliance_structure_metadata(int $structureId, array $tokenContext): ?array
+{
+    if ($structureId <= 0) {
+        return null;
+    }
+
+    $accessToken = (string) ($tokenContext['access_token'] ?? '');
+    if ($accessToken === '') {
+        return null;
+    }
+
+    $cached = db_alliance_structure_metadata_get($structureId);
+    if ($cached !== null && trim((string) ($cached['structure_name'] ?? '')) !== '') {
+        return [
+            'id' => $structureId,
+            'name' => trim((string) $cached['structure_name']),
+            'last_verified_at' => $cached['last_verified_at'] ?? null,
+        ];
+    }
+
+    $response = http_get_json(
+        'https://esi.evetech.net/latest/universe/structures/' . $structureId . '/',
+        [
+            'Authorization: Bearer ' . $accessToken,
+            'Accept: application/json',
+        ]
+    );
+
+    if (($response['status'] ?? 500) >= 400) {
+        return null;
+    }
+
+    $name = trim((string) ($response['json']['name'] ?? ''));
+    db_alliance_structure_metadata_upsert(
+        $structureId,
+        $name !== '' ? $name : null,
+        gmdate('Y-m-d H:i:s')
+    );
+
+    return [
+        'id' => $structureId,
+        'name' => $name,
+        'last_verified_at' => gmdate('Y-m-d H:i:s'),
+    ];
+}
+
 function esi_structure_search(string $query, array $tokenContext): array
 {
     $term = trim($query);
@@ -587,6 +685,8 @@ function esi_structure_search(string $query, array $tokenContext): array
         if (mb_stripos($name, $term) === false) {
             continue;
         }
+
+        db_alliance_structure_metadata_upsert($id, $name, gmdate('Y-m-d H:i:s'));
 
         $results[] = esi_structure_result_shape([
             'id' => $id,
