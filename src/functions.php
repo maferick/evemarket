@@ -1434,15 +1434,17 @@ function sync_market_hub_history(string|int $hubRef, string $runMode = 'incremen
         } else {
             $fallbackTypeIds = market_hub_history_fallback_type_ids($sourceId);
             if ($fallbackTypeIds === []) {
-                throw new RuntimeException('EVE Tycoon history sync failed with status ' . $status . ' and fallback could not run because no type IDs were found for this hub.');
+                $result['warnings'][] = 'Primary history endpoint returned ' . $status . ' and fallback could not run because no local type IDs were found for this hub yet.';
             }
 
-            $result['warnings'][] = 'Primary history endpoint returned ' . $status . '; falling back to per-type region history calls.';
+            if ($fallbackTypeIds !== []) {
+                $result['warnings'][] = 'Primary history endpoint returned ' . $status . '; falling back to per-type region history calls.';
+            }
             $fallbackErrors = [];
             $rowsSeen = 0;
 
             foreach ($fallbackTypeIds as $typeId) {
-                $fallbackEndpoint = 'https://evetycoon.com/api/v1/market/history/' . rawurlencode((string) $sourceId) . '/' . rawurlencode((string) $typeId);
+                $fallbackEndpoint = 'https://evetycoon.com/api/v1/market/history/' . rawurlencode($hubKey) . '/' . rawurlencode((string) $typeId);
                 $fallbackResponse = http_get_json_with_backoff($fallbackEndpoint, ['Accept: application/json']);
                 $fallbackStatus = (int) ($fallbackResponse['status'] ?? 500);
 
@@ -1464,7 +1466,7 @@ function sync_market_hub_history(string|int $hubRef, string $runMode = 'incremen
             }
 
             $result['rows_seen'] = $rowsSeen;
-            if ($providerRows === []) {
+            if ($providerRows === [] && $fallbackTypeIds !== []) {
                 $errorSummary = $fallbackErrors === [] ? 'unknown' : implode(', ', array_slice($fallbackErrors, 0, 8));
                 throw new RuntimeException('EVE Tycoon history sync failed: fallback per-type history calls returned no rows. Errors: ' . $errorSummary . '.');
             }
