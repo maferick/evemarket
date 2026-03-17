@@ -1378,6 +1378,18 @@ function eve_tycoon_history_to_canonical(array $row, int $sourceId, string $obse
     ];
 }
 
+function market_hub_history_fallback_type_ids(int $sourceId, int $limit = 200): array
+{
+    $safeLimit = max(1, min($limit, 2000));
+    $orderTypeIds = db_market_orders_current_distinct_type_ids('market_hub', $sourceId, $safeLimit);
+    $historyTypeIds = db_market_history_daily_distinct_type_ids('market_hub', $sourceId, $safeLimit);
+
+    $typeIds = array_values(array_unique(array_filter(array_merge($orderTypeIds, $historyTypeIds), static fn (int $typeId): bool => $typeId > 0)));
+    sort($typeIds);
+
+    return array_slice($typeIds, 0, $safeLimit);
+}
+
 function sync_market_hub_history(string|int $hubRef, string $runMode = 'incremental'): array
 {
     $result = sync_result_shape();
@@ -1399,12 +1411,50 @@ function sync_market_hub_history(string|int $hubRef, string $runMode = 'incremen
 
         $response = http_get_json_with_backoff($endpoint, ['Accept: application/json']);
         $status = (int) ($response['status'] ?? 500);
-        if ($status >= 400) {
-            throw new RuntimeException('EVE Tycoon history sync failed with status ' . $status . '.');
+        $providerRows = [];
+
+        if ($status < 400) {
+            $providerRows = eve_tycoon_history_payload_rows($response['json'] ?? []);
+            $result['rows_seen'] = count($providerRows);
+        } else {
+            $fallbackTypeIds = market_hub_history_fallback_type_ids($sourceId);
+            if ($fallbackTypeIds === []) {
+                throw new RuntimeException('EVE Tycoon history sync failed with status ' . $status . ' and fallback could not run because no type IDs were found for this hub.');
+            }
+
+            $result['warnings'][] = 'Primary history endpoint returned ' . $status . '; falling back to per-type region history calls.';
+            $fallbackErrors = [];
+            $rowsSeen = 0;
+
+            foreach ($fallbackTypeIds as $typeId) {
+                $fallbackEndpoint = 'https://evetycoon.com/api/v1/market/history/' . rawurlencode((string) $sourceId) . '/' . rawurlencode((string) $typeId);
+                $fallbackResponse = http_get_json_with_backoff($fallbackEndpoint, ['Accept: application/json']);
+                $fallbackStatus = (int) ($fallbackResponse['status'] ?? 500);
+
+                if ($fallbackStatus >= 400) {
+                    $fallbackErrors[] = $typeId . ':' . $fallbackStatus;
+                    continue;
+                }
+
+                $typeRows = eve_tycoon_history_payload_rows($fallbackResponse['json'] ?? []);
+                foreach ($typeRows as $typeRow) {
+                    if (!is_array($typeRow)) {
+                        continue;
+                    }
+
+                    $typeRow['type_id'] = (int) ($typeRow['type_id'] ?? $typeRow['typeId'] ?? $typeId);
+                    $providerRows[] = $typeRow;
+                    $rowsSeen++;
+                }
+            }
+
+            $result['rows_seen'] = $rowsSeen;
+            if ($providerRows === []) {
+                $errorSummary = $fallbackErrors === [] ? 'unknown' : implode(', ', array_slice($fallbackErrors, 0, 8));
+                throw new RuntimeException('EVE Tycoon history sync failed: fallback per-type history calls returned no rows. Errors: ' . $errorSummary . '.');
+            }
         }
 
-        $providerRows = eve_tycoon_history_payload_rows($response['json'] ?? []);
-        $result['rows_seen'] = count($providerRows);
         $observedAt = gmdate('Y-m-d H:i:s');
         $canonicalRows = [];
 

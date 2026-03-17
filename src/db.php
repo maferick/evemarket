@@ -562,6 +562,36 @@ function db_market_history_daily_insert(array $historyRows, ?int $chunkSize = nu
     );
 }
 
+function db_market_orders_current_distinct_type_ids(string $sourceType, int $sourceId, int $limit = 500): array
+{
+    $safeLimit = max(1, min($limit, 5000));
+    $rows = db_select(
+        "SELECT DISTINCT type_id
+         FROM market_orders_current
+         WHERE source_type = ? AND source_id = ?
+         ORDER BY type_id ASC
+         LIMIT {$safeLimit}",
+        [$sourceType, $sourceId]
+    );
+
+    return array_values(array_map(static fn (array $row): int => (int) ($row['type_id'] ?? 0), $rows));
+}
+
+function db_market_history_daily_distinct_type_ids(string $sourceType, int $sourceId, int $limit = 500): array
+{
+    $safeLimit = max(1, min($limit, 5000));
+    $rows = db_select(
+        "SELECT DISTINCT type_id
+         FROM market_history_daily
+         WHERE source_type = ? AND source_id = ?
+         ORDER BY type_id ASC
+         LIMIT {$safeLimit}",
+        [$sourceType, $sourceId]
+    );
+
+    return array_values(array_map(static fn (array $row): int => (int) ($row['type_id'] ?? 0), $rows));
+}
+
 function db_sync_run_start(string $datasetKey, string $runMode, ?string $cursorStart): int
 {
     db_execute(
