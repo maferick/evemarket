@@ -49,7 +49,7 @@ function nav_items(): array
             'icon' => '🛒',
             'children' => [
                 ['label' => 'Current Alliance Structure', 'path' => '/market-status/current-alliance'],
-                ['label' => 'Jita Comparison', 'path' => '/market-status/jita-comparison'],
+                ['label' => 'Reference Hub Comparison', 'path' => '/market-status/reference-comparison'],
                 ['label' => 'Missing Items', 'path' => '/market-status/missing-items'],
                 ['label' => 'Price Deviations', 'path' => '/market-status/price-deviations'],
             ],
@@ -145,7 +145,7 @@ function station_options(): array
         return db_trading_station_options();
     } catch (Throwable) {
         return [
-            ['id' => 1, 'station_name' => 'Jita IV - Moon 4 - Caldari Navy Assembly Plant', 'station_type' => 'market'],
+            ['id' => 1, 'station_name' => 'Primary Market Hub', 'station_type' => 'market'],
             ['id' => 2, 'station_name' => 'Amarr VIII (Oris) - Emperor Family Academy', 'station_type' => 'market'],
             ['id' => 3, 'station_name' => '1DQ1-A Keepstar', 'station_type' => 'alliance'],
             ['id' => 4, 'station_name' => 'T5ZI-S Fortizar', 'station_type' => 'alliance'],
@@ -764,18 +764,27 @@ function market_compare_thresholds(): array
     ];
 }
 
+
+function market_comparison_context(): array
+{
+    return [
+        'alliance_destination' => selected_station_name('alliance_station_id') ?? 'Operational destination not configured',
+        'reference_hub' => market_hub_reference_name(),
+    ];
+}
+
 function market_compare_aggregates(array $typeIds = []): array
 {
     $allianceStructureId = configured_structure_destination_id_for_esi_sync();
     $marketHubRef = market_hub_setting_reference();
-    $jitaSourceId = sync_source_id_from_hub_ref($marketHubRef);
+    $referenceSourceId = sync_source_id_from_hub_ref($marketHubRef);
 
-    if ($allianceStructureId <= 0 || $jitaSourceId <= 0) {
+    if ($allianceStructureId <= 0 || $referenceSourceId <= 0) {
         return [];
     }
 
     try {
-        return db_market_orders_current_alliance_vs_jita_aggregates($allianceStructureId, $jitaSourceId, $typeIds);
+        return db_market_orders_current_alliance_vs_reference_aggregates($allianceStructureId, $referenceSourceId, $typeIds);
     } catch (Throwable) {
         return [];
     }
@@ -784,16 +793,16 @@ function market_compare_aggregates(array $typeIds = []): array
 function market_compare_evaluate_row(array $row, array $thresholds): array
 {
     $alliancePrice = isset($row['alliance_best_sell_price']) ? (float) $row['alliance_best_sell_price'] : null;
-    $jitaPrice = isset($row['jita_best_sell_price']) ? (float) $row['jita_best_sell_price'] : null;
+    $referencePrice = isset($row['reference_best_sell_price']) ? (float) $row['reference_best_sell_price'] : null;
     $allianceSellVolume = (int) ($row['alliance_total_sell_volume'] ?? 0);
     $allianceSellOrders = (int) ($row['alliance_sell_order_count'] ?? 0);
 
-    $inBothMarkets = $alliancePrice !== null && $jitaPrice !== null;
-    $missingInAlliance = $alliancePrice === null && $jitaPrice !== null;
+    $inBothMarkets = $alliancePrice !== null && $referencePrice !== null;
+    $missingInAlliance = $alliancePrice === null && $referencePrice !== null;
 
     $deviationPercent = 0.0;
-    if ($inBothMarkets && $jitaPrice > 0) {
-        $deviationPercent = (($alliancePrice - $jitaPrice) / $jitaPrice) * 100.0;
+    if ($inBothMarkets && $referencePrice > 0) {
+        $deviationPercent = (($alliancePrice - $referencePrice) / $referencePrice) * 100.0;
     }
 
     $overpriced = $inBothMarkets && $deviationPercent >= $thresholds['deviation_percent'];
@@ -833,13 +842,13 @@ function market_compare_evaluate_row(array $row, array $thresholds): array
         'alliance_sell_order_count' => $allianceSellOrders,
         'alliance_buy_order_count' => (int) ($row['alliance_buy_order_count'] ?? 0),
         'alliance_last_observed_at' => $row['alliance_last_observed_at'] ?? null,
-        'jita_best_sell_price' => $jitaPrice,
-        'jita_best_buy_price' => isset($row['jita_best_buy_price']) ? (float) $row['jita_best_buy_price'] : null,
-        'jita_total_sell_volume' => (int) ($row['jita_total_sell_volume'] ?? 0),
-        'jita_total_buy_volume' => (int) ($row['jita_total_buy_volume'] ?? 0),
-        'jita_sell_order_count' => (int) ($row['jita_sell_order_count'] ?? 0),
-        'jita_buy_order_count' => (int) ($row['jita_buy_order_count'] ?? 0),
-        'jita_last_observed_at' => $row['jita_last_observed_at'] ?? null,
+        'reference_best_sell_price' => $referencePrice,
+        'reference_best_buy_price' => isset($row['reference_best_buy_price']) ? (float) $row['reference_best_buy_price'] : null,
+        'reference_total_sell_volume' => (int) ($row['reference_total_sell_volume'] ?? 0),
+        'reference_total_buy_volume' => (int) ($row['reference_total_buy_volume'] ?? 0),
+        'reference_sell_order_count' => (int) ($row['reference_sell_order_count'] ?? 0),
+        'reference_buy_order_count' => (int) ($row['reference_buy_order_count'] ?? 0),
+        'reference_last_observed_at' => $row['reference_last_observed_at'] ?? null,
         'in_both_markets' => $inBothMarkets,
         'missing_in_alliance' => $missingInAlliance,
         'overpriced_in_alliance' => $overpriced,
@@ -976,6 +985,7 @@ function dashboard_trend_snippets(array $rows): array
 
 function dashboard_intelligence_data(): array
 {
+    $comparisonContext = market_comparison_context();
     $outcomes = market_comparison_outcomes();
     $rows = $outcomes['rows'];
 
@@ -984,7 +994,7 @@ function dashboard_intelligence_data(): array
     $coveragePercent = $rowCount > 0 ? ($inBothCount / $rowCount) * 100.0 : 0.0;
 
     $opportunities = $rows;
-    usort($opportunities, static fn (array $a, array $b): int => (($b['opportunity_score'] ?? 0) <=> ($a['opportunity_score'] ?? 0)) ?: (($b['jita_total_sell_volume'] ?? 0) <=> ($a['jita_total_sell_volume'] ?? 0)));
+    usort($opportunities, static fn (array $a, array $b): int => (($b['opportunity_score'] ?? 0) <=> ($a['opportunity_score'] ?? 0)) ?: (($b['reference_total_sell_volume'] ?? 0) <=> ($a['reference_total_sell_volume'] ?? 0)));
     $risks = $rows;
     usort($risks, static fn (array $a, array $b): int => (($b['risk_score'] ?? 0) <=> ($a['risk_score'] ?? 0)) ?: (abs((float) ($b['deviation_percent'] ?? 0)) <=> abs((float) ($a['deviation_percent'] ?? 0))));
 
@@ -993,11 +1003,11 @@ function dashboard_intelligence_data(): array
     $historySync = sync_status_from_prefix('market.history.daily.');
 
     $marketHubRef = market_hub_setting_reference();
-    $jitaSourceId = sync_source_id_from_hub_ref($marketHubRef);
+    $referenceSourceId = sync_source_id_from_hub_ref($marketHubRef);
     $historyRows = [];
-    if ($jitaSourceId > 0) {
+    if ($referenceSourceId > 0) {
         try {
-            $historyRows = db_market_history_daily_recent_window('market_hub', $jitaSourceId, 8, 80);
+            $historyRows = db_market_history_daily_recent_window('market_hub', $referenceSourceId, 8, 80);
         } catch (Throwable) {
             $historyRows = [];
         }
@@ -1006,14 +1016,14 @@ function dashboard_intelligence_data(): array
     return [
         'kpis' => [
             ['label' => 'Overlap Coverage', 'value' => market_format_percentage($coveragePercent), 'context' => $rowCount > 0 ? ($inBothCount . ' of ' . $rowCount . ' items in both markets') : 'No market overlap data yet'],
-            ['label' => 'Missing Items', 'value' => (string) count($outcomes['missing_in_alliance']), 'context' => 'Items in Jita without alliance sell listing'],
+            ['label' => 'Missing Items', 'value' => (string) count($outcomes['missing_in_alliance']), 'context' => 'Items in ' . $comparisonContext['reference_hub'] . ' without alliance sell listing'],
             ['label' => 'Over / Underpriced', 'value' => count($outcomes['overpriced_in_alliance']) . ' / ' . count($outcomes['underpriced_in_alliance']), 'context' => 'Outside configured deviation threshold'],
             ['label' => 'Weak Stock', 'value' => (string) count($outcomes['weak_or_missing_alliance_stock']), 'context' => 'Low volume/order depth or missing listing'],
         ],
         'priority_queues' => [
             'opportunities' => array_map(static fn (array $row): array => [
                 'module' => $row['type_name'] !== '' ? $row['type_name'] : ('Type #' . $row['type_id']),
-                'signal' => (bool) ($row['missing_in_alliance'] ?? false) ? 'Missing in alliance' : sprintf('%+.1f%% vs Jita', (float) ($row['deviation_percent'] ?? 0.0)),
+                'signal' => (bool) ($row['missing_in_alliance'] ?? false) ? 'Missing in alliance' : sprintf('%+.1f%% vs %s', (float) ($row['deviation_percent'] ?? 0.0), (string) $comparisonContext['reference_hub']),
                 'score' => (int) ($row['opportunity_score'] ?? 0),
             ], array_slice(array_values(array_filter($opportunities, static fn (array $row): bool => (int) ($row['opportunity_score'] ?? 0) > 0)), 0, 5)),
             'risks' => array_map(static fn (array $row): array => [
@@ -1061,8 +1071,9 @@ function current_alliance_market_status_data(): array
     ];
 }
 
-function jita_comparison_data(): array
+function reference_hub_comparison_data(): array
 {
+    $comparisonContext = market_comparison_context();
     $outcomes = market_comparison_outcomes();
     $inBoth = $outcomes['in_both_markets'];
     $underpriced = $outcomes['underpriced_in_alliance'];
@@ -1070,14 +1081,14 @@ function jita_comparison_data(): array
 
     return [
         'summary' => [
-            ['label' => 'Compared Modules', 'value' => (string) count($inBoth), 'context' => 'Alliance vs Jita pairs'],
-            ['label' => 'Cheaper Than Jita', 'value' => (string) count($underpriced), 'context' => 'Alliance price advantage'],
-            ['label' => 'Pricier Than Jita', 'value' => (string) count($overpriced), 'context' => 'Candidate reprice opportunities'],
+            ['label' => 'Compared Modules', 'value' => (string) count($inBoth), 'context' => 'Alliance vs ' . $comparisonContext['reference_hub'] . ' pairs'],
+            ['label' => 'Cheaper Than ' . $comparisonContext['reference_hub'], 'value' => (string) count($underpriced), 'context' => 'Alliance price advantage'],
+            ['label' => 'Pricier Than ' . $comparisonContext['reference_hub'], 'value' => (string) count($overpriced), 'context' => 'Candidate reprice opportunities'],
         ],
         'rows' => array_map(static fn (array $row): array => [
             'module' => $row['type_name'] !== '' ? $row['type_name'] : ('Type #' . $row['type_id']),
             'alliance_price' => market_format_isk($row['alliance_best_sell_price']),
-            'jita_price' => market_format_isk($row['jita_best_sell_price']),
+            'reference_price' => market_format_isk($row['reference_best_sell_price']),
             'delta' => sprintf('%+.1f%%', (float) ($row['deviation_percent'] ?? 0.0)),
         ], array_slice(array_merge($overpriced, $underpriced), 0, 25)),
     ];
@@ -1085,13 +1096,14 @@ function jita_comparison_data(): array
 
 function missing_items_data(): array
 {
+    $comparisonContext = market_comparison_context();
     $outcomes = market_comparison_outcomes();
     $missingRows = $outcomes['missing_in_alliance'];
 
     return [
         'summary' => [
             ['label' => 'Missing Modules', 'value' => (string) count($missingRows), 'context' => 'No active alliance listing'],
-            ['label' => 'High-Turnover Gaps', 'value' => (string) count(array_filter($missingRows, static fn (array $row): bool => (int) ($row['jita_total_sell_volume'] ?? 0) >= 100)), 'context' => 'Missing + strong Jita depth'],
+            ['label' => 'High-Turnover Gaps', 'value' => (string) count(array_filter($missingRows, static fn (array $row): bool => (int) ($row['reference_total_sell_volume'] ?? 0) >= 100)), 'context' => 'Missing + strong ' . $comparisonContext['reference_hub'] . ' depth'],
             ['label' => 'Restock Priority', 'value' => (string) count(array_filter($missingRows, static fn (array $row): bool => (int) ($row['opportunity_score'] ?? 0) >= 50)), 'context' => 'High opportunity score'],
         ],
         'rows' => array_map(static function (array $row): array {
@@ -1099,8 +1111,8 @@ function missing_items_data(): array
 
             return [
                 'module' => $row['type_name'] !== '' ? $row['type_name'] : ('Type #' . $row['type_id']),
-                'jita_price' => market_format_isk($row['jita_best_sell_price']),
-                'daily_volume' => (string) ($row['jita_total_sell_volume'] ?? 0),
+                'reference_price' => market_format_isk($row['reference_best_sell_price']),
+                'daily_volume' => (string) ($row['reference_total_sell_volume'] ?? 0),
                 'priority' => $priority,
             ];
         }, array_slice($missingRows, 0, 25)),
@@ -1109,19 +1121,20 @@ function missing_items_data(): array
 
 function price_deviations_data(): array
 {
+    $comparisonContext = market_comparison_context();
     $outcomes = market_comparison_outcomes();
     $alerts = array_values(array_filter($outcomes['rows'], static fn (array $row): bool => (bool) ($row['overpriced_in_alliance'] ?? false) || (bool) ($row['underpriced_in_alliance'] ?? false)));
 
     return [
         'summary' => [
             ['label' => 'Deviation Alerts', 'value' => (string) count($alerts), 'context' => 'Outside configured threshold'],
-            ['label' => 'Overpriced', 'value' => (string) count($outcomes['overpriced_in_alliance']), 'context' => 'Alliance > Jita threshold'],
-            ['label' => 'Underpriced', 'value' => (string) count($outcomes['underpriced_in_alliance']), 'context' => 'Alliance < Jita threshold'],
+            ['label' => 'Overpriced', 'value' => (string) count($outcomes['overpriced_in_alliance']), 'context' => 'Alliance > ' . $comparisonContext['reference_hub'] . ' threshold'],
+            ['label' => 'Underpriced', 'value' => (string) count($outcomes['underpriced_in_alliance']), 'context' => 'Alliance < ' . $comparisonContext['reference_hub'] . ' threshold'],
         ],
         'rows' => array_map(static fn (array $row): array => [
             'module' => $row['type_name'] !== '' ? $row['type_name'] : ('Type #' . $row['type_id']),
             'alliance_price' => market_format_isk($row['alliance_best_sell_price']),
-            'reference_price' => market_format_isk($row['jita_best_sell_price']),
+            'reference_price' => market_format_isk($row['reference_best_sell_price']),
             'deviation' => sprintf('%+.1f%%', (float) ($row['deviation_percent'] ?? 0.0)),
         ], array_slice($alerts, 0, 25)),
     ];
@@ -2031,27 +2044,34 @@ function market_hub_setting_reference(): string
     $configuredHub = trim((string) get_setting('market_station_id', ''));
 
     if ($configuredHub === '') {
-        return '60003760';
+        return '';
     }
 
     $configuredStationId = (int) $configuredHub;
     if ($configuredStationId <= 0) {
-        return '60003760';
+        return '';
     }
 
     try {
         $station = db_trading_station_by_id($configuredStationId, 'market');
-        if ($station !== null) {
-            $resolvedNpcStationId = db_ref_npc_station_id_by_name((string) ($station['station_name'] ?? ''));
-            if ($resolvedNpcStationId !== null) {
-                return (string) $resolvedNpcStationId;
-            }
+        if ($station === null) {
+            return '';
+        }
+
+        $resolvedNpcStationId = db_ref_npc_station_id_by_name((string) ($station['station_name'] ?? ''));
+        if ($resolvedNpcStationId !== null) {
+            return (string) $resolvedNpcStationId;
         }
     } catch (Throwable) {
-        // Fall back to legacy behavior when DB lookups are unavailable.
+        return '';
     }
 
     return $configuredHub;
+}
+
+function market_hub_reference_name(): string
+{
+    return selected_station_name('market_station_id') ?? 'Reference market hub not configured';
 }
 
 function sync_source_id_from_hub_ref(string|int $hubRef): int

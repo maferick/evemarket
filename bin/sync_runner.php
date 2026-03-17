@@ -57,9 +57,13 @@ function sync_runner_parse_arguments(array $argv): array
         throw new InvalidArgumentException('Argument --job must be one of: ' . implode(', ', $allowedJobs) . '.');
     }
 
-    $jobRequiresSourceId = !in_array($job, ['maintenance-prune'], true);
+    $jobRequiresSourceId = in_array($job, ['alliance-current', 'alliance-history', 'all'], true);
     if ($jobRequiresSourceId && ($sourceIdValue === '' || preg_match('/^[1-9][0-9]*$/', $sourceIdValue) !== 1)) {
         throw new InvalidArgumentException('Argument --source-id must be a positive integer for the selected job.');
+    }
+
+    if ($sourceIdValue !== '' && preg_match('/^[1-9][0-9]*$/', $sourceIdValue) !== 1) {
+        throw new InvalidArgumentException('Argument --source-id must be a positive integer when provided.');
     }
 
     $allowedModes = ['incremental', 'full'];
@@ -79,7 +83,7 @@ function sync_runner_parse_arguments(array $argv): array
 
     return [
         'job' => $job,
-        'source_id' => $sourceIdValue === '' ? 1 : (int) $sourceIdValue,
+        'source_id' => $sourceIdValue === '' ? 0 : (int) $sourceIdValue,
         'mode' => $mode,
         'since' => $since,
     ];
@@ -173,8 +177,13 @@ function sync_runner_dispatch_job(string $jobKey, int $sourceId, string $runMode
     }
 
     if ($jobKey === 'hub-current') {
-        $datasetKey = sync_dataset_key_market_hub_current_orders((string) $sourceId);
-        $result = sync_market_hub_current_orders((string) $sourceId, $runMode);
+        $hubRef = market_hub_setting_reference();
+        if ($hubRef === '') {
+            throw new RuntimeException('Hub current sync skipped: configure a reference market hub in Trading Stations settings.');
+        }
+
+        $datasetKey = sync_dataset_key_market_hub_current_orders($hubRef);
+        $result = sync_market_hub_current_orders($hubRef, $runMode);
 
         return $result + ['dataset_key' => $datasetKey];
     }
@@ -187,8 +196,13 @@ function sync_runner_dispatch_job(string $jobKey, int $sourceId, string $runMode
         return $result + ['dataset_key' => $datasetKey];
     }
 
-    $datasetKey = sync_dataset_key_market_hub_history_daily((string) $sourceId);
-    $result = sync_market_hub_history((string) $sourceId, $runMode);
+    $hubRef = market_hub_setting_reference();
+    if ($hubRef === '') {
+        throw new RuntimeException('Hub history sync skipped: configure a reference market hub in Trading Stations settings.');
+    }
+
+    $datasetKey = sync_dataset_key_market_hub_history_daily($hubRef);
+    $result = sync_market_hub_history($hubRef, $runMode);
 
     return $result + ['dataset_key' => $datasetKey];
 }
@@ -204,14 +218,18 @@ function sync_runner_dataset_key_for_job(string $jobKey, int $sourceId): string
     }
 
     if ($jobKey === 'hub-current') {
-        return sync_dataset_key_market_hub_current_orders((string) $sourceId);
+        $hubRef = market_hub_setting_reference();
+
+        return sync_dataset_key_market_hub_current_orders($hubRef !== '' ? $hubRef : ((string) $sourceId));
     }
 
     if ($jobKey === 'maintenance-prune') {
         return sync_dataset_key_maintenance_history_prune();
     }
 
-    return sync_dataset_key_market_hub_history_daily((string) $sourceId);
+    $hubRef = market_hub_setting_reference();
+
+    return sync_dataset_key_market_hub_history_daily($hubRef !== '' ? $hubRef : ((string) $sourceId));
 }
 
 function sync_runner_backfill_start_for_job(string $jobKey): ?string

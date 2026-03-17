@@ -4,17 +4,18 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/../../src/bootstrap.php';
 
-$title = 'Jita Comparison';
-$data = jita_comparison_data();
+$referenceHubName = market_hub_reference_name();
+$title = $referenceHubName . ' Comparison';
+$data = reference_hub_comparison_data();
 $summary = $data['summary'] ?? [];
 $tableColumns = [
     'module' => 'Module',
     'alliance_price' => 'Alliance Price',
-    'jita_price' => 'Jita Price',
+    'reference_price' => $referenceHubName . ' Price',
     'delta' => 'Delta',
 ];
 $tableRows = $data['rows'] ?? [];
-$emptyMessage = 'No comparison rows available.';
+$emptyMessage = 'No comparison rows available for ' . $referenceHubName . '.';
 
 include __DIR__ . '/../../src/views/partials/header.php';
 include __DIR__ . '/../../src/views/partials/module-page.php';

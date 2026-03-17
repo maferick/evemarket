@@ -270,7 +270,7 @@ CREATE TABLE IF NOT EXISTS ref_item_types (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 INSERT INTO trading_stations (station_name, station_type) VALUES
-    ('Jita IV - Moon 4 - Caldari Navy Assembly Plant', 'market'),
+    ('Rens VI - Moon 8 - Brutor Tribe Treasury', 'market'),
     ('Amarr VIII (Oris) - Emperor Family Academy', 'market'),
     ('Dodixie IX - Moon 20 - Federation Navy Assembly Plant', 'market'),
     ('1DQ1-A Keepstar', 'alliance'),

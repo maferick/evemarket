@@ -810,10 +810,10 @@ function db_market_orders_current_source_aggregates(string $sourceType, int $sou
     );
 }
 
-function db_market_orders_current_alliance_vs_jita_aggregates(int $allianceStructureId, int $jitaSourceId, array $typeIds = []): array
+function db_market_orders_current_alliance_vs_reference_aggregates(int $allianceStructureId, int $referenceSourceId, array $typeIds = []): array
 {
     $allianceRows = db_market_orders_current_source_aggregates('alliance_structure', $allianceStructureId, $typeIds);
-    $jitaRows = db_market_orders_current_source_aggregates('market_hub', $jitaSourceId, $typeIds);
+    $referenceRows = db_market_orders_current_source_aggregates('market_hub', $referenceSourceId, $typeIds);
 
     $normalized = [];
 
@@ -833,17 +833,17 @@ function db_market_orders_current_alliance_vs_jita_aggregates(int $allianceStruc
             'alliance_sell_order_count' => (int) ($row['sell_order_count'] ?? 0),
             'alliance_buy_order_count' => (int) ($row['buy_order_count'] ?? 0),
             'alliance_last_observed_at' => $row['last_observed_at'] ?? null,
-            'jita_best_sell_price' => null,
-            'jita_best_buy_price' => null,
-            'jita_total_sell_volume' => 0,
-            'jita_total_buy_volume' => 0,
-            'jita_sell_order_count' => 0,
-            'jita_buy_order_count' => 0,
-            'jita_last_observed_at' => null,
+            'reference_best_sell_price' => null,
+            'reference_best_buy_price' => null,
+            'reference_total_sell_volume' => 0,
+            'reference_total_buy_volume' => 0,
+            'reference_sell_order_count' => 0,
+            'reference_buy_order_count' => 0,
+            'reference_last_observed_at' => null,
         ];
     }
 
-    foreach ($jitaRows as $row) {
+    foreach ($referenceRows as $row) {
         $typeId = (int) ($row['type_id'] ?? 0);
         if ($typeId <= 0) {
             continue;
@@ -860,13 +860,13 @@ function db_market_orders_current_alliance_vs_jita_aggregates(int $allianceStruc
                 'alliance_sell_order_count' => 0,
                 'alliance_buy_order_count' => 0,
                 'alliance_last_observed_at' => null,
-                'jita_best_sell_price' => null,
-                'jita_best_buy_price' => null,
-                'jita_total_sell_volume' => 0,
-                'jita_total_buy_volume' => 0,
-                'jita_sell_order_count' => 0,
-                'jita_buy_order_count' => 0,
-                'jita_last_observed_at' => null,
+                'reference_best_sell_price' => null,
+                'reference_best_buy_price' => null,
+                'reference_total_sell_volume' => 0,
+                'reference_total_buy_volume' => 0,
+                'reference_sell_order_count' => 0,
+                'reference_buy_order_count' => 0,
+                'reference_last_observed_at' => null,
             ];
         }
 
@@ -874,13 +874,13 @@ function db_market_orders_current_alliance_vs_jita_aggregates(int $allianceStruc
             $normalized[$typeId]['type_name'] = (string) $row['type_name'];
         }
 
-        $normalized[$typeId]['jita_best_sell_price'] = isset($row['best_sell_price']) ? (float) $row['best_sell_price'] : null;
-        $normalized[$typeId]['jita_best_buy_price'] = isset($row['best_buy_price']) ? (float) $row['best_buy_price'] : null;
-        $normalized[$typeId]['jita_total_sell_volume'] = (int) ($row['total_sell_volume'] ?? 0);
-        $normalized[$typeId]['jita_total_buy_volume'] = (int) ($row['total_buy_volume'] ?? 0);
-        $normalized[$typeId]['jita_sell_order_count'] = (int) ($row['sell_order_count'] ?? 0);
-        $normalized[$typeId]['jita_buy_order_count'] = (int) ($row['buy_order_count'] ?? 0);
-        $normalized[$typeId]['jita_last_observed_at'] = $row['last_observed_at'] ?? null;
+        $normalized[$typeId]['reference_best_sell_price'] = isset($row['best_sell_price']) ? (float) $row['best_sell_price'] : null;
+        $normalized[$typeId]['reference_best_buy_price'] = isset($row['best_buy_price']) ? (float) $row['best_buy_price'] : null;
+        $normalized[$typeId]['reference_total_sell_volume'] = (int) ($row['total_sell_volume'] ?? 0);
+        $normalized[$typeId]['reference_total_buy_volume'] = (int) ($row['total_buy_volume'] ?? 0);
+        $normalized[$typeId]['reference_sell_order_count'] = (int) ($row['sell_order_count'] ?? 0);
+        $normalized[$typeId]['reference_buy_order_count'] = (int) ($row['buy_order_count'] ?? 0);
+        $normalized[$typeId]['reference_last_observed_at'] = $row['last_observed_at'] ?? null;
     }
 
     ksort($normalized);

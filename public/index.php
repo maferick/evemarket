@@ -28,7 +28,7 @@ include __DIR__ . '/../src/views/partials/header.php';
         </div>
         <?php $opportunities = $intel['priority_queues']['opportunities'] ?? []; ?>
         <?php if ($opportunities === []): ?>
-            <p class="mt-4 rounded-lg border border-dashed border-border bg-black/20 p-4 text-sm text-muted">No opportunity signals yet. Run alliance and market sync jobs to generate overlap and pricing insights.</p>
+            <p class="mt-4 rounded-lg border border-dashed border-border bg-black/20 p-4 text-sm text-muted">No opportunity signals yet. Run alliance and reference-hub sync jobs to generate overlap and pricing insights.</p>
         <?php else: ?>
             <div class="mt-4 space-y-2">
                 <?php foreach ($opportunities as $row): ?>
@@ -94,7 +94,7 @@ include __DIR__ . '/../src/views/partials/header.php';
     </div>
     <?php $snippets = $intel['trend_snippets'] ?? []; ?>
     <?php if ($snippets === []): ?>
-        <p class="mt-4 rounded-lg border border-dashed border-border bg-black/20 p-4 text-sm text-muted">Trend snippets will appear after market history is synced. Enable hub history sync in Settings → Data Sync and run at least two daily snapshots.</p>
+        <p class="mt-4 rounded-lg border border-dashed border-border bg-black/20 p-4 text-sm text-muted">Trend snippets will appear after reference hub history is synced. Enable hub history sync in Settings → Data Sync and run at least two daily snapshots.</p>
     <?php else: ?>
         <div class="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
             <?php foreach ($snippets as $snippet): ?>

@@ -9,12 +9,12 @@ $data = missing_items_data();
 $summary = $data['summary'] ?? [];
 $tableColumns = [
     'module' => 'Module',
-    'jita_price' => 'Jita Price',
+    'reference_price' => market_hub_reference_name() . ' Price',
     'daily_volume' => 'Daily Volume',
     'priority' => 'Priority',
 ];
 $tableRows = $data['rows'] ?? [];
-$emptyMessage = 'No missing items detected.';
+$emptyMessage = 'No missing items detected against ' . market_hub_reference_name() . '.';
 
 include __DIR__ . '/../../src/views/partials/header.php';
 include __DIR__ . '/../../src/views/partials/module-page.php';

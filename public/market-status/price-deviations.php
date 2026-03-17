@@ -10,11 +10,11 @@ $summary = $data['summary'] ?? [];
 $tableColumns = [
     'module' => 'Module',
     'alliance_price' => 'Alliance Price',
-    'reference_price' => 'Reference Price',
+    'reference_price' => market_hub_reference_name() . ' Price',
     'deviation' => 'Deviation',
 ];
 $tableRows = $data['rows'] ?? [];
-$emptyMessage = 'No deviation alerts at this time.';
+$emptyMessage = 'No deviation alerts at this time versus ' . market_hub_reference_name() . '.';
 
 include __DIR__ . '/../../src/views/partials/header.php';
 include __DIR__ . '/../../src/views/partials/module-page.php';
