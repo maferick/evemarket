@@ -18,9 +18,21 @@ if ($allianceStationName !== null) {
     $selectedStationsCount++;
 }
 
+$tradeStationContextParts = [];
+if ($marketStationName !== null) {
+    $tradeStationContextParts[] = 'Market: ' . $marketStationName;
+}
+if ($allianceStationName !== null) {
+    $tradeStationContextParts[] = 'Alliance: ' . $allianceStationName;
+}
+
+$tradeStationContext = $tradeStationContextParts === []
+    ? 'No market or alliance station selected yet'
+    : implode(' · ', $tradeStationContextParts);
+
 $stats = [
     ['label' => 'Tracked Markets', 'value' => '12', 'context' => 'Regions with active pull schedules'],
-    ['label' => 'Trade Stations', 'value' => (string) $selectedStationsCount . '/2', 'context' => 'Configured market + alliance selections'],
+    ['label' => 'Trade Stations', 'value' => (string) $selectedStationsCount . '/2', 'context' => $tradeStationContext],
     ['label' => 'ESI Status', 'value' => get_setting('esi_enabled', 'disabled') === '1' ? 'Connected' : 'Pending', 'context' => 'SSO configuration health'],
     ['label' => 'Incremental SQL', 'value' => get_setting('incremental_updates_enabled', '1') === '1' ? 'Enabled' : 'Disabled', 'context' => 'Future sync/import optimizer'],
 ];
