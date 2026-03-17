@@ -2590,6 +2590,7 @@ function market_hub_reference_context(string|int $hubRef): array
             'hub_type' => 'unknown',
             'api_source' => 'unknown',
             'region_id' => null,
+            'system_id' => null,
             'structure_id' => null,
         ];
     }
@@ -2611,8 +2612,11 @@ function market_hub_reference_context(string|int $hubRef): array
     $preferStructure = $hasStructureMetadata || $looksLikeStructureId;
 
     if ($npcStation !== null && !$preferStructure) {
+        $systemId = (int) ($npcStation['system_id'] ?? 0);
+        $resolvedSystemId = $systemId > 0 ? $systemId : null;
+
         try {
-            $regionId = db_ref_npc_station_region_id($hubId);
+            $regionId = $resolvedSystemId !== null ? db_ref_system_region_id($resolvedSystemId) : null;
         } catch (Throwable) {
             $regionId = null;
         }
@@ -2625,6 +2629,7 @@ function market_hub_reference_context(string|int $hubRef): array
             'hub_type' => 'npc_station',
             'api_source' => 'esi.region_orders',
             'region_id' => $regionId,
+            'system_id' => $resolvedSystemId,
             'structure_id' => null,
         ];
     }
@@ -2638,6 +2643,7 @@ function market_hub_reference_context(string|int $hubRef): array
             'hub_type' => 'structure',
             'api_source' => 'esi.structure_orders',
             'region_id' => null,
+            'system_id' => null,
             'structure_id' => $hubId,
         ];
     }
@@ -2648,6 +2654,7 @@ function market_hub_reference_context(string|int $hubRef): array
         'hub_type' => 'unknown',
         'api_source' => 'unknown',
         'region_id' => null,
+        'system_id' => null,
         'structure_id' => null,
     ];
 }
@@ -2740,9 +2747,10 @@ function sync_market_hub_current_orders(string|int $hubRef, string $runMode = 'i
             $result['cursor'] = 'observed_at:' . $observedAt . ';source:structure;id:' . $structureId . ';page:' . max(1, $page - 1);
         } elseif ($selectedHubType === 'npc_station') {
             $regionId = (int) ($hubContext['region_id'] ?? 0);
+            $systemId = (int) ($hubContext['system_id'] ?? 0);
             $stationId = (int) $hubKey;
-            if ($regionId <= 0 || $stationId <= 0) {
-                throw new RuntimeException('Hub current sync requires a valid NPC station reference with region mapping.');
+            if ($stationId <= 0 || $systemId <= 0 || $regionId <= 0) {
+                throw new RuntimeException('Missing station→system→region mapping (selected_hub_id=' . $stationId . ', system_id=' . $systemId . ', resolved_region_id=' . $regionId . ').');
             }
             $resolvedRegionId = $regionId;
 
@@ -2799,6 +2807,7 @@ function sync_market_hub_current_orders(string|int $hubRef, string $runMode = 'i
                 'selected_hub_id' => $selectedHubId,
                 'selected_hub_name' => $selectedHubName,
                 'selected_hub_type' => $selectedHubType,
+                'system_id' => isset($hubContext['system_id']) && $hubContext['system_id'] !== null ? (int) $hubContext['system_id'] : null,
                 'effective_api_source' => $effectiveApiSource,
                 'resolved_region_id' => $resolvedRegionId,
                 'resolved_structure_id' => $resolvedStructureId,
@@ -2820,6 +2829,7 @@ function sync_market_hub_current_orders(string|int $hubRef, string $runMode = 'i
             'selected_hub_id' => $selectedHubId,
             'selected_hub_name' => $selectedHubName,
             'selected_hub_type' => $selectedHubType,
+            'system_id' => isset($hubContext['system_id']) && $hubContext['system_id'] !== null ? (int) $hubContext['system_id'] : null,
             'effective_api_source' => $effectiveApiSource,
             'resolved_region_id' => $resolvedRegionId,
             'resolved_structure_id' => $resolvedStructureId,
@@ -2841,6 +2851,7 @@ function sync_market_hub_current_orders(string|int $hubRef, string $runMode = 'i
             'selected_hub_id' => (string) ($hubContext['hub_id'] ?? $hubKey),
             'selected_hub_name' => (string) ($hubContext['hub_name'] ?? market_hub_reference_name()),
             'selected_hub_type' => (string) ($hubContext['hub_type'] ?? 'unknown'),
+            'system_id' => isset($hubContext['system_id']) && $hubContext['system_id'] !== null ? (int) $hubContext['system_id'] : null,
             'effective_api_source' => (string) ($hubContext['api_source'] ?? 'unknown'),
             'resolved_region_id' => isset($hubContext['region_id']) && $hubContext['region_id'] !== null ? (int) $hubContext['region_id'] : null,
             'resolved_structure_id' => isset($hubContext['structure_id']) && $hubContext['structure_id'] !== null ? (int) $hubContext['structure_id'] : null,
