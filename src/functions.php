@@ -1665,6 +1665,7 @@ function dashboard_intelligence_data(): array
         $referenceSourceId = sync_source_id_from_hub_ref($marketHubRef);
         $trendHistory = dashboard_trend_history_dataset($marketHubRef, $referenceSourceId);
         $historyRows = $trendHistory['rows'] ?? [];
+        $doctrine = doctrine_groups_overview_data();
 
         return [
         'kpis' => [
@@ -1702,9 +1703,10 @@ function dashboard_intelligence_data(): array
         ],
         'trend_snippets' => dashboard_trend_snippets($historyRows),
         'trend_snippets_message' => (string) ($trendHistory['message'] ?? ''),
+        'doctrine' => $doctrine,
         ];
     }, [
-        'dependencies' => ['dashboard', 'market_compare'],
+        'dependencies' => ['dashboard', 'market_compare', 'doctrine'],
         'lock_ttl' => 20,
     ]);
 }
@@ -7512,28 +7514,31 @@ function doctrine_default_group_name(): string
     return trim((string) get_setting('doctrine.default_group', 'SupplyCore Doctrine')) ?: 'SupplyCore Doctrine';
 }
 
+function doctrine_parse_group_csv(?string $csv): array
+{
+    if ($csv === null || trim($csv) === '') {
+        return [];
+    }
+
+    return array_values(array_unique(array_filter(array_map('intval', explode(',', $csv)), static fn (int $id): bool => $id > 0)));
+}
+
+function doctrine_parse_group_names_csv(?string $csv): array
+{
+    if ($csv === null || trim($csv) === '') {
+        return [];
+    }
+
+    return array_values(array_filter(array_map('trim', explode('||', $csv)), static fn (string $name): bool => $name !== ''));
+}
+
 function doctrine_group_options(): array
 {
     try {
-        $groups = db_doctrine_groups_all();
+        return db_doctrine_groups_all();
     } catch (Throwable) {
-        $groups = [];
+        return [];
     }
-
-    if ($groups === []) {
-        return [
-            [
-                'id' => 0,
-                'group_name' => doctrine_default_group_name(),
-                'description' => 'Create your first doctrine group to start importing alliance fits.',
-                'fit_count' => 0,
-                'item_count' => 0,
-                'last_fit_updated_at' => null,
-            ],
-        ];
-    }
-
-    return $groups;
 }
 
 function doctrine_sanitize_group_name(string $name): string
@@ -7694,14 +7699,15 @@ function doctrine_parse_eft(string $text): array
 
 function doctrine_parse_buyall(string $text): array
 {
+    $rawLines = array_values(array_filter(array_map(static fn (mixed $line): string => trim((string) $line), preg_split('/\R/', $text) ?: []), static fn (string $line): bool => $line !== ''));
+    if ($rawLines === []) {
+        throw new RuntimeException('BuyAll imports must include at least the ship hull on the first line.');
+    }
+
+    $shipName = $rawLines[0];
     $items = [];
 
-    foreach (preg_split('/\R/', $text) ?: [] as $rawLine) {
-        $line = trim((string) $rawLine);
-        if ($line === '') {
-            continue;
-        }
-
+    foreach ($rawLines as $index => $line) {
         $parsed = doctrine_parse_quantity_and_name($line);
         $itemName = trim((string) ($parsed['item_name'] ?? ''));
         if ($itemName === '') {
@@ -7710,22 +7716,15 @@ function doctrine_parse_buyall(string $text): array
 
         $items[] = [
             'line_number' => count($items) + 1,
-            'slot_category' => count($items) === 0 ? 'Hull' : 'Items',
+            'slot_category' => $index === 0 ? 'Hull' : 'Items',
             'item_name' => $itemName,
             'quantity' => max(1, (int) ($parsed['quantity'] ?? 1)),
         ];
     }
 
-    $shipName = 'Unspecified Hull';
-    $fitName = 'Imported BuyAll List';
-    if ($items !== []) {
-        $shipName = (string) ($items[0]['item_name'] ?? $shipName);
-        $fitName = $shipName . ' BuyAll';
-    }
-
     return [
         'format' => 'buyall',
-        'fit_name' => $fitName,
+        'fit_name' => $shipName !== '' ? ($shipName . ' BuyAll') : 'Imported BuyAll List',
         'ship_name' => $shipName,
         'items' => $items,
     ];
@@ -7895,7 +7894,7 @@ function doctrine_resolve_item_names(array $names): array
             ];
         }
     } catch (Throwable) {
-        // Cache unavailable; continue to reference tables.
+        // Continue.
     }
 
     $lookupNames = [];
@@ -7922,12 +7921,10 @@ function doctrine_resolve_item_names(array $names): array
                 try {
                     db_item_name_cache_upsert($normalized, (string) ($row['type_name'] ?? ''), $typeId, 'ref');
                 } catch (Throwable) {
-                    // Ignore cache write failures.
                 }
                 unset($lookupNames[$normalized]);
             }
         } catch (Throwable) {
-            // Continue to ESI lookup.
         }
     }
 
@@ -7937,7 +7934,6 @@ function doctrine_resolve_item_names(array $names): array
             try {
                 db_item_name_cache_upsert($normalized, (string) ($row['item_name'] ?? $lookupNames[$normalized] ?? ''), (int) ($row['type_id'] ?? 0), 'esi');
             } catch (Throwable) {
-                // Ignore cache write failures.
             }
             unset($lookupNames[$normalized]);
         }
@@ -7951,7 +7947,6 @@ function doctrine_resolve_item_names(array $names): array
                 try {
                     db_item_name_cache_upsert($normalized, (string) $found['item_name'], (int) ($found['type_id'] ?? 0), 'esi');
                 } catch (Throwable) {
-                    // Ignore cache write failures.
                 }
                 continue;
             }
@@ -7964,7 +7959,6 @@ function doctrine_resolve_item_names(array $names): array
             try {
                 db_item_name_cache_upsert($normalized, $original, null, 'missing');
             } catch (Throwable) {
-                // Ignore cache write failures.
             }
         }
     }
@@ -8018,6 +8012,8 @@ function doctrine_resolve_parsed_fit(array $parsed, string $rawText): array
         $fitName = trim((string) ($shipResolved['item_name'] ?? $parsed['ship_name'] ?? 'Imported Doctrine Fit'));
     }
 
+    $shipMissing = (int) ($shipResolved['type_id'] ?? 0) <= 0;
+
     return [
         'fit' => [
             'fit_name' => mb_substr($fitName, 0, 190),
@@ -8026,81 +8022,252 @@ function doctrine_resolve_parsed_fit(array $parsed, string $rawText): array
             'source_format' => (string) ($parsed['format'] ?? doctrine_detect_format($rawText)),
             'import_body' => $rawText,
             'item_count' => count($resolvedItems),
-            'unresolved_count' => count($unresolvedItems) + ((int) ($shipResolved['type_id'] ?? 0) > 0 ? 0 : 1),
+            'unresolved_count' => count($unresolvedItems) + ($shipMissing ? 1 : 0),
         ],
         'items' => $resolvedItems,
         'ship' => $shipResolved,
         'unresolved' => array_values(array_unique(array_filter(array_merge(
-            (int) ($shipResolved['type_id'] ?? 0) > 0 ? [] : [trim((string) ($shipResolved['item_name'] ?? $parsed['ship_name'] ?? 'Unknown Hull'))],
+            $shipMissing ? [trim((string) ($shipResolved['item_name'] ?? $parsed['ship_name'] ?? 'Unknown Hull'))] : [],
             $unresolvedItems
         )))),
+        'ship_missing' => $shipMissing,
     ];
 }
 
-function doctrine_resolve_group_id_from_request(array $post): int
+function doctrine_selected_group_ids(array $post): array
 {
-    $existingGroupId = max(0, (int) ($post['group_id'] ?? 0));
-    $newGroupName = doctrine_sanitize_group_name((string) ($post['new_group_name'] ?? ''));
-    $newGroupDescription = doctrine_sanitize_description($post['new_group_description'] ?? null);
-
-    if ($existingGroupId > 0 && trim((string) ($post['new_group_name'] ?? '')) === '') {
-        return $existingGroupId;
+    $groupIds = [];
+    foreach ((array) ($post['group_ids'] ?? []) as $groupId) {
+        $id = (int) $groupId;
+        if ($id > 0) {
+            $groupIds[] = $id;
+        }
     }
 
+    $single = (int) ($post['group_id'] ?? 0);
+    if ($single > 0) {
+        $groupIds[] = $single;
+    }
+
+    return array_values(array_unique(array_filter($groupIds, static fn (int $id): bool => $id > 0)));
+}
+
+function doctrine_render_editable_item_lines(array $items): string
+{
+    $lines = [];
+    foreach ($items as $item) {
+        $category = trim((string) ($item['slot_category'] ?? 'Items'));
+        $quantity = max(1, (int) ($item['quantity'] ?? 1));
+        $itemName = trim((string) ($item['item_name'] ?? ''));
+        if ($itemName === '') {
+            continue;
+        }
+
+        $prefix = $category !== '' ? ($category . ' :: ') : '';
+        $suffix = $quantity !== 1 ? (' x' . $quantity) : '';
+        $lines[] = $prefix . $itemName . $suffix;
+    }
+
+    return implode("\n", $lines);
+}
+
+function doctrine_parse_editable_item_lines(string $text, string $shipName = ''): array
+{
+    $items = [];
+    foreach (preg_split('/\R/', $text) ?: [] as $rawLine) {
+        $line = trim((string) $rawLine);
+        if ($line === '') {
+            continue;
+        }
+
+        $category = 'Items';
+        $lineBody = $line;
+        if (preg_match('/^(.*?)\s*::\s*(.+)$/', $line, $matches) === 1) {
+            $category = trim($matches[1]) !== '' ? trim($matches[1]) : 'Items';
+            $lineBody = trim($matches[2]);
+        }
+
+        $parsed = doctrine_parse_quantity_and_name($lineBody);
+        $itemName = trim((string) ($parsed['item_name'] ?? ''));
+        if ($itemName === '') {
+            continue;
+        }
+
+        if (count($items) === 0 && doctrine_normalize_item_name($itemName) === doctrine_normalize_item_name($shipName)) {
+            $category = 'Hull';
+        }
+
+        $items[] = [
+            'line_number' => count($items) + 1,
+            'slot_category' => mb_substr($category, 0, 80),
+            'item_name' => $itemName,
+            'quantity' => max(1, (int) ($parsed['quantity'] ?? 1)),
+        ];
+    }
+
+    return $items;
+}
+
+function doctrine_create_group_if_requested(array $post): int
+{
+    $newGroupNameRaw = trim((string) ($post['new_group_name'] ?? ''));
+    if ($newGroupNameRaw === '') {
+        return 0;
+    }
+
+    return db_doctrine_group_create(
+        doctrine_sanitize_group_name($newGroupNameRaw),
+        doctrine_sanitize_description($post['new_group_description'] ?? null)
+    );
+}
+
+function doctrine_fit_group_suggestions(array $fit, int $excludeFitId = 0): array
+{
     try {
-        return db_doctrine_group_create($newGroupName, $newGroupDescription);
+        return db_doctrine_group_suggestions_for_fit(
+            (string) ($fit['fit_name'] ?? ''),
+            isset($fit['ship_type_id']) && $fit['ship_type_id'] !== null ? (int) $fit['ship_type_id'] : null,
+            $excludeFitId
+        );
     } catch (Throwable) {
-        return $existingGroupId;
+        return [];
     }
+}
+
+function doctrine_prepare_fit_draft(array $resolved, array $groupIds = [], int $fitId = 0): array
+{
+    $fit = (array) ($resolved['fit'] ?? []);
+    $items = (array) ($resolved['items'] ?? []);
+    $suggestions = doctrine_fit_group_suggestions($fit, $fitId);
+    $suggestedGroupIds = array_values(array_map(static fn (array $row): int => (int) ($row['id'] ?? 0), $suggestions));
+    $selectedGroupIds = array_values(array_unique(array_merge($groupIds, $suggestedGroupIds)));
+
+    return [
+        'fit_id' => $fitId,
+        'fit' => $fit,
+        'items' => $items,
+        'item_lines_text' => doctrine_render_editable_item_lines($items),
+        'group_ids' => $selectedGroupIds,
+        'suggested_groups' => $suggestions,
+        'unresolved' => array_values(array_unique((array) ($resolved['unresolved'] ?? []))),
+        'ship_missing' => (bool) ($resolved['ship_missing'] ?? false),
+        'ready_to_save' => ((array) ($resolved['unresolved'] ?? [])) === [] && trim((string) ($fit['ship_name'] ?? '')) !== '' && trim((string) ($fit['fit_name'] ?? '')) !== '',
+    ];
+}
+
+function doctrine_build_draft_from_import_request(array $post): array
+{
+    $rawText = trim((string) ($post['fit_payload'] ?? ''));
+    if ($rawText === '') {
+        throw new RuntimeException('Paste a doctrine fit payload before importing.');
+    }
+
+    $parsed = doctrine_parse_import_text($rawText);
+    $resolved = doctrine_resolve_parsed_fit($parsed, $rawText);
+
+    return doctrine_prepare_fit_draft($resolved, doctrine_selected_group_ids($post));
+}
+
+function doctrine_build_draft_from_editor_request(array $post, int $fitId = 0): array
+{
+    $fitName = trim((string) ($post['fit_name'] ?? ''));
+    $shipName = trim((string) ($post['ship_name'] ?? ''));
+    $sourceFormat = in_array((string) ($post['source_format'] ?? ''), ['eft', 'buyall'], true) ? (string) $post['source_format'] : 'buyall';
+    $rawText = trim((string) ($post['import_body'] ?? ''));
+    $itemLinesText = trim((string) ($post['item_lines_text'] ?? ''));
+    $items = doctrine_parse_editable_item_lines($itemLinesText, $shipName);
+
+    if ($shipName === '') {
+        throw new RuntimeException('Ship name is required before saving a doctrine fit.');
+    }
+    if ($fitName === '') {
+        throw new RuntimeException('Fit name is required before saving a doctrine fit.');
+    }
+    if ($items === []) {
+        throw new RuntimeException('Add at least one parsed item line before saving a doctrine fit.');
+    }
+
+    $parsed = [
+        'format' => $sourceFormat,
+        'fit_name' => $fitName,
+        'ship_name' => $shipName,
+        'items' => $items,
+    ];
+    $resolved = doctrine_resolve_parsed_fit($parsed, $rawText !== '' ? $rawText : $itemLinesText);
+    $resolved['fit']['fit_name'] = mb_substr($fitName, 0, 190);
+    $resolved['fit']['source_format'] = $sourceFormat;
+    $resolved['fit']['import_body'] = $rawText !== '' ? $rawText : $itemLinesText;
+
+    return doctrine_prepare_fit_draft($resolved, doctrine_selected_group_ids($post), $fitId);
 }
 
 function doctrine_import_fit_from_request(array $post): array
 {
-    $rawText = trim((string) ($post['fit_payload'] ?? ''));
-    if ($rawText === '') {
-        return ['ok' => false, 'message' => 'Paste a doctrine fit payload before importing.'];
-    }
-
-    $groupId = doctrine_resolve_group_id_from_request($post);
-    if ($groupId <= 0) {
-        return ['ok' => false, 'message' => 'Select an existing doctrine group or enter a new group name.'];
-    }
-
     try {
-        $parsed = doctrine_parse_import_text($rawText);
-        $resolved = doctrine_resolve_parsed_fit($parsed, $rawText);
+        $draft = doctrine_build_draft_from_editor_request($post);
     } catch (Throwable $exception) {
         return ['ok' => false, 'message' => $exception->getMessage()];
     }
 
-    if (($resolved['unresolved'] ?? []) !== []) {
-        return [
-            'ok' => false,
-            'message' => 'Unable to resolve all items to real EVE types. Resolve these names first: ' . implode(', ', array_slice((array) $resolved['unresolved'], 0, 12)),
-            'parsed' => $parsed,
-            'resolved' => $resolved,
-        ];
+    $groupIds = doctrine_selected_group_ids($post);
+    try {
+        $newGroupId = doctrine_create_group_if_requested($post);
+    } catch (Throwable $exception) {
+        return ['ok' => false, 'message' => 'Unable to create doctrine group: ' . $exception->getMessage(), 'draft' => $draft];
     }
+    if ($newGroupId > 0) {
+        $groupIds[] = $newGroupId;
+    }
+    $groupIds = array_values(array_unique(array_filter($groupIds, static fn (int $id): bool => $id > 0)));
 
-    $fit = (array) ($resolved['fit'] ?? []);
-    $fit['doctrine_group_id'] = $groupId;
+    if ($groupIds === []) {
+        return ['ok' => false, 'message' => 'Assign the fit to at least one doctrine group before saving.', 'draft' => $draft];
+    }
+    if (($draft['unresolved'] ?? []) !== []) {
+        return ['ok' => false, 'message' => 'Resolve the ship or item names before saving the doctrine fit.', 'draft' => $draft];
+    }
 
     try {
-        $fitId = db_doctrine_fit_create($fit, (array) ($resolved['items'] ?? []));
+        $fitId = db_doctrine_fit_create((array) ($draft['fit'] ?? []), (array) ($draft['items'] ?? []), $groupIds);
     } catch (Throwable $exception) {
-        return ['ok' => false, 'message' => 'Doctrine fit import failed: ' . $exception->getMessage()];
+        return ['ok' => false, 'message' => 'Doctrine fit import failed: ' . $exception->getMessage(), 'draft' => $draft];
     }
 
-    supplycore_cache_bust(['doctrine']);
+    supplycore_cache_bust(['doctrine', 'dashboard']);
 
     return [
         'ok' => true,
         'message' => 'Doctrine fit imported successfully.',
         'fit_id' => $fitId,
-        'group_id' => $groupId,
-        'parsed' => $parsed,
-        'resolved' => $resolved,
+        'draft' => $draft,
     ];
+}
+
+function doctrine_update_fit_from_request(int $fitId, array $post): array
+{
+    try {
+        $draft = doctrine_build_draft_from_editor_request($post, $fitId);
+    } catch (Throwable $exception) {
+        return ['ok' => false, 'message' => $exception->getMessage()];
+    }
+
+    $groupIds = doctrine_selected_group_ids($post);
+    if ($groupIds === []) {
+        return ['ok' => false, 'message' => 'Assign the fit to at least one doctrine group before saving.', 'draft' => $draft];
+    }
+    if (($draft['unresolved'] ?? []) !== []) {
+        return ['ok' => false, 'message' => 'Resolve the ship or item names before saving the doctrine fit.', 'draft' => $draft];
+    }
+
+    try {
+        db_doctrine_fit_update($fitId, (array) ($draft['fit'] ?? []), (array) ($draft['items'] ?? []), $groupIds);
+    } catch (Throwable $exception) {
+        return ['ok' => false, 'message' => 'Doctrine fit update failed: ' . $exception->getMessage(), 'draft' => $draft];
+    }
+
+    supplycore_cache_bust(['doctrine', 'dashboard']);
+
+    return ['ok' => true, 'message' => 'Doctrine fit updated successfully.', 'draft' => $draft];
 }
 
 function doctrine_ship_image_url(?int $typeId, int $size = 128): ?string
@@ -8120,23 +8287,29 @@ function doctrine_format_quantity(int $value): string
     return number_format(max(0, $value));
 }
 
-function doctrine_fit_item_market_rows(array $items): array
+function doctrine_market_lookup_by_type_ids(array $typeIds): array
 {
-    $typeIds = [];
-    foreach ($items as $item) {
-        $typeId = (int) ($item['type_id'] ?? 0);
-        if ($typeId > 0) {
-            $typeIds[] = $typeId;
-        }
+    $typeIds = array_values(array_unique(array_filter(array_map('intval', $typeIds), static fn (int $id): bool => $id > 0)));
+    if ($typeIds === []) {
+        return [];
     }
 
     $comparisonRows = market_comparison_outcomes($typeIds)['rows'] ?? [];
-    $comparisonByTypeId = [];
+    $lookup = [];
     foreach ($comparisonRows as $row) {
         $typeId = (int) ($row['type_id'] ?? 0);
         if ($typeId > 0) {
-            $comparisonByTypeId[$typeId] = $row;
+            $lookup[$typeId] = $row;
         }
+    }
+
+    return $lookup;
+}
+
+function doctrine_fit_item_market_rows(array $items, array $comparisonByTypeId = []): array
+{
+    if ($comparisonByTypeId === []) {
+        $comparisonByTypeId = doctrine_market_lookup_by_type_ids(array_map(static fn (array $item): int => (int) ($item['type_id'] ?? 0), $items));
     }
 
     $rows = [];
@@ -8146,14 +8319,16 @@ function doctrine_fit_item_market_rows(array $items): array
         $requiredQty = max(1, (int) ($item['quantity'] ?? 1));
         $localQty = max(0, (int) ($market['alliance_total_sell_volume'] ?? 0));
         $missingQty = max(0, $requiredQty - $localQty);
-        $coverageRatio = $requiredQty > 0 ? ($localQty / $requiredQty) : 0.0;
+        $coverageRatio = $requiredQty > 0 ? min(1.0, $localQty / $requiredQty) : 0.0;
         $status = $missingQty <= 0 ? 'ok' : ($coverageRatio >= 0.5 ? 'low' : 'missing');
+        $hubPrice = isset($market['reference_best_sell_price']) ? (float) $market['reference_best_sell_price'] : null;
 
         $rows[] = $item + [
             'local_available_qty' => $localQty,
             'missing_qty' => $missingQty,
             'local_price' => isset($market['alliance_best_sell_price']) ? (float) $market['alliance_best_sell_price'] : null,
-            'hub_price' => isset($market['reference_best_sell_price']) ? (float) $market['reference_best_sell_price'] : null,
+            'hub_price' => $hubPrice,
+            'restock_gap_isk' => $hubPrice !== null ? ($hubPrice * $missingQty) : null,
             'market_status' => $status,
             'market_label' => match ($status) {
                 'ok' => 'Stock OK',
@@ -8165,6 +8340,85 @@ function doctrine_fit_item_market_rows(array $items): array
     }
 
     return $rows;
+}
+
+function doctrine_supply_summary(array $rows): array
+{
+    $totalRequired = 0;
+    $totalLocal = 0;
+    $missingLines = 0;
+    $okLines = 0;
+    $totalMissingQty = 0;
+    $restockGap = 0.0;
+    $trackedRestockLines = 0;
+
+    foreach ($rows as $row) {
+        $required = max(1, (int) ($row['quantity'] ?? 1));
+        $local = max(0, (int) ($row['local_available_qty'] ?? 0));
+        $missing = max(0, (int) ($row['missing_qty'] ?? 0));
+        $totalRequired += $required;
+        $totalLocal += $local;
+        $totalMissingQty += $missing;
+        if ($missing > 0) {
+            $missingLines++;
+        } else {
+            $okLines++;
+        }
+        if (isset($row['restock_gap_isk']) && $row['restock_gap_isk'] !== null) {
+            $restockGap += (float) $row['restock_gap_isk'];
+            $trackedRestockLines++;
+        }
+    }
+
+    $coveragePercent = $totalRequired > 0 ? min(100.0, ($totalLocal / $totalRequired) * 100.0) : 0.0;
+    $marketReady = $missingLines === 0;
+    $status = $marketReady ? 'ready' : ($coveragePercent >= 70.0 ? 'warning' : 'critical');
+
+    return [
+        'market_ready' => $marketReady,
+        'status' => $status,
+        'status_label' => match ($status) {
+            'ready' => 'Market ready',
+            'warning' => 'Partial gap',
+            default => 'Supply gap',
+        },
+        'total_required' => $totalRequired,
+        'total_local' => $totalLocal,
+        'missing_lines' => $missingLines,
+        'ok_lines' => $okLines,
+        'total_missing_qty' => $totalMissingQty,
+        'restock_gap_isk' => $restockGap,
+        'coverage_percent' => $coveragePercent,
+        'tracked_restock_lines' => $trackedRestockLines,
+    ];
+}
+
+function doctrine_supply_status_tone(string $status): string
+{
+    return match ($status) {
+        'ready' => 'border-emerald-400/20 bg-emerald-500/10 text-emerald-100',
+        'warning' => 'border-amber-400/20 bg-amber-500/10 text-amber-100',
+        default => 'border-rose-400/20 bg-rose-500/10 text-rose-200',
+    };
+}
+
+function doctrine_group_market_rows_by_category(array $items, array $comparisonByTypeId = []): array
+{
+    $categories = [];
+    foreach (doctrine_fit_item_market_rows($items, $comparisonByTypeId) as $row) {
+        $category = trim((string) ($row['slot_category'] ?? 'Items'));
+        if ($category === '') {
+            $category = 'Items';
+        }
+
+        $categories[$category][] = $row;
+    }
+
+    uksort($categories, static function (string $a, string $b): int {
+        return doctrine_category_sort_order($a) <=> doctrine_category_sort_order($b) ?: strcasecmp($a, $b);
+    });
+
+    return $categories;
 }
 
 function doctrine_category_sort_order(string $category): int
@@ -8188,78 +8442,135 @@ function doctrine_category_sort_order(string $category): int
     return $map[$category] ?? 999;
 }
 
-function doctrine_group_market_rows_by_category(array $items): array
+function doctrine_operational_snapshot(): array
 {
-    $categories = [];
-    foreach (doctrine_fit_item_market_rows($items) as $row) {
-        $category = trim((string) ($row['slot_category'] ?? 'Items'));
-        if ($category === '') {
-            $category = 'Items';
+    return supplycore_cache_aside('doctrine', ['operational-snapshot'], supplycore_cache_ttl('doctrine_summary'), static function (): array {
+        try {
+            $groups = db_doctrine_groups_all();
+            $fits = db_doctrine_fits_all();
+            $ungroupedFits = db_doctrine_ungrouped_fits();
+        } catch (Throwable) {
+            return ['groups' => [], 'fits' => [], 'ungrouped_fits' => [], 'top_missing_items' => []];
         }
 
-        $categories[$category][] = $row;
-    }
-
-    uksort($categories, static function (string $a, string $b): int {
-        return doctrine_category_sort_order($a) <=> doctrine_category_sort_order($b) ?: strcasecmp($a, $b);
-    });
-
-    return $categories;
-}
-
-function doctrine_groups_overview_data(): array
-{
-    return supplycore_cache_aside('doctrine', ['groups-overview'], supplycore_cache_ttl('doctrine_summary'), static function (): array {
-        $groups = doctrine_group_options();
-        $fitCount = 0;
-        $itemCount = 0;
-        foreach ($groups as $group) {
-            $fitCount += (int) ($group['fit_count'] ?? 0);
-            $itemCount += (int) ($group['item_count'] ?? 0);
+        $fitIds = array_values(array_map(static fn (array $fit): int => (int) ($fit['id'] ?? 0), $fits));
+        $itemsByFitId = [];
+        $allTypeIds = [];
+        try {
+            foreach (db_doctrine_fit_items_by_fit_ids($fitIds) as $item) {
+                $fitId = (int) ($item['doctrine_fit_id'] ?? 0);
+                $itemsByFitId[$fitId][] = $item;
+                $typeId = (int) ($item['type_id'] ?? 0);
+                if ($typeId > 0) {
+                    $allTypeIds[] = $typeId;
+                }
+            }
+        } catch (Throwable) {
         }
+
+        $comparisonByTypeId = doctrine_market_lookup_by_type_ids($allTypeIds);
+        $topMissing = [];
+        $fitsById = [];
+
+        foreach ($fits as $fit) {
+            $fitId = (int) ($fit['id'] ?? 0);
+            $fitItems = $itemsByFitId[$fitId] ?? [];
+            $marketRows = doctrine_fit_item_market_rows($fitItems, $comparisonByTypeId);
+            $summary = doctrine_supply_summary($marketRows);
+            $groupIds = doctrine_parse_group_csv($fit['group_ids_csv'] ?? null);
+            $groupNames = doctrine_parse_group_names_csv($fit['group_names_csv'] ?? null);
+            $fit['group_ids'] = $groupIds;
+            $fit['group_names'] = $groupNames;
+            $fit['ship_image_url'] = doctrine_ship_image_url(isset($fit['ship_type_id']) ? (int) $fit['ship_type_id'] : null, 64);
+            $fit['supply'] = $summary;
+            $fitsById[$fitId] = $fit;
+
+            foreach ($marketRows as $row) {
+                $missingQty = (int) ($row['missing_qty'] ?? 0);
+                if ($missingQty <= 0) {
+                    continue;
+                }
+                $key = (string) ((int) ($row['type_id'] ?? 0) > 0 ? 'type:' . (int) ($row['type_id'] ?? 0) : 'name:' . doctrine_normalize_item_name((string) ($row['item_name'] ?? '')));
+                if (!isset($topMissing[$key])) {
+                    $topMissing[$key] = [
+                        'item_name' => (string) ($row['item_name'] ?? ''),
+                        'type_id' => isset($row['type_id']) ? (int) $row['type_id'] : null,
+                        'missing_qty' => 0,
+                        'restock_gap_isk' => 0.0,
+                        'fit_count' => 0,
+                    ];
+                }
+                $topMissing[$key]['missing_qty'] += $missingQty;
+                $topMissing[$key]['restock_gap_isk'] += (float) ($row['restock_gap_isk'] ?? 0.0);
+                $topMissing[$key]['fit_count']++;
+            }
+        }
+
+        foreach ($groups as &$group) {
+            $groupId = (int) ($group['id'] ?? 0);
+            $groupFits = array_values(array_filter($fitsById, static fn (array $fit): bool => in_array($groupId, (array) ($fit['group_ids'] ?? []), true)));
+            $group['fits'] = $groupFits;
+            $group['ready_fit_count'] = count(array_filter($groupFits, static fn (array $fit): bool => (bool) (($fit['supply']['market_ready'] ?? false))));
+            $group['gap_fit_count'] = count($groupFits) - (int) $group['ready_fit_count'];
+            $group['missing_lines'] = array_sum(array_map(static fn (array $fit): int => (int) (($fit['supply']['missing_lines'] ?? 0)), $groupFits));
+            $group['total_missing_qty'] = array_sum(array_map(static fn (array $fit): int => (int) (($fit['supply']['total_missing_qty'] ?? 0)), $groupFits));
+            $group['restock_gap_isk'] = array_sum(array_map(static fn (array $fit): float => (float) (($fit['supply']['restock_gap_isk'] ?? 0.0)), $groupFits));
+            $group['coverage_percent'] = count($groupFits) > 0 ? array_sum(array_map(static fn (array $fit): float => (float) (($fit['supply']['coverage_percent'] ?? 0.0)), $groupFits)) / count($groupFits) : 0.0;
+            $group['status'] = ((int) $group['gap_fit_count']) === 0 ? 'ready' : (((int) $group['ready_fit_count']) > 0 ? 'warning' : 'critical');
+            $group['status_label'] = ((int) $group['gap_fit_count']) === 0 ? 'Ready' : (((int) $group['ready_fit_count']) > 0 ? 'At risk' : 'Gap active');
+        }
+        unset($group);
+
+        usort($groups, static fn (array $a, array $b): int => ((int) ($b['gap_fit_count'] ?? 0) <=> (int) ($a['gap_fit_count'] ?? 0)) ?: strcasecmp((string) ($a['group_name'] ?? ''), (string) ($b['group_name'] ?? '')));
+        usort($topMissing, static fn (array $a, array $b): int => ((int) ($b['missing_qty'] ?? 0) <=> (int) ($a['missing_qty'] ?? 0)) ?: ((float) ($b['restock_gap_isk'] ?? 0.0) <=> (float) ($a['restock_gap_isk'] ?? 0.0)));
 
         return [
-        'summary' => [
-            ['label' => 'Doctrine Groups', 'value' => (string) count($groups), 'context' => 'Organized doctrine collections ready for market mapping'],
-            ['label' => 'Imported Fits', 'value' => (string) $fitCount, 'context' => 'Alliance fit payloads normalized and stored'],
-            ['label' => 'Tracked Items', 'value' => (string) $itemCount, 'context' => 'Doctrine lines prepared for gap detection'],
-            ['label' => 'Baseline Goal', 'value' => 'Ready', 'context' => 'Restock, hauling, and supply-gap workflows'],
-        ],
-        'groups' => $groups,
+            'groups' => $groups,
+            'fits' => array_values($fitsById),
+            'ungrouped_fits' => $ungroupedFits,
+            'top_missing_items' => array_slice(array_values($topMissing), 0, 10),
         ];
-    }, [
-        'dependencies' => ['doctrine'],
-        'lock_ttl' => 20,
-    ]);
-}
-
-function doctrine_group_detail_data(int $groupId): array
-{
-    return supplycore_cache_aside('doctrine', ['group-detail', $groupId], supplycore_cache_ttl('doctrine_detail'), static function () use ($groupId): array {
-        try {
-            $group = db_doctrine_group_by_id($groupId);
-            $fits = db_doctrine_fits_by_group($groupId);
-        } catch (Throwable) {
-            $group = null;
-            $fits = [];
-        }
-
-        if ($group === null) {
-            return ['group' => null, 'fits' => []];
-        }
-
-        foreach ($fits as &$fit) {
-            $requiredQty = max(0, (int) ($fit['required_quantity'] ?? 0));
-            $fit['required_quantity_label'] = doctrine_format_quantity($requiredQty);
-            $fit['ship_image_url'] = doctrine_ship_image_url(isset($fit['ship_type_id']) ? (int) $fit['ship_type_id'] : null, 64);
-        }
-        unset($fit);
-
-        return ['group' => $group, 'fits' => $fits];
     }, [
         'dependencies' => ['doctrine', 'market_compare'],
         'lock_ttl' => 20,
     ]);
+}
+
+function doctrine_groups_overview_data(): array
+{
+    $snapshot = doctrine_operational_snapshot();
+    $groups = $snapshot['groups'] ?? [];
+    $fits = $snapshot['fits'] ?? [];
+    $notReadyFits = array_values(array_filter($fits, static fn (array $fit): bool => !(bool) (($fit['supply']['market_ready'] ?? false))));
+    $totalMissingQty = array_sum(array_map(static fn (array $fit): int => (int) (($fit['supply']['total_missing_qty'] ?? 0)), $notReadyFits));
+    $restockGap = array_sum(array_map(static fn (array $fit): float => (float) (($fit['supply']['restock_gap_isk'] ?? 0.0)), $notReadyFits));
+
+    return [
+        'summary' => [
+            ['label' => 'Doctrine Groups', 'value' => (string) count($groups), 'context' => 'Operational doctrine collections under active readiness tracking'],
+            ['label' => 'Imported Fits', 'value' => (string) count($fits), 'context' => count($notReadyFits) . ' fits currently have local supply gaps'],
+            ['label' => 'Missing Units', 'value' => doctrine_format_quantity($totalMissingQty), 'context' => 'Total local shortfall across every doctrine fit'],
+            ['label' => 'Restock Gap', 'value' => market_format_isk($restockGap), 'context' => 'Estimated hub spend required to close doctrine gaps'],
+        ],
+        'groups' => $groups,
+        'fits' => $fits,
+        'not_ready_fits' => $notReadyFits,
+        'top_missing_items' => $snapshot['top_missing_items'] ?? [],
+        'ungrouped_fits' => $snapshot['ungrouped_fits'] ?? [],
+    ];
+}
+
+function doctrine_group_detail_data(int $groupId): array
+{
+    $snapshot = doctrine_operational_snapshot();
+    $groups = $snapshot['groups'] ?? [];
+    foreach ($groups as $group) {
+        if ((int) ($group['id'] ?? 0) === $groupId) {
+            return ['group' => $group, 'fits' => (array) ($group['fits'] ?? [])];
+        }
+    }
+
+    return ['group' => null, 'fits' => []];
 }
 
 function doctrine_fit_detail_view_model(int $fitId): array
@@ -8274,45 +8585,42 @@ function doctrine_fit_detail_view_model(int $fitId): array
         }
 
         if ($fit === null) {
-            return ['fit' => null, 'categories' => [], 'summary' => []];
+            return ['fit' => null, 'categories' => [], 'summary' => [], 'items' => []];
         }
 
-        $categories = doctrine_group_market_rows_by_category($items);
-        $totalRequired = 0;
-        $totalLocal = 0;
-        $missingLines = 0;
-        $okLines = 0;
+        $fit['group_ids'] = doctrine_parse_group_csv($fit['group_ids_csv'] ?? null);
+        $fit['group_names'] = doctrine_parse_group_names_csv($fit['group_names_csv'] ?? null);
+        $comparison = doctrine_market_lookup_by_type_ids(array_map(static fn (array $item): int => (int) ($item['type_id'] ?? 0), $items));
+        $categories = doctrine_group_market_rows_by_category($items, $comparison);
+        $marketRows = [];
 
         foreach ($categories as &$rows) {
             foreach ($rows as &$row) {
-                $totalRequired += max(1, (int) ($row['quantity'] ?? 1));
-                $totalLocal += max(0, (int) ($row['local_available_qty'] ?? 0));
-                if ((int) ($row['missing_qty'] ?? 0) > 0) {
-                    $missingLines++;
-                } else {
-                    $okLines++;
-                }
-
                 $row['required_qty_label'] = doctrine_format_quantity((int) ($row['quantity'] ?? 1));
                 $row['local_available_qty_label'] = doctrine_format_quantity((int) ($row['local_available_qty'] ?? 0));
                 $row['missing_qty_label'] = doctrine_format_quantity((int) ($row['missing_qty'] ?? 0));
                 $row['local_price_label'] = market_format_isk(isset($row['local_price']) ? (float) $row['local_price'] : null);
                 $row['hub_price_label'] = market_format_isk(isset($row['hub_price']) ? (float) $row['hub_price'] : null);
+                $row['restock_gap_label'] = market_format_isk(isset($row['restock_gap_isk']) ? (float) $row['restock_gap_isk'] : null);
+                $marketRows[] = $row;
             }
             unset($row);
         }
         unset($rows);
 
+        $supply = doctrine_supply_summary($marketRows);
         $fit['ship_image_url'] = doctrine_ship_image_url(isset($fit['ship_type_id']) ? (int) $fit['ship_type_id'] : null, 256);
+        $fit['supply'] = $supply;
 
         return [
             'fit' => $fit,
             'categories' => $categories,
+            'items' => $items,
             'summary' => [
-                ['label' => 'Required Units', 'value' => doctrine_format_quantity($totalRequired), 'context' => 'Doctrine demand to satisfy one complete fit'],
-                ['label' => 'Local Units', 'value' => doctrine_format_quantity($totalLocal), 'context' => 'Alliance market quantity available right now'],
-                ['label' => 'Missing Lines', 'value' => doctrine_format_quantity($missingLines), 'context' => 'Immediate supply gaps to restock or haul'],
-                ['label' => 'Stock OK Lines', 'value' => doctrine_format_quantity($okLines), 'context' => 'Lines already covered in alliance stock'],
+                ['label' => 'Readiness', 'value' => $supply['status_label'], 'context' => $supply['market_ready'] ? 'Every line is covered locally for one complete hull.' : 'Local stock cannot currently fill this fit end-to-end.'],
+                ['label' => 'Missing Lines', 'value' => doctrine_format_quantity((int) $supply['missing_lines']), 'context' => 'Distinct doctrine lines still blocked by local supply'],
+                ['label' => 'Missing Units', 'value' => doctrine_format_quantity((int) $supply['total_missing_qty']), 'context' => 'Total quantity still needed to field this fit locally'],
+                ['label' => 'Restock Gap', 'value' => market_format_isk((float) $supply['restock_gap_isk']), 'context' => 'Estimated hub spend to close the remaining local gap'],
             ],
         ];
     }, [
