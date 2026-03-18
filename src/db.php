@@ -563,6 +563,235 @@ function db_market_history_daily_insert(array $historyRows, ?int $chunkSize = nu
     );
 }
 
+function db_market_hub_local_history_daily_normalize_row(array $row): array
+{
+    $normalizeNullableFloat = static function (mixed $value): ?float {
+        if ($value === null || $value === '') {
+            return null;
+        }
+
+        return (float) $value;
+    };
+
+    return [
+        'source' => trim((string) ($row['source'] ?? '')),
+        'source_id' => max(0, (int) ($row['source_id'] ?? 0)),
+        'type_id' => max(0, (int) ($row['type_id'] ?? 0)),
+        'trade_date' => (string) ($row['trade_date'] ?? ''),
+        'open_price' => (float) ($row['open_price'] ?? 0),
+        'high_price' => (float) ($row['high_price'] ?? 0),
+        'low_price' => (float) ($row['low_price'] ?? 0),
+        'close_price' => (float) ($row['close_price'] ?? 0),
+        'buy_price' => $normalizeNullableFloat($row['buy_price'] ?? null),
+        'sell_price' => $normalizeNullableFloat($row['sell_price'] ?? null),
+        'spread_value' => $normalizeNullableFloat($row['spread_value'] ?? null),
+        'spread_percent' => $normalizeNullableFloat($row['spread_percent'] ?? null),
+        'volume' => max(0, (int) ($row['volume'] ?? 0)),
+        'buy_order_count' => max(0, (int) ($row['buy_order_count'] ?? 0)),
+        'sell_order_count' => max(0, (int) ($row['sell_order_count'] ?? 0)),
+        'captured_at' => (string) ($row['captured_at'] ?? ''),
+    ];
+}
+
+function db_market_hub_local_history_daily_bulk_upsert(array $historyRows, ?int $chunkSize = null): int
+{
+    $normalizedRows = [];
+
+    foreach ($historyRows as $row) {
+        $normalizedRow = db_market_hub_local_history_daily_normalize_row($row);
+        if ($normalizedRow['source'] === ''
+            || $normalizedRow['source_id'] <= 0
+            || $normalizedRow['type_id'] <= 0
+            || $normalizedRow['trade_date'] === ''
+            || $normalizedRow['captured_at'] === ''
+        ) {
+            continue;
+        }
+
+        $normalizedRows[] = $normalizedRow;
+    }
+
+    return db_bulk_insert_or_upsert(
+        'market_hub_local_history_daily',
+        [
+            'source',
+            'source_id',
+            'type_id',
+            'trade_date',
+            'open_price',
+            'high_price',
+            'low_price',
+            'close_price',
+            'buy_price',
+            'sell_price',
+            'spread_value',
+            'spread_percent',
+            'volume',
+            'buy_order_count',
+            'sell_order_count',
+            'captured_at',
+        ],
+        $normalizedRows,
+        [
+            'open_price',
+            'high_price',
+            'low_price',
+            'close_price',
+            'buy_price',
+            'sell_price',
+            'spread_value',
+            'spread_percent',
+            'volume',
+            'buy_order_count',
+            'sell_order_count',
+            'captured_at',
+        ],
+        $chunkSize
+    );
+}
+
+function db_market_hub_local_history_daily_select_type_ids(string $source, int $sourceId, int $typeLimit = 120): array
+{
+    $safeTypeLimit = max(1, min($typeLimit, 500));
+    $rows = db_select(
+        "SELECT type_id
+         FROM market_hub_local_history_daily
+         WHERE source = ? AND source_id = ?
+         GROUP BY type_id
+         ORDER BY MAX(trade_date) DESC, SUM(volume) DESC
+         LIMIT {$safeTypeLimit}",
+        [$source, $sourceId]
+    );
+
+    return array_values(array_filter(array_map(static fn (array $row): int => (int) ($row['type_id'] ?? 0), $rows), static fn (int $typeId): bool => $typeId > 0));
+}
+
+function db_market_hub_local_history_daily_normalize_result_row(array $row): array
+{
+    return [
+        'type_id' => (int) ($row['type_id'] ?? 0),
+        'type_name' => (string) ($row['type_name'] ?? ''),
+        'trade_date' => (string) ($row['trade_date'] ?? ''),
+        'close_price' => isset($row['close_price']) ? (float) $row['close_price'] : 0.0,
+        'buy_price' => isset($row['buy_price']) && $row['buy_price'] !== null ? (float) $row['buy_price'] : null,
+        'sell_price' => isset($row['sell_price']) && $row['sell_price'] !== null ? (float) $row['sell_price'] : null,
+        'spread_value' => isset($row['spread_value']) && $row['spread_value'] !== null ? (float) $row['spread_value'] : null,
+        'spread_percent' => isset($row['spread_percent']) && $row['spread_percent'] !== null ? (float) $row['spread_percent'] : null,
+        'volume' => (int) ($row['volume'] ?? 0),
+        'buy_order_count' => (int) ($row['buy_order_count'] ?? 0),
+        'sell_order_count' => (int) ($row['sell_order_count'] ?? 0),
+        'observed_at' => (string) ($row['observed_at'] ?? ''),
+    ];
+}
+
+function db_market_hub_local_history_daily_recent_window(string $source, int $sourceId, int $days = 8, int $typeLimit = 120): array
+{
+    $safeSource = trim($source);
+    $safeSourceId = max(0, $sourceId);
+    $safeDays = max(1, min($days, 60));
+
+    if ($safeSource === '' || $safeSourceId <= 0) {
+        return [];
+    }
+
+    $typeIds = db_market_hub_local_history_daily_select_type_ids($safeSource, $safeSourceId, $typeLimit);
+    if ($typeIds === []) {
+        return [];
+    }
+
+    $placeholders = implode(',', array_fill(0, count($typeIds), '?'));
+    $params = array_merge([$safeSource, $safeSourceId], $typeIds);
+    $rows = db_select(
+        "SELECT
+            mlhd.type_id,
+            rit.type_name,
+            mlhd.trade_date,
+            mlhd.close_price,
+            mlhd.buy_price,
+            mlhd.sell_price,
+            mlhd.spread_value,
+            mlhd.spread_percent,
+            mlhd.volume,
+            mlhd.buy_order_count,
+            mlhd.sell_order_count,
+            mlhd.captured_at AS observed_at
+         FROM market_hub_local_history_daily mlhd
+         LEFT JOIN ref_item_types rit ON rit.type_id = mlhd.type_id
+         WHERE mlhd.source = ?
+           AND mlhd.source_id = ?
+           AND mlhd.type_id IN ({$placeholders})
+           AND mlhd.trade_date >= DATE_SUB(UTC_DATE(), INTERVAL {$safeDays} DAY)
+         ORDER BY mlhd.type_id ASC, mlhd.trade_date DESC, mlhd.id DESC",
+        $params
+    );
+
+    return array_map('db_market_hub_local_history_daily_normalize_result_row', $rows);
+}
+
+function db_market_hub_local_history_daily_latest_points_by_type(
+    string $source,
+    int $sourceId,
+    array $typeIds = [],
+    int $pointsPerType = 2,
+    int $typeLimit = 120
+): array {
+    $safeSource = trim($source);
+    $safeSourceId = max(0, $sourceId);
+    $safePointsPerType = max(1, min($pointsPerType, 5));
+    $safeTypeLimit = max(1, min($typeLimit, 500));
+    $normalizedTypeIds = array_values(array_unique(array_filter(array_map('intval', $typeIds), static fn (int $typeId): bool => $typeId > 0)));
+
+    if ($safeSource === '' || $safeSourceId <= 0) {
+        return [];
+    }
+
+    if ($normalizedTypeIds === []) {
+        $normalizedTypeIds = db_market_hub_local_history_daily_select_type_ids($safeSource, $safeSourceId, $safeTypeLimit);
+    }
+
+    if ($normalizedTypeIds === []) {
+        return [];
+    }
+
+    $placeholders = implode(',', array_fill(0, count($normalizedTypeIds), '?'));
+    $params = array_merge([$safeSource, $safeSourceId], $normalizedTypeIds);
+    $rows = db_select(
+        "SELECT
+            mlhd.type_id,
+            rit.type_name,
+            mlhd.trade_date,
+            mlhd.close_price,
+            mlhd.buy_price,
+            mlhd.sell_price,
+            mlhd.spread_value,
+            mlhd.spread_percent,
+            mlhd.volume,
+            mlhd.buy_order_count,
+            mlhd.sell_order_count,
+            mlhd.captured_at AS observed_at
+         FROM market_hub_local_history_daily mlhd
+         LEFT JOIN ref_item_types rit ON rit.type_id = mlhd.type_id
+         WHERE mlhd.source = ?
+           AND mlhd.source_id = ?
+           AND mlhd.type_id IN ({$placeholders})
+           AND (
+                SELECT COUNT(*)
+                FROM market_hub_local_history_daily newer
+                WHERE newer.source = mlhd.source
+                  AND newer.source_id = mlhd.source_id
+                  AND newer.type_id = mlhd.type_id
+                  AND (
+                        newer.trade_date > mlhd.trade_date
+                        OR (newer.trade_date = mlhd.trade_date AND newer.id > mlhd.id)
+                  )
+           ) < {$safePointsPerType}
+         ORDER BY mlhd.type_id ASC, mlhd.trade_date DESC, mlhd.id DESC",
+        $params
+    );
+
+    return array_map('db_market_hub_local_history_daily_normalize_result_row', $rows);
+}
+
 function db_market_orders_current_distinct_type_ids(string $sourceType, int $sourceId, int $limit = 500): array
 {
     $safeLimit = max(1, min($limit, 5000));
