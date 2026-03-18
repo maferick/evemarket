@@ -75,13 +75,13 @@ function nav_items(): array
         [
             'label' => 'Dashboard',
             'path' => '/',
-            'icon' => '📈',
+            'icon' => '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" class="h-4 w-4" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M4 19V5"/><path stroke-linecap="round" stroke-linejoin="round" d="M8 15l3-3 3 2 6-6"/></svg>',
             'children' => [],
         ],
         [
             'label' => 'Market Status',
             'path' => '/market-status',
-            'icon' => '🛒',
+            'icon' => '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" class="h-4 w-4" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M3 6h18"/><path stroke-linecap="round" stroke-linejoin="round" d="M7 12h10"/><path stroke-linecap="round" stroke-linejoin="round" d="M10 18h4"/></svg>',
             'children' => [
                 ['label' => 'Current Alliance Structure', 'path' => '/market-status/current-alliance'],
                 ['label' => 'Reference Hub Comparison', 'path' => '/market-status/reference-comparison'],
@@ -92,7 +92,7 @@ function nav_items(): array
         [
             'label' => 'History',
             'path' => '/history',
-            'icon' => '🕰️',
+            'icon' => '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" class="h-4 w-4" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M12 8v5l3 2"/><path stroke-linecap="round" stroke-linejoin="round" d="M21 12a9 9 0 1 1-3.3-6.95"/></svg>',
             'children' => [
                 ['label' => 'Alliance Structure Trends', 'path' => '/history/alliance-trends'],
                 ['label' => 'Module History', 'path' => '/history/module-history'],
@@ -101,7 +101,7 @@ function nav_items(): array
         [
             'label' => 'Killmail Intelligence',
             'path' => '/killmail-intelligence',
-            'icon' => '💥',
+            'icon' => '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" class="h-4 w-4" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M13 3 4 14h6l-1 7 9-11h-6l1-7Z"/></svg>',
             'children' => [
                 ['label' => 'Recent Killmails', 'path' => '/killmail-intelligence'],
             ],
@@ -109,7 +109,7 @@ function nav_items(): array
         [
             'label' => 'Settings',
             'path' => '/settings',
-            'icon' => '⚙️',
+            'icon' => '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" class="h-4 w-4" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M12 15.5A3.5 3.5 0 1 0 12 8.5a3.5 3.5 0 0 0 0 7Z"/><path stroke-linecap="round" stroke-linejoin="round" d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06A1.65 1.65 0 0 0 15 19.4a1.65 1.65 0 0 0-1 .6 1.65 1.65 0 0 0-.33 1V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-.33-1 1.65 1.65 0 0 0-1-.6 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-.6-1 1.65 1.65 0 0 0-1-.33H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1-.33 1.65 1.65 0 0 0 .6-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-.6 1.65 1.65 0 0 0 .33-1V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 .33 1 1.65 1.65 0 0 0 1 .6 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9c.3.3.5.68.6 1 .23.1.66.1 1 .1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1 .33c-.44.25-.79.6-1.01 1.07Z"/></svg>',
             'children' => [],
         ],
     ];
