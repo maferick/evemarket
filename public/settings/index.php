@@ -496,51 +496,58 @@ include __DIR__ . '/../../src/views/partials/header.php';
                     <label class="block space-y-2" id="killmail-alliance-search-field">
                         <span class="text-sm text-muted">Tracked Alliances</span>
                         <textarea name="tracked_alliance_names" id="tracked_alliance_names" rows="4" class="hidden"><?= htmlspecialchars($alliancesText, ENT_QUOTES) ?></textarea>
-                        <input
-                            type="text"
-                            id="tracked_alliance_search"
-                            autocomplete="off"
-                            placeholder="Search alliances to add to the zKill filter"
-                            class="w-full rounded-lg border border-border bg-black/30 px-3 py-2 text-sm outline-none ring-accent focus:ring"
-                        />
+                        <div class="flex gap-2">
+                            <input
+                                type="text"
+                                id="tracked_alliance_search"
+                                autocomplete="off"
+                                placeholder="Search alliances by name or add an exact alliance ID"
+                                class="w-full rounded-lg border border-border bg-black/30 px-3 py-2 text-sm outline-none ring-accent focus:ring"
+                            />
+                            <button type="button" id="tracked_alliance_add" class="rounded-lg border border-border bg-black/30 px-3 py-2 text-sm text-slate-100 transition hover:bg-white/5">Add</button>
+                        </div>
                         <p id="tracked_alliance_status" class="text-xs text-muted">
                             <?= htmlspecialchars($trackedAllianceSelections === []
-                                ? 'Type at least 2 characters to search alliances.'
+                                ? 'Search by name, or add an exact numeric alliance ID.'
                                 : ('Tracking ' . count($trackedAllianceSelections) . ' alliance' . (count($trackedAllianceSelections) === 1 ? '' : 's') . '.'), ENT_QUOTES) ?>
                         </p>
                         <ul id="tracked_alliance_results" class="hidden max-h-60 overflow-y-auto rounded-lg border border-border bg-black/40"></ul>
-                        <div id="tracked_alliance_selected" class="flex flex-wrap gap-2"></div>
+                        <div id="tracked_alliance_selected" class="space-y-2 rounded-lg border border-border bg-black/10 p-3"></div>
                     </label>
 
                     <label class="block space-y-2" id="killmail-corporation-search-field">
                         <span class="text-sm text-muted">Tracked Corporations</span>
                         <textarea name="tracked_corporation_names" id="tracked_corporation_names" rows="4" class="hidden"><?= htmlspecialchars($corporationsText, ENT_QUOTES) ?></textarea>
-                        <input
-                            type="text"
-                            id="tracked_corporation_search"
-                            autocomplete="off"
-                            placeholder="Search corporations to add to the zKill filter"
-                            class="w-full rounded-lg border border-border bg-black/30 px-3 py-2 text-sm outline-none ring-accent focus:ring"
-                        />
+                        <div class="flex gap-2">
+                            <input
+                                type="text"
+                                id="tracked_corporation_search"
+                                autocomplete="off"
+                                placeholder="Search corporations by name or add an exact corporation ID"
+                                class="w-full rounded-lg border border-border bg-black/30 px-3 py-2 text-sm outline-none ring-accent focus:ring"
+                            />
+                            <button type="button" id="tracked_corporation_add" class="rounded-lg border border-border bg-black/30 px-3 py-2 text-sm text-slate-100 transition hover:bg-white/5">Add</button>
+                        </div>
                         <p id="tracked_corporation_status" class="text-xs text-muted">
                             <?= htmlspecialchars($trackedCorporationSelections === []
-                                ? 'Type at least 2 characters to search corporations.'
+                                ? 'Search by name, or add an exact numeric corporation ID.'
                                 : ('Tracking ' . count($trackedCorporationSelections) . ' corporation' . (count($trackedCorporationSelections) === 1 ? '' : 's') . '.'), ENT_QUOTES) ?>
                         </p>
                         <ul id="tracked_corporation_results" class="hidden max-h-60 overflow-y-auto rounded-lg border border-border bg-black/40"></ul>
-                        <div id="tracked_corporation_selected" class="flex flex-wrap gap-2"></div>
+                        <div id="tracked_corporation_selected" class="space-y-2 rounded-lg border border-border bg-black/10 p-3"></div>
                     </label>
                 </div>
 
                 <div class="rounded-lg border border-border bg-black/20 p-3 text-sm text-muted space-y-2">
-                    <p>Use the lookup fields to add the same way you pick the market hub or structure destination. Selections are stored locally as ID + name pairs for reliable zKill filtering.</p>
-                    <p>If needed, you can still paste raw numeric IDs before saving.</p>
+                    <p>Add alliances and corporations from the lookup, or enter exact numeric IDs when you already know them.</p>
+                    <p>Each saved entry is stored locally as <span class="text-slate-100">ID + name</span>, and you can remove anything here before saving if an alliance or corporation leaves the group you care about.</p>
                 </div>
 
                 <script>
                     (() => {
                         const createTrackedEntityPicker = ({
                             inputId,
+                            addButtonId,
                             hiddenId,
                             resultsId,
                             statusId,
@@ -549,45 +556,57 @@ include __DIR__ . '/../../src/views/partials/header.php';
                             initialItems,
                         }) => {
                             const input = document.getElementById(inputId);
+                            const addButton = document.getElementById(addButtonId);
                             const hidden = document.getElementById(hiddenId);
                             const results = document.getElementById(resultsId);
                             const status = document.getElementById(statusId);
                             const selected = document.getElementById(selectedId);
 
-                            if (!input || !hidden || !results || !status || !selected) {
+                            if (!input || !addButton || !hidden || !results || !status || !selected) {
                                 return;
                             }
 
                             const items = new Map();
                             let debounceTimer = null;
 
-                            const escapeHtml = (value) => {
-                                const div = document.createElement('div');
-                                div.textContent = value;
-                                return div.innerHTML;
-                            };
-
                             const syncHiddenField = () => {
                                 hidden.value = Array.from(items.values())
                                     .map((item) => String(item.id) + ' | ' + item.name)
-                                    .join('
-');
+                                    .join('\n');
                             };
 
-                            const updateStatus = (message = null) => {
-                                if (message !== null) {
-                                    status.textContent = message;
-                                    return;
-                                }
+                            const defaultStatus = () => items.size === 0
+                                ? 'Search by name, or add an exact numeric ' + allowedType.toLowerCase() + ' ID.'
+                                : 'Tracking ' + items.size + ' ' + allowedType.toLowerCase() + (items.size === 1 ? '' : 's') + '. Remove any that are no longer relevant before saving.';
 
-                                status.textContent = items.size === 0
-                                    ? 'Type at least 2 characters to search ' + allowedType.toLowerCase() + 's.'
-                                    : 'Tracking ' + items.size + ' ' + allowedType.toLowerCase() + (items.size === 1 ? '' : 's') + '.';
+                            const updateStatus = (message = null) => {
+                                status.textContent = message ?? defaultStatus();
                             };
 
                             const clearResults = () => {
                                 results.innerHTML = '';
                                 results.classList.add('hidden');
+                            };
+
+                            const parseDirectEntry = (value) => {
+                                const match = value.trim().match(/^([1-9][0-9]{0,19})(?:\s*[|,:-]\s*(.+))?$/);
+                                if (!match) {
+                                    return null;
+                                }
+
+                                const id = Number(match[1]);
+                                if (!Number.isFinite(id) || id <= 0) {
+                                    return null;
+                                }
+
+                                const label = String(match[2] || '').trim();
+
+                                return {
+                                    id,
+                                    name: label,
+                                    type: allowedType,
+                                    labelProvided: label !== '',
+                                };
                             };
 
                             const renderSelected = () => {
@@ -606,22 +625,36 @@ include __DIR__ . '/../../src/views/partials/header.php';
                                 Array.from(items.values())
                                     .sort((a, b) => a.name.localeCompare(b.name))
                                     .forEach((item) => {
-                                        const chip = document.createElement('span');
-                                        chip.className = 'inline-flex items-center gap-2 rounded-full border border-border bg-black/20 px-3 py-1 text-xs text-slate-100';
-                                        chip.innerHTML = '<span>' + escapeHtml(item.name) + ' <span class="text-muted">(#' + item.id + ')</span></span>';
+                                        const row = document.createElement('div');
+                                        row.className = 'flex items-center justify-between gap-3 rounded-lg border border-border bg-black/20 px-3 py-2';
+
+                                        const meta = document.createElement('div');
+                                        meta.className = 'min-w-0';
+
+                                        const name = document.createElement('p');
+                                        name.className = 'truncate text-sm text-slate-100';
+                                        name.textContent = item.name;
+
+                                        const details = document.createElement('p');
+                                        details.className = 'text-xs text-muted';
+                                        details.textContent = allowedType + ' · #' + item.id;
+
+                                        meta.appendChild(name);
+                                        meta.appendChild(details);
 
                                         const remove = document.createElement('button');
                                         remove.type = 'button';
-                                        remove.className = 'rounded-full px-1 text-muted hover:bg-white/10 hover:text-slate-100';
+                                        remove.className = 'rounded-lg border border-border px-3 py-1 text-xs text-muted transition hover:bg-white/5 hover:text-slate-100';
                                         remove.setAttribute('aria-label', 'Remove ' + item.name);
-                                        remove.textContent = '×';
+                                        remove.textContent = 'Remove';
                                         remove.addEventListener('click', () => {
                                             items.delete(String(item.id));
                                             renderSelected();
                                         });
 
-                                        chip.appendChild(remove);
-                                        selected.appendChild(chip);
+                                        row.appendChild(meta);
+                                        row.appendChild(remove);
+                                        selected.appendChild(row);
                                     });
 
                                 syncHiddenField();
@@ -630,22 +663,24 @@ include __DIR__ . '/../../src/views/partials/header.php';
 
                             const addItem = (item) => {
                                 if (!item || String(item.type || '') !== allowedType) {
-                                    return;
+                                    return false;
                                 }
 
                                 const id = Number(item.id || 0);
-                                const name = String(item.name || '').trim();
-                                if (!Number.isFinite(id) || id <= 0 || name === '') {
-                                    return;
+                                const name = String(item.name || '').trim() || (allowedType + ' #' + id);
+                                if (!Number.isFinite(id) || id <= 0) {
+                                    return false;
                                 }
 
                                 items.set(String(id), { id, name, type: allowedType });
                                 input.value = '';
                                 clearResults();
                                 renderSelected();
+                                updateStatus('Added ' + name + ' (#' + id + ').');
+                                return true;
                             };
 
-                            const renderResults = (rows) => {
+                            const renderResults = (rows, message = null) => {
                                 clearResults();
 
                                 const options = Array.isArray(rows)
@@ -653,7 +688,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                                     : [];
 
                                 if (options.length === 0) {
-                                    updateStatus('No matching ' + allowedType.toLowerCase() + 's found.');
+                                    updateStatus(message || ('No matching ' + allowedType.toLowerCase() + 's found.'));
                                     return;
                                 }
 
@@ -663,9 +698,17 @@ include __DIR__ . '/../../src/views/partials/header.php';
                                     const button = document.createElement('button');
                                     button.type = 'button';
                                     button.className = 'flex w-full flex-col items-start gap-1 px-3 py-2 text-left text-sm hover:bg-white/5';
-                                    button.innerHTML = '<span class="text-slate-100"></span><span class="text-xs text-muted"></span>';
-                                    button.querySelector('span').textContent = item.name;
-                                    button.querySelectorAll('span')[1].textContent = item.type + ' · #' + item.id;
+
+                                    const title = document.createElement('span');
+                                    title.className = 'text-slate-100';
+                                    title.textContent = item.name;
+
+                                    const details = document.createElement('span');
+                                    details.className = 'text-xs text-muted';
+                                    details.textContent = item.type + ' · #' + item.id;
+
+                                    button.appendChild(title);
+                                    button.appendChild(details);
                                     button.addEventListener('click', () => addItem(item));
                                     row.appendChild(button);
                                     fragment.appendChild(row);
@@ -673,7 +716,75 @@ include __DIR__ . '/../../src/views/partials/header.php';
 
                                 results.appendChild(fragment);
                                 results.classList.remove('hidden');
-                                updateStatus('Select a ' + allowedType.toLowerCase() + ' from the list.');
+                                updateStatus('Select a ' + allowedType.toLowerCase() + ' from the list, or press Add to use the top result.');
+                            };
+
+                            const fetchResults = async (query, { autoAddFirst = false, fallbackItem = null } = {}) => {
+                                const response = await fetch('/settings/killmail-entities.php?q=' + encodeURIComponent(query) + '&type=' + encodeURIComponent(allowedType.toLowerCase()), {
+                                    headers: { 'Accept': 'application/json' },
+                                });
+                                const payload = await response.json();
+                                if (!response.ok) {
+                                    throw new Error(payload.error || 'Lookup failed.');
+                                }
+
+                                const rows = Array.isArray(payload.results) ? payload.results : [];
+                                const options = rows.filter((row) => String(row.type || '') === allowedType && !items.has(String(row.id || '')));
+
+                                if (autoAddFirst) {
+                                    if (options[0]) {
+                                        addItem(options[0]);
+                                    } else if (fallbackItem !== null) {
+                                        addItem(fallbackItem);
+                                        updateStatus('Added ' + allowedType.toLowerCase() + ' #' + fallbackItem.id + ' without a resolved name.');
+                                    } else {
+                                        clearResults();
+                                        updateStatus(payload.message || ('No matching ' + allowedType.toLowerCase() + 's found.'));
+                                    }
+                                    return;
+                                }
+
+                                renderResults(rows, payload.message || null);
+                            };
+
+                            const runLookup = async ({ autoAddFirst = false } = {}) => {
+                                const query = input.value.trim();
+                                if (query === '') {
+                                    updateStatus('Enter an ' + allowedType.toLowerCase() + ' name or an exact numeric ID.');
+                                    return;
+                                }
+
+                                const direct = parseDirectEntry(query);
+                                if (direct !== null) {
+                                    if (direct.labelProvided) {
+                                        addItem(direct);
+                                        return;
+                                    }
+
+                                    try {
+                                        await fetchResults(query, {
+                                            autoAddFirst: true,
+                                            fallbackItem: {
+                                                id: direct.id,
+                                                name: '',
+                                                type: allowedType,
+                                            },
+                                        });
+                                    } catch (error) {
+                                        clearResults();
+                                        updateStatus(error instanceof Error ? error.message : 'Lookup failed.');
+                                    }
+                                    return;
+                                }
+
+                                updateStatus('Searching ' + allowedType.toLowerCase() + 's…');
+
+                                try {
+                                    await fetchResults(query, { autoAddFirst });
+                                } catch (error) {
+                                    clearResults();
+                                    updateStatus(error instanceof Error ? error.message : 'Lookup failed.');
+                                }
                             };
 
                             input.addEventListener('input', () => {
@@ -683,30 +794,43 @@ include __DIR__ . '/../../src/views/partials/header.php';
                                     clearTimeout(debounceTimer);
                                 }
 
-                                if (query.length < 2) {
+                                if (query === '') {
                                     clearResults();
                                     updateStatus();
                                     return;
                                 }
 
-                                debounceTimer = window.setTimeout(async () => {
-                                    updateStatus('Searching…');
+                                const direct = parseDirectEntry(query);
+                                if (direct !== null) {
+                                    clearResults();
+                                    updateStatus(direct.labelProvided
+                                        ? ('Press Add to include ' + allowedType.toLowerCase() + ' #' + direct.id + '.')
+                                        : ('Press Add to resolve and include ' + allowedType.toLowerCase() + ' #' + direct.id + '.'));
+                                    return;
+                                }
 
-                                    try {
-                                        const response = await fetch('/settings/killmail-entities.php?q=' + encodeURIComponent(query), {
-                                            headers: { 'Accept': 'application/json' },
-                                        });
-                                        const payload = await response.json();
-                                        if (!response.ok) {
-                                            throw new Error(payload.error || 'Lookup failed.');
-                                        }
+                                if (query.length < 2) {
+                                    clearResults();
+                                    updateStatus('Type at least 2 characters to search ' + allowedType.toLowerCase() + 's by name, or enter an exact numeric ID.');
+                                    return;
+                                }
 
-                                        renderResults(payload.results || []);
-                                    } catch (error) {
-                                        clearResults();
-                                        updateStatus(error instanceof Error ? error.message : 'Lookup failed.');
-                                    }
+                                debounceTimer = window.setTimeout(() => {
+                                    void runLookup();
                                 }, 250);
+                            });
+
+                            input.addEventListener('keydown', (event) => {
+                                if (event.key !== 'Enter') {
+                                    return;
+                                }
+
+                                event.preventDefault();
+                                void runLookup({ autoAddFirst: true });
+                            });
+
+                            addButton.addEventListener('click', () => {
+                                void runLookup({ autoAddFirst: true });
                             });
 
                             document.addEventListener('click', (event) => {
@@ -730,6 +854,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
 
                         createTrackedEntityPicker({
                             inputId: 'tracked_alliance_search',
+                            addButtonId: 'tracked_alliance_add',
                             hiddenId: 'tracked_alliance_names',
                             resultsId: 'tracked_alliance_results',
                             statusId: 'tracked_alliance_status',
@@ -740,6 +865,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
 
                         createTrackedEntityPicker({
                             inputId: 'tracked_corporation_search',
+                            addButtonId: 'tracked_corporation_add',
                             hiddenId: 'tracked_corporation_names',
                             resultsId: 'tracked_corporation_results',
                             statusId: 'tracked_corporation_status',

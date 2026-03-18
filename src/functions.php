@@ -4353,6 +4353,119 @@ function esi_alliance_and_corporation_search(string $query, array $tokenContext)
 }
 
 
+
+function killmail_entity_type_label(?string $type): ?string
+{
+    $normalized = strtolower(trim((string) $type));
+
+    return match ($normalized) {
+        'alliance' => 'Alliance',
+        'corporation' => 'Corporation',
+        default => null,
+    };
+}
+
+function killmail_public_entity_lookup_by_id(int $id, ?string $type = null): array
+{
+    if ($id <= 0) {
+        return [];
+    }
+
+    $types = [];
+    $normalizedType = killmail_entity_type_label($type);
+    if ($normalizedType !== null) {
+        $types[] = $normalizedType;
+    } else {
+        $types = ['Alliance', 'Corporation'];
+    }
+
+    $endpoints = [
+        'Alliance' => 'https://esi.evetech.net/latest/alliances/' . $id . '/?datasource=tranquility',
+        'Corporation' => 'https://esi.evetech.net/latest/corporations/' . $id . '/?datasource=tranquility',
+    ];
+
+    $results = [];
+    foreach ($types as $label) {
+        $response = http_get_json($endpoints[$label], [
+            'Accept: application/json',
+            'User-Agent: ' . esi_user_agent(),
+        ]);
+
+        if (($response['status'] ?? 500) >= 400) {
+            continue;
+        }
+
+        $name = trim((string) ($response['json']['name'] ?? ''));
+        if ($name === '') {
+            continue;
+        }
+
+        $results[] = esi_entity_result_shape([
+            'id' => $id,
+            'name' => $name,
+            'type' => $label,
+        ]);
+    }
+
+    return $results;
+}
+
+function killmail_entity_search(string $query, ?string $type = null): array
+{
+    $term = trim($query);
+    if ($term === '') {
+        return [];
+    }
+
+    $allowedType = killmail_entity_type_label($type);
+    $results = [];
+
+    if (preg_match('/^[1-9][0-9]{0,19}$/', $term) === 1) {
+        foreach (killmail_public_entity_lookup_by_id((int) $term, $allowedType) as $row) {
+            $results[(string) ($row['type'] ?? '') . ':' . (string) ($row['id'] ?? 0)] = $row;
+        }
+    }
+
+    $context = esi_lookup_context();
+    if (($context['ok'] ?? false) === true) {
+        try {
+            foreach (esi_alliance_and_corporation_search($term, (array) ($context['token'] ?? [])) as $row) {
+                $rowType = killmail_entity_type_label((string) ($row['type'] ?? ''));
+                if ($rowType === null) {
+                    continue;
+                }
+
+                if ($allowedType !== null && $rowType !== $allowedType) {
+                    continue;
+                }
+
+                $results[$rowType . ':' . (string) ($row['id'] ?? 0)] = [
+                    'id' => (int) ($row['id'] ?? 0),
+                    'name' => (string) ($row['name'] ?? ''),
+                    'type' => $rowType,
+                ];
+            }
+        } catch (Throwable) {
+            // Fallback to exact-ID results only.
+        }
+    }
+
+    $rows = array_values(array_filter($results, static function (array $row): bool {
+        return (int) ($row['id'] ?? 0) > 0 && trim((string) ($row['name'] ?? '')) !== '';
+    }));
+
+    usort($rows, static function (array $a, array $b): int {
+        $typeCompare = strcasecmp((string) ($a['type'] ?? ''), (string) ($b['type'] ?? ''));
+        if ($typeCompare !== 0) {
+            return $typeCompare;
+        }
+
+        return strcasecmp((string) ($a['name'] ?? ''), (string) ($b['name'] ?? ''));
+    });
+
+    return array_slice($rows, 0, 20);
+}
+
 function esi_alliance_structure_metadata(int $structureId, array $tokenContext): ?array
 {
     if ($structureId <= 0) {
@@ -5192,6 +5305,38 @@ function killmail_resolve_tracked_entities(string $allianceText, string $corpora
             'id' => $id,
             'label' => isset($row['label']) && trim((string) $row['label']) !== '' ? trim((string) $row['label']) : null,
         ];
+    }
+
+    foreach ($allianceById as $id => $row) {
+        if (($row['label'] ?? null) !== null) {
+            continue;
+        }
+
+        foreach (killmail_public_entity_lookup_by_id($id, 'alliance') as $resolved) {
+            $name = trim((string) ($resolved['name'] ?? ''));
+            if ($name === '') {
+                continue;
+            }
+
+            $allianceById[$id]['label'] = $name;
+            break;
+        }
+    }
+
+    foreach ($corporationById as $id => $row) {
+        if (($row['label'] ?? null) !== null) {
+            continue;
+        }
+
+        foreach (killmail_public_entity_lookup_by_id($id, 'corporation') as $resolved) {
+            $name = trim((string) ($resolved['name'] ?? ''));
+            if ($name === '') {
+                continue;
+            }
+
+            $corporationById[$id]['label'] = $name;
+            break;
+        }
     }
 
     foreach ($allianceLines as $line) {
