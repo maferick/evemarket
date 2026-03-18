@@ -1088,26 +1088,50 @@ function market_format_percentage(float $value, int $precision = 1): string
     return number_format($value, $precision, '.', ',') . '%';
 }
 
+function dashboard_sync_dataset_active_error(array $states): ?string
+{
+    foreach ($states as $state) {
+        if (!is_array($state) || (string) ($state['status'] ?? '') !== 'failed') {
+            continue;
+        }
+
+        $message = trim((string) ($state['last_error_message'] ?? ''));
+        if ($message !== '') {
+            return $message;
+        }
+    }
+
+    return null;
+}
+
 function dashboard_sync_health_panel(array $dataset): array
 {
     $states = $dataset['states'] ?? [];
     $runs = $dataset['runs'] ?? [];
     $activeStateCount = count($states);
-    $failedRuns = array_values(array_filter($runs, static fn (array $run): bool => (string) ($run['run_status'] ?? '') === 'failed'));
+    $latestRun = is_array($runs[0] ?? null) ? $runs[0] : null;
+    $activeError = dashboard_sync_dataset_active_error($states);
+    $latestRunFailed = is_array($latestRun) && (string) ($latestRun['run_status'] ?? '') === 'failed';
 
     $status = 'Not synced';
     if ($activeStateCount > 0) {
-        $status = $failedRuns === [] ? 'Healthy' : 'Warning';
+        $status = ($activeError !== null || $latestRunFailed) ? 'Warning' : 'Healthy';
     }
 
     $lastSuccessAt = (string) ($dataset['last_success_at'] ?? '');
-    $lastError = trim((string) ($dataset['last_error_message'] ?? ''));
+    $lastError = $activeError;
+    if ($lastError === null && $latestRunFailed) {
+        $candidate = trim((string) ($latestRun['error_message'] ?? ''));
+        if ($candidate !== '') {
+            $lastError = $candidate;
+        }
+    }
 
     return [
         'status' => $status,
         'last_success_at' => $lastSuccessAt !== '' ? $lastSuccessAt : 'No successful sync yet',
         'recent_rows_written' => (int) ($dataset['recent_rows_written'] ?? 0),
-        'last_error' => $lastError !== '' ? $lastError : 'None',
+        'last_error' => $lastError !== null ? $lastError : 'None',
         'state_count' => $activeStateCount,
     ];
 }

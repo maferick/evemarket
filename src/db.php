@@ -686,6 +686,15 @@ function db_market_history_daily_insert(array $historyRows, ?int $chunkSize = nu
     );
 }
 
+function db_market_hub_local_history_daily_normalize_spread_percent(mixed $value): ?float
+{
+    if ($value === null || $value === '') {
+        return null;
+    }
+
+    return round((float) $value, 4);
+}
+
 function db_market_hub_local_history_daily_normalize_row(array $row): array
 {
     $normalizeNullableFloat = static function (mixed $value): ?float {
@@ -708,7 +717,7 @@ function db_market_hub_local_history_daily_normalize_row(array $row): array
         'buy_price' => $normalizeNullableFloat($row['buy_price'] ?? null),
         'sell_price' => $normalizeNullableFloat($row['sell_price'] ?? null),
         'spread_value' => $normalizeNullableFloat($row['spread_value'] ?? null),
-        'spread_percent' => $normalizeNullableFloat($row['spread_percent'] ?? null),
+        'spread_percent' => db_market_hub_local_history_daily_normalize_spread_percent($row['spread_percent'] ?? null),
         'volume' => max(0, (int) ($row['volume'] ?? 0)),
         'buy_order_count' => max(0, (int) ($row['buy_order_count'] ?? 0)),
         'sell_order_count' => max(0, (int) ($row['sell_order_count'] ?? 0)),

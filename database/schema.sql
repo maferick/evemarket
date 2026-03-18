@@ -275,7 +275,7 @@ CREATE TABLE IF NOT EXISTS market_hub_local_history_daily (
     buy_price DECIMAL(20, 2) DEFAULT NULL,
     sell_price DECIMAL(20, 2) DEFAULT NULL,
     spread_value DECIMAL(20, 2) DEFAULT NULL,
-    spread_percent DECIMAL(9, 4) DEFAULT NULL,
+    spread_percent DECIMAL(20, 4) DEFAULT NULL,
     volume BIGINT UNSIGNED NOT NULL DEFAULT 0,
     buy_order_count INT UNSIGNED NOT NULL DEFAULT 0,
     sell_order_count INT UNSIGNED NOT NULL DEFAULT 0,
