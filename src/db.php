@@ -2029,15 +2029,6 @@ function db_killmail_tracked_match_sql(string $eventAlias = 'e'): string
     return "(
         EXISTS (SELECT 1 FROM killmail_tracked_alliances ta WHERE ta.is_active = 1 AND ta.alliance_id = {$eventAlias}.victim_alliance_id)
         OR EXISTS (SELECT 1 FROM killmail_tracked_corporations tc WHERE tc.is_active = 1 AND tc.corporation_id = {$eventAlias}.victim_corporation_id)
-        OR EXISTS (
-            SELECT 1
-            FROM killmail_attackers a
-            WHERE a.sequence_id = {$eventAlias}.sequence_id
-              AND (
-                  EXISTS (SELECT 1 FROM killmail_tracked_alliances ta2 WHERE ta2.is_active = 1 AND ta2.alliance_id = a.alliance_id)
-                  OR EXISTS (SELECT 1 FROM killmail_tracked_corporations tc2 WHERE tc2.is_active = 1 AND tc2.corporation_id = a.corporation_id)
-              )
-        )
     )";
 }
 
@@ -2074,14 +2065,6 @@ function db_killmail_filtered_recent(int $limit = 50): array
          WHERE (
             EXISTS (SELECT 1 FROM killmail_tracked_alliances ta WHERE ta.is_active = 1 AND ta.alliance_id = e.victim_alliance_id)
             OR EXISTS (SELECT 1 FROM killmail_tracked_corporations tc WHERE tc.is_active = 1 AND tc.corporation_id = e.victim_corporation_id)
-            OR EXISTS (
-                SELECT 1 FROM killmail_attackers a
-                WHERE a.sequence_id = e.sequence_id
-                  AND (
-                      EXISTS (SELECT 1 FROM killmail_tracked_alliances ta2 WHERE ta2.is_active = 1 AND ta2.alliance_id = a.alliance_id)
-                      OR EXISTS (SELECT 1 FROM killmail_tracked_corporations tc2 WHERE tc2.is_active = 1 AND tc2.corporation_id = a.corporation_id)
-                  )
-            )
          )
          ORDER BY e.sequence_id DESC
          LIMIT {$limit}"
@@ -2137,6 +2120,114 @@ function db_killmail_overview_filter_options(): array
         'alliances' => $alliances,
         'corporations' => $corporations,
     ];
+}
+
+function db_killmail_detail(int $sequenceId): ?array
+{
+    if ($sequenceId <= 0) {
+        return null;
+    }
+
+    $matchSql = db_killmail_tracked_match_sql('e');
+
+    return db_select_one(
+        "SELECT
+            e.sequence_id,
+            e.killmail_id,
+            e.killmail_hash,
+            e.uploaded_at,
+            e.sequence_updated,
+            e.killmail_time,
+            e.solar_system_id,
+            e.region_id,
+            e.victim_character_id,
+            e.victim_corporation_id,
+            e.victim_alliance_id,
+            e.victim_ship_type_id,
+            e.zkb_json,
+            e.raw_killmail_json,
+            e.created_at,
+            e.updated_at,
+            COALESCE(NULLIF(victim_tc.label, ''), '') AS victim_corporation_label,
+            COALESCE(NULLIF(victim_ta.label, ''), '') AS victim_alliance_label,
+            COALESCE(NULLIF(ship.type_name, ''), '') AS ship_type_name,
+            COALESCE(NULLIF(system_ref.system_name, ''), '') AS system_name,
+            COALESCE(NULLIF(region_ref.region_name, ''), '') AS region_name,
+            CASE WHEN EXISTS (
+                SELECT 1 FROM killmail_tracked_alliances ta WHERE ta.is_active = 1 AND ta.alliance_id = e.victim_alliance_id
+            ) THEN 1 ELSE 0 END AS matches_victim_alliance,
+            CASE WHEN EXISTS (
+                SELECT 1 FROM killmail_tracked_corporations tc WHERE tc.is_active = 1 AND tc.corporation_id = e.victim_corporation_id
+            ) THEN 1 ELSE 0 END AS matches_victim_corporation,
+            CASE WHEN {$matchSql} THEN 1 ELSE 0 END AS matched_tracked
+         FROM killmail_events e
+         LEFT JOIN ref_item_types ship ON ship.type_id = e.victim_ship_type_id
+         LEFT JOIN ref_systems system_ref ON system_ref.system_id = e.solar_system_id
+         LEFT JOIN ref_regions region_ref ON region_ref.region_id = e.region_id
+         LEFT JOIN killmail_tracked_alliances victim_ta
+           ON victim_ta.alliance_id = e.victim_alliance_id
+          AND victim_ta.is_active = 1
+         LEFT JOIN killmail_tracked_corporations victim_tc
+           ON victim_tc.corporation_id = e.victim_corporation_id
+          AND victim_tc.is_active = 1
+         WHERE e.sequence_id = ?
+         LIMIT 1",
+        [$sequenceId]
+    );
+}
+
+function db_killmail_attackers_by_sequence(int $sequenceId): array
+{
+    if ($sequenceId <= 0) {
+        return [];
+    }
+
+    return db_select(
+        "SELECT
+            a.sequence_id,
+            a.attacker_index,
+            a.character_id,
+            a.corporation_id,
+            a.alliance_id,
+            a.ship_type_id,
+            a.weapon_type_id,
+            a.final_blow,
+            a.security_status,
+            COALESCE(NULLIF(ship.type_name, ''), '') AS ship_type_name,
+            COALESCE(NULLIF(weapon.type_name, ''), '') AS weapon_type_name
+         FROM killmail_attackers a
+         LEFT JOIN ref_item_types ship ON ship.type_id = a.ship_type_id
+         LEFT JOIN ref_item_types weapon ON weapon.type_id = a.weapon_type_id
+         WHERE a.sequence_id = ?
+         ORDER BY a.final_blow DESC, a.attacker_index ASC",
+        [$sequenceId]
+    );
+}
+
+function db_killmail_items_by_sequence(int $sequenceId): array
+{
+    if ($sequenceId <= 0) {
+        return [];
+    }
+
+    return db_select(
+        "SELECT
+            i.sequence_id,
+            i.item_index,
+            i.item_type_id,
+            i.item_flag,
+            i.quantity_dropped,
+            i.quantity_destroyed,
+            i.singleton,
+            i.item_role,
+            i.created_at,
+            COALESCE(NULLIF(t.type_name, ''), '') AS item_type_name
+         FROM killmail_items i
+         LEFT JOIN ref_item_types t ON t.type_id = i.item_type_id
+         WHERE i.sequence_id = ?
+         ORDER BY FIELD(i.item_role, 'dropped', 'destroyed', 'fitted', 'other'), i.item_index ASC",
+        [$sequenceId]
+    );
 }
 
 function db_killmail_overview_page(array $filters = []): array
@@ -2227,28 +2318,6 @@ function db_killmail_overview_page(array $filters = []): array
             CASE WHEN EXISTS (
                 SELECT 1 FROM killmail_tracked_corporations tc WHERE tc.is_active = 1 AND tc.corporation_id = e.victim_corporation_id
             ) THEN 1 ELSE 0 END AS matches_victim_corporation,
-            CASE WHEN EXISTS (
-                SELECT 1
-                FROM killmail_attackers attacker_alliance
-                WHERE attacker_alliance.sequence_id = e.sequence_id
-                  AND EXISTS (
-                      SELECT 1
-                      FROM killmail_tracked_alliances ta2
-                      WHERE ta2.is_active = 1
-                        AND ta2.alliance_id = attacker_alliance.alliance_id
-                  )
-            ) THEN 1 ELSE 0 END AS matches_attacker_alliance,
-            CASE WHEN EXISTS (
-                SELECT 1
-                FROM killmail_attackers attacker_corporation
-                WHERE attacker_corporation.sequence_id = e.sequence_id
-                  AND EXISTS (
-                      SELECT 1
-                      FROM killmail_tracked_corporations tc2
-                      WHERE tc2.is_active = 1
-                        AND tc2.corporation_id = attacker_corporation.corporation_id
-                  )
-            ) THEN 1 ELSE 0 END AS matches_attacker_corporation,
             CASE WHEN {$matchSql} THEN 1 ELSE 0 END AS matched_tracked
             {$fromSql}
             {$whereSql}

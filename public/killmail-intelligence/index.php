@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/../../src/bootstrap.php';
 
-$title = 'Killmail Overview';
+$title = 'Killmail Loss Overview';
 $data = killmail_overview_data();
 $summary = $data['summary'] ?? [];
 $status = $data['status'] ?? [];
@@ -33,8 +33,8 @@ include __DIR__ . '/../../src/views/partials/header.php';
 <section class="mb-6 flex flex-wrap items-center justify-between gap-4 rounded-xl border border-border bg-card p-5">
     <div>
         <p class="text-xs uppercase tracking-[0.2em] text-muted">Operational visibility</p>
-        <h2 class="mt-1 text-lg font-medium text-slate-50">Recent killmail ingestion at a glance</h2>
-        <p class="mt-2 max-w-3xl text-sm text-muted">Use this page to confirm the killmail pipeline is alive, local killmails are being stored, and tracked alliances or corporations are being matched before deeper analytics are added.</p>
+        <h2 class="mt-1 text-lg font-medium text-slate-50">Tracked victim losses, stored locally</h2>
+        <p class="mt-2 max-w-3xl text-sm text-muted">Use this workspace to validate that killmail ingestion is capturing the victim side correctly, inspect stored loss items, and prepare for future loss-vs-market analysis without centering raw database IDs.</p>
     </div>
     <div class="flex flex-wrap gap-2">
         <span class="rounded-full border px-3 py-1 text-xs uppercase tracking-[0.15em] <?= ($status['ingestion_enabled'] ?? false) ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-200' : 'border-amber-500/40 bg-amber-500/10 text-amber-100' ?>">
@@ -93,8 +93,8 @@ include __DIR__ . '/../../src/views/partials/header.php';
 
     <article class="rounded-xl border border-border bg-card p-5">
         <div class="flex items-center justify-between gap-3">
-            <h2 class="text-base font-medium text-slate-50">Tracked entity context</h2>
-            <span class="text-xs text-muted">Validation foundation</span>
+            <h2 class="text-base font-medium text-slate-50">Victim tracking context</h2>
+            <span class="text-xs text-muted">Loss validation foundation</span>
         </div>
         <div class="mt-4 space-y-3">
             <div class="rounded-lg border border-border bg-black/20 px-4 py-3">
@@ -106,7 +106,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                 <p class="mt-2 text-xl font-semibold text-slate-50"><?= number_format((int) ($status['tracked_corporation_count'] ?? 0)) ?></p>
             </div>
             <div class="rounded-lg border border-dashed border-border bg-black/10 px-4 py-3 text-sm text-muted">
-                This first page focuses on operational verification: stored killmails, current feed freshness, and tracked-entity matching. It is ready to grow into detail pages, doctrine views, and demand-signal analytics later.
+                Tracked matching is now victim-only. The overview highlights losses suffered by the tracked alliances and corporations, while attacker data is reserved for detail inspection.
             </div>
         </div>
     </article>
@@ -114,13 +114,13 @@ include __DIR__ . '/../../src/views/partials/header.php';
 
 <section class="mt-6 rounded-xl border border-border bg-card p-5 shadow-lg shadow-black/20">
     <form method="get" action="<?= htmlspecialchars(current_path(), ENT_QUOTES) ?>" class="rounded-xl border border-border/80 bg-black/20 p-4">
-        <div class="grid gap-4 xl:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)_minmax(0,1fr)_auto_auto] xl:items-end">
+        <div class="grid gap-4 xl:grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)_minmax(0,1fr)_auto_auto] xl:items-end">
             <label class="block text-sm text-muted">
-                <span class="mb-1 block text-xs uppercase tracking-[0.18em]">Search killmails</span>
-                <input type="search" name="q" value="<?= htmlspecialchars((string) ($filters['search'] ?? ''), ENT_QUOTES) ?>" placeholder="Search sequence, killmail ID, ship, system, or tracked labels..." class="w-full rounded-lg border border-border bg-black/30 px-3 py-2 text-slate-100 placeholder:text-muted focus:border-accent/70 focus:outline-none">
+                <span class="mb-1 block text-xs uppercase tracking-[0.18em]">Search stored losses</span>
+                <input type="search" name="q" value="<?= htmlspecialchars((string) ($filters['search'] ?? ''), ENT_QUOTES) ?>" placeholder="Search sequence, killmail ID, ship, system, region, or tracked victim labels..." class="w-full rounded-lg border border-border bg-black/30 px-3 py-2 text-slate-100 placeholder:text-muted focus:border-accent/70 focus:outline-none">
             </label>
             <label class="block text-sm text-muted">
-                <span class="mb-1 block text-xs uppercase tracking-[0.18em]">Alliance</span>
+                <span class="mb-1 block text-xs uppercase tracking-[0.18em]">Victim alliance</span>
                 <select name="alliance_id" class="w-full rounded-lg border border-border bg-black/30 px-3 py-2 text-slate-100 focus:border-accent/70 focus:outline-none">
                     <?php foreach ((array) ($filters['alliance_options'] ?? []) as $optionValue => $optionLabel): ?>
                         <option value="<?= htmlspecialchars((string) $optionValue, ENT_QUOTES) ?>" <?= (string) $optionValue === (string) ($filters['alliance_id'] ?? 0) ? 'selected' : '' ?>><?= htmlspecialchars((string) $optionLabel, ENT_QUOTES) ?></option>
@@ -128,7 +128,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                 </select>
             </label>
             <label class="block text-sm text-muted">
-                <span class="mb-1 block text-xs uppercase tracking-[0.18em]">Corporation</span>
+                <span class="mb-1 block text-xs uppercase tracking-[0.18em]">Victim corporation</span>
                 <select name="corporation_id" class="w-full rounded-lg border border-border bg-black/30 px-3 py-2 text-slate-100 focus:border-accent/70 focus:outline-none">
                     <?php foreach ((array) ($filters['corporation_options'] ?? []) as $optionValue => $optionLabel): ?>
                         <option value="<?= htmlspecialchars((string) $optionValue, ENT_QUOTES) ?>" <?= (string) $optionValue === (string) ($filters['corporation_id'] ?? 0) ? 'selected' : '' ?>><?= htmlspecialchars((string) $optionLabel, ENT_QUOTES) ?></option>
@@ -147,12 +147,12 @@ include __DIR__ . '/../../src/views/partials/header.php';
             <label class="flex items-center gap-3 rounded-lg border border-border bg-black/20 px-4 py-2 text-sm text-slate-200">
                 <input type="hidden" name="tracked_only" value="0">
                 <input type="checkbox" name="tracked_only" value="1" <?= ($filters['tracked_only'] ?? false) ? 'checked' : '' ?> class="size-4 rounded border-border bg-black">
-                <span>Tracked matches only</span>
+                <span>Tracked victim losses only</span>
             </label>
         </div>
         <div class="mt-4 flex flex-wrap items-center justify-between gap-3">
             <div class="text-sm text-muted">
-                Showing <?= (int) ($pagination['showing_from'] ?? 0) ?>-<?= (int) ($pagination['showing_to'] ?? 0) ?> of <?= number_format((int) ($pagination['total_items'] ?? 0)) ?> stored killmails
+                Showing <?= (int) ($pagination['showing_from'] ?? 0) ?>-<?= (int) ($pagination['showing_to'] ?? 0) ?> of <?= number_format((int) ($pagination['total_items'] ?? 0)) ?> stored losses
             </div>
             <div class="flex flex-wrap gap-2">
                 <button type="submit" class="rounded-lg border border-border bg-accent/40 px-4 py-2 text-sm font-medium text-white transition hover:bg-accent/60">Apply filters</button>
@@ -166,13 +166,13 @@ include __DIR__ . '/../../src/views/partials/header.php';
         <table class="min-w-full text-sm">
             <thead>
             <tr class="border-b border-border/80 bg-white/[0.03] text-left text-xs uppercase tracking-[0.15em] text-muted">
-                <th class="px-3 py-2 font-medium">Killmail Time</th>
-                <th class="px-3 py-2 font-medium">Sequence</th>
-                <th class="px-3 py-2 font-medium">Victim Corp / Alliance</th>
-                <th class="px-3 py-2 font-medium">Ship Type</th>
-                <th class="px-3 py-2 font-medium">System / Region</th>
-                <th class="px-3 py-2 font-medium">Tracked Match</th>
-                <th class="px-3 py-2 font-medium">Ingestion Context</th>
+                <th class="px-3 py-2 font-medium">Loss</th>
+                <th class="px-3 py-2 font-medium">Victim</th>
+                <th class="px-3 py-2 font-medium">Ship lost</th>
+                <th class="px-3 py-2 font-medium">Location</th>
+                <th class="px-3 py-2 font-medium">Tracked victim match</th>
+                <th class="px-3 py-2 font-medium">Stored locally</th>
+                <th class="px-3 py-2 font-medium">Inspect</th>
             </tr>
             </thead>
             <tbody>
@@ -190,32 +190,37 @@ include __DIR__ . '/../../src/views/partials/header.php';
                     <tr class="border-b border-border/60 text-slate-200 transition hover:bg-accent/10 <?= $index % 2 === 1 ? 'bg-white/[0.01]' : '' ?>">
                         <td class="px-3 py-3 align-top">
                             <p class="font-medium text-slate-50"><?= htmlspecialchars((string) ($row['killmail_time_display'] ?? '—'), ENT_QUOTES) ?></p>
-                            <p class="mt-1 text-xs text-muted">Uploaded <?= htmlspecialchars((string) ($row['uploaded_at_display'] ?? '—'), ENT_QUOTES) ?></p>
-                        </td>
-                        <td class="px-3 py-3 align-top">
-                            <p class="font-semibold text-slate-50">#<?= htmlspecialchars(number_format((int) ($row['sequence_id'] ?? 0)), ENT_QUOTES) ?></p>
+                            <p class="mt-1 text-xs text-muted">Sequence #<?= htmlspecialchars(number_format((int) ($row['sequence_id'] ?? 0)), ENT_QUOTES) ?></p>
                             <p class="mt-1 text-xs text-muted">Killmail <?= htmlspecialchars((string) ($row['killmail_id'] ?? '—'), ENT_QUOTES) ?></p>
                         </td>
                         <td class="px-3 py-3 align-top">
                             <p class="font-medium text-slate-50"><?= htmlspecialchars((string) ($row['victim_corporation'] ?? '—'), ENT_QUOTES) ?></p>
-                            <p class="mt-1 text-xs text-muted"><?= htmlspecialchars((string) ($row['victim_alliance'] ?? '—'), ENT_QUOTES) ?></p>
+                            <p class="mt-1 text-xs text-muted"><?= htmlspecialchars((string) ($row['victim_corporation_id_display'] ?? '—'), ENT_QUOTES) ?></p>
+                            <p class="mt-2 text-xs text-slate-300"><?= htmlspecialchars((string) ($row['victim_alliance'] ?? '—'), ENT_QUOTES) ?></p>
+                            <p class="mt-1 text-xs text-muted"><?= htmlspecialchars((string) ($row['victim_alliance_id_display'] ?? '—'), ENT_QUOTES) ?></p>
                         </td>
                         <td class="px-3 py-3 align-top">
                             <p class="font-medium text-slate-50"><?= htmlspecialchars((string) ($row['ship_type'] ?? '—'), ENT_QUOTES) ?></p>
+                            <p class="mt-1 text-xs text-muted"><?= htmlspecialchars((string) ($row['ship_type_id_display'] ?? '—'), ENT_QUOTES) ?></p>
                         </td>
                         <td class="px-3 py-3 align-top">
                             <p class="font-medium text-slate-50"><?= htmlspecialchars((string) ($row['system'] ?? '—'), ENT_QUOTES) ?></p>
-                            <p class="mt-1 text-xs text-muted"><?= htmlspecialchars((string) ($row['region'] ?? '—'), ENT_QUOTES) ?></p>
+                            <p class="mt-1 text-xs text-muted"><?= htmlspecialchars((string) ($row['system_id_display'] ?? '—'), ENT_QUOTES) ?></p>
+                            <p class="mt-2 text-xs text-slate-300"><?= htmlspecialchars((string) ($row['region'] ?? '—'), ENT_QUOTES) ?></p>
+                            <p class="mt-1 text-xs text-muted"><?= htmlspecialchars((string) ($row['region_id_display'] ?? '—'), ENT_QUOTES) ?></p>
                         </td>
                         <td class="px-3 py-3 align-top">
                             <span class="rounded-full border px-2 py-0.5 text-[11px] uppercase tracking-[0.08em] <?= ($row['matched_tracked'] ?? false) ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-200' : 'border-slate-500/40 bg-slate-500/10 text-slate-300' ?>">
-                                <?= ($row['matched_tracked'] ?? false) ? 'Matched' : 'Unmatched' ?>
+                                <?= ($row['matched_tracked'] ?? false) ? 'Tracked victim' : 'Untracked victim' ?>
                             </span>
                             <p class="mt-2 max-w-xs text-xs text-muted"><?= htmlspecialchars((string) ($row['match_context'] ?? ''), ENT_QUOTES) ?></p>
                         </td>
                         <td class="px-3 py-3 align-top">
                             <p class="font-medium text-slate-50"><?= htmlspecialchars((string) ($row['created_at_display'] ?? '—'), ENT_QUOTES) ?></p>
-                            <p class="mt-1 text-xs text-muted">Stored locally</p>
+                            <p class="mt-1 text-xs text-muted">Uploaded <?= htmlspecialchars((string) ($row['uploaded_at_display'] ?? '—'), ENT_QUOTES) ?></p>
+                        </td>
+                        <td class="px-3 py-3 align-top">
+                            <a href="<?= htmlspecialchars((string) ($row['inspect_url'] ?? '#'), ENT_QUOTES) ?>" class="inline-flex items-center rounded-lg border border-accent/50 bg-accent/15 px-3 py-2 text-sm font-medium text-slate-50 transition hover:bg-accent/25">Inspect loss</a>
                         </td>
                     </tr>
                 <?php endforeach; ?>
