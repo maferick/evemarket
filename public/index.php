@@ -116,7 +116,7 @@ include __DIR__ . '/../src/views/partials/header.php';
     <?php $snippets = $intel['trend_snippets'] ?? []; ?>
     <?php $snippetMessage = trim((string) ($intel['trend_snippets_message'] ?? '')); ?>
     <?php if ($snippets === []): ?>
-        <p class="mt-4 rounded-lg border border-dashed border-border bg-black/20 p-4 text-sm text-muted"><?= htmlspecialchars($snippetMessage !== '' ? $snippetMessage : 'Trend snippets will appear after reference hub history is synced. Enable hub history sync in Settings → Data Sync and run at least two daily snapshots.', ENT_QUOTES) ?></p>
+        <p class="mt-4 rounded-lg border border-dashed border-border bg-black/20 p-4 text-sm text-muted"><?= htmlspecialchars($snippetMessage !== '' ? $snippetMessage : 'Trend snippets will appear after local history sync is running. Enable the local-history pipeline in Settings → Data Sync, run the Local History job, and capture at least two daily snapshots.', ENT_QUOTES) ?></p>
     <?php else: ?>
         <div class="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
             <?php foreach ($snippets as $snippet): ?>
