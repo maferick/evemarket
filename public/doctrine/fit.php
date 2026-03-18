@@ -98,6 +98,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
     </section>
 <?php else: ?>
     <?php $supply = (array) ($fit['supply'] ?? []); ?>
+    <?php $statusBadges = doctrine_combined_status_badges($supply); ?>
     <?php $history = is_array($snapshotHistory) ? $snapshotHistory : []; ?>
     <?php $latestSnapshot = is_array($history['latest'] ?? null) ? $history['latest'] : null; ?>
     <?php $previousSnapshot = is_array($history['previous'] ?? null) ? $history['previous'] : null; ?>
@@ -116,7 +117,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
 
     <section class="mt-6 grid gap-4 xl:grid-cols-3">
         <article class="surface-secondary">
-            <p class="eyebrow">Recommendation change</p>
+            <p class="eyebrow">Readiness + pressure change</p>
             <h2 class="mt-2 section-title">Why the doctrine moved</h2>
             <p class="mt-3 text-sm text-slate-300">
                 <?= htmlspecialchars((string) ($change['summary'] ?? 'No doctrine snapshot history has been recorded yet.'), ENT_QUOTES) ?>
@@ -128,9 +129,9 @@ include __DIR__ . '/../../src/views/partials/header.php';
                     <p class="mt-1 text-xs text-slate-500">Previous <?= doctrine_format_quantity((int) ($previousSnapshot['target_fits'] ?? $supply['recommended_target_fit_count'] ?? 0)) ?> → current <?= doctrine_format_quantity((int) ($latestSnapshot['target_fits'] ?? $supply['recommended_target_fit_count'] ?? 0)) ?></p>
                 </div>
                 <div class="surface-tertiary">
-                    <p class="text-xs uppercase tracking-[0.16em] text-slate-500">Recommendation</p>
+                    <p class="text-xs uppercase tracking-[0.16em] text-slate-500">Combined outlook</p>
                     <p class="mt-2 text-sm font-semibold text-slate-100"><?= htmlspecialchars((string) ($previousSnapshot['recommendation_text'] ?? 'No prior snapshot'), ENT_QUOTES) ?> → <?= htmlspecialchars((string) ($latestSnapshot['recommendation_text'] ?? ($supply['recommendation_text'] ?? 'Unavailable')), ENT_QUOTES) ?></p>
-                    <p class="mt-1 text-xs text-slate-500">Fit gap delta <?= ($change['fit_gap_delta'] ?? 0) >= 0 ? '+' : '' ?><?= doctrine_format_quantity((int) ($change['fit_gap_delta'] ?? 0)) ?></p>
+                    <p class="mt-1 text-xs text-slate-500">Readiness <?= htmlspecialchars(doctrine_readiness_label_from_state((string) ($previousSnapshot['readiness_state'] ?? ($supply['readiness_state'] ?? 'market_ready'))), ENT_QUOTES) ?> → <?= htmlspecialchars(doctrine_readiness_label_from_state((string) ($latestSnapshot['readiness_state'] ?? ($supply['readiness_state'] ?? 'market_ready'))), ENT_QUOTES) ?> · Pressure <?= htmlspecialchars((string) ($previousSnapshot['resupply_pressure_text'] ?? ($supply['resupply_pressure_label'] ?? 'Stable')), ENT_QUOTES) ?> → <?= htmlspecialchars((string) ($latestSnapshot['resupply_pressure_text'] ?? ($supply['resupply_pressure_label'] ?? 'Stable')), ENT_QUOTES) ?></p>
                 </div>
             </div>
         </article>
@@ -193,7 +194,9 @@ include __DIR__ . '/../../src/views/partials/header.php';
                         <p class="eyebrow">Hull profile</p>
                         <div class="mt-2 flex flex-wrap items-center gap-3">
                             <h2 class="section-title"><?= htmlspecialchars((string) ($fit['ship_name'] ?? ''), ENT_QUOTES) ?></h2>
-                            <span class="badge <?= htmlspecialchars(doctrine_supply_status_tone((string) ($supply['status'] ?? 'critical')), ENT_QUOTES) ?>"><?= htmlspecialchars((string) ($supply['status_label'] ?? 'Supply gap'), ENT_QUOTES) ?></span>
+                            <?php foreach ($statusBadges as $badge): ?>
+                                <span class="badge <?= htmlspecialchars((string) ($badge['tone'] ?? ''), ENT_QUOTES) ?>"><?= htmlspecialchars((string) ($badge['title'] ?? '') . ': ' . (string) ($badge['label'] ?? ''), ENT_QUOTES) ?></span>
+                            <?php endforeach; ?>
                             <?php if (!empty($supply['externally_managed'])): ?>
                                 <span class="badge border-cyan-400/20 bg-cyan-500/10 text-cyan-100">Excluded from stocking</span>
                             <?php endif; ?>
@@ -229,9 +232,11 @@ include __DIR__ . '/../../src/views/partials/header.php';
                         <p class="mt-2 font-semibold text-slate-100"><?= doctrine_format_quantity((int) ($supply['recommended_target_fit_count'] ?? 0)) ?></p>
                         <p class="mt-1 text-xs text-slate-500"><?= doctrine_format_quantity((int) ($supply['gap_to_target_fit_count'] ?? 0)) ?> fits short of target<?= !empty($supply['externally_managed']) ? ' (readiness-only; no hull restock urgency)' : '' ?></p>
                     </div>
-                    <div class="surface-tertiary border <?= htmlspecialchars(doctrine_supply_status_tone((string) ($supply['status'] ?? 'critical')), ENT_QUOTES) ?>">
-                        <p class="text-xs uppercase tracking-[0.16em]">Operational outcome</p>
-                        <p class="mt-2 text-sm <?= !empty($supply['externally_managed']) || ($supply['likely_enough_based_on_recent_losses'] ?? false) ? 'text-emerald-100' : 'text-rose-100' ?>"><?= htmlspecialchars((string) ($supply['planning_context'] ?? 'Operational recommendation unavailable.'), ENT_QUOTES) ?></p>
+                    <div class="surface-tertiary border <?= htmlspecialchars(doctrine_supply_status_tone((string) ($supply['readiness_state'] ?? 'market_ready')), ENT_QUOTES) ?>">
+                        <p class="text-xs uppercase tracking-[0.16em]">Combined outlook</p>
+                        <p class="mt-2 text-sm text-slate-100"><?= htmlspecialchars((string) ($supply['combined_status_label'] ?? 'Market ready · Stable'), ENT_QUOTES) ?></p>
+                        <p class="mt-2 text-sm text-slate-300"><?= htmlspecialchars((string) ($supply['readiness_context'] ?? 'Operational readiness unavailable.'), ENT_QUOTES) ?></p>
+                        <p class="mt-2 text-sm text-slate-300"><?= htmlspecialchars((string) ($supply['resupply_pressure_context'] ?? 'Resupply pressure unavailable.'), ENT_QUOTES) ?></p>
                         <p class="mt-2 text-xs text-slate-300">Trend: <?= htmlspecialchars((string) ($supply['readiness_trend'] ?? 'Trend unavailable'), ENT_QUOTES) ?> · Restock: <?= htmlspecialchars((string) ($supply['restock_trend'] ?? 'Unavailable'), ENT_QUOTES) ?> · Depletion: <?= htmlspecialchars((string) ucfirst((string) ($supply['depletion_state'] ?? 'stable')), ENT_QUOTES) ?> · 7d hull losses: <?= doctrine_format_quantity((int) ($supply['recent_hull_losses_7d'] ?? 0)) ?>.</p>
                     </div>
                     <div class="flex gap-3">
@@ -342,7 +347,11 @@ include __DIR__ . '/../../src/views/partials/header.php';
                     <h2 class="mt-2 section-title">Required items by category</h2>
                     <p class="mt-2 text-sm text-slate-400">Doctrine readiness now highlights the bottleneck item, complete-fit ceiling, and whether local stock is keeping pace with recent tracked losses.</p>
                 </div>
-                <span class="badge <?= htmlspecialchars(doctrine_supply_status_tone((string) ($supply['status'] ?? 'critical')), ENT_QUOTES) ?>"><?= htmlspecialchars((string) ($supply['status_label'] ?? 'Supply gap'), ENT_QUOTES) ?></span>
+                <div class="flex flex-wrap gap-2">
+                    <?php foreach ($statusBadges as $badge): ?>
+                        <span class="badge <?= htmlspecialchars((string) ($badge['tone'] ?? ''), ENT_QUOTES) ?>"><?= htmlspecialchars((string) ($badge['title'] ?? '') . ': ' . (string) ($badge['label'] ?? ''), ENT_QUOTES) ?></span>
+                    <?php endforeach; ?>
+                </div>
             </div>
 
             <div class="mb-6 grid gap-4 xl:grid-cols-2">
@@ -378,7 +387,8 @@ include __DIR__ . '/../../src/views/partials/header.php';
                                 <div class="rounded-2xl border border-white/8 bg-slate-950/60 px-3 py-2.5">
                                     <div class="flex items-center justify-between gap-3">
                                         <p class="text-xs uppercase tracking-[0.16em] text-slate-500"><?= htmlspecialchars((string) ($event['snapshot_time'] ?? ''), ENT_QUOTES) ?></p>
-                                        <span class="badge <?= htmlspecialchars(doctrine_supply_status_tone((string) ($latestSnapshot['readiness_state'] ?? $supply['status'] ?? 'critical')), ENT_QUOTES) ?>"><?= htmlspecialchars((string) ($event['recommendation_text'] ?? 'Updated'), ENT_QUOTES) ?></span>
+                                        <span class="badge <?= htmlspecialchars(doctrine_supply_status_tone((string) ($event['readiness_state'] ?? $latestSnapshot['readiness_state'] ?? $supply['readiness_state'] ?? 'market_ready')), ENT_QUOTES) ?>"><?= htmlspecialchars((string) ($event['readiness_text'] ?? ($supply['readiness_label'] ?? 'Market ready')), ENT_QUOTES) ?></span>
+                                        <span class="badge <?= htmlspecialchars(doctrine_resupply_pressure_tone((string) ($event['resupply_pressure_state'] ?? $latestSnapshot['resupply_pressure_state'] ?? $supply['resupply_pressure_state'] ?? 'stable')), ENT_QUOTES) ?>"><?= htmlspecialchars((string) ($event['resupply_pressure_text'] ?? ($supply['resupply_pressure_label'] ?? 'Stable')), ENT_QUOTES) ?></span>
                                     </div>
                                     <p class="mt-2 text-sm text-slate-300"><?= htmlspecialchars((string) ($event['summary'] ?? ''), ENT_QUOTES) ?></p>
                                 </div>

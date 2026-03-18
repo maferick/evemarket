@@ -497,6 +497,9 @@ CREATE TABLE IF NOT EXISTS doctrine_fit_snapshots (
     bottleneck_type_id INT UNSIGNED DEFAULT NULL,
     bottleneck_quantity INT NOT NULL DEFAULT 0,
     readiness_state VARCHAR(32) NOT NULL DEFAULT 'unknown',
+    resupply_pressure_state VARCHAR(32) NOT NULL DEFAULT 'stable',
+    resupply_pressure_code VARCHAR(64) NOT NULL DEFAULT 'stable',
+    resupply_pressure_text VARCHAR(255) NOT NULL DEFAULT 'Stable',
     recommendation_code VARCHAR(64) NOT NULL DEFAULT 'observe',
     recommendation_text VARCHAR(255) NOT NULL DEFAULT '',
     loss_24h INT UNSIGNED NOT NULL DEFAULT 0,
@@ -513,6 +516,7 @@ CREATE TABLE IF NOT EXISTS doctrine_fit_snapshots (
     KEY idx_fit_snapshot_time (fit_id, snapshot_time),
     KEY idx_snapshot_time (snapshot_time),
     KEY idx_readiness_state (readiness_state),
+    KEY idx_resupply_pressure_state (resupply_pressure_state),
     KEY idx_recommendation_code (recommendation_code),
     CONSTRAINT fk_doctrine_fit_snapshots_fit FOREIGN KEY (fit_id) REFERENCES doctrine_fits(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

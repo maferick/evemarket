@@ -166,7 +166,7 @@ $statusThemes = [
             <div>
                 <p class="eyebrow">Doctrine readiness</p>
                 <h2 class="mt-2 section-title">Doctrine Supply Risk</h2>
-                <p class="mt-2 section-copy">First-class doctrine signals for market readiness, at-risk groups, and immediate restock candidates.</p>
+                <p class="mt-2 section-copy">First-class doctrine signals that separate fieldable readiness from replenishment pressure.</p>
             </div>
             <span class="badge border-rose-400/20 bg-rose-500/10 text-rose-200"><?= doctrine_format_quantity(count((array) ($doctrine['not_ready_fits'] ?? []))) ?> fits blocked</span>
         </div>
@@ -187,8 +187,8 @@ $statusThemes = [
                                 <p class="mt-1 text-xs text-slate-500"><?= htmlspecialchars(implode(', ', (array) ($fit['group_names'] ?? [])) ?: (string) ($fit['ship_name'] ?? ''), ENT_QUOTES) ?><?= !empty($fit['supply']['externally_managed']) ? ' · Externally managed hull' : '' ?></p>
                             </div>
                             <div class="text-right">
-                                <p class="text-sm font-semibold text-rose-200"><?= doctrine_format_quantity((int) (($fit['supply']['missing_lines'] ?? 0))) ?> lines</p>
-                                <p class="text-xs text-slate-500"><?= doctrine_format_quantity((int) (($fit['supply']['total_missing_qty'] ?? 0))) ?> units</p>
+                                <p class="text-sm font-semibold text-rose-200"><?= htmlspecialchars((string) (($fit['supply']['readiness_label'] ?? 'Market ready')), ENT_QUOTES) ?></p>
+                                <p class="text-xs text-slate-500"><?= htmlspecialchars((string) (($fit['supply']['resupply_pressure_label'] ?? 'Stable')), ENT_QUOTES) ?></p>
                             </div>
                         </a>
                     <?php endforeach; ?>
@@ -213,8 +213,8 @@ $statusThemes = [
                                 <p class="mt-1 text-xs text-slate-500"><?= doctrine_format_quantity((int) ($group['gap_fit_count'] ?? 0)) ?> fits with supply gaps</p>
                             </div>
                             <div class="text-right">
-                                <p class="text-sm font-semibold text-orange-100"><?= doctrine_format_quantity((int) ($group['total_missing_qty'] ?? 0)) ?> units</p>
-                                <p class="text-xs text-slate-500"><?= htmlspecialchars(market_format_isk((float) ($group['restock_gap_isk'] ?? 0.0)), ENT_QUOTES) ?></p>
+                                <p class="text-sm font-semibold text-orange-100"><?= htmlspecialchars((string) ($group['status_label'] ?? 'Market ready'), ENT_QUOTES) ?></p>
+                                <p class="text-xs text-slate-500"><?= htmlspecialchars((string) ($group['pressure_label'] ?? 'Stable'), ENT_QUOTES) ?></p>
                             </div>
                         </a>
                     <?php endforeach; ?>

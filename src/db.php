@@ -2935,6 +2935,9 @@ function doctrine_db_ensure_schema(): void
             bottleneck_type_id INT UNSIGNED DEFAULT NULL,
             bottleneck_quantity INT NOT NULL DEFAULT 0,
             readiness_state VARCHAR(32) NOT NULL DEFAULT "unknown",
+            resupply_pressure_state VARCHAR(32) NOT NULL DEFAULT "stable",
+            resupply_pressure_code VARCHAR(64) NOT NULL DEFAULT "stable",
+            resupply_pressure_text VARCHAR(255) NOT NULL DEFAULT "Stable",
             recommendation_code VARCHAR(64) NOT NULL DEFAULT "observe",
             recommendation_text VARCHAR(255) NOT NULL DEFAULT "",
             loss_24h INT UNSIGNED NOT NULL DEFAULT 0,
@@ -2951,10 +2954,18 @@ function doctrine_db_ensure_schema(): void
             KEY idx_fit_snapshot_time (fit_id, snapshot_time),
             KEY idx_snapshot_time (snapshot_time),
             KEY idx_readiness_state (readiness_state),
+            KEY idx_resupply_pressure_state (resupply_pressure_state),
             KEY idx_recommendation_code (recommendation_code),
             CONSTRAINT fk_doctrine_fit_snapshots_fit FOREIGN KEY (fit_id) REFERENCES doctrine_fits(id) ON DELETE CASCADE
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4'
     );
+
+    if (db_table_exists('doctrine_fit_snapshots') && !db_column_exists('doctrine_fit_snapshots', 'resupply_pressure_state')) {
+        db()->exec('ALTER TABLE doctrine_fit_snapshots ADD COLUMN resupply_pressure_state VARCHAR(32) NOT NULL DEFAULT "stable" AFTER readiness_state');
+        db()->exec('ALTER TABLE doctrine_fit_snapshots ADD COLUMN resupply_pressure_code VARCHAR(64) NOT NULL DEFAULT "stable" AFTER resupply_pressure_state');
+        db()->exec('ALTER TABLE doctrine_fit_snapshots ADD COLUMN resupply_pressure_text VARCHAR(255) NOT NULL DEFAULT "Stable" AFTER resupply_pressure_code');
+        db()->exec('ALTER TABLE doctrine_fit_snapshots ADD KEY idx_resupply_pressure_state (resupply_pressure_state)');
+    }
 
     if (db_table_exists('doctrine_fit_items') && !db_column_exists('doctrine_fit_items', 'is_stock_tracked')) {
         db()->exec('ALTER TABLE doctrine_fit_items ADD COLUMN is_stock_tracked TINYINT(1) NOT NULL DEFAULT 1 AFTER quantity');
@@ -3348,6 +3359,9 @@ function db_doctrine_fit_snapshot_insert(array $row): int
             bottleneck_type_id,
             bottleneck_quantity,
             readiness_state,
+            resupply_pressure_state,
+            resupply_pressure_code,
+            resupply_pressure_text,
             recommendation_code,
             recommendation_text,
             loss_24h,
@@ -3360,7 +3374,7 @@ function db_doctrine_fit_snapshot_insert(array $row): int
             score_stock_gap,
             score_depletion,
             score_bottleneck
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
         [
             (int) ($row['fit_id'] ?? 0),
             (string) ($row['snapshot_time'] ?? gmdate('Y-m-d H:i:s')),
@@ -3370,6 +3384,9 @@ function db_doctrine_fit_snapshot_insert(array $row): int
             isset($row['bottleneck_type_id']) && (int) $row['bottleneck_type_id'] > 0 ? (int) $row['bottleneck_type_id'] : null,
             (int) ($row['bottleneck_quantity'] ?? 0),
             mb_substr(trim((string) ($row['readiness_state'] ?? 'unknown')), 0, 32),
+            mb_substr(trim((string) ($row['resupply_pressure_state'] ?? 'stable')), 0, 32),
+            mb_substr(trim((string) ($row['resupply_pressure_code'] ?? 'stable')), 0, 64),
+            mb_substr(trim((string) ($row['resupply_pressure_text'] ?? 'Stable')), 0, 255),
             mb_substr(trim((string) ($row['recommendation_code'] ?? 'observe')), 0, 64),
             mb_substr(trim((string) ($row['recommendation_text'] ?? '')), 0, 255),
             max(0, (int) ($row['loss_24h'] ?? 0)),

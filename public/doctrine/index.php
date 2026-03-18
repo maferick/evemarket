@@ -54,7 +54,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
             <div>
                 <p class="eyebrow">Doctrine registry</p>
                 <h2 class="mt-2 section-title">Alliance doctrine groups</h2>
-                <p class="mt-2 text-sm text-slate-400">Every card now exposes complete-fit availability, target stock, readiness trend, and loss-aware doctrine pressure before you even open the fit.</p>
+                <p class="mt-2 text-sm text-slate-400">Every card now separates fieldable readiness from replenishment pressure before you even open the fit.</p>
             </div>
             <a href="/doctrine/import" class="btn-primary">Import fit</a>
         </div>
@@ -69,7 +69,8 @@ include __DIR__ . '/../../src/views/partials/header.php';
                             <div>
                                 <div class="flex flex-wrap items-center gap-3">
                                     <h3 class="text-lg font-semibold text-white"><?= htmlspecialchars((string) ($group['group_name'] ?? ''), ENT_QUOTES) ?></h3>
-                                    <span class="badge <?= htmlspecialchars(doctrine_supply_status_tone((string) ($group['status'] ?? 'critical')), ENT_QUOTES) ?>"><?= htmlspecialchars((string) ($group['status_label'] ?? 'Gap active'), ENT_QUOTES) ?></span>
+                                    <span class="badge <?= htmlspecialchars(doctrine_supply_status_tone((string) ($group['status'] ?? 'market_ready')), ENT_QUOTES) ?>"><?= htmlspecialchars((string) ($group['status_label'] ?? 'Market ready'), ENT_QUOTES) ?></span>
+                                    <span class="badge <?= htmlspecialchars(doctrine_resupply_pressure_tone((string) ($group['pressure_state'] ?? 'stable')), ENT_QUOTES) ?>"><?= htmlspecialchars((string) ($group['pressure_label'] ?? 'Stable'), ENT_QUOTES) ?></span>
                                 </div>
                                 <p class="mt-2 max-w-2xl text-sm text-slate-400"><?= htmlspecialchars((string) ($group['description'] ?? 'Doctrine fit collection for SupplyCore workflows.'), ENT_QUOTES) ?></p>
                             </div>
@@ -94,9 +95,9 @@ include __DIR__ . '/../../src/views/partials/header.php';
                                 <p class="mt-1 text-xs text-slate-500"><?= doctrine_format_quantity((int) ($group['trending_down_fit_count'] ?? 0)) ?> fits trending down</p>
                             </div>
                             <div class="surface-tertiary">
-                                <p class="text-xs uppercase tracking-[0.16em] text-slate-500">Loss pressure</p>
-                                <p class="mt-2 text-sm font-semibold text-sky-100"><?= htmlspecialchars(market_format_isk((float) ($group['restock_gap_isk'] ?? 0.0)), ENT_QUOTES) ?></p>
-                                <p class="mt-1 text-xs text-slate-500"><?= doctrine_format_quantity((int) ($group['loss_pressure_fit_count'] ?? 0)) ?> fits not yet sufficient vs recent tracked losses</p>
+                                <p class="text-xs uppercase tracking-[0.16em] text-slate-500">Resupply pressure</p>
+                                <p class="mt-2 text-sm font-semibold text-sky-100"><?= htmlspecialchars((string) ($group['pressure_label'] ?? 'Stable'), ENT_QUOTES) ?></p>
+                                <p class="mt-1 text-xs text-slate-500"><?= doctrine_format_quantity((int) ($group['pressure_fit_count'] ?? 0)) ?> fits show elevated-or-worse replenishment pressure</p>
                             </div>
                         </div>
                     </a>
@@ -197,7 +198,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                 <div>
                     <p class="eyebrow">Readiness exceptions</p>
                 <h2 class="mt-2 section-title">Fits that need doctrine attention</h2>
-                <p class="mt-2 text-sm text-slate-400">These fits are below target, trending down, or already under pressure from recent tracked losses.</p>
+                <p class="mt-2 text-sm text-slate-400">These fits still have readiness gaps right now, even if replenishment pressure is tracked separately.</p>
                 </div>
                 <span class="badge border-rose-400/20 bg-rose-500/10 text-rose-200"><?= doctrine_format_quantity(count($notReadyFits)) ?> active</span>
             </div>
@@ -213,7 +214,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                         </div>
                         <div class="text-right">
                             <p class="text-sm font-semibold text-rose-200"><?= doctrine_format_quantity((int) (($fit['supply']['complete_fits_available'] ?? 0))) ?> / <?= doctrine_format_quantity((int) (($fit['supply']['recommended_target_fit_count'] ?? 0))) ?></p>
-                            <p class="text-xs text-slate-500"><?= htmlspecialchars((string) (($fit['supply']['status_label'] ?? 'Watch closely')), ENT_QUOTES) ?></p>
+                            <p class="text-xs text-slate-500"><?= htmlspecialchars((string) (($fit['supply']['combined_status_label'] ?? (($fit['supply']['readiness_label'] ?? 'Market ready') . ' · ' . ($fit['supply']['resupply_pressure_label'] ?? 'Stable')))), ENT_QUOTES) ?></p>
                         </div>
                         <div class="text-slate-500 transition group-hover:text-slate-200">›</div>
                     </a>

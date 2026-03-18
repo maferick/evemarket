@@ -72,8 +72,13 @@ include __DIR__ . '/../../src/views/partials/header.php';
     <section class="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <article class="surface-secondary">
             <p class="eyebrow">Readiness</p>
-            <p class="mt-3 text-3xl metric-value"><?= htmlspecialchars((string) ($group['status_label'] ?? 'Gap active'), ENT_QUOTES) ?></p>
-            <p class="mt-2 text-sm text-slate-300"><?= doctrine_format_quantity((int) ($group['loss_pressure_fit_count'] ?? 0)) ?> fits need closer stock planning against recent loss pressure.</p>
+            <p class="mt-3 text-3xl metric-value"><?= htmlspecialchars((string) ($group['status_label'] ?? 'Market ready'), ENT_QUOTES) ?></p>
+            <p class="mt-2 text-sm text-slate-300"><?= doctrine_format_quantity((int) ($group['gap_fit_count'] ?? 0)) ?> fits are below fieldable target coverage right now.</p>
+        </article>
+        <article class="surface-secondary">
+            <p class="eyebrow">Resupply pressure</p>
+            <p class="mt-3 text-3xl metric-value"><?= htmlspecialchars((string) ($group['pressure_label'] ?? 'Stable'), ENT_QUOTES) ?></p>
+            <p class="mt-2 text-sm text-slate-300"><?= doctrine_format_quantity((int) ($group['loss_pressure_fit_count'] ?? 0)) ?> fits need replenishment soon or urgently.</p>
         </article>
         <article class="surface-secondary">
             <p class="eyebrow">Complete fits</p>
@@ -99,7 +104,8 @@ include __DIR__ . '/../../src/views/partials/header.php';
                     <p class="eyebrow">Fit inventory</p>
                     <div class="mt-2 flex flex-wrap items-center gap-3">
                         <h2 class="section-title"><?= htmlspecialchars((string) ($group['group_name'] ?? ''), ENT_QUOTES) ?></h2>
-                        <span class="badge <?= htmlspecialchars(doctrine_supply_status_tone((string) ($group['status'] ?? 'critical')), ENT_QUOTES) ?>"><?= htmlspecialchars((string) ($group['status_label'] ?? 'Gap active'), ENT_QUOTES) ?></span>
+                        <span class="badge <?= htmlspecialchars(doctrine_supply_status_tone((string) ($group['status'] ?? 'market_ready')), ENT_QUOTES) ?>"><?= htmlspecialchars((string) ($group['status_label'] ?? 'Market ready'), ENT_QUOTES) ?></span>
+                        <span class="badge <?= htmlspecialchars(doctrine_resupply_pressure_tone((string) ($group['pressure_state'] ?? 'stable')), ENT_QUOTES) ?>"><?= htmlspecialchars((string) ($group['pressure_label'] ?? 'Stable'), ENT_QUOTES) ?></span>
                     </div>
                     <p class="mt-2 text-sm text-slate-400"><?= htmlspecialchars((string) ($group['description'] ?? 'Doctrine fit collection for SupplyCore.'), ENT_QUOTES) ?></p>
                 </div>
@@ -128,7 +134,8 @@ include __DIR__ . '/../../src/views/partials/header.php';
                                     <div>
                                         <div class="flex flex-wrap items-center gap-3">
                                             <h3 class="text-lg font-semibold text-white"><?= htmlspecialchars((string) ($fit['fit_name'] ?? ''), ENT_QUOTES) ?></h3>
-                                            <span class="rounded-full border px-2 py-0.5 text-[11px] uppercase tracking-[0.08em] <?= htmlspecialchars(doctrine_supply_status_tone((string) ($supply['status'] ?? 'critical')), ENT_QUOTES) ?>"><?= htmlspecialchars((string) ($supply['status_label'] ?? 'Supply gap'), ENT_QUOTES) ?></span>
+                                            <span class="rounded-full border px-2 py-0.5 text-[11px] uppercase tracking-[0.08em] <?= htmlspecialchars(doctrine_supply_status_tone((string) ($supply['readiness_state'] ?? $supply['status'] ?? 'market_ready')), ENT_QUOTES) ?>"><?= htmlspecialchars((string) ($supply['readiness_label'] ?? $supply['status_label'] ?? 'Market ready'), ENT_QUOTES) ?></span>
+                                            <span class="rounded-full border px-2 py-0.5 text-[11px] uppercase tracking-[0.08em] <?= htmlspecialchars(doctrine_resupply_pressure_tone((string) ($supply['resupply_pressure_state'] ?? 'stable')), ENT_QUOTES) ?>"><?= htmlspecialchars((string) ($supply['resupply_pressure_label'] ?? 'Stable'), ENT_QUOTES) ?></span>
                                             <?php if (!empty($supply['externally_managed'])): ?>
                                                 <span class="rounded-full border border-cyan-400/20 bg-cyan-500/10 px-2 py-0.5 text-[11px] uppercase tracking-[0.08em] text-cyan-100">Externally managed</span>
                                             <?php endif; ?>
