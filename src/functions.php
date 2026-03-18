@@ -846,6 +846,49 @@ function item_scope_is_type_id_in_scope(int $typeId, ?array $config = null, ?arr
     return item_scope_type_metadata_in_scope($metadata, $config);
 }
 
+function item_scope_type_metadata(int $typeId, ?array $metadataByType = null): array
+{
+    if ($typeId <= 0) {
+        return [];
+    }
+
+    $metadataByType ??= item_scope_metadata_by_type_ids([$typeId]);
+
+    return is_array($metadataByType[$typeId] ?? null) ? (array) $metadataByType[$typeId] : [];
+}
+
+function item_scope_type_is_consumable(int $typeId, ?array $metadataByType = null): bool
+{
+    if ($typeId <= 0) {
+        return false;
+    }
+
+    $metadata = item_scope_type_metadata($typeId, $metadataByType);
+    if ($metadata === []) {
+        return false;
+    }
+
+    $categoryName = item_scope_normalize_token((string) ($metadata['category_name'] ?? ''));
+    if ($categoryName === 'charge') {
+        return true;
+    }
+
+    return item_scope_matches_operational_category($metadata, 'boosters');
+}
+
+function item_scope_type_is_durable_loss_relevant(int $typeId, ?array $config = null, ?array $metadataByType = null): bool
+{
+    if ($typeId <= 0) {
+        return false;
+    }
+
+    if (!item_scope_is_type_id_in_scope($typeId, $config, $metadataByType)) {
+        return false;
+    }
+
+    return !item_scope_type_is_consumable($typeId, $metadataByType);
+}
+
 function item_scope_filter_rows(array $rows, callable $typeIdResolver, ?array $config = null): array
 {
     $config ??= item_scope_config();
@@ -3521,6 +3564,397 @@ function killmail_loss_item_groups(array $items, array $resolvedEntities = []): 
     return $groups;
 }
 
+function killmail_doctrine_impact_severity(int $matchedFitCount, int $matchedPrimaryLineCount, bool $matchedHull): array
+{
+    $score = $matchedPrimaryLineCount + ($matchedHull ? 2 : 0) + max(0, $matchedFitCount - 1);
+    $level = 'low';
+    $label = 'Low';
+    $tone = 'border-sky-500/40 bg-sky-500/10 text-sky-100';
+
+    if ($score >= 6) {
+        $level = 'high';
+        $label = 'High';
+        $tone = 'border-red-500/40 bg-red-500/10 text-red-100';
+    } elseif ($score >= 3) {
+        $level = 'medium';
+        $label = 'Medium';
+        $tone = 'border-amber-500/40 bg-amber-500/10 text-amber-100';
+    }
+
+    return [
+        'level' => $level,
+        'label' => $label,
+        'tone' => $tone,
+        'score' => $score,
+    ];
+}
+
+function killmail_doctrine_impact_debug_enabled(): bool
+{
+    return sanitize_enabled_flag($_GET['debug_doctrine_impact'] ?? '0') === '1';
+}
+
+function killmail_doctrine_impact_log_debug(array $debug): void
+{
+    if (!killmail_doctrine_impact_debug_enabled()) {
+        return;
+    }
+
+    try {
+        error_log('[killmail.doctrine_impact] ' . json_encode($debug, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES));
+    } catch (Throwable) {
+    }
+}
+
+function doctrine_impact_fit_catalog(): array
+{
+    static $catalog = null;
+    if (is_array($catalog)) {
+        return $catalog;
+    }
+
+    try {
+        $fits = db_doctrine_fits_all();
+    } catch (Throwable) {
+        $catalog = ['fits' => [], 'doctrine_type_ids' => []];
+
+        return $catalog;
+    }
+
+    $fitIds = array_values(array_filter(array_map(static fn (array $fit): int => (int) ($fit['id'] ?? 0), $fits), static fn (int $fitId): bool => $fitId > 0));
+    $itemsByFitId = [];
+    if ($fitIds !== []) {
+        try {
+            foreach (db_doctrine_fit_items_by_fit_ids($fitIds) as $item) {
+                $fitId = (int) ($item['doctrine_fit_id'] ?? 0);
+                if ($fitId > 0) {
+                    $itemsByFitId[$fitId][] = $item;
+                }
+            }
+        } catch (Throwable) {
+            $itemsByFitId = [];
+        }
+    }
+
+    $normalizedItemsByFitId = [];
+    $allTypeIds = [];
+    foreach ($fits as $fit) {
+        $fitId = (int) ($fit['id'] ?? 0);
+        if ($fitId <= 0) {
+            continue;
+        }
+
+        $normalizedItems = doctrine_normalize_persisted_fit_items($fit, $itemsByFitId[$fitId] ?? []);
+        $normalizedItemsByFitId[$fitId] = $normalizedItems;
+        foreach ($normalizedItems as $item) {
+            $typeId = (int) ($item['type_id'] ?? 0);
+            if ($typeId > 0) {
+                $allTypeIds[] = $typeId;
+            }
+        }
+    }
+
+    $metadataByType = item_scope_metadata_by_type_ids(array_values(array_unique($allTypeIds)));
+    $fitCatalog = [];
+    $allDoctrineTypeIds = [];
+
+    foreach ($fits as $fit) {
+        $fitId = (int) ($fit['id'] ?? 0);
+        if ($fitId <= 0) {
+            continue;
+        }
+
+        $groupIds = doctrine_parse_group_csv($fit['group_ids_csv'] ?? null);
+        $groupNames = doctrine_parse_group_names_csv($fit['group_names_csv'] ?? null);
+        $durableTypeIds = [];
+        $consumableTypeIds = [];
+        $durableItems = [];
+        $consumableItems = [];
+
+        foreach ($normalizedItemsByFitId[$fitId] ?? [] as $item) {
+            $typeId = (int) ($item['type_id'] ?? 0);
+            if ($typeId <= 0) {
+                continue;
+            }
+
+            $itemName = trim((string) (($item['type_name'] ?? null) ?: ($item['item_name'] ?? '')));
+            $payload = [
+                'type_id' => $typeId,
+                'item_name' => $itemName !== '' ? $itemName : ('Type #' . $typeId),
+                'quantity' => max(1, (int) ($item['quantity'] ?? 1)),
+                'slot_category' => (string) ($item['slot_category'] ?? ''),
+            ];
+
+            if (item_scope_type_is_consumable($typeId, $metadataByType)) {
+                $consumableTypeIds[$typeId] = true;
+                $consumableItems[$typeId] = $payload;
+                continue;
+            }
+
+            $durableTypeIds[$typeId] = true;
+            $durableItems[$typeId] = $payload;
+            $allDoctrineTypeIds[$typeId] = true;
+        }
+
+        $fitCatalog[] = [
+            'id' => $fitId,
+            'fit_name' => (string) ($fit['fit_name'] ?? 'Doctrine fit'),
+            'ship_name' => (string) ($fit['ship_name'] ?? ''),
+            'ship_type_id' => isset($fit['ship_type_id']) ? (int) $fit['ship_type_id'] : null,
+            'ship_image_url' => doctrine_ship_image_url(isset($fit['ship_type_id']) ? (int) ($fit['ship_type_id'] ?? 0) : null, 64),
+            'group_ids' => $groupIds,
+            'group_names' => $groupNames,
+            'durable_type_ids' => array_values(array_map('intval', array_keys($durableTypeIds))),
+            'consumable_type_ids' => array_values(array_map('intval', array_keys($consumableTypeIds))),
+            'durable_items_by_type_id' => $durableItems,
+            'consumable_items_by_type_id' => $consumableItems,
+        ];
+    }
+
+    $catalog = [
+        'fits' => $fitCatalog,
+        'doctrine_type_ids' => array_values(array_map('intval', array_keys($allDoctrineTypeIds))),
+    ];
+
+    return $catalog;
+}
+
+function killmail_doctrine_impact(array $event, array $items, array $resolvedEntities = []): array
+{
+    $catalog = doctrine_impact_fit_catalog();
+    $victimShipTypeId = isset($event['victim_ship_type_id']) ? (int) ($event['victim_ship_type_id'] ?? 0) : 0;
+    $candidateTypeIds = [];
+    $candidateRows = [];
+
+    if ($victimShipTypeId > 0) {
+        $candidateTypeIds[] = $victimShipTypeId;
+        $resolvedHull = killmail_resolved_entity($resolvedEntities, 'type', $victimShipTypeId, isset($event['ship_type_name']) ? (string) $event['ship_type_name'] : null);
+        $candidateRows[] = [
+            'type_id' => $victimShipTypeId,
+            'quantity' => 1,
+            'role' => 'hull',
+            'item_name' => (string) ($resolvedHull['name'] ?? ('Type #' . $victimShipTypeId)),
+            'state_label' => 'Victim hull',
+        ];
+    }
+
+    foreach ($items as $item) {
+        if (!is_array($item)) {
+            continue;
+        }
+
+        $role = (string) ($item['item_role'] ?? 'other');
+        if (!in_array($role, ['dropped', 'destroyed', 'fitted'], true)) {
+            continue;
+        }
+
+        $typeId = (int) ($item['item_type_id'] ?? 0);
+        if ($typeId <= 0) {
+            continue;
+        }
+
+        $quantity = match ($role) {
+            'dropped' => max(1, (int) ($item['quantity_dropped'] ?? 0)),
+            'destroyed' => max(1, (int) ($item['quantity_destroyed'] ?? 0)),
+            default => max(1, (int) ($item['quantity_destroyed'] ?? 0), (int) ($item['quantity_dropped'] ?? 0)),
+        };
+        $resolvedItem = killmail_resolved_entity($resolvedEntities, 'type', $typeId, isset($item['item_type_name']) ? (string) $item['item_type_name'] : null);
+
+        $candidateTypeIds[] = $typeId;
+        $candidateRows[] = [
+            'type_id' => $typeId,
+            'quantity' => $quantity,
+            'role' => $role,
+            'item_name' => (string) ($resolvedItem['name'] ?? ('Type #' . $typeId)),
+            'state_label' => match ($role) {
+                'dropped' => number_format($quantity) . ' dropped',
+                'destroyed' => number_format($quantity) . ' destroyed',
+                default => number_format($quantity) . ' fitted',
+            },
+        ];
+    }
+
+    $candidateTypeIds = array_values(array_unique(array_filter(
+        array_map('intval', $candidateTypeIds),
+        static fn (int $typeId): bool => $typeId > 0
+    )));
+    $metadataByType = item_scope_metadata_by_type_ids($candidateTypeIds);
+    $primaryVictimTypeIds = [];
+    $secondaryVictimTypeIds = [];
+    $victimRowsByTypeId = [];
+
+    foreach ($candidateRows as $row) {
+        $typeId = (int) ($row['type_id'] ?? 0);
+        if ($typeId <= 0) {
+            continue;
+        }
+
+        $victimRowsByTypeId[$typeId] ??= $row;
+        if (($row['role'] ?? '') === 'hull' || item_scope_type_is_durable_loss_relevant($typeId, null, $metadataByType)) {
+            $primaryVictimTypeIds[$typeId] = true;
+            continue;
+        }
+
+        if (item_scope_type_is_consumable($typeId, $metadataByType)) {
+            $secondaryVictimTypeIds[$typeId] = true;
+        }
+    }
+
+    $matchedFits = [];
+    $matchedGroups = [];
+    $matchedItemNames = [];
+    $matchedPrimaryTypeIds = [];
+    $matchedSecondaryTypeIds = [];
+
+    foreach ((array) ($catalog['fits'] ?? []) as $fit) {
+        $fitPrimaryIntersection = array_values(array_intersect(
+            array_keys($primaryVictimTypeIds),
+            (array) ($fit['durable_type_ids'] ?? [])
+        ));
+        $fitSecondaryIntersection = array_values(array_intersect(
+            array_keys($secondaryVictimTypeIds),
+            (array) ($fit['consumable_type_ids'] ?? [])
+        ));
+        if ($fitPrimaryIntersection === [] && $fitSecondaryIntersection === []) {
+            continue;
+        }
+
+        $matchedPrimaryItems = [];
+        foreach ($fitPrimaryIntersection as $typeId) {
+            $typeId = (int) $typeId;
+            $matchedPrimaryTypeIds[$typeId] = true;
+            $fitItem = (array) (($fit['durable_items_by_type_id'][$typeId] ?? []));
+            $victimItem = (array) ($victimRowsByTypeId[$typeId] ?? []);
+            $itemName = (string) (($fitItem['item_name'] ?? null) ?: ($victimItem['item_name'] ?? ('Type #' . $typeId)));
+            $matchedItemNames[$itemName] = true;
+            $matchedPrimaryItems[] = [
+                'type_id' => $typeId,
+                'item_name' => $itemName,
+                'slot_category' => (string) ($fitItem['slot_category'] ?? ''),
+                'victim_state_label' => (string) ($victimItem['state_label'] ?? ''),
+            ];
+        }
+
+        $matchedSecondaryItems = [];
+        foreach ($fitSecondaryIntersection as $typeId) {
+            $typeId = (int) $typeId;
+            $matchedSecondaryTypeIds[$typeId] = true;
+            $fitItem = (array) (($fit['consumable_items_by_type_id'][$typeId] ?? []));
+            $victimItem = (array) ($victimRowsByTypeId[$typeId] ?? []);
+            $matchedSecondaryItems[] = [
+                'type_id' => $typeId,
+                'item_name' => (string) (($fitItem['item_name'] ?? null) ?: ($victimItem['item_name'] ?? ('Type #' . $typeId))),
+                'victim_state_label' => (string) ($victimItem['state_label'] ?? ''),
+            ];
+        }
+
+        $matchedFits[] = [
+            'id' => (int) ($fit['id'] ?? 0),
+            'fit_name' => (string) ($fit['fit_name'] ?? 'Doctrine fit'),
+            'ship_name' => (string) (($fit['ship_name'] ?? '') !== '' ? $fit['ship_name'] : ($fit['fit_name'] ?? 'Doctrine fit')),
+            'ship_image_url' => $fit['ship_image_url'] ?? null,
+            'group_names' => array_values((array) ($fit['group_names'] ?? [])),
+            'matched_primary_items' => $matchedPrimaryItems,
+            'matched_secondary_items' => $matchedSecondaryItems,
+            'matched_primary_line_count' => count($matchedPrimaryItems),
+            'matched_secondary_line_count' => count($matchedSecondaryItems),
+        ];
+
+        foreach ((array) ($fit['group_names'] ?? []) as $groupName) {
+            $normalizedGroup = trim((string) $groupName);
+            if ($normalizedGroup === '') {
+                continue;
+            }
+
+            $matchedGroups[$normalizedGroup] ??= [
+                'group_name' => $normalizedGroup,
+                'fit_names' => [],
+                'matched_item_names' => [],
+            ];
+            $matchedGroups[$normalizedGroup]['fit_names'][(string) ($fit['fit_name'] ?? 'Doctrine fit')] = true;
+            foreach ($matchedPrimaryItems as $matchedItem) {
+                $matchedGroups[$normalizedGroup]['matched_item_names'][(string) ($matchedItem['item_name'] ?? '')] = true;
+            }
+        }
+    }
+
+    usort($matchedFits, static function (array $a, array $b): int {
+        return ((int) ($b['matched_primary_line_count'] ?? 0) <=> (int) ($a['matched_primary_line_count'] ?? 0))
+            ?: ((int) ($b['matched_secondary_line_count'] ?? 0) <=> (int) ($a['matched_secondary_line_count'] ?? 0))
+            ?: strcasecmp((string) ($a['fit_name'] ?? ''), (string) ($b['fit_name'] ?? ''));
+    });
+
+    $matchedPrimaryTypeIds = array_values(array_map('intval', array_keys($matchedPrimaryTypeIds)));
+    $matchedSecondaryTypeIds = array_values(array_map('intval', array_keys($matchedSecondaryTypeIds)));
+    sort($matchedPrimaryTypeIds);
+    sort($matchedSecondaryTypeIds);
+    $matchedItemNames = array_values(array_keys($matchedItemNames));
+    natcasesort($matchedItemNames);
+
+    $matchedGroupRows = array_values(array_map(static function (array $group): array {
+        $group['fit_names'] = array_values(array_keys((array) ($group['fit_names'] ?? [])));
+        sort($group['fit_names']);
+        $group['matched_item_names'] = array_values(array_keys((array) ($group['matched_item_names'] ?? [])));
+        natcasesort($group['matched_item_names']);
+
+        return $group;
+    }, $matchedGroups));
+    usort($matchedGroupRows, static fn (array $a, array $b): int => strcasecmp((string) ($a['group_name'] ?? ''), (string) ($b['group_name'] ?? '')));
+
+    $severity = killmail_doctrine_impact_severity(count($matchedFits), count($matchedPrimaryTypeIds), in_array($victimShipTypeId, $matchedPrimaryTypeIds, true));
+    $matched = $matchedPrimaryTypeIds !== [];
+    $debug = [
+        'sequence_id' => (int) ($event['sequence_id'] ?? 0),
+        'victim_item_type_ids_considered' => $candidateTypeIds,
+        'victim_durable_type_ids_considered' => array_values(array_map('intval', array_keys($primaryVictimTypeIds))),
+        'victim_consumable_type_ids_considered' => array_values(array_map('intval', array_keys($secondaryVictimTypeIds))),
+        'doctrine_item_type_ids_considered' => (array) ($catalog['doctrine_type_ids'] ?? []),
+        'primary_intersection_type_ids' => $matchedPrimaryTypeIds,
+        'secondary_intersection_type_ids' => $matchedSecondaryTypeIds,
+        'intersection_count' => count($matchedPrimaryTypeIds),
+        'secondary_intersection_count' => count($matchedSecondaryTypeIds),
+        'matched_fit_ids' => array_values(array_map(static fn (array $fit): int => (int) ($fit['id'] ?? 0), $matchedFits)),
+        'matched_group_names' => array_values(array_map(static fn (array $group): string => (string) ($group['group_name'] ?? ''), $matchedGroupRows)),
+        'no_match_reason' => $matched
+            ? null
+            : match (true) {
+                $candidateRows === [] => 'No victim-side hull or item rows were available for doctrine comparison.',
+                $primaryVictimTypeIds === [] && $secondaryVictimTypeIds === [] => 'Victim-side rows did not include any comparable type_ids.',
+                ($catalog['doctrine_type_ids'] ?? []) === [] => 'No normalized doctrine fit item type_ids are available locally.',
+                $matchedSecondaryTypeIds !== [] => 'Only consumable doctrine items overlapped; primary durable doctrine impact remains empty.',
+                default => 'Victim-side durable type_ids did not intersect any normalized doctrine fit durable type_ids.',
+            },
+    ];
+    killmail_doctrine_impact_log_debug($debug);
+
+    $context = $matched
+        ? ('Matched ' . number_format(count($matchedPrimaryTypeIds)) . ' durable doctrine item type' . (count($matchedPrimaryTypeIds) === 1 ? '' : 's')
+            . ' across ' . number_format(count($matchedFits)) . ' doctrine fit' . (count($matchedFits) === 1 ? '' : 's') . '.')
+        : 'No durable doctrine fit item type_ids intersected the victim-side hull and stored loss items.';
+    if (!$matched && $matchedSecondaryTypeIds !== []) {
+        $context .= ' Secondary consumable-only overlaps were detected, but they do not drive the primary doctrine-impact signal.';
+    }
+
+    return [
+        'matched' => $matched,
+        'label' => $matched ? 'Doctrine impact detected' : 'No doctrine impact',
+        'tone' => $matched
+            ? ($severity['tone'] ?? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-100')
+            : 'border-slate-500/40 bg-slate-500/10 text-slate-300',
+        'context' => $context,
+        'severity' => $severity,
+        'matched_groups' => $matchedGroupRows,
+        'matched_fits' => $matchedFits,
+        'matched_item_names' => array_values($matchedItemNames),
+        'matched_item_count' => count($matchedPrimaryTypeIds),
+        'matched_fit_count' => count($matchedFits),
+        'matched_group_count' => count($matchedGroupRows),
+        'matched_line_count' => count($matchedPrimaryTypeIds),
+        'supporting_consumable_count' => count($matchedSecondaryTypeIds),
+        'debug' => $debug,
+    ];
+}
+
 function killmail_value_amount(array $zkb): ?float
 {
     if (!isset($zkb['totalValue']) || !is_numeric($zkb['totalValue'])) {
@@ -3714,6 +4148,7 @@ function killmail_detail_data(): array
         $resolutionRequests = killmail_entity_resolution_requests($event, $attackers, $items);
         $resolvedEntities = killmail_entity_resolve_batch($resolutionRequests, false);
         $groupedItems = killmail_loss_item_groups($items, $resolvedEntities);
+        $doctrineImpact = killmail_doctrine_impact($event, $items, $resolvedEntities);
         $victimCharacter = killmail_resolved_entity($resolvedEntities, 'character', isset($event['victim_character_id']) ? (int) $event['victim_character_id'] : null);
         $victimCorporation = killmail_resolved_entity(
             $resolvedEntities,
@@ -3822,6 +4257,7 @@ function killmail_detail_data(): array
             'match_context' => $matchSources === [] ? 'No tracked victim entity currently matches this stored loss.' : ('Matched on ' . implode(' and ', $matchSources) . '.'),
             'signal_strength' => $signalStrength,
             'supply_impact' => $supplyImpact,
+            'doctrine_impact' => $doctrineImpact,
             'loss_summary' => [
                 'estimated_value_display' => $estimatedValue !== null ? number_format($estimatedValue, 0) . ' ISK' : 'Value unavailable',
                 'item_count_display' => number_format($storedItemCount) . ' extracted items',
@@ -11068,8 +11504,9 @@ function doctrine_operational_snapshot_build(bool $persistSnapshots = false, str
         }
     }
 
+    $durableLossTypeIds = array_values(array_filter(array_unique($allTypeIds), static fn (int $typeId): bool => item_scope_type_is_durable_loss_relevant($typeId)));
     try {
-        $itemLossByType = doctrine_item_loss_index(db_killmail_tracked_recent_item_losses($allTypeIds, 24 * 7));
+        $itemLossByType = doctrine_item_loss_index(db_killmail_tracked_recent_item_losses($durableLossTypeIds, 24 * 7));
     } catch (Throwable) {
         $itemLossByType = [];
     }
@@ -11616,8 +12053,9 @@ function doctrine_fit_detail_view_model(int $fitId): array
             }
         }
 
+        $durableLossTypeIds = array_values(array_filter($typeIds, static fn (int $typeId): bool => item_scope_type_is_durable_loss_relevant($typeId)));
         try {
-            $itemLossByType = doctrine_item_loss_index(db_killmail_tracked_recent_item_losses($typeIds, 24 * 7));
+            $itemLossByType = doctrine_item_loss_index(db_killmail_tracked_recent_item_losses($durableLossTypeIds, 24 * 7));
         } catch (Throwable) {
             $itemLossByType = [];
         }
