@@ -1823,8 +1823,13 @@ function db_static_data_import_state_upsert(
 
 function db_reference_data_truncate_all(): void
 {
+    item_scope_db_ensure_schema();
+
     db_transaction(static function (): void {
         db_execute('TRUNCATE TABLE ref_item_types');
+        db_execute('TRUNCATE TABLE ref_meta_groups');
+        db_execute('TRUNCATE TABLE ref_item_groups');
+        db_execute('TRUNCATE TABLE ref_item_categories');
         db_execute('TRUNCATE TABLE ref_market_groups');
         db_execute('TRUNCATE TABLE ref_npc_stations');
         db_execute('TRUNCATE TABLE ref_systems');
@@ -1858,13 +1863,38 @@ function db_ref_market_groups_bulk_upsert(array $rows, ?int $chunkSize = null): 
     return db_bulk_insert_or_upsert('ref_market_groups', ['market_group_id', 'parent_group_id', 'market_group_name', 'description'], $rows, ['parent_group_id', 'market_group_name', 'description'], $chunkSize);
 }
 
+function db_ref_item_categories_bulk_upsert(array $rows, ?int $chunkSize = null): int
+{
+    item_scope_db_ensure_schema();
+
+    return db_bulk_insert_or_upsert('ref_item_categories', ['category_id', 'category_name', 'published'], $rows, ['category_name', 'published'], $chunkSize);
+}
+
+function db_ref_item_groups_bulk_upsert(array $rows, ?int $chunkSize = null): int
+{
+    item_scope_db_ensure_schema();
+
+    return db_bulk_insert_or_upsert('ref_item_groups', ['group_id', 'category_id', 'group_name', 'published'], $rows, ['category_id', 'group_name', 'published'], $chunkSize);
+}
+
+function db_ref_meta_groups_bulk_upsert(array $rows, ?int $chunkSize = null): int
+{
+    item_scope_db_ensure_schema();
+
+    return db_bulk_insert_or_upsert('ref_meta_groups', ['meta_group_id', 'meta_group_name'], $rows, ['meta_group_name'], $chunkSize);
+}
+
 function db_ref_item_types_bulk_upsert(array $rows, ?int $chunkSize = null): int
 {
-    return db_bulk_insert_or_upsert('ref_item_types', ['type_id', 'group_id', 'market_group_id', 'type_name', 'description', 'published', 'volume'], $rows, ['group_id', 'market_group_id', 'type_name', 'description', 'published', 'volume'], $chunkSize);
+    item_scope_db_ensure_schema();
+
+    return db_bulk_insert_or_upsert('ref_item_types', ['type_id', 'group_id', 'market_group_id', 'meta_group_id', 'type_name', 'description', 'published', 'volume'], $rows, ['group_id', 'market_group_id', 'meta_group_id', 'type_name', 'description', 'published', 'volume'], $chunkSize);
 }
 
 function db_ref_item_types_by_ids(array $typeIds): array
 {
+    item_scope_db_ensure_schema();
+
     $ids = array_values(array_unique(array_filter(array_map(static fn (mixed $id): int => (int) $id, $typeIds), static fn (int $id): bool => $id > 0)));
     if ($ids === []) {
         return [];
@@ -1873,7 +1903,7 @@ function db_ref_item_types_by_ids(array $typeIds): array
     $placeholders = implode(',', array_fill(0, count($ids), '?'));
 
     return db_select(
-        "SELECT type_id, type_name, group_id, market_group_id, description, published, volume
+        "SELECT type_id, type_name, group_id, market_group_id, meta_group_id, description, published, volume
          FROM ref_item_types
          WHERE type_id IN ($placeholders)",
         $ids
@@ -2616,6 +2646,8 @@ function db_killmail_tracked_recent_item_losses(array $typeIds, int $hours = 24 
 
 function db_ref_item_types_by_names(array $names): array
 {
+    item_scope_db_ensure_schema();
+
     $safeNames = array_values(array_unique(array_filter(array_map(static fn (mixed $name): string => trim((string) $name), $names), static fn (string $name): bool => $name !== '')));
     if ($safeNames === []) {
         return [];
@@ -2624,11 +2656,112 @@ function db_ref_item_types_by_names(array $names): array
     $placeholders = implode(',', array_fill(0, count($safeNames), '?'));
 
     return db_select(
-        "SELECT type_id, type_name, group_id, market_group_id, description, published, volume
+        "SELECT type_id, type_name, group_id, market_group_id, meta_group_id, description, published, volume
          FROM ref_item_types
          WHERE LOWER(type_name) IN ($placeholders)",
         array_map(static fn (string $name): string => mb_strtolower($name), $safeNames)
     );
+}
+
+function db_ref_item_scope_metadata_by_ids(array $typeIds): array
+{
+    item_scope_db_ensure_schema();
+
+    $ids = array_values(array_unique(array_filter(array_map(static fn (mixed $id): int => (int) $id, $typeIds), static fn (int $id): bool => $id > 0)));
+    if ($ids === []) {
+        return [];
+    }
+
+    $placeholders = implode(',', array_fill(0, count($ids), '?'));
+
+    return db_select(
+        "SELECT
+            rit.type_id,
+            rit.type_name,
+            rit.group_id,
+            rig.group_name,
+            rig.category_id,
+            ric.category_name,
+            rit.market_group_id,
+            rmg.market_group_name,
+            rmg.parent_group_id,
+            rit.meta_group_id,
+            rmeta.meta_group_name,
+            rit.published,
+            rit.volume
+         FROM ref_item_types rit
+         LEFT JOIN ref_item_groups rig ON rig.group_id = rit.group_id
+         LEFT JOIN ref_item_categories ric ON ric.category_id = rig.category_id
+         LEFT JOIN ref_market_groups rmg ON rmg.market_group_id = rit.market_group_id
+         LEFT JOIN ref_meta_groups rmeta ON rmeta.meta_group_id = rit.meta_group_id
+         WHERE rit.type_id IN ($placeholders)",
+        $ids
+    );
+}
+
+function db_ref_item_scope_catalog(): array
+{
+    item_scope_db_ensure_schema();
+
+    return [
+        'categories' => db_select(
+            'SELECT
+                ric.category_id,
+                ric.category_name,
+                ric.published,
+                COUNT(DISTINCT rit.type_id) AS type_count
+             FROM ref_item_categories ric
+             LEFT JOIN ref_item_groups rig ON rig.category_id = ric.category_id
+             LEFT JOIN ref_item_types rit ON rit.group_id = rig.group_id AND rit.published = 1
+             GROUP BY ric.category_id, ric.category_name, ric.published
+             ORDER BY ric.category_name ASC'
+        ),
+        'groups' => db_select(
+            'SELECT
+                rig.group_id,
+                rig.group_name,
+                rig.category_id,
+                COALESCE(ric.category_name, CONCAT("Category #", rig.category_id)) AS category_name,
+                rig.published,
+                COUNT(DISTINCT rit.type_id) AS type_count
+             FROM ref_item_groups rig
+             LEFT JOIN ref_item_categories ric ON ric.category_id = rig.category_id
+             LEFT JOIN ref_item_types rit ON rit.group_id = rig.group_id AND rit.published = 1
+             GROUP BY rig.group_id, rig.group_name, rig.category_id, ric.category_name, rig.published
+             ORDER BY rig.group_name ASC'
+        ),
+        'market_groups' => db_select(
+            'SELECT
+                rmg.market_group_id,
+                rmg.parent_group_id,
+                rmg.market_group_name,
+                COUNT(DISTINCT rit.type_id) AS type_count
+             FROM ref_market_groups rmg
+             LEFT JOIN ref_item_types rit ON rit.market_group_id = rmg.market_group_id AND rit.published = 1
+             GROUP BY rmg.market_group_id, rmg.parent_group_id, rmg.market_group_name
+             ORDER BY rmg.market_group_name ASC'
+        ),
+        'meta_groups' => db_select(
+            'SELECT
+                rmeta.meta_group_id,
+                rmeta.meta_group_name,
+                COUNT(DISTINCT rit.type_id) AS type_count
+             FROM ref_meta_groups rmeta
+             LEFT JOIN ref_item_types rit ON rit.meta_group_id = rmeta.meta_group_id AND rit.published = 1
+             GROUP BY rmeta.meta_group_id, rmeta.meta_group_name
+             ORDER BY rmeta.meta_group_id ASC'
+        ),
+    ];
+}
+
+function db_ref_item_type_ids_published(): array
+{
+    item_scope_db_ensure_schema();
+
+    return array_values(array_map(
+        static fn (array $row): int => (int) ($row['type_id'] ?? 0),
+        db_select('SELECT type_id FROM ref_item_types WHERE published = 1 ORDER BY type_id ASC')
+    ));
 }
 
 function db_item_name_cache_get_many(array $normalizedNames): array
@@ -2690,6 +2823,55 @@ function db_foreign_key_delete_rule(string $constraintName): ?string
     );
 
     return $row !== null ? strtoupper((string) ($row['DELETE_RULE'] ?? '')) : null;
+}
+
+function item_scope_db_ensure_schema(): void
+{
+    static $ensured = false;
+
+    if ($ensured) {
+        return;
+    }
+
+    db()->exec(
+        'CREATE TABLE IF NOT EXISTS ref_item_categories (
+            category_id INT UNSIGNED PRIMARY KEY,
+            category_name VARCHAR(190) NOT NULL,
+            published TINYINT(1) NOT NULL DEFAULT 1,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            KEY idx_published (published)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4'
+    );
+
+    db()->exec(
+        'CREATE TABLE IF NOT EXISTS ref_item_groups (
+            group_id INT UNSIGNED PRIMARY KEY,
+            category_id INT UNSIGNED NOT NULL,
+            group_name VARCHAR(190) NOT NULL,
+            published TINYINT(1) NOT NULL DEFAULT 1,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            KEY idx_category_id (category_id),
+            KEY idx_published (published)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4'
+    );
+
+    db()->exec(
+        'CREATE TABLE IF NOT EXISTS ref_meta_groups (
+            meta_group_id INT UNSIGNED PRIMARY KEY,
+            meta_group_name VARCHAR(120) NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4'
+    );
+
+    if (db_table_exists('ref_item_types') && !db_column_exists('ref_item_types', 'meta_group_id')) {
+        db()->exec('ALTER TABLE ref_item_types ADD COLUMN meta_group_id INT UNSIGNED DEFAULT NULL AFTER market_group_id');
+        db()->exec('ALTER TABLE ref_item_types ADD KEY idx_meta_group_id (meta_group_id)');
+    }
+
+    $ensured = true;
 }
 
 function doctrine_db_ensure_schema(): void

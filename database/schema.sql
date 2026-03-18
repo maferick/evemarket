@@ -376,10 +376,38 @@ CREATE TABLE IF NOT EXISTS ref_market_groups (
     KEY idx_parent_group_id (parent_group_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+CREATE TABLE IF NOT EXISTS ref_item_categories (
+    category_id INT UNSIGNED PRIMARY KEY,
+    category_name VARCHAR(190) NOT NULL,
+    published TINYINT(1) NOT NULL DEFAULT 1,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    KEY idx_published (published)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS ref_item_groups (
+    group_id INT UNSIGNED PRIMARY KEY,
+    category_id INT UNSIGNED NOT NULL,
+    group_name VARCHAR(190) NOT NULL,
+    published TINYINT(1) NOT NULL DEFAULT 1,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    KEY idx_category_id (category_id),
+    KEY idx_published (published)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS ref_meta_groups (
+    meta_group_id INT UNSIGNED PRIMARY KEY,
+    meta_group_name VARCHAR(120) NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 CREATE TABLE IF NOT EXISTS ref_item_types (
     type_id INT UNSIGNED PRIMARY KEY,
     group_id INT UNSIGNED NOT NULL,
     market_group_id INT UNSIGNED DEFAULT NULL,
+    meta_group_id INT UNSIGNED DEFAULT NULL,
     type_name VARCHAR(255) NOT NULL,
     description TEXT DEFAULT NULL,
     published TINYINT(1) NOT NULL DEFAULT 0,
@@ -388,6 +416,7 @@ CREATE TABLE IF NOT EXISTS ref_item_types (
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     KEY idx_group_id (group_id),
     KEY idx_market_group_id (market_group_id),
+    KEY idx_meta_group_id (meta_group_id),
     KEY idx_published (published)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
@@ -491,6 +520,17 @@ INSERT INTO app_settings (setting_key, setting_value) VALUES
     ('market_compare_deviation_percent', '5'),
     ('market_compare_min_alliance_sell_volume', '50'),
     ('market_compare_min_alliance_sell_orders', '3'),
+    ('item_scope_mode', 'allow_all'),
+    ('item_scope_include_category_ids', '[]'),
+    ('item_scope_exclude_category_ids', '[]'),
+    ('item_scope_include_group_ids', '[]'),
+    ('item_scope_exclude_group_ids', '[]'),
+    ('item_scope_include_market_group_ids', '[]'),
+    ('item_scope_exclude_market_group_ids', '[]'),
+    ('item_scope_include_meta_group_ids', '[]'),
+    ('item_scope_exclude_meta_group_ids', '[]'),
+    ('item_scope_include_type_ids', '[]'),
+    ('item_scope_exclude_type_ids', '[]'),
     ('sync_automation_enabled_since', ''),
     ('esi_enabled', '0'),
     ('esi_client_id', '961316f6177d4a0283fef0bd72fbd224'),

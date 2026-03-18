@@ -130,6 +130,7 @@ function setting_sections(): array
     return [
         'general' => ['title' => 'General Settings', 'description' => 'Core application behavior and preferences.'],
         'trading-stations' => ['title' => 'Trading Stations', 'description' => 'Configure your reference market hub and operational trading destination.'],
+        'item-scope' => ['title' => 'Item Scope', 'description' => 'Control which item classes are operationally relevant across market, doctrine, and loss-demand analytics.'],
         'esi-login' => ['title' => 'ESI Login', 'description' => 'Configure EVE SSO credentials and callback behavior.'],
         'data-sync' => ['title' => 'Data Sync', 'description' => 'Control database import and incremental update policies.'],
         'killmail-intelligence' => ['title' => 'Killmail Intelligence', 'description' => 'Manage zKillboard stream ingestion, tracked entities, and demand prediction foundation.'],
@@ -191,6 +192,510 @@ function save_settings(array $settings): bool
     }
 
     return true;
+}
+
+function item_scope_setting_keys(): array
+{
+    return [
+        'item_scope_mode',
+        'item_scope_include_category_ids',
+        'item_scope_exclude_category_ids',
+        'item_scope_include_group_ids',
+        'item_scope_exclude_group_ids',
+        'item_scope_include_market_group_ids',
+        'item_scope_exclude_market_group_ids',
+        'item_scope_include_meta_group_ids',
+        'item_scope_exclude_meta_group_ids',
+        'item_scope_include_type_ids',
+        'item_scope_exclude_type_ids',
+    ];
+}
+
+function item_scope_default_meta_groups(): array
+{
+    return [
+        ['meta_group_id' => 1, 'meta_group_name' => 'Tech I', 'type_count' => 0],
+        ['meta_group_id' => 2, 'meta_group_name' => 'Tech II', 'type_count' => 0],
+        ['meta_group_id' => 3, 'meta_group_name' => 'Storyline', 'type_count' => 0],
+        ['meta_group_id' => 4, 'meta_group_name' => 'Faction', 'type_count' => 0],
+        ['meta_group_id' => 5, 'meta_group_name' => 'Officer', 'type_count' => 0],
+        ['meta_group_id' => 6, 'meta_group_name' => 'Deadspace', 'type_count' => 0],
+    ];
+}
+
+function item_scope_decode_int_list(mixed $value): array
+{
+    if (is_array($value)) {
+        $decoded = $value;
+    } else {
+        $raw = trim((string) $value);
+        if ($raw === '') {
+            return [];
+        }
+
+        try {
+            $decoded = json_decode($raw, true, 512, JSON_THROW_ON_ERROR);
+        } catch (Throwable) {
+            $decoded = preg_split('/[\s,]+/', $raw) ?: [];
+        }
+    }
+
+    return array_values(array_unique(array_filter(array_map(static fn (mixed $id): int => (int) $id, $decoded), static fn (int $id): bool => $id > 0)));
+}
+
+function item_scope_encode_int_list(array $ids): string
+{
+    return json_encode(item_scope_decode_int_list($ids), JSON_THROW_ON_ERROR);
+}
+
+function item_scope_default_config(): array
+{
+    return [
+        'mode' => 'allow_all',
+        'include_category_ids' => [],
+        'exclude_category_ids' => [],
+        'include_group_ids' => [],
+        'exclude_group_ids' => [],
+        'include_market_group_ids' => [],
+        'exclude_market_group_ids' => [],
+        'include_meta_group_ids' => [],
+        'exclude_meta_group_ids' => [],
+        'include_type_ids' => [],
+        'exclude_type_ids' => [],
+    ];
+}
+
+function item_scope_normalize_mode(string $mode): string
+{
+    return $mode === 'allow_list' ? 'allow_list' : 'allow_all';
+}
+
+function item_scope_settings_to_config(array $settings): array
+{
+    $defaults = item_scope_default_config();
+
+    return [
+        'mode' => item_scope_normalize_mode((string) ($settings['item_scope_mode'] ?? $defaults['mode'])),
+        'include_category_ids' => item_scope_decode_int_list($settings['item_scope_include_category_ids'] ?? $defaults['include_category_ids']),
+        'exclude_category_ids' => item_scope_decode_int_list($settings['item_scope_exclude_category_ids'] ?? $defaults['exclude_category_ids']),
+        'include_group_ids' => item_scope_decode_int_list($settings['item_scope_include_group_ids'] ?? $defaults['include_group_ids']),
+        'exclude_group_ids' => item_scope_decode_int_list($settings['item_scope_exclude_group_ids'] ?? $defaults['exclude_group_ids']),
+        'include_market_group_ids' => item_scope_decode_int_list($settings['item_scope_include_market_group_ids'] ?? $defaults['include_market_group_ids']),
+        'exclude_market_group_ids' => item_scope_decode_int_list($settings['item_scope_exclude_market_group_ids'] ?? $defaults['exclude_market_group_ids']),
+        'include_meta_group_ids' => item_scope_decode_int_list($settings['item_scope_include_meta_group_ids'] ?? $defaults['include_meta_group_ids']),
+        'exclude_meta_group_ids' => item_scope_decode_int_list($settings['item_scope_exclude_meta_group_ids'] ?? $defaults['exclude_meta_group_ids']),
+        'include_type_ids' => item_scope_decode_int_list($settings['item_scope_include_type_ids'] ?? $defaults['include_type_ids']),
+        'exclude_type_ids' => item_scope_decode_int_list($settings['item_scope_exclude_type_ids'] ?? $defaults['exclude_type_ids']),
+    ];
+}
+
+function item_scope_config(): array
+{
+    static $config = null;
+
+    if ($config !== null) {
+        return $config;
+    }
+
+    $config = item_scope_settings_to_config(get_settings(item_scope_setting_keys()));
+
+    return $config;
+}
+
+function item_scope_catalog(): array
+{
+    static $catalog = null;
+
+    if ($catalog !== null) {
+        return $catalog;
+    }
+
+    try {
+        $catalog = db_ref_item_scope_catalog();
+    } catch (Throwable) {
+        $catalog = [
+            'categories' => [],
+            'groups' => [],
+            'market_groups' => [],
+            'meta_groups' => [],
+        ];
+    }
+
+    $metaGroups = [];
+    foreach (item_scope_default_meta_groups() as $row) {
+        $metaGroups[(int) $row['meta_group_id']] = $row;
+    }
+    foreach ((array) ($catalog['meta_groups'] ?? []) as $row) {
+        $metaGroupId = (int) ($row['meta_group_id'] ?? 0);
+        if ($metaGroupId <= 0) {
+            continue;
+        }
+        $metaGroups[$metaGroupId] = [
+            'meta_group_id' => $metaGroupId,
+            'meta_group_name' => (string) ($row['meta_group_name'] ?? ($metaGroups[$metaGroupId]['meta_group_name'] ?? ('Meta Group #' . $metaGroupId))),
+            'type_count' => (int) ($row['type_count'] ?? 0),
+        ];
+    }
+    ksort($metaGroups);
+    $catalog['meta_groups'] = array_values($metaGroups);
+
+    return $catalog;
+}
+
+function item_scope_market_group_parent_index(?array $catalog = null): array
+{
+    $catalog ??= item_scope_catalog();
+    $index = [];
+
+    foreach ((array) ($catalog['market_groups'] ?? []) as $row) {
+        $marketGroupId = (int) ($row['market_group_id'] ?? 0);
+        if ($marketGroupId <= 0) {
+            continue;
+        }
+
+        $index[$marketGroupId] = (int) ($row['parent_group_id'] ?? 0);
+    }
+
+    return $index;
+}
+
+function item_scope_expand_market_group_ids(?int $marketGroupId, array $parentIndex): array
+{
+    $resolved = [];
+    $current = $marketGroupId !== null ? (int) $marketGroupId : 0;
+
+    while ($current > 0 && !isset($resolved[$current])) {
+        $resolved[$current] = true;
+        $current = (int) ($parentIndex[$current] ?? 0);
+    }
+
+    return array_keys($resolved);
+}
+
+function item_scope_metadata_by_type_ids(array $typeIds): array
+{
+    $typeIds = array_values(array_unique(array_filter(array_map('intval', $typeIds), static fn (int $typeId): bool => $typeId > 0)));
+    if ($typeIds === []) {
+        return [];
+    }
+
+    static $cache = [];
+    $missing = [];
+    foreach ($typeIds as $typeId) {
+        if (!array_key_exists($typeId, $cache)) {
+            $missing[] = $typeId;
+        }
+    }
+
+    if ($missing !== []) {
+        $parentIndex = item_scope_market_group_parent_index();
+        try {
+            $rows = db_ref_item_scope_metadata_by_ids($missing);
+        } catch (Throwable) {
+            $rows = [];
+        }
+
+        foreach ($missing as $typeId) {
+            $cache[$typeId] = null;
+        }
+
+        foreach ($rows as $row) {
+            $typeId = (int) ($row['type_id'] ?? 0);
+            if ($typeId <= 0) {
+                continue;
+            }
+
+            $cache[$typeId] = [
+                'type_id' => $typeId,
+                'type_name' => (string) ($row['type_name'] ?? ''),
+                'category_id' => isset($row['category_id']) ? (int) $row['category_id'] : null,
+                'category_name' => (string) ($row['category_name'] ?? ''),
+                'group_id' => isset($row['group_id']) ? (int) $row['group_id'] : null,
+                'group_name' => (string) ($row['group_name'] ?? ''),
+                'market_group_id' => isset($row['market_group_id']) ? (int) $row['market_group_id'] : null,
+                'market_group_name' => (string) ($row['market_group_name'] ?? ''),
+                'meta_group_id' => isset($row['meta_group_id']) ? (int) $row['meta_group_id'] : null,
+                'meta_group_name' => (string) ($row['meta_group_name'] ?? ''),
+                'published' => (int) ($row['published'] ?? 0) === 1,
+                'market_group_path_ids' => item_scope_expand_market_group_ids(isset($row['market_group_id']) ? (int) $row['market_group_id'] : null, $parentIndex),
+            ];
+        }
+    }
+
+    $resolved = [];
+    foreach ($typeIds as $typeId) {
+        if (isset($cache[$typeId]) && is_array($cache[$typeId])) {
+            $resolved[$typeId] = $cache[$typeId];
+        }
+    }
+
+    return $resolved;
+}
+
+function item_scope_has_broad_includes(array $config): bool
+{
+    return $config['mode'] === 'allow_list'
+        || $config['include_category_ids'] !== []
+        || $config['include_group_ids'] !== []
+        || $config['include_market_group_ids'] !== []
+        || $config['include_meta_group_ids'] !== [];
+}
+
+function item_scope_market_group_matches(array $metadata, array $selectedIds): bool
+{
+    if ($selectedIds === []) {
+        return false;
+    }
+
+    $pathIds = item_scope_decode_int_list($metadata['market_group_path_ids'] ?? []);
+    foreach ($pathIds as $marketGroupId) {
+        if (in_array($marketGroupId, $selectedIds, true)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+function item_scope_metadata_matches(array $metadata, array $config, string $prefix): bool
+{
+    return ($metadata['category_id'] !== null && in_array((int) $metadata['category_id'], $config[$prefix . '_category_ids'], true))
+        || ($metadata['group_id'] !== null && in_array((int) $metadata['group_id'], $config[$prefix . '_group_ids'], true))
+        || item_scope_market_group_matches($metadata, $config[$prefix . '_market_group_ids'])
+        || ($metadata['meta_group_id'] !== null && in_array((int) $metadata['meta_group_id'], $config[$prefix . '_meta_group_ids'], true));
+}
+
+function item_scope_type_metadata_in_scope(array $metadata, ?array $config = null): bool
+{
+    $config ??= item_scope_config();
+    $typeId = (int) ($metadata['type_id'] ?? 0);
+    if ($typeId <= 0) {
+        return false;
+    }
+
+    if (in_array($typeId, $config['include_type_ids'], true)) {
+        return true;
+    }
+
+    if (in_array($typeId, $config['exclude_type_ids'], true)) {
+        return false;
+    }
+
+    $included = item_scope_has_broad_includes($config) ? item_scope_metadata_matches($metadata, $config, 'include') : true;
+    if (!$included) {
+        return false;
+    }
+
+    if (item_scope_metadata_matches($metadata, $config, 'exclude')) {
+        return false;
+    }
+
+    return true;
+}
+
+function item_scope_is_type_id_in_scope(int $typeId, ?array $config = null, ?array $metadataByType = null): bool
+{
+    if ($typeId <= 0) {
+        return false;
+    }
+
+    $metadataByType ??= item_scope_metadata_by_type_ids([$typeId]);
+    $metadata = $metadataByType[$typeId] ?? null;
+    if (!is_array($metadata)) {
+        return false;
+    }
+
+    return item_scope_type_metadata_in_scope($metadata, $config);
+}
+
+function item_scope_filter_rows(array $rows, callable $typeIdResolver, ?array $config = null): array
+{
+    $config ??= item_scope_config();
+    $typeIds = [];
+    foreach ($rows as $row) {
+        $typeId = (int) $typeIdResolver($row);
+        if ($typeId > 0) {
+            $typeIds[] = $typeId;
+        }
+    }
+
+    $metadataByType = item_scope_metadata_by_type_ids($typeIds);
+
+    return array_values(array_filter($rows, static function (array $row) use ($typeIdResolver, $config, $metadataByType): bool {
+        $typeId = (int) $typeIdResolver($row);
+
+        return $typeId > 0 && item_scope_is_type_id_in_scope($typeId, $config, $metadataByType);
+    }));
+}
+
+function item_scope_parse_override_input(string $input): array
+{
+    $tokens = array_values(array_filter(array_map(static fn (string $value): string => trim($value), preg_split('/[\r\n,]+/', $input) ?: []), static fn (string $value): bool => $value !== ''));
+    if ($tokens === []) {
+        return ['type_ids' => [], 'unresolved' => []];
+    }
+
+    $typeIds = [];
+    $names = [];
+    foreach ($tokens as $token) {
+        if (preg_match('/^[1-9][0-9]*$/', $token) === 1) {
+            $typeIds[] = (int) $token;
+        } else {
+            $names[] = $token;
+        }
+    }
+
+    $resolvedRows = [];
+    try {
+        if ($typeIds !== []) {
+            $resolvedRows = array_merge($resolvedRows, db_ref_item_scope_metadata_by_ids($typeIds));
+        }
+        if ($names !== []) {
+            $resolvedRows = array_merge($resolvedRows, db_ref_item_types_by_names($names));
+        }
+    } catch (Throwable) {
+    }
+
+    $resolvedTypeIds = [];
+    $resolvedNames = [];
+    foreach ($resolvedRows as $row) {
+        $typeId = (int) ($row['type_id'] ?? 0);
+        if ($typeId <= 0) {
+            continue;
+        }
+        $resolvedTypeIds[] = $typeId;
+        $resolvedNames[mb_strtolower((string) ($row['type_name'] ?? ''))] = true;
+    }
+
+    $unresolved = [];
+    foreach ($tokens as $token) {
+        if (preg_match('/^[1-9][0-9]*$/', $token) === 1) {
+            if (!in_array((int) $token, $resolvedTypeIds, true)) {
+                $unresolved[] = $token;
+            }
+            continue;
+        }
+
+        if (!isset($resolvedNames[mb_strtolower($token)])) {
+            $unresolved[] = $token;
+        }
+    }
+
+    return [
+        'type_ids' => array_values(array_unique(array_filter(array_map('intval', $resolvedTypeIds), static fn (int $typeId): bool => $typeId > 0))),
+        'unresolved' => $unresolved,
+    ];
+}
+
+function item_scope_settings_payload_from_request(array $request): array
+{
+    $includeOverrides = item_scope_parse_override_input((string) ($request['item_scope_include_overrides'] ?? ''));
+    $excludeOverrides = item_scope_parse_override_input((string) ($request['item_scope_exclude_overrides'] ?? ''));
+
+    return [
+        'settings' => [
+            'item_scope_mode' => item_scope_normalize_mode((string) ($request['item_scope_mode'] ?? 'allow_all')),
+            'item_scope_include_category_ids' => item_scope_encode_int_list((array) ($request['item_scope_include_category_ids'] ?? [])),
+            'item_scope_exclude_category_ids' => item_scope_encode_int_list((array) ($request['item_scope_exclude_category_ids'] ?? [])),
+            'item_scope_include_group_ids' => item_scope_encode_int_list((array) ($request['item_scope_include_group_ids'] ?? [])),
+            'item_scope_exclude_group_ids' => item_scope_encode_int_list((array) ($request['item_scope_exclude_group_ids'] ?? [])),
+            'item_scope_include_market_group_ids' => item_scope_encode_int_list((array) ($request['item_scope_include_market_group_ids'] ?? [])),
+            'item_scope_exclude_market_group_ids' => item_scope_encode_int_list((array) ($request['item_scope_exclude_market_group_ids'] ?? [])),
+            'item_scope_include_meta_group_ids' => item_scope_encode_int_list((array) ($request['item_scope_include_meta_group_ids'] ?? [])),
+            'item_scope_exclude_meta_group_ids' => item_scope_encode_int_list((array) ($request['item_scope_exclude_meta_group_ids'] ?? [])),
+            'item_scope_include_type_ids' => item_scope_encode_int_list($includeOverrides['type_ids']),
+            'item_scope_exclude_type_ids' => item_scope_encode_int_list($excludeOverrides['type_ids']),
+        ],
+        'messages' => array_values(array_filter([
+            $includeOverrides['unresolved'] !== [] ? ('Include overrides not resolved locally: ' . implode(', ', $includeOverrides['unresolved']) . '.') : null,
+            $excludeOverrides['unresolved'] !== [] ? ('Exclude overrides not resolved locally: ' . implode(', ', $excludeOverrides['unresolved']) . '.') : null,
+        ])),
+    ];
+}
+
+function item_scope_summary_lines(array $config, ?array $catalog = null): array
+{
+    $catalog ??= item_scope_catalog();
+    $hasBroadIncludes = item_scope_has_broad_includes($config);
+    $labelMaps = [
+        'include_category_ids' => array_column((array) ($catalog['categories'] ?? []), 'category_name', 'category_id'),
+        'exclude_category_ids' => array_column((array) ($catalog['categories'] ?? []), 'category_name', 'category_id'),
+        'include_group_ids' => array_column((array) ($catalog['groups'] ?? []), 'group_name', 'group_id'),
+        'exclude_group_ids' => array_column((array) ($catalog['groups'] ?? []), 'group_name', 'group_id'),
+        'include_market_group_ids' => array_column((array) ($catalog['market_groups'] ?? []), 'market_group_name', 'market_group_id'),
+        'exclude_market_group_ids' => array_column((array) ($catalog['market_groups'] ?? []), 'market_group_name', 'market_group_id'),
+        'include_meta_group_ids' => array_column((array) ($catalog['meta_groups'] ?? []), 'meta_group_name', 'meta_group_id'),
+        'exclude_meta_group_ids' => array_column((array) ($catalog['meta_groups'] ?? []), 'meta_group_name', 'meta_group_id'),
+    ];
+
+    $lines = [
+        $hasBroadIncludes
+            ? 'Broad include rules are active. Items must match at least one include rule unless an explicit type override says otherwise.'
+            : 'No broad include rules are active. All published items remain in scope unless excluded.',
+    ];
+
+    foreach ($labelMaps as $key => $labels) {
+        $ids = item_scope_decode_int_list($config[$key] ?? []);
+        if ($ids === []) {
+            continue;
+        }
+
+        $names = array_map(static fn (int $id): string => (string) ($labels[$id] ?? ('#' . $id)), array_slice($ids, 0, 6));
+        if (count($ids) > 6) {
+            $names[] = '+' . (count($ids) - 6) . ' more';
+        }
+
+        $lines[] = ucfirst(str_replace('_ids', '', str_replace('_', ' ', $key))) . ': ' . implode(', ', $names) . '.';
+    }
+
+    if ($config['include_type_ids'] !== []) {
+        $lines[] = 'Explicit item includes: ' . number_format(count($config['include_type_ids'])) . '.';
+    }
+    if ($config['exclude_type_ids'] !== []) {
+        $lines[] = 'Explicit item excludes: ' . number_format(count($config['exclude_type_ids'])) . '.';
+    }
+
+    return $lines;
+}
+
+function item_scope_view_model(): array
+{
+    $config = item_scope_config();
+    $catalog = item_scope_catalog();
+
+    $includeOverrides = item_scope_metadata_by_type_ids($config['include_type_ids']);
+    $excludeOverrides = item_scope_metadata_by_type_ids($config['exclude_type_ids']);
+    $publishedCount = 0;
+    $inScopeCount = 0;
+
+    try {
+        $publishedTypeIds = db_ref_item_type_ids_published();
+        $publishedCount = count($publishedTypeIds);
+        $metadataByType = item_scope_metadata_by_type_ids($publishedTypeIds);
+        foreach ($publishedTypeIds as $typeId) {
+            if (item_scope_is_type_id_in_scope($typeId, $config, $metadataByType)) {
+                $inScopeCount++;
+            }
+        }
+    } catch (Throwable) {
+        $publishedCount = 0;
+        $inScopeCount = 0;
+    }
+
+    return [
+        'config' => $config,
+        'catalog' => $catalog,
+        'summary_lines' => item_scope_summary_lines($config, $catalog),
+        'stats' => [
+            'published_count' => $publishedCount,
+            'in_scope_count' => $inScopeCount,
+            'excluded_count' => max(0, $publishedCount - $inScopeCount),
+        ],
+        'override_rows' => [
+            'include' => array_values($includeOverrides),
+            'exclude' => array_values($excludeOverrides),
+        ],
+    ];
 }
 
 function supplycore_cache_ttl(string $category): int
@@ -367,7 +872,7 @@ function supplycore_cache_invalidate_for_dataset(string $datasetKey): void
     }
 
     if (str_starts_with($normalized, 'static_data.')) {
-        supplycore_cache_bust(['market_compare', 'doctrine', 'killmail_detail', 'metadata_entities', 'metadata_structures']);
+        supplycore_cache_bust(['dashboard', 'market_compare', 'doctrine', 'killmail_overview', 'killmail_detail', 'metadata_entities', 'metadata_structures']);
     }
 }
 
@@ -1377,6 +1882,11 @@ function market_comparison_outcomes(array $typeIds = []): array
         $evaluatedRows[] = market_compare_evaluate_row($row, $thresholds);
     }
 
+    $evaluatedRows = item_scope_filter_rows(
+        $evaluatedRows,
+        static fn (array $row): int => (int) ($row['type_id'] ?? 0)
+    );
+
     return [
         'thresholds' => $thresholds,
         'rows' => $evaluatedRows,
@@ -1543,6 +2053,11 @@ function dashboard_sync_health_panel(array $dataset): array
 
 function dashboard_trend_snippets(array $rows): array
 {
+    $rows = item_scope_filter_rows(
+        $rows,
+        static fn (array $row): int => (int) ($row['type_id'] ?? 0)
+    );
+
     $grouped = [];
     foreach ($rows as $row) {
         $typeId = (int) ($row['type_id'] ?? 0);
@@ -2520,6 +3035,11 @@ function killmail_loss_item_groups(array $items, array $resolvedEntities = []): 
             continue;
         }
 
+        $typeId = isset($item['item_type_id']) ? (int) $item['item_type_id'] : 0;
+        if ($typeId <= 0 || !item_scope_is_type_id_in_scope($typeId)) {
+            continue;
+        }
+
         $role = (string) ($item['item_role'] ?? 'other');
         if (!isset($groups[$role])) {
             continue;
@@ -2534,7 +3054,6 @@ function killmail_loss_item_groups(array $items, array $resolvedEntities = []): 
             $quantity = max(1, (int) ($item['quantity_destroyed'] ?? 0), (int) ($item['quantity_dropped'] ?? 0));
         }
 
-        $typeId = isset($item['item_type_id']) ? (int) $item['item_type_id'] : null;
         $resolvedItem = killmail_resolved_entity($resolvedEntities, 'type', $typeId, isset($item['item_type_name']) ? (string) $item['item_type_name'] : null);
 
         $groups[$role]['rows'][] = [
@@ -2811,7 +3330,7 @@ function killmail_detail_data(): array
             'destroyed' => (int) ($groupedItems['destroyed']['total_quantity'] ?? 0),
             'fitted' => (int) ($groupedItems['fitted']['total_quantity'] ?? 0),
         ];
-        $storedItemCount = count($items);
+        $storedItemCount = array_sum(array_map(static fn (array $group): int => count((array) ($group['rows'] ?? [])), $groupedItems));
         $signalStrength = killmail_signal_strength_meta($storedItemCount, count($formattedAttackers), (int) ($event['matched_tracked'] ?? 0) === 1);
         $supplyImpact = killmail_supply_impact_meta($estimatedValue, $itemTotals['dropped'], $itemTotals['destroyed'], $itemTotals['fitted']);
 
@@ -6622,7 +7141,13 @@ function static_data_extract_reference_rows_from_jsonl_archive(string $archivePa
         'mapsolarsystems.jsonl' => 'systems',
         'npcstations.jsonl' => 'stations',
         'stations.jsonl' => 'stations',
+        'categories.jsonl' => 'categories',
+        'invcategories.jsonl' => 'categories',
+        'groups.jsonl' => 'groups',
+        'invgroups.jsonl' => 'groups',
         'marketgroups.jsonl' => 'market_groups',
+        'metagroups.jsonl' => 'meta_groups',
+        'invmetagroups.jsonl' => 'meta_groups',
         'types.jsonl' => 'types',
     ];
 
@@ -6631,7 +7156,10 @@ function static_data_extract_reference_rows_from_jsonl_archive(string $archivePa
         'constellations' => [],
         'systems' => [],
         'stations' => [],
+        'categories' => [],
+        'groups' => [],
         'market_groups' => [],
+        'meta_groups' => [],
         'types' => [],
     ];
 
@@ -6735,17 +7263,61 @@ function static_data_extract_reference_rows_from_jsonl_archive(string $archivePa
                 continue;
             }
 
+            if ($targetKey === 'categories') {
+                $categoryId = (int) static_data_record_value($row, ['categoryID', 'category_id', '_key']);
+                $name = static_data_localized_text(static_data_record_value($row, ['categoryName', 'name']));
+                if ($categoryId > 0 && $name !== null) {
+                    $publishedRaw = static_data_record_value($row, ['published'], 1);
+                    $records['categories'][] = [
+                        'category_id' => $categoryId,
+                        'category_name' => $name,
+                        'published' => ($publishedRaw === true || (int) $publishedRaw === 1) ? 1 : 0,
+                    ];
+                }
+                continue;
+            }
+
+            if ($targetKey === 'groups') {
+                $groupId = (int) static_data_record_value($row, ['groupID', 'group_id', '_key']);
+                $categoryId = (int) static_data_record_value($row, ['categoryID', 'category_id']);
+                $name = static_data_localized_text(static_data_record_value($row, ['groupName', 'name']));
+                if ($groupId > 0 && $categoryId > 0 && $name !== null) {
+                    $publishedRaw = static_data_record_value($row, ['published'], 1);
+                    $records['groups'][] = [
+                        'group_id' => $groupId,
+                        'category_id' => $categoryId,
+                        'group_name' => $name,
+                        'published' => ($publishedRaw === true || (int) $publishedRaw === 1) ? 1 : 0,
+                    ];
+                }
+                continue;
+            }
+
+            if ($targetKey === 'meta_groups') {
+                $metaGroupId = (int) static_data_record_value($row, ['metaGroupID', 'meta_group_id', '_key']);
+                $name = static_data_localized_text(static_data_record_value($row, ['metaGroupName', 'name']));
+                if ($metaGroupId > 0 && $name !== null) {
+                    $records['meta_groups'][] = [
+                        'meta_group_id' => $metaGroupId,
+                        'meta_group_name' => $name,
+                    ];
+                }
+                continue;
+            }
+
             if ($targetKey === 'types') {
                 $typeId = (int) static_data_record_value($row, ['typeID', 'type_id', '_key']);
                 $groupId = (int) static_data_record_value($row, ['groupID', 'group_id']);
                 $name = static_data_localized_text(static_data_record_value($row, ['typeName', 'name']));
                 if ($typeId > 0 && $groupId > 0 && $name !== null) {
                     $marketGroupId = (int) static_data_record_value($row, ['marketGroupID', 'market_group_id', '_key'], 0);
+                    $metaGroupId = (int) static_data_record_value($row, ['metaGroupID', 'meta_group_id'], 0);
                     $publishedRaw = static_data_record_value($row, ['published'], 0);
                     $records['types'][] = [
                         'type_id' => $typeId,
                         'group_id' => $groupId,
                         'market_group_id' => $marketGroupId > 0 ? $marketGroupId : null,
+                        'meta_group_id' => $metaGroupId > 0 ? $metaGroupId : null,
                         'type_name' => $name,
                         'description' => static_data_localized_text(static_data_record_value($row, ['description'])),
                         'published' => ($publishedRaw === true || (int) $publishedRaw === 1) ? 1 : 0,
@@ -6820,10 +7392,13 @@ function static_data_import_reference_data(string $requestedMode = 'auto', bool 
         $constellations = $dataset['constellations'];
         $systems = $dataset['systems'];
         $stations = $dataset['stations'];
+        $categories = $dataset['categories'];
+        $groups = $dataset['groups'];
         $marketGroups = $dataset['market_groups'];
+        $metaGroups = $dataset['meta_groups'];
         $types = $dataset['types'];
 
-        $rowsWritten = db_transaction(static function () use ($mode, $regions, $constellations, $systems, $stations, $marketGroups, $types): int {
+        $rowsWritten = db_transaction(static function () use ($mode, $regions, $constellations, $systems, $stations, $categories, $groups, $marketGroups, $metaGroups, $types): int {
             if ($mode === 'full') {
                 db_reference_data_truncate_all();
             }
@@ -6833,7 +7408,10 @@ function static_data_import_reference_data(string $requestedMode = 'auto', bool 
             $written += db_ref_constellations_bulk_upsert($constellations);
             $written += db_ref_systems_bulk_upsert($systems);
             $written += db_ref_npc_stations_bulk_upsert($stations);
+            $written += db_ref_item_categories_bulk_upsert($categories);
+            $written += db_ref_item_groups_bulk_upsert($groups);
             $written += db_ref_market_groups_bulk_upsert($marketGroups);
+            $written += db_ref_meta_groups_bulk_upsert($metaGroups);
             $written += db_ref_item_types_bulk_upsert($types);
 
             return $written;
@@ -6858,7 +7436,10 @@ function static_data_import_reference_data(string $requestedMode = 'auto', bool 
                     'constellations' => count($constellations),
                     'systems' => count($systems),
                     'npc_stations' => count($stations),
+                    'item_categories' => count($categories),
+                    'item_groups' => count($groups),
                     'market_groups' => count($marketGroups),
+                    'meta_groups' => count($metaGroups),
                     'item_types' => count($types),
                 ],
             ], JSON_THROW_ON_ERROR)
@@ -8367,6 +8948,11 @@ function doctrine_market_lookup_by_type_ids(array $typeIds): array
 
 function doctrine_fit_item_market_rows(array $items, array $comparisonByTypeId = []): array
 {
+    $items = item_scope_filter_rows(
+        $items,
+        static fn (array $item): int => (int) ($item['type_id'] ?? 0)
+    );
+
     if ($comparisonByTypeId === []) {
         $comparisonByTypeId = doctrine_market_lookup_by_type_ids(array_map(static fn (array $item): int => (int) ($item['type_id'] ?? 0), $items));
     }
@@ -8960,9 +9546,9 @@ function doctrine_operational_snapshot(): array
         try {
             foreach (db_doctrine_fit_items_by_fit_ids($fitIds) as $item) {
                 $fitId = (int) ($item['doctrine_fit_id'] ?? 0);
-                $itemsByFitId[$fitId][] = $item;
                 $typeId = (int) ($item['type_id'] ?? 0);
-                if ($typeId > 0) {
+                if ($typeId > 0 && item_scope_is_type_id_in_scope($typeId)) {
+                    $itemsByFitId[$fitId][] = $item;
                     $allTypeIds[] = $typeId;
                 }
             }
@@ -8999,7 +9585,7 @@ function doctrine_operational_snapshot(): array
         $hullTypeIds = array_values(array_unique(array_filter(array_map(
             static fn (array $fit): int => isset($fit['ship_type_id']) ? (int) $fit['ship_type_id'] : 0,
             $fits
-        ), static fn (int $typeId): bool => $typeId > 0)));
+        ), static fn (int $typeId): bool => $typeId > 0 && item_scope_is_type_id_in_scope($typeId))));
         try {
             $hullLossByType = doctrine_hull_loss_index(db_killmail_tracked_recent_hull_losses($hullTypeIds, 24 * 7));
         } catch (Throwable) {
@@ -9145,6 +9731,10 @@ function doctrine_fit_detail_view_model(int $fitId): array
 
         $fit['group_ids'] = doctrine_parse_group_csv($fit['group_ids_csv'] ?? null);
         $fit['group_names'] = doctrine_parse_group_names_csv($fit['group_names_csv'] ?? null);
+        $items = item_scope_filter_rows(
+            $items,
+            static fn (array $item): int => (int) ($item['type_id'] ?? 0)
+        );
         $comparison = doctrine_market_lookup_by_type_ids(array_map(static fn (array $item): int => (int) ($item['type_id'] ?? 0), $items));
         $typeIds = array_values(array_unique(array_filter(array_map(static fn (array $item): int => (int) ($item['type_id'] ?? 0), $items), static fn (int $typeId): bool => $typeId > 0)));
         $localHistoryByTypeId = [];
@@ -9171,7 +9761,10 @@ function doctrine_fit_detail_view_model(int $fitId): array
         }
 
         try {
-            $hullLossByType = doctrine_hull_loss_index(db_killmail_tracked_recent_hull_losses([(int) ($fit['ship_type_id'] ?? 0)], 24 * 7));
+            $trackedHullTypeIds = item_scope_is_type_id_in_scope((int) ($fit['ship_type_id'] ?? 0))
+                ? [(int) ($fit['ship_type_id'] ?? 0)]
+                : [];
+            $hullLossByType = doctrine_hull_loss_index(db_killmail_tracked_recent_hull_losses($trackedHullTypeIds, 24 * 7));
         } catch (Throwable) {
             $hullLossByType = [];
         }
