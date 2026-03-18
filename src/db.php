@@ -2549,8 +2549,100 @@ function db_item_name_cache_upsert(string $normalizedName, string $itemName, ?in
     );
 }
 
+function db_table_exists(string $tableName): bool
+{
+    $row = db_select_one(
+        'SELECT 1 FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? LIMIT 1',
+        [$tableName]
+    );
+
+    return $row !== null;
+}
+
+function db_column_exists(string $tableName, string $columnName): bool
+{
+    $row = db_select_one(
+        'SELECT 1 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ? LIMIT 1',
+        [$tableName, $columnName]
+    );
+
+    return $row !== null;
+}
+
+function db_foreign_key_delete_rule(string $constraintName): ?string
+{
+    $row = db_select_one(
+        'SELECT DELETE_RULE FROM information_schema.REFERENTIAL_CONSTRAINTS WHERE CONSTRAINT_SCHEMA = DATABASE() AND CONSTRAINT_NAME = ? LIMIT 1',
+        [$constraintName]
+    );
+
+    return $row !== null ? strtoupper((string) ($row['DELETE_RULE'] ?? '')) : null;
+}
+
+function doctrine_db_ensure_schema(): void
+{
+    static $ensured = false;
+
+    if ($ensured) {
+        return;
+    }
+
+    db_transaction(static function (): void {
+        if (db_table_exists('doctrine_fits') && db_column_exists('doctrine_fits', 'doctrine_group_id')) {
+            $column = db_select_one(
+                'SELECT IS_NULLABLE FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ? LIMIT 1',
+                ['doctrine_fits', 'doctrine_group_id']
+            );
+            if (strtoupper((string) ($column['IS_NULLABLE'] ?? 'NO')) !== 'YES') {
+                db()->exec('ALTER TABLE doctrine_fits MODIFY doctrine_group_id INT UNSIGNED DEFAULT NULL');
+            }
+
+            $deleteRule = db_foreign_key_delete_rule('fk_doctrine_fits_group');
+            if ($deleteRule !== null && $deleteRule !== 'SET NULL') {
+                db()->exec('ALTER TABLE doctrine_fits DROP FOREIGN KEY fk_doctrine_fits_group');
+                db()->exec('ALTER TABLE doctrine_fits ADD CONSTRAINT fk_doctrine_fits_group FOREIGN KEY (doctrine_group_id) REFERENCES doctrine_groups(id) ON DELETE SET NULL');
+            }
+        }
+
+        db()->exec(
+            'CREATE TABLE IF NOT EXISTS doctrine_fit_groups (
+                doctrine_fit_id INT UNSIGNED NOT NULL,
+                doctrine_group_id INT UNSIGNED NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (doctrine_fit_id, doctrine_group_id),
+                KEY idx_doctrine_fit_groups_group (doctrine_group_id),
+                CONSTRAINT fk_doctrine_fit_groups_fit FOREIGN KEY (doctrine_fit_id) REFERENCES doctrine_fits(id) ON DELETE CASCADE,
+                CONSTRAINT fk_doctrine_fit_groups_group FOREIGN KEY (doctrine_group_id) REFERENCES doctrine_groups(id) ON DELETE CASCADE
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4'
+        );
+
+        db()->exec(
+            'INSERT IGNORE INTO doctrine_fit_groups (doctrine_fit_id, doctrine_group_id)
+             SELECT id, doctrine_group_id
+             FROM doctrine_fits
+             WHERE doctrine_group_id IS NOT NULL'
+        );
+    });
+
+    $ensured = true;
+}
+
+function db_doctrine_group_membership_fit_count(int $groupId): int
+{
+    doctrine_db_ensure_schema();
+
+    $row = db_select_one(
+        'SELECT COUNT(DISTINCT doctrine_fit_id) AS fit_count FROM doctrine_fit_groups WHERE doctrine_group_id = ?',
+        [$groupId]
+    );
+
+    return (int) ($row['fit_count'] ?? 0);
+}
+
 function db_doctrine_groups_all(): array
 {
+    doctrine_db_ensure_schema();
+
     return db_select(
         'SELECT
             dg.id,
@@ -2558,11 +2650,12 @@ function db_doctrine_groups_all(): array
             dg.description,
             dg.created_at,
             dg.updated_at,
-            COUNT(DISTINCT df.id) AS fit_count,
-            COALESCE(SUM(df.item_count), 0) AS item_count,
+            COUNT(DISTINCT dfg.doctrine_fit_id) AS fit_count,
+            COALESCE(SUM(COALESCE(df.item_count, 0)), 0) AS item_count,
             MAX(df.updated_at) AS last_fit_updated_at
          FROM doctrine_groups dg
-         LEFT JOIN doctrine_fits df ON df.doctrine_group_id = dg.id
+         LEFT JOIN doctrine_fit_groups dfg ON dfg.doctrine_group_id = dg.id
+         LEFT JOIN doctrine_fits df ON df.id = dfg.doctrine_fit_id
          GROUP BY dg.id, dg.group_name, dg.description, dg.created_at, dg.updated_at
          ORDER BY dg.group_name ASC'
     );
@@ -2570,6 +2663,8 @@ function db_doctrine_groups_all(): array
 
 function db_doctrine_group_by_id(int $groupId): ?array
 {
+    doctrine_db_ensure_schema();
+
     if ($groupId <= 0) {
         return null;
     }
@@ -2581,11 +2676,12 @@ function db_doctrine_group_by_id(int $groupId): ?array
             dg.description,
             dg.created_at,
             dg.updated_at,
-            COUNT(DISTINCT df.id) AS fit_count,
-            COALESCE(SUM(df.item_count), 0) AS item_count,
+            COUNT(DISTINCT dfg.doctrine_fit_id) AS fit_count,
+            COALESCE(SUM(COALESCE(df.item_count, 0)), 0) AS item_count,
             MAX(df.updated_at) AS last_fit_updated_at
          FROM doctrine_groups dg
-         LEFT JOIN doctrine_fits df ON df.doctrine_group_id = dg.id
+         LEFT JOIN doctrine_fit_groups dfg ON dfg.doctrine_group_id = dg.id
+         LEFT JOIN doctrine_fits df ON df.id = dfg.doctrine_fit_id
          WHERE dg.id = ?
          GROUP BY dg.id, dg.group_name, dg.description, dg.created_at, dg.updated_at
          LIMIT 1',
@@ -2595,6 +2691,8 @@ function db_doctrine_group_by_id(int $groupId): ?array
 
 function db_doctrine_group_create(string $groupName, ?string $description = null): int
 {
+    doctrine_db_ensure_schema();
+
     db_execute(
         'INSERT INTO doctrine_groups (group_name, description) VALUES (?, ?)
          ON DUPLICATE KEY UPDATE
@@ -2607,8 +2705,122 @@ function db_doctrine_group_create(string $groupName, ?string $description = null
     return (int) db()->lastInsertId();
 }
 
+function db_doctrine_group_update(int $groupId, string $groupName, ?string $description = null): bool
+{
+    doctrine_db_ensure_schema();
+
+    if ($groupId <= 0) {
+        return false;
+    }
+
+    return db_execute(
+        'UPDATE doctrine_groups SET group_name = ?, description = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? LIMIT 1',
+        [$groupName, $description, $groupId]
+    );
+}
+
+function db_doctrine_group_delete(int $groupId): array
+{
+    doctrine_db_ensure_schema();
+
+    if ($groupId <= 0) {
+        return ['deleted' => false, 'removed_memberships' => 0, 'orphaned_fits' => 0];
+    }
+
+    return db_transaction(static function () use ($groupId): array {
+        $memberships = db_select(
+            'SELECT doctrine_fit_id FROM doctrine_fit_groups WHERE doctrine_group_id = ?',
+            [$groupId]
+        );
+        $fitIds = array_values(array_unique(array_map(static fn (array $row): int => (int) ($row['doctrine_fit_id'] ?? 0), $memberships)));
+        $orphanedFits = 0;
+
+        foreach ($fitIds as $fitId) {
+            $other = db_select_one(
+                'SELECT doctrine_group_id FROM doctrine_fit_groups WHERE doctrine_fit_id = ? AND doctrine_group_id <> ? ORDER BY doctrine_group_id ASC LIMIT 1',
+                [$fitId, $groupId]
+            );
+            if ($other === null) {
+                $orphanedFits++;
+            }
+        }
+
+        db_execute('DELETE FROM doctrine_fit_groups WHERE doctrine_group_id = ?', [$groupId]);
+        db_execute('DELETE FROM doctrine_groups WHERE id = ? LIMIT 1', [$groupId]);
+
+        foreach ($fitIds as $fitId) {
+            $next = db_select_one(
+                'SELECT doctrine_group_id FROM doctrine_fit_groups WHERE doctrine_fit_id = ? ORDER BY doctrine_group_id ASC LIMIT 1',
+                [$fitId]
+            );
+            db_execute(
+                'UPDATE doctrine_fits SET doctrine_group_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? LIMIT 1',
+                [$next !== null ? (int) ($next['doctrine_group_id'] ?? 0) : null, $fitId]
+            );
+        }
+
+        return [
+            'deleted' => true,
+            'removed_memberships' => count($memberships),
+            'orphaned_fits' => $orphanedFits,
+        ];
+    });
+}
+
+function db_doctrine_fit_membership_rows(int $fitId): array
+{
+    doctrine_db_ensure_schema();
+
+    if ($fitId <= 0) {
+        return [];
+    }
+
+    return db_select(
+        'SELECT dg.id, dg.group_name
+         FROM doctrine_fit_groups dfg
+         INNER JOIN doctrine_groups dg ON dg.id = dfg.doctrine_group_id
+         WHERE dfg.doctrine_fit_id = ?
+         ORDER BY dg.group_name ASC',
+        [$fitId]
+    );
+}
+
+function db_doctrine_fit_group_ids(int $fitId): array
+{
+    return array_values(array_map(static fn (array $row): int => (int) ($row['id'] ?? 0), db_doctrine_fit_membership_rows($fitId)));
+}
+
+function db_doctrine_fits_all(): array
+{
+    doctrine_db_ensure_schema();
+
+    return db_select(
+        'SELECT
+            df.id,
+            df.doctrine_group_id,
+            df.fit_name,
+            df.ship_name,
+            df.ship_type_id,
+            df.source_format,
+            df.import_body,
+            df.item_count,
+            df.unresolved_count,
+            df.created_at,
+            df.updated_at,
+            GROUP_CONCAT(DISTINCT dfg.doctrine_group_id ORDER BY dfg.doctrine_group_id SEPARATOR ",") AS group_ids_csv,
+            GROUP_CONCAT(DISTINCT dg.group_name ORDER BY dg.group_name SEPARATOR "||") AS group_names_csv
+         FROM doctrine_fits df
+         LEFT JOIN doctrine_fit_groups dfg ON dfg.doctrine_fit_id = df.id
+         LEFT JOIN doctrine_groups dg ON dg.id = dfg.doctrine_group_id
+         GROUP BY df.id, df.doctrine_group_id, df.fit_name, df.ship_name, df.ship_type_id, df.source_format, df.import_body, df.item_count, df.unresolved_count, df.created_at, df.updated_at
+         ORDER BY df.updated_at DESC, df.fit_name ASC'
+    );
+}
+
 function db_doctrine_fits_by_group(int $groupId): array
 {
+    doctrine_db_ensure_schema();
+
     if ($groupId <= 0) {
         return [];
     }
@@ -2621,32 +2833,56 @@ function db_doctrine_fits_by_group(int $groupId): array
             df.ship_name,
             df.ship_type_id,
             df.source_format,
+            df.import_body,
             df.item_count,
             df.unresolved_count,
             df.created_at,
             df.updated_at,
             COALESCE(SUM(dfi.quantity), 0) AS required_quantity,
             COUNT(dfi.id) AS fit_line_count
-         FROM doctrine_fits df
+         FROM doctrine_fit_groups dfg
+         INNER JOIN doctrine_fits df ON df.id = dfg.doctrine_fit_id
          LEFT JOIN doctrine_fit_items dfi ON dfi.doctrine_fit_id = df.id
-         WHERE df.doctrine_group_id = ?
-         GROUP BY df.id, df.doctrine_group_id, df.fit_name, df.ship_name, df.ship_type_id, df.source_format, df.item_count, df.unresolved_count, df.created_at, df.updated_at
+         WHERE dfg.doctrine_group_id = ?
+         GROUP BY df.id, df.doctrine_group_id, df.fit_name, df.ship_name, df.ship_type_id, df.source_format, df.import_body, df.item_count, df.unresolved_count, df.created_at, df.updated_at
          ORDER BY df.updated_at DESC, df.fit_name ASC',
         [$groupId]
     );
 }
 
+function db_doctrine_ungrouped_fits(): array
+{
+    doctrine_db_ensure_schema();
+
+    return db_select(
+        'SELECT df.*
+         FROM doctrine_fits df
+         LEFT JOIN doctrine_fit_groups dfg ON dfg.doctrine_fit_id = df.id
+         WHERE dfg.doctrine_fit_id IS NULL
+         ORDER BY df.updated_at DESC, df.fit_name ASC'
+    );
+}
+
 function db_doctrine_fit_by_id(int $fitId): ?array
 {
+    doctrine_db_ensure_schema();
+
     if ($fitId <= 0) {
         return null;
     }
 
     return db_select_one(
-        'SELECT df.*, dg.group_name, dg.description AS group_description
+        'SELECT
+            df.*,
+            pg.group_name AS primary_group_name,
+            GROUP_CONCAT(DISTINCT dfg.doctrine_group_id ORDER BY dfg.doctrine_group_id SEPARATOR ",") AS group_ids_csv,
+            GROUP_CONCAT(DISTINCT dg.group_name ORDER BY dg.group_name SEPARATOR "||") AS group_names_csv
          FROM doctrine_fits df
-         INNER JOIN doctrine_groups dg ON dg.id = df.doctrine_group_id
+         LEFT JOIN doctrine_groups pg ON pg.id = df.doctrine_group_id
+         LEFT JOIN doctrine_fit_groups dfg ON dfg.doctrine_fit_id = df.id
+         LEFT JOIN doctrine_groups dg ON dg.id = dfg.doctrine_group_id
          WHERE df.id = ?
+         GROUP BY df.id, df.doctrine_group_id, df.fit_name, df.ship_name, df.ship_type_id, df.source_format, df.import_body, df.item_count, df.unresolved_count, df.created_at, df.updated_at, pg.group_name
          LIMIT 1',
         [$fitId]
     );
@@ -2654,6 +2890,8 @@ function db_doctrine_fit_by_id(int $fitId): ?array
 
 function db_doctrine_fit_items_by_fit(int $fitId): array
 {
+    doctrine_db_ensure_schema();
+
     if ($fitId <= 0) {
         return [];
     }
@@ -2677,9 +2915,89 @@ function db_doctrine_fit_items_by_fit(int $fitId): array
     );
 }
 
-function db_doctrine_fit_create(array $fit, array $items): int
+function db_doctrine_fit_items_by_fit_ids(array $fitIds): array
 {
-    return db_transaction(function () use ($fit, $items): int {
+    doctrine_db_ensure_schema();
+
+    $fitIds = array_values(array_filter(array_map('intval', $fitIds), static fn (int $id): bool => $id > 0));
+    if ($fitIds === []) {
+        return [];
+    }
+
+    $placeholders = implode(', ', array_fill(0, count($fitIds), '?'));
+
+    return db_select(
+        "SELECT
+            dfi.id,
+            dfi.doctrine_fit_id,
+            dfi.line_number,
+            dfi.slot_category,
+            dfi.item_name,
+            dfi.type_id,
+            dfi.quantity,
+            dfi.resolution_source,
+            rit.type_name
+         FROM doctrine_fit_items dfi
+         LEFT JOIN ref_item_types rit ON rit.type_id = dfi.type_id
+         WHERE dfi.doctrine_fit_id IN ({$placeholders})
+         ORDER BY dfi.doctrine_fit_id ASC, dfi.line_number ASC, dfi.id ASC",
+        $fitIds
+    );
+}
+
+function db_doctrine_fit_replace_items(int $fitId, array $items): void
+{
+    db_execute('DELETE FROM doctrine_fit_items WHERE doctrine_fit_id = ?', [$fitId]);
+
+    if ($items === []) {
+        return;
+    }
+
+    $rows = [];
+    foreach ($items as $item) {
+        $rows[] = [
+            'doctrine_fit_id' => $fitId,
+            'line_number' => (int) ($item['line_number'] ?? 0),
+            'slot_category' => (string) ($item['slot_category'] ?? 'Items'),
+            'item_name' => (string) ($item['item_name'] ?? ''),
+            'type_id' => isset($item['type_id']) ? (int) $item['type_id'] : null,
+            'quantity' => max(1, (int) ($item['quantity'] ?? 1)),
+            'resolution_source' => (string) ($item['resolution_source'] ?? 'ref'),
+        ];
+    }
+
+    db_bulk_insert_or_upsert(
+        'doctrine_fit_items',
+        ['doctrine_fit_id', 'line_number', 'slot_category', 'item_name', 'type_id', 'quantity', 'resolution_source'],
+        $rows
+    );
+}
+
+function db_doctrine_fit_replace_groups(int $fitId, array $groupIds): void
+{
+    $groupIds = array_values(array_unique(array_filter(array_map('intval', $groupIds), static fn (int $id): bool => $id > 0)));
+    db_execute('DELETE FROM doctrine_fit_groups WHERE doctrine_fit_id = ?', [$fitId]);
+
+    if ($groupIds !== []) {
+        $rows = [];
+        foreach ($groupIds as $groupId) {
+            $rows[] = ['doctrine_fit_id' => $fitId, 'doctrine_group_id' => $groupId];
+        }
+        db_bulk_insert_or_upsert('doctrine_fit_groups', ['doctrine_fit_id', 'doctrine_group_id'], $rows);
+    }
+
+    db_execute(
+        'UPDATE doctrine_fits SET doctrine_group_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? LIMIT 1',
+        [$groupIds[0] ?? null, $fitId]
+    );
+}
+
+function db_doctrine_fit_create(array $fit, array $items, array $groupIds = []): int
+{
+    doctrine_db_ensure_schema();
+
+    return db_transaction(function () use ($fit, $items, $groupIds): int {
+        $groupIds = array_values(array_unique(array_filter(array_map('intval', $groupIds), static fn (int $id): bool => $id > 0)));
         db_execute(
             'INSERT INTO doctrine_fits (
                 doctrine_group_id,
@@ -2692,7 +3010,7 @@ function db_doctrine_fit_create(array $fit, array $items): int
                 unresolved_count
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
             [
-                (int) ($fit['doctrine_group_id'] ?? 0),
+                $groupIds[0] ?? (isset($fit['doctrine_group_id']) ? (int) $fit['doctrine_group_id'] : null),
                 (string) ($fit['fit_name'] ?? ''),
                 (string) ($fit['ship_name'] ?? ''),
                 isset($fit['ship_type_id']) ? (int) $fit['ship_type_id'] : null,
@@ -2704,28 +3022,75 @@ function db_doctrine_fit_create(array $fit, array $items): int
         );
 
         $fitId = (int) db()->lastInsertId();
-
-        if ($items !== []) {
-            $rows = [];
-            foreach ($items as $item) {
-                $rows[] = [
-                    'doctrine_fit_id' => $fitId,
-                    'line_number' => (int) ($item['line_number'] ?? 0),
-                    'slot_category' => (string) ($item['slot_category'] ?? 'Items'),
-                    'item_name' => (string) ($item['item_name'] ?? ''),
-                    'type_id' => isset($item['type_id']) ? (int) $item['type_id'] : null,
-                    'quantity' => max(1, (int) ($item['quantity'] ?? 1)),
-                    'resolution_source' => (string) ($item['resolution_source'] ?? 'ref'),
-                ];
-            }
-
-            db_bulk_insert_or_upsert(
-                'doctrine_fit_items',
-                ['doctrine_fit_id', 'line_number', 'slot_category', 'item_name', 'type_id', 'quantity', 'resolution_source'],
-                $rows
-            );
-        }
+        db_doctrine_fit_replace_items($fitId, $items);
+        db_doctrine_fit_replace_groups($fitId, $groupIds);
 
         return $fitId;
     });
+}
+
+function db_doctrine_fit_update(int $fitId, array $fit, array $items, array $groupIds = []): bool
+{
+    doctrine_db_ensure_schema();
+
+    if ($fitId <= 0) {
+        return false;
+    }
+
+    return db_transaction(function () use ($fitId, $fit, $items, $groupIds): bool {
+        $groupIds = array_values(array_unique(array_filter(array_map('intval', $groupIds), static fn (int $id): bool => $id > 0)));
+        db_execute(
+            'UPDATE doctrine_fits
+             SET doctrine_group_id = ?, fit_name = ?, ship_name = ?, ship_type_id = ?, source_format = ?, import_body = ?, item_count = ?, unresolved_count = ?, updated_at = CURRENT_TIMESTAMP
+             WHERE id = ? LIMIT 1',
+            [
+                $groupIds[0] ?? null,
+                (string) ($fit['fit_name'] ?? ''),
+                (string) ($fit['ship_name'] ?? ''),
+                isset($fit['ship_type_id']) ? (int) $fit['ship_type_id'] : null,
+                (string) ($fit['source_format'] ?? 'buyall'),
+                (string) ($fit['import_body'] ?? ''),
+                (int) ($fit['item_count'] ?? 0),
+                (int) ($fit['unresolved_count'] ?? 0),
+                $fitId,
+            ]
+        );
+
+        db_doctrine_fit_replace_items($fitId, $items);
+        db_doctrine_fit_replace_groups($fitId, $groupIds);
+
+        return true;
+    });
+}
+
+function db_doctrine_fit_delete(int $fitId): bool
+{
+    doctrine_db_ensure_schema();
+
+    if ($fitId <= 0) {
+        return false;
+    }
+
+    return db_transaction(static function () use ($fitId): bool {
+        db_execute('DELETE FROM doctrine_fit_groups WHERE doctrine_fit_id = ?', [$fitId]);
+        db_execute('DELETE FROM doctrine_fit_items WHERE doctrine_fit_id = ?', [$fitId]);
+
+        return db_execute('DELETE FROM doctrine_fits WHERE id = ? LIMIT 1', [$fitId]);
+    });
+}
+
+function db_doctrine_group_suggestions_for_fit(string $fitName, ?int $shipTypeId = null, int $excludeFitId = 0): array
+{
+    doctrine_db_ensure_schema();
+
+    return db_select(
+        'SELECT DISTINCT dg.id, dg.group_name
+         FROM doctrine_groups dg
+         INNER JOIN doctrine_fit_groups dfg ON dfg.doctrine_group_id = dg.id
+         INNER JOIN doctrine_fits df ON df.id = dfg.doctrine_fit_id
+         WHERE df.id <> ?
+           AND ((? <> "" AND df.fit_name = ?) OR (? > 0 AND df.ship_type_id = ?))
+         ORDER BY dg.group_name ASC',
+        [$excludeFitId, trim($fitName), trim($fitName), $shipTypeId ?? 0, $shipTypeId ?? 0]
+    );
 }

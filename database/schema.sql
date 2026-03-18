@@ -413,7 +413,7 @@ CREATE TABLE IF NOT EXISTS doctrine_groups (
 
 CREATE TABLE IF NOT EXISTS doctrine_fits (
     id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-    doctrine_group_id INT UNSIGNED NOT NULL,
+    doctrine_group_id INT UNSIGNED DEFAULT NULL,
     fit_name VARCHAR(190) NOT NULL,
     ship_name VARCHAR(255) NOT NULL,
     ship_type_id INT UNSIGNED DEFAULT NULL,
@@ -425,7 +425,17 @@ CREATE TABLE IF NOT EXISTS doctrine_fits (
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     KEY idx_doctrine_group_id (doctrine_group_id),
     KEY idx_ship_type_id (ship_type_id),
-    CONSTRAINT fk_doctrine_fits_group FOREIGN KEY (doctrine_group_id) REFERENCES doctrine_groups(id) ON DELETE CASCADE
+    CONSTRAINT fk_doctrine_fits_group FOREIGN KEY (doctrine_group_id) REFERENCES doctrine_groups(id) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS doctrine_fit_groups (
+    doctrine_fit_id INT UNSIGNED NOT NULL,
+    doctrine_group_id INT UNSIGNED NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (doctrine_fit_id, doctrine_group_id),
+    KEY idx_doctrine_fit_groups_group (doctrine_group_id),
+    CONSTRAINT fk_doctrine_fit_groups_fit FOREIGN KEY (doctrine_fit_id) REFERENCES doctrine_fits(id) ON DELETE CASCADE,
+    CONSTRAINT fk_doctrine_fit_groups_group FOREIGN KEY (doctrine_group_id) REFERENCES doctrine_groups(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS doctrine_fit_items (

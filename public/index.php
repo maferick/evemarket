@@ -7,6 +7,7 @@ require_once __DIR__ . '/../src/bootstrap.php';
 $title = 'Command Dashboard';
 $dbStatus = db_connection_status();
 $intel = dashboard_intelligence_data();
+$doctrine = $intel['doctrine'] ?? doctrine_groups_overview_data();
 
 include __DIR__ . '/../src/views/partials/header.php';
 ?>
@@ -157,6 +158,102 @@ $statusThemes = [
             </div>
         </article>
     <?php endforeach; ?>
+</section>
+
+<section class="mt-8 grid gap-5 xl:grid-cols-[minmax(0,1.3fr)_minmax(320px,0.9fr)]">
+    <article class="surface-primary">
+        <div class="section-header border-b border-white/8 pb-4">
+            <div>
+                <p class="eyebrow">Doctrine readiness</p>
+                <h2 class="mt-2 section-title">Doctrine Supply Risk</h2>
+                <p class="mt-2 section-copy">First-class doctrine signals for market readiness, at-risk groups, and immediate restock candidates.</p>
+            </div>
+            <span class="badge border-rose-400/20 bg-rose-500/10 text-rose-200"><?= doctrine_format_quantity(count((array) ($doctrine['not_ready_fits'] ?? []))) ?> fits blocked</span>
+        </div>
+        <div class="mt-5 grid gap-5 lg:grid-cols-2">
+            <div class="surface-tertiary">
+                <div class="flex items-start justify-between gap-3">
+                    <div>
+                        <h3 class="text-lg font-semibold text-white">Fits not fully covered locally</h3>
+                        <p class="mt-1 text-sm text-slate-400">The highest-priority doctrine fits still missing local stock.</p>
+                    </div>
+                    <span class="badge border-amber-400/20 bg-amber-500/10 text-amber-100">Needs stock</span>
+                </div>
+                <div class="mt-4 space-y-3">
+                    <?php foreach (array_slice((array) ($doctrine['not_ready_fits'] ?? []), 0, 5) as $fit): ?>
+                        <a href="/doctrine/fit?fit_id=<?= (int) ($fit['id'] ?? 0) ?>" class="intelligence-row group">
+                            <div class="min-w-0 flex-1">
+                                <p class="truncate text-sm font-semibold text-slate-100"><?= htmlspecialchars((string) ($fit['fit_name'] ?? ''), ENT_QUOTES) ?></p>
+                                <p class="mt-1 text-xs text-slate-500"><?= htmlspecialchars(implode(', ', (array) ($fit['group_names'] ?? [])) ?: (string) ($fit['ship_name'] ?? ''), ENT_QUOTES) ?></p>
+                            </div>
+                            <div class="text-right">
+                                <p class="text-sm font-semibold text-rose-200"><?= doctrine_format_quantity((int) (($fit['supply']['missing_lines'] ?? 0))) ?> lines</p>
+                                <p class="text-xs text-slate-500"><?= doctrine_format_quantity((int) (($fit['supply']['total_missing_qty'] ?? 0))) ?> units</p>
+                            </div>
+                        </a>
+                    <?php endforeach; ?>
+                    <?php if (((array) ($doctrine['not_ready_fits'] ?? [])) === []): ?>
+                        <div class="surface-tertiary text-sm text-slate-400">No doctrine fits are currently blocked by local stock gaps.</div>
+                    <?php endif; ?>
+                </div>
+            </div>
+            <div class="surface-tertiary">
+                <div class="flex items-start justify-between gap-3">
+                    <div>
+                        <h3 class="text-lg font-semibold text-white">Doctrine groups at risk</h3>
+                        <p class="mt-1 text-sm text-slate-400">Groups with active gap fits and the largest downstream stocking burden.</p>
+                    </div>
+                    <span class="badge border-orange-400/20 bg-orange-500/10 text-orange-100">Watchlist</span>
+                </div>
+                <div class="mt-4 space-y-3">
+                    <?php foreach (array_slice(array_values(array_filter((array) ($doctrine['groups'] ?? []), static fn (array $group): bool => (int) ($group['gap_fit_count'] ?? 0) > 0)), 0, 5) as $group): ?>
+                        <a href="/doctrine/group?group_id=<?= (int) ($group['id'] ?? 0) ?>" class="intelligence-row group">
+                            <div class="min-w-0 flex-1">
+                                <p class="truncate text-sm font-semibold text-slate-100"><?= htmlspecialchars((string) ($group['group_name'] ?? ''), ENT_QUOTES) ?></p>
+                                <p class="mt-1 text-xs text-slate-500"><?= doctrine_format_quantity((int) ($group['gap_fit_count'] ?? 0)) ?> fits with supply gaps</p>
+                            </div>
+                            <div class="text-right">
+                                <p class="text-sm font-semibold text-orange-100"><?= doctrine_format_quantity((int) ($group['total_missing_qty'] ?? 0)) ?> units</p>
+                                <p class="text-xs text-slate-500"><?= htmlspecialchars(market_format_isk((float) ($group['restock_gap_isk'] ?? 0.0)), ENT_QUOTES) ?></p>
+                            </div>
+                        </a>
+                    <?php endforeach; ?>
+                    <?php if (array_values(array_filter((array) ($doctrine['groups'] ?? []), static fn (array $group): bool => (int) ($group['gap_fit_count'] ?? 0) > 0)) === []): ?>
+                        <div class="surface-tertiary text-sm text-slate-400">No doctrine groups currently show active supply gaps.</div>
+                    <?php endif; ?>
+                </div>
+            </div>
+        </div>
+    </article>
+
+    <article class="surface-secondary">
+        <div class="section-header border-b border-white/8 pb-4">
+            <div>
+                <p class="eyebrow">Restock queue</p>
+                <h2 class="mt-2 section-title">Top Missing Doctrine Items</h2>
+                <p class="mt-2 section-copy">What needs stocking first to restore doctrine readiness.</p>
+            </div>
+            <span class="badge border-sky-400/18 bg-sky-500/10 text-sky-100">Doctrine-aware</span>
+        </div>
+        <div class="mt-5 space-y-3">
+            <?php if (((array) ($doctrine['top_missing_items'] ?? [])) === []): ?>
+                <div class="surface-tertiary text-sm text-slate-400">No doctrine item shortages are currently tracked.</div>
+            <?php else: ?>
+                <?php foreach (array_slice((array) ($doctrine['top_missing_items'] ?? []), 0, 6) as $item): ?>
+                    <div class="intelligence-row group">
+                        <div class="min-w-0 flex-1">
+                            <p class="truncate text-sm font-semibold text-slate-100"><?= htmlspecialchars((string) ($item['item_name'] ?? ''), ENT_QUOTES) ?></p>
+                            <p class="mt-1 text-xs text-slate-500"><?= doctrine_format_quantity((int) ($item['fit_count'] ?? 0)) ?> doctrine fits impacted</p>
+                        </div>
+                        <div class="text-right">
+                            <p class="text-sm font-semibold text-orange-100"><?= doctrine_format_quantity((int) ($item['missing_qty'] ?? 0)) ?> units</p>
+                            <p class="text-xs text-slate-500"><?= htmlspecialchars(market_format_isk((float) ($item['restock_gap_isk'] ?? 0.0)), ENT_QUOTES) ?></p>
+                        </div>
+                    </div>
+                <?php endforeach; ?>
+            <?php endif; ?>
+        </div>
+    </article>
 </section>
 
 <section class="mt-8 grid gap-5 xl:grid-cols-3">
