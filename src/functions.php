@@ -1916,7 +1916,7 @@ function data_sync_schedule_job_definitions(): array
             'enabled_key' => 'alliance_current_sync_enabled',
             'interval_value_key' => 'alliance_current_sync_interval_value',
             'interval_unit_key' => 'alliance_current_sync_interval_unit',
-            'default_interval_seconds' => 300,
+            'default_interval_seconds' => 60,
             'label' => 'Alliance Current',
         ],
         'alliance_historical_sync' => [
@@ -1930,8 +1930,15 @@ function data_sync_schedule_job_definitions(): array
             'enabled_key' => 'market_hub_current_sync_enabled',
             'interval_value_key' => 'market_hub_current_sync_interval_value',
             'interval_unit_key' => 'market_hub_current_sync_interval_unit',
-            'default_interval_seconds' => 300,
+            'default_interval_seconds' => 60,
             'label' => 'Hub Current',
+        ],
+        'current_state_refresh_sync' => [
+            'enabled_key' => 'current_state_refresh_sync_enabled',
+            'interval_value_key' => 'current_state_refresh_sync_interval_value',
+            'interval_unit_key' => 'current_state_refresh_sync_interval_unit',
+            'default_interval_seconds' => 120,
+            'label' => 'Current-State Refresh',
         ],
         'market_hub_historical_sync' => [
             'enabled_key' => 'market_hub_historical_sync_enabled',
@@ -1951,8 +1958,15 @@ function data_sync_schedule_job_definitions(): array
             'enabled_key' => 'doctrine_intelligence_sync_enabled',
             'interval_value_key' => 'doctrine_intelligence_sync_interval_value',
             'interval_unit_key' => 'doctrine_intelligence_sync_interval_unit',
-            'default_interval_seconds' => 1800,
-            'label' => 'Doctrine Intelligence',
+            'default_interval_seconds' => 900,
+            'label' => 'Medium Intelligence Batch',
+        ],
+        'forecasting_ai_sync' => [
+            'enabled_key' => 'forecasting_ai_sync_enabled',
+            'interval_value_key' => 'forecasting_ai_sync_interval_value',
+            'interval_unit_key' => 'forecasting_ai_sync_interval_unit',
+            'default_interval_seconds' => 3600,
+            'label' => 'Forecasting / AI Batch',
         ],
         'killmail_r2z2_sync' => [
             'enabled_key' => 'killmail_r2z2_sync_enabled',
@@ -4693,22 +4707,25 @@ function scheduler_job_definitions(): array
                 return sync_market_hub_current_orders($hubRef, 'incremental');
             },
         ],
+        'current_state_refresh_sync' => [
+            'timeout_seconds' => 90,
+            'lock_ttl_seconds' => 180,
+            'handler' => static function (): array {
+                return supplycore_refresh_current_state_cache('scheduler');
+            },
+        ],
         'doctrine_intelligence_sync' => [
             'timeout_seconds' => 180,
             'lock_ttl_seconds' => 300,
             'handler' => static function (): array {
-                $snapshot = doctrine_refresh_intelligence('scheduler');
-                $fitCount = count((array) ($snapshot['fits'] ?? []));
-
-                return sync_result_shape() + [
-                    'rows_seen' => $fitCount,
-                    'rows_written' => $fitCount,
-                    'cursor' => 'doctrine_snapshot:' . gmdate('Y-m-d H:i:s'),
-                    'checksum' => sync_checksum(['fit_count' => $fitCount, 'finished_at' => gmdate(DATE_ATOM)]),
-                    'meta' => [
-                        'outcome_reason' => 'Doctrine intelligence refreshed from cached market, killmail, and fit data.',
-                    ],
-                ];
+                return doctrine_refresh_intelligence_job_result('scheduler');
+            },
+        ],
+        'forecasting_ai_sync' => [
+            'timeout_seconds' => 180,
+            'lock_ttl_seconds' => 300,
+            'handler' => static function (): array {
+                return supplycore_refresh_forecasting_snapshot_job_result('scheduler');
             },
         ],
         'killmail_r2z2_sync' => [
@@ -4729,9 +4746,10 @@ function scheduler_job_definitions(): array
 function scheduler_job_type(string $jobKey): string
 {
     return match ($jobKey) {
-        'alliance_current_sync', 'market_hub_current_sync' => 'sync.current',
+        'alliance_current_sync', 'market_hub_current_sync', 'current_state_refresh_sync' => 'sync.current',
         'alliance_historical_sync', 'market_hub_historical_sync', 'market_hub_local_history_sync' => 'sync.history',
         'doctrine_intelligence_sync' => 'sync.doctrine',
+        'forecasting_ai_sync' => 'sync.forecasting',
         'killmail_r2z2_sync' => 'sync.killmail',
         default => 'sync.generic',
     };
@@ -4891,13 +4909,6 @@ function scheduler_run_job(array $job): array
             'meta' => is_array($syncResult['meta'] ?? null) ? $syncResult['meta'] : [],
         ];
         $result['summary'] = scheduler_job_summary_message($result);
-
-        if ($status === 'success' && in_array($jobKey, doctrine_refresh_trigger_job_keys(), true) && $jobKey !== 'doctrine_intelligence_sync') {
-            try {
-                doctrine_refresh_intelligence('scheduler:' . $jobKey);
-            } catch (Throwable) {
-            }
-        }
 
         return $result;
     } catch (Throwable $exception) {
@@ -10820,16 +10831,106 @@ function doctrine_operational_snapshot_build(bool $persistSnapshots = false, str
 function doctrine_operational_snapshot(): array
 {
     return supplycore_cache_aside('doctrine', ['operational-snapshot'], supplycore_cache_ttl('doctrine_summary'), static function (): array {
-        return doctrine_operational_snapshot_build(false, 'cached-read');
+        $snapshot = doctrine_snapshot_cache_payload();
+        if ($snapshot !== null) {
+            return $snapshot;
+        }
+
+        return doctrine_operational_snapshot_build(false, 'cached-read-fallback');
     }, [
         'dependencies' => ['doctrine', 'market_compare', 'killmail_overview'],
         'lock_ttl' => 20,
     ]);
 }
 
+function doctrine_snapshot_setting_key(): string
+{
+    return 'doctrine_intelligence_snapshot_v1';
+}
+
+function doctrine_snapshot_metadata_setting_key(): string
+{
+    return 'doctrine_intelligence_snapshot_meta_v1';
+}
+
+function doctrine_snapshot_cache_payload(): ?array
+{
+    $raw = trim((string) get_setting(doctrine_snapshot_setting_key(), ''));
+    if ($raw === '') {
+        return null;
+    }
+
+    $decoded = json_decode($raw, true);
+    if (!is_array($decoded)) {
+        return null;
+    }
+
+    return [
+        'groups' => array_values((array) ($decoded['groups'] ?? [])),
+        'fits' => array_values((array) ($decoded['fits'] ?? [])),
+        'ungrouped_fits' => array_values((array) ($decoded['ungrouped_fits'] ?? [])),
+        'top_missing_items' => array_values((array) ($decoded['top_missing_items'] ?? [])),
+        'global_layer' => is_array($decoded['global_layer'] ?? null)
+            ? $decoded['global_layer']
+            : ['rows' => [], 'top_restock_items' => []],
+    ];
+}
+
+function doctrine_snapshot_metadata(): array
+{
+    $raw = trim((string) get_setting(doctrine_snapshot_metadata_setting_key(), ''));
+    if ($raw === '') {
+        return [];
+    }
+
+    $decoded = json_decode($raw, true);
+
+    return is_array($decoded) ? $decoded : [];
+}
+
+function doctrine_store_snapshot(array $snapshot, string $reason): bool
+{
+    $meta = [
+        'generated_at' => gmdate(DATE_ATOM),
+        'reason' => $reason,
+        'fit_count' => count((array) ($snapshot['fits'] ?? [])),
+        'group_count' => count((array) ($snapshot['groups'] ?? [])),
+        'top_missing_count' => count((array) ($snapshot['top_missing_items'] ?? [])),
+    ];
+
+    return save_settings([
+        doctrine_snapshot_setting_key() => json_encode($snapshot, JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE),
+        doctrine_snapshot_metadata_setting_key() => json_encode($meta, JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE),
+    ]);
+}
+
+function doctrine_refresh_intelligence_job_result(string $reason = 'manual'): array
+{
+    $snapshot = doctrine_refresh_intelligence($reason);
+    $fitCount = count((array) ($snapshot['fits'] ?? []));
+    $meta = doctrine_snapshot_metadata();
+
+    return sync_result_shape() + [
+        'rows_seen' => $fitCount,
+        'rows_written' => $fitCount,
+        'cursor' => 'doctrine_snapshot:' . gmdate('Y-m-d H:i:s'),
+        'checksum' => sync_checksum([
+            'fit_count' => $fitCount,
+            'generated_at' => (string) ($meta['generated_at'] ?? gmdate(DATE_ATOM)),
+            'reason' => $reason,
+        ]),
+        'meta' => [
+            'outcome_reason' => 'Medium intelligence snapshot refreshed from the latest ingested market, killmail, and doctrine data.',
+            'snapshot_generated_at' => (string) ($meta['generated_at'] ?? ''),
+            'snapshot_reason' => (string) ($meta['reason'] ?? $reason),
+        ],
+    ];
+}
+
 function doctrine_refresh_intelligence(string $reason = 'manual'): array
 {
     $snapshot = doctrine_operational_snapshot_build(true, $reason);
+    doctrine_store_snapshot($snapshot, $reason);
     supplycore_cache_bust(['doctrine', 'dashboard']);
 
     return $snapshot;
@@ -10837,12 +10938,171 @@ function doctrine_refresh_intelligence(string $reason = 'manual'): array
 
 function doctrine_refresh_trigger_job_keys(): array
 {
+    return ['doctrine_intelligence_sync'];
+}
+
+function supplycore_refresh_current_state_cache(string $reason = 'manual'): array
+{
+    supplycore_cache_bust(['dashboard', 'market_compare']);
+
+    $context = market_comparison_context();
+    $outcomes = market_comparison_outcomes();
+    $dashboard = dashboard_intelligence_data();
+    $rows = count((array) ($outcomes['rows'] ?? []));
+    $queues = count((array) ($dashboard['priority_queues']['opportunities'] ?? []))
+        + count((array) ($dashboard['priority_queues']['risks'] ?? []))
+        + count((array) ($dashboard['priority_queues']['missing_items'] ?? []));
+
+    return sync_result_shape() + [
+        'rows_seen' => $rows,
+        'rows_written' => $queues,
+        'cursor' => 'current_state:' . gmdate('Y-m-d H:i:s'),
+        'checksum' => sync_checksum([
+            'reason' => $reason,
+            'reference_hub' => (string) ($context['reference_hub'] ?? ''),
+            'rows' => $rows,
+            'queues' => $queues,
+        ]),
+        'meta' => [
+            'outcome_reason' => 'Fast current-state cache refresh completed without recalculating higher-level recommendations.',
+        ],
+    ];
+}
+
+function supplycore_forecasting_snapshot_setting_key(): string
+{
+    return 'supplycore_forecasting_snapshot_v1';
+}
+
+function supplycore_forecasting_snapshot_metadata_setting_key(): string
+{
+    return 'supplycore_forecasting_snapshot_meta_v1';
+}
+
+function supplycore_forecasting_snapshot(): array
+{
+    $raw = trim((string) get_setting(supplycore_forecasting_snapshot_setting_key(), ''));
+    if ($raw === '') {
+        return [];
+    }
+
+    $decoded = json_decode($raw, true);
+
+    return is_array($decoded) ? $decoded : [];
+}
+
+function supplycore_forecasting_snapshot_store(array $snapshot, string $reason): bool
+{
+    $meta = [
+        'generated_at' => gmdate(DATE_ATOM),
+        'reason' => $reason,
+        'forecast_count' => count((array) ($snapshot['forecast_rows'] ?? [])),
+        'anomaly_count' => count((array) ($snapshot['anomalies'] ?? [])),
+    ];
+
+    return save_settings([
+        supplycore_forecasting_snapshot_setting_key() => json_encode($snapshot, JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE),
+        supplycore_forecasting_snapshot_metadata_setting_key() => json_encode($meta, JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE),
+    ]);
+}
+
+function supplycore_forecasting_snapshot_build(string $reason = 'manual'): array
+{
+    $snapshot = doctrine_snapshot_cache_payload();
+    if ($snapshot === null) {
+        $snapshot = doctrine_refresh_intelligence($reason . ':bootstrap');
+    }
+
+    $fits = array_values((array) ($snapshot['fits'] ?? []));
+    $forecastRows = [];
+    $anomalies = [];
+    $briefings = [];
+    $explanations = [];
+
+    foreach ($fits as $fit) {
+        $fitId = (int) ($fit['id'] ?? 0);
+        $fitName = trim((string) ($fit['fit_name'] ?? ('Fit #' . $fitId)));
+        $supply = is_array($fit['supply'] ?? null) ? $fit['supply'] : [];
+        $gap = max(0, (int) ($supply['gap_to_target_fit_count'] ?? 0));
+        $target = max(0, (int) ($supply['recommended_target_fit_count'] ?? 0));
+        $losses7d = max((int) ($supply['recent_hull_losses_7d'] ?? 0), (int) ($supply['recent_item_fit_losses_7d'] ?? 0));
+        $depletionState = (string) ($supply['depletion_state'] ?? 'stable');
+        $totalScore = (float) (($supply['driver_scores']['total'] ?? 0.0));
+        $restockGap = (float) ($supply['restock_gap_isk'] ?? 0.0);
+        $pressureIndex = round(($gap * 12) + ($losses7d * 4) + ($depletionState === 'draining' ? 15 : 0) + min(35, $totalScore * 0.4), 2);
+
+        $forecastRows[] = [
+            'fit_id' => $fitId,
+            'fit_name' => $fitName,
+            'target_fits' => $target,
+            'fit_gap' => $gap,
+            'losses_7d' => $losses7d,
+            'depletion_state' => $depletionState,
+            'pressure_index' => $pressureIndex,
+            'restock_gap_isk' => $restockGap,
+            'recommended_action' => (string) ($supply['recommendation_text'] ?? 'Observe'),
+        ];
+
+        if ($gap >= 3 || $totalScore >= 70.0 || $depletionState === 'draining') {
+            $anomalies[] = [
+                'fit_id' => $fitId,
+                'fit_name' => $fitName,
+                'signal' => $depletionState === 'draining'
+                    ? 'Depletion is draining faster than the doctrine buffer.'
+                    : ($gap >= 3 ? 'Doctrine target gap has widened materially.' : 'Recommendation pressure score spiked above the normal threshold.'),
+            ];
+        }
+
+        if ($gap > 0 || $restockGap > 0.0) {
+            $briefings[] = [
+                'fit_id' => $fitId,
+                'fit_name' => $fitName,
+                'briefing' => $fitName . ' needs ' . doctrine_format_quantity($gap) . ' more fit'
+                    . ($gap === 1 ? '' : 's')
+                    . ' to reach target, with ' . market_format_isk($restockGap) . ' estimated hub spend.',
+            ];
+        }
+
+        $explanations[] = [
+            'fit_id' => $fitId,
+            'fit_name' => $fitName,
+            'recommendation_code' => (string) ($supply['recommendation_code'] ?? 'observe'),
+            'recommendation_text' => (string) ($supply['recommendation_text'] ?? 'Observe'),
+            'recommendation_explanation' => (string) ($supply['recommendation_explanation'] ?? 'No explanation available.'),
+        ];
+    }
+
+    usort($forecastRows, static fn (array $a, array $b): int => ((float) ($b['pressure_index'] ?? 0.0) <=> (float) ($a['pressure_index'] ?? 0.0)) ?: strcasecmp((string) ($a['fit_name'] ?? ''), (string) ($b['fit_name'] ?? '')));
+    usort($anomalies, static fn (array $a, array $b): int => strcasecmp((string) ($a['fit_name'] ?? ''), (string) ($b['fit_name'] ?? '')));
+    usort($briefings, static fn (array $a, array $b): int => strcasecmp((string) ($a['fit_name'] ?? ''), (string) ($b['fit_name'] ?? '')));
+
     return [
-        'alliance_current_sync',
-        'market_hub_current_sync',
-        'market_hub_local_history_sync',
-        'killmail_r2z2_sync',
-        'doctrine_intelligence_sync',
+        'generated_at' => gmdate(DATE_ATOM),
+        'reason' => $reason,
+        'forecast_rows' => array_slice($forecastRows, 0, 12),
+        'anomalies' => array_slice($anomalies, 0, 12),
+        'briefings' => array_slice($briefings, 0, 8),
+        'recommendation_explanations' => array_slice($explanations, 0, 20),
+    ];
+}
+
+function supplycore_refresh_forecasting_snapshot_job_result(string $reason = 'manual'): array
+{
+    $snapshot = supplycore_forecasting_snapshot_build($reason);
+    supplycore_forecasting_snapshot_store($snapshot, $reason);
+
+    return sync_result_shape() + [
+        'rows_seen' => count((array) ($snapshot['forecast_rows'] ?? [])),
+        'rows_written' => count((array) ($snapshot['briefings'] ?? [])) + count((array) ($snapshot['anomalies'] ?? [])),
+        'cursor' => 'forecasting_snapshot:' . gmdate('Y-m-d H:i:s'),
+        'checksum' => sync_checksum([
+            'generated_at' => (string) ($snapshot['generated_at'] ?? gmdate(DATE_ATOM)),
+            'reason' => $reason,
+            'forecast_rows' => count((array) ($snapshot['forecast_rows'] ?? [])),
+        ]),
+        'meta' => [
+            'outcome_reason' => 'Slow forecasting batch refreshed target-adjustment, anomaly, briefing, and recommendation-explanation views from the latest medium snapshot.',
+        ],
     ];
 }
 

@@ -168,6 +168,10 @@ SupplyCore sync pipelines depend on the `cron` daemon being present and running 
 - Cron is **timer-only**: it triggers `bin/cron_tick.php` once per minute.
 - The scheduler (`bin/cron_tick.php`) decides which jobs are due and dispatches `bin/sync_runner.php`.
 - Interval and enable/disable controls are configured in **Settings → Data Sync** (`/settings?section=data-sync`) via scheduler rows in `sync_schedules`.
+- SupplyCore now separates cadences by workload:
+  - **Fast ingestion**: `killmail_r2z2_sync`, `alliance_current_sync`, `market_hub_current_sync`, and `current_state_refresh_sync` keep raw data and lightweight current-state views fresh.
+  - **Medium intelligence**: `doctrine_intelligence_sync` recomputes snapshot-backed readiness, shortages, opportunities, loss pressure, depletion, and dashboard-facing doctrine summaries on a steadier batch cadence.
+  - **Slow forecasting / AI**: `forecasting_ai_sync` derives slower-moving target-adjustment, anomaly, briefing, and explanation layers from the latest medium snapshot instead of raw minute-by-minute ingestion.
 - The hub-history scheduler jobs (`market_hub_historical_sync` and `market_hub_local_history_sync`) rebuild `market_history_daily` from SupplyCore’s own raw hub-order snapshots stored in MySQL for the configured market hub, using the recent window controlled by `raw_order_snapshot_retention_days` unless a CLI override is supplied.
 - **Trend Snippets** on the dashboard depend on that first-party snapshot history generation.
 - The **Run now** button in Settings → Data Sync includes the Hub Snapshot History job, forces the selected enabled schedule due immediately, and executes one scheduler tick.
@@ -289,7 +293,8 @@ Configure ingestion + tracked alliances/corporations at:
 - Doctrine recalculation persists fit-level history in `doctrine_fit_snapshots`.
 - Each recalculation stores complete-fit availability, target fits, fit gap, bottleneck item, loss pressure, depletion, readiness state, recommendation, and the driver scores behind the decision.
 - The doctrine UI uses those snapshots to explain recommendation changes, target deltas, bottleneck swaps, and trend direction over time.
-- Intended recalculation triggers are doctrine fit changes, market sync completion, killmail sync completion, and the optional scheduler job `doctrine_intelligence_sync`.
+- High-level recommendations are now intentionally **snapshot-based**: fast ingestion updates raw data quickly, while `doctrine_intelligence_sync` refreshes the stable doctrine snapshot on its own medium cadence.
+- Slow forecasting (`forecasting_ai_sync`) reads from the latest stored doctrine snapshot so heavier recommendation explanations and anomaly-style summaries do not thrash on every minute tick.
 
 
 ## Architecture Guidelines

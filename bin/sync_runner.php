@@ -212,10 +212,6 @@ function sync_runner_dispatch_job(string $jobKey, int $sourceId, string $runMode
     if ($jobKey === 'alliance-current') {
         $datasetKey = sync_dataset_key_alliance_structure_orders_current($sourceId);
         $result = sync_alliance_structure_orders($sourceId, $runMode);
-        try {
-            doctrine_refresh_intelligence('sync-runner:alliance-current');
-        } catch (Throwable) {
-        }
 
         return $result + ['dataset_key' => $datasetKey];
     }
@@ -230,10 +226,6 @@ function sync_runner_dispatch_job(string $jobKey, int $sourceId, string $runMode
     if ($jobKey === 'killmail-r2z2') {
         $datasetKey = sync_dataset_key_killmail_r2z2_stream();
         $result = sync_killmail_r2z2_stream($runMode);
-        try {
-            doctrine_refresh_intelligence('sync-runner:killmail-r2z2');
-        } catch (Throwable) {
-        }
 
         return $result + ['dataset_key' => $datasetKey];
     }
@@ -246,10 +238,6 @@ function sync_runner_dispatch_job(string $jobKey, int $sourceId, string $runMode
 
         $datasetKey = sync_dataset_key_market_hub_current_orders($hubRef);
         $result = sync_market_hub_current_orders($hubRef, $runMode);
-        try {
-            doctrine_refresh_intelligence('sync-runner:hub-current');
-        } catch (Throwable) {
-        }
 
         return $result + ['dataset_key' => $datasetKey];
     }
@@ -262,10 +250,6 @@ function sync_runner_dispatch_job(string $jobKey, int $sourceId, string $runMode
 
         $datasetKey = sync_dataset_key_market_hub_local_history_daily($hubRef);
         $result = sync_market_hub_local_history($hubRef, $runMode, $windowDays);
-        try {
-            doctrine_refresh_intelligence('sync-runner:market-hub-local-history');
-        } catch (Throwable) {
-        }
 
         return $result + ['dataset_key' => $datasetKey];
     }
