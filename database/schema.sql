@@ -405,6 +405,7 @@ CREATE TABLE IF NOT EXISTS ref_meta_groups (
 
 CREATE TABLE IF NOT EXISTS ref_item_types (
     type_id INT UNSIGNED PRIMARY KEY,
+    category_id INT UNSIGNED NOT NULL,
     group_id INT UNSIGNED NOT NULL,
     market_group_id INT UNSIGNED DEFAULT NULL,
     meta_group_id INT UNSIGNED DEFAULT NULL,
@@ -414,6 +415,7 @@ CREATE TABLE IF NOT EXISTS ref_item_types (
     volume DECIMAL(20,6) DEFAULT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    KEY idx_category_id (category_id),
     KEY idx_group_id (group_id),
     KEY idx_market_group_id (market_group_id),
     KEY idx_meta_group_id (meta_group_id),
@@ -520,7 +522,10 @@ INSERT INTO app_settings (setting_key, setting_value) VALUES
     ('market_compare_deviation_percent', '5'),
     ('market_compare_min_alliance_sell_volume', '50'),
     ('market_compare_min_alliance_sell_orders', '3'),
-    ('item_scope_mode', 'allow_all'),
+    ('item_scope_mode', 'allow_list'),
+    ('item_scope_operational_category_keys', '["ships","modules","rigs","ammo_charges","drones_fighters","fuel_structures","boosters"]'),
+    ('item_scope_tier_meta_group_ids', '[1,2]'),
+    ('item_scope_noise_filter_keys', '["exclude_commodities_consumer_goods","exclude_civilian_items","exclude_blueprints","exclude_skins","exclude_non_market_mission_items"]'),
     ('item_scope_include_category_ids', '[]'),
     ('item_scope_exclude_category_ids', '[]'),
     ('item_scope_include_group_ids', '[]'),

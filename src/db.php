@@ -1888,7 +1888,7 @@ function db_ref_item_types_bulk_upsert(array $rows, ?int $chunkSize = null): int
 {
     item_scope_db_ensure_schema();
 
-    return db_bulk_insert_or_upsert('ref_item_types', ['type_id', 'group_id', 'market_group_id', 'meta_group_id', 'type_name', 'description', 'published', 'volume'], $rows, ['group_id', 'market_group_id', 'meta_group_id', 'type_name', 'description', 'published', 'volume'], $chunkSize);
+    return db_bulk_insert_or_upsert('ref_item_types', ['type_id', 'category_id', 'group_id', 'market_group_id', 'meta_group_id', 'type_name', 'description', 'published', 'volume'], $rows, ['category_id', 'group_id', 'market_group_id', 'meta_group_id', 'type_name', 'description', 'published', 'volume'], $chunkSize);
 }
 
 function db_ref_item_types_by_ids(array $typeIds): array
@@ -1903,7 +1903,7 @@ function db_ref_item_types_by_ids(array $typeIds): array
     $placeholders = implode(',', array_fill(0, count($ids), '?'));
 
     return db_select(
-        "SELECT type_id, type_name, group_id, market_group_id, meta_group_id, description, published, volume
+        "SELECT type_id, type_name, category_id, group_id, market_group_id, meta_group_id, description, published, volume
          FROM ref_item_types
          WHERE type_id IN ($placeholders)",
         $ids
@@ -2656,7 +2656,7 @@ function db_ref_item_types_by_names(array $names): array
     $placeholders = implode(',', array_fill(0, count($safeNames), '?'));
 
     return db_select(
-        "SELECT type_id, type_name, group_id, market_group_id, meta_group_id, description, published, volume
+        "SELECT type_id, type_name, category_id, group_id, market_group_id, meta_group_id, description, published, volume
          FROM ref_item_types
          WHERE LOWER(type_name) IN ($placeholders)",
         array_map(static fn (string $name): string => mb_strtolower($name), $safeNames)
@@ -2678,9 +2678,9 @@ function db_ref_item_scope_metadata_by_ids(array $typeIds): array
         "SELECT
             rit.type_id,
             rit.type_name,
+            COALESCE(rit.category_id, rig.category_id) AS category_id,
             rit.group_id,
             rig.group_name,
-            rig.category_id,
             ric.category_name,
             rit.market_group_id,
             rmg.market_group_name,
@@ -2691,7 +2691,7 @@ function db_ref_item_scope_metadata_by_ids(array $typeIds): array
             rit.volume
          FROM ref_item_types rit
          LEFT JOIN ref_item_groups rig ON rig.group_id = rit.group_id
-         LEFT JOIN ref_item_categories ric ON ric.category_id = rig.category_id
+         LEFT JOIN ref_item_categories ric ON ric.category_id = COALESCE(rit.category_id, rig.category_id)
          LEFT JOIN ref_market_groups rmg ON rmg.market_group_id = rit.market_group_id
          LEFT JOIN ref_meta_groups rmeta ON rmeta.meta_group_id = rit.meta_group_id
          WHERE rit.type_id IN ($placeholders)",
@@ -2865,6 +2865,13 @@ function item_scope_db_ensure_schema(): void
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4'
     );
+
+    if (db_table_exists('ref_item_types') && !db_column_exists('ref_item_types', 'category_id')) {
+        db()->exec('ALTER TABLE ref_item_types ADD COLUMN category_id INT UNSIGNED DEFAULT NULL AFTER type_id');
+        db()->exec('UPDATE ref_item_types rit INNER JOIN ref_item_groups rig ON rig.group_id = rit.group_id SET rit.category_id = rig.category_id WHERE rit.category_id IS NULL');
+        db()->exec('ALTER TABLE ref_item_types MODIFY COLUMN category_id INT UNSIGNED NOT NULL');
+        db()->exec('ALTER TABLE ref_item_types ADD KEY idx_category_id (category_id)');
+    }
 
     if (db_table_exists('ref_item_types') && !db_column_exists('ref_item_types', 'meta_group_id')) {
         db()->exec('ALTER TABLE ref_item_types ADD COLUMN meta_group_id INT UNSIGNED DEFAULT NULL AFTER market_group_id');

@@ -516,6 +516,9 @@ include __DIR__ . '/../../src/views/partials/header.php';
                 $itemScopeConfig = $itemScope['config'] ?? item_scope_default_config();
                 $itemScopeCatalog = $itemScope['catalog'] ?? ['categories' => [], 'groups' => [], 'market_groups' => [], 'meta_groups' => []];
                 $itemScopeStats = $itemScope['stats'] ?? ['published_count' => 0, 'in_scope_count' => 0, 'excluded_count' => 0];
+                $operationalRows = $itemScope['operational_rows'] ?? [];
+                $tierRows = $itemScope['tier_rows'] ?? [];
+                $noiseRows = $itemScope['noise_rows'] ?? [];
                 $includeOverridesText = implode("\n", array_map(
                     static fn (array $row): string => (string) ((int) ($row['type_id'] ?? 0)) . ' | ' . (string) ($row['type_name'] ?? ('Type #' . (int) ($row['type_id'] ?? 0))),
                     (array) (($itemScope['override_rows']['include'] ?? []))
@@ -529,22 +532,22 @@ include __DIR__ . '/../../src/views/partials/header.php';
                 <div class="rounded-2xl border border-white/8 bg-white/[0.03] p-4">
                     <p class="text-xs uppercase tracking-[0.16em] text-muted">Published Types</p>
                     <p class="mt-2 text-2xl font-semibold text-slate-50"><?= number_format((int) ($itemScopeStats['published_count'] ?? 0)) ?></p>
-                    <p class="mt-1 text-sm text-muted">Local reference items available for scope evaluation.</p>
+                    <p class="mt-1 text-sm text-muted">Reference inventory available to the shared item-scope service.</p>
                 </div>
                 <div class="rounded-2xl border border-emerald-500/20 bg-emerald-500/10 p-4">
                     <p class="text-xs uppercase tracking-[0.16em] text-emerald-200/80">Currently In Scope</p>
                     <p class="mt-2 text-2xl font-semibold text-emerald-100"><?= number_format((int) ($itemScopeStats['in_scope_count'] ?? 0)) ?></p>
-                    <p class="mt-1 text-sm text-emerald-100/70">Used by market comparison, doctrine readiness, and loss-demand signals.</p>
+                    <p class="mt-1 text-sm text-emerald-100/70">Shared across doctrine readiness, market gaps, dashboard summaries, and killmail demand.</p>
                 </div>
                 <div class="rounded-2xl border border-amber-500/20 bg-amber-500/10 p-4">
                     <p class="text-xs uppercase tracking-[0.16em] text-amber-200/80">Filtered Out</p>
                     <p class="mt-2 text-2xl font-semibold text-amber-100"><?= number_format((int) ($itemScopeStats['excluded_count'] ?? 0)) ?></p>
-                    <p class="mt-1 text-sm text-amber-100/70">Ignored unless re-enabled by explicit item override.</p>
+                    <p class="mt-1 text-sm text-amber-100/70">Removed by the operational allow-list, tier controls, noise filters, or explicit overrides.</p>
                 </div>
             </div>
 
             <div class="mt-6 rounded-2xl border border-white/8 bg-white/[0.03] p-4">
-                <h3 class="text-sm font-semibold text-slate-100">Current Rule Summary</h3>
+                <h3 class="text-sm font-semibold text-slate-100">Operational Summary</h3>
                 <ul class="mt-3 space-y-2 text-sm text-muted">
                     <?php foreach ((array) ($itemScope['summary_lines'] ?? []) as $line): ?>
                         <li>• <?= htmlspecialchars((string) $line, ENT_QUOTES) ?></li>
@@ -556,106 +559,181 @@ include __DIR__ . '/../../src/views/partials/header.php';
                 <input type="hidden" name="_token" value="<?= htmlspecialchars(csrf_token(), ENT_QUOTES) ?>">
                 <input type="hidden" name="section" value="item-scope">
 
-                <div class="grid gap-4 lg:grid-cols-2">
+                <div class="grid gap-4 lg:grid-cols-[minmax(0,1.2fr)_minmax(0,0.8fr)]">
                     <label class="rounded-2xl border border-white/8 bg-white/[0.03] p-4">
                         <span class="text-sm font-medium text-slate-100">Scope Mode</span>
                         <select name="item_scope_mode" class="mt-3 w-full field-input">
-                            <option value="allow_all" <?= ($itemScopeConfig['mode'] ?? 'allow_all') === 'allow_all' ? 'selected' : '' ?>>Allow all published items, then exclude noise</option>
-                            <option value="allow_list" <?= ($itemScopeConfig['mode'] ?? 'allow_all') === 'allow_list' ? 'selected' : '' ?>>Only include selected classes</option>
+                            <option value="allow_list" <?= ($itemScopeConfig['mode'] ?? 'allow_list') === 'allow_list' ? 'selected' : '' ?>>Alliance logistics allow-list</option>
+                            <option value="allow_all" <?= ($itemScopeConfig['mode'] ?? 'allow_list') === 'allow_all' ? 'selected' : '' ?>>Allow all published items, then apply shared exclusions</option>
                         </select>
-                        <p class="mt-2 text-xs text-muted">If you choose opt-in mode, an item must match at least one broad include rule unless it is explicitly re-enabled by override.</p>
+                        <p class="mt-2 text-xs text-muted">Allow-list mode is the recommended default: it keeps the scope centered on operational categories instead of the full SDE universe.</p>
                     </label>
 
                     <div class="rounded-2xl border border-white/8 bg-white/[0.03] p-4 text-sm text-muted">
                         <p class="font-medium text-slate-100">Rule precedence</p>
-                        <ol class="mt-3 space-y-2 list-decimal pl-5">
-                            <li>Explicit item overrides win.</li>
-                            <li>Broad excludes remove matching categories, groups, market groups, or meta groups.</li>
-                            <li>Broad includes add matching items when scope mode is opt-in or when you want to re-focus the operational universe.</li>
+                        <ol class="mt-3 list-decimal space-y-2 pl-5">
+                            <li>Explicit item overrides always win.</li>
+                            <li>Noise filters and advanced excludes remove unwanted inventory before it reaches downstream analytics.</li>
+                            <li>Operational categories and advanced includes define the baseline logistics universe in allow-list mode.</li>
+                            <li>Tier toggles use metaGroupID so doctrine-safe tiers can be curated without using raw meta levels.</li>
                         </ol>
+                    </div>
+                </div>
+
+                <div class="rounded-2xl border border-cyan-500/20 bg-cyan-500/10 p-5">
+                    <div class="flex flex-col gap-2 md:flex-row md:items-end md:justify-between">
+                        <div>
+                            <h3 class="text-sm font-semibold text-cyan-100">Operational categories</h3>
+                            <p class="mt-1 text-xs text-cyan-100/70">High-level alliance logistics buckets mapped from categoryID first, then refined with group and market taxonomy only where needed.</p>
+                        </div>
+                        <p class="text-xs text-cyan-100/60">Default profile surfaces doctrine-ready ships, modules, rigs, charges, drones, structure fuel, and boosters.</p>
+                    </div>
+                    <div class="mt-4 grid gap-3 xl:grid-cols-2">
+                        <?php foreach ((array) $operationalRows as $row): ?>
+                            <?php $rowKey = (string) ($row['key'] ?? ''); ?>
+                            <?php if ($rowKey === '') { continue; } ?>
+                            <label class="flex items-start gap-3 rounded-2xl border border-cyan-400/15 bg-black/20 p-4 text-sm text-cyan-50">
+                                <input type="checkbox" name="item_scope_operational_category_keys[]" value="<?= htmlspecialchars($rowKey, ENT_QUOTES) ?>" class="mt-1" <?= !empty($row['selected']) ? 'checked' : '' ?>>
+                                <span class="block min-w-0 flex-1">
+                                    <span class="flex items-center gap-2">
+                                        <span class="font-medium"><?= htmlspecialchars((string) ($row['label'] ?? $rowKey), ENT_QUOTES) ?></span>
+                                        <?php if (!empty($row['default'])): ?>
+                                            <span class="rounded-full border border-cyan-300/30 bg-cyan-400/10 px-2 py-0.5 text-[10px] uppercase tracking-[0.2em] text-cyan-100/70">Default</span>
+                                        <?php endif; ?>
+                                    </span>
+                                    <span class="mt-1 block text-xs text-cyan-100/70"><?= htmlspecialchars((string) ($row['description'] ?? ''), ENT_QUOTES) ?></span>
+                                    <span class="mt-2 block text-xs text-cyan-100/60"><?= number_format((int) ($row['type_count'] ?? 0)) ?> published types currently map here</span>
+                                </span>
+                            </label>
+                        <?php endforeach; ?>
                     </div>
                 </div>
 
                 <div class="grid gap-4 xl:grid-cols-2">
                     <div class="rounded-2xl border border-emerald-500/20 bg-emerald-500/10 p-4">
-                        <h3 class="text-sm font-semibold text-emerald-100">Broad include rules</h3>
-                        <p class="mt-1 text-xs text-emerald-100/70">Use these when you want to focus SupplyCore on doctrine-safe or alliance-relevant item classes.</p>
-                        <div class="mt-4 grid gap-4">
-                            <?php
-                                $includeSections = [
-                                    'item_scope_include_meta_group_ids' => ['title' => 'Meta / tech tier', 'rows' => $itemScopeCatalog['meta_groups'] ?? [], 'id' => 'meta_group_id', 'label' => 'meta_group_name', 'count' => 'type_count'],
-                                    'item_scope_include_category_ids' => ['title' => 'Categories', 'rows' => $itemScopeCatalog['categories'] ?? [], 'id' => 'category_id', 'label' => 'category_name', 'count' => 'type_count'],
-                                    'item_scope_include_group_ids' => ['title' => 'Groups', 'rows' => $itemScopeCatalog['groups'] ?? [], 'id' => 'group_id', 'label' => 'group_name', 'count' => 'type_count'],
-                                    'item_scope_include_market_group_ids' => ['title' => 'Market groups', 'rows' => $itemScopeCatalog['market_groups'] ?? [], 'id' => 'market_group_id', 'label' => 'market_group_name', 'count' => 'type_count'],
-                                ];
-                            ?>
-                            <?php foreach ($includeSections as $fieldName => $meta): ?>
-                                <div>
-                                    <p class="text-xs uppercase tracking-[0.16em] text-emerald-100/70"><?= htmlspecialchars((string) $meta['title'], ENT_QUOTES) ?></p>
-                                    <div class="mt-2 max-h-48 space-y-2 overflow-y-auto rounded-xl border border-emerald-400/15 bg-black/20 p-3">
-                                        <?php foreach ((array) $meta['rows'] as $row): ?>
-                                            <?php $rowId = (int) ($row[$meta['id']] ?? 0); ?>
-                                            <?php if ($rowId <= 0) { continue; } ?>
-                                            <label class="flex items-start gap-3 text-sm text-emerald-50">
-                                                <input type="checkbox" name="<?= htmlspecialchars($fieldName, ENT_QUOTES) ?>[]" value="<?= $rowId ?>" class="mt-1" <?= in_array($rowId, (array) ($itemScopeConfig[str_replace('item_scope_', '', $fieldName)] ?? []), true) ? 'checked' : '' ?>>
-                                                <span>
-                                                    <span class="block"><?= htmlspecialchars((string) ($row[$meta['label']] ?? ('#' . $rowId)), ENT_QUOTES) ?></span>
-                                                    <span class="text-xs text-emerald-100/60"><?= number_format((int) ($row[$meta['count']] ?? 0)) ?> published types</span>
-                                                </span>
-                                            </label>
-                                        <?php endforeach; ?>
-                                    </div>
-                                </div>
+                        <h3 class="text-sm font-semibold text-emerald-100">Tier filtering</h3>
+                        <p class="mt-1 text-xs text-emerald-100/70">Simple metaGroupID toggles for alliance-ready tiers. Tech I and Tech II are enabled by default; Deadspace and Officer stay off unless explicitly enabled.</p>
+                        <div class="mt-4 grid gap-3">
+                            <?php foreach ((array) $tierRows as $row): ?>
+                                <?php $tierId = (int) ($row['meta_group_id'] ?? 0); ?>
+                                <?php if ($tierId <= 0) { continue; } ?>
+                                <label class="flex items-start gap-3 rounded-xl border border-emerald-400/15 bg-black/20 p-3 text-sm text-emerald-50">
+                                    <input type="checkbox" name="item_scope_tier_meta_group_ids[]" value="<?= $tierId ?>" class="mt-1" <?= !empty($row['selected']) ? 'checked' : '' ?>>
+                                    <span>
+                                        <span class="block font-medium"><?= htmlspecialchars((string) ($row['meta_group_name'] ?? ('Meta Group #' . $tierId)), ENT_QUOTES) ?></span>
+                                        <span class="text-xs text-emerald-100/60"><?= number_format((int) ($row['type_count'] ?? 0)) ?> published types with this meta group</span>
+                                    </span>
+                                </label>
                             <?php endforeach; ?>
                         </div>
                     </div>
 
                     <div class="rounded-2xl border border-rose-500/20 bg-rose-500/10 p-4">
-                        <h3 class="text-sm font-semibold text-rose-100">Broad exclude rules</h3>
-                        <p class="mt-1 text-xs text-rose-100/70">Use these to remove consumer goods, officer modules, deadspace tiers, or any other noise from downstream analytics.</p>
-                        <div class="mt-4 grid gap-4">
-                            <?php
-                                $excludeSections = [
-                                    'item_scope_exclude_meta_group_ids' => ['title' => 'Meta / tech tier', 'rows' => $itemScopeCatalog['meta_groups'] ?? [], 'id' => 'meta_group_id', 'label' => 'meta_group_name', 'count' => 'type_count'],
-                                    'item_scope_exclude_category_ids' => ['title' => 'Categories', 'rows' => $itemScopeCatalog['categories'] ?? [], 'id' => 'category_id', 'label' => 'category_name', 'count' => 'type_count'],
-                                    'item_scope_exclude_group_ids' => ['title' => 'Groups', 'rows' => $itemScopeCatalog['groups'] ?? [], 'id' => 'group_id', 'label' => 'group_name', 'count' => 'type_count'],
-                                    'item_scope_exclude_market_group_ids' => ['title' => 'Market groups', 'rows' => $itemScopeCatalog['market_groups'] ?? [], 'id' => 'market_group_id', 'label' => 'market_group_name', 'count' => 'type_count'],
-                                ];
-                            ?>
-                            <?php foreach ($excludeSections as $fieldName => $meta): ?>
-                                <div>
-                                    <p class="text-xs uppercase tracking-[0.16em] text-rose-100/70"><?= htmlspecialchars((string) $meta['title'], ENT_QUOTES) ?></p>
-                                    <div class="mt-2 max-h-48 space-y-2 overflow-y-auto rounded-xl border border-rose-400/15 bg-black/20 p-3">
-                                        <?php foreach ((array) $meta['rows'] as $row): ?>
-                                            <?php $rowId = (int) ($row[$meta['id']] ?? 0); ?>
-                                            <?php if ($rowId <= 0) { continue; } ?>
-                                            <label class="flex items-start gap-3 text-sm text-rose-50">
-                                                <input type="checkbox" name="<?= htmlspecialchars($fieldName, ENT_QUOTES) ?>[]" value="<?= $rowId ?>" class="mt-1" <?= in_array($rowId, (array) ($itemScopeConfig[str_replace('item_scope_', '', $fieldName)] ?? []), true) ? 'checked' : '' ?>>
-                                                <span>
-                                                    <span class="block"><?= htmlspecialchars((string) ($row[$meta['label']] ?? ('#' . $rowId)), ENT_QUOTES) ?></span>
-                                                    <span class="text-xs text-rose-100/60"><?= number_format((int) ($row[$meta['count']] ?? 0)) ?> published types</span>
-                                                </span>
-                                            </label>
-                                        <?php endforeach; ?>
-                                    </div>
-                                </div>
+                        <h3 class="text-sm font-semibold text-rose-100">Noise filters</h3>
+                        <p class="mt-1 text-xs text-rose-100/70">Shared exclusions applied before market, doctrine, and loss-demand analytics are evaluated.</p>
+                        <div class="mt-4 grid gap-3">
+                            <?php foreach ((array) $noiseRows as $row): ?>
+                                <?php $rowKey = (string) ($row['key'] ?? ''); ?>
+                                <?php if ($rowKey === '') { continue; } ?>
+                                <label class="flex items-start gap-3 rounded-xl border border-rose-400/15 bg-black/20 p-3 text-sm text-rose-50">
+                                    <input type="checkbox" name="item_scope_noise_filter_keys[]" value="<?= htmlspecialchars($rowKey, ENT_QUOTES) ?>" class="mt-1" <?= !empty($row['selected']) ? 'checked' : '' ?>>
+                                    <span>
+                                        <span class="flex items-center gap-2">
+                                            <span class="font-medium"><?= htmlspecialchars((string) ($row['label'] ?? $rowKey), ENT_QUOTES) ?></span>
+                                            <?php if (!empty($row['default'])): ?>
+                                                <span class="rounded-full border border-rose-300/30 bg-rose-400/10 px-2 py-0.5 text-[10px] uppercase tracking-[0.2em] text-rose-100/70">Default</span>
+                                            <?php endif; ?>
+                                        </span>
+                                        <span class="mt-1 block text-xs text-rose-100/70"><?= htmlspecialchars((string) ($row['description'] ?? ''), ENT_QUOTES) ?></span>
+                                        <span class="mt-2 block text-xs text-rose-100/60"><?= number_format((int) ($row['type_count'] ?? 0)) ?> published types currently match this filter</span>
+                                    </span>
+                                </label>
                             <?php endforeach; ?>
                         </div>
                     </div>
                 </div>
 
-                <div class="grid gap-4 xl:grid-cols-2">
-                    <label class="rounded-2xl border border-white/8 bg-white/[0.03] p-4">
-                        <span class="text-sm font-semibold text-slate-100">Explicit include overrides</span>
-                        <textarea name="item_scope_include_overrides" rows="8" class="mt-3 w-full field-input font-mono" placeholder="Exact item name or numeric type ID per line"><?= htmlspecialchars($includeOverridesText, ENT_QUOTES) ?></textarea>
-                        <p class="mt-2 text-xs text-muted">Use this when an item should stay in scope even if a broader exclude rule would normally remove it.</p>
-                    </label>
-                    <label class="rounded-2xl border border-white/8 bg-white/[0.03] p-4">
-                        <span class="text-sm font-semibold text-slate-100">Explicit exclude overrides</span>
-                        <textarea name="item_scope_exclude_overrides" rows="8" class="mt-3 w-full field-input font-mono" placeholder="Exact item name or numeric type ID per line"><?= htmlspecialchars($excludeOverridesText, ENT_QUOTES) ?></textarea>
-                        <p class="mt-2 text-xs text-muted">Use this when one item should be suppressed even though its wider category or tier remains enabled.</p>
-                    </label>
-                </div>
+                <details class="rounded-2xl border border-white/8 bg-white/[0.03] p-4">
+                    <summary class="cursor-pointer list-none text-sm font-semibold text-slate-100">Advanced mode</summary>
+                    <p class="mt-2 text-xs text-muted">Advanced controls stay hidden by default. Use them only when you need group-level or market-group-level exceptions beyond the curated operational model.</p>
+
+                    <div class="mt-4 grid gap-4 xl:grid-cols-2">
+                        <div class="rounded-2xl border border-emerald-500/20 bg-emerald-500/10 p-4">
+                            <h4 class="text-sm font-semibold text-emerald-100">Advanced include rules</h4>
+                            <p class="mt-1 text-xs text-emerald-100/70">Use these to extend the operational universe with specific groups or market branches.</p>
+                            <div class="mt-4 grid gap-4">
+                                <?php
+                                    $advancedIncludeSections = [
+                                        'item_scope_include_group_ids' => ['title' => 'Groups', 'rows' => $itemScopeCatalog['groups'] ?? [], 'id' => 'group_id', 'label' => 'group_name', 'count' => 'type_count'],
+                                        'item_scope_include_market_group_ids' => ['title' => 'Market groups', 'rows' => $itemScopeCatalog['market_groups'] ?? [], 'id' => 'market_group_id', 'label' => 'market_group_name', 'count' => 'type_count'],
+                                    ];
+                                ?>
+                                <?php foreach ($advancedIncludeSections as $fieldName => $meta): ?>
+                                    <div>
+                                        <p class="text-xs uppercase tracking-[0.16em] text-emerald-100/70"><?= htmlspecialchars((string) $meta['title'], ENT_QUOTES) ?></p>
+                                        <div class="mt-2 max-h-56 space-y-2 overflow-y-auto rounded-xl border border-emerald-400/15 bg-black/20 p-3">
+                                            <?php foreach ((array) $meta['rows'] as $row): ?>
+                                                <?php $rowId = (int) ($row[$meta['id']] ?? 0); ?>
+                                                <?php if ($rowId <= 0) { continue; } ?>
+                                                <label class="flex items-start gap-3 text-sm text-emerald-50">
+                                                    <input type="checkbox" name="<?= htmlspecialchars($fieldName, ENT_QUOTES) ?>[]" value="<?= $rowId ?>" class="mt-1" <?= in_array($rowId, (array) ($itemScopeConfig[str_replace('item_scope_', '', $fieldName)] ?? []), true) ? 'checked' : '' ?>>
+                                                    <span>
+                                                        <span class="block"><?= htmlspecialchars((string) ($row[$meta['label']] ?? ('#' . $rowId)), ENT_QUOTES) ?></span>
+                                                        <span class="text-xs text-emerald-100/60"><?= number_format((int) ($row[$meta['count']] ?? 0)) ?> published types</span>
+                                                    </span>
+                                                </label>
+                                            <?php endforeach; ?>
+                                        </div>
+                                    </div>
+                                <?php endforeach; ?>
+                            </div>
+                        </div>
+
+                        <div class="rounded-2xl border border-rose-500/20 bg-rose-500/10 p-4">
+                            <h4 class="text-sm font-semibold text-rose-100">Advanced exclude rules</h4>
+                            <p class="mt-1 text-xs text-rose-100/70">Use these to carve out specific problem groups or market branches after the shared defaults have done most of the work.</p>
+                            <div class="mt-4 grid gap-4">
+                                <?php
+                                    $advancedExcludeSections = [
+                                        'item_scope_exclude_group_ids' => ['title' => 'Groups', 'rows' => $itemScopeCatalog['groups'] ?? [], 'id' => 'group_id', 'label' => 'group_name', 'count' => 'type_count'],
+                                        'item_scope_exclude_market_group_ids' => ['title' => 'Market groups', 'rows' => $itemScopeCatalog['market_groups'] ?? [], 'id' => 'market_group_id', 'label' => 'market_group_name', 'count' => 'type_count'],
+                                    ];
+                                ?>
+                                <?php foreach ($advancedExcludeSections as $fieldName => $meta): ?>
+                                    <div>
+                                        <p class="text-xs uppercase tracking-[0.16em] text-rose-100/70"><?= htmlspecialchars((string) $meta['title'], ENT_QUOTES) ?></p>
+                                        <div class="mt-2 max-h-56 space-y-2 overflow-y-auto rounded-xl border border-rose-400/15 bg-black/20 p-3">
+                                            <?php foreach ((array) $meta['rows'] as $row): ?>
+                                                <?php $rowId = (int) ($row[$meta['id']] ?? 0); ?>
+                                                <?php if ($rowId <= 0) { continue; } ?>
+                                                <label class="flex items-start gap-3 text-sm text-rose-50">
+                                                    <input type="checkbox" name="<?= htmlspecialchars($fieldName, ENT_QUOTES) ?>[]" value="<?= $rowId ?>" class="mt-1" <?= in_array($rowId, (array) ($itemScopeConfig[str_replace('item_scope_', '', $fieldName)] ?? []), true) ? 'checked' : '' ?>>
+                                                    <span>
+                                                        <span class="block"><?= htmlspecialchars((string) ($row[$meta['label']] ?? ('#' . $rowId)), ENT_QUOTES) ?></span>
+                                                        <span class="text-xs text-rose-100/60"><?= number_format((int) ($row[$meta['count']] ?? 0)) ?> published types</span>
+                                                    </span>
+                                                </label>
+                                            <?php endforeach; ?>
+                                        </div>
+                                    </div>
+                                <?php endforeach; ?>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="mt-4 grid gap-4 xl:grid-cols-2">
+                        <label class="rounded-2xl border border-white/8 bg-black/20 p-4">
+                            <span class="text-sm font-semibold text-slate-100">Explicit include overrides</span>
+                            <textarea name="item_scope_include_overrides" rows="8" class="mt-3 w-full field-input font-mono" placeholder="Exact item name or numeric type ID per line"><?= htmlspecialchars($includeOverridesText, ENT_QUOTES) ?></textarea>
+                            <p class="mt-2 text-xs text-muted">Use this when one item must remain visible even if broader rules would remove it.</p>
+                        </label>
+                        <label class="rounded-2xl border border-white/8 bg-black/20 p-4">
+                            <span class="text-sm font-semibold text-slate-100">Explicit exclude overrides</span>
+                            <textarea name="item_scope_exclude_overrides" rows="8" class="mt-3 w-full field-input font-mono" placeholder="Exact item name or numeric type ID per line"><?= htmlspecialchars($excludeOverridesText, ENT_QUOTES) ?></textarea>
+                            <p class="mt-2 text-xs text-muted">Use this when one item should stay suppressed even though its category or group remains enabled.</p>
+                        </label>
+                    </div>
+                </details>
 
                 <button class="btn-primary">Save Item Scope</button>
             </form>
