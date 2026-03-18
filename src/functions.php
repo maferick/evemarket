@@ -3564,21 +3564,51 @@ function killmail_loss_item_groups(array $items, array $resolvedEntities = []): 
     return $groups;
 }
 
-function killmail_doctrine_impact_severity(int $matchedFitCount, int $matchedPrimaryLineCount, bool $matchedHull): array
+
+function killmail_doctrine_impact_confidence(int $matchedItemCount, int $matchedFitCount, bool $matchedHull): array
 {
-    $score = $matchedPrimaryLineCount + ($matchedHull ? 2 : 0) + max(0, $matchedFitCount - 1);
+    $score = $matchedItemCount + min(2, max(0, $matchedFitCount - 1)) + ($matchedHull ? 1 : 0);
     $level = 'low';
     $label = 'Low';
     $tone = 'border-sky-500/40 bg-sky-500/10 text-sky-100';
 
-    if ($score >= 6) {
+    if ($score >= 5) {
         $level = 'high';
         $label = 'High';
-        $tone = 'border-red-500/40 bg-red-500/10 text-red-100';
+        $tone = 'border-emerald-500/40 bg-emerald-500/10 text-emerald-100';
     } elseif ($score >= 3) {
         $level = 'medium';
         $label = 'Medium';
         $tone = 'border-amber-500/40 bg-amber-500/10 text-amber-100';
+    }
+
+    return [
+        'level' => $level,
+        'label' => $label,
+        'tone' => $tone,
+        'score' => $score,
+    ];
+}
+
+function killmail_doctrine_impact_severity(int $matchedGroupCount, int $matchedMeaningfulItemCount, bool $matchedHull): array
+{
+    $score = ($matchedGroupCount * 2) + $matchedMeaningfulItemCount + ($matchedHull ? 2 : 0);
+    $level = 'weak';
+    $label = 'Weak';
+    $tone = 'border-sky-500/40 bg-sky-500/10 text-sky-100';
+
+    if ($score >= 9) {
+        $level = 'strong';
+        $label = 'Strong';
+        $tone = 'border-red-500/40 bg-red-500/10 text-red-100';
+    } elseif ($score >= 6) {
+        $level = 'likely';
+        $label = 'Likely';
+        $tone = 'border-amber-500/40 bg-amber-500/10 text-amber-100';
+    } elseif ($score >= 3) {
+        $level = 'possible';
+        $label = 'Possible';
+        $tone = 'border-cyan-500/40 bg-cyan-500/10 text-cyan-100';
     }
 
     return [
@@ -3800,13 +3830,18 @@ function killmail_doctrine_impact(array $event, array $items, array $resolvedEnt
         }
     }
 
-    $matchedFits = [];
+    $matchedFitsById = [];
     $matchedGroups = [];
-    $matchedItemNames = [];
     $matchedPrimaryTypeIds = [];
     $matchedSecondaryTypeIds = [];
+    $matchedItemsByTypeId = [];
 
     foreach ((array) ($catalog['fits'] ?? []) as $fit) {
+        $fitId = (int) ($fit['id'] ?? 0);
+        if ($fitId <= 0) {
+            continue;
+        }
+
         $fitPrimaryIntersection = array_values(array_intersect(
             array_keys($primaryVictimTypeIds),
             (array) ($fit['durable_type_ids'] ?? [])
@@ -3822,45 +3857,82 @@ function killmail_doctrine_impact(array $event, array $items, array $resolvedEnt
         $matchedPrimaryItems = [];
         foreach ($fitPrimaryIntersection as $typeId) {
             $typeId = (int) $typeId;
+            if ($typeId <= 0) {
+                continue;
+            }
+
             $matchedPrimaryTypeIds[$typeId] = true;
             $fitItem = (array) (($fit['durable_items_by_type_id'][$typeId] ?? []));
             $victimItem = (array) ($victimRowsByTypeId[$typeId] ?? []);
-            $itemName = (string) (($fitItem['item_name'] ?? null) ?: ($victimItem['item_name'] ?? ('Type #' . $typeId)));
-            $matchedItemNames[$itemName] = true;
-            $matchedPrimaryItems[] = [
+            $itemName = trim((string) (($fitItem['item_name'] ?? null) ?: ($victimItem['item_name'] ?? ('Type #' . $typeId))));
+            $slotCategory = (string) ($fitItem['slot_category'] ?? '');
+            $matchedPrimaryItems[$typeId] = [
                 'type_id' => $typeId,
-                'item_name' => $itemName,
-                'slot_category' => (string) ($fitItem['slot_category'] ?? ''),
+                'item_name' => $itemName !== '' ? $itemName : ('Type #' . $typeId),
+                'slot_category' => $slotCategory,
                 'victim_state_label' => (string) ($victimItem['state_label'] ?? ''),
+                'is_hull' => $typeId === $victimShipTypeId,
             ];
         }
 
         $matchedSecondaryItems = [];
         foreach ($fitSecondaryIntersection as $typeId) {
             $typeId = (int) $typeId;
+            if ($typeId <= 0) {
+                continue;
+            }
+
             $matchedSecondaryTypeIds[$typeId] = true;
             $fitItem = (array) (($fit['consumable_items_by_type_id'][$typeId] ?? []));
             $victimItem = (array) ($victimRowsByTypeId[$typeId] ?? []);
-            $matchedSecondaryItems[] = [
+            $matchedSecondaryItems[$typeId] = [
                 'type_id' => $typeId,
                 'item_name' => (string) (($fitItem['item_name'] ?? null) ?: ($victimItem['item_name'] ?? ('Type #' . $typeId))),
                 'victim_state_label' => (string) ($victimItem['state_label'] ?? ''),
             ];
         }
 
-        $matchedFits[] = [
-            'id' => (int) ($fit['id'] ?? 0),
+        ksort($matchedPrimaryItems);
+        ksort($matchedSecondaryItems);
+
+        $matchedFitsById[$fitId] = [
+            'id' => $fitId,
             'fit_name' => (string) ($fit['fit_name'] ?? 'Doctrine fit'),
             'ship_name' => (string) (($fit['ship_name'] ?? '') !== '' ? $fit['ship_name'] : ($fit['fit_name'] ?? 'Doctrine fit')),
             'ship_image_url' => $fit['ship_image_url'] ?? null,
-            'group_names' => array_values((array) ($fit['group_names'] ?? [])),
-            'matched_primary_items' => $matchedPrimaryItems,
-            'matched_secondary_items' => $matchedSecondaryItems,
+            'group_names' => array_values(array_filter(array_map(static fn ($value): string => trim((string) $value), (array) ($fit['group_names'] ?? [])), static fn (string $value): bool => $value !== '')),
+            'matched_primary_items' => array_values($matchedPrimaryItems),
+            'matched_secondary_items' => array_values($matchedSecondaryItems),
             'matched_primary_line_count' => count($matchedPrimaryItems),
             'matched_secondary_line_count' => count($matchedSecondaryItems),
         ];
 
-        foreach ((array) ($fit['group_names'] ?? []) as $groupName) {
+        $fitGroupNames = $matchedFitsById[$fitId]['group_names'];
+        if ($fitGroupNames === []) {
+            $fitGroupNames = ['Ungrouped'];
+            $matchedFitsById[$fitId]['group_names'] = $fitGroupNames;
+        }
+
+        foreach ($matchedPrimaryItems as $typeId => $matchedItem) {
+            $typeId = (int) $typeId;
+            $matchedItemsByTypeId[$typeId] ??= [
+                'type_id' => $typeId,
+                'item_name' => (string) ($matchedItem['item_name'] ?? ('Type #' . $typeId)),
+                'slot_category' => (string) ($matchedItem['slot_category'] ?? ''),
+                'victim_state_label' => (string) ($matchedItem['victim_state_label'] ?? ''),
+                'is_hull' => (bool) ($matchedItem['is_hull'] ?? false),
+                'fit_ids' => [],
+                'fit_names' => [],
+                'group_names' => [],
+            ];
+            $matchedItemsByTypeId[$typeId]['fit_ids'][$fitId] = true;
+            $matchedItemsByTypeId[$typeId]['fit_names'][(string) ($matchedFitsById[$fitId]['fit_name'] ?? 'Doctrine fit')] = true;
+            foreach ($fitGroupNames as $groupName) {
+                $matchedItemsByTypeId[$typeId]['group_names'][$groupName] = true;
+            }
+        }
+
+        foreach ($fitGroupNames as $groupName) {
             $normalizedGroup = trim((string) $groupName);
             if ($normalizedGroup === '') {
                 continue;
@@ -3868,16 +3940,31 @@ function killmail_doctrine_impact(array $event, array $items, array $resolvedEnt
 
             $matchedGroups[$normalizedGroup] ??= [
                 'group_name' => $normalizedGroup,
+                'fit_ids' => [],
                 'fit_names' => [],
+                'matched_item_type_ids' => [],
                 'matched_item_names' => [],
+                'matched_secondary_type_ids' => [],
+                'matched_secondary_item_names' => [],
+                'matched_hull' => false,
             ];
-            $matchedGroups[$normalizedGroup]['fit_names'][(string) ($fit['fit_name'] ?? 'Doctrine fit')] = true;
-            foreach ($matchedPrimaryItems as $matchedItem) {
+            $matchedGroups[$normalizedGroup]['fit_ids'][$fitId] = true;
+            $matchedGroups[$normalizedGroup]['fit_names'][(string) ($matchedFitsById[$fitId]['fit_name'] ?? 'Doctrine fit')] = true;
+            foreach ($matchedPrimaryItems as $typeId => $matchedItem) {
+                $matchedGroups[$normalizedGroup]['matched_item_type_ids'][(int) $typeId] = true;
                 $matchedGroups[$normalizedGroup]['matched_item_names'][(string) ($matchedItem['item_name'] ?? '')] = true;
+                if ((bool) ($matchedItem['is_hull'] ?? false)) {
+                    $matchedGroups[$normalizedGroup]['matched_hull'] = true;
+                }
+            }
+            foreach ($matchedSecondaryItems as $typeId => $matchedItem) {
+                $matchedGroups[$normalizedGroup]['matched_secondary_type_ids'][(int) $typeId] = true;
+                $matchedGroups[$normalizedGroup]['matched_secondary_item_names'][(string) ($matchedItem['item_name'] ?? '')] = true;
             }
         }
     }
 
+    $matchedFits = array_values($matchedFitsById);
     usort($matchedFits, static function (array $a, array $b): int {
         return ((int) ($b['matched_primary_line_count'] ?? 0) <=> (int) ($a['matched_primary_line_count'] ?? 0))
             ?: ((int) ($b['matched_secondary_line_count'] ?? 0) <=> (int) ($a['matched_secondary_line_count'] ?? 0))
@@ -3888,21 +3975,82 @@ function killmail_doctrine_impact(array $event, array $items, array $resolvedEnt
     $matchedSecondaryTypeIds = array_values(array_map('intval', array_keys($matchedSecondaryTypeIds)));
     sort($matchedPrimaryTypeIds);
     sort($matchedSecondaryTypeIds);
-    $matchedItemNames = array_values(array_keys($matchedItemNames));
-    natcasesort($matchedItemNames);
+
+    $matchedItemRows = array_values(array_map(static function (array $item): array {
+        $item['fit_count'] = count((array) ($item['fit_ids'] ?? []));
+        $item['group_count'] = count((array) ($item['group_names'] ?? []));
+        $slotCategory = strtolower(trim((string) ($item['slot_category'] ?? '')));
+        $genericPenalty = in_array($slotCategory, ['low', 'mid', 'high', 'subsystem', 'service'], true) ? 1 : 0;
+        $item['is_generic_overlap'] = !$item['is_hull'] && $genericPenalty > 0 && ($item['group_count'] >= 2 || $item['fit_count'] >= 3);
+        $item['signal_score'] = ($item['is_hull'] ? 100 : 0)
+            + ($item['group_count'] * 6)
+            + min(3, $item['fit_count'])
+            + ($slotCategory === 'rig' ? 2 : 0)
+            + ($slotCategory === 'drone' ? 1 : 0)
+            - $genericPenalty;
+        $item['fit_names'] = array_values(array_keys((array) ($item['fit_names'] ?? [])));
+        sort($item['fit_names']);
+        $item['group_names'] = array_values(array_keys((array) ($item['group_names'] ?? [])));
+        sort($item['group_names']);
+        unset($item['fit_ids']);
+
+        return $item;
+    }, $matchedItemsByTypeId));
+
+    usort($matchedItemRows, static function (array $a, array $b): int {
+        return ((int) ($b['signal_score'] ?? 0) <=> (int) ($a['signal_score'] ?? 0))
+            ?: ((int) ($b['group_count'] ?? 0) <=> (int) ($a['group_count'] ?? 0))
+            ?: ((int) ($b['fit_count'] ?? 0) <=> (int) ($a['fit_count'] ?? 0))
+            ?: strcasecmp((string) ($a['item_name'] ?? ''), (string) ($b['item_name'] ?? ''));
+    });
+
+    $meaningfulItemRows = array_values(array_filter($matchedItemRows, static fn (array $item): bool => !((bool) ($item['is_generic_overlap'] ?? false))));
+    if ($meaningfulItemRows === []) {
+        $meaningfulItemRows = $matchedItemRows;
+    }
+
+    $topMatchedItemRows = array_slice($meaningfulItemRows, 0, 5);
 
     $matchedGroupRows = array_values(array_map(static function (array $group): array {
+        $fitCount = count((array) ($group['fit_ids'] ?? []));
+        $itemCount = count((array) ($group['matched_item_type_ids'] ?? []));
+        $confidence = killmail_doctrine_impact_confidence($itemCount, $fitCount, (bool) ($group['matched_hull'] ?? false));
         $group['fit_names'] = array_values(array_keys((array) ($group['fit_names'] ?? [])));
         sort($group['fit_names']);
-        $group['matched_item_names'] = array_values(array_keys((array) ($group['matched_item_names'] ?? [])));
+        $group['matched_item_names'] = array_values(array_filter(array_keys((array) ($group['matched_item_names'] ?? [])), static fn (string $value): bool => trim($value) !== ''));
         natcasesort($group['matched_item_names']);
+        $group['matched_item_names'] = array_values($group['matched_item_names']);
+        $group['matched_secondary_item_names'] = array_values(array_filter(array_keys((array) ($group['matched_secondary_item_names'] ?? [])), static fn (string $value): bool => trim($value) !== ''));
+        natcasesort($group['matched_secondary_item_names']);
+        $group['matched_secondary_item_names'] = array_values($group['matched_secondary_item_names']);
+        $group['fit_count'] = $fitCount;
+        $group['matched_item_count'] = $itemCount;
+        $group['matched_secondary_count'] = count((array) ($group['matched_secondary_type_ids'] ?? []));
+        $group['confidence'] = $confidence;
+        $group['preview_item_names'] = array_slice($group['matched_item_names'], 0, 3);
+        unset($group['fit_ids'], $group['matched_item_type_ids'], $group['matched_secondary_type_ids'], $group['matched_hull']);
 
         return $group;
     }, $matchedGroups));
-    usort($matchedGroupRows, static fn (array $a, array $b): int => strcasecmp((string) ($a['group_name'] ?? ''), (string) ($b['group_name'] ?? '')));
+    usort($matchedGroupRows, static function (array $a, array $b): int {
+        return ((int) (($b['confidence']['score'] ?? 0)) <=> (int) (($a['confidence']['score'] ?? 0)))
+            ?: ((int) ($b['matched_item_count'] ?? 0) <=> (int) ($a['matched_item_count'] ?? 0))
+            ?: strcasecmp((string) ($a['group_name'] ?? ''), (string) ($b['group_name'] ?? ''));
+    });
 
-    $severity = killmail_doctrine_impact_severity(count($matchedFits), count($matchedPrimaryTypeIds), in_array($victimShipTypeId, $matchedPrimaryTypeIds, true));
     $matched = $matchedPrimaryTypeIds !== [];
+    $meaningfulItemCount = count($meaningfulItemRows);
+    $severity = killmail_doctrine_impact_severity(count($matchedGroupRows), $meaningfulItemCount, in_array($victimShipTypeId, $matchedPrimaryTypeIds, true));
+    $topItemNames = array_values(array_map(static fn (array $item): string => (string) ($item['item_name'] ?? ''), $topMatchedItemRows));
+    $context = $matched
+        ? ('Doctrine signal is ' . strtolower((string) ($severity['label'] ?? 'weak'))
+            . ': ' . number_format(count($matchedGroupRows)) . ' doctrine group' . (count($matchedGroupRows) === 1 ? '' : 's')
+            . ' affected by ' . number_format($meaningfulItemCount) . ' meaningful durable item' . ($meaningfulItemCount === 1 ? '' : 's') . '.')
+        : 'No durable doctrine fit item type_ids intersected the victim-side hull and stored loss items.';
+    if (!$matched && $matchedSecondaryTypeIds !== []) {
+        $context .= ' Secondary consumable-only overlaps were detected, but they do not drive the primary doctrine-impact signal.';
+    }
+
     $debug = [
         'sequence_id' => (int) ($event['sequence_id'] ?? 0),
         'victim_item_type_ids_considered' => $candidateTypeIds,
@@ -3915,6 +4063,8 @@ function killmail_doctrine_impact(array $event, array $items, array $resolvedEnt
         'secondary_intersection_count' => count($matchedSecondaryTypeIds),
         'matched_fit_ids' => array_values(array_map(static fn (array $fit): int => (int) ($fit['id'] ?? 0), $matchedFits)),
         'matched_group_names' => array_values(array_map(static fn (array $group): string => (string) ($group['group_name'] ?? ''), $matchedGroupRows)),
+        'meaningful_item_type_ids' => array_values(array_map(static fn (array $item): int => (int) ($item['type_id'] ?? 0), $meaningfulItemRows)),
+        'top_item_type_ids' => array_values(array_map(static fn (array $item): int => (int) ($item['type_id'] ?? 0), $topMatchedItemRows)),
         'no_match_reason' => $matched
             ? null
             : match (true) {
@@ -3927,14 +4077,6 @@ function killmail_doctrine_impact(array $event, array $items, array $resolvedEnt
     ];
     killmail_doctrine_impact_log_debug($debug);
 
-    $context = $matched
-        ? ('Matched ' . number_format(count($matchedPrimaryTypeIds)) . ' durable doctrine item type' . (count($matchedPrimaryTypeIds) === 1 ? '' : 's')
-            . ' across ' . number_format(count($matchedFits)) . ' doctrine fit' . (count($matchedFits) === 1 ? '' : 's') . '.')
-        : 'No durable doctrine fit item type_ids intersected the victim-side hull and stored loss items.';
-    if (!$matched && $matchedSecondaryTypeIds !== []) {
-        $context .= ' Secondary consumable-only overlaps were detected, but they do not drive the primary doctrine-impact signal.';
-    }
-
     return [
         'matched' => $matched,
         'label' => $matched ? 'Doctrine impact detected' : 'No doctrine impact',
@@ -3945,7 +4087,10 @@ function killmail_doctrine_impact(array $event, array $items, array $resolvedEnt
         'severity' => $severity,
         'matched_groups' => $matchedGroupRows,
         'matched_fits' => $matchedFits,
-        'matched_item_names' => array_values($matchedItemNames),
+        'matched_items' => $matchedItemRows,
+        'matched_item_names' => $topItemNames,
+        'top_matched_items' => $topMatchedItemRows,
+        'meaningful_item_count' => $meaningfulItemCount,
         'matched_item_count' => count($matchedPrimaryTypeIds),
         'matched_fit_count' => count($matchedFits),
         'matched_group_count' => count($matchedGroupRows),

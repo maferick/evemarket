@@ -173,126 +173,115 @@ include __DIR__ . '/../../src/views/partials/header.php';
         <div class="flex flex-wrap items-start justify-between gap-4">
             <div>
                 <p class="text-xs uppercase tracking-[0.2em] text-emerald-200/80">Doctrine impact</p>
-                <h2 class="mt-1 text-xl font-semibold text-slate-50">Normalized doctrine fit match</h2>
-                <p class="mt-2 max-w-4xl text-sm text-muted">Victim-side hull and stored loss items are matched by <span class="font-medium text-slate-200">type_id</span> against normalized doctrine fit items. Durable components drive the primary signal; consumables only appear as supporting context.</p>
+                <h2 class="mt-1 text-xl font-semibold text-slate-50">Compact doctrine match summary</h2>
+                <p class="mt-2 max-w-4xl text-sm text-muted">Victim-side hull and stored loss items are matched by <span class="font-medium text-slate-200">type_id</span> against normalized doctrine fit items. Durable overlaps are condensed into an operator-focused summary; full fit-level detail remains available on demand.</p>
             </div>
             <div class="flex flex-wrap gap-2">
                 <span class="rounded-full border px-3 py-1 text-xs uppercase tracking-[0.15em] <?= htmlspecialchars((string) ($doctrineImpact['tone'] ?? 'border-slate-500/40 bg-slate-500/10 text-slate-300'), ENT_QUOTES) ?>">
                     <?= htmlspecialchars((string) ($doctrineImpact['label'] ?? 'No doctrine impact'), ENT_QUOTES) ?>
                 </span>
-                <?php if (($doctrineImpact['matched'] ?? false) && is_array($doctrineImpact['severity'] ?? null)): ?>
+                <?php if (is_array($doctrineImpact['severity'] ?? null)): ?>
                     <span class="rounded-full border px-3 py-1 text-xs uppercase tracking-[0.15em] <?= htmlspecialchars((string) (($doctrineImpact['severity']['tone'] ?? 'border-slate-500/40 bg-slate-500/10 text-slate-300')), ENT_QUOTES) ?>">
-                        Severity <?= htmlspecialchars((string) ($doctrineImpact['severity']['label'] ?? 'Low'), ENT_QUOTES) ?>
+                        Severity <?= htmlspecialchars((string) ($doctrineImpact['severity']['label'] ?? 'Weak'), ENT_QUOTES) ?>
                     </span>
                 <?php endif; ?>
             </div>
         </div>
 
-        <div class="mt-6 grid gap-4 md:grid-cols-4">
-            <article class="surface-tertiary">
-                <p class="text-xs uppercase tracking-[0.15em] text-muted">Doctrine groups</p>
-                <p class="mt-2 text-2xl font-semibold text-slate-50"><?= number_format((int) ($doctrineImpact['matched_group_count'] ?? 0)) ?></p>
-                <p class="mt-2 text-sm text-muted">Groups touched by at least one durable victim-side doctrine item.</p>
-            </article>
-            <article class="surface-tertiary">
-                <p class="text-xs uppercase tracking-[0.15em] text-muted">Doctrine fits</p>
-                <p class="mt-2 text-2xl font-semibold text-slate-50"><?= number_format((int) ($doctrineImpact['matched_fit_count'] ?? 0)) ?></p>
-                <p class="mt-2 text-sm text-muted">Normalized fits intersecting the victim hull or stored durable loss items.</p>
-            </article>
-            <article class="surface-tertiary">
-                <p class="text-xs uppercase tracking-[0.15em] text-muted">Matched lines</p>
-                <p class="mt-2 text-2xl font-semibold text-slate-50"><?= number_format((int) ($doctrineImpact['matched_line_count'] ?? 0)) ?></p>
-                <p class="mt-2 text-sm text-muted">Distinct durable doctrine item type_ids found on the victim-side loss.</p>
-            </article>
-            <article class="surface-tertiary">
-                <p class="text-xs uppercase tracking-[0.15em] text-muted">Consumable overlaps</p>
-                <p class="mt-2 text-2xl font-semibold text-slate-50"><?= number_format((int) ($doctrineImpact['supporting_consumable_count'] ?? 0)) ?></p>
-                <p class="mt-2 text-sm text-muted">Secondary-only overlaps excluded from the primary doctrine-impact signal.</p>
-            </article>
-        </div>
-
-        <div class="mt-6 grid gap-4 xl:grid-cols-[minmax(0,1.3fr)_minmax(0,1fr)]">
+        <div class="mt-6 grid gap-4 lg:grid-cols-[minmax(0,1.25fr)_minmax(0,0.85fr)]">
             <article class="surface-secondary">
-                <p class="text-xs uppercase tracking-[0.15em] text-muted">Summary</p>
+                <p class="text-xs uppercase tracking-[0.15em] text-muted">Doctrine impact summary</p>
                 <p class="mt-3 text-sm text-slate-200"><?= htmlspecialchars((string) ($doctrineImpact['context'] ?? 'Doctrine impact context unavailable.'), ENT_QUOTES) ?></p>
 
-                <?php if (((array) ($doctrineImpact['matched_item_names'] ?? [])) !== []): ?>
-                    <div class="mt-4">
-                        <p class="text-xs uppercase tracking-[0.15em] text-muted">Matched doctrine items</p>
-                        <div class="mt-3 flex flex-wrap gap-2">
-                            <?php foreach ((array) ($doctrineImpact['matched_item_names'] ?? []) as $itemName): ?>
-                                <span class="rounded-full border border-emerald-500/30 bg-emerald-500/10 px-3 py-1 text-xs text-emerald-100"><?= htmlspecialchars((string) $itemName, ENT_QUOTES) ?></span>
+                <div class="mt-4 grid gap-3 sm:grid-cols-3">
+                    <div class="surface-tertiary">
+                        <p class="text-xs uppercase tracking-[0.15em] text-muted">Severity</p>
+                        <p class="mt-2 text-lg font-semibold text-slate-50"><?= htmlspecialchars((string) ($doctrineImpact['severity']['label'] ?? 'Weak'), ENT_QUOTES) ?></p>
+                        <p class="mt-1 text-xs text-muted">Immediate doctrine relevance.</p>
+                    </div>
+                    <div class="surface-tertiary">
+                        <p class="text-xs uppercase tracking-[0.15em] text-muted">Groups affected</p>
+                        <p class="mt-2 text-lg font-semibold text-slate-50"><?= number_format((int) ($doctrineImpact['matched_group_count'] ?? 0)) ?></p>
+                        <p class="mt-1 text-xs text-muted">Distinct doctrine groups touched.</p>
+                    </div>
+                    <div class="surface-tertiary">
+                        <p class="text-xs uppercase tracking-[0.15em] text-muted">Meaningful items</p>
+                        <p class="mt-2 text-lg font-semibold text-slate-50"><?= number_format((int) ($doctrineImpact['meaningful_item_count'] ?? ($doctrineImpact['matched_item_count'] ?? 0))) ?></p>
+                        <p class="mt-1 text-xs text-muted">Unique durable items after overlap collapse.</p>
+                    </div>
+                </div>
+
+                <div class="mt-5">
+                    <div class="flex items-center justify-between gap-3">
+                        <p class="text-xs uppercase tracking-[0.15em] text-muted">Impacted doctrine groups</p>
+                        <?php if ((int) ($doctrineImpact['matched_fit_count'] ?? 0) > 0): ?>
+                            <span class="text-xs text-muted"><?= number_format((int) ($doctrineImpact['matched_fit_count'] ?? 0)) ?> unique fit<?= ((int) ($doctrineImpact['matched_fit_count'] ?? 0)) === 1 ? '' : 's' ?> behind summary</span>
+                        <?php endif; ?>
+                    </div>
+
+                    <?php if (((array) ($doctrineImpact['matched_groups'] ?? [])) === []): ?>
+                        <div class="mt-3 rounded-xl border border-dashed border-border bg-black/20 px-4 py-5 text-sm text-slate-400">
+                            No durable doctrine groups matched this victim-side loss.
+                        </div>
+                    <?php else: ?>
+                        <div class="mt-3 space-y-2">
+                            <?php foreach ((array) ($doctrineImpact['matched_groups'] ?? []) as $group): ?>
+                                <div class="surface-tertiary">
+                                    <div class="flex flex-wrap items-start justify-between gap-3">
+                                        <div>
+                                            <p class="font-medium text-slate-50"><?= htmlspecialchars((string) ($group['group_name'] ?? 'Doctrine group'), ENT_QUOTES) ?></p>
+                                            <?php if (((array) ($group['preview_item_names'] ?? [])) !== []): ?>
+                                                <p class="mt-1 text-xs text-muted"><?= htmlspecialchars(implode(', ', (array) ($group['preview_item_names'] ?? [])), ENT_QUOTES) ?></p>
+                                            <?php else: ?>
+                                                <p class="mt-1 text-xs text-muted">No durable item preview available.</p>
+                                            <?php endif; ?>
+                                        </div>
+                                        <div class="flex flex-wrap items-center gap-2 text-xs">
+                                            <span class="rounded-full border border-border bg-black/20 px-2 py-0.5 text-slate-300"><?= number_format((int) ($group['matched_item_count'] ?? 0)) ?> item<?= ((int) ($group['matched_item_count'] ?? 0)) === 1 ? '' : 's' ?></span>
+                                            <?php if (is_array($group['confidence'] ?? null)): ?>
+                                                <span class="rounded-full border px-2 py-0.5 <?= htmlspecialchars((string) ($group['confidence']['tone'] ?? 'border-slate-500/40 bg-slate-500/10 text-slate-300'), ENT_QUOTES) ?>"><?= htmlspecialchars((string) ($group['confidence']['label'] ?? 'Low'), ENT_QUOTES) ?> confidence</span>
+                                            <?php endif; ?>
+                                        </div>
+                                    </div>
+                                </div>
                             <?php endforeach; ?>
                         </div>
-                    </div>
-                <?php endif; ?>
+                    <?php endif; ?>
+                </div>
+            </article>
 
-                <?php if (((array) ($doctrineImpact['matched_groups'] ?? [])) === []): ?>
+            <article class="surface-secondary">
+                <div class="flex items-center justify-between gap-3">
+                    <p class="text-xs uppercase tracking-[0.15em] text-muted">Key matching items</p>
+                    <?php if ((int) ($doctrineImpact['supporting_consumable_count'] ?? 0) > 0): ?>
+                        <span class="text-xs text-muted"><?= number_format((int) ($doctrineImpact['supporting_consumable_count'] ?? 0)) ?> consumable overlap<?= ((int) ($doctrineImpact['supporting_consumable_count'] ?? 0)) === 1 ? '' : 's' ?> hidden in details</span>
+                    <?php endif; ?>
+                </div>
+
+                <?php if (((array) ($doctrineImpact['top_matched_items'] ?? [])) === []): ?>
                     <div class="mt-4 rounded-xl border border-dashed border-border bg-black/20 px-4 py-5 text-sm text-slate-400">
-                        No durable doctrine groups matched this victim-side loss.
+                        No meaningful durable doctrine items were identified for summary display.
                     </div>
                 <?php else: ?>
-                    <div class="mt-4 space-y-3">
-                        <?php foreach ((array) ($doctrineImpact['matched_groups'] ?? []) as $group): ?>
+                    <div class="mt-4 space-y-2">
+                        <?php foreach ((array) ($doctrineImpact['top_matched_items'] ?? []) as $matchedItem): ?>
                             <div class="surface-tertiary">
                                 <div class="flex flex-wrap items-start justify-between gap-3">
                                     <div>
-                                        <p class="font-medium text-slate-50"><?= htmlspecialchars((string) ($group['group_name'] ?? 'Doctrine group'), ENT_QUOTES) ?></p>
-                                        <p class="mt-1 text-xs text-muted"><?= htmlspecialchars(implode(', ', (array) ($group['fit_names'] ?? [])), ENT_QUOTES) ?></p>
+                                        <p class="font-medium text-slate-50"><?= htmlspecialchars((string) ($matchedItem['item_name'] ?? 'Unknown item'), ENT_QUOTES) ?></p>
+                                        <p class="mt-1 text-xs text-muted">
+                                            <?= number_format((int) ($matchedItem['group_count'] ?? 0)) ?> group<?= ((int) ($matchedItem['group_count'] ?? 0)) === 1 ? '' : 's' ?>
+                                            <?php if ((int) ($matchedItem['fit_count'] ?? 0) > 0): ?>
+                                                · <?= number_format((int) ($matchedItem['fit_count'] ?? 0)) ?> fit<?= ((int) ($matchedItem['fit_count'] ?? 0)) === 1 ? '' : 's' ?>
+                                            <?php endif; ?>
+                                            <?php if ((string) ($matchedItem['victim_state_label'] ?? '') !== ''): ?>
+                                                · <?= htmlspecialchars((string) ($matchedItem['victim_state_label'] ?? ''), ENT_QUOTES) ?>
+                                            <?php endif; ?>
+                                        </p>
                                     </div>
-                                    <span class="rounded-full border border-border bg-black/20 px-2 py-0.5 text-xs text-slate-300"><?= number_format(count((array) ($group['matched_item_names'] ?? []))) ?> items</span>
-                                </div>
-                                <?php if (((array) ($group['matched_item_names'] ?? [])) !== []): ?>
-                                    <p class="mt-3 text-sm text-slate-300"><?= htmlspecialchars(implode(', ', (array) ($group['matched_item_names'] ?? [])), ENT_QUOTES) ?></p>
-                                <?php endif; ?>
-                            </div>
-                        <?php endforeach; ?>
-                    </div>
-                <?php endif; ?>
-            </article>
-
-            <article class="surface-secondary">
-                <p class="text-xs uppercase tracking-[0.15em] text-muted">Matched doctrine fits</p>
-                <?php if (((array) ($doctrineImpact['matched_fits'] ?? [])) === []): ?>
-                    <div class="mt-4 rounded-xl border border-dashed border-border bg-black/20 px-4 py-5 text-sm text-slate-400">
-                        No normalized doctrine fits currently intersect this victim-side loss.
-                    </div>
-                <?php else: ?>
-                    <div class="mt-4 space-y-3">
-                        <?php foreach ((array) ($doctrineImpact['matched_fits'] ?? []) as $fit): ?>
-                            <div class="surface-tertiary">
-                                <div class="flex items-start gap-3">
-                                    <?php if ((string) ($fit['ship_image_url'] ?? '') !== ''): ?>
-                                        <img src="<?= htmlspecialchars((string) $fit['ship_image_url'], ENT_QUOTES) ?>" alt="" class="h-12 w-12 rounded-xl bg-black/20 object-cover">
+                                    <?php if ((bool) ($matchedItem['is_hull'] ?? false)): ?>
+                                        <span class="rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-xs text-emerald-100">Hull match</span>
                                     <?php endif; ?>
-                                    <div class="min-w-0 flex-1">
-                                        <div class="flex flex-wrap items-start justify-between gap-3">
-                                            <div>
-                                                <p class="font-medium text-slate-50"><?= htmlspecialchars((string) ($fit['fit_name'] ?? 'Doctrine fit'), ENT_QUOTES) ?></p>
-                                                <p class="mt-1 text-xs text-muted"><?= htmlspecialchars(implode(', ', (array) ($fit['group_names'] ?? [])) ?: (string) ($fit['ship_name'] ?? ''), ENT_QUOTES) ?></p>
-                                            </div>
-                                            <div class="flex flex-wrap gap-2 text-xs">
-                                                <span class="rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-emerald-100"><?= number_format((int) ($fit['matched_primary_line_count'] ?? 0)) ?> durable</span>
-                                                <?php if ((int) ($fit['matched_secondary_line_count'] ?? 0) > 0): ?>
-                                                    <span class="rounded-full border border-border bg-black/20 px-2 py-0.5 text-slate-300"><?= number_format((int) ($fit['matched_secondary_line_count'] ?? 0)) ?> consumable</span>
-                                                <?php endif; ?>
-                                            </div>
-                                        </div>
-
-                                        <?php if (((array) ($fit['matched_primary_items'] ?? [])) !== []): ?>
-                                            <div class="mt-3 flex flex-wrap gap-2">
-                                                <?php foreach ((array) ($fit['matched_primary_items'] ?? []) as $matchedItem): ?>
-                                                    <span class="rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-xs text-emerald-100">
-                                                        <?= htmlspecialchars((string) ($matchedItem['item_name'] ?? 'Unknown item'), ENT_QUOTES) ?>
-                                                    </span>
-                                                <?php endforeach; ?>
-                                            </div>
-                                        <?php endif; ?>
-
-                                        <?php if (((array) ($fit['matched_secondary_items'] ?? [])) !== []): ?>
-                                            <p class="mt-3 text-xs text-muted">Supporting consumables: <?= htmlspecialchars(implode(', ', array_map(static fn (array $row): string => (string) ($row['item_name'] ?? ''), (array) ($fit['matched_secondary_items'] ?? []))), ENT_QUOTES) ?></p>
-                                        <?php endif; ?>
-                                    </div>
                                 </div>
                             </div>
                         <?php endforeach; ?>
@@ -302,26 +291,109 @@ include __DIR__ . '/../../src/views/partials/header.php';
         </div>
 
         <details class="mt-6 surface-secondary">
-            <summary class="cursor-pointer list-none text-sm font-medium text-slate-100">Doctrine impact debug trace</summary>
-            <?php $doctrineDebug = $doctrineImpact['debug'] ?? []; ?>
-            <div class="mt-4 grid gap-4 md:grid-cols-2">
-                <div class="surface-tertiary">
-                    <p class="text-xs uppercase tracking-[0.15em] text-muted">Victim-side type_ids considered</p>
-                    <p class="mt-2 break-words font-mono text-xs text-slate-300"><?= htmlspecialchars(implode(', ', array_map('strval', (array) ($doctrineDebug['victim_item_type_ids_considered'] ?? []))) ?: 'None', ENT_QUOTES) ?></p>
-                    <p class="mt-3 text-xs uppercase tracking-[0.15em] text-muted">Durable type_ids considered</p>
-                    <p class="mt-2 break-words font-mono text-xs text-slate-300"><?= htmlspecialchars(implode(', ', array_map('strval', (array) ($doctrineDebug['victim_durable_type_ids_considered'] ?? []))) ?: 'None', ENT_QUOTES) ?></p>
-                    <p class="mt-3 text-xs uppercase tracking-[0.15em] text-muted">Consumable type_ids considered</p>
-                    <p class="mt-2 break-words font-mono text-xs text-slate-300"><?= htmlspecialchars(implode(', ', array_map('strval', (array) ($doctrineDebug['victim_consumable_type_ids_considered'] ?? []))) ?: 'None', ENT_QUOTES) ?></p>
+            <summary class="cursor-pointer list-none text-sm font-medium text-slate-100">Expanded doctrine match details</summary>
+            <div class="mt-4 space-y-4">
+                <div class="grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
+                    <article class="surface-tertiary">
+                        <div class="flex items-center justify-between gap-3">
+                            <p class="text-xs uppercase tracking-[0.15em] text-muted">Fit-level matches</p>
+                            <span class="text-xs text-muted"><?= number_format((int) ($doctrineImpact['matched_fit_count'] ?? 0)) ?> fit<?= ((int) ($doctrineImpact['matched_fit_count'] ?? 0)) === 1 ? '' : 's' ?></span>
+                        </div>
+                        <?php if (((array) ($doctrineImpact['matched_fits'] ?? [])) === []): ?>
+                            <div class="mt-4 rounded-xl border border-dashed border-border bg-black/20 px-4 py-5 text-sm text-slate-400">
+                                No normalized doctrine fits currently intersect this victim-side loss.
+                            </div>
+                        <?php else: ?>
+                            <div class="mt-4 space-y-3">
+                                <?php foreach ((array) ($doctrineImpact['matched_fits'] ?? []) as $fit): ?>
+                                    <div class="rounded-xl border border-border bg-black/20 p-4">
+                                        <div class="flex items-start gap-3">
+                                            <?php if ((string) ($fit['ship_image_url'] ?? '') !== ''): ?>
+                                                <img src="<?= htmlspecialchars((string) $fit['ship_image_url'], ENT_QUOTES) ?>" alt="" class="h-10 w-10 rounded-xl bg-black/20 object-cover">
+                                            <?php endif; ?>
+                                            <div class="min-w-0 flex-1">
+                                                <div class="flex flex-wrap items-start justify-between gap-3">
+                                                    <div>
+                                                        <p class="font-medium text-slate-50"><?= htmlspecialchars((string) ($fit['fit_name'] ?? 'Doctrine fit'), ENT_QUOTES) ?></p>
+                                                        <p class="mt-1 text-xs text-muted"><?= htmlspecialchars(implode(', ', (array) ($fit['group_names'] ?? [])) ?: (string) ($fit['ship_name'] ?? ''), ENT_QUOTES) ?></p>
+                                                    </div>
+                                                    <div class="flex flex-wrap gap-2 text-xs">
+                                                        <span class="rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-emerald-100"><?= number_format((int) ($fit['matched_primary_line_count'] ?? 0)) ?> durable</span>
+                                                        <?php if ((int) ($fit['matched_secondary_line_count'] ?? 0) > 0): ?>
+                                                            <span class="rounded-full border border-border bg-black/20 px-2 py-0.5 text-slate-300"><?= number_format((int) ($fit['matched_secondary_line_count'] ?? 0)) ?> consumable</span>
+                                                        <?php endif; ?>
+                                                    </div>
+                                                </div>
+
+                                                <?php if (((array) ($fit['matched_primary_items'] ?? [])) !== []): ?>
+                                                    <p class="mt-3 text-sm text-slate-300"><?= htmlspecialchars(implode(', ', array_map(static fn (array $row): string => (string) ($row['item_name'] ?? ''), (array) ($fit['matched_primary_items'] ?? []))), ENT_QUOTES) ?></p>
+                                                <?php endif; ?>
+
+                                                <?php if (((array) ($fit['matched_secondary_items'] ?? [])) !== []): ?>
+                                                    <p class="mt-3 text-xs text-muted">Supporting consumables: <?= htmlspecialchars(implode(', ', array_map(static fn (array $row): string => (string) ($row['item_name'] ?? ''), (array) ($fit['matched_secondary_items'] ?? []))), ENT_QUOTES) ?></p>
+                                                <?php endif; ?>
+                                            </div>
+                                        </div>
+                                    </div>
+                                <?php endforeach; ?>
+                            </div>
+                        <?php endif; ?>
+                    </article>
+
+                    <article class="surface-tertiary">
+                        <p class="text-xs uppercase tracking-[0.15em] text-muted">All matched durable items</p>
+                        <?php if (((array) ($doctrineImpact['matched_items'] ?? [])) === []): ?>
+                            <div class="mt-4 rounded-xl border border-dashed border-border bg-black/20 px-4 py-5 text-sm text-slate-400">
+                                No durable doctrine items matched this loss.
+                            </div>
+                        <?php else: ?>
+                            <div class="mt-4 space-y-2">
+                                <?php foreach ((array) ($doctrineImpact['matched_items'] ?? []) as $matchedItem): ?>
+                                    <div class="rounded-xl border border-border bg-black/20 px-4 py-3">
+                                        <div class="flex flex-wrap items-start justify-between gap-3">
+                                            <div>
+                                                <p class="font-medium text-slate-50"><?= htmlspecialchars((string) ($matchedItem['item_name'] ?? 'Unknown item'), ENT_QUOTES) ?></p>
+                                                <p class="mt-1 text-xs text-muted"><?= htmlspecialchars(implode(', ', (array) ($matchedItem['group_names'] ?? [])) ?: 'No doctrine groups recorded', ENT_QUOTES) ?></p>
+                                            </div>
+                                            <div class="flex flex-wrap gap-2 text-xs">
+                                                <span class="rounded-full border border-border bg-black/20 px-2 py-0.5 text-slate-300"><?= number_format((int) ($matchedItem['group_count'] ?? 0)) ?> group<?= ((int) ($matchedItem['group_count'] ?? 0)) === 1 ? '' : 's' ?></span>
+                                                <?php if ((bool) ($matchedItem['is_generic_overlap'] ?? false)): ?>
+                                                    <span class="rounded-full border border-slate-500/30 bg-slate-500/10 px-2 py-0.5 text-slate-300">Generic overlap</span>
+                                                <?php endif; ?>
+                                            </div>
+                                        </div>
+                                    </div>
+                                <?php endforeach; ?>
+                            </div>
+                        <?php endif; ?>
+                    </article>
                 </div>
+
                 <div class="surface-tertiary">
-                    <p class="text-xs uppercase tracking-[0.15em] text-muted">Doctrine durable type_ids considered</p>
-                    <p class="mt-2 break-words font-mono text-xs text-slate-300"><?= htmlspecialchars(implode(', ', array_map('strval', (array) ($doctrineDebug['doctrine_item_type_ids_considered'] ?? []))) ?: 'None', ENT_QUOTES) ?></p>
-                    <p class="mt-3 text-xs uppercase tracking-[0.15em] text-muted">Intersection</p>
-                    <p class="mt-2 text-sm text-slate-200"><?= htmlspecialchars((string) number_format((int) ($doctrineDebug['intersection_count'] ?? 0)), ENT_QUOTES) ?> durable · <?= htmlspecialchars((string) number_format((int) ($doctrineDebug['secondary_intersection_count'] ?? 0)), ENT_QUOTES) ?> consumable</p>
-                    <?php if ((string) ($doctrineDebug['no_match_reason'] ?? '') !== ''): ?>
-                        <p class="mt-3 text-xs uppercase tracking-[0.15em] text-muted">No-match reason</p>
-                        <p class="mt-2 text-sm text-slate-300"><?= htmlspecialchars((string) ($doctrineDebug['no_match_reason'] ?? ''), ENT_QUOTES) ?></p>
-                    <?php endif; ?>
+                    <p class="text-sm font-medium text-slate-100">Doctrine impact debug trace</p>
+                    <?php $doctrineDebug = $doctrineImpact['debug'] ?? []; ?>
+                    <div class="mt-4 grid gap-4 md:grid-cols-2">
+                        <div class="rounded-xl border border-border bg-black/20 p-4">
+                            <p class="text-xs uppercase tracking-[0.15em] text-muted">Victim-side type_ids considered</p>
+                            <p class="mt-2 break-words font-mono text-xs text-slate-300"><?= htmlspecialchars(implode(', ', array_map('strval', (array) ($doctrineDebug['victim_item_type_ids_considered'] ?? []))) ?: 'None', ENT_QUOTES) ?></p>
+                            <p class="mt-3 text-xs uppercase tracking-[0.15em] text-muted">Durable type_ids considered</p>
+                            <p class="mt-2 break-words font-mono text-xs text-slate-300"><?= htmlspecialchars(implode(', ', array_map('strval', (array) ($doctrineDebug['victim_durable_type_ids_considered'] ?? []))) ?: 'None', ENT_QUOTES) ?></p>
+                            <p class="mt-3 text-xs uppercase tracking-[0.15em] text-muted">Consumable type_ids considered</p>
+                            <p class="mt-2 break-words font-mono text-xs text-slate-300"><?= htmlspecialchars(implode(', ', array_map('strval', (array) ($doctrineDebug['victim_consumable_type_ids_considered'] ?? []))) ?: 'None', ENT_QUOTES) ?></p>
+                        </div>
+                        <div class="rounded-xl border border-border bg-black/20 p-4">
+                            <p class="text-xs uppercase tracking-[0.15em] text-muted">Doctrine durable type_ids considered</p>
+                            <p class="mt-2 break-words font-mono text-xs text-slate-300"><?= htmlspecialchars(implode(', ', array_map('strval', (array) ($doctrineDebug['doctrine_item_type_ids_considered'] ?? []))) ?: 'None', ENT_QUOTES) ?></p>
+                            <p class="mt-3 text-xs uppercase tracking-[0.15em] text-muted">Intersection</p>
+                            <p class="mt-2 text-sm text-slate-200"><?= htmlspecialchars((string) number_format((int) ($doctrineDebug['intersection_count'] ?? 0)), ENT_QUOTES) ?> durable · <?= htmlspecialchars((string) number_format((int) ($doctrineDebug['secondary_intersection_count'] ?? 0)), ENT_QUOTES) ?> consumable</p>
+                            <p class="mt-3 text-xs uppercase tracking-[0.15em] text-muted">Meaningful durable type_ids</p>
+                            <p class="mt-2 break-words font-mono text-xs text-slate-300"><?= htmlspecialchars(implode(', ', array_map('strval', (array) ($doctrineDebug['meaningful_item_type_ids'] ?? []))) ?: 'None', ENT_QUOTES) ?></p>
+                            <?php if ((string) ($doctrineDebug['no_match_reason'] ?? '') !== ''): ?>
+                                <p class="mt-3 text-xs uppercase tracking-[0.15em] text-muted">No-match reason</p>
+                                <p class="mt-2 text-sm text-slate-300"><?= htmlspecialchars((string) ($doctrineDebug['no_match_reason'] ?? ''), ENT_QUOTES) ?></p>
+                            <?php endif; ?>
+                        </div>
+                    </div>
                 </div>
             </div>
         </details>
