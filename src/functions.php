@@ -198,6 +198,9 @@ function item_scope_setting_keys(): array
 {
     return [
         'item_scope_mode',
+        'item_scope_operational_category_keys',
+        'item_scope_tier_meta_group_ids',
+        'item_scope_noise_filter_keys',
         'item_scope_include_category_ids',
         'item_scope_exclude_category_ids',
         'item_scope_include_group_ids',
@@ -216,10 +219,25 @@ function item_scope_default_meta_groups(): array
     return [
         ['meta_group_id' => 1, 'meta_group_name' => 'Tech I', 'type_count' => 0],
         ['meta_group_id' => 2, 'meta_group_name' => 'Tech II', 'type_count' => 0],
-        ['meta_group_id' => 3, 'meta_group_name' => 'Storyline', 'type_count' => 0],
         ['meta_group_id' => 4, 'meta_group_name' => 'Faction', 'type_count' => 0],
-        ['meta_group_id' => 5, 'meta_group_name' => 'Officer', 'type_count' => 0],
         ['meta_group_id' => 6, 'meta_group_name' => 'Deadspace', 'type_count' => 0],
+        ['meta_group_id' => 5, 'meta_group_name' => 'Officer', 'type_count' => 0],
+    ];
+}
+
+function item_scope_default_operational_category_keys(): array
+{
+    return ['ships', 'modules', 'rigs', 'ammo_charges', 'drones_fighters', 'fuel_structures', 'boosters'];
+}
+
+function item_scope_default_noise_filter_keys(): array
+{
+    return [
+        'exclude_commodities_consumer_goods',
+        'exclude_civilian_items',
+        'exclude_blueprints',
+        'exclude_skins',
+        'exclude_non_market_mission_items',
     ];
 }
 
@@ -248,10 +266,40 @@ function item_scope_encode_int_list(array $ids): string
     return json_encode(item_scope_decode_int_list($ids), JSON_THROW_ON_ERROR);
 }
 
+function item_scope_decode_string_list(mixed $value): array
+{
+    if (is_array($value)) {
+        $decoded = $value;
+    } else {
+        $raw = trim((string) $value);
+        if ($raw === '') {
+            return [];
+        }
+
+        try {
+            $decoded = json_decode($raw, true, 512, JSON_THROW_ON_ERROR);
+        } catch (Throwable) {
+            $decoded = preg_split('/[\r\n,]+/', $raw) ?: [];
+        }
+    }
+
+    $normalized = array_map(static fn (mixed $entry): string => trim(mb_strtolower((string) $entry)), $decoded);
+
+    return array_values(array_unique(array_filter($normalized, static fn (string $entry): bool => $entry !== '')));
+}
+
+function item_scope_encode_string_list(array $values): string
+{
+    return json_encode(item_scope_decode_string_list($values), JSON_THROW_ON_ERROR);
+}
+
 function item_scope_default_config(): array
 {
     return [
-        'mode' => 'allow_all',
+        'mode' => 'allow_list',
+        'operational_category_keys' => item_scope_default_operational_category_keys(),
+        'tier_meta_group_ids' => [1, 2],
+        'noise_filter_keys' => item_scope_default_noise_filter_keys(),
         'include_category_ids' => [],
         'exclude_category_ids' => [],
         'include_group_ids' => [],
@@ -267,7 +315,7 @@ function item_scope_default_config(): array
 
 function item_scope_normalize_mode(string $mode): string
 {
-    return $mode === 'allow_list' ? 'allow_list' : 'allow_all';
+    return $mode === 'allow_all' ? 'allow_all' : 'allow_list';
 }
 
 function item_scope_settings_to_config(array $settings): array
@@ -276,6 +324,9 @@ function item_scope_settings_to_config(array $settings): array
 
     return [
         'mode' => item_scope_normalize_mode((string) ($settings['item_scope_mode'] ?? $defaults['mode'])),
+        'operational_category_keys' => item_scope_decode_string_list($settings['item_scope_operational_category_keys'] ?? $defaults['operational_category_keys']),
+        'tier_meta_group_ids' => item_scope_decode_int_list($settings['item_scope_tier_meta_group_ids'] ?? $defaults['tier_meta_group_ids']),
+        'noise_filter_keys' => item_scope_decode_string_list($settings['item_scope_noise_filter_keys'] ?? $defaults['noise_filter_keys']),
         'include_category_ids' => item_scope_decode_int_list($settings['item_scope_include_category_ids'] ?? $defaults['include_category_ids']),
         'exclude_category_ids' => item_scope_decode_int_list($settings['item_scope_exclude_category_ids'] ?? $defaults['exclude_category_ids']),
         'include_group_ids' => item_scope_decode_int_list($settings['item_scope_include_group_ids'] ?? $defaults['include_group_ids']),
@@ -300,6 +351,138 @@ function item_scope_config(): array
     $config = item_scope_settings_to_config(get_settings(item_scope_setting_keys()));
 
     return $config;
+}
+
+function item_scope_operational_definitions(): array
+{
+    return [
+        'ships' => [
+            'label' => 'Ships',
+            'description' => 'Combat hulls and logistics ships tracked as the alliance operating fleet.',
+            'default' => true,
+            'clauses' => [
+                ['category_names' => ['ship']],
+            ],
+        ],
+        'modules' => [
+            'label' => 'Modules',
+            'description' => 'Standard fit components, including subsystems, but excluding rig-only lines.',
+            'default' => true,
+            'clauses' => [
+                [
+                    'category_names' => ['module', 'subsystem'],
+                    'exclude_group_keywords' => ['rig'],
+                    'exclude_market_group_keywords' => ['rig'],
+                ],
+            ],
+        ],
+        'rigs' => [
+            'label' => 'Rigs',
+            'description' => 'Rig market segments separated from the wider module universe.',
+            'default' => true,
+            'clauses' => [
+                ['category_names' => ['module'], 'group_keywords' => ['rig']],
+                ['category_names' => ['module'], 'market_group_keywords' => ['rig']],
+            ],
+        ],
+        'ammo_charges' => [
+            'label' => 'Ammo & Charges',
+            'description' => 'Ammunition, scripts, crystals, bombs, and other consumable charge-based items.',
+            'default' => true,
+            'clauses' => [
+                ['category_names' => ['charge']],
+            ],
+        ],
+        'drones_fighters' => [
+            'label' => 'Drones & Fighters',
+            'description' => 'Drone bays, carrier support, and fighter wings used in doctrine fits.',
+            'default' => true,
+            'clauses' => [
+                ['category_names' => ['drone', 'fighter']],
+            ],
+        ],
+        'fuel_structures' => [
+            'label' => 'Fuel & Structures',
+            'description' => 'Structure hulls, deployables, and operational fuel inputs for alliance infrastructure.',
+            'default' => true,
+            'clauses' => [
+                ['category_names' => ['structure', 'deployable', 'starbase']],
+                ['category_names' => ['charge'], 'group_keywords' => ['fuel', 'isotope', 'strontium', 'liquid ozone', 'heavy water']],
+                ['category_names' => ['charge'], 'market_group_keywords' => ['fuel']],
+            ],
+        ],
+        'boosters' => [
+            'label' => 'Boosters',
+            'description' => 'Combat and support boosters surfaced separately from general implants.',
+            'default' => true,
+            'clauses' => [
+                ['category_names' => ['implant'], 'group_keywords' => ['booster']],
+                ['category_names' => ['implant'], 'market_group_keywords' => ['booster']],
+            ],
+        ],
+        'industry' => [
+            'label' => 'Industry',
+            'description' => 'Optional manufacturing and input chains for blueprints, materials, and components.',
+            'default' => false,
+            'clauses' => [
+                ['category_names' => ['blueprint']],
+                ['category_names' => ['commodity', 'planetary commodities'], 'market_group_keywords' => ['planetary', 'component', 'reaction', 'salvage', 'materials']],
+            ],
+        ],
+    ];
+}
+
+function item_scope_noise_filter_definitions(): array
+{
+    return [
+        'exclude_commodities_consumer_goods' => [
+            'label' => 'Exclude commodities / consumer goods',
+            'description' => 'Suppress commodity-style goods and planetary trade cargo by category and market taxonomy.',
+            'default' => true,
+            'clauses' => [
+                ['category_names' => ['commodity', 'planetary commodities']],
+                ['market_group_keywords' => ['commodity', 'consumer goods', 'trade goods', 'planetary']],
+            ],
+        ],
+        'exclude_civilian_items' => [
+            'label' => 'Exclude civilian items',
+            'description' => 'Remove tutorial and civilian equipment from logistics views.',
+            'default' => true,
+            'clauses' => [
+                ['group_keywords' => ['civilian']],
+                ['market_group_keywords' => ['civilian']],
+                ['type_name_keywords' => ['civilian']],
+            ],
+        ],
+        'exclude_blueprints' => [
+            'label' => 'Exclude blueprints',
+            'description' => 'Filter blueprint categories unless Industry mode is explicitly enabled.',
+            'default' => true,
+            'clauses' => [
+                ['category_names' => ['blueprint']],
+                ['market_group_keywords' => ['blueprint']],
+            ],
+        ],
+        'exclude_skins' => [
+            'label' => 'Exclude skins',
+            'description' => 'Remove cosmetic SKIN inventory and cosmetic market branches.',
+            'default' => true,
+            'clauses' => [
+                ['category_names' => ['skin', 'skins']],
+                ['market_group_keywords' => ['skin']],
+                ['group_keywords' => ['skin']],
+            ],
+        ],
+        'exclude_non_market_mission_items' => [
+            'label' => 'Exclude mission / non-market / irrelevant items',
+            'description' => 'Suppress unpublished, unmarketed, and mission-only inventory that should not drive alliance logistics.',
+            'default' => true,
+            'clauses' => [
+                ['requires_missing_market_group' => true],
+                ['market_group_keywords' => ['mission']],
+            ],
+        ],
+    ];
 }
 
 function item_scope_catalog(): array
@@ -336,6 +519,8 @@ function item_scope_catalog(): array
             'type_count' => (int) ($row['type_count'] ?? 0),
         ];
     }
+
+    $metaGroups = array_intersect_key($metaGroups, array_flip([1, 2, 4, 5, 6]));
     ksort($metaGroups);
     $catalog['meta_groups'] = array_values($metaGroups);
 
@@ -354,6 +539,23 @@ function item_scope_market_group_parent_index(?array $catalog = null): array
         }
 
         $index[$marketGroupId] = (int) ($row['parent_group_id'] ?? 0);
+    }
+
+    return $index;
+}
+
+function item_scope_market_group_name_index(?array $catalog = null): array
+{
+    $catalog ??= item_scope_catalog();
+    $index = [];
+
+    foreach ((array) ($catalog['market_groups'] ?? []) as $row) {
+        $marketGroupId = (int) ($row['market_group_id'] ?? 0);
+        if ($marketGroupId <= 0) {
+            continue;
+        }
+
+        $index[$marketGroupId] = (string) ($row['market_group_name'] ?? '');
     }
 
     return $index;
@@ -389,6 +591,7 @@ function item_scope_metadata_by_type_ids(array $typeIds): array
 
     if ($missing !== []) {
         $parentIndex = item_scope_market_group_parent_index();
+        $marketGroupNameIndex = item_scope_market_group_name_index();
         try {
             $rows = db_ref_item_scope_metadata_by_ids($missing);
         } catch (Throwable) {
@@ -405,6 +608,12 @@ function item_scope_metadata_by_type_ids(array $typeIds): array
                 continue;
             }
 
+            $marketGroupPathIds = item_scope_expand_market_group_ids(isset($row['market_group_id']) ? (int) $row['market_group_id'] : null, $parentIndex);
+            $marketGroupPathNames = array_values(array_filter(array_map(
+                static fn (int $marketGroupId): string => trim((string) ($marketGroupNameIndex[$marketGroupId] ?? '')),
+                $marketGroupPathIds
+            ), static fn (string $name): bool => $name !== ''));
+
             $cache[$typeId] = [
                 'type_id' => $typeId,
                 'type_name' => (string) ($row['type_name'] ?? ''),
@@ -417,7 +626,8 @@ function item_scope_metadata_by_type_ids(array $typeIds): array
                 'meta_group_id' => isset($row['meta_group_id']) ? (int) $row['meta_group_id'] : null,
                 'meta_group_name' => (string) ($row['meta_group_name'] ?? ''),
                 'published' => (int) ($row['published'] ?? 0) === 1,
-                'market_group_path_ids' => item_scope_expand_market_group_ids(isset($row['market_group_id']) ? (int) $row['market_group_id'] : null, $parentIndex),
+                'market_group_path_ids' => $marketGroupPathIds,
+                'market_group_path_names' => $marketGroupPathNames,
             ];
         }
     }
@@ -432,10 +642,103 @@ function item_scope_metadata_by_type_ids(array $typeIds): array
     return $resolved;
 }
 
-function item_scope_has_broad_includes(array $config): bool
+function item_scope_normalize_token(string $value): string
 {
-    return $config['mode'] === 'allow_list'
-        || $config['include_category_ids'] !== []
+    return trim(mb_strtolower($value));
+}
+
+function item_scope_text_contains_keywords(array $texts, array $keywords): bool
+{
+    $keywords = array_values(array_filter(array_map(static fn (string $keyword): string => item_scope_normalize_token($keyword), $keywords), static fn (string $keyword): bool => $keyword !== ''));
+    if ($keywords === []) {
+        return true;
+    }
+
+    foreach ($texts as $text) {
+        $normalized = item_scope_normalize_token((string) $text);
+        if ($normalized === '') {
+            continue;
+        }
+
+        foreach ($keywords as $keyword) {
+            if (str_contains($normalized, $keyword)) {
+                return true;
+            }
+        }
+    }
+
+    return false;
+}
+
+function item_scope_metadata_matches_clause(array $metadata, array $clause): bool
+{
+    $categoryNames = array_map(static fn (string $name): string => item_scope_normalize_token($name), (array) ($clause['category_names'] ?? []));
+    $categoryName = item_scope_normalize_token((string) ($metadata['category_name'] ?? ''));
+    if ($categoryNames !== [] && !in_array($categoryName, $categoryNames, true)) {
+        return false;
+    }
+
+    if (($clause['requires_missing_market_group'] ?? false) === true && ($metadata['market_group_id'] ?? null) !== null) {
+        return false;
+    }
+
+    $groupTexts = [(string) ($metadata['group_name'] ?? '')];
+    $marketTexts = array_merge([(string) ($metadata['market_group_name'] ?? '')], (array) ($metadata['market_group_path_names'] ?? []));
+    $typeTexts = [(string) ($metadata['type_name'] ?? '')];
+
+    if (!item_scope_text_contains_keywords($groupTexts, (array) ($clause['group_keywords'] ?? []))) {
+        return false;
+    }
+    if (!item_scope_text_contains_keywords($marketTexts, (array) ($clause['market_group_keywords'] ?? []))) {
+        return false;
+    }
+    if (!item_scope_text_contains_keywords($typeTexts, (array) ($clause['type_name_keywords'] ?? []))) {
+        return false;
+    }
+
+    if (($clause['exclude_group_keywords'] ?? []) !== [] && item_scope_text_contains_keywords($groupTexts, (array) $clause['exclude_group_keywords'])) {
+        return false;
+    }
+    if (($clause['exclude_market_group_keywords'] ?? []) !== [] && item_scope_text_contains_keywords($marketTexts, (array) $clause['exclude_market_group_keywords'])) {
+        return false;
+    }
+    if (($clause['exclude_type_name_keywords'] ?? []) !== [] && item_scope_text_contains_keywords($typeTexts, (array) $clause['exclude_type_name_keywords'])) {
+        return false;
+    }
+
+    return true;
+}
+
+function item_scope_metadata_matches_definition(array $metadata, array $definition): bool
+{
+    foreach ((array) ($definition['clauses'] ?? []) as $clause) {
+        if (item_scope_metadata_matches_clause($metadata, (array) $clause)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+function item_scope_matches_operational_category(array $metadata, string $key): bool
+{
+    $definitions = item_scope_operational_definitions();
+    $definition = $definitions[$key] ?? null;
+
+    return is_array($definition) ? item_scope_metadata_matches_definition($metadata, $definition) : false;
+}
+
+function item_scope_matches_noise_filter(array $metadata, string $key): bool
+{
+    $definitions = item_scope_noise_filter_definitions();
+    $definition = $definitions[$key] ?? null;
+
+    return is_array($definition) ? item_scope_metadata_matches_definition($metadata, $definition) : false;
+}
+
+function item_scope_has_advanced_includes(array $config): bool
+{
+    return $config['include_category_ids'] !== []
         || $config['include_group_ids'] !== []
         || $config['include_market_group_ids'] !== []
         || $config['include_meta_group_ids'] !== [];
@@ -465,11 +768,24 @@ function item_scope_metadata_matches(array $metadata, array $config, string $pre
         || ($metadata['meta_group_id'] !== null && in_array((int) $metadata['meta_group_id'], $config[$prefix . '_meta_group_ids'], true));
 }
 
+function item_scope_has_meta_group_catalog_data(?array $catalog = null): bool
+{
+    $catalog ??= item_scope_catalog();
+
+    foreach ((array) ($catalog['meta_groups'] ?? []) as $row) {
+        if ((int) ($row['type_count'] ?? 0) > 0) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 function item_scope_type_metadata_in_scope(array $metadata, ?array $config = null): bool
 {
     $config ??= item_scope_config();
     $typeId = (int) ($metadata['type_id'] ?? 0);
-    if ($typeId <= 0) {
+    if ($typeId <= 0 || !((bool) ($metadata['published'] ?? false))) {
         return false;
     }
 
@@ -481,8 +797,30 @@ function item_scope_type_metadata_in_scope(array $metadata, ?array $config = nul
         return false;
     }
 
-    $included = item_scope_has_broad_includes($config) ? item_scope_metadata_matches($metadata, $config, 'include') : true;
-    if (!$included) {
+    foreach ($config['noise_filter_keys'] as $noiseKey) {
+        if (item_scope_matches_noise_filter($metadata, $noiseKey)) {
+            return false;
+        }
+    }
+
+    $tierFilterActive = $config['tier_meta_group_ids'] !== [] && item_scope_has_meta_group_catalog_data();
+    if ($tierFilterActive) {
+        $metaGroupId = isset($metadata['meta_group_id']) ? (int) $metadata['meta_group_id'] : null;
+        if ($metaGroupId === null || !in_array($metaGroupId, $config['tier_meta_group_ids'], true)) {
+            return false;
+        }
+    }
+
+    $operationalMatch = false;
+    foreach ($config['operational_category_keys'] as $categoryKey) {
+        if (item_scope_matches_operational_category($metadata, (string) $categoryKey)) {
+            $operationalMatch = true;
+            break;
+        }
+    }
+
+    $advancedIncludeMatch = item_scope_metadata_matches($metadata, $config, 'include');
+    if ($config['mode'] === 'allow_list' && !$operationalMatch && !$advancedIncludeMatch) {
         return false;
     }
 
@@ -594,7 +932,10 @@ function item_scope_settings_payload_from_request(array $request): array
 
     return [
         'settings' => [
-            'item_scope_mode' => item_scope_normalize_mode((string) ($request['item_scope_mode'] ?? 'allow_all')),
+            'item_scope_mode' => item_scope_normalize_mode((string) ($request['item_scope_mode'] ?? 'allow_list')),
+            'item_scope_operational_category_keys' => item_scope_encode_string_list((array) ($request['item_scope_operational_category_keys'] ?? [])),
+            'item_scope_tier_meta_group_ids' => item_scope_encode_int_list((array) ($request['item_scope_tier_meta_group_ids'] ?? [])),
+            'item_scope_noise_filter_keys' => item_scope_encode_string_list((array) ($request['item_scope_noise_filter_keys'] ?? [])),
             'item_scope_include_category_ids' => item_scope_encode_int_list((array) ($request['item_scope_include_category_ids'] ?? [])),
             'item_scope_exclude_category_ids' => item_scope_encode_int_list((array) ($request['item_scope_exclude_category_ids'] ?? [])),
             'item_scope_include_group_ids' => item_scope_encode_int_list((array) ($request['item_scope_include_group_ids'] ?? [])),
@@ -616,38 +957,46 @@ function item_scope_settings_payload_from_request(array $request): array
 function item_scope_summary_lines(array $config, ?array $catalog = null): array
 {
     $catalog ??= item_scope_catalog();
-    $hasBroadIncludes = item_scope_has_broad_includes($config);
-    $labelMaps = [
-        'include_category_ids' => array_column((array) ($catalog['categories'] ?? []), 'category_name', 'category_id'),
-        'exclude_category_ids' => array_column((array) ($catalog['categories'] ?? []), 'category_name', 'category_id'),
-        'include_group_ids' => array_column((array) ($catalog['groups'] ?? []), 'group_name', 'group_id'),
-        'exclude_group_ids' => array_column((array) ($catalog['groups'] ?? []), 'group_name', 'group_id'),
-        'include_market_group_ids' => array_column((array) ($catalog['market_groups'] ?? []), 'market_group_name', 'market_group_id'),
-        'exclude_market_group_ids' => array_column((array) ($catalog['market_groups'] ?? []), 'market_group_name', 'market_group_id'),
-        'include_meta_group_ids' => array_column((array) ($catalog['meta_groups'] ?? []), 'meta_group_name', 'meta_group_id'),
-        'exclude_meta_group_ids' => array_column((array) ($catalog['meta_groups'] ?? []), 'meta_group_name', 'meta_group_id'),
-    ];
+    $operationalDefinitions = item_scope_operational_definitions();
+    $noiseDefinitions = item_scope_noise_filter_definitions();
+    $tierLabels = array_column((array) ($catalog['meta_groups'] ?? []), 'meta_group_name', 'meta_group_id');
 
-    $lines = [
-        $hasBroadIncludes
-            ? 'Broad include rules are active. Items must match at least one include rule unless an explicit type override says otherwise.'
-            : 'No broad include rules are active. All published items remain in scope unless excluded.',
-    ];
-
-    foreach ($labelMaps as $key => $labels) {
-        $ids = item_scope_decode_int_list($config[$key] ?? []);
-        if ($ids === []) {
-            continue;
+    $operationalLabels = [];
+    foreach ($config['operational_category_keys'] as $key) {
+        if (isset($operationalDefinitions[$key])) {
+            $operationalLabels[] = (string) $operationalDefinitions[$key]['label'];
         }
-
-        $names = array_map(static fn (int $id): string => (string) ($labels[$id] ?? ('#' . $id)), array_slice($ids, 0, 6));
-        if (count($ids) > 6) {
-            $names[] = '+' . (count($ids) - 6) . ' more';
-        }
-
-        $lines[] = ucfirst(str_replace('_ids', '', str_replace('_', ' ', $key))) . ': ' . implode(', ', $names) . '.';
     }
 
+    $noiseLabels = [];
+    foreach ($config['noise_filter_keys'] as $key) {
+        if (isset($noiseDefinitions[$key])) {
+            $noiseLabels[] = (string) $noiseDefinitions[$key]['label'];
+        }
+    }
+
+    $tierNames = array_map(static fn (int $id): string => (string) ($tierLabels[$id] ?? ('Meta Group #' . $id)), $config['tier_meta_group_ids']);
+    $lines = [
+        $config['mode'] === 'allow_list'
+            ? 'Operational allow-list mode is active. Items must match a selected operational category or advanced include before they flow into alliance analytics.'
+            : 'Allow-all mode is active. Published items stay visible unless blocked by the shared noise filters, tier toggles, or advanced exclusions.',
+        $operationalLabels !== []
+            ? 'Operational categories: ' . implode(', ', $operationalLabels) . '.'
+            : 'Operational categories: none selected.',
+        $tierNames !== []
+            ? 'Meta tiers enabled: ' . implode(', ', $tierNames) . '.'
+            : 'Meta tiers enabled: all tiers.',
+        $noiseLabels !== []
+            ? 'Noise filters enabled: ' . implode(', ', $noiseLabels) . '.'
+            : 'Noise filters enabled: none.',
+    ];
+
+    if ($config['include_group_ids'] !== [] || $config['include_market_group_ids'] !== []) {
+        $lines[] = 'Advanced includes are active for specific groups or market groups.';
+    }
+    if ($config['exclude_group_ids'] !== [] || $config['exclude_market_group_ids'] !== []) {
+        $lines[] = 'Advanced excludes are active for specific groups or market groups.';
+    }
     if ($config['include_type_ids'] !== []) {
         $lines[] = 'Explicit item includes: ' . number_format(count($config['include_type_ids'])) . '.';
     }
@@ -662,11 +1011,14 @@ function item_scope_view_model(): array
 {
     $config = item_scope_config();
     $catalog = item_scope_catalog();
+    $operationalDefinitions = item_scope_operational_definitions();
+    $noiseDefinitions = item_scope_noise_filter_definitions();
 
     $includeOverrides = item_scope_metadata_by_type_ids($config['include_type_ids']);
     $excludeOverrides = item_scope_metadata_by_type_ids($config['exclude_type_ids']);
     $publishedCount = 0;
     $inScopeCount = 0;
+    $metadataByType = [];
 
     try {
         $publishedTypeIds = db_ref_item_type_ids_published();
@@ -680,6 +1032,61 @@ function item_scope_view_model(): array
     } catch (Throwable) {
         $publishedCount = 0;
         $inScopeCount = 0;
+        $metadataByType = [];
+    }
+
+    $operationalRows = [];
+    foreach ($operationalDefinitions as $key => $definition) {
+        $matchedCount = 0;
+        foreach ($metadataByType as $metadata) {
+            if (item_scope_matches_operational_category($metadata, $key)) {
+                $matchedCount++;
+            }
+        }
+
+        $operationalRows[] = [
+            'key' => $key,
+            'label' => (string) ($definition['label'] ?? $key),
+            'description' => (string) ($definition['description'] ?? ''),
+            'selected' => in_array($key, $config['operational_category_keys'], true),
+            'default' => (bool) ($definition['default'] ?? false),
+            'type_count' => $matchedCount,
+        ];
+    }
+
+    $tierRows = [];
+    $tierCountById = array_column((array) ($catalog['meta_groups'] ?? []), 'type_count', 'meta_group_id');
+    foreach ((array) ($catalog['meta_groups'] ?? []) as $row) {
+        $metaGroupId = (int) ($row['meta_group_id'] ?? 0);
+        if ($metaGroupId <= 0) {
+            continue;
+        }
+
+        $tierRows[] = [
+            'meta_group_id' => $metaGroupId,
+            'meta_group_name' => (string) ($row['meta_group_name'] ?? ('Meta Group #' . $metaGroupId)),
+            'selected' => in_array($metaGroupId, $config['tier_meta_group_ids'], true),
+            'type_count' => (int) ($tierCountById[$metaGroupId] ?? 0),
+        ];
+    }
+
+    $noiseRows = [];
+    foreach ($noiseDefinitions as $key => $definition) {
+        $matchedCount = 0;
+        foreach ($metadataByType as $metadata) {
+            if (item_scope_matches_noise_filter($metadata, $key)) {
+                $matchedCount++;
+            }
+        }
+
+        $noiseRows[] = [
+            'key' => $key,
+            'label' => (string) ($definition['label'] ?? $key),
+            'description' => (string) ($definition['description'] ?? ''),
+            'selected' => in_array($key, $config['noise_filter_keys'], true),
+            'default' => (bool) ($definition['default'] ?? false),
+            'type_count' => $matchedCount,
+        ];
     }
 
     return [
@@ -691,6 +1098,9 @@ function item_scope_view_model(): array
             'in_scope_count' => $inScopeCount,
             'excluded_count' => max(0, $publishedCount - $inScopeCount),
         ],
+        'operational_rows' => $operationalRows,
+        'tier_rows' => $tierRows,
+        'noise_rows' => $noiseRows,
         'override_rows' => [
             'include' => array_values($includeOverrides),
             'exclude' => array_values($excludeOverrides),
@@ -7392,6 +7802,8 @@ function static_data_extract_reference_rows_from_jsonl_archive(string $archivePa
         'groups.jsonl' => 'groups',
         'invgroups.jsonl' => 'groups',
         'marketgroups.jsonl' => 'market_groups',
+        'metatypes.jsonl' => 'meta_types',
+        'invmetatypes.jsonl' => 'meta_types',
         'metagroups.jsonl' => 'meta_groups',
         'invmetagroups.jsonl' => 'meta_groups',
         'types.jsonl' => 'types',
@@ -7405,6 +7817,7 @@ function static_data_extract_reference_rows_from_jsonl_archive(string $archivePa
         'categories' => [],
         'groups' => [],
         'market_groups' => [],
+        'meta_types' => [],
         'meta_groups' => [],
         'types' => [],
     ];
@@ -7551,16 +7964,27 @@ function static_data_extract_reference_rows_from_jsonl_archive(string $archivePa
                 continue;
             }
 
+            if ($targetKey === 'meta_types') {
+                $typeId = (int) static_data_record_value($row, ['typeID', 'type_id']);
+                $metaGroupId = (int) static_data_record_value($row, ['metaGroupID', 'meta_group_id']);
+                if ($typeId > 0 && $metaGroupId > 0) {
+                    $records['meta_types'][$typeId] = $metaGroupId;
+                }
+                continue;
+            }
+
             if ($targetKey === 'types') {
                 $typeId = (int) static_data_record_value($row, ['typeID', 'type_id', '_key']);
                 $groupId = (int) static_data_record_value($row, ['groupID', 'group_id']);
                 $name = static_data_localized_text(static_data_record_value($row, ['typeName', 'name']));
                 if ($typeId > 0 && $groupId > 0 && $name !== null) {
+                    $categoryId = (int) static_data_record_value($row, ['categoryID', 'category_id'], 0);
                     $marketGroupId = (int) static_data_record_value($row, ['marketGroupID', 'market_group_id', '_key'], 0);
-                    $metaGroupId = (int) static_data_record_value($row, ['metaGroupID', 'meta_group_id'], 0);
+                    $metaGroupId = (int) static_data_record_value($row, ['metaGroupID', 'meta_group_id'], (int) ($records['meta_types'][$typeId] ?? 0));
                     $publishedRaw = static_data_record_value($row, ['published'], 0);
                     $records['types'][] = [
                         'type_id' => $typeId,
+                        'category_id' => $categoryId,
                         'group_id' => $groupId,
                         'market_group_id' => $marketGroupId > 0 ? $marketGroupId : null,
                         'meta_group_id' => $metaGroupId > 0 ? $metaGroupId : null,
@@ -7581,6 +8005,28 @@ function static_data_extract_reference_rows_from_jsonl_archive(string $archivePa
     if ($records['regions'] === [] || $records['constellations'] === [] || $records['systems'] === [] || $records['market_groups'] === [] || $records['types'] === []) {
         throw new RuntimeException('Static-data archive is missing one or more required JSONL datasets for import.');
     }
+
+    $groupCategoryById = [];
+    foreach ($records['groups'] as $groupRow) {
+        $groupId = (int) ($groupRow['group_id'] ?? 0);
+        $categoryId = (int) ($groupRow['category_id'] ?? 0);
+        if ($groupId > 0 && $categoryId > 0) {
+            $groupCategoryById[$groupId] = $categoryId;
+        }
+    }
+
+    foreach ($records['types'] as &$typeRow) {
+        $categoryId = (int) ($typeRow['category_id'] ?? 0);
+        if ($categoryId <= 0) {
+            $typeRow['category_id'] = (int) ($groupCategoryById[(int) ($typeRow['group_id'] ?? 0)] ?? 0);
+        }
+    }
+    unset($typeRow);
+
+    $records['types'] = array_values(array_filter(
+        $records['types'],
+        static fn (array $row): bool => (int) ($row['category_id'] ?? 0) > 0
+    ));
 
     return $records;
 }
