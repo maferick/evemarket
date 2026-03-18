@@ -49,6 +49,8 @@ README.md
    mysql -u root -p evemarket < database/schema.sql
    ```
 
+> Upgrading an existing installation? Apply schema changes before the next sync run, for example: `ALTER TABLE market_hub_local_history_daily MODIFY spread_percent DECIMAL(20,4) NULL;`.
+
 2. **Set environment variables** (example)
    ```bash
    export APP_ENV=development
