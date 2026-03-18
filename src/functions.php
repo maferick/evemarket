@@ -5630,11 +5630,13 @@ function sync_killmail_r2z2_stream(string $runMode = 'incremental'): array
         $sequenceProbeStatus = (int) ($sequenceProbe['status'] ?? 0);
         $cursor = db_sync_cursor_get($datasetKey);
         $lastSavedSequence = $cursor !== null && preg_match('/^[0-9]+$/', $cursor) === 1 ? (int) $cursor : null;
+        $pollBackoffSeconds = killmail_poll_sleep_seconds();
 
         if ($sequenceProbeStatus === 403 || $sequenceProbeStatus === 429) {
             $cursorEnd = $cursor !== null ? $cursor : '0';
             $checksum = sync_checksum([0, 0, $cursorEnd]);
-            $warnings = ['R2Z2 sequence probe returned status ' . $sequenceProbeStatus . '; respecting feed backoff.'];
+            $warnings = ['R2Z2 sequence probe returned status ' . $sequenceProbeStatus . '; worker hit rate limiting and is backing off for ' . $pollBackoffSeconds . 's.'];
+            sleep($pollBackoffSeconds);
             $meta = [
                 'last_saved_sequence_before_run' => $lastSavedSequence,
                 'latest_remote_sequence' => null,
@@ -5693,11 +5695,14 @@ function sync_killmail_r2z2_stream(string $runMode = 'incremental'): array
 
             if ($status === 404) {
                 $sequence404s++;
+                $warnings[] = 'R2Z2 returned 404 for sequence ' . $nextSequence . '; worker reached end-of-feed and is backing off for ' . $pollBackoffSeconds . 's.';
+                sleep($pollBackoffSeconds);
                 break;
             }
 
             if ($status === 429 || $status === 403) {
-                $warnings[] = 'R2Z2 returned status ' . $status . '; respecting feed backoff.';
+                $warnings[] = 'R2Z2 returned status ' . $status . ' for sequence ' . $nextSequence . '; worker hit rate limiting and is backing off for ' . $pollBackoffSeconds . 's.';
+                sleep($pollBackoffSeconds);
                 break;
             }
 
