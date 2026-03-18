@@ -2924,6 +2924,38 @@ function doctrine_db_ensure_schema(): void
          WHERE doctrine_group_id IS NOT NULL'
     );
 
+    db()->exec(
+        'CREATE TABLE IF NOT EXISTS doctrine_fit_snapshots (
+            id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+            fit_id INT UNSIGNED NOT NULL,
+            snapshot_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            complete_fits_available INT UNSIGNED NOT NULL DEFAULT 0,
+            target_fits INT UNSIGNED NOT NULL DEFAULT 0,
+            fit_gap INT UNSIGNED NOT NULL DEFAULT 0,
+            bottleneck_type_id INT UNSIGNED DEFAULT NULL,
+            bottleneck_quantity INT NOT NULL DEFAULT 0,
+            readiness_state VARCHAR(32) NOT NULL DEFAULT "unknown",
+            recommendation_code VARCHAR(64) NOT NULL DEFAULT "observe",
+            recommendation_text VARCHAR(255) NOT NULL DEFAULT "",
+            loss_24h INT UNSIGNED NOT NULL DEFAULT 0,
+            loss_7d INT UNSIGNED NOT NULL DEFAULT 0,
+            local_coverage_pct DECIMAL(6,2) NOT NULL DEFAULT 0.00,
+            depletion_24h INT NOT NULL DEFAULT 0,
+            depletion_7d INT NOT NULL DEFAULT 0,
+            total_score DECIMAL(8,2) NOT NULL DEFAULT 0.00,
+            score_loss_pressure DECIMAL(8,2) NOT NULL DEFAULT 0.00,
+            score_stock_gap DECIMAL(8,2) NOT NULL DEFAULT 0.00,
+            score_depletion DECIMAL(8,2) NOT NULL DEFAULT 0.00,
+            score_bottleneck DECIMAL(8,2) NOT NULL DEFAULT 0.00,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            KEY idx_fit_snapshot_time (fit_id, snapshot_time),
+            KEY idx_snapshot_time (snapshot_time),
+            KEY idx_readiness_state (readiness_state),
+            KEY idx_recommendation_code (recommendation_code),
+            CONSTRAINT fk_doctrine_fit_snapshots_fit FOREIGN KEY (fit_id) REFERENCES doctrine_fits(id) ON DELETE CASCADE
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4'
+    );
+
     $ensured = true;
 }
 
@@ -3243,6 +3275,111 @@ function db_doctrine_fit_items_by_fit_ids(array $fitIds): array
          ORDER BY dfi.doctrine_fit_id ASC, dfi.line_number ASC, dfi.id ASC",
         $fitIds
     );
+}
+
+function db_doctrine_fit_latest_snapshots(array $fitIds = []): array
+{
+    doctrine_db_ensure_schema();
+
+    $params = [];
+    $fitFilterSql = '';
+    if ($fitIds !== []) {
+        $fitIds = array_values(array_unique(array_filter(array_map('intval', $fitIds), static fn (int $id): bool => $id > 0)));
+        if ($fitIds === []) {
+            return [];
+        }
+
+        $placeholders = implode(',', array_fill(0, count($fitIds), '?'));
+        $fitFilterSql = " AND dfs.fit_id IN ({$placeholders})";
+        $params = $fitIds;
+    }
+
+    return db_select(
+        "SELECT dfs.*
+         FROM doctrine_fit_snapshots dfs
+         INNER JOIN (
+            SELECT fit_id, MAX(id) AS latest_id
+            FROM doctrine_fit_snapshots
+            GROUP BY fit_id
+         ) latest ON latest.latest_id = dfs.id
+         WHERE 1 = 1{$fitFilterSql}
+         ORDER BY dfs.snapshot_time DESC, dfs.id DESC",
+        $params
+    );
+}
+
+function db_doctrine_fit_snapshot_history(int $fitId, int $limit = 20): array
+{
+    doctrine_db_ensure_schema();
+
+    $safeFitId = max(0, $fitId);
+    $safeLimit = max(1, min($limit, 90));
+    if ($safeFitId <= 0) {
+        return [];
+    }
+
+    return db_select(
+        "SELECT *
+         FROM doctrine_fit_snapshots
+         WHERE fit_id = ?
+         ORDER BY snapshot_time DESC, id DESC
+         LIMIT {$safeLimit}",
+        [$safeFitId]
+    );
+}
+
+function db_doctrine_fit_snapshot_insert(array $row): int
+{
+    doctrine_db_ensure_schema();
+
+    db_execute(
+        'INSERT INTO doctrine_fit_snapshots (
+            fit_id,
+            snapshot_time,
+            complete_fits_available,
+            target_fits,
+            fit_gap,
+            bottleneck_type_id,
+            bottleneck_quantity,
+            readiness_state,
+            recommendation_code,
+            recommendation_text,
+            loss_24h,
+            loss_7d,
+            local_coverage_pct,
+            depletion_24h,
+            depletion_7d,
+            total_score,
+            score_loss_pressure,
+            score_stock_gap,
+            score_depletion,
+            score_bottleneck
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        [
+            (int) ($row['fit_id'] ?? 0),
+            (string) ($row['snapshot_time'] ?? gmdate('Y-m-d H:i:s')),
+            max(0, (int) ($row['complete_fits_available'] ?? 0)),
+            max(0, (int) ($row['target_fits'] ?? 0)),
+            max(0, (int) ($row['fit_gap'] ?? 0)),
+            isset($row['bottleneck_type_id']) && (int) $row['bottleneck_type_id'] > 0 ? (int) $row['bottleneck_type_id'] : null,
+            (int) ($row['bottleneck_quantity'] ?? 0),
+            mb_substr(trim((string) ($row['readiness_state'] ?? 'unknown')), 0, 32),
+            mb_substr(trim((string) ($row['recommendation_code'] ?? 'observe')), 0, 64),
+            mb_substr(trim((string) ($row['recommendation_text'] ?? '')), 0, 255),
+            max(0, (int) ($row['loss_24h'] ?? 0)),
+            max(0, (int) ($row['loss_7d'] ?? 0)),
+            round((float) ($row['local_coverage_pct'] ?? 0.0), 2),
+            (int) ($row['depletion_24h'] ?? 0),
+            (int) ($row['depletion_7d'] ?? 0),
+            round((float) ($row['total_score'] ?? 0.0), 2),
+            round((float) ($row['score_loss_pressure'] ?? 0.0), 2),
+            round((float) ($row['score_stock_gap'] ?? 0.0), 2),
+            round((float) ($row['score_depletion'] ?? 0.0), 2),
+            round((float) ($row['score_bottleneck'] ?? 0.0), 2),
+        ]
+    );
+
+    return (int) db()->lastInsertId();
 }
 
 function db_doctrine_fit_replace_items(int $fitId, array $items): void

@@ -10,6 +10,8 @@ $summary = $data['summary'] ?? [];
 $groups = $data['groups'] ?? [];
 $notReadyFits = $data['not_ready_fits'] ?? [];
 $topMissingItems = $data['top_missing_items'] ?? [];
+$topBottlenecks = $data['top_bottlenecks'] ?? [];
+$highestPriorityRestockItems = $data['highest_priority_restock_items'] ?? [];
 $ungroupedFits = $data['ungrouped_fits'] ?? [];
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
@@ -23,7 +25,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     try {
         $groupId = db_doctrine_group_create($groupName, $description);
-        supplycore_cache_bust(['doctrine', 'dashboard']);
+        doctrine_refresh_intelligence('group-create');
         flash('success', 'Doctrine group saved successfully.');
         header('Location: /doctrine/group?group_id=' . $groupId);
         exit;
@@ -156,6 +158,36 @@ include __DIR__ . '/../../src/views/partials/header.php';
                 <?php endif; ?>
             </div>
         </article>
+
+        <article class="surface-secondary">
+            <div class="section-header">
+                <div>
+                    <p class="eyebrow">Bottleneck queue</p>
+                    <h2 class="mt-2 section-title">Top doctrine bottlenecks</h2>
+                </div>
+                <span class="badge border-rose-400/20 bg-rose-500/10 text-rose-200">Critical path</span>
+            </div>
+            <div class="space-y-3">
+                <?php if ($topBottlenecks === []): ?>
+                    <div class="surface-tertiary text-sm text-slate-400">No current doctrine bottlenecks were detected.</div>
+                <?php else: ?>
+                    <?php foreach ($topBottlenecks as $row): ?>
+                        <div class="surface-tertiary">
+                            <div class="flex items-start justify-between gap-3">
+                                <div>
+                                    <p class="font-semibold text-slate-100"><?= htmlspecialchars((string) ($row['type_name'] ?? ''), ENT_QUOTES) ?></p>
+                                    <p class="mt-1 text-xs text-slate-500"><?= doctrine_format_quantity((int) ($row['doctrine_fit_count'] ?? 0)) ?> doctrine fits depend on this item</p>
+                                </div>
+                                <div class="text-right">
+                                    <p class="text-sm font-semibold text-rose-100"><?= htmlspecialchars((string) ($row['priority_score'] ?? 0), ENT_QUOTES) ?></p>
+                                    <p class="text-xs text-slate-500">priority</p>
+                                </div>
+                            </div>
+                        </div>
+                    <?php endforeach; ?>
+                <?php endif; ?>
+            </div>
+        </article>
     </aside>
 </section>
 
@@ -185,6 +217,35 @@ include __DIR__ . '/../../src/views/partials/header.php';
                         </div>
                         <div class="text-slate-500 transition group-hover:text-slate-200">›</div>
                     </a>
+                <?php endforeach; ?>
+            <?php endif; ?>
+        </div>
+    </article>
+
+    <article class="surface-secondary">
+        <div class="section-header">
+            <div>
+                <p class="eyebrow">Enabled-items layer</p>
+                <h2 class="mt-2 section-title">Highest priority restock items</h2>
+                <p class="mt-2 text-sm text-slate-400">Doctrine-linked items are ranked above general enabled items, but every in-scope item remains visible.</p>
+            </div>
+            <span class="badge border-sky-400/18 bg-sky-500/10 text-sky-100">Two-layer engine</span>
+        </div>
+        <div class="space-y-3">
+            <?php if ($highestPriorityRestockItems === []): ?>
+                <div class="surface-tertiary text-sm text-slate-400">No enabled-item restock opportunities are currently ranked.</div>
+            <?php else: ?>
+                <?php foreach (array_slice($highestPriorityRestockItems, 0, 6) as $row): ?>
+                    <div class="intelligence-row">
+                        <div class="min-w-0 flex-1">
+                            <p class="truncate text-sm font-semibold text-slate-100"><?= htmlspecialchars((string) ($row['type_name'] ?? ''), ENT_QUOTES) ?></p>
+                            <p class="mt-1 text-xs text-slate-500"><?= !empty($row['is_doctrine_item']) ? 'Doctrine-linked' : 'Enabled item' ?> · depletion <?= htmlspecialchars((string) ($row['depletion_state'] ?? 'stable'), ENT_QUOTES) ?></p>
+                        </div>
+                        <div class="text-right">
+                            <p class="text-sm font-semibold text-sky-100"><?= htmlspecialchars((string) ($row['priority_score'] ?? 0), ENT_QUOTES) ?></p>
+                            <p class="text-xs text-slate-500">priority</p>
+                        </div>
+                    </div>
                 <?php endforeach; ?>
             <?php endif; ?>
         </div>

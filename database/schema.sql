@@ -486,6 +486,36 @@ CREATE TABLE IF NOT EXISTS doctrine_fit_items (
     CONSTRAINT fk_doctrine_fit_items_fit FOREIGN KEY (doctrine_fit_id) REFERENCES doctrine_fits(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+CREATE TABLE IF NOT EXISTS doctrine_fit_snapshots (
+    id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    fit_id INT UNSIGNED NOT NULL,
+    snapshot_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    complete_fits_available INT UNSIGNED NOT NULL DEFAULT 0,
+    target_fits INT UNSIGNED NOT NULL DEFAULT 0,
+    fit_gap INT UNSIGNED NOT NULL DEFAULT 0,
+    bottleneck_type_id INT UNSIGNED DEFAULT NULL,
+    bottleneck_quantity INT NOT NULL DEFAULT 0,
+    readiness_state VARCHAR(32) NOT NULL DEFAULT 'unknown',
+    recommendation_code VARCHAR(64) NOT NULL DEFAULT 'observe',
+    recommendation_text VARCHAR(255) NOT NULL DEFAULT '',
+    loss_24h INT UNSIGNED NOT NULL DEFAULT 0,
+    loss_7d INT UNSIGNED NOT NULL DEFAULT 0,
+    local_coverage_pct DECIMAL(6,2) NOT NULL DEFAULT 0.00,
+    depletion_24h INT NOT NULL DEFAULT 0,
+    depletion_7d INT NOT NULL DEFAULT 0,
+    total_score DECIMAL(8,2) NOT NULL DEFAULT 0.00,
+    score_loss_pressure DECIMAL(8,2) NOT NULL DEFAULT 0.00,
+    score_stock_gap DECIMAL(8,2) NOT NULL DEFAULT 0.00,
+    score_depletion DECIMAL(8,2) NOT NULL DEFAULT 0.00,
+    score_bottleneck DECIMAL(8,2) NOT NULL DEFAULT 0.00,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    KEY idx_fit_snapshot_time (fit_id, snapshot_time),
+    KEY idx_snapshot_time (snapshot_time),
+    KEY idx_readiness_state (readiness_state),
+    KEY idx_recommendation_code (recommendation_code),
+    CONSTRAINT fk_doctrine_fit_snapshots_fit FOREIGN KEY (fit_id) REFERENCES doctrine_fits(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 INSERT INTO trading_stations (station_name, station_type) VALUES
     ('Rens VI - Moon 8 - Brutor Tribe Treasury', 'market'),
     ('Amarr VIII (Oris) - Emperor Family Academy', 'market'),
@@ -555,6 +585,7 @@ INSERT INTO sync_schedules (job_key, enabled, interval_seconds, next_run_at, las
     ('market_hub_current_sync', 1, 300, NULL, NULL, NULL, NULL, NULL),
     ('market_hub_historical_sync', 1, 1800, NULL, NULL, NULL, NULL, NULL),
     ('market_hub_local_history_sync', 1, 300, NULL, NULL, NULL, NULL, NULL),
+    ('doctrine_intelligence_sync', 0, 1800, NULL, NULL, NULL, NULL, NULL),
     ('killmail_r2z2_sync', 0, 60, NULL, NULL, NULL, NULL, NULL)
 ON DUPLICATE KEY UPDATE
     enabled = VALUES(enabled),

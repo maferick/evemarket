@@ -21,7 +21,7 @@ This repository establishes a clean architecture that can scale from an initial 
 - ESI cache tables (`esi_cache_namespaces`, `esi_cache_entries`) for structured `cache.esi.*` namespaces
 - Incremental sync state tables (`sync_state`, `sync_runs`) for watermark/cursor tracking and run observability
 - Reusable entity metadata cache for human-readable killmail, market, and analytics surfaces
-- Doctrine fit import workflow with EFT/BuyAll parsing, item-name cache, doctrine group pages, and alliance-vs-hub market mapping
+- Doctrine fit import workflow with EFT/BuyAll parsing, item-name cache, doctrine group pages, alliance-vs-hub market mapping, and persistent doctrine intelligence snapshots
 - Secure CSRF-protected settings forms
 - Session-based flash messaging
 
@@ -90,6 +90,7 @@ README.md
   - alliance-vs-hub market comparison summaries plus useful default result sets
   - killmail overview summaries and per-killmail detail view models
   - doctrine group/fit supply summaries
+  - doctrine snapshot-backed recommendation history and adaptive restock prioritization
   - metadata/name resolution for alliance, corporation, character, type, system, region, and structure labels
 - Redis locks are used only as a lightweight coordination layer for scheduler runners and expensive cache recomputation. Database-backed locking remains the fallback path when Redis is disabled or unavailable.
 - You can configure Redis either through environment variables or through **Settings → Data Sync → Redis performance layer**.
@@ -282,6 +283,13 @@ SupplyCore now includes a first-pass killmail intelligence ingestion foundation 
 
 Configure ingestion + tracked alliances/corporations at:
 `/settings?section=killmail-intelligence`
+
+## Doctrine Intelligence Snapshots
+
+- Doctrine recalculation persists fit-level history in `doctrine_fit_snapshots`.
+- Each recalculation stores complete-fit availability, target fits, fit gap, bottleneck item, loss pressure, depletion, readiness state, recommendation, and the driver scores behind the decision.
+- The doctrine UI uses those snapshots to explain recommendation changes, target deltas, bottleneck swaps, and trend direction over time.
+- Intended recalculation triggers are doctrine fit changes, market sync completion, killmail sync completion, and the optional scheduler job `doctrine_intelligence_sync`.
 
 
 ## Architecture Guidelines
