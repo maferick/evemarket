@@ -73,22 +73,22 @@ include __DIR__ . '/../../src/views/partials/header.php';
         <article class="surface-secondary">
             <p class="eyebrow">Readiness</p>
             <p class="mt-3 text-3xl metric-value"><?= htmlspecialchars((string) ($group['status_label'] ?? 'Gap active'), ENT_QUOTES) ?></p>
-            <p class="mt-2 text-sm text-slate-300"><?= (int) ($group['gap_fit_count'] ?? 0) === 0 ? 'All linked fits are fully covered locally.' : doctrine_format_quantity((int) ($group['gap_fit_count'] ?? 0)) . ' fits still have local supply gaps.' ?></p>
+            <p class="mt-2 text-sm text-slate-300"><?= doctrine_format_quantity((int) ($group['loss_pressure_fit_count'] ?? 0)) ?> fits need closer stock planning against recent loss pressure.</p>
         </article>
         <article class="surface-secondary">
-            <p class="eyebrow">Missing lines</p>
-            <p class="mt-3 text-3xl metric-value"><?= doctrine_format_quantity((int) ($group['missing_lines'] ?? 0)) ?></p>
-            <p class="mt-2 text-sm text-slate-300">Blocked doctrine lines across every fit in this group.</p>
+            <p class="eyebrow">Complete fits</p>
+            <p class="mt-3 text-3xl metric-value"><?= doctrine_format_quantity((int) ($group['complete_fits_available'] ?? 0)) ?></p>
+            <p class="mt-2 text-sm text-slate-300">Fleet-ready hulls that can be fielded right now from local stock.</p>
         </article>
         <article class="surface-secondary">
-            <p class="eyebrow">Missing units</p>
-            <p class="mt-3 text-3xl metric-value"><?= doctrine_format_quantity((int) ($group['total_missing_qty'] ?? 0)) ?></p>
-            <p class="mt-2 text-sm text-slate-300">Total local stock shortfall across the doctrine group.</p>
+            <p class="eyebrow">Target fits</p>
+            <p class="mt-3 text-3xl metric-value"><?= doctrine_format_quantity((int) ($group['target_fit_count'] ?? 0)) ?></p>
+            <p class="mt-2 text-sm text-slate-300">Rule-based stock target across linked fits using losses and readiness trend.</p>
         </article>
         <article class="surface-secondary">
-            <p class="eyebrow">Restock gap</p>
-            <p class="mt-3 text-3xl metric-value"><?= htmlspecialchars(market_format_isk((float) ($group['restock_gap_isk'] ?? 0.0)), ENT_QUOTES) ?></p>
-            <p class="mt-2 text-sm text-slate-300"><?= htmlspecialchars(market_format_percentage((float) ($group['coverage_percent'] ?? 0.0)), ENT_QUOTES) ?> average local coverage across linked fits.</p>
+            <p class="eyebrow">Fit gap</p>
+            <p class="mt-3 text-3xl metric-value"><?= doctrine_format_quantity((int) ($group['fit_gap_count'] ?? 0)) ?></p>
+            <p class="mt-2 text-sm text-slate-300"><?= htmlspecialchars((string) ($group['readiness_trend'] ?? 'Stable'), ENT_QUOTES) ?> across linked fits · <?= htmlspecialchars(market_format_isk((float) ($group['restock_gap_isk'] ?? 0.0)), ENT_QUOTES) ?> restock gap.</p>
         </article>
     </section>
 
@@ -137,20 +137,33 @@ include __DIR__ . '/../../src/views/partials/header.php';
                             </div>
                             <div class="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
                                 <div class="surface-tertiary">
-                                    <p class="text-xs uppercase tracking-[0.16em] text-slate-500">Missing lines</p>
-                                    <p class="mt-2 text-xl font-semibold text-amber-100"><?= doctrine_format_quantity((int) ($supply['missing_lines'] ?? 0)) ?></p>
+                                    <p class="text-xs uppercase tracking-[0.16em] text-slate-500">Complete fits</p>
+                                    <p class="mt-2 text-xl font-semibold text-slate-100"><?= doctrine_format_quantity((int) ($supply['complete_fits_available'] ?? 0)) ?></p>
                                 </div>
                                 <div class="surface-tertiary">
-                                    <p class="text-xs uppercase tracking-[0.16em] text-slate-500">Missing qty</p>
-                                    <p class="mt-2 text-xl font-semibold text-slate-100"><?= doctrine_format_quantity((int) ($supply['total_missing_qty'] ?? 0)) ?></p>
+                                    <p class="text-xs uppercase tracking-[0.16em] text-slate-500">Target fits</p>
+                                    <p class="mt-2 text-xl font-semibold text-slate-100"><?= doctrine_format_quantity((int) ($supply['recommended_target_fit_count'] ?? 0)) ?></p>
                                 </div>
                                 <div class="surface-tertiary">
-                                    <p class="text-xs uppercase tracking-[0.16em] text-slate-500">Local coverage</p>
-                                    <p class="mt-2 text-xl font-semibold text-slate-100"><?= htmlspecialchars(market_format_percentage((float) ($supply['coverage_percent'] ?? 0.0)), ENT_QUOTES) ?></p>
+                                    <p class="text-xs uppercase tracking-[0.16em] text-slate-500">Fit gap</p>
+                                    <p class="mt-2 text-xl font-semibold text-rose-200"><?= doctrine_format_quantity((int) ($supply['gap_to_target_fit_count'] ?? 0)) ?></p>
                                 </div>
                                 <div class="surface-tertiary">
-                                    <p class="text-xs uppercase tracking-[0.16em] text-slate-500">Restock gap</p>
-                                    <p class="mt-2 text-sm font-semibold text-sky-100"><?= htmlspecialchars(market_format_isk((float) ($supply['restock_gap_isk'] ?? 0.0)), ENT_QUOTES) ?></p>
+                                    <p class="text-xs uppercase tracking-[0.16em] text-slate-500">Trend</p>
+                                    <p class="mt-2 text-sm font-semibold text-sky-100"><?= htmlspecialchars((string) ($supply['readiness_trend'] ?? 'Trend unavailable'), ENT_QUOTES) ?></p>
+                                    <p class="mt-1 text-xs text-slate-500"><?= htmlspecialchars((string) ($supply['planning_context'] ?? ''), ENT_QUOTES) ?></p>
+                                </div>
+                            </div>
+                            <div class="mt-3 grid gap-3 xl:grid-cols-2">
+                                <div class="surface-tertiary">
+                                    <p class="text-xs uppercase tracking-[0.16em] text-slate-500">Bottleneck</p>
+                                    <p class="mt-2 text-sm font-semibold text-slate-100"><?= htmlspecialchars((string) ($supply['bottleneck_item_name'] ?? 'Unavailable'), ENT_QUOTES) ?></p>
+                                    <p class="mt-1 text-xs text-slate-500"><?= doctrine_format_quantity((int) ($supply['bottleneck_quantity'] ?? 0)) ?> local for <?= doctrine_format_quantity((int) ($supply['bottleneck_required_quantity'] ?? 0)) ?> required per fit</p>
+                                </div>
+                                <div class="surface-tertiary">
+                                    <p class="text-xs uppercase tracking-[0.16em] text-slate-500">Loss-aware view</p>
+                                    <p class="mt-2 text-sm font-semibold text-slate-100"><?= doctrine_format_quantity((int) ($supply['recent_hull_losses_7d'] ?? 0)) ?> hull losses · <?= doctrine_format_quantity((int) ($supply['recent_item_fit_losses_7d'] ?? 0)) ?> fit-equivalent item losses</p>
+                                    <p class="mt-1 text-xs text-slate-500"><?= htmlspecialchars((string) ($supply['restock_trend'] ?? 'Restock trend unavailable'), ENT_QUOTES) ?></p>
                                 </div>
                             </div>
                         </a>

@@ -8452,6 +8452,448 @@ function doctrine_supply_summary(array $rows): array
     ];
 }
 
+function doctrine_complete_fit_availability(array $rows): array
+{
+    $completeFits = null;
+    $bottleneck = null;
+
+    foreach ($rows as $row) {
+        $requiredQty = max(1, (int) ($row['quantity'] ?? 1));
+        $localQty = max(0, (int) ($row['local_available_qty'] ?? 0));
+        $fitCount = intdiv($localQty, $requiredQty);
+
+        if (
+            $completeFits === null
+            || $fitCount < $completeFits
+            || (
+                $fitCount === $completeFits
+                && $bottleneck !== null
+                && $localQty < (int) ($bottleneck['local_qty'] ?? PHP_INT_MAX)
+            )
+        ) {
+            $completeFits = $fitCount;
+            $bottleneck = [
+                'item_name' => (string) ($row['item_name'] ?? 'Unknown item'),
+                'type_id' => isset($row['type_id']) ? (int) $row['type_id'] : null,
+                'local_qty' => $localQty,
+                'required_qty' => $requiredQty,
+                'complete_fit_limit' => $fitCount,
+            ];
+        }
+    }
+
+    if ($completeFits === null || $bottleneck === null) {
+        return [
+            'complete_fits_available' => 0,
+            'bottleneck_item_name' => null,
+            'bottleneck_type_id' => null,
+            'bottleneck_quantity' => 0,
+            'bottleneck_required_quantity' => 0,
+            'minimum_stock_constraint' => 0,
+            'constraint_label' => 'No doctrine items mapped yet.',
+        ];
+    }
+
+    $bottleneckItemName = trim((string) ($bottleneck['item_name'] ?? ''));
+    $bottleneckQty = max(0, (int) ($bottleneck['local_qty'] ?? 0));
+    $bottleneckRequired = max(1, (int) ($bottleneck['required_qty'] ?? 1));
+    $resolvedFits = max(0, (int) $completeFits);
+
+    return [
+        'complete_fits_available' => $resolvedFits,
+        'bottleneck_item_name' => $bottleneckItemName !== '' ? $bottleneckItemName : 'Unknown item',
+        'bottleneck_type_id' => isset($bottleneck['type_id']) ? (int) $bottleneck['type_id'] : null,
+        'bottleneck_quantity' => $bottleneckQty,
+        'bottleneck_required_quantity' => $bottleneckRequired,
+        'minimum_stock_constraint' => $resolvedFits,
+        'constraint_label' => doctrine_format_quantity($resolvedFits) . ' complete fits from ' . ($bottleneckItemName !== '' ? $bottleneckItemName : 'Unknown item'),
+    ];
+}
+
+function doctrine_local_history_index(array $historyRows): array
+{
+    $indexed = [];
+
+    foreach ($historyRows as $row) {
+        $typeId = max(0, (int) ($row['type_id'] ?? 0));
+        $tradeDate = trim((string) ($row['trade_date'] ?? ''));
+        if ($typeId <= 0 || $tradeDate === '') {
+            continue;
+        }
+
+        $indexed[$typeId][$tradeDate] = $row;
+    }
+
+    return $indexed;
+}
+
+function doctrine_complete_fit_history_series(array $items, array $historyByTypeId, int $days = 7): array
+{
+    $safeDays = max(3, min(30, $days));
+    $dateMap = [];
+
+    foreach ($items as $item) {
+        $typeId = max(0, (int) ($item['type_id'] ?? 0));
+        if ($typeId <= 0 || !isset($historyByTypeId[$typeId])) {
+            continue;
+        }
+
+        foreach ((array) $historyByTypeId[$typeId] as $tradeDate => $row) {
+            if (trim((string) $tradeDate) !== '') {
+                $dateMap[(string) $tradeDate] = true;
+            }
+        }
+    }
+
+    if ($dateMap === []) {
+        return [];
+    }
+
+    $dates = array_keys($dateMap);
+    sort($dates);
+    $dates = array_slice($dates, max(0, count($dates) - $safeDays));
+
+    $series = [];
+    foreach ($dates as $tradeDate) {
+        $completeFits = null;
+
+        foreach ($items as $item) {
+            $requiredQty = max(1, (int) ($item['quantity'] ?? 1));
+            $typeId = max(0, (int) ($item['type_id'] ?? 0));
+            $historyRow = ($historyByTypeId[$typeId][$tradeDate] ?? null);
+            $localQty = is_array($historyRow) ? max(0, (int) ($historyRow['volume'] ?? 0)) : 0;
+            $fitCount = intdiv($localQty, $requiredQty);
+            $completeFits = $completeFits === null ? $fitCount : min($completeFits, $fitCount);
+        }
+
+        $series[] = [
+            'trade_date' => $tradeDate,
+            'complete_fits_available' => max(0, (int) ($completeFits ?? 0)),
+        ];
+    }
+
+    return $series;
+}
+
+function doctrine_average_ints(array $values): float
+{
+    if ($values === []) {
+        return 0.0;
+    }
+
+    return array_sum($values) / count($values);
+}
+
+function doctrine_readiness_trend(array $series, int $currentCompleteFits): array
+{
+    if ($series === []) {
+        return [
+            'direction' => 'unknown',
+            'label' => 'Trend unavailable',
+            'context' => 'Need more local history snapshots before readiness trend can be estimated.',
+            'delta' => 0.0,
+            'recent_average' => null,
+            'prior_average' => null,
+        ];
+    }
+
+    $values = array_values(array_map(static fn (array $row): int => max(0, (int) ($row['complete_fits_available'] ?? 0)), $series));
+    $recent = array_slice($values, -3);
+    $priorWindow = array_slice($values, -6, 3);
+    $prior = $priorWindow === [] ? array_slice($values, 0, max(0, count($values) - count($recent))) : $priorWindow;
+
+    if ($prior === []) {
+        $baseline = (float) ($values[0] ?? 0);
+        $latest = (float) ($values[count($values) - 1] ?? 0);
+        $delta = $latest - $baseline;
+
+        return [
+            'direction' => $delta < 0 ? 'down' : ($delta > 0 ? 'up' : 'flat'),
+            'label' => $delta < 0 ? 'Trending down' : ($delta > 0 ? 'Trending up' : 'Stable'),
+            'context' => 'Based on the last ' . count($values) . ' local stock snapshots.',
+            'delta' => $delta,
+            'recent_average' => $latest,
+            'prior_average' => $baseline,
+        ];
+    }
+
+    $recentAverage = doctrine_average_ints($recent);
+    $priorAverage = doctrine_average_ints($prior);
+    $delta = $recentAverage - $priorAverage;
+    $direction = 'flat';
+    $label = 'Stable';
+
+    if ($delta <= -0.75 || $currentCompleteFits < (int) floor($priorAverage)) {
+        $direction = 'down';
+        $label = 'Trending down';
+    } elseif ($delta >= 0.75 || $currentCompleteFits > (int) ceil($priorAverage)) {
+        $direction = 'up';
+        $label = 'Trending up';
+    }
+
+    return [
+        'direction' => $direction,
+        'label' => $label,
+        'context' => 'Recent 3-snapshot average ' . number_format($recentAverage, 1) . ' fits vs prior average ' . number_format($priorAverage, 1) . '.',
+        'delta' => $delta,
+        'recent_average' => $recentAverage,
+        'prior_average' => $priorAverage,
+    ];
+}
+
+function doctrine_item_loss_index(array $rows): array
+{
+    $indexed = [];
+
+    foreach ($rows as $row) {
+        $typeId = max(0, (int) ($row['type_id'] ?? 0));
+        if ($typeId <= 0) {
+            continue;
+        }
+
+        $indexed[$typeId] = [
+            'quantity_24h' => max(0, (int) ($row['quantity_24h'] ?? 0)),
+            'quantity_7d' => max(0, (int) ($row['quantity_7d'] ?? 0)),
+            'quantity_window' => max(0, (int) ($row['quantity_window'] ?? 0)),
+            'losses_24h' => max(0, (int) ($row['losses_24h'] ?? 0)),
+            'losses_7d' => max(0, (int) ($row['losses_7d'] ?? 0)),
+            'losses_window' => max(0, (int) ($row['losses_window'] ?? 0)),
+            'latest_loss_at' => $row['latest_loss_at'] ?? null,
+        ];
+    }
+
+    return $indexed;
+}
+
+function doctrine_hull_loss_index(array $rows): array
+{
+    $indexed = [];
+
+    foreach ($rows as $row) {
+        $typeId = max(0, (int) ($row['type_id'] ?? 0));
+        if ($typeId <= 0) {
+            continue;
+        }
+
+        $indexed[$typeId] = [
+            'losses_24h' => max(0, (int) ($row['losses_24h'] ?? 0)),
+            'losses_7d' => max(0, (int) ($row['losses_7d'] ?? 0)),
+            'losses_window' => max(0, (int) ($row['losses_window'] ?? 0)),
+            'latest_loss_at' => $row['latest_loss_at'] ?? null,
+        ];
+    }
+
+    return $indexed;
+}
+
+function doctrine_loss_pressure_signals(array $items, ?int $shipTypeId, array $itemLossByType, array $hullLossByType): array
+{
+    $topItem = null;
+    $equivalentFits24h = 0;
+    $equivalentFits7d = 0;
+
+    foreach ($items as $item) {
+        $typeId = max(0, (int) ($item['type_id'] ?? 0));
+        $requiredQty = max(1, (int) ($item['quantity'] ?? 1));
+        $itemLoss = $itemLossByType[$typeId] ?? [];
+        $itemEquivalent24h = (int) ceil(max(0, (int) ($itemLoss['quantity_24h'] ?? 0)) / $requiredQty);
+        $itemEquivalent7d = (int) ceil(max(0, (int) ($itemLoss['quantity_7d'] ?? 0)) / $requiredQty);
+
+        $equivalentFits24h = max($equivalentFits24h, $itemEquivalent24h);
+        $equivalentFits7d = max($equivalentFits7d, $itemEquivalent7d);
+
+        if (
+            $topItem === null
+            || $itemEquivalent7d > (int) ($topItem['equivalent_fits_7d'] ?? -1)
+            || (
+                $itemEquivalent7d === (int) ($topItem['equivalent_fits_7d'] ?? -1)
+                && (int) ($itemLoss['quantity_7d'] ?? 0) > (int) ($topItem['quantity_7d'] ?? -1)
+            )
+        ) {
+            $topItem = [
+                'item_name' => (string) ($item['item_name'] ?? 'Unknown item'),
+                'type_id' => $typeId > 0 ? $typeId : null,
+                'quantity_24h' => max(0, (int) ($itemLoss['quantity_24h'] ?? 0)),
+                'quantity_7d' => max(0, (int) ($itemLoss['quantity_7d'] ?? 0)),
+                'losses_24h' => max(0, (int) ($itemLoss['losses_24h'] ?? 0)),
+                'losses_7d' => max(0, (int) ($itemLoss['losses_7d'] ?? 0)),
+                'equivalent_fits_24h' => $itemEquivalent24h,
+                'equivalent_fits_7d' => $itemEquivalent7d,
+            ];
+        }
+    }
+
+    $hullLoss = $shipTypeId !== null && $shipTypeId > 0 ? ($hullLossByType[$shipTypeId] ?? []) : [];
+
+    return [
+        'hull_losses_24h' => max(0, (int) ($hullLoss['losses_24h'] ?? 0)),
+        'hull_losses_7d' => max(0, (int) ($hullLoss['losses_7d'] ?? 0)),
+        'item_equivalent_fit_losses_24h' => $equivalentFits24h,
+        'item_equivalent_fit_losses_7d' => $equivalentFits7d,
+        'top_pressure_item' => $topItem,
+    ];
+}
+
+function doctrine_bottleneck_restock_signal(array $availability, array $historyByTypeId): array
+{
+    $typeId = max(0, (int) ($availability['bottleneck_type_id'] ?? 0));
+    if ($typeId <= 0 || !isset($historyByTypeId[$typeId])) {
+        return [
+            'direction' => 'unknown',
+            'label' => 'Restock trend unavailable',
+            'context' => 'No recent local stock history exists for the current bottleneck item.',
+        ];
+    }
+
+    $rows = array_values((array) $historyByTypeId[$typeId]);
+    usort($rows, static fn (array $a, array $b): int => strcmp((string) ($a['trade_date'] ?? ''), (string) ($b['trade_date'] ?? '')));
+    $values = array_map(static fn (array $row): int => max(0, (int) ($row['volume'] ?? 0)), $rows);
+    $recent = array_slice($values, -3);
+    $priorWindow = array_slice($values, -6, 3);
+    $prior = $priorWindow === [] ? array_slice($values, 0, max(0, count($values) - count($recent))) : $priorWindow;
+
+    if ($recent === [] || $prior === []) {
+        return [
+            'direction' => 'unknown',
+            'label' => 'Restock trend limited',
+            'context' => 'Need at least two local history windows for bottleneck trend analysis.',
+        ];
+    }
+
+    $recentAverage = doctrine_average_ints($recent);
+    $priorAverage = doctrine_average_ints($prior);
+    $delta = $recentAverage - $priorAverage;
+    $direction = 'flat';
+    $label = 'Replacement stable';
+
+    if ($delta <= -1.0) {
+        $direction = 'down';
+        $label = 'Replacement lagging';
+    } elseif ($delta >= 1.0) {
+        $direction = 'up';
+        $label = 'Replacement improving';
+    }
+
+    return [
+        'direction' => $direction,
+        'label' => $label,
+        'context' => ($availability['bottleneck_item_name'] ?? 'Bottleneck item') . ' averaged ' . number_format($recentAverage, 1) . ' local units recently vs ' . number_format($priorAverage, 1) . ' previously.',
+    ];
+}
+
+function doctrine_recommended_target_fit_count(array $availability, array $trend, array $lossSignals, array $restockSignal): array
+{
+    $baselineTarget = 3;
+    $lossFloor = max(
+        0,
+        (int) ($lossSignals['hull_losses_7d'] ?? 0),
+        (int) ($lossSignals['item_equivalent_fit_losses_7d'] ?? 0)
+    );
+    $recentPressure = max(
+        0,
+        (int) ($lossSignals['hull_losses_24h'] ?? 0),
+        (int) ($lossSignals['item_equivalent_fit_losses_24h'] ?? 0)
+    );
+
+    $buffer = 1;
+    if (($trend['direction'] ?? 'unknown') === 'down') {
+        $buffer++;
+    }
+    if (($restockSignal['direction'] ?? 'unknown') === 'down') {
+        $buffer++;
+    }
+    if ($recentPressure > 0) {
+        $buffer++;
+    }
+
+    $recommended = max($baselineTarget, $lossFloor + $buffer, $recentPressure + 1);
+    $completeFits = max(0, (int) ($availability['complete_fits_available'] ?? 0));
+    $gap = max(0, $recommended - $completeFits);
+
+    return [
+        'recommended_target_fit_count' => $recommended,
+        'gap_to_target_fit_count' => $gap,
+        'baseline_target_fit_count' => $baselineTarget,
+    ];
+}
+
+function doctrine_planning_recommendation(array $availability, array $trend, array $lossSignals, array $restockSignal, array $targetPlan): array
+{
+    $completeFits = max(0, (int) ($availability['complete_fits_available'] ?? 0));
+    $gap = max(0, (int) ($targetPlan['gap_to_target_fit_count'] ?? 0));
+    $recentPressure = max(
+        0,
+        (int) ($lossSignals['hull_losses_24h'] ?? 0),
+        (int) ($lossSignals['item_equivalent_fit_losses_24h'] ?? 0)
+    );
+    $weeklyPressure = max(
+        0,
+        (int) ($lossSignals['hull_losses_7d'] ?? 0),
+        (int) ($lossSignals['item_equivalent_fit_losses_7d'] ?? 0)
+    );
+
+    $status = 'ready';
+    $label = 'Stock level looks sufficient';
+    $context = 'Current complete-fit stock covers the present rule-based target.';
+
+    if ($completeFits <= 0 || ($recentPressure > 0 && $completeFits <= $recentPressure) || $gap >= 3) {
+        $status = 'critical';
+        $label = 'Urgent restock needed';
+        $context = 'Tracked losses and current local stock indicate immediate doctrine pressure.';
+    } elseif ($gap > 0 || $weeklyPressure > $completeFits || ($restockSignal['direction'] ?? '') === 'down') {
+        $status = 'critical';
+        $label = 'Increase local stock target';
+        $context = 'Recent losses or weaker replacement trends are outrunning the current doctrine buffer.';
+    } elseif (($trend['direction'] ?? '') === 'down' || $completeFits <= ($recentPressure + 1)) {
+        $status = 'warning';
+        $label = 'Watch closely';
+        $context = 'Complete-fit count is still usable, but the trend or daily loss pressure is tightening the buffer.';
+    }
+
+    return [
+        'status' => $status,
+        'label' => $label,
+        'context' => $context,
+        'likely_enough_based_on_recent_losses' => in_array($status, ['ready', 'warning'], true),
+    ];
+}
+
+function doctrine_operational_supply(array $rows, array $items, array $fit, array $historyByTypeId, array $itemLossByType, array $hullLossByType): array
+{
+    $base = doctrine_supply_summary($rows);
+    $availability = doctrine_complete_fit_availability($rows);
+    $historySeries = doctrine_complete_fit_history_series($items, $historyByTypeId, 7);
+    $trend = doctrine_readiness_trend($historySeries, (int) ($availability['complete_fits_available'] ?? 0));
+    $lossSignals = doctrine_loss_pressure_signals(
+        $items,
+        isset($fit['ship_type_id']) ? (int) $fit['ship_type_id'] : null,
+        $itemLossByType,
+        $hullLossByType
+    );
+    $restockSignal = doctrine_bottleneck_restock_signal($availability, $historyByTypeId);
+    $targetPlan = doctrine_recommended_target_fit_count($availability, $trend, $lossSignals, $restockSignal);
+    $planning = doctrine_planning_recommendation($availability, $trend, $lossSignals, $restockSignal, $targetPlan);
+
+    return $base + $availability + $targetPlan + [
+        'status' => $planning['status'],
+        'status_label' => $planning['label'],
+        'planning_context' => $planning['context'],
+        'readiness_trend' => $trend['label'],
+        'readiness_trend_direction' => $trend['direction'],
+        'readiness_trend_context' => $trend['context'],
+        'complete_fit_history' => $historySeries,
+        'recent_hull_losses_24h' => $lossSignals['hull_losses_24h'],
+        'recent_hull_losses_7d' => $lossSignals['hull_losses_7d'],
+        'recent_item_fit_losses_24h' => $lossSignals['item_equivalent_fit_losses_24h'],
+        'recent_item_fit_losses_7d' => $lossSignals['item_equivalent_fit_losses_7d'],
+        'top_pressure_item' => $lossSignals['top_pressure_item'],
+        'restock_trend' => $restockSignal['label'],
+        'restock_trend_direction' => $restockSignal['direction'],
+        'restock_trend_context' => $restockSignal['context'],
+        'likely_enough_based_on_recent_losses' => (bool) ($planning['likely_enough_based_on_recent_losses'] ?? false),
+    ];
+}
+
 function doctrine_supply_status_tone(string $status): string
 {
     return match ($status) {
@@ -8528,6 +8970,42 @@ function doctrine_operational_snapshot(): array
         }
 
         $comparisonByTypeId = doctrine_market_lookup_by_type_ids($allTypeIds);
+        $localHistoryByTypeId = [];
+        $itemLossByType = [];
+        $hullLossByType = [];
+        $hubRef = market_hub_setting_reference();
+        $hubSourceId = sync_source_id_from_hub_ref($hubRef);
+        if ($hubSourceId > 0) {
+            try {
+                $localHistoryByTypeId = doctrine_local_history_index(
+                    db_market_hub_local_history_daily_window_by_type_ids(
+                        market_hub_local_history_source(),
+                        $hubSourceId,
+                        $allTypeIds,
+                        14
+                    )
+                );
+            } catch (Throwable) {
+                $localHistoryByTypeId = [];
+            }
+        }
+
+        try {
+            $itemLossByType = doctrine_item_loss_index(db_killmail_tracked_recent_item_losses($allTypeIds, 24 * 7));
+        } catch (Throwable) {
+            $itemLossByType = [];
+        }
+
+        $hullTypeIds = array_values(array_unique(array_filter(array_map(
+            static fn (array $fit): int => isset($fit['ship_type_id']) ? (int) $fit['ship_type_id'] : 0,
+            $fits
+        ), static fn (int $typeId): bool => $typeId > 0)));
+        try {
+            $hullLossByType = doctrine_hull_loss_index(db_killmail_tracked_recent_hull_losses($hullTypeIds, 24 * 7));
+        } catch (Throwable) {
+            $hullLossByType = [];
+        }
+
         $topMissing = [];
         $fitsById = [];
 
@@ -8535,7 +9013,7 @@ function doctrine_operational_snapshot(): array
             $fitId = (int) ($fit['id'] ?? 0);
             $fitItems = $itemsByFitId[$fitId] ?? [];
             $marketRows = doctrine_fit_item_market_rows($fitItems, $comparisonByTypeId);
-            $summary = doctrine_supply_summary($marketRows);
+            $summary = doctrine_operational_supply($marketRows, $fitItems, $fit, $localHistoryByTypeId, $itemLossByType, $hullLossByType);
             $groupIds = doctrine_parse_group_csv($fit['group_ids_csv'] ?? null);
             $groupNames = doctrine_parse_group_names_csv($fit['group_names_csv'] ?? null);
             $fit['group_ids'] = $groupIds;
@@ -8575,8 +9053,22 @@ function doctrine_operational_snapshot(): array
             $group['total_missing_qty'] = array_sum(array_map(static fn (array $fit): int => (int) (($fit['supply']['total_missing_qty'] ?? 0)), $groupFits));
             $group['restock_gap_isk'] = array_sum(array_map(static fn (array $fit): float => (float) (($fit['supply']['restock_gap_isk'] ?? 0.0)), $groupFits));
             $group['coverage_percent'] = count($groupFits) > 0 ? array_sum(array_map(static fn (array $fit): float => (float) (($fit['supply']['coverage_percent'] ?? 0.0)), $groupFits)) / count($groupFits) : 0.0;
-            $group['status'] = ((int) $group['gap_fit_count']) === 0 ? 'ready' : (((int) $group['ready_fit_count']) > 0 ? 'warning' : 'critical');
-            $group['status_label'] = ((int) $group['gap_fit_count']) === 0 ? 'Ready' : (((int) $group['ready_fit_count']) > 0 ? 'At risk' : 'Gap active');
+            $group['complete_fits_available'] = array_sum(array_map(static fn (array $fit): int => (int) (($fit['supply']['complete_fits_available'] ?? 0)), $groupFits));
+            $group['target_fit_count'] = array_sum(array_map(static fn (array $fit): int => (int) (($fit['supply']['recommended_target_fit_count'] ?? 0)), $groupFits));
+            $group['fit_gap_count'] = array_sum(array_map(static fn (array $fit): int => (int) (($fit['supply']['gap_to_target_fit_count'] ?? 0)), $groupFits));
+            $group['loss_pressure_fit_count'] = count(array_filter($groupFits, static fn (array $fit): bool => !(bool) (($fit['supply']['likely_enough_based_on_recent_losses'] ?? false))));
+            $group['trending_down_fit_count'] = count(array_filter($groupFits, static fn (array $fit): bool => (($fit['supply']['readiness_trend_direction'] ?? 'unknown') === 'down')));
+            $group['status'] = count(array_filter($groupFits, static fn (array $fit): bool => (($fit['supply']['status'] ?? 'ready') === 'critical'))) > 0
+                ? 'critical'
+                : (count(array_filter($groupFits, static fn (array $fit): bool => (($fit['supply']['status'] ?? 'ready') === 'warning'))) > 0 ? 'warning' : 'ready');
+            $group['status_label'] = match ($group['status']) {
+                'ready' => 'Stock sufficient',
+                'warning' => 'Watch closely',
+                default => 'Restock pressure',
+            };
+            $group['readiness_trend'] = $group['trending_down_fit_count'] > 0
+                ? 'Trending down'
+                : (count(array_filter($groupFits, static fn (array $fit): bool => (($fit['supply']['readiness_trend_direction'] ?? 'unknown') === 'up'))) > 0 ? 'Trending up' : 'Stable');
         }
         unset($group);
 
@@ -8590,7 +9082,7 @@ function doctrine_operational_snapshot(): array
             'top_missing_items' => array_slice(array_values($topMissing), 0, 10),
         ];
     }, [
-        'dependencies' => ['doctrine', 'market_compare'],
+        'dependencies' => ['doctrine', 'market_compare', 'killmail_overview'],
         'lock_ttl' => 20,
     ]);
 }
@@ -8600,16 +9092,20 @@ function doctrine_groups_overview_data(): array
     $snapshot = doctrine_operational_snapshot();
     $groups = $snapshot['groups'] ?? [];
     $fits = $snapshot['fits'] ?? [];
-    $notReadyFits = array_values(array_filter($fits, static fn (array $fit): bool => !(bool) (($fit['supply']['market_ready'] ?? false))));
+    $notReadyFits = array_values(array_filter($fits, static fn (array $fit): bool => (($fit['supply']['status'] ?? 'ready') !== 'ready')));
     $totalMissingQty = array_sum(array_map(static fn (array $fit): int => (int) (($fit['supply']['total_missing_qty'] ?? 0)), $notReadyFits));
     $restockGap = array_sum(array_map(static fn (array $fit): float => (float) (($fit['supply']['restock_gap_isk'] ?? 0.0)), $notReadyFits));
+    $completeFitsAvailable = array_sum(array_map(static fn (array $fit): int => (int) (($fit['supply']['complete_fits_available'] ?? 0)), $fits));
+    $targetFitsDesired = array_sum(array_map(static fn (array $fit): int => (int) (($fit['supply']['recommended_target_fit_count'] ?? 0)), $fits));
+    $fitGap = max(0, $targetFitsDesired - $completeFitsAvailable);
+    $watchFits = count(array_filter($fits, static fn (array $fit): bool => (($fit['supply']['status'] ?? 'ready') !== 'ready')));
 
     return [
         'summary' => [
             ['label' => 'Doctrine Groups', 'value' => (string) count($groups), 'context' => 'Operational doctrine collections under active readiness tracking'],
-            ['label' => 'Imported Fits', 'value' => (string) count($fits), 'context' => count($notReadyFits) . ' fits currently have local supply gaps'],
-            ['label' => 'Missing Units', 'value' => doctrine_format_quantity($totalMissingQty), 'context' => 'Total local shortfall across every doctrine fit'],
-            ['label' => 'Restock Gap', 'value' => market_format_isk($restockGap), 'context' => 'Estimated hub spend required to close doctrine gaps'],
+            ['label' => 'Complete Fits', 'value' => doctrine_format_quantity($completeFitsAvailable), 'context' => doctrine_format_quantity($watchFits) . ' fits need closer stock planning'],
+            ['label' => 'Target Fits', 'value' => doctrine_format_quantity($targetFitsDesired), 'context' => 'Rule-based local target built from readiness trend and recent tracked losses'],
+            ['label' => 'Fit Gap', 'value' => doctrine_format_quantity($fitGap), 'context' => market_format_isk($restockGap) . ' estimated hub spend still missing'],
         ],
         'groups' => $groups,
         'fits' => $fits,
@@ -8650,6 +9146,36 @@ function doctrine_fit_detail_view_model(int $fitId): array
         $fit['group_ids'] = doctrine_parse_group_csv($fit['group_ids_csv'] ?? null);
         $fit['group_names'] = doctrine_parse_group_names_csv($fit['group_names_csv'] ?? null);
         $comparison = doctrine_market_lookup_by_type_ids(array_map(static fn (array $item): int => (int) ($item['type_id'] ?? 0), $items));
+        $typeIds = array_values(array_unique(array_filter(array_map(static fn (array $item): int => (int) ($item['type_id'] ?? 0), $items), static fn (int $typeId): bool => $typeId > 0)));
+        $localHistoryByTypeId = [];
+        $hubSourceId = sync_source_id_from_hub_ref(market_hub_setting_reference());
+        if ($hubSourceId > 0) {
+            try {
+                $localHistoryByTypeId = doctrine_local_history_index(
+                    db_market_hub_local_history_daily_window_by_type_ids(
+                        market_hub_local_history_source(),
+                        $hubSourceId,
+                        $typeIds,
+                        14
+                    )
+                );
+            } catch (Throwable) {
+                $localHistoryByTypeId = [];
+            }
+        }
+
+        try {
+            $itemLossByType = doctrine_item_loss_index(db_killmail_tracked_recent_item_losses($typeIds, 24 * 7));
+        } catch (Throwable) {
+            $itemLossByType = [];
+        }
+
+        try {
+            $hullLossByType = doctrine_hull_loss_index(db_killmail_tracked_recent_hull_losses([(int) ($fit['ship_type_id'] ?? 0)], 24 * 7));
+        } catch (Throwable) {
+            $hullLossByType = [];
+        }
+
         $categories = doctrine_group_market_rows_by_category($items, $comparison);
         $marketRows = [];
 
@@ -8667,7 +9193,7 @@ function doctrine_fit_detail_view_model(int $fitId): array
         }
         unset($rows);
 
-        $supply = doctrine_supply_summary($marketRows);
+        $supply = doctrine_operational_supply($marketRows, $items, $fit, $localHistoryByTypeId, $itemLossByType, $hullLossByType);
         $fit['ship_image_url'] = doctrine_ship_image_url(isset($fit['ship_type_id']) ? (int) $fit['ship_type_id'] : null, 256);
         $fit['supply'] = $supply;
 
@@ -8676,14 +9202,14 @@ function doctrine_fit_detail_view_model(int $fitId): array
             'categories' => $categories,
             'items' => $items,
             'summary' => [
-                ['label' => 'Readiness', 'value' => $supply['status_label'], 'context' => $supply['market_ready'] ? 'Every line is covered locally for one complete hull.' : 'Local stock cannot currently fill this fit end-to-end.'],
-                ['label' => 'Missing Lines', 'value' => doctrine_format_quantity((int) $supply['missing_lines']), 'context' => 'Distinct doctrine lines still blocked by local supply'],
-                ['label' => 'Missing Units', 'value' => doctrine_format_quantity((int) $supply['total_missing_qty']), 'context' => 'Total quantity still needed to field this fit locally'],
-                ['label' => 'Restock Gap', 'value' => market_format_isk((float) $supply['restock_gap_isk']), 'context' => 'Estimated hub spend to close the remaining local gap'],
+                ['label' => 'Readiness', 'value' => $supply['status_label'], 'context' => (string) ($supply['planning_context'] ?? 'Operational stock recommendation unavailable.')],
+                ['label' => 'Complete Fits', 'value' => doctrine_format_quantity((int) $supply['complete_fits_available']), 'context' => (string) ($supply['constraint_label'] ?? 'Current fleet-ready fit count unavailable.')],
+                ['label' => 'Target Fits', 'value' => doctrine_format_quantity((int) $supply['recommended_target_fit_count']), 'context' => 'Recent losses and local stock trend define the current target.'],
+                ['label' => 'Fit Gap', 'value' => doctrine_format_quantity((int) $supply['gap_to_target_fit_count']), 'context' => market_format_isk((float) $supply['restock_gap_isk']) . ' estimated hub spend to close the doctrine gap'],
             ],
         ];
     }, [
-        'dependencies' => ['doctrine', 'market_compare'],
+        'dependencies' => ['doctrine', 'market_compare', 'killmail_overview'],
         'lock_ttl' => 20,
     ]);
 }

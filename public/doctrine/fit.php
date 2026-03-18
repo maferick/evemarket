@@ -130,13 +130,19 @@ include __DIR__ . '/../../src/views/partials/header.php';
                         <p class="mt-2 font-semibold text-slate-100"><?= htmlspecialchars(implode(', ', (array) ($fit['group_names'] ?? [])) ?: 'Ungrouped', ENT_QUOTES) ?></p>
                     </div>
                     <div class="surface-tertiary">
-                        <p class="text-xs uppercase tracking-[0.16em] text-slate-500">Local coverage</p>
-                        <p class="mt-2 font-semibold text-slate-100"><?= htmlspecialchars(market_format_percentage((float) ($supply['coverage_percent'] ?? 0.0)), ENT_QUOTES) ?></p>
+                        <p class="text-xs uppercase tracking-[0.16em] text-slate-500">Complete fits available</p>
+                        <p class="mt-2 font-semibold text-slate-100"><?= doctrine_format_quantity((int) ($supply['complete_fits_available'] ?? 0)) ?></p>
+                        <p class="mt-1 text-xs text-slate-500"><?= htmlspecialchars((string) ($supply['constraint_label'] ?? ''), ENT_QUOTES) ?></p>
+                    </div>
+                    <div class="surface-tertiary">
+                        <p class="text-xs uppercase tracking-[0.16em] text-slate-500">Target fit count</p>
+                        <p class="mt-2 font-semibold text-slate-100"><?= doctrine_format_quantity((int) ($supply['recommended_target_fit_count'] ?? 0)) ?></p>
+                        <p class="mt-1 text-xs text-slate-500"><?= doctrine_format_quantity((int) ($supply['gap_to_target_fit_count'] ?? 0)) ?> fits short of target</p>
                     </div>
                     <div class="surface-tertiary border <?= htmlspecialchars(doctrine_supply_status_tone((string) ($supply['status'] ?? 'critical')), ENT_QUOTES) ?>">
                         <p class="text-xs uppercase tracking-[0.16em]">Operational outcome</p>
-                        <p class="mt-2 text-sm <?= ($supply['market_ready'] ?? false) ? 'text-emerald-100' : 'text-rose-100' ?>"><?= ($supply['market_ready'] ?? false) ? 'This fit is market-ready locally.' : 'This fit cannot be bought locally in full yet.' ?></p>
-                        <p class="mt-2 text-xs text-slate-300">Hub-vs-local scan: <?= doctrine_format_quantity((int) ($supply['missing_lines'] ?? 0)) ?> lines missing, <?= doctrine_format_quantity((int) ($supply['total_missing_qty'] ?? 0)) ?> units short, <?= htmlspecialchars(market_format_isk((float) ($supply['restock_gap_isk'] ?? 0.0)), ENT_QUOTES) ?> estimated restock gap.</p>
+                        <p class="mt-2 text-sm <?= ($supply['likely_enough_based_on_recent_losses'] ?? false) ? 'text-emerald-100' : 'text-rose-100' ?>"><?= htmlspecialchars((string) ($supply['planning_context'] ?? 'Operational recommendation unavailable.'), ENT_QUOTES) ?></p>
+                        <p class="mt-2 text-xs text-slate-300">Trend: <?= htmlspecialchars((string) ($supply['readiness_trend'] ?? 'Trend unavailable'), ENT_QUOTES) ?> · Restock: <?= htmlspecialchars((string) ($supply['restock_trend'] ?? 'Unavailable'), ENT_QUOTES) ?> · 7d hull losses: <?= doctrine_format_quantity((int) ($supply['recent_hull_losses_7d'] ?? 0)) ?>.</p>
                     </div>
                     <div class="flex gap-3">
                         <?php $primaryGroupId = (int) ($fit['doctrine_group_id'] ?? 0); ?>
@@ -233,9 +239,22 @@ include __DIR__ . '/../../src/views/partials/header.php';
                 <div>
                     <p class="eyebrow">Market mapping</p>
                     <h2 class="mt-2 section-title">Required items by category</h2>
-                    <p class="mt-2 text-sm text-slate-400">Missing lines are highlighted directly in the table so hub-vs-local shortfalls are easy to scan.</p>
+                    <p class="mt-2 text-sm text-slate-400">Doctrine readiness now highlights the bottleneck item, complete-fit ceiling, and whether local stock is keeping pace with recent tracked losses.</p>
                 </div>
                 <span class="badge <?= htmlspecialchars(doctrine_supply_status_tone((string) ($supply['status'] ?? 'critical')), ENT_QUOTES) ?>"><?= htmlspecialchars((string) ($supply['status_label'] ?? 'Supply gap'), ENT_QUOTES) ?></span>
+            </div>
+
+            <div class="mb-6 grid gap-4 xl:grid-cols-2">
+                <div class="surface-tertiary">
+                    <p class="text-xs uppercase tracking-[0.16em] text-slate-500">Bottleneck item</p>
+                    <p class="mt-2 text-lg font-semibold text-slate-50"><?= htmlspecialchars((string) ($supply['bottleneck_item_name'] ?? 'Unavailable'), ENT_QUOTES) ?></p>
+                    <p class="mt-1 text-sm text-slate-400"><?= doctrine_format_quantity((int) ($supply['bottleneck_quantity'] ?? 0)) ?> local units for <?= doctrine_format_quantity((int) ($supply['bottleneck_required_quantity'] ?? 0)) ?> required per fit · minimum stock constraint <?= doctrine_format_quantity((int) ($supply['minimum_stock_constraint'] ?? 0)) ?> complete fits.</p>
+                </div>
+                <div class="surface-tertiary">
+                    <p class="text-xs uppercase tracking-[0.16em] text-slate-500">Loss-aware planning</p>
+                    <p class="mt-2 text-lg font-semibold text-slate-50"><?= doctrine_format_quantity((int) ($supply['recent_hull_losses_24h'] ?? 0)) ?> hull losses (24h) · <?= doctrine_format_quantity((int) ($supply['recent_hull_losses_7d'] ?? 0)) ?> hull losses (7d)</p>
+                    <p class="mt-1 text-sm text-slate-400"><?= doctrine_format_quantity((int) ($supply['recent_item_fit_losses_24h'] ?? 0)) ?> / <?= doctrine_format_quantity((int) ($supply['recent_item_fit_losses_7d'] ?? 0)) ?> fit-equivalent item losses from tracked victim killmails. <?= htmlspecialchars((string) ($supply['readiness_trend_context'] ?? ''), ENT_QUOTES) ?></p>
+                </div>
             </div>
 
             <?php if ($categories === []): ?>
@@ -255,6 +274,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                                             <th>Item</th>
                                             <th class="text-right">Required</th>
                                             <th class="text-right">Local</th>
+                                            <th class="text-right">Fits</th>
                                             <th class="text-right">Missing</th>
                                             <th class="text-right">Hub Price</th>
                                             <th class="text-right">Local Price</th>
@@ -264,17 +284,19 @@ include __DIR__ . '/../../src/views/partials/header.php';
                                     </thead>
                                     <tbody>
                                         <?php foreach ($rows as $row): ?>
-                                            <tr class="<?= ((int) ($row['missing_qty'] ?? 0) > 0) ? 'bg-rose-900/10' : '' ?>">
+                                            <?php $isBottleneck = (int) ($row['type_id'] ?? 0) > 0 && (int) ($row['type_id'] ?? 0) === (int) ($supply['bottleneck_type_id'] ?? 0); ?>
+                                            <tr class="<?= ((int) ($row['missing_qty'] ?? 0) > 0) ? 'bg-rose-900/10' : ($isBottleneck ? 'bg-amber-900/10' : '') ?>">
                                                 <td class="font-semibold text-slate-50"><?= htmlspecialchars((string) ($row['item_name'] ?? ''), ENT_QUOTES) ?></td>
                                                 <td class="text-right tabular-nums"><?= htmlspecialchars((string) ($row['required_qty_label'] ?? '0'), ENT_QUOTES) ?></td>
                                                 <td class="text-right tabular-nums"><?= htmlspecialchars((string) ($row['local_available_qty_label'] ?? '0'), ENT_QUOTES) ?></td>
+                                                <td class="text-right tabular-nums <?= $isBottleneck ? 'text-amber-100' : 'text-slate-200' ?>"><?= doctrine_format_quantity(intdiv(max(0, (int) ($row['local_available_qty'] ?? 0)), max(1, (int) ($row['quantity'] ?? 1)))) ?></td>
                                                 <td class="text-right tabular-nums <?= ((int) ($row['missing_qty'] ?? 0) > 0) ? 'text-rose-200' : '' ?>"><?= htmlspecialchars((string) ($row['missing_qty_label'] ?? '0'), ENT_QUOTES) ?></td>
                                                 <td class="text-right tabular-nums text-sky-300"><?= htmlspecialchars((string) ($row['hub_price_label'] ?? '—'), ENT_QUOTES) ?></td>
                                                 <td class="text-right tabular-nums text-sky-300"><?= htmlspecialchars((string) ($row['local_price_label'] ?? '—'), ENT_QUOTES) ?></td>
                                                 <td class="text-right tabular-nums text-sky-100"><?= htmlspecialchars((string) ($row['restock_gap_label'] ?? '—'), ENT_QUOTES) ?></td>
                                                 <td>
                                                     <span class="rounded-full border px-2 py-0.5 text-[11px] uppercase tracking-[0.08em] <?= $statusTone((string) ($row['market_status'] ?? 'missing')) ?>">
-                                                        <?= htmlspecialchars((string) ($row['market_label'] ?? 'Missing'), ENT_QUOTES) ?>
+                                                        <?= htmlspecialchars((string) ($isBottleneck ? 'Bottleneck' : ($row['market_label'] ?? 'Missing')), ENT_QUOTES) ?>
                                                     </span>
                                                 </td>
                                             </tr>

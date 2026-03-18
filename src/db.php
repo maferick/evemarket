@@ -979,6 +979,53 @@ function db_market_hub_local_history_daily_latest_points_by_type(
     return array_map('db_market_hub_local_history_daily_normalize_result_row', $rows);
 }
 
+function db_market_hub_local_history_daily_window_by_type_ids(
+    string $source,
+    int $sourceId,
+    array $typeIds,
+    int $days = 14
+): array {
+    $safeSource = trim($source);
+    $safeSourceId = max(0, $sourceId);
+    $safeDays = max(1, min($days, 90));
+    $normalizedTypeIds = array_values(array_unique(array_filter(array_map('intval', $typeIds), static fn (int $typeId): bool => $typeId > 0)));
+
+    if ($safeSource === '' || $safeSourceId <= 0 || $normalizedTypeIds === []) {
+        return [];
+    }
+
+    $placeholders = implode(',', array_fill(0, count($normalizedTypeIds), '?'));
+    $params = array_merge([$safeSource, $safeSourceId], $normalizedTypeIds);
+    $rows = db_select(
+        "SELECT
+            mlhd.type_id,
+            rit.type_name,
+            mlhd.trade_date,
+            mlhd.open_price,
+            mlhd.high_price,
+            mlhd.low_price,
+            mlhd.close_price,
+            mlhd.buy_price,
+            mlhd.sell_price,
+            mlhd.spread_value,
+            mlhd.spread_percent,
+            mlhd.volume,
+            mlhd.buy_order_count,
+            mlhd.sell_order_count,
+            mlhd.captured_at AS observed_at
+         FROM market_hub_local_history_daily mlhd
+         LEFT JOIN ref_item_types rit ON rit.type_id = mlhd.type_id
+         WHERE mlhd.source = ?
+           AND mlhd.source_id = ?
+           AND mlhd.type_id IN ({$placeholders})
+           AND mlhd.trade_date >= DATE_SUB(UTC_DATE(), INTERVAL {$safeDays} DAY)
+         ORDER BY mlhd.trade_date ASC, mlhd.type_id ASC, mlhd.id ASC",
+        $params
+    );
+
+    return array_map('db_market_hub_local_history_daily_normalize_result_row', $rows);
+}
+
 function db_market_orders_current_distinct_type_ids(string $sourceType, int $sourceId, int $limit = 500): array
 {
     $safeLimit = max(1, min($limit, 5000));
@@ -2499,6 +2546,72 @@ function db_killmail_overview_page(array $filters = []): array
         'showing_from' => $totalItems > 0 ? $offset + 1 : 0,
         'showing_to' => min($offset + $pageSize, $totalItems),
     ];
+}
+
+function db_killmail_tracked_recent_hull_losses(array $hullTypeIds, int $hours = 24 * 7): array
+{
+    $safeHours = max(1, min(24 * 30, $hours));
+    $normalizedTypeIds = array_values(array_unique(array_filter(array_map('intval', $hullTypeIds), static fn (int $typeId): bool => $typeId > 0)));
+    if ($normalizedTypeIds === []) {
+        return [];
+    }
+
+    $placeholders = implode(',', array_fill(0, count($normalizedTypeIds), '?'));
+    $matchSql = db_killmail_tracked_match_sql('e');
+
+    return db_select(
+        "SELECT
+            e.victim_ship_type_id AS type_id,
+            SUM(CASE WHEN COALESCE(e.killmail_time, e.created_at) >= (UTC_TIMESTAMP() - INTERVAL 24 HOUR) THEN 1 ELSE 0 END) AS losses_24h,
+            SUM(CASE WHEN COALESCE(e.killmail_time, e.created_at) >= (UTC_TIMESTAMP() - INTERVAL 7 DAY) THEN 1 ELSE 0 END) AS losses_7d,
+            COUNT(*) AS losses_window,
+            MAX(COALESCE(e.killmail_time, e.created_at)) AS latest_loss_at
+         FROM killmail_events e
+         WHERE {$matchSql}
+           AND COALESCE(e.killmail_time, e.created_at) >= (UTC_TIMESTAMP() - INTERVAL {$safeHours} HOUR)
+           AND e.victim_ship_type_id IN ({$placeholders})
+         GROUP BY e.victim_ship_type_id",
+        $normalizedTypeIds
+    );
+}
+
+function db_killmail_tracked_recent_item_losses(array $typeIds, int $hours = 24 * 7): array
+{
+    $safeHours = max(1, min(24 * 30, $hours));
+    $normalizedTypeIds = array_values(array_unique(array_filter(array_map('intval', $typeIds), static fn (int $typeId): bool => $typeId > 0)));
+    if ($normalizedTypeIds === []) {
+        return [];
+    }
+
+    $placeholders = implode(',', array_fill(0, count($normalizedTypeIds), '?'));
+    $matchSql = db_killmail_tracked_match_sql('e');
+    $quantitySql = "GREATEST(
+        COALESCE(i.quantity_destroyed, 0) + COALESCE(i.quantity_dropped, 0),
+        CASE
+            WHEN COALESCE(i.quantity_destroyed, 0) + COALESCE(i.quantity_dropped, 0) > 0 THEN 0
+            WHEN i.item_role IN ('fitted', 'destroyed', 'dropped') THEN 1
+            ELSE 0
+        END
+    )";
+
+    return db_select(
+        "SELECT
+            i.item_type_id AS type_id,
+            SUM(CASE WHEN COALESCE(e.killmail_time, e.created_at) >= (UTC_TIMESTAMP() - INTERVAL 24 HOUR) THEN {$quantitySql} ELSE 0 END) AS quantity_24h,
+            SUM(CASE WHEN COALESCE(e.killmail_time, e.created_at) >= (UTC_TIMESTAMP() - INTERVAL 7 DAY) THEN {$quantitySql} ELSE 0 END) AS quantity_7d,
+            SUM({$quantitySql}) AS quantity_window,
+            COUNT(DISTINCT CASE WHEN COALESCE(e.killmail_time, e.created_at) >= (UTC_TIMESTAMP() - INTERVAL 24 HOUR) THEN e.sequence_id END) AS losses_24h,
+            COUNT(DISTINCT CASE WHEN COALESCE(e.killmail_time, e.created_at) >= (UTC_TIMESTAMP() - INTERVAL 7 DAY) THEN e.sequence_id END) AS losses_7d,
+            COUNT(DISTINCT e.sequence_id) AS losses_window,
+            MAX(COALESCE(e.killmail_time, e.created_at)) AS latest_loss_at
+         FROM killmail_items i
+         INNER JOIN killmail_events e ON e.sequence_id = i.sequence_id
+         WHERE {$matchSql}
+           AND COALESCE(e.killmail_time, e.created_at) >= (UTC_TIMESTAMP() - INTERVAL {$safeHours} HOUR)
+           AND i.item_type_id IN ({$placeholders})
+         GROUP BY i.item_type_id",
+        $normalizedTypeIds
+    );
 }
 
 function db_ref_item_types_by_names(array $names): array
