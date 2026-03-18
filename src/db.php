@@ -2587,42 +2587,40 @@ function doctrine_db_ensure_schema(): void
         return;
     }
 
-    db_transaction(static function (): void {
-        if (db_table_exists('doctrine_fits') && db_column_exists('doctrine_fits', 'doctrine_group_id')) {
-            $column = db_select_one(
-                'SELECT IS_NULLABLE FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ? LIMIT 1',
-                ['doctrine_fits', 'doctrine_group_id']
-            );
-            if (strtoupper((string) ($column['IS_NULLABLE'] ?? 'NO')) !== 'YES') {
-                db()->exec('ALTER TABLE doctrine_fits MODIFY doctrine_group_id INT UNSIGNED DEFAULT NULL');
-            }
-
-            $deleteRule = db_foreign_key_delete_rule('fk_doctrine_fits_group');
-            if ($deleteRule !== null && $deleteRule !== 'SET NULL') {
-                db()->exec('ALTER TABLE doctrine_fits DROP FOREIGN KEY fk_doctrine_fits_group');
-                db()->exec('ALTER TABLE doctrine_fits ADD CONSTRAINT fk_doctrine_fits_group FOREIGN KEY (doctrine_group_id) REFERENCES doctrine_groups(id) ON DELETE SET NULL');
-            }
+    if (db_table_exists('doctrine_fits') && db_column_exists('doctrine_fits', 'doctrine_group_id')) {
+        $column = db_select_one(
+            'SELECT IS_NULLABLE FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ? LIMIT 1',
+            ['doctrine_fits', 'doctrine_group_id']
+        );
+        if (strtoupper((string) ($column['IS_NULLABLE'] ?? 'NO')) !== 'YES') {
+            db()->exec('ALTER TABLE doctrine_fits MODIFY doctrine_group_id INT UNSIGNED DEFAULT NULL');
         }
 
-        db()->exec(
-            'CREATE TABLE IF NOT EXISTS doctrine_fit_groups (
-                doctrine_fit_id INT UNSIGNED NOT NULL,
-                doctrine_group_id INT UNSIGNED NOT NULL,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                PRIMARY KEY (doctrine_fit_id, doctrine_group_id),
-                KEY idx_doctrine_fit_groups_group (doctrine_group_id),
-                CONSTRAINT fk_doctrine_fit_groups_fit FOREIGN KEY (doctrine_fit_id) REFERENCES doctrine_fits(id) ON DELETE CASCADE,
-                CONSTRAINT fk_doctrine_fit_groups_group FOREIGN KEY (doctrine_group_id) REFERENCES doctrine_groups(id) ON DELETE CASCADE
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4'
-        );
+        $deleteRule = db_foreign_key_delete_rule('fk_doctrine_fits_group');
+        if ($deleteRule !== null && $deleteRule !== 'SET NULL') {
+            db()->exec('ALTER TABLE doctrine_fits DROP FOREIGN KEY fk_doctrine_fits_group');
+            db()->exec('ALTER TABLE doctrine_fits ADD CONSTRAINT fk_doctrine_fits_group FOREIGN KEY (doctrine_group_id) REFERENCES doctrine_groups(id) ON DELETE SET NULL');
+        }
+    }
 
-        db()->exec(
-            'INSERT IGNORE INTO doctrine_fit_groups (doctrine_fit_id, doctrine_group_id)
-             SELECT id, doctrine_group_id
-             FROM doctrine_fits
-             WHERE doctrine_group_id IS NOT NULL'
-        );
-    });
+    db()->exec(
+        'CREATE TABLE IF NOT EXISTS doctrine_fit_groups (
+            doctrine_fit_id INT UNSIGNED NOT NULL,
+            doctrine_group_id INT UNSIGNED NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (doctrine_fit_id, doctrine_group_id),
+            KEY idx_doctrine_fit_groups_group (doctrine_group_id),
+            CONSTRAINT fk_doctrine_fit_groups_fit FOREIGN KEY (doctrine_fit_id) REFERENCES doctrine_fits(id) ON DELETE CASCADE,
+            CONSTRAINT fk_doctrine_fit_groups_group FOREIGN KEY (doctrine_group_id) REFERENCES doctrine_groups(id) ON DELETE CASCADE
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4'
+    );
+
+    db()->exec(
+        'INSERT IGNORE INTO doctrine_fit_groups (doctrine_fit_id, doctrine_group_id)
+         SELECT id, doctrine_group_id
+         FROM doctrine_fits
+         WHERE doctrine_group_id IS NOT NULL'
+    );
 
     $ensured = true;
 }
