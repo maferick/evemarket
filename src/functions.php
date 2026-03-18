@@ -827,7 +827,7 @@ function data_sync_schedule_job_definitions(): array
             'interval_value_key' => 'market_hub_local_history_sync_interval_value',
             'interval_unit_key' => 'market_hub_local_history_sync_interval_unit',
             'default_interval_seconds' => 300,
-            'label' => 'Local History',
+            'label' => 'Hub Snapshot History',
         ],
         'killmail_r2z2_sync' => [
             'enabled_key' => 'killmail_r2z2_sync_enabled',
@@ -1269,25 +1269,17 @@ function dashboard_trend_snippets(array $rows): array
     return array_slice($snippets, 0, 6);
 }
 
-function market_hub_dashboard_trend_legacy_history_fallback_enabled(): bool
-{
-    return sanitize_enabled_flag(get_setting('dashboard_trend_legacy_history_fallback_enabled', '0')) === '1';
-}
-
 function dashboard_trend_history_dataset(string $marketHubRef, int $referenceSourceId): array
 {
-    $historyRows = [];
-    $message = '';
-
     if ($marketHubRef === '' || $referenceSourceId <= 0) {
         return [
             'rows' => [],
-            'message' => 'Trend snippets need a reference hub. Configure Settings → General first, then run the local-history sync job for that hub.',
+            'message' => 'Trend snippets need a reference hub. Configure Settings → General first, then run the hub history snapshot job for that hub.',
         ];
     }
 
     try {
-        $historyRows = db_market_hub_local_history_daily_latest_points_by_type(market_hub_local_history_source(), $referenceSourceId, [], 2, 80);
+        $historyRows = db_market_history_daily_recent_window('market_hub', $referenceSourceId, 8, 80);
     } catch (Throwable) {
         $historyRows = [];
     }
@@ -1299,23 +1291,9 @@ function dashboard_trend_history_dataset(string $marketHubRef, int $referenceSou
         ];
     }
 
-    $message = 'Trend snippets use local hub history. Run the local-history sync job for ' . market_hub_reference_name() . ' and capture at least two daily snapshots; EVE Tycoon history sync does not populate this panel.';
-
-    if (market_hub_dashboard_trend_legacy_history_fallback_enabled()) {
-        try {
-            $historyRows = db_market_history_daily_recent_window('market_hub', $referenceSourceId, 8, 80);
-        } catch (Throwable) {
-            $historyRows = [];
-        }
-
-        if ($historyRows !== []) {
-            $message = 'Trend snippets are temporarily using legacy hub history fallback. Run the local-history sync job to migrate this panel to market_hub_local_history_daily.';
-        }
-    }
-
     return [
-        'rows' => $historyRows,
-        'message' => $message,
+        'rows' => [],
+        'message' => 'Trend snippets use SupplyCore snapshot history. Run the hub current sync for ' . market_hub_reference_name() . ' and capture at least two daily history builds from local snapshots.',
     ];
 }
 
@@ -3256,7 +3234,7 @@ function scheduler_job_definitions(): array
                     throw new RuntimeException('Alliance history sync skipped: choose an alliance structure destination (NPC stations are not eligible for structure sync).');
                 }
 
-                return sync_alliance_structure_orders($structureId, 'full');
+                return sync_alliance_market_history($structureId, 'full');
             },
         ],
         'market_hub_historical_sync' => [
@@ -3277,7 +3255,7 @@ function scheduler_job_definitions(): array
             'handler' => static function (): array {
                 $hubRef = market_hub_setting_reference();
                 if ($hubRef === '') {
-                    throw new RuntimeException('Hub local history sync skipped: configure a market hub/station first.');
+                    throw new RuntimeException('Hub snapshot history sync skipped: configure a market hub/station first.');
                 }
 
                 return sync_market_hub_local_history($hubRef, 'incremental');
@@ -3853,6 +3831,16 @@ function sync_dataset_key_alliance_structure_orders_history(int $structureId): s
     return 'alliance.structure.' . $structureId . '.orders.history';
 }
 
+function sync_dataset_key_alliance_structure_history_daily(int $structureId): string
+{
+    return 'alliance.structure.' . $structureId . '.history.daily';
+}
+
+function sync_dataset_key_market_hub_orders_history(string $hubKey): string
+{
+    return 'market.hub.' . $hubKey . '.orders.history';
+}
+
 function sync_dataset_key_market_hub_history_daily(string $hubKey): string
 {
     return 'market.hub.' . $hubKey . '.history.daily';
@@ -4083,6 +4071,11 @@ function market_hub_current_snapshot_metrics_by_type(array $rows, ?int $sourceId
 
 function market_hub_local_history_trade_date(string $observedAt): string
 {
+    return market_snapshot_trade_date($observedAt);
+}
+
+function market_snapshot_trade_date(string $observedAt): string
+{
     $raw = trim($observedAt);
     if ($raw === '') {
         return '';
@@ -4097,6 +4090,118 @@ function market_hub_local_history_trade_date(string $observedAt): string
     } catch (Throwable) {
         return '';
     }
+}
+
+function market_history_daily_point_from_snapshot_metric(array $metric, string $sourceType): ?array
+{
+    $normalizedSourceType = $sourceType === 'market_hub' ? 'market_hub' : 'alliance_structure';
+    $typeId = (int) ($metric['type_id'] ?? 0);
+    $sourceId = (int) ($metric['source_id'] ?? 0);
+    $observedAt = trim((string) ($metric['observed_at'] ?? ''));
+    if ($typeId <= 0 || $sourceId <= 0 || $observedAt === '') {
+        return null;
+    }
+
+    $sellPrice = isset($metric['best_sell_price']) && $metric['best_sell_price'] !== null ? round((float) $metric['best_sell_price'], 2) : null;
+    $buyPrice = isset($metric['best_buy_price']) && $metric['best_buy_price'] !== null ? round((float) $metric['best_buy_price'], 2) : null;
+    $closePrice = $sellPrice ?? $buyPrice;
+    if ($closePrice === null) {
+        return null;
+    }
+
+    return [
+        'source_type' => $normalizedSourceType,
+        'source_id' => $sourceId,
+        'type_id' => $typeId,
+        'trade_date' => market_snapshot_trade_date($observedAt),
+        'open_price' => $closePrice,
+        'high_price' => $closePrice,
+        'low_price' => $closePrice,
+        'close_price' => $closePrice,
+        'average_price' => $closePrice,
+        'volume' => max(0, (int) ($metric['total_volume'] ?? 0)),
+        'order_count' => max(0, (int) ($metric['buy_order_count'] ?? 0)) + max(0, (int) ($metric['sell_order_count'] ?? 0)),
+        'source_label' => 'supplycore_snapshot',
+        'observed_at' => $observedAt,
+        '_average_sum' => $closePrice,
+        '_average_count' => 1,
+    ];
+}
+
+function market_history_daily_rebuild_from_snapshot_metrics(array $snapshotMetrics, string $sourceType): array
+{
+    $dailyBuckets = [];
+    $snapshotCount = 0;
+    $tradeDates = [];
+
+    foreach ($snapshotMetrics as $metric) {
+        if (!is_array($metric)) {
+            continue;
+        }
+
+        $snapshotRow = market_history_daily_point_from_snapshot_metric($metric, $sourceType);
+        if ($snapshotRow === null) {
+            continue;
+        }
+
+        $tradeDate = trim((string) ($snapshotRow['trade_date'] ?? ''));
+        $typeId = (int) ($snapshotRow['type_id'] ?? 0);
+        $sourceId = (int) ($snapshotRow['source_id'] ?? 0);
+        if ($tradeDate === '' || $typeId <= 0 || $sourceId <= 0) {
+            continue;
+        }
+
+        $snapshotCount++;
+        $tradeDates[$tradeDate] = true;
+        $bucketKey = $tradeDate . ':' . $typeId;
+
+        if (!isset($dailyBuckets[$bucketKey])) {
+            $dailyBuckets[$bucketKey] = $snapshotRow;
+            continue;
+        }
+
+        $bucket = $dailyBuckets[$bucketKey];
+        $closePrice = (float) ($snapshotRow['close_price'] ?? 0);
+        $bucket['high_price'] = max((float) ($bucket['high_price'] ?? $closePrice), $closePrice);
+        $bucket['low_price'] = min((float) ($bucket['low_price'] ?? $closePrice), $closePrice);
+        $bucket['_average_sum'] = (float) ($bucket['_average_sum'] ?? 0.0) + $closePrice;
+        $bucket['_average_count'] = (int) ($bucket['_average_count'] ?? 0) + 1;
+
+        $bucketObservedAt = trim((string) ($bucket['observed_at'] ?? ''));
+        $rowObservedAt = trim((string) ($snapshotRow['observed_at'] ?? ''));
+        if ($bucketObservedAt === '' || ($rowObservedAt !== '' && strcmp($rowObservedAt, $bucketObservedAt) >= 0)) {
+            $bucket['close_price'] = $closePrice;
+            $bucket['volume'] = max(0, (int) ($snapshotRow['volume'] ?? 0));
+            $bucket['order_count'] = max(0, (int) ($snapshotRow['order_count'] ?? 0));
+            $bucket['observed_at'] = $rowObservedAt;
+            $bucket['source_label'] = (string) ($snapshotRow['source_label'] ?? 'supplycore_snapshot');
+        }
+
+        $dailyBuckets[$bucketKey] = $bucket;
+    }
+
+    uasort($dailyBuckets, static function (array $left, array $right): int {
+        $dateCompare = strcmp((string) ($left['trade_date'] ?? ''), (string) ($right['trade_date'] ?? ''));
+        if ($dateCompare !== 0) {
+            return $dateCompare;
+        }
+
+        return ((int) ($left['type_id'] ?? 0)) <=> ((int) ($right['type_id'] ?? 0));
+    });
+
+    $rows = [];
+    foreach ($dailyBuckets as $bucket) {
+        $averageCount = max(1, (int) ($bucket['_average_count'] ?? 1));
+        $bucket['average_price'] = round(((float) ($bucket['_average_sum'] ?? (float) ($bucket['close_price'] ?? 0.0))) / $averageCount, 2);
+        unset($bucket['_average_sum'], $bucket['_average_count']);
+        $rows[] = $bucket;
+    }
+
+    return [
+        'rows' => $rows,
+        'snapshot_metric_rows' => $snapshotCount,
+        'trade_dates' => array_keys($tradeDates),
+    ];
 }
 
 
@@ -4516,54 +4621,6 @@ function sync_alliance_structure_orders(int $structureId, string $runMode = 'inc
     }
 }
 
-function eve_tycoon_current_orders_payload_rows(array $payload): array
-{
-    foreach (['items', 'data', 'results', 'orders'] as $key) {
-        if (isset($payload[$key]) && is_array($payload[$key])) {
-            return $payload[$key];
-        }
-    }
-
-    return array_is_list($payload) ? $payload : [];
-}
-
-function eve_tycoon_current_order_to_canonical(array $row, int $sourceId, string $observedAt): ?array
-{
-    $orderId = (int) ($row['order_id'] ?? $row['orderId'] ?? 0);
-    $typeId = (int) ($row['type_id'] ?? $row['typeId'] ?? 0);
-    if ($orderId <= 0 || $typeId <= 0) {
-        return null;
-    }
-
-    $issuedAt = strtotime((string) ($row['issued'] ?? $row['issued_at'] ?? ''));
-    if ($issuedAt === false) {
-        $issuedAt = time();
-    }
-
-    $duration = max(1, (int) ($row['duration'] ?? 90));
-    $expiresAt = strtotime((string) ($row['expires'] ?? $row['expires_at'] ?? ''));
-    if ($expiresAt === false) {
-        $expiresAt = strtotime('+' . $duration . ' days', $issuedAt);
-    }
-
-    return [
-        'source_type' => 'market_hub',
-        'source_id' => $sourceId,
-        'type_id' => $typeId,
-        'order_id' => $orderId,
-        'is_buy_order' => !empty($row['is_buy_order'] ?? $row['isBuyOrder'] ?? false) ? 1 : 0,
-        'price' => (float) ($row['price'] ?? 0),
-        'volume_remain' => max(0, (int) ($row['volume_remain'] ?? $row['volumeRemain'] ?? $row['volume'] ?? 0)),
-        'volume_total' => max(0, (int) ($row['volume_total'] ?? $row['volumeTotal'] ?? $row['volume'] ?? 0)),
-        'min_volume' => max(1, (int) ($row['min_volume'] ?? $row['minVolume'] ?? 1)),
-        'range' => (string) ($row['range'] ?? 'region'),
-        'duration' => $duration,
-        'issued' => gmdate('Y-m-d H:i:s', $issuedAt),
-        'expires' => gmdate('Y-m-d H:i:s', $expiresAt),
-        'observed_at' => $observedAt,
-    ];
-}
-
 function market_hub_reference_context(string|int $hubRef): array
 {
     $hubKey = trim((string) $hubRef);
@@ -4670,8 +4727,12 @@ function sync_market_hub_current_orders(string|int $hubRef, string $runMode = 'i
 
     $hubContext = market_hub_reference_context($hubKey);
     $sourceId = sync_source_id_from_hub_ref($hubKey);
-    $datasetKey = sync_dataset_key_market_hub_current_orders($hubKey);
-    $runId = db_sync_run_start($datasetKey, $syncMode, sync_watermark($datasetKey));
+    $datasetKeyCurrent = sync_dataset_key_market_hub_current_orders($hubKey);
+    $datasetKeyHistory = sync_dataset_key_market_hub_orders_history($hubKey);
+    $runIdCurrent = db_sync_run_start($datasetKeyCurrent, $syncMode, sync_watermark($datasetKeyCurrent));
+    $runIdHistory = db_sync_run_start($datasetKeyHistory, $syncMode, sync_watermark($datasetKeyHistory));
+    $currentFinished = false;
+    $historyFinished = false;
 
     try {
         $observedAt = gmdate('Y-m-d H:i:s');
@@ -4817,12 +4878,23 @@ function sync_market_hub_current_orders(string|int $hubRef, string $runMode = 'i
                 'api_pages_processed' => $pagesProcessed,
                 'no_changes' => true,
             ];
-            sync_run_finalize_success($runId, $datasetKey, $syncMode, $result['rows_seen'], 0, $result['cursor'], $result['checksum']);
+            sync_run_finalize_success($runIdCurrent, $datasetKeyCurrent, $syncMode, $result['rows_seen'], 0, $result['cursor'], $result['checksum']);
+            $currentFinished = true;
+            sync_run_finalize_success($runIdHistory, $datasetKeyHistory, $syncMode, $result['rows_seen'], 0, $result['cursor'], $result['checksum']);
+            $historyFinished = true;
 
             return $result;
         }
 
-        $result['rows_written'] = db_market_orders_current_bulk_upsert($canonicalRows);
+        $writtenCurrent = db_market_orders_current_bulk_upsert($canonicalRows);
+        sync_run_finalize_success($runIdCurrent, $datasetKeyCurrent, $syncMode, $result['rows_seen'], $writtenCurrent, $result['cursor'], $result['checksum']);
+        $currentFinished = true;
+
+        $writtenHistory = db_market_orders_history_bulk_insert($canonicalRows);
+        sync_run_finalize_success($runIdHistory, $datasetKeyHistory, $syncMode, $result['rows_seen'], $writtenHistory, $result['cursor'], $result['checksum']);
+        $historyFinished = true;
+
+        $result['rows_written'] = $writtenCurrent + $writtenHistory;
         $result['meta'] = [
             'selected_hub_id' => $selectedHubId,
             'selected_hub_name' => $selectedHubName,
@@ -4833,17 +4905,24 @@ function sync_market_hub_current_orders(string|int $hubRef, string $runMode = 'i
             'resolved_structure_id' => $resolvedStructureId,
             'records_fetched' => (int) $result['rows_seen'],
             'records_inserted' => 0,
-            'records_updated' => (int) $result['rows_written'],
-            'records_skipped' => max(0, (int) $result['rows_seen'] - (int) $result['rows_written']),
+            'records_updated' => (int) $writtenCurrent,
+            'records_skipped' => max(0, (int) $result['rows_seen'] - (int) $writtenCurrent),
             'records_deleted' => 0,
+            'history_rows_generated' => (int) $writtenHistory,
             'api_pages_processed' => $pagesProcessed,
-            'no_changes' => (int) $result['rows_written'] === 0,
+            'no_changes' => ((int) $writtenCurrent + (int) $writtenHistory) === 0,
         ];
-        sync_run_finalize_success($runId, $datasetKey, $syncMode, $result['rows_seen'], $result['rows_written'], $result['cursor'], $result['checksum']);
 
         return $result;
     } catch (Throwable $exception) {
-        sync_run_finalize_failure($runId, $datasetKey, $syncMode, $exception->getMessage());
+        if (!$currentFinished) {
+            sync_run_finalize_failure($runIdCurrent, $datasetKeyCurrent, $syncMode, $exception->getMessage());
+        }
+
+        if (!$historyFinished) {
+            sync_run_finalize_failure($runIdHistory, $datasetKeyHistory, $syncMode, $exception->getMessage());
+        }
+
         $result['warnings'][] = 'Hub current sync failed: ' . $exception->getMessage();
         $result['meta'] = [
             'selected_hub_id' => (string) ($hubContext['hub_id'] ?? $hubKey),
@@ -4859,283 +4938,36 @@ function sync_market_hub_current_orders(string|int $hubRef, string $runMode = 'i
     }
 }
 
-function eve_tycoon_history_payload_rows(array $payload): array
-{
-    foreach (['items', 'data', 'results', 'history'] as $key) {
-        if (isset($payload[$key]) && is_array($payload[$key])) {
-            return $payload[$key];
-        }
-    }
-
-    if (array_is_list($payload)) {
-        return $payload;
-    }
-
-    if (isset($payload['type_id'], $payload['date'])) {
-        return [$payload];
-    }
-
-    return [];
-}
-
-function eve_tycoon_history_to_canonical(array $row, int $sourceId, string $observedAt, ?int $typeId = null): ?array
-{
-    $resolvedTypeId = $typeId ?? (int) ($row['type_id'] ?? $row['typeId'] ?? 0);
-    $tradeDateRaw = (string) ($row['date'] ?? $row['trade_date'] ?? $row['day'] ?? '');
-    $tradeDateTs = strtotime($tradeDateRaw);
-    if ($resolvedTypeId <= 0 || $tradeDateTs === false) {
-        return null;
-    }
-
-    $open = (float) ($row['open'] ?? $row['open_price'] ?? 0);
-    $high = (float) ($row['high'] ?? $row['high_price'] ?? $open);
-    $low = (float) ($row['low'] ?? $row['low_price'] ?? $open);
-    $close = (float) ($row['close'] ?? $row['close_price'] ?? $open);
-    $average = $row['average'] ?? $row['average_price'] ?? null;
-
-    return [
-        'source_type' => 'market_hub',
-        'source_id' => $sourceId,
-        'type_id' => $resolvedTypeId,
-        'trade_date' => gmdate('Y-m-d', $tradeDateTs),
-        'open_price' => $open,
-        'high_price' => $high,
-        'low_price' => $low,
-        'close_price' => $close,
-        'average_price' => $average !== null ? (float) $average : null,
-        'volume' => max(0, (int) ($row['volume'] ?? 0)),
-        'order_count' => isset($row['order_count']) ? max(0, (int) $row['order_count']) : (isset($row['orders']) ? max(0, (int) $row['orders']) : null),
-        'source_label' => 'eve_tycoon',
-        'observed_at' => $observedAt,
-    ];
-}
-
-function market_hub_history_fallback_type_ids(int $sourceId, int $limit = 200): array
-{
-    $safeLimit = max(1, min($limit, 2000));
-    $orderTypeIds = db_market_orders_current_distinct_type_ids('market_hub', $sourceId, $safeLimit);
-    $historyTypeIds = db_market_history_daily_distinct_type_ids('market_hub', $sourceId, $safeLimit);
-
-    $fallbackTypeIds = array_merge($orderTypeIds, $historyTypeIds);
-
-    $allianceSourceId = configured_structure_destination_id_for_esi_sync();
-    if ($allianceSourceId > 0) {
-        $fallbackTypeIds = array_merge(
-            $fallbackTypeIds,
-            db_market_orders_current_distinct_type_ids('alliance_structure', $allianceSourceId, $safeLimit),
-            db_market_history_daily_distinct_type_ids('alliance_structure', $allianceSourceId, $safeLimit)
-        );
-    }
-
-    $typeIds = array_values(array_unique(array_filter($fallbackTypeIds, static fn (int $typeId): bool => $typeId > 0)));
-    sort($typeIds);
-
-    return array_slice($typeIds, 0, $safeLimit);
-}
-
-function market_hub_history_api_reference(string $hubRef): string
-{
-    $normalized = trim($hubRef);
-    if ($normalized === '') {
-        return '';
-    }
-
-    $stationId = (int) $normalized;
-    if ($stationId <= 0) {
-        return $normalized;
-    }
-
-    try {
-        $regionId = db_ref_npc_station_region_id($stationId);
-    } catch (Throwable) {
-        $regionId = null;
-    }
-
-    return $regionId !== null ? (string) $regionId : $normalized;
-}
-
-function sync_market_hub_history(string|int $hubRef, string $runMode = 'incremental'): array
-{
+function sync_market_history_from_snapshots(
+    string $sourceType,
+    int $sourceId,
+    string $datasetKey,
+    string $runMode,
+    ?int $windowDays,
+    array $context,
+    string $syncLabel
+): array {
     $result = sync_result_shape();
     $syncMode = sync_mode_normalize($runMode);
-    $sourceId = sync_source_id_from_hub_ref($hubRef);
-    $hubKey = trim((string) $hubRef);
-    $historyApiHubRef = market_hub_history_api_reference($hubKey);
-    $datasetKey = sync_dataset_key_market_hub_history_daily($hubKey);
-    if ($hubKey === '') {
-        $result['warnings'][] = 'Market hub reference is required.';
-
-        return $result;
-    }
-
-    $runId = db_sync_run_start($datasetKey, $syncMode, sync_watermark($datasetKey));
-
-    try {
-        $urlTemplate = trim((string) get_setting('eve_tycoon_history_url_template', 'https://evetycoon.com/api/v1/market/history/{hub}'));
-        $endpoint = str_replace('{hub}', rawurlencode($historyApiHubRef), $urlTemplate);
-
-        $response = http_get_json_with_backoff($endpoint, ['Accept: application/json']);
-        $status = (int) ($response['status'] ?? 500);
-        $providerRows = [];
-        $apiPagesProcessed = 1;
-
-        if ($status < 400) {
-            $providerRows = eve_tycoon_history_payload_rows($response['json'] ?? []);
-            $result['rows_seen'] = count($providerRows);
-        } else {
-            $fallbackTypeIds = market_hub_history_fallback_type_ids($sourceId);
-            if ($fallbackTypeIds === []) {
-                $result['warnings'][] = 'Primary history endpoint returned ' . $status . ' and fallback could not run because no local type IDs were found for this hub yet.';
-            }
-
-            if ($fallbackTypeIds !== []) {
-                $result['warnings'][] = 'Primary history endpoint returned ' . $status . '; falling back to per-type region history calls.';
-            }
-            $fallbackErrors = [];
-            $rowsSeen = 0;
-
-            foreach ($fallbackTypeIds as $typeId) {
-                $apiPagesProcessed++;
-                $fallbackEndpoint = 'https://evetycoon.com/api/v1/market/history/' . rawurlencode($historyApiHubRef) . '/' . rawurlencode((string) $typeId);
-                $fallbackResponse = http_get_json_with_backoff($fallbackEndpoint, ['Accept: application/json']);
-                $fallbackStatus = (int) ($fallbackResponse['status'] ?? 500);
-
-                if ($fallbackStatus >= 400) {
-                    $fallbackErrors[] = $typeId . ':' . $fallbackStatus;
-                    continue;
-                }
-
-                $typeRows = eve_tycoon_history_payload_rows($fallbackResponse['json'] ?? []);
-                foreach ($typeRows as $typeRow) {
-                    if (!is_array($typeRow)) {
-                        continue;
-                    }
-
-                    $typeRow['type_id'] = (int) ($typeRow['type_id'] ?? $typeRow['typeId'] ?? $typeId);
-                    $providerRows[] = $typeRow;
-                    $rowsSeen++;
-                }
-            }
-
-            $result['rows_seen'] = $rowsSeen;
-            if ($providerRows === [] && $fallbackTypeIds !== []) {
-                $errorSummary = $fallbackErrors === [] ? 'unknown' : implode(', ', array_slice($fallbackErrors, 0, 8));
-                throw new RuntimeException('EVE Tycoon history sync failed: fallback per-type history calls returned no rows. Errors: ' . $errorSummary . '.');
-            }
-        }
-
-        $observedAt = gmdate('Y-m-d H:i:s');
-        $canonicalRows = [];
-
-        foreach ($providerRows as $providerRow) {
-            if (!is_array($providerRow)) {
-                continue;
-            }
-
-            if (isset($providerRow['history']) && is_array($providerRow['history'])) {
-                $parentTypeId = (int) ($providerRow['type_id'] ?? $providerRow['typeId'] ?? 0);
-                foreach ($providerRow['history'] as $historyRow) {
-                    if (!is_array($historyRow)) {
-                        continue;
-                    }
-
-                    $mapped = eve_tycoon_history_to_canonical($historyRow, $sourceId, $observedAt, $parentTypeId > 0 ? $parentTypeId : null);
-                    if ($mapped !== null) {
-                        $canonicalRows[] = $mapped;
-                    }
-                }
-
-                continue;
-            }
-
-            $mapped = eve_tycoon_history_to_canonical($providerRow, $sourceId, $observedAt);
-            if ($mapped !== null) {
-                $canonicalRows[] = $mapped;
-            }
-        }
-
-        if ($canonicalRows === []) {
-            $result['warnings'][] = 'No canonical market history rows were mapped from provider payload.';
-            $result['checksum'] = sync_checksum([]);
-            $result['cursor'] = null;
-            $result['meta'] = [
-                'reference_hub' => $hubKey,
-                'reference_hub_history_api' => $historyApiHubRef,
-                'reference_market_hub' => market_hub_reference_name(),
-                'records_fetched' => (int) $result['rows_seen'],
-                'records_inserted' => 0,
-                'records_updated' => 0,
-                'records_skipped' => (int) $result['rows_seen'],
-                'records_deleted' => 0,
-                'api_pages_processed' => $apiPagesProcessed,
-                'history_rows_generated' => 0,
-                'no_changes' => true,
-            ];
-            sync_run_finalize_success($runId, $datasetKey, $syncMode, $result['rows_seen'], 0, $result['cursor'], $result['checksum']);
-
-            return $result;
-        }
-
-        $result['rows_written'] = db_market_history_daily_bulk_upsert($canonicalRows);
-        $latestTradeDate = max(array_column($canonicalRows, 'trade_date'));
-        $result['cursor'] = 'trade_date:' . $latestTradeDate;
-        $result['checksum'] = sync_checksum($canonicalRows);
-        $result['meta'] = [
-            'reference_hub' => $hubKey,
-            'reference_hub_history_api' => $historyApiHubRef,
-                'reference_market_hub' => market_hub_reference_name(),
-            'records_fetched' => (int) $result['rows_seen'],
-            'records_inserted' => 0,
-            'records_updated' => (int) $result['rows_written'],
-            'records_skipped' => max(0, (int) $result['rows_seen'] - (int) $result['rows_written']),
-            'records_deleted' => 0,
-            'api_pages_processed' => $apiPagesProcessed,
-            'history_rows_generated' => (int) $result['rows_written'],
-            'no_changes' => (int) $result['rows_written'] === 0,
-        ];
-        sync_run_finalize_success($runId, $datasetKey, $syncMode, $result['rows_seen'], $result['rows_written'], $result['cursor'], $result['checksum']);
-
-        return $result;
-    } catch (Throwable $exception) {
-        sync_run_finalize_failure($runId, $datasetKey, $syncMode, $exception->getMessage());
-        $result['warnings'][] = $exception->getMessage();
-
-        return $result;
-    }
-}
-
-function sync_market_hub_local_history(string|int $hubRef, string $runMode = 'incremental', ?int $windowDays = null): array
-{
-    $result = sync_result_shape();
-    $syncMode = sync_mode_normalize($runMode);
-    $hubKey = trim((string) $hubRef);
-    $datasetKey = sync_dataset_key_market_hub_local_history_daily($hubKey);
-
-    if ($hubKey === '') {
-        $result['warnings'][] = 'Local hub history sync skipped: configure a market hub/station first.';
-
-        return $result;
-    }
-
-    $hubContext = market_hub_reference_context($hubKey);
-    $sourceId = sync_source_id_from_hub_ref($hubKey);
+    $normalizedSourceType = $sourceType === 'market_hub' ? 'market_hub' : 'alliance_structure';
     $safeWindowDays = market_hub_local_history_window_days_normalize($windowDays);
     $windowStartObservedAt = market_hub_local_history_window_start_observed_at($safeWindowDays);
     $runId = db_sync_run_start($datasetKey, $syncMode, sync_watermark($datasetKey));
 
     try {
         if ($sourceId <= 0) {
-            $warning = 'Local hub history sync skipped: could not resolve a valid local source id for hub ' . ($hubContext['hub_name'] ?? $hubKey) . '.';
+            $sourceName = (string) ($context['source_name'] ?? $context['reference_market_hub'] ?? $context['operational_market'] ?? ('Source #' . $sourceId));
+            $warning = $syncLabel . ' skipped: could not resolve a valid local source id for ' . $sourceName . '.';
             $result['warnings'][] = $warning;
-            $result['cursor'] = 'hub:' . $hubKey . ';state:missing_source_id';
+            $result['cursor'] = 'source_type:' . $normalizedSourceType . ';state:missing_source_id';
             $result['checksum'] = sync_checksum([
-                'hub' => $hubKey,
+                'source_type' => $normalizedSourceType,
+                'source_id' => $sourceId,
                 'status' => 'missing_source_id',
             ]);
-            $result['meta'] = [
-                'reference_hub' => $hubKey,
-                'reference_market_hub' => (string) ($hubContext['hub_name'] ?? market_hub_reference_name()),
-                'source_id' => 0,
+            $result['meta'] = $context + [
+                'source_type' => $normalizedSourceType,
+                'source_id' => $sourceId,
                 'window_days' => $safeWindowDays,
                 'window_start_observed_at' => $windowStartObservedAt,
                 'records_fetched' => 0,
@@ -5153,21 +4985,22 @@ function sync_market_hub_local_history(string|int $hubRef, string $runMode = 'in
             return $result;
         }
 
-        $snapshotMetrics = db_market_orders_snapshot_metrics_window('market_hub', $sourceId, $windowStartObservedAt);
+        $snapshotMetrics = db_market_orders_snapshot_metrics_window($normalizedSourceType, $sourceId, $windowStartObservedAt);
         $result['rows_seen'] = count($snapshotMetrics);
 
         if ($snapshotMetrics === []) {
-            $warning = 'Local hub history sync found no local raw hub snapshots in the last ' . $safeWindowDays . ' day(s) for ' . ($hubContext['hub_name'] ?? $hubKey) . '. Run the hub current sync first or widen --window-days.';
+            $sourceName = (string) ($context['source_name'] ?? $context['reference_market_hub'] ?? $context['operational_market'] ?? ('Source #' . $sourceId));
+            $warning = $syncLabel . ' found no local raw order snapshots in the last ' . $safeWindowDays . ' day(s) for ' . $sourceName . '. Run the matching current sync first or widen --window-days.';
             $result['warnings'][] = $warning;
-            $result['cursor'] = 'source_id:' . $sourceId . ';state:awaiting_local_snapshots';
+            $result['cursor'] = 'source_type:' . $normalizedSourceType . ';source_id:' . $sourceId . ';state:awaiting_local_snapshots';
             $result['checksum'] = sync_checksum([
+                'source_type' => $normalizedSourceType,
                 'source_id' => $sourceId,
                 'window_days' => $safeWindowDays,
                 'status' => 'awaiting_local_snapshots',
             ]);
-            $result['meta'] = [
-                'reference_hub' => $hubKey,
-                'reference_market_hub' => (string) ($hubContext['hub_name'] ?? market_hub_reference_name()),
+            $result['meta'] = $context + [
+                'source_type' => $normalizedSourceType,
                 'source_id' => $sourceId,
                 'window_days' => $safeWindowDays,
                 'window_start_observed_at' => $windowStartObservedAt,
@@ -5186,24 +5019,25 @@ function sync_market_hub_local_history(string|int $hubRef, string $runMode = 'in
             return $result;
         }
 
-        $rebuilt = market_hub_local_history_daily_rebuild_from_snapshot_metrics($snapshotMetrics);
+        $rebuilt = market_history_daily_rebuild_from_snapshot_metrics($snapshotMetrics, $normalizedSourceType);
         $canonicalRows = is_array($rebuilt['rows'] ?? null) ? $rebuilt['rows'] : [];
         $historyRowCount = count($canonicalRows);
         $tradeDates = is_array($rebuilt['trade_dates'] ?? null) ? $rebuilt['trade_dates'] : [];
-        $latestCapturedAt = $canonicalRows === [] ? '' : (string) ($canonicalRows[array_key_last($canonicalRows)]['captured_at'] ?? '');
+        $latestObservedAt = $canonicalRows === [] ? '' : (string) ($canonicalRows[array_key_last($canonicalRows)]['observed_at'] ?? '');
 
         if ($canonicalRows === []) {
-            $warning = 'Local hub history sync could not derive any daily rows from the local raw hub snapshots for ' . ($hubContext['hub_name'] ?? $hubKey) . '.';
+            $sourceName = (string) ($context['source_name'] ?? $context['reference_market_hub'] ?? $context['operational_market'] ?? ('Source #' . $sourceId));
+            $warning = $syncLabel . ' could not derive any daily rows from the local raw order snapshots for ' . $sourceName . '.';
             $result['warnings'][] = $warning;
-            $result['cursor'] = 'source_id:' . $sourceId . ';window_days:' . $safeWindowDays . ';state:no_canonical_rows';
+            $result['cursor'] = 'source_type:' . $normalizedSourceType . ';source_id:' . $sourceId . ';window_days:' . $safeWindowDays . ';state:no_canonical_rows';
             $result['checksum'] = sync_checksum([
+                'source_type' => $normalizedSourceType,
                 'source_id' => $sourceId,
                 'window_days' => $safeWindowDays,
                 'status' => 'no_canonical_rows',
             ]);
-            $result['meta'] = [
-                'reference_hub' => $hubKey,
-                'reference_market_hub' => (string) ($hubContext['hub_name'] ?? market_hub_reference_name()),
+            $result['meta'] = $context + [
+                'source_type' => $normalizedSourceType,
                 'source_id' => $sourceId,
                 'window_days' => $safeWindowDays,
                 'window_start_observed_at' => $windowStartObservedAt,
@@ -5222,16 +5056,15 @@ function sync_market_hub_local_history(string|int $hubRef, string $runMode = 'in
             return $result;
         }
 
-        $result['rows_written'] = db_market_hub_local_history_daily_bulk_upsert($canonicalRows);
-        $result['cursor'] = 'source_id:' . $sourceId . ';window_days:' . $safeWindowDays . ';captured_at:' . $latestCapturedAt;
+        $result['rows_written'] = db_market_history_daily_bulk_upsert($canonicalRows);
+        $result['cursor'] = 'source_type:' . $normalizedSourceType . ';source_id:' . $sourceId . ';window_days:' . $safeWindowDays . ';observed_at:' . $latestObservedAt;
         $result['checksum'] = sync_checksum($canonicalRows);
-        $result['meta'] = [
-            'reference_hub' => $hubKey,
-            'reference_market_hub' => (string) ($hubContext['hub_name'] ?? market_hub_reference_name()),
+        $result['meta'] = $context + [
+            'source_type' => $normalizedSourceType,
             'source_id' => $sourceId,
             'window_days' => $safeWindowDays,
             'window_start_observed_at' => $windowStartObservedAt,
-            'captured_at' => $latestCapturedAt !== '' ? $latestCapturedAt : null,
+            'observed_at' => $latestObservedAt !== '' ? $latestObservedAt : null,
             'records_fetched' => (int) $result['rows_seen'],
             'records_inserted' => 0,
             'records_updated' => (int) $result['rows_written'],
@@ -5255,10 +5088,110 @@ function sync_market_hub_local_history(string|int $hubRef, string $runMode = 'in
         return $result;
     } catch (Throwable $exception) {
         sync_run_finalize_failure($runId, $datasetKey, $syncMode, $exception->getMessage());
-        $result['warnings'][] = 'Local hub history sync failed: ' . $exception->getMessage();
+        $result['warnings'][] = $syncLabel . ' failed: ' . $exception->getMessage();
 
         return $result;
     }
+}
+
+function sync_alliance_market_history(int $structureId, string $runMode = 'incremental', ?int $windowDays = null): array
+{
+    if ($structureId <= 0) {
+        return [
+            'rows_seen' => 0,
+            'rows_written' => 0,
+            'warnings' => ['Alliance history sync skipped: choose an alliance structure destination first.'],
+            'meta' => [],
+            'cursor' => null,
+            'checksum' => null,
+        ];
+    }
+
+    return sync_market_history_from_snapshots(
+        'alliance_structure',
+        $structureId,
+        sync_dataset_key_alliance_structure_history_daily($structureId),
+        $runMode,
+        $windowDays,
+        [
+            'operational_market_id' => $structureId,
+            'operational_market' => selected_station_name('alliance_station_id') ?? ('Structure ' . $structureId),
+            'source_name' => selected_station_name('alliance_station_id') ?? ('Structure ' . $structureId),
+        ],
+        'Alliance history sync'
+    );
+}
+
+function sync_market_hub_history(string|int $hubRef, string $runMode = 'incremental', ?int $windowDays = null): array
+{
+    $hubKey = trim((string) $hubRef);
+    if ($hubKey === '') {
+        return [
+            'rows_seen' => 0,
+            'rows_written' => 0,
+            'warnings' => ['Hub history sync skipped: configure a market hub/station first.'],
+            'meta' => [],
+            'cursor' => null,
+            'checksum' => null,
+        ];
+    }
+
+    $hubContext = market_hub_reference_context($hubKey);
+    $sourceId = sync_source_id_from_hub_ref($hubKey);
+
+    return sync_market_history_from_snapshots(
+        'market_hub',
+        $sourceId,
+        sync_dataset_key_market_hub_history_daily($hubKey),
+        $runMode,
+        $windowDays,
+        [
+            'reference_hub' => $hubKey,
+            'reference_market_hub' => (string) ($hubContext['hub_name'] ?? market_hub_reference_name()),
+            'selected_hub_type' => (string) ($hubContext['hub_type'] ?? 'unknown'),
+            'effective_api_source' => (string) ($hubContext['api_source'] ?? 'unknown'),
+            'resolved_region_id' => isset($hubContext['region_id']) && $hubContext['region_id'] !== null ? (int) $hubContext['region_id'] : null,
+            'resolved_structure_id' => isset($hubContext['structure_id']) && $hubContext['structure_id'] !== null ? (int) $hubContext['structure_id'] : null,
+            'source_name' => (string) ($hubContext['hub_name'] ?? market_hub_reference_name()),
+        ],
+        'Hub history sync'
+    );
+}
+
+function sync_market_hub_local_history(string|int $hubRef, string $runMode = 'incremental', ?int $windowDays = null): array
+{
+    $hubKey = trim((string) $hubRef);
+    if ($hubKey === '') {
+        return [
+            'rows_seen' => 0,
+            'rows_written' => 0,
+            'warnings' => ['Hub snapshot history sync skipped: configure a market hub/station first.'],
+            'meta' => [],
+            'cursor' => null,
+            'checksum' => null,
+        ];
+    }
+
+    $hubContext = market_hub_reference_context($hubKey);
+    $sourceId = sync_source_id_from_hub_ref($hubKey);
+
+    return sync_market_history_from_snapshots(
+        'market_hub',
+        $sourceId,
+        sync_dataset_key_market_hub_local_history_daily($hubKey),
+        $runMode,
+        $windowDays,
+        [
+            'reference_hub' => $hubKey,
+            'reference_market_hub' => (string) ($hubContext['hub_name'] ?? market_hub_reference_name()),
+            'selected_hub_type' => (string) ($hubContext['hub_type'] ?? 'unknown'),
+            'effective_api_source' => (string) ($hubContext['api_source'] ?? 'unknown'),
+            'resolved_region_id' => isset($hubContext['region_id']) && $hubContext['region_id'] !== null ? (int) $hubContext['region_id'] : null,
+            'resolved_structure_id' => isset($hubContext['structure_id']) && $hubContext['structure_id'] !== null ? (int) $hubContext['structure_id'] : null,
+            'source_name' => (string) ($hubContext['hub_name'] ?? market_hub_reference_name()),
+        ],
+        'Hub snapshot history sync'
+    );
 }
 
 function sync_market_orders_history_prune(int $retentionDays, string $runMode = 'incremental'): array

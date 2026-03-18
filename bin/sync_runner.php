@@ -217,8 +217,8 @@ function sync_runner_dispatch_job(string $jobKey, int $sourceId, string $runMode
     }
 
     if ($jobKey === 'alliance-history') {
-        $datasetKey = sync_dataset_key_alliance_structure_orders_history($sourceId);
-        $result = sync_alliance_structure_orders($sourceId, $runMode);
+        $datasetKey = sync_dataset_key_alliance_structure_history_daily($sourceId);
+        $result = sync_alliance_market_history($sourceId, $runMode, $windowDays);
 
         return $result + ['dataset_key' => $datasetKey];
     }
@@ -245,7 +245,7 @@ function sync_runner_dispatch_job(string $jobKey, int $sourceId, string $runMode
     if ($jobKey === 'market-hub-local-history') {
         $hubRef = market_hub_setting_reference();
         if ($hubRef === '') {
-            throw new RuntimeException('Hub local history sync skipped: configure a reference market hub in Trading Stations settings.');
+            throw new RuntimeException('Hub snapshot history sync skipped: configure a reference market hub in Trading Stations settings.');
         }
 
         $datasetKey = sync_dataset_key_market_hub_local_history_daily($hubRef);
@@ -268,7 +268,7 @@ function sync_runner_dispatch_job(string $jobKey, int $sourceId, string $runMode
     }
 
     $datasetKey = sync_dataset_key_market_hub_history_daily($hubRef);
-    $result = sync_market_hub_history($hubRef, $runMode);
+    $result = sync_market_hub_history($hubRef, $runMode, $windowDays);
 
     return $result + ['dataset_key' => $datasetKey];
 }
@@ -280,7 +280,7 @@ function sync_runner_dataset_key_for_job(string $jobKey, int $sourceId): string
     }
 
     if ($jobKey === 'alliance-history') {
-        return sync_dataset_key_alliance_structure_orders_history($sourceId);
+        return sync_dataset_key_alliance_structure_history_daily($sourceId);
     }
 
     if ($jobKey === 'hub-current') {

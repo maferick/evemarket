@@ -52,9 +52,7 @@ README.md
    mysql -u root -p supplycore < database/schema.sql
    ```
 
-> Upgrading an existing installation? Apply schema changes before the next sync run, for example: `ALTER TABLE market_hub_local_history_daily MODIFY spread_percent DECIMAL(20,4) NULL;`.
->
-> If local-history sync previously failed with `Out of range value for column 'spread_percent'`, re-run that `ALTER TABLE` first, then trigger the **Local History** job again from **Settings → Data Sync** or `php bin/sync_runner.php --job=market-hub-local-history --mode=full --window-days=30`.
+> Upgrading an existing installation? Apply schema changes before the next sync run so local snapshot history can keep rebuilding cleanly from your stored ESI order snapshots.
 
 2. **Set environment variables** (example)
    ```bash
@@ -149,9 +147,9 @@ SupplyCore sync pipelines depend on the `cron` daemon being present and running 
 - Cron is **timer-only**: it triggers `bin/cron_tick.php` once per minute.
 - The scheduler (`bin/cron_tick.php`) decides which jobs are due and dispatches `bin/sync_runner.php`.
 - Interval and enable/disable controls are configured in **Settings → Data Sync** (`/settings?section=data-sync`) via scheduler rows in `sync_schedules`.
-- The local-history scheduler job (`market_hub_local_history_sync`) rebuilds `market_hub_local_history_daily` from the local raw hub-order snapshots available in MySQL for the configured market hub, using the recent window controlled by `raw_order_snapshot_retention_days` unless a CLI override is supplied.
-- **Trend Snippets** on the dashboard depend on that local-history generation; the external hub-history sync alone does not populate the snippet panel.
-- The **Run now** button in Settings → Data Sync includes the Local History job, forces the selected enabled schedule due immediately, and executes one scheduler tick.
+- The hub-history scheduler jobs (`market_hub_historical_sync` and `market_hub_local_history_sync`) rebuild `market_history_daily` from SupplyCore’s own raw hub-order snapshots stored in MySQL for the configured market hub, using the recent window controlled by `raw_order_snapshot_retention_days` unless a CLI override is supplied.
+- **Trend Snippets** on the dashboard depend on that first-party snapshot history generation.
+- The **Run now** button in Settings → Data Sync includes the Hub Snapshot History job, forces the selected enabled schedule due immediately, and executes one scheduler tick.
 - Backfill start dates are automatic: each pipeline starts from the date sync automation was enabled (`sync_automation_enabled_since`).
 
 ### Required cron runtime environment
@@ -162,16 +160,16 @@ Cron must run with the same environment the app expects:
 - Database vars: `DB_HOST`, `DB_PORT`, `DB_DATABASE`, `DB_USERNAME`, `DB_PASSWORD`
 - Pipeline source vars (when those pipelines are enabled):
   - `SUPPLYCORE_ALLIANCE_SOURCE_ID` (for `alliance-current` and `alliance-history`)
-  - `SUPPLYCORE_HUB_SOURCE_ID` (for `hub-current`, `hub-history`, and local-history generation)
+  - `SUPPLYCORE_HUB_SOURCE_ID` (for `hub-current`, `hub-history`, and hub snapshot-history generation)
 
 The canonical log path for the cron tick is `storage/logs/cron.log` (relative to app root).
 Raw order snapshots are pruned according to `raw_order_snapshot_retention_days` from Settings → Data Sync.
-Local history rows are built from those current snapshots, so keep the hub-current and Local History schedules enabled together for continuous Trend Snippet updates.
+Daily history rows are built from those local snapshots for both the alliance market and the reference hub, so keep the current-sync and history schedules enabled together for continuous trend updates.
 
 
-### Manual local-history rebuild CLI
+### Manual snapshot-history rebuild CLI
 
-Use the sync runner directly when you want to backfill or re-derive the recent local hub history window from raw order snapshots already stored in MySQL:
+Use the sync runner directly when you want to backfill or re-derive the recent hub history window from raw order snapshots already stored in MySQL:
 
 ```bash
 php bin/sync_runner.php --job=market-hub-local-history --mode=full --window-days=30
@@ -180,18 +178,18 @@ php bin/sync_runner.php --job=market-hub-local-history --mode=full --window-days
 Notes:
 
 - `--window-days` is optional. If omitted, the job defaults to `raw_order_snapshot_retention_days` from Settings → Data Sync.
-- The job scans local `market_orders_history` rows plus the latest `market_orders_current` snapshot for the configured hub, derives per-type daily OHLC buckets, and upserts them into `market_hub_local_history_daily`.
+- The job scans local `market_orders_history` rows for the configured hub, derives per-type daily OHLC buckets, and upserts them into `market_history_daily`.
 - The runner writes JSON summary lines and warning/error summaries to `storage/logs/cron.log`, so you can tail the same file whether the job ran via cron or manually.
 - Expected first-run duration is typically **under 1 minute for a 7-day window**, **1–5 minutes for ~30 days**, and longer if the hub has unusually dense raw snapshots or the database is resource-constrained.
 
 Verification SQL:
 
 ```bash
-mysql -u "$DB_USERNAME" -p"$DB_PASSWORD" -h "$DB_HOST" -P "$DB_PORT" "$DB_DATABASE" -e "SELECT trade_date, COUNT(*) AS bucket_rows, MIN(captured_at) AS first_capture, MAX(captured_at) AS last_capture FROM market_hub_local_history_daily WHERE source = 'market_hub_current_sync' AND source_id = <SOURCE_ID> GROUP BY trade_date ORDER BY trade_date DESC LIMIT 30;"
+mysql -u "$DB_USERNAME" -p"$DB_PASSWORD" -h "$DB_HOST" -P "$DB_PORT" "$DB_DATABASE" -e "SELECT trade_date, COUNT(*) AS bucket_rows, MIN(observed_at) AS first_capture, MAX(observed_at) AS last_capture FROM market_history_daily WHERE source_type = 'market_hub' AND source_id = <SOURCE_ID> GROUP BY trade_date ORDER BY trade_date DESC LIMIT 30;"
 
 mysql -u "$DB_USERNAME" -p"$DB_PASSWORD" -h "$DB_HOST" -P "$DB_PORT" "$DB_DATABASE" -e "SELECT DATE(observed_at) AS snapshot_day, COUNT(DISTINCT observed_at) AS snapshots_seen, COUNT(DISTINCT type_id) AS type_count FROM market_orders_history WHERE source_type = 'market_hub' AND source_id = <SOURCE_ID> AND observed_at >= UTC_TIMESTAMP() - INTERVAL 30 DAY GROUP BY DATE(observed_at) ORDER BY snapshot_day DESC;"
 
-mysql -u "$DB_USERNAME" -p"$DB_PASSWORD" -h "$DB_HOST" -P "$DB_PORT" "$DB_DATABASE" -e "SELECT * FROM sync_runs WHERE dataset_key LIKE 'market.hub.%history.local.daily' ORDER BY started_at DESC LIMIT 10;"
+mysql -u "$DB_USERNAME" -p"$DB_PASSWORD" -h "$DB_HOST" -P "$DB_PORT" "$DB_DATABASE" -e "SELECT * FROM sync_runs WHERE dataset_key LIKE 'market.hub.%history%.daily' ORDER BY started_at DESC LIMIT 10;"
 ```
 
 ### Troubleshooting

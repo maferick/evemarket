@@ -1022,7 +1022,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                 <div class="space-y-3">
                     <div>
                         <p class="text-sm text-muted">Per-job schedules</p>
-                        <p class="mt-1 text-xs text-muted">Scheduler intervals and the Run now selector are managed here, including local-history generation for dashboard trend snippets.</p>
+                        <p class="mt-1 text-xs text-muted">Scheduler intervals and the Run now selector are managed here, including first-party snapshot-history generation for dashboard trends and analytics.</p>
                     </div>
                     <?php foreach ($syncScheduleCards as $schedule): ?>
                         <?php $isLocalHistorySchedule = ($schedule['job_key'] ?? '') === 'market_hub_local_history_sync'; ?>
@@ -1035,7 +1035,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                                 </label>
                                 <p class="pl-7 text-xs text-muted">
                                     <?= $isLocalHistorySchedule
-                                        ? 'Generates local daily market history from your latest hub-current snapshot and powers Trend Snippets on the dashboard.'
+                                        ? 'Refreshes first-party hub history from locally stored ESI snapshots for dashboard trends and analytics.'
                                         : 'Controls how often the scheduler runs this sync job.' ?>
                                 </p>
                             </div>
@@ -1096,7 +1096,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                     <label class="flex items-center gap-3 rounded-lg border border-border bg-black/20 p-3">
                         <input type="hidden" name="market_hub_local_history_pipeline_enabled" value="0">
                         <input type="checkbox" name="market_hub_local_history_pipeline_enabled" value="1" <?= ($dataSyncSettingValues['market_hub_local_history_pipeline_enabled'] ?? '1') === '1' ? 'checked' : '' ?> class="size-4 rounded border-border bg-black">
-                        <span class="text-sm">Enable local-history pipeline for dashboard trend snippets</span>
+                        <span class="text-sm">Enable hub snapshot-history refresh pipeline</span>
                     </label>
                 </div>
 

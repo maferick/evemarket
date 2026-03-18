@@ -354,7 +354,7 @@ $statusThemes = [
     <?php $snippetMessage = trim((string) ($intel['trend_snippets_message'] ?? '')); ?>
     <?php if ($snippets === []): ?>
         <div class="surface-tertiary mt-5">
-            <p class="text-sm leading-6 text-slate-300"><?= htmlspecialchars($snippetMessage !== '' ? $snippetMessage : 'Trend intelligence will appear after local history sync is running. Enable the local-history pipeline in Settings, run the job, and capture at least two daily snapshots.', ENT_QUOTES) ?></p>
+            <p class="text-sm leading-6 text-slate-300"><?= htmlspecialchars($snippetMessage !== '' ? $snippetMessage : 'Trend intelligence will appear after snapshot history is running. Enable the hub history pipeline in Settings, run the job, and capture at least two daily snapshots.', ENT_QUOTES) ?></p>
         </div>
     <?php else: ?>
         <div class="mt-5 grid gap-4 xl:grid-cols-[minmax(0,1.45fr)_minmax(0,1fr)]">
