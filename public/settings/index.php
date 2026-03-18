@@ -133,6 +133,7 @@ $settingValues = get_settings([
     'alliance_current_pipeline_enabled',
     'alliance_history_pipeline_enabled',
     'hub_history_pipeline_enabled',
+    'market_hub_local_history_pipeline_enabled',
     'alliance_current_backfill_start_date',
     'alliance_history_backfill_start_date',
     'hub_history_backfill_start_date',
@@ -140,6 +141,8 @@ $settingValues = get_settings([
     'sync_automation_enabled_since',
     'static_data_source_url',
 ]);
+
+$dataSyncSettingValues = data_sync_pipeline_settings_view($settingValues);
 
 $dbStatus = db_connection_status();
 $latestEsiToken = null;
@@ -577,14 +580,14 @@ include __DIR__ . '/../../src/views/partials/header.php';
                 <input type="hidden" name="_token" value="<?= htmlspecialchars(csrf_token(), ENT_QUOTES) ?>">
                 <input type="hidden" name="section" value="data-sync">
                 <label class="flex items-center gap-3 rounded-lg border border-border bg-black/20 p-3">
-                    <input type="checkbox" name="incremental_updates_enabled" value="1" <?= ($settingValues['incremental_updates_enabled'] ?? '1') === '1' ? 'checked' : '' ?> class="size-4 rounded border-border bg-black">
+                    <input type="checkbox" name="incremental_updates_enabled" value="1" <?= ($dataSyncSettingValues['incremental_updates_enabled'] ?? '1') === '1' ? 'checked' : '' ?> class="size-4 rounded border-border bg-black">
                     <span class="text-sm">Enable incremental database updates</span>
                 </label>
                 <label class="block space-y-2">
                     <span class="text-sm text-muted">Incremental Strategy</span>
                     <select name="incremental_strategy" class="w-full rounded-lg border border-border bg-black/30 px-3 py-2 text-sm outline-none ring-accent focus:ring">
                         <?php foreach (incremental_strategy_options() as $value => $label): ?>
-                            <option value="<?= htmlspecialchars($value, ENT_QUOTES) ?>" <?= ($settingValues['incremental_strategy'] ?? 'watermark_upsert') === $value ? 'selected' : '' ?>>
+                            <option value="<?= htmlspecialchars($value, ENT_QUOTES) ?>" <?= ($dataSyncSettingValues['incremental_strategy'] ?? 'watermark_upsert') === $value ? 'selected' : '' ?>>
                                 <?= htmlspecialchars($label, ENT_QUOTES) ?>
                             </option>
                         <?php endforeach; ?>
@@ -594,7 +597,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                     <span class="text-sm text-muted">Delete Handling Policy</span>
                     <select name="incremental_delete_policy" class="w-full rounded-lg border border-border bg-black/30 px-3 py-2 text-sm outline-none ring-accent focus:ring">
                         <?php foreach (incremental_delete_policy_options() as $value => $label): ?>
-                            <option value="<?= htmlspecialchars($value, ENT_QUOTES) ?>" <?= ($settingValues['incremental_delete_policy'] ?? 'reconcile') === $value ? 'selected' : '' ?>>
+                            <option value="<?= htmlspecialchars($value, ENT_QUOTES) ?>" <?= ($dataSyncSettingValues['incremental_delete_policy'] ?? 'reconcile') === $value ? 'selected' : '' ?>>
                                 <?= htmlspecialchars($label, ENT_QUOTES) ?>
                             </option>
                         <?php endforeach; ?>
@@ -602,18 +605,29 @@ include __DIR__ . '/../../src/views/partials/header.php';
                 </label>
                 <label class="block space-y-2">
                     <span class="text-sm text-muted">Chunk Size</span>
-                    <input type="number" min="100" max="10000" step="100" name="incremental_chunk_size" value="<?= htmlspecialchars($settingValues['incremental_chunk_size'] ?? '1000', ENT_QUOTES) ?>" class="w-full rounded-lg border border-border bg-black/30 px-3 py-2 text-sm outline-none ring-accent focus:ring" />
+                    <input type="number" min="100" max="10000" step="100" name="incremental_chunk_size" value="<?= htmlspecialchars($dataSyncSettingValues['incremental_chunk_size'] ?? '1000', ENT_QUOTES) ?>" class="w-full rounded-lg border border-border bg-black/30 px-3 py-2 text-sm outline-none ring-accent focus:ring" />
                 </label>
 
                 <div class="space-y-3">
-                    <p class="text-sm text-muted">Per-job schedules</p>
+                    <div>
+                        <p class="text-sm text-muted">Per-job schedules</p>
+                        <p class="mt-1 text-xs text-muted">Scheduler intervals and the Run now selector are managed here, including local-history generation for dashboard trend snippets.</p>
+                    </div>
                     <?php foreach ($syncScheduleCards as $schedule): ?>
+                        <?php $isLocalHistorySchedule = ($schedule['job_key'] ?? '') === 'market_hub_local_history_sync'; ?>
                         <div class="grid gap-3 rounded-lg border border-border bg-black/20 p-3 md:grid-cols-[minmax(0,1fr)_auto_auto]">
-                            <label class="flex items-center gap-3">
-                                <input type="hidden" name="<?= htmlspecialchars($schedule['enabled_key'], ENT_QUOTES) ?>" value="0">
-                                <input type="checkbox" name="<?= htmlspecialchars($schedule['enabled_key'], ENT_QUOTES) ?>" value="1" <?= (int) $schedule['enabled'] === 1 ? 'checked' : '' ?> class="size-4 rounded border-border bg-black">
-                                <span class="text-sm">Enable <?= htmlspecialchars($schedule['label'], ENT_QUOTES) ?> job</span>
-                            </label>
+                            <div class="space-y-1">
+                                <label class="flex items-center gap-3">
+                                    <input type="hidden" name="<?= htmlspecialchars($schedule['enabled_key'], ENT_QUOTES) ?>" value="0">
+                                    <input type="checkbox" name="<?= htmlspecialchars($schedule['enabled_key'], ENT_QUOTES) ?>" value="1" <?= (int) $schedule['enabled'] === 1 ? 'checked' : '' ?> class="size-4 rounded border-border bg-black">
+                                    <span class="text-sm">Enable <?= htmlspecialchars($schedule['label'], ENT_QUOTES) ?> job</span>
+                                </label>
+                                <p class="pl-7 text-xs text-muted">
+                                    <?= $isLocalHistorySchedule
+                                        ? 'Generates local daily market history from your latest hub-current snapshot and powers Trend Snippets on the dashboard.'
+                                        : 'Controls how often the scheduler runs this sync job.' ?>
+                                </p>
+                            </div>
                             <input
                                 type="number"
                                 min="1"
@@ -639,31 +653,39 @@ include __DIR__ . '/../../src/views/partials/header.php';
 
                 <label class="block space-y-2">
                     <span class="text-sm text-muted">Raw Order Snapshot Retention (days)</span>
-                    <input type="number" min="1" max="3650" step="1" name="raw_order_snapshot_retention_days" value="<?= htmlspecialchars($settingValues['raw_order_snapshot_retention_days'] ?? '30', ENT_QUOTES) ?>" class="w-full rounded-lg border border-border bg-black/30 px-3 py-2 text-sm outline-none ring-accent focus:ring" />
+                    <input type="number" min="1" max="3650" step="1" name="raw_order_snapshot_retention_days" value="<?= htmlspecialchars($dataSyncSettingValues['raw_order_snapshot_retention_days'] ?? '30', ENT_QUOTES) ?>" class="w-full rounded-lg border border-border bg-black/30 px-3 py-2 text-sm outline-none ring-accent focus:ring" />
                 </label>
 
                 <label class="block space-y-2">
                     <span class="text-sm text-muted">Static Data JSONL ZIP Source URL</span>
-                    <input type="url" name="static_data_source_url" value="<?= htmlspecialchars($settingValues['static_data_source_url'] ?? 'https://developers.eveonline.com/static-data/eve-online-static-data-latest-jsonl.zip', ENT_QUOTES) ?>" class="w-full rounded-lg border border-border bg-black/30 px-3 py-2 text-sm outline-none ring-accent focus:ring" />
+                    <input type="url" name="static_data_source_url" value="<?= htmlspecialchars($dataSyncSettingValues['static_data_source_url'] ?? 'https://developers.eveonline.com/static-data/eve-online-static-data-latest-jsonl.zip', ENT_QUOTES) ?>" class="w-full rounded-lg border border-border bg-black/30 px-3 py-2 text-sm outline-none ring-accent focus:ring" />
                     <p class="text-xs text-muted">Importer expects the official CCP JSONL ZIP payload (<span class="font-mono">.zip</span>) from developers.eveonline.com.</p>
                 </label>
 
                 <div class="space-y-3">
-                    <p class="text-sm text-muted">Pipeline toggles</p>
+                    <div>
+                        <p class="text-sm text-muted">Pipeline toggles</p>
+                        <p class="mt-1 text-xs text-muted">Use these defaults to keep related sync pipelines enabled alongside the scheduler cadence above.</p>
+                    </div>
                     <label class="flex items-center gap-3 rounded-lg border border-border bg-black/20 p-3">
                         <input type="hidden" name="alliance_current_pipeline_enabled" value="0">
-                        <input type="checkbox" name="alliance_current_pipeline_enabled" value="1" <?= ($settingValues['alliance_current_pipeline_enabled'] ?? '1') === '1' ? 'checked' : '' ?> class="size-4 rounded border-border bg-black">
+                        <input type="checkbox" name="alliance_current_pipeline_enabled" value="1" <?= ($dataSyncSettingValues['alliance_current_pipeline_enabled'] ?? '1') === '1' ? 'checked' : '' ?> class="size-4 rounded border-border bg-black">
                         <span class="text-sm">Enable alliance current pipeline</span>
                     </label>
                     <label class="flex items-center gap-3 rounded-lg border border-border bg-black/20 p-3">
                         <input type="hidden" name="alliance_history_pipeline_enabled" value="0">
-                        <input type="checkbox" name="alliance_history_pipeline_enabled" value="1" <?= ($settingValues['alliance_history_pipeline_enabled'] ?? '1') === '1' ? 'checked' : '' ?> class="size-4 rounded border-border bg-black">
+                        <input type="checkbox" name="alliance_history_pipeline_enabled" value="1" <?= ($dataSyncSettingValues['alliance_history_pipeline_enabled'] ?? '1') === '1' ? 'checked' : '' ?> class="size-4 rounded border-border bg-black">
                         <span class="text-sm">Enable alliance history/backfill pipeline</span>
                     </label>
                     <label class="flex items-center gap-3 rounded-lg border border-border bg-black/20 p-3">
                         <input type="hidden" name="hub_history_pipeline_enabled" value="0">
-                        <input type="checkbox" name="hub_history_pipeline_enabled" value="1" <?= ($settingValues['hub_history_pipeline_enabled'] ?? '1') === '1' ? 'checked' : '' ?> class="size-4 rounded border-border bg-black">
+                        <input type="checkbox" name="hub_history_pipeline_enabled" value="1" <?= ($dataSyncSettingValues['hub_history_pipeline_enabled'] ?? '1') === '1' ? 'checked' : '' ?> class="size-4 rounded border-border bg-black">
                         <span class="text-sm">Enable market hub history pipeline</span>
+                    </label>
+                    <label class="flex items-center gap-3 rounded-lg border border-border bg-black/20 p-3">
+                        <input type="hidden" name="market_hub_local_history_pipeline_enabled" value="0">
+                        <input type="checkbox" name="market_hub_local_history_pipeline_enabled" value="1" <?= ($dataSyncSettingValues['market_hub_local_history_pipeline_enabled'] ?? '1') === '1' ? 'checked' : '' ?> class="size-4 rounded border-border bg-black">
+                        <span class="text-sm">Enable local-history pipeline for dashboard trend snippets</span>
                     </label>
                 </div>
 
@@ -679,12 +701,13 @@ include __DIR__ . '/../../src/views/partials/header.php';
                 <p class="text-sm text-muted">When enabled, future import/sync jobs will only process changed rows for better scalability.</p>
                 <div class="flex flex-wrap items-center gap-2">
                     <button name="data_sync_action" value="save" class="rounded-lg bg-accent px-4 py-2 text-sm font-medium">Save Data Sync Settings</button>
-                    <select name="run_now_job_key" class="rounded-lg border border-border bg-black/30 px-3 py-2 text-sm outline-none ring-accent focus:ring">
+                    <select name="run_now_job_key" class="rounded-lg border border-border bg-black/30 px-3 py-2 text-sm outline-none ring-accent focus:ring" aria-label="Run a data sync job now">
                         <?php foreach ($runNowJobOptions as $jobOption): ?>
                             <option value="<?= htmlspecialchars($jobOption['job_key'], ENT_QUOTES) ?>"><?= htmlspecialchars($jobOption['label'], ENT_QUOTES) ?></option>
                         <?php endforeach; ?>
                     </select>
                     <button name="data_sync_action" value="run-now" class="rounded-lg border border-border px-4 py-2 text-sm font-medium text-slate-100 hover:bg-white/5">Run selected now</button>
+                    <p class="text-xs text-muted">Local History is available in this selector and is required to populate Trend Snippets.</p>
                     <button name="data_sync_action" value="static-data-import" class="rounded-lg border border-border px-4 py-2 text-sm font-medium text-slate-100 hover:bg-white/5">Import EVE Static Data</button>
                 </div>
             </form>

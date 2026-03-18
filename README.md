@@ -142,7 +142,9 @@ EveMarket sync pipelines depend on the `cron` daemon being present and running o
 - Cron is **timer-only**: it triggers `bin/cron_tick.php` once per minute.
 - The scheduler (`bin/cron_tick.php`) decides which jobs are due and dispatches `bin/sync_runner.php`.
 - Interval and enable/disable controls are configured in **Settings → Data Sync** (`/settings?section=data-sync`) via scheduler rows in `sync_schedules`.
-- The **Run now** button in Settings → Data Sync forces all enabled schedules due immediately and executes one scheduler tick.
+- The local-history scheduler job (`market_hub_local_history_sync`) generates `market_hub_local_history_daily` rows from the latest hub-current snapshot for the configured market hub.
+- **Trend Snippets** on the dashboard depend on that local-history generation; the external hub-history sync alone does not populate the snippet panel.
+- The **Run now** button in Settings → Data Sync includes the Local History job, forces the selected enabled schedule due immediately, and executes one scheduler tick.
 - Backfill start dates are automatic: each pipeline starts from the date sync automation was enabled (`sync_automation_enabled_since`).
 
 ### Required cron runtime environment
@@ -153,10 +155,11 @@ Cron must run with the same environment the app expects:
 - Database vars: `DB_HOST`, `DB_PORT`, `DB_DATABASE`, `DB_USERNAME`, `DB_PASSWORD`
 - Pipeline source vars (when those pipelines are enabled):
   - `EVEMARKET_ALLIANCE_SOURCE_ID` (for `alliance-current` and `alliance-history`)
-  - `EVEMARKET_HUB_SOURCE_ID` (for `hub-current` and `hub-history`)
+  - `EVEMARKET_HUB_SOURCE_ID` (for `hub-current`, `hub-history`, and local-history generation)
 
 The canonical log path for the cron tick is `storage/logs/cron.log` (relative to app root).
 Raw order snapshots are pruned according to `raw_order_snapshot_retention_days` from Settings → Data Sync.
+Local history rows are built from those current snapshots, so keep the hub-current and Local History schedules enabled together for continuous Trend Snippet updates.
 
 ### Troubleshooting
 

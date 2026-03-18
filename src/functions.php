@@ -567,6 +567,53 @@ function sanitize_enabled_flag(mixed $value): string
     return sanitize_pipeline_enabled($value);
 }
 
+function data_sync_pipeline_setting_defaults(): array
+{
+    return [
+        'incremental_updates_enabled' => '1',
+        'incremental_strategy' => 'watermark_upsert',
+        'incremental_delete_policy' => 'reconcile',
+        'incremental_chunk_size' => '1000',
+        'alliance_current_pipeline_enabled' => '1',
+        'alliance_history_pipeline_enabled' => '1',
+        'hub_history_pipeline_enabled' => '1',
+        'market_hub_local_history_pipeline_enabled' => '1',
+        'raw_order_snapshot_retention_days' => '30',
+        'static_data_source_url' => 'https://developers.eveonline.com/static-data/eve-online-static-data-latest-jsonl.zip',
+    ];
+}
+
+function data_sync_pipeline_setting_value(array $settings, string $key): string
+{
+    $defaults = data_sync_pipeline_setting_defaults();
+    $value = $settings[$key] ?? ($defaults[$key] ?? '');
+
+    return match ($key) {
+        'incremental_updates_enabled',
+        'alliance_current_pipeline_enabled',
+        'alliance_history_pipeline_enabled',
+        'hub_history_pipeline_enabled',
+        'market_hub_local_history_pipeline_enabled' => sanitize_pipeline_enabled($value),
+        'incremental_strategy' => sanitize_incremental_strategy((string) $value),
+        'incremental_delete_policy' => sanitize_incremental_delete_policy((string) $value),
+        'incremental_chunk_size' => sanitize_incremental_chunk_size($value),
+        'raw_order_snapshot_retention_days' => sanitize_retention_days($value),
+        'static_data_source_url' => sanitize_static_data_source_url($value),
+        default => (string) $value,
+    };
+}
+
+function data_sync_pipeline_settings_view(array $settings): array
+{
+    $resolved = [];
+
+    foreach (array_keys(data_sync_pipeline_setting_defaults()) as $key) {
+        $resolved[$key] = data_sync_pipeline_setting_value($settings, $key);
+    }
+
+    return $resolved;
+}
+
 function sanitize_backfill_start_date(mixed $value): string
 {
     $raw = trim((string) $value);
@@ -702,7 +749,7 @@ function data_sync_schedule_job_definitions(): array
             'interval_value_key' => 'market_hub_local_history_sync_interval_value',
             'interval_unit_key' => 'market_hub_local_history_sync_interval_unit',
             'default_interval_seconds' => 300,
-            'label' => 'Hub Local History',
+            'label' => 'Local History',
         ],
         'killmail_r2z2_sync' => [
             'enabled_key' => 'killmail_r2z2_sync_enabled',
@@ -794,22 +841,24 @@ function data_sync_settings_from_request(array $request): array
     $allianceCurrentEnabled = sanitize_pipeline_enabled($request['alliance_current_pipeline_enabled'] ?? null);
     $allianceHistoryEnabled = sanitize_pipeline_enabled($request['alliance_history_pipeline_enabled'] ?? null);
     $hubHistoryEnabled = sanitize_pipeline_enabled($request['hub_history_pipeline_enabled'] ?? null);
+    $localHistoryEnabled = sanitize_pipeline_enabled($request['market_hub_local_history_pipeline_enabled'] ?? null);
 
     $baselineDate = sync_automation_enabled_since_date();
 
     return [
-        'incremental_updates_enabled' => isset($request['incremental_updates_enabled']) ? '1' : '0',
+        'incremental_updates_enabled' => sanitize_pipeline_enabled($request['incremental_updates_enabled'] ?? null),
         'incremental_strategy' => sanitize_incremental_strategy($request['incremental_strategy'] ?? null),
         'incremental_delete_policy' => sanitize_incremental_delete_policy($request['incremental_delete_policy'] ?? null),
         'incremental_chunk_size' => sanitize_incremental_chunk_size($request['incremental_chunk_size'] ?? null),
         'alliance_current_pipeline_enabled' => $allianceCurrentEnabled,
         'alliance_history_pipeline_enabled' => $allianceHistoryEnabled,
         'hub_history_pipeline_enabled' => $hubHistoryEnabled,
+        'market_hub_local_history_pipeline_enabled' => $localHistoryEnabled,
         'sync_automation_enabled_since' => $baselineDate,
         'alliance_current_backfill_start_date' => data_sync_backfill_start_date('alliance_current_backfill_start_date', $allianceCurrentEnabled === '1', $baselineDate),
         'alliance_history_backfill_start_date' => data_sync_backfill_start_date('alliance_history_backfill_start_date', $allianceHistoryEnabled === '1', $baselineDate),
         'hub_history_backfill_start_date' => data_sync_backfill_start_date('hub_history_backfill_start_date', $hubHistoryEnabled === '1', $baselineDate),
-        'raw_order_snapshot_retention_days' => sanitize_retention_days($request['raw_order_snapshot_retention_days'] ?? null, 30),
+        'raw_order_snapshot_retention_days' => sanitize_retention_days($request['raw_order_snapshot_retention_days'] ?? null),
         'static_data_source_url' => sanitize_static_data_source_url($request['static_data_source_url'] ?? null),
     ];
 }
