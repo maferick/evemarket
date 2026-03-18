@@ -1627,7 +1627,16 @@ function dashboard_trend_history_dataset(string $marketHubRef, int $referenceSou
 function dashboard_intelligence_data(): array
 {
     $marketHubRef = market_hub_setting_reference();
-    $allianceStructureId = selected_alliance_structure_id();
+    $allianceStructureId = configured_alliance_structure_id();
+    $allianceSync = $allianceStructureId !== null
+        ? sync_status_for_dataset_keys([sync_dataset_key_alliance_structure_orders_current($allianceStructureId)])
+        : ['states' => [], 'runs' => [], 'last_success_at' => null, 'last_error_message' => null, 'recent_rows_written' => 0];
+    $hubCurrentSync = $marketHubRef !== ''
+        ? sync_status_for_dataset_keys([sync_dataset_key_market_hub_current_orders($marketHubRef)])
+        : ['states' => [], 'runs' => [], 'last_success_at' => null, 'last_error_message' => null, 'recent_rows_written' => 0];
+    $historySync = $marketHubRef !== ''
+        ? sync_status_for_dataset_keys([sync_dataset_key_market_hub_local_history_daily($marketHubRef)])
+        : ['states' => [], 'runs' => [], 'last_success_at' => null, 'last_error_message' => null, 'recent_rows_written' => 0];
 
     return supplycore_cache_aside('dashboard', [$marketHubRef, $allianceStructureId], supplycore_cache_ttl('dashboard'), static function () use ($marketHubRef, $allianceStructureId): array {
         $comparisonContext = market_comparison_context();
