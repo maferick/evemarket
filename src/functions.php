@@ -2053,9 +2053,9 @@ function killmail_resolved_entity(array $resolved, string $type, ?int $id, ?stri
 function killmail_loss_item_groups(array $items, array $resolvedEntities = []): array
 {
     $groups = [
-        'dropped' => ['label' => killmail_item_role_label('dropped'), 'description' => 'Recovered from the stored victim-side loss record.', 'rows' => [], 'total_quantity' => 0],
-        'destroyed' => ['label' => killmail_item_role_label('destroyed'), 'description' => 'Destroyed in the stored victim-side loss record.', 'rows' => [], 'total_quantity' => 0],
-        'fitted' => ['label' => killmail_item_role_label('fitted'), 'description' => 'Fitted modules with no explicit drop or destroy quantity in the killmail payload.', 'rows' => [], 'total_quantity' => 0],
+        'dropped' => ['label' => killmail_item_role_label('dropped'), 'description' => 'Recovered from the wreck and immediately useful for supply planning.', 'rows' => [], 'total_quantity' => 0],
+        'destroyed' => ['label' => killmail_item_role_label('destroyed'), 'description' => 'Removed from circulation and relevant for replacement demand.', 'rows' => [], 'total_quantity' => 0],
+        'fitted' => ['label' => killmail_item_role_label('fitted'), 'description' => 'Seen on the fit, but not explicitly marked as dropped or destroyed in the payload.', 'rows' => [], 'total_quantity' => 0],
     ];
 
     foreach ($items as $item) {
@@ -2099,6 +2099,163 @@ function killmail_loss_item_groups(array $items, array $resolvedEntities = []): 
     }
 
     return $groups;
+}
+
+function killmail_value_amount(array $zkb): ?float
+{
+    if (!isset($zkb['totalValue']) || !is_numeric($zkb['totalValue'])) {
+        return null;
+    }
+
+    return (float) $zkb['totalValue'];
+}
+
+function killmail_signal_strength_meta(int $itemCount, int $attackerCount, bool $trackedVictimLoss): array
+{
+    $score = $itemCount;
+    if ($trackedVictimLoss) {
+        $score += 3;
+    }
+
+    if ($attackerCount >= 10) {
+        $score += 2;
+    } elseif ($attackerCount >= 5) {
+        $score += 1;
+    }
+
+    if ($score >= 10) {
+        return [
+            'label' => 'Strong signal',
+            'context' => 'Rich fit data with strong logistics relevance.',
+            'tone' => 'border-rose-500/40 bg-rose-500/10 text-rose-200',
+        ];
+    }
+
+    if ($score >= 5) {
+        return [
+            'label' => 'Actionable signal',
+            'context' => 'Useful loss data for supply and doctrine review.',
+            'tone' => 'border-amber-500/40 bg-amber-500/10 text-amber-100',
+        ];
+    }
+
+    return [
+        'label' => 'Light signal',
+        'context' => 'Lower detail, but still worth monitoring.',
+        'tone' => 'border-sky-400/20 bg-sky-500/10 text-sky-100',
+    ];
+}
+
+function killmail_supply_impact_meta(?float $estimatedValue, int $droppedQuantity, int $destroyedQuantity, int $fittedQuantity): array
+{
+    $score = 0;
+    if ($estimatedValue !== null) {
+        if ($estimatedValue >= 1000000000) {
+            $score += 3;
+        } elseif ($estimatedValue >= 250000000) {
+            $score += 2;
+        } elseif ($estimatedValue >= 50000000) {
+            $score += 1;
+        }
+    }
+
+    $quantityTotal = $droppedQuantity + $destroyedQuantity + $fittedQuantity;
+    if ($quantityTotal >= 20) {
+        $score += 3;
+    } elseif ($quantityTotal >= 10) {
+        $score += 2;
+    } elseif ($quantityTotal >= 5) {
+        $score += 1;
+    }
+
+    if ($destroyedQuantity >= 10) {
+        $score += 2;
+    } elseif ($destroyedQuantity >= 5) {
+        $score += 1;
+    }
+
+    if ($score >= 6) {
+        return [
+            'label' => 'High supply impact',
+            'context' => 'Expect noticeable replacement pressure.',
+            'tone' => 'border-rose-500/40 bg-rose-500/10 text-rose-200',
+        ];
+    }
+
+    if ($score >= 3) {
+        return [
+            'label' => 'Moderate supply impact',
+            'context' => 'Worth watching for follow-on replenishment.',
+            'tone' => 'border-amber-500/40 bg-amber-500/10 text-amber-100',
+        ];
+    }
+
+    return [
+        'label' => 'Low supply impact',
+        'context' => 'Limited downstream replenishment pressure.',
+        'tone' => 'border-emerald-500/40 bg-emerald-500/10 text-emerald-200',
+    ];
+}
+
+function killmail_ship_class_label(?int $groupId): string
+{
+    $groupMap = [
+        25 => 'Frigate',
+        26 => 'Cruiser',
+        27 => 'Battleship',
+        28 => 'Industrial',
+        29 => 'Capsule',
+        30 => 'Titan',
+        31 => 'Shuttle',
+        324 => 'Assault Frigate',
+        358 => 'Heavy Assault Cruiser',
+        380 => 'Destroyer',
+        419 => 'Battlecruiser',
+        420 => 'Destroyer',
+        463 => 'Mining Barge',
+        485 => 'Dreadnought',
+        513 => 'Freighter',
+        540 => 'Command Ship',
+        541 => 'Interdictor',
+        543 => 'Exhumer',
+        547 => 'Carrier',
+        659 => 'Supercarrier',
+        830 => 'Covert Ops',
+        831 => 'Interceptor',
+        832 => 'Logistics',
+        833 => 'Force Recon',
+        834 => 'Stealth Bomber',
+        893 => 'Electronic Attack Frigate',
+        894 => 'Heavy Interdictor',
+        898 => 'Black Ops',
+        900 => 'Marauder',
+        902 => 'Jump Freighter',
+        906 => 'Combat Recon',
+        941 => 'Industrial Command Ship',
+        963 => 'Strategic Cruiser',
+        1022 => 'Prototype Exploration Ship',
+        1201 => 'Attack Battlecruiser',
+        1202 => 'Blockade Runner',
+        1203 => 'Transport Ship',
+        1283 => 'Expedition Frigate',
+        1305 => 'Tactical Destroyer',
+        1527 => 'Logistics Frigate',
+        1534 => 'Command Destroyer',
+        1972 => 'Flag Cruiser',
+        1973 => 'Force Auxiliary',
+    ];
+
+    return $groupMap[$groupId ?? 0] ?? 'Ship class unavailable';
+}
+
+function killmail_item_empty_message(string $groupKey): string
+{
+    return match ($groupKey) {
+        'dropped' => 'No modules dropped — no supply signal from this loss.',
+        'destroyed' => 'No modules were explicitly destroyed in the stored record.',
+        'fitted' => 'No fitted modules were extracted from this loss.',
+        default => 'No item intelligence was extracted for this section.',
+    };
 }
 
 function killmail_detail_data(): array
@@ -2190,6 +2347,16 @@ function killmail_detail_data(): array
         }
     }
 
+    $estimatedValue = killmail_value_amount($zkb);
+    $itemTotals = [
+        'dropped' => (int) ($groupedItems['dropped']['total_quantity'] ?? 0),
+        'destroyed' => (int) ($groupedItems['destroyed']['total_quantity'] ?? 0),
+        'fitted' => (int) ($groupedItems['fitted']['total_quantity'] ?? 0),
+    ];
+    $storedItemCount = count($items);
+    $signalStrength = killmail_signal_strength_meta($storedItemCount, count($formattedAttackers), (int) ($event['matched_tracked'] ?? 0) === 1);
+    $supplyImpact = killmail_supply_impact_meta($estimatedValue, $itemTotals['dropped'], $itemTotals['destroyed'], $itemTotals['fitted']);
+
     return [
         'error' => null,
         'detail' => [
@@ -2214,6 +2381,7 @@ function killmail_detail_data(): array
                 'name' => $victimShip['name'],
                 'render_url' => $victimShip['id'] !== null ? killmail_entity_image_url('type', (int) $victimShip['id'], 'render', 512) : null,
                 'icon_url' => $victimShip['id'] !== null ? killmail_entity_image_url('type', (int) $victimShip['id'], 'icon', 128) : null,
+                'class' => killmail_ship_class_label(isset($victimShip['metadata']['group_id']) ? (int) $victimShip['metadata']['group_id'] : null),
             ],
             'location' => [
                 'system_display' => $system['name'],
@@ -2227,16 +2395,19 @@ function killmail_detail_data(): array
                 'final_blow' => $finalBlow,
             ],
             'items' => $groupedItems,
-            'item_totals' => [
-                'dropped' => (int) ($groupedItems['dropped']['total_quantity'] ?? 0),
-                'destroyed' => (int) ($groupedItems['destroyed']['total_quantity'] ?? 0),
-                'fitted' => (int) ($groupedItems['fitted']['total_quantity'] ?? 0),
-            ],
-            'stored_item_count' => count($items),
+            'item_totals' => $itemTotals,
+            'stored_item_count' => $storedItemCount,
             'tracked_victim_loss' => (int) ($event['matched_tracked'] ?? 0) === 1,
             'match_context' => $matchSources === [] ? 'No tracked victim entity currently matches this stored loss.' : ('Matched on ' . implode(' and ', $matchSources) . '.'),
+            'signal_strength' => $signalStrength,
+            'supply_impact' => $supplyImpact,
+            'loss_summary' => [
+                'estimated_value_display' => $estimatedValue !== null ? number_format($estimatedValue, 0) . ' ISK' : 'Value unavailable',
+                'item_count_display' => number_format($storedItemCount) . ' extracted items',
+                'impact_summary' => $supplyImpact['context'],
+            ],
             'zkb' => [
-                'total_value_display' => isset($zkb['totalValue']) ? number_format((float) $zkb['totalValue'], 0) . ' ISK' : 'Unavailable',
+                'total_value_display' => $estimatedValue !== null ? number_format($estimatedValue, 0) . ' ISK' : 'Unavailable',
                 'points_display' => isset($zkb['points']) ? number_format((int) $zkb['points']) : 'Unavailable',
                 'npc' => !empty($zkb['npc']),
                 'solo' => !empty($zkb['solo']),
@@ -2330,6 +2501,11 @@ function killmail_overview_data(): array
 
     $rows = array_map(static function (array $row): array {
         $matchSources = killmail_match_sources($row);
+        $zkb = killmail_decode_json_array(isset($row['zkb_json']) ? (string) $row['zkb_json'] : null);
+        $estimatedValue = killmail_value_amount($zkb);
+        $shipTypeId = isset($row['victim_ship_type_id']) ? (int) $row['victim_ship_type_id'] : null;
+        $signalStrength = killmail_signal_strength_meta(0, 0, (int) ($row['matched_tracked'] ?? 0) === 1);
+        $supplyImpact = killmail_supply_impact_meta($estimatedValue, 0, 0, 0);
 
         return [
             'sequence_id' => (int) ($row['sequence_id'] ?? 0),
@@ -2338,17 +2514,16 @@ function killmail_overview_data(): array
             'uploaded_at_display' => killmail_format_datetime(isset($row['uploaded_at']) ? (string) $row['uploaded_at'] : null),
             'created_at_display' => killmail_format_datetime(isset($row['created_at']) ? (string) $row['created_at'] : null),
             'victim_alliance' => killmail_entity_display_name(isset($row['victim_alliance_label']) ? (string) $row['victim_alliance_label'] : '', 'Alliance', isset($row['victim_alliance_id']) ? (int) $row['victim_alliance_id'] : null),
-            'victim_alliance_id_display' => killmail_secondary_id(isset($row['victim_alliance_id']) ? (int) $row['victim_alliance_id'] : null, 'Alliance ID'),
             'victim_corporation' => killmail_entity_display_name(isset($row['victim_corporation_label']) ? (string) $row['victim_corporation_label'] : '', 'Corporation', isset($row['victim_corporation_id']) ? (int) $row['victim_corporation_id'] : null),
-            'victim_corporation_id_display' => killmail_secondary_id(isset($row['victim_corporation_id']) ? (int) $row['victim_corporation_id'] : null, 'Corp ID'),
             'ship_type' => killmail_entity_display_name(isset($row['ship_type_name']) ? (string) $row['ship_type_name'] : '', 'Ship', isset($row['victim_ship_type_id']) ? (int) $row['victim_ship_type_id'] : null),
-            'ship_type_id_display' => killmail_secondary_id(isset($row['victim_ship_type_id']) ? (int) $row['victim_ship_type_id'] : null, 'Type ID'),
             'system' => killmail_entity_display_name(isset($row['system_name']) ? (string) $row['system_name'] : '', 'System', isset($row['solar_system_id']) ? (int) $row['solar_system_id'] : null),
-            'system_id_display' => killmail_secondary_id(isset($row['solar_system_id']) ? (int) $row['solar_system_id'] : null, 'System ID'),
             'region' => killmail_entity_display_name(isset($row['region_name']) ? (string) $row['region_name'] : '', 'Region', isset($row['region_id']) ? (int) $row['region_id'] : null),
-            'region_id_display' => killmail_secondary_id(isset($row['region_id']) ? (int) $row['region_id'] : null, 'Region ID'),
             'matched_tracked' => (int) ($row['matched_tracked'] ?? 0) === 1,
             'match_context' => $matchSources === [] ? 'No tracked victim entity currently matches this stored loss.' : ('Matched on ' . implode(', ', $matchSources) . '.'),
+            'ship_icon_url' => $shipTypeId !== null ? killmail_entity_image_url('type', $shipTypeId, 'icon', 64) : null,
+            'estimated_value_display' => $estimatedValue !== null ? number_format($estimatedValue, 0) . ' ISK' : 'Value unavailable',
+            'signal_strength' => $signalStrength,
+            'supply_impact' => $supplyImpact,
             'inspect_url' => '/killmail-intelligence/view.php?sequence_id=' . urlencode((string) ((int) ($row['sequence_id'] ?? 0))),
         ];
     }, (array) ($listing['rows'] ?? []));

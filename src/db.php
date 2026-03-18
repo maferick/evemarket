@@ -2465,6 +2465,7 @@ function db_killmail_overview_page(array $filters = []): array
             e.killmail_time,
             e.uploaded_at,
             e.created_at,
+            e.zkb_json,
             e.victim_corporation_id,
             e.victim_alliance_id,
             e.victim_ship_type_id,
