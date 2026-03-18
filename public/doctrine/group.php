@@ -19,7 +19,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 doctrine_sanitize_group_name((string) ($_POST['group_name'] ?? '')),
                 doctrine_sanitize_description($_POST['description'] ?? null)
             );
-            supplycore_cache_bust(['doctrine', 'dashboard']);
+            doctrine_refresh_intelligence('group-update');
             flash('success', 'Doctrine group updated successfully.');
         } catch (Throwable $exception) {
             flash('success', 'Doctrine group update failed: ' . $exception->getMessage());
@@ -37,7 +37,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         try {
             $result = db_doctrine_group_delete($groupId);
-            supplycore_cache_bust(['doctrine', 'dashboard']);
+            doctrine_refresh_intelligence('group-delete');
             flash('success', 'Doctrine group deleted. Removed ' . doctrine_format_quantity((int) ($result['removed_memberships'] ?? 0)) . ' memberships; ' . doctrine_format_quantity((int) ($result['orphaned_fits'] ?? 0)) . ' fits remain as ungrouped records.');
             header('Location: /doctrine');
             exit;

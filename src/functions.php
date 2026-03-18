@@ -1947,6 +1947,13 @@ function data_sync_schedule_job_definitions(): array
             'default_interval_seconds' => 300,
             'label' => 'Hub Snapshot History',
         ],
+        'doctrine_intelligence_sync' => [
+            'enabled_key' => 'doctrine_intelligence_sync_enabled',
+            'interval_value_key' => 'doctrine_intelligence_sync_interval_value',
+            'interval_unit_key' => 'doctrine_intelligence_sync_interval_unit',
+            'default_interval_seconds' => 1800,
+            'label' => 'Doctrine Intelligence',
+        ],
         'killmail_r2z2_sync' => [
             'enabled_key' => 'killmail_r2z2_sync_enabled',
             'interval_value_key' => 'killmail_r2z2_sync_interval_value',
@@ -4686,6 +4693,24 @@ function scheduler_job_definitions(): array
                 return sync_market_hub_current_orders($hubRef, 'incremental');
             },
         ],
+        'doctrine_intelligence_sync' => [
+            'timeout_seconds' => 180,
+            'lock_ttl_seconds' => 300,
+            'handler' => static function (): array {
+                $snapshot = doctrine_refresh_intelligence('scheduler');
+                $fitCount = count((array) ($snapshot['fits'] ?? []));
+
+                return sync_result_shape() + [
+                    'rows_seen' => $fitCount,
+                    'rows_written' => $fitCount,
+                    'cursor' => 'doctrine_snapshot:' . gmdate('Y-m-d H:i:s'),
+                    'checksum' => sync_checksum(['fit_count' => $fitCount, 'finished_at' => gmdate(DATE_ATOM)]),
+                    'meta' => [
+                        'outcome_reason' => 'Doctrine intelligence refreshed from cached market, killmail, and fit data.',
+                    ],
+                ];
+            },
+        ],
         'killmail_r2z2_sync' => [
             'timeout_seconds' => 90,
             'lock_ttl_seconds' => 180,
@@ -4706,6 +4731,7 @@ function scheduler_job_type(string $jobKey): string
     return match ($jobKey) {
         'alliance_current_sync', 'market_hub_current_sync' => 'sync.current',
         'alliance_historical_sync', 'market_hub_historical_sync', 'market_hub_local_history_sync' => 'sync.history',
+        'doctrine_intelligence_sync' => 'sync.doctrine',
         'killmail_r2z2_sync' => 'sync.killmail',
         default => 'sync.generic',
     };
@@ -4865,6 +4891,13 @@ function scheduler_run_job(array $job): array
             'meta' => is_array($syncResult['meta'] ?? null) ? $syncResult['meta'] : [],
         ];
         $result['summary'] = scheduler_job_summary_message($result);
+
+        if ($status === 'success' && in_array($jobKey, doctrine_refresh_trigger_job_keys(), true) && $jobKey !== 'doctrine_intelligence_sync') {
+            try {
+                doctrine_refresh_intelligence('scheduler:' . $jobKey);
+            } catch (Throwable) {
+            }
+        }
 
         return $result;
     } catch (Throwable $exception) {
@@ -9578,7 +9611,7 @@ function doctrine_import_fit_from_request(array $post): array
         return ['ok' => false, 'message' => 'Doctrine fit import failed: ' . $exception->getMessage(), 'draft' => $draft];
     }
 
-    supplycore_cache_bust(['doctrine', 'dashboard']);
+    doctrine_refresh_intelligence('fit-import');
 
     return [
         'ok' => true,
@@ -9610,7 +9643,7 @@ function doctrine_update_fit_from_request(int $fitId, array $post): array
         return ['ok' => false, 'message' => 'Doctrine fit update failed: ' . $exception->getMessage(), 'draft' => $draft];
     }
 
-    supplycore_cache_bust(['doctrine', 'dashboard']);
+    doctrine_refresh_intelligence('fit-update');
 
     return ['ok' => true, 'message' => 'Doctrine fit updated successfully.', 'draft' => $draft];
 }
@@ -9807,7 +9840,7 @@ function doctrine_local_history_index(array $historyRows): array
 
     foreach ($historyRows as $row) {
         $typeId = max(0, (int) ($row['type_id'] ?? 0));
-        $tradeDate = trim((string) ($row['trade_date'] ?? ''));
+        $tradeDate = trim((string) (($row['trade_date'] ?? $row['observed_date']) ?? ''));
         if ($typeId <= 0 || $tradeDate === '') {
             continue;
         }
@@ -10072,32 +10105,142 @@ function doctrine_bottleneck_restock_signal(array $availability, array $historyB
     ];
 }
 
+function doctrine_item_depletion_index(array $historyByTypeId): array
+{
+    $indexed = [];
+
+    foreach ($historyByTypeId as $typeId => $rowsByDate) {
+        $rows = array_values((array) $rowsByDate);
+        usort($rows, static fn (array $a, array $b): int => strcmp((string) ($a['trade_date'] ?? ''), (string) ($b['trade_date'] ?? '')));
+        if ($rows === []) {
+            continue;
+        }
+
+        $volumes = array_values(array_map(static fn (array $row): int => max(0, (int) ($row['volume'] ?? 0)), $rows));
+        $latestVolume = $volumes[count($volumes) - 1] ?? 0;
+        $previousVolume = $volumes[count($volumes) - 2] ?? $latestVolume;
+        $recent = array_slice($volumes, -3);
+        $priorWindow = array_slice($volumes, -6, 3);
+        $prior = $priorWindow === [] ? array_slice($volumes, 0, max(0, count($volumes) - count($recent))) : $priorWindow;
+        $recentAverage = doctrine_average_ints($recent);
+        $priorAverage = doctrine_average_ints($prior === [] ? [$previousVolume] : $prior);
+        $depletion24h = (int) round($previousVolume - $latestVolume);
+        $depletion7d = (int) round($priorAverage - $recentAverage);
+        $classification = 'stable';
+
+        if ($depletion24h > 0 || $depletion7d > 0.75) {
+            $classification = 'draining';
+        } elseif ($depletion24h < 0 || $depletion7d < -0.75) {
+            $classification = 'recovering';
+        }
+
+        $indexed[(int) $typeId] = [
+            'latest_volume' => $latestVolume,
+            'previous_volume' => $previousVolume,
+            'recent_average' => $recentAverage,
+            'prior_average' => $priorAverage,
+            'depletion_24h' => $depletion24h,
+            'depletion_7d' => $depletion7d,
+            'classification' => $classification,
+        ];
+    }
+
+    return $indexed;
+}
+
+function doctrine_fit_depletion_signal(array $items, array $depletionByType): array
+{
+    if ($items === []) {
+        return [
+            'depletion_24h' => 0,
+            'depletion_7d' => 0,
+            'fit_equivalent_24h' => 0.0,
+            'fit_equivalent_7d' => 0.0,
+            'classification' => 'stable',
+            'context' => 'No local depletion signal is available yet.',
+        ];
+    }
+
+    $fitEquivalent24h = 0.0;
+    $fitEquivalent7d = 0.0;
+    $totalDepletion24h = 0;
+    $totalDepletion7d = 0;
+    $drainingCount = 0;
+    $recoveringCount = 0;
+
+    foreach ($items as $item) {
+        $typeId = max(0, (int) ($item['type_id'] ?? 0));
+        $requiredQty = max(1, (int) ($item['quantity'] ?? 1));
+        $signal = $depletionByType[$typeId] ?? [];
+        $depletion24h = (int) ($signal['depletion_24h'] ?? 0);
+        $depletion7d = (int) ($signal['depletion_7d'] ?? 0);
+        $classification = (string) ($signal['classification'] ?? 'stable');
+
+        $totalDepletion24h += $depletion24h;
+        $totalDepletion7d += $depletion7d;
+        $fitEquivalent24h = max($fitEquivalent24h, $depletion24h / $requiredQty);
+        $fitEquivalent7d = max($fitEquivalent7d, $depletion7d / $requiredQty);
+
+        if ($classification === 'draining') {
+            $drainingCount++;
+        } elseif ($classification === 'recovering') {
+            $recoveringCount++;
+        }
+    }
+
+    $classification = 'stable';
+    if ($drainingCount > max(0, $recoveringCount)) {
+        $classification = 'draining';
+    } elseif ($recoveringCount > max(0, $drainingCount)) {
+        $classification = 'recovering';
+    }
+
+    return [
+        'depletion_24h' => $totalDepletion24h,
+        'depletion_7d' => $totalDepletion7d,
+        'fit_equivalent_24h' => round($fitEquivalent24h, 2),
+        'fit_equivalent_7d' => round($fitEquivalent7d, 2),
+        'classification' => $classification,
+        'context' => match ($classification) {
+            'draining' => 'Recent local stock is draining faster than the prior window.',
+            'recovering' => 'Recent local stock is recovering faster than the prior window.',
+            default => 'Local stock movement is broadly stable.',
+        },
+    ];
+}
+
 function doctrine_recommended_target_fit_count(array $availability, array $trend, array $lossSignals, array $restockSignal): array
 {
+    $depletionSignal = is_array($restockSignal['depletion_signal'] ?? null) ? $restockSignal['depletion_signal'] : [];
     $baselineTarget = 3;
+    $minimumTarget = 2;
+    $maximumTarget = 12;
     $lossFloor = max(
         0,
-        (int) ($lossSignals['hull_losses_7d'] ?? 0),
-        (int) ($lossSignals['item_equivalent_fit_losses_7d'] ?? 0)
+        (int) ceil(max(
+            (int) ($lossSignals['hull_losses_7d'] ?? 0),
+            (int) ($lossSignals['item_equivalent_fit_losses_7d'] ?? 0)
+        ))
     );
     $recentPressure = max(
         0,
-        (int) ($lossSignals['hull_losses_24h'] ?? 0),
-        (int) ($lossSignals['item_equivalent_fit_losses_24h'] ?? 0)
+        (int) ceil(max(
+            (int) ($lossSignals['hull_losses_24h'] ?? 0),
+            (int) ($lossSignals['item_equivalent_fit_losses_24h'] ?? 0)
+        ))
     );
-
-    $buffer = 1;
-    if (($trend['direction'] ?? 'unknown') === 'down') {
-        $buffer++;
+    $lossAdjustment = min(4, (int) ceil(($lossFloor * 0.5) + ($recentPressure * 0.8)));
+    $depletionAdjustment = 0;
+    if (($depletionSignal['classification'] ?? 'stable') === 'draining') {
+        $depletionAdjustment = min(3, max(1, (int) ceil((float) ($depletionSignal['fit_equivalent_7d'] ?? 0.0))));
     }
-    if (($restockSignal['direction'] ?? 'unknown') === 'down') {
-        $buffer++;
+    $recoveryAdjustment = 0;
+    if (($depletionSignal['classification'] ?? 'stable') === 'recovering' && ($trend['direction'] ?? 'unknown') !== 'down') {
+        $recoveryAdjustment = min(2, max(1, (int) round(abs((float) ($depletionSignal['fit_equivalent_7d'] ?? 0.0)))));
     }
-    if ($recentPressure > 0) {
-        $buffer++;
-    }
-
-    $recommended = max($baselineTarget, $lossFloor + $buffer, $recentPressure + 1);
+    $trendAdjustment = ($trend['direction'] ?? 'unknown') === 'down' ? 1 : 0;
+    $recommended = $baselineTarget + $lossAdjustment + $depletionAdjustment + $trendAdjustment - $recoveryAdjustment;
+    $recommended = max($minimumTarget, min($maximumTarget, max($recommended, $lossFloor, $recentPressure + 1)));
     $completeFits = max(0, (int) ($availability['complete_fits_available'] ?? 0));
     $gap = max(0, $recommended - $completeFits);
 
@@ -10105,6 +10248,12 @@ function doctrine_recommended_target_fit_count(array $availability, array $trend
         'recommended_target_fit_count' => $recommended,
         'gap_to_target_fit_count' => $gap,
         'baseline_target_fit_count' => $baselineTarget,
+        'loss_adjustment' => $lossAdjustment,
+        'depletion_adjustment' => $depletionAdjustment,
+        'recovery_adjustment' => $recoveryAdjustment,
+        'trend_adjustment' => $trendAdjustment,
+        'minimum_target_fit_count' => $minimumTarget,
+        'maximum_target_fit_count' => $maximumTarget,
     ];
 }
 
@@ -10123,28 +10272,39 @@ function doctrine_planning_recommendation(array $availability, array $trend, arr
         (int) ($lossSignals['item_equivalent_fit_losses_7d'] ?? 0)
     );
 
+    $depletionSignal = is_array($restockSignal['depletion_signal'] ?? null) ? $restockSignal['depletion_signal'] : [];
     $status = 'ready';
-    $label = 'Stock level looks sufficient';
+    $label = 'Market ready';
     $context = 'Current complete-fit stock covers the present rule-based target.';
+    $code = 'market_ready';
+    $explanation = 'Target remains covered and local depletion is manageable.';
 
     if ($completeFits <= 0 || ($recentPressure > 0 && $completeFits <= $recentPressure) || $gap >= 3) {
         $status = 'critical';
-        $label = 'Urgent restock needed';
+        $label = 'Urgent restock required';
         $context = 'Tracked losses and current local stock indicate immediate doctrine pressure.';
-    } elseif ($gap > 0 || $weeklyPressure > $completeFits || ($restockSignal['direction'] ?? '') === 'down') {
+        $code = 'urgent_restock';
+        $explanation = 'Recent losses plus the fit gap leave no ready buffer.';
+    } elseif ($gap > 0 || $weeklyPressure > $completeFits || ($depletionSignal['classification'] ?? '') === 'draining') {
         $status = 'critical';
-        $label = 'Increase local stock target';
+        $label = 'Increase stock target';
         $context = 'Recent losses or weaker replacement trends are outrunning the current doctrine buffer.';
+        $code = 'increase_target';
+        $explanation = 'Demand or depletion is outpacing the current stock target.';
     } elseif (($trend['direction'] ?? '') === 'down' || $completeFits <= ($recentPressure + 1)) {
         $status = 'warning';
         $label = 'Watch closely';
         $context = 'Complete-fit count is still usable, but the trend or daily loss pressure is tightening the buffer.';
+        $code = 'watch';
+        $explanation = 'The doctrine is currently serviceable, but the buffer is tightening.';
     }
 
     return [
         'status' => $status,
         'label' => $label,
         'context' => $context,
+        'code' => $code,
+        'explanation' => $explanation,
         'likely_enough_based_on_recent_losses' => in_array($status, ['ready', 'warning'], true),
     ];
 }
@@ -10161,13 +10321,29 @@ function doctrine_operational_supply(array $rows, array $items, array $fit, arra
         $itemLossByType,
         $hullLossByType
     );
+    $depletionByType = doctrine_item_depletion_index($historyByTypeId);
+    $depletionSignal = doctrine_fit_depletion_signal($items, $depletionByType);
     $restockSignal = doctrine_bottleneck_restock_signal($availability, $historyByTypeId);
+    $restockSignal['depletion_signal'] = $depletionSignal;
     $targetPlan = doctrine_recommended_target_fit_count($availability, $trend, $lossSignals, $restockSignal);
     $planning = doctrine_planning_recommendation($availability, $trend, $lossSignals, $restockSignal, $targetPlan);
+    $coveragePercent = (float) ($base['coverage_percent'] ?? 0.0);
+    $scoreLossPressure = min(40.0, max(
+        (int) ($lossSignals['hull_losses_24h'] ?? 0) * 8.0,
+        (int) ($lossSignals['item_equivalent_fit_losses_7d'] ?? 0) * 4.5,
+        (int) ($lossSignals['hull_losses_7d'] ?? 0) * 4.0
+    ));
+    $scoreStockGap = min(30.0, max(0.0, ((float) ($targetPlan['gap_to_target_fit_count'] ?? 0) * 8.0) + max(0.0, (100.0 - $coveragePercent) * 0.08)));
+    $scoreDepletion = min(20.0, max(0.0, ((float) ($depletionSignal['fit_equivalent_7d'] ?? 0.0) * 6.0) + (($depletionSignal['classification'] ?? 'stable') === 'draining' ? 4.0 : 0.0)));
+    $scoreBottleneck = min(10.0, max(0.0, ((int) ($availability['bottleneck_required_quantity'] ?? 0) > 0 && (int) ($availability['bottleneck_quantity'] ?? 0) <= (int) ($availability['bottleneck_required_quantity'] ?? 0)) ? 7.0 : 3.0));
+    $totalScore = round($scoreLossPressure + $scoreStockGap + $scoreDepletion + $scoreBottleneck, 2);
 
     return $base + $availability + $targetPlan + [
         'status' => $planning['status'],
         'status_label' => $planning['label'],
+        'recommendation_code' => $planning['code'],
+        'recommendation_text' => $planning['label'],
+        'recommendation_explanation' => $planning['explanation'],
         'planning_context' => $planning['context'],
         'readiness_trend' => $trend['label'],
         'readiness_trend_direction' => $trend['direction'],
@@ -10178,9 +10354,22 @@ function doctrine_operational_supply(array $rows, array $items, array $fit, arra
         'recent_item_fit_losses_24h' => $lossSignals['item_equivalent_fit_losses_24h'],
         'recent_item_fit_losses_7d' => $lossSignals['item_equivalent_fit_losses_7d'],
         'top_pressure_item' => $lossSignals['top_pressure_item'],
+        'depletion_24h' => $depletionSignal['depletion_24h'],
+        'depletion_7d' => $depletionSignal['depletion_7d'],
+        'depletion_fit_equivalent_24h' => $depletionSignal['fit_equivalent_24h'],
+        'depletion_fit_equivalent_7d' => $depletionSignal['fit_equivalent_7d'],
+        'depletion_state' => $depletionSignal['classification'],
+        'depletion_context' => $depletionSignal['context'],
         'restock_trend' => $restockSignal['label'],
         'restock_trend_direction' => $restockSignal['direction'],
         'restock_trend_context' => $restockSignal['context'],
+        'driver_scores' => [
+            'loss_pressure' => round($scoreLossPressure, 2),
+            'stock_gap' => round($scoreStockGap, 2),
+            'depletion' => round($scoreDepletion, 2),
+            'bottleneck' => round($scoreBottleneck, 2),
+            'total' => $totalScore,
+        ],
         'likely_enough_based_on_recent_losses' => (bool) ($planning['likely_enough_based_on_recent_losses'] ?? false),
     ];
 }
@@ -10234,148 +10423,427 @@ function doctrine_category_sort_order(string $category): int
     return $map[$category] ?? 999;
 }
 
+function doctrine_snapshot_delta(?array $previous, array $current): array
+{
+    if (!is_array($previous) || $previous === []) {
+        return [
+            'target_delta' => 0,
+            'complete_delta' => 0,
+            'fit_gap_delta' => 0,
+            'recommendation_changed' => false,
+            'bottleneck_changed' => false,
+            'summary' => 'First recorded doctrine snapshot for this fit.',
+        ];
+    }
+
+    $targetDelta = (int) ($current['target_fits'] ?? 0) - (int) ($previous['target_fits'] ?? 0);
+    $completeDelta = (int) ($current['complete_fits_available'] ?? 0) - (int) ($previous['complete_fits_available'] ?? 0);
+    $fitGapDelta = (int) ($current['fit_gap'] ?? 0) - (int) ($previous['fit_gap'] ?? 0);
+    $recommendationChanged = (string) ($current['recommendation_code'] ?? '') !== (string) ($previous['recommendation_code'] ?? '');
+    $bottleneckChanged = (int) ($current['bottleneck_type_id'] ?? 0) !== (int) ($previous['bottleneck_type_id'] ?? 0);
+    $parts = [];
+
+    if ($targetDelta !== 0) {
+        $parts[] = 'Target ' . ($targetDelta > 0 ? 'rose' : 'fell') . ' by ' . doctrine_format_quantity(abs($targetDelta)) . '.';
+    }
+    if ($completeDelta !== 0) {
+        $parts[] = 'Complete fits ' . ($completeDelta > 0 ? 'improved' : 'fell') . ' by ' . doctrine_format_quantity(abs($completeDelta)) . '.';
+    }
+    if ($recommendationChanged) {
+        $parts[] = 'Recommendation changed from ' . (string) ($previous['recommendation_text'] ?? 'previous state') . ' to ' . (string) ($current['recommendation_text'] ?? 'current state') . '.';
+    }
+    if ($bottleneckChanged) {
+        $parts[] = 'The bottleneck item changed.';
+    }
+
+    return [
+        'target_delta' => $targetDelta,
+        'complete_delta' => $completeDelta,
+        'fit_gap_delta' => $fitGapDelta,
+        'recommendation_changed' => $recommendationChanged,
+        'bottleneck_changed' => $bottleneckChanged,
+        'summary' => $parts !== [] ? implode(' ', $parts) : 'No material doctrine change since the previous snapshot.',
+    ];
+}
+
+function doctrine_snapshot_history_view_model(int $fitId, array $latestSupply): array
+{
+    $history = [];
+
+    try {
+        $history = db_doctrine_fit_snapshot_history($fitId, 12);
+    } catch (Throwable) {
+        $history = [];
+    }
+
+    if ($history === []) {
+        return [
+            'latest' => null,
+            'previous' => null,
+            'timeline' => [],
+            'trend_points' => [],
+            'change' => [
+                'target_delta' => 0,
+                'complete_delta' => 0,
+                'fit_gap_delta' => 0,
+                'recommendation_changed' => false,
+                'bottleneck_changed' => false,
+                'summary' => 'No doctrine snapshot history has been recorded yet.',
+            ],
+        ];
+    }
+
+    $latest = $history[0];
+    $previous = $history[1] ?? null;
+    $change = doctrine_snapshot_delta($previous, $latest);
+    $trendPoints = [];
+    $timeline = [];
+
+    foreach (array_reverse($history) as $row) {
+        $trendPoints[] = [
+            'snapshot_time' => (string) ($row['snapshot_time'] ?? ''),
+            'complete_fits_available' => (int) ($row['complete_fits_available'] ?? 0),
+            'target_fits' => (int) ($row['target_fits'] ?? 0),
+            'fit_gap' => (int) ($row['fit_gap'] ?? 0),
+            'loss_24h' => (int) ($row['loss_24h'] ?? 0),
+            'total_score' => (float) ($row['total_score'] ?? 0.0),
+        ];
+    }
+
+    for ($i = 0; $i < count($history); $i++) {
+        $current = $history[$i];
+        $prior = $history[$i + 1] ?? null;
+        $delta = doctrine_snapshot_delta($prior, $current);
+        if ($delta['recommendation_changed'] || $delta['bottleneck_changed'] || $delta['target_delta'] !== 0 || $delta['fit_gap_delta'] !== 0 || $i === 0) {
+            $timeline[] = [
+                'snapshot_time' => (string) ($current['snapshot_time'] ?? ''),
+                'recommendation_text' => (string) ($current['recommendation_text'] ?? ''),
+                'target_fits' => (int) ($current['target_fits'] ?? 0),
+                'fit_gap' => (int) ($current['fit_gap'] ?? 0),
+                'summary' => $delta['summary'],
+            ];
+        }
+    }
+
+    return [
+        'latest' => $latest,
+        'previous' => $previous,
+        'timeline' => array_slice($timeline, 0, 8),
+        'trend_points' => $trendPoints,
+        'change' => $change,
+    ];
+}
+
+function doctrine_global_item_layer(array $fitsById, array $allDoctrineItems, array $depletionByType = []): array
+{
+    $outcomes = market_comparison_outcomes();
+    $rows = $outcomes['rows'] ?? [];
+    $doctrineItemMeta = [];
+
+    foreach ($allDoctrineItems as $item) {
+        $typeId = max(0, (int) ($item['type_id'] ?? 0));
+        if ($typeId <= 0) {
+            continue;
+        }
+
+        if (!isset($doctrineItemMeta[$typeId])) {
+            $doctrineItemMeta[$typeId] = [
+                'fit_count' => 0,
+                'is_bottleneck' => false,
+            ];
+        }
+        $doctrineItemMeta[$typeId]['fit_count']++;
+    }
+
+    foreach ($fitsById as $fit) {
+        $supply = (array) ($fit['supply'] ?? []);
+        $bottleneckTypeId = max(0, (int) ($supply['bottleneck_type_id'] ?? 0));
+        if ($bottleneckTypeId > 0) {
+            $doctrineItemMeta[$bottleneckTypeId]['is_bottleneck'] = true;
+        }
+    }
+
+    $rankedRows = [];
+    foreach ($rows as $row) {
+        $typeId = max(0, (int) ($row['type_id'] ?? 0));
+        $doctrineMeta = $doctrineItemMeta[$typeId] ?? ['fit_count' => 0, 'is_bottleneck' => false];
+        $isDoctrine = (int) ($doctrineMeta['fit_count'] ?? 0) > 0;
+        $depletion = $depletionByType[$typeId] ?? [];
+        $priority = max((int) ($row['opportunity_score'] ?? 0), (int) ($row['risk_score'] ?? 0));
+        if ($isDoctrine) {
+            $priority = (int) round($priority * 1.6);
+        }
+        if (($doctrineMeta['is_bottleneck'] ?? false) === true) {
+            $priority += 18;
+        }
+        if (($depletion['classification'] ?? 'stable') === 'draining') {
+            $priority += 10;
+        }
+
+        $rankedRows[] = $row + [
+            'is_doctrine_item' => $isDoctrine,
+            'doctrine_fit_count' => (int) ($doctrineMeta['fit_count'] ?? 0),
+            'is_bottleneck_item' => (bool) ($doctrineMeta['is_bottleneck'] ?? false),
+            'depletion_state' => (string) ($depletion['classification'] ?? 'stable'),
+            'depletion_24h' => (int) ($depletion['depletion_24h'] ?? 0),
+            'depletion_7d' => (int) ($depletion['depletion_7d'] ?? 0),
+            'priority_score' => min(100, max(0, $priority)),
+        ];
+    }
+
+    usort($rankedRows, static function (array $a, array $b): int {
+        $doctrineWeight = ((bool) ($b['is_doctrine_item'] ?? false) <=> (bool) ($a['is_doctrine_item'] ?? false));
+        if ($doctrineWeight !== 0) {
+            return $doctrineWeight;
+        }
+
+        $bottleneckWeight = ((bool) ($b['is_bottleneck_item'] ?? false) <=> (bool) ($a['is_bottleneck_item'] ?? false));
+        if ($bottleneckWeight !== 0) {
+            return $bottleneckWeight;
+        }
+
+        return ((int) ($b['priority_score'] ?? 0) <=> (int) ($a['priority_score'] ?? 0))
+            ?: strcasecmp((string) ($a['type_name'] ?? ''), (string) ($b['type_name'] ?? ''));
+    });
+
+    return [
+        'rows' => $rankedRows,
+        'top_restock_items' => array_slice(array_values(array_filter($rankedRows, static fn (array $row): bool => (bool) ($row['missing_in_alliance'] ?? false) || (bool) ($row['weak_alliance_stock'] ?? false))), 0, 12),
+    ];
+}
+
+function doctrine_operational_snapshot_build(bool $persistSnapshots = false, string $reason = 'manual'): array
+{
+    try {
+        $groups = db_doctrine_groups_all();
+        $fits = db_doctrine_fits_all();
+        $ungroupedFits = db_doctrine_ungrouped_fits();
+    } catch (Throwable) {
+        return ['groups' => [], 'fits' => [], 'ungrouped_fits' => [], 'top_missing_items' => [], 'global_layer' => ['rows' => [], 'top_restock_items' => []]];
+    }
+
+    $fitIds = array_values(array_map(static fn (array $fit): int => (int) ($fit['id'] ?? 0), $fits));
+    $itemsByFitId = [];
+    $allTypeIds = [];
+    try {
+        foreach (db_doctrine_fit_items_by_fit_ids($fitIds) as $item) {
+            $fitId = (int) ($item['doctrine_fit_id'] ?? 0);
+            $typeId = (int) ($item['type_id'] ?? 0);
+            if ($typeId > 0 && item_scope_is_type_id_in_scope($typeId)) {
+                $itemsByFitId[$fitId][] = $item;
+                $allTypeIds[] = $typeId;
+            }
+        }
+    } catch (Throwable) {
+    }
+
+    $comparisonByTypeId = doctrine_market_lookup_by_type_ids($allTypeIds);
+    $localHistoryByTypeId = [];
+    $itemLossByType = [];
+    $hullLossByType = [];
+    $allianceStructureId = configured_structure_destination_id_for_esi_sync();
+    $hubRef = market_hub_setting_reference();
+    $hubSourceId = sync_source_id_from_hub_ref($hubRef);
+    if ($allianceStructureId > 0) {
+        $startDate = gmdate('Y-m-d', strtotime('-14 days'));
+        $endDate = gmdate('Y-m-d');
+        try {
+            $localHistoryByTypeId = doctrine_local_history_index(
+                db_market_orders_history_stock_health_series(
+                    'alliance_structure',
+                    $allianceStructureId,
+                    $startDate,
+                    $endDate,
+                    $allTypeIds
+                )
+            );
+        } catch (Throwable) {
+            $localHistoryByTypeId = [];
+        }
+    } elseif ($hubSourceId > 0) {
+        try {
+            $localHistoryByTypeId = doctrine_local_history_index(
+                db_market_hub_local_history_daily_window_by_type_ids(
+                    market_hub_local_history_source(),
+                    $hubSourceId,
+                    $allTypeIds,
+                    14
+                )
+            );
+        } catch (Throwable) {
+            $localHistoryByTypeId = [];
+        }
+    }
+
+    try {
+        $itemLossByType = doctrine_item_loss_index(db_killmail_tracked_recent_item_losses($allTypeIds, 24 * 7));
+    } catch (Throwable) {
+        $itemLossByType = [];
+    }
+
+    $hullTypeIds = array_values(array_unique(array_filter(array_map(
+        static fn (array $fit): int => isset($fit['ship_type_id']) ? (int) $fit['ship_type_id'] : 0,
+        $fits
+    ), static fn (int $typeId): bool => $typeId > 0 && item_scope_is_type_id_in_scope($typeId))));
+    try {
+        $hullLossByType = doctrine_hull_loss_index(db_killmail_tracked_recent_hull_losses($hullTypeIds, 24 * 7));
+    } catch (Throwable) {
+        $hullLossByType = [];
+    }
+
+    $depletionByType = doctrine_item_depletion_index($localHistoryByTypeId);
+    $topMissing = [];
+    $fitsById = [];
+    $latestSnapshotsByFitId = [];
+    if ($persistSnapshots) {
+        try {
+            foreach (db_doctrine_fit_latest_snapshots($fitIds) as $snapshot) {
+                $latestSnapshotsByFitId[(int) ($snapshot['fit_id'] ?? 0)] = $snapshot;
+            }
+        } catch (Throwable) {
+            $latestSnapshotsByFitId = [];
+        }
+    }
+    $snapshotTime = gmdate('Y-m-d H:i:s');
+
+    foreach ($fits as $fit) {
+        $fitId = (int) ($fit['id'] ?? 0);
+        $fitItems = $itemsByFitId[$fitId] ?? [];
+        $marketRows = doctrine_fit_item_market_rows($fitItems, $comparisonByTypeId);
+        $summary = doctrine_operational_supply($marketRows, $fitItems, $fit, $localHistoryByTypeId, $itemLossByType, $hullLossByType);
+        $groupIds = doctrine_parse_group_csv($fit['group_ids_csv'] ?? null);
+        $groupNames = doctrine_parse_group_names_csv($fit['group_names_csv'] ?? null);
+        $fit['group_ids'] = $groupIds;
+        $fit['group_names'] = $groupNames;
+        $fit['ship_image_url'] = doctrine_ship_image_url(isset($fit['ship_type_id']) ? (int) $fit['ship_type_id'] : null, 64);
+        $fit['supply'] = $summary;
+        $fitsById[$fitId] = $fit;
+
+        if ($persistSnapshots && $fitId > 0) {
+            $snapshotRow = [
+                'fit_id' => $fitId,
+                'snapshot_time' => $snapshotTime,
+                'complete_fits_available' => (int) ($summary['complete_fits_available'] ?? 0),
+                'target_fits' => (int) ($summary['recommended_target_fit_count'] ?? 0),
+                'fit_gap' => (int) ($summary['gap_to_target_fit_count'] ?? 0),
+                'bottleneck_type_id' => isset($summary['bottleneck_type_id']) ? (int) $summary['bottleneck_type_id'] : null,
+                'bottleneck_quantity' => (int) ($summary['bottleneck_quantity'] ?? 0),
+                'readiness_state' => (string) ($summary['status'] ?? 'unknown'),
+                'recommendation_code' => (string) ($summary['recommendation_code'] ?? 'observe'),
+                'recommendation_text' => (string) ($summary['recommendation_text'] ?? ''),
+                'loss_24h' => max((int) ($summary['recent_hull_losses_24h'] ?? 0), (int) ($summary['recent_item_fit_losses_24h'] ?? 0)),
+                'loss_7d' => max((int) ($summary['recent_hull_losses_7d'] ?? 0), (int) ($summary['recent_item_fit_losses_7d'] ?? 0)),
+                'local_coverage_pct' => (float) ($summary['coverage_percent'] ?? 0.0),
+                'depletion_24h' => (int) ($summary['depletion_24h'] ?? 0),
+                'depletion_7d' => (int) ($summary['depletion_7d'] ?? 0),
+                'total_score' => (float) (($summary['driver_scores']['total'] ?? 0.0)),
+                'score_loss_pressure' => (float) (($summary['driver_scores']['loss_pressure'] ?? 0.0)),
+                'score_stock_gap' => (float) (($summary['driver_scores']['stock_gap'] ?? 0.0)),
+                'score_depletion' => (float) (($summary['driver_scores']['depletion'] ?? 0.0)),
+                'score_bottleneck' => (float) (($summary['driver_scores']['bottleneck'] ?? 0.0)),
+            ];
+            try {
+                db_doctrine_fit_snapshot_insert($snapshotRow);
+                $fit['snapshot_change'] = doctrine_snapshot_delta($latestSnapshotsByFitId[$fitId] ?? null, $snapshotRow);
+                $fit['latest_snapshot'] = $snapshotRow;
+                $fit['snapshot_reason'] = $reason;
+                $fitsById[$fitId] = $fit;
+            } catch (Throwable) {
+            }
+        }
+
+        foreach ($marketRows as $row) {
+            $missingQty = (int) ($row['missing_qty'] ?? 0);
+            if ($missingQty <= 0) {
+                continue;
+            }
+            $key = (string) ((int) ($row['type_id'] ?? 0) > 0 ? 'type:' . (int) ($row['type_id'] ?? 0) : 'name:' . doctrine_normalize_item_name((string) ($row['item_name'] ?? '')));
+            if (!isset($topMissing[$key])) {
+                $topMissing[$key] = [
+                    'item_name' => (string) ($row['item_name'] ?? ''),
+                    'type_id' => isset($row['type_id']) ? (int) $row['type_id'] : null,
+                    'missing_qty' => 0,
+                    'restock_gap_isk' => 0.0,
+                    'fit_count' => 0,
+                    'priority_score' => 0,
+                ];
+            }
+            $topMissing[$key]['missing_qty'] += $missingQty;
+            $topMissing[$key]['restock_gap_isk'] += (float) ($row['restock_gap_isk'] ?? 0.0);
+            $topMissing[$key]['fit_count']++;
+            $topMissing[$key]['priority_score'] += (int) (($summary['driver_scores']['total'] ?? 0) + (($summary['bottleneck_type_id'] ?? null) === ($row['type_id'] ?? null) ? 12 : 0));
+        }
+    }
+
+    foreach ($groups as &$group) {
+        $groupId = (int) ($group['id'] ?? 0);
+        $groupFits = array_values(array_filter($fitsById, static fn (array $fit): bool => in_array($groupId, (array) ($fit['group_ids'] ?? []), true)));
+        $group['fits'] = $groupFits;
+        $group['ready_fit_count'] = count(array_filter($groupFits, static fn (array $fit): bool => (bool) (($fit['supply']['market_ready'] ?? false))));
+        $group['gap_fit_count'] = count($groupFits) - (int) $group['ready_fit_count'];
+        $group['missing_lines'] = array_sum(array_map(static fn (array $fit): int => (int) (($fit['supply']['missing_lines'] ?? 0)), $groupFits));
+        $group['total_missing_qty'] = array_sum(array_map(static fn (array $fit): int => (int) (($fit['supply']['total_missing_qty'] ?? 0)), $groupFits));
+        $group['restock_gap_isk'] = array_sum(array_map(static fn (array $fit): float => (float) (($fit['supply']['restock_gap_isk'] ?? 0.0)), $groupFits));
+        $group['coverage_percent'] = count($groupFits) > 0 ? array_sum(array_map(static fn (array $fit): float => (float) (($fit['supply']['coverage_percent'] ?? 0.0)), $groupFits)) / count($groupFits) : 0.0;
+        $group['complete_fits_available'] = array_sum(array_map(static fn (array $fit): int => (int) (($fit['supply']['complete_fits_available'] ?? 0)), $groupFits));
+        $group['target_fit_count'] = array_sum(array_map(static fn (array $fit): int => (int) (($fit['supply']['recommended_target_fit_count'] ?? 0)), $groupFits));
+        $group['fit_gap_count'] = array_sum(array_map(static fn (array $fit): int => (int) (($fit['supply']['gap_to_target_fit_count'] ?? 0)), $groupFits));
+        $group['loss_pressure_fit_count'] = count(array_filter($groupFits, static fn (array $fit): bool => !(bool) (($fit['supply']['likely_enough_based_on_recent_losses'] ?? false))));
+        $group['trending_down_fit_count'] = count(array_filter($groupFits, static fn (array $fit): bool => (($fit['supply']['readiness_trend_direction'] ?? 'unknown') === 'down')));
+        $group['status'] = count(array_filter($groupFits, static fn (array $fit): bool => (($fit['supply']['status'] ?? 'ready') === 'critical'))) > 0
+            ? 'critical'
+            : (count(array_filter($groupFits, static fn (array $fit): bool => (($fit['supply']['status'] ?? 'ready') === 'warning'))) > 0 ? 'warning' : 'ready');
+        $group['status_label'] = match ($group['status']) {
+            'ready' => 'Stock sufficient',
+            'warning' => 'Watch closely',
+            default => 'Restock pressure',
+        };
+        $group['readiness_trend'] = $group['trending_down_fit_count'] > 0
+            ? 'Trending down'
+            : (count(array_filter($groupFits, static fn (array $fit): bool => (($fit['supply']['readiness_trend_direction'] ?? 'unknown') === 'up'))) > 0 ? 'Trending up' : 'Stable');
+    }
+    unset($group);
+
+    usort($groups, static fn (array $a, array $b): int => ((int) ($b['fit_gap_count'] ?? 0) <=> (int) ($a['fit_gap_count'] ?? 0)) ?: strcasecmp((string) ($a['group_name'] ?? ''), (string) ($b['group_name'] ?? '')));
+    usort($topMissing, static fn (array $a, array $b): int => ((int) ($b['priority_score'] ?? 0) <=> (int) ($a['priority_score'] ?? 0)) ?: ((int) ($b['missing_qty'] ?? 0) <=> (int) ($a['missing_qty'] ?? 0)));
+    $globalLayer = doctrine_global_item_layer($fitsById, array_merge(...array_values($itemsByFitId ?: [[]])), $depletionByType);
+
+    return [
+        'groups' => $groups,
+        'fits' => array_values($fitsById),
+        'ungrouped_fits' => $ungroupedFits,
+        'top_missing_items' => array_slice(array_values($topMissing), 0, 10),
+        'global_layer' => $globalLayer,
+    ];
+}
+
 function doctrine_operational_snapshot(): array
 {
     return supplycore_cache_aside('doctrine', ['operational-snapshot'], supplycore_cache_ttl('doctrine_summary'), static function (): array {
-        try {
-            $groups = db_doctrine_groups_all();
-            $fits = db_doctrine_fits_all();
-            $ungroupedFits = db_doctrine_ungrouped_fits();
-        } catch (Throwable) {
-            return ['groups' => [], 'fits' => [], 'ungrouped_fits' => [], 'top_missing_items' => []];
-        }
-
-        $fitIds = array_values(array_map(static fn (array $fit): int => (int) ($fit['id'] ?? 0), $fits));
-        $itemsByFitId = [];
-        $allTypeIds = [];
-        try {
-            foreach (db_doctrine_fit_items_by_fit_ids($fitIds) as $item) {
-                $fitId = (int) ($item['doctrine_fit_id'] ?? 0);
-                $typeId = (int) ($item['type_id'] ?? 0);
-                if ($typeId > 0 && item_scope_is_type_id_in_scope($typeId)) {
-                    $itemsByFitId[$fitId][] = $item;
-                    $allTypeIds[] = $typeId;
-                }
-            }
-        } catch (Throwable) {
-        }
-
-        $comparisonByTypeId = doctrine_market_lookup_by_type_ids($allTypeIds);
-        $localHistoryByTypeId = [];
-        $itemLossByType = [];
-        $hullLossByType = [];
-        $hubRef = market_hub_setting_reference();
-        $hubSourceId = sync_source_id_from_hub_ref($hubRef);
-        if ($hubSourceId > 0) {
-            try {
-                $localHistoryByTypeId = doctrine_local_history_index(
-                    db_market_hub_local_history_daily_window_by_type_ids(
-                        market_hub_local_history_source(),
-                        $hubSourceId,
-                        $allTypeIds,
-                        14
-                    )
-                );
-            } catch (Throwable) {
-                $localHistoryByTypeId = [];
-            }
-        }
-
-        try {
-            $itemLossByType = doctrine_item_loss_index(db_killmail_tracked_recent_item_losses($allTypeIds, 24 * 7));
-        } catch (Throwable) {
-            $itemLossByType = [];
-        }
-
-        $hullTypeIds = array_values(array_unique(array_filter(array_map(
-            static fn (array $fit): int => isset($fit['ship_type_id']) ? (int) $fit['ship_type_id'] : 0,
-            $fits
-        ), static fn (int $typeId): bool => $typeId > 0 && item_scope_is_type_id_in_scope($typeId))));
-        try {
-            $hullLossByType = doctrine_hull_loss_index(db_killmail_tracked_recent_hull_losses($hullTypeIds, 24 * 7));
-        } catch (Throwable) {
-            $hullLossByType = [];
-        }
-
-        $topMissing = [];
-        $fitsById = [];
-
-        foreach ($fits as $fit) {
-            $fitId = (int) ($fit['id'] ?? 0);
-            $fitItems = $itemsByFitId[$fitId] ?? [];
-            $marketRows = doctrine_fit_item_market_rows($fitItems, $comparisonByTypeId);
-            $summary = doctrine_operational_supply($marketRows, $fitItems, $fit, $localHistoryByTypeId, $itemLossByType, $hullLossByType);
-            $groupIds = doctrine_parse_group_csv($fit['group_ids_csv'] ?? null);
-            $groupNames = doctrine_parse_group_names_csv($fit['group_names_csv'] ?? null);
-            $fit['group_ids'] = $groupIds;
-            $fit['group_names'] = $groupNames;
-            $fit['ship_image_url'] = doctrine_ship_image_url(isset($fit['ship_type_id']) ? (int) $fit['ship_type_id'] : null, 64);
-            $fit['supply'] = $summary;
-            $fitsById[$fitId] = $fit;
-
-            foreach ($marketRows as $row) {
-                $missingQty = (int) ($row['missing_qty'] ?? 0);
-                if ($missingQty <= 0) {
-                    continue;
-                }
-                $key = (string) ((int) ($row['type_id'] ?? 0) > 0 ? 'type:' . (int) ($row['type_id'] ?? 0) : 'name:' . doctrine_normalize_item_name((string) ($row['item_name'] ?? '')));
-                if (!isset($topMissing[$key])) {
-                    $topMissing[$key] = [
-                        'item_name' => (string) ($row['item_name'] ?? ''),
-                        'type_id' => isset($row['type_id']) ? (int) $row['type_id'] : null,
-                        'missing_qty' => 0,
-                        'restock_gap_isk' => 0.0,
-                        'fit_count' => 0,
-                    ];
-                }
-                $topMissing[$key]['missing_qty'] += $missingQty;
-                $topMissing[$key]['restock_gap_isk'] += (float) ($row['restock_gap_isk'] ?? 0.0);
-                $topMissing[$key]['fit_count']++;
-            }
-        }
-
-        foreach ($groups as &$group) {
-            $groupId = (int) ($group['id'] ?? 0);
-            $groupFits = array_values(array_filter($fitsById, static fn (array $fit): bool => in_array($groupId, (array) ($fit['group_ids'] ?? []), true)));
-            $group['fits'] = $groupFits;
-            $group['ready_fit_count'] = count(array_filter($groupFits, static fn (array $fit): bool => (bool) (($fit['supply']['market_ready'] ?? false))));
-            $group['gap_fit_count'] = count($groupFits) - (int) $group['ready_fit_count'];
-            $group['missing_lines'] = array_sum(array_map(static fn (array $fit): int => (int) (($fit['supply']['missing_lines'] ?? 0)), $groupFits));
-            $group['total_missing_qty'] = array_sum(array_map(static fn (array $fit): int => (int) (($fit['supply']['total_missing_qty'] ?? 0)), $groupFits));
-            $group['restock_gap_isk'] = array_sum(array_map(static fn (array $fit): float => (float) (($fit['supply']['restock_gap_isk'] ?? 0.0)), $groupFits));
-            $group['coverage_percent'] = count($groupFits) > 0 ? array_sum(array_map(static fn (array $fit): float => (float) (($fit['supply']['coverage_percent'] ?? 0.0)), $groupFits)) / count($groupFits) : 0.0;
-            $group['complete_fits_available'] = array_sum(array_map(static fn (array $fit): int => (int) (($fit['supply']['complete_fits_available'] ?? 0)), $groupFits));
-            $group['target_fit_count'] = array_sum(array_map(static fn (array $fit): int => (int) (($fit['supply']['recommended_target_fit_count'] ?? 0)), $groupFits));
-            $group['fit_gap_count'] = array_sum(array_map(static fn (array $fit): int => (int) (($fit['supply']['gap_to_target_fit_count'] ?? 0)), $groupFits));
-            $group['loss_pressure_fit_count'] = count(array_filter($groupFits, static fn (array $fit): bool => !(bool) (($fit['supply']['likely_enough_based_on_recent_losses'] ?? false))));
-            $group['trending_down_fit_count'] = count(array_filter($groupFits, static fn (array $fit): bool => (($fit['supply']['readiness_trend_direction'] ?? 'unknown') === 'down')));
-            $group['status'] = count(array_filter($groupFits, static fn (array $fit): bool => (($fit['supply']['status'] ?? 'ready') === 'critical'))) > 0
-                ? 'critical'
-                : (count(array_filter($groupFits, static fn (array $fit): bool => (($fit['supply']['status'] ?? 'ready') === 'warning'))) > 0 ? 'warning' : 'ready');
-            $group['status_label'] = match ($group['status']) {
-                'ready' => 'Stock sufficient',
-                'warning' => 'Watch closely',
-                default => 'Restock pressure',
-            };
-            $group['readiness_trend'] = $group['trending_down_fit_count'] > 0
-                ? 'Trending down'
-                : (count(array_filter($groupFits, static fn (array $fit): bool => (($fit['supply']['readiness_trend_direction'] ?? 'unknown') === 'up'))) > 0 ? 'Trending up' : 'Stable');
-        }
-        unset($group);
-
-        usort($groups, static fn (array $a, array $b): int => ((int) ($b['gap_fit_count'] ?? 0) <=> (int) ($a['gap_fit_count'] ?? 0)) ?: strcasecmp((string) ($a['group_name'] ?? ''), (string) ($b['group_name'] ?? '')));
-        usort($topMissing, static fn (array $a, array $b): int => ((int) ($b['missing_qty'] ?? 0) <=> (int) ($a['missing_qty'] ?? 0)) ?: ((float) ($b['restock_gap_isk'] ?? 0.0) <=> (float) ($a['restock_gap_isk'] ?? 0.0)));
-
-        return [
-            'groups' => $groups,
-            'fits' => array_values($fitsById),
-            'ungrouped_fits' => $ungroupedFits,
-            'top_missing_items' => array_slice(array_values($topMissing), 0, 10),
-        ];
+        return doctrine_operational_snapshot_build(false, 'cached-read');
     }, [
         'dependencies' => ['doctrine', 'market_compare', 'killmail_overview'],
         'lock_ttl' => 20,
     ]);
+}
+
+function doctrine_refresh_intelligence(string $reason = 'manual'): array
+{
+    $snapshot = doctrine_operational_snapshot_build(true, $reason);
+    supplycore_cache_bust(['doctrine', 'dashboard']);
+
+    return $snapshot;
+}
+
+function doctrine_refresh_trigger_job_keys(): array
+{
+    return [
+        'alliance_current_sync',
+        'market_hub_current_sync',
+        'market_hub_local_history_sync',
+        'killmail_r2z2_sync',
+        'doctrine_intelligence_sync',
+    ];
 }
 
 function doctrine_groups_overview_data(): array
@@ -10384,12 +10852,15 @@ function doctrine_groups_overview_data(): array
     $groups = $snapshot['groups'] ?? [];
     $fits = $snapshot['fits'] ?? [];
     $notReadyFits = array_values(array_filter($fits, static fn (array $fit): bool => (($fit['supply']['status'] ?? 'ready') !== 'ready')));
+    usort($notReadyFits, static fn (array $a, array $b): int => ((float) (($b['supply']['driver_scores']['total'] ?? 0.0)) <=> (float) (($a['supply']['driver_scores']['total'] ?? 0.0))) ?: ((int) (($b['supply']['gap_to_target_fit_count'] ?? 0)) <=> (int) (($a['supply']['gap_to_target_fit_count'] ?? 0))));
     $totalMissingQty = array_sum(array_map(static fn (array $fit): int => (int) (($fit['supply']['total_missing_qty'] ?? 0)), $notReadyFits));
     $restockGap = array_sum(array_map(static fn (array $fit): float => (float) (($fit['supply']['restock_gap_isk'] ?? 0.0)), $notReadyFits));
     $completeFitsAvailable = array_sum(array_map(static fn (array $fit): int => (int) (($fit['supply']['complete_fits_available'] ?? 0)), $fits));
     $targetFitsDesired = array_sum(array_map(static fn (array $fit): int => (int) (($fit['supply']['recommended_target_fit_count'] ?? 0)), $fits));
     $fitGap = max(0, $targetFitsDesired - $completeFitsAvailable);
     $watchFits = count(array_filter($fits, static fn (array $fit): bool => (($fit['supply']['status'] ?? 'ready') !== 'ready')));
+    $globalLayer = $snapshot['global_layer'] ?? ['rows' => [], 'top_restock_items' => []];
+    $topBottlenecks = array_values(array_filter($globalLayer['rows'] ?? [], static fn (array $row): bool => (bool) ($row['is_bottleneck_item'] ?? false)));
 
     return [
         'summary' => [
@@ -10402,6 +10873,9 @@ function doctrine_groups_overview_data(): array
         'fits' => $fits,
         'not_ready_fits' => $notReadyFits,
         'top_missing_items' => $snapshot['top_missing_items'] ?? [],
+        'top_bottlenecks' => array_slice($topBottlenecks, 0, 8),
+        'highest_priority_restock_items' => array_slice((array) ($globalLayer['top_restock_items'] ?? []), 0, 8),
+        'global_layer' => $globalLayer,
         'ungrouped_fits' => $snapshot['ungrouped_fits'] ?? [],
     ];
 }
@@ -10492,8 +10966,10 @@ function doctrine_fit_detail_view_model(int $fitId): array
         unset($rows);
 
         $supply = doctrine_operational_supply($marketRows, $items, $fit, $localHistoryByTypeId, $itemLossByType, $hullLossByType);
+        $history = doctrine_snapshot_history_view_model($fitId, $supply);
         $fit['ship_image_url'] = doctrine_ship_image_url(isset($fit['ship_type_id']) ? (int) $fit['ship_type_id'] : null, 256);
         $fit['supply'] = $supply;
+        $fit['snapshot_history'] = $history;
 
         return [
             'fit' => $fit,
@@ -10505,6 +10981,7 @@ function doctrine_fit_detail_view_model(int $fitId): array
                 ['label' => 'Target Fits', 'value' => doctrine_format_quantity((int) $supply['recommended_target_fit_count']), 'context' => 'Recent losses and local stock trend define the current target.'],
                 ['label' => 'Fit Gap', 'value' => doctrine_format_quantity((int) $supply['gap_to_target_fit_count']), 'context' => market_format_isk((float) $supply['restock_gap_isk']) . ' estimated hub spend to close the doctrine gap'],
             ],
+            'snapshot_history' => $history,
         ];
     }, [
         'dependencies' => ['doctrine', 'market_compare', 'killmail_overview'],

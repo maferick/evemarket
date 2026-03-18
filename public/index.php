@@ -224,6 +224,61 @@ $statusThemes = [
                 </div>
             </div>
         </div>
+
+        <div class="mt-5 grid gap-5 lg:grid-cols-2">
+            <div class="surface-tertiary">
+                <div class="flex items-start justify-between gap-3">
+                    <div>
+                        <h3 class="text-lg font-semibold text-white">Top doctrine bottlenecks</h3>
+                        <p class="mt-1 text-sm text-slate-400">Items now blocking the most complete-fit availability.</p>
+                    </div>
+                    <span class="badge border-rose-400/20 bg-rose-500/10 text-rose-200">Bottlenecks</span>
+                </div>
+                <div class="mt-4 space-y-3">
+                    <?php foreach (array_slice((array) ($doctrine['top_bottlenecks'] ?? []), 0, 5) as $row): ?>
+                        <div class="intelligence-row">
+                            <div class="min-w-0 flex-1">
+                                <p class="truncate text-sm font-semibold text-slate-100"><?= htmlspecialchars((string) ($row['type_name'] ?? ''), ENT_QUOTES) ?></p>
+                                <p class="mt-1 text-xs text-slate-500"><?= doctrine_format_quantity((int) ($row['doctrine_fit_count'] ?? 0)) ?> doctrine fits impacted</p>
+                            </div>
+                            <div class="text-right">
+                                <p class="text-sm font-semibold text-rose-100"><?= htmlspecialchars((string) ($row['priority_score'] ?? 0), ENT_QUOTES) ?></p>
+                                <p class="text-xs text-slate-500">priority</p>
+                            </div>
+                        </div>
+                    <?php endforeach; ?>
+                    <?php if (((array) ($doctrine['top_bottlenecks'] ?? [])) === []): ?>
+                        <div class="surface-tertiary text-sm text-slate-400">No doctrine bottlenecks are currently ranked.</div>
+                    <?php endif; ?>
+                </div>
+            </div>
+            <div class="surface-tertiary">
+                <div class="flex items-start justify-between gap-3">
+                    <div>
+                        <h3 class="text-lg font-semibold text-white">Highest priority restock items</h3>
+                        <p class="mt-1 text-sm text-slate-400">The global enabled-items layer remains visible, but doctrine items stay pinned above it.</p>
+                    </div>
+                    <span class="badge border-sky-400/18 bg-sky-500/10 text-sky-100">Enabled items</span>
+                </div>
+                <div class="mt-4 space-y-3">
+                    <?php foreach (array_slice((array) ($doctrine['highest_priority_restock_items'] ?? []), 0, 5) as $row): ?>
+                        <div class="intelligence-row">
+                            <div class="min-w-0 flex-1">
+                                <p class="truncate text-sm font-semibold text-slate-100"><?= htmlspecialchars((string) ($row['type_name'] ?? ''), ENT_QUOTES) ?></p>
+                                <p class="mt-1 text-xs text-slate-500"><?= !empty($row['is_doctrine_item']) ? 'Doctrine-linked' : 'Enabled item' ?> · depletion <?= htmlspecialchars((string) ($row['depletion_state'] ?? 'stable'), ENT_QUOTES) ?></p>
+                            </div>
+                            <div class="text-right">
+                                <p class="text-sm font-semibold text-sky-100"><?= htmlspecialchars((string) ($row['priority_score'] ?? 0), ENT_QUOTES) ?></p>
+                                <p class="text-xs text-slate-500">priority</p>
+                            </div>
+                        </div>
+                    <?php endforeach; ?>
+                    <?php if (((array) ($doctrine['highest_priority_restock_items'] ?? [])) === []): ?>
+                        <div class="surface-tertiary text-sm text-slate-400">No enabled-item restock rows are currently ranked.</div>
+                    <?php endif; ?>
+                </div>
+            </div>
+        </div>
     </article>
 
     <article class="surface-secondary">
