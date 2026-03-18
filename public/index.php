@@ -284,8 +284,17 @@ $statusThemes = [
                         <?php else: ?>
                             <?php foreach ($rows as $index => $row): ?>
                                 <div class="intelligence-row group">
-                                    <div class="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl border border-white/8 bg-slate-900/88 text-sm font-semibold text-slate-100">
-                                        <?= htmlspecialchars(substr((string) ($row['module'] ?? '?'), 0, 2), ENT_QUOTES) ?>
+                                    <div class="flex h-11 w-11 shrink-0 items-center justify-center overflow-hidden rounded-2xl border border-white/8 bg-slate-900/88 text-sm font-semibold text-slate-100">
+                                        <?php if (!empty($row['image_url'])): ?>
+                                            <img
+                                                src="<?= htmlspecialchars((string) $row['image_url'], ENT_QUOTES) ?>"
+                                                alt="<?= htmlspecialchars((string) ($row['module'] ?? 'Item icon'), ENT_QUOTES) ?>"
+                                                class="h-full w-full object-contain p-1"
+                                                loading="lazy"
+                                            >
+                                        <?php else: ?>
+                                            <?= htmlspecialchars(substr((string) ($row['module'] ?? '?'), 0, 2), ENT_QUOTES) ?>
+                                        <?php endif; ?>
                                     </div>
                                     <div class="min-w-0 flex-1">
                                         <div class="flex flex-wrap items-start gap-3">
@@ -332,8 +341,17 @@ $statusThemes = [
             <?php else: ?>
                 <?php foreach ($rows as $index => $row): ?>
                     <div class="intelligence-row group">
-                        <div class="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl border border-orange-400/15 bg-orange-500/8 text-sm font-semibold text-orange-100">
-                            <?= htmlspecialchars(substr((string) ($row['module'] ?? '?'), 0, 2), ENT_QUOTES) ?>
+                        <div class="flex h-11 w-11 shrink-0 items-center justify-center overflow-hidden rounded-2xl border border-orange-400/15 bg-orange-500/8 text-sm font-semibold text-orange-100">
+                            <?php if (!empty($row['image_url'])): ?>
+                                <img
+                                    src="<?= htmlspecialchars((string) $row['image_url'], ENT_QUOTES) ?>"
+                                    alt="<?= htmlspecialchars((string) ($row['module'] ?? 'Item icon'), ENT_QUOTES) ?>"
+                                    class="h-full w-full object-contain p-1"
+                                    loading="lazy"
+                                >
+                            <?php else: ?>
+                                <?= htmlspecialchars(substr((string) ($row['module'] ?? '?'), 0, 2), ENT_QUOTES) ?>
+                            <?php endif; ?>
                         </div>
                         <div class="min-w-0 flex-1">
                             <div class="flex items-start justify-between gap-3">

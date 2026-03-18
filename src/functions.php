@@ -2600,21 +2600,21 @@ function dashboard_intelligence_data(): array
             ['label' => 'Overlap Coverage', 'value' => market_format_percentage($coveragePercent), 'context' => $rowCount > 0 ? ($inBothCount . ' of ' . $rowCount . ' items in both markets') : 'No market overlap data yet'],
         ],
         'priority_queues' => [
-            'opportunities' => array_map(static fn (array $row): array => [
-                'module' => $row['type_name'] !== '' ? $row['type_name'] : ('Type #' . $row['type_id']),
-                'signal' => (bool) ($row['missing_in_alliance'] ?? false) ? 'Import seed candidate' : sprintf('%+.1f%% vs hub', (float) ($row['deviation_percent'] ?? 0.0)),
-                'score' => (int) ($row['opportunity_score'] ?? 0),
-            ], array_slice(array_values(array_filter($opportunities, static fn (array $row): bool => (int) ($row['opportunity_score'] ?? 0) > 0)), 0, 5)),
-            'risks' => array_map(static fn (array $row): array => [
-                'module' => $row['type_name'] !== '' ? $row['type_name'] : ('Type #' . $row['type_id']),
-                'signal' => (bool) ($row['overpriced_in_alliance'] ?? false) ? sprintf('%+.1f%% overpriced', (float) ($row['deviation_percent'] ?? 0.0)) : 'Stock or freshness risk',
-                'score' => (int) ($row['risk_score'] ?? 0),
-            ], array_slice(array_values(array_filter($risks, static fn (array $row): bool => (int) ($row['risk_score'] ?? 0) > 0)), 0, 5)),
-            'missing_items' => array_map(static fn (array $row): array => [
-                'module' => $row['type_name'] !== '' ? $row['type_name'] : ('Type #' . $row['type_id']),
-                'signal' => 'Volume ' . (string) ($row['reference_total_sell_volume'] ?? 0) . ' · score ' . (string) ($row['opportunity_score'] ?? 0),
-                'score' => (int) ($row['opportunity_score'] ?? 0),
-            ], array_slice(array_values(array_filter($opportunities, static fn (array $row): bool => (bool) ($row['missing_in_alliance'] ?? false))), 0, 5)),
+            'opportunities' => array_map(static fn (array $row): array => dashboard_priority_queue_item(
+                $row,
+                (bool) ($row['missing_in_alliance'] ?? false) ? 'Import seed candidate' : sprintf('%+.1f%% vs hub', (float) ($row['deviation_percent'] ?? 0.0)),
+                (int) ($row['opportunity_score'] ?? 0)
+            ), array_slice(array_values(array_filter($opportunities, static fn (array $row): bool => (int) ($row['opportunity_score'] ?? 0) > 0)), 0, 5)),
+            'risks' => array_map(static fn (array $row): array => dashboard_priority_queue_item(
+                $row,
+                (bool) ($row['overpriced_in_alliance'] ?? false) ? sprintf('%+.1f%% overpriced', (float) ($row['deviation_percent'] ?? 0.0)) : 'Stock or freshness risk',
+                (int) ($row['risk_score'] ?? 0)
+            ), array_slice(array_values(array_filter($risks, static fn (array $row): bool => (int) ($row['risk_score'] ?? 0) > 0)), 0, 5)),
+            'missing_items' => array_map(static fn (array $row): array => dashboard_priority_queue_item(
+                $row,
+                'Volume ' . (string) ($row['reference_total_sell_volume'] ?? 0) . ' · score ' . (string) ($row['opportunity_score'] ?? 0),
+                (int) ($row['opportunity_score'] ?? 0)
+            ), array_slice(array_values(array_filter($opportunities, static fn (array $row): bool => (bool) ($row['missing_in_alliance'] ?? false))), 0, 5)),
         ],
         'health_panels' => [
             'alliance_freshness' => dashboard_sync_health_panel($allianceSync),
@@ -2634,6 +2634,19 @@ function dashboard_intelligence_data(): array
         'dependencies' => ['dashboard', 'market_compare', 'doctrine'],
         'lock_ttl' => 20,
     ]);
+}
+
+function dashboard_priority_queue_item(array $row, string $signal, int $score): array
+{
+    $typeId = max(0, (int) ($row['type_id'] ?? 0));
+
+    return [
+        'module' => $row['type_name'] !== '' ? $row['type_name'] : ('Type #' . $typeId),
+        'signal' => $signal,
+        'score' => max(0, $score),
+        'type_id' => $typeId > 0 ? $typeId : null,
+        'image_url' => $typeId > 0 ? killmail_entity_image_url('type', $typeId, 'icon', 64) : null,
+    ];
 }
 
 function current_alliance_market_status_data(): array
