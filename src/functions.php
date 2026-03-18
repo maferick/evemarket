@@ -8007,12 +8007,22 @@ function doctrine_resolve_parsed_fit(array $parsed, string $rawText): array
         $resolvedItems[] = $resolvedItem;
     }
 
+    $resolvedItems = doctrine_ensure_hull_item(
+        $resolvedItems,
+        $shipResolved,
+        (string) ($parsed['ship_name'] ?? '')
+    );
+
     $fitName = trim((string) ($parsed['fit_name'] ?? ''));
     if ($fitName === '') {
         $fitName = trim((string) ($shipResolved['item_name'] ?? $parsed['ship_name'] ?? 'Imported Doctrine Fit'));
     }
 
     $shipMissing = (int) ($shipResolved['type_id'] ?? 0) <= 0;
+    $unresolved = array_values(array_unique(array_filter(array_merge(
+        $shipMissing ? [trim((string) ($shipResolved['item_name'] ?? $parsed['ship_name'] ?? 'Unknown Hull'))] : [],
+        $unresolvedItems
+    ))));
 
     return [
         'fit' => [
@@ -8022,16 +8032,65 @@ function doctrine_resolve_parsed_fit(array $parsed, string $rawText): array
             'source_format' => (string) ($parsed['format'] ?? doctrine_detect_format($rawText)),
             'import_body' => $rawText,
             'item_count' => count($resolvedItems),
-            'unresolved_count' => count($unresolvedItems) + ($shipMissing ? 1 : 0),
+            'unresolved_count' => count($unresolved),
         ],
         'items' => $resolvedItems,
         'ship' => $shipResolved,
-        'unresolved' => array_values(array_unique(array_filter(array_merge(
-            $shipMissing ? [trim((string) ($shipResolved['item_name'] ?? $parsed['ship_name'] ?? 'Unknown Hull'))] : [],
-            $unresolvedItems
-        )))),
+        'unresolved' => $unresolved,
         'ship_missing' => $shipMissing,
     ];
+}
+
+function doctrine_ensure_hull_item(array $items, array $shipResolved, string $fallbackShipName = ''): array
+{
+    $shipName = trim((string) ($shipResolved['item_name'] ?? $fallbackShipName));
+    if ($shipName === '') {
+        return $items;
+    }
+
+    $shipKey = doctrine_normalize_item_name($shipName);
+    $shipTypeId = isset($shipResolved['type_id']) && $shipResolved['type_id'] !== null ? (int) $shipResolved['type_id'] : null;
+    $hullIndex = null;
+
+    foreach ($items as $index => $item) {
+        $itemKey = doctrine_normalize_item_name((string) ($item['item_name'] ?? ''));
+        $itemTypeId = isset($item['type_id']) && $item['type_id'] !== null ? (int) $item['type_id'] : null;
+
+        if (($shipTypeId !== null && $itemTypeId === $shipTypeId) || ($shipKey !== '' && $itemKey === $shipKey)) {
+            $hullIndex = $index;
+            break;
+        }
+    }
+
+    if ($hullIndex === null) {
+        array_unshift($items, [
+            'line_number' => 1,
+            'slot_category' => 'Hull',
+            'item_name' => $shipName,
+            'type_id' => $shipTypeId,
+            'quantity' => 1,
+            'resolution_source' => (string) ($shipResolved['resolution_source'] ?? 'missing'),
+        ]);
+    } else {
+        $items[$hullIndex]['slot_category'] = 'Hull';
+        $items[$hullIndex]['item_name'] = $shipName;
+        $items[$hullIndex]['type_id'] = $shipTypeId;
+        $items[$hullIndex]['quantity'] = max(1, (int) ($items[$hullIndex]['quantity'] ?? 1));
+        $items[$hullIndex]['resolution_source'] = (string) ($items[$hullIndex]['resolution_source'] ?? ($shipResolved['resolution_source'] ?? 'missing'));
+
+        if ($hullIndex !== 0) {
+            $hullItem = $items[$hullIndex];
+            array_splice($items, $hullIndex, 1);
+            array_unshift($items, $hullItem);
+        }
+    }
+
+    foreach ($items as $index => &$item) {
+        $item['line_number'] = $index + 1;
+    }
+    unset($item);
+
+    return $items;
 }
 
 function doctrine_selected_group_ids(array $post): array
