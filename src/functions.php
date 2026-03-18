@@ -3,6 +3,7 @@
 declare(strict_types=1);
 
 require_once __DIR__ . '/db.php';
+require_once __DIR__ . '/cache.php';
 
 date_default_timezone_set(app_timezone());
 
@@ -192,6 +193,184 @@ function save_settings(array $settings): bool
     return true;
 }
 
+function supplycore_cache_ttl(string $category): int
+{
+    return match ($category) {
+        'dashboard' => 120,
+        'market_summary' => 180,
+        'market_listing' => 90,
+        'killmail_summary' => 120,
+        'killmail_detail' => 600,
+        'doctrine_summary' => 180,
+        'doctrine_detail' => 300,
+        'metadata_dynamic' => 86400,
+        'metadata_static' => 604800,
+        'structure_metadata' => 3600,
+        default => 300,
+    };
+}
+
+function supplycore_cache_version(string $namespace): int
+{
+    if (!supplycore_redis_enabled()) {
+        return 1;
+    }
+
+    $safeNamespace = preg_replace('/[^a-z0-9:_-]+/i', '-', strtolower(trim($namespace))) ?: 'default';
+    $value = supplycore_redis_get('cache-version:' . $safeNamespace);
+    $version = (int) $value;
+
+    return $version > 0 ? $version : 1;
+}
+
+function supplycore_cache_key(string $namespace, array $parts = [], array $dependencies = []): string
+{
+    $safeNamespace = preg_replace('/[^a-z0-9:_-]+/i', '-', strtolower(trim($namespace))) ?: 'default';
+    $resolvedDependencies = array_values(array_unique(array_merge([$safeNamespace], array_map(
+        static fn (mixed $dependency): string => preg_replace('/[^a-z0-9:_-]+/i', '-', strtolower(trim((string) $dependency))) ?: 'default',
+        $dependencies
+    ))));
+
+    $versions = [];
+    foreach ($resolvedDependencies as $dependency) {
+        $versions[$dependency] = supplycore_cache_version($dependency);
+    }
+
+    return sprintf(
+        'cache:%s:%s:%s',
+        $safeNamespace,
+        http_build_query($versions, '', ','),
+        sha1(json_encode($parts, JSON_THROW_ON_ERROR))
+    );
+}
+
+function supplycore_cache_read(string $namespace, array $parts = [], array $dependencies = []): mixed
+{
+    if (!supplycore_redis_enabled()) {
+        return null;
+    }
+
+    $payload = supplycore_redis_get(supplycore_cache_key($namespace, $parts, $dependencies));
+    if ($payload === null || $payload === '') {
+        return null;
+    }
+
+    try {
+        $decoded = json_decode($payload, true, 512, JSON_THROW_ON_ERROR);
+    } catch (Throwable) {
+        return null;
+    }
+
+    return $decoded['value'] ?? null;
+}
+
+function supplycore_cache_write(string $namespace, array $parts, mixed $value, int $ttlSeconds, array $dependencies = []): mixed
+{
+    if (!supplycore_redis_enabled()) {
+        return $value;
+    }
+
+    try {
+        $encoded = json_encode([
+            'stored_at' => gmdate(DATE_ATOM),
+            'value' => $value,
+        ], JSON_THROW_ON_ERROR);
+    } catch (Throwable) {
+        return $value;
+    }
+
+    supplycore_redis_set(
+        supplycore_cache_key($namespace, $parts, $dependencies),
+        $encoded,
+        max(1, $ttlSeconds)
+    );
+
+    return $value;
+}
+
+function supplycore_cache_bust(array|string $namespaces): void
+{
+    $list = is_array($namespaces) ? $namespaces : [$namespaces];
+
+    foreach ($list as $namespace) {
+        $safeNamespace = preg_replace('/[^a-z0-9:_-]+/i', '-', strtolower(trim((string) $namespace))) ?: '';
+        if ($safeNamespace === '') {
+            continue;
+        }
+
+        supplycore_redis_incr('cache-version:' . $safeNamespace);
+    }
+}
+
+function supplycore_cache_lock_name(string $namespace, array $parts = []): string
+{
+    $safeNamespace = preg_replace('/[^a-z0-9:_-]+/i', '-', strtolower(trim($namespace))) ?: 'default';
+
+    return 'cache-build:' . $safeNamespace . ':' . sha1(json_encode($parts, JSON_THROW_ON_ERROR));
+}
+
+function supplycore_cache_aside(string $namespace, array $parts, int $ttlSeconds, callable $resolver, array $options = []): mixed
+{
+    $dependencies = array_values(array_unique(array_filter(array_map(
+        static fn (mixed $value): string => trim((string) $value),
+        (array) ($options['dependencies'] ?? [])
+    ), static fn (string $value): bool => $value !== '')));
+
+    $cached = supplycore_cache_read($namespace, $parts, $dependencies);
+    if ($cached !== null) {
+        return $cached;
+    }
+
+    $lockSeconds = max(1, (int) ($options['lock_ttl'] ?? 15));
+    $lockName = supplycore_cache_lock_name($namespace, $parts);
+    $lockToken = supplycore_redis_lock_acquire($lockName, $lockSeconds);
+
+    if ($lockToken === null && supplycore_redis_locking_enabled()) {
+        $deadline = microtime(true) + 2.5;
+        do {
+            usleep(100000);
+            $cached = supplycore_cache_read($namespace, $parts, $dependencies);
+            if ($cached !== null) {
+                return $cached;
+            }
+        } while (microtime(true) < $deadline);
+    }
+
+    try {
+        $value = $resolver();
+    } finally {
+        if ($lockToken !== null) {
+            supplycore_redis_lock_release($lockName, $lockToken);
+        }
+    }
+
+    return supplycore_cache_write($namespace, $parts, $value, $ttlSeconds, $dependencies);
+}
+
+function supplycore_cache_invalidate_for_dataset(string $datasetKey): void
+{
+    $normalized = trim($datasetKey);
+    if ($normalized === '') {
+        return;
+    }
+
+    if (str_starts_with($normalized, 'alliance.structure.') || str_starts_with($normalized, 'market.hub.')) {
+        supplycore_cache_bust(['dashboard', 'market_compare', 'doctrine']);
+
+        return;
+    }
+
+    if (str_starts_with($normalized, 'killmail.r2z2')) {
+        supplycore_cache_bust(['dashboard', 'killmail_overview', 'killmail_detail']);
+
+        return;
+    }
+
+    if (str_starts_with($normalized, 'static_data.')) {
+        supplycore_cache_bust(['market_compare', 'doctrine', 'killmail_detail', 'metadata_entities', 'metadata_structures']);
+    }
+}
+
 function station_options(): array
 {
     try {
@@ -334,11 +513,14 @@ function sanitize_market_station_selection(?string $value): string
         return '';
     }
 
-    db_alliance_structure_metadata_upsert(
+    $updated = db_alliance_structure_metadata_upsert(
         $stationId,
         $resolved['name'] ?? null,
         gmdate('Y-m-d H:i:s')
     );
+    if ($updated) {
+        supplycore_cache_bust('metadata_structures');
+    }
 
     return (string) $stationId;
 }
@@ -387,11 +569,14 @@ function sanitize_alliance_station_selection(?string $value): string
         return '';
     }
 
-    db_alliance_structure_metadata_upsert(
+    $updated = db_alliance_structure_metadata_upsert(
         $structureId,
         $metadata['name'] ?? null,
         gmdate('Y-m-d H:i:s')
     );
+    if ($updated) {
+        supplycore_cache_bust('metadata_structures');
+    }
 
     return (string) $structureId;
 }
@@ -420,79 +605,84 @@ function selected_station_name(string $settingKey): ?string
         return null;
     }
 
-    if ($stationType === 'alliance') {
-        try {
-            $npcStation = db_ref_npc_station_by_id($stationId);
-        } catch (Throwable) {
-            $npcStation = null;
-        }
+    return supplycore_cache_aside('metadata_structures', [$settingKey, $stationType, $stationId], supplycore_cache_ttl('structure_metadata'), static function () use ($stationId, $stationType): ?string {
+        if ($stationType === 'alliance') {
+            try {
+                $npcStation = db_ref_npc_station_by_id($stationId);
+            } catch (Throwable) {
+                $npcStation = null;
+            }
 
-        if ($npcStation !== null) {
-            $npcStationName = trim((string) ($npcStation['station_name'] ?? ''));
-            if ($npcStationName !== '' && !is_placeholder_station_name($npcStationName, $stationId)) {
-                return $npcStationName;
+            if ($npcStation !== null) {
+                $npcStationName = trim((string) ($npcStation['station_name'] ?? ''));
+                if ($npcStationName !== '' && !is_placeholder_station_name($npcStationName, $stationId)) {
+                    return $npcStationName;
+                }
+
+                try {
+                    $metadata = esi_npc_station_metadata($stationId);
+                } catch (Throwable) {
+                    $metadata = null;
+                }
+
+                if ($metadata !== null && trim((string) ($metadata['name'] ?? '')) !== '') {
+                    return trim((string) $metadata['name']);
+                }
+
+                return $npcStationName !== '' ? $npcStationName : ('Station #' . $stationId);
             }
 
             try {
-                $metadata = esi_npc_station_metadata($stationId);
+                $metadata = db_alliance_structure_metadata_get($stationId);
             } catch (Throwable) {
                 $metadata = null;
             }
 
-            if ($metadata !== null && trim((string) ($metadata['name'] ?? '')) !== '') {
-                return trim((string) $metadata['name']);
-            }
+            $name = trim((string) ($metadata['structure_name'] ?? ''));
 
-            return $npcStationName !== '' ? $npcStationName : ('Station #' . $stationId);
+            return $name !== '' ? $name : 'Structure #' . $stationId;
         }
 
         try {
-            $metadata = db_alliance_structure_metadata_get($stationId);
+            $station = db_ref_npc_station_by_id($stationId);
+        } catch (Throwable) {
+            $station = null;
+        }
+
+        if ($station !== null) {
+            $stationName = trim((string) ($station['station_name'] ?? ''));
+            if ($stationName !== '' && !is_placeholder_station_name($stationName, $stationId)) {
+                return $stationName;
+            }
+        }
+
+        try {
+            $metadata = esi_npc_station_metadata($stationId);
         } catch (Throwable) {
             $metadata = null;
         }
 
-        $name = trim((string) ($metadata['structure_name'] ?? ''));
-
-        return $name !== '' ? $name : 'Structure #' . $stationId;
-    }
-
-    try {
-        $station = db_ref_npc_station_by_id($stationId);
-    } catch (Throwable) {
-        $station = null;
-    }
-
-    if ($station !== null) {
-        $stationName = trim((string) ($station['station_name'] ?? ''));
-        if ($stationName !== '' && !is_placeholder_station_name($stationName, $stationId)) {
-            return $stationName;
-        }
-    }
-
-    try {
-        $metadata = esi_npc_station_metadata($stationId);
-    } catch (Throwable) {
-        $metadata = null;
-    }
-
-    if ($metadata !== null && trim((string) ($metadata['name'] ?? '')) !== '') {
-        return trim((string) $metadata['name']);
-    }
-
-    if (preg_match('/^[1-9][0-9]{9,19}$/', (string) $stationId) === 1) {
-        try {
-            $structureMetadata = db_alliance_structure_metadata_get($stationId);
-        } catch (Throwable) {
-            $structureMetadata = null;
+        if ($metadata !== null && trim((string) ($metadata['name'] ?? '')) !== '') {
+            return trim((string) $metadata['name']);
         }
 
-        $structureName = trim((string) ($structureMetadata['structure_name'] ?? ''));
+        if (preg_match('/^[1-9][0-9]{9,19}$/', (string) $stationId) === 1) {
+            try {
+                $structureMetadata = db_alliance_structure_metadata_get($stationId);
+            } catch (Throwable) {
+                $structureMetadata = null;
+            }
 
-        return $structureName !== '' ? $structureName : ('Structure #' . $stationId);
-    }
+            $structureName = trim((string) ($structureMetadata['structure_name'] ?? ''));
 
-    return null;
+            return $structureName !== '' ? $structureName : ('Structure #' . $stationId);
+        }
+
+        return null;
+    }, [
+        'dependencies' => ['metadata_structures'],
+        'lock_ttl' => 10,
+    ]);
 }
 
 function is_placeholder_station_name(string $stationName, int $stationId): bool
@@ -658,6 +848,13 @@ function data_sync_pipeline_setting_defaults(): array
         'market_hub_local_history_pipeline_enabled' => '1',
         'raw_order_snapshot_retention_days' => '30',
         'static_data_source_url' => 'https://developers.eveonline.com/static-data/eve-online-static-data-latest-jsonl.zip',
+        'redis_cache_enabled' => config('redis.enabled', false) ? '1' : '0',
+        'redis_locking_enabled' => config('redis.lock_enabled', true) ? '1' : '0',
+        'redis_host' => (string) config('redis.host', '127.0.0.1'),
+        'redis_port' => (string) config('redis.port', 6379),
+        'redis_database' => (string) config('redis.database', 0),
+        'redis_password' => (string) config('redis.password', ''),
+        'redis_prefix' => (string) config('redis.prefix', 'supplycore'),
     ];
 }
 
@@ -671,12 +868,18 @@ function data_sync_pipeline_setting_value(array $settings, string $key): string
         'alliance_current_pipeline_enabled',
         'alliance_history_pipeline_enabled',
         'hub_history_pipeline_enabled',
-        'market_hub_local_history_pipeline_enabled' => sanitize_pipeline_enabled($value),
+        'market_hub_local_history_pipeline_enabled',
+        'redis_cache_enabled',
+        'redis_locking_enabled' => sanitize_pipeline_enabled($value),
         'incremental_strategy' => sanitize_incremental_strategy((string) $value),
         'incremental_delete_policy' => sanitize_incremental_delete_policy((string) $value),
         'incremental_chunk_size' => sanitize_incremental_chunk_size($value),
         'raw_order_snapshot_retention_days' => sanitize_retention_days($value),
         'static_data_source_url' => sanitize_static_data_source_url($value),
+        'redis_host' => sanitize_redis_host((string) $value),
+        'redis_port' => sanitize_redis_port($value),
+        'redis_database' => sanitize_redis_database($value),
+        'redis_prefix' => sanitize_redis_prefix((string) $value),
         default => (string) $value,
     };
 }
@@ -914,6 +1117,31 @@ function save_data_sync_schedule_settings(array $request): bool
     return true;
 }
 
+function sanitize_redis_host(?string $value): string
+{
+    $host = trim((string) $value);
+
+    return $host !== '' ? mb_substr($host, 0, 190) : (string) config('redis.host', '127.0.0.1');
+}
+
+function sanitize_redis_prefix(?string $value): string
+{
+    $prefix = preg_replace('/[^a-z0-9:_-]+/i', '-', trim((string) $value)) ?? '';
+    $prefix = trim($prefix, '-:');
+
+    return $prefix !== '' ? mb_substr($prefix, 0, 80) : (string) config('redis.prefix', 'supplycore');
+}
+
+function sanitize_redis_port(mixed $value): string
+{
+    return (string) max(1, min(65535, (int) $value));
+}
+
+function sanitize_redis_database(mixed $value): string
+{
+    return (string) max(0, min(15, (int) $value));
+}
+
 function data_sync_settings_from_request(array $request): array
 {
     $allianceCurrentEnabled = sanitize_pipeline_enabled($request['alliance_current_pipeline_enabled'] ?? null);
@@ -938,6 +1166,13 @@ function data_sync_settings_from_request(array $request): array
         'hub_history_backfill_start_date' => data_sync_backfill_start_date('hub_history_backfill_start_date', $hubHistoryEnabled === '1', $baselineDate),
         'raw_order_snapshot_retention_days' => sanitize_retention_days($request['raw_order_snapshot_retention_days'] ?? null),
         'static_data_source_url' => sanitize_static_data_source_url($request['static_data_source_url'] ?? null),
+        'redis_cache_enabled' => isset($request['redis_cache_enabled']) ? '1' : '0',
+        'redis_locking_enabled' => isset($request['redis_locking_enabled']) ? '1' : '0',
+        'redis_host' => sanitize_redis_host($request['redis_host'] ?? null),
+        'redis_port' => sanitize_redis_port($request['redis_port'] ?? config('redis.port', 6379)),
+        'redis_database' => sanitize_redis_database($request['redis_database'] ?? config('redis.database', 0)),
+        'redis_password' => trim((string) ($request['redis_password'] ?? '')),
+        'redis_prefix' => sanitize_redis_prefix($request['redis_prefix'] ?? null),
     ];
 }
 
@@ -985,11 +1220,22 @@ function market_compare_aggregates(array $typeIds = []): array
         return [];
     }
 
-    try {
-        return db_market_orders_current_alliance_vs_reference_aggregates($allianceStructureId, $referenceSourceId, $typeIds);
-    } catch (Throwable) {
-        return [];
-    }
+    return supplycore_cache_aside(
+        'market_compare',
+        ['aggregates', $allianceStructureId, $marketHubRef, $referenceSourceId, array_values($typeIds)],
+        supplycore_cache_ttl('market_summary'),
+        static function () use ($allianceStructureId, $referenceSourceId, $typeIds): array {
+            try {
+                return db_market_orders_current_alliance_vs_reference_aggregates($allianceStructureId, $referenceSourceId, $typeIds);
+            } catch (Throwable) {
+                return [];
+            }
+        },
+        [
+            'dependencies' => ['market_compare'],
+            'lock_ttl' => 20,
+        ]
+    );
 }
 
 function market_compare_evaluate_row(array $row, array $thresholds): array
@@ -1380,36 +1626,38 @@ function dashboard_trend_history_dataset(string $marketHubRef, int $referenceSou
 
 function dashboard_intelligence_data(): array
 {
-    $comparisonContext = market_comparison_context();
-    $outcomes = market_comparison_outcomes();
-    $rows = $outcomes['rows'];
-
-    $rowCount = count($rows);
-    $inBothCount = count($outcomes['in_both_markets']);
-    $coveragePercent = $rowCount > 0 ? ($inBothCount / $rowCount) * 100.0 : 0.0;
-
-    $opportunities = $rows;
-    usort($opportunities, static fn (array $a, array $b): int => (($b['opportunity_score'] ?? 0) <=> ($a['opportunity_score'] ?? 0)) ?: (($b['volume_score'] ?? 0) <=> ($a['volume_score'] ?? 0)));
-    $risks = $rows;
-    usort($risks, static fn (array $a, array $b): int => (($b['risk_score'] ?? 0) <=> ($a['risk_score'] ?? 0)) ?: (($b['stock_score'] ?? 0) <=> ($a['stock_score'] ?? 0)));
-
     $marketHubRef = market_hub_setting_reference();
     $allianceStructureId = selected_alliance_structure_id();
-    $allianceSync = $allianceStructureId !== null
-        ? sync_status_for_dataset_keys([sync_dataset_key_alliance_structure_orders_current($allianceStructureId)])
-        : ['states' => [], 'runs' => [], 'last_success_at' => null, 'last_error_message' => null, 'recent_rows_written' => 0];
-    $hubCurrentSync = $marketHubRef !== ''
-        ? sync_status_for_dataset_keys([sync_dataset_key_market_hub_current_orders($marketHubRef)])
-        : ['states' => [], 'runs' => [], 'last_success_at' => null, 'last_error_message' => null, 'recent_rows_written' => 0];
-    $historySync = $marketHubRef !== ''
-        ? sync_status_for_dataset_keys([sync_dataset_key_market_hub_local_history_daily($marketHubRef)])
-        : ['states' => [], 'runs' => [], 'last_success_at' => null, 'last_error_message' => null, 'recent_rows_written' => 0];
 
-    $referenceSourceId = sync_source_id_from_hub_ref($marketHubRef);
-    $trendHistory = dashboard_trend_history_dataset($marketHubRef, $referenceSourceId);
-    $historyRows = $trendHistory['rows'] ?? [];
+    return supplycore_cache_aside('dashboard', [$marketHubRef, $allianceStructureId], supplycore_cache_ttl('dashboard'), static function () use ($marketHubRef, $allianceStructureId): array {
+        $comparisonContext = market_comparison_context();
+        $outcomes = market_comparison_outcomes();
+        $rows = $outcomes['rows'];
 
-    return [
+        $rowCount = count($rows);
+        $inBothCount = count($outcomes['in_both_markets']);
+        $coveragePercent = $rowCount > 0 ? ($inBothCount / $rowCount) * 100.0 : 0.0;
+
+        $opportunities = $rows;
+        usort($opportunities, static fn (array $a, array $b): int => (($b['opportunity_score'] ?? 0) <=> ($a['opportunity_score'] ?? 0)) ?: (($b['volume_score'] ?? 0) <=> ($a['volume_score'] ?? 0)));
+        $risks = $rows;
+        usort($risks, static fn (array $a, array $b): int => (($b['risk_score'] ?? 0) <=> ($a['risk_score'] ?? 0)) ?: (($b['stock_score'] ?? 0) <=> ($a['stock_score'] ?? 0)));
+
+        $allianceSync = $allianceStructureId !== null
+            ? sync_status_for_dataset_keys([sync_dataset_key_alliance_structure_orders_current($allianceStructureId)])
+            : ['states' => [], 'runs' => [], 'last_success_at' => null, 'last_error_message' => null, 'recent_rows_written' => 0];
+        $hubCurrentSync = $marketHubRef !== ''
+            ? sync_status_for_dataset_keys([sync_dataset_key_market_hub_current_orders($marketHubRef)])
+            : ['states' => [], 'runs' => [], 'last_success_at' => null, 'last_error_message' => null, 'recent_rows_written' => 0];
+        $historySync = $marketHubRef !== ''
+            ? sync_status_for_dataset_keys([sync_dataset_key_market_hub_local_history_daily($marketHubRef)])
+            : ['states' => [], 'runs' => [], 'last_success_at' => null, 'last_error_message' => null, 'recent_rows_written' => 0];
+
+        $referenceSourceId = sync_source_id_from_hub_ref($marketHubRef);
+        $trendHistory = dashboard_trend_history_dataset($marketHubRef, $referenceSourceId);
+        $historyRows = $trendHistory['rows'] ?? [];
+
+        return [
         'kpis' => [
             ['label' => 'Top Opportunities', 'value' => (string) count(array_filter($rows, static fn (array $row): bool => (int) ($row['opportunity_score'] ?? 0) >= 60)), 'context' => 'High-confidence import/reprice candidates'],
             ['label' => 'Top Risks', 'value' => (string) count(array_filter($rows, static fn (array $row): bool => (int) ($row['risk_score'] ?? 0) >= 60)), 'context' => 'High-severity pricing or stock risk'],
@@ -1445,18 +1693,16 @@ function dashboard_intelligence_data(): array
         ],
         'trend_snippets' => dashboard_trend_snippets($historyRows),
         'trend_snippets_message' => (string) ($trendHistory['message'] ?? ''),
-    ];
+        ];
+    }, [
+        'dependencies' => ['dashboard', 'market_compare'],
+        'lock_ttl' => 20,
+    ]);
 }
 
 function current_alliance_market_status_data(): array
 {
-    $outcomes = market_comparison_outcomes();
-    $thresholds = $outcomes['thresholds'] ?? [];
-    $lowStockThreshold = max(1, (int) ($thresholds['min_alliance_sell_volume'] ?? 25));
-    $staleAfterSeconds = 6 * 3600;
-
     $search = trim((string) ($_GET['q'] ?? ''));
-    $searchNeedle = mb_strtolower($search);
     $sort = (string) ($_GET['sort'] ?? 'urgency');
     $allowedSort = ['urgency', 'stock', 'price_delta', 'score'];
     if (!in_array($sort, $allowedSort, true)) {
@@ -1470,40 +1716,48 @@ function current_alliance_market_status_data(): array
     }
 
     $page = max(1, (int) ($_GET['page'] ?? 1));
+    $cacheParts = ['current-alliance', $sort, $pageSize, $page, $search];
+    $useCache = $search === '' && $page === 1 && $pageSize === 25 && $sort === 'urgency';
+    $resolver = static function () use ($search, $sort, $pageSize, $page): array {
+        $outcomes = market_comparison_outcomes();
+        $thresholds = $outcomes['thresholds'] ?? [];
+        $lowStockThreshold = max(1, (int) ($thresholds['min_alliance_sell_volume'] ?? 25));
+        $staleAfterSeconds = 6 * 3600;
+        $searchNeedle = mb_strtolower($search);
 
-    $rows = array_values(array_filter($outcomes['rows'], static function (array $row) use ($searchNeedle): bool {
-        if (($row['alliance_best_sell_price'] ?? null) === null) {
-            return false;
-        }
+        $rows = array_values(array_filter($outcomes['rows'], static function (array $row) use ($searchNeedle): bool {
+            if (($row['alliance_best_sell_price'] ?? null) === null) {
+                return false;
+            }
 
-        if ($searchNeedle === '') {
-            return true;
-        }
+            if ($searchNeedle === '') {
+                return true;
+            }
 
-        return str_contains(mb_strtolower((string) ($row['type_name'] ?? '')), $searchNeedle);
-    }));
+            return str_contains(mb_strtolower((string) ($row['type_name'] ?? '')), $searchNeedle);
+        }));
 
-    usort($rows, static function (array $a, array $b) use ($sort): int {
-        return match ($sort) {
-            'stock' => (($a['alliance_total_sell_volume'] ?? 0) <=> ($b['alliance_total_sell_volume'] ?? 0)) ?: (($b['risk_score'] ?? 0) <=> ($a['risk_score'] ?? 0)),
-            'price_delta' => (abs((float) ($b['deviation_percent'] ?? 0.0)) <=> abs((float) ($a['deviation_percent'] ?? 0.0))) ?: (($b['opportunity_score'] ?? 0) <=> ($a['opportunity_score'] ?? 0)),
-            'score', 'urgency' => (($b['risk_score'] ?? 0) <=> ($a['risk_score'] ?? 0)) ?: (($b['stock_score'] ?? 0) <=> ($a['stock_score'] ?? 0)),
-            default => strcmp((string) ($a['type_name'] ?? ''), (string) ($b['type_name'] ?? '')),
-        };
-    });
+        usort($rows, static function (array $a, array $b) use ($sort): int {
+            return match ($sort) {
+                'stock' => (($a['alliance_total_sell_volume'] ?? 0) <=> ($b['alliance_total_sell_volume'] ?? 0)) ?: (($b['risk_score'] ?? 0) <=> ($a['risk_score'] ?? 0)),
+                'price_delta' => (abs((float) ($b['deviation_percent'] ?? 0.0)) <=> abs((float) ($a['deviation_percent'] ?? 0.0))) ?: (($b['opportunity_score'] ?? 0) <=> ($a['opportunity_score'] ?? 0)),
+                'score', 'urgency' => (($b['risk_score'] ?? 0) <=> ($a['risk_score'] ?? 0)) ?: (($b['stock_score'] ?? 0) <=> ($a['stock_score'] ?? 0)),
+                default => strcmp((string) ($a['type_name'] ?? ''), (string) ($b['type_name'] ?? '')),
+            };
+        });
 
-    $totalItems = count($rows);
-    $totalPages = max(1, (int) ceil($totalItems / $pageSize));
-    $page = min($page, $totalPages);
-    $offset = ($page - 1) * $pageSize;
-    $pagedRows = array_slice($rows, $offset, $pageSize);
+        $totalItems = count($rows);
+        $totalPages = max(1, (int) ceil($totalItems / $pageSize));
+        $resolvedPage = min($page, $totalPages);
+        $offset = ($resolvedPage - 1) * $pageSize;
+        $pagedRows = array_slice($rows, $offset, $pageSize);
 
-    $criticalItems = array_slice(array_values(array_filter($rows, static fn (array $row): bool => (int) ($row['risk_score'] ?? 0) >= 70 || (int) ($row['stock_score'] ?? 0) >= 80)), 0, 5);
-    $allListings = array_values(array_filter($outcomes['rows'], static fn (array $row): bool => ($row['alliance_best_sell_price'] ?? null) !== null));
-    $listingsWithStock = count(array_filter($allListings, static fn (array $row): bool => (int) ($row['alliance_total_sell_volume'] ?? 0) > 0));
-    $lowStockCount = count(array_filter($allListings, static fn (array $row): bool => (int) ($row['alliance_total_sell_volume'] ?? 0) > 0 && (int) ($row['alliance_total_sell_volume'] ?? 0) < $lowStockThreshold));
+        $criticalItems = array_slice(array_values(array_filter($rows, static fn (array $row): bool => (int) ($row['risk_score'] ?? 0) >= 70 || (int) ($row['stock_score'] ?? 0) >= 80)), 0, 5);
+        $allListings = array_values(array_filter($outcomes['rows'], static fn (array $row): bool => ($row['alliance_best_sell_price'] ?? null) !== null));
+        $listingsWithStock = count(array_filter($allListings, static fn (array $row): bool => (int) ($row['alliance_total_sell_volume'] ?? 0) > 0));
+        $lowStockCount = count(array_filter($allListings, static fn (array $row): bool => (int) ($row['alliance_total_sell_volume'] ?? 0) > 0 && (int) ($row['alliance_total_sell_volume'] ?? 0) < $lowStockThreshold));
 
-    return [
+        return [
         'summary' => [
             ['label' => 'Tracked Modules', 'value' => (string) count($outcomes['rows']), 'context' => 'Items monitored in current sync'],
             ['label' => 'Listings with Stock', 'value' => (string) $listingsWithStock, 'context' => 'Items with active alliance destination volume'],
@@ -1550,13 +1804,23 @@ function current_alliance_market_status_data(): array
             ],
             'page_size' => $pageSize,
             'page_size_options' => $allowedPageSizes,
-            'page' => $page,
+            'page' => $resolvedPage,
             'total_pages' => $totalPages,
             'total_items' => $totalItems,
             'showing_from' => $totalItems > 0 ? $offset + 1 : 0,
             'showing_to' => min($offset + $pageSize, $totalItems),
         ],
-    ];
+        ];
+    };
+
+    if ($useCache) {
+        return supplycore_cache_aside('market_compare', $cacheParts, supplycore_cache_ttl('market_listing'), $resolver, [
+            'dependencies' => ['market_compare'],
+            'lock_ttl' => 20,
+        ]);
+    }
+
+    return $resolver();
 }
 
 function killmail_format_datetime(?string $value): string
@@ -1899,14 +2163,84 @@ function killmail_entity_cache_prefill_from_references(array $requests): void
     }
 }
 
+function killmail_entity_redis_cache_key(string $type, int $entityId): string
+{
+    return sprintf(
+        'metadata:entity:v%d:%s:%d',
+        supplycore_cache_version('metadata_entities'),
+        preg_replace('/[^a-z0-9:_-]+/i', '-', strtolower($type)) ?: 'entity',
+        max(0, $entityId)
+    );
+}
+
 function killmail_entity_cache_rows_by_type(array $requests): array
 {
     $rowsByType = [];
+    $databaseMisses = [];
 
     foreach ($requests as $type => $ids) {
         $rowsByType[$type] = [];
+        $databaseMisses[$type] = [];
+        $cacheKeys = [];
+        $idMap = [];
+
+        foreach ((array) $ids as $id) {
+            $entityId = (int) $id;
+            if ($entityId <= 0) {
+                continue;
+            }
+
+            $cacheKey = killmail_entity_redis_cache_key($type, $entityId);
+            $cacheKeys[] = $cacheKey;
+            $idMap[] = $entityId;
+        }
+
+        $cachedPayloads = supplycore_redis_enabled() ? supplycore_redis_mget($cacheKeys) : [];
+        foreach ($idMap as $index => $entityId) {
+            $payload = $cachedPayloads[$index] ?? null;
+            if (!is_string($payload) || $payload === '') {
+                $databaseMisses[$type][] = $entityId;
+
+                continue;
+            }
+
+            try {
+                $row = json_decode($payload, true, 512, JSON_THROW_ON_ERROR);
+            } catch (Throwable) {
+                $databaseMisses[$type][] = $entityId;
+
+                continue;
+            }
+
+            if (is_array($row)) {
+                $rowsByType[$type][$entityId] = $row;
+            }
+        }
+    }
+
+    foreach ($databaseMisses as $type => $ids) {
         foreach (db_entity_metadata_cache_get_many($type, (array) $ids) as $row) {
-            $rowsByType[$type][(int) ($row['entity_id'] ?? 0)] = $row;
+            $entityId = (int) ($row['entity_id'] ?? 0);
+            if ($entityId <= 0) {
+                continue;
+            }
+
+            $rowsByType[$type][$entityId] = $row;
+
+            $ttl = supplycore_cache_ttl(in_array($type, ['type', 'system', 'region'], true) ? 'metadata_static' : 'metadata_dynamic');
+            $expiresAt = trim((string) ($row['expires_at'] ?? ''));
+            if ($expiresAt !== '') {
+                $expiresUnix = strtotime($expiresAt);
+                if ($expiresUnix !== false) {
+                    $ttl = max(60, $expiresUnix - time());
+                }
+            }
+
+            supplycore_redis_set(
+                killmail_entity_redis_cache_key($type, $entityId),
+                json_encode($row, JSON_THROW_ON_ERROR),
+                $ttl
+            );
         }
     }
 
@@ -2380,98 +2714,99 @@ function killmail_detail_data(): array
         ];
     }
 
-    try {
-        $event = db_killmail_detail($sequenceId);
-        if ($event === null) {
+    return supplycore_cache_aside('killmail_detail', [$sequenceId], supplycore_cache_ttl('killmail_detail'), static function () use ($sequenceId): array {
+        try {
+            $event = db_killmail_detail($sequenceId);
+            if ($event === null) {
+                return [
+                    'error' => 'The requested killmail is not stored locally.',
+                    'detail' => null,
+                ];
+            }
+
+            $attackers = db_killmail_attackers_by_sequence($sequenceId);
+            $items = db_killmail_items_by_sequence($sequenceId);
+        } catch (Throwable $exception) {
             return [
-                'error' => 'The requested killmail is not stored locally.',
+                'error' => $exception->getMessage(),
                 'detail' => null,
             ];
         }
 
-        $attackers = db_killmail_attackers_by_sequence($sequenceId);
-        $items = db_killmail_items_by_sequence($sequenceId);
-    } catch (Throwable $exception) {
+        $killmail = killmail_decode_json_array(isset($event['raw_killmail_json']) ? (string) $event['raw_killmail_json'] : null);
+        $victim = is_array($killmail['victim'] ?? null) ? $killmail['victim'] : [];
+        $zkb = killmail_decode_json_array(isset($event['zkb_json']) ? (string) $event['zkb_json'] : null);
+        $matchSources = killmail_match_sources($event);
+        $resolutionRequests = killmail_entity_resolution_requests($event, $attackers, $items);
+        $resolvedEntities = killmail_entity_resolve_batch($resolutionRequests, false);
+        $groupedItems = killmail_loss_item_groups($items, $resolvedEntities);
+        $victimCharacter = killmail_resolved_entity($resolvedEntities, 'character', isset($event['victim_character_id']) ? (int) $event['victim_character_id'] : null);
+        $victimCorporation = killmail_resolved_entity(
+            $resolvedEntities,
+            'corporation',
+            isset($event['victim_corporation_id']) ? (int) $event['victim_corporation_id'] : null,
+            isset($event['victim_corporation_label']) ? (string) $event['victim_corporation_label'] : null
+        );
+        $victimAlliance = killmail_resolved_entity(
+            $resolvedEntities,
+            'alliance',
+            isset($event['victim_alliance_id']) ? (int) $event['victim_alliance_id'] : null,
+            isset($event['victim_alliance_label']) ? (string) $event['victim_alliance_label'] : null
+        );
+        $victimShip = killmail_resolved_entity($resolvedEntities, 'type', isset($event['victim_ship_type_id']) ? (int) $event['victim_ship_type_id'] : null, isset($event['ship_type_name']) ? (string) $event['ship_type_name'] : null);
+        $system = killmail_resolved_entity($resolvedEntities, 'system', isset($event['solar_system_id']) ? (int) $event['solar_system_id'] : null, isset($event['system_name']) ? (string) $event['system_name'] : null);
+        $region = killmail_resolved_entity($resolvedEntities, 'region', isset($event['region_id']) ? (int) $event['region_id'] : null, isset($event['region_name']) ? (string) $event['region_name'] : null);
+
+        $formattedAttackers = [];
+        foreach ($attackers as $attacker) {
+            if (!is_array($attacker)) {
+                continue;
+            }
+
+            $attackerCharacter = killmail_resolved_entity($resolvedEntities, 'character', isset($attacker['character_id']) ? (int) $attacker['character_id'] : null);
+            $attackerCorporation = killmail_resolved_entity($resolvedEntities, 'corporation', isset($attacker['corporation_id']) ? (int) $attacker['corporation_id'] : null);
+            $attackerAlliance = killmail_resolved_entity($resolvedEntities, 'alliance', isset($attacker['alliance_id']) ? (int) $attacker['alliance_id'] : null);
+            $attackerShip = killmail_resolved_entity($resolvedEntities, 'type', isset($attacker['ship_type_id']) ? (int) $attacker['ship_type_id'] : null, isset($attacker['ship_type_name']) ? (string) $attacker['ship_type_name'] : null);
+            $attackerWeapon = killmail_resolved_entity($resolvedEntities, 'type', isset($attacker['weapon_type_id']) ? (int) $attacker['weapon_type_id'] : null, isset($attacker['weapon_type_name']) ? (string) $attacker['weapon_type_name'] : null);
+
+            $formattedAttackers[] = [
+                'attacker_index' => (int) ($attacker['attacker_index'] ?? 0),
+                'character_name' => $attackerCharacter['name'],
+                'character_image_url' => $attackerCharacter['id'] !== null ? killmail_entity_image_url('character', (int) $attackerCharacter['id'], 'portrait', 128) : null,
+                'corporation_display' => $attackerCorporation['name'],
+                'corporation_logo_url' => $attackerCorporation['id'] !== null ? killmail_entity_image_url('corporation', (int) $attackerCorporation['id'], 'logo', 64) : null,
+                'alliance_display' => $attackerAlliance['name'],
+                'alliance_logo_url' => $attackerAlliance['id'] !== null ? killmail_entity_image_url('alliance', (int) $attackerAlliance['id'], 'logo', 64) : null,
+                'ship_display' => $attackerShip['name'],
+                'ship_icon_url' => $attackerShip['id'] !== null ? killmail_entity_image_url('type', (int) $attackerShip['id'], 'icon', 64) : null,
+                'weapon_display' => $attackerWeapon['name'],
+                'final_blow' => (int) ($attacker['final_blow'] ?? 0) === 1,
+                'security_status' => isset($attacker['security_status']) && $attacker['security_status'] !== null ? number_format((float) $attacker['security_status'], 2) : '—',
+            ];
+        }
+
+        $topAttackers = array_slice($formattedAttackers, 0, 5);
+        $finalBlow = null;
+        foreach ($formattedAttackers as $attacker) {
+            if ($attacker['final_blow']) {
+                $finalBlow = $attacker;
+                break;
+            }
+        }
+
+        $estimatedValue = killmail_value_amount($zkb);
+        $itemTotals = [
+            'dropped' => (int) ($groupedItems['dropped']['total_quantity'] ?? 0),
+            'destroyed' => (int) ($groupedItems['destroyed']['total_quantity'] ?? 0),
+            'fitted' => (int) ($groupedItems['fitted']['total_quantity'] ?? 0),
+        ];
+        $storedItemCount = count($items);
+        $signalStrength = killmail_signal_strength_meta($storedItemCount, count($formattedAttackers), (int) ($event['matched_tracked'] ?? 0) === 1);
+        $supplyImpact = killmail_supply_impact_meta($estimatedValue, $itemTotals['dropped'], $itemTotals['destroyed'], $itemTotals['fitted']);
+
         return [
-            'error' => $exception->getMessage(),
-            'detail' => null,
-        ];
-    }
-
-    $killmail = killmail_decode_json_array(isset($event['raw_killmail_json']) ? (string) $event['raw_killmail_json'] : null);
-    $victim = is_array($killmail['victim'] ?? null) ? $killmail['victim'] : [];
-    $zkb = killmail_decode_json_array(isset($event['zkb_json']) ? (string) $event['zkb_json'] : null);
-    $matchSources = killmail_match_sources($event);
-    $resolutionRequests = killmail_entity_resolution_requests($event, $attackers, $items);
-    $resolvedEntities = killmail_entity_resolve_batch($resolutionRequests, false);
-    $groupedItems = killmail_loss_item_groups($items, $resolvedEntities);
-    $victimCharacter = killmail_resolved_entity($resolvedEntities, 'character', isset($event['victim_character_id']) ? (int) $event['victim_character_id'] : null);
-    $victimCorporation = killmail_resolved_entity(
-        $resolvedEntities,
-        'corporation',
-        isset($event['victim_corporation_id']) ? (int) $event['victim_corporation_id'] : null,
-        isset($event['victim_corporation_label']) ? (string) $event['victim_corporation_label'] : null
-    );
-    $victimAlliance = killmail_resolved_entity(
-        $resolvedEntities,
-        'alliance',
-        isset($event['victim_alliance_id']) ? (int) $event['victim_alliance_id'] : null,
-        isset($event['victim_alliance_label']) ? (string) $event['victim_alliance_label'] : null
-    );
-    $victimShip = killmail_resolved_entity($resolvedEntities, 'type', isset($event['victim_ship_type_id']) ? (int) $event['victim_ship_type_id'] : null, isset($event['ship_type_name']) ? (string) $event['ship_type_name'] : null);
-    $system = killmail_resolved_entity($resolvedEntities, 'system', isset($event['solar_system_id']) ? (int) $event['solar_system_id'] : null, isset($event['system_name']) ? (string) $event['system_name'] : null);
-    $region = killmail_resolved_entity($resolvedEntities, 'region', isset($event['region_id']) ? (int) $event['region_id'] : null, isset($event['region_name']) ? (string) $event['region_name'] : null);
-
-    $formattedAttackers = [];
-    foreach ($attackers as $attacker) {
-        if (!is_array($attacker)) {
-            continue;
-        }
-
-        $attackerCharacter = killmail_resolved_entity($resolvedEntities, 'character', isset($attacker['character_id']) ? (int) $attacker['character_id'] : null);
-        $attackerCorporation = killmail_resolved_entity($resolvedEntities, 'corporation', isset($attacker['corporation_id']) ? (int) $attacker['corporation_id'] : null);
-        $attackerAlliance = killmail_resolved_entity($resolvedEntities, 'alliance', isset($attacker['alliance_id']) ? (int) $attacker['alliance_id'] : null);
-        $attackerShip = killmail_resolved_entity($resolvedEntities, 'type', isset($attacker['ship_type_id']) ? (int) $attacker['ship_type_id'] : null, isset($attacker['ship_type_name']) ? (string) $attacker['ship_type_name'] : null);
-        $attackerWeapon = killmail_resolved_entity($resolvedEntities, 'type', isset($attacker['weapon_type_id']) ? (int) $attacker['weapon_type_id'] : null, isset($attacker['weapon_type_name']) ? (string) $attacker['weapon_type_name'] : null);
-
-        $formattedAttackers[] = [
-            'attacker_index' => (int) ($attacker['attacker_index'] ?? 0),
-            'character_name' => $attackerCharacter['name'],
-            'character_image_url' => $attackerCharacter['id'] !== null ? killmail_entity_image_url('character', (int) $attackerCharacter['id'], 'portrait', 128) : null,
-            'corporation_display' => $attackerCorporation['name'],
-            'corporation_logo_url' => $attackerCorporation['id'] !== null ? killmail_entity_image_url('corporation', (int) $attackerCorporation['id'], 'logo', 64) : null,
-            'alliance_display' => $attackerAlliance['name'],
-            'alliance_logo_url' => $attackerAlliance['id'] !== null ? killmail_entity_image_url('alliance', (int) $attackerAlliance['id'], 'logo', 64) : null,
-            'ship_display' => $attackerShip['name'],
-            'ship_icon_url' => $attackerShip['id'] !== null ? killmail_entity_image_url('type', (int) $attackerShip['id'], 'icon', 64) : null,
-            'weapon_display' => $attackerWeapon['name'],
-            'final_blow' => (int) ($attacker['final_blow'] ?? 0) === 1,
-            'security_status' => isset($attacker['security_status']) && $attacker['security_status'] !== null ? number_format((float) $attacker['security_status'], 2) : '—',
-        ];
-    }
-
-    $topAttackers = array_slice($formattedAttackers, 0, 5);
-    $finalBlow = null;
-    foreach ($formattedAttackers as $attacker) {
-        if ($attacker['final_blow']) {
-            $finalBlow = $attacker;
-            break;
-        }
-    }
-
-    $estimatedValue = killmail_value_amount($zkb);
-    $itemTotals = [
-        'dropped' => (int) ($groupedItems['dropped']['total_quantity'] ?? 0),
-        'destroyed' => (int) ($groupedItems['destroyed']['total_quantity'] ?? 0),
-        'fitted' => (int) ($groupedItems['fitted']['total_quantity'] ?? 0),
-    ];
-    $storedItemCount = count($items);
-    $signalStrength = killmail_signal_strength_meta($storedItemCount, count($formattedAttackers), (int) ($event['matched_tracked'] ?? 0) === 1);
-    $supplyImpact = killmail_supply_impact_meta($estimatedValue, $itemTotals['dropped'], $itemTotals['destroyed'], $itemTotals['fitted']);
-
-    return [
-        'error' => null,
-        'detail' => [
+            'error' => null,
+            'detail' => [
             'sequence_id' => (int) ($event['sequence_id'] ?? 0),
             'killmail_id' => (int) ($event['killmail_id'] ?? 0),
             'killmail_hash' => (string) ($event['killmail_hash'] ?? ''),
@@ -2526,8 +2861,12 @@ function killmail_detail_data(): array
                 'awox' => !empty($zkb['awox']),
                 'href' => isset($zkb['href']) ? (string) $zkb['href'] : '',
             ],
-        ],
-    ];
+            ],
+        ];
+    }, [
+        'dependencies' => ['killmail_detail'],
+        'lock_ttl' => 20,
+    ]);
 }
 
 function killmail_overview_data(): array
@@ -2547,211 +2886,223 @@ function killmail_overview_data(): array
         'page' => max(1, (int) ($_GET['page'] ?? 1)),
         'page_size' => $pageSize,
     ];
+    $useCache = $filters['search'] === '' && $filters['alliance_id'] === 0 && $filters['corporation_id'] === 0 && $filters['tracked_only'] === false && $filters['page'] === 1 && $filters['page_size'] === 25;
 
-    try {
-        $summaryRow = db_killmail_overview_summary($recentHours);
-        $status = db_killmail_ingestion_status();
-        $options = db_killmail_overview_filter_options();
-        $listing = db_killmail_overview_page($filters);
-    } catch (Throwable $exception) {
+    $resolver = static function () use ($recentHours, $filters, $allowedPageSizes, $pageSize): array {
+        try {
+            $summaryRow = db_killmail_overview_summary($recentHours);
+            $status = db_killmail_ingestion_status();
+            $options = db_killmail_overview_filter_options();
+            $listing = db_killmail_overview_page($filters);
+        } catch (Throwable $exception) {
+            return [
+                'error' => $exception->getMessage(),
+                'summary' => [],
+                'status' => [
+                    'ingestion_enabled' => killmail_ingestion_enabled(),
+                    'last_sync_outcome' => 'Unavailable',
+                ],
+                'rows' => [],
+                'filters' => $filters + [
+                    'page_size_options' => $allowedPageSizes,
+                    'alliance_options' => ['0' => 'All alliances'],
+                    'corporation_options' => ['0' => 'All corporations'],
+                ],
+                'pagination' => [
+                    'page' => 1,
+                    'page_size' => $pageSize,
+                    'page_size_options' => $allowedPageSizes,
+                    'total_pages' => 1,
+                    'total_items' => 0,
+                    'showing_from' => 0,
+                    'showing_to' => 0,
+                ],
+                'empty_message' => 'Killmail overview is unavailable because the database query failed.',
+            ];
+        }
+
+        $totalCount = (int) ($summaryRow['total_count'] ?? 0);
+        $recentCount = (int) ($summaryRow['recent_count'] ?? 0);
+        $trackedMatchCount = (int) ($summaryRow['tracked_match_count'] ?? 0);
+        $maxSequenceId = (int) ($summaryRow['max_sequence_id'] ?? ($status['max_sequence_id'] ?? 0));
+        $state = is_array($status['state'] ?? null) ? $status['state'] : [];
+        $latestRun = is_array($status['latest_run'] ?? null) ? $status['latest_run'] : null;
+        $lastSuccessAt = isset($state['last_success_at']) ? (string) $state['last_success_at'] : null;
+        $lastIngestedAt = isset($summaryRow['last_ingested_at']) ? (string) $summaryRow['last_ingested_at'] : null;
+        $latestUploadedAt = isset($summaryRow['latest_uploaded_at']) ? (string) $summaryRow['latest_uploaded_at'] : null;
+        $cursor = isset($state['last_cursor']) ? trim((string) $state['last_cursor']) : '';
+
+        $overviewResolutionRequests = [
+            'alliance' => [],
+            'corporation' => [],
+            'character' => [],
+            'type' => [],
+            'system' => [],
+            'region' => [],
+        ];
+
+        foreach ((array) ($options['alliances'] ?? []) as $row) {
+            $id = (int) ($row['entity_id'] ?? 0);
+            if ($id > 0) {
+                $overviewResolutionRequests['alliance'][$id] = $id;
+            }
+        }
+
+        foreach ((array) ($options['corporations'] ?? []) as $row) {
+            $id = (int) ($row['entity_id'] ?? 0);
+            if ($id > 0) {
+                $overviewResolutionRequests['corporation'][$id] = $id;
+            }
+        }
+
+        foreach ((array) ($listing['rows'] ?? []) as $row) {
+            $allianceId = (int) ($row['victim_alliance_id'] ?? 0);
+            $corporationId = (int) ($row['victim_corporation_id'] ?? 0);
+            $shipTypeId = (int) ($row['victim_ship_type_id'] ?? 0);
+            $systemId = (int) ($row['solar_system_id'] ?? 0);
+            $regionId = (int) ($row['region_id'] ?? 0);
+
+            if ($allianceId > 0) {
+                $overviewResolutionRequests['alliance'][$allianceId] = $allianceId;
+            }
+            if ($corporationId > 0) {
+                $overviewResolutionRequests['corporation'][$corporationId] = $corporationId;
+            }
+            if ($shipTypeId > 0) {
+                $overviewResolutionRequests['type'][$shipTypeId] = $shipTypeId;
+            }
+            if ($systemId > 0) {
+                $overviewResolutionRequests['system'][$systemId] = $systemId;
+            }
+            if ($regionId > 0) {
+                $overviewResolutionRequests['region'][$regionId] = $regionId;
+            }
+        }
+
+        foreach ($overviewResolutionRequests as $type => $ids) {
+            $overviewResolutionRequests[$type] = array_values($ids);
+        }
+
+        $resolvedOverviewEntities = killmail_entity_resolve_batch($overviewResolutionRequests, true);
+
+        $allianceOptions = ['0' => 'All alliances'];
+        foreach ((array) ($options['alliances'] ?? []) as $row) {
+            $id = (int) ($row['entity_id'] ?? 0);
+            if ($id <= 0) {
+                continue;
+            }
+
+            $allianceOptions[(string) $id] = killmail_entity_preferred_name(
+                $resolvedOverviewEntities,
+                'alliance',
+                $id,
+                isset($row['entity_label']) ? (string) $row['entity_label'] : '',
+                'Alliance'
+            );
+        }
+
+        $corporationOptions = ['0' => 'All corporations'];
+        foreach ((array) ($options['corporations'] ?? []) as $row) {
+            $id = (int) ($row['entity_id'] ?? 0);
+            if ($id <= 0) {
+                continue;
+            }
+
+            $corporationOptions[(string) $id] = killmail_entity_preferred_name(
+                $resolvedOverviewEntities,
+                'corporation',
+                $id,
+                isset($row['entity_label']) ? (string) $row['entity_label'] : '',
+                'Corporation'
+            );
+        }
+
+        $rows = array_map(static function (array $row) use ($resolvedOverviewEntities): array {
+            $matchSources = killmail_match_sources($row);
+            $zkb = killmail_decode_json_array(isset($row['zkb_json']) ? (string) $row['zkb_json'] : null);
+            $estimatedValue = killmail_value_amount($zkb);
+            $shipTypeId = isset($row['victim_ship_type_id']) ? (int) $row['victim_ship_type_id'] : null;
+            $signalStrength = killmail_signal_strength_meta(0, 0, (int) ($row['matched_tracked'] ?? 0) === 1);
+            $supplyImpact = killmail_supply_impact_meta($estimatedValue, 0, 0, 0);
+
+            return [
+                'sequence_id' => (int) ($row['sequence_id'] ?? 0),
+                'killmail_id' => (int) ($row['killmail_id'] ?? 0),
+                'killmail_time_display' => killmail_format_datetime(isset($row['killmail_time']) ? (string) $row['killmail_time'] : null),
+                'uploaded_at_display' => killmail_format_datetime(isset($row['uploaded_at']) ? (string) $row['uploaded_at'] : null),
+                'created_at_display' => killmail_format_datetime(isset($row['created_at']) ? (string) $row['created_at'] : null),
+                'victim_alliance' => killmail_entity_preferred_name($resolvedOverviewEntities, 'alliance', isset($row['victim_alliance_id']) ? (int) $row['victim_alliance_id'] : null, isset($row['victim_alliance_label']) ? (string) $row['victim_alliance_label'] : '', 'Alliance'),
+                'victim_corporation' => killmail_entity_preferred_name($resolvedOverviewEntities, 'corporation', isset($row['victim_corporation_id']) ? (int) $row['victim_corporation_id'] : null, isset($row['victim_corporation_label']) ? (string) $row['victim_corporation_label'] : '', 'Corporation'),
+                'ship_type' => killmail_entity_preferred_name($resolvedOverviewEntities, 'type', isset($row['victim_ship_type_id']) ? (int) $row['victim_ship_type_id'] : null, isset($row['ship_type_name']) ? (string) $row['ship_type_name'] : '', 'Ship'),
+                'system' => killmail_entity_preferred_name($resolvedOverviewEntities, 'system', isset($row['solar_system_id']) ? (int) $row['solar_system_id'] : null, isset($row['system_name']) ? (string) $row['system_name'] : '', 'System'),
+                'region' => killmail_entity_preferred_name($resolvedOverviewEntities, 'region', isset($row['region_id']) ? (int) $row['region_id'] : null, isset($row['region_name']) ? (string) $row['region_name'] : '', 'Region'),
+                'matched_tracked' => (int) ($row['matched_tracked'] ?? 0) === 1,
+                'match_context' => $matchSources === [] ? 'No tracked victim entity currently matches this stored loss.' : ('Matched on ' . implode(', ', $matchSources) . '.'),
+                'ship_icon_url' => $shipTypeId !== null ? killmail_entity_image_url('type', $shipTypeId, 'icon', 64) : null,
+                'estimated_value_display' => $estimatedValue !== null ? number_format($estimatedValue, 0) . ' ISK' : 'Value unavailable',
+                'signal_strength' => $signalStrength,
+                'supply_impact' => $supplyImpact,
+                'inspect_url' => '/killmail-intelligence/view.php?sequence_id=' . urlencode((string) ((int) ($row['sequence_id'] ?? 0))),
+            ];
+        }, (array) ($listing['rows'] ?? []));
+
+        $emptyMessage = $totalCount === 0
+            ? 'No killmails have been stored yet. Enable killmail ingestion, run the sync worker, and this view will populate as local killmails arrive.'
+            : 'No killmails matched the current filters. Try clearing search or filter controls.';
+
         return [
-            'error' => $exception->getMessage(),
-            'summary' => [],
+            'error' => null,
+            'summary' => [
+                ['label' => 'Total Ingested', 'value' => number_format($totalCount), 'context' => 'Killmails stored locally'],
+                ['label' => 'Recent Ingestion', 'value' => number_format($recentCount), 'context' => 'Stored in the last ' . $recentHours . ' hours'],
+                ['label' => 'Tracked Victim Losses', 'value' => number_format($trackedMatchCount), 'context' => 'Stored losses where the victim matches a tracked alliance or corporation'],
+                ['label' => 'Last Processed Sequence', 'value' => $maxSequenceId > 0 ? number_format($maxSequenceId) : '—', 'context' => $cursor !== '' ? ('Cursor ' . $cursor) : 'Cursor not recorded yet'],
+                ['label' => 'Sync Freshness', 'value' => killmail_relative_datetime($lastSuccessAt), 'context' => $lastSuccessAt !== null ? ('Last success ' . killmail_format_datetime($lastSuccessAt)) : 'No successful sync recorded'],
+            ],
             'status' => [
                 'ingestion_enabled' => killmail_ingestion_enabled(),
-                'last_sync_outcome' => 'Unavailable',
+                'current_cursor' => $cursor !== '' ? $cursor : 'Unavailable',
+                'last_sync_outcome' => killmail_last_sync_outcome_label($latestRun),
+                'last_success_at' => killmail_format_datetime($lastSuccessAt),
+                'last_sync_relative' => killmail_relative_datetime($lastSuccessAt),
+                'last_uploaded_at' => killmail_format_datetime($latestUploadedAt),
+                'last_ingested_at' => killmail_format_datetime($lastIngestedAt),
+                'tracked_alliance_count' => (int) ($status['tracked_alliance_count'] ?? 0),
+                'tracked_corporation_count' => (int) ($status['tracked_corporation_count'] ?? 0),
+                'sync_status' => (string) ($state['status'] ?? 'idle'),
+                'last_run_status' => (string) ($latestRun['run_status'] ?? 'not_run'),
+                'last_run_source_rows' => (int) ($latestRun['source_rows'] ?? 0),
+                'last_run_written_rows' => (int) ($latestRun['written_rows'] ?? 0),
+                'last_run_finished_at' => killmail_format_datetime(isset($latestRun['finished_at']) ? (string) $latestRun['finished_at'] : null),
+                'last_error' => trim((string) ($state['last_error_message'] ?? '')),
             ],
-            'rows' => [],
+            'rows' => $rows,
             'filters' => $filters + [
                 'page_size_options' => $allowedPageSizes,
-                'alliance_options' => ['0' => 'All alliances'],
-                'corporation_options' => ['0' => 'All corporations'],
+                'alliance_options' => $allianceOptions,
+                'corporation_options' => $corporationOptions,
             ],
             'pagination' => [
-                'page' => 1,
-                'page_size' => $pageSize,
+                'page' => (int) ($listing['page'] ?? 1),
+                'page_size' => (int) ($listing['page_size'] ?? $pageSize),
                 'page_size_options' => $allowedPageSizes,
-                'total_pages' => 1,
-                'total_items' => 0,
-                'showing_from' => 0,
-                'showing_to' => 0,
+                'total_pages' => (int) ($listing['total_pages'] ?? 1),
+                'total_items' => (int) ($listing['total_items'] ?? 0),
+                'showing_from' => (int) ($listing['showing_from'] ?? 0),
+                'showing_to' => (int) ($listing['showing_to'] ?? 0),
             ],
-            'empty_message' => 'Killmail overview is unavailable because the database query failed.',
+            'empty_message' => $emptyMessage,
         ];
+    };
+
+    if ($useCache) {
+        return supplycore_cache_aside('killmail_overview', ['default-page', $pageSize], supplycore_cache_ttl('killmail_summary'), $resolver, [
+            'dependencies' => ['killmail_overview'],
+            'lock_ttl' => 20,
+        ]);
     }
 
-    $totalCount = (int) ($summaryRow['total_count'] ?? 0);
-    $recentCount = (int) ($summaryRow['recent_count'] ?? 0);
-    $trackedMatchCount = (int) ($summaryRow['tracked_match_count'] ?? 0);
-    $maxSequenceId = (int) ($summaryRow['max_sequence_id'] ?? ($status['max_sequence_id'] ?? 0));
-    $state = is_array($status['state'] ?? null) ? $status['state'] : [];
-    $latestRun = is_array($status['latest_run'] ?? null) ? $status['latest_run'] : null;
-    $lastSuccessAt = isset($state['last_success_at']) ? (string) $state['last_success_at'] : null;
-    $lastIngestedAt = isset($summaryRow['last_ingested_at']) ? (string) $summaryRow['last_ingested_at'] : null;
-    $latestUploadedAt = isset($summaryRow['latest_uploaded_at']) ? (string) $summaryRow['latest_uploaded_at'] : null;
-    $cursor = isset($state['last_cursor']) ? trim((string) $state['last_cursor']) : '';
-
-    $overviewResolutionRequests = [
-        'alliance' => [],
-        'corporation' => [],
-        'character' => [],
-        'type' => [],
-        'system' => [],
-        'region' => [],
-    ];
-
-    foreach ((array) ($options['alliances'] ?? []) as $row) {
-        $id = (int) ($row['entity_id'] ?? 0);
-        if ($id > 0) {
-            $overviewResolutionRequests['alliance'][$id] = $id;
-        }
-    }
-
-    foreach ((array) ($options['corporations'] ?? []) as $row) {
-        $id = (int) ($row['entity_id'] ?? 0);
-        if ($id > 0) {
-            $overviewResolutionRequests['corporation'][$id] = $id;
-        }
-    }
-
-    foreach ((array) ($listing['rows'] ?? []) as $row) {
-        $allianceId = (int) ($row['victim_alliance_id'] ?? 0);
-        $corporationId = (int) ($row['victim_corporation_id'] ?? 0);
-        $shipTypeId = (int) ($row['victim_ship_type_id'] ?? 0);
-        $systemId = (int) ($row['solar_system_id'] ?? 0);
-        $regionId = (int) ($row['region_id'] ?? 0);
-
-        if ($allianceId > 0) {
-            $overviewResolutionRequests['alliance'][$allianceId] = $allianceId;
-        }
-        if ($corporationId > 0) {
-            $overviewResolutionRequests['corporation'][$corporationId] = $corporationId;
-        }
-        if ($shipTypeId > 0) {
-            $overviewResolutionRequests['type'][$shipTypeId] = $shipTypeId;
-        }
-        if ($systemId > 0) {
-            $overviewResolutionRequests['system'][$systemId] = $systemId;
-        }
-        if ($regionId > 0) {
-            $overviewResolutionRequests['region'][$regionId] = $regionId;
-        }
-    }
-
-    foreach ($overviewResolutionRequests as $type => $ids) {
-        $overviewResolutionRequests[$type] = array_values($ids);
-    }
-
-    $resolvedOverviewEntities = killmail_entity_resolve_batch($overviewResolutionRequests, true);
-
-    $allianceOptions = ['0' => 'All alliances'];
-    foreach ((array) ($options['alliances'] ?? []) as $row) {
-        $id = (int) ($row['entity_id'] ?? 0);
-        if ($id <= 0) {
-            continue;
-        }
-
-        $allianceOptions[(string) $id] = killmail_entity_preferred_name(
-            $resolvedOverviewEntities,
-            'alliance',
-            $id,
-            isset($row['entity_label']) ? (string) $row['entity_label'] : '',
-            'Alliance'
-        );
-    }
-
-    $corporationOptions = ['0' => 'All corporations'];
-    foreach ((array) ($options['corporations'] ?? []) as $row) {
-        $id = (int) ($row['entity_id'] ?? 0);
-        if ($id <= 0) {
-            continue;
-        }
-
-        $corporationOptions[(string) $id] = killmail_entity_preferred_name(
-            $resolvedOverviewEntities,
-            'corporation',
-            $id,
-            isset($row['entity_label']) ? (string) $row['entity_label'] : '',
-            'Corporation'
-        );
-    }
-
-    $rows = array_map(static function (array $row) use ($resolvedOverviewEntities): array {
-        $matchSources = killmail_match_sources($row);
-        $zkb = killmail_decode_json_array(isset($row['zkb_json']) ? (string) $row['zkb_json'] : null);
-        $estimatedValue = killmail_value_amount($zkb);
-        $shipTypeId = isset($row['victim_ship_type_id']) ? (int) $row['victim_ship_type_id'] : null;
-        $signalStrength = killmail_signal_strength_meta(0, 0, (int) ($row['matched_tracked'] ?? 0) === 1);
-        $supplyImpact = killmail_supply_impact_meta($estimatedValue, 0, 0, 0);
-
-        return [
-            'sequence_id' => (int) ($row['sequence_id'] ?? 0),
-            'killmail_id' => (int) ($row['killmail_id'] ?? 0),
-            'killmail_time_display' => killmail_format_datetime(isset($row['killmail_time']) ? (string) $row['killmail_time'] : null),
-            'uploaded_at_display' => killmail_format_datetime(isset($row['uploaded_at']) ? (string) $row['uploaded_at'] : null),
-            'created_at_display' => killmail_format_datetime(isset($row['created_at']) ? (string) $row['created_at'] : null),
-            'victim_alliance' => killmail_entity_preferred_name($resolvedOverviewEntities, 'alliance', isset($row['victim_alliance_id']) ? (int) $row['victim_alliance_id'] : null, isset($row['victim_alliance_label']) ? (string) $row['victim_alliance_label'] : '', 'Alliance'),
-            'victim_corporation' => killmail_entity_preferred_name($resolvedOverviewEntities, 'corporation', isset($row['victim_corporation_id']) ? (int) $row['victim_corporation_id'] : null, isset($row['victim_corporation_label']) ? (string) $row['victim_corporation_label'] : '', 'Corporation'),
-            'ship_type' => killmail_entity_preferred_name($resolvedOverviewEntities, 'type', isset($row['victim_ship_type_id']) ? (int) $row['victim_ship_type_id'] : null, isset($row['ship_type_name']) ? (string) $row['ship_type_name'] : '', 'Ship'),
-            'system' => killmail_entity_preferred_name($resolvedOverviewEntities, 'system', isset($row['solar_system_id']) ? (int) $row['solar_system_id'] : null, isset($row['system_name']) ? (string) $row['system_name'] : '', 'System'),
-            'region' => killmail_entity_preferred_name($resolvedOverviewEntities, 'region', isset($row['region_id']) ? (int) $row['region_id'] : null, isset($row['region_name']) ? (string) $row['region_name'] : '', 'Region'),
-            'matched_tracked' => (int) ($row['matched_tracked'] ?? 0) === 1,
-            'match_context' => $matchSources === [] ? 'No tracked victim entity currently matches this stored loss.' : ('Matched on ' . implode(', ', $matchSources) . '.'),
-            'ship_icon_url' => $shipTypeId !== null ? killmail_entity_image_url('type', $shipTypeId, 'icon', 64) : null,
-            'estimated_value_display' => $estimatedValue !== null ? number_format($estimatedValue, 0) . ' ISK' : 'Value unavailable',
-            'signal_strength' => $signalStrength,
-            'supply_impact' => $supplyImpact,
-            'inspect_url' => '/killmail-intelligence/view.php?sequence_id=' . urlencode((string) ((int) ($row['sequence_id'] ?? 0))),
-        ];
-    }, (array) ($listing['rows'] ?? []));
-
-    $emptyMessage = $totalCount === 0
-        ? 'No killmails have been stored yet. Enable killmail ingestion, run the sync worker, and this view will populate as local killmails arrive.'
-        : 'No killmails matched the current filters. Try clearing search or filter controls.';
-
-    return [
-        'error' => null,
-        'summary' => [
-            ['label' => 'Total Ingested', 'value' => number_format($totalCount), 'context' => 'Killmails stored locally'],
-            ['label' => 'Recent Ingestion', 'value' => number_format($recentCount), 'context' => 'Stored in the last ' . $recentHours . ' hours'],
-            ['label' => 'Tracked Victim Losses', 'value' => number_format($trackedMatchCount), 'context' => 'Stored losses where the victim matches a tracked alliance or corporation'],
-            ['label' => 'Last Processed Sequence', 'value' => $maxSequenceId > 0 ? number_format($maxSequenceId) : '—', 'context' => $cursor !== '' ? ('Cursor ' . $cursor) : 'Cursor not recorded yet'],
-            ['label' => 'Sync Freshness', 'value' => killmail_relative_datetime($lastSuccessAt), 'context' => $lastSuccessAt !== null ? ('Last success ' . killmail_format_datetime($lastSuccessAt)) : 'No successful sync recorded'],
-        ],
-        'status' => [
-            'ingestion_enabled' => killmail_ingestion_enabled(),
-            'current_cursor' => $cursor !== '' ? $cursor : 'Unavailable',
-            'last_sync_outcome' => killmail_last_sync_outcome_label($latestRun),
-            'last_success_at' => killmail_format_datetime($lastSuccessAt),
-            'last_sync_relative' => killmail_relative_datetime($lastSuccessAt),
-            'last_uploaded_at' => killmail_format_datetime($latestUploadedAt),
-            'last_ingested_at' => killmail_format_datetime($lastIngestedAt),
-            'tracked_alliance_count' => (int) ($status['tracked_alliance_count'] ?? 0),
-            'tracked_corporation_count' => (int) ($status['tracked_corporation_count'] ?? 0),
-            'sync_status' => (string) ($state['status'] ?? 'idle'),
-            'last_run_status' => (string) ($latestRun['run_status'] ?? 'not_run'),
-            'last_run_source_rows' => (int) ($latestRun['source_rows'] ?? 0),
-            'last_run_written_rows' => (int) ($latestRun['written_rows'] ?? 0),
-            'last_run_finished_at' => killmail_format_datetime(isset($latestRun['finished_at']) ? (string) $latestRun['finished_at'] : null),
-            'last_error' => trim((string) ($state['last_error_message'] ?? '')),
-        ],
-        'rows' => $rows,
-        'filters' => $filters + [
-            'page_size_options' => $allowedPageSizes,
-            'alliance_options' => $allianceOptions,
-            'corporation_options' => $corporationOptions,
-        ],
-        'pagination' => [
-            'page' => (int) ($listing['page'] ?? 1),
-            'page_size' => (int) ($listing['page_size'] ?? $pageSize),
-            'page_size_options' => $allowedPageSizes,
-            'total_pages' => (int) ($listing['total_pages'] ?? 1),
-            'total_items' => (int) ($listing['total_items'] ?? 0),
-            'showing_from' => (int) ($listing['showing_from'] ?? 0),
-            'showing_to' => (int) ($listing['showing_to'] ?? 0),
-        ],
-        'empty_message' => $emptyMessage,
-    ];
+    return $resolver();
 }
 
 function human_duration_ago(int $seconds): string
@@ -2773,36 +3124,37 @@ function human_duration_ago(int $seconds): string
 
 function reference_hub_comparison_data(): array
 {
-    $comparisonContext = market_comparison_context();
-    $outcomes = market_comparison_outcomes();
-    $underpriced = $outcomes['underpriced_in_alliance'];
-    $overpriced = $outcomes['overpriced_in_alliance'];
+    return supplycore_cache_aside('market_compare', ['reference-comparison'], supplycore_cache_ttl('market_summary'), static function (): array {
+        $comparisonContext = market_comparison_context();
+        $outcomes = market_comparison_outcomes();
+        $underpriced = $outcomes['underpriced_in_alliance'];
+        $overpriced = $outcomes['overpriced_in_alliance'];
 
-    usort($underpriced, static fn (array $a, array $b): int => (($b['opportunity_score'] ?? 0) <=> ($a['opportunity_score'] ?? 0)) ?: (($b['volume_score'] ?? 0) <=> ($a['volume_score'] ?? 0)));
-    usort($overpriced, static fn (array $a, array $b): int => (($b['risk_score'] ?? 0) <=> ($a['risk_score'] ?? 0)) ?: (($b['price_delta_score'] ?? 0) <=> ($a['price_delta_score'] ?? 0)));
+        usort($underpriced, static fn (array $a, array $b): int => (($b['opportunity_score'] ?? 0) <=> ($a['opportunity_score'] ?? 0)) ?: (($b['volume_score'] ?? 0) <=> ($a['volume_score'] ?? 0)));
+        usort($overpriced, static fn (array $a, array $b): int => (($b['risk_score'] ?? 0) <=> ($a['risk_score'] ?? 0)) ?: (($b['price_delta_score'] ?? 0) <=> ($a['price_delta_score'] ?? 0)));
 
-    $top = array_slice(array_values(array_filter(array_merge($underpriced, $overpriced), static fn (array $row): bool => (int) max((int) ($row['risk_score'] ?? 0), (int) ($row['opportunity_score'] ?? 0)) >= 60)), 0, 5);
+        $top = array_slice(array_values(array_filter(array_merge($underpriced, $overpriced), static fn (array $row): bool => (int) max((int) ($row['risk_score'] ?? 0), (int) ($row['opportunity_score'] ?? 0)) >= 60)), 0, 5);
 
-    $rows = [];
-    foreach ([
-        ['label' => 'Underpriced vs Hub', 'items' => $underpriced, 'kind' => 'opportunity'],
-        ['label' => 'Overpriced vs Hub', 'items' => $overpriced, 'kind' => 'risk'],
-    ] as $group) {
-        $rows[] = ['is_group_header' => true, 'module' => $group['label']];
-        foreach (array_slice($group['items'], 0, 15) as $row) {
-            $rows[] = [
-                'module' => $row['type_name'] !== '' ? $row['type_name'] : ('Type #' . $row['type_id']),
-                'alliance_price' => market_format_isk($row['alliance_best_sell_price']),
-                'reference_price' => market_format_isk($row['reference_best_sell_price']),
-                'delta' => sprintf('%+.1f%%', (float) ($row['deviation_percent'] ?? 0.0)),
-                'score' => (string) ((int) ($group['kind'] === 'risk' ? ($row['risk_score'] ?? 0) : ($row['opportunity_score'] ?? 0))),
-                'severity' => (string) ($group['kind'] === 'risk' ? ($row['severity'] ?? 'Low') : ($row['opportunity_tier'] ?? 'Low')),
-                'row_tone' => $group['kind'] === 'risk' ? 'risk_high' : 'opp_high',
-            ];
+        $rows = [];
+        foreach ([
+            ['label' => 'Underpriced vs Hub', 'items' => $underpriced, 'kind' => 'opportunity'],
+            ['label' => 'Overpriced vs Hub', 'items' => $overpriced, 'kind' => 'risk'],
+        ] as $group) {
+            $rows[] = ['is_group_header' => true, 'module' => $group['label']];
+            foreach (array_slice($group['items'], 0, 15) as $row) {
+                $rows[] = [
+                    'module' => $row['type_name'] !== '' ? $row['type_name'] : ('Type #' . $row['type_id']),
+                    'alliance_price' => market_format_isk($row['alliance_best_sell_price']),
+                    'reference_price' => market_format_isk($row['reference_best_sell_price']),
+                    'delta' => sprintf('%+.1f%%', (float) ($row['deviation_percent'] ?? 0.0)),
+                    'score' => (string) ((int) ($group['kind'] === 'risk' ? ($row['risk_score'] ?? 0) : ($row['opportunity_score'] ?? 0))),
+                    'severity' => (string) ($group['kind'] === 'risk' ? ($row['severity'] ?? 'Low') : ($row['opportunity_tier'] ?? 'Low')),
+                    'row_tone' => $group['kind'] === 'risk' ? 'risk_high' : 'opp_high',
+                ];
+            }
         }
-    }
 
-    return [
+        return [
         'summary' => [
             ['label' => 'Compared Modules', 'value' => (string) count($outcomes['in_both_markets']), 'context' => 'Alliance vs ' . $comparisonContext['reference_hub'] . ' pairs'],
             ['label' => 'Best Underpriced', 'value' => (string) count($underpriced), 'context' => 'Alliance cheaper than ' . $comparisonContext['reference_hub']],
@@ -2817,19 +3169,24 @@ function reference_hub_comparison_data(): array
             ], $top),
         ],
         'rows' => $rows,
-    ];
+        ];
+    }, [
+        'dependencies' => ['market_compare'],
+        'lock_ttl' => 20,
+    ]);
 }
 
 function missing_items_data(): array
 {
-    $comparisonContext = market_comparison_context();
-    $outcomes = market_comparison_outcomes();
-    $missingRows = $outcomes['missing_in_alliance'];
+    return supplycore_cache_aside('market_compare', ['missing-items'], supplycore_cache_ttl('market_summary'), static function (): array {
+        $comparisonContext = market_comparison_context();
+        $outcomes = market_comparison_outcomes();
+        $missingRows = $outcomes['missing_in_alliance'];
 
-    usort($missingRows, static fn (array $a, array $b): int => (($b['opportunity_score'] ?? 0) <=> ($a['opportunity_score'] ?? 0)) ?: (($b['volume_score'] ?? 0) <=> ($a['volume_score'] ?? 0)));
-    $topRows = array_slice($missingRows, 0, 5);
+        usort($missingRows, static fn (array $a, array $b): int => (($b['opportunity_score'] ?? 0) <=> ($a['opportunity_score'] ?? 0)) ?: (($b['volume_score'] ?? 0) <=> ($a['volume_score'] ?? 0)));
+        $topRows = array_slice($missingRows, 0, 5);
 
-    return [
+        return [
         'summary' => [
             ['label' => 'Missing Modules', 'value' => (string) count($missingRows), 'context' => 'No active alliance listing'],
             ['label' => 'High-Turnover Gaps', 'value' => (string) count(array_filter($missingRows, static fn (array $row): bool => (int) ($row['volume_score'] ?? 0) >= 55)), 'context' => 'Strong ' . $comparisonContext['reference_hub'] . ' movement'],
@@ -2854,48 +3211,57 @@ function missing_items_data(): array
                 'row_tone' => (int) ($row['opportunity_score'] ?? 0) >= 75 ? 'opp_high' : ((int) ($row['opportunity_score'] ?? 0) >= 45 ? 'opp_medium' : 'opp_low'),
             ];
         }, array_slice($missingRows, 0, 30)),
-    ];
+        ];
+    }, [
+        'dependencies' => ['market_compare'],
+        'lock_ttl' => 20,
+    ]);
 }
 
 function price_deviations_data(): array
 {
-    $comparisonContext = market_comparison_context();
-    $outcomes = market_comparison_outcomes();
-    $alerts = array_values(array_filter($outcomes['rows'], static fn (array $row): bool => (bool) ($row['overpriced_in_alliance'] ?? false) || (bool) ($row['underpriced_in_alliance'] ?? false)));
+    return supplycore_cache_aside('market_compare', ['price-deviations'], supplycore_cache_ttl('market_summary'), static function (): array {
+        $comparisonContext = market_comparison_context();
+        $outcomes = market_comparison_outcomes();
+        $alerts = array_values(array_filter($outcomes['rows'], static fn (array $row): bool => (bool) ($row['overpriced_in_alliance'] ?? false) || (bool) ($row['underpriced_in_alliance'] ?? false)));
 
-    $actionable = array_values(array_filter($alerts, static fn (array $row): bool => (int) ($row['price_delta_score'] ?? 0) >= 45 && (int) ($row['volume_score'] ?? 0) >= 35));
-    $noise = array_values(array_filter($alerts, static fn (array $row): bool => !in_array($row, $actionable, true)));
+        $actionable = array_values(array_filter($alerts, static fn (array $row): bool => (int) ($row['price_delta_score'] ?? 0) >= 45 && (int) ($row['volume_score'] ?? 0) >= 35));
+        $noise = array_values(array_filter($alerts, static fn (array $row): bool => !in_array($row, $actionable, true)));
 
-    usort($actionable, static fn (array $a, array $b): int => (($b['risk_score'] ?? 0) <=> ($a['risk_score'] ?? 0)) ?: (($b['price_delta_score'] ?? 0) <=> ($a['price_delta_score'] ?? 0)));
-    usort($noise, static fn (array $a, array $b): int => (($b['price_delta_score'] ?? 0) <=> ($a['price_delta_score'] ?? 0)));
+        usort($actionable, static fn (array $a, array $b): int => (($b['risk_score'] ?? 0) <=> ($a['risk_score'] ?? 0)) ?: (($b['price_delta_score'] ?? 0) <=> ($a['price_delta_score'] ?? 0)));
+        usort($noise, static fn (array $a, array $b): int => (($b['price_delta_score'] ?? 0) <=> ($a['price_delta_score'] ?? 0)));
 
-    $rows = [];
-    foreach ([
-        ['label' => 'Actionable', 'items' => $actionable],
-        ['label' => 'Noise', 'items' => $noise],
-    ] as $group) {
-        $rows[] = ['is_group_header' => true, 'module' => $group['label']];
-        foreach (array_slice($group['items'], 0, 15) as $row) {
-            $rows[] = [
-                'module' => $row['type_name'] !== '' ? $row['type_name'] : ('Type #' . $row['type_id']),
-                'alliance_price' => market_format_isk($row['alliance_best_sell_price']),
-                'reference_price' => market_format_isk($row['reference_best_sell_price']),
-                'deviation' => sprintf('%+.1f%%', (float) ($row['deviation_percent'] ?? 0.0)),
-                'severity' => (string) ($row['severity'] ?? 'Low'),
-                'score' => (string) ((int) ($row['risk_score'] ?? 0)),
-                'row_tone' => $group['label'] === 'Actionable' ? 'risk_high' : 'risk_low',
-            ];
+        $rows = [];
+        foreach ([
+            ['label' => 'Actionable', 'items' => $actionable],
+            ['label' => 'Noise', 'items' => $noise],
+        ] as $group) {
+            $rows[] = ['is_group_header' => true, 'module' => $group['label']];
+            foreach (array_slice($group['items'], 0, 15) as $row) {
+                $rows[] = [
+                    'module' => $row['type_name'] !== '' ? $row['type_name'] : ('Type #' . $row['type_id']),
+                    'alliance_price' => market_format_isk($row['alliance_best_sell_price']),
+                    'reference_price' => market_format_isk($row['reference_best_sell_price']),
+                    'deviation' => sprintf('%+.1f%%', (float) ($row['deviation_percent'] ?? 0.0)),
+                    'severity' => (string) ($row['severity'] ?? 'Low'),
+                    'score' => (string) ((int) ($row['risk_score'] ?? 0)),
+                    'row_tone' => $group['label'] === 'Actionable' ? 'risk_high' : 'risk_low',
+                ];
+            }
         }
-    }
 
-    return [
+        return [
         'summary' => [
             ['label' => 'Deviation Alerts', 'value' => (string) count($alerts), 'context' => 'Outside configured threshold'],
             ['label' => 'Actionable', 'value' => (string) count($actionable), 'context' => 'High deviation + meaningful volume'],
             ['label' => 'Noise', 'value' => (string) count($noise), 'context' => 'Low relevance, monitor only'],
         ],
         'rows' => $rows,
-    ];
+        ];
+    }, [
+        'dependencies' => ['market_compare'],
+        'lock_ttl' => 20,
+    ]);
 }
 
 function history_sanitize_days(mixed $value, int $default = 30): int
@@ -3239,7 +3605,7 @@ function sync_watermark(string $datasetKey): ?string
 
 function mark_sync_success(string $datasetKey, string $syncMode, ?string $cursor, int $rowsWritten, ?string $checksum = null): bool
 {
-    return db_sync_state_upsert(
+    $ok = db_sync_state_upsert(
         $datasetKey,
         $syncMode,
         'success',
@@ -3249,6 +3615,12 @@ function mark_sync_success(string $datasetKey, string $syncMode, ?string $cursor
         $checksum,
         null
     );
+
+    if ($ok) {
+        supplycore_cache_invalidate_for_dataset($datasetKey);
+    }
+
+    return $ok;
 }
 
 function mark_sync_failure(string $datasetKey, string $syncMode, string $errorMessage): bool
@@ -5818,11 +6190,14 @@ function esi_alliance_structure_metadata(int $structureId, array $tokenContext):
     }
 
     $name = trim((string) ($response['json']['name'] ?? ''));
-    db_alliance_structure_metadata_upsert(
+    $updated = db_alliance_structure_metadata_upsert(
         $structureId,
         $name !== '' ? $name : null,
         gmdate('Y-m-d H:i:s')
     );
+    if ($updated) {
+        supplycore_cache_bust('metadata_structures');
+    }
 
     return [
         'id' => $structureId,
@@ -5906,7 +6281,9 @@ function esi_structure_search(string $query, array $tokenContext): array
             continue;
         }
 
-        db_alliance_structure_metadata_upsert($id, $name, gmdate('Y-m-d H:i:s'));
+        if (db_alliance_structure_metadata_upsert($id, $name, gmdate('Y-m-d H:i:s'))) {
+            supplycore_cache_bust('metadata_structures');
+        }
 
         $results[] = esi_structure_result_shape([
             'id' => $id,
@@ -6025,11 +6402,28 @@ function esi_npc_station_metadata(int $stationId): ?array
 
 function runner_lock_acquire(string $lockName, int $timeoutSeconds = 0): bool
 {
+    if (supplycore_redis_locking_enabled()) {
+        $ttl = max(30, $timeoutSeconds > 0 ? $timeoutSeconds : 300);
+        $token = supplycore_redis_lock_acquire('runner:' . $lockName, $ttl);
+        if ($token !== null) {
+            $GLOBALS['__supplycore_runner_lock_tokens'][$lockName] = $token;
+
+            return true;
+        }
+    }
+
     return db_runner_lock_acquire($lockName, $timeoutSeconds);
 }
 
 function runner_lock_release(string $lockName): bool
 {
+    $token = $GLOBALS['__supplycore_runner_lock_tokens'][$lockName] ?? null;
+    if (is_string($token) && $token !== '') {
+        unset($GLOBALS['__supplycore_runner_lock_tokens'][$lockName]);
+
+        return supplycore_redis_lock_release('runner:' . $lockName, $token);
+    }
+
     return db_runner_lock_release($lockName);
 }
 
@@ -6458,6 +6852,8 @@ function static_data_import_reference_data(string $requestedMode = 'auto', bool 
                 ],
             ], JSON_THROW_ON_ERROR)
         );
+
+        supplycore_cache_invalidate_for_dataset('static_data.reference');
 
         return ['ok' => true, 'changed' => true, 'build_id' => $remoteBuildId, 'rows_written' => $rowsWritten, 'mode' => $mode];
     } catch (Throwable $exception) {
@@ -7686,6 +8082,8 @@ function doctrine_import_fit_from_request(array $post): array
         return ['ok' => false, 'message' => 'Doctrine fit import failed: ' . $exception->getMessage()];
     }
 
+    supplycore_cache_bust(['doctrine']);
+
     return [
         'ok' => true,
         'message' => 'Doctrine fit imported successfully.',
@@ -7802,15 +8200,16 @@ function doctrine_group_market_rows_by_category(array $items): array
 
 function doctrine_groups_overview_data(): array
 {
-    $groups = doctrine_group_options();
-    $fitCount = 0;
-    $itemCount = 0;
-    foreach ($groups as $group) {
-        $fitCount += (int) ($group['fit_count'] ?? 0);
-        $itemCount += (int) ($group['item_count'] ?? 0);
-    }
+    return supplycore_cache_aside('doctrine', ['groups-overview'], supplycore_cache_ttl('doctrine_summary'), static function (): array {
+        $groups = doctrine_group_options();
+        $fitCount = 0;
+        $itemCount = 0;
+        foreach ($groups as $group) {
+            $fitCount += (int) ($group['fit_count'] ?? 0);
+            $itemCount += (int) ($group['item_count'] ?? 0);
+        }
 
-    return [
+        return [
         'summary' => [
             ['label' => 'Doctrine Groups', 'value' => (string) count($groups), 'context' => 'Organized doctrine collections ready for market mapping'],
             ['label' => 'Imported Fits', 'value' => (string) $fitCount, 'context' => 'Alliance fit payloads normalized and stored'],
@@ -7818,83 +8217,97 @@ function doctrine_groups_overview_data(): array
             ['label' => 'Baseline Goal', 'value' => 'Ready', 'context' => 'Restock, hauling, and supply-gap workflows'],
         ],
         'groups' => $groups,
-    ];
+        ];
+    }, [
+        'dependencies' => ['doctrine'],
+        'lock_ttl' => 20,
+    ]);
 }
 
 function doctrine_group_detail_data(int $groupId): array
 {
-    try {
-        $group = db_doctrine_group_by_id($groupId);
-        $fits = db_doctrine_fits_by_group($groupId);
-    } catch (Throwable) {
-        $group = null;
-        $fits = [];
-    }
+    return supplycore_cache_aside('doctrine', ['group-detail', $groupId], supplycore_cache_ttl('doctrine_detail'), static function () use ($groupId): array {
+        try {
+            $group = db_doctrine_group_by_id($groupId);
+            $fits = db_doctrine_fits_by_group($groupId);
+        } catch (Throwable) {
+            $group = null;
+            $fits = [];
+        }
 
-    if ($group === null) {
-        return ['group' => null, 'fits' => []];
-    }
+        if ($group === null) {
+            return ['group' => null, 'fits' => []];
+        }
 
-    foreach ($fits as &$fit) {
-        $requiredQty = max(0, (int) ($fit['required_quantity'] ?? 0));
-        $fit['required_quantity_label'] = doctrine_format_quantity($requiredQty);
-        $fit['ship_image_url'] = doctrine_ship_image_url(isset($fit['ship_type_id']) ? (int) $fit['ship_type_id'] : null, 64);
-    }
-    unset($fit);
+        foreach ($fits as &$fit) {
+            $requiredQty = max(0, (int) ($fit['required_quantity'] ?? 0));
+            $fit['required_quantity_label'] = doctrine_format_quantity($requiredQty);
+            $fit['ship_image_url'] = doctrine_ship_image_url(isset($fit['ship_type_id']) ? (int) $fit['ship_type_id'] : null, 64);
+        }
+        unset($fit);
 
-    return ['group' => $group, 'fits' => $fits];
+        return ['group' => $group, 'fits' => $fits];
+    }, [
+        'dependencies' => ['doctrine', 'market_compare'],
+        'lock_ttl' => 20,
+    ]);
 }
 
 function doctrine_fit_detail_view_model(int $fitId): array
 {
-    try {
-        $fit = db_doctrine_fit_by_id($fitId);
-        $items = db_doctrine_fit_items_by_fit($fitId);
-    } catch (Throwable) {
-        $fit = null;
-        $items = [];
-    }
-
-    if ($fit === null) {
-        return ['fit' => null, 'categories' => [], 'summary' => []];
-    }
-
-    $categories = doctrine_group_market_rows_by_category($items);
-    $totalRequired = 0;
-    $totalLocal = 0;
-    $missingLines = 0;
-    $okLines = 0;
-
-    foreach ($categories as &$rows) {
-        foreach ($rows as &$row) {
-            $totalRequired += max(1, (int) ($row['quantity'] ?? 1));
-            $totalLocal += max(0, (int) ($row['local_available_qty'] ?? 0));
-            if ((int) ($row['missing_qty'] ?? 0) > 0) {
-                $missingLines++;
-            } else {
-                $okLines++;
-            }
-
-            $row['required_qty_label'] = doctrine_format_quantity((int) ($row['quantity'] ?? 1));
-            $row['local_available_qty_label'] = doctrine_format_quantity((int) ($row['local_available_qty'] ?? 0));
-            $row['missing_qty_label'] = doctrine_format_quantity((int) ($row['missing_qty'] ?? 0));
-            $row['local_price_label'] = market_format_isk(isset($row['local_price']) ? (float) $row['local_price'] : null);
-            $row['hub_price_label'] = market_format_isk(isset($row['hub_price']) ? (float) $row['hub_price'] : null);
+    return supplycore_cache_aside('doctrine', ['fit-detail', $fitId], supplycore_cache_ttl('doctrine_detail'), static function () use ($fitId): array {
+        try {
+            $fit = db_doctrine_fit_by_id($fitId);
+            $items = db_doctrine_fit_items_by_fit($fitId);
+        } catch (Throwable) {
+            $fit = null;
+            $items = [];
         }
-        unset($row);
-    }
-    unset($rows);
 
-    $fit['ship_image_url'] = doctrine_ship_image_url(isset($fit['ship_type_id']) ? (int) $fit['ship_type_id'] : null, 256);
+        if ($fit === null) {
+            return ['fit' => null, 'categories' => [], 'summary' => []];
+        }
 
-    return [
-        'fit' => $fit,
-        'categories' => $categories,
-        'summary' => [
-            ['label' => 'Required Units', 'value' => doctrine_format_quantity($totalRequired), 'context' => 'Doctrine demand to satisfy one complete fit'],
-            ['label' => 'Local Units', 'value' => doctrine_format_quantity($totalLocal), 'context' => 'Alliance market quantity available right now'],
-            ['label' => 'Missing Lines', 'value' => doctrine_format_quantity($missingLines), 'context' => 'Immediate supply gaps to restock or haul'],
-            ['label' => 'Stock OK Lines', 'value' => doctrine_format_quantity($okLines), 'context' => 'Lines already covered in alliance stock'],
-        ],
-    ];
+        $categories = doctrine_group_market_rows_by_category($items);
+        $totalRequired = 0;
+        $totalLocal = 0;
+        $missingLines = 0;
+        $okLines = 0;
+
+        foreach ($categories as &$rows) {
+            foreach ($rows as &$row) {
+                $totalRequired += max(1, (int) ($row['quantity'] ?? 1));
+                $totalLocal += max(0, (int) ($row['local_available_qty'] ?? 0));
+                if ((int) ($row['missing_qty'] ?? 0) > 0) {
+                    $missingLines++;
+                } else {
+                    $okLines++;
+                }
+
+                $row['required_qty_label'] = doctrine_format_quantity((int) ($row['quantity'] ?? 1));
+                $row['local_available_qty_label'] = doctrine_format_quantity((int) ($row['local_available_qty'] ?? 0));
+                $row['missing_qty_label'] = doctrine_format_quantity((int) ($row['missing_qty'] ?? 0));
+                $row['local_price_label'] = market_format_isk(isset($row['local_price']) ? (float) $row['local_price'] : null);
+                $row['hub_price_label'] = market_format_isk(isset($row['hub_price']) ? (float) $row['hub_price'] : null);
+            }
+            unset($row);
+        }
+        unset($rows);
+
+        $fit['ship_image_url'] = doctrine_ship_image_url(isset($fit['ship_type_id']) ? (int) $fit['ship_type_id'] : null, 256);
+
+        return [
+            'fit' => $fit,
+            'categories' => $categories,
+            'summary' => [
+                ['label' => 'Required Units', 'value' => doctrine_format_quantity($totalRequired), 'context' => 'Doctrine demand to satisfy one complete fit'],
+                ['label' => 'Local Units', 'value' => doctrine_format_quantity($totalLocal), 'context' => 'Alliance market quantity available right now'],
+                ['label' => 'Missing Lines', 'value' => doctrine_format_quantity($missingLines), 'context' => 'Immediate supply gaps to restock or haul'],
+                ['label' => 'Stock OK Lines', 'value' => doctrine_format_quantity($okLines), 'context' => 'Lines already covered in alliance stock'],
+            ],
+        ];
+    }, [
+        'dependencies' => ['doctrine', 'market_compare'],
+        'lock_ttl' => 20,
+    ]);
 }

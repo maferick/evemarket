@@ -38,6 +38,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 'market_station_id' => sanitize_station_selection($_POST['market_station_id'] ?? null, 'market'),
                 'alliance_station_id' => sanitize_station_selection($_POST['alliance_station_id'] ?? null, 'alliance'),
             ]);
+            if ($saved) {
+                supplycore_cache_bust(['market_compare', 'dashboard', 'doctrine', 'metadata_structures']);
+            }
             break;
 
         case 'esi-login':
@@ -67,6 +70,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             if ($saved) {
                 $saved = db_killmail_tracked_alliances_replace(array_map(static fn (array $row): array => ['alliance_id' => $row['id'], 'label' => $row['label']], (array) ($resolvedEntities['alliances'] ?? [])))
                     && db_killmail_tracked_corporations_replace(array_map(static fn (array $row): array => ['corporation_id' => $row['id'], 'label' => $row['label']], (array) ($resolvedEntities['corporations'] ?? [])));
+                if ($saved) {
+                    supplycore_cache_bust(['dashboard', 'killmail_overview', 'killmail_detail']);
+                }
             }
 
             $unresolved = array_slice((array) ($resolvedEntities['unresolved'] ?? []), 0, 8);
@@ -150,6 +156,13 @@ $settingValues = get_settings([
     'raw_order_snapshot_retention_days',
     'sync_automation_enabled_since',
     'static_data_source_url',
+    'redis_cache_enabled',
+    'redis_locking_enabled',
+    'redis_host',
+    'redis_port',
+    'redis_database',
+    'redis_password',
+    'redis_prefix',
 ]);
 
 $dataSyncSettingValues = data_sync_pipeline_settings_view($settingValues);
@@ -1072,6 +1085,46 @@ include __DIR__ . '/../../src/views/partials/header.php';
                     <input type="url" name="static_data_source_url" value="<?= htmlspecialchars($dataSyncSettingValues['static_data_source_url'] ?? 'https://developers.eveonline.com/static-data/eve-online-static-data-latest-jsonl.zip', ENT_QUOTES) ?>" class="w-full field-input" />
                     <p class="text-xs text-muted">Importer expects the official CCP JSONL ZIP payload (<span class="font-mono">.zip</span>) from developers.eveonline.com.</p>
                 </label>
+
+                <div class="space-y-3 rounded-lg border border-border bg-black/20 p-4">
+                    <div>
+                        <p class="text-sm text-slate-100">Redis performance layer</p>
+                        <p class="mt-1 text-xs text-muted">Redis stays optional and non-authoritative. MySQL remains the source of truth while Redis accelerates cached summaries, comparison defaults, metadata lookups, and lightweight distributed locks.</p>
+                    </div>
+                    <label class="flex items-center gap-3">
+                        <input type="hidden" name="redis_cache_enabled" value="0">
+                        <input type="checkbox" name="redis_cache_enabled" value="1" <?= ($dataSyncSettingValues['redis_cache_enabled'] ?? (config('redis.enabled', false) ? '1' : '0')) === '1' ? 'checked' : '' ?> class="size-4 rounded border-border bg-black">
+                        <span class="text-sm">Enable Redis cache-aside reads</span>
+                    </label>
+                    <label class="flex items-center gap-3">
+                        <input type="hidden" name="redis_locking_enabled" value="0">
+                        <input type="checkbox" name="redis_locking_enabled" value="1" <?= ($dataSyncSettingValues['redis_locking_enabled'] ?? (config('redis.lock_enabled', true) ? '1' : '0')) === '1' ? 'checked' : '' ?> class="size-4 rounded border-border bg-black">
+                        <span class="text-sm">Prefer Redis distributed locks for schedulers and expensive recomputes</span>
+                    </label>
+                    <div class="grid gap-3 md:grid-cols-2">
+                        <label class="block space-y-2">
+                            <span class="text-sm text-muted">Redis Host</span>
+                            <input type="text" name="redis_host" value="<?= htmlspecialchars($dataSyncSettingValues['redis_host'] ?? (string) config('redis.host', '127.0.0.1'), ENT_QUOTES) ?>" class="w-full field-input" />
+                        </label>
+                        <label class="block space-y-2">
+                            <span class="text-sm text-muted">Redis Port</span>
+                            <input type="number" min="1" max="65535" step="1" name="redis_port" value="<?= htmlspecialchars($dataSyncSettingValues['redis_port'] ?? (string) config('redis.port', 6379), ENT_QUOTES) ?>" class="w-full field-input" />
+                        </label>
+                        <label class="block space-y-2">
+                            <span class="text-sm text-muted">Redis Database</span>
+                            <input type="number" min="0" max="15" step="1" name="redis_database" value="<?= htmlspecialchars($dataSyncSettingValues['redis_database'] ?? (string) config('redis.database', 0), ENT_QUOTES) ?>" class="w-full field-input" />
+                        </label>
+                        <label class="block space-y-2">
+                            <span class="text-sm text-muted">Redis Key Prefix</span>
+                            <input type="text" name="redis_prefix" value="<?= htmlspecialchars($dataSyncSettingValues['redis_prefix'] ?? (string) config('redis.prefix', 'supplycore'), ENT_QUOTES) ?>" class="w-full field-input" />
+                        </label>
+                    </div>
+                    <label class="block space-y-2">
+                        <span class="text-sm text-muted">Redis Password</span>
+                        <input type="password" name="redis_password" value="<?= htmlspecialchars($dataSyncSettingValues['redis_password'] ?? '', ENT_QUOTES) ?>" class="w-full field-input" autocomplete="new-password" />
+                        <p class="text-xs text-muted">Leave blank for unauthenticated local Redis deployments.</p>
+                    </label>
+                </div>
 
                 <div class="space-y-3">
                     <div>

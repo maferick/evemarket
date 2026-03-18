@@ -17,4 +17,15 @@ return [
         'password' => getenv('DB_PASSWORD') ?: '',
         'charset' => 'utf8mb4',
     ],
+    'redis' => [
+        'enabled' => (getenv('REDIS_ENABLED') ?: '0') === '1',
+        'host' => getenv('REDIS_HOST') ?: '127.0.0.1',
+        'port' => (int) (getenv('REDIS_PORT') ?: 6379),
+        'database' => (int) (getenv('REDIS_DATABASE') ?: 0),
+        'password' => getenv('REDIS_PASSWORD') ?: '',
+        'prefix' => getenv('REDIS_PREFIX') ?: 'supplycore',
+        'connect_timeout' => (float) (getenv('REDIS_CONNECT_TIMEOUT') ?: 1.5),
+        'read_timeout' => (float) (getenv('REDIS_READ_TIMEOUT') ?: 1.5),
+        'lock_enabled' => (getenv('REDIS_LOCK_ENABLED') ?: '1') === '1',
+    ],
 ];

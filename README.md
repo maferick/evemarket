@@ -16,6 +16,7 @@ This repository establishes a clean architecture that can scale from an initial 
   - Killmail Intelligence settings (R2Z2 ingestion toggle, tracked alliances/corporations, ingestion health)
 - `src/db.php` as the **single central database access layer**
 - `src/functions.php` as the **single shared helper/business utility layer**
+- Optional Redis cache/lock layer that accelerates dashboard, market comparison, killmail, doctrine, and metadata reads while keeping MySQL authoritative
 - ESI OAuth callback (`/callback`) with token verification and DB persistence
 - ESI cache tables (`esi_cache_namespaces`, `esi_cache_entries`) for structured `cache.esi.*` namespaces
 - Incremental sync state tables (`sync_state`, `sync_runs`) for watermark/cursor tracking and run observability
@@ -34,6 +35,7 @@ public/
   .htaccess                 # Apache rewrite rules
 src/
   bootstrap.php             # Session + shared bootstrap
+  cache.php                 # Redis client + low-level cache/lock primitives
   db.php                    # Config + PDO + query helpers + transactions
   functions.php             # Navigation, settings services, shared helpers
   config/app.php            # Environment-driven app/db config
@@ -63,6 +65,11 @@ README.md
    export DB_DATABASE=supplycore
    export DB_USERNAME=root
    export DB_PASSWORD=secret
+   export REDIS_ENABLED=1
+   export REDIS_HOST=127.0.0.1
+   export REDIS_PORT=6379
+   export REDIS_DATABASE=0
+   export REDIS_PREFIX=supplycore
    ```
 
 3. **Run with PHP built-in server (dev only)**
@@ -73,6 +80,19 @@ README.md
 4. Open:
    - `http://localhost:8080/` dashboard
    - `http://localhost:8080/settings?section=general`
+
+## Redis Integration Notes
+
+- Redis is intentionally **non-authoritative** in SupplyCore. MySQL remains the source of truth for market, killmail, doctrine, and metadata state.
+- SupplyCore uses cache-aside reads by default and bumps namespaced cache versions after successful sync/import workflows.
+- The first Redis-backed categories are:
+  - dashboard and top-line summary cards
+  - alliance-vs-hub market comparison summaries plus useful default result sets
+  - killmail overview summaries and per-killmail detail view models
+  - doctrine group/fit supply summaries
+  - metadata/name resolution for alliance, corporation, character, type, system, region, and structure labels
+- Redis locks are used only as a lightweight coordination layer for scheduler runners and expensive cache recomputation. Database-backed locking remains the fallback path when Redis is disabled or unavailable.
+- You can configure Redis either through environment variables or through **Settings → Data Sync → Redis performance layer**.
 
 ## Apache2 Deployment Notes
 
