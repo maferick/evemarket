@@ -194,6 +194,25 @@ CREATE TABLE IF NOT EXISTS killmail_tracked_corporations (
     KEY idx_active (is_active)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+CREATE TABLE IF NOT EXISTS entity_metadata_cache (
+    entity_type ENUM('alliance', 'corporation', 'character', 'type', 'system', 'region') NOT NULL,
+    entity_id BIGINT UNSIGNED NOT NULL,
+    entity_name VARCHAR(255) DEFAULT NULL,
+    image_url VARCHAR(255) DEFAULT NULL,
+    metadata_json JSON DEFAULT NULL,
+    source_system VARCHAR(40) NOT NULL DEFAULT 'cache',
+    resolution_status ENUM('pending', 'resolved', 'failed') NOT NULL DEFAULT 'pending',
+    expires_at DATETIME DEFAULT NULL,
+    last_requested_at DATETIME DEFAULT NULL,
+    resolved_at DATETIME DEFAULT NULL,
+    last_error_message VARCHAR(255) DEFAULT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (entity_type, entity_id),
+    KEY idx_resolution_status (resolution_status, entity_type, updated_at),
+    KEY idx_expires_at (expires_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 
 CREATE TABLE IF NOT EXISTS market_orders_current (
     id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,

@@ -30,100 +30,103 @@ include __DIR__ . '/../../src/views/partials/header.php';
     <?php $items = $detail['items'] ?? []; ?>
     <?php $zkb = $detail['zkb'] ?? []; ?>
 
-    <section class="rounded-xl border border-border bg-card p-5 shadow-lg shadow-black/20">
-        <div class="flex flex-wrap items-start justify-between gap-4">
-            <div>
-                <p class="text-xs uppercase tracking-[0.2em] text-muted">Stored victim loss</p>
-                <h2 class="mt-1 text-xl font-semibold text-slate-50"><?= htmlspecialchars((string) ($ship['name'] ?? 'Killmail loss'), ENT_QUOTES) ?></h2>
-                <p class="mt-2 text-sm text-muted"><?= htmlspecialchars((string) ($victim['corporation_display'] ?? 'Victim corporation unavailable'), ENT_QUOTES) ?> · <?= htmlspecialchars((string) ($location['system_display'] ?? 'System unavailable'), ENT_QUOTES) ?></p>
+    <section class="overflow-hidden rounded-2xl border border-border bg-card shadow-lg shadow-black/20">
+        <div class="grid gap-6 p-6 xl:grid-cols-[minmax(280px,420px)_minmax(0,1fr)]">
+            <div class="rounded-2xl border border-border/80 bg-black/30 p-4">
+                <?php if ((string) ($ship['render_url'] ?? '') !== ''): ?>
+                    <img
+                        src="<?= htmlspecialchars((string) $ship['render_url'], ENT_QUOTES) ?>"
+                        alt="<?= htmlspecialchars((string) ($ship['name'] ?? 'Victim ship'), ENT_QUOTES) ?>"
+                        class="mx-auto aspect-square w-full max-w-sm rounded-2xl object-contain"
+                        loading="eager"
+                    >
+                <?php else: ?>
+                    <div class="flex aspect-square items-center justify-center rounded-2xl border border-dashed border-border bg-black/20 text-sm text-muted">
+                        Ship render unavailable
+                    </div>
+                <?php endif; ?>
             </div>
-            <div class="flex flex-wrap gap-2">
-                <span class="rounded-full border px-3 py-1 text-xs uppercase tracking-[0.15em] <?= ($detail['tracked_victim_loss'] ?? false) ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-200' : 'border-slate-500/40 bg-slate-500/10 text-slate-300' ?>">
-                    <?= ($detail['tracked_victim_loss'] ?? false) ? 'Tracked victim loss' : 'Stored loss' ?>
-                </span>
-                <span class="rounded-full border border-border bg-black/20 px-3 py-1 text-xs uppercase tracking-[0.15em] text-slate-200">Sequence #<?= htmlspecialchars(number_format((int) ($detail['sequence_id'] ?? 0)), ENT_QUOTES) ?></span>
+
+            <div class="flex flex-col justify-between gap-6">
+                <div class="flex flex-wrap items-start justify-between gap-3">
+                    <div>
+                        <p class="text-xs uppercase tracking-[0.2em] text-muted">Stored victim loss</p>
+                        <h2 class="mt-2 text-3xl font-semibold text-slate-50"><?= htmlspecialchars((string) ($ship['name'] ?? 'Killmail loss'), ENT_QUOTES) ?></h2>
+                        <p class="mt-2 text-base text-slate-200"><?= htmlspecialchars((string) ($victim['character_name'] ?? 'Victim unavailable'), ENT_QUOTES) ?></p>
+                        <p class="mt-2 text-sm text-muted">
+                            <?= htmlspecialchars((string) ($location['system_display'] ?? 'Unknown system'), ENT_QUOTES) ?>
+                            ·
+                            <?= htmlspecialchars((string) ($location['region_display'] ?? 'Unknown region'), ENT_QUOTES) ?>
+                            <?php if ((string) ($location['security_status'] ?? '') !== ''): ?>
+                                · Sec <?= htmlspecialchars((string) $location['security_status'], ENT_QUOTES) ?>
+                            <?php endif; ?>
+                        </p>
+                    </div>
+                    <div class="flex flex-wrap gap-2">
+                        <span class="rounded-full border px-3 py-1 text-xs uppercase tracking-[0.15em] <?= ($detail['tracked_victim_loss'] ?? false) ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-200' : 'border-slate-500/40 bg-slate-500/10 text-slate-300' ?>">
+                            <?= ($detail['tracked_victim_loss'] ?? false) ? 'Tracked victim loss' : 'Stored loss' ?>
+                        </span>
+                        <span class="rounded-full border border-border bg-black/20 px-3 py-1 text-xs uppercase tracking-[0.15em] text-slate-300">Attackers <?= htmlspecialchars(number_format((int) ($attackers['count'] ?? 0)), ENT_QUOTES) ?></span>
+                    </div>
+                </div>
+
+                <div class="grid gap-4 md:grid-cols-3">
+                    <div class="rounded-xl border border-border bg-black/20 p-4">
+                        <p class="text-xs uppercase tracking-[0.15em] text-muted">Victim</p>
+                        <div class="mt-3 flex items-center gap-3">
+                            <?php if ((string) ($victim['character_portrait_url'] ?? '') !== ''): ?>
+                                <img src="<?= htmlspecialchars((string) $victim['character_portrait_url'], ENT_QUOTES) ?>" alt="" class="h-12 w-12 rounded-xl object-cover">
+                            <?php endif; ?>
+                            <div>
+                                <p class="font-medium text-slate-50"><?= htmlspecialchars((string) ($victim['character_name'] ?? 'Unknown character'), ENT_QUOTES) ?></p>
+                                <p class="mt-1 text-xs text-muted">Damage taken <?= htmlspecialchars((string) ($victim['damage_taken'] ?? '0'), ENT_QUOTES) ?></p>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="rounded-xl border border-border bg-black/20 p-4">
+                        <p class="text-xs uppercase tracking-[0.15em] text-muted">Corporation</p>
+                        <div class="mt-3 flex items-center gap-3">
+                            <?php if ((string) ($victim['corporation_logo_url'] ?? '') !== ''): ?>
+                                <img src="<?= htmlspecialchars((string) $victim['corporation_logo_url'], ENT_QUOTES) ?>" alt="" class="h-12 w-12 rounded-xl object-cover">
+                            <?php endif; ?>
+                            <div>
+                                <p class="font-medium text-slate-50"><?= htmlspecialchars((string) ($victim['corporation_display'] ?? 'Unknown corporation'), ENT_QUOTES) ?></p>
+                                <p class="mt-1 text-xs text-muted">Victim corporation</p>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="rounded-xl border border-border bg-black/20 p-4">
+                        <p class="text-xs uppercase tracking-[0.15em] text-muted">Alliance</p>
+                        <div class="mt-3 flex items-center gap-3">
+                            <?php if ((string) ($victim['alliance_logo_url'] ?? '') !== ''): ?>
+                                <img src="<?= htmlspecialchars((string) $victim['alliance_logo_url'], ENT_QUOTES) ?>" alt="" class="h-12 w-12 rounded-xl object-cover">
+                            <?php endif; ?>
+                            <div>
+                                <p class="font-medium text-slate-50"><?= htmlspecialchars((string) ($victim['alliance_display'] ?? 'Unknown alliance'), ENT_QUOTES) ?></p>
+                                <p class="mt-1 text-xs text-muted">Victim alliance</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="grid gap-4 md:grid-cols-3">
+                    <div class="rounded-xl border border-border bg-black/20 p-4">
+                        <p class="text-xs uppercase tracking-[0.15em] text-muted">Kill time</p>
+                        <p class="mt-2 text-lg font-semibold text-slate-50"><?= htmlspecialchars((string) ($detail['killmail_time_display'] ?? '—'), ENT_QUOTES) ?></p>
+                        <p class="mt-1 text-sm text-muted">Uploaded <?= htmlspecialchars((string) ($detail['uploaded_at_display'] ?? '—'), ENT_QUOTES) ?></p>
+                    </div>
+                    <div class="rounded-xl border border-border bg-black/20 p-4">
+                        <p class="text-xs uppercase tracking-[0.15em] text-muted">Context</p>
+                        <p class="mt-2 text-sm text-slate-200"><?= htmlspecialchars((string) ($detail['match_context'] ?? 'No tracked match context available.'), ENT_QUOTES) ?></p>
+                    </div>
+                    <div class="rounded-xl border border-border bg-black/20 p-4">
+                        <p class="text-xs uppercase tracking-[0.15em] text-muted">Stored references</p>
+                        <p class="mt-2 text-sm text-slate-200">Killmail <?= htmlspecialchars((string) ($detail['killmail_id'] ?? '—'), ENT_QUOTES) ?> · Sequence <?= htmlspecialchars((string) ($detail['sequence_id'] ?? '—'), ENT_QUOTES) ?></p>
+                        <p class="mt-1 truncate text-xs text-muted">Hash <?= htmlspecialchars((string) ($detail['killmail_hash'] ?? '—'), ENT_QUOTES) ?></p>
+                    </div>
+                </div>
             </div>
         </div>
-        <p class="mt-4 max-w-4xl text-sm text-muted"><?= htmlspecialchars((string) ($detail['match_context'] ?? ''), ENT_QUOTES) ?></p>
-    </section>
-
-    <section class="mt-6 grid gap-4 xl:grid-cols-[minmax(0,1.45fr)_minmax(320px,0.95fr)]">
-        <article class="rounded-xl border border-border bg-card p-5">
-            <div class="grid gap-4 md:grid-cols-2">
-                <div class="rounded-lg border border-border bg-black/20 p-4">
-                    <p class="text-xs uppercase tracking-[0.15em] text-muted">Killmail time</p>
-                    <p class="mt-2 text-lg font-semibold text-slate-50"><?= htmlspecialchars((string) ($detail['killmail_time_display'] ?? '—'), ENT_QUOTES) ?></p>
-                    <p class="mt-1 text-sm text-muted">Uploaded <?= htmlspecialchars((string) ($detail['uploaded_at_display'] ?? '—'), ENT_QUOTES) ?></p>
-                </div>
-                <div class="rounded-lg border border-border bg-black/20 p-4">
-                    <p class="text-xs uppercase tracking-[0.15em] text-muted">Stored references</p>
-                    <p class="mt-2 text-lg font-semibold text-slate-50">Killmail <?= htmlspecialchars((string) ($detail['killmail_id'] ?? '—'), ENT_QUOTES) ?></p>
-                    <p class="mt-1 text-sm text-muted">Sequence <?= htmlspecialchars((string) ($detail['sequence_id'] ?? '—'), ENT_QUOTES) ?> · Hash <?= htmlspecialchars((string) ($detail['killmail_hash'] ?? '—'), ENT_QUOTES) ?></p>
-                </div>
-                <div class="rounded-lg border border-border bg-black/20 p-4">
-                    <p class="text-xs uppercase tracking-[0.15em] text-muted">Victim details</p>
-                    <p class="mt-2 text-base font-semibold text-slate-50"><?= htmlspecialchars((string) ($victim['corporation_display'] ?? '—'), ENT_QUOTES) ?></p>
-                    <p class="mt-1 text-sm text-slate-300"><?= htmlspecialchars((string) ($victim['alliance_display'] ?? '—'), ENT_QUOTES) ?></p>
-                    <div class="mt-3 space-y-1 text-xs text-muted">
-                        <p><?= htmlspecialchars((string) ($victim['character_id_display'] ?? '—'), ENT_QUOTES) ?></p>
-                        <p><?= htmlspecialchars((string) ($victim['corporation_id_display'] ?? '—'), ENT_QUOTES) ?></p>
-                        <p><?= htmlspecialchars((string) ($victim['alliance_id_display'] ?? '—'), ENT_QUOTES) ?></p>
-                        <p>Damage taken <?= htmlspecialchars((string) ($victim['damage_taken'] ?? '0'), ENT_QUOTES) ?></p>
-                    </div>
-                </div>
-                <div class="rounded-lg border border-border bg-black/20 p-4">
-                    <p class="text-xs uppercase tracking-[0.15em] text-muted">Ship and location</p>
-                    <p class="mt-2 text-base font-semibold text-slate-50"><?= htmlspecialchars((string) ($ship['name'] ?? '—'), ENT_QUOTES) ?></p>
-                    <p class="mt-1 text-sm text-slate-300"><?= htmlspecialchars((string) ($location['system_display'] ?? '—'), ENT_QUOTES) ?> · <?= htmlspecialchars((string) ($location['region_display'] ?? '—'), ENT_QUOTES) ?></p>
-                    <div class="mt-3 space-y-1 text-xs text-muted">
-                        <p><?= htmlspecialchars((string) ($ship['type_id_display'] ?? '—'), ENT_QUOTES) ?></p>
-                        <p><?= htmlspecialchars((string) ($location['system_id_display'] ?? '—'), ENT_QUOTES) ?></p>
-                        <p><?= htmlspecialchars((string) ($location['region_id_display'] ?? '—'), ENT_QUOTES) ?></p>
-                    </div>
-                </div>
-            </div>
-        </article>
-
-        <article class="rounded-xl border border-border bg-card p-5">
-            <div class="flex items-center justify-between gap-3">
-                <h2 class="text-base font-medium text-slate-50">Attackers summary</h2>
-                <span class="text-xs uppercase tracking-[0.15em] text-muted"><?= number_format((int) ($attackers['count'] ?? 0)) ?> attackers</span>
-            </div>
-            <div class="mt-4 space-y-3">
-                <div class="rounded-lg border border-border bg-black/20 p-4">
-                    <p class="text-xs uppercase tracking-[0.15em] text-muted">Final blow</p>
-                    <?php if (is_array($attackers['final_blow'] ?? null)): ?>
-                        <p class="mt-2 text-base font-semibold text-slate-50"><?= htmlspecialchars((string) (($attackers['final_blow']['corporation_display'] ?? 'Unknown attacker')), ENT_QUOTES) ?></p>
-                        <p class="mt-1 text-sm text-slate-300"><?= htmlspecialchars((string) (($attackers['final_blow']['ship_display'] ?? 'Unknown ship') . ' · ' . ($attackers['final_blow']['weapon_display'] ?? 'Unknown weapon')), ENT_QUOTES) ?></p>
-                    <?php else: ?>
-                        <p class="mt-2 text-sm text-muted">No final blow row stored.</p>
-                    <?php endif; ?>
-                </div>
-                <div class="rounded-lg border border-border bg-black/10 p-4">
-                    <p class="text-xs uppercase tracking-[0.15em] text-muted">Top attacker rows</p>
-                    <div class="mt-3 space-y-3">
-                        <?php foreach ((array) ($attackers['top_rows'] ?? []) as $attacker): ?>
-                            <div class="rounded-lg border border-border/70 bg-black/20 p-3">
-                                <div class="flex items-start justify-between gap-3">
-                                    <div>
-                                        <p class="font-medium text-slate-50"><?= htmlspecialchars((string) ($attacker['corporation_display'] ?? '—'), ENT_QUOTES) ?></p>
-                                        <p class="mt-1 text-xs text-slate-300"><?= htmlspecialchars((string) ($attacker['alliance_display'] ?? '—'), ENT_QUOTES) ?></p>
-                                    </div>
-                                    <?php if ($attacker['final_blow'] ?? false): ?>
-                                        <span class="rounded-full border border-emerald-500/40 bg-emerald-500/10 px-2 py-0.5 text-[11px] uppercase tracking-[0.08em] text-emerald-200">Final blow</span>
-                                    <?php endif; ?>
-                                </div>
-                                <p class="mt-2 text-sm text-muted"><?= htmlspecialchars((string) (($attacker['ship_display'] ?? '—') . ' · ' . ($attacker['weapon_display'] ?? '—')), ENT_QUOTES) ?></p>
-                                <p class="mt-2 text-xs text-muted"><?= htmlspecialchars((string) ($attacker['corporation_id_display'] ?? '—'), ENT_QUOTES) ?> · <?= htmlspecialchars((string) ($attacker['alliance_id_display'] ?? '—'), ENT_QUOTES) ?> · Sec <?= htmlspecialchars((string) ($attacker['security_status'] ?? '—'), ENT_QUOTES) ?></p>
-                            </div>
-                        <?php endforeach; ?>
-                    </div>
-                </div>
-                <div class="rounded-lg border border-dashed border-border bg-black/10 px-4 py-3 text-sm text-muted">
-                    Attacker rows are secondary context only. The primary intelligence target remains the victim-side loss and its locally stored item rows.
-                </div>
-            </div>
-        </article>
     </section>
 
     <section class="mt-6 rounded-xl border border-border bg-card p-5 shadow-lg shadow-black/20">
@@ -165,12 +168,17 @@ include __DIR__ . '/../../src/views/partials/header.php';
                         <div class="mt-4 space-y-3">
                             <?php foreach ((array) ($group['rows'] ?? []) as $itemRow): ?>
                                 <div class="rounded-lg border border-border/70 bg-black/30 p-3">
-                                    <div class="flex items-start justify-between gap-3">
-                                        <div>
-                                            <p class="font-medium text-slate-50"><?= htmlspecialchars((string) ($itemRow['item_name'] ?? 'Unknown item'), ENT_QUOTES) ?></p>
-                                            <p class="mt-1 text-xs text-muted"><?= htmlspecialchars((string) ('Type ID ' . number_format((int) ($itemRow['item_type_id'] ?? 0))), ENT_QUOTES) ?></p>
+                                    <div class="flex items-start gap-3">
+                                        <?php if ((string) ($itemRow['item_icon_url'] ?? '') !== ''): ?>
+                                            <img src="<?= htmlspecialchars((string) $itemRow['item_icon_url'], ENT_QUOTES) ?>" alt="" class="h-12 w-12 rounded-lg bg-black/30 object-contain p-1">
+                                        <?php endif; ?>
+                                        <div class="min-w-0 flex-1">
+                                            <div class="flex flex-wrap items-start justify-between gap-2">
+                                                <p class="font-medium text-slate-50"><?= htmlspecialchars((string) ($itemRow['item_name'] ?? 'Unknown item'), ENT_QUOTES) ?></p>
+                                                <span class="rounded-full border border-accent/40 bg-accent/10 px-2 py-0.5 text-xs text-slate-100"><?= htmlspecialchars((string) ($itemRow['quantity_label'] ?? 'Qty 0'), ENT_QUOTES) ?></span>
+                                            </div>
+                                            <p class="mt-1 text-xs text-slate-300"><?= htmlspecialchars((string) ($itemRow['state_label'] ?? ''), ENT_QUOTES) ?></p>
                                         </div>
-                                        <span class="rounded-full border border-accent/40 bg-accent/10 px-2 py-0.5 text-xs text-slate-100">Qty <?= number_format((int) ($itemRow['quantity'] ?? 0)) ?></span>
                                     </div>
                                     <div class="mt-3 grid gap-2 text-xs text-muted sm:grid-cols-3">
                                         <p>Flag <?= htmlspecialchars((string) (($itemRow['item_flag'] ?? null) !== null ? (string) $itemRow['item_flag'] : '—'), ENT_QUOTES) ?></p>
@@ -191,6 +199,72 @@ include __DIR__ . '/../../src/views/partials/header.php';
     </section>
 
     <section class="mt-6 grid gap-4 xl:grid-cols-[minmax(0,1.2fr)_minmax(320px,0.8fr)]">
+        <article class="rounded-xl border border-border bg-card p-5">
+            <div class="flex items-center justify-between gap-3">
+                <h2 class="text-base font-medium text-slate-50">Attacker context</h2>
+                <span class="text-xs uppercase tracking-[0.15em] text-muted">Secondary view</span>
+            </div>
+            <div class="mt-4 space-y-3">
+                <div class="rounded-lg border border-border bg-black/20 p-4">
+                    <p class="text-xs uppercase tracking-[0.15em] text-muted">Final blow</p>
+                    <?php if (is_array($attackers['final_blow'] ?? null)): ?>
+                        <div class="mt-3 flex items-center gap-3">
+                            <?php if ((string) (($attackers['final_blow']['ship_icon_url'] ?? '')) !== ''): ?>
+                                <img src="<?= htmlspecialchars((string) $attackers['final_blow']['ship_icon_url'], ENT_QUOTES) ?>" alt="" class="h-11 w-11 rounded-lg bg-black/30 object-contain p-1">
+                            <?php endif; ?>
+                            <div>
+                                <p class="font-medium text-slate-50"><?= htmlspecialchars((string) (($attackers['final_blow']['character_name'] ?? 'Unknown attacker')), ENT_QUOTES) ?></p>
+                                <p class="mt-1 text-sm text-slate-300"><?= htmlspecialchars((string) (($attackers['final_blow']['corporation_display'] ?? 'Unknown corporation') . ' · ' . ($attackers['final_blow']['alliance_display'] ?? 'Unknown alliance')), ENT_QUOTES) ?></p>
+                                <p class="mt-1 text-xs text-muted"><?= htmlspecialchars((string) (($attackers['final_blow']['ship_display'] ?? 'Unknown ship') . ' · ' . ($attackers['final_blow']['weapon_display'] ?? 'Unknown weapon')), ENT_QUOTES) ?></p>
+                            </div>
+                        </div>
+                    <?php else: ?>
+                        <p class="mt-2 text-sm text-muted">No final blow row stored.</p>
+                    <?php endif; ?>
+                </div>
+                <div class="rounded-lg border border-border bg-black/10 p-4">
+                    <p class="text-xs uppercase tracking-[0.15em] text-muted">Top attacker rows</p>
+                    <div class="mt-3 space-y-3">
+                        <?php foreach ((array) ($attackers['top_rows'] ?? []) as $attacker): ?>
+                            <div class="rounded-lg border border-border/70 bg-black/20 p-3 opacity-90">
+                                <div class="flex items-start gap-3">
+                                    <?php if ((string) ($attacker['ship_icon_url'] ?? '') !== ''): ?>
+                                        <img src="<?= htmlspecialchars((string) $attacker['ship_icon_url'], ENT_QUOTES) ?>" alt="" class="h-10 w-10 rounded-lg bg-black/30 object-contain p-1">
+                                    <?php endif; ?>
+                                    <div class="min-w-0 flex-1">
+                                        <div class="flex items-start justify-between gap-3">
+                                            <div>
+                                                <p class="font-medium text-slate-50"><?= htmlspecialchars((string) ($attacker['character_name'] ?? 'Unknown attacker'), ENT_QUOTES) ?></p>
+                                                <div class="mt-1 flex flex-wrap items-center gap-2 text-xs text-slate-300">
+                                                    <?php if ((string) ($attacker['corporation_logo_url'] ?? '') !== ''): ?>
+                                                        <img src="<?= htmlspecialchars((string) $attacker['corporation_logo_url'], ENT_QUOTES) ?>" alt="" class="h-5 w-5 rounded-md object-cover">
+                                                    <?php endif; ?>
+                                                    <span><?= htmlspecialchars((string) ($attacker['corporation_display'] ?? 'Unknown corporation'), ENT_QUOTES) ?></span>
+                                                </div>
+                                                <div class="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted">
+                                                    <?php if ((string) ($attacker['alliance_logo_url'] ?? '') !== ''): ?>
+                                                        <img src="<?= htmlspecialchars((string) $attacker['alliance_logo_url'], ENT_QUOTES) ?>" alt="" class="h-5 w-5 rounded-md object-cover">
+                                                    <?php endif; ?>
+                                                    <span><?= htmlspecialchars((string) ($attacker['alliance_display'] ?? 'Unknown alliance'), ENT_QUOTES) ?></span>
+                                                </div>
+                                            </div>
+                                            <?php if ($attacker['final_blow'] ?? false): ?>
+                                                <span class="rounded-full border border-emerald-500/40 bg-emerald-500/10 px-2 py-0.5 text-[11px] uppercase tracking-[0.08em] text-emerald-200">Final blow</span>
+                                            <?php endif; ?>
+                                        </div>
+                                        <p class="mt-2 text-xs text-muted"><?= htmlspecialchars((string) (($attacker['ship_display'] ?? '—') . ' · ' . ($attacker['weapon_display'] ?? '—') . ' · Sec ' . ($attacker['security_status'] ?? '—')), ENT_QUOTES) ?></p>
+                                    </div>
+                                </div>
+                            </div>
+                        <?php endforeach; ?>
+                    </div>
+                </div>
+                <div class="rounded-lg border border-dashed border-border bg-black/10 px-4 py-3 text-sm text-muted">
+                    Attacker rows stay visible for combat context, but the primary intelligence target remains the victim fit and dropped/destroyed inventory.
+                </div>
+            </div>
+        </article>
+
         <article class="rounded-xl border border-border bg-card p-5">
             <h2 class="text-base font-medium text-slate-50">Storage proof</h2>
             <div class="mt-4 grid gap-3 md:grid-cols-2">
@@ -217,7 +291,6 @@ include __DIR__ . '/../../src/views/partials/header.php';
                 <div class="rounded-lg border border-border bg-black/20 px-4 py-3">
                     <p class="text-xs uppercase tracking-[0.15em] text-muted">Metadata flags</p>
                     <p class="mt-1 text-sm text-slate-300">Points <?= htmlspecialchars((string) ($zkb['points_display'] ?? 'Unavailable'), ENT_QUOTES) ?> · NPC <?= !empty($zkb['npc']) ? 'Yes' : 'No' ?> · Solo <?= !empty($zkb['solo']) ? 'Yes' : 'No' ?> · Awox <?= !empty($zkb['awox']) ? 'Yes' : 'No' ?></p>
-                    <p class="mt-1 text-xs text-muted"><?= htmlspecialchars((string) ($zkb['location_id_display'] ?? 'Unavailable'), ENT_QUOTES) ?></p>
                 </div>
                 <?php if ((string) ($zkb['href'] ?? '') !== ''): ?>
                     <a href="<?= htmlspecialchars((string) $zkb['href'], ENT_QUOTES) ?>" target="_blank" rel="noreferrer" class="inline-flex items-center rounded-lg border border-border px-3 py-2 text-sm text-slate-200 transition hover:bg-white/5">Open zKill reference</a>

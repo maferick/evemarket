@@ -1812,6 +1812,165 @@ function db_ref_item_types_bulk_upsert(array $rows, ?int $chunkSize = null): int
     return db_bulk_insert_or_upsert('ref_item_types', ['type_id', 'group_id', 'market_group_id', 'type_name', 'description', 'published', 'volume'], $rows, ['group_id', 'market_group_id', 'type_name', 'description', 'published', 'volume'], $chunkSize);
 }
 
+function db_ref_item_types_by_ids(array $typeIds): array
+{
+    $ids = array_values(array_unique(array_filter(array_map(static fn (mixed $id): int => (int) $id, $typeIds), static fn (int $id): bool => $id > 0)));
+    if ($ids === []) {
+        return [];
+    }
+
+    $placeholders = implode(',', array_fill(0, count($ids), '?'));
+
+    return db_select(
+        "SELECT type_id, type_name, group_id, market_group_id, description, published, volume
+         FROM ref_item_types
+         WHERE type_id IN ($placeholders)",
+        $ids
+    );
+}
+
+function db_ref_systems_by_ids(array $systemIds): array
+{
+    $ids = array_values(array_unique(array_filter(array_map(static fn (mixed $id): int => (int) $id, $systemIds), static fn (int $id): bool => $id > 0)));
+    if ($ids === []) {
+        return [];
+    }
+
+    $placeholders = implode(',', array_fill(0, count($ids), '?'));
+
+    return db_select(
+        "SELECT system_id, constellation_id, region_id, system_name, security
+         FROM ref_systems
+         WHERE system_id IN ($placeholders)",
+        $ids
+    );
+}
+
+function db_ref_regions_by_ids(array $regionIds): array
+{
+    $ids = array_values(array_unique(array_filter(array_map(static fn (mixed $id): int => (int) $id, $regionIds), static fn (int $id): bool => $id > 0)));
+    if ($ids === []) {
+        return [];
+    }
+
+    $placeholders = implode(',', array_fill(0, count($ids), '?'));
+
+    return db_select(
+        "SELECT region_id, region_name
+         FROM ref_regions
+         WHERE region_id IN ($placeholders)",
+        $ids
+    );
+}
+
+function db_entity_metadata_cache_get_many(string $entityType, array $entityIds): array
+{
+    $type = trim($entityType);
+    $ids = array_values(array_unique(array_filter(array_map(static fn (mixed $id): int => (int) $id, $entityIds), static fn (int $id): bool => $id > 0)));
+    if ($type === '' || $ids === []) {
+        return [];
+    }
+
+    $placeholders = implode(',', array_fill(0, count($ids), '?'));
+
+    return db_select(
+        "SELECT entity_type, entity_id, entity_name, image_url, metadata_json, source_system, resolution_status, expires_at, last_requested_at, resolved_at, last_error_message, updated_at
+         FROM entity_metadata_cache
+         WHERE entity_type = ?
+           AND entity_id IN ($placeholders)",
+        array_merge([$type], $ids)
+    );
+}
+
+function db_entity_metadata_cache_upsert(array $rows): int
+{
+    $normalizedRows = [];
+
+    foreach ($rows as $row) {
+        $entityType = trim((string) ($row['entity_type'] ?? ''));
+        $entityId = (int) ($row['entity_id'] ?? 0);
+        if ($entityType === '' || $entityId <= 0) {
+            continue;
+        }
+
+        $normalizedRows[] = [
+            'entity_type' => $entityType,
+            'entity_id' => $entityId,
+            'entity_name' => ($name = trim((string) ($row['entity_name'] ?? ''))) !== '' ? $name : null,
+            'image_url' => ($imageUrl = trim((string) ($row['image_url'] ?? ''))) !== '' ? $imageUrl : null,
+            'metadata_json' => $row['metadata_json'] ?? null,
+            'source_system' => ($source = trim((string) ($row['source_system'] ?? 'cache'))) !== '' ? $source : 'cache',
+            'resolution_status' => in_array((string) ($row['resolution_status'] ?? 'pending'), ['pending', 'resolved', 'failed'], true) ? (string) $row['resolution_status'] : 'pending',
+            'expires_at' => $row['expires_at'] ?? null,
+            'last_requested_at' => $row['last_requested_at'] ?? gmdate('Y-m-d H:i:s'),
+            'resolved_at' => $row['resolved_at'] ?? (((string) ($row['resolution_status'] ?? 'pending')) === 'resolved' ? gmdate('Y-m-d H:i:s') : null),
+            'last_error_message' => isset($row['last_error_message']) ? mb_substr(trim((string) $row['last_error_message']), 0, 255) : null,
+        ];
+    }
+
+    if ($normalizedRows === []) {
+        return 0;
+    }
+
+    return db_bulk_insert_or_upsert(
+        'entity_metadata_cache',
+        [
+            'entity_type',
+            'entity_id',
+            'entity_name',
+            'image_url',
+            'metadata_json',
+            'source_system',
+            'resolution_status',
+            'expires_at',
+            'last_requested_at',
+            'resolved_at',
+            'last_error_message',
+        ],
+        $normalizedRows,
+        [
+            'entity_name',
+            'image_url',
+            'metadata_json',
+            'source_system',
+            'resolution_status',
+            'expires_at',
+            'last_requested_at',
+            'resolved_at',
+            'last_error_message',
+        ]
+    );
+}
+
+function db_entity_metadata_cache_mark_pending(string $entityType, array $entityIds, ?string $errorMessage = null): int
+{
+    $type = trim($entityType);
+    $ids = array_values(array_unique(array_filter(array_map(static fn (mixed $id): int => (int) $id, $entityIds), static fn (int $id): bool => $id > 0)));
+    if ($type === '' || $ids === []) {
+        return 0;
+    }
+
+    $rows = [];
+    $requestedAt = gmdate('Y-m-d H:i:s');
+    foreach ($ids as $id) {
+        $rows[] = [
+            'entity_type' => $type,
+            'entity_id' => $id,
+            'entity_name' => null,
+            'image_url' => null,
+            'metadata_json' => null,
+            'source_system' => 'queue',
+            'resolution_status' => 'pending',
+            'expires_at' => null,
+            'last_requested_at' => $requestedAt,
+            'resolved_at' => null,
+            'last_error_message' => $errorMessage,
+        ];
+    }
+
+    return db_entity_metadata_cache_upsert($rows);
+}
+
 function db_killmail_event_upsert(array $event): bool
 {
     return db_execute(

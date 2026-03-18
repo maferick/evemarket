@@ -19,6 +19,7 @@ This repository establishes a clean architecture that can scale from an initial 
 - ESI OAuth callback (`/callback`) with token verification and DB persistence
 - ESI cache tables (`esi_cache_namespaces`, `esi_cache_entries`) for structured `cache.esi.*` namespaces
 - Incremental sync state tables (`sync_state`, `sync_runs`) for watermark/cursor tracking and run observability
+- Reusable entity metadata cache for human-readable killmail, market, and analytics surfaces
 - Secure CSRF-protected settings forms
 - Session-based flash messaging
 
@@ -234,6 +235,12 @@ EveMarket now includes a first-pass killmail intelligence ingestion foundation b
   - `killmail_items`
   - `killmail_tracked_alliances`
   - `killmail_tracked_corporations`
+  - `entity_metadata_cache`
+- Resolution model:
+  - prefer local reference tables for item types, solar systems, and regions
+  - cache dynamic alliance, corporation, and character names locally
+  - prime metadata during ingestion so detail pages can stay image-rich without repeatedly calling ESI
+  - build EVE Image Server URLs directly at render time instead of proxying or storing binaries locally
 
 ### Operations
 

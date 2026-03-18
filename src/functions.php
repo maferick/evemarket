@@ -1536,7 +1536,460 @@ function killmail_item_role_label(string $role): string
     };
 }
 
-function killmail_loss_item_groups(array $items): array
+function killmail_entity_cacheable_types(): array
+{
+    return ['alliance', 'corporation', 'character', 'type', 'system', 'region'];
+}
+
+function killmail_entity_type_label_human(string $entityType): string
+{
+    return match ($entityType) {
+        'alliance' => 'Alliance',
+        'corporation' => 'Corporation',
+        'character' => 'Character',
+        'type' => 'Type',
+        'system' => 'System',
+        'region' => 'Region',
+        default => 'Entity',
+    };
+}
+
+function killmail_entity_image_url(string $entityType, ?int $entityId, string $variation = 'default', int $size = 128): ?string
+{
+    $id = (int) $entityId;
+    if ($id <= 0) {
+        return null;
+    }
+
+    $category = null;
+    $resolvedVariation = $variation;
+    $resolvedSize = max(32, min(1024, $size));
+
+    switch ($entityType) {
+        case 'alliance':
+            $category = 'alliances';
+            $resolvedVariation = $variation === 'default' ? 'logo' : $variation;
+            break;
+        case 'corporation':
+            $category = 'corporations';
+            $resolvedVariation = $variation === 'default' ? 'logo' : $variation;
+            break;
+        case 'character':
+            $category = 'characters';
+            $resolvedVariation = $variation === 'default' ? 'portrait' : $variation;
+            break;
+        case 'type':
+            $category = 'types';
+            $resolvedVariation = $variation === 'default' ? 'icon' : $variation;
+            break;
+    }
+
+    if ($category === null) {
+        return null;
+    }
+
+    return sprintf(
+        'https://images.evetech.net/%s/%d/%s?size=%d',
+        rawurlencode($category),
+        $id,
+        rawurlencode($resolvedVariation),
+        $resolvedSize
+    );
+}
+
+function killmail_entity_cache_ttl(string $entityType): ?string
+{
+    if (in_array($entityType, ['type', 'system', 'region'], true)) {
+        return null;
+    }
+
+    return gmdate('Y-m-d H:i:s', strtotime('+30 days'));
+}
+
+function killmail_entity_resolution_requests(array $event, array $attackers = [], array $items = []): array
+{
+    $requests = array_fill_keys(killmail_entity_cacheable_types(), []);
+
+    $add = static function (string $type, ?int $id) use (&$requests): void {
+        $entityId = (int) $id;
+        if (!isset($requests[$type]) || $entityId <= 0) {
+            return;
+        }
+
+        $requests[$type][$entityId] = $entityId;
+    };
+
+    $add('character', isset($event['victim_character_id']) ? (int) $event['victim_character_id'] : null);
+    $add('corporation', isset($event['victim_corporation_id']) ? (int) $event['victim_corporation_id'] : null);
+    $add('alliance', isset($event['victim_alliance_id']) ? (int) $event['victim_alliance_id'] : null);
+    $add('type', isset($event['victim_ship_type_id']) ? (int) $event['victim_ship_type_id'] : null);
+    $add('system', isset($event['solar_system_id']) ? (int) $event['solar_system_id'] : null);
+    $add('region', isset($event['region_id']) ? (int) $event['region_id'] : null);
+
+    foreach ($attackers as $attacker) {
+        if (!is_array($attacker)) {
+            continue;
+        }
+
+        $add('character', isset($attacker['character_id']) ? (int) $attacker['character_id'] : null);
+        $add('corporation', isset($attacker['corporation_id']) ? (int) $attacker['corporation_id'] : null);
+        $add('alliance', isset($attacker['alliance_id']) ? (int) $attacker['alliance_id'] : null);
+        $add('type', isset($attacker['ship_type_id']) ? (int) $attacker['ship_type_id'] : null);
+        $add('type', isset($attacker['weapon_type_id']) ? (int) $attacker['weapon_type_id'] : null);
+    }
+
+    foreach ($items as $item) {
+        if (!is_array($item)) {
+            continue;
+        }
+
+        $add('type', isset($item['item_type_id']) ? (int) $item['item_type_id'] : null);
+    }
+
+    foreach ($requests as $type => $ids) {
+        $requests[$type] = array_values($ids);
+    }
+
+    return $requests;
+}
+
+function killmail_entity_cache_prefill_from_references(array $requests): void
+{
+    $upserts = [];
+
+    foreach (db_ref_item_types_by_ids($requests['type'] ?? []) as $row) {
+        $typeId = (int) ($row['type_id'] ?? 0);
+        if ($typeId <= 0) {
+            continue;
+        }
+
+        $upserts[] = [
+            'entity_type' => 'type',
+            'entity_id' => $typeId,
+            'entity_name' => trim((string) ($row['type_name'] ?? '')),
+            'image_url' => killmail_entity_image_url('type', $typeId, 'icon', 128),
+            'metadata_json' => json_encode([
+                'group_id' => isset($row['group_id']) ? (int) $row['group_id'] : null,
+                'market_group_id' => isset($row['market_group_id']) ? (int) $row['market_group_id'] : null,
+                'published' => isset($row['published']) ? (int) $row['published'] : null,
+            ], JSON_THROW_ON_ERROR),
+            'source_system' => 'local_ref',
+            'resolution_status' => 'resolved',
+            'expires_at' => null,
+            'resolved_at' => gmdate('Y-m-d H:i:s'),
+        ];
+    }
+
+    foreach (db_ref_systems_by_ids($requests['system'] ?? []) as $row) {
+        $systemId = (int) ($row['system_id'] ?? 0);
+        if ($systemId <= 0) {
+            continue;
+        }
+
+        $upserts[] = [
+            'entity_type' => 'system',
+            'entity_id' => $systemId,
+            'entity_name' => trim((string) ($row['system_name'] ?? '')),
+            'image_url' => null,
+            'metadata_json' => json_encode([
+                'region_id' => isset($row['region_id']) ? (int) $row['region_id'] : null,
+                'security' => isset($row['security']) ? (float) $row['security'] : null,
+            ], JSON_THROW_ON_ERROR),
+            'source_system' => 'local_ref',
+            'resolution_status' => 'resolved',
+            'expires_at' => null,
+            'resolved_at' => gmdate('Y-m-d H:i:s'),
+        ];
+    }
+
+    foreach (db_ref_regions_by_ids($requests['region'] ?? []) as $row) {
+        $regionId = (int) ($row['region_id'] ?? 0);
+        if ($regionId <= 0) {
+            continue;
+        }
+
+        $upserts[] = [
+            'entity_type' => 'region',
+            'entity_id' => $regionId,
+            'entity_name' => trim((string) ($row['region_name'] ?? '')),
+            'image_url' => null,
+            'metadata_json' => null,
+            'source_system' => 'local_ref',
+            'resolution_status' => 'resolved',
+            'expires_at' => null,
+            'resolved_at' => gmdate('Y-m-d H:i:s'),
+        ];
+    }
+
+    if ($upserts !== []) {
+        db_entity_metadata_cache_upsert($upserts);
+    }
+}
+
+function killmail_entity_cache_rows_by_type(array $requests): array
+{
+    $rowsByType = [];
+
+    foreach ($requests as $type => $ids) {
+        $rowsByType[$type] = [];
+        foreach (db_entity_metadata_cache_get_many($type, (array) $ids) as $row) {
+            $rowsByType[$type][(int) ($row['entity_id'] ?? 0)] = $row;
+        }
+    }
+
+    return $rowsByType;
+}
+
+function killmail_entity_cache_is_current(array $row): bool
+{
+    if (($row['resolution_status'] ?? '') !== 'resolved') {
+        return false;
+    }
+
+    $expiresAt = trim((string) ($row['expires_at'] ?? ''));
+    if ($expiresAt === '') {
+        return true;
+    }
+
+    return strtotime($expiresAt) !== false && strtotime($expiresAt) > time();
+}
+
+function killmail_entity_public_endpoint(string $entityType, int $entityId): ?string
+{
+    if ($entityId <= 0) {
+        return null;
+    }
+
+    return match ($entityType) {
+        'alliance' => 'https://esi.evetech.net/latest/alliances/' . $entityId . '/?datasource=tranquility',
+        'corporation' => 'https://esi.evetech.net/latest/corporations/' . $entityId . '/?datasource=tranquility',
+        'character' => 'https://esi.evetech.net/latest/characters/' . $entityId . '/?datasource=tranquility',
+        default => null,
+    };
+}
+
+function killmail_entity_network_resolve(array $missingByType): void
+{
+    $dynamicIds = [];
+    foreach (['alliance', 'corporation', 'character'] as $type) {
+        foreach ((array) ($missingByType[$type] ?? []) as $id) {
+            $entityId = (int) $id;
+            if ($entityId > 0) {
+                $dynamicIds[$entityId] = $entityId;
+            }
+        }
+    }
+
+    $upserts = [];
+    $resolvedByType = ['alliance' => [], 'corporation' => [], 'character' => []];
+
+    if ($dynamicIds !== []) {
+        try {
+            $nameRows = esi_universe_names_lookup(array_values($dynamicIds));
+        } catch (Throwable) {
+            $nameRows = [];
+        }
+
+        foreach ($nameRows as $row) {
+            if (!is_array($row)) {
+                continue;
+            }
+
+            $id = (int) ($row['id'] ?? 0);
+            $type = strtolower(trim((string) ($row['category'] ?? '')));
+            $name = trim((string) ($row['name'] ?? ''));
+            if ($id <= 0 || $name === '' || !isset($resolvedByType[$type])) {
+                continue;
+            }
+
+            $resolvedByType[$type][$id] = true;
+            $upserts[] = [
+                'entity_type' => $type,
+                'entity_id' => $id,
+                'entity_name' => $name,
+                'image_url' => killmail_entity_image_url($type, $id),
+                'metadata_json' => json_encode(['via' => 'universe_names'], JSON_THROW_ON_ERROR),
+                'source_system' => 'esi',
+                'resolution_status' => 'resolved',
+                'expires_at' => killmail_entity_cache_ttl($type),
+                'resolved_at' => gmdate('Y-m-d H:i:s'),
+                'last_error_message' => null,
+            ];
+        }
+    }
+
+    foreach (['alliance', 'corporation', 'character'] as $type) {
+        foreach ((array) ($missingByType[$type] ?? []) as $id) {
+            $entityId = (int) $id;
+            if ($entityId <= 0 || isset($resolvedByType[$type][$entityId])) {
+                continue;
+            }
+
+            $endpoint = killmail_entity_public_endpoint($type, $entityId);
+            if ($endpoint === null) {
+                continue;
+            }
+
+            try {
+                $response = http_get_json($endpoint, [
+                    'Accept: application/json',
+                    'User-Agent: ' . esi_user_agent(),
+                ]);
+            } catch (Throwable $exception) {
+                $response = ['status' => 599, 'json' => [], 'body' => '', 'error_message' => $exception->getMessage()];
+            }
+
+            if (($response['status'] ?? 500) >= 400) {
+                db_entity_metadata_cache_upsert([[
+                    'entity_type' => $type,
+                    'entity_id' => $entityId,
+                    'entity_name' => null,
+                    'image_url' => killmail_entity_image_url($type, $entityId),
+                    'metadata_json' => null,
+                    'source_system' => 'esi',
+                    'resolution_status' => 'failed',
+                    'expires_at' => gmdate('Y-m-d H:i:s', strtotime('+6 hours')),
+                    'resolved_at' => null,
+                    'last_error_message' => 'ESI profile lookup failed with status ' . (int) ($response['status'] ?? 0),
+                ]]);
+                continue;
+            }
+
+            $name = trim((string) ($response['json']['name'] ?? ''));
+            if ($name === '') {
+                continue;
+            }
+
+            $resolvedByType[$type][$entityId] = true;
+            $upserts[] = [
+                'entity_type' => $type,
+                'entity_id' => $entityId,
+                'entity_name' => $name,
+                'image_url' => killmail_entity_image_url($type, $entityId),
+                'metadata_json' => json_encode((array) ($response['json'] ?? []), JSON_THROW_ON_ERROR),
+                'source_system' => 'esi',
+                'resolution_status' => 'resolved',
+                'expires_at' => killmail_entity_cache_ttl($type),
+                'resolved_at' => gmdate('Y-m-d H:i:s'),
+                'last_error_message' => null,
+            ];
+        }
+    }
+
+    if ($upserts !== []) {
+        db_entity_metadata_cache_upsert($upserts);
+    }
+}
+
+function killmail_entity_placeholder(string $entityType, int $entityId): string
+{
+    return 'Unknown ' . strtolower(killmail_entity_type_label_human($entityType)) . ' (ID cached for resolution)';
+}
+
+function killmail_entity_resolve_batch(array $requests, bool $allowNetworkFallback = false): array
+{
+    $normalized = [];
+    foreach (killmail_entity_cacheable_types() as $type) {
+        $ids = array_values(array_unique(array_filter(
+            array_map(static fn (mixed $id): int => (int) $id, (array) ($requests[$type] ?? [])),
+            static fn (int $id): bool => $id > 0
+        )));
+        $normalized[$type] = $ids;
+    }
+
+    killmail_entity_cache_prefill_from_references($normalized);
+    $cacheRowsByType = killmail_entity_cache_rows_by_type($normalized);
+
+    $missingByType = [];
+    foreach ($normalized as $type => $ids) {
+        $missingByType[$type] = [];
+        foreach ($ids as $id) {
+            $row = $cacheRowsByType[$type][$id] ?? null;
+            if (!is_array($row)) {
+                $missingByType[$type][] = $id;
+                continue;
+            }
+
+            if ($allowNetworkFallback && !killmail_entity_cache_is_current($row)) {
+                $missingByType[$type][] = $id;
+            }
+        }
+    }
+
+    if ($allowNetworkFallback) {
+        killmail_entity_network_resolve($missingByType);
+        $cacheRowsByType = killmail_entity_cache_rows_by_type($normalized);
+    }
+
+    $resolved = [];
+    foreach ($normalized as $type => $ids) {
+        $resolved[$type] = [];
+        $stillMissing = [];
+
+        foreach ($ids as $id) {
+            $row = $cacheRowsByType[$type][$id] ?? null;
+            $name = trim((string) ($row['entity_name'] ?? ''));
+            $resolved[$type][$id] = [
+                'entity_type' => $type,
+                'entity_id' => $id,
+                'name' => $name !== '' ? $name : killmail_entity_placeholder($type, $id),
+                'image_url' => ($imageUrl = trim((string) ($row['image_url'] ?? ''))) !== '' ? $imageUrl : killmail_entity_image_url($type, $id),
+                'status' => $name !== '' ? (string) ($row['resolution_status'] ?? 'resolved') : 'pending',
+                'source_system' => (string) ($row['source_system'] ?? ($name !== '' ? 'cache' : 'queue')),
+                'metadata' => killmail_decode_json_array(isset($row['metadata_json']) ? (string) $row['metadata_json'] : null),
+            ];
+
+            if ($name === '') {
+                $stillMissing[] = $id;
+            }
+        }
+
+        if ($stillMissing !== []) {
+            db_entity_metadata_cache_mark_pending($type, $stillMissing);
+        }
+    }
+
+    return $resolved;
+}
+
+function killmail_prime_entity_metadata(array $requests): void
+{
+    try {
+        killmail_entity_resolve_batch($requests, true);
+    } catch (Throwable) {
+        foreach ($requests as $type => $ids) {
+            db_entity_metadata_cache_mark_pending((string) $type, (array) $ids);
+        }
+    }
+}
+
+function killmail_resolved_entity(array $resolved, string $type, ?int $id, ?string $fallbackName = null): array
+{
+    $entityId = (int) $id;
+    $fallback = trim((string) $fallbackName);
+    $row = $entityId > 0 ? ($resolved[$type][$entityId] ?? null) : null;
+    $name = trim((string) ($row['name'] ?? ''));
+
+    if ($name === '' && $fallback !== '') {
+        $name = $fallback;
+    }
+
+    if ($name === '') {
+        $name = $entityId > 0
+            ? killmail_entity_placeholder($type, $entityId)
+            : killmail_entity_type_label_human($type) . ' unavailable';
+    }
+
+    return [
+        'id' => $entityId > 0 ? $entityId : null,
+        'name' => $name,
+        'status' => (string) ($row['status'] ?? ($entityId > 0 ? 'pending' : 'unavailable')),
+        'image_url' => $entityId > 0 ? (($row['image_url'] ?? null) ?: killmail_entity_image_url($type, $entityId)) : null,
+        'metadata' => is_array($row['metadata'] ?? null) ? $row['metadata'] : [],
+    ];
+}
+
+function killmail_loss_item_groups(array $items, array $resolvedEntities = []): array
 {
     $groups = [
         'dropped' => ['label' => killmail_item_role_label('dropped'), 'description' => 'Recovered from the stored victim-side loss record.', 'rows' => [], 'total_quantity' => 0],
@@ -1563,10 +2016,20 @@ function killmail_loss_item_groups(array $items): array
             $quantity = max(1, (int) ($item['quantity_destroyed'] ?? 0), (int) ($item['quantity_dropped'] ?? 0));
         }
 
+        $typeId = isset($item['item_type_id']) ? (int) $item['item_type_id'] : null;
+        $resolvedItem = killmail_resolved_entity($resolvedEntities, 'type', $typeId, isset($item['item_type_name']) ? (string) $item['item_type_name'] : null);
+
         $groups[$role]['rows'][] = [
-            'item_name' => killmail_entity_display_name(isset($item['item_type_name']) ? (string) $item['item_type_name'] : '', 'Item', isset($item['item_type_id']) ? (int) $item['item_type_id'] : null),
-            'item_type_id' => isset($item['item_type_id']) ? (int) $item['item_type_id'] : null,
+            'item_name' => $resolvedItem['name'],
+            'item_type_id' => $typeId,
+            'item_icon_url' => $typeId !== null ? killmail_entity_image_url('type', $typeId, 'icon', 64) : null,
             'quantity' => $quantity,
+            'quantity_label' => 'Qty ' . number_format($quantity),
+            'state_label' => match ($role) {
+                'dropped' => number_format($quantity) . ' dropped',
+                'destroyed' => number_format($quantity) . ' destroyed',
+                default => number_format($quantity) . ' fitted',
+            },
             'item_flag' => isset($item['item_flag']) ? (int) $item['item_flag'] : null,
             'singleton' => isset($item['singleton']) ? (int) $item['singleton'] : null,
             'stored_at_display' => killmail_format_datetime(isset($item['created_at']) ? (string) $item['created_at'] : null),
@@ -1609,7 +2072,25 @@ function killmail_detail_data(): array
     $victim = is_array($killmail['victim'] ?? null) ? $killmail['victim'] : [];
     $zkb = killmail_decode_json_array(isset($event['zkb_json']) ? (string) $event['zkb_json'] : null);
     $matchSources = killmail_match_sources($event);
-    $groupedItems = killmail_loss_item_groups($items);
+    $resolutionRequests = killmail_entity_resolution_requests($event, $attackers, $items);
+    $resolvedEntities = killmail_entity_resolve_batch($resolutionRequests, false);
+    $groupedItems = killmail_loss_item_groups($items, $resolvedEntities);
+    $victimCharacter = killmail_resolved_entity($resolvedEntities, 'character', isset($event['victim_character_id']) ? (int) $event['victim_character_id'] : null);
+    $victimCorporation = killmail_resolved_entity(
+        $resolvedEntities,
+        'corporation',
+        isset($event['victim_corporation_id']) ? (int) $event['victim_corporation_id'] : null,
+        isset($event['victim_corporation_label']) ? (string) $event['victim_corporation_label'] : null
+    );
+    $victimAlliance = killmail_resolved_entity(
+        $resolvedEntities,
+        'alliance',
+        isset($event['victim_alliance_id']) ? (int) $event['victim_alliance_id'] : null,
+        isset($event['victim_alliance_label']) ? (string) $event['victim_alliance_label'] : null
+    );
+    $victimShip = killmail_resolved_entity($resolvedEntities, 'type', isset($event['victim_ship_type_id']) ? (int) $event['victim_ship_type_id'] : null, isset($event['ship_type_name']) ? (string) $event['ship_type_name'] : null);
+    $system = killmail_resolved_entity($resolvedEntities, 'system', isset($event['solar_system_id']) ? (int) $event['solar_system_id'] : null, isset($event['system_name']) ? (string) $event['system_name'] : null);
+    $region = killmail_resolved_entity($resolvedEntities, 'region', isset($event['region_id']) ? (int) $event['region_id'] : null, isset($event['region_name']) ? (string) $event['region_name'] : null);
 
     $formattedAttackers = [];
     foreach ($attackers as $attacker) {
@@ -1617,15 +2098,23 @@ function killmail_detail_data(): array
             continue;
         }
 
+        $attackerCharacter = killmail_resolved_entity($resolvedEntities, 'character', isset($attacker['character_id']) ? (int) $attacker['character_id'] : null);
+        $attackerCorporation = killmail_resolved_entity($resolvedEntities, 'corporation', isset($attacker['corporation_id']) ? (int) $attacker['corporation_id'] : null);
+        $attackerAlliance = killmail_resolved_entity($resolvedEntities, 'alliance', isset($attacker['alliance_id']) ? (int) $attacker['alliance_id'] : null);
+        $attackerShip = killmail_resolved_entity($resolvedEntities, 'type', isset($attacker['ship_type_id']) ? (int) $attacker['ship_type_id'] : null, isset($attacker['ship_type_name']) ? (string) $attacker['ship_type_name'] : null);
+        $attackerWeapon = killmail_resolved_entity($resolvedEntities, 'type', isset($attacker['weapon_type_id']) ? (int) $attacker['weapon_type_id'] : null, isset($attacker['weapon_type_name']) ? (string) $attacker['weapon_type_name'] : null);
+
         $formattedAttackers[] = [
             'attacker_index' => (int) ($attacker['attacker_index'] ?? 0),
-            'character_id_display' => killmail_secondary_id(isset($attacker['character_id']) ? (int) $attacker['character_id'] : null, 'Character'),
-            'corporation_display' => killmail_entity_display_name('', 'Corporation', isset($attacker['corporation_id']) ? (int) $attacker['corporation_id'] : null),
-            'corporation_id_display' => killmail_secondary_id(isset($attacker['corporation_id']) ? (int) $attacker['corporation_id'] : null, 'Corp ID'),
-            'alliance_display' => killmail_entity_display_name('', 'Alliance', isset($attacker['alliance_id']) ? (int) $attacker['alliance_id'] : null),
-            'alliance_id_display' => killmail_secondary_id(isset($attacker['alliance_id']) ? (int) $attacker['alliance_id'] : null, 'Alliance ID'),
-            'ship_display' => killmail_entity_display_name(isset($attacker['ship_type_name']) ? (string) $attacker['ship_type_name'] : '', 'Ship', isset($attacker['ship_type_id']) ? (int) $attacker['ship_type_id'] : null),
-            'weapon_display' => killmail_entity_display_name(isset($attacker['weapon_type_name']) ? (string) $attacker['weapon_type_name'] : '', 'Weapon', isset($attacker['weapon_type_id']) ? (int) $attacker['weapon_type_id'] : null),
+            'character_name' => $attackerCharacter['name'],
+            'character_image_url' => $attackerCharacter['id'] !== null ? killmail_entity_image_url('character', (int) $attackerCharacter['id'], 'portrait', 128) : null,
+            'corporation_display' => $attackerCorporation['name'],
+            'corporation_logo_url' => $attackerCorporation['id'] !== null ? killmail_entity_image_url('corporation', (int) $attackerCorporation['id'], 'logo', 64) : null,
+            'alliance_display' => $attackerAlliance['name'],
+            'alliance_logo_url' => $attackerAlliance['id'] !== null ? killmail_entity_image_url('alliance', (int) $attackerAlliance['id'], 'logo', 64) : null,
+            'ship_display' => $attackerShip['name'],
+            'ship_icon_url' => $attackerShip['id'] !== null ? killmail_entity_image_url('type', (int) $attackerShip['id'], 'icon', 64) : null,
+            'weapon_display' => $attackerWeapon['name'],
             'final_blow' => (int) ($attacker['final_blow'] ?? 0) === 1,
             'security_status' => isset($attacker['security_status']) && $attacker['security_status'] !== null ? number_format((float) $attacker['security_status'], 2) : '—',
         ];
@@ -1651,23 +2140,24 @@ function killmail_detail_data(): array
             'created_at_display' => killmail_format_datetime(isset($event['created_at']) ? (string) $event['created_at'] : null),
             'updated_at_display' => killmail_format_datetime(isset($event['updated_at']) ? (string) $event['updated_at'] : null),
             'victim' => [
-                'character_id_display' => killmail_secondary_id(isset($event['victim_character_id']) ? (int) $event['victim_character_id'] : null, 'Character'),
-                'corporation_display' => killmail_entity_display_name(isset($event['victim_corporation_label']) ? (string) $event['victim_corporation_label'] : '', 'Corporation', isset($event['victim_corporation_id']) ? (int) $event['victim_corporation_id'] : null),
-                'corporation_id_display' => killmail_secondary_id(isset($event['victim_corporation_id']) ? (int) $event['victim_corporation_id'] : null, 'Corp ID'),
-                'alliance_display' => killmail_entity_display_name(isset($event['victim_alliance_label']) ? (string) $event['victim_alliance_label'] : '', 'Alliance', isset($event['victim_alliance_id']) ? (int) $event['victim_alliance_id'] : null),
-                'alliance_id_display' => killmail_secondary_id(isset($event['victim_alliance_id']) ? (int) $event['victim_alliance_id'] : null, 'Alliance ID'),
+                'character_name' => $victimCharacter['name'],
+                'character_portrait_url' => $victimCharacter['id'] !== null ? killmail_entity_image_url('character', (int) $victimCharacter['id'], 'portrait', 256) : null,
+                'corporation_display' => $victimCorporation['name'],
+                'corporation_logo_url' => $victimCorporation['id'] !== null ? killmail_entity_image_url('corporation', (int) $victimCorporation['id'], 'logo', 128) : null,
+                'alliance_display' => $victimAlliance['name'],
+                'alliance_logo_url' => $victimAlliance['id'] !== null ? killmail_entity_image_url('alliance', (int) $victimAlliance['id'], 'logo', 128) : null,
                 'damage_taken' => number_format((int) ($victim['damage_taken'] ?? 0)),
                 'tracked_badges' => $matchSources,
             ],
             'ship' => [
-                'name' => killmail_entity_display_name(isset($event['ship_type_name']) ? (string) $event['ship_type_name'] : '', 'Ship', isset($event['victim_ship_type_id']) ? (int) $event['victim_ship_type_id'] : null),
-                'type_id_display' => killmail_secondary_id(isset($event['victim_ship_type_id']) ? (int) $event['victim_ship_type_id'] : null, 'Type ID'),
+                'name' => $victimShip['name'],
+                'render_url' => $victimShip['id'] !== null ? killmail_entity_image_url('type', (int) $victimShip['id'], 'render', 512) : null,
+                'icon_url' => $victimShip['id'] !== null ? killmail_entity_image_url('type', (int) $victimShip['id'], 'icon', 128) : null,
             ],
             'location' => [
-                'system_display' => killmail_entity_display_name(isset($event['system_name']) ? (string) $event['system_name'] : '', 'System', isset($event['solar_system_id']) ? (int) $event['solar_system_id'] : null),
-                'system_id_display' => killmail_secondary_id(isset($event['solar_system_id']) ? (int) $event['solar_system_id'] : null, 'System ID'),
-                'region_display' => killmail_entity_display_name(isset($event['region_name']) ? (string) $event['region_name'] : '', 'Region', isset($event['region_id']) ? (int) $event['region_id'] : null),
-                'region_id_display' => killmail_secondary_id(isset($event['region_id']) ? (int) $event['region_id'] : null, 'Region ID'),
+                'system_display' => $system['name'],
+                'region_display' => $region['name'],
+                'security_status' => isset($system['metadata']['security']) ? number_format((float) $system['metadata']['security'], 1) : null,
             ],
             'attackers' => [
                 'count' => count($formattedAttackers),
@@ -1691,7 +2181,6 @@ function killmail_detail_data(): array
                 'solo' => !empty($zkb['solo']),
                 'awox' => !empty($zkb['awox']),
                 'href' => isset($zkb['href']) ? (string) $zkb['href'] : '',
-                'location_id_display' => isset($zkb['locationID']) ? killmail_secondary_id((int) $zkb['locationID'], 'zKill location') : 'Unavailable',
             ],
         ],
     ];
@@ -6180,6 +6669,12 @@ function sync_killmail_r2z2_stream(string $runMode = 'incremental'): array
                 usleep(100000);
                 continue;
             }
+
+            killmail_prime_entity_metadata(killmail_entity_resolution_requests(
+                $event,
+                (array) ($transformed['attackers'] ?? []),
+                (array) ($transformed['items'] ?? [])
+            ));
 
             db_transaction(static function () use ($transformed, $sequenceId, &$rowsWritten): void {
                 db_killmail_event_upsert($transformed['event']);
