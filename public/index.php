@@ -186,7 +186,7 @@ $statusThemes = [
                             <div class="surface-tertiary text-sm text-slate-400">No ranked signals yet.</div>
                         <?php else: ?>
                             <?php foreach ($rows as $index => $row): ?>
-                                <div class="intelligence-row">
+                                <div class="intelligence-row group">
                                     <div class="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl border border-white/8 bg-slate-900/88 text-sm font-semibold text-slate-100">
                                         <?= htmlspecialchars(substr((string) ($row['module'] ?? '?'), 0, 2), ENT_QUOTES) ?>
                                     </div>
@@ -234,7 +234,7 @@ $statusThemes = [
                 <div class="surface-tertiary text-sm text-slate-400">No missing-item priorities yet.</div>
             <?php else: ?>
                 <?php foreach ($rows as $index => $row): ?>
-                    <div class="intelligence-row">
+                    <div class="intelligence-row group">
                         <div class="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl border border-orange-400/15 bg-orange-500/8 text-sm font-semibold text-orange-100">
                             <?= htmlspecialchars(substr((string) ($row['module'] ?? '?'), 0, 2), ENT_QUOTES) ?>
                         </div>
