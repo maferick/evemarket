@@ -262,6 +262,31 @@ CREATE TABLE IF NOT EXISTS market_history_daily (
     KEY idx_market_history_daily_observed (source_type, source_id, observed_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+CREATE TABLE IF NOT EXISTS market_hub_local_history_daily (
+    id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    source VARCHAR(40) NOT NULL,
+    source_id BIGINT UNSIGNED NOT NULL,
+    type_id INT UNSIGNED NOT NULL,
+    trade_date DATE NOT NULL,
+    open_price DECIMAL(20, 2) NOT NULL,
+    high_price DECIMAL(20, 2) NOT NULL,
+    low_price DECIMAL(20, 2) NOT NULL,
+    close_price DECIMAL(20, 2) NOT NULL,
+    buy_price DECIMAL(20, 2) DEFAULT NULL,
+    sell_price DECIMAL(20, 2) DEFAULT NULL,
+    spread_value DECIMAL(20, 2) DEFAULT NULL,
+    spread_percent DECIMAL(9, 4) DEFAULT NULL,
+    volume BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    buy_order_count INT UNSIGNED NOT NULL DEFAULT 0,
+    sell_order_count INT UNSIGNED NOT NULL DEFAULT 0,
+    captured_at DATETIME NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    KEY idx_market_hub_local_history_daily_source_date (source, source_id, trade_date),
+    UNIQUE KEY unique_market_hub_local_history_daily (source, source_id, type_id, trade_date),
+    KEY idx_market_hub_local_history_daily_type_date (type_id, trade_date)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 CREATE TABLE IF NOT EXISTS static_data_import_state (
     id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
     source_key VARCHAR(120) NOT NULL,
