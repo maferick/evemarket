@@ -542,6 +542,90 @@ function db_market_orders_current_latest_snapshot_rows(string $sourceType, int $
     );
 }
 
+
+function db_market_orders_snapshot_metrics_window(string $sourceType, int $sourceId, string $startObservedAt): array
+{
+    $safeSourceType = trim($sourceType);
+    $safeSourceId = max(0, $sourceId);
+    $safeStartObservedAt = trim($startObservedAt);
+
+    if ($safeSourceType === '' || $safeSourceId <= 0 || $safeStartObservedAt === '') {
+        return [];
+    }
+
+    $rows = db_select(
+        "SELECT
+            snapshots.source_id,
+            snapshots.type_id,
+            snapshots.observed_at,
+            MIN(CASE WHEN snapshots.is_buy_order = 0 THEN snapshots.price ELSE NULL END) AS best_sell_price,
+            MAX(CASE WHEN snapshots.is_buy_order = 1 THEN snapshots.price ELSE NULL END) AS best_buy_price,
+            SUM(snapshots.volume_remain) AS total_volume,
+            SUM(CASE WHEN snapshots.is_buy_order = 1 THEN 1 ELSE 0 END) AS buy_order_count,
+            SUM(CASE WHEN snapshots.is_buy_order = 0 THEN 1 ELSE 0 END) AS sell_order_count
+         FROM (
+            SELECT
+                moh.source_id,
+                moh.type_id,
+                moh.is_buy_order,
+                moh.price,
+                moh.volume_remain,
+                moh.observed_at
+            FROM market_orders_history moh
+            WHERE moh.source_type = ?
+              AND moh.source_id = ?
+              AND moh.observed_at >= ?
+
+            UNION ALL
+
+            SELECT
+                moc.source_id,
+                moc.type_id,
+                moc.is_buy_order,
+                moc.price,
+                moc.volume_remain,
+                moc.observed_at
+            FROM market_orders_current moc
+            WHERE moc.source_type = ?
+              AND moc.source_id = ?
+              AND moc.observed_at >= ?
+              AND NOT EXISTS (
+                    SELECT 1
+                    FROM market_orders_history moh_existing
+                    WHERE moh_existing.source_type = ?
+                      AND moh_existing.source_id = ?
+                      AND moh_existing.observed_at = moc.observed_at
+                )
+         ) snapshots
+         GROUP BY snapshots.source_id, snapshots.type_id, snapshots.observed_at
+         ORDER BY snapshots.observed_at ASC, snapshots.type_id ASC",
+        [
+            $safeSourceType,
+            $safeSourceId,
+            $safeStartObservedAt,
+            $safeSourceType,
+            $safeSourceId,
+            $safeStartObservedAt,
+            $safeSourceType,
+            $safeSourceId,
+        ]
+    );
+
+    return array_map(static function (array $row): array {
+        return [
+            'source_id' => (int) ($row['source_id'] ?? 0),
+            'type_id' => (int) ($row['type_id'] ?? 0),
+            'observed_at' => (string) ($row['observed_at'] ?? ''),
+            'best_sell_price' => isset($row['best_sell_price']) && $row['best_sell_price'] !== null ? (float) $row['best_sell_price'] : null,
+            'best_buy_price' => isset($row['best_buy_price']) && $row['best_buy_price'] !== null ? (float) $row['best_buy_price'] : null,
+            'total_volume' => max(0, (int) ($row['total_volume'] ?? 0)),
+            'buy_order_count' => max(0, (int) ($row['buy_order_count'] ?? 0)),
+            'sell_order_count' => max(0, (int) ($row['sell_order_count'] ?? 0)),
+        ];
+    }, $rows);
+}
+
+
 function db_market_history_daily_bulk_upsert(array $historyRows, ?int $chunkSize = null): int
 {
     return db_bulk_insert_or_upsert(

@@ -2802,6 +2802,143 @@ function market_hub_local_history_trade_date(string $observedAt): string
     }
 }
 
+
+function market_hub_local_history_window_days_default(): int
+{
+    $retentionDays = (int) get_setting('raw_order_snapshot_retention_days', '30');
+
+    return max(1, min(365, $retentionDays));
+}
+
+function market_hub_local_history_window_days_normalize(?int $windowDays = null): int
+{
+    if ($windowDays === null) {
+        return market_hub_local_history_window_days_default();
+    }
+
+    return max(1, min(365, $windowDays));
+}
+
+function market_hub_local_history_window_start_observed_at(int $windowDays): string
+{
+    $safeWindowDays = market_hub_local_history_window_days_normalize($windowDays);
+
+    try {
+        $appTz = new DateTimeZone(app_timezone());
+        $windowStart = (new DateTimeImmutable('now', $appTz))
+            ->setTime(0, 0, 0)
+            ->modify('-' . ($safeWindowDays - 1) . ' days')
+            ->setTimezone(new DateTimeZone('UTC'));
+
+        return $windowStart->format('Y-m-d H:i:s');
+    } catch (Throwable) {
+        return gmdate('Y-m-d 00:00:00', strtotime('-' . ($safeWindowDays - 1) . ' days'));
+    }
+}
+
+function market_hub_local_history_daily_bucket_seed(array $snapshotRow): array
+{
+    $closePrice = (float) ($snapshotRow['close_price'] ?? 0);
+
+    return [
+        'source' => market_hub_local_history_source(),
+        'source_id' => max(0, (int) ($snapshotRow['source_id'] ?? 0)),
+        'type_id' => max(0, (int) ($snapshotRow['type_id'] ?? 0)),
+        'trade_date' => (string) ($snapshotRow['trade_date'] ?? ''),
+        'open_price' => $closePrice,
+        'high_price' => $closePrice,
+        'low_price' => $closePrice,
+        'close_price' => $closePrice,
+        'buy_price' => $snapshotRow['buy_price'] ?? null,
+        'sell_price' => $snapshotRow['sell_price'] ?? null,
+        'spread_value' => $snapshotRow['spread_value'] ?? null,
+        'spread_percent' => $snapshotRow['spread_percent'] ?? null,
+        'volume' => max(0, (int) ($snapshotRow['volume'] ?? 0)),
+        'buy_order_count' => max(0, (int) ($snapshotRow['buy_order_count'] ?? 0)),
+        'sell_order_count' => max(0, (int) ($snapshotRow['sell_order_count'] ?? 0)),
+        'captured_at' => (string) ($snapshotRow['captured_at'] ?? ''),
+    ];
+}
+
+function market_hub_local_history_daily_bucket_observe(array $bucket, array $snapshotRow): array
+{
+    $closePrice = (float) ($snapshotRow['close_price'] ?? 0);
+    $capturedAt = trim((string) ($snapshotRow['captured_at'] ?? ''));
+    $currentCapturedAt = trim((string) ($bucket['captured_at'] ?? ''));
+
+    $bucket['high_price'] = max((float) ($bucket['high_price'] ?? $closePrice), $closePrice);
+    $bucket['low_price'] = min((float) ($bucket['low_price'] ?? $closePrice), $closePrice);
+
+    if ((float) ($bucket['open_price'] ?? 0) <= 0) {
+        $bucket['open_price'] = $closePrice;
+    }
+
+    if ($currentCapturedAt === '' || ($capturedAt !== '' && strcmp($capturedAt, $currentCapturedAt) >= 0)) {
+        $bucket['close_price'] = $closePrice;
+        $bucket['buy_price'] = $snapshotRow['buy_price'] ?? null;
+        $bucket['sell_price'] = $snapshotRow['sell_price'] ?? null;
+        $bucket['spread_value'] = $snapshotRow['spread_value'] ?? null;
+        $bucket['spread_percent'] = $snapshotRow['spread_percent'] ?? null;
+        $bucket['volume'] = max(0, (int) ($snapshotRow['volume'] ?? 0));
+        $bucket['buy_order_count'] = max(0, (int) ($snapshotRow['buy_order_count'] ?? 0));
+        $bucket['sell_order_count'] = max(0, (int) ($snapshotRow['sell_order_count'] ?? 0));
+        $bucket['captured_at'] = $capturedAt;
+    }
+
+    return $bucket;
+}
+
+function market_hub_local_history_daily_rebuild_from_snapshot_metrics(array $snapshotMetrics): array
+{
+    $dailyBuckets = [];
+    $snapshotCount = 0;
+    $tradeDates = [];
+
+    foreach ($snapshotMetrics as $metric) {
+        if (!is_array($metric)) {
+            continue;
+        }
+
+        $snapshotRow = market_hub_current_snapshot_finalize_metric($metric);
+        if ($snapshotRow === null) {
+            continue;
+        }
+
+        $tradeDate = trim((string) ($snapshotRow['trade_date'] ?? ''));
+        $typeId = (int) ($snapshotRow['type_id'] ?? 0);
+        $sourceId = (int) ($snapshotRow['source_id'] ?? 0);
+        if ($tradeDate === '' || $typeId <= 0 || $sourceId <= 0) {
+            continue;
+        }
+
+        $snapshotCount++;
+        $tradeDates[$tradeDate] = true;
+        $bucketKey = $tradeDate . ':' . $typeId;
+
+        if (!isset($dailyBuckets[$bucketKey])) {
+            $dailyBuckets[$bucketKey] = market_hub_local_history_daily_bucket_seed($snapshotRow);
+            continue;
+        }
+
+        $dailyBuckets[$bucketKey] = market_hub_local_history_daily_bucket_observe($dailyBuckets[$bucketKey], $snapshotRow);
+    }
+
+    uasort($dailyBuckets, static function (array $left, array $right): int {
+        $dateCompare = strcmp((string) ($left['trade_date'] ?? ''), (string) ($right['trade_date'] ?? ''));
+        if ($dateCompare !== 0) {
+            return $dateCompare;
+        }
+
+        return ((int) ($left['type_id'] ?? 0)) <=> ((int) ($right['type_id'] ?? 0));
+    });
+
+    return [
+        'rows' => array_values($dailyBuckets),
+        'snapshot_metric_rows' => $snapshotCount,
+        'trade_dates' => array_keys($tradeDates),
+    ];
+}
+
 function market_hub_local_history_daily_merge_row(array $snapshotRow, ?array $existingRow = null): array
 {
     $effectiveSnapshot = $snapshotRow;
@@ -3670,7 +3807,7 @@ function sync_market_hub_history(string|int $hubRef, string $runMode = 'incremen
     }
 }
 
-function sync_market_hub_local_history(string|int $hubRef, string $runMode = 'incremental'): array
+function sync_market_hub_local_history(string|int $hubRef, string $runMode = 'incremental', ?int $windowDays = null): array
 {
     $result = sync_result_shape();
     $syncMode = sync_mode_normalize($runMode);
@@ -3684,16 +3821,12 @@ function sync_market_hub_local_history(string|int $hubRef, string $runMode = 'in
     }
 
     $hubContext = market_hub_reference_context($hubKey);
-    $resolvedSourceId = sync_source_id_from_hub_ref($hubKey);
+    $sourceId = sync_source_id_from_hub_ref($hubKey);
+    $safeWindowDays = market_hub_local_history_window_days_normalize($windowDays);
+    $windowStartObservedAt = market_hub_local_history_window_start_observed_at($safeWindowDays);
     $runId = db_sync_run_start($datasetKey, $syncMode, sync_watermark($datasetKey));
 
     try {
-        $dataset = market_hub_current_sync_latest_dataset($hubKey);
-        $sourceId = max($resolvedSourceId, (int) ($dataset['source_id'] ?? 0));
-        $observedAt = trim((string) ($dataset['observed_at'] ?? ''));
-        $tradeDate = trim((string) ($dataset['trade_date'] ?? ''));
-        $snapshotRows = is_array($dataset['rows'] ?? null) ? $dataset['rows'] : [];
-
         if ($sourceId <= 0) {
             $warning = 'Local hub history sync skipped: could not resolve a valid local source id for hub ' . ($hubContext['hub_name'] ?? $hubKey) . '.';
             $result['warnings'][] = $warning;
@@ -3706,13 +3839,15 @@ function sync_market_hub_local_history(string|int $hubRef, string $runMode = 'in
                 'reference_hub' => $hubKey,
                 'reference_market_hub' => (string) ($hubContext['hub_name'] ?? market_hub_reference_name()),
                 'source_id' => 0,
-                'trade_date' => null,
+                'window_days' => $safeWindowDays,
+                'window_start_observed_at' => $windowStartObservedAt,
                 'records_fetched' => 0,
                 'records_inserted' => 0,
                 'records_updated' => 0,
                 'records_skipped' => 0,
                 'records_deleted' => 0,
                 'history_rows_generated' => 0,
+                'snapshot_days_seen' => 0,
                 'no_changes' => true,
                 'outcome_reason' => 'missing_source_id',
             ];
@@ -3721,60 +3856,67 @@ function sync_market_hub_local_history(string|int $hubRef, string $runMode = 'in
             return $result;
         }
 
-        $result['rows_seen'] = count($snapshotRows);
+        $snapshotMetrics = db_market_orders_snapshot_metrics_window('market_hub', $sourceId, $windowStartObservedAt);
+        $result['rows_seen'] = count($snapshotMetrics);
 
-        if ($snapshotRows === [] || $observedAt === '' || $tradeDate === '') {
-            $warning = 'Local hub history sync found no current hub snapshot rows for ' . ($hubContext['hub_name'] ?? $hubKey) . ' yet. Run the hub current sync first.';
+        if ($snapshotMetrics === []) {
+            $warning = 'Local hub history sync found no local raw hub snapshots in the last ' . $safeWindowDays . ' day(s) for ' . ($hubContext['hub_name'] ?? $hubKey) . '. Run the hub current sync first or widen --window-days.';
             $result['warnings'][] = $warning;
-            $result['cursor'] = 'source_id:' . $sourceId . ';state:awaiting_current_snapshot';
+            $result['cursor'] = 'source_id:' . $sourceId . ';state:awaiting_local_snapshots';
             $result['checksum'] = sync_checksum([
                 'source_id' => $sourceId,
-                'status' => 'awaiting_current_snapshot',
+                'window_days' => $safeWindowDays,
+                'status' => 'awaiting_local_snapshots',
             ]);
             $result['meta'] = [
                 'reference_hub' => $hubKey,
                 'reference_market_hub' => (string) ($hubContext['hub_name'] ?? market_hub_reference_name()),
                 'source_id' => $sourceId,
-                'trade_date' => null,
+                'window_days' => $safeWindowDays,
+                'window_start_observed_at' => $windowStartObservedAt,
                 'records_fetched' => 0,
                 'records_inserted' => 0,
                 'records_updated' => 0,
                 'records_skipped' => 0,
                 'records_deleted' => 0,
                 'history_rows_generated' => 0,
+                'snapshot_days_seen' => 0,
                 'no_changes' => true,
-                'outcome_reason' => 'awaiting_current_snapshot',
+                'outcome_reason' => 'awaiting_local_snapshots',
             ];
             sync_run_finalize_success($runId, $datasetKey, $syncMode, 0, 0, $result['cursor'], $result['checksum']);
 
             return $result;
         }
 
-        $canonicalRows = market_hub_current_sync_daily_canonical_rows($hubKey);
+        $rebuilt = market_hub_local_history_daily_rebuild_from_snapshot_metrics($snapshotMetrics);
+        $canonicalRows = is_array($rebuilt['rows'] ?? null) ? $rebuilt['rows'] : [];
         $historyRowCount = count($canonicalRows);
+        $tradeDates = is_array($rebuilt['trade_dates'] ?? null) ? $rebuilt['trade_dates'] : [];
+        $latestCapturedAt = $canonicalRows === [] ? '' : (string) ($canonicalRows[array_key_last($canonicalRows)]['captured_at'] ?? '');
 
         if ($canonicalRows === []) {
-            $warning = 'Local hub history sync could not derive any daily rows from the latest current snapshot for ' . ($hubContext['hub_name'] ?? $hubKey) . '.';
+            $warning = 'Local hub history sync could not derive any daily rows from the local raw hub snapshots for ' . ($hubContext['hub_name'] ?? $hubKey) . '.';
             $result['warnings'][] = $warning;
-            $result['cursor'] = 'source_id:' . $sourceId . ';trade_date:' . $tradeDate . ';captured_at:' . $observedAt . ';state:no_canonical_rows';
+            $result['cursor'] = 'source_id:' . $sourceId . ';window_days:' . $safeWindowDays . ';state:no_canonical_rows';
             $result['checksum'] = sync_checksum([
                 'source_id' => $sourceId,
-                'trade_date' => $tradeDate,
-                'observed_at' => $observedAt,
+                'window_days' => $safeWindowDays,
                 'status' => 'no_canonical_rows',
             ]);
             $result['meta'] = [
                 'reference_hub' => $hubKey,
                 'reference_market_hub' => (string) ($hubContext['hub_name'] ?? market_hub_reference_name()),
                 'source_id' => $sourceId,
-                'trade_date' => $tradeDate,
-                'captured_at' => $observedAt,
+                'window_days' => $safeWindowDays,
+                'window_start_observed_at' => $windowStartObservedAt,
                 'records_fetched' => (int) $result['rows_seen'],
                 'records_inserted' => 0,
                 'records_updated' => 0,
                 'records_skipped' => (int) $result['rows_seen'],
                 'records_deleted' => 0,
                 'history_rows_generated' => 0,
+                'snapshot_days_seen' => count($tradeDates),
                 'no_changes' => true,
                 'outcome_reason' => 'no_canonical_rows',
             ];
@@ -3784,20 +3926,22 @@ function sync_market_hub_local_history(string|int $hubRef, string $runMode = 'in
         }
 
         $result['rows_written'] = db_market_hub_local_history_daily_bulk_upsert($canonicalRows);
-        $result['cursor'] = 'source_id:' . $sourceId . ';trade_date:' . $tradeDate . ';captured_at:' . $observedAt;
+        $result['cursor'] = 'source_id:' . $sourceId . ';window_days:' . $safeWindowDays . ';captured_at:' . $latestCapturedAt;
         $result['checksum'] = sync_checksum($canonicalRows);
         $result['meta'] = [
             'reference_hub' => $hubKey,
             'reference_market_hub' => (string) ($hubContext['hub_name'] ?? market_hub_reference_name()),
             'source_id' => $sourceId,
-            'trade_date' => $tradeDate,
-            'captured_at' => $observedAt,
+            'window_days' => $safeWindowDays,
+            'window_start_observed_at' => $windowStartObservedAt,
+            'captured_at' => $latestCapturedAt !== '' ? $latestCapturedAt : null,
             'records_fetched' => (int) $result['rows_seen'],
             'records_inserted' => 0,
             'records_updated' => (int) $result['rows_written'],
             'records_skipped' => max(0, $historyRowCount - (int) $result['rows_written']),
             'records_deleted' => 0,
             'history_rows_generated' => $historyRowCount,
+            'snapshot_days_seen' => count($tradeDates),
             'no_changes' => (int) $result['rows_written'] === 0,
         ];
 

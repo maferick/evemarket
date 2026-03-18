@@ -9,6 +9,7 @@ const SYNC_RUNNER_JOB_SEQUENCE = [
     'alliance-current',
     'alliance-history',
     'hub-current',
+    'market-hub-local-history',
     'hub-history',
     'maintenance-prune',
     'killmail-r2z2',
@@ -21,7 +22,7 @@ function sync_runner_main(array $argv): int
     } catch (InvalidArgumentException $exception) {
         sync_runner_log_stderr('sync_runner.invalid_arguments', [
             'error' => $exception->getMessage(),
-            'usage' => 'php bin/sync_runner.php --job=alliance-current|alliance-history|hub-current|hub-history|maintenance-prune|killmail-r2z2|all --source-id=<id> --mode=incremental|full [--since=<ISO8601>]',
+            'usage' => 'php bin/sync_runner.php --job=alliance-current|alliance-history|hub-current|market-hub-local-history|hub-history|maintenance-prune|killmail-r2z2|all --source-id=<id> --mode=incremental|full [--since=<ISO8601>] [--window-days=<days>]',
         ]);
 
         return 2;
@@ -31,11 +32,12 @@ function sync_runner_main(array $argv): int
     $runMode = $options['mode'];
     $sourceId = (int) $options['source_id'];
     $since = $options['since'];
+    $windowDays = $options['window_days'];
 
     $hasFailures = false;
 
     foreach ($requestedJobs as $jobKey) {
-        $jobResult = sync_runner_execute_job($jobKey, $sourceId, $runMode, $since);
+        $jobResult = sync_runner_execute_job($jobKey, $sourceId, $runMode, $since, $windowDays);
         if (($jobResult['ok'] ?? false) !== true) {
             $hasFailures = true;
         }
@@ -46,14 +48,15 @@ function sync_runner_main(array $argv): int
 
 function sync_runner_parse_arguments(array $argv): array
 {
-    $options = getopt('', ['job:', 'source-id:', 'mode:', 'since::']);
+    $options = getopt('', ['job:', 'source-id:', 'mode:', 'since::', 'window-days::']);
 
     $job = trim((string) ($options['job'] ?? ''));
     $sourceIdValue = trim((string) ($options['source-id'] ?? ''));
     $mode = trim((string) ($options['mode'] ?? ''));
     $sinceRaw = isset($options['since']) ? trim((string) $options['since']) : null;
+    $windowDaysRaw = isset($options['window-days']) ? trim((string) $options['window-days']) : null;
 
-    $allowedJobs = ['alliance-current', 'alliance-history', 'hub-current', 'hub-history', 'maintenance-prune', 'killmail-r2z2', 'all'];
+    $allowedJobs = ['alliance-current', 'alliance-history', 'hub-current', 'market-hub-local-history', 'hub-history', 'maintenance-prune', 'killmail-r2z2', 'all'];
     if ($job === '' || !in_array($job, $allowedJobs, true)) {
         throw new InvalidArgumentException('Argument --job must be one of: ' . implode(', ', $allowedJobs) . '.');
     }
@@ -82,20 +85,30 @@ function sync_runner_parse_arguments(array $argv): array
         $since = gmdate(DATE_ATOM, $timestamp);
     }
 
+    $windowDays = null;
+    if ($windowDaysRaw !== null && $windowDaysRaw !== '') {
+        if (preg_match('/^[1-9][0-9]{0,2}$/', $windowDaysRaw) !== 1) {
+            throw new InvalidArgumentException('Argument --window-days must be a positive integer between 1 and 999 when provided.');
+        }
+
+        $windowDays = (int) $windowDaysRaw;
+    }
+
     return [
         'job' => $job,
         'source_id' => $sourceIdValue === '' ? 0 : (int) $sourceIdValue,
         'mode' => $mode,
         'since' => $since,
+        'window_days' => $windowDays,
     ];
 }
 
-function sync_runner_execute_job(string $jobKey, int $sourceId, string $runMode, ?string $since): array
+function sync_runner_execute_job(string $jobKey, int $sourceId, string $runMode, ?string $since, ?int $windowDays = null): array
 {
     $startedAt = gmdate(DATE_ATOM);
 
     try {
-        $result = sync_runner_dispatch_job($jobKey, $sourceId, $runMode, $since);
+        $result = sync_runner_dispatch_job($jobKey, $sourceId, $runMode, $since, $windowDays);
         $datasetKey = (string) ($result['dataset_key'] ?? '');
         $runId = sync_runner_latest_run_id_safe($datasetKey);
         $sourceRows = (int) ($result['rows_seen'] ?? 0);
@@ -113,8 +126,20 @@ function sync_runner_execute_job(string $jobKey, int $sourceId, string $runMode,
                 'mode' => $runMode,
                 'source_id' => $sourceId,
                 'since' => $since,
+                'window_days' => $windowDays,
                 'started_at' => $startedAt,
                 'finished_at' => gmdate(DATE_ATOM),
+            ]);
+            sync_runner_log_cron_file('sync_runner.job_warning_summary', [
+                'job' => $jobKey,
+                'dataset_key' => $datasetKey,
+                'run_id' => $runId,
+                'source_rows' => $sourceRows,
+                'written_rows' => $writtenRows,
+                'warnings' => array_values($warnings),
+                'mode' => $runMode,
+                'source_id' => $sourceId,
+                'window_days' => $windowDays,
             ]);
 
             return ['ok' => false];
@@ -129,8 +154,19 @@ function sync_runner_execute_job(string $jobKey, int $sourceId, string $runMode,
             'mode' => $runMode,
             'source_id' => $sourceId,
             'since' => $since,
+            'window_days' => $windowDays,
             'started_at' => $startedAt,
             'finished_at' => gmdate(DATE_ATOM),
+        ]);
+        sync_runner_log_cron_file('sync_runner.job_success_summary', [
+            'job' => $jobKey,
+            'dataset_key' => $datasetKey,
+            'run_id' => $runId,
+            'source_rows' => $sourceRows,
+            'written_rows' => $writtenRows,
+            'mode' => $runMode,
+            'source_id' => $sourceId,
+            'window_days' => $windowDays,
         ]);
 
         return ['ok' => true];
@@ -147,8 +183,18 @@ function sync_runner_execute_job(string $jobKey, int $sourceId, string $runMode,
             'mode' => $runMode,
             'source_id' => $sourceId,
             'since' => $since,
+            'window_days' => $windowDays,
             'started_at' => $startedAt,
             'finished_at' => gmdate(DATE_ATOM),
+            'error' => $exception->getMessage(),
+        ]);
+        sync_runner_log_cron_file('sync_runner.job_error_summary', [
+            'job' => $jobKey,
+            'dataset_key' => $datasetKey,
+            'run_id' => $runId,
+            'mode' => $runMode,
+            'source_id' => $sourceId,
+            'window_days' => $windowDays,
             'error' => $exception->getMessage(),
         ]);
 
@@ -156,7 +202,7 @@ function sync_runner_execute_job(string $jobKey, int $sourceId, string $runMode,
     }
 }
 
-function sync_runner_dispatch_job(string $jobKey, int $sourceId, string $runMode, ?string $since): array
+function sync_runner_dispatch_job(string $jobKey, int $sourceId, string $runMode, ?string $since, ?int $windowDays = null): array
 {
     $effectiveSince = $since ?? sync_runner_backfill_start_for_job($jobKey);
     if ($effectiveSince !== null) {
@@ -196,6 +242,18 @@ function sync_runner_dispatch_job(string $jobKey, int $sourceId, string $runMode
         return $result + ['dataset_key' => $datasetKey];
     }
 
+    if ($jobKey === 'market-hub-local-history') {
+        $hubRef = market_hub_setting_reference();
+        if ($hubRef === '') {
+            throw new RuntimeException('Hub local history sync skipped: configure a reference market hub in Trading Stations settings.');
+        }
+
+        $datasetKey = sync_dataset_key_market_hub_local_history_daily($hubRef);
+        $result = sync_market_hub_local_history($hubRef, $runMode, $windowDays);
+
+        return $result + ['dataset_key' => $datasetKey];
+    }
+
     if ($jobKey === 'maintenance-prune') {
         $datasetKey = sync_dataset_key_maintenance_history_prune();
         $retentionDays = (int) get_setting('raw_order_snapshot_retention_days', '30');
@@ -229,6 +287,12 @@ function sync_runner_dataset_key_for_job(string $jobKey, int $sourceId): string
         $hubRef = market_hub_setting_reference();
 
         return sync_dataset_key_market_hub_current_orders($hubRef !== '' ? $hubRef : ((string) $sourceId));
+    }
+
+    if ($jobKey === 'market-hub-local-history') {
+        $hubRef = market_hub_setting_reference();
+
+        return sync_dataset_key_market_hub_local_history_daily($hubRef !== '' ? $hubRef : ((string) $sourceId));
     }
 
     if ($jobKey === 'maintenance-prune') {
@@ -296,14 +360,30 @@ function sync_runner_log_stderr(string $event, array $payload): void
     sync_runner_write_log(STDERR, $event, $payload);
 }
 
-function sync_runner_write_log($stream, string $event, array $payload): void
+function sync_runner_log_cron_file(string $event, array $payload): void
 {
-    $line = [
+    $line = sync_runner_format_log_line($event, $payload);
+    $logPath = dirname(__DIR__) . '/storage/logs/cron.log';
+    $logDir = dirname($logPath);
+
+    if (!is_dir($logDir)) {
+        mkdir($logDir, 0775, true);
+    }
+
+    file_put_contents($logPath, $line, FILE_APPEND | LOCK_EX);
+}
+
+function sync_runner_format_log_line(string $event, array $payload): string
+{
+    return json_encode([
         'event' => $event,
         'ts' => gmdate(DATE_ATOM),
-    ] + $payload;
+    ] + $payload, JSON_UNESCAPED_SLASHES) . PHP_EOL;
+}
 
-    fwrite($stream, json_encode($line, JSON_UNESCAPED_SLASHES) . PHP_EOL);
+function sync_runner_write_log($stream, string $event, array $payload): void
+{
+    fwrite($stream, sync_runner_format_log_line($event, $payload));
 }
 
 exit(sync_runner_main($argv));
