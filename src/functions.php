@@ -697,6 +697,13 @@ function data_sync_schedule_job_definitions(): array
             'default_interval_seconds' => 1800,
             'label' => 'Hub History',
         ],
+        'market_hub_local_history_sync' => [
+            'enabled_key' => 'market_hub_local_history_sync_enabled',
+            'interval_value_key' => 'market_hub_local_history_sync_interval_value',
+            'interval_unit_key' => 'market_hub_local_history_sync_interval_unit',
+            'default_interval_seconds' => 300,
+            'label' => 'Hub Local History',
+        ],
         'killmail_r2z2_sync' => [
             'enabled_key' => 'killmail_r2z2_sync_enabled',
             'interval_value_key' => 'killmail_r2z2_sync_interval_value',
@@ -1873,6 +1880,18 @@ function scheduler_job_definitions(): array
                 return sync_market_hub_history($hubRef, 'full');
             },
         ],
+        'market_hub_local_history_sync' => [
+            'timeout_seconds' => 180,
+            'lock_ttl_seconds' => 300,
+            'handler' => static function (): array {
+                $hubRef = market_hub_setting_reference();
+                if ($hubRef === '') {
+                    throw new RuntimeException('Hub local history sync skipped: configure a market hub/station first.');
+                }
+
+                return sync_market_hub_local_history($hubRef, 'incremental');
+            },
+        ],
         'market_hub_current_sync' => [
             'timeout_seconds' => 240,
             'lock_ttl_seconds' => 360,
@@ -1904,7 +1923,7 @@ function scheduler_job_type(string $jobKey): string
 {
     return match ($jobKey) {
         'alliance_current_sync', 'market_hub_current_sync' => 'sync.current',
-        'alliance_historical_sync', 'market_hub_historical_sync' => 'sync.history',
+        'alliance_historical_sync', 'market_hub_historical_sync', 'market_hub_local_history_sync' => 'sync.history',
         'killmail_r2z2_sync' => 'sync.killmail',
         default => 'sync.generic',
     };
@@ -2030,8 +2049,12 @@ function scheduler_run_job(array $job): array
         $rowsWritten = max(0, (int) ($syncResult['rows_written'] ?? 0));
         $warnings = scheduler_normalize_messages((array) ($syncResult['warnings'] ?? []));
         $status = scheduler_job_status_from_sync_result($syncResult);
-        $cursor = 'finished_at:' . gmdate('Y-m-d H:i:s') . ';duration_ms:' . $durationMs;
-        $checksum = sync_checksum([
+        $cursor = isset($syncResult['cursor']) && $syncResult['cursor'] !== null
+            ? mb_substr(trim((string) $syncResult['cursor']), 0, 190)
+            : 'finished_at:' . gmdate('Y-m-d H:i:s') . ';duration_ms:' . $durationMs;
+        $checksum = isset($syncResult['checksum']) && $syncResult['checksum'] !== null
+            ? mb_substr(trim((string) $syncResult['checksum']), 0, 190)
+            : sync_checksum([
             'job_key' => $jobKey,
             'rows_seen' => $rowsSeen,
             'rows_written' => $rowsWritten,
@@ -2442,6 +2465,11 @@ function sync_dataset_key_alliance_structure_orders_history(int $structureId): s
 function sync_dataset_key_market_hub_history_daily(string $hubKey): string
 {
     return 'market.hub.' . $hubKey . '.history.daily';
+}
+
+function sync_dataset_key_market_hub_local_history_daily(string $hubKey): string
+{
+    return 'market.hub.' . $hubKey . '.history.local.daily';
 }
 
 function sync_dataset_key_market_hub_current_orders(string $hubKey): string
@@ -3543,6 +3571,156 @@ function sync_market_hub_history(string|int $hubRef, string $runMode = 'incremen
     } catch (Throwable $exception) {
         sync_run_finalize_failure($runId, $datasetKey, $syncMode, $exception->getMessage());
         $result['warnings'][] = $exception->getMessage();
+
+        return $result;
+    }
+}
+
+function sync_market_hub_local_history(string|int $hubRef, string $runMode = 'incremental'): array
+{
+    $result = sync_result_shape();
+    $syncMode = sync_mode_normalize($runMode);
+    $hubKey = trim((string) $hubRef);
+    $datasetKey = sync_dataset_key_market_hub_local_history_daily($hubKey);
+
+    if ($hubKey === '') {
+        $result['warnings'][] = 'Local hub history sync skipped: configure a market hub/station first.';
+
+        return $result;
+    }
+
+    $hubContext = market_hub_reference_context($hubKey);
+    $resolvedSourceId = sync_source_id_from_hub_ref($hubKey);
+    $runId = db_sync_run_start($datasetKey, $syncMode, sync_watermark($datasetKey));
+
+    try {
+        $dataset = market_hub_current_sync_latest_dataset($hubKey);
+        $sourceId = max($resolvedSourceId, (int) ($dataset['source_id'] ?? 0));
+        $observedAt = trim((string) ($dataset['observed_at'] ?? ''));
+        $tradeDate = trim((string) ($dataset['trade_date'] ?? ''));
+        $snapshotRows = is_array($dataset['rows'] ?? null) ? $dataset['rows'] : [];
+
+        if ($sourceId <= 0) {
+            $warning = 'Local hub history sync skipped: could not resolve a valid local source id for hub ' . ($hubContext['hub_name'] ?? $hubKey) . '.';
+            $result['warnings'][] = $warning;
+            $result['cursor'] = 'hub:' . $hubKey . ';state:missing_source_id';
+            $result['checksum'] = sync_checksum([
+                'hub' => $hubKey,
+                'status' => 'missing_source_id',
+            ]);
+            $result['meta'] = [
+                'reference_hub' => $hubKey,
+                'reference_market_hub' => (string) ($hubContext['hub_name'] ?? market_hub_reference_name()),
+                'source_id' => 0,
+                'trade_date' => null,
+                'records_fetched' => 0,
+                'records_inserted' => 0,
+                'records_updated' => 0,
+                'records_skipped' => 0,
+                'records_deleted' => 0,
+                'history_rows_generated' => 0,
+                'no_changes' => true,
+                'outcome_reason' => 'missing_source_id',
+            ];
+            sync_run_finalize_success($runId, $datasetKey, $syncMode, 0, 0, $result['cursor'], $result['checksum']);
+
+            return $result;
+        }
+
+        $result['rows_seen'] = count($snapshotRows);
+
+        if ($snapshotRows === [] || $observedAt === '' || $tradeDate === '') {
+            $warning = 'Local hub history sync found no current hub snapshot rows for ' . ($hubContext['hub_name'] ?? $hubKey) . ' yet. Run the hub current sync first.';
+            $result['warnings'][] = $warning;
+            $result['cursor'] = 'source_id:' . $sourceId . ';state:awaiting_current_snapshot';
+            $result['checksum'] = sync_checksum([
+                'source_id' => $sourceId,
+                'status' => 'awaiting_current_snapshot',
+            ]);
+            $result['meta'] = [
+                'reference_hub' => $hubKey,
+                'reference_market_hub' => (string) ($hubContext['hub_name'] ?? market_hub_reference_name()),
+                'source_id' => $sourceId,
+                'trade_date' => null,
+                'records_fetched' => 0,
+                'records_inserted' => 0,
+                'records_updated' => 0,
+                'records_skipped' => 0,
+                'records_deleted' => 0,
+                'history_rows_generated' => 0,
+                'no_changes' => true,
+                'outcome_reason' => 'awaiting_current_snapshot',
+            ];
+            sync_run_finalize_success($runId, $datasetKey, $syncMode, 0, 0, $result['cursor'], $result['checksum']);
+
+            return $result;
+        }
+
+        $canonicalRows = market_hub_current_sync_daily_canonical_rows($hubKey);
+        $historyRowCount = count($canonicalRows);
+
+        if ($canonicalRows === []) {
+            $warning = 'Local hub history sync could not derive any daily rows from the latest current snapshot for ' . ($hubContext['hub_name'] ?? $hubKey) . '.';
+            $result['warnings'][] = $warning;
+            $result['cursor'] = 'source_id:' . $sourceId . ';trade_date:' . $tradeDate . ';captured_at:' . $observedAt . ';state:no_canonical_rows';
+            $result['checksum'] = sync_checksum([
+                'source_id' => $sourceId,
+                'trade_date' => $tradeDate,
+                'observed_at' => $observedAt,
+                'status' => 'no_canonical_rows',
+            ]);
+            $result['meta'] = [
+                'reference_hub' => $hubKey,
+                'reference_market_hub' => (string) ($hubContext['hub_name'] ?? market_hub_reference_name()),
+                'source_id' => $sourceId,
+                'trade_date' => $tradeDate,
+                'captured_at' => $observedAt,
+                'records_fetched' => (int) $result['rows_seen'],
+                'records_inserted' => 0,
+                'records_updated' => 0,
+                'records_skipped' => (int) $result['rows_seen'],
+                'records_deleted' => 0,
+                'history_rows_generated' => 0,
+                'no_changes' => true,
+                'outcome_reason' => 'no_canonical_rows',
+            ];
+            sync_run_finalize_success($runId, $datasetKey, $syncMode, $result['rows_seen'], 0, $result['cursor'], $result['checksum']);
+
+            return $result;
+        }
+
+        $result['rows_written'] = db_market_hub_local_history_daily_bulk_upsert($canonicalRows);
+        $result['cursor'] = 'source_id:' . $sourceId . ';trade_date:' . $tradeDate . ';captured_at:' . $observedAt;
+        $result['checksum'] = sync_checksum($canonicalRows);
+        $result['meta'] = [
+            'reference_hub' => $hubKey,
+            'reference_market_hub' => (string) ($hubContext['hub_name'] ?? market_hub_reference_name()),
+            'source_id' => $sourceId,
+            'trade_date' => $tradeDate,
+            'captured_at' => $observedAt,
+            'records_fetched' => (int) $result['rows_seen'],
+            'records_inserted' => 0,
+            'records_updated' => (int) $result['rows_written'],
+            'records_skipped' => max(0, $historyRowCount - (int) $result['rows_written']),
+            'records_deleted' => 0,
+            'history_rows_generated' => $historyRowCount,
+            'no_changes' => (int) $result['rows_written'] === 0,
+        ];
+
+        sync_run_finalize_success(
+            $runId,
+            $datasetKey,
+            $syncMode,
+            $result['rows_seen'],
+            $result['rows_written'],
+            $result['cursor'],
+            $result['checksum']
+        );
+
+        return $result;
+    } catch (Throwable $exception) {
+        sync_run_finalize_failure($runId, $datasetKey, $syncMode, $exception->getMessage());
+        $result['warnings'][] = 'Local hub history sync failed: ' . $exception->getMessage();
 
         return $result;
     }
