@@ -213,7 +213,7 @@ foreach ($syncScheduleCards as $schedule) {
 include __DIR__ . '/../../src/views/partials/header.php';
 ?>
 <div class="grid gap-6 xl:grid-cols-[260px_1fr]">
-    <aside class="rounded-xl border border-border bg-card p-4">
+    <aside class="surface-secondary">
         <h2 class="px-3 text-sm font-medium">Configuration Areas</h2>
         <div class="mt-3 space-y-1">
             <?php foreach ($sections as $key => $meta): ?>
@@ -225,7 +225,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
         </div>
     </aside>
 
-    <section class="rounded-xl border border-border bg-card p-6">
+    <section class="surface-primary">
         <h2 class="text-xl font-semibold"><?= htmlspecialchars($sections[$section]['title'], ENT_QUOTES) ?></h2>
         <p class="mt-1 text-sm text-muted"><?= htmlspecialchars($sections[$section]['description'], ENT_QUOTES) ?></p>
 
@@ -241,39 +241,39 @@ include __DIR__ . '/../../src/views/partials/header.php';
                 <input type="hidden" name="section" value="general">
                 <label class="block space-y-2">
                     <span class="text-sm text-muted">Application Name</span>
-                    <input name="app_name" value="<?= htmlspecialchars($settingValues['app_name'] ?? app_name(), ENT_QUOTES) ?>" class="w-full rounded-lg border border-border bg-black/30 px-3 py-2 text-sm outline-none ring-accent focus:ring" />
+                    <input name="app_name" value="<?= htmlspecialchars($settingValues['app_name'] ?? app_name(), ENT_QUOTES) ?>" class="w-full field-input" />
                 </label>
                 <label class="block space-y-2">
                     <span class="text-sm text-muted">Brand Family</span>
-                    <input name="brand_family_name" value="<?= htmlspecialchars($settingValues['brand_family_name'] ?? brand_family_name(), ENT_QUOTES) ?>" class="w-full rounded-lg border border-border bg-black/30 px-3 py-2 text-sm outline-none ring-accent focus:ring" />
+                    <input name="brand_family_name" value="<?= htmlspecialchars($settingValues['brand_family_name'] ?? brand_family_name(), ENT_QUOTES) ?>" class="w-full field-input" />
                     <p class="text-xs text-muted">Use this shared family label to support future products like SupplyCore Intelligence, SupplyCore AI, and SupplyCore Logistics.</p>
                 </label>
                 <label class="block space-y-2">
                     <span class="text-sm text-muted">Console Label</span>
-                    <input name="brand_console_label" value="<?= htmlspecialchars($settingValues['brand_console_label'] ?? brand_console_label(), ENT_QUOTES) ?>" class="w-full rounded-lg border border-border bg-black/30 px-3 py-2 text-sm outline-none ring-accent focus:ring" />
+                    <input name="brand_console_label" value="<?= htmlspecialchars($settingValues['brand_console_label'] ?? brand_console_label(), ENT_QUOTES) ?>" class="w-full field-input" />
                 </label>
                 <label class="block space-y-2">
                     <span class="text-sm text-muted">Brand Tagline</span>
-                    <input name="brand_tagline" value="<?= htmlspecialchars($settingValues['brand_tagline'] ?? brand_tagline(), ENT_QUOTES) ?>" class="w-full rounded-lg border border-border bg-black/30 px-3 py-2 text-sm outline-none ring-accent focus:ring" />
+                    <input name="brand_tagline" value="<?= htmlspecialchars($settingValues['brand_tagline'] ?? brand_tagline(), ENT_QUOTES) ?>" class="w-full field-input" />
                 </label>
                 <label class="block space-y-2">
                     <span class="text-sm text-muted">Logo Asset Path</span>
-                    <input name="brand_logo_path" value="<?= htmlspecialchars($settingValues['brand_logo_path'] ?? brand_logo_path(), ENT_QUOTES) ?>" class="w-full rounded-lg border border-border bg-black/30 px-3 py-2 text-sm outline-none ring-accent focus:ring" />
+                    <input name="brand_logo_path" value="<?= htmlspecialchars($settingValues['brand_logo_path'] ?? brand_logo_path(), ENT_QUOTES) ?>" class="w-full field-input" />
                     <p class="text-xs text-muted">Default placeholder logo is ready at <span class="font-medium text-slate-100">/assets/branding/supplycore-logo.svg</span>.</p>
                 </label>
                 <label class="block space-y-2">
                     <span class="text-sm text-muted">Favicon Asset Path</span>
-                    <input name="brand_favicon_path" value="<?= htmlspecialchars($settingValues['brand_favicon_path'] ?? brand_favicon_path(), ENT_QUOTES) ?>" class="w-full rounded-lg border border-border bg-black/30 px-3 py-2 text-sm outline-none ring-accent focus:ring" />
+                    <input name="brand_favicon_path" value="<?= htmlspecialchars($settingValues['brand_favicon_path'] ?? brand_favicon_path(), ENT_QUOTES) ?>" class="w-full field-input" />
                 </label>
                 <label class="block space-y-2">
                     <span class="text-sm text-muted">Timezone</span>
-                    <input name="app_timezone" value="<?= htmlspecialchars($settingValues['app_timezone'] ?? app_timezone(), ENT_QUOTES) ?>" class="w-full rounded-lg border border-border bg-black/30 px-3 py-2 text-sm outline-none ring-accent focus:ring" />
+                    <input name="app_timezone" value="<?= htmlspecialchars($settingValues['app_timezone'] ?? app_timezone(), ENT_QUOTES) ?>" class="w-full field-input" />
                 </label>
                 <label class="block space-y-2">
                     <span class="text-sm text-muted">Default Currency</span>
-                    <input name="default_currency" value="<?= htmlspecialchars($settingValues['default_currency'] ?? default_currency(), ENT_QUOTES) ?>" class="w-full rounded-lg border border-border bg-black/30 px-3 py-2 text-sm outline-none ring-accent focus:ring" />
+                    <input name="default_currency" value="<?= htmlspecialchars($settingValues['default_currency'] ?? default_currency(), ENT_QUOTES) ?>" class="w-full field-input" />
                 </label>
-                <button class="rounded-lg bg-accent px-4 py-2 text-sm font-medium">Save General Settings</button>
+                <button class="btn-primary">Save General Settings</button>
             </form>
         <?php elseif ($section === 'trading-stations'): ?>
             <form class="mt-6 space-y-4" method="post">
@@ -292,14 +292,14 @@ include __DIR__ . '/../../src/views/partials/header.php';
                         autocomplete="off"
                         value="<?= htmlspecialchars($marketStationName ?? '', ENT_QUOTES) ?>"
                         placeholder="Search reference market hubs by station name"
-                        class="w-full rounded-lg border border-border bg-black/30 px-3 py-2 text-sm outline-none ring-accent focus:ring"
+                        class="w-full field-input"
                     />
                     <p id="market_station_status" class="text-xs text-muted">
                         <?= htmlspecialchars($marketStationId === ''
                             ? 'Type at least 2 characters to search reference market hubs.'
                             : ('Selected market hub: ' . ($marketStationName ?? ('Station #' . $marketStationId)) . ' (#' . $marketStationId . ').'), ENT_QUOTES) ?>
                     </p>
-                    <ul id="market_station_results" class="hidden max-h-60 overflow-y-auto rounded-lg border border-border bg-black/40"></ul>
+                    <ul id="market_station_results" class="hidden max-h-60 overflow-y-auto surface-tertiary"></ul>
                 </label>
                 <label class="block space-y-2" id="alliance-structure-search-field">
                     <span class="text-sm text-muted">Operational Trading Destination</span>
@@ -314,14 +314,14 @@ include __DIR__ . '/../../src/views/partials/header.php';
                         autocomplete="off"
                         value="<?= htmlspecialchars($allianceStationName ?? '', ENT_QUOTES) ?>"
                         placeholder="Search operational destinations (NPC stations + structures)"
-                        class="w-full rounded-lg border border-border bg-black/30 px-3 py-2 text-sm outline-none ring-accent focus:ring"
+                        class="w-full field-input"
                     />
                     <p id="alliance_structure_status" class="text-xs text-muted">
                         <?= htmlspecialchars($allianceStationId === ''
                             ? 'Search ESI destinations (NPC stations + alliance structures).'
                             : ('Selected destination: ' . ($allianceStationName ?? ('Destination #' . $allianceStationId)) . ' (#' . $allianceStationId . ').'), ENT_QUOTES) ?>
                     </p>
-                    <ul id="alliance_structure_results" class="hidden max-h-60 overflow-y-auto rounded-lg border border-border bg-black/40"></ul>
+                    <ul id="alliance_structure_results" class="hidden max-h-60 overflow-y-auto surface-tertiary"></ul>
                     <p class="text-xs text-muted">Used as your operational destination for alliance-vs-hub comparisons. If you pick an NPC station, structure-only sync jobs stay disabled automatically.</p>
                 </label>
                 <?php if ($latestEsiToken !== null && $missingStructureScopes !== []): ?>
@@ -330,7 +330,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                         Update scopes to include <span class="font-medium">esi-universe.read_structures.v1</span> and <span class="font-medium">esi-markets.structure_markets.v1</span>, then reconnect your ESI character.
                     </div>
                 <?php endif; ?>
-                <button class="rounded-lg bg-accent px-4 py-2 text-sm font-medium">Save Trading Stations</button>
+                <button class="btn-primary">Save Trading Stations</button>
             </form>
 
             <script>
@@ -516,11 +516,11 @@ include __DIR__ . '/../../src/views/partials/header.php';
                 <div class="grid gap-4 md:grid-cols-2">
                     <label class="block space-y-2">
                         <span class="text-sm text-muted">Poll Sleep Seconds (min 6)</span>
-                        <input type="number" min="6" max="300" step="1" name="killmail_ingestion_poll_sleep_seconds" value="<?= htmlspecialchars($settingValues['killmail_ingestion_poll_sleep_seconds'] ?? '6', ENT_QUOTES) ?>" class="w-full rounded-lg border border-border bg-black/30 px-3 py-2 text-sm outline-none ring-accent focus:ring" />
+                        <input type="number" min="6" max="300" step="1" name="killmail_ingestion_poll_sleep_seconds" value="<?= htmlspecialchars($settingValues['killmail_ingestion_poll_sleep_seconds'] ?? '6', ENT_QUOTES) ?>" class="w-full field-input" />
                     </label>
                     <label class="block space-y-2">
                         <span class="text-sm text-muted">Max Sequences Per Run</span>
-                        <input type="number" min="1" max="5000" step="1" name="killmail_ingestion_max_sequences_per_run" value="<?= htmlspecialchars($settingValues['killmail_ingestion_max_sequences_per_run'] ?? '120', ENT_QUOTES) ?>" class="w-full rounded-lg border border-border bg-black/30 px-3 py-2 text-sm outline-none ring-accent focus:ring" />
+                        <input type="number" min="1" max="5000" step="1" name="killmail_ingestion_max_sequences_per_run" value="<?= htmlspecialchars($settingValues['killmail_ingestion_max_sequences_per_run'] ?? '120', ENT_QUOTES) ?>" class="w-full field-input" />
                     </label>
                 </div>
 
@@ -534,7 +534,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                                 id="tracked_alliance_search"
                                 autocomplete="off"
                                 placeholder="Search alliances by name or add an exact alliance ID"
-                                class="w-full rounded-lg border border-border bg-black/30 px-3 py-2 text-sm outline-none ring-accent focus:ring"
+                                class="w-full field-input"
                             />
                             <button type="button" id="tracked_alliance_add" class="rounded-lg border border-border bg-black/30 px-3 py-2 text-sm text-slate-100 transition hover:bg-white/5">Add</button>
                         </div>
@@ -543,7 +543,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                                 ? 'Search by name, or add an exact numeric alliance ID.'
                                 : ('Tracking ' . count($trackedAllianceSelections) . ' alliance' . (count($trackedAllianceSelections) === 1 ? '' : 's') . '.'), ENT_QUOTES) ?>
                         </p>
-                        <ul id="tracked_alliance_results" class="hidden max-h-60 overflow-y-auto rounded-lg border border-border bg-black/40"></ul>
+                        <ul id="tracked_alliance_results" class="hidden max-h-60 overflow-y-auto surface-tertiary"></ul>
                         <div id="tracked_alliance_selected" class="space-y-2 rounded-lg border border-border bg-black/10 p-3"></div>
                     </label>
 
@@ -556,7 +556,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                                 id="tracked_corporation_search"
                                 autocomplete="off"
                                 placeholder="Search corporations by name or add an exact corporation ID"
-                                class="w-full rounded-lg border border-border bg-black/30 px-3 py-2 text-sm outline-none ring-accent focus:ring"
+                                class="w-full field-input"
                             />
                             <button type="button" id="tracked_corporation_add" class="rounded-lg border border-border bg-black/30 px-3 py-2 text-sm text-slate-100 transition hover:bg-white/5">Add</button>
                         </div>
@@ -565,7 +565,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                                 ? 'Search by name, or add an exact numeric corporation ID.'
                                 : ('Tracking ' . count($trackedCorporationSelections) . ' corporation' . (count($trackedCorporationSelections) === 1 ? '' : 's') . '.'), ENT_QUOTES) ?>
                         </p>
-                        <ul id="tracked_corporation_results" class="hidden max-h-60 overflow-y-auto rounded-lg border border-border bg-black/40"></ul>
+                        <ul id="tracked_corporation_results" class="hidden max-h-60 overflow-y-auto surface-tertiary"></ul>
                         <div id="tracked_corporation_selected" class="space-y-2 rounded-lg border border-border bg-black/10 p-3"></div>
                     </label>
                 </div>
@@ -910,7 +910,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
 
                 <label class="block space-y-2">
                     <span class="text-sm text-muted">Demand Prediction Mode (future-facing)</span>
-                    <input type="text" name="killmail_demand_prediction_mode" value="<?= htmlspecialchars($settingValues['killmail_demand_prediction_mode'] ?? 'baseline', ENT_QUOTES) ?>" class="w-full rounded-lg border border-border bg-black/30 px-3 py-2 text-sm outline-none ring-accent focus:ring" />
+                    <input type="text" name="killmail_demand_prediction_mode" value="<?= htmlspecialchars($settingValues['killmail_demand_prediction_mode'] ?? 'baseline', ENT_QUOTES) ?>" class="w-full field-input" />
                 </label>
 
                 <div class="rounded-lg border border-border bg-black/20 p-3 text-sm text-muted space-y-1">
@@ -922,7 +922,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                 </div>
 
                 <p class="text-sm text-muted">Ingestion consumes R2Z2 as an ordered stream. Filtering for alliances/corporations happens after local persistence, enabling future module-demand prediction and restock analytics.</p>
-                <button class="rounded-lg bg-accent px-4 py-2 text-sm font-medium">Save Killmail Intelligence Settings</button>
+                <button class="btn-primary">Save Killmail Intelligence Settings</button>
             </form>
         <?php elseif ($section === 'esi-login'): ?>
             <form class="mt-6 space-y-4" method="post">
@@ -930,33 +930,33 @@ include __DIR__ . '/../../src/views/partials/header.php';
                 <input type="hidden" name="section" value="esi-login">
                 <label class="block space-y-2">
                     <span class="text-sm text-muted">ESI Client ID</span>
-                    <input name="esi_client_id" value="<?= htmlspecialchars($settingValues['esi_client_id'] ?? '', ENT_QUOTES) ?>" class="w-full rounded-lg border border-border bg-black/30 px-3 py-2 text-sm outline-none ring-accent focus:ring" />
+                    <input name="esi_client_id" value="<?= htmlspecialchars($settingValues['esi_client_id'] ?? '', ENT_QUOTES) ?>" class="w-full field-input" />
                 </label>
                 <label class="block space-y-2">
                     <span class="text-sm text-muted">ESI Client Secret</span>
-                    <input name="esi_client_secret" type="password" value="<?= htmlspecialchars($settingValues['esi_client_secret'] ?? '', ENT_QUOTES) ?>" class="w-full rounded-lg border border-border bg-black/30 px-3 py-2 text-sm outline-none ring-accent focus:ring" />
+                    <input name="esi_client_secret" type="password" value="<?= htmlspecialchars($settingValues['esi_client_secret'] ?? '', ENT_QUOTES) ?>" class="w-full field-input" />
                 </label>
                 <label class="block space-y-2">
                     <span class="text-sm text-muted">Callback URL</span>
-                    <input name="esi_callback_url" value="<?= htmlspecialchars($settingValues['esi_callback_url'] ?? base_url('/callback'), ENT_QUOTES) ?>" class="w-full rounded-lg border border-border bg-black/30 px-3 py-2 text-sm outline-none ring-accent focus:ring" />
+                    <input name="esi_callback_url" value="<?= htmlspecialchars($settingValues['esi_callback_url'] ?? base_url('/callback'), ENT_QUOTES) ?>" class="w-full field-input" />
                 </label>
                 <label class="block space-y-2">
                     <span class="text-sm text-muted">Enabled Scopes (space separated)</span>
-                    <textarea name="esi_scopes" rows="4" class="w-full rounded-lg border border-border bg-black/30 px-3 py-2 text-sm outline-none ring-accent focus:ring"><?= htmlspecialchars($settingValues['esi_scopes'] ?? implode(' ', esi_default_scopes()), ENT_QUOTES) ?></textarea>
+                    <textarea name="esi_scopes" rows="4" class="w-full field-input"><?= htmlspecialchars($settingValues['esi_scopes'] ?? implode(' ', esi_default_scopes()), ENT_QUOTES) ?></textarea>
                 </label>
                 <label class="flex items-center gap-3 rounded-lg border border-border bg-black/20 p-3">
                     <input type="checkbox" name="esi_enabled" value="1" <?= ($settingValues['esi_enabled'] ?? '0') === '1' ? 'checked' : '' ?> class="size-4 rounded border-border bg-black">
                     <span class="text-sm">Enable ESI OAuth login</span>
                 </label>
                 <div class="flex flex-wrap items-center gap-3">
-                    <button class="rounded-lg bg-accent px-4 py-2 text-sm font-medium">Save ESI Login Settings</button>
+                    <button class="btn-primary">Save ESI Login Settings</button>
                     <?php if (($settingValues['esi_enabled'] ?? '0') === '1' && ($settingValues['esi_client_id'] ?? '') !== ''): ?>
                         <a class="rounded-lg border border-border px-4 py-2 text-sm hover:bg-white/5" href="<?= htmlspecialchars(esi_sso_authorize_url(), ENT_QUOTES) ?>">Connect ESI Character</a>
                     <?php endif; ?>
                 </div>
             </form>
 
-            <div class="mt-6 rounded-lg border border-border bg-black/20 p-4 text-sm text-muted">
+            <div class="mt-6 surface-tertiary text-sm text-muted">
                 <p class="font-medium text-slate-200">ESI OAuth Status</p>
                 <?php if ($latestEsiToken === null): ?>
                     <p class="mt-2">No ESI token is stored yet.</p>
@@ -977,7 +977,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                 <div class="mt-6 grid gap-3 md:grid-cols-3">
                     <?php foreach ($syncStatusCards as $syncCard): ?>
                         <?php $status = $syncCard['status']; ?>
-                        <article class="rounded-lg border border-border bg-black/20 p-4 text-sm">
+                        <article class="surface-tertiary text-sm">
                             <p class="text-xs uppercase tracking-[0.16em] text-muted"><?= htmlspecialchars($syncCard['label'], ENT_QUOTES) ?></p>
                             <p class="mt-2 text-sm text-slate-100">Last success: <?= htmlspecialchars($status['last_success_at'] ?? 'Never', ENT_QUOTES) ?></p>
                             <p class="mt-1 text-sm text-muted">Rows written (recent runs): <?= (int) ($status['recent_rows_written'] ?? 0) ?></p>
@@ -996,7 +996,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                 </label>
                 <label class="block space-y-2">
                     <span class="text-sm text-muted">Incremental Strategy</span>
-                    <select name="incremental_strategy" class="w-full rounded-lg border border-border bg-black/30 px-3 py-2 text-sm outline-none ring-accent focus:ring">
+                    <select name="incremental_strategy" class="w-full field-input">
                         <?php foreach (incremental_strategy_options() as $value => $label): ?>
                             <option value="<?= htmlspecialchars($value, ENT_QUOTES) ?>" <?= ($dataSyncSettingValues['incremental_strategy'] ?? 'watermark_upsert') === $value ? 'selected' : '' ?>>
                                 <?= htmlspecialchars($label, ENT_QUOTES) ?>
@@ -1006,7 +1006,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                 </label>
                 <label class="block space-y-2">
                     <span class="text-sm text-muted">Delete Handling Policy</span>
-                    <select name="incremental_delete_policy" class="w-full rounded-lg border border-border bg-black/30 px-3 py-2 text-sm outline-none ring-accent focus:ring">
+                    <select name="incremental_delete_policy" class="w-full field-input">
                         <?php foreach (incremental_delete_policy_options() as $value => $label): ?>
                             <option value="<?= htmlspecialchars($value, ENT_QUOTES) ?>" <?= ($dataSyncSettingValues['incremental_delete_policy'] ?? 'reconcile') === $value ? 'selected' : '' ?>>
                                 <?= htmlspecialchars($label, ENT_QUOTES) ?>
@@ -1016,7 +1016,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                 </label>
                 <label class="block space-y-2">
                     <span class="text-sm text-muted">Chunk Size</span>
-                    <input type="number" min="100" max="10000" step="100" name="incremental_chunk_size" value="<?= htmlspecialchars($dataSyncSettingValues['incremental_chunk_size'] ?? '1000', ENT_QUOTES) ?>" class="w-full rounded-lg border border-border bg-black/30 px-3 py-2 text-sm outline-none ring-accent focus:ring" />
+                    <input type="number" min="100" max="10000" step="100" name="incremental_chunk_size" value="<?= htmlspecialchars($dataSyncSettingValues['incremental_chunk_size'] ?? '1000', ENT_QUOTES) ?>" class="w-full field-input" />
                 </label>
 
                 <div class="space-y-3">
@@ -1046,9 +1046,9 @@ include __DIR__ . '/../../src/views/partials/header.php';
                                 step="1"
                                 name="<?= htmlspecialchars($schedule['interval_value_key'], ENT_QUOTES) ?>"
                                 value="<?= htmlspecialchars((string) $schedule['interval_value'], ENT_QUOTES) ?>"
-                                class="w-full rounded-lg border border-border bg-black/30 px-3 py-2 text-sm outline-none ring-accent focus:ring"
+                                class="w-full field-input"
                             />
-                            <select name="<?= htmlspecialchars($schedule['interval_unit_key'], ENT_QUOTES) ?>" class="rounded-lg border border-border bg-black/30 px-3 py-2 text-sm outline-none ring-accent focus:ring">
+                            <select name="<?= htmlspecialchars($schedule['interval_unit_key'], ENT_QUOTES) ?>" class="field-input">
                                 <option value="seconds" <?= ($schedule['interval_unit'] ?? 'minutes') === 'seconds' ? 'selected' : '' ?>>seconds</option>
                                 <option value="minutes" <?= ($schedule['interval_unit'] ?? 'minutes') === 'minutes' ? 'selected' : '' ?>>minutes</option>
                             </select>
@@ -1064,12 +1064,12 @@ include __DIR__ . '/../../src/views/partials/header.php';
 
                 <label class="block space-y-2">
                     <span class="text-sm text-muted">Raw Order Snapshot Retention (days)</span>
-                    <input type="number" min="1" max="3650" step="1" name="raw_order_snapshot_retention_days" value="<?= htmlspecialchars($dataSyncSettingValues['raw_order_snapshot_retention_days'] ?? '30', ENT_QUOTES) ?>" class="w-full rounded-lg border border-border bg-black/30 px-3 py-2 text-sm outline-none ring-accent focus:ring" />
+                    <input type="number" min="1" max="3650" step="1" name="raw_order_snapshot_retention_days" value="<?= htmlspecialchars($dataSyncSettingValues['raw_order_snapshot_retention_days'] ?? '30', ENT_QUOTES) ?>" class="w-full field-input" />
                 </label>
 
                 <label class="block space-y-2">
                     <span class="text-sm text-muted">Static Data JSONL ZIP Source URL</span>
-                    <input type="url" name="static_data_source_url" value="<?= htmlspecialchars($dataSyncSettingValues['static_data_source_url'] ?? 'https://developers.eveonline.com/static-data/eve-online-static-data-latest-jsonl.zip', ENT_QUOTES) ?>" class="w-full rounded-lg border border-border bg-black/30 px-3 py-2 text-sm outline-none ring-accent focus:ring" />
+                    <input type="url" name="static_data_source_url" value="<?= htmlspecialchars($dataSyncSettingValues['static_data_source_url'] ?? 'https://developers.eveonline.com/static-data/eve-online-static-data-latest-jsonl.zip', ENT_QUOTES) ?>" class="w-full field-input" />
                     <p class="text-xs text-muted">Importer expects the official CCP JSONL ZIP payload (<span class="font-mono">.zip</span>) from developers.eveonline.com.</p>
                 </label>
 
@@ -1111,8 +1111,8 @@ include __DIR__ . '/../../src/views/partials/header.php';
 
                 <p class="text-sm text-muted">When enabled, future import/sync jobs will only process changed rows for better scalability.</p>
                 <div class="flex flex-wrap items-center gap-2">
-                    <button name="data_sync_action" value="save" class="rounded-lg bg-accent px-4 py-2 text-sm font-medium">Save Data Sync Settings</button>
-                    <select name="run_now_job_key" class="rounded-lg border border-border bg-black/30 px-3 py-2 text-sm outline-none ring-accent focus:ring" aria-label="Run a data sync job now">
+                    <button name="data_sync_action" value="save" class="btn-primary">Save Data Sync Settings</button>
+                    <select name="run_now_job_key" class="field-input" aria-label="Run a data sync job now">
                         <?php foreach ($runNowJobOptions as $jobOption): ?>
                             <option value="<?= htmlspecialchars($jobOption['job_key'], ENT_QUOTES) ?>"><?= htmlspecialchars($jobOption['label'], ENT_QUOTES) ?></option>
                         <?php endforeach; ?>

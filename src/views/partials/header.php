@@ -17,6 +17,7 @@ $notice = flash('success');
         @theme {
             --color-background: #0b0f14;
             --color-background-elevated: #101722;
+            --color-card: #101722;
             --color-panel: #111927;
             --color-panel-strong: #0f1724;
             --color-panel-muted: #0d141d;
@@ -44,9 +45,20 @@ $notice = flash('success');
             body {
                 @apply min-h-screen bg-background text-slate-100 antialiased;
                 background-image:
-                    radial-gradient(circle at top, rgba(59, 130, 246, 0.14), transparent 30%),
-                    radial-gradient(circle at 85% 15%, rgba(34, 211, 238, 0.10), transparent 20%),
+                    radial-gradient(circle at top, rgba(59, 130, 246, 0.12), transparent 32%),
+                    radial-gradient(circle at 85% 15%, rgba(34, 211, 238, 0.08), transparent 20%),
                     linear-gradient(180deg, #0b0f14 0%, #0a0f16 100%);
+            }
+
+            body::before {
+                content: '';
+                position: fixed;
+                inset: 0;
+                pointer-events: none;
+                opacity: 0.22;
+                background-image: radial-gradient(rgba(148, 163, 184, 0.28) 0.6px, transparent 0.6px);
+                background-size: 24px 24px;
+                mask-image: linear-gradient(180deg, rgba(255,255,255,0.75), transparent 75%);
             }
 
             ::selection {
@@ -61,12 +73,12 @@ $notice = flash('success');
             }
 
             .sidebar-shell {
-                @apply hidden w-80 shrink-0 border-r border-white/5 bg-slate-950/55 px-5 py-6 backdrop-blur-xl lg:block;
-                box-shadow: inset -1px 0 0 rgba(96, 165, 250, 0.08);
+                @apply hidden w-80 shrink-0 border-r border-white/5 bg-slate-950/60 px-5 py-6 backdrop-blur-xl lg:block;
+                box-shadow: inset -1px 0 0 rgba(96, 165, 250, 0.06);
             }
 
             .brand-lockup {
-                @apply relative mb-8 overflow-hidden rounded-2xl border border-white/8 bg-gradient-to-br from-slate-900 via-slate-900 to-slate-950 px-4 py-4 shadow-[0_20px_40px_rgba(2,6,23,0.45)] transition duration-200 hover:border-sky-400/25 hover:shadow-[0_22px_50px_rgba(6,182,212,0.12)];
+                @apply relative mb-8 overflow-hidden rounded-[1.75rem] border border-white/8 bg-gradient-to-br from-slate-900 via-slate-900 to-slate-950 px-4 py-4 shadow-[0_24px_48px_rgba(2,6,23,0.45)] transition duration-200 hover:border-sky-400/20 hover:shadow-[0_26px_56px_rgba(6,182,212,0.10)];
             }
 
             .brand-lockup::after {
@@ -74,11 +86,11 @@ $notice = flash('success');
                 position: absolute;
                 inset: 0;
                 pointer-events: none;
-                background: linear-gradient(135deg, rgba(59,130,246,0.10), transparent 45%, rgba(34,211,238,0.06));
+                background: linear-gradient(135deg, rgba(59,130,246,0.10), transparent 48%, rgba(34,211,238,0.05));
             }
 
             .nav-group {
-                @apply space-y-2 rounded-2xl border border-white/6 bg-white/[0.03] p-2.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.02)];
+                @apply space-y-2 rounded-[1.4rem] border border-white/6 bg-white/[0.025] p-2.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.02)];
             }
 
             .nav-item {
@@ -86,7 +98,7 @@ $notice = flash('success');
             }
 
             .nav-item-active {
-                @apply border-sky-400/20 bg-sky-400/10 text-white shadow-[0_0_24px_rgba(59,130,246,0.16)];
+                @apply border-sky-400/18 bg-sky-400/10 text-white shadow-[0_0_20px_rgba(59,130,246,0.12)];
             }
 
             .nav-item-active::before {
@@ -98,7 +110,7 @@ $notice = flash('success');
                 width: 3px;
                 border-radius: 999px;
                 background: linear-gradient(180deg, rgba(34,211,238,0.95), rgba(59,130,246,0.95));
-                box-shadow: 0 0 18px rgba(34,211,238,0.6);
+                box-shadow: 0 0 16px rgba(34,211,238,0.45);
             }
 
             .subnav-item {
@@ -106,11 +118,11 @@ $notice = flash('success');
             }
 
             .subnav-item-active {
-                @apply border-sky-400/16 bg-slate-900/70 text-sky-100;
+                @apply border-sky-400/16 bg-slate-900/75 text-sky-100;
             }
 
             .page-header {
-                @apply relative overflow-hidden rounded-2xl border border-white/8 bg-gradient-to-br from-slate-900 via-slate-900/95 to-slate-950 px-6 py-6 shadow-[0_24px_60px_rgba(2,6,23,0.42)];
+                @apply relative overflow-hidden rounded-[1.75rem] border border-white/8 bg-gradient-to-br from-slate-900 via-slate-900/95 to-slate-950 px-6 py-6 shadow-[0_26px_70px_rgba(2,6,23,0.42)];
             }
 
             .page-header::after {
@@ -118,33 +130,58 @@ $notice = flash('success');
                 position: absolute;
                 inset: 0;
                 pointer-events: none;
-                background: radial-gradient(circle at top right, rgba(34,211,238,0.10), transparent 24%), linear-gradient(135deg, rgba(59,130,246,0.10), transparent 50%);
+                background: radial-gradient(circle at top right, rgba(34,211,238,0.08), transparent 24%), linear-gradient(135deg, rgba(59,130,246,0.10), transparent 52%);
             }
 
             .section-header {
                 @apply mb-4 flex items-start justify-between gap-3;
             }
 
+            .surface-primary {
+                @apply rounded-[1.75rem] border border-sky-400/18 bg-gradient-to-br from-slate-900 via-[#111827] to-slate-950 p-6 shadow-[0_24px_72px_rgba(2,6,23,0.46)];
+                box-shadow: inset 0 1px 0 rgba(255,255,255,0.04), 0 24px 72px rgba(2,6,23,0.46);
+            }
+
+            .surface-secondary {
+                @apply rounded-[1.55rem] border border-white/8 bg-gradient-to-b from-panel via-panel to-panel-strong p-5 shadow-[0_18px_48px_rgba(3,8,20,0.38)];
+                box-shadow: inset 0 1px 0 rgba(255,255,255,0.03), 0 18px 48px rgba(3,8,20,0.38);
+            }
+
+            .surface-tertiary {
+                @apply rounded-[1.3rem] border border-white/7 bg-slate-950/50 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.02)];
+            }
+
             .panel {
-                @apply rounded-2xl border border-white/8 bg-gradient-to-b from-panel via-panel to-panel-strong p-6 shadow-[0_18px_60px_rgba(3,8,20,0.42)] transition duration-200 hover:border-sky-300/16 hover:shadow-[0_22px_70px_rgba(6,182,212,0.12)];
-                box-shadow: inset 0 1px 0 rgba(255,255,255,0.03), 0 18px 60px rgba(3,8,20,0.42);
+                @apply surface-secondary transition duration-200 hover:border-sky-300/14 hover:shadow-[0_20px_55px_rgba(6,182,212,0.10)];
             }
 
             .tertiary-panel {
-                @apply rounded-2xl border border-dashed border-white/10 bg-slate-950/45 p-4;
+                @apply surface-tertiary;
             }
 
             .kpi-card {
-                @apply relative overflow-hidden rounded-2xl border border-white/8 bg-gradient-to-br from-panel via-panel to-slate-950 p-5 shadow-[0_18px_55px_rgba(3,8,20,0.45)] transition duration-200 hover:-translate-y-0.5 hover:border-sky-300/18 hover:shadow-[0_24px_70px_rgba(59,130,246,0.15)] focus-within:border-sky-300/25;
-                box-shadow: inset 0 1px 0 rgba(255,255,255,0.03), 0 18px 55px rgba(3,8,20,0.45);
+                @apply relative overflow-hidden rounded-[1.55rem] border border-white/8 bg-gradient-to-br from-panel via-panel to-slate-950 p-5 shadow-[0_18px_52px_rgba(3,8,20,0.42)] transition duration-200 hover:-translate-y-0.5 hover:border-sky-300/16 hover:shadow-[0_22px_64px_rgba(59,130,246,0.14)];
+                box-shadow: inset 0 1px 0 rgba(255,255,255,0.03), 0 18px 52px rgba(3,8,20,0.42);
             }
 
-            .list-row {
-                @apply flex items-start gap-4 rounded-xl border border-white/7 bg-slate-950/45 px-4 py-3.5 transition duration-200 hover:border-sky-300/18 hover:bg-slate-900/75 hover:shadow-[0_12px_30px_rgba(8,47,73,0.18)];
+            .metric-value {
+                @apply font-semibold tracking-tight text-white tabular-nums;
+            }
+
+            .eyebrow {
+                @apply text-[0.68rem] font-semibold uppercase tracking-[0.22em] text-slate-500;
+            }
+
+            .section-title {
+                @apply text-xl font-semibold tracking-tight text-white;
+            }
+
+            .section-copy {
+                @apply text-sm leading-6 text-slate-400;
             }
 
             .badge {
-                @apply inline-flex items-center rounded-full border px-2.5 py-1 text-[0.65rem] font-semibold uppercase tracking-[0.18em];
+                @apply inline-flex items-center rounded-full border px-2.5 py-1 text-[0.64rem] font-semibold uppercase tracking-[0.18em];
             }
 
             .status-chip {
@@ -152,7 +189,69 @@ $notice = flash('success');
             }
 
             .muted-meta {
-                @apply text-sm text-muted;
+                @apply text-sm text-slate-400;
+            }
+
+            .intelligence-row {
+                @apply group flex items-center gap-3 rounded-[1.2rem] border border-white/7 bg-slate-950/46 px-4 py-3.5 transition duration-200 hover:border-sky-300/18 hover:bg-slate-900/78 hover:shadow-[0_14px_36px_rgba(8,47,73,0.18)];
+            }
+
+            .signal-dot {
+                @apply h-2 w-2 rounded-full bg-current opacity-85;
+            }
+
+            .info-kv {
+                @apply flex items-center justify-between gap-3 rounded-xl border border-white/6 bg-slate-950/34 px-3 py-2.5;
+            }
+
+            .field-label {
+                @apply text-sm font-medium text-slate-300;
+            }
+
+            .field-help {
+                @apply text-xs leading-5 text-slate-500;
+            }
+
+            .field-input,
+            .field-select,
+            .field-textarea {
+                @apply w-full rounded-xl border border-white/10 bg-slate-950/72 px-3 py-2.5 text-sm text-slate-100 outline-none transition focus:border-sky-400/50 focus:ring-2 focus:ring-sky-400/20;
+            }
+
+            .btn-primary {
+                @apply inline-flex items-center justify-center rounded-xl border border-sky-400/30 bg-sky-500/18 px-4 py-2.5 text-sm font-medium text-white transition hover:border-sky-300/40 hover:bg-sky-500/28;
+            }
+
+            .btn-secondary {
+                @apply inline-flex items-center justify-center rounded-xl border border-white/10 bg-white/[0.03] px-4 py-2.5 text-sm font-medium text-slate-200 transition hover:bg-white/[0.06];
+            }
+
+            .table-shell {
+                @apply overflow-x-auto rounded-[1.3rem] border border-white/8 bg-slate-950/36;
+            }
+
+            .table-ui {
+                @apply min-w-full text-sm;
+            }
+
+            .table-ui thead tr {
+                @apply border-b border-white/8 bg-white/[0.03] text-left text-[0.68rem] uppercase tracking-[0.18em] text-slate-500;
+            }
+
+            .table-ui th {
+                @apply px-3 py-2.5 font-medium;
+            }
+
+            .table-ui td {
+                @apply px-3 py-3 text-slate-200;
+            }
+
+            .table-ui tbody tr {
+                @apply border-b border-white/6 transition hover:bg-sky-500/8;
+            }
+
+            .table-ui tbody tr:nth-child(even) {
+                @apply bg-white/[0.01];
             }
         }
     </style>
@@ -160,27 +259,27 @@ $notice = flash('success');
 <body>
 <div class="app-shell">
     <?php include __DIR__ . '/sidebar.php'; ?>
-    <main class="flex-1 px-5 py-6 sm:px-6 lg:px-8 xl:px-10 xl:py-8">
+    <main class="relative flex-1 px-5 py-6 sm:px-6 lg:px-8 xl:px-10 xl:py-8">
         <header class="page-header mb-8">
             <div class="relative z-10 flex flex-wrap items-start justify-between gap-5">
                 <div class="max-w-3xl">
-                    <p class="text-[0.68rem] font-semibold uppercase tracking-[0.28em] text-cyan/80"><?= htmlspecialchars(brand_console_label(), ENT_QUOTES) ?></p>
+                    <p class="eyebrow text-cyan/80"><?= htmlspecialchars(brand_console_label(), ENT_QUOTES) ?></p>
                     <div class="mt-3 flex flex-wrap items-center gap-3">
                         <h1 class="text-3xl font-semibold tracking-tight text-white sm:text-[2.1rem]"><?= htmlspecialchars($title ?? 'Dashboard', ENT_QUOTES) ?></h1>
                         <span class="status-chip border-cyan/20 bg-cyan/10 text-cyan-100">
-                            <span class="h-2 w-2 rounded-full bg-cyan shadow-[0_0_12px_rgba(34,211,238,0.85)]"></span>
-                            Alliance-scale supply intelligence
+                            <span class="h-2 w-2 rounded-full bg-cyan shadow-[0_0_12px_rgba(34,211,238,0.65)]"></span>
+                            Alliance logistics intelligence
                         </span>
                     </div>
-                    <p class="mt-3 max-w-2xl text-sm leading-6 text-slate-300/88"><?= htmlspecialchars(brand_tagline(), ENT_QUOTES) ?> for coverage monitoring, operational risk, and market sync readiness.</p>
+                    <p class="mt-3 max-w-2xl text-sm leading-6 text-slate-300/88">Alliance logistics intelligence for coverage, risk, and market readiness.</p>
                 </div>
-                <div class="relative z-10 flex flex-col items-start gap-3 rounded-2xl border border-white/8 bg-slate-950/45 px-4 py-3 text-sm text-slate-300 shadow-[inset_0_1px_0_rgba(255,255,255,0.02)] sm:items-end">
-                    <span class="text-[0.7rem] font-semibold uppercase tracking-[0.22em] text-slate-500">Deployment profile</span>
+                <div class="surface-tertiary relative z-10 flex flex-col items-start gap-3 px-4 py-3 text-sm text-slate-300 sm:items-end">
+                    <span class="eyebrow">Deployment profile</span>
                     <span class="font-medium text-slate-100">PHP 8 · MySQL · Apache2</span>
-                    <span class="text-xs text-slate-400">Production-usable dark command layer</span>
+                    <span class="text-xs text-slate-500">Premium operational command layer</span>
                 </div>
             </div>
         </header>
         <?php if ($notice): ?>
-            <div class="mb-6 rounded-2xl border border-emerald-500/30 bg-emerald-500/12 px-4 py-3 text-sm text-emerald-100 shadow-[0_0_30px_rgba(34,197,94,0.10)]"><?= htmlspecialchars($notice, ENT_QUOTES) ?></div>
+            <div class="mb-6 rounded-2xl border border-emerald-500/30 bg-emerald-500/12 px-4 py-3 text-sm text-emerald-100 shadow-[0_0_24px_rgba(34,197,94,0.08)]"><?= htmlspecialchars($notice, ENT_QUOTES) ?></div>
         <?php endif; ?>

@@ -30,7 +30,7 @@ $buildPageUrl = static function (int $targetPage) use ($queryParams): string {
 };
 ?>
 <?php if ($filterFields !== []): ?>
-    <section class="mb-6 rounded-xl border border-border bg-card p-4">
+    <section class="surface-tertiary mb-6">
         <form method="get" action="<?= htmlspecialchars($filterAction, ENT_QUOTES) ?>" class="grid gap-4 md:grid-cols-4 md:items-end">
             <?php foreach ($filterFields as $field): ?>
                 <?php
@@ -40,9 +40,9 @@ $buildPageUrl = static function (int $targetPage) use ($queryParams): string {
                 $options = is_array($field['options'] ?? null) ? $field['options'] : [];
                 ?>
                 <?php if ($key !== ''): ?>
-                    <label class="block text-sm text-muted">
-                        <span class="mb-1 block text-xs uppercase tracking-[0.15em]"><?= htmlspecialchars($label, ENT_QUOTES) ?></span>
-                        <select name="<?= htmlspecialchars($key, ENT_QUOTES) ?>" class="w-full rounded-lg border border-border bg-black/20 px-3 py-2 text-slate-100">
+                    <label class="block">
+                        <span class="mb-2 block field-label"><?= htmlspecialchars($label, ENT_QUOTES) ?></span>
+                        <select name="<?= htmlspecialchars($key, ENT_QUOTES) ?>" class="field-select">
                             <?php foreach ($options as $optionValue => $optionLabel): ?>
                                 <option value="<?= htmlspecialchars((string) $optionValue, ENT_QUOTES) ?>" <?= (string) $optionValue === $value ? 'selected' : '' ?>>
                                     <?= htmlspecialchars((string) $optionLabel, ENT_QUOTES) ?>
@@ -52,7 +52,7 @@ $buildPageUrl = static function (int $targetPage) use ($queryParams): string {
                     </label>
                 <?php endif; ?>
             <?php endforeach; ?>
-            <button type="submit" class="rounded-lg border border-border bg-accent/30 px-4 py-2 text-sm text-white hover:bg-accent/50">Apply filters</button>
+            <button type="submit" class="btn-primary">Apply filters</button>
         </form>
     </section>
 <?php endif; ?>
@@ -60,31 +60,34 @@ $buildPageUrl = static function (int $targetPage) use ($queryParams): string {
 <?php if ($summary !== []): ?>
     <section class="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <?php foreach ($summary as $card): ?>
-            <article class="rounded-xl border border-border/90 bg-gradient-to-b from-card to-black/40 p-5 shadow-lg shadow-black/20 ring-1 ring-white/5">
-                <p class="text-xs uppercase tracking-[0.2em] text-muted"><?= htmlspecialchars((string) ($card['label'] ?? ''), ENT_QUOTES) ?></p>
-                <p class="mt-2 text-2xl font-semibold text-slate-50"><?= htmlspecialchars((string) ($card['value'] ?? ''), ENT_QUOTES) ?></p>
-                <p class="mt-2 text-sm text-muted"><?= htmlspecialchars((string) ($card['context'] ?? ''), ENT_QUOTES) ?></p>
+            <article class="surface-secondary">
+                <p class="eyebrow"><?= htmlspecialchars((string) ($card['label'] ?? ''), ENT_QUOTES) ?></p>
+                <p class="mt-3 text-3xl metric-value"><?= htmlspecialchars((string) ($card['value'] ?? ''), ENT_QUOTES) ?></p>
+                <p class="mt-2 text-sm text-slate-300"><?= htmlspecialchars((string) ($card['context'] ?? ''), ENT_QUOTES) ?></p>
             </article>
         <?php endforeach; ?>
     </section>
 <?php endif; ?>
 
 <?php if ($highlights !== []): ?>
-    <section class="mt-6 rounded-xl border border-border bg-card p-5">
-        <div class="mb-3 flex items-center justify-between gap-3">
-            <h2 class="text-base font-medium"><?= htmlspecialchars((string) ($highlights['title'] ?? 'Top Signals'), ENT_QUOTES) ?></h2>
-            <span class="text-xs text-muted">Action queue</span>
+    <section class="surface-secondary mt-6">
+        <div class="section-header">
+            <div>
+                <p class="eyebrow">Priority signals</p>
+                <h2 class="mt-2 section-title"><?= htmlspecialchars((string) ($highlights['title'] ?? 'Top Signals'), ENT_QUOTES) ?></h2>
+            </div>
+            <span class="badge border-sky-400/20 bg-sky-500/10 text-sky-100">Action queue</span>
         </div>
         <?php $highlightRows = is_array($highlights['rows'] ?? null) ? $highlights['rows'] : []; ?>
         <?php if ($highlightRows === []): ?>
-            <p class="rounded-lg border border-dashed border-border bg-black/20 p-3 text-sm text-muted">No high-priority signals yet.</p>
+            <p class="surface-tertiary text-sm text-slate-400">No high-priority signals yet.</p>
         <?php else: ?>
-            <div class="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
+            <div class="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
                 <?php foreach ($highlightRows as $signal): ?>
-                    <article class="rounded-lg border border-border bg-black/20 px-3 py-2">
-                        <p class="text-sm font-medium"><?= htmlspecialchars((string) ($signal['module'] ?? ''), ENT_QUOTES) ?></p>
-                        <p class="mt-1 text-xs text-muted"><?= htmlspecialchars((string) ($signal['signal'] ?? ''), ENT_QUOTES) ?></p>
-                        <p class="mt-1 text-[11px] uppercase tracking-[0.08em] text-muted">Score: <?= htmlspecialchars((string) ($signal['score'] ?? '0'), ENT_QUOTES) ?></p>
+                    <article class="surface-tertiary">
+                        <p class="text-sm font-semibold text-slate-100"><?= htmlspecialchars((string) ($signal['module'] ?? ''), ENT_QUOTES) ?></p>
+                        <p class="mt-1 text-sm text-slate-400"><?= htmlspecialchars((string) ($signal['signal'] ?? ''), ENT_QUOTES) ?></p>
+                        <p class="mt-3 text-xs text-slate-500">Priority score <span class="tabular-nums text-slate-200"><?= htmlspecialchars((string) ($signal['score'] ?? '0'), ENT_QUOTES) ?></span></p>
                     </article>
                 <?php endforeach; ?>
             </div>
@@ -92,28 +95,28 @@ $buildPageUrl = static function (int $targetPage) use ($queryParams): string {
     </section>
 <?php endif; ?>
 
-<section class="mt-8 rounded-xl border border-border bg-card p-5 shadow-lg shadow-black/20">
+<section class="surface-secondary mt-8">
     <?php if ($hasTableControls): ?>
-        <form method="get" action="<?= htmlspecialchars(current_path(), ENT_QUOTES) ?>" class="mb-5 rounded-xl border border-border/80 bg-black/20 p-4">
+        <form method="get" action="<?= htmlspecialchars(current_path(), ENT_QUOTES) ?>" class="surface-tertiary mb-5">
             <div class="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
-                <div class="grid flex-1 gap-4 md:grid-cols-[minmax(0,1fr)_auto]">
+                <div class="grid flex-1 gap-4 md:grid-cols-[minmax(0,1fr)_auto_auto]">
                     <label class="block text-sm text-muted">
-                        <span class="mb-1 block text-xs uppercase tracking-[0.18em]">Search item</span>
-                        <input type="search" name="q" value="<?= htmlspecialchars($search, ENT_QUOTES) ?>" placeholder="Filter by module name..." class="w-full rounded-lg border border-border bg-black/30 px-3 py-2 text-slate-100 placeholder:text-muted focus:border-accent/70 focus:outline-none">
+                        <span class="mb-2 block field-label">Search item</span>
+                        <input type="search" name="q" value="<?= htmlspecialchars($search, ENT_QUOTES) ?>" placeholder="Filter by module name..." class="field-input">
                     </label>
                     <?php if ($sortOptions !== []): ?>
-                        <label class="block text-sm text-muted md:w-44">
-                            <span class="mb-1 block text-xs uppercase tracking-[0.18em]">Sort by</span>
-                            <select name="sort" class="w-full rounded-lg border border-border bg-black/30 px-3 py-2 text-slate-100 focus:border-accent/70 focus:outline-none">
+                        <label class="block md:w-44">
+                            <span class="mb-2 block field-label">Sort by</span>
+                            <select name="sort" class="field-select">
                                 <?php foreach ($sortOptions as $sortValue => $sortLabel): ?>
                                     <option value="<?= htmlspecialchars((string) $sortValue, ENT_QUOTES) ?>" <?= (string) $sortValue === $sort ? 'selected' : '' ?>><?= htmlspecialchars((string) $sortLabel, ENT_QUOTES) ?></option>
                                 <?php endforeach; ?>
                             </select>
                         </label>
                     <?php endif; ?>
-                    <label class="block text-sm text-muted md:w-36">
-                        <span class="mb-1 block text-xs uppercase tracking-[0.18em]">Page size</span>
-                        <select name="page_size" class="w-full rounded-lg border border-border bg-black/30 px-3 py-2 text-slate-100 focus:border-accent/70 focus:outline-none">
+                    <label class="block md:w-36">
+                        <span class="mb-2 block field-label">Page size</span>
+                        <select name="page_size" class="field-select">
                             <?php foreach ($pageSizeOptions as $option): ?>
                                 <?php $optionValue = max(1, (int) $option); ?>
                                 <option value="<?= $optionValue ?>" <?= $optionValue === $pageSize ? 'selected' : '' ?>><?= $optionValue ?></option>
@@ -122,31 +125,31 @@ $buildPageUrl = static function (int $targetPage) use ($queryParams): string {
                     </label>
                 </div>
                 <div class="flex items-center gap-3">
-                    <button type="submit" class="rounded-lg border border-border bg-accent/40 px-4 py-2 text-sm font-medium text-white transition hover:bg-accent/60">Apply</button>
-                    <span class="text-sm text-muted"><?= number_format($totalItems) ?> items</span>
+                    <button type="submit" class="btn-primary">Apply</button>
+                    <span class="text-sm text-slate-400"><span class="tabular-nums text-slate-100"><?= number_format($totalItems) ?></span> items</span>
                 </div>
             </div>
             <input type="hidden" name="page" value="1">
         </form>
 
-        <div class="mb-3 flex flex-wrap items-center justify-between gap-3 text-sm text-muted">
-            <p>Showing <?= $showingFrom ?>-<?= $showingTo ?> of <?= number_format($totalItems) ?> results</p>
+        <div class="mb-3 flex flex-wrap items-center justify-between gap-3 text-sm text-slate-400">
+            <p>Showing <span class="tabular-nums text-slate-200"><?= $showingFrom ?>-<?= $showingTo ?></span> of <span class="tabular-nums text-slate-200"><?= number_format($totalItems) ?></span></p>
             <div class="flex items-center gap-2">
-                <span>Page <?= $page ?> / <?= $totalPages ?></span>
-                <a href="<?= htmlspecialchars($buildPageUrl($page - 1), ENT_QUOTES) ?>" class="rounded-md border border-border px-3 py-1.5 text-slate-200 transition hover:bg-white/5 <?= $page <= 1 ? 'pointer-events-none opacity-40' : '' ?>">Previous</a>
-                <a href="<?= htmlspecialchars($buildPageUrl($page + 1), ENT_QUOTES) ?>" class="rounded-md border border-border px-3 py-1.5 text-slate-200 transition hover:bg-white/5 <?= $page >= $totalPages ? 'pointer-events-none opacity-40' : '' ?>">Next</a>
+                <span>Page <span class="tabular-nums text-slate-200"><?= $page ?></span> / <span class="tabular-nums text-slate-200"><?= $totalPages ?></span></span>
+                <a href="<?= htmlspecialchars($buildPageUrl($page - 1), ENT_QUOTES) ?>" class="btn-secondary px-3 py-1.5 <?= $page <= 1 ? 'pointer-events-none opacity-40' : '' ?>">Previous</a>
+                <a href="<?= htmlspecialchars($buildPageUrl($page + 1), ENT_QUOTES) ?>" class="btn-secondary px-3 py-1.5 <?= $page >= $totalPages ? 'pointer-events-none opacity-40' : '' ?>">Next</a>
             </div>
         </div>
     <?php endif; ?>
 
-    <div class="overflow-x-auto rounded-lg border border-border/80">
-        <table class="min-w-full text-sm">
+    <div class="table-shell">
+        <table class="table-ui">
             <thead>
-            <tr class="border-b border-border/80 bg-white/[0.03] text-left text-xs uppercase tracking-[0.15em] text-muted">
+            <tr>
                 <?php foreach ($tableColumns as $column): ?>
                     <?php
                     $alignRight = in_array((string) $column, ['Stock', 'Daily Volume'], true);
-                    $thClass = $alignRight ? 'px-3 py-2 font-medium text-right' : 'px-3 py-2 font-medium';
+                    $thClass = $alignRight ? 'text-right' : '';
                     ?>
                     <th class="<?= $thClass ?>"><?= htmlspecialchars((string) $column, ENT_QUOTES) ?></th>
                 <?php endforeach; ?>
@@ -155,13 +158,13 @@ $buildPageUrl = static function (int $targetPage) use ($queryParams): string {
             <tbody>
             <?php if ($tableRows === []): ?>
                 <tr>
-                    <td class="px-3 py-6 text-muted" colspan="<?= max(1, count($tableColumns)) ?>"><?= htmlspecialchars($emptyMessage, ENT_QUOTES) ?></td>
+                    <td class="px-3 py-6 text-slate-400" colspan="<?= max(1, count($tableColumns)) ?>"><?= htmlspecialchars($emptyMessage, ENT_QUOTES) ?></td>
                 </tr>
             <?php else: ?>
                 <?php foreach ($tableRows as $index => $row): ?>
                     <?php if ((bool) ($row['is_group_header'] ?? false)): ?>
-                        <tr class="border-b border-border/80 bg-white/[0.05]">
-                            <td class="px-3 py-2 text-xs font-semibold uppercase tracking-[0.15em] text-muted" colspan="<?= max(1, count($tableColumns)) ?>"><?= htmlspecialchars((string) ($row['module'] ?? ''), ENT_QUOTES) ?></td>
+                        <tr class="bg-white/[0.05]">
+                            <td class="px-3 py-2 text-xs font-semibold uppercase tracking-[0.15em] text-slate-400" colspan="<?= max(1, count($tableColumns)) ?>"><?= htmlspecialchars((string) ($row['module'] ?? ''), ENT_QUOTES) ?></td>
                         </tr>
                         <?php continue; ?>
                     <?php endif; ?>
@@ -169,20 +172,20 @@ $buildPageUrl = static function (int $targetPage) use ($queryParams): string {
                     $rowTone = (string) ($row['row_tone'] ?? '');
                     $toneClass = $rowTone === 'risk_high' ? 'bg-rose-900/10' : ($rowTone === 'risk_medium' ? 'bg-amber-900/10' : ($rowTone === 'opp_high' ? 'bg-emerald-900/10' : ''));
                     ?>
-                    <tr class="border-b border-border/60 text-slate-200 transition hover:bg-accent/10 <?= $index % 2 === 1 ? 'bg-white/[0.01]' : '' ?> <?= $toneClass ?>">
+                    <tr class="<?= $toneClass ?>">
                         <?php foreach (array_keys($tableColumns) as $key): ?>
                             <?php
                             $value = (string) ($row[$key] ?? '');
-                            $cellClass = 'px-3 py-3';
+                            $cellClass = '';
 
                             if ($key === 'module') {
                                 $cellClass .= ' font-semibold text-slate-50';
                             } elseif ($key === 'price') {
-                                $cellClass .= ' font-medium text-sky-300';
+                                $cellClass .= ' font-medium text-sky-300 tabular-nums';
                             } elseif ($key === 'stock') {
                                 $cellClass .= ' text-right tabular-nums';
                             } elseif ($key === 'updated_at') {
-                                $cellClass .= ' text-muted';
+                                $cellClass .= ' text-slate-400';
                             }
                             ?>
                             <td class="<?= $cellClass ?>">

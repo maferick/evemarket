@@ -30,9 +30,9 @@ include __DIR__ . '/../../src/views/partials/header.php';
     <?php $items = $detail['items'] ?? []; ?>
     <?php $zkb = $detail['zkb'] ?? []; ?>
 
-    <section class="overflow-hidden rounded-2xl border border-border bg-card shadow-lg shadow-black/20">
+    <section class="overflow-hidden surface-primary">
         <div class="grid gap-6 p-6 xl:grid-cols-[minmax(280px,420px)_minmax(0,1fr)]">
-            <div class="rounded-2xl border border-border/80 bg-black/30 p-4">
+            <div class="surface-tertiary">
                 <?php if ((string) ($ship['render_url'] ?? '') !== ''): ?>
                     <img
                         src="<?= htmlspecialchars((string) $ship['render_url'], ENT_QUOTES) ?>"
@@ -41,7 +41,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                         loading="eager"
                     >
                 <?php else: ?>
-                    <div class="flex aspect-square items-center justify-center rounded-2xl border border-dashed border-border bg-black/20 text-sm text-muted">
+                    <div class="surface-tertiary flex aspect-square items-center justify-center text-sm text-slate-400">
                         Ship render unavailable
                     </div>
                 <?php endif; ?>
@@ -71,7 +71,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                 </div>
 
                 <div class="grid gap-4 md:grid-cols-3">
-                    <div class="rounded-xl border border-border bg-black/20 p-4">
+                    <div class="surface-tertiary">
                         <p class="text-xs uppercase tracking-[0.15em] text-muted">Victim</p>
                         <div class="mt-3 flex items-center gap-3">
                             <?php if ((string) ($victim['character_portrait_url'] ?? '') !== ''): ?>
@@ -83,7 +83,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                             </div>
                         </div>
                     </div>
-                    <div class="rounded-xl border border-border bg-black/20 p-4">
+                    <div class="surface-tertiary">
                         <p class="text-xs uppercase tracking-[0.15em] text-muted">Corporation</p>
                         <div class="mt-3 flex items-center gap-3">
                             <?php if ((string) ($victim['corporation_logo_url'] ?? '') !== ''): ?>
@@ -95,7 +95,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                             </div>
                         </div>
                     </div>
-                    <div class="rounded-xl border border-border bg-black/20 p-4">
+                    <div class="surface-tertiary">
                         <p class="text-xs uppercase tracking-[0.15em] text-muted">Alliance</p>
                         <div class="mt-3 flex items-center gap-3">
                             <?php if ((string) ($victim['alliance_logo_url'] ?? '') !== ''): ?>
@@ -110,16 +110,16 @@ include __DIR__ . '/../../src/views/partials/header.php';
                 </div>
 
                 <div class="grid gap-4 md:grid-cols-3">
-                    <div class="rounded-xl border border-border bg-black/20 p-4">
+                    <div class="surface-tertiary">
                         <p class="text-xs uppercase tracking-[0.15em] text-muted">Kill time</p>
                         <p class="mt-2 text-lg font-semibold text-slate-50"><?= htmlspecialchars((string) ($detail['killmail_time_display'] ?? '—'), ENT_QUOTES) ?></p>
                         <p class="mt-1 text-sm text-muted">Uploaded <?= htmlspecialchars((string) ($detail['uploaded_at_display'] ?? '—'), ENT_QUOTES) ?></p>
                     </div>
-                    <div class="rounded-xl border border-border bg-black/20 p-4">
+                    <div class="surface-tertiary">
                         <p class="text-xs uppercase tracking-[0.15em] text-muted">Context</p>
                         <p class="mt-2 text-sm text-slate-200"><?= htmlspecialchars((string) ($detail['match_context'] ?? 'No tracked match context available.'), ENT_QUOTES) ?></p>
                     </div>
-                    <div class="rounded-xl border border-border bg-black/20 p-4">
+                    <div class="surface-tertiary">
                         <p class="text-xs uppercase tracking-[0.15em] text-muted">Stored references</p>
                         <p class="mt-2 text-sm text-slate-200">Killmail <?= htmlspecialchars((string) ($detail['killmail_id'] ?? '—'), ENT_QUOTES) ?> · Sequence <?= htmlspecialchars((string) ($detail['sequence_id'] ?? '—'), ENT_QUOTES) ?></p>
                         <p class="mt-1 truncate text-xs text-muted">Hash <?= htmlspecialchars((string) ($detail['killmail_hash'] ?? '—'), ENT_QUOTES) ?></p>
@@ -129,7 +129,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
         </div>
     </section>
 
-    <section class="mt-6 rounded-xl border border-border bg-card p-5 shadow-lg shadow-black/20">
+    <section class="mt-6 surface-secondary shadow-lg shadow-black/20">
         <div class="flex flex-wrap items-center justify-between gap-3">
             <div>
                 <p class="text-xs uppercase tracking-[0.2em] text-muted">Loss item intelligence</p>
@@ -137,15 +137,15 @@ include __DIR__ . '/../../src/views/partials/header.php';
                 <p class="mt-2 max-w-4xl text-sm text-muted">This section is organized around the locally stored item rows so future market availability, hub pricing, and restock-worthiness comparisons can plug in cleanly.</p>
             </div>
             <div class="grid gap-2 sm:grid-cols-3">
-                <div class="rounded-lg border border-border bg-black/20 px-4 py-3 text-center">
+                <div class="surface-tertiary text-center">
                     <p class="text-xs uppercase tracking-[0.15em] text-muted">Dropped qty</p>
                     <p class="mt-1 text-lg font-semibold text-slate-50"><?= number_format((int) ($detail['item_totals']['dropped'] ?? 0)) ?></p>
                 </div>
-                <div class="rounded-lg border border-border bg-black/20 px-4 py-3 text-center">
+                <div class="surface-tertiary text-center">
                     <p class="text-xs uppercase tracking-[0.15em] text-muted">Destroyed qty</p>
                     <p class="mt-1 text-lg font-semibold text-slate-50"><?= number_format((int) ($detail['item_totals']['destroyed'] ?? 0)) ?></p>
                 </div>
-                <div class="rounded-lg border border-border bg-black/20 px-4 py-3 text-center">
+                <div class="surface-tertiary text-center">
                     <p class="text-xs uppercase tracking-[0.15em] text-muted">Stored item rows</p>
                     <p class="mt-1 text-lg font-semibold text-slate-50"><?= number_format((int) ($detail['stored_item_count'] ?? 0)) ?></p>
                 </div>
@@ -154,7 +154,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
 
         <div class="mt-6 grid gap-4 xl:grid-cols-3">
             <?php foreach ((array) $items as $groupKey => $group): ?>
-                <article class="rounded-xl border border-border/80 bg-black/20 p-4">
+                <article class="surface-tertiary">
                     <div class="flex items-start justify-between gap-3">
                         <div>
                             <h3 class="text-base font-semibold text-slate-50"><?= htmlspecialchars((string) ($group['label'] ?? $groupKey), ENT_QUOTES) ?></h3>
@@ -163,11 +163,11 @@ include __DIR__ . '/../../src/views/partials/header.php';
                         <span class="rounded-full border border-border px-2 py-0.5 text-xs text-slate-300"><?= number_format((int) ($group['total_quantity'] ?? 0)) ?></span>
                     </div>
                     <?php if (((array) ($group['rows'] ?? [])) === []): ?>
-                        <div class="mt-4 rounded-lg border border-dashed border-border bg-black/10 px-4 py-5 text-sm text-muted">No <?= htmlspecialchars(strtolower((string) ($group['label'] ?? $groupKey)), ENT_QUOTES) ?> stored for this loss.</div>
+                        <div class="mt-4 surface-tertiary text-sm text-slate-400">No <?= htmlspecialchars(strtolower((string) ($group['label'] ?? $groupKey)), ENT_QUOTES) ?> stored for this loss.</div>
                     <?php else: ?>
                         <div class="mt-4 space-y-3">
                             <?php foreach ((array) ($group['rows'] ?? []) as $itemRow): ?>
-                                <div class="rounded-lg border border-border/70 bg-black/30 p-3">
+                                <div class="surface-tertiary">
                                     <div class="flex items-start gap-3">
                                         <?php if ((string) ($itemRow['item_icon_url'] ?? '') !== ''): ?>
                                             <img src="<?= htmlspecialchars((string) $itemRow['item_icon_url'], ENT_QUOTES) ?>" alt="" class="h-12 w-12 rounded-lg bg-black/30 object-contain p-1">
@@ -193,19 +193,19 @@ include __DIR__ . '/../../src/views/partials/header.php';
             <?php endforeach; ?>
         </div>
 
-        <div class="mt-6 rounded-xl border border-dashed border-border bg-black/10 px-4 py-4 text-sm text-muted">
+        <div class="mt-6 surface-tertiary text-sm text-slate-400">
             Future extension points: compare these stored loss items against alliance market availability, reference-hub pricing, and restock thresholds without redesigning the loss detail layout.
         </div>
     </section>
 
     <section class="mt-6 grid gap-4 xl:grid-cols-[minmax(0,1.2fr)_minmax(320px,0.8fr)]">
-        <article class="rounded-xl border border-border bg-card p-5">
+        <article class="surface-secondary">
             <div class="flex items-center justify-between gap-3">
                 <h2 class="text-base font-medium text-slate-50">Attacker context</h2>
                 <span class="text-xs uppercase tracking-[0.15em] text-muted">Secondary view</span>
             </div>
             <div class="mt-4 space-y-3">
-                <div class="rounded-lg border border-border bg-black/20 p-4">
+                <div class="surface-tertiary">
                     <p class="text-xs uppercase tracking-[0.15em] text-muted">Final blow</p>
                     <?php if (is_array($attackers['final_blow'] ?? null)): ?>
                         <div class="mt-3 flex items-center gap-3">
@@ -222,11 +222,11 @@ include __DIR__ . '/../../src/views/partials/header.php';
                         <p class="mt-2 text-sm text-muted">No final blow row stored.</p>
                     <?php endif; ?>
                 </div>
-                <div class="rounded-lg border border-border bg-black/10 p-4">
+                <div class="surface-tertiary">
                     <p class="text-xs uppercase tracking-[0.15em] text-muted">Top attacker rows</p>
                     <div class="mt-3 space-y-3">
                         <?php foreach ((array) ($attackers['top_rows'] ?? []) as $attacker): ?>
-                            <div class="rounded-lg border border-border/70 bg-black/20 p-3 opacity-90">
+                            <div class="surface-tertiary opacity-90">
                                 <div class="flex items-start gap-3">
                                     <?php if ((string) ($attacker['ship_icon_url'] ?? '') !== ''): ?>
                                         <img src="<?= htmlspecialchars((string) $attacker['ship_icon_url'], ENT_QUOTES) ?>" alt="" class="h-10 w-10 rounded-lg bg-black/30 object-contain p-1">
@@ -259,21 +259,21 @@ include __DIR__ . '/../../src/views/partials/header.php';
                         <?php endforeach; ?>
                     </div>
                 </div>
-                <div class="rounded-lg border border-dashed border-border bg-black/10 px-4 py-3 text-sm text-muted">
+                <div class="surface-tertiary text-sm text-slate-400">
                     Attacker rows stay visible for combat context, but the primary intelligence target remains the victim fit and dropped/destroyed inventory.
                 </div>
             </div>
         </article>
 
-        <article class="rounded-xl border border-border bg-card p-5">
+        <article class="surface-secondary">
             <h2 class="text-base font-medium text-slate-50">Storage proof</h2>
             <div class="mt-4 grid gap-3 md:grid-cols-2">
-                <div class="rounded-lg border border-border bg-black/20 p-4">
+                <div class="surface-tertiary">
                     <p class="text-xs uppercase tracking-[0.15em] text-muted">Locally written</p>
                     <p class="mt-2 text-lg font-semibold text-slate-50"><?= htmlspecialchars((string) ($detail['created_at_display'] ?? '—'), ENT_QUOTES) ?></p>
                     <p class="mt-1 text-sm text-muted">Updated <?= htmlspecialchars((string) ($detail['updated_at_display'] ?? '—'), ENT_QUOTES) ?></p>
                 </div>
-                <div class="rounded-lg border border-border bg-black/20 p-4">
+                <div class="surface-tertiary">
                     <p class="text-xs uppercase tracking-[0.15em] text-muted">Item rows stored</p>
                     <p class="mt-2 text-lg font-semibold text-slate-50"><?= number_format((int) ($detail['stored_item_count'] ?? 0)) ?></p>
                     <p class="mt-1 text-sm text-muted">Ready for downstream market and price analytics.</p>
@@ -281,21 +281,21 @@ include __DIR__ . '/../../src/views/partials/header.php';
             </div>
         </article>
 
-        <article class="rounded-xl border border-border bg-card p-5">
+        <article class="surface-secondary">
             <h2 class="text-base font-medium text-slate-50">zKill metadata</h2>
             <div class="mt-4 space-y-3 text-sm text-slate-200">
-                <div class="rounded-lg border border-border bg-black/20 px-4 py-3">
+                <div class="surface-tertiary">
                     <p class="text-xs uppercase tracking-[0.15em] text-muted">Estimated value</p>
                     <p class="mt-1 text-base font-semibold text-slate-50"><?= htmlspecialchars((string) ($zkb['total_value_display'] ?? 'Unavailable'), ENT_QUOTES) ?></p>
                 </div>
-                <div class="rounded-lg border border-border bg-black/20 px-4 py-3">
+                <div class="surface-tertiary">
                     <p class="text-xs uppercase tracking-[0.15em] text-muted">Metadata flags</p>
                     <p class="mt-1 text-sm text-slate-300">Points <?= htmlspecialchars((string) ($zkb['points_display'] ?? 'Unavailable'), ENT_QUOTES) ?> · NPC <?= !empty($zkb['npc']) ? 'Yes' : 'No' ?> · Solo <?= !empty($zkb['solo']) ? 'Yes' : 'No' ?> · Awox <?= !empty($zkb['awox']) ? 'Yes' : 'No' ?></p>
                 </div>
                 <?php if ((string) ($zkb['href'] ?? '') !== ''): ?>
                     <a href="<?= htmlspecialchars((string) $zkb['href'], ENT_QUOTES) ?>" target="_blank" rel="noreferrer" class="inline-flex items-center rounded-lg border border-border px-3 py-2 text-sm text-slate-200 transition hover:bg-white/5">Open zKill reference</a>
                 <?php else: ?>
-                    <div class="rounded-lg border border-dashed border-border bg-black/10 px-4 py-3 text-sm text-muted">No zKill reference URL was stored for this loss.</div>
+                    <div class="surface-tertiary text-sm text-slate-400">No zKill reference URL was stored for this loss.</div>
                 <?php endif; ?>
             </div>
         </article>
