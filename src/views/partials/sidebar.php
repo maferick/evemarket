@@ -1,14 +1,18 @@
-<aside class="hidden w-80 shrink-0 border-r border-border bg-black/30 p-6 lg:block">
-    <a href="/" class="mb-8 block rounded-xl border border-border bg-card px-4 py-3">
-        <div class="flex items-center gap-3">
-            <img src="<?= htmlspecialchars(brand_logo_path(), ENT_QUOTES) ?>" alt="<?= htmlspecialchars(app_name(), ENT_QUOTES) ?> logo" class="h-11 w-11 rounded-xl border border-border bg-black/20 p-1.5">
+<aside class="sidebar-shell">
+    <a href="/" class="brand-lockup block">
+        <div class="relative z-10 flex items-center gap-3">
+            <img src="<?= htmlspecialchars(brand_logo_path(), ENT_QUOTES) ?>" alt="<?= htmlspecialchars(app_name(), ENT_QUOTES) ?> logo" class="h-12 w-12 rounded-2xl border border-white/10 bg-slate-950/70 p-2 shadow-[0_0_30px_rgba(59,130,246,0.18)]">
             <div>
-                <p class="text-xs uppercase tracking-[0.2em] text-muted"><?= htmlspecialchars(brand_family_name(), ENT_QUOTES) ?></p>
-                <p class="text-lg font-semibold"><?= htmlspecialchars(app_name(), ENT_QUOTES) ?></p>
+                <p class="text-[0.68rem] font-semibold uppercase tracking-[0.26em] text-cyan/75"><?= htmlspecialchars(brand_family_name(), ENT_QUOTES) ?></p>
+                <p class="mt-1 text-xl font-semibold tracking-tight text-white"><?= htmlspecialchars(app_name(), ENT_QUOTES) ?></p>
+                <p class="mt-1 text-xs text-slate-400">Supply intelligence command layer</p>
             </div>
         </div>
     </a>
 
+    <div class="mb-4 px-1">
+        <p class="text-[0.7rem] font-semibold uppercase tracking-[0.22em] text-slate-500">Navigation</p>
+    </div>
     <nav class="space-y-4">
         <?php foreach (nav_items() as $item): ?>
             <?php
@@ -45,18 +49,21 @@
                     $isParentActive = true;
                 }
             ?>
-            <div class="rounded-xl border border-border bg-card p-2">
+            <div class="nav-group">
                 <a href="<?= htmlspecialchars($item['path'], ENT_QUOTES) ?>"
-                   class="flex items-center gap-2 rounded-lg px-3 py-2 text-sm transition <?= $isParentActive ? 'bg-accent/20 text-white' : 'text-slate-200 hover:bg-white/5' ?>">
-                    <span><?= $item['icon'] ?></span>
-                    <span><?= htmlspecialchars($item['label'], ENT_QUOTES) ?></span>
+                   class="nav-item <?= $isParentActive ? 'nav-item-active' : '' ?>">
+                    <span class="flex h-8 w-8 items-center justify-center rounded-xl border border-white/8 bg-slate-950/70 text-base shadow-[inset_0_1px_0_rgba(255,255,255,0.03)]"><?= $item['icon'] ?></span>
+                    <span class="flex-1"><?= htmlspecialchars($item['label'], ENT_QUOTES) ?></span>
+                    <?php if ($item['children'] !== []): ?>
+                        <span class="text-xs text-slate-500"><?= count($item['children']) ?></span>
+                    <?php endif; ?>
                 </a>
                 <?php if ($item['children'] !== []): ?>
-                    <div class="mt-1 space-y-1 border-t border-border pt-2">
+                    <div class="mt-2 space-y-1 border-t border-white/6 pt-2">
                         <?php foreach ($item['children'] as $index => $child): ?>
                             <?php $isChildActive = $childStates[$index] ?? false; ?>
                             <a href="<?= htmlspecialchars($child['path'], ENT_QUOTES) ?>"
-                               class="block rounded-lg px-3 py-2 text-sm <?= $isChildActive ? 'bg-accent/20 text-white' : 'text-muted hover:bg-white/5 hover:text-slate-200' ?>">
+                               class="subnav-item <?= $isChildActive ? 'subnav-item-active' : '' ?>">
                                 <?= htmlspecialchars($child['label'], ENT_QUOTES) ?>
                             </a>
                         <?php endforeach; ?>
