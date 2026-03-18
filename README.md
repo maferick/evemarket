@@ -51,6 +51,8 @@ README.md
    ```
 
 > Upgrading an existing installation? Apply schema changes before the next sync run, for example: `ALTER TABLE market_hub_local_history_daily MODIFY spread_percent DECIMAL(20,4) NULL;`.
+>
+> If local-history sync previously failed with `Out of range value for column 'spread_percent'`, re-run that `ALTER TABLE` first, then trigger the **Local History** job again from **Settings → Data Sync** or `php bin/sync_runner.php --job=market-hub-local-history --mode=full --window-days=30`.
 
 2. **Set environment variables** (example)
    ```bash

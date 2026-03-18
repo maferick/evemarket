@@ -698,7 +698,11 @@ function db_market_hub_local_history_daily_normalize_spread_percent(mixed $value
     }
 
     $spreadPercent = round($spreadPercent, 4);
-    $maxAbsValue = 9999999999999999.9999;
+    // Keep local-history writes compatible with legacy installs that still
+    // have a narrower DECIMAL definition for spread_percent. Extremely large
+    // values are usually caused by near-zero buy orders and are not useful for
+    // dashboard trend commentary, so drop them instead of failing the sync.
+    $maxAbsValue = 9999.9999;
     if (abs($spreadPercent) > $maxAbsValue) {
         return null;
     }
