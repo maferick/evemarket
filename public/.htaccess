@@ -6,6 +6,9 @@ RewriteRule ^ - [L]
 
 # Friendly routes
 RewriteRule ^settings/?$ settings/index.php [L,QSA]
+RewriteRule ^settings/market-stations/?$ settings/market-stations.php [L,QSA]
+RewriteRule ^settings/esi-structures/?$ settings/esi-structures.php [L,QSA]
+RewriteRule ^settings/killmail-entities/?$ settings/killmail-entities.php [L,QSA]
 RewriteRule ^callback/?$ callback/index.php [L,QSA]
 
 RewriteRule ^market-status/?$ market-status/current-alliance.php [L,QSA]
@@ -17,5 +20,13 @@ RewriteRule ^market-status/price-deviations/?$ market-status/price-deviations.ph
 RewriteRule ^history/?$ history/alliance-trends.php [L,QSA]
 RewriteRule ^history/alliance-trends/?$ history/alliance-trends.php [L,QSA]
 RewriteRule ^history/module-history/?$ history/module-history.php [L,QSA]
+
+RewriteRule ^killmail-intelligence/?$ killmail-intelligence/index.php [L,QSA]
+RewriteRule ^killmail-intelligence/view/?$ killmail-intelligence/view.php [L,QSA]
+
+RewriteRule ^doctrine/?$ doctrine/index.php [L,QSA]
+RewriteRule ^doctrine/group/?$ doctrine/group.php [L,QSA]
+RewriteRule ^doctrine/fit/?$ doctrine/fit.php [L,QSA]
+RewriteRule ^doctrine/import/?$ doctrine/import.php [L,QSA]
 
 RewriteRule ^$ index.php [L,QSA]
