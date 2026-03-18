@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 return [
     'app' => [
-        'name' => 'EveMarket',
+        'name' => 'SupplyCore',
         'env' => getenv('APP_ENV') ?: 'development',
         'base_url' => getenv('APP_BASE_URL') ?: 'http://localhost:8080',
         'timezone' => getenv('APP_TIMEZONE') ?: 'UTC',
@@ -12,7 +12,7 @@ return [
     'db' => [
         'host' => getenv('DB_HOST') ?: '127.0.0.1',
         'port' => (int) (getenv('DB_PORT') ?: 3306),
-        'database' => getenv('DB_DATABASE') ?: 'evemarket',
+        'database' => getenv('DB_DATABASE') ?: 'supplycore',
         'username' => getenv('DB_USERNAME') ?: 'root',
         'password' => getenv('DB_PASSWORD') ?: '',
         'charset' => 'utf8mb4',

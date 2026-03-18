@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-labelledby="title desc">
+  <title id="title">SupplyCore logo placeholder</title>
+  <desc id="desc">Placeholder logo for the SupplyCore alliance logistics platform.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1d4ed8" />
+      <stop offset="100%" stop-color="#0f172a" />
+    </linearGradient>
+    <linearGradient id="core" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#e2e8f0" />
+      <stop offset="100%" stop-color="#93c5fd" />
+    </linearGradient>
+  </defs>
+  <rect width="128" height="128" rx="28" fill="url(#bg)" />
+  <path d="M26 64c0-21 17-38 38-38h20v16H64c-12.15 0-22 9.85-22 22s9.85 22 22 22h20v16H64c-21 0-38-17-38-38Z" fill="url(#core)" />
+  <path d="M74 34h12c9.941 0 18 8.059 18 18v24c0 9.941-8.059 18-18 18H74V78h10c1.105 0 2-.895 2-2V52c0-1.105-.895-2-2-2H74V34Z" fill="#38bdf8" />
+  <circle cx="96" cy="64" r="6" fill="#f8fafc" />
+</svg>

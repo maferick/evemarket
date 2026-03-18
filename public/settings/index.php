@@ -23,6 +23,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         case 'general':
             $saved = save_settings([
                 'app_name' => sanitize_app_name((string) ($_POST['app_name'] ?? app_name())),
+                'brand_family_name' => sanitize_app_name((string) ($_POST['brand_family_name'] ?? brand_family_name())),
+                'brand_console_label' => sanitize_brand_label((string) ($_POST['brand_console_label'] ?? brand_console_label()), brand_family_name() . ' Console'),
+                'brand_tagline' => sanitize_brand_label((string) ($_POST['brand_tagline'] ?? brand_tagline()), 'Alliance logistics intelligence platform'),
+                'brand_logo_path' => sanitize_brand_asset_path((string) ($_POST['brand_logo_path'] ?? brand_logo_path()), '/assets/branding/supplycore-logo.svg'),
+                'brand_favicon_path' => sanitize_brand_asset_path((string) ($_POST['brand_favicon_path'] ?? brand_favicon_path()), '/assets/branding/supplycore-favicon.svg'),
                 'app_timezone' => sanitize_timezone((string) ($_POST['app_timezone'] ?? 'UTC')),
                 'default_currency' => sanitize_currency((string) ($_POST['default_currency'] ?? 'ISK')),
             ]);
@@ -113,6 +118,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
 $settingValues = get_settings([
     'app_name',
+    'brand_family_name',
+    'brand_console_label',
+    'brand_tagline',
+    'brand_logo_path',
+    'brand_favicon_path',
     'app_timezone',
     'default_currency',
     'market_station_id',
@@ -232,6 +242,28 @@ include __DIR__ . '/../../src/views/partials/header.php';
                 <label class="block space-y-2">
                     <span class="text-sm text-muted">Application Name</span>
                     <input name="app_name" value="<?= htmlspecialchars($settingValues['app_name'] ?? app_name(), ENT_QUOTES) ?>" class="w-full rounded-lg border border-border bg-black/30 px-3 py-2 text-sm outline-none ring-accent focus:ring" />
+                </label>
+                <label class="block space-y-2">
+                    <span class="text-sm text-muted">Brand Family</span>
+                    <input name="brand_family_name" value="<?= htmlspecialchars($settingValues['brand_family_name'] ?? brand_family_name(), ENT_QUOTES) ?>" class="w-full rounded-lg border border-border bg-black/30 px-3 py-2 text-sm outline-none ring-accent focus:ring" />
+                    <p class="text-xs text-muted">Use this shared family label to support future products like SupplyCore Intelligence, SupplyCore AI, and SupplyCore Logistics.</p>
+                </label>
+                <label class="block space-y-2">
+                    <span class="text-sm text-muted">Console Label</span>
+                    <input name="brand_console_label" value="<?= htmlspecialchars($settingValues['brand_console_label'] ?? brand_console_label(), ENT_QUOTES) ?>" class="w-full rounded-lg border border-border bg-black/30 px-3 py-2 text-sm outline-none ring-accent focus:ring" />
+                </label>
+                <label class="block space-y-2">
+                    <span class="text-sm text-muted">Brand Tagline</span>
+                    <input name="brand_tagline" value="<?= htmlspecialchars($settingValues['brand_tagline'] ?? brand_tagline(), ENT_QUOTES) ?>" class="w-full rounded-lg border border-border bg-black/30 px-3 py-2 text-sm outline-none ring-accent focus:ring" />
+                </label>
+                <label class="block space-y-2">
+                    <span class="text-sm text-muted">Logo Asset Path</span>
+                    <input name="brand_logo_path" value="<?= htmlspecialchars($settingValues['brand_logo_path'] ?? brand_logo_path(), ENT_QUOTES) ?>" class="w-full rounded-lg border border-border bg-black/30 px-3 py-2 text-sm outline-none ring-accent focus:ring" />
+                    <p class="text-xs text-muted">Default placeholder logo is ready at <span class="font-medium text-slate-100">/assets/branding/supplycore-logo.svg</span>.</p>
+                </label>
+                <label class="block space-y-2">
+                    <span class="text-sm text-muted">Favicon Asset Path</span>
+                    <input name="brand_favicon_path" value="<?= htmlspecialchars($settingValues['brand_favicon_path'] ?? brand_favicon_path(), ENT_QUOTES) ?>" class="w-full rounded-lg border border-border bg-black/30 px-3 py-2 text-sm outline-none ring-accent focus:ring" />
                 </label>
                 <label class="block space-y-2">
                     <span class="text-sm text-muted">Timezone</span>

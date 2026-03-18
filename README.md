@@ -1,6 +1,6 @@
-# EveMarket Foundation
+# SupplyCore Foundation
 
-A production-oriented baseline for **EveMarket** built with **PHP 8+, MySQL, Apache2**, and a modern **Tailwind CSS v4 + shadcn/ui-inspired** interface.
+A production-oriented baseline for **SupplyCore** built with **PHP 8+, MySQL, Apache2**, and a modern **Tailwind CSS v4 + shadcn/ui-inspired** interface.
 
 This repository establishes a clean architecture that can scale from an initial dashboard/settings app into a complete market, trading, and ESI-integrated platform.
 
@@ -46,8 +46,8 @@ README.md
 
 1. **Create database and import schema**
    ```bash
-   mysql -u root -p -e "CREATE DATABASE IF NOT EXISTS evemarket CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
-   mysql -u root -p evemarket < database/schema.sql
+   mysql -u root -p -e "CREATE DATABASE IF NOT EXISTS supplycore CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
+   mysql -u root -p supplycore < database/schema.sql
    ```
 
 > Upgrading an existing installation? Apply schema changes before the next sync run, for example: `ALTER TABLE market_hub_local_history_daily MODIFY spread_percent DECIMAL(20,4) NULL;`.
@@ -58,7 +58,7 @@ README.md
    export APP_BASE_URL=http://localhost:8080
    export DB_HOST=127.0.0.1
    export DB_PORT=3306
-   export DB_DATABASE=evemarket
+   export DB_DATABASE=supplycore
    export DB_USERNAME=root
    export DB_PASSWORD=secret
    ```
@@ -82,7 +82,7 @@ README.md
 
 ### Ensure cron is installed and enabled
 
-EveMarket sync pipelines depend on the `cron` daemon being present and running on server boot.
+SupplyCore sync pipelines depend on the `cron` daemon being present and running on server boot.
 
 1. Install cron (if missing):
    ```bash
@@ -113,7 +113,7 @@ EveMarket sync pipelines depend on the `cron` daemon being present and running o
 
 1. Determine the final app path and PHP binary path:
    ```bash
-   APP_PATH=$(realpath /var/www/evemarket)
+   APP_PATH=$(realpath /var/www/supplycore)
    PHP_BIN=$(command -v php)
    echo "$APP_PATH"
    echo "$PHP_BIN"
@@ -125,14 +125,14 @@ EveMarket sync pipelines depend on the `cron` daemon being present and running o
    ```
 
    ```cron
-   * * * * * cd /var/www/evemarket && /usr/bin/php bin/cron_tick.php >> storage/logs/cron.log 2>&1
+   * * * * * cd /var/www/supplycore && /usr/bin/php bin/cron_tick.php >> storage/logs/cron.log 2>&1
    ```
 
 3. Ensure the log directory exists and is writable by the cron user:
    ```bash
-   mkdir -p /var/www/evemarket/storage/logs
-   chown -R www-data:www-data /var/www/evemarket/storage
-   chmod -R u+rwX /var/www/evemarket/storage
+   mkdir -p /var/www/supplycore/storage/logs
+   chown -R www-data:www-data /var/www/supplycore/storage
+   chmod -R u+rwX /var/www/supplycore/storage
    ```
 
 4. Validate the installed crontab:
@@ -157,8 +157,8 @@ Cron must run with the same environment the app expects:
 - App config vars: `APP_ENV`, `APP_BASE_URL`, `APP_TIMEZONE`
 - Database vars: `DB_HOST`, `DB_PORT`, `DB_DATABASE`, `DB_USERNAME`, `DB_PASSWORD`
 - Pipeline source vars (when those pipelines are enabled):
-  - `EVEMARKET_ALLIANCE_SOURCE_ID` (for `alliance-current` and `alliance-history`)
-  - `EVEMARKET_HUB_SOURCE_ID` (for `hub-current`, `hub-history`, and local-history generation)
+  - `SUPPLYCORE_ALLIANCE_SOURCE_ID` (for `alliance-current` and `alliance-history`)
+  - `SUPPLYCORE_HUB_SOURCE_ID` (for `hub-current`, `hub-history`, and local-history generation)
 
 The canonical log path for the cron tick is `storage/logs/cron.log` (relative to app root).
 Raw order snapshots are pruned according to `raw_order_snapshot_retention_days` from Settings → Data Sync.
@@ -201,7 +201,7 @@ systemctl status cron
 Tail the cron tick log:
 
 ```bash
-tail -f /var/www/evemarket/storage/logs/cron.log
+tail -f /var/www/supplycore/storage/logs/cron.log
 ```
 
 Inspect scheduler state tables:
@@ -219,7 +219,7 @@ If you previously had one cron line per pipeline/job, remove those entries and k
 
 ## Killmail Intelligence Foundation (zKillboard R2Z2)
 
-EveMarket now includes a first-pass killmail intelligence ingestion foundation built around the zKillboard **R2Z2 ordered sequence feed**.
+SupplyCore now includes a first-pass killmail intelligence ingestion foundation built around the zKillboard **R2Z2 ordered sequence feed**.
 
 - Stream source:
   - sequence pointer: `https://r2z2.zkillboard.com/ephemeral/sequence.json`
@@ -286,7 +286,7 @@ Configure ingestion + tracked alliances/corporations at:
 
 ## EVE Static Data Import Pipeline
 
-EveMarket includes a local reference-data pipeline for EVE static data exports.
+SupplyCore includes a local reference-data pipeline for EVE static data exports.
 
 ### What it does
 
@@ -322,7 +322,7 @@ php bin/static_data_import.php --mode=incremental
 
 ### Source format note
 
-The current importer reads required datasets directly from the official JSONL ZIP archive (for example `mapRegions.jsonl`, `mapSolarSystems.jsonl`, `types.jsonl`, and `marketGroups.jsonl`) and maps them into EveMarket reference tables.
+The current importer reads required datasets directly from the official JSONL ZIP archive (for example `mapRegions.jsonl`, `mapSolarSystems.jsonl`, `types.jsonl`, and `marketGroups.jsonl`) and maps them into SupplyCore reference tables.
 
 ### Data-boundary policy
 

@@ -1,7 +1,12 @@
 <aside class="hidden w-80 shrink-0 border-r border-border bg-black/30 p-6 lg:block">
     <a href="/" class="mb-8 block rounded-xl border border-border bg-card px-4 py-3">
-        <p class="text-xs uppercase tracking-[0.2em] text-muted">Project</p>
-        <p class="text-lg font-semibold"><?= htmlspecialchars(app_name(), ENT_QUOTES) ?></p>
+        <div class="flex items-center gap-3">
+            <img src="<?= htmlspecialchars(brand_logo_path(), ENT_QUOTES) ?>" alt="<?= htmlspecialchars(app_name(), ENT_QUOTES) ?> logo" class="h-11 w-11 rounded-xl border border-border bg-black/20 p-1.5">
+            <div>
+                <p class="text-xs uppercase tracking-[0.2em] text-muted"><?= htmlspecialchars(brand_family_name(), ENT_QUOTES) ?></p>
+                <p class="text-lg font-semibold"><?= htmlspecialchars(app_name(), ENT_QUOTES) ?></p>
+            </div>
+        </div>
     </a>
 
     <nav class="space-y-4">

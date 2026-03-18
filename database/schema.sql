@@ -401,7 +401,12 @@ INSERT INTO trading_stations (station_name, station_type) VALUES
 ON DUPLICATE KEY UPDATE station_name = VALUES(station_name);
 
 INSERT INTO app_settings (setting_key, setting_value) VALUES
-    ('app_name', 'EveMarket'),
+    ('app_name', 'SupplyCore'),
+    ('brand_family_name', 'SupplyCore'),
+    ('brand_console_label', 'SupplyCore Console'),
+    ('brand_tagline', 'Alliance logistics intelligence platform'),
+    ('brand_logo_path', '/assets/branding/supplycore-logo.svg'),
+    ('brand_favicon_path', '/assets/branding/supplycore-favicon.svg'),
     ('app_timezone', 'UTC'),
     ('default_currency', 'ISK'),
     ('incremental_updates_enabled', '1'),

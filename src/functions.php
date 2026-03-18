@@ -8,9 +8,44 @@ date_default_timezone_set(app_timezone());
 
 function app_name(): string
 {
-    $configured = trim((string) get_setting('app_name', config('app.name', 'EveMarket')));
+    $configured = trim((string) get_setting('app_name', config('app.name', 'SupplyCore')));
 
     return sanitize_app_name($configured);
+}
+
+function brand_family_name(): string
+{
+    $configured = trim((string) get_setting('brand_family_name', 'SupplyCore'));
+
+    return sanitize_app_name($configured);
+}
+
+function brand_console_label(): string
+{
+    $configured = trim((string) get_setting('brand_console_label', brand_family_name() . ' Console'));
+
+    return sanitize_brand_label($configured, brand_family_name() . ' Console');
+}
+
+function brand_tagline(): string
+{
+    $configured = trim((string) get_setting('brand_tagline', 'Alliance logistics intelligence platform'));
+
+    return sanitize_brand_label($configured, 'Alliance logistics intelligence platform');
+}
+
+function brand_logo_path(): string
+{
+    $configured = trim((string) get_setting('brand_logo_path', '/assets/branding/supplycore-logo.svg'));
+
+    return sanitize_brand_asset_path($configured, '/assets/branding/supplycore-logo.svg');
+}
+
+function brand_favicon_path(): string
+{
+    $configured = trim((string) get_setting('brand_favicon_path', '/assets/branding/supplycore-favicon.svg'));
+
+    return sanitize_brand_asset_path($configured, '/assets/branding/supplycore-favicon.svg');
 }
 
 function app_timezone(): string
@@ -175,10 +210,36 @@ function sanitize_app_name(string $name): string
     $name = trim($name);
 
     if ($name === '') {
-        return 'EveMarket';
+        return 'SupplyCore';
     }
 
     return mb_substr($name, 0, 120);
+}
+
+function sanitize_brand_label(string $value, string $default): string
+{
+    $value = trim($value);
+
+    if ($value === '') {
+        return $default;
+    }
+
+    return mb_substr($value, 0, 160);
+}
+
+function sanitize_brand_asset_path(string $path, string $default): string
+{
+    $path = trim($path);
+
+    if ($path === '') {
+        return $default;
+    }
+
+    if ($path[0] !== '/' || preg_match('/[[:cntrl:]]/', $path) === 1) {
+        return $default;
+    }
+
+    return mb_substr($path, 0, 255);
 }
 
 function sanitize_timezone(string $timezone): string
@@ -5130,11 +5191,11 @@ function esi_valid_access_token(int $refreshWindowSeconds = 120): string
 
 function esi_user_agent(): string
 {
-    $configured = trim((string) get_setting('app_name', 'EveMarket'));
+    $configured = trim((string) get_setting('app_name', 'SupplyCore'));
 
     return $configured !== ''
-        ? $configured . ' eve-market/1.0 (+https://github.com/cvweiss/evemarket)'
-        : 'EveMarket eve-market/1.0 (+https://github.com/cvweiss/evemarket)';
+        ? $configured . ' supplycore/1.0 (+https://github.com/cvweiss/supplycore)'
+        : 'SupplyCore supplycore/1.0 (+https://github.com/cvweiss/supplycore)';
 }
 
 function esi_lookup_context(array $requiredScopes = []): array
@@ -6383,14 +6444,14 @@ function killmail_resolve_tracked_entities(string $allianceText, string $corpora
 
 function killmail_r2z2_fetch_json(string $url): array
 {
-    $userAgent = trim((string) get_setting('app_name', 'EveMarket'));
+    $userAgent = trim((string) get_setting('app_name', 'SupplyCore'));
     if ($userAgent === '') {
-        $userAgent = 'EveMarket';
+        $userAgent = 'SupplyCore';
     }
 
     $headers = [
         'Accept: application/json',
-        'User-Agent: ' . $userAgent . ' killmail-ingestion/1.0 (+https://github.com/cvweiss/evemarket)',
+        'User-Agent: ' . $userAgent . ' killmail-ingestion/1.0 (+https://github.com/cvweiss/supplycore)',
     ];
 
     $ch = curl_init($url);
