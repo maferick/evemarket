@@ -391,6 +391,60 @@ CREATE TABLE IF NOT EXISTS ref_item_types (
     KEY idx_published (published)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+CREATE TABLE IF NOT EXISTS item_name_cache (
+    normalized_name VARCHAR(190) PRIMARY KEY,
+    item_name VARCHAR(255) NOT NULL,
+    type_id INT UNSIGNED DEFAULT NULL,
+    resolution_source ENUM('cache', 'ref', 'esi', 'missing') NOT NULL DEFAULT 'ref',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    KEY idx_type_id (type_id),
+    KEY idx_resolution_source (resolution_source)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS doctrine_groups (
+    id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    group_name VARCHAR(190) NOT NULL,
+    description TEXT DEFAULT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY unique_group_name (group_name)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS doctrine_fits (
+    id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    doctrine_group_id INT UNSIGNED NOT NULL,
+    fit_name VARCHAR(190) NOT NULL,
+    ship_name VARCHAR(255) NOT NULL,
+    ship_type_id INT UNSIGNED DEFAULT NULL,
+    source_format ENUM('eft', 'buyall') NOT NULL,
+    import_body LONGTEXT NOT NULL,
+    item_count INT UNSIGNED NOT NULL DEFAULT 0,
+    unresolved_count INT UNSIGNED NOT NULL DEFAULT 0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    KEY idx_doctrine_group_id (doctrine_group_id),
+    KEY idx_ship_type_id (ship_type_id),
+    CONSTRAINT fk_doctrine_fits_group FOREIGN KEY (doctrine_group_id) REFERENCES doctrine_groups(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS doctrine_fit_items (
+    id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    doctrine_fit_id INT UNSIGNED NOT NULL,
+    line_number SMALLINT UNSIGNED NOT NULL DEFAULT 0,
+    slot_category VARCHAR(80) NOT NULL DEFAULT 'Items',
+    item_name VARCHAR(255) NOT NULL,
+    type_id INT UNSIGNED DEFAULT NULL,
+    quantity INT UNSIGNED NOT NULL DEFAULT 1,
+    resolution_source ENUM('cache', 'ref', 'esi', 'missing') NOT NULL DEFAULT 'ref',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    KEY idx_doctrine_fit_id (doctrine_fit_id),
+    KEY idx_type_id (type_id),
+    KEY idx_slot_category (slot_category),
+    CONSTRAINT fk_doctrine_fit_items_fit FOREIGN KEY (doctrine_fit_id) REFERENCES doctrine_fits(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 INSERT INTO trading_stations (station_name, station_type) VALUES
     ('Rens VI - Moon 8 - Brutor Tribe Treasury', 'market'),
     ('Amarr VIII (Oris) - Emperor Family Academy', 'market'),
@@ -432,8 +486,13 @@ INSERT INTO app_settings (setting_key, setting_value) VALUES
     ('esi_client_id', '961316f6177d4a0283fef0bd72fbd224'),
     ('esi_client_secret', 'eat_iasVmhqov40Ud568JVAyctOErv5E6AgV_3S6eiZ'),
     ('esi_callback_url', 'http://192.168.178.47/callback'),
-    ('esi_scopes', 'publicData esi-location.read_location.v1 esi-search.search_structures.v1 esi-universe.read_structures.v1 esi-markets.structure_markets.v1')
+    ('esi_scopes', 'publicData esi-location.read_location.v1 esi-search.search_structures.v1 esi-universe.read_structures.v1 esi-markets.structure_markets.v1'),
+    ('doctrine.default_group', 'SupplyCore Doctrine')
 ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value);
+
+INSERT INTO doctrine_groups (group_name, description) VALUES
+    ('SupplyCore Doctrine', 'Baseline doctrine fits used for gap detection, restock generation, and hauling prep.')
+ON DUPLICATE KEY UPDATE description = VALUES(description);
 
 INSERT INTO sync_schedules (job_key, enabled, interval_seconds, next_run_at, last_run_at, last_status, last_error, locked_until) VALUES
     ('alliance_current_sync', 1, 300, NULL, NULL, NULL, NULL, NULL),

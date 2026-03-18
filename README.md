@@ -20,6 +20,7 @@ This repository establishes a clean architecture that can scale from an initial 
 - ESI cache tables (`esi_cache_namespaces`, `esi_cache_entries`) for structured `cache.esi.*` namespaces
 - Incremental sync state tables (`sync_state`, `sync_runs`) for watermark/cursor tracking and run observability
 - Reusable entity metadata cache for human-readable killmail, market, and analytics surfaces
+- Doctrine fit import workflow with EFT/BuyAll parsing, item-name cache, doctrine group pages, and alliance-vs-hub market mapping
 - Secure CSRF-protected settings forms
 - Session-based flash messaging
 
@@ -29,6 +30,7 @@ This repository establishes a clean architecture that can scale from an initial 
 public/
   index.php                 # Dashboard
   settings/index.php        # Modular settings controller/view
+  doctrine/                 # Doctrine groups, import, and fit detail pages
   .htaccess                 # Apache rewrite rules
 src/
   bootstrap.php             # Session + shared bootstrap

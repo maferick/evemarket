@@ -2500,3 +2500,232 @@ function db_killmail_overview_page(array $filters = []): array
         'showing_to' => min($offset + $pageSize, $totalItems),
     ];
 }
+
+function db_ref_item_types_by_names(array $names): array
+{
+    $safeNames = array_values(array_unique(array_filter(array_map(static fn (mixed $name): string => trim((string) $name), $names), static fn (string $name): bool => $name !== '')));
+    if ($safeNames === []) {
+        return [];
+    }
+
+    $placeholders = implode(',', array_fill(0, count($safeNames), '?'));
+
+    return db_select(
+        "SELECT type_id, type_name, group_id, market_group_id, description, published, volume
+         FROM ref_item_types
+         WHERE LOWER(type_name) IN ($placeholders)",
+        array_map(static fn (string $name): string => mb_strtolower($name), $safeNames)
+    );
+}
+
+function db_item_name_cache_get_many(array $normalizedNames): array
+{
+    $safeNames = array_values(array_unique(array_filter(array_map(static fn (mixed $name): string => trim((string) $name), $normalizedNames), static fn (string $name): bool => $name !== '')));
+    if ($safeNames === []) {
+        return [];
+    }
+
+    $placeholders = implode(',', array_fill(0, count($safeNames), '?'));
+
+    return db_select(
+        "SELECT normalized_name, item_name, type_id, resolution_source, created_at, updated_at
+         FROM item_name_cache
+         WHERE normalized_name IN ($placeholders)",
+        $safeNames
+    );
+}
+
+function db_item_name_cache_upsert(string $normalizedName, string $itemName, ?int $typeId, string $resolutionSource): bool
+{
+    return db_execute(
+        'INSERT INTO item_name_cache (normalized_name, item_name, type_id, resolution_source)
+         VALUES (?, ?, ?, ?)
+         ON DUPLICATE KEY UPDATE
+            item_name = VALUES(item_name),
+            type_id = VALUES(type_id),
+            resolution_source = VALUES(resolution_source),
+            updated_at = CURRENT_TIMESTAMP',
+        [$normalizedName, $itemName, $typeId, $resolutionSource]
+    );
+}
+
+function db_doctrine_groups_all(): array
+{
+    return db_select(
+        'SELECT
+            dg.id,
+            dg.group_name,
+            dg.description,
+            dg.created_at,
+            dg.updated_at,
+            COUNT(DISTINCT df.id) AS fit_count,
+            COALESCE(SUM(df.item_count), 0) AS item_count,
+            MAX(df.updated_at) AS last_fit_updated_at
+         FROM doctrine_groups dg
+         LEFT JOIN doctrine_fits df ON df.doctrine_group_id = dg.id
+         GROUP BY dg.id, dg.group_name, dg.description, dg.created_at, dg.updated_at
+         ORDER BY dg.group_name ASC'
+    );
+}
+
+function db_doctrine_group_by_id(int $groupId): ?array
+{
+    if ($groupId <= 0) {
+        return null;
+    }
+
+    return db_select_one(
+        'SELECT
+            dg.id,
+            dg.group_name,
+            dg.description,
+            dg.created_at,
+            dg.updated_at,
+            COUNT(DISTINCT df.id) AS fit_count,
+            COALESCE(SUM(df.item_count), 0) AS item_count,
+            MAX(df.updated_at) AS last_fit_updated_at
+         FROM doctrine_groups dg
+         LEFT JOIN doctrine_fits df ON df.doctrine_group_id = dg.id
+         WHERE dg.id = ?
+         GROUP BY dg.id, dg.group_name, dg.description, dg.created_at, dg.updated_at
+         LIMIT 1',
+        [$groupId]
+    );
+}
+
+function db_doctrine_group_create(string $groupName, ?string $description = null): int
+{
+    db_execute(
+        'INSERT INTO doctrine_groups (group_name, description) VALUES (?, ?)
+         ON DUPLICATE KEY UPDATE
+            description = COALESCE(VALUES(description), description),
+            id = LAST_INSERT_ID(id),
+            updated_at = CURRENT_TIMESTAMP',
+        [$groupName, $description]
+    );
+
+    return (int) db()->lastInsertId();
+}
+
+function db_doctrine_fits_by_group(int $groupId): array
+{
+    if ($groupId <= 0) {
+        return [];
+    }
+
+    return db_select(
+        'SELECT
+            df.id,
+            df.doctrine_group_id,
+            df.fit_name,
+            df.ship_name,
+            df.ship_type_id,
+            df.source_format,
+            df.item_count,
+            df.unresolved_count,
+            df.created_at,
+            df.updated_at,
+            COALESCE(SUM(dfi.quantity), 0) AS required_quantity,
+            COUNT(dfi.id) AS fit_line_count
+         FROM doctrine_fits df
+         LEFT JOIN doctrine_fit_items dfi ON dfi.doctrine_fit_id = df.id
+         WHERE df.doctrine_group_id = ?
+         GROUP BY df.id, df.doctrine_group_id, df.fit_name, df.ship_name, df.ship_type_id, df.source_format, df.item_count, df.unresolved_count, df.created_at, df.updated_at
+         ORDER BY df.updated_at DESC, df.fit_name ASC',
+        [$groupId]
+    );
+}
+
+function db_doctrine_fit_by_id(int $fitId): ?array
+{
+    if ($fitId <= 0) {
+        return null;
+    }
+
+    return db_select_one(
+        'SELECT df.*, dg.group_name, dg.description AS group_description
+         FROM doctrine_fits df
+         INNER JOIN doctrine_groups dg ON dg.id = df.doctrine_group_id
+         WHERE df.id = ?
+         LIMIT 1',
+        [$fitId]
+    );
+}
+
+function db_doctrine_fit_items_by_fit(int $fitId): array
+{
+    if ($fitId <= 0) {
+        return [];
+    }
+
+    return db_select(
+        'SELECT
+            dfi.id,
+            dfi.doctrine_fit_id,
+            dfi.line_number,
+            dfi.slot_category,
+            dfi.item_name,
+            dfi.type_id,
+            dfi.quantity,
+            dfi.resolution_source,
+            rit.type_name
+         FROM doctrine_fit_items dfi
+         LEFT JOIN ref_item_types rit ON rit.type_id = dfi.type_id
+         WHERE dfi.doctrine_fit_id = ?
+         ORDER BY dfi.line_number ASC, dfi.id ASC',
+        [$fitId]
+    );
+}
+
+function db_doctrine_fit_create(array $fit, array $items): int
+{
+    return db_transaction(function () use ($fit, $items): int {
+        db_execute(
+            'INSERT INTO doctrine_fits (
+                doctrine_group_id,
+                fit_name,
+                ship_name,
+                ship_type_id,
+                source_format,
+                import_body,
+                item_count,
+                unresolved_count
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+            [
+                (int) ($fit['doctrine_group_id'] ?? 0),
+                (string) ($fit['fit_name'] ?? ''),
+                (string) ($fit['ship_name'] ?? ''),
+                isset($fit['ship_type_id']) ? (int) $fit['ship_type_id'] : null,
+                (string) ($fit['source_format'] ?? 'buyall'),
+                (string) ($fit['import_body'] ?? ''),
+                (int) ($fit['item_count'] ?? 0),
+                (int) ($fit['unresolved_count'] ?? 0),
+            ]
+        );
+
+        $fitId = (int) db()->lastInsertId();
+
+        if ($items !== []) {
+            $rows = [];
+            foreach ($items as $item) {
+                $rows[] = [
+                    'doctrine_fit_id' => $fitId,
+                    'line_number' => (int) ($item['line_number'] ?? 0),
+                    'slot_category' => (string) ($item['slot_category'] ?? 'Items'),
+                    'item_name' => (string) ($item['item_name'] ?? ''),
+                    'type_id' => isset($item['type_id']) ? (int) $item['type_id'] : null,
+                    'quantity' => max(1, (int) ($item['quantity'] ?? 1)),
+                    'resolution_source' => (string) ($item['resolution_source'] ?? 'ref'),
+                ];
+            }
+
+            db_bulk_insert_or_upsert(
+                'doctrine_fit_items',
+                ['doctrine_fit_id', 'line_number', 'slot_category', 'item_name', 'type_id', 'quantity', 'resolution_source'],
+                $rows
+            );
+        }
+
+        return $fitId;
+    });
+}
