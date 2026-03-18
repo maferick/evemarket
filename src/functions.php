@@ -1118,6 +1118,56 @@ function dashboard_trend_snippets(array $rows): array
     return array_slice($snippets, 0, 6);
 }
 
+function market_hub_dashboard_trend_legacy_history_fallback_enabled(): bool
+{
+    return sanitize_enabled_flag(get_setting('dashboard_trend_legacy_history_fallback_enabled', '0')) === '1';
+}
+
+function dashboard_trend_history_dataset(string $marketHubRef, int $referenceSourceId): array
+{
+    $historyRows = [];
+    $message = '';
+
+    if ($marketHubRef === '' || $referenceSourceId <= 0) {
+        return [
+            'rows' => [],
+            'message' => 'Trend snippets need a reference hub. Configure Settings → General first, then run the local-history sync job for that hub.',
+        ];
+    }
+
+    try {
+        $historyRows = db_market_hub_local_history_daily_latest_points_by_type(market_hub_local_history_source(), $referenceSourceId, [], 2, 80);
+    } catch (Throwable) {
+        $historyRows = [];
+    }
+
+    if ($historyRows !== []) {
+        return [
+            'rows' => $historyRows,
+            'message' => '',
+        ];
+    }
+
+    $message = 'Trend snippets use local hub history. Run the local-history sync job for ' . market_hub_reference_name() . ' and capture at least two daily snapshots; EVE Tycoon history sync does not populate this panel.';
+
+    if (market_hub_dashboard_trend_legacy_history_fallback_enabled()) {
+        try {
+            $historyRows = db_market_history_daily_recent_window('market_hub', $referenceSourceId, 8, 80);
+        } catch (Throwable) {
+            $historyRows = [];
+        }
+
+        if ($historyRows !== []) {
+            $message = 'Trend snippets are temporarily using legacy hub history fallback. Run the local-history sync job to migrate this panel to market_hub_local_history_daily.';
+        }
+    }
+
+    return [
+        'rows' => $historyRows,
+        'message' => $message,
+    ];
+}
+
 function dashboard_intelligence_data(): array
 {
     $comparisonContext = market_comparison_context();
@@ -1139,14 +1189,8 @@ function dashboard_intelligence_data(): array
 
     $marketHubRef = market_hub_setting_reference();
     $referenceSourceId = sync_source_id_from_hub_ref($marketHubRef);
-    $historyRows = [];
-    if ($referenceSourceId > 0) {
-        try {
-            $historyRows = db_market_history_daily_recent_window('market_hub', $referenceSourceId, 8, 80);
-        } catch (Throwable) {
-            $historyRows = [];
-        }
-    }
+    $trendHistory = dashboard_trend_history_dataset($marketHubRef, $referenceSourceId);
+    $historyRows = $trendHistory['rows'] ?? [];
 
     return [
         'kpis' => [
@@ -1183,6 +1227,7 @@ function dashboard_intelligence_data(): array
             ],
         ],
         'trend_snippets' => dashboard_trend_snippets($historyRows),
+        'trend_snippets_message' => (string) ($trendHistory['message'] ?? ''),
     ];
 }
 
