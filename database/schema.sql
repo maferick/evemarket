@@ -172,6 +172,7 @@ CREATE TABLE IF NOT EXISTS killmail_events (
     victim_ship_type_id INT UNSIGNED DEFAULT NULL,
     zkb_json LONGTEXT NOT NULL,
     raw_killmail_json LONGTEXT NOT NULL,
+    effective_killmail_at DATETIME GENERATED ALWAYS AS (COALESCE(killmail_time, created_at)) STORED,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     UNIQUE KEY unique_sequence_id (sequence_id),
@@ -180,6 +181,8 @@ CREATE TABLE IF NOT EXISTS killmail_events (
     KEY idx_victim_alliance (victim_alliance_id),
     KEY idx_victim_corporation (victim_corporation_id),
     KEY idx_victim_ship_type (victim_ship_type_id),
+    KEY idx_killmail_effective_ship (effective_killmail_at, victim_ship_type_id),
+    KEY idx_killmail_ship_effective (victim_ship_type_id, effective_killmail_at),
     KEY idx_system_region (solar_system_id, region_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
@@ -293,10 +296,12 @@ CREATE TABLE IF NOT EXISTS market_orders_history (
     issued DATETIME NOT NULL,
     expires DATETIME NOT NULL,
     observed_at DATETIME NOT NULL,
+    observed_date DATE GENERATED ALWAYS AS (DATE(observed_at)) STORED,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     UNIQUE KEY unique_source_order_observed (source_type, source_id, order_id, observed_at),
     KEY idx_market_orders_history_type_observed (source_type, source_id, type_id, observed_at),
-    KEY idx_market_orders_history_observed (source_type, source_id, observed_at)
+    KEY idx_market_orders_history_observed (source_type, source_id, observed_at),
+    KEY idx_market_orders_history_source_date_type (source_type, source_id, observed_date, type_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS market_history_daily (

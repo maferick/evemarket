@@ -1284,7 +1284,7 @@ function db_market_orders_history_stock_health_series(
 
     return db_select(
         "SELECT
-            DATE(moh.observed_at) AS observed_date,
+            moh.observed_date,
             moh.type_id,
             rit.type_name,
             SUM(CASE WHEN moh.is_buy_order = 0 THEN moh.volume_remain ELSE 0 END) AS sell_volume,
@@ -1298,8 +1298,8 @@ function db_market_orders_history_stock_health_series(
          LEFT JOIN ref_item_types rit ON rit.type_id = moh.type_id
          WHERE moh.source_type = ?
            AND moh.source_id = ?
-           AND DATE(moh.observed_at) BETWEEN ? AND ?{$typeFilterSql}
-         GROUP BY DATE(moh.observed_at), moh.type_id, rit.type_name
+           AND moh.observed_date BETWEEN ? AND ?{$typeFilterSql}
+         GROUP BY moh.observed_date, moh.type_id, rit.type_name
          ORDER BY observed_date ASC, moh.type_id ASC",
         $params
     );
@@ -2810,13 +2810,13 @@ function db_killmail_tracked_recent_hull_losses(array $hullTypeIds, int $hours =
     return db_select(
         "SELECT
             e.victim_ship_type_id AS type_id,
-            SUM(CASE WHEN COALESCE(e.killmail_time, e.created_at) >= (UTC_TIMESTAMP() - INTERVAL 24 HOUR) THEN 1 ELSE 0 END) AS losses_24h,
-            SUM(CASE WHEN COALESCE(e.killmail_time, e.created_at) >= (UTC_TIMESTAMP() - INTERVAL 7 DAY) THEN 1 ELSE 0 END) AS losses_7d,
+            SUM(CASE WHEN e.effective_killmail_at >= (UTC_TIMESTAMP() - INTERVAL 24 HOUR) THEN 1 ELSE 0 END) AS losses_24h,
+            SUM(CASE WHEN e.effective_killmail_at >= (UTC_TIMESTAMP() - INTERVAL 7 DAY) THEN 1 ELSE 0 END) AS losses_7d,
             COUNT(*) AS losses_window,
-            MAX(COALESCE(e.killmail_time, e.created_at)) AS latest_loss_at
+            MAX(e.effective_killmail_at) AS latest_loss_at
          FROM killmail_events e
          WHERE {$matchSql}
-           AND COALESCE(e.killmail_time, e.created_at) >= (UTC_TIMESTAMP() - INTERVAL {$safeHours} HOUR)
+           AND e.effective_killmail_at >= (UTC_TIMESTAMP() - INTERVAL {$safeHours} HOUR)
            AND e.victim_ship_type_id IN ({$placeholders})
          GROUP BY e.victim_ship_type_id",
         $normalizedTypeIds
@@ -2845,17 +2845,17 @@ function db_killmail_tracked_recent_item_losses(array $typeIds, int $hours = 24 
     return db_select(
         "SELECT
             i.item_type_id AS type_id,
-            SUM(CASE WHEN COALESCE(e.killmail_time, e.created_at) >= (UTC_TIMESTAMP() - INTERVAL 24 HOUR) THEN {$quantitySql} ELSE 0 END) AS quantity_24h,
-            SUM(CASE WHEN COALESCE(e.killmail_time, e.created_at) >= (UTC_TIMESTAMP() - INTERVAL 7 DAY) THEN {$quantitySql} ELSE 0 END) AS quantity_7d,
+            SUM(CASE WHEN e.effective_killmail_at >= (UTC_TIMESTAMP() - INTERVAL 24 HOUR) THEN {$quantitySql} ELSE 0 END) AS quantity_24h,
+            SUM(CASE WHEN e.effective_killmail_at >= (UTC_TIMESTAMP() - INTERVAL 7 DAY) THEN {$quantitySql} ELSE 0 END) AS quantity_7d,
             SUM({$quantitySql}) AS quantity_window,
-            COUNT(DISTINCT CASE WHEN COALESCE(e.killmail_time, e.created_at) >= (UTC_TIMESTAMP() - INTERVAL 24 HOUR) THEN e.sequence_id END) AS losses_24h,
-            COUNT(DISTINCT CASE WHEN COALESCE(e.killmail_time, e.created_at) >= (UTC_TIMESTAMP() - INTERVAL 7 DAY) THEN e.sequence_id END) AS losses_7d,
+            COUNT(DISTINCT CASE WHEN e.effective_killmail_at >= (UTC_TIMESTAMP() - INTERVAL 24 HOUR) THEN e.sequence_id END) AS losses_24h,
+            COUNT(DISTINCT CASE WHEN e.effective_killmail_at >= (UTC_TIMESTAMP() - INTERVAL 7 DAY) THEN e.sequence_id END) AS losses_7d,
             COUNT(DISTINCT e.sequence_id) AS losses_window,
-            MAX(COALESCE(e.killmail_time, e.created_at)) AS latest_loss_at
+            MAX(e.effective_killmail_at) AS latest_loss_at
          FROM killmail_items i
          INNER JOIN killmail_events e ON e.sequence_id = i.sequence_id
          WHERE {$matchSql}
-           AND COALESCE(e.killmail_time, e.created_at) >= (UTC_TIMESTAMP() - INTERVAL {$safeHours} HOUR)
+           AND e.effective_killmail_at >= (UTC_TIMESTAMP() - INTERVAL {$safeHours} HOUR)
            AND i.item_type_id IN ({$placeholders})
          GROUP BY i.item_type_id",
         $normalizedTypeIds
