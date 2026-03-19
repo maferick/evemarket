@@ -203,13 +203,13 @@ SupplyCore sync pipelines depend on the `cron` daemon being present and running 
 ### Scheduling model
 
 - Cron is **timer-only**: it triggers `bin/cron_tick.php` once per minute.
-- The scheduler (`bin/cron_tick.php`) decides which jobs are due and dispatches `bin/sync_runner.php`.
+- The scheduler (`bin/cron_tick.php`) decides which jobs are due, runs standard jobs inline, and dispatches async-capable AI jobs to `bin/scheduler_job_runner.php` background workers so long-polling providers do not block the rest of the queue.
 - Interval and enable/disable controls are configured in **Settings → Data Sync** (`/settings?section=data-sync`) via scheduler rows in `sync_schedules`.
 - SupplyCore now separates cadences by workload:
   - **Fast ingestion**: `killmail_r2z2_sync`, `alliance_current_sync`, and `market_hub_current_sync` keep raw market and killmail inputs fresh.
   - **Materialized intelligence refresh (target cadence: every 5 minutes)**: `doctrine_intelligence_sync`, `market_comparison_summary_sync`, `loss_demand_summary_sync`, `dashboard_summary_sync`, and `current_state_refresh_sync` recompute heavy current-summary layers from raw tables, then publish the latest payloads into Redis for fast reads.
-  - **Doctrine AI briefings (target cadence: every 5 minutes)**: `rebuild_ai_briefings` ranks doctrine fits/groups through the centralized capability-tier strategy, scales prompt/context richness and batch size to the configured model, stores the latest result in MySQL, refreshes the dashboard briefing panel, and skips that cycle when a history rebuild job is still running.
-  - **Slow forecasting / AI**: `forecasting_ai_sync` derives slower-moving target-adjustment, anomaly, briefing, and explanation layers from the latest medium snapshot instead of raw minute-by-minute ingestion.
+  - **Doctrine AI briefings (target cadence: every 5 minutes)**: `rebuild_ai_briefings` ranks doctrine fits/groups through the centralized capability-tier strategy, scales prompt/context richness and batch size to the configured model, stores the latest result in MySQL, refreshes the dashboard briefing panel, skips that cycle when a history rebuild job is still running, and now continues in a background worker after the scheduler claims it.
+  - **Slow forecasting / AI**: `forecasting_ai_sync` derives slower-moving target-adjustment, anomaly, briefing, and explanation layers from the latest medium snapshot instead of raw minute-by-minute ingestion, and it also continues in its own background worker after dispatch.
 - UI pages now read Redis first and fall back to `intelligence_snapshots` if Redis is unavailable; each intelligence surface also exposes its last computed timestamp and freshness state to operators.
 - The hub-history scheduler jobs (`market_hub_historical_sync` and `market_hub_local_history_sync`) rebuild `market_history_daily` from SupplyCore’s own raw hub-order snapshots stored in MySQL for the configured market hub, using the recent window controlled by `raw_order_snapshot_retention_days` unless a CLI override is supplied.
 - **Trend Snippets** on the dashboard depend on that first-party snapshot history generation.

@@ -1752,6 +1752,23 @@ function db_sync_schedule_fetch_by_job_keys(array $jobKeys): array
     );
 }
 
+function db_sync_schedule_fetch_by_id(int $scheduleId): ?array
+{
+    if ($scheduleId <= 0) {
+        return null;
+    }
+
+    $row = db_select_one(
+        'SELECT id, job_key, enabled, interval_seconds, next_run_at, last_run_at, last_status, last_error, locked_until
+         FROM sync_schedules
+         WHERE id = ?
+         LIMIT 1',
+        [$scheduleId]
+    );
+
+    return $row !== [] ? $row : null;
+}
+
 function db_sync_schedule_running_job_keys(array $jobKeys): array
 {
     $keys = array_values(array_filter(array_map(static fn (mixed $jobKey): string => trim((string) $jobKey), $jobKeys), static fn (string $jobKey): bool => $jobKey !== ''));

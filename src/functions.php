@@ -5766,6 +5766,107 @@ function scheduler_job_lock_ttl_seconds(int $defaultSeconds, int $timeoutSeconds
     return $timeoutBackedTtl;
 }
 
+function scheduler_job_runner_script_path(): string
+{
+    return dirname(__DIR__) . '/bin/scheduler_job_runner.php';
+}
+
+function scheduler_cron_log_path(): string
+{
+    return dirname(__DIR__) . '/storage/logs/cron.log';
+}
+
+function scheduler_job_runs_in_background(string $jobKey): bool
+{
+    $definitions = scheduler_job_definitions();
+    $definition = $definitions[$jobKey] ?? null;
+
+    return ($definition['execution'] ?? 'inline') === 'background';
+}
+
+function scheduler_dispatch_background_job(array $job): array
+{
+    $scheduleId = (int) ($job['id'] ?? 0);
+    $jobKey = trim((string) ($job['job_key'] ?? ''));
+    $jobType = scheduler_job_type($jobKey);
+    $scheduledFor = (string) ($job['next_run_at'] ?? '');
+    $startedAt = gmdate(DATE_ATOM);
+
+    if ($scheduleId <= 0 || $jobKey === '') {
+        throw new RuntimeException('Background scheduler dispatch requires a valid claimed job.');
+    }
+
+    $phpBinary = PHP_BINARY !== '' ? PHP_BINARY : 'php';
+    $scriptPath = scheduler_job_runner_script_path();
+    $logPath = scheduler_cron_log_path();
+    $command = sprintf(
+        '%s %s --schedule-id=%d >> %s 2>&1 &',
+        escapeshellarg($phpBinary),
+        escapeshellarg($scriptPath),
+        $scheduleId,
+        escapeshellarg($logPath)
+    );
+
+    exec($command, $output, $exitCode);
+    if ($exitCode !== 0) {
+        throw new RuntimeException('Failed to dispatch background job "' . $jobKey . '".');
+    }
+
+    return [
+        'job_id' => $scheduleId,
+        'job_key' => $jobKey,
+        'job_type' => $jobType,
+        'scheduled_for' => $scheduledFor,
+        'started_at' => $startedAt,
+        'finished_at' => null,
+        'duration_ms' => 0,
+        'status' => 'dispatched',
+        'error' => null,
+        'rows_seen' => 0,
+        'rows_written' => 0,
+        'warnings' => [],
+        'meta' => [
+            'execution' => 'background',
+            'outcome_reason' => 'Job was dispatched to a background PHP worker so other due jobs can continue immediately.',
+        ],
+        'summary' => 'Dispatched to a background worker.',
+    ];
+}
+
+function scheduler_background_dispatch_failure_result(array $job, Throwable $exception): array
+{
+    $jobKey = trim((string) ($job['job_key'] ?? ''));
+    $scheduleId = (int) ($job['id'] ?? 0);
+    $jobType = scheduler_job_type($jobKey);
+    $scheduledFor = (string) ($job['next_run_at'] ?? '');
+    $datasetKey = scheduler_job_dataset_key($jobKey !== '' ? $jobKey : 'unknown');
+    $message = scheduler_normalize_error_message($exception->getMessage());
+
+    mark_sync_failure($datasetKey, 'incremental', $message);
+    if ($scheduleId > 0) {
+        db_sync_schedule_mark_failure($scheduleId, $message);
+    }
+
+    return [
+        'job_id' => $scheduleId,
+        'job_key' => $jobKey,
+        'job_type' => $jobType,
+        'scheduled_for' => $scheduledFor,
+        'started_at' => gmdate(DATE_ATOM),
+        'finished_at' => gmdate(DATE_ATOM),
+        'duration_ms' => 0,
+        'status' => 'failed',
+        'error' => $message,
+        'rows_seen' => 0,
+        'rows_written' => 0,
+        'warnings' => [],
+        'meta' => [
+            'execution' => 'background',
+        ],
+        'summary' => $message,
+    ];
+}
+
 function scheduler_job_definitions(): array
 {
     return [
@@ -5867,6 +5968,7 @@ function scheduler_job_definitions(): array
         'rebuild_ai_briefings' => [
             'timeout_seconds' => 180,
             'lock_ttl_seconds' => 300,
+            'execution' => 'background',
             'handler' => static function (): array {
                 $runningHistoryJobs = scheduler_ai_briefing_running_history_jobs();
                 if ($runningHistoryJobs !== []) {
@@ -5890,6 +5992,7 @@ function scheduler_job_definitions(): array
         'forecasting_ai_sync' => [
             'timeout_seconds' => 180,
             'lock_ttl_seconds' => 300,
+            'execution' => 'background',
             'handler' => static function (): array {
                 return supplycore_refresh_forecasting_snapshot_job_result('scheduler');
             },
@@ -6149,6 +6252,7 @@ function cron_tick_run(?callable $logger = null): array
     $results = [];
     $successCount = 0;
     $failureCount = 0;
+    $dispatchedCount = 0;
 
     foreach ($jobs as $job) {
         $jobId = (int) ($job['id'] ?? 0);
@@ -6165,11 +6269,22 @@ function cron_tick_run(?callable $logger = null): array
             ]);
         }
 
-        $result = scheduler_run_job($job);
+        try {
+            $result = scheduler_job_runs_in_background($jobKey)
+                ? scheduler_dispatch_background_job($job)
+                : scheduler_run_job($job);
+        } catch (Throwable $exception) {
+            $result = scheduler_background_dispatch_failure_result($job, $exception);
+        }
         $results[] = $result;
 
         if ($logger !== null) {
-            $jobEvent = ($result['status'] ?? 'failed') === 'failed' ? 'job.failed' : 'job.completed';
+            $resultStatus = (string) ($result['status'] ?? 'failed');
+            $jobEvent = match ($resultStatus) {
+                'failed' => 'job.failed',
+                'dispatched' => 'job.dispatched',
+                default => 'job.completed',
+            };
             $logger($jobEvent, [
                 'job_id' => (int) ($result['job_id'] ?? $jobId),
                 'job' => (string) ($result['job_key'] ?? $jobKey),
@@ -6204,6 +6319,11 @@ function cron_tick_run(?callable $logger = null): array
             continue;
         }
 
+        if ($jobStatus === 'dispatched') {
+            $dispatchedCount++;
+            continue;
+        }
+
         if ($jobStatus === 'failed') {
             $failureCount++;
         }
@@ -6215,6 +6335,7 @@ function cron_tick_run(?callable $logger = null): array
         'jobs_processed' => count($results),
         'jobs_succeeded' => $successCount,
         'jobs_failed' => $failureCount,
+        'jobs_dispatched' => $dispatchedCount,
         'results' => $results,
     ];
 }
