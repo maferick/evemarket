@@ -8047,7 +8047,7 @@ function sync_market_history_from_snapshots(
             return $result;
         }
 
-        $snapshotMetrics = db_market_orders_snapshot_metrics_window($normalizedSourceType, $sourceId, $windowStartObservedAt);
+        $snapshotMetrics = db_market_orders_snapshot_metrics_window_raw($normalizedSourceType, $sourceId, $windowStartObservedAt);
         $result['rows_seen'] = count($snapshotMetrics);
 
         if ($snapshotMetrics === []) {
@@ -8081,6 +8081,7 @@ function sync_market_history_from_snapshots(
             return $result;
         }
 
+        $summaryRowsWritten = db_market_order_snapshots_summary_bulk_upsert($snapshotMetrics);
         $rebuilt = market_history_daily_rebuild_from_snapshot_metrics($snapshotMetrics, $normalizedSourceType);
         $canonicalRows = is_array($rebuilt['rows'] ?? null) ? $rebuilt['rows'] : [];
         $historyRowCount = count($canonicalRows);
@@ -8133,6 +8134,7 @@ function sync_market_history_from_snapshots(
             'records_skipped' => max(0, $historyRowCount - (int) $result['rows_written']),
             'records_deleted' => 0,
             'history_rows_generated' => $historyRowCount,
+            'snapshot_summary_rows_written' => $summaryRowsWritten,
             'snapshot_days_seen' => count($tradeDates),
             'no_changes' => (int) $result['rows_written'] === 0,
         ];

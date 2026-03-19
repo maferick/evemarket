@@ -306,6 +306,28 @@ CREATE TABLE IF NOT EXISTS market_orders_history (
     KEY idx_market_orders_history_source_date_type (source_type, source_id, observed_date, type_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+CREATE TABLE IF NOT EXISTS market_order_snapshots_summary (
+    id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    source_type ENUM('market_hub', 'alliance_structure') NOT NULL,
+    source_id BIGINT UNSIGNED NOT NULL,
+    type_id INT UNSIGNED NOT NULL,
+    observed_at DATETIME NOT NULL,
+    observed_date DATE GENERATED ALWAYS AS (DATE(observed_at)) STORED,
+    best_sell_price DECIMAL(20, 2) DEFAULT NULL,
+    best_buy_price DECIMAL(20, 2) DEFAULT NULL,
+    total_buy_volume BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    total_sell_volume BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    total_volume BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    buy_order_count INT UNSIGNED NOT NULL DEFAULT 0,
+    sell_order_count INT UNSIGNED NOT NULL DEFAULT 0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY unique_market_order_snapshot_summary (source_type, source_id, type_id, observed_at),
+    KEY idx_snapshot_summary_source_observed_type (source_type, source_id, observed_at, type_id),
+    KEY idx_snapshot_summary_source_type_observed (source_type, source_id, type_id, observed_at),
+    KEY idx_snapshot_summary_source_date_type (source_type, source_id, observed_date, type_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 CREATE TABLE IF NOT EXISTS market_history_daily (
     id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
     source_type ENUM('market_hub', 'alliance_structure') NOT NULL,
@@ -325,7 +347,8 @@ CREATE TABLE IF NOT EXISTS market_history_daily (
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     UNIQUE KEY unique_market_history_daily (source_type, source_id, type_id, trade_date),
     KEY idx_market_history_daily_type_date (source_type, source_id, type_id, trade_date),
-    KEY idx_market_history_daily_observed (source_type, source_id, observed_at)
+    KEY idx_market_history_daily_observed (source_type, source_id, observed_at),
+    KEY idx_market_history_daily_date_type (source_type, source_id, trade_date, type_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS market_hub_local_history_daily (
@@ -351,7 +374,8 @@ CREATE TABLE IF NOT EXISTS market_hub_local_history_daily (
     KEY idx_market_hub_local_history_daily_source_date (source, source_id, trade_date),
     KEY idx_market_hub_local_history_daily_latest_points (source, source_id, type_id, trade_date, id),
     UNIQUE KEY unique_market_hub_local_history_daily (source, source_id, type_id, trade_date),
-    KEY idx_market_hub_local_history_daily_type_date (type_id, trade_date)
+    KEY idx_market_hub_local_history_daily_type_date (type_id, trade_date),
+    KEY idx_market_hub_local_history_daily_source_type_date (source, source_id, type_id, trade_date)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS static_data_import_state (

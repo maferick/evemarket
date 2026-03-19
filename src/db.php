@@ -78,6 +78,85 @@ function db_connection_status(): array
     }
 }
 
+function &db_query_cache_store_ref(): array
+{
+    static $store = [
+        'request' => [],
+        'redis_checked' => false,
+        'redis_enabled' => false,
+    ];
+
+    return $store;
+}
+
+function db_query_cache_key(string $sql, array $params = [], string $namespace = 'default'): string
+{
+    return 'db-query:' . md5($namespace . "\n" . trim($sql) . "\n" . json_encode($params, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE));
+}
+
+function db_query_cache_redis_enabled(): bool
+{
+    $store = &db_query_cache_store_ref();
+    if ($store['redis_checked'] === true) {
+        return $store['redis_enabled'] === true;
+    }
+
+    $store['redis_checked'] = true;
+    $store['redis_enabled'] = function_exists('supplycore_redis_enabled') && supplycore_redis_enabled();
+
+    return $store['redis_enabled'] === true;
+}
+
+function db_query_cache_clear(): void
+{
+    $store = &db_query_cache_store_ref();
+    $store['request'] = [];
+}
+
+function db_select_cached(string $sql, array $params = [], int $ttlSeconds = 60, string $namespace = 'default'): array
+{
+    $safeTtl = max(30, min(120, $ttlSeconds));
+    $cacheKey = db_query_cache_key($sql, $params, $namespace);
+    $now = time();
+    $store = &db_query_cache_store_ref();
+
+    if (isset($store['request'][$cacheKey]) && (int) ($store['request'][$cacheKey]['expires_at'] ?? 0) >= $now) {
+        return (array) ($store['request'][$cacheKey]['value'] ?? []);
+    }
+
+    if (db_query_cache_redis_enabled()) {
+        $cached = supplycore_redis_get_json($cacheKey);
+        if (is_array($cached) && array_key_exists('rows', $cached) && is_array($cached['rows'])) {
+            $store['request'][$cacheKey] = [
+                'expires_at' => $now + $safeTtl,
+                'value' => $cached['rows'],
+            ];
+
+            return $cached['rows'];
+        }
+    }
+
+    $rows = db_select($sql, $params);
+    $store['request'][$cacheKey] = [
+        'expires_at' => $now + $safeTtl,
+        'value' => $rows,
+    ];
+
+    if (db_query_cache_redis_enabled()) {
+        supplycore_redis_set_json($cacheKey, ['rows' => $rows], $safeTtl);
+    }
+
+    return $rows;
+}
+
+function db_select_one_cached(string $sql, array $params = [], int $ttlSeconds = 60, string $namespace = 'default'): ?array
+{
+    $rows = db_select_cached($sql, $params, $ttlSeconds, $namespace);
+    $row = $rows[0] ?? null;
+
+    return is_array($row) ? $row : null;
+}
+
 function db_select(string $sql, array $params = []): array
 {
     $stmt = db()->prepare($sql);
@@ -97,6 +176,7 @@ function db_select_one(string $sql, array $params = []): ?array
 
 function db_execute(string $sql, array $params = []): bool
 {
+    db_query_cache_clear();
     $stmt = db()->prepare($sql);
 
     return $stmt->execute($params);
@@ -104,6 +184,7 @@ function db_execute(string $sql, array $params = []): bool
 
 function db_transaction(callable $callback): mixed
 {
+    db_query_cache_clear();
     $pdo = db();
     $isRootTransaction = !$pdo->inTransaction();
     $savepoint = 'sp_' . bin2hex(random_bytes(8));
@@ -497,6 +578,7 @@ function db_market_orders_history_bulk_insert(array $orders, ?int $chunkSize = n
 
 function db_market_orders_history_prune_before(string $cutoffObservedAt): int
 {
+    db_query_cache_clear();
     $stmt = db()->prepare('DELETE FROM market_orders_history WHERE observed_at < ?');
     $stmt->execute([$cutoffObservedAt]);
 
@@ -542,8 +624,70 @@ function db_market_orders_current_latest_snapshot_rows(string $sourceType, int $
     );
 }
 
+function db_market_order_snapshots_summary_normalize_row(array $row): array
+{
+    return [
+        'source_type' => trim((string) ($row['source_type'] ?? '')),
+        'source_id' => max(0, (int) ($row['source_id'] ?? 0)),
+        'type_id' => max(0, (int) ($row['type_id'] ?? 0)),
+        'observed_at' => trim((string) ($row['observed_at'] ?? '')),
+        'best_sell_price' => isset($row['best_sell_price']) && $row['best_sell_price'] !== null ? (float) $row['best_sell_price'] : null,
+        'best_buy_price' => isset($row['best_buy_price']) && $row['best_buy_price'] !== null ? (float) $row['best_buy_price'] : null,
+        'total_buy_volume' => max(0, (int) ($row['total_buy_volume'] ?? 0)),
+        'total_sell_volume' => max(0, (int) ($row['total_sell_volume'] ?? 0)),
+        'total_volume' => max(0, (int) ($row['total_volume'] ?? 0)),
+        'buy_order_count' => max(0, (int) ($row['buy_order_count'] ?? 0)),
+        'sell_order_count' => max(0, (int) ($row['sell_order_count'] ?? 0)),
+    ];
+}
 
-function db_market_orders_snapshot_metrics_window(string $sourceType, int $sourceId, string $startObservedAt): array
+function db_market_order_snapshots_summary_bulk_upsert(array $summaryRows, ?int $chunkSize = null): int
+{
+    $normalizedRows = [];
+
+    foreach ($summaryRows as $row) {
+        $normalized = db_market_order_snapshots_summary_normalize_row($row);
+        if ($normalized['source_type'] === ''
+            || $normalized['source_id'] <= 0
+            || $normalized['type_id'] <= 0
+            || $normalized['observed_at'] === ''
+        ) {
+            continue;
+        }
+
+        $normalizedRows[] = $normalized;
+    }
+
+    return db_bulk_insert_or_upsert(
+        'market_order_snapshots_summary',
+        [
+            'source_type',
+            'source_id',
+            'type_id',
+            'observed_at',
+            'best_sell_price',
+            'best_buy_price',
+            'total_buy_volume',
+            'total_sell_volume',
+            'total_volume',
+            'buy_order_count',
+            'sell_order_count',
+        ],
+        $normalizedRows,
+        [
+            'best_sell_price',
+            'best_buy_price',
+            'total_buy_volume',
+            'total_sell_volume',
+            'total_volume',
+            'buy_order_count',
+            'sell_order_count',
+        ],
+        $chunkSize
+    );
+}
+
+function db_market_orders_snapshot_metrics_window_raw(string $sourceType, int $sourceId, string $startObservedAt): array
 {
     $safeSourceType = trim($sourceType);
     $safeSourceId = max(0, $sourceId);
@@ -558,23 +702,28 @@ function db_market_orders_snapshot_metrics_window(string $sourceType, int $sourc
             snapshots.source_id,
             snapshots.type_id,
             snapshots.observed_at,
-            MIN(CASE WHEN snapshots.is_buy_order = 0 THEN snapshots.price ELSE NULL END) AS best_sell_price,
-            MAX(CASE WHEN snapshots.is_buy_order = 1 THEN snapshots.price ELSE NULL END) AS best_buy_price,
+            MIN(CASE WHEN snapshots.is_buy_order = 0 THEN snapshots.min_price ELSE NULL END) AS best_sell_price,
+            MAX(CASE WHEN snapshots.is_buy_order = 1 THEN snapshots.max_price ELSE NULL END) AS best_buy_price,
+            SUM(CASE WHEN snapshots.is_buy_order = 1 THEN snapshots.volume_remain ELSE 0 END) AS total_buy_volume,
+            SUM(CASE WHEN snapshots.is_buy_order = 0 THEN snapshots.volume_remain ELSE 0 END) AS total_sell_volume,
             SUM(snapshots.volume_remain) AS total_volume,
-            SUM(CASE WHEN snapshots.is_buy_order = 1 THEN 1 ELSE 0 END) AS buy_order_count,
-            SUM(CASE WHEN snapshots.is_buy_order = 0 THEN 1 ELSE 0 END) AS sell_order_count
+            SUM(CASE WHEN snapshots.is_buy_order = 1 THEN snapshots.order_count ELSE 0 END) AS buy_order_count,
+            SUM(CASE WHEN snapshots.is_buy_order = 0 THEN snapshots.order_count ELSE 0 END) AS sell_order_count
          FROM (
             SELECT
                 moh.source_id,
                 moh.type_id,
                 moh.is_buy_order,
-                moh.price,
-                moh.volume_remain,
+                MIN(moh.price) AS min_price,
+                MAX(moh.price) AS max_price,
+                SUM(moh.volume_remain) AS volume_remain,
+                COUNT(*) AS order_count,
                 moh.observed_at
             FROM market_orders_history moh
             WHERE moh.source_type = ?
               AND moh.source_id = ?
               AND moh.observed_at >= ?
+            GROUP BY moh.source_id, moh.type_id, moh.is_buy_order, moh.observed_at
 
             UNION ALL
 
@@ -582,20 +731,25 @@ function db_market_orders_snapshot_metrics_window(string $sourceType, int $sourc
                 moc.source_id,
                 moc.type_id,
                 moc.is_buy_order,
-                moc.price,
-                moc.volume_remain,
+                MIN(moc.price) AS min_price,
+                MAX(moc.price) AS max_price,
+                SUM(moc.volume_remain) AS volume_remain,
+                COUNT(*) AS order_count,
                 moc.observed_at
             FROM market_orders_current moc
+            LEFT JOIN (
+                SELECT DISTINCT observed_at
+                FROM market_orders_history
+                WHERE source_type = ?
+                  AND source_id = ?
+                  AND observed_at >= ?
+            ) history_observed
+              ON history_observed.observed_at = moc.observed_at
             WHERE moc.source_type = ?
               AND moc.source_id = ?
               AND moc.observed_at >= ?
-              AND NOT EXISTS (
-                    SELECT 1
-                    FROM market_orders_history moh_existing
-                    WHERE moh_existing.source_type = ?
-                      AND moh_existing.source_id = ?
-                      AND moh_existing.observed_at = moc.observed_at
-                )
+              AND history_observed.observed_at IS NULL
+            GROUP BY moc.source_id, moc.type_id, moc.is_buy_order, moc.observed_at
          ) snapshots
          GROUP BY snapshots.source_id, snapshots.type_id, snapshots.observed_at
          ORDER BY snapshots.observed_at ASC, snapshots.type_id ASC",
@@ -608,21 +762,65 @@ function db_market_orders_snapshot_metrics_window(string $sourceType, int $sourc
             $safeStartObservedAt,
             $safeSourceType,
             $safeSourceId,
+            $safeStartObservedAt,
         ]
     );
 
-    return array_map(static function (array $row): array {
+    return array_map(function (array $row) use ($safeSourceType): array {
         return [
+            'source_type' => $safeSourceType,
             'source_id' => (int) ($row['source_id'] ?? 0),
             'type_id' => (int) ($row['type_id'] ?? 0),
             'observed_at' => (string) ($row['observed_at'] ?? ''),
             'best_sell_price' => isset($row['best_sell_price']) && $row['best_sell_price'] !== null ? (float) $row['best_sell_price'] : null,
             'best_buy_price' => isset($row['best_buy_price']) && $row['best_buy_price'] !== null ? (float) $row['best_buy_price'] : null,
+            'total_buy_volume' => max(0, (int) ($row['total_buy_volume'] ?? 0)),
+            'total_sell_volume' => max(0, (int) ($row['total_sell_volume'] ?? 0)),
             'total_volume' => max(0, (int) ($row['total_volume'] ?? 0)),
             'buy_order_count' => max(0, (int) ($row['buy_order_count'] ?? 0)),
             'sell_order_count' => max(0, (int) ($row['sell_order_count'] ?? 0)),
         ];
     }, $rows);
+}
+
+function db_market_orders_snapshot_metrics_window(string $sourceType, int $sourceId, string $startObservedAt): array
+{
+    $safeSourceType = trim($sourceType);
+    $safeSourceId = max(0, $sourceId);
+    $safeStartObservedAt = trim($startObservedAt);
+
+    if ($safeSourceType === '' || $safeSourceId <= 0 || $safeStartObservedAt === '') {
+        return [];
+    }
+
+    $rows = db_select_cached(
+        "SELECT
+            source_type,
+            source_id,
+            type_id,
+            observed_at,
+            best_sell_price,
+            best_buy_price,
+            total_buy_volume,
+            total_sell_volume,
+            total_volume,
+            buy_order_count,
+            sell_order_count
+         FROM market_order_snapshots_summary
+         WHERE source_type = ?
+           AND source_id = ?
+           AND observed_at >= ?
+         ORDER BY observed_at ASC, type_id ASC",
+        [$safeSourceType, $safeSourceId, $safeStartObservedAt],
+        60,
+        'market.snapshot.metrics'
+    );
+
+    if ($rows === []) {
+        return db_market_orders_snapshot_metrics_window_raw($safeSourceType, $safeSourceId, $safeStartObservedAt);
+    }
+
+    return array_map('db_market_order_snapshots_summary_normalize_row', $rows);
 }
 
 
@@ -800,14 +998,24 @@ function db_market_hub_local_history_daily_bulk_upsert(array $historyRows, ?int 
 function db_market_hub_local_history_daily_select_type_ids(string $source, int $sourceId, int $typeLimit = 120): array
 {
     $safeTypeLimit = max(1, min($typeLimit, 500));
-    $rows = db_select(
-        "SELECT type_id
-         FROM market_hub_local_history_daily
-         WHERE source = ? AND source_id = ?
-         GROUP BY type_id
-         ORDER BY MAX(trade_date) DESC, SUM(volume) DESC
+    $rows = db_select_cached(
+        "SELECT ranked.type_id
+         FROM (
+            SELECT
+                type_id,
+                MAX(trade_date) AS latest_trade_date,
+                SUM(volume) AS total_volume
+            FROM market_hub_local_history_daily
+            WHERE source = ?
+              AND source_id = ?
+            GROUP BY type_id
+         ) ranked
+         ORDER BY ranked.latest_trade_date DESC, ranked.total_volume DESC
          LIMIT {$safeTypeLimit}",
         [$source, $sourceId]
+        ,
+        60,
+        'market.hub.local.types'
     );
 
     return array_values(array_filter(array_map(static fn (array $row): int => (int) ($row['type_id'] ?? 0), $rows), static fn (int $typeId): bool => $typeId > 0));
@@ -888,7 +1096,7 @@ function db_market_hub_local_history_daily_recent_window(string $source, int $so
 
     $placeholders = implode(',', array_fill(0, count($typeIds), '?'));
     $params = array_merge([$safeSource, $safeSourceId], $typeIds);
-    $rows = db_select(
+    $rows = db_select_cached(
         "SELECT
             mlhd.type_id,
             rit.type_name,
@@ -909,7 +1117,9 @@ function db_market_hub_local_history_daily_recent_window(string $source, int $so
            AND mlhd.type_id IN ({$placeholders})
            AND mlhd.trade_date >= DATE_SUB(UTC_DATE(), INTERVAL {$safeDays} DAY)
          ORDER BY mlhd.type_id ASC, mlhd.trade_date DESC, mlhd.id DESC",
-        $params
+        $params,
+        60,
+        'market.hub.local.recent'
     );
 
     return array_map('db_market_hub_local_history_daily_normalize_result_row', $rows);
@@ -1043,7 +1253,7 @@ function db_market_hub_local_history_daily_latest_points_by_type(
                     )
              ) < {$safePointsPerType}
            ORDER BY mlhd.type_id ASC, mlhd.trade_date DESC, mlhd.id DESC";
-    $rows = db_select($sql, $params);
+    $rows = db_select_cached($sql, $params, 60, 'market.hub.local.latest-points');
 
     return array_map('db_market_hub_local_history_daily_normalize_result_row', $rows);
 }
@@ -1065,7 +1275,7 @@ function db_market_hub_local_history_daily_window_by_type_ids(
 
     $placeholders = implode(',', array_fill(0, count($normalizedTypeIds), '?'));
     $params = array_merge([$safeSource, $safeSourceId], $normalizedTypeIds);
-    $rows = db_select(
+    $rows = db_select_cached(
         "SELECT
             mlhd.type_id,
             rit.type_name,
@@ -1089,7 +1299,9 @@ function db_market_hub_local_history_daily_window_by_type_ids(
            AND mlhd.type_id IN ({$placeholders})
            AND mlhd.trade_date >= DATE_SUB(UTC_DATE(), INTERVAL {$safeDays} DAY)
          ORDER BY mlhd.trade_date ASC, mlhd.type_id ASC, mlhd.id ASC",
-        $params
+        $params,
+        60,
+        'market.hub.local.window'
     );
 
     return array_map('db_market_hub_local_history_daily_normalize_result_row', $rows);
@@ -1098,13 +1310,15 @@ function db_market_hub_local_history_daily_window_by_type_ids(
 function db_market_orders_current_distinct_type_ids(string $sourceType, int $sourceId, int $limit = 500): array
 {
     $safeLimit = max(1, min($limit, 5000));
-    $rows = db_select(
+    $rows = db_select_cached(
         "SELECT DISTINCT type_id
          FROM market_orders_current
          WHERE source_type = ? AND source_id = ?
          ORDER BY type_id ASC
          LIMIT {$safeLimit}",
-        [$sourceType, $sourceId]
+        [$sourceType, $sourceId],
+        60,
+        'market.current.distinct-types'
     );
 
     return array_values(array_map(static fn (array $row): int => (int) ($row['type_id'] ?? 0), $rows));
@@ -1113,13 +1327,15 @@ function db_market_orders_current_distinct_type_ids(string $sourceType, int $sou
 function db_market_history_daily_distinct_type_ids(string $sourceType, int $sourceId, int $limit = 500): array
 {
     $safeLimit = max(1, min($limit, 5000));
-    $rows = db_select(
+    $rows = db_select_cached(
         "SELECT DISTINCT type_id
          FROM market_history_daily
          WHERE source_type = ? AND source_id = ?
          ORDER BY type_id ASC
          LIMIT {$safeLimit}",
-        [$sourceType, $sourceId]
+        [$sourceType, $sourceId],
+        60,
+        'market.history.distinct-types'
     );
 
     return array_values(array_map(static fn (array $row): int => (int) ($row['type_id'] ?? 0), $rows));
@@ -1130,14 +1346,24 @@ function db_market_history_daily_recent_window(string $sourceType, int $sourceId
     $safeDays = max(1, min($days, 60));
     $safeTypeLimit = max(1, min($typeLimit, 500));
 
-    $typeRows = db_select(
-        "SELECT type_id
-         FROM market_history_daily
-         WHERE source_type = ? AND source_id = ?
-         GROUP BY type_id
-         ORDER BY MAX(trade_date) DESC, SUM(volume) DESC
+    $typeRows = db_select_cached(
+        "SELECT ranked.type_id
+         FROM (
+            SELECT
+                type_id,
+                MAX(trade_date) AS latest_trade_date,
+                SUM(volume) AS total_volume
+            FROM market_history_daily
+            WHERE source_type = ?
+              AND source_id = ?
+            GROUP BY type_id
+         ) ranked
+         ORDER BY ranked.latest_trade_date DESC, ranked.total_volume DESC
          LIMIT {$safeTypeLimit}",
         [$sourceType, $sourceId]
+        ,
+        60,
+        'market.history.recent-types'
     );
 
     $typeIds = array_values(array_filter(array_map(static fn (array $row): int => (int) ($row['type_id'] ?? 0), $typeRows), static fn (int $typeId): bool => $typeId > 0));
@@ -1148,7 +1374,7 @@ function db_market_history_daily_recent_window(string $sourceType, int $sourceId
     $placeholders = implode(',', array_fill(0, count($typeIds), '?'));
     $params = array_merge([$sourceType, $sourceId], $typeIds);
 
-    return db_select(
+    return db_select_cached(
         "SELECT
             mhd.type_id,
             rit.type_name,
@@ -1163,7 +1389,9 @@ function db_market_history_daily_recent_window(string $sourceType, int $sourceId
            AND mhd.type_id IN ({$placeholders})
            AND mhd.trade_date >= DATE_SUB(UTC_DATE(), INTERVAL {$safeDays} DAY)
          ORDER BY mhd.type_id ASC, mhd.trade_date DESC",
-        $params
+        $params,
+        60,
+        'market.history.recent-window'
     );
 }
 
@@ -1176,6 +1404,7 @@ function db_market_history_daily_aggregate_by_date_type_source(
 ): array {
     $params = [$sourceType, $sourceId, $startDate, $endDate];
     $typeFilterSql = '';
+    $rawTypeFilterSql = '';
 
     if ($typeIds !== []) {
         $normalizedTypeIds = array_values(array_unique(array_filter(array_map('intval', $typeIds), static fn (int $typeId): bool => $typeId > 0)));
@@ -1188,7 +1417,7 @@ function db_market_history_daily_aggregate_by_date_type_source(
         $params = array_merge($params, $normalizedTypeIds);
     }
 
-    return db_select(
+    return db_select_cached(
         "SELECT
             mhd.trade_date,
             mhd.type_id,
@@ -1206,7 +1435,9 @@ function db_market_history_daily_aggregate_by_date_type_source(
            AND mhd.trade_date BETWEEN ? AND ?{$typeFilterSql}
          GROUP BY mhd.trade_date, mhd.type_id, rit.type_name, mhd.source_type, mhd.source_id
          ORDER BY mhd.trade_date ASC, mhd.type_id ASC",
-        $params
+        $params,
+        60,
+        'market.history.aggregate'
     );
 }
 
@@ -1231,7 +1462,7 @@ function db_market_history_daily_deviation_series(
         $params = array_merge($params, $normalizedTypeIds);
     }
 
-    return db_select(
+    return db_select_cached(
         "SELECT
             a.trade_date,
             a.type_id,
@@ -1257,7 +1488,9 @@ function db_market_history_daily_deviation_series(
            AND a.source_id = ?
            AND a.trade_date BETWEEN ? AND ?{$typeFilterSql}
          ORDER BY a.trade_date ASC, a.type_id ASC",
-        [$hubSourceId, $allianceStructureId, $startDate, $endDate, ...array_slice($params, 4)]
+        [$hubSourceId, $allianceStructureId, $startDate, $endDate, ...array_slice($params, 4)],
+        60,
+        'market.history.deviation'
     );
 }
 
@@ -1278,8 +1511,38 @@ function db_market_orders_history_stock_health_series(
         }
 
         $placeholders = implode(',', array_fill(0, count($normalizedTypeIds), '?'));
-        $typeFilterSql = " AND moh.type_id IN ({$placeholders})";
+        $typeFilterSql = " AND moss.type_id IN ({$placeholders})";
+        $rawTypeFilterSql = " AND moh.type_id IN ({$placeholders})";
         $params = array_merge($params, $normalizedTypeIds);
+    }
+
+    $rows = db_select_cached(
+        "SELECT
+            moss.observed_date,
+            moss.type_id,
+            rit.type_name,
+            SUM(moss.total_sell_volume) AS sell_volume,
+            SUM(moss.total_buy_volume) AS buy_volume,
+            SUM(moss.sell_order_count) AS sell_order_count,
+            SUM(moss.buy_order_count) AS buy_order_count,
+            AVG(moss.best_sell_price) AS avg_sell_price,
+            AVG(moss.best_buy_price) AS avg_buy_price,
+            MAX(moss.observed_at) AS last_observed_at
+         FROM market_order_snapshots_summary moss
+         LEFT JOIN ref_item_types rit ON rit.type_id = moss.type_id
+         WHERE moss.source_type = ?
+           AND moss.source_id = ?
+           AND moss.observed_date BETWEEN ? AND ?{$typeFilterSql}
+         GROUP BY moss.observed_date, moss.type_id, rit.type_name
+         ORDER BY moss.observed_date ASC, moss.type_id ASC",
+        $params
+        ,
+        60,
+        'market.snapshot.stock-health'
+    );
+
+    if ($rows !== []) {
+        return $rows;
     }
 
     return db_select(
@@ -1298,10 +1561,10 @@ function db_market_orders_history_stock_health_series(
          LEFT JOIN ref_item_types rit ON rit.type_id = moh.type_id
          WHERE moh.source_type = ?
            AND moh.source_id = ?
-           AND moh.observed_date BETWEEN ? AND ?{$typeFilterSql}
+           AND moh.observed_date BETWEEN ? AND ?{$rawTypeFilterSql}
          GROUP BY moh.observed_date, moh.type_id, rit.type_name
-         ORDER BY observed_date ASC, moh.type_id ASC",
-        $params
+         ORDER BY moh.observed_date ASC, moh.type_id ASC",
+        array_merge([$sourceType, $sourceId, $startDate, $endDate], array_slice($params, 4))
     );
 }
 
@@ -1309,6 +1572,7 @@ function db_market_orders_current_source_aggregates(string $sourceType, int $sou
 {
     $params = [$sourceType, $sourceId];
     $typeFilterSql = '';
+    $rawTypeFilterSql = '';
 
     if ($typeIds !== []) {
         $normalizedTypeIds = array_values(array_unique(array_filter(array_map('intval', $typeIds), static fn (int $typeId): bool => $typeId > 0)));
@@ -1317,8 +1581,40 @@ function db_market_orders_current_source_aggregates(string $sourceType, int $sou
         }
 
         $typePlaceholders = implode(',', array_fill(0, count($normalizedTypeIds), '?'));
-        $typeFilterSql = " AND moc.type_id IN ({$typePlaceholders})";
+        $typeFilterSql = " AND moss.type_id IN ({$typePlaceholders})";
+        $rawTypeFilterSql = " AND moc.type_id IN ({$typePlaceholders})";
         $params = array_merge($params, $normalizedTypeIds);
+    }
+
+    $rows = db_select_cached(
+        "SELECT
+            moss.type_id,
+            rit.type_name,
+            moss.best_sell_price,
+            moss.best_buy_price,
+            moss.total_sell_volume,
+            moss.total_buy_volume,
+            moss.sell_order_count,
+            moss.buy_order_count,
+            moss.observed_at AS last_observed_at
+         FROM market_order_snapshots_summary moss
+         LEFT JOIN ref_item_types rit ON rit.type_id = moss.type_id
+         WHERE moss.source_type = ?
+           AND moss.source_id = ?
+           AND moss.observed_at = (
+                SELECT MAX(summary_latest.observed_at)
+                FROM market_order_snapshots_summary summary_latest
+                WHERE summary_latest.source_type = ?
+                  AND summary_latest.source_id = ?
+           ){$typeFilterSql}
+         ORDER BY moss.type_id ASC",
+        [$sourceType, $sourceId, $sourceType, $sourceId, ...array_slice($params, 2)],
+        60,
+        'market.snapshot.current-aggregates'
+    );
+
+    if ($rows !== []) {
+        return $rows;
     }
 
     return db_select(
@@ -1335,7 +1631,7 @@ function db_market_orders_current_source_aggregates(string $sourceType, int $sou
          FROM market_orders_current moc
          LEFT JOIN ref_item_types rit ON rit.type_id = moc.type_id
          WHERE moc.source_type = ?
-           AND moc.source_id = ?{$typeFilterSql}
+           AND moc.source_id = ?{$rawTypeFilterSql}
          GROUP BY moc.type_id, rit.type_name
          ORDER BY moc.type_id ASC",
         $params
@@ -2485,8 +2781,16 @@ function db_killmail_tracked_match_sql(string $eventAlias = 'e'): string
     $eventAlias = preg_replace('/[^a-zA-Z0-9_]/', '', $eventAlias) ?: 'e';
 
     return "(
-        EXISTS (SELECT 1 FROM killmail_tracked_alliances ta WHERE ta.is_active = 1 AND ta.alliance_id = {$eventAlias}.victim_alliance_id)
-        OR EXISTS (SELECT 1 FROM killmail_tracked_corporations tc WHERE tc.is_active = 1 AND tc.corporation_id = {$eventAlias}.victim_corporation_id)
+        {$eventAlias}.victim_alliance_id IN (
+            SELECT ta.alliance_id
+            FROM killmail_tracked_alliances ta
+            WHERE ta.is_active = 1
+        )
+        OR {$eventAlias}.victim_corporation_id IN (
+            SELECT tc.corporation_id
+            FROM killmail_tracked_corporations tc
+            WHERE tc.is_active = 1
+        )
     )";
 }
 
@@ -2650,12 +2954,8 @@ function db_killmail_detail(int $sequenceId): ?array
             COALESCE(NULLIF(ship.type_name, ''), '') AS ship_type_name,
             COALESCE(NULLIF(system_ref.system_name, ''), '') AS system_name,
             COALESCE(NULLIF(region_ref.region_name, ''), '') AS region_name,
-            CASE WHEN EXISTS (
-                SELECT 1 FROM killmail_tracked_alliances ta WHERE ta.is_active = 1 AND ta.alliance_id = e.victim_alliance_id
-            ) THEN 1 ELSE 0 END AS matches_victim_alliance,
-            CASE WHEN EXISTS (
-                SELECT 1 FROM killmail_tracked_corporations tc WHERE tc.is_active = 1 AND tc.corporation_id = e.victim_corporation_id
-            ) THEN 1 ELSE 0 END AS matches_victim_corporation,
+            CASE WHEN victim_ta.alliance_id IS NULL THEN 0 ELSE 1 END AS matches_victim_alliance,
+            CASE WHEN victim_tc.corporation_id IS NULL THEN 0 ELSE 1 END AS matches_victim_corporation,
             CASE WHEN {$matchSql} THEN 1 ELSE 0 END AS matched_tracked
          FROM killmail_events e
          LEFT JOIN ref_item_types ship ON ship.type_id = e.victim_ship_type_id
