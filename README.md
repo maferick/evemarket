@@ -204,11 +204,13 @@ Cron must run with the same environment the app expects:
 
 - App config vars: `APP_ENV`, `APP_BASE_URL`, `APP_TIMEZONE`
 - Database vars: `DB_HOST`, `DB_PORT`, `DB_DATABASE`, `DB_USERNAME`, `DB_PASSWORD`
+- Scheduler timeout vars (optional): `SCHEDULER_DEFAULT_TIMEOUT_SECONDS` for a global override, plus per-job overrides such as `SCHEDULER_TIMEOUT_MARKET_HUB_CURRENT_SYNC=480` when a single pipeline needs more runtime.
 - Pipeline source vars (when those pipelines are enabled):
   - `SUPPLYCORE_ALLIANCE_SOURCE_ID` (for `alliance-current` and `alliance-history`)
   - `SUPPLYCORE_HUB_SOURCE_ID` (for `hub-current`, `hub-history`, and hub snapshot-history generation)
 
 The canonical log path for the cron tick is `storage/logs/cron.log` (relative to app root).
+If logs show `Job exceeded timeout of ... seconds.`, raise the matching scheduler timeout environment variable and reload cron/PHP so new worker processes inherit it.
 Raw order snapshots are pruned according to `raw_order_snapshot_retention_days` from Settings → Data Sync.
 Daily history rows are built from those local snapshots for both the alliance market and the reference hub, so keep the current-sync and history schedules enabled together for continuous trend updates.
 

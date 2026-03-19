@@ -34,4 +34,7 @@ return [
         'model' => getenv('OLLAMA_MODEL') ?: 'qwen2.5:1.5b-instruct',
         'timeout' => max(1, (int) (getenv('OLLAMA_TIMEOUT') ?: 20)),
     ],
+    'scheduler' => [
+        'default_timeout_seconds' => max(30, (int) (getenv('SCHEDULER_DEFAULT_TIMEOUT_SECONDS') ?: 300)),
+    ],
 ];

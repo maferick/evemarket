@@ -5513,6 +5513,34 @@ function scheduler_normalize_messages(array $messages): array
     return array_keys($normalized);
 }
 
+function scheduler_timeout_env_key(string $jobKey): string
+{
+    $normalizedKey = strtoupper((string) preg_replace('/[^A-Za-z0-9]+/', '_', $jobKey));
+
+    return 'SCHEDULER_TIMEOUT_' . trim($normalizedKey, '_');
+}
+
+function scheduler_job_timeout_seconds(string $jobKey, int $defaultSeconds = 300): int
+{
+    $fallback = max(30, min(3600, $defaultSeconds));
+    $configuredDefault = max(30, min(3600, (int) config('scheduler.default_timeout_seconds', $fallback)));
+    $envValue = getenv(scheduler_timeout_env_key($jobKey));
+
+    if ($envValue === false || trim((string) $envValue) === '') {
+        return $configuredDefault;
+    }
+
+    return max(30, min(3600, (int) $envValue));
+}
+
+function scheduler_job_lock_ttl_seconds(int $defaultSeconds, int $timeoutSeconds): int
+{
+    $baseLockTtl = max(30, min(3600, $defaultSeconds));
+    $timeoutBackedTtl = min(3600, max($baseLockTtl, $timeoutSeconds + 60));
+
+    return $timeoutBackedTtl;
+}
+
 function scheduler_job_definitions(): array
 {
     return [
@@ -5756,7 +5784,10 @@ function scheduler_due_jobs(): array
         }
 
         $jobKey = (string) ($job['job_key'] ?? '');
-        $lockTtl = (int) ($definitions[$jobKey]['lock_ttl_seconds'] ?? 300);
+        $defaultTimeout = (int) ($definitions[$jobKey]['timeout_seconds'] ?? 300);
+        $timeoutSeconds = scheduler_job_timeout_seconds($jobKey, $defaultTimeout);
+        $defaultLockTtl = (int) ($definitions[$jobKey]['lock_ttl_seconds'] ?? 300);
+        $lockTtl = scheduler_job_lock_ttl_seconds($defaultLockTtl, $timeoutSeconds);
         $claimedJob = db_sync_schedule_claim_job($scheduleId, $lockTtl);
         if ($claimedJob !== null) {
             $claimed[] = $claimedJob;
@@ -5805,7 +5836,7 @@ function scheduler_run_job(array $job): array
         ];
     }
 
-    $timeoutSeconds = max(30, min(3600, (int) ($definition['timeout_seconds'] ?? 300)));
+    $timeoutSeconds = scheduler_job_timeout_seconds($jobKey, (int) ($definition['timeout_seconds'] ?? 300));
     $startedAt = microtime(true);
 
     try {
