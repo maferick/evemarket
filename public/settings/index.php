@@ -54,6 +54,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
             break;
 
+        case 'ai-briefings':
+            $saved = save_settings(ai_briefing_settings_from_request($_POST));
+            break;
+
         case 'esi-login':
             $saved = save_settings([
                 'esi_client_id' => trim($_POST['esi_client_id'] ?? ''),
@@ -145,6 +149,7 @@ $settingValues = get_settings([
     'market_station_id',
     'alliance_station_id',
     ...item_scope_setting_keys(),
+    ...ai_briefing_setting_keys(),
     'esi_client_id',
     'esi_client_secret',
     'esi_callback_url',
@@ -217,6 +222,8 @@ $trackedAlliances = [];
 $trackedCorporations = [];
 $killmailStatus = null;
 $itemScope = item_scope_view_model();
+$ollamaConfig = supplycore_ai_ollama_config();
+$ollamaAvailable = supplycore_ai_ollama_available();
 if ($dbStatus['ok']) {
     try {
         $trackedAlliances = db_killmail_tracked_alliances_active();
@@ -511,6 +518,60 @@ include __DIR__ . '/../../src/views/partials/header.php';
                     });
                 })();
             </script>
+        <?php elseif ($section === 'ai-briefings'): ?>
+            <form class="mt-6 space-y-6" method="post">
+                <input type="hidden" name="_token" value="<?= htmlspecialchars(csrf_token(), ENT_QUOTES) ?>">
+                <input type="hidden" name="section" value="ai-briefings">
+
+                <div class="grid gap-4 md:grid-cols-3">
+                    <div class="rounded-2xl border border-white/8 bg-white/[0.03] p-4">
+                        <p class="text-xs uppercase tracking-[0.16em] text-muted">Configured Mode</p>
+                        <p class="mt-2 text-2xl font-semibold text-slate-50"><?= ($ollamaConfig['enabled'] ?? false) ? 'Enabled' : 'Fallback only' ?></p>
+                        <p class="mt-1 text-sm text-muted">Doctrine briefings use the saved endpoint and model below.</p>
+                    </div>
+                    <div class="rounded-2xl border <?= $ollamaAvailable ? 'border-emerald-500/20 bg-emerald-500/10' : 'border-amber-500/20 bg-amber-500/10' ?> p-4">
+                        <p class="text-xs uppercase tracking-[0.16em] <?= $ollamaAvailable ? 'text-emerald-200/80' : 'text-amber-200/80' ?>">Reachability</p>
+                        <p class="mt-2 text-2xl font-semibold <?= $ollamaAvailable ? 'text-emerald-100' : 'text-amber-100' ?>"><?= $ollamaAvailable ? 'Ollama reachable' : 'Ollama not reachable' ?></p>
+                        <p class="mt-1 text-sm <?= $ollamaAvailable ? 'text-emerald-100/70' : 'text-amber-100/70' ?>">Status is checked against the configured Ollama API endpoint.</p>
+                    </div>
+                    <div class="rounded-2xl border border-sky-500/20 bg-sky-500/10 p-4">
+                        <p class="text-xs uppercase tracking-[0.16em] text-sky-200/80">Scheduler Behavior</p>
+                        <p class="mt-2 text-2xl font-semibold text-sky-100">Non-blocking</p>
+                        <p class="mt-1 text-sm text-sky-100/70">Disabled or unreachable AI falls back to deterministic summaries instead of blocking the job.</p>
+                    </div>
+                </div>
+
+                <label class="flex items-start gap-3 rounded-2xl border border-white/8 bg-white/[0.03] px-4 py-3">
+                    <input type="hidden" name="ollama_enabled" value="0">
+                    <input type="checkbox" name="ollama_enabled" value="1" <?= ($settingValues['ollama_enabled'] ?? '0') === '1' ? 'checked' : '' ?> class="mt-1 size-4 rounded border-border bg-black">
+                    <span>
+                        <span class="block text-sm font-medium text-slate-100">Enable local Ollama doctrine briefings</span>
+                        <span class="mt-1 block text-xs text-muted">Turn this off to force deterministic fallback summaries while still keeping briefing records populated.</span>
+                    </span>
+                </label>
+
+                <div class="grid gap-4 md:grid-cols-2">
+                    <label class="block space-y-2 md:col-span-2">
+                        <span class="text-sm text-muted">Ollama API URL</span>
+                        <input name="ollama_url" value="<?= htmlspecialchars($settingValues['ollama_url'] ?? ($ollamaConfig['url'] ?? 'http://localhost:11434/api'), ENT_QUOTES) ?>" class="w-full field-input" />
+                        <p class="text-xs text-muted">Use the API base URL, for example <span class="font-medium text-slate-100">http://localhost:11434/api</span>.</p>
+                    </label>
+                    <label class="block space-y-2">
+                        <span class="text-sm text-muted">Model Name</span>
+                        <input name="ollama_model" value="<?= htmlspecialchars($settingValues['ollama_model'] ?? ($ollamaConfig['model'] ?? 'qwen2.5:1.5b-instruct'), ENT_QUOTES) ?>" class="w-full field-input" />
+                    </label>
+                    <label class="block space-y-2">
+                        <span class="text-sm text-muted">Request Timeout (seconds)</span>
+                        <input type="number" min="1" max="300" step="1" name="ollama_timeout" value="<?= htmlspecialchars($settingValues['ollama_timeout'] ?? (string) ($ollamaConfig['timeout'] ?? 20), ENT_QUOTES) ?>" class="w-full field-input" />
+                    </label>
+                </div>
+
+                <div class="rounded-2xl border border-white/8 bg-white/[0.03] px-4 py-3 text-sm text-muted">
+                    Configure the local AI endpoint here, then manage cadence under <a href="/settings?section=data-sync" class="font-medium text-slate-100 hover:text-white">Settings → Data Sync</a> for the <span class="font-medium text-slate-100">rebuild_ai_briefings</span> scheduler job.
+                </div>
+
+                <button class="btn-primary">Save AI Briefing Settings</button>
+            </form>
         <?php elseif ($section === 'item-scope'): ?>
             <?php
                 $itemScopeConfig = $itemScope['config'] ?? item_scope_default_config();

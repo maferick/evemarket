@@ -617,6 +617,10 @@ INSERT INTO app_settings (setting_key, setting_value) VALUES
     ('esi_client_secret', 'eat_iasVmhqov40Ud568JVAyctOErv5E6AgV_3S6eiZ'),
     ('esi_callback_url', 'http://192.168.178.47/callback'),
     ('esi_scopes', 'publicData esi-location.read_location.v1 esi-search.search_structures.v1 esi-universe.read_structures.v1 esi-markets.structure_markets.v1'),
+    ('ollama_enabled', '0'),
+    ('ollama_url', 'http://localhost:11434/api'),
+    ('ollama_model', 'qwen2.5:1.5b-instruct'),
+    ('ollama_timeout', '20'),
     ('doctrine.default_group', 'SupplyCore Doctrine')
 ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value);
 

@@ -131,6 +131,7 @@ function setting_sections(): array
         'general' => ['title' => 'General Settings', 'description' => 'Core application behavior and preferences.'],
         'trading-stations' => ['title' => 'Trading Stations', 'description' => 'Configure your reference market hub and operational trading destination.'],
         'item-scope' => ['title' => 'Item Scope', 'description' => 'Control which item classes are operationally relevant across market, doctrine, and loss-demand analytics.'],
+        'ai-briefings' => ['title' => 'AI Briefings', 'description' => 'Configure the local Ollama endpoint used for doctrine briefing summaries.'],
         'esi-login' => ['title' => 'ESI Login', 'description' => 'Configure EVE SSO credentials and callback behavior.'],
         'data-sync' => ['title' => 'Data Sync', 'description' => 'Control database import and incremental update policies.'],
         'killmail-intelligence' => ['title' => 'Killmail Intelligence', 'description' => 'Manage zKillboard stream ingestion, tracked entities, and demand prediction foundation.'],
@@ -211,6 +212,64 @@ function item_scope_setting_keys(): array
         'item_scope_exclude_meta_group_ids',
         'item_scope_include_type_ids',
         'item_scope_exclude_type_ids',
+    ];
+}
+
+function ai_briefing_setting_defaults(): array
+{
+    return [
+        'ollama_enabled' => '0',
+        'ollama_url' => 'http://localhost:11434/api',
+        'ollama_model' => 'qwen2.5:1.5b-instruct',
+        'ollama_timeout' => '20',
+    ];
+}
+
+function ai_briefing_setting_keys(): array
+{
+    return array_keys(ai_briefing_setting_defaults());
+}
+
+function sanitize_ollama_url(?string $value): string
+{
+    $url = rtrim(trim((string) $value), '/');
+
+    if ($url === '') {
+        return ai_briefing_setting_defaults()['ollama_url'];
+    }
+
+    if (!preg_match('/^https?:\/\/.+/i', $url)) {
+        return ai_briefing_setting_defaults()['ollama_url'];
+    }
+
+    return mb_substr($url, 0, 255);
+}
+
+function sanitize_ollama_model(?string $value): string
+{
+    $model = trim((string) $value);
+
+    if ($model === '') {
+        return ai_briefing_setting_defaults()['ollama_model'];
+    }
+
+    return mb_substr($model, 0, 120);
+}
+
+function sanitize_ollama_timeout(mixed $value): string
+{
+    $timeout = max(1, min(300, (int) $value));
+
+    return (string) $timeout;
+}
+
+function ai_briefing_settings_from_request(array $request): array
+{
+    return [
+        'ollama_enabled' => sanitize_enabled_flag($request['ollama_enabled'] ?? null),
+        'ollama_url' => sanitize_ollama_url($request['ollama_url'] ?? null),
+        'ollama_model' => sanitize_ollama_model($request['ollama_model'] ?? null),
+        'ollama_timeout' => sanitize_ollama_timeout($request['ollama_timeout'] ?? null),
     ];
 }
 
@@ -6182,14 +6241,14 @@ function http_post_json(string $url, array $headers, array $payload, int $timeou
     return ['status' => $status, 'json' => $decoded];
 }
 
-function http_get_json(string $url, array $headers = []): array
+function http_get_json(string $url, array $headers = [], int $timeoutSeconds = 25): array
 {
     $ch = curl_init($url);
     $responseHeaders = [];
     curl_setopt_array($ch, [
         CURLOPT_RETURNTRANSFER => true,
         CURLOPT_HTTPHEADER => $headers,
-        CURLOPT_TIMEOUT => 25,
+        CURLOPT_TIMEOUT => max(1, $timeoutSeconds),
         CURLOPT_HEADERFUNCTION => static function ($curl, string $headerLine) use (&$responseHeaders): int {
             $trimmed = trim($headerLine);
             if ($trimmed === '' || !str_contains($trimmed, ':')) {
@@ -12988,11 +13047,27 @@ function doctrine_fit_detail_view_model(int $fitId): array
 
 function supplycore_ai_ollama_config(): array
 {
+    static $config = null;
+
+    if (is_array($config)) {
+        return $config;
+    }
+
+    $defaults = ai_briefing_setting_defaults();
+    $settings = get_settings(ai_briefing_setting_keys());
+
+    $config = [
+        'enabled' => (($settings['ollama_enabled'] ?? $defaults['ollama_enabled']) === '1'),
+        'url' => sanitize_ollama_url($settings['ollama_url'] ?? $defaults['ollama_url']),
+        'model' => sanitize_ollama_model($settings['ollama_model'] ?? $defaults['ollama_model']),
+        'timeout' => max(1, (int) sanitize_ollama_timeout($settings['ollama_timeout'] ?? $defaults['ollama_timeout'])),
+    ];
+
     return [
-        'enabled' => (bool) config('ollama.enabled', false),
-        'url' => rtrim((string) config('ollama.url', 'http://localhost:11434/api'), '/'),
-        'model' => trim((string) config('ollama.model', 'qwen2.5:1.5b-instruct')),
-        'timeout' => max(1, (int) config('ollama.timeout', 20)),
+        'enabled' => (bool) ($config['enabled'] ?? false),
+        'url' => (string) ($config['url'] ?? $defaults['ollama_url']),
+        'model' => (string) ($config['model'] ?? $defaults['ollama_model']),
+        'timeout' => max(1, (int) ($config['timeout'] ?? (int) $defaults['ollama_timeout'])),
     ];
 }
 
@@ -13001,6 +13076,38 @@ function supplycore_ai_ollama_enabled(): bool
     $config = supplycore_ai_ollama_config();
 
     return $config['enabled'] === true && $config['url'] !== '' && $config['model'] !== '';
+}
+
+function supplycore_ai_ollama_available(): bool
+{
+    static $availability = [];
+
+    $config = supplycore_ai_ollama_config();
+    if (!supplycore_ai_ollama_enabled()) {
+        return false;
+    }
+
+    $cacheKey = implode('|', [
+        (string) ($config['url'] ?? ''),
+        (string) ($config['model'] ?? ''),
+        (string) ($config['timeout'] ?? 20),
+    ]);
+    if (array_key_exists($cacheKey, $availability)) {
+        return $availability[$cacheKey];
+    }
+
+    $endpoint = rtrim((string) ($config['url'] ?? ''), '/') . '/tags';
+
+    try {
+        $response = http_get_json($endpoint, [], max(1, (int) ($config['timeout'] ?? 20)));
+        $status = (int) ($response['status'] ?? 0);
+        $json = is_array($response['json'] ?? null) ? $response['json'] : [];
+        $availability[$cacheKey] = $status >= 200 && $status < 300 && is_array($json['models'] ?? null);
+    } catch (Throwable) {
+        $availability[$cacheKey] = false;
+    }
+
+    return $availability[$cacheKey];
 }
 
 function supplycore_ai_log(string $event, array $payload = []): void
@@ -13626,7 +13733,7 @@ function doctrine_ai_debug_preview(?string $entityType = null, ?int $entityId = 
 
     return [
         'config' => supplycore_ai_ollama_config() + [
-            'available' => supplycore_ai_ollama_enabled(),
+            'available' => supplycore_ai_ollama_available(),
         ],
         'selected_candidate' => [
             'entity_type' => $resolvedEntityType,

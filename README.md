@@ -72,10 +72,6 @@ README.md
    export REDIS_PORT=6379
    export REDIS_DATABASE=0
    export REDIS_PREFIX=supplycore
-   export OLLAMA_ENABLED=1
-   export OLLAMA_URL=http://localhost:11434/api
-   export OLLAMA_MODEL=qwen2.5:1.5b-instruct
-   export OLLAMA_TIMEOUT=20
    ```
 
 3. **Run with PHP built-in server (dev only)**
@@ -106,14 +102,14 @@ README.md
 - SupplyCore’s first local AI layer is intentionally **non-authoritative**. Doctrine calculations, market comparisons, killmail/loss signals, and readiness math remain deterministic and authoritative.
 - Ollama is used only to summarize compact precomputed doctrine facts into operator briefings. It does **not** run on page load; it runs in the background through the scheduler job `rebuild_ai_briefings`.
 - The scheduler now self-registers missing schedule rows, so `rebuild_ai_briefings` starts running automatically on fresh installs and after upgrades without requiring a manual save in Settings.
-- Required environment variables:
-  - `OLLAMA_ENABLED=1`
-  - `OLLAMA_URL=http://localhost:11434/api`
-  - `OLLAMA_MODEL=qwen2.5:1.5b-instruct`
-  - `OLLAMA_TIMEOUT=20`
+- Configure Ollama in **Settings → AI Briefings** (`/settings?section=ai-briefings`):
+  - `Enable local Ollama doctrine briefings`
+  - `Ollama API URL` (for example `http://localhost:11434/api`)
+  - `Model Name` (for example `qwen2.5:1.5b-instruct`)
+  - `Request Timeout (seconds)`
 - The current-state AI briefing store lives in MySQL table `doctrine_ai_briefings`. Each row keeps the latest model name, operator-facing text, compact source payload, raw response JSON, and failure metadata for debugging/auditability.
 - If Ollama is unavailable or returns malformed JSON, SupplyCore logs the failure and stores a deterministic fallback briefing instead of blocking the rest of the app.
-- If `OLLAMA_ENABLED=0`, the background briefing job still stores deterministic fallback briefings so the dashboard briefing panel remains populated while AI connectivity is being debugged.
+- If the AI Briefings section is disabled, the background briefing job still stores deterministic fallback briefings so the dashboard briefing panel remains populated while AI connectivity is being debugged.
 - Use the AI briefing debug CLI to exercise the pipeline on demand:
   ```bash
   php bin/ai_briefing_debug.php

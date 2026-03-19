@@ -28,12 +28,6 @@ return [
         'read_timeout' => (float) (getenv('REDIS_READ_TIMEOUT') ?: 1.5),
         'lock_enabled' => (getenv('REDIS_LOCK_ENABLED') ?: '1') === '1',
     ],
-    'ollama' => [
-        'enabled' => (getenv('OLLAMA_ENABLED') ?: '0') === '1',
-        'url' => rtrim(getenv('OLLAMA_URL') ?: 'http://localhost:11434/api', '/'),
-        'model' => getenv('OLLAMA_MODEL') ?: 'qwen2.5:1.5b-instruct',
-        'timeout' => max(1, (int) (getenv('OLLAMA_TIMEOUT') ?: 20)),
-    ],
     'scheduler' => [
         'default_timeout_seconds' => max(30, (int) (getenv('SCHEDULER_DEFAULT_TIMEOUT_SECONDS') ?: 300)),
     ],
