@@ -334,10 +334,28 @@ $statusThemes = [
                     </div>
                     <p class="mt-4 text-base font-semibold text-white"><?= htmlspecialchars((string) ($briefing['headline'] ?? 'Briefing unavailable'), ENT_QUOTES) ?></p>
                     <p class="mt-2 text-sm text-slate-300"><?= htmlspecialchars((string) ($briefing['summary'] ?? ''), ENT_QUOTES) ?></p>
+                    <?php if (trim((string) ($briefing['explanation_text'] ?? '')) !== ''): ?>
+                        <div class="mt-4 rounded-2xl border border-white/8 bg-white/[0.02] px-3 py-3">
+                            <p class="text-xs uppercase tracking-[0.16em] text-slate-500">Why this changed</p>
+                            <p class="mt-2 text-sm text-slate-200"><?= htmlspecialchars((string) ($briefing['explanation_text'] ?? ''), ENT_QUOTES) ?></p>
+                        </div>
+                    <?php endif; ?>
                     <div class="mt-4 rounded-2xl border border-white/8 bg-slate-950/60 px-3 py-3">
                         <p class="text-xs uppercase tracking-[0.16em] text-slate-500">Recommended action</p>
                         <p class="mt-2 text-sm text-slate-100"><?= htmlspecialchars((string) ($briefing['action_text'] ?? ''), ENT_QUOTES) ?></p>
                     </div>
+                    <?php if (trim((string) ($briefing['operator_briefing'] ?? '')) !== ''): ?>
+                        <div class="mt-4 rounded-2xl border border-violet-400/15 bg-violet-500/5 px-3 py-3">
+                            <p class="text-xs uppercase tracking-[0.16em] text-violet-200/70">Operator briefing</p>
+                            <p class="mt-2 text-sm text-violet-50"><?= htmlspecialchars((string) ($briefing['operator_briefing'] ?? ''), ENT_QUOTES) ?></p>
+                        </div>
+                    <?php endif; ?>
+                    <?php if (trim((string) ($briefing['trend_interpretation'] ?? '')) !== ''): ?>
+                        <div class="mt-4 rounded-2xl border border-sky-400/15 bg-sky-500/5 px-3 py-3">
+                            <p class="text-xs uppercase tracking-[0.16em] text-sky-200/70">Trend interpretation</p>
+                            <p class="mt-2 text-sm text-sky-50"><?= htmlspecialchars((string) ($briefing['trend_interpretation'] ?? ''), ENT_QUOTES) ?></p>
+                        </div>
+                    <?php endif; ?>
                     <p class="mt-3 text-xs text-slate-500">Updated <?= htmlspecialchars((string) ($briefing['computed_relative'] ?? 'Unknown'), ENT_QUOTES) ?><?= (($briefing['generation_status'] ?? 'ready') !== 'ready') ? ' · deterministic fallback' : '' ?></p>
                 </a>
             <?php endforeach; ?>

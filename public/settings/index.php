@@ -539,6 +539,18 @@ include __DIR__ . '/../../src/views/partials/header.php';
                         <p class="mt-2 text-2xl font-semibold text-sky-100">Non-blocking</p>
                         <p class="mt-1 text-sm text-sky-100/70">Disabled or unreachable AI falls back to deterministic summaries instead of blocking the job.</p>
                     </div>
+                    <div class="rounded-2xl border border-violet-500/20 bg-violet-500/10 p-4 md:col-span-3">
+                        <p class="text-xs uppercase tracking-[0.16em] text-violet-200/80">Capability Tier</p>
+                        <div class="mt-2 flex flex-wrap items-center gap-3">
+                            <p class="text-2xl font-semibold text-violet-50"><?= htmlspecialchars(strtoupper((string) ($ollamaConfig['capability_tier'] ?? 'small')), ENT_QUOTES) ?></p>
+                            <span class="badge border-violet-300/20 bg-violet-400/10 text-violet-100">
+                                <?= (($ollamaConfig['capability_override'] ?? 'auto') === 'auto')
+                                    ? ('auto from model: ' . htmlspecialchars((string) ($ollamaConfig['inferred_tier'] ?? 'small'), ENT_QUOTES))
+                                    : ('manual override: ' . htmlspecialchars((string) ($ollamaConfig['capability_override'] ?? 'small'), ENT_QUOTES)) ?>
+                            </span>
+                        </div>
+                        <p class="mt-2 text-sm text-violet-100/75">Candidate batching, prompt depth, enabled tasks, and dashboard richness all scale from this centralized AI strategy.</p>
+                    </div>
                 </div>
 
                 <label class="flex items-start gap-3 rounded-2xl border border-white/8 bg-white/[0.03] px-4 py-3">
@@ -564,10 +576,20 @@ include __DIR__ . '/../../src/views/partials/header.php';
                         <span class="text-sm text-muted">Request Timeout (seconds)</span>
                         <input type="number" min="1" max="300" step="1" name="ollama_timeout" value="<?= htmlspecialchars($settingValues['ollama_timeout'] ?? (string) ($ollamaConfig['timeout'] ?? 20), ENT_QUOTES) ?>" class="w-full field-input" />
                     </label>
+                    <label class="block space-y-2 md:col-span-2">
+                        <span class="text-sm text-muted">Capability Tier</span>
+                        <select name="ollama_capability_tier" class="w-full field-input">
+                            <?php $selectedTier = (string) ($settingValues['ollama_capability_tier'] ?? ($ollamaConfig['capability_override'] ?? 'auto')); ?>
+                            <?php foreach (['auto' => 'Auto-detect from model', 'small' => 'Small', 'medium' => 'Medium', 'large' => 'Large'] as $value => $label): ?>
+                                <option value="<?= htmlspecialchars($value, ENT_QUOTES) ?>" <?= $selectedTier === $value ? 'selected' : '' ?>><?= htmlspecialchars($label, ENT_QUOTES) ?></option>
+                            <?php endforeach; ?>
+                        </select>
+                        <p class="text-xs text-muted">Leave this on auto to infer capability from the configured model name, or pin a tier if the model naming does not include parameter size.</p>
+                    </label>
                 </div>
 
                 <div class="rounded-2xl border border-white/8 bg-white/[0.03] px-4 py-3 text-sm text-muted">
-                    Configure the local AI endpoint here, then manage cadence under <a href="/settings?section=data-sync" class="font-medium text-slate-100 hover:text-white">Settings → Data Sync</a> for the <span class="font-medium text-slate-100">rebuild_ai_briefings</span> scheduler job.
+                    Configure the local AI endpoint here, then manage cadence under <a href="/settings?section=data-sync" class="font-medium text-slate-100 hover:text-white">Settings → Data Sync</a> for the <span class="font-medium text-slate-100">rebuild_ai_briefings</span> scheduler job. Small tiers stay compact, medium tiers add explanation and deltas, and large tiers unlock richer operator briefings while still keeping deterministic calculations authoritative.
                 </div>
 
                 <button class="btn-primary">Save AI Briefing Settings</button>

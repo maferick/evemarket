@@ -621,6 +621,7 @@ INSERT INTO app_settings (setting_key, setting_value) VALUES
     ('ollama_url', 'http://localhost:11434/api'),
     ('ollama_model', 'qwen2.5:1.5b-instruct'),
     ('ollama_timeout', '20'),
+    ('ollama_capability_tier', 'auto'),
     ('doctrine.default_group', 'SupplyCore Doctrine')
 ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value);
 

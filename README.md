@@ -107,6 +107,12 @@ README.md
   - `Ollama API URL` (for example `http://localhost:11434/api`)
   - `Model Name` (for example `qwen2.5:1.5b-instruct`)
   - `Request Timeout (seconds)`
+  - `Capability Tier` (`auto`, `small`, `medium`, or `large`)
+- SupplyCore now uses a centralized AI capability strategy layer. By default it infers the tier from the configured model name (for example `1.5b` → `small`, `3b–8b` → `medium`, larger local models → `large`), but operators can explicitly override the tier in Settings when needed.
+- The capability tier centrally controls prompt depth, enabled AI task types, how much snapshot/history context is included, the number of doctrine entities processed per background run, and how rich the dashboard briefing cards are.
+- Small tiers stay intentionally compact: short prompts, short structured outputs, top critical doctrines/groups only, no broad cross-doctrine reasoning, and no forecast-style commentary.
+- Medium tiers add explanation-oriented outputs: richer summaries, previous-vs-current recommendation context, bounded cross-signal reasoning, and larger batch sizes.
+- Large tiers unlock richer operator-facing sections: broader doctrine coverage, deeper explanations of pressure/bottlenecks, bounded use of local snapshot history, and limited forecast-style commentary grounded only in SupplyCore’s stored deterministic history.
 - The current-state AI briefing store lives in MySQL table `doctrine_ai_briefings`. Each row keeps the latest model name, operator-facing text, compact source payload, raw response JSON, and failure metadata for debugging/auditability.
 - If Ollama is unavailable or returns malformed JSON, SupplyCore logs the failure and stores a deterministic fallback briefing instead of blocking the rest of the app.
 - If the AI Briefings section is disabled, the background briefing job still stores deterministic fallback briefings so the dashboard briefing panel remains populated while AI connectivity is being debugged.
@@ -196,7 +202,7 @@ SupplyCore sync pipelines depend on the `cron` daemon being present and running 
 - SupplyCore now separates cadences by workload:
   - **Fast ingestion**: `killmail_r2z2_sync`, `alliance_current_sync`, and `market_hub_current_sync` keep raw market and killmail inputs fresh.
   - **Materialized intelligence refresh (target cadence: every 5 minutes)**: `doctrine_intelligence_sync`, `market_comparison_summary_sync`, `loss_demand_summary_sync`, `dashboard_summary_sync`, and `current_state_refresh_sync` recompute heavy current-summary layers from raw tables, then publish the latest payloads into Redis for fast reads.
-  - **Local doctrine AI briefings (target cadence: every 5 minutes)**: `rebuild_ai_briefings` ranks the most important doctrine fits/groups first, generates concise Ollama summaries from compact deterministic facts, stores the latest result in MySQL, refreshes the dashboard briefing panel, and skips that cycle when a history rebuild job is still running.
+  - **Local doctrine AI briefings (target cadence: every 5 minutes)**: `rebuild_ai_briefings` ranks doctrine fits/groups through the centralized capability-tier strategy, scales prompt/context richness and batch size to the configured Ollama model, stores the latest result in MySQL, refreshes the dashboard briefing panel, and skips that cycle when a history rebuild job is still running.
   - **Slow forecasting / AI**: `forecasting_ai_sync` derives slower-moving target-adjustment, anomaly, briefing, and explanation layers from the latest medium snapshot instead of raw minute-by-minute ingestion.
 - UI pages now read Redis first and fall back to `intelligence_snapshots` if Redis is unavailable; each intelligence surface also exposes its last computed timestamp and freshness state to operators.
 - The hub-history scheduler jobs (`market_hub_historical_sync` and `market_hub_local_history_sync`) rebuild `market_history_daily` from SupplyCore’s own raw hub-order snapshots stored in MySQL for the configured market hub, using the recent window controlled by `raw_order_snapshot_retention_days` unless a CLI override is supplied.
