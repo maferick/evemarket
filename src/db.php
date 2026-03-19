@@ -1752,6 +1752,61 @@ function db_sync_schedule_fetch_by_job_keys(array $jobKeys): array
     );
 }
 
+function db_sync_schedule_running_job_keys(array $jobKeys): array
+{
+    $keys = array_values(array_filter(array_map(static fn (mixed $jobKey): string => trim((string) $jobKey), $jobKeys), static fn (string $jobKey): bool => $jobKey !== ''));
+    if ($keys === []) {
+        return [];
+    }
+
+    $placeholders = implode(',', array_fill(0, count($keys), '?'));
+    $rows = db_select(
+        "SELECT job_key
+         FROM sync_schedules
+         WHERE job_key IN ($placeholders)
+           AND enabled = 1
+           AND last_status = 'running'
+           AND locked_until IS NOT NULL
+           AND locked_until > UTC_TIMESTAMP()
+         ORDER BY job_key ASC",
+        $keys
+    );
+
+    return array_values(array_filter(array_map(
+        static fn (array $row): string => trim((string) ($row['job_key'] ?? '')),
+        $rows
+    ), static fn (string $jobKey): bool => $jobKey !== ''));
+}
+
+function db_sync_schedule_ensure_job(string $jobKey, int $enabled, int $intervalSeconds): bool
+{
+    $normalizedKey = trim($jobKey);
+    if ($normalizedKey === '') {
+        return false;
+    }
+
+    return db_execute(
+        'INSERT INTO sync_schedules (job_key, enabled, interval_seconds, next_run_at, last_run_at, last_status, last_error, locked_until)
+         VALUES (
+            ?,
+            ?,
+            ?,
+            CASE WHEN ? = 1 THEN UTC_TIMESTAMP() ELSE NULL END,
+            NULL,
+            NULL,
+            NULL,
+            NULL
+         )
+         ON DUPLICATE KEY UPDATE
+            next_run_at = CASE
+                WHEN enabled = 1 AND next_run_at IS NULL THEN UTC_TIMESTAMP()
+                ELSE next_run_at
+            END,
+            updated_at = CURRENT_TIMESTAMP',
+        [$normalizedKey, $enabled, $intervalSeconds, $enabled]
+    );
+}
+
 function db_sync_schedule_upsert(string $jobKey, int $enabled, int $intervalSeconds): bool
 {
     $normalizedKey = trim($jobKey);
@@ -1761,7 +1816,16 @@ function db_sync_schedule_upsert(string $jobKey, int $enabled, int $intervalSeco
 
     return db_execute(
         'INSERT INTO sync_schedules (job_key, enabled, interval_seconds, next_run_at, last_run_at, last_status, last_error, locked_until)
-         VALUES (?, ?, ?, NULL, NULL, NULL, NULL, NULL)
+         VALUES (
+            ?,
+            ?,
+            ?,
+            CASE WHEN ? = 1 THEN UTC_TIMESTAMP() ELSE NULL END,
+            NULL,
+            NULL,
+            NULL,
+            NULL
+         )
          ON DUPLICATE KEY UPDATE
             enabled = VALUES(enabled),
             interval_seconds = VALUES(interval_seconds),
@@ -1771,7 +1835,7 @@ function db_sync_schedule_upsert(string $jobKey, int $enabled, int $intervalSeco
             END,
             locked_until = CASE WHEN VALUES(enabled) = 1 THEN locked_until ELSE NULL END,
             updated_at = CURRENT_TIMESTAMP',
-        [$normalizedKey, $enabled, $intervalSeconds]
+        [$normalizedKey, $enabled, $intervalSeconds, $enabled]
     );
 }
 

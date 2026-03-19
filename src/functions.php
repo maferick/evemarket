@@ -5615,6 +5615,22 @@ function scheduler_job_definitions(): array
             'timeout_seconds' => 180,
             'lock_ttl_seconds' => 300,
             'handler' => static function (): array {
+                $runningHistoryJobs = scheduler_ai_briefing_running_history_jobs();
+                if ($runningHistoryJobs !== []) {
+                    $historyJobLabels = array_map(
+                        static fn (string $jobKey): string => str_replace('_', ' ', $jobKey),
+                        $runningHistoryJobs
+                    );
+
+                    return sync_result_shape() + [
+                        'warnings' => ['AI briefing rebuild skipped while history sync is running: ' . implode(', ', $historyJobLabels) . '.'],
+                        'meta' => [
+                            'outcome_reason' => 'Doctrine AI briefings were deferred because a history sync job is still running.',
+                            'blocking_jobs' => $runningHistoryJobs,
+                        ],
+                    ];
+                }
+
                 return rebuild_ai_briefings_job_result('scheduler');
             },
         ],
@@ -5695,8 +5711,40 @@ function scheduler_job_summary_message(array $result): string
 
     return 'Processed ' . $rowsSeen . ' records, wrote ' . $rowsWritten . ' records.';
 }
+
+function scheduler_ensure_default_jobs_registered(): void
+{
+    foreach (data_sync_schedule_job_definitions() as $jobKey => $definition) {
+        db_sync_schedule_ensure_job(
+            $jobKey,
+            1,
+            (int) ($definition['default_interval_seconds'] ?? 300)
+        );
+    }
+}
+
+function scheduler_ai_briefing_blocking_job_keys(): array
+{
+    return [
+        'alliance_historical_sync',
+        'market_hub_historical_sync',
+        'market_hub_local_history_sync',
+    ];
+}
+
+function scheduler_ai_briefing_running_history_jobs(): array
+{
+    try {
+        return db_sync_schedule_running_job_keys(scheduler_ai_briefing_blocking_job_keys());
+    } catch (Throwable) {
+        return [];
+    }
+}
+
 function scheduler_due_jobs(): array
 {
+    scheduler_ensure_default_jobs_registered();
+
     $definitions = scheduler_job_definitions();
     $due = db_sync_schedule_fetch_due_jobs(20);
     $claimed = [];
