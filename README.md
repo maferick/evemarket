@@ -105,6 +105,7 @@ README.md
 
 - SupplyCore’s first local AI layer is intentionally **non-authoritative**. Doctrine calculations, market comparisons, killmail/loss signals, and readiness math remain deterministic and authoritative.
 - Ollama is used only to summarize compact precomputed doctrine facts into operator briefings. It does **not** run on page load; it runs in the background through the scheduler job `rebuild_ai_briefings`.
+- The scheduler now self-registers missing schedule rows, so `rebuild_ai_briefings` starts running automatically on fresh installs and after upgrades without requiring a manual save in Settings.
 - Required environment variables:
   - `OLLAMA_ENABLED=1`
   - `OLLAMA_URL=http://localhost:11434/api`
@@ -189,7 +190,7 @@ SupplyCore sync pipelines depend on the `cron` daemon being present and running 
 - SupplyCore now separates cadences by workload:
   - **Fast ingestion**: `killmail_r2z2_sync`, `alliance_current_sync`, and `market_hub_current_sync` keep raw market and killmail inputs fresh.
   - **Materialized intelligence refresh (target cadence: every 5 minutes)**: `doctrine_intelligence_sync`, `market_comparison_summary_sync`, `loss_demand_summary_sync`, `dashboard_summary_sync`, and `current_state_refresh_sync` recompute heavy current-summary layers from raw tables, then publish the latest payloads into Redis for fast reads.
-  - **Local doctrine AI briefings (target cadence: every 5 minutes)**: `rebuild_ai_briefings` ranks the most important doctrine fits/groups first, generates concise Ollama summaries from compact deterministic facts, stores the latest result in MySQL, and refreshes the dashboard briefing panel.
+  - **Local doctrine AI briefings (target cadence: every 5 minutes)**: `rebuild_ai_briefings` ranks the most important doctrine fits/groups first, generates concise Ollama summaries from compact deterministic facts, stores the latest result in MySQL, refreshes the dashboard briefing panel, and skips that cycle when a history rebuild job is still running.
   - **Slow forecasting / AI**: `forecasting_ai_sync` derives slower-moving target-adjustment, anomaly, briefing, and explanation layers from the latest medium snapshot instead of raw minute-by-minute ingestion.
 - UI pages now read Redis first and fall back to `intelligence_snapshots` if Redis is unavailable; each intelligence surface also exposes its last computed timestamp and freshness state to operators.
 - The hub-history scheduler jobs (`market_hub_historical_sync` and `market_hub_local_history_sync`) rebuild `market_history_daily` from SupplyCore’s own raw hub-order snapshots stored in MySQL for the configured market hub, using the recent window controlled by `raw_order_snapshot_retention_days` unless a CLI override is supplied.

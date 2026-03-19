@@ -625,14 +625,18 @@ INSERT INTO doctrine_groups (group_name, description) VALUES
 ON DUPLICATE KEY UPDATE description = VALUES(description);
 
 INSERT INTO sync_schedules (job_key, enabled, interval_seconds, next_run_at, last_run_at, last_status, last_error, locked_until) VALUES
-    ('alliance_current_sync', 1, 60, NULL, NULL, NULL, NULL, NULL),
-    ('alliance_historical_sync', 1, 1800, NULL, NULL, NULL, NULL, NULL),
-    ('market_hub_current_sync', 1, 60, NULL, NULL, NULL, NULL, NULL),
-    ('current_state_refresh_sync', 1, 120, NULL, NULL, NULL, NULL, NULL),
-    ('market_hub_historical_sync', 1, 1800, NULL, NULL, NULL, NULL, NULL),
-    ('market_hub_local_history_sync', 1, 300, NULL, NULL, NULL, NULL, NULL),
-    ('doctrine_intelligence_sync', 1, 900, NULL, NULL, NULL, NULL, NULL),
-    ('forecasting_ai_sync', 1, 3600, NULL, NULL, NULL, NULL, NULL),
+    ('alliance_current_sync', 1, 60, UTC_TIMESTAMP(), NULL, NULL, NULL, NULL),
+    ('alliance_historical_sync', 1, 1800, UTC_TIMESTAMP(), NULL, NULL, NULL, NULL),
+    ('market_hub_current_sync', 1, 60, UTC_TIMESTAMP(), NULL, NULL, NULL, NULL),
+    ('current_state_refresh_sync', 1, 300, UTC_TIMESTAMP(), NULL, NULL, NULL, NULL),
+    ('market_hub_historical_sync', 1, 1800, UTC_TIMESTAMP(), NULL, NULL, NULL, NULL),
+    ('market_hub_local_history_sync', 1, 300, UTC_TIMESTAMP(), NULL, NULL, NULL, NULL),
+    ('doctrine_intelligence_sync', 1, 300, UTC_TIMESTAMP(), NULL, NULL, NULL, NULL),
+    ('market_comparison_summary_sync', 1, 300, UTC_TIMESTAMP(), NULL, NULL, NULL, NULL),
+    ('loss_demand_summary_sync', 1, 300, UTC_TIMESTAMP(), NULL, NULL, NULL, NULL),
+    ('dashboard_summary_sync', 1, 300, UTC_TIMESTAMP(), NULL, NULL, NULL, NULL),
+    ('rebuild_ai_briefings', 1, 300, UTC_TIMESTAMP(), NULL, NULL, NULL, NULL),
+    ('forecasting_ai_sync', 1, 3600, UTC_TIMESTAMP(), NULL, NULL, NULL, NULL),
     ('killmail_r2z2_sync', 0, 60, NULL, NULL, NULL, NULL, NULL)
 ON DUPLICATE KEY UPDATE
     enabled = VALUES(enabled),
