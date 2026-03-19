@@ -915,6 +915,36 @@ function db_market_hub_local_history_daily_recent_window(string $source, int $so
     return array_map('db_market_hub_local_history_daily_normalize_result_row', $rows);
 }
 
+function db_mysql_supports_window_functions(): bool
+{
+    static $supportsWindowFunctions = null;
+
+    if ($supportsWindowFunctions !== null) {
+        return $supportsWindowFunctions;
+    }
+
+    $versionRow = db_select_one('SELECT VERSION() AS version_string');
+    $versionString = strtolower((string) ($versionRow['version_string'] ?? ''));
+
+    if ($versionString === '') {
+        $supportsWindowFunctions = false;
+
+        return $supportsWindowFunctions;
+    }
+
+    if (str_contains($versionString, 'mariadb')) {
+        $normalizedVersion = preg_replace('/[^0-9.].*/', '', $versionString) ?: '0';
+        $supportsWindowFunctions = version_compare($normalizedVersion, '10.2.0', '>=');
+
+        return $supportsWindowFunctions;
+    }
+
+    $normalizedVersion = preg_replace('/[^0-9.].*/', '', $versionString) ?: '0';
+    $supportsWindowFunctions = version_compare($normalizedVersion, '8.0.0', '>=');
+
+    return $supportsWindowFunctions;
+}
+
 function db_market_hub_local_history_daily_latest_points_by_type(
     string $source,
     int $sourceId,
@@ -942,39 +972,78 @@ function db_market_hub_local_history_daily_latest_points_by_type(
 
     $placeholders = implode(',', array_fill(0, count($normalizedTypeIds), '?'));
     $params = array_merge([$safeSource, $safeSourceId], $normalizedTypeIds);
-    $rows = db_select(
-        "SELECT
-            mlhd.type_id,
-            rit.type_name,
-            mlhd.trade_date,
-            mlhd.close_price,
-            mlhd.buy_price,
-            mlhd.sell_price,
-            mlhd.spread_value,
-            mlhd.spread_percent,
-            mlhd.volume,
-            mlhd.buy_order_count,
-            mlhd.sell_order_count,
-            mlhd.captured_at AS observed_at
-         FROM market_hub_local_history_daily mlhd
-         LEFT JOIN ref_item_types rit ON rit.type_id = mlhd.type_id
-         WHERE mlhd.source = ?
-           AND mlhd.source_id = ?
-           AND mlhd.type_id IN ({$placeholders})
-           AND (
-                SELECT COUNT(*)
-                FROM market_hub_local_history_daily newer
-                WHERE newer.source = mlhd.source
-                  AND newer.source_id = mlhd.source_id
-                  AND newer.type_id = mlhd.type_id
-                  AND (
-                        newer.trade_date > mlhd.trade_date
-                        OR (newer.trade_date = mlhd.trade_date AND newer.id > mlhd.id)
-                  )
-           ) < {$safePointsPerType}
-         ORDER BY mlhd.type_id ASC, mlhd.trade_date DESC, mlhd.id DESC",
-        $params
-    );
+    $sql = db_mysql_supports_window_functions()
+        ? "SELECT
+                ranked.type_id,
+                ranked.type_name,
+                ranked.trade_date,
+                ranked.close_price,
+                ranked.buy_price,
+                ranked.sell_price,
+                ranked.spread_value,
+                ranked.spread_percent,
+                ranked.volume,
+                ranked.buy_order_count,
+                ranked.sell_order_count,
+                ranked.observed_at
+           FROM (
+                SELECT
+                    mlhd.id,
+                    mlhd.type_id,
+                    rit.type_name,
+                    mlhd.trade_date,
+                    mlhd.close_price,
+                    mlhd.buy_price,
+                    mlhd.sell_price,
+                    mlhd.spread_value,
+                    mlhd.spread_percent,
+                    mlhd.volume,
+                    mlhd.buy_order_count,
+                    mlhd.sell_order_count,
+                    mlhd.captured_at AS observed_at,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY mlhd.source, mlhd.source_id, mlhd.type_id
+                        ORDER BY mlhd.trade_date DESC, mlhd.id DESC
+                    ) AS row_number
+                FROM market_hub_local_history_daily mlhd
+                LEFT JOIN ref_item_types rit ON rit.type_id = mlhd.type_id
+                WHERE mlhd.source = ?
+                  AND mlhd.source_id = ?
+                  AND mlhd.type_id IN ({$placeholders})
+           ) ranked
+           WHERE ranked.row_number <= {$safePointsPerType}
+           ORDER BY ranked.type_id ASC, ranked.trade_date DESC, ranked.id DESC"
+        : "SELECT
+                mlhd.type_id,
+                rit.type_name,
+                mlhd.trade_date,
+                mlhd.close_price,
+                mlhd.buy_price,
+                mlhd.sell_price,
+                mlhd.spread_value,
+                mlhd.spread_percent,
+                mlhd.volume,
+                mlhd.buy_order_count,
+                mlhd.sell_order_count,
+                mlhd.captured_at AS observed_at
+           FROM market_hub_local_history_daily mlhd
+           LEFT JOIN ref_item_types rit ON rit.type_id = mlhd.type_id
+           WHERE mlhd.source = ?
+             AND mlhd.source_id = ?
+             AND mlhd.type_id IN ({$placeholders})
+             AND (
+                  SELECT COUNT(*)
+                  FROM market_hub_local_history_daily newer
+                  WHERE newer.source = mlhd.source
+                    AND newer.source_id = mlhd.source_id
+                    AND newer.type_id = mlhd.type_id
+                    AND (
+                          newer.trade_date > mlhd.trade_date
+                          OR (newer.trade_date = mlhd.trade_date AND newer.id > mlhd.id)
+                    )
+             ) < {$safePointsPerType}
+           ORDER BY mlhd.type_id ASC, mlhd.trade_date DESC, mlhd.id DESC";
+    $rows = db_select($sql, $params);
 
     return array_map('db_market_hub_local_history_daily_normalize_result_row', $rows);
 }

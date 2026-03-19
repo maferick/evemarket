@@ -342,6 +342,7 @@ CREATE TABLE IF NOT EXISTS market_hub_local_history_daily (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     KEY idx_market_hub_local_history_daily_source_date (source, source_id, trade_date),
+    KEY idx_market_hub_local_history_daily_latest_points (source, source_id, type_id, trade_date, id),
     UNIQUE KEY unique_market_hub_local_history_daily (source, source_id, type_id, trade_date),
     KEY idx_market_hub_local_history_daily_type_date (type_id, trade_date)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
