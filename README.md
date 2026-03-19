@@ -97,18 +97,23 @@ README.md
 - Redis locks are used only as a lightweight coordination layer for scheduler runners and expensive cache recomputation. Database-backed locking remains the fallback path when Redis is disabled or unavailable.
 - You can configure Redis either through environment variables or through **Settings → Data Sync → Redis performance layer**.
 
-## Local Ollama AI Briefings
+## AI Briefings
 
-- SupplyCore’s first local AI layer is intentionally **non-authoritative**. Doctrine calculations, market comparisons, killmail/loss signals, and readiness math remain deterministic and authoritative.
-- Ollama is used only to summarize compact precomputed doctrine facts into operator briefings. It does **not** run on page load; it runs in the background through the scheduler job `rebuild_ai_briefings`.
+- SupplyCore’s AI briefing layer is intentionally **non-authoritative**. Doctrine calculations, market comparisons, killmail/loss signals, and readiness math remain deterministic and authoritative.
+- The configured provider is used only to summarize compact precomputed doctrine facts into operator briefings. It does **not** run on page load; it runs in the background through the scheduler job `rebuild_ai_briefings`.
 - The scheduler now self-registers missing schedule rows, so `rebuild_ai_briefings` starts running automatically on fresh installs and after upgrades without requiring a manual save in Settings.
-- Configure Ollama in **Settings → AI Briefings** (`/settings?section=ai-briefings`):
-  - `Enable local Ollama doctrine briefings`
-  - `Ollama API URL` (for example `http://localhost:11434/api`)
+- Configure AI briefing connectivity in **Settings → AI Briefings** (`/settings?section=ai-briefings`):
+  - `Enable AI doctrine briefings`
+  - `AI Provider` (`Local Ollama` or `Runpod Serverless`)
+  - `Local Ollama API URL` (for example `http://localhost:11434/api`)
+  - `Runpod Serverless Endpoint` (for example `https://api.runpod.ai/v2/<endpoint-id>/run`)
+  - `Runpod API Key`
   - `Model Name` (for example `qwen2.5:1.5b-instruct`)
   - `Request Timeout (seconds)`
   - `Capability Tier` (`auto`, `small`, `medium`, or `large`)
-- SupplyCore now uses a centralized AI capability strategy layer. By default it infers the tier from the configured model name (for example `1.5b` → `small`, `3b–8b` → `medium`, larger local models → `large`), but operators can explicitly override the tier in Settings when needed.
+- When `Local Ollama` is selected, SupplyCore sends standard Ollama `/generate` requests to the configured API base URL.
+- When `Runpod Serverless` is selected, SupplyCore sends a bearer-authenticated JSON request to the saved Runpod endpoint using the configured model name and the centralized doctrine prompt payload.
+- SupplyCore now uses a centralized AI capability strategy layer. By default it infers the tier from the configured model name (for example `1.5b` → `small`, `3b–8b` → `medium`, larger models → `large`), but operators can explicitly override the tier in Settings when needed.
 - The capability tier centrally controls prompt depth, enabled AI task types, how much snapshot/history context is included, the number of doctrine entities processed per background run, and how rich the dashboard briefing cards are.
 - Small tiers stay intentionally compact: short prompts, short structured outputs, top critical doctrines/groups only, no broad cross-doctrine reasoning, and no forecast-style commentary.
 - Medium tiers add explanation-oriented outputs: richer summaries, previous-vs-current recommendation context, bounded cross-signal reasoning, and larger batch sizes.
@@ -202,7 +207,7 @@ SupplyCore sync pipelines depend on the `cron` daemon being present and running 
 - SupplyCore now separates cadences by workload:
   - **Fast ingestion**: `killmail_r2z2_sync`, `alliance_current_sync`, and `market_hub_current_sync` keep raw market and killmail inputs fresh.
   - **Materialized intelligence refresh (target cadence: every 5 minutes)**: `doctrine_intelligence_sync`, `market_comparison_summary_sync`, `loss_demand_summary_sync`, `dashboard_summary_sync`, and `current_state_refresh_sync` recompute heavy current-summary layers from raw tables, then publish the latest payloads into Redis for fast reads.
-  - **Local doctrine AI briefings (target cadence: every 5 minutes)**: `rebuild_ai_briefings` ranks doctrine fits/groups through the centralized capability-tier strategy, scales prompt/context richness and batch size to the configured Ollama model, stores the latest result in MySQL, refreshes the dashboard briefing panel, and skips that cycle when a history rebuild job is still running.
+  - **Doctrine AI briefings (target cadence: every 5 minutes)**: `rebuild_ai_briefings` ranks doctrine fits/groups through the centralized capability-tier strategy, scales prompt/context richness and batch size to the configured model, stores the latest result in MySQL, refreshes the dashboard briefing panel, and skips that cycle when a history rebuild job is still running.
   - **Slow forecasting / AI**: `forecasting_ai_sync` derives slower-moving target-adjustment, anomaly, briefing, and explanation layers from the latest medium snapshot instead of raw minute-by-minute ingestion.
 - UI pages now read Redis first and fall back to `intelligence_snapshots` if Redis is unavailable; each intelligence surface also exposes its last computed timestamp and freshness state to operators.
 - The hub-history scheduler jobs (`market_hub_historical_sync` and `market_hub_local_history_sync`) rebuild `market_history_daily` from SupplyCore’s own raw hub-order snapshots stored in MySQL for the configured market hub, using the recent window controlled by `raw_order_snapshot_retention_days` unless a CLI override is supplied.

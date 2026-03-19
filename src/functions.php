@@ -131,7 +131,7 @@ function setting_sections(): array
         'general' => ['title' => 'General Settings', 'description' => 'Core application behavior and preferences.'],
         'trading-stations' => ['title' => 'Trading Stations', 'description' => 'Configure your reference market hub and operational trading destination.'],
         'item-scope' => ['title' => 'Item Scope', 'description' => 'Control which item classes are operationally relevant across market, doctrine, and loss-demand analytics.'],
-        'ai-briefings' => ['title' => 'AI Briefings', 'description' => 'Configure the local Ollama endpoint used for doctrine briefing summaries.'],
+        'ai-briefings' => ['title' => 'AI Briefings', 'description' => 'Configure either a local Ollama endpoint or a Runpod serverless endpoint for doctrine briefing summaries.'],
         'esi-login' => ['title' => 'ESI Login', 'description' => 'Configure EVE SSO credentials and callback behavior.'],
         'data-sync' => ['title' => 'Data Sync', 'description' => 'Control database import and incremental update policies.'],
         'killmail-intelligence' => ['title' => 'Killmail Intelligence', 'description' => 'Manage zKillboard stream ingestion, tracked entities, and demand prediction foundation.'],
@@ -219,16 +219,36 @@ function ai_briefing_setting_defaults(): array
 {
     return [
         'ollama_enabled' => '0',
+        'ollama_provider' => 'local',
         'ollama_url' => 'http://localhost:11434/api',
         'ollama_model' => 'qwen2.5:1.5b-instruct',
         'ollama_timeout' => '20',
         'ollama_capability_tier' => 'auto',
+        'ollama_runpod_url' => '',
+        'ollama_runpod_api_key' => '',
     ];
 }
 
 function ai_briefing_setting_keys(): array
 {
     return array_keys(ai_briefing_setting_defaults());
+}
+
+function ollama_provider_options(): array
+{
+    return [
+        'local' => 'Local Ollama',
+        'runpod' => 'Runpod Serverless',
+    ];
+}
+
+function sanitize_ollama_provider(mixed $value): string
+{
+    $provider = mb_strtolower(trim((string) $value));
+
+    return array_key_exists($provider, ollama_provider_options())
+        ? $provider
+        : ai_briefing_setting_defaults()['ollama_provider'];
 }
 
 function sanitize_ollama_url(?string $value): string
@@ -273,14 +293,36 @@ function sanitize_ollama_capability_tier(mixed $value): string
         : ai_briefing_setting_defaults()['ollama_capability_tier'];
 }
 
+function sanitize_ollama_runpod_url(?string $value): string
+{
+    $url = rtrim(trim((string) $value), '/');
+    if ($url === '') {
+        return '';
+    }
+
+    if (!preg_match('/^https?:\/\/.+/i', $url)) {
+        return '';
+    }
+
+    return mb_substr($url, 0, 255);
+}
+
+function sanitize_ollama_runpod_api_key(?string $value): string
+{
+    return mb_substr(trim((string) $value), 0, 255);
+}
+
 function ai_briefing_settings_from_request(array $request): array
 {
     return [
         'ollama_enabled' => sanitize_enabled_flag($request['ollama_enabled'] ?? null),
+        'ollama_provider' => sanitize_ollama_provider($request['ollama_provider'] ?? null),
         'ollama_url' => sanitize_ollama_url($request['ollama_url'] ?? null),
         'ollama_model' => sanitize_ollama_model($request['ollama_model'] ?? null),
         'ollama_timeout' => sanitize_ollama_timeout($request['ollama_timeout'] ?? null),
         'ollama_capability_tier' => sanitize_ollama_capability_tier($request['ollama_capability_tier'] ?? null),
+        'ollama_runpod_url' => sanitize_ollama_runpod_url($request['ollama_runpod_url'] ?? null),
+        'ollama_runpod_api_key' => sanitize_ollama_runpod_api_key($request['ollama_runpod_api_key'] ?? null),
     ];
 }
 
@@ -13234,13 +13276,17 @@ function supplycore_ai_ollama_config(): array
 
     $defaults = ai_briefing_setting_defaults();
     $settings = get_settings(ai_briefing_setting_keys());
+    $provider = sanitize_ollama_provider($settings['ollama_provider'] ?? $defaults['ollama_provider']);
 
     $config = [
         'enabled' => (($settings['ollama_enabled'] ?? $defaults['ollama_enabled']) === '1'),
+        'provider' => $provider,
         'url' => sanitize_ollama_url($settings['ollama_url'] ?? $defaults['ollama_url']),
         'model' => sanitize_ollama_model($settings['ollama_model'] ?? $defaults['ollama_model']),
         'timeout' => max(1, (int) sanitize_ollama_timeout($settings['ollama_timeout'] ?? $defaults['ollama_timeout'])),
         'capability_override' => sanitize_ollama_capability_tier($settings['ollama_capability_tier'] ?? $defaults['ollama_capability_tier']),
+        'runpod_url' => sanitize_ollama_runpod_url($settings['ollama_runpod_url'] ?? $defaults['ollama_runpod_url']),
+        'runpod_api_key' => sanitize_ollama_runpod_api_key($settings['ollama_runpod_api_key'] ?? $defaults['ollama_runpod_api_key']),
     ];
 
     $inferredTier = supplycore_ai_infer_model_capability_tier((string) ($config['model'] ?? ''));
@@ -13251,14 +13297,33 @@ function supplycore_ai_ollama_config(): array
 
     return [
         'enabled' => (bool) ($config['enabled'] ?? false),
+        'provider' => (string) ($config['provider'] ?? $defaults['ollama_provider']),
         'url' => (string) ($config['url'] ?? $defaults['ollama_url']),
         'model' => (string) ($config['model'] ?? $defaults['ollama_model']),
         'timeout' => max(1, (int) ($config['timeout'] ?? (int) $defaults['ollama_timeout'])),
         'capability_override' => (string) ($config['capability_override'] ?? 'auto'),
+        'runpod_url' => (string) ($config['runpod_url'] ?? ''),
+        'runpod_api_key' => (string) ($config['runpod_api_key'] ?? ''),
+        'runpod_api_key_masked' => supplycore_mask_secret((string) ($config['runpod_api_key'] ?? '')),
         'inferred_tier' => $inferredTier,
         'capability_tier' => $effectiveTier,
         'strategy' => $strategy,
     ];
+}
+
+function supplycore_mask_secret(string $value): string
+{
+    $trimmed = trim($value);
+    if ($trimmed === '') {
+        return '';
+    }
+
+    $length = mb_strlen($trimmed);
+    if ($length <= 8) {
+        return str_repeat('•', $length);
+    }
+
+    return mb_substr($trimmed, 0, 4) . str_repeat('•', max(4, $length - 8)) . mb_substr($trimmed, -4);
 }
 
 function supplycore_ai_infer_model_capacity_billions(string $model): ?float
@@ -13421,7 +13486,15 @@ function supplycore_ai_ollama_enabled(): bool
 {
     $config = supplycore_ai_ollama_config();
 
-    return $config['enabled'] === true && $config['url'] !== '' && $config['model'] !== '';
+    if ($config['enabled'] !== true || $config['model'] === '') {
+        return false;
+    }
+
+    if (($config['provider'] ?? 'local') === 'runpod') {
+        return ($config['runpod_url'] ?? '') !== '' && ($config['runpod_api_key'] ?? '') !== '';
+    }
+
+    return ($config['url'] ?? '') !== '';
 }
 
 function supplycore_ai_ollama_available(): bool
@@ -13434,11 +13507,19 @@ function supplycore_ai_ollama_available(): bool
     }
 
     $cacheKey = implode('|', [
+        (string) ($config['provider'] ?? 'local'),
         (string) ($config['url'] ?? ''),
+        (string) ($config['runpod_url'] ?? ''),
         (string) ($config['model'] ?? ''),
         (string) ($config['timeout'] ?? 20),
     ]);
     if (array_key_exists($cacheKey, $availability)) {
+        return $availability[$cacheKey];
+    }
+
+    if (($config['provider'] ?? 'local') === 'runpod') {
+        $availability[$cacheKey] = ($config['runpod_url'] ?? '') !== '' && ($config['runpod_api_key'] ?? '') !== '';
+
         return $availability[$cacheKey];
     }
 
@@ -13454,6 +13535,29 @@ function supplycore_ai_ollama_available(): bool
     }
 
     return $availability[$cacheKey];
+}
+
+function supplycore_ai_status_summary(): array
+{
+    $config = supplycore_ai_ollama_config();
+    $provider = (string) ($config['provider'] ?? 'local');
+    $available = supplycore_ai_ollama_available();
+
+    if ($provider === 'runpod') {
+        return [
+            'ok' => $available,
+            'label' => $available ? 'Runpod configured' : 'Runpod incomplete',
+            'description' => $available
+                ? 'Runpod serverless endpoint and API key are saved for AI briefing requests.'
+                : 'Save both the Runpod endpoint and API key to enable serverless AI briefings.',
+        ];
+    }
+
+    return [
+        'ok' => $available,
+        'label' => $available ? 'Ollama reachable' : 'Ollama not reachable',
+        'description' => 'Status is checked against the configured local Ollama API endpoint.',
+    ];
 }
 
 function supplycore_ai_log(string $event, array $payload = []): void
@@ -14069,13 +14173,33 @@ function supplycore_ai_ollama_generate_json(array $sourcePayload): array
         throw new RuntimeException('Ollama integration is disabled.');
     }
 
+    $systemPrompt = doctrine_ai_system_prompt($strategy, $sourcePayload);
+    $userPrompt = doctrine_ai_user_prompt($sourcePayload, $strategy);
+    $schema = doctrine_ai_output_schema($strategy);
+
+    if (($config['provider'] ?? 'local') === 'runpod') {
+        $response = http_post_json(
+            (string) ($config['runpod_url'] ?? ''),
+            ['Authorization: Bearer ' . (string) ($config['runpod_api_key'] ?? '')],
+            [
+                'input' => [
+                    'prompt' => supplycore_ai_runpod_prompt($config, $systemPrompt, $userPrompt, $schema),
+                ],
+            ],
+            (int) ($config['timeout'] ?? 20)
+        );
+        $decoded = supplycore_ai_decode_runpod_response($response);
+
+        return doctrine_ai_validate_response($decoded, $strategy);
+    }
+
     $endpoint = $config['url'] . '/generate';
     $requestPayload = [
         'model' => $config['model'],
         'stream' => false,
-        'system' => doctrine_ai_system_prompt($strategy, $sourcePayload),
-        'prompt' => doctrine_ai_user_prompt($sourcePayload, $strategy),
-        'format' => doctrine_ai_output_schema($strategy),
+        'system' => $systemPrompt,
+        'prompt' => $userPrompt,
+        'format' => $schema,
         'options' => [
             'temperature' => 0.1,
         ],
@@ -14099,6 +14223,88 @@ function supplycore_ai_ollama_generate_json(array $sourcePayload): array
     }
 
     return doctrine_ai_validate_response($decoded, $strategy);
+}
+
+function supplycore_ai_runpod_prompt(array $config, string $systemPrompt, string $userPrompt, array $schema): string
+{
+    $schemaJson = json_encode($schema, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE);
+    if (!is_string($schemaJson)) {
+        $schemaJson = '{}';
+    }
+
+    return trim(implode("\n\n", [
+        'You are using the model "' . (string) ($config['model'] ?? '') . '" through a Runpod serverless endpoint.',
+        'SYSTEM INSTRUCTIONS',
+        $systemPrompt,
+        'USER REQUEST',
+        $userPrompt,
+        'OUTPUT REQUIREMENTS',
+        'Return JSON only. Do not include markdown fences or any commentary outside the JSON object.',
+        'The JSON object must match this schema exactly:',
+        $schemaJson,
+    ]));
+}
+
+function supplycore_ai_decode_runpod_response(array $response): array
+{
+    $status = (int) ($response['status'] ?? 0);
+    $json = is_array($response['json'] ?? null) ? $response['json'] : [];
+    if ($status < 200 || $status >= 300) {
+        throw new RuntimeException('Runpod returned HTTP ' . $status . '.');
+    }
+
+    $jobStatus = strtoupper(trim((string) ($json['status'] ?? '')));
+    if ($jobStatus !== '' && !in_array($jobStatus, ['COMPLETED', 'SUCCESS'], true)) {
+        throw new RuntimeException('Runpod job did not complete synchronously (status: ' . $jobStatus . ').');
+    }
+
+    $candidates = [
+        $json['output']['response'] ?? null,
+        $json['output']['text'] ?? null,
+        $json['output'][0]['response'] ?? null,
+        $json['output'][0]['text'] ?? null,
+        $json['response'] ?? null,
+        $json['output'] ?? null,
+    ];
+
+    foreach ($candidates as $candidate) {
+        if (is_array($candidate)) {
+            if ($candidate !== [] && array_keys($candidate) !== range(0, count($candidate) - 1)) {
+                return $candidate;
+            }
+
+            $candidate = json_encode($candidate, JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE);
+        }
+
+        $decoded = supplycore_ai_decode_json_string((string) $candidate);
+        if (is_array($decoded)) {
+            return $decoded;
+        }
+    }
+
+    throw new RuntimeException('Runpod returned an unsupported response payload.');
+}
+
+function supplycore_ai_decode_json_string(string $value): ?array
+{
+    $trimmed = trim($value);
+    if ($trimmed === '') {
+        return null;
+    }
+
+    $decoded = json_decode($trimmed, true);
+    if (is_array($decoded)) {
+        return $decoded;
+    }
+
+    if (preg_match('/\{.*\}/s', $trimmed, $matches) === 1) {
+        $decoded = json_decode((string) $matches[0], true);
+        if (is_array($decoded)) {
+            return $decoded;
+        }
+    }
+
+    return null;
 }
 
 function doctrine_ai_store_briefing(array $sourcePayload, array $briefing, string $status, ?string $errorMessage = null): bool

@@ -223,7 +223,7 @@ $trackedCorporations = [];
 $killmailStatus = null;
 $itemScope = item_scope_view_model();
 $ollamaConfig = supplycore_ai_ollama_config();
-$ollamaAvailable = supplycore_ai_ollama_available();
+$ollamaStatus = supplycore_ai_status_summary();
 if ($dbStatus['ok']) {
     try {
         $trackedAlliances = db_killmail_tracked_alliances_active();
@@ -527,12 +527,12 @@ include __DIR__ . '/../../src/views/partials/header.php';
                     <div class="rounded-2xl border border-white/8 bg-white/[0.03] p-4">
                         <p class="text-xs uppercase tracking-[0.16em] text-muted">Configured Mode</p>
                         <p class="mt-2 text-2xl font-semibold text-slate-50"><?= ($ollamaConfig['enabled'] ?? false) ? 'Enabled' : 'Fallback only' ?></p>
-                        <p class="mt-1 text-sm text-muted">Doctrine briefings use the saved endpoint and model below.</p>
+                        <p class="mt-1 text-sm text-muted">Provider: <?= htmlspecialchars(ollama_provider_options()[(string) ($ollamaConfig['provider'] ?? 'local')] ?? 'Local Ollama', ENT_QUOTES) ?>.</p>
                     </div>
-                    <div class="rounded-2xl border <?= $ollamaAvailable ? 'border-emerald-500/20 bg-emerald-500/10' : 'border-amber-500/20 bg-amber-500/10' ?> p-4">
-                        <p class="text-xs uppercase tracking-[0.16em] <?= $ollamaAvailable ? 'text-emerald-200/80' : 'text-amber-200/80' ?>">Reachability</p>
-                        <p class="mt-2 text-2xl font-semibold <?= $ollamaAvailable ? 'text-emerald-100' : 'text-amber-100' ?>"><?= $ollamaAvailable ? 'Ollama reachable' : 'Ollama not reachable' ?></p>
-                        <p class="mt-1 text-sm <?= $ollamaAvailable ? 'text-emerald-100/70' : 'text-amber-100/70' ?>">Status is checked against the configured Ollama API endpoint.</p>
+                    <div class="rounded-2xl border <?= ($ollamaStatus['ok'] ?? false) ? 'border-emerald-500/20 bg-emerald-500/10' : 'border-amber-500/20 bg-amber-500/10' ?> p-4">
+                        <p class="text-xs uppercase tracking-[0.16em] <?= ($ollamaStatus['ok'] ?? false) ? 'text-emerald-200/80' : 'text-amber-200/80' ?>">Connection Status</p>
+                        <p class="mt-2 text-2xl font-semibold <?= ($ollamaStatus['ok'] ?? false) ? 'text-emerald-100' : 'text-amber-100' ?>"><?= htmlspecialchars((string) ($ollamaStatus['label'] ?? 'Not configured'), ENT_QUOTES) ?></p>
+                        <p class="mt-1 text-sm <?= ($ollamaStatus['ok'] ?? false) ? 'text-emerald-100/70' : 'text-amber-100/70' ?>"><?= htmlspecialchars((string) ($ollamaStatus['description'] ?? ''), ENT_QUOTES) ?></p>
                     </div>
                     <div class="rounded-2xl border border-sky-500/20 bg-sky-500/10 p-4">
                         <p class="text-xs uppercase tracking-[0.16em] text-sky-200/80">Scheduler Behavior</p>
@@ -557,16 +557,40 @@ include __DIR__ . '/../../src/views/partials/header.php';
                     <input type="hidden" name="ollama_enabled" value="0">
                     <input type="checkbox" name="ollama_enabled" value="1" <?= ($settingValues['ollama_enabled'] ?? '0') === '1' ? 'checked' : '' ?> class="mt-1 size-4 rounded border-border bg-black">
                     <span>
-                        <span class="block text-sm font-medium text-slate-100">Enable local Ollama doctrine briefings</span>
+                        <span class="block text-sm font-medium text-slate-100">Enable AI doctrine briefings</span>
                         <span class="mt-1 block text-xs text-muted">Turn this off to force deterministic fallback summaries while still keeping briefing records populated.</span>
                     </span>
                 </label>
 
                 <div class="grid gap-4 md:grid-cols-2">
                     <label class="block space-y-2 md:col-span-2">
-                        <span class="text-sm text-muted">Ollama API URL</span>
+                        <span class="text-sm text-muted">AI Provider</span>
+                        <select name="ollama_provider" class="w-full field-input">
+                            <?php $selectedProvider = (string) ($settingValues['ollama_provider'] ?? ($ollamaConfig['provider'] ?? 'local')); ?>
+                            <?php foreach (ollama_provider_options() as $value => $label): ?>
+                                <option value="<?= htmlspecialchars($value, ENT_QUOTES) ?>" <?= $selectedProvider === $value ? 'selected' : '' ?>><?= htmlspecialchars($label, ENT_QUOTES) ?></option>
+                            <?php endforeach; ?>
+                        </select>
+                        <p class="text-xs text-muted">Use <span class="font-medium text-slate-100">Local Ollama</span> for your existing self-hosted API, or switch to <span class="font-medium text-slate-100">Runpod Serverless</span> to send prompt requests through a bearer-authenticated endpoint.</p>
+                    </label>
+                    <label class="block space-y-2 md:col-span-2">
+                        <span class="text-sm text-muted">Local Ollama API URL</span>
                         <input name="ollama_url" value="<?= htmlspecialchars($settingValues['ollama_url'] ?? ($ollamaConfig['url'] ?? 'http://localhost:11434/api'), ENT_QUOTES) ?>" class="w-full field-input" />
                         <p class="text-xs text-muted">Use the API base URL, for example <span class="font-medium text-slate-100">http://localhost:11434/api</span>.</p>
+                    </label>
+                    <label class="block space-y-2 md:col-span-2">
+                        <span class="text-sm text-muted">Runpod Serverless Endpoint</span>
+                        <input name="ollama_runpod_url" value="<?= htmlspecialchars($settingValues['ollama_runpod_url'] ?? ($ollamaConfig['runpod_url'] ?? ''), ENT_QUOTES) ?>" class="w-full field-input" placeholder="https://api.runpod.ai/v2/.../run" />
+                        <p class="text-xs text-muted">Paste the full Runpod request URL, for example <span class="font-medium text-slate-100">https://api.runpod.ai/v2/58qz2qbho8h3f1/run</span>.</p>
+                    </label>
+                    <label class="block space-y-2 md:col-span-2">
+                        <span class="text-sm text-muted">Runpod API Key</span>
+                        <input name="ollama_runpod_api_key" type="password" value="<?= htmlspecialchars($settingValues['ollama_runpod_api_key'] ?? ($ollamaConfig['runpod_api_key'] ?? ''), ENT_QUOTES) ?>" class="w-full field-input" placeholder="Bearer token for the Runpod endpoint" />
+                        <?php if (($ollamaConfig['runpod_api_key_masked'] ?? '') !== ''): ?>
+                            <p class="text-xs text-muted">Saved key preview: <span class="font-medium text-slate-100"><?= htmlspecialchars((string) $ollamaConfig['runpod_api_key_masked'], ENT_QUOTES) ?></span>.</p>
+                        <?php else: ?>
+                            <p class="text-xs text-muted">Stored only when you save settings. Leave blank if you are staying on the local provider.</p>
+                        <?php endif; ?>
                     </label>
                     <label class="block space-y-2">
                         <span class="text-sm text-muted">Model Name</span>
@@ -589,7 +613,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                 </div>
 
                 <div class="rounded-2xl border border-white/8 bg-white/[0.03] px-4 py-3 text-sm text-muted">
-                    Configure the local AI endpoint here, then manage cadence under <a href="/settings?section=data-sync" class="font-medium text-slate-100 hover:text-white">Settings → Data Sync</a> for the <span class="font-medium text-slate-100">rebuild_ai_briefings</span> scheduler job. Small tiers stay compact, medium tiers add explanation and deltas, and large tiers unlock richer operator briefings while still keeping deterministic calculations authoritative.
+                    Configure either the local Ollama API or the Runpod serverless endpoint here, then manage cadence under <a href="/settings?section=data-sync" class="font-medium text-slate-100 hover:text-white">Settings → Data Sync</a> for the <span class="font-medium text-slate-100">rebuild_ai_briefings</span> scheduler job. Small tiers stay compact, medium tiers add explanation and deltas, and large tiers unlock richer operator briefings while still keeping deterministic calculations authoritative.
                 </div>
 
                 <button class="btn-primary">Save AI Briefing Settings</button>
