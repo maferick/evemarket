@@ -13328,6 +13328,31 @@ function doctrine_ai_fallback_response(array $sourcePayload, string $reason): ar
     ];
 }
 
+function doctrine_ai_generate_briefing_result(array $sourcePayload): array
+{
+    $config = supplycore_ai_ollama_config();
+
+    try {
+        $briefing = supplycore_ai_ollama_generate_json($sourcePayload);
+
+        return [
+            'status' => 'ready',
+            'briefing' => $briefing,
+            'error_message' => null,
+            'model_name' => (string) ($config['model'] ?? ''),
+        ];
+    } catch (Throwable $exception) {
+        $fallback = doctrine_ai_fallback_response($sourcePayload, $exception->getMessage());
+
+        return [
+            'status' => 'fallback',
+            'briefing' => $fallback,
+            'error_message' => $exception->getMessage(),
+            'model_name' => 'deterministic-fallback',
+        ];
+    }
+}
+
 function supplycore_ai_ollama_generate_json(array $sourcePayload): array
 {
     $config = supplycore_ai_ollama_config();
@@ -13402,6 +13427,23 @@ function doctrine_ai_store_briefing(array $sourcePayload, array $briefing, strin
     }
 
     return $saved;
+}
+
+function doctrine_ai_entity_label(array $candidate): string
+{
+    $entityType = (string) ($candidate['entity_type'] ?? '');
+    $entity = is_array($candidate['entity'] ?? null) ? $candidate['entity'] : [];
+    $entityId = (int) ($candidate['entity_id'] ?? 0);
+
+    if ($entityType === 'fit') {
+        return trim((string) ($entity['fit_name'] ?? ('Fit #' . $entityId)));
+    }
+
+    if ($entityType === 'group') {
+        return trim((string) ($entity['group_name'] ?? ('Group #' . $entityId)));
+    }
+
+    return $entityType !== '' ? ($entityType . ':' . $entityId) : ('Entity #' . $entityId);
 }
 
 function doctrine_ai_candidate_score(array $entity, string $entityType): float
@@ -13492,6 +13534,89 @@ function doctrine_ai_select_candidates(array $snapshot, int $limit = 8): array
     return array_slice($candidates, 0, max(1, min(20, $limit)));
 }
 
+function doctrine_ai_find_candidate(array $snapshot, ?string $entityType = null, ?int $entityId = null, int $limit = 8): ?array
+{
+    $safeEntityType = in_array((string) $entityType, ['fit', 'group'], true) ? (string) $entityType : null;
+    $safeEntityId = $entityId !== null ? max(0, $entityId) : null;
+    $candidates = doctrine_ai_select_candidates($snapshot, max(1, $limit));
+
+    if ($safeEntityType === null || $safeEntityId === null || $safeEntityId <= 0) {
+        return $candidates[0] ?? null;
+    }
+
+    foreach ($candidates as $candidate) {
+        if ((string) ($candidate['entity_type'] ?? '') === $safeEntityType && (int) ($candidate['entity_id'] ?? 0) === $safeEntityId) {
+            return $candidate;
+        }
+    }
+
+    $entities = $safeEntityType === 'fit'
+        ? (array) ($snapshot['fits'] ?? [])
+        : (array) ($snapshot['groups'] ?? []);
+
+    foreach ($entities as $entity) {
+        if ((int) ($entity['id'] ?? 0) !== $safeEntityId) {
+            continue;
+        }
+
+        return [
+            'entity_type' => $safeEntityType,
+            'entity_id' => $safeEntityId,
+            'score' => doctrine_ai_candidate_score($entity, $safeEntityType),
+            'entity' => $entity,
+        ];
+    }
+
+    return null;
+}
+
+function doctrine_ai_debug_preview(?string $entityType = null, ?int $entityId = null, int $limit = 5): array
+{
+    $snapshot = doctrine_snapshot_cache_payload();
+    if ($snapshot === null) {
+        $snapshot = doctrine_refresh_intelligence('ai-debug');
+    }
+
+    $candidateLimit = max(1, min(20, $limit));
+    $candidates = doctrine_ai_select_candidates($snapshot, $candidateLimit);
+    $selectedCandidate = doctrine_ai_find_candidate($snapshot, $entityType, $entityId, max($candidateLimit, 8));
+    if (!is_array($selectedCandidate)) {
+        throw new RuntimeException('No doctrine AI candidate is available for preview.');
+    }
+
+    $resolvedEntityType = (string) ($selectedCandidate['entity_type'] ?? '');
+    $resolvedEntityId = (int) ($selectedCandidate['entity_id'] ?? 0);
+    $entity = is_array($selectedCandidate['entity'] ?? null) ? $selectedCandidate['entity'] : [];
+    $previousBriefing = doctrine_ai_briefing_get($resolvedEntityType, $resolvedEntityId);
+    $sourcePayload = $resolvedEntityType === 'fit'
+        ? doctrine_ai_source_payload_for_fit($entity, $previousBriefing)
+        : doctrine_ai_source_payload_for_group($entity, $previousBriefing);
+    $generation = doctrine_ai_generate_briefing_result($sourcePayload);
+
+    return [
+        'config' => supplycore_ai_ollama_config() + [
+            'available' => supplycore_ai_ollama_enabled(),
+        ],
+        'selected_candidate' => [
+            'entity_type' => $resolvedEntityType,
+            'entity_id' => $resolvedEntityId,
+            'label' => doctrine_ai_entity_label($selectedCandidate),
+            'score' => (float) ($selectedCandidate['score'] ?? 0.0),
+        ],
+        'candidate_list' => array_map(static function (array $candidate): array {
+            return [
+                'entity_type' => (string) ($candidate['entity_type'] ?? ''),
+                'entity_id' => (int) ($candidate['entity_id'] ?? 0),
+                'label' => doctrine_ai_entity_label($candidate),
+                'score' => (float) ($candidate['score'] ?? 0.0),
+            ];
+        }, $candidates),
+        'previous_briefing' => $previousBriefing,
+        'source_payload' => $sourcePayload,
+        'generation' => $generation,
+    ];
+}
+
 function rebuild_ai_briefings_job_result(string $reason = 'manual'): array
 {
     $snapshot = doctrine_snapshot_cache_payload();
@@ -13500,21 +13625,15 @@ function rebuild_ai_briefings_job_result(string $reason = 'manual'): array
     }
 
     $config = supplycore_ai_ollama_config();
-    if ($config['enabled'] !== true) {
-        return sync_result_shape() + [
-            'rows_seen' => 0,
-            'rows_written' => 0,
-            'warnings' => ['Ollama integration is disabled.'],
-            'meta' => [
-                'outcome_reason' => 'AI briefing rebuild skipped because OLLAMA_ENABLED is disabled.',
-            ],
-        ];
-    }
-
     $candidates = doctrine_ai_select_candidates($snapshot, 8);
     $processed = 0;
     $written = 0;
     $fallbacks = 0;
+    $warnings = [];
+
+    if ($config['enabled'] !== true) {
+        $warnings[] = 'Ollama integration is disabled; storing deterministic fallback briefings only.';
+    }
 
     foreach ($candidates as $candidate) {
         $entityType = (string) ($candidate['entity_type'] ?? '');
@@ -13537,23 +13656,25 @@ function rebuild_ai_briefings_job_result(string $reason = 'manual'): array
             'model' => $config['model'],
         ]);
 
-        try {
-            $briefing = supplycore_ai_ollama_generate_json($sourcePayload);
-            doctrine_ai_store_briefing($sourcePayload, $briefing, 'ready');
+        $generation = doctrine_ai_generate_briefing_result($sourcePayload);
+        $briefing = is_array($generation['briefing'] ?? null) ? $generation['briefing'] : [];
+        $status = (string) ($generation['status'] ?? 'fallback');
+        $errorMessage = ($generation['error_message'] ?? null) !== null ? (string) $generation['error_message'] : null;
+
+        doctrine_ai_store_briefing($sourcePayload, $briefing, $status, $errorMessage);
+        if ($status === 'ready') {
             $written++;
             supplycore_ai_log('briefing.success', [
                 'entity_type' => $entityType,
                 'entity_id' => $entityId,
                 'priority' => (string) ($briefing['priority'] ?? 'medium'),
             ]);
-        } catch (Throwable $exception) {
+        } else {
             $fallbacks++;
-            $fallback = doctrine_ai_fallback_response($sourcePayload, $exception->getMessage());
-            doctrine_ai_store_briefing($sourcePayload, $fallback, 'fallback', $exception->getMessage());
             supplycore_ai_log('briefing.failure', [
                 'entity_type' => $entityType,
                 'entity_id' => $entityId,
-                'error' => $exception->getMessage(),
+                'error' => $errorMessage,
             ]);
         }
     }
@@ -13564,6 +13685,7 @@ function rebuild_ai_briefings_job_result(string $reason = 'manual'): array
     return sync_result_shape() + [
         'rows_seen' => $processed,
         'rows_written' => $written + $fallbacks,
+        'warnings' => $warnings,
         'cursor' => 'doctrine_ai_briefings:' . gmdate('Y-m-d H:i:s'),
         'checksum' => sync_checksum([
             'processed' => $processed,
