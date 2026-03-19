@@ -5494,6 +5494,119 @@ function static_data_default_source_url(): string
     return 'https://developers.eveonline.com/static-data/eve-online-static-data-latest-jsonl.zip';
 }
 
+function static_data_manifest_url_for_source(string $sourceUrl): ?string
+{
+    $host = mb_strtolower((string) parse_url($sourceUrl, PHP_URL_HOST));
+    $path = (string) parse_url($sourceUrl, PHP_URL_PATH);
+
+    if ($host !== 'developers.eveonline.com') {
+        return null;
+    }
+
+    if (!str_starts_with($path, '/static-data/')) {
+        return null;
+    }
+
+    return 'https://developers.eveonline.com/static-data/tranquility/latest.jsonl';
+}
+
+function static_data_fetch_text_payload(string $url, int $timeoutSeconds = 30): string
+{
+    if (!function_exists('curl_init')) {
+        throw new RuntimeException('PHP cURL extension is required to fetch static-data payloads.');
+    }
+
+    $ch = curl_init($url);
+    curl_setopt_array($ch, [
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_FOLLOWLOCATION => true,
+        CURLOPT_CONNECTTIMEOUT => 10,
+        CURLOPT_TIMEOUT => $timeoutSeconds,
+        CURLOPT_HTTPHEADER => [
+            'Accept: application/json, text/plain, */*',
+            'User-Agent: SupplyCore/1.0',
+        ],
+    ]);
+
+    $payload = curl_exec($ch);
+    $error = curl_error($ch);
+    $status = (int) curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
+    curl_close($ch);
+
+    if (!is_string($payload) || $payload === '' || $status >= 400) {
+        throw new RuntimeException('Unable to fetch static-data payload from source URL.' . ($error !== '' ? ' ' . $error : ''));
+    }
+
+    return $payload;
+}
+
+function static_data_fetch_binary_payload(string $url, int $timeoutSeconds = 120): string
+{
+    if (!function_exists('curl_init')) {
+        throw new RuntimeException('PHP cURL extension is required to download static-data archives.');
+    }
+
+    $ch = curl_init($url);
+    curl_setopt_array($ch, [
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_FOLLOWLOCATION => true,
+        CURLOPT_CONNECTTIMEOUT => 15,
+        CURLOPT_TIMEOUT => $timeoutSeconds,
+        CURLOPT_HTTPHEADER => [
+            'Accept: application/zip, application/octet-stream, */*',
+            'User-Agent: SupplyCore/1.0',
+        ],
+    ]);
+
+    $payload = curl_exec($ch);
+    $error = curl_error($ch);
+    $status = (int) curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
+    curl_close($ch);
+
+    if (!is_string($payload) || $payload === '' || $status >= 400) {
+        throw new RuntimeException('Failed to download static-data package.' . ($error !== '' ? ' ' . $error : ''));
+    }
+
+    return $payload;
+}
+
+function static_data_build_info_from_manifest(string $manifestUrl): ?array
+{
+    $payload = static_data_fetch_text_payload($manifestUrl);
+
+    foreach (preg_split("/(?:\r\n|\n|\r)/", $payload) as $line) {
+        $line = trim((string) $line);
+        if ($line === '') {
+            continue;
+        }
+
+        try {
+            $row = json_decode($line, true, 512, JSON_THROW_ON_ERROR);
+        } catch (Throwable) {
+            continue;
+        }
+
+        if (!is_array($row)) {
+            continue;
+        }
+
+        $buildNumber = trim((string) ($row['buildNumber'] ?? $row['build_number'] ?? ''));
+        $releaseDate = trim((string) ($row['releaseDate'] ?? $row['release_date'] ?? ''));
+        if ($buildNumber === '' && $releaseDate === '') {
+            continue;
+        }
+
+        return [
+            'build_id' => $buildNumber !== '' ? $buildNumber : sha1($manifestUrl . '|' . $releaseDate),
+            'etag' => null,
+            'last_modified' => $releaseDate !== '' ? $releaseDate : null,
+            'manifest_url' => $manifestUrl,
+        ];
+    }
+
+    return null;
+}
+
 function sync_watermark(string $datasetKey): ?string
 {
     $state = db_sync_state_get($datasetKey);
@@ -8773,9 +8886,69 @@ function static_data_import_mode(string $requestedMode = 'auto'): string
 
 function static_data_fetch_remote_build_info(string $sourceUrl): array
 {
-    $headers = @get_headers($sourceUrl, true);
+    $manifestUrl = static_data_manifest_url_for_source($sourceUrl);
+    if ($manifestUrl !== null) {
+        try {
+            $manifestInfo = static_data_build_info_from_manifest($manifestUrl);
+            if ($manifestInfo !== null) {
+                return $manifestInfo;
+            }
+        } catch (Throwable) {
+            // Fall back to archive headers for non-standard mirrors or manifest fetch failures.
+        }
+    }
+
+    if (!function_exists('get_headers')) {
+        throw new RuntimeException('Unable to fetch static-data metadata from source URL.');
+    }
+
+    $context = stream_context_create([
+        'http' => [
+            'method' => 'HEAD',
+            'timeout' => 30,
+            'ignore_errors' => true,
+            'header' => "User-Agent: SupplyCore/1.0\r\nAccept: */*\r\n",
+        ],
+    ]);
+    $headers = @get_headers($sourceUrl, true, $context);
+    if ($headers === false && function_exists('curl_init')) {
+        $ch = curl_init($sourceUrl);
+        curl_setopt_array($ch, [
+            CURLOPT_NOBODY => true,
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_HEADER => true,
+            CURLOPT_FOLLOWLOCATION => true,
+            CURLOPT_CONNECTTIMEOUT => 10,
+            CURLOPT_TIMEOUT => 30,
+            CURLOPT_HTTPHEADER => ['Accept: */*', 'User-Agent: SupplyCore/1.0'],
+        ]);
+        $rawHeaders = curl_exec($ch);
+        $status = (int) curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
+        curl_close($ch);
+
+        if (is_string($rawHeaders) && $rawHeaders !== '' && $status > 0 && $status < 400) {
+            $headers = [];
+            foreach (preg_split("/(?:\r\n|\n|\r)/", trim($rawHeaders)) as $line) {
+                if (!str_contains($line, ':')) {
+                    continue;
+                }
+
+                [$name, $value] = array_map('trim', explode(':', $line, 2));
+                if ($name === '') {
+                    continue;
+                }
+
+                if (isset($headers[$name])) {
+                    $headers[$name] = array_merge((array) $headers[$name], [$value]);
+                } else {
+                    $headers[$name] = $value;
+                }
+            }
+        }
+    }
+
     if ($headers === false) {
-        throw new RuntimeException('Unable to fetch static-data headers from source URL.');
+        throw new RuntimeException('Unable to fetch static-data metadata from source URL.');
     }
 
     $lastModified = '';
@@ -8825,12 +8998,7 @@ function static_data_ensure_local_jsonl_archive(string $sourceUrl, string $build
     }
 
     if (!is_file($paths['archive_path'])) {
-        $context = stream_context_create(['http' => ['timeout' => 120]]);
-        $payload = @file_get_contents($sourceUrl, false, $context);
-        if ($payload === false) {
-            throw new RuntimeException('Failed to download static-data package.');
-        }
-
+        $payload = static_data_fetch_binary_payload($sourceUrl);
         if (file_put_contents($paths['archive_path'], $payload) === false) {
             throw new RuntimeException('Failed to write static-data archive to local storage.');
         }
