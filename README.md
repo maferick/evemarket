@@ -354,7 +354,7 @@ SupplyCore includes a local reference-data pipeline for EVE static data exports.
 
 ### What it does
 
-- Checks the current upstream static-data build from `static_data_source_url`
+- Checks the current upstream static-data build from `static_data_source_url` and, for the official CCP archive, uses the companion `static-data/tranquility/latest.jsonl` manifest for build detection
 - Compares upstream build metadata with `static_data_import_state.imported_build_id`
 - Downloads and caches the static package in `storage/static-data/`
 - Supports official CCP JSONL ZIP payloads (`.zip`); default source is `eve-online-static-data-latest-jsonl.zip`
