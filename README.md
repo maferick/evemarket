@@ -113,6 +113,16 @@ README.md
   - `OLLAMA_TIMEOUT=20`
 - The current-state AI briefing store lives in MySQL table `doctrine_ai_briefings`. Each row keeps the latest model name, operator-facing text, compact source payload, raw response JSON, and failure metadata for debugging/auditability.
 - If Ollama is unavailable or returns malformed JSON, SupplyCore logs the failure and stores a deterministic fallback briefing instead of blocking the rest of the app.
+- If `OLLAMA_ENABLED=0`, the background briefing job still stores deterministic fallback briefings so the dashboard briefing panel remains populated while AI connectivity is being debugged.
+- Use the AI briefing debug CLI to exercise the pipeline on demand:
+  ```bash
+  php bin/ai_briefing_debug.php
+  php bin/ai_briefing_debug.php --entity-type=fit --entity-id=123
+  php bin/ai_briefing_debug.php --store
+  ```
+  - With no entity arguments, the command previews the top currently ranked doctrine candidate.
+  - `--entity-type` + `--entity-id` targets a specific fit or doctrine group from the current snapshot.
+  - `--store` writes the generated result back into `doctrine_ai_briefings`, which is useful when validating fallback behavior outside the scheduler.
 
 ## Apache2 Deployment Notes
 
