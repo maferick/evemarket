@@ -108,6 +108,14 @@ function nav_items(): array
             ],
         ],
         [
+            'label' => 'Activity Priority',
+            'path' => '/activity-priority',
+            'icon' => '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" class="h-4 w-4" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M4 7h16"/><path stroke-linecap="round" stroke-linejoin="round" d="M6 12h12"/><path stroke-linecap="round" stroke-linejoin="round" d="M9 17h6"/><path stroke-linecap="round" stroke-linejoin="round" d="m15 5 4 4-4 4"/></svg>',
+            'children' => [
+                ['label' => 'Doctrine Activity Board', 'path' => '/activity-priority'],
+            ],
+        ],
+        [
             'label' => 'Doctrine Fits',
             'path' => '/doctrine',
             'icon' => '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" class="h-4 w-4" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M5 5h14v14H5z"/><path stroke-linecap="round" stroke-linejoin="round" d="M9 9h6M9 13h6M9 17h4"/></svg>',
@@ -2137,6 +2145,13 @@ function data_sync_schedule_job_definitions(): array
             'interval_unit_key' => 'dashboard_summary_sync_interval_unit',
             'default_interval_seconds' => 300,
             'label' => 'Dashboard Summary Batch',
+        ],
+        'activity_priority_summary_sync' => [
+            'enabled_key' => 'activity_priority_summary_sync_enabled',
+            'interval_value_key' => 'activity_priority_summary_sync_interval_value',
+            'interval_unit_key' => 'activity_priority_summary_sync_interval_unit',
+            'default_interval_seconds' => 300,
+            'label' => 'Activity Priority Batch',
         ],
         'rebuild_ai_briefings' => [
             'enabled_key' => 'rebuild_ai_briefings_enabled',
@@ -5966,6 +5981,13 @@ function scheduler_job_definitions(): array
                 return dashboard_refresh_summary_job_result('scheduler');
             },
         ],
+        'activity_priority_summary_sync' => [
+            'timeout_seconds' => 180,
+            'lock_ttl_seconds' => 300,
+            'handler' => static function (): array {
+                return activity_priority_refresh_summary_job_result('scheduler');
+            },
+        ],
         'rebuild_ai_briefings' => [
             'timeout_seconds' => 180,
             'lock_ttl_seconds' => 300,
@@ -6022,6 +6044,7 @@ function scheduler_job_type(string $jobKey): string
         'market_comparison_summary_sync' => 'sync.market_summary',
         'loss_demand_summary_sync' => 'sync.loss_demand',
         'dashboard_summary_sync' => 'sync.dashboard',
+        'activity_priority_summary_sync' => 'sync.activity_priority',
         'rebuild_ai_briefings' => 'sync.doctrine_ai',
         'forecasting_ai_sync' => 'sync.forecasting',
         'killmail_r2z2_sync' => 'sync.killmail',
@@ -13603,6 +13626,7 @@ function supplycore_materialized_snapshot_keys(): array
         'market_comparison_summaries',
         'loss_demand_summaries',
         'dashboard_summaries',
+        'activity_priority_summaries',
     ];
 }
 
@@ -13949,7 +13973,7 @@ function doctrine_refresh_intelligence(string $reason = 'manual'): array
 
 function doctrine_schedule_intelligence_refresh(string $reason = 'manual'): void
 {
-    foreach ([doctrine_fit_snapshot_key(), doctrine_group_snapshot_key(), market_comparison_snapshot_key(), loss_demand_snapshot_key(), dashboard_snapshot_key()] as $snapshotKey) {
+    foreach ([doctrine_fit_snapshot_key(), doctrine_group_snapshot_key(), market_comparison_snapshot_key(), loss_demand_snapshot_key(), dashboard_snapshot_key(), activity_priority_snapshot_key()] as $snapshotKey) {
         supplycore_materialized_snapshot_mark_updating($snapshotKey, $reason);
     }
 
@@ -13966,6 +13990,7 @@ function doctrine_refresh_trigger_job_keys(): array
         'market_comparison_summary_sync',
         'loss_demand_summary_sync',
         'dashboard_summary_sync',
+        'activity_priority_summary_sync',
         'rebuild_ai_briefings',
     ];
 }
@@ -15893,4 +15918,791 @@ function doctrine_ai_dashboard_briefings(int $limit = 6): array
     });
 
     return array_slice($briefings, 0, $resolvedLimit);
+}
+
+function activity_priority_snapshot_key(): string
+{
+    return 'activity_priority_summaries';
+}
+
+function activity_priority_snapshot_payload(): array
+{
+    return supplycore_materialized_snapshot_read_or_bootstrap(
+        activity_priority_snapshot_key(),
+        static fn (): array => activity_priority_summary_build('bootstrap'),
+        'activity-priority-bootstrap'
+    );
+}
+
+function activity_priority_refresh_summary(string $reason = 'manual'): array
+{
+    supplycore_materialized_snapshot_mark_updating(activity_priority_snapshot_key(), $reason);
+    $snapshot = activity_priority_summary_build($reason);
+
+    return supplycore_materialized_snapshot_store(activity_priority_snapshot_key(), $snapshot, [
+        'reason' => $reason,
+        'group_count' => count((array) ($snapshot['active_doctrines'] ?? [])),
+        'item_count' => count((array) ($snapshot['priority_items'] ?? [])),
+    ]);
+}
+
+function activity_priority_refresh_summary_job_result(string $reason = 'manual'): array
+{
+    $snapshot = activity_priority_refresh_summary($reason);
+    $rowCount = count((array) ($snapshot['active_doctrines'] ?? [])) + count((array) ($snapshot['priority_items'] ?? []));
+    $freshness = is_array($snapshot['_freshness'] ?? null) ? $snapshot['_freshness'] : [];
+
+    return sync_result_shape() + [
+        'rows_seen' => $rowCount,
+        'rows_written' => $rowCount,
+        'cursor' => 'activity_priority:' . gmdate('Y-m-d H:i:s'),
+        'checksum' => sync_checksum([
+            'rows' => $rowCount,
+            'computed_at' => (string) ($freshness['computed_at'] ?? gmdate(DATE_ATOM)),
+            'reason' => $reason,
+        ]),
+        'meta' => [
+            'outcome_reason' => 'Doctrine activity and item-priority summaries were recomputed from tracked losses, doctrine definitions, and local market pressure signals.',
+            'snapshot_generated_at' => (string) ($freshness['computed_at'] ?? ''),
+        ],
+    ];
+}
+
+function activity_priority_page_data(): array
+{
+    return activity_priority_snapshot_payload();
+}
+
+function activity_priority_level_from_score(float $score): string
+{
+    if ($score >= 78.0) {
+        return 'highly active';
+    }
+    if ($score >= 56.0) {
+        return 'active';
+    }
+    if ($score >= 32.0) {
+        return 'moderate';
+    }
+
+    return 'low';
+}
+
+function activity_priority_item_band(float $score): string
+{
+    if ($score >= 82.0) {
+        return 'critical';
+    }
+    if ($score >= 66.0) {
+        return 'high';
+    }
+    if ($score >= 44.0) {
+        return 'elevated';
+    }
+
+    return 'watch';
+}
+
+function activity_priority_level_tone(string $level): string
+{
+    return match ($level) {
+        'highly active', 'critical' => 'border-rose-400/20 bg-rose-500/10 text-rose-100',
+        'active', 'high' => 'border-orange-400/20 bg-orange-500/10 text-orange-100',
+        'moderate', 'elevated' => 'border-amber-400/20 bg-amber-500/10 text-amber-100',
+        default => 'border-slate-400/15 bg-slate-500/10 text-slate-200',
+    };
+}
+
+function activity_priority_repeated_usage_weight(float $window24h, float $window3d, float $window7d): float
+{
+    $activeWindows = 0;
+    foreach ([$window24h, $window3d, $window7d] as $value) {
+        if ($value > 0) {
+            $activeWindows++;
+        }
+    }
+
+    $carryForward = max(0.0, $window3d - $window24h) + max(0.0, $window7d - $window3d);
+
+    return round(min(16.0, ($activeWindows * 3.5) + ($carryForward * 2.2)), 2);
+}
+
+function activity_priority_recency_weight(float $window24h, float $window3d, float $window7d): float
+{
+    if ($window24h > 0) {
+        return min(18.0, 10.0 + ($window24h * 2.2));
+    }
+    if ($window3d > 0) {
+        return min(12.0, 6.0 + ($window3d * 1.1));
+    }
+    if ($window7d > 0) {
+        return min(6.0, 2.5 + ($window7d * 0.4));
+    }
+
+    return 0.0;
+}
+
+function activity_priority_pressure_bonus(string $pressureState): float
+{
+    return match ($pressureState) {
+        'urgent_resupply' => 8.0,
+        'resupply_soon' => 6.0,
+        'elevated' => 3.0,
+        default => 0.0,
+    };
+}
+
+function activity_priority_item_history_index(array $typeIds): array
+{
+    $normalizedTypeIds = array_values(array_unique(array_filter(array_map('intval', $typeIds), static fn (int $typeId): bool => $typeId > 0)));
+    if ($normalizedTypeIds === []) {
+        return [];
+    }
+
+    $allianceStructureId = configured_structure_destination_id_for_esi_sync();
+    $hubRef = market_hub_setting_reference();
+    $hubSourceId = sync_source_id_from_hub_ref($hubRef);
+
+    try {
+        if ($allianceStructureId > 0) {
+            return doctrine_local_history_index(
+                db_market_orders_history_stock_health_series(
+                    'alliance_structure',
+                    $allianceStructureId,
+                    gmdate('Y-m-d', strtotime('-14 days')),
+                    gmdate('Y-m-d'),
+                    $normalizedTypeIds
+                )
+            );
+        }
+
+        if ($hubSourceId > 0) {
+            return doctrine_local_history_index(
+                db_market_hub_local_history_daily_window_by_type_ids(
+                    market_hub_local_history_source(),
+                    $hubSourceId,
+                    $normalizedTypeIds,
+                    14
+                )
+            );
+        }
+    } catch (Throwable) {
+        return [];
+    }
+
+    return [];
+}
+
+function activity_priority_fit_item_windows(array $items, array $itemLossByType): array
+{
+    $moduleLosses24h = 0;
+    $moduleLosses3d = 0;
+    $moduleLosses7d = 0;
+    $equivalent24h = 0.0;
+    $equivalent3d = 0.0;
+    $equivalent7d = 0.0;
+
+    foreach ($items as $item) {
+        $typeId = max(0, (int) ($item['type_id'] ?? 0));
+        $requiredQty = max(1, (int) ($item['quantity'] ?? 1));
+        if ($typeId <= 0) {
+            continue;
+        }
+
+        $loss = $itemLossByType[$typeId] ?? [];
+        $qty24h = max(0, (int) ($loss['quantity_24h'] ?? 0));
+        $qty3d = max(0, (int) ($loss['quantity_3d'] ?? 0));
+        $qty7d = max(0, (int) ($loss['quantity_7d'] ?? 0));
+
+        $moduleLosses24h += $qty24h;
+        $moduleLosses3d += $qty3d;
+        $moduleLosses7d += $qty7d;
+        $equivalent24h = max($equivalent24h, $qty24h / $requiredQty);
+        $equivalent3d = max($equivalent3d, $qty3d / $requiredQty);
+        $equivalent7d = max($equivalent7d, $qty7d / $requiredQty);
+    }
+
+    return [
+        'module_losses_24h' => $moduleLosses24h,
+        'module_losses_3d' => $moduleLosses3d,
+        'module_losses_7d' => $moduleLosses7d,
+        'fit_equivalent_losses_24h' => round($equivalent24h, 2),
+        'fit_equivalent_losses_3d' => round($equivalent3d, 2),
+        'fit_equivalent_losses_7d' => round($equivalent7d, 2),
+    ];
+}
+
+function activity_priority_doctrine_explanation(array $row): string
+{
+    $parts = [];
+    if ((int) ($row['hull_losses_24h'] ?? 0) > 0 || (int) ($row['hull_losses_7d'] ?? 0) > 0) {
+        $parts[] = doctrine_format_quantity((int) ($row['hull_losses_24h'] ?? 0)) . ' hull losses in 24h and ' . doctrine_format_quantity((int) ($row['hull_losses_7d'] ?? 0)) . ' in 7d';
+    }
+    if ((float) ($row['fit_equivalent_losses_7d'] ?? 0.0) > 0) {
+        $parts[] = number_format((float) ($row['fit_equivalent_losses_7d'] ?? 0.0), 1) . ' fit-equivalent module losses over 7d';
+    }
+    if ((int) ($row['readiness_gap_count'] ?? 0) > 0) {
+        $parts[] = doctrine_format_quantity((int) ($row['readiness_gap_count'] ?? 0)) . ' fit gaps still open locally';
+    }
+    if (((string) ($row['resupply_pressure_state'] ?? 'stable')) !== 'stable') {
+        $parts[] = 'resupply pressure is ' . strtolower((string) ($row['resupply_pressure'] ?? 'elevated'));
+    }
+
+    return ucfirst(implode(' · ', array_slice($parts, 0, 4))) . ($parts === [] ? 'No recent tracked loss pressure is pushing this doctrine higher right now.' : '.');
+}
+
+function activity_priority_item_explanation(array $row): string
+{
+    $parts = [];
+    if ((bool) ($row['is_doctrine_linked'] ?? false)) {
+        $parts[] = 'linked to ' . doctrine_format_quantity((int) ($row['linked_doctrine_count'] ?? 0)) . ' doctrine fits';
+    }
+    if ((int) ($row['linked_active_doctrine_count'] ?? 0) > 0) {
+        $parts[] = doctrine_format_quantity((int) ($row['linked_active_doctrine_count'] ?? 0)) . ' linked doctrines are active now';
+    }
+    if ((int) ($row['recent_loss_qty_24h'] ?? 0) > 0 || (int) ($row['recent_loss_qty_7d'] ?? 0) > 0) {
+        $parts[] = doctrine_format_quantity((int) ($row['recent_loss_qty_24h'] ?? 0)) . ' units lost in 24h and ' . doctrine_format_quantity((int) ($row['recent_loss_qty_7d'] ?? 0)) . ' in 7d';
+    }
+    if ((int) ($row['local_sell_volume'] ?? 0) <= 0) {
+        $parts[] = 'no local sell stock currently listed';
+    } elseif ((string) ($row['depletion_state'] ?? 'stable') === 'draining') {
+        $parts[] = 'local stock is draining versus the prior window';
+    }
+    if ((int) ($row['bottleneck_fit_count'] ?? 0) > 0) {
+        $parts[] = 'it is already blocking complete fits';
+    }
+
+    return ucfirst(implode(' · ', array_slice($parts, 0, 5))) . ($parts === [] ? 'Signals are steady, so the item remains on watch rather than elevated.' : '.');
+}
+
+function activity_priority_movement_label(int $rankDelta, float $scoreDelta): string
+{
+    if ($rankDelta >= 5 || $scoreDelta >= 12.0) {
+        return 'Rising fast';
+    }
+    if ($rankDelta > 0 || $scoreDelta > 4.0) {
+        return 'Moving up';
+    }
+    if ($rankDelta <= -5 || $scoreDelta <= -12.0) {
+        return 'Cooling down';
+    }
+    if ($rankDelta < 0 || $scoreDelta < -4.0) {
+        return 'Softening';
+    }
+
+    return 'Holding';
+}
+
+function activity_priority_summary_build(string $reason = 'manual'): array
+{
+    $doctrineSnapshot = doctrine_snapshot_cache_payload();
+    if ($doctrineSnapshot === null) {
+        $doctrineSnapshot = doctrine_refresh_intelligence($reason . ':bootstrap');
+    }
+
+    $marketOutcomes = market_comparison_outcomes();
+    $marketRows = array_values((array) ($marketOutcomes['rows'] ?? []));
+    $marketByTypeId = [];
+    foreach ($marketRows as $row) {
+        $typeId = (int) ($row['type_id'] ?? 0);
+        if ($typeId > 0) {
+            $marketByTypeId[$typeId] = $row;
+        }
+    }
+
+    $fits = array_values((array) ($doctrineSnapshot['fits'] ?? []));
+    $groups = array_values((array) ($doctrineSnapshot['groups'] ?? []));
+    $fitIds = array_values(array_filter(array_map(static fn (array $fit): int => (int) ($fit['id'] ?? 0), $fits), static fn (int $fitId): bool => $fitId > 0));
+
+    $itemsByFitId = [];
+    $doctrineTypeIds = [];
+    try {
+        foreach (db_doctrine_fit_items_by_fit_ids($fitIds) as $item) {
+            $fitId = (int) ($item['doctrine_fit_id'] ?? 0);
+            $typeId = (int) ($item['type_id'] ?? 0);
+            if ($fitId <= 0 || $typeId <= 0 || !item_scope_is_type_id_in_scope($typeId)) {
+                continue;
+            }
+
+            $itemsByFitId[$fitId][] = $item;
+            $doctrineTypeIds[] = $typeId;
+        }
+    } catch (Throwable) {
+        $itemsByFitId = [];
+    }
+
+    $enabledTypeIds = array_values(array_unique(array_merge(array_keys($marketByTypeId), $doctrineTypeIds)));
+    $itemLossRows = [];
+    $hullLossRows = [];
+    try {
+        $itemLossRows = db_killmail_tracked_recent_item_activity_windows($enabledTypeIds, 24 * 7);
+    } catch (Throwable) {
+        $itemLossRows = [];
+    }
+    try {
+        $hullLossRows = db_killmail_tracked_recent_hull_activity_windows(
+            array_values(array_filter(array_map(static fn (array $fit): int => (int) ($fit['ship_type_id'] ?? 0), $fits), static fn (int $typeId): bool => $typeId > 0)),
+            24 * 7
+        );
+    } catch (Throwable) {
+        $hullLossRows = [];
+    }
+
+    $itemLossByType = doctrine_item_loss_index($itemLossRows);
+    foreach ($itemLossRows as $row) {
+        $typeId = (int) ($row['type_id'] ?? 0);
+        if ($typeId <= 0) {
+            continue;
+        }
+        $itemLossByType[$typeId]['quantity_3d'] = max(0, (int) ($row['quantity_3d'] ?? 0));
+        $itemLossByType[$typeId]['losses_3d'] = max(0, (int) ($row['losses_3d'] ?? 0));
+    }
+    $hullLossByType = doctrine_hull_loss_index($hullLossRows);
+    foreach ($hullLossRows as $row) {
+        $typeId = (int) ($row['type_id'] ?? 0);
+        if ($typeId <= 0) {
+            continue;
+        }
+        $hullLossByType[$typeId]['losses_3d'] = max(0, (int) ($row['losses_3d'] ?? 0));
+    }
+
+    $historyByTypeId = activity_priority_item_history_index($enabledTypeIds);
+    $depletionByType = doctrine_item_depletion_index($historyByTypeId);
+
+    $previousFitSnapshots = [];
+    foreach (db_doctrine_activity_latest_snapshots('fit', $fitIds) as $row) {
+        $previousFitSnapshots[(int) ($row['entity_id'] ?? 0)] = $row;
+    }
+
+    $fitRows = [];
+    foreach ($fits as $fit) {
+        $fitId = (int) ($fit['id'] ?? 0);
+        $supply = is_array($fit['supply'] ?? null) ? $fit['supply'] : [];
+        $shipTypeId = (int) ($fit['ship_type_id'] ?? 0);
+        $hull = $hullLossByType[$shipTypeId] ?? [];
+        $itemWindows = activity_priority_fit_item_windows($itemsByFitId[$fitId] ?? [], $itemLossByType);
+
+        $hullPressure = min(38.0, ((int) ($hull['losses_24h'] ?? 0) * 16.0) + max(0, ((int) ($hull['losses_3d'] ?? 0) - (int) ($hull['losses_24h'] ?? 0)) * 5.5) + max(0, ((int) ($hull['losses_7d'] ?? 0) - (int) ($hull['losses_3d'] ?? 0)) * 3.0));
+        $modulePressure = min(24.0, ((float) ($itemWindows['fit_equivalent_losses_24h'] ?? 0.0) * 8.5) + max(0.0, ((float) ($itemWindows['fit_equivalent_losses_3d'] ?? 0.0) - (float) ($itemWindows['fit_equivalent_losses_24h'] ?? 0.0)) * 4.0) + max(0.0, ((float) ($itemWindows['fit_equivalent_losses_7d'] ?? 0.0) - (float) ($itemWindows['fit_equivalent_losses_3d'] ?? 0.0)) * 2.4));
+        $recencyWeight = activity_priority_recency_weight(
+            max((float) ($hull['losses_24h'] ?? 0), (float) ($itemWindows['fit_equivalent_losses_24h'] ?? 0.0)),
+            max((float) ($hull['losses_3d'] ?? 0), (float) ($itemWindows['fit_equivalent_losses_3d'] ?? 0.0)),
+            max((float) ($hull['losses_7d'] ?? 0), (float) ($itemWindows['fit_equivalent_losses_7d'] ?? 0.0))
+        );
+        $repeatedUsage = activity_priority_repeated_usage_weight(
+            max((float) ($hull['losses_24h'] ?? 0), (float) ($itemWindows['fit_equivalent_losses_24h'] ?? 0.0)),
+            max((float) ($hull['losses_3d'] ?? 0), (float) ($itemWindows['fit_equivalent_losses_3d'] ?? 0.0)),
+            max((float) ($hull['losses_7d'] ?? 0), (float) ($itemWindows['fit_equivalent_losses_7d'] ?? 0.0))
+        );
+        $readinessGapWeight = min(16.0, ((int) ($supply['gap_to_target_fit_count'] ?? 0) * 3.0) + (((string) ($supply['readiness_state'] ?? 'market_ready')) === 'critical_gap' ? 6.0 : ((((string) ($supply['readiness_state'] ?? 'market_ready')) === 'partial_gap') ? 3.0 : 0.0)));
+        $pressureWeight = activity_priority_pressure_bonus((string) ($supply['resupply_pressure_state'] ?? 'stable'));
+        $activityScore = round(min(100.0, $hullPressure + $modulePressure + $recencyWeight + $repeatedUsage + $readinessGapWeight + $pressureWeight), 2);
+
+        $components = [
+            'hull_loss_pressure' => round($hullPressure, 2),
+            'module_loss_pressure' => round($modulePressure, 2),
+            'recency_weight' => round($recencyWeight, 2),
+            'repeated_usage_weight' => round($repeatedUsage, 2),
+            'readiness_gap_weight' => round($readinessGapWeight + $pressureWeight, 2),
+        ];
+
+        $previous = $previousFitSnapshots[$fitId] ?? [];
+        $scoreDelta = round($activityScore - (float) ($previous['activity_score'] ?? 0.0), 2);
+        $fitRows[] = $fit + [
+            'entity_type' => 'fit',
+            'entity_id' => $fitId,
+            'doctrine_name' => (string) ($fit['fit_name'] ?? ('Fit #' . $fitId)),
+            'activity_score' => $activityScore,
+            'activity_level' => activity_priority_level_from_score($activityScore),
+            'hull_losses_24h' => max(0, (int) ($hull['losses_24h'] ?? 0)),
+            'hull_losses_3d' => max(0, (int) ($hull['losses_3d'] ?? 0)),
+            'hull_losses_7d' => max(0, (int) ($hull['losses_7d'] ?? 0)),
+            'module_losses_24h' => max(0, (int) ($itemWindows['module_losses_24h'] ?? 0)),
+            'module_losses_3d' => max(0, (int) ($itemWindows['module_losses_3d'] ?? 0)),
+            'module_losses_7d' => max(0, (int) ($itemWindows['module_losses_7d'] ?? 0)),
+            'fit_equivalent_losses_24h' => (float) ($itemWindows['fit_equivalent_losses_24h'] ?? 0.0),
+            'fit_equivalent_losses_3d' => (float) ($itemWindows['fit_equivalent_losses_3d'] ?? 0.0),
+            'fit_equivalent_losses_7d' => (float) ($itemWindows['fit_equivalent_losses_7d'] ?? 0.0),
+            'readiness_state' => (string) ($supply['readiness_state'] ?? 'market_ready'),
+            'readiness_label' => (string) ($supply['readiness_label'] ?? 'Market ready'),
+            'resupply_pressure_state' => (string) ($supply['resupply_pressure_state'] ?? 'stable'),
+            'resupply_pressure' => (string) ($supply['resupply_pressure_label'] ?? 'Stable'),
+            'readiness_gap_count' => max(0, (int) ($supply['gap_to_target_fit_count'] ?? 0)),
+            'resupply_gap_isk' => (float) ($supply['restock_gap_isk'] ?? 0.0),
+            'score_components' => $components,
+            'score_delta' => $scoreDelta,
+        ];
+    }
+
+    usort($fitRows, static fn (array $a, array $b): int => ((float) ($b['activity_score'] ?? 0.0) <=> (float) ($a['activity_score'] ?? 0.0)) ?: strcasecmp((string) ($a['doctrine_name'] ?? ''), (string) ($b['doctrine_name'] ?? '')));
+    foreach ($fitRows as $index => &$row) {
+        $previous = $previousFitSnapshots[(int) ($row['entity_id'] ?? 0)] ?? [];
+        $row['rank_position'] = $index + 1;
+        $row['previous_rank_position'] = isset($previous['rank_position']) ? (int) $previous['rank_position'] : null;
+        $row['rank_delta'] = $row['previous_rank_position'] !== null ? ((int) $row['previous_rank_position'] - (int) $row['rank_position']) : 0;
+        $row['movement_label'] = activity_priority_movement_label((int) $row['rank_delta'], (float) ($row['score_delta'] ?? 0.0));
+        $row['explanation'] = activity_priority_doctrine_explanation($row);
+    }
+    unset($row);
+
+    $fitById = [];
+    foreach ($fitRows as $row) {
+        $fitById[(int) ($row['entity_id'] ?? 0)] = $row;
+    }
+
+    $groupIds = array_values(array_filter(array_map(static fn (array $group): int => (int) ($group['id'] ?? 0), $groups), static fn (int $groupId): bool => $groupId > 0));
+    $previousGroupSnapshots = [];
+    foreach (db_doctrine_activity_latest_snapshots('group', $groupIds) as $row) {
+        $previousGroupSnapshots[(int) ($row['entity_id'] ?? 0)] = $row;
+    }
+
+    $groupRows = [];
+    foreach ($groups as $group) {
+        $groupFits = array_values((array) ($group['fits'] ?? []));
+        $scoredFits = [];
+        foreach ($groupFits as $fit) {
+            $fitId = (int) ($fit['id'] ?? 0);
+            if (isset($fitById[$fitId])) {
+                $scoredFits[] = $fitById[$fitId];
+            }
+        }
+        if ($scoredFits === []) {
+            continue;
+        }
+
+        usort($scoredFits, static fn (array $a, array $b): int => ((float) ($b['activity_score'] ?? 0.0) <=> (float) ($a['activity_score'] ?? 0.0)));
+        $topFitScore = (float) ($scoredFits[0]['activity_score'] ?? 0.0);
+        $averageFitScore = array_sum(array_map(static fn (array $fit): float => (float) ($fit['activity_score'] ?? 0.0), $scoredFits)) / max(1, count($scoredFits));
+        $hull24h = array_sum(array_map(static fn (array $fit): int => (int) ($fit['hull_losses_24h'] ?? 0), $scoredFits));
+        $hull3d = array_sum(array_map(static fn (array $fit): int => (int) ($fit['hull_losses_3d'] ?? 0), $scoredFits));
+        $hull7d = array_sum(array_map(static fn (array $fit): int => (int) ($fit['hull_losses_7d'] ?? 0), $scoredFits));
+        $module24h = array_sum(array_map(static fn (array $fit): int => (int) ($fit['module_losses_24h'] ?? 0), $scoredFits));
+        $module3d = array_sum(array_map(static fn (array $fit): int => (int) ($fit['module_losses_3d'] ?? 0), $scoredFits));
+        $module7d = array_sum(array_map(static fn (array $fit): int => (int) ($fit['module_losses_7d'] ?? 0), $scoredFits));
+        $equivalent24h = array_sum(array_map(static fn (array $fit): float => (float) ($fit['fit_equivalent_losses_24h'] ?? 0.0), $scoredFits));
+        $equivalent3d = array_sum(array_map(static fn (array $fit): float => (float) ($fit['fit_equivalent_losses_3d'] ?? 0.0), $scoredFits));
+        $equivalent7d = array_sum(array_map(static fn (array $fit): float => (float) ($fit['fit_equivalent_losses_7d'] ?? 0.0), $scoredFits));
+        $recencyWeight = activity_priority_recency_weight(max($hull24h, $equivalent24h), max($hull3d, $equivalent3d), max($hull7d, $equivalent7d));
+        $repeatedWeight = activity_priority_repeated_usage_weight(max($hull24h, $equivalent24h), max($hull3d, $equivalent3d), max($hull7d, $equivalent7d));
+        $readinessWeight = min(18.0, ((int) ($group['fit_gap_count'] ?? 0) * 2.5) + ((int) ($group['gap_fit_count'] ?? 0) * 2.0) + activity_priority_pressure_bonus((string) ($group['pressure_state'] ?? 'stable')));
+        $hullPressure = min(30.0, ($hull24h * 7.0) + max(0, $hull3d - $hull24h) * 2.8 + max(0, $hull7d - $hull3d) * 1.6);
+        $modulePressure = min(22.0, ($equivalent24h * 5.5) + max(0.0, $equivalent3d - $equivalent24h) * 2.4 + max(0.0, $equivalent7d - $equivalent3d) * 1.4);
+        $score = round(min(100.0, ($topFitScore * 0.45) + ($averageFitScore * 0.25) + $hullPressure + $modulePressure + $recencyWeight + $repeatedWeight + $readinessWeight), 2);
+        $components = [
+            'hull_loss_pressure' => round($hullPressure, 2),
+            'module_loss_pressure' => round($modulePressure, 2),
+            'recency_weight' => round($recencyWeight, 2),
+            'repeated_usage_weight' => round($repeatedWeight, 2),
+            'readiness_gap_weight' => round($readinessWeight, 2),
+        ];
+        $previous = $previousGroupSnapshots[(int) ($group['id'] ?? 0)] ?? [];
+        $scoreDelta = round($score - (float) ($previous['activity_score'] ?? 0.0), 2);
+
+        $groupRows[] = $group + [
+            'entity_type' => 'group',
+            'entity_id' => (int) ($group['id'] ?? 0),
+            'doctrine_name' => (string) ($group['group_name'] ?? 'Doctrine group'),
+            'activity_score' => $score,
+            'activity_level' => activity_priority_level_from_score($score),
+            'hull_losses_24h' => $hull24h,
+            'hull_losses_3d' => $hull3d,
+            'hull_losses_7d' => $hull7d,
+            'module_losses_24h' => $module24h,
+            'module_losses_3d' => $module3d,
+            'module_losses_7d' => $module7d,
+            'fit_equivalent_losses_24h' => round($equivalent24h, 2),
+            'fit_equivalent_losses_3d' => round($equivalent3d, 2),
+            'fit_equivalent_losses_7d' => round($equivalent7d, 2),
+            'readiness_state' => (string) ($group['status'] ?? 'market_ready'),
+            'readiness_label' => (string) ($group['status_label'] ?? 'Market ready'),
+            'resupply_pressure_state' => (string) ($group['pressure_state'] ?? 'stable'),
+            'resupply_pressure' => (string) ($group['pressure_label'] ?? 'Stable'),
+            'readiness_gap_count' => max(0, (int) ($group['fit_gap_count'] ?? 0)),
+            'resupply_gap_isk' => (float) ($group['restock_gap_isk'] ?? 0.0),
+            'score_components' => $components,
+            'score_delta' => $scoreDelta,
+            'top_fits' => array_slice(array_map(static fn (array $fit): array => [
+                'fit_id' => (int) ($fit['entity_id'] ?? 0),
+                'fit_name' => (string) ($fit['doctrine_name'] ?? ''),
+                'activity_score' => (float) ($fit['activity_score'] ?? 0.0),
+                'activity_level' => (string) ($fit['activity_level'] ?? 'low'),
+            ], $scoredFits), 0, 3),
+        ];
+    }
+
+    usort($groupRows, static fn (array $a, array $b): int => ((float) ($b['activity_score'] ?? 0.0) <=> (float) ($a['activity_score'] ?? 0.0)) ?: strcasecmp((string) ($a['doctrine_name'] ?? ''), (string) ($b['doctrine_name'] ?? '')));
+    foreach ($groupRows as $index => &$row) {
+        $previous = $previousGroupSnapshots[(int) ($row['entity_id'] ?? 0)] ?? [];
+        $row['rank_position'] = $index + 1;
+        $row['previous_rank_position'] = isset($previous['rank_position']) ? (int) $previous['rank_position'] : null;
+        $row['rank_delta'] = $row['previous_rank_position'] !== null ? ((int) $row['previous_rank_position'] - (int) $row['rank_position']) : 0;
+        $row['movement_label'] = activity_priority_movement_label((int) $row['rank_delta'], (float) ($row['score_delta'] ?? 0.0));
+        $row['explanation'] = activity_priority_doctrine_explanation($row);
+    }
+    unset($row);
+
+    $activeFitIds = array_fill_keys(array_map(static fn (array $fit): int => (int) ($fit['entity_id'] ?? 0), array_filter($fitRows, static fn (array $fit): bool => in_array((string) ($fit['activity_level'] ?? 'low'), ['active', 'highly active'], true))), true);
+    $doctrineItemMeta = [];
+    foreach ($fits as $fit) {
+        $fitId = (int) ($fit['id'] ?? 0);
+        $supply = is_array($fit['supply'] ?? null) ? $fit['supply'] : [];
+        $groupNames = array_values((array) ($fit['group_names'] ?? []));
+        foreach ($itemsByFitId[$fitId] ?? [] as $item) {
+            $typeId = (int) ($item['type_id'] ?? 0);
+            if ($typeId <= 0) {
+                continue;
+            }
+            if (!isset($doctrineItemMeta[$typeId])) {
+                $doctrineItemMeta[$typeId] = [
+                    'linked_fit_ids' => [],
+                    'linked_group_names' => [],
+                    'active_fit_ids' => [],
+                    'bottleneck_fit_count' => 0,
+                    'readiness_gap_fit_count' => 0,
+                    'max_doctrine_activity_score' => 0.0,
+                    'avg_doctrine_activity_score' => 0.0,
+                    'activity_score_total' => 0.0,
+                    'activity_score_count' => 0,
+                ];
+            }
+            $doctrineItemMeta[$typeId]['linked_fit_ids'][$fitId] = (string) ($fit['fit_name'] ?? 'Doctrine fit');
+            foreach ($groupNames as $groupName) {
+                $safeName = trim((string) $groupName);
+                if ($safeName !== '') {
+                    $doctrineItemMeta[$typeId]['linked_group_names'][$safeName] = true;
+                }
+            }
+            if (isset($activeFitIds[$fitId])) {
+                $doctrineItemMeta[$typeId]['active_fit_ids'][$fitId] = true;
+            }
+            if ((int) ($supply['bottleneck_type_id'] ?? 0) === $typeId && (($supply['bottleneck_is_stock_tracked'] ?? true) === true)) {
+                $doctrineItemMeta[$typeId]['bottleneck_fit_count']++;
+            }
+            if ((int) ($supply['gap_to_target_fit_count'] ?? 0) > 0) {
+                $doctrineItemMeta[$typeId]['readiness_gap_fit_count']++;
+            }
+            $fitScore = (float) (($fitById[$fitId]['activity_score'] ?? 0.0));
+            $doctrineItemMeta[$typeId]['max_doctrine_activity_score'] = max((float) $doctrineItemMeta[$typeId]['max_doctrine_activity_score'], $fitScore);
+            $doctrineItemMeta[$typeId]['activity_score_total'] += $fitScore;
+            $doctrineItemMeta[$typeId]['activity_score_count']++;
+        }
+    }
+    foreach ($doctrineItemMeta as $typeId => &$meta) {
+        $count = max(1, (int) ($meta['activity_score_count'] ?? 1));
+        $meta['avg_doctrine_activity_score'] = round(((float) ($meta['activity_score_total'] ?? 0.0)) / $count, 2);
+    }
+    unset($meta);
+
+    $previousItemSnapshots = [];
+    foreach (db_item_priority_latest_snapshots(array_keys($marketByTypeId)) as $row) {
+        $previousItemSnapshots[(int) ($row['type_id'] ?? 0)] = $row;
+    }
+
+    $itemRows = [];
+    foreach ($marketRows as $row) {
+        $typeId = (int) ($row['type_id'] ?? 0);
+        if ($typeId <= 0) {
+            continue;
+        }
+        $loss = $itemLossByType[$typeId] ?? [];
+        $depletion = $depletionByType[$typeId] ?? [];
+        $doctrineMeta = $doctrineItemMeta[$typeId] ?? [];
+        $isDoctrineLinked = isset($doctrineMeta['linked_fit_ids']) && $doctrineMeta['linked_fit_ids'] !== [];
+        $linkedDoctrineCount = $isDoctrineLinked ? count((array) ($doctrineMeta['linked_fit_ids'] ?? [])) : 0;
+        $linkedActiveDoctrineCount = $isDoctrineLinked ? count((array) ($doctrineMeta['active_fit_ids'] ?? [])) : 0;
+        $doctrineActivityWeight = $isDoctrineLinked
+            ? min(26.0, (((float) ($doctrineMeta['max_doctrine_activity_score'] ?? 0.0)) * 0.18) + (((float) ($doctrineMeta['avg_doctrine_activity_score'] ?? 0.0)) * 0.10) + ($linkedActiveDoctrineCount * 2.8))
+            : 0.0;
+        $directLossWeight = min(24.0,
+            ((int) ($loss['quantity_24h'] ?? 0) * 2.2)
+            + (max(0, (int) (($loss['quantity_3d'] ?? 0) - ($loss['quantity_24h'] ?? 0))) * 1.1)
+            + (max(0, (int) (($loss['quantity_7d'] ?? 0) - ($loss['quantity_3d'] ?? 0))) * 0.6)
+            + ((int) ($loss['losses_24h'] ?? 0) * 1.8)
+        );
+        $stockGapWeight = min(24.0,
+            ((bool) ($row['missing_in_alliance'] ?? false) ? 18.0 : 0.0)
+            + ((bool) ($row['weak_alliance_stock'] ?? false) ? 10.0 : 0.0)
+            + min(12.0, (float) ($row['stock_score'] ?? 0) * 0.12)
+        );
+        $depletionWeight = match ((string) ($depletion['classification'] ?? 'stable')) {
+            'draining' => min(14.0, 6.0 + max(0.0, (float) ($depletion['depletion_7d'] ?? 0))),
+            'recovering' => -4.0,
+            default => 0.0,
+        };
+        $bottleneckWeight = min(18.0, ((int) ($doctrineMeta['bottleneck_fit_count'] ?? 0) * 6.0) + ((int) ($doctrineMeta['readiness_gap_fit_count'] ?? 0) * 2.0));
+        $doctrinePriorityBonus = $isDoctrineLinked ? (10.0 + min(8.0, $linkedDoctrineCount * 1.5)) : 0.0;
+        $consumablePenalty = item_scope_type_is_durable_loss_relevant($typeId) ? 0.0 : 12.0;
+        $priorityScore = round(max(0.0, min(100.0, $doctrineActivityWeight + $directLossWeight + $stockGapWeight + $depletionWeight + $bottleneckWeight + $doctrinePriorityBonus - $consumablePenalty)), 2);
+        $components = [
+            'doctrine_activity_weight' => round($doctrineActivityWeight, 2),
+            'direct_loss_frequency_weight' => round($directLossWeight, 2),
+            'stock_gap_weight' => round($stockGapWeight, 2),
+            'depletion_weight' => round($depletionWeight, 2),
+            'bottleneck_weight' => round($bottleneckWeight, 2),
+            'doctrine_priority_bonus' => round($doctrinePriorityBonus, 2),
+        ];
+        $previous = $previousItemSnapshots[$typeId] ?? [];
+        $scoreDelta = round($priorityScore - (float) ($previous['priority_score'] ?? 0.0), 2);
+        $itemRows[] = $row + [
+            'type_id' => $typeId,
+            'item_name' => (string) ($row['type_name'] ?? ('Type #' . $typeId)),
+            'priority_score' => $priorityScore,
+            'priority_band' => activity_priority_item_band($priorityScore),
+            'is_doctrine_linked' => $isDoctrineLinked,
+            'linked_doctrine_count' => $linkedDoctrineCount,
+            'linked_active_doctrine_count' => $linkedActiveDoctrineCount,
+            'linked_doctrine_names' => array_slice(array_keys((array) ($doctrineMeta['linked_group_names'] ?? [])), 0, 5),
+            'local_available_qty' => max(0, (int) ($row['alliance_total_sell_volume'] ?? 0)),
+            'local_sell_orders' => max(0, (int) ($row['alliance_sell_order_count'] ?? 0)),
+            'local_sell_volume' => max(0, (int) ($row['alliance_total_sell_volume'] ?? 0)),
+            'recent_loss_qty_24h' => max(0, (int) ($loss['quantity_24h'] ?? 0)),
+            'recent_loss_qty_3d' => max(0, (int) ($loss['quantity_3d'] ?? 0)),
+            'recent_loss_qty_7d' => max(0, (int) ($loss['quantity_7d'] ?? 0)),
+            'recent_loss_events_24h' => max(0, (int) ($loss['losses_24h'] ?? 0)),
+            'recent_loss_events_3d' => max(0, (int) ($loss['losses_3d'] ?? 0)),
+            'recent_loss_events_7d' => max(0, (int) ($loss['losses_7d'] ?? 0)),
+            'readiness_gap_fit_count' => max(0, (int) ($doctrineMeta['readiness_gap_fit_count'] ?? 0)),
+            'bottleneck_fit_count' => max(0, (int) ($doctrineMeta['bottleneck_fit_count'] ?? 0)),
+            'depletion_state' => (string) ($depletion['classification'] ?? 'stable'),
+            'score_components' => $components,
+            'score_delta' => $scoreDelta,
+        ];
+    }
+
+    usort($itemRows, static function (array $a, array $b): int {
+        $doctrineWeight = ((bool) ($b['is_doctrine_linked'] ?? false) <=> (bool) ($a['is_doctrine_linked'] ?? false));
+        if ($doctrineWeight !== 0 && abs((float) ($a['priority_score'] ?? 0.0) - (float) ($b['priority_score'] ?? 0.0)) <= 8.0) {
+            return $doctrineWeight;
+        }
+
+        return ((float) ($b['priority_score'] ?? 0.0) <=> (float) ($a['priority_score'] ?? 0.0))
+            ?: strcasecmp((string) ($a['item_name'] ?? ''), (string) ($b['item_name'] ?? ''));
+    });
+    foreach ($itemRows as $index => &$row) {
+        $previous = $previousItemSnapshots[(int) ($row['type_id'] ?? 0)] ?? [];
+        $row['rank_position'] = $index + 1;
+        $row['previous_rank_position'] = isset($previous['rank_position']) ? (int) $previous['rank_position'] : null;
+        $row['rank_delta'] = $row['previous_rank_position'] !== null ? ((int) $row['previous_rank_position'] - (int) $row['rank_position']) : 0;
+        $row['movement_label'] = activity_priority_movement_label((int) $row['rank_delta'], (float) ($row['score_delta'] ?? 0.0));
+        $row['explanation'] = activity_priority_item_explanation($row);
+    }
+    unset($row);
+
+    $snapshotTime = gmdate('Y-m-d H:i:s');
+    $groupSnapshotRows = array_map(static fn (array $row): array => [
+        'entity_type' => 'group',
+        'entity_id' => (int) ($row['entity_id'] ?? 0),
+        'entity_name' => (string) ($row['doctrine_name'] ?? ''),
+        'snapshot_time' => $snapshotTime,
+        'rank_position' => (int) ($row['rank_position'] ?? 0),
+        'previous_rank_position' => $row['previous_rank_position'] ?? null,
+        'rank_delta' => (int) ($row['rank_delta'] ?? 0),
+        'activity_score' => (float) ($row['activity_score'] ?? 0.0),
+        'activity_level' => (string) ($row['activity_level'] ?? 'low'),
+        'hull_losses_24h' => (int) ($row['hull_losses_24h'] ?? 0),
+        'hull_losses_3d' => (int) ($row['hull_losses_3d'] ?? 0),
+        'hull_losses_7d' => (int) ($row['hull_losses_7d'] ?? 0),
+        'module_losses_24h' => (int) ($row['module_losses_24h'] ?? 0),
+        'module_losses_3d' => (int) ($row['module_losses_3d'] ?? 0),
+        'module_losses_7d' => (int) ($row['module_losses_7d'] ?? 0),
+        'fit_equivalent_losses_24h' => (float) ($row['fit_equivalent_losses_24h'] ?? 0.0),
+        'fit_equivalent_losses_3d' => (float) ($row['fit_equivalent_losses_3d'] ?? 0.0),
+        'fit_equivalent_losses_7d' => (float) ($row['fit_equivalent_losses_7d'] ?? 0.0),
+        'readiness_state' => (string) ($row['readiness_state'] ?? 'market_ready'),
+        'resupply_pressure_state' => (string) ($row['resupply_pressure_state'] ?? 'stable'),
+        'resupply_pressure' => (string) ($row['resupply_pressure'] ?? 'Stable'),
+        'readiness_gap_count' => (int) ($row['readiness_gap_count'] ?? 0),
+        'resupply_gap_isk' => (float) ($row['resupply_gap_isk'] ?? 0.0),
+        'score_components_json' => json_encode((array) ($row['score_components'] ?? []), JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE),
+        'explanation_text' => (string) ($row['explanation'] ?? ''),
+    ], $groupRows);
+    $fitSnapshotRows = array_map(static fn (array $row): array => [
+        'entity_type' => 'fit',
+        'entity_id' => (int) ($row['entity_id'] ?? 0),
+        'entity_name' => (string) ($row['doctrine_name'] ?? ''),
+        'snapshot_time' => $snapshotTime,
+        'rank_position' => (int) ($row['rank_position'] ?? 0),
+        'previous_rank_position' => $row['previous_rank_position'] ?? null,
+        'rank_delta' => (int) ($row['rank_delta'] ?? 0),
+        'activity_score' => (float) ($row['activity_score'] ?? 0.0),
+        'activity_level' => (string) ($row['activity_level'] ?? 'low'),
+        'hull_losses_24h' => (int) ($row['hull_losses_24h'] ?? 0),
+        'hull_losses_3d' => (int) ($row['hull_losses_3d'] ?? 0),
+        'hull_losses_7d' => (int) ($row['hull_losses_7d'] ?? 0),
+        'module_losses_24h' => (int) ($row['module_losses_24h'] ?? 0),
+        'module_losses_3d' => (int) ($row['module_losses_3d'] ?? 0),
+        'module_losses_7d' => (int) ($row['module_losses_7d'] ?? 0),
+        'fit_equivalent_losses_24h' => (float) ($row['fit_equivalent_losses_24h'] ?? 0.0),
+        'fit_equivalent_losses_3d' => (float) ($row['fit_equivalent_losses_3d'] ?? 0.0),
+        'fit_equivalent_losses_7d' => (float) ($row['fit_equivalent_losses_7d'] ?? 0.0),
+        'readiness_state' => (string) ($row['readiness_state'] ?? 'market_ready'),
+        'resupply_pressure_state' => (string) ($row['resupply_pressure_state'] ?? 'stable'),
+        'resupply_pressure' => (string) ($row['resupply_pressure'] ?? 'Stable'),
+        'readiness_gap_count' => (int) ($row['readiness_gap_count'] ?? 0),
+        'resupply_gap_isk' => (float) ($row['resupply_gap_isk'] ?? 0.0),
+        'score_components_json' => json_encode((array) ($row['score_components'] ?? []), JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE),
+        'explanation_text' => (string) ($row['explanation'] ?? ''),
+    ], $fitRows);
+    $itemSnapshotRows = array_map(static fn (array $row): array => [
+        'type_id' => (int) ($row['type_id'] ?? 0),
+        'item_name' => (string) ($row['item_name'] ?? ''),
+        'snapshot_time' => $snapshotTime,
+        'rank_position' => (int) ($row['rank_position'] ?? 0),
+        'previous_rank_position' => $row['previous_rank_position'] ?? null,
+        'rank_delta' => (int) ($row['rank_delta'] ?? 0),
+        'priority_score' => (float) ($row['priority_score'] ?? 0.0),
+        'priority_band' => (string) ($row['priority_band'] ?? 'watch'),
+        'is_doctrine_linked' => !empty($row['is_doctrine_linked']) ? 1 : 0,
+        'linked_doctrine_count' => (int) ($row['linked_doctrine_count'] ?? 0),
+        'linked_active_doctrine_count' => (int) ($row['linked_active_doctrine_count'] ?? 0),
+        'local_available_qty' => (int) ($row['local_available_qty'] ?? 0),
+        'local_sell_orders' => (int) ($row['local_sell_orders'] ?? 0),
+        'local_sell_volume' => (int) ($row['local_sell_volume'] ?? 0),
+        'recent_loss_qty_24h' => (int) ($row['recent_loss_qty_24h'] ?? 0),
+        'recent_loss_qty_3d' => (int) ($row['recent_loss_qty_3d'] ?? 0),
+        'recent_loss_qty_7d' => (int) ($row['recent_loss_qty_7d'] ?? 0),
+        'recent_loss_events_24h' => (int) ($row['recent_loss_events_24h'] ?? 0),
+        'recent_loss_events_3d' => (int) ($row['recent_loss_events_3d'] ?? 0),
+        'recent_loss_events_7d' => (int) ($row['recent_loss_events_7d'] ?? 0),
+        'readiness_gap_fit_count' => (int) ($row['readiness_gap_fit_count'] ?? 0),
+        'bottleneck_fit_count' => (int) ($row['bottleneck_fit_count'] ?? 0),
+        'depletion_state' => (string) ($row['depletion_state'] ?? 'stable'),
+        'score_components_json' => json_encode((array) ($row['score_components'] ?? []), JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE),
+        'linked_doctrines_json' => json_encode((array) ($row['linked_doctrine_names'] ?? []), JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE),
+        'explanation_text' => (string) ($row['explanation'] ?? ''),
+    ], $itemRows);
+
+    try {
+        db_doctrine_activity_snapshot_bulk_insert(array_merge($groupSnapshotRows, $fitSnapshotRows));
+        db_item_priority_snapshot_bulk_insert($itemSnapshotRows);
+    } catch (Throwable) {
+    }
+
+    $risingDoctrines = array_slice(array_values(array_filter($groupRows, static fn (array $row): bool => (int) ($row['rank_delta'] ?? 0) > 0 || (float) ($row['score_delta'] ?? 0.0) >= 6.0)), 0, 6);
+    $newlyElevatedItems = array_slice(array_values(array_filter($itemRows, static fn (array $row): bool => in_array((string) ($row['priority_band'] ?? 'watch'), ['high', 'critical'], true) && ((int) ($row['rank_delta'] ?? 0) > 0 || (float) ($row['score_delta'] ?? 0.0) >= 6.0))), 0, 8);
+    $coolingItems = array_slice(array_values(array_filter($itemRows, static fn (array $row): bool => (int) ($row['rank_delta'] ?? 0) < 0 || (float) ($row['score_delta'] ?? 0.0) <= -6.0)), 0, 8);
+
+    return [
+        'summary_cards' => [
+            ['label' => 'Active doctrines', 'value' => (string) count(array_filter($groupRows, static fn (array $row): bool => in_array((string) ($row['activity_level'] ?? 'low'), ['active', 'highly active'], true))), 'context' => 'Doctrine groups showing repeated tracked loss pressure right now'],
+            ['label' => 'Highly active fits', 'value' => (string) count(array_filter($fitRows, static fn (array $row): bool => (string) ($row['activity_level'] ?? 'low') === 'highly active')), 'context' => 'Doctrine fits with the strongest recent hull + module pressure'],
+            ['label' => 'Elevated doctrine items', 'value' => (string) count(array_filter($itemRows, static fn (array $row): bool => !empty($row['is_doctrine_linked']) && in_array((string) ($row['priority_band'] ?? 'watch'), ['high', 'critical'], true))), 'context' => 'Doctrine-linked items now pinned above comparable generic signals'],
+            ['label' => 'Items moving up', 'value' => (string) count(array_filter($itemRows, static fn (array $row): bool => (int) ($row['rank_delta'] ?? 0) > 0 || (float) ($row['score_delta'] ?? 0.0) > 0)), 'context' => 'Priority shifts versus the prior materialized snapshot'],
+        ],
+        'active_doctrines' => array_slice($groupRows, 0, 12),
+        'active_fits' => array_slice($fitRows, 0, 10),
+        'priority_items' => array_slice($itemRows, 0, 20),
+        'trend_movement' => [
+            'doctrines_moving_up' => $risingDoctrines,
+            'items_newly_elevated' => $newlyElevatedItems,
+            'items_cooling_down' => $coolingItems,
+        ],
+        'questions_answered' => [
+            'which_doctrines_are_active' => array_map(static fn (array $row): string => (string) ($row['doctrine_name'] ?? ''), array_slice($groupRows, 0, 3)),
+            'which_items_should_move_up' => array_map(static fn (array $row): string => (string) ($row['item_name'] ?? ''), array_slice($itemRows, 0, 5)),
+        ],
+        'fit_count' => count($fitRows),
+        'group_count' => count($groupRows),
+        'item_count' => count($itemRows),
+    ];
 }

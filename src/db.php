@@ -3535,6 +3535,79 @@ function doctrine_db_ensure_schema(): void
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4'
     );
 
+    db()->exec(
+        'CREATE TABLE IF NOT EXISTS doctrine_activity_snapshots (
+            id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+            entity_type ENUM(\'fit\', \'group\') NOT NULL,
+            entity_id INT UNSIGNED NOT NULL,
+            entity_name VARCHAR(190) NOT NULL,
+            snapshot_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            rank_position INT UNSIGNED NOT NULL DEFAULT 0,
+            previous_rank_position INT DEFAULT NULL,
+            rank_delta INT NOT NULL DEFAULT 0,
+            activity_score DECIMAL(8,2) NOT NULL DEFAULT 0.00,
+            activity_level VARCHAR(32) NOT NULL DEFAULT "low",
+            hull_losses_24h INT UNSIGNED NOT NULL DEFAULT 0,
+            hull_losses_3d INT UNSIGNED NOT NULL DEFAULT 0,
+            hull_losses_7d INT UNSIGNED NOT NULL DEFAULT 0,
+            module_losses_24h INT UNSIGNED NOT NULL DEFAULT 0,
+            module_losses_3d INT UNSIGNED NOT NULL DEFAULT 0,
+            module_losses_7d INT UNSIGNED NOT NULL DEFAULT 0,
+            fit_equivalent_losses_24h DECIMAL(8,2) NOT NULL DEFAULT 0.00,
+            fit_equivalent_losses_3d DECIMAL(8,2) NOT NULL DEFAULT 0.00,
+            fit_equivalent_losses_7d DECIMAL(8,2) NOT NULL DEFAULT 0.00,
+            readiness_state VARCHAR(32) NOT NULL DEFAULT "unknown",
+            resupply_pressure_state VARCHAR(32) NOT NULL DEFAULT "stable",
+            resupply_pressure VARCHAR(255) NOT NULL DEFAULT "Stable",
+            readiness_gap_count INT UNSIGNED NOT NULL DEFAULT 0,
+            resupply_gap_isk DECIMAL(16,2) NOT NULL DEFAULT 0.00,
+            score_components_json LONGTEXT DEFAULT NULL,
+            explanation_text VARCHAR(500) DEFAULT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE KEY unique_doctrine_activity_snapshot (entity_type, entity_id, snapshot_time),
+            KEY idx_doctrine_activity_snapshot_time (snapshot_time),
+            KEY idx_doctrine_activity_rank (entity_type, rank_position),
+            KEY idx_doctrine_activity_score (entity_type, activity_score)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4'
+    );
+
+    db()->exec(
+        'CREATE TABLE IF NOT EXISTS item_priority_snapshots (
+            id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+            type_id INT UNSIGNED NOT NULL,
+            item_name VARCHAR(255) NOT NULL,
+            snapshot_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            rank_position INT UNSIGNED NOT NULL DEFAULT 0,
+            previous_rank_position INT DEFAULT NULL,
+            rank_delta INT NOT NULL DEFAULT 0,
+            priority_score DECIMAL(8,2) NOT NULL DEFAULT 0.00,
+            priority_band VARCHAR(32) NOT NULL DEFAULT "watch",
+            is_doctrine_linked TINYINT(1) NOT NULL DEFAULT 0,
+            linked_doctrine_count INT UNSIGNED NOT NULL DEFAULT 0,
+            linked_active_doctrine_count INT UNSIGNED NOT NULL DEFAULT 0,
+            local_available_qty INT NOT NULL DEFAULT 0,
+            local_sell_orders INT NOT NULL DEFAULT 0,
+            local_sell_volume INT NOT NULL DEFAULT 0,
+            recent_loss_qty_24h INT UNSIGNED NOT NULL DEFAULT 0,
+            recent_loss_qty_3d INT UNSIGNED NOT NULL DEFAULT 0,
+            recent_loss_qty_7d INT UNSIGNED NOT NULL DEFAULT 0,
+            recent_loss_events_24h INT UNSIGNED NOT NULL DEFAULT 0,
+            recent_loss_events_3d INT UNSIGNED NOT NULL DEFAULT 0,
+            recent_loss_events_7d INT UNSIGNED NOT NULL DEFAULT 0,
+            readiness_gap_fit_count INT UNSIGNED NOT NULL DEFAULT 0,
+            bottleneck_fit_count INT UNSIGNED NOT NULL DEFAULT 0,
+            depletion_state VARCHAR(32) NOT NULL DEFAULT "stable",
+            score_components_json LONGTEXT DEFAULT NULL,
+            linked_doctrines_json LONGTEXT DEFAULT NULL,
+            explanation_text VARCHAR(500) DEFAULT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE KEY unique_item_priority_snapshot (type_id, snapshot_time),
+            KEY idx_item_priority_snapshot_time (snapshot_time),
+            KEY idx_item_priority_rank (rank_position),
+            KEY idx_item_priority_score (priority_score)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4'
+    );
+
     if (db_table_exists('doctrine_fit_snapshots') && !db_column_exists('doctrine_fit_snapshots', 'resupply_pressure_state')) {
         db()->exec('ALTER TABLE doctrine_fit_snapshots ADD COLUMN resupply_pressure_state VARCHAR(32) NOT NULL DEFAULT "stable" AFTER readiness_state');
         db()->exec('ALTER TABLE doctrine_fit_snapshots ADD COLUMN resupply_pressure_code VARCHAR(64) NOT NULL DEFAULT "stable" AFTER resupply_pressure_state');
@@ -4706,5 +4779,260 @@ function db_doctrine_group_suggestions_for_fit(string $fitName, ?int $shipTypeId
            AND ((? <> "" AND df.fit_name = ?) OR (? > 0 AND df.ship_type_id = ?))
          ORDER BY dg.group_name ASC',
         [$excludeFitId, trim($fitName), trim($fitName), $shipTypeId ?? 0, $shipTypeId ?? 0]
+    );
+}
+
+
+function db_killmail_tracked_recent_hull_activity_windows(array $hullTypeIds, int $hours = 24 * 7): array
+{
+    $safeHours = max(24, min(24 * 30, $hours));
+    $normalizedTypeIds = array_values(array_unique(array_filter(array_map('intval', $hullTypeIds), static fn (int $typeId): bool => $typeId > 0)));
+    if ($normalizedTypeIds === []) {
+        return [];
+    }
+
+    $placeholders = implode(',', array_fill(0, count($normalizedTypeIds), '?'));
+    $trackedMatchesSql = db_killmail_tracked_matches_sql("(UTC_TIMESTAMP() - INTERVAL {$safeHours} HOUR)");
+
+    return db_select(
+        "SELECT
+            e.victim_ship_type_id AS type_id,
+            SUM(CASE WHEN e.effective_killmail_at >= (UTC_TIMESTAMP() - INTERVAL 24 HOUR) THEN 1 ELSE 0 END) AS losses_24h,
+            SUM(CASE WHEN e.effective_killmail_at >= (UTC_TIMESTAMP() - INTERVAL 3 DAY) THEN 1 ELSE 0 END) AS losses_3d,
+            SUM(CASE WHEN e.effective_killmail_at >= (UTC_TIMESTAMP() - INTERVAL 7 DAY) THEN 1 ELSE 0 END) AS losses_7d,
+            COUNT(*) AS losses_window,
+            MAX(e.effective_killmail_at) AS latest_loss_at
+         FROM {$trackedMatchesSql} tracked
+         INNER JOIN killmail_events e ON e.sequence_id = tracked.sequence_id
+         WHERE e.effective_killmail_at >= (UTC_TIMESTAMP() - INTERVAL {$safeHours} HOUR)
+           AND e.victim_ship_type_id IN ({$placeholders})
+         GROUP BY e.victim_ship_type_id",
+        $normalizedTypeIds
+    );
+}
+
+function db_killmail_tracked_recent_item_activity_windows(array $typeIds, int $hours = 24 * 7): array
+{
+    $safeHours = max(24, min(24 * 30, $hours));
+    $normalizedTypeIds = array_values(array_unique(array_filter(array_map('intval', $typeIds), static fn (int $typeId): bool => $typeId > 0)));
+    if ($normalizedTypeIds === []) {
+        return [];
+    }
+
+    $placeholders = implode(',', array_fill(0, count($normalizedTypeIds), '?'));
+    $trackedMatchesSql = db_killmail_tracked_matches_sql("(UTC_TIMESTAMP() - INTERVAL {$safeHours} HOUR)");
+    $quantitySql = "GREATEST(
+        COALESCE(i.quantity_destroyed, 0) + COALESCE(i.quantity_dropped, 0),
+        CASE
+            WHEN COALESCE(i.quantity_destroyed, 0) + COALESCE(i.quantity_dropped, 0) > 0 THEN 0
+            WHEN i.item_role IN ('fitted', 'destroyed', 'dropped') THEN 1
+            ELSE 0
+        END
+    )";
+
+    return db_select(
+        "SELECT
+            i.item_type_id AS type_id,
+            SUM(CASE WHEN e.effective_killmail_at >= (UTC_TIMESTAMP() - INTERVAL 24 HOUR) THEN {$quantitySql} ELSE 0 END) AS quantity_24h,
+            SUM(CASE WHEN e.effective_killmail_at >= (UTC_TIMESTAMP() - INTERVAL 3 DAY) THEN {$quantitySql} ELSE 0 END) AS quantity_3d,
+            SUM(CASE WHEN e.effective_killmail_at >= (UTC_TIMESTAMP() - INTERVAL 7 DAY) THEN {$quantitySql} ELSE 0 END) AS quantity_7d,
+            SUM({$quantitySql}) AS quantity_window,
+            COUNT(DISTINCT CASE WHEN e.effective_killmail_at >= (UTC_TIMESTAMP() - INTERVAL 24 HOUR) THEN e.sequence_id END) AS losses_24h,
+            COUNT(DISTINCT CASE WHEN e.effective_killmail_at >= (UTC_TIMESTAMP() - INTERVAL 3 DAY) THEN e.sequence_id END) AS losses_3d,
+            COUNT(DISTINCT CASE WHEN e.effective_killmail_at >= (UTC_TIMESTAMP() - INTERVAL 7 DAY) THEN e.sequence_id END) AS losses_7d,
+            COUNT(DISTINCT e.sequence_id) AS losses_window,
+            MAX(e.effective_killmail_at) AS latest_loss_at
+         FROM {$trackedMatchesSql} tracked
+         INNER JOIN killmail_events e ON e.sequence_id = tracked.sequence_id
+         INNER JOIN killmail_items i ON i.sequence_id = e.sequence_id
+         WHERE e.effective_killmail_at >= (UTC_TIMESTAMP() - INTERVAL {$safeHours} HOUR)
+           AND i.item_type_id IN ({$placeholders})
+         GROUP BY i.item_type_id",
+        $normalizedTypeIds
+    );
+}
+
+function db_doctrine_activity_latest_snapshots(string $entityType, array $entityIds): array
+{
+    doctrine_db_ensure_schema();
+
+    $safeEntityType = trim($entityType);
+    $normalizedIds = array_values(array_unique(array_filter(array_map('intval', $entityIds), static fn (int $id): bool => $id > 0)));
+    if (!in_array($safeEntityType, ['fit', 'group'], true) || $normalizedIds === []) {
+        return [];
+    }
+
+    $placeholders = implode(', ', array_fill(0, count($normalizedIds), '?'));
+    $params = array_merge([$safeEntityType], $normalizedIds, [$safeEntityType], $normalizedIds);
+
+    return db_select(
+        "SELECT s.*
+         FROM doctrine_activity_snapshots s
+         INNER JOIN (
+            SELECT entity_id, MAX(snapshot_time) AS snapshot_time
+            FROM doctrine_activity_snapshots
+            WHERE entity_type = ?
+              AND entity_id IN ({$placeholders})
+            GROUP BY entity_id
+         ) latest
+           ON latest.entity_id = s.entity_id
+          AND latest.snapshot_time = s.snapshot_time
+         WHERE s.entity_type = ?
+           AND s.entity_id IN ({$placeholders})",
+        $params
+    );
+}
+
+function db_item_priority_latest_snapshots(array $typeIds): array
+{
+    doctrine_db_ensure_schema();
+
+    $normalizedTypeIds = array_values(array_unique(array_filter(array_map('intval', $typeIds), static fn (int $typeId): bool => $typeId > 0)));
+    if ($normalizedTypeIds === []) {
+        return [];
+    }
+
+    $placeholders = implode(', ', array_fill(0, count($normalizedTypeIds), '?'));
+
+    return db_select(
+        "SELECT s.*
+         FROM item_priority_snapshots s
+         INNER JOIN (
+            SELECT type_id, MAX(snapshot_time) AS snapshot_time
+            FROM item_priority_snapshots
+            WHERE type_id IN ({$placeholders})
+            GROUP BY type_id
+         ) latest
+           ON latest.type_id = s.type_id
+          AND latest.snapshot_time = s.snapshot_time
+         WHERE s.type_id IN ({$placeholders})",
+        array_merge($normalizedTypeIds, $normalizedTypeIds)
+    );
+}
+
+function db_doctrine_activity_snapshot_bulk_insert(array $rows, ?int $chunkSize = null): int
+{
+    doctrine_db_ensure_schema();
+
+    return db_bulk_insert_or_upsert(
+        'doctrine_activity_snapshots',
+        [
+            'entity_type',
+            'entity_id',
+            'entity_name',
+            'snapshot_time',
+            'rank_position',
+            'previous_rank_position',
+            'rank_delta',
+            'activity_score',
+            'activity_level',
+            'hull_losses_24h',
+            'hull_losses_3d',
+            'hull_losses_7d',
+            'module_losses_24h',
+            'module_losses_3d',
+            'module_losses_7d',
+            'fit_equivalent_losses_24h',
+            'fit_equivalent_losses_3d',
+            'fit_equivalent_losses_7d',
+            'readiness_state',
+            'resupply_pressure_state',
+            'resupply_pressure',
+            'readiness_gap_count',
+            'resupply_gap_isk',
+            'score_components_json',
+            'explanation_text',
+        ],
+        $rows,
+        [
+            'entity_name',
+            'rank_position',
+            'previous_rank_position',
+            'rank_delta',
+            'activity_score',
+            'activity_level',
+            'hull_losses_24h',
+            'hull_losses_3d',
+            'hull_losses_7d',
+            'module_losses_24h',
+            'module_losses_3d',
+            'module_losses_7d',
+            'fit_equivalent_losses_24h',
+            'fit_equivalent_losses_3d',
+            'fit_equivalent_losses_7d',
+            'readiness_state',
+            'resupply_pressure_state',
+            'resupply_pressure',
+            'readiness_gap_count',
+            'resupply_gap_isk',
+            'score_components_json',
+            'explanation_text',
+        ],
+        $chunkSize
+    );
+}
+
+function db_item_priority_snapshot_bulk_insert(array $rows, ?int $chunkSize = null): int
+{
+    doctrine_db_ensure_schema();
+
+    return db_bulk_insert_or_upsert(
+        'item_priority_snapshots',
+        [
+            'type_id',
+            'item_name',
+            'snapshot_time',
+            'rank_position',
+            'previous_rank_position',
+            'rank_delta',
+            'priority_score',
+            'priority_band',
+            'is_doctrine_linked',
+            'linked_doctrine_count',
+            'linked_active_doctrine_count',
+            'local_available_qty',
+            'local_sell_orders',
+            'local_sell_volume',
+            'recent_loss_qty_24h',
+            'recent_loss_qty_3d',
+            'recent_loss_qty_7d',
+            'recent_loss_events_24h',
+            'recent_loss_events_3d',
+            'recent_loss_events_7d',
+            'readiness_gap_fit_count',
+            'bottleneck_fit_count',
+            'depletion_state',
+            'score_components_json',
+            'linked_doctrines_json',
+            'explanation_text',
+        ],
+        $rows,
+        [
+            'item_name',
+            'rank_position',
+            'previous_rank_position',
+            'rank_delta',
+            'priority_score',
+            'priority_band',
+            'is_doctrine_linked',
+            'linked_doctrine_count',
+            'linked_active_doctrine_count',
+            'local_available_qty',
+            'local_sell_orders',
+            'local_sell_volume',
+            'recent_loss_qty_24h',
+            'recent_loss_qty_3d',
+            'recent_loss_qty_7d',
+            'recent_loss_events_24h',
+            'recent_loss_events_3d',
+            'recent_loss_events_7d',
+            'readiness_gap_fit_count',
+            'bottleneck_fit_count',
+            'depletion_state',
+            'score_components_json',
+            'linked_doctrines_json',
+            'explanation_text',
+        ],
+        $chunkSize
     );
 }
