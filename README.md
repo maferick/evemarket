@@ -23,6 +23,7 @@ This repository establishes a clean architecture that can scale from an initial 
 - Reusable entity metadata cache for human-readable killmail, market, and analytics surfaces
 - HTML-first doctrine fit import workflow for Winter Coalition fit pages, BuyAll/EFT normalization, bulk preview/save controls, fit-overview bulk management, item-name cache, doctrine group pages, alliance-vs-hub market mapping, and background-refreshed materialized intelligence snapshots
 - Materialized intelligence storage (`intelligence_snapshots`) for doctrine fit/group summaries, market comparison summaries, loss-demand summaries, and dashboard payloads
+- MariaDB-native analytics bucket layer (`*_1h`, `*_1d`) for killmail, market, and doctrine trend windows without introducing a separate time-series database
 - Redis delivery cache for the latest precomputed intelligence payloads with MySQL materialized-summary fallback
 - Secure CSRF-protected settings forms
 - Session-based flash messaging
@@ -208,6 +209,7 @@ SupplyCore sync pipelines depend on the `cron` daemon being present and running 
 - SupplyCore now separates cadences by workload:
   - **Fast ingestion**: `killmail_r2z2_sync`, `alliance_current_sync`, and `market_hub_current_sync` keep raw market and killmail inputs fresh.
   - **Materialized intelligence refresh (target cadence: every 5 minutes)**: `doctrine_intelligence_sync`, `market_comparison_summary_sync`, `loss_demand_summary_sync`, `dashboard_summary_sync`, and `current_state_refresh_sync` recompute heavy current-summary layers from raw tables, then publish the latest payloads into Redis for fast reads.
+  - **MariaDB analytics buckets**: `analytics_bucket_1h_sync` incrementally upserts recent hourly killmail + market buckets, while `analytics_bucket_1d_sync` rolls daily killmail, market, and doctrine aggregate tables forward for trend pages, depletion logic, and scoring windows.
   - **Doctrine AI briefings (target cadence: every 5 minutes)**: `rebuild_ai_briefings` ranks doctrine fits/groups through the centralized capability-tier strategy, scales prompt/context richness and batch size to the configured model, stores the latest result in MySQL, refreshes the dashboard briefing panel, skips that cycle when a history rebuild job is still running, and now continues in a background worker after the scheduler claims it.
   - **Slow forecasting / AI**: `forecasting_ai_sync` derives slower-moving target-adjustment, anomaly, briefing, and explanation layers from the latest medium snapshot instead of raw minute-by-minute ingestion, and it also continues in its own background worker after dispatch.
 - UI pages now read Redis first and fall back to `intelligence_snapshots` if Redis is unavailable; each intelligence surface also exposes its last computed timestamp and freshness state to operators.

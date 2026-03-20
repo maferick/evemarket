@@ -683,6 +683,199 @@ CREATE TABLE IF NOT EXISTS item_priority_snapshots (
     KEY idx_item_priority_score (priority_score)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+CREATE TABLE IF NOT EXISTS killmail_item_loss_1h (
+    bucket_start DATETIME NOT NULL,
+    type_id INT UNSIGNED NOT NULL,
+    doctrine_fit_id INT UNSIGNED DEFAULT NULL,
+    doctrine_group_id INT UNSIGNED DEFAULT NULL,
+    hull_type_id INT UNSIGNED DEFAULT NULL,
+    loss_count INT UNSIGNED NOT NULL DEFAULT 0,
+    quantity_lost BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    victim_count INT UNSIGNED NOT NULL DEFAULT 0,
+    killmail_count INT UNSIGNED NOT NULL DEFAULT 0,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (bucket_start, type_id, doctrine_fit_id, doctrine_group_id, hull_type_id),
+    KEY idx_killmail_item_loss_1h_type_bucket (type_id, bucket_start),
+    KEY idx_killmail_item_loss_1h_group_bucket (doctrine_group_id, bucket_start),
+    KEY idx_killmail_item_loss_1h_fit_bucket (doctrine_fit_id, bucket_start),
+    KEY idx_killmail_item_loss_1h_hull_bucket (hull_type_id, bucket_start)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS killmail_item_loss_1d (
+    bucket_start DATE NOT NULL,
+    type_id INT UNSIGNED NOT NULL,
+    doctrine_fit_id INT UNSIGNED DEFAULT NULL,
+    doctrine_group_id INT UNSIGNED DEFAULT NULL,
+    hull_type_id INT UNSIGNED DEFAULT NULL,
+    loss_count INT UNSIGNED NOT NULL DEFAULT 0,
+    quantity_lost BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    victim_count INT UNSIGNED NOT NULL DEFAULT 0,
+    killmail_count INT UNSIGNED NOT NULL DEFAULT 0,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (bucket_start, type_id, doctrine_fit_id, doctrine_group_id, hull_type_id),
+    KEY idx_killmail_item_loss_1d_type_bucket (type_id, bucket_start),
+    KEY idx_killmail_item_loss_1d_group_bucket (doctrine_group_id, bucket_start),
+    KEY idx_killmail_item_loss_1d_fit_bucket (doctrine_fit_id, bucket_start),
+    KEY idx_killmail_item_loss_1d_hull_bucket (hull_type_id, bucket_start)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS killmail_hull_loss_1d (
+    bucket_start DATE NOT NULL,
+    hull_type_id INT UNSIGNED NOT NULL,
+    doctrine_fit_id INT UNSIGNED DEFAULT NULL,
+    doctrine_group_id INT UNSIGNED DEFAULT NULL,
+    loss_count INT UNSIGNED NOT NULL DEFAULT 0,
+    victim_count INT UNSIGNED NOT NULL DEFAULT 0,
+    killmail_count INT UNSIGNED NOT NULL DEFAULT 0,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (bucket_start, hull_type_id, doctrine_fit_id, doctrine_group_id),
+    KEY idx_killmail_hull_loss_1d_hull_bucket (hull_type_id, bucket_start),
+    KEY idx_killmail_hull_loss_1d_group_bucket (doctrine_group_id, bucket_start),
+    KEY idx_killmail_hull_loss_1d_fit_bucket (doctrine_fit_id, bucket_start)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS killmail_doctrine_activity_1d (
+    bucket_start DATE NOT NULL,
+    doctrine_fit_id INT UNSIGNED DEFAULT NULL,
+    doctrine_group_id INT UNSIGNED DEFAULT NULL,
+    hull_type_id INT UNSIGNED DEFAULT NULL,
+    loss_count INT UNSIGNED NOT NULL DEFAULT 0,
+    quantity_lost BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    victim_count INT UNSIGNED NOT NULL DEFAULT 0,
+    killmail_count INT UNSIGNED NOT NULL DEFAULT 0,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (bucket_start, doctrine_fit_id, doctrine_group_id, hull_type_id),
+    KEY idx_killmail_doctrine_activity_1d_group_bucket (doctrine_group_id, bucket_start),
+    KEY idx_killmail_doctrine_activity_1d_fit_bucket (doctrine_fit_id, bucket_start),
+    KEY idx_killmail_doctrine_activity_1d_hull_bucket (hull_type_id, bucket_start)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS market_item_stock_1h (
+    bucket_start DATETIME NOT NULL,
+    source_type ENUM('alliance_structure', 'market_hub') NOT NULL,
+    source_id BIGINT UNSIGNED NOT NULL,
+    type_id INT UNSIGNED NOT NULL,
+    local_stock_units BIGINT NOT NULL DEFAULT 0,
+    listing_count INT UNSIGNED NOT NULL DEFAULT 0,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (bucket_start, source_type, source_id, type_id),
+    KEY idx_market_item_stock_1h_type_bucket (type_id, bucket_start),
+    KEY idx_market_item_stock_1h_source_bucket (source_type, source_id, bucket_start)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS market_item_stock_1d (
+    bucket_start DATE NOT NULL,
+    source_type ENUM('alliance_structure', 'market_hub') NOT NULL,
+    source_id BIGINT UNSIGNED NOT NULL,
+    type_id INT UNSIGNED NOT NULL,
+    local_stock_units BIGINT NOT NULL DEFAULT 0,
+    listing_count INT UNSIGNED NOT NULL DEFAULT 0,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (bucket_start, source_type, source_id, type_id),
+    KEY idx_market_item_stock_1d_type_bucket (type_id, bucket_start),
+    KEY idx_market_item_stock_1d_source_bucket (source_type, source_id, bucket_start)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS market_item_price_1h (
+    bucket_start DATETIME NOT NULL,
+    source_type ENUM('alliance_structure', 'market_hub') NOT NULL,
+    source_id BIGINT UNSIGNED NOT NULL,
+    type_id INT UNSIGNED NOT NULL,
+    listing_count INT UNSIGNED NOT NULL DEFAULT 0,
+    min_price DECIMAL(20, 2) DEFAULT NULL,
+    max_price DECIMAL(20, 2) DEFAULT NULL,
+    avg_price DECIMAL(20, 2) DEFAULT NULL,
+    weighted_price DECIMAL(20, 2) DEFAULT NULL,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (bucket_start, source_type, source_id, type_id),
+    KEY idx_market_item_price_1h_type_bucket (type_id, bucket_start),
+    KEY idx_market_item_price_1h_source_bucket (source_type, source_id, bucket_start)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS market_item_price_1d (
+    bucket_start DATE NOT NULL,
+    source_type ENUM('alliance_structure', 'market_hub') NOT NULL,
+    source_id BIGINT UNSIGNED NOT NULL,
+    type_id INT UNSIGNED NOT NULL,
+    listing_count INT UNSIGNED NOT NULL DEFAULT 0,
+    min_price DECIMAL(20, 2) DEFAULT NULL,
+    max_price DECIMAL(20, 2) DEFAULT NULL,
+    avg_price DECIMAL(20, 2) DEFAULT NULL,
+    weighted_price DECIMAL(20, 2) DEFAULT NULL,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (bucket_start, source_type, source_id, type_id),
+    KEY idx_market_item_price_1d_type_bucket (type_id, bucket_start),
+    KEY idx_market_item_price_1d_source_bucket (source_type, source_id, bucket_start)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS doctrine_item_stock_1d (
+    bucket_start DATE NOT NULL,
+    fit_id INT UNSIGNED NOT NULL,
+    doctrine_group_id INT UNSIGNED DEFAULT NULL,
+    type_id INT UNSIGNED NOT NULL,
+    required_units INT UNSIGNED NOT NULL DEFAULT 0,
+    local_stock_units BIGINT NOT NULL DEFAULT 0,
+    complete_fits_supported INT UNSIGNED NOT NULL DEFAULT 0,
+    fit_gap INT UNSIGNED NOT NULL DEFAULT 0,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (bucket_start, fit_id, type_id),
+    KEY idx_doctrine_item_stock_1d_group_bucket (doctrine_group_id, bucket_start),
+    KEY idx_doctrine_item_stock_1d_type_bucket (type_id, bucket_start)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS doctrine_fit_activity_1d (
+    bucket_start DATE NOT NULL,
+    fit_id INT UNSIGNED NOT NULL,
+    hull_type_id INT UNSIGNED DEFAULT NULL,
+    doctrine_group_id INT UNSIGNED DEFAULT NULL,
+    hull_loss_count INT UNSIGNED NOT NULL DEFAULT 0,
+    doctrine_item_loss_count INT UNSIGNED NOT NULL DEFAULT 0,
+    complete_fits_available INT UNSIGNED NOT NULL DEFAULT 0,
+    target_fits INT UNSIGNED NOT NULL DEFAULT 0,
+    fit_gap INT UNSIGNED NOT NULL DEFAULT 0,
+    readiness_state VARCHAR(32) NOT NULL DEFAULT 'unknown',
+    resupply_pressure VARCHAR(64) NOT NULL DEFAULT 'stable',
+    priority_score DECIMAL(8,2) NOT NULL DEFAULT 0.00,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (bucket_start, fit_id),
+    KEY idx_doctrine_fit_activity_1d_group_bucket (doctrine_group_id, bucket_start),
+    KEY idx_doctrine_fit_activity_1d_hull_bucket (hull_type_id, bucket_start),
+    KEY idx_doctrine_fit_activity_1d_priority (priority_score, bucket_start)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS doctrine_group_activity_1d (
+    bucket_start DATE NOT NULL,
+    group_id INT UNSIGNED NOT NULL,
+    hull_loss_count INT UNSIGNED NOT NULL DEFAULT 0,
+    doctrine_item_loss_count INT UNSIGNED NOT NULL DEFAULT 0,
+    complete_fits_available INT UNSIGNED NOT NULL DEFAULT 0,
+    target_fits INT UNSIGNED NOT NULL DEFAULT 0,
+    fit_gap INT UNSIGNED NOT NULL DEFAULT 0,
+    readiness_state VARCHAR(32) NOT NULL DEFAULT 'unknown',
+    resupply_pressure VARCHAR(64) NOT NULL DEFAULT 'stable',
+    priority_score DECIMAL(8,2) NOT NULL DEFAULT 0.00,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (bucket_start, group_id),
+    KEY idx_doctrine_group_activity_1d_priority (priority_score, bucket_start)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS doctrine_fit_stock_pressure_1d (
+    bucket_start DATE NOT NULL,
+    fit_id INT UNSIGNED NOT NULL,
+    doctrine_group_id INT UNSIGNED DEFAULT NULL,
+    complete_fits_available INT UNSIGNED NOT NULL DEFAULT 0,
+    target_fits INT UNSIGNED NOT NULL DEFAULT 0,
+    fit_gap INT UNSIGNED NOT NULL DEFAULT 0,
+    readiness_state VARCHAR(32) NOT NULL DEFAULT 'unknown',
+    resupply_pressure VARCHAR(64) NOT NULL DEFAULT 'stable',
+    bottleneck_type_id INT UNSIGNED DEFAULT NULL,
+    bottleneck_quantity INT NOT NULL DEFAULT 0,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (bucket_start, fit_id),
+    KEY idx_doctrine_fit_stock_pressure_1d_group_bucket (doctrine_group_id, bucket_start),
+    KEY idx_doctrine_fit_stock_pressure_1d_bottleneck (bottleneck_type_id, bucket_start)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 INSERT INTO trading_stations (station_name, station_type) VALUES
     ('Rens VI - Moon 8 - Brutor Tribe Treasury', 'market'),
     ('Amarr VIII (Oris) - Emperor Family Academy', 'market'),
@@ -715,6 +908,8 @@ INSERT INTO app_settings (setting_key, setting_value) VALUES
     ('killmail_ingestion_poll_sleep_seconds', '6'),
     ('killmail_ingestion_max_sequences_per_run', '120'),
     ('killmail_demand_prediction_mode', 'baseline'),
+    ('analytics_bucket_1h_retention_days', '14'),
+    ('analytics_bucket_1d_retention_days', '400'),
     ('raw_order_snapshot_retention_days', '30'),
     ('market_compare_deviation_percent', '5'),
     ('market_compare_min_alliance_sell_volume', '50'),
@@ -763,6 +958,8 @@ INSERT INTO sync_schedules (job_key, enabled, interval_seconds, next_run_at, las
     ('loss_demand_summary_sync', 1, 300, UTC_TIMESTAMP(), NULL, NULL, NULL, NULL),
     ('dashboard_summary_sync', 1, 300, UTC_TIMESTAMP(), NULL, NULL, NULL, NULL),
     ('activity_priority_summary_sync', 1, 300, UTC_TIMESTAMP(), NULL, NULL, NULL, NULL),
+    ('analytics_bucket_1h_sync', 1, 300, UTC_TIMESTAMP(), NULL, NULL, NULL, NULL),
+    ('analytics_bucket_1d_sync', 1, 900, UTC_TIMESTAMP(), NULL, NULL, NULL, NULL),
     ('rebuild_ai_briefings', 1, 300, UTC_TIMESTAMP(), NULL, NULL, NULL, NULL),
     ('forecasting_ai_sync', 1, 3600, UTC_TIMESTAMP(), NULL, NULL, NULL, NULL),
     ('killmail_r2z2_sync', 0, 60, NULL, NULL, NULL, NULL, NULL)

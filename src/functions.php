@@ -2153,6 +2153,20 @@ function data_sync_schedule_job_definitions(): array
             'default_interval_seconds' => 300,
             'label' => 'Activity Priority Batch',
         ],
+        'analytics_bucket_1h_sync' => [
+            'enabled_key' => 'analytics_bucket_1h_sync_enabled',
+            'interval_value_key' => 'analytics_bucket_1h_sync_interval_value',
+            'interval_unit_key' => 'analytics_bucket_1h_sync_interval_unit',
+            'default_interval_seconds' => 300,
+            'label' => 'Analytics Buckets (1h)',
+        ],
+        'analytics_bucket_1d_sync' => [
+            'enabled_key' => 'analytics_bucket_1d_sync_enabled',
+            'interval_value_key' => 'analytics_bucket_1d_sync_interval_value',
+            'interval_unit_key' => 'analytics_bucket_1d_sync_interval_unit',
+            'default_interval_seconds' => 900,
+            'label' => 'Analytics Buckets (1d)',
+        ],
         'rebuild_ai_briefings' => [
             'enabled_key' => 'rebuild_ai_briefings_enabled',
             'interval_value_key' => 'rebuild_ai_briefings_interval_value',
@@ -5988,6 +6002,20 @@ function scheduler_job_definitions(): array
                 return activity_priority_refresh_summary_job_result('scheduler');
             },
         ],
+        'analytics_bucket_1h_sync' => [
+            'timeout_seconds' => 180,
+            'lock_ttl_seconds' => 300,
+            'handler' => static function (): array {
+                return analytics_bucket_refresh_job_result('1h', 'scheduler');
+            },
+        ],
+        'analytics_bucket_1d_sync' => [
+            'timeout_seconds' => 240,
+            'lock_ttl_seconds' => 360,
+            'handler' => static function (): array {
+                return analytics_bucket_refresh_job_result('1d', 'scheduler');
+            },
+        ],
         'rebuild_ai_briefings' => [
             'timeout_seconds' => 180,
             'lock_ttl_seconds' => 300,
@@ -6045,6 +6073,7 @@ function scheduler_job_type(string $jobKey): string
         'loss_demand_summary_sync' => 'sync.loss_demand',
         'dashboard_summary_sync' => 'sync.dashboard',
         'activity_priority_summary_sync' => 'sync.activity_priority',
+        'analytics_bucket_1h_sync', 'analytics_bucket_1d_sync' => 'sync.analytics',
         'rebuild_ai_briefings' => 'sync.doctrine_ai',
         'forecasting_ai_sync' => 'sync.forecasting',
         'killmail_r2z2_sync' => 'sync.killmail',
@@ -13991,7 +14020,32 @@ function doctrine_refresh_trigger_job_keys(): array
         'loss_demand_summary_sync',
         'dashboard_summary_sync',
         'activity_priority_summary_sync',
+        'analytics_bucket_1h_sync',
+        'analytics_bucket_1d_sync',
         'rebuild_ai_briefings',
+    ];
+}
+
+function analytics_bucket_refresh_job_result(string $resolution = '1h', string $reason = 'manual'): array
+{
+    $result = db_time_series_refresh_all($resolution);
+    $meta = is_array($result['meta'] ?? null) ? $result['meta'] : [];
+    $safeResolution = $resolution === '1d' ? '1d' : '1h';
+
+    return sync_result_shape() + [
+        'rows_seen' => (int) ($result['rows_seen'] ?? 0),
+        'rows_written' => (int) ($result['rows_written'] ?? 0),
+        'cursor' => 'analytics_bucket:' . $safeResolution . ':' . gmdate('Y-m-d H:i:s'),
+        'checksum' => sync_checksum([
+            'resolution' => $safeResolution,
+            'rows_seen' => (int) ($result['rows_seen'] ?? 0),
+            'rows_written' => (int) ($result['rows_written'] ?? 0),
+            'reason' => $reason,
+        ]),
+        'meta' => [
+            'outcome_reason' => 'MariaDB analytics bucket tables were incrementally upserted for ' . $safeResolution . ' windows.',
+            'resolution' => $safeResolution,
+        ] + $meta,
     ];
 }
 
@@ -16675,6 +16729,11 @@ function activity_priority_summary_build(string $reason = 'manual'): array
     try {
         db_doctrine_activity_snapshot_bulk_insert(array_merge($groupSnapshotRows, $fitSnapshotRows));
         db_item_priority_snapshot_bulk_insert($itemSnapshotRows);
+    } catch (Throwable) {
+    }
+
+    try {
+        db_time_series_store_doctrine_daily_rollups($fitRows, $groupRows, $itemsByFitId, $marketByTypeId);
     } catch (Throwable) {
     }
 
