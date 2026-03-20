@@ -103,6 +103,7 @@ CREATE TABLE IF NOT EXISTS sync_schedules (
     job_key VARCHAR(190) NOT NULL,
     enabled TINYINT(1) NOT NULL DEFAULT 1,
     interval_seconds INT UNSIGNED NOT NULL,
+    offset_seconds INT UNSIGNED NOT NULL DEFAULT 0,
     next_run_at DATETIME DEFAULT NULL,
     last_run_at DATETIME DEFAULT NULL,
     last_status VARCHAR(40) DEFAULT NULL,
@@ -988,26 +989,27 @@ INSERT INTO doctrine_groups (group_name, description) VALUES
     ('SupplyCore Doctrine', 'Baseline doctrine fits used for gap detection, restock generation, and hauling prep.')
 ON DUPLICATE KEY UPDATE description = VALUES(description);
 
-INSERT INTO sync_schedules (job_key, enabled, interval_seconds, next_run_at, last_run_at, last_status, last_error, locked_until) VALUES
-    ('alliance_current_sync', 1, 60, UTC_TIMESTAMP(), NULL, NULL, NULL, NULL),
-    ('alliance_historical_sync', 1, 1800, UTC_TIMESTAMP(), NULL, NULL, NULL, NULL),
-    ('market_hub_current_sync', 1, 60, UTC_TIMESTAMP(), NULL, NULL, NULL, NULL),
-    ('current_state_refresh_sync', 1, 300, UTC_TIMESTAMP(), NULL, NULL, NULL, NULL),
-    ('market_hub_historical_sync', 1, 1800, UTC_TIMESTAMP(), NULL, NULL, NULL, NULL),
-    ('market_hub_local_history_sync', 1, 300, UTC_TIMESTAMP(), NULL, NULL, NULL, NULL),
-    ('doctrine_intelligence_sync', 1, 300, UTC_TIMESTAMP(), NULL, NULL, NULL, NULL),
-    ('market_comparison_summary_sync', 1, 300, UTC_TIMESTAMP(), NULL, NULL, NULL, NULL),
-    ('loss_demand_summary_sync', 1, 300, UTC_TIMESTAMP(), NULL, NULL, NULL, NULL),
-    ('dashboard_summary_sync', 1, 300, UTC_TIMESTAMP(), NULL, NULL, NULL, NULL),
-    ('activity_priority_summary_sync', 1, 300, UTC_TIMESTAMP(), NULL, NULL, NULL, NULL),
-    ('analytics_bucket_1h_sync', 1, 300, UTC_TIMESTAMP(), NULL, NULL, NULL, NULL),
-    ('analytics_bucket_1d_sync', 1, 900, UTC_TIMESTAMP(), NULL, NULL, NULL, NULL),
-    ('rebuild_ai_briefings', 1, 300, UTC_TIMESTAMP(), NULL, NULL, NULL, NULL),
-    ('forecasting_ai_sync', 1, 3600, UTC_TIMESTAMP(), NULL, NULL, NULL, NULL),
-    ('killmail_r2z2_sync', 0, 60, NULL, NULL, NULL, NULL, NULL)
+INSERT INTO sync_schedules (job_key, enabled, interval_seconds, offset_seconds, next_run_at, last_run_at, last_status, last_error, locked_until) VALUES
+    ('alliance_current_sync', 1, 300, 0, UTC_TIMESTAMP(), NULL, NULL, NULL, NULL),
+    ('alliance_historical_sync', 1, 21600, 0, UTC_TIMESTAMP(), NULL, NULL, NULL, NULL),
+    ('market_hub_current_sync', 1, 300, 0, UTC_TIMESTAMP(), NULL, NULL, NULL, NULL),
+    ('current_state_refresh_sync', 1, 300, 0, UTC_TIMESTAMP(), NULL, NULL, NULL, NULL),
+    ('market_hub_historical_sync', 1, 21600, 0, UTC_TIMESTAMP(), NULL, NULL, NULL, NULL),
+    ('market_hub_local_history_sync', 1, 300, 0, UTC_TIMESTAMP(), NULL, NULL, NULL, NULL),
+    ('doctrine_intelligence_sync', 1, 600, 120, UTC_TIMESTAMP(), NULL, NULL, NULL, NULL),
+    ('market_comparison_summary_sync', 1, 600, 120, UTC_TIMESTAMP(), NULL, NULL, NULL, NULL),
+    ('loss_demand_summary_sync', 1, 600, 120, UTC_TIMESTAMP(), NULL, NULL, NULL, NULL),
+    ('dashboard_summary_sync', 1, 600, 120, UTC_TIMESTAMP(), NULL, NULL, NULL, NULL),
+    ('activity_priority_summary_sync', 1, 600, 120, UTC_TIMESTAMP(), NULL, NULL, NULL, NULL),
+    ('analytics_bucket_1h_sync', 1, 600, 120, UTC_TIMESTAMP(), NULL, NULL, NULL, NULL),
+    ('analytics_bucket_1d_sync', 1, 3600, 0, UTC_TIMESTAMP(), NULL, NULL, NULL, NULL),
+    ('rebuild_ai_briefings', 1, 900, 420, UTC_TIMESTAMP(), NULL, NULL, NULL, NULL),
+    ('forecasting_ai_sync', 1, 3600, 0, UTC_TIMESTAMP(), NULL, NULL, NULL, NULL),
+    ('killmail_r2z2_sync', 0, 60, 0, NULL, NULL, NULL, NULL, NULL)
 ON DUPLICATE KEY UPDATE
     enabled = VALUES(enabled),
-    interval_seconds = VALUES(interval_seconds);
+    interval_seconds = VALUES(interval_seconds),
+    offset_seconds = VALUES(offset_seconds);
 
 INSERT INTO esi_cache_namespaces (namespace_key, source_system, description) VALUES
     ('cache.esi.controlTowerResources', 'esi', 'ESI cache namespace mapped to controlTowerResources.jsonl'),
