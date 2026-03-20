@@ -91,6 +91,12 @@ function nav_items(): array
             ],
         ],
         [
+            'label' => 'Deal Alerts',
+            'path' => '/deal-alerts',
+            'icon' => '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" class="h-4 w-4" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M12 3 3 8.5V15.5L12 21l9-5.5V8.5L12 3Z"/><path stroke-linecap="round" stroke-linejoin="round" d="M12 8v5"/><path stroke-linecap="round" stroke-linejoin="round" d="M12 16h.01"/></svg>',
+            'children' => [],
+        ],
+        [
             'label' => 'History',
             'path' => '/history',
             'icon' => '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" class="h-4 w-4" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M12 8v5l3 2"/><path stroke-linecap="round" stroke-linejoin="round" d="M21 12a9 9 0 1 1-3.3-6.95"/></svg>',
@@ -143,6 +149,7 @@ function setting_sections(): array
         'ai-briefings' => ['title' => 'AI Briefings', 'description' => 'Configure either a local Ollama endpoint or a Runpod serverless endpoint for doctrine briefing summaries.'],
         'esi-login' => ['title' => 'ESI Login', 'description' => 'Configure EVE SSO credentials and callback behavior.'],
         'data-sync' => ['title' => 'Data Sync', 'description' => 'Control database import and incremental update policies.'],
+        'deal-alerts' => ['title' => 'Deal Alerts', 'description' => 'Tune mispriced-listing detection thresholds, popup behavior, and anomaly cadence.'],
         'killmail-intelligence' => ['title' => 'Killmail Intelligence', 'description' => 'Manage zKillboard stream ingestion, tracked entities, and demand prediction foundation.'],
     ];
 }
@@ -241,6 +248,132 @@ function ai_briefing_setting_defaults(): array
 function ai_briefing_setting_keys(): array
 {
     return array_keys(ai_briefing_setting_defaults());
+}
+
+function deal_alerts_setting_defaults(): array
+{
+    return [
+        'deal_alerts_enabled' => '1',
+        'deal_alert_baseline_days' => '14',
+        'deal_alert_min_history_points' => '5',
+        'deal_alert_critical_threshold_percent' => '1',
+        'deal_alert_very_strong_threshold_percent' => '5',
+        'deal_alert_strong_threshold_percent' => '10',
+        'deal_alert_watch_threshold_percent' => '15',
+        'deal_alert_popup_min_severity' => 'very_strong',
+        'deal_alert_popup_dismiss_minutes' => '120',
+    ];
+}
+
+function deal_alerts_setting_keys(): array
+{
+    return array_keys(deal_alerts_setting_defaults());
+}
+
+function deal_alert_severity_rank_options(): array
+{
+    return [
+        'watch' => 1,
+        'strong' => 2,
+        'very_strong' => 3,
+        'critical' => 4,
+    ];
+}
+
+function deal_alert_popup_severity_options(): array
+{
+    return [
+        'very_strong' => 'Very strong + critical',
+        'critical' => 'Critical only',
+        'strong' => 'Strong + higher',
+    ];
+}
+
+function sanitize_deal_alert_threshold_percent(mixed $value, float $default): string
+{
+    $threshold = (float) $value;
+    if (!is_finite($threshold) || $threshold <= 0) {
+        $threshold = $default;
+    }
+
+    return number_format(max(0.1, min(100.0, $threshold)), 2, '.', '');
+}
+
+function sanitize_deal_alert_popup_min_severity(mixed $value): string
+{
+    $severity = trim((string) $value);
+
+    return array_key_exists($severity, deal_alert_popup_severity_options()) ? $severity : 'very_strong';
+}
+
+function sanitize_deal_alert_baseline_days(mixed $value): string
+{
+    return (string) max(3, min(60, (int) $value));
+}
+
+function sanitize_deal_alert_min_history_points(mixed $value): string
+{
+    return (string) max(3, min(30, (int) $value));
+}
+
+function sanitize_deal_alert_popup_dismiss_minutes(mixed $value): string
+{
+    return (string) max(5, min(1440, (int) $value));
+}
+
+function deal_alert_settings_value(array $settings, string $key): string
+{
+    $defaults = deal_alerts_setting_defaults();
+    $value = $settings[$key] ?? ($defaults[$key] ?? '');
+
+    return match ($key) {
+        'deal_alerts_enabled' => sanitize_enabled_flag($value),
+        'deal_alert_baseline_days' => sanitize_deal_alert_baseline_days($value),
+        'deal_alert_min_history_points' => sanitize_deal_alert_min_history_points($value),
+        'deal_alert_critical_threshold_percent' => sanitize_deal_alert_threshold_percent($value, 1.0),
+        'deal_alert_very_strong_threshold_percent' => sanitize_deal_alert_threshold_percent($value, 5.0),
+        'deal_alert_strong_threshold_percent' => sanitize_deal_alert_threshold_percent($value, 10.0),
+        'deal_alert_watch_threshold_percent' => sanitize_deal_alert_threshold_percent($value, 15.0),
+        'deal_alert_popup_min_severity' => sanitize_deal_alert_popup_min_severity($value),
+        'deal_alert_popup_dismiss_minutes' => sanitize_deal_alert_popup_dismiss_minutes($value),
+        default => (string) $value,
+    };
+}
+
+function deal_alert_settings_view(array $settings): array
+{
+    $resolved = [];
+
+    foreach (array_keys(deal_alerts_setting_defaults()) as $key) {
+        $resolved[$key] = deal_alert_settings_value($settings, $key);
+    }
+
+    $critical = (float) $resolved['deal_alert_critical_threshold_percent'];
+    $veryStrong = max($critical, (float) $resolved['deal_alert_very_strong_threshold_percent']);
+    $strong = max($veryStrong, (float) $resolved['deal_alert_strong_threshold_percent']);
+    $watch = max($strong, (float) $resolved['deal_alert_watch_threshold_percent']);
+
+    $resolved['deal_alert_critical_threshold_percent'] = number_format($critical, 2, '.', '');
+    $resolved['deal_alert_very_strong_threshold_percent'] = number_format($veryStrong, 2, '.', '');
+    $resolved['deal_alert_strong_threshold_percent'] = number_format($strong, 2, '.', '');
+    $resolved['deal_alert_watch_threshold_percent'] = number_format($watch, 2, '.', '');
+
+    return $resolved;
+}
+
+function deal_alert_settings_from_request(array $request): array
+{
+    return deal_alert_settings_view([
+        'deal_alerts_enabled' => sanitize_enabled_flag($request['deal_alerts_enabled'] ?? null),
+        'deal_alert_baseline_days' => sanitize_deal_alert_baseline_days($request['deal_alert_baseline_days'] ?? null),
+        'deal_alert_min_history_points' => sanitize_deal_alert_min_history_points($request['deal_alert_min_history_points'] ?? null),
+        'deal_alert_critical_threshold_percent' => sanitize_deal_alert_threshold_percent($request['deal_alert_critical_threshold_percent'] ?? null, 1.0),
+        'deal_alert_very_strong_threshold_percent' => sanitize_deal_alert_threshold_percent($request['deal_alert_very_strong_threshold_percent'] ?? null, 5.0),
+        'deal_alert_strong_threshold_percent' => sanitize_deal_alert_threshold_percent($request['deal_alert_strong_threshold_percent'] ?? null, 10.0),
+        'deal_alert_watch_threshold_percent' => sanitize_deal_alert_threshold_percent($request['deal_alert_watch_threshold_percent'] ?? null, 15.0),
+        'deal_alert_popup_min_severity' => sanitize_deal_alert_popup_min_severity($request['deal_alert_popup_min_severity'] ?? null),
+        'deal_alert_popup_dismiss_minutes' => sanitize_deal_alert_popup_dismiss_minutes($request['deal_alert_popup_dismiss_minutes'] ?? null),
+    ]);
 }
 
 function ollama_provider_options(): array
@@ -2306,6 +2439,14 @@ function data_sync_schedule_job_definitions(): array
             'default_offset_seconds' => 0,
             'label' => 'Current-State Refresh',
         ],
+        'deal_alerts_sync' => [
+            'enabled_key' => 'deal_alerts_sync_enabled',
+            'interval_value_key' => 'deal_alerts_sync_interval_value',
+            'interval_unit_key' => 'deal_alerts_sync_interval_unit',
+            'default_interval_seconds' => 300,
+            'default_offset_seconds' => 30,
+            'label' => 'Deal Alerts',
+        ],
         'market_hub_historical_sync' => [
             'enabled_key' => 'market_hub_historical_sync_enabled',
             'interval_value_key' => 'market_hub_historical_sync_interval_value',
@@ -3129,6 +3270,522 @@ function market_format_isk(?float $price): string
 function market_format_percentage(float $value, int $precision = 1): string
 {
     return number_format($value, $precision, '.', ',') . '%';
+}
+
+function deal_alert_settings(): array
+{
+    static $cached = null;
+
+    if (is_array($cached)) {
+        return $cached;
+    }
+
+    $cached = deal_alert_settings_view(get_settings(deal_alerts_setting_keys()));
+
+    return $cached;
+}
+
+function deal_alert_thresholds(): array
+{
+    $settings = deal_alert_settings();
+    $ranks = deal_alert_severity_rank_options();
+
+    return [
+        'critical' => ['max_percent' => (float) ($settings['deal_alert_critical_threshold_percent'] ?? 1.0), 'rank' => $ranks['critical']],
+        'very_strong' => ['max_percent' => (float) ($settings['deal_alert_very_strong_threshold_percent'] ?? 5.0), 'rank' => $ranks['very_strong']],
+        'strong' => ['max_percent' => (float) ($settings['deal_alert_strong_threshold_percent'] ?? 10.0), 'rank' => $ranks['strong']],
+        'watch' => ['max_percent' => (float) ($settings['deal_alert_watch_threshold_percent'] ?? 15.0), 'rank' => $ranks['watch']],
+    ];
+}
+
+function deal_alert_popup_min_severity_rank(): int
+{
+    $settings = deal_alert_settings();
+    $selected = (string) ($settings['deal_alert_popup_min_severity'] ?? 'very_strong');
+
+    return deal_alert_severity_rank_options()[$selected] ?? deal_alert_severity_rank_options()['very_strong'];
+}
+
+function deal_alert_source_name(string $sourceType, int $sourceId): string
+{
+    if ($sourceType === 'alliance_structure') {
+        return selected_station_name('alliance_station_id') ?? ('Alliance Market #' . $sourceId);
+    }
+
+    return selected_station_name('market_station_id') ?? ('Reference Hub #' . $sourceId);
+}
+
+function deal_alert_market_label(string $sourceType): string
+{
+    return $sourceType === 'alliance_structure' ? 'Alliance Market' : 'Reference Hub';
+}
+
+function deal_alert_severity_for_percent(float $percentOfNormal): ?array
+{
+    foreach (deal_alert_thresholds() as $severity => $meta) {
+        if ($percentOfNormal <= (float) $meta['max_percent']) {
+            return ['severity' => $severity, 'rank' => (int) $meta['rank']];
+        }
+    }
+
+    return null;
+}
+
+function deal_alert_percent_band(float $percentOfNormal): float
+{
+    return floor(max(0.0, $percentOfNormal) * 2.0) / 2.0;
+}
+
+function deal_alert_alert_key(int $itemTypeId, string $sourceType, int $sourceId, float $percentOfNormal): string
+{
+    return implode(':', [
+        $sourceType,
+        $sourceId,
+        $itemTypeId,
+        number_format(deal_alert_percent_band($percentOfNormal), 1, '.', ''),
+    ]);
+}
+
+function deal_alert_normalize_history_row(array $row, string $origin): ?array
+{
+    $close = isset($row['close_price']) ? (float) $row['close_price'] : 0.0;
+    $average = isset($row['average_price']) ? (float) $row['average_price'] : 0.0;
+    $sell = isset($row['sell_price']) ? (float) $row['sell_price'] : 0.0;
+    $price = $sell > 0 ? $sell : ($close > 0 ? $close : $average);
+
+    if ($price <= 0) {
+        return null;
+    }
+
+    return [
+        'price' => $price,
+        'weight' => max(1, (int) ($row['volume'] ?? 0)),
+        'origin' => $origin,
+    ];
+}
+
+function deal_alert_baseline_from_rows(array $rows): ?array
+{
+    if ($rows === []) {
+        return null;
+    }
+
+    $prices = [];
+    $weightedNumerator = 0.0;
+    $weightedDenominator = 0.0;
+    $origins = [];
+
+    foreach ($rows as $row) {
+        $price = (float) ($row['price'] ?? 0.0);
+        if ($price <= 0) {
+            continue;
+        }
+
+        $prices[] = $price;
+        $weight = max(1, (int) ($row['weight'] ?? 1));
+        $weightedNumerator += ($price * $weight);
+        $weightedDenominator += $weight;
+        $origins[(string) ($row['origin'] ?? 'history')] = true;
+    }
+
+    if ($prices === [] || $weightedDenominator <= 0.0) {
+        return null;
+    }
+
+    sort($prices, SORT_NUMERIC);
+    $count = count($prices);
+    $midpoint = intdiv($count, 2);
+    $median = $count % 2 === 1
+        ? $prices[$midpoint]
+        : (($prices[$midpoint - 1] + $prices[$midpoint]) / 2.0);
+    $weightedAverage = $weightedNumerator / $weightedDenominator;
+    $normalPrice = ($median * 0.7) + ($weightedAverage * 0.3);
+
+    return [
+        'median_price' => round($median, 2),
+        'weighted_price' => round($weightedAverage, 2),
+        'normal_price' => round($normalPrice, 2),
+        'points' => $count,
+        'baseline_model' => count($origins) > 1 ? 'local_median_weighted_blend' : 'median_weighted_blend',
+    ];
+}
+
+function deal_alert_anomaly_score(float $percentOfNormal, int $quantityAvailable, int $baselinePoints, int $severityRank): float
+{
+    $discountComponent = max(0.0, 110.0 - min(100.0, $percentOfNormal));
+    $quantityComponent = min(18.0, log(max(1, $quantityAvailable), 10) * 9.0);
+    $historyComponent = min(12.0, $baselinePoints * 1.5);
+    $severityComponent = $severityRank * 12.5;
+
+    return round($discountComponent + $quantityComponent + $historyComponent + $severityComponent, 2);
+}
+
+function deal_alert_detection_sources(): array
+{
+    $sources = [];
+    $allianceStructureId = configured_alliance_structure_id();
+    if ($allianceStructureId > 0) {
+        $sources[] = [
+            'source_type' => 'alliance_structure',
+            'source_id' => $allianceStructureId,
+            'source_name' => deal_alert_source_name('alliance_structure', $allianceStructureId),
+        ];
+    }
+
+    $hubRef = market_hub_setting_reference();
+    $hubSourceId = sync_source_id_from_hub_ref($hubRef);
+    if ($hubSourceId > 0 && $hubRef !== '') {
+        $sources[] = [
+            'source_type' => 'market_hub',
+            'source_id' => $hubSourceId,
+            'source_name' => deal_alert_source_name('market_hub', $hubSourceId),
+        ];
+    }
+
+    return $sources;
+}
+
+function deal_alert_refresh_current(string $reason = 'manual'): array
+{
+    $settings = deal_alert_settings();
+    $enabled = ($settings['deal_alerts_enabled'] ?? '1') === '1';
+
+    if (!$enabled) {
+        $inactiveCount = db_market_deal_alerts_mark_missing_inactive([]);
+
+        return sync_result_shape() + [
+            'rows_seen' => 0,
+            'rows_written' => $inactiveCount,
+            'cursor' => 'deal_alerts_disabled:' . gmdate('Y-m-d H:i:s'),
+            'checksum' => sync_checksum(['enabled' => false, 'reason' => $reason, 'at' => gmdate(DATE_ATOM)]),
+            'meta' => [
+                'outcome_reason' => 'Deal alerts were disabled in settings, so all active anomaly windows were marked inactive.',
+            ],
+        ];
+    }
+
+    $windowDays = max(3, (int) ($settings['deal_alert_baseline_days'] ?? 14));
+    $minHistoryPoints = max(3, (int) ($settings['deal_alert_min_history_points'] ?? 5));
+    $sources = deal_alert_detection_sources();
+    $now = gmdate('Y-m-d H:i:s');
+    $rowsToUpsert = [];
+    $activeAlertKeys = [];
+    $rowsSeen = 0;
+
+    foreach ($sources as $source) {
+        $currentRows = db_market_lowest_sell_orders_by_source((string) $source['source_type'], (int) $source['source_id']);
+        if ($currentRows === []) {
+            continue;
+        }
+
+        $typeIds = array_values(array_unique(array_filter(array_map(static fn (array $row): int => (int) ($row['type_id'] ?? 0), $currentRows), static fn (int $typeId): bool => $typeId > 0)));
+        if ($typeIds === []) {
+            continue;
+        }
+
+        $historyRows = db_market_history_daily_window_by_type_ids((string) $source['source_type'], (int) $source['source_id'], $typeIds, $windowDays);
+        $historyByType = [];
+        foreach ($historyRows as $historyRow) {
+            $typeId = (int) ($historyRow['type_id'] ?? 0);
+            $normalized = deal_alert_normalize_history_row($historyRow, 'market_history_daily');
+            if ($typeId <= 0 || $normalized === null) {
+                continue;
+            }
+            $historyByType[$typeId][] = $normalized;
+        }
+
+        $localHistoryByType = [];
+        if (($source['source_type'] ?? '') === 'market_hub') {
+            $localRows = db_market_hub_local_history_daily_window_by_type_ids(
+                market_hub_local_history_source(),
+                (int) $source['source_id'],
+                $typeIds,
+                $windowDays
+            );
+
+            foreach ($localRows as $localRow) {
+                $typeId = (int) ($localRow['type_id'] ?? 0);
+                $normalized = deal_alert_normalize_history_row($localRow, 'market_hub_local_history_daily');
+                if ($typeId <= 0 || $normalized === null) {
+                    continue;
+                }
+                $localHistoryByType[$typeId][] = $normalized;
+            }
+        }
+
+        foreach ($currentRows as $currentRow) {
+            $rowsSeen++;
+            $typeId = (int) ($currentRow['type_id'] ?? 0);
+            $currentPrice = isset($currentRow['price']) ? (float) $currentRow['price'] : 0.0;
+            if ($typeId <= 0 || $currentPrice <= 0.0) {
+                continue;
+            }
+
+            $baselineInput = $localHistoryByType[$typeId] ?? [];
+            if (count($baselineInput) < $minHistoryPoints) {
+                $baselineInput = $historyByType[$typeId] ?? [];
+            }
+
+            $baseline = deal_alert_baseline_from_rows($baselineInput);
+            if ($baseline === null || (int) ($baseline['points'] ?? 0) < $minHistoryPoints) {
+                continue;
+            }
+
+            $normalPrice = (float) ($baseline['normal_price'] ?? 0.0);
+            if ($normalPrice <= 0.0) {
+                continue;
+            }
+
+            $percentOfNormal = ($currentPrice / $normalPrice) * 100.0;
+            $severity = deal_alert_severity_for_percent($percentOfNormal);
+            if ($severity === null) {
+                continue;
+            }
+
+            $quantityAvailable = max(0, (int) ($currentRow['volume_remain'] ?? 0));
+            $listingCount = max(0, (int) ($currentRow['sell_order_count'] ?? 0));
+            $observedAt = trim((string) ($currentRow['observed_at'] ?? $now));
+            $observedTimestamp = strtotime($observedAt);
+            $freshnessSeconds = $observedTimestamp === false ? 0 : max(0, time() - $observedTimestamp);
+            $anomalyScore = deal_alert_anomaly_score($percentOfNormal, $quantityAvailable, (int) ($baseline['points'] ?? 0), (int) ($severity['rank'] ?? 1));
+            $alertKey = deal_alert_alert_key($typeId, (string) $source['source_type'], (int) $source['source_id'], $percentOfNormal);
+
+            $metadata = [
+                'reason' => $reason,
+                'type_name' => (string) ($currentRow['type_name'] ?? ''),
+                'market_label' => deal_alert_market_label((string) $source['source_type']),
+                'total_sell_volume' => max(0, (int) ($currentRow['total_sell_volume'] ?? 0)),
+                'baseline_model' => (string) ($baseline['baseline_model'] ?? 'median_weighted_blend'),
+                'history_window_days' => $windowDays,
+            ];
+
+            $rowsToUpsert[] = [
+                'alert_key' => $alertKey,
+                'item_type_id' => $typeId,
+                'source_type' => (string) $source['source_type'],
+                'source_id' => (int) $source['source_id'],
+                'source_name' => (string) $source['source_name'],
+                'percent_band' => deal_alert_percent_band($percentOfNormal),
+                'current_price' => round($currentPrice, 2),
+                'normal_price' => round($normalPrice, 2),
+                'percent_of_normal' => round($percentOfNormal, 4),
+                'anomaly_score' => $anomalyScore,
+                'severity' => (string) ($severity['severity'] ?? 'watch'),
+                'severity_rank' => (int) ($severity['rank'] ?? 1),
+                'quantity_available' => $quantityAvailable,
+                'listing_count' => $listingCount,
+                'best_order_id' => isset($currentRow['order_id']) ? (int) $currentRow['order_id'] : null,
+                'baseline_model' => (string) ($baseline['baseline_model'] ?? 'median_weighted_blend'),
+                'baseline_points' => (int) ($baseline['points'] ?? 0),
+                'baseline_median_price' => (float) ($baseline['median_price'] ?? 0.0),
+                'baseline_weighted_price' => (float) ($baseline['weighted_price'] ?? 0.0),
+                'observed_at' => $observedTimestamp === false ? $now : gmdate('Y-m-d H:i:s', $observedTimestamp),
+                'detected_at' => $now,
+                'last_seen_at' => $now,
+                'inactive_at' => null,
+                'freshness_seconds' => $freshnessSeconds,
+                'status' => 'active',
+                'metadata_json' => json_encode($metadata, JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE),
+            ];
+            $activeAlertKeys[] = $alertKey;
+        }
+    }
+
+    $rowsWritten = db_market_deal_alerts_upsert_current($rowsToUpsert);
+    $inactiveCount = db_market_deal_alerts_mark_missing_inactive($activeAlertKeys);
+    supplycore_cache_bust(['dashboard']);
+
+    return sync_result_shape() + [
+        'rows_seen' => $rowsSeen,
+        'rows_written' => $rowsWritten + $inactiveCount,
+        'cursor' => 'deal_alerts:' . gmdate('Y-m-d H:i:s'),
+        'checksum' => sync_checksum([
+            'reason' => $reason,
+            'active_alerts' => count($activeAlertKeys),
+            'rows_seen' => $rowsSeen,
+            'rows_written' => $rowsWritten,
+            'inactive_count' => $inactiveCount,
+        ]),
+        'meta' => [
+            'outcome_reason' => 'Current market sell orders were compared against local historical baselines and persisted into the active deal-alert layer.',
+            'active_alerts' => count($activeAlertKeys),
+            'sources_scanned' => count($sources),
+        ],
+    ];
+}
+
+function deal_alert_refresh_job_result(string $reason = 'manual'): array
+{
+    return deal_alert_refresh_current($reason);
+}
+
+function deal_alert_severity_label(string $severity): string
+{
+    return match ($severity) {
+        'critical' => 'Critical misprice',
+        'very_strong' => 'Very strong deal',
+        'strong' => 'Strong deal',
+        default => 'Watch',
+    };
+}
+
+function deal_alert_severity_tone(string $severity): string
+{
+    return match ($severity) {
+        'critical' => 'border-rose-400/35 bg-rose-500/12 text-rose-100',
+        'very_strong' => 'border-orange-400/35 bg-orange-500/12 text-orange-100',
+        'strong' => 'border-amber-400/35 bg-amber-500/12 text-amber-100',
+        default => 'border-sky-400/25 bg-sky-500/10 text-sky-100',
+    };
+}
+
+function deal_alert_market_filter_options(): array
+{
+    return [
+        '' => 'All markets',
+        'alliance_structure' => 'Alliance Market',
+        'market_hub' => 'Reference Hub',
+    ];
+}
+
+function deal_alert_sort_options(): array
+{
+    return [
+        'severity' => 'Severity',
+        'percent' => 'Lowest % of normal',
+        'freshness' => 'Newest seen',
+        'price' => 'Lowest price',
+    ];
+}
+
+function deal_alert_minimum_severity_options(): array
+{
+    return [
+        0 => 'All severities',
+        4 => 'Critical only',
+        3 => 'Very strong + critical',
+        2 => 'Strong + higher',
+        1 => 'Watch + higher',
+    ];
+}
+
+function deal_alerts_page_filters(array $query): array
+{
+    $market = trim((string) ($query['market'] ?? ''));
+    if (!array_key_exists($market, deal_alert_market_filter_options())) {
+        $market = '';
+    }
+
+    $sort = trim((string) ($query['sort'] ?? 'severity'));
+    if (!array_key_exists($sort, deal_alert_sort_options())) {
+        $sort = 'severity';
+    }
+
+    $minSeverityRank = (int) ($query['min_severity'] ?? 0);
+    if (!array_key_exists($minSeverityRank, deal_alert_minimum_severity_options())) {
+        $minSeverityRank = 0;
+    }
+
+    $page = max(1, (int) ($query['page'] ?? 1));
+    $perPage = 25;
+
+    return [
+        'market' => $market,
+        'sort' => $sort,
+        'minimum_severity_rank' => $minSeverityRank,
+        'search' => trim((string) ($query['search'] ?? '')),
+        'page' => $page,
+        'per_page' => $perPage,
+    ];
+}
+
+function deal_alerts_page_data(array $query = []): array
+{
+    $filters = deal_alerts_page_filters($query);
+    $offset = ($filters['page'] - 1) * $filters['per_page'];
+    $rows = db_market_deal_alerts_list($filters, $filters['per_page'], $offset);
+    $total = db_market_deal_alerts_count($filters);
+    $summary = db_market_deal_alerts_active_summary();
+    $pages = max(1, (int) ceil($total / max(1, $filters['per_page'])));
+
+    $mappedRows = array_map(static function (array $row): array {
+        $severity = (string) ($row['severity'] ?? 'watch');
+        $typeName = trim((string) ($row['type_name'] ?? ''));
+        $marketLabel = deal_alert_market_label((string) ($row['source_type'] ?? 'market_hub'));
+
+        return $row + [
+            'display_name' => $typeName !== '' ? $typeName : ('Type #' . (int) ($row['item_type_id'] ?? 0)),
+            'market_label' => $marketLabel,
+            'severity_label' => deal_alert_severity_label($severity),
+            'severity_tone' => deal_alert_severity_tone($severity),
+            'current_price_label' => market_format_isk(isset($row['current_price']) ? (float) $row['current_price'] : null),
+            'normal_price_label' => market_format_isk(isset($row['normal_price']) ? (float) $row['normal_price'] : null),
+            'percent_of_normal_label' => market_format_percentage((float) ($row['percent_of_normal'] ?? 0.0), 2),
+            'freshness_relative' => supplycore_relative_datetime(isset($row['last_seen_at']) ? (string) $row['last_seen_at'] : null),
+            'freshness_at' => supplycore_format_datetime(isset($row['last_seen_at']) ? (string) $row['last_seen_at'] : null),
+        ];
+    }, $rows);
+
+    return [
+        'filters' => $filters,
+        'rows' => $mappedRows,
+        'total' => $total,
+        'page_count' => $pages,
+        'summary' => [
+            'active_count' => (int) ($summary['active_count'] ?? 0),
+            'critical_count' => (int) ($summary['critical_count'] ?? 0),
+            'last_seen_at' => isset($summary['last_seen_at']) ? (string) $summary['last_seen_at'] : null,
+            'last_seen_relative' => supplycore_relative_datetime(isset($summary['last_seen_at']) ? (string) $summary['last_seen_at'] : null),
+            'last_seen_label' => supplycore_format_datetime(isset($summary['last_seen_at']) ? (string) $summary['last_seen_at'] : null),
+        ],
+    ];
+}
+
+function deal_alert_popup_view_model(): array
+{
+    $rows = db_market_deal_alerts_popup_rows(deal_alert_popup_min_severity_rank(), 3);
+
+    return array_map(static function (array $row): array {
+        $severity = (string) ($row['severity'] ?? 'watch');
+        $typeName = trim((string) ($row['type_name'] ?? ''));
+
+        return $row + [
+            'display_name' => $typeName !== '' ? $typeName : ('Type #' . (int) ($row['item_type_id'] ?? 0)),
+            'severity_label' => deal_alert_severity_label($severity),
+            'severity_tone' => deal_alert_severity_tone($severity),
+            'market_label' => deal_alert_market_label((string) ($row['source_type'] ?? 'market_hub')),
+            'current_price_label' => market_format_isk(isset($row['current_price']) ? (float) $row['current_price'] : null),
+            'normal_price_label' => market_format_isk(isset($row['normal_price']) ? (float) $row['normal_price'] : null),
+            'percent_of_normal_label' => market_format_percentage((float) ($row['percent_of_normal'] ?? 0.0), 2),
+            'freshness_relative' => supplycore_relative_datetime(isset($row['last_seen_at']) ? (string) $row['last_seen_at'] : null),
+        ];
+    }, $rows);
+}
+
+function deal_alert_dismiss(string $alertKey, int $severityRank): bool
+{
+    $settings = deal_alert_settings();
+
+    return db_market_deal_alerts_dismiss(
+        $alertKey,
+        $severityRank,
+        (int) ($settings['deal_alert_popup_dismiss_minutes'] ?? 120)
+    );
+}
+
+function deal_alert_safe_return_path(string $value): string
+{
+    $path = trim($value);
+
+    if ($path === '' || !str_starts_with($path, '/')) {
+        return '/deal-alerts';
+    }
+
+    if (preg_match('/[\r\n]/', $path) === 1) {
+        return '/deal-alerts';
+    }
+
+    return $path;
 }
 
 function dashboard_sync_dataset_active_error(array $states): ?string
@@ -6197,6 +6854,13 @@ function scheduler_job_definitions(): array
                 return supplycore_refresh_current_state_cache('scheduler');
             },
         ],
+        'deal_alerts_sync' => [
+            'timeout_seconds' => 90,
+            'lock_ttl_seconds' => 180,
+            'handler' => static function (): array {
+                return deal_alert_refresh_job_result('scheduler');
+            },
+        ],
         'doctrine_intelligence_sync' => [
             'timeout_seconds' => 180,
             'lock_ttl_seconds' => 300,
@@ -6296,7 +6960,7 @@ function scheduler_job_definitions(): array
 function scheduler_job_type(string $jobKey): string
 {
     return match ($jobKey) {
-        'alliance_current_sync', 'market_hub_current_sync', 'current_state_refresh_sync' => 'sync.current',
+        'alliance_current_sync', 'market_hub_current_sync', 'current_state_refresh_sync', 'deal_alerts_sync' => 'sync.current',
         'alliance_historical_sync', 'market_hub_historical_sync', 'market_hub_local_history_sync' => 'sync.history',
         'doctrine_intelligence_sync' => 'sync.doctrine',
         'market_comparison_summary_sync' => 'sync.market_summary',
@@ -6483,6 +7147,12 @@ function scheduler_run_job(array $job): array
         db_sync_run_finish($runId, 'success', $rowsSeen, $rowsWritten, $cursor, null);
         if ($scheduleId > 0) {
             db_sync_schedule_mark_success($scheduleId);
+        }
+        if (in_array($jobKey, ['alliance_current_sync', 'market_hub_current_sync'], true)) {
+            try {
+                db_sync_schedule_force_due_by_job_keys(['deal_alerts_sync']);
+            } catch (Throwable) {
+            }
         }
 
         $result = [
