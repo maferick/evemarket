@@ -1898,15 +1898,26 @@ function db_market_orders_snapshot_metrics_window_raw(string $sourceType, int $s
 
 function db_market_orders_snapshot_metrics_window(string $sourceType, int $sourceId, string $startObservedAt): array
 {
+    $result = db_market_orders_snapshot_metrics_window_ensure_summary($sourceType, $sourceId, $startObservedAt);
+
+    return is_array($result['rows'] ?? null) ? $result['rows'] : [];
+}
+
+function db_market_orders_snapshot_metrics_window_ensure_summary(string $sourceType, int $sourceId, string $startObservedAt): array
+{
     $safeSourceType = trim($sourceType);
     $safeSourceId = max(0, $sourceId);
     $safeStartObservedAt = trim($startObservedAt);
 
     if ($safeSourceType === '' || $safeSourceId <= 0 || $safeStartObservedAt === '') {
-        return [];
+        return [
+            'rows' => [],
+            'summary_rows_written' => 0,
+            'loaded_from_summary' => false,
+        ];
     }
 
-    $rows = db_select_cached(
+    $summaryRows = db_select_cached(
         "SELECT
             source_type,
             source_id,
@@ -1929,11 +1940,56 @@ function db_market_orders_snapshot_metrics_window(string $sourceType, int $sourc
         'market.snapshot.metrics'
     );
 
-    if ($rows === []) {
-        return db_market_orders_snapshot_metrics_window_raw($safeSourceType, $safeSourceId, $safeStartObservedAt);
+    $normalizedSummaryRows = array_map('db_market_order_snapshots_summary_normalize_row', $summaryRows);
+    $latestObservedAt = '';
+    foreach ($normalizedSummaryRows as $row) {
+        $observedAt = trim((string) ($row['observed_at'] ?? ''));
+        if ($observedAt !== '' && strcmp($observedAt, $latestObservedAt) > 0) {
+            $latestObservedAt = $observedAt;
+        }
     }
 
-    return array_map('db_market_order_snapshots_summary_normalize_row', $rows);
+    $rawRowsStartObservedAt = $latestObservedAt !== '' ? $latestObservedAt : $safeStartObservedAt;
+    $rawRows = db_market_orders_snapshot_metrics_window_raw($safeSourceType, $safeSourceId, $rawRowsStartObservedAt);
+    $summaryRowsWritten = $rawRows === [] ? 0 : db_market_order_snapshots_summary_bulk_upsert($rawRows);
+
+    if ($normalizedSummaryRows === []) {
+        return [
+            'rows' => $rawRows,
+            'summary_rows_written' => $summaryRowsWritten,
+            'loaded_from_summary' => false,
+        ];
+    }
+
+    $mergedRows = [];
+    foreach (array_merge($normalizedSummaryRows, $rawRows) as $row) {
+        $rowKey = implode(':', [
+            (string) ($row['source_type'] ?? ''),
+            (string) ($row['source_id'] ?? ''),
+            (string) ($row['type_id'] ?? ''),
+            (string) ($row['observed_at'] ?? ''),
+        ]);
+        if ($rowKey === ':::') {
+            continue;
+        }
+
+        $mergedRows[$rowKey] = db_market_order_snapshots_summary_normalize_row($row);
+    }
+
+    uasort($mergedRows, static function (array $left, array $right): int {
+        $observedCompare = strcmp((string) ($left['observed_at'] ?? ''), (string) ($right['observed_at'] ?? ''));
+        if ($observedCompare !== 0) {
+            return $observedCompare;
+        }
+
+        return ((int) ($left['type_id'] ?? 0)) <=> ((int) ($right['type_id'] ?? 0));
+    });
+
+    return [
+        'rows' => array_values($mergedRows),
+        'summary_rows_written' => $summaryRowsWritten,
+        'loaded_from_summary' => true,
+    ];
 }
 
 

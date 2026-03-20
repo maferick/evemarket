@@ -5961,8 +5961,9 @@ function scheduler_job_definitions(): array
             },
         ],
         'alliance_historical_sync' => [
-            'timeout_seconds' => 480,
-            'lock_ttl_seconds' => 600,
+            'timeout_seconds' => 3600,
+            'lock_ttl_seconds' => 3900,
+            'execution' => 'background',
             'handler' => static function (): array {
                 $structureId = configured_structure_destination_id_for_esi_sync();
                 if ($structureId <= 0) {
@@ -5973,8 +5974,9 @@ function scheduler_job_definitions(): array
             },
         ],
         'market_hub_historical_sync' => [
-            'timeout_seconds' => 300,
-            'lock_ttl_seconds' => 420,
+            'timeout_seconds' => 3600,
+            'lock_ttl_seconds' => 3900,
+            'execution' => 'background',
             'handler' => static function (): array {
                 $hubRef = market_hub_setting_reference();
                 if ($hubRef === '') {
@@ -5985,8 +5987,9 @@ function scheduler_job_definitions(): array
             },
         ],
         'market_hub_local_history_sync' => [
-            'timeout_seconds' => 180,
-            'lock_ttl_seconds' => 300,
+            'timeout_seconds' => 3600,
+            'lock_ttl_seconds' => 3900,
+            'execution' => 'background',
             'handler' => static function (): array {
                 $hubRef = market_hub_setting_reference();
                 if ($hubRef === '') {
@@ -8148,7 +8151,9 @@ function sync_market_history_from_snapshots(
             return $result;
         }
 
-        $snapshotMetrics = db_market_orders_snapshot_metrics_window_raw($normalizedSourceType, $sourceId, $windowStartObservedAt);
+        $snapshotMetricResult = db_market_orders_snapshot_metrics_window_ensure_summary($normalizedSourceType, $sourceId, $windowStartObservedAt);
+        $snapshotMetrics = is_array($snapshotMetricResult['rows'] ?? null) ? $snapshotMetricResult['rows'] : [];
+        $summaryRowsWritten = max(0, (int) ($snapshotMetricResult['summary_rows_written'] ?? 0));
         $result['rows_seen'] = count($snapshotMetrics);
 
         if ($snapshotMetrics === []) {
@@ -8182,7 +8187,6 @@ function sync_market_history_from_snapshots(
             return $result;
         }
 
-        $summaryRowsWritten = db_market_order_snapshots_summary_bulk_upsert($snapshotMetrics);
         $rebuilt = market_history_daily_rebuild_from_snapshot_metrics($snapshotMetrics, $normalizedSourceType);
         $canonicalRows = is_array($rebuilt['rows'] ?? null) ? $rebuilt['rows'] : [];
         $historyRowCount = count($canonicalRows);
