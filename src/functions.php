@@ -2113,6 +2113,164 @@ function run_data_sync_now(?string $jobKey = null): array
     }
 }
 
+function scheduler_reset_process_targets(): array
+{
+    $paths = [
+        scheduler_job_runner_script_path(),
+        dirname(__DIR__) . '/bin/cron_tick.php',
+    ];
+
+    return array_values(array_unique(array_filter(array_map(static function (string $path): string {
+        $resolved = realpath($path);
+
+        return $resolved !== false ? $resolved : $path;
+    }, $paths), static fn (string $path): bool => $path !== '')));
+}
+
+function scheduler_find_running_processes(): array
+{
+    if (!function_exists('exec')) {
+        return [];
+    }
+
+    $targets = scheduler_reset_process_targets();
+    if ($targets === []) {
+        return [];
+    }
+
+    $output = [];
+    $exitCode = 1;
+    @exec('ps -eo pid=,command=', $output, $exitCode);
+    if ($exitCode !== 0) {
+        return [];
+    }
+
+    $currentPid = function_exists('getmypid') ? (int) getmypid() : 0;
+    $processes = [];
+
+    foreach ($output as $line) {
+        $trimmed = trim((string) $line);
+        if ($trimmed === '') {
+            continue;
+        }
+
+        if (!preg_match('/^(\d+)\s+(.*)$/', $trimmed, $matches)) {
+            continue;
+        }
+
+        $pid = (int) ($matches[1] ?? 0);
+        $command = trim((string) ($matches[2] ?? ''));
+        if ($pid <= 0 || $command === '' || $pid === $currentPid) {
+            continue;
+        }
+
+        foreach ($targets as $target) {
+            if (!str_contains($command, $target)) {
+                continue;
+            }
+
+            $processes[$pid] = [
+                'pid' => $pid,
+                'command' => $command,
+            ];
+            break;
+        }
+    }
+
+    ksort($processes);
+
+    return array_values($processes);
+}
+
+function scheduler_signal_processes(array $pids, int $signal): void
+{
+    if ($pids === []) {
+        return;
+    }
+
+    $safeSignal = max(1, $signal);
+    $safePids = array_values(array_filter(array_map(static fn (mixed $pid): int => (int) $pid, $pids), static fn (int $pid): bool => $pid > 0));
+    if ($safePids === []) {
+        return;
+    }
+
+    if (function_exists('posix_kill')) {
+        foreach ($safePids as $pid) {
+            @posix_kill($pid, $safeSignal);
+        }
+
+        return;
+    }
+
+    if (!function_exists('exec')) {
+        return;
+    }
+
+    @exec(sprintf(
+        'kill -%d %s >/dev/null 2>&1',
+        $safeSignal,
+        implode(' ', array_map('intval', $safePids))
+    ));
+}
+
+function scheduler_reset_runtime_state(): array
+{
+    $message = 'Scheduler locks were reset manually from Settings.';
+    $processes = scheduler_find_running_processes();
+    $pids = array_values(array_map(static fn (array $process): int => (int) ($process['pid'] ?? 0), $processes));
+
+    scheduler_signal_processes($pids, 15);
+    usleep(250000);
+
+    $remainingProcesses = scheduler_find_running_processes();
+    $remainingPids = array_values(array_map(static fn (array $process): int => (int) ($process['pid'] ?? 0), $remainingProcesses));
+    if ($remainingPids !== []) {
+        scheduler_signal_processes($remainingPids, 9);
+        usleep(250000);
+    }
+
+    $appLockReleased = db_runner_lock_force_release('supplycore:cron_tick');
+    $runnerLockReleased = db_runner_lock_force_release('cron_tick_runner');
+
+    if (supplycore_redis_locking_enabled()) {
+        supplycore_redis_del(['lock:runner:cron_tick_runner']);
+    }
+
+    $resetSchedules = db_sync_schedule_reset_locks($message);
+    $finalProcesses = scheduler_find_running_processes();
+
+    $releasedLocks = [];
+    if ($appLockReleased) {
+        $releasedLocks[] = 'supplycore:cron_tick';
+    }
+    if ($runnerLockReleased) {
+        $releasedLocks[] = 'cron_tick_runner';
+    }
+
+    return [
+        'ok' => $finalProcesses === [],
+        'killed_processes' => $processes,
+        'remaining_processes' => $finalProcesses,
+        'released_locks' => $releasedLocks,
+        'reset_schedule_count' => $resetSchedules,
+    ];
+}
+
+function scheduler_reset_runtime_state_message(array $result): string
+{
+    $killedCount = count((array) ($result['killed_processes'] ?? []));
+    $remainingCount = count((array) ($result['remaining_processes'] ?? []));
+    $lockCount = count((array) ($result['released_locks'] ?? []));
+    $scheduleCount = (int) ($result['reset_schedule_count'] ?? 0);
+
+    $message = 'Scheduler reset completed. Cleared ' . $scheduleCount . ' locked schedule(s), released ' . $lockCount . ' runner lock(s), and targeted ' . $killedCount . ' PHP scheduler process(es).';
+    if ($remainingCount > 0) {
+        $message .= ' Warning: ' . $remainingCount . ' scheduler process(es) still appear to be running and may need manual review.';
+    }
+
+    return $message;
+}
+
 function data_sync_schedule_job_definitions(): array
 {
     return [

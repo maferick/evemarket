@@ -108,6 +108,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 exit;
             }
 
+            if ($dataSyncAction === 'reset-scheduler') {
+                $resetResult = scheduler_reset_runtime_state();
+                $saved = (bool) ($resetResult['ok'] ?? false);
+                flash('success', scheduler_reset_runtime_state_message($resetResult));
+                header('Location: /settings?section=' . urlencode($submittedSection));
+                exit;
+            }
+
             if ($dataSyncAction === 'static-data-import') {
                 try {
                     $result = static_data_import_reference_data('auto', false);
@@ -1518,6 +1526,8 @@ include __DIR__ . '/../../src/views/partials/header.php';
                     </select>
                     <button name="data_sync_action" value="run-now" class="rounded-lg border border-border px-4 py-2 text-sm font-medium text-slate-100 hover:bg-white/5">Run selected now</button>
                     <p class="text-xs text-muted">Local History is available in this selector and is required to populate Trend Snippets.</p>
+                    <button name="data_sync_action" value="reset-scheduler" class="rounded-lg border border-amber-400/40 bg-amber-500/10 px-4 py-2 text-sm font-medium text-amber-100 hover:bg-amber-500/20">Reset scheduler locks</button>
+                    <p class="text-xs text-muted">Clears stuck schedule locks and attempts to terminate related background PHP workers before the next run.</p>
                     <button name="data_sync_action" value="static-data-import" class="rounded-lg border border-border px-4 py-2 text-sm font-medium text-slate-100 hover:bg-white/5">Import EVE Static Data</button>
                 </div>
             </form>

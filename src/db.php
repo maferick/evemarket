@@ -3163,6 +3163,30 @@ function db_runner_lock_release(string $lockName): bool
     return (int) ($row['lock_released'] ?? 0) === 1;
 }
 
+function db_runner_lock_holder_connection_id(string $lockName): ?int
+{
+    $row = db_select_one('SELECT IS_USED_LOCK(?) AS connection_id', [$lockName]);
+    $connectionId = (int) ($row['connection_id'] ?? 0);
+
+    return $connectionId > 0 ? $connectionId : null;
+}
+
+function db_runner_lock_force_release(string $lockName): bool
+{
+    $connectionId = db_runner_lock_holder_connection_id($lockName);
+    if ($connectionId === null) {
+        return true;
+    }
+
+    try {
+        db()->exec('KILL CONNECTION ' . $connectionId);
+    } catch (Throwable) {
+        return false;
+    }
+
+    return db_runner_lock_holder_connection_id($lockName) === null;
+}
+
 function db_sync_schedule_fetch_due_jobs(int $limit = 20): array
 {
     $safeLimit = max(1, min(200, $limit));
@@ -3408,6 +3432,39 @@ function db_sync_schedule_force_due_by_job_keys(array $jobKeys): int
 
     $stmt = db()->prepare($sql);
     $stmt->execute($keys);
+
+    return (int) $stmt->rowCount();
+}
+
+function db_sync_schedule_reset_locks(string $errorMessage): int
+{
+    $message = mb_substr(trim($errorMessage), 0, 500);
+    if ($message === '') {
+        $message = 'Scheduler locks were reset manually.';
+    }
+
+    $stmt = db()->prepare(
+        'UPDATE sync_schedules
+         SET locked_until = NULL,
+             last_status = CASE
+                WHEN last_status = ? OR locked_until IS NOT NULL THEN ?
+                ELSE last_status
+             END,
+             last_error = CASE
+                WHEN last_status = ? OR locked_until IS NOT NULL THEN ?
+                ELSE last_error
+             END,
+             next_run_at = CASE
+                WHEN enabled = 1 AND (last_status = ? OR locked_until IS NOT NULL) THEN UTC_TIMESTAMP()
+                WHEN enabled = 0 THEN NULL
+                ELSE next_run_at
+             END,
+             updated_at = CURRENT_TIMESTAMP
+         WHERE last_status = ?
+            OR locked_until IS NOT NULL'
+    );
+
+    $stmt->execute(['running', 'failed', 'running', $message, 'running', 'running']);
 
     return (int) $stmt->rowCount();
 }
