@@ -1,11 +1,16 @@
 <aside class="sidebar-shell">
     <a href="/" class="brand-lockup block">
-        <div class="relative z-10 flex items-center gap-3">
-            <img src="<?= htmlspecialchars(brand_logo_path(), ENT_QUOTES) ?>" alt="<?= htmlspecialchars(app_name(), ENT_QUOTES) ?> logo" class="h-12 w-12 rounded-2xl border border-white/10 bg-slate-950/70 p-2 shadow-[0_0_30px_rgba(59,130,246,0.18)]">
-            <div>
+        <div class="brand-lockup-grid">
+            <img src="<?= htmlspecialchars(brand_logo_path(), ENT_QUOTES) ?>" alt="<?= htmlspecialchars(app_name(), ENT_QUOTES) ?> logo" class="brand-mark">
+            <div class="space-y-2">
+                <div class="flex items-center gap-2">
+                    <span class="status-chip border-cyan/20 bg-cyan/10 text-cyan-100">
+                        <span class="h-2 w-2 rounded-full bg-cyan shadow-[0_0_12px_rgba(34,211,238,0.65)]"></span>
+                        Operations online
+                    </span>
+                </div>
                 <p class="text-[0.68rem] font-semibold uppercase tracking-[0.26em] text-cyan/75"><?= htmlspecialchars(brand_family_name(), ENT_QUOTES) ?></p>
-                <p class="mt-1 text-xl font-semibold tracking-tight text-white"><?= htmlspecialchars(app_name(), ENT_QUOTES) ?></p>
-                <p class="mt-1 text-xs text-slate-400">Supply intelligence command layer</p>
+                <p class="text-sm text-slate-300">Supply intelligence command layer</p>
             </div>
         </div>
     </a>
