@@ -117,6 +117,22 @@ CREATE TABLE IF NOT EXISTS sync_schedules (
     KEY idx_job_key (job_key)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+SET @sync_schedules_offset_seconds_exists := (
+    SELECT COUNT(*)
+    FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'sync_schedules'
+      AND COLUMN_NAME = 'offset_seconds'
+);
+SET @sync_schedules_offset_seconds_sql := IF(
+    @sync_schedules_offset_seconds_exists = 0,
+    'ALTER TABLE sync_schedules ADD COLUMN offset_seconds INT UNSIGNED NOT NULL DEFAULT 0 AFTER interval_seconds',
+    'SELECT 1'
+);
+PREPARE sync_schedules_offset_seconds_stmt FROM @sync_schedules_offset_seconds_sql;
+EXECUTE sync_schedules_offset_seconds_stmt;
+DEALLOCATE PREPARE sync_schedules_offset_seconds_stmt;
+
 CREATE TABLE IF NOT EXISTS intelligence_snapshots (
     snapshot_key VARCHAR(190) PRIMARY KEY,
     snapshot_status ENUM('ready', 'updating', 'failed') NOT NULL DEFAULT 'ready',
