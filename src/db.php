@@ -659,7 +659,18 @@ function db_time_series_analytics_ensure_schema(): void
         db_ensure_table_column($table, $columnName, $definitionSql);
     }
 
+    if (!db_table_has_column('killmail_events', 'effective_killmail_at')) {
+        db()->exec(
+            'ALTER TABLE killmail_events
+             ADD COLUMN effective_killmail_at DATETIME GENERATED ALWAYS AS (COALESCE(killmail_time, created_at)) STORED'
+        );
+    }
+
     $indexes = [
+        ['killmail_events', 'idx_victim_alliance_effective', 'INDEX idx_victim_alliance_effective (victim_alliance_id, effective_killmail_at)'],
+        ['killmail_events', 'idx_victim_corporation_effective', 'INDEX idx_victim_corporation_effective (victim_corporation_id, effective_killmail_at)'],
+        ['killmail_events', 'idx_killmail_effective_ship', 'INDEX idx_killmail_effective_ship (effective_killmail_at, victim_ship_type_id)'],
+        ['killmail_events', 'idx_killmail_ship_effective', 'INDEX idx_killmail_ship_effective (victim_ship_type_id, effective_killmail_at)'],
         ['killmail_item_loss_1h', 'idx_killmail_item_loss_1h_bucket_type', 'INDEX idx_killmail_item_loss_1h_bucket_type (bucket_start, type_id)'],
         ['killmail_item_loss_1h', 'idx_killmail_item_loss_1h_bucket', 'INDEX idx_killmail_item_loss_1h_bucket (bucket_start)'],
         ['killmail_item_loss_1d', 'idx_killmail_item_loss_1d_bucket_type', 'INDEX idx_killmail_item_loss_1d_bucket_type (bucket_start, type_id)'],
@@ -3189,10 +3200,12 @@ function db_runner_lock_force_release(string $lockName): bool
 
 function db_sync_schedule_fetch_due_jobs(int $limit = 20): array
 {
+    db_ensure_table_column('sync_schedules', 'offset_seconds', 'INT UNSIGNED NOT NULL DEFAULT 0');
+
     $safeLimit = max(1, min(200, $limit));
 
     return db_select(
-        'SELECT id, job_key, enabled, interval_seconds, next_run_at, last_run_at, last_status, last_error, locked_until
+        'SELECT id, job_key, enabled, interval_seconds, offset_seconds, next_run_at, last_run_at, last_status, last_error, locked_until
          FROM sync_schedules
          WHERE enabled = 1
            AND next_run_at IS NOT NULL
@@ -3205,6 +3218,8 @@ function db_sync_schedule_fetch_due_jobs(int $limit = 20): array
 
 function db_sync_schedule_claim_job(int $scheduleId, int $lockTtlSeconds = 300): ?array
 {
+    db_ensure_table_column('sync_schedules', 'offset_seconds', 'INT UNSIGNED NOT NULL DEFAULT 0');
+
     $safeLockTtl = max(30, min(3600, $lockTtlSeconds));
 
     $stmt = db()->prepare(
@@ -3227,7 +3242,7 @@ function db_sync_schedule_claim_job(int $scheduleId, int $lockTtlSeconds = 300):
     }
 
     return db_select_one(
-        'SELECT id, job_key, enabled, interval_seconds, next_run_at, last_run_at, last_status, last_error, locked_until
+        'SELECT id, job_key, enabled, interval_seconds, offset_seconds, next_run_at, last_run_at, last_status, last_error, locked_until
          FROM sync_schedules
          WHERE id = ?
          LIMIT 1',
@@ -3235,40 +3250,94 @@ function db_sync_schedule_claim_job(int $scheduleId, int $lockTtlSeconds = 300):
     );
 }
 
+function db_sync_schedule_next_run_at_for_values(int $intervalSeconds, int $offsetSeconds, ?int $nowUnix = null): string
+{
+    $safeInterval = max(1, min(86400, $intervalSeconds));
+    $safeOffset = max(0, min($safeInterval - 1, $offsetSeconds));
+    $referenceUnix = $nowUnix ?? time();
+
+    $elapsed = (($referenceUnix - $safeOffset) % $safeInterval + $safeInterval) % $safeInterval;
+    $wait = $elapsed === 0 ? $safeInterval : ($safeInterval - $elapsed);
+    $nextUnix = $referenceUnix + $wait;
+
+    return gmdate('Y-m-d H:i:s', $nextUnix);
+}
+
+function db_sync_schedule_next_run_at_by_id(int $scheduleId, ?int $nowUnix = null): ?string
+{
+    if ($scheduleId <= 0) {
+        return null;
+    }
+
+    $row = db_select_one(
+        'SELECT interval_seconds, offset_seconds
+         FROM sync_schedules
+         WHERE id = ?
+         LIMIT 1',
+        [$scheduleId]
+    );
+
+    if ($row === null) {
+        return null;
+    }
+
+    return db_sync_schedule_next_run_at_for_values(
+        (int) ($row['interval_seconds'] ?? 60),
+        (int) ($row['offset_seconds'] ?? 0),
+        $nowUnix
+    );
+}
+
 function db_sync_schedule_mark_success(int $scheduleId): bool
 {
+    db_ensure_table_column('sync_schedules', 'offset_seconds', 'INT UNSIGNED NOT NULL DEFAULT 0');
+
+    $nextRunAt = db_sync_schedule_next_run_at_by_id($scheduleId);
+    if ($nextRunAt === null) {
+        return false;
+    }
+
     return db_execute(
         'UPDATE sync_schedules
          SET last_run_at = UTC_TIMESTAMP(),
              last_status = ?,
              last_error = NULL,
-             next_run_at = DATE_ADD(UTC_TIMESTAMP(), INTERVAL interval_seconds SECOND),
+             next_run_at = ?,
              locked_until = NULL,
              updated_at = CURRENT_TIMESTAMP
          WHERE id = ?
          LIMIT 1',
-        ['success', $scheduleId]
+        ['success', $nextRunAt, $scheduleId]
     );
 }
 
 function db_sync_schedule_mark_failure(int $scheduleId, string $errorMessage): bool
 {
+    db_ensure_table_column('sync_schedules', 'offset_seconds', 'INT UNSIGNED NOT NULL DEFAULT 0');
+
+    $nextRunAt = db_sync_schedule_next_run_at_by_id($scheduleId);
+    if ($nextRunAt === null) {
+        return false;
+    }
+
     return db_execute(
         'UPDATE sync_schedules
          SET last_run_at = UTC_TIMESTAMP(),
              last_status = ?,
              last_error = ?,
-             next_run_at = DATE_ADD(UTC_TIMESTAMP(), INTERVAL interval_seconds SECOND),
+             next_run_at = ?,
              locked_until = NULL,
              updated_at = CURRENT_TIMESTAMP
          WHERE id = ?
          LIMIT 1',
-        ['failed', mb_substr($errorMessage, 0, 500), $scheduleId]
+        ['failed', mb_substr($errorMessage, 0, 500), $nextRunAt, $scheduleId]
     );
 }
 
 function db_sync_schedule_fetch_by_job_keys(array $jobKeys): array
 {
+    db_ensure_table_column('sync_schedules', 'offset_seconds', 'INT UNSIGNED NOT NULL DEFAULT 0');
+
     $keys = array_values(array_filter(array_map(static fn (mixed $jobKey): string => trim((string) $jobKey), $jobKeys), static fn (string $jobKey): bool => $jobKey !== ''));
     if ($keys === []) {
         return [];
@@ -3277,7 +3346,7 @@ function db_sync_schedule_fetch_by_job_keys(array $jobKeys): array
     $placeholders = implode(',', array_fill(0, count($keys), '?'));
 
     return db_select(
-        "SELECT id, job_key, enabled, interval_seconds, next_run_at, last_run_at, last_status, last_error, locked_until
+        "SELECT id, job_key, enabled, interval_seconds, offset_seconds, next_run_at, last_run_at, last_status, last_error, locked_until
          FROM sync_schedules
          WHERE job_key IN ($placeholders)",
         $keys
@@ -3286,12 +3355,14 @@ function db_sync_schedule_fetch_by_job_keys(array $jobKeys): array
 
 function db_sync_schedule_fetch_by_id(int $scheduleId): ?array
 {
+    db_ensure_table_column('sync_schedules', 'offset_seconds', 'INT UNSIGNED NOT NULL DEFAULT 0');
+
     if ($scheduleId <= 0) {
         return null;
     }
 
     $row = db_select_one(
-        'SELECT id, job_key, enabled, interval_seconds, next_run_at, last_run_at, last_status, last_error, locked_until
+        'SELECT id, job_key, enabled, interval_seconds, offset_seconds, next_run_at, last_run_at, last_status, last_error, locked_until
          FROM sync_schedules
          WHERE id = ?
          LIMIT 1',
@@ -3303,6 +3374,8 @@ function db_sync_schedule_fetch_by_id(int $scheduleId): ?array
 
 function db_sync_schedule_running_job_keys(array $jobKeys): array
 {
+    db_ensure_table_column('sync_schedules', 'offset_seconds', 'INT UNSIGNED NOT NULL DEFAULT 0');
+
     $keys = array_values(array_filter(array_map(static fn (mixed $jobKey): string => trim((string) $jobKey), $jobKeys), static fn (string $jobKey): bool => $jobKey !== ''));
     if ($keys === []) {
         return [];
@@ -3327,20 +3400,29 @@ function db_sync_schedule_running_job_keys(array $jobKeys): array
     ), static fn (string $jobKey): bool => $jobKey !== ''));
 }
 
-function db_sync_schedule_ensure_job(string $jobKey, int $enabled, int $intervalSeconds): bool
+function db_sync_schedule_ensure_job(string $jobKey, int $enabled, int $intervalSeconds, int $offsetSeconds = 0): bool
 {
+    db_ensure_table_column('sync_schedules', 'offset_seconds', 'INT UNSIGNED NOT NULL DEFAULT 0');
+
     $normalizedKey = trim($jobKey);
     if ($normalizedKey === '') {
         return false;
     }
 
+    $safeInterval = max(1, min(86400, $intervalSeconds));
+    $safeOffset = max(0, min($safeInterval - 1, $offsetSeconds));
+    $nextRunAt = $enabled === 1
+        ? db_sync_schedule_next_run_at_for_values($safeInterval, $safeOffset)
+        : null;
+
     return db_execute(
-        'INSERT INTO sync_schedules (job_key, enabled, interval_seconds, next_run_at, last_run_at, last_status, last_error, locked_until)
+        'INSERT INTO sync_schedules (job_key, enabled, interval_seconds, offset_seconds, next_run_at, last_run_at, last_status, last_error, locked_until)
          VALUES (
             ?,
             ?,
             ?,
-            CASE WHEN ? = 1 THEN UTC_TIMESTAMP() ELSE NULL END,
+            ?,
+            ?,
             NULL,
             NULL,
             NULL,
@@ -3348,28 +3430,49 @@ function db_sync_schedule_ensure_job(string $jobKey, int $enabled, int $interval
          )
          ON DUPLICATE KEY UPDATE
             next_run_at = CASE
-                WHEN enabled = 1 AND next_run_at IS NULL THEN UTC_TIMESTAMP()
+                WHEN enabled = 1 AND next_run_at IS NULL THEN ?
                 ELSE next_run_at
             END,
             updated_at = CURRENT_TIMESTAMP',
-        [$normalizedKey, $enabled, $intervalSeconds, $enabled]
+        [$normalizedKey, $enabled, $safeInterval, $safeOffset, $nextRunAt, $nextRunAt]
     );
 }
 
-function db_sync_schedule_upsert(string $jobKey, int $enabled, int $intervalSeconds): bool
+function db_sync_schedule_upsert(string $jobKey, int $enabled, int $intervalSeconds, ?int $offsetSeconds = null): bool
 {
+    db_ensure_table_column('sync_schedules', 'offset_seconds', 'INT UNSIGNED NOT NULL DEFAULT 0');
+
     $normalizedKey = trim($jobKey);
     if ($normalizedKey === '') {
         return false;
     }
 
+    $safeInterval = max(1, min(86400, $intervalSeconds));
+    $resolvedOffset = $offsetSeconds;
+    if ($resolvedOffset === null) {
+        $existing = db_select_one(
+            'SELECT offset_seconds
+             FROM sync_schedules
+             WHERE job_key = ?
+             LIMIT 1',
+            [$normalizedKey]
+        );
+        $resolvedOffset = (int) ($existing['offset_seconds'] ?? 0);
+    }
+
+    $safeOffset = max(0, min($safeInterval - 1, (int) $resolvedOffset));
+    $nextRunAt = $enabled === 1
+        ? db_sync_schedule_next_run_at_for_values($safeInterval, $safeOffset)
+        : null;
+
     return db_execute(
-        'INSERT INTO sync_schedules (job_key, enabled, interval_seconds, next_run_at, last_run_at, last_status, last_error, locked_until)
+        'INSERT INTO sync_schedules (job_key, enabled, interval_seconds, offset_seconds, next_run_at, last_run_at, last_status, last_error, locked_until)
          VALUES (
             ?,
             ?,
             ?,
-            CASE WHEN ? = 1 THEN UTC_TIMESTAMP() ELSE NULL END,
+            ?,
+            ?,
             NULL,
             NULL,
             NULL,
@@ -3378,18 +3481,21 @@ function db_sync_schedule_upsert(string $jobKey, int $enabled, int $intervalSeco
          ON DUPLICATE KEY UPDATE
             enabled = VALUES(enabled),
             interval_seconds = VALUES(interval_seconds),
+            offset_seconds = VALUES(offset_seconds),
             next_run_at = CASE
-                WHEN VALUES(enabled) = 1 THEN COALESCE(next_run_at, DATE_ADD(UTC_TIMESTAMP(), INTERVAL VALUES(interval_seconds) SECOND))
+                WHEN VALUES(enabled) = 1 THEN COALESCE(next_run_at, ?)
                 ELSE NULL
             END,
             locked_until = CASE WHEN VALUES(enabled) = 1 THEN locked_until ELSE NULL END,
             updated_at = CURRENT_TIMESTAMP',
-        [$normalizedKey, $enabled, $intervalSeconds, $enabled]
+        [$normalizedKey, $enabled, $safeInterval, $safeOffset, $nextRunAt, $nextRunAt]
     );
 }
 
 function db_sync_schedule_force_due_all_enabled(): int
 {
+    db_ensure_table_column('sync_schedules', 'offset_seconds', 'INT UNSIGNED NOT NULL DEFAULT 0');
+
     $stmt = db()->prepare(
         'UPDATE sync_schedules
          SET next_run_at = UTC_TIMESTAMP(),
@@ -3405,6 +3511,8 @@ function db_sync_schedule_force_due_all_enabled(): int
 
 function db_sync_schedule_force_due_by_job_keys(array $jobKeys): int
 {
+    db_ensure_table_column('sync_schedules', 'offset_seconds', 'INT UNSIGNED NOT NULL DEFAULT 0');
+
     $normalized = [];
 
     foreach ($jobKeys as $jobKey) {
@@ -3438,6 +3546,8 @@ function db_sync_schedule_force_due_by_job_keys(array $jobKeys): int
 
 function db_sync_schedule_reset_locks(string $errorMessage): int
 {
+    db_ensure_table_column('sync_schedules', 'offset_seconds', 'INT UNSIGNED NOT NULL DEFAULT 0');
+
     $message = mb_substr(trim($errorMessage), 0, 500);
     if ($message === '') {
         $message = 'Scheduler locks were reset manually.';

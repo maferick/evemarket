@@ -2278,21 +2278,24 @@ function data_sync_schedule_job_definitions(): array
             'enabled_key' => 'alliance_current_sync_enabled',
             'interval_value_key' => 'alliance_current_sync_interval_value',
             'interval_unit_key' => 'alliance_current_sync_interval_unit',
-            'default_interval_seconds' => 60,
+            'default_interval_seconds' => 300,
+            'default_offset_seconds' => 0,
             'label' => 'Alliance Current',
         ],
         'alliance_historical_sync' => [
             'enabled_key' => 'alliance_historical_sync_enabled',
             'interval_value_key' => 'alliance_historical_sync_interval_value',
             'interval_unit_key' => 'alliance_historical_sync_interval_unit',
-            'default_interval_seconds' => 1800,
+            'default_interval_seconds' => 21600,
+            'default_offset_seconds' => 0,
             'label' => 'Alliance History',
         ],
         'market_hub_current_sync' => [
             'enabled_key' => 'market_hub_current_sync_enabled',
             'interval_value_key' => 'market_hub_current_sync_interval_value',
             'interval_unit_key' => 'market_hub_current_sync_interval_unit',
-            'default_interval_seconds' => 60,
+            'default_interval_seconds' => 300,
+            'default_offset_seconds' => 0,
             'label' => 'Hub Current',
         ],
         'current_state_refresh_sync' => [
@@ -2300,13 +2303,15 @@ function data_sync_schedule_job_definitions(): array
             'interval_value_key' => 'current_state_refresh_sync_interval_value',
             'interval_unit_key' => 'current_state_refresh_sync_interval_unit',
             'default_interval_seconds' => 300,
+            'default_offset_seconds' => 0,
             'label' => 'Current-State Refresh',
         ],
         'market_hub_historical_sync' => [
             'enabled_key' => 'market_hub_historical_sync_enabled',
             'interval_value_key' => 'market_hub_historical_sync_interval_value',
             'interval_unit_key' => 'market_hub_historical_sync_interval_unit',
-            'default_interval_seconds' => 1800,
+            'default_interval_seconds' => 21600,
+            'default_offset_seconds' => 0,
             'label' => 'Hub History',
         ],
         'market_hub_local_history_sync' => [
@@ -2314,62 +2319,71 @@ function data_sync_schedule_job_definitions(): array
             'interval_value_key' => 'market_hub_local_history_sync_interval_value',
             'interval_unit_key' => 'market_hub_local_history_sync_interval_unit',
             'default_interval_seconds' => 300,
+            'default_offset_seconds' => 0,
             'label' => 'Hub Snapshot History',
         ],
         'doctrine_intelligence_sync' => [
             'enabled_key' => 'doctrine_intelligence_sync_enabled',
             'interval_value_key' => 'doctrine_intelligence_sync_interval_value',
             'interval_unit_key' => 'doctrine_intelligence_sync_interval_unit',
-            'default_interval_seconds' => 300,
+            'default_interval_seconds' => 600,
+            'default_offset_seconds' => 120,
             'label' => 'Doctrine Intelligence Batch',
         ],
         'market_comparison_summary_sync' => [
             'enabled_key' => 'market_comparison_summary_sync_enabled',
             'interval_value_key' => 'market_comparison_summary_sync_interval_value',
             'interval_unit_key' => 'market_comparison_summary_sync_interval_unit',
-            'default_interval_seconds' => 300,
+            'default_interval_seconds' => 600,
+            'default_offset_seconds' => 120,
             'label' => 'Market Comparison Batch',
         ],
         'loss_demand_summary_sync' => [
             'enabled_key' => 'loss_demand_summary_sync_enabled',
             'interval_value_key' => 'loss_demand_summary_sync_interval_value',
             'interval_unit_key' => 'loss_demand_summary_sync_interval_unit',
-            'default_interval_seconds' => 300,
+            'default_interval_seconds' => 600,
+            'default_offset_seconds' => 120,
             'label' => 'Loss-Demand Batch',
         ],
         'dashboard_summary_sync' => [
             'enabled_key' => 'dashboard_summary_sync_enabled',
             'interval_value_key' => 'dashboard_summary_sync_interval_value',
             'interval_unit_key' => 'dashboard_summary_sync_interval_unit',
-            'default_interval_seconds' => 300,
+            'default_interval_seconds' => 600,
+            'default_offset_seconds' => 120,
             'label' => 'Dashboard Summary Batch',
         ],
         'activity_priority_summary_sync' => [
             'enabled_key' => 'activity_priority_summary_sync_enabled',
             'interval_value_key' => 'activity_priority_summary_sync_interval_value',
             'interval_unit_key' => 'activity_priority_summary_sync_interval_unit',
-            'default_interval_seconds' => 300,
+            'default_interval_seconds' => 600,
+            'default_offset_seconds' => 120,
             'label' => 'Activity Priority Batch',
         ],
         'analytics_bucket_1h_sync' => [
             'enabled_key' => 'analytics_bucket_1h_sync_enabled',
             'interval_value_key' => 'analytics_bucket_1h_sync_interval_value',
             'interval_unit_key' => 'analytics_bucket_1h_sync_interval_unit',
-            'default_interval_seconds' => 300,
+            'default_interval_seconds' => 600,
+            'default_offset_seconds' => 120,
             'label' => 'Analytics Buckets (1h)',
         ],
         'analytics_bucket_1d_sync' => [
             'enabled_key' => 'analytics_bucket_1d_sync_enabled',
             'interval_value_key' => 'analytics_bucket_1d_sync_interval_value',
             'interval_unit_key' => 'analytics_bucket_1d_sync_interval_unit',
-            'default_interval_seconds' => 900,
+            'default_interval_seconds' => 3600,
+            'default_offset_seconds' => 0,
             'label' => 'Analytics Buckets (1d)',
         ],
         'rebuild_ai_briefings' => [
             'enabled_key' => 'rebuild_ai_briefings_enabled',
             'interval_value_key' => 'rebuild_ai_briefings_interval_value',
             'interval_unit_key' => 'rebuild_ai_briefings_interval_unit',
-            'default_interval_seconds' => 300,
+            'default_interval_seconds' => 900,
+            'default_offset_seconds' => 420,
             'label' => 'Doctrine AI Briefings',
         ],
         'forecasting_ai_sync' => [
@@ -2377,6 +2391,7 @@ function data_sync_schedule_job_definitions(): array
             'interval_value_key' => 'forecasting_ai_sync_interval_value',
             'interval_unit_key' => 'forecasting_ai_sync_interval_unit',
             'default_interval_seconds' => 3600,
+            'default_offset_seconds' => 0,
             'label' => 'Forecasting / AI Batch',
         ],
         'killmail_r2z2_sync' => [
@@ -2384,6 +2399,7 @@ function data_sync_schedule_job_definitions(): array
             'interval_value_key' => 'killmail_r2z2_sync_interval_value',
             'interval_unit_key' => 'killmail_r2z2_sync_interval_unit',
             'default_interval_seconds' => 60,
+            'default_offset_seconds' => 0,
             'label' => 'Killmail R2Z2 Stream',
         ],
     ];
@@ -2454,7 +2470,12 @@ function save_data_sync_schedule_settings(array $request): bool
                     (int) $definition['default_interval_seconds']
                 );
 
-                db_sync_schedule_upsert($jobKey, $enabled, $intervalSeconds);
+                db_sync_schedule_upsert(
+                    $jobKey,
+                    $enabled,
+                    $intervalSeconds,
+                    (int) ($definition['default_offset_seconds'] ?? 0)
+                );
             }
         });
     } catch (Throwable) {
@@ -6336,7 +6357,8 @@ function scheduler_ensure_default_jobs_registered(): void
         db_sync_schedule_ensure_job(
             $jobKey,
             1,
-            (int) ($definition['default_interval_seconds'] ?? 300)
+            (int) ($definition['default_interval_seconds'] ?? 300),
+            (int) ($definition['default_offset_seconds'] ?? 0)
         );
     }
 }
