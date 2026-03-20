@@ -4274,7 +4274,7 @@ function db_doctrine_fit_create(array $fit, array $items, array $groupIds = []):
                 warning_count,
                 item_count,
                 unresolved_count
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
             [
                 $groupIds[0] ?? (isset($fit['doctrine_group_id']) ? (int) $fit['doctrine_group_id'] : null),
                 (string) ($fit['fit_name'] ?? ''),
