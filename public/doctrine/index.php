@@ -57,11 +57,14 @@ include __DIR__ . '/../../src/views/partials/header.php';
                 <h2 class="mt-2 section-title">Alliance doctrine groups</h2>
                 <p class="mt-2 text-sm text-slate-400">Every card now separates fieldable readiness from replenishment pressure before you even open the fit.</p>
             </div>
-            <a href="/doctrine/import" class="btn-primary">Import fit</a>
+            <div class="flex flex-wrap gap-3">
+                <a href="/doctrine/fits" class="btn-secondary">Fit overview</a>
+                <a href="/doctrine/import" class="btn-primary">Bulk import</a>
+            </div>
         </div>
 
         <?php if ($groups === []): ?>
-            <div class="surface-tertiary text-sm text-slate-400">No doctrine groups yet. Create one, then import an EFT or BuyAll payload.</div>
+            <div class="surface-tertiary text-sm text-slate-400">No doctrine groups yet. Create one, then import Winter Coalition HTML pages or EFT fallback payloads in bulk.</div>
         <?php else: ?>
             <div class="space-y-4">
                 <?php foreach ($groups as $group): ?>

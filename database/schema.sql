@@ -522,14 +522,31 @@ CREATE TABLE IF NOT EXISTS doctrine_fits (
     fit_name VARCHAR(190) NOT NULL,
     ship_name VARCHAR(255) NOT NULL,
     ship_type_id INT UNSIGNED DEFAULT NULL,
+    source_type ENUM('html', 'eft', 'buyall', 'manual') NOT NULL DEFAULT 'manual',
     source_format ENUM('eft', 'buyall') NOT NULL,
+    source_reference VARCHAR(255) DEFAULT NULL,
+    notes TEXT DEFAULT NULL,
     import_body LONGTEXT NOT NULL,
+    raw_html LONGTEXT DEFAULT NULL,
+    raw_buyall LONGTEXT DEFAULT NULL,
+    raw_eft LONGTEXT DEFAULT NULL,
+    metadata_json LONGTEXT DEFAULT NULL,
+    parse_warnings_json LONGTEXT DEFAULT NULL,
+    parse_status ENUM('ready', 'review') NOT NULL DEFAULT 'ready',
+    review_status ENUM('clean', 'needs_review', 'reparse_requested') NOT NULL DEFAULT 'clean',
+    conflict_state ENUM('none', 'duplicate_name', 'duplicate_items', 'version_conflict', 'source_mismatch') NOT NULL DEFAULT 'none',
+    fingerprint_hash CHAR(64) DEFAULT NULL,
+    warning_count INT UNSIGNED NOT NULL DEFAULT 0,
     item_count INT UNSIGNED NOT NULL DEFAULT 0,
     unresolved_count INT UNSIGNED NOT NULL DEFAULT 0,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     KEY idx_doctrine_group_id (doctrine_group_id),
     KEY idx_ship_type_id (ship_type_id),
+    KEY idx_source_type (source_type),
+    KEY idx_parse_status (parse_status, review_status),
+    KEY idx_conflict_state (conflict_state),
+    KEY idx_fingerprint_hash (fingerprint_hash),
     CONSTRAINT fk_doctrine_fits_group FOREIGN KEY (doctrine_group_id) REFERENCES doctrine_groups(id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
@@ -548,6 +565,7 @@ CREATE TABLE IF NOT EXISTS doctrine_fit_items (
     doctrine_fit_id INT UNSIGNED NOT NULL,
     line_number SMALLINT UNSIGNED NOT NULL DEFAULT 0,
     slot_category VARCHAR(80) NOT NULL DEFAULT 'Items',
+    source_role VARCHAR(80) NOT NULL DEFAULT 'fit',
     item_name VARCHAR(255) NOT NULL,
     type_id INT UNSIGNED DEFAULT NULL,
     quantity INT UNSIGNED NOT NULL DEFAULT 1,
@@ -558,6 +576,7 @@ CREATE TABLE IF NOT EXISTS doctrine_fit_items (
     KEY idx_doctrine_fit_id (doctrine_fit_id),
     KEY idx_type_id (type_id),
     KEY idx_slot_category (slot_category),
+    KEY idx_source_role (source_role),
     CONSTRAINT fk_doctrine_fit_items_fit FOREIGN KEY (doctrine_fit_id) REFERENCES doctrine_fits(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 

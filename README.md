@@ -21,7 +21,7 @@ This repository establishes a clean architecture that can scale from an initial 
 - ESI cache tables (`esi_cache_namespaces`, `esi_cache_entries`) for structured `cache.esi.*` namespaces
 - Incremental sync state tables (`sync_state`, `sync_runs`) for watermark/cursor tracking and run observability
 - Reusable entity metadata cache for human-readable killmail, market, and analytics surfaces
-- Doctrine fit import workflow with EFT/BuyAll parsing, item-name cache, doctrine group pages, alliance-vs-hub market mapping, and background-refreshed materialized intelligence snapshots
+- HTML-first doctrine fit import workflow for Winter Coalition fit pages, BuyAll/EFT normalization, bulk preview/save controls, fit-overview bulk management, item-name cache, doctrine group pages, alliance-vs-hub market mapping, and background-refreshed materialized intelligence snapshots
 - Materialized intelligence storage (`intelligence_snapshots`) for doctrine fit/group summaries, market comparison summaries, loss-demand summaries, and dashboard payloads
 - Redis delivery cache for the latest precomputed intelligence payloads with MySQL materialized-summary fallback
 - Secure CSRF-protected settings forms
@@ -33,7 +33,7 @@ This repository establishes a clean architecture that can scale from an initial 
 public/
   index.php                 # Dashboard
   settings/index.php        # Modular settings controller/view
-  doctrine/                 # Doctrine groups, import, and fit detail pages
+  doctrine/                 # Doctrine groups, bulk import, fit overview, and fit detail pages
   .htaccess                 # Apache rewrite rules
 src/
   bootstrap.php             # Session + shared bootstrap

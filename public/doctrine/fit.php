@@ -218,6 +218,30 @@ include __DIR__ . '/../../src/views/partials/header.php';
                         <p class="text-xs uppercase tracking-[0.16em] text-slate-500">Doctrine groups</p>
                         <p class="mt-2 font-semibold text-slate-100"><?= htmlspecialchars(implode(', ', (array) ($fit['group_names'] ?? [])) ?: 'Ungrouped', ENT_QUOTES) ?></p>
                     </div>
+                    <div class="surface-tertiary">
+                        <p class="text-xs uppercase tracking-[0.16em] text-slate-500">Import status</p>
+                        <p class="mt-2 font-semibold text-slate-100"><?= htmlspecialchars((string) ($fit['readiness_status'] ?? 'Ready'), ENT_QUOTES) ?></p>
+                        <p class="mt-1 text-xs text-slate-500">Source <?= htmlspecialchars(strtoupper((string) ($fit['source_type'] ?? 'manual')), ENT_QUOTES) ?> · warnings <?= (int) ($fit['warning_count'] ?? 0) ?> · unresolved <?= (int) ($fit['unresolved_count'] ?? 0) ?></p>
+                        <?php if (($fit['conflict_state'] ?? 'none') !== 'none'): ?>
+                            <p class="mt-2 text-xs text-fuchsia-100">Conflict: <?= htmlspecialchars((string) ($fit['conflict_state'] ?? ''), ENT_QUOTES) ?></p>
+                        <?php endif; ?>
+                    </div>
+                    <?php if (!empty($fit['notes'])): ?>
+                        <div class="surface-tertiary">
+                            <p class="text-xs uppercase tracking-[0.16em] text-slate-500">Fitting notes</p>
+                            <p class="mt-2 whitespace-pre-wrap text-sm text-slate-300"><?= htmlspecialchars((string) ($fit['notes'] ?? ''), ENT_QUOTES) ?></p>
+                        </div>
+                    <?php endif; ?>
+                    <?php if ((array) ($fit['parse_warnings'] ?? []) !== []): ?>
+                        <div class="rounded-[1.25rem] border border-amber-400/20 bg-amber-500/10 p-4">
+                            <p class="text-xs uppercase tracking-[0.16em] text-amber-100/80">Parse warnings</p>
+                            <ul class="mt-3 space-y-2 text-sm text-amber-100">
+                                <?php foreach ((array) ($fit['parse_warnings'] ?? []) as $warning): ?>
+                                    <li class="rounded-xl border border-amber-400/15 bg-black/10 px-3 py-2"><?= htmlspecialchars((string) $warning, ENT_QUOTES) ?></li>
+                                <?php endforeach; ?>
+                            </ul>
+                        </div>
+                    <?php endif; ?>
                     <?php if (is_array($fit['ai_briefing'] ?? null)): ?>
                         <?php $aiBriefing = (array) $fit['ai_briefing']; ?>
                         <div class="rounded-[1.25rem] border border-violet-400/20 bg-violet-500/10 p-4">
@@ -471,6 +495,21 @@ include __DIR__ . '/../../src/views/partials/header.php';
                     <?php endforeach; ?>
                 </div>
             <?php endif; ?>
+
+            <div class="mt-8 grid gap-4 xl:grid-cols-3">
+                <section class="surface-tertiary">
+                    <p class="text-xs uppercase tracking-[0.16em] text-slate-500">Raw Buy All</p>
+                    <pre class="mt-3 overflow-x-auto whitespace-pre-wrap text-xs text-slate-300"><?= htmlspecialchars((string) ($fit['raw_buyall'] ?? 'Unavailable'), ENT_QUOTES) ?></pre>
+                </section>
+                <section class="surface-tertiary">
+                    <p class="text-xs uppercase tracking-[0.16em] text-slate-500">Raw EFT</p>
+                    <pre class="mt-3 overflow-x-auto whitespace-pre-wrap text-xs text-slate-300"><?= htmlspecialchars((string) ($fit['raw_eft'] ?? 'Unavailable'), ENT_QUOTES) ?></pre>
+                </section>
+                <section class="surface-tertiary">
+                    <p class="text-xs uppercase tracking-[0.16em] text-slate-500">Source metadata</p>
+                    <pre class="mt-3 overflow-x-auto whitespace-pre-wrap text-xs text-slate-300"><?= htmlspecialchars(json_encode((array) ($fit['metadata'] ?? []), JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE) ?: '{}', ENT_QUOTES) ?></pre>
+                </section>
+            </div>
         </article>
     </section>
 <?php endif; ?>
