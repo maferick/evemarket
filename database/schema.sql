@@ -148,6 +148,51 @@ CREATE TABLE IF NOT EXISTS intelligence_snapshots (
     KEY idx_snapshot_computed_at (computed_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+CREATE TABLE IF NOT EXISTS market_deal_alerts_current (
+    alert_key VARCHAR(190) PRIMARY KEY,
+    item_type_id INT UNSIGNED NOT NULL,
+    source_type ENUM('market_hub', 'alliance_structure') NOT NULL,
+    source_id BIGINT UNSIGNED NOT NULL,
+    source_name VARCHAR(190) NOT NULL,
+    percent_band DECIMAL(6,2) NOT NULL,
+    current_price DECIMAL(20,2) NOT NULL,
+    normal_price DECIMAL(20,2) NOT NULL,
+    percent_of_normal DECIMAL(8,4) NOT NULL,
+    anomaly_score DECIMAL(10,2) NOT NULL DEFAULT 0.00,
+    severity ENUM('critical', 'very_strong', 'strong', 'watch') NOT NULL,
+    severity_rank TINYINT UNSIGNED NOT NULL DEFAULT 1,
+    quantity_available BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    listing_count INT UNSIGNED NOT NULL DEFAULT 0,
+    best_order_id BIGINT UNSIGNED DEFAULT NULL,
+    baseline_model VARCHAR(80) NOT NULL DEFAULT 'median_weighted_blend',
+    baseline_points INT UNSIGNED NOT NULL DEFAULT 0,
+    baseline_median_price DECIMAL(20,2) DEFAULT NULL,
+    baseline_weighted_price DECIMAL(20,2) DEFAULT NULL,
+    observed_at DATETIME NOT NULL,
+    detected_at DATETIME NOT NULL,
+    last_seen_at DATETIME NOT NULL,
+    inactive_at DATETIME DEFAULT NULL,
+    freshness_seconds INT UNSIGNED NOT NULL DEFAULT 0,
+    status ENUM('active', 'inactive') NOT NULL DEFAULT 'active',
+    metadata_json JSON DEFAULT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    KEY idx_market_deal_alerts_status_severity (status, severity_rank, anomaly_score),
+    KEY idx_market_deal_alerts_item_source (item_type_id, source_type, source_id),
+    KEY idx_market_deal_alerts_last_seen (last_seen_at),
+    KEY idx_market_deal_alerts_observed (observed_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS market_deal_alert_dismissals (
+    alert_key VARCHAR(190) PRIMARY KEY,
+    dismissed_severity_rank TINYINT UNSIGNED NOT NULL DEFAULT 1,
+    dismissed_at DATETIME NOT NULL,
+    dismissed_until DATETIME DEFAULT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    KEY idx_market_deal_alert_dismissals_until (dismissed_until)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 CREATE TABLE IF NOT EXISTS doctrine_ai_briefings (
     id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
     entity_type ENUM('fit', 'group') NOT NULL,

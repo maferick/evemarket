@@ -138,6 +138,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $schedulesSaved = save_data_sync_schedule_settings($_POST);
             $saved = $settingsSaved && $schedulesSaved;
             break;
+
+        case 'deal-alerts':
+            $saved = save_settings(deal_alert_settings_from_request($_POST));
+            break;
     }
 
     flash('success', $saveMessage ?? ($saved ? 'Settings saved successfully.' : 'Database unavailable. Settings were not persisted.'));
@@ -188,9 +192,11 @@ $settingValues = get_settings([
     'redis_database',
     'redis_password',
     'redis_prefix',
+    ...deal_alerts_setting_keys(),
 ]);
 
 $dataSyncSettingValues = data_sync_pipeline_settings_view($settingValues);
+$dealAlertSettingValues = deal_alert_settings_view($settingValues);
 
 $dbStatus = db_connection_status();
 $latestEsiToken = null;
@@ -1339,6 +1345,90 @@ include __DIR__ . '/../../src/views/partials/header.php';
                     <?php endif; ?>
                 <?php endif; ?>
             </div>
+        <?php elseif ($section === 'deal-alerts'): ?>
+            <form class="mt-6 space-y-5" method="post">
+                <input type="hidden" name="_token" value="<?= htmlspecialchars(csrf_token(), ENT_QUOTES) ?>">
+                <input type="hidden" name="section" value="deal-alerts">
+
+                <div class="grid gap-4 xl:grid-cols-[minmax(0,1.2fr)_minmax(300px,0.8fr)]">
+                    <div class="space-y-4">
+                        <label class="flex items-center gap-3 rounded-lg border border-border bg-black/20 p-3">
+                            <input type="hidden" name="deal_alerts_enabled" value="0">
+                            <input type="checkbox" name="deal_alerts_enabled" value="1" <?= ($dealAlertSettingValues['deal_alerts_enabled'] ?? '1') === '1' ? 'checked' : '' ?> class="size-4 rounded border-border bg-black">
+                            <span class="text-sm">Enable dedicated deal-alert anomaly scanning</span>
+                        </label>
+
+                        <div class="grid gap-4 md:grid-cols-2">
+                            <label class="block space-y-2">
+                                <span class="text-sm text-muted">Historical baseline window (days)</span>
+                                <input type="number" min="3" max="60" step="1" name="deal_alert_baseline_days" value="<?= htmlspecialchars($dealAlertSettingValues['deal_alert_baseline_days'] ?? '14', ENT_QUOTES) ?>" class="w-full field-input" />
+                                <p class="text-xs text-muted">Uses local SupplyCore history for median and weighted-average baselines.</p>
+                            </label>
+                            <label class="block space-y-2">
+                                <span class="text-sm text-muted">Minimum history points</span>
+                                <input type="number" min="3" max="30" step="1" name="deal_alert_min_history_points" value="<?= htmlspecialchars($dealAlertSettingValues['deal_alert_min_history_points'] ?? '5', ENT_QUOTES) ?>" class="w-full field-input" />
+                                <p class="text-xs text-muted">Skip alerting when local history is still too thin to form a reliable normal price.</p>
+                            </label>
+                        </div>
+
+                        <div class="rounded-2xl border border-border bg-black/20 p-4">
+                            <div>
+                                <p class="text-sm font-semibold text-slate-100">Severity thresholds (% of normal price)</p>
+                                <p class="mt-1 text-xs text-muted">Listings at or below these thresholds are promoted into escalating urgency tiers.</p>
+                            </div>
+                            <div class="mt-4 grid gap-4 md:grid-cols-2">
+                                <label class="block space-y-2">
+                                    <span class="text-sm text-muted">Critical misprice</span>
+                                    <input type="number" min="0.10" max="100" step="0.10" name="deal_alert_critical_threshold_percent" value="<?= htmlspecialchars($dealAlertSettingValues['deal_alert_critical_threshold_percent'] ?? '1.00', ENT_QUOTES) ?>" class="w-full field-input" />
+                                </label>
+                                <label class="block space-y-2">
+                                    <span class="text-sm text-muted">Very strong deal</span>
+                                    <input type="number" min="0.10" max="100" step="0.10" name="deal_alert_very_strong_threshold_percent" value="<?= htmlspecialchars($dealAlertSettingValues['deal_alert_very_strong_threshold_percent'] ?? '5.00', ENT_QUOTES) ?>" class="w-full field-input" />
+                                </label>
+                                <label class="block space-y-2">
+                                    <span class="text-sm text-muted">Strong deal</span>
+                                    <input type="number" min="0.10" max="100" step="0.10" name="deal_alert_strong_threshold_percent" value="<?= htmlspecialchars($dealAlertSettingValues['deal_alert_strong_threshold_percent'] ?? '10.00', ENT_QUOTES) ?>" class="w-full field-input" />
+                                </label>
+                                <label class="block space-y-2">
+                                    <span class="text-sm text-muted">Watch threshold</span>
+                                    <input type="number" min="0.10" max="100" step="0.10" name="deal_alert_watch_threshold_percent" value="<?= htmlspecialchars($dealAlertSettingValues['deal_alert_watch_threshold_percent'] ?? '15.00', ENT_QUOTES) ?>" class="w-full field-input" />
+                                </label>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="space-y-4 rounded-2xl border border-border bg-black/20 p-4">
+                        <div>
+                            <p class="text-sm font-semibold text-slate-100">Popup behavior</p>
+                            <p class="mt-1 text-xs text-muted">Keep the alert obvious, but only when urgency is high enough to act immediately.</p>
+                        </div>
+                        <label class="block space-y-2">
+                            <span class="text-sm text-muted">Show popup for</span>
+                            <select name="deal_alert_popup_min_severity" class="w-full field-input">
+                                <?php foreach (deal_alert_popup_severity_options() as $value => $label): ?>
+                                    <option value="<?= htmlspecialchars($value, ENT_QUOTES) ?>" <?= ($dealAlertSettingValues['deal_alert_popup_min_severity'] ?? 'very_strong') === $value ? 'selected' : '' ?>>
+                                        <?= htmlspecialchars($label, ENT_QUOTES) ?>
+                                    </option>
+                                <?php endforeach; ?>
+                            </select>
+                        </label>
+                        <label class="block space-y-2">
+                            <span class="text-sm text-muted">Dismiss popup for (minutes)</span>
+                            <input type="number" min="5" max="1440" step="5" name="deal_alert_popup_dismiss_minutes" value="<?= htmlspecialchars($dealAlertSettingValues['deal_alert_popup_dismiss_minutes'] ?? '120', ENT_QUOTES) ?>" class="w-full field-input" />
+                        </label>
+                        <div class="rounded-xl border border-rose-400/20 bg-rose-500/10 p-3 text-sm text-rose-100">
+                            Critical alerts compare the current cheapest sell listing against SupplyCore&apos;s own local history. The resulting popup includes item, current price, expected price, severity, market, and freshness so operators can react without opening the full market pages first.
+                        </div>
+                        <div class="rounded-xl border border-border bg-black/30 p-3 text-xs text-muted space-y-1">
+                            <p>Reference Hub coverage uses the first-party snapshot-history table when it exists, then falls back to stored hub daily history.</p>
+                            <p>Alliance Market coverage uses the alliance market daily history already collected by SupplyCore.</p>
+                            <p>Deduplication is keyed by item + market + suspicious price band so identical refreshes do not spam the UI.</p>
+                        </div>
+                    </div>
+                </div>
+
+                <button class="btn-primary">Save Deal Alert Settings</button>
+            </form>
         <?php else: ?>
             <?php if ($syncStatusCards !== []): ?>
                 <div class="mt-6 grid gap-3 md:grid-cols-3">
