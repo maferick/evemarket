@@ -487,12 +487,12 @@ $statusThemes = [
     </article>
 </section>
 
-<section class="mt-8 grid gap-5 xl:grid-cols-3">
+<section class="mt-8 grid gap-5 lg:grid-cols-2 xl:grid-cols-3">
     <?php foreach ($healthPanels as $panelTitle => $panel): ?>
         <?php
         $status = (string) ($panel['status'] ?? 'Awaiting sync');
         $statusClass = $statusThemes[$status] ?? 'border-red-400/20 bg-red-500/10 text-red-100';
-        $wrapperClass = $panelTitle === 'Sync Health' ? 'surface-primary xl:col-span-2' : 'surface-secondary';
+        $wrapperClass = $panelTitle === 'Sync Health' ? 'surface-primary' : 'surface-secondary';
 
         $summaryText = match ($panelTitle) {
             'Alliance Market Freshness' => $status === 'Healthy'
