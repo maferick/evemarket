@@ -2404,199 +2404,231 @@ function scheduler_reset_runtime_state_message(array $result): string
     return $message;
 }
 
-function data_sync_schedule_job_definitions(): array
+function scheduler_priority_options(): array
 {
     return [
-        'alliance_current_sync' => [
-            'enabled_key' => 'alliance_current_sync_enabled',
-            'interval_value_key' => 'alliance_current_sync_interval_value',
-            'interval_unit_key' => 'alliance_current_sync_interval_unit',
-            'default_interval_seconds' => 300,
-            'default_offset_seconds' => 0,
-            'label' => 'Alliance Current',
-        ],
-        'alliance_historical_sync' => [
-            'enabled_key' => 'alliance_historical_sync_enabled',
-            'interval_value_key' => 'alliance_historical_sync_interval_value',
-            'interval_unit_key' => 'alliance_historical_sync_interval_unit',
-            'default_interval_seconds' => 21600,
-            'default_offset_seconds' => 0,
-            'label' => 'Alliance History',
-        ],
-        'market_hub_current_sync' => [
-            'enabled_key' => 'market_hub_current_sync_enabled',
-            'interval_value_key' => 'market_hub_current_sync_interval_value',
-            'interval_unit_key' => 'market_hub_current_sync_interval_unit',
-            'default_interval_seconds' => 300,
-            'default_offset_seconds' => 0,
-            'label' => 'Hub Current',
-        ],
-        'current_state_refresh_sync' => [
-            'enabled_key' => 'current_state_refresh_sync_enabled',
-            'interval_value_key' => 'current_state_refresh_sync_interval_value',
-            'interval_unit_key' => 'current_state_refresh_sync_interval_unit',
-            'default_interval_seconds' => 300,
-            'default_offset_seconds' => 0,
-            'label' => 'Current-State Refresh',
-        ],
-        'deal_alerts_sync' => [
-            'enabled_key' => 'deal_alerts_sync_enabled',
-            'interval_value_key' => 'deal_alerts_sync_interval_value',
-            'interval_unit_key' => 'deal_alerts_sync_interval_unit',
-            'default_interval_seconds' => 300,
-            'default_offset_seconds' => 30,
-            'label' => 'Deal Alerts',
-        ],
-        'market_hub_historical_sync' => [
-            'enabled_key' => 'market_hub_historical_sync_enabled',
-            'interval_value_key' => 'market_hub_historical_sync_interval_value',
-            'interval_unit_key' => 'market_hub_historical_sync_interval_unit',
-            'default_interval_seconds' => 21600,
-            'default_offset_seconds' => 0,
-            'label' => 'Hub History',
-        ],
-        'market_hub_local_history_sync' => [
-            'enabled_key' => 'market_hub_local_history_sync_enabled',
-            'interval_value_key' => 'market_hub_local_history_sync_interval_value',
-            'interval_unit_key' => 'market_hub_local_history_sync_interval_unit',
-            'default_interval_seconds' => 300,
-            'default_offset_seconds' => 0,
-            'label' => 'Hub Snapshot History',
-        ],
-        'doctrine_intelligence_sync' => [
-            'enabled_key' => 'doctrine_intelligence_sync_enabled',
-            'interval_value_key' => 'doctrine_intelligence_sync_interval_value',
-            'interval_unit_key' => 'doctrine_intelligence_sync_interval_unit',
-            'default_interval_seconds' => 600,
-            'default_offset_seconds' => 120,
-            'label' => 'Doctrine Intelligence Batch',
-        ],
-        'market_comparison_summary_sync' => [
-            'enabled_key' => 'market_comparison_summary_sync_enabled',
-            'interval_value_key' => 'market_comparison_summary_sync_interval_value',
-            'interval_unit_key' => 'market_comparison_summary_sync_interval_unit',
-            'default_interval_seconds' => 600,
-            'default_offset_seconds' => 120,
-            'label' => 'Market Comparison Batch',
-        ],
-        'loss_demand_summary_sync' => [
-            'enabled_key' => 'loss_demand_summary_sync_enabled',
-            'interval_value_key' => 'loss_demand_summary_sync_interval_value',
-            'interval_unit_key' => 'loss_demand_summary_sync_interval_unit',
-            'default_interval_seconds' => 600,
-            'default_offset_seconds' => 120,
-            'label' => 'Loss-Demand Batch',
-        ],
-        'dashboard_summary_sync' => [
-            'enabled_key' => 'dashboard_summary_sync_enabled',
-            'interval_value_key' => 'dashboard_summary_sync_interval_value',
-            'interval_unit_key' => 'dashboard_summary_sync_interval_unit',
-            'default_interval_seconds' => 600,
-            'default_offset_seconds' => 120,
-            'label' => 'Dashboard Summary Batch',
-        ],
-        'activity_priority_summary_sync' => [
-            'enabled_key' => 'activity_priority_summary_sync_enabled',
-            'interval_value_key' => 'activity_priority_summary_sync_interval_value',
-            'interval_unit_key' => 'activity_priority_summary_sync_interval_unit',
-            'default_interval_seconds' => 600,
-            'default_offset_seconds' => 120,
-            'label' => 'Activity Priority Batch',
-        ],
-        'analytics_bucket_1h_sync' => [
-            'enabled_key' => 'analytics_bucket_1h_sync_enabled',
-            'interval_value_key' => 'analytics_bucket_1h_sync_interval_value',
-            'interval_unit_key' => 'analytics_bucket_1h_sync_interval_unit',
-            'default_interval_seconds' => 600,
-            'default_offset_seconds' => 120,
-            'label' => 'Analytics Buckets (1h)',
-        ],
-        'analytics_bucket_1d_sync' => [
-            'enabled_key' => 'analytics_bucket_1d_sync_enabled',
-            'interval_value_key' => 'analytics_bucket_1d_sync_interval_value',
-            'interval_unit_key' => 'analytics_bucket_1d_sync_interval_unit',
-            'default_interval_seconds' => 3600,
-            'default_offset_seconds' => 0,
-            'label' => 'Analytics Buckets (1d)',
-        ],
-        'rebuild_ai_briefings' => [
-            'enabled_key' => 'rebuild_ai_briefings_enabled',
-            'interval_value_key' => 'rebuild_ai_briefings_interval_value',
-            'interval_unit_key' => 'rebuild_ai_briefings_interval_unit',
-            'default_interval_seconds' => 900,
-            'default_offset_seconds' => 420,
-            'label' => 'Doctrine AI Briefings',
-        ],
-        'forecasting_ai_sync' => [
-            'enabled_key' => 'forecasting_ai_sync_enabled',
-            'interval_value_key' => 'forecasting_ai_sync_interval_value',
-            'interval_unit_key' => 'forecasting_ai_sync_interval_unit',
-            'default_interval_seconds' => 3600,
-            'default_offset_seconds' => 0,
-            'label' => 'Forecasting / AI Batch',
-        ],
-        'killmail_r2z2_sync' => [
-            'enabled_key' => 'killmail_r2z2_sync_enabled',
-            'interval_value_key' => 'killmail_r2z2_sync_interval_value',
-            'interval_unit_key' => 'killmail_r2z2_sync_interval_unit',
-            'default_interval_seconds' => 60,
-            'default_offset_seconds' => 0,
-            'label' => 'Killmail R2Z2 Stream',
-        ],
+        'highest' => 'Highest',
+        'high' => 'High',
+        'medium' => 'Medium',
+        'normal' => 'Normal',
     ];
+}
+
+function scheduler_tuning_mode_options(): array
+{
+    return [
+        'automatic' => 'Automatic',
+        'manual' => 'Manual',
+    ];
+}
+
+function scheduler_registry_definitions(): array
+{
+    return [
+        'market_hub_current_sync' => ['label' => 'Market Hub Current', 'default_interval_minutes' => 8, 'default_offset_minutes' => 0, 'priority' => 'high', 'timeout_seconds' => 240, 'concurrency_policy' => 'single', 'tuning_mode' => 'automatic', 'explicitly_configured' => true, 'min_interval_minutes' => 1, 'max_interval_minutes' => 8],
+        'alliance_current_sync' => ['label' => 'Alliance Current', 'default_interval_minutes' => 4, 'default_offset_minutes' => 2, 'priority' => 'medium', 'timeout_seconds' => 180, 'concurrency_policy' => 'single', 'tuning_mode' => 'automatic', 'explicitly_configured' => true],
+        'killmail_r2z2_sync' => ['label' => 'Killmail R2Z2 Stream', 'default_interval_minutes' => 3, 'default_offset_minutes' => 3, 'priority' => 'highest', 'timeout_seconds' => 90, 'concurrency_policy' => 'single', 'tuning_mode' => 'automatic', 'explicitly_configured' => true, 'min_interval_minutes' => 1, 'max_interval_minutes' => 3],
+        'current_state_refresh_sync' => ['label' => 'Current-State Refresh', 'default_interval_minutes' => 12, 'default_offset_minutes' => 6, 'priority' => 'medium', 'timeout_seconds' => 120, 'concurrency_policy' => 'single', 'tuning_mode' => 'automatic', 'explicitly_configured' => true],
+        'doctrine_intelligence_sync' => ['label' => 'Doctrine Intelligence', 'default_interval_minutes' => 15, 'default_offset_minutes' => 8, 'priority' => 'normal', 'timeout_seconds' => 180, 'concurrency_policy' => 'single', 'tuning_mode' => 'automatic', 'explicitly_configured' => true],
+        'market_comparison_summary_sync' => ['label' => 'Market Comparison Summary', 'default_interval_minutes' => 15, 'default_offset_minutes' => 9, 'priority' => 'normal', 'timeout_seconds' => 180, 'concurrency_policy' => 'single', 'tuning_mode' => 'automatic', 'explicitly_configured' => true],
+        'loss_demand_summary_sync' => ['label' => 'Loss Demand Summary', 'default_interval_minutes' => 15, 'default_offset_minutes' => 10, 'priority' => 'normal', 'timeout_seconds' => 180, 'concurrency_policy' => 'single', 'tuning_mode' => 'automatic', 'explicitly_configured' => true],
+        'dashboard_summary_sync' => ['label' => 'Dashboard Summary', 'default_interval_minutes' => 15, 'default_offset_minutes' => 11, 'priority' => 'normal', 'timeout_seconds' => 180, 'concurrency_policy' => 'single', 'tuning_mode' => 'automatic', 'explicitly_configured' => true],
+        'rebuild_ai_briefings' => ['label' => 'Rebuild AI Briefings', 'default_interval_minutes' => 20, 'default_offset_minutes' => 12, 'priority' => 'normal', 'timeout_seconds' => 300, 'concurrency_policy' => 'background', 'tuning_mode' => 'automatic', 'explicitly_configured' => true],
+        'market_hub_local_history_sync' => ['label' => 'Market Hub Local History', 'default_interval_minutes' => 20, 'default_offset_minutes' => 14, 'priority' => 'normal', 'timeout_seconds' => 1800, 'concurrency_policy' => 'background', 'tuning_mode' => 'automatic', 'explicitly_configured' => true],
+        'alliance_historical_sync' => ['label' => 'Alliance Historical', 'default_interval_minutes' => 360, 'default_offset_minutes' => 0, 'priority' => 'normal', 'timeout_seconds' => 3600, 'concurrency_policy' => 'background', 'tuning_mode' => 'automatic', 'explicitly_configured' => true],
+        'market_hub_historical_sync' => ['label' => 'Market Hub Historical', 'default_interval_minutes' => 360, 'default_offset_minutes' => 0, 'priority' => 'normal', 'timeout_seconds' => 3600, 'concurrency_policy' => 'background', 'tuning_mode' => 'automatic', 'explicitly_configured' => true],
+        'forecasting_ai_sync' => ['label' => 'Forecasting AI', 'default_interval_minutes' => 60, 'default_offset_minutes' => 0, 'priority' => 'normal', 'timeout_seconds' => 300, 'concurrency_policy' => 'background', 'tuning_mode' => 'automatic', 'explicitly_configured' => true],
+        'deal_alerts_sync' => ['label' => 'Deal Alerts', 'default_interval_minutes' => 5, 'default_offset_minutes' => 1, 'priority' => 'normal', 'timeout_seconds' => 90, 'concurrency_policy' => 'single', 'tuning_mode' => 'automatic', 'explicitly_configured' => false],
+        'activity_priority_summary_sync' => ['label' => 'Activity Priority Summary', 'default_interval_minutes' => 15, 'default_offset_minutes' => 13, 'priority' => 'normal', 'timeout_seconds' => 180, 'concurrency_policy' => 'single', 'tuning_mode' => 'automatic', 'explicitly_configured' => false],
+        'analytics_bucket_1h_sync' => ['label' => 'Analytics Buckets (1h)', 'default_interval_minutes' => 15, 'default_offset_minutes' => 15, 'priority' => 'normal', 'timeout_seconds' => 180, 'concurrency_policy' => 'single', 'tuning_mode' => 'automatic', 'explicitly_configured' => false],
+        'analytics_bucket_1d_sync' => ['label' => 'Analytics Buckets (1d)', 'default_interval_minutes' => 60, 'default_offset_minutes' => 16, 'priority' => 'normal', 'timeout_seconds' => 240, 'concurrency_policy' => 'single', 'tuning_mode' => 'automatic', 'explicitly_configured' => false],
+    ];
+}
+
+function data_sync_schedule_job_definitions(): array
+{
+    $definitions = [];
+
+    foreach (scheduler_registry_definitions() as $jobKey => $definition) {
+        $definitions[$jobKey] = $definition + [
+            'enabled_key' => $jobKey . '_enabled',
+            'interval_minutes_key' => $jobKey . '_interval_minutes',
+            'offset_minutes_key' => $jobKey . '_offset_minutes',
+            'priority_key' => $jobKey . '_priority',
+            'timeout_key' => $jobKey . '_timeout_seconds',
+            'mode_key' => $jobKey . '_tuning_mode',
+        ];
+    }
+
+    return $definitions;
+}
+
+function scheduler_pressure_label(array $summary): string
+{
+    $lockConflicts = (int) ($summary['lock_conflicts'] ?? 0);
+    $lateJobs = (int) ($summary['late_jobs'] ?? 0);
+    $degradedJobs = (int) ($summary['degraded_jobs'] ?? 0);
+
+    if ($lockConflicts >= 4 || $lateJobs >= 4 || $degradedJobs >= 3) {
+        return 'congested';
+    }
+
+    if ($lockConflicts >= 2 || $lateJobs >= 2 || $degradedJobs >= 1) {
+        return 'busy';
+    }
+
+    return 'healthy';
 }
 
 function sync_schedule_settings_view_model(): array
 {
-    $definitions = data_sync_schedule_job_definitions();
+    scheduler_registry_bootstrap();
 
     try {
-        $rows = db_sync_schedule_fetch_by_job_keys(array_keys($definitions));
+        $rows = db_sync_schedule_fetch_all();
     } catch (Throwable) {
         $rows = [];
     }
 
-    $byJobKey = [];
+    $definitions = data_sync_schedule_job_definitions();
+    try {
+        $eventSummary = db_scheduler_job_events_recent_summary(180);
+        $recentActions = db_scheduler_tuning_actions_recent(12);
+        $busiestOffsets = db_sync_schedule_busiest_offsets(12);
+        $outcomeSummary = db_sync_schedule_recent_outcomes_summary(180);
+    } catch (Throwable) {
+        $eventSummary = [];
+        $recentActions = [];
+        $busiestOffsets = [];
+        $outcomeSummary = [];
+    }
+
+    $configuredJobs = [];
+    $discoveredJobs = [];
+    $healthSummary = [
+        'total_jobs' => 0,
+        'running_jobs' => 0,
+        'waiting_jobs' => 0,
+        'stopped_jobs' => 0,
+        'degraded_jobs' => 0,
+        'lock_conflicts' => 0,
+        'late_jobs' => 0,
+    ];
 
     foreach ($rows as $row) {
-        $jobKey = (string) ($row['job_key'] ?? '');
+        $jobKey = trim((string) ($row['job_key'] ?? ''));
         if ($jobKey === '') {
             continue;
         }
 
-        $byJobKey[$jobKey] = $row;
-    }
+        $definition = $definitions[$jobKey] ?? [
+            'label' => ucwords(str_replace('_', ' ', $jobKey)),
+            'enabled_key' => $jobKey . '_enabled',
+            'interval_minutes_key' => $jobKey . '_interval_minutes',
+            'offset_minutes_key' => $jobKey . '_offset_minutes',
+            'priority_key' => $jobKey . '_priority',
+            'timeout_key' => $jobKey . '_timeout_seconds',
+            'mode_key' => $jobKey . '_tuning_mode',
+            'default_interval_minutes' => 30,
+            'default_offset_minutes' => (int) ($row['offset_minutes'] ?? 0),
+            'priority' => 'normal',
+            'timeout_seconds' => 300,
+            'concurrency_policy' => 'single',
+            'tuning_mode' => 'automatic',
+            'explicitly_configured' => false,
+        ];
 
-    $viewModel = [];
+        $jobEvents = $eventSummary[$jobKey] ?? [];
+        $jobRunStats = db_sync_schedule_recent_job_run_stats($jobKey, 20);
+        $currentState = (string) ($row['current_state'] ?? ((int) ($row['enabled'] ?? 1) === 1 ? 'waiting' : 'stopped'));
+        $nextDueAt = $row['next_due_at'] ?? $row['next_run_at'] ?? null;
+        $latenessSeconds = $nextDueAt !== null ? max(0, time() - (int) strtotime((string) $nextDueAt)) : 0;
+        $lastAction = null;
+        foreach ($recentActions as $action) {
+            if (($action['job_key'] ?? '') === $jobKey) {
+                $lastAction = $action;
+                break;
+            }
+        }
 
-    foreach ($definitions as $jobKey => $definition) {
-        $defaultInterval = (int) $definition['default_interval_seconds'];
-        $row = $byJobKey[$jobKey] ?? null;
-
-        $enabled = $row === null
-            ? 1
-            : sanitize_sync_schedule_enabled($row['enabled'] ?? 1);
-
-        $intervalSeconds = $row === null
-            ? $defaultInterval
-            : sanitize_sync_interval_value($row['interval_seconds'] ?? $defaultInterval, $defaultInterval);
-
-        $formValues = sync_schedule_form_values($intervalSeconds);
-
-        $viewModel[$jobKey] = [
+        $isDegraded = !empty($row['degraded_until']) && strtotime((string) $row['degraded_until']) > time();
+        $card = [
             'job_key' => $jobKey,
             'label' => (string) ($definition['label'] ?? $jobKey),
-            'enabled' => $enabled,
-            'interval_seconds' => $intervalSeconds,
-            'interval_value' => $formValues['value'],
-            'interval_unit' => $formValues['unit'],
+            'enabled' => (int) ($row['enabled'] ?? 1),
+            'priority' => (string) ($row['priority'] ?? ($definition['priority'] ?? 'normal')),
+            'interval_minutes' => (int) ($row['interval_minutes'] ?? ($definition['default_interval_minutes'] ?? 30)),
+            'offset_minutes' => (int) ($row['offset_minutes'] ?? ($definition['default_offset_minutes'] ?? 0)),
+            'next_due_at' => $nextDueAt,
+            'last_started_at' => $row['last_started_at'] ?? null,
+            'last_finished_at' => $row['last_finished_at'] ?? null,
+            'last_duration_seconds' => $row['last_duration_seconds'] ?? null,
+            'average_duration_seconds' => $row['average_duration_seconds'] ?? $jobRunStats['average_duration_seconds'],
+            'p95_duration_seconds' => $row['p95_duration_seconds'] ?? $jobRunStats['p95_duration_seconds'],
+            'timeout_seconds' => (int) ($row['timeout_seconds'] ?? ($definition['timeout_seconds'] ?? 300)),
+            'last_result' => (string) ($row['last_result'] ?? $row['last_status'] ?? 'never'),
+            'last_error' => (string) ($row['last_error'] ?? ''),
+            'current_state' => $currentState,
+            'concurrency_policy' => (string) ($row['concurrency_policy'] ?? ($definition['concurrency_policy'] ?? 'single')),
+            'tuning_mode' => (string) ($row['tuning_mode'] ?? ($definition['tuning_mode'] ?? 'automatic')),
+            'value_source' => ((string) ($row['tuning_mode'] ?? 'automatic')) === 'manual' ? 'manual' : (!empty($row['last_auto_tuned_at']) ? 'auto-tuned' : 'baseline'),
+            'last_auto_tune_reason' => (string) ($row['last_auto_tune_reason'] ?? ''),
+            'last_auto_tuned_at' => $row['last_auto_tuned_at'] ?? null,
+            'skips_recent' => (int) (($jobEvents['skipped']['count'] ?? 0) + ($jobEvents['deferred_pressure']['count'] ?? 0)),
+            'lock_conflicts_recent' => (int) (($jobEvents['lock_conflict']['count'] ?? 0) + ($jobEvents['lock_skipped']['count'] ?? 0)),
+            'timeout_count_recent' => (int) ($jobEvents['timeout']['count'] ?? 0),
+            'lateness_seconds' => $latenessSeconds,
+            'degraded' => $isDegraded,
+            'explicitly_configured' => !empty($row['explicitly_configured']),
+            'discovered_from_code' => !empty($row['discovered_from_code']),
             'enabled_key' => (string) $definition['enabled_key'],
-            'interval_value_key' => (string) $definition['interval_value_key'],
-            'interval_unit_key' => (string) $definition['interval_unit_key'],
+            'interval_minutes_key' => (string) $definition['interval_minutes_key'],
+            'offset_minutes_key' => (string) $definition['offset_minutes_key'],
+            'priority_key' => (string) $definition['priority_key'],
+            'timeout_key' => (string) $definition['timeout_key'],
+            'mode_key' => (string) $definition['mode_key'],
+            'latest_action' => $lastAction,
+            'recent_outcomes' => $outcomeSummary[$jobKey] ?? ['failed_runs' => 0, 'successful_runs' => 0, 'total_runs' => 0],
         ];
+
+        $healthSummary['total_jobs']++;
+        $healthSummary[$currentState . '_jobs'] = (int) ($healthSummary[$currentState . '_jobs'] ?? 0) + 1;
+        $healthSummary['lock_conflicts'] += $card['lock_conflicts_recent'];
+        if ($card['lateness_seconds'] >= 60) {
+            $healthSummary['late_jobs']++;
+        }
+        if ($isDegraded) {
+            $healthSummary['degraded_jobs']++;
+        }
+
+        if ($card['explicitly_configured']) {
+            $configuredJobs[] = $card;
+        } else {
+            $discoveredJobs[] = $card;
+        }
     }
 
-    return $viewModel;
+    $healthSummary['pressure'] = scheduler_pressure_label($healthSummary);
+
+    return [
+        'configured_jobs' => $configuredJobs,
+        'discovered_jobs' => $discoveredJobs,
+        'health_summary' => $healthSummary,
+        'busiest_offsets' => $busiestOffsets,
+        'recent_actions' => $recentActions,
+    ];
+}
+
+function scheduler_request_bool(array $request, string $key): int
+{
+    return sanitize_sync_schedule_enabled($request[$key] ?? null);
+}
+
+function scheduler_request_int(array $request, string $key, int $default, int $min, int $max): int
+{
+    $value = (int) ($request[$key] ?? $default);
+
+    return max($min, min($max, $value));
 }
 
 function save_data_sync_schedule_settings(array $request): bool
@@ -2604,18 +2636,55 @@ function save_data_sync_schedule_settings(array $request): bool
     try {
         db_transaction(function () use ($request): void {
             foreach (data_sync_schedule_job_definitions() as $jobKey => $definition) {
-                $enabled = sanitize_sync_schedule_enabled($request[$definition['enabled_key']] ?? null);
-                $intervalSeconds = sanitize_sync_schedule_interval_seconds(
-                    $request[$definition['interval_value_key']] ?? null,
-                    $request[$definition['interval_unit_key']] ?? null,
-                    (int) $definition['default_interval_seconds']
-                );
+                if (!array_key_exists($definition['enabled_key'], $request) && !array_key_exists($definition['interval_minutes_key'], $request)) {
+                    continue;
+                }
+
+                $enabled = scheduler_request_bool($request, (string) $definition['enabled_key']);
+                $intervalMinutes = scheduler_request_int($request, (string) $definition['interval_minutes_key'], (int) ($definition['default_interval_minutes'] ?? 30), 1, 1440);
+                $offsetMinutes = scheduler_request_int($request, (string) $definition['offset_minutes_key'], (int) ($definition['default_offset_minutes'] ?? 0), 0, max(0, $intervalMinutes - 1));
+                $timeoutSeconds = scheduler_request_int($request, (string) $definition['timeout_key'], (int) ($definition['timeout_seconds'] ?? 300), 30, 7200);
+                $priority = trim((string) ($request[$definition['priority_key']] ?? ($definition['priority'] ?? 'normal')));
+                if (!array_key_exists($priority, scheduler_priority_options())) {
+                    $priority = (string) ($definition['priority'] ?? 'normal');
+                }
+                $tuningMode = trim((string) ($request[$definition['mode_key']] ?? ($definition['tuning_mode'] ?? 'automatic')));
+                if (!array_key_exists($tuningMode, scheduler_tuning_mode_options())) {
+                    $tuningMode = (string) ($definition['tuning_mode'] ?? 'automatic');
+                }
 
                 db_sync_schedule_upsert(
                     $jobKey,
                     $enabled,
-                    $intervalSeconds,
-                    (int) ($definition['default_offset_seconds'] ?? 0)
+                    $intervalMinutes * 60,
+                    $offsetMinutes * 60,
+                    [
+                        'interval_minutes' => $intervalMinutes,
+                        'offset_minutes' => $offsetMinutes,
+                        'priority' => $priority,
+                        'timeout_seconds' => $timeoutSeconds,
+                        'concurrency_policy' => (string) ($definition['concurrency_policy'] ?? 'single'),
+                        'tuning_mode' => $tuningMode,
+                        'discovered_from_code' => 1,
+                        'explicitly_configured' => (bool) ($definition['explicitly_configured'] ?? false),
+                    ]
+                );
+
+                db_scheduler_tuning_action_log(
+                    $jobKey,
+                    'admin',
+                    'manual_update',
+                    'Admin updated scheduler controls from the sync control panel.',
+                    [],
+                    [
+                        'enabled' => $enabled,
+                        'interval_minutes' => $intervalMinutes,
+                        'offset_minutes' => $offsetMinutes,
+                        'priority' => $priority,
+                        'timeout_seconds' => $timeoutSeconds,
+                        'tuning_mode' => $tuningMode,
+                    ],
+                    []
                 );
             }
         });
@@ -6703,7 +6772,8 @@ function scheduler_dispatch_background_job(array $job): array
     $scheduleId = (int) ($job['id'] ?? 0);
     $jobKey = trim((string) ($job['job_key'] ?? ''));
     $jobType = scheduler_job_type($jobKey);
-    $scheduledFor = (string) ($job['next_run_at'] ?? '');
+    $scheduledFor = (string) ($job['next_due_at'] ?? $job['next_run_at'] ?? '');
+    $dispatchStartedAt = microtime(true);
     $startedAt = gmdate(DATE_ATOM);
 
     if ($scheduleId <= 0 || $jobKey === '') {
@@ -6722,6 +6792,7 @@ function scheduler_dispatch_background_job(array $job): array
     );
 
     exec($command, $output, $exitCode);
+    $dispatchDurationMs = (int) round((microtime(true) - $dispatchStartedAt) * 1000);
     if ($exitCode !== 0) {
         throw new RuntimeException('Failed to dispatch background job "' . $jobKey . '".');
     }
@@ -6733,7 +6804,7 @@ function scheduler_dispatch_background_job(array $job): array
         'scheduled_for' => $scheduledFor,
         'started_at' => $startedAt,
         'finished_at' => null,
-        'duration_ms' => 0,
+        'duration_ms' => $dispatchDurationMs,
         'status' => 'dispatched',
         'error' => null,
         'rows_seen' => 0,
@@ -6741,6 +6812,7 @@ function scheduler_dispatch_background_job(array $job): array
         'warnings' => [],
         'meta' => [
             'execution' => 'background',
+            'dispatch_duration_ms' => $dispatchDurationMs,
             'outcome_reason' => 'Job was dispatched to a background PHP worker so other due jobs can continue immediately.',
         ],
         'summary' => 'Dispatched to a background worker.',
@@ -6752,7 +6824,7 @@ function scheduler_background_dispatch_failure_result(array $job, Throwable $exc
     $jobKey = trim((string) ($job['job_key'] ?? ''));
     $scheduleId = (int) ($job['id'] ?? 0);
     $jobType = scheduler_job_type($jobKey);
-    $scheduledFor = (string) ($job['next_run_at'] ?? '');
+    $scheduledFor = (string) ($job['next_due_at'] ?? $job['next_run_at'] ?? '');
     $datasetKey = scheduler_job_dataset_key($jobKey !== '' ? $jobKey : 'unknown');
     $message = scheduler_normalize_error_message($exception->getMessage());
 
@@ -6823,8 +6895,8 @@ function scheduler_job_definitions(): array
             },
         ],
         'market_hub_local_history_sync' => [
-            'timeout_seconds' => 3600,
-            'lock_ttl_seconds' => 3900,
+            'timeout_seconds' => 1800,
+            'lock_ttl_seconds' => 1860,
             'execution' => 'background',
             'handler' => static function (): array {
                 $hubRef = market_hub_setting_reference();
@@ -6848,7 +6920,7 @@ function scheduler_job_definitions(): array
             },
         ],
         'current_state_refresh_sync' => [
-            'timeout_seconds' => 90,
+            'timeout_seconds' => 120,
             'lock_ttl_seconds' => 180,
             'handler' => static function (): array {
                 return supplycore_refresh_current_state_cache('scheduler');
@@ -6911,19 +6983,14 @@ function scheduler_job_definitions(): array
             },
         ],
         'rebuild_ai_briefings' => [
-            'timeout_seconds' => 180,
-            'lock_ttl_seconds' => 300,
+            'timeout_seconds' => 300,
+            'lock_ttl_seconds' => 360,
             'execution' => 'background',
             'handler' => static function (): array {
                 $runningHistoryJobs = scheduler_ai_briefing_running_history_jobs();
                 if ($runningHistoryJobs !== []) {
-                    $historyJobLabels = array_map(
-                        static fn (string $jobKey): string => str_replace('_', ' ', $jobKey),
-                        $runningHistoryJobs
-                    );
-
                     return sync_result_shape() + [
-                        'warnings' => ['AI briefing rebuild skipped while history sync is running: ' . implode(', ', $historyJobLabels) . '.'],
+                        'warnings' => ['AI briefing rebuild deferred while history sync is running.'],
                         'meta' => [
                             'outcome_reason' => 'Doctrine AI briefings were deferred because a history sync job is still running.',
                             'blocking_jobs' => $runningHistoryJobs,
@@ -6935,8 +7002,8 @@ function scheduler_job_definitions(): array
             },
         ],
         'forecasting_ai_sync' => [
-            'timeout_seconds' => 180,
-            'lock_ttl_seconds' => 300,
+            'timeout_seconds' => 300,
+            'lock_ttl_seconds' => 360,
             'execution' => 'background',
             'handler' => static function (): array {
                 return supplycore_refresh_forecasting_snapshot_job_result('scheduler');
@@ -6955,7 +7022,6 @@ function scheduler_job_definitions(): array
         ],
     ];
 }
-
 
 function scheduler_job_type(string $jobKey): string
 {
@@ -7005,8 +7071,8 @@ function scheduler_job_summary_message(array $result): string
 
     $meta = is_array($result['meta'] ?? null) ? $result['meta'] : [];
     $outcomeReason = trim((string) ($meta['outcome_reason'] ?? ''));
-    if ($jobKey === 'killmail_r2z2_sync' && $outcomeReason !== '') {
-        return 'Killmail sync outcome: ' . $outcomeReason . '.';
+    if ($outcomeReason !== '') {
+        return $outcomeReason;
     }
 
     $rowsSeen = max(0, (int) ($result['rows_seen'] ?? 0));
@@ -7015,15 +7081,149 @@ function scheduler_job_summary_message(array $result): string
     return 'Processed ' . $rowsSeen . ' records, wrote ' . $rowsWritten . ' records.';
 }
 
-function scheduler_ensure_default_jobs_registered(): void
+function scheduler_least_congested_offset_minutes(int $intervalMinutes = 30): int
 {
-    foreach (data_sync_schedule_job_definitions() as $jobKey => $definition) {
+    $intervalMinutes = max(1, min(1440, $intervalMinutes));
+    $counts = array_fill(0, $intervalMinutes, 0);
+
+    try {
+        foreach (db_sync_schedule_fetch_all() as $row) {
+            $offset = (int) ($row['offset_minutes'] ?? 0);
+            $counts[$offset % $intervalMinutes] = (int) ($counts[$offset % $intervalMinutes] ?? 0) + 1;
+        }
+    } catch (Throwable) {
+        return 0;
+    }
+
+    asort($counts);
+
+    return (int) array_key_first($counts);
+}
+
+function scheduler_code_discovery_paths(): array
+{
+    return [dirname(__DIR__) . '/bin', __DIR__];
+}
+
+function scheduler_discover_jobs(): array
+{
+    $discovered = [];
+    $known = scheduler_registry_definitions();
+    foreach ($known as $jobKey => $definition) {
+        $discovered[$jobKey] = $definition + ['job_key' => $jobKey, 'discovered_from_code' => true];
+    }
+
+    $patterns = [
+        '/\b([a-z0-9]+(?:_[a-z0-9]+)+(?:_sync|_job))\b/i',
+        '/--job=([a-z0-9\-]+)/i',
+    ];
+
+    foreach (scheduler_code_discovery_paths() as $path) {
+        if (!is_dir($path)) {
+            continue;
+        }
+
+        $iterator = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($path, FilesystemIterator::SKIP_DOTS));
+        foreach ($iterator as $fileInfo) {
+            if (!$fileInfo->isFile()) {
+                continue;
+            }
+
+            $pathname = $fileInfo->getPathname();
+            if (!preg_match('/\.(php|md)$/i', $pathname)) {
+                continue;
+            }
+
+            $contents = @file_get_contents($pathname);
+            if (!is_string($contents) || $contents === '') {
+                continue;
+            }
+
+            foreach ($patterns as $pattern) {
+                if (!preg_match_all($pattern, $contents, $matches)) {
+                    continue;
+                }
+
+                foreach ((array) ($matches[1] ?? []) as $match) {
+                    $candidate = str_replace('-', '_', strtolower(trim((string) $match)));
+                    if ($candidate === '' || !preg_match('/(sync|refresh|summary|briefing|forecast|history|cron|job)$/', $candidate)) {
+                        continue;
+                    }
+
+                    if (!isset($discovered[$candidate])) {
+                        $discovered[$candidate] = [
+                            'job_key' => $candidate,
+                            'label' => ucwords(str_replace('_', ' ', $candidate)),
+                            'default_interval_minutes' => 30,
+                            'default_offset_minutes' => scheduler_least_congested_offset_minutes(30),
+                            'priority' => 'normal',
+                            'timeout_seconds' => 300,
+                            'concurrency_policy' => 'single',
+                            'tuning_mode' => 'automatic',
+                            'explicitly_configured' => false,
+                            'discovered_from_code' => true,
+                        ];
+                    }
+                }
+            }
+        }
+    }
+
+    ksort($discovered);
+
+    return $discovered;
+}
+
+function scheduler_registry_bootstrap(): void
+{
+    $definitions = scheduler_discover_jobs();
+    $existingRows = [];
+    try {
+        foreach (db_sync_schedule_fetch_all() as $row) {
+            $existingRows[(string) ($row['job_key'] ?? '')] = $row;
+        }
+    } catch (Throwable) {
+        $existingRows = [];
+    }
+
+    $handlers = scheduler_job_definitions();
+
+    foreach ($definitions as $jobKey => $definition) {
+        $enabled = array_key_exists($jobKey, $handlers) ? 1 : 0;
+        $wasKnown = array_key_exists($jobKey, $existingRows);
         db_sync_schedule_ensure_job(
             $jobKey,
-            1,
-            (int) ($definition['default_interval_seconds'] ?? 300),
-            (int) ($definition['default_offset_seconds'] ?? 0)
+            $enabled,
+            ((int) ($definition['default_interval_minutes'] ?? 30)) * 60,
+            ((int) ($definition['default_offset_minutes'] ?? 0)) * 60,
+            [
+                'interval_minutes' => (int) ($definition['default_interval_minutes'] ?? 30),
+                'offset_minutes' => (int) ($definition['default_offset_minutes'] ?? 0),
+                'priority' => (string) ($definition['priority'] ?? 'normal'),
+                'timeout_seconds' => (int) ($definition['timeout_seconds'] ?? 300),
+                'concurrency_policy' => (string) ($definition['concurrency_policy'] ?? 'single'),
+                'tuning_mode' => (string) ($definition['tuning_mode'] ?? 'automatic'),
+                'discovered_from_code' => true,
+                'explicitly_configured' => (bool) ($definition['explicitly_configured'] ?? false),
+            ]
         );
+
+        if (!$wasKnown) {
+            db_scheduler_tuning_action_log(
+                $jobKey,
+                'system',
+                'discovery',
+                'Discovered new job in code and assigned safe baseline schedule.',
+                [],
+                [
+                    'enabled' => $enabled,
+                    'interval_minutes' => (int) ($definition['default_interval_minutes'] ?? 30),
+                    'offset_minutes' => (int) ($definition['default_offset_minutes'] ?? 0),
+                    'priority' => (string) ($definition['priority'] ?? 'normal'),
+                ],
+                ['source' => 'code-discovery']
+            );
+        }
     }
 }
 
@@ -7045,11 +7245,62 @@ function scheduler_ai_briefing_running_history_jobs(): array
     }
 }
 
+function scheduler_pressure_summary(): array
+{
+    $view = sync_schedule_settings_view_model();
+
+    return (array) ($view['health_summary'] ?? []);
+}
+
+function scheduler_record_lock_conflicts(): void
+{
+    foreach (db_sync_schedule_fetch_locked_due_jobs(25) as $job) {
+        $jobKey = (string) ($job['job_key'] ?? '');
+        if ($jobKey === '') {
+            continue;
+        }
+
+        $nextDueAt = (string) ($job['next_due_at'] ?? '');
+        $lateness = $nextDueAt !== '' ? max(0, time() - (int) strtotime($nextDueAt)) : 0;
+        db_scheduler_job_event_insert($jobKey, 'lock_conflict', ['locked_until' => $job['locked_until'] ?? null], $lateness, null);
+    }
+}
+
+function scheduler_should_defer_due_job(array $job, string $pressure): bool
+{
+    $priority = (string) ($job['priority'] ?? 'normal');
+    if ($pressure === 'healthy') {
+        return false;
+    }
+
+    if ($pressure === 'busy') {
+        return $priority === 'normal' && in_array((string) ($job['concurrency_policy'] ?? 'single'), ['background', 'single'], true);
+    }
+
+    return !in_array($priority, ['highest', 'high'], true);
+}
+
+function scheduler_defer_due_job(array $job, string $reason): void
+{
+    $scheduleId = (int) ($job['id'] ?? 0);
+    if ($scheduleId <= 0) {
+        return;
+    }
+
+    $intervalMinutes = max(1, (int) ($job['interval_minutes'] ?? 30));
+    $nextDueAt = gmdate('Y-m-d H:i:s', time() + ($intervalMinutes * 60));
+    db_sync_schedule_set_next_due_at($scheduleId, $nextDueAt, 'deferred');
+    db_scheduler_job_event_insert((string) ($job['job_key'] ?? ''), 'deferred_pressure', ['reason' => $reason], 0, null);
+    db_scheduler_tuning_action_log((string) ($job['job_key'] ?? ''), 'system', 'pressure_deferral', $reason, [], ['next_due_at' => $nextDueAt], ['pressure' => $reason]);
+}
+
 function scheduler_due_jobs(): array
 {
-    scheduler_ensure_default_jobs_registered();
+    scheduler_registry_bootstrap();
+    scheduler_record_lock_conflicts();
 
     $definitions = scheduler_job_definitions();
+    $pressure = scheduler_pressure_summary()['pressure'] ?? 'healthy';
     $due = db_sync_schedule_fetch_due_jobs(20);
     $claimed = [];
 
@@ -7059,18 +7310,38 @@ function scheduler_due_jobs(): array
             continue;
         }
 
+        if (scheduler_should_defer_due_job($job, (string) $pressure)) {
+            scheduler_defer_due_job($job, 'Deferred low-priority job to preserve high-priority freshness under ' . $pressure . ' scheduler pressure.');
+            continue;
+        }
+
         $jobKey = (string) ($job['job_key'] ?? '');
-        $defaultTimeout = (int) ($definitions[$jobKey]['timeout_seconds'] ?? 300);
+        $defaultTimeout = (int) ($definitions[$jobKey]['timeout_seconds'] ?? ($job['timeout_seconds'] ?? 300));
         $timeoutSeconds = scheduler_job_timeout_seconds($jobKey, $defaultTimeout);
-        $defaultLockTtl = (int) ($definitions[$jobKey]['lock_ttl_seconds'] ?? 300);
+        $defaultLockTtl = (int) ($definitions[$jobKey]['lock_ttl_seconds'] ?? max(120, $timeoutSeconds + 60));
         $lockTtl = scheduler_job_lock_ttl_seconds($defaultLockTtl, $timeoutSeconds);
         $claimedJob = db_sync_schedule_claim_job($scheduleId, $lockTtl);
         if ($claimedJob !== null) {
             $claimed[] = $claimedJob;
+            continue;
         }
+
+        db_scheduler_job_event_insert($jobKey, 'lock_skipped', [], 0, null);
     }
 
     return $claimed;
+}
+
+function scheduler_job_runtime_snapshot(string $jobKey, string $resultLabel, bool $timeout = false): array
+{
+    $stats = db_sync_schedule_recent_job_run_stats($jobKey, 20);
+
+    return [
+        'last_result' => $resultLabel,
+        'average_duration_seconds' => $stats['average_duration_seconds'],
+        'p95_duration_seconds' => $stats['p95_duration_seconds'],
+        'timeout' => $timeout,
+    ];
 }
 
 function scheduler_run_job(array $job): array
@@ -7081,18 +7352,20 @@ function scheduler_run_job(array $job): array
     $definition = $definitions[$jobKey] ?? null;
     $datasetKey = scheduler_job_dataset_key($jobKey !== '' ? $jobKey : 'unknown');
     $jobType = scheduler_job_type($jobKey);
-    $scheduledFor = (string) ($job['next_run_at'] ?? '');
+    $scheduledFor = (string) ($job['next_due_at'] ?? $job['next_run_at'] ?? '');
     $startedAtUnix = microtime(true);
     $startedAtIso = gmdate(DATE_ATOM, (int) $startedAtUnix);
     $runId = db_sync_run_start($datasetKey, 'incremental', null);
+    $latenessSeconds = $scheduledFor !== '' ? max(0, time() - (int) strtotime($scheduledFor)) : 0;
 
     if ($definition === null || !isset($definition['handler']) || !is_callable($definition['handler'])) {
         $message = scheduler_normalize_error_message('Unknown scheduler job key: ' . ($jobKey !== '' ? $jobKey : '[empty]') . '.');
         mark_sync_failure($datasetKey, 'incremental', $message);
         db_sync_run_finish($runId, 'failed', 0, 0, null, $message);
         if ($scheduleId > 0) {
-            db_sync_schedule_mark_failure($scheduleId, $message);
+            db_sync_schedule_mark_failure($scheduleId, $message, scheduler_job_runtime_snapshot($jobKey, 'failed'));
         }
+        db_scheduler_job_event_insert($jobKey, 'failure', ['error' => $message], $latenessSeconds, null);
 
         return [
             'job_id' => $scheduleId,
@@ -7120,6 +7393,8 @@ function scheduler_run_job(array $job): array
             @set_time_limit($timeoutSeconds + 5);
         }
 
+        db_scheduler_job_event_insert($jobKey, 'started', [], $latenessSeconds, null);
+
         $handler = $definition['handler'];
         $syncResult = $handler();
         $durationMs = (int) round((microtime(true) - $startedAt) * 1000);
@@ -7137,17 +7412,28 @@ function scheduler_run_job(array $job): array
         $checksum = isset($syncResult['checksum']) && $syncResult['checksum'] !== null
             ? mb_substr(trim((string) $syncResult['checksum']), 0, 190)
             : sync_checksum([
-            'job_key' => $jobKey,
-            'rows_seen' => $rowsSeen,
-            'rows_written' => $rowsWritten,
-            'warnings' => $warnings,
-        ]);
+                'job_key' => $jobKey,
+                'rows_seen' => $rowsSeen,
+                'rows_written' => $rowsWritten,
+                'warnings' => $warnings,
+            ]);
 
-        mark_sync_success($datasetKey, 'incremental', $cursor, $rowsWritten, $checksum);
-        db_sync_run_finish($runId, 'success', $rowsSeen, $rowsWritten, $cursor, null);
-        if ($scheduleId > 0) {
-            db_sync_schedule_mark_success($scheduleId);
+        if ($status === 'success') {
+            mark_sync_success($datasetKey, 'incremental', $cursor, $rowsWritten, $checksum);
+            db_sync_run_finish($runId, 'success', $rowsSeen, $rowsWritten, $cursor, null);
+            if ($scheduleId > 0) {
+                db_sync_schedule_mark_success($scheduleId, scheduler_job_runtime_snapshot($jobKey, 'success') + ['last_duration_seconds' => round($durationMs / 1000, 2)]);
+            }
+            db_scheduler_job_event_insert($jobKey, 'finished', ['status' => 'success'], $latenessSeconds, round($durationMs / 1000, 2));
+        } else {
+            mark_sync_success($datasetKey, 'incremental', $cursor, $rowsWritten, $checksum);
+            db_sync_run_finish($runId, 'success', $rowsSeen, $rowsWritten, $cursor, null);
+            if ($scheduleId > 0) {
+                db_sync_schedule_mark_success($scheduleId, scheduler_job_runtime_snapshot($jobKey, 'skipped') + ['last_duration_seconds' => round($durationMs / 1000, 2)]);
+            }
+            db_scheduler_job_event_insert($jobKey, 'skipped', ['warnings' => $warnings], $latenessSeconds, round($durationMs / 1000, 2));
         }
+
         if (in_array($jobKey, ['alliance_current_sync', 'market_hub_current_sync'], true)) {
             try {
                 db_sync_schedule_force_due_by_job_keys(['deal_alerts_sync']);
@@ -7175,11 +7461,14 @@ function scheduler_run_job(array $job): array
         return $result;
     } catch (Throwable $exception) {
         $message = scheduler_normalize_error_message($exception->getMessage());
+        $durationSeconds = round((microtime(true) - $startedAtUnix), 2);
+        $isTimeout = str_contains(strtolower($message), 'timeout');
         mark_sync_failure($datasetKey, 'incremental', $message);
         db_sync_run_finish($runId, 'failed', 0, 0, null, $message);
         if ($scheduleId > 0) {
-            db_sync_schedule_mark_failure($scheduleId, $message);
+            db_sync_schedule_mark_failure($scheduleId, $message, scheduler_job_runtime_snapshot($jobKey, 'failed', $isTimeout) + ['last_duration_seconds' => $durationSeconds]);
         }
+        db_scheduler_job_event_insert($jobKey, $isTimeout ? 'timeout' : 'failure', ['error' => $message], $latenessSeconds, $durationSeconds);
 
         return [
             'job_id' => $scheduleId,
@@ -7200,6 +7489,140 @@ function scheduler_run_job(array $job): array
     }
 }
 
+function scheduler_can_auto_tune(array $job): bool
+{
+    return ((int) ($job['enabled'] ?? 1)) === 1
+        && ((string) ($job['tuning_mode'] ?? 'automatic')) === 'automatic'
+        && ((string) ($job['current_state'] ?? 'waiting')) !== 'running';
+}
+
+function scheduler_auto_tune_cooldown_minutes(): int
+{
+    return 30;
+}
+
+function scheduler_job_can_change_now(array $job): bool
+{
+    if (!scheduler_can_auto_tune($job)) {
+        return false;
+    }
+
+    $lastTunedAt = trim((string) ($job['last_auto_tuned_at'] ?? ''));
+    if ($lastTunedAt === '') {
+        return true;
+    }
+
+    return (time() - (int) strtotime($lastTunedAt)) >= (scheduler_auto_tune_cooldown_minutes() * 60);
+}
+
+function scheduler_job_constraints(string $jobKey): array
+{
+    $definition = scheduler_registry_definitions()[$jobKey] ?? [];
+
+    return [
+        'min_interval_minutes' => (int) ($definition['min_interval_minutes'] ?? 1),
+        'max_interval_minutes' => (int) ($definition['max_interval_minutes'] ?? 1440),
+    ];
+}
+
+function scheduler_apply_tuning_change(array $job, string $actionType, string $reason, array $changes, array $metrics): bool
+{
+    $scheduleId = (int) ($job['id'] ?? 0);
+    if ($scheduleId <= 0) {
+        return false;
+    }
+
+    $before = [
+        'interval_minutes' => (int) ($job['interval_minutes'] ?? 0),
+        'offset_minutes' => (int) ($job['offset_minutes'] ?? 0),
+        'timeout_seconds' => (int) ($job['timeout_seconds'] ?? 0),
+    ];
+    $after = $before + $changes;
+
+    $applied = db_sync_schedule_apply_adjustment($scheduleId, $changes + ['last_auto_tune_reason' => $reason]);
+    if ($applied) {
+        db_scheduler_tuning_action_log((string) ($job['job_key'] ?? ''), 'system', $actionType, $reason, $before, $after, $metrics);
+    }
+
+    return $applied;
+}
+
+function scheduler_run_optimizer(): ?array
+{
+    $rows = db_sync_schedule_fetch_all();
+    $pressure = scheduler_pressure_summary();
+    $busiest = db_sync_schedule_busiest_offsets(4);
+    $eventSummary = db_scheduler_job_events_recent_summary(180);
+
+    foreach ($rows as $job) {
+        if (!scheduler_job_can_change_now($job)) {
+            continue;
+        }
+
+        $jobKey = (string) ($job['job_key'] ?? '');
+        $constraints = scheduler_job_constraints($jobKey);
+        $intervalMinutes = (int) ($job['interval_minutes'] ?? 30);
+        $offsetMinutes = (int) ($job['offset_minutes'] ?? 0);
+        $timeoutSeconds = (int) ($job['timeout_seconds'] ?? 300);
+        $runStats = db_sync_schedule_recent_job_run_stats($jobKey, 20);
+        $events = $eventSummary[$jobKey] ?? [];
+        $lockConflicts = (int) (($events['lock_conflict']['count'] ?? 0) + ($events['lock_skipped']['count'] ?? 0));
+        $timeouts = (int) ($events['timeout']['count'] ?? 0);
+        $skips = (int) (($events['skipped']['count'] ?? 0) + ($events['deferred_pressure']['count'] ?? 0));
+        $metrics = [
+            'average_duration_seconds' => $runStats['average_duration_seconds'],
+            'p95_duration_seconds' => $runStats['p95_duration_seconds'],
+            'lock_conflicts' => $lockConflicts,
+            'timeouts' => $timeouts,
+            'skips' => $skips,
+            'pressure' => $pressure['pressure'] ?? 'healthy',
+        ];
+
+        foreach ($busiest as $busy) {
+            if ((int) ($busy['offset_minutes'] ?? -1) === $offsetMinutes && (int) ($busy['job_count'] ?? 0) >= 2 && !in_array((string) ($job['priority'] ?? 'normal'), ['highest', 'high'], true)) {
+                $newOffset = scheduler_least_congested_offset_minutes(max(2, $intervalMinutes));
+                if ($newOffset !== $offsetMinutes) {
+                    if (scheduler_apply_tuning_change($job, 'offset_shift', 'Shifted offset away from congested minute slot.', ['offset_minutes' => $newOffset], $metrics)) {
+                        return ['job_key' => $jobKey, 'action' => 'offset_shift'];
+                    }
+                }
+            }
+        }
+
+        if ($timeouts >= 2 && $runStats['p95_duration_seconds'] !== null) {
+            $targetTimeout = max($timeoutSeconds, (int) ceil((float) $runStats['p95_duration_seconds'] + 60));
+            if ($targetTimeout > $timeoutSeconds) {
+                if (scheduler_apply_tuning_change($job, 'timeout_increase', 'Increased timeout due to repeated timeout pressure.', ['timeout_seconds' => $targetTimeout], $metrics)) {
+                    return ['job_key' => $jobKey, 'action' => 'timeout_increase'];
+                }
+            }
+        }
+
+        if (($lockConflicts >= 2 || $timeouts >= 2) && $runStats['p95_duration_seconds'] !== null) {
+            $newInterval = min($constraints['max_interval_minutes'], max($intervalMinutes + 1, (int) ceil($intervalMinutes * 1.25)));
+            if ($newInterval > $intervalMinutes) {
+                if (scheduler_apply_tuning_change($job, 'interval_increase', 'Increased interval due to repeated timeout pressure.', ['interval_minutes' => $newInterval], $metrics)) {
+                    return ['job_key' => $jobKey, 'action' => 'interval_increase'];
+                }
+            }
+        }
+
+        if (($pressure['pressure'] ?? 'healthy') === 'healthy' && $runStats['average_duration_seconds'] !== null && $lockConflicts === 0 && $skips === 0) {
+            $averageDuration = (float) $runStats['average_duration_seconds'];
+            if ($averageDuration > 0 && $averageDuration < ($intervalMinutes * 60 * 0.15) && $intervalMinutes > $constraints['min_interval_minutes']) {
+                $newInterval = max($constraints['min_interval_minutes'], $intervalMinutes - 1);
+                if ($newInterval < $intervalMinutes) {
+                    if (scheduler_apply_tuning_change($job, 'interval_reduce', 'Reduced interval because runtime is low and freshness headroom exists.', ['interval_minutes' => $newInterval], $metrics)) {
+                        return ['job_key' => $jobKey, 'action' => 'interval_reduce'];
+                    }
+                }
+            }
+        }
+    }
+
+    return null;
+}
+
 function cron_tick_run(?callable $logger = null): array
 {
     $jobs = scheduler_due_jobs();
@@ -7212,7 +7635,7 @@ function cron_tick_run(?callable $logger = null): array
         $jobId = (int) ($job['id'] ?? 0);
         $jobKey = (string) ($job['job_key'] ?? 'unknown_job');
         $jobType = scheduler_job_type($jobKey);
-        $scheduledFor = (string) ($job['next_run_at'] ?? '');
+        $scheduledFor = (string) ($job['next_due_at'] ?? $job['next_run_at'] ?? '');
 
         if ($logger !== null) {
             $logger('job.started', [
@@ -7227,6 +7650,9 @@ function cron_tick_run(?callable $logger = null): array
             $result = scheduler_job_runs_in_background($jobKey)
                 ? scheduler_dispatch_background_job($job)
                 : scheduler_run_job($job);
+            if (($result['status'] ?? '') === 'dispatched') {
+                db_scheduler_job_event_insert($jobKey, 'dispatch', ['execution' => 'background'], 0, 0.0);
+            }
         } catch (Throwable $exception) {
             $result = scheduler_background_dispatch_failure_result($job, $exception);
         }
@@ -7251,24 +7677,10 @@ function cron_tick_run(?callable $logger = null): array
                 'summary' => (string) ($result['summary'] ?? ''),
                 'error' => ($result['status'] ?? '') === 'failed' ? (string) ($result['error'] ?? '') : null,
             ]);
-
-            $meta = is_array($result['meta'] ?? null) ? $result['meta'] : [];
-            if ($meta !== []) {
-                $basePayload = [
-                    'job_id' => (int) ($result['job_id'] ?? $jobId),
-                    'job' => (string) ($result['job_key'] ?? $jobKey),
-                    'status' => (string) ($result['status'] ?? 'failed'),
-                ];
-                $logger('job.' . str_replace('.', '_', $jobType) . '.outcome', $basePayload + $meta);
-
-                if ($jobKey === 'killmail_r2z2_sync') {
-                    $logger('job.killmail_r2z2_sync.outcome', $basePayload + $meta);
-                }
-            }
         }
 
         $jobStatus = (string) ($result['status'] ?? 'failed');
-        if ($jobStatus === 'success') {
+        if ($jobStatus === 'success' || $jobStatus === 'skipped') {
             $successCount++;
             continue;
         }
@@ -7283,6 +7695,8 @@ function cron_tick_run(?callable $logger = null): array
         }
     }
 
+    $optimizerResult = scheduler_run_optimizer();
+
     return [
         'ran_at' => gmdate('Y-m-d H:i:s'),
         'jobs_due' => count($jobs),
@@ -7290,11 +7704,10 @@ function cron_tick_run(?callable $logger = null): array
         'jobs_succeeded' => $successCount,
         'jobs_failed' => $failureCount,
         'jobs_dispatched' => $dispatchedCount,
+        'optimizer' => $optimizerResult,
         'results' => $results,
     ];
 }
-
-
 
 function sync_status_from_prefix(string $datasetPrefix, int $recentRunsLimit = 5): array
 {

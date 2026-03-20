@@ -43,7 +43,7 @@ function scheduler_job_runner_main(): int
         'job_id' => $scheduleId,
         'job' => $jobKey,
         'job_type' => $jobType,
-        'scheduled_for' => (string) ($job['next_run_at'] ?? ''),
+        'scheduled_for' => (string) ($job['next_due_at'] ?? $job['next_run_at'] ?? ''),
         'locked_until' => $lockedUntil,
     ]);
 

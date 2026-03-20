@@ -133,6 +133,397 @@ PREPARE sync_schedules_offset_seconds_stmt FROM @sync_schedules_offset_seconds_s
 EXECUTE sync_schedules_offset_seconds_stmt;
 DEALLOCATE PREPARE sync_schedules_offset_seconds_stmt;
 
+SET @sync_schedules_interval_minutes_exists := (
+    SELECT COUNT(*)
+    FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'sync_schedules'
+      AND COLUMN_NAME = 'interval_minutes'
+);
+SET @sync_schedules_interval_minutes_sql := IF(
+    @sync_schedules_interval_minutes_exists = 0,
+    'ALTER TABLE sync_schedules ADD COLUMN interval_minutes INT UNSIGNED NOT NULL DEFAULT 5 AFTER enabled',
+    'SELECT 1'
+);
+PREPARE sync_schedules_interval_minutes_stmt FROM @sync_schedules_interval_minutes_sql;
+EXECUTE sync_schedules_interval_minutes_stmt;
+DEALLOCATE PREPARE sync_schedules_interval_minutes_stmt;
+
+SET @sync_schedules_offset_minutes_exists := (
+    SELECT COUNT(*)
+    FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'sync_schedules'
+      AND COLUMN_NAME = 'offset_minutes'
+);
+SET @sync_schedules_offset_minutes_sql := IF(
+    @sync_schedules_offset_minutes_exists = 0,
+    'ALTER TABLE sync_schedules ADD COLUMN offset_minutes INT UNSIGNED NOT NULL DEFAULT 0 AFTER offset_seconds',
+    'SELECT 1'
+);
+PREPARE sync_schedules_offset_minutes_stmt FROM @sync_schedules_offset_minutes_sql;
+EXECUTE sync_schedules_offset_minutes_stmt;
+DEALLOCATE PREPARE sync_schedules_offset_minutes_stmt;
+
+SET @sync_schedules_priority_exists := (
+    SELECT COUNT(*)
+    FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'sync_schedules'
+      AND COLUMN_NAME = 'priority'
+);
+SET @sync_schedules_priority_sql := IF(
+    @sync_schedules_priority_exists = 0,
+    'ALTER TABLE sync_schedules ADD COLUMN priority VARCHAR(20) NOT NULL DEFAULT ''normal'' AFTER offset_minutes',
+    'SELECT 1'
+);
+PREPARE sync_schedules_priority_stmt FROM @sync_schedules_priority_sql;
+EXECUTE sync_schedules_priority_stmt;
+DEALLOCATE PREPARE sync_schedules_priority_stmt;
+
+SET @sync_schedules_concurrency_policy_exists := (
+    SELECT COUNT(*)
+    FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'sync_schedules'
+      AND COLUMN_NAME = 'concurrency_policy'
+);
+SET @sync_schedules_concurrency_policy_sql := IF(
+    @sync_schedules_concurrency_policy_exists = 0,
+    'ALTER TABLE sync_schedules ADD COLUMN concurrency_policy VARCHAR(40) NOT NULL DEFAULT ''single'' AFTER priority',
+    'SELECT 1'
+);
+PREPARE sync_schedules_concurrency_policy_stmt FROM @sync_schedules_concurrency_policy_sql;
+EXECUTE sync_schedules_concurrency_policy_stmt;
+DEALLOCATE PREPARE sync_schedules_concurrency_policy_stmt;
+
+SET @sync_schedules_timeout_seconds_exists := (
+    SELECT COUNT(*)
+    FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'sync_schedules'
+      AND COLUMN_NAME = 'timeout_seconds'
+);
+SET @sync_schedules_timeout_seconds_sql := IF(
+    @sync_schedules_timeout_seconds_exists = 0,
+    'ALTER TABLE sync_schedules ADD COLUMN timeout_seconds INT UNSIGNED NOT NULL DEFAULT 300 AFTER concurrency_policy',
+    'SELECT 1'
+);
+PREPARE sync_schedules_timeout_seconds_stmt FROM @sync_schedules_timeout_seconds_sql;
+EXECUTE sync_schedules_timeout_seconds_stmt;
+DEALLOCATE PREPARE sync_schedules_timeout_seconds_stmt;
+
+SET @sync_schedules_last_started_at_exists := (
+    SELECT COUNT(*)
+    FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'sync_schedules'
+      AND COLUMN_NAME = 'last_started_at'
+);
+SET @sync_schedules_last_started_at_sql := IF(
+    @sync_schedules_last_started_at_exists = 0,
+    'ALTER TABLE sync_schedules ADD COLUMN last_started_at DATETIME DEFAULT NULL AFTER last_run_at',
+    'SELECT 1'
+);
+PREPARE sync_schedules_last_started_at_stmt FROM @sync_schedules_last_started_at_sql;
+EXECUTE sync_schedules_last_started_at_stmt;
+DEALLOCATE PREPARE sync_schedules_last_started_at_stmt;
+
+SET @sync_schedules_last_finished_at_exists := (
+    SELECT COUNT(*)
+    FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'sync_schedules'
+      AND COLUMN_NAME = 'last_finished_at'
+);
+SET @sync_schedules_last_finished_at_sql := IF(
+    @sync_schedules_last_finished_at_exists = 0,
+    'ALTER TABLE sync_schedules ADD COLUMN last_finished_at DATETIME DEFAULT NULL AFTER last_started_at',
+    'SELECT 1'
+);
+PREPARE sync_schedules_last_finished_at_stmt FROM @sync_schedules_last_finished_at_sql;
+EXECUTE sync_schedules_last_finished_at_stmt;
+DEALLOCATE PREPARE sync_schedules_last_finished_at_stmt;
+
+SET @sync_schedules_last_duration_seconds_exists := (
+    SELECT COUNT(*)
+    FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'sync_schedules'
+      AND COLUMN_NAME = 'last_duration_seconds'
+);
+SET @sync_schedules_last_duration_seconds_sql := IF(
+    @sync_schedules_last_duration_seconds_exists = 0,
+    'ALTER TABLE sync_schedules ADD COLUMN last_duration_seconds DECIMAL(10,2) DEFAULT NULL AFTER last_finished_at',
+    'SELECT 1'
+);
+PREPARE sync_schedules_last_duration_seconds_stmt FROM @sync_schedules_last_duration_seconds_sql;
+EXECUTE sync_schedules_last_duration_seconds_stmt;
+DEALLOCATE PREPARE sync_schedules_last_duration_seconds_stmt;
+
+SET @sync_schedules_average_duration_seconds_exists := (
+    SELECT COUNT(*)
+    FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'sync_schedules'
+      AND COLUMN_NAME = 'average_duration_seconds'
+);
+SET @sync_schedules_average_duration_seconds_sql := IF(
+    @sync_schedules_average_duration_seconds_exists = 0,
+    'ALTER TABLE sync_schedules ADD COLUMN average_duration_seconds DECIMAL(10,2) DEFAULT NULL AFTER last_duration_seconds',
+    'SELECT 1'
+);
+PREPARE sync_schedules_average_duration_seconds_stmt FROM @sync_schedules_average_duration_seconds_sql;
+EXECUTE sync_schedules_average_duration_seconds_stmt;
+DEALLOCATE PREPARE sync_schedules_average_duration_seconds_stmt;
+
+SET @sync_schedules_p95_duration_seconds_exists := (
+    SELECT COUNT(*)
+    FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'sync_schedules'
+      AND COLUMN_NAME = 'p95_duration_seconds'
+);
+SET @sync_schedules_p95_duration_seconds_sql := IF(
+    @sync_schedules_p95_duration_seconds_exists = 0,
+    'ALTER TABLE sync_schedules ADD COLUMN p95_duration_seconds DECIMAL(10,2) DEFAULT NULL AFTER average_duration_seconds',
+    'SELECT 1'
+);
+PREPARE sync_schedules_p95_duration_seconds_stmt FROM @sync_schedules_p95_duration_seconds_sql;
+EXECUTE sync_schedules_p95_duration_seconds_stmt;
+DEALLOCATE PREPARE sync_schedules_p95_duration_seconds_stmt;
+
+SET @sync_schedules_last_result_exists := (
+    SELECT COUNT(*)
+    FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'sync_schedules'
+      AND COLUMN_NAME = 'last_result'
+);
+SET @sync_schedules_last_result_sql := IF(
+    @sync_schedules_last_result_exists = 0,
+    'ALTER TABLE sync_schedules ADD COLUMN last_result VARCHAR(120) DEFAULT NULL AFTER p95_duration_seconds',
+    'SELECT 1'
+);
+PREPARE sync_schedules_last_result_stmt FROM @sync_schedules_last_result_sql;
+EXECUTE sync_schedules_last_result_stmt;
+DEALLOCATE PREPARE sync_schedules_last_result_stmt;
+
+SET @sync_schedules_next_due_at_exists := (
+    SELECT COUNT(*)
+    FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'sync_schedules'
+      AND COLUMN_NAME = 'next_due_at'
+);
+SET @sync_schedules_next_due_at_sql := IF(
+    @sync_schedules_next_due_at_exists = 0,
+    'ALTER TABLE sync_schedules ADD COLUMN next_due_at DATETIME DEFAULT NULL AFTER last_result',
+    'SELECT 1'
+);
+PREPARE sync_schedules_next_due_at_stmt FROM @sync_schedules_next_due_at_sql;
+EXECUTE sync_schedules_next_due_at_stmt;
+DEALLOCATE PREPARE sync_schedules_next_due_at_stmt;
+
+SET @sync_schedules_current_state_exists := (
+    SELECT COUNT(*)
+    FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'sync_schedules'
+      AND COLUMN_NAME = 'current_state'
+);
+SET @sync_schedules_current_state_sql := IF(
+    @sync_schedules_current_state_exists = 0,
+    'ALTER TABLE sync_schedules ADD COLUMN current_state ENUM(''running'', ''waiting'', ''stopped'') NOT NULL DEFAULT ''waiting'' AFTER next_due_at',
+    'SELECT 1'
+);
+PREPARE sync_schedules_current_state_stmt FROM @sync_schedules_current_state_sql;
+EXECUTE sync_schedules_current_state_stmt;
+DEALLOCATE PREPARE sync_schedules_current_state_stmt;
+
+SET @sync_schedules_tuning_mode_exists := (
+    SELECT COUNT(*)
+    FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'sync_schedules'
+      AND COLUMN_NAME = 'tuning_mode'
+);
+SET @sync_schedules_tuning_mode_sql := IF(
+    @sync_schedules_tuning_mode_exists = 0,
+    'ALTER TABLE sync_schedules ADD COLUMN tuning_mode ENUM(''automatic'', ''manual'') NOT NULL DEFAULT ''automatic'' AFTER current_state',
+    'SELECT 1'
+);
+PREPARE sync_schedules_tuning_mode_stmt FROM @sync_schedules_tuning_mode_sql;
+EXECUTE sync_schedules_tuning_mode_stmt;
+DEALLOCATE PREPARE sync_schedules_tuning_mode_stmt;
+
+SET @sync_schedules_discovered_from_code_exists := (
+    SELECT COUNT(*)
+    FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'sync_schedules'
+      AND COLUMN_NAME = 'discovered_from_code'
+);
+SET @sync_schedules_discovered_from_code_sql := IF(
+    @sync_schedules_discovered_from_code_exists = 0,
+    'ALTER TABLE sync_schedules ADD COLUMN discovered_from_code TINYINT(1) NOT NULL DEFAULT 0 AFTER tuning_mode',
+    'SELECT 1'
+);
+PREPARE sync_schedules_discovered_from_code_stmt FROM @sync_schedules_discovered_from_code_sql;
+EXECUTE sync_schedules_discovered_from_code_stmt;
+DEALLOCATE PREPARE sync_schedules_discovered_from_code_stmt;
+
+SET @sync_schedules_explicitly_configured_exists := (
+    SELECT COUNT(*)
+    FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'sync_schedules'
+      AND COLUMN_NAME = 'explicitly_configured'
+);
+SET @sync_schedules_explicitly_configured_sql := IF(
+    @sync_schedules_explicitly_configured_exists = 0,
+    'ALTER TABLE sync_schedules ADD COLUMN explicitly_configured TINYINT(1) NOT NULL DEFAULT 1 AFTER discovered_from_code',
+    'SELECT 1'
+);
+PREPARE sync_schedules_explicitly_configured_stmt FROM @sync_schedules_explicitly_configured_sql;
+EXECUTE sync_schedules_explicitly_configured_stmt;
+DEALLOCATE PREPARE sync_schedules_explicitly_configured_stmt;
+
+SET @sync_schedules_last_auto_tuned_at_exists := (
+    SELECT COUNT(*)
+    FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'sync_schedules'
+      AND COLUMN_NAME = 'last_auto_tuned_at'
+);
+SET @sync_schedules_last_auto_tuned_at_sql := IF(
+    @sync_schedules_last_auto_tuned_at_exists = 0,
+    'ALTER TABLE sync_schedules ADD COLUMN last_auto_tuned_at DATETIME DEFAULT NULL AFTER explicitly_configured',
+    'SELECT 1'
+);
+PREPARE sync_schedules_last_auto_tuned_at_stmt FROM @sync_schedules_last_auto_tuned_at_sql;
+EXECUTE sync_schedules_last_auto_tuned_at_stmt;
+DEALLOCATE PREPARE sync_schedules_last_auto_tuned_at_stmt;
+
+SET @sync_schedules_last_auto_tune_reason_exists := (
+    SELECT COUNT(*)
+    FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'sync_schedules'
+      AND COLUMN_NAME = 'last_auto_tune_reason'
+);
+SET @sync_schedules_last_auto_tune_reason_sql := IF(
+    @sync_schedules_last_auto_tune_reason_exists = 0,
+    'ALTER TABLE sync_schedules ADD COLUMN last_auto_tune_reason VARCHAR(500) DEFAULT NULL AFTER last_auto_tuned_at',
+    'SELECT 1'
+);
+PREPARE sync_schedules_last_auto_tune_reason_stmt FROM @sync_schedules_last_auto_tune_reason_sql;
+EXECUTE sync_schedules_last_auto_tune_reason_stmt;
+DEALLOCATE PREPARE sync_schedules_last_auto_tune_reason_stmt;
+
+SET @sync_schedules_degraded_until_exists := (
+    SELECT COUNT(*)
+    FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'sync_schedules'
+      AND COLUMN_NAME = 'degraded_until'
+);
+SET @sync_schedules_degraded_until_sql := IF(
+    @sync_schedules_degraded_until_exists = 0,
+    'ALTER TABLE sync_schedules ADD COLUMN degraded_until DATETIME DEFAULT NULL AFTER last_auto_tune_reason',
+    'SELECT 1'
+);
+PREPARE sync_schedules_degraded_until_stmt FROM @sync_schedules_degraded_until_sql;
+EXECUTE sync_schedules_degraded_until_stmt;
+DEALLOCATE PREPARE sync_schedules_degraded_until_stmt;
+
+SET @sync_schedules_failure_streak_exists := (
+    SELECT COUNT(*)
+    FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'sync_schedules'
+      AND COLUMN_NAME = 'failure_streak'
+);
+SET @sync_schedules_failure_streak_sql := IF(
+    @sync_schedules_failure_streak_exists = 0,
+    'ALTER TABLE sync_schedules ADD COLUMN failure_streak INT UNSIGNED NOT NULL DEFAULT 0 AFTER degraded_until',
+    'SELECT 1'
+);
+PREPARE sync_schedules_failure_streak_stmt FROM @sync_schedules_failure_streak_sql;
+EXECUTE sync_schedules_failure_streak_stmt;
+DEALLOCATE PREPARE sync_schedules_failure_streak_stmt;
+
+SET @sync_schedules_lock_conflict_count_exists := (
+    SELECT COUNT(*)
+    FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'sync_schedules'
+      AND COLUMN_NAME = 'lock_conflict_count'
+);
+SET @sync_schedules_lock_conflict_count_sql := IF(
+    @sync_schedules_lock_conflict_count_exists = 0,
+    'ALTER TABLE sync_schedules ADD COLUMN lock_conflict_count INT UNSIGNED NOT NULL DEFAULT 0 AFTER failure_streak',
+    'SELECT 1'
+);
+PREPARE sync_schedules_lock_conflict_count_stmt FROM @sync_schedules_lock_conflict_count_sql;
+EXECUTE sync_schedules_lock_conflict_count_stmt;
+DEALLOCATE PREPARE sync_schedules_lock_conflict_count_stmt;
+
+SET @sync_schedules_timeout_count_exists := (
+    SELECT COUNT(*)
+    FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'sync_schedules'
+      AND COLUMN_NAME = 'timeout_count'
+);
+SET @sync_schedules_timeout_count_sql := IF(
+    @sync_schedules_timeout_count_exists = 0,
+    'ALTER TABLE sync_schedules ADD COLUMN timeout_count INT UNSIGNED NOT NULL DEFAULT 0 AFTER lock_conflict_count',
+    'SELECT 1'
+);
+PREPARE sync_schedules_timeout_count_stmt FROM @sync_schedules_timeout_count_sql;
+EXECUTE sync_schedules_timeout_count_stmt;
+DEALLOCATE PREPARE sync_schedules_timeout_count_stmt;
+
+UPDATE sync_schedules
+SET interval_minutes = GREATEST(1, CEIL(interval_seconds / 60)),
+    offset_minutes = FLOOR(offset_seconds / 60),
+    next_due_at = COALESCE(next_due_at, next_run_at),
+    current_state = CASE
+        WHEN enabled = 0 THEN 'stopped'
+        WHEN locked_until IS NOT NULL AND locked_until > UTC_TIMESTAMP() THEN 'running'
+        ELSE 'waiting'
+    END
+WHERE interval_minutes IS NULL
+   OR offset_minutes IS NULL
+   OR next_due_at IS NULL;
+
+CREATE TABLE IF NOT EXISTS scheduler_job_events (
+    id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    job_key VARCHAR(190) NOT NULL,
+    event_type VARCHAR(50) NOT NULL,
+    detail_json LONGTEXT DEFAULT NULL,
+    lateness_seconds INT NOT NULL DEFAULT 0,
+    duration_seconds DECIMAL(10,2) DEFAULT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    KEY idx_scheduler_job_events_job_created (job_key, created_at),
+    KEY idx_scheduler_job_events_type_created (event_type, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS scheduler_tuning_actions (
+    id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    job_key VARCHAR(190) NOT NULL,
+    actor VARCHAR(20) NOT NULL DEFAULT 'system',
+    action_type VARCHAR(50) NOT NULL,
+    reason_text VARCHAR(500) NOT NULL,
+    before_json LONGTEXT DEFAULT NULL,
+    after_json LONGTEXT DEFAULT NULL,
+    metrics_json LONGTEXT DEFAULT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    KEY idx_scheduler_tuning_actions_job_created (job_key, created_at),
+    KEY idx_scheduler_tuning_actions_actor_created (actor, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 CREATE TABLE IF NOT EXISTS intelligence_snapshots (
     snapshot_key VARCHAR(190) PRIMARY KEY,
     snapshot_status ENUM('ready', 'updating', 'failed') NOT NULL DEFAULT 'ready',
@@ -1061,27 +1452,56 @@ INSERT INTO doctrine_groups (group_name, description) VALUES
     ('SupplyCore Doctrine', 'Baseline doctrine fits used for gap detection, restock generation, and hauling prep.')
 ON DUPLICATE KEY UPDATE description = VALUES(description);
 
-INSERT INTO sync_schedules (job_key, enabled, interval_seconds, offset_seconds, next_run_at, last_run_at, last_status, last_error, locked_until) VALUES
-    ('alliance_current_sync', 1, 300, 0, UTC_TIMESTAMP(), NULL, NULL, NULL, NULL),
-    ('alliance_historical_sync', 1, 21600, 0, UTC_TIMESTAMP(), NULL, NULL, NULL, NULL),
-    ('market_hub_current_sync', 1, 300, 0, UTC_TIMESTAMP(), NULL, NULL, NULL, NULL),
-    ('current_state_refresh_sync', 1, 300, 0, UTC_TIMESTAMP(), NULL, NULL, NULL, NULL),
-    ('market_hub_historical_sync', 1, 21600, 0, UTC_TIMESTAMP(), NULL, NULL, NULL, NULL),
-    ('market_hub_local_history_sync', 1, 300, 0, UTC_TIMESTAMP(), NULL, NULL, NULL, NULL),
-    ('doctrine_intelligence_sync', 1, 600, 120, UTC_TIMESTAMP(), NULL, NULL, NULL, NULL),
-    ('market_comparison_summary_sync', 1, 600, 120, UTC_TIMESTAMP(), NULL, NULL, NULL, NULL),
-    ('loss_demand_summary_sync', 1, 600, 120, UTC_TIMESTAMP(), NULL, NULL, NULL, NULL),
-    ('dashboard_summary_sync', 1, 600, 120, UTC_TIMESTAMP(), NULL, NULL, NULL, NULL),
-    ('activity_priority_summary_sync', 1, 600, 120, UTC_TIMESTAMP(), NULL, NULL, NULL, NULL),
-    ('analytics_bucket_1h_sync', 1, 600, 120, UTC_TIMESTAMP(), NULL, NULL, NULL, NULL),
-    ('analytics_bucket_1d_sync', 1, 3600, 0, UTC_TIMESTAMP(), NULL, NULL, NULL, NULL),
-    ('rebuild_ai_briefings', 1, 900, 420, UTC_TIMESTAMP(), NULL, NULL, NULL, NULL),
-    ('forecasting_ai_sync', 1, 3600, 0, UTC_TIMESTAMP(), NULL, NULL, NULL, NULL),
-    ('killmail_r2z2_sync', 0, 60, 0, NULL, NULL, NULL, NULL, NULL)
+INSERT INTO sync_schedules (
+    job_key,
+    enabled,
+    interval_minutes,
+    interval_seconds,
+    offset_seconds,
+    offset_minutes,
+    priority,
+    concurrency_policy,
+    timeout_seconds,
+    next_run_at,
+    next_due_at,
+    current_state,
+    tuning_mode,
+    discovered_from_code,
+    explicitly_configured,
+    last_run_at,
+    last_status,
+    last_error,
+    locked_until
+) VALUES
+    ('market_hub_current_sync', 1, 8, 480, 0, 0, 'high', 'single', 240, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
+    ('alliance_current_sync', 1, 4, 240, 120, 2, 'medium', 'single', 180, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
+    ('current_state_refresh_sync', 1, 12, 720, 360, 6, 'medium', 'single', 120, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
+    ('market_hub_local_history_sync', 1, 20, 1200, 840, 14, 'normal', 'background', 1800, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
+    ('doctrine_intelligence_sync', 1, 15, 900, 480, 8, 'normal', 'single', 180, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
+    ('market_comparison_summary_sync', 1, 15, 900, 540, 9, 'normal', 'single', 180, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
+    ('loss_demand_summary_sync', 1, 15, 900, 600, 10, 'normal', 'single', 180, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
+    ('dashboard_summary_sync', 1, 15, 900, 660, 11, 'normal', 'single', 180, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
+    ('rebuild_ai_briefings', 1, 20, 1200, 720, 12, 'normal', 'background', 300, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
+    ('killmail_r2z2_sync', 1, 3, 180, 180, 3, 'highest', 'single', 90, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
+    ('alliance_historical_sync', 1, 360, 21600, 0, 0, 'normal', 'background', 3600, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
+    ('market_hub_historical_sync', 1, 360, 21600, 0, 0, 'normal', 'background', 3600, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
+    ('forecasting_ai_sync', 1, 60, 3600, 0, 0, 'normal', 'background', 300, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
+    ('deal_alerts_sync', 1, 5, 300, 60, 1, 'normal', 'single', 90, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 0, NULL, NULL, NULL, NULL),
+    ('activity_priority_summary_sync', 1, 15, 900, 780, 13, 'normal', 'single', 180, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 0, NULL, NULL, NULL, NULL),
+    ('analytics_bucket_1h_sync', 1, 15, 900, 900, 15, 'normal', 'single', 180, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 0, NULL, NULL, NULL, NULL),
+    ('analytics_bucket_1d_sync', 1, 60, 3600, 960, 16, 'normal', 'single', 240, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 0, NULL, NULL, NULL, NULL)
 ON DUPLICATE KEY UPDATE
     enabled = VALUES(enabled),
+    interval_minutes = VALUES(interval_minutes),
     interval_seconds = VALUES(interval_seconds),
-    offset_seconds = VALUES(offset_seconds);
+    offset_seconds = VALUES(offset_seconds),
+    offset_minutes = VALUES(offset_minutes),
+    priority = VALUES(priority),
+    concurrency_policy = VALUES(concurrency_policy),
+    timeout_seconds = VALUES(timeout_seconds),
+    next_due_at = COALESCE(sync_schedules.next_due_at, VALUES(next_due_at)),
+    discovered_from_code = VALUES(discovered_from_code),
+    explicitly_configured = VALUES(explicitly_configured);
 
 INSERT INTO esi_cache_namespaces (namespace_key, source_system, description) VALUES
     ('cache.esi.controlTowerResources', 'esi', 'ESI cache namespace mapped to controlTowerResources.jsonl'),
