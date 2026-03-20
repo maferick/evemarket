@@ -13,6 +13,7 @@ This repository establishes a clean architecture that can scale from an initial 
   - Trading Stations (market + alliance station selection)
   - ESI Login settings
   - Data Sync settings with incremental update toggle
+  - Deal Alerts settings for threshold tuning, popup behavior, and baseline controls
   - Killmail Intelligence settings (R2Z2 ingestion toggle, tracked alliances/corporations, ingestion health)
 - `src/db.php` as the **single central database access layer**
 - `src/functions.php` as the **single shared helper/business utility layer**
@@ -23,6 +24,7 @@ This repository establishes a clean architecture that can scale from an initial 
 - Reusable entity metadata cache for human-readable killmail, market, and analytics surfaces
 - HTML-first doctrine fit import workflow for Winter Coalition fit pages, BuyAll/EFT normalization, bulk preview/save controls, fit-overview bulk management, item-name cache, doctrine group pages, alliance-vs-hub market mapping, and background-refreshed materialized intelligence snapshots
 - Materialized intelligence storage (`intelligence_snapshots`) for doctrine fit/group summaries, market comparison summaries, loss-demand summaries, and dashboard payloads
+- Dedicated mispriced-listing detection with a separate `/deal-alerts` page, background anomaly scan job, dismissible critical popups, and a persisted current-state deal alert table
 - MariaDB-native analytics bucket layer (`*_1h`, `*_1d`) for killmail, market, and doctrine trend windows without introducing a separate time-series database
 - Redis delivery cache for the latest precomputed intelligence payloads with MySQL materialized-summary fallback
 - Secure CSRF-protected settings forms
@@ -209,6 +211,7 @@ SupplyCore sync pipelines depend on the `cron` daemon being present and running 
 - Interval and enable/disable controls are configured in **Settings → Data Sync** (`/settings?section=data-sync`) via scheduler rows in `sync_schedules`.
 - SupplyCore now separates cadences by workload:
   - **Fast ingestion / current state**: `killmail_r2z2_sync` runs every minute, while `alliance_current_sync`, `market_hub_current_sync`, and `current_state_refresh_sync` default to every 5 minutes.
+  - **Deal anomaly detection**: `deal_alerts_sync` defaults to every 5 minutes and is also forced due after current alliance/hub order syncs so mispriced sell listings are checked against SupplyCore’s own recent historical baseline immediately after fresh market data arrives.
   - **Slow history refresh**: `alliance_historical_sync` and `market_hub_historical_sync` default to every 6 hours, while `market_hub_local_history_sync` defaults to every 5 minutes so local snapshot history stays warm.
   - **Materialized intelligence refresh**: `doctrine_intelligence_sync`, `market_comparison_summary_sync`, `loss_demand_summary_sync`, `dashboard_summary_sync`, `activity_priority_summary_sync`, and `analytics_bucket_1h_sync` default to every 10 minutes.
   - **MariaDB analytics buckets**: `analytics_bucket_1d_sync` defaults to every 60 minutes and rolls daily killmail, market, and doctrine aggregate tables forward for trend pages, depletion logic, and scoring windows.

@@ -3274,6 +3274,478 @@ function db_intelligence_snapshots_get_many(array $snapshotKeys): array
     );
 }
 
+function db_market_deal_alerts_ensure_schema(): void
+{
+    static $ensured = false;
+
+    if ($ensured) {
+        return;
+    }
+
+    db()->exec(
+        "CREATE TABLE IF NOT EXISTS market_deal_alerts_current (
+            alert_key VARCHAR(190) PRIMARY KEY,
+            item_type_id INT UNSIGNED NOT NULL,
+            source_type ENUM('market_hub', 'alliance_structure') NOT NULL,
+            source_id BIGINT UNSIGNED NOT NULL,
+            source_name VARCHAR(190) NOT NULL,
+            percent_band DECIMAL(6,2) NOT NULL,
+            current_price DECIMAL(20,2) NOT NULL,
+            normal_price DECIMAL(20,2) NOT NULL,
+            percent_of_normal DECIMAL(8,4) NOT NULL,
+            anomaly_score DECIMAL(10,2) NOT NULL DEFAULT 0.00,
+            severity ENUM('critical', 'very_strong', 'strong', 'watch') NOT NULL,
+            severity_rank TINYINT UNSIGNED NOT NULL DEFAULT 1,
+            quantity_available BIGINT UNSIGNED NOT NULL DEFAULT 0,
+            listing_count INT UNSIGNED NOT NULL DEFAULT 0,
+            best_order_id BIGINT UNSIGNED DEFAULT NULL,
+            baseline_model VARCHAR(80) NOT NULL DEFAULT 'median_weighted_blend',
+            baseline_points INT UNSIGNED NOT NULL DEFAULT 0,
+            baseline_median_price DECIMAL(20,2) DEFAULT NULL,
+            baseline_weighted_price DECIMAL(20,2) DEFAULT NULL,
+            observed_at DATETIME NOT NULL,
+            detected_at DATETIME NOT NULL,
+            last_seen_at DATETIME NOT NULL,
+            inactive_at DATETIME DEFAULT NULL,
+            freshness_seconds INT UNSIGNED NOT NULL DEFAULT 0,
+            status ENUM('active', 'inactive') NOT NULL DEFAULT 'active',
+            metadata_json JSON DEFAULT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            KEY idx_market_deal_alerts_status_severity (status, severity_rank, anomaly_score),
+            KEY idx_market_deal_alerts_item_source (item_type_id, source_type, source_id),
+            KEY idx_market_deal_alerts_last_seen (last_seen_at),
+            KEY idx_market_deal_alerts_observed (observed_at)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"
+    );
+
+    db()->exec(
+        "CREATE TABLE IF NOT EXISTS market_deal_alert_dismissals (
+            alert_key VARCHAR(190) PRIMARY KEY,
+            dismissed_severity_rank TINYINT UNSIGNED NOT NULL DEFAULT 1,
+            dismissed_at DATETIME NOT NULL,
+            dismissed_until DATETIME DEFAULT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            KEY idx_market_deal_alert_dismissals_until (dismissed_until)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"
+    );
+
+    $ensured = true;
+}
+
+function db_market_lowest_sell_orders_by_source(string $sourceType, int $sourceId): array
+{
+    $safeSourceType = $sourceType === 'alliance_structure' ? 'alliance_structure' : 'market_hub';
+    $safeSourceId = max(0, $sourceId);
+    if ($safeSourceId <= 0) {
+        return [];
+    }
+
+    return db_select(
+        "SELECT
+            picked.type_id,
+            rit.type_name,
+            picked.order_id,
+            picked.price,
+            picked.volume_remain,
+            picked.observed_at,
+            COALESCE(summary.sell_order_count, 0) AS sell_order_count,
+            COALESCE(summary.total_sell_volume, 0) AS total_sell_volume
+         FROM (
+            SELECT
+                base.type_id,
+                MIN(base.order_id) AS order_id
+            FROM market_orders_current base
+            INNER JOIN (
+                SELECT type_id, MIN(price) AS min_price
+                FROM market_orders_current
+                WHERE source_type = ?
+                  AND source_id = ?
+                  AND is_buy_order = 0
+                  AND volume_remain > 0
+                GROUP BY type_id
+            ) best
+                ON best.type_id = base.type_id
+               AND best.min_price = base.price
+            WHERE base.source_type = ?
+              AND base.source_id = ?
+              AND base.is_buy_order = 0
+              AND base.volume_remain > 0
+            GROUP BY base.type_id
+         ) lowest
+         INNER JOIN market_orders_current picked
+            ON picked.source_type = ?
+           AND picked.source_id = ?
+           AND picked.type_id = lowest.type_id
+           AND picked.order_id = lowest.order_id
+         LEFT JOIN ref_item_types rit ON rit.type_id = picked.type_id
+         LEFT JOIN (
+            SELECT
+                type_id,
+                SUM(volume_remain) AS total_sell_volume,
+                COUNT(*) AS sell_order_count
+            FROM market_orders_current
+            WHERE source_type = ?
+              AND source_id = ?
+              AND is_buy_order = 0
+              AND volume_remain > 0
+            GROUP BY type_id
+         ) summary
+            ON summary.type_id = picked.type_id
+         ORDER BY picked.price ASC, picked.type_id ASC",
+        [
+            $safeSourceType,
+            $safeSourceId,
+            $safeSourceType,
+            $safeSourceId,
+            $safeSourceType,
+            $safeSourceId,
+            $safeSourceType,
+            $safeSourceId,
+        ]
+    );
+}
+
+function db_market_history_daily_window_by_type_ids(string $sourceType, int $sourceId, array $typeIds, int $days = 14): array
+{
+    $safeSourceType = $sourceType === 'alliance_structure' ? 'alliance_structure' : 'market_hub';
+    $safeSourceId = max(0, $sourceId);
+    $safeDays = max(1, min($days, 90));
+    $normalizedTypeIds = array_values(array_unique(array_filter(array_map('intval', $typeIds), static fn (int $typeId): bool => $typeId > 0)));
+
+    if ($safeSourceId <= 0 || $normalizedTypeIds === []) {
+        return [];
+    }
+
+    $placeholders = implode(',', array_fill(0, count($normalizedTypeIds), '?'));
+    $params = array_merge([$safeSourceType, $safeSourceId], $normalizedTypeIds);
+
+    return db_select_cached(
+        "SELECT
+            mhd.type_id,
+            mhd.trade_date,
+            mhd.close_price,
+            mhd.average_price,
+            mhd.volume,
+            mhd.order_count,
+            mhd.observed_at
+         FROM market_history_daily mhd
+         WHERE mhd.source_type = ?
+           AND mhd.source_id = ?
+           AND mhd.type_id IN ({$placeholders})
+           AND mhd.trade_date >= DATE_SUB(UTC_DATE(), INTERVAL {$safeDays} DAY)
+         ORDER BY mhd.type_id ASC, mhd.trade_date DESC",
+        $params,
+        120,
+        'market.deal-alerts.history'
+    );
+}
+
+function db_market_deal_alerts_upsert_current(array $rows): int
+{
+    db_market_deal_alerts_ensure_schema();
+
+    if ($rows === []) {
+        return 0;
+    }
+
+    $written = 0;
+
+    db_transaction(function () use ($rows, &$written): void {
+        $sql = 'INSERT INTO market_deal_alerts_current (
+                    alert_key,
+                    item_type_id,
+                    source_type,
+                    source_id,
+                    source_name,
+                    percent_band,
+                    current_price,
+                    normal_price,
+                    percent_of_normal,
+                    anomaly_score,
+                    severity,
+                    severity_rank,
+                    quantity_available,
+                    listing_count,
+                    best_order_id,
+                    baseline_model,
+                    baseline_points,
+                    baseline_median_price,
+                    baseline_weighted_price,
+                    observed_at,
+                    detected_at,
+                    last_seen_at,
+                    inactive_at,
+                    freshness_seconds,
+                    status,
+                    metadata_json
+                ) VALUES (
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                )
+                ON DUPLICATE KEY UPDATE
+                    item_type_id = VALUES(item_type_id),
+                    source_type = VALUES(source_type),
+                    source_id = VALUES(source_id),
+                    source_name = VALUES(source_name),
+                    percent_band = VALUES(percent_band),
+                    current_price = VALUES(current_price),
+                    normal_price = VALUES(normal_price),
+                    percent_of_normal = VALUES(percent_of_normal),
+                    anomaly_score = VALUES(anomaly_score),
+                    severity = VALUES(severity),
+                    severity_rank = VALUES(severity_rank),
+                    quantity_available = VALUES(quantity_available),
+                    listing_count = VALUES(listing_count),
+                    best_order_id = VALUES(best_order_id),
+                    baseline_model = VALUES(baseline_model),
+                    baseline_points = VALUES(baseline_points),
+                    baseline_median_price = VALUES(baseline_median_price),
+                    baseline_weighted_price = VALUES(baseline_weighted_price),
+                    observed_at = VALUES(observed_at),
+                    detected_at = IF(status = \'inactive\', VALUES(detected_at), detected_at),
+                    last_seen_at = VALUES(last_seen_at),
+                    inactive_at = NULL,
+                    freshness_seconds = VALUES(freshness_seconds),
+                    status = VALUES(status),
+                    metadata_json = VALUES(metadata_json)';
+
+        foreach ($rows as $row) {
+            db_execute($sql, [
+                (string) ($row['alert_key'] ?? ''),
+                max(0, (int) ($row['item_type_id'] ?? 0)),
+                (string) ($row['source_type'] ?? 'market_hub'),
+                max(0, (int) ($row['source_id'] ?? 0)),
+                mb_substr(trim((string) ($row['source_name'] ?? '')), 0, 190),
+                round((float) ($row['percent_band'] ?? 0.0), 2),
+                round((float) ($row['current_price'] ?? 0.0), 2),
+                round((float) ($row['normal_price'] ?? 0.0), 2),
+                round((float) ($row['percent_of_normal'] ?? 0.0), 4),
+                round((float) ($row['anomaly_score'] ?? 0.0), 2),
+                (string) ($row['severity'] ?? 'watch'),
+                max(1, (int) ($row['severity_rank'] ?? 1)),
+                max(0, (int) ($row['quantity_available'] ?? 0)),
+                max(0, (int) ($row['listing_count'] ?? 0)),
+                isset($row['best_order_id']) ? max(0, (int) $row['best_order_id']) : null,
+                mb_substr(trim((string) ($row['baseline_model'] ?? 'median_weighted_blend')), 0, 80),
+                max(0, (int) ($row['baseline_points'] ?? 0)),
+                isset($row['baseline_median_price']) ? round((float) $row['baseline_median_price'], 2) : null,
+                isset($row['baseline_weighted_price']) ? round((float) $row['baseline_weighted_price'], 2) : null,
+                (string) ($row['observed_at'] ?? gmdate('Y-m-d H:i:s')),
+                (string) ($row['detected_at'] ?? gmdate('Y-m-d H:i:s')),
+                (string) ($row['last_seen_at'] ?? gmdate('Y-m-d H:i:s')),
+                $row['inactive_at'] ?? null,
+                max(0, (int) ($row['freshness_seconds'] ?? 0)),
+                (string) ($row['status'] ?? 'active'),
+                $row['metadata_json'] ?? null,
+            ]);
+            $written++;
+        }
+    });
+
+    return $written;
+}
+
+function db_market_deal_alerts_mark_missing_inactive(array $activeAlertKeys): int
+{
+    db_market_deal_alerts_ensure_schema();
+
+    $normalizedKeys = array_values(array_unique(array_filter(array_map(static fn (mixed $value): string => trim((string) $value), $activeAlertKeys), static fn (string $value): bool => $value !== '')));
+
+    if ($normalizedKeys === []) {
+        db_execute(
+            "UPDATE market_deal_alerts_current
+             SET status = 'inactive',
+                 inactive_at = UTC_TIMESTAMP()
+             WHERE status = 'active'"
+        );
+
+        return (int) db()->query('SELECT ROW_COUNT()')->fetchColumn();
+    }
+
+    $placeholders = implode(',', array_fill(0, count($normalizedKeys), '?'));
+    db_execute(
+        "UPDATE market_deal_alerts_current
+         SET status = 'inactive',
+             inactive_at = UTC_TIMESTAMP()
+         WHERE status = 'active'
+           AND alert_key NOT IN ({$placeholders})",
+        $normalizedKeys
+    );
+
+    return (int) db()->query('SELECT ROW_COUNT()')->fetchColumn();
+}
+
+function db_market_deal_alerts_dismiss(string $alertKey, int $severityRank, int $dismissMinutes): bool
+{
+    db_market_deal_alerts_ensure_schema();
+
+    $safeAlertKey = trim($alertKey);
+    if ($safeAlertKey === '') {
+        return false;
+    }
+
+    return db_execute(
+        'INSERT INTO market_deal_alert_dismissals (alert_key, dismissed_severity_rank, dismissed_at, dismissed_until)
+         VALUES (?, ?, UTC_TIMESTAMP(), DATE_ADD(UTC_TIMESTAMP(), INTERVAL ? MINUTE))
+         ON DUPLICATE KEY UPDATE
+            dismissed_severity_rank = GREATEST(dismissed_severity_rank, VALUES(dismissed_severity_rank)),
+            dismissed_at = VALUES(dismissed_at),
+            dismissed_until = VALUES(dismissed_until)',
+        [$safeAlertKey, max(1, min(4, $severityRank)), max(5, min(1440, $dismissMinutes))]
+    );
+}
+
+function db_market_deal_alerts_active_summary(): array
+{
+    db_market_deal_alerts_ensure_schema();
+
+    $row = db_select_one(
+        "SELECT
+            COUNT(*) AS active_count,
+            SUM(CASE WHEN severity = 'critical' THEN 1 ELSE 0 END) AS critical_count,
+            MAX(last_seen_at) AS last_seen_at
+         FROM market_deal_alerts_current
+         WHERE status = 'active'"
+    );
+
+    return is_array($row) ? $row : ['active_count' => 0, 'critical_count' => 0, 'last_seen_at' => null];
+}
+
+function db_market_deal_alerts_list(array $filters = [], int $limit = 25, int $offset = 0): array
+{
+    db_market_deal_alerts_ensure_schema();
+
+    $safeLimit = max(1, min(100, $limit));
+    $safeOffset = max(0, $offset);
+    $params = [];
+    $where = ["a.status = 'active'"];
+
+    $market = trim((string) ($filters['market'] ?? ''));
+    if (in_array($market, ['market_hub', 'alliance_structure'], true)) {
+        $where[] = 'a.source_type = ?';
+        $params[] = $market;
+    }
+
+    $minimumSeverityRank = (int) ($filters['minimum_severity_rank'] ?? 0);
+    if ($minimumSeverityRank > 0) {
+        $where[] = 'a.severity_rank >= ?';
+        $params[] = $minimumSeverityRank;
+    }
+
+    $search = trim((string) ($filters['search'] ?? ''));
+    if ($search !== '') {
+        $numericSearch = preg_replace('/[^0-9]/', '', $search) ?? '';
+        if ($numericSearch !== '') {
+            $where[] = '(rit.type_name LIKE ? OR CAST(a.item_type_id AS CHAR) LIKE ?)';
+            $params[] = '%' . $search . '%';
+            $params[] = '%' . $numericSearch . '%';
+        } else {
+            $where[] = 'rit.type_name LIKE ?';
+            $params[] = '%' . $search . '%';
+        }
+    }
+
+    $whereSql = implode(' AND ', $where);
+    $sort = trim((string) ($filters['sort'] ?? 'severity'));
+    $orderBy = match ($sort) {
+        'price' => 'a.current_price ASC, a.severity_rank DESC, a.anomaly_score DESC, a.item_type_id ASC',
+        'freshness' => 'a.last_seen_at DESC, a.severity_rank DESC, a.anomaly_score DESC, a.item_type_id ASC',
+        'percent' => 'a.percent_of_normal ASC, a.severity_rank DESC, a.anomaly_score DESC, a.item_type_id ASC',
+        default => 'a.severity_rank DESC, a.anomaly_score DESC, a.percent_of_normal ASC, a.last_seen_at DESC, a.item_type_id ASC',
+    };
+
+    return db_select(
+        "SELECT
+            a.*,
+            rit.type_name,
+            d.dismissed_at,
+            d.dismissed_until,
+            d.dismissed_severity_rank
+         FROM market_deal_alerts_current a
+         LEFT JOIN ref_item_types rit ON rit.type_id = a.item_type_id
+         LEFT JOIN market_deal_alert_dismissals d ON d.alert_key = a.alert_key
+         WHERE {$whereSql}
+         ORDER BY {$orderBy}
+         LIMIT {$safeLimit} OFFSET {$safeOffset}",
+        $params
+    );
+}
+
+function db_market_deal_alerts_count(array $filters = []): int
+{
+    db_market_deal_alerts_ensure_schema();
+
+    $params = [];
+    $where = ["a.status = 'active'"];
+
+    $market = trim((string) ($filters['market'] ?? ''));
+    if (in_array($market, ['market_hub', 'alliance_structure'], true)) {
+        $where[] = 'a.source_type = ?';
+        $params[] = $market;
+    }
+
+    $minimumSeverityRank = (int) ($filters['minimum_severity_rank'] ?? 0);
+    if ($minimumSeverityRank > 0) {
+        $where[] = 'a.severity_rank >= ?';
+        $params[] = $minimumSeverityRank;
+    }
+
+    $search = trim((string) ($filters['search'] ?? ''));
+    if ($search !== '') {
+        $numericSearch = preg_replace('/[^0-9]/', '', $search) ?? '';
+        if ($numericSearch !== '') {
+            $where[] = '(rit.type_name LIKE ? OR CAST(a.item_type_id AS CHAR) LIKE ?)';
+            $params[] = '%' . $search . '%';
+            $params[] = '%' . $numericSearch . '%';
+        } else {
+            $where[] = 'rit.type_name LIKE ?';
+            $params[] = '%' . $search . '%';
+        }
+    }
+
+    $row = db_select_one(
+        'SELECT COUNT(*) AS total
+         FROM market_deal_alerts_current a
+         LEFT JOIN ref_item_types rit ON rit.type_id = a.item_type_id
+         WHERE ' . implode(' AND ', $where),
+        $params
+    );
+
+    return max(0, (int) ($row['total'] ?? 0));
+}
+
+function db_market_deal_alerts_popup_rows(int $minimumSeverityRank = 3, int $limit = 3): array
+{
+    db_market_deal_alerts_ensure_schema();
+
+    $safeMinimumSeverityRank = max(1, min(4, $minimumSeverityRank));
+    $safeLimit = max(1, min(5, $limit));
+
+    return db_select(
+        "SELECT
+            a.*,
+            rit.type_name,
+            d.dismissed_at,
+            d.dismissed_until,
+            d.dismissed_severity_rank
+         FROM market_deal_alerts_current a
+         LEFT JOIN ref_item_types rit ON rit.type_id = a.item_type_id
+         LEFT JOIN market_deal_alert_dismissals d ON d.alert_key = a.alert_key
+         WHERE a.status = 'active'
+           AND a.severity_rank >= ?
+           AND (
+                d.alert_key IS NULL
+                OR d.dismissed_until IS NULL
+                OR d.dismissed_until < UTC_TIMESTAMP()
+                OR d.dismissed_severity_rank < a.severity_rank
+           )
+         ORDER BY a.severity_rank DESC, a.anomaly_score DESC, a.percent_of_normal ASC, a.last_seen_at DESC
+         LIMIT {$safeLimit}",
+        [$safeMinimumSeverityRank]
+    );
+}
+
 function db_intelligence_snapshot_upsert(
     string $snapshotKey,
     string $status,
