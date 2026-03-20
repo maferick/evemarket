@@ -113,7 +113,8 @@ function nav_items(): array
             'icon' => '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" class="h-4 w-4" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M5 5h14v14H5z"/><path stroke-linecap="round" stroke-linejoin="round" d="M9 9h6M9 13h6M9 17h4"/></svg>',
             'children' => [
                 ['label' => 'Doctrine Groups', 'path' => '/doctrine'],
-                ['label' => 'Import Fit', 'path' => '/doctrine/import'],
+                ['label' => 'Fit Overview', 'path' => '/doctrine/fits'],
+                ['label' => 'Bulk Import', 'path' => '/doctrine/import'],
             ],
         ],
         [
@@ -10325,6 +10326,408 @@ function doctrine_detect_format(string $text): string
     return 'buyall';
 }
 
+function doctrine_normalize_label(string $value): string
+{
+    $clean = preg_replace('/\s+/', ' ', trim($value));
+
+    return mb_strtolower((string) $clean);
+}
+
+function doctrine_html_xpath(string $html): ?DOMXPath
+{
+    if (trim($html) === '' || !class_exists(DOMDocument::class)) {
+        return null;
+    }
+
+    $internalErrors = libxml_use_internal_errors(true);
+    $document = new DOMDocument();
+    $loaded = $document->loadHTML('<?xml encoding="utf-8" ?>' . $html, LIBXML_NOERROR | LIBXML_NOWARNING | LIBXML_NONET);
+    libxml_clear_errors();
+    libxml_use_internal_errors($internalErrors);
+
+    if ($loaded !== true) {
+        return null;
+    }
+
+    return new DOMXPath($document);
+}
+
+function doctrine_html_text(?DOMNode $node): string
+{
+    if (!$node instanceof DOMNode) {
+        return '';
+    }
+
+    return trim(preg_replace('/\s+/', ' ', (string) $node->textContent) ?? '');
+}
+
+function doctrine_html_collect_texts(DOMXPath $xpath, array $queries, int $maxLength = 1000, ?DOMNode $contextNode = null): array
+{
+    $texts = [];
+
+    foreach ($queries as $query) {
+        $nodes = @$xpath->query($query, $contextNode);
+        if (!$nodes instanceof DOMNodeList) {
+            continue;
+        }
+
+        foreach ($nodes as $node) {
+            $text = doctrine_html_text($node);
+            if ($text === '') {
+                continue;
+            }
+
+            $key = doctrine_normalize_label($text);
+            if ($key === '') {
+                continue;
+            }
+
+            $texts[$key] = mb_substr($text, 0, $maxLength);
+        }
+    }
+
+    return array_values($texts);
+}
+
+function doctrine_html_first_text(DOMXPath $xpath, array $queries, ?DOMNode $contextNode = null): ?string
+{
+    foreach (doctrine_html_collect_texts($xpath, $queries, 1000, $contextNode) as $text) {
+        if ($text !== '') {
+            return $text;
+        }
+    }
+
+    return null;
+}
+
+function doctrine_html_attr_candidates(DOMXPath $xpath, array $attributeNames): array
+{
+    $values = [];
+
+    foreach ($attributeNames as $attributeName) {
+        $nodes = @$xpath->query('//*[@' . $attributeName . ']');
+        if (!$nodes instanceof DOMNodeList) {
+            continue;
+        }
+
+        foreach ($nodes as $node) {
+            if (!$node instanceof DOMElement) {
+                continue;
+            }
+
+            $value = trim($node->getAttribute($attributeName));
+            if ($value === '') {
+                continue;
+            }
+
+            $values[] = $value;
+        }
+    }
+
+    return $values;
+}
+
+function doctrine_extract_buyall_payload_from_html(string $html, ?DOMXPath $xpath = null): ?string
+{
+    $candidates = [];
+    $xpath ??= doctrine_html_xpath($html);
+
+    if ($xpath instanceof DOMXPath) {
+        foreach (['data-clipboard-text', 'data-clipboard', 'data-copy', 'data-fit-buyall', 'data-buyall', 'data-raw-buyall'] as $attr) {
+            foreach (doctrine_html_attr_candidates($xpath, [$attr]) as $value) {
+                $candidates[] = html_entity_decode($value, ENT_QUOTES | ENT_HTML5);
+            }
+        }
+
+        foreach (doctrine_html_collect_texts($xpath, [
+            '//textarea[contains(@name, "buy") or contains(@id, "buy") or contains(@class, "buy")]',
+            '//pre[contains(@class, "buy") or contains(@id, "buy")]',
+            '//code[contains(@class, "buy") or contains(@id, "buy")]',
+        ], 20000) as $value) {
+            $candidates[] = html_entity_decode($value, ENT_QUOTES | ENT_HTML5);
+        }
+    }
+
+    if (preg_match_all('/(?:clipboard|buyall|copy)[^>="\']{0,80}(?:text|payload|value)?[^"\']*["\']([^"\']*(?:\r?\n)[^"\']*)["\']/i', $html, $matches) === 1 || !empty($matches[1])) {
+        foreach ((array) ($matches[1] ?? []) as $value) {
+            $candidates[] = html_entity_decode((string) $value, ENT_QUOTES | ENT_HTML5);
+        }
+    }
+
+    foreach ($candidates as $candidate) {
+        $candidate = trim(str_replace(["\r\n", "\r"], "\n", (string) $candidate));
+        if ($candidate === '' || substr_count($candidate, "\n") < 1) {
+            continue;
+        }
+
+        $lines = array_values(array_filter(array_map('trim', explode("\n", $candidate)), static fn (string $line): bool => $line !== ''));
+        if ($lines === []) {
+            continue;
+        }
+
+        return implode("\n", $lines);
+    }
+
+    return null;
+}
+
+function doctrine_extract_eft_payload_from_html(string $html, ?DOMXPath $xpath = null): ?string
+{
+    $xpath ??= doctrine_html_xpath($html);
+    $candidates = [];
+
+    if ($xpath instanceof DOMXPath) {
+        foreach (['data-eft', 'data-clipboard-eft', 'data-raw-eft'] as $attr) {
+            foreach (doctrine_html_attr_candidates($xpath, [$attr]) as $value) {
+                $candidates[] = html_entity_decode($value, ENT_QUOTES | ENT_HTML5);
+            }
+        }
+
+        foreach (doctrine_html_collect_texts($xpath, [
+            '//textarea[contains(@name, "eft") or contains(@id, "eft") or contains(@class, "eft")]',
+            '//pre[contains(@class, "eft") or contains(@id, "eft")]',
+            '//code[contains(@class, "eft") or contains(@id, "eft")]',
+        ], 20000) as $value) {
+            $candidates[] = html_entity_decode($value, ENT_QUOTES | ENT_HTML5);
+        }
+    }
+
+    if (preg_match_all('/\[[^\],]+\s*,\s*[^\]]+\](?:\R.+)+/m', html_entity_decode($html, ENT_QUOTES | ENT_HTML5), $matches) === 1 || !empty($matches[0])) {
+        foreach ((array) ($matches[0] ?? []) as $value) {
+            $candidates[] = trim((string) $value);
+        }
+    }
+
+    foreach ($candidates as $candidate) {
+        $candidate = trim(str_replace(["\r\n", "\r"], "\n", (string) $candidate));
+        if ($candidate !== '' && preg_match('/^\[[^\],]+\s*,\s*[^\]]+\]/', $candidate) === 1) {
+            return $candidate;
+        }
+    }
+
+    return null;
+}
+
+function doctrine_extract_html_group_labels(DOMXPath $xpath): array
+{
+    $labels = doctrine_html_collect_texts($xpath, [
+        '//*[contains(@class, "breadcrumb")]//a',
+        '//*[contains(@class, "group")]//a',
+        '//*[contains(@class, "group")][self::a or self::span or self::div]',
+        '//*[contains(@class, "group")]//*[self::a or self::span]',
+        '//*[contains(@class, "tag")][self::a or self::span or self::div]',
+        '//*[contains(@class, "tag")]//*[self::a or self::span]',
+        '//*[contains(@class, "chip")][self::a or self::span or self::div]',
+        '//*[contains(@class, "chip")]//*[self::a or self::span]',
+        '//*[contains(@class, "badge")][self::a or self::span or self::div]',
+        '//*[contains(@class, "badge")]//*[self::a or self::span]',
+        '//a[contains(@href, "doctrine") or contains(@href, "group")]',
+    ], 190);
+
+    $ignored = [
+        'buy all', 'copy buy all', 'copy eft', 'copy fit', 'back', 'doctrine fits',
+        'fit', 'fitting', 'eft', 'copy', 'clipboard',
+    ];
+
+    return array_values(array_filter($labels, static function (string $label) use ($ignored): bool {
+        $normalized = doctrine_normalize_label($label);
+        if ($normalized === '' || in_array($normalized, $ignored, true)) {
+            return false;
+        }
+
+        return mb_strlen($label) >= 3 && mb_strlen($label) <= 190;
+    }));
+}
+
+function doctrine_extract_html_notes(DOMXPath $xpath): ?string
+{
+    $notes = doctrine_html_collect_texts($xpath, [
+        '//*[contains(@class, "note") or contains(@class, "help") or contains(@class, "comment")]',
+        '//*[contains(@data-role, "note") or contains(@data-role, "comment")]',
+        '//section[contains(@class, "note")]//p',
+        '//article[contains(@class, "note")]//p',
+    ], 5000);
+
+    if ($notes === []) {
+        return null;
+    }
+
+    return trim(implode("\n\n", array_slice($notes, 0, 6)));
+}
+
+function doctrine_extract_html_visible_items(DOMXPath $xpath): array
+{
+    $items = [];
+    $groupQueries = [
+        '//*[contains(@class, "slot") and (self::section or self::div)]',
+        '//*[contains(@class, "fit-items") and (self::section or self::div)]/*',
+        '//*[contains(@class, "module-group")]',
+    ];
+
+    foreach ($groupQueries as $query) {
+        $groups = @$xpath->query($query);
+        if (!$groups instanceof DOMNodeList) {
+            continue;
+        }
+
+        foreach ($groups as $groupNode) {
+            $category = doctrine_html_first_text($xpath, [
+                './/h2', './/h3', './/h4', './/*[@data-slot-group]', './/*[contains(@class, "title")]',
+            ], $groupNode);
+            $category = $category !== null ? mb_substr($category, 0, 80) : 'Items';
+
+            $itemNodes = @$xpath->query('.//li|.//tr|.//*[contains(@class, "item")]', $groupNode);
+            if (!$itemNodes instanceof DOMNodeList) {
+                continue;
+            }
+
+            foreach ($itemNodes as $itemNode) {
+                $text = doctrine_html_text($itemNode);
+                if ($text === '' || mb_strlen($text) > 255) {
+                    continue;
+                }
+
+                $parsed = doctrine_parse_quantity_and_name($text);
+                $itemName = trim((string) ($parsed['item_name'] ?? ''));
+                if ($itemName === '') {
+                    continue;
+                }
+
+                $items[] = [
+                    'line_number' => count($items) + 1,
+                    'slot_category' => $category,
+                    'source_role' => doctrine_source_role_from_category($category),
+                    'item_name' => $itemName,
+                    'quantity' => max(1, (int) ($parsed['quantity'] ?? 1)),
+                ];
+            }
+        }
+
+        if ($items !== []) {
+            break;
+        }
+    }
+
+    return $items;
+}
+
+function doctrine_source_role_from_category(string $category): string
+{
+    $normalized = doctrine_normalize_label($category);
+
+    return match (true) {
+        str_contains($normalized, 'drone') => 'drone',
+        str_contains($normalized, 'cargo') || str_contains($normalized, 'ammo') => 'cargo',
+        str_contains($normalized, 'implant') => 'implant',
+        str_contains($normalized, 'booster') => 'booster',
+        str_contains($normalized, 'subsystem') => 'subsystem',
+        str_contains($normalized, 'service') => 'service',
+        str_contains($normalized, 'hull') => 'hull',
+        default => 'fit',
+    };
+}
+
+function doctrine_parse_html_fit_page(string $html, string $sourceReference = ''): array
+{
+    $xpath = doctrine_html_xpath($html);
+    if (!$xpath instanceof DOMXPath) {
+        throw new RuntimeException('Uploaded HTML could not be parsed.');
+    }
+
+    $fitTitle = doctrine_html_first_text($xpath, [
+        '//main//h1',
+        '//header//h1',
+        '//*[@data-fit-title]',
+        '//*[contains(@class, "fit-title")]',
+        '//title',
+    ]) ?? '';
+
+    $buyAllPayload = doctrine_extract_buyall_payload_from_html($html, $xpath);
+    $eftPayload = doctrine_extract_eft_payload_from_html($html, $xpath);
+    $groupLabels = doctrine_extract_html_group_labels($xpath);
+    $notes = doctrine_extract_html_notes($xpath);
+    $visibleItems = doctrine_extract_html_visible_items($xpath);
+
+    $buyAllParsed = null;
+    $eftParsed = null;
+    $warnings = [];
+
+    if ($buyAllPayload !== null) {
+        try {
+            $buyAllParsed = doctrine_parse_buyall($buyAllPayload);
+        } catch (Throwable $exception) {
+            $warnings[] = 'Buy All payload could not be parsed: ' . $exception->getMessage();
+        }
+    }
+
+    if ($eftPayload !== null) {
+        try {
+            $eftParsed = doctrine_parse_eft($eftPayload);
+        } catch (Throwable $exception) {
+            $warnings[] = 'Embedded EFT payload could not be parsed: ' . $exception->getMessage();
+        }
+    }
+
+    $candidateHulls = array_values(array_unique(array_filter([
+        trim((string) ($buyAllParsed['ship_name'] ?? '')),
+        trim((string) ($eftParsed['ship_name'] ?? '')),
+        doctrine_html_first_text($xpath, [
+            '//*[contains(@class, "ship")]//*[self::h1 or self::h2 or self::h3 or self::span]',
+            '//*[@data-ship-name]',
+            '//*[contains(@class, "hull")]//*[self::span or self::h2 or self::h3]',
+        ]) ?? '',
+    ])));
+
+    $shipName = $candidateHulls[0] ?? '';
+    if (count(array_map('doctrine_normalize_label', $candidateHulls)) > 1) {
+        $normalizedHulls = array_values(array_unique(array_map('doctrine_normalize_label', $candidateHulls)));
+        if (count($normalizedHulls) > 1) {
+            $warnings[] = 'HTML and fallback sources disagree on hull name.';
+        }
+    }
+
+    $fitName = trim((string) $fitTitle);
+    if ($fitName === '') {
+        $fitName = trim((string) ($eftParsed['fit_name'] ?? ''));
+    }
+    if ($fitName === '' && $buyAllParsed !== null) {
+        $fitName = trim((string) ($buyAllParsed['fit_name'] ?? ''));
+    }
+
+    if ($fitName === '') {
+        $fitName = pathinfo($sourceReference !== '' ? $sourceReference : 'Imported HTML Fit', PATHINFO_FILENAME);
+    }
+
+    $sourceFormat = $buyAllParsed !== null ? 'buyall' : ($eftParsed !== null ? 'eft' : 'buyall');
+    $items = $buyAllParsed['items'] ?? ($eftParsed['items'] ?? $visibleItems);
+
+    if ($buyAllParsed === null && $eftParsed === null && $visibleItems === []) {
+        $warnings[] = 'No Buy All payload, embedded EFT, or visible item list was detected.';
+    }
+
+    return [
+        'format' => $sourceFormat,
+        'source_type' => 'html',
+        'source_reference' => $sourceReference,
+        'fit_name' => trim($fitName),
+        'ship_name' => trim($shipName),
+        'items' => is_array($items) ? $items : [],
+        'notes' => $notes,
+        'raw_html' => $html,
+        'raw_buyall' => $buyAllPayload,
+        'raw_eft' => $eftPayload,
+        'group_labels' => $groupLabels,
+        'visible_items' => $visibleItems,
+        'warnings' => array_values(array_unique(array_filter($warnings))),
+        'metadata' => [
+            'fit_title' => $fitTitle,
+            'candidate_hulls' => $candidateHulls,
+            'group_labels' => $groupLabels,
+            'visible_items' => $visibleItems,
+        ],
+    ];
+}
+
 function doctrine_parse_quantity_and_name(string $line): array
 {
     $trimmed = preg_replace('/\s+/', ' ', trim($line));
@@ -10425,6 +10828,7 @@ function doctrine_parse_eft(string $text): array
         $items[] = [
             'line_number' => count($items) + 1,
             'slot_category' => doctrine_eft_category_label($blockIndex, $itemName),
+            'source_role' => doctrine_source_role_from_category(doctrine_eft_category_label($blockIndex, $itemName)),
             'item_name' => $itemName,
             'quantity' => max(1, (int) ($parsed['quantity'] ?? 1)),
         ];
@@ -10463,6 +10867,7 @@ function doctrine_parse_buyall(string $text): array
         $items[] = [
             'line_number' => count($items) + 1,
             'slot_category' => $index === 0 ? 'Hull' : 'Items',
+            'source_role' => $index === 0 ? 'hull' : 'fit',
             'item_name' => $itemName,
             'quantity' => max(1, (int) ($parsed['quantity'] ?? 1)),
         ];
@@ -10774,24 +11179,52 @@ function doctrine_resolve_parsed_fit(array $parsed, string $rawText): array
     }
 
     $shipMissing = (int) ($shipResolved['type_id'] ?? 0) <= 0;
+    $warnings = array_values(array_unique(array_filter(array_map(
+        static fn (mixed $warning): string => trim((string) $warning),
+        (array) ($parsed['warnings'] ?? [])
+    ))));
     $unresolved = array_values(array_unique(array_filter(array_merge(
         $shipMissing ? [trim((string) ($shipResolved['item_name'] ?? $parsed['ship_name'] ?? 'Unknown Hull'))] : [],
         $unresolvedItems
     ))));
+    $status = doctrine_fit_status_from_warnings($warnings, $unresolved, (string) ($parsed['conflict_state'] ?? 'none'));
+    $metadata = (array) ($parsed['metadata'] ?? []);
+    $metadata['group_labels'] = array_values(array_unique(array_filter(array_map(
+        static fn (mixed $value): string => trim((string) $value),
+        (array) ($parsed['group_labels'] ?? [])
+    ))));
+    $metadata['source_reference'] = (string) ($parsed['source_reference'] ?? '');
+    $metadata['detected_source_type'] = (string) ($parsed['source_type'] ?? 'manual');
+    $fingerprintHash = doctrine_fit_item_fingerprint($resolvedItems);
 
     return [
         'fit' => [
             'fit_name' => mb_substr($fitName, 0, 190),
             'ship_name' => trim((string) ($shipResolved['item_name'] ?? $parsed['ship_name'] ?? 'Unknown Hull')),
             'ship_type_id' => isset($shipResolved['type_id']) && $shipResolved['type_id'] !== null ? (int) $shipResolved['type_id'] : null,
+            'source_type' => (string) ($parsed['source_type'] ?? 'manual'),
             'source_format' => (string) ($parsed['format'] ?? doctrine_detect_format($rawText)),
+            'source_reference' => ($parsed['source_reference'] ?? null) !== null ? mb_substr(trim((string) $parsed['source_reference']), 0, 255) : null,
+            'notes' => ($parsed['notes'] ?? null) !== null ? trim((string) $parsed['notes']) : null,
             'import_body' => $rawText,
+            'raw_html' => ($parsed['raw_html'] ?? null) !== null ? (string) $parsed['raw_html'] : null,
+            'raw_buyall' => ($parsed['raw_buyall'] ?? null) !== null ? (string) $parsed['raw_buyall'] : null,
+            'raw_eft' => ($parsed['raw_eft'] ?? null) !== null ? (string) $parsed['raw_eft'] : null,
+            'metadata_json' => json_encode($metadata, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE),
+            'parse_warnings_json' => json_encode($warnings, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE),
+            'parse_status' => $status['parse_status'],
+            'review_status' => $status['review_status'],
+            'conflict_state' => (string) ($parsed['conflict_state'] ?? 'none'),
+            'fingerprint_hash' => $fingerprintHash,
+            'warning_count' => $status['warning_count'],
             'item_count' => count($resolvedItems),
             'unresolved_count' => count($unresolved),
         ],
         'items' => $resolvedItems,
         'ship' => $shipResolved,
         'unresolved' => $unresolved,
+        'warnings' => $warnings,
+        'metadata' => $metadata,
         'ship_missing' => $shipMissing,
         'hull_is_stock_tracked' => $hullIsStockTracked,
         'hull_tracking_default_reason' => doctrine_hull_stock_tracking_reason($shipResolved, $hullIsStockTracked),
@@ -10892,6 +11325,7 @@ function doctrine_ensure_hull_item(array $items, array $shipResolved, string $fa
         'resolution_source' => (string) ($shipResolved['resolution_source'] ?? 'missing'),
     ];
     $hullItem['slot_category'] = 'Hull';
+    $hullItem['source_role'] = 'hull';
     $hullItem['item_name'] = $shipName;
     $hullItem['type_id'] = $shipTypeId;
     $hullItem['quantity'] = 1;
@@ -10903,10 +11337,46 @@ function doctrine_ensure_hull_item(array $items, array $shipResolved, string $fa
     foreach ($items as $index => &$item) {
         $item['line_number'] = $index + 1;
         $item['is_stock_tracked'] = array_key_exists('is_stock_tracked', $item) ? (bool) $item['is_stock_tracked'] : true;
+        $item['source_role'] = (string) ($item['source_role'] ?? doctrine_source_role_from_category((string) ($item['slot_category'] ?? 'Items')));
     }
     unset($item);
 
     return $items;
+}
+
+function doctrine_fit_item_fingerprint(array $items): string
+{
+    $parts = [];
+
+    foreach ($items as $item) {
+        $name = doctrine_normalize_item_name((string) ($item['item_name'] ?? ''));
+        if ($name === '') {
+            continue;
+        }
+
+        $parts[] = implode(':', [
+            (string) ($item['source_role'] ?? doctrine_source_role_from_category((string) ($item['slot_category'] ?? 'Items'))),
+            doctrine_normalize_label((string) ($item['slot_category'] ?? 'Items')),
+            (string) ((int) ($item['type_id'] ?? 0)),
+            $name,
+            (string) max(1, (int) ($item['quantity'] ?? 1)),
+        ]);
+    }
+
+    sort($parts, SORT_STRING);
+
+    return hash('sha256', implode('|', $parts));
+}
+
+function doctrine_fit_status_from_warnings(array $warnings, array $unresolved, string $conflictState = 'none'): array
+{
+    $needsReview = $warnings !== [] || $unresolved !== [] || $conflictState !== 'none';
+
+    return [
+        'parse_status' => $needsReview ? 'review' : 'ready',
+        'review_status' => $needsReview ? 'needs_review' : 'clean',
+        'warning_count' => count($warnings),
+    ];
 }
 
 function doctrine_selected_group_ids(array $post): array
@@ -10984,6 +11454,7 @@ function doctrine_parse_editable_item_lines(string $text, string $shipName = '')
         $items[] = [
             'line_number' => count($items) + 1,
             'slot_category' => mb_substr($category, 0, 80),
+            'source_role' => doctrine_source_role_from_category($category),
             'item_name' => $itemName,
             'quantity' => max(1, (int) ($parsed['quantity'] ?? 1)),
         ];
@@ -11023,8 +11494,20 @@ function doctrine_prepare_fit_draft(array $resolved, array $groupIds = [], int $
     $fit = (array) ($resolved['fit'] ?? []);
     $items = (array) ($resolved['items'] ?? []);
     $suggestions = doctrine_fit_group_suggestions($fit, $fitId);
+    $detectedLabels = array_values(array_unique(array_filter(array_map(
+        'trim',
+        (array) (($resolved['metadata'] ?? [])['group_labels'] ?? [])
+    ))));
+    $detectedGroupIds = [];
+    foreach ($detectedLabels as $label) {
+        foreach (doctrine_group_options() as $group) {
+            if (doctrine_normalize_label((string) ($group['group_name'] ?? '')) === doctrine_normalize_label($label)) {
+                $detectedGroupIds[] = (int) ($group['id'] ?? 0);
+            }
+        }
+    }
     $suggestedGroupIds = array_values(array_map(static fn (array $row): int => (int) ($row['id'] ?? 0), $suggestions));
-    $selectedGroupIds = array_values(array_unique(array_merge($groupIds, $suggestedGroupIds)));
+    $selectedGroupIds = array_values(array_unique(array_merge($groupIds, $detectedGroupIds, $suggestedGroupIds)));
 
     return [
         'fit_id' => $fitId,
@@ -11034,10 +11517,13 @@ function doctrine_prepare_fit_draft(array $resolved, array $groupIds = [], int $
         'group_ids' => $selectedGroupIds,
         'suggested_groups' => $suggestions,
         'unresolved' => array_values(array_unique((array) ($resolved['unresolved'] ?? []))),
+        'warnings' => array_values(array_unique((array) ($resolved['warnings'] ?? []))),
+        'detected_group_labels' => $detectedLabels,
+        'metadata' => (array) ($resolved['metadata'] ?? []),
         'ship_missing' => (bool) ($resolved['ship_missing'] ?? false),
         'hull_is_stock_tracked' => (bool) ($resolved['hull_is_stock_tracked'] ?? true),
         'hull_tracking_default_reason' => (string) ($resolved['hull_tracking_default_reason'] ?? ''),
-        'ready_to_save' => ((array) ($resolved['unresolved'] ?? [])) === [] && trim((string) ($fit['ship_name'] ?? '')) !== '' && trim((string) ($fit['fit_name'] ?? '')) !== '',
+        'ready_to_save' => ((array) ($resolved['unresolved'] ?? [])) === [] && ((array) ($resolved['warnings'] ?? [])) === [] && trim((string) ($fit['ship_name'] ?? '')) !== '' && trim((string) ($fit['fit_name'] ?? '')) !== '',
     ];
 }
 
@@ -11089,10 +11575,347 @@ function doctrine_build_draft_from_editor_request(array $post, int $fitId = 0): 
     return doctrine_prepare_fit_draft($resolved, doctrine_selected_group_ids($post), $fitId);
 }
 
+function doctrine_attach_conflicts_to_draft(array $draft, int $excludeFitId = 0): array
+{
+    $fit = (array) ($draft['fit'] ?? []);
+
+    try {
+        $conflicts = db_doctrine_fit_conflicts(
+            (string) ($fit['fit_name'] ?? ''),
+            isset($fit['ship_type_id']) && $fit['ship_type_id'] !== null ? (int) $fit['ship_type_id'] : null,
+            (string) ($fit['ship_name'] ?? ''),
+            isset($fit['fingerprint_hash']) ? (string) $fit['fingerprint_hash'] : null,
+            $excludeFitId
+        );
+    } catch (Throwable) {
+        $conflicts = [];
+    }
+
+    $conflictState = 'none';
+    foreach ($conflicts as $row) {
+        $sameName = doctrine_normalize_label((string) ($row['fit_name'] ?? '')) === doctrine_normalize_label((string) ($fit['fit_name'] ?? ''))
+            && doctrine_normalize_label((string) ($row['ship_name'] ?? '')) === doctrine_normalize_label((string) ($fit['ship_name'] ?? ''));
+        $sameFingerprint = trim((string) ($row['fingerprint_hash'] ?? '')) !== ''
+            && trim((string) ($row['fingerprint_hash'] ?? '')) === trim((string) ($fit['fingerprint_hash'] ?? ''));
+
+        if ($sameName && $sameFingerprint) {
+            $conflictState = 'duplicate_items';
+            break;
+        }
+
+        if ($sameName) {
+            $conflictState = 'duplicate_name';
+        } elseif ($sameFingerprint) {
+            $conflictState = 'version_conflict';
+        }
+    }
+
+    if ($conflictState !== 'none') {
+        $draft['warnings'][] = 'Potential duplicate or version conflict detected.';
+        $draft['ready_to_save'] = false;
+    }
+
+    $draft['warnings'] = array_values(array_unique(array_filter(array_map('trim', (array) ($draft['warnings'] ?? [])))));
+    $draft['conflicts'] = array_map(static function (array $row): array {
+        $row['group_names'] = doctrine_parse_group_names_csv($row['group_names_csv'] ?? null);
+
+        return $row;
+    }, $conflicts);
+    $draft['fit']['conflict_state'] = $conflictState;
+    $draft['fit']['parse_status'] = (($draft['warnings'] ?? []) !== [] || ($draft['unresolved'] ?? []) !== [] || $conflictState !== 'none') ? 'review' : (string) (($draft['fit']['parse_status'] ?? 'ready'));
+    $draft['fit']['review_status'] = (($draft['fit']['parse_status'] ?? 'ready') === 'review') ? 'needs_review' : 'clean';
+    $draft['fit']['warning_count'] = count((array) ($draft['warnings'] ?? []));
+    $draft['fit']['parse_warnings_json'] = json_encode((array) ($draft['warnings'] ?? []), JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE);
+
+    return $draft;
+}
+
+function doctrine_bulk_preview_session_key(): string
+{
+    return 'doctrine_bulk_import_preview';
+}
+
+function doctrine_bulk_import_preview_store(array $preview): void
+{
+    $_SESSION[doctrine_bulk_preview_session_key()] = $preview;
+}
+
+function doctrine_bulk_import_preview_fetch(): ?array
+{
+    $preview = $_SESSION[doctrine_bulk_preview_session_key()] ?? null;
+
+    return is_array($preview) ? $preview : null;
+}
+
+function doctrine_bulk_import_preview_clear(): void
+{
+    unset($_SESSION[doctrine_bulk_preview_session_key()]);
+}
+
+function doctrine_uploaded_files(string $field): array
+{
+    $files = $_FILES[$field] ?? null;
+    if (!is_array($files) || !isset($files['name']) || !is_array($files['name'])) {
+        return [];
+    }
+
+    $rows = [];
+    foreach ($files['name'] as $index => $name) {
+        $error = (int) ($files['error'][$index] ?? UPLOAD_ERR_NO_FILE);
+        if ($error !== UPLOAD_ERR_OK) {
+            continue;
+        }
+
+        $tmpName = (string) ($files['tmp_name'][$index] ?? '');
+        if ($tmpName === '' || !is_uploaded_file($tmpName)) {
+            continue;
+        }
+
+        $rows[] = [
+            'name' => (string) $name,
+            'tmp_name' => $tmpName,
+            'size' => (int) ($files['size'][$index] ?? 0),
+            'type' => (string) ($files['type'][$index] ?? ''),
+        ];
+    }
+
+    return $rows;
+}
+
+function doctrine_match_uploaded_eft_fallback(array $htmlParsed, array $eftDraftsByKey): ?array
+{
+    $keys = [
+        doctrine_normalize_label((string) ($htmlParsed['source_reference'] ?? '')),
+        doctrine_normalize_label(pathinfo((string) ($htmlParsed['source_reference'] ?? ''), PATHINFO_FILENAME)),
+        doctrine_normalize_label((string) ($htmlParsed['fit_name'] ?? '')),
+    ];
+
+    foreach ($keys as $key) {
+        if ($key !== '' && isset($eftDraftsByKey[$key]) && is_array($eftDraftsByKey[$key])) {
+            return $eftDraftsByKey[$key];
+        }
+    }
+
+    return null;
+}
+
+function doctrine_bulk_import_build_preview(): array
+{
+    $htmlFiles = doctrine_uploaded_files('html_files');
+    $eftFiles = doctrine_uploaded_files('eft_files');
+
+    if ($htmlFiles === [] && $eftFiles === []) {
+        throw new RuntimeException('Upload at least one Winter Coalition HTML fit page or EFT fallback file.');
+    }
+
+    $eftDraftsByKey = [];
+    foreach ($eftFiles as $file) {
+        $body = (string) file_get_contents($file['tmp_name']);
+        if (trim($body) === '') {
+            continue;
+        }
+
+        $parsed = doctrine_parse_eft($body);
+        $draft = doctrine_attach_conflicts_to_draft(
+            doctrine_prepare_fit_draft(
+                doctrine_resolve_parsed_fit([
+                    'format' => 'eft',
+                    'source_type' => 'eft',
+                    'source_reference' => (string) ($file['name'] ?? ''),
+                    'fit_name' => (string) ($parsed['fit_name'] ?? ''),
+                    'ship_name' => (string) ($parsed['ship_name'] ?? ''),
+                    'items' => (array) ($parsed['items'] ?? []),
+                    'raw_eft' => $body,
+                    'warnings' => [],
+                    'metadata' => ['group_labels' => []],
+                ], $body)
+            )
+        );
+
+        $eftDraftsByKey[doctrine_normalize_label((string) ($file['name'] ?? ''))] = $draft;
+        $eftDraftsByKey[doctrine_normalize_label(pathinfo((string) ($file['name'] ?? ''), PATHINFO_FILENAME))] = $draft;
+        $eftDraftsByKey[doctrine_normalize_label((string) ($draft['fit']['fit_name'] ?? ''))] = $draft;
+    }
+
+    $rows = [];
+    foreach ($htmlFiles as $index => $file) {
+        $html = (string) file_get_contents($file['tmp_name']);
+        if (trim($html) === '') {
+            continue;
+        }
+
+        $parsed = doctrine_parse_html_fit_page($html, (string) ($file['name'] ?? ('fit-' . $index . '.html')));
+        $eftFallback = doctrine_match_uploaded_eft_fallback($parsed, $eftDraftsByKey);
+
+        if ($eftFallback !== null) {
+            $fallbackFit = (array) ($eftFallback['fit'] ?? []);
+            $htmlHull = doctrine_normalize_label((string) ($parsed['ship_name'] ?? ''));
+            $eftHull = doctrine_normalize_label((string) ($fallbackFit['ship_name'] ?? ''));
+            if ($htmlHull !== '' && $eftHull !== '' && $htmlHull !== $eftHull) {
+                $parsed['warnings'][] = 'HTML and uploaded EFT fallback disagree on hull identity.';
+                $parsed['conflict_state'] = 'source_mismatch';
+            }
+
+            if (trim((string) ($parsed['raw_eft'] ?? '')) === '') {
+                $parsed['raw_eft'] = (string) ($fallbackFit['raw_eft'] ?? ($fallbackFit['import_body'] ?? ''));
+            }
+
+            if (($parsed['items'] ?? []) === [] && isset($eftFallback['items'])) {
+                $parsed['items'] = (array) $eftFallback['items'];
+                $parsed['format'] = 'eft';
+            }
+        }
+
+        $resolved = doctrine_resolve_parsed_fit($parsed, (string) ($parsed['raw_buyall'] ?? $parsed['raw_eft'] ?? $html));
+        $draft = doctrine_attach_conflicts_to_draft(doctrine_prepare_fit_draft($resolved));
+        $draft['source_filename'] = (string) ($file['name'] ?? '');
+        $draft['source_type_label'] = strtoupper((string) (($draft['fit']['source_type'] ?? 'html')));
+        $rows[] = $draft;
+    }
+
+    if ($rows === [] && $eftFiles !== []) {
+        foreach ($eftFiles as $file) {
+            $body = (string) file_get_contents($file['tmp_name']);
+            if (trim($body) === '') {
+                continue;
+            }
+
+            $parsed = doctrine_parse_eft($body);
+            $draft = doctrine_attach_conflicts_to_draft(
+                doctrine_prepare_fit_draft(
+                    doctrine_resolve_parsed_fit([
+                        'format' => 'eft',
+                        'source_type' => 'eft',
+                        'source_reference' => (string) ($file['name'] ?? ''),
+                        'fit_name' => (string) ($parsed['fit_name'] ?? ''),
+                        'ship_name' => (string) ($parsed['ship_name'] ?? ''),
+                        'items' => (array) ($parsed['items'] ?? []),
+                        'raw_eft' => $body,
+                        'warnings' => [],
+                        'metadata' => ['group_labels' => []],
+                    ], $body)
+                )
+            );
+            $draft['source_filename'] = (string) ($file['name'] ?? '');
+            $rows[] = $draft;
+        }
+    }
+
+    return [
+        'created_at' => gmdate('Y-m-d H:i:s'),
+        'rows' => $rows,
+        'counts' => [
+            'total' => count($rows),
+            'ready' => count(array_filter($rows, static fn (array $row): bool => (($row['fit']['parse_status'] ?? 'ready') === 'ready'))),
+            'review' => count(array_filter($rows, static fn (array $row): bool => (($row['fit']['parse_status'] ?? 'ready') === 'review'))),
+        ],
+    ];
+}
+
+function doctrine_bulk_import_selected_group_ids(array $row, array $post): array
+{
+    $index = (string) ($row['source_filename'] ?? md5((string) (($row['fit']['fit_name'] ?? '') . '|' . ($row['fit']['ship_name'] ?? ''))));
+    $posted = (array) ($post['row_group_ids'][$index] ?? []);
+    $groupIds = array_values(array_unique(array_filter(array_map('intval', $posted), static fn (int $id): bool => $id > 0)));
+
+    if ($groupIds !== []) {
+        return $groupIds;
+    }
+
+    return array_values(array_unique(array_filter(array_map('intval', (array) ($row['group_ids'] ?? [])), static fn (int $id): bool => $id > 0)));
+}
+
+function doctrine_ensure_groups_from_labels(array $labels, array $selectedGroupIds = []): array
+{
+    $groupIds = array_values(array_unique(array_filter(array_map('intval', $selectedGroupIds), static fn (int $id): bool => $id > 0)));
+    $existingByName = [];
+    foreach (doctrine_group_options() as $group) {
+        $existingByName[doctrine_normalize_label((string) ($group['group_name'] ?? ''))] = (int) ($group['id'] ?? 0);
+    }
+
+    foreach ($labels as $label) {
+        $clean = doctrine_sanitize_group_name((string) $label);
+        $key = doctrine_normalize_label($clean);
+        if ($key === '') {
+            continue;
+        }
+
+        if (isset($existingByName[$key]) && $existingByName[$key] > 0) {
+            $groupIds[] = $existingByName[$key];
+            continue;
+        }
+
+        $newId = db_doctrine_group_create($clean, null);
+        $existingByName[$key] = $newId;
+        $groupIds[] = $newId;
+    }
+
+    return array_values(array_unique(array_filter($groupIds, static fn (int $id): bool => $id > 0)));
+}
+
+function doctrine_bulk_import_save_from_request(array $post): array
+{
+    $preview = doctrine_bulk_import_preview_fetch();
+    if (!is_array($preview) || !isset($preview['rows']) || !is_array($preview['rows'])) {
+        return ['ok' => false, 'message' => 'The import preview expired. Upload the files again before saving.'];
+    }
+
+    $results = ['created' => 0, 'updated' => 0, 'skipped' => 0, 'review' => 0];
+
+    foreach ($preview['rows'] as $row) {
+        $sourceKey = (string) ($row['source_filename'] ?? md5((string) (($row['fit']['fit_name'] ?? '') . '|' . ($row['fit']['ship_name'] ?? ''))));
+        $action = (string) (($post['row_action'][$sourceKey] ?? (($row['fit']['parse_status'] ?? 'ready') === 'ready' ? 'create' : 'review')));
+        if ($action === 'skip') {
+            $results['skipped']++;
+            continue;
+        }
+
+        $groupIds = doctrine_ensure_groups_from_labels(
+            (array) ($row['detected_group_labels'] ?? []),
+            doctrine_bulk_import_selected_group_ids($row, $post)
+        );
+
+        $fit = (array) ($row['fit'] ?? []);
+        $items = (array) ($row['items'] ?? []);
+        $fit['conflict_state'] = (string) ($fit['conflict_state'] ?? 'none');
+
+        if ($action === 'review') {
+            $fit['parse_status'] = 'review';
+            $fit['review_status'] = 'needs_review';
+            $fit['warning_count'] = max((int) ($fit['warning_count'] ?? 0), count((array) ($row['warnings'] ?? [])));
+            $fit['parse_warnings_json'] = json_encode((array) ($row['warnings'] ?? []), JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE);
+        }
+
+        if ($action === 'update') {
+            $targetId = (int) ($post['row_target_fit_id'][$sourceKey] ?? 0);
+            if ($targetId <= 0) {
+                $results['review']++;
+                continue;
+            }
+
+            db_doctrine_fit_update($targetId, $fit, $items, $groupIds);
+            $results['updated']++;
+            continue;
+        }
+
+        db_doctrine_fit_create($fit, $items, $groupIds);
+        if ($action === 'review') {
+            $results['review']++;
+        } else {
+            $results['created']++;
+        }
+    }
+
+    doctrine_bulk_import_preview_clear();
+    doctrine_schedule_intelligence_refresh('bulk-fit-import');
+
+    return ['ok' => true, 'message' => 'Bulk doctrine import processed.', 'results' => $results];
+}
+
 function doctrine_import_fit_from_request(array $post): array
 {
     try {
-        $draft = doctrine_build_draft_from_editor_request($post);
+        $draft = doctrine_attach_conflicts_to_draft(doctrine_build_draft_from_editor_request($post));
     } catch (Throwable $exception) {
         return ['ok' => false, 'message' => $exception->getMessage()];
     }
@@ -11111,9 +11934,6 @@ function doctrine_import_fit_from_request(array $post): array
     if ($groupIds === []) {
         return ['ok' => false, 'message' => 'Assign the fit to at least one doctrine group before saving.', 'draft' => $draft];
     }
-    if (($draft['unresolved'] ?? []) !== []) {
-        return ['ok' => false, 'message' => 'Resolve the ship or item names before saving the doctrine fit.', 'draft' => $draft];
-    }
 
     try {
         $fitId = db_doctrine_fit_create((array) ($draft['fit'] ?? []), (array) ($draft['items'] ?? []), $groupIds);
@@ -11125,7 +11945,9 @@ function doctrine_import_fit_from_request(array $post): array
 
     return [
         'ok' => true,
-        'message' => 'Doctrine fit imported successfully.',
+        'message' => (($draft['fit']['parse_status'] ?? 'ready') === 'review')
+            ? 'Doctrine fit saved and flagged for review.'
+            : 'Doctrine fit imported successfully.',
         'fit_id' => $fitId,
         'draft' => $draft,
     ];
@@ -11134,7 +11956,7 @@ function doctrine_import_fit_from_request(array $post): array
 function doctrine_update_fit_from_request(int $fitId, array $post): array
 {
     try {
-        $draft = doctrine_build_draft_from_editor_request($post, $fitId);
+        $draft = doctrine_attach_conflicts_to_draft(doctrine_build_draft_from_editor_request($post, $fitId), $fitId);
     } catch (Throwable $exception) {
         return ['ok' => false, 'message' => $exception->getMessage()];
     }
@@ -11142,9 +11964,6 @@ function doctrine_update_fit_from_request(int $fitId, array $post): array
     $groupIds = doctrine_selected_group_ids($post);
     if ($groupIds === []) {
         return ['ok' => false, 'message' => 'Assign the fit to at least one doctrine group before saving.', 'draft' => $draft];
-    }
-    if (($draft['unresolved'] ?? []) !== []) {
-        return ['ok' => false, 'message' => 'Resolve the ship or item names before saving the doctrine fit.', 'draft' => $draft];
     }
 
     try {
@@ -11155,7 +11974,13 @@ function doctrine_update_fit_from_request(int $fitId, array $post): array
 
     doctrine_schedule_intelligence_refresh('fit-update');
 
-    return ['ok' => true, 'message' => 'Doctrine fit updated successfully.', 'draft' => $draft];
+    return [
+        'ok' => true,
+        'message' => (($draft['fit']['parse_status'] ?? 'ready') === 'review')
+            ? 'Doctrine fit updated and remains flagged for review.'
+            : 'Doctrine fit updated successfully.',
+        'draft' => $draft,
+    ];
 }
 
 function doctrine_ship_image_url(?int $typeId, int $size = 128): ?string
@@ -11261,6 +12086,7 @@ function doctrine_fit_items_equal(array $before, array $after): bool
             return [
                 'line_number' => (int) ($item['line_number'] ?? 0),
                 'slot_category' => (string) ($item['slot_category'] ?? ''),
+                'source_role' => (string) ($item['source_role'] ?? ''),
                 'item_name' => (string) ($item['item_name'] ?? ''),
                 'type_id' => isset($item['type_id']) && $item['type_id'] !== null ? (int) $item['type_id'] : null,
                 'quantity' => (int) ($item['quantity'] ?? 0),
@@ -13307,6 +14133,79 @@ function doctrine_group_detail_data(int $groupId): array
     return ['group' => null, 'fits' => [], 'freshness' => $snapshot['_freshness'] ?? doctrine_snapshot_metadata()];
 }
 
+function doctrine_parse_json_array(mixed $value): array
+{
+    if (is_array($value)) {
+        return $value;
+    }
+
+    if (!is_string($value) || trim($value) === '') {
+        return [];
+    }
+
+    $decoded = json_decode($value, true);
+
+    return is_array($decoded) ? $decoded : [];
+}
+
+function doctrine_fit_readiness_status(array $fit): string
+{
+    if ((int) ($fit['unresolved_count'] ?? 0) > 0) {
+        return 'Unresolved';
+    }
+
+    if ((string) ($fit['parse_status'] ?? 'ready') === 'review') {
+        return 'Needs review';
+    }
+
+    if ((string) ($fit['conflict_state'] ?? 'none') !== 'none') {
+        return 'Conflict';
+    }
+
+    return 'Ready';
+}
+
+function doctrine_fit_overview_data(array $query = []): array
+{
+    $filters = [
+        'search' => (string) ($query['q'] ?? ''),
+        'group_id' => (int) ($query['group_id'] ?? 0),
+        'hull' => (string) ($query['hull'] ?? ''),
+        'source_type' => (string) ($query['source_type'] ?? ''),
+        'parse_status' => (string) ($query['parse_status'] ?? ''),
+        'review_status' => (string) ($query['review_status'] ?? ''),
+        'conflict_state' => (string) ($query['conflict_state'] ?? ''),
+        'unresolved_only' => in_array((string) ($query['unresolved_only'] ?? ''), ['1', 'true', 'yes', 'on'], true),
+    ];
+    $sort = (string) ($query['sort'] ?? 'updated_desc');
+
+    try {
+        $fits = db_doctrine_fit_overview($filters, $sort);
+    } catch (Throwable) {
+        $fits = [];
+    }
+
+    foreach ($fits as &$fit) {
+        $fit['group_names'] = doctrine_parse_group_names_csv($fit['group_names_csv'] ?? null);
+        $fit['readiness_status'] = doctrine_fit_readiness_status($fit);
+        $fit['parse_status_label'] = (($fit['parse_status'] ?? 'ready') === 'review') ? 'Review' : 'Ready';
+    }
+    unset($fit);
+
+    return [
+        'filters' => $filters,
+        'sort' => $sort,
+        'fits' => $fits,
+        'groups' => doctrine_group_options(),
+        'summary' => [
+            'total' => count($fits),
+            'review' => count(array_filter($fits, static fn (array $fit): bool => (($fit['parse_status'] ?? 'ready') === 'review'))),
+            'unresolved' => count(array_filter($fits, static fn (array $fit): bool => ((int) ($fit['unresolved_count'] ?? 0) > 0))),
+            'conflicts' => count(array_filter($fits, static fn (array $fit): bool => (($fit['conflict_state'] ?? 'none') !== 'none'))),
+        ],
+    ];
+}
+
 function doctrine_fit_detail_view_model(int $fitId): array
 {
     return supplycore_cache_aside('doctrine', ['fit-detail', $fitId], supplycore_cache_ttl('doctrine_detail'), static function () use ($fitId): array {
@@ -13338,6 +14237,9 @@ function doctrine_fit_detail_view_model(int $fitId): array
 
         $fit['group_ids'] = doctrine_parse_group_csv($fit['group_ids_csv'] ?? null);
         $fit['group_names'] = doctrine_parse_group_names_csv($fit['group_names_csv'] ?? null);
+        $fit['metadata'] = doctrine_parse_json_array($fit['metadata_json'] ?? null);
+        $fit['parse_warnings'] = doctrine_parse_json_array($fit['parse_warnings_json'] ?? null);
+        $fit['readiness_status'] = doctrine_fit_readiness_status($fit);
         $items = doctrine_normalize_persisted_fit_items($fit, $items);
         $items = item_scope_filter_rows(
             $items,
