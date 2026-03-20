@@ -3823,79 +3823,170 @@ function db_runner_lock_force_release(string $lockName): bool
     return db_runner_lock_holder_connection_id($lockName) === null;
 }
 
-function db_sync_schedule_fetch_due_jobs(int $limit = 20): array
+function db_sync_schedule_registry_columns_ensure(): void
 {
     db_ensure_table_column('sync_schedules', 'offset_seconds', 'INT UNSIGNED NOT NULL DEFAULT 0');
+    db_ensure_table_column('sync_schedules', 'interval_minutes', 'INT UNSIGNED NOT NULL DEFAULT 5');
+    db_ensure_table_column('sync_schedules', 'offset_minutes', 'INT UNSIGNED NOT NULL DEFAULT 0');
+    db_ensure_table_column('sync_schedules', 'priority', "VARCHAR(20) NOT NULL DEFAULT 'normal'");
+    db_ensure_table_column('sync_schedules', 'concurrency_policy', "VARCHAR(40) NOT NULL DEFAULT 'single'");
+    db_ensure_table_column('sync_schedules', 'timeout_seconds', 'INT UNSIGNED NOT NULL DEFAULT 300');
+    db_ensure_table_column('sync_schedules', 'last_started_at', 'DATETIME DEFAULT NULL');
+    db_ensure_table_column('sync_schedules', 'last_finished_at', 'DATETIME DEFAULT NULL');
+    db_ensure_table_column('sync_schedules', 'last_duration_seconds', 'DECIMAL(10,2) DEFAULT NULL');
+    db_ensure_table_column('sync_schedules', 'average_duration_seconds', 'DECIMAL(10,2) DEFAULT NULL');
+    db_ensure_table_column('sync_schedules', 'p95_duration_seconds', 'DECIMAL(10,2) DEFAULT NULL');
+    db_ensure_table_column('sync_schedules', 'last_result', 'VARCHAR(120) DEFAULT NULL');
+    db_ensure_table_column('sync_schedules', 'next_due_at', 'DATETIME DEFAULT NULL');
+    db_ensure_table_column('sync_schedules', 'current_state', "ENUM('running', 'waiting', 'stopped') NOT NULL DEFAULT 'waiting'");
+    db_ensure_table_column('sync_schedules', 'tuning_mode', "ENUM('automatic', 'manual') NOT NULL DEFAULT 'automatic'");
+    db_ensure_table_column('sync_schedules', 'discovered_from_code', 'TINYINT(1) NOT NULL DEFAULT 0');
+    db_ensure_table_column('sync_schedules', 'explicitly_configured', 'TINYINT(1) NOT NULL DEFAULT 1');
+    db_ensure_table_column('sync_schedules', 'last_auto_tuned_at', 'DATETIME DEFAULT NULL');
+    db_ensure_table_column('sync_schedules', 'last_auto_tune_reason', 'VARCHAR(500) DEFAULT NULL');
+    db_ensure_table_column('sync_schedules', 'degraded_until', 'DATETIME DEFAULT NULL');
+    db_ensure_table_column('sync_schedules', 'failure_streak', 'INT UNSIGNED NOT NULL DEFAULT 0');
+    db_ensure_table_column('sync_schedules', 'lock_conflict_count', 'INT UNSIGNED NOT NULL DEFAULT 0');
+    db_ensure_table_column('sync_schedules', 'timeout_count', 'INT UNSIGNED NOT NULL DEFAULT 0');
+
+    db_execute(
+        "UPDATE sync_schedules
+         SET interval_minutes = GREATEST(1, COALESCE(interval_minutes, CEIL(interval_seconds / 60), 5)),
+             offset_minutes = GREATEST(0, COALESCE(offset_minutes, FLOOR(offset_seconds / 60), 0)),
+             priority = COALESCE(NULLIF(priority, ''), 'normal'),
+             concurrency_policy = COALESCE(NULLIF(concurrency_policy, ''), 'single'),
+             timeout_seconds = GREATEST(30, COALESCE(timeout_seconds, 300)),
+             next_due_at = COALESCE(next_due_at, next_run_at),
+             current_state = CASE
+                WHEN enabled = 0 THEN 'stopped'
+                WHEN degraded_until IS NOT NULL AND degraded_until > UTC_TIMESTAMP() THEN 'stopped'
+                WHEN failure_streak >= 3 THEN 'stopped'
+                WHEN locked_until IS NOT NULL AND locked_until > UTC_TIMESTAMP() THEN 'running'
+                ELSE 'waiting'
+             END
+         WHERE 1 = 1"
+    );
+}
+
+function db_sync_schedule_select_columns_sql(): string
+{
+    db_sync_schedule_registry_columns_ensure();
+
+    return 'id, job_key, enabled, interval_minutes, interval_seconds, offset_seconds, offset_minutes, priority, concurrency_policy, timeout_seconds, next_run_at, next_due_at, last_run_at, last_started_at, last_finished_at, last_duration_seconds, average_duration_seconds, p95_duration_seconds, last_status, last_result, last_error, current_state, tuning_mode, discovered_from_code, explicitly_configured, last_auto_tuned_at, last_auto_tune_reason, degraded_until, failure_streak, lock_conflict_count, timeout_count, locked_until, created_at, updated_at';
+}
+
+function db_sync_schedule_priority_rank_sql(string $column = 'priority'): string
+{
+    return "CASE " . $column . " WHEN 'highest' THEN 1 WHEN 'high' THEN 2 WHEN 'medium' THEN 3 ELSE 4 END";
+}
+
+function db_sync_schedule_fetch_due_jobs(int $limit = 20): array
+{
+    db_sync_schedule_registry_columns_ensure();
 
     $safeLimit = max(1, min(200, $limit));
+    $columns = db_sync_schedule_select_columns_sql();
+    $priorityRank = db_sync_schedule_priority_rank_sql();
 
     return db_select(
-        'SELECT id, job_key, enabled, interval_seconds, offset_seconds, next_run_at, last_run_at, last_status, last_error, locked_until
+        'SELECT ' . $columns . '
          FROM sync_schedules
          WHERE enabled = 1
-           AND next_run_at IS NOT NULL
-           AND next_run_at <= UTC_TIMESTAMP()
+           AND next_due_at IS NOT NULL
+           AND next_due_at <= UTC_TIMESTAMP()
            AND (locked_until IS NULL OR locked_until <= UTC_TIMESTAMP())
-         ORDER BY next_run_at ASC, id ASC
+           AND current_state <> ?
+         ORDER BY ' . $priorityRank . ' ASC, next_due_at ASC, id ASC
+         LIMIT ' . $safeLimit,
+        ['stopped']
+    );
+}
+
+function db_sync_schedule_fetch_locked_due_jobs(int $limit = 50): array
+{
+    db_sync_schedule_registry_columns_ensure();
+
+    $safeLimit = max(1, min(200, $limit));
+    $columns = db_sync_schedule_select_columns_sql();
+
+    return db_select(
+        'SELECT ' . $columns . '
+         FROM sync_schedules
+         WHERE enabled = 1
+           AND next_due_at IS NOT NULL
+           AND next_due_at <= UTC_TIMESTAMP()
+           AND locked_until IS NOT NULL
+           AND locked_until > UTC_TIMESTAMP()
+         ORDER BY next_due_at ASC, id ASC
          LIMIT ' . $safeLimit
     );
 }
 
 function db_sync_schedule_claim_job(int $scheduleId, int $lockTtlSeconds = 300): ?array
 {
-    db_ensure_table_column('sync_schedules', 'offset_seconds', 'INT UNSIGNED NOT NULL DEFAULT 0');
+    db_sync_schedule_registry_columns_ensure();
 
-    $safeLockTtl = max(30, min(3600, $lockTtlSeconds));
+    $safeLockTtl = max(30, min(7200, $lockTtlSeconds));
 
     $stmt = db()->prepare(
         'UPDATE sync_schedules
          SET locked_until = DATE_ADD(UTC_TIMESTAMP(), INTERVAL ? SECOND),
              last_status = ?,
              last_error = NULL,
+             current_state = ?,
+             last_started_at = UTC_TIMESTAMP(),
              updated_at = CURRENT_TIMESTAMP
          WHERE id = ?
            AND enabled = 1
-           AND next_run_at IS NOT NULL
-           AND next_run_at <= UTC_TIMESTAMP()
+           AND next_due_at IS NOT NULL
+           AND next_due_at <= UTC_TIMESTAMP()
            AND (locked_until IS NULL OR locked_until <= UTC_TIMESTAMP())
          LIMIT 1'
     );
 
-    $stmt->execute([$safeLockTtl, 'running', $scheduleId]);
+    $stmt->execute([$safeLockTtl, 'running', 'running', $scheduleId]);
     if ($stmt->rowCount() !== 1) {
         return null;
     }
 
-    return db_select_one(
-        'SELECT id, job_key, enabled, interval_seconds, offset_seconds, next_run_at, last_run_at, last_status, last_error, locked_until
-         FROM sync_schedules
-         WHERE id = ?
-         LIMIT 1',
-        [$scheduleId]
-    );
+    return db_sync_schedule_fetch_by_id($scheduleId);
 }
 
 function db_sync_schedule_next_run_at_for_values(int $intervalSeconds, int $offsetSeconds, ?int $nowUnix = null): string
 {
-    $safeInterval = max(1, min(86400, $intervalSeconds));
-    $safeOffset = max(0, min($safeInterval - 1, $offsetSeconds));
+    $intervalMinutes = max(1, (int) ceil($intervalSeconds / 60));
+    $offsetMinutes = max(0, (int) floor($offsetSeconds / 60));
+
+    return db_sync_schedule_next_due_at_for_minutes($intervalMinutes, $offsetMinutes, $nowUnix);
+}
+
+function db_sync_schedule_next_due_at_for_minutes(int $intervalMinutes, int $offsetMinutes, ?int $nowUnix = null): string
+{
+    $safeInterval = max(1, min(1440, $intervalMinutes));
+    $safeOffset = max(0, min($safeInterval - 1, $offsetMinutes));
     $referenceUnix = $nowUnix ?? time();
+    $referenceMinute = (int) floor($referenceUnix / 60);
 
-    $elapsed = (($referenceUnix - $safeOffset) % $safeInterval + $safeInterval) % $safeInterval;
+    $elapsed = (($referenceMinute - $safeOffset) % $safeInterval + $safeInterval) % $safeInterval;
     $wait = $elapsed === 0 ? $safeInterval : ($safeInterval - $elapsed);
-    $nextUnix = $referenceUnix + $wait;
+    $nextMinute = $referenceMinute + $wait;
 
-    return gmdate('Y-m-d H:i:s', $nextUnix);
+    return gmdate('Y-m-d H:i:s', $nextMinute * 60);
 }
 
 function db_sync_schedule_next_run_at_by_id(int $scheduleId, ?int $nowUnix = null): ?string
+{
+    return db_sync_schedule_next_due_at_by_id($scheduleId, $nowUnix);
+}
+
+function db_sync_schedule_next_due_at_by_id(int $scheduleId, ?int $nowUnix = null): ?string
 {
     if ($scheduleId <= 0) {
         return null;
     }
 
     $row = db_select_one(
-        'SELECT interval_seconds, offset_seconds
+        'SELECT interval_minutes, offset_minutes
          FROM sync_schedules
          WHERE id = ?
          LIMIT 1',
@@ -3906,62 +3997,92 @@ function db_sync_schedule_next_run_at_by_id(int $scheduleId, ?int $nowUnix = nul
         return null;
     }
 
-    return db_sync_schedule_next_run_at_for_values(
-        (int) ($row['interval_seconds'] ?? 60),
-        (int) ($row['offset_seconds'] ?? 0),
+    return db_sync_schedule_next_due_at_for_minutes(
+        (int) ($row['interval_minutes'] ?? 5),
+        (int) ($row['offset_minutes'] ?? 0),
         $nowUnix
     );
 }
 
-function db_sync_schedule_mark_success(int $scheduleId): bool
+function db_sync_schedule_mark_success(int $scheduleId, ?array $runtime = null): bool
 {
-    db_ensure_table_column('sync_schedules', 'offset_seconds', 'INT UNSIGNED NOT NULL DEFAULT 0');
+    db_sync_schedule_registry_columns_ensure();
 
-    $nextRunAt = db_sync_schedule_next_run_at_by_id($scheduleId);
-    if ($nextRunAt === null) {
+    $nextDueAt = db_sync_schedule_next_due_at_by_id($scheduleId);
+    if ($nextDueAt === null) {
         return false;
     }
+
+    $lastDuration = $runtime !== null ? (float) ($runtime['last_duration_seconds'] ?? 0.0) : null;
+    $averageDuration = $runtime !== null ? (float) ($runtime['average_duration_seconds'] ?? 0.0) : null;
+    $p95Duration = $runtime !== null ? (float) ($runtime['p95_duration_seconds'] ?? 0.0) : null;
+    $lastResult = $runtime !== null ? mb_substr(trim((string) ($runtime['last_result'] ?? 'success')), 0, 120) : 'success';
 
     return db_execute(
         'UPDATE sync_schedules
          SET last_run_at = UTC_TIMESTAMP(),
+             last_finished_at = UTC_TIMESTAMP(),
              last_status = ?,
+             last_result = ?,
              last_error = NULL,
              next_run_at = ?,
+             next_due_at = ?,
+             current_state = CASE WHEN enabled = 1 THEN ? ELSE ? END,
+             last_duration_seconds = ?,
+             average_duration_seconds = ?,
+             p95_duration_seconds = ?,
              locked_until = NULL,
+             failure_streak = 0,
+             degraded_until = NULL,
              updated_at = CURRENT_TIMESTAMP
          WHERE id = ?
          LIMIT 1',
-        ['success', $nextRunAt, $scheduleId]
+        ['success', $lastResult, $nextDueAt, $nextDueAt, 'waiting', 'stopped', $lastDuration, $averageDuration, $p95Duration, $scheduleId]
     );
 }
 
-function db_sync_schedule_mark_failure(int $scheduleId, string $errorMessage): bool
+function db_sync_schedule_mark_failure(int $scheduleId, string $errorMessage, ?array $runtime = null): bool
 {
-    db_ensure_table_column('sync_schedules', 'offset_seconds', 'INT UNSIGNED NOT NULL DEFAULT 0');
+    db_sync_schedule_registry_columns_ensure();
 
-    $nextRunAt = db_sync_schedule_next_run_at_by_id($scheduleId);
-    if ($nextRunAt === null) {
+    $nextDueAt = db_sync_schedule_next_due_at_by_id($scheduleId);
+    if ($nextDueAt === null) {
         return false;
     }
+
+    $message = mb_substr($errorMessage, 0, 500);
+    $lastDuration = $runtime !== null ? (float) ($runtime['last_duration_seconds'] ?? 0.0) : null;
+    $averageDuration = $runtime !== null ? (float) ($runtime['average_duration_seconds'] ?? 0.0) : null;
+    $p95Duration = $runtime !== null ? (float) ($runtime['p95_duration_seconds'] ?? 0.0) : null;
+    $lastResult = $runtime !== null ? mb_substr(trim((string) ($runtime['last_result'] ?? 'failed')), 0, 120) : 'failed';
 
     return db_execute(
         'UPDATE sync_schedules
          SET last_run_at = UTC_TIMESTAMP(),
+             last_finished_at = UTC_TIMESTAMP(),
              last_status = ?,
+             last_result = ?,
              last_error = ?,
              next_run_at = ?,
+             next_due_at = ?,
+             current_state = CASE WHEN enabled = 1 THEN ? ELSE ? END,
+             last_duration_seconds = ?,
+             average_duration_seconds = ?,
+             p95_duration_seconds = ?,
              locked_until = NULL,
+             failure_streak = failure_streak + 1,
+             timeout_count = timeout_count + CASE WHEN ? = 1 THEN 1 ELSE 0 END,
+             degraded_until = CASE WHEN failure_streak + 1 >= 3 THEN DATE_ADD(UTC_TIMESTAMP(), INTERVAL 30 MINUTE) ELSE degraded_until END,
              updated_at = CURRENT_TIMESTAMP
          WHERE id = ?
          LIMIT 1',
-        ['failed', mb_substr($errorMessage, 0, 500), $nextRunAt, $scheduleId]
+        ['failed', $lastResult, $message, $nextDueAt, $nextDueAt, 'waiting', 'stopped', $lastDuration, $averageDuration, $p95Duration, !empty($runtime['timeout']) ? 1 : 0, $scheduleId]
     );
 }
 
 function db_sync_schedule_fetch_by_job_keys(array $jobKeys): array
 {
-    db_ensure_table_column('sync_schedules', 'offset_seconds', 'INT UNSIGNED NOT NULL DEFAULT 0');
+    db_sync_schedule_registry_columns_ensure();
 
     $keys = array_values(array_filter(array_map(static fn (mixed $jobKey): string => trim((string) $jobKey), $jobKeys), static fn (string $jobKey): bool => $jobKey !== ''));
     if ($keys === []) {
@@ -3969,25 +4090,41 @@ function db_sync_schedule_fetch_by_job_keys(array $jobKeys): array
     }
 
     $placeholders = implode(',', array_fill(0, count($keys), '?'));
+    $columns = db_sync_schedule_select_columns_sql();
 
     return db_select(
-        "SELECT id, job_key, enabled, interval_seconds, offset_seconds, next_run_at, last_run_at, last_status, last_error, locked_until
+        "SELECT $columns
          FROM sync_schedules
          WHERE job_key IN ($placeholders)",
         $keys
     );
 }
 
+function db_sync_schedule_fetch_all(): array
+{
+    db_sync_schedule_registry_columns_ensure();
+
+    $columns = db_sync_schedule_select_columns_sql();
+    $priorityRank = db_sync_schedule_priority_rank_sql();
+
+    return db_select(
+        'SELECT ' . $columns . '
+         FROM sync_schedules
+         ORDER BY explicitly_configured DESC, ' . $priorityRank . ' ASC, job_key ASC'
+    );
+}
+
 function db_sync_schedule_fetch_by_id(int $scheduleId): ?array
 {
-    db_ensure_table_column('sync_schedules', 'offset_seconds', 'INT UNSIGNED NOT NULL DEFAULT 0');
+    db_sync_schedule_registry_columns_ensure();
 
     if ($scheduleId <= 0) {
         return null;
     }
 
+    $columns = db_sync_schedule_select_columns_sql();
     $row = db_select_one(
-        'SELECT id, job_key, enabled, interval_seconds, offset_seconds, next_run_at, last_run_at, last_status, last_error, locked_until
+        'SELECT ' . $columns . '
          FROM sync_schedules
          WHERE id = ?
          LIMIT 1',
@@ -3999,7 +4136,7 @@ function db_sync_schedule_fetch_by_id(int $scheduleId): ?array
 
 function db_sync_schedule_running_job_keys(array $jobKeys): array
 {
-    db_ensure_table_column('sync_schedules', 'offset_seconds', 'INT UNSIGNED NOT NULL DEFAULT 0');
+    db_sync_schedule_registry_columns_ensure();
 
     $keys = array_values(array_filter(array_map(static fn (mixed $jobKey): string => trim((string) $jobKey), $jobKeys), static fn (string $jobKey): bool => $jobKey !== ''));
     if ($keys === []) {
@@ -4012,7 +4149,7 @@ function db_sync_schedule_running_job_keys(array $jobKeys): array
          FROM sync_schedules
          WHERE job_key IN ($placeholders)
            AND enabled = 1
-           AND last_status = 'running'
+           AND current_state = 'running'
            AND locked_until IS NOT NULL
            AND locked_until > UTC_TIMESTAMP()
          ORDER BY job_key ASC",
@@ -4025,106 +4162,191 @@ function db_sync_schedule_running_job_keys(array $jobKeys): array
     ), static fn (string $jobKey): bool => $jobKey !== ''));
 }
 
-function db_sync_schedule_ensure_job(string $jobKey, int $enabled, int $intervalSeconds, int $offsetSeconds = 0): bool
+function db_sync_schedule_ensure_job(string $jobKey, int $enabled, int $intervalSeconds, int $offsetSeconds = 0, array $options = []): bool
 {
-    db_ensure_table_column('sync_schedules', 'offset_seconds', 'INT UNSIGNED NOT NULL DEFAULT 0');
+    db_sync_schedule_registry_columns_ensure();
 
     $normalizedKey = trim($jobKey);
     if ($normalizedKey === '') {
         return false;
     }
 
-    $safeInterval = max(1, min(86400, $intervalSeconds));
-    $safeOffset = max(0, min($safeInterval - 1, $offsetSeconds));
-    $nextRunAt = $enabled === 1
-        ? db_sync_schedule_next_run_at_for_values($safeInterval, $safeOffset)
-        : null;
+    $intervalMinutes = max(1, min(1440, (int) ($options['interval_minutes'] ?? (int) ceil($intervalSeconds / 60))));
+    $safeIntervalSeconds = max(60, $intervalMinutes * 60);
+    $offsetMinutes = max(0, min($intervalMinutes - 1, (int) ($options['offset_minutes'] ?? (int) floor($offsetSeconds / 60))));
+    $safeOffsetSeconds = $offsetMinutes * 60;
+    $priority = mb_substr(trim((string) ($options['priority'] ?? 'normal')), 0, 20);
+    $concurrencyPolicy = mb_substr(trim((string) ($options['concurrency_policy'] ?? 'single')), 0, 40);
+    $timeoutSeconds = max(30, min(7200, (int) ($options['timeout_seconds'] ?? 300)));
+    $tuningMode = ($options['tuning_mode'] ?? 'automatic') === 'manual' ? 'manual' : 'automatic';
+    $discoveredFromCode = !empty($options['discovered_from_code']) ? 1 : 0;
+    $explicitlyConfigured = array_key_exists('explicitly_configured', $options) && !$options['explicitly_configured'] ? 0 : 1;
+    $nextDueAt = $enabled === 1 ? db_sync_schedule_next_due_at_for_minutes($intervalMinutes, $offsetMinutes) : null;
+    $currentState = $enabled === 1 ? 'waiting' : 'stopped';
 
     return db_execute(
-        'INSERT INTO sync_schedules (job_key, enabled, interval_seconds, offset_seconds, next_run_at, last_run_at, last_status, last_error, locked_until)
-         VALUES (
-            ?,
-            ?,
-            ?,
-            ?,
-            ?,
-            NULL,
-            NULL,
-            NULL,
-            NULL
+        'INSERT INTO sync_schedules (
+            job_key,
+            enabled,
+            interval_minutes,
+            interval_seconds,
+            offset_seconds,
+            offset_minutes,
+            priority,
+            concurrency_policy,
+            timeout_seconds,
+            next_run_at,
+            next_due_at,
+            current_state,
+            tuning_mode,
+            discovered_from_code,
+            explicitly_configured,
+            last_run_at,
+            last_status,
+            last_error,
+            locked_until
+         ) VALUES (
+            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL
          )
          ON DUPLICATE KEY UPDATE
+            enabled = sync_schedules.enabled,
+            discovered_from_code = GREATEST(sync_schedules.discovered_from_code, VALUES(discovered_from_code)),
+            explicitly_configured = GREATEST(sync_schedules.explicitly_configured, VALUES(explicitly_configured)),
+            interval_minutes = COALESCE(sync_schedules.interval_minutes, VALUES(interval_minutes)),
+            interval_seconds = COALESCE(sync_schedules.interval_seconds, VALUES(interval_seconds)),
+            offset_seconds = COALESCE(sync_schedules.offset_seconds, VALUES(offset_seconds)),
+            offset_minutes = COALESCE(sync_schedules.offset_minutes, VALUES(offset_minutes)),
+            priority = COALESCE(NULLIF(sync_schedules.priority, \'\'), VALUES(priority)),
+            concurrency_policy = COALESCE(NULLIF(sync_schedules.concurrency_policy, \'\'), VALUES(concurrency_policy)),
+            timeout_seconds = COALESCE(sync_schedules.timeout_seconds, VALUES(timeout_seconds)),
+            tuning_mode = COALESCE(sync_schedules.tuning_mode, VALUES(tuning_mode)),
             next_run_at = CASE
-                WHEN enabled = 1 AND next_run_at IS NULL THEN ?
-                ELSE next_run_at
+                WHEN sync_schedules.enabled = 1 AND sync_schedules.next_run_at IS NULL THEN VALUES(next_run_at)
+                ELSE sync_schedules.next_run_at
+            END,
+            next_due_at = CASE
+                WHEN sync_schedules.enabled = 1 AND sync_schedules.next_due_at IS NULL THEN VALUES(next_due_at)
+                ELSE sync_schedules.next_due_at
+            END,
+            current_state = CASE
+                WHEN sync_schedules.enabled = 0 THEN \'stopped\'
+                WHEN sync_schedules.current_state = \'running\' THEN sync_schedules.current_state
+                ELSE VALUES(current_state)
             END,
             updated_at = CURRENT_TIMESTAMP',
-        [$normalizedKey, $enabled, $safeInterval, $safeOffset, $nextRunAt, $nextRunAt]
+        [$normalizedKey, $enabled, $intervalMinutes, $safeIntervalSeconds, $safeOffsetSeconds, $offsetMinutes, $priority, $concurrencyPolicy, $timeoutSeconds, $nextDueAt, $nextDueAt, $currentState, $tuningMode, $discoveredFromCode, $explicitlyConfigured]
     );
 }
 
-function db_sync_schedule_upsert(string $jobKey, int $enabled, int $intervalSeconds, ?int $offsetSeconds = null): bool
+function db_sync_schedule_upsert(string $jobKey, int $enabled, int $intervalSeconds, ?int $offsetSeconds = null, array $options = []): bool
 {
-    db_ensure_table_column('sync_schedules', 'offset_seconds', 'INT UNSIGNED NOT NULL DEFAULT 0');
+    db_sync_schedule_registry_columns_ensure();
 
     $normalizedKey = trim($jobKey);
     if ($normalizedKey === '') {
         return false;
     }
 
-    $safeInterval = max(1, min(86400, $intervalSeconds));
-    $resolvedOffset = $offsetSeconds;
-    if ($resolvedOffset === null) {
-        $existing = db_select_one(
-            'SELECT offset_seconds
-             FROM sync_schedules
-             WHERE job_key = ?
-             LIMIT 1',
-            [$normalizedKey]
-        );
-        $resolvedOffset = (int) ($existing['offset_seconds'] ?? 0);
-    }
+    $existing = db_select_one(
+        'SELECT offset_minutes, priority, concurrency_policy, timeout_seconds, tuning_mode, discovered_from_code, explicitly_configured
+         FROM sync_schedules
+         WHERE job_key = ?
+         LIMIT 1',
+        [$normalizedKey]
+    ) ?? [];
 
-    $safeOffset = max(0, min($safeInterval - 1, (int) $resolvedOffset));
-    $nextRunAt = $enabled === 1
-        ? db_sync_schedule_next_run_at_for_values($safeInterval, $safeOffset)
-        : null;
+    $intervalMinutes = max(1, min(1440, (int) ($options['interval_minutes'] ?? (int) ceil($intervalSeconds / 60))));
+    $safeIntervalSeconds = max(60, $intervalMinutes * 60);
+    $resolvedOffsetSeconds = $offsetSeconds ?? ((int) ($existing['offset_minutes'] ?? 0) * 60);
+    $offsetMinutes = max(0, min($intervalMinutes - 1, (int) ($options['offset_minutes'] ?? (int) floor($resolvedOffsetSeconds / 60))));
+    $safeOffsetSeconds = $offsetMinutes * 60;
+    $priority = mb_substr(trim((string) ($options['priority'] ?? ($existing['priority'] ?? 'normal'))), 0, 20);
+    $concurrencyPolicy = mb_substr(trim((string) ($options['concurrency_policy'] ?? ($existing['concurrency_policy'] ?? 'single'))), 0, 40);
+    $timeoutSeconds = max(30, min(7200, (int) ($options['timeout_seconds'] ?? ($existing['timeout_seconds'] ?? 300))));
+    $tuningMode = ($options['tuning_mode'] ?? ($existing['tuning_mode'] ?? 'automatic')) === 'manual' ? 'manual' : 'automatic';
+    $discoveredFromCode = !empty($options['discovered_from_code'] ?? $existing['discovered_from_code'] ?? 0) ? 1 : 0;
+    $explicitlyConfigured = array_key_exists('explicitly_configured', $options)
+        ? ($options['explicitly_configured'] ? 1 : 0)
+        : (int) ($existing['explicitly_configured'] ?? 1);
+    $nextDueAt = $enabled === 1 ? db_sync_schedule_next_due_at_for_minutes($intervalMinutes, $offsetMinutes) : null;
+    $currentState = $enabled === 1 ? 'waiting' : 'stopped';
 
     return db_execute(
-        'INSERT INTO sync_schedules (job_key, enabled, interval_seconds, offset_seconds, next_run_at, last_run_at, last_status, last_error, locked_until)
-         VALUES (
-            ?,
-            ?,
-            ?,
-            ?,
-            ?,
-            NULL,
-            NULL,
-            NULL,
-            NULL
+        'INSERT INTO sync_schedules (
+            job_key,
+            enabled,
+            interval_minutes,
+            interval_seconds,
+            offset_seconds,
+            offset_minutes,
+            priority,
+            concurrency_policy,
+            timeout_seconds,
+            next_run_at,
+            next_due_at,
+            current_state,
+            tuning_mode,
+            discovered_from_code,
+            explicitly_configured,
+            last_run_at,
+            last_status,
+            last_error,
+            locked_until
+         ) VALUES (
+            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL
          )
          ON DUPLICATE KEY UPDATE
             enabled = VALUES(enabled),
+            interval_minutes = VALUES(interval_minutes),
             interval_seconds = VALUES(interval_seconds),
             offset_seconds = VALUES(offset_seconds),
-            next_run_at = CASE
-                WHEN VALUES(enabled) = 1 THEN COALESCE(next_run_at, ?)
-                ELSE NULL
+            offset_minutes = VALUES(offset_minutes),
+            priority = VALUES(priority),
+            concurrency_policy = VALUES(concurrency_policy),
+            timeout_seconds = VALUES(timeout_seconds),
+            tuning_mode = VALUES(tuning_mode),
+            discovered_from_code = VALUES(discovered_from_code),
+            explicitly_configured = VALUES(explicitly_configured),
+            next_run_at = CASE WHEN VALUES(enabled) = 1 THEN COALESCE(sync_schedules.next_run_at, VALUES(next_run_at)) ELSE NULL END,
+            next_due_at = CASE WHEN VALUES(enabled) = 1 THEN COALESCE(sync_schedules.next_due_at, VALUES(next_due_at)) ELSE NULL END,
+            current_state = CASE
+                WHEN VALUES(enabled) = 0 THEN \'stopped\'
+                WHEN sync_schedules.current_state = \'running\' THEN sync_schedules.current_state
+                ELSE VALUES(current_state)
             END,
-            locked_until = CASE WHEN VALUES(enabled) = 1 THEN locked_until ELSE NULL END,
+            locked_until = CASE WHEN VALUES(enabled) = 1 THEN sync_schedules.locked_until ELSE NULL END,
             updated_at = CURRENT_TIMESTAMP',
-        [$normalizedKey, $enabled, $safeInterval, $safeOffset, $nextRunAt, $nextRunAt]
+        [$normalizedKey, $enabled, $intervalMinutes, $safeIntervalSeconds, $safeOffsetSeconds, $offsetMinutes, $priority, $concurrencyPolicy, $timeoutSeconds, $nextDueAt, $nextDueAt, $currentState, $tuningMode, $discoveredFromCode, $explicitlyConfigured]
+    );
+}
+
+function db_sync_schedule_set_next_due_at(int $scheduleId, string $nextDueAt, string $reason = ''): bool
+{
+    db_sync_schedule_registry_columns_ensure();
+
+    return db_execute(
+        'UPDATE sync_schedules
+         SET next_run_at = ?,
+             next_due_at = ?,
+             last_result = CASE WHEN ? <> \'\' THEN ? ELSE last_result END,
+             current_state = CASE WHEN enabled = 1 THEN \'waiting\' ELSE \'stopped\' END,
+             updated_at = CURRENT_TIMESTAMP
+         WHERE id = ?
+         LIMIT 1',
+        [$nextDueAt, $nextDueAt, $reason, mb_substr($reason, 0, 120), $scheduleId]
     );
 }
 
 function db_sync_schedule_force_due_all_enabled(): int
 {
-    db_ensure_table_column('sync_schedules', 'offset_seconds', 'INT UNSIGNED NOT NULL DEFAULT 0');
+    db_sync_schedule_registry_columns_ensure();
 
     $stmt = db()->prepare(
         'UPDATE sync_schedules
          SET next_run_at = UTC_TIMESTAMP(),
+             next_due_at = UTC_TIMESTAMP(),
              locked_until = NULL,
+             current_state = \'waiting\',
              updated_at = CURRENT_TIMESTAMP
          WHERE enabled = 1'
     );
@@ -4136,7 +4358,7 @@ function db_sync_schedule_force_due_all_enabled(): int
 
 function db_sync_schedule_force_due_by_job_keys(array $jobKeys): int
 {
-    db_ensure_table_column('sync_schedules', 'offset_seconds', 'INT UNSIGNED NOT NULL DEFAULT 0');
+    db_sync_schedule_registry_columns_ensure();
 
     $normalized = [];
 
@@ -4158,7 +4380,9 @@ function db_sync_schedule_force_due_by_job_keys(array $jobKeys): int
     $placeholders = implode(', ', array_fill(0, count($keys), '?'));
     $sql = "UPDATE sync_schedules
             SET next_run_at = UTC_TIMESTAMP(),
+                next_due_at = UTC_TIMESTAMP(),
                 locked_until = NULL,
+                current_state = 'waiting',
                 updated_at = CURRENT_TIMESTAMP
             WHERE enabled = 1
               AND job_key IN ($placeholders)";
@@ -4169,9 +4393,51 @@ function db_sync_schedule_force_due_by_job_keys(array $jobKeys): int
     return (int) $stmt->rowCount();
 }
 
+function db_sync_schedule_apply_adjustment(int $scheduleId, array $changes): bool
+{
+    db_sync_schedule_registry_columns_ensure();
+
+    $row = db_sync_schedule_fetch_by_id($scheduleId);
+    if ($row === null) {
+        return false;
+    }
+
+    $enabled = (int) ($row['enabled'] ?? 1);
+    $intervalMinutes = max(1, min(1440, (int) ($changes['interval_minutes'] ?? $row['interval_minutes'] ?? 5)));
+    $offsetMinutes = max(0, min($intervalMinutes - 1, (int) ($changes['offset_minutes'] ?? $row['offset_minutes'] ?? 0)));
+    $timeoutSeconds = max(30, min(7200, (int) ($changes['timeout_seconds'] ?? $row['timeout_seconds'] ?? 300)));
+    $priority = mb_substr(trim((string) ($changes['priority'] ?? $row['priority'] ?? 'normal')), 0, 20);
+    $tuningMode = ($changes['tuning_mode'] ?? $row['tuning_mode'] ?? 'automatic') === 'manual' ? 'manual' : 'automatic';
+    $reason = mb_substr(trim((string) ($changes['last_auto_tune_reason'] ?? $row['last_auto_tune_reason'] ?? '')), 0, 500);
+    $nextDueAt = $enabled === 1 ? db_sync_schedule_next_due_at_for_minutes($intervalMinutes, $offsetMinutes) : null;
+    $currentState = $enabled === 1
+        ? (($row['current_state'] ?? '') === 'running' ? 'running' : 'waiting')
+        : 'stopped';
+
+    return db_execute(
+        'UPDATE sync_schedules
+         SET interval_minutes = ?,
+             interval_seconds = ?,
+             offset_minutes = ?,
+             offset_seconds = ?,
+             timeout_seconds = ?,
+             priority = ?,
+             tuning_mode = ?,
+             last_auto_tuned_at = CASE WHEN ? <> \'\' THEN UTC_TIMESTAMP() ELSE last_auto_tuned_at END,
+             last_auto_tune_reason = CASE WHEN ? <> \'\' THEN ? ELSE last_auto_tune_reason END,
+             next_run_at = CASE WHEN enabled = 1 AND current_state <> \'running\' THEN ? ELSE next_run_at END,
+             next_due_at = CASE WHEN enabled = 1 AND current_state <> \'running\' THEN ? ELSE next_due_at END,
+             current_state = ?,
+             updated_at = CURRENT_TIMESTAMP
+         WHERE id = ?
+         LIMIT 1',
+        [$intervalMinutes, $intervalMinutes * 60, $offsetMinutes, $offsetMinutes * 60, $timeoutSeconds, $priority, $tuningMode, $reason, $reason, $reason, $nextDueAt, $nextDueAt, $currentState, $scheduleId]
+    );
+}
+
 function db_sync_schedule_reset_locks(string $errorMessage): int
 {
-    db_ensure_table_column('sync_schedules', 'offset_seconds', 'INT UNSIGNED NOT NULL DEFAULT 0');
+    db_sync_schedule_registry_columns_ensure();
 
     $message = mb_substr(trim($errorMessage), 0, 500);
     if ($message === '') {
@@ -4182,26 +4448,255 @@ function db_sync_schedule_reset_locks(string $errorMessage): int
         'UPDATE sync_schedules
          SET locked_until = NULL,
              last_status = CASE
-                WHEN last_status = ? OR locked_until IS NOT NULL THEN ?
+                WHEN current_state = \'running\' OR locked_until IS NOT NULL THEN \'failed\'
                 ELSE last_status
              END,
+             last_result = CASE
+                WHEN current_state = \'running\' OR locked_until IS NOT NULL THEN \'reset\'
+                ELSE last_result
+             END,
              last_error = CASE
-                WHEN last_status = ? OR locked_until IS NOT NULL THEN ?
+                WHEN current_state = \'running\' OR locked_until IS NOT NULL THEN ?
                 ELSE last_error
              END,
              next_run_at = CASE
-                WHEN enabled = 1 AND (last_status = ? OR locked_until IS NOT NULL) THEN UTC_TIMESTAMP()
+                WHEN enabled = 1 AND (current_state = \'running\' OR locked_until IS NOT NULL) THEN UTC_TIMESTAMP()
                 WHEN enabled = 0 THEN NULL
                 ELSE next_run_at
              END,
+             next_due_at = CASE
+                WHEN enabled = 1 AND (current_state = \'running\' OR locked_until IS NOT NULL) THEN UTC_TIMESTAMP()
+                WHEN enabled = 0 THEN NULL
+                ELSE next_due_at
+             END,
+             current_state = CASE WHEN enabled = 1 THEN \'waiting\' ELSE \'stopped\' END,
              updated_at = CURRENT_TIMESTAMP
-         WHERE last_status = ?
+         WHERE current_state = \'running\'
             OR locked_until IS NOT NULL'
     );
 
-    $stmt->execute(['running', 'failed', 'running', $message, 'running', 'running']);
+    $stmt->execute([$message]);
 
     return (int) $stmt->rowCount();
+}
+
+function db_scheduler_job_event_insert(string $jobKey, string $eventType, array $detail = [], int $latenessSeconds = 0, ?float $durationSeconds = null): bool
+{
+    db_execute('CREATE TABLE IF NOT EXISTS scheduler_job_events (
+        id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+        job_key VARCHAR(190) NOT NULL,
+        event_type VARCHAR(50) NOT NULL,
+        detail_json LONGTEXT DEFAULT NULL,
+        lateness_seconds INT NOT NULL DEFAULT 0,
+        duration_seconds DECIMAL(10,2) DEFAULT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        KEY idx_scheduler_job_events_job_created (job_key, created_at),
+        KEY idx_scheduler_job_events_type_created (event_type, created_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4');
+
+    return db_execute(
+        'INSERT INTO scheduler_job_events (job_key, event_type, detail_json, lateness_seconds, duration_seconds)
+         VALUES (?, ?, ?, ?, ?)',
+        [mb_substr(trim($jobKey), 0, 190), mb_substr(trim($eventType), 0, 50), $detail !== [] ? json_encode($detail, JSON_UNESCAPED_SLASHES) : null, $latenessSeconds, $durationSeconds]
+    );
+}
+
+function db_scheduler_job_events_recent_summary(int $windowMinutes = 120): array
+{
+    db_execute('CREATE TABLE IF NOT EXISTS scheduler_job_events (
+        id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+        job_key VARCHAR(190) NOT NULL,
+        event_type VARCHAR(50) NOT NULL,
+        detail_json LONGTEXT DEFAULT NULL,
+        lateness_seconds INT NOT NULL DEFAULT 0,
+        duration_seconds DECIMAL(10,2) DEFAULT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        KEY idx_scheduler_job_events_job_created (job_key, created_at),
+        KEY idx_scheduler_job_events_type_created (event_type, created_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4');
+
+    $safeWindow = max(5, min(1440, $windowMinutes));
+    $rows = db_select(
+        'SELECT job_key, event_type, COUNT(*) AS event_count, MAX(created_at) AS last_seen_at
+         FROM scheduler_job_events
+         WHERE created_at >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL ? MINUTE)
+         GROUP BY job_key, event_type',
+        [$safeWindow]
+    );
+
+    $summary = [];
+    foreach ($rows as $row) {
+        $jobKey = (string) ($row['job_key'] ?? '');
+        $eventType = (string) ($row['event_type'] ?? '');
+        if ($jobKey === '' || $eventType === '') {
+            continue;
+        }
+
+        $summary[$jobKey][$eventType] = [
+            'count' => (int) ($row['event_count'] ?? 0),
+            'last_seen_at' => $row['last_seen_at'] ?? null,
+        ];
+    }
+
+    return $summary;
+}
+
+function db_scheduler_tuning_action_log(string $jobKey, string $actor, string $actionType, string $reasonText, array $before = [], array $after = [], array $metrics = []): bool
+{
+    db_execute('CREATE TABLE IF NOT EXISTS scheduler_tuning_actions (
+        id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+        job_key VARCHAR(190) NOT NULL,
+        actor VARCHAR(20) NOT NULL DEFAULT \'system\',
+        action_type VARCHAR(50) NOT NULL,
+        reason_text VARCHAR(500) NOT NULL,
+        before_json LONGTEXT DEFAULT NULL,
+        after_json LONGTEXT DEFAULT NULL,
+        metrics_json LONGTEXT DEFAULT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        KEY idx_scheduler_tuning_actions_job_created (job_key, created_at),
+        KEY idx_scheduler_tuning_actions_actor_created (actor, created_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4');
+
+    return db_execute(
+        'INSERT INTO scheduler_tuning_actions (job_key, actor, action_type, reason_text, before_json, after_json, metrics_json)
+         VALUES (?, ?, ?, ?, ?, ?, ?)',
+        [
+            mb_substr(trim($jobKey), 0, 190),
+            mb_substr(trim($actor), 0, 20),
+            mb_substr(trim($actionType), 0, 50),
+            mb_substr(trim($reasonText), 0, 500),
+            $before !== [] ? json_encode($before, JSON_UNESCAPED_SLASHES) : null,
+            $after !== [] ? json_encode($after, JSON_UNESCAPED_SLASHES) : null,
+            $metrics !== [] ? json_encode($metrics, JSON_UNESCAPED_SLASHES) : null,
+        ]
+    );
+}
+
+function db_scheduler_tuning_actions_recent(int $limit = 20): array
+{
+    db_execute('CREATE TABLE IF NOT EXISTS scheduler_tuning_actions (
+        id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+        job_key VARCHAR(190) NOT NULL,
+        actor VARCHAR(20) NOT NULL DEFAULT \'system\',
+        action_type VARCHAR(50) NOT NULL,
+        reason_text VARCHAR(500) NOT NULL,
+        before_json LONGTEXT DEFAULT NULL,
+        after_json LONGTEXT DEFAULT NULL,
+        metrics_json LONGTEXT DEFAULT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        KEY idx_scheduler_tuning_actions_job_created (job_key, created_at),
+        KEY idx_scheduler_tuning_actions_actor_created (actor, created_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4');
+
+    $safeLimit = max(1, min(100, $limit));
+    return db_select(
+        'SELECT id, job_key, actor, action_type, reason_text, before_json, after_json, metrics_json, created_at
+         FROM scheduler_tuning_actions
+         ORDER BY created_at DESC, id DESC
+         LIMIT ' . $safeLimit
+    );
+}
+
+function db_sync_schedule_recent_run_durations(string $jobKey, int $limit = 20): array
+{
+    $safeLimit = max(1, min(100, $limit));
+    $datasetKey = 'scheduler.job.' . trim($jobKey);
+
+    $rows = db_select(
+        'SELECT TIMESTAMPDIFF(SECOND, started_at, finished_at) AS duration_seconds,
+                started_at,
+                finished_at,
+                run_status
+         FROM sync_runs
+         WHERE dataset_key = ?
+           AND finished_at IS NOT NULL
+         ORDER BY started_at DESC
+         LIMIT ' . $safeLimit,
+        [$datasetKey]
+    );
+
+    return array_values(array_map(static function (array $row): array {
+        return [
+            'duration_seconds' => max(0.0, (float) ($row['duration_seconds'] ?? 0)),
+            'started_at' => $row['started_at'] ?? null,
+            'finished_at' => $row['finished_at'] ?? null,
+            'run_status' => $row['run_status'] ?? null,
+        ];
+    }, $rows));
+}
+
+function db_sync_schedule_recent_job_run_stats(string $jobKey, int $limit = 20): array
+{
+    $runs = db_sync_schedule_recent_run_durations($jobKey, $limit);
+    $durations = array_values(array_filter(array_map(static fn (array $run): float => (float) ($run['duration_seconds'] ?? 0.0), $runs), static fn (float $duration): bool => $duration >= 0.0));
+    if ($durations === []) {
+        return [
+            'count' => 0,
+            'average_duration_seconds' => null,
+            'p95_duration_seconds' => null,
+        ];
+    }
+
+    sort($durations);
+    $count = count($durations);
+    $average = array_sum($durations) / $count;
+    $index = (int) max(0, ceil($count * 0.95) - 1);
+    $p95 = $durations[$index] ?? $durations[$count - 1];
+
+    return [
+        'count' => $count,
+        'average_duration_seconds' => round($average, 2),
+        'p95_duration_seconds' => round((float) $p95, 2),
+    ];
+}
+
+function db_sync_schedule_busiest_offsets(int $limit = 12): array
+{
+    db_sync_schedule_registry_columns_ensure();
+
+    $safeLimit = max(1, min(60, $limit));
+    return db_select(
+        "SELECT offset_minutes, COUNT(*) AS job_count,
+                GROUP_CONCAT(job_key ORDER BY job_key SEPARATOR ', ') AS job_keys
+         FROM sync_schedules
+         WHERE enabled = 1
+         GROUP BY offset_minutes
+         ORDER BY job_count DESC, offset_minutes ASC
+         LIMIT " . $safeLimit
+    );
+}
+
+function db_sync_schedule_recent_outcomes_summary(int $windowMinutes = 180): array
+{
+    $safeWindow = max(5, min(1440, $windowMinutes));
+    $rows = db_select(
+        "SELECT dataset_key,
+                SUM(CASE WHEN run_status = 'failed' THEN 1 ELSE 0 END) AS failed_runs,
+                SUM(CASE WHEN run_status = 'success' THEN 1 ELSE 0 END) AS successful_runs,
+                COUNT(*) AS total_runs
+         FROM sync_runs
+         WHERE dataset_key LIKE 'scheduler.job.%'
+           AND started_at >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL ? MINUTE)
+         GROUP BY dataset_key",
+        [$safeWindow]
+    );
+
+    $summary = [];
+    foreach ($rows as $row) {
+        $datasetKey = trim((string) ($row['dataset_key'] ?? ''));
+        if ($datasetKey === '') {
+            continue;
+        }
+
+        $jobKey = preg_replace('/^scheduler\.job\./', '', $datasetKey) ?? $datasetKey;
+        $summary[$jobKey] = [
+            'failed_runs' => (int) ($row['failed_runs'] ?? 0),
+            'successful_runs' => (int) ($row['successful_runs'] ?? 0),
+            'total_runs' => (int) ($row['total_runs'] ?? 0),
+        ];
+    }
+
+    return $summary;
 }
 
 function db_static_data_import_state_get(string $sourceKey): ?array
