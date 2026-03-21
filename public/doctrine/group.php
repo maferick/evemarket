@@ -74,7 +74,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
         <article class="surface-secondary">
             <p class="eyebrow">Readiness</p>
             <p class="mt-3 text-3xl metric-value"><?= htmlspecialchars((string) ($group['status_label'] ?? 'Market ready'), ENT_QUOTES) ?></p>
-            <p class="mt-2 text-sm text-slate-300"><?= doctrine_format_quantity((int) ($group['gap_fit_count'] ?? 0)) ?> fits are below fieldable target coverage right now.</p>
+            <p class="mt-2 text-sm text-slate-300"><?= doctrine_format_quantity((int) ($group['gap_fit_count'] ?? 0)) ?> doctrines are below fleet target coverage right now.</p>
         </article>
         <article class="surface-secondary">
             <p class="eyebrow">Resupply pressure</p>
@@ -82,17 +82,17 @@ include __DIR__ . '/../../src/views/partials/header.php';
             <p class="mt-2 text-sm text-slate-300"><?= doctrine_format_quantity((int) ($group['loss_pressure_fit_count'] ?? 0)) ?> fits need replenishment soon or urgently.</p>
         </article>
         <article class="surface-secondary">
-            <p class="eyebrow">Complete fits</p>
+            <p class="eyebrow">Fleet ready</p>
             <p class="mt-3 text-3xl metric-value"><?= doctrine_format_quantity((int) ($group['complete_fits_available'] ?? 0)) ?></p>
-            <p class="mt-2 text-sm text-slate-300">Fleet-ready hulls that can be fielded right now from local stock.</p>
+            <p class="mt-2 text-sm text-slate-300">Ships that can be fielded right now once doctrine hard blockers are applied.</p>
         </article>
         <article class="surface-secondary">
-            <p class="eyebrow">Target fits</p>
+            <p class="eyebrow">Target fleet</p>
             <p class="mt-3 text-3xl metric-value"><?= doctrine_format_quantity((int) ($group['target_fit_count'] ?? 0)) ?></p>
-            <p class="mt-2 text-sm text-slate-300">Rule-based stock target across linked fits using losses and readiness trend.</p>
+            <p class="mt-2 text-sm text-slate-300">Doctrine-class fleet sizing across linked fits, with per-doctrine overrides when configured.</p>
         </article>
         <article class="surface-secondary">
-            <p class="eyebrow">Fit gap</p>
+            <p class="eyebrow">Fleet gap</p>
             <p class="mt-3 text-3xl metric-value"><?= doctrine_format_quantity((int) ($group['fit_gap_count'] ?? 0)) ?></p>
             <p class="mt-2 text-sm text-slate-300"><?= htmlspecialchars((string) ($group['readiness_trend'] ?? 'Stable'), ENT_QUOTES) ?> across linked fits · <?= htmlspecialchars(market_format_isk((float) ($group['restock_gap_isk'] ?? 0.0)), ENT_QUOTES) ?> restock gap.</p>
         </article>
@@ -164,16 +164,16 @@ include __DIR__ . '/../../src/views/partials/header.php';
                             </div>
                             <div class="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
                                 <div class="surface-tertiary">
-                                    <p class="text-xs uppercase tracking-[0.16em] text-slate-500">Complete fits</p>
-                                    <p class="mt-2 text-xl font-semibold text-slate-100"><?= doctrine_format_quantity((int) ($supply['complete_fits_available'] ?? 0)) ?></p>
+                                    <p class="text-xs uppercase tracking-[0.16em] text-slate-500">Fleet ready</p>
+                                    <p class="mt-2 text-xl font-semibold text-slate-100"><?= doctrine_format_quantity((int) ($supply['fleet_ready'] ?? $supply['complete_fits_available'] ?? 0)) ?></p>
                                 </div>
                                 <div class="surface-tertiary">
-                                    <p class="text-xs uppercase tracking-[0.16em] text-slate-500">Target fits</p>
-                                    <p class="mt-2 text-xl font-semibold text-slate-100"><?= doctrine_format_quantity((int) ($supply['recommended_target_fit_count'] ?? 0)) ?></p>
+                                    <p class="text-xs uppercase tracking-[0.16em] text-slate-500">Target fleet</p>
+                                    <p class="mt-2 text-xl font-semibold text-slate-100"><?= doctrine_format_quantity((int) ($supply['doctrine_target_fleet_size'] ?? $supply['recommended_target_fit_count'] ?? 0)) ?></p>
                                 </div>
                                 <div class="surface-tertiary">
-                                    <p class="text-xs uppercase tracking-[0.16em] text-slate-500">Fit gap</p>
-                                    <p class="mt-2 text-xl font-semibold text-rose-200"><?= doctrine_format_quantity((int) ($supply['gap_to_target_fit_count'] ?? 0)) ?></p>
+                                    <p class="text-xs uppercase tracking-[0.16em] text-slate-500">Fleet gap</p>
+                                    <p class="mt-2 text-xl font-semibold text-rose-200"><?= doctrine_format_quantity((int) ($supply['fleet_gap'] ?? $supply['gap_to_target_fit_count'] ?? 0)) ?></p>
                                 </div>
                                 <div class="surface-tertiary">
                                     <p class="text-xs uppercase tracking-[0.16em] text-slate-500">Trend</p>
@@ -185,12 +185,12 @@ include __DIR__ . '/../../src/views/partials/header.php';
                                 <div class="surface-tertiary">
                                     <p class="text-xs uppercase tracking-[0.16em] text-slate-500">Bottleneck</p>
                                     <p class="mt-2 text-sm font-semibold text-slate-100"><?= htmlspecialchars((string) ($supply['bottleneck_item_name'] ?? 'Unavailable'), ENT_QUOTES) ?></p>
-                                    <p class="mt-1 text-xs text-slate-500"><?= doctrine_format_quantity((int) ($supply['bottleneck_quantity'] ?? 0)) ?> local for <?= doctrine_format_quantity((int) ($supply['bottleneck_required_quantity'] ?? 0)) ?> required per fit<?= !empty($supply['external_bottleneck']) ? ' · External bottleneck' : '' ?></p>
+                                    <p class="mt-1 text-xs text-slate-500"><?= doctrine_format_quantity((int) ($supply['bottleneck_quantity'] ?? 0)) ?> local for <?= doctrine_format_quantity((int) ($supply['bottleneck_required_quantity'] ?? 0)) ?> required per ship · blocks <?= doctrine_format_quantity((int) ($supply['bottleneck_impact'] ?? 0)) ?> ships<?= !empty($supply['external_bottleneck']) ? ' · External bottleneck' : '' ?></p>
                                 </div>
                                 <div class="surface-tertiary">
-                                    <p class="text-xs uppercase tracking-[0.16em] text-slate-500">Loss-aware view</p>
-                                    <p class="mt-2 text-sm font-semibold text-slate-100"><?= doctrine_format_quantity((int) ($supply['recent_hull_losses_7d'] ?? 0)) ?> hull losses · <?= doctrine_format_quantity((int) ($supply['recent_item_fit_losses_7d'] ?? 0)) ?> fit-equivalent item losses</p>
-                                    <p class="mt-1 text-xs text-slate-500"><?= htmlspecialchars((string) ($supply['restock_trend'] ?? 'Restock trend unavailable'), ENT_QUOTES) ?></p>
+                                    <p class="text-xs uppercase tracking-[0.16em] text-slate-500">Sustainment risk</p>
+                                    <p class="mt-2 text-sm font-semibold text-slate-100"><?= htmlspecialchars((string) ($supply['sustainment_risk_label'] ?? 'Stable'), ENT_QUOTES) ?></p>
+                                    <p class="mt-1 text-xs text-slate-500"><?= htmlspecialchars((string) ($supply['sustainment_risk_context'] ?? ($supply['restock_trend'] ?? 'Restock trend unavailable')), ENT_QUOTES) ?></p>
                                 </div>
                             </div>
                         </a>

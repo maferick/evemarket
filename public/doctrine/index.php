@@ -55,7 +55,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
             <div>
                 <p class="eyebrow">Doctrine registry</p>
                 <h2 class="mt-2 section-title">Alliance doctrine groups</h2>
-                <p class="mt-2 text-sm text-slate-400">Every card now separates fieldable readiness from replenishment pressure before you even open the fit.</p>
+                <p class="mt-2 text-sm text-slate-400">Every card now separates fleet readiness, sustainment, and replenishment pressure before you even open the doctrine.</p>
             </div>
             <div class="flex flex-wrap gap-3">
                 <a href="/doctrine/fits" class="btn-secondary">Fit overview</a>
@@ -82,15 +82,15 @@ include __DIR__ . '/../../src/views/partials/header.php';
                         </div>
                         <div class="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
                             <div class="surface-tertiary">
-                                <p class="text-xs uppercase tracking-[0.16em] text-slate-500">Complete fits</p>
+                                <p class="text-xs uppercase tracking-[0.16em] text-slate-500">Fleet ready</p>
                                 <p class="mt-2 text-xl font-semibold text-slate-100"><?= doctrine_format_quantity((int) ($group['complete_fits_available'] ?? 0)) ?></p>
                             </div>
                             <div class="surface-tertiary">
-                                <p class="text-xs uppercase tracking-[0.16em] text-slate-500">Target fits</p>
+                                <p class="text-xs uppercase tracking-[0.16em] text-slate-500">Target fleet</p>
                                 <p class="mt-2 text-xl font-semibold text-slate-100"><?= doctrine_format_quantity((int) ($group['target_fit_count'] ?? 0)) ?></p>
                             </div>
                             <div class="surface-tertiary">
-                                <p class="text-xs uppercase tracking-[0.16em] text-slate-500">Fit gap</p>
+                                <p class="text-xs uppercase tracking-[0.16em] text-slate-500">Fleet gap</p>
                                 <p class="mt-2 text-xl font-semibold text-rose-200"><?= doctrine_format_quantity((int) ($group['fit_gap_count'] ?? 0)) ?></p>
                             </div>
                             <div class="surface-tertiary">
@@ -181,7 +181,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                             <div class="flex items-start justify-between gap-3">
                                 <div>
                                     <p class="font-semibold text-slate-100"><?= htmlspecialchars((string) ($row['type_name'] ?? ''), ENT_QUOTES) ?></p>
-                                    <p class="mt-1 text-xs text-slate-500"><?= doctrine_format_quantity((int) ($row['doctrine_fit_count'] ?? 0)) ?> doctrine fits depend on this item<?= !empty($row['is_external_bottleneck']) ? ' · External bottleneck' : '' ?></p>
+                                    <p class="mt-1 text-xs text-slate-500"><?= doctrine_format_quantity((int) ($row['doctrine_fit_count'] ?? 0)) ?> doctrines depend on this item · <?= doctrine_format_quantity((int) ($row['bottleneck_ship_impact'] ?? 0)) ?> ships blocked<?= !empty($row['is_external_bottleneck']) ? ' · External bottleneck' : '' ?></p>
                                 </div>
                                 <div class="text-right">
                                     <p class="text-sm font-semibold text-rose-100"><?= htmlspecialchars((string) ($row['priority_score'] ?? 0), ENT_QUOTES) ?></p>

@@ -7244,6 +7244,7 @@ function doctrine_db_ensure_schema(): void
     }
 
     $fitColumnDefinitions = [
+        'target_fleet_size_override' => 'ALTER TABLE doctrine_fits ADD COLUMN target_fleet_size_override INT UNSIGNED DEFAULT NULL AFTER ship_type_id',
         'source_type' => "ALTER TABLE doctrine_fits ADD COLUMN source_type ENUM('html', 'eft', 'buyall', 'manual') NOT NULL DEFAULT 'manual' AFTER ship_type_id",
         'source_reference' => 'ALTER TABLE doctrine_fits ADD COLUMN source_reference VARCHAR(255) DEFAULT NULL AFTER source_format',
         'notes' => 'ALTER TABLE doctrine_fits ADD COLUMN notes TEXT DEFAULT NULL AFTER source_reference',
@@ -7466,6 +7467,7 @@ function db_doctrine_fits_all(): array
             df.fit_name,
             df.ship_name,
             df.ship_type_id,
+            df.target_fleet_size_override,
             df.source_type,
             df.source_format,
             df.source_reference,
@@ -7485,7 +7487,7 @@ function db_doctrine_fits_all(): array
          FROM doctrine_fits df
          LEFT JOIN doctrine_fit_groups dfg ON dfg.doctrine_fit_id = df.id
          LEFT JOIN doctrine_groups dg ON dg.id = dfg.doctrine_group_id
-         GROUP BY df.id, df.doctrine_group_id, df.fit_name, df.ship_name, df.ship_type_id, df.source_type, df.source_format, df.source_reference, df.notes, df.import_body, df.parse_status, df.review_status, df.conflict_state, df.fingerprint_hash, df.warning_count, df.item_count, df.unresolved_count, df.created_at, df.updated_at
+         GROUP BY df.id, df.doctrine_group_id, df.fit_name, df.ship_name, df.ship_type_id, df.target_fleet_size_override, df.source_type, df.source_format, df.source_reference, df.notes, df.import_body, df.parse_status, df.review_status, df.conflict_state, df.fingerprint_hash, df.warning_count, df.item_count, df.unresolved_count, df.created_at, df.updated_at
          ORDER BY df.updated_at DESC, df.fit_name ASC'
     );
 }
@@ -7505,6 +7507,7 @@ function db_doctrine_fits_by_group(int $groupId): array
             df.fit_name,
             df.ship_name,
             df.ship_type_id,
+            df.target_fleet_size_override,
             df.source_type,
             df.source_format,
             df.source_reference,
@@ -7525,7 +7528,7 @@ function db_doctrine_fits_by_group(int $groupId): array
          INNER JOIN doctrine_fits df ON df.id = dfg.doctrine_fit_id
          LEFT JOIN doctrine_fit_items dfi ON dfi.doctrine_fit_id = df.id
          WHERE dfg.doctrine_group_id = ?
-         GROUP BY df.id, df.doctrine_group_id, df.fit_name, df.ship_name, df.ship_type_id, df.source_type, df.source_format, df.source_reference, df.notes, df.import_body, df.parse_status, df.review_status, df.conflict_state, df.fingerprint_hash, df.warning_count, df.item_count, df.unresolved_count, df.created_at, df.updated_at
+         GROUP BY df.id, df.doctrine_group_id, df.fit_name, df.ship_name, df.ship_type_id, df.target_fleet_size_override, df.source_type, df.source_format, df.source_reference, df.notes, df.import_body, df.parse_status, df.review_status, df.conflict_state, df.fingerprint_hash, df.warning_count, df.item_count, df.unresolved_count, df.created_at, df.updated_at
          ORDER BY df.updated_at DESC, df.fit_name ASC',
         [$groupId]
     );
@@ -7563,7 +7566,7 @@ function db_doctrine_fit_by_id(int $fitId): ?array
          LEFT JOIN doctrine_fit_groups dfg ON dfg.doctrine_fit_id = df.id
          LEFT JOIN doctrine_groups dg ON dg.id = dfg.doctrine_group_id
          WHERE df.id = ?
-         GROUP BY df.id, df.doctrine_group_id, df.fit_name, df.ship_name, df.ship_type_id, df.source_type, df.source_format, df.source_reference, df.notes, df.import_body, df.raw_html, df.raw_buyall, df.raw_eft, df.metadata_json, df.parse_warnings_json, df.parse_status, df.review_status, df.conflict_state, df.fingerprint_hash, df.warning_count, df.item_count, df.unresolved_count, df.created_at, df.updated_at, pg.group_name
+         GROUP BY df.id, df.doctrine_group_id, df.fit_name, df.ship_name, df.ship_type_id, df.target_fleet_size_override, df.source_type, df.source_format, df.source_reference, df.notes, df.import_body, df.raw_html, df.raw_buyall, df.raw_eft, df.metadata_json, df.parse_warnings_json, df.parse_status, df.review_status, df.conflict_state, df.fingerprint_hash, df.warning_count, df.item_count, df.unresolved_count, df.created_at, df.updated_at, pg.group_name
          LIMIT 1',
         [$fitId]
     );
@@ -7954,6 +7957,7 @@ function db_doctrine_fit_create(array $fit, array $items, array $groupIds = []):
                 fit_name,
                 ship_name,
                 ship_type_id,
+                target_fleet_size_override,
                 source_type,
                 source_format,
                 source_reference,
@@ -7971,12 +7975,13 @@ function db_doctrine_fit_create(array $fit, array $items, array $groupIds = []):
                 warning_count,
                 item_count,
                 unresolved_count
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
             [
                 $groupIds[0] ?? (isset($fit['doctrine_group_id']) ? (int) $fit['doctrine_group_id'] : null),
                 (string) ($fit['fit_name'] ?? ''),
                 (string) ($fit['ship_name'] ?? ''),
                 isset($fit['ship_type_id']) ? (int) $fit['ship_type_id'] : null,
+                isset($fit['target_fleet_size_override']) && (int) ($fit['target_fleet_size_override'] ?? 0) > 0 ? (int) $fit['target_fleet_size_override'] : null,
                 (string) ($fit['source_type'] ?? 'manual'),
                 (string) ($fit['source_format'] ?? 'buyall'),
                 ($fit['source_reference'] ?? null) !== null ? (string) $fit['source_reference'] : null,
@@ -8017,13 +8022,14 @@ function db_doctrine_fit_update(int $fitId, array $fit, array $items, array $gro
         $groupIds = array_values(array_unique(array_filter(array_map('intval', $groupIds), static fn (int $id): bool => $id > 0)));
         db_execute(
             'UPDATE doctrine_fits
-             SET doctrine_group_id = ?, fit_name = ?, ship_name = ?, ship_type_id = ?, source_type = ?, source_format = ?, source_reference = ?, notes = ?, import_body = ?, raw_html = ?, raw_buyall = ?, raw_eft = ?, metadata_json = ?, parse_warnings_json = ?, parse_status = ?, review_status = ?, conflict_state = ?, fingerprint_hash = ?, warning_count = ?, item_count = ?, unresolved_count = ?, updated_at = CURRENT_TIMESTAMP
+             SET doctrine_group_id = ?, fit_name = ?, ship_name = ?, ship_type_id = ?, target_fleet_size_override = ?, source_type = ?, source_format = ?, source_reference = ?, notes = ?, import_body = ?, raw_html = ?, raw_buyall = ?, raw_eft = ?, metadata_json = ?, parse_warnings_json = ?, parse_status = ?, review_status = ?, conflict_state = ?, fingerprint_hash = ?, warning_count = ?, item_count = ?, unresolved_count = ?, updated_at = CURRENT_TIMESTAMP
              WHERE id = ? LIMIT 1',
             [
                 $groupIds[0] ?? null,
                 (string) ($fit['fit_name'] ?? ''),
                 (string) ($fit['ship_name'] ?? ''),
                 isset($fit['ship_type_id']) ? (int) $fit['ship_type_id'] : null,
+                isset($fit['target_fleet_size_override']) && (int) ($fit['target_fleet_size_override'] ?? 0) > 0 ? (int) $fit['target_fleet_size_override'] : null,
                 (string) ($fit['source_type'] ?? 'manual'),
                 (string) ($fit['source_format'] ?? 'buyall'),
                 ($fit['source_reference'] ?? null) !== null ? (string) $fit['source_reference'] : null,

@@ -15977,6 +15977,8 @@ function doctrine_build_draft_from_editor_request(array $post, int $fitId = 0): 
     $fitName = trim((string) ($post['fit_name'] ?? ''));
     $shipName = trim((string) ($post['ship_name'] ?? ''));
     $sourceFormat = in_array((string) ($post['source_format'] ?? ''), ['eft', 'buyall'], true) ? (string) $post['source_format'] : 'buyall';
+    $doctrineClass = doctrine_hull_class_from_metadata(['type_name' => $shipName]);
+    $targetFleetSizeOverride = doctrine_sanitize_target_fleet_size_override($post['target_fleet_size_override'] ?? null, $doctrineClass);
     $rawText = trim((string) ($post['import_body'] ?? ''));
     $itemLinesText = trim((string) ($post['item_lines_text'] ?? ''));
     $items = doctrine_parse_editable_item_lines($itemLinesText, $shipName);
@@ -16002,6 +16004,8 @@ function doctrine_build_draft_from_editor_request(array $post, int $fitId = 0): 
     $resolved['fit']['fit_name'] = mb_substr($fitName, 0, 190);
     $resolved['fit']['source_format'] = $sourceFormat;
     $resolved['fit']['import_body'] = $rawText !== '' ? $rawText : $itemLinesText;
+    $resolvedDoctrineClass = doctrine_fit_hull_class((array) ($resolved['fit'] ?? []), (array) ($resolved['items'] ?? []));
+    $resolved['fit']['target_fleet_size_override'] = doctrine_sanitize_target_fleet_size_override($targetFleetSizeOverride, $resolvedDoctrineClass);
 
     return doctrine_prepare_fit_draft($resolved, doctrine_selected_group_ids($post), $fitId);
 }
@@ -16604,68 +16608,264 @@ function doctrine_supply_summary(array $rows): array
     ];
 }
 
-function doctrine_complete_fit_availability(array $rows): array
+function doctrine_target_fleet_profiles(): array
 {
-    $completeFits = null;
-    $bottleneck = null;
+    return [
+        'subcap' => ['default' => 192, 'minimum' => 150, 'maximum' => 256],
+        'capital' => ['default' => 30, 'minimum' => 20, 'maximum' => 50],
+        'super' => ['default' => 15, 'minimum' => 10, 'maximum' => 25],
+        'titan' => ['default' => 8, 'minimum' => 5, 'maximum' => 15],
+        'implants_support' => ['default' => 192, 'minimum' => 150, 'maximum' => 256],
+    ];
+}
+
+function doctrine_target_fleet_profile(string $doctrineClass): array
+{
+    $profiles = doctrine_target_fleet_profiles();
+
+    return $profiles[$doctrineClass] ?? $profiles['subcap'];
+}
+
+function doctrine_sanitize_target_fleet_size_override(mixed $value, string $doctrineClass = 'subcap'): ?int
+{
+    if ($value === null || $value === '') {
+        return null;
+    }
+
+    $profile = doctrine_target_fleet_profile($doctrineClass);
+    $override = max(0, (int) $value);
+    if ($override <= 0) {
+        return null;
+    }
+
+    return max((int) ($profile['minimum'] ?? 1), min((int) ($profile['maximum'] ?? PHP_INT_MAX), $override));
+}
+
+function doctrine_target_fleet_size_override(array $fit, string $doctrineClass = 'subcap'): ?int
+{
+    $directOverride = doctrine_sanitize_target_fleet_size_override($fit['target_fleet_size_override'] ?? null, $doctrineClass);
+    if ($directOverride !== null) {
+        return $directOverride;
+    }
+
+    $metadata = doctrine_parse_json_array($fit['metadata_json'] ?? ($fit['metadata'] ?? null));
+
+    foreach (['target_fleet_size_override', 'doctrine_target_fleet_size_override', 'doctrine_target_fleet_size'] as $key) {
+        $override = doctrine_sanitize_target_fleet_size_override($metadata[$key] ?? null, $doctrineClass);
+        if ($override !== null) {
+            return $override;
+        }
+    }
+
+    return null;
+}
+
+function doctrine_item_block_type(array $row, ?array $metadataByType = null): string
+{
+    $typeId = max(0, (int) ($row['type_id'] ?? 0));
+    $slotCategory = doctrine_normalize_label((string) ($row['slot_category'] ?? ''));
+    $sourceRole = doctrine_normalize_label((string) ($row['source_role'] ?? ''));
+    $itemName = doctrine_normalize_item_name((string) ($row['item_name'] ?? ''));
+    $metadata = $typeId > 0 ? item_scope_type_metadata($typeId, $metadataByType) : [];
+    $categoryName = item_scope_normalize_token((string) ($metadata['category_name'] ?? ''));
+
+    if ($slotCategory === 'hull' || $sourceRole === 'hull' || str_contains($slotCategory, 'rig') || str_contains($sourceRole, 'rig')) {
+        return 'hard_blocker';
+    }
+
+    if (
+        $categoryName === 'charge'
+        || item_scope_type_is_consumable($typeId, $metadataByType)
+        || preg_match('/\b(ammo|script|charge|crystal|bomb|paste|booster charge)\b/', $itemName) === 1
+    ) {
+        return 'soft_blocker';
+    }
+
+    if (
+        str_contains($slotCategory, 'cargo')
+        || str_contains($slotCategory, 'drone')
+        || str_contains($slotCategory, 'fighter')
+        || str_contains($sourceRole, 'cargo')
+        || str_contains($sourceRole, 'drone')
+        || str_contains($sourceRole, 'fighter')
+        || item_scope_matches_operational_category($metadata, 'boosters')
+        || item_scope_matches_operational_category($metadata, 'fuel_structures')
+    ) {
+        return 'sustainment';
+    }
+
+    return 'hard_blocker';
+}
+
+function doctrine_item_block_type_label(string $blockType): string
+{
+    return match ($blockType) {
+        'soft_blocker' => 'Soft blocker',
+        'sustainment' => 'Sustainment',
+        default => 'Hard blocker',
+    };
+}
+
+function doctrine_complete_fit_availability(array $rows, int $targetFleetSize = 0): array
+{
+    $hardRows = [];
+    $softRows = [];
+    $sustainmentRows = [];
 
     foreach ($rows as $row) {
         $requiredQty = max(1, (int) ($row['quantity'] ?? 1));
         $localQty = max(0, (int) ($row['local_available_qty'] ?? 0));
-        $fitCount = intdiv($localQty, $requiredQty);
+        $fitCapacity = intdiv($localQty, $requiredQty);
+        $classifiedRow = $row + [
+            'item_fit_capacity' => $fitCapacity,
+            'item_block_type' => doctrine_item_block_type($row),
+        ];
+
+        switch ((string) ($classifiedRow['item_block_type'] ?? 'hard_blocker')) {
+            case 'soft_blocker':
+                $softRows[] = $classifiedRow;
+                break;
+            case 'sustainment':
+                $sustainmentRows[] = $classifiedRow;
+                break;
+            default:
+                $hardRows[] = $classifiedRow;
+                break;
+        }
+    }
+
+    $readinessRows = $hardRows !== [] ? $hardRows : $rows;
+    $rawFleetCapacity = null;
+    $bottleneck = null;
+
+    foreach ($readinessRows as $row) {
+        $requiredQty = max(1, (int) ($row['quantity'] ?? 1));
+        $localQty = max(0, (int) ($row['local_available_qty'] ?? 0));
+        $fitCapacity = isset($row['item_fit_capacity']) ? max(0, (int) $row['item_fit_capacity']) : intdiv($localQty, $requiredQty);
 
         if (
-            $completeFits === null
-            || $fitCount < $completeFits
+            $rawFleetCapacity === null
+            || $fitCapacity < $rawFleetCapacity
             || (
-                $fitCount === $completeFits
+                $fitCapacity === $rawFleetCapacity
                 && $bottleneck !== null
                 && $localQty < (int) ($bottleneck['local_qty'] ?? PHP_INT_MAX)
             )
         ) {
-            $completeFits = $fitCount;
+            $rawFleetCapacity = $fitCapacity;
             $bottleneck = [
                 'item_name' => (string) ($row['item_name'] ?? 'Unknown item'),
                 'type_id' => isset($row['type_id']) ? (int) $row['type_id'] : null,
                 'local_qty' => $localQty,
                 'required_qty' => $requiredQty,
-                'complete_fit_limit' => $fitCount,
+                'complete_fit_limit' => $fitCapacity,
+                'item_block_type' => (string) ($row['item_block_type'] ?? 'hard_blocker'),
                 'is_stock_tracked' => !array_key_exists('is_stock_tracked', $row) || (bool) $row['is_stock_tracked'],
             ];
         }
     }
 
-    if ($completeFits === null || $bottleneck === null) {
+    $targetFleetSize = max(0, $targetFleetSize);
+    $resolvedRawFleetCapacity = max(0, (int) ($rawFleetCapacity ?? 0));
+    $fleetReady = $targetFleetSize > 0 ? min($resolvedRawFleetCapacity, $targetFleetSize) : $resolvedRawFleetCapacity;
+    $fleetGap = $targetFleetSize > 0 ? max(0, $targetFleetSize - $fleetReady) : 0;
+    $overcapacity = $targetFleetSize > 0 ? max(0, $resolvedRawFleetCapacity - $targetFleetSize) : 0;
+
+    $summarizeSupport = static function (array $supportRows): array {
+        if ($supportRows === []) {
+            return [
+                'item_name' => null,
+                'type_id' => null,
+                'capacity' => null,
+                'quantity' => 0,
+                'required_qty' => 0,
+            ];
+        }
+
+        usort($supportRows, static fn (array $a, array $b): int => ((int) ($a['item_fit_capacity'] ?? 0) <=> (int) ($b['item_fit_capacity'] ?? 0)) ?: ((int) ($a['local_available_qty'] ?? 0) <=> (int) ($b['local_available_qty'] ?? 0)));
+        $row = $supportRows[0];
+
+        return [
+            'item_name' => (string) ($row['item_name'] ?? 'Unknown item'),
+            'type_id' => isset($row['type_id']) ? (int) $row['type_id'] : null,
+            'capacity' => max(0, (int) ($row['item_fit_capacity'] ?? 0)),
+            'quantity' => max(0, (int) ($row['local_available_qty'] ?? 0)),
+            'required_qty' => max(1, (int) ($row['quantity'] ?? 1)),
+        ];
+    };
+
+    $softSummary = $summarizeSupport($softRows);
+    $sustainmentSummary = $summarizeSupport($sustainmentRows);
+
+    if ($bottleneck === null) {
         return [
             'complete_fits_available' => 0,
+            'fleet_ready' => 0,
+            'raw_fleet_capacity' => 0,
+            'fleet_gap' => $fleetGap,
+            'blocked_fits' => $fleetGap,
+            'overcapacity' => $overcapacity,
             'bottleneck_item_name' => null,
             'bottleneck_type_id' => null,
             'bottleneck_quantity' => 0,
             'bottleneck_required_quantity' => 0,
+            'bottleneck_capacity' => 0,
+            'bottleneck_impact' => 0,
+            'bottleneck_item_block_type' => 'hard_blocker',
             'minimum_stock_constraint' => 0,
             'constraint_label' => 'No doctrine items mapped yet.',
+            'hard_blocker_rows' => $hardRows,
+            'soft_blocker_rows' => $softRows,
+            'sustainment_rows' => $sustainmentRows,
+            'soft_blocker_item_name' => $softSummary['item_name'],
+            'soft_blocker_type_id' => $softSummary['type_id'],
+            'soft_blocker_capacity' => $softSummary['capacity'],
+            'sustainment_item_name' => $sustainmentSummary['item_name'],
+            'sustainment_type_id' => $sustainmentSummary['type_id'],
+            'sustainment_capacity' => $sustainmentSummary['capacity'],
         ];
     }
 
     $bottleneckItemName = trim((string) ($bottleneck['item_name'] ?? ''));
     $bottleneckQty = max(0, (int) ($bottleneck['local_qty'] ?? 0));
     $bottleneckRequired = max(1, (int) ($bottleneck['required_qty'] ?? 1));
-    $resolvedFits = max(0, (int) $completeFits);
+    $bottleneckCapacity = max(0, (int) ($bottleneck['complete_fit_limit'] ?? 0));
     $isStockTracked = (bool) ($bottleneck['is_stock_tracked'] ?? true);
     $constraintPrefix = $isStockTracked ? '' : 'External bottleneck · ';
 
     return [
-        'complete_fits_available' => $resolvedFits,
+        'complete_fits_available' => $fleetReady,
+        'fleet_ready' => $fleetReady,
+        'raw_fleet_capacity' => $resolvedRawFleetCapacity,
+        'fleet_gap' => $fleetGap,
+        'blocked_fits' => $fleetGap,
+        'overcapacity' => $overcapacity,
         'bottleneck_item_name' => $bottleneckItemName !== '' ? $bottleneckItemName : 'Unknown item',
         'bottleneck_type_id' => isset($bottleneck['type_id']) ? (int) $bottleneck['type_id'] : null,
         'bottleneck_quantity' => $bottleneckQty,
         'bottleneck_required_quantity' => $bottleneckRequired,
+        'bottleneck_capacity' => $bottleneckCapacity,
+        'bottleneck_impact' => $targetFleetSize > 0 ? max(0, $targetFleetSize - min($bottleneckCapacity, $targetFleetSize)) : 0,
         'bottleneck_is_stock_tracked' => $isStockTracked,
         'external_bottleneck' => !$isStockTracked,
         'bottleneck_label' => $isStockTracked ? 'Bottleneck' : 'External bottleneck',
         'bottleneck_management_label' => $isStockTracked ? 'Tracked for stocking' : 'Externally managed',
-        'minimum_stock_constraint' => $resolvedFits,
-        'constraint_label' => $constraintPrefix . doctrine_format_quantity($resolvedFits) . ' complete fits from ' . ($bottleneckItemName !== '' ? $bottleneckItemName : 'Unknown item'),
+        'bottleneck_item_block_type' => (string) ($bottleneck['item_block_type'] ?? 'hard_blocker'),
+        'minimum_stock_constraint' => $bottleneckCapacity,
+        'constraint_label' => $constraintPrefix . doctrine_format_quantity($fleetReady) . ' fleet-ready ships from ' . ($bottleneckItemName !== '' ? $bottleneckItemName : 'Unknown item'),
+        'hard_blocker_rows' => $hardRows,
+        'soft_blocker_rows' => $softRows,
+        'sustainment_rows' => $sustainmentRows,
+        'soft_blocker_item_name' => $softSummary['item_name'],
+        'soft_blocker_type_id' => $softSummary['type_id'],
+        'soft_blocker_capacity' => $softSummary['capacity'],
+        'soft_blocker_quantity' => $softSummary['quantity'],
+        'soft_blocker_required_quantity' => $softSummary['required_qty'],
+        'sustainment_item_name' => $sustainmentSummary['item_name'],
+        'sustainment_type_id' => $sustainmentSummary['type_id'],
+        'sustainment_capacity' => $sustainmentSummary['capacity'],
+        'sustainment_quantity' => $sustainmentSummary['quantity'],
+        'sustainment_required_quantity' => $sustainmentSummary['required_qty'],
     ];
 }
 
@@ -16686,12 +16886,14 @@ function doctrine_local_history_index(array $historyRows): array
     return $indexed;
 }
 
-function doctrine_complete_fit_history_series(array $items, array $historyByTypeId, int $days = 7): array
+function doctrine_complete_fit_history_series(array $items, array $historyByTypeId, int $targetFleetSize = 0, int $days = 7): array
 {
     $safeDays = max(3, min(30, $days));
     $dateMap = [];
+    $hardItems = array_values(array_filter($items, static fn (array $item): bool => doctrine_item_block_type($item) === 'hard_blocker'));
+    $trackedItems = $hardItems !== [] ? $hardItems : $items;
 
-    foreach ($items as $item) {
+    foreach ($trackedItems as $item) {
         $typeId = max(0, (int) ($item['type_id'] ?? 0));
         if ($typeId <= 0 || !isset($historyByTypeId[$typeId])) {
             continue;
@@ -16714,20 +16916,22 @@ function doctrine_complete_fit_history_series(array $items, array $historyByType
 
     $series = [];
     foreach ($dates as $tradeDate) {
-        $completeFits = null;
+        $fleetCapacity = null;
 
-        foreach ($items as $item) {
+        foreach ($trackedItems as $item) {
             $requiredQty = max(1, (int) ($item['quantity'] ?? 1));
             $typeId = max(0, (int) ($item['type_id'] ?? 0));
             $historyRow = ($historyByTypeId[$typeId][$tradeDate] ?? null);
             $localQty = is_array($historyRow) ? max(0, (int) ($historyRow['volume'] ?? 0)) : 0;
             $fitCount = intdiv($localQty, $requiredQty);
-            $completeFits = $completeFits === null ? $fitCount : min($completeFits, $fitCount);
+            $fleetCapacity = $fleetCapacity === null ? $fitCount : min($fleetCapacity, $fitCount);
         }
 
+        $resolvedFleetCapacity = max(0, (int) ($fleetCapacity ?? 0));
         $series[] = [
             'trade_date' => $tradeDate,
-            'complete_fits_available' => max(0, (int) ($completeFits ?? 0)),
+            'complete_fits_available' => $targetFleetSize > 0 ? min($resolvedFleetCapacity, $targetFleetSize) : $resolvedFleetCapacity,
+            'raw_fleet_capacity' => $resolvedFleetCapacity,
         ];
     }
 
@@ -17054,28 +17258,21 @@ function doctrine_fit_depletion_signal(array $items, array $depletionByType): ar
 
 function doctrine_class_profiles(): array
 {
-    return [
-        'subcap' => ['baseline' => 3, 'minimum' => 2, 'maximum' => 12, 'loss_cap' => 4, 'depletion_cap' => 3, 'trend_bonus' => 1],
-        'capital' => ['baseline' => 1, 'minimum' => 1, 'maximum' => 4, 'loss_cap' => 2, 'depletion_cap' => 1, 'trend_bonus' => 1],
-        'super' => ['baseline' => 1, 'minimum' => 1, 'maximum' => 2, 'loss_cap' => 1, 'depletion_cap' => 1, 'trend_bonus' => 0],
-        'titan' => ['baseline' => 1, 'minimum' => 1, 'maximum' => 1, 'loss_cap' => 0, 'depletion_cap' => 0, 'trend_bonus' => 0],
-        'implants_support' => ['baseline' => 2, 'minimum' => 1, 'maximum' => 6, 'loss_cap' => 2, 'depletion_cap' => 2, 'trend_bonus' => 1],
-    ];
+    return doctrine_target_fleet_profiles();
 }
 
 function doctrine_readiness_profile_for_class(string $doctrineClass): array
 {
-    $profiles = doctrine_class_profiles();
-    $profile = $profiles[$doctrineClass] ?? $profiles['subcap'];
+    $profile = doctrine_target_fleet_profile($doctrineClass);
 
     return [
         'class' => $doctrineClass,
-        'baseline_target_fit_count' => max(1, (int) ($profile['baseline'] ?? 3)),
-        'minimum_target_fit_count' => max(1, (int) ($profile['minimum'] ?? 2)),
-        'maximum_target_fit_count' => max(1, (int) ($profile['maximum'] ?? 12)),
-        'loss_adjustment_cap' => max(0, (int) ($profile['loss_cap'] ?? 4)),
-        'depletion_adjustment_cap' => max(0, (int) ($profile['depletion_cap'] ?? 3)),
-        'trend_bonus' => max(0, (int) ($profile['trend_bonus'] ?? 1)),
+        'baseline_target_fit_count' => max(1, (int) ($profile['default'] ?? 1)),
+        'minimum_target_fit_count' => max(1, (int) ($profile['minimum'] ?? 1)),
+        'maximum_target_fit_count' => max(1, (int) ($profile['maximum'] ?? 1)),
+        'loss_adjustment_cap' => 0,
+        'depletion_adjustment_cap' => 0,
+        'trend_bonus' => 0,
     ];
 }
 
@@ -17146,54 +17343,90 @@ function doctrine_hull_class_label(string $class): string
     };
 }
 
-function doctrine_recommended_target_fit_count(array $availability, array $trend, array $lossSignals, array $restockSignal, string $doctrineClass = 'subcap'): array
+function doctrine_recommended_target_fit_count(array $fit, string $doctrineClass = 'subcap'): array
 {
-    $depletionSignal = is_array($restockSignal['depletion_signal'] ?? null) ? $restockSignal['depletion_signal'] : [];
-    $profile = doctrine_readiness_profile_for_class($doctrineClass);
-    $baselineTarget = (int) ($profile['baseline_target_fit_count'] ?? 3);
-    $minimumTarget = (int) ($profile['minimum_target_fit_count'] ?? 2);
-    $maximumTarget = (int) ($profile['maximum_target_fit_count'] ?? 12);
-    $lossFloor = max(
-        0,
-        (int) ceil(max(
-            (int) ($lossSignals['hull_losses_7d'] ?? 0),
-            (int) ($lossSignals['item_equivalent_fit_losses_7d'] ?? 0)
-        ))
-    );
-    $recentPressure = max(
-        0,
-        (int) ceil(max(
-            (int) ($lossSignals['hull_losses_24h'] ?? 0),
-            (int) ($lossSignals['item_equivalent_fit_losses_24h'] ?? 0)
-        ))
-    );
-    $lossAdjustment = min((int) ($profile['loss_adjustment_cap'] ?? 4), (int) ceil(($lossFloor * 0.5) + ($recentPressure * 0.8)));
-    $depletionAdjustment = 0;
-    if (($depletionSignal['classification'] ?? 'stable') === 'draining') {
-        $depletionAdjustment = min((int) ($profile['depletion_adjustment_cap'] ?? 3), max(1, (int) ceil((float) ($depletionSignal['fit_equivalent_7d'] ?? 0.0))));
-    }
-    $recoveryAdjustment = 0;
-    if (($depletionSignal['classification'] ?? 'stable') === 'recovering' && ($trend['direction'] ?? 'unknown') !== 'down') {
-        $recoveryAdjustment = min(2, max(1, (int) round(abs((float) ($depletionSignal['fit_equivalent_7d'] ?? 0.0)))));
-    }
-    $trendAdjustment = ($trend['direction'] ?? 'unknown') === 'down' ? (int) ($profile['trend_bonus'] ?? 1) : 0;
-    $recommended = $baselineTarget + $lossAdjustment + $depletionAdjustment + $trendAdjustment - $recoveryAdjustment;
-    $recommended = max($minimumTarget, min($maximumTarget, max($recommended, $lossFloor, $recentPressure + 1)));
-    $completeFits = max(0, (int) ($availability['complete_fits_available'] ?? 0));
-    $gap = max(0, $recommended - $completeFits);
+    $profile = doctrine_target_fleet_profile($doctrineClass);
+    $defaultTarget = max(1, (int) ($profile['default'] ?? 1));
+    $minimumTarget = max(1, (int) ($profile['minimum'] ?? 1));
+    $maximumTarget = max(1, (int) ($profile['maximum'] ?? 1));
+    $overrideTarget = doctrine_target_fleet_size_override($fit, $doctrineClass);
+    $target = $overrideTarget ?? $defaultTarget;
 
     return [
         'doctrine_class' => $doctrineClass,
-        'recommended_target_fit_count' => $recommended,
-        'gap_to_target_fit_count' => $gap,
-        'baseline_target_fit_count' => $baselineTarget,
-        'loss_adjustment' => $lossAdjustment,
-        'depletion_adjustment' => $depletionAdjustment,
-        'recovery_adjustment' => $recoveryAdjustment,
-        'trend_adjustment' => $trendAdjustment,
+        'doctrine_target_fleet_size' => $target,
+        'recommended_target_fit_count' => $target,
+        'gap_to_target_fit_count' => 0,
+        'baseline_target_fit_count' => $defaultTarget,
+        'loss_adjustment' => 0,
+        'depletion_adjustment' => 0,
+        'recovery_adjustment' => 0,
+        'trend_adjustment' => 0,
         'minimum_target_fit_count' => $minimumTarget,
         'maximum_target_fit_count' => $maximumTarget,
-        'readiness_profile' => $profile,
+        'target_fleet_size_override' => $overrideTarget,
+        'target_fleet_size_source' => $overrideTarget !== null ? 'override' : 'class_default',
+        'target_fleet_size_range_label' => doctrine_format_quantity($minimumTarget) . '–' . doctrine_format_quantity($maximumTarget),
+        'readiness_profile' => doctrine_readiness_profile_for_class($doctrineClass),
+    ];
+}
+
+function doctrine_sustainment_risk(array $availability, array $targetPlan, array $lossSignals, array $depletionSignal): array
+{
+    $targetFleetSize = max(0, (int) ($targetPlan['doctrine_target_fleet_size'] ?? $targetPlan['recommended_target_fit_count'] ?? 0));
+    $softCapacity = isset($availability['soft_blocker_capacity']) ? (int) $availability['soft_blocker_capacity'] : null;
+    $sustainmentCapacity = isset($availability['sustainment_capacity']) ? (int) $availability['sustainment_capacity'] : null;
+    $candidateRows = [];
+
+    if ($softCapacity !== null) {
+        $candidateRows[] = [
+            'block_type' => 'soft_blocker',
+            'capacity' => $softCapacity,
+            'item_name' => (string) ($availability['soft_blocker_item_name'] ?? 'Ammo / charge package'),
+        ];
+    }
+    if ($sustainmentCapacity !== null) {
+        $candidateRows[] = [
+            'block_type' => 'sustainment',
+            'capacity' => $sustainmentCapacity,
+            'item_name' => (string) ($availability['sustainment_item_name'] ?? 'Sustainment package'),
+        ];
+    }
+
+    if ($candidateRows === []) {
+        return [
+            'state' => 'stable',
+            'label' => 'Stable',
+            'context' => 'No soft-blocker or sustainment-only lines were detected for separate fleet sustainment tracking.',
+            'limiting_item_name' => null,
+            'limiting_capacity' => null,
+            'limiting_block_type' => null,
+        ];
+    }
+
+    usort($candidateRows, static fn (array $a, array $b): int => ((int) ($a['capacity'] ?? PHP_INT_MAX) <=> (int) ($b['capacity'] ?? PHP_INT_MAX)) ?: strcmp((string) ($a['item_name'] ?? ''), (string) ($b['item_name'] ?? '')));
+    $limiter = $candidateRows[0];
+    $limitingCapacity = max(0, (int) ($limiter['capacity'] ?? 0));
+    $recentItemLosses = max(0, (int) ($lossSignals['item_equivalent_fit_losses_7d'] ?? 0));
+    $depletionState = (string) ($depletionSignal['classification'] ?? 'stable');
+
+    $state = 'stable';
+    $label = 'Stable';
+    if ($targetFleetSize > 0 && ($limitingCapacity <= 0 || $limitingCapacity < (int) ceil($targetFleetSize * 0.5))) {
+        $state = 'high';
+        $label = 'High risk';
+    } elseif ($targetFleetSize > 0 && ($limitingCapacity < $targetFleetSize || $recentItemLosses > 0 || $depletionState === 'draining')) {
+        $state = 'elevated';
+        $label = 'Elevated risk';
+    }
+
+    return [
+        'state' => $state,
+        'label' => $label,
+        'context' => ($limiter['item_name'] ?? 'Support package') . ' currently supports about ' . doctrine_format_quantity($limitingCapacity) . ' ships versus a readiness target of ' . doctrine_format_quantity($targetFleetSize) . '.',
+        'limiting_item_name' => (string) ($limiter['item_name'] ?? ''),
+        'limiting_capacity' => $limitingCapacity,
+        'limiting_block_type' => (string) ($limiter['block_type'] ?? 'sustainment'),
     ];
 }
 
@@ -17205,7 +17438,7 @@ function doctrine_readiness_state(array $availability, array $targetPlan): array
 
     $state = 'market_ready';
     $label = 'Market ready';
-    $context = 'Current complete-fit stock covers the present rule-based target, so ships can be fielded now.';
+    $context = 'Current hard-blocker stock covers the doctrine target fleet size, so the fleet can be fielded now.';
     $explanation = 'Complete fits currently meet or exceed the target fit count.';
 
     if ($completeFits <= 0 || $gap >= max(3, (int) ceil(max(1, $targetFits) * 0.5))) {
@@ -17260,7 +17493,7 @@ function doctrine_resupply_pressure(array $base, array $availability, array $tre
         : $rawGap;
     $bottleneckPressure = (($availability['external_bottleneck'] ?? false) === true)
         ? 0
-        : (((int) ($availability['bottleneck_required_quantity'] ?? 0) > 0 && (int) ($availability['bottleneck_quantity'] ?? 0) <= (int) ($availability['bottleneck_required_quantity'] ?? 0)) ? 1 : 0);
+        : (((int) ($availability['bottleneck_impact'] ?? 0) > 0) ? 1 : 0);
 
     $score = 0;
     $drivers = [];
@@ -17292,7 +17525,7 @@ function doctrine_resupply_pressure(array $base, array $availability, array $tre
 
     if ($bottleneckPressure > 0) {
         $score += 1;
-        $drivers[] = 'The current bottleneck item is already at or below one-fit coverage.';
+        $drivers[] = 'The limiting hard-blocker item is constraining doctrine fleet size.';
     }
 
     $state = 'stable';
@@ -17356,8 +17589,10 @@ function doctrine_operational_supply(array $rows, array $items, array $fit, arra
     $trackedRows = doctrine_filter_stock_tracked_rows($rows);
     $trackedItems = doctrine_filter_stock_tracked_items($items);
     $base = doctrine_supply_summary($trackedRows);
-    $availability = doctrine_complete_fit_availability($rows);
-    $historySeries = doctrine_complete_fit_history_series($items, $historyByTypeId, 7);
+    $targetPlan = doctrine_recommended_target_fit_count($fit, $doctrineClass);
+    $availability = doctrine_complete_fit_availability($rows, (int) ($targetPlan['doctrine_target_fleet_size'] ?? 0));
+    $targetPlan['gap_to_target_fit_count'] = max(0, (int) ($availability['fleet_gap'] ?? 0));
+    $historySeries = doctrine_complete_fit_history_series($items, $historyByTypeId, (int) ($targetPlan['doctrine_target_fleet_size'] ?? 0), 7);
     $trend = doctrine_readiness_trend($historySeries, (int) ($availability['complete_fits_available'] ?? 0));
     $lossSignals = doctrine_loss_pressure_signals(
         $trackedItems,
@@ -17377,9 +17612,9 @@ function doctrine_operational_supply(array $rows, array $items, array $fit, arra
     $depletionSignal = doctrine_fit_depletion_signal($trackedItems, $depletionByType);
     $restockSignal = doctrine_bottleneck_restock_signal($availability, $historyByTypeId);
     $restockSignal['depletion_signal'] = $depletionSignal;
-    $targetPlan = doctrine_recommended_target_fit_count($availability, $trend, $lossSignals, $restockSignal, $doctrineClass);
     $readiness = doctrine_readiness_state($availability, $targetPlan);
     $pressure = doctrine_resupply_pressure($base, $availability, $trend, $lossSignals, $restockSignal, $targetPlan);
+    $sustainmentRisk = doctrine_sustainment_risk($availability, $targetPlan, $lossSignals, $depletionSignal);
     $combined = doctrine_combined_supply_status($readiness, $pressure);
 
     $coveragePercent = (float) ($base['coverage_percent'] ?? 0.0);
@@ -17388,11 +17623,11 @@ function doctrine_operational_supply(array $rows, array $items, array $fit, arra
         (int) ($lossSignals['item_equivalent_fit_losses_7d'] ?? 0) * 4.5,
         (int) ($lossSignals['hull_losses_7d'] ?? 0) * 4.0
     ));
-    $scoreStockGap = min(30.0, max(0.0, ((float) ($targetPlan['gap_to_target_fit_count'] ?? 0) * 8.0) + max(0.0, (100.0 - $coveragePercent) * 0.08)));
+    $scoreStockGap = min(30.0, max(0.0, ((float) ($availability['fleet_gap'] ?? 0) * 8.0) + max(0.0, (100.0 - $coveragePercent) * 0.08)));
     $scoreDepletion = min(20.0, max(0.0, ((float) ($depletionSignal['fit_equivalent_7d'] ?? 0.0) * 6.0) + (($depletionSignal['classification'] ?? 'stable') === 'draining' ? 4.0 : 0.0)));
     $scoreBottleneck = ($availability['external_bottleneck'] ?? false)
         ? 0.0
-        : min(10.0, max(0.0, ((int) ($availability['bottleneck_required_quantity'] ?? 0) > 0 && (int) ($availability['bottleneck_quantity'] ?? 0) <= (int) ($availability['bottleneck_required_quantity'] ?? 0)) ? 7.0 : 3.0));
+        : min(10.0, max(0.0, ((int) ($availability['bottleneck_impact'] ?? 0) > 0) ? 7.0 : 3.0));
     $totalScore = round($scoreLossPressure + $scoreStockGap + $scoreDepletion + $scoreBottleneck, 2);
 
     return $base + $availability + $targetPlan + [
@@ -17422,6 +17657,11 @@ function doctrine_operational_supply(array $rows, array $items, array $fit, arra
         'readiness_trend_direction' => $trend['direction'],
         'readiness_trend_context' => $trend['context'],
         'complete_fit_history' => $historySeries,
+        'doctrine_target_fleet_size' => (int) ($targetPlan['doctrine_target_fleet_size'] ?? 0),
+        'fleet_ready' => (int) ($availability['fleet_ready'] ?? 0),
+        'fleet_gap' => (int) ($availability['fleet_gap'] ?? 0),
+        'blocked_fits' => (int) ($availability['blocked_fits'] ?? 0),
+        'overcapacity' => (int) ($availability['overcapacity'] ?? 0),
         'recent_hull_losses_24h' => $displayLossSignals['hull_losses_24h'],
         'recent_hull_losses_7d' => $displayLossSignals['hull_losses_7d'],
         'recent_item_fit_losses_24h' => $lossSignals['item_equivalent_fit_losses_24h'],
@@ -17434,6 +17674,12 @@ function doctrine_operational_supply(array $rows, array $items, array $fit, arra
         'depletion_state' => $depletionSignal['classification'],
         'depletion_context' => $depletionSignal['context'],
         'restock_trend' => $restockSignal['label'],
+        'sustainment_risk_state' => (string) ($sustainmentRisk['state'] ?? 'stable'),
+        'sustainment_risk_label' => (string) ($sustainmentRisk['label'] ?? 'Stable'),
+        'sustainment_risk_context' => (string) ($sustainmentRisk['context'] ?? ''),
+        'sustainment_risk_item_name' => $sustainmentRisk['limiting_item_name'] ?? null,
+        'sustainment_risk_capacity' => $sustainmentRisk['limiting_capacity'] ?? null,
+        'sustainment_risk_block_type' => $sustainmentRisk['limiting_block_type'] ?? null,
         'restock_trend_direction' => $restockSignal['direction'],
         'restock_trend_context' => $restockSignal['context'],
         'externally_managed' => (bool) (($availability['external_bottleneck'] ?? false) === true && (int) ($base['missing_lines'] ?? 0) === 0),
@@ -17702,6 +17948,7 @@ function doctrine_global_item_layer(array $fitsById, array $allDoctrineItems, ar
                 'fit_count' => 0,
                 'is_bottleneck' => false,
                 'is_external_bottleneck' => false,
+                'bottleneck_ship_impact' => 0,
             ];
         }
         if ($isStockTracked) {
@@ -17715,6 +17962,7 @@ function doctrine_global_item_layer(array $fitsById, array $allDoctrineItems, ar
         if ($bottleneckTypeId > 0) {
             $doctrineItemMeta[$bottleneckTypeId]['is_bottleneck'] = true;
             $doctrineItemMeta[$bottleneckTypeId]['is_external_bottleneck'] = !((bool) ($supply['bottleneck_is_stock_tracked'] ?? true));
+            $doctrineItemMeta[$bottleneckTypeId]['bottleneck_ship_impact'] += max(0, (int) ($supply['bottleneck_impact'] ?? 0));
         }
     }
 
@@ -17729,7 +17977,7 @@ function doctrine_global_item_layer(array $fitsById, array $allDoctrineItems, ar
             $priority = (int) round($priority * 1.6);
         }
         if (($doctrineMeta['is_bottleneck'] ?? false) === true && ($doctrineMeta['is_external_bottleneck'] ?? false) !== true) {
-            $priority += 18;
+            $priority += 18 + min(18, ((int) ($doctrineMeta['bottleneck_ship_impact'] ?? 0) * 2));
         }
         if (($depletion['classification'] ?? 'stable') === 'draining') {
             $priority += 10;
@@ -17740,6 +17988,7 @@ function doctrine_global_item_layer(array $fitsById, array $allDoctrineItems, ar
             'doctrine_fit_count' => (int) ($doctrineMeta['fit_count'] ?? 0),
             'is_bottleneck_item' => (bool) ($doctrineMeta['is_bottleneck'] ?? false),
             'is_external_bottleneck' => (bool) ($doctrineMeta['is_external_bottleneck'] ?? false),
+            'bottleneck_ship_impact' => (int) ($doctrineMeta['bottleneck_ship_impact'] ?? 0),
             'depletion_state' => (string) ($depletion['classification'] ?? 'stable'),
             'depletion_24h' => (int) ($depletion['depletion_24h'] ?? 0),
             'depletion_7d' => (int) ($depletion['depletion_7d'] ?? 0),
@@ -18658,14 +18907,14 @@ function doctrine_groups_overview_data(): array
     $watchFits = count($notReadyFits);
     $pressureFitCount = count($pressureFits);
     $globalLayer = $snapshot['global_layer'] ?? ['rows' => [], 'top_restock_items' => []];
-    $topBottlenecks = array_values(array_filter($globalLayer['rows'] ?? [], static fn (array $row): bool => (bool) ($row['is_bottleneck_item'] ?? false)));
+    $topBottlenecks = array_values(array_filter($globalLayer['rows'] ?? [], static fn (array $row): bool => (bool) ($row['is_bottleneck_item'] ?? false) && (int) ($row['bottleneck_ship_impact'] ?? 0) > 0));
 
     return [
         'summary' => [
             ['label' => 'Doctrine Groups', 'value' => (string) count($groups), 'context' => 'Operational doctrine collections under active readiness tracking'],
-            ['label' => 'Complete Fits', 'value' => doctrine_format_quantity($completeFitsAvailable), 'context' => doctrine_format_quantity($watchFits) . ' fits have readiness gaps · ' . doctrine_format_quantity($pressureFitCount) . ' fits show pressure'],
-            ['label' => 'Target Fits', 'value' => doctrine_format_quantity($targetFitsDesired), 'context' => 'Readiness uses fit coverage; resupply pressure uses losses, depletion, drain, and bottlenecks'],
-            ['label' => 'Fit Gap', 'value' => doctrine_format_quantity($fitGap), 'context' => market_format_isk($restockGap) . ' estimated hub spend still missing'],
+            ['label' => 'Fleet Ready', 'value' => doctrine_format_quantity($completeFitsAvailable), 'context' => doctrine_format_quantity($watchFits) . ' doctrines have readiness gaps · ' . doctrine_format_quantity($pressureFitCount) . ' doctrines show pressure'],
+            ['label' => 'Target Fleet', 'value' => doctrine_format_quantity($targetFitsDesired), 'context' => 'Fleet readiness is doctrine-scoped; losses and depletion now drive urgency instead of target inflation'],
+            ['label' => 'Fleet Gap', 'value' => doctrine_format_quantity($fitGap), 'context' => market_format_isk($restockGap) . ' estimated hub spend still missing'],
         ],
         'groups' => $groups,
         'fits' => $fits,
@@ -18823,6 +19072,8 @@ function doctrine_fit_detail_view_model(int $fitId): array
             foreach ($rows as &$row) {
                 $row['required_qty_label'] = doctrine_format_quantity((int) ($row['quantity'] ?? 1));
                 $row['local_available_qty_label'] = doctrine_format_quantity((int) ($row['local_available_qty'] ?? 0));
+                $row['item_block_type'] = doctrine_item_block_type($row);
+                $row['item_block_type_label'] = doctrine_item_block_type_label((string) ($row['item_block_type'] ?? 'hard_blocker'));
                 $row['missing_qty_label'] = (($row['is_stock_tracked'] ?? true) === true)
                     ? doctrine_format_quantity((int) ($row['missing_qty'] ?? 0))
                     : 'Externally managed';
@@ -18849,9 +19100,10 @@ function doctrine_fit_detail_view_model(int $fitId): array
             'items' => $items,
             'summary' => [
                 ['label' => 'Readiness', 'value' => (string) ($supply['readiness_label'] ?? $supply['status_label'] ?? 'Market ready'), 'context' => (string) ($supply['readiness_context'] ?? 'Operational readiness unavailable.')],
-                ['label' => 'Resupply Pressure', 'value' => (string) ($supply['resupply_pressure_label'] ?? 'Stable'), 'context' => (string) ($supply['resupply_pressure_context'] ?? 'Resupply pressure unavailable.')],
-                ['label' => 'Complete Fits', 'value' => doctrine_format_quantity((int) ($supply['complete_fits_available'] ?? 0)), 'context' => (string) ($supply['constraint_label'] ?? 'Current fleet-ready fit count unavailable.')],
-                ['label' => 'Fit Gap', 'value' => doctrine_format_quantity((int) ($supply['gap_to_target_fit_count'] ?? 0)), 'context' => market_format_isk((float) ($supply['restock_gap_isk'] ?? 0.0)) . ' estimated hub spend to close the doctrine gap'],
+                ['label' => 'Target Fleet', 'value' => doctrine_format_quantity((int) ($supply['doctrine_target_fleet_size'] ?? $supply['recommended_target_fit_count'] ?? 0)), 'context' => ucfirst((string) ($supply['doctrine_class_label'] ?? 'Subcap')) . ' doctrine default ' . (string) ($supply['target_fleet_size_range_label'] ?? '') . (($supply['target_fleet_size_source'] ?? 'class_default') === 'override' ? ' · manual override' : ' · class default')],
+                ['label' => 'Fleet Ready', 'value' => doctrine_format_quantity((int) ($supply['fleet_ready'] ?? $supply['complete_fits_available'] ?? 0)), 'context' => (string) ($supply['constraint_label'] ?? 'Current fleet-ready count unavailable.')],
+                ['label' => 'Fleet Gap', 'value' => doctrine_format_quantity((int) ($supply['fleet_gap'] ?? $supply['gap_to_target_fit_count'] ?? 0)), 'context' => doctrine_format_quantity((int) ($supply['overcapacity'] ?? 0)) . ' overcapacity · ' . market_format_isk((float) ($supply['restock_gap_isk'] ?? 0.0)) . ' estimated hub spend'],
+                ['label' => 'Sustainment Risk', 'value' => (string) ($supply['sustainment_risk_label'] ?? 'Stable'), 'context' => (string) ($supply['sustainment_risk_context'] ?? 'Sustainment risk unavailable.')],
             ],
             'snapshot_history' => $history,
             'freshness' => $snapshot['_freshness'] ?? [],
@@ -20704,9 +20956,9 @@ function buy_all_item_impact_map(array $fits, array $itemsByFitId, array $market
         }
 
         $supply = is_array($fit['supply'] ?? null) ? $fit['supply'] : [];
-        $targetReadyFits = max(0, (int) ($supply['recommended_target_fit_count'] ?? 0));
-        $fitReadyCapacity = max(0, (int) ($supply['complete_fits_available'] ?? 0));
-        $targetShortfall = max(0, $targetReadyFits - $fitReadyCapacity);
+        $targetReadyFits = max(0, (int) ($supply['doctrine_target_fleet_size'] ?? $supply['recommended_target_fit_count'] ?? 0));
+        $fitReadyCapacity = max(0, (int) ($supply['fleet_ready'] ?? $supply['complete_fits_available'] ?? 0));
+        $targetShortfall = max(0, (int) ($supply['blocked_fits'] ?? max(0, $targetReadyFits - $fitReadyCapacity)));
         $fitName = (string) ($fit['fit_name'] ?? ('Fit #' . $fitId));
         $groupNames = array_values((array) ($fit['group_names'] ?? []));
         $hullClass = doctrine_fit_hull_class($fit, $fitItems, $metadataByType);
@@ -20725,11 +20977,12 @@ function buy_all_item_impact_map(array $fits, array $itemsByFitId, array $market
             $requiredQty = max(1, (int) ($item['quantity'] ?? 1));
             $localStock = max(0, (int) (($marketByTypeId[$typeId]['alliance_total_sell_volume'] ?? 0)));
             $itemFitCapacity = intdiv($localStock, $requiredQty);
-            $exactDeficitQuantity = max(0, ($targetReadyFits * $requiredQty) - $localStock);
-            $deterministicBlockedFits = 0;
-            if ($targetShortfall > 0 && $itemFitCapacity <= $fitReadyCapacity) {
-                $deterministicBlockedFits = min($targetShortfall, max(0, $targetReadyFits - $itemFitCapacity));
-            }
+            $itemBlockType = doctrine_item_block_type($item, $metadataByType);
+            $exactDeficitQuantity = $itemBlockType === 'hard_blocker' ? max(0, ($targetReadyFits * $requiredQty) - $localStock) : 0;
+            $supportDeficitQuantity = $itemBlockType !== 'hard_blocker' ? max(0, ($targetReadyFits * $requiredQty) - $localStock) : 0;
+            $deterministicBlockedFits = ((int) ($supply['bottleneck_type_id'] ?? 0) === $typeId && $itemBlockType === 'hard_blocker')
+                ? $targetShortfall
+                : 0;
 
             if (!isset($impactByType[$typeId])) {
                 $impactByType[$typeId] = [
@@ -20742,10 +20995,12 @@ function buy_all_item_impact_map(array $fits, array $itemsByFitId, array $market
                     'total_target_shortfall' => 0,
                     'deterministic_blocked_fits' => 0,
                     'exact_deficit_quantity' => 0,
+                    'support_deficit_quantity' => 0,
                     'exact_deficit_fit_count' => 0,
                     'blocked_fit_count' => 0,
                     'bottleneck_fit_count' => 0,
                     'required_quantity_total' => 0,
+                    'item_block_types' => [],
                     'activity_modifier_total' => 0.0,
                     'activity_modifier_count' => 0,
                     'activity_pressure_modifier' => 1.0,
@@ -20757,10 +21012,12 @@ function buy_all_item_impact_map(array $fits, array $itemsByFitId, array $market
             $impactByType[$typeId]['total_target_shortfall'] += $targetShortfall;
             $impactByType[$typeId]['deterministic_blocked_fits'] += $deterministicBlockedFits;
             $impactByType[$typeId]['exact_deficit_quantity'] += $exactDeficitQuantity;
+            $impactByType[$typeId]['support_deficit_quantity'] += $supportDeficitQuantity;
             $impactByType[$typeId]['required_quantity_total'] += $requiredQty;
             $impactByType[$typeId]['valid_fit_names'][$fitName] = true;
             $impactByType[$typeId]['valid_fit_ids'][$fitId] = true;
             $impactByType[$typeId]['fit_hull_classes'][$hullClass] = true;
+            $impactByType[$typeId]['item_block_types'][$itemBlockType] = true;
             $impactByType[$typeId]['activity_modifier_total'] += $activityModifier;
             $impactByType[$typeId]['activity_modifier_count']++;
             if ($exactDeficitQuantity > 0) {
@@ -20786,11 +21043,13 @@ function buy_all_item_impact_map(array $fits, array $itemsByFitId, array $market
                 'hull_class_label' => doctrine_hull_class_label($hullClass),
                 'required_quantity' => $requiredQty,
                 'local_stock' => $localStock,
+                'item_block_type' => $itemBlockType,
                 'item_fit_capacity' => $itemFitCapacity,
                 'fit_ready_capacity' => $fitReadyCapacity,
                 'target_ready_fits' => $targetReadyFits,
                 'target_shortfall' => $targetShortfall,
                 'exact_deficit_quantity' => $exactDeficitQuantity,
+                'support_deficit_quantity' => $supportDeficitQuantity,
                 'deterministic_blocked_fits' => $deterministicBlockedFits,
                 'activity_pressure_modifier' => $activityModifier,
             ];
@@ -20812,13 +21071,15 @@ function buy_all_item_impact_map(array $fits, array $itemsByFitId, array $market
         );
         $impact['hull_class'] = buy_all_primary_hull_class(array_keys((array) ($impact['fit_hull_classes'] ?? [])));
         $impact['hull_class_label'] = buy_all_hull_class_label((string) ($impact['hull_class'] ?? 'subcap'));
+        $impact['item_block_type'] = isset($impact['item_block_types']['hard_blocker']) ? 'hard_blocker' : (isset($impact['item_block_types']['soft_blocker']) ? 'soft_blocker' : 'sustainment');
+        $impact['item_block_type_label'] = doctrine_item_block_type_label((string) ($impact['item_block_type'] ?? 'hard_blocker'));
         $impact['valid_doctrine_names'] = array_values(array_keys((array) ($impact['valid_doctrine_names'] ?? [])));
         $impact['valid_fit_names'] = array_values(array_keys((array) ($impact['valid_fit_names'] ?? [])));
         $impact['valid_fit_ids'] = array_values(array_keys((array) ($impact['valid_fit_ids'] ?? [])));
         $impact['fit_hull_classes'] = array_values(array_keys((array) ($impact['fit_hull_classes'] ?? [])));
         $impact['affected_fits'] = array_values(array_filter(
             (array) ($impact['affected_fits'] ?? []),
-            static fn (array $fit): bool => (int) ($fit['deterministic_blocked_fits'] ?? 0) > 0 || (int) ($fit['exact_deficit_quantity'] ?? 0) > 0
+            static fn (array $fit): bool => (int) ($fit['deterministic_blocked_fits'] ?? 0) > 0 || (int) ($fit['exact_deficit_quantity'] ?? 0) > 0 || (int) ($fit['support_deficit_quantity'] ?? 0) > 0
         ));
     }
     unset($impact);
