@@ -4530,7 +4530,7 @@ function db_sync_schedule_apply_adjustment(int $scheduleId, array $changes): boo
              updated_at = CURRENT_TIMESTAMP
          WHERE id = ?
          LIMIT 1',
-        [$intervalMinutes, $intervalMinutes * 60, $offsetMinutes, $offsetMinutes * 60, $timeoutSeconds, $priority, $tuningMode, $reason, $reason, $reason, $nextDueAt, $nextDueAt, $nextDueAt, $currentState, $scheduleId]
+        [$intervalMinutes, $intervalMinutes * 60, $offsetMinutes, $offsetMinutes * 60, $timeoutSeconds, $priority, $tuningMode, $reason, $reason, $reason, $nextDueAt, $nextDueAt, $currentState, $scheduleId]
     );
 }
 
