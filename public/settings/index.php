@@ -1531,6 +1531,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                 </label>
 
                 <?php $schedulerHealth = (array) ($syncDashboard['health_summary'] ?? []); ?>
+                <?php $schedulerDaemon = (array) ($syncDashboard['daemon_state'] ?? ($schedulerHealth['daemon'] ?? [])); ?>
                 <div class="space-y-4">
                     <div class="grid gap-4 xl:grid-cols-[1.2fr_1fr]">
                         <article class="rounded-xl border border-border bg-black/20 p-4">
@@ -1557,6 +1558,27 @@ include __DIR__ . '/../../src/views/partials/header.php';
                             </div>
                         </article>
                         <article class="rounded-xl border border-border bg-black/20 p-4">
+                            <div class="flex items-start justify-between gap-3">
+                                <div>
+                                    <p class="text-sm text-slate-100">Scheduler daemon state</p>
+                                    <p class="mt-1 text-xs text-muted">Tracks the long-running master loop, lease heartbeat, wake/recovery state, and watchdog observations.</p>
+                                </div>
+                                <?php $daemonStatus = (string) ($schedulerDaemon['derived_status'] ?? 'stopped'); ?>
+                                <?php $daemonStatusClass = $daemonStatus === 'running' ? 'border-emerald-400/30 bg-emerald-500/10 text-emerald-100' : ($daemonStatus === 'degraded' ? 'border-amber-400/40 bg-amber-500/10 text-amber-100' : 'border-rose-400/40 bg-rose-500/10 text-rose-100'); ?>
+                                <span class="inline-flex items-center rounded-full border px-3 py-1 text-xs font-medium uppercase tracking-[0.16em] <?= $daemonStatusClass ?>"><?= htmlspecialchars($daemonStatus, ENT_QUOTES) ?></span>
+                            </div>
+                            <div class="mt-4 grid gap-3 sm:grid-cols-2">
+                                <div class="rounded-lg border border-border bg-black/30 p-3 text-sm"><p class="text-xs uppercase tracking-[0.16em] text-muted">Owner</p><p class="mt-2 font-semibold text-white"><?= htmlspecialchars((string) ($schedulerDaemon['owner_label'] ?? 'unclaimed'), ENT_QUOTES) ?></p><p class="mt-1 text-xs text-muted">PID <?= (int) ($schedulerDaemon['owner_pid'] ?? 0) ?> · <?= htmlspecialchars((string) ($schedulerDaemon['owner_hostname'] ?? 'unknown'), ENT_QUOTES) ?></p></div>
+                                <div class="rounded-lg border border-border bg-black/30 p-3 text-sm"><p class="text-xs uppercase tracking-[0.16em] text-muted">Loop</p><p class="mt-2 font-semibold text-white"><?= htmlspecialchars((string) ($schedulerDaemon['loop_state'] ?? 'idle'), ENT_QUOTES) ?></p><p class="mt-1 text-xs text-muted">Dispatches <?= (int) ($schedulerDaemon['active_dispatch_count'] ?? 0) ?> · loops <?= (int) ($schedulerDaemon['current_loop_count'] ?? 0) ?></p></div>
+                                <div class="rounded-lg border border-border bg-black/30 p-3 text-sm"><p class="text-xs uppercase tracking-[0.16em] text-muted">Heartbeat</p><p class="mt-2 font-semibold text-white"><?= htmlspecialchars((string) ($schedulerDaemon['heartbeat_at'] ?? 'never'), ENT_QUOTES) ?></p><p class="mt-1 text-xs text-muted">Age <?= isset($schedulerDaemon['heartbeat_age_seconds']) ? htmlspecialchars(human_duration_ago((int) $schedulerDaemon['heartbeat_age_seconds']), ENT_QUOTES) : '—' ?> · uptime <?= isset($schedulerDaemon['uptime_seconds']) ? htmlspecialchars(human_duration_ago((int) $schedulerDaemon['uptime_seconds']), ENT_QUOTES) : '—' ?></p></div>
+                                <div class="rounded-lg border border-border bg-black/30 p-3 text-sm"><p class="text-xs uppercase tracking-[0.16em] text-muted">Dispatch / watchdog</p><p class="mt-2 font-semibold text-white"><?= htmlspecialchars((string) ($schedulerDaemon['last_dispatch_at'] ?? 'never'), ENT_QUOTES) ?></p><p class="mt-1 text-xs text-muted">Watchdog <?= htmlspecialchars((string) ($schedulerDaemon['watchdog_status'] ?? 'unknown'), ENT_QUOTES) ?> · <?= htmlspecialchars((string) ($schedulerDaemon['last_watchdog_at'] ?? 'never'), ENT_QUOTES) ?></p></div>
+                                <div class="rounded-lg border border-border bg-black/30 p-3 text-sm sm:col-span-2"><p class="text-xs uppercase tracking-[0.16em] text-muted">Recovery</p><p class="mt-2 font-semibold text-white"><?= htmlspecialchars((string) ($schedulerDaemon['last_recovery_event'] ?? 'No recovery event recorded.'), ENT_QUOTES) ?></p><p class="mt-1 text-xs text-muted">Last recovery <?= htmlspecialchars((string) ($schedulerDaemon['last_recovery_at'] ?? 'never'), ENT_QUOTES) ?> · last exit <?= htmlspecialchars((string) ($schedulerDaemon['last_exit_reason'] ?? 'n/a'), ENT_QUOTES) ?></p></div>
+                            </div>
+                        </article>
+                    </div>
+
+                    <div class="grid gap-4 xl:grid-cols-[1.2fr_1fr]">
+                        <article class="rounded-xl border border-border bg-black/20 p-4">
                             <p class="text-sm text-slate-100">Busiest minute offsets</p>
                             <p class="mt-1 text-xs text-muted">Use this to spot offset clustering before jobs contend for the same minute slot.</p>
                             <div class="mt-4 space-y-2 text-sm">
@@ -1566,6 +1588,16 @@ include __DIR__ . '/../../src/views/partials/header.php';
                                         <p class="mt-1 text-xs text-muted"><?= htmlspecialchars((string) ($offsetRow['job_keys'] ?? ''), ENT_QUOTES) ?></p>
                                     </div>
                                 <?php endforeach; ?>
+                            </div>
+                        </article>
+                        <article class="rounded-xl border border-border bg-black/20 p-4">
+                            <p class="text-sm text-slate-100">Daemon recycling / control flags</p>
+                            <p class="mt-1 text-xs text-muted">Long-running PHP workers recycle cleanly to control memory growth while systemd or the watchdog brings them back.</p>
+                            <div class="mt-4 grid gap-3 sm:grid-cols-2 text-sm">
+                                <div class="rounded-lg border border-border bg-black/30 p-3"><p class="text-xs uppercase tracking-[0.16em] text-muted">Memory</p><p class="mt-2 font-semibold text-white"><?= htmlspecialchars(scheduler_format_bytes((int) ($schedulerDaemon['current_memory_bytes'] ?? 0)), ENT_QUOTES) ?></p></div>
+                                <div class="rounded-lg border border-border bg-black/30 p-3"><p class="text-xs uppercase tracking-[0.16em] text-muted">Lease expires</p><p class="mt-2 font-semibold text-white"><?= htmlspecialchars((string) ($schedulerDaemon['lease_expires_at'] ?? 'n/a'), ENT_QUOTES) ?></p></div>
+                                <div class="rounded-lg border border-border bg-black/30 p-3"><p class="text-xs uppercase tracking-[0.16em] text-muted">Stop requested</p><p class="mt-2 font-semibold text-white"><?= !empty($schedulerDaemon['stop_requested']) ? 'Yes' : 'No' ?></p></div>
+                                <div class="rounded-lg border border-border bg-black/30 p-3"><p class="text-xs uppercase tracking-[0.16em] text-muted">Restart requested</p><p class="mt-2 font-semibold text-white"><?= !empty($schedulerDaemon['restart_requested']) ? 'Yes' : 'No' ?></p></div>
                             </div>
                         </article>
                     </div>

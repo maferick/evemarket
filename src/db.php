@@ -3829,6 +3829,250 @@ function db_runner_lock_force_release(string $lockName): bool
     return db_runner_lock_holder_connection_id($lockName) === null;
 }
 
+function db_scheduler_daemon_state_ensure(): void
+{
+    db_execute('CREATE TABLE IF NOT EXISTS scheduler_daemon_state (
+        daemon_key VARCHAR(64) NOT NULL PRIMARY KEY,
+        owner_token VARCHAR(190) DEFAULT NULL,
+        owner_label VARCHAR(190) DEFAULT NULL,
+        owner_pid INT UNSIGNED DEFAULT NULL,
+        owner_hostname VARCHAR(190) DEFAULT NULL,
+        status VARCHAR(32) NOT NULL DEFAULT \'stopped\',
+        loop_state VARCHAR(64) DEFAULT NULL,
+        stop_requested TINYINT(1) NOT NULL DEFAULT 0,
+        restart_requested TINYINT(1) NOT NULL DEFAULT 0,
+        active_dispatch_count INT UNSIGNED NOT NULL DEFAULT 0,
+        current_loop_count BIGINT UNSIGNED NOT NULL DEFAULT 0,
+        current_memory_bytes BIGINT UNSIGNED NOT NULL DEFAULT 0,
+        started_at DATETIME DEFAULT NULL,
+        heartbeat_at DATETIME DEFAULT NULL,
+        lease_expires_at DATETIME DEFAULT NULL,
+        last_dispatch_at DATETIME DEFAULT NULL,
+        last_recovery_at DATETIME DEFAULT NULL,
+        last_recovery_event VARCHAR(500) DEFAULT NULL,
+        last_watchdog_at DATETIME DEFAULT NULL,
+        watchdog_status VARCHAR(64) DEFAULT NULL,
+        wake_requested_at DATETIME DEFAULT NULL,
+        last_exit_at DATETIME DEFAULT NULL,
+        last_exit_code INT DEFAULT NULL,
+        last_exit_reason VARCHAR(500) DEFAULT NULL,
+        metadata_json LONGTEXT DEFAULT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        KEY idx_scheduler_daemon_lease (lease_expires_at),
+        KEY idx_scheduler_daemon_heartbeat (heartbeat_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4');
+
+    db_execute(
+        'INSERT INTO scheduler_daemon_state (daemon_key, status, loop_state, watchdog_status)
+         VALUES (?, ?, ?, ?)
+         ON DUPLICATE KEY UPDATE daemon_key = daemon_key',
+        ['master', 'stopped', 'idle', 'unknown']
+    );
+}
+
+function db_scheduler_daemon_state_fetch(string $daemonKey = 'master'): ?array
+{
+    db_scheduler_daemon_state_ensure();
+
+    $row = db_select_one(
+        'SELECT daemon_key, owner_token, owner_label, owner_pid, owner_hostname, status, loop_state, stop_requested, restart_requested, active_dispatch_count, current_loop_count, current_memory_bytes, started_at, heartbeat_at, lease_expires_at, last_dispatch_at, last_recovery_at, last_recovery_event, last_watchdog_at, watchdog_status, wake_requested_at, last_exit_at, last_exit_code, last_exit_reason, metadata_json, created_at, updated_at
+         FROM scheduler_daemon_state
+         WHERE daemon_key = ?
+         LIMIT 1',
+        [mb_substr(trim($daemonKey), 0, 64)]
+    );
+
+    return $row !== [] ? $row : null;
+}
+
+function db_scheduler_daemon_try_claim(string $daemonKey, string $ownerToken, string $ownerLabel, int $ownerPid, string $ownerHostname, int $leaseTtlSeconds, array $metadata = []): bool
+{
+    db_scheduler_daemon_state_ensure();
+
+    $safeDaemonKey = mb_substr(trim($daemonKey), 0, 64);
+    $safeOwnerToken = mb_substr(trim($ownerToken), 0, 190);
+    $safeOwnerLabel = mb_substr(trim($ownerLabel), 0, 190);
+    $safeHostname = mb_substr(trim($ownerHostname), 0, 190);
+    $safeTtl = max(5, min(300, $leaseTtlSeconds));
+    $metadataJson = $metadata !== [] ? json_encode($metadata, JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE) : null;
+
+    $ok = db_execute(
+        'INSERT INTO scheduler_daemon_state (
+            daemon_key, owner_token, owner_label, owner_pid, owner_hostname, status, loop_state, stop_requested, restart_requested, active_dispatch_count, current_loop_count, current_memory_bytes, started_at, heartbeat_at, lease_expires_at, metadata_json, created_at, updated_at
+         ) VALUES (
+            ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, 0, 0, UTC_TIMESTAMP(), UTC_TIMESTAMP(), DATE_ADD(UTC_TIMESTAMP(), INTERVAL ? SECOND), ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+         )
+         ON DUPLICATE KEY UPDATE
+            owner_token = IF(owner_token IS NULL OR owner_token = VALUES(owner_token) OR lease_expires_at IS NULL OR lease_expires_at <= UTC_TIMESTAMP(), VALUES(owner_token), owner_token),
+            owner_label = IF(owner_token IS NULL OR owner_token = VALUES(owner_token) OR lease_expires_at IS NULL OR lease_expires_at <= UTC_TIMESTAMP(), VALUES(owner_label), owner_label),
+            owner_pid = IF(owner_token IS NULL OR owner_token = VALUES(owner_token) OR lease_expires_at IS NULL OR lease_expires_at <= UTC_TIMESTAMP(), VALUES(owner_pid), owner_pid),
+            owner_hostname = IF(owner_token IS NULL OR owner_token = VALUES(owner_token) OR lease_expires_at IS NULL OR lease_expires_at <= UTC_TIMESTAMP(), VALUES(owner_hostname), owner_hostname),
+            status = IF(owner_token IS NULL OR owner_token = VALUES(owner_token) OR lease_expires_at IS NULL OR lease_expires_at <= UTC_TIMESTAMP(), VALUES(status), status),
+            loop_state = IF(owner_token IS NULL OR owner_token = VALUES(owner_token) OR lease_expires_at IS NULL OR lease_expires_at <= UTC_TIMESTAMP(), VALUES(loop_state), loop_state),
+            stop_requested = IF(owner_token IS NULL OR owner_token = VALUES(owner_token) OR lease_expires_at IS NULL OR lease_expires_at <= UTC_TIMESTAMP(), 0, stop_requested),
+            restart_requested = IF(owner_token IS NULL OR owner_token = VALUES(owner_token) OR lease_expires_at IS NULL OR lease_expires_at <= UTC_TIMESTAMP(), 0, restart_requested),
+            active_dispatch_count = IF(owner_token IS NULL OR owner_token = VALUES(owner_token) OR lease_expires_at IS NULL OR lease_expires_at <= UTC_TIMESTAMP(), 0, active_dispatch_count),
+            current_loop_count = IF(owner_token IS NULL OR owner_token = VALUES(owner_token) OR lease_expires_at IS NULL OR lease_expires_at <= UTC_TIMESTAMP(), 0, current_loop_count),
+            current_memory_bytes = IF(owner_token IS NULL OR owner_token = VALUES(owner_token) OR lease_expires_at IS NULL OR lease_expires_at <= UTC_TIMESTAMP(), 0, current_memory_bytes),
+            started_at = IF(owner_token IS NULL OR owner_token = VALUES(owner_token) OR lease_expires_at IS NULL OR lease_expires_at <= UTC_TIMESTAMP(), UTC_TIMESTAMP(), started_at),
+            heartbeat_at = IF(owner_token IS NULL OR owner_token = VALUES(owner_token) OR lease_expires_at IS NULL OR lease_expires_at <= UTC_TIMESTAMP(), UTC_TIMESTAMP(), heartbeat_at),
+            lease_expires_at = IF(owner_token IS NULL OR owner_token = VALUES(owner_token) OR lease_expires_at IS NULL OR lease_expires_at <= UTC_TIMESTAMP(), DATE_ADD(UTC_TIMESTAMP(), INTERVAL ? SECOND), lease_expires_at),
+            metadata_json = IF(owner_token IS NULL OR owner_token = VALUES(owner_token) OR lease_expires_at IS NULL OR lease_expires_at <= UTC_TIMESTAMP(), VALUES(metadata_json), metadata_json),
+            updated_at = CURRENT_TIMESTAMP',
+        [$safeDaemonKey, $safeOwnerToken, $safeOwnerLabel, max(0, $ownerPid), $safeHostname, 'running', 'starting', $safeTtl, $metadataJson, $safeTtl]
+    );
+    if (!$ok) {
+        return false;
+    }
+
+    $row = db_scheduler_daemon_state_fetch($safeDaemonKey);
+
+    return (string) ($row['owner_token'] ?? '') === $safeOwnerToken;
+}
+
+function db_scheduler_daemon_heartbeat(string $daemonKey, string $ownerToken, array $state = [], int $leaseTtlSeconds = 30): bool
+{
+    db_scheduler_daemon_state_ensure();
+
+    $safeDaemonKey = mb_substr(trim($daemonKey), 0, 64);
+    $safeOwnerToken = mb_substr(trim($ownerToken), 0, 190);
+    $safeTtl = max(5, min(300, $leaseTtlSeconds));
+    $status = array_key_exists('status', $state) ? mb_substr(trim((string) $state['status']), 0, 32) : null;
+    $loopState = array_key_exists('loop_state', $state) ? mb_substr(trim((string) $state['loop_state']), 0, 64) : null;
+    $dispatchCount = array_key_exists('active_dispatch_count', $state) ? max(0, (int) $state['active_dispatch_count']) : null;
+    $loopCount = array_key_exists('current_loop_count', $state) ? max(0, (int) $state['current_loop_count']) : null;
+    $memoryBytes = array_key_exists('current_memory_bytes', $state) ? max(0, (int) $state['current_memory_bytes']) : null;
+    $metadataJson = array_key_exists('metadata', $state) && is_array($state['metadata'])
+        ? json_encode($state['metadata'], JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE)
+        : null;
+    $touchDispatch = !empty($state['touch_last_dispatch']);
+    $touchRecovery = !empty($state['touch_last_recovery']);
+    $recoveryEvent = array_key_exists('last_recovery_event', $state) ? mb_substr(trim((string) $state['last_recovery_event']), 0, 500) : null;
+
+    return db_execute(
+        'UPDATE scheduler_daemon_state
+         SET heartbeat_at = UTC_TIMESTAMP(),
+             lease_expires_at = DATE_ADD(UTC_TIMESTAMP(), INTERVAL ? SECOND),
+             status = COALESCE(?, status),
+             loop_state = COALESCE(?, loop_state),
+             active_dispatch_count = COALESCE(?, active_dispatch_count),
+             current_loop_count = COALESCE(?, current_loop_count),
+             current_memory_bytes = COALESCE(?, current_memory_bytes),
+             last_dispatch_at = CASE WHEN ? = 1 THEN UTC_TIMESTAMP() ELSE last_dispatch_at END,
+             last_recovery_at = CASE WHEN ? = 1 THEN UTC_TIMESTAMP() ELSE last_recovery_at END,
+             last_recovery_event = CASE WHEN ? <> \'\' THEN ? ELSE last_recovery_event END,
+             metadata_json = COALESCE(?, metadata_json),
+             updated_at = CURRENT_TIMESTAMP
+         WHERE daemon_key = ?
+           AND owner_token = ?
+         LIMIT 1',
+        [$safeTtl, $status, $loopState, $dispatchCount, $loopCount, $memoryBytes, $touchDispatch ? 1 : 0, $touchRecovery ? 1 : 0, $recoveryEvent ?? '', $recoveryEvent, $metadataJson, $safeDaemonKey, $safeOwnerToken]
+    );
+}
+
+function db_scheduler_daemon_release(string $daemonKey, string $ownerToken, string $status = 'stopped', ?int $exitCode = null, string $exitReason = ''): bool
+{
+    db_scheduler_daemon_state_ensure();
+
+    return db_execute(
+        'UPDATE scheduler_daemon_state
+         SET status = ?,
+             loop_state = ?,
+             owner_token = NULL,
+             owner_label = NULL,
+             owner_pid = NULL,
+             owner_hostname = NULL,
+             active_dispatch_count = 0,
+             lease_expires_at = NULL,
+             wake_requested_at = NULL,
+             stop_requested = 0,
+             restart_requested = 0,
+             last_exit_at = UTC_TIMESTAMP(),
+             last_exit_code = ?,
+             last_exit_reason = CASE WHEN ? <> \'\' THEN ? ELSE last_exit_reason END,
+             updated_at = CURRENT_TIMESTAMP
+         WHERE daemon_key = ?
+           AND owner_token = ?
+         LIMIT 1',
+        [mb_substr(trim($status), 0, 32), 'idle', $exitCode, mb_substr(trim($exitReason), 0, 500), mb_substr(trim($exitReason), 0, 500), mb_substr(trim($daemonKey), 0, 64), mb_substr(trim($ownerToken), 0, 190)]
+    );
+}
+
+function db_scheduler_daemon_watchdog_touch(string $daemonKey, string $watchdogStatus, array $metadata = []): bool
+{
+    db_scheduler_daemon_state_ensure();
+
+    $metadataJson = $metadata !== [] ? json_encode($metadata, JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE) : null;
+
+    return db_execute(
+        'UPDATE scheduler_daemon_state
+         SET last_watchdog_at = UTC_TIMESTAMP(),
+             watchdog_status = ?,
+             metadata_json = COALESCE(?, metadata_json),
+             updated_at = CURRENT_TIMESTAMP
+         WHERE daemon_key = ?
+         LIMIT 1',
+        [mb_substr(trim($watchdogStatus), 0, 64), $metadataJson, mb_substr(trim($daemonKey), 0, 64)]
+    );
+}
+
+function db_scheduler_daemon_set_control_flags(string $daemonKey, ?bool $stopRequested = null, ?bool $restartRequested = null): bool
+{
+    db_scheduler_daemon_state_ensure();
+
+    return db_execute(
+        'UPDATE scheduler_daemon_state
+         SET stop_requested = COALESCE(?, stop_requested),
+             restart_requested = COALESCE(?, restart_requested),
+             updated_at = CURRENT_TIMESTAMP
+         WHERE daemon_key = ?
+         LIMIT 1',
+        [$stopRequested === null ? null : ($stopRequested ? 1 : 0), $restartRequested === null ? null : ($restartRequested ? 1 : 0), mb_substr(trim($daemonKey), 0, 64)]
+    );
+}
+
+function db_scheduler_daemon_request_wake(string $daemonKey = 'master'): bool
+{
+    db_scheduler_daemon_state_ensure();
+
+    return db_execute(
+        'UPDATE scheduler_daemon_state
+         SET wake_requested_at = UTC_TIMESTAMP(),
+             updated_at = CURRENT_TIMESTAMP
+         WHERE daemon_key = ?
+         LIMIT 1',
+        [mb_substr(trim($daemonKey), 0, 64)]
+    );
+}
+
+function db_scheduler_daemon_force_reset(string $daemonKey = 'master', string $exitReason = ''): bool
+{
+    db_scheduler_daemon_state_ensure();
+
+    return db_execute(
+        'UPDATE scheduler_daemon_state
+         SET status = ?,
+             loop_state = ?,
+             owner_token = NULL,
+             owner_label = NULL,
+             owner_pid = NULL,
+             owner_hostname = NULL,
+             active_dispatch_count = 0,
+             stop_requested = 0,
+             restart_requested = 0,
+             lease_expires_at = NULL,
+             heartbeat_at = NULL,
+             wake_requested_at = NULL,
+             last_exit_at = UTC_TIMESTAMP(),
+             last_exit_reason = CASE WHEN ? <> \'\' THEN ? ELSE last_exit_reason END,
+             updated_at = CURRENT_TIMESTAMP
+         WHERE daemon_key = ?
+         LIMIT 1',
+        ['stopped', 'idle', mb_substr(trim($exitReason), 0, 500), mb_substr(trim($exitReason), 0, 500), mb_substr(trim($daemonKey), 0, 64)]
+    );
+}
+
 function db_sync_schedule_registry_columns_ensure(): void
 {
     db_ensure_table_column('sync_schedules', 'offset_seconds', 'INT UNSIGNED NOT NULL DEFAULT 0');
@@ -5030,6 +5274,63 @@ function db_sync_schedule_reset_locks(string $errorMessage): int
     $stmt->execute([$message]);
 
     return (int) $stmt->rowCount();
+}
+
+function db_sync_schedule_recover_stale_running_jobs(string $errorMessage, int $staleGraceSeconds = 300): int
+{
+    db_sync_schedule_registry_columns_ensure();
+
+    $message = mb_substr(trim($errorMessage), 0, 500);
+    if ($message === '') {
+        $message = 'Recovered stale scheduler job state after daemon restart.';
+    }
+
+    $safeGrace = max(60, min(7200, $staleGraceSeconds));
+    $stmt = db()->prepare(
+        'UPDATE sync_schedules
+         SET locked_until = NULL,
+             last_status = \'failed\',
+             last_result = \'recovered\',
+             last_error = ?,
+             next_run_at = CASE WHEN enabled = 1 THEN UTC_TIMESTAMP() ELSE NULL END,
+             next_due_at = CASE WHEN enabled = 1 THEN UTC_TIMESTAMP() ELSE NULL END,
+             latest_allowed_start_at = CASE
+                WHEN enabled = 1 THEN DATE_ADD(UTC_TIMESTAMP(), INTERVAL GREATEST(1, interval_minutes) MINUTE)
+                ELSE NULL
+             END,
+             current_state = CASE WHEN enabled = 1 THEN \'waiting\' ELSE \'stopped\' END,
+             updated_at = CURRENT_TIMESTAMP
+         WHERE enabled = 1
+           AND (
+                (locked_until IS NOT NULL AND locked_until <= UTC_TIMESTAMP())
+                OR (
+                    current_state = \'running\'
+                    AND last_started_at IS NOT NULL
+                    AND last_started_at <= DATE_SUB(UTC_TIMESTAMP(), INTERVAL GREATEST(timeout_seconds + ?, 120) SECOND)
+                )
+           )'
+    );
+    $stmt->execute([$message, $safeGrace]);
+
+    return (int) $stmt->rowCount();
+}
+
+function db_sync_schedule_next_due_snapshot(): ?array
+{
+    db_sync_schedule_registry_columns_ensure();
+
+    $row = db_select_one(
+        'SELECT id, job_key, next_due_at
+         FROM sync_schedules
+         WHERE enabled = 1
+           AND next_due_at IS NOT NULL
+           AND current_state <> ?
+         ORDER BY next_due_at ASC, id ASC
+         LIMIT 1',
+        ['stopped']
+    );
+
+    return $row !== [] ? $row : null;
 }
 
 function db_scheduler_job_event_insert(string $jobKey, string $eventType, array $detail = [], int $latenessSeconds = 0, ?float $durationSeconds = null): bool

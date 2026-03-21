@@ -75,6 +75,8 @@ function scheduler_job_runner_main(): int
         ] + $meta);
     }
 
+    db_scheduler_daemon_request_wake(scheduler_daemon_key());
+
     return $resultStatus === 'failed' ? 1 : 0;
 }
 

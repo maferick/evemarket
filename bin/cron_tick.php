@@ -5,96 +5,53 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/../src/bootstrap.php';
 
-const CRON_TICK_RUNNER_LOCK = 'cron_tick_runner';
-const CRON_TICK_APP_LOCK = 'supplycore:cron_tick';
+const CRON_TICK_WATCHDOG_LOCK = 'supplycore:scheduler_watchdog';
 
 function cron_tick_output(string $event, array $payload = [], $stream = STDOUT): void
 {
-    $line = ['event' => $event, 'ts' => gmdate(DATE_ATOM)] + $payload;
-    fwrite($stream, json_encode($line, JSON_UNESCAPED_SLASHES) . PHP_EOL);
-}
-
-function cron_tick_exit_code(array $summary): int
-{
-    return !empty($summary['scheduler_failed']) ? 1 : 0;
+    scheduler_daemon_output($event, $payload, $stream);
 }
 
 function cron_tick_main(): int
 {
-    $tickStartedAt = microtime(true);
-    $appLockAcquired = false;
+    $startedAt = microtime(true);
     $lockAcquired = false;
 
     try {
-        $appLockAcquired = db_runner_lock_acquire(CRON_TICK_APP_LOCK, 0);
-        if (!$appLockAcquired) {
-            $durationMs = (int) round((microtime(true) - $tickStartedAt) * 1000);
-            cron_tick_output('cron_tick.lock_skipped', [
-                'scheduler_status' => 'skipped_locked',
-                'duration_ms' => $durationMs,
-                'lock_name' => CRON_TICK_APP_LOCK,
-            ]);
-
-            return 0;
-        }
-
-        cron_tick_output('cron_tick.started', [
-            'scheduler_status' => 'starting',
-            'lock_name' => CRON_TICK_APP_LOCK,
-        ]);
-
-        $lockAcquired = runner_lock_acquire(CRON_TICK_RUNNER_LOCK);
+        $lockAcquired = db_runner_lock_acquire(CRON_TICK_WATCHDOG_LOCK, 0);
         if (!$lockAcquired) {
-            $durationMs = (int) round((microtime(true) - $tickStartedAt) * 1000);
-            cron_tick_output('cron_tick.lock_skipped', [
-                'scheduler_status' => 'skipped_locked',
-                'duration_ms' => $durationMs,
-                'lock_name' => CRON_TICK_RUNNER_LOCK,
+            cron_tick_output('cron_tick.watchdog_skipped', [
+                'reason' => 'lock_held',
+                'duration_ms' => (int) round((microtime(true) - $startedAt) * 1000),
             ]);
 
             return 0;
         }
 
-        cron_tick_output('cron_tick.lock_acquired', [
-            'scheduler_status' => 'running',
+        cron_tick_output('cron_tick.watchdog_started', [
+            'scheduler_status' => 'checking',
         ]);
 
-        $summary = cron_tick_run('cron_tick_output');
-        $summary['scheduler_failed'] = false;
-        $summary['duration_ms'] = (int) round((microtime(true) - $tickStartedAt) * 1000);
+        $result = scheduler_watchdog_run('cron_tick_output');
 
-        cron_tick_output('cron_tick.summary', [
-            'jobs_due' => (int) ($summary['jobs_due'] ?? 0),
-            'jobs_processed' => (int) ($summary['jobs_processed'] ?? 0),
-            'jobs_succeeded' => (int) ($summary['jobs_succeeded'] ?? 0),
-            'jobs_failed' => (int) ($summary['jobs_failed'] ?? 0),
-            'duration_ms' => (int) ($summary['duration_ms'] ?? 0),
-            'scheduler_failed' => false,
-            'scheduler_status' => 'ok',
-        ]);
+        cron_tick_output('cron_tick.watchdog_summary', [
+            'scheduler_status' => (string) ($result['status'] ?? 'healthy'),
+            'action' => (string) ($result['action'] ?? 'none'),
+            'duration_ms' => (int) round((microtime(true) - $startedAt) * 1000),
+        ] + (array) ($result['health'] ?? []));
 
-        cron_tick_output('cron_tick.completed', [
-            'scheduler_status' => 'ok',
-            'duration_ms' => (int) ($summary['duration_ms'] ?? 0),
-        ]);
-
-        return cron_tick_exit_code($summary);
+        return ($result['status'] ?? 'healthy') === 'degraded' ? 1 : 0;
     } catch (Throwable $exception) {
-        $durationMs = (int) round((microtime(true) - $tickStartedAt) * 1000);
-        cron_tick_output('cron_tick.scheduler_error', [
-            'scheduler_failed' => true,
+        cron_tick_output('cron_tick.watchdog_error', [
             'scheduler_status' => 'failed',
-            'duration_ms' => $durationMs,
-            'error' => $exception->getMessage(),
+            'duration_ms' => (int) round((microtime(true) - $startedAt) * 1000),
+            'error' => scheduler_normalize_error_message($exception->getMessage()),
         ], STDERR);
 
         return 1;
     } finally {
         if ($lockAcquired) {
-            runner_lock_release(CRON_TICK_RUNNER_LOCK);
-        }
-        if ($appLockAcquired) {
-            db_runner_lock_release(CRON_TICK_APP_LOCK);
+            db_runner_lock_release(CRON_TICK_WATCHDOG_LOCK);
         }
     }
 }
