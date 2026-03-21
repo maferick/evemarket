@@ -4419,6 +4419,7 @@ function db_sync_schedule_upsert(string $jobKey, int $enabled, int $intervalSeco
 function db_sync_schedule_set_next_due_at(int $scheduleId, string $nextDueAt, string $reason = ''): bool
 {
     db_sync_schedule_registry_columns_ensure();
+    $result = mb_substr($reason, 0, 120);
 
     return db_execute(
         'UPDATE sync_schedules
@@ -4429,7 +4430,7 @@ function db_sync_schedule_set_next_due_at(int $scheduleId, string $nextDueAt, st
              updated_at = CURRENT_TIMESTAMP
          WHERE id = ?
          LIMIT 1',
-        [$nextDueAt, $nextDueAt, $nextDueAt, $reason, mb_substr($reason, 0, 120), $scheduleId]
+        [$nextDueAt, $nextDueAt, $result, $result, $scheduleId]
     );
 }
 
