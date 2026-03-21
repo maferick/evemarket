@@ -2218,6 +2218,24 @@ function run_data_sync_now(?string $jobKey = null): array
     }
 
     try {
+        $daemonState = scheduler_daemon_state_view();
+        if (!empty($daemonState['is_healthy'])) {
+            $forcedJobs = $normalizedJobKey === ''
+                ? db_sync_schedule_force_due_all_enabled()
+                : db_sync_schedule_force_due_by_job_keys([$normalizedJobKey]);
+            db_scheduler_daemon_request_wake(scheduler_daemon_key());
+
+            $jobLabel = $normalizedJobKey === ''
+                ? 'all enabled jobs'
+                : ((string) ($definitions[$normalizedJobKey]['label'] ?? $normalizedJobKey) . ' job');
+
+            return [
+                'ok' => true,
+                'message' => 'Run now queued for ' . $jobLabel . '. Forced ' . $forcedJobs . ' schedule(s) and signaled the active scheduler daemon to dispatch immediately.',
+                'summary' => ['jobs_forced' => $forcedJobs, 'mode' => 'daemon_wake'],
+            ];
+        }
+
         $lockAcquired = runner_lock_acquire($lockName, 0);
         if (!$lockAcquired) {
             return [
@@ -2256,6 +2274,8 @@ function scheduler_reset_process_targets(): array
 {
     $paths = [
         scheduler_job_runner_script_path(),
+        scheduler_daemon_script_path(),
+        scheduler_watchdog_script_path(),
         dirname(__DIR__) . '/bin/cron_tick.php',
     ];
 
@@ -2370,6 +2390,7 @@ function scheduler_reset_runtime_state(): array
 
     $appLockReleased = db_runner_lock_force_release('supplycore:cron_tick');
     $runnerLockReleased = db_runner_lock_force_release('cron_tick_runner');
+    db_scheduler_daemon_force_reset(scheduler_daemon_key(), 'Scheduler runtime was reset manually from Settings.');
 
     if (supplycore_redis_locking_enabled()) {
         supplycore_redis_del(['lock:runner:cron_tick_runner']);
@@ -2408,6 +2429,574 @@ function scheduler_reset_runtime_state_message(array $result): string
     }
 
     return $message;
+}
+
+function scheduler_daemon_key(): string
+{
+    return 'master';
+}
+
+function scheduler_daemon_script_path(): string
+{
+    return dirname(__DIR__) . '/bin/scheduler_daemon.php';
+}
+
+function scheduler_watchdog_script_path(): string
+{
+    return dirname(__DIR__) . '/bin/scheduler_watchdog.php';
+}
+
+function scheduler_health_script_path(): string
+{
+    return dirname(__DIR__) . '/bin/scheduler_health.php';
+}
+
+function scheduler_daemon_hostname(): string
+{
+    $host = trim((string) gethostname());
+    if ($host !== '') {
+        return $host;
+    }
+
+    return trim((string) php_uname('n'));
+}
+
+function scheduler_daemon_owner_label(?int $pid = null): string
+{
+    $resolvedPid = $pid ?? (function_exists('getmypid') ? (int) getmypid() : 0);
+
+    return 'scheduler-daemon@' . scheduler_daemon_hostname() . ($resolvedPid > 0 ? ('#' . $resolvedPid) : '');
+}
+
+function scheduler_daemon_owner_token(?int $pid = null): string
+{
+    $seed = scheduler_daemon_hostname() . '|' . ($pid ?? (function_exists('getmypid') ? (int) getmypid() : 0)) . '|' . microtime(true) . '|' . bin2hex(random_bytes(8));
+
+    return substr(hash('sha256', $seed), 0, 40);
+}
+
+function scheduler_daemon_lease_ttl_seconds(): int
+{
+    $configured = (int) config('scheduler.daemon_lease_ttl_seconds', (int) getenv('SCHEDULER_DAEMON_LEASE_TTL_SECONDS'));
+
+    return max(10, min(120, $configured > 0 ? $configured : 30));
+}
+
+function scheduler_daemon_poll_interval_seconds(): int
+{
+    $configured = (int) config('scheduler.daemon_poll_interval_seconds', (int) getenv('SCHEDULER_DAEMON_POLL_INTERVAL_SECONDS'));
+
+    return max(2, min(30, $configured > 0 ? $configured : 5));
+}
+
+function scheduler_daemon_running_poll_interval_seconds(): int
+{
+    $configured = (int) config('scheduler.daemon_running_poll_interval_seconds', (int) getenv('SCHEDULER_DAEMON_RUNNING_POLL_INTERVAL_SECONDS'));
+
+    return max(1, min(10, $configured > 0 ? $configured : 2));
+}
+
+function scheduler_daemon_max_runtime_seconds(): int
+{
+    $configured = (int) config('scheduler.daemon_max_runtime_seconds', (int) getenv('SCHEDULER_DAEMON_MAX_RUNTIME_SECONDS'));
+
+    return max(300, $configured > 0 ? $configured : 21600);
+}
+
+function scheduler_daemon_max_loop_count(): int
+{
+    $configured = (int) config('scheduler.daemon_max_loop_count', (int) getenv('SCHEDULER_DAEMON_MAX_LOOP_COUNT'));
+
+    return max(100, $configured > 0 ? $configured : 10000);
+}
+
+function scheduler_daemon_memory_recycle_bytes(): int
+{
+    $configured = (int) config('scheduler.daemon_memory_recycle_bytes', (int) getenv('SCHEDULER_DAEMON_MEMORY_RECYCLE_BYTES'));
+    if ($configured > 0) {
+        return $configured;
+    }
+
+    $memoryLimit = scheduler_parse_memory_limit_bytes((string) ini_get('memory_limit'));
+    if ($memoryLimit !== null && $memoryLimit > 0) {
+        return max(134217728, (int) round($memoryLimit * 0.7));
+    }
+
+    return 268435456;
+}
+
+function scheduler_daemon_watchdog_service_name(): string
+{
+    $configured = trim((string) config('scheduler.systemd_service', (string) getenv('SCHEDULER_SYSTEMD_SERVICE')));
+
+    return $configured !== '' ? $configured : 'supplycore-scheduler.service';
+}
+
+function scheduler_daemon_watchdog_grace_seconds(): int
+{
+    $configured = (int) config('scheduler.daemon_watchdog_grace_seconds', (int) getenv('SCHEDULER_DAEMON_WATCHDOG_GRACE_SECONDS'));
+
+    return max(30, min(900, $configured > 0 ? $configured : (scheduler_daemon_lease_ttl_seconds() * 3)));
+}
+
+function scheduler_daemon_log_path(): string
+{
+    return scheduler_cron_log_path();
+}
+
+function scheduler_daemon_state_view(?array $state = null): array
+{
+    $row = $state ?? db_scheduler_daemon_state_fetch(scheduler_daemon_key()) ?? [];
+    $metadata = scheduler_json_decode_assoc($row['metadata_json'] ?? null);
+    $now = time();
+    $heartbeatAt = trim((string) ($row['heartbeat_at'] ?? ''));
+    $leaseExpiresAt = trim((string) ($row['lease_expires_at'] ?? ''));
+    $startedAt = trim((string) ($row['started_at'] ?? ''));
+    $lastDispatchAt = trim((string) ($row['last_dispatch_at'] ?? ''));
+    $lastRecoveryAt = trim((string) ($row['last_recovery_at'] ?? ''));
+    $lastWatchdogAt = trim((string) ($row['last_watchdog_at'] ?? ''));
+    $status = trim((string) ($row['status'] ?? 'stopped'));
+    $derived = 'stopped';
+
+    if ($leaseExpiresAt !== '' && strtotime($leaseExpiresAt) !== false && strtotime($leaseExpiresAt) > $now && in_array($status, ['running', 'starting', 'idle'], true)) {
+        $derived = $status === 'starting' ? 'degraded' : 'running';
+    } elseif ($heartbeatAt !== '' && strtotime($heartbeatAt) !== false && ($now - (int) strtotime($heartbeatAt)) <= scheduler_daemon_watchdog_grace_seconds()) {
+        $derived = 'degraded';
+    }
+
+    return [
+        'daemon_key' => (string) ($row['daemon_key'] ?? scheduler_daemon_key()),
+        'status' => $status,
+        'derived_status' => $derived,
+        'owner_token' => (string) ($row['owner_token'] ?? ''),
+        'owner_label' => (string) ($row['owner_label'] ?? ''),
+        'owner_pid' => (int) ($row['owner_pid'] ?? 0),
+        'owner_hostname' => (string) ($row['owner_hostname'] ?? ''),
+        'loop_state' => (string) ($row['loop_state'] ?? 'idle'),
+        'stop_requested' => !empty($row['stop_requested']),
+        'restart_requested' => !empty($row['restart_requested']),
+        'active_dispatch_count' => (int) ($row['active_dispatch_count'] ?? 0),
+        'current_loop_count' => (int) ($row['current_loop_count'] ?? 0),
+        'current_memory_bytes' => (int) ($row['current_memory_bytes'] ?? 0),
+        'started_at' => $startedAt !== '' ? $startedAt : null,
+        'heartbeat_at' => $heartbeatAt !== '' ? $heartbeatAt : null,
+        'lease_expires_at' => $leaseExpiresAt !== '' ? $leaseExpiresAt : null,
+        'last_dispatch_at' => $lastDispatchAt !== '' ? $lastDispatchAt : null,
+        'last_recovery_at' => $lastRecoveryAt !== '' ? $lastRecoveryAt : null,
+        'last_recovery_event' => (string) ($row['last_recovery_event'] ?? ''),
+        'last_watchdog_at' => $lastWatchdogAt !== '' ? $lastWatchdogAt : null,
+        'watchdog_status' => (string) ($row['watchdog_status'] ?? 'unknown'),
+        'wake_requested_at' => !empty($row['wake_requested_at']) ? (string) $row['wake_requested_at'] : null,
+        'last_exit_at' => !empty($row['last_exit_at']) ? (string) $row['last_exit_at'] : null,
+        'last_exit_code' => isset($row['last_exit_code']) ? (int) $row['last_exit_code'] : null,
+        'last_exit_reason' => (string) ($row['last_exit_reason'] ?? ''),
+        'heartbeat_age_seconds' => $heartbeatAt !== '' ? max(0, $now - (int) strtotime($heartbeatAt)) : null,
+        'uptime_seconds' => $startedAt !== '' ? max(0, $now - (int) strtotime($startedAt)) : null,
+        'metadata' => $metadata,
+        'is_healthy' => $derived === 'running',
+    ];
+}
+
+function scheduler_daemon_health_summary(): array
+{
+    return scheduler_daemon_state_view();
+}
+
+function scheduler_daemon_output(string $event, array $payload = [], $stream = STDOUT): void
+{
+    $line = ['event' => $event, 'ts' => gmdate(DATE_ATOM)] + $payload;
+    fwrite($stream, json_encode($line, JSON_UNESCAPED_SLASHES) . PHP_EOL);
+}
+
+function scheduler_daemon_write_heartbeat(string $ownerToken, array $state = []): bool
+{
+    return db_scheduler_daemon_heartbeat(scheduler_daemon_key(), $ownerToken, $state, scheduler_daemon_lease_ttl_seconds());
+}
+
+function scheduler_daemon_recover_runtime_state(string $ownerToken, ?callable $logger = null): array
+{
+    $daemonState = scheduler_daemon_state_view();
+    $details = [];
+    $messageParts = [];
+    $recoveredCount = 0;
+
+    if (($daemonState['derived_status'] ?? 'stopped') !== 'running' && !empty($daemonState['owner_token'])) {
+        $messageParts[] = 'Recovered expired scheduler daemon lease previously owned by ' . ($daemonState['owner_label'] ?? 'unknown') . '.';
+    }
+
+    $staleSchedules = db_sync_schedule_recover_stale_running_jobs(
+        'Recovered stale scheduler job markers after daemon startup.',
+        scheduler_daemon_watchdog_grace_seconds()
+    );
+    if ($staleSchedules > 0) {
+        $details['recovered_schedule_count'] = $staleSchedules;
+        $messageParts[] = 'Released ' . $staleSchedules . ' stale running-job marker(s).';
+        $recoveredCount += $staleSchedules;
+    }
+
+    $message = $messageParts !== [] ? implode(' ', $messageParts) : 'No stale scheduler runtime artifacts required recovery.';
+    scheduler_daemon_write_heartbeat($ownerToken, [
+        'status' => 'running',
+        'loop_state' => 'recovery',
+        'touch_last_recovery' => true,
+        'last_recovery_event' => $message,
+        'metadata' => ['recovery' => $details],
+    ]);
+
+    if ($logger !== null) {
+        $logger('scheduler_daemon.recovery', [
+            'recovered_count' => $recoveredCount,
+            'message' => $message,
+        ] + $details);
+    }
+
+    return [
+        'recovered_count' => $recoveredCount,
+        'message' => $message,
+    ] + $details;
+}
+
+function scheduler_daemon_should_exit_for_recycle(float $startedAtUnix, int $loopCount): ?string
+{
+    $runtimeSeconds = microtime(true) - $startedAtUnix;
+    if ($runtimeSeconds >= scheduler_daemon_max_runtime_seconds()) {
+        return 'max_runtime_reached';
+    }
+
+    if ($loopCount >= scheduler_daemon_max_loop_count()) {
+        return 'max_loop_count_reached';
+    }
+
+    $memoryUsage = function_exists('memory_get_usage') ? (int) memory_get_usage(true) : 0;
+    if ($memoryUsage >= scheduler_daemon_memory_recycle_bytes()) {
+        return 'memory_recycle_threshold_reached';
+    }
+
+    return null;
+}
+
+function scheduler_daemon_next_sleep_seconds(): int
+{
+    $fallback = scheduler_daemon_poll_interval_seconds();
+    $nextDue = db_sync_schedule_next_due_snapshot();
+    $running = db_sync_schedule_fetch_running_jobs();
+    $nextDueAt = trim((string) ($nextDue['next_due_at'] ?? ''));
+    $nextDueSeconds = $fallback;
+
+    if ($nextDueAt !== '' && strtotime($nextDueAt) !== false) {
+        $nextDueSeconds = max(0, (int) ceil(strtotime($nextDueAt) - microtime(true)));
+    }
+
+    if ($nextDueSeconds <= 0) {
+        return 0;
+    }
+
+    $candidate = min($fallback, $nextDueSeconds);
+    if ($running !== []) {
+        $candidate = min($candidate, scheduler_daemon_running_poll_interval_seconds());
+    }
+
+    return max(1, $candidate);
+}
+
+function scheduler_daemon_wait_for_wake_or_timeout(int $seconds, string $ownerToken, ?callable $logger = null): void
+{
+    if ($seconds <= 0) {
+        return;
+    }
+
+    $startedWaitAt = gmdate('Y-m-d H:i:s');
+    $deadline = microtime(true) + $seconds;
+
+    while (microtime(true) < $deadline) {
+        usleep(500000);
+
+        $state = scheduler_daemon_state_view();
+        if (($state['owner_token'] ?? '') !== '' && ($state['owner_token'] ?? '') !== $ownerToken) {
+            break;
+        }
+
+        if (!empty($state['stop_requested']) || !empty($state['restart_requested'])) {
+            break;
+        }
+
+        $wakeRequestedAt = trim((string) ($state['wake_requested_at'] ?? ''));
+        if ($wakeRequestedAt !== '' && strtotime($wakeRequestedAt) !== false && strtotime($wakeRequestedAt) >= strtotime($startedWaitAt)) {
+            if ($logger !== null) {
+                $logger('scheduler_daemon.wake', [
+                    'wake_requested_at' => $wakeRequestedAt,
+                ]);
+            }
+            break;
+        }
+
+        scheduler_daemon_write_heartbeat($ownerToken, [
+            'status' => 'running',
+            'loop_state' => 'sleeping',
+            'active_dispatch_count' => 0,
+            'current_memory_bytes' => function_exists('memory_get_usage') ? (int) memory_get_usage(true) : 0,
+        ]);
+    }
+}
+
+function scheduler_daemon_spawn_detached(): array
+{
+    if (!function_exists('exec')) {
+        return ['ok' => false, 'mode' => 'spawn', 'message' => 'PHP exec() is unavailable, so the watchdog could not start the scheduler daemon directly.'];
+    }
+
+    $phpBinary = PHP_BINARY !== '' ? PHP_BINARY : 'php';
+    $command = sprintf(
+        'cd %s && nohup %s %s >> %s 2>&1 & echo $!',
+        escapeshellarg(dirname(__DIR__)),
+        escapeshellarg($phpBinary),
+        escapeshellarg(scheduler_daemon_script_path()),
+        escapeshellarg(scheduler_daemon_log_path())
+    );
+
+    $output = [];
+    $exitCode = 1;
+    @exec($command, $output, $exitCode);
+    $pid = isset($output[0]) ? (int) $output[0] : 0;
+
+    return [
+        'ok' => $exitCode === 0 && $pid > 0,
+        'mode' => 'spawn',
+        'pid' => $pid > 0 ? $pid : null,
+        'message' => $exitCode === 0 && $pid > 0
+            ? 'Watchdog spawned scheduler daemon process #' . $pid . '.'
+            : 'Watchdog failed to spawn the scheduler daemon process.',
+    ];
+}
+
+function scheduler_watchdog_start_daemon(): array
+{
+    if (!function_exists('exec')) {
+        return scheduler_daemon_spawn_detached();
+    }
+
+    $serviceName = scheduler_daemon_watchdog_service_name();
+    $systemctlPath = trim((string) @shell_exec('command -v systemctl 2>/dev/null'));
+    if ($systemctlPath !== '') {
+        $output = [];
+        $exitCode = 1;
+        @exec($systemctlPath . ' restart ' . escapeshellarg($serviceName) . ' 2>&1', $output, $exitCode);
+        if ($exitCode === 0) {
+            return [
+                'ok' => true,
+                'mode' => 'systemd',
+                'message' => 'Watchdog asked systemd to restart ' . $serviceName . '.',
+            ];
+        }
+    }
+
+    return scheduler_daemon_spawn_detached();
+}
+
+function scheduler_watchdog_run(?callable $logger = null): array
+{
+    $state = scheduler_daemon_state_view();
+    $result = [
+        'checked_at' => gmdate('Y-m-d H:i:s'),
+        'health' => $state,
+        'action' => 'none',
+        'recovery' => null,
+        'start' => null,
+        'status' => 'healthy',
+    ];
+
+    if ($state['is_healthy']) {
+        db_scheduler_daemon_watchdog_touch(scheduler_daemon_key(), 'healthy', ['watchdog' => ['status' => 'healthy']]);
+        if ($logger !== null) {
+            $logger('scheduler_watchdog.healthy', [
+                'owner' => $state['owner_label'] ?? null,
+                'heartbeat_at' => $state['heartbeat_at'] ?? null,
+            ]);
+        }
+
+        return $result;
+    }
+
+    $recoveryMessage = 'Watchdog observed a stale or stopped scheduler daemon and prepared recovery.';
+    $recoveredSchedules = db_sync_schedule_recover_stale_running_jobs($recoveryMessage, scheduler_daemon_watchdog_grace_seconds());
+    $result['recovery'] = [
+        'recovered_schedule_count' => $recoveredSchedules,
+        'message' => $recoveryMessage,
+    ];
+
+    $startResult = scheduler_watchdog_start_daemon();
+    $result['start'] = $startResult;
+    $result['action'] = !empty($startResult['ok']) ? 'restart_attempted' : 'restart_failed';
+    $result['status'] = !empty($startResult['ok']) ? 'recovery_started' : 'degraded';
+
+    db_scheduler_daemon_watchdog_touch(
+        scheduler_daemon_key(),
+        !empty($startResult['ok']) ? 'restart_requested' : 'restart_failed',
+        ['watchdog' => $result]
+    );
+
+    if ($logger !== null) {
+        $logger('scheduler_watchdog.recovery', [
+            'status' => $result['status'],
+            'action' => $result['action'],
+            'recovered_schedule_count' => $recoveredSchedules,
+            'start_mode' => $startResult['mode'] ?? null,
+            'message' => $startResult['message'] ?? null,
+        ]);
+    }
+
+    return $result;
+}
+
+function scheduler_daemon_run(?callable $logger = null): int
+{
+    $pid = function_exists('getmypid') ? (int) getmypid() : 0;
+    $ownerToken = scheduler_daemon_owner_token($pid);
+    $ownerLabel = scheduler_daemon_owner_label($pid);
+    $hostname = scheduler_daemon_hostname();
+    $leaseTtl = scheduler_daemon_lease_ttl_seconds();
+    $startedAtUnix = microtime(true);
+
+    if (!db_scheduler_daemon_try_claim(scheduler_daemon_key(), $ownerToken, $ownerLabel, $pid, $hostname, $leaseTtl, [
+        'boot' => [
+            'php_binary' => PHP_BINARY,
+            'hostname' => $hostname,
+        ],
+    ])) {
+        if ($logger !== null) {
+            $logger('scheduler_daemon.lock_skipped', [
+                'owner' => $ownerLabel,
+                'reason' => 'claim_failed',
+            ]);
+        }
+
+        return 0;
+    }
+
+    $shouldStop = false;
+    $shouldRestart = false;
+    if (function_exists('pcntl_async_signals')) {
+        pcntl_async_signals(true);
+        pcntl_signal(SIGTERM, static function () use (&$shouldStop): void {
+            $shouldStop = true;
+        });
+        pcntl_signal(SIGINT, static function () use (&$shouldStop): void {
+            $shouldStop = true;
+        });
+        pcntl_signal(SIGHUP, static function () use (&$shouldRestart): void {
+            $shouldRestart = true;
+        });
+    }
+
+    if ($logger !== null) {
+        $logger('scheduler_daemon.started', [
+            'owner' => $ownerLabel,
+            'lease_ttl_seconds' => $leaseTtl,
+        ]);
+    }
+
+    $recovery = scheduler_daemon_recover_runtime_state($ownerToken, $logger);
+    $loopCount = 0;
+    $exitReason = 'graceful_stop';
+    $exitCode = 0;
+
+    try {
+        while (true) {
+            $loopCount++;
+            $currentMemory = function_exists('memory_get_usage') ? (int) memory_get_usage(true) : 0;
+            scheduler_daemon_write_heartbeat($ownerToken, [
+                'status' => 'running',
+                'loop_state' => 'evaluating',
+                'active_dispatch_count' => 0,
+                'current_loop_count' => $loopCount,
+                'current_memory_bytes' => $currentMemory,
+                'metadata' => ['recovery' => $recovery],
+            ]);
+
+            $summary = cron_tick_run($logger);
+            $processedCount = (int) ($summary['jobs_processed'] ?? 0);
+            $dispatchCount = (int) ($summary['jobs_dispatched'] ?? 0);
+            $runningCount = count((array) (($summary['planner']['running'] ?? [])));
+            scheduler_daemon_write_heartbeat($ownerToken, [
+                'status' => 'running',
+                'loop_state' => 'post_dispatch',
+                'active_dispatch_count' => max($dispatchCount, $runningCount),
+                'current_loop_count' => $loopCount,
+                'current_memory_bytes' => function_exists('memory_get_usage') ? (int) memory_get_usage(true) : 0,
+                'touch_last_dispatch' => ($processedCount + $dispatchCount) > 0,
+                'metadata' => [
+                    'last_summary' => [
+                        'jobs_due' => (int) ($summary['jobs_due'] ?? 0),
+                        'jobs_planned' => (int) ($summary['jobs_planned'] ?? 0),
+                        'jobs_processed' => $processedCount,
+                        'jobs_dispatched' => $dispatchCount,
+                    ],
+                    'recovery' => $recovery,
+                ],
+            ]);
+
+            if ($shouldStop) {
+                $exitReason = 'signal_stop_requested';
+                break;
+            }
+            if ($shouldRestart) {
+                $exitReason = 'signal_restart_requested';
+                break;
+            }
+
+            $state = scheduler_daemon_state_view();
+            if (!empty($state['stop_requested'])) {
+                $exitReason = 'database_stop_requested';
+                break;
+            }
+            if (!empty($state['restart_requested'])) {
+                $exitReason = 'database_restart_requested';
+                break;
+            }
+
+            $recycleReason = scheduler_daemon_should_exit_for_recycle($startedAtUnix, $loopCount);
+            if ($recycleReason !== null) {
+                $exitReason = $recycleReason;
+                break;
+            }
+
+            if ($processedCount > 0 || $dispatchCount > 0 || (int) ($summary['jobs_due'] ?? 0) > 0) {
+                continue;
+            }
+
+            $sleepSeconds = scheduler_daemon_next_sleep_seconds();
+            scheduler_daemon_write_heartbeat($ownerToken, [
+                'status' => 'running',
+                'loop_state' => 'sleeping',
+                'active_dispatch_count' => 0,
+                'current_loop_count' => $loopCount,
+                'current_memory_bytes' => function_exists('memory_get_usage') ? (int) memory_get_usage(true) : 0,
+                'metadata' => ['sleep_seconds' => $sleepSeconds, 'recovery' => $recovery],
+            ]);
+            scheduler_daemon_wait_for_wake_or_timeout($sleepSeconds, $ownerToken, $logger);
+        }
+    } catch (Throwable $exception) {
+        $exitReason = scheduler_normalize_error_message($exception->getMessage());
+        $exitCode = 1;
+        if ($logger !== null) {
+            $logger('scheduler_daemon.failed', [
+                'error' => $exitReason,
+            ]);
+        }
+    } finally {
+        $finalStatus = $exitCode === 0 ? 'stopped' : 'failed';
+        db_scheduler_daemon_release(scheduler_daemon_key(), $ownerToken, $finalStatus, $exitCode, $exitReason);
+        if ($logger !== null) {
+            $logger('scheduler_daemon.stopped', [
+                'status' => $finalStatus,
+                'exit_code' => $exitCode,
+                'exit_reason' => $exitReason,
+                'loop_count' => $loopCount,
+            ]);
+        }
+    }
+
+    return $exitCode;
 }
 
 function scheduler_priority_options(): array
@@ -4104,6 +4693,7 @@ function sync_schedule_settings_view_model(): array
     $internalJobs = [];
     $liveCapacity = scheduler_live_capacity_snapshot();
     $recentDecisionCounts = scheduler_recent_planner_decision_counts();
+    $daemonState = scheduler_daemon_health_summary();
     $healthSummary = [
         'total_jobs' => 0,
         'running_jobs' => 0,
@@ -4125,6 +4715,7 @@ function sync_schedule_settings_view_model(): array
         'reserved_critical_cpu_percent' => (float) ($liveCapacity['reserved_critical_cpu_percent'] ?? 0.0),
         'reserved_critical_memory_bytes' => (int) ($liveCapacity['reserved_critical_memory_bytes'] ?? 0),
         'pressure' => (string) ($liveCapacity['pressure'] ?? 'healthy'),
+        'daemon' => $daemonState,
     ];
 
     foreach ($rows as $row) {
@@ -4283,6 +4874,7 @@ function sync_schedule_settings_view_model(): array
         'discovered_jobs' => $discoveredJobs,
         'internal_jobs' => $internalJobs,
         'health_summary' => $healthSummary,
+        'daemon_state' => $daemonState,
         'busiest_offsets' => $busiestOffsets,
         'recent_actions' => $recentActions,
         'recent_planner_decisions' => $recentPlannerDecisions,

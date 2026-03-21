@@ -172,7 +172,7 @@ SupplyCore sync pipelines depend on the `cron` daemon being present and running 
 
 ## Production Cron Setup
 
-### Canonical crontab entry (single scheduler timer)
+### Canonical crontab entry (scheduler watchdog only)
 
 1. Determine the final app path and PHP binary path:
    ```bash
@@ -205,9 +205,11 @@ SupplyCore sync pipelines depend on the `cron` daemon being present and running 
 
 ### Scheduling model
 
-- Cron is **timer-only**: it triggers `bin/cron_tick.php` once per minute.
-- Production cron must use `/usr/bin/flock -n /tmp/supplycore_cron.lock ...` as the first single-run guard, while `bin/cron_tick.php` also acquires the MariaDB advisory lock `GET_LOCK('supplycore:cron_tick', 0)` as an application-level safety net before any scheduler work begins.
-- The scheduler (`bin/cron_tick.php`) decides which jobs are due, runs standard jobs inline, and dispatches async-capable AI jobs to `bin/scheduler_job_runner.php` background workers so long-polling providers do not block the rest of the queue.
+- `bin/scheduler_daemon.php` is now the **primary scheduler master loop**. It stays alive, renews a database lease/heartbeat in `scheduler_daemon_state`, continuously re-evaluates due work, dispatches follow-up jobs immediately when capacity opens, and recycles itself cleanly when runtime, loop-count, or memory thresholds are reached.
+- Cron is now **watchdog-only**. `bin/cron_tick.php` no longer performs primary dispatch; it runs `bin/scheduler_watchdog.php` semantics to verify the daemon heartbeat, recover stale scheduler state, and start the daemon again when needed.
+- `bin/scheduler_health.php` prints the daemon health JSON and exits non-zero when the daemon is degraded or stopped, which makes it suitable for `systemd` health probes or manual checks.
+- The continuous daemon still reuses the existing scheduler intelligence: it claims due jobs from `sync_schedules`, preserves priority/fairness/latest-allowed-start behavior, keeps protected-job and incompatibility rules, uses the same resource-aware concurrency planner, and still dispatches async-capable AI jobs to `bin/scheduler_job_runner.php` background workers so long-polling providers do not block the rest of the queue.
+- The daemon does not busy-spin. When nothing is runnable it sleeps until the earliest of the next due timestamp, a short fallback poll interval, or a wake signal recorded by the watchdog/background workers after completions.
 - Interval and enable/disable controls are configured in **Settings → Data Sync** (`/settings?section=data-sync`) via scheduler rows in `sync_schedules`.
 - SupplyCore now separates cadences by workload:
   - **Fast ingestion / current state**: `killmail_r2z2_sync` runs every minute, while `alliance_current_sync`, `market_hub_current_sync`, and `current_state_refresh_sync` default to every 5 minutes.
@@ -225,12 +227,47 @@ SupplyCore sync pipelines depend on the `cron` daemon being present and running 
 - CPU telemetry is derived from PHP process user+system CPU time (`getrusage()`) divided by wall-clock seconds, so the recorded percentage represents how much of one CPU core the job consumed on average during the run. Memory telemetry uses PHP's process memory usage and peak high-water mark (`memory_get_usage(true)` / `memory_get_peak_usage(true)`), with the stored run cost preferring the peak delta observed while the job was executing.
 - The planner learns a rolling light/medium/heavy class for each job from recent CPU, memory, duration, timeout/failure, and lock-wait behavior. Unknown jobs stay in learning mode and are projected conservatively until enough telemetry samples accumulate.
 - Capacity decisions combine current running-job projections, per-job p95 resource costs, fairness/urgency toward `latest_allowed_start_at`, explicit incompatibility rules, reserved headroom for critical jobs, and the pressure states `healthy`, `busy`, `congested`, and `overload_protection`.
+- Lease recovery and stale-state cleanup now happen during daemon startup and watchdog intervention. The daemon clears expired/stale running markers, updates the last recovery event in `scheduler_daemon_state`, and resumes scheduling without waiting for the next cron minute.
 - UI pages now read Redis first and fall back to `intelligence_snapshots` if Redis is unavailable; each intelligence surface also exposes its last computed timestamp and freshness state to operators.
 - The hub-history scheduler jobs (`market_hub_historical_sync` and `market_hub_local_history_sync`) now pre-aggregate raw hub-order snapshots into `market_order_snapshots_summary`, then rebuild `market_history_daily` from that summary layer using the recent window controlled by `raw_order_snapshot_retention_days` unless a CLI override is supplied.
 - `market_order_snapshots_summary` is indexed for the read paths the app uses most: latest snapshot reads via `(source_type, source_id, observed_at, type_id)`, per-type windows via `(source_type, source_id, type_id, observed_at)`, and daily stock-health rollups via `(source_type, source_id, observed_date, type_id)`.
 - **Trend Snippets** on the dashboard depend on that first-party snapshot history generation.
-- The **Run now** button in Settings → Data Sync includes the Hub Snapshot History job, forces the selected enabled schedule due immediately, and executes one scheduler tick.
+- The **Run now** button in Settings → Data Sync still forces the selected enabled schedule due immediately, but when the daemon is healthy it now wakes that daemon instead of waiting for the old minute-based cron trigger.
 - Backfill start dates are automatic: each pipeline starts from the date sync automation was enabled (`sync_automation_enabled_since`).
+
+### Example `systemd` unit
+
+Create `/etc/systemd/system/supplycore-scheduler.service`:
+
+```ini
+[Unit]
+Description=SupplyCore continuous scheduler daemon
+After=network.target mariadb.service
+
+[Service]
+Type=simple
+WorkingDirectory=/var/www/supplycore
+ExecStart=/usr/bin/php /var/www/supplycore/bin/scheduler_daemon.php
+Restart=always
+RestartSec=5
+User=www-data
+Group=www-data
+KillSignal=SIGTERM
+TimeoutStopSec=120
+StandardOutput=append:/var/www/supplycore/storage/logs/cron.log
+StandardError=append:/var/www/supplycore/storage/logs/cron.log
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Then enable it:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now supplycore-scheduler.service
+sudo systemctl status supplycore-scheduler.service
+```
 
 ### Required cron runtime environment
 
@@ -243,8 +280,8 @@ Cron must run with the same environment the app expects:
   - `SUPPLYCORE_ALLIANCE_SOURCE_ID` (for `alliance-current` and `alliance-history`)
   - `SUPPLYCORE_HUB_SOURCE_ID` (for `hub-current`, `hub-history`, and hub snapshot-history generation)
 
-The canonical log path for the cron tick is `storage/logs/cron.log` (relative to app root).
-If logs show `Job exceeded timeout of ... seconds.`, raise the matching scheduler timeout environment variable and reload cron/PHP so new worker processes inherit it.
+The canonical log path for the daemon and watchdog is `storage/logs/cron.log` (relative to app root).
+If logs show `Job exceeded timeout of ... seconds.`, raise the matching scheduler timeout environment variable and restart the `supplycore-scheduler.service` (or let the watchdog/systemd respawn it) so new worker processes inherit it.
 Raw order snapshots are pruned according to `raw_order_snapshot_retention_days` from Settings → Data Sync.
 Daily history rows are built from those local snapshots for both the alliance market and the reference hub, so keep the current-sync and history schedules enabled together for continuous trend updates.
 

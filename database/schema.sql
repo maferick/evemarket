@@ -541,6 +541,42 @@ WHERE interval_minutes IS NULL
    OR offset_minutes IS NULL
    OR next_due_at IS NULL;
 
+CREATE TABLE IF NOT EXISTS scheduler_daemon_state (
+    daemon_key VARCHAR(64) NOT NULL PRIMARY KEY,
+    owner_token VARCHAR(190) DEFAULT NULL,
+    owner_label VARCHAR(190) DEFAULT NULL,
+    owner_pid INT UNSIGNED DEFAULT NULL,
+    owner_hostname VARCHAR(190) DEFAULT NULL,
+    status VARCHAR(32) NOT NULL DEFAULT 'stopped',
+    loop_state VARCHAR(64) DEFAULT NULL,
+    stop_requested TINYINT(1) NOT NULL DEFAULT 0,
+    restart_requested TINYINT(1) NOT NULL DEFAULT 0,
+    active_dispatch_count INT UNSIGNED NOT NULL DEFAULT 0,
+    current_loop_count BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    current_memory_bytes BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    started_at DATETIME DEFAULT NULL,
+    heartbeat_at DATETIME DEFAULT NULL,
+    lease_expires_at DATETIME DEFAULT NULL,
+    last_dispatch_at DATETIME DEFAULT NULL,
+    last_recovery_at DATETIME DEFAULT NULL,
+    last_recovery_event VARCHAR(500) DEFAULT NULL,
+    last_watchdog_at DATETIME DEFAULT NULL,
+    watchdog_status VARCHAR(64) DEFAULT NULL,
+    wake_requested_at DATETIME DEFAULT NULL,
+    last_exit_at DATETIME DEFAULT NULL,
+    last_exit_code INT DEFAULT NULL,
+    last_exit_reason VARCHAR(500) DEFAULT NULL,
+    metadata_json LONGTEXT DEFAULT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    KEY idx_scheduler_daemon_lease (lease_expires_at),
+    KEY idx_scheduler_daemon_heartbeat (heartbeat_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+INSERT INTO scheduler_daemon_state (daemon_key, status, loop_state, watchdog_status)
+VALUES ('master', 'stopped', 'idle', 'unknown')
+ON DUPLICATE KEY UPDATE daemon_key = daemon_key;
+
 
 CREATE TABLE IF NOT EXISTS scheduler_job_pairing_rules (
     id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
