@@ -4210,7 +4210,8 @@ function db_sync_schedule_fetch_running_jobs(?array $excludeScheduleIds = null):
 '
         . 'WHERE enabled = 1
 '
-        . '  AND current_state = \'running\'\n'
+        . '  AND current_state = \'running\'
+'
         . '  AND locked_until IS NOT NULL
 '
         . '  AND locked_until > UTC_TIMESTAMP()';
