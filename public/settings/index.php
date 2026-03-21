@@ -206,6 +206,7 @@ $syncStatusCards = [];
 $syncDashboard = sync_schedule_settings_view_model();
 $configuredSyncJobs = array_values((array) ($syncDashboard['configured_jobs'] ?? []));
 $discoveredSyncJobs = array_values((array) ($syncDashboard['discovered_jobs'] ?? []));
+$internalSyncJobs = array_values((array) ($syncDashboard['internal_jobs'] ?? []));
 $runNowJobOptions = [];
 $staticDataState = null;
 if ($dbStatus['ok']) {
@@ -252,7 +253,7 @@ if ($dbStatus['ok']) {
     }
 }
 
-foreach (array_merge($configuredSyncJobs, $discoveredSyncJobs) as $schedule) {
+foreach ($configuredSyncJobs as $schedule) {
     $runNowJobOptions[] = [
         'job_key' => (string) ($schedule['job_key'] ?? ''),
         'label' => (string) ($schedule['label'] ?? ''),
@@ -1485,7 +1486,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                             <div class="flex items-start justify-between gap-3">
                                 <div>
                                     <p class="text-sm text-slate-100">Scheduler health summary</p>
-                                    <p class="mt-1 text-xs text-muted">Operational state across configured and discovered sync jobs.</p>
+                                    <p class="mt-1 text-xs text-muted">Operational state across user-managed jobs and unreviewed discovered workloads. Internal mechanics are excluded from this summary.</p>
                                 </div>
                                 <?php $pressure = (string) ($schedulerHealth['pressure'] ?? 'healthy'); ?>
                                 <?php $pressureClass = $pressure === 'congested' ? 'border-rose-400/40 bg-rose-500/10 text-rose-100' : ($pressure === 'busy' ? 'border-amber-400/40 bg-amber-500/10 text-amber-100' : 'border-emerald-400/30 bg-emerald-500/10 text-emerald-100'); ?>
@@ -1513,8 +1514,8 @@ include __DIR__ . '/../../src/views/partials/header.php';
                     </div>
 
                     <div>
-                        <p class="text-sm text-slate-100">Configured scheduler jobs</p>
-                        <p class="mt-1 text-xs text-muted">Manual mode locks cadence until an admin changes it. Automatic mode allows the optimizer to move offset first, then timeout, then interval.</p>
+                        <p class="text-sm text-slate-100">Operational jobs</p>
+                        <p class="mt-1 text-xs text-muted">These are user-managed scheduler workloads. Manual mode locks cadence until an admin changes it. Automatic mode moves offset first, then timeout, then interval while preserving protected offsets for critical jobs.</p>
                     </div>
                     <div class="space-y-3">
                         <?php foreach ($configuredSyncJobs as $schedule): ?>
@@ -1593,8 +1594,8 @@ include __DIR__ . '/../../src/views/partials/header.php';
                     </div>
 
                     <div>
-                        <p class="text-sm text-slate-100">Discovered jobs not explicitly configured</p>
-                        <p class="mt-1 text-xs text-muted">These were found in scheduler registration points or code patterns and were assigned conservative baseline schedules instead of being ignored.</p>
+                        <p class="text-sm text-slate-100">Discovered but not yet reviewed jobs</p>
+                        <p class="mt-1 text-xs text-muted">These look like runnable workloads found in code and were assigned conservative baseline schedules after protected offsets were reserved. Review them before promoting them into the operational set.</p>
                     </div>
                     <div class="space-y-3">
                         <?php if ($discoveredSyncJobs === []): ?>
@@ -1613,6 +1614,35 @@ include __DIR__ . '/../../src/views/partials/header.php';
                             </div>
                         <?php endforeach; ?>
                     </div>
+
+                    <details class="rounded-xl border border-border bg-black/20 p-4">
+                        <summary class="cursor-pointer list-none">
+                            <div class="flex flex-wrap items-center justify-between gap-3">
+                                <div>
+                                    <p class="text-sm text-slate-100">Internal scheduler mechanics</p>
+                                    <p class="mt-1 text-xs text-muted">Advanced diagnostics for helper functions, claim/dispatch plumbing, and orchestration internals that are intentionally not treated as normal operational jobs.</p>
+                                </div>
+                                <span class="inline-flex items-center rounded-full border border-border px-2.5 py-1 text-[11px] uppercase tracking-[0.14em] text-muted"><?= count($internalSyncJobs) ?> internal</span>
+                            </div>
+                        </summary>
+                        <div class="mt-4 space-y-3">
+                            <?php if ($internalSyncJobs === []): ?>
+                                <div class="rounded-xl border border-dashed border-border bg-black/20 p-4 text-sm text-muted">No internal scheduler mechanics were surfaced by discovery.</div>
+                            <?php endif; ?>
+                            <?php foreach ($internalSyncJobs as $schedule): ?>
+                                <div class="rounded-xl border border-border bg-black/20 p-4">
+                                    <div class="flex flex-wrap items-center justify-between gap-3">
+                                        <div>
+                                            <p class="text-sm font-medium text-slate-100"><?= htmlspecialchars((string) ($schedule['label'] ?? $schedule['job_key']), ENT_QUOTES) ?></p>
+                                            <p class="mt-1 text-xs text-muted font-mono"><?= htmlspecialchars((string) ($schedule['job_key'] ?? ''), ENT_QUOTES) ?></p>
+                                        </div>
+                                        <span class="inline-flex items-center rounded-full border border-amber-400/40 bg-amber-500/10 px-2.5 py-1 text-[11px] uppercase tracking-[0.14em] text-amber-100">internal</span>
+                                    </div>
+                                    <p class="mt-3 text-xs text-muted">Hidden from normal sync workload controls because discovery classified this as scheduler plumbing rather than a user-managed runnable job.</p>
+                                </div>
+                            <?php endforeach; ?>
+                        </div>
+                    </details>
 
                     <div>
                         <p class="text-sm text-slate-100">Recent auto-tuning actions</p>

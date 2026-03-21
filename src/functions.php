@@ -2426,22 +2426,23 @@ function scheduler_registry_definitions(): array
 {
     return [
         'market_hub_current_sync' => ['label' => 'Market Hub Current', 'default_interval_minutes' => 8, 'default_offset_minutes' => 0, 'priority' => 'high', 'timeout_seconds' => 240, 'concurrency_policy' => 'single', 'tuning_mode' => 'automatic', 'explicitly_configured' => true, 'min_interval_minutes' => 1, 'max_interval_minutes' => 8],
+        'deal_alerts_sync' => ['label' => 'Deal Alerts', 'default_interval_minutes' => 5, 'default_offset_minutes' => 1, 'priority' => 'high', 'timeout_seconds' => 90, 'concurrency_policy' => 'single', 'tuning_mode' => 'automatic', 'explicitly_configured' => false],
         'alliance_current_sync' => ['label' => 'Alliance Current', 'default_interval_minutes' => 4, 'default_offset_minutes' => 2, 'priority' => 'medium', 'timeout_seconds' => 180, 'concurrency_policy' => 'single', 'tuning_mode' => 'automatic', 'explicitly_configured' => true],
         'killmail_r2z2_sync' => ['label' => 'Killmail R2Z2 Stream', 'default_interval_minutes' => 3, 'default_offset_minutes' => 3, 'priority' => 'highest', 'timeout_seconds' => 90, 'concurrency_policy' => 'single', 'tuning_mode' => 'automatic', 'explicitly_configured' => true, 'min_interval_minutes' => 1, 'max_interval_minutes' => 3],
+        'configured_structure_destination_id_for_esi_sync' => ['label' => 'Configured Structure Destination for ESI', 'default_interval_minutes' => 30, 'default_offset_minutes' => 4, 'priority' => 'normal', 'timeout_seconds' => 120, 'concurrency_policy' => 'single', 'tuning_mode' => 'automatic', 'explicitly_configured' => false],
         'current_state_refresh_sync' => ['label' => 'Current-State Refresh', 'default_interval_minutes' => 12, 'default_offset_minutes' => 6, 'priority' => 'medium', 'timeout_seconds' => 120, 'concurrency_policy' => 'single', 'tuning_mode' => 'automatic', 'explicitly_configured' => true],
         'doctrine_intelligence_sync' => ['label' => 'Doctrine Intelligence', 'default_interval_minutes' => 15, 'default_offset_minutes' => 8, 'priority' => 'normal', 'timeout_seconds' => 180, 'concurrency_policy' => 'single', 'tuning_mode' => 'automatic', 'explicitly_configured' => true],
         'market_comparison_summary_sync' => ['label' => 'Market Comparison Summary', 'default_interval_minutes' => 15, 'default_offset_minutes' => 9, 'priority' => 'normal', 'timeout_seconds' => 180, 'concurrency_policy' => 'single', 'tuning_mode' => 'automatic', 'explicitly_configured' => true],
         'loss_demand_summary_sync' => ['label' => 'Loss Demand Summary', 'default_interval_minutes' => 15, 'default_offset_minutes' => 10, 'priority' => 'normal', 'timeout_seconds' => 180, 'concurrency_policy' => 'single', 'tuning_mode' => 'automatic', 'explicitly_configured' => true],
         'dashboard_summary_sync' => ['label' => 'Dashboard Summary', 'default_interval_minutes' => 15, 'default_offset_minutes' => 11, 'priority' => 'normal', 'timeout_seconds' => 180, 'concurrency_policy' => 'single', 'tuning_mode' => 'automatic', 'explicitly_configured' => true],
         'rebuild_ai_briefings' => ['label' => 'Rebuild AI Briefings', 'default_interval_minutes' => 20, 'default_offset_minutes' => 12, 'priority' => 'normal', 'timeout_seconds' => 300, 'concurrency_policy' => 'background', 'tuning_mode' => 'automatic', 'explicitly_configured' => true],
-        'market_hub_local_history_sync' => ['label' => 'Market Hub Local History', 'default_interval_minutes' => 20, 'default_offset_minutes' => 14, 'priority' => 'normal', 'timeout_seconds' => 1800, 'concurrency_policy' => 'background', 'tuning_mode' => 'automatic', 'explicitly_configured' => true],
-        'alliance_historical_sync' => ['label' => 'Alliance Historical', 'default_interval_minutes' => 360, 'default_offset_minutes' => 0, 'priority' => 'normal', 'timeout_seconds' => 3600, 'concurrency_policy' => 'background', 'tuning_mode' => 'automatic', 'explicitly_configured' => true],
-        'market_hub_historical_sync' => ['label' => 'Market Hub Historical', 'default_interval_minutes' => 360, 'default_offset_minutes' => 0, 'priority' => 'normal', 'timeout_seconds' => 3600, 'concurrency_policy' => 'background', 'tuning_mode' => 'automatic', 'explicitly_configured' => true],
-        'forecasting_ai_sync' => ['label' => 'Forecasting AI', 'default_interval_minutes' => 60, 'default_offset_minutes' => 0, 'priority' => 'normal', 'timeout_seconds' => 300, 'concurrency_policy' => 'background', 'tuning_mode' => 'automatic', 'explicitly_configured' => true],
-        'deal_alerts_sync' => ['label' => 'Deal Alerts', 'default_interval_minutes' => 5, 'default_offset_minutes' => 1, 'priority' => 'normal', 'timeout_seconds' => 90, 'concurrency_policy' => 'single', 'tuning_mode' => 'automatic', 'explicitly_configured' => false],
         'activity_priority_summary_sync' => ['label' => 'Activity Priority Summary', 'default_interval_minutes' => 15, 'default_offset_minutes' => 13, 'priority' => 'normal', 'timeout_seconds' => 180, 'concurrency_policy' => 'single', 'tuning_mode' => 'automatic', 'explicitly_configured' => false],
+        'market_hub_local_history_sync' => ['label' => 'Market Hub Local History', 'default_interval_minutes' => 20, 'default_offset_minutes' => 14, 'priority' => 'normal', 'timeout_seconds' => 1800, 'concurrency_policy' => 'background', 'tuning_mode' => 'automatic', 'explicitly_configured' => true],
         'analytics_bucket_1h_sync' => ['label' => 'Analytics Buckets (1h)', 'default_interval_minutes' => 15, 'default_offset_minutes' => 15, 'priority' => 'normal', 'timeout_seconds' => 180, 'concurrency_policy' => 'single', 'tuning_mode' => 'automatic', 'explicitly_configured' => false],
         'analytics_bucket_1d_sync' => ['label' => 'Analytics Buckets (1d)', 'default_interval_minutes' => 60, 'default_offset_minutes' => 16, 'priority' => 'normal', 'timeout_seconds' => 240, 'concurrency_policy' => 'single', 'tuning_mode' => 'automatic', 'explicitly_configured' => false],
+        'alliance_historical_sync' => ['label' => 'Alliance Historical', 'default_interval_minutes' => 360, 'default_offset_minutes' => 5, 'priority' => 'normal', 'timeout_seconds' => 3600, 'concurrency_policy' => 'background', 'tuning_mode' => 'automatic', 'explicitly_configured' => true],
+        'market_hub_historical_sync' => ['label' => 'Market Hub Historical', 'default_interval_minutes' => 360, 'default_offset_minutes' => 0, 'priority' => 'normal', 'timeout_seconds' => 3600, 'concurrency_policy' => 'background', 'tuning_mode' => 'automatic', 'explicitly_configured' => true],
+        'forecasting_ai_sync' => ['label' => 'Forecasting AI', 'default_interval_minutes' => 60, 'default_offset_minutes' => 0, 'priority' => 'normal', 'timeout_seconds' => 300, 'concurrency_policy' => 'background', 'tuning_mode' => 'automatic', 'explicitly_configured' => true],
     ];
 }
 
@@ -2461,6 +2462,180 @@ function data_sync_schedule_job_definitions(): array
     }
 
     return $definitions;
+}
+
+function scheduler_internal_mechanic_job_keys(): array
+{
+    return [
+        'db_sync_schedule_claim_job',
+        'db_sync_schedule_ensure_job',
+        'scheduler_defer_due_job',
+        'scheduler_dispatch_background_job',
+        'scheduler_run_job',
+        'scheduler_should_defer_due_job',
+        'sync_runner_backfill_start_for_job',
+        'sync_runner_dataset_key_for_job',
+        'sync_runner_dispatch_job',
+        'sync_runner_execute_job',
+        'max_runtime_reached_before_market_job',
+    ];
+}
+
+function scheduler_protected_job_keys(): array
+{
+    return [
+        'killmail_r2z2_sync',
+        'market_hub_current_sync',
+        'deal_alerts_sync',
+        'alliance_current_sync',
+        'current_state_refresh_sync',
+    ];
+}
+
+function scheduler_is_internal_mechanic_job(string $jobKey): bool
+{
+    $normalizedKey = trim(strtolower($jobKey));
+    if ($normalizedKey === '') {
+        return false;
+    }
+
+    if (in_array($normalizedKey, scheduler_internal_mechanic_job_keys(), true)) {
+        return true;
+    }
+
+    foreach (['db_sync_schedule_', 'scheduler_', 'sync_runner_'] as $prefix) {
+        if (str_starts_with($normalizedKey, $prefix)) {
+            return true;
+        }
+    }
+
+    foreach (['_claim_', '_ensure_', '_dispatch_', '_execute_', '_dataset_key_', '_backfill_start_', '_should_defer_', '_defer_'] as $needle) {
+        if (str_contains($normalizedKey, $needle)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+function scheduler_is_protected_job(string $jobKey): bool
+{
+    return in_array(trim($jobKey), scheduler_protected_job_keys(), true);
+}
+
+function scheduler_reserved_protected_offsets(int $offsetHorizonMinutes = 60, ?string $excludeJobKey = null): array
+{
+    $reserved = [];
+    $horizon = max(1, min(1440, $offsetHorizonMinutes));
+
+    foreach (scheduler_registry_definitions() as $jobKey => $definition) {
+        if (!scheduler_is_protected_job($jobKey) || $jobKey === $excludeJobKey) {
+            continue;
+        }
+
+        $offset = max(0, (int) ($definition['default_offset_minutes'] ?? 0)) % $horizon;
+        $reserved[$offset] = true;
+    }
+
+    ksort($reserved);
+
+    return array_map('intval', array_keys($reserved));
+}
+
+function scheduler_discovery_offset_horizon_minutes(): int
+{
+    return 60;
+}
+
+function scheduler_offset_load_map(int $offsetHorizonMinutes = 60, array $options = []): array
+{
+    $horizon = max(1, min(1440, $offsetHorizonMinutes));
+    $counts = array_fill(0, $horizon, 0);
+    $excludeJobKey = trim((string) ($options['exclude_job_key'] ?? ''));
+    $rows = $options['rows'] ?? null;
+    if (!is_array($rows)) {
+        try {
+            $rows = db_sync_schedule_fetch_all();
+        } catch (Throwable) {
+            $rows = [];
+        }
+    }
+
+    foreach ($rows as $row) {
+        $jobKey = trim((string) ($row['job_key'] ?? ''));
+        if ($jobKey === '' || $jobKey === $excludeJobKey) {
+            continue;
+        }
+
+        $offset = max(0, (int) ($row['offset_minutes'] ?? 0)) % $horizon;
+        $counts[$offset] = (int) ($counts[$offset] ?? 0) + 1;
+    }
+
+    $reserveProtectedOffsets = !array_key_exists('reserve_protected_offsets', $options) || !empty($options['reserve_protected_offsets']);
+    if ($reserveProtectedOffsets) {
+        $reserveWeight = max(1, (int) ($options['reserved_weight'] ?? 3));
+        foreach (scheduler_reserved_protected_offsets($horizon, $excludeJobKey) as $offset) {
+            $counts[$offset] = (int) ($counts[$offset] ?? 0) + $reserveWeight;
+        }
+    }
+
+    return $counts;
+}
+
+function scheduler_least_congested_offset_minutes(int $offsetHorizonMinutes = 60, array $options = []): int
+{
+    $counts = scheduler_offset_load_map($offsetHorizonMinutes, $options);
+    $reservedOffsets = [];
+    if (!empty($options['avoid_protected_offsets'])) {
+        foreach (scheduler_reserved_protected_offsets(count($counts), trim((string) ($options['exclude_job_key'] ?? ''))) as $offset) {
+            $reservedOffsets[$offset] = true;
+        }
+    }
+
+    $bestOffset = 0;
+    $bestScore = null;
+
+    foreach ($counts as $offset => $count) {
+        $score = [
+            isset($reservedOffsets[$offset]) ? 1 : 0,
+            (int) $count,
+            (int) $offset,
+        ];
+        if ($bestScore === null || $score < $bestScore) {
+            $bestScore = $score;
+            $bestOffset = (int) $offset;
+        }
+    }
+
+    return $bestOffset;
+}
+
+function scheduler_extract_php_function_names(string $contents): array
+{
+    $names = [];
+    $tokens = token_get_all($contents);
+    $tokenCount = count($tokens);
+
+    for ($index = 0; $index < $tokenCount; $index++) {
+        $token = $tokens[$index];
+        if (!is_array($token) || $token[0] !== T_FUNCTION) {
+            continue;
+        }
+
+        for ($lookahead = $index + 1; $lookahead < $tokenCount; $lookahead++) {
+            $candidate = $tokens[$lookahead];
+            if (is_array($candidate) && $candidate[0] === T_STRING) {
+                $names[] = strtolower(trim((string) $candidate[1]));
+                break;
+            }
+
+            if ($candidate === '(') {
+                break;
+            }
+        }
+    }
+
+    return array_values(array_unique(array_filter($names, static fn (string $name): bool => $name !== '')));
 }
 
 function scheduler_pressure_label(array $summary): string
@@ -2505,6 +2680,7 @@ function sync_schedule_settings_view_model(): array
 
     $configuredJobs = [];
     $discoveredJobs = [];
+    $internalJobs = [];
     $healthSummary = [
         'total_jobs' => 0,
         'running_jobs' => 0,
@@ -2536,6 +2712,7 @@ function sync_schedule_settings_view_model(): array
             'concurrency_policy' => 'single',
             'tuning_mode' => 'automatic',
             'explicitly_configured' => false,
+            'discovery_classification' => scheduler_is_internal_mechanic_job($jobKey) ? 'internal' : 'operational',
         ];
 
         $jobEvents = $eventSummary[$jobKey] ?? [];
@@ -2589,21 +2766,33 @@ function sync_schedule_settings_view_model(): array
             'mode_key' => (string) $definition['mode_key'],
             'latest_action' => $lastAction,
             'recent_outcomes' => $outcomeSummary[$jobKey] ?? ['failed_runs' => 0, 'successful_runs' => 0, 'total_runs' => 0],
+            'discovery_classification' => (string) ($definition['discovery_classification'] ?? (scheduler_is_internal_mechanic_job($jobKey) ? 'internal' : 'operational')),
+            'protected_offset' => scheduler_is_protected_job($jobKey),
         ];
 
-        $healthSummary['total_jobs']++;
-        $healthSummary[$currentState . '_jobs'] = (int) ($healthSummary[$currentState . '_jobs'] ?? 0) + 1;
-        $healthSummary['lock_conflicts'] += $card['lock_conflicts_recent'];
-        if ($card['lateness_seconds'] >= 60) {
-            $healthSummary['late_jobs']++;
-        }
-        if ($isDegraded) {
-            $healthSummary['degraded_jobs']++;
-        }
-
-        if ($card['explicitly_configured']) {
+        if ($card['discovery_classification'] === 'internal') {
+            $internalJobs[] = $card;
+        } elseif ($card['explicitly_configured']) {
+            $healthSummary['total_jobs']++;
+            $healthSummary[$currentState . '_jobs'] = (int) ($healthSummary[$currentState . '_jobs'] ?? 0) + 1;
+            $healthSummary['lock_conflicts'] += $card['lock_conflicts_recent'];
+            if ($card['lateness_seconds'] >= 60) {
+                $healthSummary['late_jobs']++;
+            }
+            if ($isDegraded) {
+                $healthSummary['degraded_jobs']++;
+            }
             $configuredJobs[] = $card;
         } else {
+            $healthSummary['total_jobs']++;
+            $healthSummary[$currentState . '_jobs'] = (int) ($healthSummary[$currentState . '_jobs'] ?? 0) + 1;
+            $healthSummary['lock_conflicts'] += $card['lock_conflicts_recent'];
+            if ($card['lateness_seconds'] >= 60) {
+                $healthSummary['late_jobs']++;
+            }
+            if ($isDegraded) {
+                $healthSummary['degraded_jobs']++;
+            }
             $discoveredJobs[] = $card;
         }
     }
@@ -2613,6 +2802,7 @@ function sync_schedule_settings_view_model(): array
     return [
         'configured_jobs' => $configuredJobs,
         'discovered_jobs' => $discoveredJobs,
+        'internal_jobs' => $internalJobs,
         'health_summary' => $healthSummary,
         'busiest_offsets' => $busiestOffsets,
         'recent_actions' => $recentActions,
@@ -2642,7 +2832,7 @@ function save_data_sync_schedule_settings(array $request): bool
 
                 $enabled = scheduler_request_bool($request, (string) $definition['enabled_key']);
                 $intervalMinutes = scheduler_request_int($request, (string) $definition['interval_minutes_key'], (int) ($definition['default_interval_minutes'] ?? 30), 1, 1440);
-                $offsetMinutes = scheduler_request_int($request, (string) $definition['offset_minutes_key'], (int) ($definition['default_offset_minutes'] ?? 0), 0, max(0, $intervalMinutes - 1));
+                $offsetMinutes = scheduler_request_int($request, (string) $definition['offset_minutes_key'], (int) ($definition['default_offset_minutes'] ?? 0), 0, 1439);
                 $timeoutSeconds = scheduler_request_int($request, (string) $definition['timeout_key'], (int) ($definition['timeout_seconds'] ?? 300), 30, 7200);
                 $priority = trim((string) ($request[$definition['priority_key']] ?? ($definition['priority'] ?? 'normal')));
                 if (!array_key_exists($priority, scheduler_priority_options())) {
@@ -7081,25 +7271,6 @@ function scheduler_job_summary_message(array $result): string
     return 'Processed ' . $rowsSeen . ' records, wrote ' . $rowsWritten . ' records.';
 }
 
-function scheduler_least_congested_offset_minutes(int $intervalMinutes = 30): int
-{
-    $intervalMinutes = max(1, min(1440, $intervalMinutes));
-    $counts = array_fill(0, $intervalMinutes, 0);
-
-    try {
-        foreach (db_sync_schedule_fetch_all() as $row) {
-            $offset = (int) ($row['offset_minutes'] ?? 0);
-            $counts[$offset % $intervalMinutes] = (int) ($counts[$offset % $intervalMinutes] ?? 0) + 1;
-        }
-    } catch (Throwable) {
-        return 0;
-    }
-
-    asort($counts);
-
-    return (int) array_key_first($counts);
-}
-
 function scheduler_code_discovery_paths(): array
 {
     return [dirname(__DIR__) . '/bin', __DIR__];
@@ -7110,13 +7281,43 @@ function scheduler_discover_jobs(): array
     $discovered = [];
     $known = scheduler_registry_definitions();
     foreach ($known as $jobKey => $definition) {
-        $discovered[$jobKey] = $definition + ['job_key' => $jobKey, 'discovered_from_code' => true];
+        $discovered[$jobKey] = $definition + [
+            'job_key' => $jobKey,
+            'discovered_from_code' => true,
+            'discovery_classification' => scheduler_is_internal_mechanic_job($jobKey) ? 'internal' : 'operational',
+        ];
     }
 
-    $patterns = [
-        '/\b([a-z0-9]+(?:_[a-z0-9]+)+(?:_sync|_job))\b/i',
-        '/--job=([a-z0-9\-]+)/i',
-    ];
+    foreach (scheduler_internal_mechanic_job_keys() as $jobKey) {
+        if (isset($discovered[$jobKey])) {
+            $discovered[$jobKey]['discovery_classification'] = 'internal';
+            continue;
+        }
+
+        $discovered[$jobKey] = [
+            'job_key' => $jobKey,
+            'label' => ucwords(str_replace('_', ' ', $jobKey)),
+            'default_interval_minutes' => 30,
+            'default_offset_minutes' => scheduler_least_congested_offset_minutes(
+                scheduler_discovery_offset_horizon_minutes(),
+                ['avoid_protected_offsets' => true, 'reserve_protected_offsets' => true]
+            ),
+            'priority' => 'normal',
+            'timeout_seconds' => 300,
+            'concurrency_policy' => 'single',
+            'tuning_mode' => 'automatic',
+            'explicitly_configured' => false,
+            'discovered_from_code' => true,
+            'discovery_classification' => 'internal',
+        ];
+    }
+
+    $rows = [];
+    try {
+        $rows = db_sync_schedule_fetch_all();
+    } catch (Throwable) {
+        $rows = [];
+    }
 
     foreach (scheduler_code_discovery_paths() as $path) {
         if (!is_dir($path)) {
@@ -7139,32 +7340,37 @@ function scheduler_discover_jobs(): array
                 continue;
             }
 
-            foreach ($patterns as $pattern) {
-                if (!preg_match_all($pattern, $contents, $matches)) {
+            foreach (scheduler_extract_php_function_names($contents) as $candidate) {
+                if (!preg_match('/(?:_sync|_job)$/', $candidate)) {
                     continue;
                 }
 
-                foreach ((array) ($matches[1] ?? []) as $match) {
-                    $candidate = str_replace('-', '_', strtolower(trim((string) $match)));
-                    if ($candidate === '' || !preg_match('/(sync|refresh|summary|briefing|forecast|history|cron|job)$/', $candidate)) {
-                        continue;
-                    }
-
-                    if (!isset($discovered[$candidate])) {
-                        $discovered[$candidate] = [
-                            'job_key' => $candidate,
-                            'label' => ucwords(str_replace('_', ' ', $candidate)),
-                            'default_interval_minutes' => 30,
-                            'default_offset_minutes' => scheduler_least_congested_offset_minutes(30),
-                            'priority' => 'normal',
-                            'timeout_seconds' => 300,
-                            'concurrency_policy' => 'single',
-                            'tuning_mode' => 'automatic',
-                            'explicitly_configured' => false,
-                            'discovered_from_code' => true,
-                        ];
-                    }
+                $classification = scheduler_is_internal_mechanic_job($candidate) ? 'internal' : 'operational';
+                if (!isset($discovered[$candidate])) {
+                    $discovered[$candidate] = [
+                        'job_key' => $candidate,
+                        'label' => ucwords(str_replace('_', ' ', $candidate)),
+                        'default_interval_minutes' => 30,
+                        'default_offset_minutes' => scheduler_least_congested_offset_minutes(
+                            scheduler_discovery_offset_horizon_minutes(),
+                            [
+                                'rows' => $rows,
+                                'avoid_protected_offsets' => true,
+                                'reserve_protected_offsets' => true,
+                            ]
+                        ),
+                        'priority' => 'normal',
+                        'timeout_seconds' => 300,
+                        'concurrency_policy' => 'single',
+                        'tuning_mode' => 'automatic',
+                        'explicitly_configured' => false,
+                        'discovered_from_code' => true,
+                        'discovery_classification' => $classification,
+                    ];
+                    continue;
                 }
+
+                $discovered[$candidate]['discovery_classification'] = $classification;
             }
         }
     }
@@ -7172,6 +7378,65 @@ function scheduler_discover_jobs(): array
     ksort($discovered);
 
     return $discovered;
+}
+
+function scheduler_reconcile_baseline_rows(array $definitions, array $existingRows): void
+{
+    $legacyFixes = [
+        'deal_alerts_sync' => static function (array $row): bool {
+            return (int) ($row['interval_minutes'] ?? 0) === 5
+                && (int) ($row['offset_minutes'] ?? 0) === 1
+                && (string) ($row['priority'] ?? 'normal') === 'normal';
+        },
+        'alliance_historical_sync' => static function (array $row): bool {
+            return (int) ($row['interval_minutes'] ?? 0) === 360
+                && (int) ($row['offset_minutes'] ?? 0) === 0
+                && (string) ($row['priority'] ?? 'normal') === 'normal';
+        },
+    ];
+
+    foreach ($legacyFixes as $jobKey => $shouldRepair) {
+        $row = $existingRows[$jobKey] ?? null;
+        $definition = $definitions[$jobKey] ?? null;
+        if (!is_array($row) || !is_array($definition) || !$shouldRepair($row)) {
+            continue;
+        }
+
+        db_sync_schedule_upsert(
+            $jobKey,
+            (int) ($row['enabled'] ?? 1),
+            ((int) ($definition['default_interval_minutes'] ?? 30)) * 60,
+            ((int) ($definition['default_offset_minutes'] ?? 0)) * 60,
+            [
+                'interval_minutes' => (int) ($definition['default_interval_minutes'] ?? 30),
+                'offset_minutes' => (int) ($definition['default_offset_minutes'] ?? 0),
+                'priority' => (string) ($definition['priority'] ?? 'normal'),
+                'timeout_seconds' => (int) ($row['timeout_seconds'] ?? $definition['timeout_seconds'] ?? 300),
+                'concurrency_policy' => (string) ($row['concurrency_policy'] ?? $definition['concurrency_policy'] ?? 'single'),
+                'tuning_mode' => (string) ($row['tuning_mode'] ?? $definition['tuning_mode'] ?? 'automatic'),
+                'discovered_from_code' => true,
+                'explicitly_configured' => !empty($row['explicitly_configured']),
+            ]
+        );
+
+        db_scheduler_tuning_action_log(
+            $jobKey,
+            'system',
+            'baseline_repair',
+            'Repaired legacy baseline cadence/priority to preserve protected scheduler offsets.',
+            [
+                'interval_minutes' => (int) ($row['interval_minutes'] ?? 0),
+                'offset_minutes' => (int) ($row['offset_minutes'] ?? 0),
+                'priority' => (string) ($row['priority'] ?? 'normal'),
+            ],
+            [
+                'interval_minutes' => (int) ($definition['default_interval_minutes'] ?? 30),
+                'offset_minutes' => (int) ($definition['default_offset_minutes'] ?? 0),
+                'priority' => (string) ($definition['priority'] ?? 'normal'),
+            ],
+            ['source' => 'baseline-repair']
+        );
+    }
 }
 
 function scheduler_registry_bootstrap(): void
@@ -7185,6 +7450,8 @@ function scheduler_registry_bootstrap(): void
     } catch (Throwable) {
         $existingRows = [];
     }
+
+    scheduler_reconcile_baseline_rows($definitions, $existingRows);
 
     $handlers = scheduler_job_definitions();
 
@@ -7525,6 +7792,74 @@ function scheduler_job_constraints(string $jobKey): array
     ];
 }
 
+function scheduler_job_shares_protected_offset(string $jobKey, int $offsetMinutes, array $rows): bool
+{
+    foreach ($rows as $row) {
+        $otherJobKey = trim((string) ($row['job_key'] ?? ''));
+        if ($otherJobKey === '' || $otherJobKey === $jobKey || !scheduler_is_protected_job($otherJobKey)) {
+            continue;
+        }
+
+        if ((int) ($row['offset_minutes'] ?? 0) === $offsetMinutes) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+function scheduler_recommended_offset_minutes_for_job(array $job, array $rows, bool $preserveProtectedOffsets = true): int
+{
+    $jobKey = trim((string) ($job['job_key'] ?? ''));
+    $isProtected = scheduler_is_protected_job($jobKey);
+    $counts = scheduler_offset_load_map(
+        scheduler_discovery_offset_horizon_minutes(),
+        [
+            'rows' => $rows,
+            'exclude_job_key' => $jobKey,
+            'reserve_protected_offsets' => !$isProtected,
+        ]
+    );
+    $reservedOffsets = [];
+    if ($preserveProtectedOffsets) {
+        foreach (scheduler_reserved_protected_offsets(count($counts), $jobKey) as $offset) {
+            $reservedOffsets[$offset] = true;
+        }
+    }
+
+    $bestOffset = max(0, (int) ($job['offset_minutes'] ?? 0));
+    $bestScore = null;
+
+    foreach ($counts as $offset => $count) {
+        if ($isProtected && scheduler_job_shares_protected_offset($jobKey, (int) $offset, $rows)) {
+            continue;
+        }
+
+        $score = [
+            (!$isProtected && isset($reservedOffsets[$offset])) ? 1 : 0,
+            (int) $count,
+            abs((int) $offset - max(0, (int) ($job['offset_minutes'] ?? 0))),
+            (int) $offset,
+        ];
+        if ($bestScore === null || $score < $bestScore) {
+            $bestScore = $score;
+            $bestOffset = (int) $offset;
+        }
+    }
+
+    return $bestOffset;
+}
+
+function scheduler_job_needs_protected_offset_repair(array $job, array $rows): bool
+{
+    $jobKey = trim((string) ($job['job_key'] ?? ''));
+    if (!scheduler_is_protected_job($jobKey)) {
+        return false;
+    }
+
+    return scheduler_job_shares_protected_offset($jobKey, (int) ($job['offset_minutes'] ?? 0), $rows);
+}
+
 function scheduler_apply_tuning_change(array $job, string $actionType, string $reason, array $changes, array $metrics): bool
 {
     $scheduleId = (int) ($job['id'] ?? 0);
@@ -7578,9 +7913,16 @@ function scheduler_run_optimizer(): ?array
             'pressure' => $pressure['pressure'] ?? 'healthy',
         ];
 
+        if (scheduler_job_needs_protected_offset_repair($job, $rows)) {
+            $newOffset = scheduler_recommended_offset_minutes_for_job($job, $rows);
+            if ($newOffset !== $offsetMinutes && scheduler_apply_tuning_change($job, 'protected_offset_repair', 'Moved protected job onto a dedicated offset to avoid protected-job collisions.', ['offset_minutes' => $newOffset], $metrics)) {
+                return ['job_key' => $jobKey, 'action' => 'protected_offset_repair'];
+            }
+        }
+
         foreach ($busiest as $busy) {
             if ((int) ($busy['offset_minutes'] ?? -1) === $offsetMinutes && (int) ($busy['job_count'] ?? 0) >= 2 && !in_array((string) ($job['priority'] ?? 'normal'), ['highest', 'high'], true)) {
-                $newOffset = scheduler_least_congested_offset_minutes(max(2, $intervalMinutes));
+                $newOffset = scheduler_recommended_offset_minutes_for_job($job, $rows);
                 if ($newOffset !== $offsetMinutes) {
                     if (scheduler_apply_tuning_change($job, 'offset_shift', 'Shifted offset away from congested minute slot.', ['offset_minutes' => $newOffset], $metrics)) {
                         return ['job_key' => $jobKey, 'action' => 'offset_shift'];

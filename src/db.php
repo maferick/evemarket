@@ -3963,7 +3963,7 @@ function db_sync_schedule_next_run_at_for_values(int $intervalSeconds, int $offs
 function db_sync_schedule_next_due_at_for_minutes(int $intervalMinutes, int $offsetMinutes, ?int $nowUnix = null): string
 {
     $safeInterval = max(1, min(1440, $intervalMinutes));
-    $safeOffset = max(0, min($safeInterval - 1, $offsetMinutes));
+    $safeOffset = max(0, min(1439, $offsetMinutes));
     $referenceUnix = $nowUnix ?? time();
     $referenceMinute = (int) floor($referenceUnix / 60);
 
@@ -4173,7 +4173,7 @@ function db_sync_schedule_ensure_job(string $jobKey, int $enabled, int $interval
 
     $intervalMinutes = max(1, min(1440, (int) ($options['interval_minutes'] ?? (int) ceil($intervalSeconds / 60))));
     $safeIntervalSeconds = max(60, $intervalMinutes * 60);
-    $offsetMinutes = max(0, min($intervalMinutes - 1, (int) ($options['offset_minutes'] ?? (int) floor($offsetSeconds / 60))));
+    $offsetMinutes = max(0, min(1439, (int) ($options['offset_minutes'] ?? (int) floor($offsetSeconds / 60))));
     $safeOffsetSeconds = $offsetMinutes * 60;
     $priority = mb_substr(trim((string) ($options['priority'] ?? 'normal')), 0, 20);
     $concurrencyPolicy = mb_substr(trim((string) ($options['concurrency_policy'] ?? 'single')), 0, 40);
@@ -4258,7 +4258,7 @@ function db_sync_schedule_upsert(string $jobKey, int $enabled, int $intervalSeco
     $intervalMinutes = max(1, min(1440, (int) ($options['interval_minutes'] ?? (int) ceil($intervalSeconds / 60))));
     $safeIntervalSeconds = max(60, $intervalMinutes * 60);
     $resolvedOffsetSeconds = $offsetSeconds ?? ((int) ($existing['offset_minutes'] ?? 0) * 60);
-    $offsetMinutes = max(0, min($intervalMinutes - 1, (int) ($options['offset_minutes'] ?? (int) floor($resolvedOffsetSeconds / 60))));
+    $offsetMinutes = max(0, min(1439, (int) ($options['offset_minutes'] ?? (int) floor($resolvedOffsetSeconds / 60))));
     $safeOffsetSeconds = $offsetMinutes * 60;
     $priority = mb_substr(trim((string) ($options['priority'] ?? ($existing['priority'] ?? 'normal'))), 0, 20);
     $concurrencyPolicy = mb_substr(trim((string) ($options['concurrency_policy'] ?? ($existing['concurrency_policy'] ?? 'single'))), 0, 40);
@@ -4404,7 +4404,7 @@ function db_sync_schedule_apply_adjustment(int $scheduleId, array $changes): boo
 
     $enabled = (int) ($row['enabled'] ?? 1);
     $intervalMinutes = max(1, min(1440, (int) ($changes['interval_minutes'] ?? $row['interval_minutes'] ?? 5)));
-    $offsetMinutes = max(0, min($intervalMinutes - 1, (int) ($changes['offset_minutes'] ?? $row['offset_minutes'] ?? 0)));
+    $offsetMinutes = max(0, min(1439, (int) ($changes['offset_minutes'] ?? $row['offset_minutes'] ?? 0)));
     $timeoutSeconds = max(30, min(7200, (int) ($changes['timeout_seconds'] ?? $row['timeout_seconds'] ?? 300)));
     $priority = mb_substr(trim((string) ($changes['priority'] ?? $row['priority'] ?? 'normal')), 0, 20);
     $tuningMode = ($changes['tuning_mode'] ?? $row['tuning_mode'] ?? 'automatic') === 'manual' ? 'manual' : 'automatic';
