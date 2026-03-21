@@ -3855,6 +3855,7 @@ function db_sync_schedule_registry_columns_ensure(): void
     db_ensure_table_column('sync_schedules', 'allow_parallel', 'TINYINT(1) NOT NULL DEFAULT 1');
     db_ensure_table_column('sync_schedules', 'prefers_solo', 'TINYINT(1) NOT NULL DEFAULT 0');
     db_ensure_table_column('sync_schedules', 'must_run_alone', 'TINYINT(1) NOT NULL DEFAULT 0');
+    db_ensure_table_column('sync_schedules', 'preferred_max_parallelism', 'INT UNSIGNED NOT NULL DEFAULT 1');
     db_ensure_table_column('sync_schedules', 'latest_allowed_start_at', 'DATETIME DEFAULT NULL');
     db_ensure_table_column('sync_schedules', 'last_cpu_percent', 'DECIMAL(8,2) DEFAULT NULL');
     db_ensure_table_column('sync_schedules', 'average_cpu_percent', 'DECIMAL(8,2) DEFAULT NULL');
@@ -3888,6 +3889,7 @@ function db_sync_schedule_registry_columns_ensure(): void
              allow_parallel = IFNULL(allow_parallel, 1),
              prefers_solo = IFNULL(prefers_solo, 0),
              must_run_alone = IFNULL(must_run_alone, 0),
+             preferred_max_parallelism = GREATEST(1, IFNULL(preferred_max_parallelism, 1)),
              learning_mode = IFNULL(learning_mode, 1),
              current_state = CASE
                 WHEN enabled = 0 THEN 'stopped'
@@ -3904,7 +3906,7 @@ function db_sync_schedule_select_columns_sql(): string
 {
     db_sync_schedule_registry_columns_ensure();
 
-    return 'id, job_key, enabled, interval_minutes, interval_seconds, offset_seconds, offset_minutes, priority, concurrency_policy, timeout_seconds, next_run_at, next_due_at, latest_allowed_start_at, last_run_at, last_started_at, last_finished_at, last_duration_seconds, average_duration_seconds, p95_duration_seconds, last_status, last_result, last_error, current_state, tuning_mode, discovered_from_code, explicitly_configured, last_auto_tuned_at, last_auto_tune_reason, degraded_until, failure_streak, lock_conflict_count, timeout_count, resource_class, resource_class_confidence, telemetry_sample_count, learning_mode, allow_parallel, prefers_solo, must_run_alone, last_cpu_percent, average_cpu_percent, p95_cpu_percent, last_memory_peak_bytes, average_memory_peak_bytes, p95_memory_peak_bytes, last_queue_wait_seconds, last_lock_wait_seconds, average_lock_wait_seconds, last_overlap_count, last_overlapped, recent_timeout_rate, recent_failure_rate, current_projected_cpu_percent, current_projected_memory_bytes, current_pressure_state, last_capacity_reason, locked_until, created_at, updated_at';
+    return 'id, job_key, enabled, interval_minutes, interval_seconds, offset_seconds, offset_minutes, priority, concurrency_policy, timeout_seconds, next_run_at, next_due_at, latest_allowed_start_at, last_run_at, last_started_at, last_finished_at, last_duration_seconds, average_duration_seconds, p95_duration_seconds, last_status, last_result, last_error, current_state, tuning_mode, discovered_from_code, explicitly_configured, last_auto_tuned_at, last_auto_tune_reason, degraded_until, failure_streak, lock_conflict_count, timeout_count, resource_class, resource_class_confidence, telemetry_sample_count, learning_mode, allow_parallel, prefers_solo, must_run_alone, preferred_max_parallelism, last_cpu_percent, average_cpu_percent, p95_cpu_percent, last_memory_peak_bytes, average_memory_peak_bytes, p95_memory_peak_bytes, last_queue_wait_seconds, last_lock_wait_seconds, average_lock_wait_seconds, last_overlap_count, last_overlapped, recent_timeout_rate, recent_failure_rate, current_projected_cpu_percent, current_projected_memory_bytes, current_pressure_state, last_capacity_reason, locked_until, created_at, updated_at';
 }
 
 function db_sync_schedule_priority_rank_sql(string $column = 'priority'): string
@@ -4505,6 +4507,7 @@ function db_sync_schedule_apply_adjustment(int $scheduleId, array $changes): boo
     $intervalMinutes = max(1, min(1440, (int) ($changes['interval_minutes'] ?? $row['interval_minutes'] ?? 5)));
     $offsetMinutes = max(0, min(1439, (int) ($changes['offset_minutes'] ?? $row['offset_minutes'] ?? 0)));
     $timeoutSeconds = max(30, min(7200, (int) ($changes['timeout_seconds'] ?? $row['timeout_seconds'] ?? 300)));
+    $preferredMaxParallelism = max(1, min(6, (int) ($changes['preferred_max_parallelism'] ?? $row['preferred_max_parallelism'] ?? 1)));
     $priority = mb_substr(trim((string) ($changes['priority'] ?? $row['priority'] ?? 'normal')), 0, 20);
     $tuningMode = ($changes['tuning_mode'] ?? $row['tuning_mode'] ?? 'automatic') === 'manual' ? 'manual' : 'automatic';
     $reason = mb_substr(trim((string) ($changes['last_auto_tune_reason'] ?? $row['last_auto_tune_reason'] ?? '')), 0, 500);
@@ -4522,6 +4525,7 @@ function db_sync_schedule_apply_adjustment(int $scheduleId, array $changes): boo
              timeout_seconds = ?,
              priority = ?,
              tuning_mode = ?,
+             preferred_max_parallelism = ?,
              last_auto_tuned_at = CASE WHEN ? <> \'\' THEN UTC_TIMESTAMP() ELSE last_auto_tuned_at END,
              last_auto_tune_reason = CASE WHEN ? <> \'\' THEN ? ELSE last_auto_tune_reason END,
              next_run_at = CASE WHEN enabled = 1 AND current_state <> \'running\' THEN ? ELSE next_run_at END,
@@ -4530,7 +4534,442 @@ function db_sync_schedule_apply_adjustment(int $scheduleId, array $changes): boo
              updated_at = CURRENT_TIMESTAMP
          WHERE id = ?
          LIMIT 1',
-        [$intervalMinutes, $intervalMinutes * 60, $offsetMinutes, $offsetMinutes * 60, $timeoutSeconds, $priority, $tuningMode, $reason, $reason, $reason, $nextDueAt, $nextDueAt, $currentState, $scheduleId]
+        [$intervalMinutes, $intervalMinutes * 60, $offsetMinutes, $offsetMinutes * 60, $timeoutSeconds, $priority, $tuningMode, $preferredMaxParallelism, $reason, $reason, $reason, $nextDueAt, $nextDueAt, $currentState, $scheduleId]
+    );
+}
+
+
+function db_sync_schedule_claim_job_forced(int $scheduleId, int $lockTtlSeconds = 300): ?array
+{
+    db_sync_schedule_registry_columns_ensure();
+
+    $safeLockTtl = max(30, min(7200, $lockTtlSeconds));
+    $stmt = db()->prepare(
+        'UPDATE sync_schedules
+         SET locked_until = DATE_ADD(UTC_TIMESTAMP(), INTERVAL ? SECOND),
+             last_status = ?,
+             last_error = NULL,
+             current_state = ?,
+             last_started_at = UTC_TIMESTAMP(),
+             latest_allowed_start_at = DATE_ADD(UTC_TIMESTAMP(), INTERVAL GREATEST(1, interval_minutes) MINUTE),
+             updated_at = CURRENT_TIMESTAMP
+         WHERE id = ?
+           AND enabled = 1
+           AND (locked_until IS NULL OR locked_until <= UTC_TIMESTAMP())
+           AND current_state <> ?
+         LIMIT 1'
+    );
+
+    $stmt->execute([$safeLockTtl, 'running', 'running', $scheduleId, 'running']);
+    if ($stmt->rowCount() !== 1) {
+        return null;
+    }
+
+    return db_sync_schedule_fetch_by_id($scheduleId);
+}
+
+function db_scheduler_pairing_rules_ensure(): void
+{
+    db_execute('CREATE TABLE IF NOT EXISTS scheduler_job_pairing_rules (
+        id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+        primary_job_key VARCHAR(190) NOT NULL,
+        secondary_job_key VARCHAR(190) NOT NULL,
+        rule_type VARCHAR(20) NOT NULL,
+        source_type VARCHAR(30) NOT NULL DEFAULT "profiling",
+        profiling_run_id BIGINT UNSIGNED DEFAULT NULL,
+        active TINYINT(1) NOT NULL DEFAULT 1,
+        notes VARCHAR(500) DEFAULT NULL,
+        metadata_json LONGTEXT DEFAULT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        UNIQUE KEY uniq_scheduler_pairing_rule (primary_job_key, secondary_job_key, rule_type),
+        KEY idx_scheduler_pairing_rules_type_active (rule_type, active),
+        KEY idx_scheduler_pairing_rules_run (profiling_run_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4');
+}
+
+function db_scheduler_pairing_rules_fetch_active(): array
+{
+    db_scheduler_pairing_rules_ensure();
+
+    return db_select(
+        'SELECT id, primary_job_key, secondary_job_key, rule_type, source_type, profiling_run_id, active, notes, metadata_json, created_at, updated_at
+         FROM scheduler_job_pairing_rules
+         WHERE active = 1
+         ORDER BY primary_job_key ASC, secondary_job_key ASC, rule_type ASC'
+    );
+}
+
+function db_scheduler_pairing_rules_replace_from_profiling_run(int $profilingRunId, array $rules, string $actorNote = ''): bool
+{
+    db_scheduler_pairing_rules_ensure();
+    $safeRunId = max(0, $profilingRunId);
+
+    return db_transaction(static function () use ($safeRunId, $rules, $actorNote): bool {
+        db_execute('UPDATE scheduler_job_pairing_rules SET active = 0, updated_at = CURRENT_TIMESTAMP WHERE source_type = ?', ['profiling']);
+        foreach ($rules as $rule) {
+            $primary = mb_substr(trim((string) ($rule['primary_job_key'] ?? '')), 0, 190);
+            $secondary = mb_substr(trim((string) ($rule['secondary_job_key'] ?? '')), 0, 190);
+            $type = mb_substr(trim((string) ($rule['rule_type'] ?? 'avoid')), 0, 20);
+            if ($primary === '' || $secondary === '' || $primary === $secondary) {
+                continue;
+            }
+            if (strcmp($primary, $secondary) > 0) {
+                $primaryTmp = $primary;
+                $primary = $secondary;
+                $secondary = $primaryTmp;
+            }
+            db_execute(
+                'INSERT INTO scheduler_job_pairing_rules (primary_job_key, secondary_job_key, rule_type, source_type, profiling_run_id, active, notes, metadata_json)
+                 VALUES (?, ?, ?, ?, ?, 1, ?, ?)
+                 ON DUPLICATE KEY UPDATE
+                    source_type = VALUES(source_type),
+                    profiling_run_id = VALUES(profiling_run_id),
+                    active = VALUES(active),
+                    notes = VALUES(notes),
+                    metadata_json = VALUES(metadata_json),
+                    updated_at = CURRENT_TIMESTAMP',
+                [
+                    $primary,
+                    $secondary,
+                    $type,
+                    'profiling',
+                    $safeRunId > 0 ? $safeRunId : null,
+                    mb_substr(trim((string) (($rule['notes'] ?? '') ?: $actorNote)), 0, 500),
+                    !empty($rule['metadata']) ? json_encode($rule['metadata'], JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE) : null,
+                ]
+            );
+        }
+        return true;
+    });
+}
+
+function db_scheduler_profiling_tables_ensure(): void
+{
+    db_execute('CREATE TABLE IF NOT EXISTS scheduler_profiling_runs (
+        id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+        run_status VARCHAR(30) NOT NULL,
+        current_phase VARCHAR(40) NOT NULL,
+        execution_mode VARCHAR(30) NOT NULL DEFAULT "isolated_only",
+        started_by VARCHAR(190) NOT NULL,
+        scope_json LONGTEXT DEFAULT NULL,
+        options_json LONGTEXT DEFAULT NULL,
+        selected_job_keys_json LONGTEXT DEFAULT NULL,
+        progress_json LONGTEXT DEFAULT NULL,
+        recommendations_json LONGTEXT DEFAULT NULL,
+        summary_json LONGTEXT DEFAULT NULL,
+        failure_message VARCHAR(500) DEFAULT NULL,
+        applied_snapshot_id BIGINT UNSIGNED DEFAULT NULL,
+        rollback_snapshot_id BIGINT UNSIGNED DEFAULT NULL,
+        started_at DATETIME NOT NULL,
+        finished_at DATETIME DEFAULT NULL,
+        applied_at DATETIME DEFAULT NULL,
+        cancelled_at DATETIME DEFAULT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        KEY idx_scheduler_profiling_runs_status (run_status, current_phase),
+        KEY idx_scheduler_profiling_runs_started (started_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4');
+
+    db_execute('CREATE TABLE IF NOT EXISTS scheduler_profiling_samples (
+        id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+        profiling_run_id BIGINT UNSIGNED NOT NULL,
+        schedule_id INT UNSIGNED DEFAULT NULL,
+        job_key VARCHAR(190) NOT NULL,
+        phase VARCHAR(30) NOT NULL,
+        sample_key VARCHAR(190) NOT NULL,
+        partner_job_key VARCHAR(190) DEFAULT NULL,
+        sample_index INT UNSIGNED NOT NULL DEFAULT 1,
+        run_status VARCHAR(20) NOT NULL,
+        wall_duration_seconds DECIMAL(10,2) DEFAULT NULL,
+        cpu_percent DECIMAL(8,2) DEFAULT NULL,
+        memory_peak_bytes BIGINT UNSIGNED DEFAULT NULL,
+        lock_wait_seconds DECIMAL(10,2) DEFAULT NULL,
+        queue_wait_seconds DECIMAL(10,2) DEFAULT NULL,
+        overlap_count INT UNSIGNED NOT NULL DEFAULT 0,
+        timed_out TINYINT(1) NOT NULL DEFAULT 0,
+        failed TINYINT(1) NOT NULL DEFAULT 0,
+        workload_json LONGTEXT DEFAULT NULL,
+        result_json LONGTEXT DEFAULT NULL,
+        started_at DATETIME DEFAULT NULL,
+        finished_at DATETIME DEFAULT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        KEY idx_scheduler_profiling_samples_run_phase (profiling_run_id, phase, created_at),
+        KEY idx_scheduler_profiling_samples_job (job_key, created_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4');
+
+    db_execute('CREATE TABLE IF NOT EXISTS scheduler_profiling_pairings (
+        id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+        profiling_run_id BIGINT UNSIGNED NOT NULL,
+        primary_job_key VARCHAR(190) NOT NULL,
+        secondary_job_key VARCHAR(190) NOT NULL,
+        probe_status VARCHAR(20) NOT NULL,
+        compatibility VARCHAR(20) NOT NULL DEFAULT "pending",
+        recommended_parallelism INT UNSIGNED NOT NULL DEFAULT 1,
+        reason_text VARCHAR(500) DEFAULT NULL,
+        metrics_json LONGTEXT DEFAULT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE KEY uniq_scheduler_profiling_pair (profiling_run_id, primary_job_key, secondary_job_key),
+        KEY idx_scheduler_profiling_pairings_run (profiling_run_id, compatibility)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4');
+
+    db_execute('CREATE TABLE IF NOT EXISTS scheduler_schedule_snapshots (
+        id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+        profiling_run_id BIGINT UNSIGNED DEFAULT NULL,
+        snapshot_label VARCHAR(80) NOT NULL,
+        actor VARCHAR(190) NOT NULL,
+        reason_text VARCHAR(500) DEFAULT NULL,
+        schedule_json LONGTEXT NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        KEY idx_scheduler_schedule_snapshots_run (profiling_run_id, created_at),
+        KEY idx_scheduler_schedule_snapshots_label (snapshot_label, created_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4');
+}
+
+function db_scheduler_profiling_active_run(): ?array
+{
+    db_scheduler_profiling_tables_ensure();
+
+    return db_select_one(
+        'SELECT id, run_status, current_phase, execution_mode, started_by, scope_json, options_json, selected_job_keys_json, progress_json, recommendations_json, summary_json, failure_message, applied_snapshot_id, rollback_snapshot_id, started_at, finished_at, applied_at, cancelled_at, created_at, updated_at
+         FROM scheduler_profiling_runs
+         WHERE run_status IN ("requested", "waiting", "isolated", "compatibility", "awaiting_review")
+         ORDER BY id DESC
+         LIMIT 1'
+    );
+}
+
+function db_scheduler_profiling_latest_runs(int $limit = 10): array
+{
+    db_scheduler_profiling_tables_ensure();
+    $safeLimit = max(1, min(50, $limit));
+
+    return db_select(
+        'SELECT id, run_status, current_phase, execution_mode, started_by, scope_json, options_json, selected_job_keys_json, progress_json, recommendations_json, summary_json, failure_message, applied_snapshot_id, rollback_snapshot_id, started_at, finished_at, applied_at, cancelled_at, created_at, updated_at
+         FROM scheduler_profiling_runs
+         ORDER BY id DESC
+         LIMIT ' . $safeLimit
+    );
+}
+
+function db_scheduler_profiling_run_fetch(int $runId): ?array
+{
+    db_scheduler_profiling_tables_ensure();
+    return db_select_one(
+        'SELECT id, run_status, current_phase, execution_mode, started_by, scope_json, options_json, selected_job_keys_json, progress_json, recommendations_json, summary_json, failure_message, applied_snapshot_id, rollback_snapshot_id, started_at, finished_at, applied_at, cancelled_at, created_at, updated_at
+         FROM scheduler_profiling_runs
+         WHERE id = ?
+         LIMIT 1',
+        [$runId]
+    );
+}
+
+function db_scheduler_profiling_run_insert(array $row): int
+{
+    db_scheduler_profiling_tables_ensure();
+    db_execute(
+        'INSERT INTO scheduler_profiling_runs (run_status, current_phase, execution_mode, started_by, scope_json, options_json, selected_job_keys_json, progress_json, recommendations_json, summary_json, failure_message, applied_snapshot_id, rollback_snapshot_id, started_at, finished_at, applied_at, cancelled_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        [
+            mb_substr(trim((string) ($row['run_status'] ?? 'requested')), 0, 30),
+            mb_substr(trim((string) ($row['current_phase'] ?? 'requested')), 0, 40),
+            mb_substr(trim((string) ($row['execution_mode'] ?? 'isolated_only')), 0, 30),
+            mb_substr(trim((string) ($row['started_by'] ?? 'scheduler-admin')), 0, 190),
+            !empty($row['scope_json']) ? (string) $row['scope_json'] : null,
+            !empty($row['options_json']) ? (string) $row['options_json'] : null,
+            !empty($row['selected_job_keys_json']) ? (string) $row['selected_job_keys_json'] : null,
+            !empty($row['progress_json']) ? (string) $row['progress_json'] : null,
+            !empty($row['recommendations_json']) ? (string) $row['recommendations_json'] : null,
+            !empty($row['summary_json']) ? (string) $row['summary_json'] : null,
+            isset($row['failure_message']) ? mb_substr(trim((string) $row['failure_message']), 0, 500) : null,
+            isset($row['applied_snapshot_id']) ? max(0, (int) $row['applied_snapshot_id']) ?: null : null,
+            isset($row['rollback_snapshot_id']) ? max(0, (int) $row['rollback_snapshot_id']) ?: null : null,
+            $row['started_at'] ?? gmdate('Y-m-d H:i:s'),
+            $row['finished_at'] ?? null,
+            $row['applied_at'] ?? null,
+            $row['cancelled_at'] ?? null,
+        ]
+    );
+
+    return (int) db()->lastInsertId();
+}
+
+function db_scheduler_profiling_run_update(int $runId, array $changes): bool
+{
+    db_scheduler_profiling_tables_ensure();
+    if ($runId <= 0 || $changes === []) {
+        return false;
+    }
+
+    $sets = [];
+    $params = [];
+    $map = [
+        'run_status' => ['run_status', 30],
+        'current_phase' => ['current_phase', 40],
+        'execution_mode' => ['execution_mode', 30],
+        'started_by' => ['started_by', 190],
+        'failure_message' => ['failure_message', 500],
+    ];
+    foreach ($map as $key => [$column, $length]) {
+        if (array_key_exists($key, $changes)) {
+            $sets[] = $column . ' = ?';
+            $params[] = $changes[$key] === null ? null : mb_substr(trim((string) $changes[$key]), 0, $length);
+        }
+    }
+    foreach (['scope_json','options_json','selected_job_keys_json','progress_json','recommendations_json','summary_json','started_at','finished_at','applied_at','cancelled_at'] as $column) {
+        if (array_key_exists($column, $changes)) {
+            $sets[] = $column . ' = ?';
+            $params[] = $changes[$column];
+        }
+    }
+    foreach (['applied_snapshot_id','rollback_snapshot_id'] as $column) {
+        if (array_key_exists($column, $changes)) {
+            $sets[] = $column . ' = ?';
+            $params[] = $changes[$column] !== null ? max(0, (int) $changes[$column]) ?: null : null;
+        }
+    }
+    if ($sets === []) {
+        return false;
+    }
+    $sets[] = 'updated_at = CURRENT_TIMESTAMP';
+    $params[] = $runId;
+
+    return db_execute('UPDATE scheduler_profiling_runs SET ' . implode(', ', $sets) . ' WHERE id = ? LIMIT 1', $params);
+}
+
+function db_scheduler_profiling_sample_insert(array $row): bool
+{
+    db_scheduler_profiling_tables_ensure();
+    return db_execute(
+        'INSERT INTO scheduler_profiling_samples (profiling_run_id, schedule_id, job_key, phase, sample_key, partner_job_key, sample_index, run_status, wall_duration_seconds, cpu_percent, memory_peak_bytes, lock_wait_seconds, queue_wait_seconds, overlap_count, timed_out, failed, workload_json, result_json, started_at, finished_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        [
+            max(1, (int) ($row['profiling_run_id'] ?? 0)),
+            isset($row['schedule_id']) ? max(0, (int) $row['schedule_id']) ?: null : null,
+            mb_substr(trim((string) ($row['job_key'] ?? '')), 0, 190),
+            mb_substr(trim((string) ($row['phase'] ?? 'isolated')), 0, 30),
+            mb_substr(trim((string) ($row['sample_key'] ?? 'sample')), 0, 190),
+            isset($row['partner_job_key']) ? mb_substr(trim((string) $row['partner_job_key']), 0, 190) : null,
+            max(1, (int) ($row['sample_index'] ?? 1)),
+            mb_substr(trim((string) ($row['run_status'] ?? 'unknown')), 0, 20),
+            isset($row['wall_duration_seconds']) ? round((float) $row['wall_duration_seconds'], 2) : null,
+            isset($row['cpu_percent']) ? round((float) $row['cpu_percent'], 2) : null,
+            isset($row['memory_peak_bytes']) ? max(0, (int) $row['memory_peak_bytes']) : null,
+            isset($row['lock_wait_seconds']) ? round((float) $row['lock_wait_seconds'], 2) : null,
+            isset($row['queue_wait_seconds']) ? round((float) $row['queue_wait_seconds'], 2) : null,
+            max(0, (int) ($row['overlap_count'] ?? 0)),
+            !empty($row['timed_out']) ? 1 : 0,
+            !empty($row['failed']) ? 1 : 0,
+            !empty($row['workload_json']) ? (string) $row['workload_json'] : null,
+            !empty($row['result_json']) ? (string) $row['result_json'] : null,
+            $row['started_at'] ?? null,
+            $row['finished_at'] ?? null,
+        ]
+    );
+}
+
+function db_scheduler_profiling_samples_fetch(int $runId, ?string $phase = null): array
+{
+    db_scheduler_profiling_tables_ensure();
+    $params = [max(1, $runId)];
+    $sql = 'SELECT id, profiling_run_id, schedule_id, job_key, phase, sample_key, partner_job_key, sample_index, run_status, wall_duration_seconds, cpu_percent, memory_peak_bytes, lock_wait_seconds, queue_wait_seconds, overlap_count, timed_out, failed, workload_json, result_json, started_at, finished_at, created_at
+            FROM scheduler_profiling_samples
+            WHERE profiling_run_id = ?';
+    if ($phase !== null && $phase !== '') {
+        $sql .= ' AND phase = ?';
+        $params[] = mb_substr(trim($phase), 0, 30);
+    }
+    $sql .= ' ORDER BY created_at ASC, id ASC';
+    return db_select($sql, $params);
+}
+
+function db_scheduler_profiling_pairing_upsert(array $row): bool
+{
+    db_scheduler_profiling_tables_ensure();
+    $primary = mb_substr(trim((string) ($row['primary_job_key'] ?? '')), 0, 190);
+    $secondary = mb_substr(trim((string) ($row['secondary_job_key'] ?? '')), 0, 190);
+    if ($primary === '' || $secondary === '') {
+        return false;
+    }
+    if (strcmp($primary, $secondary) > 0) {
+        $tmp = $primary;
+        $primary = $secondary;
+        $secondary = $tmp;
+    }
+
+    return db_execute(
+        'INSERT INTO scheduler_profiling_pairings (profiling_run_id, primary_job_key, secondary_job_key, probe_status, compatibility, recommended_parallelism, reason_text, metrics_json)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+         ON DUPLICATE KEY UPDATE
+            probe_status = VALUES(probe_status),
+            compatibility = VALUES(compatibility),
+            recommended_parallelism = VALUES(recommended_parallelism),
+            reason_text = VALUES(reason_text),
+            metrics_json = VALUES(metrics_json)',
+        [
+            max(1, (int) ($row['profiling_run_id'] ?? 0)),
+            $primary,
+            $secondary,
+            mb_substr(trim((string) ($row['probe_status'] ?? 'planned')), 0, 20),
+            mb_substr(trim((string) ($row['compatibility'] ?? 'pending')), 0, 20),
+            max(1, min(6, (int) ($row['recommended_parallelism'] ?? 1))),
+            isset($row['reason_text']) ? mb_substr(trim((string) $row['reason_text']), 0, 500) : null,
+            !empty($row['metrics_json']) ? (string) $row['metrics_json'] : null,
+        ]
+    );
+}
+
+function db_scheduler_profiling_pairings_fetch(int $runId): array
+{
+    db_scheduler_profiling_tables_ensure();
+    return db_select(
+        'SELECT id, profiling_run_id, primary_job_key, secondary_job_key, probe_status, compatibility, recommended_parallelism, reason_text, metrics_json, created_at
+         FROM scheduler_profiling_pairings
+         WHERE profiling_run_id = ?
+         ORDER BY primary_job_key ASC, secondary_job_key ASC',
+        [max(1, $runId)]
+    );
+}
+
+function db_scheduler_schedule_snapshot_insert(?int $profilingRunId, string $label, string $actor, string $reason, array $rows): int
+{
+    db_scheduler_profiling_tables_ensure();
+    db_execute(
+        'INSERT INTO scheduler_schedule_snapshots (profiling_run_id, snapshot_label, actor, reason_text, schedule_json)
+         VALUES (?, ?, ?, ?, ?)',
+        [
+            $profilingRunId !== null && $profilingRunId > 0 ? $profilingRunId : null,
+            mb_substr(trim($label), 0, 80),
+            mb_substr(trim($actor), 0, 190),
+            mb_substr(trim($reason), 0, 500),
+            json_encode(array_values($rows), JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE),
+        ]
+    );
+
+    return (int) db()->lastInsertId();
+}
+
+function db_scheduler_schedule_snapshot_fetch(int $snapshotId): ?array
+{
+    db_scheduler_profiling_tables_ensure();
+    return db_select_one(
+        'SELECT id, profiling_run_id, snapshot_label, actor, reason_text, schedule_json, created_at
+         FROM scheduler_schedule_snapshots
+         WHERE id = ?
+         LIMIT 1',
+        [$snapshotId]
+    );
+}
+
+function db_scheduler_schedule_snapshots_recent(int $limit = 12): array
+{
+    db_scheduler_profiling_tables_ensure();
+    $safeLimit = max(1, min(50, $limit));
+    return db_select(
+        'SELECT id, profiling_run_id, snapshot_label, actor, reason_text, schedule_json, created_at
+         FROM scheduler_schedule_snapshots
+         ORDER BY id DESC
+         LIMIT ' . $safeLimit
     );
 }
 
@@ -4832,6 +5271,7 @@ function db_sync_schedule_update_resource_profile(int $scheduleId, array $profil
              allow_parallel = ?,
              prefers_solo = ?,
              must_run_alone = ?,
+             preferred_max_parallelism = ?,
              last_cpu_percent = ?,
              average_cpu_percent = ?,
              p95_cpu_percent = ?,
@@ -4859,6 +5299,7 @@ function db_sync_schedule_update_resource_profile(int $scheduleId, array $profil
             !empty($profile['allow_parallel']) ? 1 : 0,
             !empty($profile['prefers_solo']) ? 1 : 0,
             !empty($profile['must_run_alone']) ? 1 : 0,
+            max(1, min(6, (int) ($profile['preferred_max_parallelism'] ?? 1))),
             isset($profile['last_cpu_percent']) ? round((float) $profile['last_cpu_percent'], 2) : null,
             isset($profile['average_cpu_percent']) ? round((float) $profile['average_cpu_percent'], 2) : null,
             isset($profile['p95_cpu_percent']) ? round((float) $profile['p95_cpu_percent'], 2) : null,

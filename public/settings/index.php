@@ -108,6 +108,51 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 exit;
             }
 
+            if ($dataSyncAction === 'start-profiling-run') {
+                $profiling = scheduler_profiling_start($_POST);
+                flash('success', (string) ($profiling['message'] ?? 'Performance Monitoring Run request submitted.'));
+                header('Location: /settings?section=' . urlencode($submittedSection));
+                exit;
+            }
+
+            if ($dataSyncAction === 'cancel-profiling-run') {
+                $profiling = scheduler_profiling_cancel_active();
+                flash('success', (string) ($profiling['message'] ?? 'Performance Monitoring Run cancelled.'));
+                header('Location: /settings?section=' . urlencode($submittedSection));
+                exit;
+            }
+
+            if ($dataSyncAction === 'apply-profiling-run') {
+                $profilingRunId = max(0, (int) ($_POST['profiling_run_id'] ?? 0));
+                $profiling = scheduler_profiling_apply_recommendations($profilingRunId, false);
+                flash('success', (string) ($profiling['message'] ?? 'Profiling recommendations applied.'));
+                header('Location: /settings?section=' . urlencode($submittedSection));
+                exit;
+            }
+
+            if ($dataSyncAction === 'apply-profiling-run-preserve-manual') {
+                $profilingRunId = max(0, (int) ($_POST['profiling_run_id'] ?? 0));
+                $profiling = scheduler_profiling_apply_recommendations($profilingRunId, true);
+                flash('success', (string) ($profiling['message'] ?? 'Profiling recommendations applied while preserving manual overrides.'));
+                header('Location: /settings?section=' . urlencode($submittedSection));
+                exit;
+            }
+
+            if ($dataSyncAction === 'dismiss-profiling-run') {
+                $profilingRunId = max(0, (int) ($_POST['profiling_run_id'] ?? 0));
+                $profiling = scheduler_profiling_dismiss_recommendations($profilingRunId);
+                flash('success', (string) ($profiling['message'] ?? 'Profiling recommendations dismissed.'));
+                header('Location: /settings?section=' . urlencode($submittedSection));
+                exit;
+            }
+
+            if ($dataSyncAction === 'rollback-profiling-run') {
+                $profiling = scheduler_profiling_rollback_last_apply();
+                flash('success', (string) ($profiling['message'] ?? 'Rolled back the last synthesized schedule snapshot.'));
+                header('Location: /settings?section=' . urlencode($submittedSection));
+                exit;
+            }
+
             if ($dataSyncAction === 'reset-scheduler') {
                 $resetResult = scheduler_reset_runtime_state();
                 $saved = (bool) ($resetResult['ok'] ?? false);
@@ -207,6 +252,12 @@ $syncDashboard = sync_schedule_settings_view_model();
 $configuredSyncJobs = array_values((array) ($syncDashboard['configured_jobs'] ?? []));
 $discoveredSyncJobs = array_values((array) ($syncDashboard['discovered_jobs'] ?? []));
 $internalSyncJobs = array_values((array) ($syncDashboard['internal_jobs'] ?? []));
+$profilingActiveRun = is_array($syncDashboard['profiling_active_run'] ?? null) ? $syncDashboard['profiling_active_run'] : null;
+$profilingRuns = array_values((array) ($syncDashboard['profiling_runs'] ?? []));
+$profilingPreviewRun = is_array($syncDashboard['profiling_preview_run'] ?? null) ? $syncDashboard['profiling_preview_run'] : $profilingActiveRun;
+$profilingSamples = array_values((array) ($syncDashboard['profiling_samples'] ?? []));
+$profilingPairings = array_values((array) ($syncDashboard['profiling_pairings'] ?? []));
+$scheduleSnapshots = array_values((array) ($syncDashboard['schedule_snapshots'] ?? []));
 $runNowJobOptions = [];
 $staticDataState = null;
 if ($dbStatus['ok']) {
@@ -1519,6 +1570,103 @@ include __DIR__ . '/../../src/views/partials/header.php';
                         </article>
                     </div>
 
+
+                    <?php $profilingRecommendations = is_array($profilingPreviewRun['recommendations']['jobs'] ?? null) ? $profilingPreviewRun['recommendations']['jobs'] : []; ?>
+                    <div class="grid gap-4 xl:grid-cols-[1.2fr_1fr]">
+                        <article class="rounded-xl border border-border bg-black/20 p-4">
+                            <div class="flex flex-wrap items-start justify-between gap-3">
+                                <div>
+                                    <p class="text-sm text-slate-100">Performance Monitoring Run</p>
+                                    <p class="mt-1 text-xs text-muted">Temporarily pauses new normal dispatch, waits for running work to finish, captures clean isolated baselines, optionally probes conservative pairings, then synthesizes a previewable baseline schedule.</p>
+                                </div>
+                                <?php if ($profilingActiveRun !== null): ?>
+                                    <span class="inline-flex items-center rounded-full border border-sky-400/40 bg-sky-500/10 px-3 py-1 text-xs font-medium uppercase tracking-[0.16em] text-sky-100"><?= htmlspecialchars((string) ($profilingActiveRun['current_phase'] ?? 'profiling'), ENT_QUOTES) ?></span>
+                                <?php else: ?>
+                                    <span class="inline-flex items-center rounded-full border border-emerald-400/30 bg-emerald-500/10 px-3 py-1 text-xs font-medium uppercase tracking-[0.16em] text-emerald-100">idle</span>
+                                <?php endif; ?>
+                            </div>
+                            <div class="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4 text-sm">
+                                <label class="block space-y-2">
+                                    <span class="text-muted">Scope</span>
+                                    <select name="profiling_scope" class="w-full field-input">
+                                        <option value="all_operational">All operational jobs</option>
+                                        <option value="selected_operational">Selected operational jobs</option>
+                                    </select>
+                                </label>
+                                <label class="flex items-center gap-3 rounded-lg border border-border bg-black/30 p-3 text-sm">
+                                    <input type="checkbox" name="profiling_include_discovered" value="1" class="size-4 rounded border-border bg-black">
+                                    <span>Include discovered jobs</span>
+                                </label>
+                                <label class="flex items-center gap-3 rounded-lg border border-border bg-black/30 p-3 text-sm">
+                                    <input type="checkbox" name="profiling_exclude_unsafe_heavy" value="1" checked class="size-4 rounded border-border bg-black">
+                                    <span>Exclude unsafe / heavy jobs</span>
+                                </label>
+                                <label class="block space-y-2">
+                                    <span class="text-muted">Profiling mode</span>
+                                    <select name="profiling_mode" class="w-full field-input">
+                                        <option value="isolated_plus_compatibility">Isolated + compatibility probing</option>
+                                        <option value="isolated_only">Isolated only</option>
+                                    </select>
+                                </label>
+                            </div>
+                            <div class="mt-3 grid gap-3 md:grid-cols-[0.7fr_1.3fr]">
+                                <label class="block space-y-2 text-sm">
+                                    <span class="text-muted">Isolated samples per job</span>
+                                    <input type="number" min="1" max="3" step="1" name="profiling_isolated_sample_count" value="1" class="w-full field-input">
+                                </label>
+                                <label class="block space-y-2 text-sm">
+                                    <span class="text-muted">Reason / notes</span>
+                                    <input type="text" name="profiling_reason_text" value="Controlled baseline refresh requested from Settings → Data Sync." class="w-full field-input">
+                                </label>
+                            </div>
+                            <div class="mt-4 rounded-lg border border-border bg-black/30 p-3 text-xs text-muted">
+                                <p class="text-slate-100">Selectable jobs</p>
+                                <div class="mt-2 grid gap-2 md:grid-cols-2 xl:grid-cols-3">
+                                    <?php foreach (array_merge($configuredSyncJobs, $discoveredSyncJobs) as $profilingJob): ?>
+                                        <label class="flex items-center gap-2 rounded-lg border border-border bg-black/20 px-3 py-2">
+                                            <input type="checkbox" name="profiling_job_keys[]" value="<?= htmlspecialchars((string) ($profilingJob['job_key'] ?? ''), ENT_QUOTES) ?>" class="size-4 rounded border-border bg-black">
+                                            <span><?= htmlspecialchars((string) ($profilingJob['label'] ?? $profilingJob['job_key']), ENT_QUOTES) ?></span>
+                                        </label>
+                                    <?php endforeach; ?>
+                                </div>
+                            </div>
+                            <div class="mt-4 flex flex-wrap gap-3">
+                                <button name="data_sync_action" value="start-profiling-run" class="rounded-lg border border-sky-400/40 bg-sky-500/10 px-4 py-2 text-sm font-medium text-sky-100 hover:bg-sky-500/20">Start Performance Monitoring Run</button>
+                                <?php if ($profilingActiveRun !== null): ?>
+                                    <button name="data_sync_action" value="cancel-profiling-run" class="rounded-lg border border-amber-400/40 bg-amber-500/10 px-4 py-2 text-sm font-medium text-amber-100 hover:bg-amber-500/20">Cancel active run</button>
+                                <?php endif; ?>
+                                <button name="data_sync_action" value="rollback-profiling-run" class="rounded-lg border border-border px-4 py-2 text-sm font-medium text-slate-100 hover:bg-white/5">Rollback previous snapshot</button>
+                            </div>
+                        </article>
+                        <article class="rounded-xl border border-border bg-black/20 p-4">
+                            <p class="text-sm text-slate-100">Profiling state</p>
+                            <?php if ($profilingActiveRun === null): ?>
+                                <p class="mt-2 text-sm text-muted">No active Performance Monitoring Run. Normal adaptive scheduling and optimizer tuning are active.</p>
+                            <?php else: ?>
+                                <div class="mt-3 space-y-2 text-xs text-muted">
+                                    <div class="rounded-lg border border-border bg-black/30 p-3">
+                                        <p class="text-slate-100">Started by <?= htmlspecialchars((string) ($profilingActiveRun['started_by'] ?? 'unknown'), ENT_QUOTES) ?> at <?= htmlspecialchars((string) ($profilingActiveRun['started_at'] ?? ''), ENT_QUOTES) ?></p>
+                                        <p class="mt-1">Phase <?= htmlspecialchars((string) ($profilingActiveRun['current_phase'] ?? ''), ENT_QUOTES) ?> · mode <?= htmlspecialchars((string) ($profilingActiveRun['execution_mode'] ?? ''), ENT_QUOTES) ?></p>
+                                        <p class="mt-1"><?= htmlspecialchars((string) (($profilingActiveRun['progress']['message'] ?? '') ?: 'Profiling is active.'), ENT_QUOTES) ?></p>
+                                    </div>
+                                    <div class="rounded-lg border border-border bg-black/30 p-3">
+                                        <p>Total jobs <?= (int) (($profilingActiveRun['progress']['total_jobs'] ?? 0)) ?> · isolated complete <?= (int) (($profilingActiveRun['progress']['isolated_completed_jobs'] ?? 0)) ?></p>
+                                        <p class="mt-1">Compatibility complete <?= (int) (($profilingActiveRun['progress']['compatibility_completed_pairs'] ?? 0)) ?><?php if (isset($profilingActiveRun['progress']['compatibility_total_pairs'])): ?> / <?= (int) ($profilingActiveRun['progress']['compatibility_total_pairs'] ?? 0) ?><?php endif; ?></p>
+                                        <?php if (!empty($profilingActiveRun['failure_message'])): ?><p class="mt-1 text-rose-200">Failure: <?= htmlspecialchars((string) $profilingActiveRun['failure_message'], ENT_QUOTES) ?></p><?php endif; ?>
+                                    </div>
+                                </div>
+                            <?php endif; ?>
+                            <div class="mt-4 space-y-2 text-xs text-muted">
+                                <?php foreach (array_slice($profilingRuns, 0, 5) as $profilingRun): ?>
+                                    <div class="rounded-lg border border-border bg-black/30 p-3">
+                                        <div class="flex items-center justify-between gap-2"><span class="font-medium text-slate-100">Run #<?= (int) ($profilingRun['id'] ?? 0) ?></span><span><?= htmlspecialchars((string) ($profilingRun['run_status'] ?? ''), ENT_QUOTES) ?></span></div>
+                                        <p class="mt-1"><?= htmlspecialchars((string) ($profilingRun['started_at'] ?? ''), ENT_QUOTES) ?> · <?= htmlspecialchars((string) ($profilingRun['execution_mode'] ?? ''), ENT_QUOTES) ?></p>
+                                    </div>
+                                <?php endforeach; ?>
+                            </div>
+                        </article>
+                    </div>
+
                     <div class="grid gap-4 xl:grid-cols-[1.2fr_1fr]">
                         <article class="rounded-xl border border-border bg-black/20 p-4">
                             <p class="text-sm text-slate-100">Current running jobs</p>
@@ -1628,7 +1776,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                                     <div class="rounded-lg border border-border bg-black/30 p-3"><span class="block text-[11px] uppercase tracking-[0.14em]">Resource class</span><span class="mt-1 block text-slate-100"><?= htmlspecialchars((string) ($schedule['resource_class'] ?? 'medium'), ENT_QUOTES) ?><?php if (!empty($schedule['learning_mode'])): ?> · learning<?php endif; ?></span><span class="mt-1 block">samples <?= (int) ($schedule['telemetry_sample_count'] ?? 0) ?> · confidence <?= htmlspecialchars(number_format((float) ($schedule['resource_class_confidence'] ?? 0), 2), ENT_QUOTES) ?></span></div>
                                     <div class="rounded-lg border border-border bg-black/30 p-3"><span class="block text-[11px] uppercase tracking-[0.14em]">CPU</span><span class="mt-1 block text-slate-100">last <?= htmlspecialchars(number_format((float) ($schedule['last_cpu_percent'] ?? 0), 1), ENT_QUOTES) ?>% · avg <?= htmlspecialchars(number_format((float) ($schedule['average_cpu_percent'] ?? 0), 1), ENT_QUOTES) ?>% · p95 <?= htmlspecialchars(number_format((float) ($schedule['p95_cpu_percent'] ?? 0), 1), ENT_QUOTES) ?>%</span></div>
                                     <div class="rounded-lg border border-border bg-black/30 p-3"><span class="block text-[11px] uppercase tracking-[0.14em]">Memory</span><span class="mt-1 block text-slate-100">last <?= htmlspecialchars(scheduler_format_bytes(isset($schedule['last_memory_peak_bytes']) ? (int) $schedule['last_memory_peak_bytes'] : 0), ENT_QUOTES) ?> · avg <?= htmlspecialchars(scheduler_format_bytes(isset($schedule['average_memory_peak_bytes']) ? (int) $schedule['average_memory_peak_bytes'] : 0), ENT_QUOTES) ?> · p95 <?= htmlspecialchars(scheduler_format_bytes(isset($schedule['p95_memory_peak_bytes']) ? (int) $schedule['p95_memory_peak_bytes'] : 0), ENT_QUOTES) ?></span></div>
-                                    <div class="rounded-lg border border-border bg-black/30 p-3"><span class="block text-[11px] uppercase tracking-[0.14em]">Parallel safety</span><span class="mt-1 block text-slate-100"><?= !empty($schedule['allow_parallel']) ? 'Allowed in parallel' : 'Restricted' ?><?php if (!empty($schedule['prefers_solo'])): ?> · prefers solo<?php endif; ?><?php if (!empty($schedule['must_run_alone'])): ?> · must run alone<?php endif; ?></span></div>
+                                    <div class="rounded-lg border border-border bg-black/30 p-3"><span class="block text-[11px] uppercase tracking-[0.14em]">Parallel safety</span><span class="mt-1 block text-slate-100"><?= !empty($schedule['allow_parallel']) ? 'Allowed in parallel' : 'Restricted' ?> · max <?= (int) ($schedule['preferred_max_parallelism'] ?? 1) ?><?php if (!empty($schedule['prefers_solo'])): ?> · prefers solo<?php endif; ?><?php if (!empty($schedule['must_run_alone'])): ?> · must run alone<?php endif; ?></span></div>
                                     <div class="rounded-lg border border-border bg-black/30 p-3"><span class="block text-[11px] uppercase tracking-[0.14em]">Urgency</span><span class="mt-1 block text-slate-100">latest <?= htmlspecialchars((string) ($schedule['latest_allowed_start_at'] ?? '—'), ENT_QUOTES) ?></span><span class="mt-1 block"><?php if (!empty($schedule['starvation_indicator'])): ?>Starvation guard active · <?php endif; ?>score <?= htmlspecialchars(number_format((float) ($schedule['urgency_score'] ?? 0), 2), ENT_QUOTES) ?></span></div>
                                 </div>
 
@@ -1721,6 +1869,88 @@ include __DIR__ . '/../../src/views/partials/header.php';
                                 <p class="mt-1">After: <?= htmlspecialchars(json_encode($after, JSON_UNESCAPED_SLASHES) ?: '{}', ENT_QUOTES) ?></p>
                             </div>
                         <?php endforeach; ?>
+                    </div>
+                </div>
+
+
+                <div class="space-y-3 rounded-xl border border-border bg-black/20 p-4">
+                    <div class="flex flex-wrap items-start justify-between gap-3">
+                        <div>
+                            <p class="text-sm text-slate-100">Profiling results and synthesized schedule preview</p>
+                            <p class="mt-1 text-xs text-muted">Review isolated baselines, compatibility outcomes, and proposed cadence/concurrency changes before applying them to the adaptive scheduler baseline.</p>
+                        </div>
+                        <?php if ($profilingPreviewRun !== null && $profilingRecommendations !== []): ?>
+                            <input type="hidden" name="profiling_run_id" value="<?= (int) ($profilingPreviewRun['id'] ?? 0) ?>">
+                            <div class="flex flex-wrap gap-2">
+                                <button name="data_sync_action" value="apply-profiling-run" class="rounded-lg border border-emerald-400/30 bg-emerald-500/10 px-4 py-2 text-sm font-medium text-emerald-100 hover:bg-emerald-500/20">Apply recommended schedule</button>
+                                <button name="data_sync_action" value="apply-profiling-run-preserve-manual" class="rounded-lg border border-sky-400/30 bg-sky-500/10 px-4 py-2 text-sm font-medium text-sky-100 hover:bg-sky-500/20">Apply but preserve manual overrides</button>
+                                <button name="data_sync_action" value="dismiss-profiling-run" class="rounded-lg border border-border px-4 py-2 text-sm font-medium text-slate-100 hover:bg-white/5">Cancel and keep current schedule</button>
+                            </div>
+                        <?php endif; ?>
+                    </div>
+                    <div class="grid gap-4 xl:grid-cols-[1.1fr_0.9fr]">
+                        <div class="space-y-3">
+                            <div>
+                                <p class="text-sm text-slate-100">Isolated baseline samples</p>
+                                <div class="mt-2 space-y-2 text-xs text-muted">
+                                    <?php if ($profilingSamples === []): ?>
+                                        <div class="rounded-lg border border-dashed border-border bg-black/30 p-3">No profiling samples have been recorded yet.</div>
+                                    <?php endif; ?>
+                                    <?php foreach ($profilingSamples as $sample): ?>
+                                        <div class="rounded-lg border border-border bg-black/30 p-3">
+                                            <div class="flex flex-wrap items-center justify-between gap-2"><span class="font-medium text-slate-100"><?= htmlspecialchars((string) ($sample['job_key'] ?? ''), ENT_QUOTES) ?></span><span><?= htmlspecialchars((string) ($sample['phase'] ?? ''), ENT_QUOTES) ?> · <?= htmlspecialchars((string) ($sample['run_status'] ?? ''), ENT_QUOTES) ?></span></div>
+                                            <p class="mt-1">wall <?= htmlspecialchars(number_format((float) ($sample['wall_duration_seconds'] ?? 0), 2), ENT_QUOTES) ?>s · CPU <?= htmlspecialchars(number_format((float) ($sample['cpu_percent'] ?? 0), 1), ENT_QUOTES) ?>% · memory <?= htmlspecialchars(scheduler_format_bytes(isset($sample['memory_peak_bytes']) ? (int) $sample['memory_peak_bytes'] : 0), ENT_QUOTES) ?></p>
+                                            <p class="mt-1">lock <?= htmlspecialchars(number_format((float) ($sample['lock_wait_seconds'] ?? 0), 2), ENT_QUOTES) ?>s · queue <?= htmlspecialchars(number_format((float) ($sample['queue_wait_seconds'] ?? 0), 2), ENT_QUOTES) ?>s<?php if (!empty($sample['partner_job_key'])): ?> · partner <?= htmlspecialchars((string) $sample['partner_job_key'], ENT_QUOTES) ?><?php endif; ?></p>
+                                        </div>
+                                    <?php endforeach; ?>
+                                </div>
+                            </div>
+                            <div>
+                                <p class="text-sm text-slate-100">Compatibility outcomes</p>
+                                <div class="mt-2 space-y-2 text-xs text-muted">
+                                    <?php if ($profilingPairings === []): ?>
+                                        <div class="rounded-lg border border-dashed border-border bg-black/30 p-3">No compatibility pairings have been recorded yet.</div>
+                                    <?php endif; ?>
+                                    <?php foreach ($profilingPairings as $pairing): ?>
+                                        <?php $pairingMetrics = json_decode((string) ($pairing['metrics_json'] ?? 'null'), true); ?>
+                                        <div class="rounded-lg border border-border bg-black/30 p-3">
+                                            <div class="flex flex-wrap items-center justify-between gap-2"><span class="font-medium text-slate-100"><?= htmlspecialchars((string) ($pairing['primary_job_key'] ?? ''), ENT_QUOTES) ?> + <?= htmlspecialchars((string) ($pairing['secondary_job_key'] ?? ''), ENT_QUOTES) ?></span><span><?= htmlspecialchars((string) ($pairing['compatibility'] ?? ''), ENT_QUOTES) ?></span></div>
+                                            <p class="mt-1"><?= htmlspecialchars((string) ($pairing['reason_text'] ?? ''), ENT_QUOTES) ?></p>
+                                            <p class="mt-1">combined CPU <?= htmlspecialchars(number_format((float) ($pairingMetrics['combined_cpu_percent'] ?? 0), 1), ENT_QUOTES) ?>% · combined memory <?= htmlspecialchars(scheduler_format_bytes(isset($pairingMetrics['combined_memory_bytes']) ? (int) $pairingMetrics['combined_memory_bytes'] : 0), ENT_QUOTES) ?> · max lock <?= htmlspecialchars(number_format((float) ($pairingMetrics['max_lock_wait_seconds'] ?? 0), 2), ENT_QUOTES) ?>s</p>
+                                        </div>
+                                    <?php endforeach; ?>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="space-y-3">
+                            <div>
+                                <p class="text-sm text-slate-100">Recommended schedule table</p>
+                                <div class="mt-2 space-y-2 text-xs text-muted">
+                                    <?php if ($profilingRecommendations === []): ?>
+                                        <div class="rounded-lg border border-dashed border-border bg-black/30 p-3">Start or finish a Performance Monitoring Run to preview synthesized recommendations here.</div>
+                                    <?php endif; ?>
+                                    <?php foreach ($profilingRecommendations as $recommendation): ?>
+                                        <div class="rounded-lg border border-border bg-black/30 p-3">
+                                            <div class="flex flex-wrap items-center justify-between gap-2"><span class="font-medium text-slate-100"><?= htmlspecialchars((string) ($recommendation['job_key'] ?? ''), ENT_QUOTES) ?></span><span><?= htmlspecialchars((string) ($recommendation['resource_class'] ?? 'medium'), ENT_QUOTES) ?></span></div>
+                                            <p class="mt-1">interval <?= (int) ($recommendation['recommended_interval_minutes'] ?? 0) ?>m · offset <?= (int) ($recommendation['recommended_offset_minutes'] ?? 0) ?>m · timeout <?= (int) ($recommendation['recommended_timeout_seconds'] ?? 0) ?>s</p>
+                                            <p class="mt-1">parallelism <?= (int) ($recommendation['preferred_max_parallelism'] ?? 1) ?><?php if (!empty($recommendation['must_run_alone'])): ?> · must run alone<?php endif; ?><?php if (!empty($recommendation['reserved_capacity'])): ?> · reserved capacity protected<?php endif; ?></p>
+                                            <p class="mt-1">delta interval <?= (int) (($recommendation['delta']['interval_minutes'] ?? 0)) ?> · delta offset <?= (int) (($recommendation['delta']['offset_minutes'] ?? 0)) ?> · delta timeout <?= (int) (($recommendation['delta']['timeout_seconds'] ?? 0)) ?></p>
+                                        </div>
+                                    <?php endforeach; ?>
+                                </div>
+                            </div>
+                            <div>
+                                <p class="text-sm text-slate-100">Schedule snapshots</p>
+                                <div class="mt-2 space-y-2 text-xs text-muted">
+                                    <?php foreach ($scheduleSnapshots as $snapshot): ?>
+                                        <div class="rounded-lg border border-border bg-black/30 p-3">
+                                            <div class="flex flex-wrap items-center justify-between gap-2"><span class="font-medium text-slate-100">#<?= (int) ($snapshot['id'] ?? 0) ?> · <?= htmlspecialchars((string) ($snapshot['snapshot_label'] ?? ''), ENT_QUOTES) ?></span><span><?= htmlspecialchars((string) ($snapshot['created_at'] ?? ''), ENT_QUOTES) ?></span></div>
+                                            <p class="mt-1"><?= htmlspecialchars((string) ($snapshot['reason_text'] ?? ''), ENT_QUOTES) ?></p>
+                                        </div>
+                                    <?php endforeach; ?>
+                                </div>
+                            </div>
+                        </div>
                     </div>
                 </div>
 

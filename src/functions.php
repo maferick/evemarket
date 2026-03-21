@@ -2904,6 +2904,10 @@ function scheduler_job_recent_resource_profile(string $jobKey, ?array $row = nul
     $mustRunAlone = !empty($rules['must_run_alone']) || $derivedClass === 'heavy' || $cpuRatio >= 0.52 || $memoryRatio >= 0.52 || $timeoutRate >= 0.25;
     $prefersSolo = $mustRunAlone || $cpuRatio >= 0.38 || $memoryRatio >= 0.38 || $failureRate >= 0.18 || $lockRatio >= 0.4;
     $allowParallel = !$mustRunAlone && $failureRate < 0.45;
+    $preferredMaxParallelism = $mustRunAlone ? 1 : ($derivedClass === 'light' ? 3 : 2);
+    if ($prefersSolo && $preferredMaxParallelism > 2) {
+        $preferredMaxParallelism = 2;
+    }
 
     return [
         'sample_count' => $samples,
@@ -2928,6 +2932,7 @@ function scheduler_job_recent_resource_profile(string $jobKey, ?array $row = nul
         'allow_parallel' => $allowParallel,
         'prefers_solo' => $prefersSolo,
         'must_run_alone' => $mustRunAlone,
+        'preferred_max_parallelism' => $preferredMaxParallelism,
         'projection_cpu_percent' => round((float) ($p95Cpu ?? $avgCpu ?? 45.0) * ($samples < 3 ? 1.15 : 1.0) * (($failureRate > 0.1 || $timeoutRate > 0.1) ? 1.15 : 1.0), 2),
         'projection_memory_bytes' => (int) round((float) ($p95Memory ?? $avgMemory ?? (128 * 1024 * 1024)) * ($samples < 3 ? 1.2 : 1.0) * (($failureRate > 0.1 || $timeoutRate > 0.1) ? 1.15 : 1.0)),
         'allowed_groups' => (array) ($rules['allowed_groups'] ?? ['light', 'medium', 'heavy']),
@@ -3029,7 +3034,7 @@ function scheduler_live_capacity_snapshot(?array $runningJobs = null): array
     return $summary;
 }
 
-function scheduler_jobs_are_compatible(array $candidate, array $running): bool
+function scheduler_jobs_are_compatible(array $candidate, array $running, int $totalConcurrency = 2): bool
 {
     if ((string) ($candidate['job_key'] ?? '') === (string) ($running['job_key'] ?? '')) {
         return false;
@@ -3041,7 +3046,23 @@ function scheduler_jobs_are_compatible(array $candidate, array $running): bool
         return false;
     }
 
+    foreach (db_scheduler_pairing_rules_fetch_active() as $rule) {
+        $primary = (string) ($rule['primary_job_key'] ?? '');
+        $secondary = (string) ($rule['secondary_job_key'] ?? '');
+        $matches = ($primary === (string) ($candidate['job_key'] ?? '') && $secondary === (string) ($running['job_key'] ?? ''))
+            || ($secondary === (string) ($candidate['job_key'] ?? '') && $primary === (string) ($running['job_key'] ?? ''));
+        if ($matches && (string) ($rule['rule_type'] ?? '') === 'avoid') {
+            return false;
+        }
+    }
+
     if (!empty($candidate['must_run_alone']) || !empty($running['must_run_alone'])) {
+        return false;
+    }
+
+    $candidateParallelism = max(1, (int) ($candidate['preferred_max_parallelism'] ?? 1));
+    $runningParallelism = max(1, (int) ($running['preferred_max_parallelism'] ?? 1));
+    if ($totalConcurrency > $candidateParallelism || $totalConcurrency > $runningParallelism) {
         return false;
     }
 
@@ -3126,7 +3147,7 @@ function scheduler_plan_due_jobs(array $jobs): array
             $reasons[] = 'reserved_critical_memory';
         }
         foreach (array_merge($runningProfiles, $allowed) as $other) {
-            if (!scheduler_jobs_are_compatible($candidate, $other)) {
+            if (!scheduler_jobs_are_compatible($candidate, $other, count($runningProfiles) + count($allowed) + 1)) {
                 $reasons[] = 'incompatible:' . (string) ($other['job_key'] ?? '');
                 break;
             }
@@ -3193,6 +3214,856 @@ function scheduler_plan_due_jobs(array $jobs): array
         'state' => $state,
         'running' => $runningProfiles,
     ];
+}
+
+
+function scheduler_json_decode_assoc(mixed $value): array
+{
+    if (!is_string($value) || trim($value) === '') {
+        return [];
+    }
+
+    $decoded = json_decode($value, true);
+
+    return is_array($decoded) ? $decoded : [];
+}
+
+function scheduler_operator_identity_label(): string
+{
+    try {
+        $token = db_latest_esi_oauth_token();
+        $name = trim((string) ($token['character_name'] ?? ''));
+        if ($name !== '') {
+            return $name;
+        }
+    } catch (Throwable) {
+    }
+
+    $remote = trim((string) ($_SERVER['REMOTE_ADDR'] ?? ''));
+
+    return $remote !== '' ? 'settings-admin@' . $remote : 'settings-admin';
+}
+
+function scheduler_profiling_decode_run(?array $row): ?array
+{
+    if (!is_array($row) || $row === []) {
+        return null;
+    }
+
+    foreach (['scope_json' => 'scope', 'options_json' => 'options', 'selected_job_keys_json' => 'selected_job_keys', 'progress_json' => 'progress', 'recommendations_json' => 'recommendations', 'summary_json' => 'summary'] as $source => $target) {
+        $row[$target] = scheduler_json_decode_assoc($row[$source] ?? null);
+    }
+
+    return $row;
+}
+
+function scheduler_profiling_active_run(): ?array
+{
+    return scheduler_profiling_decode_run(db_scheduler_profiling_active_run());
+}
+
+function scheduler_profiling_latest_runs(int $limit = 6): array
+{
+    return array_values(array_filter(array_map('scheduler_profiling_decode_run', db_scheduler_profiling_latest_runs($limit))));
+}
+
+function scheduler_profiling_is_unsafe_or_heavy(array $job): bool
+{
+    $jobKey = (string) ($job['job_key'] ?? '');
+    $rules = scheduler_job_safety_rules()[$jobKey] ?? [];
+
+    return !empty($job['must_run_alone'])
+        || (string) ($job['resource_class'] ?? '') === 'heavy'
+        || !empty($rules['must_run_alone'])
+        || (float) ($job['p95_cpu_percent'] ?? 0) >= (float) (scheduler_capacity_model()['cpu_budget_percent'] * 0.55)
+        || (float) ($job['recent_timeout_rate'] ?? 0) >= 0.25;
+}
+
+function scheduler_profiling_request_options(array $request): array
+{
+    $scope = trim((string) ($request['profiling_scope'] ?? 'all_operational'));
+    if (!in_array($scope, ['all_operational', 'selected_operational'], true)) {
+        $scope = 'all_operational';
+    }
+
+    $mode = trim((string) ($request['profiling_mode'] ?? 'isolated_plus_compatibility'));
+    if (!in_array($mode, ['isolated_only', 'isolated_plus_compatibility'], true)) {
+        $mode = 'isolated_plus_compatibility';
+    }
+
+    $selectedJobKeys = array_values(array_unique(array_filter(array_map(
+        static fn (mixed $jobKey): string => trim((string) $jobKey),
+        (array) ($request['profiling_job_keys'] ?? [])
+    ), static fn (string $jobKey): bool => $jobKey !== '')));
+
+    return [
+        'scope' => $scope,
+        'include_discovered_jobs' => !empty($request['profiling_include_discovered']),
+        'exclude_unsafe_heavy' => !array_key_exists('profiling_exclude_unsafe_heavy', $request) || !empty($request['profiling_exclude_unsafe_heavy']),
+        'mode' => $mode,
+        'isolated_sample_count' => max(1, min(3, (int) ($request['profiling_isolated_sample_count'] ?? 1))),
+        'selected_job_keys' => $selectedJobKeys,
+        'reason_text' => mb_substr(trim((string) ($request['profiling_reason_text'] ?? 'Baseline refresh requested from Settings → Data Sync.')), 0, 500),
+    ];
+}
+
+function scheduler_profiling_target_jobs(array $run): array
+{
+    $options = is_array($run['options'] ?? null) ? $run['options'] : [];
+    $scope = (string) ($options['scope'] ?? 'all_operational');
+    $selectedKeys = array_fill_keys((array) ($run['selected_job_keys'] ?? $options['selected_job_keys'] ?? []), true);
+    $includeDiscovered = !empty($options['include_discovered_jobs']);
+    $excludeUnsafeHeavy = !array_key_exists('exclude_unsafe_heavy', $options) || !empty($options['exclude_unsafe_heavy']);
+    $rows = db_sync_schedule_fetch_all();
+    $targets = [];
+
+    foreach ($rows as $row) {
+        $jobKey = trim((string) ($row['job_key'] ?? ''));
+        if ($jobKey === '' || scheduler_is_internal_mechanic_job($jobKey)) {
+            continue;
+        }
+        $explicit = !empty($row['explicitly_configured']);
+        if (!$explicit && !$includeDiscovered) {
+            continue;
+        }
+        if ($scope === 'selected_operational' && !isset($selectedKeys[$jobKey])) {
+            continue;
+        }
+        if ($excludeUnsafeHeavy && scheduler_profiling_is_unsafe_or_heavy($row)) {
+            continue;
+        }
+        $targets[$jobKey] = $row;
+    }
+
+    ksort($targets);
+
+    return $targets;
+}
+
+function scheduler_profiling_start(array $request): array
+{
+    $active = scheduler_profiling_active_run();
+    if ($active !== null) {
+        return ['ok' => false, 'message' => 'A Performance Monitoring Run is already active.'];
+    }
+
+    $options = scheduler_profiling_request_options($request);
+    $actor = scheduler_operator_identity_label();
+    $scopeSummary = [
+        'scope' => $options['scope'],
+        'include_discovered_jobs' => $options['include_discovered_jobs'],
+        'exclude_unsafe_heavy' => $options['exclude_unsafe_heavy'],
+        'mode' => $options['mode'],
+        'isolated_sample_count' => $options['isolated_sample_count'],
+        'reason_text' => $options['reason_text'],
+    ];
+    $selectedRows = scheduler_profiling_target_jobs([
+        'options' => $options,
+        'selected_job_keys' => $options['selected_job_keys'],
+    ]);
+    if ($selectedRows === []) {
+        return ['ok' => false, 'message' => 'No operational jobs matched the selected Performance Monitoring scope.'];
+    }
+
+    $runId = db_transaction(static function () use ($actor, $scopeSummary, $options, $selectedRows): int {
+        $runId = db_scheduler_profiling_run_insert([
+            'run_status' => 'waiting',
+            'current_phase' => 'waiting_for_active_jobs',
+            'execution_mode' => $options['mode'],
+            'started_by' => $actor,
+            'scope_json' => json_encode($scopeSummary, JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE),
+            'options_json' => json_encode($options, JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE),
+            'selected_job_keys_json' => json_encode(array_keys($selectedRows), JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE),
+            'progress_json' => json_encode([
+                'total_jobs' => count($selectedRows),
+                'isolated_completed_jobs' => 0,
+                'compatibility_completed_pairs' => 0,
+                'message' => 'Waiting for active scheduler work to drain before starting isolated baseline profiling.',
+            ], JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE),
+            'started_at' => gmdate('Y-m-d H:i:s'),
+        ]);
+        $snapshotId = db_scheduler_schedule_snapshot_insert($runId, 'profiling_start_snapshot', $actor, 'Captured scheduler configuration before Performance Monitoring started.', db_sync_schedule_fetch_all());
+        db_scheduler_profiling_run_update($runId, ['summary_json' => json_encode(['start_snapshot_id' => $snapshotId], JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE)]);
+        return $runId;
+    });
+
+    return ['ok' => $runId > 0, 'message' => $runId > 0 ? 'Performance Monitoring Run started.' : 'Could not start Performance Monitoring Run.'];
+}
+
+function scheduler_profiling_cancel_active(): array
+{
+    $active = scheduler_profiling_active_run();
+    if ($active === null) {
+        return ['ok' => false, 'message' => 'No active Performance Monitoring Run was found.'];
+    }
+
+    db_scheduler_profiling_run_update((int) $active['id'], [
+        'run_status' => 'cancelled',
+        'current_phase' => 'cancelled',
+        'cancelled_at' => gmdate('Y-m-d H:i:s'),
+        'finished_at' => gmdate('Y-m-d H:i:s'),
+        'progress_json' => json_encode(array_merge((array) ($active['progress'] ?? []), ['message' => 'Cancelled by admin from the sync control panel.']), JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE),
+    ]);
+
+    return ['ok' => true, 'message' => 'Performance Monitoring Run cancelled and normal scheduling will resume on the next tick.'];
+}
+
+function scheduler_profiling_sample_summary(array $samples): array
+{
+    $grouped = [];
+    foreach ($samples as $sample) {
+        $jobKey = (string) ($sample['job_key'] ?? '');
+        if ($jobKey === '') {
+            continue;
+        }
+        $grouped[$jobKey][] = $sample;
+    }
+
+    $summary = [];
+    foreach ($grouped as $jobKey => $rows) {
+        $durations = array_map(static fn (array $row): float => (float) ($row['wall_duration_seconds'] ?? 0.0), $rows);
+        $cpu = array_map(static fn (array $row): float => (float) ($row['cpu_percent'] ?? 0.0), $rows);
+        $memory = array_map(static fn (array $row): float => (float) ($row['memory_peak_bytes'] ?? 0.0), $rows);
+        $lockWait = array_map(static fn (array $row): float => (float) ($row['lock_wait_seconds'] ?? 0.0), $rows);
+        $queueWait = array_map(static fn (array $row): float => (float) ($row['queue_wait_seconds'] ?? 0.0), $rows);
+        $failures = count(array_filter($rows, static fn (array $row): bool => !empty($row['failed'])));
+        $timeouts = count(array_filter($rows, static fn (array $row): bool => !empty($row['timed_out'])));
+        $summary[$jobKey] = [
+            'job_key' => $jobKey,
+            'sample_count' => count($rows),
+            'median_wall_seconds' => scheduler_metric_percentile($durations, 0.5),
+            'average_wall_seconds' => count($durations) > 0 ? array_sum($durations) / count($durations) : null,
+            'p95_wall_seconds' => scheduler_metric_percentile($durations, 0.95),
+            'median_cpu_percent' => scheduler_metric_percentile($cpu, 0.5),
+            'p95_cpu_percent' => scheduler_metric_percentile($cpu, 0.95),
+            'median_memory_peak_bytes' => scheduler_metric_percentile($memory, 0.5),
+            'p95_memory_peak_bytes' => scheduler_metric_percentile($memory, 0.95),
+            'median_lock_wait_seconds' => scheduler_metric_percentile($lockWait, 0.5),
+            'median_queue_wait_seconds' => scheduler_metric_percentile($queueWait, 0.5),
+            'failure_rate' => count($rows) > 0 ? $failures / count($rows) : 0.0,
+            'timeout_rate' => count($rows) > 0 ? $timeouts / count($rows) : 0.0,
+            'resource_class' => 'medium',
+            'preferred_max_parallelism' => 2,
+        ];
+        $capacity = scheduler_capacity_model();
+        $cpuRatio = $capacity['cpu_budget_percent'] > 0 ? (float) ($summary[$jobKey]['p95_cpu_percent'] ?? 0.0) / $capacity['cpu_budget_percent'] : 0.0;
+        $memoryRatio = $capacity['memory_budget_bytes'] > 0 ? (float) ($summary[$jobKey]['p95_memory_peak_bytes'] ?? 0.0) / $capacity['memory_budget_bytes'] : 0.0;
+        if ($cpuRatio >= 0.45 || $memoryRatio >= 0.45 || $summary[$jobKey]['timeout_rate'] >= 0.2) {
+            $summary[$jobKey]['resource_class'] = 'heavy';
+            $summary[$jobKey]['preferred_max_parallelism'] = 1;
+        } elseif ($cpuRatio >= 0.18 || $memoryRatio >= 0.18) {
+            $summary[$jobKey]['resource_class'] = 'medium';
+            $summary[$jobKey]['preferred_max_parallelism'] = 2;
+        } else {
+            $summary[$jobKey]['resource_class'] = 'light';
+            $summary[$jobKey]['preferred_max_parallelism'] = 3;
+        }
+    }
+
+    return $summary;
+}
+
+function scheduler_profiling_next_isolated_job(array $run, array $targets, array $samples): ?array
+{
+    $options = (array) ($run['options'] ?? []);
+    $targetSampleCount = max(1, (int) ($options['isolated_sample_count'] ?? 1));
+    $counts = [];
+    foreach ($samples as $sample) {
+        $jobKey = (string) ($sample['job_key'] ?? '');
+        if ($jobKey === '') {
+            continue;
+        }
+        $counts[$jobKey] = (int) ($counts[$jobKey] ?? 0) + 1;
+    }
+
+    foreach ($targets as $jobKey => $job) {
+        if ((int) ($counts[$jobKey] ?? 0) < $targetSampleCount) {
+            return array_merge($job, ['profiling_sample_index' => (int) ($counts[$jobKey] ?? 0) + 1]);
+        }
+    }
+
+    return null;
+}
+
+function scheduler_profiling_latest_metric_for_job(string $jobKey): array
+{
+    $metrics = db_scheduler_resource_metrics_recent($jobKey, 1);
+
+    return $metrics[0] ?? [];
+}
+
+function scheduler_profiling_insert_sample(int $runId, array $job, string $phase, int $sampleIndex, ?string $partnerJobKey, array $result, ?array $metric = null): void
+{
+    $resourceUsage = is_array($result['meta']['resource_usage'] ?? null) ? $result['meta']['resource_usage'] : [];
+    $runtimeMetric = is_array($metric) ? $metric : scheduler_profiling_latest_metric_for_job((string) ($job['job_key'] ?? ''));
+    $workload = [
+        'rows_seen' => (int) ($result['rows_seen'] ?? 0),
+        'rows_written' => (int) ($result['rows_written'] ?? 0),
+        'warnings' => array_values((array) ($result['warnings'] ?? [])),
+        'summary' => (string) ($result['summary'] ?? ''),
+    ];
+
+    db_scheduler_profiling_sample_insert([
+        'profiling_run_id' => $runId,
+        'schedule_id' => (int) ($job['id'] ?? 0),
+        'job_key' => (string) ($job['job_key'] ?? ''),
+        'phase' => $phase,
+        'sample_key' => $phase . ':' . (string) ($job['job_key'] ?? '') . ':' . $sampleIndex . ($partnerJobKey !== null ? ':' . $partnerJobKey : ''),
+        'partner_job_key' => $partnerJobKey,
+        'sample_index' => $sampleIndex,
+        'run_status' => (string) ($result['status'] ?? 'failed'),
+        'wall_duration_seconds' => isset($resourceUsage['cpu_percent']) ? (float) (($runtimeMetric['wall_duration_seconds'] ?? null) ?? (($result['duration_ms'] ?? 0) / 1000)) : (($result['duration_ms'] ?? 0) / 1000),
+        'cpu_percent' => $runtimeMetric['cpu_percent'] ?? $resourceUsage['cpu_percent'] ?? null,
+        'memory_peak_bytes' => $runtimeMetric['memory_peak_delta_bytes'] ?? $runtimeMetric['memory_peak_bytes'] ?? $resourceUsage['memory_peak_delta_bytes'] ?? $resourceUsage['memory_peak_bytes'] ?? null,
+        'lock_wait_seconds' => $runtimeMetric['lock_wait_seconds'] ?? $resourceUsage['lock_wait_seconds'] ?? null,
+        'queue_wait_seconds' => $runtimeMetric['queue_wait_seconds'] ?? $resourceUsage['queue_wait_seconds'] ?? null,
+        'overlap_count' => $runtimeMetric['overlap_count'] ?? $resourceUsage['overlap_count'] ?? 0,
+        'timed_out' => !empty($runtimeMetric['timed_out']) || str_contains(strtolower((string) ($result['error'] ?? '')), 'timeout'),
+        'failed' => ($result['status'] ?? '') === 'failed',
+        'workload_json' => json_encode($workload, JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE),
+        'result_json' => json_encode($result, JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE),
+        'started_at' => isset($result['started_at']) ? gmdate('Y-m-d H:i:s', strtotime((string) $result['started_at'])) : null,
+        'finished_at' => isset($result['finished_at']) && $result['finished_at'] !== null ? gmdate('Y-m-d H:i:s', strtotime((string) $result['finished_at'])) : null,
+    ]);
+}
+
+function scheduler_profiling_run_isolated_sample(array $run, array $job): array
+{
+    $jobKey = (string) ($job['job_key'] ?? '');
+    $lockTtl = scheduler_job_lock_ttl_seconds((int) ($job['timeout_seconds'] ?? 300) + 120, (int) ($job['timeout_seconds'] ?? 300));
+    $claimed = db_sync_schedule_claim_job_forced((int) ($job['id'] ?? 0), $lockTtl);
+    if ($claimed === null) {
+        throw new RuntimeException('Could not claim ' . $jobKey . ' for isolated profiling.');
+    }
+
+    $sampleIndex = (int) ($job['profiling_sample_index'] ?? 1);
+    $result = scheduler_run_job($claimed);
+    scheduler_profiling_insert_sample((int) $run['id'], $claimed, 'isolated', $sampleIndex, null, $result);
+
+    return $result;
+}
+
+function scheduler_profiling_wait_for_job_finish(int $scheduleId, int $timeoutSeconds): ?array
+{
+    $deadline = microtime(true) + max(10, $timeoutSeconds);
+    do {
+        usleep(250000);
+        $row = db_sync_schedule_fetch_by_id($scheduleId);
+        if ($row === null) {
+            return null;
+        }
+        if ((string) ($row['current_state'] ?? '') !== 'running' && empty($row['locked_until'])) {
+            return $row;
+        }
+    } while (microtime(true) < $deadline);
+
+    return db_sync_schedule_fetch_by_id($scheduleId);
+}
+
+function scheduler_profiling_pair_candidates(array $targets, array $isolatedSummary): array
+{
+    $candidates = [];
+    $keys = array_keys($targets);
+    sort($keys);
+    foreach ($keys as $index => $jobKey) {
+        for ($otherIndex = $index + 1; $otherIndex < count($keys); $otherIndex++) {
+            $otherKey = $keys[$otherIndex];
+            $aSummary = $isolatedSummary[$jobKey] ?? [];
+            $bSummary = $isolatedSummary[$otherKey] ?? [];
+            $classA = (string) ($aSummary['resource_class'] ?? ($targets[$jobKey]['resource_class'] ?? 'medium'));
+            $classB = (string) ($bSummary['resource_class'] ?? ($targets[$otherKey]['resource_class'] ?? 'medium'));
+            $weight = (($classA === 'light' && $classB === 'light') ? 1 : (($classA === 'medium' && $classB === 'light') || ($classA === 'light' && $classB === 'medium') ? 2 : 5));
+            $candidates[] = ['primary_job_key' => $jobKey, 'secondary_job_key' => $otherKey, 'weight' => $weight];
+        }
+    }
+
+    usort($candidates, static fn (array $a, array $b): int => ($a['weight'] <=> $b['weight']) ?: strcmp($a['primary_job_key'] . $a['secondary_job_key'], $b['primary_job_key'] . $b['secondary_job_key']));
+
+    return $candidates;
+}
+
+function scheduler_profiling_run_pair_probe(array $run, array $primary, array $secondary): array
+{
+    $primaryClaim = db_sync_schedule_claim_job_forced((int) ($primary['id'] ?? 0), (int) (($primary['timeout_seconds'] ?? 300) + ($secondary['timeout_seconds'] ?? 300) + 180));
+    $secondaryClaim = db_sync_schedule_claim_job_forced((int) ($secondary['id'] ?? 0), (int) (($primary['timeout_seconds'] ?? 300) + ($secondary['timeout_seconds'] ?? 300) + 180));
+    if ($primaryClaim === null || $secondaryClaim === null) {
+        if ($primaryClaim !== null) {
+            db_sync_schedule_release_claim((int) ($primaryClaim['id'] ?? 0), gmdate('Y-m-d H:i:s', time() + 60), 'profiling-claim-released');
+        }
+        if ($secondaryClaim !== null) {
+            db_sync_schedule_release_claim((int) ($secondaryClaim['id'] ?? 0), gmdate('Y-m-d H:i:s', time() + 60), 'profiling-claim-released');
+        }
+        throw new RuntimeException('Could not claim both jobs for compatibility probing.');
+    }
+
+    $dispatchResult = scheduler_dispatch_background_job($primaryClaim);
+    usleep(300000);
+    $inlineResult = scheduler_run_job($secondaryClaim);
+    $primaryRow = scheduler_profiling_wait_for_job_finish((int) ($primaryClaim['id'] ?? 0), (int) (($primary['timeout_seconds'] ?? 300) + 120)) ?? [];
+    if ((string) ($primaryRow['current_state'] ?? '') === 'running') {
+        $primaryRow['last_status'] = 'failed';
+        $primaryRow['last_error'] = 'Compatibility probe timed out while waiting for the background job to finish.';
+    }
+    $primaryMetric = scheduler_profiling_latest_metric_for_job((string) ($primaryClaim['job_key'] ?? ''));
+    $secondaryMetric = scheduler_profiling_latest_metric_for_job((string) ($secondaryClaim['job_key'] ?? ''));
+
+    $primaryResult = [
+        'job_id' => (int) ($primaryClaim['id'] ?? 0),
+        'job_key' => (string) ($primaryClaim['job_key'] ?? ''),
+        'status' => (string) ($primaryRow['last_status'] ?? 'failed'),
+        'started_at' => $primaryRow['last_started_at'] ?? $dispatchResult['started_at'] ?? null,
+        'finished_at' => $primaryRow['last_finished_at'] ?? null,
+        'duration_ms' => isset($primaryMetric['wall_duration_seconds']) ? (int) round(((float) $primaryMetric['wall_duration_seconds']) * 1000) : 0,
+        'summary' => (string) ($primaryRow['last_result'] ?? $dispatchResult['summary'] ?? 'Background compatibility probe finished.'),
+        'error' => $primaryRow['last_error'] ?? null,
+        'rows_seen' => 0,
+        'rows_written' => 0,
+        'warnings' => [],
+        'meta' => [
+            'resource_usage' => [
+                'cpu_percent' => $primaryMetric['cpu_percent'] ?? null,
+                'memory_peak_delta_bytes' => $primaryMetric['memory_peak_delta_bytes'] ?? $primaryMetric['memory_peak_bytes'] ?? null,
+                'lock_wait_seconds' => $primaryMetric['lock_wait_seconds'] ?? null,
+                'queue_wait_seconds' => $primaryMetric['queue_wait_seconds'] ?? null,
+                'overlap_count' => $primaryMetric['overlap_count'] ?? null,
+            ],
+        ],
+    ];
+
+    scheduler_profiling_insert_sample((int) $run['id'], $primaryClaim, 'compatibility', 1, (string) ($secondaryClaim['job_key'] ?? ''), $primaryResult, $primaryMetric);
+    scheduler_profiling_insert_sample((int) $run['id'], $secondaryClaim, 'compatibility', 1, (string) ($primaryClaim['job_key'] ?? ''), $inlineResult, $secondaryMetric);
+
+    $capacity = scheduler_capacity_model();
+    $combinedCpu = (float) ($primaryMetric['cpu_percent'] ?? 0.0) + (float) ($secondaryMetric['cpu_percent'] ?? 0.0);
+    $combinedMemory = (int) ($primaryMetric['memory_peak_delta_bytes'] ?? $primaryMetric['memory_peak_bytes'] ?? 0) + (int) ($secondaryMetric['memory_peak_delta_bytes'] ?? $secondaryMetric['memory_peak_bytes'] ?? 0);
+    $maxLockWait = max((float) ($primaryMetric['lock_wait_seconds'] ?? 0.0), (float) ($secondaryMetric['lock_wait_seconds'] ?? 0.0));
+    $hasFailure = ($primaryResult['status'] ?? '') === 'failed' || ($inlineResult['status'] ?? '') === 'failed';
+    $compatibility = 'safe';
+    $recommendedParallelism = 2;
+    $reason = 'Pair completed within conservative CPU, memory, lock, and failure thresholds.';
+
+    if ($hasFailure || $combinedCpu > ((float) $capacity['cpu_budget_percent'] * 0.75) || $combinedMemory > ((int) $capacity['memory_budget_bytes'] * 0.75) || $maxLockWait >= 5.0) {
+        $compatibility = 'incompatible';
+        $recommendedParallelism = 1;
+        $reason = $hasFailure
+            ? 'Compatibility probe failed or timed out, so the pairing should be avoided.'
+            : 'Compatibility probe exceeded conservative resource or lock thresholds, so the pairing should be avoided.';
+    } elseif ($combinedCpu > ((float) $capacity['cpu_budget_percent'] * 0.55) || $combinedMemory > ((int) $capacity['memory_budget_bytes'] * 0.55)) {
+        $compatibility = 'degraded';
+        $recommendedParallelism = 1;
+        $reason = 'Compatibility probe succeeded but resource pressure was high enough that the jobs should usually run solo.';
+    }
+
+    $metrics = [
+        'combined_cpu_percent' => round($combinedCpu, 2),
+        'combined_memory_bytes' => $combinedMemory,
+        'max_lock_wait_seconds' => round($maxLockWait, 2),
+        'primary_status' => $primaryResult['status'] ?? 'failed',
+        'secondary_status' => $inlineResult['status'] ?? 'failed',
+    ];
+
+    db_scheduler_profiling_pairing_upsert([
+        'profiling_run_id' => (int) $run['id'],
+        'primary_job_key' => (string) ($primaryClaim['job_key'] ?? ''),
+        'secondary_job_key' => (string) ($secondaryClaim['job_key'] ?? ''),
+        'probe_status' => 'completed',
+        'compatibility' => $compatibility,
+        'recommended_parallelism' => $recommendedParallelism,
+        'reason_text' => $reason,
+        'metrics_json' => json_encode($metrics, JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE),
+    ]);
+
+    return ['compatibility' => $compatibility, 'reason' => $reason, 'metrics' => $metrics];
+}
+
+function scheduler_profiling_synthesize_recommendations(array $run, array $targets, array $isolatedSamples, array $pairings): array
+{
+    $isolatedSummary = scheduler_profiling_sample_summary($isolatedSamples);
+    $rowsForOffsets = array_values($targets);
+    $recommendations = [];
+    $safePairings = [];
+    $badPairings = [];
+    foreach ($pairings as $pairing) {
+        $compatibility = (string) ($pairing['compatibility'] ?? 'pending');
+        $entry = [
+            'primary_job_key' => (string) ($pairing['primary_job_key'] ?? ''),
+            'secondary_job_key' => (string) ($pairing['secondary_job_key'] ?? ''),
+            'compatibility' => $compatibility,
+            'reason_text' => (string) ($pairing['reason_text'] ?? ''),
+            'recommended_parallelism' => (int) ($pairing['recommended_parallelism'] ?? 1),
+            'metrics' => scheduler_json_decode_assoc($pairing['metrics_json'] ?? null),
+        ];
+        if ($compatibility === 'safe') {
+            $safePairings[] = $entry;
+        } elseif (in_array($compatibility, ['degraded', 'incompatible'], true)) {
+            $badPairings[] = $entry;
+        }
+    }
+
+    foreach ($targets as $jobKey => $row) {
+        $summary = $isolatedSummary[$jobKey] ?? [];
+        $constraints = scheduler_job_constraints($jobKey);
+        $resourceClass = (string) ($summary['resource_class'] ?? $row['resource_class'] ?? 'medium');
+        $timeoutBase = (float) ($summary['p95_wall_seconds'] ?? $summary['average_wall_seconds'] ?? ($row['p95_duration_seconds'] ?? $row['average_duration_seconds'] ?? 60));
+        $timeoutSeconds = max((int) ($row['timeout_seconds'] ?? 300), (int) ceil(($timeoutBase * 1.5) + 30));
+        $intervalMinutes = (int) ($row['interval_minutes'] ?? 15);
+        if ($resourceClass === 'heavy') {
+            $intervalMinutes = min($constraints['max_interval_minutes'], max($intervalMinutes, (int) ceil(max(5.0, $timeoutBase / 45.0))));
+        } elseif ($resourceClass === 'light' && $timeoutBase > 0) {
+            $intervalMinutes = max($constraints['min_interval_minutes'], min($intervalMinutes, max(1, (int) floor(max(1.0, $timeoutBase / 30.0)))));
+        }
+        $recommendedRow = array_merge($row, [
+            'interval_minutes' => $intervalMinutes,
+            'timeout_seconds' => $timeoutSeconds,
+        ]);
+        $offsetMinutes = scheduler_recommended_offset_minutes_for_job($recommendedRow, $rowsForOffsets);
+        $parallelism = (int) ($summary['preferred_max_parallelism'] ?? ($row['preferred_max_parallelism'] ?? 1));
+        $jobBadPairings = array_values(array_filter($badPairings, static fn (array $entry): bool => $entry['primary_job_key'] === $jobKey || $entry['secondary_job_key'] === $jobKey));
+        if ($jobBadPairings !== []) {
+            $parallelism = 1;
+        }
+        $mustRunAlone = !empty($row['must_run_alone']) || $resourceClass === 'heavy' || $jobBadPairings !== [];
+        if ($mustRunAlone) {
+            $parallelism = 1;
+        }
+        $recommendations[$jobKey] = [
+            'job_key' => $jobKey,
+            'label' => (string) ($row['label'] ?? ucwords(str_replace('_', ' ', $jobKey))),
+            'recommended_interval_minutes' => $intervalMinutes,
+            'recommended_offset_minutes' => $offsetMinutes,
+            'recommended_timeout_seconds' => $timeoutSeconds,
+            'latest_allowed_start_policy' => 'Start no later than the due time plus one interval minute window, with starvation protection preserved.',
+            'resource_class' => $resourceClass,
+            'preferred_max_parallelism' => $parallelism,
+            'must_run_alone' => $mustRunAlone,
+            'reserved_capacity' => scheduler_is_protected_job($jobKey),
+            'incompatible_job_keys' => array_values(array_unique(array_map(static function (array $entry) use ($jobKey): string {
+                return $entry['primary_job_key'] === $jobKey ? $entry['secondary_job_key'] : $entry['primary_job_key'];
+            }, $jobBadPairings))),
+            'explanation' => [
+                'Built from isolated baseline runtime/resource samples and conservative compatibility probing.',
+                scheduler_is_protected_job($jobKey) ? 'Protected job offsets remain dedicated and reserved.' : 'Offset recommendation avoids protected slots and busy offsets.',
+                $mustRunAlone ? 'Solo execution is recommended because profiling or policy marked the job as risky in parallel.' : 'Parallel budget recommendation remains bounded by conservative resource ceilings.',
+            ],
+            'delta' => [
+                'interval_minutes' => $intervalMinutes - (int) ($row['interval_minutes'] ?? 0),
+                'offset_minutes' => $offsetMinutes - (int) ($row['offset_minutes'] ?? 0),
+                'timeout_seconds' => $timeoutSeconds - (int) ($row['timeout_seconds'] ?? 0),
+                'preferred_max_parallelism' => $parallelism - (int) ($row['preferred_max_parallelism'] ?? 1),
+                'resource_class_changed' => $resourceClass !== (string) ($row['resource_class'] ?? 'medium'),
+            ],
+        ];
+        foreach ($rowsForOffsets as &$candidateRow) {
+            if ((string) ($candidateRow['job_key'] ?? '') === $jobKey) {
+                $candidateRow['offset_minutes'] = $offsetMinutes;
+                $candidateRow['interval_minutes'] = $intervalMinutes;
+                break;
+            }
+        }
+        unset($candidateRow);
+    }
+
+    return [
+        'generated_at' => gmdate(DATE_ATOM),
+        'jobs' => $recommendations,
+        'safe_pairings' => $safePairings,
+        'bad_pairings' => $badPairings,
+        'reserved_capacity_jobs' => scheduler_protected_job_keys(),
+        'notes' => [
+            'Fairness, anti-starvation, due-window urgency, and live CPU/memory/lock-aware shifting remain active after baseline synthesis.',
+            'Protected jobs keep their dedicated offsets and reserved capacity treatment.',
+        ],
+    ];
+}
+
+function scheduler_profiling_apply_recommendations(int $runId, bool $preserveManualOverrides): array
+{
+    $run = scheduler_profiling_decode_run(db_scheduler_profiling_run_fetch($runId));
+    if ($run === null) {
+        return ['ok' => false, 'message' => 'Profiling run not found.'];
+    }
+    $recommendations = (array) ($run['recommendations'] ?? []);
+    $jobs = (array) ($recommendations['jobs'] ?? []);
+    if ($jobs === []) {
+        return ['ok' => false, 'message' => 'This profiling run does not have synthesized schedule recommendations yet.'];
+    }
+
+    $actor = scheduler_operator_identity_label();
+    $beforeSnapshotId = db_scheduler_schedule_snapshot_insert($runId, 'profiling_before_apply', $actor, 'Snapshot captured before applying synthesized scheduler recommendations.', db_sync_schedule_fetch_all());
+    $appliedCount = 0;
+    foreach (db_sync_schedule_fetch_all() as $row) {
+        $jobKey = (string) ($row['job_key'] ?? '');
+        $recommendation = $jobs[$jobKey] ?? null;
+        if (!is_array($recommendation)) {
+            continue;
+        }
+        if ($preserveManualOverrides && (string) ($row['tuning_mode'] ?? 'automatic') === 'manual') {
+            continue;
+        }
+        $changes = [
+            'interval_minutes' => (int) ($recommendation['recommended_interval_minutes'] ?? $row['interval_minutes'] ?? 5),
+            'offset_minutes' => (int) ($recommendation['recommended_offset_minutes'] ?? $row['offset_minutes'] ?? 0),
+            'timeout_seconds' => (int) ($recommendation['recommended_timeout_seconds'] ?? $row['timeout_seconds'] ?? 300),
+            'preferred_max_parallelism' => (int) ($recommendation['preferred_max_parallelism'] ?? $row['preferred_max_parallelism'] ?? 1),
+            'last_auto_tune_reason' => 'Applied synthesized baseline from Performance Monitoring Run #' . $runId . '.',
+        ];
+        if (db_sync_schedule_apply_adjustment((int) ($row['id'] ?? 0), $changes)) {
+            db_sync_schedule_update_resource_profile((int) ($row['id'] ?? 0), [
+                'resource_class' => (string) ($recommendation['resource_class'] ?? $row['resource_class'] ?? 'medium'),
+                'resource_class_confidence' => $row['resource_class_confidence'] ?? 1,
+                'telemetry_sample_count' => $row['telemetry_sample_count'] ?? 0,
+                'learning_mode' => $row['learning_mode'] ?? 0,
+                'allow_parallel' => empty($recommendation['must_run_alone']),
+                'prefers_solo' => !empty($recommendation['must_run_alone']) || ((int) ($recommendation['preferred_max_parallelism'] ?? 1) <= 1),
+                'must_run_alone' => !empty($recommendation['must_run_alone']),
+                'preferred_max_parallelism' => (int) ($recommendation['preferred_max_parallelism'] ?? 1),
+                'last_capacity_reason' => 'Synthesized baseline applied from Performance Monitoring Run #' . $runId . '.',
+            ] + $row);
+            db_scheduler_tuning_action_log($jobKey, 'admin', 'profiling_apply', 'Applied synthesized scheduler baseline from Performance Monitoring Run.', [
+                'interval_minutes' => (int) ($row['interval_minutes'] ?? 0),
+                'offset_minutes' => (int) ($row['offset_minutes'] ?? 0),
+                'timeout_seconds' => (int) ($row['timeout_seconds'] ?? 0),
+                'preferred_max_parallelism' => (int) ($row['preferred_max_parallelism'] ?? 1),
+            ], $changes, ['profiling_run_id' => $runId]);
+            $appliedCount++;
+        }
+    }
+
+    $rules = [];
+    foreach ((array) ($recommendations['bad_pairings'] ?? []) as $pairing) {
+        $rules[] = [
+            'primary_job_key' => (string) ($pairing['primary_job_key'] ?? ''),
+            'secondary_job_key' => (string) ($pairing['secondary_job_key'] ?? ''),
+            'rule_type' => 'avoid',
+            'notes' => 'Applied from Performance Monitoring Run #' . $runId . '.',
+            'metadata' => (array) ($pairing['metrics'] ?? []),
+        ];
+    }
+    foreach ((array) ($recommendations['safe_pairings'] ?? []) as $pairing) {
+        $rules[] = [
+            'primary_job_key' => (string) ($pairing['primary_job_key'] ?? ''),
+            'secondary_job_key' => (string) ($pairing['secondary_job_key'] ?? ''),
+            'rule_type' => 'safe',
+            'notes' => 'Applied from Performance Monitoring Run #' . $runId . '.',
+            'metadata' => (array) ($pairing['metrics'] ?? []),
+        ];
+    }
+    db_scheduler_pairing_rules_replace_from_profiling_run($runId, $rules, 'Applied from Performance Monitoring Run.');
+
+    $afterSnapshotId = db_scheduler_schedule_snapshot_insert($runId, 'profiling_after_apply', $actor, 'Snapshot captured after applying synthesized scheduler recommendations.', db_sync_schedule_fetch_all());
+    db_scheduler_profiling_run_update($runId, [
+        'run_status' => 'applied',
+        'current_phase' => 'applied',
+        'applied_at' => gmdate('Y-m-d H:i:s'),
+        'finished_at' => gmdate('Y-m-d H:i:s'),
+        'applied_snapshot_id' => $beforeSnapshotId,
+        'rollback_snapshot_id' => $afterSnapshotId,
+        'progress_json' => json_encode(array_merge((array) ($run['progress'] ?? []), ['message' => 'Synthesized schedule applied to the adaptive scheduler baseline.']), JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE),
+    ]);
+
+    return ['ok' => true, 'message' => 'Applied synthesized schedule to ' . $appliedCount . ' job(s).'];
+}
+
+function scheduler_profiling_dismiss_recommendations(int $runId): array
+{
+    $run = scheduler_profiling_decode_run(db_scheduler_profiling_run_fetch($runId));
+    if ($run === null) {
+        return ['ok' => false, 'message' => 'Profiling run not found.'];
+    }
+
+    db_scheduler_profiling_run_update($runId, [
+        'run_status' => 'dismissed',
+        'current_phase' => 'dismissed',
+        'finished_at' => gmdate('Y-m-d H:i:s'),
+        'progress_json' => json_encode(array_merge((array) ($run['progress'] ?? []), ['message' => 'Recommendations were reviewed and dismissed; the current scheduler baseline remains active.']), JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE),
+    ]);
+
+    return ['ok' => true, 'message' => 'Profiling recommendations dismissed and the current schedule was kept.'];
+}
+
+function scheduler_profiling_rollback_last_apply(): array
+{
+    foreach (scheduler_profiling_latest_runs(12) as $run) {
+        if ((string) ($run['run_status'] ?? '') !== 'applied' || (int) ($run['applied_snapshot_id'] ?? 0) <= 0) {
+            continue;
+        }
+        $snapshot = db_scheduler_schedule_snapshot_fetch((int) $run['applied_snapshot_id']);
+        if ($snapshot === null) {
+            continue;
+        }
+        $rows = scheduler_json_decode_assoc($snapshot['schedule_json'] ?? null);
+        if ($rows === []) {
+            continue;
+        }
+        foreach ($rows as $row) {
+            db_sync_schedule_apply_adjustment((int) ($row['id'] ?? 0), [
+                'interval_minutes' => (int) ($row['interval_minutes'] ?? 5),
+                'offset_minutes' => (int) ($row['offset_minutes'] ?? 0),
+                'timeout_seconds' => (int) ($row['timeout_seconds'] ?? 300),
+                'preferred_max_parallelism' => (int) ($row['preferred_max_parallelism'] ?? 1),
+                'priority' => (string) ($row['priority'] ?? 'normal'),
+                'tuning_mode' => (string) ($row['tuning_mode'] ?? 'automatic'),
+                'last_auto_tune_reason' => 'Rolled back to the snapshot captured before Performance Monitoring Run #' . (int) ($run['id'] ?? 0) . ' was applied.',
+            ]);
+        }
+        db_scheduler_pairing_rules_replace_from_profiling_run(0, [], 'Cleared profiling pairing rules during rollback.');
+        db_scheduler_schedule_snapshot_insert((int) ($run['id'] ?? 0), 'profiling_rollback_snapshot', scheduler_operator_identity_label(), 'Snapshot captured after rolling back a synthesized schedule.', db_sync_schedule_fetch_all());
+        db_scheduler_profiling_run_update((int) ($run['id'] ?? 0), [
+            'run_status' => 'rolled_back',
+            'current_phase' => 'rolled_back',
+            'finished_at' => gmdate('Y-m-d H:i:s'),
+        ]);
+
+        return ['ok' => true, 'message' => 'Rolled scheduler settings back to the snapshot captured before the last synthesized apply.'];
+    }
+
+    return ['ok' => false, 'message' => 'No applied Performance Monitoring Run snapshot is available to roll back.'];
+}
+
+function scheduler_profiling_tick(?callable $logger = null): ?array
+{
+    $run = scheduler_profiling_active_run();
+    if ($run === null) {
+        return null;
+    }
+
+    try {
+        $targets = scheduler_profiling_target_jobs($run);
+        $running = db_sync_schedule_fetch_running_jobs();
+        $isolatedSamples = db_scheduler_profiling_samples_fetch((int) $run['id'], 'isolated');
+        $pairings = db_scheduler_profiling_pairings_fetch((int) $run['id']);
+
+        if ((string) ($run['current_phase'] ?? '') === 'waiting_for_active_jobs') {
+            if ($running !== []) {
+                db_scheduler_profiling_run_update((int) $run['id'], [
+                    'progress_json' => json_encode(array_merge((array) ($run['progress'] ?? []), [
+                        'active_jobs_remaining' => count($running),
+                        'running_job_keys' => array_values(array_map(static fn (array $row): string => (string) ($row['job_key'] ?? ''), $running)),
+                        'message' => 'Normal scheduler dispatch is paused while active jobs drain before profiling begins.',
+                    ]), JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE),
+                ]);
+
+                return ['mode' => 'profiling', 'run' => $run, 'status' => 'waiting_for_active_jobs', 'jobs_processed' => 0];
+            }
+            db_scheduler_profiling_run_update((int) $run['id'], [
+                'run_status' => 'isolated',
+                'current_phase' => 'isolated_baseline',
+            ]);
+            $run['run_status'] = 'isolated';
+            $run['current_phase'] = 'isolated_baseline';
+        }
+
+        if ((string) ($run['current_phase'] ?? '') === 'isolated_baseline') {
+            $nextJob = scheduler_profiling_next_isolated_job($run, $targets, $isolatedSamples);
+            if ($nextJob !== null) {
+                $result = scheduler_profiling_run_isolated_sample($run, $nextJob);
+                $updatedSamples = db_scheduler_profiling_samples_fetch((int) $run['id'], 'isolated');
+                $completedJobs = count(array_unique(array_map(static fn (array $sample): string => (string) ($sample['job_key'] ?? ''), $updatedSamples)));
+                db_scheduler_profiling_run_update((int) $run['id'], [
+                    'progress_json' => json_encode(array_merge((array) ($run['progress'] ?? []), [
+                        'total_jobs' => count($targets),
+                        'isolated_completed_jobs' => $completedJobs,
+                        'message' => 'Completed isolated baseline sample ' . (int) ($nextJob['profiling_sample_index'] ?? 1) . ' for ' . (string) ($nextJob['job_key'] ?? '') . '.',
+                    ]), JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE),
+                ]);
+                if ($logger !== null) {
+                    $logger('profiling.isolated_sample', ['run_id' => (int) $run['id'], 'job' => (string) ($nextJob['job_key'] ?? ''), 'status' => (string) ($result['status'] ?? 'failed')]);
+                }
+
+                return ['mode' => 'profiling', 'run' => $run, 'status' => 'isolated_sample_completed', 'jobs_processed' => 1];
+            }
+            if ((string) ($run['execution_mode'] ?? 'isolated_only') === 'isolated_only' || count($targets) < 2) {
+                $recommendations = scheduler_profiling_synthesize_recommendations($run, $targets, $isolatedSamples, $pairings);
+                db_scheduler_profiling_run_update((int) $run['id'], [
+                    'run_status' => 'awaiting_review',
+                    'current_phase' => 'review',
+                    'finished_at' => gmdate('Y-m-d H:i:s'),
+                    'recommendations_json' => json_encode($recommendations, JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE),
+                    'progress_json' => json_encode(array_merge((array) ($run['progress'] ?? []), ['message' => 'Isolated baseline profiling completed and synthesized schedule recommendations are ready for review.']), JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE),
+                ]);
+
+                return ['mode' => 'profiling', 'run' => $run, 'status' => 'awaiting_review', 'jobs_processed' => 0];
+            }
+            db_scheduler_profiling_run_update((int) $run['id'], [
+                'run_status' => 'compatibility',
+                'current_phase' => 'compatibility_probing',
+            ]);
+            $run['run_status'] = 'compatibility';
+            $run['current_phase'] = 'compatibility_probing';
+        }
+
+        if ((string) ($run['current_phase'] ?? '') === 'compatibility_probing') {
+            $isolatedSummary = scheduler_profiling_sample_summary($isolatedSamples);
+            $candidates = scheduler_profiling_pair_candidates($targets, $isolatedSummary);
+            $completed = [];
+            foreach ($pairings as $pairing) {
+                $completed[(string) ($pairing['primary_job_key'] ?? '') . '|' . (string) ($pairing['secondary_job_key'] ?? '')] = true;
+            }
+            foreach ($candidates as $candidate) {
+                $pairKey = $candidate['primary_job_key'] . '|' . $candidate['secondary_job_key'];
+                if (isset($completed[$pairKey])) {
+                    continue;
+                }
+                $primary = $targets[$candidate['primary_job_key']] ?? null;
+                $secondary = $targets[$candidate['secondary_job_key']] ?? null;
+                if ($primary === null || $secondary === null) {
+                    continue;
+                }
+                $compatibilityCheck = scheduler_jobs_are_compatible(
+                    array_merge($primary, ['resource_class' => $isolatedSummary[$candidate['primary_job_key']]['resource_class'] ?? ($primary['resource_class'] ?? 'medium')]),
+                    array_merge($secondary, ['resource_class' => $isolatedSummary[$candidate['secondary_job_key']]['resource_class'] ?? ($secondary['resource_class'] ?? 'medium')])
+                );
+                if (!$compatibilityCheck) {
+                    db_scheduler_profiling_pairing_upsert([
+                        'profiling_run_id' => (int) $run['id'],
+                        'primary_job_key' => $candidate['primary_job_key'],
+                        'secondary_job_key' => $candidate['secondary_job_key'],
+                        'probe_status' => 'skipped',
+                        'compatibility' => 'incompatible',
+                        'recommended_parallelism' => 1,
+                        'reason_text' => 'Existing solo or incompatibility rules already mark this pairing as unsafe.',
+                        'metrics_json' => json_encode(['weight' => $candidate['weight']], JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE),
+                    ]);
+                } else {
+                    scheduler_profiling_run_pair_probe($run, $primary, $secondary);
+                }
+                $updatedPairings = db_scheduler_profiling_pairings_fetch((int) $run['id']);
+                db_scheduler_profiling_run_update((int) $run['id'], [
+                    'progress_json' => json_encode(array_merge((array) ($run['progress'] ?? []), [
+                        'compatibility_completed_pairs' => count($updatedPairings),
+                        'compatibility_total_pairs' => count($candidates),
+                        'message' => 'Compatibility probing evaluated ' . $candidate['primary_job_key'] . ' with ' . $candidate['secondary_job_key'] . '.',
+                    ]), JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE),
+                ]);
+
+                return ['mode' => 'profiling', 'run' => $run, 'status' => 'compatibility_probe_completed', 'jobs_processed' => 2];
+            }
+
+            $updatedPairings = db_scheduler_profiling_pairings_fetch((int) $run['id']);
+            $recommendations = scheduler_profiling_synthesize_recommendations($run, $targets, $isolatedSamples, $updatedPairings);
+            db_scheduler_profiling_run_update((int) $run['id'], [
+                'run_status' => 'awaiting_review',
+                'current_phase' => 'review',
+                'finished_at' => gmdate('Y-m-d H:i:s'),
+                'recommendations_json' => json_encode($recommendations, JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE),
+                'progress_json' => json_encode(array_merge((array) ($run['progress'] ?? []), ['message' => 'Compatibility probing finished and synthesized schedule recommendations are ready for preview.']), JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE),
+            ]);
+
+            return ['mode' => 'profiling', 'run' => $run, 'status' => 'awaiting_review', 'jobs_processed' => 0];
+        }
+    } catch (Throwable $exception) {
+        db_scheduler_profiling_run_update((int) $run['id'], [
+            'run_status' => 'failed',
+            'current_phase' => 'failed',
+            'failure_message' => scheduler_normalize_error_message($exception->getMessage()),
+            'finished_at' => gmdate('Y-m-d H:i:s'),
+            'progress_json' => json_encode(array_merge((array) ($run['progress'] ?? []), ['message' => 'Profiling failed and the scheduler can resume normal mode on the next tick.']), JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE),
+        ]);
+
+        return ['mode' => 'profiling', 'run' => $run, 'status' => 'failed', 'jobs_processed' => 0, 'error' => $exception->getMessage()];
+    }
+
+    return ['mode' => 'profiling', 'run' => $run, 'status' => 'idle', 'jobs_processed' => 0];
 }
 
 function sync_schedule_settings_view_model(): array
@@ -3349,6 +4220,7 @@ function sync_schedule_settings_view_model(): array
             'allow_parallel' => !empty($row['allow_parallel']) || !empty($resourceProfile['allow_parallel']),
             'prefers_solo' => !empty($row['prefers_solo']) || !empty($resourceProfile['prefers_solo']),
             'must_run_alone' => !empty($row['must_run_alone']) || !empty($resourceProfile['must_run_alone']),
+            'preferred_max_parallelism' => (int) ($row['preferred_max_parallelism'] ?? $resourceProfile['preferred_max_parallelism'] ?? 1),
             'projected_cpu_percent' => $row['current_projected_cpu_percent'] ?? $resourceProfile['projection_cpu_percent'] ?? null,
             'projected_memory_bytes' => $row['current_projected_memory_bytes'] ?? $resourceProfile['projection_memory_bytes'] ?? null,
             'latest_allowed_start_at' => scheduler_latest_allowed_start_at($row),
@@ -3388,6 +4260,17 @@ function sync_schedule_settings_view_model(): array
     }
 
     $healthSummary['pressure'] = scheduler_pressure_label($healthSummary);
+    $activeProfilingRun = scheduler_profiling_active_run();
+    $profilingRuns = scheduler_profiling_latest_runs();
+    $profilingPreviewRun = $activeProfilingRun;
+    if ($profilingPreviewRun === null) {
+        foreach ($profilingRuns as $profilingRunRow) {
+            if (is_array($profilingRunRow['recommendations'] ?? null) && ((array) ($profilingRunRow['recommendations']['jobs'] ?? [])) !== []) {
+                $profilingPreviewRun = $profilingRunRow;
+                break;
+            }
+        }
+    }
 
     return [
         'configured_jobs' => $configuredJobs,
@@ -3400,6 +4283,12 @@ function sync_schedule_settings_view_model(): array
         'recent_resource_metrics' => $recentResourceMetrics,
         'running_jobs' => (array) ($liveCapacity['running_jobs_detail'] ?? []),
         'live_capacity' => $liveCapacity,
+        'profiling_active_run' => $activeProfilingRun,
+        'profiling_runs' => $profilingRuns,
+        'profiling_preview_run' => $profilingPreviewRun,
+        'profiling_samples' => $profilingPreviewRun !== null ? db_scheduler_profiling_samples_fetch((int) ($profilingPreviewRun['id'] ?? 0)) : [],
+        'profiling_pairings' => $profilingPreviewRun !== null ? db_scheduler_profiling_pairings_fetch((int) ($profilingPreviewRun['id'] ?? 0)) : [],
+        'schedule_snapshots' => db_scheduler_schedule_snapshots_recent(8),
     ];
 }
 
@@ -8698,6 +9587,24 @@ function scheduler_run_optimizer(): ?array
 
 function cron_tick_run(?callable $logger = null): array
 {
+    $profiling = scheduler_profiling_tick($logger);
+    if ($profiling !== null) {
+        return [
+            'ran_at' => gmdate('Y-m-d H:i:s'),
+            'jobs_due' => 0,
+            'jobs_planned' => 0,
+            'jobs_deferred' => 0,
+            'jobs_processed' => (int) ($profiling['jobs_processed'] ?? 0),
+            'jobs_succeeded' => 0,
+            'jobs_failed' => !empty($profiling['error']) ? 1 : 0,
+            'jobs_dispatched' => 0,
+            'planner' => ['mode' => 'profiling_pause'],
+            'optimizer' => null,
+            'profiling' => $profiling,
+            'results' => [],
+        ];
+    }
+
     $jobs = scheduler_due_jobs();
     $plan = scheduler_plan_due_jobs($jobs);
     $plannedJobs = (array) ($plan['allowed'] ?? []);

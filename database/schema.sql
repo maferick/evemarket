@@ -117,6 +117,7 @@ CREATE TABLE IF NOT EXISTS sync_schedules (
     allow_parallel TINYINT(1) NOT NULL DEFAULT 1,
     prefers_solo TINYINT(1) NOT NULL DEFAULT 0,
     must_run_alone TINYINT(1) NOT NULL DEFAULT 0,
+    preferred_max_parallelism INT UNSIGNED NOT NULL DEFAULT 1,
     last_cpu_percent DECIMAL(8,2) DEFAULT NULL,
     average_cpu_percent DECIMAL(8,2) DEFAULT NULL,
     p95_cpu_percent DECIMAL(8,2) DEFAULT NULL,
@@ -539,6 +540,103 @@ SET interval_minutes = GREATEST(1, CEIL(interval_seconds / 60)),
 WHERE interval_minutes IS NULL
    OR offset_minutes IS NULL
    OR next_due_at IS NULL;
+
+
+CREATE TABLE IF NOT EXISTS scheduler_job_pairing_rules (
+    id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    primary_job_key VARCHAR(190) NOT NULL,
+    secondary_job_key VARCHAR(190) NOT NULL,
+    rule_type VARCHAR(20) NOT NULL,
+    source_type VARCHAR(30) NOT NULL DEFAULT 'profiling',
+    profiling_run_id BIGINT UNSIGNED DEFAULT NULL,
+    active TINYINT(1) NOT NULL DEFAULT 1,
+    notes VARCHAR(500) DEFAULT NULL,
+    metadata_json LONGTEXT DEFAULT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uniq_scheduler_pairing_rule (primary_job_key, secondary_job_key, rule_type),
+    KEY idx_scheduler_pairing_rules_type_active (rule_type, active),
+    KEY idx_scheduler_pairing_rules_run (profiling_run_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS scheduler_profiling_runs (
+    id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    run_status VARCHAR(30) NOT NULL,
+    current_phase VARCHAR(40) NOT NULL,
+    execution_mode VARCHAR(30) NOT NULL DEFAULT 'isolated_only',
+    started_by VARCHAR(190) NOT NULL,
+    scope_json LONGTEXT DEFAULT NULL,
+    options_json LONGTEXT DEFAULT NULL,
+    selected_job_keys_json LONGTEXT DEFAULT NULL,
+    progress_json LONGTEXT DEFAULT NULL,
+    recommendations_json LONGTEXT DEFAULT NULL,
+    summary_json LONGTEXT DEFAULT NULL,
+    failure_message VARCHAR(500) DEFAULT NULL,
+    applied_snapshot_id BIGINT UNSIGNED DEFAULT NULL,
+    rollback_snapshot_id BIGINT UNSIGNED DEFAULT NULL,
+    started_at DATETIME NOT NULL,
+    finished_at DATETIME DEFAULT NULL,
+    applied_at DATETIME DEFAULT NULL,
+    cancelled_at DATETIME DEFAULT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    KEY idx_scheduler_profiling_runs_status (run_status, current_phase),
+    KEY idx_scheduler_profiling_runs_started (started_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS scheduler_profiling_samples (
+    id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    profiling_run_id BIGINT UNSIGNED NOT NULL,
+    schedule_id INT UNSIGNED DEFAULT NULL,
+    job_key VARCHAR(190) NOT NULL,
+    phase VARCHAR(30) NOT NULL,
+    sample_key VARCHAR(190) NOT NULL,
+    partner_job_key VARCHAR(190) DEFAULT NULL,
+    sample_index INT UNSIGNED NOT NULL DEFAULT 1,
+    run_status VARCHAR(20) NOT NULL,
+    wall_duration_seconds DECIMAL(10,2) DEFAULT NULL,
+    cpu_percent DECIMAL(8,2) DEFAULT NULL,
+    memory_peak_bytes BIGINT UNSIGNED DEFAULT NULL,
+    lock_wait_seconds DECIMAL(10,2) DEFAULT NULL,
+    queue_wait_seconds DECIMAL(10,2) DEFAULT NULL,
+    overlap_count INT UNSIGNED NOT NULL DEFAULT 0,
+    timed_out TINYINT(1) NOT NULL DEFAULT 0,
+    failed TINYINT(1) NOT NULL DEFAULT 0,
+    workload_json LONGTEXT DEFAULT NULL,
+    result_json LONGTEXT DEFAULT NULL,
+    started_at DATETIME DEFAULT NULL,
+    finished_at DATETIME DEFAULT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    KEY idx_scheduler_profiling_samples_run_phase (profiling_run_id, phase, created_at),
+    KEY idx_scheduler_profiling_samples_job (job_key, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS scheduler_profiling_pairings (
+    id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    profiling_run_id BIGINT UNSIGNED NOT NULL,
+    primary_job_key VARCHAR(190) NOT NULL,
+    secondary_job_key VARCHAR(190) NOT NULL,
+    probe_status VARCHAR(20) NOT NULL,
+    compatibility VARCHAR(20) NOT NULL DEFAULT 'pending',
+    recommended_parallelism INT UNSIGNED NOT NULL DEFAULT 1,
+    reason_text VARCHAR(500) DEFAULT NULL,
+    metrics_json LONGTEXT DEFAULT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY uniq_scheduler_profiling_pair (profiling_run_id, primary_job_key, secondary_job_key),
+    KEY idx_scheduler_profiling_pairings_run (profiling_run_id, compatibility)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS scheduler_schedule_snapshots (
+    id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    profiling_run_id BIGINT UNSIGNED DEFAULT NULL,
+    snapshot_label VARCHAR(80) NOT NULL,
+    actor VARCHAR(190) NOT NULL,
+    reason_text VARCHAR(500) DEFAULT NULL,
+    schedule_json LONGTEXT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    KEY idx_scheduler_schedule_snapshots_run (profiling_run_id, created_at),
+    KEY idx_scheduler_schedule_snapshots_label (snapshot_label, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS scheduler_job_events (
     id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
