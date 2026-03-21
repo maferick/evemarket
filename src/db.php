@@ -3848,6 +3848,31 @@ function db_sync_schedule_registry_columns_ensure(): void
     db_ensure_table_column('sync_schedules', 'failure_streak', 'INT UNSIGNED NOT NULL DEFAULT 0');
     db_ensure_table_column('sync_schedules', 'lock_conflict_count', 'INT UNSIGNED NOT NULL DEFAULT 0');
     db_ensure_table_column('sync_schedules', 'timeout_count', 'INT UNSIGNED NOT NULL DEFAULT 0');
+    db_ensure_table_column('sync_schedules', 'resource_class', "VARCHAR(20) NOT NULL DEFAULT 'learning'");
+    db_ensure_table_column('sync_schedules', 'resource_class_confidence', 'DECIMAL(6,4) DEFAULT NULL');
+    db_ensure_table_column('sync_schedules', 'telemetry_sample_count', 'INT UNSIGNED NOT NULL DEFAULT 0');
+    db_ensure_table_column('sync_schedules', 'learning_mode', 'TINYINT(1) NOT NULL DEFAULT 1');
+    db_ensure_table_column('sync_schedules', 'allow_parallel', 'TINYINT(1) NOT NULL DEFAULT 1');
+    db_ensure_table_column('sync_schedules', 'prefers_solo', 'TINYINT(1) NOT NULL DEFAULT 0');
+    db_ensure_table_column('sync_schedules', 'must_run_alone', 'TINYINT(1) NOT NULL DEFAULT 0');
+    db_ensure_table_column('sync_schedules', 'latest_allowed_start_at', 'DATETIME DEFAULT NULL');
+    db_ensure_table_column('sync_schedules', 'last_cpu_percent', 'DECIMAL(8,2) DEFAULT NULL');
+    db_ensure_table_column('sync_schedules', 'average_cpu_percent', 'DECIMAL(8,2) DEFAULT NULL');
+    db_ensure_table_column('sync_schedules', 'p95_cpu_percent', 'DECIMAL(8,2) DEFAULT NULL');
+    db_ensure_table_column('sync_schedules', 'last_memory_peak_bytes', 'BIGINT UNSIGNED DEFAULT NULL');
+    db_ensure_table_column('sync_schedules', 'average_memory_peak_bytes', 'BIGINT UNSIGNED DEFAULT NULL');
+    db_ensure_table_column('sync_schedules', 'p95_memory_peak_bytes', 'BIGINT UNSIGNED DEFAULT NULL');
+    db_ensure_table_column('sync_schedules', 'last_queue_wait_seconds', 'DECIMAL(10,2) DEFAULT NULL');
+    db_ensure_table_column('sync_schedules', 'last_lock_wait_seconds', 'DECIMAL(10,2) DEFAULT NULL');
+    db_ensure_table_column('sync_schedules', 'average_lock_wait_seconds', 'DECIMAL(10,2) DEFAULT NULL');
+    db_ensure_table_column('sync_schedules', 'last_overlap_count', 'INT UNSIGNED NOT NULL DEFAULT 0');
+    db_ensure_table_column('sync_schedules', 'last_overlapped', 'TINYINT(1) NOT NULL DEFAULT 0');
+    db_ensure_table_column('sync_schedules', 'recent_timeout_rate', 'DECIMAL(8,4) DEFAULT NULL');
+    db_ensure_table_column('sync_schedules', 'recent_failure_rate', 'DECIMAL(8,4) DEFAULT NULL');
+    db_ensure_table_column('sync_schedules', 'current_projected_cpu_percent', 'DECIMAL(8,2) DEFAULT NULL');
+    db_ensure_table_column('sync_schedules', 'current_projected_memory_bytes', 'BIGINT UNSIGNED DEFAULT NULL');
+    db_ensure_table_column('sync_schedules', 'current_pressure_state', "VARCHAR(32) NOT NULL DEFAULT 'healthy'");
+    db_ensure_table_column('sync_schedules', 'last_capacity_reason', 'VARCHAR(500) DEFAULT NULL');
 
     db_execute(
         "UPDATE sync_schedules
@@ -3857,6 +3882,13 @@ function db_sync_schedule_registry_columns_ensure(): void
              concurrency_policy = COALESCE(NULLIF(concurrency_policy, ''), 'single'),
              timeout_seconds = GREATEST(30, COALESCE(timeout_seconds, 300)),
              next_due_at = COALESCE(next_due_at, next_run_at),
+             latest_allowed_start_at = COALESCE(latest_allowed_start_at, DATE_ADD(COALESCE(next_due_at, next_run_at, UTC_TIMESTAMP()), INTERVAL GREATEST(1, interval_minutes) MINUTE)),
+             resource_class = COALESCE(NULLIF(resource_class, ''), 'learning'),
+             current_pressure_state = COALESCE(NULLIF(current_pressure_state, ''), 'healthy'),
+             allow_parallel = IFNULL(allow_parallel, 1),
+             prefers_solo = IFNULL(prefers_solo, 0),
+             must_run_alone = IFNULL(must_run_alone, 0),
+             learning_mode = IFNULL(learning_mode, 1),
              current_state = CASE
                 WHEN enabled = 0 THEN 'stopped'
                 WHEN degraded_until IS NOT NULL AND degraded_until > UTC_TIMESTAMP() THEN 'stopped'
@@ -3872,7 +3904,7 @@ function db_sync_schedule_select_columns_sql(): string
 {
     db_sync_schedule_registry_columns_ensure();
 
-    return 'id, job_key, enabled, interval_minutes, interval_seconds, offset_seconds, offset_minutes, priority, concurrency_policy, timeout_seconds, next_run_at, next_due_at, last_run_at, last_started_at, last_finished_at, last_duration_seconds, average_duration_seconds, p95_duration_seconds, last_status, last_result, last_error, current_state, tuning_mode, discovered_from_code, explicitly_configured, last_auto_tuned_at, last_auto_tune_reason, degraded_until, failure_streak, lock_conflict_count, timeout_count, locked_until, created_at, updated_at';
+    return 'id, job_key, enabled, interval_minutes, interval_seconds, offset_seconds, offset_minutes, priority, concurrency_policy, timeout_seconds, next_run_at, next_due_at, latest_allowed_start_at, last_run_at, last_started_at, last_finished_at, last_duration_seconds, average_duration_seconds, p95_duration_seconds, last_status, last_result, last_error, current_state, tuning_mode, discovered_from_code, explicitly_configured, last_auto_tuned_at, last_auto_tune_reason, degraded_until, failure_streak, lock_conflict_count, timeout_count, resource_class, resource_class_confidence, telemetry_sample_count, learning_mode, allow_parallel, prefers_solo, must_run_alone, last_cpu_percent, average_cpu_percent, p95_cpu_percent, last_memory_peak_bytes, average_memory_peak_bytes, p95_memory_peak_bytes, last_queue_wait_seconds, last_lock_wait_seconds, average_lock_wait_seconds, last_overlap_count, last_overlapped, recent_timeout_rate, recent_failure_rate, current_projected_cpu_percent, current_projected_memory_bytes, current_pressure_state, last_capacity_reason, locked_until, created_at, updated_at';
 }
 
 function db_sync_schedule_priority_rank_sql(string $column = 'priority'): string
@@ -3935,6 +3967,7 @@ function db_sync_schedule_claim_job(int $scheduleId, int $lockTtlSeconds = 300):
              last_error = NULL,
              current_state = ?,
              last_started_at = UTC_TIMESTAMP(),
+             latest_allowed_start_at = DATE_ADD(UTC_TIMESTAMP(), INTERVAL GREATEST(1, interval_minutes) MINUTE),
              updated_at = CURRENT_TIMESTAMP
          WHERE id = ?
            AND enabled = 1
@@ -4027,6 +4060,7 @@ function db_sync_schedule_mark_success(int $scheduleId, ?array $runtime = null):
              last_error = NULL,
              next_run_at = ?,
              next_due_at = ?,
+             latest_allowed_start_at = DATE_ADD(?, INTERVAL GREATEST(1, interval_minutes) MINUTE),
              current_state = CASE WHEN enabled = 1 THEN ? ELSE ? END,
              last_duration_seconds = ?,
              average_duration_seconds = ?,
@@ -4037,7 +4071,7 @@ function db_sync_schedule_mark_success(int $scheduleId, ?array $runtime = null):
              updated_at = CURRENT_TIMESTAMP
          WHERE id = ?
          LIMIT 1',
-        ['success', $lastResult, $nextDueAt, $nextDueAt, 'waiting', 'stopped', $lastDuration, $averageDuration, $p95Duration, $scheduleId]
+        ['success', $lastResult, $nextDueAt, $nextDueAt, $nextDueAt, 'waiting', 'stopped', $lastDuration, $averageDuration, $p95Duration, $scheduleId]
     );
 }
 
@@ -4065,6 +4099,7 @@ function db_sync_schedule_mark_failure(int $scheduleId, string $errorMessage, ?a
              last_error = ?,
              next_run_at = ?,
              next_due_at = ?,
+             latest_allowed_start_at = DATE_ADD(?, INTERVAL GREATEST(1, interval_minutes) MINUTE),
              current_state = CASE WHEN enabled = 1 THEN ? ELSE ? END,
              last_duration_seconds = ?,
              average_duration_seconds = ?,
@@ -4076,7 +4111,7 @@ function db_sync_schedule_mark_failure(int $scheduleId, string $errorMessage, ?a
              updated_at = CURRENT_TIMESTAMP
          WHERE id = ?
          LIMIT 1',
-        ['failed', $lastResult, $message, $nextDueAt, $nextDueAt, 'waiting', 'stopped', $lastDuration, $averageDuration, $p95Duration, !empty($runtime['timeout']) ? 1 : 0, $scheduleId]
+        ['failed', $lastResult, $message, $nextDueAt, $nextDueAt, $nextDueAt, 'waiting', 'stopped', $lastDuration, $averageDuration, $p95Duration, !empty($runtime['timeout']) ? 1 : 0, $scheduleId]
     );
 }
 
@@ -4160,6 +4195,66 @@ function db_sync_schedule_running_job_keys(array $jobKeys): array
         static fn (array $row): string => trim((string) ($row['job_key'] ?? '')),
         $rows
     ), static fn (string $jobKey): bool => $jobKey !== ''));
+}
+
+
+function db_sync_schedule_fetch_running_jobs(?array $excludeScheduleIds = null): array
+{
+    db_sync_schedule_registry_columns_ensure();
+
+    $columns = db_sync_schedule_select_columns_sql();
+    $params = [];
+    $sql = 'SELECT ' . $columns . '
+'
+        . 'FROM sync_schedules
+'
+        . 'WHERE enabled = 1
+'
+        . '  AND current_state = \'running\'\n'
+        . '  AND locked_until IS NOT NULL
+'
+        . '  AND locked_until > UTC_TIMESTAMP()';
+
+    $ids = array_values(array_filter(array_map('intval', $excludeScheduleIds ?? []), static fn (int $id): bool => $id > 0));
+    if ($ids !== []) {
+        $sql .= '
+  AND id NOT IN (' . implode(',', array_fill(0, count($ids), '?')) . ')';
+        $params = $ids;
+    }
+
+    $sql .= '
+ORDER BY last_started_at ASC, id ASC';
+
+    return db_select($sql, $params);
+}
+
+function db_sync_schedule_release_claim(int $scheduleId, ?string $nextDueAt = null, string $reason = ''): bool
+{
+    db_sync_schedule_registry_columns_ensure();
+
+    if ($scheduleId <= 0) {
+        return false;
+    }
+
+    $resolvedNextDueAt = $nextDueAt;
+    if ($resolvedNextDueAt === null || trim($resolvedNextDueAt) === '') {
+        $resolvedNextDueAt = gmdate('Y-m-d H:i:s', time() + 60);
+    }
+
+    return db_execute(
+        'UPDATE sync_schedules
+         SET locked_until = NULL,
+             current_state = CASE WHEN enabled = 1 THEN \'waiting\' ELSE \'stopped\' END,
+             next_run_at = CASE WHEN enabled = 1 THEN ? ELSE NULL END,
+             next_due_at = CASE WHEN enabled = 1 THEN ? ELSE NULL END,
+             latest_allowed_start_at = CASE WHEN enabled = 1 THEN DATE_ADD(?, INTERVAL GREATEST(1, interval_minutes) MINUTE) ELSE NULL END,
+             last_result = CASE WHEN ? <> \'\' THEN ? ELSE last_result END,
+             last_capacity_reason = CASE WHEN ? <> \'\' THEN ? ELSE last_capacity_reason END,
+             updated_at = CURRENT_TIMESTAMP
+         WHERE id = ?
+         LIMIT 1',
+        [$resolvedNextDueAt, $resolvedNextDueAt, $resolvedNextDueAt, $reason, mb_substr($reason, 0, 120), $reason, mb_substr($reason, 0, 500), $scheduleId]
+    );
 }
 
 function db_sync_schedule_ensure_job(string $jobKey, int $enabled, int $intervalSeconds, int $offsetSeconds = 0, array $options = []): bool
@@ -4333,7 +4428,7 @@ function db_sync_schedule_set_next_due_at(int $scheduleId, string $nextDueAt, st
              updated_at = CURRENT_TIMESTAMP
          WHERE id = ?
          LIMIT 1',
-        [$nextDueAt, $nextDueAt, $reason, mb_substr($reason, 0, 120), $scheduleId]
+        [$nextDueAt, $nextDueAt, $nextDueAt, $reason, mb_substr($reason, 0, 120), $scheduleId]
     );
 }
 
@@ -4345,6 +4440,7 @@ function db_sync_schedule_force_due_all_enabled(): int
         'UPDATE sync_schedules
          SET next_run_at = UTC_TIMESTAMP(),
              next_due_at = UTC_TIMESTAMP(),
+             latest_allowed_start_at = DATE_ADD(UTC_TIMESTAMP(), INTERVAL GREATEST(1, interval_minutes) MINUTE),
              locked_until = NULL,
              current_state = \'waiting\',
              updated_at = CURRENT_TIMESTAMP
@@ -4381,6 +4477,7 @@ function db_sync_schedule_force_due_by_job_keys(array $jobKeys): int
     $sql = "UPDATE sync_schedules
             SET next_run_at = UTC_TIMESTAMP(),
                 next_due_at = UTC_TIMESTAMP(),
+                latest_allowed_start_at = DATE_ADD(UTC_TIMESTAMP(), INTERVAL GREATEST(1, interval_minutes) MINUTE),
                 locked_until = NULL,
                 current_state = 'waiting',
                 updated_at = CURRENT_TIMESTAMP
@@ -4431,7 +4528,7 @@ function db_sync_schedule_apply_adjustment(int $scheduleId, array $changes): boo
              updated_at = CURRENT_TIMESTAMP
          WHERE id = ?
          LIMIT 1',
-        [$intervalMinutes, $intervalMinutes * 60, $offsetMinutes, $offsetMinutes * 60, $timeoutSeconds, $priority, $tuningMode, $reason, $reason, $reason, $nextDueAt, $nextDueAt, $currentState, $scheduleId]
+        [$intervalMinutes, $intervalMinutes * 60, $offsetMinutes, $offsetMinutes * 60, $timeoutSeconds, $priority, $tuningMode, $reason, $reason, $reason, $nextDueAt, $nextDueAt, $nextDueAt, $currentState, $scheduleId]
     );
 }
 
@@ -4592,6 +4689,274 @@ function db_scheduler_tuning_actions_recent(int $limit = 20): array
     return db_select(
         'SELECT id, job_key, actor, action_type, reason_text, before_json, after_json, metrics_json, created_at
          FROM scheduler_tuning_actions
+         ORDER BY created_at DESC, id DESC
+         LIMIT ' . $safeLimit
+    );
+}
+
+
+function db_scheduler_resource_metrics_ensure(): void
+{
+    db_execute('CREATE TABLE IF NOT EXISTS scheduler_job_resource_metrics (
+        id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+        schedule_id INT UNSIGNED DEFAULT NULL,
+        job_key VARCHAR(190) NOT NULL,
+        run_status VARCHAR(20) NOT NULL,
+        wall_duration_seconds DECIMAL(10,2) NOT NULL DEFAULT 0,
+        queue_wait_seconds DECIMAL(10,2) NOT NULL DEFAULT 0,
+        lock_wait_seconds DECIMAL(10,2) NOT NULL DEFAULT 0,
+        overlap_count INT UNSIGNED NOT NULL DEFAULT 0,
+        overlapped TINYINT(1) NOT NULL DEFAULT 0,
+        cpu_user_seconds DECIMAL(10,4) DEFAULT NULL,
+        cpu_system_seconds DECIMAL(10,4) DEFAULT NULL,
+        cpu_percent DECIMAL(8,2) DEFAULT NULL,
+        memory_start_bytes BIGINT UNSIGNED DEFAULT NULL,
+        memory_end_bytes BIGINT UNSIGNED DEFAULT NULL,
+        memory_peak_bytes BIGINT UNSIGNED DEFAULT NULL,
+        memory_peak_delta_bytes BIGINT UNSIGNED DEFAULT NULL,
+        projected_cpu_percent DECIMAL(8,2) DEFAULT NULL,
+        projected_memory_bytes BIGINT UNSIGNED DEFAULT NULL,
+        pressure_state VARCHAR(32) DEFAULT NULL,
+        timed_out TINYINT(1) NOT NULL DEFAULT 0,
+        failed TINYINT(1) NOT NULL DEFAULT 0,
+        started_at DATETIME DEFAULT NULL,
+        finished_at DATETIME DEFAULT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        KEY idx_scheduler_resource_metrics_job_created (job_key, created_at),
+        KEY idx_scheduler_resource_metrics_schedule_created (schedule_id, created_at),
+        KEY idx_scheduler_resource_metrics_job_started (job_key, started_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4');
+}
+
+function db_scheduler_resource_metric_insert(array $row): bool
+{
+    db_scheduler_resource_metrics_ensure();
+
+    return db_execute(
+        'INSERT INTO scheduler_job_resource_metrics (
+            schedule_id,
+            job_key,
+            run_status,
+            wall_duration_seconds,
+            queue_wait_seconds,
+            lock_wait_seconds,
+            overlap_count,
+            overlapped,
+            cpu_user_seconds,
+            cpu_system_seconds,
+            cpu_percent,
+            memory_start_bytes,
+            memory_end_bytes,
+            memory_peak_bytes,
+            memory_peak_delta_bytes,
+            projected_cpu_percent,
+            projected_memory_bytes,
+            pressure_state,
+            timed_out,
+            failed,
+            started_at,
+            finished_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        [
+            isset($row['schedule_id']) ? max(0, (int) $row['schedule_id']) ?: null : null,
+            mb_substr(trim((string) ($row['job_key'] ?? '')), 0, 190),
+            mb_substr(trim((string) ($row['run_status'] ?? 'unknown')), 0, 20),
+            round((float) ($row['wall_duration_seconds'] ?? 0.0), 2),
+            round((float) ($row['queue_wait_seconds'] ?? 0.0), 2),
+            round((float) ($row['lock_wait_seconds'] ?? 0.0), 2),
+            max(0, (int) ($row['overlap_count'] ?? 0)),
+            !empty($row['overlapped']) ? 1 : 0,
+            isset($row['cpu_user_seconds']) ? round((float) $row['cpu_user_seconds'], 4) : null,
+            isset($row['cpu_system_seconds']) ? round((float) $row['cpu_system_seconds'], 4) : null,
+            isset($row['cpu_percent']) ? round((float) $row['cpu_percent'], 2) : null,
+            isset($row['memory_start_bytes']) ? max(0, (int) $row['memory_start_bytes']) : null,
+            isset($row['memory_end_bytes']) ? max(0, (int) $row['memory_end_bytes']) : null,
+            isset($row['memory_peak_bytes']) ? max(0, (int) $row['memory_peak_bytes']) : null,
+            isset($row['memory_peak_delta_bytes']) ? max(0, (int) $row['memory_peak_delta_bytes']) : null,
+            isset($row['projected_cpu_percent']) ? round((float) $row['projected_cpu_percent'], 2) : null,
+            isset($row['projected_memory_bytes']) ? max(0, (int) $row['projected_memory_bytes']) : null,
+            isset($row['pressure_state']) ? mb_substr(trim((string) $row['pressure_state']), 0, 32) : null,
+            !empty($row['timed_out']) ? 1 : 0,
+            !empty($row['failed']) ? 1 : 0,
+            $row['started_at'] ?? null,
+            $row['finished_at'] ?? null,
+        ]
+    );
+}
+
+function db_scheduler_resource_metrics_recent(string $jobKey, int $limit = 40): array
+{
+    db_scheduler_resource_metrics_ensure();
+
+    $safeLimit = max(1, min(200, $limit));
+    return db_select(
+        'SELECT id, schedule_id, job_key, run_status, wall_duration_seconds, queue_wait_seconds, lock_wait_seconds, overlap_count, overlapped, cpu_user_seconds, cpu_system_seconds, cpu_percent, memory_start_bytes, memory_end_bytes, memory_peak_bytes, memory_peak_delta_bytes, projected_cpu_percent, projected_memory_bytes, pressure_state, timed_out, failed, started_at, finished_at, created_at
+         FROM scheduler_job_resource_metrics
+         WHERE job_key = ?
+         ORDER BY created_at DESC, id DESC
+         LIMIT ' . $safeLimit,
+        [mb_substr(trim($jobKey), 0, 190)]
+    );
+}
+
+function db_scheduler_resource_metrics_recent_all(int $limit = 20): array
+{
+    db_scheduler_resource_metrics_ensure();
+
+    $safeLimit = max(1, min(100, $limit));
+    return db_select(
+        'SELECT id, schedule_id, job_key, run_status, wall_duration_seconds, queue_wait_seconds, lock_wait_seconds, overlap_count, overlapped, cpu_percent, memory_peak_bytes, projected_cpu_percent, projected_memory_bytes, pressure_state, timed_out, failed, started_at, finished_at, created_at
+         FROM scheduler_job_resource_metrics
+         ORDER BY created_at DESC, id DESC
+         LIMIT ' . $safeLimit
+    );
+}
+
+
+function db_sync_schedule_update_resource_profile(int $scheduleId, array $profile): bool
+{
+    db_sync_schedule_registry_columns_ensure();
+
+    if ($scheduleId <= 0) {
+        return false;
+    }
+
+    return db_execute(
+        'UPDATE sync_schedules
+         SET resource_class = ?,
+             resource_class_confidence = ?,
+             telemetry_sample_count = ?,
+             learning_mode = ?,
+             allow_parallel = ?,
+             prefers_solo = ?,
+             must_run_alone = ?,
+             last_cpu_percent = ?,
+             average_cpu_percent = ?,
+             p95_cpu_percent = ?,
+             last_memory_peak_bytes = ?,
+             average_memory_peak_bytes = ?,
+             p95_memory_peak_bytes = ?,
+             last_queue_wait_seconds = ?,
+             last_lock_wait_seconds = ?,
+             average_lock_wait_seconds = ?,
+             recent_timeout_rate = ?,
+             recent_failure_rate = ?,
+             last_overlap_count = ?,
+             last_overlapped = ?,
+             current_projected_cpu_percent = ?,
+             current_projected_memory_bytes = ?,
+             last_capacity_reason = CASE WHEN ? <> \'\' THEN ? ELSE last_capacity_reason END,
+             updated_at = CURRENT_TIMESTAMP
+         WHERE id = ?
+         LIMIT 1',
+        [
+            mb_substr(trim((string) ($profile['resource_class'] ?? 'learning')), 0, 20),
+            isset($profile['resource_class_confidence']) ? round((float) $profile['resource_class_confidence'], 4) : null,
+            max(0, (int) ($profile['telemetry_sample_count'] ?? 0)),
+            !empty($profile['learning_mode']) ? 1 : 0,
+            !empty($profile['allow_parallel']) ? 1 : 0,
+            !empty($profile['prefers_solo']) ? 1 : 0,
+            !empty($profile['must_run_alone']) ? 1 : 0,
+            isset($profile['last_cpu_percent']) ? round((float) $profile['last_cpu_percent'], 2) : null,
+            isset($profile['average_cpu_percent']) ? round((float) $profile['average_cpu_percent'], 2) : null,
+            isset($profile['p95_cpu_percent']) ? round((float) $profile['p95_cpu_percent'], 2) : null,
+            isset($profile['last_memory_peak_bytes']) ? max(0, (int) $profile['last_memory_peak_bytes']) : null,
+            isset($profile['average_memory_peak_bytes']) ? max(0, (int) round((float) $profile['average_memory_peak_bytes'])) : null,
+            isset($profile['p95_memory_peak_bytes']) ? max(0, (int) round((float) $profile['p95_memory_peak_bytes'])) : null,
+            isset($profile['last_queue_wait_seconds']) ? round((float) $profile['last_queue_wait_seconds'], 2) : null,
+            isset($profile['last_lock_wait_seconds']) ? round((float) $profile['last_lock_wait_seconds'], 2) : null,
+            isset($profile['average_lock_wait_seconds']) ? round((float) $profile['average_lock_wait_seconds'], 2) : null,
+            isset($profile['recent_timeout_rate']) ? round((float) $profile['recent_timeout_rate'], 4) : null,
+            isset($profile['recent_failure_rate']) ? round((float) $profile['recent_failure_rate'], 4) : null,
+            max(0, (int) ($profile['last_overlap_count'] ?? 0)),
+            !empty($profile['last_overlapped']) ? 1 : 0,
+            isset($profile['current_projected_cpu_percent']) ? round((float) $profile['current_projected_cpu_percent'], 2) : null,
+            isset($profile['current_projected_memory_bytes']) ? max(0, (int) $profile['current_projected_memory_bytes']) : null,
+            mb_substr(trim((string) ($profile['last_capacity_reason'] ?? '')), 0, 500),
+            mb_substr(trim((string) ($profile['last_capacity_reason'] ?? '')), 0, 500),
+            $scheduleId,
+        ]
+    );
+}
+
+function db_sync_schedule_mark_planner_state(int $scheduleId, array $state): bool
+{
+    db_sync_schedule_registry_columns_ensure();
+
+    if ($scheduleId <= 0) {
+        return false;
+    }
+
+    return db_execute(
+        'UPDATE sync_schedules
+         SET current_projected_cpu_percent = ?,
+             current_projected_memory_bytes = ?,
+             current_pressure_state = ?,
+             latest_allowed_start_at = COALESCE(?, latest_allowed_start_at),
+             must_run_alone = ?,
+             prefers_solo = ?,
+             allow_parallel = ?,
+             last_capacity_reason = CASE WHEN ? <> \'\' THEN ? ELSE last_capacity_reason END,
+             updated_at = CURRENT_TIMESTAMP
+         WHERE id = ?
+         LIMIT 1',
+        [
+            isset($state['current_projected_cpu_percent']) ? round((float) $state['current_projected_cpu_percent'], 2) : null,
+            isset($state['current_projected_memory_bytes']) ? max(0, (int) $state['current_projected_memory_bytes']) : null,
+            mb_substr(trim((string) ($state['current_pressure_state'] ?? 'healthy')), 0, 32),
+            $state['latest_allowed_start_at'] ?? null,
+            !empty($state['must_run_alone']) ? 1 : 0,
+            !empty($state['prefers_solo']) ? 1 : 0,
+            !empty($state['allow_parallel']) ? 1 : 0,
+            mb_substr(trim((string) ($state['last_capacity_reason'] ?? '')), 0, 500),
+            mb_substr(trim((string) ($state['last_capacity_reason'] ?? '')), 0, 500),
+            $scheduleId,
+        ]
+    );
+}
+
+function db_scheduler_planner_decisions_ensure(): void
+{
+    db_execute('CREATE TABLE IF NOT EXISTS scheduler_planner_decisions (
+        id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+        schedule_id INT UNSIGNED DEFAULT NULL,
+        job_key VARCHAR(190) NOT NULL,
+        decision_type VARCHAR(40) NOT NULL,
+        pressure_state VARCHAR(32) NOT NULL DEFAULT "healthy",
+        reason_text VARCHAR(500) NOT NULL,
+        decision_json LONGTEXT DEFAULT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        KEY idx_scheduler_planner_decisions_job_created (job_key, created_at),
+        KEY idx_scheduler_planner_decisions_type_created (decision_type, created_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4');
+}
+
+function db_scheduler_planner_decision_insert(?int $scheduleId, string $jobKey, string $decisionType, string $pressureState, string $reasonText, array $decision = []): bool
+{
+    db_scheduler_planner_decisions_ensure();
+
+    return db_execute(
+        'INSERT INTO scheduler_planner_decisions (schedule_id, job_key, decision_type, pressure_state, reason_text, decision_json)
+         VALUES (?, ?, ?, ?, ?, ?)',
+        [
+            $scheduleId !== null && $scheduleId > 0 ? $scheduleId : null,
+            mb_substr(trim($jobKey), 0, 190),
+            mb_substr(trim($decisionType), 0, 40),
+            mb_substr(trim($pressureState), 0, 32),
+            mb_substr(trim($reasonText), 0, 500),
+            $decision !== [] ? json_encode($decision, JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE) : null,
+        ]
+    );
+}
+
+function db_scheduler_planner_decisions_recent(int $limit = 30): array
+{
+    db_scheduler_planner_decisions_ensure();
+
+    $safeLimit = max(1, min(200, $limit));
+    return db_select(
+        'SELECT id, schedule_id, job_key, decision_type, pressure_state, reason_text, decision_json, created_at
+         FROM scheduler_planner_decisions
          ORDER BY created_at DESC, id DESC
          LIMIT ' . $safeLimit
     );

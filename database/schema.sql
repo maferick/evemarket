@@ -109,6 +109,31 @@ CREATE TABLE IF NOT EXISTS sync_schedules (
     last_status VARCHAR(40) DEFAULT NULL,
     last_error VARCHAR(500) DEFAULT NULL,
     locked_until DATETIME DEFAULT NULL,
+    latest_allowed_start_at DATETIME DEFAULT NULL,
+    resource_class VARCHAR(20) NOT NULL DEFAULT 'medium',
+    resource_class_confidence DECIMAL(6,4) DEFAULT NULL,
+    telemetry_sample_count INT UNSIGNED NOT NULL DEFAULT 0,
+    learning_mode TINYINT(1) NOT NULL DEFAULT 1,
+    allow_parallel TINYINT(1) NOT NULL DEFAULT 1,
+    prefers_solo TINYINT(1) NOT NULL DEFAULT 0,
+    must_run_alone TINYINT(1) NOT NULL DEFAULT 0,
+    last_cpu_percent DECIMAL(8,2) DEFAULT NULL,
+    average_cpu_percent DECIMAL(8,2) DEFAULT NULL,
+    p95_cpu_percent DECIMAL(8,2) DEFAULT NULL,
+    last_memory_peak_bytes BIGINT UNSIGNED DEFAULT NULL,
+    average_memory_peak_bytes BIGINT UNSIGNED DEFAULT NULL,
+    p95_memory_peak_bytes BIGINT UNSIGNED DEFAULT NULL,
+    last_queue_wait_seconds DECIMAL(10,2) DEFAULT NULL,
+    last_lock_wait_seconds DECIMAL(10,2) DEFAULT NULL,
+    average_lock_wait_seconds DECIMAL(10,2) DEFAULT NULL,
+    last_overlap_count INT UNSIGNED NOT NULL DEFAULT 0,
+    last_overlapped TINYINT(1) NOT NULL DEFAULT 0,
+    recent_timeout_rate DECIMAL(8,4) DEFAULT NULL,
+    recent_failure_rate DECIMAL(8,4) DEFAULT NULL,
+    current_projected_cpu_percent DECIMAL(8,2) DEFAULT NULL,
+    current_projected_memory_bytes BIGINT UNSIGNED DEFAULT NULL,
+    current_pressure_state VARCHAR(32) NOT NULL DEFAULT 'healthy',
+    last_capacity_reason VARCHAR(500) DEFAULT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     UNIQUE KEY unique_job_key (job_key),
@@ -163,7 +188,24 @@ SET @sync_schedules_offset_minutes_sql := IF(
 );
 PREPARE sync_schedules_offset_minutes_stmt FROM @sync_schedules_offset_minutes_sql;
 EXECUTE sync_schedules_offset_minutes_stmt;
+
 DEALLOCATE PREPARE sync_schedules_offset_minutes_stmt;
+
+SET @sync_schedules_latest_allowed_start_at_exists := (
+    SELECT COUNT(*)
+    FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'sync_schedules'
+      AND COLUMN_NAME = 'latest_allowed_start_at'
+);
+SET @sync_schedules_latest_allowed_start_at_sql := IF(
+    @sync_schedules_latest_allowed_start_at_exists = 0,
+    'ALTER TABLE sync_schedules ADD COLUMN latest_allowed_start_at DATETIME DEFAULT NULL AFTER next_run_at',
+    'SELECT 1'
+);
+PREPARE sync_schedules_latest_allowed_start_at_stmt FROM @sync_schedules_latest_allowed_start_at_sql;
+EXECUTE sync_schedules_latest_allowed_start_at_stmt;
+DEALLOCATE PREPARE sync_schedules_latest_allowed_start_at_stmt;
 
 SET @sync_schedules_priority_exists := (
     SELECT COUNT(*)
@@ -522,6 +564,50 @@ CREATE TABLE IF NOT EXISTS scheduler_tuning_actions (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     KEY idx_scheduler_tuning_actions_job_created (job_key, created_at),
     KEY idx_scheduler_tuning_actions_actor_created (actor, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+
+CREATE TABLE IF NOT EXISTS scheduler_job_resource_metrics (
+    id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    schedule_id INT UNSIGNED DEFAULT NULL,
+    job_key VARCHAR(190) NOT NULL,
+    run_status VARCHAR(20) NOT NULL,
+    wall_duration_seconds DECIMAL(10,2) NOT NULL DEFAULT 0,
+    queue_wait_seconds DECIMAL(10,2) NOT NULL DEFAULT 0,
+    lock_wait_seconds DECIMAL(10,2) NOT NULL DEFAULT 0,
+    overlap_count INT UNSIGNED NOT NULL DEFAULT 0,
+    overlapped TINYINT(1) NOT NULL DEFAULT 0,
+    cpu_user_seconds DECIMAL(10,4) DEFAULT NULL,
+    cpu_system_seconds DECIMAL(10,4) DEFAULT NULL,
+    cpu_percent DECIMAL(8,2) DEFAULT NULL,
+    memory_start_bytes BIGINT UNSIGNED DEFAULT NULL,
+    memory_end_bytes BIGINT UNSIGNED DEFAULT NULL,
+    memory_peak_bytes BIGINT UNSIGNED DEFAULT NULL,
+    memory_peak_delta_bytes BIGINT UNSIGNED DEFAULT NULL,
+    projected_cpu_percent DECIMAL(8,2) DEFAULT NULL,
+    projected_memory_bytes BIGINT UNSIGNED DEFAULT NULL,
+    pressure_state VARCHAR(32) DEFAULT NULL,
+    timed_out TINYINT(1) NOT NULL DEFAULT 0,
+    failed TINYINT(1) NOT NULL DEFAULT 0,
+    started_at DATETIME DEFAULT NULL,
+    finished_at DATETIME DEFAULT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    KEY idx_scheduler_resource_metrics_job_created (job_key, created_at),
+    KEY idx_scheduler_resource_metrics_schedule_created (schedule_id, created_at),
+    KEY idx_scheduler_resource_metrics_job_started (job_key, started_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS scheduler_planner_decisions (
+    id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    schedule_id INT UNSIGNED DEFAULT NULL,
+    job_key VARCHAR(190) NOT NULL,
+    decision_type VARCHAR(40) NOT NULL,
+    pressure_state VARCHAR(32) NOT NULL DEFAULT 'healthy',
+    reason_text VARCHAR(500) NOT NULL,
+    decision_json LONGTEXT DEFAULT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    KEY idx_scheduler_planner_decisions_job_created (job_key, created_at),
+    KEY idx_scheduler_planner_decisions_type_created (decision_type, created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS intelligence_snapshots (

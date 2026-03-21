@@ -2643,16 +2643,556 @@ function scheduler_pressure_label(array $summary): string
     $lockConflicts = (int) ($summary['lock_conflicts'] ?? 0);
     $lateJobs = (int) ($summary['late_jobs'] ?? 0);
     $degradedJobs = (int) ($summary['degraded_jobs'] ?? 0);
+    $timeoutRate = (float) ($summary['timeout_rate'] ?? 0.0);
+    $failureRate = (float) ($summary['failure_rate'] ?? 0.0);
+    $cpuRatio = (float) ($summary['cpu_budget_ratio'] ?? 0.0);
+    $memoryRatio = (float) ($summary['memory_budget_ratio'] ?? 0.0);
 
-    if ($lockConflicts >= 4 || $lateJobs >= 4 || $degradedJobs >= 3) {
+    if ($cpuRatio >= 1.0 || $memoryRatio >= 1.0 || $timeoutRate >= 0.25 || $failureRate >= 0.3 || $lockConflicts >= 6 || $lateJobs >= 6 || $degradedJobs >= 4) {
+        return 'overload_protection';
+    }
+
+    if ($cpuRatio >= 0.82 || $memoryRatio >= 0.82 || $timeoutRate >= 0.12 || $failureRate >= 0.16 || $lockConflicts >= 4 || $lateJobs >= 4 || $degradedJobs >= 3) {
         return 'congested';
     }
 
-    if ($lockConflicts >= 2 || $lateJobs >= 2 || $degradedJobs >= 1) {
+    if ($cpuRatio >= 0.62 || $memoryRatio >= 0.62 || $lockConflicts >= 2 || $lateJobs >= 2 || $degradedJobs >= 1) {
         return 'busy';
     }
 
     return 'healthy';
+}
+
+function scheduler_metric_percentile(array $values, float $percentile): ?float
+{
+    $filtered = array_values(array_filter(array_map(static fn (mixed $value): float => (float) $value, $values), static fn (float $value): bool => $value >= 0.0));
+    if ($filtered === []) {
+        return null;
+    }
+
+    sort($filtered, SORT_NUMERIC);
+    $index = (int) max(0, ceil(count($filtered) * $percentile) - 1);
+
+    return (float) ($filtered[$index] ?? $filtered[count($filtered) - 1]);
+}
+
+function scheduler_format_bytes(?int $bytes): string
+{
+    if ($bytes === null || $bytes <= 0) {
+        return '—';
+    }
+
+    $units = ['B', 'KB', 'MB', 'GB', 'TB'];
+    $value = (float) $bytes;
+    $index = 0;
+    while ($value >= 1024 && $index < count($units) - 1) {
+        $value /= 1024;
+        $index++;
+    }
+
+    return number_format($value, $index === 0 ? 0 : 1, '.', ',') . ' ' . $units[$index];
+}
+
+function scheduler_parse_memory_limit_bytes(string $value): ?int
+{
+    $normalized = trim(strtolower($value));
+    if ($normalized === '' || $normalized === '-1') {
+        return null;
+    }
+
+    if (!preg_match('/^([0-9]+)([kmgt]?)/', $normalized, $matches)) {
+        return null;
+    }
+
+    $amount = (int) ($matches[1] ?? 0);
+    $suffix = (string) ($matches[2] ?? '');
+    $multiplier = match ($suffix) {
+        'g' => 1024 ** 3,
+        'm' => 1024 ** 2,
+        'k' => 1024,
+        't' => 1024 ** 4,
+        default => 1,
+    };
+
+    return $amount > 0 ? $amount * $multiplier : null;
+}
+
+function scheduler_cpu_core_count(): int
+{
+    static $cached = null;
+    if ($cached !== null) {
+        return $cached;
+    }
+
+    $configured = (int) config('scheduler.cpu_core_count', (int) getenv('SCHEDULER_CPU_CORE_COUNT'));
+    if ($configured > 0) {
+        $cached = $configured;
+        return $cached;
+    }
+
+    $detected = trim((string) @shell_exec('getconf _NPROCESSORS_ONLN 2>/dev/null'));
+    $cached = max(1, (int) $detected);
+
+    return $cached;
+}
+
+function scheduler_capacity_model(): array
+{
+    static $cached = null;
+    if (is_array($cached)) {
+        return $cached;
+    }
+
+    $cores = scheduler_cpu_core_count();
+    $memoryLimit = scheduler_parse_memory_limit_bytes((string) ini_get('memory_limit'));
+    $cpuBudget = (float) config('scheduler.cpu_budget_percent', (float) getenv('SCHEDULER_CPU_BUDGET_PERCENT'));
+    if ($cpuBudget <= 0) {
+        $cpuBudget = min(400.0, max(100.0, $cores * 70.0));
+    }
+    $memoryBudget = (int) config('scheduler.memory_budget_bytes', (int) getenv('SCHEDULER_MEMORY_BUDGET_BYTES'));
+    if ($memoryBudget <= 0) {
+        $memoryBudget = $memoryLimit !== null ? (int) round($memoryLimit * 0.6) : (512 * 1024 * 1024);
+    }
+    $maxConcurrent = (int) config('scheduler.max_concurrent_jobs', (int) getenv('SCHEDULER_MAX_CONCURRENT_JOBS'));
+    if ($maxConcurrent <= 0) {
+        $maxConcurrent = max(1, min(6, $cores + 1));
+    }
+
+    $reservedCpu = (float) config('scheduler.reserved_critical_cpu_percent', (float) getenv('SCHEDULER_RESERVED_CRITICAL_CPU_PERCENT'));
+    if ($reservedCpu <= 0) {
+        $reservedCpu = min(120.0, max(35.0, $cpuBudget * 0.22));
+    }
+    $reservedMemory = (int) config('scheduler.reserved_critical_memory_bytes', (int) getenv('SCHEDULER_RESERVED_CRITICAL_MEMORY_BYTES'));
+    if ($reservedMemory <= 0) {
+        $reservedMemory = max(64 * 1024 * 1024, (int) round($memoryBudget * 0.18));
+    }
+
+    $cached = [
+        'cpu_budget_percent' => round($cpuBudget, 2),
+        'memory_budget_bytes' => $memoryBudget,
+        'max_concurrent_jobs' => $maxConcurrent,
+        'reserved_critical_cpu_percent' => round($reservedCpu, 2),
+        'reserved_critical_memory_bytes' => $reservedMemory,
+        'detected_cpu_cores' => $cores,
+        'memory_limit_bytes' => $memoryLimit,
+    ];
+
+    return $cached;
+}
+
+function scheduler_priority_rank(string $priority): int
+{
+    return match ($priority) {
+        'highest' => 4,
+        'high' => 3,
+        'medium' => 2,
+        default => 1,
+    };
+}
+
+function scheduler_latest_allowed_start_at(array $job): ?string
+{
+    $existing = trim((string) ($job['latest_allowed_start_at'] ?? ''));
+    if ($existing !== '') {
+        return $existing;
+    }
+
+    $nextDueAt = trim((string) ($job['next_due_at'] ?? $job['next_run_at'] ?? ''));
+    if ($nextDueAt === '') {
+        return null;
+    }
+
+    $intervalMinutes = max(1, (int) ($job['interval_minutes'] ?? 5));
+    return gmdate('Y-m-d H:i:s', strtotime($nextDueAt) + ($intervalMinutes * 60));
+}
+
+function scheduler_resource_usage_snapshot(): array
+{
+    $usage = function_exists('getrusage') ? @getrusage() : null;
+
+    return [
+        'usage' => is_array($usage) ? $usage : [],
+        'memory_usage' => function_exists('memory_get_usage') ? memory_get_usage(true) : null,
+        'memory_peak_usage' => function_exists('memory_get_peak_usage') ? memory_get_peak_usage(true) : null,
+        'wall_time' => microtime(true),
+    ];
+}
+
+function scheduler_resource_usage_delta_seconds(array $usage, string $prefix): float
+{
+    $sec = (float) ($usage[$prefix . '.tv_sec'] ?? 0.0);
+    $usec = (float) ($usage[$prefix . '.tv_usec'] ?? 0.0);
+
+    return $sec + ($usec / 1000000);
+}
+
+function scheduler_resource_usage_delta(array $started, array $finished): array
+{
+    $startUsage = is_array($started['usage'] ?? null) ? $started['usage'] : [];
+    $endUsage = is_array($finished['usage'] ?? null) ? $finished['usage'] : [];
+    $wallSeconds = max(0.001, (float) (($finished['wall_time'] ?? microtime(true)) - ($started['wall_time'] ?? microtime(true))));
+    $cpuUser = max(0.0, scheduler_resource_usage_delta_seconds($endUsage, 'ru_utime') - scheduler_resource_usage_delta_seconds($startUsage, 'ru_utime'));
+    $cpuSystem = max(0.0, scheduler_resource_usage_delta_seconds($endUsage, 'ru_stime') - scheduler_resource_usage_delta_seconds($startUsage, 'ru_stime'));
+    $cpuPercent = (($cpuUser + $cpuSystem) / $wallSeconds) * 100.0;
+    $startPeak = (int) ($started['memory_peak_usage'] ?? 0);
+    $endPeak = (int) ($finished['memory_peak_usage'] ?? 0);
+    $startMem = (int) ($started['memory_usage'] ?? 0);
+    $endMem = (int) ($finished['memory_usage'] ?? 0);
+
+    return [
+        'wall_duration_seconds' => round($wallSeconds, 2),
+        'cpu_user_seconds' => round($cpuUser, 4),
+        'cpu_system_seconds' => round($cpuSystem, 4),
+        'cpu_percent' => round($cpuPercent, 2),
+        'memory_start_bytes' => $startMem,
+        'memory_end_bytes' => $endMem,
+        'memory_peak_bytes' => max($endPeak, $endMem, $startMem),
+        'memory_peak_delta_bytes' => max(0, max($endPeak - $startPeak, $endMem - $startMem)),
+    ];
+}
+
+function scheduler_job_safety_rules(): array
+{
+    return [
+        'alliance_historical_sync' => ['must_run_alone' => true, 'forbidden_with' => ['alliance_current_sync', 'current_state_refresh_sync']],
+        'market_hub_historical_sync' => ['must_run_alone' => true, 'forbidden_with' => ['market_hub_current_sync', 'deal_alerts_sync']],
+        'market_hub_local_history_sync' => ['must_run_alone' => true, 'forbidden_with' => ['market_hub_current_sync', 'rebuild_ai_briefings']],
+        'rebuild_ai_briefings' => ['forbidden_with' => scheduler_ai_briefing_blocking_job_keys()],
+        'forecasting_ai_sync' => ['forbidden_with' => ['rebuild_ai_briefings']],
+        'killmail_r2z2_sync' => ['allowed_groups' => ['light', 'medium']],
+        'deal_alerts_sync' => ['allowed_groups' => ['light', 'medium']],
+    ];
+}
+
+function scheduler_job_recent_resource_profile(string $jobKey, ?array $row = null): array
+{
+    $metrics = db_scheduler_resource_metrics_recent($jobKey, 40);
+    $capacity = scheduler_capacity_model();
+    $samples = count($metrics);
+    $cpuValues = array_map(static fn (array $metric): float => (float) ($metric['cpu_percent'] ?? 0.0), $metrics);
+    $memoryValues = array_map(static fn (array $metric): float => (float) ($metric['memory_peak_delta_bytes'] ?? $metric['memory_peak_bytes'] ?? 0.0), $metrics);
+    $durationValues = array_map(static fn (array $metric): float => (float) ($metric['wall_duration_seconds'] ?? 0.0), $metrics);
+    $lockWaitValues = array_map(static fn (array $metric): float => (float) ($metric['lock_wait_seconds'] ?? 0.0), $metrics);
+    $failureCount = count(array_filter($metrics, static fn (array $metric): bool => !empty($metric['failed'])));
+    $timeoutCount = count(array_filter($metrics, static fn (array $metric): bool => !empty($metric['timed_out'])));
+    $lastMetric = $metrics[0] ?? [];
+
+    $avgCpu = $samples > 0 ? array_sum($cpuValues) / $samples : null;
+    $p95Cpu = scheduler_metric_percentile($cpuValues, 0.95);
+    $avgMemory = $samples > 0 ? array_sum($memoryValues) / $samples : null;
+    $p95Memory = scheduler_metric_percentile($memoryValues, 0.95);
+    $avgDuration = $samples > 0 ? array_sum($durationValues) / $samples : null;
+    $p95Duration = scheduler_metric_percentile($durationValues, 0.95);
+    $avgLockWait = $samples > 0 ? array_sum($lockWaitValues) / $samples : null;
+    $failureRate = $samples > 0 ? $failureCount / $samples : 0.0;
+    $timeoutRate = $samples > 0 ? $timeoutCount / $samples : 0.0;
+    $cpuRatio = $capacity['cpu_budget_percent'] > 0 ? (float) ($p95Cpu ?? $avgCpu ?? 45.0) / $capacity['cpu_budget_percent'] : 0.0;
+    $memoryRatio = $capacity['memory_budget_bytes'] > 0 ? (float) ($p95Memory ?? $avgMemory ?? (128 * 1024 * 1024)) / $capacity['memory_budget_bytes'] : 0.0;
+    $timeoutReference = max(60.0, (float) ($row['timeout_seconds'] ?? 300));
+    $durationRatio = (float) ($p95Duration ?? $avgDuration ?? ($timeoutReference * 0.4)) / $timeoutReference;
+    $lockRatio = min(1.0, (float) ($avgLockWait ?? 0.0) / 15.0);
+    $pressureScore = ($cpuRatio * 0.35) + ($memoryRatio * 0.35) + ($durationRatio * 0.15) + ($timeoutRate * 0.1) + ($failureRate * 0.03) + ($lockRatio * 0.02);
+    $derivedClass = $pressureScore >= 0.9 ? 'heavy' : ($pressureScore >= 0.45 ? 'medium' : 'light');
+    $existingClass = trim((string) ($row['resource_class'] ?? ''));
+    if ($samples < 3) {
+        $derivedClass = 'medium';
+    } elseif ($existingClass !== '' && in_array($existingClass, ['light', 'medium', 'heavy'], true) && abs($pressureScore - ($existingClass === 'heavy' ? 0.9 : ($existingClass === 'medium' ? 0.45 : 0.0))) < 0.08) {
+        $derivedClass = $existingClass;
+    }
+
+    $rules = scheduler_job_safety_rules()[$jobKey] ?? [];
+    $mustRunAlone = !empty($rules['must_run_alone']) || $derivedClass === 'heavy' || $cpuRatio >= 0.52 || $memoryRatio >= 0.52 || $timeoutRate >= 0.25;
+    $prefersSolo = $mustRunAlone || $cpuRatio >= 0.38 || $memoryRatio >= 0.38 || $failureRate >= 0.18 || $lockRatio >= 0.4;
+    $allowParallel = !$mustRunAlone && $failureRate < 0.45;
+
+    return [
+        'sample_count' => $samples,
+        'learning_mode' => $samples < 3,
+        'resource_class' => $derivedClass,
+        'resource_class_confidence' => round(min(1.0, $samples / 8), 4),
+        'average_cpu_percent' => $avgCpu !== null ? round($avgCpu, 2) : null,
+        'p95_cpu_percent' => $p95Cpu !== null ? round($p95Cpu, 2) : null,
+        'average_memory_peak_bytes' => $avgMemory !== null ? (int) round($avgMemory) : null,
+        'p95_memory_peak_bytes' => $p95Memory !== null ? (int) round($p95Memory) : null,
+        'average_duration_seconds' => $avgDuration !== null ? round($avgDuration, 2) : null,
+        'p95_duration_seconds' => $p95Duration !== null ? round($p95Duration, 2) : null,
+        'average_lock_wait_seconds' => $avgLockWait !== null ? round($avgLockWait, 2) : null,
+        'recent_failure_rate' => round($failureRate, 4),
+        'recent_timeout_rate' => round($timeoutRate, 4),
+        'last_cpu_percent' => isset($lastMetric['cpu_percent']) ? round((float) $lastMetric['cpu_percent'], 2) : null,
+        'last_memory_peak_bytes' => isset($lastMetric['memory_peak_delta_bytes']) ? (int) $lastMetric['memory_peak_delta_bytes'] : (isset($lastMetric['memory_peak_bytes']) ? (int) $lastMetric['memory_peak_bytes'] : null),
+        'last_queue_wait_seconds' => isset($lastMetric['queue_wait_seconds']) ? round((float) $lastMetric['queue_wait_seconds'], 2) : null,
+        'last_lock_wait_seconds' => isset($lastMetric['lock_wait_seconds']) ? round((float) $lastMetric['lock_wait_seconds'], 2) : null,
+        'last_overlap_count' => (int) ($lastMetric['overlap_count'] ?? 0),
+        'last_overlapped' => !empty($lastMetric['overlapped']),
+        'allow_parallel' => $allowParallel,
+        'prefers_solo' => $prefersSolo,
+        'must_run_alone' => $mustRunAlone,
+        'projection_cpu_percent' => round((float) ($p95Cpu ?? $avgCpu ?? 45.0) * ($samples < 3 ? 1.15 : 1.0) * (($failureRate > 0.1 || $timeoutRate > 0.1) ? 1.15 : 1.0), 2),
+        'projection_memory_bytes' => (int) round((float) ($p95Memory ?? $avgMemory ?? (128 * 1024 * 1024)) * ($samples < 3 ? 1.2 : 1.0) * (($failureRate > 0.1 || $timeoutRate > 0.1) ? 1.15 : 1.0)),
+        'allowed_groups' => (array) ($rules['allowed_groups'] ?? ['light', 'medium', 'heavy']),
+        'forbidden_with' => array_values(array_unique(array_filter((array) ($rules['forbidden_with'] ?? [])))),
+    ];
+}
+
+function scheduler_job_urgency_snapshot(array $job, array $recentDecisionCounts = []): array
+{
+    $priority = (string) ($job['priority'] ?? 'normal');
+    $scheduledFor = trim((string) ($job['next_due_at'] ?? $job['next_run_at'] ?? ''));
+    $latestAllowed = scheduler_latest_allowed_start_at($job);
+    $now = time();
+    $queueWait = $scheduledFor !== '' ? max(0, $now - (int) strtotime($scheduledFor)) : 0;
+    $latestAllowedTs = $latestAllowed !== null ? (int) strtotime($latestAllowed) : 0;
+    $secondsToLatest = $latestAllowedTs > 0 ? $latestAllowedTs - $now : PHP_INT_MAX;
+    $intervalSeconds = max(60, (int) ($job['interval_minutes'] ?? 5) * 60);
+    $latenessRatio = min(3.0, $queueWait / max(60, (int) round($intervalSeconds * 0.5)));
+    $criticalWindowRatio = $latestAllowedTs > 0 ? max(0.0, 1.0 - ($secondsToLatest / max(60, $intervalSeconds))) : 0.0;
+    $starvationCount = (int) ($recentDecisionCounts[(string) ($job['job_key'] ?? '')]['deferred_capacity'] ?? 0) + (int) ($recentDecisionCounts[(string) ($job['job_key'] ?? '')]['deferred_memory'] ?? 0) + (int) ($recentDecisionCounts[(string) ($job['job_key'] ?? '')]['deferred_cpu'] ?? 0);
+    $starvationBoost = min(2.0, $starvationCount * 0.35);
+    $criticalBoost = scheduler_is_protected_job((string) ($job['job_key'] ?? '')) ? 0.75 : 0.0;
+    $score = (scheduler_priority_rank($priority) * 1.7) + ($latenessRatio * 1.5) + ($criticalWindowRatio * 3.4) + $starvationBoost + $criticalBoost;
+
+    return [
+        'queue_wait_seconds' => $queueWait,
+        'latest_allowed_start_at' => $latestAllowed,
+        'seconds_to_latest_allowed_start' => $secondsToLatest === PHP_INT_MAX ? null : $secondsToLatest,
+        'latest_window_ratio' => round($criticalWindowRatio, 4),
+        'starvation_count' => $starvationCount,
+        'urgency_score' => round($score, 3),
+        'starvation_indicator' => $starvationCount >= 2 || $criticalWindowRatio >= 0.75,
+    ];
+}
+
+function scheduler_recent_planner_decision_counts(int $limit = 120): array
+{
+    $rows = db_scheduler_planner_decisions_recent($limit);
+    $summary = [];
+    foreach ($rows as $row) {
+        $jobKey = (string) ($row['job_key'] ?? '');
+        $type = (string) ($row['decision_type'] ?? '');
+        if ($jobKey === '' || $type === '') {
+            continue;
+        }
+        $summary[$jobKey][$type] = (int) ($summary[$jobKey][$type] ?? 0) + 1;
+    }
+
+    return $summary;
+}
+
+function scheduler_live_capacity_snapshot(?array $runningJobs = null): array
+{
+    $capacity = scheduler_capacity_model();
+    $running = is_array($runningJobs) ? $runningJobs : db_sync_schedule_fetch_running_jobs();
+    $cpuUsed = 0.0;
+    $memoryUsed = 0;
+    $timeoutRates = [];
+    $failureRates = [];
+
+    foreach ($running as $job) {
+        $cpuUsed += (float) ($job['current_projected_cpu_percent'] ?? $job['p95_cpu_percent'] ?? $job['average_cpu_percent'] ?? 0.0);
+        $memoryUsed += (int) ($job['current_projected_memory_bytes'] ?? $job['p95_memory_peak_bytes'] ?? $job['average_memory_peak_bytes'] ?? 0);
+        if (isset($job['recent_timeout_rate'])) {
+            $timeoutRates[] = (float) $job['recent_timeout_rate'];
+        }
+        if (isset($job['recent_failure_rate'])) {
+            $failureRates[] = (float) $job['recent_failure_rate'];
+        }
+    }
+
+    $summary = [
+        'running_jobs' => count($running),
+        'cpu_budget_percent' => (float) $capacity['cpu_budget_percent'],
+        'memory_budget_bytes' => (int) $capacity['memory_budget_bytes'],
+        'reserved_critical_cpu_percent' => (float) $capacity['reserved_critical_cpu_percent'],
+        'reserved_critical_memory_bytes' => (int) $capacity['reserved_critical_memory_bytes'],
+        'max_concurrent_jobs' => (int) $capacity['max_concurrent_jobs'],
+        'current_cpu_used_percent' => round($cpuUsed, 2),
+        'current_memory_used_bytes' => $memoryUsed,
+        'cpu_budget_ratio' => $capacity['cpu_budget_percent'] > 0 ? round($cpuUsed / $capacity['cpu_budget_percent'], 4) : 0.0,
+        'memory_budget_ratio' => $capacity['memory_budget_bytes'] > 0 ? round($memoryUsed / $capacity['memory_budget_bytes'], 4) : 0.0,
+        'timeout_rate' => $timeoutRates !== [] ? round(array_sum($timeoutRates) / count($timeoutRates), 4) : 0.0,
+        'failure_rate' => $failureRates !== [] ? round(array_sum($failureRates) / count($failureRates), 4) : 0.0,
+        'running_jobs_detail' => array_map(static function (array $job): array {
+            return [
+                'job_key' => (string) ($job['job_key'] ?? ''),
+                'label' => ucwords(str_replace('_', ' ', (string) ($job['job_key'] ?? ''))),
+                'resource_class' => (string) ($job['resource_class'] ?? 'medium'),
+                'projected_cpu_percent' => isset($job['current_projected_cpu_percent']) ? (float) $job['current_projected_cpu_percent'] : null,
+                'projected_memory_bytes' => isset($job['current_projected_memory_bytes']) ? (int) $job['current_projected_memory_bytes'] : null,
+                'started_at' => $job['last_started_at'] ?? null,
+                'latest_allowed_start_at' => $job['latest_allowed_start_at'] ?? null,
+            ];
+        }, $running),
+    ];
+    $summary['pressure'] = scheduler_pressure_label($summary);
+
+    return $summary;
+}
+
+function scheduler_jobs_are_compatible(array $candidate, array $running): bool
+{
+    if ((string) ($candidate['job_key'] ?? '') === (string) ($running['job_key'] ?? '')) {
+        return false;
+    }
+
+    $candidateForbidden = array_fill_keys((array) ($candidate['forbidden_with'] ?? []), true);
+    $runningForbidden = array_fill_keys((array) ($running['forbidden_with'] ?? []), true);
+    if (isset($candidateForbidden[(string) ($running['job_key'] ?? '')]) || isset($runningForbidden[(string) ($candidate['job_key'] ?? '')])) {
+        return false;
+    }
+
+    if (!empty($candidate['must_run_alone']) || !empty($running['must_run_alone'])) {
+        return false;
+    }
+
+    $allowedGroups = array_fill_keys((array) ($candidate['allowed_groups'] ?? ['light', 'medium', 'heavy']), true);
+    if (!isset($allowedGroups[(string) ($running['resource_class'] ?? 'medium')])) {
+        return false;
+    }
+
+    return true;
+}
+
+function scheduler_plan_due_jobs(array $jobs): array
+{
+    $claimedIds = array_values(array_filter(array_map(static fn (array $job): int => (int) ($job['id'] ?? 0), $jobs), static fn (int $id): bool => $id > 0));
+    $running = db_sync_schedule_fetch_running_jobs($claimedIds);
+    $liveCapacity = scheduler_live_capacity_snapshot($running);
+    $recentDecisionCounts = scheduler_recent_planner_decision_counts();
+    $prepared = [];
+
+    foreach ($jobs as $job) {
+        $jobKey = (string) ($job['job_key'] ?? '');
+        $profile = scheduler_job_recent_resource_profile($jobKey, $job);
+        $urgency = scheduler_job_urgency_snapshot($job, $recentDecisionCounts);
+        $preparedJob = $job + $profile + $urgency + [
+            'projected_cpu_percent' => $profile['projection_cpu_percent'],
+            'projected_memory_bytes' => $profile['projection_memory_bytes'],
+            'job_key' => $jobKey,
+        ];
+        usort($running, static fn (array $a, array $b): int => strcmp((string) ($a['job_key'] ?? ''), (string) ($b['job_key'] ?? '')));
+        db_sync_schedule_mark_planner_state((int) ($job['id'] ?? 0), [
+            'current_projected_cpu_percent' => $preparedJob['projected_cpu_percent'],
+            'current_projected_memory_bytes' => $preparedJob['projected_memory_bytes'],
+            'current_pressure_state' => $liveCapacity['pressure'],
+            'latest_allowed_start_at' => $preparedJob['latest_allowed_start_at'],
+            'must_run_alone' => $preparedJob['must_run_alone'],
+            'prefers_solo' => $preparedJob['prefers_solo'],
+            'allow_parallel' => $preparedJob['allow_parallel'],
+        ]);
+        $prepared[] = $preparedJob;
+    }
+
+    usort($prepared, static function (array $a, array $b): int {
+        return (($b['urgency_score'] ?? 0) <=> ($a['urgency_score'] ?? 0)) ?: (((int) ($a['id'] ?? 0)) <=> ((int) ($b['id'] ?? 0)));
+    });
+
+    $allowed = [];
+    $deferred = [];
+    $state = $liveCapacity;
+    $runningProfiles = [];
+    foreach ($running as $job) {
+        $runningProfiles[] = $job + scheduler_job_recent_resource_profile((string) ($job['job_key'] ?? ''), $job) + [
+            'projected_cpu_percent' => (float) ($job['current_projected_cpu_percent'] ?? $job['p95_cpu_percent'] ?? $job['average_cpu_percent'] ?? 0.0),
+            'projected_memory_bytes' => (int) ($job['current_projected_memory_bytes'] ?? $job['p95_memory_peak_bytes'] ?? $job['average_memory_peak_bytes'] ?? 0),
+            'forbidden_with' => (array) (scheduler_job_recent_resource_profile((string) ($job['job_key'] ?? ''), $job)['forbidden_with'] ?? []),
+        ];
+    }
+
+    foreach ($prepared as $candidate) {
+        $reasons = [];
+        $projectedCpu = $state['current_cpu_used_percent'] + (float) ($candidate['projected_cpu_percent'] ?? 0.0);
+        $projectedMemory = $state['current_memory_used_bytes'] + (int) ($candidate['projected_memory_bytes'] ?? 0);
+        $budgetCpu = (float) $state['cpu_budget_percent'];
+        $budgetMemory = (int) $state['memory_budget_bytes'];
+        $jobKey = (string) ($candidate['job_key'] ?? '');
+        $isCritical = scheduler_is_protected_job($jobKey);
+        $availableCpu = $budgetCpu - $projectedCpu;
+        $availableMemory = $budgetMemory - $projectedMemory;
+
+        if (count($runningProfiles) + count($allowed) >= (int) $state['max_concurrent_jobs']) {
+            $reasons[] = 'concurrency_ceiling';
+        }
+        if ($projectedCpu > $budgetCpu) {
+            $reasons[] = 'cpu_budget';
+        }
+        if ($projectedMemory > $budgetMemory) {
+            $reasons[] = 'memory_budget';
+        }
+        if (!$isCritical && $availableCpu < (float) $state['reserved_critical_cpu_percent']) {
+            $reasons[] = 'reserved_critical_cpu';
+        }
+        if (!$isCritical && $availableMemory < (int) $state['reserved_critical_memory_bytes']) {
+            $reasons[] = 'reserved_critical_memory';
+        }
+        foreach (array_merge($runningProfiles, $allowed) as $other) {
+            if (!scheduler_jobs_are_compatible($candidate, $other)) {
+                $reasons[] = 'incompatible:' . (string) ($other['job_key'] ?? '');
+                break;
+            }
+        }
+        if (($state['pressure'] ?? 'healthy') === 'overload_protection' && !$isCritical) {
+            $reasons[] = 'overload_guard';
+        }
+        if (($state['pressure'] ?? 'healthy') === 'congested' && (string) ($candidate['resource_class'] ?? 'medium') === 'heavy' && count($allowed) > 0) {
+            $reasons[] = 'heavy_under_congestion';
+        }
+
+        $decisionPayload = [
+            'projected_cpu_percent' => $candidate['projected_cpu_percent'] ?? null,
+            'projected_memory_bytes' => $candidate['projected_memory_bytes'] ?? null,
+            'current_capacity' => $state,
+            'running_jobs' => array_map(static fn (array $job): string => (string) ($job['job_key'] ?? ''), array_merge($runningProfiles, $allowed)),
+            'urgency_score' => $candidate['urgency_score'] ?? 0,
+            'latest_allowed_start_at' => $candidate['latest_allowed_start_at'] ?? null,
+            'starvation_indicator' => !empty($candidate['starvation_indicator']),
+        ];
+
+        if ($reasons === []) {
+            $reasonText = 'Allowed now because projected CPU/memory fit the active budget, overlap rules were satisfied, and urgency justified parallel capacity use.';
+            if (!empty($candidate['starvation_indicator'])) {
+                $reasonText = 'Allowed now because starvation prevention or latest-allowed-start pressure elevated this overdue job into available capacity.';
+                $decisionPayload['starvation_prevention_triggered'] = true;
+            }
+            db_scheduler_planner_decision_insert((int) ($candidate['id'] ?? 0), $jobKey, 'allowed', (string) $state['pressure'], $reasonText, $decisionPayload);
+            $allowed[] = $candidate;
+            $state['current_cpu_used_percent'] = round($projectedCpu, 2);
+            $state['current_memory_used_bytes'] = $projectedMemory;
+            $state['cpu_budget_ratio'] = $budgetCpu > 0 ? round($state['current_cpu_used_percent'] / $budgetCpu, 4) : 0.0;
+            $state['memory_budget_ratio'] = $budgetMemory > 0 ? round($state['current_memory_used_bytes'] / $budgetMemory, 4) : 0.0;
+            $state['running_jobs'] = count($runningProfiles) + count($allowed);
+            $state['pressure'] = scheduler_pressure_label($state);
+            continue;
+        }
+
+        $primaryReason = str_starts_with($reasons[0], 'incompatible:') ? 'incompatibility' : $reasons[0];
+        $decisionType = match ($primaryReason) {
+            'cpu_budget', 'reserved_critical_cpu' => 'deferred_cpu',
+            'memory_budget', 'reserved_critical_memory' => 'deferred_memory',
+            default => 'deferred_capacity',
+        };
+        $reasonText = match ($primaryReason) {
+            'cpu_budget' => 'Deferred because projected CPU demand would exceed the scheduler CPU budget.',
+            'memory_budget' => 'Deferred because projected memory demand would exceed the scheduler memory budget.',
+            'reserved_critical_cpu', 'reserved_critical_memory' => 'Deferred to preserve reserved headroom for critical jobs nearing their run windows.',
+            'incompatibility' => 'Deferred because an explicit incompatibility or solo-execution rule blocks this job alongside current work.',
+            'concurrency_ceiling' => 'Deferred because the dynamic concurrency ceiling is already full for the current pressure state.',
+            'overload_guard' => 'Deferred because overload protection is active and only critical work should claim more capacity.',
+            'heavy_under_congestion' => 'Deferred because congested pressure keeps heavy work isolated until lighter or overdue work clears.',
+            default => 'Deferred because current scheduler pressure and budget state make the combination unsafe right now.',
+        };
+        $decisionPayload['defer_reasons'] = $reasons;
+        db_scheduler_planner_decision_insert((int) ($candidate['id'] ?? 0), $jobKey, $decisionType, (string) $state['pressure'], $reasonText, $decisionPayload);
+        db_sync_schedule_release_claim((int) ($candidate['id'] ?? 0), gmdate('Y-m-d H:i:s', time() + 60), $decisionType);
+        $deferred[] = $candidate + ['defer_reasons' => $reasons, 'decision_type' => $decisionType];
+    }
+
+    return [
+        'allowed' => $allowed,
+        'deferred' => $deferred,
+        'state' => $state,
+        'running' => $runningProfiles,
+    ];
 }
 
 function sync_schedule_settings_view_model(): array
@@ -2671,16 +3211,22 @@ function sync_schedule_settings_view_model(): array
         $recentActions = db_scheduler_tuning_actions_recent(12);
         $busiestOffsets = db_sync_schedule_busiest_offsets(12);
         $outcomeSummary = db_sync_schedule_recent_outcomes_summary(180);
+        $recentPlannerDecisions = db_scheduler_planner_decisions_recent(20);
+        $recentResourceMetrics = db_scheduler_resource_metrics_recent_all(20);
     } catch (Throwable) {
         $eventSummary = [];
         $recentActions = [];
         $busiestOffsets = [];
         $outcomeSummary = [];
+        $recentPlannerDecisions = [];
+        $recentResourceMetrics = [];
     }
 
     $configuredJobs = [];
     $discoveredJobs = [];
     $internalJobs = [];
+    $liveCapacity = scheduler_live_capacity_snapshot();
+    $recentDecisionCounts = scheduler_recent_planner_decision_counts();
     $healthSummary = [
         'total_jobs' => 0,
         'running_jobs' => 0,
@@ -2689,6 +3235,19 @@ function sync_schedule_settings_view_model(): array
         'degraded_jobs' => 0,
         'lock_conflicts' => 0,
         'late_jobs' => 0,
+        'cpu_budget_percent' => (float) ($liveCapacity['cpu_budget_percent'] ?? 0.0),
+        'memory_budget_bytes' => (int) ($liveCapacity['memory_budget_bytes'] ?? 0),
+        'current_cpu_used_percent' => (float) ($liveCapacity['current_cpu_used_percent'] ?? 0.0),
+        'current_memory_used_bytes' => (int) ($liveCapacity['current_memory_used_bytes'] ?? 0),
+        'cpu_budget_ratio' => (float) ($liveCapacity['cpu_budget_ratio'] ?? 0.0),
+        'memory_budget_ratio' => (float) ($liveCapacity['memory_budget_ratio'] ?? 0.0),
+        'timeout_rate' => (float) ($liveCapacity['timeout_rate'] ?? 0.0),
+        'failure_rate' => (float) ($liveCapacity['failure_rate'] ?? 0.0),
+        'current_concurrency_level' => (int) ($liveCapacity['running_jobs'] ?? 0),
+        'max_concurrent_jobs' => (int) ($liveCapacity['max_concurrent_jobs'] ?? 1),
+        'reserved_critical_cpu_percent' => (float) ($liveCapacity['reserved_critical_cpu_percent'] ?? 0.0),
+        'reserved_critical_memory_bytes' => (int) ($liveCapacity['reserved_critical_memory_bytes'] ?? 0),
+        'pressure' => (string) ($liveCapacity['pressure'] ?? 'healthy'),
     ];
 
     foreach ($rows as $row) {
@@ -2769,6 +3328,37 @@ function sync_schedule_settings_view_model(): array
             'discovery_classification' => (string) ($definition['discovery_classification'] ?? (scheduler_is_internal_mechanic_job($jobKey) ? 'internal' : 'operational')),
             'protected_offset' => scheduler_is_protected_job($jobKey),
         ];
+        $resourceProfile = scheduler_job_recent_resource_profile($jobKey, $row);
+        $urgency = scheduler_job_urgency_snapshot($row, $recentDecisionCounts);
+        $card += [
+            'resource_class' => (string) ($row['resource_class'] ?? $resourceProfile['resource_class'] ?? 'medium'),
+            'resource_class_confidence' => (float) ($row['resource_class_confidence'] ?? $resourceProfile['resource_class_confidence'] ?? 0.0),
+            'learning_mode' => !empty($row['learning_mode']) || !empty($resourceProfile['learning_mode']),
+            'telemetry_sample_count' => (int) ($row['telemetry_sample_count'] ?? $resourceProfile['sample_count'] ?? 0),
+            'last_cpu_percent' => $row['last_cpu_percent'] ?? $resourceProfile['last_cpu_percent'] ?? null,
+            'average_cpu_percent' => $row['average_cpu_percent'] ?? $resourceProfile['average_cpu_percent'] ?? null,
+            'p95_cpu_percent' => $row['p95_cpu_percent'] ?? $resourceProfile['p95_cpu_percent'] ?? null,
+            'last_memory_peak_bytes' => $row['last_memory_peak_bytes'] ?? $resourceProfile['last_memory_peak_bytes'] ?? null,
+            'average_memory_peak_bytes' => $row['average_memory_peak_bytes'] ?? $resourceProfile['average_memory_peak_bytes'] ?? null,
+            'p95_memory_peak_bytes' => $row['p95_memory_peak_bytes'] ?? $resourceProfile['p95_memory_peak_bytes'] ?? null,
+            'last_queue_wait_seconds' => $row['last_queue_wait_seconds'] ?? $resourceProfile['last_queue_wait_seconds'] ?? null,
+            'last_lock_wait_seconds' => $row['last_lock_wait_seconds'] ?? $resourceProfile['last_lock_wait_seconds'] ?? null,
+            'average_lock_wait_seconds' => $row['average_lock_wait_seconds'] ?? $resourceProfile['average_lock_wait_seconds'] ?? null,
+            'recent_timeout_rate' => $row['recent_timeout_rate'] ?? $resourceProfile['recent_timeout_rate'] ?? null,
+            'recent_failure_rate' => $row['recent_failure_rate'] ?? $resourceProfile['recent_failure_rate'] ?? null,
+            'allow_parallel' => !empty($row['allow_parallel']) || !empty($resourceProfile['allow_parallel']),
+            'prefers_solo' => !empty($row['prefers_solo']) || !empty($resourceProfile['prefers_solo']),
+            'must_run_alone' => !empty($row['must_run_alone']) || !empty($resourceProfile['must_run_alone']),
+            'projected_cpu_percent' => $row['current_projected_cpu_percent'] ?? $resourceProfile['projection_cpu_percent'] ?? null,
+            'projected_memory_bytes' => $row['current_projected_memory_bytes'] ?? $resourceProfile['projection_memory_bytes'] ?? null,
+            'latest_allowed_start_at' => scheduler_latest_allowed_start_at($row),
+            'urgency_score' => $urgency['urgency_score'] ?? 0,
+            'starvation_indicator' => !empty($urgency['starvation_indicator']),
+            'queue_wait_seconds' => $urgency['queue_wait_seconds'] ?? 0,
+            'seconds_to_latest_allowed_start' => $urgency['seconds_to_latest_allowed_start'] ?? null,
+            'current_pressure_state' => (string) ($row['current_pressure_state'] ?? $liveCapacity['pressure'] ?? 'healthy'),
+            'capacity_reason' => (string) ($row['last_capacity_reason'] ?? ''),
+        ];
 
         if ($card['discovery_classification'] === 'internal') {
             $internalJobs[] = $card;
@@ -2806,6 +3396,10 @@ function sync_schedule_settings_view_model(): array
         'health_summary' => $healthSummary,
         'busiest_offsets' => $busiestOffsets,
         'recent_actions' => $recentActions,
+        'recent_planner_decisions' => $recentPlannerDecisions,
+        'recent_resource_metrics' => $recentResourceMetrics,
+        'running_jobs' => (array) ($liveCapacity['running_jobs_detail'] ?? []),
+        'live_capacity' => $liveCapacity,
     ];
 }
 
@@ -7545,7 +8139,11 @@ function scheduler_should_defer_due_job(array $job, string $pressure): bool
         return $priority === 'normal' && in_array((string) ($job['concurrency_policy'] ?? 'single'), ['background', 'single'], true);
     }
 
-    return !in_array($priority, ['highest', 'high'], true);
+    if ($pressure === 'congested') {
+        return !in_array($priority, ['highest', 'high'], true);
+    }
+
+    return !scheduler_is_protected_job((string) ($job['job_key'] ?? '')) && $priority !== 'highest';
 }
 
 function scheduler_defer_due_job(array $job, string $reason): void
@@ -7600,14 +8198,53 @@ function scheduler_due_jobs(): array
     return $claimed;
 }
 
+function scheduler_refresh_job_resource_profile(array $job, array $runtimeMetric, string $resultStatus): array
+{
+    $jobKey = (string) ($job['job_key'] ?? '');
+    $scheduleId = (int) ($job['id'] ?? 0);
+    db_scheduler_resource_metric_insert($runtimeMetric);
+    $profile = scheduler_job_recent_resource_profile($jobKey, $job);
+
+    if ($scheduleId > 0) {
+        db_sync_schedule_update_resource_profile($scheduleId, [
+            'resource_class' => $profile['resource_class'] ?? 'medium',
+            'resource_class_confidence' => $profile['resource_class_confidence'] ?? null,
+            'telemetry_sample_count' => $profile['sample_count'] ?? 0,
+            'learning_mode' => !empty($profile['learning_mode']),
+            'allow_parallel' => !empty($profile['allow_parallel']),
+            'prefers_solo' => !empty($profile['prefers_solo']),
+            'must_run_alone' => !empty($profile['must_run_alone']),
+            'last_cpu_percent' => $runtimeMetric['cpu_percent'] ?? null,
+            'average_cpu_percent' => $profile['average_cpu_percent'] ?? null,
+            'p95_cpu_percent' => $profile['p95_cpu_percent'] ?? null,
+            'last_memory_peak_bytes' => $runtimeMetric['memory_peak_delta_bytes'] ?? $runtimeMetric['memory_peak_bytes'] ?? null,
+            'average_memory_peak_bytes' => $profile['average_memory_peak_bytes'] ?? null,
+            'p95_memory_peak_bytes' => $profile['p95_memory_peak_bytes'] ?? null,
+            'last_queue_wait_seconds' => $runtimeMetric['queue_wait_seconds'] ?? null,
+            'last_lock_wait_seconds' => $runtimeMetric['lock_wait_seconds'] ?? null,
+            'average_lock_wait_seconds' => $profile['average_lock_wait_seconds'] ?? null,
+            'recent_timeout_rate' => $profile['recent_timeout_rate'] ?? null,
+            'recent_failure_rate' => $profile['recent_failure_rate'] ?? null,
+            'last_overlap_count' => $runtimeMetric['overlap_count'] ?? 0,
+            'last_overlapped' => !empty($runtimeMetric['overlapped']),
+            'current_projected_cpu_percent' => $profile['projection_cpu_percent'] ?? null,
+            'current_projected_memory_bytes' => $profile['projection_memory_bytes'] ?? null,
+            'last_capacity_reason' => $resultStatus === 'failed' ? 'Last run failed under current resource envelope.' : 'Resource profile refreshed from the latest completed run.',
+        ]);
+    }
+
+    return $profile;
+}
+
 function scheduler_job_runtime_snapshot(string $jobKey, string $resultLabel, bool $timeout = false): array
 {
     $stats = db_sync_schedule_recent_job_run_stats($jobKey, 20);
+    $profile = scheduler_job_recent_resource_profile($jobKey);
 
     return [
         'last_result' => $resultLabel,
-        'average_duration_seconds' => $stats['average_duration_seconds'],
-        'p95_duration_seconds' => $stats['p95_duration_seconds'],
+        'average_duration_seconds' => $stats['average_duration_seconds'] ?? $profile['average_duration_seconds'] ?? null,
+        'p95_duration_seconds' => $stats['p95_duration_seconds'] ?? $profile['p95_duration_seconds'] ?? null,
         'timeout' => $timeout,
     ];
 }
@@ -7625,11 +8262,39 @@ function scheduler_run_job(array $job): array
     $startedAtIso = gmdate(DATE_ATOM, (int) $startedAtUnix);
     $runId = db_sync_run_start($datasetKey, 'incremental', null);
     $latenessSeconds = $scheduledFor !== '' ? max(0, time() - (int) strtotime($scheduledFor)) : 0;
+    $claimStartedAt = trim((string) ($job['last_started_at'] ?? ''));
+    $claimStartedTs = $claimStartedAt !== '' ? (int) strtotime($claimStartedAt) : time();
+    $queueWaitSeconds = $scheduledFor !== '' ? max(0.0, $startedAtUnix - (float) strtotime($scheduledFor)) : 0.0;
+    $lockWaitSeconds = max(0.0, $startedAtUnix - (float) $claimStartedTs);
+    $overlapJobs = $scheduleId > 0 ? db_sync_schedule_fetch_running_jobs([$scheduleId]) : [];
+    $overlapCount = count($overlapJobs);
+    $resourceStarted = scheduler_resource_usage_snapshot();
+    $projectedCpuPercent = isset($job['current_projected_cpu_percent']) ? (float) $job['current_projected_cpu_percent'] : null;
+    $projectedMemoryBytes = isset($job['current_projected_memory_bytes']) ? (int) $job['current_projected_memory_bytes'] : null;
+    $pressureState = (string) ($job['current_pressure_state'] ?? scheduler_live_capacity_snapshot()['pressure'] ?? 'healthy');
 
     if ($definition === null || !isset($definition['handler']) || !is_callable($definition['handler'])) {
         $message = scheduler_normalize_error_message('Unknown scheduler job key: ' . ($jobKey !== '' ? $jobKey : '[empty]') . '.');
         mark_sync_failure($datasetKey, 'incremental', $message);
         db_sync_run_finish($runId, 'failed', 0, 0, null, $message);
+        $runtimeMetric = [
+            'schedule_id' => $scheduleId,
+            'job_key' => $jobKey,
+            'run_status' => 'failed',
+            'wall_duration_seconds' => 0.0,
+            'queue_wait_seconds' => round($queueWaitSeconds, 2),
+            'lock_wait_seconds' => round($lockWaitSeconds, 2),
+            'overlap_count' => $overlapCount,
+            'overlapped' => $overlapCount > 0,
+            'projected_cpu_percent' => $projectedCpuPercent,
+            'projected_memory_bytes' => $projectedMemoryBytes,
+            'pressure_state' => $pressureState,
+            'timed_out' => false,
+            'failed' => true,
+            'started_at' => gmdate('Y-m-d H:i:s', (int) $startedAtUnix),
+            'finished_at' => gmdate('Y-m-d H:i:s'),
+        ];
+        scheduler_refresh_job_resource_profile($job, $runtimeMetric, 'failed');
         if ($scheduleId > 0) {
             db_sync_schedule_mark_failure($scheduleId, $message, scheduler_job_runtime_snapshot($jobKey, 'failed'));
         }
@@ -7661,7 +8326,14 @@ function scheduler_run_job(array $job): array
             @set_time_limit($timeoutSeconds + 5);
         }
 
-        db_scheduler_job_event_insert($jobKey, 'started', [], $latenessSeconds, null);
+        db_scheduler_job_event_insert($jobKey, 'started', [
+            'queue_wait_seconds' => round($queueWaitSeconds, 2),
+            'lock_wait_seconds' => round($lockWaitSeconds, 2),
+            'overlap_count' => $overlapCount,
+            'projected_cpu_percent' => $projectedCpuPercent,
+            'projected_memory_bytes' => $projectedMemoryBytes,
+            'pressure_state' => $pressureState,
+        ], $latenessSeconds, null);
 
         $handler = $definition['handler'];
         $syncResult = $handler();
@@ -7685,6 +8357,24 @@ function scheduler_run_job(array $job): array
                 'rows_written' => $rowsWritten,
                 'warnings' => $warnings,
             ]);
+        $resourceFinished = scheduler_resource_usage_snapshot();
+        $resourceMetric = scheduler_resource_usage_delta($resourceStarted, $resourceFinished) + [
+            'schedule_id' => $scheduleId,
+            'job_key' => $jobKey,
+            'run_status' => $status,
+            'queue_wait_seconds' => round($queueWaitSeconds, 2),
+            'lock_wait_seconds' => round($lockWaitSeconds, 2),
+            'overlap_count' => $overlapCount,
+            'overlapped' => $overlapCount > 0,
+            'projected_cpu_percent' => $projectedCpuPercent,
+            'projected_memory_bytes' => $projectedMemoryBytes,
+            'pressure_state' => $pressureState,
+            'timed_out' => false,
+            'failed' => $status === 'failed',
+            'started_at' => gmdate('Y-m-d H:i:s', (int) $startedAtUnix),
+            'finished_at' => gmdate('Y-m-d H:i:s'),
+        ];
+        scheduler_refresh_job_resource_profile($job, $resourceMetric, $status);
 
         if ($status === 'success') {
             mark_sync_success($datasetKey, 'incremental', $cursor, $rowsWritten, $checksum);
@@ -7692,14 +8382,14 @@ function scheduler_run_job(array $job): array
             if ($scheduleId > 0) {
                 db_sync_schedule_mark_success($scheduleId, scheduler_job_runtime_snapshot($jobKey, 'success') + ['last_duration_seconds' => round($durationMs / 1000, 2)]);
             }
-            db_scheduler_job_event_insert($jobKey, 'finished', ['status' => 'success'], $latenessSeconds, round($durationMs / 1000, 2));
+            db_scheduler_job_event_insert($jobKey, 'finished', ['status' => 'success', 'cpu_percent' => $resourceMetric['cpu_percent'] ?? null, 'memory_peak_delta_bytes' => $resourceMetric['memory_peak_delta_bytes'] ?? null], $latenessSeconds, round($durationMs / 1000, 2));
         } else {
             mark_sync_success($datasetKey, 'incremental', $cursor, $rowsWritten, $checksum);
             db_sync_run_finish($runId, 'success', $rowsSeen, $rowsWritten, $cursor, null);
             if ($scheduleId > 0) {
                 db_sync_schedule_mark_success($scheduleId, scheduler_job_runtime_snapshot($jobKey, 'skipped') + ['last_duration_seconds' => round($durationMs / 1000, 2)]);
             }
-            db_scheduler_job_event_insert($jobKey, 'skipped', ['warnings' => $warnings], $latenessSeconds, round($durationMs / 1000, 2));
+            db_scheduler_job_event_insert($jobKey, 'skipped', ['warnings' => $warnings, 'cpu_percent' => $resourceMetric['cpu_percent'] ?? null, 'memory_peak_delta_bytes' => $resourceMetric['memory_peak_delta_bytes'] ?? null], $latenessSeconds, round($durationMs / 1000, 2));
         }
 
         if (in_array($jobKey, ['alliance_current_sync', 'market_hub_current_sync'], true)) {
@@ -7722,7 +8412,19 @@ function scheduler_run_job(array $job): array
             'rows_written' => $rowsWritten,
             'warnings' => $warnings,
             'duration_ms' => $durationMs,
-            'meta' => is_array($syncResult['meta'] ?? null) ? $syncResult['meta'] : [],
+            'meta' => (is_array($syncResult['meta'] ?? null) ? $syncResult['meta'] : []) + [
+                'resource_usage' => [
+                    'cpu_percent' => $resourceMetric['cpu_percent'] ?? null,
+                    'cpu_user_seconds' => $resourceMetric['cpu_user_seconds'] ?? null,
+                    'cpu_system_seconds' => $resourceMetric['cpu_system_seconds'] ?? null,
+                    'memory_peak_bytes' => $resourceMetric['memory_peak_bytes'] ?? null,
+                    'memory_peak_delta_bytes' => $resourceMetric['memory_peak_delta_bytes'] ?? null,
+                    'queue_wait_seconds' => $resourceMetric['queue_wait_seconds'] ?? null,
+                    'lock_wait_seconds' => $resourceMetric['lock_wait_seconds'] ?? null,
+                    'overlap_count' => $resourceMetric['overlap_count'] ?? null,
+                    'pressure_state' => $pressureState,
+                ],
+            ],
         ];
         $result['summary'] = scheduler_job_summary_message($result);
 
@@ -7733,10 +8435,28 @@ function scheduler_run_job(array $job): array
         $isTimeout = str_contains(strtolower($message), 'timeout');
         mark_sync_failure($datasetKey, 'incremental', $message);
         db_sync_run_finish($runId, 'failed', 0, 0, null, $message);
+        $resourceFinished = scheduler_resource_usage_snapshot();
+        $resourceMetric = scheduler_resource_usage_delta($resourceStarted, $resourceFinished) + [
+            'schedule_id' => $scheduleId,
+            'job_key' => $jobKey,
+            'run_status' => 'failed',
+            'queue_wait_seconds' => round($queueWaitSeconds, 2),
+            'lock_wait_seconds' => round($lockWaitSeconds, 2),
+            'overlap_count' => $overlapCount,
+            'overlapped' => $overlapCount > 0,
+            'projected_cpu_percent' => $projectedCpuPercent,
+            'projected_memory_bytes' => $projectedMemoryBytes,
+            'pressure_state' => $pressureState,
+            'timed_out' => $isTimeout,
+            'failed' => true,
+            'started_at' => gmdate('Y-m-d H:i:s', (int) $startedAtUnix),
+            'finished_at' => gmdate('Y-m-d H:i:s'),
+        ];
+        scheduler_refresh_job_resource_profile($job, $resourceMetric, 'failed');
         if ($scheduleId > 0) {
             db_sync_schedule_mark_failure($scheduleId, $message, scheduler_job_runtime_snapshot($jobKey, 'failed', $isTimeout) + ['last_duration_seconds' => $durationSeconds]);
         }
-        db_scheduler_job_event_insert($jobKey, $isTimeout ? 'timeout' : 'failure', ['error' => $message], $latenessSeconds, $durationSeconds);
+        db_scheduler_job_event_insert($jobKey, $isTimeout ? 'timeout' : 'failure', ['error' => $message, 'cpu_percent' => $resourceMetric['cpu_percent'] ?? null, 'memory_peak_delta_bytes' => $resourceMetric['memory_peak_delta_bytes'] ?? null], $latenessSeconds, $durationSeconds);
 
         return [
             'job_id' => $scheduleId,
@@ -7751,7 +8471,17 @@ function scheduler_run_job(array $job): array
             'rows_seen' => 0,
             'rows_written' => 0,
             'warnings' => [],
-            'meta' => [],
+            'meta' => [
+                'resource_usage' => [
+                    'cpu_percent' => $resourceMetric['cpu_percent'] ?? null,
+                    'memory_peak_bytes' => $resourceMetric['memory_peak_bytes'] ?? null,
+                    'memory_peak_delta_bytes' => $resourceMetric['memory_peak_delta_bytes'] ?? null,
+                    'queue_wait_seconds' => $resourceMetric['queue_wait_seconds'] ?? null,
+                    'lock_wait_seconds' => $resourceMetric['lock_wait_seconds'] ?? null,
+                    'overlap_count' => $resourceMetric['overlap_count'] ?? null,
+                    'pressure_state' => $pressureState,
+                ],
+            ],
             'summary' => $message,
         ];
     }
@@ -7969,16 +8699,19 @@ function scheduler_run_optimizer(): ?array
 function cron_tick_run(?callable $logger = null): array
 {
     $jobs = scheduler_due_jobs();
+    $plan = scheduler_plan_due_jobs($jobs);
+    $plannedJobs = (array) ($plan['allowed'] ?? []);
     $results = [];
     $successCount = 0;
     $failureCount = 0;
     $dispatchedCount = 0;
 
-    foreach ($jobs as $job) {
+    foreach ($plannedJobs as $index => $job) {
         $jobId = (int) ($job['id'] ?? 0);
         $jobKey = (string) ($job['job_key'] ?? 'unknown_job');
         $jobType = scheduler_job_type($jobKey);
         $scheduledFor = (string) ($job['next_due_at'] ?? $job['next_run_at'] ?? '');
+        $forceBackground = count($plannedJobs) > 1 || count((array) ($plan['running'] ?? [])) > 0;
 
         if ($logger !== null) {
             $logger('job.started', [
@@ -7986,15 +8719,22 @@ function cron_tick_run(?callable $logger = null): array
                 'job' => $jobKey,
                 'job_type' => $jobType,
                 'scheduled_for' => $scheduledFor,
+                'projected_cpu_percent' => $job['projected_cpu_percent'] ?? null,
+                'projected_memory_bytes' => $job['projected_memory_bytes'] ?? null,
+                'pressure_state' => $plan['state']['pressure'] ?? 'healthy',
             ]);
         }
 
         try {
-            $result = scheduler_job_runs_in_background($jobKey)
+            $result = ($forceBackground || scheduler_job_runs_in_background($jobKey))
                 ? scheduler_dispatch_background_job($job)
                 : scheduler_run_job($job);
             if (($result['status'] ?? '') === 'dispatched') {
-                db_scheduler_job_event_insert($jobKey, 'dispatch', ['execution' => 'background'], 0, 0.0);
+                db_scheduler_job_event_insert($jobKey, 'dispatch', [
+                    'execution' => 'background',
+                    'projected_cpu_percent' => $job['projected_cpu_percent'] ?? null,
+                    'projected_memory_bytes' => $job['projected_memory_bytes'] ?? null,
+                ], 0, 0.0);
             }
         } catch (Throwable $exception) {
             $result = scheduler_background_dispatch_failure_result($job, $exception);
@@ -8043,10 +8783,13 @@ function cron_tick_run(?callable $logger = null): array
     return [
         'ran_at' => gmdate('Y-m-d H:i:s'),
         'jobs_due' => count($jobs),
+        'jobs_planned' => count($plannedJobs),
+        'jobs_deferred' => count((array) ($plan['deferred'] ?? [])),
         'jobs_processed' => count($results),
         'jobs_succeeded' => $successCount,
         'jobs_failed' => $failureCount,
         'jobs_dispatched' => $dispatchedCount,
+        'planner' => $plan,
         'optimizer' => $optimizerResult,
         'results' => $results,
     ];

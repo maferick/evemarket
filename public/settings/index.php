@@ -1489,7 +1489,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                                     <p class="mt-1 text-xs text-muted">Operational state across user-managed jobs and unreviewed discovered workloads. Internal mechanics are excluded from this summary.</p>
                                 </div>
                                 <?php $pressure = (string) ($schedulerHealth['pressure'] ?? 'healthy'); ?>
-                                <?php $pressureClass = $pressure === 'congested' ? 'border-rose-400/40 bg-rose-500/10 text-rose-100' : ($pressure === 'busy' ? 'border-amber-400/40 bg-amber-500/10 text-amber-100' : 'border-emerald-400/30 bg-emerald-500/10 text-emerald-100'); ?>
+                                <?php $pressureClass = $pressure === 'overload_protection' ? 'border-rose-500/50 bg-rose-600/15 text-rose-100' : ($pressure === 'congested' ? 'border-rose-400/40 bg-rose-500/10 text-rose-100' : ($pressure === 'busy' ? 'border-amber-400/40 bg-amber-500/10 text-amber-100' : 'border-emerald-400/30 bg-emerald-500/10 text-emerald-100')); ?>
                                 <span class="inline-flex items-center rounded-full border px-3 py-1 text-xs font-medium uppercase tracking-[0.16em] <?= $pressureClass ?>"><?= htmlspecialchars($pressure, ENT_QUOTES) ?></span>
                             </div>
                             <div class="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
@@ -1497,6 +1497,12 @@ include __DIR__ . '/../../src/views/partials/header.php';
                                 <div class="rounded-lg border border-border bg-black/30 p-3 text-sm"><p class="text-xs uppercase tracking-[0.16em] text-muted">Waiting</p><p class="mt-2 text-2xl font-semibold text-white"><?= (int) ($schedulerHealth['waiting_jobs'] ?? 0) ?></p></div>
                                 <div class="rounded-lg border border-border bg-black/30 p-3 text-sm"><p class="text-xs uppercase tracking-[0.16em] text-muted">Stopped</p><p class="mt-2 text-2xl font-semibold text-white"><?= (int) ($schedulerHealth['stopped_jobs'] ?? 0) ?></p></div>
                                 <div class="rounded-lg border border-border bg-black/30 p-3 text-sm"><p class="text-xs uppercase tracking-[0.16em] text-muted">Degraded</p><p class="mt-2 text-2xl font-semibold text-white"><?= (int) ($schedulerHealth['degraded_jobs'] ?? 0) ?></p></div>
+                            </div>
+                            <div class="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                                <div class="rounded-lg border border-border bg-black/30 p-3 text-sm"><p class="text-xs uppercase tracking-[0.16em] text-muted">Concurrency</p><p class="mt-2 text-lg font-semibold text-white"><?= (int) ($schedulerHealth['current_concurrency_level'] ?? 0) ?> / <?= (int) ($schedulerHealth['max_concurrent_jobs'] ?? 1) ?></p></div>
+                                <div class="rounded-lg border border-border bg-black/30 p-3 text-sm"><p class="text-xs uppercase tracking-[0.16em] text-muted">CPU budget</p><p class="mt-2 text-lg font-semibold text-white"><?= htmlspecialchars(number_format((float) ($schedulerHealth['current_cpu_used_percent'] ?? 0), 1), ENT_QUOTES) ?> / <?= htmlspecialchars(number_format((float) ($schedulerHealth['cpu_budget_percent'] ?? 0), 1), ENT_QUOTES) ?>%</p></div>
+                                <div class="rounded-lg border border-border bg-black/30 p-3 text-sm"><p class="text-xs uppercase tracking-[0.16em] text-muted">Memory budget</p><p class="mt-2 text-lg font-semibold text-white"><?= htmlspecialchars(scheduler_format_bytes((int) ($schedulerHealth['current_memory_used_bytes'] ?? 0)), ENT_QUOTES) ?> / <?= htmlspecialchars(scheduler_format_bytes((int) ($schedulerHealth['memory_budget_bytes'] ?? 0)), ENT_QUOTES) ?></p></div>
+                                <div class="rounded-lg border border-border bg-black/30 p-3 text-sm"><p class="text-xs uppercase tracking-[0.16em] text-muted">Failure / timeout</p><p class="mt-2 text-lg font-semibold text-white"><?= htmlspecialchars(number_format(((float) ($schedulerHealth['failure_rate'] ?? 0)) * 100, 1), ENT_QUOTES) ?>% · <?= htmlspecialchars(number_format(((float) ($schedulerHealth['timeout_rate'] ?? 0)) * 100, 1), ENT_QUOTES) ?>%</p></div>
                             </div>
                         </article>
                         <article class="rounded-xl border border-border bg-black/20 p-4">
@@ -1507,6 +1513,38 @@ include __DIR__ . '/../../src/views/partials/header.php';
                                     <div class="rounded-lg border border-border bg-black/30 p-3">
                                         <div class="flex items-center justify-between gap-3"><span class="font-medium text-slate-100">Minute <?= (int) ($offsetRow['offset_minutes'] ?? 0) ?></span><span class="text-xs text-muted"><?= (int) ($offsetRow['job_count'] ?? 0) ?> jobs</span></div>
                                         <p class="mt-1 text-xs text-muted"><?= htmlspecialchars((string) ($offsetRow['job_keys'] ?? ''), ENT_QUOTES) ?></p>
+                                    </div>
+                                <?php endforeach; ?>
+                            </div>
+                        </article>
+                    </div>
+
+                    <div class="grid gap-4 xl:grid-cols-[1.2fr_1fr]">
+                        <article class="rounded-xl border border-border bg-black/20 p-4">
+                            <p class="text-sm text-slate-100">Current running jobs</p>
+                            <p class="mt-1 text-xs text-muted">Live planner footprint uses each running job’s projected CPU and memory cost, with last-known telemetry shown when exact live process metrics are unavailable.</p>
+                            <div class="mt-4 space-y-2 text-sm">
+                                <?php if (((array) ($syncDashboard['running_jobs'] ?? [])) === []): ?>
+                                    <div class="rounded-lg border border-dashed border-border bg-black/30 p-3 text-muted">No scheduler workloads are currently running.</div>
+                                <?php endif; ?>
+                                <?php foreach ((array) ($syncDashboard['running_jobs'] ?? []) as $runningJob): ?>
+                                    <div class="rounded-lg border border-border bg-black/30 p-3">
+                                        <div class="flex items-center justify-between gap-3"><span class="font-medium text-slate-100"><?= htmlspecialchars((string) ($runningJob['job_key'] ?? ''), ENT_QUOTES) ?></span><span class="text-xs uppercase tracking-[0.14em] text-muted"><?= htmlspecialchars((string) ($runningJob['resource_class'] ?? 'medium'), ENT_QUOTES) ?></span></div>
+                                        <p class="mt-1 text-xs text-muted">CPU <?= htmlspecialchars(number_format((float) ($runningJob['projected_cpu_percent'] ?? 0), 1), ENT_QUOTES) ?>% · memory <?= htmlspecialchars(scheduler_format_bytes(isset($runningJob['projected_memory_bytes']) ? (int) $runningJob['projected_memory_bytes'] : 0), ENT_QUOTES) ?> · started <?= htmlspecialchars((string) ($runningJob['started_at'] ?? 'unknown'), ENT_QUOTES) ?></p>
+                                    </div>
+                                <?php endforeach; ?>
+                            </div>
+                        </article>
+                        <article class="rounded-xl border border-border bg-black/20 p-4">
+                            <p class="text-sm text-slate-100">Recent planner decisions</p>
+                            <p class="mt-1 text-xs text-muted">Records why jobs were allowed, deferred, promoted, or isolated under current pressure and fairness conditions.</p>
+                            <div class="mt-4 space-y-2 text-xs text-muted">
+                                <?php foreach ((array) ($syncDashboard['recent_planner_decisions'] ?? []) as $decision): ?>
+                                    <?php $decisionJson = json_decode((string) ($decision['decision_json'] ?? 'null'), true); ?>
+                                    <div class="rounded-lg border border-border bg-black/30 p-3">
+                                        <div class="flex items-center justify-between gap-3"><span class="font-medium text-slate-100"><?= htmlspecialchars((string) ($decision['job_key'] ?? ''), ENT_QUOTES) ?></span><span><?= htmlspecialchars((string) ($decision['decision_type'] ?? ''), ENT_QUOTES) ?> · <?= htmlspecialchars((string) ($decision['pressure_state'] ?? ''), ENT_QUOTES) ?></span></div>
+                                        <p class="mt-1 text-slate-100"><?= htmlspecialchars((string) ($decision['reason_text'] ?? ''), ENT_QUOTES) ?></p>
+                                        <p class="mt-1">Projected CPU <?= htmlspecialchars(number_format((float) ($decisionJson['projected_cpu_percent'] ?? 0), 1), ENT_QUOTES) ?>% · projected memory <?= htmlspecialchars(scheduler_format_bytes(isset($decisionJson['projected_memory_bytes']) ? (int) $decisionJson['projected_memory_bytes'] : 0), ENT_QUOTES) ?></p>
                                     </div>
                                 <?php endforeach; ?>
                             </div>
@@ -1586,6 +1624,14 @@ include __DIR__ . '/../../src/views/partials/header.php';
                                     <div class="rounded-lg border border-border bg-black/30 p-3"><span class="block text-[11px] uppercase tracking-[0.14em]">Result</span><span class="mt-1 block text-slate-100"><?= htmlspecialchars((string) ($schedule['last_result'] ?? 'never'), ENT_QUOTES) ?></span><span class="mt-1 block text-rose-200"><?= htmlspecialchars((string) ($schedule['last_error'] ?? ''), ENT_QUOTES) ?></span></div>
                                 </div>
 
+                                <div class="mt-3 grid gap-3 md:grid-cols-2 xl:grid-cols-5 text-xs text-muted">
+                                    <div class="rounded-lg border border-border bg-black/30 p-3"><span class="block text-[11px] uppercase tracking-[0.14em]">Resource class</span><span class="mt-1 block text-slate-100"><?= htmlspecialchars((string) ($schedule['resource_class'] ?? 'medium'), ENT_QUOTES) ?><?php if (!empty($schedule['learning_mode'])): ?> · learning<?php endif; ?></span><span class="mt-1 block">samples <?= (int) ($schedule['telemetry_sample_count'] ?? 0) ?> · confidence <?= htmlspecialchars(number_format((float) ($schedule['resource_class_confidence'] ?? 0), 2), ENT_QUOTES) ?></span></div>
+                                    <div class="rounded-lg border border-border bg-black/30 p-3"><span class="block text-[11px] uppercase tracking-[0.14em]">CPU</span><span class="mt-1 block text-slate-100">last <?= htmlspecialchars(number_format((float) ($schedule['last_cpu_percent'] ?? 0), 1), ENT_QUOTES) ?>% · avg <?= htmlspecialchars(number_format((float) ($schedule['average_cpu_percent'] ?? 0), 1), ENT_QUOTES) ?>% · p95 <?= htmlspecialchars(number_format((float) ($schedule['p95_cpu_percent'] ?? 0), 1), ENT_QUOTES) ?>%</span></div>
+                                    <div class="rounded-lg border border-border bg-black/30 p-3"><span class="block text-[11px] uppercase tracking-[0.14em]">Memory</span><span class="mt-1 block text-slate-100">last <?= htmlspecialchars(scheduler_format_bytes(isset($schedule['last_memory_peak_bytes']) ? (int) $schedule['last_memory_peak_bytes'] : 0), ENT_QUOTES) ?> · avg <?= htmlspecialchars(scheduler_format_bytes(isset($schedule['average_memory_peak_bytes']) ? (int) $schedule['average_memory_peak_bytes'] : 0), ENT_QUOTES) ?> · p95 <?= htmlspecialchars(scheduler_format_bytes(isset($schedule['p95_memory_peak_bytes']) ? (int) $schedule['p95_memory_peak_bytes'] : 0), ENT_QUOTES) ?></span></div>
+                                    <div class="rounded-lg border border-border bg-black/30 p-3"><span class="block text-[11px] uppercase tracking-[0.14em]">Parallel safety</span><span class="mt-1 block text-slate-100"><?= !empty($schedule['allow_parallel']) ? 'Allowed in parallel' : 'Restricted' ?><?php if (!empty($schedule['prefers_solo'])): ?> · prefers solo<?php endif; ?><?php if (!empty($schedule['must_run_alone'])): ?> · must run alone<?php endif; ?></span></div>
+                                    <div class="rounded-lg border border-border bg-black/30 p-3"><span class="block text-[11px] uppercase tracking-[0.14em]">Urgency</span><span class="mt-1 block text-slate-100">latest <?= htmlspecialchars((string) ($schedule['latest_allowed_start_at'] ?? '—'), ENT_QUOTES) ?></span><span class="mt-1 block"><?php if (!empty($schedule['starvation_indicator'])): ?>Starvation guard active · <?php endif; ?>score <?= htmlspecialchars(number_format((float) ($schedule['urgency_score'] ?? 0), 2), ENT_QUOTES) ?></span></div>
+                                </div>
+
                                 <?php if (!empty($schedule['last_auto_tune_reason'])): ?>
                                     <p class="mt-3 rounded-lg border border-sky-400/20 bg-sky-500/10 px-3 py-2 text-xs text-sky-100">Last auto-tune: <?= htmlspecialchars((string) $schedule['last_auto_tune_reason'], ENT_QUOTES) ?></p>
                                 <?php endif; ?>
@@ -1643,6 +1689,19 @@ include __DIR__ . '/../../src/views/partials/header.php';
                             <?php endforeach; ?>
                         </div>
                     </details>
+
+                    <div>
+                        <p class="text-sm text-slate-100">Recent resource telemetry</p>
+                        <p class="mt-1 text-xs text-muted">Last-known CPU, memory, overlap, and queue-wait readings collected from completed scheduler runs.</p>
+                    </div>
+                    <div class="space-y-2">
+                        <?php foreach ((array) ($syncDashboard['recent_resource_metrics'] ?? []) as $metric): ?>
+                            <div class="rounded-lg border border-border bg-black/20 p-3 text-xs text-muted">
+                                <div class="flex flex-wrap items-center justify-between gap-2"><span class="font-medium text-slate-100"><?= htmlspecialchars((string) ($metric['job_key'] ?? ''), ENT_QUOTES) ?></span><span><?= htmlspecialchars((string) ($metric['created_at'] ?? ''), ENT_QUOTES) ?></span></div>
+                                <p class="mt-1">CPU <?= htmlspecialchars(number_format((float) ($metric['cpu_percent'] ?? 0), 1), ENT_QUOTES) ?>% · memory <?= htmlspecialchars(scheduler_format_bytes(isset($metric['memory_peak_bytes']) ? (int) $metric['memory_peak_bytes'] : 0), ENT_QUOTES) ?> · overlap <?= (int) ($metric['overlap_count'] ?? 0) ?> · wait <?= htmlspecialchars(number_format((float) ($metric['queue_wait_seconds'] ?? 0), 1), ENT_QUOTES) ?>s</p>
+                            </div>
+                        <?php endforeach; ?>
+                    </div>
 
                     <div>
                         <p class="text-sm text-slate-100">Recent auto-tuning actions</p>
