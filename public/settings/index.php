@@ -1733,7 +1733,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
 
                     <div>
                         <p class="text-sm text-slate-100">Operational jobs</p>
-                        <p class="mt-1 text-xs text-muted">These are user-managed scheduler workloads. Manual mode locks cadence until an admin changes it. Automatic mode moves offset first, then timeout, then interval while preserving protected offsets for critical jobs.</p>
+                        <p class="mt-1 text-xs text-muted">These are user-managed scheduler workloads. Manual mode locks cadence until an admin changes it. Automatic mode moves offset first, then timeout, then interval while preserving protected offsets for critical jobs. When the daemon has no due work running, eligible jobs may be pulled forward as idle backfill to keep the app warm.</p>
                     </div>
                     <div class="space-y-3">
                         <?php foreach ($configuredSyncJobs as $schedule): ?>
@@ -1751,13 +1751,15 @@ include __DIR__ . '/../../src/views/partials/header.php';
                                             <span class="inline-flex items-center rounded-full border px-2.5 py-1 text-[11px] font-medium uppercase tracking-[0.14em] <?= $stateClass ?>"><?= htmlspecialchars($state, ENT_QUOTES) ?></span>
                                             <?php if (!empty($schedule['degraded'])): ?><span class="inline-flex items-center rounded-full border border-rose-400/40 bg-rose-500/10 px-2.5 py-1 text-[11px] font-medium uppercase tracking-[0.14em] text-rose-100">degraded</span><?php endif; ?>
                                             <span class="inline-flex items-center rounded-full border border-border px-2.5 py-1 text-[11px] uppercase tracking-[0.14em] text-muted"><?= htmlspecialchars((string) ($schedule['value_source'] ?? 'baseline'), ENT_QUOTES) ?></span>
+                                            <?php if (!empty($schedule['allow_backfill'])): ?><span class="inline-flex items-center rounded-full border border-emerald-400/30 bg-emerald-500/10 px-2.5 py-1 text-[11px] uppercase tracking-[0.14em] text-emerald-100">idle backfill</span><?php endif; ?>
                                         </div>
                                         <p class="mt-1 text-xs text-muted font-mono"><?= htmlspecialchars((string) ($schedule['job_key'] ?? ''), ENT_QUOTES) ?></p>
                                     </div>
-                                    <div class="grid gap-2 text-xs text-muted sm:grid-cols-2 xl:grid-cols-4">
+                                    <div class="grid gap-2 text-xs text-muted sm:grid-cols-2 xl:grid-cols-5">
                                         <div><span class="block text-[11px] uppercase tracking-[0.14em]">Next due</span><span class="text-slate-100"><?= htmlspecialchars((string) ($schedule['next_due_at'] ?? 'Not scheduled'), ENT_QUOTES) ?></span></div>
                                         <div><span class="block text-[11px] uppercase tracking-[0.14em]">Last start</span><span class="text-slate-100"><?= htmlspecialchars((string) ($schedule['last_started_at'] ?? 'Never'), ENT_QUOTES) ?></span></div>
                                         <div><span class="block text-[11px] uppercase tracking-[0.14em]">Last finish</span><span class="text-slate-100"><?= htmlspecialchars((string) ($schedule['last_finished_at'] ?? 'Never'), ENT_QUOTES) ?></span></div>
+                                        <div><span class="block text-[11px] uppercase tracking-[0.14em]">Last mode</span><span class="text-slate-100"><?= htmlspecialchars((string) ($schedule['last_execution_mode'] ?? 'scheduled'), ENT_QUOTES) ?></span></div>
                                         <div><span class="block text-[11px] uppercase tracking-[0.14em]">Priority</span><span class="text-slate-100"><?= htmlspecialchars((string) ($schedule['priority'] ?? 'normal'), ENT_QUOTES) ?></span></div>
                                     </div>
                                 </div>

@@ -4124,6 +4124,11 @@ function db_sync_schedule_registry_columns_ensure(): void
     db_ensure_table_column('sync_schedules', 'current_projected_memory_bytes', 'BIGINT UNSIGNED DEFAULT NULL');
     db_ensure_table_column('sync_schedules', 'current_pressure_state', "VARCHAR(32) NOT NULL DEFAULT 'healthy'");
     db_ensure_table_column('sync_schedules', 'last_capacity_reason', 'VARCHAR(500) DEFAULT NULL');
+    db_ensure_table_column('sync_schedules', 'allow_backfill', 'TINYINT(1) NOT NULL DEFAULT 0');
+    db_ensure_table_column('sync_schedules', 'backfill_priority', "VARCHAR(20) NOT NULL DEFAULT 'normal'");
+    db_ensure_table_column('sync_schedules', 'min_backfill_gap_seconds', 'INT UNSIGNED NOT NULL DEFAULT 900');
+    db_ensure_table_column('sync_schedules', 'max_early_start_seconds', 'INT UNSIGNED NOT NULL DEFAULT 0');
+    db_ensure_table_column('sync_schedules', 'last_execution_mode', "VARCHAR(32) NOT NULL DEFAULT 'scheduled'");
 
     db_execute(
         "UPDATE sync_schedules
@@ -4156,7 +4161,7 @@ function db_sync_schedule_select_columns_sql(): string
 {
     db_sync_schedule_registry_columns_ensure();
 
-    return 'id, job_key, enabled, interval_minutes, interval_seconds, offset_seconds, offset_minutes, priority, concurrency_policy, timeout_seconds, next_run_at, next_due_at, latest_allowed_start_at, last_run_at, last_started_at, last_finished_at, last_duration_seconds, average_duration_seconds, p95_duration_seconds, last_status, last_result, last_error, current_state, tuning_mode, discovered_from_code, explicitly_configured, last_auto_tuned_at, last_auto_tune_reason, degraded_until, failure_streak, lock_conflict_count, timeout_count, resource_class, resource_class_confidence, telemetry_sample_count, learning_mode, allow_parallel, prefers_solo, must_run_alone, preferred_max_parallelism, last_cpu_percent, average_cpu_percent, p95_cpu_percent, last_memory_peak_bytes, average_memory_peak_bytes, p95_memory_peak_bytes, last_queue_wait_seconds, last_lock_wait_seconds, average_lock_wait_seconds, last_overlap_count, last_overlapped, recent_timeout_rate, recent_failure_rate, current_projected_cpu_percent, current_projected_memory_bytes, current_pressure_state, last_capacity_reason, locked_until, created_at, updated_at';
+    return 'id, job_key, enabled, interval_minutes, interval_seconds, offset_seconds, offset_minutes, priority, concurrency_policy, timeout_seconds, next_run_at, next_due_at, latest_allowed_start_at, last_run_at, last_started_at, last_finished_at, last_duration_seconds, average_duration_seconds, p95_duration_seconds, last_status, last_result, last_error, current_state, tuning_mode, discovered_from_code, explicitly_configured, last_auto_tuned_at, last_auto_tune_reason, degraded_until, failure_streak, lock_conflict_count, timeout_count, resource_class, resource_class_confidence, telemetry_sample_count, learning_mode, allow_parallel, prefers_solo, must_run_alone, preferred_max_parallelism, last_cpu_percent, average_cpu_percent, p95_cpu_percent, last_memory_peak_bytes, average_memory_peak_bytes, p95_memory_peak_bytes, last_queue_wait_seconds, last_lock_wait_seconds, average_lock_wait_seconds, last_overlap_count, last_overlapped, recent_timeout_rate, recent_failure_rate, current_projected_cpu_percent, current_projected_memory_bytes, current_pressure_state, last_capacity_reason, allow_backfill, backfill_priority, min_backfill_gap_seconds, max_early_start_seconds, last_execution_mode, locked_until, created_at, updated_at';
 }
 
 function db_sync_schedule_priority_rank_sql(string $column = 'priority'): string
@@ -4181,6 +4186,42 @@ function db_sync_schedule_fetch_due_jobs(int $limit = 20): array
            AND (locked_until IS NULL OR locked_until <= UTC_TIMESTAMP())
            AND current_state <> ?
          ORDER BY ' . $priorityRank . ' ASC, next_due_at ASC, id ASC
+         LIMIT ' . $safeLimit,
+        ['stopped']
+    );
+}
+
+function db_sync_schedule_fetch_backfill_candidates(int $limit = 20): array
+{
+    db_sync_schedule_registry_columns_ensure();
+
+    $safeLimit = max(1, min(200, $limit));
+    $columns = db_sync_schedule_select_columns_sql();
+    $priorityRank = db_sync_schedule_priority_rank_sql('backfill_priority');
+
+    return db_select(
+        'SELECT ' . $columns . '
+         FROM sync_schedules
+         WHERE enabled = 1
+           AND allow_backfill = 1
+           AND current_state <> ?
+           AND (locked_until IS NULL OR locked_until <= UTC_TIMESTAMP())
+           AND (degraded_until IS NULL OR degraded_until <= UTC_TIMESTAMP())
+           AND (next_due_at IS NULL OR next_due_at > UTC_TIMESTAMP())
+           AND (
+                last_finished_at IS NULL
+                OR TIMESTAMPDIFF(SECOND, last_finished_at, UTC_TIMESTAMP()) >= GREATEST(60, min_backfill_gap_seconds)
+           )
+           AND (
+                max_early_start_seconds <= 0
+                OR next_due_at IS NULL
+                OR TIMESTAMPDIFF(SECOND, UTC_TIMESTAMP(), next_due_at) <= max_early_start_seconds
+           )
+         ORDER BY ' . $priorityRank . ' ASC,
+                  CASE WHEN last_finished_at IS NULL THEN 0 ELSE 1 END ASC,
+                  last_finished_at ASC,
+                  next_due_at ASC,
+                  id ASC
          LIMIT ' . $safeLimit,
         ['stopped']
     );
@@ -4218,6 +4259,7 @@ function db_sync_schedule_claim_job(int $scheduleId, int $lockTtlSeconds = 300):
              last_status = ?,
              last_error = NULL,
              current_state = ?,
+             last_execution_mode = \'scheduled\',
              last_started_at = UTC_TIMESTAMP(),
              latest_allowed_start_at = DATE_ADD(UTC_TIMESTAMP(), INTERVAL GREATEST(1, interval_minutes) MINUTE),
              updated_at = CURRENT_TIMESTAMP
@@ -4314,6 +4356,7 @@ function db_sync_schedule_mark_success(int $scheduleId, ?array $runtime = null):
              next_due_at = ?,
              latest_allowed_start_at = DATE_ADD(?, INTERVAL GREATEST(1, interval_minutes) MINUTE),
              current_state = CASE WHEN enabled = 1 THEN ? ELSE ? END,
+             last_execution_mode = COALESCE(NULLIF(last_execution_mode, \'\'), \'scheduled\'),
              last_duration_seconds = ?,
              average_duration_seconds = ?,
              p95_duration_seconds = ?,
@@ -4353,6 +4396,7 @@ function db_sync_schedule_mark_failure(int $scheduleId, string $errorMessage, ?a
              next_due_at = ?,
              latest_allowed_start_at = DATE_ADD(?, INTERVAL GREATEST(1, interval_minutes) MINUTE),
              current_state = CASE WHEN enabled = 1 THEN ? ELSE ? END,
+             last_execution_mode = COALESCE(NULLIF(last_execution_mode, \'\'), \'scheduled\'),
              last_duration_seconds = ?,
              average_duration_seconds = ?,
              p95_duration_seconds = ?,
@@ -4526,6 +4570,10 @@ function db_sync_schedule_ensure_job(string $jobKey, int $enabled, int $interval
     $priority = mb_substr(trim((string) ($options['priority'] ?? 'normal')), 0, 20);
     $concurrencyPolicy = mb_substr(trim((string) ($options['concurrency_policy'] ?? 'single')), 0, 40);
     $timeoutSeconds = max(30, min(7200, (int) ($options['timeout_seconds'] ?? 300)));
+    $allowBackfill = !empty($options['allow_backfill']) ? 1 : 0;
+    $backfillPriority = mb_substr(trim((string) ($options['backfill_priority'] ?? $priority)), 0, 20);
+    $minBackfillGapSeconds = max(60, min(86400, (int) ($options['min_backfill_gap_seconds'] ?? 900)));
+    $maxEarlyStartSeconds = max(0, min(86400, (int) ($options['max_early_start_seconds'] ?? 0)));
     $tuningMode = ($options['tuning_mode'] ?? 'automatic') === 'manual' ? 'manual' : 'automatic';
     $discoveredFromCode = !empty($options['discovered_from_code']) ? 1 : 0;
     $explicitlyConfigured = array_key_exists('explicitly_configured', $options) && !$options['explicitly_configured'] ? 0 : 1;
@@ -4543,6 +4591,10 @@ function db_sync_schedule_ensure_job(string $jobKey, int $enabled, int $interval
             priority,
             concurrency_policy,
             timeout_seconds,
+            allow_backfill,
+            backfill_priority,
+            min_backfill_gap_seconds,
+            max_early_start_seconds,
             next_run_at,
             next_due_at,
             current_state,
@@ -4554,7 +4606,7 @@ function db_sync_schedule_ensure_job(string $jobKey, int $enabled, int $interval
             last_error,
             locked_until
          ) VALUES (
-            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL
+            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL
          )
          ON DUPLICATE KEY UPDATE
             enabled = sync_schedules.enabled,
@@ -4567,6 +4619,10 @@ function db_sync_schedule_ensure_job(string $jobKey, int $enabled, int $interval
             priority = COALESCE(NULLIF(sync_schedules.priority, \'\'), VALUES(priority)),
             concurrency_policy = COALESCE(NULLIF(sync_schedules.concurrency_policy, \'\'), VALUES(concurrency_policy)),
             timeout_seconds = COALESCE(sync_schedules.timeout_seconds, VALUES(timeout_seconds)),
+            allow_backfill = COALESCE(sync_schedules.allow_backfill, VALUES(allow_backfill)),
+            backfill_priority = COALESCE(NULLIF(sync_schedules.backfill_priority, \'\'), VALUES(backfill_priority)),
+            min_backfill_gap_seconds = COALESCE(sync_schedules.min_backfill_gap_seconds, VALUES(min_backfill_gap_seconds)),
+            max_early_start_seconds = COALESCE(sync_schedules.max_early_start_seconds, VALUES(max_early_start_seconds)),
             tuning_mode = COALESCE(sync_schedules.tuning_mode, VALUES(tuning_mode)),
             next_run_at = CASE
                 WHEN sync_schedules.enabled = 1 AND sync_schedules.next_run_at IS NULL THEN VALUES(next_run_at)
@@ -4582,7 +4638,7 @@ function db_sync_schedule_ensure_job(string $jobKey, int $enabled, int $interval
                 ELSE VALUES(current_state)
             END,
             updated_at = CURRENT_TIMESTAMP',
-        [$normalizedKey, $enabled, $intervalMinutes, $safeIntervalSeconds, $safeOffsetSeconds, $offsetMinutes, $priority, $concurrencyPolicy, $timeoutSeconds, $nextDueAt, $nextDueAt, $currentState, $tuningMode, $discoveredFromCode, $explicitlyConfigured]
+        [$normalizedKey, $enabled, $intervalMinutes, $safeIntervalSeconds, $safeOffsetSeconds, $offsetMinutes, $priority, $concurrencyPolicy, $timeoutSeconds, $allowBackfill, $backfillPriority, $minBackfillGapSeconds, $maxEarlyStartSeconds, $nextDueAt, $nextDueAt, $currentState, $tuningMode, $discoveredFromCode, $explicitlyConfigured]
     );
 }
 
@@ -4596,7 +4652,7 @@ function db_sync_schedule_upsert(string $jobKey, int $enabled, int $intervalSeco
     }
 
     $existing = db_select_one(
-        'SELECT offset_minutes, priority, concurrency_policy, timeout_seconds, tuning_mode, discovered_from_code, explicitly_configured
+        'SELECT offset_minutes, priority, concurrency_policy, timeout_seconds, tuning_mode, discovered_from_code, explicitly_configured, allow_backfill, backfill_priority, min_backfill_gap_seconds, max_early_start_seconds
          FROM sync_schedules
          WHERE job_key = ?
          LIMIT 1',
@@ -4611,6 +4667,10 @@ function db_sync_schedule_upsert(string $jobKey, int $enabled, int $intervalSeco
     $priority = mb_substr(trim((string) ($options['priority'] ?? ($existing['priority'] ?? 'normal'))), 0, 20);
     $concurrencyPolicy = mb_substr(trim((string) ($options['concurrency_policy'] ?? ($existing['concurrency_policy'] ?? 'single'))), 0, 40);
     $timeoutSeconds = max(30, min(7200, (int) ($options['timeout_seconds'] ?? ($existing['timeout_seconds'] ?? 300))));
+    $allowBackfill = !empty($options['allow_backfill'] ?? $existing['allow_backfill'] ?? 0) ? 1 : 0;
+    $backfillPriority = mb_substr(trim((string) ($options['backfill_priority'] ?? ($existing['backfill_priority'] ?? $priority))), 0, 20);
+    $minBackfillGapSeconds = max(60, min(86400, (int) ($options['min_backfill_gap_seconds'] ?? ($existing['min_backfill_gap_seconds'] ?? 900))));
+    $maxEarlyStartSeconds = max(0, min(86400, (int) ($options['max_early_start_seconds'] ?? ($existing['max_early_start_seconds'] ?? 0))));
     $tuningMode = ($options['tuning_mode'] ?? ($existing['tuning_mode'] ?? 'automatic')) === 'manual' ? 'manual' : 'automatic';
     $discoveredFromCode = !empty($options['discovered_from_code'] ?? $existing['discovered_from_code'] ?? 0) ? 1 : 0;
     $explicitlyConfigured = array_key_exists('explicitly_configured', $options)
@@ -4630,6 +4690,10 @@ function db_sync_schedule_upsert(string $jobKey, int $enabled, int $intervalSeco
             priority,
             concurrency_policy,
             timeout_seconds,
+            allow_backfill,
+            backfill_priority,
+            min_backfill_gap_seconds,
+            max_early_start_seconds,
             next_run_at,
             next_due_at,
             current_state,
@@ -4641,7 +4705,7 @@ function db_sync_schedule_upsert(string $jobKey, int $enabled, int $intervalSeco
             last_error,
             locked_until
          ) VALUES (
-            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL
+            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL
          )
          ON DUPLICATE KEY UPDATE
             enabled = VALUES(enabled),
@@ -4652,6 +4716,10 @@ function db_sync_schedule_upsert(string $jobKey, int $enabled, int $intervalSeco
             priority = VALUES(priority),
             concurrency_policy = VALUES(concurrency_policy),
             timeout_seconds = VALUES(timeout_seconds),
+            allow_backfill = VALUES(allow_backfill),
+            backfill_priority = VALUES(backfill_priority),
+            min_backfill_gap_seconds = VALUES(min_backfill_gap_seconds),
+            max_early_start_seconds = VALUES(max_early_start_seconds),
             tuning_mode = VALUES(tuning_mode),
             discovered_from_code = VALUES(discovered_from_code),
             explicitly_configured = VALUES(explicitly_configured),
@@ -4664,7 +4732,7 @@ function db_sync_schedule_upsert(string $jobKey, int $enabled, int $intervalSeco
             END,
             locked_until = CASE WHEN VALUES(enabled) = 1 THEN sync_schedules.locked_until ELSE NULL END,
             updated_at = CURRENT_TIMESTAMP',
-        [$normalizedKey, $enabled, $intervalMinutes, $safeIntervalSeconds, $safeOffsetSeconds, $offsetMinutes, $priority, $concurrencyPolicy, $timeoutSeconds, $nextDueAt, $nextDueAt, $currentState, $tuningMode, $discoveredFromCode, $explicitlyConfigured]
+        [$normalizedKey, $enabled, $intervalMinutes, $safeIntervalSeconds, $safeOffsetSeconds, $offsetMinutes, $priority, $concurrencyPolicy, $timeoutSeconds, $allowBackfill, $backfillPriority, $minBackfillGapSeconds, $maxEarlyStartSeconds, $nextDueAt, $nextDueAt, $currentState, $tuningMode, $discoveredFromCode, $explicitlyConfigured]
     );
 }
 
@@ -4800,6 +4868,7 @@ function db_sync_schedule_claim_job_forced(int $scheduleId, int $lockTtlSeconds 
              last_status = ?,
              last_error = NULL,
              current_state = ?,
+             last_execution_mode = \'idle_backfill\',
              last_started_at = UTC_TIMESTAMP(),
              latest_allowed_start_at = DATE_ADD(UTC_TIMESTAMP(), INTERVAL GREATEST(1, interval_minutes) MINUTE),
              updated_at = CURRENT_TIMESTAMP

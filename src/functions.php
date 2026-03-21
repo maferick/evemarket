@@ -3026,14 +3026,14 @@ function scheduler_registry_definitions(): array
         'killmail_r2z2_sync' => ['label' => 'Killmail R2Z2 Stream', 'default_interval_minutes' => 3, 'default_offset_minutes' => 3, 'priority' => 'highest', 'timeout_seconds' => 90, 'concurrency_policy' => 'single', 'tuning_mode' => 'automatic', 'explicitly_configured' => true, 'min_interval_minutes' => 1, 'max_interval_minutes' => 3],
         'configured_structure_destination_id_for_esi_sync' => ['label' => 'Configured Structure Destination for ESI', 'default_interval_minutes' => 30, 'default_offset_minutes' => 4, 'priority' => 'normal', 'timeout_seconds' => 120, 'concurrency_policy' => 'single', 'tuning_mode' => 'automatic', 'explicitly_configured' => false],
         'current_state_refresh_sync' => ['label' => 'Current-State Refresh', 'default_interval_minutes' => 12, 'default_offset_minutes' => 6, 'priority' => 'medium', 'timeout_seconds' => 120, 'concurrency_policy' => 'single', 'tuning_mode' => 'automatic', 'explicitly_configured' => true],
-        'doctrine_intelligence_sync' => ['label' => 'Doctrine Intelligence', 'default_interval_minutes' => 15, 'default_offset_minutes' => 8, 'priority' => 'normal', 'timeout_seconds' => 180, 'concurrency_policy' => 'single', 'tuning_mode' => 'automatic', 'explicitly_configured' => true],
-        'market_comparison_summary_sync' => ['label' => 'Market Comparison Summary', 'default_interval_minutes' => 15, 'default_offset_minutes' => 9, 'priority' => 'normal', 'timeout_seconds' => 180, 'concurrency_policy' => 'single', 'tuning_mode' => 'automatic', 'explicitly_configured' => true],
-        'loss_demand_summary_sync' => ['label' => 'Loss Demand Summary', 'default_interval_minutes' => 15, 'default_offset_minutes' => 10, 'priority' => 'normal', 'timeout_seconds' => 180, 'concurrency_policy' => 'single', 'tuning_mode' => 'automatic', 'explicitly_configured' => true],
-        'dashboard_summary_sync' => ['label' => 'Dashboard Summary', 'default_interval_minutes' => 15, 'default_offset_minutes' => 11, 'priority' => 'normal', 'timeout_seconds' => 180, 'concurrency_policy' => 'single', 'tuning_mode' => 'automatic', 'explicitly_configured' => true],
+        'doctrine_intelligence_sync' => ['label' => 'Doctrine Intelligence', 'default_interval_minutes' => 15, 'default_offset_minutes' => 8, 'priority' => 'normal', 'timeout_seconds' => 180, 'concurrency_policy' => 'single', 'tuning_mode' => 'automatic', 'explicitly_configured' => true, 'allow_backfill' => true, 'backfill_priority' => 'normal', 'min_backfill_gap_seconds' => 300, 'max_early_start_seconds' => 900],
+        'market_comparison_summary_sync' => ['label' => 'Market Comparison Summary', 'default_interval_minutes' => 15, 'default_offset_minutes' => 9, 'priority' => 'normal', 'timeout_seconds' => 180, 'concurrency_policy' => 'single', 'tuning_mode' => 'automatic', 'explicitly_configured' => true, 'allow_backfill' => true, 'backfill_priority' => 'high', 'min_backfill_gap_seconds' => 300, 'max_early_start_seconds' => 900],
+        'loss_demand_summary_sync' => ['label' => 'Loss Demand Summary', 'default_interval_minutes' => 15, 'default_offset_minutes' => 10, 'priority' => 'normal', 'timeout_seconds' => 180, 'concurrency_policy' => 'single', 'tuning_mode' => 'automatic', 'explicitly_configured' => true, 'allow_backfill' => true, 'backfill_priority' => 'high', 'min_backfill_gap_seconds' => 300, 'max_early_start_seconds' => 900],
+        'dashboard_summary_sync' => ['label' => 'Dashboard Summary', 'default_interval_minutes' => 15, 'default_offset_minutes' => 11, 'priority' => 'normal', 'timeout_seconds' => 180, 'concurrency_policy' => 'single', 'tuning_mode' => 'automatic', 'explicitly_configured' => true, 'allow_backfill' => true, 'backfill_priority' => 'highest', 'min_backfill_gap_seconds' => 240, 'max_early_start_seconds' => 900],
         'rebuild_ai_briefings' => ['label' => 'Rebuild AI Briefings', 'default_interval_minutes' => 20, 'default_offset_minutes' => 12, 'priority' => 'normal', 'timeout_seconds' => 300, 'concurrency_policy' => 'background', 'tuning_mode' => 'automatic', 'explicitly_configured' => true],
         'activity_priority_summary_sync' => ['label' => 'Activity Priority Summary', 'default_interval_minutes' => 15, 'default_offset_minutes' => 13, 'priority' => 'normal', 'timeout_seconds' => 180, 'concurrency_policy' => 'single', 'tuning_mode' => 'automatic', 'explicitly_configured' => false],
-        'market_hub_local_history_sync' => ['label' => 'Market Hub Local History', 'default_interval_minutes' => 20, 'default_offset_minutes' => 14, 'priority' => 'normal', 'timeout_seconds' => 1800, 'concurrency_policy' => 'background', 'tuning_mode' => 'automatic', 'explicitly_configured' => true],
-        'analytics_bucket_1h_sync' => ['label' => 'Analytics Buckets (1h)', 'default_interval_minutes' => 15, 'default_offset_minutes' => 15, 'priority' => 'normal', 'timeout_seconds' => 180, 'concurrency_policy' => 'single', 'tuning_mode' => 'automatic', 'explicitly_configured' => false],
+        'market_hub_local_history_sync' => ['label' => 'Market Hub Local History', 'default_interval_minutes' => 20, 'default_offset_minutes' => 14, 'priority' => 'normal', 'timeout_seconds' => 1800, 'concurrency_policy' => 'background', 'tuning_mode' => 'automatic', 'explicitly_configured' => true, 'allow_backfill' => true, 'backfill_priority' => 'normal', 'min_backfill_gap_seconds' => 900, 'max_early_start_seconds' => 900],
+        'analytics_bucket_1h_sync' => ['label' => 'Analytics Buckets (1h)', 'default_interval_minutes' => 15, 'default_offset_minutes' => 15, 'priority' => 'normal', 'timeout_seconds' => 180, 'concurrency_policy' => 'single', 'tuning_mode' => 'automatic', 'explicitly_configured' => false, 'allow_backfill' => true, 'backfill_priority' => 'normal', 'min_backfill_gap_seconds' => 600, 'max_early_start_seconds' => 900],
         'analytics_bucket_1d_sync' => ['label' => 'Analytics Buckets (1d)', 'default_interval_minutes' => 60, 'default_offset_minutes' => 16, 'priority' => 'normal', 'timeout_seconds' => 240, 'concurrency_policy' => 'single', 'tuning_mode' => 'automatic', 'explicitly_configured' => false],
         'alliance_historical_sync' => ['label' => 'Alliance Historical', 'default_interval_minutes' => 360, 'default_offset_minutes' => 5, 'priority' => 'normal', 'timeout_seconds' => 3600, 'concurrency_policy' => 'background', 'tuning_mode' => 'automatic', 'explicitly_configured' => true],
         'market_hub_historical_sync' => ['label' => 'Market Hub Historical', 'default_interval_minutes' => 360, 'default_offset_minutes' => 0, 'priority' => 'normal', 'timeout_seconds' => 3600, 'concurrency_policy' => 'background', 'tuning_mode' => 'automatic', 'explicitly_configured' => true],
@@ -4773,6 +4773,11 @@ function sync_schedule_settings_view_model(): array
             'last_result' => (string) ($row['last_result'] ?? $row['last_status'] ?? 'never'),
             'last_error' => (string) ($row['last_error'] ?? ''),
             'current_state' => $currentState,
+            'allow_backfill' => !empty($row['allow_backfill']) || !empty($definition['allow_backfill']),
+            'backfill_priority' => (string) ($row['backfill_priority'] ?? ($definition['backfill_priority'] ?? ($row['priority'] ?? ($definition['priority'] ?? 'normal')))),
+            'min_backfill_gap_seconds' => (int) ($row['min_backfill_gap_seconds'] ?? ($definition['min_backfill_gap_seconds'] ?? 900)),
+            'max_early_start_seconds' => (int) ($row['max_early_start_seconds'] ?? ($definition['max_early_start_seconds'] ?? 0)),
+            'last_execution_mode' => (string) ($row['last_execution_mode'] ?? 'scheduled'),
             'concurrency_policy' => (string) ($row['concurrency_policy'] ?? ($definition['concurrency_policy'] ?? 'single')),
             'tuning_mode' => (string) ($row['tuning_mode'] ?? ($definition['tuning_mode'] ?? 'automatic')),
             'value_source' => ((string) ($row['tuning_mode'] ?? 'automatic')) === 'manual' ? 'manual' : (!empty($row['last_auto_tuned_at']) ? 'auto-tuned' : 'baseline'),
@@ -9551,6 +9556,10 @@ function scheduler_registry_bootstrap(): void
                 'priority' => (string) ($definition['priority'] ?? 'normal'),
                 'timeout_seconds' => (int) ($definition['timeout_seconds'] ?? 300),
                 'concurrency_policy' => (string) ($definition['concurrency_policy'] ?? 'single'),
+                'allow_backfill' => !empty($definition['allow_backfill']),
+                'backfill_priority' => (string) ($definition['backfill_priority'] ?? ($definition['priority'] ?? 'normal')),
+                'min_backfill_gap_seconds' => (int) ($definition['min_backfill_gap_seconds'] ?? 900),
+                'max_early_start_seconds' => (int) ($definition['max_early_start_seconds'] ?? 0),
                 'tuning_mode' => (string) ($definition['tuning_mode'] ?? 'automatic'),
                 'discovered_from_code' => true,
                 'explicitly_configured' => (bool) ($definition['explicitly_configured'] ?? false),
@@ -9683,6 +9692,158 @@ function scheduler_due_jobs(): array
     }
 
     return $claimed;
+}
+
+function scheduler_idle_backfill_jobs(?callable $logger = null, int $limit = 12): array
+{
+    scheduler_registry_bootstrap();
+
+    $definitions = scheduler_job_definitions();
+    $candidates = db_sync_schedule_fetch_backfill_candidates($limit);
+    if ($candidates === []) {
+        return [];
+    }
+
+    $running = db_sync_schedule_fetch_running_jobs();
+    if ($running !== []) {
+        return [];
+    }
+
+    $state = scheduler_live_capacity_snapshot($running);
+    foreach ($candidates as $job) {
+        $scheduleId = (int) ($job['id'] ?? 0);
+        $jobKey = (string) ($job['job_key'] ?? '');
+        if ($scheduleId <= 0 || $jobKey === '') {
+            continue;
+        }
+
+        $profile = scheduler_job_recent_resource_profile($jobKey, $job);
+        $candidate = $job + $profile + [
+            'projected_cpu_percent' => (float) ($profile['projection_cpu_percent'] ?? 0.0),
+            'projected_memory_bytes' => (int) ($profile['projection_memory_bytes'] ?? 0),
+            'scheduler_selection_mode' => 'idle_backfill',
+        ];
+
+        db_sync_schedule_mark_planner_state($scheduleId, [
+            'current_projected_cpu_percent' => $candidate['projected_cpu_percent'],
+            'current_projected_memory_bytes' => $candidate['projected_memory_bytes'],
+            'current_pressure_state' => $state['pressure'] ?? 'healthy',
+            'latest_allowed_start_at' => scheduler_latest_allowed_start_at($candidate),
+            'must_run_alone' => !empty($candidate['must_run_alone']),
+            'prefers_solo' => !empty($candidate['prefers_solo']),
+            'allow_parallel' => !empty($candidate['allow_parallel']),
+        ]);
+
+        $reasons = [];
+        $isCritical = scheduler_is_protected_job($jobKey);
+        $projectedCpu = $state['current_cpu_used_percent'] + (float) $candidate['projected_cpu_percent'];
+        $projectedMemory = $state['current_memory_used_bytes'] + (int) $candidate['projected_memory_bytes'];
+        if ($projectedCpu > (float) ($state['cpu_budget_percent'] ?? 0.0)) {
+            $reasons[] = 'cpu_budget';
+        }
+        if ($projectedMemory > (int) ($state['memory_budget_bytes'] ?? 0)) {
+            $reasons[] = 'memory_budget';
+        }
+        if (!$isCritical && $projectedCpu > ((float) ($state['cpu_budget_percent'] ?? 0.0) - (float) ($state['reserved_critical_cpu_percent'] ?? 0.0))) {
+            $reasons[] = 'reserved_critical_cpu';
+        }
+        if (!$isCritical && $projectedMemory > ((int) ($state['memory_budget_bytes'] ?? 0) - (int) ($state['reserved_critical_memory_bytes'] ?? 0))) {
+            $reasons[] = 'reserved_critical_memory';
+        }
+        if (($state['pressure'] ?? 'healthy') === 'overload_protection' && !$isCritical) {
+            $reasons[] = 'overload_guard';
+        }
+
+        if ($reasons !== []) {
+            $primaryReason = $reasons[0];
+            $decisionType = match ($primaryReason) {
+                'cpu_budget', 'reserved_critical_cpu' => 'idle_backfill_deferred_cpu',
+                'memory_budget', 'reserved_critical_memory' => 'idle_backfill_deferred_memory',
+                default => 'idle_backfill_deferred_capacity',
+            };
+            $reasonText = match ($primaryReason) {
+                'cpu_budget' => 'Idle backfill skipped because projected CPU demand would exceed the scheduler CPU budget.',
+                'memory_budget' => 'Idle backfill skipped because projected memory demand would exceed the scheduler memory budget.',
+                'reserved_critical_cpu', 'reserved_critical_memory' => 'Idle backfill skipped to preserve reserved headroom for critical due work.',
+                'overload_guard' => 'Idle backfill skipped because overload protection is active.',
+                default => 'Idle backfill skipped because current scheduler pressure made this candidate unsafe.',
+            };
+            db_scheduler_planner_decision_insert($scheduleId, $jobKey, $decisionType, (string) ($state['pressure'] ?? 'healthy'), $reasonText, [
+                'selection_mode' => 'idle_backfill',
+                'defer_reasons' => $reasons,
+                'projected_cpu_percent' => $candidate['projected_cpu_percent'],
+                'projected_memory_bytes' => $candidate['projected_memory_bytes'],
+            ]);
+            db_sync_schedule_mark_planner_state($scheduleId, [
+                'current_projected_cpu_percent' => $candidate['projected_cpu_percent'],
+                'current_projected_memory_bytes' => $candidate['projected_memory_bytes'],
+                'current_pressure_state' => $state['pressure'] ?? 'healthy',
+                'latest_allowed_start_at' => scheduler_latest_allowed_start_at($candidate),
+                'must_run_alone' => !empty($candidate['must_run_alone']),
+                'prefers_solo' => !empty($candidate['prefers_solo']),
+                'allow_parallel' => !empty($candidate['allow_parallel']),
+                'last_capacity_reason' => $reasonText,
+            ]);
+            continue;
+        }
+
+        $defaultTimeout = (int) ($definitions[$jobKey]['timeout_seconds'] ?? ($job['timeout_seconds'] ?? 300));
+        $timeoutSeconds = scheduler_job_timeout_seconds($jobKey, $defaultTimeout);
+        $defaultLockTtl = (int) ($definitions[$jobKey]['lock_ttl_seconds'] ?? max(120, $timeoutSeconds + 60));
+        $lockTtl = scheduler_job_lock_ttl_seconds($defaultLockTtl, $timeoutSeconds);
+        $claimedJob = db_sync_schedule_claim_job_forced($scheduleId, $lockTtl);
+        if ($claimedJob === null) {
+            db_scheduler_job_event_insert($jobKey, 'lock_skipped', ['selection_mode' => 'idle_backfill'], 0, null);
+            continue;
+        }
+
+        db_scheduler_planner_decision_insert($scheduleId, $jobKey, 'idle_backfill_allowed', (string) ($state['pressure'] ?? 'healthy'), 'Idle backfill selected this job because no due work was running and the projected resource cost fit the live scheduler budget.', [
+            'selection_mode' => 'idle_backfill',
+            'projected_cpu_percent' => $candidate['projected_cpu_percent'],
+            'projected_memory_bytes' => $candidate['projected_memory_bytes'],
+        ]);
+        if ($logger !== null) {
+            $logger('scheduler.idle_backfill_selected', [
+                'job_id' => $scheduleId,
+                'job' => $jobKey,
+                'projected_cpu_percent' => $candidate['projected_cpu_percent'],
+                'projected_memory_bytes' => $candidate['projected_memory_bytes'],
+            ]);
+        }
+
+        return [$claimedJob + $candidate];
+    }
+
+    return [];
+}
+
+function scheduler_select_work_batch(?callable $logger = null): array
+{
+    $due = scheduler_due_jobs();
+    if ($due !== []) {
+        return [
+            'mode' => 'due',
+            'jobs' => $due,
+            'running' => [],
+        ];
+    }
+
+    $running = db_sync_schedule_fetch_running_jobs();
+    if ($running !== []) {
+        return [
+            'mode' => 'idle',
+            'jobs' => [],
+            'running' => $running,
+        ];
+    }
+
+    $backfill = scheduler_idle_backfill_jobs($logger);
+
+    return [
+        'mode' => $backfill === [] ? 'idle' : 'idle_backfill',
+        'jobs' => $backfill,
+        'running' => [],
+    ];
 }
 
 function scheduler_refresh_job_resource_profile(array $job, array $runtimeMetric, string $resultStatus): array
@@ -10203,8 +10364,23 @@ function cron_tick_run(?callable $logger = null): array
         ];
     }
 
-    $jobs = scheduler_due_jobs();
-    $plan = scheduler_plan_due_jobs($jobs);
+    $workBatch = scheduler_select_work_batch($logger);
+    $jobs = (array) ($workBatch['jobs'] ?? []);
+    $planMode = (string) ($workBatch['mode'] ?? 'due');
+    $runningJobs = (array) ($workBatch['running'] ?? []);
+    if ($planMode === 'idle_backfill') {
+        $capacity = scheduler_live_capacity_snapshot($runningJobs);
+        $plan = [
+            'mode' => 'idle_backfill',
+            'allowed' => $jobs,
+            'deferred' => [],
+            'running' => $runningJobs,
+            'state' => $capacity,
+        ];
+    } else {
+        $plan = scheduler_plan_due_jobs($jobs);
+        $plan['mode'] = $planMode;
+    }
     $plannedJobs = (array) ($plan['allowed'] ?? []);
     $results = [];
     $successCount = 0;
@@ -10224,6 +10400,7 @@ function cron_tick_run(?callable $logger = null): array
                 'job' => $jobKey,
                 'job_type' => $jobType,
                 'scheduled_for' => $scheduledFor,
+                'selection_mode' => (string) ($job['scheduler_selection_mode'] ?? $planMode),
                 'projected_cpu_percent' => $job['projected_cpu_percent'] ?? null,
                 'projected_memory_bytes' => $job['projected_memory_bytes'] ?? null,
                 'pressure_state' => $plan['state']['pressure'] ?? 'healthy',
@@ -10258,6 +10435,7 @@ function cron_tick_run(?callable $logger = null): array
                 'job' => (string) ($result['job_key'] ?? $jobKey),
                 'job_type' => (string) ($result['job_type'] ?? $jobType),
                 'scheduled_for' => (string) ($result['scheduled_for'] ?? $scheduledFor),
+                'selection_mode' => (string) ($job['scheduler_selection_mode'] ?? $planMode),
                 'actual_start_time' => (string) ($result['started_at'] ?? ''),
                 'finish_time' => (string) ($result['finished_at'] ?? ''),
                 'duration_ms' => (int) ($result['duration_ms'] ?? 0),
@@ -10287,13 +10465,14 @@ function cron_tick_run(?callable $logger = null): array
 
     return [
         'ran_at' => gmdate('Y-m-d H:i:s'),
-        'jobs_due' => count($jobs),
+        'jobs_due' => $planMode === 'due' ? count($jobs) : 0,
         'jobs_planned' => count($plannedJobs),
         'jobs_deferred' => count((array) ($plan['deferred'] ?? [])),
         'jobs_processed' => count($results),
         'jobs_succeeded' => $successCount,
         'jobs_failed' => $failureCount,
         'jobs_dispatched' => $dispatchedCount,
+        'selection_mode' => $planMode,
         'planner' => $plan,
         'optimizer' => $optimizerResult,
         'results' => $results,
