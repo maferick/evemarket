@@ -199,8 +199,14 @@ function db_transaction(callable $callback): mixed
         $result = $callback($pdo);
 
         if ($isRootTransaction) {
+            if (!$pdo->inTransaction()) {
+                throw new RuntimeException('The active database transaction ended before db_transaction() could commit. Avoid running implicit-commit SQL inside transactional callbacks.');
+            }
             $pdo->commit();
         } else {
+            if (!$pdo->inTransaction()) {
+                throw new RuntimeException('The active database savepoint ended before db_transaction() could release it. Avoid running implicit-commit SQL inside transactional callbacks.');
+            }
             $pdo->exec("RELEASE SAVEPOINT {$savepoint}");
         }
 
@@ -4646,6 +4652,12 @@ function db_scheduler_pairing_rules_replace_from_profiling_run(int $profilingRun
 
 function db_scheduler_profiling_tables_ensure(): void
 {
+    static $ensured = false;
+
+    if ($ensured) {
+        return;
+    }
+
     db_execute('CREATE TABLE IF NOT EXISTS scheduler_profiling_runs (
         id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
         run_status VARCHAR(30) NOT NULL,
@@ -4724,6 +4736,8 @@ function db_scheduler_profiling_tables_ensure(): void
         KEY idx_scheduler_schedule_snapshots_run (profiling_run_id, created_at),
         KEY idx_scheduler_schedule_snapshots_label (snapshot_label, created_at)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4');
+
+    $ensured = true;
 }
 
 function db_scheduler_profiling_active_run(): ?array
