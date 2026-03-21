@@ -80,6 +80,12 @@ function nav_items(): array
             'children' => [],
         ],
         [
+            'label' => 'Buy All Planner',
+            'path' => '/buy-all',
+            'icon' => '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" class="h-4 w-4" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M4 7h16M4 12h16M4 17h10"/><path stroke-linecap="round" stroke-linejoin="round" d="m15 15 2 2 4-4"/></svg>',
+            'children' => [],
+        ],
+        [
             'label' => 'Market Status',
             'path' => '/market-status',
             'icon' => '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" class="h-4 w-4" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M3 6h18"/><path stroke-linecap="round" stroke-linejoin="round" d="M7 12h10"/><path stroke-linecap="round" stroke-linejoin="round" d="M10 18h4"/></svg>',
@@ -19362,6 +19368,818 @@ function activity_priority_refresh_summary_job_result(string $reason = 'manual')
 function activity_priority_page_data(): array
 {
     return activity_priority_snapshot_payload();
+}
+
+
+function buy_all_hauling_cost_per_m3(): float
+{
+    return 250.0;
+}
+
+function buy_all_page_item_type_limit(): int
+{
+    return 100;
+}
+
+function buy_all_page_volume_limit(): float
+{
+    return 350000.0;
+}
+
+function buy_all_mode_definitions(): array
+{
+    return [
+        'doctrine_critical' => [
+            'label' => 'Doctrine Critical',
+            'description' => 'Restore blocked doctrine readiness first, even when economics are partial.',
+            'default_sort' => 'necessity',
+            'necessity_weight' => 0.78,
+            'profit_weight' => 0.22,
+            'require_doctrine_linked' => true,
+            'positive_margin_bias' => false,
+        ],
+        'seed_backlog' => [
+            'label' => 'Seed Backlog',
+            'description' => 'Seed alliance gaps from the hub while keeping haul efficiency visible.',
+            'default_sort' => 'necessity',
+            'necessity_weight' => 0.62,
+            'profit_weight' => 0.38,
+            'require_doctrine_linked' => false,
+            'positive_margin_bias' => false,
+        ],
+        'opportunity' => [
+            'label' => 'Opportunity / Profit',
+            'description' => 'Prefer positive net imports and repricing candidates with strong contribution after hauling.',
+            'default_sort' => 'net_profit',
+            'necessity_weight' => 0.18,
+            'profit_weight' => 0.82,
+            'require_doctrine_linked' => false,
+            'positive_margin_bias' => true,
+        ],
+        'blended' => [
+            'label' => 'Blended',
+            'description' => 'Mix doctrine urgency with positive-margin seed and import opportunities.',
+            'default_sort' => 'blended_score',
+            'necessity_weight' => 0.56,
+            'profit_weight' => 0.44,
+            'require_doctrine_linked' => false,
+            'positive_margin_bias' => false,
+        ],
+        'custom' => [
+            'label' => 'Custom',
+            'description' => 'Operator-selected filters and ranking controls.',
+            'default_sort' => 'blended_score',
+            'necessity_weight' => 0.5,
+            'profit_weight' => 0.5,
+            'require_doctrine_linked' => false,
+            'positive_margin_bias' => false,
+        ],
+    ];
+}
+
+function buy_all_sort_options(): array
+{
+    return [
+        'blended_score' => 'Blended score',
+        'necessity' => 'Necessity',
+        'net_profit' => 'Net profit',
+        'doctrine_impact' => 'Doctrine impact',
+        'blocked_fit_impact' => 'Blocked-fit impact',
+        'volume_efficiency' => 'Volume efficiency',
+        'isk_efficiency' => 'ISK efficiency',
+        'margin_percent' => 'Net margin %',
+    ];
+}
+
+function buy_all_parse_bool_query(array $query, string $key, bool $default = false): bool
+{
+    if (!array_key_exists($key, $query)) {
+        return $default;
+    }
+
+    $value = $query[$key];
+    if (is_bool($value)) {
+        return $value;
+    }
+
+    $normalized = strtolower(trim((string) $value));
+
+    return in_array($normalized, ['1', 'true', 'yes', 'on'], true);
+}
+
+function buy_all_request(array $query = []): array
+{
+    $modes = buy_all_mode_definitions();
+    $sortOptions = buy_all_sort_options();
+    $mode = strtolower(trim((string) ($query['mode'] ?? 'blended')));
+    if (!isset($modes[$mode])) {
+        $mode = 'blended';
+    }
+
+    $sort = strtolower(trim((string) ($query['sort'] ?? ($modes[$mode]['default_sort'] ?? 'blended_score'))));
+    if (!isset($sortOptions[$sort])) {
+        $sort = (string) ($modes[$mode]['default_sort'] ?? 'blended_score');
+    }
+
+    $filters = [
+        'doctrine_linked_only' => buy_all_parse_bool_query($query, 'doctrine_linked_only', (bool) ($modes[$mode]['require_doctrine_linked'] ?? false)),
+        'positive_net_margin_only' => buy_all_parse_bool_query($query, 'positive_net_margin_only', (bool) ($modes[$mode]['positive_margin_bias'] ?? false)),
+        'allow_low_margin_doctrine_critical' => buy_all_parse_bool_query($query, 'allow_low_margin_doctrine_critical', true),
+        'exclude_incomplete_pricing' => buy_all_parse_bool_query($query, 'exclude_incomplete_pricing', false),
+        'exclude_oversized_low_efficiency' => buy_all_parse_bool_query($query, 'exclude_oversized_low_efficiency', false),
+        'min_priority_threshold' => max(0.0, min(100.0, (float) ($query['min_priority_threshold'] ?? 0))),
+        'min_net_margin_threshold' => max(-100.0, min(500.0, (float) ($query['min_net_margin_threshold'] ?? 0))),
+        'min_net_profit_threshold' => max(-1000000000.0, (float) ($query['min_net_profit_threshold'] ?? 0)),
+    ];
+
+    return [
+        'mode' => $mode,
+        'sort' => $sort,
+        'page' => max(1, (int) ($query['page'] ?? 1)),
+        'filters' => $filters,
+    ];
+}
+
+function buy_all_round_quantity(int $quantity): int
+{
+    if ($quantity <= 10) {
+        return $quantity;
+    }
+    if ($quantity <= 50) {
+        return (int) (ceil($quantity / 5) * 5);
+    }
+
+    return (int) (ceil($quantity / 10) * 10);
+}
+
+function buy_all_latest_market_history_by_type(string $sourceType, int $sourceId, array $typeIds, int $days = 14): array
+{
+    $safeTypeIds = array_values(array_unique(array_filter(array_map('intval', $typeIds), static fn (int $typeId): bool => $typeId > 0)));
+    if ($sourceId <= 0 || $safeTypeIds === []) {
+        return [];
+    }
+
+    try {
+        $rows = db_market_history_daily_window_by_type_ids($sourceType, $sourceId, $safeTypeIds, $days);
+    } catch (Throwable) {
+        return [];
+    }
+
+    $indexed = [];
+    foreach ($rows as $row) {
+        $typeId = (int) ($row['type_id'] ?? 0);
+        if ($typeId <= 0 || isset($indexed[$typeId])) {
+            continue;
+        }
+        $indexed[$typeId] = $row;
+    }
+
+    return $indexed;
+}
+
+function buy_all_reason_meta(array $candidate): array
+{
+    if ((int) ($candidate['bottleneck_fit_count'] ?? 0) > 0) {
+        return ['code' => 'doctrine_bottleneck', 'text' => 'Doctrine bottleneck blocking complete fits.', 'theme' => 'Doctrine bottlenecks'];
+    }
+    if ((int) ($candidate['blocked_fit_impact'] ?? 0) >= 3) {
+        return ['code' => 'high_blocked_fit_impact', 'text' => 'High blocked-fit impact across doctrine gaps.', 'theme' => 'Blocked fits'];
+    }
+    if ((bool) ($candidate['missing_in_alliance'] ?? false) && (($candidate['net_profit_total'] ?? null) !== null) && (float) ($candidate['net_profit_total'] ?? 0.0) > 0.0) {
+        return ['code' => 'profitable_import_spread', 'text' => 'Missing alliance stock with positive import spread after hauling.', 'theme' => 'Profitable seeding'];
+    }
+    if ((bool) ($candidate['missing_in_alliance'] ?? false)) {
+        return ['code' => 'missing_alliance_stock', 'text' => 'Missing alliance stock with hub availability to seed.', 'theme' => 'Seed backlog'];
+    }
+    if ((float) ($candidate['net_margin_percent'] ?? -999.0) >= 15.0 && (float) ($candidate['volume_efficiency'] ?? 0.0) > 0.0) {
+        return ['code' => 'low_volume_high_margin_import', 'text' => 'Low-volume, high-margin import candidate.', 'theme' => 'High-margin imports'];
+    }
+    if (!empty($candidate['is_doctrine_linked'])) {
+        return ['code' => 'enabled_item_replenishment_candidate', 'text' => 'Doctrine-linked replenishment candidate from enabled-item and market signals.', 'theme' => 'Doctrine replenishment'];
+    }
+
+    return ['code' => 'local_price_dislocation', 'text' => 'Local price dislocation or stock pressure suggests action.', 'theme' => 'Market dislocations'];
+}
+
+function buy_all_compare_items(array $a, array $b, string $sort, string $mode): int
+{
+    $cmp = 0;
+    switch ($sort) {
+        case 'necessity':
+            $cmp = ((float) ($b['necessity_score'] ?? 0.0) <=> (float) ($a['necessity_score'] ?? 0.0))
+                ?: ((int) ($b['doctrine_fit_impact'] ?? 0) <=> (int) ($a['doctrine_fit_impact'] ?? 0))
+                ?: (((float) ($b['net_profit_total'] ?? -INF)) <=> ((float) ($a['net_profit_total'] ?? -INF)));
+            break;
+        case 'net_profit':
+            $cmp = (((float) ($b['net_profit_total'] ?? -INF)) <=> ((float) ($a['net_profit_total'] ?? -INF)))
+                ?: (((float) ($b['net_margin_percent'] ?? -INF)) <=> ((float) ($a['net_margin_percent'] ?? -INF)))
+                ?: ((float) ($b['profit_score'] ?? 0.0) <=> (float) ($a['profit_score'] ?? 0.0));
+            break;
+        case 'doctrine_impact':
+            $cmp = ((int) ($b['doctrine_fit_impact'] ?? 0) <=> (int) ($a['doctrine_fit_impact'] ?? 0))
+                ?: ((float) ($b['necessity_score'] ?? 0.0) <=> (float) ($a['necessity_score'] ?? 0.0));
+            break;
+        case 'blocked_fit_impact':
+            $cmp = ((int) ($b['blocked_fit_impact'] ?? 0) <=> (int) ($a['blocked_fit_impact'] ?? 0))
+                ?: ((float) ($b['necessity_score'] ?? 0.0) <=> (float) ($a['necessity_score'] ?? 0.0));
+            break;
+        case 'volume_efficiency':
+            $cmp = (((float) ($b['volume_efficiency'] ?? -INF)) <=> ((float) ($a['volume_efficiency'] ?? -INF)))
+                ?: (((float) ($b['net_profit_total'] ?? -INF)) <=> ((float) ($a['net_profit_total'] ?? -INF)));
+            break;
+        case 'isk_efficiency':
+            $cmp = (((float) ($b['isk_efficiency'] ?? -INF)) <=> ((float) ($a['isk_efficiency'] ?? -INF)))
+                ?: (((float) ($b['net_profit_total'] ?? -INF)) <=> ((float) ($a['net_profit_total'] ?? -INF)));
+            break;
+        case 'margin_percent':
+            $cmp = (((float) ($b['net_margin_percent'] ?? -INF)) <=> ((float) ($a['net_margin_percent'] ?? -INF)))
+                ?: (((float) ($b['net_profit_total'] ?? -INF)) <=> ((float) ($a['net_profit_total'] ?? -INF)));
+            break;
+        default:
+            $cmp = ((float) ($b['blended_score'] ?? 0.0) <=> (float) ($a['blended_score'] ?? 0.0))
+                ?: ((float) ($b['necessity_score'] ?? 0.0) <=> (float) ($a['necessity_score'] ?? 0.0))
+                ?: (((float) ($b['net_profit_total'] ?? -INF)) <=> ((float) ($a['net_profit_total'] ?? -INF)));
+            break;
+    }
+
+    if ($cmp !== 0) {
+        return $cmp;
+    }
+
+    if ($mode === 'doctrine_critical') {
+        return ((int) ($b['doctrine_fit_impact'] ?? 0) <=> (int) ($a['doctrine_fit_impact'] ?? 0))
+            ?: strcasecmp((string) ($a['item_name'] ?? ''), (string) ($b['item_name'] ?? ''));
+    }
+
+    return strcasecmp((string) ($a['item_name'] ?? ''), (string) ($b['item_name'] ?? ''));
+}
+
+function buy_all_pack_pages(array $items): array
+{
+    $pages = [];
+    $maxTypes = buy_all_page_item_type_limit();
+    $maxVolume = buy_all_page_volume_limit();
+    $pageIndex = 0;
+    $pages[$pageIndex] = [
+        'number' => 1,
+        'items' => [],
+        'item_count' => 0,
+        'total_units' => 0,
+        'total_volume' => 0.0,
+        'total_buy_cost' => 0.0,
+        'total_expected_sell_value' => 0.0,
+        'total_hauling_cost' => 0.0,
+        'total_gross_profit' => 0.0,
+        'total_net_profit' => 0.0,
+        'doctrine_critical_count' => 0,
+        'high_necessity_count' => 0,
+        'medium_necessity_count' => 0,
+        'low_necessity_count' => 0,
+    ];
+    $excluded = [];
+
+    foreach ($items as $item) {
+        $remainingQuantity = max(0, (int) ($item['quantity'] ?? 0));
+        $unitVolume = max(0.0, (float) ($item['unit_volume'] ?? 0.0));
+        if ($remainingQuantity <= 0) {
+            continue;
+        }
+        if ($unitVolume > $maxVolume) {
+            $excluded[] = $item + ['exclusion_reason' => 'Unit volume exceeds the page cargo limit.'];
+            continue;
+        }
+
+        while ($remainingQuantity > 0) {
+            $page = &$pages[$pageIndex];
+            $remainingVolume = max(0.0, $maxVolume - (float) ($page['total_volume'] ?? 0.0));
+            $remainingTypeSlots = max(0, $maxTypes - (int) ($page['item_count'] ?? 0));
+
+            if ($remainingTypeSlots <= 0 || ($unitVolume > 0.0 && $remainingVolume < $unitVolume && ($page['item_count'] ?? 0) > 0)) {
+                $pageIndex++;
+                $pages[$pageIndex] = [
+                    'number' => $pageIndex + 1,
+                    'items' => [],
+                    'item_count' => 0,
+                    'total_units' => 0,
+                    'total_volume' => 0.0,
+                    'total_buy_cost' => 0.0,
+                    'total_expected_sell_value' => 0.0,
+                    'total_hauling_cost' => 0.0,
+                    'total_gross_profit' => 0.0,
+                    'total_net_profit' => 0.0,
+                    'doctrine_critical_count' => 0,
+                    'high_necessity_count' => 0,
+                    'medium_necessity_count' => 0,
+                    'low_necessity_count' => 0,
+                ];
+                unset($page);
+                continue;
+            }
+
+            $maxByVolume = $unitVolume > 0.0 ? (int) floor($remainingVolume / $unitVolume) : $remainingQuantity;
+            if ($unitVolume > 0.0) {
+                $maxByVolume = max(0, $maxByVolume);
+            }
+            if ($maxByVolume <= 0 && $unitVolume > 0.0) {
+                $pageIndex++;
+                $pages[$pageIndex] = [
+                    'number' => $pageIndex + 1,
+                    'items' => [],
+                    'item_count' => 0,
+                    'total_units' => 0,
+                    'total_volume' => 0.0,
+                    'total_buy_cost' => 0.0,
+                    'total_expected_sell_value' => 0.0,
+                    'total_hauling_cost' => 0.0,
+                    'total_gross_profit' => 0.0,
+                    'total_net_profit' => 0.0,
+                    'doctrine_critical_count' => 0,
+                    'high_necessity_count' => 0,
+                    'medium_necessity_count' => 0,
+                    'low_necessity_count' => 0,
+                ];
+                unset($page);
+                continue;
+            }
+
+            $chunkQuantity = $unitVolume > 0.0 ? min($remainingQuantity, $maxByVolume) : $remainingQuantity;
+            if ($chunkQuantity <= 0) {
+                break;
+            }
+
+            $chunk = $item;
+            $chunk['quantity'] = $chunkQuantity;
+            $chunk['total_volume'] = $unitVolume * $chunkQuantity;
+            $chunk['hauling_cost_total'] = (float) ($item['hauling_cost_per_unit'] ?? 0.0) * $chunkQuantity;
+            $chunk['buy_cost_total'] = isset($item['buy_price']) && $item['buy_price'] !== null ? ((float) $item['buy_price'] * $chunkQuantity) : null;
+            $chunk['expected_sell_total'] = isset($item['sell_price']) && $item['sell_price'] !== null ? ((float) $item['sell_price'] * $chunkQuantity) : null;
+            $chunk['gross_profit_total'] = isset($item['gross_profit_per_unit']) && $item['gross_profit_per_unit'] !== null ? ((float) $item['gross_profit_per_unit'] * $chunkQuantity) : null;
+            $chunk['net_profit_total'] = isset($item['net_profit_per_unit']) && $item['net_profit_per_unit'] !== null ? ((float) $item['net_profit_per_unit'] * $chunkQuantity) : null;
+
+            $page['items'][] = $chunk;
+            $page['item_count']++;
+            $page['total_units'] += $chunkQuantity;
+            $page['total_volume'] += (float) $chunk['total_volume'];
+            $page['total_buy_cost'] += (float) ($chunk['buy_cost_total'] ?? 0.0);
+            $page['total_expected_sell_value'] += (float) ($chunk['expected_sell_total'] ?? 0.0);
+            $page['total_hauling_cost'] += (float) ($chunk['hauling_cost_total'] ?? 0.0);
+            $page['total_gross_profit'] += (float) ($chunk['gross_profit_total'] ?? 0.0);
+            $page['total_net_profit'] += (float) ($chunk['net_profit_total'] ?? 0.0);
+            if (!empty($chunk['is_doctrine_critical'])) {
+                $page['doctrine_critical_count']++;
+            }
+            $necessity = (float) ($chunk['necessity_score'] ?? 0.0);
+            if ($necessity >= 70.0) {
+                $page['high_necessity_count']++;
+            } elseif ($necessity >= 40.0) {
+                $page['medium_necessity_count']++;
+            } else {
+                $page['low_necessity_count']++;
+            }
+
+            $remainingQuantity -= $chunkQuantity;
+            unset($page);
+
+            if ($remainingQuantity > 0) {
+                $pageIndex++;
+                $pages[$pageIndex] = [
+                    'number' => $pageIndex + 1,
+                    'items' => [],
+                    'item_count' => 0,
+                    'total_units' => 0,
+                    'total_volume' => 0.0,
+                    'total_buy_cost' => 0.0,
+                    'total_expected_sell_value' => 0.0,
+                    'total_hauling_cost' => 0.0,
+                    'total_gross_profit' => 0.0,
+                    'total_net_profit' => 0.0,
+                    'doctrine_critical_count' => 0,
+                    'high_necessity_count' => 0,
+                    'medium_necessity_count' => 0,
+                    'low_necessity_count' => 0,
+                ];
+            }
+        }
+    }
+
+    $pages = array_values(array_filter($pages, static fn (array $page): bool => (array) ($page['items'] ?? []) !== []));
+    foreach ($pages as &$page) {
+        $lines = array_map(static fn (array $row): string => trim((string) ($row['item_name'] ?? '')) . ' ' . (int) ($row['quantity'] ?? 0), $page['items']);
+        $page['necessity_mix_summary'] = 'High ' . doctrine_format_quantity((int) ($page['high_necessity_count'] ?? 0))
+            . ' · Medium ' . doctrine_format_quantity((int) ($page['medium_necessity_count'] ?? 0))
+            . ' · Low ' . doctrine_format_quantity((int) ($page['low_necessity_count'] ?? 0));
+        $page['clipboard_text'] = implode("\n", array_filter($lines, static fn (string $line): bool => trim($line) !== ''));
+    }
+    unset($page);
+
+    return ['pages' => $pages, 'excluded_items' => $excluded];
+}
+
+function buy_all_planner_data(array $query = []): array
+{
+    $request = buy_all_request($query);
+    $modeDefinitions = buy_all_mode_definitions();
+    $modeConfig = $modeDefinitions[$request['mode']] ?? $modeDefinitions['blended'];
+    $thresholds = market_compare_thresholds();
+    $marketOutcomes = market_comparison_outcomes();
+    $marketRows = array_values((array) ($marketOutcomes['rows'] ?? []));
+    $marketByTypeId = [];
+    foreach ($marketRows as $row) {
+        $typeId = (int) ($row['type_id'] ?? 0);
+        if ($typeId > 0) {
+            $marketByTypeId[$typeId] = $row;
+        }
+    }
+
+    $doctrineSnapshot = doctrine_operational_snapshot();
+    $fits = array_values((array) ($doctrineSnapshot['fits'] ?? []));
+    $globalLayerRows = array_values((array) (($doctrineSnapshot['global_layer']['rows'] ?? [])));
+    $globalByTypeId = [];
+    foreach ($globalLayerRows as $row) {
+        $typeId = (int) ($row['type_id'] ?? 0);
+        if ($typeId > 0) {
+            $globalByTypeId[$typeId] = $row;
+        }
+    }
+
+    $topMissingItems = array_values((array) ($doctrineSnapshot['top_missing_items'] ?? []));
+    $topMissingByTypeId = [];
+    foreach ($topMissingItems as $row) {
+        $typeId = (int) ($row['type_id'] ?? 0);
+        if ($typeId > 0) {
+            $topMissingByTypeId[$typeId] = $row;
+        }
+    }
+
+    $fitIds = array_values(array_filter(array_map(static fn (array $fit): int => (int) ($fit['id'] ?? 0), $fits), static fn (int $fitId): bool => $fitId > 0));
+    $itemsByFitId = [];
+    $candidateTypeIds = array_keys($marketByTypeId);
+    try {
+        foreach (db_doctrine_fit_items_by_fit_ids($fitIds) as $item) {
+            $fitId = (int) ($item['doctrine_fit_id'] ?? 0);
+            $typeId = (int) ($item['type_id'] ?? 0);
+            if ($fitId <= 0 || $typeId <= 0 || !item_scope_is_type_id_in_scope($typeId)) {
+                continue;
+            }
+            $itemsByFitId[$fitId][] = $item;
+            $candidateTypeIds[] = $typeId;
+        }
+    } catch (Throwable) {
+        $itemsByFitId = [];
+    }
+
+    $doctrineDemandByType = [];
+    foreach ($fits as $fit) {
+        $fitId = (int) ($fit['id'] ?? 0);
+        $supply = is_array($fit['supply'] ?? null) ? $fit['supply'] : [];
+        $gapFitCount = max(0, (int) ($supply['gap_to_target_fit_count'] ?? 0));
+        if ($gapFitCount <= 0) {
+            continue;
+        }
+        $fitName = (string) ($fit['fit_name'] ?? ('Fit #' . $fitId));
+        $groupNames = array_values((array) ($fit['group_names'] ?? []));
+        foreach ((array) ($itemsByFitId[$fitId] ?? []) as $item) {
+            if (array_key_exists('is_stock_tracked', $item) && !(bool) $item['is_stock_tracked']) {
+                continue;
+            }
+            $typeId = (int) ($item['type_id'] ?? 0);
+            if ($typeId <= 0) {
+                continue;
+            }
+            if (!isset($doctrineDemandByType[$typeId])) {
+                $doctrineDemandByType[$typeId] = [
+                    'exact_deficit_quantity' => 0,
+                    'blocked_fit_impact' => 0,
+                    'doctrine_fit_impact' => 0,
+                    'bottleneck_fit_count' => 0,
+                    'linked_fit_names' => [],
+                    'linked_group_names' => [],
+                ];
+            }
+            $requiredQty = max(1, (int) ($item['quantity'] ?? 1));
+            $doctrineDemandByType[$typeId]['exact_deficit_quantity'] += $requiredQty * $gapFitCount;
+            $doctrineDemandByType[$typeId]['blocked_fit_impact'] += $gapFitCount;
+            $doctrineDemandByType[$typeId]['doctrine_fit_impact']++;
+            $doctrineDemandByType[$typeId]['linked_fit_names'][$fitName] = true;
+            foreach ($groupNames as $groupName) {
+                $safeName = trim((string) $groupName);
+                if ($safeName !== '') {
+                    $doctrineDemandByType[$typeId]['linked_group_names'][$safeName] = true;
+                }
+            }
+            if ((int) ($supply['bottleneck_type_id'] ?? 0) === $typeId && (($supply['bottleneck_is_stock_tracked'] ?? true) === true)) {
+                $doctrineDemandByType[$typeId]['bottleneck_fit_count']++;
+            }
+        }
+    }
+
+    $candidateTypeIds = array_values(array_unique(array_merge($candidateTypeIds, array_keys($globalByTypeId), array_keys($topMissingByTypeId), array_keys($doctrineDemandByType))));
+    $typeMetaById = [];
+    foreach (db_ref_item_types_by_ids($candidateTypeIds) as $row) {
+        $typeMetaById[(int) ($row['type_id'] ?? 0)] = $row;
+    }
+
+    $allianceStructureId = configured_structure_destination_id_for_esi_sync();
+    $hubSourceId = sync_source_id_from_hub_ref(market_hub_setting_reference());
+    $allianceHistoryByType = buy_all_latest_market_history_by_type('alliance_structure', $allianceStructureId, $candidateTypeIds, 14);
+    $hubHistoryByType = buy_all_latest_market_history_by_type('market_hub', $hubSourceId, $candidateTypeIds, 14);
+
+    $rankedItems = [];
+    foreach ($candidateTypeIds as $typeId) {
+        $market = $marketByTypeId[$typeId] ?? [];
+        $global = $globalByTypeId[$typeId] ?? [];
+        $missing = $topMissingByTypeId[$typeId] ?? [];
+        $demand = $doctrineDemandByType[$typeId] ?? [];
+        $meta = $typeMetaById[$typeId] ?? [];
+        $itemName = trim((string) (($meta['type_name'] ?? $market['type_name'] ?? $global['type_name'] ?? $missing['item_name'] ?? ('Type #' . $typeId))));
+        if ($itemName === '') {
+            continue;
+        }
+
+        $unitVolume = max(0.0, (float) ($meta['volume'] ?? 0.0));
+        $localQty = max(0, (int) ($market['alliance_total_sell_volume'] ?? 0));
+        $exactDeficitQuantity = max(0, (int) ($demand['exact_deficit_quantity'] ?? (int) ($missing['missing_qty'] ?? 0)));
+        $seedFloor = max(0, (int) ($thresholds['min_alliance_sell_volume'] ?? 0) - $localQty);
+        $referenceVolume = max(0, (int) ($market['reference_total_sell_volume'] ?? 0));
+        $velocityBuffer = max(0, min(500, (int) ceil($referenceVolume * (((bool) ($market['missing_in_alliance'] ?? false)) ? 0.20 : 0.12))));
+        $bufferQty = max($seedFloor, $velocityBuffer, $exactDeficitQuantity > 0 ? min(250, (int) ceil($exactDeficitQuantity * 0.20)) : 0);
+        $recommendedCap = max($exactDeficitQuantity, min(500, max($bufferQty, $exactDeficitQuantity)));
+        $roundedRecommended = buy_all_round_quantity(max($exactDeficitQuantity, $recommendedCap));
+        if ($unitVolume >= 50000.0 && $roundedRecommended > 5) {
+            $roundedRecommended = min($roundedRecommended, 5);
+        } elseif ($unitVolume >= 10000.0 && $roundedRecommended > 20) {
+            $roundedRecommended = min($roundedRecommended, 20);
+        }
+        if ($exactDeficitQuantity > 0) {
+            $roundedRecommended = max($exactDeficitQuantity, $roundedRecommended);
+        }
+        if ($roundedRecommended <= 0) {
+            continue;
+        }
+
+        $buyPrice = null;
+        $buyPriceBasis = 'Unknown';
+        if (isset($market['reference_best_sell_price']) && $market['reference_best_sell_price'] !== null) {
+            $buyPrice = (float) $market['reference_best_sell_price'];
+            $buyPriceBasis = 'Hub best sell';
+        } elseif (isset($market['reference_best_buy_price']) && $market['reference_best_buy_price'] !== null) {
+            $buyPrice = (float) $market['reference_best_buy_price'];
+            $buyPriceBasis = 'Hub best buy fallback';
+        } elseif (isset($hubHistoryByType[$typeId]['close_price']) && $hubHistoryByType[$typeId]['close_price'] !== null) {
+            $buyPrice = (float) $hubHistoryByType[$typeId]['close_price'];
+            $buyPriceBasis = 'Hub historical close fallback';
+        } elseif (isset($hubHistoryByType[$typeId]['average_price']) && $hubHistoryByType[$typeId]['average_price'] !== null) {
+            $buyPrice = (float) $hubHistoryByType[$typeId]['average_price'];
+            $buyPriceBasis = 'Hub historical average fallback';
+        }
+
+        $sellPrice = null;
+        $sellPriceBasis = 'Unknown';
+        if (isset($market['alliance_best_sell_price']) && $market['alliance_best_sell_price'] !== null) {
+            $sellPrice = (float) $market['alliance_best_sell_price'];
+            $sellPriceBasis = 'Alliance best sell';
+        } elseif (isset($allianceHistoryByType[$typeId]['close_price']) && $allianceHistoryByType[$typeId]['close_price'] !== null) {
+            $sellPrice = (float) $allianceHistoryByType[$typeId]['close_price'];
+            $sellPriceBasis = 'Alliance historical close fallback';
+        } elseif (isset($allianceHistoryByType[$typeId]['average_price']) && $allianceHistoryByType[$typeId]['average_price'] !== null) {
+            $sellPrice = (float) $allianceHistoryByType[$typeId]['average_price'];
+            $sellPriceBasis = 'Alliance historical average fallback';
+        }
+
+        $haulingCostPerUnit = $unitVolume * buy_all_hauling_cost_per_m3();
+        $grossProfitPerUnit = ($buyPrice !== null && $sellPrice !== null) ? ($sellPrice - $buyPrice) : null;
+        $netProfitPerUnit = ($buyPrice !== null && $sellPrice !== null) ? ($sellPrice - $buyPrice - $haulingCostPerUnit) : null;
+        $grossProfitTotal = $grossProfitPerUnit !== null ? $grossProfitPerUnit * $roundedRecommended : null;
+        $netProfitTotal = $netProfitPerUnit !== null ? $netProfitPerUnit * $roundedRecommended : null;
+        $grossMarginPercent = ($grossProfitPerUnit !== null && $buyPrice !== null && $buyPrice > 0.0) ? (($grossProfitPerUnit / $buyPrice) * 100.0) : null;
+        $netMarginPercent = ($netProfitPerUnit !== null && $buyPrice !== null && $buyPrice > 0.0) ? (($netProfitPerUnit / $buyPrice) * 100.0) : null;
+        $volumeEfficiency = ($netProfitTotal !== null && ($roundedRecommended * max(1.0, $unitVolume)) > 0.0) ? ($netProfitTotal / ($roundedRecommended * max(1.0, $unitVolume))) : null;
+        $iskEfficiency = ($netProfitTotal !== null && $buyPrice !== null && $buyPrice > 0.0) ? (($netProfitTotal / ($buyPrice * $roundedRecommended)) * 100.0) : null;
+
+        $blockedFitImpact = max(0, (int) ($demand['blocked_fit_impact'] ?? 0));
+        $doctrineFitImpact = max(0, (int) ($demand['doctrine_fit_impact'] ?? 0));
+        $bottleneckFitCount = max(0, (int) ($demand['bottleneck_fit_count'] ?? 0));
+        $globalPriority = max(0.0, min(100.0, (float) ($global['priority_score'] ?? 0.0)));
+        $necessityScore = min(100.0,
+            min(40.0, $exactDeficitQuantity * 1.2)
+            + min(24.0, $blockedFitImpact * 7.0)
+            + min(18.0, $bottleneckFitCount * 9.0)
+            + min(10.0, (((bool) ($market['missing_in_alliance'] ?? false) || (bool) ($market['weak_alliance_stock'] ?? false)) ? 10.0 : 0.0))
+            + min(8.0, $globalPriority * 0.12)
+        );
+
+        $profitBase = 0.0;
+        if ($netProfitTotal !== null) {
+            $profitBase += min(38.0, max(0.0, $netProfitTotal) / 5000000.0 * 38.0);
+        }
+        if ($netMarginPercent !== null) {
+            $profitBase += min(24.0, max(0.0, $netMarginPercent) * 0.9);
+        }
+        $profitBase += min(22.0, max(0.0, (float) ($market['opportunity_score'] ?? 0.0)) * 0.22);
+        if ($volumeEfficiency !== null) {
+            $profitBase += min(16.0, max(0.0, $volumeEfficiency) / 250.0 * 16.0);
+        }
+        $profitScore = min(100.0, max(0.0, $profitBase));
+
+        $modeRankScore = ($necessityScore * (float) ($modeConfig['necessity_weight'] ?? 0.5)) + ($profitScore * (float) ($modeConfig['profit_weight'] ?? 0.5));
+        if ($request['mode'] === 'seed_backlog' && ((bool) ($market['missing_in_alliance'] ?? false) || (bool) ($market['weak_alliance_stock'] ?? false))) {
+            $modeRankScore += 8.0;
+        }
+        if ($request['mode'] === 'opportunity' && $netProfitTotal !== null && $netProfitTotal > 0.0) {
+            $modeRankScore += 10.0;
+        }
+        $blendedScore = min(100.0, max(0.0, round(($necessityScore * 0.56) + ($profitScore * 0.44), 2)));
+        $isDoctrineCritical = $exactDeficitQuantity > 0 || $bottleneckFitCount > 0 || $blockedFitImpact > 0;
+
+        $candidate = [
+            'item_id' => $typeId,
+            'type_id' => $typeId,
+            'item_name' => $itemName,
+            'quantity' => $roundedRecommended,
+            'exact_deficit_quantity' => $exactDeficitQuantity,
+            'capped_recommended_quantity' => $recommendedCap,
+            'buy_price' => $buyPrice,
+            'buy_price_basis' => $buyPriceBasis,
+            'sell_price' => $sellPrice,
+            'sell_price_basis' => $sellPriceBasis,
+            'unit_volume' => $unitVolume,
+            'total_volume' => $unitVolume * $roundedRecommended,
+            'hauling_cost_per_unit' => $haulingCostPerUnit,
+            'hauling_cost_total' => $haulingCostPerUnit * $roundedRecommended,
+            'gross_profit_per_unit' => $grossProfitPerUnit,
+            'net_profit_per_unit' => $netProfitPerUnit,
+            'gross_profit_total' => $grossProfitTotal,
+            'net_profit_total' => $netProfitTotal,
+            'gross_margin_percent' => $grossMarginPercent,
+            'net_margin_percent' => $netMarginPercent,
+            'necessity_score' => round($necessityScore, 2),
+            'profit_score' => round($profitScore, 2),
+            'blended_score' => $blendedScore,
+            'mode_rank_score' => round($modeRankScore, 2),
+            'doctrine_fit_impact' => $doctrineFitImpact,
+            'blocked_fit_impact' => $blockedFitImpact,
+            'bottleneck_fit_count' => $bottleneckFitCount,
+            'reason_code' => '',
+            'reason_text' => '',
+            'reason_theme' => '',
+            'is_doctrine_linked' => $doctrineFitImpact > 0 || !empty($global['is_doctrine_item']),
+            'is_doctrine_critical' => $isDoctrineCritical,
+            'missing_in_alliance' => (bool) ($market['missing_in_alliance'] ?? false),
+            'weak_alliance_stock' => (bool) ($market['weak_alliance_stock'] ?? false),
+            'opportunity_score' => (int) ($market['opportunity_score'] ?? 0),
+            'risk_score' => (int) ($market['risk_score'] ?? 0),
+            'volume_score' => (int) ($market['volume_score'] ?? 0),
+            'volume_efficiency' => $volumeEfficiency,
+            'isk_efficiency' => $iskEfficiency,
+            'linked_fit_names' => array_values(array_keys((array) ($demand['linked_fit_names'] ?? []))),
+            'linked_group_names' => array_values(array_keys((array) ($demand['linked_group_names'] ?? []))),
+            'pricing_completeness' => $buyPrice !== null && $sellPrice !== null ? 'complete' : 'partial',
+            'hub_price_observed_at' => $market['reference_last_observed_at'] ?? ($hubHistoryByType[$typeId]['observed_at'] ?? null),
+            'alliance_price_observed_at' => $market['alliance_last_observed_at'] ?? ($allianceHistoryByType[$typeId]['observed_at'] ?? null),
+            'stock_observed_at' => $market['alliance_last_observed_at'] ?? null,
+        ];
+        $reason = buy_all_reason_meta($candidate);
+        $candidate['reason_code'] = $reason['code'];
+        $candidate['reason_text'] = $reason['text'];
+        $candidate['reason_theme'] = $reason['theme'];
+
+        $filters = $request['filters'];
+        if ($filters['doctrine_linked_only'] && empty($candidate['is_doctrine_linked'])) {
+            continue;
+        }
+        if ($filters['exclude_incomplete_pricing'] && $candidate['pricing_completeness'] !== 'complete' && !$candidate['is_doctrine_critical']) {
+            continue;
+        }
+        if ($filters['positive_net_margin_only']) {
+            $hasPositiveMargin = $candidate['net_margin_percent'] !== null && (float) $candidate['net_margin_percent'] > 0.0;
+            if (!$hasPositiveMargin && !($filters['allow_low_margin_doctrine_critical'] && $candidate['is_doctrine_critical'])) {
+                continue;
+            }
+        }
+        if (!$filters['allow_low_margin_doctrine_critical'] && $candidate['net_margin_percent'] !== null && (float) $candidate['net_margin_percent'] <= 0.0 && $candidate['is_doctrine_critical']) {
+            continue;
+        }
+        if ($filters['exclude_oversized_low_efficiency'] && $candidate['total_volume'] > 100000.0 && (($candidate['volume_efficiency'] ?? null) === null || (float) ($candidate['volume_efficiency'] ?? 0.0) <= 0.0) && !$candidate['is_doctrine_critical']) {
+            continue;
+        }
+        if ((float) ($candidate['mode_rank_score'] ?? 0.0) < (float) $filters['min_priority_threshold']) {
+            continue;
+        }
+        if ($candidate['net_margin_percent'] !== null && (float) ($candidate['net_margin_percent'] ?? 0.0) < (float) $filters['min_net_margin_threshold'] && !$candidate['is_doctrine_critical']) {
+            continue;
+        }
+        if ($candidate['net_profit_total'] !== null && (float) ($candidate['net_profit_total'] ?? 0.0) < (float) $filters['min_net_profit_threshold'] && !$candidate['is_doctrine_critical']) {
+            continue;
+        }
+        if ($candidate['net_profit_total'] === null && $request['mode'] === 'opportunity' && !$candidate['is_doctrine_critical']) {
+            continue;
+        }
+
+        $rankedItems[] = $candidate;
+    }
+
+    usort($rankedItems, static fn (array $a, array $b): int => buy_all_compare_items($a, $b, (string) ($request['sort'] ?? 'blended_score'), (string) ($request['mode'] ?? 'blended')));
+    foreach ($rankedItems as $index => &$item) {
+        $item['rank_position'] = $index + 1;
+    }
+    unset($item);
+
+    $packed = buy_all_pack_pages($rankedItems);
+    $pages = $packed['pages'];
+    $pageCount = count($pages);
+    $activePage = $pageCount > 0 ? min($request['page'], $pageCount) : 1;
+    $summary = [
+        'generated_at' => gmdate(DATE_ATOM),
+        'mode' => $request['mode'],
+        'mode_label' => (string) ($modeConfig['label'] ?? ucfirst(str_replace('_', ' ', $request['mode']))),
+        'page_count' => $pageCount,
+        'candidate_count' => count($rankedItems),
+        'total_item_types' => count($rankedItems),
+        'total_units' => array_sum(array_map(static fn (array $row): int => (int) ($row['quantity'] ?? 0), $rankedItems)),
+        'total_volume' => array_sum(array_map(static fn (array $row): float => (float) ($row['total_volume'] ?? 0.0), $rankedItems)),
+        'total_buy_cost' => array_sum(array_map(static fn (array $row): float => (float) ($row['buy_price'] !== null ? ((float) $row['buy_price'] * (int) ($row['quantity'] ?? 0)) : 0.0), $rankedItems)),
+        'total_expected_sell_value' => array_sum(array_map(static fn (array $row): float => (float) ($row['sell_price'] !== null ? ((float) $row['sell_price'] * (int) ($row['quantity'] ?? 0)) : 0.0), $rankedItems)),
+        'total_hauling_cost' => array_sum(array_map(static fn (array $row): float => (float) ($row['hauling_cost_total'] ?? 0.0), $rankedItems)),
+        'total_gross_profit' => array_sum(array_map(static fn (array $row): float => (float) ($row['gross_profit_total'] ?? 0.0), $rankedItems)),
+        'total_net_profit' => array_sum(array_map(static fn (array $row): float => (float) ($row['net_profit_total'] ?? 0.0), $rankedItems)),
+        'doctrine_critical_count' => count(array_filter($rankedItems, static fn (array $row): bool => !empty($row['is_doctrine_critical']))),
+        'partial_pricing_count' => count(array_filter($rankedItems, static fn (array $row): bool => (string) ($row['pricing_completeness'] ?? 'partial') !== 'complete')),
+        'positive_net_margin_count' => count(array_filter($rankedItems, static fn (array $row): bool => isset($row['net_margin_percent']) && (float) ($row['net_margin_percent'] ?? 0.0) > 0.0)),
+        'top_reason_theme' => (string) (($rankedItems[0]['reason_theme'] ?? 'Mixed signals')),
+    ];
+
+    $hubFreshness = supplycore_page_freshness_view_model((array) ($marketOutcomes['_freshness'] ?? []));
+    $doctrineFreshness = supplycore_page_freshness_view_model((array) ($doctrineSnapshot['_freshness'] ?? []));
+    $stockFreshness = $hubFreshness;
+    if ($marketRows !== []) {
+        $timestamps = array_values(array_filter(array_map(static fn (array $row): ?string => isset($row['alliance_last_observed_at']) ? (string) $row['alliance_last_observed_at'] : null, $marketRows)));
+        rsort($timestamps);
+        $latestStock = $timestamps[0] ?? null;
+        $stockFreshness = [
+            'state' => $latestStock !== null && (time() - (strtotime($latestStock) ?: 0)) <= supplycore_summary_stale_after_seconds() ? 'fresh' : 'stale',
+            'label' => $latestStock !== null && (time() - (strtotime($latestStock) ?: 0)) <= supplycore_summary_stale_after_seconds() ? 'Fresh' : 'Stale',
+            'computed_at' => supplycore_format_datetime($latestStock),
+            'computed_relative' => supplycore_relative_datetime($latestStock),
+            'tone' => $latestStock !== null && (time() - (strtotime($latestStock) ?: 0)) <= supplycore_summary_stale_after_seconds() ? 'border-emerald-400/20 bg-emerald-500/10 text-emerald-100' : 'border-amber-400/20 bg-amber-500/10 text-amber-100',
+            'message' => 'Alliance stock freshness for the current planner inputs.',
+            'reason' => '',
+        ];
+    }
+
+    return [
+        'request' => $request,
+        'mode_options' => $modeDefinitions,
+        'sort_options' => buy_all_sort_options(),
+        'summary' => $summary,
+        'items' => $rankedItems,
+        'pages' => $pages,
+        'active_page' => $activePage,
+        'active_page_data' => $pages[$activePage - 1] ?? null,
+        'excluded_items' => $packed['excluded_items'] ?? [],
+        'freshness' => [
+            'hub_pricing' => $hubFreshness,
+            'alliance_pricing' => $stockFreshness,
+            'stock' => $stockFreshness,
+            'doctrine' => $doctrineFreshness,
+            'generated_at' => supplycore_format_datetime($summary['generated_at']),
+            'generated_relative' => supplycore_relative_datetime($summary['generated_at']),
+        ],
+        'price_basis' => [
+            'buy' => 'Hub buy basis uses hub best sell first, then hub best buy, then hub historical close/average fallback.',
+            'sell' => 'Alliance sell basis uses alliance best sell first, then alliance historical close, then alliance historical average fallback.',
+        ],
+        'hauling' => [
+            'cost_per_m3' => buy_all_hauling_cost_per_m3(),
+            'page_volume_limit' => buy_all_page_volume_limit(),
+            'page_item_type_limit' => buy_all_page_item_type_limit(),
+        ],
+    ];
+}
+
+function buy_all_dashboard_summary(): array
+{
+    $planner = buy_all_planner_data(['mode' => 'blended', 'page' => 1]);
+    $summary = is_array($planner['summary'] ?? null) ? $planner['summary'] : [];
+    $recommendedMode = 'blended';
+    if ((int) ($summary['doctrine_critical_count'] ?? 0) > 0) {
+        $recommendedMode = 'doctrine_critical';
+    } elseif ((float) ($summary['total_net_profit'] ?? 0.0) > 0.0 && (int) ($summary['positive_net_margin_count'] ?? 0) >= 6) {
+        $recommendedMode = 'opportunity';
+    }
+    $modes = buy_all_mode_definitions();
+
+    return [
+        'recommended_mode' => $recommendedMode,
+        'recommended_mode_label' => (string) (($modes[$recommendedMode]['label'] ?? ucfirst($recommendedMode))),
+        'pages' => (int) ($summary['page_count'] ?? 0),
+        'total_planned_volume' => (float) ($summary['total_volume'] ?? 0.0),
+        'expected_net_profit' => (float) ($summary['total_net_profit'] ?? 0.0),
+        'doctrine_critical_count' => (int) ($summary['doctrine_critical_count'] ?? 0),
+        'top_reason_theme' => (string) ($summary['top_reason_theme'] ?? 'Mixed signals'),
+        'planner_href' => '/buy-all?mode=' . urlencode($recommendedMode) . '&page=1',
+        'blended_href' => '/buy-all?mode=blended&page=1',
+        'summary' => $summary,
+    ];
 }
 
 function activity_priority_level_from_score(float $score): string

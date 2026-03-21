@@ -9,6 +9,7 @@ $dbStatus = db_connection_status();
 $intel = dashboard_intelligence_data();
 $doctrine = $intel['doctrine'] ?? doctrine_groups_overview_data();
 $pageFreshness = supplycore_page_freshness_view_model((array) ($intel['_freshness'] ?? []));
+$buyAll = buy_all_dashboard_summary();
 
 include __DIR__ . '/../src/views/partials/header.php';
 ?>
@@ -159,6 +160,56 @@ $statusThemes = [
             </div>
         </article>
     <?php endforeach; ?>
+</section>
+
+<section class="mt-8">
+    <article class="surface-primary">
+        <div class="section-header border-b border-white/8 pb-4">
+            <div>
+                <p class="eyebrow">Front-page action</p>
+                <h2 class="mt-2 section-title">Buy All</h2>
+                <p class="mt-2 section-copy">Generate prioritized, transport-aware procurement pages directly from doctrine readiness, seed backlog, and market opportunity signals.</p>
+            </div>
+            <a href="<?= htmlspecialchars((string) ($buyAll['planner_href'] ?? '/buy-all?mode=blended&page=1'), ENT_QUOTES) ?>" class="btn-primary">Open Buy All Planner</a>
+        </div>
+        <div class="mt-5 grid gap-4 lg:grid-cols-[minmax(0,1.1fr)_minmax(320px,0.9fr)]">
+            <div class="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+                <div class="rounded-[1.2rem] border border-white/8 bg-slate-950/50 px-4 py-4">
+                    <p class="text-xs uppercase tracking-[0.16em] text-slate-500">Recommended mode</p>
+                    <p class="mt-3 text-2xl font-semibold text-white"><?= htmlspecialchars((string) ($buyAll['recommended_mode_label'] ?? 'Blended'), ENT_QUOTES) ?></p>
+                    <p class="mt-1 text-sm text-slate-400">Smart default based on current doctrine and market pressure.</p>
+                </div>
+                <div class="rounded-[1.2rem] border border-white/8 bg-slate-950/50 px-4 py-4">
+                    <p class="text-xs uppercase tracking-[0.16em] text-slate-500">Generated pages</p>
+                    <p class="mt-3 text-2xl font-semibold text-white"><?= htmlspecialchars((string) ($buyAll['pages'] ?? 0), ENT_QUOTES) ?></p>
+                    <p class="mt-1 text-sm text-slate-400">Deterministic split by item count and cargo volume.</p>
+                </div>
+                <div class="rounded-[1.2rem] border border-white/8 bg-slate-950/50 px-4 py-4">
+                    <p class="text-xs uppercase tracking-[0.16em] text-slate-500">Planned volume</p>
+                    <p class="mt-3 text-2xl font-semibold text-white"><?= htmlspecialchars(number_format((float) ($buyAll['total_planned_volume'] ?? 0.0), 0), ENT_QUOTES) ?> m³</p>
+                    <p class="mt-1 text-sm text-slate-400">Starts on page 1 with blended ordering.</p>
+                </div>
+                <div class="rounded-[1.2rem] border border-white/8 bg-slate-950/50 px-4 py-4">
+                    <p class="text-xs uppercase tracking-[0.16em] text-slate-500">Net after hauling</p>
+                    <p class="mt-3 text-2xl font-semibold <?= (float) ($buyAll['expected_net_profit'] ?? 0.0) >= 0.0 ? 'text-emerald-100' : 'text-rose-200' ?>"><?= htmlspecialchars(market_format_isk((float) ($buyAll['expected_net_profit'] ?? 0.0)), ENT_QUOTES) ?></p>
+                    <p class="mt-1 text-sm text-slate-400"><?= htmlspecialchars((string) ($buyAll['doctrine_critical_count'] ?? 0), ENT_QUOTES) ?> doctrine-critical items · <?= htmlspecialchars((string) ($buyAll['top_reason_theme'] ?? 'Mixed signals'), ENT_QUOTES) ?></p>
+                </div>
+            </div>
+            <div class="rounded-[1.3rem] border border-cyan-400/18 bg-cyan-500/8 p-5">
+                <p class="text-xs uppercase tracking-[0.16em] text-cyan-200/80">Operational defaults</p>
+                <div class="mt-4 flex flex-wrap gap-2">
+                    <span class="badge border-cyan-400/20 bg-cyan-500/10 text-cyan-100">Blended default</span>
+                    <span class="badge border-orange-400/20 bg-orange-500/10 text-orange-100">Doctrine-critical included</span>
+                    <span class="badge border-emerald-400/20 bg-emerald-500/10 text-emerald-100">Positive-margin seed candidates</span>
+                </div>
+                <p class="mt-4 text-sm text-slate-200">The planner keeps doctrine-critical items eligible even when profit data is weak, but otherwise leans toward positive net imports and haul-efficient seeding. Current dashboard summary freshness: <?= htmlspecialchars((string) ($pageFreshness['computed_relative'] ?? 'Unknown'), ENT_QUOTES) ?>.</p>
+                <div class="mt-5 flex flex-wrap items-center gap-3">
+                    <a href="<?= htmlspecialchars((string) ($buyAll['planner_href'] ?? '/buy-all?mode=blended&page=1'), ENT_QUOTES) ?>" class="btn-primary">Buy All</a>
+                    <a href="<?= htmlspecialchars((string) ($buyAll['blended_href'] ?? '/buy-all?mode=blended&page=1'), ENT_QUOTES) ?>" class="btn-secondary">Review blended plan</a>
+                </div>
+            </div>
+        </div>
+    </article>
 </section>
 
 <section class="mt-8 grid gap-5 xl:grid-cols-[minmax(0,1.3fr)_minmax(320px,0.9fr)]">

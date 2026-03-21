@@ -1,0 +1,342 @@
+<?php
+
+declare(strict_types=1);
+
+require_once __DIR__ . '/../../src/bootstrap.php';
+
+$title = 'Buy All Planner';
+$planner = buy_all_planner_data($_GET);
+$request = is_array($planner['request'] ?? null) ? $planner['request'] : buy_all_request();
+$summary = is_array($planner['summary'] ?? null) ? $planner['summary'] : [];
+$pages = array_values((array) ($planner['pages'] ?? []));
+$activePage = (int) ($planner['active_page'] ?? 1);
+$activePageData = is_array($planner['active_page_data'] ?? null) ? $planner['active_page_data'] : null;
+$modeOptions = is_array($planner['mode_options'] ?? null) ? $planner['mode_options'] : [];
+$sortOptions = is_array($planner['sort_options'] ?? null) ? $planner['sort_options'] : [];
+$freshness = is_array($planner['freshness'] ?? null) ? $planner['freshness'] : [];
+$priceBasis = is_array($planner['price_basis'] ?? null) ? $planner['price_basis'] : [];
+$hauling = is_array($planner['hauling'] ?? null) ? $planner['hauling'] : [];
+$filters = is_array($request['filters'] ?? null) ? $request['filters'] : [];
+$baseQuery = $_GET;
+
+$buildPageUrl = static function (int $pageNumber) use ($baseQuery): string {
+    $params = $baseQuery;
+    $params['page'] = $pageNumber;
+
+    return '/buy-all?' . http_build_query($params);
+};
+
+include __DIR__ . '/../../src/views/partials/header.php';
+?>
+<section class="grid gap-5 xl:grid-cols-[minmax(0,1.45fr)_minmax(320px,0.9fr)]">
+    <article class="surface-primary">
+        <div class="section-header border-b border-white/8 pb-4">
+            <div>
+                <p class="eyebrow">Procurement workflow</p>
+                <h1 class="mt-2 section-title">Buy All Planner</h1>
+                <p class="mt-2 section-copy">Turn SupplyCore doctrine, stock, and pricing intelligence into clipboard-ready procurement pages for Jita buying and alliance-side seeding.</p>
+            </div>
+            <span class="badge border-cyan-400/20 bg-cyan-500/10 text-cyan-100"><?= htmlspecialchars((string) ($summary['mode_label'] ?? 'Blended'), ENT_QUOTES) ?></span>
+        </div>
+
+        <div class="mt-5 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+            <div class="rounded-[1.2rem] border border-white/8 bg-slate-950/50 px-4 py-4">
+                <p class="text-xs uppercase tracking-[0.16em] text-slate-500">Generated pages</p>
+                <p class="mt-3 text-3xl font-semibold text-white"><?= htmlspecialchars((string) ($summary['page_count'] ?? 0), ENT_QUOTES) ?></p>
+                <p class="mt-1 text-sm text-slate-400">100 item types max · <?= htmlspecialchars(number_format((float) ($hauling['page_volume_limit'] ?? 350000.0), 0), ENT_QUOTES) ?> m³ cap per page.</p>
+            </div>
+            <div class="rounded-[1.2rem] border border-white/8 bg-slate-950/50 px-4 py-4">
+                <p class="text-xs uppercase tracking-[0.16em] text-slate-500">Planned volume</p>
+                <p class="mt-3 text-3xl font-semibold text-white"><?= htmlspecialchars(number_format((float) ($summary['total_volume'] ?? 0.0), 0), ENT_QUOTES) ?> m³</p>
+                <p class="mt-1 text-sm text-slate-400"><?= htmlspecialchars((string) ($summary['total_item_types'] ?? 0), ENT_QUOTES) ?> ranked item types across <?= htmlspecialchars((string) ($summary['total_units'] ?? 0), ENT_QUOTES) ?> total units.</p>
+            </div>
+            <div class="rounded-[1.2rem] border border-white/8 bg-slate-950/50 px-4 py-4">
+                <p class="text-xs uppercase tracking-[0.16em] text-slate-500">Expected net profit</p>
+                <p class="mt-3 text-3xl font-semibold <?= (float) ($summary['total_net_profit'] ?? 0.0) >= 0.0 ? 'text-emerald-100' : 'text-rose-200' ?>"><?= htmlspecialchars(market_format_isk((float) ($summary['total_net_profit'] ?? 0.0)), ENT_QUOTES) ?></p>
+                <p class="mt-1 text-sm text-slate-400">After <?= htmlspecialchars(number_format((float) ($hauling['cost_per_m3'] ?? 250.0), 2), ENT_QUOTES) ?> ISK/m³ hauling.</p>
+            </div>
+            <div class="rounded-[1.2rem] border border-white/8 bg-slate-950/50 px-4 py-4">
+                <p class="text-xs uppercase tracking-[0.16em] text-slate-500">Doctrine-critical</p>
+                <p class="mt-3 text-3xl font-semibold text-orange-100"><?= htmlspecialchars((string) ($summary['doctrine_critical_count'] ?? 0), ENT_QUOTES) ?></p>
+                <p class="mt-1 text-sm text-slate-400">Top theme: <?= htmlspecialchars((string) ($summary['top_reason_theme'] ?? 'Mixed signals'), ENT_QUOTES) ?></p>
+            </div>
+        </div>
+
+        <form method="get" class="mt-5 space-y-4 rounded-[1.4rem] border border-white/8 bg-white/[0.03] p-4">
+            <div class="grid gap-4 lg:grid-cols-[minmax(0,1.2fr)_minmax(0,0.8fr)]">
+                <div>
+                    <p class="text-xs uppercase tracking-[0.16em] text-slate-500">Modes</p>
+                    <div class="mt-3 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                        <?php foreach ($modeOptions as $modeKey => $mode): ?>
+                            <label class="rounded-[1.1rem] border <?= $request['mode'] === $modeKey ? 'border-cyan-400/30 bg-cyan-500/10 text-cyan-50' : 'border-white/8 bg-slate-950/40 text-slate-200' ?> p-3 cursor-pointer">
+                                <input type="radio" name="mode" value="<?= htmlspecialchars((string) $modeKey, ENT_QUOTES) ?>" class="sr-only" <?= $request['mode'] === $modeKey ? 'checked' : '' ?>>
+                                <span class="block text-sm font-semibold"><?= htmlspecialchars((string) ($mode['label'] ?? $modeKey), ENT_QUOTES) ?></span>
+                                <span class="mt-1 block text-xs text-slate-400"><?= htmlspecialchars((string) ($mode['description'] ?? ''), ENT_QUOTES) ?></span>
+                            </label>
+                        <?php endforeach; ?>
+                    </div>
+                </div>
+                <div>
+                    <label class="block text-xs uppercase tracking-[0.16em] text-slate-500" for="sort">Sort</label>
+                    <select id="sort" name="sort" class="field-input mt-3 w-full">
+                        <?php foreach ($sortOptions as $sortKey => $sortLabel): ?>
+                            <option value="<?= htmlspecialchars((string) $sortKey, ENT_QUOTES) ?>" <?= $request['sort'] === $sortKey ? 'selected' : '' ?>><?= htmlspecialchars((string) $sortLabel, ENT_QUOTES) ?></option>
+                        <?php endforeach; ?>
+                    </select>
+
+                    <div class="mt-4 grid gap-3 sm:grid-cols-2">
+                        <label class="flex items-center gap-2 text-sm text-slate-300"><input type="checkbox" name="doctrine_linked_only" value="1" <?= !empty($filters['doctrine_linked_only']) ? 'checked' : '' ?>> Doctrine-linked only</label>
+                        <label class="flex items-center gap-2 text-sm text-slate-300"><input type="checkbox" name="positive_net_margin_only" value="1" <?= !empty($filters['positive_net_margin_only']) ? 'checked' : '' ?>> Positive net margin only</label>
+                        <label class="flex items-center gap-2 text-sm text-slate-300"><input type="checkbox" name="allow_low_margin_doctrine_critical" value="1" <?= !empty($filters['allow_low_margin_doctrine_critical']) ? 'checked' : '' ?>> Allow low/negative margin if doctrine critical</label>
+                        <label class="flex items-center gap-2 text-sm text-slate-300"><input type="checkbox" name="exclude_incomplete_pricing" value="1" <?= !empty($filters['exclude_incomplete_pricing']) ? 'checked' : '' ?>> Exclude incomplete pricing</label>
+                        <label class="flex items-center gap-2 text-sm text-slate-300"><input type="checkbox" name="exclude_oversized_low_efficiency" value="1" <?= !empty($filters['exclude_oversized_low_efficiency']) ? 'checked' : '' ?>> Exclude oversized low-efficiency items</label>
+                    </div>
+                </div>
+            </div>
+
+            <div class="grid gap-4 md:grid-cols-3">
+                <label class="block text-sm text-slate-300">Minimum priority threshold
+                    <input type="number" step="1" min="0" max="100" name="min_priority_threshold" value="<?= htmlspecialchars((string) ($filters['min_priority_threshold'] ?? 0), ENT_QUOTES) ?>" class="field-input mt-2 w-full">
+                </label>
+                <label class="block text-sm text-slate-300">Minimum net margin %
+                    <input type="number" step="0.1" name="min_net_margin_threshold" value="<?= htmlspecialchars((string) ($filters['min_net_margin_threshold'] ?? 0), ENT_QUOTES) ?>" class="field-input mt-2 w-full">
+                </label>
+                <label class="block text-sm text-slate-300">Minimum net profit total
+                    <input type="number" step="100000" name="min_net_profit_threshold" value="<?= htmlspecialchars((string) ($filters['min_net_profit_threshold'] ?? 0), ENT_QUOTES) ?>" class="field-input mt-2 w-full">
+                </label>
+            </div>
+
+            <div class="flex flex-wrap items-center gap-3">
+                <input type="hidden" name="page" value="1">
+                <button type="submit" class="btn-primary">Rebuild plan</button>
+                <a href="/buy-all?mode=blended&page=1" class="btn-secondary">Reset to smart defaults</a>
+            </div>
+        </form>
+    </article>
+
+    <div class="space-y-5">
+        <article class="surface-secondary">
+            <div class="section-header border-b border-white/8 pb-4">
+                <div>
+                    <p class="eyebrow">Freshness / trust</p>
+                    <h2 class="mt-2 section-title">Planner inputs</h2>
+                    <p class="mt-2 section-copy">Pricing, stock, and doctrine data used to produce the current plan.</p>
+                </div>
+            </div>
+            <div class="mt-4 space-y-3">
+                <?php foreach (['hub_pricing' => 'Hub pricing', 'alliance_pricing' => 'Alliance pricing', 'stock' => 'Stock', 'doctrine' => 'Doctrine'] as $key => $label): ?>
+                    <?php $card = is_array($freshness[$key] ?? null) ? $freshness[$key] : []; ?>
+                    <div class="rounded-[1.1rem] border border-white/8 bg-slate-950/50 px-4 py-3">
+                        <div class="flex items-center justify-between gap-3">
+                            <p class="text-sm font-semibold text-slate-100"><?= htmlspecialchars($label, ENT_QUOTES) ?></p>
+                            <span class="badge <?= htmlspecialchars((string) ($card['tone'] ?? 'border-amber-400/20 bg-amber-500/10 text-amber-100'), ENT_QUOTES) ?>"><?= htmlspecialchars((string) ($card['label'] ?? 'Unknown'), ENT_QUOTES) ?></span>
+                        </div>
+                        <p class="mt-2 text-sm text-slate-300"><?= htmlspecialchars((string) ($card['computed_relative'] ?? 'Unknown'), ENT_QUOTES) ?></p>
+                        <p class="mt-1 text-xs text-slate-500"><?= htmlspecialchars((string) ($card['computed_at'] ?? 'Unavailable'), ENT_QUOTES) ?></p>
+                    </div>
+                <?php endforeach; ?>
+                <div class="rounded-[1.1rem] border border-white/8 bg-slate-950/50 px-4 py-3">
+                    <p class="text-sm font-semibold text-slate-100">Generated</p>
+                    <p class="mt-2 text-sm text-slate-300"><?= htmlspecialchars((string) ($freshness['generated_relative'] ?? 'Unknown'), ENT_QUOTES) ?></p>
+                    <p class="mt-1 text-xs text-slate-500"><?= htmlspecialchars((string) ($freshness['generated_at'] ?? 'Unavailable'), ENT_QUOTES) ?></p>
+                </div>
+            </div>
+        </article>
+
+        <article class="surface-secondary">
+            <div class="section-header border-b border-white/8 pb-4">
+                <div>
+                    <p class="eyebrow">Price basis</p>
+                    <h2 class="mt-2 section-title">Economic assumptions</h2>
+                </div>
+            </div>
+            <div class="mt-4 space-y-3 text-sm text-slate-300">
+                <p><?= htmlspecialchars((string) ($priceBasis['buy'] ?? ''), ENT_QUOTES) ?></p>
+                <p><?= htmlspecialchars((string) ($priceBasis['sell'] ?? ''), ENT_QUOTES) ?></p>
+                <p>Hauling cost is always <span class="font-semibold text-white"><?= htmlspecialchars(number_format((float) ($hauling['cost_per_m3'] ?? 250.0), 2), ENT_QUOTES) ?> ISK per m³</span> and is baked into ranking through net unit spread, net list profit, margin, and efficiency.</p>
+            </div>
+        </article>
+    </div>
+</section>
+
+<section class="mt-8 grid gap-5 xl:grid-cols-[minmax(0,1.4fr)_minmax(320px,0.9fr)]">
+    <article class="surface-primary">
+        <div class="section-header border-b border-white/8 pb-4">
+            <div>
+                <p class="eyebrow">Buy-all pages</p>
+                <h2 class="mt-2 section-title">Page <?= htmlspecialchars((string) $activePage, ENT_QUOTES) ?> of <?= htmlspecialchars((string) max(1, count($pages)), ENT_QUOTES) ?></h2>
+                <p class="mt-2 section-copy">Deterministic packing preserves rank order first, then splits on the 100-type and 350,000 m³ limits.</p>
+            </div>
+            <div class="flex flex-wrap items-center gap-2">
+                <?php if ($activePage > 1): ?>
+                    <a href="<?= htmlspecialchars($buildPageUrl($activePage - 1), ENT_QUOTES) ?>" class="btn-secondary">← Back</a>
+                <?php endif; ?>
+                <?php if ($activePage < count($pages)): ?>
+                    <a href="<?= htmlspecialchars($buildPageUrl($activePage + 1), ENT_QUOTES) ?>" class="btn-secondary">Next →</a>
+                <?php endif; ?>
+            </div>
+        </div>
+
+        <?php if ($activePageData === null): ?>
+            <div class="surface-tertiary mt-5 text-sm text-slate-400">No buy-all pages were produced from the current inputs. Loosen the filters or switch to Blended mode.</div>
+        <?php else: ?>
+            <div class="mt-5 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+                <div class="rounded-[1.1rem] border border-white/8 bg-slate-950/50 px-4 py-4">
+                    <p class="text-xs uppercase tracking-[0.16em] text-slate-500">Item types</p>
+                    <p class="mt-2 text-2xl font-semibold text-white"><?= htmlspecialchars((string) ($activePageData['item_count'] ?? 0), ENT_QUOTES) ?></p>
+                </div>
+                <div class="rounded-[1.1rem] border border-white/8 bg-slate-950/50 px-4 py-4">
+                    <p class="text-xs uppercase tracking-[0.16em] text-slate-500">Total units</p>
+                    <p class="mt-2 text-2xl font-semibold text-white"><?= htmlspecialchars((string) ($activePageData['total_units'] ?? 0), ENT_QUOTES) ?></p>
+                </div>
+                <div class="rounded-[1.1rem] border border-white/8 bg-slate-950/50 px-4 py-4">
+                    <p class="text-xs uppercase tracking-[0.16em] text-slate-500">Total volume</p>
+                    <p class="mt-2 text-2xl font-semibold text-white"><?= htmlspecialchars(number_format((float) ($activePageData['total_volume'] ?? 0.0), 0), ENT_QUOTES) ?> m³</p>
+                </div>
+                <div class="rounded-[1.1rem] border border-white/8 bg-slate-950/50 px-4 py-4">
+                    <p class="text-xs uppercase tracking-[0.16em] text-slate-500">Doctrine-critical</p>
+                    <p class="mt-2 text-2xl font-semibold text-orange-100"><?= htmlspecialchars((string) ($activePageData['doctrine_critical_count'] ?? 0), ENT_QUOTES) ?></p>
+                    <p class="mt-1 text-xs text-slate-500"><?= htmlspecialchars((string) ($activePageData['necessity_mix_summary'] ?? ''), ENT_QUOTES) ?></p>
+                </div>
+            </div>
+
+            <div class="mt-5 overflow-x-auto rounded-[1.2rem] border border-white/8 bg-slate-950/40">
+                <table class="min-w-full divide-y divide-white/8 text-sm">
+                    <thead class="bg-white/[0.03] text-left text-xs uppercase tracking-[0.16em] text-slate-500">
+                        <tr>
+                            <th class="px-4 py-3">Item</th>
+                            <th class="px-4 py-3">Qty</th>
+                            <th class="px-4 py-3">Priority</th>
+                            <th class="px-4 py-3">Buy</th>
+                            <th class="px-4 py-3">Sell</th>
+                            <th class="px-4 py-3">Volume</th>
+                            <th class="px-4 py-3">Hauling</th>
+                            <th class="px-4 py-3">Net profit</th>
+                            <th class="px-4 py-3">Reason</th>
+                        </tr>
+                    </thead>
+                    <tbody class="divide-y divide-white/8 text-slate-200">
+                        <?php foreach ((array) ($activePageData['items'] ?? []) as $item): ?>
+                            <tr>
+                                <td class="px-4 py-3 align-top">
+                                    <p class="font-semibold text-white"><?= htmlspecialchars((string) ($item['item_name'] ?? ''), ENT_QUOTES) ?></p>
+                                    <p class="mt-1 text-xs text-slate-500"><?= htmlspecialchars((string) ($item['reason_code'] ?? ''), ENT_QUOTES) ?></p>
+                                    <?php if (!empty($item['linked_fit_names'])): ?>
+                                        <p class="mt-1 text-xs text-slate-500">Fits: <?= htmlspecialchars(implode(', ', array_slice((array) ($item['linked_fit_names'] ?? []), 0, 3)), ENT_QUOTES) ?></p>
+                                    <?php endif; ?>
+                                </td>
+                                <td class="px-4 py-3 align-top">
+                                    <p class="font-semibold text-white"><?= htmlspecialchars((string) ($item['quantity'] ?? 0), ENT_QUOTES) ?></p>
+                                    <p class="mt-1 text-xs text-slate-500">Exact deficit <?= htmlspecialchars((string) ($item['exact_deficit_quantity'] ?? 0), ENT_QUOTES) ?></p>
+                                </td>
+                                <td class="px-4 py-3 align-top">
+                                    <p class="font-semibold text-white">N <?= htmlspecialchars(number_format((float) ($item['necessity_score'] ?? 0.0), 1), ENT_QUOTES) ?></p>
+                                    <p class="mt-1 text-xs text-slate-500">P <?= htmlspecialchars(number_format((float) ($item['profit_score'] ?? 0.0), 1), ENT_QUOTES) ?> · B <?= htmlspecialchars(number_format((float) ($item['blended_score'] ?? 0.0), 1), ENT_QUOTES) ?></p>
+                                    <p class="mt-1 text-xs text-slate-500">Blocked fits <?= htmlspecialchars((string) ($item['blocked_fit_impact'] ?? 0), ENT_QUOTES) ?></p>
+                                </td>
+                                <td class="px-4 py-3 align-top">
+                                    <p class="font-semibold text-white"><?= htmlspecialchars(market_format_isk(isset($item['buy_price']) ? (float) $item['buy_price'] : null), ENT_QUOTES) ?></p>
+                                    <p class="mt-1 text-xs text-slate-500"><?= htmlspecialchars((string) ($item['buy_price_basis'] ?? 'Unknown'), ENT_QUOTES) ?></p>
+                                </td>
+                                <td class="px-4 py-3 align-top">
+                                    <p class="font-semibold text-white"><?= htmlspecialchars(market_format_isk(isset($item['sell_price']) ? (float) $item['sell_price'] : null), ENT_QUOTES) ?></p>
+                                    <p class="mt-1 text-xs text-slate-500"><?= htmlspecialchars((string) ($item['sell_price_basis'] ?? 'Unknown'), ENT_QUOTES) ?></p>
+                                </td>
+                                <td class="px-4 py-3 align-top">
+                                    <p class="font-semibold text-white"><?= htmlspecialchars(number_format((float) ($item['unit_volume'] ?? 0.0), 2), ENT_QUOTES) ?> m³</p>
+                                    <p class="mt-1 text-xs text-slate-500">Total <?= htmlspecialchars(number_format((float) ($item['total_volume'] ?? 0.0), 2), ENT_QUOTES) ?> m³</p>
+                                </td>
+                                <td class="px-4 py-3 align-top">
+                                    <p class="font-semibold text-white"><?= htmlspecialchars(market_format_isk((float) ($item['hauling_cost_total'] ?? 0.0)), ENT_QUOTES) ?></p>
+                                    <p class="mt-1 text-xs text-slate-500">Unit <?= htmlspecialchars(market_format_isk((float) ($item['hauling_cost_per_unit'] ?? 0.0)), ENT_QUOTES) ?></p>
+                                </td>
+                                <td class="px-4 py-3 align-top">
+                                    <p class="font-semibold <?= isset($item['net_profit_total']) && (float) ($item['net_profit_total'] ?? 0.0) >= 0.0 ? 'text-emerald-100' : 'text-rose-200' ?>"><?= htmlspecialchars(market_format_isk(isset($item['net_profit_total']) ? (float) $item['net_profit_total'] : null), ENT_QUOTES) ?></p>
+                                    <p class="mt-1 text-xs text-slate-500">Net margin <?= htmlspecialchars(isset($item['net_margin_percent']) ? market_format_percentage((float) $item['net_margin_percent'], 1) : 'Unknown', ENT_QUOTES) ?></p>
+                                </td>
+                                <td class="px-4 py-3 align-top">
+                                    <p class="text-sm text-slate-200"><?= htmlspecialchars((string) ($item['reason_text'] ?? ''), ENT_QUOTES) ?></p>
+                                    <p class="mt-1 text-xs text-slate-500">Doctrine impact <?= htmlspecialchars((string) ($item['doctrine_fit_impact'] ?? 0), ENT_QUOTES) ?> · Pricing <?= htmlspecialchars((string) ($item['pricing_completeness'] ?? 'partial'), ENT_QUOTES) ?></p>
+                                </td>
+                            </tr>
+                        <?php endforeach; ?>
+                    </tbody>
+                </table>
+            </div>
+        <?php endif; ?>
+    </article>
+
+    <div class="space-y-5">
+        <article class="surface-secondary">
+            <div class="section-header border-b border-white/8 pb-4">
+                <div>
+                    <p class="eyebrow">Clipboard</p>
+                    <h2 class="mt-2 section-title">Copy Buy All</h2>
+                    <p class="mt-2 section-copy">Exact in-game import format: item name, space, quantity, one item per line, with no prices or annotations.</p>
+                </div>
+            </div>
+            <?php if ($activePageData !== null): ?>
+                <div class="mt-4 space-y-3">
+                    <div class="flex flex-wrap items-center gap-2">
+                        <button type="button" class="btn-primary" data-copy-target="buy-all-current">Copy current page</button>
+                        <?php foreach ($pages as $page): ?>
+                            <button type="button" class="btn-secondary" data-copy-text="<?= htmlspecialchars((string) ($page['clipboard_text'] ?? ''), ENT_QUOTES) ?>">Copy page <?= (int) ($page['number'] ?? 0) ?></button>
+                        <?php endforeach; ?>
+                    </div>
+                    <textarea id="buy-all-current" class="field-input h-72 w-full font-mono text-sm" readonly><?= htmlspecialchars((string) ($activePageData['clipboard_text'] ?? ''), ENT_QUOTES) ?></textarea>
+                </div>
+            <?php else: ?>
+                <div class="surface-tertiary mt-4 text-sm text-slate-400">No clipboard content is available until the planner produces at least one page.</div>
+            <?php endif; ?>
+        </article>
+
+        <article class="surface-secondary">
+            <div class="section-header border-b border-white/8 pb-4">
+                <div>
+                    <p class="eyebrow">Page totals</p>
+                    <h2 class="mt-2 section-title">Current page economics</h2>
+                </div>
+            </div>
+            <?php if ($activePageData !== null): ?>
+                <div class="mt-4 space-y-3 text-sm">
+                    <div class="info-kv"><span class="text-slate-400">Buy cost</span><span class="font-medium text-slate-100"><?= htmlspecialchars(market_format_isk((float) ($activePageData['total_buy_cost'] ?? 0.0)), ENT_QUOTES) ?></span></div>
+                    <div class="info-kv"><span class="text-slate-400">Expected sell value</span><span class="font-medium text-slate-100"><?= htmlspecialchars(market_format_isk((float) ($activePageData['total_expected_sell_value'] ?? 0.0)), ENT_QUOTES) ?></span></div>
+                    <div class="info-kv"><span class="text-slate-400">Hauling cost</span><span class="font-medium text-slate-100"><?= htmlspecialchars(market_format_isk((float) ($activePageData['total_hauling_cost'] ?? 0.0)), ENT_QUOTES) ?></span></div>
+                    <div class="info-kv"><span class="text-slate-400">Gross profit</span><span class="font-medium text-slate-100"><?= htmlspecialchars(market_format_isk((float) ($activePageData['total_gross_profit'] ?? 0.0)), ENT_QUOTES) ?></span></div>
+                    <div class="info-kv"><span class="text-slate-400">Net profit</span><span class="font-medium <?= (float) ($activePageData['total_net_profit'] ?? 0.0) >= 0.0 ? 'text-emerald-100' : 'text-rose-200' ?>"><?= htmlspecialchars(market_format_isk((float) ($activePageData['total_net_profit'] ?? 0.0)), ENT_QUOTES) ?></span></div>
+                    <div class="info-kv"><span class="text-slate-400">Necessity mix</span><span class="font-medium text-slate-100"><?= htmlspecialchars((string) ($activePageData['necessity_mix_summary'] ?? ''), ENT_QUOTES) ?></span></div>
+                </div>
+            <?php endif; ?>
+        </article>
+    </div>
+</section>
+
+<script>
+document.addEventListener('click', function (event) {
+    const button = event.target.closest('[data-copy-target], [data-copy-text]');
+    if (!button || !navigator.clipboard) {
+        return;
+    }
+
+    let text = '';
+    const targetId = button.getAttribute('data-copy-target');
+    if (targetId) {
+        const target = document.getElementById(targetId);
+        text = target ? target.value : '';
+    } else {
+        text = button.getAttribute('data-copy-text') || '';
+    }
+
+    if (text === '') {
+        return;
+    }
+
+    navigator.clipboard.writeText(text);
+    const original = button.textContent;
+    button.textContent = 'Copied';
+    window.setTimeout(() => {
+        button.textContent = original;
+    }, 1200);
+});
+</script>
+<?php include __DIR__ . '/../../src/views/partials/footer.php'; ?>
