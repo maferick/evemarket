@@ -66,6 +66,7 @@ if ($fit !== null && $editDraft === null) {
             'ship_name' => (string) ($fit['ship_name'] ?? ''),
             'source_format' => (string) ($fit['source_format'] ?? 'buyall'),
             'import_body' => (string) ($fit['import_body'] ?? ''),
+            'target_fleet_size_override' => (string) (($fit['target_fleet_size_override'] ?? '') ?: ''),
         ],
         'item_lines_text' => doctrine_render_editable_item_lines((array) $items),
         'group_ids' => (array) ($fit['group_ids'] ?? []),
@@ -321,6 +322,10 @@ include __DIR__ . '/../../src/views/partials/header.php';
                                 <?php endforeach; ?>
                             </select>
                         </label>
+                        <label class="block">
+                            <span class="mb-2 block field-label">Target fleet override</span>
+                            <input type="number" name="target_fleet_size_override" min="0" class="field-input" value="<?= htmlspecialchars((string) (($editDraft['fit']['target_fleet_size_override'] ?? '')), ENT_QUOTES) ?>" placeholder="Class default">
+                        </label>
                     </div>
                     <div>
                         <span class="mb-2 block field-label">Doctrine groups</span>
@@ -385,7 +390,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                 <div>
                     <p class="eyebrow">Market mapping</p>
                     <h2 class="mt-2 section-title">Required items by category</h2>
-                    <p class="mt-2 text-sm text-slate-400">Doctrine readiness now highlights the bottleneck item, complete-fit ceiling, and whether local stock is keeping pace with recent tracked losses.</p>
+                    <p class="mt-2 text-sm text-slate-400">Fleet readiness now tracks only hard blockers, while sustainment and recent losses stay visible as separate operator signals.</p>
                 </div>
                 <div class="flex flex-wrap gap-2">
                     <?php foreach ($statusBadges as $badge): ?>
@@ -398,15 +403,15 @@ include __DIR__ . '/../../src/views/partials/header.php';
                 <div class="surface-tertiary">
                     <p class="text-xs uppercase tracking-[0.16em] text-slate-500"><?= htmlspecialchars((string) ($supply['bottleneck_label'] ?? 'Bottleneck item'), ENT_QUOTES) ?></p>
                     <p class="mt-2 text-lg font-semibold text-slate-50"><?= htmlspecialchars((string) ($supply['bottleneck_item_name'] ?? 'Unavailable'), ENT_QUOTES) ?></p>
-                    <p class="mt-1 text-sm text-slate-400"><?= doctrine_format_quantity((int) ($supply['bottleneck_quantity'] ?? 0)) ?> local units for <?= doctrine_format_quantity((int) ($supply['bottleneck_required_quantity'] ?? 0)) ?> required per fit · minimum stock constraint <?= doctrine_format_quantity((int) ($supply['minimum_stock_constraint'] ?? 0)) ?> complete fits.</p>
+                    <p class="mt-1 text-sm text-slate-400"><?= doctrine_format_quantity((int) ($supply['bottleneck_quantity'] ?? 0)) ?> local units for <?= doctrine_format_quantity((int) ($supply['bottleneck_required_quantity'] ?? 0)) ?> required per ship · fleet ceiling <?= doctrine_format_quantity((int) ($supply['bottleneck_capacity'] ?? $supply['minimum_stock_constraint'] ?? 0)) ?> · blocks <?= doctrine_format_quantity((int) ($supply['bottleneck_impact'] ?? 0)) ?> ships.</p>
                     <?php if (!empty($supply['external_bottleneck'])): ?>
                         <p class="mt-2 text-xs text-cyan-100">This bottleneck is externally managed, so it does not create restock urgency.</p>
                     <?php endif; ?>
                 </div>
                 <div class="surface-tertiary">
-                    <p class="text-xs uppercase tracking-[0.16em] text-slate-500">Loss-aware planning</p>
-                    <p class="mt-2 text-lg font-semibold text-slate-50"><?= doctrine_format_quantity((int) ($supply['recent_hull_losses_24h'] ?? 0)) ?> hull losses (24h) · <?= doctrine_format_quantity((int) ($supply['recent_hull_losses_7d'] ?? 0)) ?> hull losses (7d)</p>
-                    <p class="mt-1 text-sm text-slate-400"><?= doctrine_format_quantity((int) ($supply['recent_item_fit_losses_24h'] ?? 0)) ?> / <?= doctrine_format_quantity((int) ($supply['recent_item_fit_losses_7d'] ?? 0)) ?> fit-equivalent item losses from tracked victim killmails. <?= htmlspecialchars((string) ($supply['readiness_trend_context'] ?? ''), ENT_QUOTES) ?></p>
+                    <p class="text-xs uppercase tracking-[0.16em] text-slate-500">Fleet model</p>
+                    <p class="mt-2 text-lg font-semibold text-slate-50"><?= doctrine_format_quantity((int) ($supply['fleet_ready'] ?? 0)) ?> ready / <?= doctrine_format_quantity((int) ($supply['doctrine_target_fleet_size'] ?? 0)) ?> target</p>
+                    <p class="mt-1 text-sm text-slate-400">Gap <?= doctrine_format_quantity((int) ($supply['fleet_gap'] ?? 0)) ?> · overcapacity <?= doctrine_format_quantity((int) ($supply['overcapacity'] ?? 0)) ?> · <?= htmlspecialchars((string) ($supply['readiness_trend_context'] ?? ''), ENT_QUOTES) ?></p>
                 </div>
             </div>
 
@@ -418,24 +423,31 @@ include __DIR__ . '/../../src/views/partials/header.php';
                     <p class="mt-2 text-xs text-slate-500">24h <?= doctrine_format_quantity((int) ($supply['depletion_24h'] ?? 0)) ?> units · 7d <?= doctrine_format_quantity((int) ($supply['depletion_7d'] ?? 0)) ?> units · fit-equivalent drain <?= htmlspecialchars((string) number_format((float) ($supply['depletion_fit_equivalent_7d'] ?? 0.0), 2), ENT_QUOTES) ?></p>
                 </div>
                 <div class="surface-tertiary">
-                    <p class="text-xs uppercase tracking-[0.16em] text-slate-500">Change timeline</p>
-                    <?php if ($changeTimeline === []): ?>
-                        <p class="mt-2 text-sm text-slate-400">No doctrine changes logged yet.</p>
-                    <?php else: ?>
-                        <div class="mt-3 space-y-3">
-                            <?php foreach (array_slice($changeTimeline, 0, 4) as $event): ?>
-                                <div class="rounded-2xl border border-white/8 bg-slate-950/60 px-3 py-2.5">
-                                    <div class="flex items-center justify-between gap-3">
-                                        <p class="text-xs uppercase tracking-[0.16em] text-slate-500"><?= htmlspecialchars((string) ($event['snapshot_time'] ?? ''), ENT_QUOTES) ?></p>
-                                        <span class="badge <?= htmlspecialchars(doctrine_supply_status_tone((string) ($event['readiness_state'] ?? $latestSnapshot['readiness_state'] ?? $supply['readiness_state'] ?? 'market_ready')), ENT_QUOTES) ?>"><?= htmlspecialchars((string) ($event['readiness_text'] ?? ($supply['readiness_label'] ?? 'Market ready')), ENT_QUOTES) ?></span>
-                                        <span class="badge <?= htmlspecialchars(doctrine_resupply_pressure_tone((string) ($event['resupply_pressure_state'] ?? $latestSnapshot['resupply_pressure_state'] ?? $supply['resupply_pressure_state'] ?? 'stable')), ENT_QUOTES) ?>"><?= htmlspecialchars((string) ($event['resupply_pressure_text'] ?? ($supply['resupply_pressure_label'] ?? 'Stable')), ENT_QUOTES) ?></span>
-                                    </div>
-                                    <p class="mt-2 text-sm text-slate-300"><?= htmlspecialchars((string) ($event['summary'] ?? ''), ENT_QUOTES) ?></p>
-                                </div>
-                            <?php endforeach; ?>
-                        </div>
-                    <?php endif; ?>
+                    <p class="text-xs uppercase tracking-[0.16em] text-slate-500">Sustainment + losses</p>
+                    <p class="mt-2 text-lg font-semibold text-slate-50"><?= htmlspecialchars((string) ($supply['sustainment_risk_label'] ?? 'Stable'), ENT_QUOTES) ?></p>
+                    <p class="mt-1 text-sm text-slate-400"><?= htmlspecialchars((string) ($supply['sustainment_risk_context'] ?? 'No separate sustainment pressure detected.'), ENT_QUOTES) ?></p>
+                    <p class="mt-2 text-xs text-slate-500"><?= doctrine_format_quantity((int) ($supply['recent_hull_losses_24h'] ?? 0)) ?> hull losses (24h) · <?= doctrine_format_quantity((int) ($supply['recent_hull_losses_7d'] ?? 0)) ?> hull losses (7d) · <?= doctrine_format_quantity((int) ($supply['recent_item_fit_losses_7d'] ?? 0)) ?> fit-equivalent support losses (7d)</p>
                 </div>
+            </div>
+
+            <div class="mb-6 surface-tertiary">
+                <p class="text-xs uppercase tracking-[0.16em] text-slate-500">Change timeline</p>
+                <?php if ($changeTimeline === []): ?>
+                    <p class="mt-2 text-sm text-slate-400">No doctrine changes logged yet.</p>
+                <?php else: ?>
+                    <div class="mt-3 space-y-3">
+                        <?php foreach (array_slice($changeTimeline, 0, 4) as $event): ?>
+                            <div class="rounded-2xl border border-white/8 bg-slate-950/60 px-3 py-2.5">
+                                <div class="flex items-center justify-between gap-3">
+                                    <p class="text-xs uppercase tracking-[0.16em] text-slate-500"><?= htmlspecialchars((string) ($event['snapshot_time'] ?? ''), ENT_QUOTES) ?></p>
+                                    <span class="badge <?= htmlspecialchars(doctrine_supply_status_tone((string) ($event['readiness_state'] ?? $latestSnapshot['readiness_state'] ?? $supply['readiness_state'] ?? 'market_ready')), ENT_QUOTES) ?>"><?= htmlspecialchars((string) ($event['readiness_text'] ?? ($supply['readiness_label'] ?? 'Market ready')), ENT_QUOTES) ?></span>
+                                    <span class="badge <?= htmlspecialchars(doctrine_resupply_pressure_tone((string) ($event['resupply_pressure_state'] ?? $latestSnapshot['resupply_pressure_state'] ?? $supply['resupply_pressure_state'] ?? 'stable')), ENT_QUOTES) ?>"><?= htmlspecialchars((string) ($event['resupply_pressure_text'] ?? ($supply['resupply_pressure_label'] ?? 'Stable')), ENT_QUOTES) ?></span>
+                                </div>
+                                <p class="mt-2 text-sm text-slate-300"><?= htmlspecialchars((string) ($event['summary'] ?? ''), ENT_QUOTES) ?></p>
+                            </div>
+                        <?php endforeach; ?>
+                    </div>
+                <?php endif; ?>
             </div>
 
             <?php if ($categories === []): ?>
@@ -470,6 +482,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                                             <tr class="<?= $rowIsExternallyManaged ? 'bg-cyan-900/10' : (((int) ($row['missing_qty'] ?? 0) > 0) ? 'bg-rose-900/10' : ($isBottleneck ? 'bg-amber-900/10' : '')) ?>">
                                                 <td class="font-semibold text-slate-50">
                                                     <?= htmlspecialchars((string) ($row['item_name'] ?? ''), ENT_QUOTES) ?>
+                                                    <span class="ml-2 rounded-full border border-white/10 bg-white/5 px-2 py-0.5 text-[11px] uppercase tracking-[0.08em] text-slate-300"><?= htmlspecialchars((string) ($row['item_block_type_label'] ?? 'Hard blocker'), ENT_QUOTES) ?></span>
                                                     <?php if ($rowIsExternallyManaged): ?>
                                                         <span class="ml-2 rounded-full border border-cyan-400/20 bg-cyan-500/10 px-2 py-0.5 text-[11px] uppercase tracking-[0.08em] text-cyan-100">Externally managed</span>
                                                     <?php endif; ?>
@@ -483,7 +496,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                                                 <td class="text-right tabular-nums <?= $rowIsExternallyManaged ? 'text-cyan-100' : 'text-sky-100' ?>"><?= htmlspecialchars((string) ($row['restock_gap_label'] ?? '—'), ENT_QUOTES) ?></td>
                                                 <td>
                                                     <span class="rounded-full border px-2 py-0.5 text-[11px] uppercase tracking-[0.08em] <?= $statusTone((string) ($row['market_status'] ?? 'missing')) ?>">
-                                                        <?= htmlspecialchars((string) ($rowIsExternallyManaged && $isBottleneck ? 'External bottleneck' : ($isBottleneck ? 'Bottleneck' : ($row['market_label'] ?? 'Missing'))), ENT_QUOTES) ?>
+                                                        <?= htmlspecialchars((string) ($rowIsExternallyManaged && $isBottleneck ? 'External bottleneck' : ($isBottleneck ? 'Bottleneck' : (($row['item_block_type'] ?? 'hard_blocker') === 'hard_blocker' ? ($row['market_label'] ?? 'Missing') : 'Support tracked'))), ENT_QUOTES) ?>
                                                     </span>
                                                 </td>
                                             </tr>

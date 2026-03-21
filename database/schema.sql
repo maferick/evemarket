@@ -1200,6 +1200,7 @@ CREATE TABLE IF NOT EXISTS doctrine_fits (
     fit_name VARCHAR(190) NOT NULL,
     ship_name VARCHAR(255) NOT NULL,
     ship_type_id INT UNSIGNED DEFAULT NULL,
+    target_fleet_size_override INT UNSIGNED DEFAULT NULL,
     source_type ENUM('html', 'eft', 'buyall', 'manual') NOT NULL DEFAULT 'manual',
     source_format ENUM('eft', 'buyall') NOT NULL,
     source_reference VARCHAR(255) DEFAULT NULL,
