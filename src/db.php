@@ -7118,6 +7118,69 @@ function db_sync_schedule_force_due_by_job_keys(array $jobKeys): int
     return (int) $stmt->rowCount();
 }
 
+function db_sync_schedule_retry_by_job_key(string $jobKey): bool
+{
+    db_sync_schedule_registry_columns_ensure();
+
+    $normalizedKey = trim($jobKey);
+    if ($normalizedKey === '') {
+        return false;
+    }
+
+    return db_execute(
+        'UPDATE sync_schedules
+         SET next_run_at = CASE WHEN enabled = 1 THEN UTC_TIMESTAMP() ELSE next_run_at END,
+             next_due_at = CASE WHEN enabled = 1 THEN UTC_TIMESTAMP() ELSE next_due_at END,
+             latest_allowed_start_at = CASE
+                WHEN enabled = 1 THEN DATE_ADD(UTC_TIMESTAMP(), INTERVAL GREATEST(1, interval_minutes) MINUTE)
+                ELSE latest_allowed_start_at
+             END,
+             locked_until = NULL,
+             current_state = CASE WHEN enabled = 1 THEN \'waiting\' ELSE \'stopped\' END,
+             failure_streak = 0,
+             degraded_until = NULL,
+             consecutive_deferrals = 0,
+             updated_at = CURRENT_TIMESTAMP
+         WHERE job_key = ?
+         LIMIT 1',
+        [$normalizedKey]
+    );
+}
+
+function db_sync_schedule_stop_for_investigation_by_job_key(string $jobKey, string $reason, int $holdMinutes = 240): bool
+{
+    db_sync_schedule_registry_columns_ensure();
+
+    $normalizedKey = trim($jobKey);
+    if ($normalizedKey === '') {
+        return false;
+    }
+
+    $message = mb_substr(trim($reason), 0, 500);
+    if ($message === '') {
+        $message = 'Stopped by operator for investigation.';
+    }
+
+    $safeHoldMinutes = max(5, min(1440, $holdMinutes));
+
+    return db_execute(
+        'UPDATE sync_schedules
+         SET locked_until = NULL,
+             current_state = CASE WHEN enabled = 1 THEN \'stopped\' ELSE \'stopped\' END,
+             degraded_until = CASE
+                WHEN enabled = 1 THEN DATE_ADD(UTC_TIMESTAMP(), INTERVAL ? MINUTE)
+                ELSE degraded_until
+             END,
+             last_status = CASE WHEN enabled = 1 THEN \'stopped\' ELSE last_status END,
+             last_result = CASE WHEN enabled = 1 THEN \'investigating\' ELSE last_result END,
+             last_error = CASE WHEN enabled = 1 THEN ? ELSE last_error END,
+             updated_at = CURRENT_TIMESTAMP
+         WHERE job_key = ?
+         LIMIT 1',
+        [$safeHoldMinutes, $message, $normalizedKey]
+    );
+}
+
 function db_sync_schedule_apply_adjustment(int $scheduleId, array $changes): bool
 {
     db_sync_schedule_registry_columns_ensure();

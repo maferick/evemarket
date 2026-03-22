@@ -108,6 +108,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 exit;
             }
 
+            if ($dataSyncAction === 'retry-job') {
+                $requestedJob = trim((string) (($_POST['job_action_job_key'] ?? $_GET['job_action_job_key'] ?? '')));
+                $retry = retry_data_sync_job_now($requestedJob);
+                $saved = (bool) ($retry['ok'] ?? false);
+                flash('success', (string) ($retry['message'] ?? 'Retry submitted.'));
+                header('Location: /settings?section=' . urlencode($submittedSection));
+                exit;
+            }
+
+            if ($dataSyncAction === 'stop-investigate-job') {
+                $requestedJob = trim((string) (($_POST['job_action_job_key'] ?? $_GET['job_action_job_key'] ?? '')));
+                $stop = stop_data_sync_job_for_investigation($requestedJob);
+                $saved = (bool) ($stop['ok'] ?? false);
+                flash('success', (string) ($stop['message'] ?? 'Job stopped for investigation.'));
+                header('Location: /settings?section=' . urlencode($submittedSection));
+                exit;
+            }
+
             if ($dataSyncAction === 'start-profiling-run') {
                 $profiling = scheduler_profiling_start($_POST);
                 flash('success', (string) ($profiling['message'] ?? 'Performance Monitoring Run request submitted.'));
@@ -1679,6 +1697,9 @@ include __DIR__ . '/../../src/views/partials/header.php';
                                 $stateClass = $state === 'running'
                                     ? 'border-sky-400/40 bg-sky-500/10 text-sky-100'
                                     : ($state === 'stopped' ? 'border-rose-400/40 bg-rose-500/10 text-rose-100' : 'border-amber-400/40 bg-amber-500/10 text-amber-100');
+                                $jobKey = (string) ($schedule['job_key'] ?? '');
+                                $canRetry = !empty($schedule['enabled']) && $state === 'stopped';
+                                $canStopForInvestigation = !empty($schedule['enabled']) && $state !== 'stopped';
                             ?>
                             <div class="rounded-xl border border-border bg-black/20 p-4">
                                 <div class="flex flex-wrap items-start justify-between gap-3">
@@ -1687,8 +1708,18 @@ include __DIR__ . '/../../src/views/partials/header.php';
                                             <p class="text-sm font-medium text-slate-100"><?= htmlspecialchars((string) ($schedule['label'] ?? $schedule['job_key']), ENT_QUOTES) ?></p>
                                             <span class="inline-flex items-center rounded-full border px-2.5 py-1 text-[11px] font-medium uppercase tracking-[0.14em] <?= $stateClass ?>"><?= htmlspecialchars($state, ENT_QUOTES) ?></span>
                                             <?php if (!empty($schedule['allow_backfill'])): ?><span class="inline-flex items-center rounded-full border border-emerald-400/30 bg-emerald-500/10 px-2.5 py-1 text-[11px] uppercase tracking-[0.14em] text-emerald-100">idle backfill</span><?php endif; ?>
+                                            <?php if ($canRetry): ?>
+                                                <button type="submit" name="data_sync_action" value="retry-job" class="inline-flex items-center rounded-full border border-emerald-400/40 bg-emerald-500/10 px-2.5 py-1 text-[11px] font-medium uppercase tracking-[0.14em] text-emerald-100 hover:bg-emerald-500/20" formaction="/settings?section=data-sync&amp;job_action_job_key=<?= urlencode($jobKey) ?>" formnovalidate>
+                                                    <span>Retry now</span>
+                                                </button>
+                                            <?php endif; ?>
+                                            <?php if ($canStopForInvestigation): ?>
+                                                <button type="submit" name="data_sync_action" value="stop-investigate-job" class="inline-flex items-center rounded-full border border-amber-400/40 bg-amber-500/10 px-2.5 py-1 text-[11px] font-medium uppercase tracking-[0.14em] text-amber-100 hover:bg-amber-500/20" formaction="/settings?section=data-sync&amp;job_action_job_key=<?= urlencode($jobKey) ?>" formnovalidate>
+                                                    <span>Stop &amp; investigate</span>
+                                                </button>
+                                            <?php endif; ?>
                                         </div>
-                                        <p class="mt-1 text-xs text-muted font-mono"><?= htmlspecialchars((string) ($schedule['job_key'] ?? ''), ENT_QUOTES) ?></p>
+                                        <p class="mt-1 text-xs text-muted font-mono"><?= htmlspecialchars($jobKey, ENT_QUOTES) ?></p>
                                     </div>
                                     <div class="grid gap-2 text-xs text-muted sm:grid-cols-2 xl:grid-cols-4">
                                         <div><span class="block text-[11px] uppercase tracking-[0.14em]">Live cadence</span><span class="text-slate-100">every <?= (int) ($schedule['interval_minutes'] ?? 0) ?>m</span></div>

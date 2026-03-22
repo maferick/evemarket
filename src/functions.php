@@ -2471,6 +2471,105 @@ function run_data_sync_now(?string $jobKey = null): array
     }
 }
 
+function retry_data_sync_job_now(string $jobKey): array
+{
+    $definitions = data_sync_schedule_job_definitions();
+    $normalizedJobKey = trim($jobKey);
+    if ($normalizedJobKey === '' || !isset($definitions[$normalizedJobKey])) {
+        return [
+            'ok' => false,
+            'message' => 'Retry failed: unknown sync job selected.',
+        ];
+    }
+
+    $scheduleRow = db_sync_schedule_fetch_by_job_keys([$normalizedJobKey])[0] ?? null;
+    if (!is_array($scheduleRow) || (int) ($scheduleRow['enabled'] ?? 0) !== 1) {
+        return [
+            'ok' => false,
+            'message' => 'Retry failed: the selected sync job is not enabled.',
+        ];
+    }
+
+    if (!db_sync_schedule_retry_by_job_key($normalizedJobKey)) {
+        return [
+            'ok' => false,
+            'message' => 'Retry failed: scheduler state could not be reset.',
+        ];
+    }
+
+    $queued = run_data_sync_now($normalizedJobKey);
+    if (!empty($queued['ok'])) {
+        $timestamp = gmdate('Y-m-d H:i:s');
+        db_scheduler_job_event_insert($normalizedJobKey, 'manual_retry_requested', ['actor' => 'operator'], 0, null);
+        db_scheduler_tuning_action_log($normalizedJobKey, 'admin', 'manual_retry', 'Cleared scheduler quarantine state and re-queued the job.', [], ['current_state' => 'waiting'], ['source' => 'settings']);
+        db_scheduler_job_current_status_upsert($normalizedJobKey, [
+            'latest_status' => 'queued',
+            'latest_event_type' => 'manual_retry_requested',
+            'last_failure_message' => null,
+            'current_pressure_state' => 'healthy',
+            'last_pressure_state' => 'healthy',
+            'recent_timeout_count' => 0,
+            'recent_lock_conflict_count' => 0,
+            'recent_deferral_count' => 0,
+            'recent_skip_count' => 0,
+            'last_event_at' => $timestamp,
+        ]);
+    }
+
+    return $queued;
+}
+
+function stop_data_sync_job_for_investigation(string $jobKey): array
+{
+    $definitions = data_sync_schedule_job_definitions();
+    $normalizedJobKey = trim($jobKey);
+    if ($normalizedJobKey === '' || !isset($definitions[$normalizedJobKey])) {
+        return [
+            'ok' => false,
+            'message' => 'Stop failed: unknown sync job selected.',
+        ];
+    }
+
+    $scheduleRow = db_sync_schedule_fetch_by_job_keys([$normalizedJobKey])[0] ?? null;
+    if (!is_array($scheduleRow) || (int) ($scheduleRow['enabled'] ?? 0) !== 1) {
+        return [
+            'ok' => false,
+            'message' => 'Stop failed: the selected sync job is not enabled.',
+        ];
+    }
+
+    $reason = 'Stopped by operator for investigation. Use Retry now after resolving the issue.';
+    if (!db_sync_schedule_stop_for_investigation_by_job_key($normalizedJobKey, $reason)) {
+        return [
+            'ok' => false,
+            'message' => 'Stop failed: scheduler state could not be updated.',
+        ];
+    }
+
+    $timestamp = gmdate('Y-m-d H:i:s');
+    db_scheduler_job_event_insert($normalizedJobKey, 'manual_stop_requested', ['actor' => 'operator', 'reason' => $reason], 0, null);
+    db_scheduler_tuning_action_log($normalizedJobKey, 'admin', 'manual_investigation_stop', $reason, [], ['current_state' => 'stopped'], ['source' => 'settings']);
+    db_scheduler_job_current_status_upsert($normalizedJobKey, [
+        'latest_status' => 'investigating',
+        'latest_event_type' => 'manual_stop_requested',
+        'last_failure_message' => $reason,
+        'current_pressure_state' => 'healthy',
+        'last_pressure_state' => 'healthy',
+        'recent_timeout_count' => 0,
+        'recent_lock_conflict_count' => 0,
+        'recent_deferral_count' => 0,
+        'recent_skip_count' => 0,
+        'last_event_at' => $timestamp,
+    ]);
+
+    $jobLabel = (string) ($definitions[$normalizedJobKey]['label'] ?? $normalizedJobKey);
+
+    return [
+        'ok' => true,
+        'message' => $jobLabel . ' is now stopped for investigation. Retry it from the job card after you resolve the issue.',
+    ];
+}
+
 function scheduler_reset_process_targets(): array
 {
     $paths = [
