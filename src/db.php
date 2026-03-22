@@ -3337,7 +3337,145 @@ function db_market_deal_alerts_ensure_schema(): void
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"
     );
 
+    db()->exec(
+        "CREATE TABLE IF NOT EXISTS market_deal_alert_materialization_status (
+            snapshot_key VARCHAR(64) PRIMARY KEY,
+            last_job_key VARCHAR(190) DEFAULT NULL,
+            last_run_started_at DATETIME DEFAULT NULL,
+            last_run_finished_at DATETIME DEFAULT NULL,
+            last_success_at DATETIME DEFAULT NULL,
+            last_materialized_at DATETIME DEFAULT NULL,
+            first_materialized_at DATETIME DEFAULT NULL,
+            last_attempt_status VARCHAR(40) NOT NULL DEFAULT 'never_ran',
+            last_success_status VARCHAR(40) DEFAULT NULL,
+            last_reason_zero_output VARCHAR(500) DEFAULT NULL,
+            last_failure_reason VARCHAR(500) DEFAULT NULL,
+            last_deferred_at DATETIME DEFAULT NULL,
+            last_deferred_reason VARCHAR(500) DEFAULT NULL,
+            input_row_count INT UNSIGNED NOT NULL DEFAULT 0,
+            history_row_count INT UNSIGNED NOT NULL DEFAULT 0,
+            candidate_row_count INT UNSIGNED NOT NULL DEFAULT 0,
+            output_row_count INT UNSIGNED NOT NULL DEFAULT 0,
+            persisted_row_count INT UNSIGNED NOT NULL DEFAULT 0,
+            inactive_row_count INT UNSIGNED NOT NULL DEFAULT 0,
+            sources_scanned INT UNSIGNED NOT NULL DEFAULT 0,
+            last_duration_ms INT UNSIGNED DEFAULT NULL,
+            metadata_json JSON DEFAULT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            KEY idx_market_deal_alert_materialization_attempt (last_attempt_status, last_run_finished_at),
+            KEY idx_market_deal_alert_materialization_success (last_success_at),
+            KEY idx_market_deal_alert_materialization_write (last_materialized_at)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"
+    );
+
     $ensured = true;
+}
+
+function db_market_deal_alert_materialization_status_get(string $snapshotKey = 'current'): ?array
+{
+    db_market_deal_alerts_ensure_schema();
+
+    $safeSnapshotKey = trim($snapshotKey);
+    if ($safeSnapshotKey === '') {
+        $safeSnapshotKey = 'current';
+    }
+
+    $row = db_select_one(
+        'SELECT *
+         FROM market_deal_alert_materialization_status
+         WHERE snapshot_key = ?
+         LIMIT 1',
+        [$safeSnapshotKey]
+    );
+
+    return is_array($row) ? $row : null;
+}
+
+function db_market_deal_alert_materialization_status_upsert(array $row): bool
+{
+    db_market_deal_alerts_ensure_schema();
+
+    $snapshotKey = trim((string) ($row['snapshot_key'] ?? 'current'));
+    if ($snapshotKey === '') {
+        $snapshotKey = 'current';
+    }
+
+    return db_execute(
+        'INSERT INTO market_deal_alert_materialization_status (
+            snapshot_key,
+            last_job_key,
+            last_run_started_at,
+            last_run_finished_at,
+            last_success_at,
+            last_materialized_at,
+            first_materialized_at,
+            last_attempt_status,
+            last_success_status,
+            last_reason_zero_output,
+            last_failure_reason,
+            last_deferred_at,
+            last_deferred_reason,
+            input_row_count,
+            history_row_count,
+            candidate_row_count,
+            output_row_count,
+            persisted_row_count,
+            inactive_row_count,
+            sources_scanned,
+            last_duration_ms,
+            metadata_json
+        ) VALUES (
+            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+        )
+        ON DUPLICATE KEY UPDATE
+            last_job_key = VALUES(last_job_key),
+            last_run_started_at = COALESCE(VALUES(last_run_started_at), last_run_started_at),
+            last_run_finished_at = COALESCE(VALUES(last_run_finished_at), last_run_finished_at),
+            last_success_at = COALESCE(VALUES(last_success_at), last_success_at),
+            last_materialized_at = COALESCE(VALUES(last_materialized_at), last_materialized_at),
+            first_materialized_at = COALESCE(first_materialized_at, VALUES(first_materialized_at)),
+            last_attempt_status = VALUES(last_attempt_status),
+            last_success_status = COALESCE(VALUES(last_success_status), last_success_status),
+            last_reason_zero_output = VALUES(last_reason_zero_output),
+            last_failure_reason = VALUES(last_failure_reason),
+            last_deferred_at = VALUES(last_deferred_at),
+            last_deferred_reason = VALUES(last_deferred_reason),
+            input_row_count = VALUES(input_row_count),
+            history_row_count = VALUES(history_row_count),
+            candidate_row_count = VALUES(candidate_row_count),
+            output_row_count = VALUES(output_row_count),
+            persisted_row_count = VALUES(persisted_row_count),
+            inactive_row_count = VALUES(inactive_row_count),
+            sources_scanned = VALUES(sources_scanned),
+            last_duration_ms = VALUES(last_duration_ms),
+            metadata_json = VALUES(metadata_json),
+            updated_at = CURRENT_TIMESTAMP',
+        [
+            $snapshotKey,
+            ($row['last_job_key'] ?? null) !== null ? mb_substr(trim((string) $row['last_job_key']), 0, 190) : null,
+            $row['last_run_started_at'] ?? null,
+            $row['last_run_finished_at'] ?? null,
+            $row['last_success_at'] ?? null,
+            $row['last_materialized_at'] ?? null,
+            $row['first_materialized_at'] ?? null,
+            mb_substr(trim((string) ($row['last_attempt_status'] ?? 'never_ran')), 0, 40),
+            ($row['last_success_status'] ?? null) !== null ? mb_substr(trim((string) $row['last_success_status']), 0, 40) : null,
+            ($row['last_reason_zero_output'] ?? null) !== null ? mb_substr(trim((string) $row['last_reason_zero_output']), 0, 500) : null,
+            ($row['last_failure_reason'] ?? null) !== null ? mb_substr(trim((string) $row['last_failure_reason']), 0, 500) : null,
+            $row['last_deferred_at'] ?? null,
+            ($row['last_deferred_reason'] ?? null) !== null ? mb_substr(trim((string) $row['last_deferred_reason']), 0, 500) : null,
+            max(0, (int) ($row['input_row_count'] ?? 0)),
+            max(0, (int) ($row['history_row_count'] ?? 0)),
+            max(0, (int) ($row['candidate_row_count'] ?? 0)),
+            max(0, (int) ($row['output_row_count'] ?? 0)),
+            max(0, (int) ($row['persisted_row_count'] ?? 0)),
+            max(0, (int) ($row['inactive_row_count'] ?? 0)),
+            max(0, (int) ($row['sources_scanned'] ?? 0)),
+            isset($row['last_duration_ms']) ? max(0, (int) $row['last_duration_ms']) : null,
+            $row['metadata_json'] ?? null,
+        ]
+    );
 }
 
 function db_market_lowest_sell_orders_by_source(string $sourceType, int $sourceId): array
@@ -4286,6 +4424,9 @@ function db_sync_schedule_registry_columns_ensure(): void
     db_ensure_table_column('sync_schedules', 'timeout_seconds', 'INT UNSIGNED NOT NULL DEFAULT 300');
     db_ensure_table_column('sync_schedules', 'last_started_at', 'DATETIME DEFAULT NULL');
     db_ensure_table_column('sync_schedules', 'last_finished_at', 'DATETIME DEFAULT NULL');
+    db_ensure_table_column('sync_schedules', 'latency_sensitive', 'TINYINT(1) NOT NULL DEFAULT 0');
+    db_ensure_table_column('sync_schedules', 'user_facing', 'TINYINT(1) NOT NULL DEFAULT 0');
+    db_ensure_table_column('sync_schedules', 'consecutive_deferrals', 'INT UNSIGNED NOT NULL DEFAULT 0');
     db_ensure_table_column('sync_schedules', 'last_duration_seconds', 'DECIMAL(10,2) DEFAULT NULL');
     db_ensure_table_column('sync_schedules', 'average_duration_seconds', 'DECIMAL(10,2) DEFAULT NULL');
     db_ensure_table_column('sync_schedules', 'p95_duration_seconds', 'DECIMAL(10,2) DEFAULT NULL');
@@ -4364,7 +4505,7 @@ function db_sync_schedule_select_columns_sql(): string
 {
     db_sync_schedule_registry_columns_ensure();
 
-    return 'id, job_key, enabled, interval_minutes, interval_seconds, offset_seconds, offset_minutes, priority, concurrency_policy, timeout_seconds, next_run_at, next_due_at, latest_allowed_start_at, last_run_at, last_started_at, last_finished_at, last_duration_seconds, average_duration_seconds, p95_duration_seconds, last_status, last_result, last_error, current_state, tuning_mode, discovered_from_code, explicitly_configured, last_auto_tuned_at, last_auto_tune_reason, degraded_until, failure_streak, lock_conflict_count, timeout_count, resource_class, resource_class_confidence, telemetry_sample_count, learning_mode, allow_parallel, prefers_solo, must_run_alone, preferred_max_parallelism, last_cpu_percent, average_cpu_percent, p95_cpu_percent, last_memory_peak_bytes, average_memory_peak_bytes, p95_memory_peak_bytes, last_queue_wait_seconds, last_lock_wait_seconds, average_lock_wait_seconds, last_overlap_count, last_overlapped, recent_timeout_rate, recent_failure_rate, current_projected_cpu_percent, current_projected_memory_bytes, current_pressure_state, last_capacity_reason, allow_backfill, backfill_priority, min_backfill_gap_seconds, max_early_start_seconds, last_execution_mode, locked_until, created_at, updated_at';
+    return 'id, job_key, enabled, interval_minutes, interval_seconds, offset_seconds, offset_minutes, priority, concurrency_policy, timeout_seconds, next_run_at, next_due_at, latest_allowed_start_at, last_run_at, last_started_at, last_finished_at, latency_sensitive, user_facing, consecutive_deferrals, last_duration_seconds, average_duration_seconds, p95_duration_seconds, last_status, last_result, last_error, current_state, tuning_mode, discovered_from_code, explicitly_configured, last_auto_tuned_at, last_auto_tune_reason, degraded_until, failure_streak, lock_conflict_count, timeout_count, resource_class, resource_class_confidence, telemetry_sample_count, learning_mode, allow_parallel, prefers_solo, must_run_alone, preferred_max_parallelism, last_cpu_percent, average_cpu_percent, p95_cpu_percent, last_memory_peak_bytes, average_memory_peak_bytes, p95_memory_peak_bytes, last_queue_wait_seconds, last_lock_wait_seconds, average_lock_wait_seconds, last_overlap_count, last_overlapped, recent_timeout_rate, recent_failure_rate, current_projected_cpu_percent, current_projected_memory_bytes, current_pressure_state, last_capacity_reason, allow_backfill, backfill_priority, min_backfill_gap_seconds, max_early_start_seconds, last_execution_mode, locked_until, created_at, updated_at';
 }
 
 function db_sync_schedule_priority_rank_sql(string $column = 'priority'): string
@@ -4564,6 +4705,7 @@ function db_sync_schedule_mark_success(int $scheduleId, ?array $runtime = null):
              average_duration_seconds = ?,
              p95_duration_seconds = ?,
              locked_until = NULL,
+             consecutive_deferrals = 0,
              failure_streak = 0,
              degraded_until = NULL,
              updated_at = CURRENT_TIMESTAMP
@@ -4604,6 +4746,7 @@ function db_sync_schedule_mark_failure(int $scheduleId, string $errorMessage, ?a
              average_duration_seconds = ?,
              p95_duration_seconds = ?,
              locked_until = NULL,
+             consecutive_deferrals = 0,
              failure_streak = failure_streak + 1,
              timeout_count = timeout_count + CASE WHEN ? = 1 THEN 1 ELSE 0 END,
              degraded_until = CASE WHEN failure_streak + 1 >= 3 THEN DATE_ADD(UTC_TIMESTAMP(), INTERVAL 30 MINUTE) ELSE degraded_until END,
@@ -4777,6 +4920,8 @@ function db_sync_schedule_ensure_job(string $jobKey, int $enabled, int $interval
     $backfillPriority = mb_substr(trim((string) ($options['backfill_priority'] ?? $priority)), 0, 20);
     $minBackfillGapSeconds = max(60, min(86400, (int) ($options['min_backfill_gap_seconds'] ?? 900)));
     $maxEarlyStartSeconds = max(0, min(86400, (int) ($options['max_early_start_seconds'] ?? 0)));
+    $latencySensitive = !empty($options['latency_sensitive']) ? 1 : 0;
+    $userFacing = !empty($options['user_facing']) ? 1 : 0;
     $tuningMode = ($options['tuning_mode'] ?? 'automatic') === 'manual' ? 'manual' : 'automatic';
     $discoveredFromCode = !empty($options['discovered_from_code']) ? 1 : 0;
     $explicitlyConfigured = array_key_exists('explicitly_configured', $options) && !$options['explicitly_configured'] ? 0 : 1;
@@ -4798,6 +4943,8 @@ function db_sync_schedule_ensure_job(string $jobKey, int $enabled, int $interval
             backfill_priority,
             min_backfill_gap_seconds,
             max_early_start_seconds,
+            latency_sensitive,
+            user_facing,
             next_run_at,
             next_due_at,
             current_state,
@@ -4809,7 +4956,7 @@ function db_sync_schedule_ensure_job(string $jobKey, int $enabled, int $interval
             last_error,
             locked_until
          ) VALUES (
-            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL
+            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL
          )
          ON DUPLICATE KEY UPDATE
             enabled = sync_schedules.enabled,
@@ -4826,6 +4973,8 @@ function db_sync_schedule_ensure_job(string $jobKey, int $enabled, int $interval
             backfill_priority = COALESCE(NULLIF(sync_schedules.backfill_priority, \'\'), VALUES(backfill_priority)),
             min_backfill_gap_seconds = COALESCE(sync_schedules.min_backfill_gap_seconds, VALUES(min_backfill_gap_seconds)),
             max_early_start_seconds = COALESCE(sync_schedules.max_early_start_seconds, VALUES(max_early_start_seconds)),
+            latency_sensitive = GREATEST(sync_schedules.latency_sensitive, VALUES(latency_sensitive)),
+            user_facing = GREATEST(sync_schedules.user_facing, VALUES(user_facing)),
             tuning_mode = COALESCE(sync_schedules.tuning_mode, VALUES(tuning_mode)),
             next_run_at = CASE
                 WHEN sync_schedules.enabled = 1 AND sync_schedules.next_run_at IS NULL THEN VALUES(next_run_at)
@@ -4841,7 +4990,7 @@ function db_sync_schedule_ensure_job(string $jobKey, int $enabled, int $interval
                 ELSE VALUES(current_state)
             END,
             updated_at = CURRENT_TIMESTAMP',
-        [$normalizedKey, $enabled, $intervalMinutes, $safeIntervalSeconds, $safeOffsetSeconds, $offsetMinutes, $priority, $concurrencyPolicy, $timeoutSeconds, $allowBackfill, $backfillPriority, $minBackfillGapSeconds, $maxEarlyStartSeconds, $nextDueAt, $nextDueAt, $currentState, $tuningMode, $discoveredFromCode, $explicitlyConfigured]
+        [$normalizedKey, $enabled, $intervalMinutes, $safeIntervalSeconds, $safeOffsetSeconds, $offsetMinutes, $priority, $concurrencyPolicy, $timeoutSeconds, $allowBackfill, $backfillPriority, $minBackfillGapSeconds, $maxEarlyStartSeconds, $latencySensitive, $userFacing, $nextDueAt, $nextDueAt, $currentState, $tuningMode, $discoveredFromCode, $explicitlyConfigured]
     );
 }
 
@@ -4855,7 +5004,7 @@ function db_sync_schedule_upsert(string $jobKey, int $enabled, int $intervalSeco
     }
 
     $existing = db_select_one(
-        'SELECT offset_minutes, priority, concurrency_policy, timeout_seconds, tuning_mode, discovered_from_code, explicitly_configured, allow_backfill, backfill_priority, min_backfill_gap_seconds, max_early_start_seconds
+        'SELECT offset_minutes, priority, concurrency_policy, timeout_seconds, tuning_mode, discovered_from_code, explicitly_configured, allow_backfill, backfill_priority, min_backfill_gap_seconds, max_early_start_seconds, latency_sensitive, user_facing
          FROM sync_schedules
          WHERE job_key = ?
          LIMIT 1',
@@ -4874,6 +5023,8 @@ function db_sync_schedule_upsert(string $jobKey, int $enabled, int $intervalSeco
     $backfillPriority = mb_substr(trim((string) ($options['backfill_priority'] ?? ($existing['backfill_priority'] ?? $priority))), 0, 20);
     $minBackfillGapSeconds = max(60, min(86400, (int) ($options['min_backfill_gap_seconds'] ?? ($existing['min_backfill_gap_seconds'] ?? 900))));
     $maxEarlyStartSeconds = max(0, min(86400, (int) ($options['max_early_start_seconds'] ?? ($existing['max_early_start_seconds'] ?? 0))));
+    $latencySensitive = !empty($options['latency_sensitive'] ?? $existing['latency_sensitive'] ?? 0) ? 1 : 0;
+    $userFacing = !empty($options['user_facing'] ?? $existing['user_facing'] ?? 0) ? 1 : 0;
     $tuningMode = ($options['tuning_mode'] ?? ($existing['tuning_mode'] ?? 'automatic')) === 'manual' ? 'manual' : 'automatic';
     $discoveredFromCode = !empty($options['discovered_from_code'] ?? $existing['discovered_from_code'] ?? 0) ? 1 : 0;
     $explicitlyConfigured = array_key_exists('explicitly_configured', $options)
@@ -4897,6 +5048,8 @@ function db_sync_schedule_upsert(string $jobKey, int $enabled, int $intervalSeco
             backfill_priority,
             min_backfill_gap_seconds,
             max_early_start_seconds,
+            latency_sensitive,
+            user_facing,
             next_run_at,
             next_due_at,
             current_state,
@@ -4908,7 +5061,7 @@ function db_sync_schedule_upsert(string $jobKey, int $enabled, int $intervalSeco
             last_error,
             locked_until
          ) VALUES (
-            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL
+            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL
          )
          ON DUPLICATE KEY UPDATE
             enabled = VALUES(enabled),
@@ -4923,6 +5076,8 @@ function db_sync_schedule_upsert(string $jobKey, int $enabled, int $intervalSeco
             backfill_priority = VALUES(backfill_priority),
             min_backfill_gap_seconds = VALUES(min_backfill_gap_seconds),
             max_early_start_seconds = VALUES(max_early_start_seconds),
+            latency_sensitive = VALUES(latency_sensitive),
+            user_facing = VALUES(user_facing),
             tuning_mode = VALUES(tuning_mode),
             discovered_from_code = VALUES(discovered_from_code),
             explicitly_configured = VALUES(explicitly_configured),
@@ -4935,7 +5090,7 @@ function db_sync_schedule_upsert(string $jobKey, int $enabled, int $intervalSeco
             END,
             locked_until = CASE WHEN VALUES(enabled) = 1 THEN sync_schedules.locked_until ELSE NULL END,
             updated_at = CURRENT_TIMESTAMP',
-        [$normalizedKey, $enabled, $intervalMinutes, $safeIntervalSeconds, $safeOffsetSeconds, $offsetMinutes, $priority, $concurrencyPolicy, $timeoutSeconds, $allowBackfill, $backfillPriority, $minBackfillGapSeconds, $maxEarlyStartSeconds, $nextDueAt, $nextDueAt, $currentState, $tuningMode, $discoveredFromCode, $explicitlyConfigured]
+        [$normalizedKey, $enabled, $intervalMinutes, $safeIntervalSeconds, $safeOffsetSeconds, $offsetMinutes, $priority, $concurrencyPolicy, $timeoutSeconds, $allowBackfill, $backfillPriority, $minBackfillGapSeconds, $maxEarlyStartSeconds, $latencySensitive, $userFacing, $nextDueAt, $nextDueAt, $currentState, $tuningMode, $discoveredFromCode, $explicitlyConfigured]
     );
 }
 
@@ -4949,11 +5104,15 @@ function db_sync_schedule_set_next_due_at(int $scheduleId, string $nextDueAt, st
          SET next_run_at = ?,
              next_due_at = ?,
              last_result = CASE WHEN ? <> \'\' THEN ? ELSE last_result END,
+             consecutive_deferrals = CASE
+                WHEN ? <> \'\' AND (LOWER(?) LIKE \'deferred%\' OR LOWER(?) LIKE \'%deferred%\') THEN consecutive_deferrals + 1
+                ELSE consecutive_deferrals
+             END,
              current_state = CASE WHEN enabled = 1 THEN \'waiting\' ELSE \'stopped\' END,
              updated_at = CURRENT_TIMESTAMP
          WHERE id = ?
          LIMIT 1',
-        [$nextDueAt, $nextDueAt, $result, $result, $scheduleId]
+        [$nextDueAt, $nextDueAt, $result, $result, $result, $result, $result, $scheduleId]
     );
 }
 

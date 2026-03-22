@@ -2108,7 +2108,7 @@ function scheduler_operational_profile_matrix(string $profile): array
             'high' => ['interval_minutes' => 3, 'timeout_seconds' => 300, 'priority' => 'high'],
         ],
         'deal_alerts_sync' => [
-            'low' => ['interval_minutes' => 12, 'timeout_seconds' => 90, 'priority' => 'medium'],
+            'low' => ['interval_minutes' => 12, 'timeout_seconds' => 90, 'priority' => 'high'],
             'medium' => ['interval_minutes' => 5, 'timeout_seconds' => 90, 'priority' => 'high'],
             'high' => ['interval_minutes' => 3, 'timeout_seconds' => 120, 'priority' => 'high'],
         ],
@@ -3216,7 +3216,7 @@ function scheduler_registry_definitions(): array
 {
     return [
         'market_hub_current_sync' => ['label' => 'Market Hub Current', 'default_interval_minutes' => 8, 'default_offset_minutes' => 0, 'priority' => 'high', 'timeout_seconds' => 240, 'concurrency_policy' => 'single', 'tuning_mode' => 'automatic', 'explicitly_configured' => true, 'min_interval_minutes' => 1, 'max_interval_minutes' => 8],
-        'deal_alerts_sync' => ['label' => 'Deal Alerts', 'default_interval_minutes' => 5, 'default_offset_minutes' => 1, 'priority' => 'high', 'timeout_seconds' => 90, 'concurrency_policy' => 'single', 'tuning_mode' => 'automatic', 'explicitly_configured' => true],
+        'deal_alerts_sync' => ['label' => 'Deal Alerts', 'default_interval_minutes' => 5, 'default_offset_minutes' => 1, 'priority' => 'high', 'timeout_seconds' => 90, 'concurrency_policy' => 'single', 'tuning_mode' => 'automatic', 'explicitly_configured' => true, 'latency_sensitive' => true, 'user_facing' => true],
         'alliance_current_sync' => ['label' => 'Alliance Current', 'default_interval_minutes' => 4, 'default_offset_minutes' => 2, 'priority' => 'medium', 'timeout_seconds' => 180, 'concurrency_policy' => 'single', 'tuning_mode' => 'automatic', 'explicitly_configured' => true],
         'killmail_r2z2_sync' => ['label' => 'Killmail R2Z2 Stream', 'default_interval_minutes' => 3, 'default_offset_minutes' => 3, 'priority' => 'highest', 'timeout_seconds' => 90, 'concurrency_policy' => 'single', 'tuning_mode' => 'automatic', 'explicitly_configured' => true, 'min_interval_minutes' => 1, 'max_interval_minutes' => 3],
         'configured_structure_destination_id_for_esi_sync' => ['label' => 'Configured Structure Destination for ESI', 'default_interval_minutes' => 30, 'default_offset_minutes' => 4, 'priority' => 'normal', 'timeout_seconds' => 120, 'concurrency_policy' => 'single', 'tuning_mode' => 'automatic', 'explicitly_configured' => false],
@@ -3655,7 +3655,7 @@ function scheduler_job_safety_rules(): array
         'rebuild_ai_briefings' => ['forbidden_with' => scheduler_ai_briefing_blocking_job_keys()],
         'forecasting_ai_sync' => ['forbidden_with' => ['rebuild_ai_briefings']],
         'killmail_r2z2_sync' => ['allowed_groups' => ['light', 'medium']],
-        'deal_alerts_sync' => ['allowed_groups' => ['light', 'medium']],
+        'deal_alerts_sync' => ['allowed_groups' => ['light', 'medium', 'heavy']],
     ];
 }
 
@@ -3735,6 +3735,34 @@ function scheduler_job_recent_resource_profile(string $jobKey, ?array $row = nul
     ];
 }
 
+function scheduler_starvation_deferral_threshold(array $job): int
+{
+    if (!empty($job['latency_sensitive']) || scheduler_is_protected_job((string) ($job['job_key'] ?? ''))) {
+        return 2;
+    }
+
+    return 4;
+}
+
+function scheduler_job_force_execution(array $job): bool
+{
+    $consecutiveDeferrals = (int) ($job['consecutive_deferrals'] ?? 0);
+    if ($consecutiveDeferrals >= scheduler_starvation_deferral_threshold($job)) {
+        return true;
+    }
+
+    if ((string) ($job['job_key'] ?? '') === 'deal_alerts_sync' && !deal_alert_has_successful_materialization()) {
+        return true;
+    }
+
+    $latestAllowed = scheduler_latest_allowed_start_at($job);
+    if ($latestAllowed !== null && strtotime($latestAllowed) !== false && strtotime($latestAllowed) <= time()) {
+        return true;
+    }
+
+    return false;
+}
+
 function scheduler_job_urgency_snapshot(array $job, array $recentDecisionCounts = []): array
 {
     $priority = (string) ($job['priority'] ?? 'normal');
@@ -3747,10 +3775,17 @@ function scheduler_job_urgency_snapshot(array $job, array $recentDecisionCounts 
     $intervalSeconds = max(60, (int) ($job['interval_minutes'] ?? 5) * 60);
     $latenessRatio = min(3.0, $queueWait / max(60, (int) round($intervalSeconds * 0.5)));
     $criticalWindowRatio = $latestAllowedTs > 0 ? max(0.0, 1.0 - ($secondsToLatest / max(60, $intervalSeconds))) : 0.0;
-    $starvationCount = (int) ($recentDecisionCounts[(string) ($job['job_key'] ?? '')]['deferred_capacity'] ?? 0) + (int) ($recentDecisionCounts[(string) ($job['job_key'] ?? '')]['deferred_memory'] ?? 0) + (int) ($recentDecisionCounts[(string) ($job['job_key'] ?? '')]['deferred_cpu'] ?? 0);
+    $starvationCount = max(
+        (int) ($job['consecutive_deferrals'] ?? 0),
+        (int) ($recentDecisionCounts[(string) ($job['job_key'] ?? '')]['deferred_capacity'] ?? 0)
+            + (int) ($recentDecisionCounts[(string) ($job['job_key'] ?? '')]['deferred_memory'] ?? 0)
+            + (int) ($recentDecisionCounts[(string) ($job['job_key'] ?? '')]['deferred_cpu'] ?? 0)
+    );
     $starvationBoost = min(2.0, $starvationCount * 0.35);
     $criticalBoost = scheduler_is_protected_job((string) ($job['job_key'] ?? '')) ? 0.75 : 0.0;
-    $score = (scheduler_priority_rank($priority) * 1.7) + ($latenessRatio * 1.5) + ($criticalWindowRatio * 3.4) + $starvationBoost + $criticalBoost;
+    $bootstrapBoost = ((string) ($job['job_key'] ?? '') === 'deal_alerts_sync' && !deal_alert_has_successful_materialization()) ? 2.2 : 0.0;
+    $latencyBoost = !empty($job['latency_sensitive']) ? 0.9 : 0.0;
+    $score = (scheduler_priority_rank($priority) * 1.7) + ($latenessRatio * 1.5) + ($criticalWindowRatio * 3.4) + $starvationBoost + $criticalBoost + $bootstrapBoost + $latencyBoost;
 
     return [
         'queue_wait_seconds' => $queueWait,
@@ -3758,8 +3793,10 @@ function scheduler_job_urgency_snapshot(array $job, array $recentDecisionCounts 
         'seconds_to_latest_allowed_start' => $secondsToLatest === PHP_INT_MAX ? null : $secondsToLatest,
         'latest_window_ratio' => round($criticalWindowRatio, 4),
         'starvation_count' => $starvationCount,
+        'force_execution' => scheduler_job_force_execution($job),
+        'bootstrap_boost_active' => $bootstrapBoost > 0,
         'urgency_score' => round($score, 3),
-        'starvation_indicator' => $starvationCount >= 2 || $criticalWindowRatio >= 0.75,
+        'starvation_indicator' => $starvationCount >= scheduler_starvation_deferral_threshold($job) || $criticalWindowRatio >= 0.75,
     ];
 }
 
@@ -3923,6 +3960,7 @@ function scheduler_plan_due_jobs(array $jobs): array
         $budgetMemory = (int) $state['memory_budget_bytes'];
         $jobKey = (string) ($candidate['job_key'] ?? '');
         $isCritical = scheduler_is_protected_job($jobKey);
+        $forceExecution = !empty($candidate['force_execution']);
         $availableCpu = $budgetCpu - $projectedCpu;
         $availableMemory = $budgetMemory - $projectedMemory;
 
@@ -3954,6 +3992,15 @@ function scheduler_plan_due_jobs(array $jobs): array
             $reasons[] = 'heavy_under_congestion';
         }
 
+        if ($forceExecution) {
+            $reasons = array_values(array_filter($reasons, static fn (string $reason): bool => !in_array($reason, [
+                'reserved_critical_cpu',
+                'reserved_critical_memory',
+                'heavy_under_congestion',
+                'concurrency_ceiling',
+            ], true)));
+        }
+
         $decisionPayload = [
             'projected_cpu_percent' => $candidate['projected_cpu_percent'] ?? null,
             'projected_memory_bytes' => $candidate['projected_memory_bytes'] ?? null,
@@ -3962,11 +4009,12 @@ function scheduler_plan_due_jobs(array $jobs): array
             'urgency_score' => $candidate['urgency_score'] ?? 0,
             'latest_allowed_start_at' => $candidate['latest_allowed_start_at'] ?? null,
             'starvation_indicator' => !empty($candidate['starvation_indicator']),
+            'force_execution' => $forceExecution,
         ];
 
         if ($reasons === []) {
             $reasonText = 'Allowed now because projected CPU/memory fit the active budget, overlap rules were satisfied, and urgency justified parallel capacity use.';
-            if (!empty($candidate['starvation_indicator'])) {
+            if (!empty($candidate['starvation_indicator']) || $forceExecution) {
                 $reasonText = 'Allowed now because starvation prevention or latest-allowed-start pressure elevated this overdue job into available capacity.';
                 $decisionPayload['starvation_prevention_triggered'] = true;
             }
@@ -4000,6 +4048,9 @@ function scheduler_plan_due_jobs(array $jobs): array
         $decisionPayload['defer_reasons'] = $reasons;
         db_scheduler_planner_decision_insert((int) ($candidate['id'] ?? 0), $jobKey, $decisionType, (string) $state['pressure'], $reasonText, $decisionPayload);
         db_sync_schedule_release_claim((int) ($candidate['id'] ?? 0), gmdate('Y-m-d H:i:s', time() + 60), $decisionType);
+        if ($jobKey === 'deal_alerts_sync') {
+            deal_alert_record_scheduler_deferral($reasonText, $candidate);
+        }
         $deferred[] = $candidate + ['defer_reasons' => $reasons, 'decision_type' => $decisionType];
     }
 
@@ -6025,13 +6076,136 @@ function deal_alert_detection_sources(): array
     return $sources;
 }
 
-function deal_alert_refresh_current(string $reason = 'manual'): array
+function deal_alert_materialization_snapshot_key(): string
 {
+    return 'current';
+}
+
+function deal_alert_materialization_status(): array
+{
+    $row = db_market_deal_alert_materialization_status_get(deal_alert_materialization_snapshot_key()) ?? [];
+
+    return [
+        'snapshot_key' => deal_alert_materialization_snapshot_key(),
+        'last_job_key' => isset($row['last_job_key']) ? (string) $row['last_job_key'] : null,
+        'last_run_started_at' => isset($row['last_run_started_at']) ? (string) $row['last_run_started_at'] : null,
+        'last_run_finished_at' => isset($row['last_run_finished_at']) ? (string) $row['last_run_finished_at'] : null,
+        'last_success_at' => isset($row['last_success_at']) ? (string) $row['last_success_at'] : null,
+        'last_materialized_at' => isset($row['last_materialized_at']) ? (string) $row['last_materialized_at'] : null,
+        'first_materialized_at' => isset($row['first_materialized_at']) ? (string) $row['first_materialized_at'] : null,
+        'last_attempt_status' => (string) ($row['last_attempt_status'] ?? 'never_ran'),
+        'last_success_status' => isset($row['last_success_status']) ? (string) $row['last_success_status'] : null,
+        'last_reason_zero_output' => isset($row['last_reason_zero_output']) ? (string) $row['last_reason_zero_output'] : null,
+        'last_failure_reason' => isset($row['last_failure_reason']) ? (string) $row['last_failure_reason'] : null,
+        'last_deferred_at' => isset($row['last_deferred_at']) ? (string) $row['last_deferred_at'] : null,
+        'last_deferred_reason' => isset($row['last_deferred_reason']) ? (string) $row['last_deferred_reason'] : null,
+        'input_row_count' => (int) ($row['input_row_count'] ?? 0),
+        'history_row_count' => (int) ($row['history_row_count'] ?? 0),
+        'candidate_row_count' => (int) ($row['candidate_row_count'] ?? 0),
+        'output_row_count' => (int) ($row['output_row_count'] ?? 0),
+        'persisted_row_count' => (int) ($row['persisted_row_count'] ?? 0),
+        'inactive_row_count' => (int) ($row['inactive_row_count'] ?? 0),
+        'sources_scanned' => (int) ($row['sources_scanned'] ?? 0),
+        'last_duration_ms' => isset($row['last_duration_ms']) ? (int) $row['last_duration_ms'] : null,
+        'metadata' => scheduler_json_decode_assoc($row['metadata_json'] ?? null),
+    ];
+}
+
+function deal_alert_has_successful_materialization(): bool
+{
+    return deal_alert_materialization_status()['first_materialized_at'] !== null;
+}
+
+function deal_alert_materialization_record(array $payload): void
+{
+    $meta = is_array($payload['metadata'] ?? null) ? $payload['metadata'] : [];
+    db_market_deal_alert_materialization_status_upsert([
+        'snapshot_key' => deal_alert_materialization_snapshot_key(),
+        'last_job_key' => $payload['last_job_key'] ?? 'deal_alerts_sync',
+        'last_run_started_at' => $payload['last_run_started_at'] ?? null,
+        'last_run_finished_at' => $payload['last_run_finished_at'] ?? null,
+        'last_success_at' => $payload['last_success_at'] ?? null,
+        'last_materialized_at' => $payload['last_materialized_at'] ?? null,
+        'first_materialized_at' => $payload['first_materialized_at'] ?? null,
+        'last_attempt_status' => $payload['last_attempt_status'] ?? 'never_ran',
+        'last_success_status' => $payload['last_success_status'] ?? null,
+        'last_reason_zero_output' => $payload['last_reason_zero_output'] ?? null,
+        'last_failure_reason' => $payload['last_failure_reason'] ?? null,
+        'last_deferred_at' => $payload['last_deferred_at'] ?? null,
+        'last_deferred_reason' => $payload['last_deferred_reason'] ?? null,
+        'input_row_count' => (int) ($payload['input_row_count'] ?? 0),
+        'history_row_count' => (int) ($payload['history_row_count'] ?? 0),
+        'candidate_row_count' => (int) ($payload['candidate_row_count'] ?? 0),
+        'output_row_count' => (int) ($payload['output_row_count'] ?? 0),
+        'persisted_row_count' => (int) ($payload['persisted_row_count'] ?? 0),
+        'inactive_row_count' => (int) ($payload['inactive_row_count'] ?? 0),
+        'sources_scanned' => (int) ($payload['sources_scanned'] ?? 0),
+        'last_duration_ms' => isset($payload['last_duration_ms']) ? (int) $payload['last_duration_ms'] : null,
+        'metadata_json' => json_encode($meta, JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE),
+    ]);
+}
+
+function deal_alert_zero_output_reason(array $stats, array $sources): string
+{
+    if ($sources === []) {
+        return 'No market sources are configured for deal-alert detection yet.';
+    }
+
+    if (($stats['input_row_count'] ?? 0) === 0) {
+        return 'Current market snapshots returned zero sell listings across all configured deal-alert sources.';
+    }
+
+    if (($stats['history_row_count'] ?? 0) === 0) {
+        return 'Historical baselines were unavailable, so no listings could be evaluated against normal pricing.';
+    }
+
+    if (($stats['candidate_row_count'] ?? 0) === 0) {
+        return 'Listings were loaded, but baseline/freshness validation filtered every row before anomaly scoring.';
+    }
+
+    if (($stats['output_row_count'] ?? 0) === 0) {
+        return 'Candidates were evaluated successfully, but none crossed the configured severity thresholds.';
+    }
+
+    return 'The deal-alert scan completed without producing persisted rows.';
+}
+
+function deal_alert_refresh_current(string $reason = 'manual', bool $persist = true): array
+{
+    $startedAt = microtime(true);
+    $startedAtSql = gmdate('Y-m-d H:i:s');
     $settings = deal_alert_settings();
     $enabled = ($settings['deal_alerts_enabled'] ?? '1') === '1';
+    $statusSnapshot = deal_alert_materialization_status();
 
     if (!$enabled) {
-        $inactiveCount = db_market_deal_alerts_mark_missing_inactive([]);
+        $inactiveCount = $persist ? db_market_deal_alerts_mark_missing_inactive([]) : 0;
+        $durationMs = (int) round((microtime(true) - $startedAt) * 1000);
+        if ($persist) {
+            deal_alert_materialization_record([
+                'last_run_started_at' => $startedAtSql,
+                'last_run_finished_at' => gmdate('Y-m-d H:i:s'),
+                'last_success_at' => gmdate('Y-m-d H:i:s'),
+                'last_materialized_at' => gmdate('Y-m-d H:i:s'),
+                'first_materialized_at' => $statusSnapshot['first_materialized_at'] ?? gmdate('Y-m-d H:i:s'),
+                'last_attempt_status' => 'disabled',
+                'last_success_status' => 'disabled',
+                'last_reason_zero_output' => 'Deal alerts are disabled in settings.',
+                'last_failure_reason' => null,
+                'input_row_count' => 0,
+                'history_row_count' => 0,
+                'candidate_row_count' => 0,
+                'output_row_count' => 0,
+                'persisted_row_count' => 0,
+                'inactive_row_count' => $inactiveCount,
+                'sources_scanned' => 0,
+                'last_duration_ms' => $durationMs,
+                'metadata' => [
+                    'reason' => $reason,
+                    'verification_mode' => $persist ? 'persisted' : 'dry_run',
+                ],
+            ]);
+        }
 
         return sync_result_shape() + [
             'rows_seen' => 0,
@@ -6040,6 +6214,13 @@ function deal_alert_refresh_current(string $reason = 'manual'): array
             'checksum' => sync_checksum(['enabled' => false, 'reason' => $reason, 'at' => gmdate(DATE_ATOM)]),
             'meta' => [
                 'outcome_reason' => 'Deal alerts were disabled in settings, so all active anomaly windows were marked inactive.',
+                'input_row_count' => 0,
+                'candidate_row_count' => 0,
+                'output_row_count' => 0,
+                'persisted_row_count' => 0,
+                'materialization_write_timestamp' => $persist ? gmdate('Y-m-d H:i:s') : null,
+                'last_calculation_duration_ms' => $durationMs,
+                'last_zero_output_reason' => 'Deal alerts are disabled in settings.',
             ],
         ];
     }
@@ -6051,9 +6232,16 @@ function deal_alert_refresh_current(string $reason = 'manual'): array
     $rowsToUpsert = [];
     $activeAlertKeys = [];
     $rowsSeen = 0;
+    $historyRowCount = 0;
+    $candidateRowCount = 0;
+    $sourceInputCounts = [];
+    $sourceCandidateCounts = [];
+    $sourceOutputCounts = [];
 
     foreach ($sources as $source) {
         $currentRows = db_market_lowest_sell_orders_by_source((string) $source['source_type'], (int) $source['source_id']);
+        $sourceKey = (string) ($source['source_type'] ?? 'market_hub') . ':' . (int) ($source['source_id'] ?? 0);
+        $sourceInputCounts[$sourceKey] = count($currentRows);
         if ($currentRows === []) {
             continue;
         }
@@ -6064,6 +6252,7 @@ function deal_alert_refresh_current(string $reason = 'manual'): array
         }
 
         $historyRows = db_market_history_daily_window_by_type_ids((string) $source['source_type'], (int) $source['source_id'], $typeIds, $windowDays);
+        $historyRowCount += count($historyRows);
         $historyByType = [];
         foreach ($historyRows as $historyRow) {
             $typeId = (int) ($historyRow['type_id'] ?? 0);
@@ -6082,6 +6271,7 @@ function deal_alert_refresh_current(string $reason = 'manual'): array
                 $typeIds,
                 $windowDays
             );
+            $historyRowCount += count($localRows);
 
             foreach ($localRows as $localRow) {
                 $typeId = (int) ($localRow['type_id'] ?? 0);
@@ -6116,6 +6306,8 @@ function deal_alert_refresh_current(string $reason = 'manual'): array
                 continue;
             }
 
+            $candidateRowCount++;
+            $sourceCandidateCounts[$sourceKey] = (int) ($sourceCandidateCounts[$sourceKey] ?? 0) + 1;
             $percentOfNormal = ($currentPrice / $normalPrice) * 100.0;
             $severity = deal_alert_severity_for_percent($percentOfNormal);
             if ($severity === null) {
@@ -6168,16 +6360,96 @@ function deal_alert_refresh_current(string $reason = 'manual'): array
                 'metadata_json' => json_encode($metadata, JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE),
             ];
             $activeAlertKeys[] = $alertKey;
+            $sourceOutputCounts[$sourceKey] = (int) ($sourceOutputCounts[$sourceKey] ?? 0) + 1;
         }
     }
 
-    $rowsWritten = db_market_deal_alerts_upsert_current($rowsToUpsert);
-    $inactiveCount = db_market_deal_alerts_mark_missing_inactive($activeAlertKeys);
-    supplycore_cache_bust(['dashboard']);
+    $outputRowCount = count($rowsToUpsert);
+    $inactiveCount = 0;
+    $rowsWritten = 0;
+    $lastMaterializedAt = null;
+    $attemptStatus = 'success_empty';
+    $lastSuccessStatus = 'success_empty';
+    $zeroOutputReason = $outputRowCount === 0 ? deal_alert_zero_output_reason([
+        'input_row_count' => $rowsSeen,
+        'history_row_count' => $historyRowCount,
+        'candidate_row_count' => $candidateRowCount,
+        'output_row_count' => $outputRowCount,
+    ], $sources) : null;
+    if ($persist) {
+        try {
+            $rowsWritten = db_market_deal_alerts_upsert_current($rowsToUpsert);
+            $inactiveCount = db_market_deal_alerts_mark_missing_inactive($activeAlertKeys);
+            $lastMaterializedAt = gmdate('Y-m-d H:i:s');
+            $attemptStatus = $outputRowCount > 0 ? 'success_alerts' : 'success_empty';
+            $lastSuccessStatus = $attemptStatus;
+            supplycore_cache_bust(['dashboard']);
+        } catch (Throwable $exception) {
+            $durationMs = (int) round((microtime(true) - $startedAt) * 1000);
+            deal_alert_materialization_record([
+                'last_run_started_at' => $startedAtSql,
+                'last_run_finished_at' => gmdate('Y-m-d H:i:s'),
+                'last_attempt_status' => 'persistence_failed',
+                'last_failure_reason' => scheduler_normalize_error_message($exception->getMessage()),
+                'last_reason_zero_output' => $zeroOutputReason,
+                'input_row_count' => $rowsSeen,
+                'history_row_count' => $historyRowCount,
+                'candidate_row_count' => $candidateRowCount,
+                'output_row_count' => $outputRowCount,
+                'persisted_row_count' => 0,
+                'inactive_row_count' => 0,
+                'sources_scanned' => count($sources),
+                'last_duration_ms' => $durationMs,
+                'metadata' => [
+                    'reason' => $reason,
+                    'verification_mode' => 'persisted',
+                    'source_input_counts' => $sourceInputCounts,
+                    'source_candidate_counts' => $sourceCandidateCounts,
+                    'source_output_counts' => $sourceOutputCounts,
+                ],
+            ]);
+            throw $exception;
+        }
+    }
+
+    $durationMs = (int) round((microtime(true) - $startedAt) * 1000);
+    if ($persist) {
+        $firstMaterializedAt = $statusSnapshot['first_materialized_at'] ?? $lastMaterializedAt;
+        if ($firstMaterializedAt === null && $lastMaterializedAt !== null) {
+            $firstMaterializedAt = $lastMaterializedAt;
+        }
+        deal_alert_materialization_record([
+            'last_run_started_at' => $startedAtSql,
+            'last_run_finished_at' => gmdate('Y-m-d H:i:s'),
+            'last_success_at' => gmdate('Y-m-d H:i:s'),
+            'last_materialized_at' => $lastMaterializedAt,
+            'first_materialized_at' => $firstMaterializedAt,
+            'last_attempt_status' => $attemptStatus,
+            'last_success_status' => $lastSuccessStatus,
+            'last_reason_zero_output' => $zeroOutputReason,
+            'last_failure_reason' => null,
+            'input_row_count' => $rowsSeen,
+            'history_row_count' => $historyRowCount,
+            'candidate_row_count' => $candidateRowCount,
+            'output_row_count' => $outputRowCount,
+            'persisted_row_count' => $rowsWritten,
+            'inactive_row_count' => $inactiveCount,
+            'sources_scanned' => count($sources),
+            'last_duration_ms' => $durationMs,
+            'metadata' => [
+                'reason' => $reason,
+                'verification_mode' => 'persisted',
+                'source_input_counts' => $sourceInputCounts,
+                'source_candidate_counts' => $sourceCandidateCounts,
+                'source_output_counts' => $sourceOutputCounts,
+                'source_count' => count($sources),
+            ],
+        ]);
+    }
 
     return sync_result_shape() + [
         'rows_seen' => $rowsSeen,
-        'rows_written' => $rowsWritten + $inactiveCount,
+        'rows_written' => $persist ? ($rowsWritten + $inactiveCount) : $outputRowCount,
         'cursor' => 'deal_alerts:' . gmdate('Y-m-d H:i:s'),
         'checksum' => sync_checksum([
             'reason' => $reason,
@@ -6187,9 +6459,24 @@ function deal_alert_refresh_current(string $reason = 'manual'): array
             'inactive_count' => $inactiveCount,
         ]),
         'meta' => [
-            'outcome_reason' => 'Current market sell orders were compared against local historical baselines and persisted into the active deal-alert layer.',
+            'outcome_reason' => $persist
+                ? 'Current market sell orders were compared against local historical baselines and persisted into the active deal-alert layer.'
+                : 'Current market sell orders were compared against local historical baselines in diagnostic mode without writing the materialized layer.',
             'active_alerts' => count($activeAlertKeys),
             'sources_scanned' => count($sources),
+            'input_row_count' => $rowsSeen,
+            'history_row_count' => $historyRowCount,
+            'candidate_row_count' => $candidateRowCount,
+            'output_row_count' => $outputRowCount,
+            'persisted_row_count' => $persist ? $rowsWritten : 0,
+            'inactive_row_count' => $inactiveCount,
+            'materialization_write_timestamp' => $lastMaterializedAt,
+            'last_calculation_duration_ms' => $durationMs,
+            'last_zero_output_reason' => $zeroOutputReason,
+            'source_input_counts' => $sourceInputCounts,
+            'source_candidate_counts' => $sourceCandidateCounts,
+            'source_output_counts' => $sourceOutputCounts,
+            'verification_mode' => $persist ? 'persisted' : 'dry_run',
         ],
     ];
 }
@@ -6197,6 +6484,41 @@ function deal_alert_refresh_current(string $reason = 'manual'): array
 function deal_alert_refresh_job_result(string $reason = 'manual'): array
 {
     return deal_alert_refresh_current($reason);
+}
+
+function deal_alert_refresh_diagnostic_result(string $reason = 'diagnostic', bool $persist = false): array
+{
+    return deal_alert_refresh_current($reason, $persist);
+}
+
+function deal_alert_record_scheduler_deferral(string $reason, ?array $schedule = null): void
+{
+    $job = $schedule;
+    if ($job === null) {
+        $rows = db_sync_schedule_fetch_by_job_keys(['deal_alerts_sync']);
+        $job = $rows[0] ?? [];
+    }
+    $status = deal_alert_materialization_status();
+
+    deal_alert_materialization_record([
+        'last_job_key' => 'deal_alerts_sync',
+        'last_attempt_status' => 'deferred',
+        'last_deferred_at' => gmdate('Y-m-d H:i:s'),
+        'last_deferred_reason' => $reason,
+        'last_failure_reason' => null,
+        'last_reason_zero_output' => $status['last_reason_zero_output'] ?? null,
+        'input_row_count' => $status['input_row_count'] ?? 0,
+        'history_row_count' => $status['history_row_count'] ?? 0,
+        'candidate_row_count' => $status['candidate_row_count'] ?? 0,
+        'output_row_count' => $status['output_row_count'] ?? 0,
+        'persisted_row_count' => $status['persisted_row_count'] ?? 0,
+        'inactive_row_count' => $status['inactive_row_count'] ?? 0,
+        'sources_scanned' => $status['sources_scanned'] ?? 0,
+        'metadata' => [
+            'scheduler_consecutive_deferrals' => (int) ($job['consecutive_deferrals'] ?? 0),
+            'scheduler_priority' => (string) ($job['priority'] ?? 'high'),
+        ],
+    ]);
 }
 
 function deal_alert_severity_label(string $severity): string
@@ -6279,6 +6601,60 @@ function deal_alerts_page_filters(array $query): array
     ];
 }
 
+function deal_alert_status_presentation(array $materialization, array $schedule, array $summary): array
+{
+    $attemptStatus = (string) ($materialization['last_attempt_status'] ?? 'never_ran');
+    if ($attemptStatus === 'never_ran' && !empty($schedule['last_error'])) {
+        $attemptStatus = 'failed';
+    } elseif ($attemptStatus === 'never_ran' && !empty($schedule['last_finished_at'])) {
+        $attemptStatus = ((int) ($schedule['consecutive_deferrals'] ?? 0) > 0) ? 'deferred' : 'success_empty';
+    }
+    $persistedRowCount = (int) ($materialization['persisted_row_count'] ?? 0);
+    $activeCount = (int) ($summary['active_count'] ?? 0);
+    $sourceMismatch = $persistedRowCount > 0 && $activeCount === 0 && $attemptStatus === 'success_alerts';
+
+    return match ($attemptStatus) {
+        'deferred' => [
+            'code' => 'deferred',
+            'label' => 'Deferred before execution',
+            'tone' => 'border-amber-400/25 bg-amber-500/10 text-amber-100',
+            'detail' => (string) ($materialization['last_deferred_reason'] ?? 'Planner pressure deferred the job before execution.'),
+        ],
+        'success_alerts' => [
+            'code' => $sourceMismatch ? 'source_mismatch' : 'success_alerts',
+            'label' => $sourceMismatch ? 'Source unavailable / page mismatch' : 'Ran successfully and wrote alerts',
+            'tone' => $sourceMismatch ? 'border-rose-400/25 bg-rose-500/10 text-rose-100' : 'border-emerald-400/25 bg-emerald-500/10 text-emerald-100',
+            'detail' => $sourceMismatch
+                ? 'The latest successful materialization wrote alerts, but the page query returned no active rows.'
+                : 'Latest run scanned live listings, evaluated candidates, and persisted active deal alerts.',
+        ],
+        'success_empty', 'disabled' => [
+            'code' => 'success_empty',
+            'label' => 'Ran successfully but no alerts found',
+            'tone' => 'border-sky-400/25 bg-sky-500/10 text-sky-100',
+            'detail' => (string) ($materialization['last_reason_zero_output'] ?? 'Latest run completed successfully without actionable alerts.'),
+        ],
+        'persistence_failed' => [
+            'code' => 'persistence_failed',
+            'label' => 'Ran but persistence failed',
+            'tone' => 'border-rose-400/25 bg-rose-500/10 text-rose-100',
+            'detail' => (string) ($materialization['last_failure_reason'] ?? 'Rows were built, but the materialized write did not complete.'),
+        ],
+        'failed' => [
+            'code' => 'failed',
+            'label' => 'Ran and failed',
+            'tone' => 'border-rose-400/25 bg-rose-500/10 text-rose-100',
+            'detail' => (string) ($materialization['last_failure_reason'] ?? ($schedule['last_error'] ?? 'The last run ended with a failure.')),
+        ],
+        default => [
+            'code' => 'never_ran',
+            'label' => 'Never ran',
+            'tone' => 'border-slate-400/20 bg-slate-500/10 text-slate-100',
+            'detail' => 'No successful or failed deal-alert execution has been recorded yet.',
+        ],
+    };
+}
+
 function deal_alerts_page_data(array $query = []): array
 {
     $filters = deal_alerts_page_filters($query);
@@ -6286,6 +6662,9 @@ function deal_alerts_page_data(array $query = []): array
     $rows = db_market_deal_alerts_list($filters, $filters['per_page'], $offset);
     $total = db_market_deal_alerts_count($filters);
     $summary = db_market_deal_alerts_active_summary();
+    $materialization = deal_alert_materialization_status();
+    $schedule = db_sync_schedule_fetch_by_job_keys(['deal_alerts_sync'])[0] ?? [];
+    $statusPresentation = deal_alert_status_presentation($materialization, $schedule, $summary);
     $pages = max(1, (int) ceil($total / max(1, $filters['per_page'])));
 
     $mappedRows = array_map(static function (array $row): array {
@@ -6311,12 +6690,54 @@ function deal_alerts_page_data(array $query = []): array
         'rows' => $mappedRows,
         'total' => $total,
         'page_count' => $pages,
+        'materialization' => [
+            'status' => $statusPresentation,
+            'last_run_started_at' => $materialization['last_run_started_at'],
+            'last_run_finished_at' => $materialization['last_run_finished_at'],
+            'last_success_at' => $materialization['last_success_at'],
+            'last_materialized_at' => $materialization['last_materialized_at'],
+            'first_materialized_at' => $materialization['first_materialized_at'],
+            'input_row_count' => (int) ($materialization['input_row_count'] ?? 0),
+            'history_row_count' => (int) ($materialization['history_row_count'] ?? 0),
+            'candidate_row_count' => (int) ($materialization['candidate_row_count'] ?? 0),
+            'output_row_count' => (int) ($materialization['output_row_count'] ?? 0),
+            'persisted_row_count' => (int) ($materialization['persisted_row_count'] ?? 0),
+            'inactive_row_count' => (int) ($materialization['inactive_row_count'] ?? 0),
+            'sources_scanned' => (int) ($materialization['sources_scanned'] ?? 0),
+            'last_duration_ms' => $materialization['last_duration_ms'],
+            'last_reason_zero_output' => $materialization['last_reason_zero_output'],
+            'last_failure_reason' => $materialization['last_failure_reason'],
+            'last_deferred_at' => $materialization['last_deferred_at'],
+            'last_deferred_reason' => $materialization['last_deferred_reason'],
+            'metadata' => $materialization['metadata'],
+        ],
+        'scheduler' => [
+            'priority' => (string) ($schedule['priority'] ?? 'high'),
+            'latency_sensitive' => !empty($schedule['latency_sensitive']),
+            'user_facing' => !empty($schedule['user_facing']),
+            'consecutive_deferrals' => (int) ($schedule['consecutive_deferrals'] ?? 0),
+            'last_status' => (string) ($schedule['last_status'] ?? 'unknown'),
+            'last_result' => (string) ($schedule['last_result'] ?? ''),
+            'last_error' => isset($schedule['last_error']) ? (string) $schedule['last_error'] : null,
+            'last_started_at' => isset($schedule['last_started_at']) ? (string) $schedule['last_started_at'] : null,
+            'last_finished_at' => isset($schedule['last_finished_at']) ? (string) $schedule['last_finished_at'] : null,
+            'latest_allowed_start_at' => isset($schedule['latest_allowed_start_at']) ? (string) $schedule['latest_allowed_start_at'] : null,
+        ],
+        'source_verification' => [
+            'freshness_timestamp_source' => 'market_deal_alert_materialization_status.last_materialized_at',
+            'summary_source' => 'market_deal_alerts_current active summary',
+            'table_row_source' => 'market_deal_alerts_current filtered by active status',
+            'latest_success_output_source' => 'market_deal_alert_materialization_status persisted counters + market_deal_alerts_current rows',
+            'page_source_mismatch' => ($statusPresentation['code'] ?? '') === 'source_mismatch',
+        ],
         'summary' => [
             'active_count' => (int) ($summary['active_count'] ?? 0),
             'critical_count' => (int) ($summary['critical_count'] ?? 0),
-            'last_seen_at' => isset($summary['last_seen_at']) ? (string) $summary['last_seen_at'] : null,
-            'last_seen_relative' => supplycore_relative_datetime(isset($summary['last_seen_at']) ? (string) $summary['last_seen_at'] : null),
-            'last_seen_label' => supplycore_format_datetime(isset($summary['last_seen_at']) ? (string) $summary['last_seen_at'] : null),
+            'last_seen_at' => isset($materialization['last_materialized_at']) && $materialization['last_materialized_at'] !== null
+                ? (string) $materialization['last_materialized_at']
+                : (isset($summary['last_seen_at']) ? (string) $summary['last_seen_at'] : null),
+            'last_seen_relative' => supplycore_relative_datetime(isset($materialization['last_materialized_at']) && $materialization['last_materialized_at'] !== null ? (string) $materialization['last_materialized_at'] : (isset($summary['last_seen_at']) ? (string) $summary['last_seen_at'] : null)),
+            'last_seen_label' => supplycore_format_datetime(isset($materialization['last_materialized_at']) && $materialization['last_materialized_at'] !== null ? (string) $materialization['last_materialized_at'] : (isset($summary['last_seen_at']) ? (string) $summary['last_seen_at'] : null)),
         ],
     ];
 }
@@ -9782,6 +10203,8 @@ function scheduler_reconcile_baseline_rows(array $definitions, array $existingRo
                 'priority' => (string) ($definition['priority'] ?? 'normal'),
                 'timeout_seconds' => (int) ($row['timeout_seconds'] ?? $definition['timeout_seconds'] ?? 300),
                 'concurrency_policy' => (string) ($row['concurrency_policy'] ?? $definition['concurrency_policy'] ?? 'single'),
+                'latency_sensitive' => !empty($definition['latency_sensitive']),
+                'user_facing' => !empty($definition['user_facing']),
                 'tuning_mode' => (string) ($row['tuning_mode'] ?? $definition['tuning_mode'] ?? 'automatic'),
                 'discovered_from_code' => true,
                 'explicitly_configured' => (bool) ($definition['explicitly_configured'] ?? !empty($row['explicitly_configured'])),
@@ -9838,6 +10261,8 @@ function scheduler_registry_bootstrap(): void
                 'priority' => (string) ($definition['priority'] ?? 'normal'),
                 'timeout_seconds' => (int) ($definition['timeout_seconds'] ?? 300),
                 'concurrency_policy' => (string) ($definition['concurrency_policy'] ?? 'single'),
+                'latency_sensitive' => !empty($definition['latency_sensitive']),
+                'user_facing' => !empty($definition['user_facing']),
                 'allow_backfill' => !empty($definition['allow_backfill']),
                 'backfill_priority' => (string) ($definition['backfill_priority'] ?? ($definition['priority'] ?? 'normal')),
                 'min_backfill_gap_seconds' => (int) ($definition['min_backfill_gap_seconds'] ?? 900),
@@ -9909,6 +10334,10 @@ function scheduler_record_lock_conflicts(): void
 function scheduler_should_defer_due_job(array $job, string $pressure): bool
 {
     $priority = (string) ($job['priority'] ?? 'normal');
+    if (scheduler_job_force_execution($job)) {
+        return false;
+    }
+
     if ($pressure === 'healthy') {
         return false;
     }
@@ -9936,6 +10365,9 @@ function scheduler_defer_due_job(array $job, string $reason): void
     db_sync_schedule_set_next_due_at($scheduleId, $nextDueAt, 'deferred');
     db_scheduler_job_event_insert((string) ($job['job_key'] ?? ''), 'deferred_pressure', ['reason' => $reason], 0, null);
     db_scheduler_tuning_action_log((string) ($job['job_key'] ?? ''), 'system', 'pressure_deferral', $reason, [], ['next_due_at' => $nextDueAt], ['pressure' => $reason]);
+    if ((string) ($job['job_key'] ?? '') === 'deal_alerts_sync') {
+        deal_alert_record_scheduler_deferral($reason, $job);
+    }
 }
 
 function scheduler_due_jobs(): array
@@ -10381,6 +10813,20 @@ function scheduler_run_job(array $job): array
         $message = scheduler_normalize_error_message($exception->getMessage());
         $durationSeconds = round((microtime(true) - $startedAtUnix), 2);
         $isTimeout = str_contains(strtolower($message), 'timeout');
+        if ($jobKey === 'deal_alerts_sync') {
+            deal_alert_materialization_record([
+                'last_job_key' => $jobKey,
+                'last_run_started_at' => gmdate('Y-m-d H:i:s', (int) $startedAtUnix),
+                'last_run_finished_at' => gmdate('Y-m-d H:i:s'),
+                'last_attempt_status' => 'failed',
+                'last_failure_reason' => $message,
+                'last_duration_ms' => (int) round($durationSeconds * 1000),
+                'metadata' => [
+                    'scheduler_failure' => true,
+                    'timed_out' => $isTimeout,
+                ],
+            ]);
+        }
         mark_sync_failure($datasetKey, 'incremental', $message);
         db_sync_run_finish($runId, 'failed', 0, 0, null, $message);
         $resourceFinished = scheduler_resource_usage_snapshot();
@@ -18692,6 +19138,36 @@ function supplycore_ui_refresh_version_from_sync_state(string $sectionKey, array
     ];
 }
 
+function deal_alerts_ui_refresh_version(): array
+{
+    $materialization = deal_alert_materialization_status();
+    $fingerprint = hash('sha256', json_encode([
+        'last_materialized_at' => $materialization['last_materialized_at'] ?? null,
+        'persisted_row_count' => $materialization['persisted_row_count'] ?? 0,
+        'last_attempt_status' => $materialization['last_attempt_status'] ?? 'never_ran',
+        'last_success_status' => $materialization['last_success_status'] ?? null,
+    ], JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE));
+
+    return [
+        'section_key' => 'deal_alerts_version',
+        'fingerprint' => $fingerprint,
+        'snapshot_key' => 'market_deal_alert_materialization_status',
+        'domains' => ['deal_alerts'],
+        'ui_sections' => ['deal-alerts-summary', 'deal-alerts-status', 'deal-alerts-table'],
+        'freshness' => [
+            'computed_at' => $materialization['last_materialized_at'] ?? null,
+            'freshness_state' => ($materialization['last_materialized_at'] ?? null) !== null ? 'fresh' : 'stale',
+            'freshness_label' => ($materialization['last_materialized_at'] ?? null) !== null ? 'Fresh' : 'Awaiting scan',
+            'status' => $materialization['last_attempt_status'] ?? 'never_ran',
+        ],
+        'metadata' => [
+            'source' => 'market_deal_alert_materialization_status',
+            'last_attempt_status' => $materialization['last_attempt_status'] ?? 'never_ran',
+            'persisted_row_count' => $materialization['persisted_row_count'] ?? 0,
+        ],
+    ];
+}
+
 function supplycore_ui_refresh_version_from_composite(string $sectionKey, array $parts, array $domains, array $uiSections, ?string $snapshotKey = null): array
 {
     $fingerprints = [];
@@ -18759,6 +19235,11 @@ function supplycore_ui_refresh_section_version_definitions(): array
             'domains' => ['activity_priority', 'doctrine_activity'],
             'ui_sections' => ['activity-summary', 'activity-doctrines', 'activity-sidebar', 'activity-items', 'dashboard-doctrine'],
             'resolver' => static fn (): array => supplycore_ui_refresh_version_from_snapshot('activity_priority_version', activity_priority_snapshot_key(), ['activity_priority', 'doctrine_activity'], ['activity-summary', 'activity-doctrines', 'activity-sidebar', 'activity-items', 'dashboard-doctrine']),
+        ],
+        'deal_alerts_version' => [
+            'domains' => ['deal_alerts'],
+            'ui_sections' => ['deal-alerts-summary', 'deal-alerts-status', 'deal-alerts-table'],
+            'resolver' => static fn (): array => deal_alerts_ui_refresh_version(),
         ],
         'buyall_version' => [
             'domains' => ['buyall'],
@@ -18865,9 +19346,9 @@ function supplycore_ui_refresh_job_domain_map(): array
             'version_keys' => ['dashboard_summary_version', 'market_comparison_version', 'loss_demand_version'],
         ],
         'deal_alerts_sync' => [
-            'domains' => ['dashboard'],
-            'ui_sections' => ['dashboard-queues'],
-            'version_keys' => ['dashboard_summary_version'],
+            'domains' => ['dashboard', 'deal_alerts'],
+            'ui_sections' => ['dashboard-queues', 'deal-alerts-summary', 'deal-alerts-status', 'deal-alerts-table'],
+            'version_keys' => ['dashboard_summary_version', 'deal_alerts_version'],
         ],
     ];
 }
@@ -19122,6 +19603,18 @@ function supplycore_live_refresh_page_registry(): array
                 'activity-doctrines' => ['version_keys' => ['activity_priority_version', 'doctrine_readiness_version', 'killmail_activity_version']],
                 'activity-sidebar' => ['version_keys' => ['activity_priority_version', 'doctrine_readiness_version', 'killmail_activity_version']],
                 'activity-items' => ['version_keys' => ['activity_priority_version', 'killmail_activity_version']],
+            ],
+        ],
+        'deal_alerts' => [
+            'path' => '/deal-alerts/index.php',
+            'public_path' => '/deal-alerts',
+            'script' => dirname(__DIR__) . '/public/deal-alerts/index.php',
+            'domains' => ['deal_alerts'],
+            'version_keys' => ['deal_alerts_version'],
+            'sections' => [
+                'deal-alerts-summary' => ['version_keys' => ['deal_alerts_version']],
+                'deal-alerts-status' => ['version_keys' => ['deal_alerts_version']],
+                'deal-alerts-table' => ['version_keys' => ['deal_alerts_version']],
             ],
         ],
         'doctrine_fit' => [

@@ -110,6 +110,9 @@ CREATE TABLE IF NOT EXISTS sync_schedules (
     last_error VARCHAR(500) DEFAULT NULL,
     locked_until DATETIME DEFAULT NULL,
     latest_allowed_start_at DATETIME DEFAULT NULL,
+    latency_sensitive TINYINT(1) NOT NULL DEFAULT 0,
+    user_facing TINYINT(1) NOT NULL DEFAULT 0,
+    consecutive_deferrals INT UNSIGNED NOT NULL DEFAULT 0,
     resource_class VARCHAR(20) NOT NULL DEFAULT 'medium',
     resource_class_confidence DECIMAL(6,4) DEFAULT NULL,
     telemetry_sample_count INT UNSIGNED NOT NULL DEFAULT 0,
@@ -845,6 +848,36 @@ CREATE TABLE IF NOT EXISTS market_deal_alert_dismissals (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     KEY idx_market_deal_alert_dismissals_until (dismissed_until)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS market_deal_alert_materialization_status (
+    snapshot_key VARCHAR(64) PRIMARY KEY,
+    last_job_key VARCHAR(190) DEFAULT NULL,
+    last_run_started_at DATETIME DEFAULT NULL,
+    last_run_finished_at DATETIME DEFAULT NULL,
+    last_success_at DATETIME DEFAULT NULL,
+    last_materialized_at DATETIME DEFAULT NULL,
+    first_materialized_at DATETIME DEFAULT NULL,
+    last_attempt_status VARCHAR(40) NOT NULL DEFAULT 'never_ran',
+    last_success_status VARCHAR(40) DEFAULT NULL,
+    last_reason_zero_output VARCHAR(500) DEFAULT NULL,
+    last_failure_reason VARCHAR(500) DEFAULT NULL,
+    last_deferred_at DATETIME DEFAULT NULL,
+    last_deferred_reason VARCHAR(500) DEFAULT NULL,
+    input_row_count INT UNSIGNED NOT NULL DEFAULT 0,
+    history_row_count INT UNSIGNED NOT NULL DEFAULT 0,
+    candidate_row_count INT UNSIGNED NOT NULL DEFAULT 0,
+    output_row_count INT UNSIGNED NOT NULL DEFAULT 0,
+    persisted_row_count INT UNSIGNED NOT NULL DEFAULT 0,
+    inactive_row_count INT UNSIGNED NOT NULL DEFAULT 0,
+    sources_scanned INT UNSIGNED NOT NULL DEFAULT 0,
+    last_duration_ms INT UNSIGNED DEFAULT NULL,
+    metadata_json JSON DEFAULT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    KEY idx_market_deal_alert_materialization_attempt (last_attempt_status, last_run_finished_at),
+    KEY idx_market_deal_alert_materialization_success (last_success_at),
+    KEY idx_market_deal_alert_materialization_write (last_materialized_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS doctrine_ai_briefings (

@@ -38,6 +38,10 @@ $filters = $pageData['filters'];
 $summary = $pageData['summary'];
 $rows = $pageData['rows'];
 $pageCount = (int) ($pageData['page_count'] ?? 1);
+$materialization = (array) ($pageData['materialization'] ?? []);
+$status = (array) ($materialization['status'] ?? []);
+$scheduler = (array) ($pageData['scheduler'] ?? []);
+$sourceVerification = (array) ($pageData['source_verification'] ?? []);
 
 include __DIR__ . '/../../src/views/partials/header.php';
 ?>
@@ -60,14 +64,80 @@ include __DIR__ . '/../../src/views/partials/header.php';
     </article>
 </section>
 
+<section class="mt-6 rounded-[1.35rem] border p-4 <?= htmlspecialchars((string) ($status['tone'] ?? 'border-slate-400/20 bg-slate-500/10 text-slate-100'), ENT_QUOTES) ?>">
+    <div class="flex flex-wrap items-start justify-between gap-4">
+        <div>
+            <p class="text-xs font-semibold uppercase tracking-[0.16em] text-current/70">Deal Alerts status</p>
+            <h2 class="mt-2 text-lg font-semibold text-white"><?= htmlspecialchars((string) ($status['label'] ?? 'Never ran'), ENT_QUOTES) ?></h2>
+            <p class="mt-2 text-sm text-slate-200"><?= htmlspecialchars((string) ($status['detail'] ?? 'No materialized status has been recorded yet.'), ENT_QUOTES) ?></p>
+        </div>
+        <div class="grid gap-3 text-sm text-slate-200 sm:grid-cols-2 xl:grid-cols-4">
+            <div class="rounded-lg border border-white/10 bg-black/20 p-3">
+                <p class="text-xs uppercase tracking-[0.16em] text-slate-400">Last materialized</p>
+                <p class="mt-2 font-semibold text-white"><?= htmlspecialchars(supplycore_format_datetime(isset($materialization['last_materialized_at']) ? (string) $materialization['last_materialized_at'] : null), ENT_QUOTES) ?></p>
+            </div>
+            <div class="rounded-lg border border-white/10 bg-black/20 p-3">
+                <p class="text-xs uppercase tracking-[0.16em] text-slate-400">Scheduler deferrals</p>
+                <p class="mt-2 font-semibold text-white"><?= (int) ($scheduler['consecutive_deferrals'] ?? 0) ?></p>
+            </div>
+            <div class="rounded-lg border border-white/10 bg-black/20 p-3">
+                <p class="text-xs uppercase tracking-[0.16em] text-slate-400">Last duration</p>
+                <p class="mt-2 font-semibold text-white"><?= htmlspecialchars(isset($materialization['last_duration_ms']) ? number_format(((int) $materialization['last_duration_ms']) / 1000, 2) . 's' : 'Unavailable', ENT_QUOTES) ?></p>
+            </div>
+            <div class="rounded-lg border border-white/10 bg-black/20 p-3">
+                <p class="text-xs uppercase tracking-[0.16em] text-slate-400">Page source</p>
+                <p class="mt-2 font-semibold text-white"><?= !empty($sourceVerification['page_source_mismatch']) ? 'Mismatch detected' : 'Materialized source OK' ?></p>
+            </div>
+        </div>
+    </div>
+</section>
+
 <section class="surface-primary mt-8">
     <div class="section-header border-b border-white/8 pb-4">
         <div>
             <p class="eyebrow">Actionable market intelligence</p>
             <h2 class="mt-2 section-title">Mispriced listings watchfloor</h2>
             <p class="mt-2 section-copy">Separate from the regular market pages, this view stays focused on listings that are accidentally cheap enough to warrant immediate attention.</p>
+            <div class="mt-4 grid gap-3 text-sm text-slate-300 md:grid-cols-2 xl:grid-cols-4">
+                <div class="rounded-xl border border-white/8 bg-black/20 p-3">
+                    <p class="text-xs uppercase tracking-[0.16em] text-slate-500">Scanned listings</p>
+                    <p class="mt-2 text-xl font-semibold text-white"><?= number_format((int) ($materialization['input_row_count'] ?? 0)) ?></p>
+                </div>
+                <div class="rounded-xl border border-white/8 bg-black/20 p-3">
+                    <p class="text-xs uppercase tracking-[0.16em] text-slate-500">Evaluated candidates</p>
+                    <p class="mt-2 text-xl font-semibold text-white"><?= number_format((int) ($materialization['candidate_row_count'] ?? 0)) ?></p>
+                </div>
+                <div class="rounded-xl border border-white/8 bg-black/20 p-3">
+                    <p class="text-xs uppercase tracking-[0.16em] text-slate-500">Alerts built</p>
+                    <p class="mt-2 text-xl font-semibold text-white"><?= number_format((int) ($materialization['output_row_count'] ?? 0)) ?></p>
+                </div>
+                <div class="rounded-xl border border-white/8 bg-black/20 p-3">
+                    <p class="text-xs uppercase tracking-[0.16em] text-slate-500">Rows persisted</p>
+                    <p class="mt-2 text-xl font-semibold text-white"><?= number_format((int) ($materialization['persisted_row_count'] ?? 0)) ?></p>
+                </div>
+            </div>
         </div>
         <a href="/settings?section=deal-alerts" class="rounded-full border border-white/10 bg-white/5 px-4 py-2 text-sm font-medium text-slate-100 hover:bg-white/10">Tune thresholds</a>
+    </div>
+
+    <div class="mt-5 grid gap-3 rounded-[1.35rem] border border-white/8 bg-black/20 p-4 text-sm text-slate-300 lg:grid-cols-2">
+        <div>
+            <p class="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">Materialization diagnostics</p>
+            <ul class="mt-3 space-y-2">
+                <li>History rows loaded: <span class="font-semibold text-white"><?= number_format((int) ($materialization['history_row_count'] ?? 0)) ?></span></li>
+                <li>Sources scanned: <span class="font-semibold text-white"><?= number_format((int) ($materialization['sources_scanned'] ?? 0)) ?></span></li>
+                <li>Inactive rows marked: <span class="font-semibold text-white"><?= number_format((int) ($materialization['inactive_row_count'] ?? 0)) ?></span></li>
+                <li>Latest success: <span class="font-semibold text-white"><?= htmlspecialchars(supplycore_format_datetime(isset($materialization['last_success_at']) ? (string) $materialization['last_success_at'] : null), ENT_QUOTES) ?></span></li>
+            </ul>
+        </div>
+        <div>
+            <p class="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">Zero-output / failure detail</p>
+            <p class="mt-3 text-sm text-slate-300"><?= htmlspecialchars((string) ($materialization['last_reason_zero_output'] ?? $materialization['last_failure_reason'] ?? 'No zero-output or failure reason recorded.'), ENT_QUOTES) ?></p>
+            <p class="mt-3 text-xs text-slate-500">
+                Freshness source: <?= htmlspecialchars((string) ($sourceVerification['freshness_timestamp_source'] ?? 'Unavailable'), ENT_QUOTES) ?>
+                · Rows source: <?= htmlspecialchars((string) ($sourceVerification['table_row_source'] ?? 'Unavailable'), ENT_QUOTES) ?>
+            </p>
+        </div>
     </div>
 
     <form method="get" class="mt-5 grid gap-3 rounded-[1.35rem] border border-white/8 bg-black/20 p-4 lg:grid-cols-[minmax(0,1.2fr)_repeat(4,minmax(0,0.5fr))]">
@@ -167,7 +237,10 @@ include __DIR__ . '/../../src/views/partials/header.php';
                     <?php endforeach; ?>
                     <?php if ($rows === []): ?>
                         <tr>
-                            <td colspan="10" class="px-4 py-10 text-center text-sm text-slate-400">No active deal alerts matched the current filters. Try widening the market or threshold filters, or wait for the next background scan.</td>
+                            <td colspan="10" class="px-4 py-10 text-center text-sm text-slate-400">
+                                <?= htmlspecialchars((string) ($status['label'] ?? 'No active deal alerts matched the current filters.'), ENT_QUOTES) ?>.
+                                <?= htmlspecialchars((string) ($status['detail'] ?? 'Try widening the market or threshold filters, or wait for the next background scan.'), ENT_QUOTES) ?>
+                            </td>
                         </tr>
                     <?php endif; ?>
                 </tbody>
