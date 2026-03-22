@@ -15433,6 +15433,9 @@ function sync_killmail_r2z2_stream(string $runMode = 'incremental'): array
     $runId = db_sync_run_start($datasetKey, $runMode, db_sync_cursor_get($datasetKey));
 
     try {
+        // Ensure any one-time killmail schema migrations run before per-row write transactions begin.
+        db_killmail_payload_schema_ensure();
+
         $trackedAllianceRows = db_killmail_tracked_alliances_active();
         $trackedCorporationRows = db_killmail_tracked_corporations_active();
         $trackedAllianceIds = [];
