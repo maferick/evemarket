@@ -2252,6 +2252,15 @@ function sanitize_enabled_flag(mixed $value): string
     return sanitize_pipeline_enabled($value);
 }
 
+function data_sync_market_history_retention_defaults(): array
+{
+    return [
+        'market_history_retention_raw_days' => '30',
+        'market_history_retention_hourly_days' => '90',
+        'market_history_retention_daily_days' => '365',
+    ];
+}
+
 function data_sync_pipeline_setting_defaults(): array
 {
     return [
@@ -2264,7 +2273,7 @@ function data_sync_pipeline_setting_defaults(): array
         'alliance_history_pipeline_enabled' => '1',
         'hub_history_pipeline_enabled' => '1',
         'market_hub_local_history_pipeline_enabled' => '1',
-        'raw_order_snapshot_retention_days' => '30',
+        ...data_sync_market_history_retention_defaults(),
         'static_data_source_url' => 'https://developers.eveonline.com/static-data/eve-online-static-data-latest-jsonl.zip',
         'redis_cache_enabled' => config('redis.enabled', false) ? '1' : '0',
         'redis_locking_enabled' => config('redis.lock_enabled', true) ? '1' : '0',
@@ -2281,6 +2290,15 @@ function data_sync_pipeline_setting_value(array $settings, string $key): string
     $defaults = data_sync_pipeline_setting_defaults();
     $value = $settings[$key] ?? ($defaults[$key] ?? '');
 
+    if (!array_key_exists($key, $settings)) {
+        $value = match ($key) {
+            'market_history_retention_raw_days' => (string) market_history_retention_days_setting('raw'),
+            'market_history_retention_hourly_days' => (string) market_history_retention_days_setting('hourly'),
+            'market_history_retention_daily_days' => (string) market_history_retention_days_setting('daily'),
+            default => $value,
+        };
+    }
+
     return match ($key) {
         'scheduler_operational_profile' => sanitize_scheduler_operational_profile((string) $value),
         'incremental_updates_enabled',
@@ -2293,7 +2311,9 @@ function data_sync_pipeline_setting_value(array $settings, string $key): string
         'incremental_strategy' => sanitize_incremental_strategy((string) $value),
         'incremental_delete_policy' => sanitize_incremental_delete_policy((string) $value),
         'incremental_chunk_size' => sanitize_incremental_chunk_size($value),
-        'raw_order_snapshot_retention_days' => sanitize_retention_days($value),
+        'market_history_retention_raw_days',
+        'market_history_retention_hourly_days' => sanitize_retention_days($value),
+        'market_history_retention_daily_days' => sanitize_market_history_daily_retention_days($value),
         'static_data_source_url' => sanitize_static_data_source_url($value),
         'redis_host' => sanitize_redis_host((string) $value),
         'redis_port' => sanitize_redis_port($value),
@@ -2342,6 +2362,26 @@ function sanitize_retention_days(mixed $value, int $defaultDays = 30): string
     return (string) $days;
 }
 
+function sanitize_market_history_daily_retention_days(mixed $value, int $defaultDays = 365): string
+{
+    return (string) max(30, (int) sanitize_retention_days($value, $defaultDays));
+}
+
+function market_history_retention_days_setting(string $tier): int
+{
+    $fallbacks = [
+        'raw' => 30,
+        'hourly' => 90,
+        'daily' => 365,
+    ];
+    $safeTier = array_key_exists($tier, $fallbacks) ? $tier : 'raw';
+
+    try {
+        return db_market_history_retention_days($safeTier);
+    } catch (Throwable) {
+        return $fallbacks[$safeTier];
+    }
+}
 
 function sync_automation_enabled_since_date(): string
 {
@@ -5304,7 +5344,9 @@ function data_sync_settings_from_request(array $request): array
         'alliance_current_backfill_start_date' => data_sync_backfill_start_date('alliance_current_backfill_start_date', $allianceCurrentEnabled === '1', $baselineDate),
         'alliance_history_backfill_start_date' => data_sync_backfill_start_date('alliance_history_backfill_start_date', $allianceHistoryEnabled === '1', $baselineDate),
         'hub_history_backfill_start_date' => data_sync_backfill_start_date('hub_history_backfill_start_date', $hubHistoryEnabled === '1', $baselineDate),
-        'raw_order_snapshot_retention_days' => sanitize_retention_days($request['raw_order_snapshot_retention_days'] ?? null),
+        'market_history_retention_raw_days' => sanitize_retention_days($request['market_history_retention_raw_days'] ?? null, 30),
+        'market_history_retention_hourly_days' => sanitize_retention_days($request['market_history_retention_hourly_days'] ?? null, 90),
+        'market_history_retention_daily_days' => sanitize_market_history_daily_retention_days($request['market_history_retention_daily_days'] ?? null, 365),
         'static_data_source_url' => sanitize_static_data_source_url($request['static_data_source_url'] ?? null),
         'redis_cache_enabled' => isset($request['redis_cache_enabled']) ? '1' : '0',
         'redis_locking_enabled' => isset($request['redis_locking_enabled']) ? '1' : '0',
@@ -12185,9 +12227,9 @@ function market_history_daily_rebuild_from_snapshot_metrics(array $snapshotMetri
 
 function market_hub_local_history_window_days_default(): int
 {
-    $retentionDays = (int) get_setting('raw_order_snapshot_retention_days', '30');
+    $retentionDays = market_history_retention_days_setting('raw');
 
-    return max(1, min(365, $retentionDays));
+    return max(1, min(3650, $retentionDays));
 }
 
 function market_hub_local_history_window_days_normalize(?int $windowDays = null): int
@@ -13254,27 +13296,37 @@ function sync_market_orders_history_prune(int $retentionDays, string $runMode = 
     $runId = db_sync_run_start($datasetKey, $syncMode, sync_watermark($datasetKey));
 
     try {
-        $safeRetentionDays = max(1, min(3650, $retentionDays));
-        $cutoffObservedAt = gmdate('Y-m-d H:i:s', strtotime('-' . $safeRetentionDays . ' days'));
-        $deletedHistoryRows = db_market_orders_history_prune_before($cutoffObservedAt);
-        $deletedSummaryRows = db_market_order_snapshots_summary_prune_before($cutoffObservedAt);
+        $rawRetentionDays = db_market_history_retention_days('raw');
+        $hourlyRetentionDays = db_market_history_retention_days('hourly');
+        $dailyRetentionDays = db_market_history_retention_days('daily');
+        $historyCleanup = db_market_history_tier_retention_cleanup(10000);
         $controlPlaneCleanup = db_control_plane_retention_cleanup(10000);
+        $historyDeleted = array_sum(array_map(
+            static fn (array $row): int => (int) ($row['rows_deleted'] ?? 0),
+            (array) ($historyCleanup['deleted'] ?? [])
+        ));
         $controlPlaneDeleted = array_sum(array_map(
             static fn (array $row): int => (int) ($row['rows_deleted'] ?? 0),
             (array) ($controlPlaneCleanup['deleted'] ?? [])
         ));
-        $deletedRows = $deletedHistoryRows + $deletedSummaryRows + $controlPlaneDeleted;
+        $deletedRows = $historyDeleted + $controlPlaneDeleted;
+        $rawCutoff = db_market_history_tier_cutoff('raw');
+        $hourlyCutoff = db_market_history_tier_cutoff('hourly');
+        $dailyCutoff = db_market_history_tier_cutoff('daily');
 
         $result['rows_seen'] = $deletedRows;
         $result['rows_written'] = $deletedRows;
-        $result['cursor'] = 'cutoff:' . $cutoffObservedAt;
+        $result['cursor'] = 'raw:' . $rawCutoff . '|hourly:' . $hourlyCutoff . '|daily:' . $dailyCutoff;
         $result['checksum'] = sync_checksum([
             'deleted_rows' => $deletedRows,
-            'deleted_history_rows' => $deletedHistoryRows,
-            'deleted_summary_rows' => $deletedSummaryRows,
+            'deleted_history_rows' => $historyDeleted,
             'deleted_control_plane_rows' => $controlPlaneDeleted,
-            'retention_days' => $safeRetentionDays,
-            'cutoff_observed_at' => $cutoffObservedAt,
+            'raw_retention_days' => $rawRetentionDays,
+            'hourly_retention_days' => $hourlyRetentionDays,
+            'daily_retention_days' => $dailyRetentionDays,
+            'raw_cutoff' => $rawCutoff,
+            'hourly_cutoff' => $hourlyCutoff,
+            'daily_cutoff' => $dailyCutoff,
         ]);
         $result['meta'] = [
             'records_fetched' => $deletedRows,
@@ -13283,9 +13335,15 @@ function sync_market_orders_history_prune(int $retentionDays, string $runMode = 
             'records_skipped' => 0,
             'records_deleted' => $deletedRows,
             'history_rows_generated' => 0,
-            'retention_days' => $safeRetentionDays,
-            'market_orders_history_deleted' => $deletedHistoryRows,
-            'market_snapshot_summary_deleted' => $deletedSummaryRows,
+            'market_history_retention' => [
+                'raw_days' => $rawRetentionDays,
+                'hourly_days' => $hourlyRetentionDays,
+                'daily_days' => $dailyRetentionDays,
+                'raw_cutoff' => $rawCutoff,
+                'hourly_cutoff' => $hourlyCutoff,
+                'daily_cutoff' => $dailyCutoff,
+            ],
+            'market_history_cleanup' => $historyCleanup['deleted'] ?? [],
             'control_plane_deleted' => $controlPlaneDeleted,
             'control_plane_cleanup' => $controlPlaneCleanup['deleted'] ?? [],
             'no_changes' => $deletedRows === 0,

@@ -256,8 +256,7 @@ function sync_runner_dispatch_job(string $jobKey, int $sourceId, string $runMode
 
     if ($jobKey === 'maintenance-prune') {
         $datasetKey = sync_dataset_key_maintenance_history_prune();
-        $retentionDays = (int) get_setting('raw_order_snapshot_retention_days', '30');
-        $result = sync_market_orders_history_prune($retentionDays, $runMode);
+        $result = sync_market_orders_history_prune(db_market_history_retention_days('raw'), $runMode);
 
         return $result + ['dataset_key' => $datasetKey];
     }

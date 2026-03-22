@@ -228,7 +228,9 @@ $settingValues = get_settings([
     'alliance_current_backfill_start_date',
     'alliance_history_backfill_start_date',
     'hub_history_backfill_start_date',
-    'raw_order_snapshot_retention_days',
+    'market_history_retention_raw_days',
+    'market_history_retention_hourly_days',
+    'market_history_retention_daily_days',
     'sync_automation_enabled_since',
     'static_data_source_url',
     'redis_cache_enabled',
@@ -1786,10 +1788,29 @@ include __DIR__ . '/../../src/views/partials/header.php';
                     Backfill start is automatic. Pipelines begin from the date sync automation was enabled: <span class="font-medium text-slate-100"><?= htmlspecialchars($syncEnabledSince, ENT_QUOTES) ?></span>.
                 </div>
 
-                <label class="block space-y-2">
-                    <span class="text-sm text-muted">Raw Order Snapshot Retention (days)</span>
-                    <input type="number" min="1" max="3650" step="1" name="raw_order_snapshot_retention_days" value="<?= htmlspecialchars($dataSyncSettingValues['raw_order_snapshot_retention_days'] ?? '30', ENT_QUOTES) ?>" class="w-full field-input" />
-                </label>
+                <div class="space-y-3 rounded-lg border border-border bg-black/20 p-4">
+                    <div>
+                        <p class="text-sm text-slate-100">Market history retention tiers</p>
+                        <p class="mt-1 text-xs text-muted">The tiered model keeps raw capture tables short-lived, hourly rollups for the medium troubleshooting window, and daily history projections for the long-lived UI/reporting window.</p>
+                    </div>
+                    <div class="grid gap-3 xl:grid-cols-3">
+                        <label class="block space-y-2">
+                            <span class="text-sm text-muted">Raw snapshots (days)</span>
+                            <input type="number" min="1" max="3650" step="1" name="market_history_retention_raw_days" value="<?= htmlspecialchars($dataSyncSettingValues['market_history_retention_raw_days'] ?? '30', ENT_QUOTES) ?>" class="w-full field-input" />
+                            <p class="text-xs text-muted">Applies to <span class="font-mono">market_orders_history</span> and <span class="font-mono">market_order_snapshots_summary</span>.</p>
+                        </label>
+                        <label class="block space-y-2">
+                            <span class="text-sm text-muted">Hourly rollups (days)</span>
+                            <input type="number" min="1" max="3650" step="1" name="market_history_retention_hourly_days" value="<?= htmlspecialchars($dataSyncSettingValues['market_history_retention_hourly_days'] ?? '90', ENT_QUOTES) ?>" class="w-full field-input" />
+                            <p class="text-xs text-muted">Applies to <span class="font-mono">market_item_price_1h</span> and <span class="font-mono">market_item_stock_1h</span>.</p>
+                        </label>
+                        <label class="block space-y-2">
+                            <span class="text-sm text-muted">Daily history (days)</span>
+                            <input type="number" min="30" max="3650" step="1" name="market_history_retention_daily_days" value="<?= htmlspecialchars($dataSyncSettingValues['market_history_retention_daily_days'] ?? '365', ENT_QUOTES) ?>" class="w-full field-input" />
+                            <p class="text-xs text-muted">Applies to <span class="font-mono">market_item_price_1d</span>, <span class="font-mono">market_item_stock_1d</span>, <span class="font-mono">market_history_daily</span>, and <span class="font-mono">market_hub_local_history_daily</span>.</p>
+                        </label>
+                    </div>
+                </div>
 
                 <label class="block space-y-2">
                     <span class="text-sm text-muted">Static Data JSONL ZIP Source URL</span>

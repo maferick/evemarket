@@ -312,6 +312,54 @@ function db_bulk_insert_or_upsert(string $table, array $columns, array $rows, ar
 }
 
 
+function db_market_history_retention_specs(): array
+{
+    return [
+        'raw' => [
+            'setting' => 'market_history_retention_raw_days',
+            'legacy_setting' => 'raw_order_snapshot_retention_days',
+            'default' => 30,
+            'min' => 1,
+            'max' => 3650,
+        ],
+        'hourly' => [
+            'setting' => 'market_history_retention_hourly_days',
+            'legacy_setting' => 'analytics_bucket_1h_retention_days',
+            'default' => 90,
+            'min' => 1,
+            'max' => 3650,
+        ],
+        'daily' => [
+            'setting' => 'market_history_retention_daily_days',
+            'legacy_setting' => 'analytics_bucket_1d_retention_days',
+            'default' => 365,
+            'min' => 30,
+            'max' => 3650,
+        ],
+    ];
+}
+
+function db_market_history_retention_days(string $tier): int
+{
+    $specs = db_market_history_retention_specs();
+    $safeTier = array_key_exists($tier, $specs) ? $tier : 'raw';
+    $spec = $specs[$safeTier];
+    $setting = (string) $spec['setting'];
+    $legacySetting = (string) $spec['legacy_setting'];
+    $default = (int) $spec['default'];
+    $min = (int) $spec['min'];
+    $max = (int) $spec['max'];
+
+    $row = db_select_one('SELECT setting_value FROM app_settings WHERE setting_key = ? LIMIT 1', [$setting]);
+    if ($row !== null) {
+        $value = (int) ($row['setting_value'] ?? $default);
+
+        return max($min, min($max, $value > 0 ? $value : $default));
+    }
+
+    return db_setting_int($legacySetting, $default, $min, $max);
+}
+
 function db_time_series_bucket_retention_days(string $resolution): int
 {
     $default = $resolution === '1h' ? 14 : 180;
@@ -1135,37 +1183,45 @@ function db_time_series_retention_cleanup(string $resolution = '1h', int $maxRow
 
     $safeResolution = $resolution === '1d' ? '1d' : '1h';
     $safeLimit = max(100, min(20000, $maxRowsPerTable));
-    $retentionDays = db_time_series_bucket_retention_days($safeResolution);
-    $cutoff = $safeResolution === '1d'
-        ? gmdate('Y-m-d', strtotime('-' . $retentionDays . ' days'))
-        : gmdate('Y-m-d H:00:00', strtotime('-' . $retentionDays . ' days'));
-    $tables = $safeResolution === '1d'
+    $analyticsRetentionDays = db_time_series_bucket_retention_days($safeResolution);
+    $analyticsCutoff = $safeResolution === '1d'
+        ? gmdate('Y-m-d', strtotime('-' . $analyticsRetentionDays . ' days'))
+        : gmdate('Y-m-d H:00:00', strtotime('-' . $analyticsRetentionDays . ' days'));
+    $marketTier = $safeResolution === '1d' ? 'daily' : 'hourly';
+    $marketCutoff = db_market_history_tier_cutoff($marketTier);
+    $marketRetentionDays = db_market_history_retention_days($marketTier);
+    $specs = $safeResolution === '1d'
         ? [
-            'killmail_item_loss_1d',
-            'killmail_hull_loss_1d',
-            'killmail_doctrine_activity_1d',
-            'market_item_stock_1d',
-            'market_item_price_1d',
-            'doctrine_item_stock_1d',
-            'doctrine_fit_activity_1d',
-            'doctrine_group_activity_1d',
-            'doctrine_fit_stock_pressure_1d',
+            ['table' => 'killmail_item_loss_1d', 'cutoff' => $analyticsCutoff, 'retention_days' => $analyticsRetentionDays],
+            ['table' => 'killmail_hull_loss_1d', 'cutoff' => $analyticsCutoff, 'retention_days' => $analyticsRetentionDays],
+            ['table' => 'killmail_doctrine_activity_1d', 'cutoff' => $analyticsCutoff, 'retention_days' => $analyticsRetentionDays],
+            ['table' => 'market_item_stock_1d', 'cutoff' => $marketCutoff, 'retention_days' => $marketRetentionDays],
+            ['table' => 'market_item_price_1d', 'cutoff' => $marketCutoff, 'retention_days' => $marketRetentionDays],
+            ['table' => 'doctrine_item_stock_1d', 'cutoff' => $analyticsCutoff, 'retention_days' => $analyticsRetentionDays],
+            ['table' => 'doctrine_fit_activity_1d', 'cutoff' => $analyticsCutoff, 'retention_days' => $analyticsRetentionDays],
+            ['table' => 'doctrine_group_activity_1d', 'cutoff' => $analyticsCutoff, 'retention_days' => $analyticsRetentionDays],
+            ['table' => 'doctrine_fit_stock_pressure_1d', 'cutoff' => $analyticsCutoff, 'retention_days' => $analyticsRetentionDays],
         ]
         : [
-            'killmail_item_loss_1h',
-            'market_item_stock_1h',
-            'market_item_price_1h',
+            ['table' => 'killmail_item_loss_1h', 'cutoff' => $analyticsCutoff, 'retention_days' => $analyticsRetentionDays],
+            ['table' => 'market_item_stock_1h', 'cutoff' => $marketCutoff, 'retention_days' => $marketRetentionDays],
+            ['table' => 'market_item_price_1h', 'cutoff' => $marketCutoff, 'retention_days' => $marketRetentionDays],
         ];
     $deleted = [];
     $totalDeleted = 0;
 
-    foreach ($tables as $table) {
+    foreach ($specs as $spec) {
+        $table = (string) $spec['table'];
         db_execute(
             'DELETE FROM ' . db_validate_identifier($table) . ' WHERE bucket_start < ? LIMIT ' . $safeLimit,
-            [$cutoff]
+            [(string) $spec['cutoff']]
         );
         $rows = (int) db()->query('SELECT ROW_COUNT()')->fetchColumn();
-        $deleted[$table] = $rows;
+        $deleted[$table] = [
+            'rows_deleted' => $rows,
+            'cutoff' => (string) $spec['cutoff'],
+            'retention_days' => (int) $spec['retention_days'],
+        ];
         $totalDeleted += $rows;
     }
 
@@ -1173,7 +1229,7 @@ function db_time_series_retention_cleanup(string $resolution = '1h', int $maxRow
         'rows_seen' => $totalDeleted,
         'rows_written' => $totalDeleted,
         'deleted_rows' => $deleted,
-        'cutoff' => $cutoff,
+        'cutoff' => $analyticsCutoff,
     ];
 }
 
@@ -3310,6 +3366,72 @@ function db_market_order_snapshots_summary_prune_before(string $cutoffObservedAt
     return db_prune_before_datetime('market_order_snapshots_summary', 'observed_at', $cutoffObservedAt);
 }
 
+function db_market_history_tier_cleanup_specs(): array
+{
+    $rawTables = [];
+    foreach (db_market_orders_history_known_tables() as $table) {
+        $rawTables[] = ['table' => $table, 'column' => 'observed_at'];
+    }
+    $rawTables[] = ['table' => 'market_order_snapshots_summary', 'column' => 'observed_at'];
+
+    return [
+        'raw' => $rawTables,
+        'hourly' => [
+            ['table' => 'market_item_price_1h', 'column' => 'bucket_start'],
+            ['table' => 'market_item_stock_1h', 'column' => 'bucket_start'],
+        ],
+        'daily' => [
+            ['table' => 'market_item_price_1d', 'column' => 'bucket_start'],
+            ['table' => 'market_item_stock_1d', 'column' => 'bucket_start'],
+            ['table' => 'market_history_daily', 'column' => 'trade_date'],
+            ['table' => 'market_hub_local_history_daily', 'column' => 'trade_date'],
+        ],
+    ];
+}
+
+function db_market_history_tier_cutoff(string $tier): string
+{
+    $retentionDays = db_market_history_retention_days($tier);
+
+    return match ($tier) {
+        'daily' => gmdate('Y-m-d', strtotime('-' . $retentionDays . ' days')),
+        'hourly' => gmdate('Y-m-d H:00:00', strtotime('-' . $retentionDays . ' days')),
+        default => gmdate('Y-m-d H:i:s', strtotime('-' . $retentionDays . ' days')),
+    };
+}
+
+function db_market_history_tier_retention_cleanup(int $limitPerTable = 5000): array
+{
+    db_market_snapshot_optimization_ensure();
+    db_time_series_analytics_ensure_schema();
+
+    $safeLimit = max(100, min(50000, $limitPerTable));
+    $deleted = [];
+    $rowsWritten = 0;
+
+    foreach (db_market_history_tier_cleanup_specs() as $tier => $tables) {
+        $cutoff = db_market_history_tier_cutoff($tier);
+        $retentionDays = db_market_history_retention_days($tier);
+
+        foreach ($tables as $spec) {
+            $table = (string) $spec['table'];
+            $rowsDeleted = db_prune_before_datetime($table, (string) $spec['column'], $cutoff, $safeLimit);
+            $deleted[$table] = [
+                'tier' => $tier,
+                'rows_deleted' => $rowsDeleted,
+                'cutoff' => $cutoff,
+                'retention_days' => $retentionDays,
+            ];
+            $rowsWritten += $rowsDeleted;
+        }
+    }
+
+    return [
+        'rows_written' => $rowsWritten,
+        'deleted' => $deleted,
+    ];
+}
+
 function db_market_orders_current_latest_snapshot_rows(string $sourceType, int $sourceId): array
 {
     $safeSourceType = trim($sourceType);
@@ -4360,15 +4482,19 @@ function db_market_history_daily_deviation_series(
     );
 }
 
+// UI paths that depend on long-lived market history must read from the
+// daily rollups first. Raw fallback stays opt-in so tiered retention can expose
+// missing projections instead of silently masking them with short-lived snapshots.
 function db_market_orders_history_stock_health_series(
     string $sourceType,
     int $sourceId,
     string $startDate,
     string $endDate,
-    array $typeIds = []
+    array $typeIds = [],
+    bool $allowRawFallback = false
 ): array {
     $rows = db_market_item_stock_window_summaries($sourceType, $sourceId, $startDate, $endDate, $typeIds);
-    if ($rows !== []) {
+    if ($rows !== [] || $allowRawFallback === false) {
         return $rows;
     }
 
@@ -7639,7 +7765,6 @@ function db_control_plane_retention_cleanup(int $limitPerTable = 5000): array
 
     $safeLimit = max(100, min(50000, $limitPerTable));
     $specs = [
-        ['table' => 'market_order_snapshots_summary', 'column' => 'observed_at', 'setting' => 'raw_order_snapshot_retention_days', 'default' => 30, 'min' => 1, 'max' => 3650],
         ['table' => 'sync_runs', 'column' => 'created_at', 'setting' => 'sync_run_retention_days', 'default' => 30, 'min' => 7, 'max' => 3650],
         ['table' => 'scheduler_job_events', 'column' => 'created_at', 'setting' => 'scheduler_event_retention_days', 'default' => 14, 'min' => 1, 'max' => 3650],
         ['table' => 'scheduler_job_resource_metrics', 'column' => 'created_at', 'setting' => 'scheduler_metric_retention_days', 'default' => 30, 'min' => 7, 'max' => 3650],

@@ -262,7 +262,7 @@ SupplyCore sync pipelines depend on the `cron` daemon being present and running 
 - Capacity decisions combine current running-job projections, per-job p95 resource costs, fairness/urgency toward `latest_allowed_start_at`, explicit incompatibility rules, reserved headroom for critical jobs, and the pressure states `healthy`, `busy`, `congested`, and `overload_protection`.
 - Lease recovery and stale-state cleanup now happen during daemon startup and watchdog intervention. The daemon clears expired/stale running markers, updates the last recovery event in `scheduler_daemon_state`, and resumes scheduling without waiting for the next cron minute.
 - UI pages now read Redis first and fall back to `intelligence_snapshots` if Redis is unavailable; each intelligence surface also exposes its last computed timestamp and freshness state to operators.
-- The hub-history scheduler jobs (`market_hub_historical_sync` and `market_hub_local_history_sync`) now pre-aggregate raw hub-order snapshots into `market_order_snapshots_summary`, then rebuild `market_history_daily` from that summary layer using the recent window controlled by `raw_order_snapshot_retention_days` unless a CLI override is supplied.
+- The hub-history scheduler jobs (`market_hub_historical_sync` and `market_hub_local_history_sync`) now pre-aggregate raw hub-order snapshots into `market_order_snapshots_summary`, then rebuild `market_history_daily` from that summary layer using the tiered retention policy from **Settings → Data Sync → Market history retention tiers** unless a CLI override is supplied.
 - `market_order_snapshots_summary` is indexed for the read paths the app uses most: latest snapshot reads via `(source_type, source_id, observed_at, type_id)`, per-type windows via `(source_type, source_id, type_id, observed_at)`, and daily stock-health rollups via `(source_type, source_id, observed_date, type_id)`.
 - **Trend Snippets** on the dashboard depend on that first-party snapshot history generation.
 - The **Run now** button in Settings → Data Sync still forces the selected enabled schedule due immediately, but when the daemon is healthy it now wakes that daemon instead of waiting for the old minute-based cron trigger.
@@ -316,8 +316,15 @@ The remaining environment-sensitive source values are:
 
 The canonical log path for the daemon and watchdog is `storage/logs/cron.log` (relative to app root).
 If logs show `Job exceeded timeout of ... seconds.`, move the deployment to a stronger scheduler profile first (`Low` → `Medium` → `High`) and only use hard environment overrides if you have a very specific reason.
-Raw order snapshots are pruned according to `raw_order_snapshot_retention_days` from Settings → Data Sync.
+Market history retention is tiered from Settings → Data Sync:
+
+- `market_history_retention_raw_days` keeps `market_orders_history` and `market_order_snapshots_summary` only for the short raw-capture window.
+- `market_history_retention_hourly_days` keeps `market_item_price_1h` and `market_item_stock_1h` for the medium troubleshooting window.
+- `market_history_retention_daily_days` keeps `market_item_price_1d`, `market_item_stock_1d`, `market_history_daily`, and `market_hub_local_history_daily` for the long-lived UI/reporting window.
+
 Daily history rows are built from those local snapshots for both the alliance market and the reference hub, so keep the current-sync and history schedules enabled together for continuous trend updates.
+
+Once the tiered model is active, these UI routes must not rely on raw-history fallback reads: `/history/alliance-trends`, `/history/module-history`, `/activity-priority`, `/doctrine`, `/doctrine/group`, and `/doctrine/fit`. They should read from the daily history layer (`market_history_daily`, `market_hub_local_history_daily`, `market_item_*_1d`) or show gaps that indicate the rollups need rebuilding.
 
 
 ### Manual snapshot-history rebuild CLI
@@ -330,7 +337,7 @@ php bin/sync_runner.php --job=market-hub-local-history --mode=full --window-days
 
 Notes:
 
-- `--window-days` is optional. If omitted, the job defaults to `raw_order_snapshot_retention_days` from Settings → Data Sync.
+- `--window-days` is optional. If omitted, the job defaults to the raw tier (`market_history_retention_raw_days`) from Settings → Data Sync.
 - The job scans local `market_orders_history` rows for the configured hub, derives per-type daily OHLC buckets, and upserts them into `market_history_daily`.
 - The runner writes JSON summary lines and warning/error summaries to `storage/logs/cron.log`, so you can tail the same file whether the job ran via cron or manually.
 - Expected first-run duration is typically **under 1 minute for a 7-day window**, **1–5 minutes for ~30 days**, and longer if the hub has unusually dense raw snapshots or the database is resource-constrained.
@@ -340,7 +347,7 @@ Verification SQL:
 ```bash
 mysql -u "$DB_USERNAME" -p"$DB_PASSWORD" -h "$DB_HOST" -P "$DB_PORT" "$DB_DATABASE" -e "SELECT trade_date, COUNT(*) AS bucket_rows, MIN(observed_at) AS first_capture, MAX(observed_at) AS last_capture FROM market_history_daily WHERE source_type = 'market_hub' AND source_id = <SOURCE_ID> GROUP BY trade_date ORDER BY trade_date DESC LIMIT 30;"
 
-mysql -u "$DB_USERNAME" -p"$DB_PASSWORD" -h "$DB_HOST" -P "$DB_PORT" "$DB_DATABASE" -e "SELECT DATE(observed_at) AS snapshot_day, COUNT(DISTINCT observed_at) AS snapshots_seen, COUNT(DISTINCT type_id) AS type_count FROM market_orders_history WHERE source_type = 'market_hub' AND source_id = <SOURCE_ID> AND observed_at >= UTC_TIMESTAMP() - INTERVAL 30 DAY GROUP BY DATE(observed_at) ORDER BY snapshot_day DESC;"
+mysql -u "$DB_USERNAME" -p"$DB_PASSWORD" -h "$DB_HOST" -P "$DB_PORT" "$DB_DATABASE" -e "SELECT DATE(observed_at) AS snapshot_day, COUNT(DISTINCT observed_at) AS snapshots_seen, COUNT(DISTINCT type_id) AS type_count FROM market_orders_history WHERE source_type = 'market_hub' AND source_id = <SOURCE_ID> AND observed_at >= UTC_TIMESTAMP() - INTERVAL <RAW_DAYS> DAY GROUP BY DATE(observed_at) ORDER BY snapshot_day DESC;"
 
 mysql -u "$DB_USERNAME" -p"$DB_PASSWORD" -h "$DB_HOST" -P "$DB_PORT" "$DB_DATABASE" -e "SELECT * FROM sync_runs WHERE dataset_key LIKE 'market.hub.%history%.daily' ORDER BY started_at DESC LIMIT 10;"
 ```
