@@ -112,7 +112,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $requestedJob = trim((string) (($_POST['job_action_job_key'] ?? $_GET['job_action_job_key'] ?? '')));
                 $retry = retry_data_sync_job_now($requestedJob);
                 $saved = (bool) ($retry['ok'] ?? false);
-                flash('success', (string) ($retry['message'] ?? 'Retry submitted.'));
+                flash('success', (string) ($retry['message'] ?? 'Start now submitted.'));
                 header('Location: /settings?section=' . urlencode($submittedSection));
                 exit;
             }
@@ -1698,7 +1698,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                                     ? 'border-sky-400/40 bg-sky-500/10 text-sky-100'
                                     : ($state === 'stopped' ? 'border-rose-400/40 bg-rose-500/10 text-rose-100' : 'border-amber-400/40 bg-amber-500/10 text-amber-100');
                                 $jobKey = (string) ($schedule['job_key'] ?? '');
-                                $canRetry = !empty($schedule['enabled']) && $state === 'stopped';
+                                $canStartNow = !empty($schedule['enabled']) && $state === 'stopped';
                                 $canStopForInvestigation = !empty($schedule['enabled']) && $state !== 'stopped';
                             ?>
                             <div class="rounded-xl border border-border bg-black/20 p-4">
@@ -1708,9 +1708,9 @@ include __DIR__ . '/../../src/views/partials/header.php';
                                             <p class="text-sm font-medium text-slate-100"><?= htmlspecialchars((string) ($schedule['label'] ?? $schedule['job_key']), ENT_QUOTES) ?></p>
                                             <span class="inline-flex items-center rounded-full border px-2.5 py-1 text-[11px] font-medium uppercase tracking-[0.14em] <?= $stateClass ?>"><?= htmlspecialchars($state, ENT_QUOTES) ?></span>
                                             <?php if (!empty($schedule['allow_backfill'])): ?><span class="inline-flex items-center rounded-full border border-emerald-400/30 bg-emerald-500/10 px-2.5 py-1 text-[11px] uppercase tracking-[0.14em] text-emerald-100">idle backfill</span><?php endif; ?>
-                                            <?php if ($canRetry): ?>
+                                            <?php if ($canStartNow): ?>
                                                 <button type="submit" name="data_sync_action" value="retry-job" class="inline-flex items-center rounded-full border border-emerald-400/40 bg-emerald-500/10 px-2.5 py-1 text-[11px] font-medium uppercase tracking-[0.14em] text-emerald-100 hover:bg-emerald-500/20" formaction="/settings?section=data-sync&amp;job_action_job_key=<?= urlencode($jobKey) ?>" formnovalidate>
-                                                    <span>Retry now</span>
+                                                    <span>Start now</span>
                                                 </button>
                                             <?php endif; ?>
                                             <?php if ($canStopForInvestigation): ?>
