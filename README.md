@@ -87,6 +87,7 @@ README.md
            'database' => 'supplycore',
            'username' => 'root',
            'password' => 'secret',
+           'socket' => '', // Optional: set this when MySQL only listens on a local unix socket.
        ],
    ];
    ```
@@ -94,6 +95,7 @@ README.md
    Notes:
    - `src/config/app.php` loads the repository defaults first.
    - If `src/config/local.php` exists, it is merged on top of those defaults.
+   - Set `db.socket` (or `DB_SOCKET`) when Apache/PHP should connect through a local MySQL unix socket instead of TCP. SupplyCore now tries configured/default socket paths before falling back to `host` + `port`.
    - Environment variables still work, but they are optional. For most installs, editing `src/config/local.php` is simpler and matches this repository’s recommended workflow.
    - Keep `src/config/local.php` out of version control.
 

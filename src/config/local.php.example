@@ -14,6 +14,7 @@ return [
         'database' => 'supplycore',
         'username' => 'supplycore',
         'password' => 'change-me',
+        'socket' => '', // Optional: set when MySQL is exposed via a local unix socket instead of TCP.
     ],
     'redis' => [
         'enabled' => false,

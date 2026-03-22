@@ -16,6 +16,7 @@ $config = [
         'username' => getenv('DB_USERNAME') ?: 'root',
         'password' => getenv('DB_PASSWORD') ?: '',
         'charset' => 'utf8mb4',
+        'socket' => trim((string) (getenv('DB_SOCKET') ?: '')),
     ],
     'redis' => [
         'enabled' => (getenv('REDIS_ENABLED') ?: '0') === '1',

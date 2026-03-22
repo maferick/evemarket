@@ -6341,8 +6341,51 @@ function db_scheduler_daemon_force_reset(string $daemonKey = 'master', string $e
     );
 }
 
+function db_sync_schedule_registry_tables_ensure(): void
+{
+    db_execute('CREATE TABLE IF NOT EXISTS sync_schedules (
+        id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+        job_key VARCHAR(190) NOT NULL,
+        enabled TINYINT(1) NOT NULL DEFAULT 1,
+        interval_seconds INT UNSIGNED NOT NULL,
+        offset_seconds INT UNSIGNED NOT NULL DEFAULT 0,
+        next_run_at DATETIME DEFAULT NULL,
+        last_run_at DATETIME DEFAULT NULL,
+        last_status VARCHAR(40) DEFAULT NULL,
+        last_error VARCHAR(500) DEFAULT NULL,
+        locked_until DATETIME DEFAULT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        UNIQUE KEY unique_job_key (job_key),
+        KEY idx_enabled (enabled),
+        KEY idx_next_run_at (next_run_at),
+        KEY idx_job_key (job_key)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4');
+
+    db_execute("CREATE TABLE IF NOT EXISTS sync_runs (
+        id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+        dataset_key VARCHAR(190) NOT NULL,
+        run_mode ENUM('full', 'incremental') NOT NULL DEFAULT 'incremental',
+        run_status ENUM('running', 'success', 'failed') NOT NULL DEFAULT 'running',
+        started_at DATETIME NOT NULL,
+        finished_at DATETIME DEFAULT NULL,
+        source_rows INT UNSIGNED NOT NULL DEFAULT 0,
+        written_rows INT UNSIGNED NOT NULL DEFAULT 0,
+        cursor_start VARCHAR(190) DEFAULT NULL,
+        cursor_end VARCHAR(190) DEFAULT NULL,
+        error_message VARCHAR(500) DEFAULT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        KEY idx_dataset_started (dataset_key, started_at),
+        KEY idx_run_status (run_status),
+        KEY idx_sync_runs_created_at (created_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+}
+
 function db_sync_schedule_registry_columns_ensure(): void
 {
+    db_sync_schedule_registry_tables_ensure();
+
     db_ensure_table_column('sync_schedules', 'offset_seconds', 'INT UNSIGNED NOT NULL DEFAULT 0');
     db_ensure_table_column('sync_schedules', 'interval_minutes', 'INT UNSIGNED NOT NULL DEFAULT 5');
     db_ensure_table_column('sync_schedules', 'offset_minutes', 'INT UNSIGNED NOT NULL DEFAULT 0');

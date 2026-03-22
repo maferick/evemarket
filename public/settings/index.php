@@ -197,9 +197,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 exit;
             }
 
-            $settingsSaved = save_settings(data_sync_settings_from_request($_POST));
-            $schedulesSaved = save_data_sync_schedule_settings($_POST);
-            $saved = $settingsSaved && $schedulesSaved;
+            $dataSyncSave = save_data_sync_settings($_POST);
+            $saved = (bool) ($dataSyncSave['ok'] ?? false);
+            $saveMessage = (string) ($dataSyncSave['message'] ?? 'Settings saved successfully.');
             break;
 
         case 'deal-alerts':
