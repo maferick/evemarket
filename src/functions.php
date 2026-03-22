@@ -9732,6 +9732,11 @@ function killmail_overview_data(): array
             $shipTypeId = (int) ($row['victim_ship_type_id'] ?? 0);
             $systemId = (int) ($row['solar_system_id'] ?? 0);
             $regionId = (int) ($row['region_id'] ?? 0);
+            $finalBlowCharacterId = (int) ($row['final_blow_character_id'] ?? 0);
+            $finalBlowCorporationId = (int) ($row['final_blow_corporation_id'] ?? 0);
+            $finalBlowAllianceId = (int) ($row['final_blow_alliance_id'] ?? 0);
+            $finalBlowShipTypeId = (int) ($row['final_blow_ship_type_id'] ?? 0);
+            $finalBlowWeaponTypeId = (int) ($row['final_blow_weapon_type_id'] ?? 0);
 
             if ($allianceId > 0) {
                 $overviewResolutionRequests['alliance'][$allianceId] = $allianceId;
@@ -9747,6 +9752,21 @@ function killmail_overview_data(): array
             }
             if ($regionId > 0) {
                 $overviewResolutionRequests['region'][$regionId] = $regionId;
+            }
+            if ($finalBlowCharacterId > 0) {
+                $overviewResolutionRequests['character'][$finalBlowCharacterId] = $finalBlowCharacterId;
+            }
+            if ($finalBlowCorporationId > 0) {
+                $overviewResolutionRequests['corporation'][$finalBlowCorporationId] = $finalBlowCorporationId;
+            }
+            if ($finalBlowAllianceId > 0) {
+                $overviewResolutionRequests['alliance'][$finalBlowAllianceId] = $finalBlowAllianceId;
+            }
+            if ($finalBlowShipTypeId > 0) {
+                $overviewResolutionRequests['type'][$finalBlowShipTypeId] = $finalBlowShipTypeId;
+            }
+            if ($finalBlowWeaponTypeId > 0) {
+                $overviewResolutionRequests['type'][$finalBlowWeaponTypeId] = $finalBlowWeaponTypeId;
             }
         }
 
@@ -9793,6 +9813,11 @@ function killmail_overview_data(): array
             $estimatedValue = killmail_overview_value_amount($row);
             $points = killmail_overview_points($row);
             $shipTypeId = isset($row['victim_ship_type_id']) ? (int) $row['victim_ship_type_id'] : null;
+            $finalBlowCharacterId = isset($row['final_blow_character_id']) ? (int) $row['final_blow_character_id'] : null;
+            $finalBlowCorporationId = isset($row['final_blow_corporation_id']) ? (int) $row['final_blow_corporation_id'] : null;
+            $finalBlowAllianceId = isset($row['final_blow_alliance_id']) ? (int) $row['final_blow_alliance_id'] : null;
+            $finalBlowShipTypeId = isset($row['final_blow_ship_type_id']) ? (int) $row['final_blow_ship_type_id'] : null;
+            $finalBlowWeaponTypeId = isset($row['final_blow_weapon_type_id']) ? (int) $row['final_blow_weapon_type_id'] : null;
             $signalStrength = killmail_signal_strength_meta(0, 0, killmail_row_matches_tracked_victim($row));
             $supplyImpact = killmail_supply_impact_meta($estimatedValue, 0, 0, 0);
             $killmailFlags = array_values(array_filter([
@@ -9812,9 +9837,16 @@ function killmail_overview_data(): array
                 'ship_type' => killmail_entity_preferred_name($resolvedOverviewEntities, 'type', isset($row['victim_ship_type_id']) ? (int) $row['victim_ship_type_id'] : null, isset($row['ship_type_name']) ? (string) $row['ship_type_name'] : '', 'Ship'),
                 'system' => killmail_entity_preferred_name($resolvedOverviewEntities, 'system', isset($row['solar_system_id']) ? (int) $row['solar_system_id'] : null, isset($row['system_name']) ? (string) $row['system_name'] : '', 'System'),
                 'region' => killmail_entity_preferred_name($resolvedOverviewEntities, 'region', isset($row['region_id']) ? (int) $row['region_id'] : null, isset($row['region_name']) ? (string) $row['region_name'] : '', 'Region'),
+                'final_blow_character' => killmail_entity_preferred_name($resolvedOverviewEntities, 'character', $finalBlowCharacterId, '', 'Character'),
+                'final_blow_corporation' => killmail_entity_preferred_name($resolvedOverviewEntities, 'corporation', $finalBlowCorporationId, '', 'Corporation'),
+                'final_blow_alliance' => killmail_entity_preferred_name($resolvedOverviewEntities, 'alliance', $finalBlowAllianceId, '', 'Alliance'),
+                'final_blow_ship' => killmail_entity_preferred_name($resolvedOverviewEntities, 'type', $finalBlowShipTypeId, '', 'Ship'),
+                'final_blow_weapon' => killmail_entity_preferred_name($resolvedOverviewEntities, 'type', $finalBlowWeaponTypeId, '', 'Weapon'),
                 'matched_tracked' => (int) ($row['matched_tracked'] ?? 0) === 1,
                 'match_context' => $matchSources === [] ? 'No tracked entity currently matches this stored killmail.' : ('Matched on ' . implode(', ', $matchSources) . '.'),
                 'ship_icon_url' => $shipTypeId !== null ? killmail_entity_image_url('type', $shipTypeId, 'icon', 64) : null,
+                'final_blow_portrait_url' => $finalBlowCharacterId !== null && $finalBlowCharacterId > 0 ? killmail_entity_image_url('character', $finalBlowCharacterId, 'portrait', 64) : null,
+                'final_blow_ship_icon_url' => $finalBlowShipTypeId !== null && $finalBlowShipTypeId > 0 ? killmail_entity_image_url('type', $finalBlowShipTypeId, 'icon', 64) : null,
                 'estimated_value_display' => $estimatedValue !== null ? number_format($estimatedValue, 0) . ' ISK' : 'Value unavailable',
                 'points_display' => $points !== null ? number_format($points) : 'Unavailable',
                 'killmail_flags' => $killmailFlags,

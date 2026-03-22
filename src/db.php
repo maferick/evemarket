@@ -9699,6 +9699,14 @@ function db_killmail_overview_page(array $filters = []): array
     $fromSql = " FROM killmail_events e
         {$trackedJoinType} {$trackedMatchesSql} tracked
           ON tracked.sequence_id = e.sequence_id
+        LEFT JOIN killmail_attackers final_blow_attacker
+          ON final_blow_attacker.sequence_id = e.sequence_id
+         AND final_blow_attacker.attacker_index = (
+             SELECT MIN(fb.attacker_index)
+               FROM killmail_attackers fb
+              WHERE fb.sequence_id = e.sequence_id
+                AND fb.final_blow = 1
+         )
         LEFT JOIN ref_item_types ship ON ship.type_id = e.victim_ship_type_id
         LEFT JOIN ref_systems system_ref ON system_ref.system_id = e.solar_system_id
         LEFT JOIN ref_regions region_ref ON region_ref.region_id = e.region_id
@@ -9764,6 +9772,11 @@ function db_killmail_overview_page(array $filters = []): array
             e.victim_ship_type_id,
             e.solar_system_id,
             e.region_id,
+            final_blow_attacker.character_id AS final_blow_character_id,
+            final_blow_attacker.corporation_id AS final_blow_corporation_id,
+            final_blow_attacker.alliance_id AS final_blow_alliance_id,
+            final_blow_attacker.ship_type_id AS final_blow_ship_type_id,
+            final_blow_attacker.weapon_type_id AS final_blow_weapon_type_id,
             e.zkb_total_value,
             e.zkb_points,
             e.zkb_npc,

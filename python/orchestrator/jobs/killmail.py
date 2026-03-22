@@ -59,6 +59,77 @@ def _flush_batch(bridge: PhpBridge, pending_payloads: list[dict[str, Any]]) -> d
     return dict(response.get("result") or {})
 
 
+class KillmailEntityResolver:
+    def __init__(self, user_agent: str):
+        self.user_agent = user_agent
+        self._character_cache: dict[int, dict[str, Any] | None] = {}
+        self._corporation_cache: dict[int, dict[str, Any] | None] = {}
+
+    def _fetch_profile(self, url: str) -> dict[str, Any] | None:
+        status, payload = _http_json(url, self.user_agent)
+        if status != 200:
+            return None
+
+        return payload
+
+    def _character_profile(self, character_id: int) -> dict[str, Any] | None:
+        if character_id <= 0:
+            return None
+
+        if character_id not in self._character_cache:
+            self._character_cache[character_id] = self._fetch_profile(
+                f"https://esi.evetech.net/latest/characters/{character_id}/?datasource=tranquility"
+            )
+
+        return self._character_cache[character_id]
+
+    def _corporation_profile(self, corporation_id: int) -> dict[str, Any] | None:
+        if corporation_id <= 0:
+            return None
+
+        if corporation_id not in self._corporation_cache:
+            self._corporation_cache[corporation_id] = self._fetch_profile(
+                f"https://esi.evetech.net/latest/corporations/{corporation_id}/?datasource=tranquility"
+            )
+
+        return self._corporation_cache[corporation_id]
+
+    def _enrich_actor(self, actor: dict[str, Any]) -> None:
+        character_id = int(actor.get("character_id") or 0)
+        corporation_id = int(actor.get("corporation_id") or 0)
+        alliance_id = int(actor.get("alliance_id") or 0)
+
+        if corporation_id <= 0 and character_id > 0:
+            character_profile = self._character_profile(character_id) or {}
+            corporation_id = int(character_profile.get("corporation_id") or 0)
+            if corporation_id > 0:
+                actor["corporation_id"] = corporation_id
+
+        if alliance_id <= 0 and corporation_id > 0:
+            corporation_profile = self._corporation_profile(corporation_id) or {}
+            alliance_id = int(corporation_profile.get("alliance_id") or 0)
+            if alliance_id > 0:
+                actor["alliance_id"] = alliance_id
+
+    def enrich_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
+        for payload_key in ("esi", "killmail"):
+            killmail = payload.get(payload_key)
+            if not isinstance(killmail, dict):
+                continue
+
+            victim = killmail.get("victim")
+            if isinstance(victim, dict):
+                self._enrich_actor(victim)
+
+            attackers = killmail.get("attackers")
+            if isinstance(attackers, list):
+                for attacker in attackers:
+                    if isinstance(attacker, dict):
+                        self._enrich_actor(attacker)
+
+        return payload
+
+
 def run_killmail_r2z2_stream(context: Any) -> dict[str, Any]:
     bridge = PhpBridge(context.php_binary, context.app_root)
     bridge_response = bridge.call("killmail-context")
@@ -88,6 +159,7 @@ def run_killmail_r2z2_stream(context: Any) -> dict[str, Any]:
     poll_sleep_seconds = max(10, int(job_context.get("poll_sleep_seconds") or 10))
     max_sequences = max(1, int(job_context.get("max_sequences_per_run") or 120))
     batch_size = max(1, min(50, context.batch_size // 20 or 25))
+    entity_resolver = KillmailEntityResolver(user_agent)
 
     if sequence_url == "" or base_url == "":
         raise RuntimeError("Killmail Python worker requires both sequence and base R2Z2 URLs.")
@@ -139,6 +211,7 @@ def run_killmail_r2z2_stream(context: Any) -> dict[str, Any]:
         status, payload = _http_json(f"{base_url}/{sequence_id}.json", user_agent)
 
         if status == 200:
+            payload = entity_resolver.enrich_payload(payload)
             pending_payloads.append(payload)
             total_sequence_files_fetched += 1
             next_sequence = sequence_id + 1

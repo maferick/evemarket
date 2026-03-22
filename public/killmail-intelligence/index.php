@@ -44,8 +44,8 @@ include __DIR__ . '/../../src/views/partials/header.php';
 <section class="mb-6 flex flex-wrap items-center justify-between gap-4 surface-secondary">
     <div>
         <p class="text-xs uppercase tracking-[0.2em] text-muted">Operational visibility</p>
-        <h2 class="mt-1 text-lg font-medium text-slate-50">Human-readable loss intelligence</h2>
-        <p class="mt-2 max-w-3xl text-sm text-muted">Scan recent tracked losses by ship, location, signal strength, and estimated supply impact without hunting through raw identifiers.</p>
+        <h2 class="mt-1 text-lg font-medium text-slate-50">Tracked zKill loss feed</h2>
+        <p class="mt-2 max-w-3xl text-sm text-muted">Recent losses now emphasize the same core story you expect from zKill: victim, final blow, location, and estimated value, while still keeping SupplyCore’s tracked-entity context front and center.</p>
     </div>
     <div class="flex flex-wrap gap-2">
         <span class="rounded-full border px-3 py-1 text-xs uppercase tracking-[0.15em] <?= ($status['ingestion_enabled'] ?? false) ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-200' : 'border-amber-500/40 bg-amber-500/10 text-amber-100' ?>">
@@ -108,7 +108,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
     <article class="surface-secondary">
         <div class="flex items-center justify-between gap-3">
             <h2 class="text-base font-medium text-slate-50">Tracking context</h2>
-            <span class="text-xs text-muted">Victim-side coverage</span>
+            <span class="text-xs text-muted">Victim + attacker coverage</span>
         </div>
         <div class="mt-4 space-y-3">
             <div class="surface-tertiary">
@@ -120,7 +120,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                 <p class="mt-2 text-xl font-semibold text-slate-50"><?= number_format((int) ($status['tracked_corporation_count'] ?? 0)) ?></p>
             </div>
             <div class="surface-tertiary text-sm text-slate-400">
-                This view prioritizes victim losses that matter to alliance logistics, while deeper ingestion details remain secondary.
+                Python ingestion now backfills missing corporation/alliance context before persistence so tracked-entity matches stay accurate even when R2Z2 omits victim alliance IDs.
             </div>
         </div>
     </article>
@@ -182,19 +182,18 @@ include __DIR__ . '/../../src/views/partials/header.php';
         <table class="table-ui">
             <thead>
             <tr class="border-b border-border/80 bg-white/[0.03] text-left text-xs uppercase tracking-[0.15em] text-muted">
-                <th class="px-3 py-2 font-medium">Loss</th>
                 <th class="px-3 py-2 font-medium">Victim</th>
-                <th class="px-3 py-2 font-medium">Ship & place</th>
+                <th class="px-3 py-2 font-medium">Final blow</th>
+                <th class="px-3 py-2 font-medium">Ship & location</th>
                 <th class="px-3 py-2 font-medium">Signals</th>
-                <th class="px-3 py-2 font-medium">Value</th>
-                <th class="px-3 py-2 font-medium">Recorded</th>
+                <th class="px-3 py-2 font-medium">Value & time</th>
                 <th class="px-3 py-2 font-medium">Inspect</th>
             </tr>
             </thead>
             <tbody>
             <?php if ($rows === []): ?>
                 <tr>
-                    <td colspan="7" class="px-4 py-8">
+                    <td colspan="6" class="px-4 py-8">
                         <div class="surface-tertiary">
                             <p class="text-base font-medium text-slate-50">No killmails to show yet.</p>
                             <p class="mt-2 text-sm text-muted"><?= htmlspecialchars($emptyMessage, ENT_QUOTES) ?></p>
@@ -205,13 +204,21 @@ include __DIR__ . '/../../src/views/partials/header.php';
                 <?php foreach ($rows as $index => $row): ?>
                     <tr class="border-b border-border/60 text-slate-200 transition hover:bg-accent/10 <?= $index % 2 === 1 ? 'bg-white/[0.01]' : '' ?>">
                         <td class="px-3 py-3 align-top">
-                            <p class="font-medium text-slate-50"><?= htmlspecialchars((string) ($row['killmail_time_display'] ?? '—'), ENT_QUOTES) ?></p>
-                            <p class="mt-1 text-xs text-muted">Recorded loss event</p>
-                        </td>
-                        <td class="px-3 py-3 align-top">
                             <p class="font-medium text-slate-50"><?= htmlspecialchars((string) ($row['victim_corporation'] ?? '—'), ENT_QUOTES) ?></p>
                             <p class="mt-1 text-xs text-slate-300"><?= htmlspecialchars((string) ($row['victim_alliance'] ?? '—'), ENT_QUOTES) ?></p>
-                            <p class="mt-2 max-w-xs text-xs text-muted"><?= htmlspecialchars((string) ($row['match_context'] ?? ''), ENT_QUOTES) ?></p>
+                            <p class="mt-2 text-xs text-muted"><?= htmlspecialchars((string) ($row['killmail_time_display'] ?? '—'), ENT_QUOTES) ?></p>
+                        </td>
+                        <td class="px-3 py-3 align-top">
+                            <div class="flex items-start gap-3">
+                                <?php if ((string) ($row['final_blow_portrait_url'] ?? '') !== ''): ?>
+                                    <img src="<?= htmlspecialchars((string) $row['final_blow_portrait_url'], ENT_QUOTES) ?>" alt="" class="h-10 w-10 rounded-xl object-cover">
+                                <?php endif; ?>
+                                <div>
+                                    <p class="font-medium text-slate-50"><?= htmlspecialchars((string) ($row['final_blow_character'] ?? 'Unknown character'), ENT_QUOTES) ?></p>
+                                    <p class="mt-1 text-xs text-slate-300"><?= htmlspecialchars((string) ($row['final_blow_corporation'] ?? '—'), ENT_QUOTES) ?></p>
+                                    <p class="mt-1 text-xs text-muted"><?= htmlspecialchars((string) ($row['final_blow_alliance'] ?? '—'), ENT_QUOTES) ?></p>
+                                </div>
+                            </div>
                         </td>
                         <td class="px-3 py-3 align-top">
                             <div class="flex items-start gap-3">
@@ -222,10 +229,14 @@ include __DIR__ . '/../../src/views/partials/header.php';
                                     <p class="font-medium text-slate-50"><?= htmlspecialchars((string) ($row['ship_type'] ?? '—'), ENT_QUOTES) ?></p>
                                     <p class="mt-1 text-xs text-slate-300"><?= htmlspecialchars((string) ($row['system'] ?? '—'), ENT_QUOTES) ?></p>
                                     <p class="mt-1 text-xs text-muted"><?= htmlspecialchars((string) ($row['region'] ?? '—'), ENT_QUOTES) ?></p>
+                                    <?php if ((string) ($row['final_blow_ship'] ?? '') !== '' && (string) ($row['final_blow_ship'] ?? '') !== 'Ship unavailable'): ?>
+                                        <p class="mt-2 text-xs text-muted">Final blow ship: <?= htmlspecialchars((string) ($row['final_blow_ship'] ?? '—'), ENT_QUOTES) ?></p>
+                                    <?php endif; ?>
                                 </div>
                             </div>
                         </td>
                         <td class="px-3 py-3 align-top">
+                            <p class="font-medium text-slate-50"><?= htmlspecialchars((string) ($row['killmail_flags_display'] ?? 'No special flags'), ENT_QUOTES) ?></p>
                             <div class="flex max-w-xs flex-wrap gap-2">
                                 <span class="rounded-full border px-2 py-0.5 text-[11px] uppercase tracking-[0.08em] <?= ($row['matched_tracked'] ?? false) ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-200' : 'border-slate-500/40 bg-slate-500/10 text-slate-300' ?>">
                                     <?= ($row['matched_tracked'] ?? false) ? 'Tracked entity' : 'Recorded loss' ?>
@@ -237,12 +248,14 @@ include __DIR__ . '/../../src/views/partials/header.php';
                                     <?= htmlspecialchars((string) (($row['supply_impact']['label'] ?? 'Impact')), ENT_QUOTES) ?>
                                 </span>
                             </div>
+                            <p class="mt-2 max-w-xs text-xs text-muted"><?= htmlspecialchars((string) ($row['match_context'] ?? ''), ENT_QUOTES) ?></p>
                         </td>
                         <td class="px-3 py-3 align-top">
                             <p class="font-medium text-slate-50"><?= htmlspecialchars((string) ($row['estimated_value_display'] ?? 'Value unavailable'), ENT_QUOTES) ?></p>
-                        </td>
-                        <td class="px-3 py-3 align-top">
-                            <p class="font-medium text-slate-50"><?= htmlspecialchars((string) ($row['created_at_display'] ?? '—'), ENT_QUOTES) ?></p>
+                            <?php if ((string) ($row['final_blow_weapon'] ?? '') !== '' && (string) ($row['final_blow_weapon'] ?? '') !== 'Weapon unavailable'): ?>
+                                <p class="mt-1 text-xs text-slate-300"><?= htmlspecialchars((string) ($row['final_blow_weapon'] ?? '—'), ENT_QUOTES) ?></p>
+                            <?php endif; ?>
+                            <p class="mt-2 text-xs text-muted"><?= htmlspecialchars((string) ($row['created_at_display'] ?? '—'), ENT_QUOTES) ?></p>
                             <p class="mt-1 text-xs text-muted">Uploaded <?= htmlspecialchars((string) ($row['uploaded_at_display'] ?? '—'), ENT_QUOTES) ?></p>
                         </td>
                         <td class="px-3 py-3 align-top">
