@@ -191,13 +191,13 @@ SupplyCore now runs three long-lived worker classes:
 
 ### Systemd deployment
 
-Use the interactive installer to build/update the Python virtualenv, install the current orchestrator package, copy the unit files, and enable the selected services:
+Use the interactive installer after your `git clone` to bootstrap the deployed checkout, build/update the Python virtualenv, install the current orchestrator package, copy the unit files, and enable the selected services:
 
 ```bash
 sudo ./scripts/install-services.sh
 ```
 
-The script asks for the app root, runtime user/group, worker counts, whether to enable the dedicated zKill worker, and whether to also install the legacy compatibility service. It also re-runs `pip install --upgrade ./python`, which fixes hosts where `python -m orchestrator zkill-worker ...` still points at an older package build that does not know about the `zkill-worker` subcommand yet.
+The script asks for the app root, runtime user/group, worker counts, whether to enable the dedicated zKill worker, and whether to also install the legacy compatibility service. It can now also create or refresh `src/config/local.php` for the cloned checkout by prompting for the application URL plus the database login name and password, but it intentionally does **not** create the MySQL database or import `database/schema.sql`. It also re-runs `pip install --upgrade ./python`, which fixes hosts where `python -m orchestrator zkill-worker ...` still points at an older package build that does not know about the `zkill-worker` subcommand yet.
 
 If your deployed checkout is missing the newer `supplycore-sync-worker@.service` or `supplycore-compute-worker@.service` template files, the installer now falls back to the single-worker units and generates compatible instance templates automatically during installation.
 
