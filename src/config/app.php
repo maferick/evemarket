@@ -45,6 +45,21 @@ $config = [
         'worker_start_backoff_seconds' => max(1, (int) (getenv('ORCHESTRATOR_WORKER_START_BACKOFF_SECONDS') ?: 5)),
         'max_consecutive_health_failures' => max(1, (int) (getenv('ORCHESTRATOR_MAX_CONSECUTIVE_HEALTH_FAILURES') ?: 3)),
     ],
+    'workers' => [
+        'queue_name' => getenv('SUPPLYCORE_WORKER_QUEUE') ?: 'default',
+        'claim_ttl_seconds' => max(30, (int) (getenv('SUPPLYCORE_WORKER_CLAIM_TTL_SECONDS') ?: 300)),
+        'idle_sleep_seconds' => max(1, (int) (getenv('SUPPLYCORE_WORKER_IDLE_SLEEP_SECONDS') ?: 10)),
+        'compute_idle_sleep_seconds' => max(1, (int) (getenv('SUPPLYCORE_COMPUTE_IDLE_SLEEP_SECONDS') ?: 15)),
+        'sync_idle_sleep_seconds' => max(1, (int) (getenv('SUPPLYCORE_SYNC_IDLE_SLEEP_SECONDS') ?: 8)),
+        'memory_pause_threshold_bytes' => max(134217728, (int) (getenv('SUPPLYCORE_WORKER_MEMORY_PAUSE_THRESHOLD_BYTES') ?: 402653184)),
+        'memory_abort_threshold_bytes' => max(268435456, (int) (getenv('SUPPLYCORE_WORKER_MEMORY_ABORT_THRESHOLD_BYTES') ?: 536870912)),
+        'retry_backoff_seconds' => max(5, (int) (getenv('SUPPLYCORE_WORKER_RETRY_BACKOFF_SECONDS') ?: 30)),
+        'zkill_log_file' => getenv('SUPPLYCORE_ZKILL_LOG_FILE') ?: 'storage/logs/zkill.log',
+        'worker_log_file' => getenv('SUPPLYCORE_WORKER_LOG_FILE') ?: 'storage/logs/worker.log',
+        'compute_log_file' => getenv('SUPPLYCORE_COMPUTE_LOG_FILE') ?: 'storage/logs/compute.log',
+        'pool_state_file' => getenv('SUPPLYCORE_WORKER_POOL_STATE_FILE') ?: 'storage/run/worker-pool-heartbeat.json',
+        'zkill_state_file' => getenv('SUPPLYCORE_ZKILL_STATE_FILE') ?: 'storage/run/zkill-heartbeat.json',
+    ],
 ];
 
 /**

@@ -11784,3 +11784,350 @@ function db_item_priority_snapshot_bulk_insert(array $rows, ?int $chunkSize = nu
         $chunkSize
     );
 }
+
+function db_worker_jobs_ensure_schema(): void
+{
+    db_execute("CREATE TABLE IF NOT EXISTS worker_jobs (
+        id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+        job_key VARCHAR(190) NOT NULL,
+        queue_name VARCHAR(40) NOT NULL DEFAULT 'default',
+        workload_class ENUM('sync', 'compute', 'stream') NOT NULL DEFAULT 'sync',
+        execution_mode ENUM('python', 'php') NOT NULL DEFAULT 'python',
+        priority VARCHAR(20) NOT NULL DEFAULT 'normal',
+        status ENUM('queued', 'running', 'retry', 'completed', 'failed', 'dead') NOT NULL DEFAULT 'queued',
+        unique_key VARCHAR(190) DEFAULT NULL,
+        payload_json LONGTEXT DEFAULT NULL,
+        available_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        locked_at DATETIME DEFAULT NULL,
+        lock_expires_at DATETIME DEFAULT NULL,
+        locked_by VARCHAR(190) DEFAULT NULL,
+        heartbeat_at DATETIME DEFAULT NULL,
+        attempts INT UNSIGNED NOT NULL DEFAULT 0,
+        max_attempts INT UNSIGNED NOT NULL DEFAULT 5,
+        timeout_seconds INT UNSIGNED NOT NULL DEFAULT 300,
+        retry_delay_seconds INT UNSIGNED NOT NULL DEFAULT 30,
+        memory_limit_mb INT UNSIGNED NOT NULL DEFAULT 512,
+        last_error VARCHAR(500) DEFAULT NULL,
+        last_result_json LONGTEXT DEFAULT NULL,
+        last_started_at DATETIME DEFAULT NULL,
+        last_finished_at DATETIME DEFAULT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        UNIQUE KEY uniq_worker_job_unique_key (unique_key),
+        KEY idx_worker_jobs_fetch (queue_name, workload_class, status, available_at, priority, id),
+        KEY idx_worker_jobs_lock (status, lock_expires_at, locked_by),
+        KEY idx_worker_jobs_job_key (job_key, status, available_at),
+        KEY idx_worker_jobs_created (created_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+}
+
+function db_worker_job_definitions(): array
+{
+    static $definitions = null;
+    if (is_array($definitions)) {
+        return $definitions;
+    }
+
+    $definitions = function_exists('worker_job_registry_definitions') ? worker_job_registry_definitions() : [];
+
+    return $definitions;
+}
+
+function db_worker_job_definition(string $jobKey): array
+{
+    $definitions = db_worker_job_definitions();
+
+    return is_array($definitions[$jobKey] ?? null) ? $definitions[$jobKey] : [];
+}
+
+function db_worker_job_queue_due_recurring_jobs(array $jobKeys = []): array
+{
+    db_worker_jobs_ensure_schema();
+
+    $definitions = db_worker_job_definitions();
+    if ($jobKeys !== []) {
+        $definitions = array_intersect_key($definitions, array_fill_keys(array_map('strval', $jobKeys), true));
+    }
+
+    $queued = 0;
+    $skipped = 0;
+    $now = gmdate('Y-m-d H:i:s');
+
+    foreach ($definitions as $jobKey => $definition) {
+        $existing = db_select_one(
+            'SELECT id FROM worker_jobs WHERE job_key = ? AND status IN (\'queued\', \'running\', \'retry\') LIMIT 1',
+            [$jobKey]
+        );
+        if (is_array($existing)) {
+            $skipped++;
+            continue;
+        }
+
+        $intervalSeconds = max(60, (int) ($definition['interval_seconds'] ?? 300));
+        $lastFinished = db_select_one(
+            'SELECT MAX(last_finished_at) AS last_finished_at FROM worker_jobs WHERE job_key = ?',
+            [$jobKey]
+        );
+        $lastFinishedAt = trim((string) ($lastFinished['last_finished_at'] ?? ''));
+        if ($lastFinishedAt !== '') {
+            $nextEligibleAt = gmdate('Y-m-d H:i:s', strtotime($lastFinishedAt . ' UTC') + $intervalSeconds);
+            if ($nextEligibleAt > $now) {
+                $skipped++;
+                continue;
+            }
+        }
+
+        $payload = [
+            'recurring' => true,
+            'interval_seconds' => $intervalSeconds,
+            'queued_at' => gmdate(DATE_ATOM),
+        ];
+        $uniqueKey = 'recurring:' . $jobKey;
+        db_execute(
+            'INSERT INTO worker_jobs (
+                job_key, queue_name, workload_class, execution_mode, priority, status, unique_key,
+                payload_json, available_at, max_attempts, timeout_seconds, retry_delay_seconds, memory_limit_mb
+             ) VALUES (?, ?, ?, ?, ?, \'queued\', ?, ?, UTC_TIMESTAMP(), ?, ?, ?, ?)
+             ON DUPLICATE KEY UPDATE
+                queue_name = VALUES(queue_name),
+                workload_class = VALUES(workload_class),
+                execution_mode = VALUES(execution_mode),
+                priority = VALUES(priority),
+                payload_json = VALUES(payload_json),
+                available_at = CASE
+                    WHEN worker_jobs.status IN (\'completed\', \'failed\', \'dead\') THEN VALUES(available_at)
+                    ELSE worker_jobs.available_at
+                END,
+                status = CASE
+                    WHEN worker_jobs.status IN (\'completed\', \'failed\', \'dead\') THEN \'queued\'
+                    ELSE worker_jobs.status
+                END,
+                last_error = CASE
+                    WHEN worker_jobs.status IN (\'completed\', \'failed\', \'dead\') THEN NULL
+                    ELSE worker_jobs.last_error
+                END,
+                locked_at = CASE WHEN worker_jobs.status IN (\'completed\', \'failed\', \'dead\') THEN NULL ELSE worker_jobs.locked_at END,
+                lock_expires_at = CASE WHEN worker_jobs.status IN (\'completed\', \'failed\', \'dead\') THEN NULL ELSE worker_jobs.lock_expires_at END,
+                locked_by = CASE WHEN worker_jobs.status IN (\'completed\', \'failed\', \'dead\') THEN NULL ELSE worker_jobs.locked_by END,
+                heartbeat_at = CASE WHEN worker_jobs.status IN (\'completed\', \'failed\', \'dead\') THEN NULL ELSE worker_jobs.heartbeat_at END,
+                attempts = CASE WHEN worker_jobs.status IN (\'completed\', \'failed\', \'dead\') THEN 0 ELSE worker_jobs.attempts END,
+                updated_at = CURRENT_TIMESTAMP',
+            [
+                $jobKey,
+                (string) ($definition['queue_name'] ?? 'default'),
+                (string) ($definition['workload_class'] ?? 'sync'),
+                strtolower((string) ($definition['execution_mode'] ?? 'python')) === 'php' ? 'php' : 'python',
+                (string) ($definition['priority'] ?? 'normal'),
+                $uniqueKey,
+                json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE),
+                max(1, (int) ($definition['max_attempts'] ?? 5)),
+                max(30, (int) ($definition['timeout_seconds'] ?? 300)),
+                max(5, (int) ($definition['retry_delay_seconds'] ?? 30)),
+                max(128, (int) ($definition['memory_limit_mb'] ?? 512)),
+            ]
+        );
+        $queued++;
+    }
+
+    return ['queued' => $queued, 'skipped' => $skipped, 'job_count' => count($definitions)];
+}
+
+function db_worker_job_release_expired_claims(): int
+{
+    db_worker_jobs_ensure_schema();
+    $stmt = db()->prepare(
+        "UPDATE worker_jobs
+         SET status = CASE WHEN attempts >= max_attempts THEN 'dead' ELSE 'retry' END,
+             available_at = CASE
+                WHEN attempts >= max_attempts THEN available_at
+                ELSE DATE_ADD(UTC_TIMESTAMP(), INTERVAL retry_delay_seconds SECOND)
+             END,
+             locked_at = NULL,
+             lock_expires_at = NULL,
+             locked_by = NULL,
+             heartbeat_at = NULL,
+             last_error = COALESCE(last_error, 'Worker lease expired before completion.'),
+             last_finished_at = UTC_TIMESTAMP(),
+             updated_at = CURRENT_TIMESTAMP
+         WHERE status = 'running'
+           AND lock_expires_at IS NOT NULL
+           AND lock_expires_at < UTC_TIMESTAMP()"
+    );
+    $stmt->execute();
+
+    return (int) $stmt->rowCount();
+}
+
+function db_worker_job_claim_next(string $workerId, array $queues = [], array $workloadClasses = [], ?int $leaseSeconds = null): ?array
+{
+    db_worker_jobs_ensure_schema();
+    db_worker_job_release_expired_claims();
+
+    $safeWorkerId = mb_substr(trim($workerId), 0, 190);
+    if ($safeWorkerId === '') {
+        return null;
+    }
+
+    $leaseTtl = max(30, min(3600, (int) ($leaseSeconds ?? 300)));
+    $conditions = ["status IN ('queued', 'retry')", 'available_at <= UTC_TIMESTAMP()'];
+    $params = [];
+
+    $queueValues = array_values(array_filter(array_map(static fn ($value): string => trim((string) $value), $queues), static fn (string $value): bool => $value !== ''));
+    if ($queueValues !== []) {
+        $conditions[] = 'queue_name IN (' . implode(',', array_fill(0, count($queueValues), '?')) . ')';
+        array_push($params, ...$queueValues);
+    }
+
+    $classValues = array_values(array_filter(array_map(static fn ($value): string => trim((string) $value), $workloadClasses), static fn (string $value): bool => $value !== ''));
+    if ($classValues !== []) {
+        $conditions[] = 'workload_class IN (' . implode(',', array_fill(0, count($classValues), '?')) . ')';
+        array_push($params, ...$classValues);
+    }
+
+    $sql = "SELECT id
+            FROM worker_jobs
+            WHERE " . implode(' AND ', $conditions) . "
+            ORDER BY
+                CASE priority
+                    WHEN 'highest' THEN 400
+                    WHEN 'high' THEN 300
+                    WHEN 'medium' THEN 200
+                    WHEN 'normal' THEN 100
+                    ELSE 50
+                END DESC,
+                available_at ASC,
+                id ASC
+            LIMIT 1";
+    $candidate = db_select_one($sql, $params);
+    if (!is_array($candidate)) {
+        return null;
+    }
+
+    $jobId = (int) ($candidate['id'] ?? 0);
+    if ($jobId <= 0) {
+        return null;
+    }
+
+    $claimed = db_execute(
+        'UPDATE worker_jobs
+         SET status = \'running\',
+             attempts = attempts + 1,
+             locked_at = UTC_TIMESTAMP(),
+             lock_expires_at = DATE_ADD(UTC_TIMESTAMP(), INTERVAL ? SECOND),
+             heartbeat_at = UTC_TIMESTAMP(),
+             locked_by = ?,
+             last_started_at = UTC_TIMESTAMP(),
+             last_error = NULL,
+             updated_at = CURRENT_TIMESTAMP
+         WHERE id = ?
+           AND status IN (\'queued\', \'retry\')
+         LIMIT 1',
+        [$leaseTtl, $safeWorkerId, $jobId]
+    );
+
+    if (!$claimed) {
+        return null;
+    }
+
+    return db_select_one('SELECT * FROM worker_jobs WHERE id = ? LIMIT 1', [$jobId]);
+}
+
+function db_worker_job_heartbeat(int $jobId, string $workerId, ?int $leaseSeconds = null): bool
+{
+    db_worker_jobs_ensure_schema();
+    if ($jobId <= 0) {
+        return false;
+    }
+
+    $leaseTtl = max(30, min(3600, (int) ($leaseSeconds ?? 300)));
+
+    return db_execute(
+        'UPDATE worker_jobs
+         SET heartbeat_at = UTC_TIMESTAMP(),
+             lock_expires_at = DATE_ADD(UTC_TIMESTAMP(), INTERVAL ? SECOND),
+             updated_at = CURRENT_TIMESTAMP
+         WHERE id = ?
+           AND status = \'running\'
+           AND locked_by = ?
+         LIMIT 1',
+        [$leaseTtl, $jobId, mb_substr(trim($workerId), 0, 190)]
+    );
+}
+
+function db_worker_job_complete(int $jobId, string $workerId, array $result = []): ?array
+{
+    db_worker_jobs_ensure_schema();
+    if ($jobId <= 0) {
+        return null;
+    }
+
+    $status = trim((string) ($result['status'] ?? 'completed'));
+    $safeStatus = in_array($status, ['completed', 'success', 'skipped'], true) ? 'completed' : 'completed';
+    $summary = mb_substr(trim((string) ($result['summary'] ?? 'Worker job completed.')), 0, 500);
+
+    db_execute(
+        'UPDATE worker_jobs
+         SET status = ?,
+             locked_at = NULL,
+             lock_expires_at = NULL,
+             locked_by = NULL,
+             heartbeat_at = NULL,
+             last_error = NULL,
+             last_result_json = ?,
+             last_finished_at = UTC_TIMESTAMP(),
+             updated_at = CURRENT_TIMESTAMP
+         WHERE id = ?
+           AND status = \'running\'
+           AND locked_by = ?
+         LIMIT 1',
+        [$safeStatus, json_encode($result + ['summary' => $summary], JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE), $jobId, mb_substr(trim($workerId), 0, 190)]
+    );
+
+    return db_select_one('SELECT * FROM worker_jobs WHERE id = ? LIMIT 1', [$jobId]);
+}
+
+function db_worker_job_retry(int $jobId, string $workerId, string $error, ?int $retryDelaySeconds = null, array $result = []): ?array
+{
+    db_worker_jobs_ensure_schema();
+    if ($jobId <= 0) {
+        return null;
+    }
+
+    $row = db_select_one('SELECT attempts, max_attempts, retry_delay_seconds FROM worker_jobs WHERE id = ? LIMIT 1', [$jobId]);
+    if (!is_array($row)) {
+        return null;
+    }
+
+    $attempts = (int) ($row['attempts'] ?? 0);
+    $maxAttempts = max(1, (int) ($row['max_attempts'] ?? 1));
+    $nextDelay = max(5, (int) ($retryDelaySeconds ?? (int) ($row['retry_delay_seconds'] ?? 30)));
+    $nextStatus = $attempts >= $maxAttempts ? 'dead' : 'retry';
+
+    db_execute(
+        'UPDATE worker_jobs
+         SET status = ?,
+             available_at = CASE WHEN ? = \'retry\' THEN DATE_ADD(UTC_TIMESTAMP(), INTERVAL ? SECOND) ELSE available_at END,
+             locked_at = NULL,
+             lock_expires_at = NULL,
+             locked_by = NULL,
+             heartbeat_at = NULL,
+             last_error = ?,
+             last_result_json = ?,
+             last_finished_at = UTC_TIMESTAMP(),
+             updated_at = CURRENT_TIMESTAMP
+         WHERE id = ?
+           AND locked_by = ?
+         LIMIT 1',
+        [
+            $nextStatus,
+            $nextStatus,
+            $nextDelay,
+            mb_substr(trim($error), 0, 500),
+            json_encode($result + ['error' => $error], JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE),
+            $jobId,
+            mb_substr(trim($workerId), 0, 190),
+        ]
+    );
+
+    return db_select_one('SELECT * FROM worker_jobs WHERE id = ? LIMIT 1', [$jobId]);
+}

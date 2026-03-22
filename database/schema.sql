@@ -99,6 +99,39 @@ CREATE TABLE IF NOT EXISTS sync_runs (
     KEY idx_sync_runs_created_at (created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+CREATE TABLE IF NOT EXISTS worker_jobs (
+    id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    job_key VARCHAR(190) NOT NULL,
+    queue_name VARCHAR(40) NOT NULL DEFAULT 'default',
+    workload_class ENUM('sync', 'compute', 'stream') NOT NULL DEFAULT 'sync',
+    execution_mode ENUM('python', 'php') NOT NULL DEFAULT 'python',
+    priority VARCHAR(20) NOT NULL DEFAULT 'normal',
+    status ENUM('queued', 'running', 'retry', 'completed', 'failed', 'dead') NOT NULL DEFAULT 'queued',
+    unique_key VARCHAR(190) DEFAULT NULL,
+    payload_json LONGTEXT DEFAULT NULL,
+    available_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    locked_at DATETIME DEFAULT NULL,
+    lock_expires_at DATETIME DEFAULT NULL,
+    locked_by VARCHAR(190) DEFAULT NULL,
+    heartbeat_at DATETIME DEFAULT NULL,
+    attempts INT UNSIGNED NOT NULL DEFAULT 0,
+    max_attempts INT UNSIGNED NOT NULL DEFAULT 5,
+    timeout_seconds INT UNSIGNED NOT NULL DEFAULT 300,
+    retry_delay_seconds INT UNSIGNED NOT NULL DEFAULT 30,
+    memory_limit_mb INT UNSIGNED NOT NULL DEFAULT 512,
+    last_error VARCHAR(500) DEFAULT NULL,
+    last_result_json LONGTEXT DEFAULT NULL,
+    last_started_at DATETIME DEFAULT NULL,
+    last_finished_at DATETIME DEFAULT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uniq_worker_job_unique_key (unique_key),
+    KEY idx_worker_jobs_fetch (queue_name, workload_class, status, available_at, priority, id),
+    KEY idx_worker_jobs_lock (status, lock_expires_at, locked_by),
+    KEY idx_worker_jobs_job_key (job_key, status, available_at),
+    KEY idx_worker_jobs_created (created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 CREATE TABLE IF NOT EXISTS sync_schedules (
     id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
     job_key VARCHAR(190) NOT NULL,

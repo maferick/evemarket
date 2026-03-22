@@ -1,5 +1,5 @@
 [Unit]
-Description=SupplyCore compatibility worker pool service
+Description=SupplyCore %i worker pool
 After=network.target mariadb.service
 Wants=network.target
 
@@ -10,7 +10,7 @@ Group=www-data
 WorkingDirectory=/var/www/SupplyCore
 EnvironmentFile=-/etc/default/supplycore-worker
 Environment=PYTHONUNBUFFERED=1
-ExecStart=/var/www/SupplyCore/.venv-orchestrator/bin/python -m orchestrator worker-pool --app-root /var/www/SupplyCore --queues ${SUPPLYCORE_WORKER_QUEUES:-sync,compute} --workload-classes ${SUPPLYCORE_WORKER_CLASSES:-sync,compute}
+ExecStart=/var/www/SupplyCore/.venv-orchestrator/bin/python -m orchestrator worker-pool --app-root /var/www/SupplyCore --worker-id %H-%i --queues ${SUPPLYCORE_WORKER_QUEUES:-sync,compute} --workload-classes ${SUPPLYCORE_WORKER_CLASSES:-sync,compute}
 Restart=always
 RestartSec=5
 KillSignal=SIGTERM
