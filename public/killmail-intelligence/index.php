@@ -13,6 +13,17 @@ $filters = $data['filters'] ?? [];
 $pagination = $data['pagination'] ?? [];
 $error = $data['error'] ?? null;
 $emptyMessage = (string) ($data['empty_message'] ?? 'No killmails available yet.');
+$lastSyncAt = trim((string) ($status['last_success_at_raw'] ?? ''));
+$lastSyncTimestamp = $lastSyncAt !== '' ? (strtotime($lastSyncAt) ?: null) : null;
+$lastSyncAgeSeconds = $lastSyncTimestamp !== null ? max(0, time() - $lastSyncTimestamp) : null;
+$pageFreshness = supplycore_page_freshness_view_model([
+    'computed_at' => $lastSyncAt !== '' ? $lastSyncAt : null,
+    'freshness_state' => $lastSyncAgeSeconds === null
+        ? 'stale'
+        : ($lastSyncAgeSeconds <= 15 * 60 ? 'fresh' : ($lastSyncAgeSeconds <= 45 * 60 ? 'updating' : 'stale')),
+    'freshness_label' => $lastSyncAt === '' ? 'Awaiting sync' : 'Killmail sync',
+]);
+$liveRefreshConfig = supplycore_live_refresh_page_config('killmail_intelligence');
 
 $queryParams = $_GET;
 $buildPageUrl = static function (int $targetPage) use ($queryParams): string {
@@ -46,7 +57,8 @@ include __DIR__ . '/../../src/views/partials/header.php';
     </div>
 </section>
 
-<section class="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
+<!-- ui-section:killmail-overview-summary:start -->
+<section class="grid gap-4 md:grid-cols-2 xl:grid-cols-5" data-ui-section="killmail-overview-summary">
     <?php foreach ($summary as $card): ?>
         <article class="surface-secondary">
             <p class="text-xs uppercase tracking-[0.2em] text-muted"><?= htmlspecialchars((string) ($card['label'] ?? ''), ENT_QUOTES) ?></p>
@@ -55,8 +67,10 @@ include __DIR__ . '/../../src/views/partials/header.php';
         </article>
     <?php endforeach; ?>
 </section>
+<!-- ui-section:killmail-overview-summary:end -->
 
-<section class="mt-6 grid gap-4 xl:grid-cols-[minmax(0,2fr)_minmax(320px,1fr)]">
+<!-- ui-section:killmail-overview-status:start -->
+<section class="mt-6 grid gap-4 xl:grid-cols-[minmax(0,2fr)_minmax(320px,1fr)]" data-ui-section="killmail-overview-status">
     <article class="surface-secondary">
         <div class="flex items-center justify-between gap-3">
             <h2 class="text-base font-medium text-slate-50">Sync status</h2>
@@ -111,8 +125,10 @@ include __DIR__ . '/../../src/views/partials/header.php';
         </div>
     </article>
 </section>
+<!-- ui-section:killmail-overview-status:end -->
 
-<section class="mt-6 surface-secondary shadow-lg shadow-black/20">
+<!-- ui-section:killmail-overview-table:start -->
+<section class="mt-6 surface-secondary shadow-lg shadow-black/20" data-ui-section="killmail-overview-table">
     <form method="get" action="<?= htmlspecialchars(current_path(), ENT_QUOTES) ?>" class="surface-tertiary">
         <div class="grid gap-4 xl:grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)_minmax(0,1fr)_auto_auto] xl:items-end">
             <label class="block text-sm text-muted">
@@ -247,5 +263,6 @@ include __DIR__ . '/../../src/views/partials/header.php';
         </div>
     </div>
 </section>
+<!-- ui-section:killmail-overview-table:end -->
 
 <?php include __DIR__ . '/../../src/views/partials/footer.php'; ?>

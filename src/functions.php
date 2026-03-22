@@ -9859,6 +9859,7 @@ function killmail_overview_data(): array
                 'ingestion_enabled' => killmail_ingestion_enabled(),
                 'current_cursor' => $cursor !== '' ? $cursor : 'Unavailable',
                 'last_sync_outcome' => killmail_last_sync_outcome_label($latestRun),
+                'last_success_at_raw' => $lastSuccessAt,
                 'last_success_at' => killmail_format_datetime($lastSuccessAt),
                 'last_sync_relative' => killmail_relative_datetime($lastSuccessAt),
                 'last_uploaded_at' => killmail_format_datetime($latestUploadedAt),
@@ -21796,6 +21797,13 @@ function supplycore_ui_refresh_section_version_definitions(): array
                 return supplycore_ui_refresh_version_from_sync_state('killmail_activity_version', [sync_dataset_key_killmail_r2z2_stream()], ['doctrine_activity', 'loss_aware_views'], ['activity-doctrines', 'activity-sidebar', 'activity-items', 'doctrine-fit-history']);
             },
         ],
+        'killmail_overview_version' => [
+            'domains' => ['killmail_overview', 'loss_aware_views'],
+            'ui_sections' => ['killmail-overview-summary', 'killmail-overview-status', 'killmail-overview-table'],
+            'resolver' => static function (): array {
+                return supplycore_ui_refresh_version_from_sync_state('killmail_overview_version', [sync_dataset_key_killmail_r2z2_stream()], ['killmail_overview', 'loss_aware_views'], ['killmail-overview-summary', 'killmail-overview-status', 'killmail-overview-table']);
+            },
+        ],
     ];
 }
 
@@ -21803,9 +21811,9 @@ function supplycore_ui_refresh_job_domain_map(): array
 {
     return [
         'killmail_r2z2_sync' => [
-            'domains' => ['doctrine_activity', 'loss_aware_views', 'activity_priority'],
-            'ui_sections' => ['activity-doctrines', 'activity-sidebar', 'activity-items', 'doctrine-fit-history'],
-            'version_keys' => ['killmail_activity_version', 'activity_priority_version'],
+            'domains' => ['doctrine_activity', 'loss_aware_views', 'activity_priority', 'killmail_overview'],
+            'ui_sections' => ['activity-doctrines', 'activity-sidebar', 'activity-items', 'doctrine-fit-history', 'killmail-overview-summary', 'killmail-overview-status', 'killmail-overview-table'],
+            'version_keys' => ['killmail_activity_version', 'activity_priority_version', 'killmail_overview_version'],
         ],
         'alliance_current_sync' => [
             'domains' => ['alliance_stock', 'doctrine_readiness', 'fit_availability', 'buyall'],
@@ -22192,6 +22200,18 @@ function supplycore_live_refresh_page_registry(): array
             'version_keys' => ['market_comparison_version', 'alliance_stock_version', 'market_prices_version'],
             'sections' => [
                 'price-deviations-main' => ['version_keys' => ['market_comparison_version', 'alliance_stock_version', 'market_prices_version']],
+            ],
+        ],
+        'killmail_intelligence' => [
+            'path' => '/killmail-intelligence/index.php',
+            'public_path' => '/killmail-intelligence',
+            'script' => dirname(__DIR__) . '/public/killmail-intelligence/index.php',
+            'domains' => ['killmail_overview', 'loss_aware_views'],
+            'version_keys' => ['killmail_overview_version'],
+            'sections' => [
+                'killmail-overview-summary' => ['version_keys' => ['killmail_overview_version']],
+                'killmail-overview-status' => ['version_keys' => ['killmail_overview_version']],
+                'killmail-overview-table' => ['version_keys' => ['killmail_overview_version']],
             ],
         ],
     ];
