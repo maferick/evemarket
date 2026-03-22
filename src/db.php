@@ -2350,11 +2350,301 @@ function db_market_orders_history_bulk_insert(array $orders, ?int $chunkSize = n
     });
 }
 
+function db_market_snapshot_rollup_table_name(string $resolution): string
+{
+    return match ($resolution) {
+        '1h' => 'market_order_snapshot_rollup_1h',
+        '1d' => 'market_order_snapshot_rollup_1d',
+        default => throw new InvalidArgumentException('Unsupported market snapshot rollup resolution: ' . $resolution),
+    };
+}
+
+function db_market_snapshot_rollups_ensure(): void
+{
+    db_execute(
+        "CREATE TABLE IF NOT EXISTS market_order_snapshot_rollup_1h (
+            bucket_start DATETIME NOT NULL,
+            source_type ENUM('market_hub', 'alliance_structure') NOT NULL,
+            source_id BIGINT UNSIGNED NOT NULL,
+            type_id INT UNSIGNED NOT NULL,
+            sample_count INT UNSIGNED NOT NULL DEFAULT 0,
+            first_observed_at DATETIME DEFAULT NULL,
+            last_observed_at DATETIME DEFAULT NULL,
+            best_sell_price_min DECIMAL(20, 2) DEFAULT NULL,
+            best_sell_price_max DECIMAL(20, 2) DEFAULT NULL,
+            best_sell_price_sample_count INT UNSIGNED NOT NULL DEFAULT 0,
+            best_sell_price_sum DECIMAL(24, 2) NOT NULL DEFAULT 0.00,
+            best_sell_price_last DECIMAL(20, 2) DEFAULT NULL,
+            best_buy_price_min DECIMAL(20, 2) DEFAULT NULL,
+            best_buy_price_max DECIMAL(20, 2) DEFAULT NULL,
+            best_buy_price_sample_count INT UNSIGNED NOT NULL DEFAULT 0,
+            best_buy_price_sum DECIMAL(24, 2) NOT NULL DEFAULT 0.00,
+            best_buy_price_last DECIMAL(20, 2) DEFAULT NULL,
+            total_buy_volume_sum BIGINT UNSIGNED NOT NULL DEFAULT 0,
+            total_sell_volume_sum BIGINT UNSIGNED NOT NULL DEFAULT 0,
+            total_volume_sum BIGINT UNSIGNED NOT NULL DEFAULT 0,
+            buy_order_count_sum BIGINT UNSIGNED NOT NULL DEFAULT 0,
+            sell_order_count_sum BIGINT UNSIGNED NOT NULL DEFAULT 0,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            PRIMARY KEY (bucket_start, source_type, source_id, type_id),
+            KEY idx_market_order_snapshot_rollup_1h_source_bucket (source_type, source_id, bucket_start),
+            KEY idx_market_order_snapshot_rollup_1h_bucket_type (bucket_start, type_id),
+            KEY idx_market_order_snapshot_rollup_1h_type_bucket (type_id, bucket_start)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"
+    );
+
+    db_execute(
+        "CREATE TABLE IF NOT EXISTS market_order_snapshot_rollup_1d (
+            bucket_start DATE NOT NULL,
+            source_type ENUM('market_hub', 'alliance_structure') NOT NULL,
+            source_id BIGINT UNSIGNED NOT NULL,
+            type_id INT UNSIGNED NOT NULL,
+            sample_count INT UNSIGNED NOT NULL DEFAULT 0,
+            first_observed_at DATETIME DEFAULT NULL,
+            last_observed_at DATETIME DEFAULT NULL,
+            best_sell_price_min DECIMAL(20, 2) DEFAULT NULL,
+            best_sell_price_max DECIMAL(20, 2) DEFAULT NULL,
+            best_sell_price_sample_count INT UNSIGNED NOT NULL DEFAULT 0,
+            best_sell_price_sum DECIMAL(24, 2) NOT NULL DEFAULT 0.00,
+            best_sell_price_last DECIMAL(20, 2) DEFAULT NULL,
+            best_buy_price_min DECIMAL(20, 2) DEFAULT NULL,
+            best_buy_price_max DECIMAL(20, 2) DEFAULT NULL,
+            best_buy_price_sample_count INT UNSIGNED NOT NULL DEFAULT 0,
+            best_buy_price_sum DECIMAL(24, 2) NOT NULL DEFAULT 0.00,
+            best_buy_price_last DECIMAL(20, 2) DEFAULT NULL,
+            total_buy_volume_sum BIGINT UNSIGNED NOT NULL DEFAULT 0,
+            total_sell_volume_sum BIGINT UNSIGNED NOT NULL DEFAULT 0,
+            total_volume_sum BIGINT UNSIGNED NOT NULL DEFAULT 0,
+            buy_order_count_sum BIGINT UNSIGNED NOT NULL DEFAULT 0,
+            sell_order_count_sum BIGINT UNSIGNED NOT NULL DEFAULT 0,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            PRIMARY KEY (bucket_start, source_type, source_id, type_id),
+            KEY idx_market_order_snapshot_rollup_1d_source_bucket (source_type, source_id, bucket_start),
+            KEY idx_market_order_snapshot_rollup_1d_bucket_type (bucket_start, type_id),
+            KEY idx_market_order_snapshot_rollup_1d_type_bucket (type_id, bucket_start)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"
+    );
+}
+
+function db_market_snapshot_rollup_normalize_row(string $resolution, array $row): array
+{
+    $bucketStart = trim((string) ($row['bucket_start'] ?? ''));
+    if ($bucketStart !== '') {
+        $bucketStart = $resolution === '1d'
+            ? gmdate('Y-m-d', strtotime($bucketStart) ?: time())
+            : normalize_to_hour_bucket($bucketStart);
+    }
+
+    return [
+        'bucket_start' => $bucketStart,
+        'source_type' => trim((string) ($row['source_type'] ?? '')),
+        'source_id' => max(0, (int) ($row['source_id'] ?? 0)),
+        'type_id' => max(0, (int) ($row['type_id'] ?? 0)),
+        'sample_count' => max(0, (int) ($row['sample_count'] ?? 0)),
+        'first_observed_at' => isset($row['first_observed_at']) && trim((string) $row['first_observed_at']) !== '' ? trim((string) $row['first_observed_at']) : null,
+        'last_observed_at' => isset($row['last_observed_at']) && trim((string) $row['last_observed_at']) !== '' ? trim((string) $row['last_observed_at']) : null,
+        'best_sell_price_min' => isset($row['best_sell_price_min']) && $row['best_sell_price_min'] !== null ? (float) $row['best_sell_price_min'] : null,
+        'best_sell_price_max' => isset($row['best_sell_price_max']) && $row['best_sell_price_max'] !== null ? (float) $row['best_sell_price_max'] : null,
+        'best_sell_price_sample_count' => max(0, (int) ($row['best_sell_price_sample_count'] ?? 0)),
+        'best_sell_price_sum' => round((float) ($row['best_sell_price_sum'] ?? 0), 2),
+        'best_sell_price_last' => isset($row['best_sell_price_last']) && $row['best_sell_price_last'] !== null ? (float) $row['best_sell_price_last'] : null,
+        'best_buy_price_min' => isset($row['best_buy_price_min']) && $row['best_buy_price_min'] !== null ? (float) $row['best_buy_price_min'] : null,
+        'best_buy_price_max' => isset($row['best_buy_price_max']) && $row['best_buy_price_max'] !== null ? (float) $row['best_buy_price_max'] : null,
+        'best_buy_price_sample_count' => max(0, (int) ($row['best_buy_price_sample_count'] ?? 0)),
+        'best_buy_price_sum' => round((float) ($row['best_buy_price_sum'] ?? 0), 2),
+        'best_buy_price_last' => isset($row['best_buy_price_last']) && $row['best_buy_price_last'] !== null ? (float) $row['best_buy_price_last'] : null,
+        'total_buy_volume_sum' => max(0, (int) ($row['total_buy_volume_sum'] ?? 0)),
+        'total_sell_volume_sum' => max(0, (int) ($row['total_sell_volume_sum'] ?? 0)),
+        'total_volume_sum' => max(0, (int) ($row['total_volume_sum'] ?? 0)),
+        'buy_order_count_sum' => max(0, (int) ($row['buy_order_count_sum'] ?? 0)),
+        'sell_order_count_sum' => max(0, (int) ($row['sell_order_count_sum'] ?? 0)),
+    ];
+}
+
+function db_market_snapshot_rollup_rows_from_summary(string $resolution, array $summaryRows): array
+{
+    db_market_snapshot_rollup_table_name($resolution);
+
+    $rollups = [];
+
+    foreach ($summaryRows as $summaryRow) {
+        $normalized = db_market_order_snapshots_summary_normalize_row($summaryRow);
+        if ($normalized['source_type'] === ''
+            || $normalized['source_id'] <= 0
+            || $normalized['type_id'] <= 0
+            || $normalized['observed_at'] === ''
+        ) {
+            continue;
+        }
+
+        $bucketStart = $resolution === '1d'
+            ? gmdate('Y-m-d', strtotime($normalized['observed_at']) ?: time())
+            : normalize_to_hour_bucket($normalized['observed_at']);
+        $key = implode(':', [$bucketStart, $normalized['source_type'], $normalized['source_id'], $normalized['type_id']]);
+
+        if (!isset($rollups[$key])) {
+            $rollups[$key] = [
+                'bucket_start' => $bucketStart,
+                'source_type' => $normalized['source_type'],
+                'source_id' => $normalized['source_id'],
+                'type_id' => $normalized['type_id'],
+                'sample_count' => 0,
+                'first_observed_at' => $normalized['observed_at'],
+                'last_observed_at' => $normalized['observed_at'],
+                'best_sell_price_min' => null,
+                'best_sell_price_max' => null,
+                'best_sell_price_sample_count' => 0,
+                'best_sell_price_sum' => 0.0,
+                'best_sell_price_last' => null,
+                'best_buy_price_min' => null,
+                'best_buy_price_max' => null,
+                'best_buy_price_sample_count' => 0,
+                'best_buy_price_sum' => 0.0,
+                'best_buy_price_last' => null,
+                'total_buy_volume_sum' => 0,
+                'total_sell_volume_sum' => 0,
+                'total_volume_sum' => 0,
+                'buy_order_count_sum' => 0,
+                'sell_order_count_sum' => 0,
+            ];
+        }
+
+        $rollup = &$rollups[$key];
+        $rollup['sample_count']++;
+        if (strcmp($normalized['observed_at'], (string) $rollup['first_observed_at']) < 0) {
+            $rollup['first_observed_at'] = $normalized['observed_at'];
+        }
+        if (strcmp($normalized['observed_at'], (string) $rollup['last_observed_at']) >= 0) {
+            $rollup['last_observed_at'] = $normalized['observed_at'];
+            $rollup['best_sell_price_last'] = $normalized['best_sell_price'];
+            $rollup['best_buy_price_last'] = $normalized['best_buy_price'];
+        }
+
+        if ($normalized['best_sell_price'] !== null) {
+            $rollup['best_sell_price_min'] = $rollup['best_sell_price_min'] === null
+                ? $normalized['best_sell_price']
+                : min((float) $rollup['best_sell_price_min'], (float) $normalized['best_sell_price']);
+            $rollup['best_sell_price_max'] = $rollup['best_sell_price_max'] === null
+                ? $normalized['best_sell_price']
+                : max((float) $rollup['best_sell_price_max'], (float) $normalized['best_sell_price']);
+            $rollup['best_sell_price_sample_count']++;
+            $rollup['best_sell_price_sum'] += (float) $normalized['best_sell_price'];
+        }
+
+        if ($normalized['best_buy_price'] !== null) {
+            $rollup['best_buy_price_min'] = $rollup['best_buy_price_min'] === null
+                ? $normalized['best_buy_price']
+                : min((float) $rollup['best_buy_price_min'], (float) $normalized['best_buy_price']);
+            $rollup['best_buy_price_max'] = $rollup['best_buy_price_max'] === null
+                ? $normalized['best_buy_price']
+                : max((float) $rollup['best_buy_price_max'], (float) $normalized['best_buy_price']);
+            $rollup['best_buy_price_sample_count']++;
+            $rollup['best_buy_price_sum'] += (float) $normalized['best_buy_price'];
+        }
+
+        $rollup['total_buy_volume_sum'] += $normalized['total_buy_volume'];
+        $rollup['total_sell_volume_sum'] += $normalized['total_sell_volume'];
+        $rollup['total_volume_sum'] += $normalized['total_volume'];
+        $rollup['buy_order_count_sum'] += $normalized['buy_order_count'];
+        $rollup['sell_order_count_sum'] += $normalized['sell_order_count'];
+        unset($rollup);
+    }
+
+    return array_values(array_map(
+        static function (array $row): array {
+            $row['best_sell_price_sum'] = round((float) $row['best_sell_price_sum'], 2);
+            $row['best_buy_price_sum'] = round((float) $row['best_buy_price_sum'], 2);
+
+            return $row;
+        },
+        $rollups
+    ));
+}
+
+function db_market_snapshot_rollup_bulk_upsert(string $resolution, array $rows, ?int $chunkSize = null): int
+{
+    db_market_snapshot_rollups_ensure();
+
+    $table = db_market_snapshot_rollup_table_name($resolution);
+    $normalizedRows = [];
+
+    foreach ($rows as $row) {
+        $normalized = db_market_snapshot_rollup_normalize_row($resolution, $row);
+        if ($normalized['bucket_start'] === ''
+            || $normalized['source_type'] === ''
+            || $normalized['source_id'] <= 0
+            || $normalized['type_id'] <= 0
+        ) {
+            continue;
+        }
+
+        $normalizedRows[] = $normalized;
+    }
+
+    return db_bulk_insert_or_upsert(
+        $table,
+        [
+            'bucket_start',
+            'source_type',
+            'source_id',
+            'type_id',
+            'sample_count',
+            'first_observed_at',
+            'last_observed_at',
+            'best_sell_price_min',
+            'best_sell_price_max',
+            'best_sell_price_sample_count',
+            'best_sell_price_sum',
+            'best_sell_price_last',
+            'best_buy_price_min',
+            'best_buy_price_max',
+            'best_buy_price_sample_count',
+            'best_buy_price_sum',
+            'best_buy_price_last',
+            'total_buy_volume_sum',
+            'total_sell_volume_sum',
+            'total_volume_sum',
+            'buy_order_count_sum',
+            'sell_order_count_sum',
+        ],
+        $normalizedRows,
+        [
+            'sample_count',
+            'first_observed_at',
+            'last_observed_at',
+            'best_sell_price_min',
+            'best_sell_price_max',
+            'best_sell_price_sample_count',
+            'best_sell_price_sum',
+            'best_sell_price_last',
+            'best_buy_price_min',
+            'best_buy_price_max',
+            'best_buy_price_sample_count',
+            'best_buy_price_sum',
+            'best_buy_price_last',
+            'total_buy_volume_sum',
+            'total_sell_volume_sum',
+            'total_volume_sum',
+            'buy_order_count_sum',
+            'sell_order_count_sum',
+        ],
+        $chunkSize
+    );
+}
+
 function db_market_snapshot_optimization_ensure(): void
 {
+    // Keep market_order_snapshots_summary on retention-only behavior for the
+    // immediate release. Older windows should move into the additive 1h/1d
+    // rollup tables, and only then should we reconsider partitioning if growth
+    // remains problematic after current-state + compact-summary reads absorb the
+    // hot operational traffic.
     db_ensure_table_index(db_market_orders_history_legacy_table(), 'idx_market_orders_history_observed_at', 'INDEX idx_market_orders_history_observed_at (observed_at)');
     db_market_orders_history_partitioned_schema_ensure();
     db_ensure_table_index('market_order_snapshots_summary', 'idx_snapshot_summary_observed', 'INDEX idx_snapshot_summary_observed (observed_at)');
+    db_market_snapshot_rollups_ensure();
 }
 
 function db_market_source_snapshot_state_ensure(): void
@@ -3581,9 +3871,11 @@ function db_market_orders_history_stock_health_series(
 function db_market_orders_current_source_aggregates(string $sourceType, int $sourceId, array $typeIds = []): array
 {
     $params = [$sourceType, $sourceId];
+    $summaryParams = [$sourceType, $sourceId];
     $typeFilterSql = '';
     $rawTypeFilterSql = '';
     $state = db_market_source_snapshot_state_get($sourceType, $sourceId);
+    $latestCurrentObservedAt = trim((string) ($state['latest_current_observed_at'] ?? ''));
     $latestSummaryObservedAt = trim((string) ($state['latest_summary_observed_at'] ?? ''));
 
     if ($typeIds !== []) {
@@ -3596,9 +3888,82 @@ function db_market_orders_current_source_aggregates(string $sourceType, int $sou
         $typeFilterSql = " AND moss.type_id IN ({$typePlaceholders})";
         $rawTypeFilterSql = " AND moc.type_id IN ({$typePlaceholders})";
         $params = array_merge($params, $normalizedTypeIds);
+        $summaryParams = array_merge($summaryParams, $normalizedTypeIds);
     }
 
+    // Operational pages should prefer current-state projections first, summary
+    // rows second, and deep history last. `market_orders_current` is therefore
+    // the first source for source/type aggregates, with the summary table kept
+    // as the compact fallback once hot reads have moved off older windows.
     $rows = [];
+    if ($latestCurrentObservedAt !== '') {
+        $rows = db_select_cached(
+            "SELECT
+                moc.type_id,
+                rit.type_name,
+                MIN(CASE WHEN moc.is_buy_order = 0 AND moc.volume_remain > 0 THEN moc.price END) AS best_sell_price,
+                MAX(CASE WHEN moc.is_buy_order = 1 AND moc.volume_remain > 0 THEN moc.price END) AS best_buy_price,
+                COALESCE(SUM(CASE WHEN moc.is_buy_order = 0 THEN moc.volume_remain ELSE 0 END), 0) AS total_sell_volume,
+                COALESCE(SUM(CASE WHEN moc.is_buy_order = 1 THEN moc.volume_remain ELSE 0 END), 0) AS total_buy_volume,
+                COALESCE(SUM(CASE WHEN moc.is_buy_order = 0 THEN 1 ELSE 0 END), 0) AS sell_order_count,
+                COALESCE(SUM(CASE WHEN moc.is_buy_order = 1 THEN 1 ELSE 0 END), 0) AS buy_order_count,
+                MAX(moc.observed_at) AS last_observed_at
+             FROM market_orders_current moc
+             LEFT JOIN ref_item_types rit ON rit.type_id = moc.type_id
+             WHERE moc.source_type = ?
+               AND moc.source_id = ?
+               AND moc.observed_at = ?{$rawTypeFilterSql}
+             GROUP BY moc.type_id, rit.type_name
+             ORDER BY moc.type_id ASC",
+            [$sourceType, $sourceId, $latestCurrentObservedAt, ...array_slice($params, 2)],
+            60,
+            'market.current.current-aggregates'
+        );
+    }
+
+    if ($rows === []) {
+        $rows = db_select(
+            "SELECT
+                moc.type_id,
+                rit.type_name,
+                MIN(CASE WHEN moc.is_buy_order = 0 AND moc.volume_remain > 0 THEN moc.price END) AS best_sell_price,
+                MAX(CASE WHEN moc.is_buy_order = 1 AND moc.volume_remain > 0 THEN moc.price END) AS best_buy_price,
+                COALESCE(SUM(CASE WHEN moc.is_buy_order = 0 THEN moc.volume_remain ELSE 0 END), 0) AS total_sell_volume,
+                COALESCE(SUM(CASE WHEN moc.is_buy_order = 1 THEN moc.volume_remain ELSE 0 END), 0) AS total_buy_volume,
+                COALESCE(SUM(CASE WHEN moc.is_buy_order = 0 THEN 1 ELSE 0 END), 0) AS sell_order_count,
+                COALESCE(SUM(CASE WHEN moc.is_buy_order = 1 THEN 1 ELSE 0 END), 0) AS buy_order_count,
+                MAX(moc.observed_at) AS last_observed_at
+             FROM market_orders_current moc
+             LEFT JOIN ref_item_types rit ON rit.type_id = moc.type_id
+             WHERE moc.source_type = ?
+               AND moc.source_id = ?
+               AND moc.observed_at = (
+                    SELECT MAX(current_latest.observed_at)
+                    FROM market_orders_current current_latest
+                    WHERE current_latest.source_type = ?
+                      AND current_latest.source_id = ?
+               ){$rawTypeFilterSql}
+             GROUP BY moc.type_id, rit.type_name
+             ORDER BY moc.type_id ASC",
+            [$sourceType, $sourceId, $sourceType, $sourceId, ...array_slice($params, 2)]
+        );
+    }
+
+    if ($rows !== []) {
+        $resolvedLatestCurrentObservedAt = trim((string) ($rows[0]['last_observed_at'] ?? ''));
+        if ($resolvedLatestCurrentObservedAt !== '') {
+            db_market_source_snapshot_state_upsert([
+                'source_type' => $sourceType,
+                'source_id' => $sourceId,
+                'latest_current_observed_at' => $resolvedLatestCurrentObservedAt,
+                'current_distinct_type_count' => count($rows),
+                'last_synced_at' => $resolvedLatestCurrentObservedAt,
+            ]);
+        }
+
+        return $rows;
+    }
+
     if ($latestSummaryObservedAt !== '') {
         $rows = db_select_cached(
             "SELECT
@@ -3617,34 +3982,7 @@ function db_market_orders_current_source_aggregates(string $sourceType, int $sou
                AND moss.source_id = ?
                AND moss.observed_at = ?{$typeFilterSql}
              ORDER BY moss.type_id ASC",
-            [$sourceType, $sourceId, $latestSummaryObservedAt, ...array_slice($params, 2)],
-            60,
-            'market.snapshot.current-aggregates'
-        );
-    } else {
-        $rows = db_select_cached(
-            "SELECT
-                moss.type_id,
-                rit.type_name,
-                moss.best_sell_price,
-                moss.best_buy_price,
-                moss.total_sell_volume,
-                moss.total_buy_volume,
-                moss.sell_order_count,
-                moss.buy_order_count,
-                moss.observed_at AS last_observed_at
-             FROM market_order_snapshots_summary moss
-             LEFT JOIN ref_item_types rit ON rit.type_id = moss.type_id
-             WHERE moss.source_type = ?
-               AND moss.source_id = ?
-               AND moss.observed_at = (
-                    SELECT MAX(summary_latest.observed_at)
-                    FROM market_order_snapshots_summary summary_latest
-                    WHERE summary_latest.source_type = ?
-                      AND summary_latest.source_id = ?
-               ){$typeFilterSql}
-             ORDER BY moss.type_id ASC",
-            [$sourceType, $sourceId, $sourceType, $sourceId, ...array_slice($params, 2)],
+            [$sourceType, $sourceId, $latestSummaryObservedAt, ...array_slice($summaryParams, 2)],
             60,
             'market.snapshot.current-aggregates'
         );
@@ -3653,40 +3991,33 @@ function db_market_orders_current_source_aggregates(string $sourceType, int $sou
     if ($rows !== []) {
         return $rows;
     }
-    $rows = db_select(
+
+    return db_select_cached(
         "SELECT
-            moc.type_id,
+            moss.type_id,
             rit.type_name,
-            MIN(CASE WHEN moc.is_buy_order = 0 AND moc.volume_remain > 0 THEN moc.price END) AS best_sell_price,
-            MAX(CASE WHEN moc.is_buy_order = 1 AND moc.volume_remain > 0 THEN moc.price END) AS best_buy_price,
-            COALESCE(SUM(CASE WHEN moc.is_buy_order = 0 THEN moc.volume_remain ELSE 0 END), 0) AS total_sell_volume,
-            COALESCE(SUM(CASE WHEN moc.is_buy_order = 1 THEN moc.volume_remain ELSE 0 END), 0) AS total_buy_volume,
-            COALESCE(SUM(CASE WHEN moc.is_buy_order = 0 THEN 1 ELSE 0 END), 0) AS sell_order_count,
-            COALESCE(SUM(CASE WHEN moc.is_buy_order = 1 THEN 1 ELSE 0 END), 0) AS buy_order_count,
-            MAX(moc.observed_at) AS last_observed_at
-         FROM market_orders_current moc
-         LEFT JOIN ref_item_types rit ON rit.type_id = moc.type_id
-         WHERE moc.source_type = ?
-           AND moc.source_id = ?{$rawTypeFilterSql}
-         GROUP BY moc.type_id, rit.type_name
-         ORDER BY moc.type_id ASC",
-        $params
+            moss.best_sell_price,
+            moss.best_buy_price,
+            moss.total_sell_volume,
+            moss.total_buy_volume,
+            moss.sell_order_count,
+            moss.buy_order_count,
+            moss.observed_at AS last_observed_at
+         FROM market_order_snapshots_summary moss
+         LEFT JOIN ref_item_types rit ON rit.type_id = moss.type_id
+         WHERE moss.source_type = ?
+           AND moss.source_id = ?
+           AND moss.observed_at = (
+                SELECT MAX(summary_latest.observed_at)
+                FROM market_order_snapshots_summary summary_latest
+                WHERE summary_latest.source_type = ?
+                  AND summary_latest.source_id = ?
+           ){$typeFilterSql}
+         ORDER BY moss.type_id ASC",
+        [$sourceType, $sourceId, $sourceType, $sourceId, ...array_slice($summaryParams, 2)],
+        60,
+        'market.snapshot.current-aggregates'
     );
-
-    if ($rows !== []) {
-        $latestCurrentObservedAt = trim((string) ($rows[0]['last_observed_at'] ?? ''));
-        if ($latestCurrentObservedAt !== '') {
-            db_market_source_snapshot_state_upsert([
-                'source_type' => $sourceType,
-                'source_id' => $sourceId,
-                'latest_current_observed_at' => $latestCurrentObservedAt,
-                'current_distinct_type_count' => count($rows),
-                'last_synced_at' => $latestCurrentObservedAt,
-            ]);
-        }
-    }
-
-    return $rows;
 }
 
 function db_market_orders_current_alliance_vs_reference_aggregates(int $allianceStructureId, int $referenceSourceId, array $typeIds = []): array
