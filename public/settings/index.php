@@ -1747,32 +1747,35 @@ include __DIR__ . '/../../src/views/partials/header.php';
                     </div>
 
                     <div>
-                        <p class="text-sm text-slate-100">Business configuration</p>
-                        <p class="mt-1 text-xs text-muted">Use this area to choose how aggressively SupplyCore refreshes data and recovers from delays.</p>
+                        <p class="text-sm text-slate-100">Continuous worker runtime</p>
+                        <p class="mt-1 text-xs text-muted">The Python worker pool owns recurring cadence, retries, and schedule rows now. This page saves sync behavior settings, while the cards below show the currently active runtime profile.</p>
                     </div>
 
-                    <div class="rounded-xl border border-border bg-black/20 p-4">
+                    <div class="rounded-xl border border-border bg-black/20 p-4 space-y-4">
                         <div class="flex flex-wrap items-start justify-between gap-3">
                             <div>
-                                <p class="text-sm text-slate-100">Update profile</p>
-                                <p class="mt-1 text-xs text-muted">Profiles control how quickly updates run without surfacing every runtime knob.</p>
+                                <p class="text-sm text-slate-100">Active runtime profile</p>
+                                <p class="mt-1 text-xs text-muted">Profile registration happens automatically from code/bootstrap, so there is nothing to save manually here anymore.</p>
                             </div>
                             <span class="inline-flex items-center rounded-full border border-cyan-400/30 bg-cyan-500/10 px-3 py-1 text-xs font-medium uppercase tracking-[0.16em] text-cyan-100"><?= htmlspecialchars($selectedProfile, ENT_QUOTES) ?></span>
                         </div>
-                        <div class="mt-4 grid gap-3 lg:grid-cols-3">
+                        <div class="grid gap-3 lg:grid-cols-3">
                             <?php foreach ($profileOptions as $profileValue => $profileMeta): ?>
-                                <label class="rounded-xl border p-4 text-sm <?= $selectedProfile === $profileValue ? 'border-cyan-400/40 bg-cyan-500/10' : 'border-border bg-black/30' ?>">
-                                    <div class="flex items-start gap-3">
-                                        <input type="radio" name="scheduler_operational_profile" value="<?= htmlspecialchars($profileValue, ENT_QUOTES) ?>" <?= $selectedProfile === $profileValue ? 'checked' : '' ?> class="mt-1 size-4 border-border bg-black text-cyan-300">
-                                        <div>
+                                <?php $isActiveProfile = $selectedProfile === $profileValue; ?>
+                                <div class="rounded-xl border p-4 text-sm <?= $isActiveProfile ? 'border-cyan-400/40 bg-cyan-500/10' : 'border-border bg-black/30' ?>">
+                                    <div>
+                                        <div class="flex items-center justify-between gap-3">
                                             <p class="font-medium text-slate-100"><?= htmlspecialchars((string) ($profileMeta['label'] ?? ucfirst($profileValue)), ENT_QUOTES) ?></p>
-                                            <p class="mt-1 text-xs text-muted"><?= htmlspecialchars((string) ($profileMeta['description'] ?? ''), ENT_QUOTES) ?></p>
+                                            <?php if ($isActiveProfile): ?>
+                                                <span class="inline-flex items-center rounded-full border border-cyan-400/30 bg-cyan-500/10 px-2 py-0.5 text-[11px] font-medium uppercase tracking-[0.14em] text-cyan-100">active</span>
+                                            <?php endif; ?>
                                         </div>
+                                        <p class="mt-1 text-xs text-muted"><?= htmlspecialchars((string) ($profileMeta['description'] ?? ''), ENT_QUOTES) ?></p>
                                     </div>
-                                </label>
+                                </div>
                             <?php endforeach; ?>
                         </div>
-                        <div class="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4 text-sm">
+                        <div class="grid gap-3 md:grid-cols-2 xl:grid-cols-4 text-sm">
                             <div class="rounded-lg border border-border bg-black/30 p-3"><p class="text-xs uppercase tracking-[0.16em] text-muted">Auto concurrency</p><p class="mt-2 font-semibold text-white"><?= (int) ($profileRuntime['max_concurrent_jobs'] ?? 0) ?> workers</p></div>
                             <div class="rounded-lg border border-border bg-black/30 p-3"><p class="text-xs uppercase tracking-[0.16em] text-muted">CPU budget</p><p class="mt-2 font-semibold text-white"><?= htmlspecialchars(number_format((float) ($profileRuntime['cpu_budget_percent'] ?? 0), 0), ENT_QUOTES) ?>%</p></div>
                             <div class="rounded-lg border border-border bg-black/30 p-3"><p class="text-xs uppercase tracking-[0.16em] text-muted">Daemon poll</p><p class="mt-2 font-semibold text-white"><?= (int) ($profileRuntime['daemon_poll_interval_seconds'] ?? 0) ?>s idle · <?= (int) ($profileRuntime['daemon_running_poll_interval_seconds'] ?? 0) ?>s active</p></div>
@@ -2156,7 +2159,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                 <div class="space-y-3">
                     <div>
                         <p class="text-sm text-muted">Pipeline toggles</p>
-                        <p class="mt-1 text-xs text-muted">Use these defaults to keep related sync pipelines enabled alongside the scheduler cadence above.</p>
+                        <p class="mt-1 text-xs text-muted">Use these defaults to keep related sync pipelines enabled alongside the continuous worker automation shown above.</p>
                     </div>
                     <label class="flex items-center gap-3 rounded-lg border border-border bg-black/20 p-3">
                         <input type="hidden" name="alliance_current_pipeline_enabled" value="0">

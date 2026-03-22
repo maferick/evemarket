@@ -6093,37 +6093,20 @@ function scheduler_apply_operational_profile(string $profile): bool
     return true;
 }
 
-function save_data_sync_schedule_settings(array $request): bool
-{
-    return scheduler_apply_operational_profile((string) ($request['scheduler_operational_profile'] ?? 'medium'));
-}
-
 function save_data_sync_settings(array $request): array
 {
     $settingsSaved = save_settings(data_sync_settings_from_request($request));
-    $schedulesSaved = save_data_sync_schedule_settings($request);
-
-    if ($settingsSaved && $schedulesSaved) {
-        return ['ok' => true, 'message' => 'Settings saved successfully.'];
-    }
 
     if ($settingsSaved) {
         return [
-            'ok' => false,
-            'message' => 'Core sync settings were saved, but the scheduler registry could not be updated. If this keeps happening, apply the latest database schema update and try again.',
-        ];
-    }
-
-    if ($schedulesSaved) {
-        return [
-            'ok' => false,
-            'message' => 'The scheduler profile was applied, but the core sync settings could not be saved to app_settings.',
+            'ok' => true,
+            'message' => 'Settings saved successfully. Continuous worker services keep their own recurring job registry, so this page now saves only the shared app settings used by sync jobs.',
         ];
     }
 
     return [
         'ok' => false,
-        'message' => 'Settings were not persisted. Please verify the database schema is up to date and that the web app can write to the SupplyCore tables.',
+        'message' => 'Settings were not persisted. Please verify the database schema is up to date and that the web app can write to app_settings.',
     ];
 }
 

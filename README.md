@@ -541,7 +541,7 @@ mysql -u "$DB_USERNAME" -p"$DB_PASSWORD" -h "$DB_HOST" -P "$DB_PORT" "$DB_DATABA
 
 ### Migration note (old per-job crontabs)
 
-If you previously had one cron line per pipeline/job, remove those entries and keep only the single `bin/cron_tick.php` timer entry. Job-specific cadence is now managed in Data Sync settings, and due-job selection is centralized in the scheduler.
+If you previously had one cron line per pipeline/job, remove those entries and keep only the single `bin/cron_tick.php` timer entry. Recurring job registration and due-job selection are now centralized in the worker/scheduler control plane; the Data Sync page focuses on shared app settings and runtime observability instead of rewriting schedule rows manually.
 
 ### Rollout plan
 
