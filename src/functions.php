@@ -8421,6 +8421,33 @@ function killmail_value_amount(array $zkb): ?float
     return (float) $zkb['totalValue'];
 }
 
+function killmail_overview_value_amount(array $row): ?float
+{
+    if (!isset($row['zkb_total_value']) || $row['zkb_total_value'] === null || $row['zkb_total_value'] === '') {
+        return null;
+    }
+
+    return is_numeric($row['zkb_total_value']) ? (float) $row['zkb_total_value'] : null;
+}
+
+function killmail_overview_points(array $row): ?int
+{
+    if (!isset($row['zkb_points']) || $row['zkb_points'] === null || $row['zkb_points'] === '') {
+        return null;
+    }
+
+    return is_numeric($row['zkb_points']) ? (int) $row['zkb_points'] : null;
+}
+
+function killmail_overview_flag_enabled(array $row, string $field): bool
+{
+    if (!array_key_exists($field, $row) || $row[$field] === null) {
+        return false;
+    }
+
+    return (int) $row[$field] === 1;
+}
+
 function killmail_signal_strength_meta(int $itemCount, int $attackerCount, bool $trackedVictimLoss): array
 {
     $score = $itemCount;
@@ -8886,11 +8913,16 @@ function killmail_overview_data(): array
 
         $rows = array_map(static function (array $row) use ($resolvedOverviewEntities): array {
             $matchSources = killmail_match_sources($row);
-            $zkb = killmail_decode_json_array(isset($row['zkb_json']) ? (string) $row['zkb_json'] : null);
-            $estimatedValue = killmail_value_amount($zkb);
+            $estimatedValue = killmail_overview_value_amount($row);
+            $points = killmail_overview_points($row);
             $shipTypeId = isset($row['victim_ship_type_id']) ? (int) $row['victim_ship_type_id'] : null;
             $signalStrength = killmail_signal_strength_meta(0, 0, (int) ($row['matched_tracked'] ?? 0) === 1);
             $supplyImpact = killmail_supply_impact_meta($estimatedValue, 0, 0, 0);
+            $killmailFlags = array_values(array_filter([
+                killmail_overview_flag_enabled($row, 'zkb_npc') ? 'NPC' : null,
+                killmail_overview_flag_enabled($row, 'zkb_solo') ? 'Solo' : null,
+                killmail_overview_flag_enabled($row, 'zkb_awox') ? 'Awox' : null,
+            ]));
 
             return [
                 'sequence_id' => (int) ($row['sequence_id'] ?? 0),
@@ -8907,6 +8939,9 @@ function killmail_overview_data(): array
                 'match_context' => $matchSources === [] ? 'No tracked victim entity currently matches this stored loss.' : ('Matched on ' . implode(', ', $matchSources) . '.'),
                 'ship_icon_url' => $shipTypeId !== null ? killmail_entity_image_url('type', $shipTypeId, 'icon', 64) : null,
                 'estimated_value_display' => $estimatedValue !== null ? number_format($estimatedValue, 0) . ' ISK' : 'Value unavailable',
+                'points_display' => $points !== null ? number_format($points) : 'Unavailable',
+                'killmail_flags' => $killmailFlags,
+                'killmail_flags_display' => $killmailFlags === [] ? 'No special flags' : implode(' · ', $killmailFlags),
                 'signal_strength' => $signalStrength,
                 'supply_impact' => $supplyImpact,
                 'inspect_url' => '/killmail-intelligence/view.php?sequence_id=' . urlencode((string) ((int) ($row['sequence_id'] ?? 0))),
@@ -14987,6 +15022,11 @@ function killmail_transform_r2z2_payload(array $payload): array
         'victim_corporation_id' => isset($victim['corporation_id']) ? (int) $victim['corporation_id'] : null,
         'victim_alliance_id' => isset($victim['alliance_id']) ? (int) $victim['alliance_id'] : null,
         'victim_ship_type_id' => isset($victim['ship_type_id']) ? (int) $victim['ship_type_id'] : null,
+        'zkb_total_value' => isset($zkb['totalValue']) && is_numeric($zkb['totalValue']) ? (float) $zkb['totalValue'] : null,
+        'zkb_points' => isset($zkb['points']) && is_numeric($zkb['points']) ? (int) $zkb['points'] : null,
+        'zkb_npc' => !empty($zkb['npc']),
+        'zkb_solo' => !empty($zkb['solo']),
+        'zkb_awox' => !empty($zkb['awox']),
         'zkb_json' => json_encode($zkb, JSON_UNESCAPED_SLASHES),
         'raw_killmail_json' => json_encode($killmail, JSON_UNESCAPED_SLASHES),
     ];
