@@ -699,6 +699,34 @@ CREATE TABLE IF NOT EXISTS scheduler_job_events (
     KEY idx_scheduler_job_events_created (created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+CREATE TABLE IF NOT EXISTS scheduler_job_current_status (
+    job_key VARCHAR(190) PRIMARY KEY,
+    dataset_key VARCHAR(190) DEFAULT NULL,
+    latest_status VARCHAR(40) NOT NULL DEFAULT 'unknown',
+    latest_event_type VARCHAR(50) DEFAULT NULL,
+    last_started_at DATETIME DEFAULT NULL,
+    last_finished_at DATETIME DEFAULT NULL,
+    last_success_at DATETIME DEFAULT NULL,
+    last_failure_at DATETIME DEFAULT NULL,
+    last_failure_message VARCHAR(500) DEFAULT NULL,
+    current_pressure_state VARCHAR(32) NOT NULL DEFAULT 'healthy',
+    last_pressure_state VARCHAR(32) DEFAULT NULL,
+    recent_timeout_count INT UNSIGNED NOT NULL DEFAULT 0,
+    recent_lock_conflict_count INT UNSIGNED NOT NULL DEFAULT 0,
+    recent_deferral_count INT UNSIGNED NOT NULL DEFAULT 0,
+    recent_skip_count INT UNSIGNED NOT NULL DEFAULT 0,
+    last_resource_metrics_summary_json LONGTEXT DEFAULT NULL,
+    last_planner_decision_type VARCHAR(40) DEFAULT NULL,
+    last_planner_reason_text VARCHAR(500) DEFAULT NULL,
+    last_planner_decided_at DATETIME DEFAULT NULL,
+    last_event_at DATETIME DEFAULT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    KEY idx_scheduler_job_current_status_dataset (dataset_key),
+    KEY idx_scheduler_job_current_status_status (latest_status, current_pressure_state),
+    KEY idx_scheduler_job_current_status_event (last_event_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 CREATE TABLE IF NOT EXISTS scheduler_tuning_actions (
     id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
     job_key VARCHAR(190) NOT NULL,

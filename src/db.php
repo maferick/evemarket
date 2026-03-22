@@ -6344,6 +6344,7 @@ function db_sync_schedule_fetch_locked_due_jobs(int $limit = 50): array
 function db_sync_schedule_claim_job(int $scheduleId, int $lockTtlSeconds = 300): ?array
 {
     db_sync_schedule_registry_columns_ensure();
+    db_scheduler_job_current_status_ensure();
 
     $safeLockTtl = max(30, min(7200, $lockTtlSeconds));
 
@@ -6370,7 +6371,22 @@ function db_sync_schedule_claim_job(int $scheduleId, int $lockTtlSeconds = 300):
         return null;
     }
 
-    return db_sync_schedule_fetch_by_id($scheduleId);
+    $claimed = db_sync_schedule_fetch_by_id($scheduleId);
+    if (is_array($claimed)) {
+        $jobKey = trim((string) ($claimed['job_key'] ?? ''));
+        if ($jobKey !== '') {
+            db_scheduler_job_current_status_upsert($jobKey, [
+                'latest_status' => 'running',
+                'latest_event_type' => 'claim',
+                'last_started_at' => $claimed['last_started_at'] ?? gmdate('Y-m-d H:i:s'),
+                'current_pressure_state' => $claimed['current_pressure_state'] ?? 'healthy',
+                'last_pressure_state' => $claimed['current_pressure_state'] ?? null,
+                'last_event_at' => $claimed['last_started_at'] ?? gmdate('Y-m-d H:i:s'),
+            ]);
+        }
+    }
+
+    return $claimed;
 }
 
 function db_sync_schedule_next_run_at_for_values(int $intervalSeconds, int $offsetSeconds, ?int $nowUnix = null): string
@@ -6428,6 +6444,10 @@ function db_sync_schedule_next_due_at_by_id(int $scheduleId, ?int $nowUnix = nul
 function db_sync_schedule_mark_success(int $scheduleId, ?array $runtime = null): bool
 {
     db_sync_schedule_registry_columns_ensure();
+    db_scheduler_job_current_status_ensure();
+
+    $schedule = db_sync_schedule_fetch_by_id($scheduleId);
+    $jobKey = trim((string) ($schedule['job_key'] ?? ''));
 
     $nextDueAt = db_sync_schedule_next_due_at_by_id($scheduleId);
     if ($nextDueAt === null) {
@@ -6439,7 +6459,7 @@ function db_sync_schedule_mark_success(int $scheduleId, ?array $runtime = null):
     $p95Duration = $runtime !== null ? (float) ($runtime['p95_duration_seconds'] ?? 0.0) : null;
     $lastResult = $runtime !== null ? mb_substr(trim((string) ($runtime['last_result'] ?? 'success')), 0, 120) : 'success';
 
-    return db_execute(
+    $updated = db_execute(
         'UPDATE sync_schedules
          SET last_run_at = UTC_TIMESTAMP(),
              last_finished_at = UTC_TIMESTAMP(),
@@ -6463,11 +6483,37 @@ function db_sync_schedule_mark_success(int $scheduleId, ?array $runtime = null):
          LIMIT 1',
         ['success', $lastResult, $nextDueAt, $nextDueAt, $nextDueAt, 'waiting', 'stopped', $lastDuration, $averageDuration, $p95Duration, $scheduleId]
     );
+
+    if ($updated && $jobKey !== '') {
+        $finishedAt = gmdate('Y-m-d H:i:s');
+        db_scheduler_job_current_status_upsert($jobKey, [
+            'latest_status' => $lastResult,
+            'latest_event_type' => 'completion',
+            'last_started_at' => $schedule['last_started_at'] ?? null,
+            'last_finished_at' => $finishedAt,
+            'last_success_at' => $finishedAt,
+            'last_failure_at' => $lastResult === 'skipped' ? ($runtime['last_failure_at'] ?? null) : null,
+            'last_failure_message' => null,
+            'current_pressure_state' => $runtime['current_pressure_state'] ?? ($schedule['current_pressure_state'] ?? 'healthy'),
+            'last_pressure_state' => $runtime['current_pressure_state'] ?? ($schedule['current_pressure_state'] ?? null),
+            'recent_timeout_count' => 0,
+            'recent_lock_conflict_count' => 0,
+            'recent_deferral_count' => 0,
+            'recent_skip_count' => $lastResult === 'skipped' ? max(1, (int) (($runtime['recent_skip_count'] ?? 0))) : 0,
+            'last_event_at' => $finishedAt,
+        ]);
+    }
+
+    return $updated;
 }
 
 function db_sync_schedule_mark_failure(int $scheduleId, string $errorMessage, ?array $runtime = null): bool
 {
     db_sync_schedule_registry_columns_ensure();
+    db_scheduler_job_current_status_ensure();
+
+    $schedule = db_sync_schedule_fetch_by_id($scheduleId);
+    $jobKey = trim((string) ($schedule['job_key'] ?? ''));
 
     $nextDueAt = db_sync_schedule_next_due_at_by_id($scheduleId);
     if ($nextDueAt === null) {
@@ -6480,7 +6526,7 @@ function db_sync_schedule_mark_failure(int $scheduleId, string $errorMessage, ?a
     $p95Duration = $runtime !== null ? (float) ($runtime['p95_duration_seconds'] ?? 0.0) : null;
     $lastResult = $runtime !== null ? mb_substr(trim((string) ($runtime['last_result'] ?? 'failed')), 0, 120) : 'failed';
 
-    return db_execute(
+    $updated = db_execute(
         'UPDATE sync_schedules
          SET last_run_at = UTC_TIMESTAMP(),
              last_finished_at = UTC_TIMESTAMP(),
@@ -6505,6 +6551,28 @@ function db_sync_schedule_mark_failure(int $scheduleId, string $errorMessage, ?a
          LIMIT 1',
         ['failed', $lastResult, $message, $nextDueAt, $nextDueAt, $nextDueAt, 'waiting', 'stopped', $lastDuration, $averageDuration, $p95Duration, !empty($runtime['timeout']) ? 1 : 0, $scheduleId]
     );
+
+    if ($updated && $jobKey !== '') {
+        $finishedAt = gmdate('Y-m-d H:i:s');
+        $current = db_scheduler_job_current_status_fetch_map([$jobKey])[$jobKey] ?? [];
+        db_scheduler_job_current_status_upsert($jobKey, [
+            'latest_status' => 'failed',
+            'latest_event_type' => !empty($runtime['timeout']) ? 'timeout' : 'failure',
+            'last_started_at' => $schedule['last_started_at'] ?? null,
+            'last_finished_at' => $finishedAt,
+            'last_failure_at' => $finishedAt,
+            'last_failure_message' => $message,
+            'current_pressure_state' => $runtime['current_pressure_state'] ?? ($schedule['current_pressure_state'] ?? 'healthy'),
+            'last_pressure_state' => $runtime['current_pressure_state'] ?? ($schedule['current_pressure_state'] ?? null),
+            'recent_timeout_count' => max(0, (int) ($current['recent_timeout_count'] ?? 0)) + (!empty($runtime['timeout']) ? 1 : 0),
+            'recent_lock_conflict_count' => max(0, (int) ($current['recent_lock_conflict_count'] ?? 0)),
+            'recent_deferral_count' => max(0, (int) ($current['recent_deferral_count'] ?? 0)),
+            'recent_skip_count' => 0,
+            'last_event_at' => $finishedAt,
+        ]);
+    }
+
+    return $updated;
 }
 
 function db_sync_schedule_fetch_by_job_keys(array $jobKeys): array
@@ -7514,8 +7582,185 @@ function db_sync_schedule_next_due_snapshot(): ?array
     return $row !== [] ? $row : null;
 }
 
+function db_scheduler_job_current_status_ensure(): void
+{
+    db_execute('CREATE TABLE IF NOT EXISTS scheduler_job_current_status (
+        job_key VARCHAR(190) PRIMARY KEY,
+        dataset_key VARCHAR(190) DEFAULT NULL,
+        latest_status VARCHAR(40) NOT NULL DEFAULT \'unknown\',
+        latest_event_type VARCHAR(50) DEFAULT NULL,
+        last_started_at DATETIME DEFAULT NULL,
+        last_finished_at DATETIME DEFAULT NULL,
+        last_success_at DATETIME DEFAULT NULL,
+        last_failure_at DATETIME DEFAULT NULL,
+        last_failure_message VARCHAR(500) DEFAULT NULL,
+        current_pressure_state VARCHAR(32) NOT NULL DEFAULT \'healthy\',
+        last_pressure_state VARCHAR(32) DEFAULT NULL,
+        recent_timeout_count INT UNSIGNED NOT NULL DEFAULT 0,
+        recent_lock_conflict_count INT UNSIGNED NOT NULL DEFAULT 0,
+        recent_deferral_count INT UNSIGNED NOT NULL DEFAULT 0,
+        recent_skip_count INT UNSIGNED NOT NULL DEFAULT 0,
+        last_resource_metrics_summary_json LONGTEXT DEFAULT NULL,
+        last_planner_decision_type VARCHAR(40) DEFAULT NULL,
+        last_planner_reason_text VARCHAR(500) DEFAULT NULL,
+        last_planner_decided_at DATETIME DEFAULT NULL,
+        last_event_at DATETIME DEFAULT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        KEY idx_scheduler_job_current_status_dataset (dataset_key),
+        KEY idx_scheduler_job_current_status_status (latest_status, current_pressure_state),
+        KEY idx_scheduler_job_current_status_event (last_event_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4');
+}
+
+function db_scheduler_job_current_status_upsert(string $jobKey, array $status): bool
+{
+    db_scheduler_job_current_status_ensure();
+
+    $normalizedJobKey = mb_substr(trim($jobKey), 0, 190);
+    if ($normalizedJobKey === '') {
+        return false;
+    }
+
+    $datasetKey = array_key_exists('dataset_key', $status)
+        ? (($status['dataset_key'] !== null && trim((string) $status['dataset_key']) !== '') ? mb_substr(trim((string) $status['dataset_key']), 0, 190) : null)
+        : ('scheduler.job.' . $normalizedJobKey);
+    $latestStatus = mb_substr(trim((string) ($status['latest_status'] ?? 'unknown')), 0, 40);
+    $latestEventType = array_key_exists('latest_event_type', $status)
+        ? (($status['latest_event_type'] !== null && trim((string) $status['latest_event_type']) !== '') ? mb_substr(trim((string) $status['latest_event_type']), 0, 50) : null)
+        : null;
+    $currentPressureState = mb_substr(trim((string) ($status['current_pressure_state'] ?? 'healthy')), 0, 32);
+    $lastPressureState = array_key_exists('last_pressure_state', $status)
+        ? (($status['last_pressure_state'] !== null && trim((string) $status['last_pressure_state']) !== '') ? mb_substr(trim((string) $status['last_pressure_state']), 0, 32) : null)
+        : null;
+    $lastFailureMessage = array_key_exists('last_failure_message', $status)
+        ? (($status['last_failure_message'] !== null && trim((string) $status['last_failure_message']) !== '') ? mb_substr(trim((string) $status['last_failure_message']), 0, 500) : null)
+        : null;
+    $lastPlannerDecisionType = array_key_exists('last_planner_decision_type', $status)
+        ? (($status['last_planner_decision_type'] !== null && trim((string) $status['last_planner_decision_type']) !== '') ? mb_substr(trim((string) $status['last_planner_decision_type']), 0, 40) : null)
+        : null;
+    $lastPlannerReasonText = array_key_exists('last_planner_reason_text', $status)
+        ? (($status['last_planner_reason_text'] !== null && trim((string) $status['last_planner_reason_text']) !== '') ? mb_substr(trim((string) $status['last_planner_reason_text']), 0, 500) : null)
+        : null;
+    $resourceSummaryJson = null;
+    if (array_key_exists('last_resource_metrics_summary_json', $status) && $status['last_resource_metrics_summary_json'] !== null) {
+        $resourceSummaryJson = is_string($status['last_resource_metrics_summary_json'])
+            ? $status['last_resource_metrics_summary_json']
+            : json_encode($status['last_resource_metrics_summary_json'], JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE);
+    }
+
+    return db_execute(
+        'INSERT INTO scheduler_job_current_status (
+            job_key,
+            dataset_key,
+            latest_status,
+            latest_event_type,
+            last_started_at,
+            last_finished_at,
+            last_success_at,
+            last_failure_at,
+            last_failure_message,
+            current_pressure_state,
+            last_pressure_state,
+            recent_timeout_count,
+            recent_lock_conflict_count,
+            recent_deferral_count,
+            recent_skip_count,
+            last_resource_metrics_summary_json,
+            last_planner_decision_type,
+            last_planner_reason_text,
+            last_planner_decided_at,
+            last_event_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON DUPLICATE KEY UPDATE
+            dataset_key = COALESCE(VALUES(dataset_key), dataset_key),
+            latest_status = VALUES(latest_status),
+            latest_event_type = COALESCE(VALUES(latest_event_type), latest_event_type),
+            last_started_at = COALESCE(VALUES(last_started_at), last_started_at),
+            last_finished_at = COALESCE(VALUES(last_finished_at), last_finished_at),
+            last_success_at = COALESCE(VALUES(last_success_at), last_success_at),
+            last_failure_at = COALESCE(VALUES(last_failure_at), last_failure_at),
+            last_failure_message = CASE
+                WHEN VALUES(last_failure_message) IS NULL AND VALUES(last_failure_at) IS NULL THEN last_failure_message
+                ELSE VALUES(last_failure_message)
+            END,
+            current_pressure_state = COALESCE(VALUES(current_pressure_state), current_pressure_state),
+            last_pressure_state = COALESCE(VALUES(last_pressure_state), last_pressure_state),
+            recent_timeout_count = VALUES(recent_timeout_count),
+            recent_lock_conflict_count = VALUES(recent_lock_conflict_count),
+            recent_deferral_count = VALUES(recent_deferral_count),
+            recent_skip_count = VALUES(recent_skip_count),
+            last_resource_metrics_summary_json = COALESCE(VALUES(last_resource_metrics_summary_json), last_resource_metrics_summary_json),
+            last_planner_decision_type = COALESCE(VALUES(last_planner_decision_type), last_planner_decision_type),
+            last_planner_reason_text = COALESCE(VALUES(last_planner_reason_text), last_planner_reason_text),
+            last_planner_decided_at = COALESCE(VALUES(last_planner_decided_at), last_planner_decided_at),
+            last_event_at = COALESCE(VALUES(last_event_at), last_event_at),
+            updated_at = CURRENT_TIMESTAMP',
+        [
+            $normalizedJobKey,
+            $datasetKey,
+            $latestStatus,
+            $latestEventType,
+            $status['last_started_at'] ?? null,
+            $status['last_finished_at'] ?? null,
+            $status['last_success_at'] ?? null,
+            $status['last_failure_at'] ?? null,
+            $lastFailureMessage,
+            $currentPressureState,
+            $lastPressureState,
+            max(0, (int) ($status['recent_timeout_count'] ?? 0)),
+            max(0, (int) ($status['recent_lock_conflict_count'] ?? 0)),
+            max(0, (int) ($status['recent_deferral_count'] ?? 0)),
+            max(0, (int) ($status['recent_skip_count'] ?? 0)),
+            $resourceSummaryJson,
+            $lastPlannerDecisionType,
+            $lastPlannerReasonText,
+            $status['last_planner_decided_at'] ?? null,
+            $status['last_event_at'] ?? null,
+        ]
+    );
+}
+
+function db_scheduler_job_current_status_fetch_map(array $jobKeys = []): array
+{
+    db_scheduler_job_current_status_ensure();
+
+    $params = [];
+    $sql = 'SELECT job_key, dataset_key, latest_status, latest_event_type, last_started_at, last_finished_at, last_success_at, last_failure_at, last_failure_message, current_pressure_state, last_pressure_state, recent_timeout_count, recent_lock_conflict_count, recent_deferral_count, recent_skip_count, last_resource_metrics_summary_json, last_planner_decision_type, last_planner_reason_text, last_planner_decided_at, last_event_at, created_at, updated_at
+            FROM scheduler_job_current_status';
+
+    $normalizedKeys = array_values(array_filter(array_map(static fn (mixed $jobKey): string => trim((string) $jobKey), $jobKeys), static fn (string $jobKey): bool => $jobKey !== ''));
+    if ($normalizedKeys !== []) {
+        $sql .= ' WHERE job_key IN (' . implode(',', array_fill(0, count($normalizedKeys), '?')) . ')';
+        $params = $normalizedKeys;
+    }
+
+    $rows = db_select($sql, $params);
+    $map = [];
+    foreach ($rows as $row) {
+        $currentJobKey = trim((string) ($row['job_key'] ?? ''));
+        if ($currentJobKey === '') {
+            continue;
+        }
+
+        $row['last_resource_metrics_summary'] = null;
+        $summaryJson = $row['last_resource_metrics_summary_json'] ?? null;
+        if (is_string($summaryJson) && trim($summaryJson) !== '') {
+            $decoded = json_decode($summaryJson, true);
+            if (is_array($decoded)) {
+                $row['last_resource_metrics_summary'] = $decoded;
+            }
+        }
+
+        $map[$currentJobKey] = $row;
+    }
+
+    return $map;
+}
+
 function db_scheduler_job_event_insert(string $jobKey, string $eventType, array $detail = [], int $latenessSeconds = 0, ?float $durationSeconds = null): bool
 {
+    db_scheduler_job_current_status_ensure();
     db_execute('CREATE TABLE IF NOT EXISTS scheduler_job_events (
         id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
         job_key VARCHAR(190) NOT NULL,
@@ -7529,11 +7774,47 @@ function db_scheduler_job_event_insert(string $jobKey, string $eventType, array 
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4');
     db_ensure_table_index('scheduler_job_events', 'idx_scheduler_job_events_created', 'INDEX idx_scheduler_job_events_created (created_at)');
 
-    return db_execute(
+    $inserted = db_execute(
         'INSERT INTO scheduler_job_events (job_key, event_type, detail_json, lateness_seconds, duration_seconds)
          VALUES (?, ?, ?, ?, ?)',
         [mb_substr(trim($jobKey), 0, 190), mb_substr(trim($eventType), 0, 50), $detail !== [] ? json_encode($detail, JSON_UNESCAPED_SLASHES) : null, $latenessSeconds, $durationSeconds]
     );
+
+    if (!$inserted) {
+        return false;
+    }
+
+    $jobKey = mb_substr(trim($jobKey), 0, 190);
+    $eventType = mb_substr(trim($eventType), 0, 50);
+    $current = db_scheduler_job_current_status_fetch_map([$jobKey])[$jobKey] ?? [];
+    $now = gmdate('Y-m-d H:i:s');
+    $latestStatus = match ($eventType) {
+        'started' => 'running',
+        'finished' => (string) (($detail['status'] ?? 'success') === 'success' ? 'success' : ($detail['status'] ?? 'finished')),
+        'timeout', 'failure' => 'failed',
+        'skipped' => 'skipped',
+        'lock_conflict', 'lock_skipped' => 'blocked',
+        'deferred_pressure' => 'deferred',
+        default => (string) ($current['latest_status'] ?? 'unknown'),
+    };
+
+    db_scheduler_job_current_status_upsert($jobKey, [
+        'latest_status' => $latestStatus,
+        'latest_event_type' => $eventType,
+        'last_started_at' => $eventType === 'started' ? $now : ($current['last_started_at'] ?? null),
+        'last_finished_at' => in_array($eventType, ['finished', 'skipped', 'timeout', 'failure'], true) ? $now : ($current['last_finished_at'] ?? null),
+        'last_failure_at' => in_array($eventType, ['timeout', 'failure'], true) ? $now : ($current['last_failure_at'] ?? null),
+        'last_failure_message' => in_array($eventType, ['timeout', 'failure'], true) ? ($detail['error'] ?? $current['last_failure_message'] ?? null) : ($current['last_failure_message'] ?? null),
+        'current_pressure_state' => $detail['pressure_state'] ?? ($current['current_pressure_state'] ?? 'healthy'),
+        'last_pressure_state' => $detail['pressure_state'] ?? ($current['last_pressure_state'] ?? null),
+        'recent_timeout_count' => max(0, (int) ($current['recent_timeout_count'] ?? 0)) + ($eventType === 'timeout' ? 1 : 0),
+        'recent_lock_conflict_count' => max(0, (int) ($current['recent_lock_conflict_count'] ?? 0)) + (in_array($eventType, ['lock_conflict', 'lock_skipped'], true) ? 1 : 0),
+        'recent_deferral_count' => max(0, (int) ($current['recent_deferral_count'] ?? 0)) + ($eventType === 'deferred_pressure' ? 1 : 0),
+        'recent_skip_count' => max(0, (int) ($current['recent_skip_count'] ?? 0)) + ($eventType === 'skipped' ? 1 : 0),
+        'last_event_at' => $now,
+    ]);
+
+    return true;
 }
 
 function db_scheduler_job_events_recent_summary(int $windowMinutes = 120): array
@@ -7673,8 +7954,9 @@ function db_scheduler_resource_metrics_ensure(): void
 function db_scheduler_resource_metric_insert(array $row): bool
 {
     db_scheduler_resource_metrics_ensure();
+    db_scheduler_job_current_status_ensure();
 
-    return db_execute(
+    $inserted = db_execute(
         'INSERT INTO scheduler_job_resource_metrics (
             schedule_id,
             job_key,
@@ -7724,6 +8006,41 @@ function db_scheduler_resource_metric_insert(array $row): bool
             $row['finished_at'] ?? null,
         ]
     );
+
+    if (!$inserted) {
+        return false;
+    }
+
+    $jobKey = mb_substr(trim((string) ($row['job_key'] ?? '')), 0, 190);
+    if ($jobKey === '') {
+        return true;
+    }
+
+    db_scheduler_job_current_status_upsert($jobKey, [
+        'latest_status' => mb_substr(trim((string) ($row['run_status'] ?? 'unknown')), 0, 40),
+        'current_pressure_state' => $row['pressure_state'] ?? 'healthy',
+        'last_pressure_state' => $row['pressure_state'] ?? null,
+        'recent_timeout_count' => !empty($row['timed_out']) ? 1 : 0,
+        'last_resource_metrics_summary_json' => [
+            'run_status' => (string) ($row['run_status'] ?? 'unknown'),
+            'wall_duration_seconds' => round((float) ($row['wall_duration_seconds'] ?? 0.0), 2),
+            'queue_wait_seconds' => round((float) ($row['queue_wait_seconds'] ?? 0.0), 2),
+            'lock_wait_seconds' => round((float) ($row['lock_wait_seconds'] ?? 0.0), 2),
+            'overlap_count' => max(0, (int) ($row['overlap_count'] ?? 0)),
+            'cpu_percent' => isset($row['cpu_percent']) ? round((float) $row['cpu_percent'], 2) : null,
+            'memory_peak_bytes' => isset($row['memory_peak_bytes']) ? max(0, (int) $row['memory_peak_bytes']) : null,
+            'memory_peak_delta_bytes' => isset($row['memory_peak_delta_bytes']) ? max(0, (int) $row['memory_peak_delta_bytes']) : null,
+            'projected_cpu_percent' => isset($row['projected_cpu_percent']) ? round((float) $row['projected_cpu_percent'], 2) : null,
+            'projected_memory_bytes' => isset($row['projected_memory_bytes']) ? max(0, (int) $row['projected_memory_bytes']) : null,
+            'timed_out' => !empty($row['timed_out']),
+            'failed' => !empty($row['failed']),
+            'started_at' => $row['started_at'] ?? null,
+            'finished_at' => $row['finished_at'] ?? null,
+        ],
+        'last_event_at' => $row['finished_at'] ?? $row['started_at'] ?? gmdate('Y-m-d H:i:s'),
+    ]);
+
+    return true;
 }
 
 function db_scheduler_resource_metrics_recent(string $jobKey, int $limit = 40): array
@@ -7866,12 +8183,14 @@ function db_sync_schedule_update_resource_profile(int $scheduleId, array $profil
 function db_sync_schedule_mark_planner_state(int $scheduleId, array $state): bool
 {
     db_sync_schedule_registry_columns_ensure();
+    db_scheduler_job_current_status_ensure();
 
     if ($scheduleId <= 0) {
         return false;
     }
 
-    return db_execute(
+    $schedule = db_sync_schedule_fetch_by_id($scheduleId);
+    $updated = db_execute(
         'UPDATE sync_schedules
          SET current_projected_cpu_percent = ?,
              current_projected_memory_bytes = ?,
@@ -7897,6 +8216,18 @@ function db_sync_schedule_mark_planner_state(int $scheduleId, array $state): boo
             $scheduleId,
         ]
     );
+
+    $jobKey = trim((string) ($schedule['job_key'] ?? ''));
+    if ($updated && $jobKey !== '') {
+        db_scheduler_job_current_status_upsert($jobKey, [
+            'latest_status' => (string) ($state['latest_status'] ?? ($schedule['last_result'] ?? $schedule['last_status'] ?? 'planned')),
+            'current_pressure_state' => $state['current_pressure_state'] ?? ($schedule['current_pressure_state'] ?? 'healthy'),
+            'last_pressure_state' => $state['current_pressure_state'] ?? ($schedule['current_pressure_state'] ?? null),
+            'last_event_at' => gmdate('Y-m-d H:i:s'),
+        ]);
+    }
+
+    return $updated;
 }
 
 function db_scheduler_planner_decisions_ensure(): void
@@ -7919,8 +8250,9 @@ function db_scheduler_planner_decisions_ensure(): void
 function db_scheduler_planner_decision_insert(?int $scheduleId, string $jobKey, string $decisionType, string $pressureState, string $reasonText, array $decision = []): bool
 {
     db_scheduler_planner_decisions_ensure();
+    db_scheduler_job_current_status_ensure();
 
-    return db_execute(
+    $inserted = db_execute(
         'INSERT INTO scheduler_planner_decisions (schedule_id, job_key, decision_type, pressure_state, reason_text, decision_json)
          VALUES (?, ?, ?, ?, ?, ?)',
         [
@@ -7932,6 +8264,30 @@ function db_scheduler_planner_decision_insert(?int $scheduleId, string $jobKey, 
             $decision !== [] ? json_encode($decision, JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE) : null,
         ]
     );
+
+    if (!$inserted) {
+        return false;
+    }
+
+    $normalizedJobKey = mb_substr(trim($jobKey), 0, 190);
+    $current = db_scheduler_job_current_status_fetch_map([$normalizedJobKey])[$normalizedJobKey] ?? [];
+    $decisionType = mb_substr(trim($decisionType), 0, 40);
+    $latestStatus = str_contains($decisionType, 'deferred') ? 'deferred' : (($decisionType === 'allowed' || $decisionType === 'idle_backfill_allowed') ? 'planned' : ((string) ($current['latest_status'] ?? 'planned')));
+    db_scheduler_job_current_status_upsert($normalizedJobKey, [
+        'latest_status' => $latestStatus,
+        'current_pressure_state' => mb_substr(trim($pressureState), 0, 32),
+        'last_pressure_state' => mb_substr(trim($pressureState), 0, 32),
+        'recent_timeout_count' => max(0, (int) ($current['recent_timeout_count'] ?? 0)),
+        'recent_lock_conflict_count' => max(0, (int) ($current['recent_lock_conflict_count'] ?? 0)),
+        'recent_deferral_count' => max(0, (int) ($current['recent_deferral_count'] ?? 0)) + (str_contains($decisionType, 'deferred') ? 1 : 0),
+        'recent_skip_count' => max(0, (int) ($current['recent_skip_count'] ?? 0)),
+        'last_planner_decision_type' => $decisionType,
+        'last_planner_reason_text' => mb_substr(trim($reasonText), 0, 500),
+        'last_planner_decided_at' => gmdate('Y-m-d H:i:s'),
+        'last_event_at' => gmdate('Y-m-d H:i:s'),
+    ]);
+
+    return true;
 }
 
 function db_scheduler_planner_decisions_recent(int $limit = 30): array
