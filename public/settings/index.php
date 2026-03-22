@@ -76,7 +76,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             );
 
             $saved = save_settings([
-                'killmail_ingestion_enabled' => isset($_POST['killmail_ingestion_enabled']) ? '1' : '0',
+                'killmail_ingestion_enabled' => sanitize_enabled_flag($_POST['killmail_ingestion_enabled'] ?? null),
                 'killmail_ingestion_poll_sleep_seconds' => (string) max(6, min(300, (int) ($_POST['killmail_ingestion_poll_sleep_seconds'] ?? 6))),
                 'killmail_ingestion_max_sequences_per_run' => (string) max(1, min(5000, (int) ($_POST['killmail_ingestion_max_sequences_per_run'] ?? 120))),
                 'killmail_demand_prediction_mode' => trim((string) ($_POST['killmail_demand_prediction_mode'] ?? 'baseline')),
