@@ -1602,7 +1602,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                         <article class="rounded-xl border border-border bg-black/20 p-4">
                             <p class="text-sm text-slate-100">Change-aware scheduler decisions</p>
                             <p class="mt-1 text-xs text-muted">Change-aware downstream jobs now surface whether they skipped because inputs stayed stable or forced a safety refresh because the freshness ceiling elapsed.</p>
-                            <div class="mt-4 grid gap-3 sm:grid-cols-3 text-sm">
+                            <div class="mt-4 grid gap-3 sm:grid-cols-4 text-sm">
                                 <div class="rounded-lg border border-border bg-black/30 p-3">
                                     <p class="text-xs uppercase tracking-[0.16em] text-muted">Change-aware jobs</p>
                                     <p class="mt-2 text-2xl font-semibold text-white"><?= (int) (($syncDashboard['change_aware_summary']['change_aware_jobs'] ?? 0)) ?></p>
@@ -1610,6 +1610,10 @@ include __DIR__ . '/../../src/views/partials/header.php';
                                 <div class="rounded-lg border border-border bg-black/30 p-3">
                                     <p class="text-xs uppercase tracking-[0.16em] text-muted">Skipped: no change</p>
                                     <p class="mt-2 text-2xl font-semibold text-white"><?= (int) (($syncDashboard['change_aware_summary']['skipped_no_change'] ?? 0)) ?></p>
+                                </div>
+                                <div class="rounded-lg border border-border bg-black/30 p-3">
+                                    <p class="text-xs uppercase tracking-[0.16em] text-muted">Skipped: within ceiling</p>
+                                    <p class="mt-2 text-2xl font-semibold text-white"><?= (int) (($syncDashboard['change_aware_summary']['skipped_within_freshness_window'] ?? 0)) ?></p>
                                 </div>
                                 <div class="rounded-lg border border-border bg-black/30 p-3">
                                     <p class="text-xs uppercase tracking-[0.16em] text-muted">Forced refreshes</p>
@@ -1790,7 +1794,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                             <div class="flex flex-wrap items-center justify-between gap-3">
                                 <div>
                                     <p class="text-sm text-slate-100">Advanced diagnostics</p>
-                                    <p class="mt-1 text-xs text-muted">Discovery, internal mechanics, planner decisions, and profiling history remain available here when you need deeper troubleshooting.</p>
+                                    <p class="mt-1 text-xs text-muted">Discovery, internal mechanics, planner decisions, and profiling history remain available here when you need deeper troubleshooting. The legacy busiest-minute-offsets panel has been removed because change-aware execution is no longer driven primarily by cadence slot congestion.</p>
                                 </div>
                                 <span class="inline-flex items-center rounded-full border border-border px-2.5 py-1 text-[11px] uppercase tracking-[0.14em] text-muted">expand</span>
                             </div>
