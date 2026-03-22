@@ -8,9 +8,10 @@ Type=simple
 User=www-data
 Group=www-data
 WorkingDirectory=/var/www/SupplyCore
+Environment=SUPPLYCORE_ZKILL_POLL_SLEEP=10
 EnvironmentFile=-/etc/default/supplycore-worker
 Environment=PYTHONUNBUFFERED=1
-ExecStart=/var/www/SupplyCore/.venv-orchestrator/bin/python -m orchestrator zkill-worker --app-root /var/www/SupplyCore --poll-sleep ${SUPPLYCORE_ZKILL_POLL_SLEEP:-10}
+ExecStart=/var/www/SupplyCore/.venv-orchestrator/bin/python -m orchestrator zkill-worker --app-root /var/www/SupplyCore --poll-sleep ${SUPPLYCORE_ZKILL_POLL_SLEEP}
 Restart=always
 RestartSec=5
 KillSignal=SIGTERM
