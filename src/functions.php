@@ -11997,6 +11997,24 @@ function market_snapshot_trade_date(string $observedAt): string
     }
 }
 
+function market_order_distinct_type_count(array $rows): int
+{
+    $typeIds = [];
+
+    foreach ($rows as $row) {
+        if (!is_array($row)) {
+            continue;
+        }
+
+        $typeId = (int) ($row['type_id'] ?? 0);
+        if ($typeId > 0) {
+            $typeIds[$typeId] = true;
+        }
+    }
+
+    return count($typeIds);
+}
+
 function market_history_daily_point_from_snapshot_metric(array $metric, string $sourceType): ?array
 {
     $normalizedSourceType = $sourceType === 'market_hub' ? 'market_hub' : 'alliance_structure';
@@ -12487,6 +12505,14 @@ function sync_alliance_structure_orders(int $structureId, string $runMode = 'inc
         }
 
         $writtenCurrent = db_market_orders_current_bulk_upsert($mappedOrders);
+        db_market_source_snapshot_state_upsert([
+            'source_type' => 'alliance_structure',
+            'source_id' => $structureId,
+            'latest_current_observed_at' => $observedAt,
+            'current_order_count' => count($mappedOrders),
+            'current_distinct_type_count' => market_order_distinct_type_count($mappedOrders),
+            'last_synced_at' => $observedAt,
+        ]);
         sync_run_finalize_success($runIdCurrent, $datasetKeyCurrent, $syncMode, $result['rows_seen'], $writtenCurrent, $snapshotCursor, $checksum);
         $currentFinished = true;
 
@@ -12847,6 +12873,14 @@ function sync_market_hub_current_orders(string|int $hubRef, string $runMode = 'i
         }
 
         $writtenCurrent = db_market_orders_current_bulk_upsert($canonicalRows);
+        db_market_source_snapshot_state_upsert([
+            'source_type' => 'market_hub',
+            'source_id' => $sourceId,
+            'latest_current_observed_at' => $observedAt,
+            'current_order_count' => count($canonicalRows),
+            'current_distinct_type_count' => market_order_distinct_type_count($canonicalRows),
+            'last_synced_at' => $observedAt,
+        ]);
         sync_run_finalize_success($runIdCurrent, $datasetKeyCurrent, $syncMode, $result['rows_seen'], $writtenCurrent, $result['cursor'], $result['checksum']);
         $currentFinished = true;
 
@@ -13167,13 +13201,23 @@ function sync_market_orders_history_prune(int $retentionDays, string $runMode = 
     try {
         $safeRetentionDays = max(1, min(3650, $retentionDays));
         $cutoffObservedAt = gmdate('Y-m-d H:i:s', strtotime('-' . $safeRetentionDays . ' days'));
-        $deletedRows = db_market_orders_history_prune_before($cutoffObservedAt);
+        $deletedHistoryRows = db_market_orders_history_prune_before($cutoffObservedAt);
+        $deletedSummaryRows = db_market_order_snapshots_summary_prune_before($cutoffObservedAt);
+        $controlPlaneCleanup = db_control_plane_retention_cleanup(10000);
+        $controlPlaneDeleted = array_sum(array_map(
+            static fn (array $row): int => (int) ($row['rows_deleted'] ?? 0),
+            (array) ($controlPlaneCleanup['deleted'] ?? [])
+        ));
+        $deletedRows = $deletedHistoryRows + $deletedSummaryRows + $controlPlaneDeleted;
 
         $result['rows_seen'] = $deletedRows;
         $result['rows_written'] = $deletedRows;
         $result['cursor'] = 'cutoff:' . $cutoffObservedAt;
         $result['checksum'] = sync_checksum([
             'deleted_rows' => $deletedRows,
+            'deleted_history_rows' => $deletedHistoryRows,
+            'deleted_summary_rows' => $deletedSummaryRows,
+            'deleted_control_plane_rows' => $controlPlaneDeleted,
             'retention_days' => $safeRetentionDays,
             'cutoff_observed_at' => $cutoffObservedAt,
         ]);
@@ -13185,6 +13229,10 @@ function sync_market_orders_history_prune(int $retentionDays, string $runMode = 
             'records_deleted' => $deletedRows,
             'history_rows_generated' => 0,
             'retention_days' => $safeRetentionDays,
+            'market_orders_history_deleted' => $deletedHistoryRows,
+            'market_snapshot_summary_deleted' => $deletedSummaryRows,
+            'control_plane_deleted' => $controlPlaneDeleted,
+            'control_plane_cleanup' => $controlPlaneCleanup['deleted'] ?? [],
             'no_changes' => $deletedRows === 0,
         ];
 

@@ -378,6 +378,29 @@ function db_ensure_table_index(string $table, string $indexName, string $definit
     db()->exec(sprintf('ALTER TABLE %s ADD %s', db_validate_identifier($table), $definitionSql));
 }
 
+function db_setting_int(string $settingKey, int $default, int $min, int $max): int
+{
+    $row = db_select_one('SELECT setting_value FROM app_settings WHERE setting_key = ? LIMIT 1', [$settingKey]);
+    $value = (int) ($row['setting_value'] ?? $default);
+
+    return max($min, min($max, $value > 0 ? $value : $default));
+}
+
+function db_prune_before_datetime(string $table, string $column, string $cutoff, int $limit = 50000): int
+{
+    $safeLimit = max(100, min(200000, $limit));
+    $sql = sprintf(
+        'DELETE FROM %s WHERE %s < ? LIMIT %d',
+        db_validate_identifier($table),
+        db_validate_identifier($column),
+        $safeLimit
+    );
+
+    db_execute($sql, [$cutoff]);
+
+    return (int) db()->query('SELECT ROW_COUNT()')->fetchColumn();
+}
+
 function db_table_has_column(string $table, string $columnName): bool
 {
     $row = db_select_one(
@@ -1834,6 +1857,8 @@ function db_market_orders_current_bulk_upsert(array $orders, ?int $chunkSize = n
 
 function db_market_orders_history_bulk_insert(array $orders, ?int $chunkSize = null): int
 {
+    db_market_snapshot_optimization_ensure();
+
     return db_bulk_insert_or_upsert(
         'market_orders_history',
         [
@@ -1858,14 +1883,132 @@ function db_market_orders_history_bulk_insert(array $orders, ?int $chunkSize = n
     );
 }
 
+function db_market_snapshot_optimization_ensure(): void
+{
+    db_ensure_table_index('market_orders_history', 'idx_market_orders_history_observed_at', 'INDEX idx_market_orders_history_observed_at (observed_at)');
+    db_ensure_table_index('market_order_snapshots_summary', 'idx_snapshot_summary_observed', 'INDEX idx_snapshot_summary_observed (observed_at)');
+}
+
+function db_market_source_snapshot_state_ensure(): void
+{
+    db_market_snapshot_optimization_ensure();
+
+    db_execute(
+        "CREATE TABLE IF NOT EXISTS market_source_snapshot_state (
+            source_type ENUM('market_hub', 'alliance_structure') NOT NULL,
+            source_id BIGINT UNSIGNED NOT NULL,
+            latest_current_observed_at DATETIME DEFAULT NULL,
+            latest_summary_observed_at DATETIME DEFAULT NULL,
+            current_order_count INT UNSIGNED NOT NULL DEFAULT 0,
+            current_distinct_type_count INT UNSIGNED NOT NULL DEFAULT 0,
+            summary_row_count INT UNSIGNED NOT NULL DEFAULT 0,
+            last_synced_at DATETIME DEFAULT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            PRIMARY KEY (source_type, source_id),
+            KEY idx_market_source_snapshot_state_current (latest_current_observed_at),
+            KEY idx_market_source_snapshot_state_summary (latest_summary_observed_at)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"
+    );
+}
+
+function db_market_source_snapshot_state_get(string $sourceType, int $sourceId): ?array
+{
+    db_market_source_snapshot_state_ensure();
+
+    $safeSourceType = trim($sourceType);
+    $safeSourceId = max(0, $sourceId);
+    if ($safeSourceType === '' || $safeSourceId <= 0) {
+        return null;
+    }
+
+    return db_select_one(
+        'SELECT source_type, source_id, latest_current_observed_at, latest_summary_observed_at, current_order_count, current_distinct_type_count, summary_row_count, last_synced_at, created_at, updated_at
+         FROM market_source_snapshot_state
+         WHERE source_type = ?
+           AND source_id = ?
+         LIMIT 1',
+        [$safeSourceType, $safeSourceId]
+    );
+}
+
+function db_market_source_snapshot_state_upsert(array $row): bool
+{
+    db_market_source_snapshot_state_ensure();
+
+    $sourceType = trim((string) ($row['source_type'] ?? ''));
+    $sourceId = max(0, (int) ($row['source_id'] ?? 0));
+    if ($sourceType === '' || $sourceId <= 0) {
+        return false;
+    }
+
+    $existing = db_select_one(
+        'SELECT current_order_count, current_distinct_type_count, summary_row_count
+         FROM market_source_snapshot_state
+         WHERE source_type = ?
+           AND source_id = ?
+         LIMIT 1',
+        [$sourceType, $sourceId]
+    ) ?? [];
+    $latestCurrentObservedAt = isset($row['latest_current_observed_at']) && trim((string) $row['latest_current_observed_at']) !== ''
+        ? trim((string) $row['latest_current_observed_at'])
+        : null;
+    $latestSummaryObservedAt = isset($row['latest_summary_observed_at']) && trim((string) $row['latest_summary_observed_at']) !== ''
+        ? trim((string) $row['latest_summary_observed_at'])
+        : null;
+    $currentOrderCount = array_key_exists('current_order_count', $row)
+        ? max(0, (int) $row['current_order_count'])
+        : max(0, (int) ($existing['current_order_count'] ?? 0));
+    $currentDistinctTypeCount = array_key_exists('current_distinct_type_count', $row)
+        ? max(0, (int) $row['current_distinct_type_count'])
+        : max(0, (int) ($existing['current_distinct_type_count'] ?? 0));
+    $summaryRowCount = array_key_exists('summary_row_count', $row)
+        ? max(0, (int) $row['summary_row_count'])
+        : max(0, (int) ($existing['summary_row_count'] ?? 0));
+    $lastSyncedAt = isset($row['last_synced_at']) && trim((string) $row['last_synced_at']) !== ''
+        ? trim((string) $row['last_synced_at'])
+        : ($latestCurrentObservedAt ?? $latestSummaryObservedAt);
+
+    return db_execute(
+        'INSERT INTO market_source_snapshot_state (
+            source_type, source_id, latest_current_observed_at, latest_summary_observed_at, current_order_count, current_distinct_type_count, summary_row_count, last_synced_at
+         ) VALUES (
+            ?, ?, ?, ?, ?, ?, ?, ?
+         )
+         ON DUPLICATE KEY UPDATE
+            latest_current_observed_at = COALESCE(VALUES(latest_current_observed_at), latest_current_observed_at),
+            latest_summary_observed_at = COALESCE(VALUES(latest_summary_observed_at), latest_summary_observed_at),
+            current_order_count = VALUES(current_order_count),
+            current_distinct_type_count = VALUES(current_distinct_type_count),
+            summary_row_count = VALUES(summary_row_count),
+            last_synced_at = COALESCE(VALUES(last_synced_at), last_synced_at),
+            updated_at = CURRENT_TIMESTAMP',
+        [
+            $sourceType,
+            $sourceId,
+            $latestCurrentObservedAt,
+            $latestSummaryObservedAt,
+            $currentOrderCount,
+            $currentDistinctTypeCount,
+            $summaryRowCount,
+            $lastSyncedAt,
+        ]
+    );
+}
+
 
 function db_market_orders_history_prune_before(string $cutoffObservedAt): int
 {
-    db_query_cache_clear();
-    $stmt = db()->prepare('DELETE FROM market_orders_history WHERE observed_at < ?');
-    $stmt->execute([$cutoffObservedAt]);
+    db_market_snapshot_optimization_ensure();
 
-    return $stmt->rowCount();
+    return db_prune_before_datetime('market_orders_history', 'observed_at', $cutoffObservedAt);
+}
+
+function db_market_order_snapshots_summary_prune_before(string $cutoffObservedAt): int
+{
+    db_market_snapshot_optimization_ensure();
+
+    return db_prune_before_datetime('market_order_snapshots_summary', 'observed_at', $cutoffObservedAt);
 }
 
 function db_market_orders_current_latest_snapshot_rows(string $sourceType, int $sourceId): array
@@ -1877,7 +2020,36 @@ function db_market_orders_current_latest_snapshot_rows(string $sourceType, int $
         return [];
     }
 
-    return db_select(
+    $state = db_market_source_snapshot_state_get($safeSourceType, $safeSourceId);
+    $latestObservedAt = trim((string) ($state['latest_current_observed_at'] ?? ''));
+
+    if ($latestObservedAt !== '') {
+        return db_select(
+            'SELECT
+                source_type,
+                source_id,
+                type_id,
+                order_id,
+                is_buy_order,
+                price,
+                volume_remain,
+                volume_total,
+                min_volume,
+                `range`,
+                duration,
+                issued,
+                expires,
+                observed_at
+             FROM market_orders_current
+             WHERE source_type = ?
+               AND source_id = ?
+               AND observed_at = ?
+             ORDER BY type_id ASC, is_buy_order ASC, price ASC, order_id ASC',
+            [$safeSourceType, $safeSourceId, $latestObservedAt]
+        );
+    }
+
+    $rows = db_select(
         'SELECT
             source_type,
             source_id,
@@ -1905,6 +2077,25 @@ function db_market_orders_current_latest_snapshot_rows(string $sourceType, int $
          ORDER BY type_id ASC, is_buy_order ASC, price ASC, order_id ASC',
         [$safeSourceType, $safeSourceId, $safeSourceType, $safeSourceId]
     );
+
+    if ($rows !== []) {
+        $latestObservedAt = trim((string) ($rows[0]['observed_at'] ?? ''));
+        if ($latestObservedAt !== '') {
+            db_market_source_snapshot_state_upsert([
+                'source_type' => $safeSourceType,
+                'source_id' => $safeSourceId,
+                'latest_current_observed_at' => $latestObservedAt,
+                'current_order_count' => count($rows),
+                'current_distinct_type_count' => count(array_unique(array_filter(array_map(
+                    static fn (array $row): int => (int) ($row['type_id'] ?? 0),
+                    $rows
+                )))),
+                'last_synced_at' => $latestObservedAt,
+            ]);
+        }
+    }
+
+    return $rows;
 }
 
 function db_market_order_snapshots_summary_normalize_row(array $row): array
@@ -2111,6 +2302,7 @@ function db_market_orders_snapshot_metrics_window_ensure_summary(string $sourceT
     );
 
     $normalizedSummaryRows = array_map('db_market_order_snapshots_summary_normalize_row', $summaryRows);
+    $stateUpdated = false;
     $latestObservedAt = '';
     foreach ($normalizedSummaryRows as $row) {
         $observedAt = trim((string) ($row['observed_at'] ?? ''));
@@ -2122,6 +2314,32 @@ function db_market_orders_snapshot_metrics_window_ensure_summary(string $sourceT
     $rawRowsStartObservedAt = $latestObservedAt !== '' ? $latestObservedAt : $safeStartObservedAt;
     $rawRows = db_market_orders_snapshot_metrics_window_raw($safeSourceType, $safeSourceId, $rawRowsStartObservedAt);
     $summaryRowsWritten = $rawRows === [] ? 0 : db_market_order_snapshots_summary_bulk_upsert($rawRows);
+    if ($rawRows !== []) {
+        $latestRawObservedAt = trim((string) ($rawRows[array_key_last($rawRows)]['observed_at'] ?? ''));
+        if ($latestRawObservedAt !== '') {
+            db_market_source_snapshot_state_upsert([
+                'source_type' => $safeSourceType,
+                'source_id' => $safeSourceId,
+                'latest_summary_observed_at' => $latestRawObservedAt,
+                'summary_row_count' => count($rawRows),
+                'last_synced_at' => $latestRawObservedAt,
+            ]);
+            $stateUpdated = true;
+        }
+    }
+
+    if (!$stateUpdated && $latestObservedAt !== '') {
+        db_market_source_snapshot_state_upsert([
+            'source_type' => $safeSourceType,
+            'source_id' => $safeSourceId,
+            'latest_summary_observed_at' => $latestObservedAt,
+            'summary_row_count' => count(array_filter(
+                $normalizedSummaryRows,
+                static fn (array $row): bool => (string) ($row['observed_at'] ?? '') === $latestObservedAt
+            )),
+            'last_synced_at' => $latestObservedAt,
+        ]);
+    }
 
     if ($normalizedSummaryRows === []) {
         return [
@@ -2886,6 +3104,8 @@ function db_market_orders_current_source_aggregates(string $sourceType, int $sou
     $params = [$sourceType, $sourceId];
     $typeFilterSql = '';
     $rawTypeFilterSql = '';
+    $state = db_market_source_snapshot_state_get($sourceType, $sourceId);
+    $latestSummaryObservedAt = trim((string) ($state['latest_summary_observed_at'] ?? ''));
 
     if ($typeIds !== []) {
         $normalizedTypeIds = array_values(array_unique(array_filter(array_map('intval', $typeIds), static fn (int $typeId): bool => $typeId > 0)));
@@ -2899,38 +3119,62 @@ function db_market_orders_current_source_aggregates(string $sourceType, int $sou
         $params = array_merge($params, $normalizedTypeIds);
     }
 
-    $rows = db_select_cached(
-        "SELECT
-            moss.type_id,
-            rit.type_name,
-            moss.best_sell_price,
-            moss.best_buy_price,
-            moss.total_sell_volume,
-            moss.total_buy_volume,
-            moss.sell_order_count,
-            moss.buy_order_count,
-            moss.observed_at AS last_observed_at
-         FROM market_order_snapshots_summary moss
-         LEFT JOIN ref_item_types rit ON rit.type_id = moss.type_id
-         WHERE moss.source_type = ?
-           AND moss.source_id = ?
-           AND moss.observed_at = (
-                SELECT MAX(summary_latest.observed_at)
-                FROM market_order_snapshots_summary summary_latest
-                WHERE summary_latest.source_type = ?
-                  AND summary_latest.source_id = ?
-           ){$typeFilterSql}
-         ORDER BY moss.type_id ASC",
-        [$sourceType, $sourceId, $sourceType, $sourceId, ...array_slice($params, 2)],
-        60,
-        'market.snapshot.current-aggregates'
-    );
+    $rows = [];
+    if ($latestSummaryObservedAt !== '') {
+        $rows = db_select_cached(
+            "SELECT
+                moss.type_id,
+                rit.type_name,
+                moss.best_sell_price,
+                moss.best_buy_price,
+                moss.total_sell_volume,
+                moss.total_buy_volume,
+                moss.sell_order_count,
+                moss.buy_order_count,
+                moss.observed_at AS last_observed_at
+             FROM market_order_snapshots_summary moss
+             LEFT JOIN ref_item_types rit ON rit.type_id = moss.type_id
+             WHERE moss.source_type = ?
+               AND moss.source_id = ?
+               AND moss.observed_at = ?{$typeFilterSql}
+             ORDER BY moss.type_id ASC",
+            [$sourceType, $sourceId, $latestSummaryObservedAt, ...array_slice($params, 2)],
+            60,
+            'market.snapshot.current-aggregates'
+        );
+    } else {
+        $rows = db_select_cached(
+            "SELECT
+                moss.type_id,
+                rit.type_name,
+                moss.best_sell_price,
+                moss.best_buy_price,
+                moss.total_sell_volume,
+                moss.total_buy_volume,
+                moss.sell_order_count,
+                moss.buy_order_count,
+                moss.observed_at AS last_observed_at
+             FROM market_order_snapshots_summary moss
+             LEFT JOIN ref_item_types rit ON rit.type_id = moss.type_id
+             WHERE moss.source_type = ?
+               AND moss.source_id = ?
+               AND moss.observed_at = (
+                    SELECT MAX(summary_latest.observed_at)
+                    FROM market_order_snapshots_summary summary_latest
+                    WHERE summary_latest.source_type = ?
+                      AND summary_latest.source_id = ?
+               ){$typeFilterSql}
+             ORDER BY moss.type_id ASC",
+            [$sourceType, $sourceId, $sourceType, $sourceId, ...array_slice($params, 2)],
+            60,
+            'market.snapshot.current-aggregates'
+        );
+    }
 
     if ($rows !== []) {
         return $rows;
     }
-
-    return db_select(
+    $rows = db_select(
         "SELECT
             moc.type_id,
             rit.type_name,
@@ -2949,6 +3193,21 @@ function db_market_orders_current_source_aggregates(string $sourceType, int $sou
          ORDER BY moc.type_id ASC",
         $params
     );
+
+    if ($rows !== []) {
+        $latestCurrentObservedAt = trim((string) ($rows[0]['last_observed_at'] ?? ''));
+        if ($latestCurrentObservedAt !== '') {
+            db_market_source_snapshot_state_upsert([
+                'source_type' => $sourceType,
+                'source_id' => $sourceId,
+                'latest_current_observed_at' => $latestCurrentObservedAt,
+                'current_distinct_type_count' => count($rows),
+                'last_synced_at' => $latestCurrentObservedAt,
+            ]);
+        }
+    }
+
+    return $rows;
 }
 
 function db_market_orders_current_alliance_vs_reference_aggregates(int $allianceStructureId, int $referenceSourceId, array $typeIds = []): array
@@ -4499,6 +4758,11 @@ function db_sync_schedule_registry_columns_ensure(): void
              END
          WHERE 1 = 1"
     );
+
+    db_ensure_table_index('sync_schedules', 'idx_sync_schedules_due_lookup', 'INDEX idx_sync_schedules_due_lookup (enabled, current_state, next_due_at, locked_until, id)');
+    db_ensure_table_index('sync_schedules', 'idx_sync_schedules_backfill_lookup', 'INDEX idx_sync_schedules_backfill_lookup (enabled, allow_backfill, current_state, degraded_until, locked_until, next_due_at, last_finished_at, id)');
+    db_ensure_table_index('sync_schedules', 'idx_sync_schedules_running_lookup', 'INDEX idx_sync_schedules_running_lookup (enabled, current_state, locked_until, last_started_at, id)');
+    db_ensure_table_index('sync_runs', 'idx_sync_runs_created_at', 'INDEX idx_sync_runs_created_at (created_at)');
 }
 
 function db_sync_schedule_select_columns_sql(): string
@@ -5777,6 +6041,7 @@ function db_scheduler_job_event_insert(string $jobKey, string $eventType, array 
         KEY idx_scheduler_job_events_job_created (job_key, created_at),
         KEY idx_scheduler_job_events_type_created (event_type, created_at)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4');
+    db_ensure_table_index('scheduler_job_events', 'idx_scheduler_job_events_created', 'INDEX idx_scheduler_job_events_created (created_at)');
 
     return db_execute(
         'INSERT INTO scheduler_job_events (job_key, event_type, detail_json, lateness_seconds, duration_seconds)
@@ -5798,6 +6063,7 @@ function db_scheduler_job_events_recent_summary(int $windowMinutes = 120): array
         KEY idx_scheduler_job_events_job_created (job_key, created_at),
         KEY idx_scheduler_job_events_type_created (event_type, created_at)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4');
+    db_ensure_table_index('scheduler_job_events', 'idx_scheduler_job_events_created', 'INDEX idx_scheduler_job_events_created (created_at)');
 
     $safeWindow = max(5, min(1440, $windowMinutes));
     $rows = db_select(
@@ -5840,6 +6106,7 @@ function db_scheduler_tuning_action_log(string $jobKey, string $actor, string $a
         KEY idx_scheduler_tuning_actions_job_created (job_key, created_at),
         KEY idx_scheduler_tuning_actions_actor_created (actor, created_at)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4');
+    db_ensure_table_index('scheduler_tuning_actions', 'idx_scheduler_tuning_actions_created', 'INDEX idx_scheduler_tuning_actions_created (created_at)');
 
     return db_execute(
         'INSERT INTO scheduler_tuning_actions (job_key, actor, action_type, reason_text, before_json, after_json, metrics_json)
@@ -5871,6 +6138,7 @@ function db_scheduler_tuning_actions_recent(int $limit = 20): array
         KEY idx_scheduler_tuning_actions_job_created (job_key, created_at),
         KEY idx_scheduler_tuning_actions_actor_created (actor, created_at)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4');
+    db_ensure_table_index('scheduler_tuning_actions', 'idx_scheduler_tuning_actions_created', 'INDEX idx_scheduler_tuning_actions_created (created_at)');
 
     $safeLimit = max(1, min(100, $limit));
     return db_select(
@@ -5913,6 +6181,7 @@ function db_scheduler_resource_metrics_ensure(): void
         KEY idx_scheduler_resource_metrics_schedule_created (schedule_id, created_at),
         KEY idx_scheduler_resource_metrics_job_started (job_key, started_at)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4');
+    db_ensure_table_index('scheduler_job_resource_metrics', 'idx_scheduler_resource_metrics_created', 'INDEX idx_scheduler_resource_metrics_created (created_at)');
 }
 
 function db_scheduler_resource_metric_insert(array $row): bool
@@ -5997,6 +6266,47 @@ function db_scheduler_resource_metrics_recent_all(int $limit = 20): array
          ORDER BY created_at DESC, id DESC
          LIMIT ' . $safeLimit
     );
+}
+
+function db_control_plane_retention_cleanup(int $limitPerTable = 5000): array
+{
+    db_sync_schedule_registry_columns_ensure();
+    db_scheduler_job_events_recent_summary(5);
+    db_scheduler_resource_metrics_ensure();
+    db_scheduler_planner_decisions_ensure();
+    db_scheduler_tuning_actions_recent(1);
+    db_ui_refresh_schema_ensure();
+
+    $safeLimit = max(100, min(50000, $limitPerTable));
+    $specs = [
+        ['table' => 'market_order_snapshots_summary', 'column' => 'observed_at', 'setting' => 'raw_order_snapshot_retention_days', 'default' => 30, 'min' => 1, 'max' => 3650],
+        ['table' => 'sync_runs', 'column' => 'created_at', 'setting' => 'sync_run_retention_days', 'default' => 30, 'min' => 7, 'max' => 3650],
+        ['table' => 'scheduler_job_events', 'column' => 'created_at', 'setting' => 'scheduler_event_retention_days', 'default' => 14, 'min' => 1, 'max' => 3650],
+        ['table' => 'scheduler_job_resource_metrics', 'column' => 'created_at', 'setting' => 'scheduler_metric_retention_days', 'default' => 30, 'min' => 7, 'max' => 3650],
+        ['table' => 'scheduler_planner_decisions', 'column' => 'created_at', 'setting' => 'scheduler_planner_retention_days', 'default' => 30, 'min' => 7, 'max' => 3650],
+        ['table' => 'scheduler_tuning_actions', 'column' => 'created_at', 'setting' => 'scheduler_tuning_retention_days', 'default' => 30, 'min' => 7, 'max' => 3650],
+        ['table' => 'ui_refresh_events', 'column' => 'created_at', 'setting' => 'ui_refresh_event_retention_days', 'default' => 14, 'min' => 1, 'max' => 3650],
+    ];
+
+    $deleted = [];
+    $rowsWritten = 0;
+
+    foreach ($specs as $spec) {
+        $retentionDays = db_setting_int((string) $spec['setting'], (int) $spec['default'], (int) $spec['min'], (int) $spec['max']);
+        $cutoff = gmdate('Y-m-d H:i:s', strtotime('-' . $retentionDays . ' days'));
+        $rowsDeleted = db_prune_before_datetime((string) $spec['table'], (string) $spec['column'], $cutoff, $safeLimit);
+        $deleted[(string) $spec['table']] = [
+            'rows_deleted' => $rowsDeleted,
+            'cutoff' => $cutoff,
+            'retention_days' => $retentionDays,
+        ];
+        $rowsWritten += $rowsDeleted;
+    }
+
+    return [
+        'rows_written' => $rowsWritten,
+        'deleted' => $deleted,
+    ];
 }
 
 
@@ -6118,6 +6428,7 @@ function db_scheduler_planner_decisions_ensure(): void
         KEY idx_scheduler_planner_decisions_job_created (job_key, created_at),
         KEY idx_scheduler_planner_decisions_type_created (decision_type, created_at)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4');
+    db_ensure_table_index('scheduler_planner_decisions', 'idx_scheduler_planner_decisions_created', 'INDEX idx_scheduler_planner_decisions_created (created_at)');
 }
 
 function db_scheduler_planner_decision_insert(?int $scheduleId, string $jobKey, string $decisionType, string $pressureState, string $reasonText, array $decision = []): bool

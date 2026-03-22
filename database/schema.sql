@@ -95,7 +95,8 @@ CREATE TABLE IF NOT EXISTS sync_runs (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     KEY idx_dataset_started (dataset_key, started_at),
-    KEY idx_run_status (run_status)
+    KEY idx_run_status (run_status),
+    KEY idx_sync_runs_created_at (created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS sync_schedules (
@@ -148,7 +149,10 @@ CREATE TABLE IF NOT EXISTS sync_schedules (
     UNIQUE KEY unique_job_key (job_key),
     KEY idx_enabled (enabled),
     KEY idx_next_run_at (next_run_at),
-    KEY idx_job_key (job_key)
+    KEY idx_job_key (job_key),
+    KEY idx_sync_schedules_due_lookup (enabled, current_state, next_due_at, locked_until, id),
+    KEY idx_sync_schedules_backfill_lookup (enabled, allow_backfill, current_state, degraded_until, locked_until, next_due_at, last_finished_at, id),
+    KEY idx_sync_schedules_running_lookup (enabled, current_state, locked_until, last_started_at, id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 SET @sync_schedules_offset_seconds_exists := (
@@ -691,7 +695,8 @@ CREATE TABLE IF NOT EXISTS scheduler_job_events (
     duration_seconds DECIMAL(10,2) DEFAULT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     KEY idx_scheduler_job_events_job_created (job_key, created_at),
-    KEY idx_scheduler_job_events_type_created (event_type, created_at)
+    KEY idx_scheduler_job_events_type_created (event_type, created_at),
+    KEY idx_scheduler_job_events_created (created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS scheduler_tuning_actions (
@@ -705,7 +710,8 @@ CREATE TABLE IF NOT EXISTS scheduler_tuning_actions (
     metrics_json LONGTEXT DEFAULT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     KEY idx_scheduler_tuning_actions_job_created (job_key, created_at),
-    KEY idx_scheduler_tuning_actions_actor_created (actor, created_at)
+    KEY idx_scheduler_tuning_actions_actor_created (actor, created_at),
+    KEY idx_scheduler_tuning_actions_created (created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 
@@ -736,7 +742,8 @@ CREATE TABLE IF NOT EXISTS scheduler_job_resource_metrics (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     KEY idx_scheduler_resource_metrics_job_created (job_key, created_at),
     KEY idx_scheduler_resource_metrics_schedule_created (schedule_id, created_at),
-    KEY idx_scheduler_resource_metrics_job_started (job_key, started_at)
+    KEY idx_scheduler_resource_metrics_job_started (job_key, started_at),
+    KEY idx_scheduler_resource_metrics_created (created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS scheduler_planner_decisions (
@@ -749,7 +756,8 @@ CREATE TABLE IF NOT EXISTS scheduler_planner_decisions (
     decision_json LONGTEXT DEFAULT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     KEY idx_scheduler_planner_decisions_job_created (job_key, created_at),
-    KEY idx_scheduler_planner_decisions_type_created (decision_type, created_at)
+    KEY idx_scheduler_planner_decisions_type_created (decision_type, created_at),
+    KEY idx_scheduler_planner_decisions_created (created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS intelligence_snapshots (
@@ -1052,7 +1060,8 @@ CREATE TABLE IF NOT EXISTS market_orders_history (
     UNIQUE KEY unique_source_order_observed (source_type, source_id, order_id, observed_at),
     KEY idx_market_orders_history_type_observed (source_type, source_id, type_id, observed_at),
     KEY idx_market_orders_history_observed (source_type, source_id, observed_at),
-    KEY idx_market_orders_history_source_date_type (source_type, source_id, observed_date, type_id)
+    KEY idx_market_orders_history_source_date_type (source_type, source_id, observed_date, type_id),
+    KEY idx_market_orders_history_observed_at (observed_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS market_order_snapshots_summary (
@@ -1074,7 +1083,24 @@ CREATE TABLE IF NOT EXISTS market_order_snapshots_summary (
     UNIQUE KEY unique_market_order_snapshot_summary (source_type, source_id, type_id, observed_at),
     KEY idx_snapshot_summary_source_observed_type (source_type, source_id, observed_at, type_id),
     KEY idx_snapshot_summary_source_type_observed (source_type, source_id, type_id, observed_at),
-    KEY idx_snapshot_summary_source_date_type (source_type, source_id, observed_date, type_id)
+    KEY idx_snapshot_summary_source_date_type (source_type, source_id, observed_date, type_id),
+    KEY idx_snapshot_summary_observed (observed_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS market_source_snapshot_state (
+    source_type ENUM('market_hub', 'alliance_structure') NOT NULL,
+    source_id BIGINT UNSIGNED NOT NULL,
+    latest_current_observed_at DATETIME DEFAULT NULL,
+    latest_summary_observed_at DATETIME DEFAULT NULL,
+    current_order_count INT UNSIGNED NOT NULL DEFAULT 0,
+    current_distinct_type_count INT UNSIGNED NOT NULL DEFAULT 0,
+    summary_row_count INT UNSIGNED NOT NULL DEFAULT 0,
+    last_synced_at DATETIME DEFAULT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (source_type, source_id),
+    KEY idx_market_source_snapshot_state_current (latest_current_observed_at),
+    KEY idx_market_source_snapshot_state_summary (latest_summary_observed_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS market_history_daily (
