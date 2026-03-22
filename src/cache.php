@@ -49,6 +49,20 @@ function supplycore_redis_prefixed_key(string $key): string
     return $config['prefix'] . ':' . ltrim($key, ':');
 }
 
+function supplycore_redis_max_payload_bytes(): int
+{
+    $defaultLimit = 64 * 1024 * 1024;
+    $hardLimit = (512 * 1024 * 1024) - 1024;
+    $configured = (int) config('redis.max_payload_bytes', $defaultLimit);
+
+    return max(1024, min($hardLimit, $configured));
+}
+
+function supplycore_redis_value_fits_limits(string $value): bool
+{
+    return strlen($value) <= supplycore_redis_max_payload_bytes();
+}
+
 function supplycore_redis_disconnect(): void
 {
     static $socket = null;
@@ -150,18 +164,32 @@ function supplycore_redis_command(array $parts): mixed
 
 function supplycore_redis_command_raw($socket, array $parts): mixed
 {
-    $request = '*' . count($parts) . "\r\n";
+    supplycore_redis_write_all($socket, '*' . count($parts) . "\r\n");
+
     foreach ($parts as $part) {
         $chunk = (string) $part;
-        $request .= '$' . strlen($chunk) . "\r\n" . $chunk . "\r\n";
-    }
-
-    $written = fwrite($socket, $request);
-    if ($written === false || $written < strlen($request)) {
-        throw new RuntimeException('Failed to write Redis command.');
+        supplycore_redis_write_all($socket, '$' . strlen($chunk) . "\r\n");
+        supplycore_redis_write_all($socket, $chunk);
+        supplycore_redis_write_all($socket, "\r\n");
     }
 
     return supplycore_redis_read_response($socket);
+}
+
+function supplycore_redis_write_all($socket, string $payload): void
+{
+    $totalBytes = strlen($payload);
+    $writtenBytes = 0;
+
+    while ($writtenBytes < $totalBytes) {
+        $chunk = substr($payload, $writtenBytes);
+        $written = @fwrite($socket, $chunk);
+        if ($written === false || $written <= 0) {
+            throw new RuntimeException('Failed to write Redis command.');
+        }
+
+        $writtenBytes += $written;
+    }
 }
 
 function supplycore_redis_read_response($socket): mixed
@@ -228,6 +256,10 @@ function supplycore_redis_get(string $key): ?string
 
 function supplycore_redis_set(string $key, string $value, int $ttlSeconds): bool
 {
+    if (!supplycore_redis_value_fits_limits($value)) {
+        return false;
+    }
+
     $safeTtl = max(1, $ttlSeconds);
     $result = supplycore_redis_command(['SET', supplycore_redis_prefixed_key($key), $value, 'EX', (string) $safeTtl]);
 
@@ -258,6 +290,10 @@ function supplycore_redis_set_json(string $key, array $value, int $ttlSeconds): 
 
 function supplycore_redis_set_nx(string $key, string $value, int $ttlSeconds): bool
 {
+    if (!supplycore_redis_value_fits_limits($value)) {
+        return false;
+    }
+
     $safeTtl = max(1, $ttlSeconds);
     $result = supplycore_redis_command(['SET', supplycore_redis_prefixed_key($key), $value, 'EX', (string) $safeTtl, 'NX']);
 
