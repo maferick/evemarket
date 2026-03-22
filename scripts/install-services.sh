@@ -85,6 +85,62 @@ render_unit() {
     "${template}" > "${destination}"
 }
 
+resolve_unit_template() {
+  local requested_template=$1
+  local fallback_template=${2-}
+
+  if [[ -f ${requested_template} ]]; then
+    printf '%s\n' "${requested_template}"
+    return 0
+  fi
+
+  if [[ -n ${fallback_template} && -f ${fallback_template} ]]; then
+    echo "Warning: missing unit template ${requested_template}; generating it from ${fallback_template}" >&2
+    printf '%s\n' "${fallback_template}"
+    return 0
+  fi
+
+  echo "Missing required unit template: ${requested_template}" >&2
+  if [[ -n ${fallback_template} ]]; then
+    echo "Fallback template was also unavailable: ${fallback_template}" >&2
+  fi
+  exit 1
+}
+
+render_sync_instance_unit() {
+  local template
+  local destination=$1
+
+  template=$(resolve_unit_template \
+    "${REPO_ROOT}/ops/systemd/supplycore-sync-worker@.service" \
+    "${REPO_ROOT}/ops/systemd/supplycore-sync-worker.service")
+
+  render_unit "${template}" "${destination}"
+  if [[ ${template} != *"@.service" ]]; then
+    sed -i \
+      -e 's|Description=SupplyCore sync worker$|Description=SupplyCore sync worker %i|' \
+      -e 's|--worker-id %H-sync --queues|--worker-id %H-sync-%i --queues|' \
+      "${destination}"
+  fi
+}
+
+render_compute_instance_unit() {
+  local template
+  local destination=$1
+
+  template=$(resolve_unit_template \
+    "${REPO_ROOT}/ops/systemd/supplycore-compute-worker@.service" \
+    "${REPO_ROOT}/ops/systemd/supplycore-compute-worker.service")
+
+  render_unit "${template}" "${destination}"
+  if [[ ${template} != *"@.service" ]]; then
+    sed -i \
+      -e 's|Description=SupplyCore compute worker$|Description=SupplyCore compute worker %i|' \
+      -e 's|--worker-id %H-compute --queues|--worker-id %H-compute-%i --queues|' \
+      "${destination}"
+  fi
+}
+
 start_services() {
   local service
   local -a services=("$@")
@@ -150,9 +206,9 @@ else
 fi
 
 render_unit "${REPO_ROOT}/ops/systemd/supplycore-sync-worker.service" "${SYSTEMD_DIR}/supplycore-sync-worker.service"
-render_unit "${REPO_ROOT}/ops/systemd/supplycore-sync-worker@.service" "${SYSTEMD_DIR}/supplycore-sync-worker@.service"
 render_unit "${REPO_ROOT}/ops/systemd/supplycore-compute-worker.service" "${SYSTEMD_DIR}/supplycore-compute-worker.service"
-render_unit "${REPO_ROOT}/ops/systemd/supplycore-compute-worker@.service" "${SYSTEMD_DIR}/supplycore-compute-worker@.service"
+render_sync_instance_unit "${SYSTEMD_DIR}/supplycore-sync-worker@.service"
+render_compute_instance_unit "${SYSTEMD_DIR}/supplycore-compute-worker@.service"
 render_unit "${REPO_ROOT}/ops/systemd/supplycore-zkill.service" "${SYSTEMD_DIR}/supplycore-zkill.service"
 if [[ ${INSTALL_COMPAT_ORCHESTRATOR} == true ]]; then
   render_unit "${REPO_ROOT}/ops/systemd/supplycore-orchestrator.service" "${SYSTEMD_DIR}/supplycore-orchestrator.service"

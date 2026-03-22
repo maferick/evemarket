@@ -199,6 +199,8 @@ sudo ./scripts/install-services.sh
 
 The script asks for the app root, runtime user/group, worker counts, whether to enable the dedicated zKill worker, and whether to also install the legacy compatibility service. It also re-runs `pip install --upgrade ./python`, which fixes hosts where `python -m orchestrator zkill-worker ...` still points at an older package build that does not know about the `zkill-worker` subcommand yet.
 
+If your deployed checkout is missing the newer `supplycore-sync-worker@.service` or `supplycore-compute-worker@.service` template files, the installer now falls back to the single-worker units and generates compatible instance templates automatically during installation.
+
 If you prefer manual installation, copy the units and env file yourself:
 
 ```bash
