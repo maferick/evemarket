@@ -191,23 +191,35 @@ SupplyCore now runs three long-lived worker classes:
 
 ### Systemd deployment
 
-Install and enable the continuous services instead of cron:
+Use the interactive installer to build/update the Python virtualenv, install the current orchestrator package, copy the unit files, and enable the selected services:
 
 ```bash
+sudo ./scripts/install-services.sh
+```
+
+The script asks for the app root, runtime user/group, worker counts, whether to enable the dedicated zKill worker, and whether to also install the legacy compatibility service. It also re-runs `pip install --upgrade ./python`, which fixes hosts where `python -m orchestrator zkill-worker ...` still points at an older package build that does not know about the `zkill-worker` subcommand yet.
+
+If you prefer manual installation, copy the units and env file yourself:
+
+```bash
+sudo cp ops/systemd/supplycore-sync-worker.service /etc/systemd/system/
 sudo cp ops/systemd/supplycore-sync-worker@.service /etc/systemd/system/
+sudo cp ops/systemd/supplycore-compute-worker.service /etc/systemd/system/
 sudo cp ops/systemd/supplycore-compute-worker@.service /etc/systemd/system/
 sudo cp ops/systemd/supplycore-zkill.service /etc/systemd/system/
 sudo cp ops/systemd/supplycore-worker.env.example /etc/default/supplycore-worker
 sudo systemctl daemon-reload
-sudo systemctl enable --now supplycore-sync-worker@1.service
-sudo systemctl enable --now supplycore-compute-worker@1.service
+sudo systemctl enable --now supplycore-sync-worker.service
+sudo systemctl enable --now supplycore-compute-worker.service
 sudo systemctl enable --now supplycore-zkill.service
 ```
 
 Recommended scaling pattern:
 
-- `supplycore-sync-worker@N.service` → queues/classes tuned for `sync`
-- `supplycore-compute-worker@N.service` → queues/classes tuned for `compute`
+- `supplycore-sync-worker.service` → single sync worker with a convenient non-templated unit name
+- `supplycore-sync-worker@N.service` → scaled sync workers when you want more than one instance
+- `supplycore-compute-worker.service` → single compute worker with a convenient non-templated unit name
+- `supplycore-compute-worker@N.service` → scaled compute workers when you want more than one instance
 - `supplycore-zkill.service` → dedicated infinite stream worker
 
 ### Logs
@@ -380,6 +392,7 @@ Validation:
 
 ```bash
 .venv-orchestrator/bin/python -m orchestrator --help
+.venv-orchestrator/bin/python -m orchestrator zkill-worker --help
 php bin/orchestrator_config.php
 ```
 
