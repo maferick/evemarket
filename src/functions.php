@@ -3498,12 +3498,12 @@ function scheduler_registry_definitions(): array
         'killmail_r2z2_sync' => ['label' => 'Killmail R2Z2 Stream', 'default_interval_minutes' => 3, 'default_offset_minutes' => 3, 'priority' => 'highest', 'timeout_seconds' => 90, 'concurrency_policy' => 'single', 'execution_mode' => 'php', 'tuning_mode' => 'automatic', 'explicitly_configured' => true, 'min_interval_minutes' => 1, 'max_interval_minutes' => 3, 'workload_class' => 'heavy'],
         'configured_structure_destination_id_for_esi_sync' => ['label' => 'Configured Structure Destination for ESI', 'default_interval_minutes' => 30, 'default_offset_minutes' => 4, 'priority' => 'normal', 'timeout_seconds' => 120, 'concurrency_policy' => 'single', 'execution_mode' => 'php', 'tuning_mode' => 'automatic', 'explicitly_configured' => false, 'workload_class' => 'lightweight'],
         'current_state_refresh_sync' => ['label' => 'Current-State Refresh', 'default_interval_minutes' => 12, 'default_offset_minutes' => 6, 'priority' => 'medium', 'timeout_seconds' => 120, 'concurrency_policy' => 'single', 'execution_mode' => 'php', 'tuning_mode' => 'automatic', 'explicitly_configured' => true, 'workload_class' => 'heavy'],
-        'doctrine_intelligence_sync' => ['label' => 'Doctrine Intelligence', 'default_interval_minutes' => 15, 'default_offset_minutes' => 8, 'priority' => 'normal', 'timeout_seconds' => 180, 'concurrency_policy' => 'single', 'execution_mode' => 'php', 'tuning_mode' => 'automatic', 'explicitly_configured' => true, 'allow_backfill' => true, 'backfill_priority' => 'normal', 'min_backfill_gap_seconds' => 300, 'max_early_start_seconds' => 900, 'workload_class' => 'lightweight'],
-        'market_comparison_summary_sync' => ['label' => 'Market Comparison Summary', 'default_interval_minutes' => 15, 'default_offset_minutes' => 9, 'priority' => 'normal', 'timeout_seconds' => 180, 'concurrency_policy' => 'single', 'execution_mode' => 'php', 'tuning_mode' => 'automatic', 'explicitly_configured' => true, 'allow_backfill' => true, 'backfill_priority' => 'high', 'min_backfill_gap_seconds' => 300, 'max_early_start_seconds' => 900, 'workload_class' => 'heavy'],
-        'loss_demand_summary_sync' => ['label' => 'Loss Demand Summary', 'default_interval_minutes' => 15, 'default_offset_minutes' => 10, 'priority' => 'normal', 'timeout_seconds' => 180, 'concurrency_policy' => 'single', 'execution_mode' => 'php', 'tuning_mode' => 'automatic', 'explicitly_configured' => true, 'allow_backfill' => true, 'backfill_priority' => 'high', 'min_backfill_gap_seconds' => 300, 'max_early_start_seconds' => 900, 'workload_class' => 'lightweight'],
-        'dashboard_summary_sync' => ['label' => 'Dashboard Summary', 'default_interval_minutes' => 15, 'default_offset_minutes' => 11, 'priority' => 'normal', 'timeout_seconds' => 180, 'concurrency_policy' => 'single', 'execution_mode' => 'php', 'tuning_mode' => 'automatic', 'explicitly_configured' => true, 'allow_backfill' => true, 'backfill_priority' => 'highest', 'min_backfill_gap_seconds' => 240, 'max_early_start_seconds' => 900, 'workload_class' => 'lightweight'],
+        'doctrine_intelligence_sync' => ['label' => 'Doctrine Intelligence', 'default_interval_minutes' => 15, 'default_offset_minutes' => 8, 'priority' => 'normal', 'timeout_seconds' => 180, 'concurrency_policy' => 'single', 'execution_mode' => 'python', 'tuning_mode' => 'automatic', 'explicitly_configured' => true, 'allow_backfill' => true, 'backfill_priority' => 'normal', 'min_backfill_gap_seconds' => 300, 'max_early_start_seconds' => 900, 'workload_class' => 'lightweight'],
+        'market_comparison_summary_sync' => ['label' => 'Market Comparison Summary', 'default_interval_minutes' => 15, 'default_offset_minutes' => 9, 'priority' => 'normal', 'timeout_seconds' => 180, 'concurrency_policy' => 'single', 'execution_mode' => 'python', 'tuning_mode' => 'automatic', 'explicitly_configured' => true, 'allow_backfill' => true, 'backfill_priority' => 'high', 'min_backfill_gap_seconds' => 300, 'max_early_start_seconds' => 900, 'workload_class' => 'heavy'],
+        'loss_demand_summary_sync' => ['label' => 'Loss Demand Summary', 'default_interval_minutes' => 15, 'default_offset_minutes' => 10, 'priority' => 'normal', 'timeout_seconds' => 180, 'concurrency_policy' => 'single', 'execution_mode' => 'python', 'tuning_mode' => 'automatic', 'explicitly_configured' => true, 'allow_backfill' => true, 'backfill_priority' => 'high', 'min_backfill_gap_seconds' => 300, 'max_early_start_seconds' => 900, 'workload_class' => 'lightweight'],
+        'dashboard_summary_sync' => ['label' => 'Dashboard Summary', 'default_interval_minutes' => 15, 'default_offset_minutes' => 11, 'priority' => 'normal', 'timeout_seconds' => 180, 'concurrency_policy' => 'single', 'execution_mode' => 'python', 'tuning_mode' => 'automatic', 'explicitly_configured' => true, 'allow_backfill' => true, 'backfill_priority' => 'highest', 'min_backfill_gap_seconds' => 240, 'max_early_start_seconds' => 900, 'workload_class' => 'lightweight'],
         'rebuild_ai_briefings' => ['label' => 'Rebuild AI Briefings', 'default_interval_minutes' => 20, 'default_offset_minutes' => 12, 'priority' => 'normal', 'timeout_seconds' => 300, 'concurrency_policy' => 'background', 'execution_mode' => 'php', 'tuning_mode' => 'automatic', 'explicitly_configured' => true, 'workload_class' => 'lightweight'],
-        'activity_priority_summary_sync' => ['label' => 'Activity Priority Summary', 'default_interval_minutes' => 15, 'default_offset_minutes' => 13, 'priority' => 'normal', 'timeout_seconds' => 180, 'concurrency_policy' => 'single', 'execution_mode' => 'php', 'tuning_mode' => 'automatic', 'explicitly_configured' => false, 'workload_class' => 'heavy'],
+        'activity_priority_summary_sync' => ['label' => 'Activity Priority Summary', 'default_interval_minutes' => 15, 'default_offset_minutes' => 13, 'priority' => 'normal', 'timeout_seconds' => 180, 'concurrency_policy' => 'single', 'execution_mode' => 'python', 'tuning_mode' => 'automatic', 'explicitly_configured' => false, 'workload_class' => 'heavy'],
         'market_hub_local_history_sync' => ['label' => 'Market Hub Local History', 'default_interval_minutes' => 20, 'default_offset_minutes' => 14, 'priority' => 'normal', 'timeout_seconds' => 1800, 'concurrency_policy' => 'background', 'execution_mode' => 'php', 'tuning_mode' => 'automatic', 'explicitly_configured' => true, 'allow_backfill' => true, 'backfill_priority' => 'normal', 'min_backfill_gap_seconds' => 900, 'max_early_start_seconds' => 900, 'workload_class' => 'heavy'],
         'analytics_bucket_1h_sync' => ['label' => 'Analytics Buckets (1h)', 'default_interval_minutes' => 15, 'default_offset_minutes' => 15, 'priority' => 'normal', 'timeout_seconds' => 180, 'concurrency_policy' => 'single', 'execution_mode' => 'php', 'tuning_mode' => 'automatic', 'explicitly_configured' => false, 'allow_backfill' => true, 'backfill_priority' => 'normal', 'min_backfill_gap_seconds' => 600, 'max_early_start_seconds' => 900, 'workload_class' => 'lightweight'],
         'analytics_bucket_1d_sync' => ['label' => 'Analytics Buckets (1d)', 'default_interval_minutes' => 60, 'default_offset_minutes' => 16, 'priority' => 'normal', 'timeout_seconds' => 240, 'concurrency_policy' => 'single', 'execution_mode' => 'php', 'tuning_mode' => 'automatic', 'explicitly_configured' => false, 'workload_class' => 'lightweight'],
@@ -3940,10 +3940,24 @@ function scheduler_runtime_guard(float $startedAtUnix, int $timeoutSeconds, stri
     }
 }
 
+function scheduler_python_heavy_jobs_enabled(): bool
+{
+    return (bool) config('scheduler.python_heavy_jobs_enabled', true);
+}
+
+function scheduler_python_php_fallback_enabled(): bool
+{
+    return (bool) config('scheduler.python_php_fallback_enabled', true);
+}
+
 function scheduler_job_execution_mode(array $job, ?array $definition = null): string
 {
     $resolvedDefinition = is_array($definition) ? $definition : (scheduler_registry_definitions()[(string) ($job['job_key'] ?? '')] ?? []);
     $configured = strtolower(trim((string) ($job['execution_mode'] ?? $resolvedDefinition['execution_mode'] ?? 'php')));
+
+    if ($configured === 'python' && !scheduler_python_heavy_jobs_enabled()) {
+        return 'php';
+    }
 
     return $configured === 'python' ? 'python' : 'php';
 }
@@ -12833,6 +12847,148 @@ function market_order_page_canonical_rows(
         'rows_seen' => $rowsSeen,
         'rows' => $canonicalRows,
     ];
+}
+
+function item_scope_allowed_type_ids(): array
+{
+    $rows = db_select('SELECT type_id FROM ref_item_types WHERE published = 1 ORDER BY type_id ASC');
+    $filtered = item_scope_filter_rows(
+        $rows,
+        static fn (array $row): int => (int) ($row['type_id'] ?? 0)
+    );
+
+    return array_values(array_map(static fn (array $row): int => (int) ($row['type_id'] ?? 0), $filtered));
+}
+
+function python_bridge_market_comparison_context(): array
+{
+    $allianceStructureId = configured_structure_destination_id_for_esi_sync();
+    $marketHubRef = market_hub_setting_reference();
+    $referenceSourceId = sync_source_id_from_hub_ref($marketHubRef);
+
+    return [
+        'job_key' => 'market_comparison_summary_sync',
+        'alliance_structure_id' => $allianceStructureId,
+        'reference_source_id' => $referenceSourceId,
+        'market_hub_ref' => $marketHubRef,
+        'thresholds' => market_compare_thresholds(),
+        'allowed_type_ids' => item_scope_allowed_type_ids(),
+        'snapshot_key' => market_comparison_snapshot_key(),
+    ];
+}
+
+function python_bridge_run_job_handler(string $jobKey, string $reason = 'python-fallback'): array
+{
+    $definitions = scheduler_job_definitions();
+    $definition = $definitions[$jobKey] ?? null;
+    if (!is_array($definition) || !isset($definition['handler']) || !is_callable($definition['handler'])) {
+        throw new InvalidArgumentException('No scheduler handler is registered for job key: ' . $jobKey);
+    }
+
+    $result = $definition['handler']();
+    if (!is_array($result)) {
+        $result = sync_result_shape();
+    }
+
+    return $result + [
+        'meta' => (is_array($result['meta'] ?? null) ? $result['meta'] : []) + [
+            'fallback_reason' => $reason,
+        ],
+    ];
+}
+
+function scheduler_finalize_python_job_result(array $job, array $pythonResult): array
+{
+    $jobKey = trim((string) ($job['job_key'] ?? ''));
+    $scheduleId = (int) ($job['id'] ?? 0);
+    $jobType = scheduler_job_runtime_type($job);
+    $datasetKey = scheduler_job_dataset_key($jobKey !== '' ? $jobKey : 'unknown');
+    $scheduledFor = (string) ($job['next_due_at'] ?? $job['next_run_at'] ?? '');
+    $status = trim((string) ($pythonResult['status'] ?? 'failed'));
+    $status = in_array($status, ['success', 'failed', 'skipped'], true) ? $status : 'failed';
+    $error = $status === 'failed' ? scheduler_normalize_error_message((string) ($pythonResult['error'] ?? 'Python worker failed.')) : null;
+    $rowsSeen = max(0, (int) ($pythonResult['rows_seen'] ?? 0));
+    $rowsWritten = max(0, (int) ($pythonResult['rows_written'] ?? 0));
+    $cursor = isset($pythonResult['cursor']) ? (string) $pythonResult['cursor'] : null;
+    $checksum = isset($pythonResult['checksum']) ? (string) $pythonResult['checksum'] : null;
+    $warnings = array_values(array_filter(array_map('strval', (array) ($pythonResult['warnings'] ?? [])), static fn (string $message): bool => true));
+    $meta = is_array($pythonResult['meta'] ?? null) ? $pythonResult['meta'] : [];
+    $durationMs = max(0, (int) ($pythonResult['duration_ms'] ?? 0));
+    $durationSeconds = round($durationMs / 1000, 2);
+    $runId = max(0, (int) ($pythonResult['run_id'] ?? 0));
+    $startedAt = trim((string) ($pythonResult['started_at'] ?? ''));
+    if ($startedAt === '') {
+        $startedAt = gmdate(DATE_ATOM);
+    }
+    $finishedAt = trim((string) ($pythonResult['finished_at'] ?? ''));
+    if ($finishedAt === '') {
+        $finishedAt = gmdate(DATE_ATOM);
+    }
+    $summary = trim((string) ($pythonResult['summary'] ?? ''));
+    if ($summary === '') {
+        $summary = $status === 'failed' ? (string) $error : 'Python worker completed.';
+    }
+
+    if ($status === 'failed') {
+        mark_sync_failure($datasetKey, 'incremental', (string) $error);
+        if ($runId > 0) {
+            db_sync_run_finish($runId, 'failed', $rowsSeen, $rowsWritten, $cursor, $error);
+        }
+        if ($scheduleId > 0) {
+            db_sync_schedule_mark_failure($scheduleId, (string) $error, scheduler_job_runtime_snapshot($jobKey, 'failed') + [
+                'last_duration_seconds' => $durationSeconds,
+                'current_pressure_state' => $job['current_pressure_state'] ?? 'healthy',
+            ]);
+        }
+        db_scheduler_job_event_insert($jobKey, 'failure', [
+            'error' => $error,
+            'execution_mode' => 'python',
+            'rows_seen' => $rowsSeen,
+            'rows_written' => $rowsWritten,
+            'summary' => $summary,
+            'meta' => $meta,
+        ], 0, $durationSeconds);
+    } else {
+        mark_sync_success($datasetKey, 'incremental', $cursor, $rowsWritten, $checksum);
+        if ($runId > 0) {
+            db_sync_run_finish($runId, 'success', $rowsSeen, $rowsWritten, $cursor, null);
+        }
+        if ($scheduleId > 0) {
+            db_sync_schedule_mark_success($scheduleId, scheduler_job_runtime_snapshot($jobKey, $status) + [
+                'last_duration_seconds' => $durationSeconds,
+                'current_pressure_state' => $job['current_pressure_state'] ?? 'healthy',
+            ]);
+        }
+        db_scheduler_job_event_insert($jobKey, $status === 'skipped' ? 'skipped' : 'finished', [
+            'status' => $status,
+            'execution_mode' => 'python',
+            'rows_seen' => $rowsSeen,
+            'rows_written' => $rowsWritten,
+            'summary' => $summary,
+            'meta' => $meta,
+        ], 0, $durationSeconds);
+    }
+
+    $result = [
+        'job_id' => $scheduleId,
+        'job_key' => $jobKey,
+        'job_type' => $jobType,
+        'scheduled_for' => $scheduledFor,
+        'started_at' => $startedAt,
+        'finished_at' => $finishedAt,
+        'duration_ms' => $durationMs,
+        'status' => $status,
+        'error' => $error,
+        'rows_seen' => $rowsSeen,
+        'rows_written' => $rowsWritten,
+        'warnings' => $warnings,
+        'meta' => $meta + ['execution_mode' => 'python'],
+        'summary' => $summary,
+    ];
+    $result['ui_refresh'] = supplycore_ui_refresh_publish_for_job_result($result);
+    db_scheduler_daemon_request_wake(scheduler_daemon_key());
+
+    return $result;
 }
 
 function sync_result_shape(): array

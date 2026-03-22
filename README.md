@@ -312,7 +312,7 @@ python/
     __main__.py          # python -m orchestrator
     config.py            # loads PHP-exported runtime config JSON
     health.py            # scheduler health probe wrapper
-    job_runner.py        # python_worker skeleton for heavy scheduler jobs
+    job_runner.py        # Python scheduler worker entrypoint + PHP fallback/finalize bridge
     logging_utils.py     # journald-friendly JSON logs
     main.py              # CLI entrypoint
     php_runner.py        # supervised PHP child process runner
@@ -326,7 +326,7 @@ python/
 - `systemd` runs the Python orchestrator.
 - Python launches `bin/scheduler_daemon.php` as a child process.
 - Python captures stdout/stderr, polls `bin/scheduler_health.php`, enforces graceful stop/kill behavior, writes a heartbeat file, and restarts the PHP daemon after crashes or repeated health failures.
-- PHP remains the default execution engine, but heavy jobs can now be routed to a dedicated Python `python_worker` skeleton through the per-job `execution_mode` flag.
+- PHP remains the default execution engine, while heavy summary jobs can now be routed to a Python `python_worker` with SQL-first batching, memory guards, and a PHP fallback bridge for not-yet-migrated handlers.
 
 **Phase 2: optional later**
 
@@ -339,6 +339,7 @@ python/
 - `bin/scheduler_daemon.php` — primary managed PHP child process.
 - `bin/scheduler_health.php` — health/heartbeat probe used by Python.
 - `bin/python_job_runner.py` — bootstrap the Python `python_worker` runner for heavy `execution_mode=python` jobs.
+- `bin/python_scheduler_bridge.php` — small PHP bridge for Python workers to fetch job context, store snapshots, invoke PHP fallback handlers, and finalize scheduler bookkeeping.
 - `bin/scheduler_watchdog.php` / `bin/cron_tick.php` — still available during transition, but when `scheduler.supervisor_mode=python` they target the Python-managed service instead of spawning a standalone PHP daemon directly.
 
 #### Duplicate-master safety
@@ -353,6 +354,15 @@ python/
 - PHP continues to write scheduler lease/heartbeat data into `scheduler_daemon_state`.
 - Python polls `bin/scheduler_health.php` on a configurable interval and restarts the managed PHP process after repeated degraded/failed checks.
 - On orchestrator restart, PHP's existing stale-running-job recovery remains in place through the scheduler startup path.
+
+#### Python worker processing flow
+
+- `sync_schedules.execution_mode` now explicitly routes `market_comparison_summary_sync`, `loss_demand_summary_sync`, `activity_priority_summary_sync`, `dashboard_summary_sync`, and `doctrine_intelligence_sync` to the Python worker by default.
+- `market_comparison_summary_sync` is the first fully migrated example: Python fetches DB credentials from `bin/orchestrator_config.php`, requests job-specific context through `bin/python_scheduler_bridge.php`, paginates `market_order_snapshots_summary` by `type_id`, pushes aggregation work into SQL, evaluates scoring in Python, and writes the finished materialized snapshot back through the bridge.
+- After each batch the worker logs rows processed, batches completed, wall time, and current memory usage; the worker aborts if it exceeds the configured threshold (`scheduler.memory_abort_threshold_bytes`, default target 512 MB for Python jobs).
+- Final scheduler bookkeeping still reuses PHP domain helpers through the bridge so `sync_state`, `sync_runs`, `sync_schedules`, UI refresh notifications, and scheduler event logs stay consistent with existing observability.
+- If a job is marked `execution_mode=python` but does not yet have a native Python processor, the worker can still invoke the existing PHP job handler through the bridge when `SCHEDULER_PYTHON_PHP_FALLBACK_ENABLED=1` (default).
+- Set `SCHEDULER_PYTHON_HEAVY_JOBS_ENABLED=0` to force those jobs back to PHP without changing stored scheduler config.
 
 ### Python `systemd` unit
 
@@ -404,6 +414,8 @@ python3 -m venv .venv-orchestrator
 pip install --upgrade pip
 pip install ./python
 ```
+
+The Python worker package now installs `PyMySQL` for lightweight MySQL access, including server-side streaming cursors for large scheduler jobs.
 
 Validation:
 

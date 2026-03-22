@@ -33,6 +33,8 @@ $config = [
         'supervisor_mode' => getenv('SCHEDULER_SUPERVISOR_MODE') ?: 'php',
         'systemd_service' => getenv('SCHEDULER_SYSTEMD_SERVICE') ?: 'supplycore-scheduler.service',
         'python_service_name' => getenv('SCHEDULER_PYTHON_SERVICE_NAME') ?: 'supplycore-orchestrator.service',
+        'python_heavy_jobs_enabled' => (getenv('SCHEDULER_PYTHON_HEAVY_JOBS_ENABLED') ?: '1') !== '0',
+        'python_php_fallback_enabled' => (getenv('SCHEDULER_PYTHON_PHP_FALLBACK_ENABLED') ?: '1') !== '0',
     ],
     'orchestrator' => [
         'heartbeat_file' => getenv('ORCHESTRATOR_HEARTBEAT_FILE') ?: 'storage/run/orchestrator-heartbeat.json',
