@@ -5339,6 +5339,315 @@ function scheduler_profiling_tick(?callable $logger = null): ?array
     return ['mode' => 'profiling', 'run' => $run, 'status' => 'idle', 'jobs_processed' => 0];
 }
 
+function scheduler_console_result_label(?string $result): string
+{
+    $value = trim((string) $result);
+    if ($value === '') {
+        return 'No runs yet';
+    }
+
+    return match ($value) {
+        'success' => 'OK',
+        'failed' => 'Failed',
+        'timeout' => 'Timed out',
+        'running' => 'Running',
+        'blocked', 'lock_conflict', 'lock_skipped' => 'Blocked',
+        'skipped_no_change' => 'Skipped (no change)',
+        'skipped_within_freshness_window' => 'Skipped (within freshness window)',
+        'forced_refresh_due_to_staleness' => 'Forced refresh',
+        'never' => 'No runs yet',
+        default => ucwords(str_replace('_', ' ', $value)),
+    };
+}
+
+function scheduler_console_job_state(array $job): string
+{
+    if ((int) ($job['lock_conflicts_recent'] ?? 0) > 0 || (float) ($job['last_lock_wait_seconds'] ?? 0.0) > 0.0) {
+        return 'blocked';
+    }
+
+    $lastResult = (string) ($job['last_result'] ?? '');
+    if (in_array($lastResult, ['skipped_no_change', 'skipped_within_freshness_window'], true)) {
+        return 'skipped';
+    }
+
+    return match ((string) ($job['current_state'] ?? 'waiting')) {
+        'running' => 'running',
+        default => 'waiting',
+    };
+}
+
+function scheduler_console_expected_duration_seconds(array $job): int
+{
+    $candidates = [
+        (float) ($job['p95_duration_seconds'] ?? 0.0),
+        (float) ($job['average_duration_seconds'] ?? 0.0),
+        (float) ($job['last_duration_seconds'] ?? 0.0),
+    ];
+    $baseline = 0.0;
+    foreach ($candidates as $candidate) {
+        if ($candidate > $baseline) {
+            $baseline = $candidate;
+        }
+    }
+
+    if ($baseline <= 0.0) {
+        $baseline = max(60.0, ((float) ($job['resolved_timeout_seconds'] ?? 300)) * 0.5);
+    }
+
+    $expected = (int) ceil($baseline * 1.35);
+    $timeoutCap = max(60, (int) ($job['resolved_timeout_seconds'] ?? 300));
+
+    return max(60, min($timeoutCap, $expected));
+}
+
+function scheduler_console_detect_job_issues(array $job, int $memoryThresholdBytes = 314572800): array
+{
+    $issues = [];
+    $jobLabel = (string) ($job['label'] ?? $job['job_key'] ?? 'Job');
+    $jobKey = (string) ($job['job_key'] ?? '');
+    $memoryBytes = max(
+        (int) ($job['projected_memory_bytes'] ?? 0),
+        (int) ($job['last_memory_peak_bytes'] ?? 0),
+        (int) ($job['average_memory_peak_bytes'] ?? 0),
+        (int) ($job['p95_memory_peak_bytes'] ?? 0)
+    );
+
+    if ($memoryBytes > $memoryThresholdBytes) {
+        $issues[] = [
+            'severity' => 'high',
+            'type' => 'memory',
+            'job_key' => $jobKey,
+            'job_label' => $jobLabel,
+            'title' => 'High memory usage',
+            'description' => $jobLabel . ' is using ' . scheduler_format_bytes($memoryBytes) . '.',
+            'action_label' => 'Stop & investigate',
+        ];
+    }
+
+    $lockConflicts = (int) ($job['lock_conflicts_recent'] ?? 0);
+    if ($lockConflicts > 0 || (float) ($job['last_lock_wait_seconds'] ?? 0.0) > 0.0) {
+        $issues[] = [
+            'severity' => 'critical',
+            'type' => 'blocked',
+            'job_key' => $jobKey,
+            'job_label' => $jobLabel,
+            'title' => 'Blocked job',
+            'description' => $jobLabel . ' is waiting on locks (' . max($lockConflicts, 1) . ' recent conflict' . ($lockConflicts === 1 ? '' : 's') . ').',
+            'action_label' => 'Stop & investigate',
+        ];
+    }
+
+    $startedAt = trim((string) ($job['last_started_at'] ?? ''));
+    if ((string) ($job['current_state'] ?? '') === 'running' && $startedAt !== '') {
+        $startedUnix = strtotime($startedAt);
+        if ($startedUnix !== false) {
+            $elapsed = max(0, time() - $startedUnix);
+            $expected = scheduler_console_expected_duration_seconds($job);
+            if ($elapsed > $expected) {
+                $issues[] = [
+                    'severity' => 'high',
+                    'type' => 'long_running',
+                    'job_key' => $jobKey,
+                    'job_label' => $jobLabel,
+                    'title' => 'Long-running job',
+                    'description' => $jobLabel . ' has been running for ' . human_duration_ago($elapsed) . ' (expected under ' . human_duration_ago($expected) . ').',
+                    'action_label' => 'Stop & investigate',
+                ];
+            }
+        }
+    }
+
+    $lastError = strtolower((string) ($job['last_error'] ?? ''));
+    if ($lastError !== '' && (str_contains($lastError, 'out of memory') || str_contains($lastError, 'allowed memory size'))) {
+        $issues[] = [
+            'severity' => 'critical',
+            'type' => 'oom',
+            'job_key' => $jobKey,
+            'job_label' => $jobLabel,
+            'title' => 'OOM event',
+            'description' => $jobLabel . ' most recently failed with an out-of-memory error.',
+            'action_label' => 'Stop & investigate',
+        ];
+    }
+
+    return $issues;
+}
+
+function scheduler_console_issue_priority(array $issue): int
+{
+    return match ((string) ($issue['severity'] ?? 'medium')) {
+        'critical' => 0,
+        'high' => 1,
+        'medium' => 2,
+        default => 3,
+    };
+}
+
+function scheduler_console_resource_warnings(array $jobs, array $healthSummary, array $daemonState): array
+{
+    $warnings = [];
+    if ((float) ($healthSummary['memory_budget_ratio'] ?? 0.0) >= 0.85) {
+        $warnings[] = [
+            'severity' => 'high',
+            'title' => 'High memory usage',
+            'description' => 'Scheduler memory usage is at ' . number_format(((float) ($healthSummary['memory_budget_ratio'] ?? 0.0)) * 100, 0) . '% of budget.',
+        ];
+    }
+
+    if ((float) ($healthSummary['cpu_budget_ratio'] ?? 0.0) >= 0.9) {
+        $warnings[] = [
+            'severity' => 'critical',
+            'title' => 'CPU saturation',
+            'description' => 'Scheduler CPU usage is at ' . number_format(((float) ($healthSummary['cpu_budget_ratio'] ?? 0.0)) * 100, 0) . '% of budget.',
+        ];
+    }
+
+    foreach ($jobs as $job) {
+        foreach (scheduler_console_detect_job_issues($job) as $issue) {
+            if (($issue['type'] ?? '') === 'oom') {
+                $warnings[] = [
+                    'severity' => 'critical',
+                    'title' => 'OOM event',
+                    'description' => (string) ($issue['description'] ?? ''),
+                ];
+                break 2;
+            }
+        }
+    }
+
+    if (($daemonState['derived_status'] ?? 'stopped') !== 'running') {
+        $warnings[] = [
+            'severity' => 'critical',
+            'title' => 'Scheduler attention needed',
+            'description' => 'The scheduler daemon is ' . (string) ($daemonState['derived_status'] ?? 'stopped') . '.',
+        ];
+    }
+
+    return $warnings;
+}
+
+function scheduler_console_pipeline_health(array $jobs, array $pipelineSettings): array
+{
+    $jobMap = [];
+    foreach ($jobs as $job) {
+        $jobMap[(string) ($job['job_key'] ?? '')] = $job;
+    }
+
+    $pipelines = [
+        [
+            'key' => 'current',
+            'label' => 'Current sync',
+            'enabled' => ($pipelineSettings['alliance_current_pipeline_enabled'] ?? '1') === '1',
+            'jobs' => ['alliance_current_sync', 'market_hub_current_sync', 'killmail_r2z2_sync'],
+        ],
+        [
+            'key' => 'alliance_history',
+            'label' => 'Alliance history',
+            'enabled' => ($pipelineSettings['alliance_history_pipeline_enabled'] ?? '1') === '1',
+            'jobs' => ['alliance_historical_sync'],
+        ],
+        [
+            'key' => 'hub_history',
+            'label' => 'Hub history',
+            'enabled' => ($pipelineSettings['hub_history_pipeline_enabled'] ?? '1') === '1',
+            'jobs' => ['market_hub_historical_sync'],
+        ],
+        [
+            'key' => 'local_history',
+            'label' => 'Local history',
+            'enabled' => ($pipelineSettings['market_hub_local_history_pipeline_enabled'] ?? '1') === '1',
+            'jobs' => ['market_hub_local_history_sync'],
+        ],
+    ];
+
+    $results = [];
+    foreach ($pipelines as $pipeline) {
+        $state = 'OK';
+        $summary = 'On track';
+        $jobsForPipeline = [];
+        foreach ($pipeline['jobs'] as $jobKey) {
+            if (isset($jobMap[$jobKey])) {
+                $jobsForPipeline[] = $jobMap[$jobKey];
+            }
+        }
+
+        if (!$pipeline['enabled']) {
+            $state = 'OK';
+            $summary = 'Disabled';
+        } elseif ($jobsForPipeline === []) {
+            $state = 'Blocked';
+            $summary = 'No registered jobs';
+        } else {
+            $blocked = false;
+            $delayed = false;
+            foreach ($jobsForPipeline as $job) {
+                $issues = scheduler_console_detect_job_issues($job);
+                foreach ($issues as $issue) {
+                    if (in_array((string) ($issue['type'] ?? ''), ['blocked', 'oom'], true)) {
+                        $blocked = true;
+                        break 2;
+                    }
+                    if (($issue['type'] ?? '') === 'long_running') {
+                        $delayed = true;
+                    }
+                }
+
+                if (!empty($job['degraded']) || (string) ($job['last_result'] ?? '') === 'failed') {
+                    $blocked = true;
+                    break;
+                }
+
+                if ((int) ($job['lateness_seconds'] ?? 0) >= max(60, ((int) ($job['interval_minutes'] ?? 1) * 60))) {
+                    $delayed = true;
+                }
+            }
+
+            if ($blocked) {
+                $state = 'Blocked';
+                $summary = 'Needs intervention';
+            } elseif ($delayed) {
+                $state = 'Delayed';
+                $summary = 'Behind schedule';
+            }
+        }
+
+        $results[] = [
+            'key' => $pipeline['key'],
+            'label' => $pipeline['label'],
+            'state' => $state,
+            'summary' => $summary,
+        ];
+    }
+
+    return $results;
+}
+
+function scheduler_console_system_status(array $healthSummary, array $resourceWarnings, array $activeIssues): array
+{
+    $status = 'healthy';
+    $reason = 'All key scheduler signals are within expected limits.';
+
+    $hasCritical = array_filter($resourceWarnings, static fn (array $warning): bool => (string) ($warning['severity'] ?? '') === 'critical');
+    $criticalIssues = array_filter($activeIssues, static fn (array $issue): bool => (string) ($issue['severity'] ?? '') === 'critical');
+
+    if ($hasCritical !== [] || $criticalIssues !== [] || in_array((string) ($healthSummary['pressure'] ?? 'healthy'), ['congested', 'overload_protection'], true)) {
+        $status = in_array((string) ($healthSummary['pressure'] ?? 'healthy'), ['overload_protection'], true) || $criticalIssues !== [] ? 'critical' : 'degraded';
+        $reason = $status === 'critical'
+            ? 'Multiple jobs need immediate attention.'
+            : 'Some jobs are delayed or resource pressure is elevated.';
+    } elseif ((float) ($healthSummary['cpu_budget_ratio'] ?? 0.0) >= 0.7 || (float) ($healthSummary['memory_budget_ratio'] ?? 0.0) >= 0.7 || $activeIssues !== []) {
+        $status = 'degraded';
+        $reason = 'Resource pressure or job performance is trending above normal.';
+    }
+
+    return [
+        'label' => ucfirst($status),
+        'status' => $status,
+        'reason' => $reason,
+    ];
+}
+
 function sync_schedule_settings_view_model(): array
 {
     scheduler_registry_bootstrap();
@@ -5369,6 +5678,7 @@ function sync_schedule_settings_view_model(): array
     $configuredJobs = [];
     $discoveredJobs = [];
     $internalJobs = [];
+    $pipelineSettings = data_sync_pipeline_settings_view(get_settings(array_keys(data_sync_pipeline_setting_defaults())));
     $liveCapacity = scheduler_live_capacity_snapshot();
     $recentDecisionCounts = scheduler_recent_planner_decision_counts();
     $daemonState = scheduler_daemon_health_summary();
@@ -5550,6 +5860,11 @@ function sync_schedule_settings_view_model(): array
             'capacity_reason' => (string) ($statusProjection['last_planner_reason_text'] ?? $row['last_capacity_reason'] ?? ''),
             'status_projection' => $statusProjection,
         ];
+        $jobIssues = scheduler_console_detect_job_issues($card);
+        $card['status_label'] = scheduler_console_result_label((string) ($card['last_result'] ?? 'never'));
+        $card['job_state'] = scheduler_console_job_state($card);
+        $card['issues'] = $jobIssues;
+        $card['needs_attention_action'] = ((string) ($card['last_result'] ?? '') === 'failed') || $jobIssues !== [];
 
         if ($card['discovery_classification'] === 'internal') {
             $internalJobs[] = $card;
@@ -5578,7 +5893,22 @@ function sync_schedule_settings_view_model(): array
         }
     }
 
+    $allOperationalJobs = array_merge($configuredJobs, $discoveredJobs);
+    $allIssues = [];
+    foreach ($allOperationalJobs as $job) {
+        foreach (scheduler_console_detect_job_issues($job) as $issue) {
+            $allIssues[] = $issue;
+        }
+    }
+    usort($allIssues, static function (array $a, array $b): int {
+        return scheduler_console_issue_priority($a) <=> scheduler_console_issue_priority($b)
+            ?: strcmp((string) ($a['job_label'] ?? ''), (string) ($b['job_label'] ?? ''));
+    });
+
     $healthSummary['pressure'] = scheduler_pressure_label($healthSummary);
+    $resourceWarnings = scheduler_console_resource_warnings($allOperationalJobs, $healthSummary, $daemonState);
+    $pipelineHealth = scheduler_console_pipeline_health($allOperationalJobs, $pipelineSettings);
+    $systemStatus = scheduler_console_system_status($healthSummary, $resourceWarnings, $allIssues);
     $activeProfilingRun = scheduler_profiling_active_run();
     $profilingRuns = scheduler_profiling_latest_runs();
     $profilingPreviewRun = $activeProfilingRun;
@@ -5605,6 +5935,12 @@ function sync_schedule_settings_view_model(): array
         'recent_resource_metrics' => $recentResourceMetrics,
         'running_jobs' => (array) ($liveCapacity['running_jobs_detail'] ?? []),
         'live_capacity' => $liveCapacity,
+        'pipeline_settings' => $pipelineSettings,
+        'system_status' => $systemStatus,
+        'active_issues' => array_slice($allIssues, 0, 3),
+        'active_issue_count' => count($allIssues),
+        'resource_warnings' => $resourceWarnings,
+        'pipeline_health' => $pipelineHealth,
         'profiling_active_run' => $activeProfilingRun,
         'profiling_runs' => $profilingRuns,
         'profiling_preview_run' => $profilingPreviewRun,
