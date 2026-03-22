@@ -1600,15 +1600,21 @@ include __DIR__ . '/../../src/views/partials/header.php';
 
                     <div class="grid gap-4 xl:grid-cols-[1.2fr_1fr]">
                         <article class="rounded-xl border border-border bg-black/20 p-4">
-                            <p class="text-sm text-slate-100">Busiest minute offsets</p>
-                            <p class="mt-1 text-xs text-muted">Use this to spot offset clustering before jobs contend for the same minute slot.</p>
-                            <div class="mt-4 space-y-2 text-sm">
-                                <?php foreach ((array) ($syncDashboard['busiest_offsets'] ?? []) as $offsetRow): ?>
-                                    <div class="rounded-lg border border-border bg-black/30 p-3">
-                                        <div class="flex items-center justify-between gap-3"><span class="font-medium text-slate-100">Minute <?= (int) ($offsetRow['offset_minutes'] ?? 0) ?></span><span class="text-xs text-muted"><?= (int) ($offsetRow['job_count'] ?? 0) ?> jobs</span></div>
-                                        <p class="mt-1 text-xs text-muted"><?= htmlspecialchars((string) ($offsetRow['job_keys'] ?? ''), ENT_QUOTES) ?></p>
-                                    </div>
-                                <?php endforeach; ?>
+                            <p class="text-sm text-slate-100">Change-aware scheduler decisions</p>
+                            <p class="mt-1 text-xs text-muted">Change-aware downstream jobs now surface whether they skipped because inputs stayed stable or forced a safety refresh because the freshness ceiling elapsed.</p>
+                            <div class="mt-4 grid gap-3 sm:grid-cols-3 text-sm">
+                                <div class="rounded-lg border border-border bg-black/30 p-3">
+                                    <p class="text-xs uppercase tracking-[0.16em] text-muted">Change-aware jobs</p>
+                                    <p class="mt-2 text-2xl font-semibold text-white"><?= (int) (($syncDashboard['change_aware_summary']['change_aware_jobs'] ?? 0)) ?></p>
+                                </div>
+                                <div class="rounded-lg border border-border bg-black/30 p-3">
+                                    <p class="text-xs uppercase tracking-[0.16em] text-muted">Skipped: no change</p>
+                                    <p class="mt-2 text-2xl font-semibold text-white"><?= (int) (($syncDashboard['change_aware_summary']['skipped_no_change'] ?? 0)) ?></p>
+                                </div>
+                                <div class="rounded-lg border border-border bg-black/30 p-3">
+                                    <p class="text-xs uppercase tracking-[0.16em] text-muted">Forced refreshes</p>
+                                    <p class="mt-2 text-2xl font-semibold text-white"><?= (int) (($syncDashboard['change_aware_summary']['forced_refresh_due_to_staleness'] ?? 0)) ?></p>
+                                </div>
                             </div>
                         </article>
                         <article class="rounded-xl border border-border bg-black/20 p-4">
@@ -1738,6 +1744,43 @@ include __DIR__ . '/../../src/views/partials/header.php';
                                     <div class="rounded-lg border border-border bg-black/30 p-3"><span class="block text-[11px] uppercase tracking-[0.14em]">Resource profile</span><span class="mt-1 block text-slate-100"><?= htmlspecialchars((string) ($schedule['resource_class'] ?? 'medium'), ENT_QUOTES) ?></span><span class="mt-1 block">CPU <?= htmlspecialchars(number_format((float) ($schedule['average_cpu_percent'] ?? 0), 1), ENT_QUOTES) ?>% · mem <?= htmlspecialchars(scheduler_format_bytes(isset($schedule['average_memory_peak_bytes']) ? (int) $schedule['average_memory_peak_bytes'] : 0), ENT_QUOTES) ?></span></div>
                                     <div class="rounded-lg border border-border bg-black/30 p-3"><span class="block text-[11px] uppercase tracking-[0.14em]">Pressure</span><span class="mt-1 block text-slate-100">locks <?= (int) ($schedule['lock_conflicts_recent'] ?? 0) ?> · skips <?= (int) ($schedule['skips_recent'] ?? 0) ?> · timeouts <?= (int) ($schedule['timeout_count_recent'] ?? 0) ?></span></div>
                                 </div>
+                                <div class="mt-3 grid gap-3 md:grid-cols-2 xl:grid-cols-4 text-xs text-muted">
+                                    <div class="rounded-lg border border-border bg-black/30 p-3">
+                                        <span class="block text-[11px] uppercase tracking-[0.14em]">Change-aware</span>
+                                        <span class="mt-1 block text-slate-100"><?= !empty($schedule['change_aware']) ? 'Yes' : 'No' ?></span>
+                                        <?php if (!empty($schedule['change_aware'])): ?>
+                                            <span class="mt-1 block">Freshness ceiling <?= isset($schedule['freshness_ceiling_seconds']) && $schedule['freshness_ceiling_seconds'] !== null ? htmlspecialchars(human_duration_ago((int) $schedule['freshness_ceiling_seconds']), ENT_QUOTES) : '—' ?></span>
+                                        <?php endif; ?>
+                                    </div>
+                                    <div class="rounded-lg border border-border bg-black/30 p-3">
+                                        <span class="block text-[11px] uppercase tracking-[0.14em]">Trigger / last upstream</span>
+                                        <span class="mt-1 block text-slate-100"><?= htmlspecialchars((string) ($schedule['materialization_trigger'] ?? 'cadence'), ENT_QUOTES) ?></span>
+                                        <span class="mt-1 block"><?= htmlspecialchars((string) ($schedule['last_upstream_change_seen'] ?? 'unknown'), ENT_QUOTES) ?></span>
+                                    </div>
+                                    <div class="rounded-lg border border-border bg-black/30 p-3">
+                                        <span class="block text-[11px] uppercase tracking-[0.14em]">Last no-change skip</span>
+                                        <span class="mt-1 block text-slate-100"><?= htmlspecialchars((string) ($schedule['last_no_change_skip_at'] ?? 'never'), ENT_QUOTES) ?></span>
+                                        <span class="mt-1 block"><?= htmlspecialchars((string) ($schedule['last_no_change_reason'] ?? ''), ENT_QUOTES) ?></span>
+                                    </div>
+                                    <div class="rounded-lg border border-border bg-black/30 p-3">
+                                        <span class="block text-[11px] uppercase tracking-[0.14em]">Materialization versions</span>
+                                        <span class="mt-1 block text-slate-100">input <?= htmlspecialchars(substr((string) ($schedule['last_materialization_input_version'] ?? 'n/a'), 0, 12), ENT_QUOTES) ?></span>
+                                        <span class="mt-1 block">output <?= htmlspecialchars(substr((string) ($schedule['last_materialization_output_version'] ?? 'n/a'), 0, 12), ENT_QUOTES) ?></span>
+                                    </div>
+                                </div>
+                                <?php if (!empty($schedule['change_aware'])): ?>
+                                    <div class="mt-3 rounded-lg border border-border bg-black/30 p-3 text-xs text-muted">
+                                        <p class="text-[11px] uppercase tracking-[0.14em] text-muted">Upstream dependencies</p>
+                                        <div class="mt-2 flex flex-wrap gap-2">
+                                            <?php foreach ((array) (($schedule['dependency_metadata']['upstream_job_keys'] ?? [])) as $dependencyJobKey): ?>
+                                                <span class="inline-flex items-center rounded-full border border-border px-2.5 py-1 text-[11px] text-slate-100"><?= htmlspecialchars((string) $dependencyJobKey, ENT_QUOTES) ?></span>
+                                            <?php endforeach; ?>
+                                            <?php foreach ((array) (($schedule['dependency_metadata']['upstream_signals'] ?? [])) as $dependencySignal): ?>
+                                                <span class="inline-flex items-center rounded-full border border-cyan-400/20 bg-cyan-500/10 px-2.5 py-1 text-[11px] text-cyan-100"><?= htmlspecialchars((string) ($dependencySignal['label'] ?? $dependencySignal['signal_key'] ?? ''), ENT_QUOTES) ?></span>
+                                            <?php endforeach; ?>
+                                        </div>
+                                    </div>
+                                <?php endif; ?>
                             </div>
                         <?php endforeach; ?>
                     </div>

@@ -6612,20 +6612,27 @@ function db_sync_schedule_mark_success(int $scheduleId, ?array $runtime = null):
 
     if ($updated && $jobKey !== '') {
         $finishedAt = gmdate('Y-m-d H:i:s');
+        $isSkipLike = in_array($lastResult, ['skipped', 'skipped_no_change', 'skipped_within_freshness_window'], true);
         db_scheduler_job_current_status_upsert($jobKey, [
             'latest_status' => $lastResult,
             'latest_event_type' => 'completion',
             'last_started_at' => $schedule['last_started_at'] ?? null,
             'last_finished_at' => $finishedAt,
             'last_success_at' => $finishedAt,
-            'last_failure_at' => $lastResult === 'skipped' ? ($runtime['last_failure_at'] ?? null) : null,
+            'last_failure_at' => $isSkipLike ? ($runtime['last_failure_at'] ?? null) : null,
             'last_failure_message' => null,
             'current_pressure_state' => $runtime['current_pressure_state'] ?? ($schedule['current_pressure_state'] ?? 'healthy'),
             'last_pressure_state' => $runtime['current_pressure_state'] ?? ($schedule['current_pressure_state'] ?? null),
             'recent_timeout_count' => 0,
             'recent_lock_conflict_count' => 0,
             'recent_deferral_count' => 0,
-            'recent_skip_count' => $lastResult === 'skipped' ? max(1, (int) (($runtime['recent_skip_count'] ?? 0))) : 0,
+            'recent_skip_count' => $isSkipLike ? max(1, (int) (($runtime['recent_skip_count'] ?? 0))) : 0,
+            'change_aware' => $runtime['change_aware'] ?? null,
+            'dependencies_json' => $runtime['dependencies_json'] ?? null,
+            'last_change_detection_json' => $runtime['last_change_detection_json'] ?? null,
+            'last_execution_context_json' => $runtime['last_execution_context_json'] ?? null,
+            'last_no_change_skip_at' => $runtime['last_no_change_skip_at'] ?? null,
+            'last_no_change_reason' => $runtime['last_no_change_reason'] ?? null,
             'last_event_at' => $finishedAt,
         ]);
     }
@@ -6694,6 +6701,10 @@ function db_sync_schedule_mark_failure(int $scheduleId, string $errorMessage, ?a
             'recent_lock_conflict_count' => max(0, (int) ($current['recent_lock_conflict_count'] ?? 0)),
             'recent_deferral_count' => max(0, (int) ($current['recent_deferral_count'] ?? 0)),
             'recent_skip_count' => 0,
+            'change_aware' => $runtime['change_aware'] ?? null,
+            'dependencies_json' => $runtime['dependencies_json'] ?? null,
+            'last_change_detection_json' => $runtime['last_change_detection_json'] ?? null,
+            'last_execution_context_json' => $runtime['last_execution_context_json'] ?? null,
             'last_event_at' => $finishedAt,
         ]);
     }
@@ -7792,6 +7803,12 @@ function db_scheduler_job_current_status_ensure(): void
         recent_lock_conflict_count INT UNSIGNED NOT NULL DEFAULT 0,
         recent_deferral_count INT UNSIGNED NOT NULL DEFAULT 0,
         recent_skip_count INT UNSIGNED NOT NULL DEFAULT 0,
+        change_aware TINYINT(1) NOT NULL DEFAULT 0,
+        dependencies_json LONGTEXT DEFAULT NULL,
+        last_change_detection_json LONGTEXT DEFAULT NULL,
+        last_execution_context_json LONGTEXT DEFAULT NULL,
+        last_no_change_skip_at DATETIME DEFAULT NULL,
+        last_no_change_reason VARCHAR(500) DEFAULT NULL,
         last_resource_metrics_summary_json LONGTEXT DEFAULT NULL,
         last_planner_decision_type VARCHAR(40) DEFAULT NULL,
         last_planner_reason_text VARCHAR(500) DEFAULT NULL,
@@ -7803,6 +7820,12 @@ function db_scheduler_job_current_status_ensure(): void
         KEY idx_scheduler_job_current_status_status (latest_status, current_pressure_state),
         KEY idx_scheduler_job_current_status_event (last_event_at)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4');
+    db_ensure_table_column('scheduler_job_current_status', 'change_aware', 'TINYINT(1) NOT NULL DEFAULT 0 AFTER recent_skip_count');
+    db_ensure_table_column('scheduler_job_current_status', 'dependencies_json', 'LONGTEXT DEFAULT NULL AFTER change_aware');
+    db_ensure_table_column('scheduler_job_current_status', 'last_change_detection_json', 'LONGTEXT DEFAULT NULL AFTER dependencies_json');
+    db_ensure_table_column('scheduler_job_current_status', 'last_execution_context_json', 'LONGTEXT DEFAULT NULL AFTER last_change_detection_json');
+    db_ensure_table_column('scheduler_job_current_status', 'last_no_change_skip_at', 'DATETIME DEFAULT NULL AFTER last_execution_context_json');
+    db_ensure_table_column('scheduler_job_current_status', 'last_no_change_reason', 'VARCHAR(500) DEFAULT NULL AFTER last_no_change_skip_at');
 }
 
 function db_scheduler_job_current_status_upsert(string $jobKey, array $status): bool
@@ -7813,6 +7836,13 @@ function db_scheduler_job_current_status_upsert(string $jobKey, array $status): 
     if ($normalizedJobKey === '') {
         return false;
     }
+    $current = db_select(
+        'SELECT change_aware
+         FROM scheduler_job_current_status
+         WHERE job_key = ?
+         LIMIT 1',
+        [$normalizedJobKey]
+    )[0] ?? [];
 
     $datasetKey = array_key_exists('dataset_key', $status)
         ? (($status['dataset_key'] !== null && trim((string) $status['dataset_key']) !== '') ? mb_substr(trim((string) $status['dataset_key']), 0, 190) : null)
@@ -7840,6 +7870,27 @@ function db_scheduler_job_current_status_upsert(string $jobKey, array $status): 
             ? $status['last_resource_metrics_summary_json']
             : json_encode($status['last_resource_metrics_summary_json'], JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE);
     }
+    $dependenciesJson = null;
+    if (array_key_exists('dependencies_json', $status) && $status['dependencies_json'] !== null) {
+        $dependenciesJson = is_string($status['dependencies_json'])
+            ? $status['dependencies_json']
+            : json_encode($status['dependencies_json'], JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE);
+    }
+    $changeDetectionJson = null;
+    if (array_key_exists('last_change_detection_json', $status) && $status['last_change_detection_json'] !== null) {
+        $changeDetectionJson = is_string($status['last_change_detection_json'])
+            ? $status['last_change_detection_json']
+            : json_encode($status['last_change_detection_json'], JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE);
+    }
+    $executionContextJson = null;
+    if (array_key_exists('last_execution_context_json', $status) && $status['last_execution_context_json'] !== null) {
+        $executionContextJson = is_string($status['last_execution_context_json'])
+            ? $status['last_execution_context_json']
+            : json_encode($status['last_execution_context_json'], JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE);
+    }
+    $changeAware = array_key_exists('change_aware', $status) && $status['change_aware'] !== null
+        ? (!empty($status['change_aware']) ? 1 : 0)
+        : (!empty($current['change_aware']) ? 1 : 0);
 
     return db_execute(
         'INSERT INTO scheduler_job_current_status (
@@ -7858,12 +7909,18 @@ function db_scheduler_job_current_status_upsert(string $jobKey, array $status): 
             recent_lock_conflict_count,
             recent_deferral_count,
             recent_skip_count,
+            change_aware,
+            dependencies_json,
+            last_change_detection_json,
+            last_execution_context_json,
+            last_no_change_skip_at,
+            last_no_change_reason,
             last_resource_metrics_summary_json,
             last_planner_decision_type,
             last_planner_reason_text,
             last_planner_decided_at,
             last_event_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON DUPLICATE KEY UPDATE
             dataset_key = COALESCE(VALUES(dataset_key), dataset_key),
             latest_status = VALUES(latest_status),
@@ -7882,6 +7939,15 @@ function db_scheduler_job_current_status_upsert(string $jobKey, array $status): 
             recent_lock_conflict_count = VALUES(recent_lock_conflict_count),
             recent_deferral_count = VALUES(recent_deferral_count),
             recent_skip_count = VALUES(recent_skip_count),
+            change_aware = VALUES(change_aware),
+            dependencies_json = COALESCE(VALUES(dependencies_json), dependencies_json),
+            last_change_detection_json = COALESCE(VALUES(last_change_detection_json), last_change_detection_json),
+            last_execution_context_json = COALESCE(VALUES(last_execution_context_json), last_execution_context_json),
+            last_no_change_skip_at = COALESCE(VALUES(last_no_change_skip_at), last_no_change_skip_at),
+            last_no_change_reason = CASE
+                WHEN VALUES(last_no_change_reason) IS NULL AND VALUES(last_no_change_skip_at) IS NULL THEN last_no_change_reason
+                ELSE VALUES(last_no_change_reason)
+            END,
             last_resource_metrics_summary_json = COALESCE(VALUES(last_resource_metrics_summary_json), last_resource_metrics_summary_json),
             last_planner_decision_type = COALESCE(VALUES(last_planner_decision_type), last_planner_decision_type),
             last_planner_reason_text = COALESCE(VALUES(last_planner_reason_text), last_planner_reason_text),
@@ -7904,6 +7970,14 @@ function db_scheduler_job_current_status_upsert(string $jobKey, array $status): 
             max(0, (int) ($status['recent_lock_conflict_count'] ?? 0)),
             max(0, (int) ($status['recent_deferral_count'] ?? 0)),
             max(0, (int) ($status['recent_skip_count'] ?? 0)),
+            $changeAware,
+            $dependenciesJson,
+            $changeDetectionJson,
+            $executionContextJson,
+            $status['last_no_change_skip_at'] ?? null,
+            array_key_exists('last_no_change_reason', $status) && $status['last_no_change_reason'] !== null
+                ? mb_substr(trim((string) $status['last_no_change_reason']), 0, 500)
+                : null,
             $resourceSummaryJson,
             $lastPlannerDecisionType,
             $lastPlannerReasonText,
@@ -7918,7 +7992,7 @@ function db_scheduler_job_current_status_fetch_map(array $jobKeys = []): array
     db_scheduler_job_current_status_ensure();
 
     $params = [];
-    $sql = 'SELECT job_key, dataset_key, latest_status, latest_event_type, last_started_at, last_finished_at, last_success_at, last_failure_at, last_failure_message, current_pressure_state, last_pressure_state, recent_timeout_count, recent_lock_conflict_count, recent_deferral_count, recent_skip_count, last_resource_metrics_summary_json, last_planner_decision_type, last_planner_reason_text, last_planner_decided_at, last_event_at, created_at, updated_at
+    $sql = 'SELECT job_key, dataset_key, latest_status, latest_event_type, last_started_at, last_finished_at, last_success_at, last_failure_at, last_failure_message, current_pressure_state, last_pressure_state, recent_timeout_count, recent_lock_conflict_count, recent_deferral_count, recent_skip_count, change_aware, dependencies_json, last_change_detection_json, last_execution_context_json, last_no_change_skip_at, last_no_change_reason, last_resource_metrics_summary_json, last_planner_decision_type, last_planner_reason_text, last_planner_decided_at, last_event_at, created_at, updated_at
             FROM scheduler_job_current_status';
 
     $normalizedKeys = array_values(array_filter(array_map(static fn (mixed $jobKey): string => trim((string) $jobKey), $jobKeys), static fn (string $jobKey): bool => $jobKey !== ''));
@@ -7941,6 +8015,20 @@ function db_scheduler_job_current_status_fetch_map(array $jobKeys = []): array
             $decoded = json_decode($summaryJson, true);
             if (is_array($decoded)) {
                 $row['last_resource_metrics_summary'] = $decoded;
+            }
+        }
+        foreach ([
+            'dependencies_json' => 'dependencies',
+            'last_change_detection_json' => 'last_change_detection',
+            'last_execution_context_json' => 'last_execution_context',
+        ] as $jsonColumn => $decodedColumn) {
+            $row[$decodedColumn] = null;
+            $jsonValue = $row[$jsonColumn] ?? null;
+            if (is_string($jsonValue) && trim($jsonValue) !== '') {
+                $decoded = json_decode($jsonValue, true);
+                if (is_array($decoded)) {
+                    $row[$decodedColumn] = $decoded;
+                }
             }
         }
 
@@ -7984,7 +8072,7 @@ function db_scheduler_job_event_insert(string $jobKey, string $eventType, array 
         'started' => 'running',
         'finished' => (string) (($detail['status'] ?? 'success') === 'success' ? 'success' : ($detail['status'] ?? 'finished')),
         'timeout', 'failure' => 'failed',
-        'skipped' => 'skipped',
+        'skipped', 'skipped_no_change', 'skipped_within_freshness_window' => $eventType,
         'lock_conflict', 'lock_skipped' => 'blocked',
         'deferred_pressure' => 'deferred',
         default => (string) ($current['latest_status'] ?? 'unknown'),
@@ -7994,7 +8082,7 @@ function db_scheduler_job_event_insert(string $jobKey, string $eventType, array 
         'latest_status' => $latestStatus,
         'latest_event_type' => $eventType,
         'last_started_at' => $eventType === 'started' ? $now : ($current['last_started_at'] ?? null),
-        'last_finished_at' => in_array($eventType, ['finished', 'skipped', 'timeout', 'failure'], true) ? $now : ($current['last_finished_at'] ?? null),
+        'last_finished_at' => in_array($eventType, ['finished', 'skipped', 'skipped_no_change', 'skipped_within_freshness_window', 'timeout', 'failure'], true) ? $now : ($current['last_finished_at'] ?? null),
         'last_failure_at' => in_array($eventType, ['timeout', 'failure'], true) ? $now : ($current['last_failure_at'] ?? null),
         'last_failure_message' => in_array($eventType, ['timeout', 'failure'], true) ? ($detail['error'] ?? $current['last_failure_message'] ?? null) : ($current['last_failure_message'] ?? null),
         'current_pressure_state' => $detail['pressure_state'] ?? ($current['current_pressure_state'] ?? 'healthy'),
@@ -8002,7 +8090,15 @@ function db_scheduler_job_event_insert(string $jobKey, string $eventType, array 
         'recent_timeout_count' => max(0, (int) ($current['recent_timeout_count'] ?? 0)) + ($eventType === 'timeout' ? 1 : 0),
         'recent_lock_conflict_count' => max(0, (int) ($current['recent_lock_conflict_count'] ?? 0)) + (in_array($eventType, ['lock_conflict', 'lock_skipped'], true) ? 1 : 0),
         'recent_deferral_count' => max(0, (int) ($current['recent_deferral_count'] ?? 0)) + ($eventType === 'deferred_pressure' ? 1 : 0),
-        'recent_skip_count' => max(0, (int) ($current['recent_skip_count'] ?? 0)) + ($eventType === 'skipped' ? 1 : 0),
+        'recent_skip_count' => max(0, (int) ($current['recent_skip_count'] ?? 0)) + (in_array($eventType, ['skipped', 'skipped_no_change', 'skipped_within_freshness_window'], true) ? 1 : 0),
+        'change_aware' => !empty($detail['change_aware']) || !empty($current['change_aware']),
+        'dependencies_json' => $detail['dependencies'] ?? ($current['dependencies'] ?? null),
+        'last_change_detection_json' => $detail['change_detection'] ?? ($current['last_change_detection'] ?? null),
+        'last_execution_context_json' => $detail['execution_context'] ?? ($current['last_execution_context'] ?? null),
+        'last_no_change_skip_at' => in_array($eventType, ['skipped_no_change', 'skipped_within_freshness_window'], true) ? $now : ($current['last_no_change_skip_at'] ?? null),
+        'last_no_change_reason' => in_array($eventType, ['skipped_no_change', 'skipped_within_freshness_window'], true)
+            ? ($detail['skip_reason'] ?? $current['last_no_change_reason'] ?? null)
+            : ($current['last_no_change_reason'] ?? null),
         'last_event_at' => $now,
     ]);
 
@@ -10989,6 +11085,28 @@ function db_doctrine_fit_delete(int $fitId): bool
 
         return db_execute('DELETE FROM doctrine_fits WHERE id = ? LIMIT 1', [$fitId]);
     });
+}
+
+function db_doctrine_fits_change_signal(): array
+{
+    doctrine_db_ensure_schema();
+
+    $row = db_select(
+        'SELECT COUNT(*) AS fit_count,
+                MAX(updated_at) AS last_updated_at,
+                COALESCE(SUM(item_count), 0) AS total_item_count,
+                COALESCE(SUM(unresolved_count), 0) AS unresolved_count,
+                COALESCE(SUM(CRC32(COALESCE(fingerprint_hash, CONCAT(id, ":", updated_at)))), 0) AS fingerprint_crc_sum
+         FROM doctrine_fits'
+    )[0] ?? [];
+
+    return [
+        'fit_count' => (int) ($row['fit_count'] ?? 0),
+        'last_updated_at' => $row['last_updated_at'] ?? null,
+        'total_item_count' => (int) ($row['total_item_count'] ?? 0),
+        'unresolved_count' => (int) ($row['unresolved_count'] ?? 0),
+        'fingerprint_crc_sum' => (string) ($row['fingerprint_crc_sum'] ?? '0'),
+    ];
 }
 
 function db_doctrine_fit_conflicts(string $fitName, ?int $shipTypeId = null, string $shipName = '', ?string $fingerprintHash = null, int $excludeFitId = 0): array

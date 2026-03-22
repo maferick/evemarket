@@ -5261,14 +5261,12 @@ function sync_schedule_settings_view_model(): array
     try {
         $currentStatusMap = db_scheduler_job_current_status_fetch_map(array_map(static fn (array $row): string => (string) ($row['job_key'] ?? ''), $rows));
         $recentActions = db_scheduler_tuning_actions_recent(12);
-        $busiestOffsets = db_sync_schedule_busiest_offsets(12);
         $outcomeSummary = db_sync_schedule_recent_outcomes_summary(180);
         $recentPlannerDecisions = db_scheduler_planner_decisions_recent(20);
         $recentResourceMetrics = db_scheduler_resource_metrics_recent_all(20);
     } catch (Throwable) {
         $currentStatusMap = [];
         $recentActions = [];
-        $busiestOffsets = [];
         $outcomeSummary = [];
         $recentPlannerDecisions = [];
         $recentResourceMetrics = [];
@@ -5329,6 +5327,9 @@ function sync_schedule_settings_view_model(): array
         ];
 
         $statusProjection = $currentStatusMap[$jobKey] ?? [];
+        $dependencyMetadata = scheduler_dependency_metadata($jobKey);
+        $changeDetection = is_array($statusProjection['last_change_detection'] ?? null) ? $statusProjection['last_change_detection'] : [];
+        $executionContext = is_array($statusProjection['last_execution_context'] ?? null) ? $statusProjection['last_execution_context'] : [];
         $jobRunStats = db_sync_schedule_recent_job_run_stats($jobKey, 20);
         $currentState = (string) ($row['current_state'] ?? ((int) ($row['enabled'] ?? 1) === 1 ? 'waiting' : 'stopped'));
         $nextDueAt = $row['next_due_at'] ?? $row['next_run_at'] ?? null;
@@ -5402,6 +5403,21 @@ function sync_schedule_settings_view_model(): array
             'profile_interval_minutes' => (int) (($profileMatrix['jobs'][$jobKey]['interval_minutes'] ?? ($definition['default_interval_minutes'] ?? 30))),
             'profile_timeout_seconds' => (int) (($profileMatrix['jobs'][$jobKey]['timeout_seconds'] ?? ($definition['timeout_seconds'] ?? 300))),
             'profile_priority' => (string) (($profileMatrix['jobs'][$jobKey]['priority'] ?? ($definition['priority'] ?? 'normal'))),
+            'change_aware' => !empty($statusProjection['change_aware']) || !empty($dependencyMetadata['change_aware']),
+            'supports_no_change_skip' => !empty($dependencyMetadata['supports_no_change_skip']),
+            'freshness_ceiling_seconds' => $dependencyMetadata['freshness_ceiling_seconds'],
+            'minimum_rerun_gap_seconds' => $dependencyMetadata['minimum_rerun_gap_seconds'],
+            'dependency_metadata' => $dependencyMetadata,
+            'last_upstream_change_seen' => $changeDetection['last_upstream_change_seen'] ?? null,
+            'last_no_change_skip_at' => $statusProjection['last_no_change_skip_at'] ?? null,
+            'last_no_change_reason' => $statusProjection['last_no_change_reason'] ?? null,
+            'materialization_trigger' => $executionContext['trigger'] ?? $changeDetection['trigger'] ?? null,
+            'last_materialization_input_version' => $executionContext['input_fingerprint'] ?? $changeDetection['input_fingerprint'] ?? null,
+            'last_materialization_output_version' => ((array) ($executionContext['output_versions'] ?? [])) !== []
+                ? hash('sha256', json_encode($executionContext['output_versions'], JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE))
+                : null,
+            'last_change_detection' => $changeDetection,
+            'last_execution_context' => $executionContext,
         ];
         $resourceProfile = scheduler_job_recent_resource_profile($jobKey, $row + ['status_projection' => $statusProjection]);
         $urgency = scheduler_job_urgency_snapshot($row, $recentDecisionCounts);
@@ -5486,7 +5502,6 @@ function sync_schedule_settings_view_model(): array
         'internal_jobs' => $internalJobs,
         'health_summary' => $healthSummary,
         'daemon_state' => $daemonState,
-        'busiest_offsets' => $busiestOffsets,
         'recent_actions' => $recentActions,
         'recent_planner_decisions' => $recentPlannerDecisions,
         'recent_resource_metrics' => $recentResourceMetrics,
@@ -5498,6 +5513,11 @@ function sync_schedule_settings_view_model(): array
         'profiling_samples' => $profilingPreviewRun !== null ? db_scheduler_profiling_samples_fetch((int) ($profilingPreviewRun['id'] ?? 0)) : [],
         'profiling_pairings' => $profilingPreviewRun !== null ? db_scheduler_profiling_pairings_fetch((int) ($profilingPreviewRun['id'] ?? 0)) : [],
         'schedule_snapshots' => db_scheduler_schedule_snapshots_recent(8),
+        'change_aware_summary' => [
+            'skipped_no_change' => count(array_filter(array_merge($configuredJobs, $discoveredJobs), static fn (array $job): bool => in_array((string) ($job['last_result'] ?? ''), ['skipped_no_change', 'skipped_within_freshness_window'], true))),
+            'forced_refresh_due_to_staleness' => count(array_filter(array_merge($configuredJobs, $discoveredJobs), static fn (array $job): bool => (string) ($job['last_result'] ?? '') === 'forced_refresh_due_to_staleness')),
+            'change_aware_jobs' => count(array_filter(array_merge($configuredJobs, $discoveredJobs), static fn (array $job): bool => !empty($job['change_aware']))),
+        ],
     ];
 }
 
@@ -10387,6 +10407,11 @@ function scheduler_job_type(string $jobKey): string
 
 function scheduler_job_status_from_sync_result(array $syncResult): string
 {
+    $explicitStatus = trim((string) (($syncResult['meta']['scheduler_result_status'] ?? $syncResult['scheduler_result_status'] ?? '')));
+    if ($explicitStatus !== '') {
+        return $explicitStatus;
+    }
+
     $rowsSeen = max(0, (int) ($syncResult['rows_seen'] ?? 0));
     $rowsWritten = max(0, (int) ($syncResult['rows_written'] ?? 0));
     $warnings = scheduler_normalize_messages((array) ($syncResult['warnings'] ?? []));
@@ -10407,7 +10432,7 @@ function scheduler_job_summary_message(array $result): string
         return (string) ($result['error'] ?? ('Job ' . $jobKey . ' failed.'));
     }
 
-    if ($status === 'skipped') {
+    if (in_array($status, scheduler_skip_like_statuses(), true)) {
         $warnings = (array) ($result['warnings'] ?? []);
 
         return (string) ($warnings[0] ?? ('Job ' . $jobKey . ' skipped.'));
@@ -10423,6 +10448,319 @@ function scheduler_job_summary_message(array $result): string
     $rowsWritten = max(0, (int) ($result['rows_written'] ?? 0));
 
     return 'Processed ' . $rowsSeen . ' records, wrote ' . $rowsWritten . ' records.';
+}
+
+function scheduler_success_like_statuses(): array
+{
+    return ['success', 'forced_refresh_due_to_staleness'];
+}
+
+function scheduler_skip_like_statuses(): array
+{
+    return ['skipped', 'skipped_no_change', 'skipped_within_freshness_window'];
+}
+
+function scheduler_change_signal_version(string $versionKey, ?string $label = null): ?array
+{
+    $version = supplycore_ui_refresh_current_versions([$versionKey])[$versionKey] ?? null;
+    if (!is_array($version)) {
+        return null;
+    }
+
+    $changedAt = (string) (($version['freshness']['computed_at'] ?? $version['updated_at'] ?? ''));
+
+    return [
+        'signal_key' => $versionKey,
+        'signal_type' => 'ui_version',
+        'label' => $label ?? $versionKey,
+        'fingerprint' => (string) ($version['fingerprint'] ?? ''),
+        'version' => (int) ($version['version'] ?? 0),
+        'changed_at' => $changedAt !== '' ? $changedAt : null,
+        'freshness' => is_array($version['freshness'] ?? null) ? $version['freshness'] : [],
+        'metadata' => is_array($version['metadata'] ?? null) ? $version['metadata'] : [],
+    ];
+}
+
+function scheduler_change_signal_sync_state(string $signalKey, array $datasetKeys, string $label): array
+{
+    $status = sync_status_for_dataset_keys($datasetKeys);
+    $fingerprint = hash('sha256', json_encode([
+        'dataset_keys' => array_values($datasetKeys),
+        'last_success_at' => $status['last_success_at'] ?? null,
+        'recent_rows_written' => (int) ($status['recent_rows_written'] ?? 0),
+        'states' => array_values((array) ($status['states'] ?? [])),
+    ], JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE));
+
+    return [
+        'signal_key' => $signalKey,
+        'signal_type' => 'sync_state',
+        'label' => $label,
+        'fingerprint' => $fingerprint,
+        'version' => null,
+        'changed_at' => $status['last_success_at'] ?? null,
+        'freshness' => [
+            'computed_at' => $status['last_success_at'] ?? null,
+            'freshness_state' => ($status['last_success_at'] ?? null) !== null ? 'fresh' : 'stale',
+            'freshness_label' => ($status['last_success_at'] ?? null) !== null ? 'Fresh' : 'Stale',
+        ],
+        'metadata' => [
+            'dataset_keys' => array_values($datasetKeys),
+            'recent_rows_written' => (int) ($status['recent_rows_written'] ?? 0),
+            'last_error_message' => $status['last_error_message'] ?? null,
+        ],
+    ];
+}
+
+function scheduler_change_signal_doctrine_source(): array
+{
+    $signal = db_doctrine_fits_change_signal();
+    $fingerprint = hash('sha256', json_encode($signal, JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE));
+
+    return [
+        'signal_key' => 'doctrine_source',
+        'signal_type' => 'db_aggregate',
+        'label' => 'Doctrine source fits',
+        'fingerprint' => $fingerprint,
+        'version' => null,
+        'changed_at' => $signal['last_updated_at'] ?? null,
+        'freshness' => [
+            'computed_at' => $signal['last_updated_at'] ?? null,
+            'freshness_state' => ($signal['last_updated_at'] ?? null) !== null ? 'fresh' : 'stale',
+            'freshness_label' => ($signal['last_updated_at'] ?? null) !== null ? 'Fresh' : 'Stale',
+        ],
+        'metadata' => $signal,
+    ];
+}
+
+function scheduler_change_aware_job_definitions(): array
+{
+    static $definitions = null;
+    if (is_array($definitions)) {
+        return $definitions;
+    }
+
+    $definitions = [
+        'doctrine_intelligence_sync' => [
+            'change_aware' => true,
+            'supports_no_change_skip' => true,
+            'requires_forced_periodic_refresh' => true,
+            'freshness_ceiling_seconds' => 3600,
+            'minimum_rerun_gap_seconds' => 300,
+            'upstream_job_keys' => ['alliance_current_sync', 'market_hub_current_sync'],
+            'upstream_signals' => [
+                ['signal_key' => 'doctrine_source', 'label' => 'Doctrine source fits', 'resolver' => static fn (): array => scheduler_change_signal_doctrine_source()],
+                ['signal_key' => 'alliance_stock_version', 'label' => 'Alliance stock', 'resolver' => static fn (): ?array => scheduler_change_signal_version('alliance_stock_version', 'Alliance stock')],
+                ['signal_key' => 'market_prices_version', 'label' => 'Market prices', 'resolver' => static fn (): ?array => scheduler_change_signal_version('market_prices_version', 'Market prices')],
+            ],
+            'output_version_keys' => ['doctrine_readiness_version'],
+        ],
+        'market_comparison_summary_sync' => [
+            'change_aware' => true,
+            'supports_no_change_skip' => true,
+            'requires_forced_periodic_refresh' => true,
+            'freshness_ceiling_seconds' => 2700,
+            'minimum_rerun_gap_seconds' => 300,
+            'upstream_job_keys' => ['alliance_current_sync', 'market_hub_current_sync'],
+            'upstream_signals' => [
+                ['signal_key' => 'alliance_stock_version', 'label' => 'Alliance stock', 'resolver' => static fn (): ?array => scheduler_change_signal_version('alliance_stock_version', 'Alliance stock')],
+                ['signal_key' => 'market_prices_version', 'label' => 'Market prices', 'resolver' => static fn (): ?array => scheduler_change_signal_version('market_prices_version', 'Market prices')],
+            ],
+            'output_version_keys' => ['market_comparison_version'],
+        ],
+        'loss_demand_summary_sync' => [
+            'change_aware' => true,
+            'supports_no_change_skip' => true,
+            'requires_forced_periodic_refresh' => true,
+            'freshness_ceiling_seconds' => 2700,
+            'minimum_rerun_gap_seconds' => 300,
+            'upstream_job_keys' => ['market_comparison_summary_sync', 'killmail_r2z2_sync'],
+            'upstream_signals' => [
+                ['signal_key' => 'market_comparison_version', 'label' => 'Market comparison summary', 'resolver' => static fn (): ?array => scheduler_change_signal_version('market_comparison_version', 'Market comparison summary')],
+                ['signal_key' => 'killmail_activity_version', 'label' => 'Killmail activity', 'resolver' => static fn (): ?array => scheduler_change_signal_version('killmail_activity_version', 'Killmail activity')],
+            ],
+            'output_version_keys' => ['loss_demand_version'],
+        ],
+        'dashboard_summary_sync' => [
+            'change_aware' => true,
+            'supports_no_change_skip' => true,
+            'requires_forced_periodic_refresh' => true,
+            'freshness_ceiling_seconds' => 1800,
+            'minimum_rerun_gap_seconds' => 240,
+            'upstream_job_keys' => ['market_comparison_summary_sync', 'doctrine_intelligence_sync', 'loss_demand_summary_sync'],
+            'upstream_signals' => [
+                ['signal_key' => 'market_comparison_version', 'label' => 'Market comparison summary', 'resolver' => static fn (): ?array => scheduler_change_signal_version('market_comparison_version', 'Market comparison summary')],
+                ['signal_key' => 'doctrine_readiness_version', 'label' => 'Doctrine intelligence', 'resolver' => static fn (): ?array => scheduler_change_signal_version('doctrine_readiness_version', 'Doctrine intelligence')],
+                ['signal_key' => 'loss_demand_version', 'label' => 'Loss demand summary', 'resolver' => static fn (): ?array => scheduler_change_signal_version('loss_demand_version', 'Loss demand summary')],
+            ],
+            'output_version_keys' => ['dashboard_summary_version'],
+        ],
+        'activity_priority_summary_sync' => [
+            'change_aware' => true,
+            'supports_no_change_skip' => true,
+            'requires_forced_periodic_refresh' => true,
+            'freshness_ceiling_seconds' => 3600,
+            'minimum_rerun_gap_seconds' => 300,
+            'upstream_job_keys' => ['killmail_r2z2_sync', 'doctrine_intelligence_sync'],
+            'upstream_signals' => [
+                ['signal_key' => 'killmail_activity_version', 'label' => 'Killmail activity', 'resolver' => static fn (): ?array => scheduler_change_signal_version('killmail_activity_version', 'Killmail activity')],
+                ['signal_key' => 'doctrine_readiness_version', 'label' => 'Doctrine intelligence', 'resolver' => static fn (): ?array => scheduler_change_signal_version('doctrine_readiness_version', 'Doctrine intelligence')],
+            ],
+            'output_version_keys' => ['activity_priority_version'],
+        ],
+        'deal_alerts_sync' => [
+            'change_aware' => true,
+            'supports_no_change_skip' => true,
+            'requires_forced_periodic_refresh' => true,
+            'freshness_ceiling_seconds' => 1200,
+            'minimum_rerun_gap_seconds' => 180,
+            'upstream_job_keys' => ['alliance_current_sync', 'market_hub_current_sync'],
+            'upstream_signals' => [
+                ['signal_key' => 'alliance_stock_version', 'label' => 'Alliance stock', 'resolver' => static fn (): ?array => scheduler_change_signal_version('alliance_stock_version', 'Alliance stock')],
+                ['signal_key' => 'market_prices_version', 'label' => 'Market prices', 'resolver' => static fn (): ?array => scheduler_change_signal_version('market_prices_version', 'Market prices')],
+            ],
+            'output_version_keys' => ['deal_alerts_version'],
+        ],
+    ];
+
+    return $definitions;
+}
+
+function scheduler_change_aware_job_definition(string $jobKey): ?array
+{
+    $definitions = scheduler_change_aware_job_definitions();
+
+    return $definitions[$jobKey] ?? null;
+}
+
+function scheduler_dependency_metadata(string $jobKey): array
+{
+    $definition = scheduler_change_aware_job_definition($jobKey);
+    if (!is_array($definition)) {
+        return [
+            'change_aware' => false,
+            'supports_no_change_skip' => false,
+            'requires_forced_periodic_refresh' => false,
+            'freshness_ceiling_seconds' => null,
+            'minimum_rerun_gap_seconds' => null,
+            'upstream_job_keys' => [],
+            'upstream_signals' => [],
+            'output_version_keys' => [],
+        ];
+    }
+
+    $signals = [];
+    foreach ((array) ($definition['upstream_signals'] ?? []) as $signal) {
+        $signals[] = [
+            'signal_key' => (string) ($signal['signal_key'] ?? ''),
+            'label' => (string) ($signal['label'] ?? ($signal['signal_key'] ?? '')),
+        ];
+    }
+
+    return [
+        'change_aware' => !empty($definition['change_aware']),
+        'supports_no_change_skip' => !empty($definition['supports_no_change_skip']),
+        'requires_forced_periodic_refresh' => !empty($definition['requires_forced_periodic_refresh']),
+        'freshness_ceiling_seconds' => isset($definition['freshness_ceiling_seconds']) ? (int) $definition['freshness_ceiling_seconds'] : null,
+        'minimum_rerun_gap_seconds' => isset($definition['minimum_rerun_gap_seconds']) ? (int) $definition['minimum_rerun_gap_seconds'] : null,
+        'upstream_job_keys' => array_values((array) ($definition['upstream_job_keys'] ?? [])),
+        'upstream_signals' => $signals,
+        'output_version_keys' => array_values((array) ($definition['output_version_keys'] ?? [])),
+    ];
+}
+
+function scheduler_evaluate_change_aware_run(array $job, ?array $statusRow = null): ?array
+{
+    $jobKey = (string) ($job['job_key'] ?? '');
+    $definition = scheduler_change_aware_job_definition($jobKey);
+    if (!is_array($definition) || empty($definition['change_aware'])) {
+        return null;
+    }
+
+    $status = is_array($statusRow) ? $statusRow : (db_scheduler_job_current_status_fetch_map([$jobKey])[$jobKey] ?? []);
+    $signals = [];
+    foreach ((array) ($definition['upstream_signals'] ?? []) as $signalDefinition) {
+        $resolver = $signalDefinition['resolver'] ?? null;
+        if (!is_callable($resolver)) {
+            continue;
+        }
+        $resolved = $resolver();
+        if (!is_array($resolved) || trim((string) ($resolved['signal_key'] ?? '')) === '') {
+            continue;
+        }
+        $signals[] = $resolved;
+    }
+
+    $signalFingerprints = [];
+    $lastUpstreamChangeSeen = null;
+    foreach ($signals as $signal) {
+        $fingerprint = trim((string) ($signal['fingerprint'] ?? ''));
+        if ($fingerprint !== '') {
+            $signalFingerprints[(string) ($signal['signal_key'] ?? count($signalFingerprints))] = $fingerprint;
+        }
+        $changedAt = trim((string) ($signal['changed_at'] ?? ''));
+        if ($changedAt !== '' && ($lastUpstreamChangeSeen === null || strtotime($changedAt) > strtotime((string) $lastUpstreamChangeSeen))) {
+            $lastUpstreamChangeSeen = $changedAt;
+        }
+    }
+
+    ksort($signalFingerprints);
+    $inputFingerprint = hash('sha256', json_encode($signalFingerprints, JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE));
+    $previousDetection = is_array($status['last_change_detection'] ?? null) ? $status['last_change_detection'] : [];
+    $previousFingerprint = trim((string) ($previousDetection['input_fingerprint'] ?? ($status['last_execution_context']['input_fingerprint'] ?? '')));
+    $lastSuccessAt = trim((string) ($status['last_success_at'] ?? ''));
+    $lastSuccessAgeSeconds = $lastSuccessAt !== '' && strtotime($lastSuccessAt) !== false ? max(0, time() - (int) strtotime($lastSuccessAt)) : null;
+    $minimumGap = max(0, (int) ($definition['minimum_rerun_gap_seconds'] ?? 0));
+    $freshnessCeiling = max($minimumGap, (int) ($definition['freshness_ceiling_seconds'] ?? 0));
+    $upstreamChanged = $previousFingerprint === '' || $inputFingerprint !== $previousFingerprint;
+    $withinMinimumGap = $lastSuccessAgeSeconds !== null && $minimumGap > 0 && $lastSuccessAgeSeconds < $minimumGap;
+    $withinFreshnessWindow = $lastSuccessAgeSeconds !== null && $freshnessCeiling > 0 && $lastSuccessAgeSeconds < $freshnessCeiling;
+    $needsForcedRefresh = !$upstreamChanged
+        && !empty($definition['requires_forced_periodic_refresh'])
+        && ($lastSuccessAt === '' || !$withinFreshnessWindow);
+
+    $trigger = 'upstream_change';
+    $run = true;
+    $resultStatus = 'success';
+    $reason = 'Triggered because upstream input versions changed.';
+    if ($previousFingerprint === '') {
+        $trigger = 'bootstrap';
+        $reason = 'Triggered because no previous successful change-aware baseline exists yet.';
+    } elseif (!$upstreamChanged && $withinMinimumGap) {
+        $trigger = 'no_change';
+        $run = false;
+        $resultStatus = 'skipped_no_change';
+        $reason = 'No upstream change since the last successful run and the minimum rerun gap has not elapsed yet.';
+    } elseif (!$upstreamChanged && $withinFreshnessWindow) {
+        $trigger = 'no_change';
+        $run = false;
+        $resultStatus = 'skipped_within_freshness_window';
+        $reason = 'No upstream change since the last successful run, so the job stayed within its freshness ceiling.';
+    } elseif ($needsForcedRefresh) {
+        $trigger = 'staleness_ceiling';
+        $resultStatus = 'forced_refresh_due_to_staleness';
+        $reason = 'No upstream change was detected, but the configured freshness ceiling was reached so a safety refresh is required.';
+    }
+
+    return [
+        'change_aware' => true,
+        'run' => $run,
+        'trigger' => $trigger,
+        'result_status' => $resultStatus,
+        'reason' => $reason,
+        'supports_no_change_skip' => !empty($definition['supports_no_change_skip']),
+        'requires_forced_periodic_refresh' => !empty($definition['requires_forced_periodic_refresh']),
+        'freshness_ceiling_seconds' => $freshnessCeiling,
+        'minimum_rerun_gap_seconds' => $minimumGap,
+        'last_success_age_seconds' => $lastSuccessAgeSeconds,
+        'within_freshness_window' => $withinFreshnessWindow,
+        'within_minimum_gap' => $withinMinimumGap,
+        'upstream_changed' => $upstreamChanged,
+        'last_upstream_change_seen' => $lastUpstreamChangeSeen,
+        'input_fingerprint' => $inputFingerprint,
+        'previous_input_fingerprint' => $previousFingerprint !== '' ? $previousFingerprint : null,
+        'dependencies' => scheduler_dependency_metadata($jobKey),
+        'signals' => $signals,
+    ];
 }
 
 function scheduler_code_discovery_paths(): array
@@ -11007,6 +11345,9 @@ function scheduler_run_job(array $job): array
     $projectedCpuPercent = isset($job['current_projected_cpu_percent']) ? (float) $job['current_projected_cpu_percent'] : null;
     $projectedMemoryBytes = isset($job['current_projected_memory_bytes']) ? (int) $job['current_projected_memory_bytes'] : null;
     $pressureState = (string) ($job['current_pressure_state'] ?? scheduler_live_capacity_snapshot()['pressure'] ?? 'healthy');
+    $statusRow = $jobKey !== '' ? (db_scheduler_job_current_status_fetch_map([$jobKey])[$jobKey] ?? []) : [];
+    $changeDecision = scheduler_evaluate_change_aware_run($job, $statusRow);
+    $dependencyMetadata = scheduler_dependency_metadata($jobKey);
 
     if ($definition === null || !isset($definition['handler']) || !is_callable($definition['handler'])) {
         $message = scheduler_normalize_error_message('Unknown scheduler job key: ' . ($jobKey !== '' ? $jobKey : '[empty]') . '.');
@@ -11062,6 +11403,114 @@ function scheduler_run_job(array $job): array
             @set_time_limit($timeoutSeconds + 5);
         }
 
+        if (is_array($changeDecision) && !$changeDecision['run']) {
+            $durationMs = (int) round((microtime(true) - $startedAt) * 1000);
+            $skipStatus = (string) ($changeDecision['result_status'] ?? 'skipped_no_change');
+            $warnings = [$changeDecision['reason'] ?? 'No upstream change detected.'];
+            $skipCursor = 'skip:' . $jobKey . ':' . gmdate('Y-m-d H:i:s');
+            $skipChecksum = sync_checksum([
+                'job_key' => $jobKey,
+                'status' => $skipStatus,
+                'input_fingerprint' => $changeDecision['input_fingerprint'] ?? null,
+            ]);
+            $resourceFinished = scheduler_resource_usage_snapshot();
+            $resourceMetric = scheduler_resource_usage_delta($resourceStarted, $resourceFinished) + [
+                'schedule_id' => $scheduleId,
+                'job_key' => $jobKey,
+                'run_status' => $skipStatus,
+                'queue_wait_seconds' => round($queueWaitSeconds, 2),
+                'lock_wait_seconds' => round($lockWaitSeconds, 2),
+                'overlap_count' => $overlapCount,
+                'overlapped' => $overlapCount > 0,
+                'projected_cpu_percent' => $projectedCpuPercent,
+                'projected_memory_bytes' => $projectedMemoryBytes,
+                'pressure_state' => $pressureState,
+                'timed_out' => false,
+                'failed' => false,
+                'started_at' => gmdate('Y-m-d H:i:s', (int) $startedAtUnix),
+                'finished_at' => gmdate('Y-m-d H:i:s'),
+            ];
+            scheduler_refresh_job_resource_profile($job, $resourceMetric, $skipStatus);
+            $changeContext = [
+                'job_key' => $jobKey,
+                'trigger' => $changeDecision['trigger'] ?? 'no_change',
+                'input_fingerprint' => $changeDecision['input_fingerprint'] ?? null,
+                'last_upstream_change_seen' => $changeDecision['last_upstream_change_seen'] ?? null,
+                'freshness_ceiling_seconds' => $changeDecision['freshness_ceiling_seconds'] ?? null,
+                'minimum_rerun_gap_seconds' => $changeDecision['minimum_rerun_gap_seconds'] ?? null,
+                'within_freshness_window' => !empty($changeDecision['within_freshness_window']),
+                'within_minimum_gap' => !empty($changeDecision['within_minimum_gap']),
+                'upstream_changed' => !empty($changeDecision['upstream_changed']),
+                'signals' => $changeDecision['signals'] ?? [],
+            ];
+            mark_sync_success($datasetKey, 'incremental', $skipCursor, 0, $skipChecksum);
+            db_sync_run_finish($runId, 'success', 0, 0, $skipCursor, null);
+
+            if ($scheduleId > 0) {
+                db_sync_schedule_mark_success($scheduleId, scheduler_job_runtime_snapshot($jobKey, $skipStatus) + [
+                    'last_duration_seconds' => round($durationMs / 1000, 2),
+                    'recent_skip_count' => max(1, (int) ($statusRow['recent_skip_count'] ?? 0) + 1),
+                    'current_pressure_state' => $pressureState,
+                    'change_aware' => true,
+                    'dependencies_json' => $dependencyMetadata,
+                    'last_change_detection_json' => $changeContext,
+                    'last_execution_context_json' => $changeContext + [
+                        'result_status' => $skipStatus,
+                        'output_versions' => supplycore_ui_refresh_current_versions((array) ($dependencyMetadata['output_version_keys'] ?? [])),
+                    ],
+                    'last_no_change_skip_at' => gmdate('Y-m-d H:i:s'),
+                    'last_no_change_reason' => $changeDecision['reason'] ?? null,
+                ]);
+            }
+
+            db_scheduler_job_event_insert($jobKey, $skipStatus, [
+                'warnings' => $warnings,
+                'skip_reason' => $changeDecision['reason'] ?? 'No upstream change detected.',
+                'change_aware' => true,
+                'dependencies' => $dependencyMetadata,
+                'change_detection' => $changeContext,
+                'execution_context' => $changeContext + ['result_status' => $skipStatus],
+                'cpu_percent' => $resourceMetric['cpu_percent'] ?? null,
+                'memory_peak_delta_bytes' => $resourceMetric['memory_peak_delta_bytes'] ?? null,
+            ], $latenessSeconds, round($durationMs / 1000, 2));
+
+            $result = [
+                'job_id' => $scheduleId,
+                'job_key' => $jobKey,
+                'job_type' => $jobType,
+                'scheduled_for' => $scheduledFor,
+                'started_at' => $startedAtIso,
+                'finished_at' => gmdate(DATE_ATOM),
+                'status' => $skipStatus,
+                'error' => null,
+                'rows_seen' => 0,
+                'rows_written' => 0,
+                'warnings' => $warnings,
+                'duration_ms' => $durationMs,
+                'meta' => [
+                    'scheduler_result_status' => $skipStatus,
+                    'outcome_reason' => $changeDecision['reason'] ?? 'No upstream change detected.',
+                    'change_aware' => true,
+                    'trigger' => $changeDecision['trigger'] ?? 'no_change',
+                    'dependencies' => $dependencyMetadata,
+                    'change_detection' => $changeContext,
+                    'resource_usage' => [
+                        'cpu_percent' => $resourceMetric['cpu_percent'] ?? null,
+                        'memory_peak_bytes' => $resourceMetric['memory_peak_bytes'] ?? null,
+                        'memory_peak_delta_bytes' => $resourceMetric['memory_peak_delta_bytes'] ?? null,
+                        'queue_wait_seconds' => $resourceMetric['queue_wait_seconds'] ?? null,
+                        'lock_wait_seconds' => $resourceMetric['lock_wait_seconds'] ?? null,
+                        'overlap_count' => $resourceMetric['overlap_count'] ?? null,
+                        'pressure_state' => $pressureState,
+                    ],
+                ],
+            ];
+            $result['summary'] = scheduler_job_summary_message($result);
+            $result['ui_refresh'] = supplycore_ui_refresh_publish_for_job_result($result);
+
+            return $result;
+        }
+
         db_scheduler_job_event_insert($jobKey, 'started', [
             'queue_wait_seconds' => round($queueWaitSeconds, 2),
             'lock_wait_seconds' => round($lockWaitSeconds, 2),
@@ -11072,6 +11521,9 @@ function scheduler_run_job(array $job): array
             'resolved_timeout_seconds' => $timeoutResolution['resolved_timeout_seconds'] ?? null,
             'enforced_timeout_seconds' => $timeoutResolution['enforced_timeout_seconds'] ?? null,
             'timeout_source' => $timeoutResolution['timeout_source'] ?? null,
+            'change_aware' => !empty($changeDecision['change_aware']),
+            'dependencies' => $dependencyMetadata,
+            'change_detection' => $changeDecision,
         ], $latenessSeconds, null);
 
         $handler = $definition['handler'];
@@ -11085,6 +11537,18 @@ function scheduler_run_job(array $job): array
         $rowsWritten = max(0, (int) ($syncResult['rows_written'] ?? 0));
         $warnings = scheduler_normalize_messages((array) ($syncResult['warnings'] ?? []));
         $status = scheduler_job_status_from_sync_result($syncResult);
+        $changeContext = is_array($changeDecision) ? [
+            'job_key' => $jobKey,
+            'trigger' => $changeDecision['trigger'] ?? 'upstream_change',
+            'input_fingerprint' => $changeDecision['input_fingerprint'] ?? null,
+            'last_upstream_change_seen' => $changeDecision['last_upstream_change_seen'] ?? null,
+            'freshness_ceiling_seconds' => $changeDecision['freshness_ceiling_seconds'] ?? null,
+            'minimum_rerun_gap_seconds' => $changeDecision['minimum_rerun_gap_seconds'] ?? null,
+            'within_freshness_window' => !empty($changeDecision['within_freshness_window']),
+            'within_minimum_gap' => !empty($changeDecision['within_minimum_gap']),
+            'upstream_changed' => !empty($changeDecision['upstream_changed']),
+            'signals' => $changeDecision['signals'] ?? [],
+        ] : null;
         $cursor = isset($syncResult['cursor']) && $syncResult['cursor'] !== null
             ? mb_substr(trim((string) $syncResult['cursor']), 0, 190)
             : 'finished_at:' . gmdate('Y-m-d H:i:s') . ';duration_ms:' . $durationMs;
@@ -11115,20 +11579,49 @@ function scheduler_run_job(array $job): array
         ];
         scheduler_refresh_job_resource_profile($job, $resourceMetric, $status);
 
-        if ($status === 'success') {
+        if (in_array($status, scheduler_success_like_statuses(), true)) {
             mark_sync_success($datasetKey, 'incremental', $cursor, $rowsWritten, $checksum);
             db_sync_run_finish($runId, 'success', $rowsSeen, $rowsWritten, $cursor, null);
             if ($scheduleId > 0) {
-                db_sync_schedule_mark_success($scheduleId, scheduler_job_runtime_snapshot($jobKey, 'success') + ['last_duration_seconds' => round($durationMs / 1000, 2)]);
+                db_sync_schedule_mark_success($scheduleId, scheduler_job_runtime_snapshot($jobKey, $status) + [
+                    'last_duration_seconds' => round($durationMs / 1000, 2),
+                    'current_pressure_state' => $pressureState,
+                    'change_aware' => !empty($changeDecision['change_aware']),
+                    'dependencies_json' => $dependencyMetadata,
+                    'last_change_detection_json' => $changeContext,
+                ]);
             }
-            db_scheduler_job_event_insert($jobKey, 'finished', ['status' => 'success', 'cpu_percent' => $resourceMetric['cpu_percent'] ?? null, 'memory_peak_delta_bytes' => $resourceMetric['memory_peak_delta_bytes'] ?? null], $latenessSeconds, round($durationMs / 1000, 2));
+            db_scheduler_job_event_insert($jobKey, 'finished', [
+                'status' => $status,
+                'change_aware' => !empty($changeDecision['change_aware']),
+                'dependencies' => $dependencyMetadata,
+                'change_detection' => $changeContext,
+                'cpu_percent' => $resourceMetric['cpu_percent'] ?? null,
+                'memory_peak_delta_bytes' => $resourceMetric['memory_peak_delta_bytes'] ?? null,
+            ], $latenessSeconds, round($durationMs / 1000, 2));
         } else {
             mark_sync_success($datasetKey, 'incremental', $cursor, $rowsWritten, $checksum);
             db_sync_run_finish($runId, 'success', $rowsSeen, $rowsWritten, $cursor, null);
             if ($scheduleId > 0) {
-                db_sync_schedule_mark_success($scheduleId, scheduler_job_runtime_snapshot($jobKey, 'skipped') + ['last_duration_seconds' => round($durationMs / 1000, 2)]);
+                db_sync_schedule_mark_success($scheduleId, scheduler_job_runtime_snapshot($jobKey, $status) + [
+                    'last_duration_seconds' => round($durationMs / 1000, 2),
+                    'recent_skip_count' => max(1, (int) ($statusRow['recent_skip_count'] ?? 0) + 1),
+                    'current_pressure_state' => $pressureState,
+                    'change_aware' => !empty($changeDecision['change_aware']),
+                    'dependencies_json' => $dependencyMetadata,
+                    'last_change_detection_json' => $changeContext,
+                    'last_execution_context_json' => $changeContext,
+                ]);
             }
-            db_scheduler_job_event_insert($jobKey, 'skipped', ['warnings' => $warnings, 'cpu_percent' => $resourceMetric['cpu_percent'] ?? null, 'memory_peak_delta_bytes' => $resourceMetric['memory_peak_delta_bytes'] ?? null], $latenessSeconds, round($durationMs / 1000, 2));
+            db_scheduler_job_event_insert($jobKey, $status, [
+                'warnings' => $warnings,
+                'skip_reason' => $warnings[0] ?? null,
+                'change_aware' => !empty($changeDecision['change_aware']),
+                'dependencies' => $dependencyMetadata,
+                'change_detection' => $changeContext,
+                'cpu_percent' => $resourceMetric['cpu_percent'] ?? null,
+                'memory_peak_delta_bytes' => $resourceMetric['memory_peak_delta_bytes'] ?? null,
+            ], $latenessSeconds, round($durationMs / 1000, 2));
         }
 
         if (in_array($jobKey, ['alliance_current_sync', 'market_hub_current_sync'], true)) {
@@ -11168,10 +11661,29 @@ function scheduler_run_job(array $job): array
                     'enforced_timeout_seconds' => $timeoutResolution['enforced_timeout_seconds'] ?? null,
                     'timeout_source' => $timeoutResolution['timeout_source'] ?? null,
                 ],
+                'scheduler_result_status' => $status,
+                'change_aware' => !empty($changeDecision['change_aware']),
+                'trigger' => $changeDecision['trigger'] ?? null,
+                'dependencies' => $dependencyMetadata,
+                'change_detection' => $changeContext,
             ],
         ];
         $result['summary'] = scheduler_job_summary_message($result);
         $result['ui_refresh'] = supplycore_ui_refresh_publish_for_job_result($result);
+        if ($jobKey !== '') {
+            $outputVersions = $result['ui_refresh']['freshness_versions'] ?? supplycore_ui_refresh_current_versions((array) ($dependencyMetadata['output_version_keys'] ?? []));
+            db_scheduler_job_current_status_upsert($jobKey, [
+                'change_aware' => !empty($changeDecision['change_aware']),
+                'dependencies_json' => $dependencyMetadata,
+                'last_change_detection_json' => $changeContext,
+                'last_execution_context_json' => ($changeContext ?? []) + [
+                    'result_status' => $status,
+                    'output_versions' => $outputVersions,
+                ],
+                'last_no_change_skip_at' => in_array($status, ['skipped_no_change', 'skipped_within_freshness_window'], true) ? gmdate('Y-m-d H:i:s') : null,
+                'last_no_change_reason' => in_array($status, ['skipped_no_change', 'skipped_within_freshness_window'], true) ? ($warnings[0] ?? null) : null,
+            ]);
+        }
 
         return $result;
     } catch (Throwable $exception) {
@@ -11213,7 +11725,12 @@ function scheduler_run_job(array $job): array
         ];
         scheduler_refresh_job_resource_profile($job, $resourceMetric, 'failed');
         if ($scheduleId > 0) {
-            db_sync_schedule_mark_failure($scheduleId, $message, scheduler_job_runtime_snapshot($jobKey, 'failed', $isTimeout) + ['last_duration_seconds' => $durationSeconds]);
+            db_sync_schedule_mark_failure($scheduleId, $message, scheduler_job_runtime_snapshot($jobKey, 'failed', $isTimeout) + [
+                'last_duration_seconds' => $durationSeconds,
+                'change_aware' => !empty($changeDecision['change_aware']),
+                'dependencies_json' => $dependencyMetadata,
+                'last_change_detection_json' => $changeDecision,
+            ]);
         }
         db_scheduler_job_event_insert($jobKey, $isTimeout ? 'timeout' : 'failure', [
             'error' => $message,
@@ -11222,6 +11739,9 @@ function scheduler_run_job(array $job): array
             'resolved_timeout_seconds' => $timeoutResolution['resolved_timeout_seconds'] ?? null,
             'enforced_timeout_seconds' => $timeoutResolution['enforced_timeout_seconds'] ?? null,
             'timeout_source' => $timeoutResolution['timeout_source'] ?? null,
+            'change_aware' => !empty($changeDecision['change_aware']),
+            'dependencies' => $dependencyMetadata,
+            'change_detection' => $changeDecision,
         ], $latenessSeconds, $durationSeconds);
 
         $result = [
@@ -20370,7 +20890,7 @@ function supplycore_ui_refresh_publish_for_job_result(array $result): ?array
         $nextCounter = $currentCounter;
         $changed = false;
 
-        if ($status === 'success' && $resolved['fingerprint'] !== '' && $resolved['fingerprint'] !== $currentFingerprint) {
+        if (in_array($status, scheduler_success_like_statuses(), true) && $resolved['fingerprint'] !== '' && $resolved['fingerprint'] !== $currentFingerprint) {
             $nextCounter++;
             $changed = true;
         }
