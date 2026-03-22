@@ -3432,6 +3432,36 @@ function db_market_history_tier_retention_cleanup(int $limitPerTable = 5000): ar
     ];
 }
 
+function db_market_orders_current_latest_observed_at(string $sourceType, int $sourceId): string
+{
+    $safeSourceType = trim($sourceType);
+    $safeSourceId = max(0, $sourceId);
+
+    if ($safeSourceType === '' || $safeSourceId <= 0) {
+        return '';
+    }
+
+    $state = db_market_source_snapshot_state_get($safeSourceType, $safeSourceId);
+    $latestObservedAt = trim((string) ($state['latest_current_observed_at'] ?? ''));
+    if ($latestObservedAt !== '') {
+        return $latestObservedAt;
+    }
+
+    $projectionRows = db_market_order_current_projection_latest_rows($safeSourceType, $safeSourceId);
+    $latestObservedAt = trim((string) ($projectionRows[0]['observed_at'] ?? ''));
+    if ($latestObservedAt !== '') {
+        db_market_source_snapshot_state_upsert([
+            'source_type' => $safeSourceType,
+            'source_id' => $safeSourceId,
+            'latest_current_observed_at' => $latestObservedAt,
+            'current_distinct_type_count' => count($projectionRows),
+            'last_synced_at' => $latestObservedAt,
+        ]);
+    }
+
+    return $latestObservedAt;
+}
+
 function db_market_orders_current_latest_snapshot_rows(string $sourceType, int $sourceId): array
 {
     $safeSourceType = trim($sourceType);
@@ -3441,8 +3471,7 @@ function db_market_orders_current_latest_snapshot_rows(string $sourceType, int $
         return [];
     }
 
-    $state = db_market_source_snapshot_state_get($safeSourceType, $safeSourceId);
-    $latestObservedAt = trim((string) ($state['latest_current_observed_at'] ?? ''));
+    $latestObservedAt = db_market_orders_current_latest_observed_at($safeSourceType, $safeSourceId);
 
     if ($latestObservedAt !== '') {
         return db_select(
@@ -4568,78 +4597,9 @@ function db_market_orders_current_source_aggregates(string $sourceType, int $sou
     }
 
     // Operational pages should prefer current-state projections first, summary
-    // rows second, and deep history last. `market_orders_current` is therefore
-    // the first source for source/type aggregates, with the summary table kept
-    // as the compact fallback once hot reads have moved off older windows.
+    // rows second, and raw current snapshots only as a backfill/fallback path
+    // while the compact projections are still materializing.
     $rows = [];
-    if ($latestCurrentObservedAt !== '') {
-        $rows = db_select_cached(
-            "SELECT
-                moc.type_id,
-                rit.type_name,
-                MIN(CASE WHEN moc.is_buy_order = 0 AND moc.volume_remain > 0 THEN moc.price END) AS best_sell_price,
-                MAX(CASE WHEN moc.is_buy_order = 1 AND moc.volume_remain > 0 THEN moc.price END) AS best_buy_price,
-                COALESCE(SUM(CASE WHEN moc.is_buy_order = 0 THEN moc.volume_remain ELSE 0 END), 0) AS total_sell_volume,
-                COALESCE(SUM(CASE WHEN moc.is_buy_order = 1 THEN moc.volume_remain ELSE 0 END), 0) AS total_buy_volume,
-                COALESCE(SUM(CASE WHEN moc.is_buy_order = 0 THEN 1 ELSE 0 END), 0) AS sell_order_count,
-                COALESCE(SUM(CASE WHEN moc.is_buy_order = 1 THEN 1 ELSE 0 END), 0) AS buy_order_count,
-                MAX(moc.observed_at) AS last_observed_at
-             FROM market_orders_current moc
-             LEFT JOIN ref_item_types rit ON rit.type_id = moc.type_id
-             WHERE moc.source_type = ?
-               AND moc.source_id = ?
-               AND moc.observed_at = ?{$rawTypeFilterSql}
-             GROUP BY moc.type_id, rit.type_name
-             ORDER BY moc.type_id ASC",
-            [$sourceType, $sourceId, $latestCurrentObservedAt, ...array_slice($params, 2)],
-            60,
-            'market.current.current-aggregates'
-        );
-    }
-
-    if ($rows === []) {
-        $rows = db_select(
-            "SELECT
-                moc.type_id,
-                rit.type_name,
-                MIN(CASE WHEN moc.is_buy_order = 0 AND moc.volume_remain > 0 THEN moc.price END) AS best_sell_price,
-                MAX(CASE WHEN moc.is_buy_order = 1 AND moc.volume_remain > 0 THEN moc.price END) AS best_buy_price,
-                COALESCE(SUM(CASE WHEN moc.is_buy_order = 0 THEN moc.volume_remain ELSE 0 END), 0) AS total_sell_volume,
-                COALESCE(SUM(CASE WHEN moc.is_buy_order = 1 THEN moc.volume_remain ELSE 0 END), 0) AS total_buy_volume,
-                COALESCE(SUM(CASE WHEN moc.is_buy_order = 0 THEN 1 ELSE 0 END), 0) AS sell_order_count,
-                COALESCE(SUM(CASE WHEN moc.is_buy_order = 1 THEN 1 ELSE 0 END), 0) AS buy_order_count,
-                MAX(moc.observed_at) AS last_observed_at
-             FROM market_orders_current moc
-             LEFT JOIN ref_item_types rit ON rit.type_id = moc.type_id
-             WHERE moc.source_type = ?
-               AND moc.source_id = ?
-               AND moc.observed_at = (
-                    SELECT MAX(current_latest.observed_at)
-                    FROM market_orders_current current_latest
-                    WHERE current_latest.source_type = ?
-                      AND current_latest.source_id = ?
-               ){$rawTypeFilterSql}
-             GROUP BY moc.type_id, rit.type_name
-             ORDER BY moc.type_id ASC",
-            [$sourceType, $sourceId, $sourceType, $sourceId, ...array_slice($params, 2)]
-        );
-    }
-
-    if ($rows !== []) {
-        $resolvedLatestCurrentObservedAt = trim((string) ($rows[0]['last_observed_at'] ?? ''));
-        if ($resolvedLatestCurrentObservedAt !== '') {
-            db_market_source_snapshot_state_upsert([
-                'source_type' => $sourceType,
-                'source_id' => $sourceId,
-                'latest_current_observed_at' => $resolvedLatestCurrentObservedAt,
-                'current_distinct_type_count' => count($rows),
-                'last_synced_at' => $resolvedLatestCurrentObservedAt,
-            ]);
-        }
-
-        return $rows;
-    }
-
     if ($latestSummaryObservedAt !== '') {
         $rows = db_select_cached(
             "SELECT
@@ -4668,7 +4628,49 @@ function db_market_orders_current_source_aggregates(string $sourceType, int $sou
         return $rows;
     }
 
-    return db_select_cached(
+    $resolvedLatestCurrentObservedAt = $latestCurrentObservedAt !== ''
+        ? $latestCurrentObservedAt
+        : db_market_orders_current_latest_observed_at($sourceType, $sourceId);
+
+    if ($resolvedLatestCurrentObservedAt !== '') {
+        $rows = db_select(
+            "SELECT
+                moc.type_id,
+                rit.type_name,
+                MIN(CASE WHEN moc.is_buy_order = 0 AND moc.volume_remain > 0 THEN moc.price END) AS best_sell_price,
+                MAX(CASE WHEN moc.is_buy_order = 1 AND moc.volume_remain > 0 THEN moc.price END) AS best_buy_price,
+                COALESCE(SUM(CASE WHEN moc.is_buy_order = 0 THEN moc.volume_remain ELSE 0 END), 0) AS total_sell_volume,
+                COALESCE(SUM(CASE WHEN moc.is_buy_order = 1 THEN moc.volume_remain ELSE 0 END), 0) AS total_buy_volume,
+                COALESCE(SUM(CASE WHEN moc.is_buy_order = 0 THEN 1 ELSE 0 END), 0) AS sell_order_count,
+                COALESCE(SUM(CASE WHEN moc.is_buy_order = 1 THEN 1 ELSE 0 END), 0) AS buy_order_count,
+                MAX(moc.observed_at) AS last_observed_at
+             FROM market_orders_current moc
+             LEFT JOIN ref_item_types rit ON rit.type_id = moc.type_id
+             WHERE moc.source_type = ?
+               AND moc.source_id = ?
+               AND moc.observed_at = ?{$rawTypeFilterSql}
+             GROUP BY moc.type_id, rit.type_name
+             ORDER BY moc.type_id ASC",
+            [$sourceType, $sourceId, $resolvedLatestCurrentObservedAt, ...array_slice($params, 2)]
+        );
+    }
+
+    if ($rows !== []) {
+        $observedAt = trim((string) ($rows[0]['last_observed_at'] ?? ''));
+        if ($observedAt !== '') {
+            db_market_source_snapshot_state_upsert([
+                'source_type' => $sourceType,
+                'source_id' => $sourceId,
+                'latest_current_observed_at' => $observedAt,
+                'current_distinct_type_count' => count($rows),
+                'last_synced_at' => $observedAt,
+            ]);
+        }
+
+        return $rows;
+    }
+
+    $rows = db_select_cached(
         "SELECT
             moss.type_id,
             rit.type_name,
@@ -4693,6 +4695,47 @@ function db_market_orders_current_source_aggregates(string $sourceType, int $sou
         [$sourceType, $sourceId, $sourceType, $sourceId, ...array_slice($summaryParams, 2)],
         60,
         'market.snapshot.current-aggregates'
+    );
+
+    if ($rows !== []) {
+        $observedAt = trim((string) ($rows[0]['last_observed_at'] ?? ''));
+        if ($observedAt !== '') {
+            db_market_source_snapshot_state_upsert([
+                'source_type' => $sourceType,
+                'source_id' => $sourceId,
+                'latest_summary_observed_at' => $observedAt,
+                'summary_row_count' => count($rows),
+                'last_synced_at' => $observedAt,
+            ]);
+        }
+
+        return $rows;
+    }
+
+    return db_select(
+        "SELECT
+            moc.type_id,
+            rit.type_name,
+            MIN(CASE WHEN moc.is_buy_order = 0 AND moc.volume_remain > 0 THEN moc.price END) AS best_sell_price,
+            MAX(CASE WHEN moc.is_buy_order = 1 AND moc.volume_remain > 0 THEN moc.price END) AS best_buy_price,
+            COALESCE(SUM(CASE WHEN moc.is_buy_order = 0 THEN moc.volume_remain ELSE 0 END), 0) AS total_sell_volume,
+            COALESCE(SUM(CASE WHEN moc.is_buy_order = 1 THEN moc.volume_remain ELSE 0 END), 0) AS total_buy_volume,
+            COALESCE(SUM(CASE WHEN moc.is_buy_order = 0 THEN 1 ELSE 0 END), 0) AS sell_order_count,
+            COALESCE(SUM(CASE WHEN moc.is_buy_order = 1 THEN 1 ELSE 0 END), 0) AS buy_order_count,
+            MAX(moc.observed_at) AS last_observed_at
+         FROM market_orders_current moc
+         LEFT JOIN ref_item_types rit ON rit.type_id = moc.type_id
+         WHERE moc.source_type = ?
+           AND moc.source_id = ?
+           AND moc.observed_at = (
+                SELECT MAX(current_latest.observed_at)
+                FROM market_orders_current current_latest
+                WHERE current_latest.source_type = ?
+                  AND current_latest.source_id = ?
+           ){$rawTypeFilterSql}
+         GROUP BY moc.type_id, rit.type_name
+         ORDER BY moc.type_id ASC",
+        [$sourceType, $sourceId, $sourceType, $sourceId, ...array_slice($params, 2)]
     );
 }
 
@@ -9075,10 +9118,8 @@ function db_killmail_overview_filter_options(): array
     ];
 }
 
-function db_killmail_detail(int $sequenceId): ?array
+function db_killmail_overview_row(int $sequenceId): ?array
 {
-    db_killmail_payload_schema_ensure();
-
     if ($sequenceId <= 0) {
         return null;
     }
@@ -9099,8 +9140,11 @@ function db_killmail_detail(int $sequenceId): ?array
             e.victim_corporation_id,
             e.victim_alliance_id,
             e.victim_ship_type_id,
-            COALESCE(p.zkb_json, '{}') AS zkb_json,
-            COALESCE(p.raw_killmail_json, '{}') AS raw_killmail_json,
+            e.zkb_total_value,
+            e.zkb_points,
+            e.zkb_npc,
+            e.zkb_solo,
+            e.zkb_awox,
             e.created_at,
             e.updated_at,
             COALESCE(NULLIF(victim_tc.label, ''), '') AS victim_corporation_label,
@@ -9112,7 +9156,6 @@ function db_killmail_detail(int $sequenceId): ?array
             CASE WHEN victim_tc.corporation_id IS NULL THEN 0 ELSE 1 END AS matches_victim_corporation,
             CASE WHEN {$matchSql} THEN 1 ELSE 0 END AS matched_tracked
          FROM killmail_events e
-         LEFT JOIN killmail_event_payloads p ON p.sequence_id = e.sequence_id
          LEFT JOIN ref_item_types ship ON ship.type_id = e.victim_ship_type_id
          LEFT JOIN ref_systems system_ref ON system_ref.system_id = e.solar_system_id
          LEFT JOIN ref_regions region_ref ON region_ref.region_id = e.region_id
@@ -9126,6 +9169,26 @@ function db_killmail_detail(int $sequenceId): ?array
          LIMIT 1",
         [$sequenceId]
     );
+}
+
+function db_killmail_detail(int $sequenceId): ?array
+{
+    db_killmail_payload_schema_ensure();
+
+    if ($sequenceId <= 0) {
+        return null;
+    }
+
+    $overview = db_killmail_overview_row($sequenceId);
+    if (!is_array($overview)) {
+        return null;
+    }
+
+    $payload = db_killmail_event_payload_by_sequence($sequenceId) ?? [];
+    $overview['zkb_json'] = (string) ($payload['zkb_json'] ?? '{}');
+    $overview['raw_killmail_json'] = (string) ($payload['raw_killmail_json'] ?? '{}');
+
+    return $overview;
 }
 
 function db_killmail_attackers_by_sequence(int $sequenceId): array

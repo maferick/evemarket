@@ -11152,12 +11152,32 @@ function scheduler_apply_tuning_change(array $job, string $actionType, string $r
     return $applied;
 }
 
+function scheduler_optimizer_recent_event_counters(array $statusProjection): array
+{
+    $latestStatus = trim((string) ($statusProjection['latest_status'] ?? ''));
+    $latestEventType = trim((string) ($statusProjection['latest_event_type'] ?? ''));
+
+    return [
+        'lock_conflicts' => max(0, (int) ($statusProjection['recent_lock_conflict_count'] ?? 0)),
+        'timeouts' => max(
+            0,
+            (int) ($statusProjection['recent_timeout_count'] ?? 0),
+            ($latestStatus === 'timeout' || $latestEventType === 'timeout') ? 1 : 0
+        ),
+        'skips' => max(0, (int) ($statusProjection['recent_skip_count'] ?? 0))
+            + max(0, (int) ($statusProjection['recent_deferral_count'] ?? 0)),
+    ];
+}
+
 function scheduler_run_optimizer(): ?array
 {
     $rows = db_sync_schedule_fetch_all();
     $pressure = scheduler_pressure_summary();
     $busiest = db_sync_schedule_busiest_offsets(4);
-    $eventSummary = db_scheduler_job_events_recent_summary(180);
+    $statusMap = db_scheduler_job_current_status_fetch_map(array_map(
+        static fn (array $row): string => (string) ($row['job_key'] ?? ''),
+        $rows
+    ));
 
     foreach ($rows as $job) {
         if (!scheduler_job_can_change_now($job)) {
@@ -11170,10 +11190,10 @@ function scheduler_run_optimizer(): ?array
         $offsetMinutes = (int) ($job['offset_minutes'] ?? 0);
         $timeoutSeconds = (int) ($job['timeout_seconds'] ?? 300);
         $runStats = db_sync_schedule_recent_job_run_stats($jobKey, 20);
-        $events = $eventSummary[$jobKey] ?? [];
-        $lockConflicts = (int) (($events['lock_conflict']['count'] ?? 0) + ($events['lock_skipped']['count'] ?? 0));
-        $timeouts = (int) ($events['timeout']['count'] ?? 0);
-        $skips = (int) (($events['skipped']['count'] ?? 0) + ($events['deferred_pressure']['count'] ?? 0));
+        $eventCounters = scheduler_optimizer_recent_event_counters($statusMap[$jobKey] ?? []);
+        $lockConflicts = (int) ($eventCounters['lock_conflicts'] ?? 0);
+        $timeouts = (int) ($eventCounters['timeouts'] ?? 0);
+        $skips = (int) ($eventCounters['skips'] ?? 0);
         $metrics = [
             'average_duration_seconds' => $runStats['average_duration_seconds'],
             'p95_duration_seconds' => $runStats['p95_duration_seconds'],
