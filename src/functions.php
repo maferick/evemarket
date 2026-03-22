@@ -3468,6 +3468,21 @@ function orchestrator_runtime_config_export(): array
             'worker_start_backoff_seconds' => max(1, (int) config('orchestrator.worker_start_backoff_seconds', 5)),
             'max_consecutive_health_failures' => max(1, (int) config('orchestrator.max_consecutive_health_failures', 3)),
         ],
+        'workers' => [
+            'queue_name' => (string) config('workers.queue_name', 'default'),
+            'claim_ttl_seconds' => max(30, (int) config('workers.claim_ttl_seconds', 300)),
+            'idle_sleep_seconds' => max(1, (int) config('workers.idle_sleep_seconds', 10)),
+            'sync_idle_sleep_seconds' => max(1, (int) config('workers.sync_idle_sleep_seconds', 8)),
+            'compute_idle_sleep_seconds' => max(1, (int) config('workers.compute_idle_sleep_seconds', 15)),
+            'memory_pause_threshold_bytes' => max(134217728, (int) config('workers.memory_pause_threshold_bytes', 402653184)),
+            'memory_abort_threshold_bytes' => max(268435456, (int) config('workers.memory_abort_threshold_bytes', 536870912)),
+            'retry_backoff_seconds' => max(5, (int) config('workers.retry_backoff_seconds', 30)),
+            'worker_log_file' => supplycore_worker_log_path('worker.log', (string) config('workers.worker_log_file', 'storage/logs/worker.log')),
+            'compute_log_file' => supplycore_worker_log_path('compute.log', (string) config('workers.compute_log_file', 'storage/logs/compute.log')),
+            'zkill_log_file' => supplycore_worker_log_path('zkill.log', (string) config('workers.zkill_log_file', 'storage/logs/zkill.log')),
+            'pool_state_file' => supplycore_worker_runtime_path('worker-pool-heartbeat.json', (string) config('workers.pool_state_file', 'storage/run/worker-pool-heartbeat.json')),
+            'zkill_state_file' => supplycore_worker_runtime_path('zkill-heartbeat.json', (string) config('workers.zkill_state_file', 'storage/run/zkill-heartbeat.json')),
+        ],
     ];
 }
 
@@ -3486,6 +3501,50 @@ function scheduler_tuning_mode_options(): array
     return [
         'automatic' => 'Automatic',
         'manual' => 'Manual',
+    ];
+}
+
+function supplycore_worker_runtime_path(string $defaultFilename, string $configuredPath = ''): string
+{
+    $appRoot = dirname(__DIR__);
+    $candidate = trim($configuredPath);
+    if ($candidate === '') {
+        $candidate = 'storage/run/' . ltrim($defaultFilename, '/');
+    }
+
+    return str_starts_with($candidate, '/') ? $candidate : $appRoot . '/' . ltrim($candidate, '/');
+}
+
+function supplycore_worker_log_path(string $defaultFilename, string $configuredPath = ''): string
+{
+    $appRoot = dirname(__DIR__);
+    $candidate = trim($configuredPath);
+    if ($candidate === '') {
+        $candidate = 'storage/logs/' . ltrim($defaultFilename, '/');
+    }
+
+    return str_starts_with($candidate, '/') ? $candidate : $appRoot . '/' . ltrim($candidate, '/');
+}
+
+function worker_job_registry_definitions(): array
+{
+    return [
+        'market_hub_current_sync' => ['workload_class' => 'sync', 'execution_mode' => 'python', 'queue_name' => 'sync', 'priority' => 'high', 'interval_seconds' => 480, 'timeout_seconds' => 240, 'memory_limit_mb' => 768, 'retry_delay_seconds' => 45, 'max_attempts' => 5],
+        'deal_alerts_sync' => ['workload_class' => 'sync', 'execution_mode' => 'python', 'queue_name' => 'sync', 'priority' => 'high', 'interval_seconds' => 300, 'timeout_seconds' => 120, 'memory_limit_mb' => 384, 'retry_delay_seconds' => 30, 'max_attempts' => 5],
+        'alliance_current_sync' => ['workload_class' => 'sync', 'execution_mode' => 'python', 'queue_name' => 'sync', 'priority' => 'medium', 'interval_seconds' => 240, 'timeout_seconds' => 180, 'memory_limit_mb' => 384, 'retry_delay_seconds' => 30, 'max_attempts' => 5],
+        'market_comparison_summary_sync' => ['workload_class' => 'compute', 'execution_mode' => 'python', 'queue_name' => 'compute', 'priority' => 'high', 'interval_seconds' => 900, 'timeout_seconds' => 300, 'memory_limit_mb' => 1024, 'retry_delay_seconds' => 60, 'max_attempts' => 5],
+        'dashboard_summary_sync' => ['workload_class' => 'compute', 'execution_mode' => 'python', 'queue_name' => 'compute', 'priority' => 'normal', 'interval_seconds' => 900, 'timeout_seconds' => 240, 'memory_limit_mb' => 512, 'retry_delay_seconds' => 45, 'max_attempts' => 5],
+        'doctrine_intelligence_sync' => ['workload_class' => 'compute', 'execution_mode' => 'python', 'queue_name' => 'compute', 'priority' => 'normal', 'interval_seconds' => 900, 'timeout_seconds' => 240, 'memory_limit_mb' => 768, 'retry_delay_seconds' => 60, 'max_attempts' => 5],
+        'loss_demand_summary_sync' => ['workload_class' => 'compute', 'execution_mode' => 'python', 'queue_name' => 'compute', 'priority' => 'normal', 'interval_seconds' => 900, 'timeout_seconds' => 240, 'memory_limit_mb' => 768, 'retry_delay_seconds' => 60, 'max_attempts' => 5],
+        'activity_priority_summary_sync' => ['workload_class' => 'compute', 'execution_mode' => 'python', 'queue_name' => 'compute', 'priority' => 'normal', 'interval_seconds' => 900, 'timeout_seconds' => 240, 'memory_limit_mb' => 768, 'retry_delay_seconds' => 60, 'max_attempts' => 5],
+        'current_state_refresh_sync' => ['workload_class' => 'compute', 'execution_mode' => 'php', 'queue_name' => 'compute', 'priority' => 'medium', 'interval_seconds' => 720, 'timeout_seconds' => 180, 'memory_limit_mb' => 512, 'retry_delay_seconds' => 45, 'max_attempts' => 5],
+        'market_hub_local_history_sync' => ['workload_class' => 'compute', 'execution_mode' => 'python', 'queue_name' => 'compute', 'priority' => 'normal', 'interval_seconds' => 1200, 'timeout_seconds' => 1800, 'memory_limit_mb' => 1024, 'retry_delay_seconds' => 120, 'max_attempts' => 4],
+        'market_hub_historical_sync' => ['workload_class' => 'compute', 'execution_mode' => 'python', 'queue_name' => 'compute', 'priority' => 'normal', 'interval_seconds' => 21600, 'timeout_seconds' => 3600, 'memory_limit_mb' => 1024, 'retry_delay_seconds' => 300, 'max_attempts' => 3],
+        'alliance_historical_sync' => ['workload_class' => 'compute', 'execution_mode' => 'python', 'queue_name' => 'compute', 'priority' => 'normal', 'interval_seconds' => 21600, 'timeout_seconds' => 3600, 'memory_limit_mb' => 1024, 'retry_delay_seconds' => 300, 'max_attempts' => 3],
+        'analytics_bucket_1h_sync' => ['workload_class' => 'compute', 'execution_mode' => 'php', 'queue_name' => 'compute', 'priority' => 'normal', 'interval_seconds' => 900, 'timeout_seconds' => 180, 'memory_limit_mb' => 384, 'retry_delay_seconds' => 45, 'max_attempts' => 5],
+        'analytics_bucket_1d_sync' => ['workload_class' => 'compute', 'execution_mode' => 'php', 'queue_name' => 'compute', 'priority' => 'normal', 'interval_seconds' => 3600, 'timeout_seconds' => 240, 'memory_limit_mb' => 384, 'retry_delay_seconds' => 60, 'max_attempts' => 4],
+        'rebuild_ai_briefings' => ['workload_class' => 'compute', 'execution_mode' => 'php', 'queue_name' => 'compute', 'priority' => 'normal', 'interval_seconds' => 1200, 'timeout_seconds' => 300, 'memory_limit_mb' => 512, 'retry_delay_seconds' => 90, 'max_attempts' => 4],
+        'forecasting_ai_sync' => ['workload_class' => 'compute', 'execution_mode' => 'php', 'queue_name' => 'compute', 'priority' => 'normal', 'interval_seconds' => 3600, 'timeout_seconds' => 300, 'memory_limit_mb' => 512, 'retry_delay_seconds' => 90, 'max_attempts' => 4],
     ];
 }
 

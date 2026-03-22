@@ -172,116 +172,83 @@ README.md
 
 ## Deployment / Operations
 
-### Ensure cron is installed and enabled
+SupplyCore no longer relies on cron for execution. `bin/cron_tick.php` is intentionally disabled and only prints a deprecation notice so operators can detect stale cron-based deployments safely.
 
-SupplyCore sync pipelines depend on the `cron` daemon being present and running on server boot.
+### Continuous worker model
 
-1. Install cron (if missing):
-   ```bash
-   sudo apt update && sudo apt install -y cron
-   ```
-2. Enable cron at boot:
-   ```bash
-   sudo systemctl enable cron
-   ```
-3. Start cron immediately:
-   ```bash
-   sudo systemctl start cron
-   ```
-4. Verify service health:
-   ```bash
-   systemctl status cron
-   ```
-5. Verify boot persistence (run after reboot):
-   ```bash
-   systemctl is-enabled cron && systemctl is-active cron
-   ```
+SupplyCore now runs three long-lived worker classes:
 
-> Note: `systemctl` checks require a systemd-based host. In minimal containers, use `service cron status` for runtime validation.
+- **Stream worker**: `zkill-worker` runs forever, polls the R2Z2 sequence feed, writes killmails in batches, and checkpoints the last processed sequence in `sync_state`.
+- **Sync workers**: Python worker-pool processes fetch external state and light refresh jobs from the `worker_jobs` queue with adaptive sleeps when idle.
+- **Compute workers**: the same Python pool can be scaled separately for compute-heavy queue classes and is the preferred runtime for `market_hub_current_sync`, `market_comparison_summary_sync`, and `dashboard_summary_sync` orchestration.
 
-## Production Cron Setup
+### Queue-backed execution
 
-### Canonical crontab entry (scheduler watchdog only)
+- `worker_jobs` is now the queue of record for recurring and retried work.
+- The worker pool continuously seeds due recurring jobs, claims the next available row by priority, locks it with a lease, heartbeats while executing, then completes or retries the row.
+- Retry state, lock expiry recovery, and worker-side memory throttling are all handled inside the worker framework rather than through cron-driven minute ticks.
+- Large Python processors are expected to iterate with `LIMIT`-based chunking and bounded batches so they never need to load full tables into memory.
 
-1. Determine the final app path and PHP binary path:
-   ```bash
-   APP_PATH=$(realpath /var/www/SupplyCore)
-   PHP_BIN=$(command -v php)
-   echo "$APP_PATH"
-   echo "$PHP_BIN"
-   ```
+### Systemd deployment
 
-2. Add the cron entry for the web/app user:
-   ```bash
-   crontab -e
-   ```
+Install and enable the continuous services instead of cron:
 
-   ```cron
-   * * * * * cd /var/www/SupplyCore && /usr/bin/flock -n /tmp/supplycore_cron.lock /usr/bin/php bin/cron_tick.php >> storage/logs/cron.log 2>&1
-   ```
+```bash
+sudo cp ops/systemd/supplycore-sync-worker@.service /etc/systemd/system/
+sudo cp ops/systemd/supplycore-compute-worker@.service /etc/systemd/system/
+sudo cp ops/systemd/supplycore-zkill.service /etc/systemd/system/
+sudo cp ops/systemd/supplycore-worker.env.example /etc/default/supplycore-worker
+sudo systemctl daemon-reload
+sudo systemctl enable --now supplycore-sync-worker@1.service
+sudo systemctl enable --now supplycore-compute-worker@1.service
+sudo systemctl enable --now supplycore-zkill.service
+```
 
-3. Ensure the log directory exists and is writable by the cron user:
-   ```bash
-   mkdir -p /var/www/SupplyCore/storage/logs
-   chown -R www-data:www-data /var/www/SupplyCore/storage
-   chmod -R u+rwX /var/www/SupplyCore/storage
-   ```
+Recommended scaling pattern:
 
-4. Validate the installed crontab:
-   ```bash
-   crontab -l
-   ```
+- `supplycore-sync-worker@N.service` → queues/classes tuned for `sync`
+- `supplycore-compute-worker@N.service` → queues/classes tuned for `compute`
+- `supplycore-zkill.service` → dedicated infinite stream worker
 
-### Scheduling model
+### Logs
 
-- `bin/scheduler_daemon.php` is now the **primary scheduler master loop**. It stays alive, renews a database lease/heartbeat in `scheduler_daemon_state`, continuously re-evaluates due work, dispatches follow-up jobs immediately when capacity opens, and recycles itself cleanly when runtime, loop-count, or memory thresholds are reached.
-- Cron is now **watchdog-only**. `bin/cron_tick.php` no longer performs primary dispatch; it runs `bin/scheduler_watchdog.php` semantics to verify the daemon heartbeat, recover stale scheduler state, and start the daemon again when needed.
-- Clean recycle exits are now also **self-respawning**. If the daemon exits because of a memory recycle threshold, loop ceiling, runtime ceiling, or an explicit restart request, it immediately spawns a replacement process before relying on cron/systemd. This prevents the “stopped after recycle” gap you were seeing when the external supervisor did not relaunch it quickly enough.
-- `bin/scheduler_health.php` prints the daemon health JSON and exits non-zero when the daemon is degraded or stopped, which makes it suitable for `systemd` health probes or manual checks.
-- The continuous daemon still reuses the existing scheduler intelligence: it claims due jobs from `sync_schedules`, preserves priority/fairness/latest-allowed-start behavior, keeps protected-job and incompatibility rules, uses the same resource-aware concurrency planner, and still dispatches async-capable AI jobs to `bin/scheduler_job_runner.php` background workers so long-polling providers do not block the rest of the queue.
-- Each schedule row now carries an explicit `execution_mode` (`php` or `python`). Lightweight control-plane jobs stay in PHP, while heavy market aggregation, snapshot-generation, history rebuild, and killmail workloads can be routed to the Python `python_worker` runner without changing scheduler cadence or lock semantics.
-- The daemon does not busy-spin. When nothing is due it can now opportunistically claim a single **idle backfill** job (for example dashboard/summary warmers that are explicitly marked backfill-safe) so the app keeps refreshing useful derived data while otherwise idle. If no due or backfill-safe work is runnable, it sleeps until the earliest of the next due timestamp, a short fallback poll interval, or a wake signal recorded by the watchdog/background workers after completions.
-- Scheduler cadence controls in **Settings → Data Sync** are intentionally simplified to one selector:
-  - **Low**: conservative cadence, lower concurrency, wider poll intervals, and more headroom for smaller VPS/container deployments.
-  - **Medium**: balanced default for most installs.
-  - **High**: tighter current-state refresh cadence, faster summaries, and more aggressive concurrency for stronger hosts.
-- SupplyCore computes the rest in PHP:
-  - per-job interval minutes,
-  - per-job timeout seconds,
-  - daemon idle/running poll intervals,
-  - concurrency ceiling,
-  - CPU/memory budgets,
-  - daemon recycle thresholds.
-- You no longer need to hand-tune every scheduler row just to keep the daemon healthy.
-- The scheduler now stores per-job phase offsets in `sync_schedules.offset_seconds`, so fresh installs can spread expensive work across the hour instead of stacking everything on the same minute. The defaults use minute `0/5` for current-sync jobs, minute `2/12/22/...` for 10-minute intelligence batches, and minute `7/22/37/52` for AI briefings.
-- Scheduler registry state now lives directly on `sync_schedules` with interval/offset minutes, priority, concurrency policy, timeout, current state (`running` / `waiting` / `stopped`), rolling duration metrics, next due time, auto-tuning metadata, and discovered-from-code markers so the sync control panel can explain every scheduling decision.
-- Automatic discovery scans scheduler registration points and code patterns (`sync`, `refresh`, `summary`, `briefing`, `forecast`, `history`, `cron`, `job`) and persists unconfigured jobs with conservative defaults instead of silently hiding them.
-- The optimizer changes one thing at a time with cooldowns: it first shifts congested offsets, then raises timeouts when repeated timeout pressure is observed, then adjusts intervals while protecting the freshness ceilings for `killmail_r2z2_sync` and `market_hub_current_sync`. Every automatic or admin change is written to `scheduler_tuning_actions`, while lock conflicts, skips, dispatches, and timeout pressure are written to `scheduler_job_events`.
-- Resource-aware concurrency now extends that scheduler baseline instead of replacing it: every completed job records per-run CPU, wall time, queue delay, approximate lock handoff delay, overlap count, and process memory high-water marks in `scheduler_job_resource_metrics`, while planner allow/defer/promote decisions are persisted in `scheduler_planner_decisions`.
-- CPU telemetry is derived from PHP process user+system CPU time (`getrusage()`) divided by wall-clock seconds, so the recorded percentage represents how much of one CPU core the job consumed on average during the run. Memory telemetry uses PHP's process memory usage and peak high-water mark (`memory_get_usage(true)` / `memory_get_peak_usage(true)`), with the stored run cost preferring the peak delta observed while the job was executing.
-- Scheduler-run PHP entrypoints now enforce `memory_limit=512M`, log current and peak memory usage in scheduler events/resource metrics, and abort a job if runtime memory crosses 400 MiB or the resolved timeout is exceeded.
-- The planner learns a rolling light/medium/heavy class for each job from recent CPU, memory, duration, timeout/failure, and lock-wait behavior. Unknown jobs stay in learning mode and are projected conservatively until enough telemetry samples accumulate.
-- Capacity decisions combine current running-job projections, per-job p95 resource costs, fairness/urgency toward `latest_allowed_start_at`, explicit incompatibility rules, reserved headroom for critical jobs, and the pressure states `healthy`, `busy`, `congested`, and `overload_protection`.
-- Lease recovery and stale-state cleanup now happen during daemon startup and watchdog intervention. The daemon clears expired/stale running markers, updates the last recovery event in `scheduler_daemon_state`, and resumes scheduling without waiting for the next cron minute.
-- UI pages now read Redis first and fall back to `intelligence_snapshots` if Redis is unavailable; each intelligence surface also exposes its last computed timestamp and freshness state to operators.
-- The hub-history scheduler jobs (`market_hub_historical_sync` and `market_hub_local_history_sync`) now pre-aggregate raw hub-order snapshots into `market_order_snapshots_summary`, then rebuild `market_history_daily` from that summary layer using the tiered retention policy from **Settings → Data Sync → Market history retention tiers** unless a CLI override is supplied.
-- `market_order_snapshots_summary` is indexed for the read paths the app uses most: latest snapshot reads via `(source_type, source_id, observed_at, type_id)`, per-type windows via `(source_type, source_id, type_id, observed_at)`, and daily stock-health rollups via `(source_type, source_id, observed_date, type_id)`.
-- **Trend Snippets** on the dashboard depend on that first-party snapshot history generation.
-- The **Run now** button in Settings → Data Sync still forces the selected enabled schedule due immediately, but when the daemon is healthy it now wakes that daemon instead of waiting for the old minute-based cron trigger.
-- Backfill start dates are automatic: each pipeline starts from the date sync automation was enabled (`sync_automation_enabled_since`).
+Use separate log files per worker family:
+
+- `storage/logs/worker.log`
+- `storage/logs/compute.log`
+- `storage/logs/zkill.log`
+
+Create the writable directories before first boot:
+
+```bash
+mkdir -p /var/www/SupplyCore/storage/logs /var/www/SupplyCore/storage/run
+chown -R www-data:www-data /var/www/SupplyCore/storage
+chmod -R u+rwX /var/www/SupplyCore/storage
+```
+
+### Worker commands
+
+Run the services manually during development or migrations:
+
+```bash
+python -m orchestrator worker-pool --app-root /var/www/SupplyCore --queues sync --workload-classes sync
+python -m orchestrator worker-pool --app-root /var/www/SupplyCore --queues compute --workload-classes compute
+python -m orchestrator zkill-worker --app-root /var/www/SupplyCore
+php bin/cron_tick.php
+```
+
+The final command is intentionally inert and only confirms that cron-based scheduling has been retired.
 
 ### Python-supervised service architecture
 
-SupplyCore now supports a **production-preferred orchestration model** where `systemd` manages a Python service and the Python service manages the PHP scheduler process lifecycle.
+SupplyCore still includes the older PHP scheduler supervisor for compatibility, but the production-preferred path is now the queue-backed Python worker pool plus the dedicated zKill worker.
 
 #### Layering
 
-1. `systemd` owns the long-running service and restart policy.
-2. `python/orchestrator/` owns supervision, health polling, graceful restarts, heartbeat files, and duplicate-master prevention.
-3. PHP remains the source of truth for:
-   - application configuration in `src/config/app.php`,
-   - scheduler health/status in `scheduler_daemon_state`,
-   - actual job dispatch and domain logic in `bin/scheduler_daemon.php`, `bin/scheduler_job_runner.php`, and related scheduler helpers.
+1. `systemd` owns restart policy and service lifecycle.
+2. `python/orchestrator/worker_pool.py` owns recurring queue seeding, job claiming, heartbeat renewals, retries, adaptive idle sleeps, and memory backpressure.
+3. `python/orchestrator/zkill_worker.py` owns the always-on killmail ingestion stream.
+4. PHP remains the source of truth for application configuration, queue schema helpers in `src/db.php`, and reusable business logic / handlers in `src/functions.php`.
 
 #### PHP → Python config bridge
 
@@ -293,15 +260,7 @@ Instead, the bridge command below loads the real PHP bootstrap/config stack and 
 php bin/orchestrator_config.php
 ```
 
-That JSON includes:
-
-- app environment/name/base URL/timezone,
-- DB connection information,
-- resolved app/script/path locations,
-- scheduler lease/watchdog/runtime settings,
-- orchestrator lock/heartbeat/health-check settings.
-
-This keeps PHP as the config source of truth while giving Python a stable runtime contract.
+That JSON now includes worker-pool paths, log files, state-file locations, queue lease defaults, and memory thresholds in addition to the existing PHP runtime settings.
 
 #### Python project structure
 

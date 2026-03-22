@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "supplycore-orchestrator"
 version = "0.1.0"
-description = "Python supervisor for SupplyCore PHP scheduler services"
+description = "Continuous Python worker pool and stream workers for SupplyCore"
 requires-python = ">=3.11"
 dependencies = ["PyMySQL>=1.1,<2"]
 

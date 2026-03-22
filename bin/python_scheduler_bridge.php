@@ -75,6 +75,67 @@ try {
         python_scheduler_bridge_output(['ok' => true, 'result' => $result]);
     }
 
+    if ($action === 'worker-runtime-config') {
+        $runtime = orchestrator_runtime_config_export();
+        python_scheduler_bridge_output([
+            'ok' => true,
+            'workers' => (array) ($runtime['workers'] ?? []),
+            'definitions' => worker_job_registry_definitions(),
+        ]);
+    }
+
+    if ($action === 'queue-recurring-jobs') {
+        $input = python_scheduler_bridge_read_stdin_json();
+        $jobKeys = array_values(array_filter(array_map('strval', (array) ($input['job_keys'] ?? [])), static fn (string $jobKey): bool => trim($jobKey) !== ''));
+        $result = db_worker_job_queue_due_recurring_jobs($jobKeys);
+        python_scheduler_bridge_output(['ok' => true, 'result' => $result]);
+    }
+
+    if ($action === 'claim-worker-job') {
+        $input = python_scheduler_bridge_read_stdin_json();
+        $workerId = trim((string) ($input['worker_id'] ?? ''));
+        if ($workerId === '') {
+            throw new InvalidArgumentException('worker_id is required for claim-worker-job.');
+        }
+
+        $job = db_worker_job_claim_next(
+            $workerId,
+            (array) ($input['queues'] ?? []),
+            (array) ($input['workload_classes'] ?? []),
+            isset($input['lease_seconds']) ? (int) $input['lease_seconds'] : null
+        );
+
+        python_scheduler_bridge_output(['ok' => true, 'job' => $job]);
+    }
+
+    if ($action === 'heartbeat-worker-job') {
+        $input = python_scheduler_bridge_read_stdin_json();
+        $jobId = (int) ($input['job_id'] ?? 0);
+        $workerId = trim((string) ($input['worker_id'] ?? ''));
+        $result = db_worker_job_heartbeat($jobId, $workerId, isset($input['lease_seconds']) ? (int) $input['lease_seconds'] : null);
+        python_scheduler_bridge_output(['ok' => true, 'result' => $result]);
+    }
+
+    if ($action === 'complete-worker-job') {
+        $input = python_scheduler_bridge_read_stdin_json();
+        $jobId = (int) ($input['job_id'] ?? 0);
+        $workerId = trim((string) ($input['worker_id'] ?? ''));
+        $result = is_array($input['result'] ?? null) ? $input['result'] : [];
+        $stored = db_worker_job_complete($jobId, $workerId, $result);
+        python_scheduler_bridge_output(['ok' => true, 'job' => $stored]);
+    }
+
+    if ($action === 'retry-worker-job') {
+        $input = python_scheduler_bridge_read_stdin_json();
+        $jobId = (int) ($input['job_id'] ?? 0);
+        $workerId = trim((string) ($input['worker_id'] ?? ''));
+        $error = trim((string) ($input['error'] ?? 'Worker job failed.'));
+        $retryDelaySeconds = isset($input['retry_delay_seconds']) ? (int) $input['retry_delay_seconds'] : null;
+        $result = is_array($input['result'] ?? null) ? $input['result'] : [];
+        $stored = db_worker_job_retry($jobId, $workerId, $error, $retryDelaySeconds, $result);
+        python_scheduler_bridge_output(['ok' => true, 'job' => $stored]);
+    }
+
     if ($action === 'finalize-job') {
         $scheduleId = (int) ($options['schedule-id'] ?? 0);
         if ($scheduleId <= 0) {

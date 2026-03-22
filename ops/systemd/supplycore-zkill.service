@@ -1,0 +1,23 @@
+[Unit]
+Description=SupplyCore zKill stream worker
+After=network-online.target mariadb.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+WorkingDirectory=/var/www/SupplyCore
+EnvironmentFile=-/etc/default/supplycore-worker
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/var/www/SupplyCore/.venv-orchestrator/bin/python -m orchestrator zkill-worker --app-root /var/www/SupplyCore --poll-sleep ${SUPPLYCORE_ZKILL_POLL_SLEEP:-10}
+Restart=always
+RestartSec=5
+KillSignal=SIGTERM
+TimeoutStopSec=90
+MemoryMax=768M
+StandardOutput=append:/var/www/SupplyCore/storage/logs/zkill.log
+StandardError=append:/var/www/SupplyCore/storage/logs/zkill.log
+
+[Install]
+WantedBy=multi-user.target
