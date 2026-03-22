@@ -7,11 +7,11 @@ Wants=network.target
 Type=simple
 User=www-data
 Group=www-data
-WorkingDirectory=/var/www/supplycore
+WorkingDirectory=/var/www/SupplyCore
 EnvironmentFile=-/etc/default/supplycore-orchestrator
 Environment=PYTHONUNBUFFERED=1
 Environment=SCHEDULER_SUPERVISOR_MODE=python
-ExecStart=/var/www/supplycore/.venv-orchestrator/bin/python -m orchestrator --app-root /var/www/supplycore
+ExecStart=/var/www/SupplyCore/.venv-orchestrator/bin/python -m orchestrator --app-root /var/www/SupplyCore
 Restart=always
 RestartSec=5
 KillSignal=SIGTERM

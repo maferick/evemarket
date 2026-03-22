@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -68,14 +70,86 @@ class OrchestratorConfig:
         return str(self.raw["scheduler"]["supervisor_mode"])
 
 
+def _php_binary_candidates() -> list[str]:
+    candidates: list[str] = []
+
+    for env_key in ("SUPPLYCORE_PHP_BINARY", "ORCHESTRATOR_PHP_BINARY", "PHP_BINARY"):
+        env_value = os.environ.get(env_key, "").strip()
+        if env_value != "":
+            candidates.append(env_value)
+
+    candidates.extend([
+        "php8.4",
+        "php8.3",
+        "php8.2",
+        "php8.1",
+        "php8.0",
+        "php",
+    ])
+
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for candidate in candidates:
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        ordered.append(candidate)
+
+    return ordered
+
+
+def _resolve_php_binary() -> str:
+    version_probe = 'echo PHP_MAJOR_VERSION, ".", PHP_MINOR_VERSION;'
+    fallback_binary: str | None = None
+
+    for candidate in _php_binary_candidates():
+        resolved = shutil.which(candidate) if os.path.sep not in candidate else candidate
+        if not resolved or not Path(resolved).exists():
+            continue
+
+        if fallback_binary is None:
+            fallback_binary = resolved
+
+        completed = subprocess.run(
+            [resolved, "-r", version_probe],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if completed.returncode != 0:
+            continue
+
+        version = completed.stdout.strip()
+        if version != "" and tuple(int(part) for part in version.split(".", 1)) >= (8, 0):
+            return resolved
+
+    if fallback_binary is not None:
+        return fallback_binary
+
+    return "php"
+
+
 def load_php_runtime_config(app_root: Path) -> OrchestratorConfig:
     bridge = app_root / "bin" / "orchestrator_config.php"
-    completed = subprocess.run(
-        ["php", str(bridge)],
-        cwd=str(app_root),
-        check=True,
-        capture_output=True,
-        text=True,
-    )
+    php_binary = _resolve_php_binary()
+
+    try:
+        completed = subprocess.run(
+            [php_binary, str(bridge)],
+            cwd=str(app_root),
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except subprocess.CalledProcessError as error:
+        stderr = (error.stderr or "").strip()
+        stdout = (error.stdout or "").strip()
+        details = stderr if stderr != "" else stdout
+        if details == "":
+            details = "PHP bridge exited without diagnostic output."
+        raise RuntimeError(
+            f"Failed to load orchestrator PHP runtime config via {php_binary}: {details}"
+        ) from error
+
     payload = json.loads(completed.stdout)
     return OrchestratorConfig(raw=payload)

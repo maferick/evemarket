@@ -205,7 +205,7 @@ SupplyCore sync pipelines depend on the `cron` daemon being present and running 
 
 1. Determine the final app path and PHP binary path:
    ```bash
-   APP_PATH=$(realpath /var/www/supplycore)
+   APP_PATH=$(realpath /var/www/SupplyCore)
    PHP_BIN=$(command -v php)
    echo "$APP_PATH"
    echo "$PHP_BIN"
@@ -217,14 +217,14 @@ SupplyCore sync pipelines depend on the `cron` daemon being present and running 
    ```
 
    ```cron
-   * * * * * cd /var/www/supplycore && /usr/bin/flock -n /tmp/supplycore_cron.lock /usr/bin/php bin/cron_tick.php >> storage/logs/cron.log 2>&1
+   * * * * * cd /var/www/SupplyCore && /usr/bin/flock -n /tmp/supplycore_cron.lock /usr/bin/php bin/cron_tick.php >> storage/logs/cron.log 2>&1
    ```
 
 3. Ensure the log directory exists and is writable by the cron user:
    ```bash
-   mkdir -p /var/www/supplycore/storage/logs
-   chown -R www-data:www-data /var/www/supplycore/storage
-   chmod -R u+rwX /var/www/supplycore/storage
+   mkdir -p /var/www/SupplyCore/storage/logs
+   chown -R www-data:www-data /var/www/SupplyCore/storage
+   chmod -R u+rwX /var/www/SupplyCore/storage
    ```
 
 4. Validate the installed crontab:
@@ -364,11 +364,11 @@ Wants=network.target
 Type=simple
 User=www-data
 Group=www-data
-WorkingDirectory=/var/www/supplycore
+WorkingDirectory=/var/www/SupplyCore
 EnvironmentFile=-/etc/default/supplycore-orchestrator
 Environment=PYTHONUNBUFFERED=1
 Environment=SCHEDULER_SUPERVISOR_MODE=python
-ExecStart=/var/www/supplycore/.venv-orchestrator/bin/python -m orchestrator --app-root /var/www/supplycore
+ExecStart=/var/www/SupplyCore/.venv-orchestrator/bin/python -m orchestrator --app-root /var/www/SupplyCore
 Restart=always
 RestartSec=5
 KillSignal=SIGTERM
@@ -393,7 +393,7 @@ sudo systemctl status supplycore-orchestrator.service
 The orchestrator is intentionally isolated in its own virtual environment.
 
 ```bash
-cd /var/www/supplycore
+cd /var/www/SupplyCore
 python3 -m venv .venv-orchestrator
 . .venv-orchestrator/bin/activate
 pip install --upgrade pip
@@ -407,10 +407,12 @@ Validation:
 php bin/orchestrator_config.php
 ```
 
+If your host's default `php` command points to PHP 7.x or another incompatible CLI build, set `SUPPLYCORE_PHP_BINARY` in `/etc/default/supplycore-orchestrator` to a PHP 8+ binary such as `/usr/bin/php8.3`. The Python supervisor now prefers explicit overrides and otherwise probes common `php8.x` binaries before falling back to `php`.
+
 `systemd` should always use the venv interpreter path directly:
 
 ```ini
-ExecStart=/var/www/supplycore/.venv-orchestrator/bin/python -m orchestrator --app-root /var/www/supplycore
+ExecStart=/var/www/SupplyCore/.venv-orchestrator/bin/python -m orchestrator --app-root /var/www/SupplyCore
 ```
 
 ### Required runtime configuration
@@ -512,7 +514,7 @@ If the UI says the scheduler daemon is **stopped** while no jobs are running:
 Inspect the Python heartbeat file:
 
 ```bash
-cat /var/www/supplycore/storage/run/orchestrator-heartbeat.json
+cat /var/www/SupplyCore/storage/run/orchestrator-heartbeat.json
 ```
 
 Check cron service status:
@@ -524,7 +526,7 @@ systemctl status cron
 Tail the cron tick log:
 
 ```bash
-tail -f /var/www/supplycore/storage/logs/cron.log
+tail -f /var/www/SupplyCore/storage/logs/cron.log
 ```
 
 Tail the orchestrator log stream:
