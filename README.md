@@ -605,15 +605,13 @@ SupplyCore now includes a first-pass killmail intelligence ingestion foundation 
 
 ### Operations
 
-- Scheduler job key: `killmail_r2z2_sync` (configured in `sync_schedules`)
-- One-shot/manual command:
+- Dedicated runtime: `python -m orchestrator zkill-worker --app-root /var/www/SupplyCore`
+- Scheduler dataset/state key: `killmail.r2z2.stream`
+- Compatibility-only one-shot/manual command:
   ```bash
   php bin/killmail_sync.php
   ```
-- Continuous loop mode:
-  ```bash
-  php bin/killmail_sync.php --loop
-  ```
+- The dedicated Python zKill worker is the production path. The PHP command remains available as a compatibility fallback, but `bin/cron_tick.php` does not drive killmail ingestion anymore.
 - Generic sync runner job option:
   ```bash
   php bin/sync_runner.php --job=killmail-r2z2 --mode=incremental --source-id=1

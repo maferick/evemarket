@@ -97,6 +97,10 @@ def main(argv: list[str] | None = None) -> int:
                 "rows_seen": result.get("rows_seen"),
                 "rows_written": result.get("rows_written"),
                 "cursor": result.get("cursor"),
+                "duplicates": (result.get("meta") or {}).get("duplicates"),
+                "filtered": (result.get("meta") or {}).get("filtered"),
+                "invalid": (result.get("meta") or {}).get("invalid"),
+                "outcome_reason": (result.get("meta") or {}).get("outcome_reason"),
             },
         )
         if args.once:

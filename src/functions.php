@@ -13426,24 +13426,7 @@ function python_bridge_process_killmail_batch(array $payloads): array
     }
 
     db_killmail_payload_schema_ensure();
-
-    $trackedAllianceRows = db_killmail_tracked_alliances_active();
-    $trackedCorporationRows = db_killmail_tracked_corporations_active();
-    $trackedAllianceIds = [];
-    foreach ($trackedAllianceRows as $row) {
-        $id = (int) ($row['alliance_id'] ?? 0);
-        if ($id > 0) {
-            $trackedAllianceIds[$id] = true;
-        }
-    }
-
-    $trackedCorporationIds = [];
-    foreach ($trackedCorporationRows as $row) {
-        $id = (int) ($row['corporation_id'] ?? 0);
-        if ($id > 0) {
-            $trackedCorporationIds[$id] = true;
-        }
-    }
+    ['alliance_ids' => $trackedAllianceIds, 'corporation_ids' => $trackedCorporationIds] = killmail_active_tracked_entity_ids();
 
     $rowsSeen = 0;
     $rowsWritten = 0;
@@ -13454,40 +13437,21 @@ function python_bridge_process_killmail_batch(array $payloads): array
 
     foreach ($payloads as $payload) {
         $rowsSeen++;
-        $transformed = killmail_transform_r2z2_payload($payload);
-        $event = (array) ($transformed['event'] ?? []);
-        $sequenceId = (int) ($event['sequence_id'] ?? 0);
-        if ($sequenceId <= 0) {
+        $result = killmail_persist_r2z2_payload($payload, $trackedAllianceIds, $trackedCorporationIds);
+        $sequenceId = (int) ($result['sequence_id'] ?? 0);
+        $status = (string) ($result['status'] ?? 'invalid');
+        if ($status === 'invalid') {
             $invalid++;
             continue;
         }
 
-        $killmailId = (int) ($event['killmail_id'] ?? 0);
-        $killmailHash = (string) ($event['killmail_hash'] ?? '');
-        if ($killmailId > 0 && $killmailHash !== '' && db_killmail_event_exists($sequenceId, $killmailId, $killmailHash)) {
+        if ($status === 'duplicate') {
             $duplicates++;
-            $lastProcessedSequence = $sequenceId;
-            continue;
-        }
-
-        if (!killmail_event_matches_tracked_entities($event, (array) ($transformed['attackers'] ?? []), $trackedAllianceIds, $trackedCorporationIds)) {
+        } elseif ($status === 'filtered') {
             $filtered++;
-            $lastProcessedSequence = $sequenceId;
-            continue;
-        }
-
-        killmail_prime_entity_metadata(killmail_entity_resolution_requests(
-            $event,
-            (array) ($transformed['attackers'] ?? []),
-            (array) ($transformed['items'] ?? [])
-        ));
-
-        db_transaction(static function () use ($transformed, $sequenceId, &$rowsWritten): void {
-            db_killmail_event_upsert($transformed['event']);
-            db_killmail_attackers_replace($sequenceId, $transformed['attackers']);
-            db_killmail_items_replace($sequenceId, $transformed['items']);
+        } elseif ($status === 'written') {
             $rowsWritten++;
-        });
+        }
 
         $lastProcessedSequence = $sequenceId;
     }
@@ -16925,6 +16889,87 @@ function killmail_event_matches_tracked_entities(array $event, array $attackers,
     return false;
 }
 
+function killmail_active_tracked_entity_ids(): array
+{
+    $trackedAllianceIds = [];
+    foreach (db_killmail_tracked_alliances_active() as $row) {
+        $id = (int) ($row['alliance_id'] ?? 0);
+        if ($id > 0) {
+            $trackedAllianceIds[$id] = true;
+        }
+    }
+
+    $trackedCorporationIds = [];
+    foreach (db_killmail_tracked_corporations_active() as $row) {
+        $id = (int) ($row['corporation_id'] ?? 0);
+        if ($id > 0) {
+            $trackedCorporationIds[$id] = true;
+        }
+    }
+
+    return [
+        'alliance_ids' => $trackedAllianceIds,
+        'corporation_ids' => $trackedCorporationIds,
+    ];
+}
+
+function killmail_persist_r2z2_payload(
+    array $payload,
+    array $trackedAllianceIds,
+    array $trackedCorporationIds,
+    bool $strictSequenceId = false,
+    ?int $requestedSequenceId = null
+): array {
+    $transformed = killmail_transform_r2z2_payload($payload);
+    $event = (array) ($transformed['event'] ?? []);
+    $sequenceId = (int) ($event['sequence_id'] ?? 0);
+
+    if ($sequenceId <= 0) {
+        if ($strictSequenceId) {
+            $streamSequence = $requestedSequenceId !== null && $requestedSequenceId > 0 ? $requestedSequenceId : 0;
+            throw new RuntimeException('R2Z2 payload missing sequence_id for stream row ' . $streamSequence);
+        }
+
+        return [
+            'status' => 'invalid',
+            'sequence_id' => 0,
+        ];
+    }
+
+    $killmailId = (int) ($event['killmail_id'] ?? 0);
+    $killmailHash = (string) ($event['killmail_hash'] ?? '');
+    if ($killmailId > 0 && $killmailHash !== '' && db_killmail_event_exists($sequenceId, $killmailId, $killmailHash)) {
+        return [
+            'status' => 'duplicate',
+            'sequence_id' => $sequenceId,
+        ];
+    }
+
+    if (!killmail_event_matches_tracked_entities($event, (array) ($transformed['attackers'] ?? []), $trackedAllianceIds, $trackedCorporationIds)) {
+        return [
+            'status' => 'filtered',
+            'sequence_id' => $sequenceId,
+        ];
+    }
+
+    killmail_prime_entity_metadata(killmail_entity_resolution_requests(
+        $event,
+        (array) ($transformed['attackers'] ?? []),
+        (array) ($transformed['items'] ?? [])
+    ));
+
+    db_transaction(static function () use ($transformed, $sequenceId): void {
+        db_killmail_event_upsert($transformed['event']);
+        db_killmail_attackers_replace($sequenceId, $transformed['attackers']);
+        db_killmail_items_replace($sequenceId, $transformed['items']);
+    });
+
+    return [
+        'status' => 'written',
+        'sequence_id' => $sequenceId,
+    ];
+}
+
 function killmail_transform_r2z2_payload(array $payload): array
 {
     $killmail = is_array($payload['esi'] ?? null)
@@ -16998,24 +17043,7 @@ function sync_killmail_r2z2_stream(string $runMode = 'incremental'): array
         scheduler_runtime_guard($runtimeStartedAt, $runtimeTimeoutSeconds, 'killmail stream bootstrap');
         // Ensure any one-time killmail schema migrations run before per-row write transactions begin.
         db_killmail_payload_schema_ensure();
-
-        $trackedAllianceRows = db_killmail_tracked_alliances_active();
-        $trackedCorporationRows = db_killmail_tracked_corporations_active();
-        $trackedAllianceIds = [];
-        foreach ($trackedAllianceRows as $row) {
-            $id = (int) ($row['alliance_id'] ?? 0);
-            if ($id > 0) {
-                $trackedAllianceIds[$id] = true;
-            }
-        }
-
-        $trackedCorporationIds = [];
-        foreach ($trackedCorporationRows as $row) {
-            $id = (int) ($row['corporation_id'] ?? 0);
-            if ($id > 0) {
-                $trackedCorporationIds[$id] = true;
-            }
-        }
+        ['alliance_ids' => $trackedAllianceIds, 'corporation_ids' => $trackedCorporationIds] = killmail_active_tracked_entity_ids();
 
         $sequenceProbe = killmail_r2z2_fetch_json(killmail_r2z2_sequence_url());
         $sequenceProbeStatus = (int) ($sequenceProbe['status'] ?? 0);
@@ -17106,16 +17134,16 @@ function sync_killmail_r2z2_stream(string $runMode = 'incremental'): array
             $killmailsFetched++;
             $rowsSeen++;
 
-            $transformed = killmail_transform_r2z2_payload((array) ($response['json'] ?? []));
-            $event = (array) ($transformed['event'] ?? []);
-            $sequenceId = (int) ($event['sequence_id'] ?? 0);
-            if ($sequenceId <= 0) {
-                throw new RuntimeException('R2Z2 payload missing sequence_id for stream row ' . $nextSequence);
-            }
-
-            $killmailId = (int) ($event['killmail_id'] ?? 0);
-            $killmailHash = (string) ($event['killmail_hash'] ?? '');
-            if ($killmailId > 0 && $killmailHash !== '' && db_killmail_event_exists($sequenceId, $killmailId, $killmailHash)) {
+            $result = killmail_persist_r2z2_payload(
+                (array) ($response['json'] ?? []),
+                $trackedAllianceIds,
+                $trackedCorporationIds,
+                true,
+                $nextSequence
+            );
+            $sequenceId = (int) ($result['sequence_id'] ?? 0);
+            $statusKey = (string) ($result['status'] ?? 'invalid');
+            if ($statusKey === 'duplicate') {
                 $duplicateCount++;
                 $nextSequence = $sequenceId + 1;
                 $lastProcessed = $sequenceId;
@@ -17123,7 +17151,7 @@ function sync_killmail_r2z2_stream(string $runMode = 'incremental'): array
                 continue;
             }
 
-            if (!killmail_event_matches_tracked_entities($event, (array) ($transformed['attackers'] ?? []), $trackedAllianceIds, $trackedCorporationIds)) {
+            if ($statusKey === 'filtered') {
                 $filteredCount++;
                 $nextSequence = $sequenceId + 1;
                 $lastProcessed = $sequenceId;
@@ -17131,19 +17159,12 @@ function sync_killmail_r2z2_stream(string $runMode = 'incremental'): array
                 continue;
             }
 
-            killmail_prime_entity_metadata(killmail_entity_resolution_requests(
-                $event,
-                (array) ($transformed['attackers'] ?? []),
-                (array) ($transformed['items'] ?? [])
-            ));
+            if ($statusKey !== 'written') {
+                throw new RuntimeException('Killmail ingestion returned an unexpected persistence status: ' . $statusKey);
+            }
 
-            db_transaction(static function () use ($transformed, $sequenceId, &$rowsWritten): void {
-                db_killmail_event_upsert($transformed['event']);
-                db_killmail_attackers_replace($sequenceId, $transformed['attackers']);
-                db_killmail_items_replace($sequenceId, $transformed['items']);
-                $rowsWritten++;
-            });
-            unset($transformed, $event, $response);
+            $rowsWritten++;
+            unset($response);
             if (function_exists('gc_collect_cycles')) {
                 gc_collect_cycles();
             }
