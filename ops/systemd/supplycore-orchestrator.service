@@ -1,0 +1,23 @@
+[Unit]
+Description=SupplyCore Python orchestrator supervisor
+After=network.target mariadb.service
+Wants=network.target
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+WorkingDirectory=/var/www/supplycore
+EnvironmentFile=-/etc/default/supplycore-orchestrator
+Environment=PYTHONUNBUFFERED=1
+Environment=SCHEDULER_SUPERVISOR_MODE=python
+ExecStart=/var/www/supplycore/.venv-orchestrator/bin/python -m orchestrator --app-root /var/www/supplycore
+Restart=always
+RestartSec=5
+KillSignal=SIGTERM
+TimeoutStopSec=90
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

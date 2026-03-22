@@ -30,6 +30,18 @@ $config = [
     ],
     'scheduler' => [
         'default_timeout_seconds' => max(30, (int) (getenv('SCHEDULER_DEFAULT_TIMEOUT_SECONDS') ?: 300)),
+        'supervisor_mode' => getenv('SCHEDULER_SUPERVISOR_MODE') ?: 'php',
+        'systemd_service' => getenv('SCHEDULER_SYSTEMD_SERVICE') ?: 'supplycore-scheduler.service',
+        'python_service_name' => getenv('SCHEDULER_PYTHON_SERVICE_NAME') ?: 'supplycore-orchestrator.service',
+    ],
+    'orchestrator' => [
+        'heartbeat_file' => getenv('ORCHESTRATOR_HEARTBEAT_FILE') ?: 'storage/run/orchestrator-heartbeat.json',
+        'lock_file' => getenv('ORCHESTRATOR_LOCK_FILE') ?: 'storage/run/orchestrator.lock',
+        'state_dir' => getenv('ORCHESTRATOR_STATE_DIR') ?: 'storage/run',
+        'health_check_interval_seconds' => max(5, (int) (getenv('ORCHESTRATOR_HEALTH_CHECK_INTERVAL_SECONDS') ?: 15)),
+        'worker_grace_seconds' => max(15, (int) (getenv('ORCHESTRATOR_WORKER_GRACE_SECONDS') ?: 45)),
+        'worker_start_backoff_seconds' => max(1, (int) (getenv('ORCHESTRATOR_WORKER_START_BACKOFF_SECONDS') ?: 5)),
+        'max_consecutive_health_failures' => max(1, (int) (getenv('ORCHESTRATOR_MAX_CONSECUTIVE_HEALTH_FAILURES') ?: 3)),
     ],
 ];
 

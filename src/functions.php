@@ -2740,8 +2740,30 @@ function scheduler_daemon_memory_recycle_bytes(): int
     return 268435456;
 }
 
+function scheduler_supervisor_mode(): string
+{
+    $configured = strtolower(trim((string) config('scheduler.supervisor_mode', (string) getenv('SCHEDULER_SUPERVISOR_MODE'))));
+
+    return in_array($configured, ['php', 'python'], true) ? $configured : 'php';
+}
+
+function scheduler_is_python_supervised(): bool
+{
+    if ((getenv('SUPPLYCORE_PYTHON_SUPERVISOR') ?: '0') === '1') {
+        return true;
+    }
+
+    return scheduler_supervisor_mode() === 'python';
+}
+
 function scheduler_daemon_watchdog_service_name(): string
 {
+    if (scheduler_is_python_supervised()) {
+        $configured = trim((string) config('scheduler.python_service_name', (string) getenv('SCHEDULER_PYTHON_SERVICE_NAME')));
+
+        return $configured !== '' ? $configured : 'supplycore-orchestrator.service';
+    }
+
     $configured = trim((string) config('scheduler.systemd_service', (string) getenv('SCHEDULER_SYSTEMD_SERVICE')));
 
     return $configured !== '' ? $configured : 'supplycore-scheduler.service';
@@ -2986,6 +3008,10 @@ function scheduler_daemon_spawn_detached(): array
 
 function scheduler_daemon_should_self_respawn(string $exitReason, int $exitCode): bool
 {
+    if (scheduler_is_python_supervised()) {
+        return false;
+    }
+
     if ($exitCode !== 0) {
         return false;
     }
@@ -3001,6 +3027,30 @@ function scheduler_daemon_should_self_respawn(string $exitReason, int $exitCode)
 
 function scheduler_watchdog_start_daemon(): array
 {
+    if (scheduler_is_python_supervised()) {
+        $serviceName = scheduler_daemon_watchdog_service_name();
+        $systemctlPath = trim((string) @shell_exec('command -v systemctl 2>/dev/null'));
+        if ($systemctlPath === '') {
+            return [
+                'ok' => false,
+                'mode' => 'python-supervisor',
+                'message' => 'Python-supervised mode is enabled, but systemctl is unavailable for restarting ' . $serviceName . '.',
+            ];
+        }
+
+        $output = [];
+        $exitCode = 1;
+        @exec($systemctlPath . ' restart ' . escapeshellarg($serviceName) . ' 2>&1', $output, $exitCode);
+
+        return [
+            'ok' => $exitCode === 0,
+            'mode' => 'python-supervisor',
+            'message' => $exitCode === 0
+                ? 'Watchdog asked systemd to restart ' . $serviceName . '.'
+                : 'Watchdog failed to restart ' . $serviceName . ' while Python-supervised mode is enabled.',
+        ];
+    }
+
     if (!function_exists('exec')) {
         return scheduler_daemon_spawn_detached();
     }
@@ -3091,6 +3141,7 @@ function scheduler_daemon_run(?callable $logger = null): int
         'boot' => [
             'php_binary' => PHP_BINARY,
             'hostname' => $hostname,
+            'supervisor_mode' => scheduler_supervisor_mode(),
         ],
     ])) {
         if ($logger !== null) {
@@ -3232,6 +3283,77 @@ function scheduler_daemon_run(?callable $logger = null): int
     }
 
     return $exitCode;
+}
+
+function orchestrator_runtime_config_export(): array
+{
+    $appRoot = dirname(__DIR__);
+    $stateDir = trim((string) config('orchestrator.state_dir', 'storage/run'));
+    $resolvedStateDir = $stateDir !== '' && str_starts_with($stateDir, '/')
+        ? $stateDir
+        : $appRoot . '/' . ltrim($stateDir, '/');
+    $heartbeatFile = trim((string) config('orchestrator.heartbeat_file', 'storage/run/orchestrator-heartbeat.json'));
+    $resolvedHeartbeatFile = $heartbeatFile !== '' && str_starts_with($heartbeatFile, '/')
+        ? $heartbeatFile
+        : $appRoot . '/' . ltrim($heartbeatFile, '/');
+    $lockFile = trim((string) config('orchestrator.lock_file', 'storage/run/orchestrator.lock'));
+    $resolvedLockFile = $lockFile !== '' && str_starts_with($lockFile, '/')
+        ? $lockFile
+        : $appRoot . '/' . ltrim($lockFile, '/');
+
+    return [
+        'app' => [
+            'name' => (string) config('app.name', 'SupplyCore'),
+            'env' => (string) config('app.env', 'development'),
+            'base_url' => (string) config('app.base_url', 'http://localhost:8080'),
+            'timezone' => app_timezone(),
+        ],
+        'db' => [
+            'host' => (string) config('db.host', '127.0.0.1'),
+            'port' => (int) config('db.port', 3306),
+            'database' => (string) config('db.database', 'supplycore'),
+            'username' => (string) config('db.username', 'root'),
+            'password' => (string) config('db.password', ''),
+            'charset' => (string) config('db.charset', 'utf8mb4'),
+        ],
+        'paths' => [
+            'app_root' => $appRoot,
+            'bootstrap' => __DIR__ . '/bootstrap.php',
+            'config' => __DIR__ . '/config/app.php',
+            'php_binary' => PHP_BINARY !== '' ? PHP_BINARY : 'php',
+            'scheduler_daemon' => scheduler_daemon_script_path(),
+            'scheduler_watchdog' => scheduler_watchdog_script_path(),
+            'scheduler_health' => scheduler_health_script_path(),
+            'scheduler_job_runner' => scheduler_job_runner_script_path(),
+            'cron_tick' => dirname(__DIR__) . '/bin/cron_tick.php',
+            'state_dir' => $resolvedStateDir,
+            'heartbeat_file' => $resolvedHeartbeatFile,
+            'lock_file' => $resolvedLockFile,
+            'log_file' => scheduler_cron_log_path(),
+        ],
+        'scheduler' => [
+            'supervisor_mode' => scheduler_supervisor_mode(),
+            'daemon_key' => scheduler_daemon_key(),
+            'lease_ttl_seconds' => scheduler_daemon_lease_ttl_seconds(),
+            'watchdog_grace_seconds' => scheduler_daemon_watchdog_grace_seconds(),
+            'default_timeout_seconds' => scheduler_global_timeout_default_seconds(),
+            'daemon_poll_interval_seconds' => scheduler_daemon_poll_interval_seconds(),
+            'daemon_running_poll_interval_seconds' => scheduler_daemon_running_poll_interval_seconds(),
+            'daemon_max_runtime_seconds' => scheduler_daemon_max_runtime_seconds(),
+            'daemon_max_loop_count' => scheduler_daemon_max_loop_count(),
+            'daemon_memory_recycle_bytes' => scheduler_daemon_memory_recycle_bytes(),
+            'systemd_service' => scheduler_daemon_watchdog_service_name(),
+        ],
+        'orchestrator' => [
+            'state_dir' => $resolvedStateDir,
+            'heartbeat_file' => $resolvedHeartbeatFile,
+            'lock_file' => $resolvedLockFile,
+            'health_check_interval_seconds' => max(5, (int) config('orchestrator.health_check_interval_seconds', 15)),
+            'worker_grace_seconds' => max(15, (int) config('orchestrator.worker_grace_seconds', 45)),
+            'worker_start_backoff_seconds' => max(1, (int) config('orchestrator.worker_start_backoff_seconds', 5)),
+            'max_consecutive_health_failures' => max(1, (int) config('orchestrator.max_consecutive_health_failures', 3)),
+        ],
+    ];
 }
 
 function scheduler_priority_options(): array
