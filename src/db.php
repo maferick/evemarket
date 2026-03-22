@@ -438,8 +438,8 @@ function db_killmail_payload_schema_ensure(): void
         sequence_id BIGINT UNSIGNED NOT NULL,
         killmail_id BIGINT UNSIGNED NOT NULL,
         killmail_hash VARCHAR(128) NOT NULL,
-        zkb_json LONGTEXT NOT NULL,
-        raw_killmail_json LONGTEXT NOT NULL,
+        zkb_json LONGTEXT NOT NULL DEFAULT '{}',
+        raw_killmail_json LONGTEXT NOT NULL DEFAULT '{}',
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
         PRIMARY KEY (sequence_id),
@@ -486,8 +486,8 @@ function db_killmail_overview_schema_ensure(): void
         sequence_id BIGINT UNSIGNED NOT NULL,
         killmail_id BIGINT UNSIGNED NOT NULL,
         killmail_hash VARCHAR(128) NOT NULL,
-        zkb_json LONGTEXT NOT NULL,
-        raw_killmail_json LONGTEXT NOT NULL,
+        zkb_json LONGTEXT NOT NULL DEFAULT '{}',
+        raw_killmail_json LONGTEXT NOT NULL DEFAULT '{}',
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
         PRIMARY KEY (sequence_id),
@@ -543,6 +543,12 @@ function db_killmail_overview_schema_ensure(): void
     );
 
     $ensured = true;
+}
+
+function db_killmail_event_has_legacy_payload_columns(): bool
+{
+    return db_table_has_column('killmail_events', 'zkb_json')
+        && db_table_has_column('killmail_events', 'raw_killmail_json');
 }
 
 function db_killmail_event_payload_upsert(array $event): bool
@@ -8799,63 +8805,85 @@ function db_killmail_event_upsert(array $event): bool
     db_killmail_payload_schema_ensure();
 
     return db_transaction(static function () use ($event): bool {
+        $hasLegacyPayloadColumns = db_killmail_event_has_legacy_payload_columns();
+        $columns = [
+            'sequence_id',
+            'killmail_id',
+            'killmail_hash',
+            'uploaded_at',
+            'sequence_updated',
+            'killmail_time',
+            'solar_system_id',
+            'region_id',
+            'victim_character_id',
+            'victim_corporation_id',
+            'victim_alliance_id',
+            'victim_ship_type_id',
+            'zkb_total_value',
+            'zkb_points',
+            'zkb_npc',
+            'zkb_solo',
+            'zkb_awox',
+        ];
+        $values = [
+            (int) ($event['sequence_id'] ?? 0),
+            (int) ($event['killmail_id'] ?? 0),
+            (string) ($event['killmail_hash'] ?? ''),
+            $event['uploaded_at'] ?? null,
+            isset($event['sequence_updated']) ? (int) $event['sequence_updated'] : null,
+            $event['killmail_time'] ?? null,
+            isset($event['solar_system_id']) ? (int) $event['solar_system_id'] : null,
+            isset($event['region_id']) ? (int) $event['region_id'] : null,
+            isset($event['victim_character_id']) ? (int) $event['victim_character_id'] : null,
+            isset($event['victim_corporation_id']) ? (int) $event['victim_corporation_id'] : null,
+            isset($event['victim_alliance_id']) ? (int) $event['victim_alliance_id'] : null,
+            isset($event['victim_ship_type_id']) ? (int) $event['victim_ship_type_id'] : null,
+            isset($event['zkb_total_value']) ? (float) $event['zkb_total_value'] : null,
+            isset($event['zkb_points']) ? (int) $event['zkb_points'] : null,
+            array_key_exists('zkb_npc', $event) ? (int) ((bool) $event['zkb_npc']) : null,
+            array_key_exists('zkb_solo', $event) ? (int) ((bool) $event['zkb_solo']) : null,
+            array_key_exists('zkb_awox', $event) ? (int) ((bool) $event['zkb_awox']) : null,
+        ];
+        $updates = [
+            'killmail_id = VALUES(killmail_id)',
+            'killmail_hash = VALUES(killmail_hash)',
+            'uploaded_at = VALUES(uploaded_at)',
+            'sequence_updated = VALUES(sequence_updated)',
+            'killmail_time = VALUES(killmail_time)',
+            'solar_system_id = VALUES(solar_system_id)',
+            'region_id = VALUES(region_id)',
+            'victim_character_id = VALUES(victim_character_id)',
+            'victim_corporation_id = VALUES(victim_corporation_id)',
+            'victim_alliance_id = VALUES(victim_alliance_id)',
+            'victim_ship_type_id = VALUES(victim_ship_type_id)',
+            'zkb_total_value = VALUES(zkb_total_value)',
+            'zkb_points = VALUES(zkb_points)',
+            'zkb_npc = VALUES(zkb_npc)',
+            'zkb_solo = VALUES(zkb_solo)',
+            'zkb_awox = VALUES(zkb_awox)',
+        ];
+
+        if ($hasLegacyPayloadColumns) {
+            $columns[] = 'zkb_json';
+            $columns[] = 'raw_killmail_json';
+            $values[] = (string) ($event['zkb_json'] ?? '{}');
+            $values[] = (string) ($event['raw_killmail_json'] ?? '{}');
+            $updates[] = 'zkb_json = VALUES(zkb_json)';
+            $updates[] = 'raw_killmail_json = VALUES(raw_killmail_json)';
+        }
+
+        $placeholders = implode(', ', array_fill(0, count($columns), '?'));
         $eventWritten = db_execute(
-            'INSERT INTO killmail_events (
-                sequence_id,
-                killmail_id,
-                killmail_hash,
-                uploaded_at,
-                sequence_updated,
-                killmail_time,
-                solar_system_id,
-                region_id,
-                victim_character_id,
-                victim_corporation_id,
-                victim_alliance_id,
-                victim_ship_type_id,
-                zkb_total_value,
-                zkb_points,
-                zkb_npc,
-                zkb_solo,
-                zkb_awox
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON DUPLICATE KEY UPDATE
-                killmail_id = VALUES(killmail_id),
-                killmail_hash = VALUES(killmail_hash),
-                uploaded_at = VALUES(uploaded_at),
-                sequence_updated = VALUES(sequence_updated),
-                killmail_time = VALUES(killmail_time),
-                solar_system_id = VALUES(solar_system_id),
-                region_id = VALUES(region_id),
-                victim_character_id = VALUES(victim_character_id),
-                victim_corporation_id = VALUES(victim_corporation_id),
-                victim_alliance_id = VALUES(victim_alliance_id),
-                victim_ship_type_id = VALUES(victim_ship_type_id),
-                zkb_total_value = VALUES(zkb_total_value),
-                zkb_points = VALUES(zkb_points),
-                zkb_npc = VALUES(zkb_npc),
-                zkb_solo = VALUES(zkb_solo),
-                zkb_awox = VALUES(zkb_awox),
-                updated_at = CURRENT_TIMESTAMP',
-            [
-                (int) ($event['sequence_id'] ?? 0),
-                (int) ($event['killmail_id'] ?? 0),
-                (string) ($event['killmail_hash'] ?? ''),
-                $event['uploaded_at'] ?? null,
-                isset($event['sequence_updated']) ? (int) $event['sequence_updated'] : null,
-                $event['killmail_time'] ?? null,
-                isset($event['solar_system_id']) ? (int) $event['solar_system_id'] : null,
-                isset($event['region_id']) ? (int) $event['region_id'] : null,
-                isset($event['victim_character_id']) ? (int) $event['victim_character_id'] : null,
-                isset($event['victim_corporation_id']) ? (int) $event['victim_corporation_id'] : null,
-                isset($event['victim_alliance_id']) ? (int) $event['victim_alliance_id'] : null,
-                isset($event['victim_ship_type_id']) ? (int) $event['victim_ship_type_id'] : null,
-                isset($event['zkb_total_value']) ? (float) $event['zkb_total_value'] : null,
-                isset($event['zkb_points']) ? (int) $event['zkb_points'] : null,
-                array_key_exists('zkb_npc', $event) ? (int) ((bool) $event['zkb_npc']) : null,
-                array_key_exists('zkb_solo', $event) ? (int) ((bool) $event['zkb_solo']) : null,
-                array_key_exists('zkb_awox', $event) ? (int) ((bool) $event['zkb_awox']) : null,
-            ]
+            sprintf(
+                'INSERT INTO killmail_events (%s) VALUES (%s)
+                ON DUPLICATE KEY UPDATE
+                    %s,
+                    updated_at = CURRENT_TIMESTAMP',
+                implode(",\n                ", $columns),
+                $placeholders,
+                implode(",\n                    ", $updates)
+            ),
+            $values
         );
         $payloadWritten = db_killmail_event_payload_upsert($event);
 
