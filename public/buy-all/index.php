@@ -25,10 +25,12 @@ $buildPageUrl = static function (int $pageNumber) use ($baseQuery): string {
 
     return '/buy-all?' . http_build_query($params);
 };
+$liveRefreshConfig = supplycore_live_refresh_page_config('buy_all');
 
 include __DIR__ . '/../../src/views/partials/header.php';
 ?>
-<section class="grid gap-5 xl:grid-cols-[minmax(0,1.45fr)_minmax(320px,0.9fr)]">
+<!-- ui-section:buyall-overview:start -->
+<section class="grid gap-5 xl:grid-cols-[minmax(0,1.45fr)_minmax(320px,0.9fr)]" data-ui-section="buyall-overview">
     <article class="surface-primary">
         <div class="section-header border-b border-white/8 pb-4">
             <div>
@@ -158,8 +160,10 @@ include __DIR__ . '/../../src/views/partials/header.php';
         </article>
     </div>
 </section>
+<!-- ui-section:buyall-overview:end -->
 
-<section class="mt-8 grid gap-5 xl:grid-cols-[minmax(0,1.4fr)_minmax(320px,0.9fr)]">
+<!-- ui-section:buyall-results:start -->
+<section class="mt-8 grid gap-5 xl:grid-cols-[minmax(0,1.4fr)_minmax(320px,0.9fr)]" data-ui-section="buyall-results">
     <article class="surface-primary">
         <div class="section-header border-b border-white/8 pb-4">
             <div>
@@ -323,6 +327,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
         </article>
     </div>
 </section>
+<!-- ui-section:buyall-results:end -->
 
 <script>
 document.addEventListener('click', function (event) {

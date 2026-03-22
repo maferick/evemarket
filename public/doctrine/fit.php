@@ -84,6 +84,7 @@ $statusTone = static function (string $status): string {
         default => 'border-rose-400/20 bg-rose-500/10 text-rose-200',
     };
 };
+$liveRefreshConfig = supplycore_live_refresh_page_config('doctrine_fit');
 
 include __DIR__ . '/../../src/views/partials/header.php';
 ?>
@@ -107,7 +108,8 @@ include __DIR__ . '/../../src/views/partials/header.php';
     <?php $change = (array) ($history['change'] ?? []); ?>
     <?php $trendPoints = (array) ($history['trend_points'] ?? []); ?>
     <?php $changeTimeline = (array) ($history['timeline'] ?? []); ?>
-    <section class="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+    <!-- ui-section:doctrine-fit-summary:start -->
+    <section class="grid gap-4 sm:grid-cols-2 xl:grid-cols-4" data-ui-section="doctrine-fit-summary">
         <?php foreach ($summary as $card): ?>
             <article class="surface-secondary">
                 <p class="eyebrow"><?= htmlspecialchars((string) ($card['label'] ?? ''), ENT_QUOTES) ?></p>
@@ -116,8 +118,10 @@ include __DIR__ . '/../../src/views/partials/header.php';
             </article>
         <?php endforeach; ?>
     </section>
+    <!-- ui-section:doctrine-fit-summary:end -->
 
-    <section class="mt-6 grid gap-4 xl:grid-cols-3">
+    <!-- ui-section:doctrine-fit-history:start -->
+    <section class="mt-6 grid gap-4 xl:grid-cols-3" data-ui-section="doctrine-fit-history">
         <article class="surface-secondary">
             <p class="eyebrow">Readiness + pressure change</p>
             <h2 class="mt-2 section-title">Why the doctrine moved</h2>
@@ -187,8 +191,10 @@ include __DIR__ . '/../../src/views/partials/header.php';
             <?php endif; ?>
         </article>
     </section>
+    <!-- ui-section:doctrine-fit-history:end -->
 
-    <section class="mt-8 grid gap-6 xl:grid-cols-[minmax(280px,360px)_minmax(0,1fr)]">
+    <!-- ui-section:doctrine-fit-items:start -->
+    <section class="mt-8 grid gap-6 xl:grid-cols-[minmax(280px,360px)_minmax(0,1fr)]" data-ui-section="doctrine-fit-items">
         <aside class="space-y-6">
             <article class="surface-secondary">
                 <div class="section-header">
@@ -525,5 +531,6 @@ include __DIR__ . '/../../src/views/partials/header.php';
             </div>
         </article>
     </section>
+    <!-- ui-section:doctrine-fit-items:end -->
 <?php endif; ?>
 <?php include __DIR__ . '/../../src/views/partials/footer.php'; ?>

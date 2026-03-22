@@ -55,6 +55,7 @@ $fits = $data['fits'] ?? [];
 $title = $group !== null ? ((string) ($group['group_name'] ?? 'Doctrine Group')) : 'Doctrine Group';
 $showDeleteConfirm = isset($_GET['confirm_delete']) && $_GET['confirm_delete'] === '1';
 $pageFreshness = supplycore_page_freshness_view_model((array) ($data['freshness'] ?? []));
+$liveRefreshConfig = supplycore_live_refresh_page_config('doctrine_group');
 
 include __DIR__ . '/../../src/views/partials/header.php';
 ?>
@@ -70,7 +71,8 @@ include __DIR__ . '/../../src/views/partials/header.php';
         <p class="text-sm text-slate-400">The requested doctrine group does not exist yet or the database is unavailable.</p>
     </section>
 <?php else: ?>
-    <section class="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+    <!-- ui-section:doctrine-group-main:start -->
+    <section class="grid gap-4 sm:grid-cols-2 xl:grid-cols-4" data-ui-section="doctrine-group-main">
         <article class="surface-secondary">
             <p class="eyebrow">Readiness</p>
             <p class="mt-3 text-3xl metric-value"><?= htmlspecialchars((string) ($group['status_label'] ?? 'Market ready'), ENT_QUOTES) ?></p>
@@ -245,5 +247,6 @@ include __DIR__ . '/../../src/views/partials/header.php';
             </article>
         </aside>
     </section>
+    <!-- ui-section:doctrine-group-main:end -->
 <?php endif; ?>
 <?php include __DIR__ . '/../../src/views/partials/footer.php'; ?>

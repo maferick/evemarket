@@ -10,6 +10,7 @@ $intel = dashboard_intelligence_data();
 $doctrine = $intel['doctrine'] ?? doctrine_groups_overview_data();
 $pageFreshness = supplycore_page_freshness_view_model((array) ($intel['_freshness'] ?? []));
 $buyAll = buy_all_dashboard_summary();
+$liveRefreshConfig = supplycore_live_refresh_page_config('dashboard');
 
 include __DIR__ . '/../src/views/partials/header.php';
 ?>
@@ -106,7 +107,8 @@ $statusThemes = [
     'Awaiting sync' => 'border-slate-400/15 bg-slate-500/10 text-slate-200',
 ];
 ?>
-<section class="grid gap-4 xl:grid-cols-4">
+<!-- ui-section:dashboard-kpis:start -->
+<section class="grid gap-4 xl:grid-cols-4" data-ui-section="dashboard-kpis">
     <?php foreach (($intel['kpis'] ?? []) as $card): ?>
         <?php $theme = $kpiThemes[$card['label'] ?? ''] ?? $kpiThemes['Top Opportunities']; ?>
         <article class="kpi-card">
@@ -161,8 +163,10 @@ $statusThemes = [
         </article>
     <?php endforeach; ?>
 </section>
+<!-- ui-section:dashboard-kpis:end -->
 
-<section class="mt-8">
+<!-- ui-section:dashboard-buyall:start -->
+<section class="mt-8" data-ui-section="dashboard-buyall">
     <article class="surface-primary">
         <div class="section-header border-b border-white/8 pb-4">
             <div>
@@ -211,8 +215,10 @@ $statusThemes = [
         </div>
     </article>
 </section>
+<!-- ui-section:dashboard-buyall:end -->
 
-<section class="mt-8 grid gap-5 xl:grid-cols-[minmax(0,1.3fr)_minmax(320px,0.9fr)]">
+<!-- ui-section:dashboard-doctrine:start -->
+<section class="mt-8 grid gap-5 xl:grid-cols-[minmax(0,1.3fr)_minmax(320px,0.9fr)]" data-ui-section="dashboard-doctrine">
     <article class="surface-primary">
         <div class="section-header border-b border-white/8 pb-4">
             <div>
@@ -362,6 +368,7 @@ $statusThemes = [
         </div>
     </article>
 </section>
+<!-- ui-section:dashboard-doctrine:end -->
 
 <section class="mt-8">
     <article class="surface-secondary">
@@ -417,7 +424,8 @@ $statusThemes = [
     </article>
 </section>
 
-<section class="mt-8 grid gap-5 xl:grid-cols-3">
+<!-- ui-section:dashboard-queues:start -->
+<section class="mt-8 grid gap-5 xl:grid-cols-3" data-ui-section="dashboard-queues">
     <article class="surface-primary xl:col-span-2">
         <div class="section-header border-b border-white/8 pb-4">
             <div>
@@ -705,4 +713,5 @@ $statusThemes = [
         <p class="mt-3 text-sm text-red-100"><?= htmlspecialchars((string) $dbStatus['message'], ENT_QUOTES) ?></p>
     <?php endif; ?>
 </section>
+<!-- ui-section:dashboard-queues:end -->
 <?php include __DIR__ . '/../src/views/partials/footer.php'; ?>

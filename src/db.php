@@ -3791,6 +3791,209 @@ function db_intelligence_snapshot_mark_updating(string $snapshotKey, ?string $me
     );
 }
 
+function db_ui_refresh_schema_ensure(): void
+{
+    static $ensured = false;
+
+    if ($ensured) {
+        return;
+    }
+
+    db()->exec(
+        "CREATE TABLE IF NOT EXISTS ui_refresh_section_versions (
+            section_key VARCHAR(190) PRIMARY KEY,
+            version_counter BIGINT UNSIGNED NOT NULL DEFAULT 0,
+            fingerprint CHAR(64) DEFAULT NULL,
+            snapshot_key VARCHAR(190) DEFAULT NULL,
+            domains_json JSON DEFAULT NULL,
+            ui_sections_json JSON DEFAULT NULL,
+            metadata_json JSON DEFAULT NULL,
+            last_job_key VARCHAR(190) DEFAULT NULL,
+            last_status VARCHAR(40) DEFAULT NULL,
+            last_event_id BIGINT UNSIGNED DEFAULT NULL,
+            last_finished_at DATETIME DEFAULT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            KEY idx_ui_refresh_section_versions_event (last_event_id),
+            KEY idx_ui_refresh_section_versions_updated (updated_at)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"
+    );
+
+    db()->exec(
+        "CREATE TABLE IF NOT EXISTS ui_refresh_events (
+            id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+            event_type VARCHAR(80) NOT NULL DEFAULT 'job_completed',
+            event_key VARCHAR(190) DEFAULT NULL,
+            job_key VARCHAR(190) NOT NULL,
+            job_status VARCHAR(40) NOT NULL,
+            finished_at DATETIME NOT NULL,
+            domains_json JSON DEFAULT NULL,
+            ui_sections_json JSON DEFAULT NULL,
+            section_versions_json JSON DEFAULT NULL,
+            payload_json JSON DEFAULT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            UNIQUE KEY uniq_ui_refresh_event_key (event_key),
+            KEY idx_ui_refresh_events_job (job_key, finished_at),
+            KEY idx_ui_refresh_events_finished (finished_at),
+            KEY idx_ui_refresh_events_created (created_at)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"
+    );
+
+    $ensured = true;
+}
+
+function db_ui_refresh_section_version_get(string $sectionKey): ?array
+{
+    db_ui_refresh_schema_ensure();
+
+    return db_select_one(
+        'SELECT section_key, version_counter, fingerprint, snapshot_key, domains_json, ui_sections_json, metadata_json, last_job_key, last_status, last_event_id, last_finished_at, created_at, updated_at
+         FROM ui_refresh_section_versions
+         WHERE section_key = ?
+         LIMIT 1',
+        [mb_substr(trim($sectionKey), 0, 190)]
+    );
+}
+
+function db_ui_refresh_section_versions_get_many(array $sectionKeys): array
+{
+    db_ui_refresh_schema_ensure();
+
+    $normalized = array_values(array_unique(array_filter(array_map(
+        static fn (mixed $sectionKey): string => trim((string) $sectionKey),
+        $sectionKeys
+    ), static fn (string $sectionKey): bool => $sectionKey !== '')));
+
+    if ($normalized === []) {
+        return [];
+    }
+
+    $placeholders = implode(',', array_fill(0, count($normalized), '?'));
+
+    return db_select(
+        "SELECT section_key, version_counter, fingerprint, snapshot_key, domains_json, ui_sections_json, metadata_json, last_job_key, last_status, last_event_id, last_finished_at, created_at, updated_at
+         FROM ui_refresh_section_versions
+         WHERE section_key IN ({$placeholders})",
+        $normalized
+    );
+}
+
+function db_ui_refresh_section_version_upsert(array $row): bool
+{
+    db_ui_refresh_schema_ensure();
+
+    $sectionKey = mb_substr(trim((string) ($row['section_key'] ?? '')), 0, 190);
+    if ($sectionKey === '') {
+        return false;
+    }
+
+    $domainsJson = isset($row['domains_json']) ? (string) $row['domains_json'] : null;
+    $uiSectionsJson = isset($row['ui_sections_json']) ? (string) $row['ui_sections_json'] : null;
+    $metadataJson = isset($row['metadata_json']) ? (string) $row['metadata_json'] : null;
+    $fingerprint = trim((string) ($row['fingerprint'] ?? ''));
+    $snapshotKey = trim((string) ($row['snapshot_key'] ?? ''));
+    $jobKey = trim((string) ($row['last_job_key'] ?? ''));
+    $status = trim((string) ($row['last_status'] ?? ''));
+
+    return db_execute(
+        'INSERT INTO ui_refresh_section_versions (
+            section_key, version_counter, fingerprint, snapshot_key, domains_json, ui_sections_json, metadata_json, last_job_key, last_status, last_event_id, last_finished_at
+         ) VALUES (
+            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+         )
+         ON DUPLICATE KEY UPDATE
+            version_counter = VALUES(version_counter),
+            fingerprint = VALUES(fingerprint),
+            snapshot_key = VALUES(snapshot_key),
+            domains_json = VALUES(domains_json),
+            ui_sections_json = VALUES(ui_sections_json),
+            metadata_json = VALUES(metadata_json),
+            last_job_key = VALUES(last_job_key),
+            last_status = VALUES(last_status),
+            last_event_id = VALUES(last_event_id),
+            last_finished_at = VALUES(last_finished_at),
+            updated_at = CURRENT_TIMESTAMP',
+        [
+            $sectionKey,
+            max(0, (int) ($row['version_counter'] ?? 0)),
+            $fingerprint !== '' ? mb_substr($fingerprint, 0, 64) : null,
+            $snapshotKey !== '' ? mb_substr($snapshotKey, 0, 190) : null,
+            $domainsJson,
+            $uiSectionsJson,
+            $metadataJson,
+            $jobKey !== '' ? mb_substr($jobKey, 0, 190) : null,
+            $status !== '' ? mb_substr($status, 0, 40) : null,
+            isset($row['last_event_id']) ? max(0, (int) $row['last_event_id']) : null,
+            isset($row['last_finished_at']) ? (string) $row['last_finished_at'] : null,
+        ]
+    );
+}
+
+function db_ui_refresh_event_insert(array $row): int
+{
+    db_ui_refresh_schema_ensure();
+
+    $eventType = trim((string) ($row['event_type'] ?? 'job_completed'));
+    $eventKey = trim((string) ($row['event_key'] ?? ''));
+    $jobKey = mb_substr(trim((string) ($row['job_key'] ?? 'unknown_job')), 0, 190);
+    $jobStatus = trim((string) ($row['job_status'] ?? 'unknown'));
+    $finishedAt = (string) ($row['finished_at'] ?? gmdate('Y-m-d H:i:s'));
+    $domainsJson = isset($row['domains_json']) ? (string) $row['domains_json'] : null;
+    $uiSectionsJson = isset($row['ui_sections_json']) ? (string) $row['ui_sections_json'] : null;
+    $sectionVersionsJson = isset($row['section_versions_json']) ? (string) $row['section_versions_json'] : null;
+    $payloadJson = isset($row['payload_json']) ? (string) $row['payload_json'] : null;
+
+    db_execute(
+        'INSERT INTO ui_refresh_events (event_type, event_key, job_key, job_status, finished_at, domains_json, ui_sections_json, section_versions_json, payload_json)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON DUPLICATE KEY UPDATE
+            updated_at = CURRENT_TIMESTAMP,
+            id = LAST_INSERT_ID(id),
+            payload_json = COALESCE(VALUES(payload_json), payload_json),
+            section_versions_json = COALESCE(VALUES(section_versions_json), section_versions_json)',
+        [
+            $eventType !== '' ? mb_substr($eventType, 0, 80) : 'job_completed',
+            $eventKey !== '' ? mb_substr($eventKey, 0, 190) : null,
+            $jobKey,
+            $jobStatus !== '' ? mb_substr($jobStatus, 0, 40) : 'unknown',
+            $finishedAt,
+            $domainsJson,
+            $uiSectionsJson,
+            $sectionVersionsJson,
+            $payloadJson,
+        ]
+    );
+
+    return (int) db()->lastInsertId();
+}
+
+function db_ui_refresh_events_after(int $afterId = 0, int $limit = 25): array
+{
+    db_ui_refresh_schema_ensure();
+
+    return db_select(
+        'SELECT id, event_type, event_key, job_key, job_status, finished_at, domains_json, ui_sections_json, section_versions_json, payload_json, created_at, updated_at
+         FROM ui_refresh_events
+         WHERE id > ?
+         ORDER BY id ASC
+         LIMIT ' . max(1, min(100, $limit)),
+        [max(0, $afterId)]
+    );
+}
+
+function db_ui_refresh_latest_event(): ?array
+{
+    db_ui_refresh_schema_ensure();
+
+    return db_select_one(
+        'SELECT id, event_type, event_key, job_key, job_status, finished_at, domains_json, ui_sections_json, section_versions_json, payload_json, created_at, updated_at
+         FROM ui_refresh_events
+         ORDER BY id DESC
+         LIMIT 1'
+    );
+}
+
 function db_runner_lock_acquire(string $lockName, int $timeoutSeconds = 0): bool
 {
     $row = db_select_one('SELECT GET_LOCK(?, ?) AS lock_acquired', [$lockName, max(0, $timeoutSeconds)]);

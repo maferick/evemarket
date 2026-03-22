@@ -19,6 +19,8 @@ $highlights = $data['highlights'] ?? [];
 $tableRows = $data['rows'] ?? [];
 $emptyMessage = 'No deviation alerts at this time versus ' . market_hub_reference_name() . '.';
 $pageFreshness = supplycore_page_freshness_view_model((array) ($data['freshness'] ?? []));
+$liveRefreshConfig = supplycore_live_refresh_page_config('price_deviations');
+$modulePageSectionKey = 'price-deviations-main';
 
 include __DIR__ . '/../../src/views/partials/header.php';
 include __DIR__ . '/../../src/views/partials/module-page.php';

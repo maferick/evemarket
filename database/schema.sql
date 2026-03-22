@@ -764,6 +764,44 @@ CREATE TABLE IF NOT EXISTS intelligence_snapshots (
     KEY idx_snapshot_computed_at (computed_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+
+CREATE TABLE IF NOT EXISTS ui_refresh_section_versions (
+    section_key VARCHAR(190) PRIMARY KEY,
+    version_counter BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    fingerprint CHAR(64) DEFAULT NULL,
+    snapshot_key VARCHAR(190) DEFAULT NULL,
+    domains_json JSON DEFAULT NULL,
+    ui_sections_json JSON DEFAULT NULL,
+    metadata_json JSON DEFAULT NULL,
+    last_job_key VARCHAR(190) DEFAULT NULL,
+    last_status VARCHAR(40) DEFAULT NULL,
+    last_event_id BIGINT UNSIGNED DEFAULT NULL,
+    last_finished_at DATETIME DEFAULT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    KEY idx_ui_refresh_section_versions_event (last_event_id),
+    KEY idx_ui_refresh_section_versions_updated (updated_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS ui_refresh_events (
+    id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    event_type VARCHAR(80) NOT NULL DEFAULT 'job_completed',
+    event_key VARCHAR(190) DEFAULT NULL,
+    job_key VARCHAR(190) NOT NULL,
+    job_status VARCHAR(40) NOT NULL,
+    finished_at DATETIME NOT NULL,
+    domains_json JSON DEFAULT NULL,
+    ui_sections_json JSON DEFAULT NULL,
+    section_versions_json JSON DEFAULT NULL,
+    payload_json JSON DEFAULT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uniq_ui_refresh_event_key (event_key),
+    KEY idx_ui_refresh_events_job (job_key, finished_at),
+    KEY idx_ui_refresh_events_finished (finished_at),
+    KEY idx_ui_refresh_events_created (created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 CREATE TABLE IF NOT EXISTS market_deal_alerts_current (
     alert_key VARCHAR(190) PRIMARY KEY,
     item_type_id INT UNSIGNED NOT NULL,

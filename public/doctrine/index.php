@@ -14,6 +14,7 @@ $topBottlenecks = $data['top_bottlenecks'] ?? [];
 $highestPriorityRestockItems = $data['highest_priority_restock_items'] ?? [];
 $ungroupedFits = $data['ungrouped_fits'] ?? [];
 $pageFreshness = supplycore_page_freshness_view_model((array) ($data['freshness'] ?? []));
+$liveRefreshConfig = supplycore_live_refresh_page_config('doctrine_index');
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if (!validate_csrf($_POST['_token'] ?? null)) {
@@ -39,7 +40,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
 include __DIR__ . '/../../src/views/partials/header.php';
 ?>
-<section class="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+<!-- ui-section:doctrine-index-main:start -->
+<section class="grid gap-4 sm:grid-cols-2 xl:grid-cols-4" data-ui-section="doctrine-index-main">
     <?php foreach ($summary as $card): ?>
         <article class="surface-secondary">
             <p class="eyebrow"><?= htmlspecialchars((string) ($card['label'] ?? ''), ENT_QUOTES) ?></p>
@@ -282,4 +284,5 @@ include __DIR__ . '/../../src/views/partials/header.php';
         </div>
     </article>
 </section>
+<!-- ui-section:doctrine-index-main:end -->
 <?php include __DIR__ . '/../../src/views/partials/footer.php'; ?>

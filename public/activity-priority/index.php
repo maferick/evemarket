@@ -12,10 +12,12 @@ $activeDoctrines = array_values((array) ($data['active_doctrines'] ?? []));
 $activeFits = array_values((array) ($data['active_fits'] ?? []));
 $priorityItems = array_values((array) ($data['priority_items'] ?? []));
 $movement = is_array($data['trend_movement'] ?? null) ? $data['trend_movement'] : [];
+$liveRefreshConfig = supplycore_live_refresh_page_config('activity_priority');
 
 include __DIR__ . '/../../src/views/partials/header.php';
 ?>
-<section class="grid gap-4 xl:grid-cols-4">
+<!-- ui-section:activity-summary:start -->
+<section class="grid gap-4 xl:grid-cols-4" data-ui-section="activity-summary">
     <?php foreach ($summaryCards as $card): ?>
         <article class="kpi-card">
             <div class="relative z-10 flex h-full flex-col gap-4">
@@ -28,8 +30,10 @@ include __DIR__ . '/../../src/views/partials/header.php';
         </article>
     <?php endforeach; ?>
 </section>
+<!-- ui-section:activity-summary:end -->
 
-<section class="mt-8 grid gap-5 xl:grid-cols-[minmax(0,1.35fr)_minmax(320px,0.95fr)]">
+<!-- ui-section:activity-doctrines:start -->
+<section class="mt-8 grid gap-5 xl:grid-cols-[minmax(0,1.35fr)_minmax(320px,0.95fr)]" data-ui-section="activity-doctrines">
     <article class="surface-primary">
         <div class="section-header border-b border-white/8 pb-4">
             <div>
@@ -119,7 +123,8 @@ include __DIR__ . '/../../src/views/partials/header.php';
         </div>
     </article>
 
-    <div class="space-y-5">
+    <!-- ui-section:activity-sidebar:start -->
+    <div class="space-y-5" data-ui-section="activity-sidebar">
         <article class="surface-primary">
             <div class="section-header border-b border-white/8 pb-4">
                 <div>
@@ -186,9 +191,12 @@ include __DIR__ . '/../../src/views/partials/header.php';
             </div>
         </article>
     </div>
+    <!-- ui-section:activity-sidebar:end -->
 </section>
+<!-- ui-section:activity-doctrines:end -->
 
-<section class="mt-8 surface-primary">
+<!-- ui-section:activity-items:start -->
+<section class="mt-8 surface-primary" data-ui-section="activity-items">
     <div class="section-header border-b border-white/8 pb-4">
         <div>
             <p class="eyebrow">Priority-shifting items</p>
@@ -280,5 +288,6 @@ include __DIR__ . '/../../src/views/partials/header.php';
         <?php endif; ?>
     </div>
 </section>
+<!-- ui-section:activity-items:end -->
 
 <?php include __DIR__ . '/../../src/views/partials/footer.php'; ?>

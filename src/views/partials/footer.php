@@ -6,5 +6,8 @@
         </footer>
     </main>
 </div>
+<?php if (supplycore_live_refresh_should_include($liveRefreshConfig ?? null)): ?>
+    <script src="/assets/js/ui-live-refresh.js"></script>
+<?php endif; ?>
 </body>
 </html>

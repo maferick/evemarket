@@ -1,3 +1,4 @@
+<?php $modulePageSectionKey = is_string($modulePageSectionKey ?? null) ? trim((string) $modulePageSectionKey) : ''; ?>
 <?php
 
 $summary = is_array($summary ?? null) ? $summary : [];
@@ -29,6 +30,10 @@ $buildPageUrl = static function (int $targetPage) use ($queryParams): string {
     return current_path() . '?' . http_build_query($params);
 };
 ?>
+<?php if ($modulePageSectionKey !== ''): ?>
+    <!-- ui-section:<?= htmlspecialchars($modulePageSectionKey, ENT_QUOTES) ?>:start -->
+    <div data-ui-section="<?= htmlspecialchars($modulePageSectionKey, ENT_QUOTES) ?>">
+<?php endif; ?>
 <?php if ($filterFields !== []): ?>
     <section class="surface-tertiary mb-6">
         <form method="get" action="<?= htmlspecialchars($filterAction, ENT_QUOTES) ?>" class="grid gap-4 md:grid-cols-4 md:items-end">
@@ -227,3 +232,8 @@ $buildPageUrl = static function (int $targetPage) use ($queryParams): string {
         </table>
     </div>
 </section>
+
+<?php if ($modulePageSectionKey !== ''): ?>
+    </div>
+    <!-- ui-section:<?= htmlspecialchars($modulePageSectionKey, ENT_QUOTES) ?>:end -->
+<?php endif; ?>

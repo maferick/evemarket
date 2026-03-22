@@ -16,7 +16,7 @@ $dealAlertDismissMinutes = (int) (deal_alert_settings()['deal_alert_popup_dismis
     <link rel="shortcut icon" href="<?= htmlspecialchars(brand_favicon_path(), ENT_QUOTES) ?>">
     <link rel="stylesheet" href="/assets/css/app.css">
 </head>
-<body>
+<body<?= supplycore_live_refresh_page_data_attributes($liveRefreshConfig ?? null) ?>>
 <div class="app-shell">
     <?php include __DIR__ . '/sidebar.php'; ?>
     <main class="relative flex-1 px-5 py-6 sm:px-6 lg:px-8 xl:px-10 xl:py-8">
@@ -33,10 +33,23 @@ $dealAlertDismissMinutes = (int) (deal_alert_settings()['deal_alert_popup_dismis
                     </div>
                     <p class="mt-3 max-w-2xl text-sm leading-6 text-slate-300/88">Alliance logistics intelligence for coverage, risk, and market readiness.</p>
                 </div>
-                <div class="surface-tertiary relative z-10 flex flex-col items-start gap-3 px-4 py-3 text-sm text-slate-300 sm:items-end">
-                    <span class="eyebrow">Deployment profile</span>
-                    <span class="font-medium text-slate-100">PHP 8 · MySQL · Apache2</span>
-                    <span class="text-xs text-slate-500">Premium operational command layer</span>
+                <div class="flex flex-col gap-3 sm:items-end">
+                    <div class="surface-tertiary relative z-10 flex flex-col items-start gap-3 px-4 py-3 text-sm text-slate-300 sm:items-end">
+                        <span class="eyebrow">Deployment profile</span>
+                        <span class="font-medium text-slate-100">PHP 8 · MySQL · Apache2</span>
+                        <span class="text-xs text-slate-500">Premium operational command layer</span>
+                    </div>
+                    <?php if (supplycore_live_refresh_should_include($liveRefreshConfig ?? null)): ?>
+                        <section class="live-refresh-panel relative z-10 min-w-[280px] text-left text-xs text-slate-300" data-ui-refresh-diagnostics>
+                            <p class="eyebrow text-cyan-100/80">Live refresh diagnostics</p>
+                            <div class="mt-3 space-y-2">
+                                <p><span class="text-slate-500">Transport</span> · <span class="text-slate-100" data-live-refresh-transport>Starting…</span></p>
+                                <p><span class="text-slate-500">Last event</span> · <span class="text-slate-100" data-live-refresh-last-event>No published refresh event yet</span></p>
+                                <p><span class="text-slate-500">Section refresh</span> · <span class="text-slate-100" data-live-refresh-last-refresh>No section refreshed yet</span></p>
+                                <p><span class="text-slate-500">Version markers</span> · <span class="text-slate-100" data-live-refresh-versions>Loading…</span></p>
+                            </div>
+                        </section>
+                    <?php endif; ?>
                 </div>
             </div>
         </header>
@@ -44,13 +57,16 @@ $dealAlertDismissMinutes = (int) (deal_alert_settings()['deal_alert_popup_dismis
             <div class="mb-6 rounded-2xl border border-emerald-500/30 bg-emerald-500/12 px-4 py-3 text-sm text-emerald-100 shadow-[0_0_24px_rgba(34,197,94,0.08)]"><?= htmlspecialchars($notice, ENT_QUOTES) ?></div>
         <?php endif; ?>
         <?php if (is_array($pageFreshness ?? null) && $pageFreshness !== []): ?>
-            <div class="mb-6 flex flex-wrap items-center justify-between gap-3 rounded-2xl border px-4 py-3 text-sm shadow-[0_0_24px_rgba(15,23,42,0.14)] <?= htmlspecialchars((string) ($pageFreshness['tone'] ?? 'border-amber-400/20 bg-amber-500/10 text-amber-100'), ENT_QUOTES) ?>">
+            <!-- ui-section:page-freshness:start -->
+            <div class="mb-6 flex flex-wrap items-center justify-between gap-3 rounded-2xl border px-4 py-3 text-sm shadow-[0_0_24px_rgba(15,23,42,0.14)] <?= htmlspecialchars((string) ($pageFreshness['tone'] ?? 'border-amber-400/20 bg-amber-500/10 text-amber-100'), ENT_QUOTES) ?>" data-ui-section="page-freshness">
                 <div>
                     <p class="font-medium"><?= htmlspecialchars((string) ($pageFreshness['message'] ?? 'Summary freshness unavailable.'), ENT_QUOTES) ?></p>
                     <p class="mt-1 text-xs opacity-80">Last computed <?= htmlspecialchars((string) ($pageFreshness['computed_relative'] ?? 'Never'), ENT_QUOTES) ?> · <?= htmlspecialchars((string) ($pageFreshness['computed_at'] ?? 'Unavailable'), ENT_QUOTES) ?></p>
+                    <p class="mt-2 text-[11px] uppercase tracking-[0.14em] text-current/70" data-ui-freshness-target="page-freshness">Refreshed from latest sync</p>
                 </div>
                 <span class="rounded-full border border-current/20 px-3 py-1 text-[11px] uppercase tracking-[0.14em]"><?= htmlspecialchars((string) ($pageFreshness['label'] ?? 'Unknown'), ENT_QUOTES) ?></span>
             </div>
+            <!-- ui-section:page-freshness:end -->
         <?php endif; ?>
         <?php if ($dealAlertPopupRows !== []): ?>
             <div class="fixed inset-x-4 top-4 z-50 ml-auto max-w-xl">

@@ -10374,6 +10374,7 @@ function scheduler_run_job(array $job): array
             ],
         ];
         $result['summary'] = scheduler_job_summary_message($result);
+        $result['ui_refresh'] = supplycore_ui_refresh_publish_for_job_result($result);
 
         return $result;
     } catch (Throwable $exception) {
@@ -10412,7 +10413,7 @@ function scheduler_run_job(array $job): array
             'timeout_source' => $timeoutResolution['timeout_source'] ?? null,
         ], $latenessSeconds, $durationSeconds);
 
-        return [
+        $result = [
             'job_id' => $scheduleId,
             'job_key' => $jobKey,
             'job_type' => $jobType,
@@ -10443,6 +10444,9 @@ function scheduler_run_job(array $job): array
             ],
             'summary' => $message,
         ];
+        $result['ui_refresh'] = supplycore_ui_refresh_publish_for_job_result($result);
+
+        return $result;
     }
 }
 
@@ -18513,13 +18517,16 @@ function supplycore_materialized_snapshot_attach_meta(array $payload, array $met
 function supplycore_materialized_snapshot_store(string $snapshotKey, array $payload, array $meta = []): array
 {
     $computedAt = gmdate(DATE_ATOM);
+    $payloadJson = json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE);
+    $payloadHash = hash('sha256', is_string($payloadJson) ? $payloadJson : '{}');
     $normalizedMeta = supplycore_materialized_snapshot_normalize_meta($snapshotKey, $meta + [
         'snapshot_key' => $snapshotKey,
         'status' => 'ready',
         'computed_at' => $computedAt,
         'generated_at' => $computedAt,
+        'payload_hash' => $payloadHash,
+        'version_token' => $payloadHash,
     ]);
-    $payloadJson = json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE);
     $metaJson = json_encode($normalizedMeta, JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE);
     $expiresAt = gmdate('Y-m-d H:i:s', time() + max(60, (int) $normalizedMeta['stale_after_seconds']));
 
@@ -18588,6 +18595,727 @@ function supplycore_snapshot_freshness(string $snapshotKey): array
         ? supplycore_materialized_snapshot_normalize_meta($snapshotKey, $snapshot['meta'])
         : supplycore_materialized_snapshot_normalize_meta($snapshotKey, []);
 }
+
+function supplycore_ui_refresh_decode_json(mixed $value): array
+{
+    if (is_array($value)) {
+        return $value;
+    }
+
+    if (!is_string($value) || trim($value) === '') {
+        return [];
+    }
+
+    $decoded = json_decode($value, true);
+
+    return is_array($decoded) ? $decoded : [];
+}
+
+function supplycore_ui_refresh_version_from_snapshot(string $sectionKey, string $snapshotKey, array $domains, array $uiSections): array
+{
+    $meta = supplycore_snapshot_freshness($snapshotKey);
+    $fingerprint = trim((string) ($meta['payload_hash'] ?? $meta['version_token'] ?? ''));
+    if ($fingerprint === '') {
+        $fingerprint = hash('sha256', json_encode([
+            'snapshot_key' => $snapshotKey,
+            'computed_at' => (string) ($meta['computed_at'] ?? ''),
+            'status' => (string) ($meta['status'] ?? ''),
+        ], JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE));
+    }
+
+    return [
+        'section_key' => $sectionKey,
+        'fingerprint' => $fingerprint,
+        'snapshot_key' => $snapshotKey,
+        'domains' => array_values($domains),
+        'ui_sections' => array_values($uiSections),
+        'freshness' => $meta,
+        'metadata' => [
+            'source' => 'snapshot',
+            'snapshot_key' => $snapshotKey,
+            'computed_at' => $meta['computed_at'] ?? null,
+            'freshness_state' => $meta['freshness_state'] ?? 'stale',
+            'freshness_label' => $meta['freshness_label'] ?? 'Stale',
+            'status' => $meta['status'] ?? 'ready',
+        ],
+    ];
+}
+
+function supplycore_ui_refresh_version_from_sync_state(string $sectionKey, array $datasetKeys, array $domains, array $uiSections, ?string $snapshotKey = null): array
+{
+    $status = sync_status_for_dataset_keys($datasetKeys);
+    $states = array_values((array) ($status['states'] ?? []));
+    $runs = array_values((array) ($status['runs'] ?? []));
+    $fingerprintParts = [];
+
+    foreach ($states as $state) {
+        $fingerprintParts[] = [
+            'dataset_key' => (string) ($state['dataset_key'] ?? ''),
+            'status' => (string) ($state['status'] ?? ''),
+            'checksum' => (string) ($state['last_checksum'] ?? ''),
+            'rows' => (int) ($state['last_row_count'] ?? 0),
+            'success_at' => (string) ($state['last_success_at'] ?? ''),
+        ];
+    }
+
+    if ($fingerprintParts === [] && $runs !== []) {
+        foreach ($runs as $run) {
+            $fingerprintParts[] = [
+                'dataset_key' => (string) ($run['dataset_key'] ?? ''),
+                'run_status' => (string) ($run['run_status'] ?? ''),
+                'written_rows' => (int) ($run['written_rows'] ?? 0),
+                'finished_at' => (string) ($run['finished_at'] ?? ''),
+            ];
+        }
+    }
+
+    $fingerprint = hash('sha256', json_encode($fingerprintParts, JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE));
+
+    return [
+        'section_key' => $sectionKey,
+        'fingerprint' => $fingerprint,
+        'snapshot_key' => $snapshotKey,
+        'domains' => array_values($domains),
+        'ui_sections' => array_values($uiSections),
+        'freshness' => [
+            'computed_at' => $status['last_success_at'] ?? null,
+            'freshness_state' => ($status['last_success_at'] ?? null) !== null ? 'fresh' : 'stale',
+            'freshness_label' => ($status['last_success_at'] ?? null) !== null ? 'Fresh' : 'Stale',
+        ],
+        'metadata' => [
+            'source' => 'sync_state',
+            'dataset_keys' => array_values($datasetKeys),
+            'last_success_at' => $status['last_success_at'] ?? null,
+            'recent_rows_written' => (int) ($status['recent_rows_written'] ?? 0),
+            'last_error_message' => $status['last_error_message'] ?? null,
+        ],
+    ];
+}
+
+function supplycore_ui_refresh_version_from_composite(string $sectionKey, array $parts, array $domains, array $uiSections, ?string $snapshotKey = null): array
+{
+    $fingerprints = [];
+    $computedAtCandidates = [];
+    $metadata = [];
+
+    foreach ($parts as $part) {
+        if (!is_array($part)) {
+            continue;
+        }
+
+        $fingerprint = trim((string) ($part['fingerprint'] ?? ''));
+        if ($fingerprint !== '') {
+            $fingerprints[] = $fingerprint;
+        }
+
+        $computedAt = (string) (($part['freshness']['computed_at'] ?? $part['metadata']['last_success_at'] ?? ''));
+        if ($computedAt !== '') {
+            $computedAtCandidates[] = $computedAt;
+        }
+
+        $metadata[] = [
+            'section_key' => (string) ($part['section_key'] ?? ''),
+            'fingerprint' => $fingerprint,
+            'computed_at' => $computedAt !== '' ? $computedAt : null,
+            'source' => (string) ($part['metadata']['source'] ?? 'unknown'),
+        ];
+    }
+
+    rsort($computedAtCandidates);
+    $computedAt = $computedAtCandidates[0] ?? null;
+
+    return [
+        'section_key' => $sectionKey,
+        'fingerprint' => hash('sha256', json_encode($fingerprints, JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE)),
+        'snapshot_key' => $snapshotKey,
+        'domains' => array_values($domains),
+        'ui_sections' => array_values($uiSections),
+        'freshness' => [
+            'computed_at' => $computedAt,
+            'freshness_state' => $computedAt !== null ? 'fresh' : 'stale',
+            'freshness_label' => $computedAt !== null ? 'Fresh' : 'Stale',
+        ],
+        'metadata' => [
+            'source' => 'composite',
+            'parts' => $metadata,
+        ],
+    ];
+}
+
+function supplycore_ui_refresh_section_version_definitions(): array
+{
+    return [
+        'dashboard_summary_version' => [
+            'domains' => ['dashboard'],
+            'ui_sections' => ['page-freshness', 'dashboard-kpis', 'dashboard-buyall', 'dashboard-doctrine', 'dashboard-queues'],
+            'resolver' => static fn (): array => supplycore_ui_refresh_version_from_snapshot('dashboard_summary_version', dashboard_snapshot_key(), ['dashboard'], ['page-freshness', 'dashboard-kpis', 'dashboard-buyall', 'dashboard-doctrine', 'dashboard-queues']),
+        ],
+        'doctrine_readiness_version' => [
+            'domains' => ['doctrine_readiness', 'doctrine_details', 'fit_availability', 'bottlenecks'],
+            'ui_sections' => ['dashboard-doctrine', 'buyall-overview', 'buyall-results', 'activity-doctrines', 'activity-sidebar', 'doctrine-fit-summary', 'doctrine-fit-history', 'doctrine-fit-items', 'doctrine-index-main', 'doctrine-group-main'],
+            'resolver' => static fn (): array => supplycore_ui_refresh_version_from_snapshot('doctrine_readiness_version', doctrine_fit_snapshot_key(), ['doctrine_readiness', 'doctrine_details', 'fit_availability', 'bottlenecks'], ['dashboard-doctrine', 'buyall-overview', 'buyall-results', 'activity-doctrines', 'activity-sidebar', 'doctrine-fit-summary', 'doctrine-fit-history', 'doctrine-fit-items', 'doctrine-index-main', 'doctrine-group-main']),
+        ],
+        'activity_priority_version' => [
+            'domains' => ['activity_priority', 'doctrine_activity'],
+            'ui_sections' => ['activity-summary', 'activity-doctrines', 'activity-sidebar', 'activity-items', 'dashboard-doctrine'],
+            'resolver' => static fn (): array => supplycore_ui_refresh_version_from_snapshot('activity_priority_version', activity_priority_snapshot_key(), ['activity_priority', 'doctrine_activity'], ['activity-summary', 'activity-doctrines', 'activity-sidebar', 'activity-items', 'dashboard-doctrine']),
+        ],
+        'buyall_version' => [
+            'domains' => ['buyall'],
+            'ui_sections' => ['dashboard-buyall', 'buyall-overview', 'buyall-results'],
+            'resolver' => static function (): array {
+                $hubRef = market_hub_setting_reference();
+                $structureId = configured_alliance_structure_id();
+                $parts = [
+                    supplycore_ui_refresh_version_from_snapshot('market_comparison_version', market_comparison_snapshot_key(), ['market_comparison'], ['dashboard-queues', 'current-alliance-main', 'reference-comparison-main', 'missing-items-main', 'price-deviations-main']),
+                    supplycore_ui_refresh_version_from_snapshot('doctrine_readiness_version', doctrine_fit_snapshot_key(), ['doctrine_readiness'], ['dashboard-doctrine', 'buyall-overview', 'buyall-results']),
+                    supplycore_ui_refresh_version_from_sync_state('market_prices_version', $hubRef !== '' ? [sync_dataset_key_market_hub_current_orders($hubRef)] : [], ['market_prices'], ['dashboard-queues', 'buyall-overview', 'buyall-results']),
+                    supplycore_ui_refresh_version_from_sync_state('alliance_stock_version', $structureId !== null ? [sync_dataset_key_alliance_structure_orders_current((int) $structureId)] : [], ['alliance_stock'], ['dashboard-queues', 'buyall-overview', 'buyall-results', 'current-alliance-main']),
+                ];
+
+                return supplycore_ui_refresh_version_from_composite('buyall_version', $parts, ['buyall'], ['dashboard-buyall', 'buyall-overview', 'buyall-results']);
+            },
+        ],
+        'market_prices_version' => [
+            'domains' => ['market_prices', 'pricing_summaries', 'opportunity_queue', 'risk_queue'],
+            'ui_sections' => ['dashboard-queues', 'buyall-overview', 'buyall-results', 'doctrine-fit-items', 'current-alliance-main', 'reference-comparison-main', 'missing-items-main', 'price-deviations-main'],
+            'resolver' => static function (): array {
+                $hubRef = market_hub_setting_reference();
+                $datasetKeys = $hubRef !== '' ? [sync_dataset_key_market_hub_current_orders($hubRef)] : [];
+
+                return supplycore_ui_refresh_version_from_sync_state('market_prices_version', $datasetKeys, ['market_prices', 'pricing_summaries', 'opportunity_queue', 'risk_queue'], ['dashboard-queues', 'buyall-overview', 'buyall-results', 'doctrine-fit-items', 'current-alliance-main', 'reference-comparison-main', 'missing-items-main', 'price-deviations-main']);
+            },
+        ],
+        'alliance_stock_version' => [
+            'domains' => ['alliance_stock'],
+            'ui_sections' => ['dashboard-queues', 'buyall-overview', 'buyall-results', 'doctrine-fit-items', 'current-alliance-main', 'reference-comparison-main', 'missing-items-main', 'price-deviations-main'],
+            'resolver' => static function (): array {
+                $structureId = configured_alliance_structure_id();
+                $datasetKeys = $structureId !== null ? [sync_dataset_key_alliance_structure_orders_current((int) $structureId)] : [];
+
+                return supplycore_ui_refresh_version_from_sync_state('alliance_stock_version', $datasetKeys, ['alliance_stock'], ['dashboard-queues', 'buyall-overview', 'buyall-results', 'doctrine-fit-items', 'current-alliance-main', 'reference-comparison-main', 'missing-items-main', 'price-deviations-main']);
+            },
+        ],
+        'market_comparison_version' => [
+            'domains' => ['market_comparison', 'overlap', 'pricing_summaries'],
+            'ui_sections' => ['dashboard-queues', 'current-alliance-main', 'reference-comparison-main', 'missing-items-main', 'price-deviations-main', 'buyall-results'],
+            'resolver' => static fn (): array => supplycore_ui_refresh_version_from_snapshot('market_comparison_version', market_comparison_snapshot_key(), ['market_comparison', 'overlap', 'pricing_summaries'], ['dashboard-queues', 'current-alliance-main', 'reference-comparison-main', 'missing-items-main', 'price-deviations-main', 'buyall-results']),
+        ],
+        'loss_demand_version' => [
+            'domains' => ['loss_aware_views'],
+            'ui_sections' => ['dashboard-queues'],
+            'resolver' => static fn (): array => supplycore_ui_refresh_version_from_snapshot('loss_demand_version', loss_demand_snapshot_key(), ['loss_aware_views'], ['dashboard-queues']),
+        ],
+        'killmail_activity_version' => [
+            'domains' => ['doctrine_activity', 'loss_aware_views'],
+            'ui_sections' => ['activity-doctrines', 'activity-sidebar', 'activity-items', 'doctrine-fit-history'],
+            'resolver' => static function (): array {
+                return supplycore_ui_refresh_version_from_sync_state('killmail_activity_version', [sync_dataset_key_killmail_r2z2_stream()], ['doctrine_activity', 'loss_aware_views'], ['activity-doctrines', 'activity-sidebar', 'activity-items', 'doctrine-fit-history']);
+            },
+        ],
+    ];
+}
+
+function supplycore_ui_refresh_job_domain_map(): array
+{
+    return [
+        'killmail_r2z2_sync' => [
+            'domains' => ['doctrine_activity', 'loss_aware_views', 'activity_priority'],
+            'ui_sections' => ['activity-doctrines', 'activity-sidebar', 'activity-items', 'doctrine-fit-history'],
+            'version_keys' => ['killmail_activity_version', 'activity_priority_version'],
+        ],
+        'alliance_current_sync' => [
+            'domains' => ['alliance_stock', 'doctrine_readiness', 'fit_availability', 'buyall'],
+            'ui_sections' => ['dashboard-queues', 'buyall-overview', 'buyall-results', 'doctrine-fit-items', 'current-alliance-main'],
+            'version_keys' => ['alliance_stock_version', 'buyall_version'],
+        ],
+        'market_hub_current_sync' => [
+            'domains' => ['market_prices', 'opportunity_queue', 'risk_queue', 'buyall'],
+            'ui_sections' => ['dashboard-queues', 'buyall-overview', 'buyall-results', 'reference-comparison-main', 'missing-items-main', 'price-deviations-main'],
+            'version_keys' => ['market_prices_version', 'buyall_version'],
+        ],
+        'dashboard_summary_sync' => [
+            'domains' => ['dashboard'],
+            'ui_sections' => ['page-freshness', 'dashboard-kpis', 'dashboard-buyall', 'dashboard-doctrine', 'dashboard-queues'],
+            'version_keys' => ['dashboard_summary_version'],
+        ],
+        'doctrine_intelligence_sync' => [
+            'domains' => ['doctrine_readiness', 'doctrine_details', 'fit_availability', 'bottlenecks'],
+            'ui_sections' => ['dashboard-doctrine', 'buyall-overview', 'buyall-results', 'activity-doctrines', 'activity-sidebar', 'doctrine-fit-summary', 'doctrine-fit-history', 'doctrine-fit-items', 'doctrine-index-main', 'doctrine-group-main'],
+            'version_keys' => ['doctrine_readiness_version', 'buyall_version'],
+        ],
+        'market_comparison_summary_sync' => [
+            'domains' => ['market_comparison', 'overlap', 'pricing_summaries', 'buyall', 'dashboard'],
+            'ui_sections' => ['dashboard-queues', 'dashboard-kpis', 'dashboard-buyall', 'current-alliance-main', 'reference-comparison-main', 'missing-items-main', 'price-deviations-main', 'buyall-results'],
+            'version_keys' => ['market_comparison_version', 'buyall_version', 'dashboard_summary_version'],
+        ],
+        'loss_demand_summary_sync' => [
+            'domains' => ['loss_aware_views', 'dashboard'],
+            'ui_sections' => ['dashboard-queues'],
+            'version_keys' => ['loss_demand_version', 'dashboard_summary_version'],
+        ],
+        'activity_priority_summary_sync' => [
+            'domains' => ['activity_priority', 'doctrine_activity'],
+            'ui_sections' => ['activity-summary', 'activity-doctrines', 'activity-sidebar', 'activity-items', 'dashboard-doctrine'],
+            'version_keys' => ['activity_priority_version'],
+        ],
+        'current_state_refresh_sync' => [
+            'domains' => ['dashboard', 'market_comparison', 'loss_aware_views'],
+            'ui_sections' => ['page-freshness', 'dashboard-kpis', 'dashboard-buyall', 'dashboard-doctrine', 'dashboard-queues', 'current-alliance-main', 'reference-comparison-main', 'missing-items-main', 'price-deviations-main'],
+            'version_keys' => ['dashboard_summary_version', 'market_comparison_version', 'loss_demand_version'],
+        ],
+        'deal_alerts_sync' => [
+            'domains' => ['dashboard'],
+            'ui_sections' => ['dashboard-queues'],
+            'version_keys' => ['dashboard_summary_version'],
+        ],
+    ];
+}
+
+function supplycore_ui_refresh_resolve_version(string $versionKey): ?array
+{
+    $definitions = supplycore_ui_refresh_section_version_definitions();
+    $definition = $definitions[$versionKey] ?? null;
+    if (!is_array($definition) || !isset($definition['resolver']) || !is_callable($definition['resolver'])) {
+        return null;
+    }
+
+    $resolved = $definition['resolver']();
+    if (!is_array($resolved)) {
+        return null;
+    }
+
+    return $resolved + [
+        'section_key' => $versionKey,
+        'domains' => array_values((array) ($definition['domains'] ?? [])),
+        'ui_sections' => array_values((array) ($definition['ui_sections'] ?? [])),
+    ];
+}
+
+function supplycore_ui_refresh_current_versions(array $versionKeys): array
+{
+    $rows = [];
+    foreach (array_values(array_unique(array_filter(array_map('strval', $versionKeys), static fn (string $value): bool => $value !== ''))) as $versionKey) {
+        $resolved = supplycore_ui_refresh_resolve_version($versionKey);
+        if ($resolved === null) {
+            continue;
+        }
+
+        $stored = db_ui_refresh_section_version_get($versionKey);
+        if (!is_array($stored) && trim((string) ($resolved['fingerprint'] ?? '')) !== '') {
+            db_ui_refresh_section_version_upsert([
+                'section_key' => $versionKey,
+                'version_counter' => 1,
+                'fingerprint' => (string) ($resolved['fingerprint'] ?? ''),
+                'snapshot_key' => $resolved['snapshot_key'] ?? null,
+                'domains_json' => json_encode(array_values((array) ($resolved['domains'] ?? [])), JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE),
+                'ui_sections_json' => json_encode(array_values((array) ($resolved['ui_sections'] ?? [])), JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE),
+                'metadata_json' => json_encode([
+                    'freshness' => $resolved['freshness'] ?? [],
+                    'metadata' => $resolved['metadata'] ?? [],
+                ], JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE),
+                'last_status' => 'seeded',
+                'last_finished_at' => gmdate('Y-m-d H:i:s'),
+            ]);
+            $stored = db_ui_refresh_section_version_get($versionKey);
+        }
+
+        $versionCounter = max(0, (int) ($stored['version_counter'] ?? 0));
+        $rows[$versionKey] = [
+            'section_key' => $versionKey,
+            'version' => $versionCounter,
+            'fingerprint' => (string) ($stored['fingerprint'] ?? ($resolved['fingerprint'] ?? '')),
+            'snapshot_key' => $resolved['snapshot_key'] ?? null,
+            'domains' => array_values((array) ($resolved['domains'] ?? [])),
+            'ui_sections' => array_values((array) ($resolved['ui_sections'] ?? [])),
+            'freshness' => is_array($resolved['freshness'] ?? null) ? $resolved['freshness'] : [],
+            'metadata' => is_array($resolved['metadata'] ?? null) ? $resolved['metadata'] : [],
+            'updated_at' => $stored['updated_at'] ?? null,
+        ];
+    }
+
+    ksort($rows);
+
+    return $rows;
+}
+
+function supplycore_ui_refresh_publish_for_job_result(array $result): ?array
+{
+    $jobKey = trim((string) ($result['job_key'] ?? ''));
+    if ($jobKey === '') {
+        return null;
+    }
+
+    $mapping = supplycore_ui_refresh_job_domain_map()[$jobKey] ?? null;
+    $finishedAt = trim((string) ($result['finished_at'] ?? ''));
+    if ($finishedAt === '') {
+        $finishedAt = gmdate(DATE_ATOM);
+    }
+
+    $domains = array_values((array) ($mapping['domains'] ?? []));
+    $uiSections = array_values((array) ($mapping['ui_sections'] ?? []));
+    $versionKeys = array_values((array) ($mapping['version_keys'] ?? []));
+    $status = trim((string) ($result['status'] ?? 'unknown')) ?: 'unknown';
+    $changedVersions = [];
+    $allVersions = [];
+
+    foreach ($versionKeys as $versionKey) {
+        $resolved = supplycore_ui_refresh_resolve_version($versionKey);
+        if ($resolved === null) {
+            continue;
+        }
+
+        $stored = db_ui_refresh_section_version_get($versionKey);
+        $currentCounter = max(0, (int) ($stored['version_counter'] ?? 0));
+        $currentFingerprint = trim((string) ($stored['fingerprint'] ?? ''));
+        $nextCounter = $currentCounter;
+        $changed = false;
+
+        if ($status === 'success' && $resolved['fingerprint'] !== '' && $resolved['fingerprint'] !== $currentFingerprint) {
+            $nextCounter++;
+            $changed = true;
+        }
+
+        $payload = [
+            'section_key' => $versionKey,
+            'version_counter' => $nextCounter,
+            'fingerprint' => $changed ? $resolved['fingerprint'] : ($currentFingerprint !== '' ? $currentFingerprint : $resolved['fingerprint']),
+            'snapshot_key' => $resolved['snapshot_key'] ?? null,
+            'domains_json' => json_encode(array_values((array) ($resolved['domains'] ?? [])), JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE),
+            'ui_sections_json' => json_encode(array_values((array) ($resolved['ui_sections'] ?? [])), JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE),
+            'metadata_json' => json_encode([
+                'freshness' => $resolved['freshness'] ?? [],
+                'metadata' => $resolved['metadata'] ?? [],
+            ], JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE),
+            'last_job_key' => $jobKey,
+            'last_status' => $status,
+            'last_finished_at' => gmdate('Y-m-d H:i:s', strtotime($finishedAt) ?: time()),
+        ];
+        db_ui_refresh_section_version_upsert($payload);
+
+        $allVersions[$versionKey] = [
+            'section_key' => $versionKey,
+            'version' => $nextCounter,
+            'fingerprint' => (string) $payload['fingerprint'],
+            'domains' => array_values((array) ($resolved['domains'] ?? [])),
+            'ui_sections' => array_values((array) ($resolved['ui_sections'] ?? [])),
+            'freshness' => is_array($resolved['freshness'] ?? null) ? $resolved['freshness'] : [],
+            'metadata' => is_array($resolved['metadata'] ?? null) ? $resolved['metadata'] : [],
+            'changed' => $changed,
+        ];
+
+        if ($changed) {
+            $changedVersions[$versionKey] = $allVersions[$versionKey];
+        }
+    }
+
+    $eventPayload = [
+        'event_type' => 'job_completed',
+        'event_key' => $jobKey . ':' . $status . ':' . gmdate('YmdHis', strtotime($finishedAt) ?: time()),
+        'job_key' => $jobKey,
+        'job_status' => $status,
+        'finished_at' => gmdate('Y-m-d H:i:s', strtotime($finishedAt) ?: time()),
+        'domains_json' => json_encode($domains, JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE),
+        'ui_sections_json' => json_encode($uiSections, JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE),
+        'section_versions_json' => json_encode($changedVersions, JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE),
+        'payload_json' => json_encode([
+            'job_name' => $jobKey,
+            'finished_at' => $finishedAt,
+            'state' => $status,
+            'affected_data_domains' => $domains,
+            'affected_ui_sections' => $uiSections,
+            'freshness_versions' => $allVersions,
+            'changed_versions' => $changedVersions,
+        ], JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE),
+    ];
+    $eventId = db_ui_refresh_event_insert($eventPayload);
+
+    if ($eventId > 0 && $changedVersions !== []) {
+        foreach ($changedVersions as $versionKey => $version) {
+            db_ui_refresh_section_version_upsert([
+                'section_key' => $versionKey,
+                'version_counter' => (int) ($version['version'] ?? 0),
+                'fingerprint' => (string) ($version['fingerprint'] ?? ''),
+                'domains_json' => json_encode((array) ($version['domains'] ?? []), JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE),
+                'ui_sections_json' => json_encode((array) ($version['ui_sections'] ?? []), JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE),
+                'metadata_json' => json_encode([
+                    'freshness' => $version['freshness'] ?? [],
+                    'metadata' => $version['metadata'] ?? [],
+                ], JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE),
+                'last_job_key' => $jobKey,
+                'last_status' => $status,
+                'last_event_id' => $eventId,
+                'last_finished_at' => gmdate('Y-m-d H:i:s', strtotime($finishedAt) ?: time()),
+            ]);
+        }
+    }
+
+    return [
+        'event_id' => $eventId,
+        'job_name' => $jobKey,
+        'finished_at' => $finishedAt,
+        'state' => $status,
+        'affected_data_domains' => $domains,
+        'affected_ui_sections' => $uiSections,
+        'freshness_versions' => $allVersions,
+        'changed_versions' => $changedVersions,
+    ];
+}
+
+function supplycore_ui_refresh_normalize_event_row(array $row): array
+{
+    $payload = supplycore_ui_refresh_decode_json($row['payload_json'] ?? null);
+    $changedVersions = supplycore_ui_refresh_decode_json($row['section_versions_json'] ?? null);
+    $domains = array_values((array) ($payload['affected_data_domains'] ?? supplycore_ui_refresh_decode_json($row['domains_json'] ?? null)));
+    $uiSections = array_values((array) ($payload['affected_ui_sections'] ?? supplycore_ui_refresh_decode_json($row['ui_sections_json'] ?? null)));
+
+    return [
+        'id' => (int) ($row['id'] ?? 0),
+        'event_type' => (string) ($row['event_type'] ?? 'job_completed'),
+        'job_name' => (string) ($payload['job_name'] ?? $row['job_key'] ?? 'unknown_job'),
+        'finished_at' => (string) ($payload['finished_at'] ?? $row['finished_at'] ?? ''),
+        'state' => (string) ($payload['state'] ?? $row['job_status'] ?? 'unknown'),
+        'affected_data_domains' => $domains,
+        'affected_ui_sections' => $uiSections,
+        'freshness_versions' => is_array($payload['freshness_versions'] ?? null) ? $payload['freshness_versions'] : [],
+        'changed_versions' => $changedVersions,
+    ];
+}
+
+function supplycore_live_refresh_page_registry(): array
+{
+    return [
+        'dashboard' => [
+            'path' => '/index.php',
+            'public_path' => '/',
+            'script' => dirname(__DIR__) . '/public/index.php',
+            'domains' => ['dashboard', 'market_prices', 'alliance_stock', 'buyall', 'doctrine_readiness', 'activity_priority', 'loss_aware_views'],
+            'version_keys' => ['dashboard_summary_version', 'market_prices_version', 'alliance_stock_version', 'buyall_version', 'doctrine_readiness_version', 'activity_priority_version', 'loss_demand_version'],
+            'sections' => [
+                'page-freshness' => ['version_keys' => ['dashboard_summary_version']],
+                'dashboard-kpis' => ['version_keys' => ['dashboard_summary_version']],
+                'dashboard-buyall' => ['version_keys' => ['dashboard_summary_version', 'buyall_version']],
+                'dashboard-doctrine' => ['version_keys' => ['dashboard_summary_version', 'doctrine_readiness_version', 'activity_priority_version']],
+                'dashboard-queues' => ['version_keys' => ['dashboard_summary_version', 'market_prices_version', 'alliance_stock_version', 'market_comparison_version', 'loss_demand_version']],
+            ],
+        ],
+        'buy_all' => [
+            'path' => '/buy-all/index.php',
+            'public_path' => '/buy-all',
+            'script' => dirname(__DIR__) . '/public/buy-all/index.php',
+            'domains' => ['buyall', 'market_prices', 'alliance_stock', 'doctrine_readiness'],
+            'version_keys' => ['buyall_version', 'market_prices_version', 'alliance_stock_version', 'doctrine_readiness_version'],
+            'sections' => [
+                'buyall-overview' => ['version_keys' => ['buyall_version', 'market_prices_version', 'alliance_stock_version', 'doctrine_readiness_version']],
+                'buyall-results' => ['version_keys' => ['buyall_version', 'market_prices_version', 'alliance_stock_version', 'doctrine_readiness_version']],
+            ],
+        ],
+        'activity_priority' => [
+            'path' => '/activity-priority/index.php',
+            'public_path' => '/activity-priority',
+            'script' => dirname(__DIR__) . '/public/activity-priority/index.php',
+            'domains' => ['activity_priority', 'doctrine_readiness', 'doctrine_activity', 'loss_aware_views'],
+            'version_keys' => ['activity_priority_version', 'doctrine_readiness_version', 'killmail_activity_version'],
+            'sections' => [
+                'page-freshness' => ['version_keys' => ['activity_priority_version']],
+                'activity-summary' => ['version_keys' => ['activity_priority_version']],
+                'activity-doctrines' => ['version_keys' => ['activity_priority_version', 'doctrine_readiness_version', 'killmail_activity_version']],
+                'activity-sidebar' => ['version_keys' => ['activity_priority_version', 'doctrine_readiness_version', 'killmail_activity_version']],
+                'activity-items' => ['version_keys' => ['activity_priority_version', 'killmail_activity_version']],
+            ],
+        ],
+        'doctrine_fit' => [
+            'path' => '/doctrine/fit.php',
+            'public_path' => '/doctrine/fit',
+            'script' => dirname(__DIR__) . '/public/doctrine/fit.php',
+            'domains' => ['doctrine_readiness', 'market_prices', 'alliance_stock', 'doctrine_activity', 'loss_aware_views'],
+            'version_keys' => ['doctrine_readiness_version', 'market_prices_version', 'alliance_stock_version', 'killmail_activity_version'],
+            'sections' => [
+                'page-freshness' => ['version_keys' => ['doctrine_readiness_version']],
+                'doctrine-fit-summary' => ['version_keys' => ['doctrine_readiness_version']],
+                'doctrine-fit-history' => ['version_keys' => ['doctrine_readiness_version', 'killmail_activity_version']],
+                'doctrine-fit-items' => ['version_keys' => ['doctrine_readiness_version', 'market_prices_version', 'alliance_stock_version']],
+            ],
+        ],
+        'doctrine_index' => [
+            'path' => '/doctrine/index.php',
+            'public_path' => '/doctrine',
+            'script' => dirname(__DIR__) . '/public/doctrine/index.php',
+            'domains' => ['doctrine_readiness', 'market_prices', 'alliance_stock'],
+            'version_keys' => ['doctrine_readiness_version', 'market_prices_version', 'alliance_stock_version'],
+            'sections' => [
+                'page-freshness' => ['version_keys' => ['doctrine_readiness_version']],
+                'doctrine-index-main' => ['version_keys' => ['doctrine_readiness_version', 'market_prices_version', 'alliance_stock_version']],
+            ],
+        ],
+        'doctrine_group' => [
+            'path' => '/doctrine/group.php',
+            'public_path' => '/doctrine/group',
+            'script' => dirname(__DIR__) . '/public/doctrine/group.php',
+            'domains' => ['doctrine_readiness', 'market_prices', 'alliance_stock'],
+            'version_keys' => ['doctrine_readiness_version', 'market_prices_version', 'alliance_stock_version'],
+            'sections' => [
+                'page-freshness' => ['version_keys' => ['doctrine_readiness_version']],
+                'doctrine-group-main' => ['version_keys' => ['doctrine_readiness_version', 'market_prices_version', 'alliance_stock_version']],
+            ],
+        ],
+        'current_alliance' => [
+            'path' => '/market-status/current-alliance.php',
+            'public_path' => '/market-status/current-alliance',
+            'script' => dirname(__DIR__) . '/public/market-status/current-alliance.php',
+            'domains' => ['market_comparison', 'alliance_stock', 'market_prices'],
+            'version_keys' => ['market_comparison_version', 'alliance_stock_version', 'market_prices_version'],
+            'sections' => [
+                'current-alliance-main' => ['version_keys' => ['market_comparison_version', 'alliance_stock_version', 'market_prices_version']],
+            ],
+        ],
+        'reference_comparison' => [
+            'path' => '/market-status/reference-comparison.php',
+            'public_path' => '/market-status/reference-comparison',
+            'script' => dirname(__DIR__) . '/public/market-status/reference-comparison.php',
+            'domains' => ['market_comparison', 'alliance_stock', 'market_prices'],
+            'version_keys' => ['market_comparison_version', 'alliance_stock_version', 'market_prices_version'],
+            'sections' => [
+                'reference-comparison-main' => ['version_keys' => ['market_comparison_version', 'alliance_stock_version', 'market_prices_version']],
+            ],
+        ],
+        'missing_items' => [
+            'path' => '/market-status/missing-items.php',
+            'public_path' => '/market-status/missing-items',
+            'script' => dirname(__DIR__) . '/public/market-status/missing-items.php',
+            'domains' => ['market_comparison', 'alliance_stock', 'market_prices'],
+            'version_keys' => ['market_comparison_version', 'alliance_stock_version', 'market_prices_version'],
+            'sections' => [
+                'missing-items-main' => ['version_keys' => ['market_comparison_version', 'alliance_stock_version', 'market_prices_version']],
+            ],
+        ],
+        'price_deviations' => [
+            'path' => '/market-status/price-deviations.php',
+            'public_path' => '/market-status/price-deviations',
+            'script' => dirname(__DIR__) . '/public/market-status/price-deviations.php',
+            'domains' => ['market_comparison', 'alliance_stock', 'market_prices'],
+            'version_keys' => ['market_comparison_version', 'alliance_stock_version', 'market_prices_version'],
+            'sections' => [
+                'price-deviations-main' => ['version_keys' => ['market_comparison_version', 'alliance_stock_version', 'market_prices_version']],
+            ],
+        ],
+    ];
+}
+
+function supplycore_live_refresh_page_config(string $pageId): ?array
+{
+    $registry = supplycore_live_refresh_page_registry();
+    $page = $registry[$pageId] ?? null;
+    if (!is_array($page)) {
+        return null;
+    }
+
+    $currentVersions = supplycore_ui_refresh_current_versions((array) ($page['version_keys'] ?? []));
+    $latestEvent = db_ui_refresh_latest_event();
+
+    return $page + [
+        'page_id' => $pageId,
+        'stream_url' => '/api/ui-refresh-stream.php?page_id=' . rawurlencode($pageId),
+        'poll_url' => '/api/ui-refresh-state.php?page_id=' . rawurlencode($pageId),
+        'fragment_url' => '/api/ui-refresh-fragment.php?page_id=' . rawurlencode($pageId),
+        'current_versions' => $currentVersions,
+        'latest_event' => is_array($latestEvent) ? supplycore_ui_refresh_normalize_event_row($latestEvent) : null,
+        'transport' => 'sse',
+        'debounce_ms' => 1200,
+        'poll_interval_ms' => 30000,
+        'query_string' => http_build_query($_GET),
+    ];
+}
+
+function supplycore_live_refresh_page_data_attributes(?array $config): string
+{
+    if (!is_array($config) || $config === []) {
+        return '';
+    }
+
+    $payload = json_encode($config, JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE);
+    if (!is_string($payload) || $payload === '') {
+        return '';
+    }
+
+    return ' data-live-refresh-config="' . htmlspecialchars($payload, ENT_QUOTES) . '"';
+}
+
+function supplycore_live_refresh_should_include(?array $config): bool
+{
+    return is_array($config) && $config !== [];
+}
+
+function supplycore_live_refresh_matches_page(array $pageConfig, array $event): bool
+{
+    $pageDomains = array_values((array) ($pageConfig['domains'] ?? []));
+    $pageSections = array_keys((array) ($pageConfig['sections'] ?? []));
+    $eventDomains = array_values((array) ($event['affected_data_domains'] ?? []));
+    $eventSections = array_values((array) ($event['affected_ui_sections'] ?? []));
+
+    return array_intersect($pageDomains, $eventDomains) !== [] || array_intersect($pageSections, $eventSections) !== [];
+}
+
+function supplycore_live_refresh_state_payload(array $pageConfig): array
+{
+    return [
+        'page_id' => (string) ($pageConfig['page_id'] ?? ''),
+        'transport' => 'polling',
+        'current_versions' => supplycore_ui_refresh_current_versions((array) ($pageConfig['version_keys'] ?? [])),
+        'last_published_event' => ($latest = db_ui_refresh_latest_event()) ? supplycore_ui_refresh_normalize_event_row($latest) : null,
+        'generated_at' => gmdate(DATE_ATOM),
+    ];
+}
+
+function supplycore_live_refresh_extract_section(string $html, string $sectionKey): ?string
+{
+    $pattern = '/<!--\s*ui-section:' . preg_quote($sectionKey, '/') . ':start\s*-->(.*?)<!--\s*ui-section:' . preg_quote($sectionKey, '/') . ':end\s*-->/s';
+    if (preg_match($pattern, $html, $matches) !== 1) {
+        return null;
+    }
+
+    return trim((string) ($matches[1] ?? ''));
+}
+
+function supplycore_live_refresh_render_page_fragment(string $pageId, string $sectionKey, string $queryString = ''): ?string
+{
+    $registry = supplycore_live_refresh_page_registry();
+    $page = $registry[$pageId] ?? null;
+    if (!is_array($page) || !isset($page['sections'][$sectionKey])) {
+        return null;
+    }
+
+    $script = (string) ($page['script'] ?? '');
+    if ($script === '' || !is_file($script)) {
+        return null;
+    }
+
+    parse_str($queryString, $query);
+    if (!is_array($query)) {
+        $query = [];
+    }
+
+    $previousGet = $_GET;
+    $previousServer = $_SERVER;
+
+    $_GET = $query;
+    $_SERVER['REQUEST_URI'] = (string) ($page['public_path'] ?? '/') . ($queryString !== '' ? '?' . $queryString : '');
+    $_SERVER['QUERY_STRING'] = $queryString;
+
+    if (!defined('SUPPLYCORE_LIVE_FRAGMENT_CAPTURE')) {
+        define('SUPPLYCORE_LIVE_FRAGMENT_CAPTURE', true);
+    }
+
+    ob_start();
+    include $script;
+    $html = (string) ob_get_clean();
+
+    $_GET = $previousGet;
+    $_SERVER = $previousServer;
+
+    return supplycore_live_refresh_extract_section($html, $sectionKey);
+}
+
 
 function supplycore_format_datetime(?string $value): string
 {
