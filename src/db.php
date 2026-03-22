@@ -2527,6 +2527,82 @@ function db_market_order_current_projection_latest_rows(string $sourceType, int 
     );
 }
 
+function db_market_orders_current_compact_type_names(array $typeIds): array
+{
+    $normalizedTypeIds = array_values(array_unique(array_filter(array_map('intval', $typeIds), static fn (int $typeId): bool => $typeId > 0)));
+    if ($normalizedTypeIds === []) {
+        return [];
+    }
+
+    $rows = db_select(
+        'SELECT type_id, type_name
+         FROM ref_item_types
+         WHERE type_id IN (' . implode(', ', array_fill(0, count($normalizedTypeIds), '?')) . ')',
+        $normalizedTypeIds
+    );
+
+    $typeNameMap = [];
+    foreach ($rows as $row) {
+        $typeNameMap[(int) ($row['type_id'] ?? 0)] = (string) ($row['type_name'] ?? '');
+    }
+
+    return $typeNameMap;
+}
+
+function db_market_orders_current_compact_projection_rows(string $sourceType, int $sourceId, array $typeIds = []): array
+{
+    $projectionRows = db_market_order_current_projection_latest_rows($sourceType, $sourceId, $typeIds);
+    if ($projectionRows === []) {
+        return [];
+    }
+
+    $typeNameMap = db_market_orders_current_compact_type_names(array_map(
+        static fn (array $row): int => (int) ($row['type_id'] ?? 0),
+        $projectionRows
+    ));
+
+    return array_map(static function (array $row) use ($typeNameMap): array {
+        $typeId = (int) ($row['type_id'] ?? 0);
+        $totalSellVolume = max(0, (int) ($row['total_sell_volume'] ?? 0));
+        $totalBuyVolume = max(0, (int) ($row['total_buy_volume'] ?? 0));
+        $totalVolume = array_key_exists('total_volume', $row) && $row['total_volume'] !== null
+            ? max(0, (int) $row['total_volume'])
+            : ($totalSellVolume + $totalBuyVolume);
+        $observedAt = (string) ($row['observed_at'] ?? '');
+
+        return [
+            'source_type' => (string) ($row['source_type'] ?? ''),
+            'source_id' => max(0, (int) ($row['source_id'] ?? 0)),
+            'type_id' => $typeId,
+            'type_name' => $typeNameMap[$typeId] ?? null,
+            'best_sell_price' => $row['best_sell_price'] ?? null,
+            'best_buy_price' => $row['best_buy_price'] ?? null,
+            'total_sell_volume' => $totalSellVolume,
+            'total_buy_volume' => $totalBuyVolume,
+            'total_volume' => $totalVolume,
+            'sell_order_count' => max(0, (int) ($row['sell_order_count'] ?? 0)),
+            'buy_order_count' => max(0, (int) ($row['buy_order_count'] ?? 0)),
+            'last_observed_at' => $observedAt,
+        ];
+    }, $projectionRows);
+}
+
+function db_market_orders_current_compact_snapshot_rows(string $sourceType, int $sourceId, array $typeIds = []): array
+{
+    $safeSourceType = trim($sourceType);
+    $safeSourceId = max(0, $sourceId);
+    if ($safeSourceType === '' || $safeSourceId <= 0) {
+        return [];
+    }
+
+    $projectionRows = db_market_orders_current_compact_projection_rows($safeSourceType, $safeSourceId, $typeIds);
+    if ($projectionRows !== []) {
+        return $projectionRows;
+    }
+
+    return db_market_orders_current_source_aggregates($safeSourceType, $safeSourceId, $typeIds);
+}
+
 function db_market_orders_current_bulk_upsert(array $orders, ?int $chunkSize = null): int
 {
     $written = db_bulk_insert_or_upsert(
@@ -4175,41 +4251,9 @@ function db_market_orders_history_stock_health_series(
 
 function db_market_orders_current_source_aggregates(string $sourceType, int $sourceId, array $typeIds = []): array
 {
-    $projectionRows = db_market_order_current_projection_latest_rows($sourceType, $sourceId, $typeIds);
+    $projectionRows = db_market_orders_current_compact_projection_rows($sourceType, $sourceId, $typeIds);
     if ($projectionRows !== []) {
-        $typeNameMap = [];
-        $projectionTypeIds = array_values(array_unique(array_filter(array_map(
-            static fn (array $row): int => (int) ($row['type_id'] ?? 0),
-            $projectionRows
-        ))));
-
-        if ($projectionTypeIds !== []) {
-            $typeNameRows = db_select(
-                'SELECT type_id, type_name
-                 FROM ref_item_types
-                 WHERE type_id IN (' . implode(', ', array_fill(0, count($projectionTypeIds), '?')) . ')',
-                $projectionTypeIds
-            );
-            foreach ($typeNameRows as $typeNameRow) {
-                $typeNameMap[(int) ($typeNameRow['type_id'] ?? 0)] = (string) ($typeNameRow['type_name'] ?? '');
-            }
-        }
-
-        return array_map(static function (array $row) use ($typeNameMap): array {
-            $typeId = (int) ($row['type_id'] ?? 0);
-
-            return [
-                'type_id' => $typeId,
-                'type_name' => $typeNameMap[$typeId] ?? null,
-                'best_sell_price' => $row['best_sell_price'] ?? null,
-                'best_buy_price' => $row['best_buy_price'] ?? null,
-                'total_sell_volume' => max(0, (int) ($row['total_sell_volume'] ?? 0)),
-                'total_buy_volume' => max(0, (int) ($row['total_buy_volume'] ?? 0)),
-                'sell_order_count' => max(0, (int) ($row['sell_order_count'] ?? 0)),
-                'buy_order_count' => max(0, (int) ($row['buy_order_count'] ?? 0)),
-                'last_observed_at' => (string) ($row['observed_at'] ?? ''),
-            ];
-        }, $projectionRows);
+        return $projectionRows;
     }
 
     $params = [$sourceType, $sourceId];

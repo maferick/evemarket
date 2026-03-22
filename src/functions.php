@@ -11839,8 +11839,8 @@ function market_hub_current_sync_latest_dataset(string|int|null $hubRef = null):
     }
 
     $sourceId = sync_source_id_from_hub_ref($resolvedHubRef);
-    $rows = db_market_orders_current_latest_snapshot_rows('market_hub', $sourceId);
-    $observedAt = $rows !== [] ? (string) ($rows[0]['observed_at'] ?? '') : '';
+    $rows = db_market_orders_current_compact_snapshot_rows('market_hub', $sourceId);
+    $observedAt = $rows !== [] ? (string) (($rows[0]['last_observed_at'] ?? $rows[0]['observed_at'] ?? '')) : '';
 
     return [
         'hub_ref' => $resolvedHubRef,
@@ -11911,6 +11911,7 @@ function market_hub_current_snapshot_finalize_metric(array $metric): ?array
 function market_hub_current_snapshot_metrics_by_type(array $rows, ?int $sourceId = null): array
 {
     $aggregates = [];
+    $canonicalRows = [];
 
     foreach ($rows as $row) {
         if (!is_array($row)) {
@@ -11923,8 +11924,28 @@ function market_hub_current_snapshot_metrics_by_type(array $rows, ?int $sourceId
         }
 
         $rowSourceId = max(0, (int) ($row['source_id'] ?? $sourceId ?? 0));
-        $observedAt = trim((string) ($row['observed_at'] ?? ''));
+        $observedAt = trim((string) (($row['last_observed_at'] ?? $row['observed_at'] ?? '')));
         if ($rowSourceId <= 0 || $observedAt === '') {
+            continue;
+        }
+
+        if (array_key_exists('best_sell_price', $row) || array_key_exists('best_buy_price', $row)) {
+            $canonical = market_hub_current_snapshot_finalize_metric([
+                'source_id' => $rowSourceId,
+                'type_id' => $typeId,
+                'observed_at' => $observedAt,
+                'best_sell_price' => $row['best_sell_price'] ?? null,
+                'best_buy_price' => $row['best_buy_price'] ?? null,
+                'total_volume' => array_key_exists('total_volume', $row)
+                    ? max(0, (int) ($row['total_volume'] ?? 0))
+                    : max(0, (int) ($row['total_sell_volume'] ?? 0)) + max(0, (int) ($row['total_buy_volume'] ?? 0)),
+                'buy_order_count' => max(0, (int) ($row['buy_order_count'] ?? 0)),
+                'sell_order_count' => max(0, (int) ($row['sell_order_count'] ?? 0)),
+            ]);
+            if ($canonical !== null) {
+                $canonicalRows[$typeId] = $canonical;
+            }
+
             continue;
         }
 
@@ -11959,7 +11980,6 @@ function market_hub_current_snapshot_metrics_by_type(array $rows, ?int $sourceId
         }
     }
 
-    $canonicalRows = [];
     foreach ($aggregates as $typeId => $aggregate) {
         $canonical = market_hub_current_snapshot_finalize_metric($aggregate);
         if ($canonical === null) {
