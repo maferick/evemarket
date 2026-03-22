@@ -1099,6 +1099,9 @@ PARTITION BY RANGE COLUMNS(observed_date) (
     PARTITION pmax VALUES LESS THAN (MAXVALUE)
 );
 
+-- Keep this table on retention-only behavior for the immediate next release.
+-- Older windows should move into additive hourly/daily rollups before we consider
+-- partitioning this summary table.
 CREATE TABLE IF NOT EXISTS market_order_snapshots_summary (
     id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
     source_type ENUM('market_hub', 'alliance_structure') NOT NULL,
@@ -1120,6 +1123,72 @@ CREATE TABLE IF NOT EXISTS market_order_snapshots_summary (
     KEY idx_snapshot_summary_source_type_observed (source_type, source_id, type_id, observed_at),
     KEY idx_snapshot_summary_source_date_type (source_type, source_id, observed_date, type_id),
     KEY idx_snapshot_summary_observed (observed_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Compact older snapshot windows by source/type/time bucket rather than partitioning
+-- market_order_snapshots_summary immediately. These tables are additive projections
+-- that preserve queryable older trends after hot reads move to compact current-state
+-- and latest-summary paths.
+CREATE TABLE IF NOT EXISTS market_order_snapshot_rollup_1h (
+    bucket_start DATETIME NOT NULL,
+    source_type ENUM('market_hub', 'alliance_structure') NOT NULL,
+    source_id BIGINT UNSIGNED NOT NULL,
+    type_id INT UNSIGNED NOT NULL,
+    sample_count INT UNSIGNED NOT NULL DEFAULT 0,
+    first_observed_at DATETIME DEFAULT NULL,
+    last_observed_at DATETIME DEFAULT NULL,
+    best_sell_price_min DECIMAL(20, 2) DEFAULT NULL,
+    best_sell_price_max DECIMAL(20, 2) DEFAULT NULL,
+    best_sell_price_sample_count INT UNSIGNED NOT NULL DEFAULT 0,
+    best_sell_price_sum DECIMAL(24, 2) NOT NULL DEFAULT 0.00,
+    best_sell_price_last DECIMAL(20, 2) DEFAULT NULL,
+    best_buy_price_min DECIMAL(20, 2) DEFAULT NULL,
+    best_buy_price_max DECIMAL(20, 2) DEFAULT NULL,
+    best_buy_price_sample_count INT UNSIGNED NOT NULL DEFAULT 0,
+    best_buy_price_sum DECIMAL(24, 2) NOT NULL DEFAULT 0.00,
+    best_buy_price_last DECIMAL(20, 2) DEFAULT NULL,
+    total_buy_volume_sum BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    total_sell_volume_sum BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    total_volume_sum BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    buy_order_count_sum BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    sell_order_count_sum BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (bucket_start, source_type, source_id, type_id),
+    KEY idx_market_order_snapshot_rollup_1h_source_bucket (source_type, source_id, bucket_start),
+    KEY idx_market_order_snapshot_rollup_1h_bucket_type (bucket_start, type_id),
+    KEY idx_market_order_snapshot_rollup_1h_type_bucket (type_id, bucket_start)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS market_order_snapshot_rollup_1d (
+    bucket_start DATE NOT NULL,
+    source_type ENUM('market_hub', 'alliance_structure') NOT NULL,
+    source_id BIGINT UNSIGNED NOT NULL,
+    type_id INT UNSIGNED NOT NULL,
+    sample_count INT UNSIGNED NOT NULL DEFAULT 0,
+    first_observed_at DATETIME DEFAULT NULL,
+    last_observed_at DATETIME DEFAULT NULL,
+    best_sell_price_min DECIMAL(20, 2) DEFAULT NULL,
+    best_sell_price_max DECIMAL(20, 2) DEFAULT NULL,
+    best_sell_price_sample_count INT UNSIGNED NOT NULL DEFAULT 0,
+    best_sell_price_sum DECIMAL(24, 2) NOT NULL DEFAULT 0.00,
+    best_sell_price_last DECIMAL(20, 2) DEFAULT NULL,
+    best_buy_price_min DECIMAL(20, 2) DEFAULT NULL,
+    best_buy_price_max DECIMAL(20, 2) DEFAULT NULL,
+    best_buy_price_sample_count INT UNSIGNED NOT NULL DEFAULT 0,
+    best_buy_price_sum DECIMAL(24, 2) NOT NULL DEFAULT 0.00,
+    best_buy_price_last DECIMAL(20, 2) DEFAULT NULL,
+    total_buy_volume_sum BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    total_sell_volume_sum BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    total_volume_sum BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    buy_order_count_sum BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    sell_order_count_sum BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (bucket_start, source_type, source_id, type_id),
+    KEY idx_market_order_snapshot_rollup_1d_source_bucket (source_type, source_id, bucket_start),
+    KEY idx_market_order_snapshot_rollup_1d_bucket_type (bucket_start, type_id),
+    KEY idx_market_order_snapshot_rollup_1d_type_bucket (type_id, bucket_start)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS market_source_snapshot_state (
