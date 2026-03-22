@@ -1,2 +1,3 @@
 from .killmail import run_killmail_r2z2_stream
+from .market_hub_local_history import run_market_hub_local_history
 from .market_comparison import run_market_comparison_summary

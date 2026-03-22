@@ -2172,7 +2172,7 @@ INSERT INTO sync_schedules (
     ('market_hub_current_sync', 1, 8, 480, 0, 0, 'high', 'single', 'php', 240, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
     ('alliance_current_sync', 1, 4, 240, 120, 2, 'medium', 'single', 'python', 180, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
     ('current_state_refresh_sync', 1, 12, 720, 360, 6, 'medium', 'single', 'php', 120, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
-    ('market_hub_local_history_sync', 1, 20, 1200, 840, 14, 'normal', 'background', 'php', 1800, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
+    ('market_hub_local_history_sync', 1, 20, 1200, 840, 14, 'normal', 'background', 'python', 1800, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
     ('doctrine_intelligence_sync', 1, 15, 900, 480, 8, 'normal', 'single', 'python', 180, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
     ('market_comparison_summary_sync', 1, 15, 900, 540, 9, 'normal', 'single', 'python', 180, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
     ('loss_demand_summary_sync', 1, 15, 900, 600, 10, 'normal', 'single', 'python', 180, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),

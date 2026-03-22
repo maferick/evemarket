@@ -11,7 +11,7 @@ from typing import Any, Callable
 from .bridge import PhpBridge
 from .config import load_php_runtime_config
 from .db import SupplyCoreDb
-from .jobs import run_killmail_r2z2_stream, run_market_comparison_summary
+from .jobs import run_killmail_r2z2_stream, run_market_comparison_summary, run_market_hub_local_history
 from .worker_runtime import resident_memory_bytes, utc_now_iso
 
 
@@ -54,6 +54,7 @@ class PythonWorkerContext:
 PROCESSORS: dict[str, Callable[[PythonWorkerContext], dict[str, Any]]] = {
     "killmail_r2z2_sync": run_killmail_r2z2_stream,
     "market_comparison_summary_sync": run_market_comparison_summary,
+    "market_hub_local_history_sync": run_market_hub_local_history,
 }
 
 

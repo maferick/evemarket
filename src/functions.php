@@ -3563,7 +3563,7 @@ function scheduler_registry_definitions(): array
         'dashboard_summary_sync' => ['label' => 'Dashboard Summary', 'default_interval_minutes' => 15, 'default_offset_minutes' => 11, 'priority' => 'normal', 'timeout_seconds' => 180, 'concurrency_policy' => 'single', 'execution_mode' => 'python', 'tuning_mode' => 'automatic', 'explicitly_configured' => true, 'allow_backfill' => true, 'backfill_priority' => 'highest', 'min_backfill_gap_seconds' => 240, 'max_early_start_seconds' => 900, 'workload_class' => 'lightweight'],
         'rebuild_ai_briefings' => ['label' => 'Rebuild AI Briefings', 'default_interval_minutes' => 20, 'default_offset_minutes' => 12, 'priority' => 'normal', 'timeout_seconds' => 300, 'concurrency_policy' => 'background', 'execution_mode' => 'php', 'tuning_mode' => 'automatic', 'explicitly_configured' => true, 'workload_class' => 'lightweight'],
         'activity_priority_summary_sync' => ['label' => 'Activity Priority Summary', 'default_interval_minutes' => 15, 'default_offset_minutes' => 13, 'priority' => 'normal', 'timeout_seconds' => 180, 'concurrency_policy' => 'single', 'execution_mode' => 'python', 'tuning_mode' => 'automatic', 'explicitly_configured' => false, 'workload_class' => 'heavy'],
-        'market_hub_local_history_sync' => ['label' => 'Market Hub Local History', 'default_interval_minutes' => 20, 'default_offset_minutes' => 14, 'priority' => 'normal', 'timeout_seconds' => 1800, 'concurrency_policy' => 'background', 'execution_mode' => 'php', 'tuning_mode' => 'automatic', 'explicitly_configured' => true, 'allow_backfill' => true, 'backfill_priority' => 'normal', 'min_backfill_gap_seconds' => 900, 'max_early_start_seconds' => 900, 'workload_class' => 'heavy'],
+        'market_hub_local_history_sync' => ['label' => 'Market Hub Local History', 'default_interval_minutes' => 20, 'default_offset_minutes' => 14, 'priority' => 'normal', 'timeout_seconds' => 1800, 'concurrency_policy' => 'background', 'execution_mode' => 'python', 'tuning_mode' => 'automatic', 'explicitly_configured' => true, 'allow_backfill' => true, 'backfill_priority' => 'normal', 'min_backfill_gap_seconds' => 900, 'max_early_start_seconds' => 900, 'workload_class' => 'heavy'],
         'analytics_bucket_1h_sync' => ['label' => 'Analytics Buckets (1h)', 'default_interval_minutes' => 15, 'default_offset_minutes' => 15, 'priority' => 'normal', 'timeout_seconds' => 180, 'concurrency_policy' => 'single', 'execution_mode' => 'php', 'tuning_mode' => 'automatic', 'explicitly_configured' => false, 'allow_backfill' => true, 'backfill_priority' => 'normal', 'min_backfill_gap_seconds' => 600, 'max_early_start_seconds' => 900, 'workload_class' => 'lightweight'],
         'analytics_bucket_1d_sync' => ['label' => 'Analytics Buckets (1d)', 'default_interval_minutes' => 60, 'default_offset_minutes' => 16, 'priority' => 'normal', 'timeout_seconds' => 240, 'concurrency_policy' => 'single', 'execution_mode' => 'php', 'tuning_mode' => 'automatic', 'explicitly_configured' => false, 'workload_class' => 'lightweight'],
         'alliance_historical_sync' => ['label' => 'Alliance Historical', 'default_interval_minutes' => 360, 'default_offset_minutes' => 5, 'priority' => 'normal', 'timeout_seconds' => 3600, 'concurrency_policy' => 'background', 'execution_mode' => 'php', 'tuning_mode' => 'automatic', 'explicitly_configured' => true, 'workload_class' => 'heavy'],
@@ -13291,6 +13291,96 @@ function python_bridge_killmail_context(): array
         'poll_sleep_seconds' => killmail_poll_sleep_seconds(),
         'max_sequences_per_run' => killmail_max_sequences_per_run(),
         'user_agent' => $userAgent . ' killmail-ingestion/2.0 (+https://github.com/cvweiss/supplycore)',
+    ];
+}
+
+function python_bridge_market_hub_local_history_context(): array
+{
+    $hubRef = market_hub_setting_reference();
+    $hubContext = market_hub_reference_context($hubRef);
+    $sourceId = sync_source_id_from_hub_ref($hubRef);
+
+    return [
+        'job_key' => 'market_hub_local_history_sync',
+        'market_hub_ref' => $hubRef,
+        'dataset_key' => sync_dataset_key_market_hub_local_history_daily($hubRef),
+        'run_mode' => 'incremental',
+        'source_type' => 'market_hub',
+        'source_id' => $sourceId,
+        'source_name' => (string) ($hubContext['hub_name'] ?? market_hub_reference_name()),
+        'reference_market_hub' => (string) ($hubContext['hub_name'] ?? market_hub_reference_name()),
+        'selected_hub_type' => (string) ($hubContext['hub_type'] ?? 'unknown'),
+        'effective_api_source' => (string) ($hubContext['api_source'] ?? 'unknown'),
+        'resolved_region_id' => isset($hubContext['region_id']) && $hubContext['region_id'] !== null ? (int) $hubContext['region_id'] : null,
+        'resolved_structure_id' => isset($hubContext['structure_id']) && $hubContext['structure_id'] !== null ? (int) $hubContext['structure_id'] : null,
+        'timeout_seconds' => (int) (scheduler_registry_definitions()['market_hub_local_history_sync']['timeout_seconds'] ?? 1800),
+        'window_days' => market_hub_local_history_window_days_default(),
+        'app_timezone' => app_timezone(),
+        'history_read_table' => db_market_orders_history_read_table(),
+        'local_history_source' => market_hub_local_history_source(),
+    ];
+}
+
+function python_bridge_sync_run_start(string $datasetKey, string $runMode = 'incremental'): array
+{
+    $safeDatasetKey = trim($datasetKey);
+    if ($safeDatasetKey === '') {
+        throw new InvalidArgumentException('Dataset key is required to start a sync run.');
+    }
+
+    $safeRunMode = sync_mode_normalize($runMode);
+    $cursorStart = sync_watermark($safeDatasetKey);
+    $runId = db_sync_run_start($safeDatasetKey, $safeRunMode, $cursorStart);
+
+    return [
+        'run_id' => $runId,
+        'dataset_key' => $safeDatasetKey,
+        'run_mode' => $safeRunMode,
+        'cursor_start' => $cursorStart,
+    ];
+}
+
+function python_bridge_sync_run_finish(array $payload): array
+{
+    $datasetKey = trim((string) ($payload['dataset_key'] ?? ''));
+    if ($datasetKey === '') {
+        throw new InvalidArgumentException('dataset_key is required to finish a sync run.');
+    }
+
+    $runId = max(0, (int) ($payload['run_id'] ?? 0));
+    $runMode = sync_mode_normalize((string) ($payload['run_mode'] ?? 'incremental'));
+    $status = trim((string) ($payload['status'] ?? 'failed'));
+    $status = $status === 'success' ? 'success' : 'failed';
+    $rowsSeen = max(0, (int) ($payload['rows_seen'] ?? 0));
+    $rowsWritten = max(0, (int) ($payload['rows_written'] ?? 0));
+    $cursor = isset($payload['cursor']) && $payload['cursor'] !== null ? (string) $payload['cursor'] : null;
+    $checksum = isset($payload['checksum']) && $payload['checksum'] !== null ? (string) $payload['checksum'] : null;
+    $errorMessage = $status === 'failed'
+        ? mb_substr(trim((string) ($payload['error_message'] ?? 'Python sync worker failed.')), 0, 500)
+        : null;
+
+    if ($status === 'success') {
+        mark_sync_success($datasetKey, $runMode, $cursor, $rowsWritten, $checksum);
+        if ($runId > 0) {
+            db_sync_run_finish($runId, 'success', $rowsSeen, $rowsWritten, $cursor, null);
+        }
+    } else {
+        mark_sync_failure($datasetKey, $runMode, $errorMessage ?? 'Python sync worker failed.');
+        if ($runId > 0) {
+            db_sync_run_finish($runId, 'failed', $rowsSeen, $rowsWritten, $cursor, $errorMessage);
+        }
+    }
+
+    return [
+        'run_id' => $runId,
+        'dataset_key' => $datasetKey,
+        'run_mode' => $runMode,
+        'status' => $status,
+        'rows_seen' => $rowsSeen,
+        'rows_written' => $rowsWritten,
+        'cursor' => $cursor,
+        'checksum' => $checksum,
+        'error_message' => $errorMessage,
     ];
 }
 
