@@ -1064,6 +1064,41 @@ CREATE TABLE IF NOT EXISTS market_orders_history (
     KEY idx_market_orders_history_observed_at (observed_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+CREATE TABLE IF NOT EXISTS market_orders_history_p (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    source_type ENUM('market_hub', 'alliance_structure') NOT NULL,
+    source_id BIGINT UNSIGNED NOT NULL,
+    type_id INT UNSIGNED NOT NULL,
+    order_id BIGINT UNSIGNED NOT NULL,
+    is_buy_order TINYINT(1) NOT NULL,
+    price DECIMAL(20, 2) NOT NULL,
+    volume_remain INT UNSIGNED NOT NULL,
+    volume_total INT UNSIGNED NOT NULL,
+    min_volume INT UNSIGNED NOT NULL DEFAULT 1,
+    `range` VARCHAR(20) NOT NULL,
+    duration SMALLINT UNSIGNED NOT NULL,
+    issued DATETIME NOT NULL,
+    expires DATETIME NOT NULL,
+    observed_at DATETIME NOT NULL,
+    observed_date DATE GENERATED ALWAYS AS (DATE(observed_at)) STORED,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (id, observed_date),
+    UNIQUE KEY unique_source_order_observed (source_type, source_id, order_id, observed_at, observed_date),
+    KEY idx_market_orders_history_type_observed (source_type, source_id, type_id, observed_at),
+    KEY idx_market_orders_history_observed (source_type, source_id, observed_at),
+    KEY idx_market_orders_history_source_date_type (source_type, source_id, observed_date, type_id),
+    KEY idx_market_orders_history_observed_at (observed_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+PARTITION BY RANGE COLUMNS(observed_date) (
+    PARTITION p_bootstrap VALUES LESS THAN ('2026-01-01'),
+    PARTITION p202601 VALUES LESS THAN ('2026-02-01'),
+    PARTITION p202602 VALUES LESS THAN ('2026-03-01'),
+    PARTITION p202603 VALUES LESS THAN ('2026-04-01'),
+    PARTITION p202604 VALUES LESS THAN ('2026-05-01'),
+    PARTITION p202605 VALUES LESS THAN ('2026-06-01'),
+    PARTITION pmax VALUES LESS THAN (MAXVALUE)
+);
+
 CREATE TABLE IF NOT EXISTS market_order_snapshots_summary (
     id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
     source_type ENUM('market_hub', 'alliance_structure') NOT NULL,
@@ -1727,6 +1762,8 @@ INSERT INTO app_settings (setting_key, setting_value) VALUES
     ('alliance_current_backfill_start_date', ''),
     ('alliance_history_backfill_start_date', ''),
     ('hub_history_backfill_start_date', ''),
+    ('market_orders_history_read_mode', 'legacy'),
+    ('market_orders_history_write_mode', 'legacy'),
     ('killmail_ingestion_enabled', '0'),
     ('killmail_r2z2_sequence_url', 'https://r2z2.zkillboard.com/ephemeral/sequence.json'),
     ('killmail_r2z2_base_url', 'https://r2z2.zkillboard.com/ephemeral'),

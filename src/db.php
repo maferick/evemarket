@@ -1817,6 +1817,423 @@ function db_sync_run_with_state(
     });
 }
 
+function db_market_orders_history_legacy_table(): string
+{
+    return 'market_orders_history';
+}
+
+function db_market_orders_history_partitioned_table(): string
+{
+    return 'market_orders_history_p';
+}
+
+function db_market_orders_history_known_tables(): array
+{
+    return [
+        db_market_orders_history_legacy_table(),
+        db_market_orders_history_partitioned_table(),
+    ];
+}
+
+function db_market_orders_history_validate_table(string $table): string
+{
+    $safeTable = trim($table);
+    if (!in_array($safeTable, db_market_orders_history_known_tables(), true)) {
+        throw new InvalidArgumentException('Unsupported market orders history table: ' . $table);
+    }
+
+    return $safeTable;
+}
+
+function db_market_orders_history_cutover_setting_key(string $scope): string
+{
+    return match ($scope) {
+        'read' => 'market_orders_history_read_mode',
+        'write' => 'market_orders_history_write_mode',
+        default => throw new InvalidArgumentException('Unsupported market orders history cutover scope: ' . $scope),
+    };
+}
+
+function db_market_orders_history_cutover_allowed_modes(string $scope): array
+{
+    return match ($scope) {
+        'read' => ['legacy', 'partitioned'],
+        'write' => ['legacy', 'dual', 'partitioned'],
+        default => throw new InvalidArgumentException('Unsupported market orders history cutover scope: ' . $scope),
+    };
+}
+
+function db_market_orders_history_cutover_mode(string $scope): string
+{
+    $key = db_market_orders_history_cutover_setting_key($scope);
+    $row = db_select_one('SELECT setting_value FROM app_settings WHERE setting_key = ? LIMIT 1', [$key]);
+    $mode = trim((string) ($row['setting_value'] ?? ''));
+    $allowedModes = db_market_orders_history_cutover_allowed_modes($scope);
+
+    if (!in_array($mode, $allowedModes, true)) {
+        return 'legacy';
+    }
+
+    return $mode;
+}
+
+function db_market_orders_history_set_cutover_mode(string $scope, string $mode): bool
+{
+    $safeMode = trim($mode);
+    $allowedModes = db_market_orders_history_cutover_allowed_modes($scope);
+    if (!in_array($safeMode, $allowedModes, true)) {
+        throw new InvalidArgumentException(sprintf('Unsupported %s cutover mode: %s', $scope, $mode));
+    }
+
+    return db_execute(
+        'INSERT INTO app_settings (setting_key, setting_value) VALUES (?, ?)
+         ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value), updated_at = CURRENT_TIMESTAMP',
+        [db_market_orders_history_cutover_setting_key($scope), $safeMode]
+    );
+}
+
+function db_market_orders_history_read_table(): string
+{
+    return db_market_orders_history_cutover_mode('read') === 'partitioned'
+        ? db_market_orders_history_partitioned_table()
+        : db_market_orders_history_legacy_table();
+}
+
+function db_market_orders_history_write_tables(): array
+{
+    return match (db_market_orders_history_cutover_mode('write')) {
+        'partitioned' => [db_market_orders_history_partitioned_table()],
+        'dual' => [db_market_orders_history_legacy_table(), db_market_orders_history_partitioned_table()],
+        default => [db_market_orders_history_legacy_table()],
+    };
+}
+
+function db_market_orders_history_partitioned_table_sql(): string
+{
+    return "CREATE TABLE IF NOT EXISTS market_orders_history_p (
+"
+        . "    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+"
+        . "    source_type ENUM('market_hub', 'alliance_structure') NOT NULL,
+"
+        . "    source_id BIGINT UNSIGNED NOT NULL,
+"
+        . "    type_id INT UNSIGNED NOT NULL,
+"
+        . "    order_id BIGINT UNSIGNED NOT NULL,
+"
+        . "    is_buy_order TINYINT(1) NOT NULL,
+"
+        . "    price DECIMAL(20, 2) NOT NULL,
+"
+        . "    volume_remain INT UNSIGNED NOT NULL,
+"
+        . "    volume_total INT UNSIGNED NOT NULL,
+"
+        . "    min_volume INT UNSIGNED NOT NULL DEFAULT 1,
+"
+        . "    `range` VARCHAR(20) NOT NULL,
+"
+        . "    duration SMALLINT UNSIGNED NOT NULL,
+"
+        . "    issued DATETIME NOT NULL,
+"
+        . "    expires DATETIME NOT NULL,
+"
+        . "    observed_at DATETIME NOT NULL,
+"
+        . "    observed_date DATE GENERATED ALWAYS AS (DATE(observed_at)) STORED,
+"
+        . "    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+"
+        . "    PRIMARY KEY (id, observed_date),
+"
+        . "    UNIQUE KEY unique_source_order_observed (source_type, source_id, order_id, observed_at, observed_date),
+"
+        . "    KEY idx_market_orders_history_type_observed (source_type, source_id, type_id, observed_at),
+"
+        . "    KEY idx_market_orders_history_observed (source_type, source_id, observed_at),
+"
+        . "    KEY idx_market_orders_history_source_date_type (source_type, source_id, observed_date, type_id),
+"
+        . "    KEY idx_market_orders_history_observed_at (observed_at)
+"
+        . ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+"
+        . "PARTITION BY RANGE COLUMNS(observed_date) (
+"
+        . "    PARTITION p_bootstrap VALUES LESS THAN ('2026-01-01'),
+"
+        . "    PARTITION p202601 VALUES LESS THAN ('2026-02-01'),
+"
+        . "    PARTITION p202602 VALUES LESS THAN ('2026-03-01'),
+"
+        . "    PARTITION p202603 VALUES LESS THAN ('2026-04-01'),
+"
+        . "    PARTITION p202604 VALUES LESS THAN ('2026-05-01'),
+"
+        . "    PARTITION p202605 VALUES LESS THAN ('2026-06-01'),
+"
+        . "    PARTITION pmax VALUES LESS THAN (MAXVALUE)
+"
+        . ")";
+}
+
+function db_market_orders_history_partition_name_for_month(DateTimeImmutable $monthStart): string
+{
+    return 'p' . $monthStart->format('Ym');
+}
+
+function db_market_orders_history_partition_boundary_value(DateTimeImmutable $monthStart): string
+{
+    return $monthStart->modify('+1 month')->format('Y-m-d');
+}
+
+function db_market_orders_history_partition_boundaries(string $table = 'market_orders_history_p'): array
+{
+    $safeTable = db_market_orders_history_validate_table($table);
+    $rows = db_select(
+        'SELECT partition_name, partition_description, partition_ordinal_position
+'
+        . 'FROM information_schema.partitions
+'
+        . 'WHERE table_schema = DATABASE()
+'
+        . '  AND table_name = ?
+'
+        . '  AND partition_name IS NOT NULL
+'
+        . 'ORDER BY partition_ordinal_position ASC',
+        [$safeTable]
+    );
+
+    $boundaries = [];
+    foreach ($rows as $row) {
+        $description = trim((string) ($row['partition_description'] ?? ''));
+        $description = trim($description, "'");
+        $boundaries[] = [
+            'partition_name' => (string) ($row['partition_name'] ?? ''),
+            'boundary_exclusive' => strtoupper($description) === 'MAXVALUE' ? null : $description,
+            'is_maxvalue' => strtoupper($description) === 'MAXVALUE',
+            'ordinal_position' => (int) ($row['partition_ordinal_position'] ?? 0),
+        ];
+    }
+
+    return $boundaries;
+}
+
+function db_market_orders_history_partitioned_schema_ensure(int $futureMonths = 3): void
+{
+    static $ensured = false;
+
+    if ($ensured) {
+        return;
+    }
+
+    db_execute(db_market_orders_history_partitioned_table_sql());
+    db_market_orders_history_ensure_future_monthly_partitions($futureMonths, db_market_orders_history_partitioned_table());
+
+    $ensured = true;
+}
+
+function db_market_orders_history_ensure_future_monthly_partitions(int $futureMonths = 3, string $table = 'market_orders_history_p'): array
+{
+    $safeTable = db_market_orders_history_validate_table($table);
+    if ($safeTable !== db_market_orders_history_partitioned_table()) {
+        return [];
+    }
+
+    db_execute(db_market_orders_history_partitioned_table_sql());
+
+    $safeFutureMonths = max(1, min(24, $futureMonths));
+    $existing = db_market_orders_history_partition_boundaries($safeTable);
+    $existingNames = array_map(static fn (array $row): string => (string) ($row['partition_name'] ?? ''), $existing);
+    $hasMaxPartition = in_array('pmax', $existingNames, true);
+
+    if (!$hasMaxPartition) {
+        throw new RuntimeException('Partitioned market orders history table is missing the pmax partition.');
+    }
+
+    $monthsToAdd = [];
+    $currentMonthStart = new DateTimeImmutable(gmdate('Y-m-01'));
+    for ($offset = 0; $offset <= $safeFutureMonths; $offset++) {
+        $monthStart = $currentMonthStart->modify(sprintf('+%d month', $offset));
+        $partitionName = db_market_orders_history_partition_name_for_month($monthStart);
+        if (in_array($partitionName, $existingNames, true)) {
+            continue;
+        }
+
+        $monthsToAdd[] = [
+            'partition_name' => $partitionName,
+            'boundary_exclusive' => db_market_orders_history_partition_boundary_value($monthStart),
+        ];
+    }
+
+    if ($monthsToAdd === []) {
+        return [];
+    }
+
+    $partitionSql = [];
+    foreach ($monthsToAdd as $partition) {
+        $partitionSql[] = sprintf(
+            "PARTITION %s VALUES LESS THAN ('%s')",
+            db_market_orders_history_validate_partition_name((string) $partition['partition_name']),
+            (string) $partition['boundary_exclusive']
+        );
+    }
+    $partitionSql[] = 'PARTITION pmax VALUES LESS THAN (MAXVALUE)';
+
+    db()->exec(sprintf(
+        'ALTER TABLE %s REORGANIZE PARTITION pmax INTO (%s)',
+        db_validate_identifier($safeTable),
+        implode(', ', $partitionSql)
+    ));
+    db_query_cache_clear();
+
+    return $monthsToAdd;
+}
+
+function db_market_orders_history_validate_partition_name(string $partitionName): string
+{
+    $safeName = trim($partitionName);
+    if (!preg_match('/^p(?:max|bootstrap|\d{6})$/', $safeName)) {
+        throw new InvalidArgumentException('Invalid market orders history partition name: ' . $partitionName);
+    }
+
+    return $safeName;
+}
+
+function db_market_orders_history_backfill_window(
+    string $startDate,
+    string $endDate,
+    ?int $chunkSize = null,
+    ?string $sourceTable = null,
+    ?string $targetTable = null
+): int {
+    $safeStartDate = trim($startDate);
+    $safeEndDate = trim($endDate);
+    if ($safeStartDate === '' || $safeEndDate === '') {
+        return 0;
+    }
+
+    $source = db_market_orders_history_validate_table($sourceTable ?? db_market_orders_history_legacy_table());
+    $target = db_market_orders_history_validate_table($targetTable ?? db_market_orders_history_partitioned_table());
+    if ($source === $target) {
+        throw new InvalidArgumentException('Backfill source and target tables must differ.');
+    }
+
+    if ($target === db_market_orders_history_partitioned_table()) {
+        db_market_orders_history_partitioned_schema_ensure();
+        $startMonth = new DateTimeImmutable(substr($safeStartDate, 0, 7) . '-01');
+        $endMonth = new DateTimeImmutable(substr($safeEndDate, 0, 7) . '-01');
+        $monthsAhead = max(0, (((int) $endMonth->format('Y')) * 12 + (int) $endMonth->format('n')) - (((int) gmdate('Y')) * 12 + (int) gmdate('n')));
+        db_market_orders_history_ensure_future_monthly_partitions($monthsAhead + 1, $target);
+    }
+
+    $columns = [
+        'source_type',
+        'source_id',
+        'type_id',
+        'order_id',
+        'is_buy_order',
+        'price',
+        'volume_remain',
+        'volume_total',
+        'min_volume',
+        'range',
+        'duration',
+        'issued',
+        'expires',
+        'observed_at',
+    ];
+
+    $safeChunkSize = max(100, min(10000, $chunkSize ?? db_incremental_chunk_size()));
+    $offset = 0;
+    $written = 0;
+    $quotedSource = db_validate_identifier($source);
+
+    do {
+        $rows = db_select(
+            sprintf(
+                'SELECT source_type, source_id, type_id, order_id, is_buy_order, price, volume_remain, volume_total, min_volume, `range`, duration, issued, expires, observed_at
+'
+                . 'FROM %s
+'
+                . 'WHERE observed_date BETWEEN ? AND ?
+'
+                . 'ORDER BY observed_at ASC, source_type ASC, source_id ASC, order_id ASC
+'
+                . 'LIMIT %d OFFSET %d',
+                $quotedSource,
+                $safeChunkSize,
+                $offset
+            ),
+            [$safeStartDate, $safeEndDate]
+        );
+
+        if ($rows === []) {
+            break;
+        }
+
+        $written += db_bulk_insert_or_upsert(
+            $target,
+            $columns,
+            $rows,
+            [
+                'type_id',
+                'is_buy_order',
+                'price',
+                'volume_remain',
+                'volume_total',
+                'min_volume',
+                'range',
+                'duration',
+                'issued',
+                'expires',
+            ],
+            $safeChunkSize
+        );
+        $offset += $safeChunkSize;
+    } while (count($rows) === $safeChunkSize);
+
+    return $written;
+}
+
+function db_market_orders_history_cutover_swap(string $readMode = 'partitioned', string $writeMode = 'dual'): array
+{
+    $safeReadMode = trim($readMode);
+    $safeWriteMode = trim($writeMode);
+
+    if ($safeReadMode === 'partitioned' || $safeWriteMode !== 'legacy') {
+        db_market_orders_history_partitioned_schema_ensure();
+    }
+
+    db_market_orders_history_set_cutover_mode('write', $safeWriteMode);
+    db_market_orders_history_set_cutover_mode('read', $safeReadMode);
+
+    return [
+        'read_mode' => db_market_orders_history_cutover_mode('read'),
+        'write_mode' => db_market_orders_history_cutover_mode('write'),
+        'read_table' => db_market_orders_history_read_table(),
+        'write_tables' => db_market_orders_history_write_tables(),
+    ];
+}
+
+function db_market_orders_history_cutover_rollback_to_legacy(bool $resetReadMode = true): array
+{
+    db_market_orders_history_set_cutover_mode('write', 'legacy');
+    if ($resetReadMode) {
+        db_market_orders_history_set_cutover_mode('read', 'legacy');
+    }
+
+    return [
+        'read_mode' => db_market_orders_history_cutover_mode('read'),
+        'write_mode' => db_market_orders_history_cutover_mode('write'),
+        'read_table' => db_market_orders_history_read_table(),
+        'write_tables' => db_market_orders_history_write_tables(),
+    ];
+}
+
 function db_market_orders_current_bulk_upsert(array $orders, ?int $chunkSize = null): int
 {
     return db_bulk_insert_or_upsert(
@@ -1859,33 +2276,84 @@ function db_market_orders_history_bulk_insert(array $orders, ?int $chunkSize = n
 {
     db_market_snapshot_optimization_ensure();
 
-    return db_bulk_insert_or_upsert(
-        'market_orders_history',
-        [
-            'source_type',
-            'source_id',
-            'type_id',
-            'order_id',
-            'is_buy_order',
-            'price',
-            'volume_remain',
-            'volume_total',
-            'min_volume',
-            'range',
-            'duration',
-            'issued',
-            'expires',
-            'observed_at',
-        ],
-        $orders,
-        [],
-        $chunkSize
-    );
+    if ($orders === []) {
+        return 0;
+    }
+
+    $columns = [
+        'source_type',
+        'source_id',
+        'type_id',
+        'order_id',
+        'is_buy_order',
+        'price',
+        'volume_remain',
+        'volume_total',
+        'min_volume',
+        'range',
+        'duration',
+        'issued',
+        'expires',
+        'observed_at',
+    ];
+    return db_transaction(function () use ($orders, $columns, $chunkSize): int {
+        $written = 0;
+
+        foreach (db_market_orders_history_write_tables() as $table) {
+            if ($table === db_market_orders_history_partitioned_table()) {
+                db_market_orders_history_partitioned_schema_ensure();
+
+                $latestObservedDate = '';
+                foreach ($orders as $order) {
+                    $observedAt = trim((string) ($order['observed_at'] ?? ''));
+                    if ($observedAt === '') {
+                        continue;
+                    }
+
+                    $observedDate = gmdate('Y-m-d', strtotime($observedAt));
+                    if ($observedDate > $latestObservedDate) {
+                        $latestObservedDate = $observedDate;
+                    }
+                }
+
+                if ($latestObservedDate !== '') {
+                    $windowEndMonth = new DateTimeImmutable(substr($latestObservedDate, 0, 7) . '-01');
+                    $monthsAhead = max(0, (((int) $windowEndMonth->format('Y')) * 12 + (int) $windowEndMonth->format('n')) - (((int) gmdate('Y')) * 12 + (int) gmdate('n')));
+                    db_market_orders_history_ensure_future_monthly_partitions($monthsAhead + 1, $table);
+                }
+            }
+
+            $written = max(
+                $written,
+                db_bulk_insert_or_upsert(
+                    $table,
+                    $columns,
+                    $orders,
+                    [
+                        'type_id',
+                        'is_buy_order',
+                        'price',
+                        'volume_remain',
+                        'volume_total',
+                        'min_volume',
+                        'range',
+                        'duration',
+                        'issued',
+                        'expires',
+                    ],
+                    $chunkSize
+                )
+            );
+        }
+
+        return $written;
+    });
 }
 
 function db_market_snapshot_optimization_ensure(): void
 {
-    db_ensure_table_index('market_orders_history', 'idx_market_orders_history_observed_at', 'INDEX idx_market_orders_history_observed_at (observed_at)');
+    db_ensure_table_index(db_market_orders_history_legacy_table(), 'idx_market_orders_history_observed_at', 'INDEX idx_market_orders_history_observed_at (observed_at)');
+    db_market_orders_history_partitioned_schema_ensure();
     db_ensure_table_index('market_order_snapshots_summary', 'idx_snapshot_summary_observed', 'INDEX idx_snapshot_summary_observed (observed_at)');
 }
 
@@ -2001,7 +2469,7 @@ function db_market_orders_history_prune_before(string $cutoffObservedAt): int
 {
     db_market_snapshot_optimization_ensure();
 
-    return db_prune_before_datetime('market_orders_history', 'observed_at', $cutoffObservedAt);
+    return db_prune_before_datetime(db_market_orders_history_read_table(), 'observed_at', $cutoffObservedAt);
 }
 
 function db_market_order_snapshots_summary_prune_before(string $cutoffObservedAt): int
@@ -2171,62 +2639,68 @@ function db_market_orders_snapshot_metrics_window_raw(string $sourceType, int $s
         return [];
     }
 
+    $historyTable = db_validate_identifier(db_market_orders_history_read_table());
+
     $rows = db_select(
-        "SELECT
-            snapshots.source_id,
-            snapshots.type_id,
-            snapshots.observed_at,
-            MIN(CASE WHEN snapshots.is_buy_order = 0 THEN snapshots.min_price ELSE NULL END) AS best_sell_price,
-            MAX(CASE WHEN snapshots.is_buy_order = 1 THEN snapshots.max_price ELSE NULL END) AS best_buy_price,
-            SUM(CASE WHEN snapshots.is_buy_order = 1 THEN snapshots.volume_remain ELSE 0 END) AS total_buy_volume,
-            SUM(CASE WHEN snapshots.is_buy_order = 0 THEN snapshots.volume_remain ELSE 0 END) AS total_sell_volume,
-            SUM(snapshots.volume_remain) AS total_volume,
-            SUM(CASE WHEN snapshots.is_buy_order = 1 THEN snapshots.order_count ELSE 0 END) AS buy_order_count,
-            SUM(CASE WHEN snapshots.is_buy_order = 0 THEN snapshots.order_count ELSE 0 END) AS sell_order_count
-         FROM (
-            SELECT
-                moh.source_id,
-                moh.type_id,
-                moh.is_buy_order,
-                MIN(moh.price) AS min_price,
-                MAX(moh.price) AS max_price,
-                SUM(moh.volume_remain) AS volume_remain,
-                COUNT(*) AS order_count,
-                moh.observed_at
-            FROM market_orders_history moh
-            WHERE moh.source_type = ?
-              AND moh.source_id = ?
-              AND moh.observed_at >= ?
-            GROUP BY moh.source_id, moh.type_id, moh.is_buy_order, moh.observed_at
+        sprintf(
+            "SELECT
+                snapshots.source_id,
+                snapshots.type_id,
+                snapshots.observed_at,
+                MIN(CASE WHEN snapshots.is_buy_order = 0 THEN snapshots.min_price ELSE NULL END) AS best_sell_price,
+                MAX(CASE WHEN snapshots.is_buy_order = 1 THEN snapshots.max_price ELSE NULL END) AS best_buy_price,
+                SUM(CASE WHEN snapshots.is_buy_order = 1 THEN snapshots.volume_remain ELSE 0 END) AS total_buy_volume,
+                SUM(CASE WHEN snapshots.is_buy_order = 0 THEN snapshots.volume_remain ELSE 0 END) AS total_sell_volume,
+                SUM(snapshots.volume_remain) AS total_volume,
+                SUM(CASE WHEN snapshots.is_buy_order = 1 THEN snapshots.order_count ELSE 0 END) AS buy_order_count,
+                SUM(CASE WHEN snapshots.is_buy_order = 0 THEN snapshots.order_count ELSE 0 END) AS sell_order_count
+             FROM (
+                SELECT
+                    moh.source_id,
+                    moh.type_id,
+                    moh.is_buy_order,
+                    MIN(moh.price) AS min_price,
+                    MAX(moh.price) AS max_price,
+                    SUM(moh.volume_remain) AS volume_remain,
+                    COUNT(*) AS order_count,
+                    moh.observed_at
+                FROM %s moh
+                WHERE moh.source_type = ?
+                  AND moh.source_id = ?
+                  AND moh.observed_at >= ?
+                GROUP BY moh.source_id, moh.type_id, moh.is_buy_order, moh.observed_at
 
-            UNION ALL
+                UNION ALL
 
-            SELECT
-                moc.source_id,
-                moc.type_id,
-                moc.is_buy_order,
-                MIN(moc.price) AS min_price,
-                MAX(moc.price) AS max_price,
-                SUM(moc.volume_remain) AS volume_remain,
-                COUNT(*) AS order_count,
-                moc.observed_at
-            FROM market_orders_current moc
-            LEFT JOIN (
-                SELECT DISTINCT observed_at
-                FROM market_orders_history
-                WHERE source_type = ?
-                  AND source_id = ?
-                  AND observed_at >= ?
-            ) history_observed
-              ON history_observed.observed_at = moc.observed_at
-            WHERE moc.source_type = ?
-              AND moc.source_id = ?
-              AND moc.observed_at >= ?
-              AND history_observed.observed_at IS NULL
-            GROUP BY moc.source_id, moc.type_id, moc.is_buy_order, moc.observed_at
-         ) snapshots
-         GROUP BY snapshots.source_id, snapshots.type_id, snapshots.observed_at
-         ORDER BY snapshots.observed_at ASC, snapshots.type_id ASC",
+                SELECT
+                    moc.source_id,
+                    moc.type_id,
+                    moc.is_buy_order,
+                    MIN(moc.price) AS min_price,
+                    MAX(moc.price) AS max_price,
+                    SUM(moc.volume_remain) AS volume_remain,
+                    COUNT(*) AS order_count,
+                    moc.observed_at
+                FROM market_orders_current moc
+                LEFT JOIN (
+                    SELECT DISTINCT observed_at
+                    FROM %s
+                    WHERE source_type = ?
+                      AND source_id = ?
+                      AND observed_at >= ?
+                ) history_observed
+                  ON history_observed.observed_at = moc.observed_at
+                WHERE moc.source_type = ?
+                  AND moc.source_id = ?
+                  AND moc.observed_at >= ?
+                  AND history_observed.observed_at IS NULL
+                GROUP BY moc.source_id, moc.type_id, moc.is_buy_order, moc.observed_at
+             ) snapshots
+             GROUP BY snapshots.source_id, snapshots.type_id, snapshots.observed_at
+             ORDER BY snapshots.observed_at ASC, snapshots.type_id ASC",
+            $historyTable,
+            $historyTable
+        ),
         [
             $safeSourceType,
             $safeSourceId,
@@ -3076,25 +3550,30 @@ function db_market_orders_history_stock_health_series(
         $params = array_merge($params, $normalizedTypeIds);
     }
 
+    $historyTable = db_validate_identifier(db_market_orders_history_read_table());
+
     return db_select(
-        "SELECT
-            moh.observed_date,
-            moh.type_id,
-            rit.type_name,
-            SUM(CASE WHEN moh.is_buy_order = 0 THEN moh.volume_remain ELSE 0 END) AS sell_volume,
-            SUM(CASE WHEN moh.is_buy_order = 1 THEN moh.volume_remain ELSE 0 END) AS buy_volume,
-            SUM(CASE WHEN moh.is_buy_order = 0 THEN 1 ELSE 0 END) AS sell_order_count,
-            SUM(CASE WHEN moh.is_buy_order = 1 THEN 1 ELSE 0 END) AS buy_order_count,
-            AVG(CASE WHEN moh.is_buy_order = 0 THEN moh.price ELSE NULL END) AS avg_sell_price,
-            AVG(CASE WHEN moh.is_buy_order = 1 THEN moh.price ELSE NULL END) AS avg_buy_price,
-            MAX(moh.observed_at) AS last_observed_at
-         FROM market_orders_history moh
-         LEFT JOIN ref_item_types rit ON rit.type_id = moh.type_id
-         WHERE moh.source_type = ?
-           AND moh.source_id = ?
-           AND moh.observed_date BETWEEN ? AND ?{$rawTypeFilterSql}
-         GROUP BY moh.observed_date, moh.type_id, rit.type_name
-         ORDER BY moh.observed_date ASC, moh.type_id ASC",
+        sprintf(
+            "SELECT
+                moh.observed_date,
+                moh.type_id,
+                rit.type_name,
+                SUM(CASE WHEN moh.is_buy_order = 0 THEN moh.volume_remain ELSE 0 END) AS sell_volume,
+                SUM(CASE WHEN moh.is_buy_order = 1 THEN moh.volume_remain ELSE 0 END) AS buy_volume,
+                SUM(CASE WHEN moh.is_buy_order = 0 THEN 1 ELSE 0 END) AS sell_order_count,
+                SUM(CASE WHEN moh.is_buy_order = 1 THEN 1 ELSE 0 END) AS buy_order_count,
+                AVG(CASE WHEN moh.is_buy_order = 0 THEN moh.price ELSE NULL END) AS avg_sell_price,
+                AVG(CASE WHEN moh.is_buy_order = 1 THEN moh.price ELSE NULL END) AS avg_buy_price,
+                MAX(moh.observed_at) AS last_observed_at
+             FROM %s moh
+             LEFT JOIN ref_item_types rit ON rit.type_id = moh.type_id
+             WHERE moh.source_type = ?
+               AND moh.source_id = ?
+               AND moh.observed_date BETWEEN ? AND ?{$rawTypeFilterSql}
+             GROUP BY moh.observed_date, moh.type_id, rit.type_name
+             ORDER BY moh.observed_date ASC, moh.type_id ASC",
+            $historyTable
+        ),
         $params
     );
 }
