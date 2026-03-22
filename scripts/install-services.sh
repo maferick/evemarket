@@ -28,6 +28,42 @@ prompt() {
   fi
 }
 
+prompt_non_empty() {
+  local message=$1
+  local default=${2-}
+  local value
+  while true; do
+    value=$(prompt "${message}" "${default}")
+    if [[ -n ${value} ]]; then
+      printf '%s\n' "${value}"
+      return 0
+    fi
+    echo "A value is required." >&2
+  done
+}
+
+prompt_secret() {
+  local message=$1
+  local confirm=${2:-false}
+  local value
+  local verify
+
+  while true; do
+    read -r -s -p "${message}: " value
+    echo
+    if [[ ${confirm} == true ]]; then
+      read -r -s -p "Confirm ${message,,}: " verify
+      echo
+      if [[ ${value} != ${verify} ]]; then
+        echo "Values did not match. Please try again." >&2
+        continue
+      fi
+    fi
+    printf '%s\n' "${value}"
+    return 0
+  done
+}
+
 prompt_yes_no() {
   local message=$1
   local default=${2:-Y}
@@ -64,6 +100,71 @@ prompt_number() {
 
 escape_sed_replacement() {
   printf '%s' "$1" | sed -e 's/[\\&|]/\\&/g'
+}
+
+escape_php_single_quoted() {
+  printf '%s' "$1" | sed -e "s/'/\\\\'/g"
+}
+
+configure_local_php() {
+  local local_config_path=$1
+  local app_env=$2
+  local app_base_url=$3
+  local app_timezone=$4
+  local db_host=$5
+  local db_port=$6
+  local db_name=$7
+  local db_username=$8
+  local db_password=$9
+  local update_config=${10}
+
+  if [[ ${update_config} != true ]]; then
+    if [[ -f ${local_config_path} ]]; then
+      echo "Keeping existing PHP config at ${local_config_path}"
+    else
+      echo "Skipping PHP config creation for ${local_config_path}"
+    fi
+    return 0
+  fi
+
+  local local_config_dir
+  local app_env_escaped app_base_url_escaped app_timezone_escaped db_host_escaped db_name_escaped db_username_escaped db_password_escaped
+
+  local_config_dir=$(dirname "${local_config_path}")
+  install -d -m 0755 "${local_config_dir}"
+
+  app_env_escaped=$(escape_php_single_quoted "${app_env}")
+  app_base_url_escaped=$(escape_php_single_quoted "${app_base_url}")
+  app_timezone_escaped=$(escape_php_single_quoted "${app_timezone}")
+  db_host_escaped=$(escape_php_single_quoted "${db_host}")
+  db_name_escaped=$(escape_php_single_quoted "${db_name}")
+  db_username_escaped=$(escape_php_single_quoted "${db_username}")
+  db_password_escaped=$(escape_php_single_quoted "${db_password}")
+
+  cat > "${local_config_path}" <<PHP
+<?php
+
+declare(strict_types=1);
+
+return [
+    'app' => [
+        'env' => '${app_env_escaped}',
+        'base_url' => '${app_base_url_escaped}',
+        'timezone' => '${app_timezone_escaped}',
+    ],
+    'db' => [
+        'host' => '${db_host_escaped}',
+        'port' => ${db_port},
+        'database' => '${db_name_escaped}',
+        'username' => '${db_username_escaped}',
+        'password' => '${db_password_escaped}',
+    ],
+];
+PHP
+
+  chmod 0640 "${local_config_path}"
+  chown "${RUN_USER}:${RUN_GROUP}" "${local_config_path}"
+  echo "Wrote PHP config to ${local_config_path}"
 }
 
 render_unit() {
@@ -163,6 +264,35 @@ PYTHON_BIN=$(prompt "Python 3.11+ executable for the orchestrator venv" "python3
 VENV_PATH=$(prompt "Python virtualenv path" "${APP_ROOT}/.venv-orchestrator")
 SYSTEMD_DIR=$(prompt "systemd unit directory" "/etc/systemd/system")
 ENV_FILE=$(prompt "Worker environment file" "/etc/default/supplycore-worker")
+LOCAL_CONFIG_PATH=$(prompt "PHP local config path" "${APP_ROOT}/src/config/local.php")
+CONFIGURE_LOCAL_PHP=false
+if [[ ! -f ${LOCAL_CONFIG_PATH} ]]; then
+  if prompt_yes_no "Create PHP app config for this git clone (database is not created/imported by this installer)?" "Y"; then
+    CONFIGURE_LOCAL_PHP=true
+  fi
+elif prompt_yes_no "Update existing PHP app config at ${LOCAL_CONFIG_PATH}?" "Y"; then
+  CONFIGURE_LOCAL_PHP=true
+fi
+
+APP_ENV=production
+APP_BASE_URL=https://supplycore.example.com
+APP_TIMEZONE=UTC
+DB_HOST=127.0.0.1
+DB_PORT=3306
+DB_NAME=supplycore
+DB_USERNAME=supplycore
+DB_PASSWORD=
+if [[ ${CONFIGURE_LOCAL_PHP} == true ]]; then
+  APP_ENV=$(prompt_non_empty "Application environment" "production")
+  APP_BASE_URL=$(prompt_non_empty "Application base URL" "https://supplycore.example.com")
+  APP_TIMEZONE=$(prompt_non_empty "Application timezone" "UTC")
+  DB_HOST=$(prompt_non_empty "Database host" "127.0.0.1")
+  DB_PORT=$(prompt_number "Database port" "3306")
+  DB_NAME=$(prompt_non_empty "Database name (installer will not create/import it)" "supplycore")
+  DB_USERNAME=$(prompt_non_empty "Database login name" "supplycore")
+  DB_PASSWORD=$(prompt_secret "Database password" true)
+fi
+
 SYNC_COUNT=$(prompt_number "How many sync workers should be enabled?" "1")
 COMPUTE_COUNT=$(prompt_number "How many compute workers should be enabled?" "1")
 INSTALL_ZKILL=false
@@ -188,6 +318,8 @@ install -d -m 0755 "${SYSTEMD_DIR}"
 install -d -m 0755 "${APP_ROOT}/storage/logs" "${APP_ROOT}/storage/run"
 chown -R "${RUN_USER}:${RUN_GROUP}" "${APP_ROOT}/storage"
 chmod -R u+rwX "${APP_ROOT}/storage"
+
+configure_local_php "${LOCAL_CONFIG_PATH}" "${APP_ENV}" "${APP_BASE_URL}" "${APP_TIMEZONE}" "${DB_HOST}" "${DB_PORT}" "${DB_NAME}" "${DB_USERNAME}" "${DB_PASSWORD}" "${CONFIGURE_LOCAL_PHP}"
 
 if [[ ! -x ${VENV_PATH}/bin/python ]]; then
   echo "Creating orchestrator virtualenv at ${VENV_PATH}"
@@ -245,6 +377,9 @@ echo
 echo "SupplyCore services installed successfully."
 echo "Worker environment: ${ENV_FILE}"
 echo "Virtualenv: ${VENV_PATH}"
+if [[ -f ${LOCAL_CONFIG_PATH} ]]; then
+  echo "PHP config: ${LOCAL_CONFIG_PATH}"
+fi
 echo "Helpful status commands:"
 if (( SYNC_COUNT == 1 )); then
   echo "  systemctl status supplycore-sync-worker.service"
