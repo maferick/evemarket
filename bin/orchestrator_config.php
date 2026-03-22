@@ -3,9 +3,9 @@
 
 declare(strict_types=1);
 
-require_once __DIR__ . '/../src/bootstrap.php';
-
 try {
+    require_once __DIR__ . '/../src/bootstrap.php';
+
     fwrite(STDOUT, json_encode(orchestrator_runtime_config_export(), JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . PHP_EOL);
     exit(0);
 } catch (Throwable $exception) {

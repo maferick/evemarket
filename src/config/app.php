@@ -45,12 +45,41 @@ $config = [
     ],
 ];
 
-$localConfigPath = __DIR__ . '/local.php';
-if (is_file($localConfigPath)) {
-    $localConfig = require $localConfigPath;
-    if (is_array($localConfig)) {
-        $config = array_replace_recursive($config, $localConfig);
+/**
+ * @return array<string, mixed>|null
+ */
+function supplycore_load_local_config(string $localConfigPath): ?array
+{
+    if (!is_file($localConfigPath)) {
+        return null;
     }
+
+    try {
+        $localConfig = (static function (string $path): mixed {
+            return require $path;
+        })($localConfigPath);
+    } catch (ParseError $exception) {
+        throw new RuntimeException(
+            sprintf('Invalid PHP syntax in %s: %s', $localConfigPath, $exception->getMessage()),
+            previous: $exception,
+        );
+    }
+
+    if ($localConfig === null) {
+        return null;
+    }
+
+    if (!is_array($localConfig)) {
+        throw new RuntimeException(sprintf('Local config file at %s must return an array.', $localConfigPath));
+    }
+
+    return $localConfig;
+}
+
+$localConfigPath = __DIR__ . '/local.php';
+$localConfig = supplycore_load_local_config($localConfigPath);
+if (is_array($localConfig)) {
+    $config = array_replace_recursive($config, $localConfig);
 }
 
 return $config;
