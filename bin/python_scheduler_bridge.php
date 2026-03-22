@@ -38,6 +38,10 @@ try {
         python_scheduler_bridge_output(['ok' => true, 'context' => python_bridge_killmail_context()]);
     }
 
+    if ($action === 'market-hub-local-history-context') {
+        python_scheduler_bridge_output(['ok' => true, 'context' => python_bridge_market_hub_local_history_context()]);
+    }
+
     if ($action === 'store-snapshot') {
         $snapshotKey = trim((string) ($options['snapshot-key'] ?? ''));
         if ($snapshotKey === '') {
@@ -149,6 +153,20 @@ try {
 
         $input = python_scheduler_bridge_read_stdin_json();
         $result = scheduler_finalize_python_job_result($job, $input);
+        python_scheduler_bridge_output(['ok' => true, 'result' => $result]);
+    }
+
+    if ($action === 'sync-run-start') {
+        $input = python_scheduler_bridge_read_stdin_json();
+        $datasetKey = trim((string) ($input['dataset_key'] ?? ''));
+        $runMode = trim((string) ($input['run_mode'] ?? 'incremental'));
+        $result = python_bridge_sync_run_start($datasetKey, $runMode);
+        python_scheduler_bridge_output(['ok' => true, 'result' => $result]);
+    }
+
+    if ($action === 'sync-run-finish') {
+        $input = python_scheduler_bridge_read_stdin_json();
+        $result = python_bridge_sync_run_finish($input);
         python_scheduler_bridge_output(['ok' => true, 'result' => $result]);
     }
 
