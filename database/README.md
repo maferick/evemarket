@@ -1,7 +1,7 @@
 # Database exports for Codex
 
 Files:
-- `schema.sql` — schema-only dump
+- `export-schema.sql` — schema-only dump
 - `table-counts.txt` — approximate row counts per table
 - `sample_ref.sql` — reference/static tables
 - `sample_app.sql` — sampled application-owned operational tables
