@@ -268,27 +268,113 @@ SupplyCore sync pipelines depend on the `cron` daemon being present and running 
 - The **Run now** button in Settings → Data Sync still forces the selected enabled schedule due immediately, but when the daemon is healthy it now wakes that daemon instead of waiting for the old minute-based cron trigger.
 - Backfill start dates are automatic: each pipeline starts from the date sync automation was enabled (`sync_automation_enabled_since`).
 
-### Example `systemd` unit
+### Python-supervised service architecture
 
-Create `/etc/systemd/system/supplycore-scheduler.service`:
+SupplyCore now supports a **production-preferred orchestration model** where `systemd` manages a Python service and the Python service manages the PHP scheduler process lifecycle.
+
+#### Layering
+
+1. `systemd` owns the long-running service and restart policy.
+2. `python/orchestrator/` owns supervision, health polling, graceful restarts, heartbeat files, and duplicate-master prevention.
+3. PHP remains the source of truth for:
+   - application configuration in `src/config/app.php`,
+   - scheduler health/status in `scheduler_daemon_state`,
+   - actual job dispatch and domain logic in `bin/scheduler_daemon.php`, `bin/scheduler_job_runner.php`, and related scheduler helpers.
+
+#### PHP → Python config bridge
+
+Do **not** parse `src/config/app.php` directly from Python.
+
+Instead, the bridge command below loads the real PHP bootstrap/config stack and exports normalized JSON:
+
+```bash
+php bin/orchestrator_config.php
+```
+
+That JSON includes:
+
+- app environment/name/base URL/timezone,
+- DB connection information,
+- resolved app/script/path locations,
+- scheduler lease/watchdog/runtime settings,
+- orchestrator lock/heartbeat/health-check settings.
+
+This keeps PHP as the config source of truth while giving Python a stable runtime contract.
+
+#### Python project structure
+
+```text
+python/
+  pyproject.toml
+  orchestrator/
+    __main__.py          # python -m orchestrator
+    config.py            # loads PHP-exported runtime config JSON
+    health.py            # scheduler health probe wrapper
+    logging_utils.py     # journald-friendly JSON logs
+    main.py              # CLI entrypoint
+    php_runner.py        # supervised PHP child process runner
+    supervisor.py        # lifecycle, restart, heartbeat, lock management
+```
+
+#### Phase plan
+
+**Phase 1: implemented here**
+
+- `systemd` runs the Python orchestrator.
+- Python launches `bin/scheduler_daemon.php` as a child process.
+- Python captures stdout/stderr, polls `bin/scheduler_health.php`, enforces graceful stop/kill behavior, writes a heartbeat file, and restarts the PHP daemon after crashes or repeated health failures.
+- PHP background workers remain PHP-owned, preserving scheduler/business logic.
+
+**Phase 2: optional later**
+
+- Move more planner-only coordination into Python if, and only if, there is a clear operational benefit.
+- Keep PHP as the execution engine for jobs and domain workflows unless there is a strong reason to relocate a specific orchestration concern.
+
+#### PHP entrypoints the Python supervisor uses
+
+- `bin/orchestrator_config.php` — export resolved runtime config as JSON.
+- `bin/scheduler_daemon.php` — primary managed PHP child process.
+- `bin/scheduler_health.php` — health/heartbeat probe used by Python.
+- `bin/scheduler_watchdog.php` / `bin/cron_tick.php` — still available during transition, but when `scheduler.supervisor_mode=python` they target the Python-managed service instead of spawning a standalone PHP daemon directly.
+
+#### Duplicate-master safety
+
+- Python takes an exclusive lock at `storage/run/orchestrator.lock`.
+- PHP still uses `scheduler_daemon_state` lease claiming, so a stale Python worker restart cannot create two active masters.
+- When `scheduler.supervisor_mode` is `python`, PHP self-respawn is disabled and watchdog restarts are redirected toward the Python `systemd` unit, preventing competing schedulers.
+
+#### Heartbeat and health
+
+- Python writes `storage/run/orchestrator-heartbeat.json`.
+- PHP continues to write scheduler lease/heartbeat data into `scheduler_daemon_state`.
+- Python polls `bin/scheduler_health.php` on a configurable interval and restarts the managed PHP process after repeated degraded/failed checks.
+- On orchestrator restart, PHP's existing stale-running-job recovery remains in place through the scheduler startup path.
+
+### Python `systemd` unit
+
+Create `/etc/systemd/system/supplycore-orchestrator.service` from `ops/systemd/supplycore-orchestrator.service`:
 
 ```ini
 [Unit]
-Description=SupplyCore continuous scheduler daemon
+Description=SupplyCore Python orchestrator supervisor
 After=network.target mariadb.service
+Wants=network.target
 
 [Service]
 Type=simple
-WorkingDirectory=/var/www/supplycore
-ExecStart=/usr/bin/php /var/www/supplycore/bin/scheduler_daemon.php
-Restart=always
-RestartSec=5
 User=www-data
 Group=www-data
+WorkingDirectory=/var/www/supplycore
+EnvironmentFile=-/etc/default/supplycore-orchestrator
+Environment=PYTHONUNBUFFERED=1
+Environment=SCHEDULER_SUPERVISOR_MODE=python
+ExecStart=/var/www/supplycore/.venv-orchestrator/bin/python -m orchestrator --app-root /var/www/supplycore
+Restart=always
+RestartSec=5
 KillSignal=SIGTERM
-TimeoutStopSec=120
-StandardOutput=append:/var/www/supplycore/storage/logs/cron.log
-StandardError=append:/var/www/supplycore/storage/logs/cron.log
+TimeoutStopSec=90
+StandardOutput=journal
+StandardError=journal
 
 [Install]
 WantedBy=multi-user.target
@@ -298,11 +384,61 @@ Then enable it:
 
 ```bash
 sudo systemctl daemon-reload
-sudo systemctl enable --now supplycore-scheduler.service
-sudo systemctl status supplycore-scheduler.service
+sudo systemctl enable --now supplycore-orchestrator.service
+sudo systemctl status supplycore-orchestrator.service
 ```
 
-### Required cron runtime environment
+### Python virtual environment setup
+
+The orchestrator is intentionally isolated in its own virtual environment.
+
+```bash
+cd /var/www/supplycore
+python3 -m venv .venv-orchestrator
+. .venv-orchestrator/bin/activate
+pip install --upgrade pip
+pip install ./python
+```
+
+Validation:
+
+```bash
+.venv-orchestrator/bin/python -m orchestrator --help
+php bin/orchestrator_config.php
+```
+
+`systemd` should always use the venv interpreter path directly:
+
+```ini
+ExecStart=/var/www/supplycore/.venv-orchestrator/bin/python -m orchestrator --app-root /var/www/supplycore
+```
+
+### Required runtime configuration
+
+Set SupplyCore to Python-supervised mode in `src/config/local.php` or via environment overrides:
+
+```php
+<?php
+return [
+    'scheduler' => [
+        'supervisor_mode' => 'python',
+        'python_service_name' => 'supplycore-orchestrator.service',
+    ],
+];
+```
+
+Optional orchestrator-specific overrides can also live in `src/config/local.php`:
+
+```php
+'orchestrator' => [
+    'health_check_interval_seconds' => 15,
+    'worker_grace_seconds' => 45,
+    'worker_start_backoff_seconds' => 5,
+    'max_consecutive_health_failures' => 3,
+],
+```
+
+### Required cron runtime environment / transition note
 
 If you use the recommended `src/config/local.php` approach, cron and systemd do **not** need a large exported environment block for normal operation.
 
@@ -315,6 +451,7 @@ The remaining environment-sensitive source values are:
   - `SUPPLYCORE_HUB_SOURCE_ID` (for `hub-current`, `hub-history`, and hub snapshot-history generation)
 
 The canonical log path for the daemon and watchdog is `storage/logs/cron.log` (relative to app root).
+When the Python orchestrator is enabled, the canonical service log stream moves to `journalctl -u supplycore-orchestrator.service`, while PHP scheduler events still include their structured JSON payloads in child stdout/stderr captured by Python.
 If logs show `Job exceeded timeout of ... seconds.`, move the deployment to a stronger scheduler profile first (`Low` → `Medium` → `High`) and only use hard environment overrides if you have a very specific reason.
 Market history retention is tiered from Settings → Data Sync:
 
@@ -356,16 +493,27 @@ mysql -u "$DB_USERNAME" -p"$DB_PASSWORD" -h "$DB_HOST" -P "$DB_PORT" "$DB_DATABA
 
 If the UI says the scheduler daemon is **stopped** while no jobs are running:
 
-1. Check `storage/logs/cron.log` for the last `scheduler_daemon.stopped` event.
-2. Look at `exit_reason`.
+1. Check the Python supervisor logs first:
+   ```bash
+   journalctl -u supplycore-orchestrator.service -n 200 --no-pager
+   ```
+2. Check `storage/logs/cron.log` for the last `scheduler_daemon.stopped` event if you still mirror PHP output there or run transitional cron tooling.
+3. Look at `exit_reason`.
    - `memory_recycle_threshold_reached` means the daemon intentionally recycled itself.
-   - With the current design, that recycle should now immediately self-respawn.
-3. If it still stays stopped, verify:
-   - the cron watchdog is installed,
-   - the `supplycore-scheduler.service` unit is enabled if you use systemd,
-   - `exec()` is not disabled in PHP, because detached respawn depends on it outside systemd.
-4. If the host is small, set **Settings → Data Sync → Scheduler run profile** to **Low** and save.
-5. After changes, use **Run selected now** or wait for the watchdog minute tick.
+   - In Python-supervised mode, the orchestrator should detect that exit and restart the managed PHP worker.
+4. If it still stays stopped, verify:
+   - `scheduler.supervisor_mode` is set to `python`,
+   - the `supplycore-orchestrator.service` unit is enabled,
+   - the venv path in `ExecStart` is correct,
+   - `php bin/orchestrator_config.php` succeeds from the same working directory/user.
+5. If the host is small, set **Settings → Data Sync → Scheduler run profile** to **Low** and save.
+6. After changes, use **Run selected now**, restart the orchestrator, or wait for the next health interval.
+
+Inspect the Python heartbeat file:
+
+```bash
+cat /var/www/supplycore/storage/run/orchestrator-heartbeat.json
+```
 
 Check cron service status:
 
@@ -379,6 +527,12 @@ Tail the cron tick log:
 tail -f /var/www/supplycore/storage/logs/cron.log
 ```
 
+Tail the orchestrator log stream:
+
+```bash
+journalctl -u supplycore-orchestrator.service -f
+```
+
 Inspect scheduler state tables:
 
 ```bash
@@ -390,6 +544,39 @@ mysql -u "$DB_USERNAME" -p"$DB_PASSWORD" -h "$DB_HOST" -P "$DB_PORT" "$DB_DATABA
 ### Migration note (old per-job crontabs)
 
 If you previously had one cron line per pipeline/job, remove those entries and keep only the single `bin/cron_tick.php` timer entry. Job-specific cadence is now managed in Data Sync settings, and due-job selection is centralized in the scheduler.
+
+### Rollout plan
+
+1. Deploy the code changes.
+2. Update `src/config/local.php` to set `scheduler.supervisor_mode` to `python`.
+3. Create the Python virtual environment and install `./python`.
+4. Install:
+   - `ops/systemd/supplycore-orchestrator.service` to `/etc/systemd/system/`
+   - optionally `ops/systemd/supplycore-orchestrator.env.example` to `/etc/default/supplycore-orchestrator`
+5. Run:
+   ```bash
+   sudo systemctl daemon-reload
+   sudo systemctl enable --now supplycore-orchestrator.service
+   ```
+6. Verify:
+   - `systemctl status supplycore-orchestrator.service`
+   - `php bin/scheduler_health.php`
+   - `cat storage/run/orchestrator-heartbeat.json`
+7. Remove or disable any old `supplycore-scheduler.service` unit so only one master-control path remains.
+8. Keep the watchdog cron entry only if you want transitional DB stale-state recovery; in Python mode it should target the orchestrator service rather than creating a direct PHP master.
+
+### Rollback plan
+
+1. `sudo systemctl disable --now supplycore-orchestrator.service`
+2. Change `scheduler.supervisor_mode` back to `php`.
+3. Re-enable the old direct PHP service if required:
+   ```bash
+   sudo systemctl enable --now supplycore-scheduler.service
+   ```
+4. Confirm:
+   - `php bin/scheduler_health.php`
+   - `systemctl status supplycore-scheduler.service`
+5. Remove the Python venv later if you no longer need the orchestrator.
 
 
 ## Killmail Intelligence Foundation (zKillboard R2Z2)
