@@ -3493,9 +3493,9 @@ function scheduler_registry_definitions(): array
 {
     return [
         'market_hub_current_sync' => ['label' => 'Market Hub Current', 'default_interval_minutes' => 8, 'default_offset_minutes' => 0, 'priority' => 'high', 'timeout_seconds' => 240, 'concurrency_policy' => 'single', 'execution_mode' => 'php', 'tuning_mode' => 'automatic', 'explicitly_configured' => true, 'min_interval_minutes' => 1, 'max_interval_minutes' => 8, 'workload_class' => 'lightweight'],
-        'deal_alerts_sync' => ['label' => 'Deal Alerts', 'default_interval_minutes' => 5, 'default_offset_minutes' => 1, 'priority' => 'high', 'timeout_seconds' => 90, 'concurrency_policy' => 'single', 'execution_mode' => 'php', 'tuning_mode' => 'automatic', 'explicitly_configured' => true, 'latency_sensitive' => true, 'user_facing' => true, 'workload_class' => 'lightweight'],
-        'alliance_current_sync' => ['label' => 'Alliance Current', 'default_interval_minutes' => 4, 'default_offset_minutes' => 2, 'priority' => 'medium', 'timeout_seconds' => 180, 'concurrency_policy' => 'single', 'execution_mode' => 'php', 'tuning_mode' => 'automatic', 'explicitly_configured' => true, 'workload_class' => 'lightweight'],
-        'killmail_r2z2_sync' => ['label' => 'Killmail R2Z2 Stream', 'default_interval_minutes' => 3, 'default_offset_minutes' => 3, 'priority' => 'highest', 'timeout_seconds' => 90, 'concurrency_policy' => 'single', 'execution_mode' => 'php', 'tuning_mode' => 'automatic', 'explicitly_configured' => true, 'min_interval_minutes' => 1, 'max_interval_minutes' => 3, 'workload_class' => 'heavy'],
+        'deal_alerts_sync' => ['label' => 'Deal Alerts', 'default_interval_minutes' => 5, 'default_offset_minutes' => 1, 'priority' => 'high', 'timeout_seconds' => 90, 'concurrency_policy' => 'single', 'execution_mode' => 'python', 'tuning_mode' => 'automatic', 'explicitly_configured' => true, 'latency_sensitive' => true, 'user_facing' => true, 'workload_class' => 'lightweight'],
+        'alliance_current_sync' => ['label' => 'Alliance Current', 'default_interval_minutes' => 4, 'default_offset_minutes' => 2, 'priority' => 'medium', 'timeout_seconds' => 180, 'concurrency_policy' => 'single', 'execution_mode' => 'python', 'tuning_mode' => 'automatic', 'explicitly_configured' => true, 'workload_class' => 'lightweight'],
+        'killmail_r2z2_sync' => ['label' => 'Killmail R2Z2 Stream', 'default_interval_minutes' => 1, 'default_offset_minutes' => 3, 'priority' => 'highest', 'timeout_seconds' => 180, 'concurrency_policy' => 'single', 'execution_mode' => 'python', 'tuning_mode' => 'automatic', 'explicitly_configured' => true, 'min_interval_minutes' => 1, 'max_interval_minutes' => 3, 'workload_class' => 'heavy'],
         'configured_structure_destination_id_for_esi_sync' => ['label' => 'Configured Structure Destination for ESI', 'default_interval_minutes' => 30, 'default_offset_minutes' => 4, 'priority' => 'normal', 'timeout_seconds' => 120, 'concurrency_policy' => 'single', 'execution_mode' => 'php', 'tuning_mode' => 'automatic', 'explicitly_configured' => false, 'workload_class' => 'lightweight'],
         'current_state_refresh_sync' => ['label' => 'Current-State Refresh', 'default_interval_minutes' => 12, 'default_offset_minutes' => 6, 'priority' => 'medium', 'timeout_seconds' => 120, 'concurrency_policy' => 'single', 'execution_mode' => 'php', 'tuning_mode' => 'automatic', 'explicitly_configured' => true, 'workload_class' => 'heavy'],
         'doctrine_intelligence_sync' => ['label' => 'Doctrine Intelligence', 'default_interval_minutes' => 15, 'default_offset_minutes' => 8, 'priority' => 'normal', 'timeout_seconds' => 180, 'concurrency_policy' => 'single', 'execution_mode' => 'python', 'tuning_mode' => 'automatic', 'explicitly_configured' => true, 'allow_backfill' => true, 'backfill_priority' => 'normal', 'min_backfill_gap_seconds' => 300, 'max_early_start_seconds' => 900, 'workload_class' => 'lightweight'],
@@ -10854,8 +10854,8 @@ function scheduler_job_definitions(): array
             },
         ],
         'killmail_r2z2_sync' => [
-            'timeout_seconds' => 90,
-            'lock_ttl_seconds' => 180,
+            'timeout_seconds' => 180,
+            'lock_ttl_seconds' => 300,
             'handler' => static function (): array {
                 if (!killmail_ingestion_enabled()) {
                     return sync_result_shape() + ['warnings' => ['Killmail ingestion disabled in settings.']];
@@ -13210,6 +13210,120 @@ function python_bridge_market_comparison_context(): array
         'thresholds' => market_compare_thresholds(),
         'allowed_type_ids' => item_scope_allowed_type_ids(),
         'snapshot_key' => market_comparison_snapshot_key(),
+    ];
+}
+
+function python_bridge_killmail_context(): array
+{
+    $datasetKey = killmail_sync_dataset_key();
+    $cursor = db_sync_cursor_get($datasetKey);
+    $userAgent = trim((string) get_setting('app_name', 'SupplyCore'));
+    if ($userAgent === '') {
+        $userAgent = 'SupplyCore';
+    }
+
+    return [
+        'job_key' => 'killmail_r2z2_sync',
+        'enabled' => killmail_ingestion_enabled(),
+        'dataset_key' => $datasetKey,
+        'cursor' => $cursor,
+        'sequence_url' => killmail_r2z2_sequence_url(),
+        'base_url' => killmail_r2z2_base_url(),
+        'poll_sleep_seconds' => killmail_poll_sleep_seconds(),
+        'max_sequences_per_run' => killmail_max_sequences_per_run(),
+        'user_agent' => $userAgent . ' killmail-ingestion/2.0 (+https://github.com/cvweiss/supplycore)',
+    ];
+}
+
+function python_bridge_process_killmail_batch(array $payloads): array
+{
+    if ($payloads === []) {
+        return [
+            'rows_seen' => 0,
+            'rows_written' => 0,
+            'killmails_fetched' => 0,
+            'duplicates' => 0,
+            'filtered' => 0,
+            'invalid' => 0,
+            'last_processed_sequence' => null,
+        ];
+    }
+
+    db_killmail_payload_schema_ensure();
+
+    $trackedAllianceRows = db_killmail_tracked_alliances_active();
+    $trackedCorporationRows = db_killmail_tracked_corporations_active();
+    $trackedAllianceIds = [];
+    foreach ($trackedAllianceRows as $row) {
+        $id = (int) ($row['alliance_id'] ?? 0);
+        if ($id > 0) {
+            $trackedAllianceIds[$id] = true;
+        }
+    }
+
+    $trackedCorporationIds = [];
+    foreach ($trackedCorporationRows as $row) {
+        $id = (int) ($row['corporation_id'] ?? 0);
+        if ($id > 0) {
+            $trackedCorporationIds[$id] = true;
+        }
+    }
+
+    $rowsSeen = 0;
+    $rowsWritten = 0;
+    $duplicates = 0;
+    $filtered = 0;
+    $invalid = 0;
+    $lastProcessedSequence = null;
+
+    foreach ($payloads as $payload) {
+        $rowsSeen++;
+        $transformed = killmail_transform_r2z2_payload($payload);
+        $event = (array) ($transformed['event'] ?? []);
+        $sequenceId = (int) ($event['sequence_id'] ?? 0);
+        if ($sequenceId <= 0) {
+            $invalid++;
+            continue;
+        }
+
+        $killmailId = (int) ($event['killmail_id'] ?? 0);
+        $killmailHash = (string) ($event['killmail_hash'] ?? '');
+        if ($killmailId > 0 && $killmailHash !== '' && db_killmail_event_exists($sequenceId, $killmailId, $killmailHash)) {
+            $duplicates++;
+            $lastProcessedSequence = $sequenceId;
+            continue;
+        }
+
+        if (!killmail_event_matches_tracked_entities($event, (array) ($transformed['attackers'] ?? []), $trackedAllianceIds, $trackedCorporationIds)) {
+            $filtered++;
+            $lastProcessedSequence = $sequenceId;
+            continue;
+        }
+
+        killmail_prime_entity_metadata(killmail_entity_resolution_requests(
+            $event,
+            (array) ($transformed['attackers'] ?? []),
+            (array) ($transformed['items'] ?? [])
+        ));
+
+        db_transaction(static function () use ($transformed, $sequenceId, &$rowsWritten): void {
+            db_killmail_event_upsert($transformed['event']);
+            db_killmail_attackers_replace($sequenceId, $transformed['attackers']);
+            db_killmail_items_replace($sequenceId, $transformed['items']);
+            $rowsWritten++;
+        });
+
+        $lastProcessedSequence = $sequenceId;
+    }
+
+    return [
+        'rows_seen' => $rowsSeen,
+        'rows_written' => $rowsWritten,
+        'killmails_fetched' => $rowsSeen,
+        'duplicates' => $duplicates,
+        'filtered' => $filtered,
+        'invalid' => $invalid,
+        'last_processed_sequence' => $lastProcessedSequence,
     ];
 }
 
@@ -16281,7 +16395,7 @@ function killmail_r2z2_base_url(): string
 
 function killmail_poll_sleep_seconds(): int
 {
-    return max(6, min(300, (int) get_setting('killmail_ingestion_poll_sleep_seconds', '6')));
+    return max(6, min(300, (int) get_setting('killmail_ingestion_poll_sleep_seconds', '10')));
 }
 
 function killmail_max_sequences_per_run(): int

@@ -34,6 +34,10 @@ try {
         python_scheduler_bridge_output(['ok' => true, 'context' => python_bridge_market_comparison_context()]);
     }
 
+    if ($action === 'killmail-context') {
+        python_scheduler_bridge_output(['ok' => true, 'context' => python_bridge_killmail_context()]);
+    }
+
     if ($action === 'store-snapshot') {
         $snapshotKey = trim((string) ($options['snapshot-key'] ?? ''));
         if ($snapshotKey === '') {
@@ -55,6 +59,19 @@ try {
 
         $reason = trim((string) ($options['reason'] ?? 'python-fallback'));
         $result = python_bridge_run_job_handler($jobKey, $reason);
+        python_scheduler_bridge_output(['ok' => true, 'result' => $result]);
+    }
+
+    if ($action === 'process-killmail-batch') {
+        $input = python_scheduler_bridge_read_stdin_json();
+        $payloads = array_values(array_filter(
+            array_map(
+                static fn ($row): array => is_array($row) ? $row : [],
+                (array) ($input['payloads'] ?? [])
+            ),
+            static fn (array $row): bool => $row !== []
+        ));
+        $result = python_bridge_process_killmail_batch($payloads);
         python_scheduler_bridge_output(['ok' => true, 'result' => $result]);
     }
 

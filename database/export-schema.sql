@@ -1734,7 +1734,7 @@ INSERT INTO app_settings (setting_key, setting_value) VALUES
     ('killmail_ingestion_enabled', '0'),
     ('killmail_r2z2_sequence_url', 'https://r2z2.zkillboard.com/ephemeral/sequence.json'),
     ('killmail_r2z2_base_url', 'https://r2z2.zkillboard.com/ephemeral'),
-    ('killmail_ingestion_poll_sleep_seconds', '6'),
+    ('killmail_ingestion_poll_sleep_seconds', '10'),
     ('killmail_ingestion_max_sequences_per_run', '120'),
     ('killmail_demand_prediction_mode', 'baseline'),
     ('analytics_bucket_1h_retention_days', '14'),
@@ -1803,7 +1803,7 @@ INSERT INTO sync_schedules (
     locked_until
 ) VALUES
     ('market_hub_current_sync', 1, 8, 480, 0, 0, 'high', 'single', 240, 'php', UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
-    ('alliance_current_sync', 1, 4, 240, 120, 2, 'medium', 'single', 180, 'php', UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
+    ('alliance_current_sync', 1, 4, 240, 120, 2, 'medium', 'single', 180, 'python', UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
     ('current_state_refresh_sync', 1, 12, 720, 360, 6, 'medium', 'single', 120, 'php', UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
     ('market_hub_local_history_sync', 1, 20, 1200, 840, 14, 'normal', 'background', 1800, 'php', UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
     ('doctrine_intelligence_sync', 1, 15, 900, 480, 8, 'normal', 'single', 180, 'python', UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
@@ -1811,11 +1811,11 @@ INSERT INTO sync_schedules (
     ('loss_demand_summary_sync', 1, 15, 900, 600, 10, 'normal', 'single', 180, 'python', UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
     ('dashboard_summary_sync', 1, 15, 900, 660, 11, 'normal', 'single', 180, 'python', UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
     ('rebuild_ai_briefings', 1, 20, 1200, 720, 12, 'normal', 'background', 300, 'php', UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
-    ('killmail_r2z2_sync', 1, 3, 180, 180, 3, 'highest', 'single', 90, 'php', UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
+    ('killmail_r2z2_sync', 1, 1, 180, 300, 3, 'highest', 'single', 180, 'python', UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
     ('alliance_historical_sync', 1, 360, 21600, 300, 5, 'normal', 'background', 3600, 'php', UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
     ('market_hub_historical_sync', 1, 360, 21600, 0, 0, 'normal', 'background', 3600, 'php', UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
     ('forecasting_ai_sync', 1, 60, 3600, 0, 0, 'normal', 'background', 300, 'php', UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
-    ('deal_alerts_sync', 1, 5, 300, 60, 1, 'high', 'single', 90, 'php', UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
+    ('deal_alerts_sync', 1, 5, 300, 60, 1, 'high', 'single', 90, 'python', UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
     ('activity_priority_summary_sync', 1, 15, 900, 780, 13, 'normal', 'single', 180, 'python', UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 0, NULL, NULL, NULL, NULL),
     ('analytics_bucket_1h_sync', 1, 15, 900, 900, 15, 'normal', 'single', 180, 'php', UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 0, NULL, NULL, NULL, NULL),
     ('analytics_bucket_1d_sync', 1, 60, 3600, 960, 16, 'normal', 'single', 240, 'php', UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 0, NULL, NULL, NULL, NULL)

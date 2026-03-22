@@ -77,7 +77,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
             $saved = save_settings([
                 'killmail_ingestion_enabled' => sanitize_enabled_flag($_POST['killmail_ingestion_enabled'] ?? null),
-                'killmail_ingestion_poll_sleep_seconds' => (string) max(6, min(300, (int) ($_POST['killmail_ingestion_poll_sleep_seconds'] ?? 6))),
+                'killmail_ingestion_poll_sleep_seconds' => (string) max(6, min(300, (int) ($_POST['killmail_ingestion_poll_sleep_seconds'] ?? 10))),
                 'killmail_ingestion_max_sequences_per_run' => (string) max(1, min(5000, (int) ($_POST['killmail_ingestion_max_sequences_per_run'] ?? 120))),
                 'killmail_demand_prediction_mode' => trim((string) ($_POST['killmail_demand_prediction_mode'] ?? 'baseline')),
             ]);
@@ -964,7 +964,8 @@ include __DIR__ . '/../../src/views/partials/header.php';
                 <div class="grid gap-4 md:grid-cols-2">
                     <label class="block space-y-2">
                         <span class="text-sm text-muted">Poll Sleep Seconds (min 6)</span>
-                        <input type="number" min="6" max="300" step="1" name="killmail_ingestion_poll_sleep_seconds" value="<?= htmlspecialchars($settingValues['killmail_ingestion_poll_sleep_seconds'] ?? '6', ENT_QUOTES) ?>" class="w-full field-input" />
+                        <input type="number" min="6" max="300" step="1" name="killmail_ingestion_poll_sleep_seconds" value="<?= htmlspecialchars($settingValues['killmail_ingestion_poll_sleep_seconds'] ?? '10', ENT_QUOTES) ?>" class="w-full field-input" />
+                        <span class="text-xs text-muted">Continuous Python polling now defaults to 10 seconds between live-stream retry attempts after the worker reaches the R2Z2 tip or gets rate limited.</span>
                     </label>
                     <label class="block space-y-2">
                         <span class="text-sm text-muted">Max Sequences Per Run</span>
