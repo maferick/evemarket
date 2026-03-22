@@ -412,14 +412,87 @@ function db_killmail_payload_schema_ensure(): void
                 e.sequence_id,
                 e.killmail_id,
                 e.killmail_hash,
-                COALESCE(e.zkb_json, '{}'),
-                COALESCE(e.raw_killmail_json, '{}')
+               COALESCE(e.zkb_json, '{}'),
+               COALESCE(e.raw_killmail_json, '{}')
              FROM killmail_events e
              LEFT JOIN killmail_event_payloads p ON p.sequence_id = e.sequence_id
              WHERE p.sequence_id IS NULL
                AND (e.zkb_json IS NOT NULL OR e.raw_killmail_json IS NOT NULL)"
         );
     }
+
+    db_killmail_overview_schema_ensure();
+
+    $ensured = true;
+}
+
+function db_killmail_overview_schema_ensure(): void
+{
+    static $ensured = false;
+
+    if ($ensured) {
+        return;
+    }
+
+    db()->exec("CREATE TABLE IF NOT EXISTS killmail_event_payloads (
+        sequence_id BIGINT UNSIGNED NOT NULL,
+        killmail_id BIGINT UNSIGNED NOT NULL,
+        killmail_hash VARCHAR(128) NOT NULL,
+        zkb_json LONGTEXT NOT NULL,
+        raw_killmail_json LONGTEXT NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        PRIMARY KEY (sequence_id),
+        UNIQUE KEY uniq_killmail_event_payloads_killmail (killmail_id, killmail_hash),
+        CONSTRAINT fk_killmail_event_payloads_sequence
+            FOREIGN KEY (sequence_id) REFERENCES killmail_events (sequence_id)
+            ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+
+    db_ensure_table_column('killmail_events', 'zkb_total_value', 'DECIMAL(20,2) DEFAULT NULL AFTER victim_ship_type_id');
+    db_ensure_table_column('killmail_events', 'zkb_points', 'INT UNSIGNED DEFAULT NULL AFTER zkb_total_value');
+    db_ensure_table_column('killmail_events', 'zkb_npc', 'TINYINT(1) DEFAULT NULL AFTER zkb_points');
+    db_ensure_table_column('killmail_events', 'zkb_solo', 'TINYINT(1) DEFAULT NULL AFTER zkb_npc');
+    db_ensure_table_column('killmail_events', 'zkb_awox', 'TINYINT(1) DEFAULT NULL AFTER zkb_solo');
+
+    $legacyEventJsonSql = db_table_has_column('killmail_events', 'zkb_json') ? "NULLIF(e.zkb_json, '')" : 'NULL';
+    $zkbJsonSql = "COALESCE(NULLIF(p.zkb_json, ''), {$legacyEventJsonSql}, '{}')";
+    db_execute(
+        "UPDATE killmail_events e
+         LEFT JOIN killmail_event_payloads p ON p.sequence_id = e.sequence_id
+         SET
+            e.zkb_total_value = CASE
+                WHEN JSON_VALID({$zkbJsonSql}) AND JSON_EXTRACT({$zkbJsonSql}, '$.totalValue') IS NOT NULL
+                    THEN CAST(JSON_UNQUOTE(JSON_EXTRACT({$zkbJsonSql}, '$.totalValue')) AS DECIMAL(20,2))
+                ELSE NULL
+            END,
+            e.zkb_points = CASE
+                WHEN JSON_VALID({$zkbJsonSql}) AND JSON_EXTRACT({$zkbJsonSql}, '$.points') IS NOT NULL
+                    THEN CAST(JSON_UNQUOTE(JSON_EXTRACT({$zkbJsonSql}, '$.points')) AS UNSIGNED)
+                ELSE NULL
+            END,
+            e.zkb_npc = CASE
+                WHEN JSON_VALID({$zkbJsonSql}) AND JSON_EXTRACT({$zkbJsonSql}, '$.npc') IS NOT NULL
+                    THEN IF(LOWER(JSON_UNQUOTE(JSON_EXTRACT({$zkbJsonSql}, '$.npc'))) IN ('1', 'true'), 1, 0)
+                ELSE NULL
+            END,
+            e.zkb_solo = CASE
+                WHEN JSON_VALID({$zkbJsonSql}) AND JSON_EXTRACT({$zkbJsonSql}, '$.solo') IS NOT NULL
+                    THEN IF(LOWER(JSON_UNQUOTE(JSON_EXTRACT({$zkbJsonSql}, '$.solo'))) IN ('1', 'true'), 1, 0)
+                ELSE NULL
+            END,
+            e.zkb_awox = CASE
+                WHEN JSON_VALID({$zkbJsonSql}) AND JSON_EXTRACT({$zkbJsonSql}, '$.awox') IS NOT NULL
+                    THEN IF(LOWER(JSON_UNQUOTE(JSON_EXTRACT({$zkbJsonSql}, '$.awox'))) IN ('1', 'true'), 1, 0)
+                ELSE NULL
+            END
+         WHERE e.zkb_total_value IS NULL
+           AND e.zkb_points IS NULL
+           AND e.zkb_npc IS NULL
+           AND e.zkb_solo IS NULL
+           AND e.zkb_awox IS NULL
+           AND (p.sequence_id IS NOT NULL OR {$legacyEventJsonSql} IS NOT NULL)"
+    );
 
     $ensured = true;
 }
@@ -8166,8 +8239,13 @@ function db_killmail_event_upsert(array $event): bool
                 victim_character_id,
                 victim_corporation_id,
                 victim_alliance_id,
-                victim_ship_type_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                victim_ship_type_id,
+                zkb_total_value,
+                zkb_points,
+                zkb_npc,
+                zkb_solo,
+                zkb_awox
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON DUPLICATE KEY UPDATE
                 killmail_id = VALUES(killmail_id),
                 killmail_hash = VALUES(killmail_hash),
@@ -8180,6 +8258,11 @@ function db_killmail_event_upsert(array $event): bool
                 victim_corporation_id = VALUES(victim_corporation_id),
                 victim_alliance_id = VALUES(victim_alliance_id),
                 victim_ship_type_id = VALUES(victim_ship_type_id),
+                zkb_total_value = VALUES(zkb_total_value),
+                zkb_points = VALUES(zkb_points),
+                zkb_npc = VALUES(zkb_npc),
+                zkb_solo = VALUES(zkb_solo),
+                zkb_awox = VALUES(zkb_awox),
                 updated_at = CURRENT_TIMESTAMP',
             [
                 (int) ($event['sequence_id'] ?? 0),
@@ -8194,6 +8277,11 @@ function db_killmail_event_upsert(array $event): bool
                 isset($event['victim_corporation_id']) ? (int) $event['victim_corporation_id'] : null,
                 isset($event['victim_alliance_id']) ? (int) $event['victim_alliance_id'] : null,
                 isset($event['victim_ship_type_id']) ? (int) $event['victim_ship_type_id'] : null,
+                isset($event['zkb_total_value']) ? (float) $event['zkb_total_value'] : null,
+                isset($event['zkb_points']) ? (int) $event['zkb_points'] : null,
+                array_key_exists('zkb_npc', $event) ? (int) ((bool) $event['zkb_npc']) : null,
+                array_key_exists('zkb_solo', $event) ? (int) ((bool) $event['zkb_solo']) : null,
+                array_key_exists('zkb_awox', $event) ? (int) ((bool) $event['zkb_awox']) : null,
             ]
         );
         $payloadWritten = db_killmail_event_payload_upsert($event);
@@ -8615,7 +8703,7 @@ function db_killmail_items_by_sequence(int $sequenceId): array
 
 function db_killmail_overview_page(array $filters = []): array
 {
-    db_killmail_payload_schema_ensure();
+    db_killmail_overview_schema_ensure();
 
     $page = max(1, (int) ($filters['page'] ?? 1));
     $pageSize = max(1, min(100, (int) ($filters['page_size'] ?? 25)));
@@ -8630,7 +8718,6 @@ function db_killmail_overview_page(array $filters = []): array
     $fromSql = " FROM killmail_events e
         {$trackedJoinType} {$trackedMatchesSql} tracked
           ON tracked.sequence_id = e.sequence_id
-        LEFT JOIN killmail_event_payloads p ON p.sequence_id = e.sequence_id
         LEFT JOIN ref_item_types ship ON ship.type_id = e.victim_ship_type_id
         LEFT JOIN ref_systems system_ref ON system_ref.system_id = e.solar_system_id
         LEFT JOIN ref_regions region_ref ON region_ref.region_id = e.region_id
@@ -8691,12 +8778,16 @@ function db_killmail_overview_page(array $filters = []): array
             e.killmail_time,
             e.uploaded_at,
             e.created_at,
-            COALESCE(p.zkb_json, '{}') AS zkb_json,
             e.victim_corporation_id,
             e.victim_alliance_id,
             e.victim_ship_type_id,
             e.solar_system_id,
             e.region_id,
+            e.zkb_total_value,
+            e.zkb_points,
+            e.zkb_npc,
+            e.zkb_solo,
+            e.zkb_awox,
             COALESCE(NULLIF(victim_tc.label, ''), CONCAT('Corporation #', e.victim_corporation_id)) AS victim_corporation_label,
             COALESCE(NULLIF(victim_ta.label, ''), CONCAT('Alliance #', e.victim_alliance_id)) AS victim_alliance_label,
             COALESCE(NULLIF(ship.type_name, ''), CONCAT('Type #', e.victim_ship_type_id)) AS ship_type_name,

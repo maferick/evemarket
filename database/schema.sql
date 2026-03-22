@@ -927,6 +927,11 @@ CREATE TABLE IF NOT EXISTS killmail_events (
     victim_corporation_id BIGINT UNSIGNED DEFAULT NULL,
     victim_alliance_id BIGINT UNSIGNED DEFAULT NULL,
     victim_ship_type_id INT UNSIGNED DEFAULT NULL,
+    zkb_total_value DECIMAL(20,2) DEFAULT NULL,
+    zkb_points INT UNSIGNED DEFAULT NULL,
+    zkb_npc TINYINT(1) DEFAULT NULL,
+    zkb_solo TINYINT(1) DEFAULT NULL,
+    zkb_awox TINYINT(1) DEFAULT NULL,
     zkb_json LONGTEXT NOT NULL,
     raw_killmail_json LONGTEXT NOT NULL,
     effective_killmail_at DATETIME GENERATED ALWAYS AS (COALESCE(killmail_time, created_at)) STORED,
@@ -971,6 +976,126 @@ FROM killmail_events e
 LEFT JOIN killmail_event_payloads p ON p.sequence_id = e.sequence_id
 WHERE p.sequence_id IS NULL
   AND (e.zkb_json IS NOT NULL OR e.raw_killmail_json IS NOT NULL);
+
+SET @killmail_events_zkb_total_value_exists := (
+    SELECT COUNT(*)
+    FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'killmail_events'
+      AND COLUMN_NAME = 'zkb_total_value'
+);
+SET @killmail_events_zkb_total_value_sql := IF(
+    @killmail_events_zkb_total_value_exists = 0,
+    'ALTER TABLE killmail_events ADD COLUMN zkb_total_value DECIMAL(20,2) DEFAULT NULL AFTER victim_ship_type_id',
+    'SELECT 1'
+);
+PREPARE killmail_events_zkb_total_value_stmt FROM @killmail_events_zkb_total_value_sql;
+EXECUTE killmail_events_zkb_total_value_stmt;
+DEALLOCATE PREPARE killmail_events_zkb_total_value_stmt;
+
+SET @killmail_events_zkb_points_exists := (
+    SELECT COUNT(*)
+    FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'killmail_events'
+      AND COLUMN_NAME = 'zkb_points'
+);
+SET @killmail_events_zkb_points_sql := IF(
+    @killmail_events_zkb_points_exists = 0,
+    'ALTER TABLE killmail_events ADD COLUMN zkb_points INT UNSIGNED DEFAULT NULL AFTER zkb_total_value',
+    'SELECT 1'
+);
+PREPARE killmail_events_zkb_points_stmt FROM @killmail_events_zkb_points_sql;
+EXECUTE killmail_events_zkb_points_stmt;
+DEALLOCATE PREPARE killmail_events_zkb_points_stmt;
+
+SET @killmail_events_zkb_npc_exists := (
+    SELECT COUNT(*)
+    FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'killmail_events'
+      AND COLUMN_NAME = 'zkb_npc'
+);
+SET @killmail_events_zkb_npc_sql := IF(
+    @killmail_events_zkb_npc_exists = 0,
+    'ALTER TABLE killmail_events ADD COLUMN zkb_npc TINYINT(1) DEFAULT NULL AFTER zkb_points',
+    'SELECT 1'
+);
+PREPARE killmail_events_zkb_npc_stmt FROM @killmail_events_zkb_npc_sql;
+EXECUTE killmail_events_zkb_npc_stmt;
+DEALLOCATE PREPARE killmail_events_zkb_npc_stmt;
+
+SET @killmail_events_zkb_solo_exists := (
+    SELECT COUNT(*)
+    FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'killmail_events'
+      AND COLUMN_NAME = 'zkb_solo'
+);
+SET @killmail_events_zkb_solo_sql := IF(
+    @killmail_events_zkb_solo_exists = 0,
+    'ALTER TABLE killmail_events ADD COLUMN zkb_solo TINYINT(1) DEFAULT NULL AFTER zkb_npc',
+    'SELECT 1'
+);
+PREPARE killmail_events_zkb_solo_stmt FROM @killmail_events_zkb_solo_sql;
+EXECUTE killmail_events_zkb_solo_stmt;
+DEALLOCATE PREPARE killmail_events_zkb_solo_stmt;
+
+SET @killmail_events_zkb_awox_exists := (
+    SELECT COUNT(*)
+    FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'killmail_events'
+      AND COLUMN_NAME = 'zkb_awox'
+);
+SET @killmail_events_zkb_awox_sql := IF(
+    @killmail_events_zkb_awox_exists = 0,
+    'ALTER TABLE killmail_events ADD COLUMN zkb_awox TINYINT(1) DEFAULT NULL AFTER zkb_solo',
+    'SELECT 1'
+);
+PREPARE killmail_events_zkb_awox_stmt FROM @killmail_events_zkb_awox_sql;
+EXECUTE killmail_events_zkb_awox_stmt;
+DEALLOCATE PREPARE killmail_events_zkb_awox_stmt;
+
+UPDATE killmail_events e
+LEFT JOIN killmail_event_payloads p ON p.sequence_id = e.sequence_id
+SET
+    e.zkb_total_value = CASE
+        WHEN JSON_VALID(COALESCE(NULLIF(p.zkb_json, ''), NULLIF(e.zkb_json, ''), '{}'))
+             AND JSON_EXTRACT(COALESCE(NULLIF(p.zkb_json, ''), NULLIF(e.zkb_json, ''), '{}'), '$.totalValue') IS NOT NULL
+            THEN CAST(JSON_UNQUOTE(JSON_EXTRACT(COALESCE(NULLIF(p.zkb_json, ''), NULLIF(e.zkb_json, ''), '{}'), '$.totalValue')) AS DECIMAL(20,2))
+        ELSE NULL
+    END,
+    e.zkb_points = CASE
+        WHEN JSON_VALID(COALESCE(NULLIF(p.zkb_json, ''), NULLIF(e.zkb_json, ''), '{}'))
+             AND JSON_EXTRACT(COALESCE(NULLIF(p.zkb_json, ''), NULLIF(e.zkb_json, ''), '{}'), '$.points') IS NOT NULL
+            THEN CAST(JSON_UNQUOTE(JSON_EXTRACT(COALESCE(NULLIF(p.zkb_json, ''), NULLIF(e.zkb_json, ''), '{}'), '$.points')) AS UNSIGNED)
+        ELSE NULL
+    END,
+    e.zkb_npc = CASE
+        WHEN JSON_VALID(COALESCE(NULLIF(p.zkb_json, ''), NULLIF(e.zkb_json, ''), '{}'))
+             AND JSON_EXTRACT(COALESCE(NULLIF(p.zkb_json, ''), NULLIF(e.zkb_json, ''), '{}'), '$.npc') IS NOT NULL
+            THEN IF(LOWER(JSON_UNQUOTE(JSON_EXTRACT(COALESCE(NULLIF(p.zkb_json, ''), NULLIF(e.zkb_json, ''), '{}'), '$.npc'))) IN ('1', 'true'), 1, 0)
+        ELSE NULL
+    END,
+    e.zkb_solo = CASE
+        WHEN JSON_VALID(COALESCE(NULLIF(p.zkb_json, ''), NULLIF(e.zkb_json, ''), '{}'))
+             AND JSON_EXTRACT(COALESCE(NULLIF(p.zkb_json, ''), NULLIF(e.zkb_json, ''), '{}'), '$.solo') IS NOT NULL
+            THEN IF(LOWER(JSON_UNQUOTE(JSON_EXTRACT(COALESCE(NULLIF(p.zkb_json, ''), NULLIF(e.zkb_json, ''), '{}'), '$.solo'))) IN ('1', 'true'), 1, 0)
+        ELSE NULL
+    END,
+    e.zkb_awox = CASE
+        WHEN JSON_VALID(COALESCE(NULLIF(p.zkb_json, ''), NULLIF(e.zkb_json, ''), '{}'))
+             AND JSON_EXTRACT(COALESCE(NULLIF(p.zkb_json, ''), NULLIF(e.zkb_json, ''), '{}'), '$.awox') IS NOT NULL
+            THEN IF(LOWER(JSON_UNQUOTE(JSON_EXTRACT(COALESCE(NULLIF(p.zkb_json, ''), NULLIF(e.zkb_json, ''), '{}'), '$.awox'))) IN ('1', 'true'), 1, 0)
+        ELSE NULL
+    END
+WHERE e.zkb_total_value IS NULL
+  AND e.zkb_points IS NULL
+  AND e.zkb_npc IS NULL
+  AND e.zkb_solo IS NULL
+  AND e.zkb_awox IS NULL
+  AND (p.sequence_id IS NOT NULL OR NULLIF(e.zkb_json, '') IS NOT NULL);
 
 CREATE TABLE IF NOT EXISTS killmail_attackers (
     id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
