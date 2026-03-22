@@ -8139,9 +8139,9 @@ function db_scheduler_job_event_insert(string $jobKey, string $eventType, array 
         'started' => 'running',
         'finished' => (string) (($detail['status'] ?? 'success') === 'success' ? 'success' : ($detail['status'] ?? 'finished')),
         'timeout', 'failure' => 'failed',
-        'skipped', 'skipped_no_change', 'skipped_within_freshness_window' => $eventType,
+        'skipped', 'skipped_no_change', 'skipped_within_freshness_window', 'deferred_capacity', 'deferred_memory', 'deferred_cpu' => $eventType,
         'lock_conflict', 'lock_skipped' => 'blocked',
-        'deferred_pressure' => 'deferred',
+        'deferred_pressure', 'idle_backfill_deferred_capacity', 'idle_backfill_deferred_memory', 'idle_backfill_deferred_cpu' => $eventType,
         default => (string) ($current['latest_status'] ?? 'unknown'),
     };
 
@@ -8156,7 +8156,7 @@ function db_scheduler_job_event_insert(string $jobKey, string $eventType, array 
         'last_pressure_state' => $detail['pressure_state'] ?? ($current['last_pressure_state'] ?? null),
         'recent_timeout_count' => max(0, (int) ($current['recent_timeout_count'] ?? 0)) + ($eventType === 'timeout' ? 1 : 0),
         'recent_lock_conflict_count' => max(0, (int) ($current['recent_lock_conflict_count'] ?? 0)) + (in_array($eventType, ['lock_conflict', 'lock_skipped'], true) ? 1 : 0),
-        'recent_deferral_count' => max(0, (int) ($current['recent_deferral_count'] ?? 0)) + ($eventType === 'deferred_pressure' ? 1 : 0),
+        'recent_deferral_count' => max(0, (int) ($current['recent_deferral_count'] ?? 0)) + (str_contains($eventType, 'deferred') ? 1 : 0),
         'recent_skip_count' => max(0, (int) ($current['recent_skip_count'] ?? 0)) + (in_array($eventType, ['skipped', 'skipped_no_change', 'skipped_within_freshness_window'], true) ? 1 : 0),
         'change_aware' => !empty($detail['change_aware']) || !empty($current['change_aware']),
         'dependencies_json' => $detail['dependencies'] ?? ($current['dependencies'] ?? null),
@@ -8627,7 +8627,7 @@ function db_scheduler_planner_decision_insert(?int $scheduleId, string $jobKey, 
     $normalizedJobKey = mb_substr(trim($jobKey), 0, 190);
     $current = db_scheduler_job_current_status_fetch_map([$normalizedJobKey])[$normalizedJobKey] ?? [];
     $decisionType = mb_substr(trim($decisionType), 0, 40);
-    $latestStatus = str_contains($decisionType, 'deferred') ? 'deferred' : (($decisionType === 'allowed' || $decisionType === 'idle_backfill_allowed') ? 'planned' : ((string) ($current['latest_status'] ?? 'planned')));
+    $latestStatus = str_contains($decisionType, 'deferred') ? $decisionType : (($decisionType === 'allowed' || $decisionType === 'idle_backfill_allowed') ? 'planned' : ((string) ($current['latest_status'] ?? 'planned')));
     db_scheduler_job_current_status_upsert($normalizedJobKey, [
         'latest_status' => $latestStatus,
         'current_pressure_state' => mb_substr(trim($pressureState), 0, 32),
