@@ -2404,6 +2404,34 @@ function data_sync_backfill_start_date(string $settingKey, bool $pipelineEnabled
     return $pipelineEnabled ? $fallbackDate : '';
 }
 
+function scheduler_mark_manual_job_start_requested(string $jobKey, string $eventType = 'manual_start_requested', string $actionType = 'manual_start'): void
+{
+    $timestamp = gmdate('Y-m-d H:i:s');
+    db_scheduler_job_event_insert($jobKey, $eventType, ['actor' => 'operator'], 0, null);
+    db_scheduler_tuning_action_log(
+        $jobKey,
+        'admin',
+        $actionType,
+        'Operator queued the job to start immediately and cleared any stopped/investigation state.',
+        [],
+        ['current_state' => 'waiting'],
+        ['source' => 'settings']
+    );
+    db_scheduler_job_current_status_upsert($jobKey, [
+        'latest_status' => 'queued',
+        'latest_event_type' => $eventType,
+        'last_failure_at' => null,
+        'last_failure_message' => null,
+        'current_pressure_state' => 'healthy',
+        'last_pressure_state' => 'healthy',
+        'recent_timeout_count' => 0,
+        'recent_lock_conflict_count' => 0,
+        'recent_deferral_count' => 0,
+        'recent_skip_count' => 0,
+        'last_event_at' => $timestamp,
+    ]);
+}
+
 function run_data_sync_now(?string $jobKey = null): array
 {
     $lockName = 'cron_tick_runner';
@@ -2418,17 +2446,37 @@ function run_data_sync_now(?string $jobKey = null): array
         ];
     }
 
+    $jobLabel = $normalizedJobKey === ''
+        ? 'all enabled jobs'
+        : ((string) ($definitions[$normalizedJobKey]['label'] ?? $normalizedJobKey) . ' job');
+
     try {
+        if ($normalizedJobKey !== '') {
+            $scheduleRow = db_sync_schedule_fetch_by_job_keys([$normalizedJobKey])[0] ?? null;
+            if (!is_array($scheduleRow) || (int) ($scheduleRow['enabled'] ?? 0) !== 1) {
+                return [
+                    'ok' => false,
+                    'message' => 'Run now failed: the selected sync job is not enabled.',
+                ];
+            }
+
+            if (!db_sync_schedule_retry_by_job_key($normalizedJobKey)) {
+                return [
+                    'ok' => false,
+                    'message' => 'Run now failed: scheduler state could not be reset.',
+                ];
+            }
+
+            scheduler_mark_manual_job_start_requested($normalizedJobKey);
+        }
+
+        $forcedJobs = $normalizedJobKey === ''
+            ? db_sync_schedule_force_due_all_enabled()
+            : db_sync_schedule_force_due_by_job_keys([$normalizedJobKey]);
+
         $daemonState = scheduler_daemon_state_view();
         if (!empty($daemonState['is_healthy'])) {
-            $forcedJobs = $normalizedJobKey === ''
-                ? db_sync_schedule_force_due_all_enabled()
-                : db_sync_schedule_force_due_by_job_keys([$normalizedJobKey]);
             db_scheduler_daemon_request_wake(scheduler_daemon_key());
-
-            $jobLabel = $normalizedJobKey === ''
-                ? 'all enabled jobs'
-                : ((string) ($definitions[$normalizedJobKey]['label'] ?? $normalizedJobKey) . ' job');
 
             return [
                 'ok' => true,
@@ -2437,22 +2485,26 @@ function run_data_sync_now(?string $jobKey = null): array
             ];
         }
 
+        $startResult = scheduler_watchdog_start_daemon();
+        if (!empty($startResult['ok'])) {
+            db_scheduler_daemon_request_wake(scheduler_daemon_key());
+
+            return [
+                'ok' => true,
+                'message' => 'Run now queued for ' . $jobLabel . '. Forced ' . $forcedJobs . ' schedule(s) and requested an immediate scheduler daemon start (' . ($startResult['mode'] ?? 'watchdog') . ').',
+                'summary' => ['jobs_forced' => $forcedJobs, 'mode' => $startResult['mode'] ?? 'watchdog_start'],
+            ];
+        }
+
         $lockAcquired = runner_lock_acquire($lockName, 0);
         if (!$lockAcquired) {
             return [
                 'ok' => false,
-                'message' => 'Data sync is already running from cron. Please wait a minute and try again.',
+                'message' => 'Run now failed: the scheduler daemon could not be started and the cron runner lock is currently busy.',
             ];
         }
 
-        $forcedJobs = $normalizedJobKey === ''
-            ? db_sync_schedule_force_due_all_enabled()
-            : db_sync_schedule_force_due_by_job_keys([$normalizedJobKey]);
         $summary = cron_tick_run();
-
-        $jobLabel = $normalizedJobKey === ''
-            ? 'all enabled jobs'
-            : ((string) ($definitions[$normalizedJobKey]['label'] ?? $normalizedJobKey) . ' job');
 
         return [
             'ok' => true,
@@ -2473,50 +2525,7 @@ function run_data_sync_now(?string $jobKey = null): array
 
 function retry_data_sync_job_now(string $jobKey): array
 {
-    $definitions = data_sync_schedule_job_definitions();
-    $normalizedJobKey = trim($jobKey);
-    if ($normalizedJobKey === '' || !isset($definitions[$normalizedJobKey])) {
-        return [
-            'ok' => false,
-            'message' => 'Retry failed: unknown sync job selected.',
-        ];
-    }
-
-    $scheduleRow = db_sync_schedule_fetch_by_job_keys([$normalizedJobKey])[0] ?? null;
-    if (!is_array($scheduleRow) || (int) ($scheduleRow['enabled'] ?? 0) !== 1) {
-        return [
-            'ok' => false,
-            'message' => 'Retry failed: the selected sync job is not enabled.',
-        ];
-    }
-
-    if (!db_sync_schedule_retry_by_job_key($normalizedJobKey)) {
-        return [
-            'ok' => false,
-            'message' => 'Retry failed: scheduler state could not be reset.',
-        ];
-    }
-
-    $queued = run_data_sync_now($normalizedJobKey);
-    if (!empty($queued['ok'])) {
-        $timestamp = gmdate('Y-m-d H:i:s');
-        db_scheduler_job_event_insert($normalizedJobKey, 'manual_retry_requested', ['actor' => 'operator'], 0, null);
-        db_scheduler_tuning_action_log($normalizedJobKey, 'admin', 'manual_retry', 'Cleared scheduler quarantine state and re-queued the job.', [], ['current_state' => 'waiting'], ['source' => 'settings']);
-        db_scheduler_job_current_status_upsert($normalizedJobKey, [
-            'latest_status' => 'queued',
-            'latest_event_type' => 'manual_retry_requested',
-            'last_failure_message' => null,
-            'current_pressure_state' => 'healthy',
-            'last_pressure_state' => 'healthy',
-            'recent_timeout_count' => 0,
-            'recent_lock_conflict_count' => 0,
-            'recent_deferral_count' => 0,
-            'recent_skip_count' => 0,
-            'last_event_at' => $timestamp,
-        ]);
-    }
-
-    return $queued;
+    return run_data_sync_now(trim($jobKey));
 }
 
 function stop_data_sync_job_for_investigation(string $jobKey): array
@@ -2538,7 +2547,7 @@ function stop_data_sync_job_for_investigation(string $jobKey): array
         ];
     }
 
-    $reason = 'Stopped by operator for investigation. Use Retry now after resolving the issue.';
+    $reason = 'Stopped by operator for investigation. Use Start now after resolving the issue.';
     if (!db_sync_schedule_stop_for_investigation_by_job_key($normalizedJobKey, $reason)) {
         return [
             'ok' => false,
@@ -2566,7 +2575,7 @@ function stop_data_sync_job_for_investigation(string $jobKey): array
 
     return [
         'ok' => true,
-        'message' => $jobLabel . ' is now stopped for investigation. Retry it from the job card after you resolve the issue.',
+        'message' => $jobLabel . ' is now stopped for investigation. Use Start now from the job card after you resolve the issue.',
     ];
 }
 

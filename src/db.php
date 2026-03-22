@@ -7140,6 +7140,9 @@ function db_sync_schedule_retry_by_job_key(string $jobKey): bool
              failure_streak = 0,
              degraded_until = NULL,
              consecutive_deferrals = 0,
+             last_status = CASE WHEN enabled = 1 THEN \'queued\' ELSE last_status END,
+             last_result = CASE WHEN enabled = 1 THEN \'queued\' ELSE last_result END,
+             last_error = CASE WHEN enabled = 1 THEN NULL ELSE last_error END,
              updated_at = CURRENT_TIMESTAMP
          WHERE job_key = ?
          LIMIT 1',
