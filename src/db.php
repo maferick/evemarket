@@ -2162,7 +2162,7 @@ function db_market_orders_history_partitioned_table_sql(): string
 "
         . "    observed_at DATETIME NOT NULL,
 "
-        . "    observed_date DATE GENERATED ALWAYS AS (DATE(observed_at)) STORED,
+        . "    observed_date DATE NOT NULL,
 "
         . "    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 "
@@ -2240,6 +2240,39 @@ function db_market_orders_history_partition_boundaries(string $table = 'market_o
     }
 
     return $boundaries;
+}
+
+
+function db_market_orders_history_normalize_observed_date(string $observedAt): string
+{
+    $safeObservedAt = trim($observedAt);
+    if ($safeObservedAt === '') {
+        return '';
+    }
+
+    $timestamp = strtotime($safeObservedAt);
+    if ($timestamp === false) {
+        return '';
+    }
+
+    return gmdate('Y-m-d', $timestamp);
+}
+
+function db_market_orders_history_rows_with_observed_date(array $rows): array
+{
+    if ($rows === []) {
+        return [];
+    }
+
+    return array_values(array_map(static function (array $row): array {
+        if (trim((string) ($row['observed_date'] ?? '')) !== '') {
+            return $row;
+        }
+
+        $row['observed_date'] = db_market_orders_history_normalize_observed_date((string) ($row['observed_at'] ?? ''));
+
+        return $row;
+    }, $rows));
 }
 
 function db_market_orders_history_partitioned_schema_ensure(int $futureMonths = 3): void
@@ -2350,7 +2383,7 @@ function db_market_orders_history_backfill_window(
         db_market_orders_history_ensure_future_monthly_partitions($monthsAhead + 1, $target);
     }
 
-    $columns = [
+    $baseColumns = [
         'source_type',
         'source_id',
         'type_id',
@@ -2395,9 +2428,15 @@ function db_market_orders_history_backfill_window(
             break;
         }
 
+        $targetColumns = $baseColumns;
+        if ($target === db_market_orders_history_partitioned_table()) {
+            $targetColumns[] = 'observed_date';
+            $rows = db_market_orders_history_rows_with_observed_date($rows);
+        }
+
         $written += db_bulk_insert_or_upsert(
             $target,
-            $columns,
+            $targetColumns,
             $rows,
             [
                 'type_id',
@@ -2876,7 +2915,7 @@ function db_market_orders_history_bulk_insert(array $orders, ?int $chunkSize = n
         return 0;
     }
 
-    $columns = [
+    $baseColumns = [
         'source_type',
         'source_id',
         'type_id',
@@ -2892,7 +2931,7 @@ function db_market_orders_history_bulk_insert(array $orders, ?int $chunkSize = n
         'expires',
         'observed_at',
     ];
-    return db_transaction(function () use ($orders, $columns, $chunkSize): int {
+    return db_transaction(function () use ($orders, $baseColumns, $chunkSize): int {
         $written = 0;
 
         foreach (db_market_orders_history_write_tables() as $table) {
@@ -2906,7 +2945,10 @@ function db_market_orders_history_bulk_insert(array $orders, ?int $chunkSize = n
                         continue;
                     }
 
-                    $observedDate = gmdate('Y-m-d', strtotime($observedAt));
+                    $observedDate = db_market_orders_history_normalize_observed_date($observedAt);
+                    if ($observedDate === '') {
+                        continue;
+                    }
                     if ($observedDate > $latestObservedDate) {
                         $latestObservedDate = $observedDate;
                     }
@@ -2919,12 +2961,19 @@ function db_market_orders_history_bulk_insert(array $orders, ?int $chunkSize = n
                 }
             }
 
+            $tableColumns = $baseColumns;
+            $tableRows = $orders;
+            if ($table === db_market_orders_history_partitioned_table()) {
+                $tableColumns[] = 'observed_date';
+                $tableRows = db_market_orders_history_rows_with_observed_date($orders);
+            }
+
             $written = max(
                 $written,
                 db_bulk_insert_or_upsert(
                     $table,
-                    $columns,
-                    $orders,
+                    $tableColumns,
+                    $tableRows,
                     [
                         'type_id',
                         'is_buy_order',

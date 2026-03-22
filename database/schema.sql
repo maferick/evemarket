@@ -1260,7 +1260,7 @@ CREATE TABLE IF NOT EXISTS market_orders_history_p (
     issued DATETIME NOT NULL,
     expires DATETIME NOT NULL,
     observed_at DATETIME NOT NULL,
-    observed_date DATE GENERATED ALWAYS AS (DATE(observed_at)) STORED,
+    observed_date DATE NOT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (id, observed_date),
     UNIQUE KEY unique_source_order_observed (source_type, source_id, order_id, observed_at, observed_date),
