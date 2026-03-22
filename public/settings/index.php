@@ -1466,7 +1466,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                     <p><span class="text-slate-100">Latest uploaded_at:</span> <?= htmlspecialchars((string) ($killmailStatus['max_uploaded_at'] ?? '-'), ENT_QUOTES) ?></p>
                 </div>
 
-                <p class="text-sm text-muted">Ingestion consumes R2Z2 as an ordered stream. Filtering for alliances/corporations happens after local persistence, enabling future module-demand prediction and restock analytics.</p>
+                <p class="text-sm text-muted">Ingestion consumes R2Z2 as an ordered stream. The worker now stores killmails when a tracked alliance or corporation appears on either the victim or attacker side, while victim-side matches continue to drive loss-demand analytics.</p>
                 <button class="btn-primary">Save Killmail Intelligence Settings</button>
             </form>
         <?php elseif ($section === 'esi-login'): ?>

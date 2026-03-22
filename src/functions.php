@@ -8064,7 +8064,21 @@ function killmail_match_sources(array $row): array
         $sources[] = 'tracked victim corporation';
     }
 
+    if ((int) ($row['matches_attacker_alliance'] ?? 0) === 1) {
+        $sources[] = 'tracked attacker alliance';
+    }
+
+    if ((int) ($row['matches_attacker_corporation'] ?? 0) === 1) {
+        $sources[] = 'tracked attacker corporation';
+    }
+
     return $sources;
+}
+
+function killmail_row_matches_tracked_victim(array $row): bool
+{
+    return (int) ($row['matches_victim_alliance'] ?? 0) === 1
+        || (int) ($row['matches_victim_corporation'] ?? 0) === 1;
 }
 
 function killmail_entity_display_name(?string $label, string $fallbackPrefix, ?int $id): string
@@ -9545,7 +9559,7 @@ function killmail_detail_data(): array
             'fitted' => (int) ($groupedItems['fitted']['total_quantity'] ?? 0),
         ];
         $storedItemCount = array_sum(array_map(static fn (array $group): int => count((array) ($group['rows'] ?? [])), $groupedItems));
-        $signalStrength = killmail_signal_strength_meta($storedItemCount, count($formattedAttackers), (int) ($event['matched_tracked'] ?? 0) === 1);
+        $signalStrength = killmail_signal_strength_meta($storedItemCount, count($formattedAttackers), killmail_row_matches_tracked_victim($event));
         $supplyImpact = killmail_supply_impact_meta($estimatedValue, $itemTotals['dropped'], $itemTotals['destroyed'], $itemTotals['fitted']);
 
         return [
@@ -9588,8 +9602,8 @@ function killmail_detail_data(): array
             'items' => $groupedItems,
             'item_totals' => $itemTotals,
             'stored_item_count' => $storedItemCount,
-            'tracked_victim_loss' => (int) ($event['matched_tracked'] ?? 0) === 1,
-            'match_context' => $matchSources === [] ? 'No tracked victim entity currently matches this stored loss.' : ('Matched on ' . implode(' and ', $matchSources) . '.'),
+            'tracked_victim_loss' => killmail_row_matches_tracked_victim($event),
+            'match_context' => $matchSources === [] ? 'No tracked entity currently matches this stored killmail.' : ('Matched on ' . implode(' and ', $matchSources) . '.'),
             'signal_strength' => $signalStrength,
             'supply_impact' => $supplyImpact,
             'doctrine_impact' => $doctrineImpact,
@@ -9767,7 +9781,7 @@ function killmail_overview_data(): array
             $estimatedValue = killmail_overview_value_amount($row);
             $points = killmail_overview_points($row);
             $shipTypeId = isset($row['victim_ship_type_id']) ? (int) $row['victim_ship_type_id'] : null;
-            $signalStrength = killmail_signal_strength_meta(0, 0, (int) ($row['matched_tracked'] ?? 0) === 1);
+            $signalStrength = killmail_signal_strength_meta(0, 0, killmail_row_matches_tracked_victim($row));
             $supplyImpact = killmail_supply_impact_meta($estimatedValue, 0, 0, 0);
             $killmailFlags = array_values(array_filter([
                 killmail_overview_flag_enabled($row, 'zkb_npc') ? 'NPC' : null,
@@ -9787,7 +9801,7 @@ function killmail_overview_data(): array
                 'system' => killmail_entity_preferred_name($resolvedOverviewEntities, 'system', isset($row['solar_system_id']) ? (int) $row['solar_system_id'] : null, isset($row['system_name']) ? (string) $row['system_name'] : '', 'System'),
                 'region' => killmail_entity_preferred_name($resolvedOverviewEntities, 'region', isset($row['region_id']) ? (int) $row['region_id'] : null, isset($row['region_name']) ? (string) $row['region_name'] : '', 'Region'),
                 'matched_tracked' => (int) ($row['matched_tracked'] ?? 0) === 1,
-                'match_context' => $matchSources === [] ? 'No tracked victim entity currently matches this stored loss.' : ('Matched on ' . implode(', ', $matchSources) . '.'),
+                'match_context' => $matchSources === [] ? 'No tracked entity currently matches this stored killmail.' : ('Matched on ' . implode(', ', $matchSources) . '.'),
                 'ship_icon_url' => $shipTypeId !== null ? killmail_entity_image_url('type', $shipTypeId, 'icon', 64) : null,
                 'estimated_value_display' => $estimatedValue !== null ? number_format($estimatedValue, 0) . ' ISK' : 'Value unavailable',
                 'points_display' => $points !== null ? number_format($points) : 'Unavailable',
@@ -9808,7 +9822,7 @@ function killmail_overview_data(): array
             'summary' => [
                 ['label' => 'Total Ingested', 'value' => number_format($totalCount), 'context' => 'Killmails stored locally'],
                 ['label' => 'Recent Ingestion', 'value' => number_format($recentCount), 'context' => 'Stored in the last ' . $recentHours . ' hours'],
-                ['label' => 'Tracked Victim Losses', 'value' => number_format($trackedMatchCount), 'context' => 'Stored losses where the victim matches a tracked alliance or corporation'],
+                ['label' => 'Tracked Entity Killmails', 'value' => number_format($trackedMatchCount), 'context' => 'Stored killmails where a tracked alliance or corporation appears on the victim or attacker side'],
                 ['label' => 'Last Processed Sequence', 'value' => $maxSequenceId > 0 ? number_format($maxSequenceId) : '—', 'context' => $cursor !== '' ? ('Cursor ' . $cursor) : 'Cursor not recorded yet'],
                 ['label' => 'Sync Freshness', 'value' => killmail_relative_datetime($lastSuccessAt), 'context' => $lastSuccessAt !== null ? ('Last success ' . killmail_format_datetime($lastSuccessAt)) : 'No successful sync recorded'],
             ],
@@ -16785,7 +16799,27 @@ function killmail_event_matches_tracked_entities(array $event, array $attackers,
 
     $victimCorporationId = (int) ($event['victim_corporation_id'] ?? 0);
 
-    return $victimCorporationId > 0 && isset($trackedCorporationIds[$victimCorporationId]);
+    if ($victimCorporationId > 0 && isset($trackedCorporationIds[$victimCorporationId])) {
+        return true;
+    }
+
+    foreach ($attackers as $attacker) {
+        if (!is_array($attacker)) {
+            continue;
+        }
+
+        $attackerAllianceId = (int) ($attacker['alliance_id'] ?? 0);
+        if ($attackerAllianceId > 0 && isset($trackedAllianceIds[$attackerAllianceId])) {
+            return true;
+        }
+
+        $attackerCorporationId = (int) ($attacker['corporation_id'] ?? 0);
+        if ($attackerCorporationId > 0 && isset($trackedCorporationIds[$attackerCorporationId])) {
+            return true;
+        }
+    }
+
+    return false;
 }
 
 function killmail_transform_r2z2_payload(array $payload): array

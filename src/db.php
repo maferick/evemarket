@@ -9320,6 +9320,22 @@ function db_killmail_tracked_match_sql(string $eventAlias = 'e'): string
             FROM killmail_tracked_corporations tc
             WHERE tc.is_active = 1
         )
+        OR EXISTS (
+            SELECT 1
+            FROM killmail_attackers attacker
+            INNER JOIN killmail_tracked_alliances ta
+                ON ta.alliance_id = attacker.alliance_id
+               AND ta.is_active = 1
+            WHERE attacker.sequence_id = {$eventAlias}.sequence_id
+        )
+        OR EXISTS (
+            SELECT 1
+            FROM killmail_attackers attacker
+            INNER JOIN killmail_tracked_corporations tc
+                ON tc.corporation_id = attacker.corporation_id
+               AND tc.is_active = 1
+            WHERE attacker.sequence_id = {$eventAlias}.sequence_id
+        )
     )";
 }
 
@@ -9336,12 +9352,16 @@ function db_killmail_tracked_matches_sql(?string $effectiveAfterSql = null, ?str
         SELECT
             matched.sequence_id,
             MAX(matched.matches_victim_alliance) AS matches_victim_alliance,
-            MAX(matched.matches_victim_corporation) AS matches_victim_corporation
+            MAX(matched.matches_victim_corporation) AS matches_victim_corporation,
+            MAX(matched.matches_attacker_alliance) AS matches_attacker_alliance,
+            MAX(matched.matches_attacker_corporation) AS matches_attacker_corporation
         FROM (
             SELECT
                 e.sequence_id,
                 1 AS matches_victim_alliance,
-                0 AS matches_victim_corporation
+                0 AS matches_victim_corporation,
+                0 AS matches_attacker_alliance,
+                0 AS matches_attacker_corporation
             FROM killmail_tracked_alliances ta
             INNER JOIN killmail_events e
                 ON e.victim_alliance_id = ta.alliance_id{$effectiveFilterSql}{$sequenceFilterSql}
@@ -9352,10 +9372,42 @@ function db_killmail_tracked_matches_sql(?string $effectiveAfterSql = null, ?str
             SELECT
                 e.sequence_id,
                 0 AS matches_victim_alliance,
-                1 AS matches_victim_corporation
+                1 AS matches_victim_corporation,
+                0 AS matches_attacker_alliance,
+                0 AS matches_attacker_corporation
             FROM killmail_tracked_corporations tc
             INNER JOIN killmail_events e
                 ON e.victim_corporation_id = tc.corporation_id{$effectiveFilterSql}{$sequenceFilterSql}
+            WHERE tc.is_active = 1
+
+            UNION ALL
+
+            SELECT
+                a.sequence_id,
+                0 AS matches_victim_alliance,
+                0 AS matches_victim_corporation,
+                1 AS matches_attacker_alliance,
+                0 AS matches_attacker_corporation
+            FROM killmail_tracked_alliances ta
+            INNER JOIN killmail_attackers a
+                ON a.alliance_id = ta.alliance_id
+            INNER JOIN killmail_events e
+                ON e.sequence_id = a.sequence_id{$effectiveFilterSql}{$sequenceFilterSql}
+            WHERE ta.is_active = 1
+
+            UNION ALL
+
+            SELECT
+                a.sequence_id,
+                0 AS matches_victim_alliance,
+                0 AS matches_victim_corporation,
+                0 AS matches_attacker_alliance,
+                1 AS matches_attacker_corporation
+            FROM killmail_tracked_corporations tc
+            INNER JOIN killmail_attackers a
+                ON a.corporation_id = tc.corporation_id
+            INNER JOIN killmail_events e
+                ON e.sequence_id = a.sequence_id{$effectiveFilterSql}{$sequenceFilterSql}
             WHERE tc.is_active = 1
         ) matched
         GROUP BY matched.sequence_id
@@ -9459,6 +9511,7 @@ function db_killmail_overview_row(int $sequenceId): ?array
     }
 
     $matchSql = db_killmail_tracked_match_sql('e');
+    $trackedMatchesSql = db_killmail_tracked_matches_sql();
 
     return db_select_one(
         "SELECT
@@ -9488,8 +9541,12 @@ function db_killmail_overview_row(int $sequenceId): ?array
             COALESCE(NULLIF(region_ref.region_name, ''), '') AS region_name,
             CASE WHEN victim_ta.alliance_id IS NULL THEN 0 ELSE 1 END AS matches_victim_alliance,
             CASE WHEN victim_tc.corporation_id IS NULL THEN 0 ELSE 1 END AS matches_victim_corporation,
+            COALESCE(tracked.matches_attacker_alliance, 0) AS matches_attacker_alliance,
+            COALESCE(tracked.matches_attacker_corporation, 0) AS matches_attacker_corporation,
             CASE WHEN {$matchSql} THEN 1 ELSE 0 END AS matched_tracked
          FROM killmail_events e
+         LEFT JOIN {$trackedMatchesSql} tracked
+           ON tracked.sequence_id = e.sequence_id
          LEFT JOIN ref_item_types ship ON ship.type_id = e.victim_ship_type_id
          LEFT JOIN ref_systems system_ref ON system_ref.system_id = e.solar_system_id
          LEFT JOIN ref_regions region_ref ON region_ref.region_id = e.region_id
@@ -9673,6 +9730,8 @@ function db_killmail_overview_page(array $filters = []): array
             COALESCE(NULLIF(region_ref.region_name, ''), CONCAT('Region #', e.region_id)) AS region_name,
             COALESCE(tracked.matches_victim_alliance, 0) AS matches_victim_alliance,
             COALESCE(tracked.matches_victim_corporation, 0) AS matches_victim_corporation,
+            COALESCE(tracked.matches_attacker_alliance, 0) AS matches_attacker_alliance,
+            COALESCE(tracked.matches_attacker_corporation, 0) AS matches_attacker_corporation,
             CASE WHEN tracked.sequence_id IS NULL THEN 0 ELSE 1 END AS matched_tracked
             {$fromSql}
             {$whereSql}

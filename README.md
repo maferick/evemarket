@@ -586,7 +586,8 @@ SupplyCore now includes a first-pass killmail intelligence ingestion foundation 
   - treat feed as an ordered stream (not query API)
   - resume from last processed sequence cursor
   - iterate forward until 404 (no new sequence yet)
-  - filtering happens **after** local storage
+  - store killmails when a tracked alliance or corporation appears on the victim or attacker side
+  - keep victim-side tracked matches available for loss-demand analytics
 - Local persistence tables:
   - `killmail_events`
   - `killmail_attackers`

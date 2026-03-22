@@ -147,7 +147,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
             <label class="flex items-center gap-3 surface-tertiary text-sm text-slate-200">
                 <input type="hidden" name="tracked_only" value="0">
                 <input type="checkbox" name="tracked_only" value="1" <?= ($filters['tracked_only'] ?? false) ? 'checked' : '' ?> class="size-4 rounded border-border bg-black">
-                <span>Tracked victim losses only</span>
+                <span>Tracked entity killmails only</span>
             </label>
         </div>
         <div class="mt-4 flex flex-wrap items-center justify-between gap-3">
@@ -212,7 +212,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                         <td class="px-3 py-3 align-top">
                             <div class="flex max-w-xs flex-wrap gap-2">
                                 <span class="rounded-full border px-2 py-0.5 text-[11px] uppercase tracking-[0.08em] <?= ($row['matched_tracked'] ?? false) ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-200' : 'border-slate-500/40 bg-slate-500/10 text-slate-300' ?>">
-                                    <?= ($row['matched_tracked'] ?? false) ? 'Tracked victim' : 'Recorded loss' ?>
+                                    <?= ($row['matched_tracked'] ?? false) ? 'Tracked entity' : 'Recorded loss' ?>
                                 </span>
                                 <span class="rounded-full border px-2 py-0.5 text-[11px] uppercase tracking-[0.08em] <?= htmlspecialchars((string) (($row['signal_strength']['tone'] ?? 'border-slate-500/40 bg-slate-500/10 text-slate-300')), ENT_QUOTES) ?>">
                                     <?= htmlspecialchars((string) (($row['signal_strength']['label'] ?? 'Signal')), ENT_QUOTES) ?>
