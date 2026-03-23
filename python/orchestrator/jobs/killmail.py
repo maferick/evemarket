@@ -217,6 +217,9 @@ def run_killmail_r2z2_stream(context: Any) -> dict[str, Any]:
     pending_payloads: list[dict[str, Any]] = []
     total_rows_seen = 0
     total_rows_written = 0
+    total_rows_matched = 0
+    total_rows_skipped_existing = 0
+    total_rows_filtered_out = 0
     total_duplicates = 0
     total_filtered = 0
     total_invalid = 0
@@ -253,6 +256,8 @@ def run_killmail_r2z2_stream(context: Any) -> dict[str, Any]:
 
             if status == 200:
                 payload = entity_resolver.enrich_payload(payload)
+                payload["requested_sequence_id"] = sequence_id
+                payload["sequence_id"] = int(payload.get("sequence_id") or sequence_id)
                 pending_payloads.append(payload)
                 total_sequence_files_fetched += 1
                 next_sequence = sequence_id + 1
@@ -261,6 +266,9 @@ def run_killmail_r2z2_stream(context: Any) -> dict[str, Any]:
                     pending_payloads = []
                     batches_flushed += 1
                     total_rows_seen += int(batch_result.get("rows_seen") or 0)
+                    total_rows_matched += int(batch_result.get("rows_matched") or 0)
+                    total_rows_skipped_existing += int(batch_result.get("rows_skipped_existing") or 0)
+                    total_rows_filtered_out += int(batch_result.get("rows_filtered_out") or 0)
                     total_rows_written += int(batch_result.get("rows_written") or 0)
                     total_duplicates += int(batch_result.get("duplicates") or 0)
                     total_filtered += int(batch_result.get("filtered") or 0)
@@ -289,6 +297,9 @@ def run_killmail_r2z2_stream(context: Any) -> dict[str, Any]:
                 pending_payloads = []
                 batches_flushed += 1
                 total_rows_seen += int(batch_result.get("rows_seen") or 0)
+                total_rows_matched += int(batch_result.get("rows_matched") or 0)
+                total_rows_skipped_existing += int(batch_result.get("rows_skipped_existing") or 0)
+                total_rows_filtered_out += int(batch_result.get("rows_filtered_out") or 0)
                 total_rows_written += int(batch_result.get("rows_written") or 0)
                 total_duplicates += int(batch_result.get("duplicates") or 0)
                 total_filtered += int(batch_result.get("filtered") or 0)
@@ -318,6 +329,9 @@ def run_killmail_r2z2_stream(context: Any) -> dict[str, Any]:
             pending_payloads = []
             batches_flushed += 1
             total_rows_seen += int(batch_result.get("rows_seen") or 0)
+            total_rows_matched += int(batch_result.get("rows_matched") or 0)
+            total_rows_skipped_existing += int(batch_result.get("rows_skipped_existing") or 0)
+            total_rows_filtered_out += int(batch_result.get("rows_filtered_out") or 0)
             total_rows_written += int(batch_result.get("rows_written") or 0)
             total_duplicates += int(batch_result.get("duplicates") or 0)
             total_filtered += int(batch_result.get("filtered") or 0)
@@ -334,16 +348,27 @@ def run_killmail_r2z2_stream(context: Any) -> dict[str, Any]:
             "batches_flushed": batches_flushed,
         })
 
+        no_write_reason = ""
         if total_rows_written > 0:
             outcome_reason = "Python streamed killmail ingestion batches and kept polling until the worker budget expired."
         elif total_rows_seen > 0 and total_duplicates == total_rows_seen:
             outcome_reason = "All fetched killmails were already present in storage."
+            no_write_reason = "all_rows_already_present"
         elif total_rows_seen > 0 and total_filtered + total_invalid == total_rows_seen:
             outcome_reason = "Fetched killmails did not pass tracked-entity filters or were invalid."
+            no_write_reason = "all_rows_filtered_or_invalid"
+        elif total_rows_seen > 0 and total_filtered == total_rows_seen:
+            outcome_reason = "Fetched killmails did not match any tracked alliance or corporation."
+            no_write_reason = "all_rows_filtered_out"
+        elif total_rows_seen > 0 and total_invalid == total_rows_seen:
+            outcome_reason = "Fetched killmails could not be normalized into valid persistence rows."
+            no_write_reason = "all_rows_invalid"
         elif total_sequence_404s > 0:
             outcome_reason = "Python worker caught up to the live R2Z2 tip and stayed in the documented poll/sleep loop."
+            no_write_reason = "caught_up_to_live_tip"
         else:
             outcome_reason = "Python worker completed without new killmail inserts."
+            no_write_reason = "mixed_no_write_result"
 
         result = {
             "status": "success",
@@ -366,15 +391,21 @@ def run_killmail_r2z2_stream(context: Any) -> dict[str, Any]:
                 "duplicates": total_duplicates,
                 "filtered": total_filtered,
                 "invalid": total_invalid,
+                "rows_matched": total_rows_matched,
+                "rows_skipped_existing": total_rows_skipped_existing,
+                "rows_filtered_out": total_rows_filtered_out,
                 "killmails_fetched": total_rows_seen,
                 "killmails_inserted": total_rows_written,
                 "first_sequence_attempted": first_sequence_attempted,
                 "last_sequence_attempted": last_sequence_attempted,
+                "cursor_before": str(last_saved_sequence or 0),
+                "cursor_after": cursor_end,
                 "last_saved_sequence_before_run": last_saved_sequence,
                 "last_processed_sequence": last_processed_sequence,
                 "latest_remote_sequence": latest_remote_sequence,
                 "batches_flushed": batches_flushed,
                 "memory_usage_bytes": resident_memory_bytes(),
+                "no_write_reason": no_write_reason,
                 "outcome_reason": outcome_reason,
             },
         }

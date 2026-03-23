@@ -8093,10 +8093,93 @@ function zkill_worker_runtime_status(): array
         'age_seconds' => $ageSeconds,
         'status' => $status !== '' ? $status : 'unknown',
         'rows_seen' => (int) (($state['result']['rows_seen'] ?? 0)),
+        'rows_matched' => (int) (($state['result']['meta']['rows_matched'] ?? 0)),
+        'rows_skipped_existing' => (int) (($state['result']['meta']['rows_skipped_existing'] ?? 0)),
+        'rows_filtered_out' => (int) (($state['result']['meta']['rows_filtered_out'] ?? 0)),
         'rows_written' => (int) (($state['result']['rows_written'] ?? 0)),
         'cursor' => isset($state['result']['cursor']) ? (string) $state['result']['cursor'] : null,
+        'cursor_before' => isset($state['result']['meta']['cursor_before']) ? (string) $state['result']['meta']['cursor_before'] : null,
+        'cursor_after' => isset($state['result']['meta']['cursor_after']) ? (string) $state['result']['meta']['cursor_after'] : null,
+        'no_write_reason' => isset($state['result']['meta']['no_write_reason']) ? (string) $state['result']['meta']['no_write_reason'] : '',
+        'outcome_reason' => isset($state['result']['meta']['outcome_reason']) ? (string) $state['result']['meta']['outcome_reason'] : '',
         'memory_usage_bytes' => isset($state['memory_usage_bytes']) ? (int) $state['memory_usage_bytes'] : null,
         'worker_id' => isset($state['worker_id']) ? (string) $state['worker_id'] : null,
+    ];
+}
+
+function killmail_no_write_reason_label(string $reason): string
+{
+    return match (trim($reason)) {
+        'all_rows_already_present' => 'Everything in the last worker pass was already stored.',
+        'all_rows_filtered_or_invalid' => 'The last worker pass saw rows, but all of them were filtered out or invalid.',
+        'all_rows_filtered_out' => 'The last worker pass did not match any tracked alliance or corporation.',
+        'all_rows_invalid' => 'The last worker pass could not normalize the fetched killmails.',
+        'caught_up_to_live_tip' => 'The worker is caught up to the current zKill live tip.',
+        'mixed_no_write_result' => 'The last worker pass completed without inserting new rows.',
+        default => '',
+    };
+}
+
+function killmail_ingestion_health_summary(array $status, array $workerStatus = []): array
+{
+    $lastSuccessAt = trim((string) ($status['last_success_at_raw'] ?? $status['last_success_at'] ?? ''));
+    $lastSuccessTimestamp = $lastSuccessAt !== '' ? (strtotime($lastSuccessAt) ?: null) : null;
+    $workerAgeSeconds = isset($workerStatus['age_seconds']) ? (int) $workerStatus['age_seconds'] : null;
+    $lastError = trim((string) ($status['last_error'] ?? ''));
+    $rowsWritten = (int) ($status['last_run_written_rows'] ?? 0);
+    $rowsSeen = (int) ($status['last_run_source_rows'] ?? 0);
+    $workerNoWriteReason = killmail_no_write_reason_label((string) ($workerStatus['no_write_reason'] ?? ''));
+
+    $state = 'healthy';
+    if (!($status['ingestion_enabled'] ?? false)) {
+        $state = 'disabled';
+    } elseif ($lastError !== '') {
+        $state = 'stalled';
+    } elseif ($lastSuccessTimestamp === null) {
+        $state = 'stalled';
+    } elseif ((time() - $lastSuccessTimestamp) > 45 * 60) {
+        $state = 'stalled';
+    } elseif ((time() - $lastSuccessTimestamp) > 15 * 60) {
+        $state = 'delayed';
+    } elseif ($workerAgeSeconds !== null && $workerAgeSeconds > 20 * 60) {
+        $state = 'delayed';
+    }
+
+    $tone = match ($state) {
+        'healthy' => 'border-emerald-500/40 bg-emerald-500/10 text-emerald-100',
+        'delayed' => 'border-amber-500/40 bg-amber-500/10 text-amber-100',
+        'disabled', 'stalled' => 'border-rose-500/40 bg-rose-500/10 text-rose-100',
+        default => 'border-slate-500/40 bg-slate-500/10 text-slate-200',
+    };
+
+    $label = match ($state) {
+        'healthy' => 'Ingestion healthy',
+        'delayed' => 'Ingestion delayed',
+        'disabled' => 'Ingestion disabled',
+        'stalled' => 'Ingestion stalled',
+        default => 'Status unknown',
+    };
+
+    $message = match ($state) {
+        'healthy' => $rowsWritten > 0
+            ? 'The worker is writing qualifying killmails and the board should stay current.'
+            : ($workerNoWriteReason !== '' ? $workerNoWriteReason : 'The worker is current and no new qualifying killmails were written in the latest pass.'),
+        'delayed' => 'Freshness is drifting beyond the normal operating window. Confirm the worker heartbeat and latest successful sync.',
+        'disabled' => 'Killmail ingestion is currently turned off.',
+        'stalled' => $lastError !== ''
+            ? ('The most recent sync error needs attention: ' . $lastError)
+            : 'Killmail freshness is outside the expected window or the worker is no longer checking in.',
+        default => 'Killmail ingestion status is unavailable.',
+    };
+
+    return [
+        'state' => $state,
+        'label' => $label,
+        'tone' => $tone,
+        'message' => $message,
+        'last_rows_written' => $rowsWritten,
+        'last_rows_seen' => $rowsSeen,
+        'worker_no_write_reason' => $workerNoWriteReason,
     ];
 }
 
@@ -9741,6 +9824,10 @@ function killmail_overview_data(): array
         $lastIngestedAt = isset($summaryRow['last_ingested_at']) ? (string) $summaryRow['last_ingested_at'] : null;
         $latestUploadedAt = isset($summaryRow['latest_uploaded_at']) ? (string) $summaryRow['latest_uploaded_at'] : null;
         $cursor = isset($state['last_cursor']) ? trim((string) $state['last_cursor']) : '';
+        $freshnessReferenceAt = $lastIngestedAt;
+        if ($lastSuccessAt !== null && ($freshnessReferenceAt === null || strtotime($lastSuccessAt) > strtotime($freshnessReferenceAt))) {
+            $freshnessReferenceAt = $lastSuccessAt;
+        }
 
         $overviewResolutionRequests = [
             'alliance' => [],
@@ -9899,6 +9986,41 @@ function killmail_overview_data(): array
         $emptyMessage = $totalCount === 0
             ? 'No killmails have been stored yet. Enable killmail ingestion, run the sync worker, and this view will populate as local killmails arrive.'
             : 'No killmails matched the current filters. Try clearing search or filter controls.';
+        $statusView = [
+            'ingestion_enabled' => killmail_ingestion_enabled(),
+            'current_cursor' => $cursor !== '' ? $cursor : 'Unavailable',
+            'last_sync_outcome' => killmail_last_sync_outcome_label($latestRun),
+            'last_success_at_raw' => $lastSuccessAt,
+            'last_success_at' => killmail_format_datetime($lastSuccessAt),
+            'last_sync_relative' => killmail_relative_datetime($lastSuccessAt),
+            'last_uploaded_at' => killmail_format_datetime($latestUploadedAt),
+            'last_ingested_at' => killmail_format_datetime($lastIngestedAt),
+            'freshness_reference_at_raw' => $freshnessReferenceAt,
+            'freshness_reference_at' => killmail_format_datetime($freshnessReferenceAt),
+            'tracked_alliance_count' => (int) ($status['tracked_alliance_count'] ?? 0),
+            'tracked_corporation_count' => (int) ($status['tracked_corporation_count'] ?? 0),
+            'sync_status' => (string) ($state['status'] ?? 'idle'),
+            'last_run_status' => (string) ($latestRun['run_status'] ?? 'not_run'),
+            'last_run_source_rows' => (int) ($latestRun['source_rows'] ?? 0),
+            'last_run_written_rows' => (int) ($latestRun['written_rows'] ?? 0),
+            'last_run_finished_at' => killmail_format_datetime(isset($latestRun['finished_at']) ? (string) $latestRun['finished_at'] : null),
+            'last_error' => trim((string) ($state['last_error_message'] ?? '')),
+            'worker_status' => (string) ($workerStatus['status'] ?? 'unknown'),
+            'worker_seen_at' => (string) ($workerStatus['seen_at_display'] ?? 'No heartbeat recorded'),
+            'worker_seen_relative' => (string) ($workerStatus['seen_at_relative'] ?? 'No heartbeat'),
+            'worker_rows_seen' => (int) ($workerStatus['rows_seen'] ?? 0),
+            'worker_rows_matched' => (int) ($workerStatus['rows_matched'] ?? 0),
+            'worker_rows_skipped_existing' => (int) ($workerStatus['rows_skipped_existing'] ?? 0),
+            'worker_rows_filtered_out' => (int) ($workerStatus['rows_filtered_out'] ?? 0),
+            'worker_rows_written' => (int) ($workerStatus['rows_written'] ?? 0),
+            'worker_cursor' => isset($workerStatus['cursor']) ? (string) $workerStatus['cursor'] : '',
+            'worker_cursor_before' => isset($workerStatus['cursor_before']) ? (string) $workerStatus['cursor_before'] : '',
+            'worker_cursor_after' => isset($workerStatus['cursor_after']) ? (string) $workerStatus['cursor_after'] : '',
+            'worker_no_write_reason' => isset($workerStatus['no_write_reason']) ? (string) $workerStatus['no_write_reason'] : '',
+            'worker_outcome_reason' => isset($workerStatus['outcome_reason']) ? (string) $workerStatus['outcome_reason'] : '',
+            'worker_memory_usage_bytes' => isset($workerStatus['memory_usage_bytes']) ? (int) $workerStatus['memory_usage_bytes'] : null,
+        ];
+        $statusView['health'] = killmail_ingestion_health_summary($statusView, $workerStatus);
 
         return [
             'error' => null,
@@ -9909,31 +10031,7 @@ function killmail_overview_data(): array
                 ['label' => 'Last Processed Sequence', 'value' => $maxSequenceId > 0 ? number_format($maxSequenceId) : '—', 'context' => $cursor !== '' ? ('Cursor ' . $cursor) : 'Cursor not recorded yet'],
                 ['label' => 'Sync Freshness', 'value' => killmail_relative_datetime($lastSuccessAt), 'context' => $lastSuccessAt !== null ? ('Last success ' . killmail_format_datetime($lastSuccessAt)) : 'No successful sync recorded'],
             ],
-            'status' => [
-                'ingestion_enabled' => killmail_ingestion_enabled(),
-                'current_cursor' => $cursor !== '' ? $cursor : 'Unavailable',
-                'last_sync_outcome' => killmail_last_sync_outcome_label($latestRun),
-                'last_success_at_raw' => $lastSuccessAt,
-                'last_success_at' => killmail_format_datetime($lastSuccessAt),
-                'last_sync_relative' => killmail_relative_datetime($lastSuccessAt),
-                'last_uploaded_at' => killmail_format_datetime($latestUploadedAt),
-                'last_ingested_at' => killmail_format_datetime($lastIngestedAt),
-                'tracked_alliance_count' => (int) ($status['tracked_alliance_count'] ?? 0),
-                'tracked_corporation_count' => (int) ($status['tracked_corporation_count'] ?? 0),
-                'sync_status' => (string) ($state['status'] ?? 'idle'),
-                'last_run_status' => (string) ($latestRun['run_status'] ?? 'not_run'),
-                'last_run_source_rows' => (int) ($latestRun['source_rows'] ?? 0),
-                'last_run_written_rows' => (int) ($latestRun['written_rows'] ?? 0),
-                'last_run_finished_at' => killmail_format_datetime(isset($latestRun['finished_at']) ? (string) $latestRun['finished_at'] : null),
-                'last_error' => trim((string) ($state['last_error_message'] ?? '')),
-                'worker_status' => (string) ($workerStatus['status'] ?? 'unknown'),
-                'worker_seen_at' => (string) ($workerStatus['seen_at_display'] ?? 'No heartbeat recorded'),
-                'worker_seen_relative' => (string) ($workerStatus['seen_at_relative'] ?? 'No heartbeat'),
-                'worker_rows_written' => (int) ($workerStatus['rows_written'] ?? 0),
-                'worker_rows_seen' => (int) ($workerStatus['rows_seen'] ?? 0),
-                'worker_cursor' => isset($workerStatus['cursor']) ? (string) $workerStatus['cursor'] : '',
-                'worker_memory_usage_bytes' => isset($workerStatus['memory_usage_bytes']) ? (int) $workerStatus['memory_usage_bytes'] : null,
-            ],
+            'status' => $statusView,
             'rows' => $rows,
             'filters' => $filters + [
                 'page_size_options' => $allowedPageSizes,
@@ -13530,12 +13628,16 @@ function python_bridge_process_killmail_batch(array $payloads): array
     if ($payloads === []) {
         return [
             'rows_seen' => 0,
+            'rows_matched' => 0,
+            'rows_skipped_existing' => 0,
+            'rows_filtered_out' => 0,
             'rows_written' => 0,
             'killmails_fetched' => 0,
             'duplicates' => 0,
             'filtered' => 0,
             'invalid' => 0,
             'last_processed_sequence' => null,
+            'no_write_reason' => 'empty_batch',
         ];
     }
 
@@ -13543,6 +13645,7 @@ function python_bridge_process_killmail_batch(array $payloads): array
     ['alliance_ids' => $trackedAllianceIds, 'corporation_ids' => $trackedCorporationIds] = killmail_active_tracked_entity_ids();
 
     $rowsSeen = 0;
+    $rowsMatched = 0;
     $rowsWritten = 0;
     $duplicates = 0;
     $filtered = 0;
@@ -13551,33 +13654,58 @@ function python_bridge_process_killmail_batch(array $payloads): array
 
     foreach ($payloads as $payload) {
         $rowsSeen++;
-        $result = killmail_persist_r2z2_payload($payload, $trackedAllianceIds, $trackedCorporationIds);
+        $requestedSequenceId = (int) ($payload['requested_sequence_id'] ?? $payload['sequence_id'] ?? 0);
+        $result = killmail_persist_r2z2_payload($payload, $trackedAllianceIds, $trackedCorporationIds, false, $requestedSequenceId > 0 ? $requestedSequenceId : null);
         $sequenceId = (int) ($result['sequence_id'] ?? 0);
         $status = (string) ($result['status'] ?? 'invalid');
         if ($status === 'invalid') {
             $invalid++;
+            if ($requestedSequenceId > 0) {
+                $lastProcessedSequence = $requestedSequenceId;
+            }
             continue;
         }
 
         if ($status === 'duplicate') {
             $duplicates++;
+            $rowsMatched++;
         } elseif ($status === 'filtered') {
             $filtered++;
         } elseif ($status === 'written') {
             $rowsWritten++;
+            $rowsMatched++;
         }
 
         $lastProcessedSequence = $sequenceId;
     }
 
+    $noWriteReason = '';
+    if ($rowsWritten === 0) {
+        if ($duplicates === $rowsSeen && $rowsSeen > 0) {
+            $noWriteReason = 'all_rows_already_present';
+        } elseif ($filtered === $rowsSeen && $rowsSeen > 0) {
+            $noWriteReason = 'all_rows_filtered_out';
+        } elseif ($invalid === $rowsSeen && $rowsSeen > 0) {
+            $noWriteReason = 'all_rows_invalid';
+        } elseif (($filtered + $invalid) === $rowsSeen && $rowsSeen > 0) {
+            $noWriteReason = 'all_rows_filtered_or_invalid';
+        } else {
+            $noWriteReason = 'mixed_no_write_result';
+        }
+    }
+
     return [
         'rows_seen' => $rowsSeen,
+        'rows_matched' => $rowsMatched,
+        'rows_skipped_existing' => $duplicates,
+        'rows_filtered_out' => $filtered,
         'rows_written' => $rowsWritten,
         'killmails_fetched' => $rowsSeen,
         'duplicates' => $duplicates,
         'filtered' => $filtered,
         'invalid' => $invalid,
         'last_processed_sequence' => $lastProcessedSequence,
+        'no_write_reason' => $noWriteReason,
     ];
 }
 
@@ -17091,7 +17219,7 @@ function killmail_transform_r2z2_payload(array $payload): array
         : (is_array($payload['killmail'] ?? null) ? $payload['killmail'] : []);
     $victim = is_array($killmail['victim'] ?? null) ? $killmail['victim'] : [];
     $zkb = is_array($payload['zkb'] ?? null) ? $payload['zkb'] : [];
-    $sequenceId = (int) ($payload['sequence_id'] ?? 0);
+    $sequenceId = (int) ($payload['sequence_id'] ?? $payload['requested_sequence_id'] ?? 0);
     $systemId = isset($killmail['solar_system_id']) ? (int) $killmail['solar_system_id'] : null;
 
     $event = [

@@ -312,6 +312,8 @@ if ($dbStatus['ok']) {
 $trackedAlliances = [];
 $trackedCorporations = [];
 $killmailStatus = null;
+$killmailWorkerStatus = [];
+$killmailStatusSummary = [];
 $itemScope = item_scope_view_model();
 $ollamaConfig = supplycore_ai_ollama_config();
 $ollamaStatus = supplycore_ai_status_summary();
@@ -320,11 +322,31 @@ if ($dbStatus['ok']) {
         $trackedAlliances = db_killmail_tracked_alliances_active();
         $trackedCorporations = db_killmail_tracked_corporations_active();
         $killmailStatus = db_killmail_ingestion_status();
+        $killmailWorkerStatus = zkill_worker_runtime_status();
     } catch (Throwable) {
         $trackedAlliances = [];
         $trackedCorporations = [];
         $killmailStatus = null;
+        $killmailWorkerStatus = [];
     }
+}
+
+if (is_array($killmailStatus)) {
+    $killmailState = is_array($killmailStatus['state'] ?? null) ? $killmailStatus['state'] : [];
+    $killmailLatestRun = is_array($killmailStatus['latest_run'] ?? null) ? $killmailStatus['latest_run'] : [];
+    $killmailStatusSummary = [
+        'ingestion_enabled' => ($settingValues['killmail_ingestion_enabled'] ?? '0') === '1',
+        'last_success_at_raw' => isset($killmailState['last_success_at']) ? (string) $killmailState['last_success_at'] : null,
+        'last_success_at' => killmail_format_datetime(isset($killmailState['last_success_at']) ? (string) $killmailState['last_success_at'] : null),
+        'last_sync_relative' => killmail_relative_datetime(isset($killmailState['last_success_at']) ? (string) $killmailState['last_success_at'] : null),
+        'current_cursor' => (string) ($killmailState['last_cursor'] ?? 'Unavailable'),
+        'last_run_source_rows' => (int) ($killmailLatestRun['source_rows'] ?? 0),
+        'last_run_written_rows' => (int) ($killmailLatestRun['written_rows'] ?? 0),
+        'last_error' => trim((string) ($killmailState['last_error_message'] ?? '')),
+        'tracked_alliance_count' => count($trackedAlliances),
+        'tracked_corporation_count' => count($trackedCorporations),
+    ];
+    $killmailStatusSummary['health'] = killmail_ingestion_health_summary($killmailStatusSummary, $killmailWorkerStatus);
 }
 
 foreach ($configuredSyncJobs as $schedule) {
@@ -1046,10 +1068,39 @@ include __DIR__ . '/../../src/views/partials/header.php';
                 $corporationsText = implode("
 ", array_map(static fn (array $row): string => (string) $row['id'] . ' | ' . (string) $row['name'], $trackedCorporationSelections));
                 $statusState = is_array($killmailStatus['state'] ?? null) ? $killmailStatus['state'] : [];
+                $killmailHealth = is_array($killmailStatusSummary['health'] ?? null) ? $killmailStatusSummary['health'] : [];
             ?>
             <form class="mt-6 space-y-4" method="post">
                 <input type="hidden" name="_token" value="<?= htmlspecialchars(csrf_token(), ENT_QUOTES) ?>">
                 <input type="hidden" name="section" value="killmail-intelligence">
+
+                <div class="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+                    <article class="rounded-xl border p-4 <?= htmlspecialchars((string) ($killmailHealth['tone'] ?? 'border-border bg-black/20 text-slate-200'), ENT_QUOTES) ?>">
+                        <p class="text-xs uppercase tracking-[0.16em] opacity-70">Status</p>
+                        <p class="mt-2 text-sm font-semibold text-slate-50"><?= htmlspecialchars((string) ($killmailHealth['label'] ?? 'Status unavailable'), ENT_QUOTES) ?></p>
+                        <p class="mt-2 text-xs opacity-90"><?= htmlspecialchars((string) ($killmailHealth['message'] ?? 'Killmail status is unavailable.'), ENT_QUOTES) ?></p>
+                    </article>
+                    <article class="rounded-xl border border-border bg-black/20 p-4">
+                        <p class="text-xs uppercase tracking-[0.16em] text-muted">Last success</p>
+                        <p class="mt-2 text-sm font-semibold text-slate-50"><?= htmlspecialchars((string) ($killmailStatusSummary['last_sync_relative'] ?? 'Never'), ENT_QUOTES) ?></p>
+                        <p class="mt-2 text-xs text-muted"><?= htmlspecialchars((string) ($killmailStatusSummary['last_success_at'] ?? 'Unavailable'), ENT_QUOTES) ?></p>
+                    </article>
+                    <article class="rounded-xl border border-border bg-black/20 p-4">
+                        <p class="text-xs uppercase tracking-[0.16em] text-muted">Last rows written</p>
+                        <p class="mt-2 text-sm font-semibold text-slate-50"><?= number_format((int) ($killmailStatusSummary['last_run_written_rows'] ?? 0)) ?></p>
+                        <p class="mt-2 text-xs text-muted">Seen <?= number_format((int) ($killmailStatusSummary['last_run_source_rows'] ?? 0)) ?> rows in the latest pass</p>
+                    </article>
+                    <article class="rounded-xl border border-border bg-black/20 p-4">
+                        <p class="text-xs uppercase tracking-[0.16em] text-muted">Current cursor</p>
+                        <p class="mt-2 text-sm font-semibold text-slate-50"><?= htmlspecialchars((string) ($killmailStatusSummary['current_cursor'] ?? 'Unavailable'), ENT_QUOTES) ?></p>
+                        <p class="mt-2 text-xs text-muted">Next worker pass resumes from this stream checkpoint.</p>
+                    </article>
+                    <article class="rounded-xl border border-border bg-black/20 p-4">
+                        <p class="text-xs uppercase tracking-[0.16em] text-muted">Tracked entities</p>
+                        <p class="mt-2 text-sm font-semibold text-slate-50"><?= number_format((int) ($killmailStatusSummary['tracked_alliance_count'] ?? 0)) ?> alliances · <?= number_format((int) ($killmailStatusSummary['tracked_corporation_count'] ?? 0)) ?> corporations</p>
+                        <p class="mt-2 text-xs text-muted">These determine which zKill activity is retained for business use.</p>
+                    </article>
+                </div>
 
                 <label class="flex items-center gap-3 rounded-lg border border-border bg-black/20 p-3">
                     <input type="hidden" name="killmail_ingestion_enabled" value="0">
@@ -1453,20 +1504,33 @@ include __DIR__ . '/../../src/views/partials/header.php';
                     })();
                 </script>
 
-                <label class="block space-y-2">
-                    <span class="text-sm text-muted">Demand Prediction Mode (future-facing)</span>
-                    <input type="text" name="killmail_demand_prediction_mode" value="<?= htmlspecialchars($settingValues['killmail_demand_prediction_mode'] ?? 'baseline', ENT_QUOTES) ?>" class="w-full field-input" />
-                </label>
+                <details class="rounded-xl border border-border bg-black/20 p-4">
+                    <summary class="cursor-pointer list-none text-sm font-medium text-slate-100">Advanced diagnostics</summary>
+                    <div class="mt-4 grid gap-4 lg:grid-cols-2 text-sm text-muted">
+                        <div class="space-y-1 rounded-lg border border-border bg-black/20 p-3">
+                            <p><span class="text-slate-100">Last cursor:</span> <?= htmlspecialchars((string) ($statusState['last_cursor'] ?? '-'), ENT_QUOTES) ?></p>
+                            <p><span class="text-slate-100">Last success:</span> <?= htmlspecialchars((string) ($statusState['last_success_at'] ?? '-'), ENT_QUOTES) ?></p>
+                            <p><span class="text-slate-100">Last status:</span> <?= htmlspecialchars((string) ($statusState['status'] ?? 'idle'), ENT_QUOTES) ?></p>
+                            <p><span class="text-slate-100">Latest ingested sequence:</span> <?= htmlspecialchars((string) ($killmailStatus['max_sequence_id'] ?? '-'), ENT_QUOTES) ?></p>
+                            <p><span class="text-slate-100">Latest uploaded_at:</span> <?= htmlspecialchars((string) ($killmailStatus['max_uploaded_at'] ?? '-'), ENT_QUOTES) ?></p>
+                        </div>
+                        <div class="space-y-1 rounded-lg border border-border bg-black/20 p-3">
+                            <p><span class="text-slate-100">Worker heartbeat:</span> <?= htmlspecialchars((string) ($killmailWorkerStatus['seen_at_relative'] ?? 'No heartbeat'), ENT_QUOTES) ?></p>
+                            <p><span class="text-slate-100">Worker rows:</span> seen <?= number_format((int) ($killmailWorkerStatus['rows_seen'] ?? 0)) ?> · matched <?= number_format((int) ($killmailWorkerStatus['rows_matched'] ?? 0)) ?> · skipped existing <?= number_format((int) ($killmailWorkerStatus['rows_skipped_existing'] ?? 0)) ?> · filtered <?= number_format((int) ($killmailWorkerStatus['rows_filtered_out'] ?? 0)) ?> · written <?= number_format((int) ($killmailWorkerStatus['rows_written'] ?? 0)) ?></p>
+                            <p><span class="text-slate-100">Cursor movement:</span> <?= htmlspecialchars((string) (($killmailWorkerStatus['cursor_before'] ?? '') !== '' ? $killmailWorkerStatus['cursor_before'] : '—'), ENT_QUOTES) ?> → <?= htmlspecialchars((string) (($killmailWorkerStatus['cursor_after'] ?? '') !== '' ? $killmailWorkerStatus['cursor_after'] : ($killmailWorkerStatus['cursor'] ?? '—')), ENT_QUOTES) ?></p>
+                            <?php if (trim((string) ($killmailWorkerStatus['outcome_reason'] ?? '')) !== ''): ?>
+                                <p><span class="text-slate-100">Latest worker reason:</span> <?= htmlspecialchars((string) ($killmailWorkerStatus['outcome_reason'] ?? ''), ENT_QUOTES) ?></p>
+                            <?php endif; ?>
+                        </div>
+                        <label class="block space-y-2 lg:col-span-2">
+                            <span class="text-sm text-muted">Demand Prediction Mode</span>
+                            <input type="text" name="killmail_demand_prediction_mode" value="<?= htmlspecialchars($settingValues['killmail_demand_prediction_mode'] ?? 'baseline', ENT_QUOTES) ?>" class="w-full field-input" />
+                            <span class="text-xs text-muted">Keep future-facing tuning here so the default settings view stays focused on freshness, tracked entities, and whether ingestion is working.</span>
+                        </label>
+                    </div>
+                </details>
 
-                <div class="rounded-lg border border-border bg-black/20 p-3 text-sm text-muted space-y-1">
-                    <p><span class="text-slate-100">Last cursor:</span> <?= htmlspecialchars((string) ($statusState['last_cursor'] ?? '-'), ENT_QUOTES) ?></p>
-                    <p><span class="text-slate-100">Last success:</span> <?= htmlspecialchars((string) ($statusState['last_success_at'] ?? '-'), ENT_QUOTES) ?></p>
-                    <p><span class="text-slate-100">Last status:</span> <?= htmlspecialchars((string) ($statusState['status'] ?? 'idle'), ENT_QUOTES) ?></p>
-                    <p><span class="text-slate-100">Latest ingested sequence:</span> <?= htmlspecialchars((string) ($killmailStatus['max_sequence_id'] ?? '-'), ENT_QUOTES) ?></p>
-                    <p><span class="text-slate-100">Latest uploaded_at:</span> <?= htmlspecialchars((string) ($killmailStatus['max_uploaded_at'] ?? '-'), ENT_QUOTES) ?></p>
-                </div>
-
-                <p class="text-sm text-muted">Ingestion consumes R2Z2 as an ordered stream. The worker now stores killmails when a tracked alliance or corporation appears on either the victim or attacker side, while victim-side matches continue to drive loss-demand analytics.</p>
+                <p class="text-sm text-muted">Ingestion consumes R2Z2 as an ordered stream and keeps killmails when a tracked alliance or corporation appears on either side of the fight. That gives you a concise, business-facing feed without losing deeper diagnostics when you need them.</p>
                 <button class="btn-primary">Save Killmail Intelligence Settings</button>
             </form>
         <?php elseif ($section === 'esi-login'): ?>

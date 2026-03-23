@@ -48,7 +48,7 @@ def main(argv: list[str] | None = None) -> int:
     runtime = load_php_runtime_config(app_root)
     worker_settings = runtime.raw.get("workers", {}) if isinstance(runtime.raw, dict) else {}
     log_file = Path(worker_settings.get("zkill_log_file", app_root / "storage/logs/zkill.log"))
-    logger = configure_logging(verbose=args.verbose, log_file=log_file)
+    logger = configure_logging(verbose=args.verbose, log_file=log_file, stdout_enabled=args.verbose or log_file is None)
     state_file = Path(worker_settings.get("zkill_state_file", app_root / "storage/run/zkill-heartbeat.json"))
     pause_threshold = max(128 * 1024 * 1024, int(worker_settings.get("memory_pause_threshold_bytes", 384 * 1024 * 1024)))
     abort_threshold = max(pause_threshold, int(worker_settings.get("memory_abort_threshold_bytes", 512 * 1024 * 1024)))
@@ -95,11 +95,16 @@ def main(argv: list[str] | None = None) -> int:
                 "worker_id": identity,
                 "status": result.get("status"),
                 "rows_seen": result.get("rows_seen"),
+                "rows_matched": (result.get("meta") or {}).get("rows_matched"),
+                "rows_skipped_existing": (result.get("meta") or {}).get("rows_skipped_existing"),
+                "rows_filtered_out": (result.get("meta") or {}).get("rows_filtered_out"),
                 "rows_written": result.get("rows_written"),
-                "cursor": result.get("cursor"),
+                "cursor_before": (result.get("meta") or {}).get("cursor_before"),
+                "cursor_after": result.get("cursor"),
                 "duplicates": (result.get("meta") or {}).get("duplicates"),
                 "filtered": (result.get("meta") or {}).get("filtered"),
                 "invalid": (result.get("meta") or {}).get("invalid"),
+                "no_write_reason": (result.get("meta") or {}).get("no_write_reason"),
                 "outcome_reason": (result.get("meta") or {}).get("outcome_reason"),
             },
         )
