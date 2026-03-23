@@ -9,7 +9,7 @@ from ..bridge import PhpBridge
 from ..worker_runtime import payload_checksum, resident_memory_bytes, utc_now_iso
 
 
-def _http_json(url: str, user_agent: str, timeout_seconds: int = 25) -> tuple[int, dict[str, Any]]:
+def _http_json(url: str, user_agent: str, timeout_seconds: int = 25) -> tuple[int, Any]:
     request = urllib.request.Request(
         url,
         headers={
@@ -29,10 +29,64 @@ def _http_json(url: str, user_agent: str, timeout_seconds: int = 25) -> tuple[in
 
     import json
 
-    decoded = json.loads(payload) if payload.strip() else {}
-    if not isinstance(decoded, dict):
+    if not payload.strip():
+        return status, {}
+
+    try:
+        decoded = json.loads(payload)
+    except json.JSONDecodeError as error:
+        if status == 200:
+            raise RuntimeError(
+                f"R2Z2 response from {url} with status=200 contained invalid JSON: {error.msg}"
+            ) from error
         decoded = {}
     return status, decoded
+
+
+def _classify_sequence_payload(payload: Any) -> tuple[str, dict[str, Any], bool]:
+    if not isinstance(payload, dict):
+        return "malformed_non_object_payload", {}, False
+    if payload == {}:
+        return "valid_empty_payload", {}, True
+    return "valid_payload", payload, False
+
+
+def _accumulate_batch_result(
+    *,
+    batch_result: dict[str, Any],
+    totals: dict[str, int],
+) -> tuple[int, int]:
+    totals["rows_seen"] += int(batch_result.get("rows_seen") or 0)
+    totals["rows_matched"] += int(batch_result.get("rows_matched") or 0)
+    totals["rows_skipped_existing"] += int(batch_result.get("rows_skipped_existing") or 0)
+    totals["rows_filtered_out"] += int(batch_result.get("rows_filtered_out") or 0)
+    totals["rows_write_attempted"] += int(batch_result.get("rows_write_attempted") or 0)
+    totals["rows_written"] += int(batch_result.get("rows_written") or 0)
+    totals["rows_failed"] += int(batch_result.get("rows_failed") or 0)
+    totals["duplicates"] += int(batch_result.get("duplicates") or 0)
+    totals["filtered"] += int(batch_result.get("filtered") or 0)
+    totals["invalid"] += int(batch_result.get("invalid") or 0)
+
+    checkpoint_state = dict((batch_result.get("meta") or {}).get("checkpoint_state") or {})
+    if checkpoint_state.get("checkpoint_updated"):
+        return 1, 0
+    if str(checkpoint_state.get("reason") or "") != "no_processed_sequence":
+        return 0, 1
+    return 0, 0
+
+
+def _sequence_outcome_from_batch_result(batch_result: dict[str, Any]) -> str:
+    if int(batch_result.get("rows_written") or 0) > 0:
+        return "inserted"
+    if int(batch_result.get("rows_skipped_existing") or 0) > 0:
+        return "already_existing"
+    if int(batch_result.get("rows_filtered_out") or 0) > 0:
+        return "filtered_out"
+    if int(batch_result.get("invalid") or 0) > 0:
+        return "invalid_payload"
+    if int(batch_result.get("rows_failed") or 0) > 0:
+        return "write_failed"
+    return "non_actionable"
 
 
 def _sleep_with_budget(seconds: int, deadline: float) -> bool:
@@ -238,7 +292,7 @@ class KillmailEntityResolver:
 
     def _fetch_profile(self, url: str) -> dict[str, Any] | None:
         status, payload = _http_json(url, self.user_agent)
-        if status != 200:
+        if status != 200 or not isinstance(payload, dict):
             return None
 
         return payload
@@ -347,16 +401,18 @@ def run_killmail_r2z2_stream(context: Any) -> dict[str, Any]:
 
     warnings: list[str] = []
     pending_payloads: list[dict[str, Any]] = []
-    total_rows_seen = 0
-    total_rows_written = 0
-    total_rows_matched = 0
-    total_rows_skipped_existing = 0
-    total_rows_filtered_out = 0
-    total_rows_write_attempted = 0
-    total_rows_failed = 0
-    total_duplicates = 0
-    total_filtered = 0
-    total_invalid = 0
+    totals = {
+        "rows_seen": 0,
+        "rows_written": 0,
+        "rows_matched": 0,
+        "rows_skipped_existing": 0,
+        "rows_filtered_out": 0,
+        "rows_write_attempted": 0,
+        "rows_failed": 0,
+        "duplicates": 0,
+        "filtered": 0,
+        "invalid": 0,
+    }
     total_sequence_files_fetched = 0
     total_sequence_404s = 0
     total_rate_limits = 0
@@ -372,6 +428,8 @@ def run_killmail_r2z2_stream(context: Any) -> dict[str, Any]:
             if next_sequence is None:
                 probe_status, probe_payload = _http_json(sequence_url, user_agent)
                 if probe_status == 200:
+                    if not isinstance(probe_payload, dict):
+                        raise RuntimeError("R2Z2 sequence probe returned a non-object JSON payload.")
                     latest_remote_sequence = int(probe_payload.get("sequence") or 0)
                     if latest_remote_sequence <= 0:
                         raise RuntimeError("R2Z2 sequence probe returned an invalid sequence value.")
@@ -392,10 +450,27 @@ def run_killmail_r2z2_stream(context: Any) -> dict[str, Any]:
             status, payload = _http_json(f"{base_url}/{sequence_id}.json", user_agent)
 
             if status == 200:
-                payload = entity_resolver.enrich_payload(payload)
-                payload["requested_sequence_id"] = sequence_id
-                payload["sequence_id"] = int(payload.get("sequence_id") or sequence_id)
-                pending_payloads.append(payload)
+                payload_classification, normalized_payload, valid_non_actionable = _classify_sequence_payload(payload)
+                context.emit(
+                    "zkill.sequence_fetch",
+                    {
+                        "job_key": context.job_key,
+                        "sequence_id": sequence_id,
+                        "http_status": status,
+                        "payload_classification": payload_classification,
+                        "fetch_outcome": "valid_http_200",
+                        "valid_non_actionable": valid_non_actionable,
+                    },
+                )
+                if payload_classification == "malformed_non_object_payload":
+                    raise RuntimeError(
+                        f"R2Z2 sequence {sequence_id} returned HTTP 200 with malformed non-object JSON payload."
+                    )
+
+                normalized_payload = entity_resolver.enrich_payload(normalized_payload)
+                normalized_payload["requested_sequence_id"] = sequence_id
+                normalized_payload["sequence_id"] = int(normalized_payload.get("sequence_id") or sequence_id)
+                pending_payloads.append(normalized_payload)
                 total_sequence_files_fetched += 1
                 next_sequence = sequence_id + 1
                 if len(pending_payloads) >= batch_size:
@@ -408,28 +483,79 @@ def run_killmail_r2z2_stream(context: Any) -> dict[str, Any]:
                         logger_context=context,
                         started_at=started_at,
                         totals={
-                            "rows_seen": total_rows_seen,
-                            "rows_written": total_rows_written,
+                            "rows_seen": totals["rows_seen"],
+                            "rows_written": totals["rows_written"],
                         },
                     )
                     pending_payloads = []
                     batches_flushed += 1
-                    total_rows_seen += int(batch_result.get("rows_seen") or 0)
-                    total_rows_matched += int(batch_result.get("rows_matched") or 0)
-                    total_rows_skipped_existing += int(batch_result.get("rows_skipped_existing") or 0)
-                    total_rows_filtered_out += int(batch_result.get("rows_filtered_out") or 0)
-                    total_rows_write_attempted += int(batch_result.get("rows_write_attempted") or 0)
-                    total_rows_written += int(batch_result.get("rows_written") or 0)
-                    total_rows_failed += int(batch_result.get("rows_failed") or 0)
-                    total_duplicates += int(batch_result.get("duplicates") or 0)
-                    total_filtered += int(batch_result.get("filtered") or 0)
-                    total_invalid += int(batch_result.get("invalid") or 0)
-                    checkpoint_state = dict((batch_result.get("meta") or {}).get("checkpoint_state") or {})
-                    if checkpoint_state.get("checkpoint_updated"):
-                        checkpoint_updates += 1
-                    elif str(checkpoint_state.get("reason") or "") != "no_processed_sequence":
-                        checkpoint_failures += 1
+                    checkpoint_update_increment, checkpoint_failure_increment = _accumulate_batch_result(
+                        batch_result=batch_result,
+                        totals=totals,
+                    )
+                    checkpoint_updates += checkpoint_update_increment
+                    checkpoint_failures += checkpoint_failure_increment
+                    context.emit(
+                        "zkill.sequence_processed",
+                        {
+                            "job_key": context.job_key,
+                            "sequence_id": sequence_id,
+                            "http_status": status,
+                            "payload_classification": payload_classification,
+                            "processing_outcome": _sequence_outcome_from_batch_result(batch_result),
+                            "rows_matched": batch_result.get("rows_matched"),
+                            "rows_filtered_out": batch_result.get("rows_filtered_out"),
+                            "rows_skipped_existing": batch_result.get("rows_skipped_existing"),
+                            "rows_written": batch_result.get("rows_written"),
+                            "rows_failed": batch_result.get("rows_failed"),
+                            "valid_non_actionable": valid_non_actionable
+                            or int(batch_result.get("rows_written") or 0) == 0,
+                            "checkpoint_state": dict((batch_result.get("meta") or {}).get("checkpoint_state") or {}),
+                        },
+                    )
                     continue
+
+                if pending_payloads:
+                    batch_result, last_processed_sequence = _flush_pending_batch(
+                        bridge=bridge,
+                        job_context=job_context,
+                        pending_payloads=pending_payloads,
+                        batch_index=batches_flushed + 1,
+                        last_processed_sequence=last_processed_sequence,
+                        logger_context=context,
+                        started_at=started_at,
+                        totals={
+                            "rows_seen": totals["rows_seen"],
+                            "rows_written": totals["rows_written"],
+                        },
+                    )
+                    pending_payloads = []
+                    batches_flushed += 1
+                    checkpoint_update_increment, checkpoint_failure_increment = _accumulate_batch_result(
+                        batch_result=batch_result,
+                        totals=totals,
+                    )
+                    checkpoint_updates += checkpoint_update_increment
+                    checkpoint_failures += checkpoint_failure_increment
+                    context.emit(
+                        "zkill.sequence_processed",
+                        {
+                            "job_key": context.job_key,
+                            "sequence_id": sequence_id,
+                            "http_status": status,
+                            "payload_classification": payload_classification,
+                            "processing_outcome": _sequence_outcome_from_batch_result(batch_result),
+                            "rows_matched": batch_result.get("rows_matched"),
+                            "rows_filtered_out": batch_result.get("rows_filtered_out"),
+                            "rows_skipped_existing": batch_result.get("rows_skipped_existing"),
+                            "rows_written": batch_result.get("rows_written"),
+                            "rows_failed": batch_result.get("rows_failed"),
+                            "valid_non_actionable": valid_non_actionable
+                            or int(batch_result.get("rows_written") or 0) == 0,
+                            "checkpoint_state": dict((batch_result.get("meta") or {}).get("checkpoint_state") or {}),
+                        },
+                    )
+                continue
 
             if pending_payloads:
                 batch_result, last_processed_sequence = _flush_pending_batch(
@@ -441,30 +567,32 @@ def run_killmail_r2z2_stream(context: Any) -> dict[str, Any]:
                     logger_context=context,
                     started_at=started_at,
                     totals={
-                        "rows_seen": total_rows_seen,
-                        "rows_written": total_rows_written,
+                        "rows_seen": totals["rows_seen"],
+                        "rows_written": totals["rows_written"],
                     },
                 )
                 pending_payloads = []
                 batches_flushed += 1
-                total_rows_seen += int(batch_result.get("rows_seen") or 0)
-                total_rows_matched += int(batch_result.get("rows_matched") or 0)
-                total_rows_skipped_existing += int(batch_result.get("rows_skipped_existing") or 0)
-                total_rows_filtered_out += int(batch_result.get("rows_filtered_out") or 0)
-                total_rows_write_attempted += int(batch_result.get("rows_write_attempted") or 0)
-                total_rows_written += int(batch_result.get("rows_written") or 0)
-                total_rows_failed += int(batch_result.get("rows_failed") or 0)
-                total_duplicates += int(batch_result.get("duplicates") or 0)
-                total_filtered += int(batch_result.get("filtered") or 0)
-                total_invalid += int(batch_result.get("invalid") or 0)
-                checkpoint_state = dict((batch_result.get("meta") or {}).get("checkpoint_state") or {})
-                if checkpoint_state.get("checkpoint_updated"):
-                    checkpoint_updates += 1
-                elif str(checkpoint_state.get("reason") or "") != "no_processed_sequence":
-                    checkpoint_failures += 1
+                checkpoint_update_increment, checkpoint_failure_increment = _accumulate_batch_result(
+                    batch_result=batch_result,
+                    totals=totals,
+                )
+                checkpoint_updates += checkpoint_update_increment
+                checkpoint_failures += checkpoint_failure_increment
 
             if status == 404:
                 total_sequence_404s += 1
+                context.emit(
+                    "zkill.sequence_fetch",
+                    {
+                        "job_key": context.job_key,
+                        "sequence_id": sequence_id,
+                        "http_status": status,
+                        "payload_classification": "not_found",
+                        "fetch_outcome": "sleep_and_retry",
+                        "valid_non_actionable": True,
+                    },
+                )
                 warnings.append(f"R2Z2 returned 404 for sequence {sequence_id}; sleeping {poll_sleep_seconds}s before retry.")
                 if not _sleep_with_budget(poll_sleep_seconds, deadline):
                     break
@@ -472,11 +600,33 @@ def run_killmail_r2z2_stream(context: Any) -> dict[str, Any]:
 
             if status in (403, 429):
                 total_rate_limits += 1
+                context.emit(
+                    "zkill.sequence_fetch",
+                    {
+                        "job_key": context.job_key,
+                        "sequence_id": sequence_id,
+                        "http_status": status,
+                        "payload_classification": "retryable_http_status",
+                        "fetch_outcome": "sleep_and_retry",
+                        "valid_non_actionable": False,
+                    },
+                )
                 warnings.append(f"R2Z2 returned status {status} for sequence {sequence_id}; sleeping {poll_sleep_seconds}s before retry.")
                 if not _sleep_with_budget(poll_sleep_seconds, deadline):
                     break
                 continue
 
+            context.emit(
+                "zkill.sequence_fetch",
+                {
+                    "job_key": context.job_key,
+                    "sequence_id": sequence_id,
+                    "http_status": status,
+                    "payload_classification": "unexpected_http_status",
+                    "fetch_outcome": "fatal_fetch_error",
+                    "valid_non_actionable": False,
+                },
+            )
             raise RuntimeError(f"R2Z2 sequence fetch failed for {sequence_id} with status={status}")
 
         if pending_payloads:
@@ -489,51 +639,42 @@ def run_killmail_r2z2_stream(context: Any) -> dict[str, Any]:
                 logger_context=context,
                 started_at=started_at,
                 totals={
-                    "rows_seen": total_rows_seen,
-                    "rows_written": total_rows_written,
+                    "rows_seen": totals["rows_seen"],
+                    "rows_written": totals["rows_written"],
                 },
             )
             pending_payloads = []
             batches_flushed += 1
-            total_rows_seen += int(batch_result.get("rows_seen") or 0)
-            total_rows_matched += int(batch_result.get("rows_matched") or 0)
-            total_rows_skipped_existing += int(batch_result.get("rows_skipped_existing") or 0)
-            total_rows_filtered_out += int(batch_result.get("rows_filtered_out") or 0)
-            total_rows_write_attempted += int(batch_result.get("rows_write_attempted") or 0)
-            total_rows_written += int(batch_result.get("rows_written") or 0)
-            total_rows_failed += int(batch_result.get("rows_failed") or 0)
-            total_duplicates += int(batch_result.get("duplicates") or 0)
-            total_filtered += int(batch_result.get("filtered") or 0)
-            total_invalid += int(batch_result.get("invalid") or 0)
-            checkpoint_state = dict((batch_result.get("meta") or {}).get("checkpoint_state") or {})
-            if checkpoint_state.get("checkpoint_updated"):
-                checkpoint_updates += 1
-            elif str(checkpoint_state.get("reason") or "") != "no_processed_sequence":
-                checkpoint_failures += 1
+            checkpoint_update_increment, checkpoint_failure_increment = _accumulate_batch_result(
+                batch_result=batch_result,
+                totals=totals,
+            )
+            checkpoint_updates += checkpoint_update_increment
+            checkpoint_failures += checkpoint_failure_increment
 
         cursor_end = str(last_processed_sequence if last_processed_sequence is not None else (last_saved_sequence or 0))
         checksum = payload_checksum({
-            "rows_seen": total_rows_seen,
-            "rows_written": total_rows_written,
+            "rows_seen": totals["rows_seen"],
+            "rows_written": totals["rows_written"],
             "cursor": cursor_end,
             "batches_flushed": batches_flushed,
         })
 
         checkpoint_updated = checkpoint_updates > 0 or cursor_end == str(last_saved_sequence or 0)
         reason_for_zero_write = _zero_write_reason(
-            rows_seen=total_rows_seen,
-            rows_matched=total_rows_matched,
-            rows_filtered_out=total_rows_filtered_out,
-            rows_skipped_existing=total_rows_skipped_existing,
-            rows_failed=total_rows_failed,
-            rows_written=total_rows_written,
+            rows_seen=totals["rows_seen"],
+            rows_matched=totals["rows_matched"],
+            rows_filtered_out=totals["rows_filtered_out"],
+            rows_skipped_existing=totals["rows_skipped_existing"],
+            rows_failed=totals["rows_failed"],
+            rows_written=totals["rows_written"],
             checkpoint_updated=checkpoint_updated,
             sequence_404s=total_sequence_404s,
             latest_remote_sequence=latest_remote_sequence,
             cursor_before=str(last_saved_sequence or 0),
             cursor_after=cursor_end,
         )
-        if total_rows_written > 0:
+        if totals["rows_written"] > 0:
             outcome_reason = "Python streamed killmail ingestion batches and kept polling until the worker budget expired."
         else:
             outcome_reason = {
@@ -551,8 +692,8 @@ def run_killmail_r2z2_stream(context: Any) -> dict[str, Any]:
         result = {
             "status": "success",
             "summary": "Killmail R2Z2 ingestion ran in Python with continuous polling and bridge-backed batch persistence.",
-            "rows_seen": total_rows_seen,
-            "rows_written": total_rows_written,
+            "rows_seen": totals["rows_seen"],
+            "rows_written": totals["rows_written"],
             "cursor": cursor_end,
             "checksum": checksum,
             "duration_ms": int((time.monotonic() - started_at) * 1000),
@@ -566,16 +707,16 @@ def run_killmail_r2z2_stream(context: Any) -> dict[str, Any]:
                 "sequence_files_fetched": total_sequence_files_fetched,
                 "sequence_404s_encountered": total_sequence_404s,
                 "rate_limit_responses": total_rate_limits,
-                "duplicates": total_duplicates,
-                "filtered": total_filtered,
-                "invalid": total_invalid,
-                "rows_matched": total_rows_matched,
-                "rows_skipped_existing": total_rows_skipped_existing,
-                "rows_filtered_out": total_rows_filtered_out,
-                "rows_write_attempted": total_rows_write_attempted,
-                "rows_failed": total_rows_failed,
-                "killmails_fetched": total_rows_seen,
-                "killmails_inserted": total_rows_written,
+                "duplicates": totals["duplicates"],
+                "filtered": totals["filtered"],
+                "invalid": totals["invalid"],
+                "rows_matched": totals["rows_matched"],
+                "rows_skipped_existing": totals["rows_skipped_existing"],
+                "rows_filtered_out": totals["rows_filtered_out"],
+                "rows_write_attempted": totals["rows_write_attempted"],
+                "rows_failed": totals["rows_failed"],
+                "killmails_fetched": totals["rows_seen"],
+                "killmails_inserted": totals["rows_written"],
                 "first_sequence_seen": first_sequence_seen,
                 "last_sequence_seen": last_sequence_seen,
                 "cursor_before": str(last_saved_sequence or 0),
@@ -605,17 +746,17 @@ def run_killmail_r2z2_stream(context: Any) -> dict[str, Any]:
             {
                 "status": "failed",
                 "summary": str(error),
-                "rows_seen": total_rows_seen,
-                "rows_written": total_rows_written,
+                "rows_seen": totals["rows_seen"],
+                "rows_written": totals["rows_written"],
                 "cursor": str(last_processed_sequence if last_processed_sequence is not None else (last_saved_sequence or 0)),
                 "checksum": "",
                 "error": str(error),
                 "meta": {
-                    "rows_matched": total_rows_matched,
-                    "rows_filtered_out": total_rows_filtered_out,
-                    "rows_skipped_existing": total_rows_skipped_existing,
-                    "rows_write_attempted": total_rows_write_attempted,
-                    "rows_failed": max(1, total_rows_failed),
+                    "rows_matched": totals["rows_matched"],
+                    "rows_filtered_out": totals["rows_filtered_out"],
+                    "rows_skipped_existing": totals["rows_skipped_existing"],
+                    "rows_write_attempted": totals["rows_write_attempted"],
+                    "rows_failed": max(1, totals["rows_failed"]),
                     "cursor_before": str(last_saved_sequence or 0),
                     "cursor_after": str(last_processed_sequence if last_processed_sequence is not None else (last_saved_sequence or 0)),
                     "first_sequence_seen": first_sequence_seen,
