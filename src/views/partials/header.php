@@ -6,18 +6,10 @@ $pageHeaderSummary = trim((string) ($pageHeaderSummary ?? brand_tagline()));
 $pageHeaderBadge = trim((string) ($pageHeaderBadge ?? 'Operations aligned'));
 $pageHeaderBadgeTone = trim((string) ($pageHeaderBadgeTone ?? 'border-cyan/20 bg-cyan/10 text-cyan-100'));
 $liveRefreshSummary = supplycore_live_refresh_summary($liveRefreshConfig ?? null);
-$pageHeaderMeta = is_array($pageHeaderMeta ?? null) ? $pageHeaderMeta : [
-    [
-        'label' => 'Data freshness',
-        'value' => $liveRefreshSummary['last_refresh_relative'],
-        'caption' => 'Last visible update ' . $liveRefreshSummary['last_refresh_at'] . '.',
-    ],
-    [
-        'label' => 'Live updates',
-        'value' => $liveRefreshSummary['mode_label'],
-        'caption' => $liveRefreshSummary['health_message'],
-    ],
-];
+$pageFreshness = is_array($pageFreshness ?? null) ? $pageFreshness : [];
+$pageFreshnessLine = $pageFreshness !== []
+    ? trim((string) (($pageFreshness['label'] ?? 'Freshness') . ' · ' . ($pageFreshness['computed_relative'] ?? 'Unknown') . ' · ' . ($pageFreshness['computed_at'] ?? 'Unavailable')))
+    : trim((string) ('Live refresh · ' . ($liveRefreshSummary['last_refresh_relative'] ?? 'Unknown')));
 ?>
 <!doctype html>
 <html lang="en">
@@ -37,7 +29,7 @@ $pageHeaderMeta = is_array($pageHeaderMeta ?? null) ? $pageHeaderMeta : [
     <?php include __DIR__ . '/sidebar.php'; ?>
     <main class="relative flex-1 px-5 py-6 sm:px-6 lg:px-8 xl:px-10 xl:py-8">
         <header class="page-header mb-8">
-            <div class="relative z-10 grid gap-5 xl:grid-cols-[minmax(0,1.25fr)_minmax(320px,0.95fr)] xl:items-start">
+            <div class="relative z-10 grid gap-4 xl:grid-cols-[minmax(0,1fr)_auto] xl:items-start">
                 <div class="max-w-3xl">
                     <p class="eyebrow text-cyan/80"><?= htmlspecialchars(brand_console_label(), ENT_QUOTES) ?></p>
                     <div class="mt-3 flex flex-wrap items-center gap-3">
@@ -47,41 +39,41 @@ $pageHeaderMeta = is_array($pageHeaderMeta ?? null) ? $pageHeaderMeta : [
                             <?= htmlspecialchars($pageHeaderBadge, ENT_QUOTES) ?>
                         </span>
                     </div>
-                    <p class="mt-3 max-w-2xl text-sm leading-6 text-slate-300/88"><?= htmlspecialchars($pageHeaderSummary, ENT_QUOTES) ?></p>
+                    <?php if ($pageHeaderSummary !== ''): ?>
+                        <p class="mt-3 max-w-2xl text-sm leading-6 text-slate-300/88"><?= htmlspecialchars($pageHeaderSummary, ENT_QUOTES) ?></p>
+                    <?php endif; ?>
+                    <?php if ($pageFreshness === [] && $pageFreshnessLine !== ''): ?>
+                        <p class="mt-3 text-sm text-slate-300" data-ui-freshness-target="page-freshness"><?= htmlspecialchars($pageFreshnessLine, ENT_QUOTES) ?></p>
+                    <?php endif; ?>
                 </div>
-                <div class="grid gap-3 xl:grid-cols-2">
-                    <?php foreach ($pageHeaderMeta as $metaCard): ?>
-                        <div class="surface-tertiary relative z-10 px-4 py-3 text-sm text-slate-300">
-                            <span class="eyebrow"><?= htmlspecialchars((string) ($metaCard['label'] ?? 'Operational context'), ENT_QUOTES) ?></span>
-                            <p class="mt-3 font-medium text-slate-100"><?= htmlspecialchars((string) ($metaCard['value'] ?? 'Unavailable'), ENT_QUOTES) ?></p>
-                            <?php if (trim((string) ($metaCard['caption'] ?? '')) !== ''): ?>
-                                <p class="mt-2 text-xs leading-5 text-slate-500"><?= htmlspecialchars((string) ($metaCard['caption'] ?? ''), ENT_QUOTES) ?></p>
-                            <?php endif; ?>
-                        </div>
-                    <?php endforeach; ?>
+                <div class="flex flex-wrap items-start justify-end gap-2">
+                    <?php if ($pageFreshness !== []): ?>
+                        <span class="badge <?= htmlspecialchars((string) ($pageFreshness['tone'] ?? 'border-amber-400/20 bg-amber-500/10 text-amber-100'), ENT_QUOTES) ?>">
+                            <?= htmlspecialchars((string) ($pageFreshness['label'] ?? 'Unknown'), ENT_QUOTES) ?>
+                        </span>
+                    <?php endif; ?>
+                    <span class="badge <?= htmlspecialchars((string) ($liveRefreshSummary['health_tone'] ?? 'border-slate-400/20 bg-slate-500/10 text-slate-100'), ENT_QUOTES) ?>">
+                        <?= htmlspecialchars((string) ($liveRefreshSummary['mode_label'] ?? 'Live updates unavailable'), ENT_QUOTES) ?>
+                    </span>
                     <?php if (supplycore_live_refresh_should_include($liveRefreshConfig ?? null)): ?>
-                        <section class="live-refresh-panel relative z-10 xl:col-span-2 text-left text-xs text-slate-300" data-ui-refresh-diagnostics>
-                            <div class="flex flex-wrap items-start justify-between gap-3">
-                                <div>
-                                    <p class="eyebrow text-cyan-100/80">Live updates</p>
-                                    <p class="mt-2 text-xs leading-5 text-slate-500">Keep refresh health visible without turning the page into a console.</p>
+                        <details class="live-refresh-panel relative z-10 text-left text-xs text-slate-300" data-ui-refresh-diagnostics <?= !empty($liveRefreshSummary['show_advanced']) ? 'open' : '' ?>>
+                            <summary class="cursor-pointer list-none rounded-full border border-white/10 bg-black/20 px-3 py-2 text-sm font-medium text-slate-100">Diagnostics</summary>
+                            <div class="mt-3 rounded-2xl border border-white/8 bg-black/20 p-3">
+                                <div class="grid gap-3 sm:grid-cols-3">
+                                    <p><span class="text-slate-500">Live updates</span><br><span class="mt-1 inline-block text-sm text-slate-100" data-live-refresh-mode><?= htmlspecialchars((string) $liveRefreshSummary['mode_label'], ENT_QUOTES) ?></span></p>
+                                    <p><span class="text-slate-500">Last refresh</span><br><span class="mt-1 inline-block text-sm text-slate-100" data-live-refresh-last-refresh><?= htmlspecialchars((string) $liveRefreshSummary['last_refresh_relative'], ENT_QUOTES) ?></span></p>
+                                    <p><span class="text-slate-500">Refresh health</span><br><span class="mt-1 inline-block text-sm text-slate-100" data-live-refresh-health><?= htmlspecialchars((string) $liveRefreshSummary['health_message'], ENT_QUOTES) ?></span></p>
                                 </div>
-                                <span class="badge <?= htmlspecialchars((string) $liveRefreshSummary['health_tone'], ENT_QUOTES) ?>" data-live-refresh-health-badge><?= htmlspecialchars((string) $liveRefreshSummary['health_label'], ENT_QUOTES) ?></span>
+                                <details class="mt-4 rounded-2xl border border-white/8 bg-black/20 p-3" data-live-refresh-advanced <?= !empty($liveRefreshSummary['show_advanced']) ? 'open' : '' ?>>
+                                    <summary class="cursor-pointer list-none text-sm font-medium text-slate-100">Advanced transport</summary>
+                                    <div class="mt-3 grid gap-3 sm:grid-cols-2">
+                                        <p><span class="text-slate-500">Active transport</span><br><span class="mt-1 inline-block text-sm text-slate-100" data-live-refresh-transport>Starting…</span></p>
+                                        <p><span class="text-slate-500">Last update event</span><br><span class="mt-1 inline-block text-sm text-slate-100" data-live-refresh-last-event>No published refresh event yet</span></p>
+                                        <p class="sm:col-span-2"><span class="text-slate-500">Version markers</span><br><span class="mt-1 inline-block break-all text-sm text-slate-100" data-live-refresh-versions>Loading…</span></p>
+                                    </div>
+                                </details>
                             </div>
-                            <div class="mt-4 grid gap-3 sm:grid-cols-3">
-                                <p><span class="text-slate-500">Live updates</span><br><span class="mt-1 inline-block text-sm text-slate-100" data-live-refresh-mode><?= htmlspecialchars((string) $liveRefreshSummary['mode_label'], ENT_QUOTES) ?></span></p>
-                                <p><span class="text-slate-500">Last refresh</span><br><span class="mt-1 inline-block text-sm text-slate-100" data-live-refresh-last-refresh><?= htmlspecialchars((string) $liveRefreshSummary['last_refresh_relative'], ENT_QUOTES) ?></span></p>
-                                <p><span class="text-slate-500">Refresh health</span><br><span class="mt-1 inline-block text-sm text-slate-100" data-live-refresh-health><?= htmlspecialchars((string) $liveRefreshSummary['health_message'], ENT_QUOTES) ?></span></p>
-                            </div>
-                            <details class="mt-4 rounded-2xl border border-white/8 bg-black/20 p-3" data-live-refresh-advanced <?= !empty($liveRefreshSummary['show_advanced']) ? 'open' : '' ?>>
-                                <summary class="cursor-pointer list-none text-sm font-medium text-slate-100">Advanced diagnostics</summary>
-                                <div class="mt-3 grid gap-3 sm:grid-cols-2">
-                                    <p><span class="text-slate-500">Active transport</span><br><span class="mt-1 inline-block text-sm text-slate-100" data-live-refresh-transport>Starting…</span></p>
-                                    <p><span class="text-slate-500">Last update event</span><br><span class="mt-1 inline-block text-sm text-slate-100" data-live-refresh-last-event>No published refresh event yet</span></p>
-                                    <p class="sm:col-span-2"><span class="text-slate-500">Version markers</span><br><span class="mt-1 inline-block text-sm text-slate-100 break-all" data-live-refresh-versions>Loading…</span></p>
-                                </div>
-                            </details>
-                        </section>
+                        </details>
                     <?php endif; ?>
                 </div>
             </div>
@@ -89,13 +81,12 @@ $pageHeaderMeta = is_array($pageHeaderMeta ?? null) ? $pageHeaderMeta : [
         <?php if ($notice): ?>
             <div class="mb-6 rounded-2xl border border-emerald-500/30 bg-emerald-500/12 px-4 py-3 text-sm text-emerald-100 shadow-[0_0_24px_rgba(34,197,94,0.08)]"><?= htmlspecialchars($notice, ENT_QUOTES) ?></div>
         <?php endif; ?>
-        <?php if (is_array($pageFreshness ?? null) && $pageFreshness !== []): ?>
+        <?php if ($pageFreshness !== []): ?>
             <!-- ui-section:page-freshness:start -->
-            <div class="mb-6 flex flex-wrap items-center justify-between gap-3 rounded-2xl border px-4 py-3 text-sm shadow-[0_0_24px_rgba(15,23,42,0.14)] <?= htmlspecialchars((string) ($pageFreshness['tone'] ?? 'border-amber-400/20 bg-amber-500/10 text-amber-100'), ENT_QUOTES) ?>" data-ui-section="page-freshness">
+            <div class="mb-6 flex flex-wrap items-center justify-between gap-3 rounded-2xl border px-4 py-2 text-sm shadow-[0_0_24px_rgba(15,23,42,0.14)] <?= htmlspecialchars((string) ($pageFreshness['tone'] ?? 'border-amber-400/20 bg-amber-500/10 text-amber-100'), ENT_QUOTES) ?>" data-ui-section="page-freshness">
                 <div>
                     <p class="font-medium"><?= htmlspecialchars((string) ($pageFreshness['message'] ?? 'Summary freshness unavailable.'), ENT_QUOTES) ?></p>
-                    <p class="mt-1 text-xs opacity-80">Last computed <?= htmlspecialchars((string) ($pageFreshness['computed_relative'] ?? 'Never'), ENT_QUOTES) ?> · <?= htmlspecialchars((string) ($pageFreshness['computed_at'] ?? 'Unavailable'), ENT_QUOTES) ?></p>
-                    <p class="mt-2 text-[11px] uppercase tracking-[0.14em] text-current/70" data-ui-freshness-target="page-freshness">Refreshed from latest sync</p>
+                    <p class="mt-1 text-xs opacity-80" data-ui-freshness-target="page-freshness">Last computed <?= htmlspecialchars((string) ($pageFreshness['computed_relative'] ?? 'Never'), ENT_QUOTES) ?> · <?= htmlspecialchars((string) ($pageFreshness['computed_at'] ?? 'Unavailable'), ENT_QUOTES) ?></p>
                 </div>
                 <span class="rounded-full border border-current/20 px-3 py-1 text-[11px] uppercase tracking-[0.14em]"><?= htmlspecialchars((string) ($pageFreshness['label'] ?? 'Unknown'), ENT_QUOTES) ?></span>
             </div>

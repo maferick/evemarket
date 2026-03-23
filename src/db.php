@@ -574,6 +574,7 @@ function db_killmail_overview_schema_ensure(): void
     db_ensure_table_column('killmail_events', 'zkb_npc', 'TINYINT(1) DEFAULT NULL AFTER zkb_points');
     db_ensure_table_column('killmail_events', 'zkb_solo', 'TINYINT(1) DEFAULT NULL AFTER zkb_npc');
     db_ensure_table_column('killmail_events', 'zkb_awox', 'TINYINT(1) DEFAULT NULL AFTER zkb_solo');
+    db_ensure_table_index('killmail_events', 'idx_killmail_natural_sequence', 'INDEX idx_killmail_natural_sequence (killmail_id, killmail_hash, sequence_id)');
 
     $legacyEventJsonSql = db_table_has_column('killmail_events', 'zkb_json') ? "NULLIF(e.zkb_json, '')" : 'NULL';
     $zkbJsonSql = "COALESCE(NULLIF(p.zkb_json, ''), {$legacyEventJsonSql}, '{}')";
@@ -615,6 +616,16 @@ function db_killmail_overview_schema_ensure(): void
     );
 
     $ensured = true;
+}
+
+function db_killmail_latest_sequences_sql(): string
+{
+    return "(
+        SELECT
+            MAX(e.sequence_id) AS sequence_id
+        FROM killmail_events e
+        GROUP BY e.killmail_id, e.killmail_hash
+    )";
 }
 
 function db_killmail_event_has_legacy_payload_columns(): bool
@@ -3857,6 +3868,103 @@ function db_market_snapshot_rollup_bulk_upsert(string $resolution, array $rows, 
         ],
         $chunkSize
     );
+}
+
+function db_market_rebuild_source_keys(): array
+{
+    db_market_snapshot_optimization_ensure();
+
+    $historyTable = db_validate_identifier(db_market_orders_history_read_table());
+    $summaryTable = db_validate_identifier(db_market_order_snapshots_summary_read_table());
+
+    return db_select(
+        "SELECT source_type, source_id
+         FROM (
+            SELECT source_type, source_id FROM market_orders_current
+            UNION
+            SELECT source_type, source_id FROM {$historyTable}
+            UNION
+            SELECT source_type, source_id FROM {$summaryTable}
+            UNION
+            SELECT source_type, source_id FROM market_source_snapshot_state
+         ) sources
+         WHERE source_type <> ''
+           AND source_id > 0
+         ORDER BY source_type ASC, source_id ASC"
+    );
+}
+
+function db_truncate_tables(array $tables): int
+{
+    $truncated = 0;
+
+    foreach ($tables as $table) {
+        db_execute('TRUNCATE TABLE ' . db_validate_identifier((string) $table));
+        $truncated++;
+    }
+
+    return $truncated;
+}
+
+function db_market_order_snapshots_summary_delete_window(string $sourceType, int $sourceId, string $startDate, string $endDate): int
+{
+    $deleted = 0;
+
+    foreach (db_market_order_snapshots_summary_known_tables() as $table) {
+        db_execute(
+            'DELETE FROM ' . db_validate_identifier($table) . '
+             WHERE source_type = ?
+               AND source_id = ?
+               AND observed_date BETWEEN ? AND ?',
+            [$sourceType, $sourceId, $startDate, $endDate]
+        );
+        $deleted += (int) db()->query('SELECT ROW_COUNT()')->fetchColumn();
+    }
+
+    return $deleted;
+}
+
+function db_market_snapshot_rollup_delete_window(string $resolution, string $sourceType, int $sourceId, string $startDate, string $endDate): int
+{
+    $table = db_validate_identifier(db_market_snapshot_rollup_table_name($resolution));
+    $startValue = $resolution === '1d' ? $startDate : ($startDate . ' 00:00:00');
+    $endValue = $resolution === '1d' ? $endDate : ($endDate . ' 23:59:59');
+
+    db_execute(
+        "DELETE FROM {$table}
+         WHERE source_type = ?
+           AND source_id = ?
+           AND bucket_start BETWEEN ? AND ?",
+        [$sourceType, $sourceId, $startValue, $endValue]
+    );
+
+    return (int) db()->query('SELECT ROW_COUNT()')->fetchColumn();
+}
+
+function db_market_history_daily_delete_window(string $sourceType, int $sourceId, string $startDate, string $endDate): int
+{
+    db_execute(
+        'DELETE FROM market_history_daily
+         WHERE source_type = ?
+           AND source_id = ?
+           AND trade_date BETWEEN ? AND ?',
+        [$sourceType, $sourceId, $startDate, $endDate]
+    );
+
+    return (int) db()->query('SELECT ROW_COUNT()')->fetchColumn();
+}
+
+function db_market_hub_local_history_daily_delete_window(string $source, int $sourceId, string $startDate, string $endDate): int
+{
+    db_execute(
+        'DELETE FROM market_hub_local_history_daily
+         WHERE source = ?
+           AND source_id = ?
+           AND trade_date BETWEEN ? AND ?',
+        [$source, $sourceId, $startDate, $endDate]
+    );
+
+    return (int) db()->query('SELECT ROW_COUNT()')->fetchColumn();
 }
 
 function db_market_snapshot_optimization_ensure(): void
@@ -9913,8 +10021,9 @@ function db_killmail_event_exists(int $sequenceId, int $killmailId, string $kill
         'SELECT sequence_id
            FROM killmail_events
           WHERE sequence_id = ?
+             OR (killmail_id = ? AND killmail_hash = ?)
           LIMIT 1',
-        [$sequenceId]
+        [$sequenceId, $killmailId, $killmailHash]
     );
 
     return $row !== null;
@@ -10182,13 +10291,15 @@ function db_killmail_filtered_recent(int $limit = 50): array
 {
     $limit = max(1, min(500, $limit));
     $trackedMatchesSql = db_killmail_tracked_matches_sql();
+    $latestSequencesSql = db_killmail_latest_sequences_sql();
 
     return db_select(
         "SELECT e.sequence_id, e.killmail_id, e.killmail_hash, e.uploaded_at, e.killmail_time,
                 e.victim_alliance_id, e.victim_corporation_id, e.victim_ship_type_id, e.solar_system_id, e.region_id
          FROM {$trackedMatchesSql} tracked
+         INNER JOIN {$latestSequencesSql} latest ON latest.sequence_id = tracked.sequence_id
          INNER JOIN killmail_events e ON e.sequence_id = tracked.sequence_id
-         ORDER BY e.sequence_id DESC
+         ORDER BY e.effective_killmail_at DESC, e.sequence_id DESC, e.killmail_id DESC
          LIMIT {$limit}"
     );
 }
@@ -10197,16 +10308,22 @@ function db_killmail_overview_summary(int $recentHours = 24): array
 {
     $safeRecentHours = max(1, min(24 * 30, $recentHours));
     $trackedMatchesSql = db_killmail_tracked_matches_sql();
+    $latestSequencesSql = db_killmail_latest_sequences_sql();
     $summary = db_select_one(
         "SELECT
             COUNT(*) AS total_count,
-            SUM(CASE WHEN e.created_at >= (UTC_TIMESTAMP() - INTERVAL {$safeRecentHours} HOUR) THEN 1 ELSE 0 END) AS recent_count,
+            SUM(CASE WHEN e.effective_killmail_at >= (UTC_TIMESTAMP() - INTERVAL {$safeRecentHours} HOUR) THEN 1 ELSE 0 END) AS recent_count,
             MAX(e.sequence_id) AS max_sequence_id,
             MAX(e.created_at) AS last_ingested_at,
             MAX(e.uploaded_at) AS latest_uploaded_at
-         FROM killmail_events e"
+         FROM {$latestSequencesSql} latest
+         INNER JOIN killmail_events e ON e.sequence_id = latest.sequence_id"
     ) ?? [];
-    $trackedCountRow = db_select_one("SELECT COUNT(*) AS tracked_match_count FROM {$trackedMatchesSql} tracked") ?? [];
+    $trackedCountRow = db_select_one(
+        "SELECT COUNT(*) AS tracked_match_count
+         FROM {$trackedMatchesSql} tracked
+         INNER JOIN {$latestSequencesSql} latest ON latest.sequence_id = tracked.sequence_id"
+    ) ?? [];
     $summary['tracked_match_count'] = (int) ($trackedCountRow['tracked_match_count'] ?? 0);
 
     return $summary;
@@ -10214,11 +10331,13 @@ function db_killmail_overview_summary(int $recentHours = 24): array
 
 function db_killmail_overview_filter_options(): array
 {
+    $latestSequencesSql = db_killmail_latest_sequences_sql();
     $alliances = db_select(
         "SELECT DISTINCT
             e.victim_alliance_id AS entity_id,
             COALESCE(NULLIF(ta.label, ''), CONCAT('Alliance #', e.victim_alliance_id)) AS entity_label
-         FROM killmail_events e
+         FROM {$latestSequencesSql} latest
+         INNER JOIN killmail_events e ON e.sequence_id = latest.sequence_id
          LEFT JOIN killmail_tracked_alliances ta
            ON ta.alliance_id = e.victim_alliance_id
           AND ta.is_active = 1
@@ -10231,7 +10350,8 @@ function db_killmail_overview_filter_options(): array
         "SELECT DISTINCT
             e.victim_corporation_id AS entity_id,
             COALESCE(NULLIF(tc.label, ''), CONCAT('Corporation #', e.victim_corporation_id)) AS entity_label
-         FROM killmail_events e
+         FROM {$latestSequencesSql} latest
+         INNER JOIN killmail_events e ON e.sequence_id = latest.sequence_id
          LEFT JOIN killmail_tracked_corporations tc
            ON tc.corporation_id = e.victim_corporation_id
           AND tc.is_active = 1
@@ -10390,9 +10510,12 @@ function db_killmail_overview_page(array $filters = []): array
     $trackedOnly = (bool) ($filters['tracked_only'] ?? false);
     $search = trim((string) ($filters['search'] ?? ''));
     $trackedMatchesSql = db_killmail_tracked_matches_sql();
+    $latestSequencesSql = db_killmail_latest_sequences_sql();
     $trackedJoinType = $trackedOnly ? 'INNER JOIN' : 'LEFT JOIN';
 
-    $fromSql = " FROM killmail_events e
+    $fromSql = " FROM {$latestSequencesSql} latest
+        INNER JOIN killmail_events e
+          ON e.sequence_id = latest.sequence_id
         {$trackedJoinType} {$trackedMatchesSql} tracked
           ON tracked.sequence_id = e.sequence_id
         LEFT JOIN killmail_attackers final_blow_attacker
@@ -10490,7 +10613,7 @@ function db_killmail_overview_page(array $filters = []): array
             CASE WHEN tracked.sequence_id IS NULL THEN 0 ELSE 1 END AS matched_tracked
             {$fromSql}
             {$whereSql}
-         ORDER BY e.sequence_id DESC
+         ORDER BY e.effective_killmail_at DESC, e.sequence_id DESC, e.killmail_id DESC
          LIMIT {$pageSize} OFFSET {$offset}",
         $params
     );

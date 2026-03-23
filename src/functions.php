@@ -6424,6 +6424,57 @@ function loss_demand_refresh_summary_job_result(string $reason = 'manual'): arra
     ];
 }
 
+function supplycore_rows_unique_by(array $rows, callable $keyResolver): array
+{
+    $unique = [];
+
+    foreach ($rows as $row) {
+        if (!is_array($row)) {
+            continue;
+        }
+
+        $key = trim((string) $keyResolver($row));
+        if ($key === '') {
+            continue;
+        }
+
+        if (!array_key_exists($key, $unique)) {
+            $unique[$key] = $row;
+        }
+    }
+
+    return array_values($unique);
+}
+
+function supplycore_sort_rows_by_newest(array &$rows, array $timestampKeys, array $tieBreakerKeys = []): void
+{
+    usort($rows, static function (array $left, array $right) use ($timestampKeys, $tieBreakerKeys): int {
+        foreach ($timestampKeys as $timestampKey) {
+            $leftValue = trim((string) ($left[$timestampKey] ?? ''));
+            $rightValue = trim((string) ($right[$timestampKey] ?? ''));
+            $leftTimestamp = $leftValue !== '' ? (strtotime($leftValue) ?: 0) : 0;
+            $rightTimestamp = $rightValue !== '' ? (strtotime($rightValue) ?: 0) : 0;
+            $compare = $rightTimestamp <=> $leftTimestamp;
+            if ($compare !== 0) {
+                return $compare;
+            }
+        }
+
+        foreach ($tieBreakerKeys as $tieBreakerKey) {
+            $leftValue = $left[$tieBreakerKey] ?? null;
+            $rightValue = $right[$tieBreakerKey] ?? null;
+            $compare = is_numeric($leftValue) && is_numeric($rightValue)
+                ? ((int) $rightValue <=> (int) $leftValue)
+                : strcmp((string) $rightValue, (string) $leftValue);
+            if ($compare !== 0) {
+                return $compare;
+            }
+        }
+
+        return 0;
+    });
+}
+
 function dashboard_intelligence_data_build(): array
 {
     $marketHubRef = market_hub_setting_reference();
@@ -6437,8 +6488,10 @@ function dashboard_intelligence_data_build(): array
 
     $opportunities = $rows;
     usort($opportunities, static fn (array $a, array $b): int => (($b['opportunity_score'] ?? 0) <=> ($a['opportunity_score'] ?? 0)) ?: (($b['volume_score'] ?? 0) <=> ($a['volume_score'] ?? 0)));
+    $opportunities = supplycore_rows_unique_by($opportunities, static fn (array $row): string => 'type:' . (int) ($row['type_id'] ?? 0));
     $risks = $rows;
     usort($risks, static fn (array $a, array $b): int => (($b['risk_score'] ?? 0) <=> ($a['risk_score'] ?? 0)) ?: (($b['stock_score'] ?? 0) <=> ($a['stock_score'] ?? 0)));
+    $risks = supplycore_rows_unique_by($risks, static fn (array $row): string => 'type:' . (int) ($row['type_id'] ?? 0));
 
     $allianceSync = $allianceStructureId !== null
         ? sync_status_for_dataset_keys([sync_dataset_key_alliance_structure_orders_current($allianceStructureId)])
@@ -9977,6 +10030,9 @@ function killmail_overview_data(): array
             return [
                 'sequence_id' => (int) ($row['sequence_id'] ?? 0),
                 'killmail_id' => (int) ($row['killmail_id'] ?? 0),
+                'killmail_time_raw' => isset($row['killmail_time']) ? (string) $row['killmail_time'] : '',
+                'uploaded_at_raw' => isset($row['uploaded_at']) ? (string) $row['uploaded_at'] : '',
+                'created_at_raw' => isset($row['created_at']) ? (string) $row['created_at'] : '',
                 'killmail_time_display' => killmail_format_datetime(isset($row['killmail_time']) ? (string) $row['killmail_time'] : null),
                 'uploaded_at_display' => killmail_format_datetime(isset($row['uploaded_at']) ? (string) $row['uploaded_at'] : null),
                 'created_at_display' => killmail_format_datetime(isset($row['created_at']) ? (string) $row['created_at'] : null),
@@ -10004,6 +10060,8 @@ function killmail_overview_data(): array
                 'inspect_url' => '/killmail-intelligence/view.php?sequence_id=' . urlencode((string) ((int) ($row['sequence_id'] ?? 0))),
             ];
         }, (array) ($listing['rows'] ?? []));
+        $rows = supplycore_rows_unique_by($rows, static fn (array $row): string => 'killmail:' . (int) ($row['killmail_id'] ?? 0) . ':' . (int) ($row['sequence_id'] ?? 0));
+        supplycore_sort_rows_by_newest($rows, ['killmail_time_raw', 'uploaded_at_raw', 'created_at_raw'], ['sequence_id', 'killmail_id']);
 
         $emptyMessage = $totalCount === 0
             ? 'No killmails have been stored yet. Enable killmail ingestion, run the sync worker, and this view will populate as local killmails arrive.'
@@ -23120,6 +23178,172 @@ function supplycore_refresh_current_state_cache(string $reason = 'manual'): arra
         'meta' => [
             'outcome_reason' => 'Market comparison, loss-demand, and dashboard summaries were refreshed into materialized current-state layers.',
         ],
+    ];
+}
+
+function supplycore_rebuild_window_bounds(?int $windowDays = null): array
+{
+    $safeWindowDays = market_hub_local_history_window_days_normalize($windowDays);
+    $startObservedAt = market_hub_local_history_window_start_observed_at($safeWindowDays);
+
+    return [
+        'window_days' => $safeWindowDays,
+        'start_observed_at' => $startObservedAt,
+        'start_date' => substr($startObservedAt, 0, 10),
+        'end_date' => gmdate('Y-m-d'),
+    ];
+}
+
+function supplycore_rebuild_partitioned_market_history(array $window): array
+{
+    $startDate = (string) ($window['start_date'] ?? '');
+    $endDate = (string) ($window['end_date'] ?? '');
+
+    db_market_orders_history_partitioned_schema_ensure();
+    db_market_order_snapshots_summary_partitioned_schema_ensure();
+
+    $historyBackfill = db_market_orders_history_backfill_window($startDate, $endDate);
+    $summaryBackfill = db_market_order_snapshots_summary_backfill_window($startDate, $endDate);
+    $historyCutover = db_market_orders_history_cutover_swap('partitioned', 'dual');
+    $summaryCutover = db_market_order_snapshots_summary_cutover_swap('partitioned', 'dual');
+
+    return [
+        'history_backfill_rows' => $historyBackfill,
+        'summary_backfill_rows' => $summaryBackfill,
+        'history_cutover' => $historyCutover,
+        'summary_cutover' => $summaryCutover,
+    ];
+}
+
+function supplycore_rebuild_current_layers(string $reason = 'manual', bool $fullReset = false): array
+{
+    $sourceRows = db_market_rebuild_source_keys();
+    $resetTables = ['market_order_current_projection', 'market_source_snapshot_state'];
+    $resetCount = db_truncate_tables($resetTables);
+    $sourcesProcessed = 0;
+    $projectionRowsWritten = 0;
+
+    foreach ($sourceRows as $source) {
+        $sourceType = trim((string) ($source['source_type'] ?? ''));
+        $sourceId = (int) ($source['source_id'] ?? 0);
+        if ($sourceType === '' || $sourceId <= 0) {
+            continue;
+        }
+
+        $snapshotRows = db_market_orders_current_latest_snapshot_rows($sourceType, $sourceId);
+        if ($snapshotRows === []) {
+            continue;
+        }
+
+        $projectionRowsWritten += db_market_order_current_projection_refresh_snapshots(
+            db_market_order_current_projection_rows_from_orders($snapshotRows)
+        );
+        db_market_source_snapshot_state_upsert([
+            'source_type' => $sourceType,
+            'source_id' => $sourceId,
+            'latest_current_observed_at' => (string) ($snapshotRows[0]['observed_at'] ?? ''),
+            'current_order_count' => count($snapshotRows),
+            'current_distinct_type_count' => market_order_distinct_type_count($snapshotRows),
+            'last_synced_at' => (string) ($snapshotRows[0]['observed_at'] ?? ''),
+        ]);
+        $sourcesProcessed++;
+    }
+
+    return [
+        'reason' => $reason,
+        'reset_tables' => $resetTables,
+        'reset_count' => $resetCount,
+        'sources_processed' => $sourcesProcessed,
+        'projection_rows_written' => $projectionRowsWritten,
+    ];
+}
+
+function supplycore_rebuild_rollup_layers(string $reason = 'manual', ?int $windowDays = null, bool $fullReset = false): array
+{
+    $window = supplycore_rebuild_window_bounds($windowDays);
+    $startObservedAt = (string) ($window['start_observed_at'] ?? '');
+    $startDate = (string) ($window['start_date'] ?? '');
+    $endDate = (string) ($window['end_date'] ?? '');
+    $sourceRows = db_market_rebuild_source_keys();
+    $resetTables = [
+        'market_order_snapshot_rollup_1h',
+        'market_order_snapshot_rollup_1d',
+    ];
+
+    if ($fullReset) {
+        array_push(
+            $resetTables,
+            'market_order_snapshots_summary',
+            db_market_order_snapshots_summary_partitioned_table(),
+            'market_history_daily',
+            'market_hub_local_history_daily'
+        );
+    }
+
+    $resetCount = $fullReset ? db_truncate_tables($resetTables) : 0;
+    $sourcesProcessed = 0;
+    $summaryRowsWritten = 0;
+    $rollupRowsWritten = ['1h' => 0, '1d' => 0];
+    $dailyRowsWritten = 0;
+    $localDailyRowsWritten = 0;
+
+    foreach ($sourceRows as $source) {
+        $sourceType = trim((string) ($source['source_type'] ?? ''));
+        $sourceId = (int) ($source['source_id'] ?? 0);
+        if ($sourceType === '' || $sourceId <= 0) {
+            continue;
+        }
+
+        if (!$fullReset) {
+            db_market_order_snapshots_summary_delete_window($sourceType, $sourceId, $startDate, $endDate);
+            db_market_snapshot_rollup_delete_window('1h', $sourceType, $sourceId, $startDate, $endDate);
+            db_market_snapshot_rollup_delete_window('1d', $sourceType, $sourceId, $startDate, $endDate);
+            db_market_history_daily_delete_window($sourceType, $sourceId, $startDate, $endDate);
+            if ($sourceType === 'market_hub') {
+                db_market_hub_local_history_daily_delete_window(market_hub_local_history_source(), $sourceId, $startDate, $endDate);
+            }
+        }
+
+        $summaryRows = db_market_orders_snapshot_metrics_window_raw($sourceType, $sourceId, $startObservedAt);
+        if ($summaryRows !== []) {
+            $summaryRowsWritten += db_market_order_snapshots_summary_bulk_upsert($summaryRows);
+            $rollupRowsWritten['1h'] += db_market_snapshot_rollup_bulk_upsert('1h', db_market_snapshot_rollup_rows_from_summary('1h', $summaryRows));
+            $rollupRowsWritten['1d'] += db_market_snapshot_rollup_bulk_upsert('1d', db_market_snapshot_rollup_rows_from_summary('1d', $summaryRows));
+        }
+
+        $snapshotMetrics = db_market_orders_snapshot_metrics_window($sourceType, $sourceId, $startObservedAt);
+        if ($snapshotMetrics === []) {
+            continue;
+        }
+
+        $rebuiltDaily = market_history_daily_rebuild_from_snapshot_metrics($snapshotMetrics, $sourceType);
+        $dailyRowsWritten += db_market_history_daily_bulk_upsert((array) ($rebuiltDaily['rows'] ?? []));
+
+        if ($sourceType === 'market_hub') {
+            $rebuiltLocalDaily = market_hub_local_history_daily_rebuild_from_snapshot_metrics($snapshotMetrics);
+            $localDailyRowsWritten += db_market_hub_local_history_daily_bulk_upsert((array) ($rebuiltLocalDaily['rows'] ?? []));
+        }
+
+        $sourcesProcessed++;
+    }
+
+    $currentState = supplycore_refresh_current_state_cache($reason . ':current-state');
+    $doctrine = doctrine_refresh_intelligence($reason . ':doctrine');
+    $activity = activity_priority_refresh_summary($reason . ':activity-priority');
+
+    return [
+        'reason' => $reason,
+        'window' => $window,
+        'reset_tables' => $resetTables,
+        'reset_count' => $resetCount,
+        'sources_processed' => $sourcesProcessed,
+        'summary_rows_written' => $summaryRowsWritten,
+        'rollup_rows_written' => $rollupRowsWritten,
+        'daily_rows_written' => $dailyRowsWritten,
+        'local_daily_rows_written' => $localDailyRowsWritten,
+        'current_state_rows_written' => (int) ($currentState['rows_written'] ?? 0),
+        'doctrine_snapshot_groups' => count((array) ($doctrine['groups'] ?? [])),
+        'activity_rows' => count((array) ($activity['rows'] ?? [])),
     ];
 }
 

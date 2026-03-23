@@ -498,6 +498,54 @@ php bin/partition_health.php
 
 The command prints both raw partitioned tables, their read/write cutover modes, the current monthly partitions, the retention cutoff derived from Settings → Data Sync, and any missing future partitions. It also lists deferred candidates that were evaluated but intentionally left unpartitioned in this pass.
 
+### Rebuild / reset CLI
+
+Use the rebuild helper when you need to re-materialize the current/latest tables and history-derived summaries from authoritative local data without touching the raw history/event store:
+
+```bash
+php bin/rebuild_data_model.php --mode=rebuild-current-only
+php bin/rebuild_data_model.php --mode=rebuild-rollups-only --window-days=30
+php bin/rebuild_data_model.php --mode=rebuild-all-derived --window-days=30
+php bin/rebuild_data_model.php --mode=full-reset --window-days=30
+```
+
+Modes:
+
+- `rebuild-current-only` resets and rebuilds the latest/current projection layer (`market_order_current_projection`, `market_source_snapshot_state`) from `market_orders_current`.
+- `rebuild-rollups-only` rebuilds history-derived summaries for the retained raw window from `market_orders_history` plus the live gap in `market_orders_current`, then refreshes current-state materialized summaries.
+- `rebuild-all-derived` runs both rebuild passes in sequence.
+- `full-reset` is the explicit destructive mode for non-authoritative derived tables only. It truncates current/derived layers first, but still preserves raw history and killmail event history.
+
+Authoritative sources vs derived targets:
+
+- Authoritative append-only history:
+  - `market_orders_history` / `market_orders_history_p`
+  - `killmail_events`
+  - `killmail_event_payloads`
+- Authoritative latest/current:
+  - `market_orders_current`
+- Derived / rebuildable:
+  - `market_order_current_projection`
+  - `market_source_snapshot_state`
+  - `market_order_snapshots_summary` / `market_order_snapshots_summary_p`
+  - `market_order_snapshot_rollup_1h`
+  - `market_order_snapshot_rollup_1d`
+  - `market_history_daily`
+  - `market_hub_local_history_daily`
+  - current-state Redis/materialized summary payloads (`market comparison`, `loss demand`, `dashboard`, `activity priority`, `doctrine`)
+
+Partition handling during rebuild:
+
+- The rebuild CLI ensures the monthly partitioned raw-history companions exist.
+- It backfills the retained raw window into `market_orders_history_p` and `market_order_snapshots_summary_p`.
+- It then switches those tables to `read=partitioned` and `write=dual`, so reads prefer the monthly partitions while writes still keep the legacy table in sync during cutover.
+
+Safety notes:
+
+- History tables are preserved unless you explicitly choose `--mode=full-reset`.
+- `full-reset` does **not** delete `market_orders_history`, `market_orders_history_p`, `killmail_events`, or `killmail_event_payloads`.
+- Rebuilds are idempotent for the selected window: the script clears the affected derived window and writes it back from authoritative data.
+
 ### Troubleshooting
 
 If the UI says the scheduler daemon is **stopped** while no jobs are running:

@@ -44,22 +44,6 @@ include __DIR__ . '/../../src/views/partials/header.php';
     </section>
 <?php endif; ?>
 
-<section class="mb-6 flex flex-wrap items-center justify-between gap-4 surface-secondary">
-    <div>
-        <p class="text-xs uppercase tracking-[0.2em] text-muted">Operational visibility</p>
-        <h2 class="mt-1 text-lg font-medium text-slate-50">Tracked zKill loss feed</h2>
-        <p class="mt-2 max-w-3xl text-sm text-muted">Use this board to confirm that tracked losses are landing, see how fresh the data is, and review the latest killmails that matter to alliance logistics and trading.</p>
-    </div>
-    <div class="flex flex-wrap gap-2">
-        <span class="rounded-full border px-3 py-1 text-xs uppercase tracking-[0.15em] <?= htmlspecialchars((string) ($health['tone'] ?? 'border-border bg-black/20 text-slate-200'), ENT_QUOTES) ?>">
-            <?= htmlspecialchars((string) ($health['label'] ?? 'Status unavailable'), ENT_QUOTES) ?>
-        </span>
-        <span class="rounded-full border border-border bg-black/20 px-3 py-1 text-xs uppercase tracking-[0.15em] text-slate-200">
-            Live updates: <?= htmlspecialchars((string) ($liveRefreshConfig === null ? 'Off' : (($pageFreshness['state'] ?? 'stale') === 'stale' ? 'Degraded' : 'On')), ENT_QUOTES) ?>
-        </span>
-    </div>
-</section>
-
 <!-- ui-section:killmail-overview-summary:start -->
 <section class="grid gap-4 md:grid-cols-2 xl:grid-cols-5" data-ui-section="killmail-overview-summary">
     <?php foreach ($summary as $card): ?>
@@ -90,13 +74,23 @@ include __DIR__ . '/../../src/views/partials/header.php';
 <?php endif; ?>
 
 <!-- ui-section:killmail-overview-status:start -->
-<section class="mt-6 grid gap-4 xl:grid-cols-[minmax(0,2fr)_minmax(320px,1fr)]" data-ui-section="killmail-overview-status">
+<section class="mt-6 grid gap-4" data-ui-section="killmail-overview-status">
     <article class="surface-secondary">
-        <div class="flex items-center justify-between gap-3">
-            <h2 class="text-base font-medium text-slate-50">Ingestion status</h2>
-            <span class="text-xs uppercase tracking-[0.15em] text-muted"><?= htmlspecialchars((string) ($health['label'] ?? 'Unknown'), ENT_QUOTES) ?></span>
+        <div class="flex flex-wrap items-start justify-between gap-3">
+            <div>
+                <h2 class="text-base font-medium text-slate-50">Current ingestion status</h2>
+                <p class="mt-1 text-sm text-muted"><?= htmlspecialchars((string) ($health['message'] ?? 'Review the latest worker pass and freshness.'), ENT_QUOTES) ?></p>
+            </div>
+            <div class="flex flex-wrap gap-2">
+                <span class="rounded-full border px-3 py-1 text-xs uppercase tracking-[0.15em] <?= htmlspecialchars((string) ($health['tone'] ?? 'border-border bg-black/20 text-slate-200'), ENT_QUOTES) ?>">
+                    <?= htmlspecialchars((string) ($health['label'] ?? 'Status unavailable'), ENT_QUOTES) ?>
+                </span>
+                <span class="rounded-full border border-border bg-black/20 px-3 py-1 text-xs uppercase tracking-[0.15em] text-slate-200">
+                    Live updates <?= htmlspecialchars((string) ($liveRefreshConfig === null ? 'Off' : (($pageFreshness['state'] ?? 'stale') === 'stale' ? 'Degraded' : 'On')), ENT_QUOTES) ?>
+                </span>
+            </div>
         </div>
-        <div class="mt-4 grid gap-3 md:grid-cols-2">
+        <div class="mt-4 grid gap-3 md:grid-cols-4">
             <div class="surface-tertiary">
                 <p class="text-xs uppercase tracking-[0.15em] text-muted">Freshness</p>
                 <p class="mt-2 text-lg font-semibold text-slate-50"><?= htmlspecialchars((string) ($status['last_sync_relative'] ?? 'Never'), ENT_QUOTES) ?></p>
@@ -117,14 +111,23 @@ include __DIR__ . '/../../src/views/partials/header.php';
                 <p class="mt-2 text-lg font-semibold text-slate-50"><?= htmlspecialchars((string) ($health['label'] ?? 'Unknown'), ENT_QUOTES) ?></p>
                 <p class="mt-1 text-sm text-muted">Worker <?= htmlspecialchars((string) ($status['worker_status'] ?? 'unknown'), ENT_QUOTES) ?> · checkpoint <?= htmlspecialchars((string) (($status['worker_checkpoint_state'] ?? '') !== '' ? $status['worker_checkpoint_state'] : 'unavailable'), ENT_QUOTES) ?></p>
             </div>
+            <div class="surface-tertiary">
+                <p class="text-xs uppercase tracking-[0.15em] text-muted">Tracked scope</p>
+                <p class="mt-2 text-lg font-semibold text-slate-50"><?= number_format((int) ($status['tracked_alliance_count'] ?? 0)) ?>A · <?= number_format((int) ($status['tracked_corporation_count'] ?? 0)) ?>C</p>
+                <p class="mt-1 text-sm text-muted">Losses only surface when tracked victim entities match.</p>
+            </div>
         </div>
-        <?php if ((string) ($status['last_error'] ?? '') !== ''): ?>
+        <?php if (($health['state'] ?? '') !== 'healthy' || (($status['last_run_source_rows'] ?? 0) > 0 && (int) ($status['last_run_written_rows'] ?? 0) === 0) || (string) ($status['last_error'] ?? '') !== ''): ?>
             <div class="mt-4 rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm text-amber-100">
-                Last sync error: <?= htmlspecialchars((string) $status['last_error'], ENT_QUOTES) ?>
+                <p class="font-medium text-slate-50">Action needed</p>
+                <p class="mt-1"><?= htmlspecialchars((string) ($status['last_error'] !== '' ? ('Last sync error: ' . $status['last_error']) : ($health['message'] ?? 'Review the latest worker pass and freshness.')), ENT_QUOTES) ?></p>
+                <?php if ($workerNoWriteReason !== ''): ?>
+                    <p class="mt-2 text-xs opacity-90">Latest no-write reason: <?= htmlspecialchars($workerNoWriteReason, ENT_QUOTES) ?></p>
+                <?php endif; ?>
             </div>
         <?php endif; ?>
         <details class="mt-4 rounded-2xl border border-white/8 bg-black/20 p-3">
-            <summary class="cursor-pointer list-none text-sm font-medium text-slate-100">Advanced diagnostics</summary>
+            <summary class="cursor-pointer list-none text-sm font-medium text-slate-100">Diagnostics</summary>
             <div class="mt-3 grid gap-3 sm:grid-cols-2 text-sm text-slate-300">
                 <p><span class="text-slate-500">Worker heartbeat</span><br><span class="mt-1 inline-block text-slate-100"><?= htmlspecialchars((string) ($status['worker_seen_relative'] ?? 'No heartbeat'), ENT_QUOTES) ?></span><br><span class="text-xs text-muted"><?= htmlspecialchars((string) ($status['worker_seen_at'] ?? 'No heartbeat recorded'), ENT_QUOTES) ?></span></p>
                 <p><span class="text-slate-500">Latest run outcome</span><br><span class="mt-1 inline-block text-slate-100"><?= htmlspecialchars((string) ($status['last_sync_outcome'] ?? 'Unknown'), ENT_QUOTES) ?></span><br><span class="text-xs text-muted"><?= htmlspecialchars((string) ($status['last_run_finished_at'] ?? 'Unavailable'), ENT_QUOTES) ?></span></p>
@@ -140,26 +143,6 @@ include __DIR__ . '/../../src/views/partials/header.php';
                 <?php endif; ?>
             </div>
         </details>
-    </article>
-
-    <article class="surface-secondary">
-        <div class="flex items-center justify-between gap-3">
-            <h2 class="text-base font-medium text-slate-50">Tracking context</h2>
-            <span class="text-xs text-muted">What counts as relevant</span>
-        </div>
-        <div class="mt-4 space-y-3">
-            <div class="surface-tertiary">
-                <p class="text-xs uppercase tracking-[0.15em] text-muted">Tracked alliances</p>
-                <p class="mt-2 text-xl font-semibold text-slate-50"><?= number_format((int) ($status['tracked_alliance_count'] ?? 0)) ?></p>
-            </div>
-            <div class="surface-tertiary">
-                <p class="text-xs uppercase tracking-[0.15em] text-muted">Tracked corporations</p>
-                <p class="mt-2 text-xl font-semibold text-slate-50"><?= number_format((int) ($status['tracked_corporation_count'] ?? 0)) ?></p>
-            </div>
-            <div class="surface-tertiary text-sm text-slate-400">
-                Losses are retained only when a tracked alliance or corporation appears on the victim side. That keeps the board focused on tracked losses without exposing worker plumbing by default.
-            </div>
-        </div>
     </article>
 </section>
 <!-- ui-section:killmail-overview-status:end -->
