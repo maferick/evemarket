@@ -14,16 +14,19 @@ $pagination = $data['pagination'] ?? [];
 $error = $data['error'] ?? null;
 $emptyMessage = (string) ($data['empty_message'] ?? 'No killmails available yet.');
 $lastSyncAt = trim((string) ($status['last_success_at_raw'] ?? ''));
-$lastSyncTimestamp = $lastSyncAt !== '' ? (strtotime($lastSyncAt) ?: null) : null;
+$freshnessReferenceAt = trim((string) ($status['freshness_reference_at_raw'] ?? $lastSyncAt));
+$lastSyncTimestamp = $freshnessReferenceAt !== '' ? (strtotime($freshnessReferenceAt) ?: null) : null;
 $lastSyncAgeSeconds = $lastSyncTimestamp !== null ? max(0, time() - $lastSyncTimestamp) : null;
 $pageFreshness = supplycore_page_freshness_view_model([
-    'computed_at' => $lastSyncAt !== '' ? $lastSyncAt : null,
+    'computed_at' => $freshnessReferenceAt !== '' ? $freshnessReferenceAt : null,
     'freshness_state' => $lastSyncAgeSeconds === null
         ? 'stale'
         : ($lastSyncAgeSeconds <= 15 * 60 ? 'fresh' : ($lastSyncAgeSeconds <= 45 * 60 ? 'updating' : 'stale')),
     'freshness_label' => $lastSyncAt === '' ? 'Awaiting sync' : 'Killmail sync',
 ]);
 $liveRefreshConfig = supplycore_live_refresh_page_config('killmail_intelligence');
+$health = is_array($status['health'] ?? null) ? $status['health'] : [];
+$workerNoWriteReason = trim((string) ($health['worker_no_write_reason'] ?? ''));
 
 $queryParams = $_GET;
 $buildPageUrl = static function (int $targetPage) use ($queryParams): string {
@@ -45,14 +48,14 @@ include __DIR__ . '/../../src/views/partials/header.php';
     <div>
         <p class="text-xs uppercase tracking-[0.2em] text-muted">Operational visibility</p>
         <h2 class="mt-1 text-lg font-medium text-slate-50">Tracked zKill loss feed</h2>
-        <p class="mt-2 max-w-3xl text-sm text-muted">Recent losses now emphasize the same core story you expect from zKill: victim, final blow, location, and estimated value, while still keeping SupplyCore’s tracked-entity context front and center.</p>
+        <p class="mt-2 max-w-3xl text-sm text-muted">Use this board to confirm that tracked losses are landing, see how fresh the data is, and review the latest killmails that matter to alliance logistics and trading.</p>
     </div>
     <div class="flex flex-wrap gap-2">
-        <span class="rounded-full border px-3 py-1 text-xs uppercase tracking-[0.15em] <?= ($status['ingestion_enabled'] ?? false) ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-200' : 'border-amber-500/40 bg-amber-500/10 text-amber-100' ?>">
-            <?= ($status['ingestion_enabled'] ?? false) ? 'Ingestion enabled' : 'Ingestion disabled' ?>
+        <span class="rounded-full border px-3 py-1 text-xs uppercase tracking-[0.15em] <?= htmlspecialchars((string) ($health['tone'] ?? 'border-border bg-black/20 text-slate-200'), ENT_QUOTES) ?>">
+            <?= htmlspecialchars((string) ($health['label'] ?? 'Status unavailable'), ENT_QUOTES) ?>
         </span>
         <span class="rounded-full border border-border bg-black/20 px-3 py-1 text-xs uppercase tracking-[0.15em] text-slate-200">
-            Sync status: <?= htmlspecialchars((string) ($status['last_sync_outcome'] ?? 'Unknown'), ENT_QUOTES) ?>
+            Live updates: <?= htmlspecialchars((string) ($liveRefreshConfig === null ? 'Off' : (($pageFreshness['state'] ?? 'stale') === 'stale' ? 'Degraded' : 'On')), ENT_QUOTES) ?>
         </span>
     </div>
 </section>
@@ -69,34 +72,50 @@ include __DIR__ . '/../../src/views/partials/header.php';
 </section>
 <!-- ui-section:killmail-overview-summary:end -->
 
+<?php if (($health['state'] ?? '') !== 'healthy' || ($status['last_run_source_rows'] ?? 0) > 0 && (int) ($status['last_run_written_rows'] ?? 0) === 0): ?>
+    <section class="mt-6 rounded-2xl border px-4 py-4 text-sm <?= htmlspecialchars((string) ($health['tone'] ?? 'border-amber-500/40 bg-amber-500/10 text-amber-100'), ENT_QUOTES) ?>">
+        <div class="flex flex-wrap items-start justify-between gap-3">
+            <div>
+                <p class="font-medium text-slate-50"><?= htmlspecialchars((string) ($health['label'] ?? 'Killmail attention needed'), ENT_QUOTES) ?></p>
+                <p class="mt-1 text-sm opacity-90"><?= htmlspecialchars((string) ($health['message'] ?? 'Review the latest worker pass and freshness.'), ENT_QUOTES) ?></p>
+            </div>
+            <div class="text-xs uppercase tracking-[0.14em] opacity-80">
+                Last updated <?= htmlspecialchars((string) ($status['freshness_reference_at'] ?? $status['last_success_at'] ?? 'Unavailable'), ENT_QUOTES) ?>
+            </div>
+        </div>
+        <?php if ($workerNoWriteReason !== ''): ?>
+            <p class="mt-3 text-xs opacity-90">Latest no-write reason: <?= htmlspecialchars($workerNoWriteReason, ENT_QUOTES) ?></p>
+        <?php endif; ?>
+    </section>
+<?php endif; ?>
+
 <!-- ui-section:killmail-overview-status:start -->
 <section class="mt-6 grid gap-4 xl:grid-cols-[minmax(0,2fr)_minmax(320px,1fr)]" data-ui-section="killmail-overview-status">
     <article class="surface-secondary">
         <div class="flex items-center justify-between gap-3">
-            <h2 class="text-base font-medium text-slate-50">Sync status</h2>
-            <span class="text-xs uppercase tracking-[0.15em] text-muted"><?= htmlspecialchars((string) ($status['sync_status'] ?? 'idle'), ENT_QUOTES) ?></span>
+            <h2 class="text-base font-medium text-slate-50">Ingestion status</h2>
+            <span class="text-xs uppercase tracking-[0.15em] text-muted"><?= htmlspecialchars((string) ($health['label'] ?? 'Unknown'), ENT_QUOTES) ?></span>
         </div>
         <div class="mt-4 grid gap-3 md:grid-cols-2">
             <div class="surface-tertiary">
-                <p class="text-xs uppercase tracking-[0.15em] text-muted">Cursor position</p>
-                <p class="mt-2 text-lg font-semibold text-slate-50"><?= htmlspecialchars((string) ($status['current_cursor'] ?? 'Unavailable'), ENT_QUOTES) ?></p>
-                <p class="mt-1 text-sm text-muted">Current saved stream cursor or last processed sequence.</p>
-            </div>
-            <div class="surface-tertiary">
-                <p class="text-xs uppercase tracking-[0.15em] text-muted">Latest run outcome</p>
-                <p class="mt-2 text-lg font-semibold text-slate-50"><?= htmlspecialchars((string) ($status['last_sync_outcome'] ?? 'Unknown'), ENT_QUOTES) ?></p>
-                <p class="mt-1 text-sm text-muted">Source rows <?= number_format((int) ($status['last_run_source_rows'] ?? 0)) ?> · inserted <?= number_format((int) ($status['last_run_written_rows'] ?? 0)) ?></p>
-            </div>
-            <div class="surface-tertiary">
-                <p class="text-xs uppercase tracking-[0.15em] text-muted">Last successful sync</p>
+                <p class="text-xs uppercase tracking-[0.15em] text-muted">Freshness</p>
                 <p class="mt-2 text-lg font-semibold text-slate-50"><?= htmlspecialchars((string) ($status['last_sync_relative'] ?? 'Never'), ENT_QUOTES) ?></p>
-                <p class="mt-1 text-sm text-muted"><?= htmlspecialchars((string) ($status['last_success_at'] ?? '—'), ENT_QUOTES) ?></p>
+                <p class="mt-1 text-sm text-muted">Last successful ingestion <?= htmlspecialchars((string) ($status['last_success_at'] ?? '—'), ENT_QUOTES) ?></p>
             </div>
             <div class="surface-tertiary">
-                <p class="text-xs uppercase tracking-[0.15em] text-muted">Dedicated zKill worker</p>
-                <p class="mt-2 text-lg font-semibold text-slate-50"><?= htmlspecialchars((string) ($status['worker_seen_relative'] ?? 'No heartbeat'), ENT_QUOTES) ?></p>
-                <p class="mt-1 text-sm text-muted"><?= htmlspecialchars((string) ($status['worker_seen_at'] ?? 'No heartbeat recorded'), ENT_QUOTES) ?></p>
-                <p class="mt-2 text-xs text-muted">Loop status <?= htmlspecialchars((string) ($status['worker_status'] ?? 'unknown'), ENT_QUOTES) ?> · rows <?= number_format((int) ($status['worker_rows_written'] ?? 0)) ?>/<?= number_format((int) ($status['worker_rows_seen'] ?? 0)) ?> written/seen</p>
+                <p class="text-xs uppercase tracking-[0.15em] text-muted">Latest worker pass</p>
+                <p class="mt-2 text-lg font-semibold text-slate-50"><?= number_format((int) ($status['last_run_written_rows'] ?? 0)) ?> written</p>
+                <p class="mt-1 text-sm text-muted">Seen <?= number_format((int) ($status['last_run_source_rows'] ?? 0)) ?> qualifying stream rows</p>
+            </div>
+            <div class="surface-tertiary">
+                <p class="text-xs uppercase tracking-[0.15em] text-muted">Current cursor</p>
+                <p class="mt-2 text-lg font-semibold text-slate-50"><?= htmlspecialchars((string) ($status['current_cursor'] ?? 'Unavailable'), ENT_QUOTES) ?></p>
+                <p class="mt-1 text-sm text-muted">Saved stream checkpoint used for the next pass.</p>
+            </div>
+            <div class="surface-tertiary">
+                <p class="text-xs uppercase tracking-[0.15em] text-muted">Live updates</p>
+                <p class="mt-2 text-lg font-semibold text-slate-50"><?= htmlspecialchars((string) ($liveRefreshConfig === null ? 'Off' : (($pageFreshness['state'] ?? 'stale') === 'stale' ? 'Degraded' : 'On')), ENT_QUOTES) ?></p>
+                <p class="mt-1 text-sm text-muted">Last updated <?= htmlspecialchars((string) ($pageFreshness['computed_relative'] ?? 'Never'), ENT_QUOTES) ?> · <?= htmlspecialchars((string) ($pageFreshness['computed_at'] ?? 'Unavailable'), ENT_QUOTES) ?></p>
             </div>
         </div>
         <?php if ((string) ($status['last_error'] ?? '') !== ''): ?>
@@ -104,12 +123,24 @@ include __DIR__ . '/../../src/views/partials/header.php';
                 Last sync error: <?= htmlspecialchars((string) $status['last_error'], ENT_QUOTES) ?>
             </div>
         <?php endif; ?>
+        <details class="mt-4 rounded-2xl border border-white/8 bg-black/20 p-3">
+            <summary class="cursor-pointer list-none text-sm font-medium text-slate-100">Advanced diagnostics</summary>
+            <div class="mt-3 grid gap-3 sm:grid-cols-2 text-sm text-slate-300">
+                <p><span class="text-slate-500">Worker heartbeat</span><br><span class="mt-1 inline-block text-slate-100"><?= htmlspecialchars((string) ($status['worker_seen_relative'] ?? 'No heartbeat'), ENT_QUOTES) ?></span><br><span class="text-xs text-muted"><?= htmlspecialchars((string) ($status['worker_seen_at'] ?? 'No heartbeat recorded'), ENT_QUOTES) ?></span></p>
+                <p><span class="text-slate-500">Latest run outcome</span><br><span class="mt-1 inline-block text-slate-100"><?= htmlspecialchars((string) ($status['last_sync_outcome'] ?? 'Unknown'), ENT_QUOTES) ?></span><br><span class="text-xs text-muted"><?= htmlspecialchars((string) ($status['last_run_finished_at'] ?? 'Unavailable'), ENT_QUOTES) ?></span></p>
+                <p><span class="text-slate-500">Worker rows</span><br><span class="mt-1 inline-block text-slate-100">seen <?= number_format((int) ($status['worker_rows_seen'] ?? 0)) ?> · matched <?= number_format((int) ($status['worker_rows_matched'] ?? 0)) ?> · skipped existing <?= number_format((int) ($status['worker_rows_skipped_existing'] ?? 0)) ?> · filtered <?= number_format((int) ($status['worker_rows_filtered_out'] ?? 0)) ?> · written <?= number_format((int) ($status['worker_rows_written'] ?? 0)) ?></span></p>
+                <p><span class="text-slate-500">Cursor movement</span><br><span class="mt-1 inline-block text-slate-100"><?= htmlspecialchars((string) (($status['worker_cursor_before'] ?? '') !== '' ? $status['worker_cursor_before'] : '—'), ENT_QUOTES) ?> → <?= htmlspecialchars((string) (($status['worker_cursor_after'] ?? '') !== '' ? $status['worker_cursor_after'] : ($status['worker_cursor'] ?? '—')), ENT_QUOTES) ?></span></p>
+                <?php if ((string) ($status['worker_outcome_reason'] ?? '') !== ''): ?>
+                    <p class="sm:col-span-2"><span class="text-slate-500">Latest worker reason</span><br><span class="mt-1 inline-block text-slate-100"><?= htmlspecialchars((string) ($status['worker_outcome_reason'] ?? ''), ENT_QUOTES) ?></span></p>
+                <?php endif; ?>
+            </div>
+        </details>
     </article>
 
     <article class="surface-secondary">
         <div class="flex items-center justify-between gap-3">
             <h2 class="text-base font-medium text-slate-50">Tracking context</h2>
-            <span class="text-xs text-muted">Victim + attacker coverage</span>
+            <span class="text-xs text-muted">What counts as relevant</span>
         </div>
         <div class="mt-4 space-y-3">
             <div class="surface-tertiary">
@@ -121,7 +152,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                 <p class="mt-2 text-xl font-semibold text-slate-50"><?= number_format((int) ($status['tracked_corporation_count'] ?? 0)) ?></p>
             </div>
             <div class="surface-tertiary text-sm text-slate-400">
-                Python ingestion now backfills missing corporation/alliance context before persistence so tracked-entity matches stay accurate even when R2Z2 omits victim alliance IDs.
+                Losses are retained when a tracked alliance or corporation appears on the victim side or among the attackers. That keeps the board focused on actionable activity without exposing worker plumbing by default.
             </div>
         </div>
     </article>

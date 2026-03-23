@@ -33,14 +33,15 @@ class LoggerAdapter(logging.LoggerAdapter):
         return msg, kwargs
 
 
-def configure_logging(verbose: bool = False, log_file: Path | None = None) -> LoggerAdapter:
+def configure_logging(verbose: bool = False, log_file: Path | None = None, stdout_enabled: bool = True) -> LoggerAdapter:
     logger = logging.getLogger("supplycore.orchestrator")
     logger.handlers.clear()
     logger.setLevel(logging.DEBUG if verbose else logging.INFO)
 
-    stream_handler = logging.StreamHandler(sys.stdout)
-    stream_handler.setFormatter(JsonFormatter())
-    logger.addHandler(stream_handler)
+    if stdout_enabled:
+        stream_handler = logging.StreamHandler(sys.stdout)
+        stream_handler.setFormatter(JsonFormatter())
+        logger.addHandler(stream_handler)
 
     if log_file is not None:
         log_file.parent.mkdir(parents=True, exist_ok=True)
