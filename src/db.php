@@ -12050,6 +12050,74 @@ function db_worker_job_queue_due_recurring_jobs(array $jobKeys = []): array
     return ['queued' => $queued, 'skipped' => $skipped, 'job_count' => count($definitions)];
 }
 
+function db_worker_job_force_available_by_job_keys(array $jobKeys): int
+{
+    db_worker_jobs_ensure_schema();
+
+    $definitions = db_worker_job_definitions();
+    $normalizedKeys = array_values(array_unique(array_filter(
+        array_map(static fn ($value): string => trim((string) $value), $jobKeys),
+        static fn (string $jobKey): bool => $jobKey !== '' && isset($definitions[$jobKey])
+    )));
+    if ($normalizedKeys === []) {
+        return 0;
+    }
+
+    $forced = 0;
+    foreach ($normalizedKeys as $jobKey) {
+        $definition = (array) ($definitions[$jobKey] ?? []);
+        $payload = [
+            'recurring' => true,
+            'interval_seconds' => max(60, (int) ($definition['interval_seconds'] ?? 300)),
+            'forced_at' => gmdate(DATE_ATOM),
+        ];
+        $uniqueKey = 'recurring:' . $jobKey;
+        db_execute(
+            'INSERT INTO worker_jobs (
+                job_key, queue_name, workload_class, execution_mode, priority, status, unique_key,
+                payload_json, available_at, max_attempts, timeout_seconds, retry_delay_seconds, memory_limit_mb
+             ) VALUES (?, ?, ?, ?, ?, \'queued\', ?, ?, UTC_TIMESTAMP(), ?, ?, ?, ?)
+             ON DUPLICATE KEY UPDATE
+                queue_name = VALUES(queue_name),
+                workload_class = VALUES(workload_class),
+                execution_mode = VALUES(execution_mode),
+                priority = VALUES(priority),
+                payload_json = VALUES(payload_json),
+                available_at = CASE
+                    WHEN worker_jobs.status = \'running\' THEN worker_jobs.available_at
+                    ELSE UTC_TIMESTAMP()
+                END,
+                status = CASE
+                    WHEN worker_jobs.status = \'running\' THEN worker_jobs.status
+                    ELSE \'queued\'
+                END,
+                last_error = CASE WHEN worker_jobs.status = \'running\' THEN worker_jobs.last_error ELSE NULL END,
+                locked_at = CASE WHEN worker_jobs.status = \'running\' THEN worker_jobs.locked_at ELSE NULL END,
+                lock_expires_at = CASE WHEN worker_jobs.status = \'running\' THEN worker_jobs.lock_expires_at ELSE NULL END,
+                locked_by = CASE WHEN worker_jobs.status = \'running\' THEN worker_jobs.locked_by ELSE NULL END,
+                heartbeat_at = CASE WHEN worker_jobs.status = \'running\' THEN worker_jobs.heartbeat_at ELSE NULL END,
+                attempts = CASE WHEN worker_jobs.status = \'running\' THEN worker_jobs.attempts ELSE 0 END,
+                updated_at = CURRENT_TIMESTAMP',
+            [
+                $jobKey,
+                (string) ($definition['queue_name'] ?? 'default'),
+                (string) ($definition['workload_class'] ?? 'sync'),
+                strtolower((string) ($definition['execution_mode'] ?? 'python')) === 'php' ? 'php' : 'python',
+                (string) ($definition['priority'] ?? 'normal'),
+                $uniqueKey,
+                json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE),
+                max(1, (int) ($definition['max_attempts'] ?? 5)),
+                max(30, (int) ($definition['timeout_seconds'] ?? 300)),
+                max(5, (int) ($definition['retry_delay_seconds'] ?? 30)),
+                max(128, (int) ($definition['memory_limit_mb'] ?? 512)),
+            ]
+        );
+        $forced++;
+    }
+
+    return $forced;
+}
+
 function db_worker_job_release_expired_claims(): int
 {
     db_worker_jobs_ensure_schema();

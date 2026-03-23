@@ -12,7 +12,7 @@ Environment=SUPPLYCORE_WORKER_QUEUES=sync,compute
 Environment=SUPPLYCORE_WORKER_CLASSES=sync,compute
 EnvironmentFile=-/etc/default/supplycore-worker
 Environment=PYTHONUNBUFFERED=1
-ExecStart=/var/www/SupplyCore/.venv-orchestrator/bin/python -m orchestrator worker-pool --app-root /var/www/SupplyCore --worker-id %H-%i --queues ${SUPPLYCORE_WORKER_QUEUES} --workload-classes ${SUPPLYCORE_WORKER_CLASSES}
+ExecStart=/var/www/SupplyCore/.venv-orchestrator/bin/python /var/www/SupplyCore/bin/python_orchestrator.py worker-pool --app-root /var/www/SupplyCore --worker-id %H-%i --queues ${SUPPLYCORE_WORKER_QUEUES} --workload-classes ${SUPPLYCORE_WORKER_CLASSES}
 Restart=always
 RestartSec=5
 KillSignal=SIGTERM

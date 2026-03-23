@@ -93,9 +93,10 @@ include __DIR__ . '/../../src/views/partials/header.php';
                 <p class="mt-1 text-sm text-muted"><?= htmlspecialchars((string) ($status['last_success_at'] ?? '—'), ENT_QUOTES) ?></p>
             </div>
             <div class="surface-tertiary">
-                <p class="text-xs uppercase tracking-[0.15em] text-muted">Latest recorded killmail</p>
-                <p class="mt-2 text-lg font-semibold text-slate-50"><?= htmlspecialchars((string) ($status['last_ingested_at'] ?? '—'), ENT_QUOTES) ?></p>
-                <p class="mt-1 text-sm text-muted">Uploaded <?= htmlspecialchars((string) ($status['last_uploaded_at'] ?? '—'), ENT_QUOTES) ?></p>
+                <p class="text-xs uppercase tracking-[0.15em] text-muted">Dedicated zKill worker</p>
+                <p class="mt-2 text-lg font-semibold text-slate-50"><?= htmlspecialchars((string) ($status['worker_seen_relative'] ?? 'No heartbeat'), ENT_QUOTES) ?></p>
+                <p class="mt-1 text-sm text-muted"><?= htmlspecialchars((string) ($status['worker_seen_at'] ?? 'No heartbeat recorded'), ENT_QUOTES) ?></p>
+                <p class="mt-2 text-xs text-muted">Loop status <?= htmlspecialchars((string) ($status['worker_status'] ?? 'unknown'), ENT_QUOTES) ?> · rows <?= number_format((int) ($status['worker_rows_written'] ?? 0)) ?>/<?= number_format((int) ($status['worker_rows_seen'] ?? 0)) ?> written/seen</p>
             </div>
         </div>
         <?php if ((string) ($status['last_error'] ?? '') !== ''): ?>

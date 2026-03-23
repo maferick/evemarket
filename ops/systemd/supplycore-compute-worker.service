@@ -10,7 +10,7 @@ Group=www-data
 WorkingDirectory=/var/www/SupplyCore
 EnvironmentFile=-/etc/default/supplycore-worker
 Environment=PYTHONUNBUFFERED=1
-ExecStart=/var/www/SupplyCore/.venv-orchestrator/bin/python -m orchestrator worker-pool --app-root /var/www/SupplyCore --worker-id %H-compute --queues compute --workload-classes compute
+ExecStart=/var/www/SupplyCore/.venv-orchestrator/bin/python /var/www/SupplyCore/bin/python_orchestrator.py worker-pool --app-root /var/www/SupplyCore --worker-id %H-compute --queues compute --workload-classes compute
 Restart=always
 RestartSec=5
 KillSignal=SIGTERM

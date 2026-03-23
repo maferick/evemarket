@@ -8064,6 +8064,42 @@ function killmail_last_sync_outcome_label(?array $latestRun): string
     return 'No-op';
 }
 
+function supplycore_runtime_json_file_read(string $path): array
+{
+    $safePath = trim($path);
+    if ($safePath === '' || !is_file($safePath) || !is_readable($safePath)) {
+        return [];
+    }
+
+    $decoded = json_decode((string) file_get_contents($safePath), true);
+
+    return is_array($decoded) ? $decoded : [];
+}
+
+function zkill_worker_runtime_status(): array
+{
+    $runtime = orchestrator_runtime_config_export();
+    $stateFile = trim((string) ($runtime['workers']['zkill_state_file'] ?? ''));
+    $state = $stateFile !== '' ? supplycore_runtime_json_file_read($stateFile) : [];
+    $timestamp = trim((string) ($state['ts'] ?? ''));
+    $status = trim((string) (($state['result']['status'] ?? '') ?: 'unknown'));
+    $ageSeconds = $timestamp !== '' ? max(0, time() - ((int) strtotime($timestamp))) : null;
+
+    return [
+        'state_file' => $stateFile !== '' ? $stateFile : null,
+        'seen_at' => $timestamp !== '' ? $timestamp : null,
+        'seen_at_display' => $timestamp !== '' ? killmail_format_datetime($timestamp) : 'No heartbeat recorded',
+        'seen_at_relative' => $timestamp !== '' ? killmail_relative_datetime($timestamp) : 'No heartbeat',
+        'age_seconds' => $ageSeconds,
+        'status' => $status !== '' ? $status : 'unknown',
+        'rows_seen' => (int) (($state['result']['rows_seen'] ?? 0)),
+        'rows_written' => (int) (($state['result']['rows_written'] ?? 0)),
+        'cursor' => isset($state['result']['cursor']) ? (string) $state['result']['cursor'] : null,
+        'memory_usage_bytes' => isset($state['memory_usage_bytes']) ? (int) $state['memory_usage_bytes'] : null,
+        'worker_id' => isset($state['worker_id']) ? (string) $state['worker_id'] : null,
+    ];
+}
+
 function killmail_match_sources(array $row): array
 {
     $sources = [];
@@ -9663,6 +9699,7 @@ function killmail_overview_data(): array
         try {
             $summaryRow = db_killmail_overview_summary($recentHours);
             $status = db_killmail_ingestion_status();
+            $workerStatus = zkill_worker_runtime_status();
             $options = db_killmail_overview_filter_options();
             $listing = db_killmail_overview_page($filters);
         } catch (Throwable $exception) {
@@ -9672,6 +9709,8 @@ function killmail_overview_data(): array
                 'status' => [
                     'ingestion_enabled' => killmail_ingestion_enabled(),
                     'last_sync_outcome' => 'Unavailable',
+                    'worker_status' => 'unknown',
+                    'worker_seen_at' => 'No heartbeat recorded',
                 ],
                 'rows' => [],
                 'filters' => $filters + [
@@ -9887,6 +9926,13 @@ function killmail_overview_data(): array
                 'last_run_written_rows' => (int) ($latestRun['written_rows'] ?? 0),
                 'last_run_finished_at' => killmail_format_datetime(isset($latestRun['finished_at']) ? (string) $latestRun['finished_at'] : null),
                 'last_error' => trim((string) ($state['last_error_message'] ?? '')),
+                'worker_status' => (string) ($workerStatus['status'] ?? 'unknown'),
+                'worker_seen_at' => (string) ($workerStatus['seen_at_display'] ?? 'No heartbeat recorded'),
+                'worker_seen_relative' => (string) ($workerStatus['seen_at_relative'] ?? 'No heartbeat'),
+                'worker_rows_written' => (int) ($workerStatus['rows_written'] ?? 0),
+                'worker_rows_seen' => (int) ($workerStatus['rows_seen'] ?? 0),
+                'worker_cursor' => isset($workerStatus['cursor']) ? (string) $workerStatus['cursor'] : '',
+                'worker_memory_usage_bytes' => isset($workerStatus['memory_usage_bytes']) ? (int) $workerStatus['memory_usage_bytes'] : null,
             ],
             'rows' => $rows,
             'filters' => $filters + [
@@ -13408,6 +13454,7 @@ function python_bridge_sync_run_finish(array $payload): array
 
     $runId = max(0, (int) ($payload['run_id'] ?? 0));
     $runMode = sync_mode_normalize((string) ($payload['run_mode'] ?? 'incremental'));
+    $jobKey = trim((string) ($payload['job_key'] ?? ''));
     $status = trim((string) ($payload['status'] ?? 'failed'));
     $status = $status === 'success' ? 'success' : 'failed';
     $rowsSeen = max(0, (int) ($payload['rows_seen'] ?? 0));
@@ -13430,9 +13477,12 @@ function python_bridge_sync_run_finish(array $payload): array
         }
     }
 
+    $downstream = python_bridge_post_sync_result($jobKey, $status, $rowsWritten);
+
     return [
         'run_id' => $runId,
         'dataset_key' => $datasetKey,
+        'job_key' => $jobKey,
         'run_mode' => $runMode,
         'status' => $status,
         'rows_seen' => $rowsSeen,
@@ -13440,6 +13490,38 @@ function python_bridge_sync_run_finish(array $payload): array
         'cursor' => $cursor,
         'checksum' => $checksum,
         'error_message' => $errorMessage,
+        'downstream' => $downstream,
+    ];
+}
+
+function python_bridge_post_sync_result(string $jobKey, string $status, int $rowsWritten): array
+{
+    $safeJobKey = trim($jobKey);
+    if ($safeJobKey === '' || $status !== 'success') {
+        return [
+            'worker_jobs_forced' => 0,
+            'schedule_jobs_forced' => 0,
+            'job_keys' => [],
+        ];
+    }
+
+    $downstreamJobKeys = [];
+    if ($safeJobKey === 'killmail_r2z2_sync' && $rowsWritten > 0) {
+        $downstreamJobKeys = ['activity_priority_summary_sync', 'loss_demand_summary_sync'];
+    }
+
+    if ($downstreamJobKeys === []) {
+        return [
+            'worker_jobs_forced' => 0,
+            'schedule_jobs_forced' => 0,
+            'job_keys' => [],
+        ];
+    }
+
+    return [
+        'worker_jobs_forced' => db_worker_job_force_available_by_job_keys($downstreamJobKeys),
+        'schedule_jobs_forced' => db_sync_schedule_force_due_by_job_keys($downstreamJobKeys),
+        'job_keys' => $downstreamJobKeys,
     ];
 }
 
