@@ -5726,12 +5726,14 @@ function sync_schedule_settings_view_model(): array
         $outcomeSummary = db_sync_schedule_recent_outcomes_summary(180);
         $recentPlannerDecisions = db_scheduler_planner_decisions_recent(20);
         $recentResourceMetrics = db_scheduler_resource_metrics_recent_all(20);
+        $partitionDiagnostics = db_market_history_partition_diagnostics();
     } catch (Throwable) {
         $currentStatusMap = [];
         $recentActions = [];
         $outcomeSummary = [];
         $recentPlannerDecisions = [];
         $recentResourceMetrics = [];
+        $partitionDiagnostics = ['partitioned_tables' => [], 'evaluation_tables' => []];
     }
 
     $configuredJobs = [];
@@ -5996,6 +5998,7 @@ function sync_schedule_settings_view_model(): array
         'recent_actions' => $recentActions,
         'recent_planner_decisions' => $recentPlannerDecisions,
         'recent_resource_metrics' => $recentResourceMetrics,
+        'partition_diagnostics' => $partitionDiagnostics,
         'running_jobs' => (array) ($liveCapacity['running_jobs_detail'] ?? []),
         'live_capacity' => $liveCapacity,
         'pipeline_settings' => $pipelineSettings,

@@ -1339,9 +1339,6 @@ PARTITION BY RANGE COLUMNS(observed_date) (
     PARTITION pmax VALUES LESS THAN (MAXVALUE)
 );
 
--- Keep this table on retention-only behavior for the immediate next release.
--- Older windows should move into additive hourly/daily rollups before we consider
--- partitioning this summary table.
 CREATE TABLE IF NOT EXISTS market_order_snapshots_summary (
     id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
     source_type ENUM('market_hub', 'alliance_structure') NOT NULL,
@@ -1365,10 +1362,42 @@ CREATE TABLE IF NOT EXISTS market_order_snapshots_summary (
     KEY idx_snapshot_summary_observed (observed_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
--- Compact older snapshot windows by source/type/time bucket rather than partitioning
--- market_order_snapshots_summary immediately. These tables are additive projections
--- that preserve queryable older trends after hot reads move to compact current-state
--- and latest-summary paths.
+CREATE TABLE IF NOT EXISTS market_order_snapshots_summary_p (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    source_type ENUM('market_hub', 'alliance_structure') NOT NULL,
+    source_id BIGINT UNSIGNED NOT NULL,
+    type_id INT UNSIGNED NOT NULL,
+    observed_at DATETIME NOT NULL,
+    observed_date DATE NOT NULL,
+    best_sell_price DECIMAL(20, 2) DEFAULT NULL,
+    best_buy_price DECIMAL(20, 2) DEFAULT NULL,
+    total_buy_volume BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    total_sell_volume BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    total_volume BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    buy_order_count INT UNSIGNED NOT NULL DEFAULT 0,
+    sell_order_count INT UNSIGNED NOT NULL DEFAULT 0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (id, observed_date),
+    UNIQUE KEY unique_market_order_snapshot_summary (source_type, source_id, type_id, observed_at, observed_date),
+    KEY idx_snapshot_summary_source_observed_type (source_type, source_id, observed_at, type_id),
+    KEY idx_snapshot_summary_source_type_observed (source_type, source_id, type_id, observed_at),
+    KEY idx_snapshot_summary_source_date_type (source_type, source_id, observed_date, type_id),
+    KEY idx_snapshot_summary_observed (observed_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+PARTITION BY RANGE COLUMNS(observed_date) (
+    PARTITION p_bootstrap VALUES LESS THAN ('2026-01-01'),
+    PARTITION p202601 VALUES LESS THAN ('2026-02-01'),
+    PARTITION p202602 VALUES LESS THAN ('2026-03-01'),
+    PARTITION p202603 VALUES LESS THAN ('2026-04-01'),
+    PARTITION p202604 VALUES LESS THAN ('2026-05-01'),
+    PARTITION p202605 VALUES LESS THAN ('2026-06-01'),
+    PARTITION pmax VALUES LESS THAN (MAXVALUE)
+);
+
+-- Compact older snapshot windows by source/type/time bucket even after raw snapshot
+-- partitioning. These additive projections preserve longer-lived trends once raw
+-- monthly partitions are pruned from the hot snapshot tables.
 CREATE TABLE IF NOT EXISTS market_order_snapshot_rollup_1h (
     bucket_start DATETIME NOT NULL,
     source_type ENUM('market_hub', 'alliance_structure') NOT NULL,
@@ -2096,6 +2125,8 @@ INSERT INTO app_settings (setting_key, setting_value) VALUES
     ('hub_history_backfill_start_date', ''),
     ('market_orders_history_read_mode', 'legacy'),
     ('market_orders_history_write_mode', 'legacy'),
+    ('market_order_snapshots_summary_read_mode', 'legacy'),
+    ('market_order_snapshots_summary_write_mode', 'legacy'),
     ('killmail_ingestion_enabled', '0'),
     ('killmail_r2z2_sequence_url', 'https://r2z2.zkillboard.com/ephemeral/sequence.json'),
     ('killmail_r2z2_base_url', 'https://r2z2.zkillboard.com/ephemeral'),

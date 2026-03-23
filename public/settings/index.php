@@ -2157,6 +2157,74 @@ include __DIR__ . '/../../src/views/partials/header.php';
                     </div>
                 </div>
 
+                <?php $partitionDiagnostics = (array) ($syncDashboard['partition_diagnostics'] ?? []); ?>
+                <?php $partitionedTables = array_values((array) ($partitionDiagnostics['partitioned_tables'] ?? [])); ?>
+                <?php $evaluatedPartitionTables = array_values((array) ($partitionDiagnostics['evaluation_tables'] ?? [])); ?>
+                <div class="space-y-3 rounded-lg border border-border bg-black/20 p-4">
+                    <div>
+                        <p class="text-sm text-slate-100">Raw partition health</p>
+                        <p class="mt-1 text-xs text-muted">Tracks the partitioned append-heavy raw history tables, their oldest/newest monthly ranges, retention horizon, and whether future partitions already exist.</p>
+                    </div>
+                    <div class="space-y-3">
+                        <?php foreach ($partitionedTables as $partitionTable): ?>
+                            <?php
+                                $partitions = array_values((array) ($partitionTable['partitions'] ?? []));
+                                $oldestPartition = is_array($partitionTable['oldest_partition'] ?? null) ? $partitionTable['oldest_partition'] : null;
+                                $newestPartition = is_array($partitionTable['newest_partition'] ?? null) ? $partitionTable['newest_partition'] : null;
+                                $missingFuturePartitions = array_values((array) ($partitionTable['missing_future_partitions'] ?? []));
+                            ?>
+                            <div class="rounded-lg border border-border bg-black/30 p-3 text-xs text-muted space-y-3">
+                                <div class="flex flex-wrap items-center justify-between gap-2">
+                                    <div>
+                                        <p class="text-sm font-medium text-slate-100"><?= htmlspecialchars((string) ($partitionTable['logical_table'] ?? ''), ENT_QUOTES) ?></p>
+                                        <p class="mt-1">Physical table <span class="font-mono text-slate-100"><?= htmlspecialchars((string) ($partitionTable['partitioned_table'] ?? ''), ENT_QUOTES) ?></span> · read mode <span class="font-mono text-slate-100"><?= htmlspecialchars((string) ($partitionTable['read_mode'] ?? 'legacy'), ENT_QUOTES) ?></span> · write mode <span class="font-mono text-slate-100"><?= htmlspecialchars((string) ($partitionTable['write_mode'] ?? 'legacy'), ENT_QUOTES) ?></span></p>
+                                    </div>
+                                    <span class="inline-flex items-center rounded-full border <?= !empty($partitionTable['future_partitions_exist']) ? 'border-emerald-400/40 bg-emerald-500/10 text-emerald-100' : 'border-amber-400/40 bg-amber-500/10 text-amber-100' ?> px-3 py-1 uppercase tracking-[0.16em]">
+                                        <?= !empty($partitionTable['future_partitions_exist']) ? 'future ready' : 'future missing' ?>
+                                    </span>
+                                </div>
+                                <div class="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                                    <div class="rounded-lg border border-border bg-black/20 p-3">
+                                        <p class="uppercase tracking-[0.16em]">Partitions</p>
+                                        <p class="mt-2 text-lg font-semibold text-white"><?= (int) ($partitionTable['partition_count'] ?? count($partitions)) ?></p>
+                                    </div>
+                                    <div class="rounded-lg border border-border bg-black/20 p-3">
+                                        <p class="uppercase tracking-[0.16em]">Retention horizon</p>
+                                        <p class="mt-2 text-sm font-medium text-slate-100"><?= htmlspecialchars((string) ($partitionTable['retention_cutoff'] ?? '-'), ENT_QUOTES) ?></p>
+                                        <p class="mt-1"><?= (int) ($partitionTable['retention_days'] ?? 0) ?> days</p>
+                                    </div>
+                                    <div class="rounded-lg border border-border bg-black/20 p-3">
+                                        <p class="uppercase tracking-[0.16em]">Oldest partition</p>
+                                        <p class="mt-2 text-sm font-medium text-slate-100"><?= htmlspecialchars((string) (($oldestPartition['partition_name'] ?? '-') ?: '-'), ENT_QUOTES) ?></p>
+                                        <p class="mt-1"><?= htmlspecialchars((string) (($oldestPartition['boundary_exclusive'] ?? 'MAXVALUE') ?: 'MAXVALUE'), ENT_QUOTES) ?></p>
+                                    </div>
+                                    <div class="rounded-lg border border-border bg-black/20 p-3">
+                                        <p class="uppercase tracking-[0.16em]">Newest finite partition</p>
+                                        <p class="mt-2 text-sm font-medium text-slate-100"><?= htmlspecialchars((string) (($newestPartition['partition_name'] ?? '-') ?: '-'), ENT_QUOTES) ?></p>
+                                        <p class="mt-1"><?= htmlspecialchars((string) (($newestPartition['boundary_exclusive'] ?? 'MAXVALUE') ?: 'MAXVALUE'), ENT_QUOTES) ?></p>
+                                    </div>
+                                </div>
+                                <div class="rounded-lg border border-border bg-black/20 p-3">
+                                    <p><span class="text-slate-100">Approx rows:</span> <?= htmlspecialchars(number_format((int) ($partitionTable['estimated_rows'] ?? 0)), ENT_QUOTES) ?></p>
+                                    <p class="mt-1"><span class="text-slate-100">Current partitions:</span> <?= htmlspecialchars($partitions === [] ? 'None' : implode(', ', array_map(static fn (array $partition): string => (string) ($partition['partition_name'] ?? ''), $partitions)), ENT_QUOTES) ?></p>
+                                    <p class="mt-1"><span class="text-slate-100">Future partitions:</span> <?= htmlspecialchars($missingFuturePartitions === [] ? 'Current month + lookahead window are present.' : 'Missing ' . implode(', ', $missingFuturePartitions), ENT_QUOTES) ?></p>
+                                </div>
+                            </div>
+                        <?php endforeach; ?>
+                        <?php if ($partitionedTables === []): ?>
+                            <p class="text-xs text-muted">Partition diagnostics are unavailable until the database connection is healthy.</p>
+                        <?php endif; ?>
+                    </div>
+                    <?php if ($evaluatedPartitionTables !== []): ?>
+                        <div class="rounded-lg border border-border bg-black/20 p-3 text-xs text-muted space-y-2">
+                            <p class="text-sm text-slate-100">Deferred candidates</p>
+                            <?php foreach ($evaluatedPartitionTables as $candidate): ?>
+                                <p><span class="font-mono text-slate-100"><?= htmlspecialchars((string) ($candidate['table'] ?? ''), ENT_QUOTES) ?></span> · approx rows <?= htmlspecialchars(number_format((int) ($candidate['estimated_rows'] ?? 0)), ENT_QUOTES) ?> · <?= htmlspecialchars((string) ($candidate['reason'] ?? ''), ENT_QUOTES) ?></p>
+                            <?php endforeach; ?>
+                        </div>
+                    <?php endif; ?>
+                </div>
+
                 <label class="block space-y-2">
                     <span class="text-sm text-muted">Static Data JSONL ZIP Source URL</span>
                     <input type="url" name="static_data_source_url" value="<?= htmlspecialchars($dataSyncSettingValues['static_data_source_url'] ?? 'https://developers.eveonline.com/static-data/eve-online-static-data-latest-jsonl.zip', ENT_QUOTES) ?>" class="w-full field-input" />
