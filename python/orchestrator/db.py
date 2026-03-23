@@ -22,6 +22,7 @@ class SupplyCoreDb:
             password=str(self._config.get("password", "")),
             database=str(self._config.get("database", "supplycore")),
             charset=str(self._config.get("charset", "utf8mb4")),
+            unix_socket=(str(self._config.get("socket", "")).strip() or None),
             autocommit=True,
             cursorclass=cursorclass,
         )

@@ -46,6 +46,11 @@ $config = [
         'worker_start_backoff_seconds' => max(1, (int) (getenv('ORCHESTRATOR_WORKER_START_BACKOFF_SECONDS') ?: 5)),
         'max_consecutive_health_failures' => max(1, (int) (getenv('ORCHESTRATOR_MAX_CONSECUTIVE_HEALTH_FAILURES') ?: 3)),
     ],
+    'rebuild' => [
+        'status_file' => getenv('SUPPLYCORE_REBUILD_STATUS_FILE') ?: 'storage/run/rebuild-data-model-status.json',
+        'lock_file' => getenv('SUPPLYCORE_REBUILD_LOCK_FILE') ?: 'storage/run/rebuild-data-model.lock',
+        'progress_interval_seconds' => max(1, (int) (getenv('SUPPLYCORE_REBUILD_PROGRESS_INTERVAL_SECONDS') ?: 2)),
+    ],
     'workers' => [
         'queue_name' => getenv('SUPPLYCORE_WORKER_QUEUE') ?: 'default',
         'claim_ttl_seconds' => max(30, (int) (getenv('SUPPLYCORE_WORKER_CLAIM_TTL_SECONDS') ?: 300)),

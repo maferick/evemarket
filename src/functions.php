@@ -3458,6 +3458,11 @@ function orchestrator_runtime_config_export(): array
             'worker_start_backoff_seconds' => max(1, (int) config('orchestrator.worker_start_backoff_seconds', 5)),
             'max_consecutive_health_failures' => max(1, (int) config('orchestrator.max_consecutive_health_failures', 3)),
         ],
+        'rebuild' => [
+            'status_file' => supplycore_rebuild_status_file_path(),
+            'lock_file' => supplycore_rebuild_lock_file_path(),
+            'progress_interval_seconds' => supplycore_rebuild_progress_interval_seconds(),
+        ],
         'workers' => [
             'queue_name' => (string) config('workers.queue_name', 'default'),
             'claim_ttl_seconds' => max(30, (int) config('workers.claim_ttl_seconds', 300)),
@@ -3503,6 +3508,58 @@ function supplycore_worker_runtime_path(string $defaultFilename, string $configu
     }
 
     return str_starts_with($candidate, '/') ? $candidate : $appRoot . '/' . ltrim($candidate, '/');
+}
+
+function supplycore_rebuild_status_file_path(): string
+{
+    return supplycore_worker_runtime_path('rebuild-data-model-status.json', (string) config('rebuild.status_file', 'storage/run/rebuild-data-model-status.json'));
+}
+
+function supplycore_rebuild_lock_file_path(): string
+{
+    return supplycore_worker_runtime_path('rebuild-data-model.lock', (string) config('rebuild.lock_file', 'storage/run/rebuild-data-model.lock'));
+}
+
+function supplycore_rebuild_progress_interval_seconds(): int
+{
+    return max(1, (int) config('rebuild.progress_interval_seconds', 2));
+}
+
+function supplycore_rebuild_status_read(): array
+{
+    $path = supplycore_rebuild_status_file_path();
+    if (!is_file($path)) {
+        return [];
+    }
+
+    $raw = @file_get_contents($path);
+    if (!is_string($raw) || trim($raw) === '') {
+        return [];
+    }
+
+    $decoded = json_decode($raw, true);
+    if (!is_array($decoded)) {
+        return [];
+    }
+
+    $now = time();
+    foreach (['started_at', 'updated_at', 'completed_at', 'last_progress_update'] as $field) {
+        $value = trim((string) ($decoded[$field] ?? ''));
+        if ($value === '') {
+            continue;
+        }
+
+        $timestamp = strtotime($value);
+        if ($timestamp !== false) {
+            $decoded[$field . '_relative'] = human_duration_ago(max(0, $now - $timestamp));
+        }
+    }
+
+    if (!isset($decoded['elapsed_seconds_display']) && array_key_exists('elapsed_seconds', $decoded)) {
+        $decoded['elapsed_seconds_display'] = human_duration_seconds((float) $decoded['elapsed_seconds']);
+    }
+
+    return $decoded;
 }
 
 function supplycore_worker_log_path(string $defaultFilename, string $configuredPath = ''): string

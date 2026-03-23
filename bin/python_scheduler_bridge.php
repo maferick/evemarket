@@ -42,6 +42,28 @@ try {
         python_scheduler_bridge_output(['ok' => true, 'context' => python_bridge_market_hub_local_history_context()]);
     }
 
+    if ($action === 'rebuild-partitioned-history') {
+        $input = python_scheduler_bridge_read_stdin_json();
+        $window = is_array($input['window'] ?? null) ? $input['window'] : [];
+        python_scheduler_bridge_output(['ok' => true, 'result' => supplycore_rebuild_partitioned_market_history($window)]);
+    }
+
+    if ($action === 'refresh-derived-summaries') {
+        $input = python_scheduler_bridge_read_stdin_json();
+        $reason = trim((string) ($input['reason'] ?? 'python-rebuild'));
+        $currentState = supplycore_refresh_current_state_cache($reason . ':current-state');
+        $doctrine = doctrine_refresh_intelligence($reason . ':doctrine');
+        $activity = activity_priority_refresh_summary($reason . ':activity-priority');
+        python_scheduler_bridge_output([
+            'ok' => true,
+            'result' => [
+                'current_state_rows_written' => (int) ($currentState['rows_written'] ?? 0),
+                'doctrine_snapshot_groups' => count((array) ($doctrine['groups'] ?? [])),
+                'activity_rows' => count((array) ($activity['rows'] ?? [])),
+            ],
+        ]);
+    }
+
     if ($action === 'store-snapshot') {
         $snapshotKey = trim((string) ($options['snapshot-key'] ?? ''));
         if ($snapshotKey === '') {

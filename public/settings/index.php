@@ -265,6 +265,7 @@ $runNowJobOptions = [];
 $staticDataState = null;
 $settingsPipelineHealth = array_values((array) ($syncDashboard['pipeline_health'] ?? []));
 $settingsSystemStatus = (array) ($syncDashboard['system_status'] ?? []);
+$rebuildStatus = supplycore_rebuild_status_read();
 if ($dbStatus['ok']) {
     $latestEsiToken = db_latest_esi_oauth_token();
     if ($latestEsiToken !== null) {
@@ -1963,6 +1964,35 @@ include __DIR__ . '/../../src/views/partials/header.php';
                                     </div>
                                 </article>
                                 <article class="rounded-xl border border-border bg-black/30 p-4">
+                                    <?php $rebuildStatusValue = (string) ($rebuildStatus['status'] ?? 'idle'); ?>
+                                    <?php $rebuildStatusClass = in_array($rebuildStatusValue, ['running', 'starting'], true)
+                                        ? 'border-emerald-400/30 bg-emerald-500/10 text-emerald-100'
+                                        : ($rebuildStatusValue === 'failed'
+                                            ? 'border-rose-400/40 bg-rose-500/10 text-rose-100'
+                                            : 'border-border bg-black/30 text-slate-100'); ?>
+                                    <div class="flex items-start justify-between gap-3">
+                                        <div>
+                                            <p class="text-sm text-slate-100">Derived rebuild status</p>
+                                            <p class="mt-1 text-xs text-muted">Latest Python-orchestrated rebuild heartbeat from the live status file.</p>
+                                        </div>
+                                        <span class="inline-flex items-center rounded-full border px-3 py-1 text-xs font-medium uppercase tracking-[0.16em] <?= $rebuildStatusClass ?>"><?= htmlspecialchars($rebuildStatusValue, ENT_QUOTES) ?></span>
+                                    </div>
+                                    <div class="mt-4 grid gap-3 sm:grid-cols-2 text-sm">
+                                        <div class="rounded-lg border border-border bg-black/30 p-3"><p class="text-xs uppercase tracking-[0.16em] text-muted">Run</p><p class="mt-2 font-semibold text-white"><?= htmlspecialchars((string) ($rebuildStatus['run_id'] ?? 'No rebuild recorded'), ENT_QUOTES) ?></p><p class="mt-1 text-xs text-muted"><?= htmlspecialchars((string) ($rebuildStatus['mode'] ?? 'mode unknown'), ENT_QUOTES) ?> · window <?= number_format((int) ($rebuildStatus['window_days'] ?? 0)) ?>d</p></div>
+                                        <div class="rounded-lg border border-border bg-black/30 p-3"><p class="text-xs uppercase tracking-[0.16em] text-muted">Phase</p><p class="mt-2 font-semibold text-white"><?= htmlspecialchars((string) ($rebuildStatus['current_phase'] ?? 'idle'), ENT_QUOTES) ?></p><p class="mt-1 text-xs text-muted"><?= htmlspecialchars((string) ($rebuildStatus['dataset'] ?? 'No dataset active'), ENT_QUOTES) ?></p></div>
+                                        <div class="rounded-lg border border-border bg-black/30 p-3"><p class="text-xs uppercase tracking-[0.16em] text-muted">Progress</p><p class="mt-2 font-semibold text-white">scanned <?= number_format((int) ($rebuildStatus['rows_scanned'] ?? 0)) ?> · written <?= number_format((int) ($rebuildStatus['rows_written'] ?? 0)) ?></p><p class="mt-1 text-xs text-muted">elapsed <?= htmlspecialchars((string) ($rebuildStatus['elapsed_seconds_display'] ?? '0s'), ENT_QUOTES) ?> · update <?= htmlspecialchars((string) ($rebuildStatus['last_progress_update_relative'] ?? 'never'), ENT_QUOTES) ?></p></div>
+                                        <div class="rounded-lg border border-border bg-black/30 p-3"><p class="text-xs uppercase tracking-[0.16em] text-muted">Lifecycle</p><p class="mt-2 font-semibold text-white"><?= htmlspecialchars((string) ($rebuildStatus['started_at'] ?? 'not started'), ENT_QUOTES) ?></p><p class="mt-1 text-xs text-muted">updated <?= htmlspecialchars((string) ($rebuildStatus['updated_at_relative'] ?? 'never'), ENT_QUOTES) ?><?= trim((string) ($rebuildStatus['completed_at'] ?? '')) !== '' ? ' · completed ' . htmlspecialchars((string) ($rebuildStatus['completed_at'] ?? ''), ENT_QUOTES) : '' ?></p></div>
+                                    </div>
+                                    <?php if (trim((string) ($rebuildStatus['error_message'] ?? '')) !== ''): ?>
+                                        <div class="mt-3 rounded-lg border border-rose-400/30 bg-rose-500/10 p-3 text-sm text-rose-100">
+                                            <?= htmlspecialchars((string) ($rebuildStatus['error_message'] ?? ''), ENT_QUOTES) ?>
+                                        </div>
+                                    <?php endif; ?>
+                                </article>
+                            </div>
+
+                            <div class="grid gap-4 xl:grid-cols-[1fr_1fr]">
+                                <article class="rounded-xl border border-border bg-black/30 p-4">
                                     <p class="text-sm text-slate-100">Running jobs</p>
                                     <p class="mt-1 text-xs text-muted">Live projected workload if the scheduler is actively dispatching work.</p>
                                     <div class="mt-4 space-y-2 text-sm">
@@ -1972,14 +2002,11 @@ include __DIR__ . '/../../src/views/partials/header.php';
                                         <?php foreach ((array) ($syncDashboard['running_jobs'] ?? []) as $runningJob): ?>
                                             <div class="rounded-lg border border-border bg-black/30 p-3">
                                                 <div class="flex items-center justify-between gap-3"><span class="font-medium text-slate-100"><?= htmlspecialchars((string) ($runningJob['job_key'] ?? ''), ENT_QUOTES) ?></span><span class="text-xs uppercase tracking-[0.14em] text-muted"><?= htmlspecialchars((string) ($runningJob['resource_class'] ?? 'medium'), ENT_QUOTES) ?></span></div>
-                                                <p class="mt-1 text-xs text-muted">CPU <?= htmlspecialchars(number_format((float) ($runningJob['projected_cpu_percent'] ?? 0), 1), ENT_QUOTES) ?>% · memory <?= htmlspecialchars(scheduler_format_bytes(isset($runningJob['projected_memory_bytes']) ? (int) $runningJob['projected_memory_bytes'] : 0), ENT_QUOTES) ?> · started <?= htmlspecialchars((string) ($runningJob['started_at'] ?? 'unknown'), ENT_QUOTES) ?></p>
+                                                <p class="mt-1 text-xs text-muted">CPU <?= htmlspecialchars(number_format((float) ($runningJob['projected_cpu_percent'] ?? 0), 1), ENT_QUOTES) ?>% · memory <?= htmlspecialchars(scheduler_format_bytes(isset($runningJob['projected_memory_bytes']) ? (int) ($runningJob['projected_memory_bytes']) : 0), ENT_QUOTES) ?> · started <?= htmlspecialchars((string) ($runningJob['started_at'] ?? 'unknown'), ENT_QUOTES) ?></p>
                                             </div>
                                         <?php endforeach; ?>
                                     </div>
                                 </article>
-                            </div>
-
-                            <div class="grid gap-4 xl:grid-cols-[1fr_1fr]">
                                 <article class="rounded-xl border border-border bg-black/30 p-4">
                                     <p class="text-sm text-slate-100">Change-aware decisions</p>
                                     <div class="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4 text-sm">

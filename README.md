@@ -509,6 +509,8 @@ php bin/rebuild_data_model.php --mode=rebuild-all-derived --window-days=30
 php bin/rebuild_data_model.php --mode=full-reset --window-days=30
 ```
 
+The PHP entrypoint now delegates to a Python runner (`bin/rebuild_data_model.py`) so the workflow emits live JSON progress lines and writes a status heartbeat to `storage/run/rebuild-data-model-status.json` while the rebuild is running.
+
 Modes:
 
 - `rebuild-current-only` resets and rebuilds the latest/current projection layer (`market_order_current_projection`, `market_source_snapshot_state`) from `market_orders_current`.
@@ -545,6 +547,20 @@ Safety notes:
 - History tables are preserved unless you explicitly choose `--mode=full-reset`.
 - `full-reset` does **not** delete `market_orders_history`, `market_orders_history_p`, `killmail_events`, or `killmail_event_payloads`.
 - Rebuilds are idempotent for the selected window: the script clears the affected derived window and writes it back from authoritative data.
+- Progress is reported in real time with `current_phase`, `dataset`, `rows_scanned`, `rows_written`, `elapsed_seconds`, `last_progress_update`, and `error_message` fields.
+
+Monitoring:
+
+```bash
+php bin/rebuild_data_model.php --mode=rebuild-all-derived --window-days=30
+tail -f storage/run/rebuild-data-model-status.json
+```
+
+Sample progress line:
+
+```json
+{"event":"rebuild.rollup.batch","status":"running","current_phase":"rollup_layers","dataset":"market_hub:60003760","rows_scanned":182500,"rows_written":182500,"elapsed_seconds":42.381,"last_progress_update":"2026-03-23T14:52:21Z"}
+```
 
 ### Troubleshooting
 
