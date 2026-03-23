@@ -164,6 +164,12 @@ try {
         python_scheduler_bridge_output(['ok' => true, 'result' => $result]);
     }
 
+    if ($action === 'sync-cursor-upsert') {
+        $input = python_scheduler_bridge_read_stdin_json();
+        $result = python_bridge_sync_cursor_upsert($input);
+        python_scheduler_bridge_output(['ok' => true, 'result' => $result]);
+    }
+
     if ($action === 'sync-run-finish') {
         $input = python_scheduler_bridge_read_stdin_json();
         $result = python_bridge_sync_run_finish($input);

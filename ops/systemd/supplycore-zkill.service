@@ -17,8 +17,8 @@ RestartSec=5
 KillSignal=SIGTERM
 TimeoutStopSec=90
 MemoryMax=768M
-StandardOutput=append:/var/www/SupplyCore/storage/logs/zkill.log
-StandardError=append:/var/www/SupplyCore/storage/logs/zkill.log
+StandardOutput=journal
+StandardError=journal
 
 [Install]
 WantedBy=multi-user.target

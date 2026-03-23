@@ -33,9 +33,17 @@ class LoggerAdapter(logging.LoggerAdapter):
         return msg, kwargs
 
 
-def configure_logging(verbose: bool = False, log_file: Path | None = None, stdout_enabled: bool = True) -> LoggerAdapter:
-    logger = logging.getLogger("supplycore.orchestrator")
-    logger.handlers.clear()
+def configure_logging(
+    *,
+    logger_name: str = "supplycore.orchestrator",
+    verbose: bool = False,
+    log_file: Path | None = None,
+    stdout_enabled: bool = True,
+) -> LoggerAdapter:
+    logger = logging.getLogger(logger_name)
+    for handler in list(logger.handlers):
+        logger.removeHandler(handler)
+        handler.close()
     logger.setLevel(logging.DEBUG if verbose else logging.INFO)
 
     if stdout_enabled:

@@ -6,6 +6,7 @@ import os
 import socket
 import time
 from pathlib import Path
+from typing import Any
 
 from .config import load_php_runtime_config
 from .jobs import run_killmail_r2z2_stream
@@ -42,19 +43,72 @@ def _write_state_file(path: Path, payload: dict[str, object]) -> None:
     path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
 
+def _read_state_file(path: Path) -> dict[str, Any]:
+    if not path.is_file():
+        return {}
+    try:
+        decoded = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return decoded if isinstance(decoded, dict) else {}
+
+
+def _result_meta(result: dict[str, Any]) -> dict[str, Any]:
+    meta = result.get("meta")
+    return meta if isinstance(meta, dict) else {}
+
+
+def _no_progress_state(previous_state: dict[str, Any], result: dict[str, Any], threshold: int) -> dict[str, Any]:
+    meta = _result_meta(result)
+    cursor_after = str(meta.get("cursor_after") or result.get("cursor") or "").strip()
+    rows_written = int(result.get("rows_written") or 0)
+    previous_result = previous_state.get("result")
+    previous_meta = previous_result.get("meta") if isinstance(previous_result, dict) else {}
+    previous_cursor_after = ""
+    if isinstance(previous_meta, dict):
+        previous_cursor_after = str(previous_meta.get("cursor_after") or previous_result.get("cursor") or "").strip()
+    repeated_count = int(previous_state.get("same_cursor_no_progress_count") or 0)
+    if rows_written == 0 and cursor_after != "" and cursor_after == previous_cursor_after:
+        repeated_count += 1
+    else:
+        repeated_count = 0
+
+    stuck_detected = repeated_count >= max(1, threshold)
+    return {
+        "same_cursor_no_progress_count": repeated_count,
+        "stuck_threshold": max(1, threshold),
+        "stuck_detected": stuck_detected,
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     app_root = Path(args.app_root).resolve()
     runtime = load_php_runtime_config(app_root)
     worker_settings = runtime.raw.get("workers", {}) if isinstance(runtime.raw, dict) else {}
     log_file = Path(worker_settings.get("zkill_log_file", app_root / "storage/logs/zkill.log"))
-    logger = configure_logging(verbose=args.verbose, log_file=log_file, stdout_enabled=args.verbose or log_file is None)
+    logger = configure_logging(
+        logger_name="supplycore.zkill",
+        verbose=args.verbose,
+        log_file=log_file,
+        stdout_enabled=True,
+    )
     state_file = Path(worker_settings.get("zkill_state_file", app_root / "storage/run/zkill-heartbeat.json"))
     pause_threshold = max(128 * 1024 * 1024, int(worker_settings.get("memory_pause_threshold_bytes", 384 * 1024 * 1024)))
     abort_threshold = max(pause_threshold, int(worker_settings.get("memory_abort_threshold_bytes", 512 * 1024 * 1024)))
+    stuck_threshold = max(2, int(worker_settings.get("zkill_stuck_cursor_threshold", 3)))
     identity = f"{socket.gethostname()}-{os.getpid()}"
 
-    logger.info("zkill worker started", payload={"event": "zkill.started", "worker_id": identity})
+    logger.info(
+        "zkill worker started",
+        payload={
+            "event": "zkill.started",
+            "worker_id": identity,
+            "log_file": str(log_file),
+            "state_file": str(state_file),
+            "stuck_threshold": stuck_threshold,
+        },
+    )
 
     while True:
         memory_usage = resident_memory_bytes()
@@ -78,36 +132,72 @@ def main(argv: list[str] | None = None) -> int:
             memory_abort_threshold_bytes=abort_threshold,
             logger=logger,
         )
-        result = run_killmail_r2z2_stream(context)
-        _write_state_file(
-            state_file,
-            {
-                "ts": utc_now_iso(),
-                "worker_id": identity,
-                "result": result,
-                "memory_usage_bytes": resident_memory_bytes(),
-            },
-        )
+        previous_state = _read_state_file(state_file)
+        try:
+            result = run_killmail_r2z2_stream(context)
+        except Exception:
+            logger.exception(
+                "zkill loop failed",
+                payload={
+                    "event": "zkill.loop_failed",
+                    "worker_id": identity,
+                    "log_file": str(log_file),
+                    "state_file": str(state_file),
+                },
+            )
+            raise
+
+        no_progress = _no_progress_state(previous_state, result, stuck_threshold)
+        meta = _result_meta(result)
+        state_payload = {
+            "ts": utc_now_iso(),
+            "worker_id": identity,
+            "log_file": str(log_file),
+            "state_file": str(state_file),
+            "result": result,
+            "memory_usage_bytes": resident_memory_bytes(),
+            **no_progress,
+        }
+        _write_state_file(state_file, state_payload)
         logger.info(
             "zkill loop completed",
             payload={
                 "event": "zkill.loop_completed",
                 "worker_id": identity,
+                "log_file": str(log_file),
+                "state_file": str(state_file),
                 "status": result.get("status"),
                 "rows_seen": result.get("rows_seen"),
-                "rows_matched": (result.get("meta") or {}).get("rows_matched"),
-                "rows_skipped_existing": (result.get("meta") or {}).get("rows_skipped_existing"),
-                "rows_filtered_out": (result.get("meta") or {}).get("rows_filtered_out"),
+                "rows_matched": meta.get("rows_matched"),
+                "rows_filtered_out": meta.get("rows_filtered_out"),
+                "rows_skipped_existing": meta.get("rows_skipped_existing"),
+                "rows_write_attempted": meta.get("rows_write_attempted"),
                 "rows_written": result.get("rows_written"),
-                "cursor_before": (result.get("meta") or {}).get("cursor_before"),
-                "cursor_after": result.get("cursor"),
-                "duplicates": (result.get("meta") or {}).get("duplicates"),
-                "filtered": (result.get("meta") or {}).get("filtered"),
-                "invalid": (result.get("meta") or {}).get("invalid"),
-                "no_write_reason": (result.get("meta") or {}).get("no_write_reason"),
-                "outcome_reason": (result.get("meta") or {}).get("outcome_reason"),
+                "rows_failed": meta.get("rows_failed"),
+                "first_sequence_seen": meta.get("first_sequence_seen"),
+                "last_sequence_seen": meta.get("last_sequence_seen"),
+                "cursor_before": meta.get("cursor_before"),
+                "cursor_after": meta.get("cursor_after") or result.get("cursor"),
+                "reason_for_zero_write": meta.get("reason_for_zero_write"),
+                "checkpoint_state": meta.get("checkpoint_state"),
+                "same_cursor_no_progress_count": no_progress["same_cursor_no_progress_count"],
+                "stuck_detected": no_progress["stuck_detected"],
+                "stuck_threshold": no_progress["stuck_threshold"],
+                "outcome_reason": meta.get("outcome_reason"),
             },
         )
+        if no_progress["stuck_detected"]:
+            logger.warning(
+                "zkill worker detected repeated no-progress cursor state",
+                payload={
+                    "event": "zkill.no_progress_detected",
+                    "worker_id": identity,
+                    "cursor_after": meta.get("cursor_after") or result.get("cursor"),
+                    "same_cursor_no_progress_count": no_progress["same_cursor_no_progress_count"],
+                    "stuck_threshold": no_progress["stuck_threshold"],
+                    "reason_for_zero_write": meta.get("reason_for_zero_write"),
+                },
+            )
         if args.once:
             return 0
         sleep_for = max(3, args.poll_sleep if int(result.get("rows_written") or 0) == 0 else 3)

@@ -103,9 +103,9 @@ include __DIR__ . '/../../src/views/partials/header.php';
                 <p class="mt-1 text-sm text-muted">Last successful ingestion <?= htmlspecialchars((string) ($status['last_success_at'] ?? '—'), ENT_QUOTES) ?></p>
             </div>
             <div class="surface-tertiary">
-                <p class="text-xs uppercase tracking-[0.15em] text-muted">Latest worker pass</p>
-                <p class="mt-2 text-lg font-semibold text-slate-50"><?= number_format((int) ($status['last_run_written_rows'] ?? 0)) ?> written</p>
-                <p class="mt-1 text-sm text-muted">Seen <?= number_format((int) ($status['last_run_source_rows'] ?? 0)) ?> qualifying stream rows</p>
+                <p class="text-xs uppercase tracking-[0.15em] text-muted">Last rows written</p>
+                <p class="mt-2 text-lg font-semibold text-slate-50"><?= number_format((int) ($status['worker_rows_written'] ?? $status['last_run_written_rows'] ?? 0)) ?> written</p>
+                <p class="mt-1 text-sm text-muted">Seen <?= number_format((int) ($status['worker_rows_seen'] ?? $status['last_run_source_rows'] ?? 0)) ?> · matched <?= number_format((int) ($status['worker_rows_matched'] ?? 0)) ?> · skipped existing <?= number_format((int) ($status['worker_rows_skipped_existing'] ?? 0)) ?> · filtered <?= number_format((int) ($status['worker_rows_filtered_out'] ?? 0)) ?></p>
             </div>
             <div class="surface-tertiary">
                 <p class="text-xs uppercase tracking-[0.15em] text-muted">Current cursor</p>
@@ -113,9 +113,9 @@ include __DIR__ . '/../../src/views/partials/header.php';
                 <p class="mt-1 text-sm text-muted">Saved stream checkpoint used for the next pass.</p>
             </div>
             <div class="surface-tertiary">
-                <p class="text-xs uppercase tracking-[0.15em] text-muted">Live updates</p>
-                <p class="mt-2 text-lg font-semibold text-slate-50"><?= htmlspecialchars((string) ($liveRefreshConfig === null ? 'Off' : (($pageFreshness['state'] ?? 'stale') === 'stale' ? 'Degraded' : 'On')), ENT_QUOTES) ?></p>
-                <p class="mt-1 text-sm text-muted">Last updated <?= htmlspecialchars((string) ($pageFreshness['computed_relative'] ?? 'Never'), ENT_QUOTES) ?> · <?= htmlspecialchars((string) ($pageFreshness['computed_at'] ?? 'Unavailable'), ENT_QUOTES) ?></p>
+                <p class="text-xs uppercase tracking-[0.15em] text-muted">Current ingestion state</p>
+                <p class="mt-2 text-lg font-semibold text-slate-50"><?= htmlspecialchars((string) ($health['label'] ?? 'Unknown'), ENT_QUOTES) ?></p>
+                <p class="mt-1 text-sm text-muted">Worker <?= htmlspecialchars((string) ($status['worker_status'] ?? 'unknown'), ENT_QUOTES) ?> · checkpoint <?= htmlspecialchars((string) (($status['worker_checkpoint_state'] ?? '') !== '' ? $status['worker_checkpoint_state'] : 'unavailable'), ENT_QUOTES) ?></p>
             </div>
         </div>
         <?php if ((string) ($status['last_error'] ?? '') !== ''): ?>
@@ -128,10 +128,15 @@ include __DIR__ . '/../../src/views/partials/header.php';
             <div class="mt-3 grid gap-3 sm:grid-cols-2 text-sm text-slate-300">
                 <p><span class="text-slate-500">Worker heartbeat</span><br><span class="mt-1 inline-block text-slate-100"><?= htmlspecialchars((string) ($status['worker_seen_relative'] ?? 'No heartbeat'), ENT_QUOTES) ?></span><br><span class="text-xs text-muted"><?= htmlspecialchars((string) ($status['worker_seen_at'] ?? 'No heartbeat recorded'), ENT_QUOTES) ?></span></p>
                 <p><span class="text-slate-500">Latest run outcome</span><br><span class="mt-1 inline-block text-slate-100"><?= htmlspecialchars((string) ($status['last_sync_outcome'] ?? 'Unknown'), ENT_QUOTES) ?></span><br><span class="text-xs text-muted"><?= htmlspecialchars((string) ($status['last_run_finished_at'] ?? 'Unavailable'), ENT_QUOTES) ?></span></p>
-                <p><span class="text-slate-500">Worker rows</span><br><span class="mt-1 inline-block text-slate-100">seen <?= number_format((int) ($status['worker_rows_seen'] ?? 0)) ?> · matched <?= number_format((int) ($status['worker_rows_matched'] ?? 0)) ?> · skipped existing <?= number_format((int) ($status['worker_rows_skipped_existing'] ?? 0)) ?> · filtered <?= number_format((int) ($status['worker_rows_filtered_out'] ?? 0)) ?> · written <?= number_format((int) ($status['worker_rows_written'] ?? 0)) ?></span></p>
-                <p><span class="text-slate-500">Cursor movement</span><br><span class="mt-1 inline-block text-slate-100"><?= htmlspecialchars((string) (($status['worker_cursor_before'] ?? '') !== '' ? $status['worker_cursor_before'] : '—'), ENT_QUOTES) ?> → <?= htmlspecialchars((string) (($status['worker_cursor_after'] ?? '') !== '' ? $status['worker_cursor_after'] : ($status['worker_cursor'] ?? '—')), ENT_QUOTES) ?></span></p>
+                <p><span class="text-slate-500">Worker rows</span><br><span class="mt-1 inline-block text-slate-100">seen <?= number_format((int) ($status['worker_rows_seen'] ?? 0)) ?> · matched <?= number_format((int) ($status['worker_rows_matched'] ?? 0)) ?> · skipped existing <?= number_format((int) ($status['worker_rows_skipped_existing'] ?? 0)) ?> · filtered <?= number_format((int) ($status['worker_rows_filtered_out'] ?? 0)) ?> · attempted <?= number_format((int) ($status['worker_rows_write_attempted'] ?? 0)) ?> · failed <?= number_format((int) ($status['worker_rows_failed'] ?? 0)) ?> · written <?= number_format((int) ($status['worker_rows_written'] ?? 0)) ?></span></p>
+                <p><span class="text-slate-500">Cursor movement</span><br><span class="mt-1 inline-block text-slate-100"><?= htmlspecialchars((string) (($status['worker_cursor_before'] ?? '') !== '' ? $status['worker_cursor_before'] : '—'), ENT_QUOTES) ?> → <?= htmlspecialchars((string) (($status['worker_cursor_after'] ?? '') !== '' ? $status['worker_cursor_after'] : ($status['worker_cursor'] ?? '—')), ENT_QUOTES) ?></span><br><span class="text-xs text-muted">Sequences <?= htmlspecialchars((string) (($status['worker_first_sequence_seen'] ?? '') !== '' ? $status['worker_first_sequence_seen'] : '—'), ENT_QUOTES) ?> to <?= htmlspecialchars((string) (($status['worker_last_sequence_seen'] ?? '') !== '' ? $status['worker_last_sequence_seen'] : '—'), ENT_QUOTES) ?></span></p>
+                <p><span class="text-slate-500">No-progress guard</span><br><span class="mt-1 inline-block text-slate-100"><?= !empty($status['worker_stuck_detected']) ? 'Stuck condition detected' : 'No stuck condition' ?></span><br><span class="text-xs text-muted">Repeated same cursor <?= number_format((int) ($status['worker_same_cursor_no_progress_count'] ?? 0)) ?> times (threshold <?= number_format((int) ($status['worker_stuck_threshold'] ?? 0)) ?>).</span></p>
+                <p><span class="text-slate-500">Operator paths</span><br><span class="mt-1 inline-block text-slate-100 break-all"><?= htmlspecialchars((string) ($status['worker_log_file'] ?? 'Unavailable'), ENT_QUOTES) ?></span><br><span class="text-xs text-muted break-all"><?= htmlspecialchars((string) ($status['worker_state_file'] ?? 'Unavailable'), ENT_QUOTES) ?></span></p>
                 <?php if ((string) ($status['worker_outcome_reason'] ?? '') !== ''): ?>
                     <p class="sm:col-span-2"><span class="text-slate-500">Latest worker reason</span><br><span class="mt-1 inline-block text-slate-100"><?= htmlspecialchars((string) ($status['worker_outcome_reason'] ?? ''), ENT_QUOTES) ?></span></p>
+                <?php endif; ?>
+                <?php if ((string) ($status['worker_no_write_reason'] ?? '') !== ''): ?>
+                    <p class="sm:col-span-2"><span class="text-slate-500">Zero-write reason</span><br><span class="mt-1 inline-block text-slate-100"><?= htmlspecialchars((string) ($status['worker_no_write_reason'] ?? ''), ENT_QUOTES) ?></span></p>
                 <?php endif; ?>
             </div>
         </details>

@@ -98,6 +98,138 @@ def _sync_run_finish(bridge: PhpBridge, job_context: dict[str, Any], run_id: int
     return dict(response.get("result") or {})
 
 
+def _sync_cursor_checkpoint(
+    bridge: PhpBridge,
+    job_context: dict[str, Any],
+    cursor: str,
+    *,
+    rows_written: int,
+    outcome_reason: str,
+) -> dict[str, Any]:
+    dataset_key = str(job_context.get("dataset_key") or "").strip()
+    if dataset_key == "" or cursor.strip() == "":
+        return {
+            "checkpoint_updated": False,
+            "cursor": cursor,
+            "reason": "missing_dataset_or_cursor",
+        }
+
+    response = bridge.call(
+        "sync-cursor-upsert",
+        payload={
+            "dataset_key": dataset_key,
+            "run_mode": "incremental",
+            "cursor": cursor,
+            "rows_written": rows_written,
+            "outcome_reason": outcome_reason,
+        },
+    )
+    result = dict(response.get("result") or {})
+    return {
+        "checkpoint_updated": bool(result.get("checkpoint_updated")),
+        "cursor": str(result.get("cursor") or cursor),
+        "reason": str(result.get("reason") or ""),
+    }
+
+
+def _zero_write_reason(
+    *,
+    rows_seen: int,
+    rows_matched: int,
+    rows_filtered_out: int,
+    rows_skipped_existing: int,
+    rows_failed: int,
+    rows_written: int,
+    checkpoint_updated: bool,
+    sequence_404s: int,
+    latest_remote_sequence: int | None,
+    cursor_before: str,
+    cursor_after: str,
+) -> str:
+    if rows_written > 0:
+        return ""
+    if rows_seen == 0 and sequence_404s > 0:
+        return "caught_up_to_live_tip"
+    if rows_seen == 0:
+        return "unknown"
+    if rows_failed > 0:
+        return "write_failed"
+    if rows_matched == 0 and rows_filtered_out == rows_seen:
+        return "no_tracked_entity_matches"
+    if rows_skipped_existing == rows_seen:
+        return "already_existed_locally"
+    if rows_filtered_out == rows_seen:
+        return "filter_excluded_all"
+    if cursor_after == cursor_before and latest_remote_sequence is not None and latest_remote_sequence > 0:
+        return "checkpoint_prevented_write"
+    if cursor_after != "" and not checkpoint_updated:
+        return "checkpoint_prevented_write"
+    if rows_matched > 0 and rows_written == 0:
+        return "downstream_persistence_blocked"
+    return "unknown"
+
+
+def _flush_pending_batch(
+    *,
+    bridge: PhpBridge,
+    job_context: dict[str, Any],
+    pending_payloads: list[dict[str, Any]],
+    batch_index: int,
+    last_processed_sequence: int | None,
+    logger_context: Any,
+    started_at: float,
+    totals: dict[str, int],
+) -> tuple[dict[str, Any], int | None]:
+    batch_result = _flush_batch(bridge, pending_payloads)
+    batch_meta = dict(batch_result.get("meta") or {})
+    batch_last_processed = batch_result.get("last_processed_sequence")
+    if batch_last_processed is not None:
+        last_processed_sequence = int(batch_last_processed)
+
+    checkpoint_state = {
+        "checkpoint_updated": False,
+        "cursor": "",
+        "reason": "no_processed_sequence",
+    }
+    if last_processed_sequence is not None and last_processed_sequence > 0:
+        checkpoint_state = _sync_cursor_checkpoint(
+            bridge,
+            job_context,
+            str(last_processed_sequence),
+            rows_written=int(batch_result.get("rows_written") or 0),
+            outcome_reason=str(batch_result.get("reason_for_zero_write") or "batch_processed"),
+        )
+
+    batch_result["meta"] = {
+        **batch_meta,
+        "checkpoint_state": checkpoint_state,
+    }
+    logger_context.emit(
+        "zkill.batch_completed",
+        {
+            "job_key": logger_context.job_key,
+            "batch_index": batch_index,
+            "rows_seen": batch_result.get("rows_seen"),
+            "rows_matched": batch_result.get("rows_matched"),
+            "rows_filtered_out": batch_result.get("rows_filtered_out"),
+            "rows_skipped_existing": batch_result.get("rows_skipped_existing"),
+            "rows_write_attempted": batch_result.get("rows_write_attempted"),
+            "rows_written": batch_result.get("rows_written"),
+            "rows_failed": batch_result.get("rows_failed"),
+            "cursor_after": str(last_processed_sequence or ""),
+            "first_sequence_seen": batch_meta.get("first_sequence_seen"),
+            "last_sequence_seen": batch_meta.get("last_sequence_seen"),
+            "reason_for_zero_write": batch_result.get("reason_for_zero_write"),
+            "checkpoint_state": checkpoint_state,
+            "duration_ms": int((time.monotonic() - started_at) * 1000),
+            "memory_usage_bytes": resident_memory_bytes(),
+            "running_rows_seen": totals["rows_seen"] + int(batch_result.get("rows_seen") or 0),
+            "running_rows_written": totals["rows_written"] + int(batch_result.get("rows_written") or 0),
+        },
+    )
+    return batch_result, last_processed_sequence
+
+
 class KillmailEntityResolver:
     def __init__(self, user_agent: str):
         self.user_agent = user_agent
@@ -220,6 +352,8 @@ def run_killmail_r2z2_stream(context: Any) -> dict[str, Any]:
     total_rows_matched = 0
     total_rows_skipped_existing = 0
     total_rows_filtered_out = 0
+    total_rows_write_attempted = 0
+    total_rows_failed = 0
     total_duplicates = 0
     total_filtered = 0
     total_invalid = 0
@@ -227,8 +361,11 @@ def run_killmail_r2z2_stream(context: Any) -> dict[str, Any]:
     total_sequence_404s = 0
     total_rate_limits = 0
     batches_flushed = 0
-    first_sequence_attempted: int | None = None
-    last_sequence_attempted: int | None = None
+    first_sequence_seen: int | None = None
+    last_sequence_seen: int | None = None
+    checkpoint_updates = 0
+    checkpoint_failures = 0
+    first_failure_message = ""
 
     try:
         while time.monotonic() < deadline and total_sequence_files_fetched < max_sequences:
@@ -249,9 +386,9 @@ def run_killmail_r2z2_stream(context: Any) -> dict[str, Any]:
                     raise RuntimeError(f"Unable to read killmail sequence.json, status={probe_status}")
 
             sequence_id = int(next_sequence)
-            if first_sequence_attempted is None:
-                first_sequence_attempted = sequence_id
-            last_sequence_attempted = sequence_id
+            if first_sequence_seen is None:
+                first_sequence_seen = sequence_id
+            last_sequence_seen = sequence_id
             status, payload = _http_json(f"{base_url}/{sequence_id}.json", user_agent)
 
             if status == 200:
@@ -262,51 +399,69 @@ def run_killmail_r2z2_stream(context: Any) -> dict[str, Any]:
                 total_sequence_files_fetched += 1
                 next_sequence = sequence_id + 1
                 if len(pending_payloads) >= batch_size:
-                    batch_result = _flush_batch(bridge, pending_payloads)
+                    batch_result, last_processed_sequence = _flush_pending_batch(
+                        bridge=bridge,
+                        job_context=job_context,
+                        pending_payloads=pending_payloads,
+                        batch_index=batches_flushed + 1,
+                        last_processed_sequence=last_processed_sequence,
+                        logger_context=context,
+                        started_at=started_at,
+                        totals={
+                            "rows_seen": total_rows_seen,
+                            "rows_written": total_rows_written,
+                        },
+                    )
                     pending_payloads = []
                     batches_flushed += 1
                     total_rows_seen += int(batch_result.get("rows_seen") or 0)
                     total_rows_matched += int(batch_result.get("rows_matched") or 0)
                     total_rows_skipped_existing += int(batch_result.get("rows_skipped_existing") or 0)
                     total_rows_filtered_out += int(batch_result.get("rows_filtered_out") or 0)
+                    total_rows_write_attempted += int(batch_result.get("rows_write_attempted") or 0)
                     total_rows_written += int(batch_result.get("rows_written") or 0)
+                    total_rows_failed += int(batch_result.get("rows_failed") or 0)
                     total_duplicates += int(batch_result.get("duplicates") or 0)
                     total_filtered += int(batch_result.get("filtered") or 0)
                     total_invalid += int(batch_result.get("invalid") or 0)
-                    batch_last_processed = batch_result.get("last_processed_sequence")
-                    if batch_last_processed is not None:
-                        last_processed_sequence = int(batch_last_processed)
-                    context.emit(
-                        "python_worker.batch_progress",
-                        {
-                            "schedule_id": context.schedule_id,
-                            "job_key": context.job_key,
-                            "batches_completed": batches_flushed,
-                            "rows_processed": total_rows_seen,
-                            "rows_written": total_rows_written,
-                            "last_sequence_attempted": last_sequence_attempted,
-                            "last_processed_sequence": last_processed_sequence,
-                            "memory_usage_bytes": resident_memory_bytes(),
-                            "duration_ms": int((time.monotonic() - started_at) * 1000),
-                        },
-                    )
-                continue
+                    checkpoint_state = dict((batch_result.get("meta") or {}).get("checkpoint_state") or {})
+                    if checkpoint_state.get("checkpoint_updated"):
+                        checkpoint_updates += 1
+                    elif str(checkpoint_state.get("reason") or "") != "no_processed_sequence":
+                        checkpoint_failures += 1
+                    continue
 
             if pending_payloads:
-                batch_result = _flush_batch(bridge, pending_payloads)
+                batch_result, last_processed_sequence = _flush_pending_batch(
+                    bridge=bridge,
+                    job_context=job_context,
+                    pending_payloads=pending_payloads,
+                    batch_index=batches_flushed + 1,
+                    last_processed_sequence=last_processed_sequence,
+                    logger_context=context,
+                    started_at=started_at,
+                    totals={
+                        "rows_seen": total_rows_seen,
+                        "rows_written": total_rows_written,
+                    },
+                )
                 pending_payloads = []
                 batches_flushed += 1
                 total_rows_seen += int(batch_result.get("rows_seen") or 0)
                 total_rows_matched += int(batch_result.get("rows_matched") or 0)
                 total_rows_skipped_existing += int(batch_result.get("rows_skipped_existing") or 0)
                 total_rows_filtered_out += int(batch_result.get("rows_filtered_out") or 0)
+                total_rows_write_attempted += int(batch_result.get("rows_write_attempted") or 0)
                 total_rows_written += int(batch_result.get("rows_written") or 0)
+                total_rows_failed += int(batch_result.get("rows_failed") or 0)
                 total_duplicates += int(batch_result.get("duplicates") or 0)
                 total_filtered += int(batch_result.get("filtered") or 0)
                 total_invalid += int(batch_result.get("invalid") or 0)
-                batch_last_processed = batch_result.get("last_processed_sequence")
-                if batch_last_processed is not None:
-                    last_processed_sequence = int(batch_last_processed)
+                checkpoint_state = dict((batch_result.get("meta") or {}).get("checkpoint_state") or {})
+                if checkpoint_state.get("checkpoint_updated"):
+                    checkpoint_updates += 1
+                elif str(checkpoint_state.get("reason") or "") != "no_processed_sequence":
+                    checkpoint_failures += 1
 
             if status == 404:
                 total_sequence_404s += 1
@@ -325,20 +480,36 @@ def run_killmail_r2z2_stream(context: Any) -> dict[str, Any]:
             raise RuntimeError(f"R2Z2 sequence fetch failed for {sequence_id} with status={status}")
 
         if pending_payloads:
-            batch_result = _flush_batch(bridge, pending_payloads)
+            batch_result, last_processed_sequence = _flush_pending_batch(
+                bridge=bridge,
+                job_context=job_context,
+                pending_payloads=pending_payloads,
+                batch_index=batches_flushed + 1,
+                last_processed_sequence=last_processed_sequence,
+                logger_context=context,
+                started_at=started_at,
+                totals={
+                    "rows_seen": total_rows_seen,
+                    "rows_written": total_rows_written,
+                },
+            )
             pending_payloads = []
             batches_flushed += 1
             total_rows_seen += int(batch_result.get("rows_seen") or 0)
             total_rows_matched += int(batch_result.get("rows_matched") or 0)
             total_rows_skipped_existing += int(batch_result.get("rows_skipped_existing") or 0)
             total_rows_filtered_out += int(batch_result.get("rows_filtered_out") or 0)
+            total_rows_write_attempted += int(batch_result.get("rows_write_attempted") or 0)
             total_rows_written += int(batch_result.get("rows_written") or 0)
+            total_rows_failed += int(batch_result.get("rows_failed") or 0)
             total_duplicates += int(batch_result.get("duplicates") or 0)
             total_filtered += int(batch_result.get("filtered") or 0)
             total_invalid += int(batch_result.get("invalid") or 0)
-            batch_last_processed = batch_result.get("last_processed_sequence")
-            if batch_last_processed is not None:
-                last_processed_sequence = int(batch_last_processed)
+            checkpoint_state = dict((batch_result.get("meta") or {}).get("checkpoint_state") or {})
+            if checkpoint_state.get("checkpoint_updated"):
+                checkpoint_updates += 1
+            elif str(checkpoint_state.get("reason") or "") != "no_processed_sequence":
+                checkpoint_failures += 1
 
         cursor_end = str(last_processed_sequence if last_processed_sequence is not None else (last_saved_sequence or 0))
         checksum = payload_checksum({
@@ -348,27 +519,34 @@ def run_killmail_r2z2_stream(context: Any) -> dict[str, Any]:
             "batches_flushed": batches_flushed,
         })
 
-        no_write_reason = ""
+        checkpoint_updated = checkpoint_updates > 0 or cursor_end == str(last_saved_sequence or 0)
+        reason_for_zero_write = _zero_write_reason(
+            rows_seen=total_rows_seen,
+            rows_matched=total_rows_matched,
+            rows_filtered_out=total_rows_filtered_out,
+            rows_skipped_existing=total_rows_skipped_existing,
+            rows_failed=total_rows_failed,
+            rows_written=total_rows_written,
+            checkpoint_updated=checkpoint_updated,
+            sequence_404s=total_sequence_404s,
+            latest_remote_sequence=latest_remote_sequence,
+            cursor_before=str(last_saved_sequence or 0),
+            cursor_after=cursor_end,
+        )
         if total_rows_written > 0:
             outcome_reason = "Python streamed killmail ingestion batches and kept polling until the worker budget expired."
-        elif total_rows_seen > 0 and total_duplicates == total_rows_seen:
-            outcome_reason = "All fetched killmails were already present in storage."
-            no_write_reason = "all_rows_already_present"
-        elif total_rows_seen > 0 and total_filtered + total_invalid == total_rows_seen:
-            outcome_reason = "Fetched killmails did not pass tracked-entity filters or were invalid."
-            no_write_reason = "all_rows_filtered_or_invalid"
-        elif total_rows_seen > 0 and total_filtered == total_rows_seen:
-            outcome_reason = "Fetched killmails did not match any tracked alliance or corporation."
-            no_write_reason = "all_rows_filtered_out"
-        elif total_rows_seen > 0 and total_invalid == total_rows_seen:
-            outcome_reason = "Fetched killmails could not be normalized into valid persistence rows."
-            no_write_reason = "all_rows_invalid"
-        elif total_sequence_404s > 0:
-            outcome_reason = "Python worker caught up to the live R2Z2 tip and stayed in the documented poll/sleep loop."
-            no_write_reason = "caught_up_to_live_tip"
         else:
-            outcome_reason = "Python worker completed without new killmail inserts."
-            no_write_reason = "mixed_no_write_result"
+            outcome_reason = {
+                "no_tracked_entity_matches": "Fetched killmails did not match any tracked alliance or corporation.",
+                "already_existed_locally": "All fetched killmails were already present in local storage.",
+                "write_failed": "Fetched killmails reached persistence but a write failed before completion.",
+                "transaction_rolled_back": "The persistence transaction rolled back before any qualifying rows were committed.",
+                "filter_excluded_all": "Fetched killmails were excluded by tracked-entity filters.",
+                "checkpoint_prevented_write": "Cursor checkpointing did not advance after processing the batch.",
+                "downstream_persistence_blocked": "Qualifying killmails were matched but could not be persisted locally.",
+                "caught_up_to_live_tip": "Python worker caught up to the live R2Z2 tip and stayed in the documented poll/sleep loop.",
+                "unknown": "Python worker completed without new killmail inserts and the zero-write cause requires follow-up.",
+            }.get(reason_for_zero_write, "Python worker completed without new killmail inserts.")
 
         result = {
             "status": "success",
@@ -394,10 +572,12 @@ def run_killmail_r2z2_stream(context: Any) -> dict[str, Any]:
                 "rows_matched": total_rows_matched,
                 "rows_skipped_existing": total_rows_skipped_existing,
                 "rows_filtered_out": total_rows_filtered_out,
+                "rows_write_attempted": total_rows_write_attempted,
+                "rows_failed": total_rows_failed,
                 "killmails_fetched": total_rows_seen,
                 "killmails_inserted": total_rows_written,
-                "first_sequence_attempted": first_sequence_attempted,
-                "last_sequence_attempted": last_sequence_attempted,
+                "first_sequence_seen": first_sequence_seen,
+                "last_sequence_seen": last_sequence_seen,
                 "cursor_before": str(last_saved_sequence or 0),
                 "cursor_after": cursor_end,
                 "last_saved_sequence_before_run": last_saved_sequence,
@@ -405,13 +585,19 @@ def run_killmail_r2z2_stream(context: Any) -> dict[str, Any]:
                 "latest_remote_sequence": latest_remote_sequence,
                 "batches_flushed": batches_flushed,
                 "memory_usage_bytes": resident_memory_bytes(),
-                "no_write_reason": no_write_reason,
+                "checkpoint_updates": checkpoint_updates,
+                "checkpoint_failures": checkpoint_failures,
+                "checkpoint_state": "updated" if checkpoint_updated else "unchanged",
+                "reason_for_zero_write": reason_for_zero_write,
+                "no_write_reason": reason_for_zero_write,
                 "outcome_reason": outcome_reason,
             },
         }
         _sync_run_finish(bridge, job_context, run_id, result)
         return result
     except Exception as error:
+        if first_failure_message == "":
+            first_failure_message = str(error)
         _sync_run_finish(
             bridge,
             job_context,
@@ -424,6 +610,20 @@ def run_killmail_r2z2_stream(context: Any) -> dict[str, Any]:
                 "cursor": str(last_processed_sequence if last_processed_sequence is not None else (last_saved_sequence or 0)),
                 "checksum": "",
                 "error": str(error),
+                "meta": {
+                    "rows_matched": total_rows_matched,
+                    "rows_filtered_out": total_rows_filtered_out,
+                    "rows_skipped_existing": total_rows_skipped_existing,
+                    "rows_write_attempted": total_rows_write_attempted,
+                    "rows_failed": max(1, total_rows_failed),
+                    "cursor_before": str(last_saved_sequence or 0),
+                    "cursor_after": str(last_processed_sequence if last_processed_sequence is not None else (last_saved_sequence or 0)),
+                    "first_sequence_seen": first_sequence_seen,
+                    "last_sequence_seen": last_sequence_seen,
+                    "reason_for_zero_write": "transaction_rolled_back",
+                    "checkpoint_state": "unchanged",
+                    "outcome_reason": first_failure_message,
+                },
             },
         )
         raise

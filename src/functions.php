@@ -8080,6 +8080,7 @@ function zkill_worker_runtime_status(): array
 {
     $runtime = orchestrator_runtime_config_export();
     $stateFile = trim((string) ($runtime['workers']['zkill_state_file'] ?? ''));
+    $logFile = trim((string) ($runtime['workers']['zkill_log_file'] ?? ''));
     $state = $stateFile !== '' ? supplycore_runtime_json_file_read($stateFile) : [];
     $timestamp = trim((string) ($state['ts'] ?? ''));
     $status = trim((string) (($state['result']['status'] ?? '') ?: 'unknown'));
@@ -8087,6 +8088,7 @@ function zkill_worker_runtime_status(): array
 
     return [
         'state_file' => $stateFile !== '' ? $stateFile : null,
+        'log_file' => $logFile !== '' ? $logFile : null,
         'seen_at' => $timestamp !== '' ? $timestamp : null,
         'seen_at_display' => $timestamp !== '' ? killmail_format_datetime($timestamp) : 'No heartbeat recorded',
         'seen_at_relative' => $timestamp !== '' ? killmail_relative_datetime($timestamp) : 'No heartbeat',
@@ -8096,10 +8098,19 @@ function zkill_worker_runtime_status(): array
         'rows_matched' => (int) (($state['result']['meta']['rows_matched'] ?? 0)),
         'rows_skipped_existing' => (int) (($state['result']['meta']['rows_skipped_existing'] ?? 0)),
         'rows_filtered_out' => (int) (($state['result']['meta']['rows_filtered_out'] ?? 0)),
+        'rows_write_attempted' => (int) (($state['result']['meta']['rows_write_attempted'] ?? 0)),
         'rows_written' => (int) (($state['result']['rows_written'] ?? 0)),
+        'rows_failed' => (int) (($state['result']['meta']['rows_failed'] ?? 0)),
         'cursor' => isset($state['result']['cursor']) ? (string) $state['result']['cursor'] : null,
         'cursor_before' => isset($state['result']['meta']['cursor_before']) ? (string) $state['result']['meta']['cursor_before'] : null,
         'cursor_after' => isset($state['result']['meta']['cursor_after']) ? (string) $state['result']['meta']['cursor_after'] : null,
+        'first_sequence_seen' => isset($state['result']['meta']['first_sequence_seen']) ? (string) $state['result']['meta']['first_sequence_seen'] : null,
+        'last_sequence_seen' => isset($state['result']['meta']['last_sequence_seen']) ? (string) $state['result']['meta']['last_sequence_seen'] : null,
+        'checkpoint_state' => isset($state['result']['meta']['checkpoint_state']) ? (string) $state['result']['meta']['checkpoint_state'] : '',
+        'same_cursor_no_progress_count' => (int) ($state['same_cursor_no_progress_count'] ?? 0),
+        'stuck_detected' => (bool) ($state['stuck_detected'] ?? false),
+        'stuck_threshold' => (int) ($state['stuck_threshold'] ?? 0),
+        'reason_for_zero_write' => isset($state['result']['meta']['reason_for_zero_write']) ? (string) $state['result']['meta']['reason_for_zero_write'] : '',
         'no_write_reason' => isset($state['result']['meta']['no_write_reason']) ? (string) $state['result']['meta']['no_write_reason'] : '',
         'outcome_reason' => isset($state['result']['meta']['outcome_reason']) ? (string) $state['result']['meta']['outcome_reason'] : '',
         'memory_usage_bytes' => isset($state['memory_usage_bytes']) ? (int) $state['memory_usage_bytes'] : null,
@@ -8110,12 +8121,15 @@ function zkill_worker_runtime_status(): array
 function killmail_no_write_reason_label(string $reason): string
 {
     return match (trim($reason)) {
-        'all_rows_already_present' => 'Everything in the last worker pass was already stored.',
-        'all_rows_filtered_or_invalid' => 'The last worker pass saw rows, but all of them were filtered out or invalid.',
-        'all_rows_filtered_out' => 'The last worker pass did not match any tracked alliance or corporation.',
-        'all_rows_invalid' => 'The last worker pass could not normalize the fetched killmails.',
+        'already_existed_locally' => 'Everything in the last worker pass was already stored locally.',
+        'no_tracked_entity_matches' => 'The last worker pass did not match any tracked alliance or corporation.',
+        'filter_excluded_all' => 'The last worker pass was excluded by the current tracked-entity filters.',
+        'write_failed' => 'The last worker pass reached persistence, but local writes failed.',
+        'transaction_rolled_back' => 'The last worker pass rolled back before qualifying killmails could commit.',
+        'checkpoint_prevented_write' => 'The worker processed rows, but the checkpoint did not advance cleanly.',
+        'downstream_persistence_blocked' => 'The worker matched qualifying killmails, but downstream persistence blocked inserts.',
         'caught_up_to_live_tip' => 'The worker is caught up to the current zKill live tip.',
-        'mixed_no_write_result' => 'The last worker pass completed without inserting new rows.',
+        'unknown' => 'The last worker pass completed without inserting new rows and needs investigation.',
         default => '',
     };
 }
@@ -8128,12 +8142,14 @@ function killmail_ingestion_health_summary(array $status, array $workerStatus = 
     $lastError = trim((string) ($status['last_error'] ?? ''));
     $rowsWritten = (int) ($status['last_run_written_rows'] ?? 0);
     $rowsSeen = (int) ($status['last_run_source_rows'] ?? 0);
-    $workerNoWriteReason = killmail_no_write_reason_label((string) ($workerStatus['no_write_reason'] ?? ''));
+    $workerNoWriteReason = killmail_no_write_reason_label((string) ($workerStatus['reason_for_zero_write'] ?? $workerStatus['no_write_reason'] ?? ''));
 
     $state = 'healthy';
     if (!($status['ingestion_enabled'] ?? false)) {
         $state = 'disabled';
     } elseif ($lastError !== '') {
+        $state = 'stalled';
+    } elseif (!empty($workerStatus['stuck_detected'])) {
         $state = 'stalled';
     } elseif ($lastSuccessTimestamp === null) {
         $state = 'stalled';
@@ -8168,7 +8184,9 @@ function killmail_ingestion_health_summary(array $status, array $workerStatus = 
         'disabled' => 'Killmail ingestion is currently turned off.',
         'stalled' => $lastError !== ''
             ? ('The most recent sync error needs attention: ' . $lastError)
-            : 'Killmail freshness is outside the expected window or the worker is no longer checking in.',
+            : (!empty($workerStatus['stuck_detected'])
+                ? 'The worker is repeating the same cursor without progress. Review the zKill log and checkpoint state.'
+                : 'Killmail freshness is outside the expected window or the worker is no longer checking in.'),
         default => 'Killmail ingestion status is unavailable.',
     };
 
@@ -8180,6 +8198,7 @@ function killmail_ingestion_health_summary(array $status, array $workerStatus = 
         'last_rows_written' => $rowsWritten,
         'last_rows_seen' => $rowsSeen,
         'worker_no_write_reason' => $workerNoWriteReason,
+        'stuck_detected' => !empty($workerStatus['stuck_detected']),
     ];
 }
 
@@ -9824,9 +9843,13 @@ function killmail_overview_data(): array
         $lastIngestedAt = isset($summaryRow['last_ingested_at']) ? (string) $summaryRow['last_ingested_at'] : null;
         $latestUploadedAt = isset($summaryRow['latest_uploaded_at']) ? (string) $summaryRow['latest_uploaded_at'] : null;
         $cursor = isset($state['last_cursor']) ? trim((string) $state['last_cursor']) : '';
+        $workerSeenAt = isset($workerStatus['seen_at']) ? trim((string) $workerStatus['seen_at']) : '';
         $freshnessReferenceAt = $lastIngestedAt;
         if ($lastSuccessAt !== null && ($freshnessReferenceAt === null || strtotime($lastSuccessAt) > strtotime($freshnessReferenceAt))) {
             $freshnessReferenceAt = $lastSuccessAt;
+        }
+        if ($workerSeenAt !== '' && (($workerStatus['status'] ?? 'unknown') === 'success') && ($freshnessReferenceAt === null || strtotime($workerSeenAt) > strtotime($freshnessReferenceAt))) {
+            $freshnessReferenceAt = $workerSeenAt;
         }
 
         $overviewResolutionRequests = [
@@ -10012,13 +10035,23 @@ function killmail_overview_data(): array
             'worker_rows_matched' => (int) ($workerStatus['rows_matched'] ?? 0),
             'worker_rows_skipped_existing' => (int) ($workerStatus['rows_skipped_existing'] ?? 0),
             'worker_rows_filtered_out' => (int) ($workerStatus['rows_filtered_out'] ?? 0),
+            'worker_rows_write_attempted' => (int) ($workerStatus['rows_write_attempted'] ?? 0),
             'worker_rows_written' => (int) ($workerStatus['rows_written'] ?? 0),
+            'worker_rows_failed' => (int) ($workerStatus['rows_failed'] ?? 0),
             'worker_cursor' => isset($workerStatus['cursor']) ? (string) $workerStatus['cursor'] : '',
             'worker_cursor_before' => isset($workerStatus['cursor_before']) ? (string) $workerStatus['cursor_before'] : '',
             'worker_cursor_after' => isset($workerStatus['cursor_after']) ? (string) $workerStatus['cursor_after'] : '',
-            'worker_no_write_reason' => isset($workerStatus['no_write_reason']) ? (string) $workerStatus['no_write_reason'] : '',
+            'worker_first_sequence_seen' => isset($workerStatus['first_sequence_seen']) ? (string) $workerStatus['first_sequence_seen'] : '',
+            'worker_last_sequence_seen' => isset($workerStatus['last_sequence_seen']) ? (string) $workerStatus['last_sequence_seen'] : '',
+            'worker_checkpoint_state' => isset($workerStatus['checkpoint_state']) ? (string) $workerStatus['checkpoint_state'] : '',
+            'worker_same_cursor_no_progress_count' => (int) ($workerStatus['same_cursor_no_progress_count'] ?? 0),
+            'worker_stuck_detected' => (bool) ($workerStatus['stuck_detected'] ?? false),
+            'worker_stuck_threshold' => (int) ($workerStatus['stuck_threshold'] ?? 0),
+            'worker_no_write_reason' => isset($workerStatus['reason_for_zero_write']) ? (string) $workerStatus['reason_for_zero_write'] : (isset($workerStatus['no_write_reason']) ? (string) $workerStatus['no_write_reason'] : ''),
             'worker_outcome_reason' => isset($workerStatus['outcome_reason']) ? (string) $workerStatus['outcome_reason'] : '',
             'worker_memory_usage_bytes' => isset($workerStatus['memory_usage_bytes']) ? (int) $workerStatus['memory_usage_bytes'] : null,
+            'worker_log_file' => isset($workerStatus['log_file']) ? (string) $workerStatus['log_file'] : '',
+            'worker_state_file' => isset($workerStatus['state_file']) ? (string) $workerStatus['state_file'] : '',
         ];
         $statusView['health'] = killmail_ingestion_health_summary($statusView, $workerStatus);
 
@@ -13543,6 +13576,38 @@ function python_bridge_sync_run_start(string $datasetKey, string $runMode = 'inc
     ];
 }
 
+function python_bridge_sync_cursor_upsert(array $payload): array
+{
+    $datasetKey = trim((string) ($payload['dataset_key'] ?? ''));
+    if ($datasetKey === '') {
+        throw new InvalidArgumentException('dataset_key is required to checkpoint a sync cursor.');
+    }
+
+    $runMode = sync_mode_normalize((string) ($payload['run_mode'] ?? 'incremental'));
+    $cursor = isset($payload['cursor']) ? trim((string) $payload['cursor']) : '';
+    if ($cursor === '') {
+        return [
+            'dataset_key' => $datasetKey,
+            'run_mode' => $runMode,
+            'cursor' => null,
+            'checkpoint_updated' => false,
+            'reason' => 'missing_cursor',
+        ];
+    }
+
+    $updated = db_sync_cursor_upsert($datasetKey, $runMode, $cursor);
+
+    return [
+        'dataset_key' => $datasetKey,
+        'run_mode' => $runMode,
+        'cursor' => $cursor,
+        'checkpoint_updated' => $updated,
+        'reason' => $updated ? 'cursor_checkpointed' : 'checkpoint_write_failed',
+        'rows_written' => max(0, (int) ($payload['rows_written'] ?? 0)),
+        'outcome_reason' => trim((string) ($payload['outcome_reason'] ?? '')),
+    ];
+}
+
 function python_bridge_sync_run_finish(array $payload): array
 {
     $datasetKey = trim((string) ($payload['dataset_key'] ?? ''));
@@ -13647,17 +13712,35 @@ function python_bridge_process_killmail_batch(array $payloads): array
     $rowsSeen = 0;
     $rowsMatched = 0;
     $rowsWritten = 0;
+    $rowsWriteAttempted = 0;
+    $rowsFailed = 0;
     $duplicates = 0;
     $filtered = 0;
     $invalid = 0;
     $lastProcessedSequence = null;
+    $firstSequenceSeen = null;
+    $lastSequenceSeen = null;
+    $failureReason = '';
 
     foreach ($payloads as $payload) {
         $rowsSeen++;
         $requestedSequenceId = (int) ($payload['requested_sequence_id'] ?? $payload['sequence_id'] ?? 0);
-        $result = killmail_persist_r2z2_payload($payload, $trackedAllianceIds, $trackedCorporationIds, false, $requestedSequenceId > 0 ? $requestedSequenceId : null);
+        try {
+            $result = killmail_persist_r2z2_payload($payload, $trackedAllianceIds, $trackedCorporationIds, false, $requestedSequenceId > 0 ? $requestedSequenceId : null);
+        } catch (Throwable $exception) {
+            $rowsFailed++;
+            $failureReason = trim($exception->getMessage()) !== '' ? scheduler_normalize_error_message($exception->getMessage()) : 'Killmail write failed.';
+            $lastProcessedSequence = $requestedSequenceId > 0 ? $requestedSequenceId - 1 : $lastProcessedSequence;
+            break;
+        }
         $sequenceId = (int) ($result['sequence_id'] ?? 0);
         $status = (string) ($result['status'] ?? 'invalid');
+        if ($firstSequenceSeen === null && $sequenceId > 0) {
+            $firstSequenceSeen = $sequenceId;
+        }
+        if ($sequenceId > 0) {
+            $lastSequenceSeen = $sequenceId;
+        }
         if ($status === 'invalid') {
             $invalid++;
             if ($requestedSequenceId > 0) {
@@ -13672,6 +13755,7 @@ function python_bridge_process_killmail_batch(array $payloads): array
         } elseif ($status === 'filtered') {
             $filtered++;
         } elseif ($status === 'written') {
+            $rowsWriteAttempted++;
             $rowsWritten++;
             $rowsMatched++;
         }
@@ -13679,18 +13763,20 @@ function python_bridge_process_killmail_batch(array $payloads): array
         $lastProcessedSequence = $sequenceId;
     }
 
-    $noWriteReason = '';
+    $reasonForZeroWrite = '';
     if ($rowsWritten === 0) {
-        if ($duplicates === $rowsSeen && $rowsSeen > 0) {
-            $noWriteReason = 'all_rows_already_present';
+        if ($rowsFailed > 0) {
+            $reasonForZeroWrite = 'write_failed';
+        } elseif ($duplicates === $rowsSeen && $rowsSeen > 0) {
+            $reasonForZeroWrite = 'already_existed_locally';
         } elseif ($filtered === $rowsSeen && $rowsSeen > 0) {
-            $noWriteReason = 'all_rows_filtered_out';
+            $reasonForZeroWrite = 'no_tracked_entity_matches';
         } elseif ($invalid === $rowsSeen && $rowsSeen > 0) {
-            $noWriteReason = 'all_rows_invalid';
+            $reasonForZeroWrite = 'unknown';
         } elseif (($filtered + $invalid) === $rowsSeen && $rowsSeen > 0) {
-            $noWriteReason = 'all_rows_filtered_or_invalid';
+            $reasonForZeroWrite = 'filter_excluded_all';
         } else {
-            $noWriteReason = 'mixed_no_write_result';
+            $reasonForZeroWrite = 'unknown';
         }
     }
 
@@ -13699,13 +13785,30 @@ function python_bridge_process_killmail_batch(array $payloads): array
         'rows_matched' => $rowsMatched,
         'rows_skipped_existing' => $duplicates,
         'rows_filtered_out' => $filtered,
+        'rows_write_attempted' => $rowsWriteAttempted,
         'rows_written' => $rowsWritten,
+        'rows_failed' => $rowsFailed,
         'killmails_fetched' => $rowsSeen,
         'duplicates' => $duplicates,
         'filtered' => $filtered,
         'invalid' => $invalid,
         'last_processed_sequence' => $lastProcessedSequence,
-        'no_write_reason' => $noWriteReason,
+        'reason_for_zero_write' => $reasonForZeroWrite,
+        'no_write_reason' => $reasonForZeroWrite,
+        'failure_reason' => $failureReason,
+        'meta' => [
+            'first_sequence_seen' => $firstSequenceSeen,
+            'last_sequence_seen' => $lastSequenceSeen,
+            'rows_seen' => $rowsSeen,
+            'rows_matched' => $rowsMatched,
+            'rows_filtered_out' => $filtered,
+            'rows_skipped_existing' => $duplicates,
+            'rows_write_attempted' => $rowsWriteAttempted,
+            'rows_written' => $rowsWritten,
+            'rows_failed' => $rowsFailed,
+            'reason_for_zero_write' => $reasonForZeroWrite,
+            'failure_reason' => $failureReason,
+        ],
     ];
 }
 

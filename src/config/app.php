@@ -55,6 +55,7 @@ $config = [
         'memory_pause_threshold_bytes' => max(134217728, (int) (getenv('SUPPLYCORE_WORKER_MEMORY_PAUSE_THRESHOLD_BYTES') ?: 402653184)),
         'memory_abort_threshold_bytes' => max(268435456, (int) (getenv('SUPPLYCORE_WORKER_MEMORY_ABORT_THRESHOLD_BYTES') ?: 536870912)),
         'retry_backoff_seconds' => max(5, (int) (getenv('SUPPLYCORE_WORKER_RETRY_BACKOFF_SECONDS') ?: 30)),
+        'zkill_stuck_cursor_threshold' => max(2, (int) (getenv('SUPPLYCORE_ZKILL_STUCK_CURSOR_THRESHOLD') ?: 3)),
         'zkill_log_file' => getenv('SUPPLYCORE_ZKILL_LOG_FILE') ?: 'storage/logs/zkill.log',
         'worker_log_file' => getenv('SUPPLYCORE_WORKER_LOG_FILE') ?: 'storage/logs/worker.log',
         'compute_log_file' => getenv('SUPPLYCORE_COMPUTE_LOG_FILE') ?: 'storage/logs/compute.log',
