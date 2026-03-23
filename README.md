@@ -454,6 +454,10 @@ Market history retention is tiered from Settings → Data Sync:
 - `market_history_retention_hourly_days` keeps `market_item_price_1h` and `market_item_stock_1h` for the medium troubleshooting window.
 - `market_history_retention_daily_days` keeps `market_item_price_1d`, `market_item_stock_1d`, `market_history_daily`, and `market_hub_local_history_daily` for the long-lived UI/reporting window.
 
+The raw snapshot tier now has monthly partition-ready companion tables (`market_orders_history_p` and `market_order_snapshots_summary_p`) plus cutover settings for read/write modes. Retention first drops fully expired monthly partitions, then does a bounded delete only inside the current cutoff month so the existing day-based retention settings stay accurate without forcing large full-table deletes.
+
+Settings → Data Sync also exposes a Raw partition health panel that shows the partitioned tables, current monthly ranges, oldest/newest partitions, retention horizon, and whether future partitions already exist.
+
 Daily history rows are built from those local snapshots for both the alliance market and the reference hub, so keep the current-sync and history schedules enabled together for continuous trend updates.
 
 Once the tiered model is active, these UI routes must not rely on raw-history fallback reads: `/history/alliance-trends`, `/history/module-history`, `/activity-priority`, `/doctrine`, `/doctrine/group`, and `/doctrine/fit`. They should read from the daily history layer (`market_history_daily`, `market_hub_local_history_daily`, `market_item_*_1d`) or show gaps that indicate the rollups need rebuilding.
@@ -483,6 +487,16 @@ mysql -u "$DB_USERNAME" -p"$DB_PASSWORD" -h "$DB_HOST" -P "$DB_PORT" "$DB_DATABA
 
 mysql -u "$DB_USERNAME" -p"$DB_PASSWORD" -h "$DB_HOST" -P "$DB_PORT" "$DB_DATABASE" -e "SELECT * FROM sync_runs WHERE dataset_key LIKE 'market.hub.%history%.daily' ORDER BY started_at DESC LIMIT 10;"
 ```
+
+### Partition health CLI
+
+Use the lightweight diagnostic command when you want the same partition-health summary outside the admin UI:
+
+```bash
+php bin/partition_health.php
+```
+
+The command prints both raw partitioned tables, their read/write cutover modes, the current monthly partitions, the retention cutoff derived from Settings → Data Sync, and any missing future partitions. It also lists deferred candidates that were evaluated but intentionally left unpartitioned in this pass.
 
 ### Troubleshooting
 

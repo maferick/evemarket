@@ -1064,6 +1064,41 @@ CREATE TABLE IF NOT EXISTS market_orders_history (
     KEY idx_market_orders_history_observed_at (observed_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+CREATE TABLE IF NOT EXISTS market_orders_history_p (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    source_type ENUM('market_hub', 'alliance_structure') NOT NULL,
+    source_id BIGINT UNSIGNED NOT NULL,
+    type_id INT UNSIGNED NOT NULL,
+    order_id BIGINT UNSIGNED NOT NULL,
+    is_buy_order TINYINT(1) NOT NULL,
+    price DECIMAL(20, 2) NOT NULL,
+    volume_remain INT UNSIGNED NOT NULL,
+    volume_total INT UNSIGNED NOT NULL,
+    min_volume INT UNSIGNED NOT NULL DEFAULT 1,
+    `range` VARCHAR(20) NOT NULL,
+    duration SMALLINT UNSIGNED NOT NULL,
+    issued DATETIME NOT NULL,
+    expires DATETIME NOT NULL,
+    observed_at DATETIME NOT NULL,
+    observed_date DATE NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (id, observed_date),
+    UNIQUE KEY unique_source_order_observed (source_type, source_id, order_id, observed_at, observed_date),
+    KEY idx_market_orders_history_type_observed (source_type, source_id, type_id, observed_at),
+    KEY idx_market_orders_history_observed (source_type, source_id, observed_at),
+    KEY idx_market_orders_history_source_date_type (source_type, source_id, observed_date, type_id),
+    KEY idx_market_orders_history_observed_at (observed_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+PARTITION BY RANGE COLUMNS(observed_date) (
+    PARTITION p_bootstrap VALUES LESS THAN ('2026-01-01'),
+    PARTITION p202601 VALUES LESS THAN ('2026-02-01'),
+    PARTITION p202602 VALUES LESS THAN ('2026-03-01'),
+    PARTITION p202603 VALUES LESS THAN ('2026-04-01'),
+    PARTITION p202604 VALUES LESS THAN ('2026-05-01'),
+    PARTITION p202605 VALUES LESS THAN ('2026-06-01'),
+    PARTITION pmax VALUES LESS THAN (MAXVALUE)
+);
+
 CREATE TABLE IF NOT EXISTS market_order_snapshots_summary (
     id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
     source_type ENUM('market_hub', 'alliance_structure') NOT NULL,
@@ -1086,6 +1121,39 @@ CREATE TABLE IF NOT EXISTS market_order_snapshots_summary (
     KEY idx_snapshot_summary_source_date_type (source_type, source_id, observed_date, type_id),
     KEY idx_snapshot_summary_observed (observed_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS market_order_snapshots_summary_p (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    source_type ENUM('market_hub', 'alliance_structure') NOT NULL,
+    source_id BIGINT UNSIGNED NOT NULL,
+    type_id INT UNSIGNED NOT NULL,
+    observed_at DATETIME NOT NULL,
+    observed_date DATE NOT NULL,
+    best_sell_price DECIMAL(20, 2) DEFAULT NULL,
+    best_buy_price DECIMAL(20, 2) DEFAULT NULL,
+    total_buy_volume BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    total_sell_volume BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    total_volume BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    buy_order_count INT UNSIGNED NOT NULL DEFAULT 0,
+    sell_order_count INT UNSIGNED NOT NULL DEFAULT 0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (id, observed_date),
+    UNIQUE KEY unique_market_order_snapshot_summary (source_type, source_id, type_id, observed_at, observed_date),
+    KEY idx_snapshot_summary_source_observed_type (source_type, source_id, observed_at, type_id),
+    KEY idx_snapshot_summary_source_type_observed (source_type, source_id, type_id, observed_at),
+    KEY idx_snapshot_summary_source_date_type (source_type, source_id, observed_date, type_id),
+    KEY idx_snapshot_summary_observed (observed_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+PARTITION BY RANGE COLUMNS(observed_date) (
+    PARTITION p_bootstrap VALUES LESS THAN ('2026-01-01'),
+    PARTITION p202601 VALUES LESS THAN ('2026-02-01'),
+    PARTITION p202602 VALUES LESS THAN ('2026-03-01'),
+    PARTITION p202603 VALUES LESS THAN ('2026-04-01'),
+    PARTITION p202604 VALUES LESS THAN ('2026-05-01'),
+    PARTITION p202605 VALUES LESS THAN ('2026-06-01'),
+    PARTITION pmax VALUES LESS THAN (MAXVALUE)
+);
 
 CREATE TABLE IF NOT EXISTS market_source_snapshot_state (
     source_type ENUM('market_hub', 'alliance_structure') NOT NULL,
@@ -1731,6 +1799,10 @@ INSERT INTO app_settings (setting_key, setting_value) VALUES
     ('alliance_current_backfill_start_date', ''),
     ('alliance_history_backfill_start_date', ''),
     ('hub_history_backfill_start_date', ''),
+    ('market_orders_history_read_mode', 'legacy'),
+    ('market_orders_history_write_mode', 'legacy'),
+    ('market_order_snapshots_summary_read_mode', 'legacy'),
+    ('market_order_snapshots_summary_write_mode', 'legacy'),
     ('killmail_ingestion_enabled', '0'),
     ('killmail_r2z2_sequence_url', 'https://r2z2.zkillboard.com/ephemeral/sequence.json'),
     ('killmail_r2z2_base_url', 'https://r2z2.zkillboard.com/ephemeral'),
@@ -1744,7 +1816,9 @@ INSERT INTO app_settings (setting_key, setting_value) VALUES
     ('analytics_bucket_market_max_rows_per_run', '1000'),
     ('analytics_bucket_doctrine_rollup_max_rows_per_run', '500'),
     ('analytics_bucket_cache_ttl_seconds', '300'),
-    ('raw_order_snapshot_retention_days', '30'),
+    ('market_history_retention_raw_days', '30'),
+    ('market_history_retention_hourly_days', '90'),
+    ('market_history_retention_daily_days', '365'),
     ('market_compare_deviation_percent', '5'),
     ('market_compare_min_alliance_sell_volume', '50'),
     ('market_compare_min_alliance_sell_orders', '3'),

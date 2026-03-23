@@ -1495,7 +1495,9 @@ function db_time_series_refresh_market_aggregates(string $resolution = '1h', int
     $safeLimit = max(1, min(5000, $maxRowsPerRun));
     $datasetKey = db_time_series_dataset_key('market', $safeResolution);
     $cursorStart = db_sync_cursor_get($datasetKey) ?? '1970-01-01 00:00:00|0';
-    $batch = db_time_series_source_batch('market_order_snapshots_summary', 'observed_at', 'id', $cursorStart, $safeLimit);
+    $summaryTable = db_market_order_snapshots_summary_read_table();
+    $quotedSummaryTable = db_validate_identifier($summaryTable);
+    $batch = db_time_series_source_batch($summaryTable, 'observed_at', 'id', $cursorStart, $safeLimit);
 
     if ($batch === []) {
         return [
@@ -1527,7 +1529,8 @@ function db_time_series_refresh_market_aggregates(string $resolution = '1h', int
         $cursorEnd,
         $batch,
         $safeResolution,
-        $startedAt
+        $startedAt,
+        $quotedSummaryTable
     ): array {
         db_execute(
             "INSERT INTO {$stockTable} (
@@ -1551,7 +1554,7 @@ function db_time_series_refresh_market_aggregates(string $resolution = '1h', int
                 SUM(COALESCE(moss.sell_order_count, 0)) AS listing_count_sum,
                 ROUND(AVG(COALESCE(moss.total_sell_volume, 0))) AS local_stock_units,
                 ROUND(AVG(COALESCE(moss.sell_order_count, 0))) AS listing_count
-            FROM market_order_snapshots_summary moss
+            FROM {$quotedSummaryTable} moss
             WHERE moss.id IN ({$placeholders})
             GROUP BY {$bucketExpr}, moss.source_type, moss.source_id, moss.type_id
             ON DUPLICATE KEY UPDATE
@@ -1600,7 +1603,7 @@ function db_time_series_refresh_market_aggregates(string $resolution = '1h', int
                     WHEN SUM(COALESCE(moss.total_sell_volume, 0)) > 0 THEN SUM(COALESCE(moss.best_sell_price, 0) * COALESCE(moss.total_sell_volume, 0)) / SUM(COALESCE(moss.total_sell_volume, 0))
                     ELSE AVG(moss.best_sell_price)
                 END AS weighted_price
-            FROM market_order_snapshots_summary moss
+            FROM {$quotedSummaryTable} moss
             WHERE moss.id IN ({$placeholders})
             GROUP BY {$bucketExpr}, moss.source_type, moss.source_id, moss.type_id
             ON DUPLICATE KEY UPDATE
@@ -2287,9 +2290,8 @@ function db_market_orders_history_partition_boundary_value(DateTimeImmutable $mo
     return $monthStart->modify('+1 month')->format('Y-m-d');
 }
 
-function db_market_orders_history_partition_boundaries(string $table = 'market_orders_history_p'): array
+function db_monthly_partition_boundaries(string $table): array
 {
-    $safeTable = db_market_orders_history_validate_table($table);
     $rows = db_select(
         'SELECT partition_name, partition_description, partition_ordinal_position
 '
@@ -2302,7 +2304,7 @@ function db_market_orders_history_partition_boundaries(string $table = 'market_o
         . '  AND partition_name IS NOT NULL
 '
         . 'ORDER BY partition_ordinal_position ASC',
-        [$safeTable]
+        [$table]
     );
 
     $boundaries = [];
@@ -2318,6 +2320,13 @@ function db_market_orders_history_partition_boundaries(string $table = 'market_o
     }
 
     return $boundaries;
+}
+
+function db_market_orders_history_partition_boundaries(string $table = 'market_orders_history_p'): array
+{
+    $safeTable = db_market_orders_history_validate_table($table);
+
+    return db_monthly_partition_boundaries($safeTable);
 }
 
 
@@ -2351,6 +2360,127 @@ function db_market_orders_history_rows_with_observed_date(array $rows): array
 
         return $row;
     }, $rows));
+}
+
+function db_monthly_partition_names_to_drop(array $boundaries, string $cutoffDate): array
+{
+    $cutoffTimestamp = strtotime($cutoffDate);
+    if ($cutoffTimestamp === false) {
+        return [];
+    }
+
+    $cutoffMonthStart = gmdate('Y-m-01', $cutoffTimestamp);
+    $partitions = [];
+    foreach ($boundaries as $partition) {
+        $partitionName = trim((string) ($partition['partition_name'] ?? ''));
+        $boundaryExclusive = trim((string) ($partition['boundary_exclusive'] ?? ''));
+        if ($partitionName === '' || $boundaryExclusive === '' || !empty($partition['is_maxvalue'])) {
+            continue;
+        }
+
+        if ($boundaryExclusive <= $cutoffMonthStart) {
+            $partitions[] = $partitionName;
+        }
+    }
+
+    return $partitions;
+}
+
+function db_monthly_partition_frontier_bounds(string $cutoffDateTime): ?array
+{
+    $timestamp = strtotime($cutoffDateTime);
+    if ($timestamp === false) {
+        return null;
+    }
+
+    $monthStart = gmdate('Y-m-01', $timestamp);
+    $monthEndExclusive = gmdate('Y-m-01', strtotime($monthStart . ' +1 month'));
+
+    return [
+        'month_start' => $monthStart,
+        'month_end_exclusive' => $monthEndExclusive,
+    ];
+}
+
+function db_drop_table_partitions(string $table, array $partitionNames): array
+{
+    $safeNames = array_values(array_unique(array_filter(array_map(static function (mixed $partitionName): string {
+        $safeName = trim((string) $partitionName);
+        if ($safeName === '') {
+            return '';
+        }
+
+        return db_market_orders_history_validate_partition_name($safeName);
+    }, $partitionNames))));
+
+    if ($safeNames === []) {
+        return [];
+    }
+
+    db()->exec(sprintf(
+        'ALTER TABLE %s DROP PARTITION %s',
+        db_validate_identifier($table),
+        implode(', ', $safeNames)
+    ));
+    db_query_cache_clear();
+
+    return $safeNames;
+}
+
+function db_partition_frontier_prune_before_datetime(
+    string $table,
+    string $observedColumn,
+    string $partitionColumn,
+    string $cutoffDateTime,
+    int $limit = 50000
+): int {
+    $bounds = db_monthly_partition_frontier_bounds($cutoffDateTime);
+    if ($bounds === null) {
+        return 0;
+    }
+
+    $safeLimit = max(1, min(50000, $limit));
+
+    return db_execute(
+        sprintf(
+            'DELETE FROM %s WHERE %s >= ? AND %s < ? AND %s < ? LIMIT %d',
+            db_validate_identifier($table),
+            db_validate_identifier($partitionColumn),
+            db_validate_identifier($partitionColumn),
+            db_validate_identifier($observedColumn),
+            $safeLimit
+        ),
+        [
+            $bounds['month_start'],
+            $bounds['month_end_exclusive'],
+            $cutoffDateTime,
+        ]
+    )
+        ? (int) db()->query('SELECT ROW_COUNT()')->fetchColumn()
+        : 0;
+}
+
+function db_partitioned_table_retention_cleanup(
+    string $table,
+    string $observedColumn,
+    string $partitionColumn,
+    string $cutoffDateTime,
+    callable $boundariesLoader,
+    int $limit = 50000
+): array {
+    $droppedPartitions = db_drop_table_partitions(
+        $table,
+        db_monthly_partition_names_to_drop($boundariesLoader($table), $cutoffDateTime)
+    );
+    $frontierRowsDeleted = db_partition_frontier_prune_before_datetime($table, $observedColumn, $partitionColumn, $cutoffDateTime, $limit);
+
+    return [
+        'table' => $table,
+        'method' => 'partition_drop+frontier_delete',
+        'dropped_partitions' => $droppedPartitions,
+        'partitions_dropped' => count($droppedPartitions),
+        'rows_deleted' => $frontierRowsDeleted,
+    ];
 }
 
 function db_market_orders_history_partitioned_schema_ensure(int $futureMonths = 3): void
@@ -2568,6 +2698,366 @@ function db_market_orders_history_cutover_rollback_to_legacy(bool $resetReadMode
         'write_mode' => db_market_orders_history_cutover_mode('write'),
         'read_table' => db_market_orders_history_read_table(),
         'write_tables' => db_market_orders_history_write_tables(),
+    ];
+}
+
+function db_market_order_snapshots_summary_legacy_table(): string
+{
+    return 'market_order_snapshots_summary';
+}
+
+function db_market_order_snapshots_summary_partitioned_table(): string
+{
+    return 'market_order_snapshots_summary_p';
+}
+
+function db_market_order_snapshots_summary_known_tables(): array
+{
+    return [
+        db_market_order_snapshots_summary_legacy_table(),
+        db_market_order_snapshots_summary_partitioned_table(),
+    ];
+}
+
+function db_market_order_snapshots_summary_validate_table(string $table): string
+{
+    $safeTable = trim($table);
+    if (!in_array($safeTable, db_market_order_snapshots_summary_known_tables(), true)) {
+        throw new InvalidArgumentException('Unsupported market order snapshots summary table: ' . $table);
+    }
+
+    return $safeTable;
+}
+
+function db_market_order_snapshots_summary_cutover_setting_key(string $scope): string
+{
+    return match ($scope) {
+        'read' => 'market_order_snapshots_summary_read_mode',
+        'write' => 'market_order_snapshots_summary_write_mode',
+        default => throw new InvalidArgumentException('Unsupported market order snapshots summary cutover scope: ' . $scope),
+    };
+}
+
+function db_market_order_snapshots_summary_cutover_allowed_modes(string $scope): array
+{
+    return match ($scope) {
+        'read' => ['legacy', 'partitioned'],
+        'write' => ['legacy', 'dual', 'partitioned'],
+        default => throw new InvalidArgumentException('Unsupported market order snapshots summary cutover scope: ' . $scope),
+    };
+}
+
+function db_market_order_snapshots_summary_cutover_mode(string $scope): string
+{
+    $key = db_market_order_snapshots_summary_cutover_setting_key($scope);
+    $row = db_select_one('SELECT setting_value FROM app_settings WHERE setting_key = ? LIMIT 1', [$key]);
+    $mode = trim((string) ($row['setting_value'] ?? ''));
+    $allowedModes = db_market_order_snapshots_summary_cutover_allowed_modes($scope);
+
+    if (!in_array($mode, $allowedModes, true)) {
+        return 'legacy';
+    }
+
+    return $mode;
+}
+
+function db_market_order_snapshots_summary_set_cutover_mode(string $scope, string $mode): bool
+{
+    $safeMode = trim($mode);
+    $allowedModes = db_market_order_snapshots_summary_cutover_allowed_modes($scope);
+    if (!in_array($safeMode, $allowedModes, true)) {
+        throw new InvalidArgumentException(sprintf('Unsupported %s cutover mode: %s', $scope, $mode));
+    }
+
+    return db_execute(
+        'INSERT INTO app_settings (setting_key, setting_value) VALUES (?, ?)
+         ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value), updated_at = CURRENT_TIMESTAMP',
+        [db_market_order_snapshots_summary_cutover_setting_key($scope), $safeMode]
+    );
+}
+
+function db_market_order_snapshots_summary_read_table(): string
+{
+    return db_market_order_snapshots_summary_cutover_mode('read') === 'partitioned'
+        ? db_market_order_snapshots_summary_partitioned_table()
+        : db_market_order_snapshots_summary_legacy_table();
+}
+
+function db_market_order_snapshots_summary_write_tables(): array
+{
+    return match (db_market_order_snapshots_summary_cutover_mode('write')) {
+        'partitioned' => [db_market_order_snapshots_summary_partitioned_table()],
+        'dual' => [db_market_order_snapshots_summary_legacy_table(), db_market_order_snapshots_summary_partitioned_table()],
+        default => [db_market_order_snapshots_summary_legacy_table()],
+    };
+}
+
+function db_market_order_snapshots_summary_partitioned_table_sql(): string
+{
+    return "CREATE TABLE IF NOT EXISTS market_order_snapshots_summary_p (
+"
+        . "    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+"
+        . "    source_type ENUM('market_hub', 'alliance_structure') NOT NULL,
+"
+        . "    source_id BIGINT UNSIGNED NOT NULL,
+"
+        . "    type_id INT UNSIGNED NOT NULL,
+"
+        . "    observed_at DATETIME NOT NULL,
+"
+        . "    observed_date DATE NOT NULL,
+"
+        . "    best_sell_price DECIMAL(20, 2) DEFAULT NULL,
+"
+        . "    best_buy_price DECIMAL(20, 2) DEFAULT NULL,
+"
+        . "    total_buy_volume BIGINT UNSIGNED NOT NULL DEFAULT 0,
+"
+        . "    total_sell_volume BIGINT UNSIGNED NOT NULL DEFAULT 0,
+"
+        . "    total_volume BIGINT UNSIGNED NOT NULL DEFAULT 0,
+"
+        . "    buy_order_count INT UNSIGNED NOT NULL DEFAULT 0,
+"
+        . "    sell_order_count INT UNSIGNED NOT NULL DEFAULT 0,
+"
+        . "    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+"
+        . "    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+"
+        . "    PRIMARY KEY (id, observed_date),
+"
+        . "    UNIQUE KEY unique_market_order_snapshot_summary (source_type, source_id, type_id, observed_at, observed_date),
+"
+        . "    KEY idx_snapshot_summary_source_observed_type (source_type, source_id, observed_at, type_id),
+"
+        . "    KEY idx_snapshot_summary_source_type_observed (source_type, source_id, type_id, observed_at),
+"
+        . "    KEY idx_snapshot_summary_source_date_type (source_type, source_id, observed_date, type_id),
+"
+        . "    KEY idx_snapshot_summary_observed (observed_at)
+"
+        . ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+"
+        . "PARTITION BY RANGE COLUMNS(observed_date) (
+"
+        . "    PARTITION p_bootstrap VALUES LESS THAN ('2026-01-01'),
+"
+        . "    PARTITION p202601 VALUES LESS THAN ('2026-02-01'),
+"
+        . "    PARTITION p202602 VALUES LESS THAN ('2026-03-01'),
+"
+        . "    PARTITION p202603 VALUES LESS THAN ('2026-04-01'),
+"
+        . "    PARTITION p202604 VALUES LESS THAN ('2026-05-01'),
+"
+        . "    PARTITION p202605 VALUES LESS THAN ('2026-06-01'),
+"
+        . "    PARTITION pmax VALUES LESS THAN (MAXVALUE)
+"
+        . ")";
+}
+
+function db_market_order_snapshots_summary_partition_boundaries(string $table = 'market_order_snapshots_summary_p'): array
+{
+    $safeTable = db_market_order_snapshots_summary_validate_table($table);
+
+    return db_monthly_partition_boundaries($safeTable);
+}
+
+function db_market_order_snapshots_summary_partitioned_schema_ensure(int $futureMonths = 3): void
+{
+    static $ensured = false;
+
+    if ($ensured) {
+        return;
+    }
+
+    db_execute(db_market_order_snapshots_summary_partitioned_table_sql());
+    db_market_order_snapshots_summary_ensure_future_monthly_partitions($futureMonths, db_market_order_snapshots_summary_partitioned_table());
+
+    $ensured = true;
+}
+
+function db_market_order_snapshots_summary_ensure_future_monthly_partitions(int $futureMonths = 3, string $table = 'market_order_snapshots_summary_p'): array
+{
+    $safeTable = db_market_order_snapshots_summary_validate_table($table);
+    if ($safeTable !== db_market_order_snapshots_summary_partitioned_table()) {
+        return [];
+    }
+
+    db_execute(db_market_order_snapshots_summary_partitioned_table_sql());
+
+    $safeFutureMonths = max(1, min(24, $futureMonths));
+    $existing = db_market_order_snapshots_summary_partition_boundaries($safeTable);
+    $existingNames = array_map(static fn (array $row): string => (string) ($row['partition_name'] ?? ''), $existing);
+    if (!in_array('pmax', $existingNames, true)) {
+        throw new RuntimeException('Partitioned market order snapshots summary table is missing the pmax partition.');
+    }
+
+    $monthsToAdd = [];
+    $currentMonthStart = new DateTimeImmutable(gmdate('Y-m-01'));
+    for ($offset = 0; $offset <= $safeFutureMonths; $offset++) {
+        $monthStart = $currentMonthStart->modify(sprintf('+%d month', $offset));
+        $partitionName = db_market_orders_history_partition_name_for_month($monthStart);
+        if (in_array($partitionName, $existingNames, true)) {
+            continue;
+        }
+
+        $monthsToAdd[] = [
+            'partition_name' => $partitionName,
+            'boundary_exclusive' => db_market_orders_history_partition_boundary_value($monthStart),
+        ];
+    }
+
+    if ($monthsToAdd === []) {
+        return [];
+    }
+
+    $partitionSql = [];
+    foreach ($monthsToAdd as $partition) {
+        $partitionSql[] = sprintf(
+            "PARTITION %s VALUES LESS THAN ('%s')",
+            db_market_orders_history_validate_partition_name((string) $partition['partition_name']),
+            (string) $partition['boundary_exclusive']
+        );
+    }
+    $partitionSql[] = 'PARTITION pmax VALUES LESS THAN (MAXVALUE)';
+
+    db()->exec(sprintf(
+        'ALTER TABLE %s REORGANIZE PARTITION pmax INTO (%s)',
+        db_validate_identifier($safeTable),
+        implode(', ', $partitionSql)
+    ));
+    db_query_cache_clear();
+
+    return $monthsToAdd;
+}
+
+function db_market_order_snapshots_summary_backfill_window(
+    string $startDate,
+    string $endDate,
+    ?int $chunkSize = null,
+    ?string $sourceTable = null,
+    ?string $targetTable = null
+): int {
+    $safeStartDate = trim($startDate);
+    $safeEndDate = trim($endDate);
+    if ($safeStartDate === '' || $safeEndDate === '') {
+        return 0;
+    }
+
+    $source = db_market_order_snapshots_summary_validate_table($sourceTable ?? db_market_order_snapshots_summary_legacy_table());
+    $target = db_market_order_snapshots_summary_validate_table($targetTable ?? db_market_order_snapshots_summary_partitioned_table());
+    if ($source === $target) {
+        throw new InvalidArgumentException('Backfill source and target tables must differ.');
+    }
+
+    if ($target === db_market_order_snapshots_summary_partitioned_table()) {
+        db_market_order_snapshots_summary_partitioned_schema_ensure();
+        $startMonth = new DateTimeImmutable(substr($safeStartDate, 0, 7) . '-01');
+        $endMonth = new DateTimeImmutable(substr($safeEndDate, 0, 7) . '-01');
+        $monthsAhead = max(0, (((int) $endMonth->format('Y')) * 12 + (int) $endMonth->format('n')) - (((int) gmdate('Y')) * 12 + (int) gmdate('n')));
+        db_market_order_snapshots_summary_ensure_future_monthly_partitions($monthsAhead + 1, $target);
+    }
+
+    $baseColumns = [
+        'source_type',
+        'source_id',
+        'type_id',
+        'observed_at',
+        'best_sell_price',
+        'best_buy_price',
+        'total_buy_volume',
+        'total_sell_volume',
+        'total_volume',
+        'buy_order_count',
+        'sell_order_count',
+    ];
+    $safeChunkSize = max(100, min(10000, $chunkSize ?? db_incremental_chunk_size()));
+    $offset = 0;
+    $written = 0;
+    $quotedSource = db_validate_identifier($source);
+
+    do {
+        $rows = db_select(
+            sprintf(
+                'SELECT source_type, source_id, type_id, observed_at, best_sell_price, best_buy_price, total_buy_volume, total_sell_volume, total_volume, buy_order_count, sell_order_count
+                 FROM %s
+                 WHERE observed_date BETWEEN ? AND ?
+                 ORDER BY observed_at ASC, source_type ASC, source_id ASC, type_id ASC
+                 LIMIT %d OFFSET %d',
+                $quotedSource,
+                $safeChunkSize,
+                $offset
+            ),
+            [$safeStartDate, $safeEndDate]
+        );
+
+        if ($rows === []) {
+            break;
+        }
+
+        $targetColumns = $baseColumns;
+        if ($target === db_market_order_snapshots_summary_partitioned_table()) {
+            $targetColumns[] = 'observed_date';
+            $rows = db_market_orders_history_rows_with_observed_date($rows);
+        }
+
+        $written += db_bulk_insert_or_upsert(
+            $target,
+            $targetColumns,
+            $rows,
+            [
+                'best_sell_price',
+                'best_buy_price',
+                'total_buy_volume',
+                'total_sell_volume',
+                'total_volume',
+                'buy_order_count',
+                'sell_order_count',
+            ],
+            $safeChunkSize
+        );
+        $offset += $safeChunkSize;
+    } while (count($rows) === $safeChunkSize);
+
+    return $written;
+}
+
+function db_market_order_snapshots_summary_cutover_swap(string $readMode = 'partitioned', string $writeMode = 'dual'): array
+{
+    $safeReadMode = trim($readMode);
+    $safeWriteMode = trim($writeMode);
+
+    if ($safeReadMode === 'partitioned' || $safeWriteMode !== 'legacy') {
+        db_market_order_snapshots_summary_partitioned_schema_ensure();
+    }
+
+    db_market_order_snapshots_summary_set_cutover_mode('write', $safeWriteMode);
+    db_market_order_snapshots_summary_set_cutover_mode('read', $safeReadMode);
+
+    return [
+        'read_mode' => db_market_order_snapshots_summary_cutover_mode('read'),
+        'write_mode' => db_market_order_snapshots_summary_cutover_mode('write'),
+        'read_table' => db_market_order_snapshots_summary_read_table(),
+        'write_tables' => db_market_order_snapshots_summary_write_tables(),
+    ];
+}
+
+function db_market_order_snapshots_summary_cutover_rollback_to_legacy(bool $resetReadMode = true): array
+{
+    db_market_order_snapshots_summary_set_cutover_mode('write', 'legacy');
+    if ($resetReadMode) {
+        db_market_order_snapshots_summary_set_cutover_mode('read', 'legacy');
+    }
+
+    return [
+        'read_mode' => db_market_order_snapshots_summary_cutover_mode('read'),
+        'write_mode' => db_market_order_snapshots_summary_cutover_mode('write'),
+        'read_table' => db_market_order_snapshots_summary_read_table(),
+        'write_tables' => db_market_order_snapshots_summary_write_tables(),
     ];
 }
 
@@ -3377,14 +3867,11 @@ function db_market_snapshot_optimization_ensure(): void
         return;
     }
 
-    // Keep market_order_snapshots_summary on retention-only behavior for the
-    // immediate release. Older windows should move into the additive 1h/1d
-    // rollup tables, and only then should we reconsider partitioning if growth
-    // remains problematic after current-state + compact-summary reads absorb the
-    // hot operational traffic.
     db_ensure_table_index(db_market_orders_history_legacy_table(), 'idx_market_orders_history_observed_at', 'INDEX idx_market_orders_history_observed_at (observed_at)');
     db_market_orders_history_partitioned_schema_ensure();
+    db_market_order_snapshots_summary_partitioned_schema_ensure();
     db_ensure_table_index('market_order_snapshots_summary', 'idx_snapshot_summary_observed', 'INDEX idx_snapshot_summary_observed (observed_at)');
+    db_ensure_table_index(db_market_order_snapshots_summary_partitioned_table(), 'idx_snapshot_summary_observed', 'INDEX idx_snapshot_summary_observed (observed_at)');
     db_market_snapshot_rollups_ensure();
     db_market_order_current_projection_ensure();
 
@@ -3511,14 +3998,46 @@ function db_market_orders_history_prune_before(string $cutoffObservedAt): int
 {
     db_market_snapshot_optimization_ensure();
 
-    return db_prune_before_datetime(db_market_orders_history_read_table(), 'observed_at', $cutoffObservedAt);
+    $deleted = 0;
+    foreach (db_market_orders_history_known_tables() as $table) {
+        if ($table === db_market_orders_history_partitioned_table()) {
+            $deleted += (int) (db_partitioned_table_retention_cleanup(
+                $table,
+                'observed_at',
+                'observed_date',
+                $cutoffObservedAt,
+                'db_market_orders_history_partition_boundaries'
+            )['rows_deleted'] ?? 0);
+            continue;
+        }
+
+        $deleted += db_prune_before_datetime($table, 'observed_at', $cutoffObservedAt);
+    }
+
+    return $deleted;
 }
 
 function db_market_order_snapshots_summary_prune_before(string $cutoffObservedAt): int
 {
     db_market_snapshot_optimization_ensure();
 
-    return db_prune_before_datetime('market_order_snapshots_summary', 'observed_at', $cutoffObservedAt);
+    $deleted = 0;
+    foreach (db_market_order_snapshots_summary_known_tables() as $table) {
+        if ($table === db_market_order_snapshots_summary_partitioned_table()) {
+            $deleted += (int) (db_partitioned_table_retention_cleanup(
+                $table,
+                'observed_at',
+                'observed_date',
+                $cutoffObservedAt,
+                'db_market_order_snapshots_summary_partition_boundaries'
+            )['rows_deleted'] ?? 0);
+            continue;
+        }
+
+        $deleted += db_prune_before_datetime($table, 'observed_at', $cutoffObservedAt);
+    }
+
+    return $deleted;
 }
 
 function db_market_history_tier_cleanup_specs(): array
@@ -3527,7 +4046,9 @@ function db_market_history_tier_cleanup_specs(): array
     foreach (db_market_orders_history_known_tables() as $table) {
         $rawTables[] = ['table' => $table, 'column' => 'observed_at'];
     }
-    $rawTables[] = ['table' => 'market_order_snapshots_summary', 'column' => 'observed_at'];
+    foreach (db_market_order_snapshots_summary_known_tables() as $table) {
+        $rawTables[] = ['table' => $table, 'column' => 'observed_at'];
+    }
 
     return [
         'raw' => $rawTables,
@@ -3570,12 +4091,45 @@ function db_market_history_tier_retention_cleanup(int $limitPerTable = 5000): ar
 
         foreach ($tables as $spec) {
             $table = (string) $spec['table'];
-            $rowsDeleted = db_prune_before_datetime($table, (string) $spec['column'], $cutoff, $safeLimit);
+            $method = 'delete';
+            $droppedPartitions = [];
+            $rowsDeleted = 0;
+
+            if ($table === db_market_orders_history_partitioned_table()) {
+                $cleanup = db_partitioned_table_retention_cleanup(
+                    $table,
+                    (string) $spec['column'],
+                    'observed_date',
+                    $cutoff,
+                    'db_market_orders_history_partition_boundaries',
+                    $safeLimit
+                );
+                $rowsDeleted = (int) ($cleanup['rows_deleted'] ?? 0);
+                $method = (string) ($cleanup['method'] ?? $method);
+                $droppedPartitions = array_values((array) ($cleanup['dropped_partitions'] ?? []));
+            } elseif ($table === db_market_order_snapshots_summary_partitioned_table()) {
+                $cleanup = db_partitioned_table_retention_cleanup(
+                    $table,
+                    (string) $spec['column'],
+                    'observed_date',
+                    $cutoff,
+                    'db_market_order_snapshots_summary_partition_boundaries',
+                    $safeLimit
+                );
+                $rowsDeleted = (int) ($cleanup['rows_deleted'] ?? 0);
+                $method = (string) ($cleanup['method'] ?? $method);
+                $droppedPartitions = array_values((array) ($cleanup['dropped_partitions'] ?? []));
+            } else {
+                $rowsDeleted = db_prune_before_datetime($table, (string) $spec['column'], $cutoff, $safeLimit);
+            }
+
             $deleted[$table] = [
                 'tier' => $tier,
                 'rows_deleted' => $rowsDeleted,
                 'cutoff' => $cutoff,
                 'retention_days' => $retentionDays,
+                'method' => $method,
+                'dropped_partitions' => $droppedPartitions,
             ];
             $rowsWritten += $rowsDeleted;
         }
@@ -3584,6 +4138,109 @@ function db_market_history_tier_retention_cleanup(int $limitPerTable = 5000): ar
     return [
         'rows_written' => $rowsWritten,
         'deleted' => $deleted,
+    ];
+}
+
+function db_table_estimated_rows(string $table): ?int
+{
+    $row = db_select_one(
+        'SELECT table_rows
+         FROM information_schema.tables
+         WHERE table_schema = DATABASE()
+           AND table_name = ?
+         LIMIT 1',
+        [$table]
+    );
+
+    if ($row === null || !isset($row['table_rows'])) {
+        return null;
+    }
+
+    return max(0, (int) $row['table_rows']);
+}
+
+function db_market_history_partition_table_diagnostic(
+    string $logicalTable,
+    string $partitionedTable,
+    string $retentionTier,
+    string $readMode,
+    string $writeMode,
+    array $partitions,
+    int $futureMonths = 3
+): array {
+    $retentionDays = db_market_history_retention_days($retentionTier);
+    $cutoff = db_market_history_tier_cutoff($retentionTier);
+    $oldestPartition = $partitions[0] ?? null;
+    $nonMaxPartitions = array_values(array_filter($partitions, static fn (array $partition): bool => empty($partition['is_maxvalue'])));
+    $latestFinitePartition = $nonMaxPartitions === [] ? null : $nonMaxPartitions[array_key_last($nonMaxPartitions)];
+    $currentMonthStart = new DateTimeImmutable(gmdate('Y-m-01'));
+    $missingFuturePartitions = [];
+
+    $partitionNames = array_map(static fn (array $partition): string => (string) ($partition['partition_name'] ?? ''), $partitions);
+    for ($offset = 0; $offset <= max(1, min(24, $futureMonths)); $offset++) {
+        $expected = db_market_orders_history_partition_name_for_month($currentMonthStart->modify(sprintf('+%d month', $offset)));
+        if (!in_array($expected, $partitionNames, true)) {
+            $missingFuturePartitions[] = $expected;
+        }
+    }
+
+    return [
+        'logical_table' => $logicalTable,
+        'partitioned_table' => $partitionedTable,
+        'read_mode' => $readMode,
+        'write_mode' => $writeMode,
+        'retention_tier' => $retentionTier,
+        'retention_days' => $retentionDays,
+        'retention_cutoff' => $cutoff,
+        'partition_count' => count($partitions),
+        'oldest_partition' => $oldestPartition,
+        'newest_partition' => $latestFinitePartition,
+        'future_partitions_exist' => $missingFuturePartitions === [],
+        'missing_future_partitions' => $missingFuturePartitions,
+        'partitions' => $partitions,
+        'estimated_rows' => db_table_estimated_rows($partitionedTable),
+    ];
+}
+
+function db_market_history_partition_diagnostics(): array
+{
+    db_market_snapshot_optimization_ensure();
+
+    $partitionedTables = [
+        db_market_history_partition_table_diagnostic(
+            db_market_orders_history_legacy_table(),
+            db_market_orders_history_partitioned_table(),
+            'raw',
+            db_market_orders_history_cutover_mode('read'),
+            db_market_orders_history_cutover_mode('write'),
+            db_market_orders_history_partition_boundaries(db_market_orders_history_partitioned_table())
+        ),
+        db_market_history_partition_table_diagnostic(
+            db_market_order_snapshots_summary_legacy_table(),
+            db_market_order_snapshots_summary_partitioned_table(),
+            'raw',
+            db_market_order_snapshots_summary_cutover_mode('read'),
+            db_market_order_snapshots_summary_cutover_mode('write'),
+            db_market_order_snapshots_summary_partition_boundaries(db_market_order_snapshots_summary_partitioned_table())
+        ),
+    ];
+
+    return [
+        'partitioned_tables' => $partitionedTables,
+        'evaluation_tables' => [
+            [
+                'table' => 'market_history_daily',
+                'estimated_rows' => db_table_estimated_rows('market_history_daily'),
+                'recommended_action' => 'keep_unpartitioned',
+                'reason' => 'Daily rollup volume remains modest versus the raw snapshot tier, so partitioning adds more complexity than value right now.',
+            ],
+            [
+                'table' => 'killmail_events',
+                'estimated_rows' => db_table_estimated_rows('killmail_events'),
+                'recommended_action' => 'keep_unpartitioned',
+                'reason' => 'Current table size is small and retention is not driven by short-lived raw windows.',
+            ],
+        ],
     ];
 }
 
@@ -3737,9 +4394,42 @@ function db_market_order_snapshots_summary_bulk_upsert(array $summaryRows, ?int 
         $normalizedRows[] = $normalized;
     }
 
-    $written = db_bulk_insert_or_upsert(
-        'market_order_snapshots_summary',
-        [
+    if ($normalizedRows === []) {
+        return 0;
+    }
+
+    $writeTables = db_market_order_snapshots_summary_write_tables();
+    if (in_array(db_market_order_snapshots_summary_partitioned_table(), $writeTables, true)) {
+        db_market_order_snapshots_summary_partitioned_schema_ensure();
+        $maxObservedAt = '';
+        foreach ($normalizedRows as $row) {
+            $observedAt = (string) ($row['observed_at'] ?? '');
+            if ($observedAt !== '' && strcmp($observedAt, $maxObservedAt) > 0) {
+                $maxObservedAt = $observedAt;
+            }
+        }
+        if ($maxObservedAt !== '') {
+            $maxTimestamp = strtotime($maxObservedAt);
+            if ($maxTimestamp !== false) {
+                $monthsAhead = max(
+                    0,
+                    (((int) gmdate('Y', $maxTimestamp)) * 12 + (int) gmdate('n', $maxTimestamp))
+                    - (((int) gmdate('Y')) * 12 + (int) gmdate('n'))
+                );
+                db_market_order_snapshots_summary_ensure_future_monthly_partitions(
+                    $monthsAhead + 1,
+                    db_market_order_snapshots_summary_partitioned_table()
+                );
+            }
+        }
+    }
+
+    $written = 0;
+    foreach ($writeTables as $table) {
+        $rowsForTable = $table === db_market_order_snapshots_summary_partitioned_table()
+            ? db_market_orders_history_rows_with_observed_date($normalizedRows)
+            : $normalizedRows;
+        $columns = [
             'source_type',
             'source_id',
             'type_id',
@@ -3751,19 +4441,27 @@ function db_market_order_snapshots_summary_bulk_upsert(array $summaryRows, ?int 
             'total_volume',
             'buy_order_count',
             'sell_order_count',
-        ],
-        $normalizedRows,
-        [
-            'best_sell_price',
-            'best_buy_price',
-            'total_buy_volume',
-            'total_sell_volume',
-            'total_volume',
-            'buy_order_count',
-            'sell_order_count',
-        ],
-        $chunkSize
-    );
+        ];
+        if ($table === db_market_order_snapshots_summary_partitioned_table()) {
+            $columns[] = 'observed_date';
+        }
+
+        $written += db_bulk_insert_or_upsert(
+            $table,
+            $columns,
+            $rowsForTable,
+            [
+                'best_sell_price',
+                'best_buy_price',
+                'total_buy_volume',
+                'total_sell_volume',
+                'total_volume',
+                'buy_order_count',
+                'sell_order_count',
+            ],
+            $chunkSize
+        );
+    }
 
     db_market_order_current_projection_refresh_snapshots($normalizedRows, $chunkSize);
 
@@ -3893,6 +4591,7 @@ function db_market_orders_snapshot_metrics_window_ensure_summary(string $sourceT
         ];
     }
 
+    $summaryTable = db_validate_identifier(db_market_order_snapshots_summary_read_table());
     $summaryRows = db_select_cached(
         "SELECT
             source_type,
@@ -3906,7 +4605,7 @@ function db_market_orders_snapshot_metrics_window_ensure_summary(string $sourceT
             total_volume,
             buy_order_count,
             sell_order_count
-         FROM market_order_snapshots_summary
+         FROM {$summaryTable}
          WHERE source_type = ?
            AND source_id = ?
            AND observed_at >= ?
@@ -4754,6 +5453,7 @@ function db_market_orders_current_source_aggregates(string $sourceType, int $sou
     // Operational pages should prefer current-state projections first, summary
     // rows second, and raw current snapshots only as a backfill/fallback path
     // while the compact projections are still materializing.
+    $summaryTable = db_validate_identifier(db_market_order_snapshots_summary_read_table());
     $rows = [];
     if ($latestSummaryObservedAt !== '') {
         $rows = db_select_cached(
@@ -4767,7 +5467,7 @@ function db_market_orders_current_source_aggregates(string $sourceType, int $sou
                 moss.sell_order_count,
                 moss.buy_order_count,
                 moss.observed_at AS last_observed_at
-             FROM market_order_snapshots_summary moss
+             FROM {$summaryTable} moss
              LEFT JOIN ref_item_types rit ON rit.type_id = moss.type_id
              WHERE moss.source_type = ?
                AND moss.source_id = ?
@@ -4836,13 +5536,13 @@ function db_market_orders_current_source_aggregates(string $sourceType, int $sou
             moss.sell_order_count,
             moss.buy_order_count,
             moss.observed_at AS last_observed_at
-         FROM market_order_snapshots_summary moss
+         FROM {$summaryTable} moss
          LEFT JOIN ref_item_types rit ON rit.type_id = moss.type_id
          WHERE moss.source_type = ?
            AND moss.source_id = ?
            AND moss.observed_at = (
                 SELECT MAX(summary_latest.observed_at)
-                FROM market_order_snapshots_summary summary_latest
+                FROM {$summaryTable} summary_latest
                 WHERE summary_latest.source_type = ?
                   AND summary_latest.source_id = ?
            ){$typeFilterSql}
