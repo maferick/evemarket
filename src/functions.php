@@ -11289,11 +11289,38 @@ function scheduler_python_job_runner_script_path(): string
     return dirname(__DIR__) . '/bin/python_job_runner.py';
 }
 
-function scheduler_python_binary(): string
+function scheduler_python_binary_candidates(): array
 {
+    $repoRoot = dirname(__DIR__);
+    $candidates = [];
+
     foreach (['SUPPLYCORE_PYTHON_BINARY', 'ORCHESTRATOR_PYTHON_BINARY', 'PYTHON_BINARY'] as $envKey) {
         $candidate = trim((string) getenv($envKey));
         if ($candidate !== '') {
+            $candidates[] = $candidate;
+        }
+    }
+
+    foreach ([
+        $repoRoot . '/.venv-orchestrator/bin/python',
+        $repoRoot . '/.venv/bin/python',
+        $repoRoot . '/venv/bin/python',
+        'python3',
+    ] as $candidate) {
+        $candidates[] = $candidate;
+    }
+
+    return array_values(array_unique($candidates));
+}
+
+function scheduler_python_binary(): string
+{
+    foreach (scheduler_python_binary_candidates() as $candidate) {
+        if ($candidate === 'python3') {
+            return $candidate;
+        }
+
+        if (is_file($candidate) && is_executable($candidate)) {
             return $candidate;
         }
     }

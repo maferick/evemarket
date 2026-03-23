@@ -392,6 +392,8 @@ pip install ./python
 
 The Python worker package now installs `PyMySQL` for lightweight MySQL access, including server-side streaming cursors for large scheduler jobs.
 
+CLI wrappers such as `php bin/rebuild_data_model.php` now automatically prefer `/var/www/SupplyCore/.venv-orchestrator/bin/python` when that virtual environment exists, then fall back to `.venv`, `venv`, and finally `python3`. You can still override the interpreter explicitly with `SUPPLYCORE_PYTHON_BINARY`, `ORCHESTRATOR_PYTHON_BINARY`, or `PYTHON_BINARY`.
+
 Validation:
 
 ```bash
