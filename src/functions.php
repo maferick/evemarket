@@ -6030,7 +6030,16 @@ function sync_schedule_settings_view_model(): array
     $healthSummary['pressure'] = scheduler_pressure_label($healthSummary);
     $resourceWarnings = scheduler_console_resource_warnings($allOperationalJobs, $healthSummary, $daemonState);
     $pipelineHealth = scheduler_console_pipeline_health($allOperationalJobs, $pipelineSettings);
+    $runtimeDatasetCards = supplycore_settings_runtime_dataset_cards();
+    $datasetFailures = array_values(array_filter($runtimeDatasetCards, static fn (array $card): bool => !empty($card['show_latest_failure'])));
     $systemStatus = scheduler_console_system_status($healthSummary, $resourceWarnings, $allIssues);
+    if ($datasetFailures !== []) {
+        $systemStatus = [
+            'label' => 'Needs attention',
+            'status' => 'degraded',
+            'reason' => 'One or more user-facing datasets most recently failed to refresh.',
+        ];
+    }
     $activeProfilingRun = scheduler_profiling_active_run();
     $profilingRuns = scheduler_profiling_latest_runs();
     $profilingPreviewRun = $activeProfilingRun;
@@ -6064,6 +6073,7 @@ function sync_schedule_settings_view_model(): array
         'active_issue_count' => count($allIssues),
         'resource_warnings' => $resourceWarnings,
         'pipeline_health' => $pipelineHealth,
+        'runtime_dataset_cards' => $runtimeDatasetCards,
         'profiling_active_run' => $activeProfilingRun,
         'profiling_runs' => $profilingRuns,
         'profiling_preview_run' => $profilingPreviewRun,
@@ -7864,6 +7874,317 @@ function sync_status_for_dataset_keys(array $datasetKeys): array
             'recent_rows_written' => 0,
         ];
     }
+}
+
+function supplycore_latest_run_failure_message(array $runs): ?string
+{
+    $latestRun = is_array($runs[0] ?? null) ? $runs[0] : null;
+    if (!is_array($latestRun) || !supplycore_status_is_failure((string) ($latestRun['run_status'] ?? ''))) {
+        return null;
+    }
+
+    $message = trim((string) ($latestRun['error_message'] ?? ''));
+
+    return $message !== '' ? $message : null;
+}
+
+function supplycore_status_is_failure(string $status): bool
+{
+    $normalized = strtolower(trim($status));
+
+    return in_array($normalized, ['failed', 'failure', 'error', 'timeout', 'timed_out'], true);
+}
+
+function supplycore_freshness_bucket(?int $ageSeconds, int $freshSeconds, int $delayedSeconds, bool $runningNow = false): string
+{
+    if ($runningNow) {
+        return 'updating';
+    }
+
+    if ($ageSeconds === null) {
+        return 'stale';
+    }
+
+    if ($ageSeconds <= max(60, $freshSeconds)) {
+        return 'fresh';
+    }
+
+    if ($ageSeconds <= max($freshSeconds, $delayedSeconds)) {
+        return 'delayed';
+    }
+
+    return 'stale';
+}
+
+function supplycore_dataset_runtime_status_from_sync(array $spec): array
+{
+    $datasetKeys = array_values(array_filter(array_map(
+        static fn (mixed $value): string => trim((string) $value),
+        (array) ($spec['dataset_keys'] ?? [])
+    ), static fn (string $value): bool => $value !== ''));
+    $status = sync_status_for_dataset_keys($datasetKeys);
+    $states = array_values((array) ($status['states'] ?? []));
+    $runs = array_values((array) ($status['runs'] ?? []));
+    $latestRun = is_array($runs[0] ?? null) ? $runs[0] : null;
+    $lastSuccessAt = isset($status['last_success_at']) ? (string) $status['last_success_at'] : null;
+    $lastSuccessAt = is_string($lastSuccessAt) && trim($lastSuccessAt) !== '' ? $lastSuccessAt : null;
+    $lastSuccessTimestamp = $lastSuccessAt !== null ? (strtotime($lastSuccessAt) ?: null) : null;
+    $ageSeconds = $lastSuccessTimestamp !== null ? max(0, time() - $lastSuccessTimestamp) : null;
+    $runningNow = false;
+
+    foreach ($states as $state) {
+        if ((string) ($state['status'] ?? '') === 'running') {
+            $runningNow = true;
+            break;
+        }
+    }
+
+    $freshSeconds = max(60, (int) ($spec['fresh_seconds'] ?? 900));
+    $delayedSeconds = max($freshSeconds, (int) ($spec['delayed_seconds'] ?? ($freshSeconds * 3)));
+    $freshnessState = supplycore_freshness_bucket($ageSeconds, $freshSeconds, $delayedSeconds, $runningNow);
+    $latestFailureMessage = supplycore_latest_run_failure_message($runs);
+    $latestRunStatus = is_array($latestRun) ? (string) ($latestRun['run_status'] ?? '') : '';
+
+    if (supplycore_status_is_failure($latestRunStatus)) {
+        $freshnessState = 'failed';
+    }
+
+    return [
+        'key' => (string) ($spec['key'] ?? ($datasetKeys[0] ?? 'dataset')),
+        'label' => (string) ($spec['label'] ?? 'Dataset'),
+        'source' => 'sync_state',
+        'dataset_keys' => $datasetKeys,
+        'last_success_at_raw' => $lastSuccessAt,
+        'last_success_at' => supplycore_format_datetime($lastSuccessAt),
+        'last_success_relative' => supplycore_relative_datetime($lastSuccessAt),
+        'freshness_reference_at_raw' => $lastSuccessAt,
+        'freshness_state' => $freshnessState,
+        'freshness_label' => supplycore_operational_status_view_model($freshnessState)['label'],
+        'freshness_tone' => supplycore_operational_status_view_model($freshnessState)['tone'],
+        'age_seconds' => $ageSeconds,
+        'running_now' => $runningNow,
+        'latest_run_status' => $latestRunStatus,
+        'latest_failure_message' => $latestFailureMessage,
+        'show_latest_failure' => $latestFailureMessage !== null,
+        'recent_rows_written' => (int) ($status['recent_rows_written'] ?? 0),
+    ];
+}
+
+function supplycore_dataset_runtime_status_from_snapshot(array $spec): array
+{
+    $snapshotKey = trim((string) ($spec['snapshot_key'] ?? ''));
+    $jobKey = trim((string) ($spec['job_key'] ?? ''));
+    $meta = $snapshotKey !== '' ? supplycore_snapshot_freshness($snapshotKey) : [];
+    $computedAt = trim((string) ($meta['computed_at'] ?? ''));
+    $computedAt = $computedAt !== '' ? $computedAt : null;
+    $runningNow = (string) ($meta['status'] ?? '') === 'updating';
+    $freshSeconds = max(60, (int) ($meta['refresh_interval_seconds'] ?? ($spec['fresh_seconds'] ?? 900)));
+    $delayedSeconds = max($freshSeconds, (int) ($meta['stale_after_seconds'] ?? ($spec['delayed_seconds'] ?? ($freshSeconds * 3))));
+    $ageSeconds = isset($meta['age_seconds']) ? (int) $meta['age_seconds'] : null;
+    $freshnessState = supplycore_freshness_bucket($ageSeconds, $freshSeconds, $delayedSeconds, $runningNow);
+    $jobStatus = $jobKey !== '' ? (db_scheduler_job_current_status_fetch_map([$jobKey])[$jobKey] ?? []) : [];
+    $latestStatus = (string) ($jobStatus['latest_status'] ?? '');
+    $latestFailureMessage = supplycore_status_is_failure($latestStatus)
+        ? (trim((string) ($jobStatus['last_failure_message'] ?? '')) ?: null)
+        : null;
+
+    if (supplycore_status_is_failure($latestStatus)) {
+        $freshnessState = 'failed';
+    }
+
+    return [
+        'key' => (string) ($spec['key'] ?? ($snapshotKey !== '' ? $snapshotKey : 'snapshot')),
+        'label' => (string) ($spec['label'] ?? 'Dataset'),
+        'source' => 'snapshot',
+        'snapshot_key' => $snapshotKey,
+        'job_key' => $jobKey !== '' ? $jobKey : null,
+        'last_success_at_raw' => $computedAt,
+        'last_success_at' => supplycore_format_datetime($computedAt),
+        'last_success_relative' => supplycore_relative_datetime($computedAt),
+        'freshness_reference_at_raw' => $computedAt,
+        'freshness_state' => $freshnessState,
+        'freshness_label' => supplycore_operational_status_view_model($freshnessState)['label'],
+        'freshness_tone' => supplycore_operational_status_view_model($freshnessState)['tone'],
+        'age_seconds' => $ageSeconds,
+        'running_now' => $runningNow,
+        'latest_run_status' => $latestStatus,
+        'latest_failure_message' => $latestFailureMessage,
+        'show_latest_failure' => $latestFailureMessage !== null,
+    ];
+}
+
+function supplycore_dataset_runtime_status_from_killmail(array $spec = []): array
+{
+    $status = db_killmail_ingestion_status();
+    $state = is_array($status['state'] ?? null) ? $status['state'] : [];
+    $latestRun = is_array($status['latest_run'] ?? null) ? $status['latest_run'] : [];
+    $workerStatus = zkill_worker_runtime_status();
+    $lastSuccessAt = isset($state['last_success_at']) ? (string) $state['last_success_at'] : null;
+    $lastSuccessAt = is_string($lastSuccessAt) && trim($lastSuccessAt) !== '' ? $lastSuccessAt : null;
+    $lastSuccessTimestamp = $lastSuccessAt !== null ? (strtotime($lastSuccessAt) ?: null) : null;
+    $ageSeconds = $lastSuccessTimestamp !== null ? max(0, time() - $lastSuccessTimestamp) : null;
+    $runningNow = in_array((string) ($workerStatus['status'] ?? ''), ['running', 'success'], true)
+        && isset($workerStatus['age_seconds'])
+        && (int) $workerStatus['age_seconds'] <= 120;
+    $freshSeconds = max(60, (int) ($spec['fresh_seconds'] ?? 900));
+    $delayedSeconds = max($freshSeconds, (int) ($spec['delayed_seconds'] ?? 2700));
+    $latestRunStatus = (string) ($latestRun['run_status'] ?? ($state['status'] ?? ''));
+    $latestFailureMessage = supplycore_status_is_failure($latestRunStatus)
+        ? (trim((string) (($latestRun['error_message'] ?? $state['last_error_message'] ?? ''))) ?: null)
+        : null;
+    $freshnessState = supplycore_freshness_bucket($ageSeconds, $freshSeconds, $delayedSeconds, $runningNow);
+
+    if (supplycore_status_is_failure($latestRunStatus)) {
+        $freshnessState = 'failed';
+    }
+
+    return [
+        'key' => (string) ($spec['key'] ?? 'killmail.r2z2.stream'),
+        'label' => (string) ($spec['label'] ?? 'Killmail stream'),
+        'source' => 'killmail_worker',
+        'dataset_keys' => [killmail_sync_dataset_key()],
+        'last_success_at_raw' => $lastSuccessAt,
+        'last_success_at' => killmail_format_datetime($lastSuccessAt),
+        'last_success_relative' => killmail_relative_datetime($lastSuccessAt),
+        'freshness_reference_at_raw' => $lastSuccessAt,
+        'freshness_state' => $freshnessState,
+        'freshness_label' => supplycore_operational_status_view_model($freshnessState)['label'],
+        'freshness_tone' => supplycore_operational_status_view_model($freshnessState)['tone'],
+        'age_seconds' => $ageSeconds,
+        'running_now' => $runningNow,
+        'latest_run_status' => $latestRunStatus,
+        'latest_failure_message' => $latestFailureMessage,
+        'show_latest_failure' => $latestFailureMessage !== null,
+        'tracked_alliance_count' => (int) ($status['tracked_alliance_count'] ?? 0),
+        'tracked_corporation_count' => (int) ($status['tracked_corporation_count'] ?? 0),
+        'worker_status' => $workerStatus,
+        'sync_state' => $state,
+        'latest_run' => $latestRun,
+    ];
+}
+
+function supplycore_dataset_runtime_status(array $spec): array
+{
+    $source = trim((string) ($spec['source'] ?? 'sync'));
+
+    return match ($source) {
+        'snapshot' => supplycore_dataset_runtime_status_from_snapshot($spec),
+        'killmail' => supplycore_dataset_runtime_status_from_killmail($spec),
+        default => supplycore_dataset_runtime_status_from_sync($spec),
+    };
+}
+
+function supplycore_settings_runtime_datasets(): array
+{
+    $marketHubRef = market_hub_setting_reference();
+    $allianceStructureId = configured_alliance_structure_id();
+
+    return array_values(array_filter([
+        $allianceStructureId !== null ? [
+            'key' => 'alliance_market_orders',
+            'label' => 'Alliance market orders',
+            'source' => 'sync',
+            'dataset_keys' => [sync_dataset_key_alliance_structure_orders_current($allianceStructureId)],
+            'fresh_seconds' => 15 * 60,
+            'delayed_seconds' => 45 * 60,
+        ] : null,
+        $marketHubRef !== '' ? [
+            'key' => 'market_hub_orders',
+            'label' => 'Reference hub orders',
+            'source' => 'sync',
+            'dataset_keys' => [sync_dataset_key_market_hub_current_orders($marketHubRef)],
+            'fresh_seconds' => 15 * 60,
+            'delayed_seconds' => 45 * 60,
+        ] : null,
+        [
+            'key' => 'market_comparison',
+            'label' => 'Market comparison summary',
+            'source' => 'snapshot',
+            'snapshot_key' => market_comparison_snapshot_key(),
+            'job_key' => 'market_comparison_summary_sync',
+        ],
+        [
+            'key' => 'dashboard_summary',
+            'label' => 'Dashboard summary',
+            'source' => 'snapshot',
+            'snapshot_key' => dashboard_snapshot_key(),
+            'job_key' => 'dashboard_summary_sync',
+        ],
+        [
+            'key' => 'doctrine_intelligence',
+            'label' => 'Doctrine intelligence',
+            'source' => 'snapshot',
+            'snapshot_key' => doctrine_fit_snapshot_key(),
+            'job_key' => 'doctrine_intelligence_sync',
+        ],
+        [
+            'key' => 'activity_priority',
+            'label' => 'Activity priority summary',
+            'source' => 'snapshot',
+            'snapshot_key' => activity_priority_snapshot_key(),
+            'job_key' => 'activity_priority_summary_sync',
+        ],
+        [
+            'key' => 'loss_demand',
+            'label' => 'Loss demand summary',
+            'source' => 'snapshot',
+            'snapshot_key' => loss_demand_snapshot_key(),
+            'job_key' => 'loss_demand_summary_sync',
+        ],
+        [
+            'key' => 'killmail_stream',
+            'label' => 'Killmail stream',
+            'source' => 'killmail',
+            'fresh_seconds' => 15 * 60,
+            'delayed_seconds' => 45 * 60,
+        ],
+        $marketHubRef !== '' ? [
+            'key' => 'market_hub_local_history',
+            'label' => 'Market hub local history',
+            'source' => 'sync',
+            'dataset_keys' => [sync_dataset_key_market_hub_local_history_daily($marketHubRef)],
+            'fresh_seconds' => 6 * 3600,
+            'delayed_seconds' => 24 * 3600,
+        ] : null,
+    ], static fn (?array $spec): bool => is_array($spec)));
+}
+
+function supplycore_settings_runtime_dataset_cards(): array
+{
+    $cards = [];
+
+    foreach (supplycore_settings_runtime_datasets() as $spec) {
+        try {
+            $cards[] = supplycore_dataset_runtime_status($spec);
+        } catch (Throwable) {
+            $cards[] = [
+                'key' => (string) ($spec['key'] ?? 'dataset'),
+                'label' => (string) ($spec['label'] ?? 'Dataset'),
+                'source' => (string) ($spec['source'] ?? 'sync'),
+                'last_success_at_raw' => null,
+                'last_success_at' => 'Unavailable',
+                'last_success_relative' => 'Never',
+                'freshness_state' => 'stale',
+                'freshness_label' => 'Stale',
+                'freshness_tone' => supplycore_operational_status_view_model('stale')['tone'],
+                'age_seconds' => null,
+                'running_now' => false,
+                'latest_run_status' => '',
+                'latest_failure_message' => null,
+                'show_latest_failure' => false,
+            ];
+        }
+    }
+
+    usort($cards, static function (array $a, array $b): int {
+        $priority = ['failed' => 0, 'stale' => 1, 'delayed' => 2, 'updating' => 3, 'fresh' => 4];
+        $left = $priority[(string) ($a['freshness_state'] ?? 'stale')] ?? 5;
+        $right = $priority[(string) ($b['freshness_state'] ?? 'stale')] ?? 5;
+
+        return $left <=> $right ?: strcmp((string) ($a['label'] ?? ''), (string) ($b['label'] ?? ''));
+    });
+
+    return $cards;
 }
 
 function dashboard_sync_health_panel(array $dataset): array

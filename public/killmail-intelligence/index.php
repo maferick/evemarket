@@ -13,16 +13,39 @@ $filters = $data['filters'] ?? [];
 $pagination = $data['pagination'] ?? [];
 $error = $data['error'] ?? null;
 $emptyMessage = (string) ($data['empty_message'] ?? 'No killmails available yet.');
-$lastSyncAt = trim((string) ($status['last_success_at_raw'] ?? ''));
-$freshnessReferenceAt = trim((string) ($status['freshness_reference_at_raw'] ?? $lastSyncAt));
+try {
+    $runtimeCard = supplycore_dataset_runtime_status([
+        'key' => 'killmail.r2z2.stream',
+        'label' => 'Killmail stream',
+        'source' => 'killmail',
+        'fresh_seconds' => 15 * 60,
+        'delayed_seconds' => 45 * 60,
+    ]);
+} catch (Throwable) {
+    $runtimeCard = [
+        'key' => 'killmail.r2z2.stream',
+        'label' => 'Killmail stream',
+        'freshness_state' => 'stale',
+        'freshness_label' => 'Stale',
+        'freshness_tone' => supplycore_operational_status_view_model('stale')['tone'],
+        'last_success_at_raw' => null,
+        'last_success_at' => 'Unavailable',
+        'last_success_relative' => 'Never',
+        'show_latest_failure' => false,
+        'latest_failure_message' => null,
+        'tracked_alliance_count' => 0,
+        'tracked_corporation_count' => 0,
+        'running_now' => false,
+    ];
+}
+$lastSyncAt = trim((string) ($runtimeCard['last_success_at_raw'] ?? ($status['last_success_at_raw'] ?? '')));
+$freshnessReferenceAt = trim((string) ($runtimeCard['freshness_reference_at_raw'] ?? $lastSyncAt));
 $lastSyncTimestamp = $freshnessReferenceAt !== '' ? (strtotime($freshnessReferenceAt) ?: null) : null;
 $lastSyncAgeSeconds = $lastSyncTimestamp !== null ? max(0, time() - $lastSyncTimestamp) : null;
 $pageFreshness = supplycore_page_freshness_view_model([
     'computed_at' => $freshnessReferenceAt !== '' ? $freshnessReferenceAt : null,
-    'freshness_state' => $lastSyncAgeSeconds === null
-        ? 'stale'
-        : ($lastSyncAgeSeconds <= 15 * 60 ? 'fresh' : ($lastSyncAgeSeconds <= 45 * 60 ? 'updating' : 'stale')),
-    'freshness_label' => $lastSyncAt === '' ? 'Awaiting sync' : 'Killmail sync',
+    'freshness_state' => (string) ($runtimeCard['freshness_state'] ?? ($lastSyncAgeSeconds === null ? 'stale' : ($lastSyncAgeSeconds <= 15 * 60 ? 'fresh' : 'stale'))),
+    'freshness_label' => (string) ($runtimeCard['freshness_label'] ?? ($lastSyncAt === '' ? 'Awaiting sync' : 'Killmail sync')),
 ]);
 $liveRefreshConfig = supplycore_live_refresh_page_config('killmail_intelligence');
 $health = is_array($status['health'] ?? null) ? $status['health'] : [];
@@ -56,20 +79,17 @@ include __DIR__ . '/../../src/views/partials/header.php';
 </section>
 <!-- ui-section:killmail-overview-summary:end -->
 
-<?php if (($health['state'] ?? '') !== 'healthy' || ($status['last_run_source_rows'] ?? 0) > 0 && (int) ($status['last_run_written_rows'] ?? 0) === 0): ?>
+<?php if (!empty($runtimeCard['show_latest_failure'])): ?>
     <section class="mt-6 rounded-2xl border px-4 py-4 text-sm <?= htmlspecialchars((string) ($health['tone'] ?? 'border-amber-500/40 bg-amber-500/10 text-amber-100'), ENT_QUOTES) ?>">
         <div class="flex flex-wrap items-start justify-between gap-3">
             <div>
-                <p class="font-medium text-slate-50"><?= htmlspecialchars((string) ($health['label'] ?? 'Killmail attention needed'), ENT_QUOTES) ?></p>
-                <p class="mt-1 text-sm opacity-90"><?= htmlspecialchars((string) ($health['message'] ?? 'Review the latest worker pass and freshness.'), ENT_QUOTES) ?></p>
+                <p class="font-medium text-slate-50">Latest killmail refresh failed</p>
+                <p class="mt-1 text-sm opacity-90"><?= htmlspecialchars((string) ($runtimeCard['latest_failure_message'] ?? 'Review the latest worker pass and freshness.'), ENT_QUOTES) ?></p>
             </div>
             <div class="text-xs uppercase tracking-[0.14em] opacity-80">
-                Last updated <?= htmlspecialchars((string) ($status['freshness_reference_at'] ?? $status['last_success_at'] ?? 'Unavailable'), ENT_QUOTES) ?>
+                Last success <?= htmlspecialchars((string) ($runtimeCard['last_success_at'] ?? 'Unavailable'), ENT_QUOTES) ?>
             </div>
         </div>
-        <?php if ($workerNoWriteReason !== ''): ?>
-            <p class="mt-3 text-xs opacity-90">Latest no-write reason: <?= htmlspecialchars($workerNoWriteReason, ENT_QUOTES) ?></p>
-        <?php endif; ?>
     </section>
 <?php endif; ?>
 
@@ -78,12 +98,12 @@ include __DIR__ . '/../../src/views/partials/header.php';
     <article class="surface-secondary">
         <div class="flex flex-wrap items-start justify-between gap-3">
             <div>
-                <h2 class="text-base font-medium text-slate-50">Current ingestion status</h2>
-                <p class="mt-1 text-sm text-muted"><?= htmlspecialchars((string) ($health['message'] ?? 'Review the latest worker pass and freshness.'), ENT_QUOTES) ?></p>
+                <h2 class="text-base font-medium text-slate-50">Current data freshness</h2>
+                <p class="mt-1 text-sm text-muted">Keep the default view focused on the dataset, the last successful refresh, and the latest failure only when the latest run failed.</p>
             </div>
             <div class="flex flex-wrap gap-2">
-                <span class="rounded-full border px-3 py-1 text-xs uppercase tracking-[0.15em] <?= htmlspecialchars((string) ($health['tone'] ?? 'border-border bg-black/20 text-slate-200'), ENT_QUOTES) ?>">
-                    <?= htmlspecialchars((string) ($health['label'] ?? 'Status unavailable'), ENT_QUOTES) ?>
+                <span class="rounded-full border px-3 py-1 text-xs uppercase tracking-[0.15em] <?= htmlspecialchars((string) ($runtimeCard['freshness_tone'] ?? 'border-border bg-black/20 text-slate-200'), ENT_QUOTES) ?>">
+                    <?= htmlspecialchars((string) ($runtimeCard['freshness_label'] ?? 'Status unavailable'), ENT_QUOTES) ?>
                 </span>
                 <span class="rounded-full border border-border bg-black/20 px-3 py-1 text-xs uppercase tracking-[0.15em] text-slate-200">
                     Live updates <?= htmlspecialchars((string) ($liveRefreshConfig === null ? 'Off' : (($pageFreshness['state'] ?? 'stale') === 'stale' ? 'Degraded' : 'On')), ENT_QUOTES) ?>
@@ -92,38 +112,30 @@ include __DIR__ . '/../../src/views/partials/header.php';
         </div>
         <div class="mt-4 grid gap-3 md:grid-cols-4">
             <div class="surface-tertiary">
+                <p class="text-xs uppercase tracking-[0.15em] text-muted">Dataset</p>
+                <p class="mt-2 text-lg font-semibold text-slate-50"><?= htmlspecialchars((string) ($runtimeCard['label'] ?? 'Killmail stream'), ENT_QUOTES) ?></p>
+                <p class="mt-1 text-sm text-muted"><?= htmlspecialchars((string) ($runtimeCard['key'] ?? 'killmail.r2z2.stream'), ENT_QUOTES) ?></p>
+            </div>
+            <div class="surface-tertiary">
+                <p class="text-xs uppercase tracking-[0.15em] text-muted">Last successful run</p>
+                <p class="mt-2 text-lg font-semibold text-slate-50"><?= htmlspecialchars((string) ($runtimeCard['last_success_relative'] ?? 'Never'), ENT_QUOTES) ?></p>
+                <p class="mt-1 text-sm text-muted"><?= htmlspecialchars((string) ($runtimeCard['last_success_at'] ?? '—'), ENT_QUOTES) ?></p>
+            </div>
+            <div class="surface-tertiary">
                 <p class="text-xs uppercase tracking-[0.15em] text-muted">Freshness</p>
-                <p class="mt-2 text-lg font-semibold text-slate-50"><?= htmlspecialchars((string) ($status['last_sync_relative'] ?? 'Never'), ENT_QUOTES) ?></p>
-                <p class="mt-1 text-sm text-muted">Last successful ingestion <?= htmlspecialchars((string) ($status['last_success_at'] ?? '—'), ENT_QUOTES) ?></p>
-            </div>
-            <div class="surface-tertiary">
-                <p class="text-xs uppercase tracking-[0.15em] text-muted">Last rows written</p>
-                <p class="mt-2 text-lg font-semibold text-slate-50"><?= number_format((int) ($status['worker_rows_written'] ?? $status['last_run_written_rows'] ?? 0)) ?> written</p>
-                <p class="mt-1 text-sm text-muted">Seen <?= number_format((int) ($status['worker_rows_seen'] ?? $status['last_run_source_rows'] ?? 0)) ?> · matched <?= number_format((int) ($status['worker_rows_matched'] ?? 0)) ?> · skipped existing <?= number_format((int) ($status['worker_rows_skipped_existing'] ?? 0)) ?> · filtered <?= number_format((int) ($status['worker_rows_filtered_out'] ?? 0)) ?></p>
-            </div>
-            <div class="surface-tertiary">
-                <p class="text-xs uppercase tracking-[0.15em] text-muted">Current cursor</p>
-                <p class="mt-2 text-lg font-semibold text-slate-50"><?= htmlspecialchars((string) ($status['current_cursor'] ?? 'Unavailable'), ENT_QUOTES) ?></p>
-                <p class="mt-1 text-sm text-muted">Saved stream checkpoint used for the next pass.</p>
-            </div>
-            <div class="surface-tertiary">
-                <p class="text-xs uppercase tracking-[0.15em] text-muted">Current ingestion state</p>
-                <p class="mt-2 text-lg font-semibold text-slate-50"><?= htmlspecialchars((string) ($health['label'] ?? 'Unknown'), ENT_QUOTES) ?></p>
-                <p class="mt-1 text-sm text-muted">Worker <?= htmlspecialchars((string) ($status['worker_status'] ?? 'unknown'), ENT_QUOTES) ?> · checkpoint <?= htmlspecialchars((string) (($status['worker_checkpoint_state'] ?? '') !== '' ? $status['worker_checkpoint_state'] : 'unavailable'), ENT_QUOTES) ?></p>
+                <p class="mt-2 text-lg font-semibold text-slate-50"><?= htmlspecialchars((string) ($runtimeCard['freshness_label'] ?? 'Unknown'), ENT_QUOTES) ?></p>
+                <p class="mt-1 text-sm text-muted"><?= !empty($runtimeCard['running_now']) ? 'A worker heartbeat is active right now.' : 'Based on the latest successful ingestion timestamp.' ?></p>
             </div>
             <div class="surface-tertiary">
                 <p class="text-xs uppercase tracking-[0.15em] text-muted">Tracked scope</p>
-                <p class="mt-2 text-lg font-semibold text-slate-50"><?= number_format((int) ($status['tracked_alliance_count'] ?? 0)) ?>A · <?= number_format((int) ($status['tracked_corporation_count'] ?? 0)) ?>C</p>
+                <p class="mt-2 text-lg font-semibold text-slate-50"><?= number_format((int) ($runtimeCard['tracked_alliance_count'] ?? 0)) ?>A · <?= number_format((int) ($runtimeCard['tracked_corporation_count'] ?? 0)) ?>C</p>
                 <p class="mt-1 text-sm text-muted">Losses only surface when tracked victim entities match.</p>
             </div>
         </div>
-        <?php if (($health['state'] ?? '') !== 'healthy' || (($status['last_run_source_rows'] ?? 0) > 0 && (int) ($status['last_run_written_rows'] ?? 0) === 0) || (string) ($status['last_error'] ?? '') !== ''): ?>
+        <?php if (!empty($runtimeCard['show_latest_failure'])): ?>
             <div class="mt-4 rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm text-amber-100">
-                <p class="font-medium text-slate-50">Action needed</p>
-                <p class="mt-1"><?= htmlspecialchars((string) ($status['last_error'] !== '' ? ('Last sync error: ' . $status['last_error']) : ($health['message'] ?? 'Review the latest worker pass and freshness.')), ENT_QUOTES) ?></p>
-                <?php if ($workerNoWriteReason !== ''): ?>
-                    <p class="mt-2 text-xs opacity-90">Latest no-write reason: <?= htmlspecialchars($workerNoWriteReason, ENT_QUOTES) ?></p>
-                <?php endif; ?>
+                <p class="font-medium text-slate-50">Latest failure</p>
+                <p class="mt-1"><?= htmlspecialchars((string) ($runtimeCard['latest_failure_message'] ?? 'Review the latest worker pass and freshness.'), ENT_QUOTES) ?></p>
             </div>
         <?php endif; ?>
         <details class="mt-4 rounded-2xl border border-white/8 bg-black/20 p-3">

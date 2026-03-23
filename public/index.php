@@ -108,19 +108,40 @@ $queuePanels = [
     ],
 ];
 
-$healthPanels = [
-    'Alliance Market Freshness' => $intel['health_panels']['alliance_freshness'] ?? [],
-    'Sync Health' => $intel['health_panels']['sync_health'] ?? [],
-    'Data Completeness' => $intel['health_panels']['data_completeness'] ?? [],
-];
-
-$statusThemes = [
-    'Healthy' => 'border-emerald-400/20 bg-emerald-500/10 text-emerald-100',
-    'Tracked' => 'border-blue-400/20 bg-blue-500/10 text-blue-100',
-    'Warning' => 'border-amber-400/20 bg-amber-500/10 text-amber-100',
-    'Not synced' => 'border-slate-400/15 bg-slate-500/10 text-slate-200',
-    'Awaiting sync' => 'border-slate-400/15 bg-slate-500/10 text-slate-200',
-];
+$dashboardFreshnessCards = [];
+try {
+    $marketHubRef = market_hub_setting_reference();
+    $allianceStructureId = configured_alliance_structure_id();
+    if ($allianceStructureId !== null) {
+        $dashboardFreshnessCards[] = supplycore_dataset_runtime_status([
+            'key' => 'dashboard_alliance_market',
+            'label' => 'Alliance market orders',
+            'source' => 'sync',
+            'dataset_keys' => [sync_dataset_key_alliance_structure_orders_current($allianceStructureId)],
+            'fresh_seconds' => 15 * 60,
+            'delayed_seconds' => 45 * 60,
+        ]);
+    }
+    if ($marketHubRef !== '') {
+        $dashboardFreshnessCards[] = supplycore_dataset_runtime_status([
+            'key' => 'dashboard_reference_market',
+            'label' => 'Reference hub orders',
+            'source' => 'sync',
+            'dataset_keys' => [sync_dataset_key_market_hub_current_orders($marketHubRef)],
+            'fresh_seconds' => 15 * 60,
+            'delayed_seconds' => 45 * 60,
+        ]);
+        $dashboardFreshnessCards[] = supplycore_dataset_runtime_status([
+            'key' => 'dashboard_market_comparison',
+            'label' => 'Market comparison summary',
+            'source' => 'snapshot',
+            'snapshot_key' => market_comparison_snapshot_key(),
+            'job_key' => 'market_comparison_summary_sync',
+        ]);
+    }
+} catch (Throwable) {
+    $dashboardFreshnessCards = [];
+}
 ?>
 <!-- ui-section:dashboard-kpis:start -->
 <section class="grid gap-4 xl:grid-cols-4" data-ui-section="dashboard-kpis">
@@ -550,83 +571,46 @@ $statusThemes = [
 </section>
 
 <section class="mt-8 grid gap-5 lg:grid-cols-2 xl:grid-cols-3">
-    <?php foreach ($healthPanels as $panelTitle => $panel): ?>
-        <?php
-        $status = (string) ($panel['status'] ?? 'Awaiting sync');
-        $statusView = supplycore_operational_status_view_model($status, $status);
-        $statusClass = $statusView['tone'];
-        $wrapperClass = $panelTitle === 'Sync Health' ? 'surface-primary' : 'surface-secondary';
-
-        $summaryText = match ($panelTitle) {
-            'Alliance Market Freshness' => $status === 'Healthy'
-                ? 'Alliance market data is within the expected freshness window.'
-                : 'Freshness is outside the expected operating window.',
-            'Sync Health' => $status === 'Healthy'
-                ? 'Core sync jobs are landing on schedule.'
-                : 'Sync execution needs attention before confidence drops.',
-            default => $status === 'Tracked'
-                ? 'Tracked comparison data is available for decision support.'
-                : 'Coverage is limited until more sync data lands.',
-        };
-
-        $metrics = [];
-        if (isset($panel['last_success_at'])) {
-            $metrics[] = ['label' => 'Last success', 'value' => (string) $panel['last_success_at']];
-        }
-        if (isset($panel['recent_rows_written'])) {
-            $metrics[] = ['label' => 'Rows written', 'value' => (string) $panel['recent_rows_written']];
-        }
-        if (isset($panel['rows_compared'])) {
-            $metrics[] = ['label' => 'Rows compared', 'value' => (string) $panel['rows_compared']];
-        }
-        if (isset($panel['history_points'])) {
-            $metrics[] = ['label' => 'History points', 'value' => (string) $panel['history_points']];
-        }
-        if (isset($panel['history_sync']['status'])) {
-            $metrics[] = ['label' => 'History sync', 'value' => (string) $panel['history_sync']['status']];
-        }
-        $metrics = array_slice($metrics, 0, 3);
-
-        $actionText = null;
-        if ((isset($panel['last_error']) && (string) $panel['last_error'] !== 'None' && (string) $panel['last_error'] !== '') || $status === 'Warning' || $status === 'Not synced' || $status === 'Awaiting sync') {
-            $actionText = match ($panelTitle) {
-                'Sync Health' => 'Run the affected sync job and review the last error before the next dashboard review.',
-                'Alliance Market Freshness' => 'Refresh alliance market data to restore confidence in stock and price signals.',
-                default => 'Complete the required sync passes to improve coverage and trend visibility.',
-            };
-        }
-        ?>
-        <article class="<?= $wrapperClass ?>">
+    <?php foreach ($dashboardFreshnessCards as $card): ?>
+        <article class="surface-secondary">
             <div class="section-header border-b border-white/8 pb-4">
                 <div>
-                    <p class="eyebrow">Operational status</p>
-                    <h2 class="mt-2 section-title"><?= htmlspecialchars($panelTitle, ENT_QUOTES) ?></h2>
-                    <p class="mt-2 section-copy"><?= htmlspecialchars($summaryText, ENT_QUOTES) ?></p>
+                    <p class="eyebrow">Data freshness</p>
+                    <h2 class="mt-2 section-title"><?= htmlspecialchars((string) ($card['label'] ?? 'Dataset'), ENT_QUOTES) ?></h2>
+                    <p class="mt-2 section-copy">Last successful refresh and current freshness for a user-facing dataset.</p>
                 </div>
-                <span class="status-chip <?= htmlspecialchars($statusClass, ENT_QUOTES) ?>">
+                <span class="status-chip <?= htmlspecialchars((string) ($card['freshness_tone'] ?? supplycore_operational_status_view_model('stale')['tone']), ENT_QUOTES) ?>">
                     <span class="h-2 w-2 rounded-full bg-current opacity-80"></span>
-                    <?= htmlspecialchars($statusView['label'], ENT_QUOTES) ?>
+                    <?= htmlspecialchars((string) ($card['freshness_label'] ?? 'Stale'), ENT_QUOTES) ?>
                 </span>
             </div>
             <div class="mt-5 space-y-3">
-                <?php foreach ($metrics as $metric): ?>
-                    <div class="info-kv">
-                        <span class="text-sm text-slate-400"><?= htmlspecialchars($metric['label'], ENT_QUOTES) ?></span>
-                        <span class="text-sm font-medium tabular-nums text-slate-100"><?= htmlspecialchars($metric['value'], ENT_QUOTES) ?></span>
-                    </div>
-                <?php endforeach; ?>
-                <?php if ($actionText !== null): ?>
-                    <div class="rounded-[1.2rem] border <?= $panelTitle === 'Sync Health' ? 'border-amber-400/22 bg-amber-500/10 text-amber-100' : 'border-slate-400/14 bg-slate-900/70 text-slate-200' ?> px-4 py-3.5">
-                        <p class="text-xs font-semibold uppercase tracking-[0.18em] <?= $panelTitle === 'Sync Health' ? 'text-amber-200/90' : 'text-slate-400' ?>">Recommended next action</p>
-                        <p class="mt-2 text-sm leading-6"><?= htmlspecialchars($actionText, ENT_QUOTES) ?></p>
-                        <?php if (isset($panel['last_error']) && (string) $panel['last_error'] !== 'None' && (string) $panel['last_error'] !== ''): ?>
-                            <p class="mt-2 text-sm text-red-100">Last error: <?= htmlspecialchars((string) $panel['last_error'], ENT_QUOTES) ?></p>
-                        <?php endif; ?>
+                <div class="info-kv">
+                    <span class="text-sm text-slate-400">Dataset</span>
+                    <span class="text-sm font-medium tabular-nums text-slate-100"><?= htmlspecialchars((string) ($card['key'] ?? 'dataset'), ENT_QUOTES) ?></span>
+                </div>
+                <div class="info-kv">
+                    <span class="text-sm text-slate-400">Last success</span>
+                    <span class="text-sm font-medium tabular-nums text-slate-100"><?= htmlspecialchars((string) ($card['last_success_at'] ?? 'Unavailable'), ENT_QUOTES) ?></span>
+                </div>
+                <div class="info-kv">
+                    <span class="text-sm text-slate-400">Freshness</span>
+                    <span class="text-sm font-medium tabular-nums text-slate-100"><?= htmlspecialchars((string) ($card['last_success_relative'] ?? 'Never'), ENT_QUOTES) ?></span>
+                </div>
+                <?php if (!empty($card['show_latest_failure'])): ?>
+                    <div class="rounded-[1.2rem] border border-rose-400/22 bg-rose-500/10 px-4 py-3.5 text-rose-100">
+                        <p class="text-xs font-semibold uppercase tracking-[0.18em] text-rose-200/90">Latest failure</p>
+                        <p class="mt-2 text-sm leading-6"><?= htmlspecialchars((string) ($card['latest_failure_message'] ?? 'Latest refresh failed.'), ENT_QUOTES) ?></p>
                     </div>
                 <?php endif; ?>
             </div>
         </article>
     <?php endforeach; ?>
+    <?php if ($dashboardFreshnessCards === []): ?>
+        <article class="surface-secondary lg:col-span-2 xl:col-span-3">
+            <p class="text-sm text-muted">Data freshness cards are unavailable until the configured datasets have a status source.</p>
+        </article>
+    <?php endif; ?>
 </section>
 
 <section class="surface-primary mt-8">

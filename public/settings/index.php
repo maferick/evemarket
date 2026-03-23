@@ -266,6 +266,7 @@ $staticDataState = null;
 $settingsPipelineHealth = array_values((array) ($syncDashboard['pipeline_health'] ?? []));
 $settingsSystemStatus = (array) ($syncDashboard['system_status'] ?? []);
 $rebuildStatus = supplycore_rebuild_status_read();
+$runtimeDatasetCards = array_values((array) ($syncDashboard['runtime_dataset_cards'] ?? []));
 if ($dbStatus['ok']) {
     $latestEsiToken = db_latest_esi_oauth_token();
     if ($latestEsiToken !== null) {
@@ -330,6 +331,13 @@ if (is_array($killmailStatus)) {
         'tracked_corporation_count' => count($trackedCorporations),
     ];
     $killmailStatusSummary['health'] = killmail_ingestion_health_summary($killmailStatusSummary, $killmailWorkerStatus);
+}
+$killmailRuntimeCard = null;
+foreach ($runtimeDatasetCards as $runtimeDatasetCard) {
+    if ((string) ($runtimeDatasetCard['key'] ?? '') === 'killmail_stream') {
+        $killmailRuntimeCard = $runtimeDatasetCard;
+        break;
+    }
 }
 
 foreach ($configuredSyncJobs as $schedule) {
@@ -410,21 +418,23 @@ include __DIR__ . '/../../src/views/partials/header.php';
                 <section class="space-y-4">
                     <div>
                         <p class="text-sm font-semibold text-slate-100">Data freshness summary</p>
-                        <p class="mt-1 text-sm text-muted">Check the major pipelines here before drilling into runtime details.</p>
+                        <p class="mt-1 text-sm text-muted">Check the user-facing datasets here before drilling into runtime details.</p>
                     </div>
                     <div class="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-                        <?php foreach ($settingsPipelineHealth as $pipeline): ?>
-                            <?php $pipelineStatus = supplycore_operational_status_view_model((string) ($pipeline['state'] ?? ''), (string) ($pipeline['state'] ?? 'Delayed')); ?>
+                        <?php foreach (array_slice($runtimeDatasetCards, 0, 4) as $datasetCard): ?>
                             <article class="rounded-2xl border border-border bg-black/20 p-4">
                                 <div class="flex items-start justify-between gap-3">
-                                    <p class="text-sm font-semibold text-slate-100"><?= htmlspecialchars((string) ($pipeline['label'] ?? 'Pipeline'), ENT_QUOTES) ?></p>
-                                    <span class="inline-flex items-center rounded-full border px-2.5 py-1 text-[11px] uppercase tracking-[0.14em] <?= htmlspecialchars($pipelineStatus['tone'], ENT_QUOTES) ?>"><?= htmlspecialchars($pipelineStatus['label'], ENT_QUOTES) ?></span>
+                                    <p class="text-sm font-semibold text-slate-100"><?= htmlspecialchars((string) ($datasetCard['label'] ?? 'Dataset'), ENT_QUOTES) ?></p>
+                                    <span class="inline-flex items-center rounded-full border px-2.5 py-1 text-[11px] uppercase tracking-[0.14em] <?= htmlspecialchars((string) ($datasetCard['freshness_tone'] ?? supplycore_operational_status_view_model('stale')['tone']), ENT_QUOTES) ?>"><?= htmlspecialchars((string) ($datasetCard['freshness_label'] ?? 'Stale'), ENT_QUOTES) ?></span>
                                 </div>
-                                <p class="mt-3 text-sm text-slate-200"><?= htmlspecialchars((string) ($pipeline['summary'] ?? 'Status unavailable.'), ENT_QUOTES) ?></p>
-                                <p class="mt-2 text-xs text-muted">Last successful update <?= htmlspecialchars((string) ($pipeline['last_success_relative'] ?? $pipeline['last_success_at'] ?? 'Unknown'), ENT_QUOTES) ?></p>
+                                <p class="mt-3 text-sm text-slate-200"><?= htmlspecialchars((string) ($datasetCard['key'] ?? 'dataset'), ENT_QUOTES) ?></p>
+                                <p class="mt-2 text-xs text-muted">Last successful update <?= htmlspecialchars((string) ($datasetCard['last_success_relative'] ?? $datasetCard['last_success_at'] ?? 'Unknown'), ENT_QUOTES) ?></p>
+                                <?php if (!empty($datasetCard['show_latest_failure'])): ?>
+                                    <p class="mt-2 text-xs text-rose-200">Latest failure: <?= htmlspecialchars((string) ($datasetCard['latest_failure_message'] ?? ''), ENT_QUOTES) ?></p>
+                                <?php endif; ?>
                             </article>
                         <?php endforeach; ?>
-                        <?php if ($settingsPipelineHealth === []): ?>
+                        <?php if ($runtimeDatasetCards === []): ?>
                             <div class="rounded-2xl border border-dashed border-border bg-black/20 p-4 text-sm text-muted md:col-span-2 xl:col-span-4">No pipeline freshness summary is available yet.</div>
                         <?php endif; ?>
                     </div>
@@ -1058,29 +1068,29 @@ include __DIR__ . '/../../src/views/partials/header.php';
                 <input type="hidden" name="section" value="killmail-intelligence">
 
                 <div class="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
-                    <article class="rounded-xl border p-4 <?= htmlspecialchars((string) ($killmailHealth['tone'] ?? 'border-border bg-black/20 text-slate-200'), ENT_QUOTES) ?>">
-                        <p class="text-xs uppercase tracking-[0.16em] opacity-70">Status</p>
-                        <p class="mt-2 text-sm font-semibold text-slate-50"><?= htmlspecialchars((string) ($killmailHealth['label'] ?? 'Status unavailable'), ENT_QUOTES) ?></p>
-                        <p class="mt-2 text-xs opacity-90"><?= htmlspecialchars((string) ($killmailHealth['message'] ?? 'Killmail status is unavailable.'), ENT_QUOTES) ?></p>
+                    <article class="rounded-xl border p-4 <?= htmlspecialchars((string) (($killmailRuntimeCard['freshness_tone'] ?? $killmailHealth['tone']) ?? 'border-border bg-black/20 text-slate-200'), ENT_QUOTES) ?>">
+                        <p class="text-xs uppercase tracking-[0.16em] opacity-70">Dataset</p>
+                        <p class="mt-2 text-sm font-semibold text-slate-50"><?= htmlspecialchars((string) (($killmailRuntimeCard['label'] ?? null) ?: 'Killmail stream'), ENT_QUOTES) ?></p>
+                        <p class="mt-2 text-xs opacity-90"><?= htmlspecialchars((string) (($killmailRuntimeCard['key'] ?? null) ?: 'killmail.r2z2.stream'), ENT_QUOTES) ?></p>
                     </article>
                     <article class="rounded-xl border border-border bg-black/20 p-4">
                         <p class="text-xs uppercase tracking-[0.16em] text-muted">Last success</p>
-                        <p class="mt-2 text-sm font-semibold text-slate-50"><?= htmlspecialchars((string) ($killmailStatusSummary['last_sync_relative'] ?? 'Never'), ENT_QUOTES) ?></p>
-                        <p class="mt-2 text-xs text-muted"><?= htmlspecialchars((string) ($killmailStatusSummary['last_success_at'] ?? 'Unavailable'), ENT_QUOTES) ?></p>
+                        <p class="mt-2 text-sm font-semibold text-slate-50"><?= htmlspecialchars((string) (($killmailRuntimeCard['last_success_relative'] ?? null) ?: ($killmailStatusSummary['last_sync_relative'] ?? 'Never')), ENT_QUOTES) ?></p>
+                        <p class="mt-2 text-xs text-muted"><?= htmlspecialchars((string) (($killmailRuntimeCard['last_success_at'] ?? null) ?: ($killmailStatusSummary['last_success_at'] ?? 'Unavailable')), ENT_QUOTES) ?></p>
                     </article>
                     <article class="rounded-xl border border-border bg-black/20 p-4">
-                        <p class="text-xs uppercase tracking-[0.16em] text-muted">Last rows written</p>
-                        <p class="mt-2 text-sm font-semibold text-slate-50"><?= number_format((int) ($killmailStatusSummary['last_run_written_rows'] ?? 0)) ?></p>
-                        <p class="mt-2 text-xs text-muted">Seen <?= number_format((int) ($killmailStatusSummary['last_run_source_rows'] ?? 0)) ?> rows in the latest pass</p>
+                        <p class="text-xs uppercase tracking-[0.16em] text-muted">Freshness</p>
+                        <p class="mt-2 text-sm font-semibold text-slate-50"><?= htmlspecialchars((string) (($killmailRuntimeCard['freshness_label'] ?? null) ?: ($killmailHealth['label'] ?? 'Unknown')), ENT_QUOTES) ?></p>
+                        <p class="mt-2 text-xs text-muted"><?= !empty($killmailRuntimeCard['running_now']) ? 'Worker heartbeat is active now.' : 'Based on the latest successful ingestion timestamp.' ?></p>
                     </article>
                     <article class="rounded-xl border border-border bg-black/20 p-4">
-                        <p class="text-xs uppercase tracking-[0.16em] text-muted">Current cursor</p>
-                        <p class="mt-2 text-sm font-semibold text-slate-50"><?= htmlspecialchars((string) ($killmailStatusSummary['current_cursor'] ?? 'Unavailable'), ENT_QUOTES) ?></p>
-                        <p class="mt-2 text-xs text-muted">Next worker pass resumes from this stream checkpoint.</p>
+                        <p class="text-xs uppercase tracking-[0.16em] text-muted">Latest failure</p>
+                        <p class="mt-2 text-sm font-semibold text-slate-50"><?= htmlspecialchars(!empty($killmailRuntimeCard['show_latest_failure']) ? 'Failed' : 'None', ENT_QUOTES) ?></p>
+                        <p class="mt-2 text-xs text-muted"><?= htmlspecialchars(!empty($killmailRuntimeCard['show_latest_failure']) ? (string) ($killmailRuntimeCard['latest_failure_message'] ?? '') : 'Clears automatically after the next successful run.', ENT_QUOTES) ?></p>
                     </article>
                     <article class="rounded-xl border border-border bg-black/20 p-4">
                         <p class="text-xs uppercase tracking-[0.16em] text-muted">Tracked entities</p>
-                        <p class="mt-2 text-sm font-semibold text-slate-50"><?= number_format((int) ($killmailStatusSummary['tracked_alliance_count'] ?? 0)) ?> alliances · <?= number_format((int) ($killmailStatusSummary['tracked_corporation_count'] ?? 0)) ?> corporations</p>
+                        <p class="mt-2 text-sm font-semibold text-slate-50"><?= number_format((int) (($killmailRuntimeCard['tracked_alliance_count'] ?? null) ?: ($killmailStatusSummary['tracked_alliance_count'] ?? 0))) ?> alliances · <?= number_format((int) (($killmailRuntimeCard['tracked_corporation_count'] ?? null) ?: ($killmailStatusSummary['tracked_corporation_count'] ?? 0))) ?> corporations</p>
                         <p class="mt-2 text-xs text-muted">These determine which victim-side losses are retained for the tracked loss board.</p>
                     </article>
                 </div>
@@ -1694,112 +1704,51 @@ include __DIR__ . '/../../src/views/partials/header.php';
                 <div class="space-y-4">
                     <div>
                         <p class="text-sm text-slate-100">Data freshness summary</p>
-                        <p class="mt-1 text-xs text-muted">Keep the visible view centered on whether data is fresh, delayed, or needs attention.</p>
+                        <p class="mt-1 text-xs text-muted">Keep the visible view centered on datasets, last successful refreshes, freshness, and only the latest failures.</p>
                     </div>
-                    <div class="grid gap-4 xl:grid-cols-[1.1fr_0.9fr]">
-                        <article class="rounded-xl border border-border bg-black/20 p-4">
-                            <div class="flex flex-wrap items-start justify-between gap-3">
-                                <div>
-                                    <p class="text-sm text-slate-100">Overall refresh health</p>
-                                    <p class="mt-1 text-xs text-muted"><?= htmlspecialchars((string) ($systemStatus['reason'] ?? 'Status unavailable.'), ENT_QUOTES) ?></p>
+                    <div class="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+                        <?php foreach ($runtimeDatasetCards as $datasetCard): ?>
+                            <article class="rounded-xl border border-border bg-black/20 p-4">
+                                <div class="flex items-start justify-between gap-3">
+                                    <div>
+                                        <p class="text-sm text-slate-100"><?= htmlspecialchars((string) ($datasetCard['label'] ?? 'Dataset'), ENT_QUOTES) ?></p>
+                                        <p class="mt-1 text-xs text-muted"><?= htmlspecialchars((string) ($datasetCard['key'] ?? 'dataset'), ENT_QUOTES) ?></p>
+                                    </div>
+                                    <span class="inline-flex items-center rounded-full border px-3 py-1 text-xs font-medium uppercase tracking-[0.16em] <?= htmlspecialchars((string) ($datasetCard['freshness_tone'] ?? supplycore_operational_status_view_model('stale')['tone']), ENT_QUOTES) ?>"><?= htmlspecialchars((string) ($datasetCard['freshness_label'] ?? 'Stale'), ENT_QUOTES) ?></span>
                                 </div>
-                                <?php $systemStatusValue = (string) ($systemStatus['status'] ?? 'healthy'); ?>
-                                <?php $systemStatusClass = $systemStatusValue === 'critical'
-                                    ? 'border-rose-400/40 bg-rose-500/10 text-rose-100'
-                                    : ($systemStatusValue === 'degraded'
-                                        ? 'border-amber-400/40 bg-amber-500/10 text-amber-100'
-                                        : 'border-emerald-400/30 bg-emerald-500/10 text-emerald-100'); ?>
-                                <span class="inline-flex items-center rounded-full border px-3 py-1 text-xs font-medium uppercase tracking-[0.16em] <?= $systemStatusClass ?>"><?= htmlspecialchars((string) ($systemStatus['label'] ?? 'Healthy'), ENT_QUOTES) ?></span>
-                            </div>
-                            <div class="mt-4 grid gap-3 md:grid-cols-2">
-                                <?php $cpuRatio = max(0.0, min(1.0, (float) ($schedulerHealth['cpu_budget_ratio'] ?? 0.0))); ?>
-                                <?php $memoryRatio = max(0.0, min(1.0, (float) ($schedulerHealth['memory_budget_ratio'] ?? 0.0))); ?>
-                                <div class="rounded-lg border border-border bg-black/30 p-3 text-sm">
-                                    <div class="flex items-center justify-between gap-2">
-                                        <span class="text-xs uppercase tracking-[0.16em] text-muted">CPU usage</span>
-                                        <span class="font-medium text-slate-100"><?= htmlspecialchars(number_format((float) ($schedulerHealth['current_cpu_used_percent'] ?? 0), 1), ENT_QUOTES) ?> / <?= htmlspecialchars(number_format((float) ($schedulerHealth['cpu_budget_percent'] ?? 0), 1), ENT_QUOTES) ?>%</span>
+                                <p class="mt-4 text-xs uppercase tracking-[0.16em] text-muted">Last successful run</p>
+                                <p class="mt-2 text-sm font-semibold text-slate-50"><?= htmlspecialchars((string) ($datasetCard['last_success_relative'] ?? 'Never'), ENT_QUOTES) ?></p>
+                                <p class="mt-1 text-xs text-muted"><?= htmlspecialchars((string) ($datasetCard['last_success_at'] ?? 'Unavailable'), ENT_QUOTES) ?></p>
+                                <?php if (!empty($datasetCard['show_latest_failure'])): ?>
+                                    <div class="mt-4 rounded-lg border border-rose-400/40 bg-rose-500/10 p-3 text-xs text-rose-100">
+                                        <p class="font-medium uppercase tracking-[0.14em] text-rose-200">Latest failure</p>
+                                        <p class="mt-2"><?= htmlspecialchars((string) ($datasetCard['latest_failure_message'] ?? ''), ENT_QUOTES) ?></p>
                                     </div>
-                                    <div class="mt-3 h-2 rounded-full bg-white/10">
-                                        <div class="h-2 rounded-full <?= $cpuRatio >= 0.9 ? 'bg-rose-400' : ($cpuRatio >= 0.7 ? 'bg-amber-400' : 'bg-emerald-400') ?>" style="width: <?= htmlspecialchars((string) round($cpuRatio * 100, 1), ENT_QUOTES) ?>%"></div>
-                                    </div>
-                                </div>
-                                <div class="rounded-lg border border-border bg-black/30 p-3 text-sm">
-                                    <div class="flex items-center justify-between gap-2">
-                                        <span class="text-xs uppercase tracking-[0.16em] text-muted">Memory usage</span>
-                                        <span class="font-medium text-slate-100"><?= htmlspecialchars(scheduler_format_bytes((int) ($schedulerHealth['current_memory_used_bytes'] ?? 0)), ENT_QUOTES) ?> / <?= htmlspecialchars(scheduler_format_bytes((int) ($schedulerHealth['memory_budget_bytes'] ?? 0)), ENT_QUOTES) ?></span>
-                                    </div>
-                                    <div class="mt-3 h-2 rounded-full bg-white/10">
-                                        <div class="h-2 rounded-full <?= $memoryRatio >= 0.9 ? 'bg-rose-400' : ($memoryRatio >= 0.7 ? 'bg-amber-400' : 'bg-emerald-400') ?>" style="width: <?= htmlspecialchars((string) round($memoryRatio * 100, 1), ENT_QUOTES) ?>%"></div>
-                                    </div>
-                                </div>
-                            </div>
-                                <div class="mt-4 space-y-2">
-                                    <div class="flex items-center justify-between gap-2">
-                                        <p class="text-sm text-slate-100">Major pipelines</p>
-                                        <span class="text-xs text-muted">Fresh / Updating / Delayed / Stale</span>
-                                    </div>
-                                    <div class="grid gap-2 sm:grid-cols-2">
-                                        <?php foreach ($pipelineHealth as $pipeline): ?>
-                                            <?php $pipelineState = supplycore_operational_status_view_model((string) ($pipeline['state'] ?? ''), (string) ($pipeline['state'] ?? 'Delayed')); ?>
-                                            <div class="rounded-lg border border-border bg-black/30 p-3 text-sm">
-                                                <div class="flex items-center justify-between gap-2">
-                                                    <span class="font-medium text-slate-100"><?= htmlspecialchars((string) ($pipeline['label'] ?? ''), ENT_QUOTES) ?></span>
-                                                    <span class="inline-flex items-center rounded-full border px-2 py-1 text-[11px] uppercase tracking-[0.14em] <?= htmlspecialchars($pipelineState['tone'], ENT_QUOTES) ?>"><?= htmlspecialchars($pipelineState['label'], ENT_QUOTES) ?></span>
-                                                </div>
-                                                <p class="mt-1 text-xs text-muted"><?= htmlspecialchars((string) ($pipeline['summary'] ?? ''), ENT_QUOTES) ?></p>
-                                                <p class="mt-2 text-xs text-slate-300">Last successful update <?= htmlspecialchars((string) ($pipeline['last_success_relative'] ?? $pipeline['last_success_at'] ?? 'Unknown'), ENT_QUOTES) ?></p>
-                                            </div>
-                                        <?php endforeach; ?>
-                                    </div>
-                            </div>
-                        </article>
-                        <article class="rounded-xl border border-border bg-black/20 p-4">
+                                <?php endif; ?>
+                            </article>
+                        <?php endforeach; ?>
+                        <?php if ($runtimeDatasetCards === []): ?>
+                            <div class="rounded-xl border border-dashed border-border bg-black/20 p-4 text-sm text-muted md:col-span-2 xl:col-span-3">No dataset freshness cards are available yet.</div>
+                        <?php endif; ?>
+                    </div>
+
+                    <details class="rounded-xl border border-border bg-black/20 p-4">
+                        <summary class="cursor-pointer list-none">
                             <div class="flex items-start justify-between gap-3">
                                 <div>
-                                    <p class="text-sm text-slate-100">Needs attention</p>
-                                    <p class="mt-1 text-xs text-muted">Only the most actionable items stay visible by default.</p>
+                                    <p class="text-sm text-slate-100">Advanced diagnostics</p>
+                                    <p class="mt-1 text-xs text-muted">Worker runtime, scheduler internals, contention, and planner details stay behind diagnostics.</p>
                                 </div>
-                                <span class="inline-flex items-center rounded-full border border-border px-3 py-1 text-xs uppercase tracking-[0.16em] text-muted"><?= (int) ($syncDashboard['active_issue_count'] ?? count($activeIssues)) ?> total</span>
+                                <span class="inline-flex items-center rounded-full border border-border px-3 py-1 text-xs uppercase tracking-[0.16em] text-muted">expand</span>
                             </div>
-                            <div class="mt-4 space-y-3 text-sm">
-                                <?php if ($activeIssues === []): ?>
-                                    <div class="rounded-lg border border-dashed border-border bg-black/30 p-3 text-muted">No active issues detected.</div>
-                                <?php endif; ?>
-                                <?php foreach ($activeIssues as $issue): ?>
-                                    <?php $issueSeverity = (string) ($issue['severity'] ?? 'medium'); ?>
-                                    <?php $issueClass = $issueSeverity === 'critical' ? 'border-rose-400/40 bg-rose-500/10' : 'border-amber-400/40 bg-amber-500/10'; ?>
-                                    <div class="rounded-lg border <?= $issueClass ?> p-3">
-                                        <div class="flex items-center justify-between gap-2">
-                                            <span class="font-medium text-slate-100"><?= htmlspecialchars((string) ($issue['title'] ?? ''), ENT_QUOTES) ?></span>
-                                            <span class="text-[11px] uppercase tracking-[0.14em] text-muted"><?= htmlspecialchars((string) ($issue['job_label'] ?? 'system'), ENT_QUOTES) ?></span>
-                                        </div>
-                                        <p class="mt-1 text-xs text-muted"><?= htmlspecialchars((string) ($issue['description'] ?? ''), ENT_QUOTES) ?></p>
-                                    </div>
-                                <?php endforeach; ?>
+                        </summary>
+                        <div class="mt-4 space-y-4">
+                            <div>
+                                <p class="text-sm text-slate-100">Continuous worker runtime</p>
+                                <p class="mt-1 text-xs text-muted">The Python worker pool owns recurring cadence, retries, and schedule rows now. The zKill stream is tracked separately as a dedicated continuous worker, while the cards below show the currently active scheduler runtime profile for normal jobs.</p>
                             </div>
-                            <?php if ($resourceWarnings !== []): ?>
-                                <div class="mt-4 border-t border-white/10 pt-4">
-                                    <p class="text-sm text-slate-100">Resource pressure</p>
-                                    <div class="mt-2 space-y-2 text-xs text-muted">
-                                        <?php foreach ($resourceWarnings as $warning): ?>
-                                            <?php $warningSeverity = (string) ($warning['severity'] ?? 'high'); ?>
-                                            <div class="rounded-lg border <?= $warningSeverity === 'critical' ? 'border-rose-400/40 bg-rose-500/10' : 'border-amber-400/40 bg-amber-500/10' ?> p-3">
-                                                <p class="font-medium text-slate-100"><?= htmlspecialchars((string) ($warning['title'] ?? ''), ENT_QUOTES) ?></p>
-                                                <p class="mt-1"><?= htmlspecialchars((string) ($warning['description'] ?? ''), ENT_QUOTES) ?></p>
-                                            </div>
-                                        <?php endforeach; ?>
-                                    </div>
-                                </div>
-                            <?php endif; ?>
-                        </article>
-                    </div>
 
-                    <div>
-                        <p class="text-sm text-slate-100">Continuous worker runtime</p>
-                        <p class="mt-1 text-xs text-muted">The Python worker pool owns recurring cadence, retries, and schedule rows now. The zKill stream is tracked separately as a dedicated continuous worker, while the cards below show the currently active scheduler runtime profile for normal jobs.</p>
-                    </div>
-
-                    <div class="rounded-xl border border-border bg-black/20 p-4 space-y-4">
+                            <div class="rounded-xl border border-border bg-black/20 p-4 space-y-4">
                         <div class="flex flex-wrap items-start justify-between gap-3">
                             <div>
                                 <p class="text-sm text-slate-100">Active runtime profile</p>
@@ -1829,7 +1778,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                             <div class="rounded-lg border border-border bg-black/30 p-3"><p class="text-xs uppercase tracking-[0.16em] text-muted">Daemon poll</p><p class="mt-2 font-semibold text-white"><?= (int) ($profileRuntime['daemon_poll_interval_seconds'] ?? 0) ?>s idle · <?= (int) ($profileRuntime['daemon_running_poll_interval_seconds'] ?? 0) ?>s active</p></div>
                             <div class="rounded-lg border border-border bg-black/30 p-3"><p class="text-xs uppercase tracking-[0.16em] text-muted">Self-healing</p><p class="mt-2 font-semibold text-white">Auto respawn on recycle</p></div>
                         </div>
-                    </div>
+                            </div>
 
                     <?php if ($syncStatusCards !== []): ?>
                         <details class="rounded-xl border border-border bg-black/20 p-4">
@@ -1931,6 +1880,8 @@ include __DIR__ . '/../../src/views/partials/header.php';
                             </div>
                         <?php endforeach; ?>
                     </div>
+                        </div>
+                    </details>
 
                     <details class="rounded-xl border border-border bg-black/20 p-4">
                         <summary class="cursor-pointer list-none">
@@ -2244,7 +2195,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                     </div>
                     <?php if ($evaluatedPartitionTables !== []): ?>
                         <div class="rounded-lg border border-border bg-black/20 p-3 text-xs text-muted space-y-2">
-                            <p class="text-sm text-slate-100">Deferred candidates</p>
+                            <p class="text-sm text-slate-100">Other table evaluations</p>
                             <?php foreach ($evaluatedPartitionTables as $candidate): ?>
                                 <p><span class="font-mono text-slate-100"><?= htmlspecialchars((string) ($candidate['table'] ?? ''), ENT_QUOTES) ?></span> · approx rows <?= htmlspecialchars(number_format((int) ($candidate['estimated_rows'] ?? 0)), ENT_QUOTES) ?> · <?= htmlspecialchars((string) ($candidate['reason'] ?? ''), ENT_QUOTES) ?></p>
                             <?php endforeach; ?>
