@@ -273,6 +273,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                                 <td class="px-4 py-3 align-top">
                                     <p class="text-sm text-slate-200"><?= htmlspecialchars((string) ($item['reason_text'] ?? ''), ENT_QUOTES) ?></p>
                                     <p class="mt-1 text-xs text-slate-500">Doctrine impact <?= htmlspecialchars((string) ($item['doctrine_fit_impact'] ?? 0), ENT_QUOTES) ?> fits · pricing <?= htmlspecialchars((string) ($item['pricing_completeness'] ?? 'partial'), ENT_QUOTES) ?></p>
+                                    <p class="mt-1 text-xs text-cyan-200/85">Graph dependency <?= htmlspecialchars(number_format((float) ($item['dependency_score'] ?? 0.0), 1), ENT_QUOTES) ?> · used by <?= htmlspecialchars((string) ($item['valid_doctrine_count'] ?? 0), ENT_QUOTES) ?> doctrines / <?= htmlspecialchars((string) ($item['valid_fits_count'] ?? 0), ENT_QUOTES) ?> fits</p>
                                     <?php $affectedFits = array_values((array) ($item['affected_fits'] ?? [])); ?>
                                     <details class="mt-2 rounded-lg border border-white/8 bg-white/[0.03] px-3 py-2">
                                         <summary class="cursor-pointer list-none text-xs font-medium text-slate-100">More detail</summary>

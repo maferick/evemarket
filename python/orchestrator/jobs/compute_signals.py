@@ -51,12 +51,16 @@ def run_compute_signals(db: SupplyCoreDb, influx_raw: dict[str, Any] | None = No
             MAX(COALESCE(bai.quantity, 0)) AS planner_qty,
             MAX(COALESCE(mh.best_sell_price, mh.best_buy_price, 0)) AS hub_price,
             MAX(COALESCE(asrc.best_sell_price, asrc.best_buy_price, 0)) AS alliance_price,
-            MAX(COALESCE(asrc.total_sell_volume, 0)) AS alliance_volume
+            MAX(COALESCE(asrc.total_sell_volume, 0)) AS alliance_volume,
+            MAX(COALESCE(ids.dependency_score, 0.0)) AS dependency_score,
+            MAX(COALESCE(ids.doctrine_count, 0)) AS doctrine_count,
+            MAX(COALESCE(ids.fit_count, 0)) AS dependency_fit_count
         FROM buy_all_items bai
         INNER JOIN buy_all_summary bas ON bas.id = bai.summary_id
         LEFT JOIN ref_item_types rit ON rit.type_id = bai.type_id
         LEFT JOIN market_order_snapshots_summary mh ON mh.type_id = bai.type_id AND mh.source_type = 'market_hub'
         LEFT JOIN market_order_snapshots_summary asrc ON asrc.type_id = bai.type_id AND asrc.source_type = 'alliance_structure'
+        LEFT JOIN item_dependency_score ids ON ids.type_id = bai.type_id
         WHERE bas.computed_at >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL 24 HOUR)
         GROUP BY bai.type_id
         ORDER BY mode_rank_score DESC
@@ -79,13 +83,41 @@ def run_compute_signals(db: SupplyCoreDb, influx_raw: dict[str, Any] | None = No
             hub_price = float(row.get("hub_price") or 0.0)
             alliance_volume = int(row.get("alliance_volume") or 0)
             necessity = float(row.get("necessity_score") or 0.0)
+            dependency_score = float(row.get("dependency_score") or 0.0)
+            doctrine_count = int(row.get("doctrine_count") or 0)
+            dependency_fit_count = int(row.get("dependency_fit_count") or 0)
 
             signal_type = "market_spike"
             severity = "medium"
             signal_text = f"Planner rank {float(row.get('mode_rank_score') or 0.0):.1f} with alliance volume {alliance_volume}."
 
             hist = float(historical.get(type_id) or 0.0)
-            if hist > 0 and hub_price > 0 and hub_price <= hist * 0.9:
+            price_worsening = bool(hist > 0 and hub_price > (hist * 1.10))
+            low_supply = alliance_volume < 20
+            high_dependency = dependency_score >= 30.0 or doctrine_count >= 3
+
+            if high_dependency and low_supply and price_worsening:
+                signal_type = "high_dependency_low_supply"
+                severity = "critical"
+                signal_text = (
+                    f"Dependency score {dependency_score:.1f} across {doctrine_count} doctrines with low alliance volume {alliance_volume}; "
+                    f"hub price {hub_price:.2f} is above 14d mean {hist:.2f}."
+                )
+            elif high_dependency and low_supply:
+                signal_type = "critical_shared_dependency"
+                severity = "critical"
+                signal_text = (
+                    f"Shared dependency risk: score {dependency_score:.1f}, doctrines {doctrine_count}, fits {dependency_fit_count}, "
+                    f"alliance volume {alliance_volume}."
+                )
+            elif high_dependency and necessity >= 60.0:
+                signal_type = "doctrine_bottleneck"
+                severity = "high"
+                signal_text = (
+                    f"Doctrine bottleneck candidate with dependency score {dependency_score:.1f}, necessity {necessity:.1f}, "
+                    f"used by {doctrine_count} doctrines."
+                )
+            elif hist > 0 and hub_price > 0 and hub_price <= hist * 0.9:
                 signal_type = "undervalued_item"
                 severity = "high"
                 signal_text = f"Hub price {hub_price:.2f} is below 14d mean {hist:.2f}."
@@ -106,6 +138,9 @@ def run_compute_signals(db: SupplyCoreDb, influx_raw: dict[str, Any] | None = No
                 "mode_rank_score": float(row.get("mode_rank_score") or 0.0),
                 "necessity_score": necessity,
                 "profit_score": float(row.get("profit_score") or 0.0),
+                "dependency_score": dependency_score,
+                "doctrine_count": doctrine_count,
+                "dependency_fit_count": dependency_fit_count,
             }
             signal_key = f"{signal_type}:{type_id}"
             cursor.execute(

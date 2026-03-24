@@ -99,23 +99,34 @@ CREATE TABLE IF NOT EXISTS graph_sync_state (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS doctrine_dependency_depth (
-    doctrine_id INT UNSIGNED PRIMARY KEY,
-    doctrine_name VARCHAR(190) NOT NULL,
+    doctrine_id BIGINT UNSIGNED PRIMARY KEY,
     fit_count INT UNSIGNED NOT NULL DEFAULT 0,
     item_count INT UNSIGNED NOT NULL DEFAULT 0,
-    dependency_depth INT UNSIGNED NOT NULL DEFAULT 0,
+    unique_item_count INT UNSIGNED NOT NULL DEFAULT 0,
+    dependency_depth_score DECIMAL(12,4) NOT NULL DEFAULT 0.0000,
     computed_at DATETIME NOT NULL,
+    KEY idx_doctrine_dependency_depth_score (dependency_depth_score, computed_at),
     KEY idx_doctrine_dependency_depth_computed (computed_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS item_dependency_score (
-    type_id INT UNSIGNED PRIMARY KEY,
+    type_id BIGINT UNSIGNED PRIMARY KEY,
     doctrine_count INT UNSIGNED NOT NULL DEFAULT 0,
     fit_count INT UNSIGNED NOT NULL DEFAULT 0,
-    dependency_score DECIMAL(8,2) NOT NULL DEFAULT 0.00,
+    dependency_score DECIMAL(12,4) NOT NULL DEFAULT 0.0000,
     computed_at DATETIME NOT NULL,
     KEY idx_item_dependency_score_value (dependency_score, computed_at),
     KEY idx_item_dependency_score_computed (computed_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS fit_overlap_score (
+    fit_id BIGINT UNSIGNED NOT NULL,
+    other_fit_id BIGINT UNSIGNED NOT NULL,
+    shared_item_count INT UNSIGNED NOT NULL DEFAULT 0,
+    overlap_score DECIMAL(12,4) NOT NULL DEFAULT 0.0000,
+    computed_at DATETIME NOT NULL,
+    PRIMARY KEY (fit_id, other_fit_id),
+    KEY idx_fit_overlap_score_value (overlap_score, computed_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS doctrine_readiness (
