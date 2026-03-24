@@ -78,6 +78,97 @@ function db_connection_status(): array
     }
 }
 
+function &db_performance_metrics_ref(): array
+{
+    static $metrics = [
+        'query_count' => 0,
+        'query_time_ms' => 0.0,
+        'queries' => [],
+        'calls' => [],
+    ];
+
+    return $metrics;
+}
+
+function db_performance_track_query(string $sql, array $params, float $durationMs): void
+{
+    $metrics = &db_performance_metrics_ref();
+    $metrics['query_count']++;
+    $metrics['query_time_ms'] += max(0.0, $durationMs);
+
+    $fingerprint = md5(trim($sql));
+    if (!isset($metrics['queries'][$fingerprint])) {
+        $metrics['queries'][$fingerprint] = [
+            'fingerprint' => $fingerprint,
+            'sql_preview' => mb_substr(preg_replace('/\s+/', ' ', trim($sql)) ?? '', 0, 160),
+            'count' => 0,
+            'total_ms' => 0.0,
+            'param_count_total' => 0,
+        ];
+    }
+
+    $metrics['queries'][$fingerprint]['count']++;
+    $metrics['queries'][$fingerprint]['total_ms'] += max(0.0, $durationMs);
+    $metrics['queries'][$fingerprint]['param_count_total'] += count($params);
+}
+
+function db_performance_track_call(string $name, float $durationMs, array $context = []): void
+{
+    $metrics = &db_performance_metrics_ref();
+    if (!isset($metrics['calls'][$name])) {
+        $metrics['calls'][$name] = [
+            'count' => 0,
+            'total_ms' => 0.0,
+            'context' => [],
+        ];
+    }
+
+    $metrics['calls'][$name]['count']++;
+    $metrics['calls'][$name]['total_ms'] += max(0.0, $durationMs);
+
+    if ($context !== []) {
+        foreach ($context as $key => $value) {
+            if (!is_scalar($value)) {
+                continue;
+            }
+            if (!isset($metrics['calls'][$name]['context'][$key])) {
+                $metrics['calls'][$name]['context'][$key] = [];
+            }
+            $contextKey = (string) $value;
+            $metrics['calls'][$name]['context'][$key][$contextKey] = (int) (($metrics['calls'][$name]['context'][$key][$contextKey] ?? 0) + 1);
+        }
+    }
+}
+
+function db_performance_snapshot(): array
+{
+    $metrics = db_performance_metrics_ref();
+    $querySummaries = array_values($metrics['queries']);
+    usort($querySummaries, static fn (array $a, array $b): int => ($b['count'] <=> $a['count']) ?: ((int) round(($b['total_ms'] ?? 0.0) * 1000) <=> (int) round(($a['total_ms'] ?? 0.0) * 1000)));
+    $querySummaries = array_slice($querySummaries, 0, 10);
+
+    $callSummaries = [];
+    foreach ((array) $metrics['calls'] as $name => $callStats) {
+        $context = [];
+        foreach ((array) ($callStats['context'] ?? []) as $key => $counts) {
+            arsort($counts);
+            $context[$key] = array_slice($counts, 0, 6, true);
+        }
+        $callSummaries[$name] = [
+            'count' => (int) ($callStats['count'] ?? 0),
+            'total_ms' => round((float) ($callStats['total_ms'] ?? 0.0), 3),
+            'top_context' => $context,
+        ];
+    }
+
+    return [
+        'query_count' => (int) ($metrics['query_count'] ?? 0),
+        'query_time_ms' => round((float) ($metrics['query_time_ms'] ?? 0.0), 3),
+        'top_queries' => $querySummaries,
+        'calls' => $callSummaries,
+    ];
+}
+
 function &db_query_cache_store_ref(): array
 {
     static $store = [
@@ -159,8 +250,11 @@ function db_select_one_cached(string $sql, array $params = [], int $ttlSeconds =
 
 function db_select(string $sql, array $params = []): array
 {
+    $startedAt = microtime(true);
     $stmt = db()->prepare($sql);
     $stmt->execute($params);
+    $durationMs = (microtime(true) - $startedAt) * 1000.0;
+    db_performance_track_query($sql, $params, $durationMs);
 
     return $stmt->fetchAll();
 }
@@ -223,8 +317,11 @@ function db_select_stream_batches(string $sql, array $params, callable $callback
 
 function db_select_one(string $sql, array $params = []): ?array
 {
+    $startedAt = microtime(true);
     $stmt = db()->prepare($sql);
     $stmt->execute($params);
+    $durationMs = (microtime(true) - $startedAt) * 1000.0;
+    db_performance_track_query($sql, $params, $durationMs);
     $result = $stmt->fetch();
 
     return $result === false ? null : $result;
@@ -233,9 +330,13 @@ function db_select_one(string $sql, array $params = []): ?array
 function db_execute(string $sql, array $params = []): bool
 {
     db_query_cache_clear();
+    $startedAt = microtime(true);
     $stmt = db()->prepare($sql);
+    $result = $stmt->execute($params);
+    $durationMs = (microtime(true) - $startedAt) * 1000.0;
+    db_performance_track_query($sql, $params, $durationMs);
 
-    return $stmt->execute($params);
+    return $result;
 }
 
 function db_app_settings_upsert_many(array $settings): bool
@@ -10961,16 +11062,20 @@ function db_ref_item_types_by_names(array $names): array
 
 function db_ref_item_scope_metadata_by_ids(array $typeIds): array
 {
+    $startedAt = microtime(true);
     item_scope_db_ensure_schema();
 
     $ids = array_values(array_unique(array_filter(array_map(static fn (mixed $id): int => (int) $id, $typeIds), static fn (int $id): bool => $id > 0)));
     if ($ids === []) {
+        db_performance_track_call('db_ref_item_scope_metadata_by_ids', (microtime(true) - $startedAt) * 1000.0, ['ids_count' => 0]);
         return [];
     }
+    $patternIds = $ids;
+    sort($patternIds);
 
     $placeholders = implode(',', array_fill(0, count($ids), '?'));
 
-    return db_select(
+    $rows = db_select(
         "SELECT
             rit.type_id,
             rit.type_name,
@@ -10990,16 +11095,21 @@ function db_ref_item_scope_metadata_by_ids(array $typeIds): array
          LEFT JOIN ref_item_categories ric ON ric.category_id = COALESCE(rit.category_id, rig.category_id)
          LEFT JOIN ref_market_groups rmg ON rmg.market_group_id = rit.market_group_id
          LEFT JOIN ref_meta_groups rmeta ON rmeta.meta_group_id = rit.meta_group_id
-         WHERE rit.type_id IN ($placeholders)",
+        WHERE rit.type_id IN ($placeholders)",
         $ids
     );
+
+    db_performance_track_call('db_ref_item_scope_metadata_by_ids', (microtime(true) - $startedAt) * 1000.0, ['ids_count' => count($ids), 'set' => md5(implode(',', $patternIds))]);
+
+    return $rows;
 }
 
 function db_ref_item_scope_catalog(): array
 {
+    $startedAt = microtime(true);
     item_scope_db_ensure_schema();
 
-    return [
+    $catalog = [
         'categories' => db_select(
             'SELECT
                 ric.category_id,
@@ -11048,6 +11158,10 @@ function db_ref_item_scope_catalog(): array
              ORDER BY rmeta.meta_group_id ASC'
         ),
     ];
+
+    db_performance_track_call('db_ref_item_scope_catalog', (microtime(true) - $startedAt) * 1000.0);
+
+    return $catalog;
 }
 
 function db_ref_item_type_ids_published(): array

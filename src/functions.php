@@ -7,6 +7,116 @@ require_once __DIR__ . '/cache.php';
 
 date_default_timezone_set(app_timezone());
 
+function &supplycore_request_perf_ref(): array
+{
+    static $metrics = [
+        'started_at' => null,
+        'functions' => [],
+        'repeated_patterns' => [],
+        'type_sets' => [],
+        'initialized' => false,
+    ];
+
+    return $metrics;
+}
+
+function supplycore_request_perf_init(): void
+{
+    $metrics = &supplycore_request_perf_ref();
+    if ($metrics['initialized'] === true) {
+        return;
+    }
+
+    $metrics['initialized'] = true;
+    $metrics['started_at'] = microtime(true);
+
+    register_shutdown_function(static function (): void {
+        $metrics = supplycore_request_perf_ref();
+        $startedAt = (float) ($metrics['started_at'] ?? microtime(true));
+        $durationMs = (microtime(true) - $startedAt) * 1000.0;
+        $uri = (string) ($_SERVER['REQUEST_URI'] ?? '/');
+        $path = (string) (parse_url($uri, PHP_URL_PATH) ?: '/');
+        $db = function_exists('db_performance_snapshot') ? db_performance_snapshot() : [];
+        $functionSummaries = [];
+        foreach ((array) ($metrics['functions'] ?? []) as $name => $entry) {
+            $functionSummaries[$name] = [
+                'count' => (int) ($entry['count'] ?? 0),
+                'total_ms' => round((float) ($entry['total_ms'] ?? 0.0), 3),
+            ];
+        }
+        $uniqueTypeCounts = [];
+        foreach ((array) ($metrics['type_sets'] ?? []) as $name => $set) {
+            $uniqueTypeCounts[$name] = count((array) $set);
+        }
+        $repeatedPatterns = [];
+        foreach ((array) ($metrics['repeated_patterns'] ?? []) as $name => $patterns) {
+            arsort($patterns);
+            $repeatedPatterns[$name] = array_slice($patterns, 0, 12, true);
+        }
+
+        $payload = [
+            'event' => 'supplycore.request.perf',
+            'request_uri' => $uri,
+            'request_path' => $path,
+            'duration_ms' => round($durationMs, 3),
+            'peak_memory_mb' => round(memory_get_peak_usage(true) / 1048576, 3),
+            'db' => $db,
+            'functions' => $functionSummaries,
+            'unique_type_counts' => $uniqueTypeCounts,
+            'repeated_patterns' => $repeatedPatterns,
+        ];
+
+        error_log(json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE));
+    });
+}
+
+function supplycore_perf_begin(string $name): float
+{
+    supplycore_request_perf_init();
+    $metrics = &supplycore_request_perf_ref();
+    if (!isset($metrics['functions'][$name])) {
+        $metrics['functions'][$name] = ['count' => 0, 'total_ms' => 0.0];
+    }
+    $metrics['functions'][$name]['count']++;
+
+    return microtime(true);
+}
+
+function supplycore_perf_end(string $name, float $startedAt): void
+{
+    $metrics = &supplycore_request_perf_ref();
+    if (!isset($metrics['functions'][$name])) {
+        $metrics['functions'][$name] = ['count' => 0, 'total_ms' => 0.0];
+    }
+    $metrics['functions'][$name]['total_ms'] += max(0.0, (microtime(true) - $startedAt) * 1000.0);
+}
+
+function supplycore_perf_track_type_ids(string $name, array $typeIds): void
+{
+    $metrics = &supplycore_request_perf_ref();
+    if (!isset($metrics['type_sets'][$name])) {
+        $metrics['type_sets'][$name] = [];
+    }
+    foreach ($typeIds as $typeId) {
+        $safeTypeId = (int) $typeId;
+        if ($safeTypeId > 0) {
+            $metrics['type_sets'][$name][$safeTypeId] = true;
+        }
+    }
+}
+
+function supplycore_perf_track_repeated_pattern(string $name, string $pattern): void
+{
+    $metrics = &supplycore_request_perf_ref();
+    if (!isset($metrics['repeated_patterns'][$name])) {
+        $metrics['repeated_patterns'][$name] = [];
+    }
+
+    $metrics['repeated_patterns'][$name][$pattern] = (int) (($metrics['repeated_patterns'][$name][$pattern] ?? 0) + 1);
+}
+
+supplycore_request_perf_init();
+
 function app_name(): string
 {
     $configured = trim((string) get_setting('app_name', config('app.name', 'SupplyCore')));
@@ -831,10 +941,18 @@ function item_scope_expand_market_group_ids(?int $marketGroupId, array $parentIn
 
 function item_scope_metadata_by_type_ids(array $typeIds): array
 {
+    $perfStartedAt = supplycore_perf_begin(__FUNCTION__);
     $typeIds = array_values(array_unique(array_filter(array_map('intval', $typeIds), static fn (int $typeId): bool => $typeId > 0)));
     if ($typeIds === []) {
+        supplycore_perf_track_repeated_pattern(__FUNCTION__, 'size:0');
+        supplycore_perf_end(__FUNCTION__, $perfStartedAt);
         return [];
     }
+    supplycore_perf_track_type_ids(__FUNCTION__, $typeIds);
+    supplycore_perf_track_repeated_pattern(__FUNCTION__, 'size:' . count($typeIds));
+    $patternIds = $typeIds;
+    sort($patternIds);
+    supplycore_perf_track_repeated_pattern(__FUNCTION__, 'set:' . md5(implode(',', $patternIds)));
 
     static $cache = [];
     $missing = [];
@@ -893,6 +1011,8 @@ function item_scope_metadata_by_type_ids(array $typeIds): array
             $resolved[$typeId] = $cache[$typeId];
         }
     }
+
+    supplycore_perf_end(__FUNCTION__, $perfStartedAt);
 
     return $resolved;
 }
@@ -1088,28 +1208,45 @@ function item_scope_type_metadata_in_scope(array $metadata, ?array $config = nul
 
 function item_scope_is_type_id_in_scope(int $typeId, ?array $config = null, ?array $metadataByType = null): bool
 {
+    $perfStartedAt = supplycore_perf_begin(__FUNCTION__);
     if ($typeId <= 0) {
+        supplycore_perf_end(__FUNCTION__, $perfStartedAt);
         return false;
     }
+    supplycore_perf_track_type_ids(__FUNCTION__, [$typeId]);
 
+    $hasSharedMetadata = $metadataByType !== null;
     $metadataByType ??= item_scope_metadata_by_type_ids([$typeId]);
+    supplycore_perf_track_repeated_pattern(__FUNCTION__, $hasSharedMetadata ? 'metadata:shared' : 'metadata:fallback_single');
     $metadata = $metadataByType[$typeId] ?? null;
     if (!is_array($metadata)) {
+        supplycore_perf_end(__FUNCTION__, $perfStartedAt);
         return false;
     }
 
-    return item_scope_type_metadata_in_scope($metadata, $config);
+    $result = item_scope_type_metadata_in_scope($metadata, $config);
+    supplycore_perf_end(__FUNCTION__, $perfStartedAt);
+
+    return $result;
 }
 
 function item_scope_type_metadata(int $typeId, ?array $metadataByType = null): array
 {
+    $perfStartedAt = supplycore_perf_begin(__FUNCTION__);
     if ($typeId <= 0) {
+        supplycore_perf_end(__FUNCTION__, $perfStartedAt);
         return [];
     }
+    supplycore_perf_track_type_ids(__FUNCTION__, [$typeId]);
 
+    $hasSharedMetadata = $metadataByType !== null;
     $metadataByType ??= item_scope_metadata_by_type_ids([$typeId]);
+    supplycore_perf_track_repeated_pattern(__FUNCTION__, $hasSharedMetadata ? 'metadata:shared' : 'metadata:fallback_single');
 
-    return is_array($metadataByType[$typeId] ?? null) ? (array) $metadataByType[$typeId] : [];
+    $resolved = is_array($metadataByType[$typeId] ?? null) ? (array) $metadataByType[$typeId] : [];
+    supplycore_perf_end(__FUNCTION__, $perfStartedAt);
+
+    return $resolved;
 }
 
 function item_scope_type_is_consumable(int $typeId, ?array $metadataByType = null): bool
@@ -26467,6 +26604,7 @@ function buy_all_pack_pages(array $items): array
 
 function buy_all_planner_data(array $query = []): array
 {
+    $perfStartedAt = supplycore_perf_begin(__FUNCTION__);
     $request = buy_all_request($query);
     $modeDefinitions = buy_all_mode_definitions();
     $modeConfig = $modeDefinitions[$request['mode']] ?? $modeDefinitions['blended'];
@@ -26503,27 +26641,36 @@ function buy_all_planner_data(array $query = []): array
 
     $fitIds = array_values(array_filter(array_map(static fn (array $fit): int => (int) ($fit['id'] ?? 0), $fits), static fn (int $fitId): bool => $fitId > 0));
     $itemsByFitId = [];
+    $rawItemsByFitId = [];
+    $fitItemTypeIds = [];
     $candidateTypeIds = array_keys($marketByTypeId);
     try {
         foreach (db_doctrine_fit_items_by_fit_ids($fitIds) as $item) {
             $fitId = (int) ($item['doctrine_fit_id'] ?? 0);
             $typeId = (int) ($item['type_id'] ?? 0);
-            if ($fitId <= 0 || $typeId <= 0 || !item_scope_is_type_id_in_scope($typeId)) {
+            if ($fitId <= 0 || $typeId <= 0) {
                 continue;
             }
-            $itemsByFitId[$fitId][] = $item;
-            $candidateTypeIds[] = $typeId;
+            $rawItemsByFitId[$fitId][] = $item;
+            $fitItemTypeIds[] = $typeId;
         }
     } catch (Throwable) {
         $itemsByFitId = [];
+        $rawItemsByFitId = [];
+        $fitItemTypeIds = [];
     }
 
-    $candidateTypeIds = array_values(array_unique(array_merge($candidateTypeIds, array_keys($globalByTypeId), array_keys($topMissingByTypeId))));
-    $typeMetaById = [];
-    foreach (db_ref_item_types_by_ids($candidateTypeIds) as $row) {
-        $typeMetaById[(int) ($row['type_id'] ?? 0)] = $row;
-    }
+    $candidateTypeIds = array_values(array_unique(array_merge($candidateTypeIds, array_keys($globalByTypeId), array_keys($topMissingByTypeId), $fitItemTypeIds)));
     $typeMetadataById = item_scope_metadata_by_type_ids($candidateTypeIds);
+    foreach ($rawItemsByFitId as $fitId => $fitItems) {
+        foreach ($fitItems as $item) {
+            $typeId = (int) ($item['type_id'] ?? 0);
+            if ($typeId <= 0 || !item_scope_is_type_id_in_scope($typeId, null, $typeMetadataById)) {
+                continue;
+            }
+            $itemsByFitId[(int) $fitId][] = $item;
+        }
+    }
     $doctrineDemandByType = buy_all_item_impact_map($fits, $itemsByFitId, $marketByTypeId, $typeMetadataById);
     $candidateTypeIds = array_values(array_unique(array_merge($candidateTypeIds, array_keys($doctrineDemandByType))));
 
@@ -26538,7 +26685,7 @@ function buy_all_planner_data(array $query = []): array
         $global = $globalByTypeId[$typeId] ?? [];
         $missing = $topMissingByTypeId[$typeId] ?? [];
         $demand = $doctrineDemandByType[$typeId] ?? [];
-        $meta = $typeMetaById[$typeId] ?? [];
+        $meta = $typeMetadataById[$typeId] ?? [];
         $itemName = trim((string) (($meta['type_name'] ?? $market['type_name'] ?? $global['type_name'] ?? $missing['item_name'] ?? ('Type #' . $typeId))));
         if ($itemName === '') {
             continue;
@@ -26801,7 +26948,7 @@ function buy_all_planner_data(array $query = []): array
         ];
     }
 
-    return [
+    $result = [
         'request' => $request,
         'mode_options' => $modeDefinitions,
         'sort_options' => buy_all_sort_options(),
@@ -26829,6 +26976,11 @@ function buy_all_planner_data(array $query = []): array
             'page_item_type_limit' => buy_all_page_item_type_limit(),
         ],
     ];
+    supplycore_perf_track_type_ids(__FUNCTION__, $candidateTypeIds);
+    supplycore_perf_track_repeated_pattern(__FUNCTION__, 'candidate_type_count:' . count($candidateTypeIds));
+    supplycore_perf_end(__FUNCTION__, $perfStartedAt);
+
+    return $result;
 }
 
 function buy_all_dashboard_summary(): array
