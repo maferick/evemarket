@@ -7939,6 +7939,23 @@ function supplycore_dataset_runtime_status_from_sync(array $spec): array
     $latestRun = is_array($runs[0] ?? null) ? $runs[0] : null;
     $lastSuccessAt = isset($status['last_success_at']) ? (string) $status['last_success_at'] : null;
     $lastSuccessAt = is_string($lastSuccessAt) && trim($lastSuccessAt) !== '' ? $lastSuccessAt : null;
+    $fallbackCapturedAt = null;
+    if (((string) ($spec['key'] ?? '')) === 'market_hub_local_history') {
+        $fallbackSource = trim((string) ($spec['history_source'] ?? ''));
+        $fallbackSourceId = max(0, (int) ($spec['history_source_id'] ?? 0));
+        if ($fallbackSource !== '' && $fallbackSourceId > 0) {
+            $fallbackCapturedAt = db_market_hub_local_history_daily_latest_captured_at($fallbackSource, $fallbackSourceId);
+        }
+    }
+
+    if ($fallbackCapturedAt !== null) {
+        $lastSuccessUnix = $lastSuccessAt !== null ? (strtotime($lastSuccessAt) ?: null) : null;
+        $fallbackUnix = strtotime($fallbackCapturedAt) ?: null;
+        if ($fallbackUnix !== null && ($lastSuccessUnix === null || $fallbackUnix > $lastSuccessUnix)) {
+            $lastSuccessAt = $fallbackCapturedAt;
+        }
+    }
+
     $lastSuccessTimestamp = $lastSuccessAt !== null ? (strtotime($lastSuccessAt) ?: null) : null;
     $ageSeconds = $lastSuccessTimestamp !== null ? max(0, time() - $lastSuccessTimestamp) : null;
     $runningNow = false;
@@ -8154,6 +8171,8 @@ function supplycore_settings_runtime_datasets(): array
             'label' => 'Market hub local history',
             'source' => 'sync',
             'dataset_keys' => [sync_dataset_key_market_hub_local_history_daily($marketHubRef)],
+            'history_source' => market_hub_local_history_source(),
+            'history_source_id' => sync_source_id_from_hub_ref($marketHubRef),
             'fresh_seconds' => 6 * 3600,
             'delayed_seconds' => 24 * 3600,
         ] : null,

@@ -5077,6 +5077,30 @@ function db_market_hub_local_history_daily_by_trade_date(string $source, int $so
     return array_map('db_market_hub_local_history_daily_normalize_result_row', $rows);
 }
 
+function db_market_hub_local_history_daily_latest_captured_at(string $source, int $sourceId): ?string
+{
+    $safeSource = trim($source);
+    $safeSourceId = max(0, $sourceId);
+    if ($safeSource === '' || $safeSourceId <= 0) {
+        return null;
+    }
+
+    $row = db_fetch_one(
+        'SELECT MAX(captured_at) AS latest_captured_at
+           FROM market_hub_local_history_daily
+          WHERE source = :source
+            AND source_id = :source_id',
+        [
+            'source' => $safeSource,
+            'source_id' => $safeSourceId,
+        ]
+    );
+
+    $latestCapturedAt = is_array($row) ? trim((string) ($row['latest_captured_at'] ?? '')) : '';
+
+    return $latestCapturedAt !== '' ? $latestCapturedAt : null;
+}
+
 function db_market_hub_local_history_daily_recent_window(string $source, int $sourceId, int $days = 8, int $typeLimit = 120): array
 {
     $safeSource = trim($source);

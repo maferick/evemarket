@@ -55,26 +55,6 @@ $pageFreshnessLine = $pageFreshness !== []
                     <span class="badge <?= htmlspecialchars((string) ($liveRefreshSummary['health_tone'] ?? 'border-slate-400/20 bg-slate-500/10 text-slate-100'), ENT_QUOTES) ?>">
                         <?= htmlspecialchars((string) ($liveRefreshSummary['mode_label'] ?? 'Live updates unavailable'), ENT_QUOTES) ?>
                     </span>
-                    <?php if (supplycore_live_refresh_should_include($liveRefreshConfig ?? null)): ?>
-                        <details class="live-refresh-panel relative z-10 text-left text-xs text-slate-300" data-ui-refresh-diagnostics <?= !empty($liveRefreshSummary['show_advanced']) ? 'open' : '' ?>>
-                            <summary class="cursor-pointer list-none rounded-full border border-white/10 bg-black/20 px-3 py-2 text-sm font-medium text-slate-100">Diagnostics</summary>
-                            <div class="mt-3 rounded-2xl border border-white/8 bg-black/20 p-3">
-                                <div class="grid gap-3 sm:grid-cols-3">
-                                    <p><span class="text-slate-500">Live updates</span><br><span class="mt-1 inline-block text-sm text-slate-100" data-live-refresh-mode><?= htmlspecialchars((string) $liveRefreshSummary['mode_label'], ENT_QUOTES) ?></span></p>
-                                    <p><span class="text-slate-500">Last refresh</span><br><span class="mt-1 inline-block text-sm text-slate-100" data-live-refresh-last-refresh><?= htmlspecialchars((string) $liveRefreshSummary['last_refresh_relative'], ENT_QUOTES) ?></span></p>
-                                    <p><span class="text-slate-500">Refresh health</span><br><span class="mt-1 inline-block text-sm text-slate-100" data-live-refresh-health><?= htmlspecialchars((string) $liveRefreshSummary['health_message'], ENT_QUOTES) ?></span></p>
-                                </div>
-                                <details class="mt-4 rounded-2xl border border-white/8 bg-black/20 p-3" data-live-refresh-advanced <?= !empty($liveRefreshSummary['show_advanced']) ? 'open' : '' ?>>
-                                    <summary class="cursor-pointer list-none text-sm font-medium text-slate-100">Advanced transport</summary>
-                                    <div class="mt-3 grid gap-3 sm:grid-cols-2">
-                                        <p><span class="text-slate-500">Active transport</span><br><span class="mt-1 inline-block text-sm text-slate-100" data-live-refresh-transport>Starting…</span></p>
-                                        <p><span class="text-slate-500">Last update event</span><br><span class="mt-1 inline-block text-sm text-slate-100" data-live-refresh-last-event>No published refresh event yet</span></p>
-                                        <p class="sm:col-span-2"><span class="text-slate-500">Version markers</span><br><span class="mt-1 inline-block break-all text-sm text-slate-100" data-live-refresh-versions>Loading…</span></p>
-                                    </div>
-                                </details>
-                            </div>
-                        </details>
-                    <?php endif; ?>
                 </div>
             </div>
         </header>
