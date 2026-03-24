@@ -7,6 +7,10 @@ from .config import load_php_runtime_config
 from .influx_export import main as run_influx_rollup_export
 from .influx_inspect import inspect_main as run_influx_rollup_inspect
 from .influx_inspect import sample_main as run_influx_rollup_sample
+from .jobs.compute_buy_all import run_compute_buy_all
+from .jobs.compute_graph_insights import run_compute_graph_insights
+from .jobs.compute_graph_sync import run_compute_graph_sync
+from .jobs.compute_signals import run_compute_signals
 from .logging_utils import configure_logging
 from .rebuild_data_model import main as run_rebuild_data_model
 from .supervisor import run_supervisor
@@ -63,6 +67,16 @@ def parse_args() -> argparse.Namespace:
     influx_sample.add_argument("--limit", type=int, default=5, help="Number of latest points to return per measurement.")
     influx_sample.add_argument("--group-by", action="append", default=[], help="Optional tag keys to group summary output by.")
     influx_sample.add_argument("--verbose", action="store_true")
+
+    compute_buy_all = subparsers.add_parser("compute-buy-all", help="Materialize Buy All planner data into precomputed MariaDB tables")
+    compute_buy_all.add_argument("--app-root", default=str(Path(__file__).resolve().parents[2]))
+
+    compute_signals = subparsers.add_parser("compute-signals", help="Generate precomputed intelligence signals into MariaDB")
+    compute_signals.add_argument("--app-root", default=str(Path(__file__).resolve().parents[2]))
+    compute_graph_sync = subparsers.add_parser("compute-graph-sync", help="Incrementally sync doctrine-fit-item graph into Neo4j")
+    compute_graph_sync.add_argument("--app-root", default=str(Path(__file__).resolve().parents[2]))
+    compute_graph_insights = subparsers.add_parser("compute-graph-insights", help="Compute graph-derived metrics and persist into MariaDB")
+    compute_graph_insights.add_argument("--app-root", default=str(Path(__file__).resolve().parents[2]))
     return parser.parse_args()
 
 
@@ -116,6 +130,38 @@ def main() -> int:
             *(sum([["--group-by", group] for group in args.group_by], [])),
             *( ["--verbose"] if args.verbose else [] ),
         ])
+    if command == "compute-buy-all":
+        app_root = Path(args.app_root).resolve()
+        config = load_php_runtime_config(app_root)
+        from .db import SupplyCoreDb
+        db = SupplyCoreDb(config.raw.get("db", {}))
+        result = run_compute_buy_all(db)
+        print(result)
+        return 0
+    if command == "compute-signals":
+        app_root = Path(args.app_root).resolve()
+        config = load_php_runtime_config(app_root)
+        from .db import SupplyCoreDb
+        db = SupplyCoreDb(config.raw.get("db", {}))
+        result = run_compute_signals(db, config.raw.get("influx", {}))
+        print(result)
+        return 0
+    if command == "compute-graph-sync":
+        app_root = Path(args.app_root).resolve()
+        config = load_php_runtime_config(app_root)
+        from .db import SupplyCoreDb
+        db = SupplyCoreDb(config.raw.get("db", {}))
+        result = run_compute_graph_sync(db, config.raw.get("neo4j", {}))
+        print(result)
+        return 0
+    if command == "compute-graph-insights":
+        app_root = Path(args.app_root).resolve()
+        config = load_php_runtime_config(app_root)
+        from .db import SupplyCoreDb
+        db = SupplyCoreDb(config.raw.get("db", {}))
+        result = run_compute_graph_insights(db, config.raw.get("neo4j", {}))
+        print(result)
+        return 0
 
     app_root = Path(args.app_root).resolve()
     config = load_php_runtime_config(app_root)

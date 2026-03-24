@@ -72,6 +72,29 @@ class SupplyCoreDb:
                     break
                 yield [dict(row) for row in rows]
 
+    @contextmanager
+    def transaction(self):
+        connection = pymysql.connect(
+            host=str(self._config.get("host", "127.0.0.1")),
+            port=int(self._config.get("port", 3306)),
+            user=str(self._config.get("username", "root")),
+            password=str(self._config.get("password", "")),
+            database=str(self._config.get("database", "supplycore")),
+            charset=str(self._config.get("charset", "utf8mb4")),
+            unix_socket=(str(self._config.get("socket", "")).strip() or None),
+            autocommit=False,
+            cursorclass=pymysql.cursors.DictCursor,
+        )
+        try:
+            with connection.cursor() as cursor:
+                yield connection, cursor
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+
 
 def json_dumps(value: Any) -> str:
     return json.dumps(value, separators=(",", ":"), ensure_ascii=False)

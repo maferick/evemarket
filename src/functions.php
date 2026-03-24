@@ -26614,43 +26614,97 @@ function buy_all_precompute_cache_key(array $request): string
     return hash('sha256', json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE));
 }
 
+function buy_all_precomputed_empty_payload(array $request, string $reason): array
+{
+    $modeDefinitions = buy_all_mode_definitions();
+    $modeConfig = $modeDefinitions[$request['mode']] ?? $modeDefinitions['blended'];
+    $generatedAt = gmdate(DATE_ATOM);
+
+    return [
+        'request' => $request,
+        'mode_options' => $modeDefinitions,
+        'sort_options' => buy_all_sort_options(),
+        'summary' => [
+            'generated_at' => $generatedAt,
+            'mode' => $request['mode'],
+            'mode_label' => (string) ($modeConfig['label'] ?? ucfirst((string) $request['mode'])),
+            'page_count' => 0,
+            'candidate_count' => 0,
+            'total_item_types' => 0,
+            'total_units' => 0,
+            'total_volume' => 0.0,
+            'total_buy_cost' => 0.0,
+            'total_expected_sell_value' => 0.0,
+            'total_hauling_cost' => 0.0,
+            'total_gross_profit' => 0.0,
+            'total_net_profit' => 0.0,
+            'doctrine_critical_count' => 0,
+            'partial_pricing_count' => 0,
+            'positive_net_margin_count' => 0,
+            'top_reason_theme' => 'No precomputed plan available',
+            'precompute_state' => 'missing',
+            'precompute_message' => $reason,
+        ],
+        'items' => [],
+        'pages' => [],
+        'active_page' => 1,
+        'active_page_data' => null,
+        'excluded_items' => [],
+        'freshness' => [
+            'generated_at' => supplycore_format_datetime($generatedAt),
+            'generated_relative' => supplycore_relative_datetime($generatedAt),
+        ],
+        'price_basis' => [
+            'buy' => 'Precomputed by Python job compute_buy_all.',
+            'sell' => 'Precomputed by Python job compute_buy_all.',
+        ],
+        'hauling' => [
+            'cost_per_m3' => buy_all_hauling_cost_per_m3(),
+            'page_volume_limit' => buy_all_page_volume_limit(),
+            'page_item_type_limit' => buy_all_page_item_type_limit(),
+        ],
+    ];
+}
+
 function buy_all_planner_data(array $query = []): array
 {
     $request = buy_all_request($query);
-    $cacheKey = buy_all_precompute_cache_key($request);
-    $cached = db_buy_all_precomputed_payload_get($cacheKey, 300);
-    if ($cached !== null) {
-        return $cached;
+    $filtersHash = hash('sha256', json_encode((array) ($request['filters'] ?? []), JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE));
+    $row = db_buy_all_summary_latest((string) ($request['mode'] ?? 'blended'), (string) ($request['sort'] ?? 'blended_score'), $filtersHash, 3600);
+    if (is_array($row) && isset($row['payload_json'])) {
+        $decoded = json_decode((string) $row['payload_json'], true);
+        if (is_array($decoded)) {
+            $decoded['request'] = $request;
+            $computedAtRaw = isset($row['computed_at']) ? (string) $row['computed_at'] : '';
+            $computedAtTs = $computedAtRaw !== '' ? (int) (strtotime($computedAtRaw) ?: 0) : 0;
+            $isStale = $computedAtTs > 0 ? ((time() - $computedAtTs) > 600) : true;
+            if (!isset($decoded['summary']) || !is_array($decoded['summary'])) {
+                $decoded['summary'] = [];
+            }
+            $decoded['summary']['precompute_state'] = $isStale ? 'stale' : 'fresh';
+            $decoded['summary']['precompute_message'] = $isStale
+                ? 'Planner data is stale (older than 10 minutes). Latest data is still shown.'
+                : 'Planner data is fresh and precomputed.';
+            $decoded['summary']['computed_at'] = $computedAtRaw;
+
+            return $decoded;
+        }
     }
 
-    $computed = buy_all_planner_data_uncached($query);
-    db_buy_all_precomputed_payload_store($cacheKey, $computed);
-
-    return $computed;
+    return buy_all_precomputed_empty_payload(
+        $request,
+        'No recent precomputed Buy All payload was found. Run python compute_buy_all to refresh planner data.'
+    );
 }
 
 function buy_all_precompute_refresh_defaults(): array
 {
-    $requests = [
-        ['mode' => 'blended', 'sort' => 'blended_score', 'page' => 1],
-        ['mode' => 'doctrine_critical', 'sort' => 'mode_rank_score', 'page' => 1],
-        ['mode' => 'opportunity', 'sort' => 'mode_rank_score', 'page' => 1],
-        ['mode' => 'seed_backlog', 'sort' => 'necessity_score', 'page' => 1],
-    ];
-
-    $summary = [];
-    foreach ($requests as $request) {
-        $payload = buy_all_planner_data_uncached($request);
-        $cacheKey = buy_all_precompute_cache_key((array) ($payload['request'] ?? $request));
-        db_buy_all_precomputed_payload_store($cacheKey, $payload);
-        $summary[] = [
-            'mode' => (string) ($request['mode'] ?? 'blended'),
-            'items' => count((array) ($payload['items'] ?? [])),
-            'generated_at' => (string) (($payload['summary']['generated_at'] ?? gmdate(DATE_ATOM))),
-        ];
-    }
-
-    return $summary;
+    return [[
+        'mode' => 'external_python_pipeline',
+        'items' => 0,
+        'generated_at' => gmdate(DATE_ATOM),
+        'message' => 'PHP runtime precompute is disabled. Use python compute_buy_all.',
+    ]];
 }
 
 function buy_all_planner_data_uncached(array $query = []): array

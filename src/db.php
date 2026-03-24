@@ -13655,3 +13655,55 @@ function db_buy_all_precomputed_payload_store(string $cacheKey, array $payload):
         [$safeKey, $json]
     );
 }
+
+function db_buy_all_summary_latest(string $modeKey, string $sortKey, string $filtersHash, int $maxAgeSeconds = 1800): ?array
+{
+    $safeMode = mb_substr(trim($modeKey), 0, 40);
+    $safeSort = mb_substr(trim($sortKey), 0, 40);
+    $safeHash = mb_substr(trim($filtersHash), 0, 64);
+    if ($safeMode === '' || $safeSort === '' || $safeHash === '') {
+        return null;
+    }
+
+    $safeMaxAge = max(60, min(86400, $maxAgeSeconds));
+    $row = db_select_one(
+        'SELECT id, mode_key, sort_key, filters_hash, summary_json, payload_json, computed_at
+         FROM buy_all_summary
+         WHERE mode_key = ?
+           AND sort_key = ?
+           AND filters_hash = ?
+           AND computed_at >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL ? SECOND)
+         ORDER BY computed_at DESC, id DESC
+         LIMIT 1',
+        [$safeMode, $safeSort, $safeHash, $safeMaxAge]
+    );
+
+    return $row ?: null;
+}
+
+function db_buy_all_items_by_summary_id(int $summaryId): array
+{
+    if ($summaryId <= 0) {
+        return [];
+    }
+
+    return db_select(
+        'SELECT page_number, rank_position, item_json
+         FROM buy_all_items
+         WHERE summary_id = ?
+         ORDER BY page_number ASC, rank_position ASC',
+        [$summaryId]
+    );
+}
+
+function db_signals_recent(int $limit = 200): array
+{
+    $safeLimit = max(1, min(1000, $limit));
+
+    return db_select(
+        'SELECT id, signal_key, signal_type, severity, type_id, doctrine_fit_id, signal_title, signal_text, signal_payload_json, computed_at
+         FROM signals
+         ORDER BY computed_at DESC, id DESC
+         LIMIT ' . $safeLimit
+    );
+}

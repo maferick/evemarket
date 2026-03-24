@@ -170,6 +170,20 @@ README.md
 - Configure connectivity in `src/config/local.php` under the new `influxdb` section. Keep it disabled until the InfluxDB service, bucket, token, and backfill plan are ready.
 - Detailed rollout guidance, schema mapping, read-path rules, retention, and rollback notes live in `docs/INFLUXDB_ROLLUP_OFFLOAD.md`.
 
+## Precomputed Intelligence Pipeline (MariaDB + InfluxDB + Python)
+
+- PHP request handlers now expect precomputed planner/signal datasets in MariaDB (`buy_all_summary`, `buy_all_items`, `signals`, `doctrine_readiness`) and avoid runtime-heavy planner computation.
+- Cron/systemd should run:
+  - `bin/python_compute_buy_all.py` to materialize Buy All planner payloads into MariaDB.
+  - `bin/python_compute_signals.py` to generate undervalue/shortage/blocker/spike signals from MariaDB state plus optional InfluxDB trends.
+- Recommended cadence:
+  - `compute_buy_all`: every 1–5 minutes.
+  - `compute_signals`: every 1–5 minutes.
+  - `compute_graph_sync`: every 2–5 minutes (incremental Neo4j sync).
+  - `compute_graph_insights`: every 5–10 minutes.
+- Jobs use MariaDB-backed locks (`compute_job_locks`) and structured run telemetry (`job_runs`) to prevent overlap and keep run metrics observable.
+- PHP should continue reading from MariaDB only; InfluxDB and any optional graph intelligence remain Python-side compute dependencies.
+
 ## Configuration Strategy
 
 - SupplyCore does **not** require a separate `.env` file.

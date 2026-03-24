@@ -8,6 +8,131 @@ CREATE TABLE IF NOT EXISTS buy_all_precomputed_payloads (
     KEY idx_buy_all_precomputed_generated (generated_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+CREATE TABLE IF NOT EXISTS buy_all_summary (
+    id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    mode_key VARCHAR(40) NOT NULL,
+    sort_key VARCHAR(40) NOT NULL,
+    filters_hash CHAR(64) NOT NULL,
+    summary_json LONGTEXT NOT NULL,
+    payload_json LONGTEXT NOT NULL,
+    computed_at DATETIME NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uniq_buy_all_summary_request (mode_key, sort_key, filters_hash),
+    KEY idx_buy_all_summary_lookup (mode_key, sort_key, filters_hash, computed_at),
+    KEY idx_buy_all_summary_computed (computed_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS buy_all_items (
+    id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    summary_id BIGINT UNSIGNED NOT NULL,
+    page_number INT UNSIGNED NOT NULL DEFAULT 1,
+    rank_position INT UNSIGNED NOT NULL DEFAULT 0,
+    type_id INT UNSIGNED NOT NULL,
+    quantity INT UNSIGNED NOT NULL DEFAULT 0,
+    mode_rank_score DECIMAL(8,2) DEFAULT NULL,
+    necessity_score DECIMAL(8,2) DEFAULT NULL,
+    profit_score DECIMAL(8,2) DEFAULT NULL,
+    item_json LONGTEXT NOT NULL,
+    computed_at DATETIME NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY uniq_buy_all_items_summary_type_page (summary_id, type_id, page_number),
+    KEY idx_buy_all_items_summary_page_rank (summary_id, page_number, rank_position),
+    KEY idx_buy_all_items_item_id (type_id),
+    KEY idx_buy_all_items_type_computed (type_id, computed_at),
+    KEY idx_buy_all_items_computed (computed_at),
+    CONSTRAINT fk_buy_all_items_summary FOREIGN KEY (summary_id) REFERENCES buy_all_summary(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS signals (
+    id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    signal_key VARCHAR(120) NOT NULL,
+    signal_type VARCHAR(60) NOT NULL,
+    severity VARCHAR(20) NOT NULL,
+    type_id INT UNSIGNED DEFAULT NULL,
+    doctrine_fit_id INT UNSIGNED DEFAULT NULL,
+    signal_title VARCHAR(255) NOT NULL,
+    signal_text VARCHAR(500) NOT NULL,
+    signal_payload_json LONGTEXT DEFAULT NULL,
+    computed_at DATETIME NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY uniq_signals_signal_key (signal_key),
+    KEY idx_signals_signal_type_computed (signal_type, computed_at),
+    KEY idx_signals_lookup (signal_type, severity, computed_at),
+    KEY idx_signals_type_id (type_id, computed_at),
+    KEY idx_signals_computed (computed_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS job_runs (
+    id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    job_name VARCHAR(120) NOT NULL,
+    run_key VARCHAR(160) NOT NULL,
+    status ENUM('running', 'success', 'failed', 'skipped') NOT NULL DEFAULT 'running',
+    duration_ms INT UNSIGNED NOT NULL DEFAULT 0,
+    rows_processed INT UNSIGNED NOT NULL DEFAULT 0,
+    rows_written INT UNSIGNED NOT NULL DEFAULT 0,
+    error_text VARCHAR(500) DEFAULT NULL,
+    meta_json LONGTEXT DEFAULT NULL,
+    started_at DATETIME NOT NULL,
+    finished_at DATETIME DEFAULT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uniq_job_runs_run_key (run_key),
+    KEY idx_job_runs_job_started (job_name, started_at),
+    KEY idx_job_runs_status_started (status, started_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS compute_job_locks (
+    lock_key VARCHAR(120) PRIMARY KEY,
+    owner_key VARCHAR(160) NOT NULL,
+    acquired_at DATETIME NOT NULL,
+    expires_at DATETIME NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    KEY idx_compute_job_locks_expires (expires_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS graph_sync_state (
+    sync_key VARCHAR(120) PRIMARY KEY,
+    last_synced_at DATETIME DEFAULT NULL,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS doctrine_dependency_depth (
+    doctrine_id INT UNSIGNED PRIMARY KEY,
+    doctrine_name VARCHAR(190) NOT NULL,
+    fit_count INT UNSIGNED NOT NULL DEFAULT 0,
+    item_count INT UNSIGNED NOT NULL DEFAULT 0,
+    dependency_depth INT UNSIGNED NOT NULL DEFAULT 0,
+    computed_at DATETIME NOT NULL,
+    KEY idx_doctrine_dependency_depth_computed (computed_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS item_dependency_score (
+    type_id INT UNSIGNED PRIMARY KEY,
+    doctrine_count INT UNSIGNED NOT NULL DEFAULT 0,
+    fit_count INT UNSIGNED NOT NULL DEFAULT 0,
+    dependency_score DECIMAL(8,2) NOT NULL DEFAULT 0.00,
+    computed_at DATETIME NOT NULL,
+    KEY idx_item_dependency_score_value (dependency_score, computed_at),
+    KEY idx_item_dependency_score_computed (computed_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS doctrine_readiness (
+    id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    doctrine_fit_id INT UNSIGNED NOT NULL,
+    readiness_state VARCHAR(40) NOT NULL,
+    blocker_count INT UNSIGNED NOT NULL DEFAULT 0,
+    pressure_score DECIMAL(8,2) NOT NULL DEFAULT 0.00,
+    readiness_payload_json LONGTEXT DEFAULT NULL,
+    computed_at DATETIME NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uniq_doctrine_readiness_fit (doctrine_fit_id),
+    KEY idx_doctrine_readiness_state (readiness_state, computed_at),
+    KEY idx_doctrine_readiness_computed (computed_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 CREATE TABLE IF NOT EXISTS app_settings (
     id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
     setting_key VARCHAR(120) NOT NULL UNIQUE,
