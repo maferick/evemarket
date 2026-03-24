@@ -1624,6 +1624,36 @@ function supplycore_cache_invalidate_for_dataset(string $datasetKey): void
     }
 }
 
+function supplycore_dataset_triggers_summary_refresh(string $datasetKey): bool
+{
+    $normalized = trim($datasetKey);
+    if ($normalized === '') {
+        return false;
+    }
+
+    return str_starts_with($normalized, 'alliance.structure.')
+        || str_starts_with($normalized, 'market.hub.')
+        || str_starts_with($normalized, 'killmail.r2z2')
+        || str_starts_with($normalized, 'static_data.');
+}
+
+function supplycore_schedule_summary_refresh_for_dataset(string $datasetKey, string $reason = 'sync-success'): void
+{
+    if (!supplycore_dataset_triggers_summary_refresh($datasetKey)) {
+        return;
+    }
+
+    $safeReason = trim($reason);
+    if ($safeReason === '') {
+        $safeReason = 'sync-success';
+    }
+
+    $datasetToken = preg_replace('/[^a-z0-9_.:-]+/i', '-', strtolower(trim($datasetKey))) ?: 'dataset';
+    $refreshReason = mb_substr($safeReason . ':' . $datasetToken, 0, 160);
+
+    doctrine_schedule_intelligence_refresh($refreshReason);
+}
+
 function station_options(): array
 {
     try {
@@ -11215,6 +11245,7 @@ function mark_sync_success(string $datasetKey, string $syncMode, ?string $cursor
 
     if ($ok) {
         supplycore_cache_invalidate_for_dataset($datasetKey);
+        supplycore_schedule_summary_refresh_for_dataset($datasetKey);
     }
 
     return $ok;
