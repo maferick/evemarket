@@ -280,19 +280,21 @@ function active_section(): string
 function get_settings(array $keys = []): array
 {
     try {
-        if ($keys === []) {
-            $rows = db_select('SELECT setting_key, setting_value FROM app_settings');
-        } else {
-            $placeholders = implode(',', array_fill(0, count($keys), '?'));
-            $rows = db_select("SELECT setting_key, setting_value FROM app_settings WHERE setting_key IN ($placeholders)", $keys);
-        }
+        $all = db_app_settings_all();
     } catch (Throwable) {
         return [];
     }
 
+    if ($keys === []) {
+        return $all;
+    }
+
     $settings = [];
-    foreach ($rows as $row) {
-        $settings[$row['setting_key']] = $row['setting_value'];
+    foreach ($keys as $key) {
+        $safeKey = (string) $key;
+        if (array_key_exists($safeKey, $all)) {
+            $settings[$safeKey] = $all[$safeKey];
+        }
     }
 
     return $settings;
@@ -301,12 +303,10 @@ function get_settings(array $keys = []): array
 function get_setting(string $key, mixed $default = null): mixed
 {
     try {
-        $row = db_select_one('SELECT setting_value FROM app_settings WHERE setting_key = ?', [$key]);
+        return db_app_setting_get($key, $default);
     } catch (Throwable) {
         return $default;
     }
-
-    return $row['setting_value'] ?? $default;
 }
 
 function save_settings(array $settings): bool
@@ -26602,7 +26602,58 @@ function buy_all_pack_pages(array $items): array
     return ['pages' => $pages, 'excluded_items' => $excluded];
 }
 
+
+function buy_all_precompute_cache_key(array $request): string
+{
+    $payload = [
+        'mode' => (string) ($request['mode'] ?? 'blended'),
+        'sort' => (string) ($request['sort'] ?? 'blended_score'),
+        'filters' => (array) ($request['filters'] ?? []),
+    ];
+
+    return hash('sha256', json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE));
+}
+
 function buy_all_planner_data(array $query = []): array
+{
+    $request = buy_all_request($query);
+    $cacheKey = buy_all_precompute_cache_key($request);
+    $cached = db_buy_all_precomputed_payload_get($cacheKey, 300);
+    if ($cached !== null) {
+        return $cached;
+    }
+
+    $computed = buy_all_planner_data_uncached($query);
+    db_buy_all_precomputed_payload_store($cacheKey, $computed);
+
+    return $computed;
+}
+
+function buy_all_precompute_refresh_defaults(): array
+{
+    $requests = [
+        ['mode' => 'blended', 'sort' => 'blended_score', 'page' => 1],
+        ['mode' => 'doctrine_critical', 'sort' => 'mode_rank_score', 'page' => 1],
+        ['mode' => 'opportunity', 'sort' => 'mode_rank_score', 'page' => 1],
+        ['mode' => 'seed_backlog', 'sort' => 'necessity_score', 'page' => 1],
+    ];
+
+    $summary = [];
+    foreach ($requests as $request) {
+        $payload = buy_all_planner_data_uncached($request);
+        $cacheKey = buy_all_precompute_cache_key((array) ($payload['request'] ?? $request));
+        db_buy_all_precomputed_payload_store($cacheKey, $payload);
+        $summary[] = [
+            'mode' => (string) ($request['mode'] ?? 'blended'),
+            'items' => count((array) ($payload['items'] ?? [])),
+            'generated_at' => (string) (($payload['summary']['generated_at'] ?? gmdate(DATE_ATOM))),
+        ];
+    }
+
+    return $summary;
+}
+
+function buy_all_planner_data_uncached(array $query = []): array
 {
     $perfStartedAt = supplycore_perf_begin(__FUNCTION__);
     $request = buy_all_request($query);

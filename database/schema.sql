@@ -1,3 +1,13 @@
+
+CREATE TABLE IF NOT EXISTS buy_all_precomputed_payloads (
+    cache_key CHAR(64) NOT NULL PRIMARY KEY,
+    payload_json LONGTEXT NOT NULL,
+    generated_at DATETIME NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    KEY idx_buy_all_precomputed_generated (generated_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 CREATE TABLE IF NOT EXISTS app_settings (
     id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
     setting_key VARCHAR(120) NOT NULL UNIQUE,

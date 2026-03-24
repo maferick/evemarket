@@ -204,6 +204,66 @@ function db_query_cache_clear(): void
     $store['request'] = [];
 }
 
+function &db_app_settings_cache_ref(): array
+{
+    static $cache = [
+        'loaded' => false,
+        'values' => [],
+    ];
+
+    return $cache;
+}
+
+function db_app_settings_cache_clear(): void
+{
+    $cache = &db_app_settings_cache_ref();
+    $cache['loaded'] = false;
+    $cache['values'] = [];
+}
+
+function db_app_settings_all(): array
+{
+    $cache = &db_app_settings_cache_ref();
+    if ($cache['loaded'] === true) {
+        return (array) $cache['values'];
+    }
+
+    $rows = db_select('SELECT setting_key, setting_value FROM app_settings');
+    $settings = [];
+    foreach ($rows as $row) {
+        $key = trim((string) ($row['setting_key'] ?? ''));
+        if ($key === '') {
+            continue;
+        }
+        $settings[$key] = (string) ($row['setting_value'] ?? '');
+    }
+
+    $cache['loaded'] = true;
+    $cache['values'] = $settings;
+
+    return $settings;
+}
+
+function db_app_setting_get(string $settingKey, mixed $default = null): mixed
+{
+    $settings = db_app_settings_all();
+
+    return $settings[$settingKey] ?? $default;
+}
+
+function db_runtime_schema_checks_enabled(): bool
+{
+    static $enabled = null;
+    if ($enabled !== null) {
+        return $enabled;
+    }
+
+    $raw = strtolower(trim((string) ($_ENV['SUPPLYCORE_RUNTIME_SCHEMA_CHECKS'] ?? getenv('SUPPLYCORE_RUNTIME_SCHEMA_CHECKS') ?: '0')));
+    $enabled = in_array($raw, ['1', 'true', 'yes', 'on'], true);
+
+    return $enabled;
+}
+
 function db_select_cached(string $sql, array $params = [], int $ttlSeconds = 60, string $namespace = 'default'): array
 {
     $safeTtl = max(30, min(120, $ttlSeconds));
@@ -330,6 +390,7 @@ function db_select_one(string $sql, array $params = []): ?array
 function db_execute(string $sql, array $params = []): bool
 {
     db_query_cache_clear();
+    db_app_settings_cache_clear();
     $startedAt = microtime(true);
     $stmt = db()->prepare($sql);
     $result = $stmt->execute($params);
@@ -341,6 +402,7 @@ function db_execute(string $sql, array $params = []): bool
 
 function db_app_settings_upsert_many(array $settings): bool
 {
+    db_app_settings_cache_clear();
     foreach ($settings as $key => $value) {
         db_execute(
             'INSERT INTO app_settings (setting_key, setting_value) VALUES (?, ?) ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value), updated_at = CURRENT_TIMESTAMP',
@@ -393,8 +455,7 @@ function db_transaction(callable $callback): mixed
 
 function db_incremental_chunk_size(): int
 {
-    $row = db_select_one('SELECT setting_value FROM app_settings WHERE setting_key = ? LIMIT 1', ['incremental_chunk_size']);
-    $size = (int) ($row['setting_value'] ?? 1000);
+    $size = (int) db_app_setting_get('incremental_chunk_size', 1000);
 
     return max(100, min(10000, $size));
 }
@@ -519,9 +580,8 @@ function db_market_history_retention_days(string $tier): int
     $min = (int) $spec['min'];
     $max = (int) $spec['max'];
 
-    $row = db_select_one('SELECT setting_value FROM app_settings WHERE setting_key = ? LIMIT 1', [$setting]);
-    if ($row !== null) {
-        $value = (int) ($row['setting_value'] ?? $default);
+    $value = (int) db_app_setting_get($setting, $default);
+    if ($value > 0) {
 
         return max($min, min($max, $value > 0 ? $value : $default));
     }
@@ -532,16 +592,14 @@ function db_market_history_retention_days(string $tier): int
 function db_time_series_bucket_retention_days(string $resolution): int
 {
     $default = $resolution === '1h' ? 14 : 180;
-    $row = db_select_one('SELECT setting_value FROM app_settings WHERE setting_key = ? LIMIT 1', ['analytics_bucket_' . $resolution . '_retention_days']);
-    $days = (int) ($row['setting_value'] ?? $default);
+    $days = (int) db_app_setting_get('analytics_bucket_' . $resolution . '_retention_days', $default);
 
     return max($resolution === '1h' ? 1 : 30, min(3650, $days > 0 ? $days : $default));
 }
 
 function db_time_series_job_setting_int(string $settingKey, int $default, int $min, int $max): int
 {
-    $row = db_select_one('SELECT setting_value FROM app_settings WHERE setting_key = ? LIMIT 1', [$settingKey]);
-    $value = (int) ($row['setting_value'] ?? $default);
+    $value = (int) db_app_setting_get($settingKey, $default);
 
     return max($min, min($max, $value > 0 ? $value : $default));
 }
@@ -573,6 +631,10 @@ function db_time_series_cache_ttl_seconds(): int
 
 function db_table_has_index(string $table, string $indexName): bool
 {
+    if (!db_runtime_schema_checks_enabled()) {
+        return true;
+    }
+
     $row = db_select_one(
         'SELECT 1
          FROM information_schema.statistics
@@ -597,6 +659,10 @@ function db_ensure_table_index(string $table, string $indexName, string $definit
 
 function db_killmail_payload_schema_ensure(): void
 {
+
+    if (!db_runtime_schema_checks_enabled()) {
+        return;
+    }
     static $ensured = false;
 
     if ($ensured) {
@@ -649,6 +715,10 @@ function db_killmail_payload_schema_ensure(): void
 
 function db_killmail_overview_schema_ensure(): void
 {
+
+    if (!db_runtime_schema_checks_enabled()) {
+        return;
+    }
     static $ensured = false;
 
     if ($ensured) {
@@ -782,8 +852,7 @@ function db_killmail_event_payload_by_sequence(int $sequenceId): ?array
 
 function db_setting_int(string $settingKey, int $default, int $min, int $max): int
 {
-    $row = db_select_one('SELECT setting_value FROM app_settings WHERE setting_key = ? LIMIT 1', [$settingKey]);
-    $value = (int) ($row['setting_value'] ?? $default);
+    $value = (int) db_app_setting_get($settingKey, $default);
 
     return max($min, min($max, $value > 0 ? $value : $default));
 }
@@ -917,6 +986,10 @@ function db_time_series_nullable_dimension_schema_ensure(
 
 function db_time_series_analytics_ensure_schema(): void
 {
+
+    if (!db_runtime_schema_checks_enabled()) {
+        return;
+    }
     static $ensured = false;
 
     if ($ensured) {
@@ -2279,8 +2352,7 @@ function db_market_orders_history_cutover_allowed_modes(string $scope): array
 function db_market_orders_history_cutover_mode(string $scope): string
 {
     $key = db_market_orders_history_cutover_setting_key($scope);
-    $row = db_select_one('SELECT setting_value FROM app_settings WHERE setting_key = ? LIMIT 1', [$key]);
-    $mode = trim((string) ($row['setting_value'] ?? ''));
+    $mode = trim((string) db_app_setting_get($key, ''));
     $allowedModes = db_market_orders_history_cutover_allowed_modes($scope);
 
     if (!in_array($mode, $allowedModes, true)) {
@@ -2612,6 +2684,10 @@ function db_partitioned_table_retention_cleanup(
 
 function db_market_orders_history_partitioned_schema_ensure(int $futureMonths = 3): void
 {
+
+    if (!db_runtime_schema_checks_enabled()) {
+        return;
+    }
     static $ensured = false;
 
     if ($ensured) {
@@ -2879,8 +2955,7 @@ function db_market_order_snapshots_summary_cutover_allowed_modes(string $scope):
 function db_market_order_snapshots_summary_cutover_mode(string $scope): string
 {
     $key = db_market_order_snapshots_summary_cutover_setting_key($scope);
-    $row = db_select_one('SELECT setting_value FROM app_settings WHERE setting_key = ? LIMIT 1', [$key]);
-    $mode = trim((string) ($row['setting_value'] ?? ''));
+    $mode = trim((string) db_app_setting_get($key, ''));
     $allowedModes = db_market_order_snapshots_summary_cutover_allowed_modes($scope);
 
     if (!in_array($mode, $allowedModes, true)) {
@@ -2997,6 +3072,10 @@ function db_market_order_snapshots_summary_partition_boundaries(string $table = 
 
 function db_market_order_snapshots_summary_partitioned_schema_ensure(int $futureMonths = 3): void
 {
+
+    if (!db_runtime_schema_checks_enabled()) {
+        return;
+    }
     static $ensured = false;
 
     if ($ensured) {
@@ -6376,6 +6455,10 @@ function db_intelligence_snapshots_get_many(array $snapshotKeys): array
 
 function db_market_deal_alerts_ensure_schema(): void
 {
+
+    if (!db_runtime_schema_checks_enabled()) {
+        return;
+    }
     static $ensured = false;
 
     if ($ensured) {
@@ -7025,6 +7108,10 @@ function db_intelligence_snapshot_mark_updating(string $snapshotKey, ?string $me
 
 function db_ui_refresh_schema_ensure(): void
 {
+
+    if (!db_runtime_schema_checks_enabled()) {
+        return;
+    }
     static $ensured = false;
 
     if ($ensured) {
@@ -11207,6 +11294,10 @@ function db_item_name_cache_upsert(string $normalizedName, string $itemName, ?in
 
 function db_table_exists(string $tableName): bool
 {
+    if (!db_runtime_schema_checks_enabled()) {
+        return true;
+    }
+
     $row = db_select_one(
         'SELECT 1 FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? LIMIT 1',
         [$tableName]
@@ -11217,6 +11308,10 @@ function db_table_exists(string $tableName): bool
 
 function db_column_exists(string $tableName, string $columnName): bool
 {
+    if (!db_runtime_schema_checks_enabled()) {
+        return true;
+    }
+
     $row = db_select_one(
         'SELECT 1 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ? LIMIT 1',
         [$tableName, $columnName]
@@ -11227,6 +11322,10 @@ function db_column_exists(string $tableName, string $columnName): bool
 
 function db_index_exists(string $tableName, string $indexName): bool
 {
+    if (!db_runtime_schema_checks_enabled()) {
+        return true;
+    }
+
     $row = db_select_one(
         'SELECT 1 FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND INDEX_NAME = ? LIMIT 1',
         [$tableName, $indexName]
@@ -11237,6 +11336,10 @@ function db_index_exists(string $tableName, string $indexName): bool
 
 function db_foreign_key_delete_rule(string $constraintName): ?string
 {
+    if (!db_runtime_schema_checks_enabled()) {
+        return 'SET NULL';
+    }
+
     $row = db_select_one(
         'SELECT DELETE_RULE FROM information_schema.REFERENTIAL_CONSTRAINTS WHERE CONSTRAINT_SCHEMA = DATABASE() AND CONSTRAINT_NAME = ? LIMIT 1',
         [$constraintName]
@@ -11247,6 +11350,10 @@ function db_foreign_key_delete_rule(string $constraintName): ?string
 
 function item_scope_db_ensure_schema(): void
 {
+
+    if (!db_runtime_schema_checks_enabled()) {
+        return;
+    }
     static $ensured = false;
 
     if ($ensured) {
@@ -11311,6 +11418,10 @@ function item_scope_db_ensure_schema(): void
 
 function doctrine_db_ensure_schema(): void
 {
+
+    if (!db_runtime_schema_checks_enabled()) {
+        return;
+    }
     static $ensured = false;
 
     if ($ensured) {
@@ -13080,6 +13191,10 @@ function db_item_priority_snapshot_bulk_insert(array $rows, ?int $chunkSize = nu
 
 function db_worker_jobs_ensure_schema(): void
 {
+
+    if (!db_runtime_schema_checks_enabled()) {
+        return;
+    }
     db_execute("CREATE TABLE IF NOT EXISTS worker_jobs (
         id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
         job_key VARCHAR(190) NOT NULL,
@@ -13491,4 +13606,52 @@ function db_worker_job_retry(int $jobId, string $workerId, string $error, ?int $
     );
 
     return db_select_one('SELECT * FROM worker_jobs WHERE id = ? LIMIT 1', [$jobId]);
+}
+
+function db_buy_all_precomputed_payload_get(string $cacheKey, int $maxAgeSeconds = 300): ?array
+{
+    $safeKey = trim($cacheKey);
+    if ($safeKey === '') {
+        return null;
+    }
+
+    $safeMaxAge = max(30, min(3600, $maxAgeSeconds));
+    $row = db_select_one(
+        'SELECT payload_json, generated_at
+         FROM buy_all_precomputed_payloads
+         WHERE cache_key = ?
+           AND generated_at >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL ? SECOND)
+         LIMIT 1',
+        [$safeKey, $safeMaxAge]
+    );
+    if ($row === null) {
+        return null;
+    }
+
+    $decoded = json_decode((string) ($row['payload_json'] ?? ''), true);
+
+    return is_array($decoded) ? $decoded : null;
+}
+
+function db_buy_all_precomputed_payload_store(string $cacheKey, array $payload): bool
+{
+    $safeKey = trim($cacheKey);
+    if ($safeKey === '') {
+        return false;
+    }
+
+    $json = json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE);
+    if ($json === false) {
+        return false;
+    }
+
+    return db_execute(
+        'INSERT INTO buy_all_precomputed_payloads (cache_key, payload_json, generated_at)
+         VALUES (?, ?, UTC_TIMESTAMP())
+         ON DUPLICATE KEY UPDATE
+            payload_json = VALUES(payload_json),
+            generated_at = VALUES(generated_at),
+            updated_at = CURRENT_TIMESTAMP',
+        [$safeKey, $json]
+    );
 }
