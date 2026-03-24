@@ -27,6 +27,16 @@ def main() -> int:
     run = start_job_run(db, "compute_signals")
     try:
         result = run_compute_signals(db, config.raw.get("influx", {}))
+        print(
+            json.dumps(
+                {
+                    "job": "compute_signals",
+                    "rows_processed": int(result.get("rows_processed") or 0),
+                    "rows_written": int(result.get("rows_written") or 0),
+                },
+                ensure_ascii=False,
+            )
+        )
         finish_job_run(
             db,
             run,

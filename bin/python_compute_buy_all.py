@@ -16,6 +16,7 @@ def main() -> int:
     from orchestrator.db import SupplyCoreDb
     from orchestrator.job_utils import acquire_job_lock, finish_job_run, release_job_lock, start_job_run
     from orchestrator.jobs.compute_buy_all import run_compute_buy_all
+    from orchestrator.jobs.compute_signals import run_compute_signals
 
     config = load_php_runtime_config(repo_root)
     db = SupplyCoreDb(config.raw.get("db", {}))
@@ -27,6 +28,16 @@ def main() -> int:
     run = start_job_run(db, "compute_buy_all")
     try:
         result = run_compute_buy_all(db)
+        print(
+            json.dumps(
+                {
+                    "job": "compute_buy_all",
+                    "rows_processed": int(result.get("rows_processed") or 0),
+                    "rows_written": int(result.get("rows_written") or 0),
+                },
+                ensure_ascii=False,
+            )
+        )
         finish_job_run(
             db,
             run,
@@ -35,7 +46,45 @@ def main() -> int:
             rows_written=int(result.get("rows_written") or 0),
             meta={"job_name": "compute_buy_all"},
         )
-        print(json.dumps({"status": "ok", **result}, ensure_ascii=False))
+        signals_result: dict[str, object] = {"status": "skipped", "reason": "lock_not_acquired"}
+        signal_lock_owner = acquire_job_lock(db, "compute_signals", ttl_seconds=300)
+        if signal_lock_owner is not None:
+            signal_run = start_job_run(db, "compute_signals")
+            try:
+                signals_result = run_compute_signals(db, config.raw.get("influx", {}))
+                print(
+                    json.dumps(
+                        {
+                            "job": "compute_signals",
+                            "rows_processed": int(signals_result.get("rows_processed") or 0),
+                            "rows_written": int(signals_result.get("rows_written") or 0),
+                        },
+                        ensure_ascii=False,
+                    )
+                )
+                finish_job_run(
+                    db,
+                    signal_run,
+                    status="success",
+                    rows_processed=int(signals_result.get("rows_processed") or 0),
+                    rows_written=int(signals_result.get("rows_written") or 0),
+                    meta={"job_name": "compute_signals", "trigger": "compute_buy_all"},
+                )
+            except Exception as signal_error:  # noqa: BLE001
+                finish_job_run(
+                    db,
+                    signal_run,
+                    status="failed",
+                    rows_processed=0,
+                    rows_written=0,
+                    error_text=str(signal_error),
+                    meta={"job_name": "compute_signals", "trigger": "compute_buy_all"},
+                )
+                raise
+            finally:
+                release_job_lock(db, "compute_signals", signal_lock_owner)
+
+        print(json.dumps({"status": "ok", **result, "compute_signals": signals_result}, ensure_ascii=False))
         return 0
     except Exception as error:  # noqa: BLE001
         finish_job_run(db, run, status="failed", rows_processed=0, rows_written=0, error_text=str(error), meta={"job_name": "compute_buy_all"})

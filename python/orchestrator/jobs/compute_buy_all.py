@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from hashlib import sha256
 from typing import Any
 
@@ -13,6 +14,23 @@ DEFAULT_REQUESTS: list[dict[str, Any]] = [
     {"mode": "opportunity", "sort": "mode_rank_score", "filters": {}},
     {"mode": "seed_backlog", "sort": "necessity_score", "filters": {}},
 ]
+
+DECIMAL_ZERO = Decimal("0")
+
+
+def to_decimal(value: Any, default: str = "0") -> Decimal:
+    if value is None:
+        return Decimal(default)
+    if isinstance(value, Decimal):
+        return value
+    try:
+        return Decimal(str(value))
+    except (InvalidOperation, ValueError, TypeError):
+        return Decimal(default)
+
+
+def _q2(value: Decimal) -> Decimal:
+    return value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
 
 def _filters_hash(filters: dict[str, Any]) -> str:
@@ -71,68 +89,78 @@ def _ranked_items(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         type_id = int(row.get("type_id") or 0)
         if type_id <= 0:
             continue
-        buy_price = float(row.get("buy_price") or 0.0)
-        sell_price = float(row.get("sell_price") or 0.0)
-        quantity = max(1, int((row.get("reference_total_sell_volume") or 0) * 0.06))
+        buy_price = to_decimal(row.get("buy_price"))
+        sell_price = to_decimal(row.get("sell_price"))
+        quantity = max(1, int(to_decimal(row.get("reference_total_sell_volume")) * Decimal("0.06")))
         quantity = min(500, quantity)
-        dependency_score = float(row.get("dependency_score") or 0.0)
+        dependency_score = to_decimal(row.get("dependency_score"))
         doctrine_count = max(0, int(row.get("doctrine_count") or 0))
         dependency_fit_count = max(0, int(row.get("dependency_fit_count") or 0))
+        risk_score = to_decimal(row.get("risk_score"))
+        opportunity_score = to_decimal(row.get("opportunity_score"))
+        unit_volume = to_decimal(row.get("unit_volume"), default="1")
 
-        dependency_necessity_boost = min(30.0, dependency_score * 0.45)
-        doctrine_breadth_boost = min(18.0, float(doctrine_count) * 1.8)
-        bottleneck_bonus = 12.0 if doctrine_count >= 3 and int(row.get("weak_alliance_stock") or 0) == 1 else 0.0
+        dependency_necessity_boost = min(Decimal("30"), dependency_score * Decimal("0.45"))
+        doctrine_breadth_boost = min(Decimal("18"), Decimal(doctrine_count) * Decimal("1.8"))
+        bottleneck_bonus = Decimal("12") if doctrine_count >= 3 and int(row.get("weak_alliance_stock") or 0) == 1 else DECIMAL_ZERO
 
         necessity = min(
-            100.0,
-            (float(row.get("risk_score") or 0) * 0.50)
-            + (35.0 if int(row.get("missing_in_alliance") or 0) == 1 else 0.0)
+            Decimal("100"),
+            (risk_score * Decimal("0.50"))
+            + (Decimal("35") if int(row.get("missing_in_alliance") or 0) == 1 else DECIMAL_ZERO)
             + dependency_necessity_boost
             + doctrine_breadth_boost
             + bottleneck_bonus,
         )
-        profit = min(100.0, max(0.0, float(row.get("opportunity_score") or 0)))
-        mode_rank = round((necessity * 0.62) + (profit * 0.38), 2)
-        blended_score = round(min(100.0, mode_rank + min(15.0, dependency_score * 0.18)), 2)
+        profit = min(Decimal("100"), max(DECIMAL_ZERO, opportunity_score))
+        mode_rank = _q2((necessity * Decimal("0.62")) + (profit * Decimal("0.38")))
+        blended_score = _q2(min(Decimal("100"), mode_rank + min(Decimal("15"), dependency_score * Decimal("0.18"))))
 
-        net_profit_per_unit = sell_price - buy_price if buy_price > 0 and sell_price > 0 else 0.0
+        net_profit_per_unit = sell_price - buy_price if buy_price > DECIMAL_ZERO and sell_price > DECIMAL_ZERO else DECIMAL_ZERO
         graph_reason = (
-            f"Used by {doctrine_count} doctrine(s), {dependency_fit_count} fit(s), dependency score {dependency_score:.1f}."
-            if dependency_score > 0
+            f"Used by {doctrine_count} doctrine(s), {dependency_fit_count} fit(s), dependency score {_q2(dependency_score):.1f}."
+            if dependency_score > DECIMAL_ZERO
             else "No graph dependency enrichment yet."
         )
+        total_volume = _q2(unit_volume * Decimal(quantity))
         ranked.append(
             {
                 "type_id": type_id,
                 "item_name": str(row.get("type_name") or f"Type #{type_id}"),
                 "quantity": quantity,
                 "final_planner_quantity": quantity,
-                "necessity_score": round(necessity, 2),
-                "profit_score": round(profit, 2),
+                "necessity_score": _q2(necessity),
+                "profit_score": _q2(profit),
                 "mode_rank_score": mode_rank,
                 "blended_score": blended_score,
                 "final_priority_score": blended_score,
-                "buy_price": round(buy_price, 2) if buy_price > 0 else None,
-                "sell_price": round(sell_price, 2) if sell_price > 0 else None,
-                "net_profit_total": round(net_profit_per_unit * quantity, 2),
+                "buy_price": _q2(buy_price) if buy_price > DECIMAL_ZERO else None,
+                "sell_price": _q2(sell_price) if sell_price > DECIMAL_ZERO else None,
+                "net_profit_total": _q2(net_profit_per_unit * Decimal(quantity)),
                 "is_doctrine_critical": bool(
                     int(row.get("missing_in_alliance") or 0) == 1
                     or int(row.get("weak_alliance_stock") or 0) == 1
                     or doctrine_count >= 3
                 ),
-                "unit_volume": float(row.get("unit_volume") or 1.0),
-                "total_volume": round(float(row.get("unit_volume") or 1.0) * quantity, 2),
+                "unit_volume": unit_volume,
+                "total_volume": total_volume,
                 "missing_in_alliance": bool(int(row.get("missing_in_alliance") or 0) == 1),
                 "weak_alliance_stock": bool(int(row.get("weak_alliance_stock") or 0) == 1),
                 "valid_doctrine_count": doctrine_count,
                 "valid_fits_count": dependency_fit_count,
-                "dependency_score": round(dependency_score, 4),
+                "dependency_score": dependency_score.quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP),
                 "reason_text": graph_reason,
-                "reason_theme": "Graph dependency priority" if dependency_score > 0 else "Market-only priority",
+                "reason_theme": "Graph dependency priority" if dependency_score > DECIMAL_ZERO else "Market-only priority",
             }
         )
 
-    ranked.sort(key=lambda item: (float(item.get("blended_score") or 0.0), float(item.get("necessity_score") or 0.0)), reverse=True)
+    ranked.sort(
+        key=lambda item: (
+            to_decimal(item.get("blended_score")),
+            to_decimal(item.get("necessity_score")),
+        ),
+        reverse=True,
+    )
     for idx, item in enumerate(ranked, start=1):
         item["rank_position"] = idx
     return ranked
@@ -163,8 +191,8 @@ def run_compute_buy_all(db: SupplyCoreDb, requests: list[dict[str, Any]] | None 
                 "candidate_count": len(page_items),
                 "total_item_types": len(page_items),
                 "total_units": sum(int(item.get("quantity") or 0) for item in page_items),
-                "total_volume": round(sum(float(item.get("total_volume") or 0.0) for item in page_items), 2),
-                "total_net_profit": round(sum(float(item.get("net_profit_total") or 0.0) for item in page_items), 2),
+                "total_volume": _q2(sum(to_decimal(item.get("total_volume")) for item in page_items)),
+                "total_net_profit": _q2(sum(to_decimal(item.get("net_profit_total")) for item in page_items)),
                 "doctrine_critical_count": sum(1 for item in page_items if bool(item.get("is_doctrine_critical"))),
                 "top_reason_theme": "Graph dependency priority",
             },
@@ -178,13 +206,13 @@ def run_compute_buy_all(db: SupplyCoreDb, requests: list[dict[str, Any]] | None 
                 "buy": "Hub snapshot from market_comparison_snapshot.",
                 "sell": "Alliance snapshot from market_comparison_snapshot.",
             },
-            "hauling": {"cost_per_m3": 320.0, "page_volume_limit": 385000.0, "page_item_type_limit": 42},
+            "hauling": {"cost_per_m3": Decimal("320"), "page_volume_limit": Decimal("385000"), "page_item_type_limit": 42},
             "mode_options": {},
             "sort_options": {},
         }
 
-        summary_json = json.dumps(payload["summary"], separators=(",", ":"), ensure_ascii=False)
-        payload_json = json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
+        summary_json = json.dumps(payload["summary"], separators=(",", ":"), ensure_ascii=False, default=_decimal_json_default)
+        payload_json = json.dumps(payload, separators=(",", ":"), ensure_ascii=False, default=_decimal_json_default)
         with db.transaction() as (_, cursor):
             cursor.execute(
                 """
@@ -228,10 +256,10 @@ def run_compute_buy_all(db: SupplyCoreDb, requests: list[dict[str, Any]] | None 
                         int(item.get("rank_position") or 0),
                         int(item.get("type_id") or 0),
                         int(item.get("quantity") or 0),
-                        float(item.get("mode_rank_score") or 0.0),
-                        float(item.get("necessity_score") or 0.0),
-                        float(item.get("profit_score") or 0.0),
-                        json.dumps(item, separators=(",", ":"), ensure_ascii=False),
+                        to_decimal(item.get("mode_rank_score")),
+                        to_decimal(item.get("necessity_score")),
+                        to_decimal(item.get("profit_score")),
+                        json.dumps(item, separators=(",", ":"), ensure_ascii=False, default=_decimal_json_default),
                         computed_at,
                     ),
                 )
@@ -246,3 +274,9 @@ def run_compute_buy_all(db: SupplyCoreDb, requests: list[dict[str, Any]] | None 
         "rows_processed": rows_processed,
         "rows_written": rows_written,
     }
+
+
+def _decimal_json_default(value: Any) -> Any:
+    if isinstance(value, Decimal):
+        return float(value)
+    raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")

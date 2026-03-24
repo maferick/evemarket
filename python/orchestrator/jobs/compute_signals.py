@@ -2,13 +2,28 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from ..db import SupplyCoreDb
 from ..influx import InfluxClient, InfluxConfig, InfluxQueryError
 
 
-def _historical_mean_by_type(influx_raw: dict[str, Any], type_ids: list[int]) -> dict[int, float]:
+DECIMAL_ZERO = Decimal("0")
+
+
+def to_decimal(value: Any, default: str = "0") -> Decimal:
+    if value is None:
+        return Decimal(default)
+    if isinstance(value, Decimal):
+        return value
+    try:
+        return Decimal(str(value))
+    except (InvalidOperation, ValueError, TypeError):
+        return Decimal(default)
+
+
+def _historical_mean_by_type(influx_raw: dict[str, Any], type_ids: list[int]) -> dict[int, Decimal]:
     if not bool(influx_raw.get("enabled", False)) or not type_ids:
         return {}
 
@@ -29,11 +44,11 @@ from(bucket: "{config.bucket}")
     except InfluxQueryError:
         return {}
 
-    out: dict[int, float] = {}
+    out: dict[int, Decimal] = {}
     for row in rows:
         type_id = int(row.get("type_id") or 0)
-        mean_price = float(row.get("_value") or 0.0)
-        if type_id > 0 and mean_price > 0:
+        mean_price = to_decimal(row.get("_value"))
+        if type_id > 0 and mean_price > DECIMAL_ZERO:
             out[type_id] = mean_price
     return out
 
@@ -80,21 +95,22 @@ def run_compute_signals(db: SupplyCoreDb, influx_raw: dict[str, Any] | None = No
             if type_id <= 0:
                 continue
             title = str(row.get("type_name") or f"Type #{type_id}")
-            hub_price = float(row.get("hub_price") or 0.0)
+            hub_price = to_decimal(row.get("hub_price"))
             alliance_volume = int(row.get("alliance_volume") or 0)
-            necessity = float(row.get("necessity_score") or 0.0)
-            dependency_score = float(row.get("dependency_score") or 0.0)
+            necessity = to_decimal(row.get("necessity_score"))
+            dependency_score = to_decimal(row.get("dependency_score"))
             doctrine_count = int(row.get("doctrine_count") or 0)
             dependency_fit_count = int(row.get("dependency_fit_count") or 0)
 
             signal_type = "market_spike"
             severity = "medium"
-            signal_text = f"Planner rank {float(row.get('mode_rank_score') or 0.0):.1f} with alliance volume {alliance_volume}."
+            mode_rank_score = to_decimal(row.get("mode_rank_score"))
+            signal_text = f"Planner rank {mode_rank_score:.1f} with alliance volume {alliance_volume}."
 
-            hist = float(historical.get(type_id) or 0.0)
-            price_worsening = bool(hist > 0 and hub_price > (hist * 1.10))
+            hist = to_decimal(historical.get(type_id))
+            price_worsening = bool(hist > DECIMAL_ZERO and hub_price > (hist * Decimal("1.10")))
             low_supply = alliance_volume < 20
-            high_dependency = dependency_score >= 30.0 or doctrine_count >= 3
+            high_dependency = dependency_score >= Decimal("30") or doctrine_count >= 3
 
             if high_dependency and low_supply and price_worsening:
                 signal_type = "high_dependency_low_supply"
@@ -110,34 +126,34 @@ def run_compute_signals(db: SupplyCoreDb, influx_raw: dict[str, Any] | None = No
                     f"Shared dependency risk: score {dependency_score:.1f}, doctrines {doctrine_count}, fits {dependency_fit_count}, "
                     f"alliance volume {alliance_volume}."
                 )
-            elif high_dependency and necessity >= 60.0:
+            elif high_dependency and necessity >= Decimal("60"):
                 signal_type = "doctrine_bottleneck"
                 severity = "high"
                 signal_text = (
                     f"Doctrine bottleneck candidate with dependency score {dependency_score:.1f}, necessity {necessity:.1f}, "
                     f"used by {doctrine_count} doctrines."
                 )
-            elif hist > 0 and hub_price > 0 and hub_price <= hist * 0.9:
+            elif hist > DECIMAL_ZERO and hub_price > DECIMAL_ZERO and hub_price <= hist * Decimal("0.9"):
                 signal_type = "undervalued_item"
                 severity = "high"
                 signal_text = f"Hub price {hub_price:.2f} is below 14d mean {hist:.2f}."
-            elif alliance_volume < 25 and necessity >= 55.0:
+            elif alliance_volume < 25 and necessity >= Decimal("55"):
                 signal_type = "supply_shortage"
                 severity = "critical"
                 signal_text = f"Alliance volume {alliance_volume} is low for necessity score {necessity:.1f}."
-            elif necessity >= 70.0:
+            elif necessity >= Decimal("70"):
                 signal_type = "doctrine_blocking_item"
                 severity = "high"
                 signal_text = f"Necessity score {necessity:.1f} indicates doctrine blocking risk."
 
             payload = {
                 "hub_price": hub_price,
-                "historical_mean": hist if hist > 0 else None,
+                "historical_mean": hist if hist > DECIMAL_ZERO else None,
                 "alliance_volume": alliance_volume,
                 "planner_qty": int(row.get("planner_qty") or 0),
-                "mode_rank_score": float(row.get("mode_rank_score") or 0.0),
+                "mode_rank_score": mode_rank_score,
                 "necessity_score": necessity,
-                "profit_score": float(row.get("profit_score") or 0.0),
+                "profit_score": to_decimal(row.get("profit_score")),
                 "dependency_score": dependency_score,
                 "doctrine_count": doctrine_count,
                 "dependency_fit_count": dependency_fit_count,
@@ -154,8 +170,14 @@ def run_compute_signals(db: SupplyCoreDb, influx_raw: dict[str, Any] | None = No
                     signal_payload_json = VALUES(signal_payload_json),
                     computed_at = VALUES(computed_at)
                 """,
-                (signal_key, signal_type, severity, type_id, title, signal_text, json.dumps(payload, separators=(",", ":"), ensure_ascii=False), computed_at),
+                (signal_key, signal_type, severity, type_id, title, signal_text, json.dumps(payload, separators=(",", ":"), ensure_ascii=False, default=_decimal_json_default), computed_at),
             )
             created += 1
 
     return {"computed_at": computed_at, "signals_created": created, "rows_processed": len(rows), "rows_written": created}
+
+
+def _decimal_json_default(value: Any) -> Any:
+    if isinstance(value, Decimal):
+        return float(value)
+    raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
