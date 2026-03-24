@@ -69,7 +69,8 @@ def _pivot_query(bucket: str, measurement: str, tag_keys: list[str], *, sort_des
     else:
         lines.append("  |> group()")
     if count_only:
-        lines.append('  |> count(column: "_time")')
+        # Flux cannot aggregate time-typed columns, so count a stable string column.
+        lines.append('  |> count(column: "_measurement")')
     else:
         lines.append(f'  |> sort(columns: ["_time"], desc: {"true" if sort_desc else "false"})')
         if limit is not None:
