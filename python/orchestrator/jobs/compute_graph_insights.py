@@ -1,16 +1,32 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+import json
+from pathlib import Path
 from typing import Any
 
 from ..db import SupplyCoreDb
 from ..neo4j import Neo4jClient, Neo4jConfig
 
 
+def _write_graph_log(log_file: str, event: str, payload: dict[str, Any]) -> None:
+    target = str(log_file).strip()
+    if target == "":
+        return
+
+    path = Path(target)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    line = json.dumps({"event": event, "ts": datetime.now(UTC).isoformat(), **payload}, ensure_ascii=False)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(line + "\n")
+
+
 def run_compute_graph_insights(db: SupplyCoreDb, neo4j_raw: dict[str, Any] | None = None) -> dict[str, Any]:
     config = Neo4jConfig.from_runtime(neo4j_raw or {})
     if not config.enabled:
-        return {"status": "skipped", "reason": "neo4j disabled", "rows_processed": 0, "rows_written": 0}
+        result = {"status": "skipped", "reason": "neo4j disabled", "rows_processed": 0, "rows_written": 0}
+        _write_graph_log(config.log_file, "graph.job.skipped", {"job": "compute_graph_insights", **result})
+        return result
 
     client = Neo4jClient(config)
     computed_at = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
@@ -72,9 +88,11 @@ def run_compute_graph_insights(db: SupplyCoreDb, neo4j_raw: dict[str, Any] | Non
                 (type_id, doctrine_count, fit_count, dependency_score, computed_at),
             )
 
-    return {
+    result = {
         "status": "success",
         "rows_processed": len(doctrine_rows) + len(item_rows),
         "rows_written": len(doctrine_rows) + len(item_rows),
         "computed_at": computed_at,
     }
+    _write_graph_log(config.log_file, "graph.insights.completed", result)
+    return result

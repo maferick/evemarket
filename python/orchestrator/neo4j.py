@@ -16,6 +16,7 @@ class Neo4jConfig:
     password: str
     database: str
     timeout_seconds: int
+    log_file: str
 
     @classmethod
     def from_runtime(cls, raw: dict[str, Any]) -> "Neo4jConfig":
@@ -26,6 +27,7 @@ class Neo4jConfig:
             password=str(raw.get("password", "")),
             database=str(raw.get("database", "neo4j")),
             timeout_seconds=max(3, int(raw.get("timeout_seconds", 15))),
+            log_file=str(raw.get("log_file", "")).strip(),
         )
 
 

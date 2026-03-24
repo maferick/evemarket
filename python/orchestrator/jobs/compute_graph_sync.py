@@ -1,10 +1,24 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+import json
+from pathlib import Path
 from typing import Any
 
 from ..db import SupplyCoreDb
 from ..neo4j import Neo4jClient, Neo4jConfig
+
+
+def _write_graph_log(log_file: str, event: str, payload: dict[str, Any]) -> None:
+    target = str(log_file).strip()
+    if target == "":
+        return
+
+    path = Path(target)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    line = json.dumps({"event": event, "ts": datetime.now(UTC).isoformat(), **payload}, ensure_ascii=False)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(line + "\n")
 
 
 def _ensure_constraints(client: Neo4jClient) -> None:
@@ -16,7 +30,9 @@ def _ensure_constraints(client: Neo4jClient) -> None:
 def run_compute_graph_sync(db: SupplyCoreDb, neo4j_raw: dict[str, Any] | None = None) -> dict[str, Any]:
     config = Neo4jConfig.from_runtime(neo4j_raw or {})
     if not config.enabled:
-        return {"status": "skipped", "reason": "neo4j disabled", "rows_processed": 0, "rows_written": 0}
+        result = {"status": "skipped", "reason": "neo4j disabled", "rows_processed": 0, "rows_written": 0}
+        _write_graph_log(config.log_file, "graph.job.skipped", {"job": "compute_graph_sync", **result})
+        return result
 
     client = Neo4jClient(config)
     _ensure_constraints(client)
@@ -46,7 +62,9 @@ def run_compute_graph_sync(db: SupplyCoreDb, neo4j_raw: dict[str, Any] | None = 
         (last_synced_at,),
     )
     if not rows:
-        return {"status": "success", "rows_processed": 0, "rows_written": 0, "last_synced_at": last_synced_at}
+        result = {"status": "success", "rows_processed": 0, "rows_written": 0, "last_synced_at": last_synced_at}
+        _write_graph_log(config.log_file, "graph.sync.idle", result)
+        return result
 
     client.query(
         """
@@ -73,10 +91,12 @@ def run_compute_graph_sync(db: SupplyCoreDb, neo4j_raw: dict[str, Any] | None = 
         ("doctrine_fit_item", latest_changed_at),
     )
 
-    return {
+    result = {
         "status": "success",
         "rows_processed": len(rows),
         "rows_written": len(rows),
         "last_synced_at": latest_changed_at,
         "computed_at": datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S"),
     }
+    _write_graph_log(config.log_file, "graph.sync.completed", result)
+    return result

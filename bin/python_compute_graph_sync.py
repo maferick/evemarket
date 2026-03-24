@@ -3,7 +3,20 @@ from __future__ import annotations
 
 import json
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
+
+
+def _append_graph_log(config: dict[str, object], event: str, payload: dict[str, object]) -> None:
+    neo4j = dict(config.get("neo4j", {})) if isinstance(config, dict) else {}
+    target = str(neo4j.get("log_file") or "").strip()
+    if target == "":
+        return
+    path = Path(target)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    line = json.dumps({"event": event, "ts": datetime.now(timezone.utc).isoformat(), **payload}, ensure_ascii=False)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(line + "\n")
 
 
 def main() -> int:
@@ -39,6 +52,7 @@ def main() -> int:
         print(json.dumps({"status": "ok", **result}, ensure_ascii=False))
         return 0
     except Exception as error:  # noqa: BLE001
+        _append_graph_log(config.raw, "graph.sync.failed", {"status": "failed", "error": str(error)})
         finish_job_run(db, run, status="failed", rows_processed=0, rows_written=0, error_text=str(error), meta={"job_name": "compute_graph_sync"})
         print(json.dumps({"status": "failed", "error": str(error)}, ensure_ascii=False))
         return 1

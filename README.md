@@ -183,6 +183,9 @@ README.md
   - `compute_graph_insights`: every 5–10 minutes.
 - Jobs use MariaDB-backed locks (`compute_job_locks`) and structured run telemetry (`job_runs`) to prevent overlap and keep run metrics observable.
 - PHP should continue reading from MariaDB only; InfluxDB and any optional graph intelligence remain Python-side compute dependencies.
+- Configure Neo4j connectivity in `src/config/local.php` (or env vars) under `neo4j`: `enabled`, `url`, `username`, `password`, `database`, `timeout_seconds`, and optional `log_file` (default `storage/logs/graph-sync.log`).
+- Graph job status is visible in **Settings → Data Sync** via scheduler run history (`compute_graph_sync`, `compute_graph_insights`) and in `job_runs` records.
+- If graph jobs are skipped with `neo4j disabled`, enable the `neo4j.enabled` flag first; jobs intentionally no-op until the connection settings are configured.
 
 ## Configuration Strategy
 

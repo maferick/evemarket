@@ -25,6 +25,15 @@ return [
         'prefix' => 'supplycore',
         'lock_enabled' => true,
     ],
+    'neo4j' => [
+        'enabled' => false,
+        'url' => 'http://127.0.0.1:7474',
+        'username' => 'neo4j',
+        'password' => 'change-me',
+        'database' => 'neo4j',
+        'timeout_seconds' => 15,
+        'log_file' => 'storage/logs/graph-sync.log',
+    ],
     'influxdb' => [
         'enabled' => false,
         'read_enabled' => false,

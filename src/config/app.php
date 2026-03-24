@@ -29,6 +29,15 @@ $config = [
         'read_timeout' => (float) (getenv('REDIS_READ_TIMEOUT') ?: 1.5),
         'lock_enabled' => (getenv('REDIS_LOCK_ENABLED') ?: '1') === '1',
     ],
+    'neo4j' => [
+        'enabled' => (getenv('NEO4J_ENABLED') ?: '0') === '1',
+        'url' => rtrim((string) (getenv('NEO4J_URL') ?: 'http://127.0.0.1:7474'), '/'),
+        'username' => (string) (getenv('NEO4J_USERNAME') ?: 'neo4j'),
+        'password' => (string) (getenv('NEO4J_PASSWORD') ?: ''),
+        'database' => (string) (getenv('NEO4J_DATABASE') ?: 'neo4j'),
+        'timeout_seconds' => max(3, (int) (getenv('NEO4J_TIMEOUT_SECONDS') ?: 15)),
+        'log_file' => (string) (getenv('NEO4J_LOG_FILE') ?: 'storage/logs/graph-sync.log'),
+    ],
     'influxdb' => [
         'enabled' => (getenv('INFLUXDB_ENABLED') ?: '0') === '1',
         'read_enabled' => (getenv('INFLUXDB_READ_ENABLED') ?: '0') === '1',

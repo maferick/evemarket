@@ -3586,6 +3586,15 @@ function orchestrator_runtime_config_export(): array
             'password' => (string) config('db.password', ''),
             'charset' => (string) config('db.charset', 'utf8mb4'),
         ],
+        'neo4j' => [
+            'enabled' => (bool) config('neo4j.enabled', false),
+            'url' => rtrim((string) config('neo4j.url', 'http://127.0.0.1:7474'), '/'),
+            'username' => (string) config('neo4j.username', 'neo4j'),
+            'password' => (string) config('neo4j.password', ''),
+            'database' => (string) config('neo4j.database', 'neo4j'),
+            'timeout_seconds' => max(3, (int) config('neo4j.timeout_seconds', 15)),
+            'log_file' => supplycore_worker_log_path('graph-sync.log', (string) config('neo4j.log_file', 'storage/logs/graph-sync.log')),
+        ],
         'influxdb' => [
             'enabled' => (bool) config('influxdb.enabled', false),
             'read_enabled' => (bool) config('influxdb.read_enabled', false),
