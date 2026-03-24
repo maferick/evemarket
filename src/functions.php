@@ -3421,6 +3421,7 @@ function orchestrator_runtime_config_export(): array
         ],
         'influxdb' => [
             'enabled' => (bool) config('influxdb.enabled', false),
+            'read_enabled' => (bool) config('influxdb.read_enabled', false),
             'url' => rtrim((string) config('influxdb.url', 'http://127.0.0.1:8086'), '/'),
             'org' => (string) config('influxdb.org', ''),
             'bucket' => (string) config('influxdb.bucket', 'supplycore_rollups'),
@@ -8318,6 +8319,20 @@ function dashboard_trend_history_dataset(string $marketHubRef, int $referenceSou
         ];
     }
 
+    $historyRows = [];
+    try {
+        $historyRows = db_market_history_daily_recent_window_influx('market_hub', $referenceSourceId, 8, 80);
+    } catch (Throwable) {
+        $historyRows = [];
+    }
+    if ($historyRows !== []) {
+        return [
+            'rows' => $historyRows,
+            'message' => '',
+            'source' => 'influxdb',
+        ];
+    }
+
     try {
         $historyRows = db_market_history_daily_recent_window('market_hub', $referenceSourceId, 8, 80);
     } catch (Throwable) {
@@ -8328,6 +8343,7 @@ function dashboard_trend_history_dataset(string $marketHubRef, int $referenceSou
         return [
             'rows' => $historyRows,
             'message' => '',
+            'source' => 'mariadb',
         ];
     }
 

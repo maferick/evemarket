@@ -5417,6 +5417,205 @@ function db_market_history_daily_recent_window(string $sourceType, int $sourceId
     );
 }
 
+function db_influx_read_enabled(): bool
+{
+    return (bool) config('influxdb.enabled', false) && (bool) config('influxdb.read_enabled', false);
+}
+
+function db_influx_query_rows(string $flux): array
+{
+    if (!db_influx_read_enabled()) {
+        return [];
+    }
+
+    if (!function_exists('curl_init')) {
+        return [];
+    }
+
+    $url = rtrim((string) config('influxdb.url', 'http://127.0.0.1:8086'), '/');
+    $org = trim((string) config('influxdb.org', ''));
+    $token = trim((string) config('influxdb.token', ''));
+    $timeoutSeconds = max(3, (int) config('influxdb.timeout_seconds', 15));
+    if ($url === '' || $org === '' || $token === '') {
+        return [];
+    }
+
+    $endpoint = $url . '/api/v2/query?org=' . rawurlencode($org);
+    $headers = [
+        'Authorization: Token ' . $token,
+        'Content-Type: application/vnd.flux',
+        'Accept: application/csv',
+    ];
+
+    $handle = curl_init($endpoint);
+    curl_setopt_array($handle, [
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_POST => true,
+        CURLOPT_POSTFIELDS => $flux,
+        CURLOPT_HTTPHEADER => $headers,
+        CURLOPT_CONNECTTIMEOUT => min(5, $timeoutSeconds),
+        CURLOPT_TIMEOUT => $timeoutSeconds,
+    ]);
+
+    $body = curl_exec($handle);
+    $statusCode = (int) curl_getinfo($handle, CURLINFO_HTTP_CODE);
+    $curlError = curl_error($handle);
+    curl_close($handle);
+
+    if ($body === false || $statusCode < 200 || $statusCode >= 300) {
+        return [];
+    }
+    if ($curlError !== '') {
+        return [];
+    }
+
+    $lines = preg_split('/\r\n|\n|\r/', (string) $body) ?: [];
+    $rows = [];
+    $headersRow = null;
+    foreach ($lines as $line) {
+        $trimmed = trim((string) $line);
+        if ($trimmed === '' || str_starts_with($trimmed, '#')) {
+            continue;
+        }
+
+        $columns = str_getcsv($line);
+        if (!is_array($headersRow)) {
+            $headersRow = $columns;
+            continue;
+        }
+
+        if (count($columns) !== count($headersRow)) {
+            continue;
+        }
+
+        $row = [];
+        foreach ($headersRow as $index => $header) {
+            $key = trim((string) $header);
+            if ($key === '') {
+                continue;
+            }
+            $row[$key] = $columns[$index];
+        }
+        if ($row !== []) {
+            $rows[] = $row;
+        }
+    }
+
+    return $rows;
+}
+
+function db_market_history_daily_recent_window_influx(string $sourceType, int $sourceId, int $days = 8, int $typeLimit = 120): array
+{
+    if (!db_influx_read_enabled()) {
+        return [];
+    }
+
+    $safeDays = max(1, min($days, 60));
+    $safeTypeLimit = max(1, min($typeLimit, 500));
+    $bucket = trim((string) config('influxdb.bucket', 'supplycore_rollups'));
+    if ($bucket === '' || $sourceId <= 0) {
+        return [];
+    }
+
+    $quotedBucket = addslashes($bucket);
+    $quotedSourceType = addslashes($sourceType);
+    $safeSourceId = (string) $sourceId;
+
+    $priceFlux = <<<FLUX
+from(bucket: "{$quotedBucket}")
+  |> range(start: -{$safeDays}d)
+  |> filter(fn: (r) => r._measurement == "market_item_price")
+  |> filter(fn: (r) => r.window == "1d")
+  |> filter(fn: (r) => r.source_type == "{$quotedSourceType}")
+  |> filter(fn: (r) => r.source_id == "{$safeSourceId}")
+  |> filter(fn: (r) => r._field == "weighted_price")
+  |> keep(columns: ["_time", "type_id", "_value"])
+  |> sort(columns: ["_time"], desc: true)
+  |> limit(n: {$safeTypeLimit}00)
+FLUX;
+
+    $stockFlux = <<<FLUX
+from(bucket: "{$quotedBucket}")
+  |> range(start: -{$safeDays}d)
+  |> filter(fn: (r) => r._measurement == "market_item_stock")
+  |> filter(fn: (r) => r.window == "1d")
+  |> filter(fn: (r) => r.source_type == "{$quotedSourceType}")
+  |> filter(fn: (r) => r.source_id == "{$safeSourceId}")
+  |> filter(fn: (r) => r._field == "local_stock_units")
+  |> keep(columns: ["_time", "type_id", "_value"])
+  |> sort(columns: ["_time"], desc: true)
+  |> limit(n: {$safeTypeLimit}00)
+FLUX;
+
+    $priceRows = db_influx_query_rows($priceFlux);
+    if ($priceRows === []) {
+        return [];
+    }
+    $stockRows = db_influx_query_rows($stockFlux);
+
+    $volumeByKey = [];
+    foreach ($stockRows as $row) {
+        $typeId = max(0, (int) ($row['type_id'] ?? 0));
+        $time = trim((string) ($row['_time'] ?? ''));
+        if ($typeId <= 0 || $time === '') {
+            continue;
+        }
+        $tradeDate = gmdate('Y-m-d', strtotime($time) ?: 0);
+        if ($tradeDate === '1970-01-01') {
+            continue;
+        }
+        $volumeByKey[$tradeDate . ':' . $typeId] = max(0, (int) round((float) ($row['_value'] ?? 0)));
+    }
+
+    $rows = [];
+    foreach ($priceRows as $row) {
+        $typeId = max(0, (int) ($row['type_id'] ?? 0));
+        $time = trim((string) ($row['_time'] ?? ''));
+        if ($typeId <= 0 || $time === '') {
+            continue;
+        }
+        $tradeDate = gmdate('Y-m-d', strtotime($time) ?: 0);
+        if ($tradeDate === '1970-01-01') {
+            continue;
+        }
+        $key = $tradeDate . ':' . $typeId;
+        if (isset($rows[$key])) {
+            continue;
+        }
+        $rows[$key] = [
+            'type_id' => $typeId,
+            'trade_date' => $tradeDate,
+            'close_price' => max(0.0, (float) ($row['_value'] ?? 0)),
+            'volume' => max(0, (int) ($volumeByKey[$key] ?? 0)),
+            'observed_at' => gmdate('Y-m-d H:i:s', strtotime($time) ?: 0),
+        ];
+    }
+
+    if ($rows === []) {
+        return [];
+    }
+
+    $typeNamesById = [];
+    foreach (db_ref_item_types_by_ids(array_map(static fn (array $row): int => (int) $row['type_id'], array_values($rows))) as $typeRow) {
+        $typeId = max(0, (int) ($typeRow['type_id'] ?? 0));
+        if ($typeId <= 0) {
+            continue;
+        }
+        $typeNamesById[$typeId] = (string) ($typeRow['type_name'] ?? '');
+    }
+
+    $normalizedRows = array_map(static function (array $row) use ($typeNamesById): array {
+        $typeId = (int) ($row['type_id'] ?? 0);
+        $row['type_name'] = (string) ($typeNamesById[$typeId] ?? '');
+
+        return $row;
+    }, array_values($rows));
+
+    usort($normalizedRows, static fn (array $left, array $right): int => strcmp((string) ($right['trade_date'] ?? ''), (string) ($left['trade_date'] ?? '')) ?: ((int) ($left['type_id'] ?? 0) <=> (int) ($right['type_id'] ?? 0)));
+
+    return array_slice($normalizedRows, 0, $safeTypeLimit * $safeDays);
+}
+
 function db_market_history_daily_aggregate_by_date_type_source(
     string $sourceType,
     int $sourceId,

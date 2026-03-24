@@ -31,6 +31,7 @@ $config = [
     ],
     'influxdb' => [
         'enabled' => (getenv('INFLUXDB_ENABLED') ?: '0') === '1',
+        'read_enabled' => (getenv('INFLUXDB_READ_ENABLED') ?: '0') === '1',
         'url' => rtrim((string) (getenv('INFLUXDB_URL') ?: 'http://127.0.0.1:8086'), '/'),
         'org' => (string) (getenv('INFLUXDB_ORG') ?: ''),
         'bucket' => (string) (getenv('INFLUXDB_BUCKET') ?: 'supplycore_rollups'),

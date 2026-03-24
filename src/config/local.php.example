@@ -27,6 +27,7 @@ return [
     ],
     'influxdb' => [
         'enabled' => false,
+        'read_enabled' => false,
         'url' => 'http://127.0.0.1:8086',
         'org' => 'supplycore',
         'bucket' => 'supplycore_rollups',
