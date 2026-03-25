@@ -165,6 +165,16 @@ def load_php_runtime_config(app_root: Path) -> OrchestratorConfig:
 
     live_raw = _load_live_php_runtime_config(app_root)
 
+    if isinstance(raw.get("influxdb"), dict) and not isinstance(raw.get("influx"), dict):
+        raw["influx"] = dict(raw["influxdb"])
+    if isinstance(raw.get("influx"), dict) and not isinstance(raw.get("influxdb"), dict):
+        raw["influxdb"] = dict(raw["influx"])
+
+    if isinstance(live_raw.get("influxdb"), dict) and not isinstance(live_raw.get("influx"), dict):
+        live_raw["influx"] = dict(live_raw["influxdb"])
+    if isinstance(live_raw.get("influx"), dict) and not isinstance(live_raw.get("influxdb"), dict):
+        live_raw["influxdb"] = dict(live_raw["influx"])
+
     defaults = {
         "app": {"name": "SupplyCore", "env": os.getenv("APP_ENV", "development"), "timezone": os.getenv("APP_TIMEZONE", "UTC")},
         "db": {
@@ -193,6 +203,23 @@ def load_php_runtime_config(app_root: Path) -> OrchestratorConfig:
             "token": os.getenv("INFLUXDB_TOKEN", ""),
             "timeout_seconds": _env_int("INFLUXDB_TIMEOUT_SECONDS", 15, 3),
         },
+        "influxdb": {
+            "enabled": os.getenv("INFLUXDB_ENABLED", "0") == "1",
+            "read_enabled": os.getenv("INFLUXDB_READ_ENABLED", "0") == "1",
+            "url": os.getenv("INFLUXDB_URL", "http://127.0.0.1:8086").rstrip("/"),
+            "org": os.getenv("INFLUXDB_ORG", ""),
+            "bucket": os.getenv("INFLUXDB_BUCKET", "supplycore_rollups"),
+            "token": os.getenv("INFLUXDB_TOKEN", ""),
+            "timeout_seconds": _env_int("INFLUXDB_TIMEOUT_SECONDS", 15, 3),
+        },
+        "redis": {
+            "enabled": os.getenv("REDIS_ENABLED", "0") == "1",
+            "host": os.getenv("REDIS_HOST", "127.0.0.1"),
+            "port": _env_int("REDIS_PORT", 6379, 1),
+            "database": _env_int("REDIS_DB", 0, 0),
+            "password": os.getenv("REDIS_PASSWORD", ""),
+            "prefix": os.getenv("REDIS_PREFIX", "supplycore"),
+        },
         "battle_intelligence": {"log_file": str(app_root / "storage/logs/battle-intelligence.log")},
         "paths": {"app_root": str(app_root), "log_file": str(app_root / "storage/logs/orchestrator.log"), "php_binary": "php", "scheduler_daemon": str(app_root / "bin/scheduler_daemon.php"), "scheduler_watchdog": str(app_root / "bin/scheduler_watchdog.php"), "scheduler_health": str(app_root / "bin/scheduler_health.php")},
         "orchestrator": {"state_dir": str(app_root / "storage/run"), "heartbeat_file": str(app_root / "storage/run/orchestrator-heartbeat.json"), "lock_file": str(app_root / "storage/run/orchestrator.lock"), "health_check_interval_seconds": 15, "worker_grace_seconds": 45, "worker_start_backoff_seconds": 5, "max_consecutive_health_failures": 3},
@@ -214,7 +241,7 @@ def load_php_runtime_config(app_root: Path) -> OrchestratorConfig:
     }
 
     merged = defaults | raw | live_raw
-    for key in ("app", "db", "neo4j", "influx", "battle_intelligence", "paths", "orchestrator", "scheduler", "workers"):
+    for key in ("app", "db", "neo4j", "influx", "influxdb", "redis", "battle_intelligence", "paths", "orchestrator", "scheduler", "workers"):
         merged[key] = {
             **defaults.get(key, {}),
             **(raw.get(key, {}) if isinstance(raw.get(key), dict) else {}),

@@ -3754,6 +3754,14 @@ function orchestrator_runtime_config_export(): array
             'export_overlap_seconds' => max(0, (int) config('influxdb.export_overlap_seconds', 21600)),
             'export_log_file' => supplycore_worker_log_path('influx-rollup-export.log', (string) config('influxdb.export_log_file', 'storage/logs/influx-rollup-export.log')),
         ],
+        'redis' => [
+            'enabled' => (bool) config('redis.enabled', false),
+            'host' => (string) config('redis.host', '127.0.0.1'),
+            'port' => max(1, (int) config('redis.port', 6379)),
+            'database' => max(0, (int) config('redis.database', 0)),
+            'password' => (string) config('redis.password', ''),
+            'prefix' => (string) config('redis.prefix', 'supplycore'),
+        ],
         'battle_intelligence' => [
             'log_file' => supplycore_worker_log_path('battle-intelligence.log', (string) config('battle_intelligence.log_file', 'storage/logs/battle-intelligence.log')),
         ],

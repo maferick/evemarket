@@ -23,4 +23,7 @@ def neo4j_runtime(raw_config: dict[str, Any]) -> dict[str, Any]:
 
 
 def influx_runtime(raw_config: dict[str, Any]) -> dict[str, Any]:
-    return runtime_section(raw_config, "influx")
+    influx = runtime_section(raw_config, "influx")
+    if influx == {}:
+        return runtime_section(raw_config, "influxdb")
+    return influx
