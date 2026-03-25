@@ -46,6 +46,9 @@ return [
         'export_overlap_seconds' => 21600,
         'export_log_file' => 'storage/logs/influx-rollup-export.log',
     ],
+    'battle_intelligence' => [
+        'log_file' => 'storage/logs/battle-intelligence.log',
+    ],
     'scheduler' => [
         'default_timeout_seconds' => 300,
     ],

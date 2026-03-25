@@ -234,6 +234,15 @@ function nav_items(): array
             ],
         ],
         [
+            'label' => 'Battle Intelligence',
+            'path' => '/battle-intelligence',
+            'icon' => '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" class="h-4 w-4" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M4 6h16"/><path stroke-linecap="round" stroke-linejoin="round" d="M4 12h16"/><path stroke-linecap="round" stroke-linejoin="round" d="M4 18h16"/><path stroke-linecap="round" stroke-linejoin="round" d="m9 9 3 3 3-3"/></svg>',
+            'children' => [
+                ['label' => 'Suspicion Leaderboard', 'path' => '/battle-intelligence'],
+                ['label' => 'Battle Anomalies', 'path' => '/battle-intelligence/battles.php'],
+            ],
+        ],
+        [
             'label' => 'Activity Priority',
             'path' => '/activity-priority',
             'icon' => '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" class="h-4 w-4" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M4 7h16"/><path stroke-linecap="round" stroke-linejoin="round" d="M6 12h12"/><path stroke-linecap="round" stroke-linejoin="round" d="M9 17h6"/><path stroke-linecap="round" stroke-linejoin="round" d="m15 5 4 4-4 4"/></svg>',
@@ -3618,6 +3627,9 @@ function orchestrator_runtime_config_export(): array
             'export_overlap_seconds' => max(0, (int) config('influxdb.export_overlap_seconds', 21600)),
             'export_log_file' => supplycore_worker_log_path('influx-rollup-export.log', (string) config('influxdb.export_log_file', 'storage/logs/influx-rollup-export.log')),
         ],
+        'battle_intelligence' => [
+            'log_file' => supplycore_worker_log_path('battle-intelligence.log', (string) config('battle_intelligence.log_file', 'storage/logs/battle-intelligence.log')),
+        ],
         'paths' => [
             'app_root' => $appRoot,
             'bootstrap' => __DIR__ . '/bootstrap.php',
@@ -3795,6 +3807,11 @@ function worker_job_registry_definitions(): array
         'compute_graph_insights' => ['workload_class' => 'compute', 'execution_mode' => 'python', 'queue_name' => 'compute', 'priority' => 'normal', 'interval_seconds' => 900, 'timeout_seconds' => 300, 'memory_limit_mb' => 768, 'retry_delay_seconds' => 60, 'max_attempts' => 4],
         'compute_buy_all' => ['workload_class' => 'compute', 'execution_mode' => 'python', 'queue_name' => 'compute', 'priority' => 'normal', 'interval_seconds' => 900, 'timeout_seconds' => 420, 'memory_limit_mb' => 1024, 'retry_delay_seconds' => 60, 'max_attempts' => 4],
         'compute_signals' => ['workload_class' => 'compute', 'execution_mode' => 'python', 'queue_name' => 'compute', 'priority' => 'normal', 'interval_seconds' => 900, 'timeout_seconds' => 300, 'memory_limit_mb' => 768, 'retry_delay_seconds' => 60, 'max_attempts' => 4],
+        'compute_battle_rollups' => ['workload_class' => 'compute', 'execution_mode' => 'python', 'queue_name' => 'compute', 'priority' => 'normal', 'interval_seconds' => 600, 'timeout_seconds' => 420, 'memory_limit_mb' => 1024, 'retry_delay_seconds' => 90, 'max_attempts' => 4],
+        'compute_battle_target_metrics' => ['workload_class' => 'compute', 'execution_mode' => 'python', 'queue_name' => 'compute', 'priority' => 'normal', 'interval_seconds' => 600, 'timeout_seconds' => 420, 'memory_limit_mb' => 1024, 'retry_delay_seconds' => 90, 'max_attempts' => 4],
+        'compute_battle_anomalies' => ['workload_class' => 'compute', 'execution_mode' => 'python', 'queue_name' => 'compute', 'priority' => 'normal', 'interval_seconds' => 600, 'timeout_seconds' => 420, 'memory_limit_mb' => 1024, 'retry_delay_seconds' => 90, 'max_attempts' => 4],
+        'compute_battle_actor_features' => ['workload_class' => 'compute', 'execution_mode' => 'python', 'queue_name' => 'compute', 'priority' => 'normal', 'interval_seconds' => 600, 'timeout_seconds' => 420, 'memory_limit_mb' => 1024, 'retry_delay_seconds' => 90, 'max_attempts' => 4],
+        'compute_suspicion_scores' => ['workload_class' => 'compute', 'execution_mode' => 'python', 'queue_name' => 'compute', 'priority' => 'normal', 'interval_seconds' => 600, 'timeout_seconds' => 420, 'memory_limit_mb' => 1024, 'retry_delay_seconds' => 90, 'max_attempts' => 4],
     ];
 }
 
@@ -3834,6 +3851,11 @@ function scheduler_registry_definitions(): array
         'compute_graph_insights' => ['label' => 'Graph Insights', 'default_interval_minutes' => 15, 'default_offset_minutes' => 18, 'priority' => 'normal', 'timeout_seconds' => 300, 'concurrency_policy' => 'single', 'execution_mode' => 'python', 'tuning_mode' => 'automatic', 'explicitly_configured' => true, 'workload_class' => 'heavy'],
         'compute_buy_all' => ['label' => 'Compute Buy All', 'default_interval_minutes' => 15, 'default_offset_minutes' => 19, 'priority' => 'normal', 'timeout_seconds' => 420, 'concurrency_policy' => 'single', 'execution_mode' => 'python', 'tuning_mode' => 'automatic', 'explicitly_configured' => true, 'workload_class' => 'heavy'],
         'compute_signals' => ['label' => 'Compute Signals', 'default_interval_minutes' => 15, 'default_offset_minutes' => 20, 'priority' => 'normal', 'timeout_seconds' => 300, 'concurrency_policy' => 'single', 'execution_mode' => 'python', 'tuning_mode' => 'automatic', 'explicitly_configured' => true, 'workload_class' => 'lightweight'],
+        'compute_battle_rollups' => ['label' => 'Compute Battle Rollups', 'default_interval_minutes' => 10, 'default_offset_minutes' => 21, 'priority' => 'normal', 'timeout_seconds' => 420, 'concurrency_policy' => 'single', 'execution_mode' => 'python', 'tuning_mode' => 'automatic', 'explicitly_configured' => true, 'workload_class' => 'heavy'],
+        'compute_battle_target_metrics' => ['label' => 'Compute Battle Target Metrics', 'default_interval_minutes' => 10, 'default_offset_minutes' => 22, 'priority' => 'normal', 'timeout_seconds' => 420, 'concurrency_policy' => 'single', 'execution_mode' => 'python', 'tuning_mode' => 'automatic', 'explicitly_configured' => true, 'workload_class' => 'heavy'],
+        'compute_battle_anomalies' => ['label' => 'Compute Battle Anomalies', 'default_interval_minutes' => 10, 'default_offset_minutes' => 23, 'priority' => 'normal', 'timeout_seconds' => 420, 'concurrency_policy' => 'single', 'execution_mode' => 'python', 'tuning_mode' => 'automatic', 'explicitly_configured' => true, 'workload_class' => 'heavy'],
+        'compute_battle_actor_features' => ['label' => 'Compute Battle Actor Features', 'default_interval_minutes' => 10, 'default_offset_minutes' => 24, 'priority' => 'normal', 'timeout_seconds' => 420, 'concurrency_policy' => 'single', 'execution_mode' => 'python', 'tuning_mode' => 'automatic', 'explicitly_configured' => true, 'workload_class' => 'heavy'],
+        'compute_suspicion_scores' => ['label' => 'Compute Suspicion Scores', 'default_interval_minutes' => 10, 'default_offset_minutes' => 25, 'priority' => 'normal', 'timeout_seconds' => 420, 'concurrency_policy' => 'single', 'execution_mode' => 'python', 'tuning_mode' => 'automatic', 'explicitly_configured' => true, 'workload_class' => 'heavy'],
     ];
 }
 
@@ -27893,5 +27915,71 @@ function activity_priority_summary_build(string $reason = 'manual'): array
         'fit_count' => count($fitRows),
         'group_count' => count($groupRows),
         'item_count' => count($itemRows),
+    ];
+}
+
+function battle_intelligence_leaderboard_data(): array
+{
+    $rows = db_battle_intelligence_top_characters(100);
+
+    return [
+        'rows' => $rows,
+        'computed_at' => $rows !== [] ? (string) ($rows[0]['computed_at'] ?? '') : null,
+    ];
+}
+
+function battle_intelligence_anomaly_leaderboard_data(): array
+{
+    $rows = db_battle_intelligence_top_battles(100);
+
+    return [
+        'rows' => $rows,
+        'computed_at' => $rows !== [] ? (string) ($rows[0]['computed_at'] ?? '') : null,
+    ];
+}
+
+function battle_intelligence_character_data(int $characterId): array
+{
+    $character = db_battle_intelligence_character($characterId);
+    $battles = db_battle_intelligence_character_battles($characterId, 30);
+    $supportingBattles = [];
+    $explanation = [];
+
+    if (is_array($character)) {
+        $supportingBattles = json_decode((string) ($character['top_supporting_battles_json'] ?? '[]'), true);
+        if (!is_array($supportingBattles)) {
+            $supportingBattles = [];
+        }
+
+        $explanation = json_decode((string) ($character['explanation_json'] ?? '{}'), true);
+        if (!is_array($explanation)) {
+            $explanation = [];
+        }
+    }
+
+    return [
+        'character' => $character,
+        'battles' => $battles,
+        'supporting_battles' => $supportingBattles,
+        'explanation' => $explanation,
+    ];
+}
+
+function battle_intelligence_battle_data(string $battleId): array
+{
+    $battle = db_battle_intelligence_battle($battleId);
+    $sides = db_battle_intelligence_battle_sides($battleId);
+    $actors = db_battle_intelligence_battle_notable_actors($battleId, 40);
+
+    foreach ($sides as &$side) {
+        $decoded = json_decode((string) ($side['explanation_json'] ?? '{}'), true);
+        $side['explanation'] = is_array($decoded) ? $decoded : [];
+    }
+    unset($side);
+
+    return [
+        'battle' => $battle,
+        'sides' => $sides,
+        'actors' => $actors,
     ];
 }

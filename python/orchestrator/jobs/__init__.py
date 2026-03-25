@@ -5,3 +5,10 @@ from .compute_buy_all import run_compute_buy_all
 from .compute_signals import run_compute_signals
 from .compute_graph_sync import run_compute_graph_sync
 from .compute_graph_insights import run_compute_graph_insights
+from .battle_intelligence import (
+    run_compute_battle_actor_features,
+    run_compute_battle_anomalies,
+    run_compute_battle_rollups,
+    run_compute_battle_target_metrics,
+    run_compute_suspicion_scores,
+)

@@ -1383,6 +1383,165 @@ CREATE TABLE IF NOT EXISTS killmail_tracked_corporations (
     KEY idx_active (is_active)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+CREATE TABLE IF NOT EXISTS battle_rollups (
+    battle_id CHAR(64) PRIMARY KEY,
+    system_id INT UNSIGNED NOT NULL,
+    started_at DATETIME NOT NULL,
+    ended_at DATETIME NOT NULL,
+    duration_seconds INT UNSIGNED NOT NULL DEFAULT 0,
+    participant_count INT UNSIGNED NOT NULL DEFAULT 0,
+    eligible_for_suspicion TINYINT(1) NOT NULL DEFAULT 0,
+    battle_size_class VARCHAR(30) NOT NULL DEFAULT 'small',
+    computed_at DATETIME NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    KEY idx_battle_rollups_system_started (system_id, started_at),
+    KEY idx_battle_rollups_eligible (eligible_for_suspicion, started_at),
+    KEY idx_battle_rollups_computed (computed_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS battle_participants (
+    battle_id CHAR(64) NOT NULL,
+    character_id BIGINT UNSIGNED NOT NULL,
+    corporation_id BIGINT UNSIGNED DEFAULT NULL,
+    alliance_id BIGINT UNSIGNED DEFAULT NULL,
+    side_key VARCHAR(80) NOT NULL,
+    ship_type_id INT UNSIGNED DEFAULT NULL,
+    is_logi TINYINT(1) NOT NULL DEFAULT 0,
+    is_command TINYINT(1) NOT NULL DEFAULT 0,
+    is_capital TINYINT(1) NOT NULL DEFAULT 0,
+    participation_count INT UNSIGNED NOT NULL DEFAULT 0,
+    computed_at DATETIME NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (battle_id, character_id),
+    KEY idx_battle_participants_character (character_id, battle_id),
+    KEY idx_battle_participants_side (battle_id, side_key),
+    KEY idx_battle_participants_computed (computed_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS battle_target_metrics (
+    battle_id CHAR(64) NOT NULL,
+    killmail_id BIGINT UNSIGNED NOT NULL,
+    victim_character_id BIGINT UNSIGNED DEFAULT NULL,
+    victim_ship_type_id INT UNSIGNED DEFAULT NULL,
+    side_key VARCHAR(80) NOT NULL,
+    first_damage_ts DATETIME NOT NULL,
+    last_damage_ts DATETIME NOT NULL,
+    time_to_die_seconds DECIMAL(12,4) NOT NULL DEFAULT 0.0000,
+    total_damage_taken DECIMAL(20,4) NOT NULL DEFAULT 0.0000,
+    estimated_incoming_dps DECIMAL(20,6) NOT NULL DEFAULT 0.000000,
+    dps_bucket VARCHAR(20) NOT NULL,
+    expected_time_to_die_seconds DECIMAL(12,4) NOT NULL DEFAULT 0.0000,
+    sustain_factor DECIMAL(12,6) NOT NULL DEFAULT 0.000000,
+    computed_at DATETIME NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (battle_id, killmail_id),
+    KEY idx_battle_target_metrics_ship_bucket (victim_ship_type_id, dps_bucket),
+    KEY idx_battle_target_metrics_side (battle_id, side_key),
+    KEY idx_battle_target_metrics_computed (computed_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS battle_side_metrics (
+    battle_id CHAR(64) NOT NULL,
+    side_key VARCHAR(80) NOT NULL,
+    participant_count INT UNSIGNED NOT NULL DEFAULT 0,
+    logi_count INT UNSIGNED NOT NULL DEFAULT 0,
+    command_count INT UNSIGNED NOT NULL DEFAULT 0,
+    capital_count INT UNSIGNED NOT NULL DEFAULT 0,
+    total_kills INT UNSIGNED NOT NULL DEFAULT 0,
+    kill_rate_per_minute DECIMAL(12,6) NOT NULL DEFAULT 0.000000,
+    median_sustain_factor DECIMAL(12,6) NOT NULL DEFAULT 0.000000,
+    average_sustain_factor DECIMAL(12,6) NOT NULL DEFAULT 0.000000,
+    switch_pressure DECIMAL(12,6) NOT NULL DEFAULT 0.000000,
+    efficiency_score DECIMAL(14,8) NOT NULL DEFAULT 0.00000000,
+    z_efficiency_score DECIMAL(14,8) NOT NULL DEFAULT 0.00000000,
+    computed_at DATETIME NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (battle_id, side_key),
+    KEY idx_battle_side_metrics_efficiency (efficiency_score),
+    KEY idx_battle_side_metrics_z (z_efficiency_score),
+    KEY idx_battle_side_metrics_computed (computed_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS battle_anomalies (
+    battle_id CHAR(64) NOT NULL,
+    side_key VARCHAR(80) NOT NULL,
+    anomaly_class VARCHAR(20) NOT NULL,
+    z_efficiency_score DECIMAL(14,8) NOT NULL DEFAULT 0.00000000,
+    percentile_rank DECIMAL(10,6) NOT NULL DEFAULT 0.000000,
+    explanation_json LONGTEXT NOT NULL,
+    computed_at DATETIME NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (battle_id, side_key),
+    KEY idx_battle_anomalies_class (anomaly_class, z_efficiency_score),
+    KEY idx_battle_anomalies_computed (computed_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS battle_actor_features (
+    battle_id CHAR(64) NOT NULL,
+    character_id BIGINT UNSIGNED NOT NULL,
+    side_key VARCHAR(80) NOT NULL,
+    participation_count INT UNSIGNED NOT NULL DEFAULT 0,
+    centrality_score DECIMAL(12,6) NOT NULL DEFAULT 0.000000,
+    visibility_score DECIMAL(12,6) NOT NULL DEFAULT 0.000000,
+    is_logi TINYINT(1) NOT NULL DEFAULT 0,
+    is_command TINYINT(1) NOT NULL DEFAULT 0,
+    is_capital TINYINT(1) NOT NULL DEFAULT 0,
+    participated_in_high_sustain TINYINT(1) NOT NULL DEFAULT 0,
+    participated_in_low_sustain TINYINT(1) NOT NULL DEFAULT 0,
+    computed_at DATETIME NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (battle_id, character_id),
+    KEY idx_battle_actor_features_character (character_id, battle_id),
+    KEY idx_battle_actor_features_flags (participated_in_high_sustain, participated_in_low_sustain),
+    KEY idx_battle_actor_features_computed (computed_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS character_battle_intelligence (
+    character_id BIGINT UNSIGNED PRIMARY KEY,
+    total_battle_count INT UNSIGNED NOT NULL DEFAULT 0,
+    eligible_battle_count INT UNSIGNED NOT NULL DEFAULT 0,
+    high_sustain_battle_count INT UNSIGNED NOT NULL DEFAULT 0,
+    low_sustain_battle_count INT UNSIGNED NOT NULL DEFAULT 0,
+    high_sustain_frequency DECIMAL(12,6) NOT NULL DEFAULT 0.000000,
+    low_sustain_frequency DECIMAL(12,6) NOT NULL DEFAULT 0.000000,
+    cross_side_battle_count INT UNSIGNED NOT NULL DEFAULT 0,
+    cross_side_rate DECIMAL(12,6) NOT NULL DEFAULT 0.000000,
+    enemy_efficiency_uplift DECIMAL(12,6) NOT NULL DEFAULT 0.000000,
+    ally_efficiency_uplift DECIMAL(12,6) NOT NULL DEFAULT 0.000000,
+    role_weight DECIMAL(12,6) NOT NULL DEFAULT 0.000000,
+    anomalous_battle_density DECIMAL(12,6) NOT NULL DEFAULT 0.000000,
+    computed_at DATETIME NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    KEY idx_character_battle_intelligence_support (eligible_battle_count, high_sustain_frequency),
+    KEY idx_character_battle_intelligence_computed (computed_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS character_suspicion_scores (
+    character_id BIGINT UNSIGNED PRIMARY KEY,
+    suspicion_score DECIMAL(12,6) NOT NULL DEFAULT 0.000000,
+    percentile_rank DECIMAL(10,6) NOT NULL DEFAULT 0.000000,
+    high_sustain_frequency DECIMAL(12,6) NOT NULL DEFAULT 0.000000,
+    low_sustain_frequency DECIMAL(12,6) NOT NULL DEFAULT 0.000000,
+    cross_side_rate DECIMAL(12,6) NOT NULL DEFAULT 0.000000,
+    enemy_efficiency_uplift DECIMAL(12,6) NOT NULL DEFAULT 0.000000,
+    role_weight DECIMAL(12,6) NOT NULL DEFAULT 0.000000,
+    supporting_battle_count INT UNSIGNED NOT NULL DEFAULT 0,
+    top_supporting_battles_json LONGTEXT NOT NULL,
+    explanation_json LONGTEXT NOT NULL,
+    computed_at DATETIME NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    KEY idx_character_suspicion_scores_rank (suspicion_score, percentile_rank),
+    KEY idx_character_suspicion_scores_computed (computed_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 CREATE TABLE IF NOT EXISTS entity_metadata_cache (
     entity_type ENUM('alliance', 'corporation', 'character', 'type', 'system', 'region') NOT NULL,
     entity_id BIGINT UNSIGNED NOT NULL,
@@ -2363,7 +2522,12 @@ INSERT INTO sync_schedules (
     ('deal_alerts_sync', 1, 5, 300, 60, 1, 'high', 'single', 'python', 90, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
     ('activity_priority_summary_sync', 1, 15, 900, 780, 13, 'normal', 'single', 'php', 180, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 0, NULL, NULL, NULL, NULL),
     ('analytics_bucket_1h_sync', 1, 15, 900, 900, 15, 'normal', 'single', 'php', 180, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 0, NULL, NULL, NULL, NULL),
-    ('analytics_bucket_1d_sync', 1, 60, 3600, 960, 16, 'normal', 'single', 'php', 240, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 0, NULL, NULL, NULL, NULL)
+    ('analytics_bucket_1d_sync', 1, 60, 3600, 960, 16, 'normal', 'single', 'php', 240, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 0, NULL, NULL, NULL, NULL),
+    ('compute_battle_rollups', 1, 10, 600, 1260, 21, 'normal', 'single', 'python', 420, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
+    ('compute_battle_target_metrics', 1, 10, 600, 1320, 22, 'normal', 'single', 'python', 420, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
+    ('compute_battle_anomalies', 1, 10, 600, 1380, 23, 'normal', 'single', 'python', 420, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
+    ('compute_battle_actor_features', 1, 10, 600, 1440, 24, 'normal', 'single', 'python', 420, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
+    ('compute_suspicion_scores', 1, 10, 600, 1500, 25, 'normal', 'single', 'python', 420, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL)
 ON DUPLICATE KEY UPDATE
     enabled = VALUES(enabled),
     interval_minutes = VALUES(interval_minutes),

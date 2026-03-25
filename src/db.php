@@ -13824,3 +13824,138 @@ function db_signals_recent(int $limit = 200): array
          LIMIT ' . $safeLimit
     );
 }
+
+function db_battle_intelligence_top_characters(int $limit = 50): array
+{
+    $safeLimit = max(1, min(200, $limit));
+
+    return db_select(
+        'SELECT css.character_id, css.suspicion_score, css.percentile_rank, css.high_sustain_frequency, css.low_sustain_frequency,
+                css.cross_side_rate, css.enemy_efficiency_uplift, css.role_weight, css.supporting_battle_count, css.computed_at,
+                COALESCE(emc.entity_name, CONCAT("Character #", css.character_id)) AS character_name
+         FROM character_suspicion_scores css
+         LEFT JOIN entity_metadata_cache emc ON emc.entity_type = "character" AND emc.entity_id = css.character_id
+         ORDER BY css.suspicion_score DESC, css.supporting_battle_count DESC
+         LIMIT ' . $safeLimit
+    );
+}
+
+function db_battle_intelligence_top_battles(int $limit = 50): array
+{
+    $safeLimit = max(1, min(200, $limit));
+
+    return db_select(
+        'SELECT ba.battle_id, ba.side_key, ba.anomaly_class, ba.z_efficiency_score, ba.percentile_rank, ba.computed_at,
+                br.system_id, br.started_at, br.ended_at, br.participant_count,
+                COALESCE(rs.system_name, CONCAT("System #", br.system_id)) AS system_name
+         FROM battle_anomalies ba
+         INNER JOIN battle_rollups br ON br.battle_id = ba.battle_id
+         LEFT JOIN ref_systems rs ON rs.system_id = br.system_id
+         ORDER BY ba.z_efficiency_score DESC, br.participant_count DESC
+         LIMIT ' . $safeLimit
+    );
+}
+
+function db_battle_intelligence_character(int $characterId): ?array
+{
+    if ($characterId <= 0) {
+        return null;
+    }
+
+    $row = db_select_one(
+        'SELECT css.*, cbi.total_battle_count, cbi.eligible_battle_count, cbi.high_sustain_battle_count, cbi.low_sustain_battle_count,
+                cbi.cross_side_battle_count, cbi.ally_efficiency_uplift, cbi.anomalous_battle_density,
+                COALESCE(emc.entity_name, CONCAT("Character #", css.character_id)) AS character_name
+         FROM character_suspicion_scores css
+         LEFT JOIN character_battle_intelligence cbi ON cbi.character_id = css.character_id
+         LEFT JOIN entity_metadata_cache emc ON emc.entity_type = "character" AND emc.entity_id = css.character_id
+         WHERE css.character_id = ?
+         LIMIT 1',
+        [$characterId]
+    );
+
+    return $row ?: null;
+}
+
+function db_battle_intelligence_character_battles(int $characterId, int $limit = 20): array
+{
+    if ($characterId <= 0) {
+        return [];
+    }
+
+    $safeLimit = max(1, min(100, $limit));
+
+    return db_select(
+        'SELECT baf.battle_id, baf.side_key, baf.centrality_score, baf.visibility_score,
+                baf.participated_in_high_sustain, baf.participated_in_low_sustain,
+                bsm.z_efficiency_score, bsm.efficiency_score,
+                br.system_id, br.started_at, br.ended_at, br.participant_count,
+                COALESCE(rs.system_name, CONCAT("System #", br.system_id)) AS system_name
+         FROM battle_actor_features baf
+         INNER JOIN battle_rollups br ON br.battle_id = baf.battle_id
+         LEFT JOIN battle_side_metrics bsm ON bsm.battle_id = baf.battle_id AND bsm.side_key = baf.side_key
+         LEFT JOIN ref_systems rs ON rs.system_id = br.system_id
+         WHERE baf.character_id = ?
+         ORDER BY ABS(COALESCE(bsm.z_efficiency_score, 0)) DESC, br.started_at DESC
+         LIMIT ' . $safeLimit,
+        [$characterId]
+    );
+}
+
+function db_battle_intelligence_battle(string $battleId): ?array
+{
+    $safeBattleId = trim($battleId);
+    if ($safeBattleId === '') {
+        return null;
+    }
+
+    $row = db_select_one(
+        'SELECT br.*, COALESCE(rs.system_name, CONCAT("System #", br.system_id)) AS system_name
+         FROM battle_rollups br
+         LEFT JOIN ref_systems rs ON rs.system_id = br.system_id
+         WHERE br.battle_id = ?
+         LIMIT 1',
+        [$safeBattleId]
+    );
+
+    return $row ?: null;
+}
+
+function db_battle_intelligence_battle_sides(string $battleId): array
+{
+    $safeBattleId = trim($battleId);
+    if ($safeBattleId === '') {
+        return [];
+    }
+
+    return db_select(
+        'SELECT bsm.*, ba.anomaly_class, ba.percentile_rank, ba.explanation_json
+         FROM battle_side_metrics bsm
+         LEFT JOIN battle_anomalies ba ON ba.battle_id = bsm.battle_id AND ba.side_key = bsm.side_key
+         WHERE bsm.battle_id = ?
+         ORDER BY bsm.z_efficiency_score DESC',
+        [$safeBattleId]
+    );
+}
+
+function db_battle_intelligence_battle_notable_actors(string $battleId, int $limit = 30): array
+{
+    $safeBattleId = trim($battleId);
+    if ($safeBattleId === '') {
+        return [];
+    }
+
+    $safeLimit = max(1, min(200, $limit));
+
+    return db_select(
+        'SELECT baf.character_id, baf.side_key, baf.centrality_score, baf.visibility_score, baf.participation_count,
+                baf.participated_in_high_sustain, baf.participated_in_low_sustain,
+                COALESCE(emc.entity_name, CONCAT("Character #", baf.character_id)) AS character_name
+         FROM battle_actor_features baf
+         LEFT JOIN entity_metadata_cache emc ON emc.entity_type = "character" AND emc.entity_id = baf.character_id
+         WHERE baf.battle_id = ?
+         ORDER BY baf.visibility_score DESC, baf.centrality_score DESC
+         LIMIT ' . $safeLimit,
+        [$safeBattleId]
+    );
+}

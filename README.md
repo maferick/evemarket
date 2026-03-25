@@ -170,6 +170,18 @@ README.md
 - Configure connectivity in `src/config/local.php` under the new `influxdb` section. Keep it disabled until the InfluxDB service, bucket, token, and backfill plan are ready.
 - Detailed rollout guidance, schema mapping, read-path rules, retention, and rollback notes live in `docs/INFLUXDB_ROLLUP_OFFLOAD.md`.
 
+## Battle Intelligence Operations
+
+- Battle intelligence jobs are Python-only compute stages:
+  - `compute-battle-rollups`
+  - `compute-battle-target-metrics`
+  - `compute-battle-anomalies`
+  - `compute-battle-actor-features`
+  - `compute-suspicion-scores`
+- Dedicated JSONL logs default to `storage/logs/battle-intelligence.log` (override via `SUPPLYCORE_BATTLE_INTELLIGENCE_LOG_FILE` or `battle_intelligence.log_file` in `src/config/local.php`).
+- Manual validation SQL lives in `docs/BATTLE_INTELLIGENCE_VALIDATION.md`.
+- Full operator runbook (manual run order, dry-run usage, failure-mode troubleshooting, and sample outputs) lives in `docs/BATTLE_INTELLIGENCE_RUNBOOK.md`.
+
 ## Precomputed Intelligence Pipeline (MariaDB + InfluxDB + Python)
 
 - PHP request handlers now expect precomputed planner/signal datasets in MariaDB (`buy_all_summary`, `buy_all_items`, `signals`, `doctrine_readiness`) and avoid runtime-heavy planner computation.

@@ -14,9 +14,14 @@ from .bridge import PhpBridge
 from .config import load_php_runtime_config
 from .db import SupplyCoreDb
 from .jobs import (
+    run_compute_battle_actor_features,
+    run_compute_battle_anomalies,
+    run_compute_battle_rollups,
+    run_compute_battle_target_metrics,
     run_compute_buy_all,
     run_compute_graph_insights,
     run_compute_graph_sync,
+    run_compute_suspicion_scores,
     run_compute_signals,
     run_killmail_r2z2_stream,
     run_market_comparison_summary,
@@ -77,6 +82,30 @@ PROCESSORS: dict[str, Callable[[WorkerPoolContext], dict[str, Any]]] = {
         run_compute_signals(context.db, dict(context.raw_config.get("influx") or {})),
         "compute_signals",
     ),
+    "compute_battle_rollups": lambda context: _compute_result_shape(
+        run_compute_battle_rollups(context.db, dict(context.raw_config.get("battle_intelligence") or {})),
+        "compute_battle_rollups",
+    ),
+    "compute_battle_target_metrics": lambda context: _compute_result_shape(
+        run_compute_battle_target_metrics(context.db, dict(context.raw_config.get("battle_intelligence") or {})),
+        "compute_battle_target_metrics",
+    ),
+    "compute_battle_anomalies": lambda context: _compute_result_shape(
+        run_compute_battle_anomalies(context.db, dict(context.raw_config.get("battle_intelligence") or {})),
+        "compute_battle_anomalies",
+    ),
+    "compute_battle_actor_features": lambda context: _compute_result_shape(
+        run_compute_battle_actor_features(
+            context.db,
+            dict(context.raw_config.get("neo4j") or {}),
+            dict(context.raw_config.get("battle_intelligence") or {}),
+        ),
+        "compute_battle_actor_features",
+    ),
+    "compute_suspicion_scores": lambda context: _compute_result_shape(
+        run_compute_suspicion_scores(context.db, dict(context.raw_config.get("battle_intelligence") or {})),
+        "compute_suspicion_scores",
+    ),
 }
 
 PYTHON_PRIMARY_JOB_KEYS = {
@@ -89,6 +118,11 @@ PYTHON_PRIMARY_JOB_KEYS = {
     "compute_graph_insights",
     "compute_buy_all",
     "compute_signals",
+    "compute_battle_rollups",
+    "compute_battle_target_metrics",
+    "compute_battle_anomalies",
+    "compute_battle_actor_features",
+    "compute_suspicion_scores",
 }
 
 
@@ -108,11 +142,12 @@ def _graph_result_shape(result: dict[str, Any], job_key: str) -> dict[str, Any]:
 
 
 def _compute_result_shape(result: dict[str, Any], job_key: str) -> dict[str, Any]:
+    status = str(result.get("status") or "success")
     rows_processed = max(0, int(result.get("rows_processed") or 0))
     rows_written = max(0, int(result.get("rows_written") or 0))
     return {
-        "status": "success",
-        "summary": f"{job_key} completed successfully.",
+        "status": status,
+        "summary": str(result.get("summary") or f"{job_key} completed with status {status}."),
         "rows_processed": rows_processed,
         "rows_written": rows_written,
         "meta": {

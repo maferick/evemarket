@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import argparse
+import json
+import time
 from pathlib import Path
+from typing import Any
 
 from .config import load_php_runtime_config
 from .influx_export import main as run_influx_rollup_export
@@ -11,6 +14,13 @@ from .jobs.compute_buy_all import run_compute_buy_all
 from .jobs.compute_graph_insights import run_compute_graph_insights
 from .jobs.compute_graph_sync import run_compute_graph_sync
 from .jobs.compute_signals import run_compute_signals
+from .jobs.battle_intelligence import (
+    run_compute_battle_actor_features,
+    run_compute_battle_anomalies,
+    run_compute_battle_rollups,
+    run_compute_battle_target_metrics,
+    run_compute_suspicion_scores,
+)
 from .logging_utils import configure_logging
 from .rebuild_data_model import main as run_rebuild_data_model
 from .supervisor import run_supervisor
@@ -78,7 +88,30 @@ def parse_args() -> argparse.Namespace:
     compute_graph_sync.add_argument("--app-root", default=str(Path(__file__).resolve().parents[2]))
     compute_graph_insights = subparsers.add_parser("compute-graph-insights", help="Compute graph-derived metrics and persist into MariaDB")
     compute_graph_insights.add_argument("--app-root", default=str(Path(__file__).resolve().parents[2]))
+    for command, help_text in [
+        ("compute-battle-rollups", "Cluster killmails into deterministic battle rollups and participants"),
+        ("compute-battle-target-metrics", "Build target-level sustain proxy metrics"),
+        ("compute-battle-anomalies", "Compute side-level efficiency and anomaly scores"),
+        ("compute-battle-actor-features", "Build actor-level battle feature rows and optional graph sync"),
+        ("compute-suspicion-scores", "Compute character battle intelligence and suspicion scores"),
+    ]:
+        parser_job = subparsers.add_parser(command, help=help_text)
+        parser_job.add_argument("--app-root", default=str(Path(__file__).resolve().parents[2]))
+        parser_job.add_argument("--dry-run", action="store_true", help="Compute and log counters without writing MariaDB tables.")
     return parser.parse_args()
+
+
+def _print_cli_result(command: str, started_at: float, result: dict[str, Any]) -> None:
+    payload = {
+        "command": command,
+        "status": str(result.get("status") or "success"),
+        "rows_processed": int(result.get("rows_processed") or 0),
+        "rows_written": int(result.get("rows_written") or 0),
+        "rows_would_write": int(result.get("rows_would_write") or result.get("rows_written") or 0),
+        "duration_ms": max(0, int((time.monotonic() - started_at) * 1000)),
+        "result": result,
+    }
+    print(json.dumps(payload, ensure_ascii=False, default=str))
 
 
 def main() -> int:
@@ -164,6 +197,45 @@ def main() -> int:
         result = run_compute_graph_insights(db, config.raw.get("neo4j", {}))
         print(result)
         return 0
+    if command in {
+        "compute-battle-rollups",
+        "compute-battle-target-metrics",
+        "compute-battle-anomalies",
+        "compute-battle-actor-features",
+        "compute-suspicion-scores",
+    }:
+        app_root = Path(args.app_root).resolve()
+        config = load_php_runtime_config(app_root)
+        from .db import SupplyCoreDb
+
+        db = SupplyCoreDb(config.raw.get("db", {}))
+        battle_runtime = dict(config.raw.get("battle_intelligence") or {})
+        started_at = time.monotonic()
+        try:
+            if command == "compute-battle-rollups":
+                result = run_compute_battle_rollups(db, battle_runtime, dry_run=bool(args.dry_run))
+            elif command == "compute-battle-target-metrics":
+                result = run_compute_battle_target_metrics(db, battle_runtime, dry_run=bool(args.dry_run))
+            elif command == "compute-battle-anomalies":
+                result = run_compute_battle_anomalies(db, battle_runtime, dry_run=bool(args.dry_run))
+            elif command == "compute-battle-actor-features":
+                result = run_compute_battle_actor_features(
+                    db,
+                    dict(config.raw.get("neo4j", {})),
+                    battle_runtime,
+                    dry_run=bool(args.dry_run),
+                )
+            else:
+                result = run_compute_suspicion_scores(db, battle_runtime, dry_run=bool(args.dry_run))
+            _print_cli_result(command, started_at, result)
+            return 0 if str(result.get("status") or "success") != "failed" else 1
+        except Exception as exc:
+            _print_cli_result(
+                command,
+                started_at,
+                {"status": "failed", "error_text": str(exc), "rows_processed": 0, "rows_written": 0},
+            )
+            return 1
 
     app_root = Path(args.app_root).resolve()
     config = load_php_runtime_config(app_root)

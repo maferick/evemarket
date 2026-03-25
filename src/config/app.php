@@ -50,6 +50,9 @@ $config = [
         'export_overlap_seconds' => max(0, (int) (getenv('INFLUXDB_EXPORT_OVERLAP_SECONDS') ?: 21600)),
         'export_log_file' => (string) (getenv('INFLUXDB_EXPORT_LOG_FILE') ?: 'storage/logs/influx-rollup-export.log'),
     ],
+    'battle_intelligence' => [
+        'log_file' => (string) (getenv('SUPPLYCORE_BATTLE_INTELLIGENCE_LOG_FILE') ?: 'storage/logs/battle-intelligence.log'),
+    ],
     'scheduler' => [
         'default_timeout_seconds' => max(30, (int) (getenv('SCHEDULER_DEFAULT_TIMEOUT_SECONDS') ?: 300)),
         'supervisor_mode' => getenv('SCHEDULER_SUPERVISOR_MODE') ?: 'php',
