@@ -129,6 +129,89 @@ CREATE TABLE IF NOT EXISTS fit_overlap_score (
     KEY idx_fit_overlap_score_value (overlap_score, computed_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+
+CREATE TABLE IF NOT EXISTS battle_actor_graph_metrics (
+    battle_id CHAR(64) NOT NULL,
+    side_key VARCHAR(80) NOT NULL,
+    participant_count INT UNSIGNED NOT NULL DEFAULT 0,
+    co_occurrence_density DECIMAL(14,6) NOT NULL DEFAULT 0.000000,
+    anomalous_co_occurrence_density DECIMAL(14,6) NOT NULL DEFAULT 0.000000,
+    anomalous_neighbor_density DECIMAL(14,6) NOT NULL DEFAULT 0.000000,
+    cross_side_cluster_score DECIMAL(14,6) NOT NULL DEFAULT 0.000000,
+    bridge_score DECIMAL(14,6) NOT NULL DEFAULT 0.000000,
+    computed_at DATETIME NOT NULL,
+    PRIMARY KEY (battle_id, side_key),
+    KEY idx_battle_actor_graph_metrics_bridge (bridge_score, computed_at),
+    KEY idx_battle_actor_graph_metrics_computed (computed_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS character_graph_intelligence (
+    character_id BIGINT UNSIGNED PRIMARY KEY,
+    co_occurrence_density DECIMAL(14,6) NOT NULL DEFAULT 0.000000,
+    anomalous_co_occurrence_density DECIMAL(14,6) NOT NULL DEFAULT 0.000000,
+    cross_side_cluster_score DECIMAL(14,6) NOT NULL DEFAULT 0.000000,
+    neighbor_anomaly_score DECIMAL(14,6) NOT NULL DEFAULT 0.000000,
+    anomalous_neighbor_density DECIMAL(14,6) NOT NULL DEFAULT 0.000000,
+    recurrence_centrality DECIMAL(14,6) NOT NULL DEFAULT 0.000000,
+    bridge_score DECIMAL(14,6) NOT NULL DEFAULT 0.000000,
+    pagerank_score DECIMAL(14,6) NOT NULL DEFAULT 0.000000,
+    community_id INT NOT NULL DEFAULT 0,
+    suspicious_cluster_density DECIMAL(14,6) NOT NULL DEFAULT 0.000000,
+    bridge_between_clusters_score DECIMAL(14,6) NOT NULL DEFAULT 0.000000,
+    computed_at DATETIME NOT NULL,
+    KEY idx_character_graph_intelligence_bridge (bridge_score, computed_at),
+    KEY idx_character_graph_intelligence_pagerank (pagerank_score, computed_at),
+    KEY idx_character_graph_intelligence_community (community_id, computed_at),
+    KEY idx_character_graph_intelligence_computed (computed_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+
+CREATE TABLE IF NOT EXISTS character_behavioral_baselines (
+    character_id BIGINT UNSIGNED PRIMARY KEY,
+    normal_battle_frequency DECIMAL(12,6) NOT NULL DEFAULT 0.000000,
+    normal_co_occurrence_density DECIMAL(12,6) NOT NULL DEFAULT 0.000000,
+    low_sustain_participation_frequency DECIMAL(12,6) NOT NULL DEFAULT 0.000000,
+    expected_enemy_efficiency DECIMAL(12,6) NOT NULL DEFAULT 0.000000,
+    role_adjusted_baseline DECIMAL(12,6) NOT NULL DEFAULT 0.000000,
+    anomaly_delta_score DECIMAL(12,6) NOT NULL DEFAULT 0.000000,
+    computed_at DATETIME NOT NULL,
+    KEY idx_character_behavioral_baselines_computed (computed_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS graph_health_snapshots (
+    id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    snapshot_ts DATETIME NOT NULL,
+    labels_json LONGTEXT NOT NULL,
+    relationships_json LONGTEXT NOT NULL,
+    avg_character_degree DECIMAL(14,6) NOT NULL DEFAULT 0.000000,
+    max_character_degree INT UNSIGNED NOT NULL DEFAULT 0,
+    avg_fit_degree DECIMAL(14,6) NOT NULL DEFAULT 0.000000,
+    max_fit_degree INT UNSIGNED NOT NULL DEFAULT 0,
+    notes VARCHAR(255) DEFAULT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    KEY idx_graph_health_snapshots_ts (snapshot_ts)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS suspicious_actor_clusters (
+    cluster_id BIGINT UNSIGNED PRIMARY KEY,
+    suspicious_cluster_density DECIMAL(14,6) NOT NULL DEFAULT 0.000000,
+    anomalous_group_recurrence DECIMAL(14,6) NOT NULL DEFAULT 0.000000,
+    bridge_between_clusters_score DECIMAL(14,6) NOT NULL DEFAULT 0.000000,
+    member_count INT UNSIGNED NOT NULL DEFAULT 0,
+    supporting_battles_json LONGTEXT NOT NULL,
+    computed_at DATETIME NOT NULL,
+    KEY idx_suspicious_actor_clusters_density (suspicious_cluster_density, computed_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS suspicious_cluster_membership (
+    cluster_id BIGINT UNSIGNED NOT NULL,
+    character_id BIGINT UNSIGNED NOT NULL,
+    bridge_score DECIMAL(14,6) NOT NULL DEFAULT 0.000000,
+    computed_at DATETIME NOT NULL,
+    PRIMARY KEY (cluster_id, character_id),
+    KEY idx_suspicious_cluster_membership_character (character_id, computed_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 CREATE TABLE IF NOT EXISTS doctrine_readiness (
     id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
     doctrine_fit_id INT UNSIGNED NOT NULL,
@@ -1526,6 +1609,9 @@ CREATE TABLE IF NOT EXISTS character_battle_intelligence (
 CREATE TABLE IF NOT EXISTS character_suspicion_scores (
     character_id BIGINT UNSIGNED PRIMARY KEY,
     suspicion_score DECIMAL(12,6) NOT NULL DEFAULT 0.000000,
+    suspicion_score_recent DECIMAL(12,6) NOT NULL DEFAULT 0.000000,
+    suspicion_score_all_time DECIMAL(12,6) NOT NULL DEFAULT 0.000000,
+    suspicion_momentum DECIMAL(12,6) NOT NULL DEFAULT 0.000000,
     percentile_rank DECIMAL(10,6) NOT NULL DEFAULT 0.000000,
     high_sustain_frequency DECIMAL(12,6) NOT NULL DEFAULT 0.000000,
     low_sustain_frequency DECIMAL(12,6) NOT NULL DEFAULT 0.000000,
@@ -1533,12 +1619,16 @@ CREATE TABLE IF NOT EXISTS character_suspicion_scores (
     enemy_efficiency_uplift DECIMAL(12,6) NOT NULL DEFAULT 0.000000,
     role_weight DECIMAL(12,6) NOT NULL DEFAULT 0.000000,
     supporting_battle_count INT UNSIGNED NOT NULL DEFAULT 0,
+    support_evidence_count INT UNSIGNED NOT NULL DEFAULT 0,
+    community_id INT NOT NULL DEFAULT 0,
     top_supporting_battles_json LONGTEXT NOT NULL,
+    top_graph_neighbors_json LONGTEXT NOT NULL,
     explanation_json LONGTEXT NOT NULL,
     computed_at DATETIME NOT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     KEY idx_character_suspicion_scores_rank (suspicion_score, percentile_rank),
+    KEY idx_character_suspicion_scores_recent (suspicion_score_recent, suspicion_momentum),
     KEY idx_character_suspicion_scores_computed (computed_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
@@ -2523,6 +2613,15 @@ INSERT INTO sync_schedules (
     ('activity_priority_summary_sync', 1, 15, 900, 780, 13, 'normal', 'single', 'php', 180, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 0, NULL, NULL, NULL, NULL),
     ('analytics_bucket_1h_sync', 1, 15, 900, 900, 15, 'normal', 'single', 'php', 180, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 0, NULL, NULL, NULL, NULL),
     ('analytics_bucket_1d_sync', 1, 60, 3600, 960, 16, 'normal', 'single', 'php', 240, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 0, NULL, NULL, NULL, NULL),
+    ('compute_graph_sync', 1, 10, 600, 1020, 17, 'normal', 'single', 'python', 420, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
+    ('compute_graph_sync_doctrine_dependency', 1, 10, 600, 1080, 18, 'normal', 'single', 'python', 420, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
+    ('compute_graph_sync_battle_intelligence', 1, 10, 600, 1140, 19, 'normal', 'single', 'python', 420, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
+    ('compute_graph_derived_relationships', 1, 10, 600, 1200, 20, 'normal', 'single', 'python', 420, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
+    ('compute_graph_insights', 1, 10, 600, 1230, 20, 'normal', 'single', 'python', 420, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
+    ('compute_graph_prune', 1, 15, 900, 1240, 20, 'normal', 'single', 'python', 420, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
+    ('compute_graph_topology_metrics', 1, 15, 900, 1245, 20, 'normal', 'single', 'python', 420, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
+    ('compute_behavioral_baselines', 1, 15, 900, 1480, 24, 'normal', 'single', 'python', 420, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
+    ('compute_suspicion_scores_v2', 1, 15, 900, 1540, 25, 'normal', 'single', 'python', 420, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
     ('compute_battle_rollups', 1, 10, 600, 1260, 21, 'normal', 'single', 'python', 420, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
     ('compute_battle_target_metrics', 1, 10, 600, 1320, 22, 'normal', 'single', 'python', 420, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
     ('compute_battle_anomalies', 1, 10, 600, 1380, 23, 'normal', 'single', 'python', 420, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),

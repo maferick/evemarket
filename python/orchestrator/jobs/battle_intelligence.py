@@ -25,6 +25,20 @@ MIN_ELIGIBLE_PARTICIPANTS = 100
 MIN_SAMPLE_COUNT = 5
 EPSILON = 1e-6
 
+# Explainable suspicion model weights (must sum to 1.0).
+SUSPICION_WEIGHTS: dict[str, float] = {
+    "high_sustain_frequency": 0.20,
+    "cross_side_rate": 0.12,
+    "enemy_efficiency_uplift": 0.22,
+    "high_minus_low": 0.08,
+    "role_weight": 0.08,
+    "co_occurrence_density": 0.10,
+    "anomalous_co_occurrence_density": 0.08,
+    "cross_side_cluster_score": 0.05,
+    "neighbor_anomaly_score": 0.04,
+    "bridge_score": 0.03,
+}
+
 
 def _now_sql() -> str:
     return datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
@@ -832,6 +846,7 @@ def run_compute_suspicion_scores(db: SupplyCoreDb, runtime: dict[str, Any] | Non
             FROM battle_actor_features baf
             INNER JOIN battle_rollups br ON br.battle_id = baf.battle_id
             LEFT JOIN battle_side_metrics bsm ON bsm.battle_id = baf.battle_id AND bsm.side_key = baf.side_key
+            LEFT JOIN character_graph_intelligence cgi ON cgi.character_id = baf.character_id
             WHERE baf.character_id > 0
             """
         )
@@ -877,6 +892,13 @@ def run_compute_suspicion_scores(db: SupplyCoreDb, runtime: dict[str, Any] | Non
                 0.0,
             )
 
+            co_occurrence_density = _safe_div(sum(float(row.get("co_occurrence_density") or 0.0) for row in rows), float(max(len(rows), 1)), 0.0)
+            anomalous_co_occurrence_density = _safe_div(sum(float(row.get("anomalous_co_occurrence_density") or 0.0) for row in rows), float(max(len(rows), 1)), 0.0)
+            cross_side_cluster_score = _safe_div(sum(float(row.get("cross_side_cluster_score") or 0.0) for row in rows), float(max(len(rows), 1)), 0.0)
+            neighbor_anomaly_score = _safe_div(sum(float(row.get("neighbor_anomaly_score") or 0.0) for row in rows), float(max(len(rows), 1)), 0.0)
+            recurrence_centrality = _safe_div(sum(float(row.get("recurrence_centrality") or 0.0) for row in rows), float(max(len(rows), 1)), 0.0)
+            bridge_score = _safe_div(sum(float(row.get("bridge_score") or 0.0) for row in rows), float(max(len(rows), 1)), 0.0)
+
             present_enemy_z: list[float] = []
             for row in eligible_rows:
                 battle_id = str(row.get("battle_id"))
@@ -914,6 +936,12 @@ def run_compute_suspicion_scores(db: SupplyCoreDb, runtime: dict[str, Any] | Non
                     "ally_efficiency_uplift": ally_eff_uplift,
                     "role_weight": role_weight,
                     "anomalous_battle_density": anomalous_battle_density,
+                    "co_occurrence_density": co_occurrence_density,
+                    "anomalous_co_occurrence_density": anomalous_co_occurrence_density,
+                    "cross_side_cluster_score": cross_side_cluster_score,
+                    "neighbor_anomaly_score": neighbor_anomaly_score,
+                    "recurrence_centrality": recurrence_centrality,
+                    "bridge_score": bridge_score,
                 }
             )
 
@@ -921,11 +949,16 @@ def run_compute_suspicion_scores(db: SupplyCoreDb, runtime: dict[str, Any] | Non
                 suspicion_score = 0.0
             else:
                 suspicion_score = (
-                    0.25 * high_sustain_frequency
-                    + 0.20 * cross_side_rate
-                    + 0.30 * enemy_eff_uplift
-                    + 0.15 * (high_sustain_frequency - low_sustain_frequency)
-                    + 0.10 * role_weight
+                    SUSPICION_WEIGHTS["high_sustain_frequency"] * high_sustain_frequency
+                    + SUSPICION_WEIGHTS["cross_side_rate"] * cross_side_rate
+                    + SUSPICION_WEIGHTS["enemy_efficiency_uplift"] * enemy_eff_uplift
+                    + SUSPICION_WEIGHTS["high_minus_low"] * (high_sustain_frequency - low_sustain_frequency)
+                    + SUSPICION_WEIGHTS["role_weight"] * role_weight
+                    + SUSPICION_WEIGHTS["co_occurrence_density"] * min(1.0, co_occurrence_density / 10.0)
+                    + SUSPICION_WEIGHTS["anomalous_co_occurrence_density"] * min(1.0, anomalous_co_occurrence_density / 10.0)
+                    + SUSPICION_WEIGHTS["cross_side_cluster_score"] * min(1.0, cross_side_cluster_score)
+                    + SUSPICION_WEIGHTS["neighbor_anomaly_score"] * min(1.0, max(0.0, neighbor_anomaly_score))
+                    + SUSPICION_WEIGHTS["bridge_score"] * min(1.0, bridge_score / 10.0)
                 )
             suspicion_score = max(0.0, min(1.0, suspicion_score))
 
@@ -944,7 +977,8 @@ def run_compute_suspicion_scores(db: SupplyCoreDb, runtime: dict[str, Any] | Non
             )[:5]
 
             explanation = {
-                "formula": "0.25*high_sustain_frequency + 0.20*cross_side_rate + 0.30*enemy_efficiency_uplift + 0.15*(high-low) + 0.10*role_weight",
+                "formula": "weighted sum of battle + graph intelligence metrics",
+                "weights": SUSPICION_WEIGHTS,
                 "minimum_sample_count": MIN_SAMPLE_COUNT,
                 "eligible_battle_count": eligible_battle_count,
                 "high_sustain_frequency": high_sustain_frequency,
@@ -952,6 +986,11 @@ def run_compute_suspicion_scores(db: SupplyCoreDb, runtime: dict[str, Any] | Non
                 "cross_side_rate": cross_side_rate,
                 "enemy_efficiency_uplift": enemy_eff_uplift,
                 "role_weight": role_weight,
+                "co_occurrence_density": co_occurrence_density,
+                "anomalous_co_occurrence_density": anomalous_co_occurrence_density,
+                "cross_side_cluster_score": cross_side_cluster_score,
+                "neighbor_anomaly_score": neighbor_anomaly_score,
+                "bridge_score": bridge_score,
             }
             score_rows.append(
                 {

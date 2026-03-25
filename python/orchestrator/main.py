@@ -13,6 +13,14 @@ from .influx_inspect import sample_main as run_influx_rollup_sample
 from .jobs.compute_buy_all import run_compute_buy_all
 from .jobs.compute_graph_insights import run_compute_graph_insights
 from .jobs.compute_graph_sync import run_compute_graph_sync
+from .jobs.graph_pipeline import (
+    run_compute_graph_derived_relationships,
+    run_compute_graph_sync_battle_intelligence,
+    run_compute_graph_sync_doctrine_dependency,
+    run_compute_graph_prune,
+    run_compute_graph_topology_metrics,
+)
+from .jobs.behavioral_intelligence_v2 import run_compute_behavioral_baselines, run_compute_suspicion_scores_v2
 from .jobs.compute_signals import run_compute_signals
 from .jobs.battle_intelligence import (
     run_compute_battle_actor_features,
@@ -88,6 +96,20 @@ def parse_args() -> argparse.Namespace:
     compute_graph_sync.add_argument("--app-root", default=str(Path(__file__).resolve().parents[2]))
     compute_graph_insights = subparsers.add_parser("compute-graph-insights", help="Compute graph-derived metrics and persist into MariaDB")
     compute_graph_insights.add_argument("--app-root", default=str(Path(__file__).resolve().parents[2]))
+    compute_graph_sync_doctrine = subparsers.add_parser("compute-graph-sync-doctrine-dependency", help="Sync doctrine/fit/item anchors into Neo4j")
+    compute_graph_sync_doctrine.add_argument("--app-root", default=str(Path(__file__).resolve().parents[2]))
+    compute_graph_sync_battle = subparsers.add_parser("compute-graph-sync-battle-intelligence", help="Sync battle/actor anchors into Neo4j")
+    compute_graph_sync_battle.add_argument("--app-root", default=str(Path(__file__).resolve().parents[2]))
+    compute_graph_derived = subparsers.add_parser("compute-graph-derived-relationships", help="Build derived graph relationships")
+    compute_graph_derived.add_argument("--app-root", default=str(Path(__file__).resolve().parents[2]))
+    compute_graph_prune = subparsers.add_parser("compute-graph-prune", help="Prune stale low-signal graph edges")
+    compute_graph_prune.add_argument("--app-root", default=str(Path(__file__).resolve().parents[2]))
+    compute_graph_topology = subparsers.add_parser("compute-graph-topology-metrics", help="Materialize graph topology metrics to MariaDB")
+    compute_graph_topology.add_argument("--app-root", default=str(Path(__file__).resolve().parents[2]))
+    compute_behavioral = subparsers.add_parser("compute-behavioral-baselines", help="Compute character behavioral baselines")
+    compute_behavioral.add_argument("--app-root", default=str(Path(__file__).resolve().parents[2]))
+    compute_suspicion_v2 = subparsers.add_parser("compute-suspicion-scores-v2", help="Compute suspicion scoring v2")
+    compute_suspicion_v2.add_argument("--app-root", default=str(Path(__file__).resolve().parents[2]))
     for command, help_text in [
         ("compute-battle-rollups", "Cluster killmails into deterministic battle rollups and participants"),
         ("compute-battle-target-metrics", "Build target-level sustain proxy metrics"),
@@ -195,6 +217,62 @@ def main() -> int:
         from .db import SupplyCoreDb
         db = SupplyCoreDb(config.raw.get("db", {}))
         result = run_compute_graph_insights(db, config.raw.get("neo4j", {}))
+        print(result)
+        return 0
+    if command == "compute-graph-sync-doctrine-dependency":
+        app_root = Path(args.app_root).resolve()
+        config = load_php_runtime_config(app_root)
+        from .db import SupplyCoreDb
+        db = SupplyCoreDb(config.raw.get("db", {}))
+        result = run_compute_graph_sync_doctrine_dependency(db, config.raw.get("neo4j", {}))
+        print(result)
+        return 0
+    if command == "compute-graph-sync-battle-intelligence":
+        app_root = Path(args.app_root).resolve()
+        config = load_php_runtime_config(app_root)
+        from .db import SupplyCoreDb
+        db = SupplyCoreDb(config.raw.get("db", {}))
+        result = run_compute_graph_sync_battle_intelligence(db, config.raw.get("neo4j", {}))
+        print(result)
+        return 0
+    if command == "compute-graph-derived-relationships":
+        app_root = Path(args.app_root).resolve()
+        config = load_php_runtime_config(app_root)
+        from .db import SupplyCoreDb
+        db = SupplyCoreDb(config.raw.get("db", {}))
+        result = run_compute_graph_derived_relationships(db, config.raw.get("neo4j", {}))
+        print(result)
+        return 0
+    if command == "compute-graph-prune":
+        app_root = Path(args.app_root).resolve()
+        config = load_php_runtime_config(app_root)
+        from .db import SupplyCoreDb
+        db = SupplyCoreDb(config.raw.get("db", {}))
+        result = run_compute_graph_prune(db, config.raw.get("neo4j", {}))
+        print(result)
+        return 0
+    if command == "compute-graph-topology-metrics":
+        app_root = Path(args.app_root).resolve()
+        config = load_php_runtime_config(app_root)
+        from .db import SupplyCoreDb
+        db = SupplyCoreDb(config.raw.get("db", {}))
+        result = run_compute_graph_topology_metrics(db, config.raw.get("neo4j", {}))
+        print(result)
+        return 0
+    if command == "compute-behavioral-baselines":
+        app_root = Path(args.app_root).resolve()
+        config = load_php_runtime_config(app_root)
+        from .db import SupplyCoreDb
+        db = SupplyCoreDb(config.raw.get("db", {}))
+        result = run_compute_behavioral_baselines(db, config.raw.get("battle_intelligence", {}))
+        print(result)
+        return 0
+    if command == "compute-suspicion-scores-v2":
+        app_root = Path(args.app_root).resolve()
+        config = load_php_runtime_config(app_root)
+        from .db import SupplyCoreDb
+        db = SupplyCoreDb(config.raw.get("db", {}))
+        result = run_compute_suspicion_scores_v2(db, config.raw.get("battle_intelligence", {}))
         print(result)
         return 0
     if command in {
