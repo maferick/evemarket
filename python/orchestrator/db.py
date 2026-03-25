@@ -332,7 +332,7 @@ class SupplyCoreDb:
             clauses.append("workload_class IN (" + ",".join(["%s"] * len(workload_classes)) + ")")
             params.extend(workload_classes)
         where_filtered = " AND " + " AND ".join(clauses)
-        repeated = params * 4
+        repeated = params * 3
         counts = self.fetch_one(
             f"""SELECT
                 SUM(CASE WHEN status IN ('queued','retry') AND available_at <= UTC_TIMESTAMP() THEN 1 ELSE 0 END) AS ready_all,
