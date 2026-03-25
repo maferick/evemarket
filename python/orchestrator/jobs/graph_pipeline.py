@@ -112,6 +112,26 @@ def _format_int_cursor(cursor: int) -> str:
     return str(max(0, int(cursor)))
 
 
+def _parse_battle_participant_cursor(raw_cursor: str | None) -> tuple[str, int]:
+    text = str(raw_cursor or "").strip()
+    if text == "":
+        return "", 0
+    battle_id, separator, character_id_raw = text.partition("|")
+    if separator == "" or battle_id.strip() == "":
+        return "", 0
+    try:
+        return battle_id.strip(), max(0, int(character_id_raw))
+    except ValueError:
+        return "", 0
+
+
+def _format_battle_participant_cursor(battle_id: str, character_id: int) -> str:
+    battle_id_value = str(battle_id or "").strip()
+    if battle_id_value == "":
+        return ""
+    return f"{battle_id_value}|{max(0, int(character_id))}"
+
+
 def _emit_batch_telemetry(log_file: str, job_name: str, payload: dict[str, Any]) -> None:
     _write_graph_log(
         log_file,
@@ -326,40 +346,73 @@ def run_compute_graph_sync_battle_intelligence(db: SupplyCoreDb, neo4j_raw: dict
     batch_size = _coerce_batch_size(runtime.get("sync_battle_batch_size") or runtime.get("batch_size"), fallback=800)
     max_batches = max(1, int(runtime.get("sync_battle_max_batches_per_run") or 6))
     cursor_row = _sync_state_get(db, GRAPH_BATCH_STATE_KEYS["battle_cursor"]) or {}
-    cursor_id = _parse_int_cursor(cursor_row.get("last_cursor"))
+    participant_has_id = _table_has_column(db, "battle_participants", "id")
+    cursor_id = _parse_int_cursor(cursor_row.get("last_cursor")) if participant_has_id else 0
+    cursor_battle_id, cursor_character_id = _parse_battle_participant_cursor(cursor_row.get("last_cursor"))
     rows_processed = 0
     rows_written = 0
     batch_count = 0
-    latest_checkpoint = cursor_id
+    latest_checkpoint = _format_int_cursor(cursor_id) if participant_has_id else _format_battle_participant_cursor(cursor_battle_id, cursor_character_id)
     while batch_count < max_batches:
         batch_started = time.perf_counter()
-        rows = db.fetch_all(
-            """
-            SELECT
-                bp.id AS participant_row_id,
-                bp.battle_id,
-                bp.character_id,
-                bp.side_key,
-                bp.ship_type_id,
-                bp.alliance_id,
-                bp.corporation_id,
-                br.system_id,
-                br.started_at,
-                br.ended_at,
-                br.participant_count,
-                COALESCE(ba.anomaly_class, 'normal') AS anomaly_class,
-                COALESCE(ba.z_efficiency_score, 0) AS z_efficiency_score
-            FROM battle_participants bp
-            INNER JOIN battle_rollups br ON br.battle_id = bp.battle_id
-            LEFT JOIN battle_anomalies ba ON ba.battle_id = bp.battle_id AND ba.side_key = bp.side_key
-            WHERE bp.id > %s
-            ORDER BY bp.id ASC
-            LIMIT %s
-            """,
-            (cursor_id, batch_size),
-        )
+        if participant_has_id:
+            rows = db.fetch_all(
+                """
+                SELECT
+                    bp.id AS participant_row_id,
+                    bp.battle_id,
+                    bp.character_id,
+                    bp.side_key,
+                    bp.ship_type_id,
+                    bp.alliance_id,
+                    bp.corporation_id,
+                    br.system_id,
+                    br.started_at,
+                    br.ended_at,
+                    br.participant_count,
+                    COALESCE(ba.anomaly_class, 'normal') AS anomaly_class,
+                    COALESCE(ba.z_efficiency_score, 0) AS z_efficiency_score
+                FROM battle_participants bp
+                INNER JOIN battle_rollups br ON br.battle_id = bp.battle_id
+                LEFT JOIN battle_anomalies ba ON ba.battle_id = bp.battle_id AND ba.side_key = bp.side_key
+                WHERE bp.id > %s
+                ORDER BY bp.id ASC
+                LIMIT %s
+                """,
+                (cursor_id, batch_size),
+            )
+        else:
+            rows = db.fetch_all(
+                """
+                SELECT
+                    bp.battle_id,
+                    bp.character_id,
+                    bp.side_key,
+                    bp.ship_type_id,
+                    bp.alliance_id,
+                    bp.corporation_id,
+                    br.system_id,
+                    br.started_at,
+                    br.ended_at,
+                    br.participant_count,
+                    COALESCE(ba.anomaly_class, 'normal') AS anomaly_class,
+                    COALESCE(ba.z_efficiency_score, 0) AS z_efficiency_score
+                FROM battle_participants bp
+                INNER JOIN battle_rollups br ON br.battle_id = bp.battle_id
+                LEFT JOIN battle_anomalies ba ON ba.battle_id = bp.battle_id AND ba.side_key = bp.side_key
+                WHERE (bp.battle_id > %s)
+                   OR (bp.battle_id = %s AND bp.character_id > %s)
+                ORDER BY bp.battle_id ASC, bp.character_id ASC
+                LIMIT %s
+                """,
+                (cursor_battle_id, cursor_battle_id, cursor_character_id, batch_size),
+            )
         if not rows:
-            cursor_id = 0
+            if participant_has_id:
+                cursor_id = 0
+            else:
+                cursor_battle_id = ""
+                cursor_character_id = 0
             break
 
         client.query(
@@ -405,8 +458,13 @@ def run_compute_graph_sync_battle_intelligence(db: SupplyCoreDb, neo4j_raw: dict
             {"rows": rows},
         )
 
-        cursor_id = int(rows[-1].get("participant_row_id") or cursor_id)
-        latest_checkpoint = cursor_id
+        if participant_has_id:
+            cursor_id = int(rows[-1].get("participant_row_id") or cursor_id)
+            latest_checkpoint = _format_int_cursor(cursor_id)
+        else:
+            cursor_battle_id = str(rows[-1].get("battle_id") or cursor_battle_id)
+            cursor_character_id = int(rows[-1].get("character_id") or cursor_character_id)
+            latest_checkpoint = _format_battle_participant_cursor(cursor_battle_id, cursor_character_id)
         batch_count += 1
         rows_processed += len(rows)
         rows_written += len(rows)
@@ -416,7 +474,7 @@ def run_compute_graph_sync_battle_intelligence(db: SupplyCoreDb, neo4j_raw: dict
             sync_mode="incremental",
             status="running",
             last_success_at=None,
-            last_cursor=_format_int_cursor(cursor_id),
+            last_cursor=latest_checkpoint,
             last_row_count=rows_written,
             last_error_message=None,
         )
@@ -429,7 +487,7 @@ def run_compute_graph_sync_battle_intelligence(db: SupplyCoreDb, neo4j_raw: dict
                 "rows_processed": len(rows),
                 "rows_written": len(rows),
                 "duration_ms": int((time.perf_counter() - batch_started) * 1000),
-                "checkpoint_after": _format_int_cursor(cursor_id),
+                "checkpoint_after": latest_checkpoint,
                 "errors": "",
             },
         )
@@ -440,7 +498,7 @@ def run_compute_graph_sync_battle_intelligence(db: SupplyCoreDb, neo4j_raw: dict
         sync_mode="incremental",
         status="success",
         last_success_at=_utc_now_sql(),
-        last_cursor=_format_int_cursor(cursor_id),
+        last_cursor=latest_checkpoint,
         last_row_count=rows_written,
         last_error_message=None,
     )
@@ -452,10 +510,10 @@ def run_compute_graph_sync_battle_intelligence(db: SupplyCoreDb, neo4j_raw: dict
         rows_written=rows_written,
         nodes_merged=rows_written * 4,
         relationships_merged=rows_written * 6,
-        checkpoint_cursor=_format_int_cursor(latest_checkpoint),
+        checkpoint_cursor=latest_checkpoint,
         batch_count=batch_count,
         batch_size=batch_size,
-        has_more=cursor_id > 0,
+        has_more=(cursor_id > 0) if participant_has_id else (cursor_battle_id != ""),
     )
     _write_graph_log(config.log_file, "graph.sync.battle.completed", result)
     return result
@@ -858,6 +916,7 @@ def _upsert_table(db: SupplyCoreDb, table_name: str, columns: str, placeholders:
 
 def _ensure_doctrine_dependency_depth_schema(db: SupplyCoreDb) -> None:
     expected_columns: list[tuple[str, str, str]] = [
+        ("doctrine_name", "VARCHAR(191) NOT NULL DEFAULT ''", "doctrine_id"),
         ("fit_count", "INT UNSIGNED NOT NULL DEFAULT 0", "doctrine_id"),
         ("item_count", "INT UNSIGNED NOT NULL DEFAULT 0", "fit_count"),
         ("unique_item_count", "INT UNSIGNED NOT NULL DEFAULT 0", "item_count"),
@@ -1129,7 +1188,6 @@ def run_compute_graph_insights(db: SupplyCoreDb, neo4j_raw: dict[str, Any] | Non
     )
 
     _ensure_doctrine_dependency_depth_schema(db)
-    doctrine_dependency_has_name = _table_has_column(db, "doctrine_dependency_depth", "doctrine_name")
 
     _upsert_table(
         db,
@@ -1140,43 +1198,24 @@ def run_compute_graph_insights(db: SupplyCoreDb, neo4j_raw: dict[str, Any] | Non
     )
 
     doctrine_dependency_rows = [r for r in doctrine_rows if int(r.get("doctrine_id") or 0) > 0]
-    if doctrine_dependency_has_name:
-        _upsert_table(
-            db,
-            "doctrine_dependency_depth",
-            "doctrine_id, doctrine_name, fit_count, item_count, unique_item_count, dependency_depth_score, computed_at",
-            "%s, %s, %s, %s, %s, %s, %s",
-            [
-                (
-                    int(r["doctrine_id"]),
-                    str(r.get("doctrine_name") or f"Doctrine #{int(r['doctrine_id'])}"),
-                    int(r["fit_count"]),
-                    int(r["item_count"]),
-                    int(r["unique_item_count"]),
-                    float(r["dependency_depth_score"]),
-                    computed_at,
-                )
-                for r in doctrine_dependency_rows
-            ],
-        )
-    else:
-        _upsert_table(
-            db,
-            "doctrine_dependency_depth",
-            "doctrine_id, fit_count, item_count, unique_item_count, dependency_depth_score, computed_at",
-            "%s, %s, %s, %s, %s, %s",
-            [
-                (
-                    int(r["doctrine_id"]),
-                    int(r["fit_count"]),
-                    int(r["item_count"]),
-                    int(r["unique_item_count"]),
-                    float(r["dependency_depth_score"]),
-                    computed_at,
-                )
-                for r in doctrine_dependency_rows
-            ],
-        )
+    _upsert_table(
+        db,
+        "doctrine_dependency_depth",
+        "doctrine_id, doctrine_name, fit_count, item_count, unique_item_count, dependency_depth_score, computed_at",
+        "%s, %s, %s, %s, %s, %s, %s",
+        [
+            (
+                int(r["doctrine_id"]),
+                str(r.get("doctrine_name") or f"Doctrine #{int(r['doctrine_id'])}"),
+                int(r["fit_count"]),
+                int(r["item_count"]),
+                int(r["unique_item_count"]),
+                float(r["dependency_depth_score"]),
+                computed_at,
+            )
+            for r in doctrine_dependency_rows
+        ],
+    )
 
     sync_state = _sync_state_get(db, SYNC_DATASET_GRAPH_INSIGHTS_FIT_OVERLAP) or {}
     cursor_fit_id, cursor_other_fit_id = _parse_pair_cursor(sync_state.get("last_cursor"))
