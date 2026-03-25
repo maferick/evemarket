@@ -16,6 +16,7 @@ from zoneinfo import ZoneInfo
 from .bridge import PhpBridge
 from .config import load_php_runtime_config
 from .db import SupplyCoreDb
+from .json_utils import json_dumps_safe
 
 
 def _utc_now() -> datetime:
@@ -86,7 +87,7 @@ class StatusTracker:
         payload = status.to_payload()
         self.path.parent.mkdir(parents=True, exist_ok=True)
         tmp_path = self.path.with_suffix(self.path.suffix + ".tmp")
-        tmp_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+        tmp_path.write_text(json_dumps_safe(payload, indent=2) + "\n", encoding="utf-8")
         os.replace(tmp_path, self.path)
 
         monotonic_now = time.monotonic()

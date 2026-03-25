@@ -12,6 +12,7 @@ from typing import Any, TextIO
 
 from .config import load_php_runtime_config
 from .health import HealthResult, run_php_healthcheck
+from .json_utils import json_dumps_safe
 from .logging_utils import LoggerAdapter
 from .php_runner import ManagedPhpProcess
 
@@ -115,7 +116,7 @@ class SupplyCoreSupervisor:
             "last_worker_exit_code": self.state.last_worker_exit_code,
             "last_worker_exit_at": self.state.last_worker_exit_at,
         }
-        self.config.heartbeat_file.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+        self.config.heartbeat_file.write_text(json_dumps_safe(payload, indent=2) + "\n", encoding="utf-8")
 
     def evaluate_health(self) -> HealthResult:
         return run_php_healthcheck(self.config.php_binary, self.config.scheduler_health, self.config.app_root)

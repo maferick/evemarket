@@ -32,7 +32,7 @@ from .jobs import (
     run_compute_suspicion_scores,
     run_compute_suspicion_scores_v2,
 )
-from .json_utils import make_json_safe
+from .json_utils import json_dumps_safe, make_json_safe
 from .logging_utils import LoggerAdapter, configure_logging
 from .worker_registry import WORKER_JOB_DEFINITIONS
 from .worker_runtime import resident_memory_bytes, utc_now_iso
@@ -140,7 +140,7 @@ def _parse_csv(raw: str) -> list[str]:
 
 def _write_state_file(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    path.write_text(json_dumps_safe(payload, indent=2) + "\n", encoding="utf-8")
 
 
 def _process_job(context: WorkerPoolContext) -> dict[str, Any]:

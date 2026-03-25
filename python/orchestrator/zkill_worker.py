@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import load_php_runtime_config
+from .json_utils import json_dumps_safe
 from .jobs import run_killmail_r2z2_stream
 from .logging_utils import configure_logging
 from .worker_runtime import resident_memory_bytes, utc_now_iso
@@ -40,7 +41,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def _write_state_file(path: Path, payload: dict[str, object]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    path.write_text(json_dumps_safe(payload, indent=2) + "\n", encoding="utf-8")
 
 
 def _read_state_file(path: Path) -> dict[str, Any]:
