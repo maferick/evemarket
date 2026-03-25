@@ -8512,7 +8512,7 @@ function db_sync_schedule_ensure_job(string $jobKey, int $enabled, int $interval
             max_early_start_seconds = COALESCE(sync_schedules.max_early_start_seconds, VALUES(max_early_start_seconds)),
             latency_sensitive = GREATEST(sync_schedules.latency_sensitive, VALUES(latency_sensitive)),
             user_facing = GREATEST(sync_schedules.user_facing, VALUES(user_facing)),
-            execution_mode = COALESCE(NULLIF(sync_schedules.execution_mode, \'\'), VALUES(execution_mode)),
+            execution_mode = VALUES(execution_mode),
             tuning_mode = COALESCE(sync_schedules.tuning_mode, VALUES(tuning_mode)),
             next_run_at = CASE
                 WHEN sync_schedules.enabled = 1 AND sync_schedules.next_run_at IS NULL THEN VALUES(next_run_at)

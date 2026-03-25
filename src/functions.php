@@ -12806,6 +12806,7 @@ function scheduler_registry_bootstrap(): void
                 'backfill_priority' => (string) ($definition['backfill_priority'] ?? ($definition['priority'] ?? 'normal')),
                 'min_backfill_gap_seconds' => (int) ($definition['min_backfill_gap_seconds'] ?? 900),
                 'max_early_start_seconds' => (int) ($definition['max_early_start_seconds'] ?? 0),
+                'execution_mode' => (string) ($definition['execution_mode'] ?? 'php'),
                 'tuning_mode' => (string) ($definition['tuning_mode'] ?? 'automatic'),
                 'discovered_from_code' => true,
                 'explicitly_configured' => (bool) ($definition['explicitly_configured'] ?? false),

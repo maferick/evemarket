@@ -146,6 +146,28 @@ PROCESSORS: dict[str, Callable[[PythonWorkerContext], dict[str, Any]]] = {
     ),
 }
 
+# Jobs that intentionally execute via the PHP bridge while still running under the
+# Python scheduler/runtime process.
+PHP_BRIDGED_JOB_KEYS: set[str] = {
+    "market_hub_current_sync",
+    "deal_alerts_sync",
+    "alliance_current_sync",
+    "current_state_refresh_sync",
+    "doctrine_intelligence_sync",
+    "market_comparison_summary_sync",
+    "loss_demand_summary_sync",
+    "dashboard_summary_sync",
+    "rebuild_ai_briefings",
+    "activity_priority_summary_sync",
+    "market_hub_local_history_sync",
+    "analytics_bucket_1h_sync",
+    "analytics_bucket_1d_sync",
+    "alliance_historical_sync",
+    "market_hub_historical_sync",
+    "forecasting_ai_sync",
+    "killmail_r2z2_sync",
+}
+
 
 def _graph_result_shape(result: dict[str, Any], job_key: str) -> dict[str, Any]:
     rows_seen = max(0, int(result.get("rows_processed") or result.get("rows_seen") or 0))
@@ -258,9 +280,12 @@ def process_job(context: PythonWorkerContext) -> dict[str, Any]:
     )
 
     if processor is None:
-        if not bool(context.scheduler_config.get("python_php_fallback_enabled", True)):
+        if context.job_key in PHP_BRIDGED_JOB_KEYS:
+            result = _run_php_fallback(context, bridge)
+        elif not bool(context.scheduler_config.get("python_php_fallback_enabled", True)):
             raise RuntimeError(f"No Python processor is registered for job {context.job_key} and PHP fallback is disabled.")
-        result = _run_php_fallback(context, bridge)
+        else:
+            result = _run_php_fallback(context, bridge)
     else:
         result = processor(context)
 
