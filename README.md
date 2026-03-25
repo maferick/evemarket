@@ -355,6 +355,9 @@ python/
 - Python launches `bin/scheduler_daemon.php` as a child process.
 - Python captures stdout/stderr, polls `bin/scheduler_health.php`, enforces graceful stop/kill behavior, writes a heartbeat file, and restarts the PHP daemon after crashes or repeated health failures.
 - The recurring worker lane is Python-native: recurring jobs are queued, selected, and executed by the Python worker pool without PHP fallback execution.
+- Job inventory is code-authoritative via `supplycore_authoritative_job_registry()` (`src/functions.php`). Scheduler/settings/docs/validation should use that registry, not DB discovery.
+- Internal helper entries are intentionally non-schedulable and must not be shown as normal user-manageable jobs.
+- `killmail_r2z2_sync` is treated as an external integration lane and normalized behind `python/orchestrator/zkill_adapter.py` + the dedicated zKill worker instead of a blind rewrite.
 
 **Phase 2: optional later**
 

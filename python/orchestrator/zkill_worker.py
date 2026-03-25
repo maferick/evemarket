@@ -10,9 +10,9 @@ from typing import Any
 
 from .config import load_php_runtime_config
 from .json_utils import json_dumps_safe
-from .jobs import run_killmail_r2z2_stream
 from .logging_utils import configure_logging
 from .worker_runtime import resident_memory_bytes, utc_now_iso
+from .zkill_adapter import ZKillR2Z2Adapter
 
 
 class ZKillContext:
@@ -99,6 +99,7 @@ def main(argv: list[str] | None = None) -> int:
     abort_threshold = max(pause_threshold, int(worker_settings.get("memory_abort_threshold_bytes", 512 * 1024 * 1024)))
     stuck_threshold = max(2, int(worker_settings.get("zkill_stuck_cursor_threshold", 3)))
     identity = f"{socket.gethostname()}-{os.getpid()}"
+    adapter = ZKillR2Z2Adapter()
 
     logger.info(
         "zkill worker started",
@@ -135,7 +136,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         previous_state = _read_state_file(state_file)
         try:
-            result = run_killmail_r2z2_stream(context)
+            result = adapter.run_stream_once(context)
         except Exception:
             logger.exception(
                 "zkill loop failed",

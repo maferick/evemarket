@@ -2044,22 +2044,26 @@ include __DIR__ . '/../../src/views/partials/header.php';
                                         <?php endif; ?>
                                         <?php foreach ($discoveredSyncJobs as $schedule): ?>
                                             <div class="rounded-lg border border-border bg-black/30 p-3">
-                                                <div class="flex items-center justify-between gap-2"><span class="font-medium text-slate-100"><?= htmlspecialchars((string) ($schedule['label'] ?? $schedule['job_key']), ENT_QUOTES) ?></span><span>discovered</span></div>
+                                                <div class="flex items-center justify-between gap-2"><span class="font-medium text-slate-100"><?= htmlspecialchars((string) ($schedule['label'] ?? $schedule['job_key']), ENT_QUOTES) ?></span><span><?= htmlspecialchars((string) (($schedule['registry_category'] ?? '') === 'external_integrated' ? 'external' : 'review-needed'), ENT_QUOTES) ?></span></div>
                                                 <p class="mt-1"><?= htmlspecialchars((string) ($schedule['job_key'] ?? ''), ENT_QUOTES) ?></p>
+                                                <?php if (trim((string) ($schedule['review_reason'] ?? '')) !== ''): ?>
+                                                    <p class="mt-1 text-amber-200"><?= htmlspecialchars((string) ($schedule['review_reason'] ?? ''), ENT_QUOTES) ?></p>
+                                                <?php endif; ?>
                                             </div>
                                         <?php endforeach; ?>
                                     </div>
                                 </div>
                                 <div>
-                                    <p class="text-sm text-slate-100">Internal jobs</p>
+                                    <p class="text-sm text-slate-100">Triggered child jobs</p>
                                     <div class="mt-2 space-y-2 text-xs text-muted">
                                         <?php if ($internalSyncJobs === []): ?>
-                                            <div class="rounded-lg border border-dashed border-border bg-black/30 p-3">No internal scheduler mechanics were surfaced by discovery.</div>
+                                            <div class="rounded-lg border border-dashed border-border bg-black/30 p-3">No child jobs are currently modeled under parent pipelines.</div>
                                         <?php endif; ?>
                                         <?php foreach ($internalSyncJobs as $schedule): ?>
                                             <div class="rounded-lg border border-border bg-black/30 p-3">
-                                                <div class="flex items-center justify-between gap-2"><span class="font-medium text-slate-100"><?= htmlspecialchars((string) ($schedule['label'] ?? $schedule['job_key']), ENT_QUOTES) ?></span><span>internal</span></div>
+                                                <div class="flex items-center justify-between gap-2"><span class="font-medium text-slate-100"><?= htmlspecialchars((string) ($schedule['label'] ?? $schedule['job_key']), ENT_QUOTES) ?></span><span>triggered</span></div>
                                                 <p class="mt-1"><?= htmlspecialchars((string) ($schedule['job_key'] ?? ''), ENT_QUOTES) ?></p>
+                                                <p class="mt-1">Triggered by <?= htmlspecialchars((string) ($schedule['parent_job_key'] ?? 'parent job'), ENT_QUOTES) ?></p>
                                             </div>
                                         <?php endforeach; ?>
                                     </div>
