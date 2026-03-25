@@ -51,6 +51,12 @@ Preserve a modular, production-oriented PHP architecture for EveMarket. Favor ma
    - Never “fix” Python job execution failures by routing the job through PHP when the target architecture is Python-only.
    - Runtime safety audit is mandatory: enabled `execution_mode='python'` compute jobs must have a worker-pool processor binding and must not depend on scheduler-only PHP handlers.
 
+9. **Authoritative job inventory (required).**
+   - Treat `supplycore_authoritative_job_registry()` in `src/functions.php` as the canonical job inventory.
+   - Do not infer inventory from database contents or ad-hoc code scanning.
+   - Internal/helper entries are never normal user-manageable jobs.
+   - External integrations (for example zKill) must be normalized through explicit adapter boundaries (for example `python/orchestrator/zkill_adapter.py`) instead of blind rewrites.
+
 ## Preferred Workflow for Changes
 
 1. Update schema (`database/schema.sql`) if persistence needs change.

@@ -3919,6 +3919,92 @@ function supplycore_worker_log_path(string $defaultFilename, string $configuredP
     return str_starts_with($candidate, '/') ? $candidate : $appRoot . '/' . ltrim($candidate, '/');
 }
 
+function supplycore_authoritative_job_registry(): array
+{
+    return [
+        // Real enabled schedulable jobs.
+        'compute_graph_insights' => ['label' => 'Graph Insights', 'description' => 'Compute graph-derived insight metrics.', 'category' => 'real_schedulable', 'enabled_by_default' => true, 'schedulable' => true, 'settings_visible' => true, 'user_visible' => true, 'execution_mode' => 'python', 'default_interval_minutes' => 15, 'default_offset_minutes' => 18, 'priority' => 'normal', 'timeout_seconds' => 300, 'concurrency_policy' => 'single', 'explicitly_configured' => true, 'python_implementation_exists' => true, 'worker_safe' => true],
+        'compute_graph_sync' => ['label' => 'Graph Sync', 'description' => 'Refresh the primary graph projection.', 'category' => 'real_schedulable', 'enabled_by_default' => true, 'schedulable' => true, 'settings_visible' => true, 'user_visible' => true, 'execution_mode' => 'python', 'default_interval_minutes' => 15, 'default_offset_minutes' => 17, 'priority' => 'normal', 'timeout_seconds' => 300, 'concurrency_policy' => 'single', 'explicitly_configured' => true, 'python_implementation_exists' => true, 'worker_safe' => true],
+        'compute_battle_actor_features' => ['label' => 'Battle Actor Features', 'description' => 'Compute actor-level battle features.', 'category' => 'real_schedulable', 'enabled_by_default' => true, 'schedulable' => true, 'settings_visible' => true, 'user_visible' => true, 'execution_mode' => 'python', 'default_interval_minutes' => 10, 'default_offset_minutes' => 24, 'priority' => 'normal', 'timeout_seconds' => 420, 'concurrency_policy' => 'single', 'explicitly_configured' => true, 'python_implementation_exists' => true, 'worker_safe' => true],
+        'compute_battle_anomalies' => ['label' => 'Battle Anomalies', 'description' => 'Compute battle anomaly detections.', 'category' => 'real_schedulable', 'enabled_by_default' => true, 'schedulable' => true, 'settings_visible' => true, 'user_visible' => true, 'execution_mode' => 'python', 'default_interval_minutes' => 10, 'default_offset_minutes' => 23, 'priority' => 'normal', 'timeout_seconds' => 420, 'concurrency_policy' => 'single', 'explicitly_configured' => true, 'python_implementation_exists' => true, 'worker_safe' => true],
+        'compute_battle_rollups' => ['label' => 'Battle Rollups', 'description' => 'Aggregate battle telemetry rollups.', 'category' => 'real_schedulable', 'enabled_by_default' => true, 'schedulable' => true, 'settings_visible' => true, 'user_visible' => true, 'execution_mode' => 'python', 'default_interval_minutes' => 10, 'default_offset_minutes' => 21, 'priority' => 'normal', 'timeout_seconds' => 420, 'concurrency_policy' => 'single', 'explicitly_configured' => true, 'python_implementation_exists' => true, 'worker_safe' => true],
+        'compute_battle_target_metrics' => ['label' => 'Battle Target Metrics', 'description' => 'Compute target-level battle metrics.', 'category' => 'real_schedulable', 'enabled_by_default' => true, 'schedulable' => true, 'settings_visible' => true, 'user_visible' => true, 'execution_mode' => 'python', 'default_interval_minutes' => 10, 'default_offset_minutes' => 22, 'priority' => 'normal', 'timeout_seconds' => 420, 'concurrency_policy' => 'single', 'explicitly_configured' => true, 'python_implementation_exists' => true, 'worker_safe' => true],
+        'compute_suspicion_scores' => ['label' => 'Suspicion Scores', 'description' => 'Compute baseline suspicion scores.', 'category' => 'real_schedulable', 'enabled_by_default' => true, 'schedulable' => true, 'settings_visible' => true, 'user_visible' => true, 'execution_mode' => 'python', 'default_interval_minutes' => 10, 'default_offset_minutes' => 25, 'priority' => 'normal', 'timeout_seconds' => 420, 'concurrency_policy' => 'single', 'explicitly_configured' => true, 'python_implementation_exists' => true, 'worker_safe' => true],
+        'compute_graph_sync_doctrine_dependency' => ['label' => 'Graph Doctrine Dependency', 'description' => 'Child graph task for doctrine dependency links.', 'category' => 'real_schedulable', 'enabled_by_default' => true, 'schedulable' => false, 'settings_visible' => true, 'user_visible' => true, 'execution_mode' => 'python', 'default_interval_minutes' => 15, 'default_offset_minutes' => 26, 'priority' => 'normal', 'timeout_seconds' => 420, 'concurrency_policy' => 'background', 'explicitly_configured' => false, 'parent_job_key' => 'compute_graph_sync', 'python_implementation_exists' => true, 'worker_safe' => true, 'notes' => 'Triggered by compute_graph_sync.'],
+        'compute_graph_sync_battle_intelligence' => ['label' => 'Graph Battle Intelligence', 'description' => 'Child graph task for battle-intelligence edge updates.', 'category' => 'real_schedulable', 'enabled_by_default' => true, 'schedulable' => false, 'settings_visible' => true, 'user_visible' => true, 'execution_mode' => 'python', 'default_interval_minutes' => 15, 'default_offset_minutes' => 27, 'priority' => 'normal', 'timeout_seconds' => 420, 'concurrency_policy' => 'background', 'explicitly_configured' => false, 'parent_job_key' => 'compute_graph_sync', 'python_implementation_exists' => true, 'worker_safe' => true, 'notes' => 'Triggered by compute_graph_sync.'],
+        'compute_graph_derived_relationships' => ['label' => 'Graph Derived Relationships', 'description' => 'Child graph task for derived relationship expansion.', 'category' => 'real_schedulable', 'enabled_by_default' => true, 'schedulable' => false, 'settings_visible' => true, 'user_visible' => true, 'execution_mode' => 'python', 'default_interval_minutes' => 15, 'default_offset_minutes' => 28, 'priority' => 'normal', 'timeout_seconds' => 420, 'concurrency_policy' => 'background', 'explicitly_configured' => false, 'parent_job_key' => 'compute_graph_sync', 'python_implementation_exists' => true, 'worker_safe' => true, 'notes' => 'Triggered by compute_graph_sync.'],
+        'compute_graph_prune' => ['label' => 'Graph Prune', 'description' => 'Child graph task for stale-edge pruning.', 'category' => 'real_schedulable', 'enabled_by_default' => true, 'schedulable' => false, 'settings_visible' => true, 'user_visible' => true, 'execution_mode' => 'python', 'default_interval_minutes' => 15, 'default_offset_minutes' => 29, 'priority' => 'normal', 'timeout_seconds' => 420, 'concurrency_policy' => 'background', 'explicitly_configured' => false, 'parent_job_key' => 'compute_graph_sync', 'python_implementation_exists' => true, 'worker_safe' => true, 'notes' => 'Triggered by compute_graph_sync.'],
+        'compute_graph_topology_metrics' => ['label' => 'Graph Topology Metrics', 'description' => 'Child graph task for topology metric derivation.', 'category' => 'real_schedulable', 'enabled_by_default' => true, 'schedulable' => false, 'settings_visible' => true, 'user_visible' => true, 'execution_mode' => 'python', 'default_interval_minutes' => 15, 'default_offset_minutes' => 30, 'priority' => 'normal', 'timeout_seconds' => 420, 'concurrency_policy' => 'background', 'explicitly_configured' => false, 'parent_job_key' => 'compute_graph_sync', 'python_implementation_exists' => true, 'worker_safe' => true, 'notes' => 'Triggered by compute_graph_sync.'],
+        'compute_behavioral_baselines' => ['label' => 'Behavioral Baselines', 'description' => 'Child battle task for baseline features.', 'category' => 'real_schedulable', 'enabled_by_default' => true, 'schedulable' => false, 'settings_visible' => true, 'user_visible' => true, 'execution_mode' => 'python', 'default_interval_minutes' => 15, 'default_offset_minutes' => 31, 'priority' => 'normal', 'timeout_seconds' => 420, 'concurrency_policy' => 'background', 'explicitly_configured' => false, 'parent_job_key' => 'compute_suspicion_scores_v2', 'python_implementation_exists' => true, 'worker_safe' => true, 'notes' => 'Triggered by compute_suspicion_scores_v2.'],
+        'compute_suspicion_scores_v2' => ['label' => 'Suspicion Scores V2', 'description' => 'Primary suspicion pipeline v2.', 'category' => 'real_schedulable', 'enabled_by_default' => true, 'schedulable' => true, 'settings_visible' => true, 'user_visible' => true, 'execution_mode' => 'python', 'default_interval_minutes' => 15, 'default_offset_minutes' => 32, 'priority' => 'normal', 'timeout_seconds' => 420, 'concurrency_policy' => 'single', 'explicitly_configured' => true, 'python_implementation_exists' => true, 'worker_safe' => true],
+
+        // Disabled/review-needed jobs.
+        'alliance_current_sync' => ['label' => 'Alliance Current', 'description' => 'Sync current alliance structure market orders.', 'category' => 'real_disabled_review', 'enabled_by_default' => false, 'schedulable' => true, 'settings_visible' => true, 'user_visible' => true, 'execution_mode' => 'python', 'default_interval_minutes' => 4, 'default_offset_minutes' => 2, 'priority' => 'medium', 'timeout_seconds' => 180, 'concurrency_policy' => 'single', 'explicitly_configured' => true, 'python_implementation_exists' => false, 'worker_safe' => false, 'review_reason' => 'Python-native processor not implemented yet.'],
+        'alliance_historical_sync' => ['label' => 'Alliance Historical', 'description' => 'Backfill alliance market history.', 'category' => 'real_disabled_review', 'enabled_by_default' => false, 'schedulable' => true, 'settings_visible' => true, 'user_visible' => true, 'execution_mode' => 'python', 'default_interval_minutes' => 360, 'default_offset_minutes' => 5, 'priority' => 'normal', 'timeout_seconds' => 3600, 'concurrency_policy' => 'background', 'explicitly_configured' => true, 'python_implementation_exists' => false, 'worker_safe' => false, 'review_reason' => 'Python-native processor not implemented yet.'],
+        'market_hub_current_sync' => ['label' => 'Market Hub Current', 'description' => 'Sync current market-hub orders.', 'category' => 'real_disabled_review', 'enabled_by_default' => false, 'schedulable' => true, 'settings_visible' => true, 'user_visible' => true, 'execution_mode' => 'python', 'default_interval_minutes' => 8, 'default_offset_minutes' => 0, 'priority' => 'high', 'timeout_seconds' => 240, 'concurrency_policy' => 'single', 'explicitly_configured' => true, 'python_implementation_exists' => false, 'worker_safe' => false, 'review_reason' => 'Python-native processor not implemented yet.'],
+        'current_state_refresh_sync' => ['label' => 'Current-State Refresh', 'description' => 'Refresh current-state snapshots.', 'category' => 'real_disabled_review', 'enabled_by_default' => false, 'schedulable' => true, 'settings_visible' => true, 'user_visible' => true, 'execution_mode' => 'python', 'default_interval_minutes' => 12, 'default_offset_minutes' => 6, 'priority' => 'medium', 'timeout_seconds' => 120, 'concurrency_policy' => 'single', 'explicitly_configured' => true, 'python_implementation_exists' => false, 'worker_safe' => false, 'review_reason' => 'Python-native processor not implemented yet.'],
+        'market_hub_historical_sync' => ['label' => 'Market Hub Historical', 'description' => 'Backfill market-hub history.', 'category' => 'real_disabled_review', 'enabled_by_default' => false, 'schedulable' => true, 'settings_visible' => true, 'user_visible' => true, 'execution_mode' => 'python', 'default_interval_minutes' => 360, 'default_offset_minutes' => 0, 'priority' => 'normal', 'timeout_seconds' => 3600, 'concurrency_policy' => 'background', 'explicitly_configured' => true, 'python_implementation_exists' => false, 'worker_safe' => false, 'review_reason' => 'Python-native processor not implemented yet.'],
+        'market_hub_local_history_sync' => ['label' => 'Market Hub Local History', 'description' => 'Rebuild local market-hub snapshot history.', 'category' => 'real_disabled_review', 'enabled_by_default' => false, 'schedulable' => true, 'settings_visible' => true, 'user_visible' => true, 'execution_mode' => 'python', 'default_interval_minutes' => 20, 'default_offset_minutes' => 14, 'priority' => 'normal', 'timeout_seconds' => 1800, 'concurrency_policy' => 'background', 'explicitly_configured' => true, 'python_implementation_exists' => true, 'worker_safe' => false, 'review_reason' => 'Implementation exists but still relies on bridge context and is not worker-safe.'],
+        'doctrine_intelligence_sync' => ['label' => 'Doctrine Intelligence', 'description' => 'Refresh doctrine intelligence snapshots.', 'category' => 'real_disabled_review', 'enabled_by_default' => false, 'schedulable' => true, 'settings_visible' => true, 'user_visible' => true, 'execution_mode' => 'python', 'default_interval_minutes' => 15, 'default_offset_minutes' => 8, 'priority' => 'normal', 'timeout_seconds' => 180, 'concurrency_policy' => 'single', 'explicitly_configured' => true, 'python_implementation_exists' => false, 'worker_safe' => false, 'review_reason' => 'Python-native processor not implemented yet.'],
+        'market_comparison_summary_sync' => ['label' => 'Market Comparison Summary', 'description' => 'Refresh market comparison summary snapshot.', 'category' => 'real_disabled_review', 'enabled_by_default' => false, 'schedulable' => true, 'settings_visible' => true, 'user_visible' => true, 'execution_mode' => 'python', 'default_interval_minutes' => 15, 'default_offset_minutes' => 9, 'priority' => 'normal', 'timeout_seconds' => 180, 'concurrency_policy' => 'single', 'explicitly_configured' => true, 'python_implementation_exists' => true, 'worker_safe' => false, 'review_reason' => 'Current path still uses PHP bridge context; keep disabled until fully worker-safe.'],
+        'loss_demand_summary_sync' => ['label' => 'Loss Demand Summary', 'description' => 'Refresh loss-demand summary snapshot.', 'category' => 'real_disabled_review', 'enabled_by_default' => false, 'schedulable' => true, 'settings_visible' => true, 'user_visible' => true, 'execution_mode' => 'python', 'default_interval_minutes' => 15, 'default_offset_minutes' => 10, 'priority' => 'normal', 'timeout_seconds' => 180, 'concurrency_policy' => 'single', 'explicitly_configured' => true, 'python_implementation_exists' => false, 'worker_safe' => false, 'review_reason' => 'Python-native processor not implemented yet.'],
+        'dashboard_summary_sync' => ['label' => 'Dashboard Summary', 'description' => 'Refresh dashboard summary snapshot.', 'category' => 'real_disabled_review', 'enabled_by_default' => false, 'schedulable' => true, 'settings_visible' => true, 'user_visible' => true, 'execution_mode' => 'python', 'default_interval_minutes' => 15, 'default_offset_minutes' => 11, 'priority' => 'normal', 'timeout_seconds' => 180, 'concurrency_policy' => 'single', 'explicitly_configured' => true, 'python_implementation_exists' => false, 'worker_safe' => false, 'review_reason' => 'Python-native processor not implemented yet.'],
+        'rebuild_ai_briefings' => ['label' => 'Rebuild AI Briefings', 'description' => 'Rebuild compact AI briefing artifacts.', 'category' => 'real_disabled_review', 'enabled_by_default' => false, 'schedulable' => true, 'settings_visible' => true, 'user_visible' => true, 'execution_mode' => 'python', 'default_interval_minutes' => 20, 'default_offset_minutes' => 12, 'priority' => 'normal', 'timeout_seconds' => 300, 'concurrency_policy' => 'background', 'explicitly_configured' => true, 'python_implementation_exists' => false, 'worker_safe' => false, 'review_reason' => 'Python-native processor not implemented yet.'],
+        'forecasting_ai_sync' => ['label' => 'Forecasting AI', 'description' => 'Refresh forecasting intelligence snapshot.', 'category' => 'real_disabled_review', 'enabled_by_default' => false, 'schedulable' => true, 'settings_visible' => true, 'user_visible' => true, 'execution_mode' => 'python', 'default_interval_minutes' => 60, 'default_offset_minutes' => 33, 'priority' => 'normal', 'timeout_seconds' => 300, 'concurrency_policy' => 'background', 'explicitly_configured' => true, 'python_implementation_exists' => false, 'worker_safe' => false, 'review_reason' => 'Python-native processor not implemented yet.'],
+        'activity_priority_summary_sync' => ['label' => 'Activity Priority Summary', 'description' => 'Refresh activity-priority summary snapshot.', 'category' => 'real_disabled_review', 'enabled_by_default' => false, 'schedulable' => true, 'settings_visible' => true, 'user_visible' => true, 'execution_mode' => 'python', 'default_interval_minutes' => 15, 'default_offset_minutes' => 13, 'priority' => 'normal', 'timeout_seconds' => 180, 'concurrency_policy' => 'single', 'explicitly_configured' => false, 'python_implementation_exists' => false, 'worker_safe' => false, 'review_reason' => 'Python-native processor not implemented yet.'],
+        'analytics_bucket_1h_sync' => ['label' => 'Analytics Buckets (1h)', 'description' => 'Roll up analytics into hourly buckets.', 'category' => 'real_disabled_review', 'enabled_by_default' => false, 'schedulable' => true, 'settings_visible' => true, 'user_visible' => true, 'execution_mode' => 'python', 'default_interval_minutes' => 15, 'default_offset_minutes' => 15, 'priority' => 'normal', 'timeout_seconds' => 180, 'concurrency_policy' => 'single', 'explicitly_configured' => false, 'python_implementation_exists' => false, 'worker_safe' => false, 'review_reason' => 'Python-native processor not implemented yet.'],
+        'analytics_bucket_1d_sync' => ['label' => 'Analytics Buckets (1d)', 'description' => 'Roll up analytics into daily buckets.', 'category' => 'real_disabled_review', 'enabled_by_default' => false, 'schedulable' => true, 'settings_visible' => true, 'user_visible' => true, 'execution_mode' => 'python', 'default_interval_minutes' => 60, 'default_offset_minutes' => 16, 'priority' => 'normal', 'timeout_seconds' => 240, 'concurrency_policy' => 'single', 'explicitly_configured' => false, 'python_implementation_exists' => false, 'worker_safe' => false, 'review_reason' => 'Python-native processor not implemented yet.'],
+        'deal_alerts_sync' => ['label' => 'Deal Alerts', 'description' => 'Refresh deal alert materialization.', 'category' => 'real_disabled_review', 'enabled_by_default' => false, 'schedulable' => true, 'settings_visible' => true, 'user_visible' => true, 'execution_mode' => 'python', 'default_interval_minutes' => 5, 'default_offset_minutes' => 1, 'priority' => 'high', 'timeout_seconds' => 90, 'concurrency_policy' => 'single', 'explicitly_configured' => true, 'python_implementation_exists' => false, 'worker_safe' => false, 'review_reason' => 'Python-native processor not implemented yet.'],
+        'compute_buy_all' => ['label' => 'Compute Buy All', 'description' => 'Compute buy-all opportunity model.', 'category' => 'real_disabled_review', 'enabled_by_default' => false, 'schedulable' => true, 'settings_visible' => true, 'user_visible' => true, 'execution_mode' => 'python', 'default_interval_minutes' => 15, 'default_offset_minutes' => 19, 'priority' => 'normal', 'timeout_seconds' => 420, 'concurrency_policy' => 'single', 'explicitly_configured' => true, 'python_implementation_exists' => true, 'worker_safe' => false, 'review_reason' => 'Processor exists but currently disabled in authoritative inventory pending runtime validation.'],
+        'compute_signals' => ['label' => 'Compute Signals', 'description' => 'Compute market signal features.', 'category' => 'real_disabled_review', 'enabled_by_default' => false, 'schedulable' => true, 'settings_visible' => true, 'user_visible' => true, 'execution_mode' => 'python', 'default_interval_minutes' => 15, 'default_offset_minutes' => 20, 'priority' => 'normal', 'timeout_seconds' => 300, 'concurrency_policy' => 'single', 'explicitly_configured' => true, 'python_implementation_exists' => true, 'worker_safe' => false, 'review_reason' => 'Processor exists but currently disabled in authoritative inventory pending runtime validation.'],
+
+        // External integration.
+        'killmail_r2z2_sync' => ['label' => 'Killmail R2Z2 Stream', 'description' => 'Dedicated zKill ingestion worker via adapter boundary.', 'category' => 'external_integrated', 'enabled_by_default' => true, 'schedulable' => false, 'settings_visible' => true, 'user_visible' => true, 'execution_mode' => 'python', 'default_interval_minutes' => 1, 'default_offset_minutes' => 0, 'priority' => 'high', 'timeout_seconds' => 180, 'concurrency_policy' => 'dedicated_worker', 'explicitly_configured' => true, 'python_implementation_exists' => true, 'worker_safe' => true, 'external_adapter' => 'zkill_r2z2_adapter', 'notes' => 'Handled by dedicated zKill worker service.'],
+
+        // Internal/helper/non-schedulable entries.
+        'configured_structure_destination_id_for_esi_sync' => ['label' => 'Configured Structure Destination Helper', 'category' => 'internal_helper', 'settings_visible' => false, 'user_visible' => false, 'schedulable' => false],
+        'db_sync_schedule_claim_job' => ['label' => 'Claim Due Job Helper', 'category' => 'internal_helper', 'settings_visible' => false, 'user_visible' => false, 'schedulable' => false],
+        'db_sync_schedule_ensure_job' => ['label' => 'Ensure Schedule Row Helper', 'category' => 'internal_helper', 'settings_visible' => false, 'user_visible' => false, 'schedulable' => false],
+        'max_runtime_reached_before_market_job' => ['label' => 'Runtime Ceiling Guard Helper', 'category' => 'internal_helper', 'settings_visible' => false, 'user_visible' => false, 'schedulable' => false],
+        'scheduler_defer_due_job' => ['label' => 'Scheduler Defer Helper', 'category' => 'internal_helper', 'settings_visible' => false, 'user_visible' => false, 'schedulable' => false],
+        'scheduler_dispatch_background_job' => ['label' => 'Background Dispatch Helper', 'category' => 'internal_helper', 'settings_visible' => false, 'user_visible' => false, 'schedulable' => false],
+        'scheduler_run_job' => ['label' => 'Run Job Helper', 'category' => 'internal_helper', 'settings_visible' => false, 'user_visible' => false, 'schedulable' => false],
+        'scheduler_should_defer_due_job' => ['label' => 'Deferral Decision Helper', 'category' => 'internal_helper', 'settings_visible' => false, 'user_visible' => false, 'schedulable' => false],
+        'sync_runner_backfill_start_for_job' => ['label' => 'Backfill Start Helper', 'category' => 'internal_helper', 'settings_visible' => false, 'user_visible' => false, 'schedulable' => false],
+        'sync_runner_dataset_key_for_job' => ['label' => 'Dataset Key Helper', 'category' => 'internal_helper', 'settings_visible' => false, 'user_visible' => false, 'schedulable' => false],
+        'sync_runner_dispatch_job' => ['label' => 'Sync Dispatch Helper', 'category' => 'internal_helper', 'settings_visible' => false, 'user_visible' => false, 'schedulable' => false],
+        'sync_runner_execute_job' => ['label' => 'Sync Execute Helper', 'category' => 'internal_helper', 'settings_visible' => false, 'user_visible' => false, 'schedulable' => false],
+        'scheduler_is_internal_mechanic_job' => ['label' => 'Internal Job Predicate Helper', 'category' => 'internal_helper', 'settings_visible' => false, 'user_visible' => false, 'schedulable' => false],
+        'scheduler_is_protected_job' => ['label' => 'Protected Job Predicate Helper', 'category' => 'internal_helper', 'settings_visible' => false, 'user_visible' => false, 'schedulable' => false],
+        'scheduler_recommended_offset_minutes_for_job' => ['label' => 'Offset Recommendation Helper', 'category' => 'internal_helper', 'settings_visible' => false, 'user_visible' => false, 'schedulable' => false],
+        'scheduler_profiling_latest_metric_for_job' => ['label' => 'Profiling Metric Helper', 'category' => 'internal_helper', 'settings_visible' => false, 'user_visible' => false, 'schedulable' => false],
+        'scheduler_profiling_next_isolated_job' => ['label' => 'Profiling Isolation Helper', 'category' => 'internal_helper', 'settings_visible' => false, 'user_visible' => false, 'schedulable' => false],
+        'scheduler_is_dedicated_worker_job' => ['label' => 'Dedicated Worker Predicate Helper', 'category' => 'internal_helper', 'settings_visible' => false, 'user_visible' => false, 'schedulable' => false],
+        'supplycore_dataset_runtime_status_from_sync' => ['label' => 'Runtime Status Helper', 'category' => 'internal_helper', 'settings_visible' => false, 'user_visible' => false, 'schedulable' => false],
+    ];
+}
+
+function supplycore_authoritative_job_matrix(): array
+{
+    $matrix = [];
+    foreach (supplycore_authoritative_job_registry() as $jobKey => $entry) {
+        $matrix[] = [
+            'job_key' => $jobKey,
+            'category' => (string) ($entry['category'] ?? 'unknown'),
+            'user_visible' => !empty($entry['user_visible']),
+            'schedulable' => !empty($entry['schedulable']),
+            'enabled_by_default' => !empty($entry['enabled_by_default']),
+            'python_implementation_exists' => !empty($entry['python_implementation_exists']),
+            'worker_safe' => !empty($entry['worker_safe']),
+            'settings_visible' => !empty($entry['settings_visible']),
+            'parent_job_key' => (string) ($entry['parent_job_key'] ?? ''),
+            'notes' => (string) (($entry['review_reason'] ?? '') ?: ($entry['notes'] ?? '')),
+        ];
+    }
+
+    return $matrix;
+}
+
 function worker_job_registry_definitions(): array
 {
     return [
@@ -3955,34 +4041,15 @@ function scheduler_is_dedicated_worker_job(string $jobKey): bool
 
 function scheduler_registry_definitions(): array
 {
-    return [
-        'market_hub_current_sync' => ['label' => 'Market Hub Current', 'default_interval_minutes' => 8, 'default_offset_minutes' => 0, 'priority' => 'high', 'timeout_seconds' => 240, 'concurrency_policy' => 'single', 'execution_mode' => 'python', 'tuning_mode' => 'automatic', 'explicitly_configured' => true, 'min_interval_minutes' => 1, 'max_interval_minutes' => 8, 'workload_class' => 'lightweight'],
-        'deal_alerts_sync' => ['label' => 'Deal Alerts', 'default_interval_minutes' => 5, 'default_offset_minutes' => 1, 'priority' => 'high', 'timeout_seconds' => 90, 'concurrency_policy' => 'single', 'execution_mode' => 'python', 'tuning_mode' => 'automatic', 'explicitly_configured' => true, 'latency_sensitive' => true, 'user_facing' => true, 'workload_class' => 'lightweight'],
-        'alliance_current_sync' => ['label' => 'Alliance Current', 'default_interval_minutes' => 4, 'default_offset_minutes' => 2, 'priority' => 'medium', 'timeout_seconds' => 180, 'concurrency_policy' => 'single', 'execution_mode' => 'python', 'tuning_mode' => 'automatic', 'explicitly_configured' => true, 'workload_class' => 'lightweight'],
-        'configured_structure_destination_id_for_esi_sync' => ['label' => 'Configured Structure Destination for ESI', 'default_interval_minutes' => 30, 'default_offset_minutes' => 4, 'priority' => 'normal', 'timeout_seconds' => 120, 'concurrency_policy' => 'single', 'execution_mode' => 'python', 'tuning_mode' => 'automatic', 'explicitly_configured' => false, 'workload_class' => 'lightweight'],
-        'current_state_refresh_sync' => ['label' => 'Current-State Refresh', 'default_interval_minutes' => 12, 'default_offset_minutes' => 6, 'priority' => 'medium', 'timeout_seconds' => 120, 'concurrency_policy' => 'single', 'execution_mode' => 'python', 'tuning_mode' => 'automatic', 'explicitly_configured' => true, 'workload_class' => 'heavy'],
-        'doctrine_intelligence_sync' => ['label' => 'Doctrine Intelligence', 'default_interval_minutes' => 15, 'default_offset_minutes' => 8, 'priority' => 'normal', 'timeout_seconds' => 180, 'concurrency_policy' => 'single', 'execution_mode' => 'python', 'tuning_mode' => 'automatic', 'explicitly_configured' => true, 'allow_backfill' => true, 'backfill_priority' => 'normal', 'min_backfill_gap_seconds' => 300, 'max_early_start_seconds' => 900, 'workload_class' => 'lightweight'],
-        'market_comparison_summary_sync' => ['label' => 'Market Comparison Summary', 'default_interval_minutes' => 15, 'default_offset_minutes' => 9, 'priority' => 'normal', 'timeout_seconds' => 180, 'concurrency_policy' => 'single', 'execution_mode' => 'python', 'tuning_mode' => 'automatic', 'explicitly_configured' => true, 'allow_backfill' => true, 'backfill_priority' => 'high', 'min_backfill_gap_seconds' => 300, 'max_early_start_seconds' => 900, 'workload_class' => 'heavy'],
-        'loss_demand_summary_sync' => ['label' => 'Loss Demand Summary', 'default_interval_minutes' => 15, 'default_offset_minutes' => 10, 'priority' => 'normal', 'timeout_seconds' => 180, 'concurrency_policy' => 'single', 'execution_mode' => 'python', 'tuning_mode' => 'automatic', 'explicitly_configured' => true, 'allow_backfill' => true, 'backfill_priority' => 'high', 'min_backfill_gap_seconds' => 300, 'max_early_start_seconds' => 900, 'workload_class' => 'lightweight'],
-        'dashboard_summary_sync' => ['label' => 'Dashboard Summary', 'default_interval_minutes' => 15, 'default_offset_minutes' => 11, 'priority' => 'normal', 'timeout_seconds' => 180, 'concurrency_policy' => 'single', 'execution_mode' => 'python', 'tuning_mode' => 'automatic', 'explicitly_configured' => true, 'allow_backfill' => true, 'backfill_priority' => 'highest', 'min_backfill_gap_seconds' => 240, 'max_early_start_seconds' => 900, 'workload_class' => 'lightweight'],
-        'rebuild_ai_briefings' => ['label' => 'Rebuild AI Briefings', 'default_interval_minutes' => 20, 'default_offset_minutes' => 12, 'priority' => 'normal', 'timeout_seconds' => 300, 'concurrency_policy' => 'background', 'execution_mode' => 'python', 'tuning_mode' => 'automatic', 'explicitly_configured' => true, 'workload_class' => 'lightweight'],
-        'activity_priority_summary_sync' => ['label' => 'Activity Priority Summary', 'default_interval_minutes' => 15, 'default_offset_minutes' => 13, 'priority' => 'normal', 'timeout_seconds' => 180, 'concurrency_policy' => 'single', 'execution_mode' => 'python', 'tuning_mode' => 'automatic', 'explicitly_configured' => false, 'workload_class' => 'heavy'],
-        'market_hub_local_history_sync' => ['label' => 'Market Hub Local History', 'default_interval_minutes' => 20, 'default_offset_minutes' => 14, 'priority' => 'normal', 'timeout_seconds' => 1800, 'concurrency_policy' => 'background', 'execution_mode' => 'python', 'tuning_mode' => 'automatic', 'explicitly_configured' => true, 'allow_backfill' => true, 'backfill_priority' => 'normal', 'min_backfill_gap_seconds' => 900, 'max_early_start_seconds' => 900, 'workload_class' => 'heavy'],
-        'analytics_bucket_1h_sync' => ['label' => 'Analytics Buckets (1h)', 'default_interval_minutes' => 15, 'default_offset_minutes' => 15, 'priority' => 'normal', 'timeout_seconds' => 180, 'concurrency_policy' => 'single', 'execution_mode' => 'python', 'tuning_mode' => 'automatic', 'explicitly_configured' => false, 'allow_backfill' => true, 'backfill_priority' => 'normal', 'min_backfill_gap_seconds' => 600, 'max_early_start_seconds' => 900, 'workload_class' => 'lightweight'],
-        'analytics_bucket_1d_sync' => ['label' => 'Analytics Buckets (1d)', 'default_interval_minutes' => 60, 'default_offset_minutes' => 16, 'priority' => 'normal', 'timeout_seconds' => 240, 'concurrency_policy' => 'single', 'execution_mode' => 'python', 'tuning_mode' => 'automatic', 'explicitly_configured' => false, 'workload_class' => 'lightweight'],
-        'alliance_historical_sync' => ['label' => 'Alliance Historical', 'default_interval_minutes' => 360, 'default_offset_minutes' => 5, 'priority' => 'normal', 'timeout_seconds' => 3600, 'concurrency_policy' => 'background', 'execution_mode' => 'python', 'tuning_mode' => 'automatic', 'explicitly_configured' => true, 'workload_class' => 'heavy'],
-        'market_hub_historical_sync' => ['label' => 'Market Hub Historical', 'default_interval_minutes' => 360, 'default_offset_minutes' => 0, 'priority' => 'normal', 'timeout_seconds' => 3600, 'concurrency_policy' => 'background', 'execution_mode' => 'python', 'tuning_mode' => 'automatic', 'explicitly_configured' => true, 'workload_class' => 'heavy'],
-        'forecasting_ai_sync' => ['label' => 'Forecasting AI', 'default_interval_minutes' => 60, 'default_offset_minutes' => 0, 'priority' => 'normal', 'timeout_seconds' => 300, 'concurrency_policy' => 'background', 'execution_mode' => 'python', 'tuning_mode' => 'automatic', 'explicitly_configured' => true, 'workload_class' => 'lightweight'],
-        'compute_graph_sync' => ['label' => 'Graph Sync', 'default_interval_minutes' => 15, 'default_offset_minutes' => 17, 'priority' => 'normal', 'timeout_seconds' => 300, 'concurrency_policy' => 'single', 'execution_mode' => 'python', 'tuning_mode' => 'automatic', 'explicitly_configured' => true, 'workload_class' => 'heavy'],
-        'compute_graph_insights' => ['label' => 'Graph Insights', 'default_interval_minutes' => 15, 'default_offset_minutes' => 18, 'priority' => 'normal', 'timeout_seconds' => 300, 'concurrency_policy' => 'single', 'execution_mode' => 'python', 'tuning_mode' => 'automatic', 'explicitly_configured' => true, 'workload_class' => 'heavy'],
-        'compute_buy_all' => ['label' => 'Compute Buy All', 'default_interval_minutes' => 15, 'default_offset_minutes' => 19, 'priority' => 'normal', 'timeout_seconds' => 420, 'concurrency_policy' => 'single', 'execution_mode' => 'python', 'tuning_mode' => 'automatic', 'explicitly_configured' => true, 'workload_class' => 'heavy'],
-        'compute_signals' => ['label' => 'Compute Signals', 'default_interval_minutes' => 15, 'default_offset_minutes' => 20, 'priority' => 'normal', 'timeout_seconds' => 300, 'concurrency_policy' => 'single', 'execution_mode' => 'python', 'tuning_mode' => 'automatic', 'explicitly_configured' => true, 'workload_class' => 'lightweight'],
-        'compute_battle_rollups' => ['label' => 'Compute Battle Rollups', 'default_interval_minutes' => 10, 'default_offset_minutes' => 21, 'priority' => 'normal', 'timeout_seconds' => 420, 'concurrency_policy' => 'single', 'execution_mode' => 'python', 'tuning_mode' => 'automatic', 'explicitly_configured' => true, 'workload_class' => 'heavy'],
-        'compute_battle_target_metrics' => ['label' => 'Compute Battle Target Metrics', 'default_interval_minutes' => 10, 'default_offset_minutes' => 22, 'priority' => 'normal', 'timeout_seconds' => 420, 'concurrency_policy' => 'single', 'execution_mode' => 'python', 'tuning_mode' => 'automatic', 'explicitly_configured' => true, 'workload_class' => 'heavy'],
-        'compute_battle_anomalies' => ['label' => 'Compute Battle Anomalies', 'default_interval_minutes' => 10, 'default_offset_minutes' => 23, 'priority' => 'normal', 'timeout_seconds' => 420, 'concurrency_policy' => 'single', 'execution_mode' => 'python', 'tuning_mode' => 'automatic', 'explicitly_configured' => true, 'workload_class' => 'heavy'],
-        'compute_battle_actor_features' => ['label' => 'Compute Battle Actor Features', 'default_interval_minutes' => 10, 'default_offset_minutes' => 24, 'priority' => 'normal', 'timeout_seconds' => 420, 'concurrency_policy' => 'single', 'execution_mode' => 'python', 'tuning_mode' => 'automatic', 'explicitly_configured' => true, 'workload_class' => 'heavy'],
-        'compute_suspicion_scores' => ['label' => 'Compute Suspicion Scores', 'default_interval_minutes' => 10, 'default_offset_minutes' => 25, 'priority' => 'normal', 'timeout_seconds' => 420, 'concurrency_policy' => 'single', 'execution_mode' => 'python', 'tuning_mode' => 'automatic', 'explicitly_configured' => true, 'workload_class' => 'heavy'],
-    ];
+    $definitions = [];
+    foreach (supplycore_authoritative_job_registry() as $jobKey => $registryEntry) {
+        if (empty($registryEntry['schedulable'])) {
+            continue;
+        }
+        $definitions[$jobKey] = $registryEntry + ['tuning_mode' => (string) ($registryEntry['tuning_mode'] ?? 'automatic')];
+    }
+
+    return $definitions;
 }
 
 function data_sync_schedule_job_definitions(): array
@@ -4006,19 +4073,14 @@ function data_sync_schedule_job_definitions(): array
 
 function scheduler_internal_mechanic_job_keys(): array
 {
-    return [
-        'db_sync_schedule_claim_job',
-        'db_sync_schedule_ensure_job',
-        'scheduler_defer_due_job',
-        'scheduler_dispatch_background_job',
-        'scheduler_run_job',
-        'scheduler_should_defer_due_job',
-        'sync_runner_backfill_start_for_job',
-        'sync_runner_dataset_key_for_job',
-        'sync_runner_dispatch_job',
-        'sync_runner_execute_job',
-        'max_runtime_reached_before_market_job',
-    ];
+    $keys = [];
+    foreach (supplycore_authoritative_job_registry() as $jobKey => $registryEntry) {
+        if ((string) ($registryEntry['category'] ?? '') === 'internal_helper') {
+            $keys[] = $jobKey;
+        }
+    }
+
+    return $keys;
 }
 
 function scheduler_protected_job_keys(): array
@@ -4441,22 +4503,18 @@ function scheduler_job_execution_mode(array $job, ?array $definition = null): st
 
 function scheduler_enabled_python_worker_binding_audit(): array
 {
-    $rows = db_sync_schedule_fetch_all();
     $workerDefinitions = worker_job_registry_definitions();
     $issues = [];
-
-    foreach ($rows as $row) {
-        if ((int) ($row['enabled'] ?? 1) !== 1) {
+    foreach (supplycore_authoritative_job_registry() as $jobKey => $entry) {
+        if (empty($entry['schedulable']) || empty($entry['enabled_by_default'])) {
+            continue;
+        }
+        $executionMode = strtolower(trim((string) ($entry['execution_mode'] ?? 'php')));
+        if ($executionMode !== 'python') {
             continue;
         }
 
-        $jobKey = trim((string) ($row['job_key'] ?? ''));
-        $executionMode = strtolower(trim((string) ($row['execution_mode'] ?? 'php')));
-        if ($jobKey === '' || $executionMode !== 'python') {
-            continue;
-        }
-
-        if (str_starts_with($jobKey, 'compute_') && !isset($workerDefinitions[$jobKey])) {
+        if (str_starts_with($jobKey, 'compute_') && !isset($workerDefinitions[$jobKey]) && empty($entry['parent_job_key'])) {
             $issues[] = 'Enabled Python compute job "' . $jobKey . '" is missing a worker-pool processor binding.';
         }
     }
@@ -6185,6 +6243,14 @@ function sync_schedule_settings_view_model(): array
     $configuredJobs = [];
     $discoveredJobs = [];
     $internalJobs = [];
+    $registry = supplycore_authoritative_job_registry();
+    $rowsByJobKey = [];
+    foreach ($rows as $row) {
+        $rowJobKey = trim((string) ($row['job_key'] ?? ''));
+        if ($rowJobKey !== '') {
+            $rowsByJobKey[$rowJobKey] = $row;
+        }
+    }
     $pipelineSettings = data_sync_pipeline_settings_view(get_settings(array_keys(data_sync_pipeline_setting_defaults())));
     $liveCapacity = scheduler_live_capacity_snapshot();
     $recentDecisionCounts = scheduler_recent_planner_decision_counts();
@@ -6213,40 +6279,19 @@ function sync_schedule_settings_view_model(): array
         'daemon' => $daemonState,
     ];
 
-    foreach ($rows as $row) {
-        $jobKey = trim((string) ($row['job_key'] ?? ''));
-        if ($jobKey === '') {
+    foreach ($definitions as $jobKey => $definition) {
+        $registryEntry = (array) ($registry[$jobKey] ?? []);
+        if ($registryEntry === []) {
             continue;
         }
-
-        if (scheduler_is_dedicated_worker_job($jobKey)) {
-            continue;
-        }
-
-        $definition = $definitions[$jobKey] ?? [
-            'label' => ucwords(str_replace('_', ' ', $jobKey)),
-            'enabled_key' => $jobKey . '_enabled',
-            'interval_minutes_key' => $jobKey . '_interval_minutes',
-            'offset_minutes_key' => $jobKey . '_offset_minutes',
-            'priority_key' => $jobKey . '_priority',
-            'timeout_key' => $jobKey . '_timeout_seconds',
-            'mode_key' => $jobKey . '_tuning_mode',
-            'default_interval_minutes' => 30,
-            'default_offset_minutes' => (int) ($row['offset_minutes'] ?? 0),
-            'priority' => 'normal',
-            'timeout_seconds' => 300,
-            'concurrency_policy' => 'single',
-            'tuning_mode' => 'automatic',
-            'explicitly_configured' => false,
-            'discovery_classification' => scheduler_is_internal_mechanic_job($jobKey) ? 'internal' : 'operational',
-        ];
+        $row = (array) ($rowsByJobKey[$jobKey] ?? []);
 
         $statusProjection = $currentStatusMap[$jobKey] ?? [];
         $dependencyMetadata = scheduler_dependency_metadata($jobKey);
         $changeDetection = is_array($statusProjection['last_change_detection'] ?? null) ? $statusProjection['last_change_detection'] : [];
         $executionContext = is_array($statusProjection['last_execution_context'] ?? null) ? $statusProjection['last_execution_context'] : [];
         $jobRunStats = db_sync_schedule_recent_job_run_stats($jobKey, 20);
-        $currentState = (string) ($row['current_state'] ?? ((int) ($row['enabled'] ?? 1) === 1 ? 'waiting' : 'stopped'));
+        $currentState = (string) ($row['current_state'] ?? ((int) ($row['enabled'] ?? (!empty($registryEntry['enabled_by_default']) ? 1 : 0)) === 1 ? 'waiting' : 'stopped'));
         $nextDueAt = $row['next_due_at'] ?? $row['next_run_at'] ?? null;
         $latenessSeconds = $nextDueAt !== null ? max(0, time() - (int) strtotime((string) $nextDueAt)) : 0;
         $timeoutResolution = scheduler_resolve_job_timeout($jobKey, $row, $definition);
@@ -6262,7 +6307,7 @@ function sync_schedule_settings_view_model(): array
         $card = [
             'job_key' => $jobKey,
             'label' => (string) ($definition['label'] ?? $jobKey),
-            'enabled' => (int) ($row['enabled'] ?? 1),
+            'enabled' => (int) ($row['enabled'] ?? (!empty($registryEntry['enabled_by_default']) ? 1 : 0)),
             'priority' => (string) ($row['priority'] ?? ($definition['priority'] ?? 'normal')),
             'interval_minutes' => (int) ($row['interval_minutes'] ?? ($definition['default_interval_minutes'] ?? 30)),
             'offset_minutes' => (int) ($row['offset_minutes'] ?? ($definition['default_offset_minutes'] ?? 0)),
@@ -6314,6 +6359,13 @@ function sync_schedule_settings_view_model(): array
             'latest_action' => $lastAction,
             'recent_outcomes' => $outcomeSummary[$jobKey] ?? ['failed_runs' => 0, 'successful_runs' => 0, 'total_runs' => 0],
             'discovery_classification' => (string) ($definition['discovery_classification'] ?? (scheduler_is_internal_mechanic_job($jobKey) ? 'internal' : 'operational')),
+            'registry_category' => (string) ($registryEntry['category'] ?? 'real_schedulable'),
+            'review_reason' => (string) ($registryEntry['review_reason'] ?? ''),
+            'enableable' => (string) ($registryEntry['category'] ?? '') !== 'real_disabled_review',
+            'parent_job_key' => (string) ($registryEntry['parent_job_key'] ?? ''),
+            'external_adapter' => (string) ($registryEntry['external_adapter'] ?? ''),
+            'python_implementation_exists' => !empty($registryEntry['python_implementation_exists']),
+            'worker_safe' => !empty($registryEntry['worker_safe']),
             'protected_offset' => scheduler_is_protected_job($jobKey),
             'profile_interval_minutes' => (int) (($profileMatrix['jobs'][$jobKey]['interval_minutes'] ?? ($definition['default_interval_minutes'] ?? 30))),
             'profile_timeout_seconds' => (int) (($profileMatrix['jobs'][$jobKey]['timeout_seconds'] ?? ($definition['timeout_seconds'] ?? 300))),
@@ -6377,9 +6429,17 @@ function sync_schedule_settings_view_model(): array
         $card['issues'] = $jobIssues;
         $card['needs_attention_action'] = ((string) ($card['last_result'] ?? '') === 'failed') || $jobIssues !== [];
 
-        if ($card['discovery_classification'] === 'internal') {
+        if ((string) ($card['parent_job_key'] ?? '') !== '') {
             $internalJobs[] = $card;
-        } elseif ($card['explicitly_configured']) {
+            continue;
+        }
+
+        if ((string) ($card['registry_category'] ?? '') === 'real_disabled_review') {
+            $discoveredJobs[] = $card;
+            continue;
+        }
+
+        if ($card['explicitly_configured']) {
             $healthSummary['total_jobs']++;
             $healthSummary[$currentState . '_jobs'] = (int) ($healthSummary[$currentState . '_jobs'] ?? 0) + 1;
             $healthSummary['lock_conflicts'] += $card['lock_conflicts_recent'];
@@ -6400,8 +6460,28 @@ function sync_schedule_settings_view_model(): array
             if ($isDegraded) {
                 $healthSummary['degraded_jobs']++;
             }
-            $discoveredJobs[] = $card;
+            $configuredJobs[] = $card;
         }
+    }
+
+    foreach ($registry as $jobKey => $entry) {
+        if ((string) ($entry['category'] ?? '') !== 'external_integrated') {
+            continue;
+        }
+        $discoveredJobs[] = [
+            'job_key' => $jobKey,
+            'label' => (string) ($entry['label'] ?? $jobKey),
+            'enabled' => !empty($entry['enabled_by_default']) ? 1 : 0,
+            'last_result' => 'managed_externally',
+            'job_state' => 'external',
+            'status_label' => 'External integration',
+            'interval_minutes' => (int) ($entry['default_interval_minutes'] ?? 0),
+            'resolved_timeout_seconds' => (int) ($entry['timeout_seconds'] ?? 0),
+            'next_due_at' => null,
+            'review_reason' => (string) (($entry['notes'] ?? '') ?: 'Managed through an external adapter boundary.'),
+            'registry_category' => 'external_integrated',
+            'external_adapter' => (string) ($entry['external_adapter'] ?? ''),
+        ];
     }
 
     $allOperationalJobs = array_merge($configuredJobs, $discoveredJobs);
@@ -6475,6 +6555,7 @@ function sync_schedule_settings_view_model(): array
             'forced_refresh_due_to_staleness' => count(array_filter(array_merge($configuredJobs, $discoveredJobs), static fn (array $job): bool => (string) ($job['last_result'] ?? '') === 'forced_refresh_due_to_staleness')),
             'change_aware_jobs' => count(array_filter(array_merge($configuredJobs, $discoveredJobs), static fn (array $job): bool => !empty($job['change_aware']))),
         ],
+        'authoritative_job_matrix' => supplycore_authoritative_job_matrix(),
     ];
 }
 
@@ -12090,12 +12171,60 @@ function scheduler_job_definitions(): array
                 throw new RuntimeException('compute_graph_sync_doctrine_dependency must run in the Python scheduler runtime.');
             },
         ],
+        'compute_graph_sync_battle_intelligence' => [
+            'timeout_seconds' => 420,
+            'lock_ttl_seconds' => 480,
+            'execution' => 'background',
+            'handler' => static function (): array {
+                throw new RuntimeException('compute_graph_sync_battle_intelligence must run in the Python scheduler runtime.');
+            },
+        ],
+        'compute_graph_derived_relationships' => [
+            'timeout_seconds' => 420,
+            'lock_ttl_seconds' => 480,
+            'execution' => 'background',
+            'handler' => static function (): array {
+                throw new RuntimeException('compute_graph_derived_relationships must run in the Python scheduler runtime.');
+            },
+        ],
         'compute_graph_insights' => [
             'timeout_seconds' => 300,
             'lock_ttl_seconds' => 360,
             'execution' => 'background',
             'handler' => static function (): array {
                 throw new RuntimeException('compute_graph_insights must run in the Python scheduler runtime.');
+            },
+        ],
+        'compute_graph_prune' => [
+            'timeout_seconds' => 420,
+            'lock_ttl_seconds' => 480,
+            'execution' => 'background',
+            'handler' => static function (): array {
+                throw new RuntimeException('compute_graph_prune must run in the Python scheduler runtime.');
+            },
+        ],
+        'compute_graph_topology_metrics' => [
+            'timeout_seconds' => 420,
+            'lock_ttl_seconds' => 480,
+            'execution' => 'background',
+            'handler' => static function (): array {
+                throw new RuntimeException('compute_graph_topology_metrics must run in the Python scheduler runtime.');
+            },
+        ],
+        'compute_behavioral_baselines' => [
+            'timeout_seconds' => 420,
+            'lock_ttl_seconds' => 480,
+            'execution' => 'background',
+            'handler' => static function (): array {
+                throw new RuntimeException('compute_behavioral_baselines must run in the Python scheduler runtime.');
+            },
+        ],
+        'compute_suspicion_scores_v2' => [
+            'timeout_seconds' => 420,
+            'lock_ttl_seconds' => 480,
+            'execution' => 'background',
+            'handler' => static function (): array {
+                throw new RuntimeException('compute_suspicion_scores_v2 must run in the Python scheduler runtime.');
             },
         ],
         'compute_buy_all' => [
@@ -12184,7 +12313,13 @@ function scheduler_job_type(string $jobKey): string
         'killmail_r2z2_sync' => 'sync.killmail',
         'compute_graph_sync' => 'compute.graph_sync',
         'compute_graph_sync_doctrine_dependency' => 'compute.graph_sync_doctrine_dependency',
+        'compute_graph_sync_battle_intelligence' => 'compute.graph_sync_battle_intelligence',
+        'compute_graph_derived_relationships' => 'compute.graph_derived_relationships',
         'compute_graph_insights' => 'compute.graph_insights',
+        'compute_graph_prune' => 'compute.graph_prune',
+        'compute_graph_topology_metrics' => 'compute.graph_topology_metrics',
+        'compute_behavioral_baselines' => 'compute.behavioral_baselines',
+        'compute_suspicion_scores_v2' => 'compute.suspicion_scores_v2',
         'compute_buy_all' => 'compute.buy_all',
         'compute_signals' => 'compute.signals',
         'compute_battle_rollups' => 'compute.battle_rollups',
@@ -12638,109 +12773,16 @@ function scheduler_code_discovery_paths(): array
 function scheduler_discover_jobs(): array
 {
     $discovered = [];
-    $known = scheduler_registry_definitions();
-    foreach ($known as $jobKey => $definition) {
+    foreach (scheduler_registry_definitions() as $jobKey => $definition) {
         if (scheduler_is_dedicated_worker_job($jobKey)) {
             continue;
         }
         $discovered[$jobKey] = $definition + [
             'job_key' => $jobKey,
             'discovered_from_code' => true,
-            'discovery_classification' => scheduler_is_internal_mechanic_job($jobKey) ? 'internal' : 'operational',
+            'discovery_classification' => 'operational',
         ];
     }
-
-    foreach (scheduler_internal_mechanic_job_keys() as $jobKey) {
-        if (isset($discovered[$jobKey])) {
-            $discovered[$jobKey]['discovery_classification'] = 'internal';
-            continue;
-        }
-
-        $discovered[$jobKey] = [
-            'job_key' => $jobKey,
-            'label' => ucwords(str_replace('_', ' ', $jobKey)),
-            'default_interval_minutes' => 30,
-            'default_offset_minutes' => scheduler_least_congested_offset_minutes(
-                scheduler_discovery_offset_horizon_minutes(),
-                ['avoid_protected_offsets' => true, 'reserve_protected_offsets' => true]
-            ),
-            'priority' => 'normal',
-            'timeout_seconds' => 300,
-            'concurrency_policy' => 'single',
-            'tuning_mode' => 'automatic',
-            'explicitly_configured' => false,
-            'discovered_from_code' => true,
-            'discovery_classification' => 'internal',
-        ];
-    }
-
-    $rows = [];
-    try {
-        $rows = db_sync_schedule_fetch_all();
-    } catch (Throwable) {
-        $rows = [];
-    }
-
-    foreach (scheduler_code_discovery_paths() as $path) {
-        if (!is_dir($path)) {
-            continue;
-        }
-
-        $iterator = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($path, FilesystemIterator::SKIP_DOTS));
-        foreach ($iterator as $fileInfo) {
-            if (!$fileInfo->isFile()) {
-                continue;
-            }
-
-            $pathname = $fileInfo->getPathname();
-            if (!preg_match('/\.(php|md)$/i', $pathname)) {
-                continue;
-            }
-
-            $contents = @file_get_contents($pathname);
-            if (!is_string($contents) || $contents === '') {
-                continue;
-            }
-
-            foreach (scheduler_extract_php_function_names($contents) as $candidate) {
-                if (!preg_match('/(?:_sync|_job)$/', $candidate)) {
-                    continue;
-                }
-
-                if (scheduler_is_dedicated_worker_job($candidate)) {
-                    continue;
-                }
-
-                $classification = scheduler_is_internal_mechanic_job($candidate) ? 'internal' : 'operational';
-                if (!isset($discovered[$candidate])) {
-                    $discovered[$candidate] = [
-                        'job_key' => $candidate,
-                        'label' => ucwords(str_replace('_', ' ', $candidate)),
-                        'default_interval_minutes' => 30,
-                        'default_offset_minutes' => scheduler_least_congested_offset_minutes(
-                            scheduler_discovery_offset_horizon_minutes(),
-                            [
-                                'rows' => $rows,
-                                'avoid_protected_offsets' => true,
-                                'reserve_protected_offsets' => true,
-                            ]
-                        ),
-                        'priority' => 'normal',
-                        'timeout_seconds' => 300,
-                        'concurrency_policy' => 'single',
-                        'tuning_mode' => 'automatic',
-                        'explicitly_configured' => false,
-                        'discovered_from_code' => true,
-                        'discovery_classification' => $classification,
-                    ];
-                    continue;
-                }
-
-                $discovered[$candidate]['discovery_classification'] = $classification;
-            }
-        }
-    }
-
     ksort($discovered);
 
     return $discovered;
