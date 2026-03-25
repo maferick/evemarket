@@ -1,5 +1,7 @@
 # Python-Only Worker Architecture Runbook
 
+> For the full architecture/runtime audit matrix and feature dependency map, see `docs/BACKGROUND_JOB_AUDIT.md`.
+
 ## Job audit matrix (full recurring worker registry sweep)
 
 | job_key | current_mode | actual_runtime_language | php_subprocess_invoked | target_action | notes |

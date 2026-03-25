@@ -196,6 +196,26 @@ def main(argv: list[str] | None = None) -> int:
             if idle_sleep > 0:
                 time.sleep(idle_sleep)
             continue
+        payload = {}
+        try:
+            payload = json.loads(str(job.get("payload_json") or "{}"))
+        except Exception:
+            payload = {}
+        logger.info(
+            "worker job claimed",
+            payload={
+                "event": "worker_pool.job_claimed",
+                "worker_id": worker_id,
+                "job_id": int(job.get("id") or 0),
+                "job_key": str(job.get("job_key") or ""),
+                "priority": str(job.get("priority") or "normal"),
+                "urgency_score": int(payload.get("urgency_score") or 0),
+                "staleness_seconds": int(payload.get("staleness_seconds") or 0),
+                "freshness_sensitivity": str(payload.get("freshness_sensitivity") or ""),
+                "opportunistic_background": bool(payload.get("opportunistic_background", False)),
+                "diagnostics": diagnostics,
+            },
+        )
 
         context = WorkerPoolContext(
             job=job,

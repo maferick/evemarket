@@ -10,6 +10,19 @@ import pymysql.cursors
 from .json_utils import json_dumps_safe
 
 
+def _priority_rank(priority: str) -> int:
+    normalized = priority.strip().lower()
+    if normalized == "highest":
+        return 400
+    if normalized == "high":
+        return 300
+    if normalized == "medium":
+        return 200
+    if normalized == "normal":
+        return 100
+    return 50
+
+
 class SupplyCoreDb:
     def __init__(self, config: dict[str, Any]):
         self._config = config
@@ -87,6 +100,7 @@ class SupplyCoreDb:
             scoped = {key: value for key, value in definitions.items() if key in keyset}
         queued = 0
         skipped = 0
+        decision_logged = 0
         for job_key, definition in scoped.items():
             existing = self.fetch_one(
                 "SELECT id FROM worker_jobs WHERE job_key = %s AND status IN ('queued', 'running', 'retry') LIMIT 1",
@@ -94,28 +108,85 @@ class SupplyCoreDb:
             )
             if existing:
                 skipped += 1
+                self.insert_scheduler_planner_decision(
+                    schedule_id=None,
+                    job_key=job_key,
+                    decision_type="rolling_skipped_existing",
+                    pressure_state="healthy",
+                    reason_text="Skipped because queued/running/retry work already exists for this recurring job.",
+                    decision_json={"job_key": job_key, "existing_worker_job_id": int(existing.get("id") or 0)},
+                )
+                decision_logged += 1
                 continue
 
-            interval_seconds = max(60, int(definition.get("interval_seconds") or 300))
+            min_interval_seconds = max(60, int(definition.get("min_interval_seconds") or definition.get("interval_seconds") or 300))
+            max_staleness_seconds = max(min_interval_seconds, int(definition.get("max_staleness_seconds") or (min_interval_seconds * 2)))
+            cooldown_seconds = max(0, int(definition.get("cooldown_seconds") or 0))
+            opportunistic_background = bool(definition.get("opportunistic_background", False))
+            freshness_sensitivity = str(definition.get("freshness_sensitivity") or "background")
             last_finished = self.fetch_one(
                 "SELECT MAX(last_finished_at) AS last_finished_at FROM worker_jobs WHERE job_key = %s",
                 (job_key,),
             )
+            next_due_seconds = 0
+            staleness_seconds = max_staleness_seconds
             if last_finished and last_finished.get("last_finished_at"):
-                due_row = self.fetch_one(
-                    "SELECT CASE WHEN DATE_ADD(%s, INTERVAL %s SECOND) <= UTC_TIMESTAMP() THEN 1 ELSE 0 END AS due",
-                    (last_finished["last_finished_at"], interval_seconds),
-                )
-                if not bool(int((due_row or {}).get("due") or 0)):
+                timing = self.fetch_one(
+                    """SELECT
+                        GREATEST(0, TIMESTAMPDIFF(SECOND, UTC_TIMESTAMP(), DATE_ADD(%s, INTERVAL %s SECOND))) AS next_due_seconds,
+                        GREATEST(0, TIMESTAMPDIFF(SECOND, DATE_ADD(%s, INTERVAL %s SECOND), UTC_TIMESTAMP())) AS staleness_seconds
+                        """,
+                    (last_finished["last_finished_at"], min_interval_seconds, last_finished["last_finished_at"], min_interval_seconds),
+                ) or {}
+                next_due_seconds = max(0, int(timing.get("next_due_seconds") or 0))
+                staleness_seconds = max(0, int(timing.get("staleness_seconds") or 0))
+                if next_due_seconds > 0 and staleness_seconds < max_staleness_seconds:
                     skipped += 1
+                    self.insert_scheduler_planner_decision(
+                        schedule_id=None,
+                        job_key=job_key,
+                        decision_type="rolling_deferred_cooldown",
+                        pressure_state="healthy",
+                        reason_text="Deferred because minimum interval has not elapsed and max staleness has not been reached.",
+                        decision_json={
+                            "job_key": job_key,
+                            "next_due_seconds": next_due_seconds,
+                            "staleness_seconds": staleness_seconds,
+                            "min_interval_seconds": min_interval_seconds,
+                            "max_staleness_seconds": max_staleness_seconds,
+                        },
+                    )
+                    decision_logged += 1
                     continue
 
-            payload = json_dumps_safe({"recurring": True, "interval_seconds": interval_seconds})
+            urgency_score = (
+                _priority_rank(str(definition.get("priority") or "normal")) * 1000
+                + min(99_999, int(staleness_seconds))
+                + (150_000 if freshness_sensitivity == "immediate" else 0)
+                + (50_000 if not opportunistic_background else 0)
+            )
+            available_seconds = cooldown_seconds if staleness_seconds <= 0 else 0
+            payload = json_dumps_safe(
+                {
+                    "recurring": True,
+                    "rolling_planner": True,
+                    "min_interval_seconds": min_interval_seconds,
+                    "max_staleness_seconds": max_staleness_seconds,
+                    "cooldown_seconds": cooldown_seconds,
+                    "freshness_sensitivity": freshness_sensitivity,
+                    "runtime_class": str(definition.get("runtime_class") or ""),
+                    "resource_cost": str(definition.get("resource_cost") or ""),
+                    "lock_group": str(definition.get("lock_group") or ""),
+                    "opportunistic_background": opportunistic_background,
+                    "staleness_seconds": staleness_seconds,
+                    "urgency_score": urgency_score,
+                }
+            )
             self.execute(
                 """INSERT INTO worker_jobs (
                         job_key, queue_name, workload_class, execution_mode, priority, status, unique_key,
                         payload_json, available_at, max_attempts, timeout_seconds, retry_delay_seconds, memory_limit_mb
-                    ) VALUES (%s, %s, %s, 'python', %s, 'queued', %s, %s, UTC_TIMESTAMP(), %s, %s, %s, %s)
+                    ) VALUES (%s, %s, %s, 'python', %s, 'queued', %s, %s, DATE_ADD(UTC_TIMESTAMP(), INTERVAL %s SECOND), %s, %s, %s, %s)
                     ON DUPLICATE KEY UPDATE
                         queue_name = VALUES(queue_name),
                         workload_class = VALUES(workload_class),
@@ -136,14 +207,32 @@ class SupplyCoreDb:
                     str(definition.get("priority") or "normal"),
                     f"recurring:{job_key}",
                     payload,
+                    available_seconds,
                     max(1, int(definition.get("max_attempts") or 5)),
                     max(30, int(definition.get("timeout_seconds") or 300)),
                     max(5, int(definition.get("retry_delay_seconds") or 30)),
                     max(128, int(definition.get("memory_limit_mb") or 512)),
                 ),
             )
+            self.insert_scheduler_planner_decision(
+                schedule_id=None,
+                job_key=job_key,
+                decision_type="rolling_queued",
+                pressure_state="healthy",
+                reason_text="Queued by rolling planner because a worker was free and this job met freshness/cooldown requirements.",
+                decision_json={
+                    "job_key": job_key,
+                    "urgency_score": urgency_score,
+                    "staleness_seconds": staleness_seconds,
+                    "min_interval_seconds": min_interval_seconds,
+                    "max_staleness_seconds": max_staleness_seconds,
+                    "cooldown_seconds": cooldown_seconds,
+                    "opportunistic_background": opportunistic_background,
+                },
+            )
+            decision_logged += 1
             queued += 1
-        return {"queued": queued, "skipped": skipped, "job_count": len(scoped)}
+        return {"queued": queued, "skipped": skipped, "job_count": len(scoped), "planner_decisions_logged": decision_logged}
 
     def claim_next_worker_job(
         self,
@@ -180,6 +269,7 @@ class SupplyCoreDb:
                         WHEN 'medium' THEN 200
                         WHEN 'normal' THEN 100
                         ELSE 50 END DESC,
+                        CAST(JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.urgency_score')) AS UNSIGNED) DESC,
                         available_at ASC,
                         id ASC
                     LIMIT 1
@@ -204,6 +294,33 @@ class SupplyCoreDb:
             cursor.execute("SELECT * FROM worker_jobs WHERE id = %s LIMIT 1", (job_id,))
             claimed = cursor.fetchone()
             return dict(claimed) if claimed else None
+
+    def insert_scheduler_planner_decision(
+        self,
+        *,
+        schedule_id: int | None,
+        job_key: str,
+        decision_type: str,
+        pressure_state: str,
+        reason_text: str,
+        decision_json: dict[str, Any],
+    ) -> None:
+        try:
+            self.execute(
+                """INSERT INTO scheduler_planner_decisions (
+                    schedule_id, job_key, decision_type, pressure_state, reason_text, decision_json
+                ) VALUES (%s, %s, %s, %s, %s, %s)""",
+                (
+                    schedule_id,
+                    job_key[:120],
+                    decision_type[:40],
+                    pressure_state[:32],
+                    reason_text[:500],
+                    json_dumps_safe(decision_json),
+                ),
+            )
+        except Exception:
+            return
 
     def worker_claim_diagnostics(self, *, queues: list[str], workload_classes: list[str]) -> dict[str, Any]:
         clauses = ["execution_mode='python'"]

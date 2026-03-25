@@ -292,7 +292,7 @@ chmod -R u+rwX /var/www/SupplyCore/storage
 Run the services manually during development or migrations:
 
 ```bash
-python -m orchestrator worker-pool --app-root /var/www/SupplyCore --queues sync --workload-classes sync --execution-modes python,php
+python -m orchestrator worker-pool --app-root /var/www/SupplyCore --queues sync --workload-classes sync --execution-modes python
 python -m orchestrator worker-pool --app-root /var/www/SupplyCore --queues compute --workload-classes compute --execution-modes python
 python -m orchestrator zkill-worker --app-root /var/www/SupplyCore
 php bin/cron_tick.php
@@ -346,7 +346,7 @@ python/
 - `systemd` runs the Python orchestrator.
 - Python launches `bin/scheduler_daemon.php` as a child process.
 - Python captures stdout/stderr, polls `bin/scheduler_health.php`, enforces graceful stop/kill behavior, writes a heartbeat file, and restarts the PHP daemon after crashes or repeated health failures.
-- PHP remains the default execution engine, while heavy summary jobs can now be routed to a Python `python_worker` with SQL-first batching, memory guards, and a PHP fallback bridge for not-yet-migrated handlers.
+- The recurring worker lane is Python-native: recurring jobs are queued, selected, and executed by the Python worker pool without PHP fallback execution.
 
 **Phase 2: optional later**
 
@@ -359,7 +359,7 @@ python/
 - `bin/scheduler_daemon.php` — primary managed PHP child process.
 - `bin/scheduler_health.php` — health/heartbeat probe used by Python.
 - `bin/python_job_runner.py` — bootstrap the Python `python_worker` runner for heavy `execution_mode=python` jobs.
-- `bin/python_scheduler_bridge.php` — small PHP bridge for Python workers to fetch job context, store snapshots, invoke PHP fallback handlers, and finalize scheduler bookkeeping.
+- `bin/python_scheduler_bridge.php` — bridge for transitional scheduler-daemon integrations; recurring worker jobs should use native Python processors.
 - `bin/scheduler_watchdog.php` / `bin/cron_tick.php` — still available during transition, but when `scheduler.supervisor_mode=python` they target the Python-managed service instead of spawning a standalone PHP daemon directly.
 
 #### Duplicate-master safety
@@ -381,8 +381,7 @@ python/
 - `market_comparison_summary_sync` is the first fully migrated example: Python fetches DB credentials from `bin/orchestrator_config.php`, requests job-specific context through `bin/python_scheduler_bridge.php`, paginates `market_order_snapshots_summary` by `type_id`, pushes aggregation work into SQL, evaluates scoring in Python, and writes the finished materialized snapshot back through the bridge.
 - After each batch the worker logs rows processed, batches completed, wall time, and current memory usage; the worker aborts if it exceeds the configured threshold (`scheduler.memory_abort_threshold_bytes`, default target 512 MB for Python jobs).
 - Final scheduler bookkeeping still reuses PHP domain helpers through the bridge so `sync_state`, `sync_runs`, `sync_schedules`, UI refresh notifications, and scheduler event logs stay consistent with existing observability.
-- If a job is marked `execution_mode=python` but does not yet have a native Python processor, the worker can still invoke the existing PHP job handler through the bridge when `SCHEDULER_PYTHON_PHP_FALLBACK_ENABLED=1` (default).
-- Set `SCHEDULER_PYTHON_HEAVY_JOBS_ENABLED=0` to force those jobs back to PHP without changing stored scheduler config.
+- Recurring worker jobs that do not have a native Python processor should be treated as retired/disabled until ported. Do not route them through PHP fallback subprocesses.
 
 ### Python `systemd` unit
 
@@ -510,20 +509,13 @@ Daily history rows are built from those local snapshots for both the alliance ma
 Once the tiered model is active, these UI routes must not rely on raw-history fallback reads: `/history/alliance-trends`, `/history/module-history`, `/activity-priority`, `/doctrine`, `/doctrine/group`, and `/doctrine/fit`. They should read from the daily history layer (`market_history_daily`, `market_hub_local_history_daily`, `market_item_*_1d`) or show gaps that indicate the rollups need rebuilding.
 
 
-### Manual snapshot-history rebuild CLI
+### Manual recurring-worker dry run
 
-Use the sync runner directly when you want to backfill or re-derive the recent hub history window from raw order snapshots already stored in MySQL:
+Use the Python worker pool in one-shot mode when validating a specific worker class manually:
 
 ```bash
-php bin/sync_runner.php --job=market-hub-local-history --mode=full --window-days=30
+python -m orchestrator worker-pool --app-root /var/www/SupplyCore --queues compute --workload-classes compute --execution-modes python --once --verbose
 ```
-
-Notes:
-
-- `--window-days` is optional. If omitted, the job defaults to the raw tier (`market_history_retention_raw_days`) from Settings → Data Sync.
-- The job scans local `market_orders_history` rows for the configured hub, derives per-type daily OHLC buckets, and upserts them into `market_history_daily`.
-- The runner writes JSON summary lines and warning/error summaries to `storage/logs/cron.log`, so you can tail the same file whether the job ran via cron or manually.
-- Expected first-run duration is typically **under 1 minute for a 7-day window**, **1–5 minutes for ~30 days**, and longer if the hub has unusually dense raw snapshots or the database is resource-constrained.
 
 Verification SQL:
 
@@ -732,15 +724,11 @@ SupplyCore now includes a first-pass killmail intelligence ingestion foundation 
 
 - Dedicated runtime: `python -m orchestrator zkill-worker --app-root /var/www/SupplyCore`
 - Scheduler dataset/state key: `killmail.r2z2.stream`
-- Compatibility-only one-shot/manual command:
+- One-shot/manual command:
   ```bash
-  php bin/killmail_sync.php
+  python -m orchestrator zkill-worker --app-root /var/www/SupplyCore --once
   ```
-- The dedicated Python zKill worker is the production path. The PHP command remains available as a compatibility fallback, but `bin/cron_tick.php` does not drive killmail ingestion anymore.
-- Generic sync runner job option:
-  ```bash
-  php bin/sync_runner.php --job=killmail-r2z2 --mode=incremental --source-id=1
-  ```
+- The dedicated Python zKill worker is the production and compatibility path.
 
 Configure ingestion + tracked alliances/corporations at:
 `/settings?section=killmail-intelligence`
