@@ -746,6 +746,8 @@ function db_killmail_overview_schema_ensure(): void
     db_ensure_table_column('killmail_events', 'zkb_solo', 'TINYINT(1) DEFAULT NULL AFTER zkb_npc');
     db_ensure_table_column('killmail_events', 'zkb_awox', 'TINYINT(1) DEFAULT NULL AFTER zkb_solo');
     db_ensure_table_index('killmail_events', 'idx_killmail_natural_sequence', 'INDEX idx_killmail_natural_sequence (killmail_id, killmail_hash, sequence_id)');
+    db_killmail_identity_dedupe_enforce();
+    db_ensure_table_index('killmail_events', 'uniq_killmail_identity', 'UNIQUE KEY uniq_killmail_identity (killmail_id, killmail_hash)');
 
     $legacyEventJsonSql = db_table_has_column('killmail_events', 'zkb_json') ? "NULLIF(e.zkb_json, '')" : 'NULL';
     $zkbJsonSql = "COALESCE(NULLIF(p.zkb_json, ''), {$legacyEventJsonSql}, '{}')";
@@ -793,10 +795,79 @@ function db_killmail_latest_sequences_sql(): string
 {
     return "(
         SELECT
-            MAX(e.sequence_id) AS sequence_id
+            MAX(e.sequence_id) AS sequence_id,
+            CONCAT(CAST(e.killmail_id AS CHAR), ':', e.killmail_hash) AS esi_killmail_key
         FROM killmail_events e
         GROUP BY e.killmail_id, e.killmail_hash
     )";
+}
+
+function db_killmail_duplicate_identities(int $limit = 100): array
+{
+    $safeLimit = max(1, min(1000, $limit));
+
+    return db_select(
+        "SELECT
+            e.killmail_id,
+            e.killmail_hash,
+            CONCAT(CAST(e.killmail_id AS CHAR), ':', e.killmail_hash) AS esi_killmail_key,
+            COUNT(*) AS duplicate_count,
+            MAX(e.sequence_id) AS latest_sequence_id,
+            MIN(e.sequence_id) AS earliest_sequence_id,
+            GROUP_CONCAT(e.sequence_id ORDER BY e.sequence_id DESC SEPARATOR ',') AS sequence_ids
+         FROM killmail_events e
+         GROUP BY e.killmail_id, e.killmail_hash
+         HAVING COUNT(*) > 1
+         ORDER BY duplicate_count DESC, latest_sequence_id DESC
+         LIMIT {$safeLimit}"
+    );
+}
+
+function db_killmail_identity_dedupe_enforce(): void
+{
+    $duplicates = db_killmail_duplicate_identities(1000);
+    if ($duplicates === []) {
+        return;
+    }
+
+    foreach ($duplicates as $duplicate) {
+        $killmailId = (int) ($duplicate['killmail_id'] ?? 0);
+        $killmailHash = (string) ($duplicate['killmail_hash'] ?? '');
+        if ($killmailId <= 0 || $killmailHash === '') {
+            continue;
+        }
+
+        $rows = db_select(
+            'SELECT sequence_id
+             FROM killmail_events
+             WHERE killmail_id = ?
+               AND killmail_hash = ?
+             ORDER BY sequence_id DESC',
+            [$killmailId, $killmailHash]
+        );
+        if (count($rows) <= 1) {
+            continue;
+        }
+
+        $sequenceIds = array_map(static fn (array $row): int => (int) ($row['sequence_id'] ?? 0), $rows);
+        $sequenceIds = array_values(array_filter($sequenceIds, static fn (int $id): bool => $id > 0));
+        if (count($sequenceIds) <= 1) {
+            continue;
+        }
+
+        $keepSequenceId = (int) array_shift($sequenceIds);
+        if ($keepSequenceId <= 0 || $sequenceIds === []) {
+            continue;
+        }
+
+        $placeholders = implode(',', array_fill(0, count($sequenceIds), '?'));
+        $params = $sequenceIds;
+
+        db_execute("DELETE FROM killmail_attackers WHERE sequence_id IN ({$placeholders})", $params);
+        db_execute("DELETE FROM killmail_items WHERE sequence_id IN ({$placeholders})", $params);
+        db_execute("DELETE FROM killmail_event_payloads WHERE sequence_id IN ({$placeholders})", $params);
+        db_execute("DELETE FROM killmail_events WHERE sequence_id IN ({$placeholders})", $params);
+    }
 }
 
 function db_killmail_event_has_legacy_payload_columns(): bool
@@ -10810,6 +10881,7 @@ function db_killmail_overview_row(int $sequenceId): ?array
             e.sequence_id,
             e.killmail_id,
             e.killmail_hash,
+            CONCAT(CAST(e.killmail_id AS CHAR), ':', e.killmail_hash) AS esi_killmail_key,
             e.uploaded_at,
             e.sequence_updated,
             e.killmail_time,
@@ -11013,6 +11085,7 @@ function db_killmail_overview_page(array $filters = []): array
             e.sequence_id,
             e.killmail_id,
             e.killmail_hash,
+            CONCAT(CAST(e.killmail_id AS CHAR), ':', e.killmail_hash) AS esi_killmail_key,
             e.killmail_time,
             e.uploaded_at,
             e.created_at,
@@ -11057,6 +11130,38 @@ function db_killmail_overview_page(array $filters = []): array
         'showing_from' => $totalItems > 0 ? $offset + 1 : 0,
         'showing_to' => min($offset + $pageSize, $totalItems),
     ];
+}
+
+function db_killmail_overview_duplicate_identity_check(array $filters = []): array
+{
+    $filters['page'] = 1;
+    $filters['page_size'] = max(1, min(1000, (int) ($filters['page_size'] ?? 250)));
+    $listing = db_killmail_overview_page($filters);
+    $rows = array_values(array_filter((array) ($listing['rows'] ?? []), static fn (mixed $row): bool => is_array($row)));
+    $counts = [];
+
+    foreach ($rows as $row) {
+        $key = trim((string) ($row['esi_killmail_key'] ?? ''));
+        if ($key === '') {
+            $key = (string) ((int) ($row['killmail_id'] ?? 0)) . ':' . (string) ($row['killmail_hash'] ?? '');
+        }
+        if ($key === ':' || $key === '') {
+            continue;
+        }
+        $counts[$key] = ($counts[$key] ?? 0) + 1;
+    }
+
+    $duplicates = [];
+    foreach ($counts as $key => $count) {
+        if ($count > 1) {
+            $duplicates[] = [
+                'esi_killmail_key' => $key,
+                'row_count' => $count,
+            ];
+        }
+    }
+
+    return $duplicates;
 }
 
 function db_killmail_tracked_recent_hull_losses(array $hullTypeIds, int $hours = 24 * 7): array

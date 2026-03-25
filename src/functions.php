@@ -10370,6 +10370,7 @@ function killmail_detail_data(): array
             'sequence_id' => (int) ($event['sequence_id'] ?? 0),
             'killmail_id' => (int) ($event['killmail_id'] ?? 0),
             'killmail_hash' => (string) ($event['killmail_hash'] ?? ''),
+            'esi_killmail_key' => ((int) ($event['killmail_id'] ?? 0)) . ':' . (string) ($event['killmail_hash'] ?? ''),
             'killmail_time_display' => killmail_format_datetime(isset($event['killmail_time']) ? (string) $event['killmail_time'] : null),
             'uploaded_at_display' => killmail_format_datetime(isset($event['uploaded_at']) ? (string) $event['uploaded_at'] : null),
             'created_at_display' => killmail_format_datetime(isset($event['created_at']) ? (string) $event['created_at'] : null),
@@ -10456,6 +10457,8 @@ function killmail_overview_data(): array
             $workerStatus = zkill_worker_runtime_status();
             $options = db_killmail_overview_filter_options();
             $listing = db_killmail_overview_page($filters);
+            $storageDuplicateRows = db_killmail_duplicate_identities(50);
+            $resultDuplicateRows = db_killmail_overview_duplicate_identity_check($filters);
         } catch (Throwable $exception) {
             return [
                 'error' => $exception->getMessage(),
@@ -10465,6 +10468,8 @@ function killmail_overview_data(): array
                     'last_sync_outcome' => 'Unavailable',
                     'worker_status' => 'unknown',
                     'worker_seen_at' => 'No heartbeat recorded',
+                    'storage_duplicate_identity_count' => 0,
+                    'result_duplicate_identity_count' => 0,
                 ],
                 'rows' => [],
                 'filters' => $filters + [
@@ -10630,6 +10635,8 @@ function killmail_overview_data(): array
             return [
                 'sequence_id' => (int) ($row['sequence_id'] ?? 0),
                 'killmail_id' => (int) ($row['killmail_id'] ?? 0),
+                'killmail_hash' => (string) ($row['killmail_hash'] ?? ''),
+                'esi_killmail_key' => (string) ($row['esi_killmail_key'] ?? (((int) ($row['killmail_id'] ?? 0)) . ':' . (string) ($row['killmail_hash'] ?? ''))),
                 'killmail_time_raw' => isset($row['killmail_time']) ? (string) $row['killmail_time'] : '',
                 'uploaded_at_raw' => isset($row['uploaded_at']) ? (string) $row['uploaded_at'] : '',
                 'created_at_raw' => isset($row['created_at']) ? (string) $row['created_at'] : '',
@@ -10660,7 +10667,7 @@ function killmail_overview_data(): array
                 'inspect_url' => '/killmail-intelligence/view.php?sequence_id=' . urlencode((string) ((int) ($row['sequence_id'] ?? 0))),
             ];
         }, (array) ($listing['rows'] ?? []));
-        $rows = supplycore_rows_unique_by($rows, static fn (array $row): string => 'killmail:' . (int) ($row['killmail_id'] ?? 0) . ':' . (int) ($row['sequence_id'] ?? 0));
+        $rows = supplycore_rows_unique_by($rows, static fn (array $row): string => 'killmail:' . trim((string) ($row['esi_killmail_key'] ?? '')));
         supplycore_sort_rows_by_newest($rows, ['killmail_time_raw', 'uploaded_at_raw', 'created_at_raw'], ['sequence_id', 'killmail_id']);
 
         $emptyMessage = $totalCount === 0
@@ -10709,6 +10716,10 @@ function killmail_overview_data(): array
             'worker_memory_usage_bytes' => isset($workerStatus['memory_usage_bytes']) ? (int) $workerStatus['memory_usage_bytes'] : null,
             'worker_log_file' => isset($workerStatus['log_file']) ? (string) $workerStatus['log_file'] : '',
             'worker_state_file' => isset($workerStatus['state_file']) ? (string) $workerStatus['state_file'] : '',
+            'storage_duplicate_identity_count' => count($storageDuplicateRows),
+            'storage_duplicate_identities' => $storageDuplicateRows,
+            'result_duplicate_identity_count' => count($resultDuplicateRows),
+            'result_duplicate_identities' => $resultDuplicateRows,
         ];
         $statusView['health'] = killmail_ingestion_health_summary($statusView, $workerStatus);
 
