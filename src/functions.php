@@ -4436,11 +4436,35 @@ function scheduler_job_execution_mode(array $job, ?array $definition = null): st
         ? 'python'
         : ($jobMode !== '' ? $jobMode : 'php');
 
-    if ($configured === 'python' && !scheduler_python_heavy_jobs_enabled()) {
-        return 'php';
+    return $configured === 'python' ? 'python' : 'php';
+}
+
+function scheduler_enabled_python_worker_binding_audit(): array
+{
+    $rows = db_sync_schedule_fetch_all();
+    $workerDefinitions = worker_job_registry_definitions();
+    $issues = [];
+
+    foreach ($rows as $row) {
+        if ((int) ($row['enabled'] ?? 1) !== 1) {
+            continue;
+        }
+
+        $jobKey = trim((string) ($row['job_key'] ?? ''));
+        $executionMode = strtolower(trim((string) ($row['execution_mode'] ?? 'php')));
+        if ($jobKey === '' || $executionMode !== 'python') {
+            continue;
+        }
+
+        if (str_starts_with($jobKey, 'compute_') && !isset($workerDefinitions[$jobKey])) {
+            $issues[] = 'Enabled Python compute job "' . $jobKey . '" is missing a worker-pool processor binding.';
+        }
     }
 
-    return $configured === 'python' ? 'python' : 'php';
+    return [
+        'issues' => $issues,
+        'issue_count' => count($issues),
+    ];
 }
 
 function scheduler_job_workload_profile(string $jobKey): array
@@ -13882,6 +13906,19 @@ function scheduler_run_optimizer(): ?array
 
 function cron_tick_run(?callable $logger = null): array
 {
+    try {
+        $bindingAudit = scheduler_enabled_python_worker_binding_audit();
+        foreach ((array) ($bindingAudit['issues'] ?? []) as $issue) {
+            if ($logger !== null) {
+                $logger('job.binding_audit.failed', ['issue' => (string) $issue]);
+            }
+        }
+    } catch (Throwable $exception) {
+        if ($logger !== null) {
+            $logger('job.binding_audit.error', ['error' => scheduler_normalize_error_message($exception->getMessage())]);
+        }
+    }
+
     $profiling = scheduler_profiling_tick($logger);
     if ($profiling !== null) {
         return [

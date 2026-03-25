@@ -6,33 +6,17 @@ import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from .bridge import PhpBridge
 from .config import load_php_runtime_config
 from .db import SupplyCoreDb
-from .job_context import battle_runtime, influx_runtime, neo4j_runtime
 from .jobs import (
-    run_compute_battle_actor_features,
-    run_compute_battle_anomalies,
-    run_compute_battle_rollups,
-    run_compute_battle_target_metrics,
-    run_compute_buy_all,
-    run_compute_signals,
-    run_compute_graph_insights,
-    run_compute_graph_sync,
-    run_compute_graph_sync_battle_intelligence,
-    run_compute_graph_sync_doctrine_dependency,
-    run_compute_graph_derived_relationships,
-    run_compute_graph_prune,
-    run_compute_graph_topology_metrics,
-    run_compute_behavioral_baselines,
-    run_compute_suspicion_scores_v2,
-    run_compute_suspicion_scores,
     run_killmail_r2z2_stream,
     run_market_comparison_summary,
     run_market_hub_local_history,
 )
+from .processor_registry import PYTHON_COMPUTE_PROCESSOR_JOB_KEYS, audit_enabled_python_jobs, run_compute_processor
 from .worker_runtime import resident_memory_bytes, utc_now_iso
 
 
@@ -73,29 +57,10 @@ class PythonWorkerContext:
         emit(event, payload)
 
 
-PROCESSORS: dict[str, Callable[[PythonWorkerContext], dict[str, Any]]] = {
+PROCESSORS = {
     "killmail_r2z2_sync": run_killmail_r2z2_stream,
     "market_comparison_summary_sync": run_market_comparison_summary,
     "market_hub_local_history_sync": run_market_hub_local_history,
-    "compute_graph_sync": lambda context: _graph_result_shape(run_compute_graph_sync(context.db, neo4j_runtime(context.raw_config)), "compute_graph_sync"),
-    "compute_graph_sync_doctrine_dependency": lambda context: _graph_result_shape(run_compute_graph_sync_doctrine_dependency(context.db, neo4j_runtime(context.raw_config)), "compute_graph_sync_doctrine_dependency"),
-    "compute_graph_sync_battle_intelligence": lambda context: _graph_result_shape(run_compute_graph_sync_battle_intelligence(context.db, neo4j_runtime(context.raw_config)), "compute_graph_sync_battle_intelligence"),
-    "compute_graph_derived_relationships": lambda context: _graph_result_shape(run_compute_graph_derived_relationships(context.db, neo4j_runtime(context.raw_config)), "compute_graph_derived_relationships"),
-    "compute_graph_insights": lambda context: _graph_result_shape(run_compute_graph_insights(context.db, neo4j_runtime(context.raw_config)), "compute_graph_insights"),
-    "compute_graph_prune": lambda context: _graph_result_shape(run_compute_graph_prune(context.db, neo4j_runtime(context.raw_config)), "compute_graph_prune"),
-    "compute_graph_topology_metrics": lambda context: _graph_result_shape(run_compute_graph_topology_metrics(context.db, neo4j_runtime(context.raw_config)), "compute_graph_topology_metrics"),
-    "compute_behavioral_baselines": lambda context: _compute_result_shape(run_compute_behavioral_baselines(context.db, battle_runtime(context.raw_config)), "compute_behavioral_baselines"),
-    "compute_suspicion_scores_v2": lambda context: _compute_result_shape(run_compute_suspicion_scores_v2(context.db, battle_runtime(context.raw_config)), "compute_suspicion_scores_v2"),
-    "compute_buy_all": lambda context: _compute_result_shape(
-        run_compute_buy_all(context.db),
-        "compute_buy_all",
-    ),
-    "compute_signals": lambda context: _compute_result_shape(run_compute_signals(context.db, influx_runtime(context.raw_config)), "compute_signals"),
-    "compute_battle_rollups": lambda context: _compute_result_shape(run_compute_battle_rollups(context.db, battle_runtime(context.raw_config)), "compute_battle_rollups"),
-    "compute_battle_target_metrics": lambda context: _compute_result_shape(run_compute_battle_target_metrics(context.db, battle_runtime(context.raw_config)), "compute_battle_target_metrics"),
-    "compute_battle_anomalies": lambda context: _compute_result_shape(run_compute_battle_anomalies(context.db, battle_runtime(context.raw_config)), "compute_battle_anomalies"),
-    "compute_battle_actor_features": lambda context: _compute_result_shape(run_compute_battle_actor_features(context.db, neo4j_runtime(context.raw_config), battle_runtime(context.raw_config)), "compute_battle_actor_features"),
-    "compute_suspicion_scores": lambda context: _compute_result_shape(run_compute_suspicion_scores(context.db, battle_runtime(context.raw_config)), "compute_suspicion_scores"),
 }
 
 # Jobs that intentionally execute via the PHP bridge while still running under the
@@ -123,39 +88,6 @@ PHP_BRIDGED_JOB_KEYS: set[str] = {
 INVALID_BRIDGED_JOB_KEYS = sorted(job_key for job_key in PHP_BRIDGED_JOB_KEYS if job_key.startswith("compute_"))
 if INVALID_BRIDGED_JOB_KEYS:
     raise RuntimeError(f"Compute jobs must be Python-native and cannot use PHP bridge fallback: {', '.join(INVALID_BRIDGED_JOB_KEYS)}")
-
-
-def _graph_result_shape(result: dict[str, Any], job_key: str) -> dict[str, Any]:
-    rows_seen = max(0, int(result.get("rows_processed") or result.get("rows_seen") or 0))
-    rows_written = max(0, int(result.get("rows_written") or 0))
-    status = str(result.get("status") or "success")
-    summary = str(result.get("summary") or f"{job_key} finished with status {status}.")
-    return {
-        "status": status,
-        "summary": summary,
-        "rows_seen": rows_seen,
-        "rows_written": rows_written,
-        "warnings": list(result.get("warnings") or []),
-        "meta": dict(result.get("meta") or {}),
-    }
-
-
-def _compute_result_shape(result: dict[str, Any], job_key: str) -> dict[str, Any]:
-    status = str(result.get("status") or "success")
-    rows_processed = max(0, int(result.get("rows_processed") or 0))
-    rows_written = max(0, int(result.get("rows_written") or 0))
-    return {
-        "status": status,
-        "summary": str(result.get("summary") or f"{job_key} completed with status {status}."),
-        "rows_processed": rows_processed,
-        "rows_written": rows_written,
-        "warnings": list(result.get("warnings") or []),
-        "meta": {
-            "job_name": job_key,
-            "computed_at": str(result.get("computed_at") or ""),
-            "result": dict(result),
-        },
-    }
 
 
 def parse_args() -> argparse.Namespace:
@@ -245,7 +177,10 @@ def process_job(context: PythonWorkerContext) -> dict[str, Any]:
         else:
             result = _run_php_fallback(context, bridge)
     else:
-        result = processor(context)
+        if context.job_key in PYTHON_COMPUTE_PROCESSOR_JOB_KEYS:
+            result = run_compute_processor(context.job_key, context.db, context.raw_config)
+        else:
+            result = processor(context)
 
     result.setdefault("duration_ms", int((time.time() - start) * 1000))
     result.setdefault("started_at", utc_now_iso())
@@ -258,6 +193,9 @@ def main() -> int:
     app_root = Path(args.app_root).resolve()
     config = load_php_runtime_config(app_root)
     db = SupplyCoreDb(config.raw.get("db", {}))
+    audit = audit_enabled_python_jobs(db)
+    if audit["issues"]:
+        raise RuntimeError("Enabled Python job binding audit failed: " + "; ".join(audit["issues"]))
     job = _fetch_claimed_job(db, max(0, args.schedule_id))
     context = PythonWorkerContext(
         schedule_id=max(0, args.schedule_id),
