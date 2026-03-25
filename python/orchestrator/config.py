@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import shlex
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -119,6 +120,36 @@ def _load_dotenv_defaults(app_root: Path) -> None:
         os.environ.setdefault(key, parsed[0] if parsed else "")
 
 
+def _load_live_php_runtime_config(app_root: Path) -> dict[str, Any]:
+    script_path = app_root / "bin/orchestrator_config.php"
+    if not script_path.is_file():
+        return {}
+
+    php_binary = os.getenv("PHP_BINARY", "php").strip() or "php"
+    try:
+        completed = subprocess.run(
+            [php_binary, str(script_path)],
+            cwd=str(app_root),
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except Exception:
+        return {}
+
+    payload = (completed.stdout or "").strip()
+    if payload == "":
+        return {}
+
+    try:
+        decoded = json.loads(payload)
+    except Exception:
+        return {}
+
+    return decoded if isinstance(decoded, dict) else {}
+
+
 def load_php_runtime_config(app_root: Path) -> OrchestratorConfig:
     app_root = app_root.resolve()
     _load_dotenv_defaults(app_root)
@@ -129,6 +160,10 @@ def load_php_runtime_config(app_root: Path) -> OrchestratorConfig:
             raw = json.loads(runtime_file.read_text(encoding="utf-8"))
         except Exception:
             raw = {}
+    if not isinstance(raw, dict):
+        raw = {}
+
+    live_raw = _load_live_php_runtime_config(app_root)
 
     defaults = {
         "app": {"name": "SupplyCore", "env": os.getenv("APP_ENV", "development"), "timezone": os.getenv("APP_TIMEZONE", "UTC")},
@@ -178,7 +213,11 @@ def load_php_runtime_config(app_root: Path) -> OrchestratorConfig:
         },
     }
 
-    merged = defaults | raw
+    merged = defaults | raw | live_raw
     for key in ("app", "db", "neo4j", "influx", "battle_intelligence", "paths", "orchestrator", "scheduler", "workers"):
-        merged[key] = {**defaults.get(key, {}), **(raw.get(key, {}) if isinstance(raw.get(key), dict) else {})}
+        merged[key] = {
+            **defaults.get(key, {}),
+            **(raw.get(key, {}) if isinstance(raw.get(key), dict) else {}),
+            **(live_raw.get(key, {}) if isinstance(live_raw.get(key), dict) else {}),
+        }
     return OrchestratorConfig(raw=merged)
