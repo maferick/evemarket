@@ -32,6 +32,11 @@ Preserve a modular, production-oriented PHP architecture for EveMarket. Favor ma
    - UI should stay clean, minimal, and shadcn/ui-inspired.
    - Use Tailwind utility patterns consistently.
 
+7. **Worker mode consistency.**
+   - Compute workers must use the standard Python worker-pool units.
+   - Do not reintroduce dedicated `supplycore-php-compute-worker*` units.
+   - Keep compute workers Python-only and route non-native/fallback jobs to sync workers.
+
 ## Preferred Workflow for Changes
 
 1. Update schema (`database/schema.sql`) if persistence needs change.
