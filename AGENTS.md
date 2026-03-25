@@ -49,6 +49,7 @@ Preserve a modular, production-oriented PHP architecture for EveMarket. Favor ma
    - Normalize runtime dependencies (config, DB access, logger/log sinks, timestamps/metadata) through reusable Python context helpers instead of launcher-specific assumptions.
    - New or changed Python jobs are not complete until parity is validated across worker, scheduler-dispatched, and manual CLI execution paths.
    - Never “fix” Python job execution failures by routing the job through PHP when the target architecture is Python-only.
+   - Runtime safety audit is mandatory: enabled `execution_mode='python'` compute jobs must have a worker-pool processor binding and must not depend on scheduler-only PHP handlers.
 
 ## Preferred Workflow for Changes
 

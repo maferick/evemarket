@@ -8,33 +8,15 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 import pymysql
 
 from .config import load_php_runtime_config
 from .db import SupplyCoreDb
-from .job_context import battle_runtime, influx_runtime, neo4j_runtime
-from .jobs import (
-    run_compute_battle_actor_features,
-    run_compute_battle_anomalies,
-    run_compute_battle_rollups,
-    run_compute_battle_target_metrics,
-    run_compute_behavioral_baselines,
-    run_compute_buy_all,
-    run_compute_graph_derived_relationships,
-    run_compute_graph_insights,
-    run_compute_graph_prune,
-    run_compute_graph_sync,
-    run_compute_graph_sync_battle_intelligence,
-    run_compute_graph_sync_doctrine_dependency,
-    run_compute_graph_topology_metrics,
-    run_compute_signals,
-    run_compute_suspicion_scores,
-    run_compute_suspicion_scores_v2,
-)
 from .json_utils import json_dumps_safe, make_json_safe
 from .logging_utils import LoggerAdapter, configure_logging
+from .processor_registry import audit_enabled_python_jobs, run_compute_processor
 from .worker_registry import WORKER_JOB_DEFINITIONS
 from .worker_runtime import resident_memory_bytes, utc_now_iso
 
@@ -60,49 +42,6 @@ class WorkerPoolContext:
 
     def emit(self, event: str, payload: dict[str, Any]) -> None:
         self.logger.info(event, payload={"event": event, **payload})
-
-
-PROCESSORS: dict[str, Callable[[WorkerPoolContext], dict[str, Any]]] = {
-    "compute_graph_sync": lambda context: _graph_result_shape(run_compute_graph_sync(context.db, neo4j_runtime(context.raw_config)), "compute_graph_sync"),
-    "compute_graph_sync_doctrine_dependency": lambda context: _graph_result_shape(run_compute_graph_sync_doctrine_dependency(context.db, neo4j_runtime(context.raw_config)), "compute_graph_sync_doctrine_dependency"),
-    "compute_graph_sync_battle_intelligence": lambda context: _graph_result_shape(run_compute_graph_sync_battle_intelligence(context.db, neo4j_runtime(context.raw_config)), "compute_graph_sync_battle_intelligence"),
-    "compute_graph_derived_relationships": lambda context: _graph_result_shape(run_compute_graph_derived_relationships(context.db, neo4j_runtime(context.raw_config)), "compute_graph_derived_relationships"),
-    "compute_graph_insights": lambda context: _graph_result_shape(run_compute_graph_insights(context.db, neo4j_runtime(context.raw_config)), "compute_graph_insights"),
-    "compute_graph_prune": lambda context: _graph_result_shape(run_compute_graph_prune(context.db, neo4j_runtime(context.raw_config)), "compute_graph_prune"),
-    "compute_graph_topology_metrics": lambda context: _graph_result_shape(run_compute_graph_topology_metrics(context.db, neo4j_runtime(context.raw_config)), "compute_graph_topology_metrics"),
-    "compute_behavioral_baselines": lambda context: _compute_result_shape(run_compute_behavioral_baselines(context.db, battle_runtime(context.raw_config)), "compute_behavioral_baselines"),
-    "compute_suspicion_scores_v2": lambda context: _compute_result_shape(run_compute_suspicion_scores_v2(context.db, battle_runtime(context.raw_config)), "compute_suspicion_scores_v2"),
-    "compute_buy_all": lambda context: _compute_result_shape(run_compute_buy_all(context.db), "compute_buy_all"),
-    "compute_signals": lambda context: _compute_result_shape(run_compute_signals(context.db, influx_runtime(context.raw_config)), "compute_signals"),
-    "compute_battle_rollups": lambda context: _compute_result_shape(run_compute_battle_rollups(context.db, battle_runtime(context.raw_config)), "compute_battle_rollups"),
-    "compute_battle_target_metrics": lambda context: _compute_result_shape(run_compute_battle_target_metrics(context.db, battle_runtime(context.raw_config)), "compute_battle_target_metrics"),
-    "compute_battle_anomalies": lambda context: _compute_result_shape(run_compute_battle_anomalies(context.db, battle_runtime(context.raw_config)), "compute_battle_anomalies"),
-    "compute_battle_actor_features": lambda context: _compute_result_shape(run_compute_battle_actor_features(context.db, neo4j_runtime(context.raw_config), battle_runtime(context.raw_config)), "compute_battle_actor_features"),
-    "compute_suspicion_scores": lambda context: _compute_result_shape(run_compute_suspicion_scores(context.db, battle_runtime(context.raw_config)), "compute_suspicion_scores"),
-}
-
-
-def _graph_result_shape(result: dict[str, Any], job_key: str) -> dict[str, Any]:
-    return {
-        "status": str(result.get("status") or "success"),
-        "summary": str(result.get("summary") or f"{job_key} finished."),
-        "rows_processed": max(0, int(result.get("rows_processed") or result.get("rows_seen") or 0)),
-        "rows_written": max(0, int(result.get("rows_written") or 0)),
-        "warnings": list(result.get("warnings") or []),
-        "meta": dict(result.get("meta") or {}),
-    }
-
-
-def _compute_result_shape(result: dict[str, Any], job_key: str) -> dict[str, Any]:
-    status = str(result.get("status") or "success")
-    return {
-        "status": status,
-        "summary": str(result.get("summary") or f"{job_key} completed with status {status}."),
-        "rows_processed": max(0, int(result.get("rows_processed") or 0)),
-        "rows_written": max(0, int(result.get("rows_written") or 0)),
-        "warnings": list(result.get("warnings") or []),
-        "meta": {"job_name": job_key, "result": dict(result)},
-    }
 
 
 class HeartbeatThread(threading.Thread):
@@ -145,11 +84,8 @@ def _write_state_file(path: Path, payload: dict[str, Any]) -> None:
 
 
 def _process_job(context: WorkerPoolContext) -> dict[str, Any]:
-    processor = PROCESSORS.get(context.job_key)
-    if processor is None:
-        raise RuntimeError(f"No Python processor registered for job {context.job_key}; job is disabled until ported.")
     started = time.monotonic()
-    result = processor(context)
+    result = run_compute_processor(context.job_key, context.db, context.raw_config)
     result.setdefault("duration_ms", int((time.monotonic() - started) * 1000))
     result.setdefault("started_at", utc_now_iso())
     result.setdefault("finished_at", utc_now_iso())
@@ -172,6 +108,11 @@ def main(argv: list[str] | None = None) -> int:
     worker_id = args.worker_id.strip() or f"{socket.gethostname()}-{os.getpid()}"
     state_file = Path(worker_settings.get("pool_state_file", app_root / "storage/run/worker-pool-heartbeat.json"))
     db = SupplyCoreDb(dict(raw_config.get("db") or {}))
+    audit = audit_enabled_python_jobs(db)
+    if audit["issues"]:
+        for issue in audit["issues"]:
+            logger.error("python worker binding audit failure", payload={"event": "worker_pool.binding_audit.failed", "issue": issue})
+        return 1
 
     lease_seconds = max(30, int(worker_settings.get("claim_ttl_seconds", 300)))
     idle_sleep = max(0, int(worker_settings.get("idle_sleep_seconds", 10)))
