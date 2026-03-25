@@ -2011,6 +2011,13 @@ function configured_structure_destination_id_for_esi_sync(): int
     return (int) $configured;
 }
 
+function is_valid_alliance_structure_id(int|string $structureId): bool
+{
+    $normalized = trim((string) $structureId);
+
+    return preg_match('/^[1-9][0-9]{9,19}$/', $normalized) === 1;
+}
+
 function configured_alliance_structure_id(): int
 {
     return configured_structure_destination_id_for_esi_sync();
@@ -3798,7 +3805,7 @@ function scheduler_is_dedicated_worker_job(string $jobKey): bool
 function scheduler_registry_definitions(): array
 {
     return [
-        'market_hub_current_sync' => ['label' => 'Market Hub Current', 'default_interval_minutes' => 8, 'default_offset_minutes' => 0, 'priority' => 'high', 'timeout_seconds' => 240, 'concurrency_policy' => 'single', 'execution_mode' => 'php', 'tuning_mode' => 'automatic', 'explicitly_configured' => true, 'min_interval_minutes' => 1, 'max_interval_minutes' => 8, 'workload_class' => 'lightweight'],
+        'market_hub_current_sync' => ['label' => 'Market Hub Current', 'default_interval_minutes' => 8, 'default_offset_minutes' => 0, 'priority' => 'high', 'timeout_seconds' => 240, 'concurrency_policy' => 'single', 'execution_mode' => 'python', 'tuning_mode' => 'automatic', 'explicitly_configured' => true, 'min_interval_minutes' => 1, 'max_interval_minutes' => 8, 'workload_class' => 'lightweight'],
         'deal_alerts_sync' => ['label' => 'Deal Alerts', 'default_interval_minutes' => 5, 'default_offset_minutes' => 1, 'priority' => 'high', 'timeout_seconds' => 90, 'concurrency_policy' => 'single', 'execution_mode' => 'python', 'tuning_mode' => 'automatic', 'explicitly_configured' => true, 'latency_sensitive' => true, 'user_facing' => true, 'workload_class' => 'lightweight'],
         'alliance_current_sync' => ['label' => 'Alliance Current', 'default_interval_minutes' => 4, 'default_offset_minutes' => 2, 'priority' => 'medium', 'timeout_seconds' => 180, 'concurrency_policy' => 'single', 'execution_mode' => 'python', 'tuning_mode' => 'automatic', 'explicitly_configured' => true, 'workload_class' => 'lightweight'],
         'configured_structure_destination_id_for_esi_sync' => ['label' => 'Configured Structure Destination for ESI', 'default_interval_minutes' => 30, 'default_offset_minutes' => 4, 'priority' => 'normal', 'timeout_seconds' => 120, 'concurrency_policy' => 'single', 'execution_mode' => 'php', 'tuning_mode' => 'automatic', 'explicitly_configured' => false, 'workload_class' => 'lightweight'],
@@ -3812,8 +3819,8 @@ function scheduler_registry_definitions(): array
         'market_hub_local_history_sync' => ['label' => 'Market Hub Local History', 'default_interval_minutes' => 20, 'default_offset_minutes' => 14, 'priority' => 'normal', 'timeout_seconds' => 1800, 'concurrency_policy' => 'background', 'execution_mode' => 'python', 'tuning_mode' => 'automatic', 'explicitly_configured' => true, 'allow_backfill' => true, 'backfill_priority' => 'normal', 'min_backfill_gap_seconds' => 900, 'max_early_start_seconds' => 900, 'workload_class' => 'heavy'],
         'analytics_bucket_1h_sync' => ['label' => 'Analytics Buckets (1h)', 'default_interval_minutes' => 15, 'default_offset_minutes' => 15, 'priority' => 'normal', 'timeout_seconds' => 180, 'concurrency_policy' => 'single', 'execution_mode' => 'php', 'tuning_mode' => 'automatic', 'explicitly_configured' => false, 'allow_backfill' => true, 'backfill_priority' => 'normal', 'min_backfill_gap_seconds' => 600, 'max_early_start_seconds' => 900, 'workload_class' => 'lightweight'],
         'analytics_bucket_1d_sync' => ['label' => 'Analytics Buckets (1d)', 'default_interval_minutes' => 60, 'default_offset_minutes' => 16, 'priority' => 'normal', 'timeout_seconds' => 240, 'concurrency_policy' => 'single', 'execution_mode' => 'php', 'tuning_mode' => 'automatic', 'explicitly_configured' => false, 'workload_class' => 'lightweight'],
-        'alliance_historical_sync' => ['label' => 'Alliance Historical', 'default_interval_minutes' => 360, 'default_offset_minutes' => 5, 'priority' => 'normal', 'timeout_seconds' => 3600, 'concurrency_policy' => 'background', 'execution_mode' => 'php', 'tuning_mode' => 'automatic', 'explicitly_configured' => true, 'workload_class' => 'heavy'],
-        'market_hub_historical_sync' => ['label' => 'Market Hub Historical', 'default_interval_minutes' => 360, 'default_offset_minutes' => 0, 'priority' => 'normal', 'timeout_seconds' => 3600, 'concurrency_policy' => 'background', 'execution_mode' => 'php', 'tuning_mode' => 'automatic', 'explicitly_configured' => true, 'workload_class' => 'heavy'],
+        'alliance_historical_sync' => ['label' => 'Alliance Historical', 'default_interval_minutes' => 360, 'default_offset_minutes' => 5, 'priority' => 'normal', 'timeout_seconds' => 3600, 'concurrency_policy' => 'background', 'execution_mode' => 'python', 'tuning_mode' => 'automatic', 'explicitly_configured' => true, 'workload_class' => 'heavy'],
+        'market_hub_historical_sync' => ['label' => 'Market Hub Historical', 'default_interval_minutes' => 360, 'default_offset_minutes' => 0, 'priority' => 'normal', 'timeout_seconds' => 3600, 'concurrency_policy' => 'background', 'execution_mode' => 'python', 'tuning_mode' => 'automatic', 'explicitly_configured' => true, 'workload_class' => 'heavy'],
         'forecasting_ai_sync' => ['label' => 'Forecasting AI', 'default_interval_minutes' => 60, 'default_offset_minutes' => 0, 'priority' => 'normal', 'timeout_seconds' => 300, 'concurrency_policy' => 'background', 'execution_mode' => 'php', 'tuning_mode' => 'automatic', 'explicitly_configured' => true, 'workload_class' => 'lightweight'],
     ];
 }
@@ -11707,8 +11714,8 @@ function scheduler_job_definitions(): array
             'lock_ttl_seconds' => 300,
             'handler' => static function (): array {
                 $structureId = configured_structure_destination_id_for_esi_sync();
-                if ($structureId <= 0) {
-                    throw new RuntimeException('Alliance current sync skipped: choose an alliance structure destination (NPC stations are not eligible for structure sync).');
+                if (!is_valid_alliance_structure_id($structureId)) {
+                    throw new RuntimeException('Alliance current sync skipped: choose a valid alliance-owned structure destination (NPC stations/regions are not eligible for structure sync).');
                 }
 
                 return sync_alliance_structure_orders($structureId, 'incremental');
@@ -11720,8 +11727,8 @@ function scheduler_job_definitions(): array
             'execution' => 'background',
             'handler' => static function (): array {
                 $structureId = configured_structure_destination_id_for_esi_sync();
-                if ($structureId <= 0) {
-                    throw new RuntimeException('Alliance history sync skipped: choose an alliance structure destination (NPC stations are not eligible for structure sync).');
+                if (!is_valid_alliance_structure_id($structureId)) {
+                    throw new RuntimeException('Alliance history sync skipped: choose a valid alliance-owned structure destination (NPC stations/regions are not eligible for structure sync).');
                 }
 
                 return sync_alliance_market_history($structureId, 'full');
@@ -15416,8 +15423,8 @@ function sync_alliance_structure_orders(int $structureId, string $runMode = 'inc
     $datasetKeyCurrent = sync_dataset_key_alliance_structure_orders_current($structureId);
     $datasetKeyHistory = sync_dataset_key_alliance_structure_orders_history($structureId);
 
-    if ($structureId <= 0) {
-        $result['warnings'][] = 'Invalid alliance structure id.';
+    if (!is_valid_alliance_structure_id($structureId)) {
+        $result['warnings'][] = 'Invalid alliance structure id. Configure an alliance-owned Upwell structure ID (not an NPC station/region) and ensure ESI login is active.';
 
         return $result;
     }
@@ -16113,11 +16120,11 @@ function sync_market_history_from_snapshots(
 
 function sync_alliance_market_history(int $structureId, string $runMode = 'incremental', ?int $windowDays = null): array
 {
-    if ($structureId <= 0) {
+    if (!is_valid_alliance_structure_id($structureId)) {
         return [
             'rows_seen' => 0,
             'rows_written' => 0,
-            'warnings' => ['Alliance history sync skipped: choose an alliance structure destination first.'],
+            'warnings' => ['Alliance history sync skipped: choose a valid alliance-owned structure destination (not NPC station/region) first.'],
             'meta' => [],
             'cursor' => null,
             'checksum' => null,
