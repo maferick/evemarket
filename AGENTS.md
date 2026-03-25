@@ -50,6 +50,7 @@ Preserve a modular, production-oriented PHP architecture for EveMarket. Favor ma
    - New or changed Python jobs are not complete until parity is validated across worker, scheduler-dispatched, and manual CLI execution paths.
    - Never “fix” Python job execution failures by routing the job through PHP when the target architecture is Python-only.
    - Runtime safety audit is mandatory: enabled `execution_mode='python'` compute jobs must have a worker-pool processor binding and must not depend on scheduler-only PHP handlers.
+   - Python jobs must never be represented in `scheduler_job_definitions()` as PHP executable handler closures that throw "must run in the Python scheduler runtime"; keep them metadata-only in PHP and executable only via Python runtimes.
 
 9. **Authoritative job inventory (required).**
    - Treat `supplycore_authoritative_job_registry()` in `src/functions.php` as the canonical job inventory.

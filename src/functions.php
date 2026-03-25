@@ -12005,294 +12005,188 @@ function scheduler_job_definitions(): array
         'alliance_current_sync' => [
             'timeout_seconds' => 180,
             'lock_ttl_seconds' => 300,
-            'handler' => static function (): array {
-                $structureId = configured_structure_destination_id_for_esi_sync();
-                if (!is_valid_alliance_structure_id($structureId)) {
-                    throw new RuntimeException('Alliance current sync skipped: choose a valid alliance-owned structure destination (NPC stations/regions are not eligible for structure sync).');
-                }
-
-                return sync_alliance_structure_orders($structureId, 'incremental');
-            },
+            'execution_mode' => 'python',
         ],
         'alliance_historical_sync' => [
             'timeout_seconds' => 3600,
             'lock_ttl_seconds' => 3900,
             'execution' => 'background',
-            'handler' => static function (): array {
-                $structureId = configured_structure_destination_id_for_esi_sync();
-                if (!is_valid_alliance_structure_id($structureId)) {
-                    throw new RuntimeException('Alliance history sync skipped: choose a valid alliance-owned structure destination (NPC stations/regions are not eligible for structure sync).');
-                }
-
-                return sync_alliance_market_history($structureId, 'full');
-            },
+            'execution_mode' => 'python',
         ],
         'market_hub_historical_sync' => [
             'timeout_seconds' => 3600,
             'lock_ttl_seconds' => 3900,
             'execution' => 'background',
-            'handler' => static function (): array {
-                $hubRef = market_hub_setting_reference();
-                if ($hubRef === '') {
-                    throw new RuntimeException('Hub history sync skipped: configure a market hub/station first.');
-                }
-
-                return sync_market_hub_history($hubRef, 'full');
-            },
+            'execution_mode' => 'python',
         ],
         'market_hub_local_history_sync' => [
             'timeout_seconds' => 1800,
             'lock_ttl_seconds' => 1860,
             'execution' => 'background',
-            'handler' => static function (): array {
-                $hubRef = market_hub_setting_reference();
-                if ($hubRef === '') {
-                    throw new RuntimeException('Hub snapshot history sync skipped: configure a market hub/station first.');
-                }
-
-                return sync_market_hub_local_history($hubRef, 'incremental');
-            },
+            'execution_mode' => 'python',
         ],
         'market_hub_current_sync' => [
             'timeout_seconds' => 240,
             'lock_ttl_seconds' => 360,
-            'handler' => static function (): array {
-                $hubRef = market_hub_setting_reference();
-                if ($hubRef === '') {
-                    throw new RuntimeException('Hub current sync skipped: configure a market hub/station first.');
-                }
-
-                return sync_market_hub_current_orders($hubRef, 'incremental');
-            },
+            'execution_mode' => 'python',
         ],
         'current_state_refresh_sync' => [
             'timeout_seconds' => 120,
             'lock_ttl_seconds' => 180,
-            'handler' => static function (): array {
-                return supplycore_refresh_current_state_cache('scheduler');
-            },
+            'execution_mode' => 'python',
         ],
         'deal_alerts_sync' => [
             'timeout_seconds' => 90,
             'lock_ttl_seconds' => 180,
-            'handler' => static function (): array {
-                return deal_alert_refresh_job_result('scheduler');
-            },
+            'execution_mode' => 'python',
         ],
         'doctrine_intelligence_sync' => [
             'timeout_seconds' => 180,
             'lock_ttl_seconds' => 300,
-            'handler' => static function (): array {
-                return doctrine_refresh_intelligence_job_result('scheduler');
-            },
+            'execution_mode' => 'python',
         ],
         'market_comparison_summary_sync' => [
             'timeout_seconds' => 180,
             'lock_ttl_seconds' => 300,
-            'handler' => static function (): array {
-                return market_comparison_refresh_summary_job_result('scheduler');
-            },
+            'execution_mode' => 'python',
         ],
         'loss_demand_summary_sync' => [
             'timeout_seconds' => 180,
             'lock_ttl_seconds' => 300,
-            'handler' => static function (): array {
-                return loss_demand_refresh_summary_job_result('scheduler');
-            },
+            'execution_mode' => 'python',
         ],
         'dashboard_summary_sync' => [
             'timeout_seconds' => 180,
             'lock_ttl_seconds' => 300,
-            'handler' => static function (): array {
-                return dashboard_refresh_summary_job_result('scheduler');
-            },
+            'execution_mode' => 'python',
         ],
         'activity_priority_summary_sync' => [
             'timeout_seconds' => 180,
             'lock_ttl_seconds' => 300,
-            'handler' => static function (): array {
-                return activity_priority_refresh_summary_job_result('scheduler');
-            },
+            'execution_mode' => 'python',
         ],
         'analytics_bucket_1h_sync' => [
             'timeout_seconds' => 180,
             'lock_ttl_seconds' => 300,
-            'handler' => static function (): array {
-                return analytics_bucket_refresh_job_result('1h', 'scheduler');
-            },
+            'execution_mode' => 'python',
         ],
         'analytics_bucket_1d_sync' => [
             'timeout_seconds' => 240,
             'lock_ttl_seconds' => 360,
-            'handler' => static function (): array {
-                return analytics_bucket_refresh_job_result('1d', 'scheduler');
-            },
+            'execution_mode' => 'python',
         ],
         'rebuild_ai_briefings' => [
             'timeout_seconds' => 300,
             'lock_ttl_seconds' => 360,
             'execution' => 'background',
-            'handler' => static function (): array {
-                $runningHistoryJobs = scheduler_ai_briefing_running_history_jobs();
-                if ($runningHistoryJobs !== []) {
-                    return sync_result_shape() + [
-                        'warnings' => ['AI briefing rebuild deferred while history sync is running.'],
-                        'meta' => [
-                            'outcome_reason' => 'Doctrine AI briefings were deferred because a history sync job is still running.',
-                            'blocking_jobs' => $runningHistoryJobs,
-                        ],
-                    ];
-                }
-
-                return rebuild_ai_briefings_job_result('scheduler');
-            },
+            'execution_mode' => 'python',
         ],
         'forecasting_ai_sync' => [
             'timeout_seconds' => 300,
             'lock_ttl_seconds' => 360,
             'execution' => 'background',
-            'handler' => static function (): array {
-                return supplycore_refresh_forecasting_snapshot_job_result('scheduler');
-            },
+            'execution_mode' => 'python',
         ],
         'compute_graph_sync' => [
             'timeout_seconds' => 300,
             'lock_ttl_seconds' => 360,
             'execution' => 'background',
-            'handler' => static function (): array {
-                throw new RuntimeException('compute_graph_sync must run in the Python scheduler runtime.');
-            },
+            'execution_mode' => 'python',
         ],
         'compute_graph_sync_doctrine_dependency' => [
             'timeout_seconds' => 420,
             'lock_ttl_seconds' => 480,
             'execution' => 'background',
-            'handler' => static function (): array {
-                throw new RuntimeException('compute_graph_sync_doctrine_dependency must run in the Python scheduler runtime.');
-            },
+            'execution_mode' => 'python',
         ],
         'compute_graph_sync_battle_intelligence' => [
             'timeout_seconds' => 420,
             'lock_ttl_seconds' => 480,
             'execution' => 'background',
-            'handler' => static function (): array {
-                throw new RuntimeException('compute_graph_sync_battle_intelligence must run in the Python scheduler runtime.');
-            },
+            'execution_mode' => 'python',
         ],
         'compute_graph_derived_relationships' => [
             'timeout_seconds' => 420,
             'lock_ttl_seconds' => 480,
             'execution' => 'background',
-            'handler' => static function (): array {
-                throw new RuntimeException('compute_graph_derived_relationships must run in the Python scheduler runtime.');
-            },
+            'execution_mode' => 'python',
         ],
         'compute_graph_insights' => [
             'timeout_seconds' => 300,
             'lock_ttl_seconds' => 360,
             'execution' => 'background',
-            'handler' => static function (): array {
-                throw new RuntimeException('compute_graph_insights must run in the Python scheduler runtime.');
-            },
+            'execution_mode' => 'python',
         ],
         'compute_graph_prune' => [
             'timeout_seconds' => 420,
             'lock_ttl_seconds' => 480,
             'execution' => 'background',
-            'handler' => static function (): array {
-                throw new RuntimeException('compute_graph_prune must run in the Python scheduler runtime.');
-            },
+            'execution_mode' => 'python',
         ],
         'compute_graph_topology_metrics' => [
             'timeout_seconds' => 420,
             'lock_ttl_seconds' => 480,
             'execution' => 'background',
-            'handler' => static function (): array {
-                throw new RuntimeException('compute_graph_topology_metrics must run in the Python scheduler runtime.');
-            },
+            'execution_mode' => 'python',
         ],
         'compute_behavioral_baselines' => [
             'timeout_seconds' => 420,
             'lock_ttl_seconds' => 480,
             'execution' => 'background',
-            'handler' => static function (): array {
-                throw new RuntimeException('compute_behavioral_baselines must run in the Python scheduler runtime.');
-            },
+            'execution_mode' => 'python',
         ],
         'compute_suspicion_scores_v2' => [
             'timeout_seconds' => 420,
             'lock_ttl_seconds' => 480,
             'execution' => 'background',
-            'handler' => static function (): array {
-                throw new RuntimeException('compute_suspicion_scores_v2 must run in the Python scheduler runtime.');
-            },
+            'execution_mode' => 'python',
         ],
         'compute_buy_all' => [
             'timeout_seconds' => 420,
             'lock_ttl_seconds' => 480,
             'execution' => 'background',
-            'handler' => static function (): array {
-                throw new RuntimeException('compute_buy_all must run in the Python scheduler runtime.');
-            },
+            'execution_mode' => 'python',
         ],
         'compute_signals' => [
             'timeout_seconds' => 300,
             'lock_ttl_seconds' => 360,
             'execution' => 'background',
-            'handler' => static function (): array {
-                throw new RuntimeException('compute_signals must run in the Python scheduler runtime.');
-            },
+            'execution_mode' => 'python',
         ],
         'compute_battle_rollups' => [
             'timeout_seconds' => 420,
             'lock_ttl_seconds' => 480,
             'execution' => 'background',
-            'handler' => static function (): array {
-                throw new RuntimeException('compute_battle_rollups must run in the Python scheduler runtime.');
-            },
+            'execution_mode' => 'python',
         ],
         'compute_battle_target_metrics' => [
             'timeout_seconds' => 420,
             'lock_ttl_seconds' => 480,
             'execution' => 'background',
-            'handler' => static function (): array {
-                throw new RuntimeException('compute_battle_target_metrics must run in the Python scheduler runtime.');
-            },
+            'execution_mode' => 'python',
         ],
         'compute_battle_anomalies' => [
             'timeout_seconds' => 420,
             'lock_ttl_seconds' => 480,
             'execution' => 'background',
-            'handler' => static function (): array {
-                throw new RuntimeException('compute_battle_anomalies must run in the Python scheduler runtime.');
-            },
+            'execution_mode' => 'python',
         ],
         'compute_battle_actor_features' => [
             'timeout_seconds' => 420,
             'lock_ttl_seconds' => 480,
             'execution' => 'background',
-            'handler' => static function (): array {
-                throw new RuntimeException('compute_battle_actor_features must run in the Python scheduler runtime.');
-            },
+            'execution_mode' => 'python',
         ],
         'compute_suspicion_scores' => [
             'timeout_seconds' => 420,
             'lock_ttl_seconds' => 480,
             'execution' => 'background',
-            'handler' => static function (): array {
-                throw new RuntimeException('compute_suspicion_scores must run in the Python scheduler runtime.');
-            },
+            'execution_mode' => 'python',
         ],
         'killmail_r2z2_sync' => [
             'timeout_seconds' => 180,
             'lock_ttl_seconds' => 300,
-            'handler' => static function (): array {
-                if (!killmail_ingestion_enabled()) {
-                    return sync_result_shape() + ['warnings' => ['Killmail ingestion disabled in settings.']];
-                }
-
-                return sync_killmail_r2z2_stream('incremental');
-            },
+            'execution_mode' => 'python',
         ],
     ];
 }
@@ -13266,7 +13160,6 @@ function scheduler_run_job(array $job): array
     $scheduledFor = (string) ($job['next_due_at'] ?? $job['next_run_at'] ?? '');
     $startedAtUnix = microtime(true);
     $startedAtIso = gmdate(DATE_ATOM, (int) $startedAtUnix);
-    $runId = db_sync_run_start($datasetKey, 'incremental', null);
     $latenessSeconds = $scheduledFor !== '' ? max(0, time() - (int) strtotime($scheduledFor)) : 0;
     $claimStartedAt = trim((string) ($job['last_started_at'] ?? ''));
     $claimStartedTs = $claimStartedAt !== '' ? (int) strtotime($claimStartedAt) : time();
@@ -13281,6 +13174,44 @@ function scheduler_run_job(array $job): array
     $statusRow = $jobKey !== '' ? (db_scheduler_job_current_status_fetch_map([$jobKey])[$jobKey] ?? []) : [];
     $changeDecision = scheduler_evaluate_change_aware_run($job, $statusRow);
     $dependencyMetadata = scheduler_dependency_metadata($jobKey);
+
+    if ($executionMode === 'python') {
+        $message = scheduler_normalize_error_message(
+            'Routing/config error: Python-native job "' . ($jobKey !== '' ? $jobKey : '[empty]') . '" cannot execute through scheduler_run_job PHP handler path; dispatch it through the Python scheduler runtime.'
+        );
+        mark_sync_failure($datasetKey, 'incremental', $message);
+        if ($scheduleId > 0) {
+            db_sync_schedule_mark_failure($scheduleId, $message, scheduler_job_runtime_snapshot($jobKey, 'failed'));
+        }
+        db_scheduler_job_event_insert($jobKey, 'routing_error', [
+            'error' => $message,
+            'execution_mode' => $executionMode,
+            'expected_runtime' => 'python',
+            'actual_runtime' => 'php',
+        ], $latenessSeconds, 0.0);
+
+        return [
+            'job_id' => $scheduleId,
+            'job_key' => $jobKey,
+            'job_type' => $jobType,
+            'scheduled_for' => $scheduledFor,
+            'started_at' => $startedAtIso,
+            'finished_at' => gmdate(DATE_ATOM),
+            'duration_ms' => (int) round((microtime(true) - $startedAtUnix) * 1000),
+            'status' => 'failed',
+            'error' => $message,
+            'rows_seen' => 0,
+            'rows_written' => 0,
+            'warnings' => [],
+            'meta' => [
+                'execution_mode' => $executionMode,
+                'routing_error' => true,
+            ],
+            'summary' => $message,
+        ];
+    }
+
+    $runId = db_sync_run_start($datasetKey, 'incremental', null);
 
     if ($definition === null || !isset($definition['handler']) || !is_callable($definition['handler'])) {
         $message = scheduler_normalize_error_message('Unknown scheduler job key: ' . ($jobKey !== '' ? $jobKey : '[empty]') . '.');
