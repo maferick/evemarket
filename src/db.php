@@ -13656,6 +13656,14 @@ function db_worker_job_claim_diagnostics(array $queues = [], array $workloadClas
 
     $filters = db_worker_job_filter_fragments($queues, $workloadClasses, $executionModes);
     $whereFiltered = $filters['conditions'] === [] ? '' : (' AND ' . implode(' AND ', $filters['conditions']));
+    $filteredParams = [];
+    if ($whereFiltered !== '') {
+        // The filtered predicate is used in four SELECT expressions below, so
+        // repeat the bound values in the same order for each expression.
+        for ($i = 0; $i < 4; $i++) {
+            array_push($filteredParams, ...$filters['params']);
+        }
+    }
 
     $counts = db_select_one(
         "SELECT
@@ -13665,7 +13673,7 @@ function db_worker_job_claim_diagnostics(array $queues = [], array $workloadClas
             SUM(CASE WHEN status = 'running' {$whereFiltered} THEN 1 ELSE 0 END) AS running_filtered,
             MIN(CASE WHEN status IN ('queued', 'retry') {$whereFiltered} THEN available_at ELSE NULL END) AS next_available_filtered
          FROM worker_jobs",
-        $filters['params']
+        $filteredParams
     );
 
     $readyAll = max(0, (int) (($counts['ready_all'] ?? 0)));
