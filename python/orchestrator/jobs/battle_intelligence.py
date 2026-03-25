@@ -1006,6 +1006,7 @@ def run_compute_suspicion_scores(db: SupplyCoreDb, runtime: dict[str, Any] | Non
                     "role_weight": role_weight,
                     "supporting_battle_count": eligible_battle_count,
                     "top_supporting_battles_json": json_dumps_safe(support_battles),
+                    "top_graph_neighbors_json": json_dumps_safe([]),
                     "explanation_json": json_dumps_safe(explanation),
                 }
             )
@@ -1054,8 +1055,9 @@ def run_compute_suspicion_scores(db: SupplyCoreDb, runtime: dict[str, Any] | Non
                     INSERT INTO character_suspicion_scores (
                         character_id, suspicion_score, percentile_rank, high_sustain_frequency,
                         low_sustain_frequency, cross_side_rate, enemy_efficiency_uplift, role_weight,
-                        supporting_battle_count, top_supporting_battles_json, explanation_json, computed_at
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        supporting_battle_count, top_supporting_battles_json, top_graph_neighbors_json,
+                        explanation_json, computed_at
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     """,
                     (
                         int(row["character_id"]),
@@ -1068,6 +1070,7 @@ def run_compute_suspicion_scores(db: SupplyCoreDb, runtime: dict[str, Any] | Non
                         float(row["role_weight"]),
                         int(row["supporting_battle_count"]),
                         str(row["top_supporting_battles_json"]),
+                        str(row["top_graph_neighbors_json"]),
                         str(row["explanation_json"]),
                         computed_at,
                     ),

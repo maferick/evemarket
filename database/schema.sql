@@ -100,6 +100,7 @@ CREATE TABLE IF NOT EXISTS graph_sync_state (
 
 CREATE TABLE IF NOT EXISTS doctrine_dependency_depth (
     doctrine_id BIGINT UNSIGNED PRIMARY KEY,
+    doctrine_name VARCHAR(191) NOT NULL DEFAULT '',
     fit_count INT UNSIGNED NOT NULL DEFAULT 0,
     item_count INT UNSIGNED NOT NULL DEFAULT 0,
     unique_item_count INT UNSIGNED NOT NULL DEFAULT 0,
