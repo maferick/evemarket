@@ -12,6 +12,8 @@ from .bridge import PhpBridge
 from .config import load_php_runtime_config
 from .db import SupplyCoreDb
 from .jobs import (
+    run_compute_buy_all,
+    run_compute_signals,
     run_compute_graph_insights,
     run_compute_graph_sync,
     run_killmail_r2z2_stream,
@@ -52,7 +54,7 @@ class PythonWorkerContext:
 
     @property
     def job_key(self) -> str:
-        return str(self.job.get("job_key", ""))
+        return str(self.job.get("job_key", "")).strip()
 
     def emit(self, event: str, payload: dict[str, Any]) -> None:
         emit(event, payload)
@@ -70,6 +72,14 @@ PROCESSORS: dict[str, Callable[[PythonWorkerContext], dict[str, Any]]] = {
         run_compute_graph_insights(context.db, dict(context.raw_config.get("neo4j") or {})),
         "compute_graph_insights",
     ),
+    "compute_buy_all": lambda context: _compute_result_shape(
+        run_compute_buy_all(context.db),
+        "compute_buy_all",
+    ),
+    "compute_signals": lambda context: _compute_result_shape(
+        run_compute_signals(context.db, dict(context.raw_config.get("influx") or {})),
+        "compute_signals",
+    ),
 }
 
 
@@ -85,6 +95,22 @@ def _graph_result_shape(result: dict[str, Any], job_key: str) -> dict[str, Any]:
         "rows_written": rows_written,
         "warnings": list(result.get("warnings") or []),
         "meta": dict(result.get("meta") or {}),
+    }
+
+
+def _compute_result_shape(result: dict[str, Any], job_key: str) -> dict[str, Any]:
+    rows_processed = max(0, int(result.get("rows_processed") or 0))
+    rows_written = max(0, int(result.get("rows_written") or 0))
+    return {
+        "status": "success",
+        "summary": f"{job_key} completed successfully.",
+        "rows_processed": rows_processed,
+        "rows_written": rows_written,
+        "meta": {
+            "job_name": job_key,
+            "computed_at": str(result.get("computed_at") or ""),
+            "result": dict(result),
+        },
     }
 
 

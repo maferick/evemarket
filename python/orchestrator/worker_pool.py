@@ -47,7 +47,7 @@ class WorkerPoolContext:
 
     @property
     def job_key(self) -> str:
-        return str(self.job.get("job_key") or "")
+        return str(self.job.get("job_key") or "").strip()
 
     @property
     def db_config(self) -> dict[str, Any]:
