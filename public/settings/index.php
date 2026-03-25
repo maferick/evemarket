@@ -20,6 +20,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $saveMessage = null;
 
     switch ($submittedSection) {
+        case 'runtime-config':
+            $saved = save_settings(runtime_config_settings_from_request($_POST));
+            if ($saved) {
+                supplycore_runtime_config_refresh();
+            }
+            break;
+
         case 'general':
             $saved = save_settings([
                 'app_name' => sanitize_app_name((string) ($_POST['app_name'] ?? app_name())),
@@ -245,6 +252,8 @@ $settingValues = get_settings([
 
 $dataSyncSettingValues = data_sync_pipeline_settings_view($settingValues);
 $dealAlertSettingValues = deal_alert_settings_view($settingValues);
+$runtimeConfigSections = runtime_config_sections_for_ui();
+$bootstrapDbConfig = (array) (supplycore_base_config()['db'] ?? []);
 
 $dbStatus = db_connection_status();
 $latestEsiToken = null;
@@ -388,7 +397,52 @@ include __DIR__ . '/../../src/views/partials/header.php';
             </div>
         <?php endif; ?>
 
-        <?php if ($section === 'general'): ?>
+        <?php if ($section === 'runtime-config'): ?>
+            <div class="mt-6 space-y-6">
+                <section class="rounded-2xl border border-border bg-black/20 p-4">
+                    <p class="text-sm font-semibold text-slate-100">Database connection (env-only)</p>
+                    <p class="mt-1 text-sm text-muted">These values are loaded from <code>.env</code>/<code>getenv()</code> and are never saved from this UI.</p>
+                    <div class="mt-4 grid gap-3 md:grid-cols-2">
+                        <p class="text-sm text-slate-200">Host: <span class="font-mono text-slate-100"><?= htmlspecialchars((string) ($bootstrapDbConfig['host'] ?? ''), ENT_QUOTES) ?></span></p>
+                        <p class="text-sm text-slate-200">Port: <span class="font-mono text-slate-100"><?= htmlspecialchars((string) ($bootstrapDbConfig['port'] ?? ''), ENT_QUOTES) ?></span></p>
+                        <p class="text-sm text-slate-200">Database: <span class="font-mono text-slate-100"><?= htmlspecialchars((string) ($bootstrapDbConfig['database'] ?? ''), ENT_QUOTES) ?></span></p>
+                        <p class="text-sm text-slate-200">Username: <span class="font-mono text-slate-100"><?= htmlspecialchars((string) ($bootstrapDbConfig['username'] ?? ''), ENT_QUOTES) ?></span></p>
+                        <p class="text-sm text-slate-200">Socket: <span class="font-mono text-slate-100"><?= htmlspecialchars((string) ($bootstrapDbConfig['socket'] ?? ''), ENT_QUOTES) ?></span></p>
+                        <p class="text-sm text-slate-200">Password configured: <span class="font-mono text-slate-100"><?= ((string) ($bootstrapDbConfig['password'] ?? '')) !== '' ? 'yes' : 'no' ?></span></p>
+                    </div>
+                </section>
+
+                <form method="post" class="space-y-6">
+                    <input type="hidden" name="_token" value="<?= htmlspecialchars(csrf_token(), ENT_QUOTES) ?>">
+                    <input type="hidden" name="section" value="runtime-config">
+                    <?php foreach ($runtimeConfigSections as $registrySectionKey => $registrySection): ?>
+                        <?php if ($registrySectionKey === 'db') {
+                            continue;
+                        } ?>
+                        <section class="rounded-2xl border border-border bg-black/20 p-4">
+                            <p class="text-sm font-semibold text-slate-100"><?= htmlspecialchars((string) ($registrySection['title'] ?? $registrySectionKey), ENT_QUOTES) ?></p>
+                            <p class="mt-1 text-xs text-muted"><?= htmlspecialchars((string) ($registrySection['description'] ?? ''), ENT_QUOTES) ?></p>
+                            <div class="mt-4 grid gap-4 md:grid-cols-2">
+                                <?php foreach ((array) ($registrySection['fields'] ?? []) as $path => $field): ?>
+                                    <?php if (($field['editable'] ?? false) !== true) {
+                                        continue;
+                                    } ?>
+                                    <label class="block space-y-2">
+                                        <span class="text-sm text-muted"><?= htmlspecialchars($path, ENT_QUOTES) ?> (<?= htmlspecialchars((string) ($field['type'] ?? 'string'), ENT_QUOTES) ?>)</span>
+                                        <?php if (($field['type'] ?? 'string') === 'bool'): ?>
+                                            <input type="checkbox" name="<?= htmlspecialchars($path, ENT_QUOTES) ?>" value="1" <?= !empty($field['value']) ? 'checked' : '' ?>>
+                                        <?php else: ?>
+                                            <input name="<?= htmlspecialchars($path, ENT_QUOTES) ?>" value="<?= htmlspecialchars((string) ($field['value'] ?? ''), ENT_QUOTES) ?>" class="w-full field-input" />
+                                        <?php endif; ?>
+                                    </label>
+                                <?php endforeach; ?>
+                            </div>
+                        </section>
+                    <?php endforeach; ?>
+                    <button class="btn-primary">Save runtime settings</button>
+                </form>
+            </div>
+        <?php elseif ($section === 'general'): ?>
             <?php
             $businessConfigCards = [
                 ['href' => '/settings?section=trading-stations', 'title' => 'Trading stations', 'copy' => 'Reference hub and alliance destination used by market, doctrine, and buy-all workflows.'],

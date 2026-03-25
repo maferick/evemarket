@@ -272,6 +272,7 @@ function nav_items(): array
 function setting_sections(): array
 {
     return [
+        'runtime-config' => ['title' => 'Runtime Config', 'description' => 'Authoritative runtime configuration stored in app_settings and merged over app.php defaults.'],
         'general' => ['title' => 'General Settings', 'description' => 'Core application behavior and preferences.'],
         'trading-stations' => ['title' => 'Trading Stations', 'description' => 'Configure your reference market hub and operational trading destination.'],
         'item-scope' => ['title' => 'Item Scope', 'description' => 'Control which item classes are operationally relevant across market, doctrine, and loss-demand analytics.'],
@@ -281,6 +282,104 @@ function setting_sections(): array
         'deal-alerts' => ['title' => 'Deal Alerts', 'description' => 'Tune mispriced-listing detection thresholds, popup behavior, and anomaly cadence.'],
         'killmail-intelligence' => ['title' => 'Killmail Intelligence', 'description' => 'Manage zKillboard stream ingestion, tracked entities, and demand prediction foundation.'],
     ];
+}
+
+function runtime_config_registry(): array
+{
+    return supplycore_runtime_settings_registry();
+}
+
+function runtime_config_flat_fields(): array
+{
+    $flat = [];
+    foreach (runtime_config_registry() as $sectionKey => $sectionSpec) {
+        foreach ((array) ($sectionSpec['fields'] ?? []) as $path => $fieldSpec) {
+            $flat[$path] = ['section' => $sectionKey] + (array) $fieldSpec;
+        }
+    }
+
+    return $flat;
+}
+
+function runtime_config_sections_for_ui(): array
+{
+    $effective = supplycore_runtime_config();
+    $flat = runtime_config_flat_fields();
+    $sections = [];
+
+    foreach (runtime_config_registry() as $sectionKey => $sectionSpec) {
+        $fields = [];
+        foreach ((array) ($sectionSpec['fields'] ?? []) as $path => $fieldSpec) {
+            $segments = explode('.', $path, 2);
+            $groupKey = (string) ($segments[0] ?? '');
+            $leafKey = (string) ($segments[1] ?? '');
+            $value = $effective[$groupKey][$leafKey] ?? ($fieldSpec['default'] ?? '');
+            $fields[$path] = (array) $fieldSpec + ['value' => $value];
+        }
+        $sections[$sectionKey] = [
+            'title' => (string) ($sectionSpec['title'] ?? ucfirst(str_replace('_', ' ', $sectionKey))),
+            'description' => (string) ($sectionSpec['description'] ?? ''),
+            'fields' => $fields,
+        ];
+    }
+
+    return $sections;
+}
+
+function runtime_config_settings_from_request(array $request): array
+{
+    $flat = runtime_config_flat_fields();
+    $settings = [];
+
+    foreach ($flat as $path => $spec) {
+        if (($spec['database_backed'] ?? false) !== true || ($spec['editable'] ?? false) !== true) {
+            continue;
+        }
+
+        $type = (string) ($spec['type'] ?? 'string');
+        $input = $request[$path] ?? null;
+        if ($type === 'bool') {
+            $input = isset($request[$path]) ? '1' : '0';
+        }
+        $settings[$path] = (string) supplycore_cast_runtime_config_value($input ?? ($spec['default'] ?? ''), $type);
+    }
+
+    return $settings;
+}
+
+function migrate_local_config_to_app_settings(string $localConfigPath): array
+{
+    if (!is_file($localConfigPath)) {
+        return ['ok' => false, 'message' => 'local.php not found', 'imported' => 0];
+    }
+
+    $loaded = (static function (string $path): mixed {
+        return require $path;
+    })($localConfigPath);
+    if (!is_array($loaded)) {
+        return ['ok' => false, 'message' => 'local.php must return an array', 'imported' => 0];
+    }
+
+    $registry = runtime_config_flat_fields();
+    $toPersist = [];
+    foreach ($registry as $path => $spec) {
+        if (($spec['database_backed'] ?? false) !== true) {
+            continue;
+        }
+
+        [$section, $key] = explode('.', $path, 2);
+        if (!isset($loaded[$section]) || !is_array($loaded[$section]) || !array_key_exists($key, $loaded[$section])) {
+            continue;
+        }
+        $toPersist[$path] = (string) supplycore_cast_runtime_config_value($loaded[$section][$key], (string) ($spec['type'] ?? 'string'));
+    }
+
+    if ($toPersist !== []) {
+        save_settings($toPersist);
+        supplycore_runtime_config_refresh();
+    }
+
+    return ['ok' => true, 'message' => 'Imported local.php runtime values into app_settings.', 'imported' => count($toPersist)];
 }
 
 function active_section(): string

@@ -3,53 +3,12 @@
 declare(strict_types=1);
 
 return [
-    'app' => [
-        'env' => 'production',
-        'base_url' => 'https://supplycore.example.com',
-        'timezone' => 'UTC',
-    ],
-    'db' => [
-        'host' => '127.0.0.1',
-        'port' => 3306,
-        'database' => 'supplycore',
-        'username' => 'supplycore',
-        'password' => 'change-me',
-        'socket' => '', // Optional: set when MySQL is exposed via a local unix socket instead of TCP.
-    ],
-    'redis' => [
-        'enabled' => false,
-        'host' => '127.0.0.1',
-        'port' => 6379,
-        'database' => 0,
-        'password' => '',
-        'prefix' => 'supplycore',
-        'lock_enabled' => true,
-    ],
-    'neo4j' => [
-        'enabled' => false,
-        'url' => 'http://127.0.0.1:7474',
-        'username' => 'neo4j',
-        'password' => 'change-me',
-        'database' => 'neo4j',
-        'timeout_seconds' => 15,
-        'log_file' => 'storage/logs/graph-sync.log',
-    ],
-    'influxdb' => [
-        'enabled' => false,
-        'read_enabled' => false,
-        'url' => 'http://127.0.0.1:8086',
-        'org' => 'supplycore',
-        'bucket' => 'supplycore_rollups',
-        'token' => 'change-me',
-        'timeout_seconds' => 15,
-        'export_batch_size' => 1000,
-        'export_overlap_seconds' => 21600,
-        'export_log_file' => 'storage/logs/influx-rollup-export.log',
-    ],
-    'battle_intelligence' => [
-        'log_file' => 'storage/logs/battle-intelligence.log',
-    ],
-    'scheduler' => [
-        'default_timeout_seconds' => 300,
+    // Legacy migration-only file.
+    // Runtime config is no longer loaded from local.php.
+    // Use .env for DB bootstrap and Settings UI (app_settings table) for runtime values.
+    'runtime_config' => [
+        'app.base_url' => 'https://supplycore.example.com',
+        'redis.enabled' => false,
+        'neo4j.enabled' => false,
     ],
 ];

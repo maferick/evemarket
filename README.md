@@ -44,8 +44,9 @@ src/
   cache.php                 # Redis client + low-level cache/lock primitives
   db.php                    # Config + PDO + query helpers + transactions
   functions.php             # Navigation, settings services, shared helpers
-  config/app.php            # Base app/db config with optional local PHP override
-  config/local.php.example  # Copy to local.php for server-specific secrets/settings
+  config/app.php            # Bootstrap defaults + env-backed DB config
+  config/runtime_settings.php # Runtime settings registry/schema (drives UI + persistence)
+  config/local.php.example  # Legacy example only (not part of runtime override chain)
   views/partials/           # Header / sidebar / footer layout partials
 database/
   schema.sql                # Tables + starter data
@@ -63,42 +64,49 @@ README.md
 
 > Upgrading an existing installation? Apply schema changes before the next sync run so local snapshot history can keep rebuilding cleanly from your stored ESI order snapshots.
 
-2. **Configure the app in PHP (no `.env` file required or expected)**
+2. **Configure bootstrap DB settings in `.env`**
    ```bash
-   cp src/config/local.php.example src/config/local.php
+   cp .env.example .env
    ```
 
-   Then edit `src/config/local.php` and set the values for your server:
+   Then edit `.env` and set database credentials:
    ```bash
-   nano src/config/local.php
+   nano .env
    ```
 
    Minimal example:
-   ```php
-   <?php
-   return [
-       'app' => [
-           'env' => 'development',
-           'base_url' => 'http://localhost:8080',
-           'timezone' => 'UTC',
-       ],
-       'db' => [
-           'host' => '127.0.0.1',
-           'port' => 3306,
-           'database' => 'supplycore',
-           'username' => 'root',
-           'password' => 'secret',
-           'socket' => '', // Optional: set this when MySQL only listens on a local unix socket.
-       ],
-   ];
+   ```dotenv
+   DB_HOST=127.0.0.1
+   DB_PORT=3306
+   DB_DATABASE=supplycore
+   DB_USERNAME=supplycore
+   DB_PASSWORD=StrongPasswordHere
+   DB_SOCKET=
+   APP_ENV=development
    ```
 
    Notes:
-   - `src/config/app.php` loads the repository defaults first.
-   - If `src/config/local.php` exists, it is merged on top of those defaults.
-   - Set `db.socket` (or `DB_SOCKET`) when Apache/PHP should connect through a local MySQL unix socket instead of TCP. SupplyCore now tries configured/default socket paths before falling back to `host` + `port`.
-   - Environment variables still work, but they are optional. For most installs, editing `src/config/local.php` is simpler and matches this repository’s recommended workflow.
-   - Keep `src/config/local.php` out of version control.
+   - DB bootstrap settings are env-only and read-only in Settings UI.
+   - Runtime/application settings are stored in `app_settings` and managed from **Settings → Runtime Config**.
+   - `src/config/app.php` is defaults/bootstrap only.
+   - `src/config/local.php` is no longer used as a runtime override layer.
+
+### Runtime configuration model
+
+- **`.env`**: only bootstrap/infrastructure values required before DB reads (DB connection + optional `APP_ENV`).
+- **Database (`app_settings`)**: authoritative runtime config (app, redis, neo4j, influxdb, scheduler, workers, battle intelligence, orchestrator, rebuild, etc.).
+- **`src/config/app.php`**: defaults/fallbacks + schema bootstrap values.
+- **Settings UI**: authoritative runtime editor; saves to DB only (no config file writes).
+
+### Migrating old `local.php` values
+
+If you previously stored runtime values in `src/config/local.php`, import them once:
+
+```bash
+php bin/migrate_local_config.php
+```
+
+After import, runtime settings are read from `app_settings`; `local.php` is not merged at runtime.
 
 3. **Run with PHP built-in server (dev only)**
    ```bash

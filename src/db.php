@@ -4,11 +4,7 @@ declare(strict_types=1);
 
 function config(string $key = null, mixed $default = null): mixed
 {
-    static $config;
-
-    if ($config === null) {
-        $config = require __DIR__ . '/config/app.php';
-    }
+    $config = supplycore_runtime_config();
 
     if ($key === null) {
         return $config;
@@ -25,6 +21,126 @@ function config(string $key = null, mixed $default = null): mixed
     }
 
     return $value;
+}
+
+function supplycore_base_config(): array
+{
+    static $config = null;
+    if ($config !== null) {
+        return $config;
+    }
+
+    $loaded = require __DIR__ . '/config/app.php';
+    $config = is_array($loaded) ? $loaded : [];
+
+    return $config;
+}
+
+function supplycore_runtime_settings_registry(): array
+{
+    static $registry = null;
+    if ($registry !== null) {
+        return $registry;
+    }
+
+    $loaded = require __DIR__ . '/config/runtime_settings.php';
+    $registry = is_array($loaded) ? $loaded : [];
+
+    return $registry;
+}
+
+function supplycore_cast_runtime_config_value(mixed $value, string $type): mixed
+{
+    return match ($type) {
+        'bool' => in_array(strtolower(trim((string) $value)), ['1', 'true', 'yes', 'on'], true),
+        'int' => (int) $value,
+        'float' => (float) $value,
+        default => (string) $value,
+    };
+}
+
+function &supplycore_runtime_config_cache_ref(): array
+{
+    static $cache = [
+        'db_overrides_loaded' => false,
+        'db_overrides' => [],
+        'runtime_loaded' => false,
+        'runtime' => [],
+    ];
+
+    return $cache;
+}
+
+function supplycore_runtime_config_cache_clear(): void
+{
+    $cache = &supplycore_runtime_config_cache_ref();
+    $cache['db_overrides_loaded'] = false;
+    $cache['db_overrides'] = [];
+    $cache['runtime_loaded'] = false;
+    $cache['runtime'] = [];
+}
+
+function supplycore_runtime_db_overrides(): array
+{
+    $cache = &supplycore_runtime_config_cache_ref();
+    if ($cache['db_overrides_loaded'] === true) {
+        return (array) $cache['db_overrides'];
+    }
+
+    $overrides = [];
+    $registry = supplycore_runtime_settings_registry();
+
+    try {
+        $rows = db_app_settings_all();
+    } catch (Throwable) {
+        return $overrides;
+    }
+
+    foreach ($registry as $section => $sectionSpec) {
+        $fields = (array) ($sectionSpec['fields'] ?? []);
+        foreach ($fields as $path => $fieldSpec) {
+            if (($fieldSpec['database_backed'] ?? false) !== true) {
+                continue;
+            }
+
+            if (!array_key_exists($path, $rows)) {
+                continue;
+            }
+
+            $leafKey = (string) preg_replace('/^[^.]+\./', '', (string) $path);
+            $overrides[$section][$leafKey] = supplycore_cast_runtime_config_value(
+                $rows[$path],
+                (string) ($fieldSpec['type'] ?? 'string')
+            );
+        }
+    }
+
+    $cache['db_overrides_loaded'] = true;
+    $cache['db_overrides'] = $overrides;
+
+    return (array) $cache['db_overrides'];
+}
+
+function supplycore_runtime_config(bool $refresh = false): array
+{
+    if ($refresh) {
+        supplycore_runtime_config_cache_clear();
+    }
+    $cache = &supplycore_runtime_config_cache_ref();
+    if ($cache['runtime_loaded'] === true) {
+        return (array) $cache['runtime'];
+    }
+
+    $base = supplycore_base_config();
+    $cache['runtime'] = array_replace_recursive($base, supplycore_runtime_db_overrides());
+    $cache['runtime_loaded'] = true;
+
+    return (array) $cache['runtime'];
+}
+
+function supplycore_runtime_config_refresh(): void
+{
+    supplycore_runtime_config(true);
 }
 
 function db(): PDO
@@ -219,6 +335,7 @@ function db_app_settings_cache_clear(): void
     $cache = &db_app_settings_cache_ref();
     $cache['loaded'] = false;
     $cache['values'] = [];
+    supplycore_runtime_config_cache_clear();
 }
 
 function db_app_settings_all(): array
@@ -249,6 +366,24 @@ function db_app_setting_get(string $settingKey, mixed $default = null): mixed
     $settings = db_app_settings_all();
 
     return $settings[$settingKey] ?? $default;
+}
+
+function db_app_settings_by_prefix(string $prefix): array
+{
+    $settings = db_app_settings_all();
+    $filtered = [];
+    foreach ($settings as $key => $value) {
+        if (str_starts_with((string) $key, $prefix)) {
+            $filtered[$key] = $value;
+        }
+    }
+
+    return $filtered;
+}
+
+function db_app_setting_set(string $settingKey, string $value): bool
+{
+    return db_app_settings_upsert_many([$settingKey => $value]);
 }
 
 function db_runtime_schema_checks_enabled(): bool
