@@ -4423,8 +4423,18 @@ function scheduler_python_php_fallback_enabled(): bool
 
 function scheduler_job_execution_mode(array $job, ?array $definition = null): string
 {
-    $resolvedDefinition = is_array($definition) ? $definition : (scheduler_registry_definitions()[(string) ($job['job_key'] ?? '')] ?? []);
-    $configured = strtolower(trim((string) ($job['execution_mode'] ?? $resolvedDefinition['execution_mode'] ?? 'php')));
+    $jobKey = trim((string) ($job['job_key'] ?? ''));
+    $resolvedDefinition = is_array($definition) ? $definition : (scheduler_registry_definitions()[$jobKey] ?? []);
+    $definitionMode = strtolower(trim((string) ($resolvedDefinition['execution_mode'] ?? '')));
+    $jobMode = strtolower(trim((string) ($job['execution_mode'] ?? '')));
+
+    // Runtime parity guard:
+    // registry-declared Python jobs (especially compute battle-intelligence jobs)
+    // must stay on the Python runtime across scheduler, worker pool, and CLI
+    // launchers even if an old row still carries execution_mode='php'.
+    $configured = $definitionMode === 'python'
+        ? 'python'
+        : ($jobMode !== '' ? $jobMode : 'php');
 
     if ($configured === 'python' && !scheduler_python_heavy_jobs_enabled()) {
         return 'php';
