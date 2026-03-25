@@ -3677,9 +3677,9 @@ function orchestrator_runtime_config_export(): array
         'workers' => [
             'queue_name' => (string) config('workers.queue_name', 'default'),
             'claim_ttl_seconds' => max(30, (int) config('workers.claim_ttl_seconds', 300)),
-            'idle_sleep_seconds' => max(1, (int) config('workers.idle_sleep_seconds', 10)),
-            'sync_idle_sleep_seconds' => max(1, (int) config('workers.sync_idle_sleep_seconds', 8)),
-            'compute_idle_sleep_seconds' => max(1, (int) config('workers.compute_idle_sleep_seconds', 15)),
+            'idle_sleep_seconds' => max(0, (int) config('workers.idle_sleep_seconds', 10)),
+            'sync_idle_sleep_seconds' => max(0, (int) config('workers.sync_idle_sleep_seconds', 8)),
+            'compute_idle_sleep_seconds' => max(0, (int) config('workers.compute_idle_sleep_seconds', 15)),
             'memory_pause_threshold_bytes' => max(134217728, (int) config('workers.memory_pause_threshold_bytes', 402653184)),
             'memory_abort_threshold_bytes' => max(268435456, (int) config('workers.memory_abort_threshold_bytes', 536870912)),
             'retry_backoff_seconds' => max(5, (int) config('workers.retry_backoff_seconds', 30)),

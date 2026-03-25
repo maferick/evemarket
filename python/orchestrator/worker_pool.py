@@ -277,9 +277,9 @@ def main(argv: list[str] | None = None) -> int:
     bridge = PhpBridge(php_binary, app_root)
     db = SupplyCoreDb(dict(raw_config.get("db") or {}))
     lease_seconds = max(30, int(worker_settings.get("claim_ttl_seconds", 300)))
-    idle_sleep = max(1, int(worker_settings.get("idle_sleep_seconds", 10)))
-    sync_idle_sleep = max(1, int(worker_settings.get("sync_idle_sleep_seconds", idle_sleep)))
-    compute_idle_sleep = max(1, int(worker_settings.get("compute_idle_sleep_seconds", idle_sleep)))
+    idle_sleep = max(0, int(worker_settings.get("idle_sleep_seconds", 10)))
+    sync_idle_sleep = max(0, int(worker_settings.get("sync_idle_sleep_seconds", idle_sleep)))
+    compute_idle_sleep = max(0, int(worker_settings.get("compute_idle_sleep_seconds", idle_sleep)))
     pause_threshold = max(128 * 1024 * 1024, int(worker_settings.get("memory_pause_threshold_bytes", 384 * 1024 * 1024)))
     abort_threshold = max(pause_threshold, int(worker_settings.get("memory_abort_threshold_bytes", 512 * 1024 * 1024)))
     retry_backoff = max(5, int(worker_settings.get("retry_backoff_seconds", 30)))
@@ -310,7 +310,8 @@ def main(argv: list[str] | None = None) -> int:
                 "memory pause threshold reached",
                 payload={"event": "worker_pool.memory_pause", "worker_id": worker_id, "memory_usage_bytes": memory_usage},
             )
-            time.sleep(min(30, compute_idle_sleep))
+            if compute_idle_sleep > 0:
+                time.sleep(min(30, compute_idle_sleep))
 
         claim = bridge.call(
             "claim-worker-job",
@@ -323,6 +324,7 @@ def main(argv: list[str] | None = None) -> int:
             },
         )
         job = claim.get("job")
+        diagnostics = claim.get("diagnostics") if isinstance(claim.get("diagnostics"), dict) else {}
         _write_state_file(
             state_file,
             {
@@ -339,13 +341,26 @@ def main(argv: list[str] | None = None) -> int:
 
         if not isinstance(job, dict) or not job:
             sleep_for = compute_idle_sleep if workload_classes == ["compute"] else sync_idle_sleep if workload_classes == ["sync"] else idle_sleep
+            idle_reason = str(diagnostics.get("reason") or "no_matching_jobs")
             logger.info(
                 "worker pool idle",
-                payload={"event": "worker_pool.idle", "worker_id": worker_id, "sleep_seconds": sleep_for},
+                payload={
+                    "event": "worker_pool.idle",
+                    "worker_id": worker_id,
+                    "sleep_seconds": sleep_for,
+                    "reason": idle_reason,
+                    "ready_jobs_all": int(diagnostics.get("ready_jobs_all") or 0),
+                    "ready_jobs_filtered": int(diagnostics.get("ready_jobs_filtered") or 0),
+                    "delayed_jobs_filtered": int(diagnostics.get("delayed_jobs_filtered") or 0),
+                    "running_jobs_filtered": int(diagnostics.get("running_jobs_filtered") or 0),
+                    "next_available_at_filtered": diagnostics.get("next_available_at_filtered"),
+                    "filters": diagnostics.get("filters") if isinstance(diagnostics.get("filters"), dict) else {},
+                },
             )
             if args.once:
                 return 0
-            time.sleep(sleep_for)
+            if sleep_for > 0:
+                time.sleep(sleep_for)
             continue
 
         timeout_seconds = max(30, int(job.get("timeout_seconds") or 300))

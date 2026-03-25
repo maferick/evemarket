@@ -128,15 +128,24 @@ try {
             throw new InvalidArgumentException('worker_id is required for claim-worker-job.');
         }
 
+        $queues = (array) ($input['queues'] ?? []);
+        $workloadClasses = (array) ($input['workload_classes'] ?? []);
+        $executionModes = (array) ($input['execution_modes'] ?? []);
+
         $job = db_worker_job_claim_next(
             $workerId,
-            (array) ($input['queues'] ?? []),
-            (array) ($input['workload_classes'] ?? []),
-            (array) ($input['execution_modes'] ?? []),
+            $queues,
+            $workloadClasses,
+            $executionModes,
             isset($input['lease_seconds']) ? (int) $input['lease_seconds'] : null
         );
 
-        python_scheduler_bridge_output(['ok' => true, 'job' => $job]);
+        $diagnostics = null;
+        if (!is_array($job) || $job === []) {
+            $diagnostics = db_worker_job_claim_diagnostics($queues, $workloadClasses, $executionModes);
+        }
+
+        python_scheduler_bridge_output(['ok' => true, 'job' => $job, 'diagnostics' => $diagnostics]);
     }
 
     if ($action === 'heartbeat-worker-job') {

@@ -13550,32 +13550,13 @@ function db_worker_job_claim_next(string $workerId, array $queues = [], array $w
     }
 
     $leaseTtl = max(30, min(3600, (int) ($leaseSeconds ?? 300)));
+    $filters = db_worker_job_filter_fragments($queues, $workloadClasses, $executionModes);
     $conditions = ["status IN ('queued', 'retry')", 'available_at <= UTC_TIMESTAMP()'];
     $params = [];
-
-    $queueValues = array_values(array_filter(array_map(static fn ($value): string => trim((string) $value), $queues), static fn (string $value): bool => $value !== ''));
-    if ($queueValues !== []) {
-        $conditions[] = 'queue_name IN (' . implode(',', array_fill(0, count($queueValues), '?')) . ')';
-        array_push($params, ...$queueValues);
+    foreach ($filters['conditions'] as $condition) {
+        $conditions[] = $condition;
     }
-
-    $classValues = array_values(array_filter(array_map(static fn ($value): string => trim((string) $value), $workloadClasses), static fn (string $value): bool => $value !== ''));
-    if ($classValues !== []) {
-        $conditions[] = 'workload_class IN (' . implode(',', array_fill(0, count($classValues), '?')) . ')';
-        array_push($params, ...$classValues);
-    }
-
-    $modeValues = array_values(array_filter(array_map(
-        static function ($value): string {
-            $mode = strtolower(trim((string) $value));
-            return $mode === 'php' ? 'php' : ($mode === 'python' ? 'python' : '');
-        },
-        $executionModes ?? []
-    ), static fn (string $value): bool => $value !== ''));
-    if ($modeValues !== []) {
-        $conditions[] = 'execution_mode IN (' . implode(',', array_fill(0, count($modeValues), '?')) . ')';
-        array_push($params, ...$modeValues);
-    }
+    array_push($params, ...$filters['params']);
 
     $sql = "SELECT id
             FROM worker_jobs
@@ -13623,6 +13604,100 @@ function db_worker_job_claim_next(string $workerId, array $queues = [], array $w
     }
 
     return db_select_one('SELECT * FROM worker_jobs WHERE id = ? LIMIT 1', [$jobId]);
+}
+
+/**
+ * @return array{conditions: array<int, string>, params: array<int, string>, queues: array<int, string>, workload_classes: array<int, string>, execution_modes: array<int, string>}
+ */
+function db_worker_job_filter_fragments(array $queues = [], array $workloadClasses = [], ?array $executionModes = null): array
+{
+    $conditions = [];
+    $params = [];
+
+    $queueValues = array_values(array_filter(array_map(static fn ($value): string => trim((string) $value), $queues), static fn (string $value): bool => $value !== ''));
+    if ($queueValues !== []) {
+        $conditions[] = 'queue_name IN (' . implode(',', array_fill(0, count($queueValues), '?')) . ')';
+        array_push($params, ...$queueValues);
+    }
+
+    $classValues = array_values(array_filter(array_map(static fn ($value): string => trim((string) $value), $workloadClasses), static fn (string $value): bool => $value !== ''));
+    if ($classValues !== []) {
+        $conditions[] = 'workload_class IN (' . implode(',', array_fill(0, count($classValues), '?')) . ')';
+        array_push($params, ...$classValues);
+    }
+
+    $modeValues = array_values(array_filter(array_map(
+        static function ($value): string {
+            $mode = strtolower(trim((string) $value));
+            return $mode === 'php' ? 'php' : ($mode === 'python' ? 'python' : '');
+        },
+        $executionModes ?? []
+    ), static fn (string $value): bool => $value !== ''));
+    if ($modeValues !== []) {
+        $conditions[] = 'execution_mode IN (' . implode(',', array_fill(0, count($modeValues), '?')) . ')';
+        array_push($params, ...$modeValues);
+    }
+
+    return [
+        'conditions' => $conditions,
+        'params' => $params,
+        'queues' => $queueValues,
+        'workload_classes' => $classValues,
+        'execution_modes' => $modeValues,
+    ];
+}
+
+/**
+ * @return array<string, mixed>
+ */
+function db_worker_job_claim_diagnostics(array $queues = [], array $workloadClasses = [], ?array $executionModes = null): array
+{
+    db_worker_jobs_ensure_schema();
+
+    $filters = db_worker_job_filter_fragments($queues, $workloadClasses, $executionModes);
+    $whereFiltered = $filters['conditions'] === [] ? '' : (' AND ' . implode(' AND ', $filters['conditions']));
+
+    $counts = db_select_one(
+        "SELECT
+            SUM(CASE WHEN status IN ('queued', 'retry') AND available_at <= UTC_TIMESTAMP() THEN 1 ELSE 0 END) AS ready_all,
+            SUM(CASE WHEN status IN ('queued', 'retry') AND available_at <= UTC_TIMESTAMP() {$whereFiltered} THEN 1 ELSE 0 END) AS ready_filtered,
+            SUM(CASE WHEN status IN ('queued', 'retry') AND available_at > UTC_TIMESTAMP() {$whereFiltered} THEN 1 ELSE 0 END) AS delayed_filtered,
+            SUM(CASE WHEN status = 'running' {$whereFiltered} THEN 1 ELSE 0 END) AS running_filtered,
+            MIN(CASE WHEN status IN ('queued', 'retry') {$whereFiltered} THEN available_at ELSE NULL END) AS next_available_filtered
+         FROM worker_jobs",
+        $filters['params']
+    );
+
+    $readyAll = max(0, (int) (($counts['ready_all'] ?? 0)));
+    $readyFiltered = max(0, (int) (($counts['ready_filtered'] ?? 0)));
+    $delayedFiltered = max(0, (int) (($counts['delayed_filtered'] ?? 0)));
+    $runningFiltered = max(0, (int) (($counts['running_filtered'] ?? 0)));
+    $nextAvailableFiltered = trim((string) ($counts['next_available_filtered'] ?? ''));
+
+    $reason = 'no_matching_jobs';
+    if ($readyFiltered > 0) {
+        $reason = 'claim_race_lost';
+    } elseif ($delayedFiltered > 0) {
+        $reason = 'matching_jobs_delayed';
+    } elseif ($runningFiltered > 0) {
+        $reason = 'matching_jobs_running';
+    } elseif ($readyAll > 0) {
+        $reason = 'jobs_ready_but_filtered_out';
+    }
+
+    return [
+        'reason' => $reason,
+        'ready_jobs_all' => $readyAll,
+        'ready_jobs_filtered' => $readyFiltered,
+        'delayed_jobs_filtered' => $delayedFiltered,
+        'running_jobs_filtered' => $runningFiltered,
+        'next_available_at_filtered' => $nextAvailableFiltered !== '' ? $nextAvailableFiltered : null,
+        'filters' => [
+            'queues' => $filters['queues'],
+            'workload_classes' => $filters['workload_classes'],
+            'execution_modes' => $filters['execution_modes'],
+        ],
+    ];
 }
 
 function db_worker_job_heartbeat(int $jobId, string $workerId, ?int $leaseSeconds = null): bool

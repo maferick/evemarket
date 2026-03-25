@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -54,10 +55,19 @@ def configure_logging(
         logger.addHandler(stream_handler)
 
     if log_file is not None:
-        log_file.parent.mkdir(parents=True, exist_ok=True)
-        file_handler = logging.FileHandler(log_file, encoding="utf-8")
-        file_handler.setFormatter(JsonFormatter())
-        logger.addHandler(file_handler)
+        should_attach_file_handler = True
+        try:
+            stdout_target = Path(os.readlink("/proc/self/fd/1")).resolve()
+            if stdout_target == log_file.resolve():
+                should_attach_file_handler = False
+        except OSError:
+            should_attach_file_handler = True
+
+        if should_attach_file_handler:
+            log_file.parent.mkdir(parents=True, exist_ok=True)
+            file_handler = logging.FileHandler(log_file, encoding="utf-8")
+            file_handler.setFormatter(JsonFormatter())
+            logger.addHandler(file_handler)
 
     logger.propagate = False
     return LoggerAdapter(logger, {})
