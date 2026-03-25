@@ -36,6 +36,22 @@ function supplycore_base_config(): array
     return $config;
 }
 
+function supplycore_base_config_value(string $key, mixed $default = null): mixed
+{
+    $segments = explode('.', $key);
+    $value = supplycore_base_config();
+
+    foreach ($segments as $segment) {
+        if (!is_array($value) || !array_key_exists($segment, $value)) {
+            return $default;
+        }
+
+        $value = $value[$segment];
+    }
+
+    return $value;
+}
+
 function supplycore_runtime_settings_registry(): array
 {
     static $registry = null;
@@ -158,17 +174,17 @@ function db(): PDO
 
     $dsn = sprintf(
         'mysql:host=%s;port=%d;dbname=%s;charset=%s',
-        config('db.host'),
-        config('db.port'),
-        config('db.database'),
-        config('db.charset')
+        (string) supplycore_base_config_value('db.host', '127.0.0.1'),
+        (int) supplycore_base_config_value('db.port', 3306),
+        (string) supplycore_base_config_value('db.database', ''),
+        (string) supplycore_base_config_value('db.charset', 'utf8mb4')
     );
 
     try {
         $pdo = new PDO(
             $dsn,
-            config('db.username'),
-            config('db.password'),
+            (string) supplycore_base_config_value('db.username', ''),
+            (string) supplycore_base_config_value('db.password', ''),
             [
                 PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
                 PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
