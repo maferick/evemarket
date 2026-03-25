@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -82,8 +83,45 @@ def _env_int(key: str, default: int, minimum: int | None = None) -> int:
     return value
 
 
+def _load_dotenv_defaults(app_root: Path) -> None:
+    env_path = app_root / ".env"
+    if not env_path.is_file():
+        return
+
+    try:
+        lines = env_path.read_text(encoding="utf-8").splitlines()
+    except Exception:
+        return
+
+    for raw_line in lines:
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[7:].strip()
+        if "=" not in line:
+            continue
+
+        key, raw_value = line.split("=", 1)
+        key = key.strip()
+        if not key:
+            continue
+
+        value = raw_value.strip()
+        if not value:
+            os.environ.setdefault(key, "")
+            continue
+
+        try:
+            parsed = shlex.split(value, comments=True, posix=True)
+        except ValueError:
+            parsed = [value]
+        os.environ.setdefault(key, parsed[0] if parsed else "")
+
+
 def load_php_runtime_config(app_root: Path) -> OrchestratorConfig:
     app_root = app_root.resolve()
+    _load_dotenv_defaults(app_root)
     runtime_file = Path(os.getenv("SUPPLYCORE_ORCHESTRATOR_CONFIG_JSON", app_root / "storage/run/orchestrator-runtime.json"))
     raw: dict[str, Any] = {}
     if runtime_file.is_file():
@@ -98,7 +136,7 @@ def load_php_runtime_config(app_root: Path) -> OrchestratorConfig:
             "host": os.getenv("DB_HOST", "127.0.0.1"),
             "port": _env_int("DB_PORT", 3306),
             "database": os.getenv("DB_DATABASE", "supplycore"),
-            "username": os.getenv("DB_USERNAME", "root"),
+            "username": os.getenv("DB_USERNAME", "supplycore"),
             "password": os.getenv("DB_PASSWORD", ""),
             "charset": os.getenv("DB_CHARSET", "utf8mb4"),
             "socket": os.getenv("DB_SOCKET", ""),

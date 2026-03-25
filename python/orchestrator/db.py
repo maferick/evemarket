@@ -32,7 +32,7 @@ class SupplyCoreDb:
         return pymysql.connect(
             host=str(self._config.get("host", "127.0.0.1")),
             port=int(self._config.get("port", 3306)),
-            user=str(self._config.get("username", "root")),
+            user=str(self._config.get("username", "supplycore")),
             password=str(self._config.get("password", "")),
             database=str(self._config.get("database", "supplycore")),
             charset=str(self._config.get("charset", "utf8mb4")),
