@@ -22,6 +22,8 @@ TOP_K_CHARACTER_EDGES = 100
 TOP_K_FIT_EDGES = 100
 RELATIONSHIP_WINDOW_DAYS = 30
 STALE_DAYS = 45
+DEFAULT_BATCH_SIZE = 1000
+SYNC_DATASET_GRAPH_INSIGHTS_FIT_OVERLAP = "graph_insights_fit_overlap"
 
 
 def _utc_now_sql() -> str:
@@ -37,6 +39,81 @@ def _write_graph_log(log_file: str, event: str, payload: dict[str, Any]) -> None
     line = json_dumps_safe({"event": event, "timestamp": datetime.now(UTC).isoformat(), **payload})
     with path.open("a", encoding="utf-8") as handle:
         handle.write(line + "\n")
+
+
+def _coerce_batch_size(value: Any, *, fallback: int = DEFAULT_BATCH_SIZE) -> int:
+    try:
+        return max(100, min(5000, int(value)))
+    except (TypeError, ValueError):
+        return fallback
+
+
+def _sync_state_get(db: SupplyCoreDb, dataset_key: str) -> dict[str, Any] | None:
+    return db.fetch_one(
+        "SELECT dataset_key, sync_mode, status, last_success_at, last_cursor, last_row_count, last_error_message FROM sync_state WHERE dataset_key = %s LIMIT 1",
+        (dataset_key,),
+    )
+
+
+def _sync_state_upsert(
+    db: SupplyCoreDb,
+    dataset_key: str,
+    *,
+    sync_mode: str,
+    status: str,
+    last_success_at: str | None,
+    last_cursor: str | None,
+    last_row_count: int,
+    last_error_message: str | None,
+) -> None:
+    db.execute(
+        """
+        INSERT INTO sync_state (
+            dataset_key, sync_mode, status, last_success_at, last_cursor, last_row_count, last_error_message
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s)
+        ON DUPLICATE KEY UPDATE
+            sync_mode = VALUES(sync_mode),
+            status = VALUES(status),
+            last_success_at = VALUES(last_success_at),
+            last_cursor = VALUES(last_cursor),
+            last_row_count = VALUES(last_row_count),
+            last_error_message = VALUES(last_error_message),
+            updated_at = CURRENT_TIMESTAMP
+        """,
+        (dataset_key, sync_mode, status, last_success_at, last_cursor, max(0, int(last_row_count)), last_error_message),
+    )
+
+
+def _parse_pair_cursor(raw_cursor: str | None) -> tuple[int, int]:
+    text = str(raw_cursor or "").strip()
+    if text == "":
+        return 0, 0
+    left, _, right = text.partition(":")
+    try:
+        return max(0, int(left)), max(0, int(right))
+    except ValueError:
+        return 0, 0
+
+
+def _format_pair_cursor(fit_id: int, other_fit_id: int) -> str:
+    return f"{max(0, int(fit_id))}:{max(0, int(other_fit_id))}"
+
+
+def _emit_batch_telemetry(log_file: str, job_name: str, payload: dict[str, Any]) -> None:
+    _write_graph_log(
+        log_file,
+        f"{job_name}.batch",
+        {
+            "job_name": job_name,
+            "batch_start": str(payload.get("batch_start") or ""),
+            "batch_end": str(payload.get("batch_end") or ""),
+            "rows_processed": int(payload.get("rows_processed") or 0),
+            "rows_written": int(payload.get("rows_written") or 0),
+            "duration_ms": int(payload.get("duration_ms") or 0),
+            "checkpoint_after": str(payload.get("checkpoint_after") or ""),
+            "errors": str(payload.get("errors") or ""),
+        },
+    )
 
 
 def _job_payload(job_name: str, started_at: float, status: str, **kwargs: Any) -> dict[str, Any]:
@@ -524,10 +601,13 @@ def run_compute_graph_prune(db: SupplyCoreDb, neo4j_raw: dict[str, Any] | None =
 
 
 def _upsert_table(db: SupplyCoreDb, table_name: str, columns: str, placeholders: str, rows: list[tuple[Any, ...]]) -> None:
+    batch_size = DEFAULT_BATCH_SIZE
     with db.transaction() as (_, cursor):
         cursor.execute(f"DELETE FROM {table_name}")
-        if rows:
-            cursor.executemany(f"INSERT INTO {table_name} ({columns}) VALUES ({placeholders})", rows)
+    for offset in range(0, len(rows), batch_size):
+        chunk = rows[offset : offset + batch_size]
+        with db.transaction() as (_, cursor):
+            cursor.executemany(f"INSERT INTO {table_name} ({columns}) VALUES ({placeholders})", chunk)
 
 
 def _ensure_doctrine_dependency_depth_schema(db: SupplyCoreDb) -> None:
@@ -731,6 +811,8 @@ def run_compute_graph_insights(db: SupplyCoreDb, neo4j_raw: dict[str, Any] | Non
 
     client = Neo4jClient(config)
     computed_at = _utc_now_sql()
+    runtime = neo4j_raw or {}
+    batch_size = _coerce_batch_size(runtime.get("insights_batch_size") or runtime.get("batch_size"))
 
     item_rows = client.query(
         """
@@ -759,18 +841,6 @@ def run_compute_graph_insights(db: SupplyCoreDb, neo4j_raw: dict[str, Any] | Non
         """
     )
 
-    fit_overlap_rows = client.query(
-        """
-        MATCH (f1:Fit)-[r:SHARES_ITEM_WITH]->(f2:Fit)
-        RETURN toInteger(f1.fit_id) AS fit_id,
-               toInteger(f2.fit_id) AS other_fit_id,
-               toInteger(r.shared_item_count) AS shared_item_count,
-               toFloat(r.overlap_score) AS overlap_score
-        ORDER BY overlap_score DESC, shared_item_count DESC
-        LIMIT 50000
-        """
-    )
-
     _ensure_doctrine_dependency_depth_schema(db)
 
     _upsert_table(
@@ -793,25 +863,101 @@ def run_compute_graph_insights(db: SupplyCoreDb, neo4j_raw: dict[str, Any] | Non
         ],
     )
 
-    _upsert_table(
-        db,
-        "fit_overlap_score",
-        "fit_id, other_fit_id, shared_item_count, overlap_score, computed_at",
-        "%s, %s, %s, %s, %s",
-        [
+    sync_state = _sync_state_get(db, SYNC_DATASET_GRAPH_INSIGHTS_FIT_OVERLAP) or {}
+    cursor_fit_id, cursor_other_fit_id = _parse_pair_cursor(sync_state.get("last_cursor"))
+    fit_rows_processed = 0
+    fit_rows_written = 0
+    batch_count = 0
+    while True:
+        batch_started = time.perf_counter()
+        fit_overlap_rows = client.query(
+            """
+            MATCH (f1:Fit)-[r:SHARES_ITEM_WITH]->(f2:Fit)
+            WHERE toInteger(f1.fit_id) > $cursor_fit_id
+               OR (toInteger(f1.fit_id) = $cursor_fit_id AND toInteger(f2.fit_id) > $cursor_other_fit_id)
+            RETURN toInteger(f1.fit_id) AS fit_id,
+                   toInteger(f2.fit_id) AS other_fit_id,
+                   toInteger(r.shared_item_count) AS shared_item_count,
+                   toFloat(r.overlap_score) AS overlap_score
+            ORDER BY fit_id ASC, other_fit_id ASC
+            LIMIT $batch_size
+            """,
+            {"cursor_fit_id": cursor_fit_id, "cursor_other_fit_id": cursor_other_fit_id, "batch_size": batch_size},
+        )
+        if not fit_overlap_rows:
+            break
+
+        upsert_rows = [
             (int(r["fit_id"]), int(r["other_fit_id"]), int(r["shared_item_count"]), float(r["overlap_score"]), computed_at)
             for r in fit_overlap_rows
             if int(r.get("fit_id") or 0) > 0 and int(r.get("other_fit_id") or 0) > 0
-        ],
+        ]
+        if upsert_rows:
+            with db.transaction() as (_, cursor):
+                cursor.executemany(
+                    """
+                    INSERT INTO fit_overlap_score (fit_id, other_fit_id, shared_item_count, overlap_score, computed_at)
+                    VALUES (%s, %s, %s, %s, %s)
+                    ON DUPLICATE KEY UPDATE
+                        shared_item_count = VALUES(shared_item_count),
+                        overlap_score = VALUES(overlap_score),
+                        computed_at = VALUES(computed_at)
+                    """,
+                    upsert_rows,
+                )
+
+        last_row = fit_overlap_rows[-1]
+        cursor_fit_id = int(last_row.get("fit_id") or cursor_fit_id)
+        cursor_other_fit_id = int(last_row.get("other_fit_id") or cursor_other_fit_id)
+        batch_cursor = _format_pair_cursor(cursor_fit_id, cursor_other_fit_id)
+        fit_rows_processed += len(fit_overlap_rows)
+        fit_rows_written += len(upsert_rows)
+        batch_count += 1
+        _sync_state_upsert(
+            db,
+            SYNC_DATASET_GRAPH_INSIGHTS_FIT_OVERLAP,
+            sync_mode="incremental",
+            status="running",
+            last_success_at=None,
+            last_cursor=batch_cursor,
+            last_row_count=fit_rows_written,
+            last_error_message=None,
+        )
+        _emit_batch_telemetry(
+            config.log_file,
+            job_name,
+            {
+                "batch_start": batch_count,
+                "batch_end": batch_count,
+                "rows_processed": len(fit_overlap_rows),
+                "rows_written": len(upsert_rows),
+                "duration_ms": int((time.perf_counter() - batch_started) * 1000),
+                "checkpoint_after": batch_cursor,
+                "errors": "",
+            },
+        )
+
+    db.execute("DELETE FROM fit_overlap_score WHERE computed_at < %s", (computed_at,))
+    _sync_state_upsert(
+        db,
+        SYNC_DATASET_GRAPH_INSIGHTS_FIT_OVERLAP,
+        sync_mode="incremental",
+        status="success",
+        last_success_at=computed_at,
+        last_cursor=None,
+        last_row_count=fit_rows_written,
+        last_error_message=None,
     )
 
     result = _job_payload(
         job_name,
         started,
         "success",
-        rows_processed=len(item_rows) + len(doctrine_rows) + len(fit_overlap_rows),
-        rows_written=len(item_rows) + len(doctrine_rows) + len(fit_overlap_rows),
+        rows_processed=len(item_rows) + len(doctrine_rows) + fit_rows_processed,
+        rows_written=len(item_rows) + len(doctrine_rows) + fit_rows_written,
         computed_at=computed_at,
+        fit_overlap_batches=batch_count,
+        fit_overlap_batch_size=batch_size,
     )
     _write_graph_log(config.log_file, "graph.insights.completed", result)
     return result
