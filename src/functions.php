@@ -337,14 +337,42 @@ function runtime_config_settings_from_request(array $request): array
         }
 
         $type = (string) ($spec['type'] ?? 'string');
-        $input = $request[$path] ?? null;
+        $input = runtime_config_request_value($request, $path);
         if ($type === 'bool') {
-            $input = isset($request[$path]) ? '1' : '0';
+            $input = runtime_config_request_has_key($request, $path) ? '1' : '0';
         }
         $settings[$path] = (string) supplycore_cast_runtime_config_value($input ?? ($spec['default'] ?? ''), $type);
     }
 
     return $settings;
+}
+
+function runtime_config_request_key(string $path): string
+{
+    return str_replace('.', '_', $path);
+}
+
+function runtime_config_request_value(array $request, string $path): mixed
+{
+    if (array_key_exists($path, $request)) {
+        return $request[$path];
+    }
+
+    $normalizedKey = runtime_config_request_key($path);
+    if (array_key_exists($normalizedKey, $request)) {
+        return $request[$normalizedKey];
+    }
+
+    return null;
+}
+
+function runtime_config_request_has_key(array $request, string $path): bool
+{
+    if (array_key_exists($path, $request)) {
+        return true;
+    }
+
+    return array_key_exists(runtime_config_request_key($path), $request);
 }
 
 function migrate_local_config_to_app_settings(string $localConfigPath): array
