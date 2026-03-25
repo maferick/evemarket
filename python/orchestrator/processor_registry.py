@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from .job_context import battle_runtime, influx_runtime, neo4j_runtime
+from .json_utils import make_json_safe
 from .jobs import (
     run_compute_battle_actor_features,
     run_compute_battle_anomalies,
@@ -103,6 +104,7 @@ def audit_enabled_python_jobs(db: Any) -> dict[str, Any]:
 
 
 def _graph_result_shape(result: dict[str, Any], job_key: str) -> dict[str, Any]:
+    safe_result = make_json_safe(result)
     rows_seen = max(0, int(result.get("rows_processed") or result.get("rows_seen") or 0))
     rows_written = max(0, int(result.get("rows_written") or 0))
     status = str(result.get("status") or "success")
@@ -112,12 +114,13 @@ def _graph_result_shape(result: dict[str, Any], job_key: str) -> dict[str, Any]:
         "summary": summary,
         "rows_processed": rows_seen,
         "rows_written": rows_written,
-        "warnings": list(result.get("warnings") or []),
-        "meta": dict(result.get("meta") or {}),
+        "warnings": list(safe_result.get("warnings") or []),
+        "meta": dict(safe_result.get("meta") or {}),
     }
 
 
 def _compute_result_shape(result: dict[str, Any], job_key: str) -> dict[str, Any]:
+    safe_result = make_json_safe(result)
     status = str(result.get("status") or "success")
     rows_processed = max(0, int(result.get("rows_processed") or 0))
     rows_written = max(0, int(result.get("rows_written") or 0))
@@ -126,10 +129,10 @@ def _compute_result_shape(result: dict[str, Any], job_key: str) -> dict[str, Any
         "summary": str(result.get("summary") or f"{job_key} completed with status {status}."),
         "rows_processed": rows_processed,
         "rows_written": rows_written,
-        "warnings": list(result.get("warnings") or []),
+        "warnings": list(safe_result.get("warnings") or []),
         "meta": {
             "job_name": job_key,
             "computed_at": str(result.get("computed_at") or ""),
-            "result": dict(result),
+            "result": dict(safe_result),
         },
     }

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import math
 import sys
 from collections import defaultdict
@@ -648,7 +647,7 @@ def run_compute_battle_anomalies(db: SupplyCoreDb, runtime: dict[str, Any] | Non
                             anomaly_class,
                             float(z),
                             float(percentile_rank),
-                            json.dumps(explanation, separators=(",", ":"), ensure_ascii=False),
+                            json_dumps_safe(explanation),
                             computed_at,
                         ),
                     )
@@ -996,8 +995,8 @@ def run_compute_suspicion_scores(db: SupplyCoreDb, runtime: dict[str, Any] | Non
                     "enemy_efficiency_uplift": enemy_eff_uplift,
                     "role_weight": role_weight,
                     "supporting_battle_count": eligible_battle_count,
-                    "top_supporting_battles_json": json.dumps(support_battles, separators=(",", ":"), ensure_ascii=False),
-                    "explanation_json": json.dumps(explanation, separators=(",", ":"), ensure_ascii=False),
+                    "top_supporting_battles_json": json_dumps_safe(support_battles),
+                    "explanation_json": json_dumps_safe(explanation),
                 }
             )
 

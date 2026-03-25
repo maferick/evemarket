@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-import json
 import time
 from pathlib import Path
 from typing import Any
@@ -531,6 +530,29 @@ def _upsert_table(db: SupplyCoreDb, table_name: str, columns: str, placeholders:
             cursor.executemany(f"INSERT INTO {table_name} ({columns}) VALUES ({placeholders})", rows)
 
 
+def _ensure_doctrine_dependency_depth_schema(db: SupplyCoreDb) -> None:
+    column = db.fetch_one(
+        """
+        SELECT COLUMN_NAME
+        FROM INFORMATION_SCHEMA.COLUMNS
+        WHERE TABLE_SCHEMA = DATABASE()
+          AND TABLE_NAME = 'doctrine_dependency_depth'
+          AND COLUMN_NAME = 'unique_item_count'
+        LIMIT 1
+        """
+    )
+    if column:
+        return
+
+    db.execute(
+        """
+        ALTER TABLE doctrine_dependency_depth
+        ADD COLUMN unique_item_count INT UNSIGNED NOT NULL DEFAULT 0
+        AFTER item_count
+        """
+    )
+
+
 def run_compute_graph_topology_metrics(db: SupplyCoreDb, neo4j_raw: dict[str, Any] | None = None) -> dict[str, Any]:
     started = time.perf_counter()
     job_name = "compute_graph_topology_metrics"
@@ -645,7 +667,7 @@ def run_compute_graph_topology_metrics(db: SupplyCoreDb, neo4j_raw: dict[str, An
             density,
             bridge,
             member_count,
-            json.dumps([], separators=(",", ":"), ensure_ascii=False),
+            json_dumps_safe([]),
             computed_at,
         ))
         for member in members:
@@ -748,6 +770,8 @@ def run_compute_graph_insights(db: SupplyCoreDb, neo4j_raw: dict[str, Any] | Non
         LIMIT 50000
         """
     )
+
+    _ensure_doctrine_dependency_depth_schema(db)
 
     _upsert_table(
         db,

@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-import json
 import math
 import time
 from datetime import UTC, datetime
 from typing import Any
 
 from ..db import SupplyCoreDb
+from ..json_utils import json_dumps_safe
 
 MIN_SAMPLE_COUNT = 5
 
@@ -296,9 +296,9 @@ def run_compute_suspicion_scores_v2(db: SupplyCoreDb, runtime: dict[str, Any] | 
                 eligible,
                 evidence_count,
                 int(row.get("community_id") or 0),
-                json.dumps(top_supporting_battles, separators=(",", ":"), ensure_ascii=False),
-                json.dumps(top_neighbors.get(cid, []), separators=(",", ":"), ensure_ascii=False),
-                json.dumps(explanation, separators=(",", ":"), ensure_ascii=False),
+                json_dumps_safe(top_supporting_battles),
+                json_dumps_safe(top_neighbors.get(cid, [])),
+                json_dumps_safe(explanation),
                 computed_at,
             )
         )
