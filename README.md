@@ -214,6 +214,9 @@ SupplyCore now runs three long-lived worker classes:
 - **Sync workers**: Python worker-pool processes fetch external state and light refresh jobs from the `worker_jobs` queue with adaptive sleeps when idle.
 - **Compute workers**: the same Python pool can be scaled separately for compute-heavy queue classes and is the preferred runtime for `market_hub_current_sync`, `market_comparison_summary_sync`, and `dashboard_summary_sync` orchestration.
 
+> [!IMPORTANT]
+> The legacy `supplycore-php-compute-worker.service` units were removed. Compute workers should run Python-only (`--execution-modes python`), and only jobs with native Python processors should remain on the compute queue.
+
 ### Queue-backed execution
 
 - `worker_jobs` is now the queue of record for recurring and retried work.
@@ -277,8 +280,8 @@ chmod -R u+rwX /var/www/SupplyCore/storage
 Run the services manually during development or migrations:
 
 ```bash
-python -m orchestrator worker-pool --app-root /var/www/SupplyCore --queues sync --workload-classes sync
-python -m orchestrator worker-pool --app-root /var/www/SupplyCore --queues compute --workload-classes compute
+python -m orchestrator worker-pool --app-root /var/www/SupplyCore --queues sync --workload-classes sync --execution-modes python,php
+python -m orchestrator worker-pool --app-root /var/www/SupplyCore --queues compute --workload-classes compute --execution-modes python
 python -m orchestrator zkill-worker --app-root /var/www/SupplyCore
 php bin/cron_tick.php
 ```
