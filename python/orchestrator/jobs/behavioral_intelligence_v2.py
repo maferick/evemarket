@@ -42,6 +42,58 @@ def _bounded(value: float, scale: float = 1.0) -> float:
     return max(0.0, min(1.0, value / scale))
 
 
+def _ensure_character_suspicion_scores_schema(db: SupplyCoreDb) -> None:
+    column_defs: list[tuple[str, str, str]] = [
+        ("suspicion_score_recent", "DECIMAL(12,6) NOT NULL DEFAULT 0.000000", "suspicion_score"),
+        ("suspicion_score_all_time", "DECIMAL(12,6) NOT NULL DEFAULT 0.000000", "suspicion_score_recent"),
+        ("suspicion_momentum", "DECIMAL(12,6) NOT NULL DEFAULT 0.000000", "suspicion_score_all_time"),
+        ("percentile_rank", "DECIMAL(10,6) NOT NULL DEFAULT 0.000000", "suspicion_momentum"),
+        ("support_evidence_count", "INT UNSIGNED NOT NULL DEFAULT 0", "supporting_battle_count"),
+        ("community_id", "INT NOT NULL DEFAULT 0", "support_evidence_count"),
+        ("top_supporting_battles_json", "LONGTEXT NOT NULL", "community_id"),
+        ("top_graph_neighbors_json", "LONGTEXT NOT NULL", "top_supporting_battles_json"),
+        ("explanation_json", "LONGTEXT NOT NULL", "top_graph_neighbors_json"),
+    ]
+    for column_name, column_def, after_column in column_defs:
+        row = db.fetch_one(
+            """
+            SELECT COLUMN_NAME
+            FROM INFORMATION_SCHEMA.COLUMNS
+            WHERE TABLE_SCHEMA = DATABASE()
+              AND TABLE_NAME = 'character_suspicion_scores'
+              AND COLUMN_NAME = %s
+            LIMIT 1
+            """,
+            (column_name,),
+        )
+        if row:
+            continue
+        db.execute(
+            f"ALTER TABLE character_suspicion_scores ADD COLUMN {column_name} {column_def} AFTER {after_column}"
+        )
+
+    for index_name, index_cols in (
+        ("idx_character_suspicion_scores_recent", "suspicion_score_recent, suspicion_momentum"),
+        ("idx_character_suspicion_scores_computed", "computed_at"),
+    ):
+        index_row = db.fetch_one(
+            """
+            SELECT 1
+            FROM INFORMATION_SCHEMA.STATISTICS
+            WHERE TABLE_SCHEMA = DATABASE()
+              AND TABLE_NAME = 'character_suspicion_scores'
+              AND INDEX_NAME = %s
+            LIMIT 1
+            """,
+            (index_name,),
+        )
+        if index_row:
+            continue
+        db.execute(
+            f"ALTER TABLE character_suspicion_scores ADD KEY {index_name} ({index_cols})"
+        )
+
+
 def run_compute_behavioral_baselines(db: SupplyCoreDb, runtime: dict[str, Any] | None = None) -> dict[str, Any]:
     started = time.perf_counter()
     computed_at = _now_sql()
@@ -141,6 +193,7 @@ def run_compute_behavioral_baselines(db: SupplyCoreDb, runtime: dict[str, Any] |
 def run_compute_suspicion_scores_v2(db: SupplyCoreDb, runtime: dict[str, Any] | None = None) -> dict[str, Any]:
     started = time.perf_counter()
     computed_at = _now_sql()
+    _ensure_character_suspicion_scores_schema(db)
 
     rows = db.fetch_all(
         """
