@@ -9,9 +9,11 @@ from ..db import SupplyCoreDb
 from ..json_utils import json_dumps_safe
 from ..neo4j import Neo4jClient, Neo4jConfig, Neo4jError
 
-GRAPH_SYNC_KEYS = {
-    "doctrine": "graph_sync_doctrine_dependency",
-    "battle": "graph_sync_battle_intelligence",
+GRAPH_BATCH_STATE_KEYS = {
+    "doctrine_cursor": "graph_sync_doctrine_dependency_cursor",
+    "battle_cursor": "graph_sync_battle_intelligence_cursor",
+    "derived_character_cursor": "graph_derived_relationships_character_cursor",
+    "derived_fit_cursor": "graph_derived_relationships_fit_cursor",
 }
 
 # Graph-density controls.
@@ -99,6 +101,17 @@ def _format_pair_cursor(fit_id: int, other_fit_id: int) -> str:
     return f"{max(0, int(fit_id))}:{max(0, int(other_fit_id))}"
 
 
+def _parse_int_cursor(raw_cursor: str | None) -> int:
+    try:
+        return max(0, int(str(raw_cursor or "").strip()))
+    except ValueError:
+        return 0
+
+
+def _format_int_cursor(cursor: int) -> str:
+    return str(max(0, int(cursor)))
+
+
 def _emit_batch_telemetry(log_file: str, job_name: str, payload: dict[str, Any]) -> None:
     _write_graph_log(
         log_file,
@@ -155,22 +168,6 @@ def _ensure_constraints_and_indexes(client: Neo4jClient) -> None:
     client.query("CREATE INDEX side_key_lookup IF NOT EXISTS FOR (n:BattleSide) ON (n.side_key)")
 
 
-def _load_sync_cursor(db: SupplyCoreDb, sync_key: str) -> str:
-    row = db.fetch_one("SELECT last_synced_at FROM graph_sync_state WHERE sync_key = %s LIMIT 1", (sync_key,))
-    return str((row or {}).get("last_synced_at") or "1970-01-01 00:00:00")
-
-
-def _save_sync_cursor(db: SupplyCoreDb, sync_key: str, value: str) -> None:
-    db.execute(
-        """
-        INSERT INTO graph_sync_state (sync_key, last_synced_at)
-        VALUES (%s, %s)
-        ON DUPLICATE KEY UPDATE last_synced_at = VALUES(last_synced_at), updated_at = CURRENT_TIMESTAMP
-        """,
-        (sync_key, value),
-    )
-
-
 def _snapshot_graph_health(client: Neo4jClient) -> dict[str, Any]:
     labels = client.query("MATCH (n) UNWIND labels(n) AS label RETURN label, count(*) AS count ORDER BY count DESC")
     rel_types = client.query("MATCH ()-[r]->() RETURN type(r) AS rel_type, count(*) AS count ORDER BY count DESC")
@@ -207,58 +204,110 @@ def run_compute_graph_sync_doctrine_dependency(db: SupplyCoreDb, neo4j_raw: dict
     client = Neo4jClient(config)
     _ensure_constraints_and_indexes(client)
 
-    last_synced_at = _load_sync_cursor(db, GRAPH_SYNC_KEYS["doctrine"])
-    rows = db.fetch_all(
-        """
-        SELECT
-            dg.id AS doctrine_id,
-            dg.group_name AS doctrine_name,
-            df.id AS fit_id,
-            df.fit_name,
-            dfi.type_id,
-            COALESCE(rit.type_name, CONCAT('Type #', dfi.type_id)) AS item_name,
-            GREATEST(COALESCE(df.updated_at, '1970-01-01 00:00:00'), COALESCE(dfi.updated_at, '1970-01-01 00:00:00')) AS changed_at
-        FROM doctrine_fits df
-        INNER JOIN doctrine_fit_groups dfg ON dfg.doctrine_fit_id = df.id
-        INNER JOIN doctrine_groups dg ON dg.id = dfg.doctrine_group_id
-        INNER JOIN doctrine_fit_items dfi ON dfi.doctrine_fit_id = df.id
-        LEFT JOIN ref_item_types rit ON rit.type_id = dfi.type_id
-        WHERE GREATEST(COALESCE(df.updated_at, '1970-01-01 00:00:00'), COALESCE(dfi.updated_at, '1970-01-01 00:00:00')) >= %s
-        ORDER BY changed_at ASC
-        LIMIT 20000
-        """,
-        (last_synced_at,),
-    )
-    if not rows:
-        return _job_payload(job_name, started, "success", last_synced_at=last_synced_at)
+    runtime = neo4j_raw or {}
+    batch_size = _coerce_batch_size(runtime.get("sync_doctrine_batch_size") or runtime.get("batch_size"))
+    max_batches = max(1, int(runtime.get("sync_doctrine_max_batches_per_run") or 6))
+    cursor_row = _sync_state_get(db, GRAPH_BATCH_STATE_KEYS["doctrine_cursor"]) or {}
+    cursor_id = _parse_int_cursor(cursor_row.get("last_cursor"))
+    rows_processed = 0
+    rows_written = 0
+    batch_count = 0
+    latest_checkpoint = cursor_id
+    while batch_count < max_batches:
+        batch_started = time.perf_counter()
+        rows = db.fetch_all(
+            """
+            SELECT
+                dfi.id AS doctrine_item_id,
+                dg.id AS doctrine_id,
+                dg.group_name AS doctrine_name,
+                df.id AS fit_id,
+                df.fit_name,
+                dfi.type_id,
+                COALESCE(rit.type_name, CONCAT('Type #', dfi.type_id)) AS item_name,
+                GREATEST(COALESCE(df.updated_at, '1970-01-01 00:00:00'), COALESCE(dfi.updated_at, '1970-01-01 00:00:00')) AS changed_at
+            FROM doctrine_fit_items dfi
+            INNER JOIN doctrine_fits df ON df.id = dfi.doctrine_fit_id
+            INNER JOIN doctrine_fit_groups dfg ON dfg.doctrine_fit_id = df.id
+            INNER JOIN doctrine_groups dg ON dg.id = dfg.doctrine_group_id
+            LEFT JOIN ref_item_types rit ON rit.type_id = dfi.type_id
+            WHERE dfi.id > %s
+            ORDER BY dfi.id ASC
+            LIMIT %s
+            """,
+            (cursor_id, batch_size),
+        )
+        if not rows:
+            cursor_id = 0
+            break
 
-    client.query(
-        """
-        UNWIND $rows AS row
-        MERGE (d:Doctrine {doctrine_id: toInteger(row.doctrine_id)})
-          SET d.name = row.doctrine_name
-        MERGE (f:Fit {fit_id: toInteger(row.fit_id)})
-          SET f.name = row.fit_name
-        MERGE (i:Item {type_id: toInteger(row.type_id)})
-          SET i.name = row.item_name
-        MERGE (d)-[:USES]->(f)
-        MERGE (f)-[:CONTAINS]->(i)
-        """,
-        {"rows": rows},
-    )
+        client.query(
+            """
+            UNWIND $rows AS row
+            MERGE (d:Doctrine {doctrine_id: toInteger(row.doctrine_id)})
+              SET d.name = row.doctrine_name
+            MERGE (f:Fit {fit_id: toInteger(row.fit_id)})
+              SET f.name = row.fit_name
+            MERGE (i:Item {type_id: toInteger(row.type_id)})
+              SET i.name = row.item_name
+            MERGE (d)-[:USES]->(f)
+            MERGE (f)-[:CONTAINS]->(i)
+            """,
+            {"rows": rows},
+        )
 
-    latest_synced_at = max(str(row.get("changed_at") or last_synced_at) for row in rows)
-    _save_sync_cursor(db, GRAPH_SYNC_KEYS["doctrine"], latest_synced_at)
+        cursor_id = int(rows[-1].get("doctrine_item_id") or cursor_id)
+        latest_checkpoint = cursor_id
+        batch_count += 1
+        rows_processed += len(rows)
+        rows_written += len(rows)
+        _sync_state_upsert(
+            db,
+            GRAPH_BATCH_STATE_KEYS["doctrine_cursor"],
+            sync_mode="incremental",
+            status="running",
+            last_success_at=None,
+            last_cursor=_format_int_cursor(cursor_id),
+            last_row_count=rows_written,
+            last_error_message=None,
+        )
+        _emit_batch_telemetry(
+            config.log_file,
+            job_name,
+            {
+                "batch_start": batch_count,
+                "batch_end": batch_count,
+                "rows_processed": len(rows),
+                "rows_written": len(rows),
+                "duration_ms": int((time.perf_counter() - batch_started) * 1000),
+                "checkpoint_after": _format_int_cursor(cursor_id),
+                "errors": "",
+            },
+        )
+
+    _sync_state_upsert(
+        db,
+        GRAPH_BATCH_STATE_KEYS["doctrine_cursor"],
+        sync_mode="incremental",
+        status="success",
+        last_success_at=_utc_now_sql(),
+        last_cursor=_format_int_cursor(cursor_id),
+        last_row_count=rows_written,
+        last_error_message=None,
+    )
 
     result = _job_payload(
         job_name,
         started,
         "success",
-        rows_processed=len(rows),
-        rows_written=len(rows),
-        nodes_merged=len(rows) * 3,
-        relationships_merged=len(rows) * 2,
-        last_synced_at=latest_synced_at,
+        rows_processed=rows_processed,
+        rows_written=rows_written,
+        nodes_merged=rows_written * 3,
+        relationships_merged=rows_written * 2,
+        checkpoint_cursor=_format_int_cursor(latest_checkpoint),
+        batch_count=batch_count,
+        batch_size=batch_size,
+        has_more=cursor_id > 0,
     )
     _write_graph_log(config.log_file, "graph.sync.doctrine.completed", result)
     return result
@@ -273,98 +322,140 @@ def run_compute_graph_sync_battle_intelligence(db: SupplyCoreDb, neo4j_raw: dict
 
     client = Neo4jClient(config)
     _ensure_constraints_and_indexes(client)
-    last_synced_at = _load_sync_cursor(db, GRAPH_SYNC_KEYS["battle"])
+    runtime = neo4j_raw or {}
+    batch_size = _coerce_batch_size(runtime.get("sync_battle_batch_size") or runtime.get("batch_size"), fallback=800)
+    max_batches = max(1, int(runtime.get("sync_battle_max_batches_per_run") or 6))
+    cursor_row = _sync_state_get(db, GRAPH_BATCH_STATE_KEYS["battle_cursor"]) or {}
+    cursor_id = _parse_int_cursor(cursor_row.get("last_cursor"))
+    rows_processed = 0
+    rows_written = 0
+    batch_count = 0
+    latest_checkpoint = cursor_id
+    while batch_count < max_batches:
+        batch_started = time.perf_counter()
+        rows = db.fetch_all(
+            """
+            SELECT
+                bp.id AS participant_row_id,
+                bp.battle_id,
+                bp.character_id,
+                bp.side_key,
+                bp.ship_type_id,
+                bp.alliance_id,
+                bp.corporation_id,
+                br.system_id,
+                br.started_at,
+                br.ended_at,
+                br.participant_count,
+                COALESCE(ba.anomaly_class, 'normal') AS anomaly_class,
+                COALESCE(ba.z_efficiency_score, 0) AS z_efficiency_score
+            FROM battle_participants bp
+            INNER JOIN battle_rollups br ON br.battle_id = bp.battle_id
+            LEFT JOIN battle_anomalies ba ON ba.battle_id = bp.battle_id AND ba.side_key = bp.side_key
+            WHERE bp.id > %s
+            ORDER BY bp.id ASC
+            LIMIT %s
+            """,
+            (cursor_id, batch_size),
+        )
+        if not rows:
+            cursor_id = 0
+            break
 
-    rows = db.fetch_all(
-        """
-        SELECT
-            bp.battle_id,
-            bp.character_id,
-            bp.side_key,
-            bp.ship_type_id,
-            bp.alliance_id,
-            bp.corporation_id,
-            br.system_id,
-            br.started_at,
-            br.ended_at,
-            br.participant_count,
-            COALESCE(ba.anomaly_class, 'normal') AS anomaly_class,
-            COALESCE(ba.z_efficiency_score, 0) AS z_efficiency_score,
-            GREATEST(
-                COALESCE(bp.updated_at, '1970-01-01 00:00:00'),
-                COALESCE(br.updated_at, '1970-01-01 00:00:00'),
-                COALESCE(ba.updated_at, '1970-01-01 00:00:00')
-            ) AS changed_at
-        FROM battle_participants bp
-        INNER JOIN battle_rollups br ON br.battle_id = bp.battle_id
-        LEFT JOIN battle_anomalies ba ON ba.battle_id = bp.battle_id AND ba.side_key = bp.side_key
-        WHERE GREATEST(
-                COALESCE(bp.updated_at, '1970-01-01 00:00:00'),
-                COALESCE(br.updated_at, '1970-01-01 00:00:00'),
-                COALESCE(ba.updated_at, '1970-01-01 00:00:00')
-            ) >= %s
-        ORDER BY changed_at ASC
-        LIMIT 25000
-        """,
-        (last_synced_at,),
+        client.query(
+            """
+            UNWIND $rows AS row
+            MERGE (b:Battle {battle_id: row.battle_id})
+              SET b.started_at = row.started_at,
+                  b.ended_at = row.ended_at,
+                  b.participant_count = toInteger(row.participant_count)
+            MERGE (sys:System {system_id: toInteger(row.system_id)})
+            MERGE (b)-[:IN_SYSTEM]->(sys)
+
+            WITH row, b
+            MERGE (side:BattleSide {side_uid: row.battle_id + '|' + row.side_key})
+              SET side.battle_id = row.battle_id,
+                  side.side_key = row.side_key,
+                  side.anomaly_class = row.anomaly_class,
+                  side.z_efficiency_score = toFloat(row.z_efficiency_score)
+            MERGE (b)-[:HAS_SIDE]->(side)
+
+            WITH row, side, b
+            MERGE (c:Character {character_id: toInteger(row.character_id)})
+            MERGE (c)-[:PARTICIPATED_IN]->(b)
+            MERGE (c)-[:ON_SIDE]->(side)
+
+            FOREACH(_ IN CASE WHEN toInteger(COALESCE(row.ship_type_id, 0)) > 0 THEN [1] ELSE [] END |
+                MERGE (ship:ShipType {type_id: toInteger(row.ship_type_id)})
+                MERGE (c)-[:FLEW]->(ship)
+            )
+
+            FOREACH(_ IN CASE WHEN toInteger(COALESCE(row.alliance_id, 0)) > 0 THEN [1] ELSE [] END |
+                MERGE (a:Alliance {alliance_id: toInteger(row.alliance_id)})
+                MERGE (c)-[:MEMBER_OF_ALLIANCE]->(a)
+                MERGE (side)-[:REPRESENTED_BY_ALLIANCE]->(a)
+            )
+
+            FOREACH(_ IN CASE WHEN toInteger(COALESCE(row.corporation_id, 0)) > 0 THEN [1] ELSE [] END |
+                MERGE (corp:Corporation {corporation_id: toInteger(row.corporation_id)})
+                MERGE (c)-[:MEMBER_OF_CORPORATION]->(corp)
+                MERGE (side)-[:REPRESENTED_BY_CORPORATION]->(corp)
+            )
+            """,
+            {"rows": rows},
+        )
+
+        cursor_id = int(rows[-1].get("participant_row_id") or cursor_id)
+        latest_checkpoint = cursor_id
+        batch_count += 1
+        rows_processed += len(rows)
+        rows_written += len(rows)
+        _sync_state_upsert(
+            db,
+            GRAPH_BATCH_STATE_KEYS["battle_cursor"],
+            sync_mode="incremental",
+            status="running",
+            last_success_at=None,
+            last_cursor=_format_int_cursor(cursor_id),
+            last_row_count=rows_written,
+            last_error_message=None,
+        )
+        _emit_batch_telemetry(
+            config.log_file,
+            job_name,
+            {
+                "batch_start": batch_count,
+                "batch_end": batch_count,
+                "rows_processed": len(rows),
+                "rows_written": len(rows),
+                "duration_ms": int((time.perf_counter() - batch_started) * 1000),
+                "checkpoint_after": _format_int_cursor(cursor_id),
+                "errors": "",
+            },
+        )
+
+    _sync_state_upsert(
+        db,
+        GRAPH_BATCH_STATE_KEYS["battle_cursor"],
+        sync_mode="incremental",
+        status="success",
+        last_success_at=_utc_now_sql(),
+        last_cursor=_format_int_cursor(cursor_id),
+        last_row_count=rows_written,
+        last_error_message=None,
     )
-    if not rows:
-        return _job_payload(job_name, started, "success", last_synced_at=last_synced_at)
-
-    client.query(
-        """
-        UNWIND $rows AS row
-        MERGE (b:Battle {battle_id: row.battle_id})
-          SET b.started_at = row.started_at,
-              b.ended_at = row.ended_at,
-              b.participant_count = toInteger(row.participant_count)
-        MERGE (sys:System {system_id: toInteger(row.system_id)})
-        MERGE (b)-[:IN_SYSTEM]->(sys)
-
-        WITH row, b
-        MERGE (side:BattleSide {side_uid: row.battle_id + '|' + row.side_key})
-          SET side.battle_id = row.battle_id,
-              side.side_key = row.side_key,
-              side.anomaly_class = row.anomaly_class,
-              side.z_efficiency_score = toFloat(row.z_efficiency_score)
-        MERGE (b)-[:HAS_SIDE]->(side)
-
-        WITH row, side, b
-        MERGE (c:Character {character_id: toInteger(row.character_id)})
-        MERGE (c)-[:PARTICIPATED_IN]->(b)
-        MERGE (c)-[:ON_SIDE]->(side)
-
-        FOREACH(_ IN CASE WHEN toInteger(COALESCE(row.ship_type_id, 0)) > 0 THEN [1] ELSE [] END |
-            MERGE (ship:ShipType {type_id: toInteger(row.ship_type_id)})
-            MERGE (c)-[:FLEW]->(ship)
-        )
-
-        FOREACH(_ IN CASE WHEN toInteger(COALESCE(row.alliance_id, 0)) > 0 THEN [1] ELSE [] END |
-            MERGE (a:Alliance {alliance_id: toInteger(row.alliance_id)})
-            MERGE (c)-[:MEMBER_OF_ALLIANCE]->(a)
-            MERGE (side)-[:REPRESENTED_BY_ALLIANCE]->(a)
-        )
-
-        FOREACH(_ IN CASE WHEN toInteger(COALESCE(row.corporation_id, 0)) > 0 THEN [1] ELSE [] END |
-            MERGE (corp:Corporation {corporation_id: toInteger(row.corporation_id)})
-            MERGE (c)-[:MEMBER_OF_CORPORATION]->(corp)
-            MERGE (side)-[:REPRESENTED_BY_CORPORATION]->(corp)
-        )
-        """,
-        {"rows": rows},
-    )
-
-    latest_synced_at = max(str(row.get("changed_at") or last_synced_at) for row in rows)
-    _save_sync_cursor(db, GRAPH_SYNC_KEYS["battle"], latest_synced_at)
     result = _job_payload(
         job_name,
         started,
         "success",
-        rows_processed=len(rows),
-        rows_written=len(rows),
-        nodes_merged=len(rows) * 4,
-        relationships_merged=len(rows) * 6,
-        last_synced_at=latest_synced_at,
+        rows_processed=rows_processed,
+        rows_written=rows_written,
+        nodes_merged=rows_written * 4,
+        relationships_merged=rows_written * 6,
+        checkpoint_cursor=_format_int_cursor(latest_checkpoint),
+        batch_count=batch_count,
+        batch_size=batch_size,
+        has_more=cursor_id > 0,
     )
     _write_graph_log(config.log_file, "graph.sync.battle.completed", result)
     return result
@@ -378,156 +469,311 @@ def run_compute_graph_derived_relationships(db: SupplyCoreDb, neo4j_raw: dict[st
         return _job_payload(job_name, started, "skipped", error_text="neo4j disabled")
 
     client = Neo4jClient(config)
+    runtime = neo4j_raw or {}
+    character_batch_size = _coerce_batch_size(runtime.get("derived_character_batch_size") or runtime.get("batch_size"), fallback=300)
+    fit_batch_size = _coerce_batch_size(runtime.get("derived_fit_batch_size") or runtime.get("batch_size"), fallback=200)
+    max_character_batches = max(1, int(runtime.get("derived_character_max_batches_per_run") or 4))
+    max_fit_batches = max(1, int(runtime.get("derived_fit_max_batches_per_run") or 3))
+    total_processed = 0
+    total_written = 0
+    total_relationships = 0
+    character_cursor = _parse_int_cursor((_sync_state_get(db, GRAPH_BATCH_STATE_KEYS["derived_character_cursor"]) or {}).get("last_cursor"))
+    fit_cursor = _parse_int_cursor((_sync_state_get(db, GRAPH_BATCH_STATE_KEYS["derived_fit_cursor"]) or {}).get("last_cursor"))
 
-    # clear and rebuild in bounded windows
-    client.query("MATCH ()-[r:CO_OCCURS_WITH]-() DELETE r")
-    client.query("MATCH ()-[r:SHARES_ITEM_WITH]-() DELETE r")
-    client.query("MATCH ()-[r:ASSOCIATED_WITH_ANOMALY]-() DELETE r")
-    client.query("MATCH ()-[r:CROSSED_SIDES]-() DELETE r")
-    client.query("MATCH ()-[r:USES_CRITICAL_ITEM]-() DELETE r")
+    character_batches = 0
+    while character_batches < max_character_batches:
+        batch_started = time.perf_counter()
+        anchor_rows = client.query(
+            """
+            MATCH (c:Character)
+            WHERE toInteger(c.character_id) > $cursor
+            RETURN toInteger(c.character_id) AS character_id
+            ORDER BY character_id ASC
+            LIMIT $batch_size
+            """,
+            {"cursor": character_cursor, "batch_size": character_batch_size},
+        )
+        if not anchor_rows:
+            character_cursor = 0
+            break
+        anchor_ids = [int(row["character_id"]) for row in anchor_rows if int(row.get("character_id") or 0) > 0]
+        if not anchor_ids:
+            break
 
-    client.query(
-        """
-        MATCH (c1:Character)-[:PARTICIPATED_IN]->(b:Battle)<-[:PARTICIPATED_IN]-(c2:Character)
-        WHERE c1.character_id < c2.character_id
-          AND datetime(COALESCE(b.started_at, '1970-01-01T00:00:00Z')) >= datetime() - duration({days:$window_days})
-        OPTIONAL MATCH (c1)-[:ON_SIDE]->(s1:BattleSide)<-[:HAS_SIDE]-(b)
-        OPTIONAL MATCH (c2)-[:ON_SIDE]->(s2:BattleSide)<-[:HAS_SIDE]-(b)
-        WITH c1, c2,
-             min(datetime(COALESCE(b.started_at, '1970-01-01T00:00:00Z'))) AS first_seen,
-             max(datetime(COALESCE(b.started_at, '1970-01-01T00:00:00Z'))) AS last_seen,
-             count(DISTINCT b) AS occurrence_count,
-             count(DISTINCT CASE WHEN datetime(COALESCE(b.started_at, '1970-01-01T00:00:00Z')) >= datetime() - duration({days:7}) THEN b END) AS recent_occurrence_count,
-             count(DISTINCT CASE WHEN s1.anomaly_class = 'high_sustain' OR s2.anomaly_class = 'high_sustain' THEN b END) AS high_sustain_battle_count
-        WHERE occurrence_count >= $co_threshold
-        MERGE (c1)-[r:CO_OCCURS_WITH]->(c2)
-          SET r.first_seen = toString(first_seen),
-              r.last_seen = toString(last_seen),
-              r.occurrence_count = toInteger(occurrence_count),
-              r.recent_occurrence_count = toInteger(recent_occurrence_count),
-              r.high_sustain_battle_count = toInteger(high_sustain_battle_count),
-              r.recent_weight = toFloat(recent_occurrence_count * 2 + high_sustain_battle_count),
-              r.all_time_weight = toFloat(occurrence_count + high_sustain_battle_count * 2),
-              r.weight = toFloat((recent_occurrence_count * 2) + occurrence_count + (high_sustain_battle_count * 2))
-        """,
-        {"window_days": RELATIONSHIP_WINDOW_DAYS, "co_threshold": CO_OCCUR_THRESHOLD},
+        client.query(
+            """
+            UNWIND $anchor_ids AS anchor_id
+            MATCH (c1:Character {character_id: toInteger(anchor_id)})
+            MATCH (c1)-[:PARTICIPATED_IN]->(b:Battle)<-[:PARTICIPATED_IN]-(c2:Character)
+            WHERE c1.character_id < c2.character_id
+              AND datetime(COALESCE(b.started_at, '1970-01-01T00:00:00Z')) >= datetime() - duration({days:$window_days})
+            OPTIONAL MATCH (c1)-[:ON_SIDE]->(s1:BattleSide)<-[:HAS_SIDE]-(b)
+            OPTIONAL MATCH (c2)-[:ON_SIDE]->(s2:BattleSide)<-[:HAS_SIDE]-(b)
+            WITH c1, c2,
+                 min(datetime(COALESCE(b.started_at, '1970-01-01T00:00:00Z'))) AS first_seen,
+                 max(datetime(COALESCE(b.started_at, '1970-01-01T00:00:00Z'))) AS last_seen,
+                 count(DISTINCT b) AS occurrence_count,
+                 count(DISTINCT CASE WHEN datetime(COALESCE(b.started_at, '1970-01-01T00:00:00Z')) >= datetime() - duration({days:7}) THEN b END) AS recent_occurrence_count,
+                 count(DISTINCT CASE WHEN s1.anomaly_class = 'high_sustain' OR s2.anomaly_class = 'high_sustain' THEN b END) AS high_sustain_battle_count
+            WHERE occurrence_count >= $co_threshold
+            MERGE (c1)-[r:CO_OCCURS_WITH]->(c2)
+              SET r.first_seen = toString(first_seen),
+                  r.last_seen = toString(last_seen),
+                  r.occurrence_count = toInteger(occurrence_count),
+                  r.recent_occurrence_count = toInteger(recent_occurrence_count),
+                  r.high_sustain_battle_count = toInteger(high_sustain_battle_count),
+                  r.recent_weight = toFloat(recent_occurrence_count * 2 + high_sustain_battle_count),
+                  r.all_time_weight = toFloat(occurrence_count + high_sustain_battle_count * 2),
+                  r.weight = toFloat((recent_occurrence_count * 2) + occurrence_count + (high_sustain_battle_count * 2))
+            """,
+            {"anchor_ids": anchor_ids, "window_days": RELATIONSHIP_WINDOW_DAYS, "co_threshold": CO_OCCUR_THRESHOLD},
+        )
+        client.query(
+            """
+            UNWIND $anchor_ids AS anchor_id
+            MATCH (c:Character {character_id: toInteger(anchor_id)})-[r:CO_OCCURS_WITH]->(:Character)
+            WITH c, r ORDER BY r.weight DESC
+            WITH c, collect(r) AS rels
+            FOREACH(rel IN rels[$top_k..] | DELETE rel)
+            """,
+            {"anchor_ids": anchor_ids, "top_k": TOP_K_CHARACTER_EDGES},
+        )
+        client.query(
+            """
+            UNWIND $anchor_ids AS anchor_id
+            MATCH (c:Character {character_id: toInteger(anchor_id)})-[r:ASSOCIATED_WITH_ANOMALY]->(:Battle)
+            WHERE datetime(COALESCE(r.last_seen, '1970-01-01T00:00:00Z')) < datetime() - duration({days:$window_days})
+            DELETE r
+            """,
+            {"anchor_ids": anchor_ids, "window_days": RELATIONSHIP_WINDOW_DAYS},
+        )
+        client.query(
+            """
+            UNWIND $anchor_ids AS anchor_id
+            MATCH (c:Character {character_id: toInteger(anchor_id)})
+            OPTIONAL MATCH (c)-[:ON_SIDE]->(s:BattleSide)<-[:HAS_SIDE]-(b:Battle)
+            WHERE datetime(COALESCE(b.started_at, '1970-01-01T00:00:00Z')) >= datetime() - duration({days:$window_days})
+            WITH c, collect(DISTINCT s.side_key) AS side_keys,
+                 min(datetime(COALESCE(b.started_at, '1970-01-01T00:00:00Z'))) AS first_seen,
+                 max(datetime(COALESCE(b.started_at, '1970-01-01T00:00:00Z'))) AS last_seen,
+                 count(DISTINCT b) AS occurrence_count
+            WHERE size(side_keys) > 1
+            MERGE (c)-[r:CROSSED_SIDES]->(c)
+              SET r.first_seen = toString(first_seen),
+                  r.last_seen = toString(last_seen),
+                  r.occurrence_count = toInteger(occurrence_count),
+                  r.recent_occurrence_count = toInteger(occurrence_count),
+                  r.side_count = size(side_keys),
+                  r.side_transition_count = size(side_keys) - 1,
+                  r.recent_weight = toFloat(size(side_keys)),
+                  r.all_time_weight = toFloat(size(side_keys) + occurrence_count)
+            """,
+            {"anchor_ids": anchor_ids, "window_days": RELATIONSHIP_WINDOW_DAYS},
+        )
+        client.query(
+            """
+            UNWIND $anchor_ids AS anchor_id
+            MATCH (c:Character {character_id: toInteger(anchor_id)})
+            OPTIONAL MATCH (c)-[:ON_SIDE]->(s:BattleSide)<-[:HAS_SIDE]-(b:Battle)
+            WHERE datetime(COALESCE(b.started_at, '1970-01-01T00:00:00Z')) >= datetime() - duration({days:$window_days})
+            WITH c, collect(DISTINCT s.side_key) AS side_keys
+            WHERE size(side_keys) <= 1
+            MATCH (c)-[r:CROSSED_SIDES]->(c)
+            DELETE r
+            """,
+            {"anchor_ids": anchor_ids, "window_days": RELATIONSHIP_WINDOW_DAYS},
+        )
+        client.query(
+            """
+            UNWIND $anchor_ids AS anchor_id
+            MATCH (c:Character {character_id: toInteger(anchor_id)})-[:ON_SIDE]->(s:BattleSide)<-[:HAS_SIDE]-(b:Battle)
+            WHERE s.anomaly_class IN ['high_sustain', 'low_sustain']
+              AND datetime(COALESCE(b.started_at, '1970-01-01T00:00:00Z')) >= datetime() - duration({days:$window_days})
+            WITH c, b,
+                 min(datetime(COALESCE(b.started_at, '1970-01-01T00:00:00Z'))) AS first_seen,
+                 max(datetime(COALESCE(b.started_at, '1970-01-01T00:00:00Z'))) AS last_seen,
+                 count(*) AS occurrence_count,
+                 avg(toFloat(s.z_efficiency_score)) AS avg_z_score,
+                 count(CASE WHEN datetime(COALESCE(b.started_at, '1970-01-01T00:00:00Z')) >= datetime() - duration({days:7}) THEN 1 END) AS recent_occurrence_count
+            WHERE occurrence_count >= $anom_threshold
+            MERGE (c)-[r:ASSOCIATED_WITH_ANOMALY]->(b)
+              SET r.first_seen = toString(first_seen),
+                  r.last_seen = toString(last_seen),
+                  r.occurrence_count = toInteger(occurrence_count),
+                  r.recent_occurrence_count = toInteger(recent_occurrence_count),
+                  r.avg_z_score = toFloat(avg_z_score),
+                  r.recent_weight = toFloat(recent_occurrence_count + avg_z_score),
+                  r.all_time_weight = toFloat(occurrence_count + avg_z_score),
+                  r.count = toInteger(occurrence_count)
+            """,
+            {"anchor_ids": anchor_ids, "window_days": RELATIONSHIP_WINDOW_DAYS, "anom_threshold": ANOMALY_ASSOC_THRESHOLD},
+        )
+
+        character_cursor = max(anchor_ids)
+        character_batches += 1
+        total_processed += len(anchor_ids)
+        total_written += len(anchor_ids)
+        total_relationships += len(anchor_ids)
+        _sync_state_upsert(
+            db,
+            GRAPH_BATCH_STATE_KEYS["derived_character_cursor"],
+            sync_mode="incremental",
+            status="running",
+            last_success_at=None,
+            last_cursor=_format_int_cursor(character_cursor),
+            last_row_count=total_written,
+            last_error_message=None,
+        )
+        _emit_batch_telemetry(
+            config.log_file,
+            job_name,
+            {
+                "batch_start": character_batches,
+                "batch_end": character_batches,
+                "rows_processed": len(anchor_ids),
+                "rows_written": len(anchor_ids),
+                "duration_ms": int((time.perf_counter() - batch_started) * 1000),
+                "checkpoint_after": f"character:{_format_int_cursor(character_cursor)}",
+                "errors": "",
+            },
+        )
+
+    fit_batches = 0
+    while fit_batches < max_fit_batches:
+        batch_started = time.perf_counter()
+        fit_rows = client.query(
+            """
+            MATCH (f:Fit)
+            WHERE toInteger(f.fit_id) > $cursor
+            RETURN toInteger(f.fit_id) AS fit_id
+            ORDER BY fit_id ASC
+            LIMIT $batch_size
+            """,
+            {"cursor": fit_cursor, "batch_size": fit_batch_size},
+        )
+        if not fit_rows:
+            fit_cursor = 0
+            break
+        fit_ids = [int(row["fit_id"]) for row in fit_rows if int(row.get("fit_id") or 0) > 0]
+        if not fit_ids:
+            break
+
+        client.query(
+            """
+            UNWIND $fit_ids AS anchor_fit_id
+            MATCH (f1:Fit {fit_id: toInteger(anchor_fit_id)})-[:CONTAINS]->(i:Item)<-[:CONTAINS]-(f2:Fit)
+            WHERE f1.fit_id < f2.fit_id
+            WITH f1, f2, count(DISTINCT i) AS shared_item_count
+            OPTIONAL MATCH (f1)-[:CONTAINS]->(i1:Item)
+            WITH f1, f2, shared_item_count, count(DISTINCT i1) AS f1_item_count
+            OPTIONAL MATCH (f2)-[:CONTAINS]->(i2:Item)
+            WITH f1, f2, shared_item_count, f1_item_count, count(DISTINCT i2) AS f2_item_count
+            WITH f1, f2, shared_item_count,
+                 toFloat(shared_item_count) / CASE WHEN (f1_item_count + f2_item_count - shared_item_count) = 0 THEN 1 ELSE (f1_item_count + f2_item_count - shared_item_count) END AS overlap_score
+            WHERE shared_item_count >= $fit_threshold
+            MERGE (f1)-[r:SHARES_ITEM_WITH]->(f2)
+              SET r.shared_item_count = toInteger(shared_item_count),
+                  r.occurrence_count = toInteger(shared_item_count),
+                  r.first_seen = toString(datetime()),
+                  r.last_seen = toString(datetime()),
+                  r.recent_occurrence_count = toInteger(shared_item_count),
+                  r.recent_weight = toFloat(overlap_score * 2.0),
+                  r.all_time_weight = toFloat(overlap_score),
+                  r.overlap_score = toFloat(overlap_score),
+                  r.weight = toFloat(overlap_score * 100.0)
+            """,
+            {"fit_ids": fit_ids, "fit_threshold": SHARED_ITEM_THRESHOLD},
+        )
+        client.query(
+            """
+            UNWIND $fit_ids AS anchor_fit_id
+            MATCH (f:Fit {fit_id: toInteger(anchor_fit_id)})-[r:SHARES_ITEM_WITH]->(:Fit)
+            WITH f, r ORDER BY r.weight DESC
+            WITH f, collect(r) AS rels
+            FOREACH(rel IN rels[$top_k..] | DELETE rel)
+            """,
+            {"fit_ids": fit_ids, "top_k": TOP_K_FIT_EDGES},
+        )
+        client.query(
+            """
+            UNWIND $fit_ids AS anchor_fit_id
+            MATCH (f_anchor:Fit {fit_id: toInteger(anchor_fit_id)})-[:CONTAINS]->(i:Item)
+            OPTIONAL MATCH (f_any:Fit)-[:CONTAINS]->(i)
+            WITH f_anchor, i, count(DISTINCT f_any) AS fit_count
+            OPTIONAL MATCH (d:Doctrine)-[:USES]->(:Fit)-[:CONTAINS]->(i)
+            WITH f_anchor, i, fit_count, count(DISTINCT d) AS doctrine_count
+            WHERE doctrine_count >= 2 OR fit_count >= 3
+            MERGE (f_anchor)-[r:USES_CRITICAL_ITEM]->(i)
+              SET r.criticality_score = toFloat(doctrine_count * 2 + fit_count),
+                  r.doctrine_count = toInteger(doctrine_count),
+                  r.fit_count = toInteger(fit_count),
+                  r.last_seen = toString(datetime())
+            """,
+            {"fit_ids": fit_ids},
+        )
+        fit_cursor = max(fit_ids)
+        fit_batches += 1
+        total_processed += len(fit_ids)
+        total_written += len(fit_ids)
+        total_relationships += len(fit_ids)
+        _sync_state_upsert(
+            db,
+            GRAPH_BATCH_STATE_KEYS["derived_fit_cursor"],
+            sync_mode="incremental",
+            status="running",
+            last_success_at=None,
+            last_cursor=_format_int_cursor(fit_cursor),
+            last_row_count=total_written,
+            last_error_message=None,
+        )
+        _emit_batch_telemetry(
+            config.log_file,
+            job_name,
+            {
+                "batch_start": character_batches + fit_batches,
+                "batch_end": character_batches + fit_batches,
+                "rows_processed": len(fit_ids),
+                "rows_written": len(fit_ids),
+                "duration_ms": int((time.perf_counter() - batch_started) * 1000),
+                "checkpoint_after": f"fit:{_format_int_cursor(fit_cursor)}",
+                "errors": "",
+            },
+        )
+
+    _sync_state_upsert(
+        db,
+        GRAPH_BATCH_STATE_KEYS["derived_character_cursor"],
+        sync_mode="incremental",
+        status="success",
+        last_success_at=_utc_now_sql(),
+        last_cursor=_format_int_cursor(character_cursor),
+        last_row_count=total_written,
+        last_error_message=None,
     )
-
-    # top-K co-occurrence retention per character
-    client.query(
-        """
-        MATCH (c:Character)-[r:CO_OCCURS_WITH]->(:Character)
-        WITH c, r ORDER BY r.weight DESC
-        WITH c, collect(r) AS rels
-        FOREACH(rel IN rels[$top_k..] | DELETE rel)
-        """,
-        {"top_k": TOP_K_CHARACTER_EDGES},
-    )
-
-    client.query(
-        """
-        MATCH (f1:Fit)-[:CONTAINS]->(i:Item)<-[:CONTAINS]-(f2:Fit)
-        WHERE f1.fit_id < f2.fit_id
-        WITH f1, f2, count(DISTINCT i) AS shared_item_count
-        OPTIONAL MATCH (f1)-[:CONTAINS]->(i1:Item)
-        WITH f1, f2, shared_item_count, count(DISTINCT i1) AS f1_item_count
-        OPTIONAL MATCH (f2)-[:CONTAINS]->(i2:Item)
-        WITH f1, f2, shared_item_count, f1_item_count, count(DISTINCT i2) AS f2_item_count
-        WITH f1, f2, shared_item_count,
-             toFloat(shared_item_count) / CASE WHEN (f1_item_count + f2_item_count - shared_item_count) = 0 THEN 1 ELSE (f1_item_count + f2_item_count - shared_item_count) END AS overlap_score
-        WHERE shared_item_count >= $fit_threshold
-        MERGE (f1)-[r:SHARES_ITEM_WITH]->(f2)
-          SET r.shared_item_count = toInteger(shared_item_count),
-              r.occurrence_count = toInteger(shared_item_count),
-              r.first_seen = toString(datetime()),
-              r.last_seen = toString(datetime()),
-              r.recent_occurrence_count = toInteger(shared_item_count),
-              r.recent_weight = toFloat(overlap_score * 2.0),
-              r.all_time_weight = toFloat(overlap_score),
-              r.overlap_score = toFloat(overlap_score),
-              r.weight = toFloat(overlap_score * 100.0)
-        """,
-        {"fit_threshold": SHARED_ITEM_THRESHOLD},
-    )
-    client.query(
-        """
-        MATCH (f:Fit)-[r:SHARES_ITEM_WITH]->(:Fit)
-        WITH f, r ORDER BY r.weight DESC
-        WITH f, collect(r) AS rels
-        FOREACH(rel IN rels[$top_k..] | DELETE rel)
-        """,
-        {"top_k": TOP_K_FIT_EDGES},
-    )
-
-    client.query(
-        """
-        MATCH (c:Character)-[:ON_SIDE]->(s:BattleSide)<-[:HAS_SIDE]-(b:Battle)
-        WHERE s.anomaly_class IN ['high_sustain', 'low_sustain']
-          AND datetime(COALESCE(b.started_at, '1970-01-01T00:00:00Z')) >= datetime() - duration({days:$window_days})
-        WITH c, b,
-             min(datetime(COALESCE(b.started_at, '1970-01-01T00:00:00Z'))) AS first_seen,
-             max(datetime(COALESCE(b.started_at, '1970-01-01T00:00:00Z'))) AS last_seen,
-             count(*) AS occurrence_count,
-             avg(toFloat(s.z_efficiency_score)) AS avg_z_score,
-             count(CASE WHEN datetime(COALESCE(b.started_at, '1970-01-01T00:00:00Z')) >= datetime() - duration({days:7}) THEN 1 END) AS recent_occurrence_count
-        WHERE occurrence_count >= $anom_threshold
-        MERGE (c)-[r:ASSOCIATED_WITH_ANOMALY]->(b)
-          SET r.first_seen = toString(first_seen),
-              r.last_seen = toString(last_seen),
-              r.occurrence_count = toInteger(occurrence_count),
-              r.recent_occurrence_count = toInteger(recent_occurrence_count),
-              r.avg_z_score = toFloat(avg_z_score),
-              r.recent_weight = toFloat(recent_occurrence_count + avg_z_score),
-              r.all_time_weight = toFloat(occurrence_count + avg_z_score),
-              r.count = toInteger(occurrence_count)
-        """,
-        {"window_days": RELATIONSHIP_WINDOW_DAYS, "anom_threshold": ANOMALY_ASSOC_THRESHOLD},
-    )
-
-    client.query(
-        """
-        MATCH (c:Character)-[:ON_SIDE]->(s:BattleSide)<-[:HAS_SIDE]-(b:Battle)
-        WHERE datetime(COALESCE(b.started_at, '1970-01-01T00:00:00Z')) >= datetime() - duration({days:$window_days})
-        WITH c,
-             collect(DISTINCT s.side_key) AS side_keys,
-             min(datetime(COALESCE(b.started_at, '1970-01-01T00:00:00Z'))) AS first_seen,
-             max(datetime(COALESCE(b.started_at, '1970-01-01T00:00:00Z'))) AS last_seen,
-             count(DISTINCT b) AS occurrence_count
-        WHERE size(side_keys) > 1
-        MERGE (c)-[r:CROSSED_SIDES]->(c)
-          SET r.first_seen = toString(first_seen),
-              r.last_seen = toString(last_seen),
-              r.occurrence_count = toInteger(occurrence_count),
-              r.recent_occurrence_count = toInteger(occurrence_count),
-              r.side_count = size(side_keys),
-              r.side_transition_count = size(side_keys) - 1,
-              r.recent_weight = toFloat(size(side_keys)),
-              r.all_time_weight = toFloat(size(side_keys) + occurrence_count)
-        """,
-        {"window_days": RELATIONSHIP_WINDOW_DAYS},
-    )
-
-    client.query(
-        """
-        MATCH (d:Doctrine)-[:USES]->(f:Fit)-[:CONTAINS]->(i:Item)
-        WITH i, count(DISTINCT d) AS doctrine_count, count(DISTINCT f) AS fit_count
-        WHERE doctrine_count >= 2 OR fit_count >= 3
-        MATCH (f2:Fit)-[:CONTAINS]->(i)
-        MERGE (f2)-[r:USES_CRITICAL_ITEM]->(i)
-          SET r.criticality_score = toFloat(doctrine_count * 2 + fit_count),
-              r.doctrine_count = toInteger(doctrine_count),
-              r.fit_count = toInteger(fit_count),
-              r.last_seen = toString(datetime())
-        """
+    _sync_state_upsert(
+        db,
+        GRAPH_BATCH_STATE_KEYS["derived_fit_cursor"],
+        sync_mode="incremental",
+        status="success",
+        last_success_at=_utc_now_sql(),
+        last_cursor=_format_int_cursor(fit_cursor),
+        last_row_count=total_written,
+        last_error_message=None,
     )
 
     result = _job_payload(
         job_name,
         started,
         "success",
-        rows_processed=1,
-        rows_written=1,
-        relationships_created=1,
+        rows_processed=total_processed,
+        rows_written=total_written,
+        relationships_created=total_relationships,
+        character_batches=character_batches,
+        fit_batches=fit_batches,
+        character_batch_size=character_batch_size,
+        fit_batch_size=fit_batch_size,
+        character_checkpoint=_format_int_cursor(character_cursor),
+        fit_checkpoint=_format_int_cursor(fit_cursor),
     )
     _write_graph_log(config.log_file, "graph.derived.completed", result)
     return result
@@ -611,26 +857,51 @@ def _upsert_table(db: SupplyCoreDb, table_name: str, columns: str, placeholders:
 
 
 def _ensure_doctrine_dependency_depth_schema(db: SupplyCoreDb) -> None:
-    column = db.fetch_one(
-        """
-        SELECT COLUMN_NAME
-        FROM INFORMATION_SCHEMA.COLUMNS
-        WHERE TABLE_SCHEMA = DATABASE()
-          AND TABLE_NAME = 'doctrine_dependency_depth'
-          AND COLUMN_NAME = 'unique_item_count'
-        LIMIT 1
-        """
-    )
-    if column:
-        return
+    expected_columns: list[tuple[str, str, str]] = [
+        ("fit_count", "INT UNSIGNED NOT NULL DEFAULT 0", "doctrine_id"),
+        ("item_count", "INT UNSIGNED NOT NULL DEFAULT 0", "fit_count"),
+        ("unique_item_count", "INT UNSIGNED NOT NULL DEFAULT 0", "item_count"),
+        ("dependency_depth_score", "DECIMAL(12,4) NOT NULL DEFAULT 0.0000", "unique_item_count"),
+        ("computed_at", "DATETIME NOT NULL", "dependency_depth_score"),
+    ]
+    for column_name, definition, after_column in expected_columns:
+        row = db.fetch_one(
+            """
+            SELECT COLUMN_NAME
+            FROM INFORMATION_SCHEMA.COLUMNS
+            WHERE TABLE_SCHEMA = DATABASE()
+              AND TABLE_NAME = 'doctrine_dependency_depth'
+              AND COLUMN_NAME = %s
+            LIMIT 1
+            """,
+            (column_name,),
+        )
+        if row:
+            continue
+        db.execute(
+            f"ALTER TABLE doctrine_dependency_depth ADD COLUMN {column_name} {definition} AFTER {after_column}"
+        )
 
-    db.execute(
-        """
-        ALTER TABLE doctrine_dependency_depth
-        ADD COLUMN unique_item_count INT UNSIGNED NOT NULL DEFAULT 0
-        AFTER item_count
-        """
-    )
+    for index_name, index_cols in (
+        ("idx_doctrine_dependency_depth_score", "dependency_depth_score, computed_at"),
+        ("idx_doctrine_dependency_depth_computed", "computed_at"),
+    ):
+        index_row = db.fetch_one(
+            """
+            SELECT 1
+            FROM INFORMATION_SCHEMA.STATISTICS
+            WHERE TABLE_SCHEMA = DATABASE()
+              AND TABLE_NAME = 'doctrine_dependency_depth'
+              AND INDEX_NAME = %s
+            LIMIT 1
+            """,
+            (index_name,),
+        )
+        if index_row:
+            continue
+        db.execute(
+            f"ALTER TABLE doctrine_dependency_depth ADD KEY {index_name} ({index_cols})"
+        )
 
 
 def run_compute_graph_topology_metrics(db: SupplyCoreDb, neo4j_raw: dict[str, Any] | None = None) -> dict[str, Any]:
