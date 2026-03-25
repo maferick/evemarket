@@ -10,7 +10,9 @@ from ..worker_runtime import WorkerStats, payload_checksum, resident_memory_byte
 
 def _evaluate_market_row(row: dict[str, Any], thresholds: dict[str, Any]) -> dict[str, Any]:
     alliance_price = float(row["alliance_best_sell_price"]) if row.get("alliance_best_sell_price") is not None else None
+    alliance_buy_price = float(row["alliance_best_buy_price"]) if row.get("alliance_best_buy_price") is not None else None
     reference_price = float(row["reference_best_sell_price"]) if row.get("reference_best_sell_price") is not None else None
+    reference_buy_price = float(row["reference_best_buy_price"]) if row.get("reference_best_buy_price") is not None else None
     alliance_sell_volume = int(row.get("alliance_total_sell_volume") or 0)
     alliance_sell_orders = int(row.get("alliance_sell_order_count") or 0)
     reference_sell_volume = int(row.get("reference_total_sell_volume") or 0)
@@ -55,6 +57,11 @@ def _evaluate_market_row(row: dict[str, Any], thresholds: dict[str, Any]) -> dic
 
     return {
         **row,
+        "type_id": int(row.get("type_id") or 0),
+        "alliance_best_sell_price": alliance_price,
+        "alliance_best_buy_price": alliance_buy_price,
+        "reference_best_sell_price": reference_price,
+        "reference_best_buy_price": reference_buy_price,
         "alliance_total_sell_volume": alliance_sell_volume,
         "alliance_sell_order_count": alliance_sell_orders,
         "reference_total_sell_volume": reference_sell_volume,
