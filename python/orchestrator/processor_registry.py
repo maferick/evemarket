@@ -21,6 +21,7 @@ from .jobs import (
     run_compute_signals,
     run_compute_suspicion_scores,
     run_compute_suspicion_scores_v2,
+    run_compute_counterintel_pipeline,
 )
 
 PYTHON_COMPUTE_PROCESSOR_JOB_KEYS: set[str] = {
@@ -40,6 +41,7 @@ PYTHON_COMPUTE_PROCESSOR_JOB_KEYS: set[str] = {
     "compute_battle_anomalies",
     "compute_battle_actor_features",
     "compute_suspicion_scores",
+    "compute_counterintel_pipeline",
 }
 
 
@@ -76,6 +78,11 @@ def run_compute_processor(job_key: str, db: Any, raw_config: dict[str, Any]) -> 
         return _compute_result_shape(run_compute_battle_actor_features(db, neo4j_runtime(raw_config), battle_runtime(raw_config)), job_key)
     if job_key == "compute_suspicion_scores":
         return _compute_result_shape(run_compute_suspicion_scores(db, battle_runtime(raw_config)), job_key)
+    if job_key == "compute_counterintel_pipeline":
+        return _compute_result_shape(
+            run_compute_counterintel_pipeline(db, neo4j_runtime(raw_config), battle_runtime(raw_config)),
+            job_key,
+        )
     raise KeyError(f"No Python processor is registered for compute job {job_key}.")
 
 

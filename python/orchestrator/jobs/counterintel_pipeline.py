@@ -1,0 +1,493 @@
+from __future__ import annotations
+
+from collections import defaultdict
+from datetime import UTC, datetime, timedelta
+import json
+import math
+import time
+import urllib.error
+import urllib.request
+from typing import Any
+
+from ..db import SupplyCoreDb
+from ..job_utils import acquire_job_lock, finish_job_run, release_job_lock, start_job_run
+from ..json_utils import json_dumps_safe
+from ..neo4j import Neo4jClient, Neo4jConfig
+
+COUNTERINTEL_DATASET_KEY = "compute_counterintel_pipeline_cursor"
+DEFAULT_BATTLE_BATCH_SIZE = 40
+DEFAULT_MAX_BATCHES = 4
+
+
+def _now_sql() -> str:
+    return datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _safe_div(numerator: float, denominator: float, default: float = 0.0) -> float:
+    if denominator <= 0:
+        return default
+    return numerator / denominator
+
+
+def _sync_state_get(db: SupplyCoreDb, dataset_key: str) -> dict[str, Any] | None:
+    return db.fetch_one("SELECT dataset_key, last_cursor FROM sync_state WHERE dataset_key = %s LIMIT 1", (dataset_key,))
+
+
+def _sync_state_upsert(db: SupplyCoreDb, dataset_key: str, cursor: str, status: str, row_count: int) -> None:
+    db.execute(
+        """
+        INSERT INTO sync_state (dataset_key, sync_mode, status, last_success_at, last_cursor, last_row_count, last_error_message)
+        VALUES (%s, 'incremental', %s, UTC_TIMESTAMP(), %s, %s, NULL)
+        ON DUPLICATE KEY UPDATE
+            status = VALUES(status),
+            last_success_at = VALUES(last_success_at),
+            last_cursor = VALUES(last_cursor),
+            last_row_count = VALUES(last_row_count),
+            last_error_message = NULL,
+            updated_at = CURRENT_TIMESTAMP
+        """,
+        (dataset_key, status, cursor, max(0, int(row_count))),
+    )
+
+
+def _http_json(url: str, user_agent: str, timeout_seconds: int = 20) -> dict[str, Any] | None:
+    request = urllib.request.Request(url, headers={"Accept": "application/json", "User-Agent": user_agent})
+    try:
+        with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+            if int(getattr(response, "status", response.getcode())) != 200:
+                return None
+            body = response.read().decode("utf-8", errors="replace")
+    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError):
+        return None
+
+    try:
+        parsed = json.loads(body)
+    except json.JSONDecodeError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _fetch_evewho_character(character_id: int, user_agent: str) -> dict[str, Any] | None:
+    return _http_json(f"https://evewho.com/api/character/{character_id}", user_agent)
+
+
+def _enrich_org_history_cache(db: SupplyCoreDb, character_ids: list[int], user_agent: str, ttl_hours: int, max_fetches: int) -> int:
+    if not character_ids:
+        return 0
+
+    cutoff = (datetime.now(UTC) - timedelta(hours=max(1, ttl_hours))).strftime("%Y-%m-%d %H:%M:%S")
+    fresh = db.fetch_all(
+        """
+        SELECT character_id
+        FROM character_org_history_cache
+        WHERE source = 'evewho'
+          AND fetched_at >= %s
+          AND character_id IN (""" + ",".join(["%s"] * len(character_ids)) + ")",
+        tuple([cutoff, *character_ids]),
+    )
+    fresh_ids = {int(row.get("character_id") or 0) for row in fresh}
+    pending = [cid for cid in character_ids if cid not in fresh_ids][:max(0, max_fetches)]
+    if not pending:
+        return 0
+
+    written = 0
+    fetched_at = _now_sql()
+    expires_at = (datetime.now(UTC) + timedelta(hours=max(1, ttl_hours))).strftime("%Y-%m-%d %H:%M:%S")
+    with db.transaction() as (_, cursor):
+        for character_id in pending:
+            payload = _fetch_evewho_character(character_id, user_agent)
+            if not payload:
+                continue
+            history = payload.get("corporation_history") if isinstance(payload.get("corporation_history"), list) else []
+            corp_hops = len(history)
+            short_tenure = 0
+            for idx, row in enumerate(history):
+                joined = str(row.get("start_date") or "")
+                left = str(history[idx + 1].get("start_date") or "") if idx + 1 < len(history) else ""
+                if joined and left:
+                    try:
+                        delta = abs((datetime.fromisoformat(left.replace("Z", "+00:00")) - datetime.fromisoformat(joined.replace("Z", "+00:00"))).days)
+                        if delta <= 30:
+                            short_tenure += 1
+                    except ValueError:
+                        pass
+            cursor.execute(
+                """
+                INSERT INTO character_org_history_cache (
+                    character_id, source, current_corporation_id, current_alliance_id,
+                    corp_hops_180d, short_tenure_hops_180d, hostile_adjacent_hops_180d,
+                    history_json, fetched_at, expires_at
+                ) VALUES (%s, 'evewho', %s, %s, %s, %s, %s, %s, %s, %s)
+                ON DUPLICATE KEY UPDATE
+                    current_corporation_id = VALUES(current_corporation_id),
+                    current_alliance_id = VALUES(current_alliance_id),
+                    corp_hops_180d = VALUES(corp_hops_180d),
+                    short_tenure_hops_180d = VALUES(short_tenure_hops_180d),
+                    hostile_adjacent_hops_180d = VALUES(hostile_adjacent_hops_180d),
+                    history_json = VALUES(history_json),
+                    fetched_at = VALUES(fetched_at),
+                    expires_at = VALUES(expires_at)
+                """,
+                (
+                    character_id,
+                    int(payload.get("corporation_id") or 0) or None,
+                    int(payload.get("alliance_id") or 0) or None,
+                    corp_hops,
+                    short_tenure,
+                    0,
+                    json_dumps_safe(payload),
+                    fetched_at,
+                    expires_at,
+                ),
+            )
+            written += 1
+    return written
+
+
+def run_compute_counterintel_pipeline(
+    db: SupplyCoreDb,
+    neo4j_raw: dict[str, Any] | None = None,
+    runtime: dict[str, Any] | None = None,
+    *,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    lock_key = "compute_counterintel_pipeline"
+    owner = acquire_job_lock(db, lock_key, ttl_seconds=1200)
+    if owner is None:
+        return {"status": "skipped", "rows_processed": 0, "rows_written": 0, "reason": "lock-not-acquired", "job_name": lock_key}
+
+    job = start_job_run(db, lock_key)
+    started = time.perf_counter()
+    rows_processed = 0
+    rows_written = 0
+    computed_at = _now_sql()
+    runtime = runtime or {}
+    batch_size = max(10, min(200, int(runtime.get("counterintel_batch_size") or DEFAULT_BATTLE_BATCH_SIZE)))
+    max_batches = max(1, min(20, int(runtime.get("counterintel_max_batches") or DEFAULT_MAX_BATCHES)))
+
+    try:
+        cursor = str((_sync_state_get(db, COUNTERINTEL_DATASET_KEY) or {}).get("last_cursor") or "")
+        user_agent = str(runtime.get("evewho_user_agent") or "SupplyCoreCounterIntel/1.0 (+https://supplycore)")
+        org_cache_ttl_hours = max(6, int(runtime.get("evewho_cache_ttl_hours") or 24))
+        org_max_fetches = max(5, int(runtime.get("evewho_max_fetches_per_run") or 100))
+
+        neo4j_config = Neo4jConfig.from_runtime(neo4j_raw or {})
+        neo4j = Neo4jClient(neo4j_config) if neo4j_config.enabled else None
+
+        processed_battles = 0
+        batch_count = 0
+        last_battle_id = cursor
+        while batch_count < max_batches:
+            battles = db.fetch_all(
+                """
+                SELECT br.battle_id, br.started_at, br.participant_count
+                FROM battle_rollups br
+                WHERE br.eligible_for_suspicion = 1
+                  AND br.participant_count >= 100
+                  AND br.battle_id > %s
+                ORDER BY br.battle_id ASC
+                LIMIT %s
+                """,
+                (last_battle_id, batch_size),
+            )
+            if not battles:
+                break
+
+            battle_ids = [str(row["battle_id"]) for row in battles]
+            last_battle_id = battle_ids[-1]
+            processed_battles += len(battle_ids)
+            batch_count += 1
+
+            placeholders = ",".join(["%s"] * len(battle_ids))
+            target_rows = db.fetch_all(
+                f"""
+                SELECT btm.battle_id, btm.side_key, btm.victim_ship_type_id,
+                       AVG(btm.time_to_die_seconds) AS hull_survival_seconds,
+                       AVG(btm.expected_time_to_die_seconds) AS baseline_survival_seconds,
+                       COUNT(*) AS sample_count,
+                       AVG(btm.sustain_factor) AS sustain_factor
+                FROM battle_target_metrics btm
+                WHERE btm.battle_id IN ({placeholders})
+                GROUP BY btm.battle_id, btm.side_key, btm.victim_ship_type_id
+                """,
+                tuple(battle_ids),
+            )
+            rows_processed += len(target_rows)
+
+            overperformance_rows: list[dict[str, Any]] = []
+            hull_rows: list[dict[str, Any]] = []
+            side_lifts: dict[tuple[str, str], list[float]] = defaultdict(list)
+            for row in target_rows:
+                battle_id = str(row.get("battle_id") or "")
+                side_key = str(row.get("side_key") or "unknown")
+                hull_survival = float(row.get("hull_survival_seconds") or 0.0)
+                baseline_survival = max(1.0, float(row.get("baseline_survival_seconds") or 0.0))
+                survival_lift = hull_survival / baseline_survival
+                side_lifts[(battle_id, side_key)].append(survival_lift)
+                hull_rows.append(
+                    {
+                        "battle_id": battle_id,
+                        "side_key": side_key,
+                        "victim_ship_type_id": int(row.get("victim_ship_type_id") or 0),
+                        "hull_survival_seconds": hull_survival,
+                        "baseline_survival_seconds": baseline_survival,
+                        "survival_lift": survival_lift,
+                        "sample_count": int(row.get("sample_count") or 0),
+                    }
+                )
+
+            for (battle_id, side_key), lifts in side_lifts.items():
+                sustain_lift = _safe_div(sum(lifts), float(max(1, len(lifts))), 0.0)
+                control_delta = sustain_lift - 1.0
+                anomaly_class = "normal"
+                if sustain_lift >= 1.25:
+                    anomaly_class = "high_enemy_overperformance"
+                elif sustain_lift <= 0.85:
+                    anomaly_class = "underperforming"
+                overperformance_rows.append(
+                    {
+                        "battle_id": battle_id,
+                        "side_key": side_key,
+                        "overperformance_score": max(0.0, min(3.0, sustain_lift)),
+                        "sustain_lift_score": sustain_lift,
+                        "hull_survival_lift_score": sustain_lift,
+                        "control_delta_score": control_delta,
+                        "anomaly_class": anomaly_class,
+                        "evidence_json": json_dumps_safe({"mean_hull_survival_lift": sustain_lift, "sample_size": len(lifts)}),
+                    }
+                )
+
+            participants = db.fetch_all(
+                f"""
+                SELECT bp.battle_id, bp.character_id, bp.side_key,
+                       COALESCE(cgi.bridge_score, 0) AS bridge_score
+                FROM battle_participants bp
+                LEFT JOIN character_graph_intelligence cgi ON cgi.character_id = bp.character_id
+                WHERE bp.battle_id IN ({placeholders})
+                """,
+                tuple(battle_ids),
+            )
+            rows_processed += len(participants)
+            by_character: dict[int, list[dict[str, Any]]] = defaultdict(list)
+            anomalous_battles = {f"{row['battle_id']}|{row['side_key']}" for row in overperformance_rows if row["anomaly_class"] == "high_enemy_overperformance"}
+            for row in participants:
+                cid = int(row.get("character_id") or 0)
+                if cid <= 0:
+                    continue
+                by_character[cid].append(row)
+
+            org_written = _enrich_org_history_cache(db, list(by_character.keys()), user_agent, org_cache_ttl_hours, org_max_fetches)
+
+            org_rows = db.fetch_all(
+                "SELECT character_id, corp_hops_180d, short_tenure_hops_180d FROM character_org_history_cache WHERE source = 'evewho' AND character_id IN ("
+                + ",".join(["%s"] * len(by_character))
+                + ")",
+                tuple(by_character.keys()) if by_character else tuple([0]),
+            ) if by_character else []
+            org_by_character = {int(row["character_id"]): row for row in org_rows}
+
+            feature_rows: list[dict[str, Any]] = []
+            score_rows: list[dict[str, Any]] = []
+            evidence_rows: list[dict[str, Any]] = []
+            for character_id, presences in by_character.items():
+                total = len({str(p.get("battle_id")) for p in presences})
+                anomaly_hits = 0
+                sustain_lifts: list[float] = []
+                for row in presences:
+                    key = f"{row.get('battle_id')}|{row.get('side_key')}"
+                    if key in anomalous_battles:
+                        anomaly_hits += 1
+                    for over in overperformance_rows:
+                        if over["battle_id"] == str(row.get("battle_id")) and over["side_key"] != str(row.get("side_key")):
+                            sustain_lifts.append(float(over["sustain_lift_score"]))
+                anomalous_rate = _safe_div(float(anomaly_hits), float(max(1, total)), 0.0)
+                control_rate = max(0.0, 1.0 - anomalous_rate)
+                enemy_sustain_lift = _safe_div(sum(sustain_lifts), float(max(1, len(sustain_lifts))), 0.0)
+                bridge = _safe_div(sum(float(r.get("bridge_score") or 0.0) for r in presences), float(max(1, len(presences))), 0.0)
+                org = org_by_character.get(character_id, {})
+                corp_hops = int(org.get("corp_hops_180d") or 0)
+                short_hops = int(org.get("short_tenure_hops_180d") or 0)
+                corp_hop_frequency = _safe_div(float(corp_hops), 180.0, 0.0)
+                short_ratio = _safe_div(float(short_hops), float(max(1, corp_hops)), 0.0)
+                repeatability = min(1.0, _safe_div(float(anomaly_hits), 3.0, 0.0))
+                feature_rows.append(
+                    {
+                        "character_id": character_id,
+                        "anomalous_battle_presence_count": anomaly_hits,
+                        "control_battle_presence_count": max(0, total - anomaly_hits),
+                        "anomalous_presence_rate": anomalous_rate,
+                        "control_presence_rate": control_rate,
+                        "enemy_same_hull_survival_lift": enemy_sustain_lift,
+                        "enemy_sustain_lift": enemy_sustain_lift,
+                        "co_presence_anomalous_density": anomalous_rate,
+                        "graph_bridge_score": bridge,
+                        "corp_hop_frequency_180d": corp_hop_frequency,
+                        "short_tenure_ratio_180d": short_ratio,
+                        "repeatability_score": repeatability,
+                    }
+                )
+                review_score = max(0.0, min(1.0, 0.34 * anomalous_rate + 0.26 * min(1.0, enemy_sustain_lift / 1.5) + 0.2 * min(1.0, bridge / 5.0) + 0.1 * min(1.0, corp_hop_frequency * 10) + 0.1 * repeatability))
+                evidence_rows.extend(
+                    [
+                        {"character_id": character_id, "evidence_key": "anomalous_battle_presence_count", "evidence_value": float(anomaly_hits), "evidence_text": f"present in {anomaly_hits} anomalous large battles", "evidence_payload_json": None},
+                        {"character_id": character_id, "evidence_key": "anomalous_presence_rate", "evidence_value": anomalous_rate, "evidence_text": f"anomalous presence rate {anomalous_rate:.3f} vs control {control_rate:.3f}", "evidence_payload_json": None},
+                        {"character_id": character_id, "evidence_key": "enemy_sustain_lift", "evidence_value": enemy_sustain_lift, "evidence_text": f"enemy sustain lift {enemy_sustain_lift:.3f} when present", "evidence_payload_json": None},
+                    ]
+                )
+                score_rows.append({"character_id": character_id, "review_priority_score": review_score, "confidence_score": min(1.0, _safe_div(float(total), 8.0, 0.0)), "evidence_count": 3})
+
+            sorted_scores = sorted([float(row["review_priority_score"]) for row in score_rows])
+            for row in score_rows:
+                row["percentile_rank"] = _safe_div(float(sum(1 for x in sorted_scores if x <= float(row["review_priority_score"]))), float(max(1, len(sorted_scores))), 0.0)
+
+            if not dry_run:
+                with db.transaction() as (_, cursor_db):
+                    for row in hull_rows:
+                        cursor_db.execute(
+                            """
+                            INSERT INTO hull_survival_anomaly_metrics (
+                                battle_id, side_key, victim_ship_type_id, hull_survival_seconds, baseline_survival_seconds, survival_lift, sample_count, computed_at
+                            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                            ON DUPLICATE KEY UPDATE
+                                hull_survival_seconds = VALUES(hull_survival_seconds),
+                                baseline_survival_seconds = VALUES(baseline_survival_seconds),
+                                survival_lift = VALUES(survival_lift),
+                                sample_count = VALUES(sample_count),
+                                computed_at = VALUES(computed_at)
+                            """,
+                            (row["battle_id"], row["side_key"], row["victim_ship_type_id"], row["hull_survival_seconds"], row["baseline_survival_seconds"], row["survival_lift"], row["sample_count"], computed_at),
+                        )
+                    for row in overperformance_rows:
+                        cursor_db.execute(
+                            """
+                            INSERT INTO battle_enemy_overperformance_scores (
+                                battle_id, side_key, overperformance_score, sustain_lift_score, hull_survival_lift_score,
+                                control_delta_score, anomaly_class, evidence_json, computed_at
+                            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                            ON DUPLICATE KEY UPDATE
+                                overperformance_score = VALUES(overperformance_score),
+                                sustain_lift_score = VALUES(sustain_lift_score),
+                                hull_survival_lift_score = VALUES(hull_survival_lift_score),
+                                control_delta_score = VALUES(control_delta_score),
+                                anomaly_class = VALUES(anomaly_class),
+                                evidence_json = VALUES(evidence_json),
+                                computed_at = VALUES(computed_at)
+                            """,
+                            (row["battle_id"], row["side_key"], row["overperformance_score"], row["sustain_lift_score"], row["hull_survival_lift_score"], row["control_delta_score"], row["anomaly_class"], row["evidence_json"], computed_at),
+                        )
+                    for row in feature_rows:
+                        cursor_db.execute(
+                            """
+                            INSERT INTO character_counterintel_features (
+                                character_id, anomalous_battle_presence_count, control_battle_presence_count,
+                                anomalous_presence_rate, control_presence_rate, enemy_same_hull_survival_lift,
+                                enemy_sustain_lift, co_presence_anomalous_density, graph_bridge_score,
+                                corp_hop_frequency_180d, short_tenure_ratio_180d, repeatability_score, computed_at
+                            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                            ON DUPLICATE KEY UPDATE
+                                anomalous_battle_presence_count = VALUES(anomalous_battle_presence_count),
+                                control_battle_presence_count = VALUES(control_battle_presence_count),
+                                anomalous_presence_rate = VALUES(anomalous_presence_rate),
+                                control_presence_rate = VALUES(control_presence_rate),
+                                enemy_same_hull_survival_lift = VALUES(enemy_same_hull_survival_lift),
+                                enemy_sustain_lift = VALUES(enemy_sustain_lift),
+                                co_presence_anomalous_density = VALUES(co_presence_anomalous_density),
+                                graph_bridge_score = VALUES(graph_bridge_score),
+                                corp_hop_frequency_180d = VALUES(corp_hop_frequency_180d),
+                                short_tenure_ratio_180d = VALUES(short_tenure_ratio_180d),
+                                repeatability_score = VALUES(repeatability_score),
+                                computed_at = VALUES(computed_at)
+                            """,
+                            (row["character_id"], row["anomalous_battle_presence_count"], row["control_battle_presence_count"], row["anomalous_presence_rate"], row["control_presence_rate"], row["enemy_same_hull_survival_lift"], row["enemy_sustain_lift"], row["co_presence_anomalous_density"], row["graph_bridge_score"], row["corp_hop_frequency_180d"], row["short_tenure_ratio_180d"], row["repeatability_score"], computed_at),
+                        )
+                    for row in score_rows:
+                        cursor_db.execute(
+                            """
+                            INSERT INTO character_counterintel_scores (
+                                character_id, review_priority_score, percentile_rank, confidence_score, evidence_count, computed_at
+                            ) VALUES (%s, %s, %s, %s, %s, %s)
+                            ON DUPLICATE KEY UPDATE
+                                review_priority_score = VALUES(review_priority_score),
+                                percentile_rank = VALUES(percentile_rank),
+                                confidence_score = VALUES(confidence_score),
+                                evidence_count = VALUES(evidence_count),
+                                computed_at = VALUES(computed_at)
+                            """,
+                            (row["character_id"], row["review_priority_score"], row["percentile_rank"], row["confidence_score"], row["evidence_count"], computed_at),
+                        )
+                    for row in evidence_rows:
+                        cursor_db.execute(
+                            """
+                            INSERT INTO character_counterintel_evidence (
+                                character_id, evidence_key, evidence_value, evidence_text, evidence_payload_json, computed_at
+                            ) VALUES (%s, %s, %s, %s, %s, %s)
+                            ON DUPLICATE KEY UPDATE
+                                evidence_value = VALUES(evidence_value),
+                                evidence_text = VALUES(evidence_text),
+                                evidence_payload_json = VALUES(evidence_payload_json),
+                                computed_at = VALUES(computed_at)
+                            """,
+                            (row["character_id"], row["evidence_key"], row["evidence_value"], row["evidence_text"], row["evidence_payload_json"], computed_at),
+                        )
+                    if battle_ids:
+                        cursor_db.execute(
+                            "UPDATE killmail_events SET battle_id = %s WHERE battle_id IS NULL AND solar_system_id = (SELECT system_id FROM battle_rollups WHERE battle_id = %s LIMIT 1) AND effective_killmail_at BETWEEN (SELECT started_at FROM battle_rollups WHERE battle_id = %s LIMIT 1) AND (SELECT ended_at FROM battle_rollups WHERE battle_id = %s LIMIT 1)",
+                            (battle_ids[0], battle_ids[0], battle_ids[0], battle_ids[0]),
+                        )
+
+            if neo4j and overperformance_rows:
+                neo4j.query(
+                    """
+                    UNWIND $rows AS row
+                    MERGE (b:Battle {battle_id: row.battle_id})
+                    MERGE (s:BattleSide {side_uid: row.battle_id + '|' + row.side_key})
+                    MERGE (s)-[:BELONGS_TO]->(b)
+                    SET s.overperformance_score = row.overperformance_score,
+                        s.anomaly_class = row.anomaly_class,
+                        s.computed_at = row.computed_at
+                    """,
+                    {"rows": [{**row, "computed_at": computed_at} for row in overperformance_rows]},
+                )
+                neo4j.query(
+                    """
+                    UNWIND $rows AS row
+                    MERGE (c:Character {character_id: toInteger(row.character_id)})
+                    MERGE (b:Battle {battle_id: row.battle_id})
+                    MERGE (c)-[r:PRESENT_IN_ANOMALOUS_BATTLE]->(b)
+                    SET r.review_priority_score = row.review_priority_score,
+                        r.computed_at = row.computed_at
+                    """,
+                    {
+                        "rows": [
+                            {"character_id": row["character_id"], "battle_id": p["battle_id"], "review_priority_score": row["review_priority_score"], "computed_at": computed_at}
+                            for row in score_rows
+                            for p in by_character.get(int(row["character_id"]), [])
+                            if f"{p.get('battle_id')}|{p.get('side_key')}" in anomalous_battles
+                        ]
+                    },
+                )
+
+            rows_written += len(hull_rows) + len(overperformance_rows) + len(feature_rows) + len(score_rows) + len(evidence_rows) + org_written
+            _sync_state_upsert(db, COUNTERINTEL_DATASET_KEY, last_battle_id, "success", rows_written)
+
+        duration_ms = int((time.perf_counter() - started) * 1000)
+        result = {
+            "status": "success",
+            "job_name": lock_key,
+            "rows_processed": rows_processed,
+            "rows_written": 0 if dry_run else rows_written,
+            "rows_would_write": rows_written if dry_run else rows_written,
+            "computed_at": computed_at,
+            "cursor": last_battle_id,
+            "duration_ms": duration_ms,
+            "dry_run": dry_run,
+            "summary": f"processed {processed_battles} eligible 100+ participant battles across {batch_count} batches",
+        }
+        finish_job_run(db, job, status="success", rows_processed=rows_processed, rows_written=rows_written, meta=result)
+        return result
+    except Exception as exc:
+        finish_job_run(db, job, status="failed", rows_processed=rows_processed, rows_written=rows_written, error_text=str(exc))
+        _sync_state_upsert(db, COUNTERINTEL_DATASET_KEY, "", "failed", rows_written)
+        raise
+    finally:
+        release_job_lock(db, lock_key, owner)

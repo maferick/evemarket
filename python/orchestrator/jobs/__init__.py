@@ -20,3 +20,4 @@ from .battle_intelligence import (
     run_compute_suspicion_scores,
 )
 from .behavioral_intelligence_v2 import run_compute_behavioral_baselines, run_compute_suspicion_scores_v2
+from .counterintel_pipeline import run_compute_counterintel_pipeline

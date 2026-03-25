@@ -177,6 +177,7 @@ def run_compute_battle_rollups(db: SupplyCoreDb, runtime: dict[str, Any] | None 
         killmails = db.fetch_all(
             """
             SELECT
+                ke.sequence_id,
                 ke.killmail_id,
                 ke.solar_system_id AS system_id,
                 ke.effective_killmail_at AS killmail_time,
@@ -200,6 +201,7 @@ def run_compute_battle_rollups(db: SupplyCoreDb, runtime: dict[str, Any] | None 
         battles: dict[str, dict[str, Any]] = {}
         participant_sets: dict[str, set[int]] = defaultdict(set)
         participant_rows: dict[tuple[str, int], dict[str, Any]] = {}
+        killmail_assignments: list[tuple[str, int]] = []
 
         for row in killmails:
             system_id = int(row.get("system_id") or 0)
@@ -211,6 +213,9 @@ def run_compute_battle_rollups(db: SupplyCoreDb, runtime: dict[str, Any] | None 
             bucket_unix = int(datetime.strptime(killmail_time, "%Y-%m-%d %H:%M:%S").replace(tzinfo=UTC).timestamp() // WINDOW_SECONDS * WINDOW_SECONDS)
             battle_id = f"{system_id}:{bucket_unix}"
             battle_hash = __import__("hashlib").sha256(battle_id.encode("utf-8")).hexdigest()
+            sequence_id = int(row.get("sequence_id") or 0)
+            if sequence_id > 0:
+                killmail_assignments.append((battle_hash, sequence_id))
 
             battle = battles.setdefault(
                 battle_hash,
@@ -338,6 +343,11 @@ def run_compute_battle_rollups(db: SupplyCoreDb, runtime: dict[str, Any] | None 
                             int(participant.get("participation_count") or 0),
                             computed_at,
                         ),
+                    )
+                for battle_id_value, sequence_id in killmail_assignments:
+                    cursor.execute(
+                        "UPDATE killmail_events SET battle_id = %s WHERE sequence_id = %s",
+                        (battle_id_value, sequence_id),
                     )
         rows_written = len(battles) + len(participant_rows)
 

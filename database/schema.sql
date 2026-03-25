@@ -1244,7 +1244,12 @@ CREATE TABLE IF NOT EXISTS killmail_events (
     victim_corporation_id BIGINT UNSIGNED DEFAULT NULL,
     victim_alliance_id BIGINT UNSIGNED DEFAULT NULL,
     victim_ship_type_id INT UNSIGNED DEFAULT NULL,
+    victim_damage_taken BIGINT UNSIGNED DEFAULT NULL,
+    battle_id CHAR(64) DEFAULT NULL,
     zkb_total_value DECIMAL(20,2) DEFAULT NULL,
+    zkb_fitted_value DECIMAL(20,2) DEFAULT NULL,
+    zkb_dropped_value DECIMAL(20,2) DEFAULT NULL,
+    zkb_destroyed_value DECIMAL(20,2) DEFAULT NULL,
     zkb_points INT UNSIGNED DEFAULT NULL,
     zkb_npc TINYINT(1) DEFAULT NULL,
     zkb_solo TINYINT(1) DEFAULT NULL,
@@ -1263,6 +1268,7 @@ CREATE TABLE IF NOT EXISTS killmail_events (
     KEY idx_victim_alliance_effective (victim_alliance_id, effective_killmail_at),
     KEY idx_victim_corporation_effective (victim_corporation_id, effective_killmail_at),
     KEY idx_victim_ship_type (victim_ship_type_id),
+    KEY idx_killmail_events_battle (battle_id, effective_killmail_at),
     KEY idx_killmail_effective_ship (effective_killmail_at, victim_ship_type_id),
     KEY idx_killmail_ship_effective (victim_ship_type_id, effective_killmail_at),
     KEY idx_system_region (solar_system_id, region_id)
@@ -1375,6 +1381,86 @@ PREPARE killmail_events_zkb_awox_stmt FROM @killmail_events_zkb_awox_sql;
 EXECUTE killmail_events_zkb_awox_stmt;
 DEALLOCATE PREPARE killmail_events_zkb_awox_stmt;
 
+SET @killmail_events_victim_damage_taken_exists := (
+    SELECT COUNT(*)
+    FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'killmail_events'
+      AND COLUMN_NAME = 'victim_damage_taken'
+);
+SET @killmail_events_victim_damage_taken_sql := IF(
+    @killmail_events_victim_damage_taken_exists = 0,
+    'ALTER TABLE killmail_events ADD COLUMN victim_damage_taken BIGINT UNSIGNED DEFAULT NULL AFTER victim_ship_type_id',
+    'SELECT 1'
+);
+PREPARE killmail_events_victim_damage_taken_stmt FROM @killmail_events_victim_damage_taken_sql;
+EXECUTE killmail_events_victim_damage_taken_stmt;
+DEALLOCATE PREPARE killmail_events_victim_damage_taken_stmt;
+
+SET @killmail_events_battle_id_exists := (
+    SELECT COUNT(*)
+    FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'killmail_events'
+      AND COLUMN_NAME = 'battle_id'
+);
+SET @killmail_events_battle_id_sql := IF(
+    @killmail_events_battle_id_exists = 0,
+    'ALTER TABLE killmail_events ADD COLUMN battle_id CHAR(64) DEFAULT NULL AFTER victim_damage_taken',
+    'SELECT 1'
+);
+PREPARE killmail_events_battle_id_stmt FROM @killmail_events_battle_id_sql;
+EXECUTE killmail_events_battle_id_stmt;
+DEALLOCATE PREPARE killmail_events_battle_id_stmt;
+
+SET @killmail_events_zkb_fitted_value_exists := (
+    SELECT COUNT(*)
+    FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'killmail_events'
+      AND COLUMN_NAME = 'zkb_fitted_value'
+);
+SET @killmail_events_zkb_fitted_value_sql := IF(
+    @killmail_events_zkb_fitted_value_exists = 0,
+    'ALTER TABLE killmail_events ADD COLUMN zkb_fitted_value DECIMAL(20,2) DEFAULT NULL AFTER zkb_total_value',
+    'SELECT 1'
+);
+PREPARE killmail_events_zkb_fitted_value_stmt FROM @killmail_events_zkb_fitted_value_sql;
+EXECUTE killmail_events_zkb_fitted_value_stmt;
+DEALLOCATE PREPARE killmail_events_zkb_fitted_value_stmt;
+
+SET @killmail_events_zkb_dropped_value_exists := (
+    SELECT COUNT(*)
+    FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'killmail_events'
+      AND COLUMN_NAME = 'zkb_dropped_value'
+);
+SET @killmail_events_zkb_dropped_value_sql := IF(
+    @killmail_events_zkb_dropped_value_exists = 0,
+    'ALTER TABLE killmail_events ADD COLUMN zkb_dropped_value DECIMAL(20,2) DEFAULT NULL AFTER zkb_fitted_value',
+    'SELECT 1'
+);
+PREPARE killmail_events_zkb_dropped_value_stmt FROM @killmail_events_zkb_dropped_value_sql;
+EXECUTE killmail_events_zkb_dropped_value_stmt;
+DEALLOCATE PREPARE killmail_events_zkb_dropped_value_stmt;
+
+SET @killmail_events_zkb_destroyed_value_exists := (
+    SELECT COUNT(*)
+    FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'killmail_events'
+      AND COLUMN_NAME = 'zkb_destroyed_value'
+);
+SET @killmail_events_zkb_destroyed_value_sql := IF(
+    @killmail_events_zkb_destroyed_value_exists = 0,
+    'ALTER TABLE killmail_events ADD COLUMN zkb_destroyed_value DECIMAL(20,2) DEFAULT NULL AFTER zkb_dropped_value',
+    'SELECT 1'
+);
+PREPARE killmail_events_zkb_destroyed_value_stmt FROM @killmail_events_zkb_destroyed_value_sql;
+EXECUTE killmail_events_zkb_destroyed_value_stmt;
+DEALLOCATE PREPARE killmail_events_zkb_destroyed_value_stmt;
+
 UPDATE killmail_events e
 LEFT JOIN killmail_event_payloads p ON p.sequence_id = e.sequence_id
 SET
@@ -1424,6 +1510,7 @@ CREATE TABLE IF NOT EXISTS killmail_attackers (
     alliance_id BIGINT UNSIGNED DEFAULT NULL,
     ship_type_id INT UNSIGNED DEFAULT NULL,
     weapon_type_id INT UNSIGNED DEFAULT NULL,
+    damage_done BIGINT UNSIGNED DEFAULT NULL,
     final_blow TINYINT(1) NOT NULL DEFAULT 0,
     security_status DECIMAL(5,2) DEFAULT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -1431,6 +1518,22 @@ CREATE TABLE IF NOT EXISTS killmail_attackers (
     KEY idx_attacker_alliance (alliance_id),
     KEY idx_attacker_corporation (corporation_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+SET @killmail_attackers_damage_done_exists := (
+    SELECT COUNT(*)
+    FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'killmail_attackers'
+      AND COLUMN_NAME = 'damage_done'
+);
+SET @killmail_attackers_damage_done_sql := IF(
+    @killmail_attackers_damage_done_exists = 0,
+    'ALTER TABLE killmail_attackers ADD COLUMN damage_done BIGINT UNSIGNED DEFAULT NULL AFTER weapon_type_id',
+    'SELECT 1'
+);
+PREPARE killmail_attackers_damage_done_stmt FROM @killmail_attackers_damage_done_sql;
+EXECUTE killmail_attackers_damage_done_stmt;
+DEALLOCATE PREPARE killmail_attackers_damage_done_stmt;
 
 CREATE TABLE IF NOT EXISTS killmail_items (
     id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
@@ -1481,6 +1584,91 @@ CREATE TABLE IF NOT EXISTS battle_rollups (
     KEY idx_battle_rollups_system_started (system_id, started_at),
     KEY idx_battle_rollups_eligible (eligible_for_suspicion, started_at),
     KEY idx_battle_rollups_computed (computed_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS battle_enemy_overperformance_scores (
+    battle_id CHAR(64) NOT NULL,
+    side_key VARCHAR(80) NOT NULL,
+    overperformance_score DECIMAL(14,8) NOT NULL DEFAULT 0.00000000,
+    sustain_lift_score DECIMAL(14,8) NOT NULL DEFAULT 0.00000000,
+    hull_survival_lift_score DECIMAL(14,8) NOT NULL DEFAULT 0.00000000,
+    control_delta_score DECIMAL(14,8) NOT NULL DEFAULT 0.00000000,
+    anomaly_class VARCHAR(30) NOT NULL DEFAULT 'normal',
+    evidence_json LONGTEXT NOT NULL,
+    computed_at DATETIME NOT NULL,
+    PRIMARY KEY (battle_id, side_key),
+    KEY idx_battle_enemy_overperformance_score (overperformance_score, computed_at),
+    KEY idx_battle_enemy_overperformance_class (anomaly_class, computed_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS hull_survival_anomaly_metrics (
+    battle_id CHAR(64) NOT NULL,
+    side_key VARCHAR(80) NOT NULL,
+    victim_ship_type_id INT UNSIGNED NOT NULL,
+    hull_survival_seconds DECIMAL(14,4) NOT NULL DEFAULT 0.0000,
+    baseline_survival_seconds DECIMAL(14,4) NOT NULL DEFAULT 0.0000,
+    survival_lift DECIMAL(14,8) NOT NULL DEFAULT 0.00000000,
+    sample_count INT UNSIGNED NOT NULL DEFAULT 0,
+    computed_at DATETIME NOT NULL,
+    PRIMARY KEY (battle_id, side_key, victim_ship_type_id),
+    KEY idx_hull_survival_anomaly_lift (survival_lift, computed_at),
+    KEY idx_hull_survival_anomaly_ship (victim_ship_type_id, computed_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS character_org_history_cache (
+    character_id BIGINT UNSIGNED NOT NULL,
+    source VARCHAR(40) NOT NULL DEFAULT 'evewho',
+    current_corporation_id BIGINT UNSIGNED DEFAULT NULL,
+    current_alliance_id BIGINT UNSIGNED DEFAULT NULL,
+    corp_hops_180d INT UNSIGNED NOT NULL DEFAULT 0,
+    short_tenure_hops_180d INT UNSIGNED NOT NULL DEFAULT 0,
+    hostile_adjacent_hops_180d INT UNSIGNED NOT NULL DEFAULT 0,
+    history_json LONGTEXT NOT NULL,
+    fetched_at DATETIME NOT NULL,
+    expires_at DATETIME DEFAULT NULL,
+    PRIMARY KEY (character_id, source),
+    KEY idx_character_org_history_cache_expires (expires_at),
+    KEY idx_character_org_history_cache_fetched (fetched_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS character_counterintel_features (
+    character_id BIGINT UNSIGNED PRIMARY KEY,
+    anomalous_battle_presence_count INT UNSIGNED NOT NULL DEFAULT 0,
+    control_battle_presence_count INT UNSIGNED NOT NULL DEFAULT 0,
+    anomalous_presence_rate DECIMAL(12,6) NOT NULL DEFAULT 0.000000,
+    control_presence_rate DECIMAL(12,6) NOT NULL DEFAULT 0.000000,
+    enemy_same_hull_survival_lift DECIMAL(12,6) NOT NULL DEFAULT 0.000000,
+    enemy_sustain_lift DECIMAL(12,6) NOT NULL DEFAULT 0.000000,
+    co_presence_anomalous_density DECIMAL(12,6) NOT NULL DEFAULT 0.000000,
+    graph_bridge_score DECIMAL(12,6) NOT NULL DEFAULT 0.000000,
+    corp_hop_frequency_180d DECIMAL(12,6) NOT NULL DEFAULT 0.000000,
+    short_tenure_ratio_180d DECIMAL(12,6) NOT NULL DEFAULT 0.000000,
+    repeatability_score DECIMAL(12,6) NOT NULL DEFAULT 0.000000,
+    computed_at DATETIME NOT NULL,
+    KEY idx_character_counterintel_features_repeatability (repeatability_score, computed_at),
+    KEY idx_character_counterintel_features_computed (computed_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS character_counterintel_scores (
+    character_id BIGINT UNSIGNED PRIMARY KEY,
+    review_priority_score DECIMAL(12,6) NOT NULL DEFAULT 0.000000,
+    percentile_rank DECIMAL(10,6) NOT NULL DEFAULT 0.000000,
+    confidence_score DECIMAL(12,6) NOT NULL DEFAULT 0.000000,
+    evidence_count INT UNSIGNED NOT NULL DEFAULT 0,
+    computed_at DATETIME NOT NULL,
+    KEY idx_character_counterintel_scores_priority (review_priority_score, percentile_rank),
+    KEY idx_character_counterintel_scores_computed (computed_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS character_counterintel_evidence (
+    character_id BIGINT UNSIGNED NOT NULL,
+    evidence_key VARCHAR(120) NOT NULL,
+    evidence_value DECIMAL(16,6) DEFAULT NULL,
+    evidence_text VARCHAR(500) NOT NULL,
+    evidence_payload_json LONGTEXT DEFAULT NULL,
+    computed_at DATETIME NOT NULL,
+    PRIMARY KEY (character_id, evidence_key),
+    KEY idx_character_counterintel_evidence_computed (computed_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS battle_participants (
@@ -2626,6 +2814,7 @@ INSERT INTO sync_schedules (
     ('compute_battle_target_metrics', 1, 10, 600, 1320, 22, 'normal', 'single', 'python', 420, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
     ('compute_battle_anomalies', 1, 10, 600, 1380, 23, 'normal', 'single', 'python', 420, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
     ('compute_battle_actor_features', 1, 10, 600, 1440, 24, 'normal', 'single', 'python', 420, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
+    ('compute_counterintel_pipeline', 1, 15, 900, 1560, 26, 'high', 'single', 'python', 900, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
     ('compute_suspicion_scores', 1, 10, 600, 1500, 25, 'normal', 'single', 'python', 420, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL)
 ON DUPLICATE KEY UPDATE
     enabled = VALUES(enabled),

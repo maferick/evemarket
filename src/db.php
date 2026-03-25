@@ -892,11 +892,17 @@ function db_killmail_overview_schema_ensure(): void
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
 
     db_ensure_table_column('killmail_events', 'zkb_total_value', 'DECIMAL(20,2) DEFAULT NULL AFTER victim_ship_type_id');
+    db_ensure_table_column('killmail_events', 'victim_damage_taken', 'BIGINT UNSIGNED DEFAULT NULL AFTER victim_ship_type_id');
+    db_ensure_table_column('killmail_events', 'battle_id', 'CHAR(64) DEFAULT NULL AFTER victim_damage_taken');
+    db_ensure_table_column('killmail_events', 'zkb_fitted_value', 'DECIMAL(20,2) DEFAULT NULL AFTER zkb_total_value');
+    db_ensure_table_column('killmail_events', 'zkb_dropped_value', 'DECIMAL(20,2) DEFAULT NULL AFTER zkb_fitted_value');
+    db_ensure_table_column('killmail_events', 'zkb_destroyed_value', 'DECIMAL(20,2) DEFAULT NULL AFTER zkb_dropped_value');
     db_ensure_table_column('killmail_events', 'zkb_points', 'INT UNSIGNED DEFAULT NULL AFTER zkb_total_value');
     db_ensure_table_column('killmail_events', 'zkb_npc', 'TINYINT(1) DEFAULT NULL AFTER zkb_points');
     db_ensure_table_column('killmail_events', 'zkb_solo', 'TINYINT(1) DEFAULT NULL AFTER zkb_npc');
     db_ensure_table_column('killmail_events', 'zkb_awox', 'TINYINT(1) DEFAULT NULL AFTER zkb_solo');
     db_ensure_table_index('killmail_events', 'idx_killmail_natural_sequence', 'INDEX idx_killmail_natural_sequence (killmail_id, killmail_hash, sequence_id)');
+    db_ensure_table_index('killmail_events', 'idx_killmail_events_battle', 'INDEX idx_killmail_events_battle (battle_id, effective_killmail_at)');
     db_killmail_identity_dedupe_enforce();
     db_ensure_table_index('killmail_events', 'uniq_killmail_identity', 'UNIQUE KEY uniq_killmail_identity (killmail_id, killmail_hash)');
 
@@ -10595,7 +10601,12 @@ function db_killmail_event_upsert(array $event): bool
             'victim_corporation_id',
             'victim_alliance_id',
             'victim_ship_type_id',
+            'victim_damage_taken',
+            'battle_id',
             'zkb_total_value',
+            'zkb_fitted_value',
+            'zkb_dropped_value',
+            'zkb_destroyed_value',
             'zkb_points',
             'zkb_npc',
             'zkb_solo',
@@ -10614,7 +10625,12 @@ function db_killmail_event_upsert(array $event): bool
             isset($event['victim_corporation_id']) ? (int) $event['victim_corporation_id'] : null,
             isset($event['victim_alliance_id']) ? (int) $event['victim_alliance_id'] : null,
             isset($event['victim_ship_type_id']) ? (int) $event['victim_ship_type_id'] : null,
+            isset($event['victim_damage_taken']) ? (int) $event['victim_damage_taken'] : null,
+            isset($event['battle_id']) ? (string) $event['battle_id'] : null,
             isset($event['zkb_total_value']) ? (float) $event['zkb_total_value'] : null,
+            isset($event['zkb_fitted_value']) ? (float) $event['zkb_fitted_value'] : null,
+            isset($event['zkb_dropped_value']) ? (float) $event['zkb_dropped_value'] : null,
+            isset($event['zkb_destroyed_value']) ? (float) $event['zkb_destroyed_value'] : null,
             isset($event['zkb_points']) ? (int) $event['zkb_points'] : null,
             array_key_exists('zkb_npc', $event) ? (int) ((bool) $event['zkb_npc']) : null,
             array_key_exists('zkb_solo', $event) ? (int) ((bool) $event['zkb_solo']) : null,
@@ -10632,7 +10648,12 @@ function db_killmail_event_upsert(array $event): bool
             'victim_corporation_id = VALUES(victim_corporation_id)',
             'victim_alliance_id = VALUES(victim_alliance_id)',
             'victim_ship_type_id = VALUES(victim_ship_type_id)',
+            'victim_damage_taken = VALUES(victim_damage_taken)',
+            'battle_id = VALUES(battle_id)',
             'zkb_total_value = VALUES(zkb_total_value)',
+            'zkb_fitted_value = VALUES(zkb_fitted_value)',
+            'zkb_dropped_value = VALUES(zkb_dropped_value)',
+            'zkb_destroyed_value = VALUES(zkb_destroyed_value)',
             'zkb_points = VALUES(zkb_points)',
             'zkb_npc = VALUES(zkb_npc)',
             'zkb_solo = VALUES(zkb_solo)',
@@ -10700,15 +10721,17 @@ function db_killmail_attackers_replace(int $sequenceId, array $rows): int
                     alliance_id,
                     ship_type_id,
                     weapon_type_id,
+                    damage_done,
                     final_blow,
                     security_status
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON DUPLICATE KEY UPDATE
                     character_id = VALUES(character_id),
                     corporation_id = VALUES(corporation_id),
                     alliance_id = VALUES(alliance_id),
                     ship_type_id = VALUES(ship_type_id),
                     weapon_type_id = VALUES(weapon_type_id),
+                    damage_done = VALUES(damage_done),
                     final_blow = VALUES(final_blow),
                     security_status = VALUES(security_status)',
                 [
@@ -10719,6 +10742,7 @@ function db_killmail_attackers_replace(int $sequenceId, array $rows): int
                     isset($row['alliance_id']) ? (int) $row['alliance_id'] : null,
                     isset($row['ship_type_id']) ? (int) $row['ship_type_id'] : null,
                     isset($row['weapon_type_id']) ? (int) $row['weapon_type_id'] : null,
+                    isset($row['damage_done']) ? (int) $row['damage_done'] : null,
                     (int) (($row['final_blow'] ?? false) ? 1 : 0),
                     isset($row['security_status']) ? (float) $row['security_status'] : null,
                 ]

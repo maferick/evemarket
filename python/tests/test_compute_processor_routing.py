@@ -13,10 +13,12 @@ class ComputeProcessorRoutingTests(unittest.TestCase):
     def test_battle_jobs_have_python_processor_bindings(self) -> None:
         self.assertIn("compute_battle_anomalies", processor_registry.PYTHON_COMPUTE_PROCESSOR_JOB_KEYS)
         self.assertIn("compute_suspicion_scores", processor_registry.PYTHON_COMPUTE_PROCESSOR_JOB_KEYS)
+        self.assertIn("compute_counterintel_pipeline", processor_registry.PYTHON_COMPUTE_PROCESSOR_JOB_KEYS)
 
     def test_battle_jobs_are_not_php_bridged(self) -> None:
         self.assertNotIn("compute_battle_anomalies", PHP_BRIDGED_JOB_KEYS)
         self.assertNotIn("compute_suspicion_scores", PHP_BRIDGED_JOB_KEYS)
+        self.assertNotIn("compute_counterintel_pipeline", PHP_BRIDGED_JOB_KEYS)
 
     def test_battle_anomalies_routes_through_python_processor(self) -> None:
         with (

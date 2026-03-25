@@ -3929,6 +3929,7 @@ function supplycore_authoritative_job_registry(): array
         'compute_battle_anomalies' => ['label' => 'Battle Anomalies', 'description' => 'Compute battle anomaly detections.', 'category' => 'real_schedulable', 'enabled_by_default' => true, 'schedulable' => true, 'settings_visible' => true, 'user_visible' => true, 'execution_mode' => 'python', 'default_interval_minutes' => 10, 'default_offset_minutes' => 23, 'priority' => 'normal', 'timeout_seconds' => 420, 'concurrency_policy' => 'single', 'explicitly_configured' => true, 'python_implementation_exists' => true, 'worker_safe' => true],
         'compute_battle_rollups' => ['label' => 'Battle Rollups', 'description' => 'Aggregate battle telemetry rollups.', 'category' => 'real_schedulable', 'enabled_by_default' => true, 'schedulable' => true, 'settings_visible' => true, 'user_visible' => true, 'execution_mode' => 'python', 'default_interval_minutes' => 10, 'default_offset_minutes' => 21, 'priority' => 'normal', 'timeout_seconds' => 420, 'concurrency_policy' => 'single', 'explicitly_configured' => true, 'python_implementation_exists' => true, 'worker_safe' => true],
         'compute_battle_target_metrics' => ['label' => 'Battle Target Metrics', 'description' => 'Compute target-level battle metrics.', 'category' => 'real_schedulable', 'enabled_by_default' => true, 'schedulable' => true, 'settings_visible' => true, 'user_visible' => true, 'execution_mode' => 'python', 'default_interval_minutes' => 10, 'default_offset_minutes' => 22, 'priority' => 'normal', 'timeout_seconds' => 420, 'concurrency_policy' => 'single', 'explicitly_configured' => true, 'python_implementation_exists' => true, 'worker_safe' => true],
+        'compute_counterintel_pipeline' => ['label' => 'Counterintel Pipeline', 'description' => 'Counter-intelligence batch model with battle/org/graph evidence.', 'category' => 'real_schedulable', 'enabled_by_default' => true, 'schedulable' => true, 'settings_visible' => true, 'user_visible' => true, 'execution_mode' => 'python', 'default_interval_minutes' => 15, 'default_offset_minutes' => 26, 'priority' => 'high', 'timeout_seconds' => 900, 'concurrency_policy' => 'single', 'explicitly_configured' => true, 'python_implementation_exists' => true, 'worker_safe' => true],
         'compute_suspicion_scores' => ['label' => 'Suspicion Scores', 'description' => 'Compute baseline suspicion scores.', 'category' => 'real_schedulable', 'enabled_by_default' => true, 'schedulable' => true, 'settings_visible' => true, 'user_visible' => true, 'execution_mode' => 'python', 'default_interval_minutes' => 10, 'default_offset_minutes' => 25, 'priority' => 'normal', 'timeout_seconds' => 420, 'concurrency_policy' => 'single', 'explicitly_configured' => true, 'python_implementation_exists' => true, 'worker_safe' => true],
         'compute_graph_sync_doctrine_dependency' => ['label' => 'Graph Doctrine Dependency', 'description' => 'Child graph task for doctrine dependency links.', 'category' => 'real_schedulable', 'enabled_by_default' => true, 'schedulable' => false, 'settings_visible' => true, 'user_visible' => true, 'execution_mode' => 'python', 'default_interval_minutes' => 15, 'default_offset_minutes' => 26, 'priority' => 'normal', 'timeout_seconds' => 420, 'concurrency_policy' => 'background', 'explicitly_configured' => false, 'parent_job_key' => 'compute_graph_sync', 'python_implementation_exists' => true, 'worker_safe' => true, 'notes' => 'Triggered by compute_graph_sync.'],
         'compute_graph_sync_battle_intelligence' => ['label' => 'Graph Battle Intelligence', 'description' => 'Child graph task for battle-intelligence edge updates.', 'category' => 'real_schedulable', 'enabled_by_default' => true, 'schedulable' => false, 'settings_visible' => true, 'user_visible' => true, 'execution_mode' => 'python', 'default_interval_minutes' => 15, 'default_offset_minutes' => 27, 'priority' => 'normal', 'timeout_seconds' => 420, 'concurrency_policy' => 'background', 'explicitly_configured' => false, 'parent_job_key' => 'compute_graph_sync', 'python_implementation_exists' => true, 'worker_safe' => true, 'notes' => 'Triggered by compute_graph_sync.'],
@@ -4023,6 +4024,7 @@ function worker_job_registry_definitions(): array
         'compute_battle_target_metrics' => ['workload_class' => 'compute', 'execution_mode' => 'python', 'queue_name' => 'compute', 'priority' => 'normal', 'interval_seconds' => 600, 'timeout_seconds' => 420, 'memory_limit_mb' => 1024, 'retry_delay_seconds' => 90, 'max_attempts' => 4],
         'compute_battle_anomalies' => ['workload_class' => 'compute', 'execution_mode' => 'python', 'queue_name' => 'compute', 'priority' => 'normal', 'interval_seconds' => 600, 'timeout_seconds' => 420, 'memory_limit_mb' => 1024, 'retry_delay_seconds' => 90, 'max_attempts' => 4],
         'compute_battle_actor_features' => ['workload_class' => 'compute', 'execution_mode' => 'python', 'queue_name' => 'compute', 'priority' => 'normal', 'interval_seconds' => 600, 'timeout_seconds' => 420, 'memory_limit_mb' => 1024, 'retry_delay_seconds' => 90, 'max_attempts' => 4],
+        'compute_counterintel_pipeline' => ['workload_class' => 'compute', 'execution_mode' => 'python', 'queue_name' => 'compute', 'priority' => 'high', 'interval_seconds' => 900, 'timeout_seconds' => 900, 'memory_limit_mb' => 1024, 'retry_delay_seconds' => 120, 'max_attempts' => 4],
         'compute_suspicion_scores' => ['workload_class' => 'compute', 'execution_mode' => 'python', 'queue_name' => 'compute', 'priority' => 'normal', 'interval_seconds' => 600, 'timeout_seconds' => 420, 'memory_limit_mb' => 1024, 'retry_delay_seconds' => 90, 'max_attempts' => 4],
     ];
 }
@@ -12177,6 +12179,12 @@ function scheduler_job_definitions(): array
             'execution' => 'background',
             'execution_mode' => 'python',
         ],
+        'compute_counterintel_pipeline' => [
+            'timeout_seconds' => 900,
+            'lock_ttl_seconds' => 960,
+            'execution' => 'background',
+            'execution_mode' => 'python',
+        ],
         'compute_suspicion_scores' => [
             'timeout_seconds' => 420,
             'lock_ttl_seconds' => 480,
@@ -12220,6 +12228,7 @@ function scheduler_job_type(string $jobKey): string
         'compute_battle_target_metrics' => 'compute.battle_target_metrics',
         'compute_battle_anomalies' => 'compute.battle_anomalies',
         'compute_battle_actor_features' => 'compute.battle_actor_features',
+        'compute_counterintel_pipeline' => 'compute.counterintel_pipeline',
         'compute_suspicion_scores' => 'compute.suspicion_scores',
         default => 'sync.generic',
     };
@@ -18462,7 +18471,11 @@ function killmail_transform_r2z2_payload(array $payload): array
         'victim_corporation_id' => isset($victim['corporation_id']) ? (int) $victim['corporation_id'] : null,
         'victim_alliance_id' => isset($victim['alliance_id']) ? (int) $victim['alliance_id'] : null,
         'victim_ship_type_id' => isset($victim['ship_type_id']) ? (int) $victim['ship_type_id'] : null,
+        'victim_damage_taken' => isset($victim['damage_taken']) ? (int) $victim['damage_taken'] : null,
         'zkb_total_value' => isset($zkb['totalValue']) && is_numeric($zkb['totalValue']) ? (float) $zkb['totalValue'] : null,
+        'zkb_fitted_value' => isset($zkb['fittedValue']) && is_numeric($zkb['fittedValue']) ? (float) $zkb['fittedValue'] : null,
+        'zkb_dropped_value' => isset($zkb['droppedValue']) && is_numeric($zkb['droppedValue']) ? (float) $zkb['droppedValue'] : null,
+        'zkb_destroyed_value' => isset($zkb['destroyedValue']) && is_numeric($zkb['destroyedValue']) ? (float) $zkb['destroyedValue'] : null,
         'zkb_points' => isset($zkb['points']) && is_numeric($zkb['points']) ? (int) $zkb['points'] : null,
         'zkb_npc' => !empty($zkb['npc']),
         'zkb_solo' => !empty($zkb['solo']),
@@ -18484,6 +18497,7 @@ function killmail_transform_r2z2_payload(array $payload): array
             'alliance_id' => isset($attacker['alliance_id']) ? (int) $attacker['alliance_id'] : null,
             'ship_type_id' => isset($attacker['ship_type_id']) ? (int) $attacker['ship_type_id'] : null,
             'weapon_type_id' => isset($attacker['weapon_type_id']) ? (int) $attacker['weapon_type_id'] : null,
+            'damage_done' => isset($attacker['damage_done']) ? (int) $attacker['damage_done'] : null,
             'final_blow' => (bool) ($attacker['final_blow'] ?? false),
             'security_status' => isset($attacker['security_status']) ? (float) $attacker['security_status'] : null,
         ];
