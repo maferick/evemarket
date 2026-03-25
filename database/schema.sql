@@ -405,7 +405,7 @@ CREATE TABLE IF NOT EXISTS sync_schedules (
     backfill_priority VARCHAR(20) NOT NULL DEFAULT 'normal',
     min_backfill_gap_seconds INT UNSIGNED NOT NULL DEFAULT 900,
     max_early_start_seconds INT UNSIGNED NOT NULL DEFAULT 0,
-    execution_mode VARCHAR(16) NOT NULL DEFAULT 'php',
+    execution_mode VARCHAR(16) NOT NULL DEFAULT 'python',
     last_execution_mode VARCHAR(32) NOT NULL DEFAULT 'scheduled',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -812,7 +812,7 @@ SET @sync_schedules_execution_mode_exists := (
 );
 SET @sync_schedules_execution_mode_sql := IF(
     @sync_schedules_execution_mode_exists = 0,
-    'ALTER TABLE sync_schedules ADD COLUMN execution_mode VARCHAR(16) NOT NULL DEFAULT ''php'' AFTER max_early_start_seconds',
+    'ALTER TABLE sync_schedules ADD COLUMN execution_mode VARCHAR(16) NOT NULL DEFAULT ''python'' AFTER max_early_start_seconds',
     'SELECT 1'
 );
 PREPARE sync_schedules_execution_mode_stmt FROM @sync_schedules_execution_mode_sql;
@@ -824,8 +824,8 @@ SET interval_minutes = GREATEST(1, CEIL(interval_seconds / 60)),
     offset_minutes = FLOOR(offset_seconds / 60),
     next_due_at = COALESCE(next_due_at, next_run_at),
     execution_mode = CASE
-        WHEN LOWER(COALESCE(NULLIF(execution_mode, ''), 'php')) = 'python' THEN 'python'
-        ELSE 'php'
+        WHEN LOWER(COALESCE(NULLIF(execution_mode, ''), 'python')) = 'python' THEN 'python'
+        ELSE 'python'
     END,
     current_state = CASE
         WHEN enabled = 0 THEN 'stopped'
@@ -2596,23 +2596,23 @@ INSERT INTO sync_schedules (
     last_error,
     locked_until
 ) VALUES
-    ('market_hub_current_sync', 1, 8, 480, 0, 0, 'high', 'single', 'php', 240, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
-    ('alliance_current_sync', 1, 4, 240, 120, 2, 'medium', 'single', 'python', 180, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
-    ('current_state_refresh_sync', 1, 12, 720, 360, 6, 'medium', 'single', 'php', 120, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
-    ('market_hub_local_history_sync', 1, 20, 1200, 840, 14, 'normal', 'background', 'python', 1800, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
-    ('doctrine_intelligence_sync', 1, 15, 900, 480, 8, 'normal', 'single', 'python', 180, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
-    ('market_comparison_summary_sync', 1, 15, 900, 540, 9, 'normal', 'single', 'python', 180, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
-    ('loss_demand_summary_sync', 1, 15, 900, 600, 10, 'normal', 'single', 'python', 180, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
-    ('dashboard_summary_sync', 1, 15, 900, 660, 11, 'normal', 'single', 'python', 180, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
-    ('rebuild_ai_briefings', 1, 20, 1200, 720, 12, 'normal', 'background', 'php', 300, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
-    ('killmail_r2z2_sync', 1, 1, 180, 300, 3, 'highest', 'single', 'python', 180, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
-    ('alliance_historical_sync', 1, 360, 21600, 300, 5, 'normal', 'background', 'php', 3600, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
-    ('market_hub_historical_sync', 1, 360, 21600, 0, 0, 'normal', 'background', 'php', 3600, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
-    ('forecasting_ai_sync', 1, 60, 3600, 0, 0, 'normal', 'background', 'php', 300, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
-    ('deal_alerts_sync', 1, 5, 300, 60, 1, 'high', 'single', 'python', 90, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
-    ('activity_priority_summary_sync', 1, 15, 900, 780, 13, 'normal', 'single', 'php', 180, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 0, NULL, NULL, NULL, NULL),
-    ('analytics_bucket_1h_sync', 1, 15, 900, 900, 15, 'normal', 'single', 'php', 180, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 0, NULL, NULL, NULL, NULL),
-    ('analytics_bucket_1d_sync', 1, 60, 3600, 960, 16, 'normal', 'single', 'php', 240, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 0, NULL, NULL, NULL, NULL),
+    ('market_hub_current_sync', 0, 8, 480, 0, 0, 'high', 'single', 'python', 240, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
+    ('alliance_current_sync', 0, 4, 240, 120, 2, 'medium', 'single', 'python', 180, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
+    ('current_state_refresh_sync', 0, 12, 720, 360, 6, 'medium', 'single', 'python', 120, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
+    ('market_hub_local_history_sync', 0, 20, 1200, 840, 14, 'normal', 'background', 'python', 1800, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
+    ('doctrine_intelligence_sync', 0, 15, 900, 480, 8, 'normal', 'single', 'python', 180, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
+    ('market_comparison_summary_sync', 0, 15, 900, 540, 9, 'normal', 'single', 'python', 180, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
+    ('loss_demand_summary_sync', 0, 15, 900, 600, 10, 'normal', 'single', 'python', 180, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
+    ('dashboard_summary_sync', 0, 15, 900, 660, 11, 'normal', 'single', 'python', 180, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
+    ('rebuild_ai_briefings', 0, 20, 1200, 720, 12, 'normal', 'background', 'python', 300, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
+    ('killmail_r2z2_sync', 0, 1, 180, 300, 3, 'highest', 'single', 'python', 180, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
+    ('alliance_historical_sync', 0, 360, 21600, 300, 5, 'normal', 'background', 'python', 3600, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
+    ('market_hub_historical_sync', 0, 360, 21600, 0, 0, 'normal', 'background', 'python', 3600, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
+    ('forecasting_ai_sync', 0, 60, 3600, 0, 0, 'normal', 'background', 'python', 300, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
+    ('deal_alerts_sync', 0, 5, 300, 60, 1, 'high', 'single', 'python', 90, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
+    ('activity_priority_summary_sync', 0, 15, 900, 780, 13, 'normal', 'single', 'python', 180, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 0, NULL, NULL, NULL, NULL),
+    ('analytics_bucket_1h_sync', 0, 15, 900, 900, 15, 'normal', 'single', 'python', 180, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 0, NULL, NULL, NULL, NULL),
+    ('analytics_bucket_1d_sync', 0, 60, 3600, 960, 16, 'normal', 'single', 'python', 240, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 0, NULL, NULL, NULL, NULL),
     ('compute_graph_sync', 1, 10, 600, 1020, 17, 'normal', 'single', 'python', 420, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
     ('compute_graph_sync_doctrine_dependency', 1, 10, 600, 1080, 18, 'normal', 'single', 'python', 420, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
     ('compute_graph_sync_battle_intelligence', 1, 10, 600, 1140, 19, 'normal', 'single', 'python', 420, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
