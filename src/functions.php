@@ -11914,6 +11914,78 @@ function scheduler_job_definitions(): array
                 return supplycore_refresh_forecasting_snapshot_job_result('scheduler');
             },
         ],
+        'compute_graph_sync' => [
+            'timeout_seconds' => 300,
+            'lock_ttl_seconds' => 360,
+            'execution' => 'background',
+            'handler' => static function (): array {
+                throw new RuntimeException('compute_graph_sync must run in the Python scheduler runtime.');
+            },
+        ],
+        'compute_graph_insights' => [
+            'timeout_seconds' => 300,
+            'lock_ttl_seconds' => 360,
+            'execution' => 'background',
+            'handler' => static function (): array {
+                throw new RuntimeException('compute_graph_insights must run in the Python scheduler runtime.');
+            },
+        ],
+        'compute_buy_all' => [
+            'timeout_seconds' => 420,
+            'lock_ttl_seconds' => 480,
+            'execution' => 'background',
+            'handler' => static function (): array {
+                throw new RuntimeException('compute_buy_all must run in the Python scheduler runtime.');
+            },
+        ],
+        'compute_signals' => [
+            'timeout_seconds' => 300,
+            'lock_ttl_seconds' => 360,
+            'execution' => 'background',
+            'handler' => static function (): array {
+                throw new RuntimeException('compute_signals must run in the Python scheduler runtime.');
+            },
+        ],
+        'compute_battle_rollups' => [
+            'timeout_seconds' => 420,
+            'lock_ttl_seconds' => 480,
+            'execution' => 'background',
+            'handler' => static function (): array {
+                throw new RuntimeException('compute_battle_rollups must run in the Python scheduler runtime.');
+            },
+        ],
+        'compute_battle_target_metrics' => [
+            'timeout_seconds' => 420,
+            'lock_ttl_seconds' => 480,
+            'execution' => 'background',
+            'handler' => static function (): array {
+                throw new RuntimeException('compute_battle_target_metrics must run in the Python scheduler runtime.');
+            },
+        ],
+        'compute_battle_anomalies' => [
+            'timeout_seconds' => 420,
+            'lock_ttl_seconds' => 480,
+            'execution' => 'background',
+            'handler' => static function (): array {
+                throw new RuntimeException('compute_battle_anomalies must run in the Python scheduler runtime.');
+            },
+        ],
+        'compute_battle_actor_features' => [
+            'timeout_seconds' => 420,
+            'lock_ttl_seconds' => 480,
+            'execution' => 'background',
+            'handler' => static function (): array {
+                throw new RuntimeException('compute_battle_actor_features must run in the Python scheduler runtime.');
+            },
+        ],
+        'compute_suspicion_scores' => [
+            'timeout_seconds' => 420,
+            'lock_ttl_seconds' => 480,
+            'execution' => 'background',
+            'handler' => static function (): array {
+                throw new RuntimeException('compute_suspicion_scores must run in the Python scheduler runtime.');
+            },
+        ],
         'killmail_r2z2_sync' => [
             'timeout_seconds' => 180,
             'lock_ttl_seconds' => 300,
@@ -11942,6 +12014,15 @@ function scheduler_job_type(string $jobKey): string
         'rebuild_ai_briefings' => 'sync.doctrine_ai',
         'forecasting_ai_sync' => 'sync.forecasting',
         'killmail_r2z2_sync' => 'sync.killmail',
+        'compute_graph_sync' => 'compute.graph_sync',
+        'compute_graph_insights' => 'compute.graph_insights',
+        'compute_buy_all' => 'compute.buy_all',
+        'compute_signals' => 'compute.signals',
+        'compute_battle_rollups' => 'compute.battle_rollups',
+        'compute_battle_target_metrics' => 'compute.battle_target_metrics',
+        'compute_battle_anomalies' => 'compute.battle_anomalies',
+        'compute_battle_actor_features' => 'compute.battle_actor_features',
+        'compute_suspicion_scores' => 'compute.suspicion_scores',
         default => 'sync.generic',
     };
 }
