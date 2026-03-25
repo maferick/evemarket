@@ -3787,6 +3787,8 @@ function worker_job_registry_definitions(): array
         'analytics_bucket_1d_sync' => ['workload_class' => 'compute', 'execution_mode' => 'php', 'queue_name' => 'compute', 'priority' => 'normal', 'interval_seconds' => 3600, 'timeout_seconds' => 240, 'memory_limit_mb' => 384, 'retry_delay_seconds' => 60, 'max_attempts' => 4],
         'rebuild_ai_briefings' => ['workload_class' => 'compute', 'execution_mode' => 'php', 'queue_name' => 'compute', 'priority' => 'normal', 'interval_seconds' => 1200, 'timeout_seconds' => 300, 'memory_limit_mb' => 512, 'retry_delay_seconds' => 90, 'max_attempts' => 4],
         'forecasting_ai_sync' => ['workload_class' => 'compute', 'execution_mode' => 'php', 'queue_name' => 'compute', 'priority' => 'normal', 'interval_seconds' => 3600, 'timeout_seconds' => 300, 'memory_limit_mb' => 512, 'retry_delay_seconds' => 90, 'max_attempts' => 4],
+        'compute_graph_sync' => ['workload_class' => 'compute', 'execution_mode' => 'python', 'queue_name' => 'compute', 'priority' => 'normal', 'interval_seconds' => 900, 'timeout_seconds' => 300, 'memory_limit_mb' => 768, 'retry_delay_seconds' => 60, 'max_attempts' => 4],
+        'compute_graph_insights' => ['workload_class' => 'compute', 'execution_mode' => 'python', 'queue_name' => 'compute', 'priority' => 'normal', 'interval_seconds' => 900, 'timeout_seconds' => 300, 'memory_limit_mb' => 768, 'retry_delay_seconds' => 60, 'max_attempts' => 4],
     ];
 }
 
@@ -3822,6 +3824,8 @@ function scheduler_registry_definitions(): array
         'alliance_historical_sync' => ['label' => 'Alliance Historical', 'default_interval_minutes' => 360, 'default_offset_minutes' => 5, 'priority' => 'normal', 'timeout_seconds' => 3600, 'concurrency_policy' => 'background', 'execution_mode' => 'python', 'tuning_mode' => 'automatic', 'explicitly_configured' => true, 'workload_class' => 'heavy'],
         'market_hub_historical_sync' => ['label' => 'Market Hub Historical', 'default_interval_minutes' => 360, 'default_offset_minutes' => 0, 'priority' => 'normal', 'timeout_seconds' => 3600, 'concurrency_policy' => 'background', 'execution_mode' => 'python', 'tuning_mode' => 'automatic', 'explicitly_configured' => true, 'workload_class' => 'heavy'],
         'forecasting_ai_sync' => ['label' => 'Forecasting AI', 'default_interval_minutes' => 60, 'default_offset_minutes' => 0, 'priority' => 'normal', 'timeout_seconds' => 300, 'concurrency_policy' => 'background', 'execution_mode' => 'php', 'tuning_mode' => 'automatic', 'explicitly_configured' => true, 'workload_class' => 'lightweight'],
+        'compute_graph_sync' => ['label' => 'Graph Sync', 'default_interval_minutes' => 15, 'default_offset_minutes' => 17, 'priority' => 'normal', 'timeout_seconds' => 300, 'concurrency_policy' => 'single', 'execution_mode' => 'python', 'tuning_mode' => 'automatic', 'explicitly_configured' => true, 'workload_class' => 'heavy'],
+        'compute_graph_insights' => ['label' => 'Graph Insights', 'default_interval_minutes' => 15, 'default_offset_minutes' => 18, 'priority' => 'normal', 'timeout_seconds' => 300, 'concurrency_policy' => 'single', 'execution_mode' => 'python', 'tuning_mode' => 'automatic', 'explicitly_configured' => true, 'workload_class' => 'heavy'],
     ];
 }
 
@@ -8343,6 +8347,24 @@ function supplycore_settings_runtime_datasets(): array
             'snapshot_key' => loss_demand_snapshot_key(),
             'job_key' => 'loss_demand_summary_sync',
         ],
+        config('neo4j.enabled', false) ? [
+            'key' => 'graph_sync',
+            'label' => 'Graph sync',
+            'source' => 'sync',
+            'dataset_keys' => [scheduler_job_dataset_key('compute_graph_sync')],
+            'job_key' => 'compute_graph_sync',
+            'fresh_seconds' => 30 * 60,
+            'delayed_seconds' => 90 * 60,
+        ] : null,
+        config('neo4j.enabled', false) ? [
+            'key' => 'graph_insights',
+            'label' => 'Graph insights',
+            'source' => 'sync',
+            'dataset_keys' => [scheduler_job_dataset_key('compute_graph_insights')],
+            'job_key' => 'compute_graph_insights',
+            'fresh_seconds' => 30 * 60,
+            'delayed_seconds' => 90 * 60,
+        ] : null,
         [
             'key' => 'killmail_stream',
             'label' => 'Killmail stream',

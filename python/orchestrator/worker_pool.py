@@ -12,7 +12,14 @@ from typing import Any, Callable
 
 from .bridge import PhpBridge
 from .config import load_php_runtime_config
-from .jobs import run_killmail_r2z2_stream, run_market_comparison_summary, run_market_hub_local_history
+from .db import SupplyCoreDb
+from .jobs import (
+    run_compute_graph_insights,
+    run_compute_graph_sync,
+    run_killmail_r2z2_stream,
+    run_market_comparison_summary,
+    run_market_hub_local_history,
+)
 from .logging_utils import LoggerAdapter, configure_logging
 from .worker_runtime import resident_memory_bytes, utc_now_iso
 
@@ -28,6 +35,7 @@ class WorkerPoolContext:
     batch_size: int
     timeout_seconds: int
     memory_abort_threshold_bytes: int
+    db: SupplyCoreDb
 
     @property
     def schedule_id(self) -> int:
@@ -49,6 +57,14 @@ PROCESSORS: dict[str, Callable[[WorkerPoolContext], dict[str, Any]]] = {
     "killmail_r2z2_sync": run_killmail_r2z2_stream,
     "market_comparison_summary_sync": run_market_comparison_summary,
     "market_hub_local_history_sync": run_market_hub_local_history,
+    "compute_graph_sync": lambda context: _graph_result_shape(
+        run_compute_graph_sync(context.db, dict(context.raw_config.get("neo4j") or {})),
+        "compute_graph_sync",
+    ),
+    "compute_graph_insights": lambda context: _graph_result_shape(
+        run_compute_graph_insights(context.db, dict(context.raw_config.get("neo4j") or {})),
+        "compute_graph_insights",
+    ),
 }
 
 PYTHON_PRIMARY_JOB_KEYS = {
@@ -57,7 +73,24 @@ PYTHON_PRIMARY_JOB_KEYS = {
     "market_comparison_summary_sync",
     "market_hub_local_history_sync",
     "killmail_r2z2_sync",
+    "compute_graph_sync",
+    "compute_graph_insights",
 }
+
+
+def _graph_result_shape(result: dict[str, Any], job_key: str) -> dict[str, Any]:
+    rows_seen = max(0, int(result.get("rows_processed") or result.get("rows_seen") or 0))
+    rows_written = max(0, int(result.get("rows_written") or 0))
+    status = str(result.get("status") or "success")
+    summary = str(result.get("summary") or f"{job_key} finished with status {status}.")
+    return {
+        "status": status,
+        "summary": summary,
+        "rows_seen": rows_seen,
+        "rows_written": rows_written,
+        "warnings": list(result.get("warnings") or []),
+        "meta": dict(result.get("meta") or {}),
+    }
 
 
 class HeartbeatThread(threading.Thread):
@@ -167,6 +200,7 @@ def main(argv: list[str] | None = None) -> int:
     worker_id = args.worker_id.strip() or f"{socket.gethostname()}-{os.getpid()}"
     state_file = Path(worker_settings.get("pool_state_file", app_root / "storage/run/worker-pool-heartbeat.json"))
     bridge = PhpBridge(php_binary, app_root)
+    db = SupplyCoreDb(dict(raw_config.get("db") or {}))
     lease_seconds = max(30, int(worker_settings.get("claim_ttl_seconds", 300)))
     idle_sleep = max(1, int(worker_settings.get("idle_sleep_seconds", 10)))
     sync_idle_sleep = max(1, int(worker_settings.get("sync_idle_sleep_seconds", idle_sleep)))
@@ -248,6 +282,7 @@ def main(argv: list[str] | None = None) -> int:
             batch_size=1000,
             timeout_seconds=timeout_seconds,
             memory_abort_threshold_bytes=min(abort_threshold, memory_limit_mb * 1024 * 1024),
+            db=db,
         )
 
         stop_event = threading.Event()

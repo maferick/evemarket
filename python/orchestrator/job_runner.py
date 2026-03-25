@@ -11,7 +11,13 @@ from typing import Any, Callable
 from .bridge import PhpBridge
 from .config import load_php_runtime_config
 from .db import SupplyCoreDb
-from .jobs import run_killmail_r2z2_stream, run_market_comparison_summary, run_market_hub_local_history
+from .jobs import (
+    run_compute_graph_insights,
+    run_compute_graph_sync,
+    run_killmail_r2z2_stream,
+    run_market_comparison_summary,
+    run_market_hub_local_history,
+)
 from .worker_runtime import resident_memory_bytes, utc_now_iso
 
 
@@ -21,6 +27,7 @@ class PythonWorkerContext:
     app_root: Path
     raw_config: dict[str, Any]
     php_binary: str
+    db: SupplyCoreDb
     job: dict[str, Any]
 
     @property
@@ -55,7 +62,30 @@ PROCESSORS: dict[str, Callable[[PythonWorkerContext], dict[str, Any]]] = {
     "killmail_r2z2_sync": run_killmail_r2z2_stream,
     "market_comparison_summary_sync": run_market_comparison_summary,
     "market_hub_local_history_sync": run_market_hub_local_history,
+    "compute_graph_sync": lambda context: _graph_result_shape(
+        run_compute_graph_sync(context.db, dict(context.raw_config.get("neo4j") or {})),
+        "compute_graph_sync",
+    ),
+    "compute_graph_insights": lambda context: _graph_result_shape(
+        run_compute_graph_insights(context.db, dict(context.raw_config.get("neo4j") or {})),
+        "compute_graph_insights",
+    ),
 }
+
+
+def _graph_result_shape(result: dict[str, Any], job_key: str) -> dict[str, Any]:
+    rows_seen = max(0, int(result.get("rows_processed") or result.get("rows_seen") or 0))
+    rows_written = max(0, int(result.get("rows_written") or 0))
+    status = str(result.get("status") or "success")
+    summary = str(result.get("summary") or f"{job_key} finished with status {status}.")
+    return {
+        "status": status,
+        "summary": summary,
+        "rows_seen": rows_seen,
+        "rows_written": rows_written,
+        "warnings": list(result.get("warnings") or []),
+        "meta": dict(result.get("meta") or {}),
+    }
 
 
 def parse_args() -> argparse.Namespace:
@@ -159,6 +189,7 @@ def main() -> int:
         app_root=app_root,
         raw_config=config.raw,
         php_binary=config.php_binary,
+        db=db,
         job=job,
     )
 
