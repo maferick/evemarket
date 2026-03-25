@@ -943,6 +943,7 @@ CREATE TABLE IF NOT EXISTS killmail_events (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     UNIQUE KEY unique_sequence_id (sequence_id),
+    UNIQUE KEY uniq_killmail_identity (killmail_id, killmail_hash),
     KEY idx_killmail_id (killmail_id),
     KEY idx_uploaded_at (uploaded_at),
     KEY idx_victim_alliance_sequence (victim_alliance_id, sequence_id),
