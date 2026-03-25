@@ -9,7 +9,9 @@ from pathlib import Path
 from typing import Any
 
 if __package__ in (None, ""):
-    sys.path.append(str(Path(__file__).resolve().parents[2]))
+    package_root = str(Path(__file__).resolve().parents[2])
+    if package_root not in sys.path:
+        sys.path.insert(0, package_root)
     from orchestrator.db import SupplyCoreDb
     from orchestrator.job_utils import acquire_job_lock, finish_job_run, release_job_lock, start_job_run
     from orchestrator.neo4j import Neo4jClient, Neo4jConfig
