@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from ..db import SupplyCoreDb
+from ..json_utils import json_dumps_safe
 from ..neo4j import Neo4jClient, Neo4jConfig, Neo4jError
 
 GRAPH_SYNC_KEYS = {
@@ -34,7 +35,7 @@ def _write_graph_log(log_file: str, event: str, payload: dict[str, Any]) -> None
         return
     path = Path(target)
     path.parent.mkdir(parents=True, exist_ok=True)
-    line = json.dumps({"event": event, "timestamp": datetime.now(UTC).isoformat(), **payload}, ensure_ascii=False)
+    line = json_dumps_safe({"event": event, "timestamp": datetime.now(UTC).isoformat(), **payload})
     with path.open("a", encoding="utf-8") as handle:
         handle.write(line + "\n")
 
@@ -101,14 +102,14 @@ def _snapshot_graph_health(client: Neo4jClient) -> dict[str, Any]:
     degrees = client.query(
         """
         MATCH (c:Character)
-        WITH c, size((c)--()) AS deg
+        WITH c, COUNT { (c)--() } AS deg
         RETURN avg(toFloat(deg)) AS avg_character_degree, max(toInteger(deg)) AS max_character_degree
         """
     )
     fit_degrees = client.query(
         """
         MATCH (f:Fit)
-        WITH f, size((f)--()) AS deg
+        WITH f, COUNT { (f)--() } AS deg
         RETURN avg(toFloat(deg)) AS avg_fit_degree, max(toInteger(deg)) AS max_fit_degree
         """
     )
@@ -498,8 +499,8 @@ def run_compute_graph_prune(db: SupplyCoreDb, neo4j_raw: dict[str, Any] | None =
         """,
         (
             _utc_now_sql(),
-            json.dumps(health.get("labels") or [], separators=(",", ":"), ensure_ascii=False),
-            json.dumps(health.get("relationships") or [], separators=(",", ":"), ensure_ascii=False),
+            json_dumps_safe(health.get("labels") or []),
+            json_dumps_safe(health.get("relationships") or []),
             float((health.get("degree") or {}).get("avg_character_degree") or 0.0),
             int((health.get("degree") or {}).get("max_character_degree") or 0),
             float((health.get("fit_degree") or {}).get("avg_fit_degree") or 0.0),

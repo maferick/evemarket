@@ -7,6 +7,8 @@ from typing import Any
 import urllib.error
 import urllib.request
 
+from .json_utils import json_dumps_safe
+
 
 @dataclass(slots=True)
 class Neo4jConfig:
@@ -56,7 +58,7 @@ class Neo4jClient:
         auth = base64.b64encode(f"{self._config.username}:{self._config.password}".encode("utf-8")).decode("ascii")
         request = urllib.request.Request(
             self._endpoint,
-            data=json.dumps(payload).encode("utf-8"),
+            data=json_dumps_safe(payload).encode("utf-8"),
             method="POST",
             headers={
                 "Authorization": f"Basic {auth}",

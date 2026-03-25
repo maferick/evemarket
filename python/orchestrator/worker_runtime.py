@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import resource
 import time
 from dataclasses import dataclass, field
 from typing import Any
+
+from .json_utils import json_dumps_safe
 
 
 def utc_now_iso() -> str:
@@ -13,7 +14,7 @@ def utc_now_iso() -> str:
 
 
 def payload_checksum(payload: Any) -> str:
-    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    encoded = json_dumps_safe(payload, sort_keys=True)
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 

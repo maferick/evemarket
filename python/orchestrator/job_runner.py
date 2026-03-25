@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import time
 from dataclasses import dataclass
@@ -11,6 +10,7 @@ from typing import Any
 from .bridge import PhpBridge
 from .config import load_php_runtime_config
 from .db import SupplyCoreDb
+from .json_utils import json_dumps_safe
 from .jobs import (
     run_killmail_r2z2_stream,
     run_market_comparison_summary,
@@ -102,7 +102,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def emit(event: str, payload: dict[str, Any]) -> None:
-    print(json.dumps({"event": event, "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), **payload}))
+    print(json_dumps_safe({"event": event, "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), **payload}))
 
 
 def _fetch_claimed_job(db: SupplyCoreDb, schedule_id: int) -> dict[str, Any]:

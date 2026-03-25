@@ -13,10 +13,12 @@ if __package__ in (None, ""):
     if package_root not in sys.path:
         sys.path.insert(0, package_root)
     from orchestrator.db import SupplyCoreDb
+    from orchestrator.json_utils import json_dumps_safe
     from orchestrator.job_utils import acquire_job_lock, finish_job_run, release_job_lock, start_job_run
     from orchestrator.neo4j import Neo4jClient, Neo4jConfig
 else:
     from ..db import SupplyCoreDb
+    from ..json_utils import json_dumps_safe
     from ..job_utils import acquire_job_lock, finish_job_run, release_job_lock, start_job_run
     from ..neo4j import Neo4jClient, Neo4jConfig
 
@@ -94,19 +96,6 @@ def _stddev(values: list[float]) -> float:
     return math.sqrt(max(0.0, variance))
 
 
-def _json_default(value: Any) -> Any:
-    if isinstance(value, datetime):
-        return value.isoformat()
-    if hasattr(value, "isoformat"):
-        try:
-            return value.isoformat()
-        except Exception:
-            return str(value)
-    if isinstance(value, Exception):
-        return {"error_type": value.__class__.__name__, "error": str(value)}
-    return str(value)
-
-
 def _battle_log(runtime: dict[str, Any] | None, event: str, payload: dict[str, Any]) -> None:
     log_path = str(((runtime or {}).get("log_file") or "")).strip()
     if log_path == "":
@@ -115,7 +104,7 @@ def _battle_log(runtime: dict[str, Any] | None, event: str, payload: dict[str, A
     path.parent.mkdir(parents=True, exist_ok=True)
     record = {"event": event, "timestamp": datetime.now(UTC).isoformat(), **payload}
     with path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(record, ensure_ascii=False, default=_json_default) + "\n")
+        handle.write(json_dumps_safe(record) + "\n")
 
 
 def _neo4j_sync_participation(db: SupplyCoreDb, neo4j_raw: dict[str, Any] | None = None) -> dict[str, Any]:
