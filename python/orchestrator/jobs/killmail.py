@@ -741,12 +741,12 @@ def run_killmail_r2z2_stream(context: Any) -> dict[str, Any]:
             JobResult.failed(
                 job_key="sync_killmail_feed",
                 error=str(error),
-                rows_seen=totals["rows_seen"],
-                rows_written=totals["rows_written"],
-                rows_failed=max(1, totals["rows_failed"]),
-                checkpoint_before=str(last_saved_sequence or 0),
-                checkpoint_after=str(last_processed_sequence if last_processed_sequence is not None else (last_saved_sequence or 0)),
                 meta={
+                    "rows_seen": totals["rows_seen"],
+                    "rows_written": totals["rows_written"],
+                    "rows_failed": max(1, totals["rows_failed"]),
+                    "checkpoint_before": str(last_saved_sequence or 0),
+                    "checkpoint_after": str(last_processed_sequence if last_processed_sequence is not None else (last_saved_sequence or 0)),
                     "rows_matched": totals["rows_matched"],
                     "rows_filtered_out": totals["rows_filtered_out"],
                     "rows_skipped_existing": totals["rows_skipped_existing"],

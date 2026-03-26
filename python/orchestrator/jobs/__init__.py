@@ -38,4 +38,3 @@ from .deal_alerts_sync import run_deal_alerts_sync
 from .rebuild_ai_briefings import run_rebuild_ai_briefings
 from .forecasting_ai_sync import run_forecasting_ai_sync
 from .market_hub_local_history_sync import run_market_hub_local_history_sync
-from .killmail_r2z2_sync import run_killmail_r2z2_sync

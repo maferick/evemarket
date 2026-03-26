@@ -5,8 +5,8 @@ Wants=network.target
 
 [Service]
 Type=simple
-User=www-data
-Group=www-data
+User=root
+Group=root
 WorkingDirectory=/var/www/SupplyCore
 Environment=SUPPLYCORE_WORKER_QUEUES=sync,compute
 Environment=SUPPLYCORE_WORKER_CLASSES=sync,compute

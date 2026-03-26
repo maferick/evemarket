@@ -5,8 +5,8 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=www-data
-Group=www-data
+User=root
+Group=root
 WorkingDirectory=/var/www/SupplyCore
 Environment=SUPPLYCORE_ZKILL_POLL_SLEEP=10
 EnvironmentFile=-/etc/default/supplycore-worker
