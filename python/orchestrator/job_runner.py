@@ -30,6 +30,7 @@ class PythonWorkerContext:
     php_binary: str
     db: SupplyCoreDb
     job: dict[str, Any]
+    cli_options: dict[str, Any]
 
     @property
     def db_config(self) -> dict[str, Any]:
@@ -86,6 +87,10 @@ def parse_args() -> argparse.Namespace:
         default=str(Path(__file__).resolve().parents[2]),
         help="Path to the SupplyCore repository/app root.",
     )
+    parser.add_argument("--dry-run", action="store_true", help="Run job in dry-run mode when supported.")
+    parser.add_argument("--batch-size", type=int, default=0, help="Override batch size for compatible jobs.")
+    parser.add_argument("--max-batches", type=int, default=0, help="Maximum number of batches to run for compatible jobs.")
+    parser.add_argument("--verbose", action="store_true", help="Enable verbose structured worker output.")
     return parser.parse_args()
 
 
@@ -220,6 +225,9 @@ def process_job(context: PythonWorkerContext) -> dict[str, Any]:
     result.setdefault("duration_ms", int((time.time() - start) * 1000))
     result.setdefault("started_at", utc_now_iso())
     result.setdefault("finished_at", utc_now_iso())
+    result.setdefault("meta", {})
+    result["meta"] = dict(result.get("meta") or {})
+    result["meta"]["cli_options"] = dict(context.cli_options)
     return result
 
 
@@ -239,6 +247,13 @@ def main() -> int:
         php_binary=config.php_binary,
         db=db,
         job=job,
+        cli_options={
+            "app_root": str(app_root),
+            "dry_run": bool(args.dry_run),
+            "batch_size": max(0, int(args.batch_size or 0)),
+            "max_batches": max(0, int(args.max_batches or 0)),
+            "verbose": bool(args.verbose),
+        },
     )
 
     global _ACTIVE_EMIT_LOG

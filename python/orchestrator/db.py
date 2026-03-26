@@ -598,7 +598,29 @@ class SupplyCoreDb:
                 LIMIT 1"""
         ) or {}
         token = str(row.get("access_token") or "").strip()
-        return token or None
+        if token != "":
+            return token
+
+        cached = self.fetch_one(
+            """SELECT JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.access_token')) AS access_token
+                FROM esi_cache_entries
+                WHERE namespace_key = 'cache.esi.oauth.token'
+                  AND cache_key = 'latest'
+                ORDER BY updated_at DESC, id DESC
+                LIMIT 1"""
+        ) or {}
+        cached_token = str(cached.get("access_token") or "").strip()
+        if cached_token != "":
+            return cached_token
+
+        latest = self.fetch_one(
+            """SELECT access_token
+                FROM esi_oauth_tokens
+                ORDER BY updated_at DESC, id DESC
+                LIMIT 1"""
+        ) or {}
+        latest_token = str(latest.get("access_token") or "").strip()
+        return latest_token or None
 
     def replace_market_orders_for_source(
         self,
