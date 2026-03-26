@@ -7254,11 +7254,6 @@ function dashboard_intelligence_data_build(): array
 
 function dashboard_snapshot_payload(): array
 {
-    $cached = supplycore_cached_json_read(supplycore_dashboard_top_cache_key());
-    if (is_array($cached) && $cached !== []) {
-        return $cached;
-    }
-
     return supplycore_materialized_snapshot_read_or_bootstrap(
         dashboard_snapshot_key(),
         static fn (): array => dashboard_intelligence_data_build(),
@@ -7276,8 +7271,6 @@ function dashboard_refresh_summary(string $reason = 'manual'): array
             + count((array) ($snapshot['priority_queues']['risks'] ?? []))
             + count((array) ($snapshot['priority_queues']['missing_items'] ?? [])),
     ]);
-
-    supplycore_cached_json_write(supplycore_dashboard_top_cache_key(), $stored);
 
     return $stored;
 }
@@ -23098,17 +23091,6 @@ function supplycore_materialized_snapshot_normalize_meta(string $snapshotKey, ar
 
 function supplycore_materialized_snapshot_fetch(string $snapshotKey): ?array
 {
-    $redisPayload = supplycore_redis_get_json(supplycore_materialized_snapshot_redis_key($snapshotKey));
-    if (is_array($redisPayload) && isset($redisPayload['payload']) && is_array($redisPayload['payload'])) {
-        $meta = supplycore_materialized_snapshot_normalize_meta($snapshotKey, is_array($redisPayload['meta'] ?? null) ? $redisPayload['meta'] : []);
-
-        return [
-            'payload' => $redisPayload['payload'],
-            'meta' => $meta,
-            'source' => 'redis',
-        ];
-    }
-
     try {
         $row = db_intelligence_snapshot_get($snapshotKey);
     } catch (Throwable) {
@@ -23137,12 +23119,6 @@ function supplycore_materialized_snapshot_fetch(string $snapshotKey): ?array
     }
     $meta['status'] = (string) ($row['snapshot_status'] ?? ($meta['status'] ?? 'ready'));
     $meta = supplycore_materialized_snapshot_normalize_meta($snapshotKey, $meta);
-
-    $ttlSeconds = max(60, $meta['stale_after_seconds']);
-    supplycore_redis_set_json(supplycore_materialized_snapshot_redis_key($snapshotKey), [
-        'payload' => $payload,
-        'meta' => $meta,
-    ], $ttlSeconds);
 
     return [
         'payload' => $payload,
@@ -23184,11 +23160,6 @@ function supplycore_materialized_snapshot_store(string $snapshotKey, array $payl
         $expiresAt
     );
 
-    supplycore_redis_set_json(supplycore_materialized_snapshot_redis_key($snapshotKey), [
-        'payload' => $payload,
-        'meta' => $normalizedMeta + ['expires_at' => $expiresAt],
-    ], max(60, (int) $normalizedMeta['stale_after_seconds']));
-
     return supplycore_materialized_snapshot_attach_meta($payload, $normalizedMeta + ['expires_at' => $expiresAt]);
 }
 
@@ -23204,13 +23175,6 @@ function supplycore_materialized_snapshot_mark_updating(string $snapshotKey, str
     $expiresAt = gmdate('Y-m-d H:i:s', time() + max(60, (int) $meta['stale_after_seconds']));
 
     db_intelligence_snapshot_mark_updating($snapshotKey, is_string($metaJson) ? $metaJson : null, $expiresAt);
-
-    if ($payload !== []) {
-        supplycore_redis_set_json(supplycore_materialized_snapshot_redis_key($snapshotKey), [
-            'payload' => $payload,
-            'meta' => $meta + ['expires_at' => $expiresAt],
-        ], max(60, (int) $meta['stale_after_seconds']));
-    }
 }
 
 function supplycore_materialized_snapshot_read_or_bootstrap(string $snapshotKey, callable $builder, string $reason): array

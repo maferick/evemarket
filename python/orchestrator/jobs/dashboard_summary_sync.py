@@ -63,7 +63,7 @@ def _processor(db: SupplyCoreDb) -> dict[str, object]:
         "freshness": freshness,
     }
     rows_written = db.upsert_intelligence_snapshot(
-        snapshot_key="dashboard_summaries",
+        snapshot_key="dashboard_operational_kpis",
         payload_json=json_dumps_safe(payload),
         metadata_json=json_dumps_safe({"source": "worker_jobs+market_deal_alerts_current+sync_schedules+market_comparison+sync_state"}),
         expires_seconds=600,
@@ -73,7 +73,7 @@ def _processor(db: SupplyCoreDb) -> dict[str, object]:
         "rows_written": rows_written,
         "warnings": [],
         "summary": "Refreshed dashboard summary intelligence snapshot.",
-        "meta": {"snapshot_key": "dashboard_summaries"},
+        "meta": {"snapshot_key": "dashboard_operational_kpis"},
     }
 
 
