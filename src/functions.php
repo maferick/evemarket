@@ -28499,8 +28499,9 @@ function supplycore_migration_files(): array
 
 function supplycore_migration_pdo(): PDO
 {
-    // Dedicated connection for migrations to avoid conflicts with the main
-    // app connection's open cursors on MariaDB / MySQL.
+    // Dedicated connection for migrations.  Emulated prepares are enabled so
+    // that MariaDB never leaves an unconsumed result set from exec()/query()
+    // blocking a subsequent prepared-statement execute().
     $dsn = sprintf(
         'mysql:host=%s;port=%d;dbname=%s;charset=%s',
         (string) supplycore_base_config_value('db.host', '127.0.0.1'),
@@ -28516,7 +28517,7 @@ function supplycore_migration_pdo(): PDO
         [
             PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
             PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
-            PDO::ATTR_EMULATE_PREPARES => false,
+            PDO::ATTR_EMULATE_PREPARES => true,
         ]
     );
 }
@@ -28603,7 +28604,13 @@ function supplycore_run_migrations(bool $dryRun = false, bool $statusOnly = fals
                 if ($trimmed === '') {
                     continue;
                 }
-                $pdo->exec($trimmed);
+                // Use query() + closeCursor() instead of exec() so that
+                // SELECT statements (e.g. validation queries) have their
+                // result sets fully consumed before the next statement.
+                $result = $pdo->query($trimmed);
+                if ($result instanceof PDOStatement) {
+                    $result->closeCursor();
+                }
             }
             $durationMs = (int) ((microtime(true) - $startedAt) * 1000);
             $recordStmt->execute([$filename, $fileHash, $durationMs, 'applied', null]);
@@ -28611,7 +28618,11 @@ function supplycore_run_migrations(bool $dryRun = false, bool $statusOnly = fals
         } catch (Throwable $e) {
             $durationMs = (int) ((microtime(true) - $startedAt) * 1000);
             $errorMsg = mb_substr($e->getMessage(), 0, 2000);
-            $recordStmt->execute([$filename, $fileHash, $durationMs, 'failed', $errorMsg]);
+            try {
+                $recordStmt->execute([$filename, $fileHash, $durationMs, 'failed', $errorMsg]);
+            } catch (Throwable) {
+                // If recording fails too, just capture the original error.
+            }
             $errors[] = ['file' => $filename, 'message' => $errorMsg];
         }
     }
