@@ -24,15 +24,15 @@ WHERE TABLE_SCHEMA = DATABASE()
   )
 ORDER BY COLUMN_NAME;
 
-SELECT sync_key, enabled
+SELECT job_key, enabled
 FROM sync_schedules
-WHERE sync_key IN (
+WHERE job_key IN (
     'compute_graph_insights',
     'compute_graph_sync',
     'compute_graph_derived_relationships',
     'compute_suspicion_scores_v2'
 )
-ORDER BY sync_key;
+ORDER BY job_key;
 
 SELECT dataset_key, status, last_cursor, last_row_count, updated_at
 FROM sync_state

@@ -28497,11 +28497,51 @@ function supplycore_migration_files(): array
     return $files;
 }
 
+function supplycore_migration_pdo(): PDO
+{
+    // Dedicated connection for migrations to avoid conflicts with the main
+    // app connection's open cursors on MariaDB / MySQL.
+    $dsn = sprintf(
+        'mysql:host=%s;port=%d;dbname=%s;charset=%s',
+        (string) supplycore_base_config_value('db.host', '127.0.0.1'),
+        (int) supplycore_base_config_value('db.port', 3306),
+        (string) supplycore_base_config_value('db.database', ''),
+        (string) supplycore_base_config_value('db.charset', 'utf8mb4')
+    );
+
+    return new PDO(
+        $dsn,
+        (string) supplycore_base_config_value('db.username', ''),
+        (string) supplycore_base_config_value('db.password', ''),
+        [
+            PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+            PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+            PDO::ATTR_EMULATE_PREPARES => false,
+        ]
+    );
+}
+
 function supplycore_run_migrations(bool $dryRun = false, bool $statusOnly = false): array
 {
-    db_ensure_schema_migrations_table();
+    // Use a dedicated PDO connection so migration DDL never conflicts with
+    // open cursors on the main app connection (MariaDB unbuffered-query fix).
+    $pdo = supplycore_migration_pdo();
 
-    $existingRows = db_schema_migrations_all();
+    $pdo->exec(
+        'CREATE TABLE IF NOT EXISTS schema_migrations (
+            id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+            filename VARCHAR(255) NOT NULL,
+            file_hash CHAR(64) NOT NULL,
+            applied_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            duration_ms INT UNSIGNED NOT NULL DEFAULT 0,
+            status ENUM("applied","failed") NOT NULL DEFAULT "applied",
+            error_message TEXT DEFAULT NULL,
+            UNIQUE KEY uq_schema_migrations_filename (filename)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4'
+    );
+
+    $stmt = $pdo->query('SELECT filename, file_hash, applied_at, status, error_message FROM schema_migrations ORDER BY filename ASC');
+    $existingRows = $stmt->fetchAll();
     $applied = [];
     foreach ($existingRows as $row) {
         $applied[(string) $row['filename']] = $row;
@@ -28531,6 +28571,17 @@ function supplycore_run_migrations(bool $dryRun = false, bool $statusOnly = fals
         return ['applied' => $applied, 'pending' => $pending];
     }
 
+    $recordStmt = $pdo->prepare(
+        'INSERT INTO schema_migrations (filename, file_hash, applied_at, duration_ms, status, error_message)
+         VALUES (?, ?, UTC_TIMESTAMP(), ?, ?, ?)
+         ON DUPLICATE KEY UPDATE
+            file_hash = VALUES(file_hash),
+            applied_at = VALUES(applied_at),
+            duration_ms = VALUES(duration_ms),
+            status = VALUES(status),
+            error_message = VALUES(error_message)'
+    );
+
     foreach ($pending as $filename) {
         $filePath = $dir . '/' . $filename;
         $fileHash = hash_file('sha256', $filePath);
@@ -28546,7 +28597,6 @@ function supplycore_run_migrations(bool $dryRun = false, bool $statusOnly = fals
 
         $startedAt = microtime(true);
         try {
-            $pdo = db();
             $statements = supplycore_split_sql_statements($sql);
             foreach ($statements as $statement) {
                 $trimmed = trim($statement);
@@ -28556,12 +28606,12 @@ function supplycore_run_migrations(bool $dryRun = false, bool $statusOnly = fals
                 $pdo->exec($trimmed);
             }
             $durationMs = (int) ((microtime(true) - $startedAt) * 1000);
-            db_schema_migration_record($filename, $fileHash, $durationMs, 'applied');
+            $recordStmt->execute([$filename, $fileHash, $durationMs, 'applied', null]);
             $migrationsRun++;
         } catch (Throwable $e) {
             $durationMs = (int) ((microtime(true) - $startedAt) * 1000);
             $errorMsg = mb_substr($e->getMessage(), 0, 2000);
-            db_schema_migration_record($filename, $fileHash, $durationMs, 'failed', $errorMsg);
+            $recordStmt->execute([$filename, $fileHash, $durationMs, 'failed', $errorMsg]);
             $errors[] = ['file' => $filename, 'message' => $errorMsg];
         }
     }
@@ -28646,12 +28696,25 @@ function supplycore_split_sql_statements(string $sql): array
 function supplycore_check_pending_migrations(): array
 {
     try {
-        db_ensure_schema_migrations_table();
+        $pdo = supplycore_migration_pdo();
+        $pdo->exec(
+            'CREATE TABLE IF NOT EXISTS schema_migrations (
+                id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+                filename VARCHAR(255) NOT NULL,
+                file_hash CHAR(64) NOT NULL,
+                applied_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                duration_ms INT UNSIGNED NOT NULL DEFAULT 0,
+                status ENUM("applied","failed") NOT NULL DEFAULT "applied",
+                error_message TEXT DEFAULT NULL,
+                UNIQUE KEY uq_schema_migrations_filename (filename)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4'
+        );
+        $stmt = $pdo->query('SELECT filename, file_hash, status FROM schema_migrations ORDER BY filename ASC');
+        $existingRows = $stmt->fetchAll();
     } catch (Throwable) {
         return ['pending' => 0, 'files' => []];
     }
 
-    $existingRows = db_schema_migrations_all();
     $applied = [];
     foreach ($existingRows as $row) {
         $applied[(string) $row['filename']] = $row;
@@ -28679,14 +28742,4 @@ function supplycore_check_pending_migrations(): array
     }
 
     return ['pending' => count($pending), 'files' => $pending];
-}
-
-function supplycore_auto_run_migrations_if_pending(): array
-{
-    $check = supplycore_check_pending_migrations();
-    if ((int) $check['pending'] === 0) {
-        return ['migrations_run' => 0, 'errors' => []];
-    }
-
-    return supplycore_run_migrations(false, false);
 }
