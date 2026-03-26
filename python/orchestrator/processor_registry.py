@@ -39,6 +39,9 @@ from .jobs import (
     run_market_hub_local_history_sync,
 )
 from .jobs.market_comparison_summary_sync import run_market_comparison_summary_sync
+from .jobs.esi_character_queue_sync import run_esi_character_queue_sync
+from .jobs.esi_alliance_history_sync import run_esi_alliance_history_sync
+from .jobs.intelligence_pipeline import run_intelligence_pipeline
 
 PYTHON_COMPUTE_PROCESSOR_JOB_KEYS: set[str] = {
     "compute_graph_sync",
@@ -58,6 +61,7 @@ PYTHON_COMPUTE_PROCESSOR_JOB_KEYS: set[str] = {
     "compute_battle_actor_features",
     "compute_suspicion_scores",
     "compute_counterintel_pipeline",
+    "intelligence_pipeline",
 }
 
 PYTHON_SYNC_PROCESSOR_JOB_KEYS: set[str] = {
@@ -77,6 +81,8 @@ PYTHON_SYNC_PROCESSOR_JOB_KEYS: set[str] = {
     "forecasting_ai_sync",
     "market_comparison_summary_sync",
     "market_hub_local_history_sync",
+    "esi_character_queue_sync",
+    "esi_alliance_history_sync",
 }
 PYTHON_PROCESSOR_JOB_KEYS: set[str] = PYTHON_COMPUTE_PROCESSOR_JOB_KEYS | PYTHON_SYNC_PROCESSOR_JOB_KEYS
 
@@ -119,6 +125,10 @@ _PROCESSOR_DISPATCH: dict[str, tuple] = {
     "forecasting_ai_sync": (run_forecasting_ai_sync, lambda db, cfg: (db,)),
     "market_comparison_summary_sync": (run_market_comparison_summary_sync, lambda db, cfg: (db,)),
     "market_hub_local_history_sync": (run_market_hub_local_history_sync, lambda db, cfg: (db,)),
+    # Intelligence pipeline
+    "esi_character_queue_sync": (run_esi_character_queue_sync, lambda db, cfg: (db,)),
+    "esi_alliance_history_sync": (run_esi_alliance_history_sync, lambda db, cfg: (db,)),
+    "intelligence_pipeline": (run_intelligence_pipeline, lambda db, cfg: (db, neo4j_runtime(cfg))),
 }
 
 
