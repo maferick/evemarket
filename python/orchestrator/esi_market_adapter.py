@@ -30,21 +30,17 @@ class EsiMarketAdapter:
         return self._request_json(url)
 
     def fetch_structure_orders(self, *, structure_id: int, access_token: str, page: int = 1) -> EsiOrdersResponse:
-        query = urlencode({"page": page})
+        query = urlencode({"datasource": "tranquility", "page": page})
         url = f"{ESI_BASE}/latest/markets/structures/{structure_id}/?{query}"
         return self._request_json(url, token=access_token)
 
+    def fetch_structure_metadata(self, *, structure_id: int, access_token: str) -> dict[str, Any]:
+        query = urlencode({"datasource": "tranquility"})
+        url = f"{ESI_BASE}/latest/universe/structures/{structure_id}/?{query}"
+        return self._request_object(url, token=access_token)
+
     def _request_json(self, url: str, token: str | None = None) -> EsiOrdersResponse:
-        headers = {
-            "Accept": "application/json",
-            "X-Compatibility-Date": ESI_COMPATIBILITY_DATE,
-            "X-Tenant": "tranquility",
-            "Accept-Language": "en",
-            "User-Agent": "SupplyCore-Orchestrator/1.0",
-        }
-        if token:
-            headers["Authorization"] = f"Bearer {token}"
-        request = Request(url, headers=headers, method="GET")
+        request = Request(url, headers=self._request_headers(token), method="GET")
         try:
             with urlopen(request, timeout=self._timeout_seconds) as response:
                 payload = response.read().decode("utf-8")
@@ -57,6 +53,33 @@ class EsiMarketAdapter:
             if exc.code == 304:
                 return EsiOrdersResponse(orders=[], pages=1, status_code=304)
             raise RuntimeError(f"ESI request failed ({exc.code}) for {url}") from exc
+
+    def _request_object(self, url: str, token: str | None = None) -> dict[str, Any]:
+        request = Request(url, headers=self._request_headers(token), method="GET")
+        try:
+            with urlopen(request, timeout=self._timeout_seconds) as response:
+                payload = json_loads_safe(response.read().decode("utf-8"))
+                if isinstance(payload, dict):
+                    return payload
+                return {}
+        except HTTPError as exc:
+            raise RuntimeError(f"ESI request failed ({exc.code}) for {url}") from exc
+
+    def _request_headers(self, token: str | None = None) -> dict[str, str]:
+        headers = {
+            "Accept": "application/json",
+            "X-Compatibility-Date": ESI_COMPATIBILITY_DATE,
+            "X-Tenant": "tranquility",
+            "Accept-Language": "en",
+            "User-Agent": "SupplyCore-Orchestrator/1.0",
+        }
+        if token:
+            sanitized_token = token.strip()
+            if sanitized_token.lower().startswith("bearer "):
+                sanitized_token = sanitized_token[7:].strip()
+            if sanitized_token:
+                headers["Authorization"] = f"Bearer {sanitized_token}"
+        return headers
 
 
 def parse_esi_datetime(value: Any) -> str:

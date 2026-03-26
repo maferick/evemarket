@@ -589,7 +589,25 @@ class SupplyCoreDb:
                 if 10000000 < resolved < 11000000:
                     return [{"source_id": source_id, "region_id": resolved, "source_kind": "npc_station"}]
 
-        return [{"source_id": source_id, "region_id": 0, "source_kind": "structure"}]
+        return [{"source_id": source_id, "region_id": 0, "source_kind": "player_structure"}]
+
+    def fetch_region_id_for_npc_station(self, *, station_id: int) -> int:
+        if station_id <= 0:
+            return 0
+        row = self.fetch_one(
+            "SELECT region_id FROM ref_npc_stations WHERE station_id = %s LIMIT 1",
+            (station_id,),
+        ) or {}
+        return int(row.get("region_id") or 0)
+
+    def fetch_region_id_for_system(self, *, system_id: int) -> int:
+        if system_id <= 0:
+            return 0
+        row = self.fetch_one(
+            "SELECT region_id FROM ref_systems WHERE system_id = %s LIMIT 1",
+            (system_id,),
+        ) or {}
+        return int(row.get("region_id") or 0)
 
     def fetch_alliance_structure_sources(self, *, limit: int = 5) -> list[int]:
         rows = self.fetch_all(
@@ -625,6 +643,7 @@ class SupplyCoreDb:
                 FROM esi_cache_entries
                 WHERE namespace_key = 'cache.esi.oauth.token'
                   AND cache_key = 'latest'
+                  AND (expires_at IS NULL OR expires_at > UTC_TIMESTAMP())
                 ORDER BY updated_at DESC, id DESC
                 LIMIT 1"""
         ) or {}
@@ -632,14 +651,7 @@ class SupplyCoreDb:
         if cached_token != "":
             return cached_token
 
-        latest = self.fetch_one(
-            """SELECT access_token
-                FROM esi_oauth_tokens
-                ORDER BY updated_at DESC, id DESC
-                LIMIT 1"""
-        ) or {}
-        latest_token = str(latest.get("access_token") or "").strip()
-        return latest_token or None
+        return None
 
     def replace_market_orders_for_source(
         self,
