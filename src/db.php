@@ -11231,6 +11231,7 @@ function db_killmail_overview_page(array $filters = []): array
     $allianceId = max(0, (int) ($filters['alliance_id'] ?? 0));
     $corporationId = max(0, (int) ($filters['corporation_id'] ?? 0));
     $trackedOnly = (bool) ($filters['tracked_only'] ?? false);
+    $mailType = in_array((string) ($filters['mail_type'] ?? 'loss'), ['kill', 'loss', ''], true) ? (string) ($filters['mail_type'] ?? 'loss') : 'loss';
     $search = trim((string) ($filters['search'] ?? ''));
     $trackedMatchesSql = db_killmail_tracked_matches_sql();
     $latestSequencesSql = db_killmail_latest_sequences_sql();
@@ -11276,6 +11277,11 @@ function db_killmail_overview_page(array $filters = []): array
         $conditions[] = 'tracked.sequence_id IS NOT NULL';
     }
 
+    if ($mailType !== '') {
+        $conditions[] = 'e.mail_type = ?';
+        $params[] = $mailType;
+    }
+
     if ($search !== '') {
         $needle = '%' . $search . '%';
         $conditions[] = '(
@@ -11310,9 +11316,11 @@ function db_killmail_overview_page(array $filters = []): array
             e.killmail_time,
             e.uploaded_at,
             e.created_at,
+            e.victim_character_id,
             e.victim_corporation_id,
             e.victim_alliance_id,
             e.victim_ship_type_id,
+            e.mail_type,
             e.solar_system_id,
             e.region_id,
             final_blow_attacker.character_id AS final_blow_character_id,

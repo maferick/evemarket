@@ -10945,10 +10945,11 @@ function killmail_overview_data(): array
         'alliance_id' => max(0, (int) ($_GET['alliance_id'] ?? 0)),
         'corporation_id' => max(0, (int) ($_GET['corporation_id'] ?? 0)),
         'tracked_only' => sanitize_enabled_flag($_GET['tracked_only'] ?? '0') === '1',
+        'mail_type' => in_array($_GET['mail_type'] ?? 'loss', ['kill', 'loss', ''], true) ? ($_GET['mail_type'] ?? 'loss') : 'loss',
         'page' => max(1, (int) ($_GET['page'] ?? 1)),
         'page_size' => $pageSize,
     ];
-    $useCache = $filters['search'] === '' && $filters['alliance_id'] === 0 && $filters['corporation_id'] === 0 && $filters['tracked_only'] === false && $filters['page'] === 1 && $filters['page_size'] === 25;
+    $useCache = $filters['search'] === '' && $filters['alliance_id'] === 0 && $filters['corporation_id'] === 0 && $filters['tracked_only'] === false && $filters['mail_type'] === 'loss' && $filters['page'] === 1 && $filters['page_size'] === 25;
 
     $resolver = static function () use ($recentHours, $filters, $allowedPageSizes, $pageSize): array {
         try {
@@ -11035,6 +11036,7 @@ function killmail_overview_data(): array
         foreach ((array) ($listing['rows'] ?? []) as $row) {
             $allianceId = (int) ($row['victim_alliance_id'] ?? 0);
             $corporationId = (int) ($row['victim_corporation_id'] ?? 0);
+            $victimCharacterId = (int) ($row['victim_character_id'] ?? 0);
             $shipTypeId = (int) ($row['victim_ship_type_id'] ?? 0);
             $systemId = (int) ($row['solar_system_id'] ?? 0);
             $regionId = (int) ($row['region_id'] ?? 0);
@@ -11049,6 +11051,9 @@ function killmail_overview_data(): array
             }
             if ($corporationId > 0) {
                 $overviewResolutionRequests['corporation'][$corporationId] = $corporationId;
+            }
+            if ($victimCharacterId > 0) {
+                $overviewResolutionRequests['character'][$victimCharacterId] = $victimCharacterId;
             }
             if ($shipTypeId > 0) {
                 $overviewResolutionRequests['type'][$shipTypeId] = $shipTypeId;
@@ -11132,6 +11137,7 @@ function killmail_overview_data(): array
                 killmail_overview_flag_enabled($row, 'zkb_awox') ? 'Awox' : null,
             ]));
 
+            $victimCharacterId = isset($row['victim_character_id']) ? (int) $row['victim_character_id'] : null;
             return [
                 'sequence_id' => (int) ($row['sequence_id'] ?? 0),
                 'killmail_id' => (int) ($row['killmail_id'] ?? 0),
@@ -11153,6 +11159,10 @@ function killmail_overview_data(): array
                 'final_blow_alliance' => killmail_entity_preferred_name($resolvedOverviewEntities, 'alliance', $finalBlowAllianceId, '', 'Alliance'),
                 'final_blow_ship' => killmail_entity_preferred_name($resolvedOverviewEntities, 'type', $finalBlowShipTypeId, '', 'Ship'),
                 'final_blow_weapon' => killmail_entity_preferred_name($resolvedOverviewEntities, 'type', $finalBlowWeaponTypeId, '', 'Weapon'),
+                'victim_character_id' => $victimCharacterId,
+                'victim_ship_type_id' => isset($row['victim_ship_type_id']) ? (int) $row['victim_ship_type_id'] : null,
+                'victim_portrait_url' => $victimCharacterId !== null && $victimCharacterId > 0 ? killmail_entity_image_url('character', $victimCharacterId, 'portrait', 64) : null,
+                'mail_type' => (string) ($row['mail_type'] ?? 'loss'),
                 'matched_tracked' => (int) ($row['matched_tracked'] ?? 0) === 1,
                 'match_context' => $matchSources === [] ? 'No tracked entity currently matches this stored killmail.' : ('Matched on ' . implode(', ', $matchSources) . '.'),
                 'ship_icon_url' => $shipTypeId !== null ? killmail_entity_image_url('type', $shipTypeId, 'icon', 64) : null,
@@ -11169,6 +11179,45 @@ function killmail_overview_data(): array
         }, (array) ($listing['rows'] ?? []));
         $rows = supplycore_rows_unique_by($rows, static fn (array $row): string => 'killmail:' . trim((string) ($row['esi_killmail_key'] ?? '')));
         supplycore_sort_rows_by_newest($rows, ['killmail_time_raw', 'uploaded_at_raw', 'created_at_raw'], ['sequence_id', 'killmail_id']);
+
+        // Pod kill grouping: attach capsule kills as sub-rows on the preceding ship kill.
+        // Capsule type IDs: 670 (Capsule), 33328 (Capsule - Genolution 'Auroral' 197-Epsilon).
+        $capsuleTypeIds = [670, 33328, 42132];
+        $podWindow = 10 * 60; // 10-minute window
+        $shipKillsByChar = []; // character_id => [index => i, time => t]
+        foreach ($rows as $i => $row) {
+            $charId = (int) ($row['victim_character_id'] ?? 0);
+            if ($charId <= 0) {
+                continue;
+            }
+            $t = strtotime((string) ($row['killmail_time_raw'] ?? '')) ?: 0;
+            $isCapsule = in_array((int) ($row['victim_ship_type_id'] ?? 0), $capsuleTypeIds, true)
+                || stripos((string) ($row['ship_type'] ?? ''), 'capsule') !== false;
+            if (!$isCapsule) {
+                $shipKillsByChar[$charId] = ['index' => $i, 'time' => $t];
+            }
+        }
+        $podIndices = [];
+        foreach ($rows as $i => $row) {
+            $charId = (int) ($row['victim_character_id'] ?? 0);
+            if ($charId <= 0) {
+                continue;
+            }
+            $isCapsule = in_array((int) ($row['victim_ship_type_id'] ?? 0), $capsuleTypeIds, true)
+                || stripos((string) ($row['ship_type'] ?? ''), 'capsule') !== false;
+            if (!$isCapsule) {
+                continue;
+            }
+            $podTime = strtotime((string) ($row['killmail_time_raw'] ?? '')) ?: 0;
+            $ship = $shipKillsByChar[$charId] ?? null;
+            if ($ship !== null && $podTime >= $ship['time'] && ($podTime - $ship['time']) <= $podWindow) {
+                $rows[$ship['index']]['pod_kill'] = $row;
+                $podIndices[] = $i;
+            }
+        }
+        foreach (array_reverse($podIndices) as $idx) {
+            array_splice($rows, $idx, 1);
+        }
 
         $emptyMessage = $totalCount === 0
             ? 'No killmails have been stored yet. Enable killmail ingestion, run the sync worker, and this view will populate as local killmails arrive.'

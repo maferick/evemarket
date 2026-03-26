@@ -236,9 +236,16 @@ include __DIR__ . '/../../src/views/partials/header.php';
                 <?php foreach ($rows as $index => $row): ?>
                     <tr class="border-b border-border/60 text-slate-200 transition hover:bg-accent/10 <?= $index % 2 === 1 ? 'bg-white/[0.01]' : '' ?>">
                         <td class="px-3 py-3 align-top">
-                            <p class="font-medium text-slate-50"><?= htmlspecialchars((string) ($row['victim_corporation'] ?? '—'), ENT_QUOTES) ?></p>
-                            <p class="mt-1 text-xs text-slate-300"><?= htmlspecialchars((string) ($row['victim_alliance'] ?? '—'), ENT_QUOTES) ?></p>
-                            <p class="mt-2 text-xs text-muted"><?= htmlspecialchars((string) ($row['killmail_time_display'] ?? '—'), ENT_QUOTES) ?></p>
+                            <div class="flex items-start gap-3">
+                                <?php if ((string) ($row['victim_portrait_url'] ?? '') !== ''): ?>
+                                    <img src="<?= htmlspecialchars((string) $row['victim_portrait_url'], ENT_QUOTES) ?>" alt="" class="h-10 w-10 rounded-xl object-cover">
+                                <?php endif; ?>
+                                <div>
+                                    <p class="font-medium text-slate-50"><?= htmlspecialchars((string) ($row['victim_corporation'] ?? '—'), ENT_QUOTES) ?></p>
+                                    <p class="mt-1 text-xs text-slate-300"><?= htmlspecialchars((string) ($row['victim_alliance'] ?? '—'), ENT_QUOTES) ?></p>
+                                    <p class="mt-2 text-xs text-muted"><?= htmlspecialchars((string) ($row['killmail_time_display'] ?? '—'), ENT_QUOTES) ?></p>
+                                </div>
+                            </div>
                         </td>
                         <td class="px-3 py-3 align-top">
                             <div class="flex items-start gap-3">
@@ -294,6 +301,26 @@ include __DIR__ . '/../../src/views/partials/header.php';
                             <a href="<?= htmlspecialchars((string) ($row['inspect_url'] ?? '#'), ENT_QUOTES) ?>" class="inline-flex items-center btn-primary px-3 py-2">Inspect loss</a>
                         </td>
                     </tr>
+                    <?php if (isset($row['pod_kill'])): $pod = $row['pod_kill']; ?>
+                    <tr class="border-b border-border/40 text-slate-400 text-xs bg-white/[0.02]">
+                        <td class="pl-10 pr-3 py-2 align-top">
+                            <span class="text-muted">↳ Pod</span>
+                            <p class="text-slate-400"><?= htmlspecialchars((string) ($pod['killmail_time_display'] ?? '—'), ENT_QUOTES) ?></p>
+                        </td>
+                        <td class="px-3 py-2 align-top text-slate-400">
+                            <?= htmlspecialchars((string) ($pod['final_blow_character'] ?? '—'), ENT_QUOTES) ?>
+                        </td>
+                        <td class="px-3 py-2 align-top">
+                            <p class="text-slate-400"><?= htmlspecialchars((string) ($pod['ship_type'] ?? 'Capsule'), ENT_QUOTES) ?></p>
+                        </td>
+                        <td class="px-3 py-2 align-top" colspan="2">
+                            <span class="text-muted"><?= htmlspecialchars((string) ($pod['estimated_value_display'] ?? '—'), ENT_QUOTES) ?></span>
+                        </td>
+                        <td class="px-3 py-2 align-top">
+                            <a href="<?= htmlspecialchars((string) ($pod['inspect_url'] ?? '#'), ENT_QUOTES) ?>" class="text-xs text-sky-400 hover:underline">Inspect</a>
+                        </td>
+                    </tr>
+                    <?php endif; ?>
                 <?php endforeach; ?>
             <?php endif; ?>
             </tbody>
