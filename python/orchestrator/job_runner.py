@@ -14,11 +14,6 @@ from .config import load_php_runtime_config
 from .db import SupplyCoreDb
 from .job_result import JobResult
 from .json_utils import json_dumps_safe
-from .jobs import (
-    run_killmail_r2z2_stream,
-    run_market_comparison_summary,
-    run_market_hub_local_history,
-)
 from .processor_registry import PYTHON_PROCESSOR_JOB_KEYS, audit_enabled_python_jobs, run_registered_processor
 from .worker_runtime import resident_memory_bytes, utc_now_iso
 
@@ -59,25 +54,6 @@ class PythonWorkerContext:
 
     def emit(self, event: str, payload: dict[str, Any]) -> None:
         emit(event, payload)
-
-
-PROCESSORS = {
-    "killmail_r2z2_sync": run_killmail_r2z2_stream,
-    "market_comparison_summary_sync": run_market_comparison_summary,
-    "market_hub_local_history_sync": run_market_hub_local_history,
-}
-
-# Jobs that intentionally execute via the PHP bridge while still running under the
-# Python scheduler/runtime process.
-PHP_BRIDGED_JOB_KEYS: set[str] = {
-    "market_comparison_summary_sync",
-    "market_hub_local_history_sync",
-    "killmail_r2z2_sync",
-}
-
-INVALID_BRIDGED_JOB_KEYS = sorted(job_key for job_key in PHP_BRIDGED_JOB_KEYS if job_key.startswith("compute_"))
-if INVALID_BRIDGED_JOB_KEYS:
-    raise RuntimeError(f"Compute jobs must be Python-native and cannot use PHP bridge fallback: {', '.join(INVALID_BRIDGED_JOB_KEYS)}")
 
 
 def parse_args() -> argparse.Namespace:
@@ -173,26 +149,8 @@ def _start_sync_run(db: SupplyCoreDb, job_key: str) -> int:
     )
 
 
-def _run_php_fallback(context: PythonWorkerContext, bridge: PhpBridge) -> dict[str, Any]:
-    response = bridge.call(
-        "run-job-handler",
-        args=[f"--job-key={context.job_key}", "--reason=python-fallback"],
-    )
-    raw = dict(response.get("result") or {})
-    raw.setdefault("summary", f"Executed {context.job_key} via PHP fallback inside Python worker mode.")
-    raw.setdefault("meta", {})
-    raw_meta = dict(raw.get("meta") or {})
-    raw_meta["execution_mode"] = "python"
-    raw_meta["fallback_runtime"] = "php"
-    raw_meta.setdefault("outcome_reason", "Job used the PHP handler through the Python-worker fallback bridge.")
-    raw["meta"] = raw_meta
-    return JobResult.from_raw(raw, job_key=context.job_key).to_dict()
-
-
 def process_job(context: PythonWorkerContext) -> dict[str, Any]:
     start = time.time()
-    bridge = PhpBridge(context.php_binary, context.app_root)
-    processor = PROCESSORS.get(context.job_key)
 
     context.emit(
         "python_worker.started",
@@ -209,16 +167,9 @@ def process_job(context: PythonWorkerContext) -> dict[str, Any]:
         },
     )
 
-    if context.job_key in PYTHON_PROCESSOR_JOB_KEYS:
-        result = run_registered_processor(context.job_key, context.db, context.raw_config)
-    elif processor is None:
-        if context.job_key in PHP_BRIDGED_JOB_KEYS:
-            result = _run_php_fallback(context, bridge)
-        else:
-            raise RuntimeError(f"No Python processor is registered for job {context.job_key}.")
-    else:
-        raw = processor(context)
-        result = JobResult.from_raw(raw, job_key=context.job_key).to_dict()
+    if context.job_key not in PYTHON_PROCESSOR_JOB_KEYS:
+        raise RuntimeError(f"No Python processor is registered for job {context.job_key}.")
+    result = run_registered_processor(context.job_key, context.db, context.raw_config)
 
     # Back-fill timing if the processor didn't provide it.
     elapsed = int((time.time() - start) * 1000)
