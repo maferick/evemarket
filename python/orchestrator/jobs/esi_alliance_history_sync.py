@@ -1,0 +1,223 @@
+"""Fetch corporation history from ESI and derive alliance membership history.
+
+Processes characters from ``esi_character_queue`` in batches, fetching their
+corporation history from ESI and deriving alliance membership periods by
+joining against the existing corp-to-alliance mapping in MariaDB.
+"""
+from __future__ import annotations
+
+import json
+import time
+import urllib.error
+import urllib.request
+from datetime import UTC, datetime
+from typing import Any
+
+from ..db import SupplyCoreDb
+from ..job_result import JobResult
+from ..json_utils import json_dumps_safe
+
+ESI_BASE = "https://esi.evetech.net"
+ESI_USER_AGENT = "SupplyCore intelligence-pipeline/1.0 (alliance-history)"
+BATCH_SIZE = 200
+MAX_RETRIES_PER_CHARACTER = 2
+SKIP_IF_FETCHED_WITHIN_DAYS = 7
+
+
+def _esi_get_json(url: str, timeout: int = 20) -> tuple[int, Any]:
+    """Perform an ESI GET and return (status_code, parsed_json)."""
+    request = urllib.request.Request(
+        url,
+        method="GET",
+        headers={
+            "Accept": "application/json",
+            "User-Agent": ESI_USER_AGENT,
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            body = json.loads(response.read().decode("utf-8"))
+            return response.status, body
+    except urllib.error.HTTPError as error:
+        return error.code, None
+    except (urllib.error.URLError, OSError, json.JSONDecodeError):
+        return 0, None
+
+
+def _fetch_corporation_history(character_id: int) -> list[dict[str, Any]] | None:
+    """Fetch corporation membership history for a single character."""
+    url = f"{ESI_BASE}/v2/characters/{character_id}/corporationhistory/"
+    status, body = _esi_get_json(url)
+    if status == 200 and isinstance(body, list):
+        return body
+    if status in (420, 503):
+        # Rate limited or service unavailable — caller should back off.
+        return None
+    return None
+
+
+_corp_alliance_cache: dict[int, int | None] = {}
+
+
+def _lookup_corp_alliance(corp_id: int) -> int | None:
+    """Look up the current alliance for a corporation, cached per session."""
+    if corp_id in _corp_alliance_cache:
+        return _corp_alliance_cache[corp_id]
+    url = f"{ESI_BASE}/v5/corporations/{corp_id}/"
+    status, body = _esi_get_json(url)
+    alliance_id = None
+    if status == 200 and isinstance(body, dict):
+        alliance_id = int(body.get("alliance_id") or 0) or None
+    _corp_alliance_cache[corp_id] = alliance_id
+    time.sleep(0.1)  # Gentle rate limit.
+    return alliance_id
+
+
+def _derive_alliance_history(
+    character_id: int,
+    corp_history: list[dict[str, Any]],
+) -> list[tuple[int, int, str, str | None]]:
+    """Derive alliance membership periods from corporation history.
+
+    Returns list of (character_id, alliance_id, started_at, ended_at) tuples.
+    """
+    if not corp_history:
+        return []
+
+    # Sort by start_date ascending.
+    entries = sorted(corp_history, key=lambda e: e.get("start_date", ""))
+
+    # Look up alliance for each corporation via ESI (cached).
+    corp_to_alliance: dict[int, int | None] = {}
+    for entry in entries:
+        corp_id = int(entry.get("corporation_id") or 0)
+        if corp_id > 0 and corp_id not in corp_to_alliance:
+            corp_to_alliance[corp_id] = _lookup_corp_alliance(corp_id)
+
+    # Build alliance tenure periods — collapse consecutive entries in same alliance.
+    periods: list[tuple[int, int, str, str | None]] = []
+    current_alliance: int | None = None
+    current_start: str | None = None
+
+    for i, entry in enumerate(entries):
+        corp_id = int(entry.get("corporation_id") or 0)
+        start_date = str(entry.get("start_date", ""))[:10]  # YYYY-MM-DD
+        alliance_id = corp_to_alliance.get(corp_id)
+
+        if alliance_id and alliance_id != current_alliance:
+            # Close previous period.
+            if current_alliance and current_start:
+                periods.append((character_id, current_alliance, current_start, start_date))
+            current_alliance = alliance_id
+            current_start = start_date
+        elif not alliance_id and current_alliance:
+            # Left alliance.
+            if current_start:
+                periods.append((character_id, current_alliance, current_start, start_date))
+            current_alliance = None
+            current_start = None
+
+    # Close final open period (current member).
+    if current_alliance and current_start:
+        periods.append((character_id, current_alliance, current_start, None))
+
+    return periods
+
+
+def run_esi_alliance_history_sync(db: SupplyCoreDb) -> dict[str, object]:
+    """Fetch ESI corporation history for queued characters, derive alliance history."""
+    started = time.perf_counter()
+
+    # Fetch batch of pending characters, skipping recently fetched ones.
+    batch = db.fetch_all(
+        """SELECT character_id FROM esi_character_queue
+           WHERE fetch_status = 'pending'
+              OR (fetch_status = 'error' AND queued_at < DATE_SUB(UTC_TIMESTAMP(), INTERVAL 1 HOUR))
+           ORDER BY queued_at ASC
+           LIMIT %s""",
+        (BATCH_SIZE,),
+    )
+
+    if not batch:
+        return JobResult.success(
+            job_key="esi_alliance_history_sync",
+            summary="No pending characters in ESI queue.",
+            rows_processed=0,
+            rows_written=0,
+            duration_ms=int((time.perf_counter() - started) * 1000),
+        ).to_dict()
+
+    total_fetched = 0
+    total_written = 0
+    total_errors = 0
+    total_skipped = 0
+
+    for row in batch:
+        character_id = int(row["character_id"])
+
+        # Skip if already fetched recently.
+        existing = db.fetch_one(
+            """SELECT fetched_at FROM character_alliance_history
+               WHERE character_id = %s
+                 AND fetched_at >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL %s DAY)
+               LIMIT 1""",
+            (character_id, SKIP_IF_FETCHED_WITHIN_DAYS),
+        )
+        if existing:
+            db.execute(
+                "UPDATE esi_character_queue SET fetch_status = 'done', fetched_at = UTC_TIMESTAMP() WHERE character_id = %s",
+                (character_id,),
+            )
+            total_skipped += 1
+            continue
+
+        corp_history = _fetch_corporation_history(character_id)
+
+        if corp_history is None:
+            db.execute(
+                "UPDATE esi_character_queue SET fetch_status = 'error', last_error = 'ESI unavailable or rate limited' WHERE character_id = %s",
+                (character_id,),
+            )
+            total_errors += 1
+            # Back off on rate limit.
+            time.sleep(1)
+            continue
+
+        total_fetched += 1
+        periods = _derive_alliance_history(character_id, corp_history)
+
+        if periods:
+            for char_id, alliance_id, started_at, ended_at in periods:
+                db.execute(
+                    """INSERT INTO character_alliance_history
+                       (character_id, alliance_id, started_at, ended_at, fetched_at)
+                       VALUES (%s, %s, %s, %s, UTC_TIMESTAMP())
+                       ON DUPLICATE KEY UPDATE
+                           ended_at = VALUES(ended_at),
+                           fetched_at = VALUES(fetched_at)""",
+                    (char_id, alliance_id, started_at, ended_at),
+                )
+                total_written += 1
+
+        db.execute(
+            "UPDATE esi_character_queue SET fetch_status = 'done', fetched_at = UTC_TIMESTAMP() WHERE character_id = %s",
+            (character_id,),
+        )
+
+        # Gentle rate limiting — ~200ms between requests.
+        time.sleep(0.2)
+
+    return JobResult.success(
+        job_key="esi_alliance_history_sync",
+        summary=f"Fetched {total_fetched} characters, wrote {total_written} alliance history periods ({total_errors} errors, {total_skipped} skipped).",
+        rows_processed=len(batch),
+        rows_written=total_written,
+        duration_ms=int((time.perf_counter() - started) * 1000),
+        meta={
+            "fetched": total_fetched,
+            "written": total_written,
+            "errors": total_errors,
+            "skipped": total_skipped,
+            "batch_size": len(batch),
+        },
+    ).to_dict()
