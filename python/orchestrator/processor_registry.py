@@ -143,7 +143,12 @@ def run_registered_processor(job_key: str, db: Any, raw_config: dict[str, Any]) 
         return _compute_result_shape(run_rebuild_ai_briefings(db), job_key)
     if job_key == "forecasting_ai_sync":
         return _compute_result_shape(run_forecasting_ai_sync(db), job_key)
-    raise KeyError(f"No Python processor is registered for compute job {job_key}.")
+    in_compute_registry = job_key in PYTHON_COMPUTE_PROCESSOR_JOB_KEYS
+    in_sync_registry = job_key in PYTHON_SYNC_PROCESSOR_JOB_KEYS
+    raise KeyError(
+        "No Python processor is registered for job "
+        f"{job_key} (in_compute_registry={in_compute_registry}, in_sync_registry={in_sync_registry})."
+    )
 
 
 def audit_enabled_python_jobs(db: Any) -> dict[str, Any]:
