@@ -292,7 +292,7 @@ def main() -> int:
             return 1
         result = run_registered_processor(job_key, db, config.raw)
         print(result)
-        return 0
+        return 1 if str(result.get("status") or "success").lower() == "failed" else 0
 
     if command in {
         "compute-battle-rollups",

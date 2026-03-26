@@ -389,6 +389,7 @@ foreach ($configuredSyncJobs as $schedule) {
 }
 
 $settingsLiveRefreshSummary = supplycore_live_refresh_summary(null);
+$showSyncDiagnostics = sanitize_enabled_flag($_GET['show_sync_diagnostics'] ?? '0') === '1';
 $pageHeaderBadge = 'Business settings';
 $pageHeaderSummary = 'Keep settings focused on business choices, data freshness, and only show deep runtime detail when you need it.';
 $pageHeaderMeta = [
@@ -1884,6 +1885,11 @@ include __DIR__ . '/../../src/views/partials/header.php';
                     <div>
                         <p class="text-sm text-slate-100">Data freshness summary</p>
                         <p class="mt-1 text-xs text-muted">Keep the visible view centered on datasets, last successful refreshes, freshness, and only the latest failures.</p>
+                        <p class="mt-2 text-xs text-muted">
+                            <a class="underline decoration-dotted underline-offset-4 hover:text-slate-100" href="/settings?section=data-sync&amp;show_sync_diagnostics=<?= $showSyncDiagnostics ? '0' : '1' ?>">
+                                <?= $showSyncDiagnostics ? 'Hide advanced diagnostics' : 'Show advanced diagnostics' ?>
+                            </a>
+                        </p>
                     </div>
                     <div class="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
                         <?php foreach ($runtimeDatasetCards as $datasetCard): ?>
@@ -1911,6 +1917,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                         <?php endif; ?>
                     </div>
 
+                    <?php if ($showSyncDiagnostics): ?>
                     <details class="rounded-xl border border-border bg-black/20 p-4">
                         <summary class="cursor-pointer list-none">
                             <div class="flex items-start justify-between gap-3">
@@ -2287,6 +2294,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                             </div>
                         </div>
                     </details>
+                    <?php endif; ?>
                 </div>
 
                 <div class="rounded-lg border border-border bg-black/20 p-3 text-sm text-muted">
@@ -2321,6 +2329,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                 <?php $partitionDiagnostics = (array) ($syncDashboard['partition_diagnostics'] ?? []); ?>
                 <?php $partitionedTables = array_values((array) ($partitionDiagnostics['partitioned_tables'] ?? [])); ?>
                 <?php $evaluatedPartitionTables = array_values((array) ($partitionDiagnostics['evaluation_tables'] ?? [])); ?>
+                <?php if ($showSyncDiagnostics): ?>
                 <div class="space-y-3 rounded-lg border border-border bg-black/20 p-4">
                     <div>
                         <p class="text-sm text-slate-100">Raw partition health</p>
@@ -2385,6 +2394,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                         </div>
                     <?php endif; ?>
                 </div>
+                <?php endif; ?>
 
                 <label class="block space-y-2">
                     <span class="text-sm text-muted">Static Data JSONL ZIP Source URL</span>

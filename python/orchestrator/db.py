@@ -550,6 +550,28 @@ class SupplyCoreDb:
         )
         return [{"source_id": int(row.get("source_id") or 0), "region_id": int(row.get("region_id") or 0)} for row in rows]
 
+    def fetch_app_setting(self, key: str, default: str = "") -> str:
+        row = self.fetch_one("SELECT setting_value FROM app_settings WHERE setting_key = %s LIMIT 1", (key[:120],)) or {}
+        value = str(row.get("setting_value") or "").strip()
+        return value if value != "" else default
+
+    def fetch_market_hub_sources_from_settings(self, *, limit: int = 4) -> list[dict[str, object]]:
+        configured = self.fetch_app_setting("market_station_id", "").strip()
+        if configured == "":
+            return []
+        source_id = int(configured) if configured.isdigit() else 0
+        if source_id <= 0:
+            return []
+
+        npc = self.fetch_one(
+            "SELECT station_id, region_id FROM ref_npc_stations WHERE station_id = %s LIMIT 1",
+            (source_id,),
+        ) or {}
+        if int(npc.get("station_id") or 0) > 0 and int(npc.get("region_id") or 0) > 0:
+            return [{"source_id": source_id, "region_id": int(npc["region_id"]), "source_kind": "npc_station"}]
+
+        return [{"source_id": source_id, "region_id": 0, "source_kind": "structure"}]
+
     def fetch_alliance_structure_sources(self, *, limit: int = 5) -> list[int]:
         rows = self.fetch_all(
             """SELECT structure_id
@@ -559,6 +581,13 @@ class SupplyCoreDb:
             (max(1, limit),),
         )
         return [int(row.get("structure_id") or 0) for row in rows if int(row.get("structure_id") or 0) > 0]
+
+    def fetch_alliance_structure_sources_from_settings(self, *, limit: int = 3) -> list[int]:
+        configured = self.fetch_app_setting("alliance_station_id", "").strip()
+        structure_id = int(configured) if configured.isdigit() else 0
+        if structure_id > 0:
+            return [structure_id]
+        return self.fetch_alliance_structure_sources(limit=max(1, limit))
 
     def fetch_latest_esi_access_token(self) -> str | None:
         row = self.fetch_one(

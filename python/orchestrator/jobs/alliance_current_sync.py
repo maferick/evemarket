@@ -8,7 +8,7 @@ from .sync_runtime import run_sync_phase_job
 def _processor(db: SupplyCoreDb) -> dict[str, object]:
     adapter = EsiMarketAdapter(timeout_seconds=30)
     access_token = db.fetch_latest_esi_access_token()
-    structure_ids = db.fetch_alliance_structure_sources(limit=3)
+    structure_ids = db.fetch_alliance_structure_sources_from_settings(limit=3)
     warnings: list[str] = []
     if not access_token:
         warnings.append("No active ESI OAuth token found; alliance structure orders were not fetched from ESI.")
@@ -20,7 +20,7 @@ def _processor(db: SupplyCoreDb) -> dict[str, object]:
             try:
                 first_page = adapter.fetch_structure_orders(structure_id=structure_id, access_token=access_token, page=1)
                 orders.extend(first_page.orders)
-                max_pages = min(4, first_page.pages)
+                max_pages = min(20, first_page.pages)
                 for page in range(2, max_pages + 1):
                     response = adapter.fetch_structure_orders(structure_id=structure_id, access_token=access_token, page=page)
                     orders.extend(response.orders)
@@ -47,7 +47,9 @@ def _processor(db: SupplyCoreDb) -> dict[str, object]:
     rows_processed += int(stats["rows_processed"])
     rows_written += int(stats["rows_written"])
     if not structure_ids:
-        warnings.append("No alliance_structure_metadata sources were available for ESI structure sync.")
+        warnings.append("No configured alliance market structure was found. Save Settings → Trading Stations before running this sync.")
+    if rows_processed == 0:
+        warnings.append("No alliance structure orders were fetched from ESI during this run.")
     db.upsert_sync_state(
         dataset_key="alliance.structure.orders.current",
         status="success",

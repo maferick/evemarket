@@ -73,7 +73,10 @@ $pageFreshnessLine = $pageFreshness !== []
             <!-- ui-section:page-freshness:end -->
         <?php endif; ?>
         <?php if ($dealAlertPopupRows !== []): ?>
-            <div class="fixed inset-x-4 top-4 z-50 ml-auto max-w-xl">
+            <?php
+            $dealAlertPopupSignature = sha1(json_encode(array_values(array_map(static fn (array $row): string => (string) ($row['alert_key'] ?? ''), $dealAlertPopupRows)), JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE) ?: '');
+            ?>
+            <div class="fixed inset-x-4 top-4 z-50 ml-auto max-w-xl" data-deal-alert-popup data-deal-alert-signature="<?= htmlspecialchars($dealAlertPopupSignature, ENT_QUOTES) ?>" data-deal-alert-dismiss-minutes="<?= max(5, $dealAlertDismissMinutes) ?>">
                 <section class="rounded-[1.6rem] border border-rose-400/35 bg-gradient-to-br from-[#2a0911]/96 via-[#1a0c14]/96 to-[#120811]/96 px-5 py-4 text-rose-50 shadow-[0_28px_90px_rgba(244,63,94,0.28)] backdrop-blur-xl">
                     <div class="flex items-start justify-between gap-4">
                         <div>
@@ -81,7 +84,10 @@ $pageFreshnessLine = $pageFreshness !== []
                             <h2 class="mt-2 text-lg font-semibold text-white">Critical / high-confidence deal alerts are active</h2>
                             <p class="mt-1 text-sm text-rose-100/90">SupplyCore detected listings far below their local historical baseline in the alliance market or reference hub.</p>
                         </div>
-                        <a href="/deal-alerts" class="rounded-full border border-rose-200/20 bg-white/8 px-3 py-1 text-xs font-medium text-white hover:bg-white/12">Open deals page</a>
+                        <div class="flex items-center gap-2">
+                            <a href="/deal-alerts" class="rounded-full border border-rose-200/20 bg-white/8 px-3 py-1 text-xs font-medium text-white hover:bg-white/12">Open deals page</a>
+                            <button type="button" class="rounded-full border border-white/20 bg-black/20 px-2.5 py-1 text-xs font-semibold uppercase tracking-[0.14em] text-white hover:bg-black/35" data-deal-alert-close>Close</button>
+                        </div>
                     </div>
 
                     <div class="mt-4 space-y-3">
@@ -121,4 +127,38 @@ $pageFreshnessLine = $pageFreshness !== []
                     </div>
                 </section>
             </div>
+            <script>
+                (() => {
+                    const popup = document.querySelector('[data-deal-alert-popup]');
+                    if (!popup) return;
+                    const signature = popup.getAttribute('data-deal-alert-signature') || '';
+                    const ttlMinutes = Number.parseInt(popup.getAttribute('data-deal-alert-dismiss-minutes') || '120', 10);
+                    const key = `deal-alert-popup:${signature}`;
+                    try {
+                        const raw = window.sessionStorage.getItem(key);
+                        if (raw) {
+                            const expiresAt = Number.parseInt(raw, 10);
+                            if (Number.isFinite(expiresAt) && Date.now() < expiresAt) {
+                                popup.remove();
+                                return;
+                            }
+                            window.sessionStorage.removeItem(key);
+                        }
+                    } catch (error) {
+                        // ignore storage access failures and still allow close interaction
+                    }
+                    const closeButton = popup.querySelector('[data-deal-alert-close]');
+                    if (!closeButton) return;
+                    closeButton.addEventListener('click', () => {
+                        try {
+                            const minutes = Number.isFinite(ttlMinutes) ? Math.max(5, ttlMinutes) : 120;
+                            const expiresAt = Date.now() + (minutes * 60 * 1000);
+                            window.sessionStorage.setItem(key, String(expiresAt));
+                        } catch (error) {
+                            // no-op
+                        }
+                        popup.remove();
+                    });
+                })();
+            </script>
         <?php endif; ?>

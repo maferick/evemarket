@@ -7,26 +7,43 @@ from .sync_runtime import run_sync_phase_job
 
 def _processor(db: SupplyCoreDb) -> dict[str, object]:
     adapter = EsiMarketAdapter(timeout_seconds=30)
-    sources = db.fetch_market_hub_sources(limit=4)
+    sources = db.fetch_market_hub_sources_from_settings(limit=4)
+    access_token = db.fetch_latest_esi_access_token()
     warnings: list[str] = []
     rows_processed = 0
     rows_written = 0
     for source in sources:
         source_id = int(source.get("source_id") or 0)
         region_id = int(source.get("region_id") or 0)
-        if source_id <= 0 or region_id <= 0:
+        source_kind = str(source.get("source_kind") or "npc_station")
+        if source_id <= 0:
             continue
         orders: list[dict[str, object]] = []
         try:
-            first_page = adapter.fetch_region_orders(region_id=region_id, order_type="all", page=1)
+            if source_kind == "structure":
+                if not access_token:
+                    warnings.append(f"market_hub source {source_id} is a structure, but no active ESI OAuth token is available.")
+                    continue
+                first_page = adapter.fetch_structure_orders(structure_id=source_id, access_token=access_token, page=1)
+            else:
+                if region_id <= 0:
+                    warnings.append(f"market_hub source {source_id} is missing region metadata.")
+                    continue
+                first_page = adapter.fetch_region_orders(region_id=region_id, order_type="all", page=1)
             orders.extend(first_page.orders)
-            max_pages = min(4, first_page.pages)
+            max_pages = min(20, first_page.pages)
             for page in range(2, max_pages + 1):
-                response = adapter.fetch_region_orders(region_id=region_id, order_type="all", page=page)
+                if source_kind == "structure":
+                    response = adapter.fetch_structure_orders(structure_id=source_id, access_token=access_token, page=page)
+                else:
+                    response = adapter.fetch_region_orders(region_id=region_id, order_type="all", page=page)
                 orders.extend(response.orders)
         except Exception as exc:
-            warnings.append(f"market_hub source {source_id} region {region_id} fetch failed: {exc}")
+            warnings.append(f"market_hub source {source_id} fetch failed: {exc}")
             continue
+
+        if source_kind == "npc_station":
+            orders = [order for order in orders if int(order.get("location_id") or 0) == source_id]
 
         normalized_orders: list[dict[str, object]] = []
         for order in orders:
@@ -48,7 +65,9 @@ def _processor(db: SupplyCoreDb) -> dict[str, object]:
     rows_processed += int(stats["rows_processed"])
     rows_written += int(stats["rows_written"])
     if not sources:
-        warnings.append("No configured NPC market-hub sources were found (trading_stations + ref_npc_stations join returned empty).")
+        warnings.append("No configured market hub source was found. Save Settings → Trading Stations before running this sync.")
+    if rows_processed == 0:
+        warnings.append("No market-hub orders were fetched from ESI during this run.")
     db.upsert_sync_state(
         dataset_key="market_hub.orders.current",
         status="success",
