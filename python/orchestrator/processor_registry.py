@@ -22,6 +22,20 @@ from .jobs import (
     run_compute_suspicion_scores,
     run_compute_suspicion_scores_v2,
     run_compute_counterintel_pipeline,
+    run_market_hub_current_sync,
+    run_alliance_current_sync,
+    run_market_hub_historical_sync,
+    run_alliance_historical_sync,
+    run_current_state_refresh_sync,
+    run_analytics_bucket_1h_sync,
+    run_analytics_bucket_1d_sync,
+    run_activity_priority_summary_sync,
+    run_dashboard_summary_sync,
+    run_loss_demand_summary_sync,
+    run_doctrine_intelligence_sync,
+    run_deal_alerts_sync,
+    run_rebuild_ai_briefings,
+    run_forecasting_ai_sync,
 )
 
 PYTHON_COMPUTE_PROCESSOR_JOB_KEYS: set[str] = {
@@ -44,8 +58,26 @@ PYTHON_COMPUTE_PROCESSOR_JOB_KEYS: set[str] = {
     "compute_counterintel_pipeline",
 }
 
+PYTHON_SYNC_PROCESSOR_JOB_KEYS: set[str] = {
+    "market_hub_current_sync",
+    "alliance_current_sync",
+    "market_hub_historical_sync",
+    "alliance_historical_sync",
+    "current_state_refresh_sync",
+    "analytics_bucket_1h_sync",
+    "analytics_bucket_1d_sync",
+    "activity_priority_summary_sync",
+    "dashboard_summary_sync",
+    "loss_demand_summary_sync",
+    "doctrine_intelligence_sync",
+    "deal_alerts_sync",
+    "rebuild_ai_briefings",
+    "forecasting_ai_sync",
+}
+PYTHON_PROCESSOR_JOB_KEYS: set[str] = PYTHON_COMPUTE_PROCESSOR_JOB_KEYS | PYTHON_SYNC_PROCESSOR_JOB_KEYS
 
-def run_compute_processor(job_key: str, db: Any, raw_config: dict[str, Any]) -> dict[str, Any]:
+
+def run_registered_processor(job_key: str, db: Any, raw_config: dict[str, Any]) -> dict[str, Any]:
     if job_key == "compute_graph_sync":
         return _graph_result_shape(run_compute_graph_sync(db, neo4j_runtime(raw_config)), job_key)
     if job_key == "compute_graph_sync_doctrine_dependency":
@@ -83,6 +115,34 @@ def run_compute_processor(job_key: str, db: Any, raw_config: dict[str, Any]) -> 
             run_compute_counterintel_pipeline(db, neo4j_runtime(raw_config), battle_runtime(raw_config)),
             job_key,
         )
+    if job_key == "market_hub_current_sync":
+        return _compute_result_shape(run_market_hub_current_sync(db), job_key)
+    if job_key == "alliance_current_sync":
+        return _compute_result_shape(run_alliance_current_sync(db), job_key)
+    if job_key == "market_hub_historical_sync":
+        return _compute_result_shape(run_market_hub_historical_sync(db), job_key)
+    if job_key == "alliance_historical_sync":
+        return _compute_result_shape(run_alliance_historical_sync(db), job_key)
+    if job_key == "current_state_refresh_sync":
+        return _compute_result_shape(run_current_state_refresh_sync(db), job_key)
+    if job_key == "analytics_bucket_1h_sync":
+        return _compute_result_shape(run_analytics_bucket_1h_sync(db), job_key)
+    if job_key == "analytics_bucket_1d_sync":
+        return _compute_result_shape(run_analytics_bucket_1d_sync(db), job_key)
+    if job_key == "activity_priority_summary_sync":
+        return _compute_result_shape(run_activity_priority_summary_sync(db), job_key)
+    if job_key == "dashboard_summary_sync":
+        return _compute_result_shape(run_dashboard_summary_sync(db), job_key)
+    if job_key == "loss_demand_summary_sync":
+        return _compute_result_shape(run_loss_demand_summary_sync(db), job_key)
+    if job_key == "doctrine_intelligence_sync":
+        return _compute_result_shape(run_doctrine_intelligence_sync(db), job_key)
+    if job_key == "deal_alerts_sync":
+        return _compute_result_shape(run_deal_alerts_sync(db), job_key)
+    if job_key == "rebuild_ai_briefings":
+        return _compute_result_shape(run_rebuild_ai_briefings(db), job_key)
+    if job_key == "forecasting_ai_sync":
+        return _compute_result_shape(run_forecasting_ai_sync(db), job_key)
     raise KeyError(f"No Python processor is registered for compute job {job_key}.")
 
 
@@ -95,7 +155,7 @@ def audit_enabled_python_jobs(db: Any) -> dict[str, Any]:
     for row in rows:
         job_key = str(row.get("job_key") or "").strip()
         is_compute = job_key.startswith("compute_")
-        has_processor = job_key in PYTHON_COMPUTE_PROCESSOR_JOB_KEYS
+        has_processor = job_key in PYTHON_PROCESSOR_JOB_KEYS
         if is_compute and not has_processor:
             issues.append(f"Enabled Python compute job {job_key} is missing a Python worker processor binding.")
         matrix.append(
@@ -143,3 +203,7 @@ def _compute_result_shape(result: dict[str, Any], job_key: str) -> dict[str, Any
             "result": dict(safe_result),
         },
     }
+
+
+def run_compute_processor(job_key: str, db: Any, raw_config: dict[str, Any]) -> dict[str, Any]:
+    return run_registered_processor(job_key, db, raw_config)

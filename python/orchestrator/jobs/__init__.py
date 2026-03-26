@@ -21,3 +21,19 @@ from .battle_intelligence import (
 )
 from .behavioral_intelligence_v2 import run_compute_behavioral_baselines, run_compute_suspicion_scores_v2
 from .counterintel_pipeline import run_compute_counterintel_pipeline
+
+
+from .market_hub_current_sync import run_market_hub_current_sync
+from .alliance_current_sync import run_alliance_current_sync
+from .market_hub_historical_sync import run_market_hub_historical_sync
+from .alliance_historical_sync import run_alliance_historical_sync
+from .current_state_refresh_sync import run_current_state_refresh_sync
+from .analytics_bucket_1h_sync import run_analytics_bucket_1h_sync
+from .analytics_bucket_1d_sync import run_analytics_bucket_1d_sync
+from .activity_priority_summary_sync import run_activity_priority_summary_sync
+from .dashboard_summary_sync import run_dashboard_summary_sync
+from .loss_demand_summary_sync import run_loss_demand_summary_sync
+from .doctrine_intelligence_sync import run_doctrine_intelligence_sync
+from .deal_alerts_sync import run_deal_alerts_sync
+from .rebuild_ai_briefings import run_rebuild_ai_briefings
+from .forecasting_ai_sync import run_forecasting_ai_sync

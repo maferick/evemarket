@@ -18,7 +18,7 @@ from .jobs import (
     run_market_comparison_summary,
     run_market_hub_local_history,
 )
-from .processor_registry import PYTHON_COMPUTE_PROCESSOR_JOB_KEYS, audit_enabled_python_jobs, run_compute_processor
+from .processor_registry import PYTHON_PROCESSOR_JOB_KEYS, audit_enabled_python_jobs, run_registered_processor
 from .worker_runtime import resident_memory_bytes, utc_now_iso
 
 
@@ -68,22 +68,8 @@ PROCESSORS = {
 # Jobs that intentionally execute via the PHP bridge while still running under the
 # Python scheduler/runtime process.
 PHP_BRIDGED_JOB_KEYS: set[str] = {
-    "market_hub_current_sync",
-    "deal_alerts_sync",
-    "alliance_current_sync",
-    "current_state_refresh_sync",
-    "doctrine_intelligence_sync",
     "market_comparison_summary_sync",
-    "loss_demand_summary_sync",
-    "dashboard_summary_sync",
-    "rebuild_ai_briefings",
-    "activity_priority_summary_sync",
     "market_hub_local_history_sync",
-    "analytics_bucket_1h_sync",
-    "analytics_bucket_1d_sync",
-    "alliance_historical_sync",
-    "market_hub_historical_sync",
-    "forecasting_ai_sync",
     "killmail_r2z2_sync",
 }
 
@@ -221,9 +207,9 @@ def process_job(context: PythonWorkerContext) -> dict[str, Any]:
         },
     )
 
-    if processor is None:
-        if context.job_key.startswith("compute_"):
-            raise RuntimeError(f"No Python processor is registered for compute job {context.job_key}. Compute jobs cannot use PHP fallback.")
+    if context.job_key in PYTHON_PROCESSOR_JOB_KEYS:
+        result = run_registered_processor(context.job_key, context.db, context.raw_config)
+    elif processor is None:
         if context.job_key in PHP_BRIDGED_JOB_KEYS:
             result = _run_php_fallback(context, bridge)
         elif not bool(context.scheduler_config.get("python_php_fallback_enabled", True)):
@@ -231,10 +217,7 @@ def process_job(context: PythonWorkerContext) -> dict[str, Any]:
         else:
             result = _run_php_fallback(context, bridge)
     else:
-        if context.job_key in PYTHON_COMPUTE_PROCESSOR_JOB_KEYS:
-            result = run_compute_processor(context.job_key, context.db, context.raw_config)
-        else:
-            result = processor(context)
+        result = processor(context)
 
     result.setdefault("duration_ms", int((time.time() - start) * 1000))
     result.setdefault("started_at", utc_now_iso())

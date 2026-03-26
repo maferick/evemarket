@@ -16,7 +16,7 @@ from .config import load_php_runtime_config
 from .db import SupplyCoreDb
 from .json_utils import json_dumps_safe, make_json_safe
 from .logging_utils import LoggerAdapter, configure_logging
-from .processor_registry import audit_enabled_python_jobs, run_compute_processor
+from .processor_registry import audit_enabled_python_jobs, run_registered_processor
 from .worker_registry import WORKER_JOB_DEFINITIONS
 from .worker_runtime import resident_memory_bytes, utc_now_iso
 
@@ -85,7 +85,7 @@ def _write_state_file(path: Path, payload: dict[str, Any]) -> None:
 
 def _process_job(context: WorkerPoolContext) -> dict[str, Any]:
     started = time.monotonic()
-    result = run_compute_processor(context.job_key, context.db, context.raw_config)
+    result = run_registered_processor(context.job_key, context.db, context.raw_config)
     result.setdefault("duration_ms", int((time.monotonic() - started) * 1000))
     result.setdefault("started_at", utc_now_iso())
     result.setdefault("finished_at", utc_now_iso())
