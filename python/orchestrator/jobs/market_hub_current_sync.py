@@ -7,7 +7,14 @@ from .sync_runtime import run_sync_phase_job
 
 def _processor(db: SupplyCoreDb) -> dict[str, object]:
     adapter = EsiMarketAdapter(timeout_seconds=30)
-    sources = db.fetch_market_hub_sources_from_settings(limit=4)
+    sources: list[dict[str, object]] = []
+    fetch_from_settings = getattr(db, "fetch_market_hub_sources_from_settings", None)
+    if callable(fetch_from_settings):
+        sources = list(fetch_from_settings(limit=4))
+    if not sources:
+        legacy_fetch = getattr(db, "fetch_market_hub_sources", None)
+        if callable(legacy_fetch):
+            sources = list(legacy_fetch(limit=4))
     access_token = db.fetch_latest_esi_access_token()
     warnings: list[str] = []
     rows_processed = 0
@@ -43,7 +50,13 @@ def _processor(db: SupplyCoreDb) -> dict[str, object]:
             continue
 
         if source_kind == "npc_station":
-            orders = [order for order in orders if int(order.get("location_id") or 0) == source_id]
+            validated_orders: list[dict[str, object]] = []
+            for order in orders:
+                if not isinstance(order, dict):
+                    raise ValueError(f"market_hub source {source_id} returned a non-object order payload.")
+                if int(order.get("location_id") or 0) == source_id:
+                    validated_orders.append(order)
+            orders = validated_orders
 
         normalized_orders: list[dict[str, object]] = []
         for order in orders:

@@ -8,7 +8,14 @@ from .sync_runtime import run_sync_phase_job
 def _processor(db: SupplyCoreDb) -> dict[str, object]:
     adapter = EsiMarketAdapter(timeout_seconds=30)
     access_token = db.fetch_latest_esi_access_token()
-    structure_ids = db.fetch_alliance_structure_sources_from_settings(limit=3)
+    structure_ids: list[int] = []
+    fetch_from_settings = getattr(db, "fetch_alliance_structure_sources_from_settings", None)
+    if callable(fetch_from_settings):
+        structure_ids = list(fetch_from_settings(limit=3))
+    if not structure_ids:
+        legacy_fetch = getattr(db, "fetch_alliance_structure_sources", None)
+        if callable(legacy_fetch):
+            structure_ids = list(legacy_fetch(limit=3))
     warnings: list[str] = []
     if not access_token:
         warnings.append("No active ESI OAuth token found; alliance structure orders were not fetched from ESI.")
@@ -29,6 +36,8 @@ def _processor(db: SupplyCoreDb) -> dict[str, object]:
                 continue
             normalized_orders: list[dict[str, object]] = []
             for order in orders:
+                if not isinstance(order, dict):
+                    raise ValueError(f"alliance structure {structure_id} returned a non-object order payload.")
                 row = dict(order)
                 row["issued"] = parse_esi_datetime(row.get("issued"))
                 row["expires"] = parse_esi_datetime(row.get("expires"))

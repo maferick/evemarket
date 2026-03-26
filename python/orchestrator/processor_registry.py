@@ -194,13 +194,24 @@ def _graph_result_shape(result: dict[str, Any], job_key: str) -> dict[str, Any]:
 def _compute_result_shape(result: dict[str, Any], job_key: str) -> dict[str, Any]:
     safe_result = make_json_safe(result)
     status = str(result.get("status") or "success")
+    rows_seen = max(0, int(result.get("rows_seen") or result.get("rows_processed") or 0))
     rows_processed = max(0, int(result.get("rows_processed") or 0))
     rows_written = max(0, int(result.get("rows_written") or 0))
     return {
         "status": status,
         "summary": str(result.get("summary") or f"{job_key} completed with status {status}."),
+        "started_at": str(result.get("started_at") or ""),
+        "finished_at": str(result.get("finished_at") or ""),
+        "duration_ms": max(0, int(result.get("duration_ms") or 0)),
+        "rows_seen": rows_seen,
         "rows_processed": rows_processed,
         "rows_written": rows_written,
+        "rows_skipped": max(0, int(result.get("rows_skipped") or (rows_seen - rows_processed))),
+        "rows_failed": max(0, int(result.get("rows_failed") or 0)),
+        "batches_completed": max(0, int(result.get("batches_completed") or 0)),
+        "checkpoint_before": result.get("checkpoint_before"),
+        "checkpoint_after": result.get("checkpoint_after"),
+        "error_text": str(result.get("error_text") or "") or None,
         "warnings": list(safe_result.get("warnings") or []),
         "meta": {
             "job_name": job_key,
