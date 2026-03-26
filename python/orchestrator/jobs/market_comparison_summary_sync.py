@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from ..db import SupplyCoreDb
+from ..item_scope import filter_rows_by_allowed_type_ids, load_allowed_type_ids
 from ..json_utils import json_dumps_safe
 from .sync_runtime import run_sync_phase_job
 
@@ -113,23 +114,14 @@ def _processor(db: SupplyCoreDb) -> dict[str, object]:
         (alliance_structure_id, reference_source_id, alliance_structure_id, reference_source_id),
     )
 
-    # Filter by item scope if the table exists
-    try:
-        allowed_type_ids_raw = db.fetch_all(
-            "SELECT type_id FROM item_scope WHERE enabled = 1"
-        )
-        allowed_type_ids = {int(row["type_id"]) for row in allowed_type_ids_raw} if allowed_type_ids_raw else set()
-    except Exception:
-        allowed_type_ids = set()
-
-    evaluated = []
-    for row in aggregate_rows:
-        type_id = int(row.get("type_id") or 0)
-        if type_id <= 0:
-            continue
-        if allowed_type_ids and type_id not in allowed_type_ids:
-            continue
-        evaluated.append(_evaluate_market_row(row, thresholds))
+    allowed_type_ids = load_allowed_type_ids()
+    valid_rows = [row for row in aggregate_rows if int(row.get("type_id") or 0) > 0]
+    scoped_rows, scope_metrics = filter_rows_by_allowed_type_ids(
+        valid_rows,
+        allowed_type_ids,
+        type_id_getter=lambda row: int(row.get("type_id") or 0),
+    )
+    evaluated = [_evaluate_market_row(row, thresholds) for row in scoped_rows]
 
     snapshot = {
         "thresholds": thresholds,
@@ -150,6 +142,10 @@ def _processor(db: SupplyCoreDb) -> dict[str, object]:
             "row_count": len(evaluated),
             "alliance_structure_id": alliance_structure_id,
             "reference_source_id": reference_source_id,
+            "scope_filter_source": "php_bridge:item-scope-context",
+            "scope_allowed_count": scope_metrics["scope_allowed_count"],
+            "rows_before_scope": scope_metrics["rows_before_scope"],
+            "rows_after_scope": scope_metrics["rows_after_scope"],
         }),
         expires_seconds=600,
     )
@@ -167,7 +163,14 @@ def _processor(db: SupplyCoreDb) -> dict[str, object]:
         "rows_written": len(evaluated),
         "warnings": [],
         "summary": f"Market comparison: {len(evaluated)} items evaluated ({len([r for r in evaluated if r['in_both_markets']])} in both markets).",
-        "meta": {"snapshot_key": "market_comparison_summaries", "row_count": len(evaluated)},
+        "meta": {
+            "snapshot_key": "market_comparison_summaries",
+            "row_count": len(evaluated),
+            "scope_filter_source": "php_bridge:item-scope-context",
+            "scope_allowed_count": scope_metrics["scope_allowed_count"],
+            "rows_before_scope": scope_metrics["rows_before_scope"],
+            "rows_after_scope": scope_metrics["rows_after_scope"],
+        },
     }
 
 

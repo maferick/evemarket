@@ -5,6 +5,7 @@ from typing import Any
 
 from ..bridge import PhpBridge
 from ..db import SupplyCoreDb
+from ..item_scope import load_allowed_type_ids
 from ..job_result import JobResult
 from ..worker_runtime import WorkerStats, payload_checksum, resident_memory_bytes, utc_now_iso
 
@@ -92,11 +93,13 @@ def run_market_comparison_summary(context: Any) -> dict[str, Any]:
     if alliance_structure_id <= 0 or reference_source_id <= 0:
         raise RuntimeError("Market comparison Python worker requires configured alliance and reference market sources.")
 
-    allowed_type_ids = {int(type_id) for type_id in job_context.get("allowed_type_ids", []) if int(type_id) > 0}
+    allowed_type_ids = load_allowed_type_ids(php_binary=context.php_binary, app_root=context.app_root)
     thresholds = dict(job_context.get("thresholds", {}))
     db = SupplyCoreDb(context.db_config)
     stats = WorkerStats()
     snapshot_rows: list[dict[str, Any]] = []
+    rows_before_scope = 0
+    rows_after_scope = 0
 
     latest_alliance = db.fetch_one(
         "SELECT COALESCE(NULLIF(latest_summary_observed_at, ''), latest_current_observed_at) AS observed_at FROM market_source_snapshot_state WHERE source_type = %s AND source_id = %s LIMIT 1",
@@ -149,8 +152,10 @@ def run_market_comparison_summary(context: Any) -> dict[str, Any]:
             break
 
         batch_type_ids = [int(row["type_id"]) for row in batch_type_rows if int(row.get("type_id") or 0) > 0]
+        rows_before_scope += len(batch_type_ids)
         if allowed_type_ids:
             batch_type_ids = [type_id for type_id in batch_type_ids if type_id in allowed_type_ids]
+        rows_after_scope += len(batch_type_ids)
         stats.progress.last_type_id = max(int(row["type_id"]) for row in batch_type_rows)
         if not batch_type_ids:
             stats.progress.batches_completed += 1
@@ -213,6 +218,9 @@ def run_market_comparison_summary(context: Any) -> dict[str, Any]:
                 "rows_processed": stats.progress.rows_processed,
                 "rows_written": stats.progress.rows_written,
                 "last_type_id": stats.progress.last_type_id,
+                "scope_allowed_count": len(allowed_type_ids),
+                "rows_before_scope": rows_before_scope,
+                "rows_after_scope": rows_after_scope,
                 "memory_usage_bytes": memory_bytes,
                 "duration_ms": stats.duration_ms(),
             },
@@ -243,6 +251,10 @@ def run_market_comparison_summary(context: Any) -> dict[str, Any]:
                 "execution_mode": "python",
                 "batches_completed": stats.progress.batches_completed,
                 "rows_processed": stats.progress.rows_processed,
+                "scope_filter_source": "php_bridge:item-scope-context",
+                "scope_allowed_count": len(allowed_type_ids),
+                "rows_before_scope": rows_before_scope,
+                "rows_after_scope": rows_after_scope,
                 "memory_peak_bytes": resident_memory_bytes(),
             },
         },
@@ -263,6 +275,10 @@ def run_market_comparison_summary(context: Any) -> dict[str, Any]:
             "memory_usage_bytes": resident_memory_bytes(),
             "cursor": f"market_comparison:{utc_now_iso()}",
             "checksum": payload_checksum({"rows": len(snapshot_rows), "computed_at": freshness.get("computed_at")}),
+            "scope_filter_source": "php_bridge:item-scope-context",
+            "scope_allowed_count": len(allowed_type_ids),
+            "rows_before_scope": rows_before_scope,
+            "rows_after_scope": rows_after_scope,
             "outcome_reason": "Python streamed summary snapshots in batches, pushed aggregation to SQL, and stored the materialized market comparison snapshot.",
         },
     ).to_dict()
