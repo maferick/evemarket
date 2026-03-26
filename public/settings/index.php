@@ -1183,11 +1183,11 @@ include __DIR__ . '/../../src/views/partials/header.php';
                     </article>
                 </div>
 
-                <label class="flex items-center gap-3 rounded-lg border border-border bg-black/20 p-3">
-                    <input type="hidden" name="killmail_ingestion_enabled" value="0">
-                    <input type="checkbox" name="killmail_ingestion_enabled" value="1" <?= ($settingValues['killmail_ingestion_enabled'] ?? '0') === '1' ? 'checked' : '' ?> class="size-4 rounded border-border bg-black">
-                    <span class="text-sm">Enable zKillboard R2Z2 ingestion</span>
-                </label>
+                <div class="flex items-center gap-3 rounded-lg border border-border bg-black/20 p-3">
+                    <span class="inline-flex size-4 items-center justify-center rounded border <?= ($settingValues['killmail_ingestion_enabled'] ?? '0') === '1' ? 'border-emerald-500/60 bg-emerald-500/20 text-emerald-300' : 'border-border bg-black/40 text-slate-500' ?> text-xs"><?= ($settingValues['killmail_ingestion_enabled'] ?? '0') === '1' ? '✓' : '' ?></span>
+                    <span class="text-sm">zKillboard R2Z2 ingestion <?= ($settingValues['killmail_ingestion_enabled'] ?? '0') === '1' ? 'enabled' : 'disabled' ?></span>
+                    <a href="/settings?section=automation-control" class="ml-auto text-xs text-slate-400 underline decoration-dotted underline-offset-4">Change in Automation Control</a>
+                </div>
 
                 <div class="grid gap-4 md:grid-cols-2">
                     <label class="block space-y-2">
@@ -1727,10 +1727,11 @@ include __DIR__ . '/../../src/views/partials/header.php';
                     <span class="text-sm text-muted">Enabled Scopes (space separated)</span>
                     <textarea name="esi_scopes" rows="4" class="w-full field-input"><?= htmlspecialchars($settingValues['esi_scopes'] ?? implode(' ', esi_default_scopes()), ENT_QUOTES) ?></textarea>
                 </label>
-                <label class="flex items-center gap-3 rounded-lg border border-border bg-black/20 p-3">
-                    <input type="checkbox" name="esi_enabled" value="1" <?= ($settingValues['esi_enabled'] ?? '0') === '1' ? 'checked' : '' ?> class="size-4 rounded border-border bg-black">
-                    <span class="text-sm">Enable ESI OAuth login</span>
-                </label>
+                <div class="flex items-center gap-3 rounded-lg border border-border bg-black/20 p-3">
+                    <span class="inline-flex size-4 items-center justify-center rounded border <?= ($settingValues['esi_enabled'] ?? '0') === '1' ? 'border-emerald-500/60 bg-emerald-500/20 text-emerald-300' : 'border-border bg-black/40 text-slate-500' ?> text-xs"><?= ($settingValues['esi_enabled'] ?? '0') === '1' ? '✓' : '' ?></span>
+                    <span class="text-sm">ESI OAuth login <?= ($settingValues['esi_enabled'] ?? '0') === '1' ? 'enabled' : 'disabled' ?></span>
+                    <a href="/settings?section=automation-control" class="ml-auto text-xs text-slate-400 underline decoration-dotted underline-offset-4">Change in Automation Control</a>
+                </div>
                 <div class="flex flex-wrap items-center gap-3">
                     <button class="btn-primary">Save ESI Login Settings</button>
                     <?php if (($settingValues['esi_enabled'] ?? '0') === '1' && ($settingValues['esi_client_id'] ?? '') !== ''): ?>
@@ -1843,10 +1844,11 @@ include __DIR__ . '/../../src/views/partials/header.php';
             <form class="mt-6 space-y-4" method="post">
                 <input type="hidden" name="_token" value="<?= htmlspecialchars(csrf_token(), ENT_QUOTES) ?>">
                 <input type="hidden" name="section" value="data-sync">
-                <label class="flex items-center gap-3 rounded-lg border border-border bg-black/20 p-3">
-                    <input type="checkbox" name="incremental_updates_enabled" value="1" <?= ($dataSyncSettingValues['incremental_updates_enabled'] ?? '1') === '1' ? 'checked' : '' ?> class="size-4 rounded border-border bg-black">
-                    <span class="text-sm">Enable incremental database updates</span>
-                </label>
+                <div class="flex items-center gap-3 rounded-lg border border-border bg-black/20 p-3">
+                    <span class="inline-flex size-4 items-center justify-center rounded border <?= ($dataSyncSettingValues['incremental_updates_enabled'] ?? '1') === '1' ? 'border-emerald-500/60 bg-emerald-500/20 text-emerald-300' : 'border-border bg-black/40 text-slate-500' ?> text-xs"><?= ($dataSyncSettingValues['incremental_updates_enabled'] ?? '1') === '1' ? '✓' : '' ?></span>
+                    <span class="text-sm">Incremental database updates <?= ($dataSyncSettingValues['incremental_updates_enabled'] ?? '1') === '1' ? 'enabled' : 'disabled' ?></span>
+                    <a href="/settings?section=automation-control" class="ml-auto text-xs text-slate-400 underline decoration-dotted underline-offset-4">Change in Automation Control</a>
+                </div>
                 <label class="block space-y-2">
                     <span class="text-sm text-muted">Incremental Strategy</span>
                     <select name="incremental_strategy" class="w-full field-input">
@@ -2443,30 +2445,29 @@ include __DIR__ . '/../../src/views/partials/header.php';
                 </div>
 
                 <div class="space-y-3">
-                    <div>
-                        <p class="text-sm text-muted">Pipeline toggles</p>
-                        <p class="mt-1 text-xs text-muted">Use these defaults to keep related sync pipelines enabled alongside the continuous worker automation shown above.</p>
+                    <div class="flex items-start justify-between gap-3">
+                        <div>
+                            <p class="text-sm text-muted">Pipeline toggles</p>
+                            <p class="mt-1 text-xs text-muted">Pipeline runtime flags are managed centrally from Automation Control.</p>
+                        </div>
+                        <a href="/settings?section=automation-control" class="shrink-0 text-xs text-slate-400 underline decoration-dotted underline-offset-4">Automation Control →</a>
                     </div>
-                    <label class="flex items-center gap-3 rounded-lg border border-border bg-black/20 p-3">
-                        <input type="hidden" name="alliance_current_pipeline_enabled" value="0">
-                        <input type="checkbox" name="alliance_current_pipeline_enabled" value="1" <?= ($dataSyncSettingValues['alliance_current_pipeline_enabled'] ?? '1') === '1' ? 'checked' : '' ?> class="size-4 rounded border-border bg-black">
-                        <span class="text-sm">Enable alliance current pipeline</span>
-                    </label>
-                    <label class="flex items-center gap-3 rounded-lg border border-border bg-black/20 p-3">
-                        <input type="hidden" name="alliance_history_pipeline_enabled" value="0">
-                        <input type="checkbox" name="alliance_history_pipeline_enabled" value="1" <?= ($dataSyncSettingValues['alliance_history_pipeline_enabled'] ?? '1') === '1' ? 'checked' : '' ?> class="size-4 rounded border-border bg-black">
-                        <span class="text-sm">Enable alliance history/backfill pipeline</span>
-                    </label>
-                    <label class="flex items-center gap-3 rounded-lg border border-border bg-black/20 p-3">
-                        <input type="hidden" name="hub_history_pipeline_enabled" value="0">
-                        <input type="checkbox" name="hub_history_pipeline_enabled" value="1" <?= ($dataSyncSettingValues['hub_history_pipeline_enabled'] ?? '1') === '1' ? 'checked' : '' ?> class="size-4 rounded border-border bg-black">
-                        <span class="text-sm">Enable market hub history pipeline</span>
-                    </label>
-                    <label class="flex items-center gap-3 rounded-lg border border-border bg-black/20 p-3">
-                        <input type="hidden" name="market_hub_local_history_pipeline_enabled" value="0">
-                        <input type="checkbox" name="market_hub_local_history_pipeline_enabled" value="1" <?= ($dataSyncSettingValues['market_hub_local_history_pipeline_enabled'] ?? '1') === '1' ? 'checked' : '' ?> class="size-4 rounded border-border bg-black">
-                        <span class="text-sm">Enable hub snapshot-history refresh pipeline</span>
-                    </label>
+                    <?php
+                        $pipelineFlags = [
+                            ['key' => 'alliance_current_pipeline_enabled', 'label' => 'Alliance current pipeline'],
+                            ['key' => 'alliance_history_pipeline_enabled', 'label' => 'Alliance history/backfill pipeline'],
+                            ['key' => 'hub_history_pipeline_enabled', 'label' => 'Market hub history pipeline'],
+                            ['key' => 'market_hub_local_history_pipeline_enabled', 'label' => 'Hub snapshot-history refresh pipeline'],
+                        ];
+                        foreach ($pipelineFlags as $flag):
+                            $flagEnabled = ($dataSyncSettingValues[$flag['key']] ?? '1') === '1';
+                    ?>
+                    <div class="flex items-center gap-3 rounded-lg border border-border bg-black/20 p-3">
+                        <span class="inline-flex size-4 items-center justify-center rounded border <?= $flagEnabled ? 'border-emerald-500/60 bg-emerald-500/20 text-emerald-300' : 'border-border bg-black/40 text-slate-500' ?> text-xs"><?= $flagEnabled ? '✓' : '' ?></span>
+                        <span class="text-sm"><?= htmlspecialchars($flag['label'], ENT_QUOTES) ?></span>
+                        <span class="ml-auto text-xs <?= $flagEnabled ? 'text-emerald-400' : 'text-slate-500' ?>"><?= $flagEnabled ? 'On' : 'Off' ?></span>
+                    </div>
+                    <?php endforeach; ?>
                 </div>
 
                 <?php if ($staticDataState !== null): ?>

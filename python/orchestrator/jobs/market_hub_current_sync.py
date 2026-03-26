@@ -81,8 +81,10 @@ def _processor(db: SupplyCoreDb) -> dict[str, object]:
         warnings.append("No configured market hub source was found. Save Settings → Trading Stations before running this sync.")
     if rows_processed == 0:
         warnings.append("No market-hub orders were fetched from ESI during this run.")
+    hub_ref = db.fetch_app_setting("market_station_id", "")
+    dataset_key = f"market.hub.{hub_ref}.orders.current" if hub_ref else "market_hub.orders.current"
     db.upsert_sync_state(
-        dataset_key="market_hub.orders.current",
+        dataset_key=dataset_key,
         status="success",
         row_count=rows_written,
         cursor=None,
@@ -92,7 +94,7 @@ def _processor(db: SupplyCoreDb) -> dict[str, object]:
         "rows_written": rows_written,
         "warnings": warnings,
         "summary": f"Ingested/projected market-hub orders ({rows_written} writes across {len(sources)} sources).",
-        "meta": {"dataset_key": "market_hub.orders.current"},
+        "meta": {"dataset_key": dataset_key},
     }
 
 

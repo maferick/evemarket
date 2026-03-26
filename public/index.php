@@ -178,7 +178,7 @@ try {
                             $points[] = round($x, 1) . ',' . round($y, 1);
                         }
                         ?>
-                        <div class="mt-3 rounded-[1.1rem] border border-cyan-400/12 bg-slate-950/50 px-3 py-2.5">
+                        <div class="mt-3 rounded-[1.2rem] border border-cyan-400/12 bg-slate-950/50 px-3 py-2.5">
                             <div class="flex items-center justify-between gap-3">
                                 <p class="text-xs font-medium text-slate-500">7-day coverage</p>
                                 <p class="text-xs text-cyan-100">Improving parity</p>
@@ -214,22 +214,22 @@ try {
         </div>
         <div class="mt-5 grid gap-4 lg:grid-cols-[minmax(0,1.1fr)_minmax(320px,0.9fr)]">
             <div class="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-                <div class="rounded-[1.2rem] border border-white/8 bg-slate-950/50 px-4 py-4">
+                <div class="rounded-[1.3rem] border border-white/8 bg-slate-950/50 p-4">
                     <p class="text-xs uppercase tracking-[0.16em] text-slate-500">Recommended mode</p>
                     <p class="mt-3 text-2xl font-semibold text-white"><?= htmlspecialchars((string) ($buyAll['recommended_mode_label'] ?? 'Blended'), ENT_QUOTES) ?></p>
                     <p class="mt-1 text-sm text-slate-400">Smart default based on current doctrine and market pressure.</p>
                 </div>
-                <div class="rounded-[1.2rem] border border-white/8 bg-slate-950/50 px-4 py-4">
+                <div class="rounded-[1.3rem] border border-white/8 bg-slate-950/50 p-4">
                     <p class="text-xs uppercase tracking-[0.16em] text-slate-500">Generated pages</p>
                     <p class="mt-3 text-2xl font-semibold text-white"><?= htmlspecialchars((string) ($buyAll['pages'] ?? 0), ENT_QUOTES) ?></p>
                     <p class="mt-1 text-sm text-slate-400">Deterministic split by item count and cargo volume.</p>
                 </div>
-                <div class="rounded-[1.2rem] border border-white/8 bg-slate-950/50 px-4 py-4">
+                <div class="rounded-[1.3rem] border border-white/8 bg-slate-950/50 p-4">
                     <p class="text-xs uppercase tracking-[0.16em] text-slate-500">Planned volume</p>
                     <p class="mt-3 text-2xl font-semibold text-white"><?= htmlspecialchars(number_format((float) ($buyAll['total_planned_volume'] ?? 0.0), 0), ENT_QUOTES) ?> m³</p>
                     <p class="mt-1 text-sm text-slate-400">Starts on page 1 with blended ordering.</p>
                 </div>
-                <div class="rounded-[1.2rem] border border-white/8 bg-slate-950/50 px-4 py-4">
+                <div class="rounded-[1.3rem] border border-white/8 bg-slate-950/50 p-4">
                     <p class="text-xs uppercase tracking-[0.16em] text-slate-500">Net after hauling</p>
                     <p class="mt-3 text-2xl font-semibold <?= (float) ($buyAll['expected_net_profit'] ?? 0.0) >= 0.0 ? 'text-emerald-100' : 'text-rose-200' ?>"><?= htmlspecialchars(market_format_isk((float) ($buyAll['expected_net_profit'] ?? 0.0)), ENT_QUOTES) ?></p>
                     <p class="mt-1 text-sm text-slate-400"><?= htmlspecialchars((string) ($buyAll['doctrine_critical_count'] ?? 0), ENT_QUOTES) ?> doctrine-critical items · <?= htmlspecialchars((string) ($buyAll['top_reason_theme'] ?? 'Mixed signals'), ENT_QUOTES) ?></p>
@@ -287,7 +287,7 @@ try {
                         </a>
                     <?php endforeach; ?>
                     <?php if (((array) ($doctrine['not_ready_fits'] ?? [])) === []): ?>
-                        <div class="surface-tertiary text-sm text-slate-400">No doctrine fits are currently blocked by local stock gaps.</div>
+                        <div class="rounded-[1.2rem] border border-white/6 bg-white/[0.02] px-4 py-3.5 text-sm text-slate-400">No doctrine fits are currently blocked by local stock gaps.</div>
                     <?php endif; ?>
                 </div>
             </div>
@@ -313,7 +313,7 @@ try {
                         </a>
                     <?php endforeach; ?>
                     <?php if (array_values(array_filter((array) ($doctrine['groups'] ?? []), static fn (array $group): bool => (int) ($group['gap_fit_count'] ?? 0) > 0)) === []): ?>
-                        <div class="surface-tertiary text-sm text-slate-400">No doctrine groups currently show active supply gaps.</div>
+                        <div class="rounded-[1.2rem] border border-white/6 bg-white/[0.02] px-4 py-3.5 text-sm text-slate-400">No doctrine groups currently show active supply gaps.</div>
                     <?php endif; ?>
                 </div>
             </div>
@@ -342,7 +342,7 @@ try {
                         </div>
                     <?php endforeach; ?>
                     <?php if (((array) ($doctrine['top_bottlenecks'] ?? [])) === []): ?>
-                        <div class="surface-tertiary text-sm text-slate-400">No doctrine bottlenecks are currently ranked.</div>
+                        <div class="rounded-[1.2rem] border border-white/6 bg-white/[0.02] px-4 py-3.5 text-sm text-slate-400">No doctrine bottlenecks are currently ranked.</div>
                     <?php endif; ?>
                 </div>
             </div>
@@ -368,7 +368,7 @@ try {
                         </div>
                     <?php endforeach; ?>
                     <?php if (((array) ($doctrine['highest_priority_restock_items'] ?? [])) === []): ?>
-                        <div class="surface-tertiary text-sm text-slate-400">No enabled-item restock rows are currently ranked.</div>
+                        <div class="rounded-[1.2rem] border border-white/6 bg-white/[0.02] px-4 py-3.5 text-sm text-slate-400">No enabled-item restock rows are currently ranked.</div>
                     <?php endif; ?>
                 </div>
             </div>
@@ -386,7 +386,7 @@ try {
         </div>
         <div class="mt-5 space-y-3">
             <?php if (((array) ($doctrine['top_missing_items'] ?? [])) === []): ?>
-                <div class="surface-tertiary text-sm text-slate-400">No doctrine item shortages are currently tracked.</div>
+                <div class="rounded-[1.2rem] border border-white/6 bg-white/[0.02] px-4 py-3.5 text-sm text-slate-400">No doctrine item shortages are currently tracked.</div>
             <?php else: ?>
                 <?php foreach (array_slice((array) ($doctrine['top_missing_items'] ?? []), 0, 6) as $item): ?>
                     <div class="intelligence-row group">
@@ -416,7 +416,7 @@ try {
             </div>
             <span class="badge border-violet-400/20 bg-violet-500/10 text-violet-100">Background only</span>
         </div>
-        <details class="mt-5 rounded-[1.4rem] border border-white/8 bg-white/[0.03] p-4">
+        <details class="mt-5 rounded-[1.3rem] border border-white/8 bg-white/[0.03] p-4">
             <summary class="cursor-pointer list-none text-sm font-medium text-slate-100">Show briefing details</summary>
             <div class="mt-4 grid gap-4 lg:grid-cols-2 xl:grid-cols-3">
                 <?php foreach ((array) ($intel['ai_briefings'] ?? []) as $briefing): ?>
@@ -430,7 +430,7 @@ try {
                         </div>
                         <p class="mt-4 text-base font-semibold text-white"><?= htmlspecialchars((string) ($briefing['headline'] ?? 'Briefing unavailable'), ENT_QUOTES) ?></p>
                         <p class="mt-2 text-sm text-slate-300"><?= htmlspecialchars((string) ($briefing['summary'] ?? ''), ENT_QUOTES) ?></p>
-                        <div class="mt-4 rounded-2xl border border-white/8 bg-slate-950/60 px-3 py-3">
+                        <div class="mt-4 rounded-[1.2rem] border border-white/8 bg-slate-950/60 px-4 py-3">
                             <p class="text-xs uppercase tracking-[0.16em] text-slate-500">Recommended action</p>
                             <p class="mt-2 text-sm text-slate-100"><?= htmlspecialchars((string) ($briefing['action_text'] ?? ''), ENT_QUOTES) ?></p>
                         </div>
@@ -441,7 +441,7 @@ try {
                     </a>
                 <?php endforeach; ?>
                 <?php if (((array) ($intel['ai_briefings'] ?? [])) === []): ?>
-                    <div class="surface-tertiary text-sm text-slate-400 lg:col-span-2 xl:col-span-3">No operator briefings are available yet.</div>
+                    <div class="rounded-[1.2rem] border border-white/6 bg-white/[0.02] px-4 py-3.5 text-sm text-slate-400 lg:col-span-2 xl:col-span-3">No operator briefings are available yet.</div>
                 <?php endif; ?>
             </div>
         </details>
@@ -473,7 +473,7 @@ try {
                     </div>
                     <div class="mt-4 space-y-3">
                         <?php if ($rows === []): ?>
-                            <div class="surface-tertiary text-sm text-slate-400">No ranked signals yet.</div>
+                            <div class="rounded-[1.2rem] border border-white/6 bg-white/[0.02] px-4 py-3.5 text-sm text-slate-400">No ranked signals yet.</div>
                         <?php else: ?>
                             <?php foreach ($rows as $index => $row): ?>
                                 <div class="intelligence-row group">
@@ -530,7 +530,7 @@ try {
         <?php $rows = $intel['priority_queues']['missing_items'] ?? []; ?>
         <div class="mt-5 space-y-3">
             <?php if ($rows === []): ?>
-                <div class="surface-tertiary text-sm text-slate-400">No missing-item priorities yet.</div>
+                <div class="rounded-[1.2rem] border border-white/6 bg-white/[0.02] px-4 py-3.5 text-sm text-slate-400">No missing-item priorities yet.</div>
             <?php else: ?>
                 <?php foreach ($rows as $index => $row): ?>
                     <div class="intelligence-row group">
@@ -598,7 +598,7 @@ try {
                     <span class="text-sm font-medium tabular-nums text-slate-100"><?= htmlspecialchars((string) ($card['last_success_relative'] ?? 'Never'), ENT_QUOTES) ?></span>
                 </div>
                 <?php if (!empty($card['show_latest_failure'])): ?>
-                    <div class="rounded-[1.2rem] border border-rose-400/22 bg-rose-500/10 px-4 py-3.5 text-rose-100">
+                    <div class="rounded-[1.3rem] border border-rose-400/22 bg-rose-500/10 px-4 py-3.5 text-rose-100">
                         <p class="text-xs font-semibold uppercase tracking-[0.18em] text-rose-200/90">Latest failure</p>
                         <p class="mt-2 text-sm leading-6"><?= htmlspecialchars((string) ($card['latest_failure_message'] ?? 'Latest refresh failed.'), ENT_QUOTES) ?></p>
                     </div>
@@ -617,7 +617,7 @@ try {
     <div class="section-header border-b border-white/8 pb-4">
         <div>
             <p class="eyebrow">Trend intelligence</p>
-            <h2 class="mt-2 text-2xl font-semibold tracking-tight text-white">Trend Intelligence Brief</h2>
+            <h2 class="mt-2 section-title">Trend Intelligence Brief</h2>
             <p class="mt-2 section-copy">Short-period pricing and volume movement for executive review.</p>
         </div>
         <span class="badge border-cyan-400/18 bg-cyan-500/10 text-cyan-100">Daily movement</span>
@@ -642,7 +642,7 @@ try {
                         };
                         $movement = (string) ($snippet['movement'] ?? '0.0%');
                         ?>
-                        <article class="rounded-[1.1rem] border border-white/7 bg-slate-950/50 p-4">
+                        <article class="rounded-[1.2rem] border border-white/7 bg-slate-950/50 p-4">
                             <div class="flex items-start justify-between gap-3">
                                 <div>
                                     <p class="text-sm font-semibold text-slate-100"><?= htmlspecialchars((string) ($snippet['module'] ?? ''), ENT_QUOTES) ?></p>
@@ -670,7 +670,7 @@ try {
                 <div class="mt-4 space-y-3">
                     <?php foreach (array_slice($snippets, 0, 3) as $snippet): ?>
                         <?php $direction = (string) ($snippet['direction'] ?? 'Flat'); ?>
-                        <div class="rounded-[1rem] border border-white/7 bg-slate-950/44 px-4 py-3">
+                        <div class="rounded-[1.2rem] border border-white/7 bg-slate-950/50 px-4 py-3">
                             <div class="flex items-center justify-between gap-3">
                                 <p class="text-sm font-medium text-slate-100"><?= htmlspecialchars((string) ($snippet['module'] ?? ''), ENT_QUOTES) ?></p>
                                 <span class="text-sm font-semibold <?= $direction === 'Up' ? 'text-emerald-300' : ($direction === 'Down' ? 'text-red-300' : 'text-slate-300') ?>"><?= htmlspecialchars((string) ($snippet['movement'] ?? '0.0%'), ENT_QUOTES) ?></span>
