@@ -3,7 +3,9 @@ from __future__ import annotations
 import argparse
 import os
 import time
+import zipfile
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -102,7 +104,59 @@ def parse_args() -> argparse.Namespace:
 
 
 def emit(event: str, payload: dict[str, Any]) -> None:
-    print(json_dumps_safe({"event": event, "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), **payload}))
+    line = json_dumps_safe({"event": event, "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), **payload})
+    print(line)
+    emit_log = _ACTIVE_EMIT_LOG
+    if emit_log is not None:
+        emit_log.write_line(line)
+
+
+class SyncJobLogWriter:
+    def __init__(self, app_root: Path, job_key: str) -> None:
+        safe_job = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in job_key).strip("_") or "unknown_job"
+        self._job_key = safe_job
+        self._log_dir = app_root / "storage" / "logs" / "sync-jobs"
+        self._active_log_path = self._log_dir / f"{safe_job}.log"
+        self._log_dir.mkdir(parents=True, exist_ok=True)
+        self._rotate_daily_archive()
+        self._prune_archives()
+
+    def write_line(self, line: str) -> None:
+        with self._active_log_path.open("a", encoding="utf-8") as handle:
+            handle.write(line.rstrip("\n") + "\n")
+
+    def _archive_path_for_date(self, day: datetime) -> Path:
+        return self._log_dir / f"{self._job_key}-{day.strftime('%Y-%m-%d')}.zip"
+
+    def _rotate_daily_archive(self) -> None:
+        if not self._active_log_path.exists() or self._active_log_path.stat().st_size == 0:
+            return
+
+        mtime = datetime.fromtimestamp(self._active_log_path.stat().st_mtime, tz=timezone.utc)
+        today = datetime.now(tz=timezone.utc).date()
+        if mtime.date() >= today:
+            return
+
+        archive_day = datetime.combine(mtime.date(), datetime.min.time(), tzinfo=timezone.utc)
+        archive_path = self._archive_path_for_date(archive_day)
+        archive_entry_name = f"{self._job_key}-{archive_day.strftime('%Y-%m-%d')}.log"
+        with zipfile.ZipFile(archive_path, mode="w", compression=zipfile.ZIP_DEFLATED) as archive:
+            archive.write(self._active_log_path, arcname=archive_entry_name)
+        self._active_log_path.unlink(missing_ok=True)
+
+    def _prune_archives(self) -> None:
+        cutoff_day = datetime.now(tz=timezone.utc).date() - timedelta(days=2)
+        for archive in self._log_dir.glob(f"{self._job_key}-*.zip"):
+            stamp = archive.stem.removeprefix(f"{self._job_key}-")
+            try:
+                archive_day = datetime.strptime(stamp, "%Y-%m-%d").date()
+            except ValueError:
+                continue
+            if archive_day < cutoff_day:
+                archive.unlink(missing_ok=True)
+
+
+_ACTIVE_EMIT_LOG: SyncJobLogWriter | None = None
 
 
 def _fetch_claimed_job(db: SupplyCoreDb, schedule_id: int) -> dict[str, Any]:
@@ -206,6 +260,9 @@ def main() -> int:
         job=job,
     )
 
+    global _ACTIVE_EMIT_LOG
+    _ACTIVE_EMIT_LOG = SyncJobLogWriter(app_root=app_root, job_key=context.job_key)
+
     if context.schedule_id <= 0:
         emit("python_worker.error", {"error": "Argument --schedule-id must be a positive integer."})
         return 1
@@ -238,15 +295,18 @@ def main() -> int:
         }
         exit_code = 1
 
-    finalized = bridge.call("finalize-job", args=[f"--schedule-id={context.schedule_id}"], payload=result)
-    final_result = dict(finalized.get("result") or {})
-    context.emit(
-        "python_worker.finished",
-        {
-            "schedule_id": context.schedule_id,
-            "job_key": context.job_key,
-            **final_result,
-            "memory_usage_bytes": resident_memory_bytes(),
-        },
-    )
-    return 0 if final_result.get("status") != "failed" and exit_code == 0 else 1
+    try:
+        finalized = bridge.call("finalize-job", args=[f"--schedule-id={context.schedule_id}"], payload=result)
+        final_result = dict(finalized.get("result") or {})
+        context.emit(
+            "python_worker.finished",
+            {
+                "schedule_id": context.schedule_id,
+                "job_key": context.job_key,
+                **final_result,
+                "memory_usage_bytes": resident_memory_bytes(),
+            },
+        )
+        return 0 if final_result.get("status") != "failed" and exit_code == 0 else 1
+    finally:
+        _ACTIVE_EMIT_LOG = None
