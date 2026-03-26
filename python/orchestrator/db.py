@@ -52,28 +52,42 @@ class SupplyCoreDb:
 
     def fetch_one(self, sql: str, params: Sequence[Any] | None = None) -> dict[str, Any] | None:
         with self.cursor() as (_, cursor):
-            cursor.execute(sql, params or ())
+            if params is None:
+                cursor.execute(sql)
+            else:
+                cursor.execute(sql, params)
             row = cursor.fetchone()
             return dict(row) if row else None
 
     def fetch_all(self, sql: str, params: Sequence[Any] | None = None) -> list[dict[str, Any]]:
         with self.cursor() as (_, cursor):
-            cursor.execute(sql, params or ())
+            if params is None:
+                cursor.execute(sql)
+            else:
+                cursor.execute(sql, params)
             return [dict(row) for row in cursor.fetchall()]
 
     def execute(self, sql: str, params: Sequence[Any] | None = None) -> int:
         with self.cursor() as (_, cursor):
-            return int(cursor.execute(sql, params or ()))
+            if params is None:
+                return int(cursor.execute(sql))
+            return int(cursor.execute(sql, params))
 
     def insert(self, sql: str, params: Sequence[Any] | None = None) -> int:
         with self.cursor() as (connection, cursor):
-            cursor.execute(sql, params or ())
+            if params is None:
+                cursor.execute(sql)
+            else:
+                cursor.execute(sql, params)
             connection.commit()
             return int(cursor.lastrowid or 0)
 
     def iterate_batches(self, sql: str, params: Sequence[Any] | None = None, *, batch_size: int = 1000) -> Generator[list[dict[str, Any]], None, None]:
         with self.cursor(stream=True) as (_, cursor):
-            cursor.execute(sql, params or ())
+            if params is None:
+                cursor.execute(sql)
+            else:
+                cursor.execute(sql, params)
             while True:
                 rows = cursor.fetchmany(batch_size)
                 if not rows:

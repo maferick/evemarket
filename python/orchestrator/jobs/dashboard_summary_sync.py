@@ -39,7 +39,7 @@ def _processor(db: SupplyCoreDb) -> dict[str, object]:
 
     # Pull freshness info from sync_state for key datasets
     freshness_rows = db.fetch_all(
-        "SELECT dataset_key, status, last_success_at, row_count FROM sync_state WHERE dataset_key IN ('market_hub', 'alliance_structure', 'market_comparison') ORDER BY dataset_key"
+        "SELECT dataset_key, status, last_success_at, last_row_count FROM sync_state WHERE dataset_key IN ('market_hub', 'alliance_structure', 'market_comparison') ORDER BY dataset_key"
     )
     freshness: dict[str, object] = {}
     for row in (freshness_rows or []):
@@ -47,7 +47,7 @@ def _processor(db: SupplyCoreDb) -> dict[str, object]:
         freshness[key] = {
             "status": str(row.get("status") or "unknown"),
             "last_success_at": str(row.get("last_success_at") or ""),
-            "row_count": int(row.get("row_count") or 0),
+            "row_count": int(row.get("last_row_count") or 0),
         }
 
     rows_processed = int(queue_stats.get("queued_jobs") or 0) + int(queue_stats.get("running_jobs") or 0) + int(queue_stats.get("dead_jobs") or 0) + int(alert_count or 0) + int(schedules or 0)
