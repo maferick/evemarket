@@ -15,7 +15,7 @@ def _processor(db: SupplyCoreDb) -> dict[str, object]:
     ) or {}
     alert_count = db.fetch_scalar("SELECT COUNT(*) FROM market_deal_alerts_current WHERE status = 'active'")
     schedules = db.fetch_scalar("SELECT COUNT(*) FROM sync_schedules WHERE enabled = 1")
-    rows_processed = 3
+    rows_processed = int(queue_stats.get("queued_jobs") or 0) + int(queue_stats.get("running_jobs") or 0) + int(queue_stats.get("dead_jobs") or 0) + int(alert_count or 0) + int(schedules or 0)
     payload = {
         "kpis": {
             "queued_jobs": int(queue_stats.get("queued_jobs") or 0),
