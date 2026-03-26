@@ -12,18 +12,19 @@ from ..json_utils import json_dumps_safe
 MIN_SAMPLE_COUNT = 5
 
 SUSPICION_V2_WEIGHTS: dict[str, float] = {
-    "high_sustain_frequency": 0.14,
-    "cross_side_rate": 0.10,
-    "enemy_efficiency_uplift": 0.14,
-    "anomaly_delta_score": 0.12,
-    "baseline_adjusted_uplift": 0.12,
-    "co_occurrence_density": 0.10,
-    "anomalous_co_occurrence_density": 0.08,
+    "high_sustain_frequency": 0.12,
+    "cross_side_rate": 0.09,
+    "enemy_efficiency_uplift": 0.12,
+    "anomaly_delta_score": 0.10,
+    "baseline_adjusted_uplift": 0.10,
+    "co_occurrence_density": 0.09,
+    "engagement_avoidance": 0.10,
+    "anomalous_co_occurrence_density": 0.07,
     "cross_side_cluster_score": 0.06,
     "anomalous_neighbor_density": 0.05,
     "bridge_score": 0.04,
     "pagerank_score": 0.03,
-    "role_weight": 0.02,
+    "role_weight": 0.03,
 }
 
 
@@ -212,6 +213,7 @@ def run_compute_suspicion_scores_v2(db: SupplyCoreDb, runtime: dict[str, Any] | 
             COALESCE(cgi.anomalous_neighbor_density, 0) AS anomalous_neighbor_density,
             COALESCE(cgi.bridge_score, 0) AS bridge_score,
             COALESCE(cgi.pagerank_score, 0) AS pagerank_score,
+            COALESCE(cgi.engagement_avoidance_score, 0) AS engagement_avoidance_score,
             COALESCE(cgi.community_id, 0) AS community_id,
             COALESCE(cbb.normal_battle_frequency, 0) AS normal_battle_frequency,
             COALESCE(cbb.normal_co_occurrence_density, 0) AS normal_co_occurrence_density,
@@ -291,6 +293,8 @@ def run_compute_suspicion_scores_v2(db: SupplyCoreDb, runtime: dict[str, Any] | 
         baseline_adjusted_uplift = uplift - float(row.get("expected_enemy_efficiency") or 0.0)
         normal_behavior_score = max(0.0, min(1.0, 1.0 - abs(float(row.get("normal_battle_frequency") or 0.0) - high)))
 
+        engagement_avoidance = float(row.get("engagement_avoidance_score") or 0.0)
+
         components = {
             "high_sustain_frequency": SUSPICION_V2_WEIGHTS["high_sustain_frequency"] * high,
             "cross_side_rate": SUSPICION_V2_WEIGHTS["cross_side_rate"] * cross,
@@ -298,6 +302,7 @@ def run_compute_suspicion_scores_v2(db: SupplyCoreDb, runtime: dict[str, Any] | 
             "anomaly_delta_score": SUSPICION_V2_WEIGHTS["anomaly_delta_score"] * _bounded(anomaly_delta + 1.0, 2.0),
             "baseline_adjusted_uplift": SUSPICION_V2_WEIGHTS["baseline_adjusted_uplift"] * _bounded(baseline_adjusted_uplift + 1.0, 2.0),
             "co_occurrence_density": SUSPICION_V2_WEIGHTS["co_occurrence_density"] * _bounded(float(row.get("co_occurrence_density") or 0.0), 10.0),
+            "engagement_avoidance": SUSPICION_V2_WEIGHTS["engagement_avoidance"] * _bounded(engagement_avoidance, 1.0),
             "anomalous_co_occurrence_density": SUSPICION_V2_WEIGHTS["anomalous_co_occurrence_density"] * _bounded(float(row.get("anomalous_co_occurrence_density") or 0.0), 10.0),
             "cross_side_cluster_score": SUSPICION_V2_WEIGHTS["cross_side_cluster_score"] * _bounded(float(row.get("cross_side_cluster_score") or 0.0), 5.0),
             "anomalous_neighbor_density": SUSPICION_V2_WEIGHTS["anomalous_neighbor_density"] * _bounded(float(row.get("anomalous_neighbor_density") or 0.0), 3.0),
@@ -312,13 +317,32 @@ def run_compute_suspicion_scores_v2(db: SupplyCoreDb, runtime: dict[str, Any] | 
         recent_score = max(0.0, min(1.0, all_time_score * 0.6 + recent_support * 0.4))
         momentum = recent_score - all_time_score
 
+        # ── Plain-language evidence flags ──────────────────────────────
+        evidence_flags: list[str] = []
+        if high >= 0.3:
+            evidence_flags.append("Frequently participates in high-sustain (anomalous) battles")
+        if cross >= 0.15:
+            evidence_flags.append("Switches sides at an elevated rate")
+        if engagement_avoidance >= 0.4:
+            evidence_flags.append("Encounters a specific alliance repeatedly but avoids engaging them")
+        if uplift >= 0.3:
+            evidence_flags.append("Enemy efficiency is unusually high in their battles")
+        if baseline_adjusted_uplift >= 0.25:
+            evidence_flags.append("Performance significantly exceeds behavioral baseline")
+        if float(row.get("co_occurrence_density") or 0.0) >= 5.0:
+            evidence_flags.append("Repeatedly appears alongside the same group of characters")
+        if float(row.get("bridge_score") or 0.0) >= 5.0:
+            evidence_flags.append("Acts as a bridge between distinct player clusters")
+
         explanation = {
             "formula": "weighted_v2_components",
             "weights": SUSPICION_V2_WEIGHTS,
             "components": components,
+            "evidence_flags": evidence_flags,
             "normal_behavior_score": normal_behavior_score,
             "anomaly_delta_score": anomaly_delta,
             "baseline_adjusted_uplift": baseline_adjusted_uplift,
+            "engagement_avoidance_raw": engagement_avoidance,
             "minimum_sample_count": MIN_SAMPLE_COUNT,
         }
 

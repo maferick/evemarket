@@ -18559,21 +18559,34 @@ function killmail_region_id_from_system(?int $systemId): ?int
 
 function killmail_event_matches_tracked_entities(array $event, array $attackers, array $trackedAllianceIds, array $trackedCorporationIds): bool
 {
-    unset($attackers);
-
     if ($trackedAllianceIds === [] && $trackedCorporationIds === []) {
         return true;
     }
 
+    // Check victim (loss side)
     $victimAllianceId = (int) ($event['victim_alliance_id'] ?? 0);
     if ($victimAllianceId > 0 && isset($trackedAllianceIds[$victimAllianceId])) {
         return true;
     }
 
     $victimCorporationId = (int) ($event['victim_corporation_id'] ?? 0);
-
     if ($victimCorporationId > 0 && isset($trackedCorporationIds[$victimCorporationId])) {
         return true;
+    }
+
+    // Check attackers (kill side)
+    foreach ($attackers as $attacker) {
+        if (!is_array($attacker)) {
+            continue;
+        }
+        $attackerAllianceId = (int) ($attacker['alliance_id'] ?? 0);
+        if ($attackerAllianceId > 0 && isset($trackedAllianceIds[$attackerAllianceId])) {
+            return true;
+        }
+        $attackerCorporationId = (int) ($attacker['corporation_id'] ?? 0);
+        if ($attackerCorporationId > 0 && isset($trackedCorporationIds[$attackerCorporationId])) {
+            return true;
+        }
     }
 
     return false;

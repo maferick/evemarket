@@ -1049,6 +1049,48 @@ def run_compute_graph_topology_metrics(db: SupplyCoreDb, neo4j_raw: dict[str, An
         """
     )
 
+    # ── Engagement avoidance detection ──────────────────────────────────
+    # For each character, compare their high-sustain rate when facing each
+    # opposing alliance.  A character who consistently has anomalous
+    # (high_sustain) battles specifically against one alliance — while
+    # fighting normally against all others — is flagged for avoidance.
+    avoidance_rows = client.query(
+        """
+        MATCH (c:Character)-[:ON_SIDE]->(my_side:BattleSide)<-[:HAS_SIDE]-(b:Battle)-[:HAS_SIDE]->(opp_side:BattleSide)
+        WHERE my_side.side_key <> opp_side.side_key
+          AND datetime(COALESCE(b.started_at, '1970-01-01T00:00:00Z')) >= datetime() - duration({days: $window_days})
+        MATCH (opp_side)-[:REPRESENTED_BY_ALLIANCE]->(a:Alliance)
+        WITH c, a.alliance_id AS opp_alliance,
+             collect(DISTINCT b) AS battles,
+             avg(CASE WHEN my_side.anomaly_class = 'high_sustain' THEN 1.0 ELSE 0.0 END) AS hs_rate
+        WHERE size(battles) >= 2
+        WITH c,
+             collect({alliance: opp_alliance, encounters: size(battles), hs_rate: hs_rate}) AS per_alliance,
+             avg(hs_rate) AS overall_hs_rate,
+             count(*) AS alliances_faced
+        WHERE alliances_faced >= 2
+        WITH c, per_alliance, overall_hs_rate, alliances_faced,
+             reduce(mx = 0.0, s IN per_alliance |
+                 CASE WHEN s.encounters >= 2 AND (s.hs_rate - overall_hs_rate) > mx
+                      THEN s.hs_rate - overall_hs_rate ELSE mx END
+             ) AS max_avoidance_delta,
+             reduce(mx_enc = 0, s IN per_alliance |
+                 CASE WHEN s.encounters > mx_enc THEN s.encounters ELSE mx_enc END
+             ) AS max_encounters_single
+        RETURN
+            toInteger(c.character_id) AS character_id,
+            toFloat(max_avoidance_delta) AS engagement_avoidance_score,
+            toInteger(alliances_faced) AS alliances_encountered,
+            toInteger(max_encounters_single) AS max_encounters_single_alliance
+        """,
+        {"window_days": RELATIONSHIP_WINDOW_DAYS},
+    )
+    avoidance_map: dict[int, float] = {}
+    for row in avoidance_rows:
+        cid = int(row.get("character_id") or 0)
+        if cid > 0:
+            avoidance_map[cid] = float(row.get("engagement_avoidance_score") or 0.0)
+
     battle_rows = client.query(
         """
         MATCH (b:Battle)-[:HAS_SIDE]->(s:BattleSide)<-[:ON_SIDE]-(c:Character)
@@ -1071,8 +1113,8 @@ def run_compute_graph_topology_metrics(db: SupplyCoreDb, neo4j_raw: dict[str, An
     _upsert_table(
         db,
         "character_graph_intelligence",
-        "character_id, co_occurrence_density, anomalous_co_occurrence_density, cross_side_cluster_score, neighbor_anomaly_score, anomalous_neighbor_density, recurrence_centrality, bridge_score, pagerank_score, community_id, suspicious_cluster_density, bridge_between_clusters_score, computed_at",
-        "%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s",
+        "character_id, co_occurrence_density, anomalous_co_occurrence_density, cross_side_cluster_score, neighbor_anomaly_score, anomalous_neighbor_density, recurrence_centrality, bridge_score, pagerank_score, community_id, suspicious_cluster_density, bridge_between_clusters_score, engagement_avoidance_score, computed_at",
+        "%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s",
         [
             (
                 int(r["character_id"]),
@@ -1087,6 +1129,7 @@ def run_compute_graph_topology_metrics(db: SupplyCoreDb, neo4j_raw: dict[str, An
                 int(r["community_id"]),
                 float(r["suspicious_cluster_density"]),
                 float(r["bridge_between_clusters_score"]),
+                avoidance_map.get(int(r["character_id"]), 0.0),
                 computed_at,
             )
             for r in character_rows

@@ -159,10 +159,12 @@ CREATE TABLE IF NOT EXISTS character_graph_intelligence (
     community_id INT NOT NULL DEFAULT 0,
     suspicious_cluster_density DECIMAL(14,6) NOT NULL DEFAULT 0.000000,
     bridge_between_clusters_score DECIMAL(14,6) NOT NULL DEFAULT 0.000000,
+    engagement_avoidance_score DECIMAL(14,6) NOT NULL DEFAULT 0.000000,
     computed_at DATETIME NOT NULL,
     KEY idx_character_graph_intelligence_bridge (bridge_score, computed_at),
     KEY idx_character_graph_intelligence_pagerank (pagerank_score, computed_at),
     KEY idx_character_graph_intelligence_community (community_id, computed_at),
+    KEY idx_character_graph_intelligence_avoidance (engagement_avoidance_score, computed_at),
     KEY idx_character_graph_intelligence_computed (computed_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
