@@ -117,15 +117,16 @@ def _processor(db: SupplyCoreDb) -> dict[str, object]:
         warnings.append("No market-hub orders were fetched from ESI during this run.")
     hub_ref = db.fetch_app_setting("market_station_id", "")
     dataset_key = f"market.hub.{hub_ref}.orders.current" if hub_ref else "market_hub.orders.current"
+    sync_state_status = "failed" if (failed_sources > 0 and successful_sources == 0) else "success"
     db.upsert_sync_state(
         dataset_key=dataset_key,
-        status="success",
+        status=sync_state_status,
         row_count=rows_written,
         cursor=None,
         error_message=warnings[0] if sync_state_status == "failed" and warnings else None,
     )
     return {
-        "status": status,
+        "status": sync_state_status,
         "rows_processed": rows_processed,
         "rows_written": rows_written,
         "warnings": warnings,
