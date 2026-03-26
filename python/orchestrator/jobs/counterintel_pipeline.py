@@ -517,6 +517,7 @@ def run_compute_counterintel_pipeline(
             participants = db.fetch_all(
                 f"""
                 SELECT bp.battle_id, bp.character_id, bp.side_key,
+                       bp.corporation_id, bp.alliance_id,
                        COALESCE(cgi.bridge_score, 0) AS bridge_score
                 FROM battle_participants bp
                 LEFT JOIN character_graph_intelligence cgi ON cgi.character_id = bp.character_id
@@ -637,6 +638,60 @@ def run_compute_counterintel_pipeline(
                 for (corporation_id, alliance_id), values in corp_alliance_projection.items()
             ]
 
+            # --- Compute hostile_adjacent_hops_180d per character ---
+            # Build mapping: battle_id → side_key → set of alliance_ids
+            battle_side_alliances: dict[str, dict[str, set[int]]] = defaultdict(lambda: defaultdict(set))
+            for row in participants:
+                bid = str(row.get("battle_id") or "")
+                sk = str(row.get("side_key") or "unknown")
+                aid = int(row.get("alliance_id") or 0)
+                if bid and aid > 0:
+                    battle_side_alliances[bid][sk].add(aid)
+
+            # Build mapping: corporation_id → set of alliance_ids from adjacency data
+            corp_to_alliances: dict[int, set[int]] = defaultdict(set)
+            for corp_id, alliance_id in corp_alliance_projection.keys():
+                corp_to_alliances[corp_id].add(alliance_id)
+
+            cutoff_180d = datetime.now(UTC) - timedelta(days=180)
+            hostile_hops_by_character: dict[int, int] = {}
+            for character_id, presences in by_character.items():
+                # Determine hostile alliances: alliances on the opposing side(s)
+                hostile_alliances: set[int] = set()
+                for row in presences:
+                    bid = str(row.get("battle_id") or "")
+                    char_side = str(row.get("side_key") or "unknown")
+                    for sk, alli_set in battle_side_alliances.get(bid, {}).items():
+                        if sk != char_side:
+                            hostile_alliances |= alli_set
+
+                if not hostile_alliances:
+                    hostile_hops_by_character[character_id] = 0
+                    continue
+
+                # Walk org history and count hops into corps with hostile alliance adjacency
+                org = org_by_character.get(character_id, {})
+                history_rows = _build_history_projection_rows(org.get("history_json"), "evewho")
+                hostile_count = 0
+                for hrow in history_rows:
+                    start_dt = _parse_iso_datetime(hrow.get("start"))
+                    if start_dt and start_dt >= cutoff_180d:
+                        corp_id = int(hrow["corporation_id"])
+                        corp_alli = corp_to_alliances.get(corp_id, set())
+                        if corp_alli & hostile_alliances:
+                            hostile_count += 1
+                hostile_hops_by_character[character_id] = hostile_count
+
+            # Batch-update hostile_adjacent_hops_180d in the org cache
+            if not dry_run:
+                with db.transaction() as (_, cursor_hostile):
+                    for cid, hops in hostile_hops_by_character.items():
+                        if hops > 0:
+                            cursor_hostile.execute(
+                                "UPDATE character_org_history_cache SET hostile_adjacent_hops_180d = %s WHERE character_id = %s AND source = 'evewho'",
+                                (hops, cid),
+                            )
+
             feature_rows: list[dict[str, Any]] = []
             score_rows: list[dict[str, Any]] = []
             evidence_rows: list[dict[str, Any]] = []
@@ -731,11 +786,13 @@ def run_compute_counterintel_pipeline(
                         "cluster_proximity_score": cluster_proximity,
                     }
                 )
+                hostile_hops = hostile_hops_by_character.get(character_id, 0)
                 org_history_payload = json_dumps_safe(
                     {
                         "window_days": 180,
                         "corp_hops": corp_hops,
                         "short_tenure_hops": short_hops,
+                        "hostile_adjacent_hops": hostile_hops,
                         "corp_hop_frequency_per_day": corp_hop_frequency,
                         "short_tenure_ratio": short_ratio,
                         "high_movement_indicator": corp_hops >= 3,
@@ -757,7 +814,7 @@ def run_compute_counterintel_pipeline(
                     {"character_id": character_id, "evidence_key": "enemy_sustain_lift", "evidence_value": enemy_sustain_lift, "evidence_text": f"enemy sustain lift {enemy_sustain_lift:.3f} when present", "evidence_payload_json": survival_lift_payload},
                     {"character_id": character_id, "evidence_key": "enemy_same_hull_survival_lift_detail", "evidence_value": enemy_sustain_lift, "evidence_text": f"same-hull enemy survival lift {enemy_sustain_lift:.3f} across {len(sustain_lifts)} samples (min {enemy_sustain_min:.3f}, max {enemy_sustain_max:.3f})", "evidence_payload_json": survival_lift_payload},
                     {"character_id": character_id, "evidence_key": "graph_copresence_cluster_proximity", "evidence_value": cluster_proximity, "evidence_text": f"graph bridge {bridge:.3f}, anomalous co-presence density {anomalous_rate:.3f}, cluster proximity {cluster_proximity:.3f}", "evidence_payload_json": graph_payload},
-                    {"character_id": character_id, "evidence_key": "org_history_movement_180d", "evidence_value": corp_hop_frequency, "evidence_text": f"org movement over 180d: {corp_hops} hops, {short_hops} short-tenure hops, ratio {short_ratio:.3f}", "evidence_payload_json": org_history_payload},
+                    {"character_id": character_id, "evidence_key": "org_history_movement_180d", "evidence_value": corp_hop_frequency, "evidence_text": f"org movement over 180d: {corp_hops} hops, {short_hops} short-tenure, {hostile_hops} hostile-adjacent, ratio {short_ratio:.3f}", "evidence_payload_json": org_history_payload},
                     {"character_id": character_id, "evidence_key": "repeatability_across_battles_windows", "evidence_value": repeatability, "evidence_text": f"repeatability {repeatability:.3f}: {repeatability_distinct_battles} anomalous battles across {repeatability_weeks} weekly and {repeatability_months} monthly windows", "evidence_payload_json": repeatability_payload},
                 ]
                 evidence_rows.extend(character_evidence_rows)

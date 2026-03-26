@@ -17849,9 +17849,9 @@ function static_data_extract_reference_rows_from_jsonl_archive(string $archivePa
                     $records['stations'][] = [
                         'station_id' => $stationId,
                         'station_name' => $name,
-                        'system_id' => (int) static_data_record_value($row, ['solarSystemID', 'system_id', '_key']),
-                        'constellation_id' => (int) static_data_record_value($row, ['constellationID', 'constellation_id', '_key']),
-                        'region_id' => (int) static_data_record_value($row, ['regionID', 'region_id', '_key']),
+                        'system_id' => (int) static_data_record_value($row, ['solarSystemID', 'system_id'], 0),
+                        'constellation_id' => (int) static_data_record_value($row, ['constellationID', 'constellation_id'], 0),
+                        'region_id' => (int) static_data_record_value($row, ['regionID', 'region_id'], 0),
                         'station_type_id' => ($typeId = (int) static_data_record_value($row, ['stationTypeID', 'typeID', 'type_id'], 0)) > 0 ? $typeId : null,
                     ];
                 }
@@ -18059,6 +18059,18 @@ function static_data_import_reference_data(string $requestedMode = 'auto', bool 
 
             return $written;
         });
+
+        // Backfill constellation_id/region_id for stations missing geography
+        // (some SDE sources omit these fields, causing _key fallback to station_id).
+        db_execute(
+            "UPDATE ref_npc_stations ns
+             INNER JOIN ref_systems rs ON rs.system_id = ns.system_id
+             SET ns.constellation_id = rs.constellation_id,
+                 ns.region_id = rs.region_id
+             WHERE ns.system_id > 0
+               AND (ns.region_id < 10000001 OR ns.region_id > 10000069
+                    OR ns.constellation_id < 20000001 OR ns.constellation_id > 21000000)"
+        );
 
         $finishedAt = gmdate('Y-m-d H:i:s');
         db_static_data_import_state_upsert(

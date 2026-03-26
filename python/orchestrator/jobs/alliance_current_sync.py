@@ -59,18 +59,19 @@ def _processor(db: SupplyCoreDb) -> dict[str, object]:
         warnings.append("No configured alliance market structure was found. Save Settings → Trading Stations before running this sync.")
     if rows_processed == 0:
         warnings.append("No alliance structure orders were fetched from ESI during this run.")
-    db.upsert_sync_state(
-        dataset_key="alliance.structure.orders.current",
-        status="success",
-        row_count=rows_written,
-        cursor=None,
-    )
+    for sid in structure_ids:
+        db.upsert_sync_state(
+            dataset_key=f"alliance.structure.{sid}.orders.current",
+            status="success",
+            row_count=rows_written,
+            cursor=None,
+        )
     return {
         "rows_processed": rows_processed,
         "rows_written": rows_written,
         "warnings": warnings,
         "summary": f"Ingested/projected alliance structure orders ({rows_written} writes across {len(structure_ids)} structures).",
-        "meta": {"dataset_key": "alliance.structure.orders.current"},
+        "meta": {"dataset_key": "alliance.structure.orders.current", "structure_ids": structure_ids},
     }
 
 

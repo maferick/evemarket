@@ -6557,16 +6557,17 @@ function db_ref_npc_station_region_id(int $stationId): ?int
     }
 
     $row = db_select_one(
-        'SELECT region_id
-         FROM ref_npc_stations
-         WHERE station_id = ?
+        'SELECT COALESCE(rs.region_id, ns.region_id) AS region_id
+         FROM ref_npc_stations ns
+         LEFT JOIN ref_systems rs ON rs.system_id = ns.system_id
+         WHERE ns.station_id = ?
          LIMIT 1',
         [$stationId]
     );
 
     $regionId = (int) ($row['region_id'] ?? 0);
 
-    return $regionId > 0 ? $regionId : null;
+    return ($regionId > 10000000 && $regionId < 11000000) ? $regionId : null;
 }
 
 function db_ref_system_region_id(int $systemId): ?int

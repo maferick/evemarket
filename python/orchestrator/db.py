@@ -564,11 +564,30 @@ class SupplyCoreDb:
             return []
 
         npc = self.fetch_one(
-            "SELECT station_id, region_id FROM ref_npc_stations WHERE station_id = %s LIMIT 1",
+            """SELECT ns.station_id, ns.system_id,
+                      COALESCE(rs.region_id, ns.region_id) AS region_id
+               FROM ref_npc_stations ns
+               LEFT JOIN ref_systems rs ON rs.system_id = ns.system_id
+               WHERE ns.station_id = %s
+               LIMIT 1""",
             (source_id,),
         ) or {}
-        if int(npc.get("station_id") or 0) > 0 and int(npc.get("region_id") or 0) > 0:
-            return [{"source_id": source_id, "region_id": int(npc["region_id"]), "source_kind": "npc_station"}]
+        station_id = int(npc.get("station_id") or 0)
+        region_id = int(npc.get("region_id") or 0)
+        if station_id > 0 and 10000000 < region_id < 11000000:
+            return [{"source_id": source_id, "region_id": region_id, "source_kind": "npc_station"}]
+        if station_id > 0 and region_id > 0:
+            # region_id from ref_npc_stations is likely corrupt (e.g. station_id stored
+            # instead of region); fall back to ref_systems via system_id.
+            system_id = int(npc.get("system_id") or 0)
+            if system_id > 0:
+                sys_row = self.fetch_one(
+                    "SELECT region_id FROM ref_systems WHERE system_id = %s LIMIT 1",
+                    (system_id,),
+                ) or {}
+                resolved = int(sys_row.get("region_id") or 0)
+                if 10000000 < resolved < 11000000:
+                    return [{"source_id": source_id, "region_id": resolved, "source_kind": "npc_station"}]
 
         return [{"source_id": source_id, "region_id": 0, "source_kind": "player_structure"}]
 
