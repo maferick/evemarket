@@ -28,3 +28,12 @@ def json_dumps_safe(value: Any, *, indent: int | None = None, sort_keys: bool = 
         indent=indent,
         sort_keys=sort_keys,
     )
+
+
+def json_loads_safe(value: str | bytes | bytearray, *, fallback: Any = None) -> Any:
+    try:
+        if isinstance(value, (bytes, bytearray)):
+            value = value.decode("utf-8", errors="replace")
+        return json.loads(value)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return fallback
