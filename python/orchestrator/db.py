@@ -570,7 +570,16 @@ class SupplyCoreDb:
         if int(npc.get("station_id") or 0) > 0 and int(npc.get("region_id") or 0) > 0:
             return [{"source_id": source_id, "region_id": int(npc["region_id"]), "source_kind": "npc_station"}]
 
-        return [{"source_id": source_id, "region_id": 0, "source_kind": "structure"}]
+        return [{"source_id": source_id, "region_id": 0, "source_kind": "player_structure"}]
+
+    def fetch_region_id_for_npc_station(self, *, station_id: int) -> int:
+        if station_id <= 0:
+            return 0
+        row = self.fetch_one(
+            "SELECT region_id FROM ref_npc_stations WHERE station_id = %s LIMIT 1",
+            (station_id,),
+        ) or {}
+        return int(row.get("region_id") or 0)
 
     def fetch_region_id_for_system(self, *, system_id: int) -> int:
         if system_id <= 0:

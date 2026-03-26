@@ -618,7 +618,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                     <p id="market_station_status" class="text-xs text-muted">
                         <?= htmlspecialchars($marketStationId === ''
                             ? 'Type at least 2 characters to search reference market hubs.'
-                            : ('Selected market hub: ' . ($marketStationName ?? ('Station #' . $marketStationId)) . ' (#' . $marketStationId . ').'), ENT_QUOTES) ?>
+                            : ('Selected market hub (NPC station): ' . ($marketStationName ?? ('Station #' . $marketStationId)) . ' (#' . $marketStationId . ').'), ENT_QUOTES) ?>
                     </p>
                     <ul id="market_station_results" class="hidden max-h-60 overflow-y-auto surface-tertiary"></ul>
                 </label>
@@ -715,7 +715,8 @@ include __DIR__ . '/../../src/views/partials/header.php';
                                 button.addEventListener('click', () => {
                                     hidden.value = String(item.id);
                                     input.value = item.name;
-                                    status.textContent = selectionStatusPrefix + item.name + ' (#' + item.id + ').';
+                                    const selectedType = item.type ? ' [' + item.type + ']' : '';
+                                    status.textContent = selectionStatusPrefix + item.name + selectedType + ' (#' + item.id + ').';
                                     clearResults();
                                 });
 
@@ -764,7 +765,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                         statusId: 'market_station_status',
                         minimumQueryLength: 2,
                         searchingLabel: 'Searching…',
-                        selectionStatusPrefix: 'Selected market hub: ',
+                        selectionStatusPrefix: 'Selected market hub (NPC station): ',
                         emptyQueryMessage: 'Type at least 2 characters to search reference market hubs.',
                         noResultsMessage: 'No matching reference market hubs found.',
                         fetchResults: async (query) => {

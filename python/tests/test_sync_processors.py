@@ -79,6 +79,13 @@ class _SpyDb:
         self.calls.append(("fetch_market_hub_sources", limit))
         return list(self.market_hub_sources)
 
+    def fetch_region_id_for_npc_station(self, *, station_id: int) -> int:
+        self.calls.append(("fetch_region_id_for_npc_station", station_id))
+        for source in self.market_hub_sources:
+            if int(source.get("source_id") or 0) == station_id:
+                return int(source.get("region_id") or 0)
+        return 0
+
     def fetch_region_id_for_system(self, *, system_id: int) -> int:
         self.calls.append(("fetch_region_id_for_system", system_id))
         return int(self.region_by_system_id.get(system_id, 0))
@@ -169,7 +176,7 @@ class SyncProcessorCoverageTests(unittest.TestCase):
 
     def test_market_hub_structure_source_can_resolve_region_and_filter_location(self) -> None:
         db = _SpyDb()
-        db.market_hub_sources = [{"source_id": 102030405060, "region_id": 0, "source_kind": "structure"}]
+        db.market_hub_sources = [{"source_id": 102030405060, "region_id": 0, "source_kind": "player_structure"}]
         db.access_token = "token"
         db.region_by_system_id = {30000142: 10000002}
         db.replace_stats = {"rows_processed": 1, "rows_written": 1}
@@ -193,6 +200,22 @@ class SyncProcessorCoverageTests(unittest.TestCase):
         region_fetch.assert_called_once_with(region_id=10000002, order_type="all", page=1)
         structure_orders_fetch.assert_not_called()
 
+    def test_market_hub_npc_station_never_routes_to_structure_endpoint(self) -> None:
+        db = _SpyDb()
+        db.market_hub_sources = [{"source_id": 60003760, "region_id": 10000002, "source_kind": "player_structure"}]
+        db.projection_stats = {"rows_processed": 1, "rows_written": 1}
+        db.replace_stats = {"rows_processed": 1, "rows_written": 1}
+
+        with (
+            patch("orchestrator.jobs.market_hub_current_sync.EsiMarketAdapter.fetch_region_orders", return_value=EsiOrdersResponse(orders=[{"issued": "2026-03-26T00:00:00Z", "expires": "2026-03-27T00:00:00Z"}], pages=1, status_code=200)) as region_fetch,
+            patch("orchestrator.jobs.market_hub_current_sync.EsiMarketAdapter.fetch_structure_orders") as structure_orders_fetch,
+        ):
+            result = run_market_hub_current_sync(db)
+
+        self.assertEqual(result["status"], "success")
+        region_fetch.assert_called_once_with(region_id=10000002, order_type="all", page=1)
+        structure_orders_fetch.assert_not_called()
+
     def test_failure_paths_emit_meaningful_status_and_warnings(self) -> None:
         db_source_unavailable = _SpyDb()
         db_source_unavailable.market_hub_sources = [{"source_id": 60003760, "region_id": 10000002}]
@@ -201,7 +224,7 @@ class SyncProcessorCoverageTests(unittest.TestCase):
         with patch("orchestrator.jobs.market_hub_current_sync.EsiMarketAdapter.fetch_region_orders", side_effect=RuntimeError("esi unavailable")):
             unavailable_result = run_market_hub_current_sync(db_source_unavailable)
 
-        self.assertEqual(unavailable_result["status"], "success")
+        self.assertEqual(unavailable_result["status"], "failed")
         self.assertTrue(any("fetch failed" in warning for warning in unavailable_result["warnings"]))
 
         db_malformed = _SpyDb()
