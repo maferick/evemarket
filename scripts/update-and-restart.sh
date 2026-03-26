@@ -203,7 +203,7 @@ discover_services() {
   local -a discovered=()
   local unit load_state
 
-  while IFS= read -r unit load_state; do
+  while read -r unit load_state _rest; do
     [[ -z "${unit}" ]] && continue
     [[ "${unit}" == *'@.service' ]] && continue
     [[ "${load_state}" == "not-found" ]] && continue
@@ -213,7 +213,7 @@ discover_services() {
     | awk '/^supplycore-/ {print $1, $2}' \
     || true)
 
-  while IFS= read -r unit load_state; do
+  while read -r unit load_state _rest; do
     [[ -z "${unit}" ]] && continue
     [[ "${load_state}" == "not-found" ]] && continue
     [[ "${load_state}" == "masked" ]] && continue
