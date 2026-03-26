@@ -7500,8 +7500,9 @@ function market_comparison_top_rows(callable $predicate, string $sortKey, int $l
     return array_slice($rows, 0, max(1, $limit));
 }
 
-function market_format_isk(?float $price): string
+function market_format_isk(mixed $price): string
 {
+    $price = $price !== null && $price !== '' ? (float) $price : null;
     if ($price === null || $price <= 0) {
         return '—';
     }
