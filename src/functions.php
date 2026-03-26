@@ -28388,26 +28388,34 @@ function battle_intelligence_character_data(int $characterId): array
 {
     $character = db_battle_intelligence_character($characterId);
     $battles = db_battle_intelligence_character_battles($characterId, 30);
-    $supportingBattles = [];
-    $explanation = [];
+    $evidence = db_battle_intelligence_character_evidence($characterId, 60);
+    $orgHistory = [];
 
     if (is_array($character)) {
-        $supportingBattles = json_decode((string) ($character['top_supporting_battles_json'] ?? '[]'), true);
-        if (!is_array($supportingBattles)) {
-            $supportingBattles = [];
-        }
-
-        $explanation = json_decode((string) ($character['explanation_json'] ?? '{}'), true);
-        if (!is_array($explanation)) {
-            $explanation = [];
+        $decodedOrgHistory = json_decode((string) ($character['org_history_json'] ?? '[]'), true);
+        if (is_array($decodedOrgHistory)) {
+            $orgHistory = $decodedOrgHistory;
         }
     }
+
+    foreach ($evidence as &$evidenceRow) {
+        $payload = json_decode((string) ($evidenceRow['evidence_payload_json'] ?? 'null'), true);
+        $evidenceRow['evidence_payload'] = is_array($payload) ? $payload : null;
+    }
+    unset($evidenceRow);
+
+    foreach ($battles as &$battle) {
+        if (!isset($battle['anomaly_class']) || trim((string) $battle['anomaly_class']) === '') {
+            $battle['anomaly_class'] = ((float) ($battle['overperformance_score'] ?? 0.0)) > 0.0 ? 'overperformance' : 'normal';
+        }
+    }
+    unset($battle);
 
     return [
         'character' => $character,
         'battles' => $battles,
-        'supporting_battles' => $supportingBattles,
-        'explanation' => $explanation,
+        'evidence' => $evidence,
+        'org_history' => $orgHistory,
     ];
 }
 
@@ -28416,10 +28424,11 @@ function battle_intelligence_battle_data(string $battleId): array
     $battle = db_battle_intelligence_battle($battleId);
     $sides = db_battle_intelligence_battle_sides($battleId);
     $actors = db_battle_intelligence_battle_notable_actors($battleId, 40);
+    $hullAnomalies = db_battle_intelligence_battle_hull_anomalies($battleId, 80);
 
     foreach ($sides as &$side) {
-        $decoded = json_decode((string) ($side['explanation_json'] ?? '{}'), true);
-        $side['explanation'] = is_array($decoded) ? $decoded : [];
+        $decoded = json_decode((string) ($side['evidence_json'] ?? '{}'), true);
+        $side['evidence'] = is_array($decoded) ? $decoded : [];
     }
     unset($side);
 
@@ -28427,5 +28436,6 @@ function battle_intelligence_battle_data(string $battleId): array
         'battle' => $battle,
         'sides' => $sides,
         'actors' => $actors,
+        'hull_anomalies' => $hullAnomalies,
     ];
 }
