@@ -473,12 +473,9 @@ function db_select(string $sql, array $params = []): array
 
 function db_select_stream(string $sql, array $params, callable $callback): int
 {
-    $driverOptions = [];
-    if (defined('PDO::MYSQL_ATTR_USE_BUFFERED_QUERY')) {
-        $driverOptions[PDO::MYSQL_ATTR_USE_BUFFERED_QUERY] = false;
-    }
-
-    $stmt = db()->prepare($sql, $driverOptions);
+    // Keep the connection's default buffered-query behavior so callbacks can
+    // safely execute follow-up queries while iterating the result set.
+    $stmt = db()->prepare($sql);
     $stmt->execute($params);
     $stmt->setFetchMode(PDO::FETCH_ASSOC);
 
