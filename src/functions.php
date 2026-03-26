@@ -277,6 +277,7 @@ function setting_sections(): array
         'trading-stations' => ['title' => 'Trading Stations', 'description' => 'Configure your reference market hub and operational trading destination.'],
         'item-scope' => ['title' => 'Item Scope', 'description' => 'Control which item classes are operationally relevant across market, doctrine, and loss-demand analytics.'],
         'ai-briefings' => ['title' => 'AI Briefings', 'description' => 'Configure either a local Ollama endpoint or a Runpod serverless endpoint for doctrine briefing summaries.'],
+        'automation-control' => ['title' => 'Automation Control', 'description' => 'Centralized controls for runtime integrations and recurring job schedules.'],
         'esi-login' => ['title' => 'ESI Login', 'description' => 'Configure EVE SSO credentials and callback behavior.'],
         'data-sync' => ['title' => 'Data Sync', 'description' => 'Control database import and incremental update policies.'],
         'deal-alerts' => ['title' => 'Deal Alerts', 'description' => 'Tune mispriced-listing detection thresholds, popup behavior, and anomaly cadence.'],
@@ -6656,6 +6657,161 @@ function save_data_sync_settings(array $request): array
     ];
 }
 
+function automation_runtime_settings_from_request(array $request): array
+{
+    return [
+        'esi_enabled' => isset($request['esi_enabled']) ? '1' : '0',
+        'killmail_ingestion_enabled' => isset($request['killmail_ingestion_enabled']) ? '1' : '0',
+        'incremental_updates_enabled' => sanitize_pipeline_enabled($request['incremental_updates_enabled'] ?? null),
+        'alliance_current_pipeline_enabled' => sanitize_pipeline_enabled($request['alliance_current_pipeline_enabled'] ?? null),
+        'alliance_history_pipeline_enabled' => sanitize_pipeline_enabled($request['alliance_history_pipeline_enabled'] ?? null),
+        'hub_history_pipeline_enabled' => sanitize_pipeline_enabled($request['hub_history_pipeline_enabled'] ?? null),
+        'market_hub_local_history_pipeline_enabled' => sanitize_pipeline_enabled($request['market_hub_local_history_pipeline_enabled'] ?? null),
+    ];
+}
+
+function automation_runtime_manageable_job_keys(): array
+{
+    $definitions = data_sync_schedule_job_definitions();
+    $registry = supplycore_authoritative_job_registry();
+    $jobKeys = [];
+
+    foreach ($definitions as $jobKey => $definition) {
+        $entry = (array) ($registry[$jobKey] ?? []);
+        if ($entry === []) {
+            continue;
+        }
+
+        if ((string) ($entry['category'] ?? '') === 'external_integrated') {
+            continue;
+        }
+
+        if (!empty($entry['parent_job_key'])) {
+            continue;
+        }
+
+        if (($entry['schedulable'] ?? false) !== true) {
+            continue;
+        }
+
+        if (($entry['settings_visible'] ?? false) !== true) {
+            continue;
+        }
+
+        $jobKeys[] = $jobKey;
+    }
+
+    sort($jobKeys);
+
+    return $jobKeys;
+}
+
+function automation_runtime_jobs_overview(): array
+{
+    scheduler_registry_bootstrap();
+    $definitions = data_sync_schedule_job_definitions();
+    $registry = supplycore_authoritative_job_registry();
+    $rowsByJobKey = [];
+
+    try {
+        foreach (db_sync_schedule_fetch_all() as $row) {
+            $rowsByJobKey[(string) ($row['job_key'] ?? '')] = $row;
+        }
+    } catch (Throwable) {
+        $rowsByJobKey = [];
+    }
+
+    $jobs = [];
+    foreach (automation_runtime_manageable_job_keys() as $jobKey) {
+        $definition = (array) ($definitions[$jobKey] ?? []);
+        $entry = (array) ($registry[$jobKey] ?? []);
+        $row = (array) ($rowsByJobKey[$jobKey] ?? []);
+        $enabled = (int) ($row['enabled'] ?? (!empty($entry['enabled_by_default']) ? 1 : 0));
+        $jobs[] = [
+            'job_key' => $jobKey,
+            'label' => (string) ($definition['label'] ?? $entry['label'] ?? $jobKey),
+            'enabled' => $enabled === 1,
+            'interval_minutes' => (int) ($row['interval_minutes'] ?? ($definition['default_interval_minutes'] ?? 30)),
+            'next_due_at' => (string) ($row['next_due_at'] ?? $row['next_run_at'] ?? ''),
+            'review_reason' => (string) ($entry['review_reason'] ?? ''),
+            'worker_safe' => !empty($entry['worker_safe']),
+            'category' => (string) ($entry['category'] ?? 'real_schedulable'),
+        ];
+    }
+
+    usort($jobs, static fn (array $a, array $b): int => strcmp((string) ($a['label'] ?? ''), (string) ($b['label'] ?? '')));
+
+    return $jobs;
+}
+
+function automation_runtime_set_jobs_enabled(array $jobKeys, bool $enabled): array
+{
+    scheduler_registry_bootstrap();
+    $definitions = data_sync_schedule_job_definitions();
+    $allowedJobKeys = array_flip(automation_runtime_manageable_job_keys());
+    $requestedJobKeys = array_values(array_unique(array_filter(array_map(
+        static fn (mixed $value): string => trim((string) $value),
+        $jobKeys
+    ), static fn (string $value): bool => $value !== '' && isset($allowedJobKeys[$value]))));
+
+    if ($requestedJobKeys === []) {
+        return ['ok' => false, 'message' => 'No valid jobs were selected.'];
+    }
+
+    $rowsByJobKey = [];
+    try {
+        foreach (db_sync_schedule_fetch_all() as $row) {
+            $rowsByJobKey[(string) ($row['job_key'] ?? '')] = $row;
+        }
+    } catch (Throwable) {
+        $rowsByJobKey = [];
+    }
+
+    $changed = 0;
+    foreach ($requestedJobKeys as $jobKey) {
+        $definition = (array) ($definitions[$jobKey] ?? []);
+        if ($definition === []) {
+            continue;
+        }
+        $row = (array) ($rowsByJobKey[$jobKey] ?? []);
+        $intervalMinutes = max(1, (int) ($row['interval_minutes'] ?? ($definition['default_interval_minutes'] ?? 30)));
+        $offsetMinutes = max(0, (int) ($row['offset_minutes'] ?? ($definition['default_offset_minutes'] ?? 0)));
+        $ok = db_sync_schedule_upsert(
+            $jobKey,
+            $enabled ? 1 : 0,
+            $intervalMinutes * 60,
+            $offsetMinutes * 60,
+            [
+                'interval_minutes' => $intervalMinutes,
+                'offset_minutes' => $offsetMinutes,
+                'priority' => (string) ($row['priority'] ?? ($definition['priority'] ?? 'normal')),
+                'timeout_seconds' => (int) ($row['timeout_seconds'] ?? ($definition['timeout_seconds'] ?? 300)),
+                'concurrency_policy' => (string) ($row['concurrency_policy'] ?? ($definition['concurrency_policy'] ?? 'single')),
+                'execution_mode' => (string) ($row['execution_mode'] ?? ($definition['execution_mode'] ?? 'python')),
+                'explicitly_configured' => true,
+            ]
+        );
+        if ($ok) {
+            $changed++;
+        }
+    }
+
+    if ($changed === 0) {
+        return ['ok' => false, 'message' => 'No schedules were updated.'];
+    }
+
+    return [
+        'ok' => true,
+        'message' => ($enabled ? 'Enabled ' : 'Disabled ') . $changed . ' job schedule' . ($changed === 1 ? '' : 's') . '.',
+        'changed' => $changed,
+    ];
+}
+
+function automation_runtime_set_all_jobs_enabled(bool $enabled): array
+{
+    return automation_runtime_set_jobs_enabled(automation_runtime_manageable_job_keys(), $enabled);
+}
+
 function sanitize_redis_host(?string $value): string
 {
     $host = trim((string) $value);
@@ -8388,6 +8544,25 @@ function supplycore_freshness_bucket(?int $ageSeconds, int $freshSeconds, int $d
     return 'stale';
 }
 
+function supplycore_runtime_flag_is_recently_active(?string $startedAt, int $activityWindowSeconds): bool
+{
+    if ($startedAt === null) {
+        return false;
+    }
+
+    $normalized = trim($startedAt);
+    if ($normalized === '') {
+        return false;
+    }
+
+    $startedUnix = strtotime($normalized);
+    if ($startedUnix === false) {
+        return false;
+    }
+
+    return (time() - $startedUnix) <= max(60, $activityWindowSeconds);
+}
+
 function supplycore_dataset_runtime_status_from_sync(array $spec): array
 {
     $datasetKeys = array_values(array_filter(array_map(
@@ -8419,17 +8594,26 @@ function supplycore_dataset_runtime_status_from_sync(array $spec): array
 
     $lastSuccessTimestamp = $lastSuccessAt !== null ? (strtotime($lastSuccessAt) ?: null) : null;
     $ageSeconds = $lastSuccessTimestamp !== null ? max(0, time() - $lastSuccessTimestamp) : null;
+    $freshSeconds = max(60, (int) ($spec['fresh_seconds'] ?? 900));
+    $delayedSeconds = max($freshSeconds, (int) ($spec['delayed_seconds'] ?? ($freshSeconds * 3)));
     $runningNow = false;
+    $runningWindowSeconds = max(
+        120,
+        (int) ($spec['running_window_seconds'] ?? min($delayedSeconds, max($freshSeconds, 15 * 60)))
+    );
 
     foreach ($states as $state) {
-        if ((string) ($state['status'] ?? '') === 'running') {
+        if ((string) ($state['status'] ?? '') === 'running'
+            && supplycore_runtime_flag_is_recently_active(
+                isset($state['updated_at']) ? (string) $state['updated_at'] : null,
+                $runningWindowSeconds
+            )
+        ) {
             $runningNow = true;
             break;
         }
     }
 
-    $freshSeconds = max(60, (int) ($spec['fresh_seconds'] ?? 900));
-    $delayedSeconds = max($freshSeconds, (int) ($spec['delayed_seconds'] ?? ($freshSeconds * 3)));
     $freshnessState = supplycore_freshness_bucket($ageSeconds, $freshSeconds, $delayedSeconds, $runningNow);
     $latestFailureMessage = supplycore_latest_run_failure_message($runs);
     $latestRunStatus = is_array($latestRun) ? (string) ($latestRun['run_status'] ?? '') : '';
@@ -8466,7 +8650,18 @@ function supplycore_dataset_runtime_status_from_snapshot(array $spec): array
     $meta = $snapshotKey !== '' ? supplycore_snapshot_freshness($snapshotKey) : [];
     $computedAt = trim((string) ($meta['computed_at'] ?? ''));
     $computedAt = $computedAt !== '' ? $computedAt : null;
-    $runningNow = (string) ($meta['status'] ?? '') === 'updating';
+    $runningWindowSeconds = max(
+        120,
+        (int) ($spec['running_window_seconds'] ?? min(
+            (int) ($meta['stale_after_seconds'] ?? 0),
+            max((int) ($meta['refresh_interval_seconds'] ?? 900), 15 * 60)
+        ))
+    );
+    $runningNow = (string) ($meta['status'] ?? '') === 'updating'
+        && supplycore_runtime_flag_is_recently_active(
+            isset($meta['refresh_started_at']) ? (string) $meta['refresh_started_at'] : null,
+            $runningWindowSeconds
+        );
     $freshSeconds = max(60, (int) ($meta['refresh_interval_seconds'] ?? ($spec['fresh_seconds'] ?? 900)));
     $delayedSeconds = max($freshSeconds, (int) ($meta['stale_after_seconds'] ?? ($spec['delayed_seconds'] ?? ($freshSeconds * 3))));
     $ageSeconds = isset($meta['age_seconds']) ? (int) $meta['age_seconds'] : null;
