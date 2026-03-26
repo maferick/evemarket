@@ -56,11 +56,11 @@ WORKER_JOB_DEFINITIONS: dict[str, dict[str, Any]] = {
     "deal_alerts_sync":                         {"workload_class": "sync",    "execution_mode": "python", "queue_name": "sync",    "priority": "high",   "freshness_sensitivity": "immediate",  "min_interval_seconds": 180,   "max_staleness_seconds": 600,   "cooldown_seconds": 5,   "runtime_class": "sync_light",   "resource_cost": "low",    "lock_group": "intelligence",         "opportunistic_background": False, "timeout_seconds": 90,   "memory_limit_mb": 384,  "retry_delay_seconds": 15, "max_attempts": 4},
     "rebuild_ai_briefings":                     {"workload_class": "sync",    "execution_mode": "python", "queue_name": "sync",    "priority": "normal", "freshness_sensitivity": "background", "min_interval_seconds": 900,   "max_staleness_seconds": 2700,  "cooldown_seconds": 30,  "runtime_class": "sync_light",   "resource_cost": "medium", "lock_group": "intelligence",         "opportunistic_background": True,  "timeout_seconds": 300,  "memory_limit_mb": 512,  "retry_delay_seconds": 60, "max_attempts": 4},
     "forecasting_ai_sync":                      {"workload_class": "sync",    "execution_mode": "python", "queue_name": "sync",    "priority": "normal", "freshness_sensitivity": "background", "min_interval_seconds": 3600,  "max_staleness_seconds": 10800, "cooldown_seconds": 60,  "runtime_class": "sync_light",   "resource_cost": "medium", "lock_group": "intelligence",         "opportunistic_background": True,  "timeout_seconds": 300,  "memory_limit_mb": 512,  "retry_delay_seconds": 60, "max_attempts": 4},
+    "market_comparison_summary_sync":           {"workload_class": "sync",    "execution_mode": "python", "queue_name": "sync",    "priority": "high",   "freshness_sensitivity": "immediate",  "min_interval_seconds": 300,   "max_staleness_seconds": 900,   "cooldown_seconds": 5,   "runtime_class": "sync_light",   "resource_cost": "medium", "lock_group": "market_intelligence",  "opportunistic_background": False, "timeout_seconds": 180,  "memory_limit_mb": 512,  "retry_delay_seconds": 30, "max_attempts": 4},
 }
 
 # Explicitly retired from recurring execution until a Python-native processor exists.
 DISABLED_WORKER_JOBS: dict[str, str] = {
-    "market_comparison_summary_sync": "Current implementation requires PHP bridge context.",
     "market_hub_local_history_sync": "Current implementation requires PHP bridge context.",
     "killmail_r2z2_sync": "Current implementation requires PHP bridge batch handling.",
 }
