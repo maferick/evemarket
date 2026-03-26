@@ -1625,11 +1625,53 @@ CREATE TABLE IF NOT EXISTS character_org_history_cache (
     short_tenure_hops_180d INT UNSIGNED NOT NULL DEFAULT 0,
     hostile_adjacent_hops_180d INT UNSIGNED NOT NULL DEFAULT 0,
     history_json LONGTEXT NOT NULL,
+    source_endpoint VARCHAR(120) NOT NULL DEFAULT '/api/character/{character_id}',
     fetched_at DATETIME NOT NULL,
     expires_at DATETIME DEFAULT NULL,
     PRIMARY KEY (character_id, source),
     KEY idx_character_org_history_cache_expires (expires_at),
     KEY idx_character_org_history_cache_fetched (fetched_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS character_org_history_events (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    character_id BIGINT UNSIGNED NOT NULL,
+    source VARCHAR(40) NOT NULL DEFAULT 'evewho',
+    corporation_id BIGINT UNSIGNED NOT NULL,
+    event_type ENUM('joined', 'departed') NOT NULL,
+    event_at DATETIME DEFAULT NULL,
+    source_endpoint VARCHAR(120) NOT NULL,
+    fetched_at DATETIME NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (id),
+    UNIQUE KEY uq_character_org_history_event (character_id, source, corporation_id, event_type, event_at, source_endpoint),
+    KEY idx_character_org_history_events_character (character_id, source, fetched_at),
+    KEY idx_character_org_history_events_corp_event (corporation_id, event_type, event_at),
+    CONSTRAINT fk_character_org_history_events_cache
+        FOREIGN KEY (character_id, source)
+        REFERENCES character_org_history_cache (character_id, source)
+        ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS character_org_alliance_adjacency_snapshots (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    character_id BIGINT UNSIGNED NOT NULL,
+    source VARCHAR(40) NOT NULL DEFAULT 'evewho',
+    alliance_id BIGINT UNSIGNED NOT NULL,
+    corporation_id BIGINT UNSIGNED NOT NULL,
+    source_endpoint VARCHAR(120) NOT NULL,
+    fetched_at DATETIME NOT NULL,
+    expires_at DATETIME DEFAULT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (id),
+    UNIQUE KEY uq_character_org_alliance_adj (character_id, source, alliance_id, corporation_id, source_endpoint),
+    KEY idx_character_org_alliance_adj_character (character_id, source, fetched_at),
+    KEY idx_character_org_alliance_adj_alliance (alliance_id, corporation_id, fetched_at),
+    KEY idx_character_org_alliance_adj_expires (expires_at),
+    CONSTRAINT fk_character_org_alliance_adjacency_cache
+        FOREIGN KEY (character_id, source)
+        REFERENCES character_org_history_cache (character_id, source)
+        ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS character_counterintel_features (

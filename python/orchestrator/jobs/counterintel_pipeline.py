@@ -3,7 +3,6 @@ from __future__ import annotations
 from collections import defaultdict
 from datetime import UTC, datetime, timedelta
 import json
-import math
 import time
 import urllib.error
 import urllib.request
@@ -17,6 +16,7 @@ from ..neo4j import Neo4jClient, Neo4jConfig
 COUNTERINTEL_DATASET_KEY = "compute_counterintel_pipeline_cursor"
 DEFAULT_BATTLE_BATCH_SIZE = 40
 DEFAULT_MAX_BATCHES = 4
+DEFAULT_EVEWHO_BATCH_SIZE = 20
 
 
 def _now_sql() -> str:
@@ -67,11 +67,76 @@ def _http_json(url: str, user_agent: str, timeout_seconds: int = 20) -> dict[str
     return parsed if isinstance(parsed, dict) else None
 
 
-def _fetch_evewho_character(character_id: int, user_agent: str) -> dict[str, Any] | None:
-    return _http_json(f"https://evewho.com/api/character/{character_id}", user_agent)
+def _parse_iso_datetime(value: Any) -> datetime | None:
+    if value is None:
+        return None
+    raw = str(value).strip()
+    if not raw:
+        return None
+    try:
+        return datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
 
 
-def _enrich_org_history_cache(db: SupplyCoreDb, character_ids: list[int], user_agent: str, ttl_hours: int, max_fetches: int) -> int:
+def _walk_nested_rows(payload: Any) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    stack: list[Any] = [payload]
+    while stack:
+        current = stack.pop()
+        if isinstance(current, dict):
+            rows.append(current)
+            for value in current.values():
+                if isinstance(value, (dict, list)):
+                    stack.append(value)
+        elif isinstance(current, list):
+            for item in current:
+                if isinstance(item, (dict, list)):
+                    stack.append(item)
+    return rows
+
+
+def _extract_first_int(row: dict[str, Any], keys: list[str]) -> int | None:
+    for key in keys:
+        value = row.get(key)
+        try:
+            normalized = int(value or 0)
+        except (TypeError, ValueError):
+            normalized = 0
+        if normalized > 0:
+            return normalized
+    return None
+
+
+class EveWhoAdapter:
+    def __init__(self, user_agent: str):
+        self._user_agent = user_agent
+
+    def _fetch_endpoint(self, endpoint_path: str) -> dict[str, Any] | None:
+        return _http_json(f"https://evewho.com{endpoint_path}", self._user_agent)
+
+    def fetch_character(self, character_id: int) -> tuple[str, dict[str, Any] | None]:
+        endpoint = f"/api/character/{character_id}"
+        return endpoint, self._fetch_endpoint(endpoint)
+
+    def fetch_corplist(self, corp_id: int) -> tuple[str, dict[str, Any] | None]:
+        endpoint = f"/api/corplist/{corp_id}"
+        return endpoint, self._fetch_endpoint(endpoint)
+
+    def fetch_allilist(self, alliance_id: int) -> tuple[str, dict[str, Any] | None]:
+        endpoint = f"/api/allilist/{alliance_id}"
+        return endpoint, self._fetch_endpoint(endpoint)
+
+    def fetch_corpdeparted(self, corp_id: int) -> tuple[str, dict[str, Any] | None]:
+        endpoint = f"/api/corpdeparted/{corp_id}"
+        return endpoint, self._fetch_endpoint(endpoint)
+
+    def fetch_corpjoined(self, corp_id: int) -> tuple[str, dict[str, Any] | None]:
+        endpoint = f"/api/corpjoined/{corp_id}"
+        return endpoint, self._fetch_endpoint(endpoint)
+
+
+def _enrich_org_history_cache(db: SupplyCoreDb, character_ids: list[int], user_agent: str, ttl_hours: int, max_fetches: int, fetch_batch_size: int) -> int:
     if not character_ids:
         return 0
 
@@ -90,34 +155,122 @@ def _enrich_org_history_cache(db: SupplyCoreDb, character_ids: list[int], user_a
     if not pending:
         return 0
 
+    adapter = EveWhoAdapter(user_agent)
+    character_payloads: dict[int, tuple[str, dict[str, Any]]] = {}
+    corp_ids: set[int] = set()
+    alliance_ids: set[int] = set()
+    chunk_size = max(1, min(50, fetch_batch_size))
+    for idx in range(0, len(pending), chunk_size):
+        for character_id in pending[idx : idx + chunk_size]:
+            endpoint, payload = adapter.fetch_character(character_id)
+            if not payload:
+                continue
+            character_payloads[character_id] = (endpoint, payload)
+            corp_id = int(payload.get("corporation_id") or 0)
+            alliance_id = int(payload.get("alliance_id") or 0)
+            if corp_id > 0:
+                corp_ids.add(corp_id)
+            if alliance_id > 0:
+                alliance_ids.add(alliance_id)
+
+    remaining_fetch_budget = max(0, max_fetches - len(character_payloads))
+    corp_list_payloads: dict[int, tuple[str, dict[str, Any]]] = {}
+    corp_joined_payloads: dict[int, tuple[str, dict[str, Any]]] = {}
+    corp_departed_payloads: dict[int, tuple[str, dict[str, Any]]] = {}
+    allilist_payloads: dict[int, tuple[str, dict[str, Any]]] = {}
+    for corp_id in sorted(corp_ids):
+        if remaining_fetch_budget <= 0:
+            break
+        endpoint, payload = adapter.fetch_corplist(corp_id)
+        if payload:
+            corp_list_payloads[corp_id] = (endpoint, payload)
+        remaining_fetch_budget -= 1
+        if remaining_fetch_budget <= 0:
+            break
+        endpoint, payload = adapter.fetch_corpjoined(corp_id)
+        if payload:
+            corp_joined_payloads[corp_id] = (endpoint, payload)
+        remaining_fetch_budget -= 1
+        if remaining_fetch_budget <= 0:
+            break
+        endpoint, payload = adapter.fetch_corpdeparted(corp_id)
+        if payload:
+            corp_departed_payloads[corp_id] = (endpoint, payload)
+        remaining_fetch_budget -= 1
+    for alliance_id in sorted(alliance_ids):
+        if remaining_fetch_budget <= 0:
+            break
+        endpoint, payload = adapter.fetch_allilist(alliance_id)
+        if payload:
+            allilist_payloads[alliance_id] = (endpoint, payload)
+        remaining_fetch_budget -= 1
+
     written = 0
     fetched_at = _now_sql()
     expires_at = (datetime.now(UTC) + timedelta(hours=max(1, ttl_hours))).strftime("%Y-%m-%d %H:%M:%S")
     with db.transaction() as (_, cursor):
         for character_id in pending:
-            payload = _fetch_evewho_character(character_id, user_agent)
-            if not payload:
+            loaded = character_payloads.get(character_id)
+            if not loaded:
                 continue
+            source_endpoint, payload = loaded
             history = payload.get("corporation_history") if isinstance(payload.get("corporation_history"), list) else []
             corp_hops = len(history)
             short_tenure = 0
+            event_rows: list[tuple[int, str, str | None, str]] = []
             for idx, row in enumerate(history):
                 joined = str(row.get("start_date") or "")
                 left = str(history[idx + 1].get("start_date") or "") if idx + 1 < len(history) else ""
+                corp_id = int(row.get("corporation_id") or 0)
+                if corp_id > 0 and joined:
+                    event_rows.append((corp_id, "joined", joined, source_endpoint))
+                if corp_id > 0 and left:
+                    event_rows.append((corp_id, "departed", left, source_endpoint))
                 if joined and left:
                     try:
-                        delta = abs((datetime.fromisoformat(left.replace("Z", "+00:00")) - datetime.fromisoformat(joined.replace("Z", "+00:00"))).days)
+                        joined_dt = _parse_iso_datetime(joined)
+                        left_dt = _parse_iso_datetime(left)
+                        delta = abs((left_dt - joined_dt).days) if joined_dt and left_dt else 999999
                         if delta <= 30:
                             short_tenure += 1
                     except ValueError:
                         pass
+            current_corp_id = int(payload.get("corporation_id") or 0)
+            current_alliance_id = int(payload.get("alliance_id") or 0)
+            if current_corp_id > 0 and current_corp_id in corp_joined_payloads:
+                joined_endpoint, joined_payload = corp_joined_payloads[current_corp_id]
+                for row in _walk_nested_rows(joined_payload):
+                    row_character_id = _extract_first_int(row, ["character_id", "characterID", "char_id", "id"])
+                    if row_character_id != character_id:
+                        continue
+                    moved_at = row.get("start_date") or row.get("date") or row.get("joined_at")
+                    event_rows.append((current_corp_id, "joined", str(moved_at or ""), joined_endpoint))
+            if current_corp_id > 0 and current_corp_id in corp_departed_payloads:
+                departed_endpoint, departed_payload = corp_departed_payloads[current_corp_id]
+                for row in _walk_nested_rows(departed_payload):
+                    row_character_id = _extract_first_int(row, ["character_id", "characterID", "char_id", "id"])
+                    if row_character_id != character_id:
+                        continue
+                    moved_at = row.get("start_date") or row.get("date") or row.get("departed_at")
+                    event_rows.append((current_corp_id, "departed", str(moved_at or ""), departed_endpoint))
+
+            corplist_loaded = corp_list_payloads.get(current_corp_id) if current_corp_id > 0 else None
+            if corplist_loaded:
+                corplist_endpoint, corplist_payload = corplist_loaded
+                for row in _walk_nested_rows(corplist_payload):
+                    row_character_id = _extract_first_int(row, ["character_id", "characterID", "char_id", "id"])
+                    if row_character_id != character_id:
+                        continue
+                    joined_at = row.get("start_date") or row.get("date") or row.get("joined_at")
+                    event_rows.append((current_corp_id, "joined", str(joined_at or ""), corplist_endpoint))
+
             cursor.execute(
                 """
                 INSERT INTO character_org_history_cache (
                     character_id, source, current_corporation_id, current_alliance_id,
                     corp_hops_180d, short_tenure_hops_180d, hostile_adjacent_hops_180d,
-                    history_json, fetched_at, expires_at
-                ) VALUES (%s, 'evewho', %s, %s, %s, %s, %s, %s, %s, %s)
+                    history_json, source_endpoint, fetched_at, expires_at
+                ) VALUES (%s, 'evewho', %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON DUPLICATE KEY UPDATE
                     current_corporation_id = VALUES(current_corporation_id),
                     current_alliance_id = VALUES(current_alliance_id),
@@ -125,21 +278,78 @@ def _enrich_org_history_cache(db: SupplyCoreDb, character_ids: list[int], user_a
                     short_tenure_hops_180d = VALUES(short_tenure_hops_180d),
                     hostile_adjacent_hops_180d = VALUES(hostile_adjacent_hops_180d),
                     history_json = VALUES(history_json),
+                    source_endpoint = VALUES(source_endpoint),
                     fetched_at = VALUES(fetched_at),
                     expires_at = VALUES(expires_at)
                 """,
                 (
                     character_id,
-                    int(payload.get("corporation_id") or 0) or None,
-                    int(payload.get("alliance_id") or 0) or None,
+                    current_corp_id or None,
+                    current_alliance_id or None,
                     corp_hops,
                     short_tenure,
                     0,
                     json_dumps_safe(payload),
+                    source_endpoint,
                     fetched_at,
                     expires_at,
                 ),
             )
+            cursor.execute(
+                "DELETE FROM character_org_history_events WHERE character_id = %s AND source = 'evewho'",
+                (character_id,),
+            )
+            for corp_id, event_type, event_at_raw, event_endpoint in event_rows:
+                event_dt = _parse_iso_datetime(event_at_raw)
+                cursor.execute(
+                    """
+                    INSERT INTO character_org_history_events (
+                        character_id, source, corporation_id, event_type, event_at, source_endpoint, fetched_at
+                    ) VALUES (%s, 'evewho', %s, %s, %s, %s, %s)
+                    """,
+                    (character_id, corp_id, event_type, event_dt.strftime("%Y-%m-%d %H:%M:%S") if event_dt else None, event_endpoint, fetched_at),
+                )
+
+            cursor.execute(
+                "DELETE FROM character_org_alliance_adjacency_snapshots WHERE character_id = %s AND source = 'evewho'",
+                (character_id,),
+            )
+            alliance_corp_ids: set[int] = set()
+            if current_corp_id > 0:
+                alliance_corp_ids.add(current_corp_id)
+                if corplist_loaded:
+                    _, corplist_payload = corplist_loaded
+                    for row in _walk_nested_rows(corplist_payload):
+                        corp_id = _extract_first_int(row, ["corporation_id", "corporationID", "corp_id"])
+                        if corp_id and corp_id > 0:
+                            alliance_corp_ids.add(corp_id)
+            if current_alliance_id > 0:
+                allilist_loaded = allilist_payloads.get(current_alliance_id)
+                if allilist_loaded:
+                    allilist_endpoint, allilist_payload = allilist_loaded
+                    for row in _walk_nested_rows(allilist_payload):
+                        corp_id = _extract_first_int(row, ["corporation_id", "corporationID", "corp_id"])
+                        if corp_id and corp_id > 0:
+                            alliance_corp_ids.add(corp_id)
+                    for corp_id in alliance_corp_ids:
+                        cursor.execute(
+                            """
+                            INSERT INTO character_org_alliance_adjacency_snapshots (
+                                character_id, source, alliance_id, corporation_id, source_endpoint, fetched_at, expires_at
+                            ) VALUES (%s, 'evewho', %s, %s, %s, %s, %s)
+                            """,
+                            (character_id, current_alliance_id, corp_id, allilist_endpoint, fetched_at, expires_at),
+                        )
+                elif source_endpoint:
+                    for corp_id in alliance_corp_ids:
+                        cursor.execute(
+                            """
+                            INSERT INTO character_org_alliance_adjacency_snapshots (
+                                character_id, source, alliance_id, corporation_id, source_endpoint, fetched_at, expires_at
+                            ) VALUES (%s, 'evewho', %s, %s, %s, %s, %s)
+                            """,
+                            (character_id, current_alliance_id, corp_id, source_endpoint, fetched_at, expires_at),
+                        )
             written += 1
     return written
 
@@ -170,6 +380,7 @@ def run_compute_counterintel_pipeline(
         user_agent = str(runtime.get("evewho_user_agent") or "SupplyCoreCounterIntel/1.0 (+https://supplycore)")
         org_cache_ttl_hours = max(6, int(runtime.get("evewho_cache_ttl_hours") or 24))
         org_max_fetches = max(5, int(runtime.get("evewho_max_fetches_per_run") or 100))
+        org_fetch_batch_size = max(1, int(runtime.get("evewho_fetch_batch_size") or DEFAULT_EVEWHO_BATCH_SIZE))
 
         neo4j_config = Neo4jConfig.from_runtime(neo4j_raw or {})
         neo4j = Neo4jClient(neo4j_config) if neo4j_config.enabled else None
@@ -276,7 +487,7 @@ def run_compute_counterintel_pipeline(
                     continue
                 by_character[cid].append(row)
 
-            org_written = _enrich_org_history_cache(db, list(by_character.keys()), user_agent, org_cache_ttl_hours, org_max_fetches)
+            org_written = _enrich_org_history_cache(db, list(by_character.keys()), user_agent, org_cache_ttl_hours, org_max_fetches, org_fetch_batch_size)
 
             org_rows = db.fetch_all(
                 "SELECT character_id, corp_hops_180d, short_tenure_hops_180d FROM character_org_history_cache WHERE source = 'evewho' AND character_id IN ("
