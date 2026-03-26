@@ -572,6 +572,15 @@ class SupplyCoreDb:
 
         return [{"source_id": source_id, "region_id": 0, "source_kind": "structure"}]
 
+    def fetch_region_id_for_system(self, *, system_id: int) -> int:
+        if system_id <= 0:
+            return 0
+        row = self.fetch_one(
+            "SELECT region_id FROM ref_systems WHERE system_id = %s LIMIT 1",
+            (system_id,),
+        ) or {}
+        return int(row.get("region_id") or 0)
+
     def fetch_alliance_structure_sources(self, *, limit: int = 5) -> list[int]:
         rows = self.fetch_all(
             """SELECT structure_id

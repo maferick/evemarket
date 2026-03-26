@@ -26,35 +26,47 @@ def _processor(db: SupplyCoreDb) -> dict[str, object]:
         if source_id <= 0:
             continue
         orders: list[dict[str, object]] = []
+        resolved_region_id = region_id
+        filter_location_id: int | None = source_id if source_kind == "structure" else None
+        structure_orders_mode = False
+
         try:
-            if source_kind == "structure":
+            if source_kind == "structure" and resolved_region_id <= 0 and access_token:
+                structure_meta = adapter.fetch_structure_metadata(structure_id=source_id, access_token=access_token)
+                system_id = int(structure_meta.get("solar_system_id") or 0)
+                fetch_region = getattr(db, "fetch_region_id_for_system", None)
+                if callable(fetch_region):
+                    resolved_region_id = int(fetch_region(system_id=system_id))
+
+            if resolved_region_id > 0:
+                first_page = adapter.fetch_region_orders(region_id=resolved_region_id, order_type="all", page=1)
+            elif source_kind == "structure":
                 if not access_token:
                     warnings.append(f"market_hub source {source_id} is a structure, but no active ESI OAuth token is available.")
                     continue
                 first_page = adapter.fetch_structure_orders(structure_id=source_id, access_token=access_token, page=1)
+                structure_orders_mode = True
             else:
-                if region_id <= 0:
-                    warnings.append(f"market_hub source {source_id} is missing region metadata.")
-                    continue
-                first_page = adapter.fetch_region_orders(region_id=region_id, order_type="all", page=1)
+                warnings.append(f"market_hub source {source_id} is missing region metadata.")
+                continue
             orders.extend(first_page.orders)
             max_pages = min(20, first_page.pages)
             for page in range(2, max_pages + 1):
-                if source_kind == "structure":
+                if structure_orders_mode:
                     response = adapter.fetch_structure_orders(structure_id=source_id, access_token=access_token, page=page)
                 else:
-                    response = adapter.fetch_region_orders(region_id=region_id, order_type="all", page=page)
+                    response = adapter.fetch_region_orders(region_id=resolved_region_id, order_type="all", page=page)
                 orders.extend(response.orders)
         except Exception as exc:
             warnings.append(f"market_hub source {source_id} fetch failed: {exc}")
             continue
 
-        if source_kind == "npc_station":
+        if filter_location_id is not None:
             validated_orders: list[dict[str, object]] = []
             for order in orders:
                 if not isinstance(order, dict):
                     raise ValueError(f"market_hub source {source_id} returned a non-object order payload.")
-                if int(order.get("location_id") or 0) == source_id:
+                if int(order.get("location_id") or 0) == filter_location_id:
                     validated_orders.append(order)
             orders = validated_orders
 
