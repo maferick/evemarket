@@ -122,7 +122,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     lease_seconds = max(30, int(worker_settings.get("claim_ttl_seconds", 300)))
-    idle_sleep = max(0, int(worker_settings.get("idle_sleep_seconds", 10)))
+    idle_sleep = max(0, int(worker_settings.get("idle_sleep_seconds", 2)))
     pause_threshold = max(128 * 1024 * 1024, int(worker_settings.get("memory_pause_threshold_bytes", 384 * 1024 * 1024)))
     abort_threshold = max(pause_threshold, int(worker_settings.get("memory_abort_threshold_bytes", 512 * 1024 * 1024)))
     retry_backoff = max(5, int(worker_settings.get("retry_backoff_seconds", 30)))
