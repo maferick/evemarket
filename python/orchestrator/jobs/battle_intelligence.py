@@ -4,6 +4,7 @@ import math
 import sys
 from collections import defaultdict
 from datetime import UTC, datetime
+import hashlib
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +26,10 @@ WINDOW_SECONDS = 15 * 60
 MIN_ELIGIBLE_PARTICIPANTS = 100
 MIN_SAMPLE_COUNT = 5
 EPSILON = 1e-6
+ROLLUP_BATCH_SIZE = 1000
+TARGET_METRICS_BATCH_SIZE = 1000
+SYNC_STATE_KEY_BATTLE_ROLLUPS_CURSOR = "compute_battle_rollups:last_sequence_id"
+SYNC_STATE_KEY_BATTLE_TARGET_CURSOR = "compute_battle_target_metrics:last_sequence_id"
 
 # Explainable suspicion model weights (must sum to 1.0).
 SUSPICION_WEIGHTS: dict[str, float] = {
@@ -106,6 +111,60 @@ def _battle_log(runtime: dict[str, Any] | None, event: str, payload: dict[str, A
         handle.write(json_dumps_safe(record) + "\n")
 
 
+def _sync_state_cursor_get(db: SupplyCoreDb, dataset_key: str) -> int:
+    row = db.fetch_one("SELECT last_cursor FROM sync_state WHERE dataset_key = %s LIMIT 1", (dataset_key,))
+    if not row:
+        return 0
+    raw = row.get("last_cursor")
+    try:
+        return max(0, int(raw or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _sync_state_cursor_upsert(
+    db: SupplyCoreDb,
+    dataset_key: str,
+    *,
+    status: str,
+    last_cursor: int,
+    last_row_count: int = 0,
+    error_text: str | None = None,
+) -> None:
+    db.execute(
+        """
+        INSERT INTO sync_state (
+            dataset_key, sync_mode, status, last_success_at, last_cursor, last_row_count, last_checksum, last_error_message
+        ) VALUES (
+            %s, 'incremental', %s, %s, %s, %s, NULL, %s
+        )
+        ON DUPLICATE KEY UPDATE
+            status = VALUES(status),
+            last_success_at = VALUES(last_success_at),
+            last_cursor = VALUES(last_cursor),
+            last_row_count = VALUES(last_row_count),
+            last_error_message = VALUES(last_error_message)
+        """,
+        (
+            dataset_key,
+            status,
+            _now_sql() if status == "success" else None,
+            str(max(0, int(last_cursor))),
+            max(0, int(last_row_count)),
+            (str(error_text)[:500] if error_text else None),
+        ),
+    )
+
+
+def _maybe_float(raw: Any) -> float | None:
+    if raw is None:
+        return None
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return None
+
+
 def _neo4j_sync_participation(db: SupplyCoreDb, neo4j_raw: dict[str, Any] | None = None) -> dict[str, Any]:
     config = Neo4jConfig.from_runtime(neo4j_raw or {})
     if not config.enabled:
@@ -172,184 +231,269 @@ def run_compute_battle_rollups(db: SupplyCoreDb, runtime: dict[str, Any] | None 
     rows_processed = 0
     rows_written = 0
     computed_at = _now_sql()
+    cursor_start = _sync_state_cursor_get(db, SYNC_STATE_KEY_BATTLE_ROLLUPS_CURSOR)
+    cursor_end = cursor_start
+    batch_count = 0
+    _sync_state_cursor_upsert(db, SYNC_STATE_KEY_BATTLE_ROLLUPS_CURSOR, status="running", last_cursor=cursor_start, last_row_count=0)
     _battle_log(runtime, "battle_intelligence.job.started", {"job_name": "compute_battle_rollups", "dry_run": dry_run, "computed_at": computed_at})
     try:
-        killmails = db.fetch_all(
+        role_rows = db.fetch_all(
             """
             SELECT
-                ke.sequence_id,
-                ke.killmail_id,
-                ke.solar_system_id AS system_id,
-                ke.effective_killmail_at AS killmail_time,
-                ke.victim_character_id,
-                ke.victim_corporation_id,
-                ke.victim_alliance_id,
-                ke.victim_ship_type_id,
-                ka.character_id AS attacker_character_id,
-                ka.corporation_id AS attacker_corporation_id,
-                ka.alliance_id AS attacker_alliance_id,
-                ka.ship_type_id AS attacker_ship_type_id
-            FROM killmail_events ke
-            LEFT JOIN killmail_attackers ka ON ka.sequence_id = ke.sequence_id
-            WHERE ke.effective_killmail_at >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL 45 DAY)
-              AND ke.solar_system_id IS NOT NULL
-            ORDER BY ke.solar_system_id ASC, ke.effective_killmail_at ASC, ke.killmail_id ASC
+                rit.type_id,
+                LOWER(COALESCE(rig.group_name, '')) AS group_name,
+                LOWER(COALESCE(ric.category_name, '')) AS category_name
+            FROM ref_item_types rit
+            LEFT JOIN ref_item_groups rig ON rig.group_id = rit.group_id
+            LEFT JOIN ref_item_categories ric ON ric.category_id = rit.category_id
             """
         )
-        rows_processed = len(killmails)
-
-        battles: dict[str, dict[str, Any]] = {}
-        participant_sets: dict[str, set[int]] = defaultdict(set)
-        participant_rows: dict[tuple[str, int], dict[str, Any]] = {}
-        killmail_assignments: list[tuple[str, int]] = []
-
-        for row in killmails:
-            system_id = int(row.get("system_id") or 0)
-            killmail_id = int(row.get("killmail_id") or 0)
-            killmail_time = str(row.get("killmail_time") or "")
-            if system_id <= 0 or killmail_id <= 0 or killmail_time == "":
+        role_map: dict[int, tuple[int, int, int]] = {}
+        for role_row in role_rows:
+            type_id = int(role_row.get("type_id") or 0)
+            if type_id <= 0:
                 continue
+            group_name = str(role_row.get("group_name") or "")
+            category_name = str(role_row.get("category_name") or "")
+            is_logi = 1 if "logistics" in group_name else 0
+            is_command = 1 if "command" in group_name else 0
+            capital_groups = ["dreadnought", "carrier", "force auxiliary", "supercarrier", "titan", "capital"]
+            is_capital = 1 if any(token in group_name for token in capital_groups) or "capital" in category_name else 0
+            role_map[type_id] = (is_logi, is_command, is_capital)
 
-            bucket_unix = int(datetime.strptime(killmail_time, "%Y-%m-%d %H:%M:%S").replace(tzinfo=UTC).timestamp() // WINDOW_SECONDS * WINDOW_SECONDS)
-            battle_id = f"{system_id}:{bucket_unix}"
-            battle_hash = __import__("hashlib").sha256(battle_id.encode("utf-8")).hexdigest()
-            sequence_id = int(row.get("sequence_id") or 0)
-            if sequence_id > 0:
+        while True:
+            batch_started = datetime.now(UTC)
+            killmails = db.fetch_all(
+                """
+                SELECT
+                    ke.sequence_id,
+                    ke.killmail_id,
+                    ke.solar_system_id AS system_id,
+                    ke.effective_killmail_at AS killmail_time,
+                    ke.victim_character_id,
+                    ke.victim_corporation_id,
+                    ke.victim_alliance_id,
+                    ke.victim_ship_type_id,
+                    ka.character_id AS attacker_character_id,
+                    ka.corporation_id AS attacker_corporation_id,
+                    ka.alliance_id AS attacker_alliance_id,
+                    ka.ship_type_id AS attacker_ship_type_id
+                FROM killmail_events ke
+                LEFT JOIN killmail_attackers ka ON ka.sequence_id = ke.sequence_id
+                WHERE ke.sequence_id > %s
+                  AND ke.solar_system_id IS NOT NULL
+                ORDER BY ke.sequence_id ASC
+                LIMIT %s
+                """,
+                (cursor_end, ROLLUP_BATCH_SIZE),
+            )
+            if not killmails:
+                break
+
+            batch_count += 1
+            rows_processed += len(killmails)
+            battles: dict[str, dict[str, Any]] = {}
+            participant_rows: dict[tuple[str, int], dict[str, Any]] = {}
+            killmail_assignments: list[tuple[str, int]] = []
+            touched_battles: set[str] = set()
+            max_sequence_id = cursor_end
+
+            for row in killmails:
+                sequence_id = int(row.get("sequence_id") or 0)
+                if sequence_id <= 0:
+                    continue
+                max_sequence_id = max(max_sequence_id, sequence_id)
+                system_id = int(row.get("system_id") or 0)
+                killmail_id = int(row.get("killmail_id") or 0)
+                killmail_time = str(row.get("killmail_time") or "")
+                if system_id <= 0 or killmail_id <= 0 or killmail_time == "":
+                    continue
+
+                bucket_unix = int(datetime.strptime(killmail_time, "%Y-%m-%d %H:%M:%S").replace(tzinfo=UTC).timestamp() // WINDOW_SECONDS * WINDOW_SECONDS)
+                battle_id = f"{system_id}:{bucket_unix}"
+                battle_hash = hashlib.sha256(battle_id.encode("utf-8")).hexdigest()
+                touched_battles.add(battle_hash)
                 killmail_assignments.append((battle_hash, sequence_id))
 
-            battle = battles.setdefault(
-                battle_hash,
+                battle = battles.setdefault(
+                    battle_hash,
+                    {"battle_id": battle_hash, "system_id": system_id, "started_at": killmail_time, "ended_at": killmail_time},
+                )
+                if killmail_time < battle["started_at"]:
+                    battle["started_at"] = killmail_time
+                if killmail_time > battle["ended_at"]:
+                    battle["ended_at"] = killmail_time
+
+                for role in (
+                    (int(row.get("victim_character_id") or 0), int(row.get("victim_corporation_id") or 0), int(row.get("victim_alliance_id") or 0), int(row.get("victim_ship_type_id") or 0)),
+                    (int(row.get("attacker_character_id") or 0), int(row.get("attacker_corporation_id") or 0), int(row.get("attacker_alliance_id") or 0), int(row.get("attacker_ship_type_id") or 0)),
+                ):
+                    character_id, corporation_id, alliance_id, ship_type_id = role
+                    if character_id <= 0:
+                        continue
+                    side_key = f"a:{alliance_id}" if alliance_id > 0 else (f"c:{corporation_id}" if corporation_id > 0 else "unknown")
+                    key = (battle_hash, character_id)
+                    current = participant_rows.setdefault(
+                        key,
+                        {
+                            "battle_id": battle_hash,
+                            "character_id": character_id,
+                            "corporation_id": corporation_id if corporation_id > 0 else None,
+                            "alliance_id": alliance_id if alliance_id > 0 else None,
+                            "side_key": side_key,
+                            "ship_type_id": ship_type_id if ship_type_id > 0 else None,
+                            "participation_count": 0,
+                        },
+                    )
+                    if current.get("corporation_id") is None and corporation_id > 0:
+                        current["corporation_id"] = corporation_id
+                    if current.get("alliance_id") is None and alliance_id > 0:
+                        current["alliance_id"] = alliance_id
+                    if int(current.get("ship_type_id") or 0) <= 0 and ship_type_id > 0:
+                        current["ship_type_id"] = ship_type_id
+                    if str(current.get("side_key") or "") == "unknown" and side_key != "unknown":
+                        current["side_key"] = side_key
+                    current["participation_count"] = int(current["participation_count"]) + 1
+
+            batch_written = 0
+            if not dry_run:
+                with db.transaction() as (_, cursor):
+                    for battle in battles.values():
+                        started = datetime.strptime(str(battle["started_at"]), "%Y-%m-%d %H:%M:%S")
+                        ended = datetime.strptime(str(battle["ended_at"]), "%Y-%m-%d %H:%M:%S")
+                        duration_seconds = max(1, int((ended - started).total_seconds()))
+                        cursor.execute(
+                            """
+                            INSERT INTO battle_rollups (
+                                battle_id, system_id, started_at, ended_at, duration_seconds,
+                                participant_count, eligible_for_suspicion, battle_size_class, computed_at
+                            ) VALUES (%s, %s, %s, %s, %s, 0, 0, 'small', %s)
+                            ON DUPLICATE KEY UPDATE
+                                system_id = VALUES(system_id),
+                                started_at = LEAST(started_at, VALUES(started_at)),
+                                ended_at = GREATEST(ended_at, VALUES(ended_at)),
+                                duration_seconds = TIMESTAMPDIFF(SECOND, LEAST(started_at, VALUES(started_at)), GREATEST(ended_at, VALUES(ended_at))),
+                                computed_at = IF(
+                                    system_id <> VALUES(system_id)
+                                    OR started_at <> LEAST(started_at, VALUES(started_at))
+                                    OR ended_at <> GREATEST(ended_at, VALUES(ended_at)),
+                                    VALUES(computed_at),
+                                    computed_at
+                                )
+                            """
+                            ,
+                            (str(battle["battle_id"]), int(battle["system_id"]), str(battle["started_at"]), str(battle["ended_at"]), duration_seconds, computed_at),
+                        )
+                        batch_written += max(0, int(cursor.rowcount or 0))
+
+                    for participant in participant_rows.values():
+                        ship_type_id = int(participant.get("ship_type_id") or 0)
+                        flags = role_map.get(ship_type_id, (0, 0, 0))
+                        cursor.execute(
+                            """
+                            INSERT INTO battle_participants (
+                                battle_id, character_id, corporation_id, alliance_id, side_key, ship_type_id,
+                                is_logi, is_command, is_capital, participation_count, computed_at
+                            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                            ON DUPLICATE KEY UPDATE
+                                corporation_id = COALESCE(VALUES(corporation_id), corporation_id),
+                                alliance_id = COALESCE(VALUES(alliance_id), alliance_id),
+                                side_key = IF(side_key = 'unknown' AND VALUES(side_key) <> 'unknown', VALUES(side_key), side_key),
+                                ship_type_id = COALESCE(VALUES(ship_type_id), ship_type_id),
+                                is_logi = GREATEST(is_logi, VALUES(is_logi)),
+                                is_command = GREATEST(is_command, VALUES(is_command)),
+                                is_capital = GREATEST(is_capital, VALUES(is_capital)),
+                                participation_count = participation_count + VALUES(participation_count),
+                                computed_at = VALUES(computed_at)
+                            """,
+                            (
+                                str(participant["battle_id"]),
+                                int(participant["character_id"]),
+                                participant.get("corporation_id"),
+                                participant.get("alliance_id"),
+                                str(participant["side_key"]),
+                                participant.get("ship_type_id"),
+                                int(flags[0]),
+                                int(flags[1]),
+                                int(flags[2]),
+                                int(participant.get("participation_count") or 0),
+                                computed_at,
+                            ),
+                        )
+                        batch_written += max(0, int(cursor.rowcount or 0))
+
+                    for battle_id_value, sequence_id in killmail_assignments:
+                        cursor.execute(
+                            "UPDATE killmail_events SET battle_id = %s WHERE sequence_id = %s AND COALESCE(battle_id, '') <> %s",
+                            (battle_id_value, sequence_id, battle_id_value),
+                        )
+                        batch_written += max(0, int(cursor.rowcount or 0))
+
+                    for battle_id_value in touched_battles:
+                        cursor.execute(
+                            """
+                            SELECT COUNT(*) AS participant_count
+                            FROM battle_participants
+                            WHERE battle_id = %s
+                            """,
+                            (battle_id_value,),
+                        )
+                        summary_row = cursor.fetchone() or {}
+                        participant_count = int(summary_row.get("participant_count") or 0)
+                        cursor.execute(
+                            """
+                            UPDATE battle_rollups
+                            SET participant_count = %s,
+                                eligible_for_suspicion = %s,
+                                battle_size_class = %s,
+                                computed_at = %s
+                            WHERE battle_id = %s
+                              AND (
+                                participant_count <> %s
+                                OR eligible_for_suspicion <> %s
+                                OR battle_size_class <> %s
+                                OR computed_at <> %s
+                              )
+                            """,
+                            (
+                                participant_count,
+                                1 if participant_count >= MIN_ELIGIBLE_PARTICIPANTS else 0,
+                                _battle_size_class(participant_count),
+                                computed_at,
+                                battle_id_value,
+                                participant_count,
+                                1 if participant_count >= MIN_ELIGIBLE_PARTICIPANTS else 0,
+                                _battle_size_class(participant_count),
+                                computed_at,
+                            ),
+                        )
+                        batch_written += max(0, int(cursor.rowcount or 0))
+
+            cursor_end = max_sequence_id
+            rows_written += batch_written
+            _sync_state_cursor_upsert(
+                db,
+                SYNC_STATE_KEY_BATTLE_ROLLUPS_CURSOR,
+                status="success",
+                last_cursor=cursor_end,
+                last_row_count=len(killmails),
+            )
+            _battle_log(
+                runtime,
+                "battle_intelligence.job.batch",
                 {
-                    "battle_id": battle_hash,
-                    "system_id": system_id,
-                    "started_at": killmail_time,
-                    "ended_at": killmail_time,
+                    "job_name": "compute_battle_rollups",
+                    "batch_index": batch_count,
+                    "cursor_start": cursor_start if batch_count == 1 else None,
+                    "cursor_end": cursor_end,
+                    "source_rows": len(killmails),
+                    "battles_touched": len(touched_battles),
+                    "participants_touched": len(participant_rows),
+                    "rows_written": batch_written,
+                    "duration_ms": int((datetime.now(UTC) - batch_started).total_seconds() * 1000),
+                    "dry_run": dry_run,
                 },
             )
-            if killmail_time < battle["started_at"]:
-                battle["started_at"] = killmail_time
-            if killmail_time > battle["ended_at"]:
-                battle["ended_at"] = killmail_time
-
-            for role in (
-                (
-                    int(row.get("victim_character_id") or 0),
-                    int(row.get("victim_corporation_id") or 0),
-                    int(row.get("victim_alliance_id") or 0),
-                    int(row.get("victim_ship_type_id") or 0),
-                ),
-                (
-                    int(row.get("attacker_character_id") or 0),
-                    int(row.get("attacker_corporation_id") or 0),
-                    int(row.get("attacker_alliance_id") or 0),
-                    int(row.get("attacker_ship_type_id") or 0),
-                ),
-            ):
-                character_id, corporation_id, alliance_id, ship_type_id = role
-                if character_id <= 0:
-                    continue
-                participant_sets[battle_hash].add(character_id)
-                side_key = f"a:{alliance_id}" if alliance_id > 0 else (f"c:{corporation_id}" if corporation_id > 0 else "unknown")
-                key = (battle_hash, character_id)
-                current = participant_rows.setdefault(
-                    key,
-                    {
-                        "battle_id": battle_hash,
-                        "character_id": character_id,
-                        "corporation_id": corporation_id if corporation_id > 0 else None,
-                        "alliance_id": alliance_id if alliance_id > 0 else None,
-                        "side_key": side_key,
-                        "ship_type_id": ship_type_id if ship_type_id > 0 else None,
-                        "participation_count": 0,
-                    },
-                )
-                current["participation_count"] = int(current["participation_count"]) + 1
-
-        if not dry_run:
-            with db.transaction() as (_, cursor):
-                cursor.execute("DELETE FROM battle_participants")
-                cursor.execute("DELETE FROM battle_rollups")
-
-                for battle in battles.values():
-                    participants = len(participant_sets.get(str(battle["battle_id"]), set()))
-                    started = datetime.strptime(str(battle["started_at"]), "%Y-%m-%d %H:%M:%S")
-                    ended = datetime.strptime(str(battle["ended_at"]), "%Y-%m-%d %H:%M:%S")
-                    duration_seconds = max(1, int((ended - started).total_seconds()))
-                    cursor.execute(
-                        """
-                        INSERT INTO battle_rollups (
-                            battle_id, system_id, started_at, ended_at, duration_seconds,
-                            participant_count, eligible_for_suspicion, battle_size_class, computed_at
-                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-                        """,
-                        (
-                            str(battle["battle_id"]),
-                            int(battle["system_id"]),
-                            str(battle["started_at"]),
-                            str(battle["ended_at"]),
-                            duration_seconds,
-                            participants,
-                            1 if participants >= MIN_ELIGIBLE_PARTICIPANTS else 0,
-                            _battle_size_class(participants),
-                            computed_at,
-                        ),
-                    )
-                    rows_written += 1
-
-                role_rows = db.fetch_all(
-                    """
-                    SELECT
-                        rit.type_id,
-                        LOWER(COALESCE(rig.group_name, '')) AS group_name,
-                        LOWER(COALESCE(ric.category_name, '')) AS category_name
-                    FROM ref_item_types rit
-                    LEFT JOIN ref_item_groups rig ON rig.group_id = rit.group_id
-                    LEFT JOIN ref_item_categories ric ON ric.category_id = rit.category_id
-                    """
-                )
-                role_map: dict[int, tuple[int, int, int]] = {}
-                for role_row in role_rows:
-                    type_id = int(role_row.get("type_id") or 0)
-                    if type_id <= 0:
-                        continue
-                    group_name = str(role_row.get("group_name") or "")
-                    category_name = str(role_row.get("category_name") or "")
-                    is_logi = 1 if "logistics" in group_name else 0
-                    is_command = 1 if "command" in group_name else 0
-                    capital_groups = ["dreadnought", "carrier", "force auxiliary", "supercarrier", "titan", "capital"]
-                    is_capital = 1 if any(token in group_name for token in capital_groups) or "capital" in category_name else 0
-                    role_map[type_id] = (is_logi, is_command, is_capital)
-
-                for participant in participant_rows.values():
-                    ship_type_id = int(participant.get("ship_type_id") or 0)
-                    flags = role_map.get(ship_type_id, (0, 0, 0))
-                    cursor.execute(
-                        """
-                        INSERT INTO battle_participants (
-                            battle_id, character_id, corporation_id, alliance_id, side_key, ship_type_id,
-                            is_logi, is_command, is_capital, participation_count, computed_at
-                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                        """,
-                        (
-                            str(participant["battle_id"]),
-                            int(participant["character_id"]),
-                            participant.get("corporation_id"),
-                            participant.get("alliance_id"),
-                            str(participant["side_key"]),
-                            participant.get("ship_type_id"),
-                            int(flags[0]),
-                            int(flags[1]),
-                            int(flags[2]),
-                            int(participant.get("participation_count") or 0),
-                            computed_at,
-                        ),
-                    )
-                for battle_id_value, sequence_id in killmail_assignments:
-                    cursor.execute(
-                        "UPDATE killmail_events SET battle_id = %s WHERE sequence_id = %s",
-                        (battle_id_value, sequence_id),
-                    )
-        rows_written = len(battles) + len(participant_rows)
 
         finish_job_run(
             db,
@@ -357,15 +501,16 @@ def run_compute_battle_rollups(db: SupplyCoreDb, runtime: dict[str, Any] | None 
             status="success",
             rows_processed=rows_processed,
             rows_written=rows_written,
-            meta={"computed_at": computed_at, "battle_count": len(battles), "participant_rows": len(participant_rows)},
+            meta={"computed_at": computed_at, "batch_count": batch_count, "cursor_start": cursor_start, "cursor_end": cursor_end},
         )
         duration_ms = int((datetime.now(UTC) - started_monotonic).total_seconds() * 1000)
         result = {
             "rows_processed": rows_processed,
             "rows_written": 0 if dry_run else rows_written,
-            "rows_would_write": rows_written if dry_run else rows_written,
-            "battle_count": len(battles),
-            "eligible_battle_count": sum(1 for battle in battles.values() if len(participant_sets.get(str(battle["battle_id"]), set())) >= MIN_ELIGIBLE_PARTICIPANTS),
+            "rows_would_write": rows_written,
+            "batch_count": batch_count,
+            "cursor_start": cursor_start,
+            "cursor_end": cursor_end,
             "computed_at": computed_at,
             "duration_ms": duration_ms,
             "dry_run": dry_run,
@@ -375,6 +520,7 @@ def run_compute_battle_rollups(db: SupplyCoreDb, runtime: dict[str, Any] | None 
         _battle_log(runtime, "battle_intelligence.job.success", result)
         return result
     except Exception as exc:
+        _sync_state_cursor_upsert(db, SYNC_STATE_KEY_BATTLE_ROLLUPS_CURSOR, status="failed", last_cursor=cursor_end, last_row_count=0, error_text=str(exc))
         finish_job_run(db, job, status="failed", rows_processed=rows_processed, rows_written=rows_written, error_text=str(exc))
         _battle_log(
             runtime,
@@ -400,100 +546,154 @@ def run_compute_battle_target_metrics(db: SupplyCoreDb, runtime: dict[str, Any] 
     rows_written = 0
     computed_at = _now_sql()
     unscored_targets = 0
+    cursor_start = _sync_state_cursor_get(db, SYNC_STATE_KEY_BATTLE_TARGET_CURSOR)
+    cursor_end = cursor_start
+    batch_count = 0
+    _sync_state_cursor_upsert(db, SYNC_STATE_KEY_BATTLE_TARGET_CURSOR, status="running", last_cursor=cursor_start, last_row_count=0)
     _battle_log(runtime, "battle_intelligence.job.started", {"job_name": "compute_battle_target_metrics", "dry_run": dry_run, "computed_at": computed_at})
     try:
-        rows = db.fetch_all(
-            """
-            SELECT
-                br.battle_id,
-                br.started_at,
-                ke.killmail_id,
-                ke.effective_killmail_at AS killmail_time,
-                ke.victim_character_id,
-                ke.victim_ship_type_id,
-                ke.victim_alliance_id,
-                ke.victim_corporation_id,
-                JSON_UNQUOTE(JSON_EXTRACT(kep.raw_killmail_json, '$.victim.damage_taken')) AS victim_damage_taken
-            FROM battle_rollups br
-            INNER JOIN killmail_events ke
-                ON ke.solar_system_id = br.system_id
-               AND ke.effective_killmail_at BETWEEN br.started_at AND br.ended_at
-            LEFT JOIN killmail_event_payloads kep ON kep.sequence_id = ke.sequence_id
-            WHERE br.eligible_for_suspicion = 1
-            ORDER BY br.started_at DESC, ke.killmail_id ASC
-            """
-        )
-        rows_processed = len(rows)
-
-        prepared: list[dict[str, Any]] = []
-        baseline: dict[tuple[int, str], list[float]] = defaultdict(list)
-        for row in rows:
-            damage = float(row.get("victim_damage_taken") or 0.0)
-            started_at = datetime.strptime(str(row.get("started_at")), "%Y-%m-%d %H:%M:%S")
-            killmail_time = datetime.strptime(str(row.get("killmail_time")), "%Y-%m-%d %H:%M:%S")
-            ttd = max(1.0, (killmail_time - started_at).total_seconds())
-            dps = _safe_div(damage, ttd, 0.0)
-            ship_type_id = int(row.get("victim_ship_type_id") or 0)
-            bucket = _dps_bucket(dps)
-            if ship_type_id <= 0 or damage <= 0:
-                unscored_targets += 1
-                continue
-            baseline[(ship_type_id, bucket)].append(ttd)
-            prepared.append(
-                {
-                    "battle_id": str(row.get("battle_id")),
-                    "killmail_id": int(row.get("killmail_id") or 0),
-                    "victim_character_id": int(row.get("victim_character_id") or 0) or None,
-                    "victim_ship_type_id": ship_type_id,
-                    "side_key": f"a:{int(row.get('victim_alliance_id') or 0)}"
-                    if int(row.get("victim_alliance_id") or 0) > 0
-                    else (f"c:{int(row.get('victim_corporation_id') or 0)}" if int(row.get("victim_corporation_id") or 0) > 0 else "unknown"),
-                    "first_damage_ts": started_at.strftime("%Y-%m-%d %H:%M:%S"),
-                    "last_damage_ts": killmail_time.strftime("%Y-%m-%d %H:%M:%S"),
-                    "time_to_die_seconds": ttd,
-                    "total_damage_taken": damage,
-                    "estimated_incoming_dps": dps,
-                    "dps_bucket": bucket,
-                }
+        while True:
+            batch_started = datetime.now(UTC)
+            rows = db.fetch_all(
+                """
+                SELECT
+                    ke.sequence_id,
+                    br.battle_id,
+                    br.started_at,
+                    ke.killmail_id,
+                    ke.effective_killmail_at AS killmail_time,
+                    ke.victim_character_id,
+                    ke.victim_ship_type_id,
+                    ke.victim_alliance_id,
+                    ke.victim_corporation_id,
+                    JSON_UNQUOTE(JSON_EXTRACT(kep.raw_killmail_json, '$.victim.damage_taken')) AS victim_damage_taken
+                FROM killmail_events ke
+                INNER JOIN battle_rollups br ON br.battle_id = ke.battle_id
+                LEFT JOIN killmail_event_payloads kep ON kep.sequence_id = ke.sequence_id
+                WHERE ke.sequence_id > %s
+                  AND br.eligible_for_suspicion = 1
+                ORDER BY ke.sequence_id ASC
+                LIMIT %s
+                """,
+                (cursor_end, TARGET_METRICS_BATCH_SIZE),
             )
+            if not rows:
+                break
 
-        expected_ttd: dict[tuple[int, str], float] = {}
-        for key, values in baseline.items():
-            values_sorted = sorted(values)
-            expected_ttd[key] = values_sorted[len(values_sorted) // 2]
+            batch_count += 1
+            rows_processed += len(rows)
+            prepared: list[dict[str, Any]] = []
+            baseline: dict[tuple[int, str], list[float]] = defaultdict(list)
+            max_sequence_id = cursor_end
+            for row in rows:
+                sequence_id = int(row.get("sequence_id") or 0)
+                if sequence_id > 0:
+                    max_sequence_id = max(max_sequence_id, sequence_id)
+                damage_value = _maybe_float(row.get("victim_damage_taken"))
+                damage = max(0.0, float(damage_value or 0.0))
+                started_at = datetime.strptime(str(row.get("started_at")), "%Y-%m-%d %H:%M:%S")
+                killmail_time = datetime.strptime(str(row.get("killmail_time")), "%Y-%m-%d %H:%M:%S")
+                ttd = max(1.0, (killmail_time - started_at).total_seconds())
+                dps = _safe_div(damage, ttd, 0.0)
+                ship_type_id = int(row.get("victim_ship_type_id") or 0)
+                bucket = _dps_bucket(dps)
+                if ship_type_id <= 0 or damage <= 0:
+                    unscored_targets += 1
+                    continue
+                baseline[(ship_type_id, bucket)].append(ttd)
+                prepared.append(
+                    {
+                        "battle_id": str(row.get("battle_id")),
+                        "killmail_id": int(row.get("killmail_id") or 0),
+                        "victim_character_id": int(row.get("victim_character_id") or 0) or None,
+                        "victim_ship_type_id": ship_type_id,
+                        "side_key": f"a:{int(row.get('victim_alliance_id') or 0)}"
+                        if int(row.get("victim_alliance_id") or 0) > 0
+                        else (f"c:{int(row.get('victim_corporation_id') or 0)}" if int(row.get("victim_corporation_id") or 0) > 0 else "unknown"),
+                        "first_damage_ts": started_at.strftime("%Y-%m-%d %H:%M:%S"),
+                        "last_damage_ts": killmail_time.strftime("%Y-%m-%d %H:%M:%S"),
+                        "time_to_die_seconds": ttd,
+                        "total_damage_taken": damage,
+                        "estimated_incoming_dps": dps,
+                        "dps_bucket": bucket,
+                    }
+                )
 
-        if not dry_run:
-            with db.transaction() as (_, cursor):
-                cursor.execute("DELETE FROM battle_target_metrics")
-                for target in prepared:
-                    baseline_ttd = max(1.0, expected_ttd.get((int(target["victim_ship_type_id"]), str(target["dps_bucket"])), float(target["time_to_die_seconds"])))
-                    sustain_factor = max(0.05, min(8.0, _safe_div(float(target["time_to_die_seconds"]), baseline_ttd, 1.0)))
-                    cursor.execute(
-                        """
-                        INSERT INTO battle_target_metrics (
-                            battle_id, killmail_id, victim_character_id, victim_ship_type_id, side_key,
-                            first_damage_ts, last_damage_ts, time_to_die_seconds, total_damage_taken,
-                            estimated_incoming_dps, dps_bucket, expected_time_to_die_seconds, sustain_factor, computed_at
-                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                        """,
-                        (
-                            str(target["battle_id"]),
-                            int(target["killmail_id"]),
-                            target["victim_character_id"],
-                            int(target["victim_ship_type_id"]),
-                            str(target["side_key"]),
-                            str(target["first_damage_ts"]),
-                            str(target["last_damage_ts"]),
-                            float(target["time_to_die_seconds"]),
-                            float(target["total_damage_taken"]),
-                            float(target["estimated_incoming_dps"]),
-                            str(target["dps_bucket"]),
-                            float(baseline_ttd),
-                            float(sustain_factor),
-                            computed_at,
-                        ),
-                    )
-        rows_written = len(prepared)
+            expected_ttd: dict[tuple[int, str], float] = {}
+            for key, values in baseline.items():
+                values_sorted = sorted(values)
+                expected_ttd[key] = values_sorted[len(values_sorted) // 2]
+
+            batch_written = 0
+            if not dry_run:
+                with db.transaction() as (_, cursor):
+                    for target in prepared:
+                        baseline_ttd = max(1.0, expected_ttd.get((int(target["victim_ship_type_id"]), str(target["dps_bucket"])), float(target["time_to_die_seconds"])))
+                        sustain_factor = max(0.05, min(8.0, _safe_div(float(target["time_to_die_seconds"]), baseline_ttd, 1.0)))
+                        cursor.execute(
+                            """
+                            INSERT INTO battle_target_metrics (
+                                battle_id, killmail_id, victim_character_id, victim_ship_type_id, side_key,
+                                first_damage_ts, last_damage_ts, time_to_die_seconds, total_damage_taken,
+                                estimated_incoming_dps, dps_bucket, expected_time_to_die_seconds, sustain_factor, computed_at
+                            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                            ON DUPLICATE KEY UPDATE
+                                victim_character_id = VALUES(victim_character_id),
+                                victim_ship_type_id = VALUES(victim_ship_type_id),
+                                side_key = VALUES(side_key),
+                                first_damage_ts = VALUES(first_damage_ts),
+                                last_damage_ts = VALUES(last_damage_ts),
+                                time_to_die_seconds = VALUES(time_to_die_seconds),
+                                total_damage_taken = VALUES(total_damage_taken),
+                                estimated_incoming_dps = VALUES(estimated_incoming_dps),
+                                dps_bucket = VALUES(dps_bucket),
+                                expected_time_to_die_seconds = VALUES(expected_time_to_die_seconds),
+                                sustain_factor = VALUES(sustain_factor),
+                                computed_at = VALUES(computed_at)
+                            """,
+                            (
+                                str(target["battle_id"]),
+                                int(target["killmail_id"]),
+                                target["victim_character_id"],
+                                int(target["victim_ship_type_id"]),
+                                str(target["side_key"]),
+                                str(target["first_damage_ts"]),
+                                str(target["last_damage_ts"]),
+                                float(target["time_to_die_seconds"]),
+                                float(target["total_damage_taken"]),
+                                float(target["estimated_incoming_dps"]),
+                                str(target["dps_bucket"]),
+                                float(baseline_ttd),
+                                float(sustain_factor),
+                                computed_at,
+                            ),
+                        )
+                        batch_written += max(0, int(cursor.rowcount or 0))
+            cursor_end = max_sequence_id
+            rows_written += batch_written
+            _sync_state_cursor_upsert(
+                db,
+                SYNC_STATE_KEY_BATTLE_TARGET_CURSOR,
+                status="success",
+                last_cursor=cursor_end,
+                last_row_count=len(rows),
+            )
+            _battle_log(
+                runtime,
+                "battle_intelligence.job.batch",
+                {
+                    "job_name": "compute_battle_target_metrics",
+                    "batch_index": batch_count,
+                    "cursor_start": cursor_start if batch_count == 1 else None,
+                    "cursor_end": cursor_end,
+                    "source_rows": len(rows),
+                    "prepared_rows": len(prepared),
+                    "unscored_targets": unscored_targets,
+                    "rows_written": batch_written,
+                    "duration_ms": int((datetime.now(UTC) - batch_started).total_seconds() * 1000),
+                    "dry_run": dry_run,
+                },
+            )
 
         finish_job_run(
             db,
@@ -501,15 +701,18 @@ def run_compute_battle_target_metrics(db: SupplyCoreDb, runtime: dict[str, Any] 
             status="success",
             rows_processed=rows_processed,
             rows_written=rows_written,
-            meta={"computed_at": computed_at, "unscored_targets": unscored_targets},
+            meta={"computed_at": computed_at, "unscored_targets": unscored_targets, "batch_count": batch_count, "cursor_start": cursor_start, "cursor_end": cursor_end},
         )
         duration_ms = int((datetime.now(UTC) - started_monotonic).total_seconds() * 1000)
         result = {
             "rows_processed": rows_processed,
             "rows_written": 0 if dry_run else rows_written,
-            "rows_would_write": rows_written if dry_run else rows_written,
+            "rows_would_write": rows_written,
             "computed_at": computed_at,
             "unscored_targets": unscored_targets,
+            "batch_count": batch_count,
+            "cursor_start": cursor_start,
+            "cursor_end": cursor_end,
             "duration_ms": duration_ms,
             "dry_run": dry_run,
             "job_name": "compute_battle_target_metrics",
@@ -518,6 +721,7 @@ def run_compute_battle_target_metrics(db: SupplyCoreDb, runtime: dict[str, Any] 
         _battle_log(runtime, "battle_intelligence.job.success", result)
         return result
     except Exception as exc:
+        _sync_state_cursor_upsert(db, SYNC_STATE_KEY_BATTLE_TARGET_CURSOR, status="failed", last_cursor=cursor_end, last_row_count=0, error_text=str(exc))
         finish_job_run(db, job, status="failed", rows_processed=rows_processed, rows_written=rows_written, error_text=str(exc))
         _battle_log(runtime, "battle_intelligence.job.failed", {"job_name": "compute_battle_target_metrics", "status": "failed", "error_text": str(exc), "rows_processed": rows_processed, "rows_written": rows_written, "dry_run": dry_run})
         raise
