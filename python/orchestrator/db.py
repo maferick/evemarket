@@ -442,6 +442,86 @@ class SupplyCoreDb:
             (snapshot_key[:190], payload_json, metadata_json, max(60, expires_seconds)),
         )
 
+    def insert_ui_refresh_event(
+        self,
+        *,
+        job_key: str,
+        job_status: str,
+        domains_json: str | None = None,
+        ui_sections_json: str | None = None,
+        section_versions_json: str | None = None,
+    ) -> int:
+        return self.insert(
+            """INSERT INTO ui_refresh_events (
+                    event_type, event_key, job_key, job_status, finished_at,
+                    domains_json, ui_sections_json, section_versions_json
+                ) VALUES (
+                    'job_completed', %s, %s, %s, UTC_TIMESTAMP(), %s, %s, %s
+                )
+                ON DUPLICATE KEY UPDATE
+                    updated_at=CURRENT_TIMESTAMP,
+                    id=LAST_INSERT_ID(id),
+                    section_versions_json=COALESCE(VALUES(section_versions_json), section_versions_json)""",
+            (
+                f"worker_pool:{job_key}"[:190],
+                job_key[:190],
+                job_status[:40],
+                domains_json,
+                ui_sections_json,
+                section_versions_json,
+            ),
+        )
+
+    def bump_ui_refresh_section_versions(
+        self,
+        *,
+        version_keys: list[str],
+        job_key: str,
+        job_status: str,
+        event_id: int,
+    ) -> int:
+        bumped = 0
+        for version_key in version_keys:
+            bumped += self.execute(
+                """INSERT INTO ui_refresh_section_versions (
+                        section_key, version_counter, last_job_key, last_status, last_event_id, last_finished_at
+                    ) VALUES (%s, 1, %s, %s, %s, UTC_TIMESTAMP())
+                    ON DUPLICATE KEY UPDATE
+                        version_counter = version_counter + 1,
+                        last_job_key = VALUES(last_job_key),
+                        last_status = VALUES(last_status),
+                        last_event_id = VALUES(last_event_id),
+                        last_finished_at = VALUES(last_finished_at),
+                        updated_at = CURRENT_TIMESTAMP""",
+                (version_key[:190], job_key[:190], job_status[:40], event_id),
+            )
+        return bumped
+
+    def insert_sync_run(self, *, dataset_key: str, rows_seen: int, rows_written: int, status: str, error: str | None = None) -> int:
+        return self.insert(
+            """INSERT INTO sync_runs (dataset_key, run_mode, run_status, started_at, finished_at, cursor_start, cursor_end, rows_seen, rows_written, error_message)
+               VALUES (%s, 'incremental', %s, UTC_TIMESTAMP(), UTC_TIMESTAMP(), NULL, NULL, %s, %s, %s)""",
+            (dataset_key[:190], status[:20], max(0, rows_seen), max(0, rows_written), error[:500] if error else None),
+        )
+
+    def insert_scheduler_job_event(self, *, job_key: str, event_type: str, payload_json: str, duration_seconds: float) -> int:
+        return self.insert(
+            """INSERT INTO scheduler_job_events (job_key, event_type, payload_json, rows_written, duration_seconds)
+               VALUES (%s, %s, %s, 0, %s)""",
+            (job_key[:120], event_type[:40], payload_json, round(duration_seconds, 2)),
+        )
+
+    def update_sync_schedule_status(self, *, job_key: str, status: str, snapshot_json: str) -> int:
+        return self.execute(
+            """UPDATE sync_schedules
+               SET last_status = %s,
+                   last_run_at = UTC_TIMESTAMP(),
+                   locked_until = NULL,
+                   runtime_snapshot_json = %s
+               WHERE job_key = %s AND execution_mode = 'python'""",
+            (status[:20], snapshot_json, job_key[:120]),
+        )
+
     def refresh_market_order_current_projection(self, *, source_type: str) -> dict[str, int]:
         rows_processed = self.fetch_scalar(
             "SELECT COUNT(*) AS c FROM market_orders_current WHERE source_type = %s",

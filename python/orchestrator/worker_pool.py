@@ -12,6 +12,9 @@ from typing import Any
 
 import pymysql
 
+import zipfile
+from datetime import datetime, timedelta, timezone
+
 from .config import load_php_runtime_config
 from .db import SupplyCoreDb
 from .job_result import JobResult
@@ -20,6 +23,196 @@ from .logging_utils import LoggerAdapter, configure_logging
 from .processor_registry import audit_enabled_python_jobs, run_registered_processor
 from .worker_registry import WORKER_JOB_DEFINITIONS
 from .worker_runtime import resident_memory_bytes, utc_now_iso
+
+
+# Maps job keys to the UI refresh domains/sections/version_keys they affect.
+# Must stay in sync with supplycore_ui_refresh_job_domain_map() in PHP.
+_UI_REFRESH_JOB_MAP: dict[str, dict[str, list[str]]] = {
+    "killmail_r2z2_sync": {
+        "domains": ["doctrine_activity", "loss_aware_views", "activity_priority", "killmail_overview"],
+        "ui_sections": ["activity-doctrines", "activity-sidebar", "activity-items", "doctrine-fit-history", "killmail-overview-summary", "killmail-overview-status", "killmail-overview-table"],
+        "version_keys": ["killmail_activity_version", "activity_priority_version", "killmail_overview_version"],
+    },
+    "alliance_current_sync": {
+        "domains": ["alliance_stock", "doctrine_readiness", "fit_availability", "buyall"],
+        "ui_sections": ["dashboard-queues", "buyall-overview", "buyall-results", "doctrine-fit-items", "current-alliance-main"],
+        "version_keys": ["alliance_stock_version", "buyall_version"],
+    },
+    "market_hub_current_sync": {
+        "domains": ["market_prices", "opportunity_queue", "risk_queue", "buyall"],
+        "ui_sections": ["dashboard-queues", "buyall-overview", "buyall-results", "reference-comparison-main", "missing-items-main", "price-deviations-main"],
+        "version_keys": ["market_prices_version", "buyall_version"],
+    },
+    "dashboard_summary_sync": {
+        "domains": ["dashboard"],
+        "ui_sections": ["page-freshness", "dashboard-kpis", "dashboard-buyall", "dashboard-doctrine", "dashboard-queues"],
+        "version_keys": ["dashboard_summary_version"],
+    },
+    "doctrine_intelligence_sync": {
+        "domains": ["doctrine_readiness", "doctrine_details", "fit_availability", "bottlenecks"],
+        "ui_sections": ["dashboard-doctrine", "buyall-overview", "buyall-results", "activity-doctrines", "activity-sidebar", "doctrine-fit-summary", "doctrine-fit-history", "doctrine-fit-items", "doctrine-index-main", "doctrine-group-main"],
+        "version_keys": ["doctrine_readiness_version", "buyall_version"],
+    },
+    "market_comparison_summary_sync": {
+        "domains": ["market_comparison", "overlap", "pricing_summaries", "buyall", "dashboard"],
+        "ui_sections": ["dashboard-queues", "dashboard-kpis", "dashboard-buyall", "current-alliance-main", "reference-comparison-main", "missing-items-main", "price-deviations-main", "buyall-results"],
+        "version_keys": ["market_comparison_version", "buyall_version", "dashboard_summary_version"],
+    },
+    "loss_demand_summary_sync": {
+        "domains": ["loss_aware_views", "dashboard"],
+        "ui_sections": ["dashboard-queues"],
+        "version_keys": ["loss_demand_version", "dashboard_summary_version"],
+    },
+    "activity_priority_summary_sync": {
+        "domains": ["activity_priority", "doctrine_activity"],
+        "ui_sections": ["activity-summary", "activity-doctrines", "activity-sidebar", "activity-items", "dashboard-doctrine"],
+        "version_keys": ["activity_priority_version"],
+    },
+    "current_state_refresh_sync": {
+        "domains": ["dashboard", "market_comparison", "loss_aware_views"],
+        "ui_sections": ["page-freshness", "dashboard-kpis", "dashboard-buyall", "dashboard-doctrine", "dashboard-queues", "current-alliance-main", "reference-comparison-main", "missing-items-main", "price-deviations-main"],
+        "version_keys": ["dashboard_summary_version", "market_comparison_version", "loss_demand_version"],
+    },
+    "deal_alerts_sync": {
+        "domains": ["dashboard", "deal_alerts"],
+        "ui_sections": ["dashboard-queues", "deal-alerts-summary", "deal-alerts-status", "deal-alerts-table"],
+        "version_keys": ["deal_alerts_version", "dashboard_summary_version"],
+    },
+    "compute_buy_all": {
+        "domains": ["buyall", "dashboard"],
+        "ui_sections": ["dashboard-buyall", "buyall-overview", "buyall-results"],
+        "version_keys": ["buyall_version", "dashboard_summary_version"],
+    },
+}
+
+
+class _JobLogWriter:
+    """Per-job log writer for worker pool jobs. Writes to storage/logs/sync-jobs/{job_key}.log."""
+
+    def __init__(self, app_root: Path, job_key: str) -> None:
+        safe_job = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in job_key).strip("_") or "unknown_job"
+        self._job_key = safe_job
+        self._log_dir = app_root / "storage" / "logs" / "sync-jobs"
+        self._log_path = self._log_dir / f"{safe_job}.log"
+        self._log_dir.mkdir(parents=True, exist_ok=True)
+        self._rotate_if_stale()
+
+    def write_line(self, line: str) -> None:
+        with self._log_path.open("a", encoding="utf-8") as handle:
+            handle.write(line.rstrip("\n") + "\n")
+
+    def write_event(self, event: str, payload: dict[str, Any]) -> None:
+        line = json_dumps_safe({"event": event, "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), **payload})
+        self.write_line(line)
+
+    def _rotate_if_stale(self) -> None:
+        if not self._log_path.exists() or self._log_path.stat().st_size == 0:
+            return
+        mtime = datetime.fromtimestamp(self._log_path.stat().st_mtime, tz=timezone.utc)
+        if mtime.date() >= datetime.now(tz=timezone.utc).date():
+            return
+        archive_day = datetime.combine(mtime.date(), datetime.min.time(), tzinfo=timezone.utc)
+        archive_path = self._log_dir / f"{self._job_key}-{archive_day.strftime('%Y-%m-%d')}.zip"
+        entry_name = f"{self._job_key}-{archive_day.strftime('%Y-%m-%d')}.log"
+        try:
+            with zipfile.ZipFile(archive_path, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
+                zf.write(self._log_path, arcname=entry_name)
+            self._log_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        cutoff = datetime.now(tz=timezone.utc).date() - timedelta(days=2)
+        for old_archive in self._log_dir.glob(f"{self._job_key}-*.zip"):
+            stamp = old_archive.stem.removeprefix(f"{self._job_key}-")
+            try:
+                if datetime.strptime(stamp, "%Y-%m-%d").date() < cutoff:
+                    old_archive.unlink(missing_ok=True)
+            except ValueError:
+                pass
+
+
+def _finalize_job(db: SupplyCoreDb, job_key: str, result: dict[str, Any], logger: LoggerAdapter) -> None:
+    """Post-job side effects: sync_state, sync_runs, UI refresh events, scheduler status."""
+    status = str(result.get("status") or "success")
+    rows_seen = max(0, int(result.get("rows_seen") or result.get("rows_processed") or 0))
+    rows_written = max(0, int(result.get("rows_written") or 0))
+    duration_ms = max(0, int(result.get("duration_ms") or 0))
+    error_text = str(result.get("error") or "") if status == "failed" else None
+
+    dataset_key = f"scheduler.job.{job_key}"
+    try:
+        db.upsert_sync_state(
+            dataset_key=dataset_key,
+            status=status,
+            row_count=rows_written,
+            checksum=result.get("checksum"),
+            cursor=str(result.get("cursor") or "") or None,
+            error_message=error_text,
+        )
+    except Exception as exc:
+        logger.warning("sync_state upsert failed", payload={"event": "worker_pool.finalize.sync_state_error", "job_key": job_key, "error": str(exc)})
+
+    try:
+        db.insert_sync_run(
+            dataset_key=dataset_key,
+            rows_seen=rows_seen,
+            rows_written=rows_written,
+            status=status,
+            error=error_text,
+        )
+    except Exception as exc:
+        logger.warning("sync_run insert failed", payload={"event": "worker_pool.finalize.sync_run_error", "job_key": job_key, "error": str(exc)})
+
+    try:
+        db.insert_scheduler_job_event(
+            job_key=job_key,
+            event_type="finished" if status != "failed" else "failure",
+            payload_json=json_dumps_safe({
+                "status": status,
+                "execution_mode": "python",
+                "rows_seen": rows_seen,
+                "rows_written": rows_written,
+                "summary": str(result.get("summary") or ""),
+            }),
+            duration_seconds=duration_ms / 1000.0,
+        )
+    except Exception as exc:
+        logger.warning("scheduler_job_event insert failed", payload={"event": "worker_pool.finalize.event_error", "job_key": job_key, "error": str(exc)})
+
+    try:
+        db.update_sync_schedule_status(
+            job_key=job_key,
+            status=status,
+            snapshot_json=json_dumps_safe({
+                "last_status": status,
+                "last_duration_seconds": round(duration_ms / 1000.0, 2),
+                "rows_written": rows_written,
+                "execution_mode": "python",
+            }),
+        )
+    except Exception as exc:
+        logger.warning("sync_schedule status update failed", payload={"event": "worker_pool.finalize.schedule_error", "job_key": job_key, "error": str(exc)})
+
+    mapping = _UI_REFRESH_JOB_MAP.get(job_key)
+    if mapping and status in ("success", "skipped"):
+        try:
+            domains = mapping.get("domains", [])
+            ui_sections = mapping.get("ui_sections", [])
+            version_keys = mapping.get("version_keys", [])
+            event_id = db.insert_ui_refresh_event(
+                job_key=job_key,
+                job_status=status,
+                domains_json=json_dumps_safe(domains),
+                ui_sections_json=json_dumps_safe(ui_sections),
+            )
+            if version_keys:
+                db.bump_ui_refresh_section_versions(
+                    version_keys=version_keys,
+                    job_key=job_key,
+                    job_status=status,
+                    event_id=event_id,
+                )
+        except Exception as exc:
+            logger.warning("ui_refresh publish failed", payload={"event": "worker_pool.finalize.ui_refresh_error", "job_key": job_key, "error": str(exc)})
 
 
 @dataclass(slots=True)
@@ -208,13 +401,18 @@ def main(argv: list[str] | None = None) -> int:
             db=db,
         )
 
+        job_log = _JobLogWriter(app_root, context.job_key)
         stop_event = threading.Event()
         heartbeat = HeartbeatThread(db, worker_id, int(job.get("id") or 0), lease_seconds, stop_event)
         heartbeat.start()
         try:
+            job_log.write_event("worker_pool.job_started", {"worker_id": worker_id, "job_id": int(job.get("id") or 0), "job_key": context.job_key})
             result = _process_job(context)
             db.complete_worker_job(int(job.get("id") or 0), worker_id, result)
-            logger.info("worker job completed", payload={"event": "worker_pool.job_completed", "worker_id": worker_id, "job_id": int(job.get("id") or 0), "job_key": context.job_key, "status": result.get("status", "success"), "execution_language": "python", "subprocess_invoked": False, "duration_ms": result.get("duration_ms", 0), "rows_processed": result.get("rows_processed", 0), "rows_written": result.get("rows_written", 0)})
+            completed_payload = {"event": "worker_pool.job_completed", "worker_id": worker_id, "job_id": int(job.get("id") or 0), "job_key": context.job_key, "status": result.get("status", "success"), "execution_language": "python", "subprocess_invoked": False, "duration_ms": result.get("duration_ms", 0), "rows_processed": result.get("rows_processed", 0), "rows_written": result.get("rows_written", 0)}
+            logger.info("worker job completed", payload=completed_payload)
+            job_log.write_event("worker_pool.job_completed", completed_payload)
+            _finalize_job(db, context.job_key, result, logger)
         except Exception as error:  # noqa: BLE001
             fail_result = JobResult.failed(
                 job_key=context.job_key,
@@ -222,7 +420,10 @@ def main(argv: list[str] | None = None) -> int:
                 meta={"execution_language": "python", "subprocess_invoked": False},
             ).to_dict()
             db.retry_worker_job(int(job.get("id") or 0), worker_id, str(error), retry_backoff, fail_result)
-            logger.warning("worker job failed", payload={"event": "worker_pool.job_failed", "worker_id": worker_id, "job_id": int(job.get("id") or 0), "job_key": context.job_key, "error": str(error)})
+            failed_payload = {"event": "worker_pool.job_failed", "worker_id": worker_id, "job_id": int(job.get("id") or 0), "job_key": context.job_key, "error": str(error)}
+            logger.warning("worker job failed", payload=failed_payload)
+            job_log.write_event("worker_pool.job_failed", failed_payload)
+            _finalize_job(db, context.job_key, fail_result, logger)
             if args.once:
                 return 1
         finally:

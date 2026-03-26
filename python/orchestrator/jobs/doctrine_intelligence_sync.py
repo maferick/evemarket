@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from ..db import SupplyCoreDb
+from ..json_utils import json_dumps_safe
 from .sync_runtime import run_sync_phase_job
 
 
@@ -55,12 +56,53 @@ def _processor(db: SupplyCoreDb) -> dict[str, object]:
                 target_fits = VALUES(target_fits), fit_gap = VALUES(fit_gap), readiness_state = VALUES(readiness_state),
                 resupply_pressure = VALUES(resupply_pressure), priority_score = VALUES(priority_score)"""
     )
+    rows_written = stock_written + fit_written
+
+    # Build a lightweight readiness summary for the intelligence_snapshots table
+    # so the freshness system can track this job's output.
+    fit_summaries = db.fetch_all(
+        """SELECT f.id AS fit_id, f.fit_name, fa.readiness_state, fa.resupply_pressure,
+                  fa.complete_fits_available, fa.target_fits, fa.fit_gap, fa.priority_score
+           FROM doctrine_fit_activity_1d fa
+           JOIN doctrine_fits f ON f.id = fa.fit_id
+           WHERE fa.bucket_start = CURDATE() AND f.is_active = 1
+           ORDER BY fa.priority_score DESC
+           LIMIT 200"""
+    )
+    snapshot_payload = {
+        "fits": [
+            {
+                "fit_id": int(r.get("fit_id") or 0),
+                "fit_name": str(r.get("fit_name") or ""),
+                "readiness_state": str(r.get("readiness_state") or ""),
+                "resupply_pressure": str(r.get("resupply_pressure") or ""),
+                "complete_fits_available": int(r.get("complete_fits_available") or 0),
+                "target_fits": int(r.get("target_fits") or 0),
+                "fit_gap": int(r.get("fit_gap") or 0),
+                "priority_score": float(r.get("priority_score") or 0),
+            }
+            for r in fit_summaries
+        ],
+        "total_active_fits": rows_processed,
+        "rows_written": rows_written,
+    }
+    db.upsert_intelligence_snapshot(
+        snapshot_key="doctrine_fit_intelligence",
+        payload_json=json_dumps_safe(snapshot_payload),
+        metadata_json=json_dumps_safe({
+            "source": "doctrine_item_stock_1d+doctrine_fit_activity_1d",
+            "reason": "scheduler:python",
+            "fit_count": len(fit_summaries),
+        }),
+        expires_seconds=900,
+    )
+
     return {
         "rows_processed": rows_processed,
-        "rows_written": stock_written + fit_written,
+        "rows_written": rows_written,
         "warnings": [] if rows_processed > 0 else ["No active doctrine fits found while building doctrine intelligence."],
-        "summary": f"Updated doctrine intelligence stock/activity rows ({stock_written + fit_written} upserts).",
-        "meta": {"bucket_start": "CURDATE"},
+        "summary": f"Updated doctrine intelligence stock/activity rows ({rows_written} upserts).",
+        "meta": {"bucket_start": "CURDATE", "snapshot_key": "doctrine_fit_intelligence"},
     }
 
 

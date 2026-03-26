@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from ..db import SupplyCoreDb
+from ..json_utils import json_dumps_safe
 from .sync_runtime import run_sync_phase_job
 
 
@@ -45,12 +46,49 @@ def _processor(db: SupplyCoreDb) -> dict[str, object]:
                 resupply_pressure_state = VALUES(resupply_pressure_state), resupply_pressure = VALUES(resupply_pressure),
                 readiness_gap_count = VALUES(readiness_gap_count), explanation_text = VALUES(explanation_text)"""
     )
+    # Build a lightweight summary for the intelligence_snapshots table
+    # so the freshness system can track this job's output.
+    top_fits = db.fetch_all(
+        """SELECT das.entity_id AS fit_id, das.entity_name, das.activity_score, das.activity_level,
+                  das.readiness_state, das.resupply_pressure, das.readiness_gap_count, das.rank_position
+           FROM doctrine_activity_snapshots das
+           WHERE das.entity_type = 'fit'
+           ORDER BY das.activity_score DESC
+           LIMIT 100"""
+    )
+    snapshot_payload = {
+        "active_doctrines": [
+            {
+                "fit_id": int(r.get("fit_id") or 0),
+                "entity_name": str(r.get("entity_name") or ""),
+                "activity_score": float(r.get("activity_score") or 0),
+                "activity_level": str(r.get("activity_level") or "low"),
+                "readiness_state": str(r.get("readiness_state") or ""),
+                "resupply_pressure": str(r.get("resupply_pressure") or ""),
+                "readiness_gap_count": int(r.get("readiness_gap_count") or 0),
+                "rank_position": int(r.get("rank_position") or 0),
+            }
+            for r in top_fits
+        ],
+        "total_rows": rows_written,
+    }
+    db.upsert_intelligence_snapshot(
+        snapshot_key="activity_priority_summaries",
+        payload_json=json_dumps_safe(snapshot_payload),
+        metadata_json=json_dumps_safe({
+            "source": "doctrine_activity_snapshots",
+            "reason": "scheduler:python",
+            "row_count": len(top_fits),
+        }),
+        expires_seconds=900,
+    )
+
     return {
         "rows_processed": rows_processed,
         "rows_written": rows_written,
         "warnings": [] if rows_processed > 0 else ["No doctrine fit activity rows available for today."],
         "summary": f"Refreshed doctrine activity snapshots with {rows_written} upserts.",
-        "meta": {"entity_type": "fit"},
+        "meta": {"entity_type": "fit", "snapshot_key": "activity_priority_summaries"},
     }
 
 
