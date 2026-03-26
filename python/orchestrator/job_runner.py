@@ -212,10 +212,8 @@ def process_job(context: PythonWorkerContext) -> dict[str, Any]:
     elif processor is None:
         if context.job_key in PHP_BRIDGED_JOB_KEYS:
             result = _run_php_fallback(context, bridge)
-        elif not bool(context.scheduler_config.get("python_php_fallback_enabled", True)):
-            raise RuntimeError(f"No Python processor is registered for job {context.job_key} and PHP fallback is disabled.")
         else:
-            result = _run_php_fallback(context, bridge)
+            raise RuntimeError(f"No Python processor is registered for job {context.job_key}.")
     else:
         result = processor(context)
 

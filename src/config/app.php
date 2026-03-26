@@ -58,8 +58,6 @@ return [
         'supervisor_mode' => 'php',
         'systemd_service' => 'supplycore-scheduler.service',
         'python_service_name' => 'supplycore-orchestrator.service',
-        'python_heavy_jobs_enabled' => true,
-        'python_php_fallback_enabled' => true,
     ],
     'orchestrator' => [
         'heartbeat_file' => 'storage/run/orchestrator-heartbeat.json',

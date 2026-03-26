@@ -226,6 +226,41 @@ After import, runtime settings are read from `app_settings`; `local.php` is not 
 
 SupplyCore no longer relies on cron for execution. `bin/cron_tick.php` is intentionally disabled and only prints a deprecation notice so operators can detect stale cron-based deployments safely.
 
+### Operator utility scripts
+
+- `scripts/test-all-sync-jobs.sh`
+  - Runs the real Python sync/data jobs through the CLI `run-job` entrypoint.
+  - Reports per-job success/failure/skip, duration, and exit code.
+  - Default mode is safety-first and skips jobs that do not expose a dry-run interface.
+  - Use `--allow-live` to execute non-dry-run jobs directly.
+  - Supports `--app-root` and `--python-bin`.
+- `scripts/update-and-restart.sh`
+  - Performs `git fetch --all --prune` + `git pull --ff-only`.
+  - Optional flags:
+    - `--refresh-deps` to run `pip install --upgrade ./python`
+    - `--clear-cache` to clear `storage/cache/*`
+  - Restarts worker/orchestrator services and prints post-restart status.
+  - Supports `--dry-run` and `--verbose` for safe planning.
+
+#### Real sync/data jobs in scope
+
+- `market_hub_current_sync`
+- `alliance_current_sync`
+- `market_hub_historical_sync`
+- `alliance_historical_sync`
+- `current_state_refresh_sync`
+- `market_hub_local_history_sync`
+- `doctrine_intelligence_sync`
+- `market_comparison_summary_sync`
+- `loss_demand_summary_sync`
+- `dashboard_summary_sync`
+- `rebuild_ai_briefings`
+- `forecasting_ai_sync`
+- `activity_priority_summary_sync`
+- `analytics_bucket_1h_sync`
+- `analytics_bucket_1d_sync`
+- `deal_alerts_sync`
+
 ### Continuous worker model
 
 SupplyCore now runs three long-lived worker classes:

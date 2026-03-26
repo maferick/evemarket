@@ -4476,16 +4476,6 @@ function scheduler_runtime_guard(float $startedAtUnix, int $timeoutSeconds, stri
     }
 }
 
-function scheduler_python_heavy_jobs_enabled(): bool
-{
-    return (bool) config('scheduler.python_heavy_jobs_enabled', true);
-}
-
-function scheduler_python_php_fallback_enabled(): bool
-{
-    return (bool) config('scheduler.python_php_fallback_enabled', true);
-}
-
 function scheduler_job_execution_mode(array $job, ?array $definition = null): string
 {
     $jobKey = trim((string) ($job['job_key'] ?? ''));

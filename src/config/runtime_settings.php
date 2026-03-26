@@ -65,8 +65,6 @@ return [
         'fields' => [
             'scheduler.default_timeout_seconds' => ['type' => 'int', 'default' => 300, 'editable' => true, 'sensitive' => false, 'env_only' => false, 'database_backed' => true],
             'scheduler.supervisor_mode' => ['type' => 'string', 'default' => 'php', 'editable' => true, 'sensitive' => false, 'env_only' => false, 'database_backed' => true],
-            'scheduler.python_heavy_jobs_enabled' => ['type' => 'bool', 'default' => true, 'editable' => true, 'sensitive' => false, 'env_only' => false, 'database_backed' => true],
-            'scheduler.python_php_fallback_enabled' => ['type' => 'bool', 'default' => true, 'editable' => true, 'sensitive' => false, 'env_only' => false, 'database_backed' => true],
         ],
     ],
     'workers' => [
