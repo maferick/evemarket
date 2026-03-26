@@ -4,13 +4,40 @@ set -Eeuo pipefail
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 APP_ROOT_DEFAULT=$(cd -- "${SCRIPT_DIR}/.." && pwd)
 APP_ROOT=${APP_ROOT:-${APP_ROOT_DEFAULT}}
+SYSTEMD_DIR="/etc/systemd/system"
 DRY_RUN=0
 VERBOSE=0
 REFRESH_DEPS=0
 CLEAR_CACHE=0
 RUN_MIGRATIONS=1
+SYNC_UNITS=1
 BRANCH=""
 EXPLICIT_SERVICES=()
+
+# Services that should always be installed if not already present.
+# The orchestrator and legacy worker@ are opt-in only (installed via
+# install-services.sh) — they are NOT auto-installed here.
+CORE_UNITS=(
+  supplycore-sync-worker.service
+  supplycore-sync-worker@.service
+  supplycore-compute-worker.service
+  supplycore-compute-worker@.service
+  supplycore-zkill.service
+  supplycore-influx-rollup-export.service
+  supplycore-influx-rollup-export.timer
+)
+
+# Units that are opt-in only — update if already installed, but don't install.
+OPTIN_UNITS=(
+  supplycore-orchestrator.service
+  supplycore-worker@.service
+)
+
+# Known stale units that should be stopped, disabled, and removed.
+STALE_UNITS=(
+  supplycore-php-compute-worker.service
+  supplycore-php-compute-worker@.service
+)
 
 usage() {
   cat <<USAGE
@@ -23,13 +50,17 @@ Options:
   --clear-cache          Clear runtime cache files under storage/cache
   --service NAME         Restart only these services (repeatable; overrides auto-discovery)
   --no-migrations        Skip running database migrations
+  --no-sync-units        Skip syncing systemd unit files from ops/systemd/
   --dry-run              Print actions without executing mutating commands
   --verbose              Print each command before executing
   -h, --help             Show this help
 
-When no --service flags are given the script auto-discovers all active
-supplycore-* systemd units (including templated instances like
-supplycore-sync-worker@1.service) and restarts them.
+This script:
+  1. Pulls the latest code from git
+  2. Syncs systemd unit files from ops/systemd/ to ${SYSTEMD_DIR}
+  3. Removes known stale service units
+  4. Runs database migrations
+  5. Restarts all active supplycore-* services
 USAGE
 }
 
@@ -74,6 +105,10 @@ parse_args() {
         RUN_MIGRATIONS=0
         shift
         ;;
+      --no-sync-units)
+        SYNC_UNITS=0
+        shift
+        ;;
       --dry-run)
         DRY_RUN=1
         shift
@@ -95,19 +130,81 @@ parse_args() {
   done
 }
 
+sync_systemd_units() {
+  local src_dir="${APP_ROOT}/ops/systemd"
+  if [[ ! -d "${src_dir}" ]]; then
+    log "No ops/systemd directory found; skipping unit sync."
+    return 0
+  fi
+
+  log "Syncing systemd unit files"
+
+  # Always install/update core units
+  for unit in "${CORE_UNITS[@]}"; do
+    local src="${src_dir}/${unit}"
+    local dest="${SYSTEMD_DIR}/${unit}"
+    if [[ ! -f "${src}" ]]; then
+      continue
+    fi
+    if [[ -f "${dest}" ]] && cmp -s "${src}" "${dest}"; then
+      continue  # already up to date
+    fi
+    log "Installing ${unit}"
+    run_cmd cp "${src}" "${dest}"
+  done
+
+  # Update opt-in units only if already installed
+  for unit in "${OPTIN_UNITS[@]}"; do
+    local src="${src_dir}/${unit}"
+    local dest="${SYSTEMD_DIR}/${unit}"
+    if [[ ! -f "${dest}" ]]; then
+      continue  # not installed, skip
+    fi
+    if [[ ! -f "${src}" ]]; then
+      continue
+    fi
+    if cmp -s "${src}" "${dest}"; then
+      continue  # already up to date
+    fi
+    log "Updating opt-in unit ${unit}"
+    run_cmd cp "${src}" "${dest}"
+  done
+
+  # Remove known stale units
+  for unit in "${STALE_UNITS[@]}"; do
+    local dest="${SYSTEMD_DIR}/${unit}"
+    if [[ ! -f "${dest}" ]]; then
+      continue
+    fi
+    log "Removing stale unit ${unit}"
+    run_cmd systemctl stop "${unit}" 2>/dev/null || true
+    run_cmd systemctl disable "${unit}" 2>/dev/null || true
+    run_cmd rm -f "${dest}"
+  done
+
+  # Also clean up any stale templated instances of stale units
+  for unit in "${STALE_UNITS[@]}"; do
+    local base_name="${unit%.service}"
+    while IFS= read -r instance; do
+      [[ -z "${instance}" ]] && continue
+      log "Stopping stale instance ${instance}"
+      run_cmd systemctl stop "${instance}" 2>/dev/null || true
+      run_cmd systemctl disable "${instance}" 2>/dev/null || true
+    done < <(systemctl list-units --type=service --no-legend --plain 2>/dev/null \
+      | awk '{print $1}' \
+      | grep -E "^${base_name}@" \
+      || true)
+  done
+}
+
 discover_services() {
-  # Auto-discover supplycore-* services and timers that are actually loaded
-  # and not in a "not-found" state.  Filters out template definitions
-  # (e.g. supplycore-sync-worker@.service) — only concrete instances are
-  # restarted.  Uses list-unit-files for installed units and list-units for
-  # running instances to catch both enabled and active-but-not-enabled units.
+  # Auto-discover supplycore-* services and timers that are actually loaded.
+  # Skips template definitions (@.service) and not-found/masked units.
   local -a discovered=()
   local unit load_state
 
-  # Running / loaded service instances (catches templated instances like @1)
   while IFS= read -r unit load_state; do
     [[ -z "${unit}" ]] && continue
-    # Skip template definitions and not-found/masked units
     [[ "${unit}" == *'@.service' ]] && continue
     [[ "${load_state}" == "not-found" ]] && continue
     [[ "${load_state}" == "masked" ]] && continue
@@ -116,7 +213,6 @@ discover_services() {
     | awk '/^supplycore-/ {print $1, $2}' \
     || true)
 
-  # Active timers
   while IFS= read -r unit load_state; do
     [[ -z "${unit}" ]] && continue
     [[ "${load_state}" == "not-found" ]] && continue
@@ -161,7 +257,7 @@ if ! command -v systemctl >/dev/null 2>&1; then
 fi
 
 log "Starting update-and-restart"
-log "app_root=${APP_ROOT} dry_run=${DRY_RUN} refresh_deps=${REFRESH_DEPS} clear_cache=${CLEAR_CACHE} run_migrations=${RUN_MIGRATIONS}"
+log "app_root=${APP_ROOT} dry_run=${DRY_RUN} refresh_deps=${REFRESH_DEPS} clear_cache=${CLEAR_CACHE} run_migrations=${RUN_MIGRATIONS} sync_units=${SYNC_UNITS}"
 
 cd "${APP_ROOT}"
 
@@ -187,6 +283,11 @@ if [[ ${CLEAR_CACHE} -eq 1 ]]; then
   run_cmd bash -lc "rm -rf '${APP_ROOT}/storage/cache/'*"
 fi
 
+# ------- Sync systemd units -------
+if [[ ${SYNC_UNITS} -eq 1 ]]; then
+  sync_systemd_units
+fi
+
 # ------- Database migrations -------
 if [[ ${RUN_MIGRATIONS} -eq 1 ]]; then
   run_migrations
@@ -197,11 +298,9 @@ run_cmd systemctl daemon-reload
 
 RESTART_SERVICES=()
 if [[ ${#EXPLICIT_SERVICES[@]} -gt 0 ]]; then
-  # User explicitly specified services — use only those
   RESTART_SERVICES=("${EXPLICIT_SERVICES[@]}")
   log "Using ${#RESTART_SERVICES[@]} explicitly specified service(s)"
 else
-  # Auto-discover all active supplycore-* units
   while IFS= read -r svc; do
     [[ -n "${svc}" ]] && RESTART_SERVICES+=("${svc}")
   done < <(discover_services)
@@ -214,7 +313,7 @@ fi
 
 for svc in "${RESTART_SERVICES[@]}"; do
   log "Restarting ${svc}"
-  run_cmd systemctl restart "${svc}" || log "WARNING: failed to restart ${svc} (may not be installed)"
+  run_cmd systemctl restart "${svc}" || log "WARNING: failed to restart ${svc}"
 done
 
 log "Post-restart status checks"
