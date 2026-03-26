@@ -385,6 +385,251 @@ class SupplyCoreDb:
             (next_status, next_status, delay, error[:500], json_dumps_safe(result), job_id, worker_id[:190]),
         )
 
+    def fetch_scalar(self, sql: str, params: Sequence[Any] | None = None, *, default: int = 0) -> int:
+        row = self.fetch_one(sql, params)
+        if not row:
+            return default
+        first = next(iter(row.values()), default)
+        return int(first or 0)
+
+    def upsert_sync_state(
+        self,
+        *,
+        dataset_key: str,
+        status: str,
+        row_count: int,
+        checksum: str | None = None,
+        cursor: str | None = None,
+        error_message: str | None = None,
+    ) -> int:
+        return self.execute(
+            """INSERT INTO sync_state (
+                    dataset_key, sync_mode, status, last_success_at, last_cursor, last_row_count, last_checksum, last_error_message
+                ) VALUES (
+                    %s, 'incremental', %s, CASE WHEN %s='success' THEN UTC_TIMESTAMP() ELSE NULL END, %s, %s, %s, %s
+                )
+                ON DUPLICATE KEY UPDATE
+                    status = VALUES(status),
+                    last_success_at = CASE WHEN VALUES(status)='success' THEN UTC_TIMESTAMP() ELSE sync_state.last_success_at END,
+                    last_cursor = VALUES(last_cursor),
+                    last_row_count = VALUES(last_row_count),
+                    last_checksum = VALUES(last_checksum),
+                    last_error_message = VALUES(last_error_message)""",
+            (dataset_key[:190], status[:20], status[:20], cursor, max(0, row_count), checksum, error_message),
+        )
+
+    def upsert_intelligence_snapshot(
+        self,
+        *,
+        snapshot_key: str,
+        payload_json: str,
+        metadata_json: str,
+        expires_seconds: int = 900,
+    ) -> int:
+        return self.execute(
+            """INSERT INTO intelligence_snapshots (
+                    snapshot_key, snapshot_status, payload_json, metadata_json, computed_at, refresh_started_at, expires_at
+                ) VALUES (
+                    %s, 'ready', %s, %s, UTC_TIMESTAMP(), UTC_TIMESTAMP(), DATE_ADD(UTC_TIMESTAMP(), INTERVAL %s SECOND)
+                )
+                ON DUPLICATE KEY UPDATE
+                    snapshot_status='ready',
+                    payload_json=VALUES(payload_json),
+                    metadata_json=VALUES(metadata_json),
+                    computed_at=VALUES(computed_at),
+                    refresh_started_at=VALUES(refresh_started_at),
+                    expires_at=VALUES(expires_at)""",
+            (snapshot_key[:190], payload_json, metadata_json, max(60, expires_seconds)),
+        )
+
+    def refresh_market_order_current_projection(self, *, source_type: str) -> dict[str, int]:
+        rows_processed = self.fetch_scalar(
+            "SELECT COUNT(*) AS c FROM market_orders_current WHERE source_type = %s",
+            (source_type,),
+        )
+        rows_written = self.execute(
+            """INSERT INTO market_order_current_projection (
+                    source_type, source_id, type_id, observed_at, best_sell_price, best_buy_price,
+                    total_sell_volume, total_buy_volume, sell_order_count, buy_order_count, total_volume
+                )
+                SELECT
+                    source_type,
+                    source_id,
+                    type_id,
+                    MAX(observed_at) AS observed_at,
+                    MIN(CASE WHEN is_buy_order = 0 THEN price END) AS best_sell_price,
+                    MAX(CASE WHEN is_buy_order = 1 THEN price END) AS best_buy_price,
+                    SUM(CASE WHEN is_buy_order = 0 THEN volume_remain ELSE 0 END) AS total_sell_volume,
+                    SUM(CASE WHEN is_buy_order = 1 THEN volume_remain ELSE 0 END) AS total_buy_volume,
+                    SUM(CASE WHEN is_buy_order = 0 THEN 1 ELSE 0 END) AS sell_order_count,
+                    SUM(CASE WHEN is_buy_order = 1 THEN 1 ELSE 0 END) AS buy_order_count,
+                    SUM(volume_remain) AS total_volume
+                FROM market_orders_current
+                WHERE source_type = %s
+                GROUP BY source_type, source_id, type_id
+                ON DUPLICATE KEY UPDATE
+                    observed_at = VALUES(observed_at),
+                    best_sell_price = VALUES(best_sell_price),
+                    best_buy_price = VALUES(best_buy_price),
+                    total_sell_volume = VALUES(total_sell_volume),
+                    total_buy_volume = VALUES(total_buy_volume),
+                    sell_order_count = VALUES(sell_order_count),
+                    buy_order_count = VALUES(buy_order_count),
+                    total_volume = VALUES(total_volume)""",
+            (source_type,),
+        )
+        self.execute(
+            """INSERT INTO market_source_snapshot_state (
+                    source_type, source_id, latest_current_observed_at, current_order_count, current_distinct_type_count, summary_row_count, last_synced_at
+                )
+                SELECT
+                    source_type,
+                    source_id,
+                    MAX(observed_at) AS latest_current_observed_at,
+                    COUNT(*) AS current_order_count,
+                    COUNT(DISTINCT type_id) AS current_distinct_type_count,
+                    0 AS summary_row_count,
+                    UTC_TIMESTAMP() AS last_synced_at
+                FROM market_orders_current
+                WHERE source_type = %s
+                GROUP BY source_type, source_id
+                ON DUPLICATE KEY UPDATE
+                    latest_current_observed_at = VALUES(latest_current_observed_at),
+                    current_order_count = VALUES(current_order_count),
+                    current_distinct_type_count = VALUES(current_distinct_type_count),
+                    last_synced_at = VALUES(last_synced_at)""",
+            (source_type,),
+        )
+        return {"rows_processed": rows_processed, "rows_written": rows_written}
+
+    def materialize_market_history_from_projection(self, *, source_type: str) -> dict[str, int]:
+        rows_processed = self.fetch_scalar(
+            "SELECT COUNT(*) FROM market_order_current_projection WHERE source_type = %s",
+            (source_type,),
+        )
+        rows_written = self.execute(
+            """INSERT INTO market_order_snapshots_summary (
+                    source_type, source_id, type_id, observed_at, best_sell_price, best_buy_price,
+                    total_buy_volume, total_sell_volume, total_volume, buy_order_count, sell_order_count
+                )
+                SELECT
+                    source_type,
+                    source_id,
+                    type_id,
+                    observed_at,
+                    best_sell_price,
+                    best_buy_price,
+                    total_buy_volume,
+                    total_sell_volume,
+                    total_volume,
+                    buy_order_count,
+                    sell_order_count
+                FROM market_order_current_projection
+                WHERE source_type = %s
+                ON DUPLICATE KEY UPDATE
+                    best_sell_price = VALUES(best_sell_price),
+                    best_buy_price = VALUES(best_buy_price),
+                    total_buy_volume = VALUES(total_buy_volume),
+                    total_sell_volume = VALUES(total_sell_volume),
+                    total_volume = VALUES(total_volume),
+                    buy_order_count = VALUES(buy_order_count),
+                    sell_order_count = VALUES(sell_order_count)""",
+            (source_type,),
+        )
+        return {"rows_processed": rows_processed, "rows_written": rows_written}
+
+    def fetch_market_hub_sources(self, *, limit: int = 5) -> list[dict[str, int]]:
+        rows = self.fetch_all(
+            """SELECT DISTINCT rs.station_id AS source_id, rs.region_id
+                FROM ref_npc_stations rs
+                INNER JOIN trading_stations ts ON ts.id = rs.station_id
+                WHERE ts.station_type = 'market'
+                ORDER BY rs.station_id ASC
+                LIMIT %s""",
+            (max(1, limit),),
+        )
+        return [{"source_id": int(row.get("source_id") or 0), "region_id": int(row.get("region_id") or 0)} for row in rows]
+
+    def fetch_alliance_structure_sources(self, *, limit: int = 5) -> list[int]:
+        rows = self.fetch_all(
+            """SELECT structure_id
+                FROM alliance_structure_metadata
+                ORDER BY last_verified_at DESC
+                LIMIT %s""",
+            (max(1, limit),),
+        )
+        return [int(row.get("structure_id") or 0) for row in rows if int(row.get("structure_id") or 0) > 0]
+
+    def fetch_latest_esi_access_token(self) -> str | None:
+        row = self.fetch_one(
+            """SELECT access_token
+                FROM esi_oauth_tokens
+                WHERE expires_at > UTC_TIMESTAMP()
+                ORDER BY expires_at DESC
+                LIMIT 1"""
+        ) or {}
+        token = str(row.get("access_token") or "").strip()
+        return token or None
+
+    def replace_market_orders_for_source(
+        self,
+        *,
+        source_type: str,
+        source_id: int,
+        observed_at: str,
+        orders: list[dict[str, Any]],
+    ) -> dict[str, int]:
+        safe_orders: list[tuple[Any, ...]] = []
+        for row in orders:
+            order_id = int(row.get("order_id") or 0)
+            type_id = int(row.get("type_id") or 0)
+            if order_id <= 0 or type_id <= 0:
+                continue
+            safe_orders.append(
+                (
+                    source_type,
+                    max(0, source_id),
+                    type_id,
+                    order_id,
+                    1 if bool(row.get("is_buy_order")) else 0,
+                    float(row.get("price") or 0.0),
+                    max(0, int(row.get("volume_remain") or 0)),
+                    max(0, int(row.get("volume_total") or 0)),
+                    max(1, int(row.get("min_volume") or 1)),
+                    str(row.get("range") or "region")[:20],
+                    max(1, int(row.get("duration") or 1)),
+                    str(row.get("issued") or observed_at)[:19],
+                    str(row.get("expires") or observed_at)[:19],
+                    observed_at,
+                )
+            )
+
+        with self.transaction() as (_, cursor):
+            cursor.execute(
+                "DELETE FROM market_orders_current WHERE source_type = %s AND source_id = %s",
+                (source_type, max(0, source_id)),
+            )
+            if safe_orders:
+                cursor.executemany(
+                    """INSERT INTO market_orders_current (
+                            source_type, source_id, type_id, order_id, is_buy_order, price, volume_remain, volume_total,
+                            min_volume, `range`, duration, issued, expires, observed_at
+                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                    safe_orders,
+                )
+                cursor.executemany(
+                    """INSERT INTO market_orders_history (
+                            source_type, source_id, type_id, order_id, is_buy_order, price, volume_remain, volume_total,
+                            min_volume, `range`, duration, issued, expires, observed_at
+                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        ON DUPLICATE KEY UPDATE
+                            price = VALUES(price),
+                            volume_remain = VALUES(volume_remain),
+                            volume_total = VALUES(volume_total)""",
+                    safe_orders,
+                )
+        return {"rows_processed": len(orders), "rows_written": len(safe_orders)}
+
 
 def json_dumps(value: Any) -> str:
     return json_dumps_safe(value)
