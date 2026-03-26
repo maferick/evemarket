@@ -1938,7 +1938,11 @@ include __DIR__ . '/../../src/views/partials/header.php';
                         $migrationPendingCount = (int) ($migrationCheck['pending'] ?? 0);
                         $migrationPendingFiles = (array) ($migrationCheck['files'] ?? []);
                         $allMigrations = [];
-                        try { $allMigrations = db_schema_migrations_all(); } catch (Throwable) {}
+                        try {
+                            $migPdo = supplycore_migration_pdo();
+                            $migStmt = $migPdo->query('SELECT filename, file_hash, applied_at, status, error_message FROM schema_migrations ORDER BY filename ASC');
+                            $allMigrations = $migStmt->fetchAll();
+                        } catch (Throwable) {}
                         $failedMigrations = array_filter($allMigrations, static fn (array $m): bool => (string) ($m['status'] ?? '') === 'failed');
                     ?>
                     <div class="rounded-xl border <?= $migrationPendingCount > 0 ? 'border-amber-400/30 bg-amber-500/5' : (count($failedMigrations) > 0 ? 'border-rose-400/30 bg-rose-500/5' : 'border-border bg-black/20') ?> p-4">

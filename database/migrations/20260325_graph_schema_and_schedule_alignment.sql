@@ -29,7 +29,7 @@ ALTER TABLE character_suspicion_scores
 UPDATE sync_schedules
 SET enabled = 0,
     updated_at = UTC_TIMESTAMP()
-WHERE sync_key IN (
+WHERE job_key IN (
     'compute_graph_insights',
     'compute_graph_sync',
     'compute_graph_derived_relationships',

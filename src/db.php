@@ -532,6 +532,7 @@ function db_select_one(string $sql, array $params = []): ?array
     $durationMs = (microtime(true) - $startedAt) * 1000.0;
     db_performance_track_query($sql, $params, $durationMs);
     $result = $stmt->fetch();
+    $stmt->closeCursor();
 
     return $result === false ? null : $result;
 }
