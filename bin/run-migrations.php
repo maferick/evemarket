@@ -15,7 +15,9 @@ declare(strict_types=1);
  *   php bin/run-migrations.php --status     # Show migration status
  */
 
-require_once __DIR__ . '/../src/bootstrap.php';
+// Load functions directly — skip bootstrap.php which auto-runs migrations
+// and starts a session (neither needed in CLI context).
+require_once __DIR__ . '/../src/functions.php';
 
 $dryRun = in_array('--dry-run', $argv, true);
 $statusOnly = in_array('--status', $argv, true);
