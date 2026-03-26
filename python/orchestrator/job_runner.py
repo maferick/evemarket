@@ -12,6 +12,7 @@ from typing import Any
 from .bridge import PhpBridge
 from .config import load_php_runtime_config
 from .db import SupplyCoreDb
+from .job_result import JobResult
 from .json_utils import json_dumps_safe
 from .jobs import (
     run_killmail_r2z2_stream,
@@ -177,19 +178,15 @@ def _run_php_fallback(context: PythonWorkerContext, bridge: PhpBridge) -> dict[s
         "run-job-handler",
         args=[f"--job-key={context.job_key}", "--reason=python-fallback"],
     )
-    result = dict(response.get("result") or {})
-    result.setdefault("status", "success")
-    result.setdefault("summary", f"Executed {context.job_key} via PHP fallback inside Python worker mode.")
-    result.setdefault("duration_ms", 0)
-    result.setdefault("started_at", utc_now_iso())
-    result.setdefault("finished_at", utc_now_iso())
-    result.setdefault("meta", {})
-    meta = dict(result.get("meta") or {})
-    meta["execution_mode"] = "python"
-    meta["fallback_runtime"] = "php"
-    meta.setdefault("outcome_reason", "Job used the PHP handler through the Python-worker fallback bridge.")
-    result["meta"] = meta
-    return result
+    raw = dict(response.get("result") or {})
+    raw.setdefault("summary", f"Executed {context.job_key} via PHP fallback inside Python worker mode.")
+    raw.setdefault("meta", {})
+    raw_meta = dict(raw.get("meta") or {})
+    raw_meta["execution_mode"] = "python"
+    raw_meta["fallback_runtime"] = "php"
+    raw_meta.setdefault("outcome_reason", "Job used the PHP handler through the Python-worker fallback bridge.")
+    raw["meta"] = raw_meta
+    return JobResult.from_raw(raw, job_key=context.job_key).to_dict()
 
 
 def process_job(context: PythonWorkerContext) -> dict[str, Any]:
@@ -220,11 +217,17 @@ def process_job(context: PythonWorkerContext) -> dict[str, Any]:
         else:
             raise RuntimeError(f"No Python processor is registered for job {context.job_key}.")
     else:
-        result = processor(context)
+        raw = processor(context)
+        result = JobResult.from_raw(raw, job_key=context.job_key).to_dict()
 
-    result.setdefault("duration_ms", int((time.time() - start) * 1000))
-    result.setdefault("started_at", utc_now_iso())
-    result.setdefault("finished_at", utc_now_iso())
+    # Back-fill timing if the processor didn't provide it.
+    elapsed = int((time.time() - start) * 1000)
+    if not result.get("duration_ms"):
+        result["duration_ms"] = elapsed
+    if not result.get("started_at"):
+        result["started_at"] = utc_now_iso()
+    if not result.get("finished_at"):
+        result["finished_at"] = utc_now_iso()
     result.setdefault("meta", {})
     result["meta"] = dict(result.get("meta") or {})
     result["meta"]["cli_options"] = dict(context.cli_options)
@@ -273,22 +276,15 @@ def main() -> int:
         result = process_job(context)
         result["run_id"] = run_id
     except Exception as error:  # noqa: BLE001
-        result = {
-            "status": "failed",
-            "error": str(error),
-            "summary": str(error),
-            "rows_seen": 0,
-            "rows_written": 0,
-            "warnings": [],
-            "duration_ms": 0,
-            "started_at": utc_now_iso(),
-            "finished_at": utc_now_iso(),
-            "run_id": run_id,
-            "meta": {
+        result = JobResult.failed(
+            job_key=context.job_key,
+            error=error,
+            meta={
                 "execution_mode": "python",
                 "memory_usage_bytes": resident_memory_bytes(),
             },
-        }
+        ).to_dict()
+        result["run_id"] = run_id
         exit_code = 1
 
     try:

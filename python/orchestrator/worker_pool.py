@@ -14,6 +14,7 @@ import pymysql
 
 from .config import load_php_runtime_config
 from .db import SupplyCoreDb
+from .job_result import JobResult
 from .json_utils import json_dumps_safe, make_json_safe
 from .logging_utils import LoggerAdapter, configure_logging
 from .processor_registry import audit_enabled_python_jobs, run_registered_processor
@@ -86,11 +87,17 @@ def _write_state_file(path: Path, payload: dict[str, Any]) -> None:
 def _process_job(context: WorkerPoolContext) -> dict[str, Any]:
     started = time.monotonic()
     result = run_registered_processor(context.job_key, context.db, context.raw_config)
-    result.setdefault("duration_ms", int((time.monotonic() - started) * 1000))
-    result.setdefault("started_at", utc_now_iso())
-    result.setdefault("finished_at", utc_now_iso())
-    result["execution_language"] = "python"
-    result["subprocess_invoked"] = False
+    # Back-fill timing if the processor didn't provide it.
+    elapsed = int((time.monotonic() - started) * 1000)
+    if not result.get("duration_ms"):
+        result["duration_ms"] = elapsed
+    if not result.get("started_at"):
+        result["started_at"] = utc_now_iso()
+    if not result.get("finished_at"):
+        result["finished_at"] = utc_now_iso()
+    result.setdefault("meta", {})
+    result["meta"]["execution_language"] = "python"
+    result["meta"]["subprocess_invoked"] = False
     return make_json_safe(result)
 
 
@@ -209,7 +216,12 @@ def main(argv: list[str] | None = None) -> int:
             db.complete_worker_job(int(job.get("id") or 0), worker_id, result)
             logger.info("worker job completed", payload={"event": "worker_pool.job_completed", "worker_id": worker_id, "job_id": int(job.get("id") or 0), "job_key": context.job_key, "status": result.get("status", "success"), "execution_language": "python", "subprocess_invoked": False, "duration_ms": result.get("duration_ms", 0), "rows_processed": result.get("rows_processed", 0), "rows_written": result.get("rows_written", 0)})
         except Exception as error:  # noqa: BLE001
-            db.retry_worker_job(int(job.get("id") or 0), worker_id, str(error), retry_backoff, {"status": "failed", "error": str(error), "summary": str(error), "finished_at": utc_now_iso(), "execution_language": "python", "subprocess_invoked": False})
+            fail_result = JobResult.failed(
+                job_key=context.job_key,
+                error=error,
+                meta={"execution_language": "python", "subprocess_invoked": False},
+            ).to_dict()
+            db.retry_worker_job(int(job.get("id") or 0), worker_id, str(error), retry_backoff, fail_result)
             logger.warning("worker job failed", payload={"event": "worker_pool.job_failed", "worker_id": worker_id, "job_id": int(job.get("id") or 0), "job_key": context.job_key, "error": str(error)})
             if args.once:
                 return 1

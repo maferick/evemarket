@@ -7,6 +7,7 @@ import re
 from unittest.mock import patch
 
 from orchestrator import processor_registry
+from orchestrator.job_result import JobResult
 from orchestrator.job_runner import PHP_BRIDGED_JOB_KEYS
 
 
@@ -43,8 +44,8 @@ class ComputeProcessorRoutingTests(unittest.TestCase):
         runtime.assert_called_once()
         self.assertEqual(result["status"], "success")
 
-    def test_compute_result_shape_serializes_datetime_and_decimal_metadata(self) -> None:
-        shaped = processor_registry._compute_result_shape(  # noqa: SLF001
+    def test_job_result_from_raw_serializes_datetime_and_decimal_metadata(self) -> None:
+        result = JobResult.from_raw(
             {
                 "status": "success",
                 "rows_processed": 1,
@@ -53,9 +54,9 @@ class ComputeProcessorRoutingTests(unittest.TestCase):
                 "warnings": [],
                 "sample": {"ts": datetime(2026, 3, 25, tzinfo=UTC), "score": Decimal("0.1250")},
             },
-            "compute_suspicion_scores_v2",
-        )
-        sample = shaped["meta"]["result"]["sample"]
+            job_key="compute_suspicion_scores_v2",
+        ).to_dict()
+        sample = result["meta"]["sample"]
         self.assertEqual(sample["ts"], "2026-03-25T00:00:00+00:00")
         self.assertEqual(sample["score"], "0.1250")
 

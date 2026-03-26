@@ -6,6 +6,7 @@ from decimal import Decimal
 from typing import Any, Callable
 
 from ..db import SupplyCoreDb
+from ..job_result import JobResult, RESULT_SCHEMA_VERSION
 
 
 SYNC_JOB_CONTRACTS: dict[str, dict[str, Any]] = {
@@ -146,6 +147,17 @@ def run_sync_phase_job(
     started_at = datetime.now(UTC)
     started_at_iso = started_at.strftime("%Y-%m-%dT%H:%M:%SZ")
     contract = get_sync_job_contract(job_key)
+
+    sync_meta = {
+        "job_key": job_key,
+        "phase": phase,
+        "objective": objective,
+        "job_contract": contract,
+        "execution_language": "python",
+        "subprocess_invoked": False,
+        "schema_version": RESULT_SCHEMA_VERSION,
+    }
+
     try:
         payload = processor(db)
         db_now = db.fetch_one("SELECT UTC_TIMESTAMP() AS now_utc") or {}
@@ -154,66 +166,48 @@ def run_sync_phase_job(
         rows_processed = max(0, int(payload.get("rows_processed") or 0))
         rows_written = max(0, int(payload.get("rows_written") or 0))
         rows_seen = max(0, int(payload.get("rows_seen") or rows_processed))
-        return {
-            "status": str(payload.get("status") or "success"),
-            "summary": str(payload.get("summary") or f"{job_key} completed phase {phase} objective: {objective}."),
-            "started_at": started_at_iso,
-            "finished_at": finished_at_iso,
-            "duration_ms": duration_ms,
-            "rows_seen": rows_seen,
-            "rows_processed": rows_processed,
-            "rows_written": rows_written,
-            "rows_skipped": max(0, rows_seen - rows_processed),
-            "rows_failed": max(0, int(payload.get("rows_failed") or 0)),
-            "batches_completed": max(1, int(payload.get("batches_completed") or 1)),
-            "checkpoint_before": payload.get("checkpoint_before"),
-            "checkpoint_after": payload.get("checkpoint_after"),
-            "warnings": [str(item) for item in list(payload.get("warnings") or [])],
-            "error_text": None,
-            "computed_at": started_at.strftime("%Y-%m-%d %H:%M:%S"),
-            "meta": {
-                "job_key": job_key,
-                "phase": phase,
-                "objective": objective,
-                "job_contract": contract,
-                "execution_language": "python",
-                "subprocess_invoked": False,
+
+        result = JobResult(
+            status=str(payload.get("status") or "success"),
+            summary=str(payload.get("summary") or f"{job_key} completed phase {phase} objective: {objective}."),
+            started_at=started_at_iso,
+            finished_at=finished_at_iso,
+            duration_ms=duration_ms,
+            rows_seen=rows_seen,
+            rows_processed=rows_processed,
+            rows_written=rows_written,
+            rows_skipped=max(0, rows_seen - rows_processed),
+            rows_failed=max(0, int(payload.get("rows_failed") or 0)),
+            batches_completed=max(1, int(payload.get("batches_completed") or 1)),
+            checkpoint_before=payload.get("checkpoint_before"),
+            checkpoint_after=payload.get("checkpoint_after"),
+            error_text=None,
+            warnings=[str(item) for item in list(payload.get("warnings") or [])],
+            meta={
+                **sync_meta,
                 "error_classification": None,
-                "event_schema_version": "sync_result.v1",
                 "db_now_utc": str(db_now.get("now_utc") or ""),
+                "computed_at": started_at.strftime("%Y-%m-%d %H:%M:%S"),
                 **_serialize_value(dict(payload.get("meta") or {})),
             },
-        }
+        )
+        return result.to_dict()
+
     except Exception as exc:
         finished_at_iso = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
         duration_ms = int((time.perf_counter() - started_perf) * 1000)
-        error_text = f"{type(exc).__name__}: {exc}"
         error_class = _classify_error(exc)
-        return {
-            "status": "failed",
-            "summary": f"{job_key} failed in phase {phase}: {exc}",
-            "started_at": started_at_iso,
-            "finished_at": finished_at_iso,
-            "duration_ms": duration_ms,
-            "rows_seen": 0,
-            "rows_processed": 0,
-            "rows_written": 0,
-            "rows_skipped": 0,
-            "rows_failed": 0,
-            "batches_completed": 0,
-            "checkpoint_before": None,
-            "checkpoint_after": None,
-            "warnings": [error_text],
-            "error_text": error_text,
-            "computed_at": started_at.strftime("%Y-%m-%d %H:%M:%S"),
-            "meta": {
-                "job_key": job_key,
-                "phase": phase,
-                "objective": objective,
-                "job_contract": contract,
-                "execution_language": "python",
-                "subprocess_invoked": False,
+
+        result = JobResult.failed(
+            job_key=job_key,
+            error=exc,
+            started_at=started_at_iso,
+            finished_at=finished_at_iso,
+            duration_ms=duration_ms,
+            meta={
+                **sync_meta,
                 "error_classification": error_class,
-                "event_schema_version": "sync_result.v1",
+                "computed_at": started_at.strftime("%Y-%m-%d %H:%M:%S"),
             },
-        }
+        )
+        return result.to_dict()

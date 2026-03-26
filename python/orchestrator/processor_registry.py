@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from .job_context import battle_runtime, influx_runtime, neo4j_runtime
-from .json_utils import make_json_safe
+from .job_result import JobResult
 from .jobs import (
     run_compute_battle_actor_features,
     run_compute_battle_anomalies,
@@ -77,78 +77,57 @@ PYTHON_SYNC_PROCESSOR_JOB_KEYS: set[str] = {
 PYTHON_PROCESSOR_JOB_KEYS: set[str] = PYTHON_COMPUTE_PROCESSOR_JOB_KEYS | PYTHON_SYNC_PROCESSOR_JOB_KEYS
 
 
+_PROCESSOR_DISPATCH: dict[str, tuple] = {
+    # Graph pipeline jobs — (callable, arg_factory)
+    "compute_graph_sync": (run_compute_graph_sync, lambda db, cfg: (db, neo4j_runtime(cfg))),
+    "compute_graph_sync_doctrine_dependency": (run_compute_graph_sync_doctrine_dependency, lambda db, cfg: (db, neo4j_runtime(cfg))),
+    "compute_graph_sync_battle_intelligence": (run_compute_graph_sync_battle_intelligence, lambda db, cfg: (db, neo4j_runtime(cfg))),
+    "compute_graph_derived_relationships": (run_compute_graph_derived_relationships, lambda db, cfg: (db, neo4j_runtime(cfg))),
+    "compute_graph_insights": (run_compute_graph_insights, lambda db, cfg: (db, neo4j_runtime(cfg))),
+    "compute_graph_prune": (run_compute_graph_prune, lambda db, cfg: (db, neo4j_runtime(cfg))),
+    "compute_graph_topology_metrics": (run_compute_graph_topology_metrics, lambda db, cfg: (db, neo4j_runtime(cfg))),
+    # Battle intelligence jobs
+    "compute_behavioral_baselines": (run_compute_behavioral_baselines, lambda db, cfg: (db, battle_runtime(cfg))),
+    "compute_suspicion_scores_v2": (run_compute_suspicion_scores_v2, lambda db, cfg: (db, battle_runtime(cfg))),
+    "compute_battle_rollups": (run_compute_battle_rollups, lambda db, cfg: (db, battle_runtime(cfg))),
+    "compute_battle_target_metrics": (run_compute_battle_target_metrics, lambda db, cfg: (db, battle_runtime(cfg))),
+    "compute_battle_anomalies": (run_compute_battle_anomalies, lambda db, cfg: (db, battle_runtime(cfg))),
+    "compute_battle_actor_features": (run_compute_battle_actor_features, lambda db, cfg: (db, neo4j_runtime(cfg), battle_runtime(cfg))),
+    "compute_suspicion_scores": (run_compute_suspicion_scores, lambda db, cfg: (db, battle_runtime(cfg))),
+    "compute_counterintel_pipeline": (run_compute_counterintel_pipeline, lambda db, cfg: (db, neo4j_runtime(cfg), battle_runtime(cfg))),
+    # Market / supply intelligence jobs
+    "compute_buy_all": (run_compute_buy_all, lambda db, cfg: (db,)),
+    "compute_signals": (run_compute_signals, lambda db, cfg: (db, influx_runtime(cfg))),
+    # Sync phase jobs
+    "market_hub_current_sync": (run_market_hub_current_sync, lambda db, cfg: (db,)),
+    "alliance_current_sync": (run_alliance_current_sync, lambda db, cfg: (db,)),
+    "market_hub_historical_sync": (run_market_hub_historical_sync, lambda db, cfg: (db,)),
+    "alliance_historical_sync": (run_alliance_historical_sync, lambda db, cfg: (db,)),
+    "current_state_refresh_sync": (run_current_state_refresh_sync, lambda db, cfg: (db,)),
+    "analytics_bucket_1h_sync": (run_analytics_bucket_1h_sync, lambda db, cfg: (db,)),
+    "analytics_bucket_1d_sync": (run_analytics_bucket_1d_sync, lambda db, cfg: (db,)),
+    "activity_priority_summary_sync": (run_activity_priority_summary_sync, lambda db, cfg: (db,)),
+    "dashboard_summary_sync": (run_dashboard_summary_sync, lambda db, cfg: (db,)),
+    "loss_demand_summary_sync": (run_loss_demand_summary_sync, lambda db, cfg: (db,)),
+    "doctrine_intelligence_sync": (run_doctrine_intelligence_sync, lambda db, cfg: (db,)),
+    "deal_alerts_sync": (run_deal_alerts_sync, lambda db, cfg: (db,)),
+    "rebuild_ai_briefings": (run_rebuild_ai_briefings, lambda db, cfg: (db,)),
+    "forecasting_ai_sync": (run_forecasting_ai_sync, lambda db, cfg: (db,)),
+}
+
+
 def run_registered_processor(job_key: str, db: Any, raw_config: dict[str, Any]) -> dict[str, Any]:
-    if job_key == "compute_graph_sync":
-        return _graph_result_shape(run_compute_graph_sync(db, neo4j_runtime(raw_config)), job_key)
-    if job_key == "compute_graph_sync_doctrine_dependency":
-        return _graph_result_shape(run_compute_graph_sync_doctrine_dependency(db, neo4j_runtime(raw_config)), job_key)
-    if job_key == "compute_graph_sync_battle_intelligence":
-        return _graph_result_shape(run_compute_graph_sync_battle_intelligence(db, neo4j_runtime(raw_config)), job_key)
-    if job_key == "compute_graph_derived_relationships":
-        return _graph_result_shape(run_compute_graph_derived_relationships(db, neo4j_runtime(raw_config)), job_key)
-    if job_key == "compute_graph_insights":
-        return _graph_result_shape(run_compute_graph_insights(db, neo4j_runtime(raw_config)), job_key)
-    if job_key == "compute_graph_prune":
-        return _graph_result_shape(run_compute_graph_prune(db, neo4j_runtime(raw_config)), job_key)
-    if job_key == "compute_graph_topology_metrics":
-        return _graph_result_shape(run_compute_graph_topology_metrics(db, neo4j_runtime(raw_config)), job_key)
-    if job_key == "compute_behavioral_baselines":
-        return _compute_result_shape(run_compute_behavioral_baselines(db, battle_runtime(raw_config)), job_key)
-    if job_key == "compute_suspicion_scores_v2":
-        return _compute_result_shape(run_compute_suspicion_scores_v2(db, battle_runtime(raw_config)), job_key)
-    if job_key == "compute_buy_all":
-        return _compute_result_shape(run_compute_buy_all(db), job_key)
-    if job_key == "compute_signals":
-        return _compute_result_shape(run_compute_signals(db, influx_runtime(raw_config)), job_key)
-    if job_key == "compute_battle_rollups":
-        return _compute_result_shape(run_compute_battle_rollups(db, battle_runtime(raw_config)), job_key)
-    if job_key == "compute_battle_target_metrics":
-        return _compute_result_shape(run_compute_battle_target_metrics(db, battle_runtime(raw_config)), job_key)
-    if job_key == "compute_battle_anomalies":
-        return _compute_result_shape(run_compute_battle_anomalies(db, battle_runtime(raw_config)), job_key)
-    if job_key == "compute_battle_actor_features":
-        return _compute_result_shape(run_compute_battle_actor_features(db, neo4j_runtime(raw_config), battle_runtime(raw_config)), job_key)
-    if job_key == "compute_suspicion_scores":
-        return _compute_result_shape(run_compute_suspicion_scores(db, battle_runtime(raw_config)), job_key)
-    if job_key == "compute_counterintel_pipeline":
-        return _compute_result_shape(
-            run_compute_counterintel_pipeline(db, neo4j_runtime(raw_config), battle_runtime(raw_config)),
-            job_key,
+    entry = _PROCESSOR_DISPATCH.get(job_key)
+    if entry is None:
+        in_compute_registry = job_key in PYTHON_COMPUTE_PROCESSOR_JOB_KEYS
+        in_sync_registry = job_key in PYTHON_SYNC_PROCESSOR_JOB_KEYS
+        raise KeyError(
+            "No Python processor is registered for job "
+            f"{job_key} (in_compute_registry={in_compute_registry}, in_sync_registry={in_sync_registry})."
         )
-    if job_key == "market_hub_current_sync":
-        return _compute_result_shape(run_market_hub_current_sync(db), job_key)
-    if job_key == "alliance_current_sync":
-        return _compute_result_shape(run_alliance_current_sync(db), job_key)
-    if job_key == "market_hub_historical_sync":
-        return _compute_result_shape(run_market_hub_historical_sync(db), job_key)
-    if job_key == "alliance_historical_sync":
-        return _compute_result_shape(run_alliance_historical_sync(db), job_key)
-    if job_key == "current_state_refresh_sync":
-        return _compute_result_shape(run_current_state_refresh_sync(db), job_key)
-    if job_key == "analytics_bucket_1h_sync":
-        return _compute_result_shape(run_analytics_bucket_1h_sync(db), job_key)
-    if job_key == "analytics_bucket_1d_sync":
-        return _compute_result_shape(run_analytics_bucket_1d_sync(db), job_key)
-    if job_key == "activity_priority_summary_sync":
-        return _compute_result_shape(run_activity_priority_summary_sync(db), job_key)
-    if job_key == "dashboard_summary_sync":
-        return _compute_result_shape(run_dashboard_summary_sync(db), job_key)
-    if job_key == "loss_demand_summary_sync":
-        return _compute_result_shape(run_loss_demand_summary_sync(db), job_key)
-    if job_key == "doctrine_intelligence_sync":
-        return _compute_result_shape(run_doctrine_intelligence_sync(db), job_key)
-    if job_key == "deal_alerts_sync":
-        return _compute_result_shape(run_deal_alerts_sync(db), job_key)
-    if job_key == "rebuild_ai_briefings":
-        return _compute_result_shape(run_rebuild_ai_briefings(db), job_key)
-    if job_key == "forecasting_ai_sync":
-        return _compute_result_shape(run_forecasting_ai_sync(db), job_key)
-    in_compute_registry = job_key in PYTHON_COMPUTE_PROCESSOR_JOB_KEYS
-    in_sync_registry = job_key in PYTHON_SYNC_PROCESSOR_JOB_KEYS
-    raise KeyError(
-        "No Python processor is registered for job "
-        f"{job_key} (in_compute_registry={in_compute_registry}, in_sync_registry={in_sync_registry})."
-    )
+    processor_fn, arg_factory = entry
+    raw_result = processor_fn(*arg_factory(db, raw_config))
+    return JobResult.from_raw(raw_result, job_key=job_key).to_dict()
 
 
 def audit_enabled_python_jobs(db: Any) -> dict[str, Any]:
@@ -175,51 +154,6 @@ def audit_enabled_python_jobs(db: Any) -> dict[str, Any]:
     return {"jobs": matrix, "issues": issues}
 
 
-def _graph_result_shape(result: dict[str, Any], job_key: str) -> dict[str, Any]:
-    safe_result = make_json_safe(result)
-    rows_seen = max(0, int(result.get("rows_processed") or result.get("rows_seen") or 0))
-    rows_written = max(0, int(result.get("rows_written") or 0))
-    status = str(result.get("status") or "success")
-    summary = str(result.get("summary") or f"{job_key} finished with status {status}.")
-    return {
-        "status": status,
-        "summary": summary,
-        "rows_processed": rows_seen,
-        "rows_written": rows_written,
-        "warnings": list(safe_result.get("warnings") or []),
-        "meta": dict(safe_result.get("meta") or {}),
-    }
-
-
-def _compute_result_shape(result: dict[str, Any], job_key: str) -> dict[str, Any]:
-    safe_result = make_json_safe(result)
-    status = str(result.get("status") or "success")
-    rows_seen = max(0, int(result.get("rows_seen") or result.get("rows_processed") or 0))
-    rows_processed = max(0, int(result.get("rows_processed") or 0))
-    rows_written = max(0, int(result.get("rows_written") or 0))
-    return {
-        "status": status,
-        "summary": str(result.get("summary") or f"{job_key} completed with status {status}."),
-        "started_at": str(result.get("started_at") or ""),
-        "finished_at": str(result.get("finished_at") or ""),
-        "duration_ms": max(0, int(result.get("duration_ms") or 0)),
-        "rows_seen": rows_seen,
-        "rows_processed": rows_processed,
-        "rows_written": rows_written,
-        "rows_skipped": max(0, int(result.get("rows_skipped") or (rows_seen - rows_processed))),
-        "rows_failed": max(0, int(result.get("rows_failed") or 0)),
-        "batches_completed": max(0, int(result.get("batches_completed") or 0)),
-        "checkpoint_before": result.get("checkpoint_before"),
-        "checkpoint_after": result.get("checkpoint_after"),
-        "error_text": str(result.get("error_text") or "") or None,
-        "warnings": list(safe_result.get("warnings") or []),
-        "meta": {
-            "job_name": job_key,
-            "computed_at": str(result.get("computed_at") or ""),
-            "result": dict(safe_result),
-        },
-    }
-
-
 def run_compute_processor(job_key: str, db: Any, raw_config: dict[str, Any]) -> dict[str, Any]:
+    """Backward-compatible alias for ``run_registered_processor``."""
     return run_registered_processor(job_key, db, raw_config)
