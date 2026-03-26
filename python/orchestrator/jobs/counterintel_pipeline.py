@@ -481,6 +481,7 @@ def run_compute_counterintel_pipeline(
             rows_processed += len(participants)
             by_character: dict[int, list[dict[str, Any]]] = defaultdict(list)
             anomalous_battles = {f"{row['battle_id']}|{row['side_key']}" for row in overperformance_rows if row["anomaly_class"] == "high_enemy_overperformance"}
+            control_battles = {f"{row['battle_id']}|{row['side_key']}" for row in overperformance_rows if row["anomaly_class"] != "high_enemy_overperformance"}
             for row in participants:
                 cid = int(row.get("character_id") or 0)
                 if cid <= 0:
@@ -500,19 +501,27 @@ def run_compute_counterintel_pipeline(
             feature_rows: list[dict[str, Any]] = []
             score_rows: list[dict[str, Any]] = []
             evidence_rows: list[dict[str, Any]] = []
+            control_membership_rows: list[tuple[str, str, int]] = []
+            anomalous_battle_denominator = len(anomalous_battles)
+            control_battle_denominator = len(control_battles)
             for character_id, presences in by_character.items():
-                total = len({str(p.get("battle_id")) for p in presences})
                 anomaly_hits = 0
+                control_hits = 0
                 sustain_lifts: list[float] = []
                 for row in presences:
                     key = f"{row.get('battle_id')}|{row.get('side_key')}"
                     if key in anomalous_battles:
                         anomaly_hits += 1
+                    if key in control_battles:
+                        control_hits += 1
+                        control_membership_rows.append((str(row.get("battle_id") or ""), str(row.get("side_key") or "unknown"), character_id))
                     for over in overperformance_rows:
                         if over["battle_id"] == str(row.get("battle_id")) and over["side_key"] != str(row.get("side_key")):
                             sustain_lifts.append(float(over["sustain_lift_score"]))
-                anomalous_rate = _safe_div(float(anomaly_hits), float(max(1, total)), 0.0)
-                control_rate = max(0.0, 1.0 - anomalous_rate)
+                anomalous_rate = _safe_div(float(anomaly_hits), float(max(1, anomalous_battle_denominator)), 0.0)
+                control_rate = _safe_div(float(control_hits), float(max(1, control_battle_denominator)), 0.0)
+                presence_delta = anomalous_rate - control_rate
+                presence_lift = _safe_div(anomalous_rate, control_rate, 0.0) if control_rate > 0 else (1.0 if anomalous_rate > 0 else 0.0)
                 enemy_sustain_lift = _safe_div(sum(sustain_lifts), float(max(1, len(sustain_lifts))), 0.0)
                 bridge = _safe_div(sum(float(r.get("bridge_score") or 0.0) for r in presences), float(max(1, len(presences))), 0.0)
                 org = org_by_character.get(character_id, {})
@@ -525,7 +534,9 @@ def run_compute_counterintel_pipeline(
                     {
                         "character_id": character_id,
                         "anomalous_battle_presence_count": anomaly_hits,
-                        "control_battle_presence_count": max(0, total - anomaly_hits),
+                        "control_battle_presence_count": control_hits,
+                        "anomalous_battle_denominator": anomalous_battle_denominator,
+                        "control_battle_denominator": control_battle_denominator,
                         "anomalous_presence_rate": anomalous_rate,
                         "control_presence_rate": control_rate,
                         "enemy_same_hull_survival_lift": enemy_sustain_lift,
@@ -537,15 +548,26 @@ def run_compute_counterintel_pipeline(
                         "repeatability_score": repeatability,
                     }
                 )
-                review_score = max(0.0, min(1.0, 0.34 * anomalous_rate + 0.26 * min(1.0, enemy_sustain_lift / 1.5) + 0.2 * min(1.0, bridge / 5.0) + 0.1 * min(1.0, corp_hop_frequency * 10) + 0.1 * repeatability))
+                review_score = max(0.0, min(1.0, 0.24 * anomalous_rate + 0.1 * max(0.0, presence_delta) + 0.26 * min(1.0, enemy_sustain_lift / 1.5) + 0.2 * min(1.0, bridge / 5.0) + 0.1 * min(1.0, corp_hop_frequency * 10) + 0.1 * repeatability))
+                cohort_payload = json_dumps_safe(
+                    {
+                        "anomalous_battle_presence_count": anomaly_hits,
+                        "control_battle_presence_count": control_hits,
+                        "anomalous_battle_denominator": anomalous_battle_denominator,
+                        "control_battle_denominator": control_battle_denominator,
+                        "presence_delta": presence_delta,
+                        "presence_lift": presence_lift,
+                    }
+                )
                 evidence_rows.extend(
                     [
-                        {"character_id": character_id, "evidence_key": "anomalous_battle_presence_count", "evidence_value": float(anomaly_hits), "evidence_text": f"present in {anomaly_hits} anomalous large battles", "evidence_payload_json": None},
-                        {"character_id": character_id, "evidence_key": "anomalous_presence_rate", "evidence_value": anomalous_rate, "evidence_text": f"anomalous presence rate {anomalous_rate:.3f} vs control {control_rate:.3f}", "evidence_payload_json": None},
+                        {"character_id": character_id, "evidence_key": "anomalous_battle_presence_count", "evidence_value": float(anomaly_hits), "evidence_text": f"present in {anomaly_hits}/{anomalous_battle_denominator} anomalous large battle-sides", "evidence_payload_json": cohort_payload},
+                        {"character_id": character_id, "evidence_key": "anomalous_presence_rate", "evidence_value": anomalous_rate, "evidence_text": f"anomalous presence rate {anomalous_rate:.3f} ({anomaly_hits}/{anomalous_battle_denominator}) vs control {control_rate:.3f} ({control_hits}/{control_battle_denominator})", "evidence_payload_json": cohort_payload},
+                        {"character_id": character_id, "evidence_key": "presence_rate_delta", "evidence_value": presence_delta, "evidence_text": f"presence delta {presence_delta:.3f}, lift {presence_lift:.3f}", "evidence_payload_json": cohort_payload},
                         {"character_id": character_id, "evidence_key": "enemy_sustain_lift", "evidence_value": enemy_sustain_lift, "evidence_text": f"enemy sustain lift {enemy_sustain_lift:.3f} when present", "evidence_payload_json": None},
                     ]
                 )
-                score_rows.append({"character_id": character_id, "review_priority_score": review_score, "confidence_score": min(1.0, _safe_div(float(total), 8.0, 0.0)), "evidence_count": 3})
+                score_rows.append({"character_id": character_id, "review_priority_score": review_score, "confidence_score": min(1.0, _safe_div(float(anomaly_hits + control_hits), 8.0, 0.0)), "evidence_count": 4})
 
             sorted_scores = sorted([float(row["review_priority_score"]) for row in score_rows])
             for row in score_rows:
@@ -591,13 +613,16 @@ def run_compute_counterintel_pipeline(
                             """
                             INSERT INTO character_counterintel_features (
                                 character_id, anomalous_battle_presence_count, control_battle_presence_count,
+                                anomalous_battle_denominator, control_battle_denominator,
                                 anomalous_presence_rate, control_presence_rate, enemy_same_hull_survival_lift,
                                 enemy_sustain_lift, co_presence_anomalous_density, graph_bridge_score,
                                 corp_hop_frequency_180d, short_tenure_ratio_180d, repeatability_score, computed_at
-                            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                             ON DUPLICATE KEY UPDATE
                                 anomalous_battle_presence_count = VALUES(anomalous_battle_presence_count),
                                 control_battle_presence_count = VALUES(control_battle_presence_count),
+                                anomalous_battle_denominator = VALUES(anomalous_battle_denominator),
+                                control_battle_denominator = VALUES(control_battle_denominator),
                                 anomalous_presence_rate = VALUES(anomalous_presence_rate),
                                 control_presence_rate = VALUES(control_presence_rate),
                                 enemy_same_hull_survival_lift = VALUES(enemy_same_hull_survival_lift),
@@ -609,8 +634,20 @@ def run_compute_counterintel_pipeline(
                                 repeatability_score = VALUES(repeatability_score),
                                 computed_at = VALUES(computed_at)
                             """,
-                            (row["character_id"], row["anomalous_battle_presence_count"], row["control_battle_presence_count"], row["anomalous_presence_rate"], row["control_presence_rate"], row["enemy_same_hull_survival_lift"], row["enemy_sustain_lift"], row["co_presence_anomalous_density"], row["graph_bridge_score"], row["corp_hop_frequency_180d"], row["short_tenure_ratio_180d"], row["repeatability_score"], computed_at),
+                            (row["character_id"], row["anomalous_battle_presence_count"], row["control_battle_presence_count"], row["anomalous_battle_denominator"], row["control_battle_denominator"], row["anomalous_presence_rate"], row["control_presence_rate"], row["enemy_same_hull_survival_lift"], row["enemy_sustain_lift"], row["co_presence_anomalous_density"], row["graph_bridge_score"], row["corp_hop_frequency_180d"], row["short_tenure_ratio_180d"], row["repeatability_score"], computed_at),
                         )
+                    if control_membership_rows:
+                        for battle_id, side_key, character_id in control_membership_rows:
+                            cursor_db.execute(
+                                """
+                                INSERT INTO battle_side_control_cohort_membership (
+                                    battle_id, side_key, character_id, computed_at
+                                ) VALUES (%s, %s, %s, %s)
+                                ON DUPLICATE KEY UPDATE
+                                    computed_at = VALUES(computed_at)
+                                """,
+                                (battle_id, side_key, character_id, computed_at),
+                            )
                     for row in score_rows:
                         cursor_db.execute(
                             """
