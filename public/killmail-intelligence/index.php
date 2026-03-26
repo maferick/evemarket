@@ -247,6 +247,11 @@ include __DIR__ . '/../../src/views/partials/header.php';
                                     <p class="mt-2 text-xs text-muted"><?= htmlspecialchars((string) ($row['killmail_time_display'] ?? '—'), ENT_QUOTES) ?></p>
                                 </div>
                             </div>
+                            <?php if ($hasPod): ?>
+                                <div class="mt-2 border-t border-dashed border-border/30 pt-1.5 text-xs text-slate-400">
+                                    + Pod kill (<?= htmlspecialchars((string) ($pod['estimated_value_display'] ?? '—'), ENT_QUOTES) ?>)
+                                </div>
+                            <?php endif; ?>
                         </td>
                         <td class="px-3 py-3 align-top">
                             <div class="flex items-start gap-3">
@@ -259,11 +264,6 @@ include __DIR__ . '/../../src/views/partials/header.php';
                                     <p class="mt-1 text-xs text-muted"><?= htmlspecialchars((string) ($row['final_blow_alliance'] ?? '—'), ENT_QUOTES) ?></p>
                                 </div>
                             </div>
-                            <?php if ($hasPod): ?>
-                                <div class="mt-2 border-t border-dashed border-border/30 pt-1.5 text-xs text-slate-400">
-                                    ↳ Pod: <?= htmlspecialchars((string) ($pod['final_blow_character'] ?? '—'), ENT_QUOTES) ?>
-                                </div>
-                            <?php endif; ?>
                         </td>
                         <td class="px-3 py-3 align-top">
                             <div class="flex items-start gap-3">
@@ -279,11 +279,6 @@ include __DIR__ . '/../../src/views/partials/header.php';
                                     <?php endif; ?>
                                 </div>
                             </div>
-                            <?php if ($hasPod): ?>
-                                <div class="mt-2 border-t border-dashed border-border/30 pt-1.5 text-xs text-slate-400">
-                                    ↳ <?= htmlspecialchars((string) ($pod['ship_type'] ?? 'Capsule'), ENT_QUOTES) ?>
-                                </div>
-                            <?php endif; ?>
                         </td>
                         <td class="px-3 py-3 align-top">
                             <p class="font-medium text-slate-50"><?= htmlspecialchars((string) ($row['killmail_flags_display'] ?? 'No special flags'), ENT_QUOTES) ?></p>
@@ -307,16 +302,11 @@ include __DIR__ . '/../../src/views/partials/header.php';
                             <?php endif; ?>
                             <p class="mt-2 text-xs text-muted"><?= htmlspecialchars((string) ($row['created_at_display'] ?? '—'), ENT_QUOTES) ?></p>
                             <p class="mt-1 text-xs text-muted">Uploaded <?= htmlspecialchars((string) ($row['uploaded_at_display'] ?? '—'), ENT_QUOTES) ?></p>
-                            <?php if ($hasPod): ?>
-                                <div class="mt-2 border-t border-dashed border-border/30 pt-1.5 text-xs text-muted">
-                                    Pod: <?= htmlspecialchars((string) ($pod['estimated_value_display'] ?? '—'), ENT_QUOTES) ?>
-                                </div>
-                            <?php endif; ?>
                         </td>
                         <td class="px-3 py-3 align-top">
                             <a href="<?= htmlspecialchars((string) ($row['inspect_url'] ?? '#'), ENT_QUOTES) ?>" class="inline-flex items-center btn-primary px-3 py-2">Inspect loss</a>
                             <?php if ($hasPod): ?>
-                                <a href="<?= htmlspecialchars((string) ($pod['inspect_url'] ?? '#'), ENT_QUOTES) ?>" class="mt-1 inline-flex items-center text-xs text-sky-400 hover:underline">Inspect pod</a>
+                                <a href="<?= htmlspecialchars((string) ($pod['inspect_url'] ?? '#'), ENT_QUOTES) ?>" class="mt-2 inline-flex items-center btn-primary px-3 py-2">Inspect pod</a>
                             <?php endif; ?>
                         </td>
                     </tr>
