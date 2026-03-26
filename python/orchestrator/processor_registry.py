@@ -37,6 +37,7 @@ from .jobs import (
     run_rebuild_ai_briefings,
     run_forecasting_ai_sync,
 )
+from .jobs.market_comparison_summary_sync import run_market_comparison_summary_sync
 
 PYTHON_COMPUTE_PROCESSOR_JOB_KEYS: set[str] = {
     "compute_graph_sync",
@@ -73,6 +74,7 @@ PYTHON_SYNC_PROCESSOR_JOB_KEYS: set[str] = {
     "deal_alerts_sync",
     "rebuild_ai_briefings",
     "forecasting_ai_sync",
+    "market_comparison_summary_sync",
 }
 PYTHON_PROCESSOR_JOB_KEYS: set[str] = PYTHON_COMPUTE_PROCESSOR_JOB_KEYS | PYTHON_SYNC_PROCESSOR_JOB_KEYS
 
@@ -113,6 +115,7 @@ _PROCESSOR_DISPATCH: dict[str, tuple] = {
     "deal_alerts_sync": (run_deal_alerts_sync, lambda db, cfg: (db,)),
     "rebuild_ai_briefings": (run_rebuild_ai_briefings, lambda db, cfg: (db,)),
     "forecasting_ai_sync": (run_forecasting_ai_sync, lambda db, cfg: (db,)),
+    "market_comparison_summary_sync": (run_market_comparison_summary_sync, lambda db, cfg: (db,)),
 }
 
 
