@@ -1678,6 +1678,8 @@ CREATE TABLE IF NOT EXISTS character_counterintel_features (
     character_id BIGINT UNSIGNED PRIMARY KEY,
     anomalous_battle_presence_count INT UNSIGNED NOT NULL DEFAULT 0,
     control_battle_presence_count INT UNSIGNED NOT NULL DEFAULT 0,
+    anomalous_battle_denominator INT UNSIGNED NOT NULL DEFAULT 0,
+    control_battle_denominator INT UNSIGNED NOT NULL DEFAULT 0,
     anomalous_presence_rate DECIMAL(12,6) NOT NULL DEFAULT 0.000000,
     control_presence_rate DECIMAL(12,6) NOT NULL DEFAULT 0.000000,
     enemy_same_hull_survival_lift DECIMAL(12,6) NOT NULL DEFAULT 0.000000,
@@ -1690,6 +1692,16 @@ CREATE TABLE IF NOT EXISTS character_counterintel_features (
     computed_at DATETIME NOT NULL,
     KEY idx_character_counterintel_features_repeatability (repeatability_score, computed_at),
     KEY idx_character_counterintel_features_computed (computed_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS battle_side_control_cohort_membership (
+    battle_id CHAR(64) NOT NULL,
+    side_key VARCHAR(80) NOT NULL,
+    character_id BIGINT UNSIGNED NOT NULL,
+    computed_at DATETIME NOT NULL,
+    PRIMARY KEY (battle_id, side_key, character_id),
+    KEY idx_battle_side_control_cohort_character (character_id, computed_at),
+    KEY idx_battle_side_control_cohort_computed (computed_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS character_counterintel_scores (

@@ -14089,7 +14089,7 @@ function db_battle_intelligence_top_characters(int $limit = 50): array
 
     return db_select(
         'SELECT ccs.character_id, ccs.review_priority_score, ccs.percentile_rank, ccs.confidence_score, ccs.evidence_count, ccs.computed_at,
-                ccf.anomalous_battle_presence_count, ccf.control_battle_presence_count, ccf.anomalous_presence_rate, ccf.control_presence_rate,
+                ccf.anomalous_battle_presence_count, ccf.control_battle_presence_count, ccf.anomalous_battle_denominator, ccf.control_battle_denominator, ccf.anomalous_presence_rate, ccf.control_presence_rate,
                 ccf.enemy_same_hull_survival_lift, ccf.enemy_sustain_lift, ccf.co_presence_anomalous_density, ccf.graph_bridge_score,
                 ccf.corp_hop_frequency_180d, ccf.short_tenure_ratio_180d, ccf.repeatability_score,
                 COALESCE(emc.entity_name, CONCAT("Character #", ccs.character_id)) AS character_name
@@ -14126,7 +14126,7 @@ function db_battle_intelligence_character(int $characterId): ?array
 
     $row = db_select_one(
         'SELECT ccs.character_id, ccs.review_priority_score, ccs.percentile_rank, ccs.confidence_score, ccs.evidence_count, ccs.computed_at,
-                ccf.anomalous_battle_presence_count, ccf.control_battle_presence_count, ccf.anomalous_presence_rate, ccf.control_presence_rate,
+                ccf.anomalous_battle_presence_count, ccf.control_battle_presence_count, ccf.anomalous_battle_denominator, ccf.control_battle_denominator, ccf.anomalous_presence_rate, ccf.control_presence_rate,
                 ccf.enemy_same_hull_survival_lift, ccf.enemy_sustain_lift, ccf.co_presence_anomalous_density, ccf.graph_bridge_score,
                 ccf.corp_hop_frequency_180d, ccf.short_tenure_ratio_180d, ccf.repeatability_score,
                 coh.source AS org_history_source, coh.current_corporation_id, coh.current_alliance_id, coh.corp_hops_180d, coh.short_tenure_hops_180d,
