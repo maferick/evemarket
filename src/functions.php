@@ -23190,7 +23190,14 @@ function supplycore_materialized_snapshot_mark_updating(string $snapshotKey, str
 function supplycore_materialized_snapshot_read_or_bootstrap(string $snapshotKey, callable $builder, string $reason): array
 {
     $snapshot = supplycore_materialized_snapshot_fetch($snapshotKey);
-    if ($snapshot !== null && is_array($snapshot['payload'] ?? null) && $snapshot['payload'] !== []) {
+    $expired = false;
+    if ($snapshot !== null) {
+        $expiresAt = trim((string) ($snapshot['meta']['expires_at'] ?? ''));
+        if ($expiresAt !== '' && strtotime($expiresAt) !== false && strtotime($expiresAt) < time()) {
+            $expired = true;
+        }
+    }
+    if (!$expired && $snapshot !== null && is_array($snapshot['payload'] ?? null) && $snapshot['payload'] !== []) {
         return supplycore_materialized_snapshot_attach_meta($snapshot['payload'], is_array($snapshot['meta'] ?? null) ? $snapshot['meta'] : []);
     }
 
@@ -24174,6 +24181,13 @@ function doctrine_snapshot_cache_payload(): ?array
 
     if (!is_array($fitSnapshot) || !is_array($groupSnapshot)) {
         return null;
+    }
+
+    foreach ([$fitSnapshot, $groupSnapshot] as $snap) {
+        $expiresAt = trim((string) ($snap['meta']['expires_at'] ?? ''));
+        if ($expiresAt !== '' && strtotime($expiresAt) !== false && strtotime($expiresAt) < time()) {
+            return null;
+        }
     }
 
     $fitPayload = is_array($fitSnapshot['payload'] ?? null) ? $fitSnapshot['payload'] : [];
