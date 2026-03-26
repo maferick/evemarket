@@ -9,6 +9,7 @@ import urllib.request
 from typing import Any
 
 from ..db import SupplyCoreDb
+from ..job_result import JobResult
 from ..job_utils import acquire_job_lock, finish_job_run, release_job_lock, start_job_run
 from ..json_utils import json_dumps_safe
 from ..neo4j import Neo4jClient, Neo4jConfig
@@ -407,7 +408,7 @@ def run_compute_counterintel_pipeline(
     lock_key = "compute_counterintel_pipeline"
     owner = acquire_job_lock(db, lock_key, ttl_seconds=1200)
     if owner is None:
-        return {"status": "skipped", "rows_processed": 0, "rows_written": 0, "reason": "lock-not-acquired", "job_name": lock_key}
+        return JobResult.skipped(job_key=lock_key, reason="lock-not-acquired").to_dict()
 
     job = start_job_run(db, lock_key)
     started = time.perf_counter()
@@ -1028,22 +1029,24 @@ def run_compute_counterintel_pipeline(
             _sync_state_upsert(db, COUNTERINTEL_DATASET_KEY, last_battle_id, "success", rows_written)
 
         duration_ms = int((time.perf_counter() - started) * 1000)
-        result = {
-            "status": "success",
-            "job_name": lock_key,
-            "rows_processed": rows_processed,
-            "rows_written": 0 if dry_run else rows_written,
-            "rows_would_write": rows_written if dry_run else rows_written,
-            "computed_at": computed_at,
-            "cursor": last_battle_id,
-            "duration_ms": duration_ms,
-            "dry_run": dry_run,
-            "battle_assignment_validation": {
-                "mismatch_count": assignment_mismatch_count,
-                "sample_rows": assignment_mismatch_samples,
+        result = JobResult.success(
+            job_key=lock_key,
+            summary=f"Processed {processed_battles} eligible 100+ participant battles across {batch_count} batches.",
+            rows_processed=rows_processed,
+            rows_written=0 if dry_run else rows_written,
+            duration_ms=duration_ms,
+            batches_completed=batch_count,
+            meta={
+                "computed_at": computed_at,
+                "rows_would_write": rows_written if dry_run else rows_written,
+                "cursor": last_battle_id,
+                "dry_run": dry_run,
+                "battle_assignment_validation": {
+                    "mismatch_count": assignment_mismatch_count,
+                    "sample_rows": assignment_mismatch_samples,
+                },
             },
-            "summary": f"processed {processed_battles} eligible 100+ participant battles across {batch_count} batches",
-        }
+        ).to_dict()
         finish_job_run(db, job, status="success", rows_processed=rows_processed, rows_written=rows_written, meta=result)
         return result
     except Exception as exc:

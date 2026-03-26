@@ -13,11 +13,13 @@ if __package__ in (None, ""):
     if package_root not in sys.path:
         sys.path.insert(0, package_root)
     from orchestrator.db import SupplyCoreDb
+    from orchestrator.job_result import JobResult
     from orchestrator.json_utils import json_dumps_safe
     from orchestrator.job_utils import acquire_job_lock, finish_job_run, release_job_lock, start_job_run
     from orchestrator.neo4j import Neo4jClient, Neo4jConfig
 else:
     from ..db import SupplyCoreDb
+    from ..job_result import JobResult
     from ..json_utils import json_dumps_safe
     from ..job_utils import acquire_job_lock, finish_job_run, release_job_lock, start_job_run
     from ..neo4j import Neo4jClient, Neo4jConfig
@@ -222,7 +224,7 @@ def run_compute_battle_rollups(db: SupplyCoreDb, runtime: dict[str, Any] | None 
     lock_key = "compute_battle_rollups"
     owner = acquire_job_lock(db, lock_key, ttl_seconds=900)
     if owner is None:
-        result = {"rows_processed": 0, "rows_written": 0, "status": "skipped", "reason": "lock-not-acquired", "job_name": "compute_battle_rollups"}
+        result = JobResult.skipped(job_key="compute_battle_rollups", reason="lock-not-acquired").to_dict()
         _battle_log(runtime, "battle_intelligence.job.skipped", result)
         return result
 
@@ -504,19 +506,21 @@ def run_compute_battle_rollups(db: SupplyCoreDb, runtime: dict[str, Any] | None 
             meta={"computed_at": computed_at, "batch_count": batch_count, "cursor_start": cursor_start, "cursor_end": cursor_end},
         )
         duration_ms = int((datetime.now(UTC) - started_monotonic).total_seconds() * 1000)
-        result = {
-            "rows_processed": rows_processed,
-            "rows_written": 0 if dry_run else rows_written,
-            "rows_would_write": rows_written,
-            "batch_count": batch_count,
-            "cursor_start": cursor_start,
-            "cursor_end": cursor_end,
-            "computed_at": computed_at,
-            "duration_ms": duration_ms,
-            "dry_run": dry_run,
-            "job_name": "compute_battle_rollups",
-            "status": "success",
-        }
+        result = JobResult.success(
+            job_key="compute_battle_rollups",
+            summary=f"Rolled up {rows_processed} killmails into battles across {batch_count} batches.",
+            rows_processed=rows_processed,
+            rows_written=0 if dry_run else rows_written,
+            duration_ms=duration_ms,
+            batches_completed=batch_count,
+            meta={
+                "computed_at": computed_at,
+                "rows_would_write": rows_written,
+                "cursor_start": cursor_start,
+                "cursor_end": cursor_end,
+                "dry_run": dry_run,
+            },
+        ).to_dict()
         _battle_log(runtime, "battle_intelligence.job.success", result)
         return result
     except Exception as exc:
@@ -536,7 +540,7 @@ def run_compute_battle_target_metrics(db: SupplyCoreDb, runtime: dict[str, Any] 
     lock_key = "compute_battle_target_metrics"
     owner = acquire_job_lock(db, lock_key, ttl_seconds=900)
     if owner is None:
-        result = {"rows_processed": 0, "rows_written": 0, "status": "skipped", "reason": "lock-not-acquired", "job_name": "compute_battle_target_metrics"}
+        result = JobResult.skipped(job_key="compute_battle_target_metrics", reason="lock-not-acquired").to_dict()
         _battle_log(runtime, "battle_intelligence.job.skipped", result)
         return result
 
@@ -704,20 +708,22 @@ def run_compute_battle_target_metrics(db: SupplyCoreDb, runtime: dict[str, Any] 
             meta={"computed_at": computed_at, "unscored_targets": unscored_targets, "batch_count": batch_count, "cursor_start": cursor_start, "cursor_end": cursor_end},
         )
         duration_ms = int((datetime.now(UTC) - started_monotonic).total_seconds() * 1000)
-        result = {
-            "rows_processed": rows_processed,
-            "rows_written": 0 if dry_run else rows_written,
-            "rows_would_write": rows_written,
-            "computed_at": computed_at,
-            "unscored_targets": unscored_targets,
-            "batch_count": batch_count,
-            "cursor_start": cursor_start,
-            "cursor_end": cursor_end,
-            "duration_ms": duration_ms,
-            "dry_run": dry_run,
-            "job_name": "compute_battle_target_metrics",
-            "status": "success",
-        }
+        result = JobResult.success(
+            job_key="compute_battle_target_metrics",
+            summary=f"Scored {rows_processed} target metrics across {batch_count} batches ({unscored_targets} unscored).",
+            rows_processed=rows_processed,
+            rows_written=0 if dry_run else rows_written,
+            duration_ms=duration_ms,
+            batches_completed=batch_count,
+            meta={
+                "computed_at": computed_at,
+                "rows_would_write": rows_written,
+                "unscored_targets": unscored_targets,
+                "cursor_start": cursor_start,
+                "cursor_end": cursor_end,
+                "dry_run": dry_run,
+            },
+        ).to_dict()
         _battle_log(runtime, "battle_intelligence.job.success", result)
         return result
     except Exception as exc:
@@ -733,7 +739,7 @@ def run_compute_battle_anomalies(db: SupplyCoreDb, runtime: dict[str, Any] | Non
     lock_key = "compute_battle_anomalies"
     owner = acquire_job_lock(db, lock_key, ttl_seconds=900)
     if owner is None:
-        result = {"rows_processed": 0, "rows_written": 0, "status": "skipped", "reason": "lock-not-acquired", "job_name": "compute_battle_anomalies"}
+        result = JobResult.skipped(job_key="compute_battle_anomalies", reason="lock-not-acquired").to_dict()
         _battle_log(runtime, "battle_intelligence.job.skipped", result)
         return result
 
@@ -884,18 +890,20 @@ def run_compute_battle_anomalies(db: SupplyCoreDb, runtime: dict[str, Any] | Non
             if z_value > 2.0:
                 high_count += 1
         duration_ms = int((datetime.now(UTC) - started_monotonic).total_seconds() * 1000)
-        result = {
-            "rows_processed": rows_processed,
-            "rows_written": 0 if dry_run else rows_written,
-            "rows_would_write": rows_written if dry_run else rows_written,
-            "anomaly_count": len(shaped),
-            "high_sustain_count": high_count,
-            "computed_at": computed_at,
-            "duration_ms": duration_ms,
-            "dry_run": dry_run,
-            "job_name": "compute_battle_anomalies",
-            "status": "success",
-        }
+        result = JobResult.success(
+            job_key="compute_battle_anomalies",
+            summary=f"Detected {len(shaped)} anomalies ({high_count} high-sustain) from {rows_processed} rows.",
+            rows_processed=rows_processed,
+            rows_written=0 if dry_run else rows_written,
+            duration_ms=duration_ms,
+            meta={
+                "computed_at": computed_at,
+                "rows_would_write": rows_written if dry_run else rows_written,
+                "anomaly_count": len(shaped),
+                "high_sustain_count": high_count,
+                "dry_run": dry_run,
+            },
+        ).to_dict()
         _battle_log(runtime, "battle_intelligence.job.success", result)
         return result
     except Exception as exc:
@@ -916,7 +924,7 @@ def run_compute_battle_actor_features(
     lock_key = "compute_battle_actor_features"
     owner = acquire_job_lock(db, lock_key, ttl_seconds=900)
     if owner is None:
-        result = {"rows_processed": 0, "rows_written": 0, "status": "skipped", "reason": "lock-not-acquired", "job_name": "compute_battle_actor_features"}
+        result = JobResult.skipped(job_key="compute_battle_actor_features", reason="lock-not-acquired").to_dict()
         _battle_log(runtime, "battle_intelligence.job.skipped", result)
         return result
 
@@ -995,17 +1003,19 @@ def run_compute_battle_actor_features(
             meta={"computed_at": computed_at, "neo4j": neo_result},
         )
         duration_ms = int((datetime.now(UTC) - started_monotonic).total_seconds() * 1000)
-        result = {
-            "rows_processed": rows_processed,
-            "rows_written": 0 if dry_run else rows_written,
-            "rows_would_write": rows_written if dry_run else rows_written,
-            "computed_at": computed_at,
-            "neo4j": neo_result,
-            "duration_ms": duration_ms,
-            "dry_run": dry_run,
-            "job_name": "compute_battle_actor_features",
-            "status": "success",
-        }
+        result = JobResult.success(
+            job_key="compute_battle_actor_features",
+            summary=f"Extracted actor features for {rows_processed} participants, wrote {rows_written} rows.",
+            rows_processed=rows_processed,
+            rows_written=0 if dry_run else rows_written,
+            duration_ms=duration_ms,
+            meta={
+                "computed_at": computed_at,
+                "rows_would_write": rows_written if dry_run else rows_written,
+                "neo4j": neo_result,
+                "dry_run": dry_run,
+            },
+        ).to_dict()
         _battle_log(runtime, "battle_intelligence.job.success", result)
         return result
     except Exception as exc:
@@ -1025,7 +1035,7 @@ def run_compute_suspicion_scores(db: SupplyCoreDb, runtime: dict[str, Any] | Non
     lock_key = "compute_suspicion_scores"
     owner = acquire_job_lock(db, lock_key, ttl_seconds=900)
     if owner is None:
-        result = {"rows_processed": 0, "rows_written": 0, "status": "skipped", "reason": "lock-not-acquired", "job_name": "compute_suspicion_scores"}
+        result = JobResult.skipped(job_key="compute_suspicion_scores", reason="lock-not-acquired").to_dict()
         _battle_log(runtime, "battle_intelligence.job.skipped", result)
         return result
 
@@ -1290,18 +1300,20 @@ def run_compute_suspicion_scores(db: SupplyCoreDb, runtime: dict[str, Any] | Non
             meta={"computed_at": computed_at, "scored_characters": len(score_rows)},
         )
         duration_ms = int((datetime.now(UTC) - started_monotonic).total_seconds() * 1000)
-        result = {
-            "rows_processed": rows_processed,
-            "rows_written": 0 if dry_run else rows_written,
-            "rows_would_write": rows_written if dry_run else rows_written,
-            "computed_at": computed_at,
-            "scored_character_count": len(score_rows),
-            "minimum_sample_filtered_count": minimum_sample_filtered_count,
-            "duration_ms": duration_ms,
-            "dry_run": dry_run,
-            "job_name": "compute_suspicion_scores",
-            "status": "success",
-        }
+        result = JobResult.success(
+            job_key="compute_suspicion_scores",
+            summary=f"Scored {len(score_rows)} characters ({minimum_sample_filtered_count} filtered below sample threshold).",
+            rows_processed=rows_processed,
+            rows_written=0 if dry_run else rows_written,
+            duration_ms=duration_ms,
+            meta={
+                "computed_at": computed_at,
+                "rows_would_write": rows_written if dry_run else rows_written,
+                "scored_character_count": len(score_rows),
+                "minimum_sample_filtered_count": minimum_sample_filtered_count,
+                "dry_run": dry_run,
+            },
+        ).to_dict()
         _battle_log(runtime, "battle_intelligence.job.success", result)
         return result
     except Exception as exc:

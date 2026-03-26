@@ -10,6 +10,7 @@ from zoneinfo import ZoneInfo
 
 from ..bridge import PhpBridge
 from ..db import SupplyCoreDb
+from ..job_result import JobResult
 from ..worker_runtime import WorkerStats, resident_memory_bytes, utc_now_iso
 
 
@@ -531,18 +532,11 @@ def run_market_hub_local_history(context: Any) -> dict[str, Any]:
 
     try:
         if source_id <= 0:
-            result = {
-                "status": "success",
-                "summary": "Hub snapshot history sync skipped because the configured market hub source could not be resolved.",
-                "rows_seen": 0,
-                "rows_written": 0,
-                "cursor": "source_type:market_hub;state:missing_source_id",
-                "checksum": _payload_checksum({"source_type": "market_hub", "source_id": source_id, "status": "missing_source_id"}),
-                "warnings": [f"Hub snapshot history sync skipped: could not resolve a valid local source id for {source_name}."],
-                "duration_ms": stats.duration_ms(),
-                "started_at": stats.started_at_iso,
-                "finished_at": utc_now_iso(),
-                "meta": {
+            result = JobResult.skipped(
+                job_key="sync_market_hub_local_history",
+                reason=f"Hub snapshot history sync skipped: could not resolve a valid local source id for {source_name}.",
+                started_at=stats.started_at_iso,
+                meta={
                     "execution_mode": "python",
                     "source_type": "market_hub",
                     "source_id": source_id,
@@ -557,10 +551,12 @@ def run_market_hub_local_history(context: Any) -> dict[str, Any]:
                     "snapshot_days_seen": 0,
                     "no_changes": True,
                     "outcome_reason": "missing_source_id",
-                }
-                | job_context,
-                "run_id": run_id,
-            }
+                    "cursor": "source_type:market_hub;state:missing_source_id",
+                    "checksum": _payload_checksum({"source_type": "market_hub", "source_id": source_id, "status": "missing_source_id"}),
+                    "run_id": run_id,
+                    **job_context,
+                },
+            ).to_dict()
             bridge.call(
                 "sync-run-finish",
                 payload={
@@ -570,8 +566,8 @@ def run_market_hub_local_history(context: Any) -> dict[str, Any]:
                     "status": "success",
                     "rows_seen": result["rows_seen"],
                     "rows_written": result["rows_written"],
-                    "cursor": result["cursor"],
-                    "checksum": result["checksum"],
+                    "cursor": result.get("meta", {}).get("cursor", ""),
+                    "checksum": result.get("meta", {}).get("checksum", ""),
                 },
             )
             return result
@@ -611,27 +607,11 @@ def run_market_hub_local_history(context: Any) -> dict[str, Any]:
         _guard_runtime(context, stats, "snapshot metrics build")
 
         if not snapshot_metrics:
-            result = {
-                "status": "success",
-                "summary": "Hub snapshot history sync found no local raw order snapshots in the configured window.",
-                "rows_seen": 0,
-                "rows_written": 0,
-                "cursor": f"source_type:market_hub;source_id:{source_id};state:awaiting_local_snapshots",
-                "checksum": _payload_checksum(
-                    {
-                        "source_type": "market_hub",
-                        "source_id": source_id,
-                        "window_days": window_days,
-                        "status": "awaiting_local_snapshots",
-                    }
-                ),
-                "warnings": [
-                    f"Hub snapshot history sync found no local raw order snapshots in the last {window_days} day(s) for {source_name}. Run the matching current sync first or widen --window-days."
-                ],
-                "duration_ms": stats.duration_ms(),
-                "started_at": stats.started_at_iso,
-                "finished_at": utc_now_iso(),
-                "meta": {
+            result = JobResult.skipped(
+                job_key="sync_market_hub_local_history",
+                reason=f"Hub snapshot history sync found no local raw order snapshots in the last {window_days} day(s) for {source_name}. Run the matching current sync first or widen --window-days.",
+                started_at=stats.started_at_iso,
+                meta={
                     "execution_mode": "python",
                     "source_type": "market_hub",
                     "source_id": source_id,
@@ -647,10 +627,12 @@ def run_market_hub_local_history(context: Any) -> dict[str, Any]:
                     "snapshot_summary_rows_written": summary_rows_written,
                     "no_changes": True,
                     "outcome_reason": "awaiting_local_snapshots",
-                }
-                | job_context,
-                "run_id": run_id,
-            }
+                    "cursor": f"source_type:market_hub;source_id:{source_id};state:awaiting_local_snapshots",
+                    "checksum": _payload_checksum({"source_type": "market_hub", "source_id": source_id, "window_days": window_days, "status": "awaiting_local_snapshots"}),
+                    "run_id": run_id,
+                    **job_context,
+                },
+            ).to_dict()
             bridge.call(
                 "sync-run-finish",
                 payload={
@@ -660,8 +642,8 @@ def run_market_hub_local_history(context: Any) -> dict[str, Any]:
                     "status": "success",
                     "rows_seen": result["rows_seen"],
                     "rows_written": result["rows_written"],
-                    "cursor": result["cursor"],
-                    "checksum": result["checksum"],
+                    "cursor": result.get("meta", {}).get("cursor", ""),
+                    "checksum": result.get("meta", {}).get("checksum", ""),
                 },
             )
             return result
@@ -673,25 +655,13 @@ def run_market_hub_local_history(context: Any) -> dict[str, Any]:
         _guard_runtime(context, stats, "daily rebuild")
 
         if not canonical_rows:
-            result = {
-                "status": "success",
-                "summary": "Hub snapshot history sync could not derive daily local-history rows from the available snapshots.",
-                "rows_seen": rows_seen,
-                "rows_written": 0,
-                "cursor": f"source_type:market_hub;source_id:{source_id};window_days:{window_days};state:no_canonical_rows",
-                "checksum": _payload_checksum(
-                    {
-                        "source_type": "market_hub",
-                        "source_id": source_id,
-                        "window_days": window_days,
-                        "status": "no_canonical_rows",
-                    }
-                ),
-                "warnings": [f"Hub snapshot history sync could not derive any daily rows from the local raw order snapshots for {source_name}."],
-                "duration_ms": stats.duration_ms(),
-                "started_at": stats.started_at_iso,
-                "finished_at": utc_now_iso(),
-                "meta": {
+            result = JobResult.skipped(
+                job_key="sync_market_hub_local_history",
+                reason=f"Hub snapshot history sync could not derive any daily rows from the local raw order snapshots for {source_name}.",
+                rows_seen=rows_seen,
+                rows_skipped=rows_seen,
+                started_at=stats.started_at_iso,
+                meta={
                     "execution_mode": "python",
                     "source_type": "market_hub",
                     "source_id": source_id,
@@ -707,10 +677,12 @@ def run_market_hub_local_history(context: Any) -> dict[str, Any]:
                     "snapshot_summary_rows_written": summary_rows_written,
                     "no_changes": True,
                     "outcome_reason": "no_canonical_rows",
-                }
-                | job_context,
-                "run_id": run_id,
-            }
+                    "cursor": f"source_type:market_hub;source_id:{source_id};window_days:{window_days};state:no_canonical_rows",
+                    "checksum": _payload_checksum({"source_type": "market_hub", "source_id": source_id, "window_days": window_days, "status": "no_canonical_rows"}),
+                    "run_id": run_id,
+                    **job_context,
+                },
+            ).to_dict()
             bridge.call(
                 "sync-run-finish",
                 payload={
@@ -720,8 +692,8 @@ def run_market_hub_local_history(context: Any) -> dict[str, Any]:
                     "status": "success",
                     "rows_seen": result["rows_seen"],
                     "rows_written": result["rows_written"],
-                    "cursor": result["cursor"],
-                    "checksum": result["checksum"],
+                    "cursor": result.get("meta", {}).get("cursor", ""),
+                    "checksum": result.get("meta", {}).get("checksum", ""),
                 },
             )
             return result
@@ -735,18 +707,15 @@ def run_market_hub_local_history(context: Any) -> dict[str, Any]:
         _emit_progress(context, stats, "local_history_upsert", rows_seen, rows_written)
         _guard_runtime(context, stats, "local history upsert")
 
-        result = {
-            "status": "success",
-            "summary": "Hub snapshot history sync rebuilt local-history daily candles in native Python.",
-            "rows_seen": rows_seen,
-            "rows_written": rows_written,
-            "cursor": cursor,
-            "checksum": checksum,
-            "warnings": [],
-            "duration_ms": stats.duration_ms(),
-            "started_at": stats.started_at_iso,
-            "finished_at": utc_now_iso(),
-            "meta": {
+        result = JobResult.success(
+            job_key="sync_market_hub_local_history",
+            summary="Hub snapshot history sync rebuilt local-history daily candles in native Python.",
+            rows_seen=rows_seen,
+            rows_written=rows_written,
+            rows_skipped=max(0, history_row_count - rows_written),
+            batches_completed=stats.progress.batches_completed,
+            started_at=stats.started_at_iso,
+            meta={
                 "execution_mode": "python",
                 "source_type": "market_hub",
                 "source_id": source_id,
@@ -763,10 +732,12 @@ def run_market_hub_local_history(context: Any) -> dict[str, Any]:
                 "snapshot_days_seen": len(trade_dates),
                 "no_changes": rows_written == 0,
                 "memory_usage_bytes": resident_memory_bytes(),
-            }
-            | job_context,
-            "run_id": run_id,
-        }
+                "cursor": cursor,
+                "checksum": checksum,
+                "run_id": run_id,
+                **job_context,
+            },
+        ).to_dict()
         bridge.call(
             "sync-run-finish",
             payload={

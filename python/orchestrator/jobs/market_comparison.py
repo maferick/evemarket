@@ -5,6 +5,7 @@ from typing import Any
 
 from ..bridge import PhpBridge
 from ..db import SupplyCoreDb
+from ..job_result import JobResult
 from ..worker_runtime import WorkerStats, payload_checksum, resident_memory_bytes, utc_now_iso
 
 
@@ -248,23 +249,20 @@ def run_market_comparison_summary(context: Any) -> dict[str, Any]:
     )
     freshness = ((snapshot_store.get("snapshot") or {}).get("_freshness") or {})
 
-    return {
-        "status": "success",
-        "summary": "Market comparison summaries were recomputed in Python batches and written to materialized storage.",
-        "rows_seen": len(snapshot_rows),
-        "rows_written": len(snapshot_rows),
-        "cursor": f"market_comparison:{utc_now_iso()}",
-        "checksum": payload_checksum({"rows": len(snapshot_rows), "computed_at": freshness.get("computed_at")}),
-        "duration_ms": stats.duration_ms(),
-        "started_at": stats.started_at_iso,
-        "finished_at": utc_now_iso(),
-        "warnings": [],
-        "meta": {
+    return JobResult.success(
+        job_key="compute_market_comparison_summary",
+        summary="Market comparison summaries were recomputed in Python batches and written to materialized storage.",
+        rows_seen=len(snapshot_rows),
+        rows_written=len(snapshot_rows),
+        rows_processed=stats.progress.rows_processed,
+        batches_completed=stats.progress.batches_completed,
+        started_at=stats.started_at_iso,
+        meta={
             "execution_mode": "python",
             "snapshot_generated_at": freshness.get("computed_at"),
-            "rows_processed": stats.progress.rows_processed,
-            "batches_completed": stats.progress.batches_completed,
             "memory_usage_bytes": resident_memory_bytes(),
+            "cursor": f"market_comparison:{utc_now_iso()}",
+            "checksum": payload_checksum({"rows": len(snapshot_rows), "computed_at": freshness.get("computed_at")}),
             "outcome_reason": "Python streamed summary snapshots in batches, pushed aggregation to SQL, and stored the materialized market comparison snapshot.",
         },
-    }
+    ).to_dict()

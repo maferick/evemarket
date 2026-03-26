@@ -7,6 +7,7 @@ from typing import Any
 
 from ..db import SupplyCoreDb
 from ..influx import InfluxClient, InfluxConfig, InfluxQueryError
+from ..job_result import JobResult
 
 
 DECIMAL_ZERO = Decimal("0")
@@ -174,7 +175,13 @@ def run_compute_signals(db: SupplyCoreDb, influx_raw: dict[str, Any] | None = No
             )
             created += 1
 
-    return {"computed_at": computed_at, "signals_created": created, "rows_processed": len(rows), "rows_written": created}
+    return JobResult.success(
+        job_key="compute_signals",
+        summary=f"Generated {created} intelligence signals from {len(rows)} buy-all items.",
+        rows_processed=len(rows),
+        rows_written=created,
+        meta={"computed_at": computed_at, "signals_created": created},
+    ).to_dict()
 
 
 def _decimal_json_default(value: Any) -> Any:

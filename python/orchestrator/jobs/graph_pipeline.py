@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from ..db import SupplyCoreDb
+from ..job_result import JobResult
 from ..json_utils import json_dumps_safe
 from ..neo4j import Neo4jClient, Neo4jConfig, Neo4jError
 
@@ -150,21 +151,44 @@ def _emit_batch_telemetry(log_file: str, job_name: str, payload: dict[str, Any])
 
 
 def _job_payload(job_name: str, started_at: float, status: str, **kwargs: Any) -> dict[str, Any]:
-    payload = {
-        "job_name": job_name,
-        "status": status,
-        "duration_ms": int((time.perf_counter() - started_at) * 1000),
-        "rows_processed": int(kwargs.pop("rows_processed", 0)),
-        "rows_written": int(kwargs.pop("rows_written", 0)),
+    duration_ms = int((time.perf_counter() - started_at) * 1000)
+    rows_processed = int(kwargs.pop("rows_processed", 0))
+    rows_written = int(kwargs.pop("rows_written", 0))
+    error_text = str(kwargs.pop("error_text", "")) or None
+
+    graph_meta = {
         "nodes_created": int(kwargs.pop("nodes_created", 0)),
         "nodes_merged": int(kwargs.pop("nodes_merged", 0)),
         "relationships_created": int(kwargs.pop("relationships_created", 0)),
         "relationships_merged": int(kwargs.pop("relationships_merged", 0)),
-        "error_text": str(kwargs.pop("error_text", "")),
         "timestamp": datetime.now(UTC).isoformat(),
     }
-    payload.update(kwargs)
-    return payload
+    graph_meta.update(kwargs)
+
+    if status == "skipped":
+        return JobResult.skipped(
+            job_key=job_name,
+            reason=error_text or "skipped",
+            meta=graph_meta,
+        ).to_dict()
+
+    if status == "failed":
+        return JobResult.failed(
+            job_key=job_name,
+            error=error_text or "unknown error",
+            duration_ms=duration_ms,
+            meta=graph_meta,
+        ).to_dict()
+
+    return JobResult.success(
+        job_key=job_name,
+        summary=f"{job_name} completed successfully.",
+        rows_processed=rows_processed,
+        rows_written=rows_written,
+        rows_seen=rows_processed,
+        duration_ms=duration_ms,
+        meta=graph_meta,
+    ).to_dict()
 
 
 def _ensure_constraints_and_indexes(client: Neo4jClient) -> None:

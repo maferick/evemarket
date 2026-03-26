@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from ..db import SupplyCoreDb
+from ..job_result import JobResult
 from ..json_utils import json_dumps_safe
 
 MIN_SAMPLE_COUNT = 5
@@ -180,14 +181,14 @@ def run_compute_behavioral_baselines(db: SupplyCoreDb, runtime: dict[str, Any] |
                 payload,
             )
 
-    return {
-        "status": "success",
-        "rows_processed": len(rows),
-        "rows_written": len(payload),
-        "computed_at": computed_at,
-        "duration_ms": int((time.perf_counter() - started) * 1000),
-        "job_name": "compute_behavioral_baselines",
-    }
+    return JobResult.success(
+        job_key="compute_behavioral_baselines",
+        summary=f"Computed behavioral baselines for {len(payload)} characters from {len(rows)} actor features.",
+        rows_processed=len(rows),
+        rows_written=len(payload),
+        duration_ms=int((time.perf_counter() - started) * 1000),
+        meta={"computed_at": computed_at},
+    ).to_dict()
 
 
 def run_compute_suspicion_scores_v2(db: SupplyCoreDb, runtime: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -407,11 +408,11 @@ def run_compute_suspicion_scores_v2(db: SupplyCoreDb, runtime: dict[str, Any] | 
                 ),
             )
 
-    return {
-        "status": "success",
-        "rows_processed": len(rows),
-        "rows_written": len(score_payload),
-        "computed_at": computed_at,
-        "duration_ms": int((time.perf_counter() - started) * 1000),
-        "job_name": "compute_suspicion_scores_v2",
-    }
+    return JobResult.success(
+        job_key="compute_suspicion_scores_v2",
+        summary=f"Scored {len(score_payload)} characters from {len(rows)} behavioral baselines.",
+        rows_processed=len(rows),
+        rows_written=len(score_payload),
+        duration_ms=int((time.perf_counter() - started) * 1000),
+        meta={"computed_at": computed_at},
+    ).to_dict()

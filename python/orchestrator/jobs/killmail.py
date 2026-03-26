@@ -6,6 +6,7 @@ import urllib.request
 from typing import Any
 
 from ..bridge import PhpBridge
+from ..job_result import JobResult
 from ..worker_runtime import payload_checksum, resident_memory_bytes, utc_now_iso
 
 
@@ -361,22 +362,15 @@ def run_killmail_r2z2_stream(context: Any) -> dict[str, Any]:
     job_context = dict(bridge_response.get("context") or {})
 
     if not bool(job_context.get("enabled")):
-        return {
-            "status": "skipped",
-            "summary": "Killmail ingestion is disabled in settings.",
-            "rows_seen": 0,
-            "rows_written": 0,
-            "cursor": str(job_context.get("cursor") or "0"),
-            "checksum": payload_checksum({"cursor": job_context.get("cursor") or "0", "rows_written": 0}),
-            "duration_ms": 0,
-            "started_at": utc_now_iso(),
-            "finished_at": utc_now_iso(),
-            "warnings": ["Killmail ingestion disabled in settings."],
-            "meta": {
+        return JobResult.skipped(
+            job_key="killmail_r2z2_sync",
+            reason="Killmail ingestion is disabled in settings.",
+            meta={
                 "execution_mode": "python",
-                "outcome_reason": "Killmail ingestion is disabled.",
+                "cursor": str(job_context.get("cursor") or "0"),
+                "checksum": payload_checksum({"cursor": job_context.get("cursor") or "0", "rows_written": 0}),
             },
-        }
+        ).to_dict()
 
     sequence_url = str(job_context.get("sequence_url") or "").strip()
     base_url = str(job_context.get("base_url") or "").rstrip("/")
@@ -689,19 +683,22 @@ def run_killmail_r2z2_stream(context: Any) -> dict[str, Any]:
                 "unknown": "Python worker completed without new killmail inserts and the zero-write cause requires follow-up.",
             }.get(reason_for_zero_write, "Python worker completed without new killmail inserts.")
 
-        result = {
-            "status": "success",
-            "summary": "Killmail R2Z2 ingestion ran in Python with continuous polling and bridge-backed batch persistence.",
-            "rows_seen": totals["rows_seen"],
-            "rows_written": totals["rows_written"],
-            "cursor": cursor_end,
-            "checksum": checksum,
-            "duration_ms": int((time.monotonic() - started_at) * 1000),
-            "started_at": start_iso,
-            "finished_at": utc_now_iso(),
-            "warnings": warnings[-10:],
-            "meta": {
+        result = JobResult.success(
+            job_key="killmail_r2z2_sync",
+            summary="Killmail R2Z2 ingestion ran in Python with continuous polling and bridge-backed batch persistence.",
+            rows_processed=totals["rows_seen"],
+            rows_written=totals["rows_written"],
+            rows_seen=totals["rows_seen"],
+            rows_failed=totals["rows_failed"],
+            duration_ms=int((time.monotonic() - started_at) * 1000),
+            started_at=start_iso,
+            finished_at=utc_now_iso(),
+            warnings=warnings[-10:],
+            batches_completed=batches_flushed,
+            meta={
                 "execution_mode": "python",
+                "cursor": cursor_end,
+                "checksum": checksum,
                 "poll_sleep_seconds": poll_sleep_seconds,
                 "continuous_polling": True,
                 "sequence_files_fetched": total_sequence_files_fetched,
@@ -714,7 +711,6 @@ def run_killmail_r2z2_stream(context: Any) -> dict[str, Any]:
                 "rows_skipped_existing": totals["rows_skipped_existing"],
                 "rows_filtered_out": totals["rows_filtered_out"],
                 "rows_write_attempted": totals["rows_write_attempted"],
-                "rows_failed": totals["rows_failed"],
                 "killmails_fetched": totals["rows_seen"],
                 "killmails_inserted": totals["rows_written"],
                 "first_sequence_seen": first_sequence_seen,
@@ -724,7 +720,6 @@ def run_killmail_r2z2_stream(context: Any) -> dict[str, Any]:
                 "last_saved_sequence_before_run": last_saved_sequence,
                 "last_processed_sequence": last_processed_sequence,
                 "latest_remote_sequence": latest_remote_sequence,
-                "batches_flushed": batches_flushed,
                 "memory_usage_bytes": resident_memory_bytes(),
                 "checkpoint_updates": checkpoint_updates,
                 "checkpoint_failures": checkpoint_failures,
@@ -733,7 +728,7 @@ def run_killmail_r2z2_stream(context: Any) -> dict[str, Any]:
                 "no_write_reason": reason_for_zero_write,
                 "outcome_reason": outcome_reason,
             },
-        }
+        ).to_dict()
         _sync_run_finish(bridge, job_context, run_id, result)
         return result
     except Exception as error:
@@ -743,28 +738,25 @@ def run_killmail_r2z2_stream(context: Any) -> dict[str, Any]:
             bridge,
             job_context,
             run_id,
-            {
-                "status": "failed",
-                "summary": str(error),
-                "rows_seen": totals["rows_seen"],
-                "rows_written": totals["rows_written"],
-                "cursor": str(last_processed_sequence if last_processed_sequence is not None else (last_saved_sequence or 0)),
-                "checksum": "",
-                "error": str(error),
-                "meta": {
+            JobResult.failed(
+                job_key="sync_killmail_feed",
+                error=str(error),
+                rows_seen=totals["rows_seen"],
+                rows_written=totals["rows_written"],
+                rows_failed=max(1, totals["rows_failed"]),
+                checkpoint_before=str(last_saved_sequence or 0),
+                checkpoint_after=str(last_processed_sequence if last_processed_sequence is not None else (last_saved_sequence or 0)),
+                meta={
                     "rows_matched": totals["rows_matched"],
                     "rows_filtered_out": totals["rows_filtered_out"],
                     "rows_skipped_existing": totals["rows_skipped_existing"],
                     "rows_write_attempted": totals["rows_write_attempted"],
-                    "rows_failed": max(1, totals["rows_failed"]),
-                    "cursor_before": str(last_saved_sequence or 0),
-                    "cursor_after": str(last_processed_sequence if last_processed_sequence is not None else (last_saved_sequence or 0)),
                     "first_sequence_seen": first_sequence_seen,
                     "last_sequence_seen": last_sequence_seen,
                     "reason_for_zero_write": "transaction_rolled_back",
                     "checkpoint_state": "unchanged",
                     "outcome_reason": first_failure_message,
                 },
-            },
+            ).to_dict(),
         )
         raise

@@ -7,6 +7,7 @@ from hashlib import sha256
 from typing import Any
 
 from ..db import SupplyCoreDb
+from ..job_result import JobResult
 
 DEFAULT_REQUESTS: list[dict[str, Any]] = [
     {"mode": "blended", "sort": "blended_score", "filters": {}},
@@ -267,13 +268,17 @@ def run_compute_buy_all(db: SupplyCoreDb, requests: list[dict[str, Any]] | None 
 
         created += 1
 
-    return {
-        "computed_at": computed_at,
-        "requests": created,
-        "items_per_request": min(120, len(items)),
-        "rows_processed": rows_processed,
-        "rows_written": rows_written,
-    }
+    return JobResult.success(
+        job_key="compute_buy_all",
+        summary=f"Precomputed {created} buy-all request(s) with {rows_written} item rows.",
+        rows_processed=rows_processed,
+        rows_written=rows_written,
+        meta={
+            "computed_at": computed_at,
+            "requests": created,
+            "items_per_request": min(120, len(items)),
+        },
+    ).to_dict()
 
 
 def _decimal_json_default(value: Any) -> Any:
