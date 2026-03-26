@@ -21,7 +21,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
             <?php foreach ($rows as $row): ?>
                 <tr class="border-b border-border/50">
                     <td class="px-3 py-2"><?= htmlspecialchars((string) ($row['system_name'] ?? 'Unknown'), ENT_QUOTES) ?><div class="text-xs text-muted"><?= htmlspecialchars((string) ($row['started_at'] ?? ''), ENT_QUOTES) ?></div></td>
-                    <td class="px-3 py-2"><?= htmlspecialchars((string) ($row['side_key'] ?? 'unknown'), ENT_QUOTES) ?></td>
+                    <td class="px-3 py-2"><?= htmlspecialchars((string) ($row['side_name'] ?? $row['side_key'] ?? 'unknown'), ENT_QUOTES) ?><div class="text-xs text-muted"><?= htmlspecialchars((string) ($row['side_key'] ?? ''), ENT_QUOTES) ?></div></td>
                     <td class="px-3 py-2"><?= htmlspecialchars((string) ($row['anomaly_class'] ?? 'normal'), ENT_QUOTES) ?></td>
                     <td class="px-3 py-2 text-right"><?= htmlspecialchars(number_format((float) ($row['overperformance_score'] ?? 0), 3), ENT_QUOTES) ?></td>
                     <td class="px-3 py-2 text-right"><?= htmlspecialchars(number_format((float) ($row['sustain_lift_score'] ?? 0), 3), ENT_QUOTES) ?></td>
