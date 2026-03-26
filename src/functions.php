@@ -16853,6 +16853,7 @@ function esi_store_oauth_and_cache(array $tokenPayload, array $verifyPayload): v
 
         db_esi_cache_put('cache.esi.oauth.verify', 'latest', json_encode($verifyPayload, JSON_THROW_ON_ERROR));
         db_esi_cache_put('cache.esi.oauth.token', 'latest', json_encode([
+            'access_token' => $tokenPayload['access_token'] ?? '',
             'token_type' => $tokenPayload['token_type'] ?? 'Bearer',
             'expires_in' => $tokenPayload['expires_in'] ?? null,
             'scope' => $scopes,
@@ -16910,6 +16911,7 @@ function esi_refresh_oauth_token(array $storedToken): array
     );
 
     db_esi_cache_put('cache.esi.oauth.token', 'latest', json_encode([
+        'access_token' => $nextAccessToken,
         'token_type' => $tokenType !== '' ? $tokenType : 'Bearer',
         'expires_in' => $tokenPayload['expires_in'] ?? null,
         'scope' => $scopes,
