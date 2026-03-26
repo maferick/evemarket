@@ -18655,6 +18655,16 @@ function killmail_persist_r2z2_payload(
         ];
     }
 
+    // Determine mail_type: 'loss' if victim is tracked, 'kill' if attacker is tracked.
+    $mailType = 'kill';
+    $victimAllianceId = (int) ($event['victim_alliance_id'] ?? 0);
+    $victimCorporationId = (int) ($event['victim_corporation_id'] ?? 0);
+    if (($victimAllianceId > 0 && isset($trackedAllianceIds[$victimAllianceId]))
+        || ($victimCorporationId > 0 && isset($trackedCorporationIds[$victimCorporationId]))) {
+        $mailType = 'loss';
+    }
+    $transformed['event']['mail_type'] = $mailType;
+
     killmail_prime_entity_metadata(killmail_entity_resolution_requests(
         $event,
         (array) ($transformed['attackers'] ?? []),

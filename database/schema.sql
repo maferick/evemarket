@@ -1249,6 +1249,7 @@ CREATE TABLE IF NOT EXISTS killmail_events (
     victim_ship_type_id INT UNSIGNED DEFAULT NULL,
     victim_damage_taken BIGINT UNSIGNED DEFAULT NULL,
     battle_id CHAR(64) DEFAULT NULL,
+    mail_type ENUM('kill', 'loss') NOT NULL DEFAULT 'loss',
     zkb_total_value DECIMAL(20,2) DEFAULT NULL,
     zkb_fitted_value DECIMAL(20,2) DEFAULT NULL,
     zkb_dropped_value DECIMAL(20,2) DEFAULT NULL,
@@ -2736,6 +2737,69 @@ CREATE TABLE IF NOT EXISTS doctrine_fit_stock_pressure_1d (
     KEY idx_doctrine_fit_stock_pressure_1d_group_bucket (doctrine_group_id, bucket_start),
     KEY idx_doctrine_fit_stock_pressure_1d_bottleneck (bottleneck_type_id, bucket_start)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+
+-- ── Intelligence Platform ─────────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS esi_character_queue (
+    character_id   BIGINT UNSIGNED NOT NULL PRIMARY KEY,
+    queued_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    fetched_at     DATETIME DEFAULT NULL,
+    fetch_status   ENUM('pending', 'done', 'error') NOT NULL DEFAULT 'pending',
+    last_error     VARCHAR(500) DEFAULT NULL,
+    KEY idx_esi_character_queue_status (fetch_status, queued_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS character_alliance_history (
+    character_id   BIGINT UNSIGNED NOT NULL,
+    alliance_id    BIGINT UNSIGNED NOT NULL,
+    started_at     DATE NOT NULL,
+    ended_at       DATE DEFAULT NULL,
+    fetched_at     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (character_id, alliance_id, started_at),
+    KEY idx_character_alliance_history_alliance (alliance_id),
+    KEY idx_character_alliance_history_character (character_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS character_suspicion_signals (
+    character_id                     BIGINT UNSIGNED NOT NULL,
+    alliance_id                      BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    battles_present                  INT UNSIGNED NOT NULL DEFAULT 0,
+    kills_total                      INT UNSIGNED NOT NULL DEFAULT 0,
+    losses_total                     INT UNSIGNED NOT NULL DEFAULT 0,
+    damage_total                     BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    selective_non_engagement_score   DECIMAL(10,6) NOT NULL DEFAULT 0.000000,
+    high_presence_low_output_score   DECIMAL(10,6) NOT NULL DEFAULT 0.000000,
+    token_participation_score        DECIMAL(10,6) NOT NULL DEFAULT 0.000000,
+    loss_without_attack_ratio        DECIMAL(10,6) NOT NULL DEFAULT 0.000000,
+    peer_normalized_kills_delta      DECIMAL(10,6) NOT NULL DEFAULT 0.000000,
+    peer_normalized_damage_delta     DECIMAL(10,6) NOT NULL DEFAULT 0.000000,
+    suspicion_score                  DECIMAL(10,6) NOT NULL DEFAULT 0.000000,
+    suspicion_flags                  JSON NOT NULL,
+    engagement_rate_by_alliance      JSON NOT NULL,
+    computed_at                      DATETIME NOT NULL,
+    PRIMARY KEY (character_id),
+    KEY idx_character_suspicion_signals_alliance (alliance_id),
+    KEY idx_character_suspicion_signals_score (suspicion_score DESC)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS character_alliance_overlap (
+    character_id                     BIGINT UNSIGNED NOT NULL,
+    alliance_id                      BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    former_allies_attacking          INT UNSIGNED NOT NULL DEFAULT 0,
+    losses_to_former_allies          INT UNSIGNED NOT NULL DEFAULT 0,
+    repeat_former_ally_attackers     INT UNSIGNED NOT NULL DEFAULT 0,
+    total_repeat_kills_by_former     INT UNSIGNED NOT NULL DEFAULT 0,
+    historical_overlap_score         DECIMAL(10,6) NOT NULL DEFAULT 0.000000,
+    correlated_flag                  TINYINT NOT NULL DEFAULT 0,
+    combined_risk_score              DECIMAL(10,6) NOT NULL DEFAULT 0.000000,
+    computed_at                      DATETIME NOT NULL,
+    PRIMARY KEY (character_id),
+    KEY idx_character_alliance_overlap_alliance (alliance_id),
+    KEY idx_character_alliance_overlap_combined (combined_risk_score DESC),
+    KEY idx_character_alliance_overlap_correlated (correlated_flag)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 
 INSERT INTO trading_stations (station_name, station_type) VALUES
     ('Rens VI - Moon 8 - Brutor Tribe Treasury', 'market'),
