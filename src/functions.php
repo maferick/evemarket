@@ -8431,34 +8431,25 @@ function sync_status_for_dataset_keys(array $datasetKeys): array
     }
 
     try {
-        $states = [];
-        $runs = [];
+        $states = db_sync_states_get_many($normalizedKeys);
+        $runs = db_sync_runs_get_latest_many($normalizedKeys);
         $lastSuccessAt = null;
         $lastErrorMessage = null;
         $recentRowsWritten = 0;
 
-        foreach ($normalizedKeys as $datasetKey) {
-            $state = db_sync_state_get($datasetKey);
-            if ($state !== null) {
-                $states[] = $state;
-
-                $candidate = $state['last_success_at'] ?? null;
-                if (is_string($candidate) && $candidate !== '' && ($lastSuccessAt === null || strtotime($candidate) > strtotime($lastSuccessAt))) {
-                    $lastSuccessAt = $candidate;
-                }
-
-                $recentRowsWritten += max(0, (int) ($state['last_row_count'] ?? 0));
+        foreach ($states as $state) {
+            $candidate = $state['last_success_at'] ?? null;
+            if (is_string($candidate) && $candidate !== '' && ($lastSuccessAt === null || strtotime($candidate) > strtotime($lastSuccessAt))) {
+                $lastSuccessAt = $candidate;
             }
+            $recentRowsWritten += max(0, (int) ($state['last_row_count'] ?? 0));
+        }
 
-            $latestRun = db_sync_run_latest_by_dataset($datasetKey);
-            if ($latestRun !== null) {
-                $runs[] = $latestRun;
-
-                if ($lastErrorMessage === null && (string) ($latestRun['run_status'] ?? '') === 'failed') {
-                    $message = trim((string) ($latestRun['error_message'] ?? ''));
-                    if ($message !== '') {
-                        $lastErrorMessage = $message;
-                    }
+        foreach ($runs as $latestRun) {
+            if ($lastErrorMessage === null && (string) ($latestRun['run_status'] ?? '') === 'failed') {
+                $message = trim((string) ($latestRun['error_message'] ?? ''));
+                if ($message !== '') {
+                    $lastErrorMessage = $message;
                 }
             }
         }
@@ -23571,14 +23562,26 @@ function supplycore_ui_refresh_resolve_version(string $versionKey): ?array
 
 function supplycore_ui_refresh_current_versions(array $versionKeys): array
 {
+    $uniqueKeys = array_values(array_unique(array_filter(array_map('strval', $versionKeys), static fn (string $value): bool => $value !== '')));
+    if ($uniqueKeys === []) {
+        return [];
+    }
+
+    // Batch-load all stored section versions in a single query
+    $storedRows = db_ui_refresh_section_versions_get_many($uniqueKeys);
+    $storedByKey = [];
+    foreach ($storedRows as $storedRow) {
+        $storedByKey[(string) ($storedRow['section_key'] ?? '')] = $storedRow;
+    }
+
     $rows = [];
-    foreach (array_values(array_unique(array_filter(array_map('strval', $versionKeys), static fn (string $value): bool => $value !== ''))) as $versionKey) {
+    foreach ($uniqueKeys as $versionKey) {
         $resolved = supplycore_ui_refresh_resolve_version($versionKey);
         if ($resolved === null) {
             continue;
         }
 
-        $stored = db_ui_refresh_section_version_get($versionKey);
+        $stored = $storedByKey[$versionKey] ?? null;
         if (!is_array($stored) && trim((string) ($resolved['fingerprint'] ?? '')) !== '') {
             db_ui_refresh_section_version_upsert([
                 'section_key' => $versionKey,
@@ -23959,10 +23962,15 @@ function supplycore_live_refresh_matches_page(array $pageConfig, array $event): 
 
 function supplycore_live_refresh_state_payload(array $pageConfig): array
 {
+    // Reuse current_versions from page_config if already computed, otherwise resolve fresh
+    $currentVersions = is_array($pageConfig['current_versions'] ?? null) && ($pageConfig['current_versions'] ?? []) !== []
+        ? $pageConfig['current_versions']
+        : supplycore_ui_refresh_current_versions((array) ($pageConfig['version_keys'] ?? []));
+
     return [
         'page_id' => (string) ($pageConfig['page_id'] ?? ''),
         'transport' => 'polling',
-        'current_versions' => supplycore_ui_refresh_current_versions((array) ($pageConfig['version_keys'] ?? [])),
+        'current_versions' => $currentVersions,
         'last_published_event' => ($latest = db_ui_refresh_latest_event()) ? supplycore_ui_refresh_normalize_event_row($latest) : null,
         'generated_at' => gmdate(DATE_ATOM),
     ];

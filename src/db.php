@@ -2432,6 +2432,25 @@ function db_sync_state_get(string $datasetKey): ?array
     );
 }
 
+function db_sync_states_get_many(array $datasetKeys): array
+{
+    $normalized = array_values(array_unique(array_filter(array_map(
+        static fn (mixed $key): string => trim((string) $key),
+        $datasetKeys
+    ), static fn (string $key): bool => $key !== '')));
+    if ($normalized === []) {
+        return [];
+    }
+    $placeholders = implode(',', array_fill(0, count($normalized), '?'));
+
+    return db_select(
+        "SELECT dataset_key, sync_mode, status, last_success_at, last_cursor, last_row_count, last_checksum, last_error_message, updated_at
+         FROM sync_state
+         WHERE dataset_key IN ({$placeholders})",
+        $normalized
+    );
+}
+
 function db_sync_state_upsert(
     string $datasetKey,
     string $syncMode,
@@ -6472,6 +6491,30 @@ function db_sync_run_latest_by_dataset(string $datasetKey): ?array
          ORDER BY id DESC
          LIMIT 1',
         [$datasetKey]
+    );
+}
+
+function db_sync_runs_get_latest_many(array $datasetKeys): array
+{
+    $normalized = array_values(array_unique(array_filter(array_map(
+        static fn (mixed $key): string => trim((string) $key),
+        $datasetKeys
+    ), static fn (string $key): bool => $key !== '')));
+    if ($normalized === []) {
+        return [];
+    }
+    $placeholders = implode(',', array_fill(0, count($normalized), '?'));
+
+    return db_select(
+        "SELECT sr.id, sr.dataset_key, sr.run_mode, sr.run_status, sr.source_rows, sr.written_rows, sr.error_message, sr.started_at, sr.finished_at
+         FROM sync_runs sr
+         INNER JOIN (
+             SELECT dataset_key, MAX(id) AS max_id
+             FROM sync_runs
+             WHERE dataset_key IN ({$placeholders})
+             GROUP BY dataset_key
+         ) latest ON latest.dataset_key = sr.dataset_key AND latest.max_id = sr.id",
+        $normalized
     );
 }
 
