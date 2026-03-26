@@ -515,15 +515,15 @@ class SupplyCoreDb:
 
     def insert_sync_run(self, *, dataset_key: str, rows_seen: int, rows_written: int, status: str, error: str | None = None) -> int:
         return self.insert(
-            """INSERT INTO sync_runs (dataset_key, run_mode, run_status, started_at, finished_at, cursor_start, cursor_end, rows_seen, rows_written, error_message)
+            """INSERT INTO sync_runs (dataset_key, run_mode, run_status, started_at, finished_at, cursor_start, cursor_end, source_rows, written_rows, error_message)
                VALUES (%s, 'incremental', %s, UTC_TIMESTAMP(), UTC_TIMESTAMP(), NULL, NULL, %s, %s, %s)""",
             (dataset_key[:190], status[:20], max(0, rows_seen), max(0, rows_written), error[:500] if error else None),
         )
 
     def insert_scheduler_job_event(self, *, job_key: str, event_type: str, payload_json: str, duration_seconds: float) -> int:
         return self.insert(
-            """INSERT INTO scheduler_job_events (job_key, event_type, payload_json, rows_written, duration_seconds)
-               VALUES (%s, %s, %s, 0, %s)""",
+            """INSERT INTO scheduler_job_events (job_key, event_type, detail_json, duration_seconds)
+               VALUES (%s, %s, %s, %s)""",
             (job_key[:120], event_type[:40], payload_json, round(duration_seconds, 2)),
         )
 
@@ -532,10 +532,9 @@ class SupplyCoreDb:
             """UPDATE sync_schedules
                SET last_status = %s,
                    last_run_at = UTC_TIMESTAMP(),
-                   locked_until = NULL,
-                   runtime_snapshot_json = %s
+                   locked_until = NULL
                WHERE job_key = %s AND execution_mode = 'python'""",
-            (status[:20], snapshot_json, job_key[:120]),
+            (status[:20], job_key[:120]),
         )
 
     def refresh_market_order_current_projection(self, *, source_type: str) -> dict[str, int]:
