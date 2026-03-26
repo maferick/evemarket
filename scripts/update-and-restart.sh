@@ -8,15 +8,9 @@ DRY_RUN=0
 VERBOSE=0
 REFRESH_DEPS=0
 CLEAR_CACHE=0
+RUN_MIGRATIONS=1
 BRANCH=""
-
-SERVICES=(
-  supplycore-sync-worker.service
-  supplycore-compute-worker.service
-  supplycore-zkill.service
-  supplycore-orchestrator.service
-)
-RESTART_SERVICES=()
+EXPLICIT_SERVICES=()
 
 usage() {
   cat <<USAGE
@@ -27,10 +21,15 @@ Options:
   --branch NAME          Optional branch to checkout before pull
   --refresh-deps         Run python dependency refresh (pip install --upgrade ./python)
   --clear-cache          Clear runtime cache files under storage/cache
-  --service NAME         Add a service to restart (repeatable)
+  --service NAME         Restart only these services (repeatable; overrides auto-discovery)
+  --no-migrations        Skip running database migrations
   --dry-run              Print actions without executing mutating commands
   --verbose              Print each command before executing
   -h, --help             Show this help
+
+When no --service flags are given the script auto-discovers all active
+supplycore-* systemd units (including templated instances like
+supplycore-sync-worker@1.service) and restarts them.
 USAGE
 }
 
@@ -46,20 +45,6 @@ run_cmd() {
     return 0
   fi
   "$@"
-}
-
-service_exists() {
-  local service_name=$1
-  if [[ ${DRY_RUN} -eq 1 ]]; then
-    return 0
-  fi
-  if systemctl list-unit-files --type=service --all --no-legend --plain 2>/dev/null | awk '{print $1}' | grep -Fxq "${service_name}"; then
-    return 0
-  fi
-  if systemctl list-units --type=service --all --no-legend --plain 2>/dev/null | awk '{print $1}' | grep -Fxq "${service_name}"; then
-    return 0
-  fi
-  return 1
 }
 
 parse_args() {
@@ -82,8 +67,12 @@ parse_args() {
         shift
         ;;
       --service)
-        SERVICES+=("$2")
+        EXPLICIT_SERVICES+=("$2")
         shift 2
+        ;;
+      --no-migrations)
+        RUN_MIGRATIONS=0
+        shift
         ;;
       --dry-run)
         DRY_RUN=1
@@ -106,6 +95,51 @@ parse_args() {
   done
 }
 
+discover_services() {
+  # Auto-discover all active/enabled supplycore-* services and timers.
+  # This catches both plain units (supplycore-sync-worker.service) and
+  # templated instances (supplycore-sync-worker@1.service).
+  local -a discovered=()
+  local unit
+
+  while IFS= read -r unit; do
+    [[ -n "${unit}" ]] && discovered+=("${unit}")
+  done < <(systemctl list-units --type=service --all --no-legend --plain 2>/dev/null \
+    | awk '{print $1}' \
+    | grep -E '^supplycore-' \
+    | grep -v '@\.service$' \
+    || true)
+
+  # Also discover active timers
+  while IFS= read -r unit; do
+    [[ -n "${unit}" ]] && discovered+=("${unit}")
+  done < <(systemctl list-units --type=timer --all --no-legend --plain 2>/dev/null \
+    | awk '{print $1}' \
+    | grep -E '^supplycore-' \
+    || true)
+
+  printf '%s\n' "${discovered[@]}"
+}
+
+run_migrations() {
+  local migrations_dir="${APP_ROOT}/database/migrations"
+  if [[ ! -d "${migrations_dir}" ]]; then
+    log "No migrations directory found at ${migrations_dir}; skipping."
+    return 0
+  fi
+
+  local php_bin
+  php_bin=$(command -v php 2>/dev/null || true)
+  if [[ -z "${php_bin}" ]]; then
+    log "php not found on PATH; skipping database migrations."
+    return 0
+  fi
+
+  log "Running database migrations via PHP"
+  run_cmd "${php_bin}" "${APP_ROOT}/bin/run-migrations.php"
+}
+
+# ------------------------------------------------------------------
 parse_args "$@"
 
 if [[ ! -d "${APP_ROOT}/.git" ]]; then
@@ -119,10 +153,11 @@ if ! command -v systemctl >/dev/null 2>&1; then
 fi
 
 log "Starting update-and-restart"
-log "app_root=${APP_ROOT} dry_run=${DRY_RUN} refresh_deps=${REFRESH_DEPS} clear_cache=${CLEAR_CACHE}"
+log "app_root=${APP_ROOT} dry_run=${DRY_RUN} refresh_deps=${REFRESH_DEPS} clear_cache=${CLEAR_CACHE} run_migrations=${RUN_MIGRATIONS}"
 
 cd "${APP_ROOT}"
 
+# ------- Git update -------
 if [[ -n "${BRANCH}" ]]; then
   run_cmd git checkout "${BRANCH}"
 fi
@@ -130,6 +165,7 @@ fi
 run_cmd git fetch --all --prune
 run_cmd git pull --ff-only
 
+# ------- Python dependencies -------
 if [[ ${REFRESH_DEPS} -eq 1 ]]; then
   if [[ -x "${APP_ROOT}/.venv-orchestrator/bin/python" ]]; then
     run_cmd "${APP_ROOT}/.venv-orchestrator/bin/python" -m pip install --upgrade "${APP_ROOT}/python"
@@ -138,31 +174,44 @@ if [[ ${REFRESH_DEPS} -eq 1 ]]; then
   fi
 fi
 
+# ------- Cache -------
 if [[ ${CLEAR_CACHE} -eq 1 ]]; then
   run_cmd bash -lc "rm -rf '${APP_ROOT}/storage/cache/'*"
 fi
 
+# ------- Database migrations -------
+if [[ ${RUN_MIGRATIONS} -eq 1 ]]; then
+  run_migrations
+fi
+
+# ------- Service discovery and restart -------
 run_cmd systemctl daemon-reload
 
-for svc in "${SERVICES[@]}"; do
-  if service_exists "${svc}"; then
-    RESTART_SERVICES+=("${svc}")
-  else
-    log "Skipping restart for missing unit: ${svc}"
-  fi
-done
+RESTART_SERVICES=()
+if [[ ${#EXPLICIT_SERVICES[@]} -gt 0 ]]; then
+  # User explicitly specified services — use only those
+  RESTART_SERVICES=("${EXPLICIT_SERVICES[@]}")
+  log "Using ${#RESTART_SERVICES[@]} explicitly specified service(s)"
+else
+  # Auto-discover all active supplycore-* units
+  while IFS= read -r svc; do
+    [[ -n "${svc}" ]] && RESTART_SERVICES+=("${svc}")
+  done < <(discover_services)
+  log "Auto-discovered ${#RESTART_SERVICES[@]} supplycore service(s)"
+fi
 
 if [[ ${#RESTART_SERVICES[@]} -eq 0 ]]; then
-  log "No configured services found on this host; nothing to restart."
+  log "No services found to restart."
 fi
 
 for svc in "${RESTART_SERVICES[@]}"; do
+  log "Restarting ${svc}"
   run_cmd systemctl restart "${svc}"
 done
 
 log "Post-restart status checks"
 for svc in "${RESTART_SERVICES[@]}"; do
-  run_cmd systemctl --no-pager --full status "${svc}"
+  run_cmd systemctl --no-pager --full status "${svc}" || true
 done
 
 log "Completed update-and-restart"

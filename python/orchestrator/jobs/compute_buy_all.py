@@ -9,11 +9,79 @@ from typing import Any
 from ..db import SupplyCoreDb
 from ..job_result import JobResult
 
+_MODE_DEFINITIONS: dict[str, dict[str, Any]] = {
+    "doctrine_critical": {
+        "label": "Doctrine Critical",
+        "description": "Restore blocked doctrine readiness first, even when economics are partial.",
+        "default_sort": "necessity",
+        "require_doctrine_linked": True,
+        "positive_margin_bias": False,
+    },
+    "seed_backlog": {
+        "label": "Seed Backlog",
+        "description": "Seed alliance gaps from the hub while keeping haul efficiency visible.",
+        "default_sort": "necessity",
+        "require_doctrine_linked": False,
+        "positive_margin_bias": False,
+    },
+    "opportunity": {
+        "label": "Opportunity / Profit",
+        "description": "Prefer positive net imports and repricing candidates with strong contribution after hauling.",
+        "default_sort": "net_profit",
+        "require_doctrine_linked": False,
+        "positive_margin_bias": True,
+    },
+    "blended": {
+        "label": "Blended",
+        "description": "Mix doctrine urgency with positive-margin seed and import opportunities.",
+        "default_sort": "blended_score",
+        "require_doctrine_linked": False,
+        "positive_margin_bias": False,
+    },
+    "custom": {
+        "label": "Custom",
+        "description": "Operator-selected filters and ranking controls.",
+        "default_sort": "blended_score",
+        "require_doctrine_linked": False,
+        "positive_margin_bias": False,
+    },
+}
+
+_SORT_OPTIONS: dict[str, str] = {
+    "blended_score": "Blended score",
+    "necessity": "Necessity",
+    "net_profit": "Net profit",
+    "doctrine_impact": "Doctrine impact",
+    "blocked_fit_impact": "Blocked-fit impact",
+    "volume_efficiency": "Volume efficiency",
+    "isk_efficiency": "ISK efficiency",
+    "margin_percent": "Net margin %",
+}
+
+
+def _php_default_filters(mode: str) -> dict[str, Any]:
+    """Build the same default filter dict that PHP ``buy_all_request()`` produces.
+
+    Key insertion order MUST match the PHP source exactly because PHP's
+    ``json_encode`` preserves insertion order and the hash is compared."""
+    mode_def = _MODE_DEFINITIONS.get(mode, _MODE_DEFINITIONS["blended"])
+    return {
+        "doctrine_linked_only": bool(mode_def.get("require_doctrine_linked", False)),
+        "positive_net_margin_only": bool(mode_def.get("positive_margin_bias", False)),
+        "allow_low_margin_doctrine_critical": True,
+        "exclude_incomplete_pricing": False,
+        "exclude_oversized_low_efficiency": False,
+        "min_priority_threshold": 0,
+        "min_net_margin_threshold": 0,
+        "min_net_profit_threshold": 0,
+    }
+
+
 DEFAULT_REQUESTS: list[dict[str, Any]] = [
-    {"mode": "blended", "sort": "blended_score", "filters": {}},
-    {"mode": "doctrine_critical", "sort": "mode_rank_score", "filters": {}},
-    {"mode": "opportunity", "sort": "mode_rank_score", "filters": {}},
-    {"mode": "seed_backlog", "sort": "necessity_score", "filters": {}},
+    {"mode": "blended", "sort": "blended_score"},
+    {"mode": "doctrine_critical", "sort": "mode_rank_score"},
+    {"mode": "opportunity", "sort": "mode_rank_score"},
+    {"mode": "seed_backlog", "sort": "necessity_score"},
 ]
 
 DECIMAL_ZERO = Decimal("0")
@@ -35,7 +103,11 @@ def _q2(value: Decimal) -> Decimal:
 
 
 def _filters_hash(filters: dict[str, Any]) -> str:
-    encoded = json.dumps(filters, separators=(",", ":"), sort_keys=True)
+    """Compute the same SHA-256 hash that PHP ``json_encode($filters)`` produces.
+
+    PHP preserves key insertion order — do NOT sort keys here.  The filter
+    dict must already have keys in the same order as PHP's ``buy_all_request()``."""
+    encoded = json.dumps(filters, separators=(",", ":"), sort_keys=False)
     return sha256(encoded.encode("utf-8")).hexdigest()
 
 
@@ -167,6 +239,63 @@ def _ranked_items(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return ranked
 
 
+def _freshness_card(db: SupplyCoreDb, source_type: str, label: str) -> dict[str, Any]:
+    """Build a freshness card for a given market snapshot source type."""
+    row = db.fetch_one(
+        "SELECT MAX(observed_at) AS latest FROM market_order_snapshots_summary WHERE source_type = %s",
+        (source_type,),
+    )
+    latest = row.get("latest") if row else None
+    if latest is None:
+        return {"label": "Unknown", "computed_relative": "No data", "computed_at": "Unavailable", "tone": "border-amber-400/20 bg-amber-500/10 text-amber-100"}
+    from datetime import datetime as dt
+    ts = latest if isinstance(latest, dt) else dt.fromisoformat(str(latest))
+    age_seconds = (datetime.now(UTC) - ts.replace(tzinfo=UTC)).total_seconds()
+    if age_seconds < 900:
+        tone = "border-emerald-400/20 bg-emerald-500/10 text-emerald-100"
+        freshness_label = "Fresh"
+    elif age_seconds < 3600:
+        tone = "border-amber-400/20 bg-amber-500/10 text-amber-100"
+        freshness_label = "Recent"
+    else:
+        tone = "border-rose-400/20 bg-rose-500/10 text-rose-100"
+        freshness_label = "Stale"
+    minutes = int(age_seconds // 60)
+    relative = f"{minutes}m ago" if minutes < 120 else f"{minutes // 60}h ago"
+    return {
+        "label": freshness_label,
+        "computed_relative": relative,
+        "computed_at": ts.strftime("%Y-%m-%d %H:%M:%S UTC"),
+        "tone": tone,
+    }
+
+
+def _doctrine_freshness(db: SupplyCoreDb) -> dict[str, Any]:
+    """Build a freshness card for the doctrine intelligence dataset."""
+    row = db.fetch_one(
+        "SELECT MAX(updated_at) AS latest FROM intelligence_snapshots WHERE snapshot_key = %s",
+        ("doctrine_fit_intelligence",),
+    )
+    latest = row.get("latest") if row else None
+    if latest is None:
+        return {"label": "Unknown", "computed_relative": "No data", "computed_at": "Unavailable", "tone": "border-amber-400/20 bg-amber-500/10 text-amber-100"}
+    from datetime import datetime as dt
+    ts = latest if isinstance(latest, dt) else dt.fromisoformat(str(latest))
+    age_seconds = (datetime.now(UTC) - ts.replace(tzinfo=UTC)).total_seconds()
+    if age_seconds < 900:
+        tone = "border-emerald-400/20 bg-emerald-500/10 text-emerald-100"
+        lbl = "Fresh"
+    elif age_seconds < 3600:
+        tone = "border-amber-400/20 bg-amber-500/10 text-amber-100"
+        lbl = "Recent"
+    else:
+        tone = "border-rose-400/20 bg-rose-500/10 text-rose-100"
+        lbl = "Stale"
+    minutes = int(age_seconds // 60)
+    relative = f"{minutes}m ago" if minutes < 120 else f"{minutes // 60}h ago"
+    return {"label": lbl, "computed_relative": relative, "computed_at": ts.strftime("%Y-%m-%d %H:%M:%S UTC"), "tone": tone}
+
+
 def run_compute_buy_all(db: SupplyCoreDb, requests: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     computed_at = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
     planned_requests = requests or DEFAULT_REQUESTS
@@ -176,40 +305,108 @@ def run_compute_buy_all(db: SupplyCoreDb, requests: list[dict[str, Any]] | None 
     rows_written = 0
     rows_processed = len(market_rows)
 
+    # Build freshness cards once for all requests
+    hub_freshness = _freshness_card(db, "market_hub", "Hub pricing")
+    alliance_freshness = _freshness_card(db, "alliance_structure", "Alliance pricing")
+    stock_freshness: dict[str, Any] = {
+        "label": hub_freshness.get("label", "Unknown"),
+        "computed_relative": hub_freshness.get("computed_relative", "Unknown"),
+        "computed_at": hub_freshness.get("computed_at", "Unavailable"),
+        "tone": hub_freshness.get("tone", ""),
+    }
+    doctrine_freshness = _doctrine_freshness(db)
+
     for request in planned_requests:
         mode = str(request.get("mode") or "blended")
         sort = str(request.get("sort") or "blended_score")
-        filters = dict(request.get("filters") or {})
+        filters = _php_default_filters(mode)
         filters_hash = _filters_hash(filters)
         page_items = items[:120]
+
+        generated_at_iso = datetime.now(UTC).isoformat()
+        total_buy_cost = _q2(sum(
+            to_decimal(item.get("buy_price")) * Decimal(item.get("quantity", 0))
+            for item in page_items
+            if item.get("buy_price") is not None
+        ))
+        total_sell_value = _q2(sum(
+            to_decimal(item.get("sell_price")) * Decimal(item.get("quantity", 0))
+            for item in page_items
+            if item.get("sell_price") is not None
+        ))
+        total_volume = _q2(sum(to_decimal(item.get("total_volume")) for item in page_items))
+        total_hauling = _q2(total_volume * Decimal("320"))
+        total_gross_profit = _q2(total_sell_value - total_buy_cost)
+        total_net_profit = _q2(total_gross_profit - total_hauling)
+
+        # Build clipboard text for in-game import
+        clipboard_lines = []
+        for item in page_items:
+            name = str(item.get("item_name") or "")
+            qty = int(item.get("quantity") or 0)
+            if name and qty > 0:
+                clipboard_lines.append(f"{name} {qty}")
+        clipboard_text = "\n".join(clipboard_lines)
+
+        mode_label = _MODE_DEFINITIONS.get(mode, {}).get("label", mode.replace("_", " ").title())
+
+        active_page_data = {
+            "number": 1,
+            "items": page_items,
+            "item_count": len(page_items),
+            "total_units": sum(int(item.get("quantity") or 0) for item in page_items),
+            "total_volume": total_volume,
+            "total_buy_cost": total_buy_cost,
+            "total_expected_sell_value": total_sell_value,
+            "total_hauling_cost": total_hauling,
+            "total_gross_profit": total_gross_profit,
+            "total_net_profit": total_net_profit,
+            "doctrine_critical_count": sum(1 for item in page_items if bool(item.get("is_doctrine_critical"))),
+            "necessity_mix_summary": "",
+            "clipboard_text": clipboard_text,
+        }
 
         payload = {
             "request": {"mode": mode, "sort": sort, "page": 1, "filters": filters},
             "summary": {
-                "generated_at": datetime.now(UTC).isoformat(),
+                "generated_at": generated_at_iso,
                 "mode": mode,
+                "mode_label": mode_label,
                 "page_count": 1,
                 "candidate_count": len(page_items),
                 "total_item_types": len(page_items),
                 "total_units": sum(int(item.get("quantity") or 0) for item in page_items),
-                "total_volume": _q2(sum(to_decimal(item.get("total_volume")) for item in page_items)),
-                "total_net_profit": _q2(sum(to_decimal(item.get("net_profit_total")) for item in page_items)),
+                "total_volume": total_volume,
+                "total_buy_cost": total_buy_cost,
+                "total_expected_sell_value": total_sell_value,
+                "total_hauling_cost": total_hauling,
+                "total_gross_profit": total_gross_profit,
+                "total_net_profit": total_net_profit,
                 "doctrine_critical_count": sum(1 for item in page_items if bool(item.get("is_doctrine_critical"))),
-                "top_reason_theme": "Graph dependency priority",
+                "top_reason_theme": "Graph dependency priority" if any(
+                    to_decimal(item.get("dependency_score")) > DECIMAL_ZERO for item in page_items
+                ) else "Market-only priority",
             },
             "items": page_items,
-            "pages": [{"number": 1, "items": page_items, "item_count": len(page_items)}],
+            "pages": [{"number": 1, "items": page_items, "item_count": len(page_items), "clipboard_text": clipboard_text}],
             "active_page": 1,
-            "active_page_data": {"number": 1, "items": page_items, "item_count": len(page_items)},
+            "active_page_data": active_page_data,
             "excluded_items": [],
-            "freshness": {"generated_at": datetime.now(UTC).isoformat()},
+            "freshness": {
+                "generated_at": datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S UTC"),
+                "generated_relative": "0s ago",
+                "hub_pricing": hub_freshness,
+                "alliance_pricing": alliance_freshness,
+                "stock": stock_freshness,
+                "doctrine": doctrine_freshness,
+            },
             "price_basis": {
-                "buy": "Hub snapshot from market_comparison_snapshot.",
-                "sell": "Alliance snapshot from market_comparison_snapshot.",
+                "buy": "Hub snapshot from market_order_snapshots_summary.",
+                "sell": "Alliance snapshot from market_order_snapshots_summary.",
             },
             "hauling": {"cost_per_m3": Decimal("320"), "page_volume_limit": Decimal("385000"), "page_item_type_limit": 42},
-            "mode_options": {},
-            "sort_options": {},
+            "mode_options": _MODE_DEFINITIONS,
+            "sort_options": _SORT_OPTIONS,
         }
 
         summary_json = json.dumps(payload["summary"], separators=(",", ":"), ensure_ascii=False, default=_decimal_json_default)

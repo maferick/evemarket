@@ -28469,3 +28469,224 @@ function battle_intelligence_battle_data(string $battleId): array
         'hull_anomalies' => $hullAnomalies,
     ];
 }
+
+// ---------------------------------------------------------------------------
+// Automatic database migration system
+// ---------------------------------------------------------------------------
+
+function supplycore_migrations_dir(): string
+{
+    return dirname(__DIR__) . '/database/migrations';
+}
+
+function supplycore_migration_files(): array
+{
+    $dir = supplycore_migrations_dir();
+    if (!is_dir($dir)) {
+        return [];
+    }
+
+    $files = [];
+    foreach (scandir($dir) as $entry) {
+        if (str_ends_with($entry, '.sql') && $entry[0] !== '.') {
+            $files[] = $entry;
+        }
+    }
+    sort($files);
+
+    return $files;
+}
+
+function supplycore_run_migrations(bool $dryRun = false, bool $statusOnly = false): array
+{
+    db_ensure_schema_migrations_table();
+
+    $existingRows = db_schema_migrations_all();
+    $applied = [];
+    foreach ($existingRows as $row) {
+        $applied[(string) $row['filename']] = $row;
+    }
+
+    $migrationFiles = supplycore_migration_files();
+    $dir = supplycore_migrations_dir();
+    $pending = [];
+    $errors = [];
+    $migrationsRun = 0;
+
+    foreach ($migrationFiles as $filename) {
+        $filePath = $dir . '/' . $filename;
+        $fileHash = hash_file('sha256', $filePath);
+
+        if (isset($applied[$filename])) {
+            $prev = $applied[$filename];
+            if ((string) $prev['file_hash'] === $fileHash && (string) $prev['status'] === 'applied') {
+                continue;
+            }
+        }
+
+        $pending[] = $filename;
+    }
+
+    if ($statusOnly) {
+        return ['applied' => $applied, 'pending' => $pending];
+    }
+
+    foreach ($pending as $filename) {
+        $filePath = $dir . '/' . $filename;
+        $fileHash = hash_file('sha256', $filePath);
+        $sql = file_get_contents($filePath);
+        if ($sql === false || trim($sql) === '') {
+            continue;
+        }
+
+        if ($dryRun) {
+            $migrationsRun++;
+            continue;
+        }
+
+        $startedAt = microtime(true);
+        try {
+            $pdo = db();
+            $statements = supplycore_split_sql_statements($sql);
+            foreach ($statements as $statement) {
+                $trimmed = trim($statement);
+                if ($trimmed === '') {
+                    continue;
+                }
+                $pdo->exec($trimmed);
+            }
+            $durationMs = (int) ((microtime(true) - $startedAt) * 1000);
+            db_schema_migration_record($filename, $fileHash, $durationMs, 'applied');
+            $migrationsRun++;
+        } catch (Throwable $e) {
+            $durationMs = (int) ((microtime(true) - $startedAt) * 1000);
+            $errorMsg = mb_substr($e->getMessage(), 0, 2000);
+            db_schema_migration_record($filename, $fileHash, $durationMs, 'failed', $errorMsg);
+            $errors[] = ['file' => $filename, 'message' => $errorMsg];
+        }
+    }
+
+    return [
+        'migrations_run' => $migrationsRun,
+        'errors' => $errors,
+        'pending_count' => count($pending),
+    ];
+}
+
+function supplycore_split_sql_statements(string $sql): array
+{
+    $statements = [];
+    $current = '';
+    $delimiter = ';';
+    $inString = false;
+    $stringChar = '';
+    $escaped = false;
+    $len = strlen($sql);
+
+    for ($i = 0; $i < $len; $i++) {
+        $char = $sql[$i];
+
+        if ($escaped) {
+            $current .= $char;
+            $escaped = false;
+            continue;
+        }
+
+        if ($char === '\\') {
+            $current .= $char;
+            $escaped = true;
+            continue;
+        }
+
+        if ($inString) {
+            $current .= $char;
+            if ($char === $stringChar) {
+                $inString = false;
+            }
+            continue;
+        }
+
+        if ($char === '\'' || $char === '"') {
+            $inString = true;
+            $stringChar = $char;
+            $current .= $char;
+            continue;
+        }
+
+        if ($char === '-' && $i + 1 < $len && $sql[$i + 1] === '-') {
+            $end = strpos($sql, "\n", $i);
+            if ($end === false) {
+                break;
+            }
+            $i = $end;
+            $current .= "\n";
+            continue;
+        }
+
+        if ($char === $delimiter) {
+            $trimmed = trim($current);
+            if ($trimmed !== '') {
+                $statements[] = $trimmed;
+            }
+            $current = '';
+            continue;
+        }
+
+        $current .= $char;
+    }
+
+    $trimmed = trim($current);
+    if ($trimmed !== '') {
+        $statements[] = $trimmed;
+    }
+
+    return $statements;
+}
+
+function supplycore_check_pending_migrations(): array
+{
+    try {
+        db_ensure_schema_migrations_table();
+    } catch (Throwable) {
+        return ['pending' => 0, 'files' => []];
+    }
+
+    $existingRows = db_schema_migrations_all();
+    $applied = [];
+    foreach ($existingRows as $row) {
+        $applied[(string) $row['filename']] = $row;
+    }
+
+    $migrationFiles = supplycore_migration_files();
+    $dir = supplycore_migrations_dir();
+    $pending = [];
+
+    foreach ($migrationFiles as $filename) {
+        $filePath = $dir . '/' . $filename;
+        if (!is_file($filePath)) {
+            continue;
+        }
+        $fileHash = hash_file('sha256', $filePath);
+
+        if (isset($applied[$filename])) {
+            $prev = $applied[$filename];
+            if ((string) $prev['file_hash'] === $fileHash && (string) $prev['status'] === 'applied') {
+                continue;
+            }
+        }
+
+        $pending[] = $filename;
+    }
+
+    return ['pending' => count($pending), 'files' => $pending];
+}
+
+function supplycore_auto_run_migrations_if_pending(): array
+{
+    $check = supplycore_check_pending_migrations();
+    if ((int) $check['pending'] === 0) {
+        return ['migrations_run' => 0, 'errors' => []];
+    }
+
+    return supplycore_run_migrations(false, false);
+}

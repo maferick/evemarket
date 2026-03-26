@@ -175,6 +175,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 exit;
             }
 
+            if ($dataSyncAction === 'run-migrations') {
+                $migrationResult = supplycore_run_migrations(false, false);
+                $ran = (int) ($migrationResult['migrations_run'] ?? 0);
+                $migrationErrors = (array) ($migrationResult['errors'] ?? []);
+                if (count($migrationErrors) > 0) {
+                    flash('error', sprintf('Migrations completed with %d error(s). Check the migration status panel for details.', count($migrationErrors)));
+                } else {
+                    flash('success', sprintf('Database migrations complete: %d applied.', $ran));
+                }
+                header('Location: /settings?section=' . urlencode($submittedSection));
+                exit;
+            }
+
             if ($dataSyncAction === 'dismiss-profiling-run') {
                 $profilingRunId = max(0, (int) ($_POST['profiling_run_id'] ?? 0));
                 $profiling = scheduler_profiling_dismiss_recommendations($profilingRunId);
@@ -1917,6 +1930,64 @@ include __DIR__ . '/../../src/views/partials/header.php';
                         <?php endforeach; ?>
                         <?php if ($runtimeDatasetCards === []): ?>
                             <div class="rounded-xl border border-dashed border-border bg-black/20 p-4 text-sm text-muted md:col-span-2 xl:col-span-3">No dataset freshness cards are available yet.</div>
+                        <?php endif; ?>
+                    </div>
+
+                    <?php
+                        $migrationCheck = supplycore_check_pending_migrations();
+                        $migrationPendingCount = (int) ($migrationCheck['pending'] ?? 0);
+                        $migrationPendingFiles = (array) ($migrationCheck['files'] ?? []);
+                        $allMigrations = [];
+                        try { $allMigrations = db_schema_migrations_all(); } catch (Throwable) {}
+                        $failedMigrations = array_filter($allMigrations, static fn (array $m): bool => (string) ($m['status'] ?? '') === 'failed');
+                    ?>
+                    <div class="rounded-xl border <?= $migrationPendingCount > 0 ? 'border-amber-400/30 bg-amber-500/5' : (count($failedMigrations) > 0 ? 'border-rose-400/30 bg-rose-500/5' : 'border-border bg-black/20') ?> p-4">
+                        <div class="flex items-start justify-between gap-3">
+                            <div>
+                                <p class="text-sm font-semibold text-slate-100">Database migrations</p>
+                                <p class="mt-1 text-xs text-muted">SQL schema changes are auto-applied on page load. New or updated files in <code class="text-slate-300">database/migrations/</code> are detected and run automatically.</p>
+                            </div>
+                            <?php if ($migrationPendingCount > 0): ?>
+                                <span class="inline-flex items-center rounded-full border border-amber-400/40 bg-amber-500/10 px-3 py-1 text-xs font-medium uppercase tracking-[0.16em] text-amber-100"><?= $migrationPendingCount ?> pending</span>
+                            <?php elseif (count($failedMigrations) > 0): ?>
+                                <span class="inline-flex items-center rounded-full border border-rose-400/40 bg-rose-500/10 px-3 py-1 text-xs font-medium uppercase tracking-[0.16em] text-rose-100"><?= count($failedMigrations) ?> failed</span>
+                            <?php else: ?>
+                                <span class="inline-flex items-center rounded-full border border-emerald-400/20 bg-emerald-500/10 px-3 py-1 text-xs font-medium uppercase tracking-[0.16em] text-emerald-100">Up to date</span>
+                            <?php endif; ?>
+                        </div>
+
+                        <?php if ($migrationPendingCount > 0): ?>
+                            <div class="mt-3 space-y-1">
+                                <?php foreach ($migrationPendingFiles as $pendingFile): ?>
+                                    <p class="text-xs text-amber-200"><span class="mr-2 font-medium uppercase tracking-[0.14em]">Pending</span> <?= htmlspecialchars($pendingFile, ENT_QUOTES) ?></p>
+                                <?php endforeach; ?>
+                            </div>
+                            <div class="mt-3">
+                                <button type="submit" name="data_sync_action" value="run-migrations" class="inline-flex items-center rounded-full border border-cyan-400/40 bg-cyan-500/10 px-3 py-1.5 text-xs font-medium uppercase tracking-[0.14em] text-cyan-100 hover:bg-cyan-500/20">Run migrations now</button>
+                            </div>
+                        <?php endif; ?>
+
+                        <?php foreach ($failedMigrations as $failed): ?>
+                            <div class="mt-3 rounded-lg border border-rose-400/40 bg-rose-500/10 p-3 text-xs text-rose-100">
+                                <p class="font-medium uppercase tracking-[0.14em] text-rose-200">Failed: <?= htmlspecialchars((string) ($failed['filename'] ?? ''), ENT_QUOTES) ?></p>
+                                <p class="mt-1"><?= htmlspecialchars((string) ($failed['error_message'] ?? 'Unknown error'), ENT_QUOTES) ?></p>
+                                <p class="mt-1 text-rose-300/70"><?= htmlspecialchars((string) ($failed['applied_at'] ?? ''), ENT_QUOTES) ?></p>
+                            </div>
+                        <?php endforeach; ?>
+
+                        <?php if (count($allMigrations) > 0): ?>
+                            <details class="mt-3">
+                                <summary class="cursor-pointer text-xs text-muted hover:text-slate-100">Show all <?= count($allMigrations) ?> migration(s)</summary>
+                                <div class="mt-2 space-y-1">
+                                    <?php foreach ($allMigrations as $migration): ?>
+                                        <p class="text-xs <?= (string) ($migration['status'] ?? '') === 'failed' ? 'text-rose-200' : 'text-slate-400' ?>">
+                                            <span class="mr-1 inline-block w-14 font-medium uppercase tracking-[0.14em] <?= (string) ($migration['status'] ?? '') === 'failed' ? 'text-rose-300' : 'text-emerald-300' ?>"><?= htmlspecialchars((string) ($migration['status'] ?? 'unknown'), ENT_QUOTES) ?></span>
+                                            <?= htmlspecialchars((string) ($migration['filename'] ?? ''), ENT_QUOTES) ?>
+                                            <span class="text-slate-500 ml-2"><?= htmlspecialchars((string) ($migration['applied_at'] ?? ''), ENT_QUOTES) ?></span>
+                                        </p>
+                                    <?php endforeach; ?>
+                                </div>
+                            </details>
                         <?php endif; ?>
                     </div>
 

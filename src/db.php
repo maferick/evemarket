@@ -14314,3 +14314,51 @@ function db_battle_intelligence_battle_notable_actors(string $battleId, int $lim
         [$safeBattleId]
     );
 }
+
+// ---------------------------------------------------------------------------
+// Database migrations
+// ---------------------------------------------------------------------------
+
+function db_ensure_schema_migrations_table(): void
+{
+    db()->exec(
+        'CREATE TABLE IF NOT EXISTS schema_migrations (
+            id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+            filename VARCHAR(255) NOT NULL,
+            file_hash CHAR(64) NOT NULL,
+            applied_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            duration_ms INT UNSIGNED NOT NULL DEFAULT 0,
+            status ENUM("applied","failed") NOT NULL DEFAULT "applied",
+            error_message TEXT DEFAULT NULL,
+            UNIQUE KEY uq_schema_migrations_filename (filename)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4'
+    );
+}
+
+function db_schema_migration_applied(string $filename): ?array
+{
+    return db_select_one(
+        'SELECT id, filename, file_hash, applied_at, status FROM schema_migrations WHERE filename = ?',
+        [$filename]
+    );
+}
+
+function db_schema_migration_record(string $filename, string $fileHash, int $durationMs, string $status, ?string $errorMessage = null): void
+{
+    db_execute(
+        'INSERT INTO schema_migrations (filename, file_hash, applied_at, duration_ms, status, error_message)
+         VALUES (?, ?, UTC_TIMESTAMP(), ?, ?, ?)
+         ON DUPLICATE KEY UPDATE
+            file_hash = VALUES(file_hash),
+            applied_at = VALUES(applied_at),
+            duration_ms = VALUES(duration_ms),
+            status = VALUES(status),
+            error_message = VALUES(error_message)',
+        [$filename, $fileHash, $durationMs, $status, $errorMessage]
+    );
+}
+
+function db_schema_migrations_all(): array
+{
+    return db_select('SELECT filename, file_hash, applied_at, status, error_message FROM schema_migrations ORDER BY filename ASC');
+}
