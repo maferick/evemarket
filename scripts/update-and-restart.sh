@@ -16,6 +16,7 @@ SERVICES=(
   supplycore-zkill.service
   supplycore-orchestrator.service
 )
+RESTART_SERVICES=()
 
 usage() {
   cat <<USAGE
@@ -45,6 +46,20 @@ run_cmd() {
     return 0
   fi
   "$@"
+}
+
+service_exists() {
+  local service_name=$1
+  if [[ ${DRY_RUN} -eq 1 ]]; then
+    return 0
+  fi
+  if systemctl list-unit-files --type=service --all --no-legend --plain 2>/dev/null | awk '{print $1}' | grep -Fxq "${service_name}"; then
+    return 0
+  fi
+  if systemctl list-units --type=service --all --no-legend --plain 2>/dev/null | awk '{print $1}' | grep -Fxq "${service_name}"; then
+    return 0
+  fi
+  return 1
 }
 
 parse_args() {
@@ -130,11 +145,23 @@ fi
 run_cmd systemctl daemon-reload
 
 for svc in "${SERVICES[@]}"; do
+  if service_exists "${svc}"; then
+    RESTART_SERVICES+=("${svc}")
+  else
+    log "Skipping restart for missing unit: ${svc}"
+  fi
+done
+
+if [[ ${#RESTART_SERVICES[@]} -eq 0 ]]; then
+  log "No configured services found on this host; nothing to restart."
+fi
+
+for svc in "${RESTART_SERVICES[@]}"; do
   run_cmd systemctl restart "${svc}"
 done
 
 log "Post-restart status checks"
-for svc in "${SERVICES[@]}"; do
+for svc in "${RESTART_SERVICES[@]}"; do
   run_cmd systemctl --no-pager --full status "${svc}"
 done
 
