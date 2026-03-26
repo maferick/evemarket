@@ -65,6 +65,36 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $saved = save_settings(ai_briefing_settings_from_request($_POST));
             break;
 
+        case 'automation-control':
+            $automationAction = trim((string) ($_POST['automation_action'] ?? 'save-flags'));
+            if ($automationAction === 'enable-all-jobs') {
+                $result = automation_runtime_set_all_jobs_enabled(true);
+                $saved = (bool) ($result['ok'] ?? false);
+                $saveMessage = (string) ($result['message'] ?? 'Requested all jobs to be enabled.');
+                break;
+            }
+            if ($automationAction === 'disable-all-jobs') {
+                $result = automation_runtime_set_all_jobs_enabled(false);
+                $saved = (bool) ($result['ok'] ?? false);
+                $saveMessage = (string) ($result['message'] ?? 'Requested all jobs to be disabled.');
+                break;
+            }
+            if ($automationAction === 'enable-selected-jobs') {
+                $result = automation_runtime_set_jobs_enabled((array) ($_POST['managed_job_keys'] ?? []), true);
+                $saved = (bool) ($result['ok'] ?? false);
+                $saveMessage = (string) ($result['message'] ?? 'Requested selected jobs to be enabled.');
+                break;
+            }
+            if ($automationAction === 'disable-selected-jobs') {
+                $result = automation_runtime_set_jobs_enabled((array) ($_POST['managed_job_keys'] ?? []), false);
+                $saved = (bool) ($result['ok'] ?? false);
+                $saveMessage = (string) ($result['message'] ?? 'Requested selected jobs to be disabled.');
+                break;
+            }
+            $saved = save_settings(automation_runtime_settings_from_request($_POST));
+            $saveMessage = $saved ? 'Automation control settings saved.' : null;
+            break;
+
         case 'esi-login':
             $saved = save_settings([
                 'esi_client_id' => trim($_POST['esi_client_id'] ?? ''),
@@ -276,6 +306,8 @@ $settingsPipelineHealth = array_values((array) ($syncDashboard['pipeline_health'
 $settingsSystemStatus = (array) ($syncDashboard['system_status'] ?? []);
 $rebuildStatus = supplycore_rebuild_status_read();
 $runtimeDatasetCards = array_values((array) ($syncDashboard['runtime_dataset_cards'] ?? []));
+$automationJobs = automation_runtime_jobs_overview();
+$automationEnabledCount = count(array_filter($automationJobs, static fn (array $job): bool => !empty($job['enabled'])));
 if ($dbStatus['ok']) {
     $latestEsiToken = db_latest_esi_oauth_token();
     if ($latestEsiToken !== null) {
@@ -451,6 +483,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                 ['href' => '/settings?section=killmail-intelligence', 'title' => 'Doctrine + killmail inputs', 'copy' => 'Tracked alliances, corporations, and demand signals that feed readiness and replenishment views.'],
                 ['href' => '/settings?section=ai-briefings', 'title' => 'AI briefings', 'copy' => 'Choose whether background AI summaries run and which provider they use.'],
                 ['href' => '/settings?section=data-sync', 'title' => 'Sync behavior', 'copy' => 'Control update cadence, freshness expectations, and manual run controls.'],
+                ['href' => '/settings?section=automation-control', 'title' => 'Automation control', 'copy' => 'Centralized toggles for ESI, zKill ingestion, pipelines, and recurring job enablement.'],
             ];
             ?>
             <div class="mt-6 space-y-6">
@@ -1580,6 +1613,98 @@ include __DIR__ . '/../../src/views/partials/header.php';
 
                 <p class="text-sm text-muted">Ingestion consumes R2Z2 as an ordered stream and keeps killmails only when a tracked alliance or corporation appears on the victim side. That keeps the board focused on tracked losses while leaving attacker details available only inside each stored loss.</p>
                 <button class="btn-primary">Save Killmail Intelligence Settings</button>
+            </form>
+        <?php elseif ($section === 'automation-control'): ?>
+            <form class="mt-6 space-y-5" method="post">
+                <input type="hidden" name="_token" value="<?= htmlspecialchars(csrf_token(), ENT_QUOTES) ?>">
+                <input type="hidden" name="section" value="automation-control">
+
+                <section class="space-y-3 rounded-2xl border border-border bg-black/20 p-4">
+                    <div>
+                        <p class="text-sm font-semibold text-slate-100">Integration runtime toggles</p>
+                        <p class="mt-1 text-xs text-muted">Centralized runtime switches that were previously spread across multiple settings pages.</p>
+                    </div>
+                    <label class="flex items-center gap-3 rounded-lg border border-border bg-black/20 p-3">
+                        <input type="hidden" name="esi_enabled" value="0">
+                        <input type="checkbox" name="esi_enabled" value="1" <?= ($settingValues['esi_enabled'] ?? '0') === '1' ? 'checked' : '' ?> class="size-4 rounded border-border bg-black">
+                        <span class="text-sm">Enable ESI OAuth import runtime</span>
+                    </label>
+                    <label class="flex items-center gap-3 rounded-lg border border-border bg-black/20 p-3">
+                        <input type="hidden" name="killmail_ingestion_enabled" value="0">
+                        <input type="checkbox" name="killmail_ingestion_enabled" value="1" <?= ($settingValues['killmail_ingestion_enabled'] ?? '0') === '1' ? 'checked' : '' ?> class="size-4 rounded border-border bg-black">
+                        <span class="text-sm">Enable zKill stream ingestion runtime</span>
+                    </label>
+                    <label class="flex items-center gap-3 rounded-lg border border-border bg-black/20 p-3">
+                        <input type="hidden" name="incremental_updates_enabled" value="0">
+                        <input type="checkbox" name="incremental_updates_enabled" value="1" <?= ($dataSyncSettingValues['incremental_updates_enabled'] ?? '1') === '1' ? 'checked' : '' ?> class="size-4 rounded border-border bg-black">
+                        <span class="text-sm">Enable incremental update execution</span>
+                    </label>
+                    <div class="grid gap-3 md:grid-cols-2">
+                        <label class="flex items-center gap-3 rounded-lg border border-border bg-black/20 p-3">
+                            <input type="hidden" name="alliance_current_pipeline_enabled" value="0">
+                            <input type="checkbox" name="alliance_current_pipeline_enabled" value="1" <?= ($dataSyncSettingValues['alliance_current_pipeline_enabled'] ?? '1') === '1' ? 'checked' : '' ?> class="size-4 rounded border-border bg-black">
+                            <span class="text-sm">Alliance current pipeline</span>
+                        </label>
+                        <label class="flex items-center gap-3 rounded-lg border border-border bg-black/20 p-3">
+                            <input type="hidden" name="alliance_history_pipeline_enabled" value="0">
+                            <input type="checkbox" name="alliance_history_pipeline_enabled" value="1" <?= ($dataSyncSettingValues['alliance_history_pipeline_enabled'] ?? '1') === '1' ? 'checked' : '' ?> class="size-4 rounded border-border bg-black">
+                            <span class="text-sm">Alliance history pipeline</span>
+                        </label>
+                        <label class="flex items-center gap-3 rounded-lg border border-border bg-black/20 p-3">
+                            <input type="hidden" name="hub_history_pipeline_enabled" value="0">
+                            <input type="checkbox" name="hub_history_pipeline_enabled" value="1" <?= ($dataSyncSettingValues['hub_history_pipeline_enabled'] ?? '1') === '1' ? 'checked' : '' ?> class="size-4 rounded border-border bg-black">
+                            <span class="text-sm">Hub history pipeline</span>
+                        </label>
+                        <label class="flex items-center gap-3 rounded-lg border border-border bg-black/20 p-3">
+                            <input type="hidden" name="market_hub_local_history_pipeline_enabled" value="0">
+                            <input type="checkbox" name="market_hub_local_history_pipeline_enabled" value="1" <?= ($dataSyncSettingValues['market_hub_local_history_pipeline_enabled'] ?? '1') === '1' ? 'checked' : '' ?> class="size-4 rounded border-border bg-black">
+                            <span class="text-sm">Hub local history pipeline</span>
+                        </label>
+                    </div>
+                    <button class="btn-primary" name="automation_action" value="save-flags">Save Runtime Toggles</button>
+                </section>
+
+                <section class="space-y-3 rounded-2xl border border-border bg-black/20 p-4">
+                    <div class="flex flex-wrap items-center justify-between gap-3">
+                        <div>
+                            <p class="text-sm font-semibold text-slate-100">Recurring job run controls</p>
+                            <p class="mt-1 text-xs text-muted">Enable or disable all recurring schedule rows from one place.</p>
+                        </div>
+                        <span class="inline-flex items-center rounded-full border border-border px-3 py-1 text-xs uppercase tracking-[0.14em] text-slate-100"><?= $automationEnabledCount ?> / <?= count($automationJobs) ?> enabled</span>
+                    </div>
+                    <div class="flex flex-wrap gap-2">
+                        <button type="submit" name="automation_action" value="enable-all-jobs" class="rounded-lg border border-emerald-400/40 bg-emerald-500/10 px-4 py-2 text-sm font-medium text-emerald-100 hover:bg-emerald-500/20">Enable all recurring jobs</button>
+                        <button type="submit" name="automation_action" value="disable-all-jobs" class="rounded-lg border border-rose-400/40 bg-rose-500/10 px-4 py-2 text-sm font-medium text-rose-100 hover:bg-rose-500/20">Disable all recurring jobs</button>
+                    </div>
+                    <div class="grid gap-3 md:grid-cols-2">
+                        <?php foreach ($automationJobs as $job): ?>
+                            <label class="rounded-lg border border-border bg-black/30 p-3">
+                                <span class="flex items-start justify-between gap-2">
+                                    <span>
+                                        <span class="text-sm text-slate-100"><?= htmlspecialchars((string) ($job['label'] ?? $job['job_key']), ENT_QUOTES) ?></span>
+                                        <span class="mt-1 block text-xs text-muted font-mono"><?= htmlspecialchars((string) ($job['job_key'] ?? ''), ENT_QUOTES) ?></span>
+                                    </span>
+                                    <span class="text-xs <?= !empty($job['enabled']) ? 'text-emerald-200' : 'text-amber-200' ?>"><?= !empty($job['enabled']) ? 'enabled' : 'disabled' ?></span>
+                                </span>
+                                <span class="mt-2 block text-xs text-muted">Every <?= (int) ($job['interval_minutes'] ?? 0) ?> min · next <?= htmlspecialchars((string) (($job['next_due_at'] ?? '') !== '' ? $job['next_due_at'] : 'not scheduled'), ENT_QUOTES) ?></span>
+                                <?php if (trim((string) ($job['review_reason'] ?? '')) !== ''): ?>
+                                    <span class="mt-1 block text-xs text-amber-200"><?= htmlspecialchars((string) ($job['review_reason'] ?? ''), ENT_QUOTES) ?></span>
+                                <?php endif; ?>
+                                <span class="mt-2 flex items-center gap-2 text-xs text-muted">
+                                    <input type="checkbox" name="managed_job_keys[]" value="<?= htmlspecialchars((string) ($job['job_key'] ?? ''), ENT_QUOTES) ?>" class="size-4 rounded border-border bg-black">
+                                    Select
+                                </span>
+                            </label>
+                        <?php endforeach; ?>
+                        <?php if ($automationJobs === []): ?>
+                            <div class="rounded-lg border border-dashed border-border bg-black/20 p-3 text-xs text-muted md:col-span-2">No manageable recurring jobs were discovered.</div>
+                        <?php endif; ?>
+                    </div>
+                    <div class="flex flex-wrap gap-2">
+                        <button type="submit" name="automation_action" value="enable-selected-jobs" class="rounded-lg border border-emerald-400/40 bg-emerald-500/10 px-4 py-2 text-sm font-medium text-emerald-100 hover:bg-emerald-500/20">Enable selected jobs</button>
+                        <button type="submit" name="automation_action" value="disable-selected-jobs" class="rounded-lg border border-rose-400/40 bg-rose-500/10 px-4 py-2 text-sm font-medium text-rose-100 hover:bg-rose-500/20">Disable selected jobs</button>
+                    </div>
+                </section>
             </form>
         <?php elseif ($section === 'esi-login'): ?>
             <form class="mt-6 space-y-4" method="post">
