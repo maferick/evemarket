@@ -7254,11 +7254,21 @@ function dashboard_intelligence_data_build(): array
 
 function dashboard_snapshot_payload(): array
 {
-    return supplycore_materialized_snapshot_read_or_bootstrap(
+    $result = supplycore_materialized_snapshot_read_or_bootstrap(
         dashboard_snapshot_key(),
         static fn (): array => dashboard_intelligence_data_build(),
         'dashboard-bootstrap'
     );
+
+    if (!isset($result['priority_queues'])) {
+        $payload = dashboard_intelligence_data_build();
+        return supplycore_materialized_snapshot_store(dashboard_snapshot_key(), $payload, [
+            'reason' => 'dashboard-format-recovery',
+            'status' => 'ready',
+        ]);
+    }
+
+    return $result;
 }
 
 function dashboard_refresh_summary(string $reason = 'manual'): array
