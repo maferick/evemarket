@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import json
+import os
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from hashlib import sha256
+from pathlib import Path
 from typing import Any
 
+from ..bridge import PhpBridge
 from ..db import SupplyCoreDb
 from ..job_result import JobResult
 
@@ -156,6 +159,15 @@ def _load_market_rows(db: SupplyCoreDb, limit: int = 600) -> list[dict[str, Any]
     )
 
 
+def _load_allowed_type_ids_from_scope_bridge() -> set[int]:
+    php_binary = os.environ.get("SUPPLYCORE_PHP_BINARY", "php")
+    app_root = Path(__file__).resolve().parents[3]
+    bridge = PhpBridge(php_binary, app_root)
+    response = bridge.call("item-scope-context")
+    context = dict(response.get("context", {}))
+    return {int(type_id) for type_id in context.get("allowed_type_ids", []) if int(type_id) > 0}
+
+
 def _ranked_items(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     ranked: list[dict[str, Any]] = []
     for row in rows:
@@ -300,10 +312,15 @@ def run_compute_buy_all(db: SupplyCoreDb, requests: list[dict[str, Any]] | None 
     computed_at = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
     planned_requests = requests or DEFAULT_REQUESTS
     market_rows = _load_market_rows(db)
-    items = _ranked_items(market_rows)
+    allowed_type_ids = _load_allowed_type_ids_from_scope_bridge()
+    scoped_market_rows = [row for row in market_rows if int(row.get("type_id") or 0) in allowed_type_ids]
+    items = _ranked_items(scoped_market_rows)
     created = 0
     rows_written = 0
-    rows_processed = len(market_rows)
+    rows_processed = len(scoped_market_rows)
+    market_rows_before_scope = len(market_rows)
+    market_rows_after_scope = len(scoped_market_rows)
+    ranked_items_after_scope = len(items)
 
     # Build freshness cards once for all requests
     hub_freshness = _freshness_card(db, "market_hub", "Hub pricing")
@@ -474,6 +491,11 @@ def run_compute_buy_all(db: SupplyCoreDb, requests: list[dict[str, Any]] | None 
             "computed_at": computed_at,
             "requests": created,
             "items_per_request": min(120, len(items)),
+            "scope_filter_source": "php_bridge:item-scope-context",
+            "scope_allowed_type_ids_count": len(allowed_type_ids),
+            "scope_market_rows_before_filter": market_rows_before_scope,
+            "scope_market_rows_after_filter": market_rows_after_scope,
+            "scope_ranked_rows_after_filter": ranked_items_after_scope,
         },
     ).to_dict()
 

@@ -14772,6 +14772,13 @@ function python_bridge_market_comparison_context(): array
     ];
 }
 
+function python_bridge_item_scope_context(): array
+{
+    return [
+        'allowed_type_ids' => item_scope_allowed_type_ids(),
+    ];
+}
+
 function python_bridge_killmail_context(): array
 {
     $datasetKey = killmail_sync_dataset_key();
