@@ -45,7 +45,11 @@ def _processor(db: SupplyCoreDb) -> dict[str, object]:
                 GREATEST(0, COALESCE(f.target_fleet_size_override, 0) - COALESCE(MIN(dis.complete_fits_supported), 0)) AS fit_gap,
                 CASE WHEN COALESCE(MIN(dis.complete_fits_supported), 0) >= COALESCE(f.target_fleet_size_override, 0) THEN 'ready' ELSE 'degraded' END,
                 CASE WHEN COALESCE(SUM(il.quantity_lost), 0) > 0 THEN 'elevated' ELSE 'stable' END,
-                (COALESCE(SUM(il.quantity_lost), 0) * 1.0) + GREATEST(0, COALESCE(f.target_fleet_size_override, 0) - COALESCE(MIN(dis.complete_fits_supported), 0))
+                LEAST(
+                    999999.99,
+                    (COALESCE(SUM(il.quantity_lost), 0) * 1.0)
+                    + GREATEST(0, COALESCE(f.target_fleet_size_override, 0) - COALESCE(MIN(dis.complete_fits_supported), 0))
+                )
             FROM doctrine_fits f
             LEFT JOIN doctrine_item_stock_1d dis ON dis.fit_id = f.id AND dis.bucket_start = CURDATE()
             LEFT JOIN killmail_item_loss_1d il ON il.type_id = dis.type_id AND il.bucket_start >= DATE_SUB(CURDATE(), INTERVAL 1 DAY)
