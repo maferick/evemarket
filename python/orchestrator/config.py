@@ -120,12 +120,24 @@ def _load_dotenv_defaults(app_root: Path) -> None:
         os.environ.setdefault(key, parsed[0] if parsed else "")
 
 
+def _resolve_php_binary() -> str:
+    explicit = os.getenv("PHP_BINARY", "").strip()
+    if explicit:
+        return explicit
+    import shutil
+    for candidate in ("php", "php8.4", "php8.3", "php8.2", "php8.1"):
+        found = shutil.which(candidate)
+        if found:
+            return found
+    return "php"
+
+
 def _load_live_php_runtime_config(app_root: Path) -> dict[str, Any]:
     script_path = app_root / "bin/orchestrator_config.php"
     if not script_path.is_file():
         return {}
 
-    php_binary = os.getenv("PHP_BINARY", "php").strip() or "php"
+    php_binary = _resolve_php_binary()
     try:
         completed = subprocess.run(
             [php_binary, str(script_path)],
@@ -135,7 +147,9 @@ def _load_live_php_runtime_config(app_root: Path) -> dict[str, Any]:
             text=True,
             timeout=10,
         )
-    except Exception:
+    except Exception as exc:
+        import sys
+        print(f"[config] WARNING: failed to load PHP config via {php_binary}: {exc}", file=sys.stderr)
         return {}
 
     payload = (completed.stdout or "").strip()
