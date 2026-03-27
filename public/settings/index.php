@@ -955,6 +955,14 @@ include __DIR__ . '/../../src/views/partials/header.php';
                     </label>
                 </div>
 
+                <div class="mt-2">
+                    <label class="block space-y-2">
+                        <span class="text-sm text-muted">Theater AAR Prompt</span>
+                        <textarea name="theater_aar_prompt" rows="12" class="w-full field-input font-mono text-xs leading-relaxed" placeholder="Leave blank to use the default 8-section AAR prompt. Custom prompts receive the battle data JSON appended automatically."><?= htmlspecialchars($settingValues['theater_aar_prompt'] ?? '', ENT_QUOTES) ?></textarea>
+                        <p class="text-xs text-muted">Custom prompt for generating Theater After Action Reports. The battle data JSON (alliances, fleet composition, notable kills, top performers, turning points, ISK stats) is automatically appended. Leave empty to use the built-in structured AAR template with 8 sections (Executive Summary, Battle Overview, Fleet Composition, Key Turning Points, Tactical Assessment, Performance Insights, Risk Signals, Recommendations).</p>
+                    </label>
+                </div>
+
                 <div class="rounded-2xl border border-white/8 bg-white/[0.03] px-4 py-3 text-sm text-muted">
                     Configure either the local Ollama API or the Runpod serverless endpoint here, then manage cadence under <a href="/settings?section=data-sync" class="font-medium text-slate-100 hover:text-white">Settings → Data Sync</a> for the <span class="font-medium text-slate-100">rebuild_ai_briefings</span> scheduler job. Runpod requests now submit asynchronously and poll for completion within the configured timeout window. Small tiers stay compact, medium tiers add explanation and deltas, and large tiers unlock richer operator briefings while still keeping deterministic calculations authoritative.
                 </div>

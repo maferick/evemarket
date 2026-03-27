@@ -673,6 +673,7 @@ function ai_briefing_setting_defaults(): array
         'ollama_capability_tier' => 'auto',
         'ollama_runpod_url' => '',
         'ollama_runpod_api_key' => '',
+        'theater_aar_prompt' => '',
     ];
 }
 
@@ -896,6 +897,7 @@ function ai_briefing_settings_from_request(array $request): array
         'ollama_capability_tier' => sanitize_ollama_capability_tier($request['ollama_capability_tier'] ?? null),
         'ollama_runpod_url' => sanitize_ollama_runpod_url($request['ollama_runpod_url'] ?? null),
         'ollama_runpod_api_key' => sanitize_ollama_runpod_api_key($request['ollama_runpod_api_key'] ?? null),
+        'theater_aar_prompt' => mb_substr(trim((string) ($request['theater_aar_prompt'] ?? '')), 0, 8000),
     ];
 }
 
@@ -26360,18 +26362,88 @@ function theater_ai_summary_generate(string $theaterId): ?array
     }
 
     $config = supplycore_ai_ollama_config();
+    $facts = theater_ai_build_facts($theaterId, $theater);
+
+    $systemPrompt = theater_ai_system_prompt();
+    $userPrompt = theater_ai_user_prompt($facts);
+    $schema = theater_ai_output_schema();
+
+    try {
+        if (($config['provider'] ?? 'local') === 'runpod') {
+            $decoded = supplycore_ai_runpod_generate_json($config, $systemPrompt, $userPrompt, $schema);
+        } else {
+            $endpoint = $config['url'] . '/generate';
+            $requestPayload = [
+                'model' => $config['model'],
+                'stream' => false,
+                'system' => $systemPrompt,
+                'prompt' => $userPrompt,
+                'format' => $schema,
+                'options' => ['temperature' => 0.2],
+            ];
+            $response = http_post_json($endpoint, [], $requestPayload, max(60, $config['timeout']));
+            $status = (int) ($response['status'] ?? 0);
+            $json = is_array($response['json'] ?? null) ? $response['json'] : [];
+            if ($status < 200 || $status >= 300) {
+                throw new RuntimeException('Ollama returned HTTP ' . $status);
+            }
+            $rawResponse = trim((string) ($json['response'] ?? ''));
+            if ($rawResponse === '') {
+                throw new RuntimeException('Ollama returned empty response');
+            }
+            $decoded = json_decode($rawResponse, true);
+            if (!is_array($decoded)) {
+                throw new RuntimeException('Ollama returned malformed JSON');
+            }
+        }
+
+        $headline = mb_substr(trim((string) ($decoded['headline'] ?? '')), 0, 255);
+        $summary = mb_substr(trim((string) ($decoded['summary'] ?? '')), 0, 16000);
+        $verdict = mb_substr(trim((string) ($decoded['verdict'] ?? '')), 0, 32);
+
+        if ($summary === '') {
+            throw new RuntimeException('AI returned empty summary');
+        }
+        if ($headline === '') {
+            $headline = mb_substr($summary, 0, 80);
+        }
+
+        theater_ai_summary_store($theaterId, $headline, $summary, $verdict, (string) $config['model']);
+
+        return [
+            'headline' => $headline,
+            'summary' => $summary,
+            'verdict' => $verdict,
+            'model' => (string) $config['model'],
+            'generated_at' => date('Y-m-d H:i:s'),
+            'cached' => false,
+        ];
+    } catch (Throwable $e) {
+        error_log('[theater-ai] Failed to generate AAR for ' . $theaterId . ': ' . $e->getMessage());
+        return null;
+    }
+}
+
+function theater_ai_build_facts(string $theaterId, array $theater): array
+{
     $allianceSummary = db_theater_alliance_summary($theaterId);
     $turningPoints = db_theater_turning_points($theaterId);
     $systems = db_theater_systems($theaterId);
     $suspicion = db_theater_suspicion_summary($theaterId);
+    $fleetComp = db_theater_fleet_composition($theaterId);
+    $notableKills = db_theater_notable_kills($theaterId, 10);
+    $topPerformers = db_theater_top_performers($theaterId, 10);
 
-    // Build tracked alliance context
     $trackedAlliances = db_killmail_tracked_alliances_active();
     $trackedIds = array_map('intval', array_column($trackedAlliances, 'alliance_id'));
 
-    // Build side context
+    // Build alliance side data
     $sideData = ['side_a' => [], 'side_b' => []];
     $ourSide = null;
+    $friendlyIskLost = 0;
+    $friendlyIskKilled = 0;
+    $enemyIskLost = 0;
+    $enemyIskKilled = 0;
     foreach ($allianceSummary as $a) {
         $side = (string) ($a['side'] ?? '');
         $aid = (int) ($a['alliance_id'] ?? 0);
@@ -26392,22 +26464,82 @@ function theater_ai_summary_generate(string $theaterId): ?array
     }
     $enemySide = ($ourSide === 'side_a') ? 'side_b' : 'side_a';
 
-    // Build facts payload
+    foreach ($sideData[$ourSide ?? 'side_a'] as $a) {
+        $friendlyIskLost += (float) ($a['isk_lost'] ?? 0);
+        $friendlyIskKilled += (float) ($a['isk_killed'] ?? 0);
+    }
+    foreach ($sideData[$enemySide] as $a) {
+        $enemyIskLost += (float) ($a['isk_lost'] ?? 0);
+        $enemyIskKilled += (float) ($a['isk_killed'] ?? 0);
+    }
+
+    // Build fleet composition per side
+    $friendlyComp = [];
+    $enemyComp = [];
+    foreach ($fleetComp as $fc) {
+        $entry = ((string) $fc['ship_name']) . ' x' . ((int) $fc['pilot_count']);
+        if (($fc['side'] ?? '') === ($ourSide ?? 'side_a')) {
+            $friendlyComp[] = $entry;
+        } else {
+            $enemyComp[] = $entry;
+        }
+    }
+
+    // Build notable kills
+    $notableKillList = [];
+    foreach ($notableKills as $nk) {
+        $notableKillList[] = [
+            'victim' => (string) ($nk['victim_name'] ?? '?'),
+            'ship' => (string) ($nk['ship_name'] ?? '?'),
+            'alliance' => (string) ($nk['victim_alliance_name'] ?? '?'),
+            'isk' => number_format((float) ($nk['isk_value'] ?? 0), 0) . ' ISK',
+            'time' => (string) ($nk['kill_time'] ?? ''),
+        ];
+    }
+
+    // Build top performers
+    $performerList = [];
+    foreach ($topPerformers as $tp) {
+        $performerList[] = [
+            'character' => (string) ($tp['character_name'] ?? '?'),
+            'alliance' => (string) ($tp['alliance_name'] ?? '?'),
+            'side' => ($tp['side'] ?? '') === ($ourSide ?? 'side_a') ? 'friendly' : 'enemy',
+            'kills' => (int) ($tp['kills'] ?? 0),
+            'deaths' => (int) ($tp['deaths'] ?? 0),
+            'damage_done' => round((float) ($tp['damage_done'] ?? 0)),
+            'role' => (string) ($tp['role_proxy'] ?? 'dps'),
+        ];
+    }
+
+    // Friendly alliance names
+    $friendlyNames = array_map(fn($a) => $a['alliance'], $sideData[$ourSide ?? 'side_a']);
+    $enemyNames = array_map(fn($a) => $a['alliance'], $sideData[$enemySide]);
+
+    $totalIsk = $friendlyIskKilled + $enemyIskKilled;
+    $efficiency = $totalIsk > 0 ? round(($friendlyIskKilled / $totalIsk) * 100, 1) : 0;
+
     $facts = [
-        'region' => (string) ($theater['region_name'] ?? 'Unknown'),
-        'primary_system' => (string) ($theater['primary_system_name'] ?? 'Unknown'),
+        'theater_id' => $theaterId,
+        'location' => (string) ($theater['primary_system_name'] ?? 'Unknown') . ' (' . (string) ($theater['region_name'] ?? 'Unknown') . ')',
         'systems' => array_map(fn($s) => (string) ($s['system_name'] ?? '?'), $systems),
         'start_time' => (string) ($theater['start_time'] ?? ''),
         'end_time' => (string) ($theater['end_time'] ?? ''),
         'duration_minutes' => round((int) ($theater['duration_seconds'] ?? 0) / 60, 1),
-        'total_kills' => (int) ($theater['total_kills'] ?? 0),
-        'total_isk_destroyed' => round((float) ($theater['total_isk'] ?? 0)),
-        'participant_count' => (int) ($theater['participant_count'] ?? 0),
         'battle_count' => (int) ($theater['battle_count'] ?? 0),
-        'anomaly_score' => round((float) ($theater['anomaly_score'] ?? 0), 3),
-        'our_coalition' => $sideData[$ourSide ?? 'side_a'],
+        'total_kills' => (int) ($theater['total_kills'] ?? 0),
+        'participant_count' => (int) ($theater['participant_count'] ?? 0),
+        'friendly_alliance' => implode(', ', $friendlyNames) ?: 'Unknown',
+        'enemy_alliances' => implode(', ', $enemyNames) ?: 'Unknown',
+        'friendly_coalition' => $sideData[$ourSide ?? 'side_a'],
         'enemy_coalition' => $sideData[$enemySide],
-        'our_side_label' => $ourSide ?? 'side_a',
+        'friendly_isk_lost' => number_format($friendlyIskLost, 0) . ' ISK',
+        'enemy_isk_lost' => number_format($enemyIskLost, 0) . ' ISK',
+        'efficiency' => $efficiency . '%',
+        'friendly_fleet_composition' => array_slice($friendlyComp, 0, 20),
+        'enemy_fleet_composition' => array_slice($enemyComp, 0, 20),
+        'notable_kills' => $notableKillList,
+        'top_performers' => $performerList,
+        'anomaly_score' => round((float) ($theater['anomaly_score'] ?? 0), 3),
     ];
 
     if ($turningPoints !== []) {
@@ -26428,99 +26560,88 @@ function theater_ai_summary_generate(string $theaterId): ?array
         ];
     }
 
-    $systemPrompt = theater_ai_system_prompt();
-    $userPrompt = theater_ai_user_prompt($facts);
-    $schema = theater_ai_output_schema();
-
-    try {
-        if (($config['provider'] ?? 'local') === 'runpod') {
-            $decoded = supplycore_ai_runpod_generate_json($config, $systemPrompt, $userPrompt, $schema);
-        } else {
-            $endpoint = $config['url'] . '/generate';
-            $requestPayload = [
-                'model' => $config['model'],
-                'stream' => false,
-                'system' => $systemPrompt,
-                'prompt' => $userPrompt,
-                'format' => $schema,
-                'options' => ['temperature' => 0.2],
-            ];
-            $response = http_post_json($endpoint, [], $requestPayload, max(30, $config['timeout']));
-            $status = (int) ($response['status'] ?? 0);
-            $json = is_array($response['json'] ?? null) ? $response['json'] : [];
-            if ($status < 200 || $status >= 300) {
-                throw new RuntimeException('Ollama returned HTTP ' . $status);
-            }
-            $rawResponse = trim((string) ($json['response'] ?? ''));
-            if ($rawResponse === '') {
-                throw new RuntimeException('Ollama returned empty response');
-            }
-            $decoded = json_decode($rawResponse, true);
-            if (!is_array($decoded)) {
-                throw new RuntimeException('Ollama returned malformed JSON');
-            }
-        }
-
-        $headline = mb_substr(trim((string) ($decoded['headline'] ?? '')), 0, 255);
-        $summary = mb_substr(trim((string) ($decoded['summary'] ?? '')), 0, 2000);
-        $verdict = mb_substr(trim((string) ($decoded['verdict'] ?? '')), 0, 32);
-
-        if ($headline === '' || $summary === '') {
-            throw new RuntimeException('AI returned empty headline or summary');
-        }
-
-        // Persist to theaters table
-        theater_ai_summary_store($theaterId, $headline, $summary, $verdict, (string) $config['model']);
-
-        return [
-            'headline' => $headline,
-            'summary' => $summary,
-            'verdict' => $verdict,
-            'model' => (string) $config['model'],
-            'generated_at' => date('Y-m-d H:i:s'),
-            'cached' => false,
-        ];
-    } catch (Throwable $e) {
-        error_log('[theater-ai] Failed to generate summary for ' . $theaterId . ': ' . $e->getMessage());
-        return null;
-    }
+    return $facts;
 }
 
 function theater_ai_system_prompt(): string
 {
-    return <<<'PROMPT'
-You are a military intelligence analyst for an EVE Online alliance. You write concise, tactical after-action briefings for fleet commanders and alliance leadership.
-
-Rules:
-- Use ONLY the facts provided. Do not invent details.
-- Write from our coalition's perspective (the side marked as tracked/ours).
-- Be direct and analytical — no fluff or roleplay.
-- Identify the outcome (decisive victory, close fight, defeat, stalemate).
-- Note any strategic observations: efficiency gaps, turning points, suspicious activity.
-- Keep the summary to 2-4 sentences focused on what happened and why it matters.
-- The headline should be a single punchy line (max 80 chars) capturing the outcome.
-- Return valid JSON only.
-PROMPT;
+    return "You are an experienced EVE Online Fleet Commander and military analyst.\n\n"
+         . "Generate a clear, structured After Action Report (AAR) based on the provided battle data.\n\n"
+         . "Focus on tactical clarity, decision-making, and actionable insights. Avoid fluff.\n\n"
+         . "Return valid JSON only with the required fields.";
 }
 
 function theater_ai_user_prompt(array $facts): string
 {
-    $json = json_encode($facts, JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT | JSON_INVALID_UTF8_SUBSTITUTE);
+    // Load custom prompt from settings, fall back to default
+    $defaults = ai_briefing_setting_defaults();
+    $settings = get_settings(ai_briefing_setting_keys());
+    $customPrompt = trim((string) ($settings['theater_aar_prompt'] ?? $defaults['theater_aar_prompt']));
+
+    $dataJson = json_encode($facts, JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT | JSON_INVALID_UTF8_SUBSTITUTE);
+
+    if ($customPrompt !== '') {
+        return $customPrompt . "\n\n---\n\nBATTLE DATA:\n" . $dataJson;
+    }
 
     return <<<PROMPT
-Analyze this theater engagement and produce a tactical briefing.
+You are an experienced EVE Online Fleet Commander and military analyst.
 
-Theater facts:
-{$json}
+Generate a clear, structured After Action Report (AAR) based on the provided battle data.
+
+Focus on tactical clarity, decision-making, and actionable insights. Avoid fluff.
+
+
+OUTPUT FORMAT:
+
+1. Executive Summary
+Provide a 2-3 sentence high-level outcome (win/loss, strategic impact, efficiency).
+
+2. Battle Overview
+Briefly describe how the fight started, escalated, and concluded.
+
+3. Fleet Composition Analysis
+Compare doctrines, ship types, and relative strengths/weaknesses.
+
+4. Key Turning Points
+Identify 2-4 decisive moments that influenced the outcome.
+
+5. Tactical Assessment
+Evaluate:
+- Target calling effectiveness
+- Positioning and grid control
+- Use of logistics / ewar / caps (if applicable)
+
+6. Performance Insights
+Highlight:
+- Overperformance (what worked well)
+- Underperformance (mistakes, inefficiencies)
+
+7. Risk & Intelligence Signals
+Note anomalies such as:
+- Unusual pilot behavior
+- Missing expected participation
+- Suspicious patterns or potential intel leaks
+
+8. Recommendations
+Provide 1 concrete improvement for future engagements.
+
+---
+
+STYLE GUIDELINES:
+- Be concise, analytical, and neutral
+- Avoid roleplay or storytelling fluff
+- Use short paragraphs and bullet points where useful
+- Prioritize insights over description
+
+---
 
 Determine the verdict from our coalition's perspective: one of "decisive_victory", "victory", "close_fight", "defeat", "decisive_defeat", or "stalemate".
 
-Consider:
-- ISK efficiency and kill/loss ratios for both sides
-- Turning points and momentum shifts
-- Whether suspicious activity (possible spies/intel leaks) affected the outcome
-- Strategic significance of the systems involved
-- The anomaly score (higher = more unusual engagement patterns)
+---
+
+BATTLE DATA:
+{$dataJson}
 PROMPT;
 }
 
@@ -26532,11 +26653,11 @@ function theater_ai_output_schema(): array
         'properties' => [
             'headline' => [
                 'type' => 'string',
-                'description' => 'One-line outcome summary (max 80 chars). Example: "Clean sweep in 4-HWWF — 100% efficiency"',
+                'description' => 'One-line outcome summary (max 100 chars). Example: "Decisive victory in 4-HWWF — 100% ISK efficiency"',
             ],
             'summary' => [
                 'type' => 'string',
-                'description' => 'Tactical briefing: 2-4 sentences covering what happened, key observations, and implications.',
+                'description' => 'Full structured After Action Report following the requested format. Use markdown formatting with numbered sections, bullet points, and line breaks.',
             ],
             'verdict' => [
                 'type' => 'string',
