@@ -20,7 +20,7 @@ def _processor(db: SupplyCoreDb) -> dict[str, object]:
     rows_processed = len(rows)
     payload = {"generated_at": "utc", "rows": rows}
     rows_written = db.upsert_intelligence_snapshot(
-        snapshot_key="loss_demand_summaries",
+        snapshot_key="loss_demand_db_state",
         payload_json=json_dumps_safe(payload),
         metadata_json=json_dumps_safe({"source": "killmail_item_loss_1d", "window_days": 7, "row_count": rows_processed}),
         expires_seconds=900,
@@ -30,7 +30,7 @@ def _processor(db: SupplyCoreDb) -> dict[str, object]:
         "rows_written": rows_written,
         "warnings": [] if rows_processed > 0 else ["No loss-demand rows found for the trailing 7-day window."],
         "summary": f"Refreshed loss-demand intelligence snapshot with {rows_processed} rows.",
-        "meta": {"snapshot_key": "loss_demand_summaries"},
+        "meta": {"snapshot_key": "loss_demand_db_state"},
     }
 
 

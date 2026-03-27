@@ -38,24 +38,32 @@ def _processor(db: SupplyCoreDb) -> dict[str, object]:
                 f.id,
                 f.ship_type_id,
                 f.doctrine_group_id,
-                0,
+                COALESCE(hl.loss_count, 0) AS hull_loss_count,
                 COALESCE(SUM(il.quantity_lost), 0) AS doctrine_item_loss_count,
                 COALESCE(MIN(dis.complete_fits_supported), 0) AS complete_fits_available,
                 COALESCE(f.target_fleet_size_override, 0),
-                GREATEST(0, COALESCE(f.target_fleet_size_override, 0) - COALESCE(MIN(dis.complete_fits_supported), 0)) AS fit_gap,
+                LEAST(500, GREATEST(0, COALESCE(f.target_fleet_size_override, 0) - COALESCE(MIN(dis.complete_fits_supported), 0))) AS fit_gap,
                 CASE WHEN COALESCE(MIN(dis.complete_fits_supported), 0) >= COALESCE(f.target_fleet_size_override, 0) THEN 'ready' ELSE 'degraded' END,
-                CASE WHEN COALESCE(SUM(il.quantity_lost), 0) > 0 THEN 'elevated' ELSE 'stable' END,
+                CASE WHEN COALESCE(SUM(il.quantity_lost), 0) > 0 OR COALESCE(hl.loss_count, 0) > 0 THEN 'elevated' ELSE 'stable' END,
                 LEAST(
                     999.99,
                     (COALESCE(SUM(il.quantity_lost), 0) * 1.0)
+                    + (COALESCE(hl.loss_count, 0) * 5.0)
                     + LEAST(500.0, GREATEST(0, COALESCE(f.target_fleet_size_override, 0) - COALESCE(MIN(dis.complete_fits_supported), 0)))
                 )
             FROM doctrine_fits f
             LEFT JOIN doctrine_item_stock_1d dis ON dis.fit_id = f.id AND dis.bucket_start = CURDATE()
             LEFT JOIN killmail_item_loss_1d il ON il.type_id = dis.type_id AND il.bucket_start >= DATE_SUB(CURDATE(), INTERVAL 1 DAY)
+            LEFT JOIN (
+                SELECT doctrine_fit_id, SUM(loss_count) AS loss_count
+                FROM killmail_hull_loss_1d
+                WHERE bucket_start >= DATE_SUB(CURDATE(), INTERVAL 1 DAY) AND doctrine_fit_id IS NOT NULL
+                GROUP BY doctrine_fit_id
+            ) hl ON hl.doctrine_fit_id = f.id
             WHERE f.parse_status = 'ready'
             GROUP BY f.id, f.ship_type_id, f.doctrine_group_id, f.target_fleet_size_override
             ON DUPLICATE KEY UPDATE
+                hull_loss_count = VALUES(hull_loss_count),
                 doctrine_item_loss_count = VALUES(doctrine_item_loss_count), complete_fits_available = VALUES(complete_fits_available),
                 target_fits = VALUES(target_fits), fit_gap = VALUES(fit_gap), readiness_state = VALUES(readiness_state),
                 resupply_pressure = VALUES(resupply_pressure), priority_score = VALUES(priority_score)"""
@@ -91,7 +99,7 @@ def _processor(db: SupplyCoreDb) -> dict[str, object]:
         "rows_written": rows_written,
     }
     db.upsert_intelligence_snapshot(
-        snapshot_key="doctrine_fit_intelligence",
+        snapshot_key="doctrine_fit_db_state",
         payload_json=json_dumps_safe(snapshot_payload),
         metadata_json=json_dumps_safe({
             "source": "doctrine_item_stock_1d+doctrine_fit_activity_1d",
@@ -106,7 +114,7 @@ def _processor(db: SupplyCoreDb) -> dict[str, object]:
         "rows_written": rows_written,
         "warnings": [] if rows_processed > 0 else ["No active doctrine fits found while building doctrine intelligence."],
         "summary": f"Updated doctrine intelligence stock/activity rows ({rows_written} upserts).",
-        "meta": {"bucket_start": "CURDATE", "snapshot_key": "doctrine_fit_intelligence"},
+        "meta": {"bucket_start": "CURDATE", "snapshot_key": "doctrine_fit_db_state"},
     }
 
 
