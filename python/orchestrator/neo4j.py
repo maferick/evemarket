@@ -7,6 +7,7 @@ from typing import Any
 import urllib.error
 import urllib.request
 
+from .http_client import ipv4_opener
 from .json_utils import json_dumps_safe
 
 
@@ -67,7 +68,7 @@ class Neo4jClient:
             },
         )
         try:
-            with urllib.request.urlopen(request, timeout=self._config.timeout_seconds) as response:
+            with ipv4_opener.open(request, timeout=self._config.timeout_seconds) as response:
                 body = json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as error:
             details = error.read().decode("utf-8", errors="replace")

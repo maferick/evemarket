@@ -15,6 +15,7 @@ ESI killmail detail:
 from __future__ import annotations
 
 import json
+import logging
 import time
 import urllib.error
 import urllib.request
@@ -22,8 +23,10 @@ from datetime import UTC, datetime
 from typing import Any
 
 from ..bridge import PhpBridge
+from ..http_client import ipv4_opener
 from ..worker_runtime import utc_now_iso
 
+logger = logging.getLogger("supplycore.backfill")
 
 _ZKB_API_BASE = "https://zkillboard.com/api"
 _ESI_KILLMAIL_URL = "https://esi.evetech.net/latest/killmails"
@@ -39,7 +42,7 @@ def _http_get(url: str, user_agent: str, timeout: int = 30, accept_encoding: boo
 
     request = urllib.request.Request(url, headers=headers)
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        with ipv4_opener.open(request, timeout=timeout) as response:
             status = int(getattr(response, "status", response.getcode()))
             body = response.read()
             # Handle gzip encoding
@@ -51,8 +54,9 @@ def _http_get(url: str, user_agent: str, timeout: int = 30, accept_encoding: boo
             return status, body
     except urllib.error.HTTPError as error:
         return int(error.code), ""
-    except urllib.error.URLError as error:
-        raise RuntimeError(f"HTTP request failed for {url}: {error.reason}") from error
+    except (urllib.error.URLError, OSError, TimeoutError) as error:
+        logger.warning("HTTP request failed for %s: %s", url, error)
+        return 0, ""
 
 
 def _fetch_zkb_page(entity_type: str, entity_id: int, year: int, month: int, page: int, user_agent: str) -> list[dict[str, Any]]:
@@ -121,8 +125,10 @@ def _collect_entity_kills(
     for month in months:
         page = 1
         while True:
+            logger.info("zKB fetch: %s/%d year=%d month=%02d page=%d", entity_type, entity_id, year, month, page)
             results = _fetch_zkb_page(entity_type, entity_id, year, month, page, user_agent)
             if not results:
+                logger.info("zKB fetch: no results, moving on")
                 break
 
             for entry in results:
@@ -131,6 +137,8 @@ def _collect_entity_kills(
                 km_hash = str(zkb.get("hash", ""))
                 if km_id > 0 and km_hash:
                     collected[km_id] = km_hash
+
+            logger.info("zKB fetch: got %d results, total collected=%d", len(results), len(collected))
 
             # zKB returns max 1000 per page; if less, we're done
             if len(results) < 200:
@@ -148,6 +156,7 @@ def _collect_entity_kills(
 
 def run_killmail_history_backfill(context: Any) -> dict[str, Any]:
     """Backfill killmails using zKillboard API filtered by tracked entities."""
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
     bridge = PhpBridge(context.php_binary, context.app_root)
     bridge_response = bridge.call("killmail-backfill-context")
     job_context = dict(bridge_response.get("context") or {})
@@ -172,6 +181,9 @@ def run_killmail_history_backfill(context: Any) -> dict[str, Any]:
 
     start_date = datetime.strptime(start_date_str, "%Y-%m-%d").replace(tzinfo=UTC)
     end_date = datetime.strptime(end_date_str, "%Y-%m-%d").replace(tzinfo=UTC)
+
+    logger.info("Backfill starting: %s to %s, alliances=%s, corporations=%s",
+                start_date_str, end_date_str, tracked_alliances, tracked_corporations)
 
     # Build list of months to query
     year = start_date.year

@@ -11,6 +11,8 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+from .http_client import ipv4_opener
+
 
 @dataclass(slots=True)
 class InfluxConfig:
@@ -131,7 +133,7 @@ class InfluxWriter:
         )
 
         try:
-            with urllib.request.urlopen(request, timeout=self._config.timeout_seconds) as response:
+            with ipv4_opener.open(request, timeout=self._config.timeout_seconds) as response:
                 status_code = int(getattr(response, "status", 204) or 204)
                 if status_code not in (204, 200):
                     raise InfluxWriteError(f"InfluxDB write returned unexpected HTTP status {status_code}.")
@@ -223,7 +225,7 @@ class InfluxClient:
             headers={"Accept": "application/json"},
         )
         try:
-            with urllib.request.urlopen(request, timeout=self._config.timeout_seconds) as response:
+            with ipv4_opener.open(request, timeout=self._config.timeout_seconds) as response:
                 return json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as error:
             details = error.read().decode("utf-8", errors="replace").strip()
@@ -245,7 +247,7 @@ class InfluxClient:
         )
 
         try:
-            with urllib.request.urlopen(request, timeout=self._config.timeout_seconds) as response:
+            with ipv4_opener.open(request, timeout=self._config.timeout_seconds) as response:
                 body = response.read().decode("utf-8")
                 return parse_flux_csv(body)
         except urllib.error.HTTPError as error:

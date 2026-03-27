@@ -14,6 +14,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from ..db import SupplyCoreDb
+from ..http_client import ipv4_opener
 from ..job_result import JobResult
 from ..json_utils import json_dumps_safe
 
@@ -42,7 +43,7 @@ def _esi_get_json(url: str, timeout: int = 20) -> tuple[int, Any]:
         },
     )
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        with ipv4_opener.open(request, timeout=timeout) as response:
             body = json.loads(response.read().decode("utf-8"))
             remain = response.headers.get("X-Esi-Error-Limit-Remain")
             if remain is not None:

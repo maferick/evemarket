@@ -11,6 +11,7 @@ from typing import Any
 from ..db import SupplyCoreDb
 from ..job_result import JobResult
 from ..job_utils import acquire_job_lock, finish_job_run, release_job_lock, start_job_run
+from ..http_client import ipv4_opener
 from ..json_utils import json_dumps_safe
 from ..neo4j import Neo4jClient, Neo4jConfig
 
@@ -54,7 +55,7 @@ def _sync_state_upsert(db: SupplyCoreDb, dataset_key: str, cursor: str, status: 
 def _http_json(url: str, user_agent: str, timeout_seconds: int = 20) -> dict[str, Any] | None:
     request = urllib.request.Request(url, headers={"Accept": "application/json", "User-Agent": user_agent})
     try:
-        with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+        with ipv4_opener.open(request, timeout=timeout_seconds) as response:
             if int(getattr(response, "status", response.getcode())) != 200:
                 return None
             body = response.read().decode("utf-8", errors="replace")

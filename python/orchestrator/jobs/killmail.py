@@ -6,6 +6,7 @@ import urllib.request
 from typing import Any
 
 from ..bridge import PhpBridge
+from ..http_client import ipv4_opener
 from ..job_result import JobResult
 from ..worker_runtime import payload_checksum, resident_memory_bytes, utc_now_iso
 
@@ -19,7 +20,7 @@ def _http_json(url: str, user_agent: str, timeout_seconds: int = 25) -> tuple[in
         },
     )
     try:
-        with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+        with ipv4_opener.open(request, timeout=timeout_seconds) as response:
             status = int(getattr(response, "status", response.getcode()))
             payload = response.read().decode("utf-8", errors="replace")
     except urllib.error.HTTPError as error:
