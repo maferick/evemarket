@@ -10878,6 +10878,31 @@ function db_killmail_event_exists(int $sequenceId, int $killmailId, string $kill
     return $row !== null;
 }
 
+/**
+ * Given a list of killmail IDs, return the subset that already exist in killmail_events.
+ *
+ * @param int[] $killmailIds
+ * @return int[]
+ */
+function db_killmail_ids_existing(array $killmailIds): array
+{
+    $killmailIds = array_values(array_unique(array_filter(array_map('intval', $killmailIds), static fn (int $id): bool => $id > 0)));
+    if ($killmailIds === []) {
+        return [];
+    }
+
+    $existing = [];
+    foreach (array_chunk($killmailIds, 500) as $chunk) {
+        $placeholders = implode(',', array_fill(0, count($chunk), '?'));
+        $rows = db_select("SELECT DISTINCT killmail_id FROM killmail_events WHERE killmail_id IN ({$placeholders})", $chunk);
+        foreach ($rows as $row) {
+            $existing[] = (int) $row['killmail_id'];
+        }
+    }
+
+    return $existing;
+}
+
 function db_killmail_attackers_replace(int $sequenceId, array $rows): int
 {
     return db_transaction(static function () use ($sequenceId, $rows): int {

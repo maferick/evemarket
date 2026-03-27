@@ -116,6 +116,7 @@ def run_killmail_history_backfill(context: Any) -> dict[str, Any]:
     total_written = 0
     total_filtered = 0
     total_duplicates = 0
+    total_skipped_existing = 0
     batch_size = 25
 
     current_date = start_date
@@ -136,9 +137,23 @@ def run_killmail_history_backfill(context: Any) -> dict[str, Any]:
         killmail_pairs = list(history.items())
         total_killmails_seen += len(killmail_pairs)
 
+        # Pre-filter: remove killmails we already have in the DB
+        all_km_ids = [int(km_id) for km_id, _ in killmail_pairs]
+        try:
+            existing_response = bridge.call(
+                "killmail-ids-existing",
+                payload={"killmail_ids": all_km_ids},
+            )
+            existing_ids = set(int(x) for x in (existing_response.get("existing") or []))
+        except Exception:
+            existing_ids = set()
+
+        filtered_pairs = [(km_id, km_hash) for km_id, km_hash in killmail_pairs if int(km_id) not in existing_ids]
+        total_skipped_existing += len(killmail_pairs) - len(filtered_pairs)
+
         # Process in batches
-        for batch_start in range(0, len(killmail_pairs), batch_size):
-            batch_pairs = killmail_pairs[batch_start:batch_start + batch_size]
+        for batch_start in range(0, len(filtered_pairs), batch_size):
+            batch_pairs = filtered_pairs[batch_start:batch_start + batch_size]
             payloads = []
 
             for km_id_str, km_hash in batch_pairs:
@@ -175,6 +190,7 @@ def run_killmail_history_backfill(context: Any) -> dict[str, Any]:
                         "current_date": date_key,
                         "days_processed": total_days,
                         "killmails_seen": total_killmails_seen,
+                        "skipped_existing": total_skipped_existing,
                         "written": total_written,
                         "filtered": total_filtered,
                         "duplicates": total_duplicates,
@@ -212,6 +228,7 @@ def run_killmail_history_backfill(context: Any) -> dict[str, Any]:
         "finished_at": utc_now_iso(),
         "days_processed": total_days,
         "killmails_seen": total_killmails_seen,
+        "skipped_existing": total_skipped_existing,
         "esi_fetched": total_esi_fetched,
         "esi_failed": total_esi_failed,
         "written": total_written,

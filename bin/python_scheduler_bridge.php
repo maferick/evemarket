@@ -110,6 +110,12 @@ try {
         python_scheduler_bridge_output(['ok' => true, 'result' => $result]);
     }
 
+    if ($action === 'killmail-ids-existing') {
+        $input = python_scheduler_bridge_read_stdin_json();
+        $killmailIds = array_values(array_map('intval', (array) ($input['killmail_ids'] ?? [])));
+        python_scheduler_bridge_output(['ok' => true, 'existing' => db_killmail_ids_existing($killmailIds)]);
+    }
+
     if ($action === 'process-killmail-batch') {
         $input = python_scheduler_bridge_read_stdin_json();
         $payloads = array_values(array_filter(
