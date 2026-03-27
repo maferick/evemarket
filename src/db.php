@@ -14853,6 +14853,39 @@ function db_theater_turning_points(string $theaterId): array
     );
 }
 
+function db_theater_side_labels(array $theaterIds): array
+{
+    if ($theaterIds === []) {
+        return [];
+    }
+    $placeholders = implode(',', array_fill(0, count($theaterIds), '?'));
+    $rows = db_select(
+        "SELECT tas.theater_id, tas.alliance_id, tas.side, tas.participant_count,
+                COALESCE(emc.entity_name, tas.alliance_name, CONCAT('Alliance #', tas.alliance_id)) AS alliance_name
+         FROM theater_alliance_summary tas
+         LEFT JOIN entity_metadata_cache emc
+              ON emc.entity_type = 'alliance' AND emc.entity_id = tas.alliance_id
+         WHERE tas.theater_id IN ({$placeholders})
+         ORDER BY tas.participant_count DESC",
+        $theaterIds
+    );
+    // Group by theater → side → pick top alliance by pilot count
+    $grouped = [];
+    foreach ($rows as $r) {
+        $tid = (string) $r['theater_id'];
+        $side = (string) $r['side'];
+        if (!isset($grouped[$tid][$side])) {
+            $grouped[$tid][$side] = [
+                'top_name' => (string) $r['alliance_name'],
+                'top_alliance_id' => (int) $r['alliance_id'],
+                'count' => 0,
+            ];
+        }
+        $grouped[$tid][$side]['count']++;
+    }
+    return $grouped;
+}
+
 // ---------------------------------------------------------------------------
 // Database migrations
 // ---------------------------------------------------------------------------

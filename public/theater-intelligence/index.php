@@ -14,6 +14,12 @@ $offset = ($page - 1) * $perPage;
 
 $theaters = db_theaters_list($perPage, $offset, $regionFilter, $minAnomaly);
 
+// Load tracked alliances and side labels for matchup display
+$trackedAlliances = db_killmail_tracked_alliances_active();
+$trackedAllianceIds = array_map('intval', array_column($trackedAlliances, 'alliance_id'));
+$theaterIds = array_column($theaters, 'theater_id');
+$sideLabelsMap = db_theater_side_labels($theaterIds);
+
 // Load distinct regions that have theaters for the filter dropdown
 $theaterRegions = db_select(
     'SELECT DISTINCT t.region_id, rr.region_name
@@ -70,8 +76,9 @@ include __DIR__ . '/../../src/views/partials/header.php';
         <table class="table-ui">
             <thead>
                 <tr class="border-b border-border/70 text-xs uppercase tracking-[0.15em] text-muted">
+                    <th class="px-3 py-2 text-left">Matchup</th>
                     <th class="px-3 py-2 text-left">Region</th>
-                    <th class="px-3 py-2 text-left">Primary System</th>
+                    <th class="px-3 py-2 text-left">System</th>
                     <th class="px-3 py-2 text-right">Battles</th>
                     <th class="px-3 py-2 text-right">Systems</th>
                     <th class="px-3 py-2 text-right">Participants</th>
@@ -85,7 +92,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
             </thead>
             <tbody>
                 <?php if ($theaters === []): ?>
-                    <tr><td colspan="11" class="px-3 py-6 text-sm text-muted">No theaters found. Run the theater clustering job to generate data.</td></tr>
+                    <tr><td colspan="12" class="px-3 py-6 text-sm text-muted">No theaters found. Run the theater clustering job to generate data.</td></tr>
                 <?php else: ?>
                     <?php foreach ($theaters as $t): ?>
                         <?php
@@ -96,7 +103,30 @@ include __DIR__ . '/../../src/views/partials/header.php';
                             $battleCount = (int) ($t['battle_count'] ?? 0);
                             $sizeLabel = $battleCount > 5 ? 'bg-red-900/60 text-red-300' : ($battleCount > 2 ? 'bg-orange-900/60 text-orange-300' : 'bg-slate-700 text-slate-300');
                         ?>
+                        <?php
+                            // Determine matchup label for this theater
+                            $tid = (string) ($t['theater_id'] ?? '');
+                            $sides = $sideLabelsMap[$tid] ?? [];
+                            $listOurSide = null;
+                            $listEnemySide = null;
+                            foreach ($sides as $sKey => $sData) {
+                                if (in_array($sData['top_alliance_id'], $trackedAllianceIds, true)) {
+                                    $listOurSide = $sKey;
+                                }
+                            }
+                            if ($listOurSide === null) {
+                                $listOurSide = isset($sides['side_a']) ? 'side_a' : array_key_first($sides);
+                            }
+                            $listEnemySide = ($listOurSide === 'side_a') ? 'side_b' : 'side_a';
+                            $ourLabel = isset($sides[$listOurSide]) ? $sides[$listOurSide]['top_name'] . ($sides[$listOurSide]['count'] > 1 ? ' +' . ($sides[$listOurSide]['count'] - 1) : '') : '?';
+                            $enemyLabel = isset($sides[$listEnemySide]) ? $sides[$listEnemySide]['top_name'] . ($sides[$listEnemySide]['count'] > 1 ? ' +' . ($sides[$listEnemySide]['count'] - 1) : '') : '?';
+                        ?>
                         <tr class="border-b border-border/50">
+                            <td class="px-3 py-2 text-sm">
+                                <span class="text-blue-300"><?= htmlspecialchars($ourLabel, ENT_QUOTES) ?></span>
+                                <span class="text-slate-500 mx-1">vs</span>
+                                <span class="text-red-300"><?= htmlspecialchars($enemyLabel, ENT_QUOTES) ?></span>
+                            </td>
                             <td class="px-3 py-2 text-slate-100"><?= htmlspecialchars((string) ($t['region_name'] ?? 'Unknown'), ENT_QUOTES) ?></td>
                             <td class="px-3 py-2 text-slate-100"><?= htmlspecialchars((string) ($t['primary_system_name'] ?? '-'), ENT_QUOTES) ?></td>
                             <td class="px-3 py-2 text-right">

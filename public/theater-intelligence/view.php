@@ -65,6 +65,52 @@ foreach ($entityRequests as $type => $ids) {
 }
 $resolvedEntities = killmail_entity_resolve_batch($entityRequests, true);
 
+// ── Determine meaningful side labels from tracked alliances ──────────
+$trackedAlliances = db_killmail_tracked_alliances_active();
+$trackedAllianceIds = array_column($trackedAlliances, 'alliance_id');
+$trackedAllianceIds = array_map('intval', $trackedAllianceIds);
+
+// Find which internal side (side_a/side_b) contains our tracked alliances
+$ourSide = null;
+$sideAlliancesByPilots = ['side_a' => [], 'side_b' => []]; // alliance_id => participant_count
+foreach ($allianceSummary as $a) {
+    $side = (string) ($a['side'] ?? '');
+    $aid = (int) ($a['alliance_id'] ?? 0);
+    $pilots = (int) ($a['participant_count'] ?? 0);
+    if (isset($sideAlliancesByPilots[$side])) {
+        $sideAlliancesByPilots[$side][$aid] = $pilots;
+    }
+    if ($ourSide === null && in_array($aid, $trackedAllianceIds, true)) {
+        $ourSide = $side;
+    }
+}
+$enemySide = ($ourSide === 'side_a') ? 'side_b' : 'side_a';
+
+// Build human-readable label for each side (dominant alliance name by pilot count)
+$sideLabels = [];
+foreach (['side_a', 'side_b'] as $side) {
+    $alliances = $sideAlliancesByPilots[$side];
+    if ($alliances === []) {
+        $sideLabels[$side] = $side === $ourSide ? 'Our Side' : 'Enemy';
+        continue;
+    }
+    arsort($alliances); // sort by pilot count descending
+    $topAllianceId = array_key_first($alliances);
+    $topName = killmail_entity_preferred_name($resolvedEntities, 'alliance', $topAllianceId, '', 'Alliance');
+    $otherCount = count($alliances) - 1;
+    $sideLabels[$side] = $topName . ($otherCount > 0 ? " +{$otherCount}" : '');
+}
+
+// Color scheme: our side = blue, enemy = red
+$sideColorClass = [
+    $ourSide ?? 'side_a' => 'text-blue-300',
+    $enemySide => 'text-red-300',
+];
+$sideBgClass = [
+    $ourSide ?? 'side_a' => 'bg-blue-900/60',
+    $enemySide => 'bg-red-900/60',
+];
+
 $title = htmlspecialchars((string) ($theater['primary_system_name'] ?? 'Theater'), ENT_QUOTES) . ' Theater';
 $durationSec = max(1, (int) ($theater['duration_seconds'] ?? 0));
 $durationLabel = $durationSec >= 120 ? number_format($durationSec / 60, 0) . 'm' : $durationSec . 's';
@@ -85,6 +131,14 @@ include __DIR__ . '/../../src/views/partials/header.php';
                     <span class="text-sm text-muted">+<?= (int) ($theater['system_count'] ?? 0) - 1 ?> systems</span>
                 <?php endif; ?>
             </h1>
+            <p class="mt-1 text-base text-slate-200">
+                <span class="<?= $sideColorClass[$ourSide ?? 'side_a'] ?? 'text-blue-300' ?> font-semibold"><?= htmlspecialchars($sideLabels[$ourSide ?? 'side_a'] ?? 'Side A', ENT_QUOTES) ?></span>
+                <?php if ($ourSide !== null): ?>
+                    <span class="text-[10px] uppercase tracking-wider bg-blue-900/60 text-blue-300 rounded-full px-1.5 py-0.5 ml-1">Tracked</span>
+                <?php endif; ?>
+                <span class="text-slate-500 mx-2">vs</span>
+                <span class="<?= $sideColorClass[$enemySide] ?? 'text-red-300' ?> font-semibold"><?= htmlspecialchars($sideLabels[$enemySide] ?? 'Side B', ENT_QUOTES) ?></span>
+            </p>
             <p class="mt-1 text-sm text-slate-300">
                 <?= htmlspecialchars((string) ($theater['region_name'] ?? ''), ENT_QUOTES) ?>
                 &middot; <?= htmlspecialchars((string) ($theater['start_time'] ?? ''), ENT_QUOTES) ?>
@@ -189,17 +243,23 @@ include __DIR__ . '/../../src/views/partials/header.php';
 <?php if ($timeline !== []): ?>
 <section class="surface-primary mt-4">
     <h2 class="text-lg font-semibold text-slate-50">Timeline</h2>
-    <p class="text-xs text-muted mt-1"><?= count($timeline) ?> buckets (1-minute intervals). Momentum: positive = side A winning, negative = side B winning.</p>
+    <p class="text-xs text-muted mt-1"><?= count($timeline) ?> buckets (1-minute intervals). Momentum: positive = <span class="<?= $sideColorClass[$ourSide ?? 'side_a'] ?? '' ?>"><?= htmlspecialchars($sideLabels[$ourSide ?? 'side_a'] ?? 'Side A', ENT_QUOTES) ?></span> winning, negative = <span class="<?= $sideColorClass[$enemySide] ?? '' ?>"><?= htmlspecialchars($sideLabels[$enemySide] ?? 'Side B', ENT_QUOTES) ?></span> winning.</p>
 
     <?php if ($turningPoints !== []): ?>
         <div class="mt-2">
             <p class="text-xs uppercase tracking-[0.15em] text-muted mb-1">Turning Points</p>
             <?php foreach ($turningPoints as $tp): ?>
+                <?php
+                    $tpDir = (string) ($tp['direction'] ?? '');
+                    $tpSide = str_contains($tpDir, 'side_a') ? 'side_a' : 'side_b';
+                    $tpColor = $sideColorClass[$tpSide] ?? 'text-slate-300';
+                    $tpSideLabel = $sideLabels[$tpSide] ?? $tpSide;
+                ?>
                 <p class="text-xs text-slate-300">
-                    <span class="<?= str_contains((string) ($tp['direction'] ?? ''), 'side_a') ? 'text-blue-400' : 'text-red-400' ?>">
+                    <span class="<?= $tpColor ?>">
                         <?= htmlspecialchars((string) ($tp['turning_point_at'] ?? ''), ENT_QUOTES) ?>
                     </span>
-                    &mdash; <?= htmlspecialchars((string) ($tp['description'] ?? ''), ENT_QUOTES) ?>
+                    &mdash; <span class="<?= $tpColor ?>"><?= htmlspecialchars($tpSideLabel, ENT_QUOTES) ?></span> <?= htmlspecialchars((string) ($tp['description'] ?? ''), ENT_QUOTES) ?>
                     (magnitude: <?= number_format((float) ($tp['magnitude'] ?? 0), 3) ?>)
                 </p>
             <?php endforeach; ?>
@@ -215,8 +275,8 @@ include __DIR__ . '/../../src/views/partials/header.php';
                         <th class="px-3 py-2 text-left">Time</th>
                         <th class="px-3 py-2 text-right">Kills</th>
                         <th class="px-3 py-2 text-right">ISK</th>
-                        <th class="px-3 py-2 text-right">Side A Kills</th>
-                        <th class="px-3 py-2 text-right">Side B Kills</th>
+                        <th class="px-3 py-2 text-right <?= $sideColorClass[$ourSide ?? 'side_a'] ?? '' ?>"><?= htmlspecialchars($sideLabels[$ourSide ?? 'side_a'] ?? 'Side A', ENT_QUOTES) ?> Kills</th>
+                        <th class="px-3 py-2 text-right <?= $sideColorClass[$enemySide] ?? '' ?>"><?= htmlspecialchars($sideLabels[$enemySide] ?? 'Side B', ENT_QUOTES) ?> Kills</th>
                         <th class="px-3 py-2 text-right">Momentum</th>
                     </tr>
                 </thead>
@@ -227,8 +287,8 @@ include __DIR__ . '/../../src/views/partials/header.php';
                             <td class="px-3 py-2 text-xs text-slate-300"><?= htmlspecialchars((string) ($t['bucket_time'] ?? ''), ENT_QUOTES) ?></td>
                             <td class="px-3 py-2 text-right"><?= (int) ($t['kills'] ?? 0) ?></td>
                             <td class="px-3 py-2 text-right"><?= number_format((float) ($t['isk_destroyed'] ?? 0), 0) ?></td>
-                            <td class="px-3 py-2 text-right text-blue-300"><?= (int) ($t['side_a_kills'] ?? 0) ?></td>
-                            <td class="px-3 py-2 text-right text-red-300"><?= (int) ($t['side_b_kills'] ?? 0) ?></td>
+                            <td class="px-3 py-2 text-right <?= $sideColorClass[$ourSide ?? 'side_a'] ?? 'text-blue-300' ?>"><?= (int) ($t['side_a_kills'] ?? 0) ?></td>
+                            <td class="px-3 py-2 text-right <?= $sideColorClass[$enemySide] ?? 'text-red-300' ?>"><?= (int) ($t['side_b_kills'] ?? 0) ?></td>
                             <td class="px-3 py-2 text-right <?= $mom > 0 ? 'text-blue-400' : ($mom < 0 ? 'text-red-400' : 'text-slate-300') ?>">
                                 <?= number_format($mom, 3) ?>
                             </td>
@@ -262,15 +322,23 @@ include __DIR__ . '/../../src/views/partials/header.php';
             <tbody>
                 <?php foreach ($allianceSummary as $a): ?>
                     <?php
+                        $aSide = (string) ($a['side'] ?? '');
                         $eff = (float) ($a['efficiency'] ?? 0);
                         $effClass = $eff >= 0.6 ? 'text-green-400' : ($eff >= 0.4 ? 'text-yellow-400' : 'text-red-400');
-                        $sideClass = (string) ($a['side'] ?? '') === 'side_a' ? 'text-blue-300' : 'text-red-300';
+                        $aSideColor = $sideColorClass[$aSide] ?? 'text-slate-300';
+                        $aSideBg = $sideBgClass[$aSide] ?? 'bg-slate-700';
+                        $isTracked = in_array((int) ($a['alliance_id'] ?? 0), $trackedAllianceIds, true);
                     ?>
                     <tr class="border-b border-border/50">
-                        <td class="px-3 py-2 text-slate-100"><?= htmlspecialchars(killmail_entity_preferred_name($resolvedEntities, 'alliance', (int) ($a['alliance_id'] ?? 0), (string) ($a['alliance_name'] ?? ''), 'Alliance'), ENT_QUOTES) ?></td>
-                        <td class="px-3 py-2 <?= $sideClass ?>">
-                            <span class="inline-block rounded-full px-2 py-0.5 text-[10px] uppercase tracking-wider <?= (string) ($a['side'] ?? '') === 'side_a' ? 'bg-blue-900/60' : 'bg-red-900/60' ?>">
-                                <?= htmlspecialchars((string) ($a['side'] ?? ''), ENT_QUOTES) ?>
+                        <td class="px-3 py-2 text-slate-100">
+                            <?= htmlspecialchars(killmail_entity_preferred_name($resolvedEntities, 'alliance', (int) ($a['alliance_id'] ?? 0), (string) ($a['alliance_name'] ?? ''), 'Alliance'), ENT_QUOTES) ?>
+                            <?php if ($isTracked): ?>
+                                <span class="text-[10px] uppercase tracking-wider bg-blue-900/60 text-blue-300 rounded-full px-1.5 py-0.5 ml-1">Tracked</span>
+                            <?php endif; ?>
+                        </td>
+                        <td class="px-3 py-2 <?= $aSideColor ?>">
+                            <span class="inline-block rounded-full px-2 py-0.5 text-[10px] uppercase tracking-wider <?= $aSideBg ?>">
+                                <?= htmlspecialchars($sideLabels[$aSide] ?? $aSide, ENT_QUOTES) ?>
                             </span>
                         </td>
                         <td class="px-3 py-2 text-right"><?= number_format((int) ($a['participant_count'] ?? 0)) ?></td>
@@ -293,8 +361,8 @@ include __DIR__ . '/../../src/views/partials/header.php';
         <h2 class="text-lg font-semibold text-slate-50">Participants</h2>
         <div class="flex gap-2 text-sm">
             <a href="?theater_id=<?= urlencode($theaterId) ?>" class="<?= $sideFilter === null && !$suspiciousOnly ? 'text-slate-50 font-semibold' : 'text-accent' ?>">All</a>
-            <a href="?theater_id=<?= urlencode($theaterId) ?>&side=side_a" class="<?= $sideFilter === 'side_a' ? 'text-blue-300 font-semibold' : 'text-accent' ?>">Side A</a>
-            <a href="?theater_id=<?= urlencode($theaterId) ?>&side=side_b" class="<?= $sideFilter === 'side_b' ? 'text-red-300 font-semibold' : 'text-accent' ?>">Side B</a>
+            <a href="?theater_id=<?= urlencode($theaterId) ?>&side=<?= urlencode($ourSide ?? 'side_a') ?>" class="<?= $sideFilter === ($ourSide ?? 'side_a') ? ($sideColorClass[$ourSide ?? 'side_a'] ?? 'text-blue-300') . ' font-semibold' : 'text-accent' ?>"><?= htmlspecialchars($sideLabels[$ourSide ?? 'side_a'] ?? 'Side A', ENT_QUOTES) ?></a>
+            <a href="?theater_id=<?= urlencode($theaterId) ?>&side=<?= urlencode($enemySide) ?>" class="<?= $sideFilter === $enemySide ? ($sideColorClass[$enemySide] ?? 'text-red-300') . ' font-semibold' : 'text-accent' ?>"><?= htmlspecialchars($sideLabels[$enemySide] ?? 'Side B', ENT_QUOTES) ?></a>
             <a href="?theater_id=<?= urlencode($theaterId) ?>&suspicious=1" class="<?= $suspiciousOnly ? 'text-yellow-300 font-semibold' : 'text-accent' ?>">Suspicious</a>
         </div>
     </div>
@@ -321,7 +389,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                     <?php foreach ($participants as $p): ?>
                         <?php
                             $pSide = (string) ($p['side'] ?? '');
-                            $pSideClass = $pSide === 'side_a' ? 'text-blue-300' : 'text-red-300';
+                            $pSideClass = $sideColorClass[$pSide] ?? 'text-slate-300';
                             $pSusp = (float) ($p['suspicion_score'] ?? 0);
                             $pSuspClass = $pSusp >= 0.5 ? 'text-red-400 font-semibold' : ($pSusp >= 0.3 ? 'text-yellow-400' : 'text-slate-300');
                             $isSusp = (int) ($p['is_suspicious'] ?? 0);
@@ -347,8 +415,8 @@ include __DIR__ . '/../../src/views/partials/header.php';
                                 <?php endif; ?>
                             </td>
                             <td class="px-3 py-2 <?= $pSideClass ?>">
-                                <span class="inline-block rounded-full px-2 py-0.5 text-[10px] uppercase tracking-wider <?= $pSide === 'side_a' ? 'bg-blue-900/60' : 'bg-red-900/60' ?>">
-                                    <?= htmlspecialchars($pSide, ENT_QUOTES) ?>
+                                <span class="inline-block rounded-full px-2 py-0.5 text-[10px] uppercase tracking-wider <?= $sideBgClass[$pSide] ?? 'bg-slate-700' ?>">
+                                    <?= htmlspecialchars($sideLabels[$pSide] ?? $pSide, ENT_QUOTES) ?>
                                 </span>
                             </td>
                             <td class="px-3 py-2">
@@ -451,7 +519,12 @@ include __DIR__ . '/../../src/views/partials/header.php';
                                         <?= htmlspecialchars(killmail_entity_preferred_name($resolvedEntities, 'character', (int) ($gp['character_id'] ?? 0), (string) ($gp['character_name'] ?? ''), 'Character'), ENT_QUOTES) ?>
                                     </a>
                                 </td>
-                                <td class="px-3 py-2 text-xs"><?= htmlspecialchars((string) ($gp['side'] ?? '-'), ENT_QUOTES) ?></td>
+                                <?php $gpSide = (string) ($gp['side'] ?? ''); ?>
+                                <td class="px-3 py-2 text-xs <?= $sideColorClass[$gpSide] ?? 'text-slate-300' ?>">
+                                    <span class="inline-block rounded-full px-2 py-0.5 text-[10px] uppercase tracking-wider <?= $sideBgClass[$gpSide] ?? 'bg-slate-700' ?>">
+                                        <?= htmlspecialchars($sideLabels[$gpSide] ?? ($gpSide ?: '-'), ENT_QUOTES) ?>
+                                    </span>
+                                </td>
                                 <td class="px-3 py-2 text-right"><?= (int) ($gp['cluster_id'] ?? 0) ?></td>
                                 <td class="px-3 py-2 text-right <?= $bridge >= 0.3 ? 'text-yellow-400' : 'text-slate-300' ?>"><?= number_format($bridge, 3) ?></td>
                                 <td class="px-3 py-2 text-right"><?= number_format((float) ($gp['co_occurrence_density'] ?? 0), 3) ?></td>
