@@ -42,6 +42,13 @@ from .jobs.market_comparison_summary_sync import run_market_comparison_summary_s
 from .jobs.esi_character_queue_sync import run_esi_character_queue_sync
 from .jobs.esi_alliance_history_sync import run_esi_alliance_history_sync
 from .jobs.intelligence_pipeline import run_intelligence_pipeline
+from .jobs.graph_data_quality import run_graph_data_quality_check
+from .jobs.graph_temporal_metrics import run_graph_temporal_metrics_sync
+from .jobs.graph_typed_interactions import run_graph_typed_interactions_sync
+from .jobs.graph_community_detection import run_graph_community_detection_sync
+from .jobs.graph_motif_detection import run_graph_motif_detection_sync
+from .jobs.graph_evidence_paths import run_graph_evidence_paths_sync
+from .jobs.graph_analyst_recalibration import run_graph_analyst_recalibration
 
 PYTHON_COMPUTE_PROCESSOR_JOB_KEYS: set[str] = {
     "compute_graph_sync",
@@ -62,6 +69,13 @@ PYTHON_COMPUTE_PROCESSOR_JOB_KEYS: set[str] = {
     "compute_suspicion_scores",
     "compute_counterintel_pipeline",
     "intelligence_pipeline",
+    "graph_data_quality_check",
+    "graph_temporal_metrics_sync",
+    "graph_typed_interactions_sync",
+    "graph_community_detection_sync",
+    "graph_motif_detection_sync",
+    "graph_evidence_paths_sync",
+    "graph_analyst_recalibration",
 }
 
 PYTHON_SYNC_PROCESSOR_JOB_KEYS: set[str] = {
@@ -129,6 +143,14 @@ _PROCESSOR_DISPATCH: dict[str, tuple] = {
     "esi_character_queue_sync": (run_esi_character_queue_sync, lambda db, cfg: (db,)),
     "esi_alliance_history_sync": (run_esi_alliance_history_sync, lambda db, cfg: (db,)),
     "intelligence_pipeline": (run_intelligence_pipeline, lambda db, cfg: (db, neo4j_runtime(cfg))),
+    # Enhanced intelligence platform (KGv2)
+    "graph_data_quality_check": (run_graph_data_quality_check, lambda db, cfg: (db, neo4j_runtime(cfg))),
+    "graph_temporal_metrics_sync": (run_graph_temporal_metrics_sync, lambda db, cfg: (db, neo4j_runtime(cfg))),
+    "graph_typed_interactions_sync": (run_graph_typed_interactions_sync, lambda db, cfg: (db, neo4j_runtime(cfg))),
+    "graph_community_detection_sync": (run_graph_community_detection_sync, lambda db, cfg: (db, neo4j_runtime(cfg))),
+    "graph_motif_detection_sync": (run_graph_motif_detection_sync, lambda db, cfg: (db, neo4j_runtime(cfg))),
+    "graph_evidence_paths_sync": (run_graph_evidence_paths_sync, lambda db, cfg: (db, neo4j_runtime(cfg))),
+    "graph_analyst_recalibration": (run_graph_analyst_recalibration, lambda db, cfg: (db,)),
 }
 
 

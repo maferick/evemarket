@@ -14348,6 +14348,224 @@ function db_battle_intelligence_battle_notable_actors(string $battleId, int $lim
 }
 
 // ---------------------------------------------------------------------------
+// Enhanced Intelligence Platform (KGv2) — data quality, temporal, typed
+// interactions, community detection, motifs, evidence paths, analyst feedback,
+// query presets
+// ---------------------------------------------------------------------------
+
+function db_graph_data_quality_latest(): ?array
+{
+    return db_select_one(
+        'SELECT run_id, stage, characters_total, characters_with_battles,
+                orphan_characters, duplicate_relationships, missing_alliance_ids,
+                stale_data_count, identity_mismatches, quality_score, gate_passed,
+                gate_details_json, computed_at
+         FROM graph_data_quality_metrics
+         ORDER BY computed_at DESC
+         LIMIT 1'
+    );
+}
+
+function db_character_temporal_metrics(int $characterId): array
+{
+    if ($characterId <= 0) {
+        return [];
+    }
+    return db_select(
+        'SELECT window_label, battles_present, kills_total, losses_total,
+                damage_total, suspicion_score, co_presence_density,
+                engagement_rate_avg, computed_at
+         FROM character_temporal_metrics
+         WHERE character_id = ?
+         ORDER BY FIELD(window_label, "7d", "30d", "90d")',
+        [$characterId]
+    );
+}
+
+function db_character_typed_interactions(int $characterId, int $limit = 50): array
+{
+    if ($characterId <= 0) {
+        return [];
+    }
+    $safeLimit = max(1, min(200, $limit));
+    return db_select(
+        'SELECT cti.character_a_id, cti.character_b_id, cti.interaction_type,
+                cti.interaction_count, cti.last_interaction_at,
+                CASE WHEN cti.character_a_id = ? THEN cti.character_b_id ELSE cti.character_a_id END AS other_character_id,
+                COALESCE(emc.entity_name, CONCAT("Character #", CASE WHEN cti.character_a_id = ? THEN cti.character_b_id ELSE cti.character_a_id END)) AS other_character_name
+         FROM character_typed_interactions cti
+         LEFT JOIN entity_metadata_cache emc
+             ON emc.entity_type = "character"
+             AND emc.entity_id = CASE WHEN cti.character_a_id = ? THEN cti.character_b_id ELSE cti.character_a_id END
+         WHERE cti.character_a_id = ? OR cti.character_b_id = ?
+         ORDER BY cti.interaction_count DESC
+         LIMIT ' . $safeLimit,
+        [$characterId, $characterId, $characterId, $characterId, $characterId]
+    );
+}
+
+function db_graph_community_assignments(int $characterId): ?array
+{
+    if ($characterId <= 0) {
+        return null;
+    }
+    return db_select_one(
+        'SELECT community_id, community_size, membership_score, is_bridge,
+                betweenness_centrality, pagerank_score, degree_centrality, computed_at
+         FROM graph_community_assignments
+         WHERE character_id = ?',
+        [$characterId]
+    );
+}
+
+function db_graph_community_top_members(int $communityId, int $limit = 30): array
+{
+    $safeLimit = max(1, min(200, $limit));
+    return db_select(
+        'SELECT gca.character_id, gca.pagerank_score, gca.betweenness_centrality,
+                gca.degree_centrality, gca.is_bridge,
+                COALESCE(emc.entity_name, CONCAT("Character #", gca.character_id)) AS character_name
+         FROM graph_community_assignments gca
+         LEFT JOIN entity_metadata_cache emc ON emc.entity_type = "character" AND emc.entity_id = gca.character_id
+         WHERE gca.community_id = ?
+         ORDER BY gca.pagerank_score DESC
+         LIMIT ' . $safeLimit,
+        [$communityId]
+    );
+}
+
+function db_graph_motif_detections_recent(int $limit = 50): array
+{
+    $safeLimit = max(1, min(200, $limit));
+    return db_select(
+        'SELECT motif_type, member_ids_json, battle_ids_json, occurrence_count,
+                suspicion_relevance, first_seen_at, last_seen_at, computed_at
+         FROM graph_motif_detections
+         WHERE suspicion_relevance > 0.1
+         ORDER BY suspicion_relevance DESC, occurrence_count DESC
+         LIMIT ' . $safeLimit
+    );
+}
+
+function db_character_evidence_paths(int $characterId, int $limit = 10): array
+{
+    if ($characterId <= 0) {
+        return [];
+    }
+    $safeLimit = max(1, min(50, $limit));
+    return db_select(
+        'SELECT path_rank, path_description, path_nodes_json, path_edges_json,
+                path_score, computed_at
+         FROM character_evidence_paths
+         WHERE character_id = ?
+         ORDER BY path_rank ASC
+         LIMIT ' . $safeLimit,
+        [$characterId]
+    );
+}
+
+function db_analyst_feedback_for_character(int $characterId): array
+{
+    if ($characterId <= 0) {
+        return [];
+    }
+    return db_select(
+        'SELECT id, label, confidence, analyst_notes, context_json, created_at
+         FROM analyst_feedback
+         WHERE character_id = ?
+         ORDER BY created_at DESC
+         LIMIT 20',
+        [$characterId]
+    );
+}
+
+function db_analyst_feedback_save(int $characterId, string $label, float $confidence, ?string $notes, ?string $contextJson): bool
+{
+    if ($characterId <= 0) {
+        return false;
+    }
+    $allowed = ['true_positive', 'false_positive', 'needs_review', 'confirmed_clean'];
+    if (!in_array($label, $allowed, true)) {
+        return false;
+    }
+    $confidence = max(0.0, min(1.0, $confidence));
+    db()->prepare(
+        'INSERT INTO analyst_feedback (character_id, label, confidence, analyst_notes, context_json)
+         VALUES (?, ?, ?, ?, ?)'
+    )->execute([$characterId, $label, $confidence, $notes, $contextJson]);
+    return true;
+}
+
+function db_analyst_recalibration_log(int $limit = 20): array
+{
+    $safeLimit = max(1, min(100, $limit));
+    return db_select(
+        'SELECT run_id, total_labels, true_positives, false_positives,
+                precision_score, recall_estimate, weight_adjustments,
+                threshold_changes, computed_at
+         FROM analyst_recalibration_log
+         ORDER BY computed_at DESC
+         LIMIT ' . $safeLimit
+    );
+}
+
+function db_graph_query_presets_active(): array
+{
+    return db_select(
+        'SELECT id, preset_key, label, description, category, query_type,
+                query_template, parameters_json, display_columns, sort_order
+         FROM graph_query_presets
+         WHERE is_active = 1
+         ORDER BY sort_order ASC, label ASC'
+    );
+}
+
+function db_graph_query_preset_execute(string $presetKey, array $params = []): array
+{
+    $presetKey = trim($presetKey);
+    if ($presetKey === '') {
+        return [];
+    }
+    $preset = db_select_one(
+        'SELECT query_type, query_template, parameters_json
+         FROM graph_query_presets
+         WHERE preset_key = ? AND is_active = 1',
+        [$presetKey]
+    );
+    if (!$preset || ($preset['query_type'] ?? '') !== 'mariadb') {
+        return [];
+    }
+    $template = $preset['query_template'] ?? '';
+    if ($template === '') {
+        return [];
+    }
+    $defaultParams = json_decode($preset['parameters_json'] ?? '{}', true) ?: [];
+    $merged = array_merge($defaultParams, $params);
+    $limit = max(1, min(500, (int)($merged['limit'] ?? 50)));
+
+    // Replace the single ? placeholder with the limit
+    return db_select($template, [$limit]);
+}
+
+function db_graph_community_overview(int $limit = 30): array
+{
+    $safeLimit = max(1, min(100, $limit));
+    return db_select(
+        'SELECT community_id, community_size,
+                COUNT(*) AS member_count,
+                SUM(is_bridge) AS bridge_count,
+                AVG(pagerank_score) AS avg_pagerank,
+                MAX(pagerank_score) AS max_pagerank,
+                AVG(betweenness_centrality) AS avg_betweenness
+         FROM graph_community_assignments
+         GROUP BY community_id, community_size
+         HAVING member_count >= 3
+         ORDER BY member_count DESC
+         LIMIT ' . $safeLimit
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Database migrations
 // ---------------------------------------------------------------------------
 
