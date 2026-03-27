@@ -38,6 +38,20 @@ try {
         python_scheduler_bridge_output(['ok' => true, 'context' => python_bridge_killmail_context()]);
     }
 
+    if ($action === 'killmail-debug') {
+        $rawValue = get_setting('killmail_ingestion_enabled', '__NOT_SET__');
+        $boolResult = killmail_ingestion_enabled();
+        python_scheduler_bridge_output([
+            'ok' => true,
+            'debug' => [
+                'raw_setting_value' => $rawValue,
+                'raw_type' => gettype($rawValue),
+                'killmail_ingestion_enabled_returns' => $boolResult,
+                'context_enabled' => python_bridge_killmail_context()['enabled'],
+            ],
+        ]);
+    }
+
     if ($action === 'market-hub-local-history-context') {
         python_scheduler_bridge_output(['ok' => true, 'context' => python_bridge_market_hub_local_history_context()]);
     }
