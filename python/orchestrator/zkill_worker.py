@@ -59,6 +59,20 @@ def _result_meta(result: dict[str, Any]) -> dict[str, Any]:
     return meta if isinstance(meta, dict) else {}
 
 
+def _failure_result(error: Exception) -> dict[str, Any]:
+    return {
+        "status": "failed",
+        "summary": "Killmail stream loop failed before completion.",
+        "error": str(error),
+        "rows_seen": 0,
+        "rows_written": 0,
+        "meta": {
+            "outcome_reason": str(error),
+            "reason_for_zero_write": "loop_failed",
+        },
+    }
+
+
 def _no_progress_state(previous_state: dict[str, Any], result: dict[str, Any], threshold: int) -> dict[str, Any]:
     meta = _result_meta(result)
     cursor_after = str(meta.get("cursor_after") or result.get("cursor") or "").strip()
@@ -98,6 +112,7 @@ def main(argv: list[str] | None = None) -> int:
     pause_threshold = max(128 * 1024 * 1024, int(worker_settings.get("memory_pause_threshold_bytes", 384 * 1024 * 1024)))
     abort_threshold = max(pause_threshold, int(worker_settings.get("memory_abort_threshold_bytes", 512 * 1024 * 1024)))
     stuck_threshold = max(2, int(worker_settings.get("zkill_stuck_cursor_threshold", 3)))
+    error_backoff_seconds = max(3, int(worker_settings.get("zkill_error_backoff_seconds", 10)))
     identity = f"{socket.gethostname()}-{os.getpid()}"
     adapter = ZKillR2Z2Adapter()
 
@@ -137,7 +152,7 @@ def main(argv: list[str] | None = None) -> int:
         previous_state = _read_state_file(state_file)
         try:
             result = adapter.run_stream_once(context)
-        except Exception:
+        except Exception as error:
             logger.exception(
                 "zkill loop failed",
                 payload={
@@ -147,7 +162,32 @@ def main(argv: list[str] | None = None) -> int:
                     "state_file": str(state_file),
                 },
             )
-            raise
+            result = _failure_result(error)
+            state_payload = {
+                "ts": utc_now_iso(),
+                "worker_id": identity,
+                "log_file": str(log_file),
+                "state_file": str(state_file),
+                "result": result,
+                "memory_usage_bytes": resident_memory_bytes(),
+                "same_cursor_no_progress_count": 0,
+                "stuck_threshold": max(1, stuck_threshold),
+                "stuck_detected": False,
+            }
+            _write_state_file(state_file, state_payload)
+            if args.once:
+                return 1
+            logger.warning(
+                "zkill loop retry scheduled after failure",
+                payload={
+                    "event": "zkill.loop_retry_scheduled",
+                    "worker_id": identity,
+                    "retry_in_seconds": error_backoff_seconds,
+                    "error": str(error),
+                },
+            )
+            time.sleep(error_backoff_seconds)
+            continue
 
         no_progress = _no_progress_state(previous_state, result, stuck_threshold)
         meta = _result_meta(result)
