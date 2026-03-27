@@ -1,14 +1,15 @@
-"""Backfill killmails from R2Z2 history API.
+"""Backfill killmails from zKillboard API filtered by tracked entities.
 
-The history API provides {killmail_id: hash} pairs per day at:
-  https://r2z2.zkillboard.com/history/YYYYMMDD.json
+Uses the zKillboard public API to fetch losses for each tracked alliance
+and corporation, then enriches via ESI for full killmail data. This is
+far more efficient than iterating the full R2Z2 daily history since we
+only fetch killmails that match our tracked entities.
 
-Each killmail is then fetched from ESI:
+zKillboard API:
+  https://zkillboard.com/api/losses/allianceID/{id}/year/{Y}/month/{M}/page/{P}/
+
+ESI killmail detail:
   https://esi.evetech.net/latest/killmails/{id}/{hash}/
-
-The fetched payloads are processed through the existing PHP bridge
-batch pipeline which handles tracked-entity filtering, deduplication,
-and persistence.
 """
 
 from __future__ import annotations
@@ -17,26 +18,36 @@ import json
 import time
 import urllib.error
 import urllib.request
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from typing import Any
 
 from ..bridge import PhpBridge
 from ..worker_runtime import utc_now_iso
 
 
-_HISTORY_BASE_URL = "https://r2z2.zkillboard.com/history"
+_ZKB_API_BASE = "https://zkillboard.com/api"
 _ESI_KILLMAIL_URL = "https://esi.evetech.net/latest/killmails"
 
 
-def _http_get(url: str, user_agent: str, timeout: int = 30) -> tuple[int, str]:
-    request = urllib.request.Request(
-        url,
-        headers={"Accept": "application/json", "User-Agent": user_agent},
-    )
+def _http_get(url: str, user_agent: str, timeout: int = 30, accept_encoding: bool = True) -> tuple[int, str]:
+    headers: dict[str, str] = {
+        "Accept": "application/json",
+        "User-Agent": user_agent,
+    }
+    if accept_encoding:
+        headers["Accept-Encoding"] = "gzip"
+
+    request = urllib.request.Request(url, headers=headers)
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             status = int(getattr(response, "status", response.getcode()))
-            body = response.read().decode("utf-8", errors="replace")
+            body = response.read()
+            # Handle gzip encoding
+            if response.headers.get("Content-Encoding") == "gzip":
+                import gzip
+                body = gzip.decompress(body)
+            if isinstance(body, bytes):
+                body = body.decode("utf-8", errors="replace")
             return status, body
     except urllib.error.HTTPError as error:
         return int(error.code), ""
@@ -44,30 +55,35 @@ def _http_get(url: str, user_agent: str, timeout: int = 30) -> tuple[int, str]:
         raise RuntimeError(f"HTTP request failed for {url}: {error.reason}") from error
 
 
-def _fetch_history_day(date_str: str, user_agent: str) -> dict[str, str]:
-    """Fetch {killmail_id: hash} mapping for a given YYYYMMDD date."""
-    url = f"{_HISTORY_BASE_URL}/{date_str}.json"
+def _fetch_zkb_page(entity_type: str, entity_id: int, year: int, month: int, page: int, user_agent: str) -> list[dict[str, Any]]:
+    """Fetch one page of losses from zKillboard API for an entity+month.
+
+    Returns list of {killmail_id, zkb: {hash, ...}} dicts.
+    """
+    url = f"{_ZKB_API_BASE}/losses/{entity_type}/{entity_id}/year/{year}/month/{month:02d}/page/{page}/"
     status, body = _http_get(url, user_agent)
-    if status == 404:
-        return {}
+    if status == 404 or status == 429:
+        return []
     if status != 200:
-        raise RuntimeError(f"R2Z2 history returned HTTP {status} for {date_str}")
+        return []
     if not body.strip():
-        return {}
-    data = json.loads(body)
-    if not isinstance(data, dict):
-        return {}
+        return []
+    try:
+        data = json.loads(body)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(data, list):
+        return []
     return data
 
 
 def _fetch_esi_killmail(killmail_id: int, killmail_hash: str, user_agent: str) -> dict[str, Any] | None:
     """Fetch a single killmail from ESI and wrap in R2Z2-compatible format."""
     url = f"{_ESI_KILLMAIL_URL}/{killmail_id}/{killmail_hash}/"
-    status, body = _http_get(url, user_agent, timeout=15)
-    if status == 404 or status == 422:
+    status, body = _http_get(url, user_agent, timeout=15, accept_encoding=False)
+    if status in (404, 422):
         return None
-    if status == 420 or status == 429 or status == 503:
-        # ESI rate-limited or error-limited, caller should back off
+    if status in (420, 429, 503):
         return None
     if status != 200:
         return None
@@ -89,8 +105,49 @@ def _fetch_esi_killmail(killmail_id: int, killmail_hash: str, user_agent: str) -
     }
 
 
+def _collect_entity_kills(
+    entity_type: str,
+    entity_id: int,
+    year: int,
+    months: list[int],
+    user_agent: str,
+) -> dict[int, str]:
+    """Collect all {killmail_id: hash} pairs for an entity across months.
+
+    Paginates through all pages for each month.
+    """
+    collected: dict[int, str] = {}
+
+    for month in months:
+        page = 1
+        while True:
+            results = _fetch_zkb_page(entity_type, entity_id, year, month, page, user_agent)
+            if not results:
+                break
+
+            for entry in results:
+                km_id = int(entry.get("killmail_id", 0))
+                zkb = entry.get("zkb") or {}
+                km_hash = str(zkb.get("hash", ""))
+                if km_id > 0 and km_hash:
+                    collected[km_id] = km_hash
+
+            # zKB returns max 1000 per page; if less, we're done
+            if len(results) < 200:
+                break
+
+            page += 1
+            # Be polite to zKB API
+            time.sleep(2)
+
+        # Pause between months
+        time.sleep(1)
+
+    return collected
+
+
 def run_killmail_history_backfill(context: Any) -> dict[str, Any]:
-    """Backfill killmails from R2Z2 history API for a date range."""
+    """Backfill killmails using zKillboard API filtered by tracked entities."""
     bridge = PhpBridge(context.php_binary, context.app_root)
     bridge_response = bridge.call("killmail-backfill-context")
     job_context = dict(bridge_response.get("context") or {})
@@ -98,6 +155,8 @@ def run_killmail_history_backfill(context: Any) -> dict[str, Any]:
     start_date_str = str(job_context.get("start_date") or "").strip()
     end_date_str = str(job_context.get("end_date") or "").strip()
     user_agent = str(job_context.get("user_agent") or "SupplyCore killmail-backfill/1.0")
+    tracked_alliances: list[int] = [int(x) for x in (job_context.get("tracked_alliance_ids") or []) if int(x) > 0]
+    tracked_corporations: list[int] = [int(x) for x in (job_context.get("tracked_corporation_ids") or []) if int(x) > 0]
 
     if not start_date_str or not end_date_str:
         return {
@@ -105,11 +164,22 @@ def run_killmail_history_backfill(context: Any) -> dict[str, Any]:
             "error": "Missing start_date or end_date in backfill context.",
         }
 
+    if not tracked_alliances and not tracked_corporations:
+        return {
+            "status": "failed",
+            "error": "No tracked alliances or corporations configured.",
+        }
+
     start_date = datetime.strptime(start_date_str, "%Y-%m-%d").replace(tzinfo=UTC)
     end_date = datetime.strptime(end_date_str, "%Y-%m-%d").replace(tzinfo=UTC)
 
+    # Build list of months to query
+    year = start_date.year
+    start_month = start_date.month
+    end_month = end_date.month if end_date.year == year else 12
+    months = list(range(start_month, end_month + 1))
+
     started_at = utc_now_iso()
-    total_days = 0
     total_killmails_seen = 0
     total_esi_fetched = 0
     total_esi_failed = 0
@@ -118,107 +188,133 @@ def run_killmail_history_backfill(context: Any) -> dict[str, Any]:
     total_duplicates = 0
     total_skipped_existing = 0
     batch_size = 25
+    entities_processed = 0
+    total_entities = len(tracked_alliances) + len(tracked_corporations)
 
-    current_date = start_date
-    while current_date <= end_date:
-        date_key = current_date.strftime("%Y%m%d")
-        total_days += 1
+    # Collect killmail IDs from all tracked entities via zKB API
+    all_kills: dict[int, str] = {}
 
+    for alliance_id in tracked_alliances:
+        entities_processed += 1
         try:
-            history = _fetch_history_day(date_key, user_agent)
-        except RuntimeError:
-            current_date += timedelta(days=1)
-            continue
-
-        if not history:
-            current_date += timedelta(days=1)
-            continue
-
-        killmail_pairs = list(history.items())
-        total_killmails_seen += len(killmail_pairs)
-
-        # Pre-filter: remove killmails we already have in the DB
-        all_km_ids = [int(km_id) for km_id, _ in killmail_pairs]
-        try:
-            existing_response = bridge.call(
-                "killmail-ids-existing",
-                payload={"killmail_ids": all_km_ids},
-            )
-            existing_ids = set(int(x) for x in (existing_response.get("existing") or []))
-        except Exception:
-            existing_ids = set()
-
-        filtered_pairs = [(km_id, km_hash) for km_id, km_hash in killmail_pairs if int(km_id) not in existing_ids]
-        total_skipped_existing += len(killmail_pairs) - len(filtered_pairs)
-
-        # Process in batches
-        for batch_start in range(0, len(filtered_pairs), batch_size):
-            batch_pairs = filtered_pairs[batch_start:batch_start + batch_size]
-            payloads = []
-
-            for km_id_str, km_hash in batch_pairs:
-                killmail_id = int(km_id_str)
-                payload = _fetch_esi_killmail(killmail_id, km_hash, user_agent)
-                if payload is not None:
-                    payloads.append(payload)
-                    total_esi_fetched += 1
-                else:
-                    total_esi_failed += 1
-                # Respect ESI rate limits: ~20 req/s
-                time.sleep(0.06)
-
-            if payloads:
-                try:
-                    result = bridge.call(
-                        "process-killmail-batch",
-                        payload={"payloads": payloads},
-                    )
-                    batch_result = result.get("result") or {}
-                    total_written += int(batch_result.get("rows_written") or 0)
-                    total_filtered += int(batch_result.get("filtered") or 0)
-                    total_duplicates += int(batch_result.get("duplicates") or 0)
-                except Exception:
-                    pass
-
-        # Update progress in app_settings so the UI can show it
-        try:
-            bridge.call(
-                "update-setting",
-                payload={
-                    "key": "killmail_backfill_progress",
-                    "value": json.dumps({
-                        "current_date": date_key,
-                        "days_processed": total_days,
-                        "killmails_seen": total_killmails_seen,
-                        "skipped_existing": total_skipped_existing,
-                        "written": total_written,
-                        "filtered": total_filtered,
-                        "duplicates": total_duplicates,
-                        "updated_at": utc_now_iso(),
-                    }),
-                },
-            )
+            bridge.call("update-setting", payload={
+                "key": "killmail_backfill_progress",
+                "value": json.dumps({
+                    "phase": "collecting",
+                    "entity": f"alliance {alliance_id}",
+                    "entities_done": entities_processed,
+                    "entities_total": total_entities,
+                    "killmails_found": len(all_kills),
+                    "updated_at": utc_now_iso(),
+                }),
+            })
         except Exception:
             pass
 
-        current_date += timedelta(days=1)
+        entity_kills = _collect_entity_kills("allianceID", alliance_id, year, months, user_agent)
+        all_kills.update(entity_kills)
+        # Pause between entities
+        time.sleep(2)
+
+    for corp_id in tracked_corporations:
+        entities_processed += 1
+        try:
+            bridge.call("update-setting", payload={
+                "key": "killmail_backfill_progress",
+                "value": json.dumps({
+                    "phase": "collecting",
+                    "entity": f"corporation {corp_id}",
+                    "entities_done": entities_processed,
+                    "entities_total": total_entities,
+                    "killmails_found": len(all_kills),
+                    "updated_at": utc_now_iso(),
+                }),
+            })
+        except Exception:
+            pass
+
+        entity_kills = _collect_entity_kills("corporationID", corp_id, year, months, user_agent)
+        all_kills.update(entity_kills)
+        time.sleep(2)
+
+    total_killmails_seen = len(all_kills)
+
+    # Pre-filter: remove killmails we already have in the DB
+    all_km_ids = list(all_kills.keys())
+    existing_ids: set[int] = set()
+    for chunk_start in range(0, len(all_km_ids), 500):
+        chunk = all_km_ids[chunk_start:chunk_start + 500]
+        try:
+            existing_response = bridge.call(
+                "killmail-ids-existing",
+                payload={"killmail_ids": chunk},
+            )
+            existing_ids.update(int(x) for x in (existing_response.get("existing") or []))
+        except Exception:
+            pass
+
+    new_kills = {km_id: km_hash for km_id, km_hash in all_kills.items() if km_id not in existing_ids}
+    total_skipped_existing = total_killmails_seen - len(new_kills)
+
+    # Fetch from ESI and process in batches
+    kill_pairs = list(new_kills.items())
+    total_to_fetch = len(kill_pairs)
+
+    for batch_start in range(0, len(kill_pairs), batch_size):
+        batch_pairs = kill_pairs[batch_start:batch_start + batch_size]
+        payloads = []
+
+        for km_id, km_hash in batch_pairs:
+            payload = _fetch_esi_killmail(km_id, km_hash, user_agent)
+            if payload is not None:
+                payloads.append(payload)
+                total_esi_fetched += 1
+            else:
+                total_esi_failed += 1
+            # Respect ESI rate limits: ~20 req/s
+            time.sleep(0.06)
+
+        if payloads:
+            try:
+                result = bridge.call(
+                    "process-killmail-batch",
+                    payload={"payloads": payloads},
+                )
+                batch_result = result.get("result") or {}
+                total_written += int(batch_result.get("rows_written") or 0)
+                total_filtered += int(batch_result.get("filtered") or 0)
+                total_duplicates += int(batch_result.get("duplicates") or 0)
+            except Exception:
+                pass
+
+        # Update progress every batch
+        try:
+            bridge.call("update-setting", payload={
+                "key": "killmail_backfill_progress",
+                "value": json.dumps({
+                    "phase": "fetching",
+                    "killmails_seen": total_killmails_seen,
+                    "skipped_existing": total_skipped_existing,
+                    "esi_progress": f"{batch_start + len(batch_pairs)}/{total_to_fetch}",
+                    "written": total_written,
+                    "filtered": total_filtered,
+                    "duplicates": total_duplicates,
+                    "updated_at": utc_now_iso(),
+                }),
+            })
+        except Exception:
+            pass
 
     # Clear progress and set completion marker
     try:
-        bridge.call(
-            "update-setting",
-            payload={
-                "key": "killmail_backfill_progress",
-                "value": "",
-            },
-        )
-        bridge.call(
-            "update-setting",
-            payload={
-                "key": "killmail_backfill_completed_at",
-                "value": utc_now_iso(),
-            },
-        )
+        bridge.call("update-setting", payload={
+            "key": "killmail_backfill_progress",
+            "value": "",
+        })
+        bridge.call("update-setting", payload={
+            "key": "killmail_backfill_completed_at",
+            "value": utc_now_iso(),
+        })
     except Exception:
         pass
 
@@ -226,7 +322,8 @@ def run_killmail_history_backfill(context: Any) -> dict[str, Any]:
         "status": "success",
         "started_at": started_at,
         "finished_at": utc_now_iso(),
-        "days_processed": total_days,
+        "tracked_alliances": len(tracked_alliances),
+        "tracked_corporations": len(tracked_corporations),
         "killmails_seen": total_killmails_seen,
         "skipped_existing": total_skipped_existing,
         "esi_fetched": total_esi_fetched,

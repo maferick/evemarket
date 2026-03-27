@@ -1712,13 +1712,22 @@ include __DIR__ . '/../../src/views/partials/header.php';
                             <div class="size-2 animate-pulse rounded-full bg-amber-400"></div>
                             <p class="text-sm font-semibold text-amber-200">History Backfill In Progress</p>
                         </div>
-                        <div class="mt-2 grid gap-2 text-sm text-slate-300 md:grid-cols-5">
-                            <p>Processing: <span class="font-medium text-slate-100"><?= htmlspecialchars((string) ($backfillProgress['current_date'] ?? '—'), ENT_QUOTES) ?></span></p>
-                            <p>Days done: <span class="font-medium text-slate-100"><?= number_format((int) ($backfillProgress['days_processed'] ?? 0)) ?></span></p>
-                            <p>Killmails seen: <span class="font-medium text-slate-100"><?= number_format((int) ($backfillProgress['killmails_seen'] ?? 0)) ?></span></p>
-                            <p>Skipped (cached): <span class="font-medium text-slate-100"><?= number_format((int) ($backfillProgress['skipped_existing'] ?? 0)) ?></span></p>
-                            <p>Written: <span class="font-medium text-slate-100"><?= number_format((int) ($backfillProgress['written'] ?? 0)) ?></span></p>
-                        </div>
+                        <?php $backfillPhase = (string) ($backfillProgress['phase'] ?? 'collecting'); ?>
+                        <?php if ($backfillPhase === 'collecting'): ?>
+                            <div class="mt-2 grid gap-2 text-sm text-slate-300 md:grid-cols-3">
+                                <p>Querying: <span class="font-medium text-slate-100"><?= htmlspecialchars((string) ($backfillProgress['entity'] ?? '—'), ENT_QUOTES) ?></span></p>
+                                <p>Entities: <span class="font-medium text-slate-100"><?= (int) ($backfillProgress['entities_done'] ?? 0) ?>/<?= (int) ($backfillProgress['entities_total'] ?? 0) ?></span></p>
+                                <p>Killmails found: <span class="font-medium text-slate-100"><?= number_format((int) ($backfillProgress['killmails_found'] ?? 0)) ?></span></p>
+                            </div>
+                        <?php else: ?>
+                            <div class="mt-2 grid gap-2 text-sm text-slate-300 md:grid-cols-5">
+                                <p>ESI progress: <span class="font-medium text-slate-100"><?= htmlspecialchars((string) ($backfillProgress['esi_progress'] ?? '—'), ENT_QUOTES) ?></span></p>
+                                <p>Killmails seen: <span class="font-medium text-slate-100"><?= number_format((int) ($backfillProgress['killmails_seen'] ?? 0)) ?></span></p>
+                                <p>Skipped (cached): <span class="font-medium text-slate-100"><?= number_format((int) ($backfillProgress['skipped_existing'] ?? 0)) ?></span></p>
+                                <p>Written: <span class="font-medium text-slate-100"><?= number_format((int) ($backfillProgress['written'] ?? 0)) ?></span></p>
+                                <p>Filtered: <span class="font-medium text-slate-100"><?= number_format((int) ($backfillProgress['filtered'] ?? 0)) ?></span></p>
+                            </div>
+                        <?php endif; ?>
                         <p class="mt-1 text-xs text-muted">Refresh this page to see updated progress. Backfill runs in the background.</p>
                     </div>
                 <?php elseif ($backfillNeeded): ?>
