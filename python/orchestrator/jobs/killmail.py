@@ -364,11 +364,13 @@ def run_killmail_r2z2_stream(context: Any) -> dict[str, Any]:
     if not bool(job_context.get("enabled")):
         return JobResult.skipped(
             job_key="killmail_r2z2_sync",
-            reason="Killmail ingestion is disabled in settings.",
+            reason=f"Killmail ingestion is disabled in settings. (bridge returned enabled={job_context.get('enabled')!r})",
             meta={
                 "execution_mode": "python",
                 "cursor": str(job_context.get("cursor") or "0"),
                 "checksum": payload_checksum({"cursor": job_context.get("cursor") or "0", "rows_written": 0}),
+                "bridge_context_keys": list(job_context.keys()),
+                "bridge_enabled_raw": job_context.get("enabled"),
             },
         ).to_dict()
 
