@@ -26333,7 +26333,7 @@ function supplycore_ai_decode_json_string(string $value): ?array
 // Theater Intelligence AI Summary
 // ---------------------------------------------------------------------------
 
-function theater_ai_summary_generate(string $theaterId): ?array
+function theater_ai_summary_generate(string $theaterId, bool $forceRegenerate = false): ?array
 {
     if (!supplycore_ai_ollama_enabled()) {
         return null;
@@ -26344,20 +26344,22 @@ function theater_ai_summary_generate(string $theaterId): ?array
         return null;
     }
 
-    // Skip if already generated and fresh (< 6 hours old)
-    $existingSummary = $theater['ai_summary'] ?? null;
-    $existingSummaryAt = $theater['ai_summary_at'] ?? null;
-    if ($existingSummary !== null && $existingSummaryAt !== null) {
-        $age = time() - strtotime((string) $existingSummaryAt);
-        if ($age < 21600) {
-            return [
-                'headline' => (string) ($theater['ai_headline'] ?? ''),
-                'summary' => (string) $existingSummary,
-                'verdict' => (string) ($theater['ai_verdict'] ?? ''),
-                'model' => (string) ($theater['ai_summary_model'] ?? ''),
-                'generated_at' => (string) $existingSummaryAt,
-                'cached' => true,
-            ];
+    // Skip if already generated and fresh (< 6 hours old), unless force-regenerating
+    if (!$forceRegenerate) {
+        $existingSummary = $theater['ai_summary'] ?? null;
+        $existingSummaryAt = $theater['ai_summary_at'] ?? null;
+        if ($existingSummary !== null && $existingSummaryAt !== null) {
+            $age = time() - strtotime((string) $existingSummaryAt);
+            if ($age < 21600) {
+                return [
+                    'headline' => (string) ($theater['ai_headline'] ?? ''),
+                    'summary' => (string) $existingSummary,
+                    'verdict' => (string) ($theater['ai_verdict'] ?? ''),
+                    'model' => (string) ($theater['ai_summary_model'] ?? ''),
+                    'generated_at' => (string) $existingSummaryAt,
+                    'cached' => true,
+                ];
+            }
         }
     }
 
