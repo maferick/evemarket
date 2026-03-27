@@ -14696,6 +14696,144 @@ function db_graph_community_overview(int $limit = 30): array
 }
 
 // ---------------------------------------------------------------------------
+// Theater intelligence
+// ---------------------------------------------------------------------------
+
+function db_theaters_list(int $limit = 50, int $offset = 0, ?string $regionFilter = null, ?float $minAnomaly = null): array
+{
+    $sql = 'SELECT t.*, rs.system_name AS primary_system_name, rr.region_name
+            FROM theaters t
+            LEFT JOIN ref_systems rs ON rs.system_id = t.primary_system_id
+            LEFT JOIN ref_regions rr ON rr.region_id = t.region_id
+            WHERE 1=1';
+    $params = [];
+    if ($regionFilter !== null) {
+        $sql .= ' AND t.region_id = ?';
+        $params[] = (int)$regionFilter;
+    }
+    if ($minAnomaly !== null) {
+        $sql .= ' AND t.anomaly_score >= ?';
+        $params[] = $minAnomaly;
+    }
+    $sql .= ' ORDER BY t.start_time DESC LIMIT ' . max(1, min(200, (int)$limit)) . ' OFFSET ' . max(0, (int)$offset);
+    return db_select($sql, $params);
+}
+
+function db_theater_detail(string $theaterId): ?array
+{
+    return db_select_one(
+        'SELECT t.*, rs.system_name AS primary_system_name, rr.region_name
+         FROM theaters t
+         LEFT JOIN ref_systems rs ON rs.system_id = t.primary_system_id
+         LEFT JOIN ref_regions rr ON rr.region_id = t.region_id
+         WHERE t.theater_id = ?',
+        [$theaterId]
+    );
+}
+
+function db_theater_battles(string $theaterId): array
+{
+    return db_select(
+        'SELECT tb.*, br.system_id, br.started_at, br.ended_at, br.participant_count,
+                br.battle_size_class, rs.system_name
+         FROM theater_battles tb
+         INNER JOIN battle_rollups br ON br.battle_id = tb.battle_id
+         LEFT JOIN ref_systems rs ON rs.system_id = br.system_id
+         WHERE tb.theater_id = ?
+         ORDER BY br.started_at ASC',
+        [$theaterId]
+    );
+}
+
+function db_theater_systems(string $theaterId): array
+{
+    return db_select(
+        'SELECT * FROM theater_systems WHERE theater_id = ? ORDER BY participant_count DESC',
+        [$theaterId]
+    );
+}
+
+function db_theater_timeline(string $theaterId): array
+{
+    return db_select(
+        'SELECT * FROM theater_timeline WHERE theater_id = ? ORDER BY bucket_time ASC',
+        [$theaterId]
+    );
+}
+
+function db_theater_alliance_summary(string $theaterId): array
+{
+    return db_select(
+        'SELECT * FROM theater_alliance_summary WHERE theater_id = ? ORDER BY total_isk_killed DESC',
+        [$theaterId]
+    );
+}
+
+function db_theater_participants(string $theaterId, ?string $sideFilter = null, bool $suspiciousOnly = false, int $limit = 200): array
+{
+    $sql = 'SELECT * FROM theater_participants WHERE theater_id = ?';
+    $params = [$theaterId];
+    if ($sideFilter !== null) {
+        $sql .= ' AND side = ?';
+        $params[] = $sideFilter;
+    }
+    if ($suspiciousOnly) {
+        $sql .= ' AND is_suspicious = 1';
+    }
+    $sql .= ' ORDER BY kills DESC, damage_done DESC LIMIT ' . max(1, min(1000, (int)$limit));
+    return db_select($sql, $params);
+}
+
+function db_theater_suspicion_summary(string $theaterId): ?array
+{
+    return db_select_one(
+        'SELECT * FROM theater_suspicion_summary WHERE theater_id = ?',
+        [$theaterId]
+    );
+}
+
+function db_theater_graph_summary(string $theaterId): ?array
+{
+    return db_select_one(
+        'SELECT * FROM theater_graph_summary WHERE theater_id = ?',
+        [$theaterId]
+    );
+}
+
+function db_theater_graph_participants(string $theaterId, int $limit = 100): array
+{
+    return db_select(
+        'SELECT tgp.*, tp.side, tp.character_name
+         FROM theater_graph_participants tgp
+         LEFT JOIN theater_participants tp ON tp.theater_id = tgp.theater_id AND tp.character_id = tgp.character_id
+         WHERE tgp.theater_id = ?
+         ORDER BY tgp.bridge_score DESC
+         LIMIT ' . max(1, min(500, (int)$limit)),
+        [$theaterId]
+    );
+}
+
+function db_battle_turning_points(string $battleId): array
+{
+    return db_select(
+        'SELECT * FROM battle_turning_points WHERE battle_id = ? ORDER BY turning_point_at ASC',
+        [$battleId]
+    );
+}
+
+function db_theater_turning_points(string $theaterId): array
+{
+    return db_select(
+        'SELECT btp.*
+         FROM battle_turning_points btp
+         INNER JOIN theater_battles tb ON tb.battle_id = btp.battle_id
+         WHERE tb.theater_id = ?
+         ORDER BY btp.turning_point_at ASC',
+        [$theaterId]
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Database migrations
 // ---------------------------------------------------------------------------
 

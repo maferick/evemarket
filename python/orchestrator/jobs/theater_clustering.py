@@ -1,0 +1,534 @@
+"""Theater Intelligence — Phase 2: Battle clustering into theaters.
+
+Groups existing battles from ``battle_rollups`` into multi-system theaters
+based on:
+  1. Time proximity (battles within a configurable window)
+  2. System proximity (same constellation or region)
+  3. Participant overlap (shared characters across battles)
+
+Populates: ``theaters``, ``theater_battles``, ``theater_systems``
+"""
+
+from __future__ import annotations
+
+import hashlib
+import sys
+from collections import defaultdict
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
+
+if __package__ in (None, ""):
+    package_root = str(Path(__file__).resolve().parents[2])
+    if package_root not in sys.path:
+        sys.path.insert(0, package_root)
+    from orchestrator.db import SupplyCoreDb
+    from orchestrator.job_result import JobResult
+    from orchestrator.json_utils import json_dumps_safe
+    from orchestrator.job_utils import acquire_job_lock, finish_job_run, release_job_lock, start_job_run
+else:
+    from ..db import SupplyCoreDb
+    from ..job_result import JobResult
+    from ..json_utils import json_dumps_safe
+    from ..job_utils import acquire_job_lock, finish_job_run, release_job_lock, start_job_run
+
+# ── Configuration ────────────────────────────────────────────────────────────
+
+# Max time gap (seconds) between two battles to be considered part of the same
+# theater.  Two battles in the same constellation within this window will be
+# grouped.
+THEATER_TIME_WINDOW_SECONDS = 45 * 60  # 45 minutes
+
+# Minimum participant overlap ratio to merge battles from different
+# constellations (but same region) into the same theater.
+MIN_PARTICIPANT_OVERLAP = 0.10  # 10%
+
+# Minimum number of participants across all battles for a theater to be stored.
+MIN_THEATER_PARTICIPANTS = 10
+
+BATCH_SIZE = 500
+
+
+def _now_sql() -> str:
+    return datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _theater_log(runtime: dict[str, Any] | None, event: str, payload: dict[str, Any]) -> None:
+    log_path = str(((runtime or {}).get("log_file") or "")).strip()
+    if log_path == "":
+        return
+    path = Path(log_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    record = {"event": event, "timestamp": datetime.now(UTC).isoformat(), **payload}
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json_dumps_safe(record) + "\n")
+
+
+# ── Union-Find for merging battles ──────────────────────────────────────────
+
+class _UnionFind:
+    """Simple union-find (disjoint set) structure for merging battle groups."""
+
+    def __init__(self) -> None:
+        self._parent: dict[str, str] = {}
+        self._rank: dict[str, int] = {}
+
+    def find(self, x: str) -> str:
+        if x not in self._parent:
+            self._parent[x] = x
+            self._rank[x] = 0
+        root = x
+        while self._parent[root] != root:
+            root = self._parent[root]
+        # Path compression
+        while self._parent[x] != root:
+            self._parent[x], x = root, self._parent[x]
+        return root
+
+    def union(self, a: str, b: str) -> None:
+        ra, rb = self.find(a), self.find(b)
+        if ra == rb:
+            return
+        if self._rank[ra] < self._rank[rb]:
+            ra, rb = rb, ra
+        self._parent[rb] = ra
+        if self._rank[ra] == self._rank[rb]:
+            self._rank[ra] += 1
+
+    def groups(self) -> dict[str, list[str]]:
+        result: dict[str, list[str]] = defaultdict(list)
+        for key in self._parent:
+            result[self.find(key)].append(key)
+        return dict(result)
+
+
+# ── Core logic ──────────────────────────────────────────────────────────────
+
+def _load_battles(db: SupplyCoreDb) -> list[dict[str, Any]]:
+    """Load all eligible battles with system/constellation/region metadata."""
+    return db.fetch_all(
+        """
+        SELECT
+            br.battle_id,
+            br.system_id,
+            br.started_at,
+            br.ended_at,
+            br.duration_seconds,
+            br.participant_count,
+            br.battle_size_class,
+            rs.constellation_id,
+            rs.region_id,
+            rs.system_name
+        FROM battle_rollups br
+        INNER JOIN ref_systems rs ON rs.system_id = br.system_id
+        WHERE br.participant_count >= %s
+        ORDER BY br.started_at ASC
+        """,
+        (MIN_THEATER_PARTICIPANTS,),
+    )
+
+
+def _load_battle_participants(db: SupplyCoreDb, battle_ids: set[str]) -> dict[str, set[int]]:
+    """Load character sets per battle for overlap detection."""
+    if not battle_ids:
+        return {}
+
+    result: dict[str, set[int]] = defaultdict(set)
+    id_list = list(battle_ids)
+
+    for offset in range(0, len(id_list), BATCH_SIZE):
+        chunk = id_list[offset:offset + BATCH_SIZE]
+        placeholders = ",".join(["%s"] * len(chunk))
+        rows = db.fetch_all(
+            f"""
+            SELECT battle_id, character_id
+            FROM battle_participants
+            WHERE battle_id IN ({placeholders})
+            """,
+            tuple(chunk),
+        )
+        for row in rows:
+            bid = str(row.get("battle_id") or "")
+            cid = int(row.get("character_id") or 0)
+            if bid and cid > 0:
+                result[bid].add(cid)
+
+    return dict(result)
+
+
+def _participant_overlap(chars_a: set[int], chars_b: set[int]) -> float:
+    """Jaccard-like overlap: intersection / min(|A|, |B|)."""
+    if not chars_a or not chars_b:
+        return 0.0
+    intersection = len(chars_a & chars_b)
+    smaller = min(len(chars_a), len(chars_b))
+    return intersection / smaller if smaller > 0 else 0.0
+
+
+def _cluster_battles(
+    battles: list[dict[str, Any]],
+    participants: dict[str, set[int]],
+) -> dict[str, list[dict[str, Any]]]:
+    """Group battles into theaters using union-find.
+
+    Merge criteria:
+    1. Same constellation + time overlap → always merge
+    2. Same region + time overlap + participant overlap ≥ threshold → merge
+    """
+    uf = _UnionFind()
+
+    # Index battles by constellation and region for pairwise comparison
+    by_constellation: dict[int, list[dict[str, Any]]] = defaultdict(list)
+    by_region: dict[int, list[dict[str, Any]]] = defaultdict(list)
+    battle_map: dict[str, dict[str, Any]] = {}
+
+    for b in battles:
+        bid = str(b["battle_id"])
+        uf.find(bid)  # ensure registered
+        battle_map[bid] = b
+        constellation_id = int(b.get("constellation_id") or 0)
+        region_id = int(b.get("region_id") or 0)
+        if constellation_id > 0:
+            by_constellation[constellation_id].append(b)
+        if region_id > 0:
+            by_region[region_id].append(b)
+
+    def _times_overlap(a: dict[str, Any], b: dict[str, Any]) -> bool:
+        """Check if two battles are within THEATER_TIME_WINDOW_SECONDS of each other."""
+        a_start = a["started_at"]
+        a_end = a["ended_at"]
+        b_start = b["started_at"]
+        b_end = b["ended_at"]
+        # Convert to timestamps if strings
+        if isinstance(a_start, str):
+            a_start = datetime.strptime(a_start, "%Y-%m-%d %H:%M:%S").replace(tzinfo=UTC)
+        if isinstance(a_end, str):
+            a_end = datetime.strptime(a_end, "%Y-%m-%d %H:%M:%S").replace(tzinfo=UTC)
+        if isinstance(b_start, str):
+            b_start = datetime.strptime(b_start, "%Y-%m-%d %H:%M:%S").replace(tzinfo=UTC)
+        if isinstance(b_end, str):
+            b_end = datetime.strptime(b_end, "%Y-%m-%d %H:%M:%S").replace(tzinfo=UTC)
+
+        gap = max(
+            (b_start - a_end).total_seconds(),
+            (a_start - b_end).total_seconds(),
+        )
+        return gap <= THEATER_TIME_WINDOW_SECONDS
+
+    # Pass 1: merge battles in the same constellation within time window
+    for constellation_id, group in by_constellation.items():
+        for i in range(len(group)):
+            for j in range(i + 1, len(group)):
+                if _times_overlap(group[i], group[j]):
+                    uf.union(str(group[i]["battle_id"]), str(group[j]["battle_id"]))
+
+    # Pass 2: merge battles in the same region (different constellations) if
+    # time overlap AND participant overlap meets threshold
+    for region_id, group in by_region.items():
+        for i in range(len(group)):
+            for j in range(i + 1, len(group)):
+                bid_i = str(group[i]["battle_id"])
+                bid_j = str(group[j]["battle_id"])
+                # Skip if already in same group
+                if uf.find(bid_i) == uf.find(bid_j):
+                    continue
+                if not _times_overlap(group[i], group[j]):
+                    continue
+                chars_i = participants.get(bid_i, set())
+                chars_j = participants.get(bid_j, set())
+                if _participant_overlap(chars_i, chars_j) >= MIN_PARTICIPANT_OVERLAP:
+                    uf.union(bid_i, bid_j)
+
+    # Collect groups
+    raw_groups = uf.groups()
+    theater_groups: dict[str, list[dict[str, Any]]] = {}
+    for root, battle_ids in raw_groups.items():
+        theater_battles = [battle_map[bid] for bid in battle_ids if bid in battle_map]
+        if theater_battles:
+            theater_groups[root] = theater_battles
+
+    return theater_groups
+
+
+def _compute_theater_id(battle_ids: list[str]) -> str:
+    """Deterministic theater ID from sorted constituent battle IDs."""
+    canonical = "|".join(sorted(battle_ids))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _build_theater_row(
+    theater_id: str,
+    battles: list[dict[str, Any]],
+    participants: dict[str, set[int]],
+    computed_at: str,
+) -> dict[str, Any]:
+    """Build a theater summary row from its constituent battles."""
+    all_systems: dict[int, dict[str, Any]] = {}
+    all_participants: set[int] = set()
+    start_times: list[datetime] = []
+    end_times: list[datetime] = []
+    total_kills = 0
+
+    for b in battles:
+        bid = str(b["battle_id"])
+        system_id = int(b.get("system_id") or 0)
+        system_name = str(b.get("system_name") or "")
+        participant_count = int(b.get("participant_count") or 0)
+
+        s_start = b["started_at"]
+        s_end = b["ended_at"]
+        if isinstance(s_start, str):
+            s_start = datetime.strptime(s_start, "%Y-%m-%d %H:%M:%S").replace(tzinfo=UTC)
+        if isinstance(s_end, str):
+            s_end = datetime.strptime(s_end, "%Y-%m-%d %H:%M:%S").replace(tzinfo=UTC)
+        start_times.append(s_start)
+        end_times.append(s_end)
+
+        total_kills += participant_count  # approximate: will be refined in analysis phase
+
+        if system_id > 0:
+            sys_entry = all_systems.setdefault(system_id, {
+                "system_id": system_id,
+                "system_name": system_name,
+                "kill_count": 0,
+                "participant_count": 0,
+            })
+            sys_entry["kill_count"] += participant_count
+            sys_entry["participant_count"] += participant_count
+
+        chars = participants.get(bid, set())
+        all_participants.update(chars)
+
+    theater_start = min(start_times)
+    theater_end = max(end_times)
+    duration = max(1, int((theater_end - theater_start).total_seconds()))
+
+    # Primary system = system with most participants
+    primary_system_id = None
+    primary_region_id = None
+    if all_systems:
+        primary = max(all_systems.values(), key=lambda s: s["participant_count"])
+        primary_system_id = primary["system_id"]
+
+    # Get region from first battle
+    for b in battles:
+        region_id = int(b.get("region_id") or 0)
+        if region_id > 0:
+            primary_region_id = region_id
+            break
+
+    return {
+        "theater_id": theater_id,
+        "label": None,
+        "primary_system_id": primary_system_id,
+        "region_id": primary_region_id,
+        "start_time": theater_start.strftime("%Y-%m-%d %H:%M:%S"),
+        "end_time": theater_end.strftime("%Y-%m-%d %H:%M:%S"),
+        "duration_seconds": duration,
+        "battle_count": len(battles),
+        "system_count": len(all_systems),
+        "total_kills": 0,  # placeholder — refined in theater_analysis
+        "total_isk": 0,    # placeholder — refined in theater_analysis
+        "participant_count": len(all_participants),
+        "anomaly_score": 0,
+        "computed_at": computed_at,
+        "systems": all_systems,
+    }
+
+
+# ── DB writes ───────────────────────────────────────────────────────────────
+
+def _flush_theaters(
+    db: SupplyCoreDb,
+    theaters: list[dict[str, Any]],
+    battle_assignments: list[tuple[str, str, int, float, str | None]],
+    system_rows: list[tuple[str, int, str | None, int, float, int, float, str | None]],
+) -> int:
+    """Write theater data to MariaDB. Returns total rows written."""
+    rows_written = 0
+
+    with db.transaction() as (_, cursor):
+        # Truncate and rewrite (full-refresh pattern)
+        cursor.execute("DELETE FROM theater_systems")
+        cursor.execute("DELETE FROM theater_battles")
+        cursor.execute("DELETE FROM theaters")
+
+        # Insert theaters
+        for t in theaters:
+            cursor.execute(
+                """
+                INSERT INTO theaters (
+                    theater_id, label, primary_system_id, region_id,
+                    start_time, end_time, duration_seconds,
+                    battle_count, system_count, total_kills, total_isk,
+                    participant_count, anomaly_score, computed_at
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    t["theater_id"], t["label"], t["primary_system_id"], t["region_id"],
+                    t["start_time"], t["end_time"], t["duration_seconds"],
+                    t["battle_count"], t["system_count"], t["total_kills"], t["total_isk"],
+                    t["participant_count"], t["anomaly_score"], t["computed_at"],
+                ),
+            )
+            rows_written += max(0, int(cursor.rowcount or 0))
+
+        # Insert theater_battles
+        for chunk_start in range(0, len(battle_assignments), BATCH_SIZE):
+            chunk = battle_assignments[chunk_start:chunk_start + BATCH_SIZE]
+            cursor.executemany(
+                """
+                INSERT INTO theater_battles (theater_id, battle_id, system_id, weight, phase)
+                VALUES (%s, %s, %s, %s, %s)
+                """,
+                chunk,
+            )
+            rows_written += max(0, int(cursor.rowcount or 0))
+
+        # Insert theater_systems
+        for chunk_start in range(0, len(system_rows), BATCH_SIZE):
+            chunk = system_rows[chunk_start:chunk_start + BATCH_SIZE]
+            cursor.executemany(
+                """
+                INSERT INTO theater_systems (
+                    theater_id, system_id, system_name, kill_count,
+                    isk_destroyed, participant_count, weight, phase
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                chunk,
+            )
+            rows_written += max(0, int(cursor.rowcount or 0))
+
+    return rows_written
+
+
+# ── Entry point ─────────────────────────────────────────────────────────────
+
+def run_theater_clustering(
+    db: SupplyCoreDb,
+    runtime: dict[str, Any] | None = None,
+    *,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Cluster battles into theaters and persist results."""
+    lock_key = "theater_clustering"
+    owner = acquire_job_lock(db, lock_key, ttl_seconds=900)
+    if owner is None:
+        result = JobResult.skipped(job_key="theater_clustering", reason="lock-not-acquired").to_dict()
+        _theater_log(runtime, "theater_clustering.job.skipped", result)
+        return result
+
+    job = start_job_run(db, "theater_clustering")
+    started_monotonic = datetime.now(UTC)
+    rows_processed = 0
+    rows_written = 0
+    computed_at = _now_sql()
+    _theater_log(runtime, "theater_clustering.job.started", {"dry_run": dry_run, "computed_at": computed_at})
+
+    try:
+        # 1. Load all eligible battles
+        battles = _load_battles(db)
+        rows_processed = len(battles)
+        _theater_log(runtime, "theater_clustering.battles_loaded", {"count": len(battles)})
+
+        if not battles:
+            finish_job_run(db, job, status="success", rows_processed=0, rows_written=0, meta={"theaters": 0})
+            duration_ms = int((datetime.now(UTC) - started_monotonic).total_seconds() * 1000)
+            result = JobResult.success(
+                job_key="theater_clustering", summary="No eligible battles found.", rows_processed=0, rows_written=0, duration_ms=duration_ms,
+            ).to_dict()
+            _theater_log(runtime, "theater_clustering.job.success", result)
+            return result
+
+        # 2. Load participant sets for overlap detection
+        battle_ids = {str(b["battle_id"]) for b in battles}
+        participants = _load_battle_participants(db, battle_ids)
+        _theater_log(runtime, "theater_clustering.participants_loaded", {"battles_with_participants": len(participants)})
+
+        # 3. Cluster battles into theater groups
+        theater_groups = _cluster_battles(battles, participants)
+        _theater_log(runtime, "theater_clustering.clustered", {"theater_count": len(theater_groups)})
+
+        # 4. Build theater rows
+        theater_rows: list[dict[str, Any]] = []
+        battle_assignments: list[tuple[str, str, int, float, str | None]] = []
+        system_rows: list[tuple[str, int, str | None, int, float, int, float, str | None]] = []
+
+        for _root, group_battles in theater_groups.items():
+            battle_ids_in_group = [str(b["battle_id"]) for b in group_battles]
+            theater_id = _compute_theater_id(battle_ids_in_group)
+
+            theater = _build_theater_row(theater_id, group_battles, participants, computed_at)
+
+            # Skip tiny theaters
+            if theater["participant_count"] < MIN_THEATER_PARTICIPANTS:
+                continue
+
+            theater_rows.append(theater)
+
+            # Build battle assignment rows
+            for b in group_battles:
+                bid = str(b["battle_id"])
+                sys_id = int(b.get("system_id") or 0)
+                battle_assignments.append((theater_id, bid, sys_id, 1.0, None))
+
+            # Build system rows
+            for sys_id, sys_info in theater["systems"].items():
+                total_sys_participants = sum(
+                    int(bb.get("participant_count") or 0)
+                    for bb in group_battles
+                )
+                weight = (sys_info["participant_count"] / total_sys_participants) if total_sys_participants > 0 else 1.0
+                system_rows.append((
+                    theater_id,
+                    int(sys_id),
+                    sys_info.get("system_name"),
+                    sys_info["kill_count"],
+                    0,  # isk_destroyed — refined in analysis phase
+                    sys_info["participant_count"],
+                    round(weight, 4),
+                    None,  # phase
+                ))
+
+        _theater_log(runtime, "theater_clustering.theaters_built", {
+            "theater_count": len(theater_rows),
+            "battle_assignments": len(battle_assignments),
+            "system_rows": len(system_rows),
+        })
+
+        # 5. Flush to DB
+        if not dry_run:
+            rows_written = _flush_theaters(db, theater_rows, battle_assignments, system_rows)
+
+        finish_job_run(
+            db, job,
+            status="success",
+            rows_processed=rows_processed,
+            rows_written=rows_written,
+            meta={"computed_at": computed_at, "theater_count": len(theater_rows)},
+        )
+
+        duration_ms = int((datetime.now(UTC) - started_monotonic).total_seconds() * 1000)
+        result = JobResult.success(
+            job_key="theater_clustering",
+            summary=f"Clustered {rows_processed} battles into {len(theater_rows)} theaters.",
+            rows_processed=rows_processed,
+            rows_written=0 if dry_run else rows_written,
+            duration_ms=duration_ms,
+            meta={
+                "computed_at": computed_at,
+                "theater_count": len(theater_rows),
+                "battle_assignments": len(battle_assignments),
+                "system_rows": len(system_rows),
+                "dry_run": dry_run,
+            },
+        ).to_dict()
+        _theater_log(runtime, "theater_clustering.job.success", result)
+        return result
+
+    except Exception as exc:
+        finish_job_run(db, job, status="failed", rows_processed=rows_processed, rows_written=rows_written, error_text=str(exc))
+        _theater_log(runtime, "theater_clustering.job.failed", {"status": "failed", "error": str(exc)})
+        raise
+    finally:
+        release_job_lock(db, lock_key, owner)

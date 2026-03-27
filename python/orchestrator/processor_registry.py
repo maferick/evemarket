@@ -49,6 +49,10 @@ from .jobs.graph_community_detection import run_graph_community_detection_sync
 from .jobs.graph_motif_detection import run_graph_motif_detection_sync
 from .jobs.graph_evidence_paths import run_graph_evidence_paths_sync
 from .jobs.graph_analyst_recalibration import run_graph_analyst_recalibration
+from .jobs.theater_clustering import run_theater_clustering
+from .jobs.theater_analysis import run_theater_analysis
+from .jobs.theater_graph_integration import run_theater_graph_integration
+from .jobs.theater_suspicion import run_theater_suspicion
 
 PYTHON_COMPUTE_PROCESSOR_JOB_KEYS: set[str] = {
     "compute_graph_sync",
@@ -76,6 +80,10 @@ PYTHON_COMPUTE_PROCESSOR_JOB_KEYS: set[str] = {
     "graph_motif_detection_sync",
     "graph_evidence_paths_sync",
     "graph_analyst_recalibration",
+    "theater_clustering",
+    "theater_analysis",
+    "theater_graph_integration",
+    "theater_suspicion",
 }
 
 PYTHON_SYNC_PROCESSOR_JOB_KEYS: set[str] = {
@@ -151,6 +159,11 @@ _PROCESSOR_DISPATCH: dict[str, tuple] = {
     "graph_motif_detection_sync": (run_graph_motif_detection_sync, lambda db, cfg: (db, neo4j_runtime(cfg))),
     "graph_evidence_paths_sync": (run_graph_evidence_paths_sync, lambda db, cfg: (db, neo4j_runtime(cfg))),
     "graph_analyst_recalibration": (run_graph_analyst_recalibration, lambda db, cfg: (db,)),
+    # Theater intelligence
+    "theater_clustering": (run_theater_clustering, lambda db, cfg: (db, battle_runtime(cfg))),
+    "theater_analysis": (run_theater_analysis, lambda db, cfg: (db, battle_runtime(cfg))),
+    "theater_graph_integration": (run_theater_graph_integration, lambda db, cfg: (db, neo4j_runtime(cfg), battle_runtime(cfg))),
+    "theater_suspicion": (run_theater_suspicion, lambda db, cfg: (db, battle_runtime(cfg))),
 }
 
 
