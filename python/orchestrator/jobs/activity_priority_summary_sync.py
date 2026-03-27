@@ -73,7 +73,7 @@ def _processor(db: SupplyCoreDb) -> dict[str, object]:
         "total_rows": rows_written,
     }
     db.upsert_intelligence_snapshot(
-        snapshot_key="activity_priority_summaries",
+        snapshot_key="doctrine_activity_db_state",
         payload_json=json_dumps_safe(snapshot_payload),
         metadata_json=json_dumps_safe({
             "source": "doctrine_activity_snapshots",
