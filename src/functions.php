@@ -26381,9 +26381,13 @@ function theater_ai_summary_generate(string $theaterId, bool $forceRegenerate = 
                 'system' => $systemPrompt,
                 'prompt' => $userPrompt,
                 'format' => $schema,
-                'options' => ['temperature' => 0.2],
+                'options' => [
+                    'temperature' => 0.2,
+                    'num_predict' => 8192,
+                    'num_ctx' => 16384,
+                ],
             ];
-            $response = http_post_json($endpoint, [], $requestPayload, max(60, $config['timeout']));
+            $response = http_post_json($endpoint, [], $requestPayload, max(300, $config['timeout']));
             $status = (int) ($response['status'] ?? 0);
             $json = is_array($response['json'] ?? null) ? $response['json'] : [];
             if ($status < 200 || $status >= 300) {
@@ -26567,10 +26571,14 @@ function theater_ai_build_facts(string $theaterId, array $theater): array
 
 function theater_ai_system_prompt(): string
 {
-    return "You are an experienced EVE Online Fleet Commander and military analyst.\n\n"
-         . "Generate a clear, structured After Action Report (AAR) based on the provided battle data.\n\n"
-         . "Focus on tactical clarity, decision-making, and actionable insights. Avoid fluff.\n\n"
-         . "Return valid JSON only with the required fields.";
+    return "You are an experienced EVE Online Fleet Commander and military analyst writing a detailed After Action Report (AAR).\n\n"
+         . "IMPORTANT INSTRUCTIONS:\n"
+         . "- Generate a COMPREHENSIVE, DETAILED report. Do NOT be brief. Aim for at least 1500-3000 words in the summary field.\n"
+         . "- Follow ALL numbered sections in the user prompt. Each section must have substantial content.\n"
+         . "- Use markdown formatting: ## for section headers, **bold** for emphasis, - for bullet points.\n"
+         . "- Analyze the battle data thoroughly. Reference specific alliances, ship types, ISK values, and pilot names from the data.\n"
+         . "- Focus on tactical clarity, decision-making, and actionable insights.\n\n"
+         . "Return valid JSON with the required fields. The 'summary' field must contain the full multi-section AAR in markdown.";
 }
 
 function theater_ai_user_prompt(array $facts): string
@@ -26659,7 +26667,7 @@ function theater_ai_output_schema(): array
             ],
             'summary' => [
                 'type' => 'string',
-                'description' => 'Full structured After Action Report following the requested format. Use markdown formatting with numbered sections, bullet points, and line breaks.',
+                'description' => 'Full structured After Action Report (1500-3000 words minimum). Must include ALL numbered sections from the prompt with detailed analysis. Use markdown: ## for headers, **bold** for emphasis, - for bullets. Do NOT be brief — each section needs multiple paragraphs or bullet points.',
             ],
             'verdict' => [
                 'type' => 'string',
