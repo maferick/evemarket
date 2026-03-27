@@ -375,6 +375,23 @@ def run_killmail_r2z2_stream(context: Any) -> dict[str, Any]:
             },
         ).to_dict()
 
+    tracked_alliance_count = max(0, int(job_context.get("tracked_alliance_count") or 0))
+    tracked_corporation_count = max(0, int(job_context.get("tracked_corporation_count") or 0))
+    tracked_entity_count = tracked_alliance_count + tracked_corporation_count
+    if tracked_entity_count <= 0:
+        return JobResult.skipped(
+            job_key="killmail_r2z2_sync",
+            reason="Killmail ingestion is enabled, but no tracked alliances or corporations are configured.",
+            meta={
+                "execution_mode": "python",
+                "cursor": str(job_context.get("cursor") or "0"),
+                "checksum": payload_checksum({"cursor": job_context.get("cursor") or "0", "rows_written": 0}),
+                "tracked_alliance_count": tracked_alliance_count,
+                "tracked_corporation_count": tracked_corporation_count,
+                "tracked_entity_count": tracked_entity_count,
+            },
+        ).to_dict()
+
     sequence_url = str(job_context.get("sequence_url") or "").strip()
     base_url = str(job_context.get("base_url") or "").rstrip("/")
     user_agent = str(job_context.get("user_agent") or "SupplyCore killmail-ingestion/2.0")
@@ -734,6 +751,9 @@ def run_killmail_r2z2_stream(context: Any) -> dict[str, Any]:
                 "outcome_reason": outcome_reason,
             },
         ).to_dict()
+        result["cursor"] = cursor_end
+        result["checksum"] = checksum
+        result["run_id"] = run_id
         _sync_run_finish(bridge, job_context, run_id, result)
         return result
     except Exception as error:

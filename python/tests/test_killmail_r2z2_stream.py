@@ -27,6 +27,8 @@ class FakeBridge:
                     "cursor": "100",
                     "dataset_key": "killmail",
                     "job_key": "killmail_r2z2_sync",
+                    "tracked_alliance_count": 1,
+                    "tracked_corporation_count": 0,
                 }
             }
         if action == "sync-run-start":
@@ -197,6 +199,22 @@ class KillmailStreamTests(unittest.TestCase):
         with patch.object(killmail, "PhpBridge", FakeBridge), patch.object(killmail, "_http_json", side_effect=fake_http_json):
             with self.assertRaisesRegex(RuntimeError, "HTTP 200 with malformed non-object JSON payload"):
                 killmail.run_killmail_r2z2_stream(self.context)
+
+    def test_skips_when_no_tracked_entities_configured(self) -> None:
+        class FakeBridgeNoTracked(FakeBridge):
+            def call(self, action: str, payload: dict | None = None) -> dict:
+                response = super().call(action, payload)
+                if action == "killmail-context":
+                    response["context"]["tracked_alliance_count"] = 0
+                    response["context"]["tracked_corporation_count"] = 0
+                return response
+
+        with patch.object(killmail, "PhpBridge", FakeBridgeNoTracked):
+            result = killmail.run_killmail_r2z2_stream(self.context)
+
+        self.assertEqual(result["status"], "skipped")
+        self.assertIn("no tracked alliances or corporations", result["summary"].lower())
+        self.assertEqual(result["meta"]["tracked_entity_count"], 0)
 
 
 if __name__ == "__main__":

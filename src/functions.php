@@ -15017,6 +15017,8 @@ function python_bridge_killmail_context(): array
 {
     $datasetKey = killmail_sync_dataset_key();
     $cursor = db_sync_cursor_get($datasetKey);
+    $trackedAllianceCount = count(db_killmail_tracked_alliances_active());
+    $trackedCorporationCount = count(db_killmail_tracked_corporations_active());
     $userAgent = trim((string) get_setting('app_name', 'SupplyCore'));
     if ($userAgent === '') {
         $userAgent = 'SupplyCore';
@@ -15032,6 +15034,8 @@ function python_bridge_killmail_context(): array
         'poll_sleep_seconds' => killmail_poll_sleep_seconds(),
         'max_sequences_per_run' => killmail_max_sequences_per_run(),
         'user_agent' => $userAgent . ' killmail-ingestion/2.0 (+https://github.com/cvweiss/supplycore)',
+        'tracked_alliance_count' => $trackedAllianceCount,
+        'tracked_corporation_count' => $trackedCorporationCount,
     ];
 }
 
