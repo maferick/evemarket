@@ -1,5 +1,5 @@
--- Intelligence Platform: new tables and columns for suspicion signals,
--- historical alliance overlap, and ESI character queue.
+-- Intelligence Platform (idempotent): new tables and columns for suspicion
+-- signals, historical alliance overlap, and ESI character queue.
 
 -- 1. Add mail_type to killmail_events (kill = tracked entity was attacker,
 --    loss = tracked entity was victim).

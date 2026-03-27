@@ -1,4 +1,4 @@
--- Add engagement_avoidance_score to character_graph_intelligence.
+-- Add engagement_avoidance_score to character_graph_intelligence (idempotent).
 -- This column stores a Neo4j-derived metric that detects characters who
 -- repeatedly encounter a specific alliance on the opposing side but
 -- disproportionately appear in high-sustain (non-engagement) battles

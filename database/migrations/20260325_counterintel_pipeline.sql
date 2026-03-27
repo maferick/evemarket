@@ -1,4 +1,4 @@
--- Counter-intelligence model extensions.
+-- Counter-intelligence model extensions (idempotent — safe to re-run).
 ALTER TABLE killmail_events
     ADD COLUMN IF NOT EXISTS victim_damage_taken BIGINT UNSIGNED DEFAULT NULL AFTER victim_ship_type_id,
     ADD COLUMN IF NOT EXISTS battle_id CHAR(64) DEFAULT NULL AFTER victim_damage_taken,
