@@ -384,28 +384,40 @@ configure_local_php "${LOCAL_CONFIG_PATH}" "${APP_ENV}" "${APP_BASE_URL}" "${APP
 
 # ===========================  Python venv  ================================
 
-# The venv may exist from git (checked-in or pulled) but contain broken
-# symlinks and paths from the machine it was originally created on.
-# Always verify the venv's Python actually runs; recreate if it doesn't.
+# The venv may exist from git or a previous install but be broken:
+#   - Pulled from git with symlinks to the build machine's Python
+#   - Created by a different Python version
+#   - Missing pip (some distros, or git-pulled venvs)
+# We test TWO things: (1) the venv python runs, (2) pip is available.
+# If either fails, nuke and recreate — a fresh venv always includes pip.
+
+recreate_venv() {
+  if [[ -d ${VENV_PATH} ]]; then
+    echo "Removing stale/broken virtualenv at ${VENV_PATH}"
+    rm -rf "${VENV_PATH}"
+  fi
+  echo "Creating orchestrator virtualenv at ${VENV_PATH}"
+  "${PYTHON_BIN}" -m venv "${VENV_PATH}"
+}
+
 VENV_OK=false
-if [[ -x ${VENV_PATH}/bin/python ]] && "${VENV_PATH}/bin/python" -c "import sys; sys.exit(0)" 2>/dev/null; then
+if [[ -x ${VENV_PATH}/bin/python ]] \
+   && "${VENV_PATH}/bin/python" -c "import sys; sys.exit(0)" 2>/dev/null \
+   && "${VENV_PATH}/bin/python" -m pip --version >/dev/null 2>&1; then
   VENV_OK=true
 fi
 
 if [[ ${VENV_OK} == false ]]; then
-  echo "Creating orchestrator virtualenv at ${VENV_PATH}"
-  # Remove broken venv if it exists (e.g. pulled from git with wrong symlinks)
-  if [[ -d ${VENV_PATH} ]]; then
-    echo "Removing stale/broken virtualenv"
-    rm -rf "${VENV_PATH}"
+  recreate_venv
+  # If pip is still missing after venv creation (rare — e.g. Debian without
+  # python3-venv fully installed), try ensurepip as a fallback.
+  if ! "${VENV_PATH}/bin/python" -m pip --version >/dev/null 2>&1; then
+    echo "pip still missing after venv creation; trying ensurepip"
+    "${VENV_PATH}/bin/python" -m ensurepip --upgrade 2>/dev/null || {
+      echo "ERROR: Cannot bootstrap pip. Install python3-venv or python3-pip on the host." >&2
+      exit 1
+    }
   fi
-  "${PYTHON_BIN}" -m venv "${VENV_PATH}"
-fi
-
-# Ensure pip is available inside the venv (some distros create venvs without it)
-if ! "${VENV_PATH}/bin/python" -m pip --version >/dev/null 2>&1; then
-  echo "Bootstrapping pip inside virtualenv"
-  "${VENV_PATH}/bin/python" -m ensurepip --upgrade
 fi
 
 "${VENV_PATH}/bin/python" -m pip install --upgrade pip
