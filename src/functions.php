@@ -15045,10 +15045,21 @@ function python_bridge_killmail_backfill_context(): array
     $startDate = trim((string) get_setting('killmail_backfill_start_date', ''));
     $endDate = trim((string) get_setting('killmail_backfill_end_date', ''));
 
+    $trackedAllianceIds = array_values(array_map(
+        static fn (array $row): int => (int) ($row['alliance_id'] ?? 0),
+        db_killmail_tracked_alliances_active()
+    ));
+    $trackedCorporationIds = array_values(array_map(
+        static fn (array $row): int => (int) ($row['corporation_id'] ?? 0),
+        db_killmail_tracked_corporations_active()
+    ));
+
     return [
         'start_date' => $startDate !== '' ? $startDate : date('Y') . '-01-01',
         'end_date' => $endDate !== '' ? $endDate : date('Y-m-d'),
         'user_agent' => $userAgent . ' killmail-backfill/1.0 (+https://github.com/cvweiss/supplycore)',
+        'tracked_alliance_ids' => $trackedAllianceIds,
+        'tracked_corporation_ids' => $trackedCorporationIds,
     ];
 }
 
