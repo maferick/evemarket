@@ -14764,23 +14764,40 @@ function db_theater_timeline(string $theaterId): array
 function db_theater_alliance_summary(string $theaterId): array
 {
     return db_select(
-        'SELECT * FROM theater_alliance_summary WHERE theater_id = ? ORDER BY total_isk_killed DESC',
+        'SELECT tas.*,
+                COALESCE(emc.entity_name, tas.alliance_name, CONCAT("Alliance #", tas.alliance_id)) AS alliance_name
+         FROM theater_alliance_summary tas
+         LEFT JOIN entity_metadata_cache emc
+              ON emc.entity_type = "alliance" AND emc.entity_id = tas.alliance_id
+         WHERE tas.theater_id = ?
+         ORDER BY tas.total_isk_killed DESC',
         [$theaterId]
     );
 }
 
 function db_theater_participants(string $theaterId, ?string $sideFilter = null, bool $suspiciousOnly = false, int $limit = 200): array
 {
-    $sql = 'SELECT * FROM theater_participants WHERE theater_id = ?';
+    $sql = 'SELECT tp.*,
+                   COALESCE(emc.entity_name, tp.character_name, CONCAT("Character #", tp.character_id)) AS character_name,
+                   COALESCE(emc_a.entity_name, CONCAT("Alliance #", tp.alliance_id)) AS alliance_name,
+                   COALESCE(emc_c.entity_name, CONCAT("Corp #", tp.corporation_id)) AS corporation_name
+            FROM theater_participants tp
+            LEFT JOIN entity_metadata_cache emc
+                 ON emc.entity_type = "character" AND emc.entity_id = tp.character_id
+            LEFT JOIN entity_metadata_cache emc_a
+                 ON emc_a.entity_type = "alliance" AND emc_a.entity_id = tp.alliance_id
+            LEFT JOIN entity_metadata_cache emc_c
+                 ON emc_c.entity_type = "corporation" AND emc_c.entity_id = tp.corporation_id
+            WHERE tp.theater_id = ?';
     $params = [$theaterId];
     if ($sideFilter !== null) {
-        $sql .= ' AND side = ?';
+        $sql .= ' AND tp.side = ?';
         $params[] = $sideFilter;
     }
     if ($suspiciousOnly) {
-        $sql .= ' AND is_suspicious = 1';
+        $sql .= ' AND tp.is_suspicious = 1';
     }
-    $sql .= ' ORDER BY kills DESC, damage_done DESC LIMIT ' . max(1, min(1000, (int)$limit));
+    $sql .= ' ORDER BY tp.kills DESC, tp.damage_done DESC LIMIT ' . max(1, min(1000, (int)$limit));
     return db_select($sql, $params);
 }
 
@@ -14803,9 +14820,12 @@ function db_theater_graph_summary(string $theaterId): ?array
 function db_theater_graph_participants(string $theaterId, int $limit = 100): array
 {
     return db_select(
-        'SELECT tgp.*, tp.side, tp.character_name
+        'SELECT tgp.*, tp.side,
+                COALESCE(emc.entity_name, tp.character_name, CONCAT("Character #", tgp.character_id)) AS character_name
          FROM theater_graph_participants tgp
          LEFT JOIN theater_participants tp ON tp.theater_id = tgp.theater_id AND tp.character_id = tgp.character_id
+         LEFT JOIN entity_metadata_cache emc
+              ON emc.entity_type = "character" AND emc.entity_id = tgp.character_id
          WHERE tgp.theater_id = ?
          ORDER BY tgp.bridge_score DESC
          LIMIT ' . max(1, min(500, (int)$limit)),

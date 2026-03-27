@@ -235,7 +235,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                         $sideClass = (string) ($a['side'] ?? '') === 'side_a' ? 'text-blue-300' : 'text-red-300';
                     ?>
                     <tr class="border-b border-border/50">
-                        <td class="px-3 py-2 text-slate-100"><?= htmlspecialchars((string) ($a['alliance_name'] ?? 'ID:' . (int) ($a['alliance_id'] ?? 0)), ENT_QUOTES) ?></td>
+                        <td class="px-3 py-2 text-slate-100"><?= htmlspecialchars((string) ($a['alliance_name'] ?? 'Alliance #' . (int) ($a['alliance_id'] ?? 0)), ENT_QUOTES) ?></td>
                         <td class="px-3 py-2 <?= $sideClass ?>">
                             <span class="inline-block rounded-full px-2 py-0.5 text-[10px] uppercase tracking-wider <?= (string) ($a['side'] ?? '') === 'side_a' ? 'bg-blue-900/60' : 'bg-red-900/60' ?>">
                                 <?= htmlspecialchars((string) ($a['side'] ?? ''), ENT_QUOTES) ?>
@@ -271,6 +271,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
             <thead>
                 <tr class="border-b border-border/70 text-xs uppercase tracking-[0.15em] text-muted">
                     <th class="px-3 py-2 text-left">Character</th>
+                    <th class="px-3 py-2 text-left">Alliance / Corp</th>
                     <th class="px-3 py-2 text-left">Side</th>
                     <th class="px-3 py-2 text-left">Role</th>
                     <th class="px-3 py-2 text-right">Kills</th>
@@ -283,7 +284,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
             </thead>
             <tbody>
                 <?php if ($participants === []): ?>
-                    <tr><td colspan="9" class="px-3 py-6 text-sm text-muted">No participants found.</td></tr>
+                    <tr><td colspan="10" class="px-3 py-6 text-sm text-muted">No participants found.</td></tr>
                 <?php else: ?>
                     <?php foreach ($participants as $p): ?>
                         <?php
@@ -295,7 +296,22 @@ include __DIR__ . '/../../src/views/partials/header.php';
                         ?>
                         <tr class="border-b border-border/50 <?= $isSusp ? 'bg-red-900/10' : '' ?>">
                             <td class="px-3 py-2 text-slate-100">
-                                <?= htmlspecialchars((string) ($p['character_name'] ?? 'ID:' . (int) ($p['character_id'] ?? 0)), ENT_QUOTES) ?>
+                                <a class="text-accent" href="/battle-intelligence/character.php?character_id=<?= (int) ($p['character_id'] ?? 0) ?>">
+                                    <?= htmlspecialchars((string) ($p['character_name'] ?? 'Character #' . (int) ($p['character_id'] ?? 0)), ENT_QUOTES) ?>
+                                </a>
+                            </td>
+                            <td class="px-3 py-2 text-slate-300 text-xs">
+                                <?php
+                                    $allianceName = $p['alliance_name'] ?? null;
+                                    $corpName = $p['corporation_name'] ?? null;
+                                    if ($allianceName && !str_starts_with($allianceName, 'Alliance #')):
+                                ?>
+                                    <span class="text-slate-100"><?= htmlspecialchars($allianceName, ENT_QUOTES) ?></span>
+                                <?php elseif ($corpName && !str_starts_with($corpName, 'Corp #')): ?>
+                                    <span class="text-slate-300"><?= htmlspecialchars($corpName, ENT_QUOTES) ?></span>
+                                <?php else: ?>
+                                    <span class="text-slate-500">-</span>
+                                <?php endif; ?>
                             </td>
                             <td class="px-3 py-2 <?= $pSideClass ?>">
                                 <span class="inline-block rounded-full px-2 py-0.5 text-[10px] uppercase tracking-wider <?= $pSide === 'side_a' ? 'bg-blue-900/60' : 'bg-red-900/60' ?>">
@@ -317,6 +333,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                             <td class="px-3 py-2 text-right">
                                 <a class="text-accent text-sm" href="/battle-intelligence/character.php?character_id=<?= (int) ($p['character_id'] ?? 0) ?>">Intel</a>
                             </td>
+
                         </tr>
                     <?php endforeach; ?>
                 <?php endif; ?>
@@ -398,7 +415,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                             <tr class="border-b border-border/50">
                                 <td class="px-3 py-2 text-slate-100">
                                     <a class="text-accent" href="/battle-intelligence/character.php?character_id=<?= (int) ($gp['character_id'] ?? 0) ?>">
-                                        <?= htmlspecialchars((string) ($gp['character_name'] ?? 'ID:' . (int) ($gp['character_id'] ?? 0)), ENT_QUOTES) ?>
+                                        <?= htmlspecialchars((string) ($gp['character_name'] ?? 'Character #' . (int) ($gp['character_id'] ?? 0)), ENT_QUOTES) ?>
                                     </a>
                                 </td>
                                 <td class="px-3 py-2 text-xs"><?= htmlspecialchars((string) ($gp['side'] ?? '-'), ENT_QUOTES) ?></td>

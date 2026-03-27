@@ -14,6 +14,15 @@ $offset = ($page - 1) * $perPage;
 
 $theaters = db_theaters_list($perPage, $offset, $regionFilter, $minAnomaly);
 
+// Load distinct regions that have theaters for the filter dropdown
+$theaterRegions = db_select(
+    'SELECT DISTINCT t.region_id, rr.region_name
+     FROM theaters t
+     LEFT JOIN ref_regions rr ON rr.region_id = t.region_id
+     WHERE t.region_id IS NOT NULL
+     ORDER BY rr.region_name ASC'
+);
+
 include __DIR__ . '/../../src/views/partials/header.php';
 ?>
 
@@ -33,9 +42,15 @@ include __DIR__ . '/../../src/views/partials/header.php';
 <section class="surface-primary mt-4">
     <form method="GET" class="flex gap-3 items-end flex-wrap">
         <div>
-            <label class="text-xs text-muted block mb-1">Region ID</label>
-            <input type="number" name="region_id" value="<?= htmlspecialchars((string) ($regionFilter ?? ''), ENT_QUOTES) ?>"
-                   class="w-32 rounded bg-slate-800 border border-border px-2 py-1.5 text-sm text-slate-100" placeholder="Any">
+            <label class="text-xs text-muted block mb-1">Region</label>
+            <select name="region_id" class="w-48 rounded bg-slate-800 border border-border px-2 py-1.5 text-sm text-slate-100">
+                <option value="">Any</option>
+                <?php foreach ($theaterRegions as $tr): ?>
+                    <option value="<?= (int) $tr['region_id'] ?>" <?= $regionFilter === (string) $tr['region_id'] ? 'selected' : '' ?>>
+                        <?= htmlspecialchars((string) ($tr['region_name'] ?? 'Region #' . $tr['region_id']), ENT_QUOTES) ?>
+                    </option>
+                <?php endforeach; ?>
+            </select>
         </div>
         <div>
             <label class="text-xs text-muted block mb-1">Min Anomaly</label>
