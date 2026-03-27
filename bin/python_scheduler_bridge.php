@@ -38,6 +38,20 @@ try {
         python_scheduler_bridge_output(['ok' => true, 'context' => python_bridge_killmail_context()]);
     }
 
+<<<<<<< claude/killmail-backfill
+    if ($action === 'killmail-backfill-context') {
+        python_scheduler_bridge_output(['ok' => true, 'context' => python_bridge_killmail_backfill_context()]);
+    }
+
+    if ($action === 'update-setting') {
+        $input = python_scheduler_bridge_read_stdin_json();
+        $key = trim((string) ($input['key'] ?? ''));
+        $value = (string) ($input['value'] ?? '');
+        if ($key !== '') {
+            save_settings([$key => $value]);
+        }
+        python_scheduler_bridge_output(['ok' => true]);
+=======
     if ($action === 'killmail-debug') {
         $rawValue = get_setting('killmail_ingestion_enabled', '__NOT_SET__');
         $boolResult = killmail_ingestion_enabled();
@@ -50,6 +64,7 @@ try {
                 'context_enabled' => python_bridge_killmail_context()['enabled'],
             ],
         ]);
+>>>>>>> main
     }
 
     if ($action === 'market-hub-local-history-context') {
@@ -108,6 +123,12 @@ try {
         $reason = trim((string) ($options['reason'] ?? 'python-fallback'));
         $result = python_bridge_run_job_handler($jobKey, $reason);
         python_scheduler_bridge_output(['ok' => true, 'result' => $result]);
+    }
+
+    if ($action === 'killmail-ids-existing') {
+        $input = python_scheduler_bridge_read_stdin_json();
+        $killmailIds = array_values(array_map('intval', (array) ($input['killmail_ids'] ?? [])));
+        python_scheduler_bridge_output(['ok' => true, 'existing' => db_killmail_ids_existing($killmailIds)]);
     }
 
     if ($action === 'process-killmail-batch') {

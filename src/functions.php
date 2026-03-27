@@ -15035,6 +15035,52 @@ function python_bridge_killmail_context(): array
     ];
 }
 
+function python_bridge_killmail_backfill_context(): array
+{
+    $userAgent = trim((string) get_setting('app_name', 'SupplyCore'));
+    if ($userAgent === '') {
+        $userAgent = 'SupplyCore';
+    }
+
+    $startDate = trim((string) get_setting('killmail_backfill_start_date', ''));
+    $endDate = trim((string) get_setting('killmail_backfill_end_date', ''));
+
+    return [
+        'start_date' => $startDate !== '' ? $startDate : date('Y') . '-01-01',
+        'end_date' => $endDate !== '' ? $endDate : date('Y-m-d'),
+        'user_agent' => $userAgent . ' killmail-backfill/1.0 (+https://github.com/cvweiss/supplycore)',
+    ];
+}
+
+function killmail_backfill_needed(): bool
+{
+    $yearStart = date('Y') . '-01-01 00:00:00';
+    $row = db_select_one(
+        'SELECT MIN(killmail_time) AS earliest FROM killmail_events WHERE killmail_time IS NOT NULL'
+    );
+    $earliest = $row['earliest'] ?? null;
+    if ($earliest === null) {
+        return true;
+    }
+    return $earliest > $yearStart;
+}
+
+function killmail_backfill_running(): bool
+{
+    $progress = trim((string) get_setting('killmail_backfill_progress', ''));
+    return $progress !== '';
+}
+
+function killmail_backfill_progress(): ?array
+{
+    $progress = trim((string) get_setting('killmail_backfill_progress', ''));
+    if ($progress === '') {
+        return null;
+    }
+    $decoded = json_decode($progress, true);
+    return is_array($decoded) ? $decoded : null;
+}
+
 function python_bridge_market_history_tables_context(): array
 {
     return [

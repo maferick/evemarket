@@ -36,6 +36,7 @@ from .supervisor import run_supervisor
 from .worker_pool import main as run_worker_pool
 from .zkill_worker import main as run_zkill_worker
 from .processor_registry import run_registered_processor, PYTHON_PROCESSOR_JOB_KEYS
+from .jobs.killmail_history_backfill import run_killmail_history_backfill
 
 
 def parse_args() -> argparse.Namespace:
@@ -115,6 +116,9 @@ def parse_args() -> argparse.Namespace:
     run_job = subparsers.add_parser("run-job", help="Run a Python-native recurring job by job key")
     run_job.add_argument("--app-root", default=str(Path(__file__).resolve().parents[2]))
     run_job.add_argument("--job-key", required=True)
+
+    backfill = subparsers.add_parser("killmail-backfill", help="Backfill killmails from R2Z2 history API")
+    backfill.add_argument("--app-root", default=str(Path(__file__).resolve().parents[2]))
 
     for command, help_text in [
         ("compute-battle-rollups", "Cluster killmails into deterministic battle rollups and participants"),
@@ -281,6 +285,21 @@ def main() -> int:
         result = run_compute_suspicion_scores_v2(db, battle_runtime(config.raw))
         print(result)
         return 0
+    if command == "killmail-backfill":
+        from dataclasses import dataclass
+
+        @dataclass
+        class BackfillContext:
+            app_root: Path
+            php_binary: str
+
+        app_root = Path(args.app_root).resolve()
+        config = load_php_runtime_config(app_root)
+        ctx = BackfillContext(app_root=app_root, php_binary=config.php_binary)
+        result = run_killmail_history_backfill(ctx)
+        print(json.dumps(result, default=str))
+        return 0 if result.get("status") == "success" else 1
+
     if command == "run-job":
         app_root = Path(args.app_root).resolve()
         config = load_php_runtime_config(app_root)

@@ -107,6 +107,32 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
 
         case 'killmail-intelligence':
+            if (isset($_POST['killmail_backfill_start'])) {
+                // Trigger history backfill as a background process
+                $backfillStart = date('Y') . '-01-01';
+                $backfillEnd = date('Y-m-d');
+                save_settings([
+                    'killmail_backfill_start_date' => $backfillStart,
+                    'killmail_backfill_end_date' => $backfillEnd,
+                    'killmail_backfill_progress' => json_encode([
+                        'current_date' => str_replace('-', '', $backfillStart),
+                        'days_processed' => 0,
+                        'killmails_seen' => 0,
+                        'written' => 0,
+                        'status' => 'starting',
+                        'updated_at' => gmdate('Y-m-d\TH:i:s\Z'),
+                    ]),
+                ]);
+                $pythonBin = '/var/www/SupplyCore/.venv-orchestrator/bin/python';
+                $appRoot = realpath(__DIR__ . '/../..') ?: '/var/www/SupplyCore';
+                $cmd = escapeshellarg($pythonBin) . ' ' . escapeshellarg($appRoot . '/bin/python_orchestrator.py')
+                     . ' killmail-backfill --app-root ' . escapeshellarg($appRoot)
+                     . ' >> ' . escapeshellarg($appRoot . '/storage/logs/killmail-backfill.log') . ' 2>&1 &';
+                exec($cmd);
+                $saved = true;
+                $saveMessage = 'Killmail history backfill started for ' . $backfillStart . ' through ' . $backfillEnd . '. Progress will update on this page.';
+                break;
+            }
             $killmailSave = save_killmail_intelligence_settings($_POST);
             $saved = (bool) ($killmailSave['ok'] ?? false);
             $unresolved = (array) ($killmailSave['unresolved'] ?? []);
@@ -1674,6 +1700,44 @@ include __DIR__ . '/../../src/views/partials/header.php';
                         </label>
                     </div>
                 </details>
+
+                <?php
+                    $backfillNeeded = killmail_backfill_needed();
+                    $backfillProgress = killmail_backfill_progress();
+                    $backfillRunning = $backfillProgress !== null;
+                ?>
+                <?php if ($backfillRunning): ?>
+                    <div class="rounded-2xl border border-amber-500/30 bg-amber-500/5 px-4 py-3">
+                        <div class="flex items-center gap-3">
+                            <div class="size-2 animate-pulse rounded-full bg-amber-400"></div>
+                            <p class="text-sm font-semibold text-amber-200">History Backfill In Progress</p>
+                        </div>
+                        <div class="mt-2 grid gap-2 text-sm text-slate-300 md:grid-cols-5">
+                            <p>Processing: <span class="font-medium text-slate-100"><?= htmlspecialchars((string) ($backfillProgress['current_date'] ?? '—'), ENT_QUOTES) ?></span></p>
+                            <p>Days done: <span class="font-medium text-slate-100"><?= number_format((int) ($backfillProgress['days_processed'] ?? 0)) ?></span></p>
+                            <p>Killmails seen: <span class="font-medium text-slate-100"><?= number_format((int) ($backfillProgress['killmails_seen'] ?? 0)) ?></span></p>
+                            <p>Skipped (cached): <span class="font-medium text-slate-100"><?= number_format((int) ($backfillProgress['skipped_existing'] ?? 0)) ?></span></p>
+                            <p>Written: <span class="font-medium text-slate-100"><?= number_format((int) ($backfillProgress['written'] ?? 0)) ?></span></p>
+                        </div>
+                        <p class="mt-1 text-xs text-muted">Refresh this page to see updated progress. Backfill runs in the background.</p>
+                    </div>
+                <?php elseif ($backfillNeeded): ?>
+                    <div class="rounded-2xl border border-blue-500/30 bg-blue-500/5 px-4 py-3">
+                        <div class="flex items-center justify-between gap-4">
+                            <div>
+                                <p class="text-sm font-semibold text-blue-200">History Backfill Available</p>
+                                <p class="mt-1 text-xs text-muted">
+                                    Fetch historical killmails from zKillboard's R2Z2 history API for <?= date('Y') ?>.
+                                    Each day's killmail IDs are fetched from R2Z2, then full details are loaded from ESI.
+                                    Only killmails matching your tracked alliances and corporations will be stored.
+                                </p>
+                            </div>
+                            <button type="submit" name="killmail_backfill_start" value="1" class="shrink-0 rounded-lg border border-blue-400/40 bg-blue-500/10 px-4 py-2 text-sm font-medium text-blue-100 hover:bg-blue-500/20" onclick="this.disabled=true;this.textContent='Starting…';this.form.submit();">
+                                Backfill <?= date('Y') ?>
+                            </button>
+                        </div>
+                    </div>
+                <?php endif; ?>
 
                 <p class="text-sm text-muted">Ingestion consumes R2Z2 as an ordered stream and keeps killmails only when a tracked alliance or corporation appears on the victim side. That keeps the board focused on tracked losses while leaving attacker details available only inside each stored loss.</p>
                 <button class="btn-primary">Save Killmail Intelligence Settings</button>
