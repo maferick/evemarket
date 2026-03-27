@@ -26327,6 +26327,261 @@ function supplycore_ai_decode_json_string(string $value): ?array
     return null;
 }
 
+// ---------------------------------------------------------------------------
+// Theater Intelligence AI Summary
+// ---------------------------------------------------------------------------
+
+function theater_ai_summary_generate(string $theaterId): ?array
+{
+    if (!supplycore_ai_ollama_enabled()) {
+        return null;
+    }
+
+    $theater = db_theater_detail($theaterId);
+    if ($theater === null) {
+        return null;
+    }
+
+    // Skip if already generated and fresh (< 6 hours old)
+    $existingSummary = $theater['ai_summary'] ?? null;
+    $existingSummaryAt = $theater['ai_summary_at'] ?? null;
+    if ($existingSummary !== null && $existingSummaryAt !== null) {
+        $age = time() - strtotime((string) $existingSummaryAt);
+        if ($age < 21600) {
+            return [
+                'headline' => (string) ($theater['ai_headline'] ?? ''),
+                'summary' => (string) $existingSummary,
+                'verdict' => (string) ($theater['ai_verdict'] ?? ''),
+                'model' => (string) ($theater['ai_summary_model'] ?? ''),
+                'generated_at' => (string) $existingSummaryAt,
+                'cached' => true,
+            ];
+        }
+    }
+
+    $config = supplycore_ai_ollama_config();
+    $allianceSummary = db_theater_alliance_summary($theaterId);
+    $turningPoints = db_theater_turning_points($theaterId);
+    $systems = db_theater_systems($theaterId);
+    $suspicion = db_theater_suspicion_summary($theaterId);
+
+    // Build tracked alliance context
+    $trackedAlliances = db_killmail_tracked_alliances_active();
+    $trackedIds = array_map('intval', array_column($trackedAlliances, 'alliance_id'));
+
+    // Build side context
+    $sideData = ['side_a' => [], 'side_b' => []];
+    $ourSide = null;
+    foreach ($allianceSummary as $a) {
+        $side = (string) ($a['side'] ?? '');
+        $aid = (int) ($a['alliance_id'] ?? 0);
+        if (!isset($sideData[$side])) continue;
+        $sideData[$side][] = [
+            'alliance' => (string) ($a['alliance_name'] ?? "Alliance #{$aid}"),
+            'pilots' => (int) ($a['participant_count'] ?? 0),
+            'kills' => (int) ($a['total_kills'] ?? 0),
+            'losses' => (int) ($a['total_losses'] ?? 0),
+            'isk_killed' => round((float) ($a['total_isk_killed'] ?? 0)),
+            'isk_lost' => round((float) ($a['total_isk_lost'] ?? 0)),
+            'efficiency' => round((float) ($a['efficiency'] ?? 0) * 100, 1) . '%',
+            'is_tracked' => in_array($aid, $trackedIds, true),
+        ];
+        if ($ourSide === null && in_array($aid, $trackedIds, true)) {
+            $ourSide = $side;
+        }
+    }
+    $enemySide = ($ourSide === 'side_a') ? 'side_b' : 'side_a';
+
+    // Build facts payload
+    $facts = [
+        'region' => (string) ($theater['region_name'] ?? 'Unknown'),
+        'primary_system' => (string) ($theater['primary_system_name'] ?? 'Unknown'),
+        'systems' => array_map(fn($s) => (string) ($s['system_name'] ?? '?'), $systems),
+        'start_time' => (string) ($theater['start_time'] ?? ''),
+        'end_time' => (string) ($theater['end_time'] ?? ''),
+        'duration_minutes' => round((int) ($theater['duration_seconds'] ?? 0) / 60, 1),
+        'total_kills' => (int) ($theater['total_kills'] ?? 0),
+        'total_isk_destroyed' => round((float) ($theater['total_isk'] ?? 0)),
+        'participant_count' => (int) ($theater['participant_count'] ?? 0),
+        'battle_count' => (int) ($theater['battle_count'] ?? 0),
+        'anomaly_score' => round((float) ($theater['anomaly_score'] ?? 0), 3),
+        'our_coalition' => $sideData[$ourSide ?? 'side_a'],
+        'enemy_coalition' => $sideData[$enemySide],
+        'our_side_label' => $ourSide ?? 'side_a',
+    ];
+
+    if ($turningPoints !== []) {
+        $facts['turning_points'] = array_map(fn($tp) => [
+            'time' => (string) ($tp['turning_point_at'] ?? ''),
+            'direction' => (string) ($tp['direction'] ?? ''),
+            'magnitude' => round((float) ($tp['magnitude'] ?? 0), 3),
+            'description' => (string) ($tp['description'] ?? ''),
+        ], array_slice($turningPoints, 0, 5));
+    }
+
+    if (is_array($suspicion)) {
+        $facts['suspicion'] = [
+            'suspicious_characters' => (int) ($suspicion['suspicious_character_count'] ?? 0),
+            'tracked_alliance_suspicious' => (int) ($suspicion['tracked_alliance_suspicious_count'] ?? 0),
+            'max_score' => round((float) ($suspicion['max_suspicion_score'] ?? 0), 3),
+            'avg_score' => round((float) ($suspicion['avg_suspicion_score'] ?? 0), 3),
+        ];
+    }
+
+    $systemPrompt = theater_ai_system_prompt();
+    $userPrompt = theater_ai_user_prompt($facts);
+    $schema = theater_ai_output_schema();
+
+    try {
+        if (($config['provider'] ?? 'local') === 'runpod') {
+            $decoded = supplycore_ai_runpod_generate_json($config, $systemPrompt, $userPrompt, $schema);
+        } else {
+            $endpoint = $config['url'] . '/generate';
+            $requestPayload = [
+                'model' => $config['model'],
+                'stream' => false,
+                'system' => $systemPrompt,
+                'prompt' => $userPrompt,
+                'format' => $schema,
+                'options' => ['temperature' => 0.2],
+            ];
+            $response = http_post_json($endpoint, [], $requestPayload, max(30, $config['timeout']));
+            $status = (int) ($response['status'] ?? 0);
+            $json = is_array($response['json'] ?? null) ? $response['json'] : [];
+            if ($status < 200 || $status >= 300) {
+                throw new RuntimeException('Ollama returned HTTP ' . $status);
+            }
+            $rawResponse = trim((string) ($json['response'] ?? ''));
+            if ($rawResponse === '') {
+                throw new RuntimeException('Ollama returned empty response');
+            }
+            $decoded = json_decode($rawResponse, true);
+            if (!is_array($decoded)) {
+                throw new RuntimeException('Ollama returned malformed JSON');
+            }
+        }
+
+        $headline = mb_substr(trim((string) ($decoded['headline'] ?? '')), 0, 255);
+        $summary = mb_substr(trim((string) ($decoded['summary'] ?? '')), 0, 2000);
+        $verdict = mb_substr(trim((string) ($decoded['verdict'] ?? '')), 0, 32);
+
+        if ($headline === '' || $summary === '') {
+            throw new RuntimeException('AI returned empty headline or summary');
+        }
+
+        // Persist to theaters table
+        theater_ai_summary_store($theaterId, $headline, $summary, $verdict, (string) $config['model']);
+
+        return [
+            'headline' => $headline,
+            'summary' => $summary,
+            'verdict' => $verdict,
+            'model' => (string) $config['model'],
+            'generated_at' => date('Y-m-d H:i:s'),
+            'cached' => false,
+        ];
+    } catch (Throwable $e) {
+        error_log('[theater-ai] Failed to generate summary for ' . $theaterId . ': ' . $e->getMessage());
+        return null;
+    }
+}
+
+function theater_ai_system_prompt(): string
+{
+    return <<<'PROMPT'
+You are a military intelligence analyst for an EVE Online alliance. You write concise, tactical after-action briefings for fleet commanders and alliance leadership.
+
+Rules:
+- Use ONLY the facts provided. Do not invent details.
+- Write from our coalition's perspective (the side marked as tracked/ours).
+- Be direct and analytical — no fluff or roleplay.
+- Identify the outcome (decisive victory, close fight, defeat, stalemate).
+- Note any strategic observations: efficiency gaps, turning points, suspicious activity.
+- Keep the summary to 2-4 sentences focused on what happened and why it matters.
+- The headline should be a single punchy line (max 80 chars) capturing the outcome.
+- Return valid JSON only.
+PROMPT;
+}
+
+function theater_ai_user_prompt(array $facts): string
+{
+    $json = json_encode($facts, JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT | JSON_INVALID_UTF8_SUBSTITUTE);
+
+    return <<<PROMPT
+Analyze this theater engagement and produce a tactical briefing.
+
+Theater facts:
+{$json}
+
+Determine the verdict from our coalition's perspective: one of "decisive_victory", "victory", "close_fight", "defeat", "decisive_defeat", or "stalemate".
+
+Consider:
+- ISK efficiency and kill/loss ratios for both sides
+- Turning points and momentum shifts
+- Whether suspicious activity (possible spies/intel leaks) affected the outcome
+- Strategic significance of the systems involved
+- The anomaly score (higher = more unusual engagement patterns)
+PROMPT;
+}
+
+function theater_ai_output_schema(): array
+{
+    return [
+        'type' => 'object',
+        'required' => ['headline', 'summary', 'verdict'],
+        'properties' => [
+            'headline' => [
+                'type' => 'string',
+                'description' => 'One-line outcome summary (max 80 chars). Example: "Clean sweep in 4-HWWF — 100% efficiency"',
+            ],
+            'summary' => [
+                'type' => 'string',
+                'description' => 'Tactical briefing: 2-4 sentences covering what happened, key observations, and implications.',
+            ],
+            'verdict' => [
+                'type' => 'string',
+                'enum' => ['decisive_victory', 'victory', 'close_fight', 'defeat', 'decisive_defeat', 'stalemate'],
+                'description' => 'Outcome from our tracked coalition perspective.',
+            ],
+        ],
+        'additionalProperties' => false,
+    ];
+}
+
+function theater_ai_summary_store(string $theaterId, string $headline, string $summary, string $verdict, string $model): void
+{
+    db_execute(
+        'UPDATE theaters SET ai_headline = ?, ai_summary = ?, ai_verdict = ?, ai_summary_model = ?, ai_summary_at = NOW() WHERE theater_id = ?',
+        [$headline, $summary, $verdict, $model, $theaterId]
+    );
+}
+
+function theater_ai_verdict_label(string $verdict): string
+{
+    return match ($verdict) {
+        'decisive_victory' => 'Decisive Victory',
+        'victory' => 'Victory',
+        'close_fight' => 'Close Fight',
+        'defeat' => 'Defeat',
+        'decisive_defeat' => 'Decisive Defeat',
+        'stalemate' => 'Stalemate',
+        default => ucfirst(str_replace('_', ' ', $verdict)),
+    };
+}
+
+function theater_ai_verdict_color_class(string $verdict): string
+{
+    return match ($verdict) {
+        'decisive_victory' => 'text-green-400',
+        'victory' => 'text-green-300',
+        'close_fight' => 'text-yellow-400',
+        'defeat' => 'text-red-300',
+        'decisive_defeat' => 'text-red-400',
+        'stalemate' => 'text-slate-400',
+        default => 'text-slate-300',
+    };
+}
+
 function doctrine_ai_store_briefing(array $sourcePayload, array $briefing, string $status, ?string $errorMessage = null): bool
 {
     $entityType = (string) ($sourcePayload['entity_type'] ?? '');

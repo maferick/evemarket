@@ -77,10 +77,10 @@ include __DIR__ . '/../../src/views/partials/header.php';
             <thead>
                 <tr class="border-b border-border/70 text-xs uppercase tracking-[0.15em] text-muted">
                     <th class="px-3 py-2 text-left">Matchup</th>
+                    <th class="px-3 py-2 text-left">Verdict</th>
                     <th class="px-3 py-2 text-left">Region</th>
                     <th class="px-3 py-2 text-left">System</th>
                     <th class="px-3 py-2 text-right">Battles</th>
-                    <th class="px-3 py-2 text-right">Systems</th>
                     <th class="px-3 py-2 text-right">Participants</th>
                     <th class="px-3 py-2 text-right">Kills</th>
                     <th class="px-3 py-2 text-right">ISK</th>
@@ -92,7 +92,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
             </thead>
             <tbody>
                 <?php if ($theaters === []): ?>
-                    <tr><td colspan="12" class="px-3 py-6 text-sm text-muted">No theaters found. Run the theater clustering job to generate data.</td></tr>
+                    <tr><td colspan="13" class="px-3 py-6 text-sm text-muted">No theaters found. Run the theater clustering job to generate data.</td></tr>
                 <?php else: ?>
                     <?php foreach ($theaters as $t): ?>
                         <?php
@@ -121,11 +121,29 @@ include __DIR__ . '/../../src/views/partials/header.php';
                             $ourLabel = isset($sides[$listOurSide]) ? $sides[$listOurSide]['top_name'] . ($sides[$listOurSide]['count'] > 1 ? ' +' . ($sides[$listOurSide]['count'] - 1) : '') : '?';
                             $enemyLabel = isset($sides[$listEnemySide]) ? $sides[$listEnemySide]['top_name'] . ($sides[$listEnemySide]['count'] > 1 ? ' +' . ($sides[$listEnemySide]['count'] - 1) : '') : '?';
                         ?>
+                        <?php
+                            $listVerdict = (string) ($t['ai_verdict'] ?? '');
+                            $listHeadline = (string) ($t['ai_headline'] ?? '');
+                        ?>
                         <tr class="border-b border-border/50">
-                            <td class="px-3 py-2 text-sm">
-                                <span class="text-blue-300"><?= htmlspecialchars($ourLabel, ENT_QUOTES) ?></span>
-                                <span class="text-slate-500 mx-1">vs</span>
-                                <span class="text-red-300"><?= htmlspecialchars($enemyLabel, ENT_QUOTES) ?></span>
+                            <td class="px-3 py-2">
+                                <div class="text-sm">
+                                    <span class="text-blue-300"><?= htmlspecialchars($ourLabel, ENT_QUOTES) ?></span>
+                                    <span class="text-slate-500 mx-1">vs</span>
+                                    <span class="text-red-300"><?= htmlspecialchars($enemyLabel, ENT_QUOTES) ?></span>
+                                </div>
+                                <?php if ($listHeadline !== ''): ?>
+                                    <p class="text-[11px] text-slate-400 mt-0.5 leading-tight"><?= htmlspecialchars($listHeadline, ENT_QUOTES) ?></p>
+                                <?php endif; ?>
+                            </td>
+                            <td class="px-3 py-2">
+                                <?php if ($listVerdict !== ''): ?>
+                                    <span class="inline-block rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider <?= theater_ai_verdict_color_class($listVerdict) ?> <?= str_contains($listVerdict, 'victory') ? 'bg-green-900/40' : (str_contains($listVerdict, 'defeat') ? 'bg-red-900/40' : 'bg-slate-700') ?>">
+                                        <?= htmlspecialchars(theater_ai_verdict_label($listVerdict), ENT_QUOTES) ?>
+                                    </span>
+                                <?php else: ?>
+                                    <span class="text-slate-500 text-xs">-</span>
+                                <?php endif; ?>
                             </td>
                             <td class="px-3 py-2 text-slate-100"><?= htmlspecialchars((string) ($t['region_name'] ?? 'Unknown'), ENT_QUOTES) ?></td>
                             <td class="px-3 py-2 text-slate-100"><?= htmlspecialchars((string) ($t['primary_system_name'] ?? '-'), ENT_QUOTES) ?></td>
@@ -134,7 +152,6 @@ include __DIR__ . '/../../src/views/partials/header.php';
                                     <?= (int) ($t['battle_count'] ?? 0) ?>
                                 </span>
                             </td>
-                            <td class="px-3 py-2 text-right"><?= (int) ($t['system_count'] ?? 0) ?></td>
                             <td class="px-3 py-2 text-right"><?= number_format((int) ($t['participant_count'] ?? 0)) ?></td>
                             <td class="px-3 py-2 text-right"><?= number_format((int) ($t['total_kills'] ?? 0)) ?></td>
                             <td class="px-3 py-2 text-right"><?= number_format((float) ($t['total_isk'] ?? 0), 0) ?></td>
