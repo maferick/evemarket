@@ -108,7 +108,7 @@ def _load_killmails_for_battles(db: SupplyCoreDb, battle_ids: list[str]) -> list
                 ke.victim_corporation_id,
                 ke.victim_alliance_id,
                 ke.victim_ship_type_id,
-                COALESCE(ke.total_value, 0) AS total_value,
+                COALESCE(ke.zkb_total_value, 0) AS total_value,
                 ka.character_id AS attacker_character_id,
                 ka.corporation_id AS attacker_corporation_id,
                 ka.alliance_id AS attacker_alliance_id,
