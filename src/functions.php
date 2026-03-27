@@ -2920,8 +2920,6 @@ function scheduler_mark_manual_job_start_requested(string $jobKey, string $event
 
 function run_data_sync_now(?string $jobKey = null): array
 {
-    $lockName = 'cron_tick_runner';
-    $lockAcquired = false;
     $definitions = data_sync_schedule_job_definitions();
     $normalizedJobKey = $jobKey === null ? '' : trim($jobKey);
 
@@ -2982,30 +2980,15 @@ function run_data_sync_now(?string $jobKey = null): array
             ];
         }
 
-        $lockAcquired = runner_lock_acquire($lockName, 0);
-        if (!$lockAcquired) {
-            return [
-                'ok' => false,
-                'message' => 'Run now failed: the scheduler daemon could not be started and the cron runner lock is currently busy.',
-            ];
-        }
-
-        $summary = cron_tick_run();
-
         return [
-            'ok' => true,
-            'message' => 'Run now completed for ' . $jobLabel . '. Forced ' . $forcedJobs . ' schedule(s); processed ' . (int) ($summary['jobs_processed'] ?? 0) . ' job(s), with ' . (int) ($summary['jobs_failed'] ?? 0) . ' failure(s).',
-            'summary' => $summary,
+            'ok' => false,
+            'message' => 'Run now failed: no active scheduler daemon found and the watchdog could not start one. Check that the Python worker services are running.',
         ];
     } catch (Throwable $exception) {
         return [
             'ok' => false,
             'message' => 'Run now failed: ' . scheduler_normalize_error_message($exception->getMessage()),
         ];
-    } finally {
-        if ($lockAcquired) {
-            runner_lock_release($lockName);
-        }
     }
 }
 
@@ -3071,7 +3054,6 @@ function scheduler_reset_process_targets(): array
         scheduler_job_runner_script_path(),
         scheduler_daemon_script_path(),
         scheduler_watchdog_script_path(),
-        dirname(__DIR__) . '/bin/cron_tick.php',
     ];
 
     return array_values(array_unique(array_filter(array_map(static function (string $path): string {
@@ -3218,9 +3200,9 @@ function scheduler_reset_runtime_state_message(array $result): string
     $lockCount = count((array) ($result['released_locks'] ?? []));
     $scheduleCount = (int) ($result['reset_schedule_count'] ?? 0);
 
-    $message = 'Scheduler reset completed. Cleared ' . $scheduleCount . ' locked schedule(s), released ' . $lockCount . ' runner lock(s), and targeted ' . $killedCount . ' PHP scheduler process(es).';
+    $message = 'Scheduler reset completed. Cleared ' . $scheduleCount . ' locked schedule(s), released ' . $lockCount . ' runner lock(s), and targeted ' . $killedCount . ' worker process(es).';
     if ($remainingCount > 0) {
-        $message .= ' Warning: ' . $remainingCount . ' scheduler process(es) still appear to be running and may need manual review.';
+        $message .= ' Warning: ' . $remainingCount . ' worker process(es) still appear to be running and may need manual review.';
     }
 
     return $message;
@@ -12390,11 +12372,9 @@ function scheduler_dispatch_background_job(array $job): array
             'resolved_timeout_seconds' => (int) ($timeout['resolved_timeout_seconds'] ?? 0),
             'enforced_timeout_seconds' => (int) ($timeout['enforced_timeout_seconds'] ?? 0),
             'timeout_source' => (string) ($timeout['timeout_source'] ?? 'unknown'),
-            'outcome_reason' => $executionMode === 'python'
-                ? 'Job was dispatched to a background Python worker for controlled heavy-workload execution.'
-                : 'Job was dispatched to a background PHP worker so other due jobs can continue immediately.',
+            'outcome_reason' => 'Job was dispatched to a background worker for controlled execution.',
         ],
-        'summary' => $executionMode === 'python' ? 'Dispatched to a background Python worker.' : 'Dispatched to a background PHP worker.',
+        'summary' => 'Dispatched to a background worker.',
     ];
 }
 
