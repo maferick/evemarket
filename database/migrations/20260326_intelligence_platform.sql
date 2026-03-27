@@ -4,10 +4,10 @@
 -- 1. Add mail_type to killmail_events (kill = tracked entity was attacker,
 --    loss = tracked entity was victim).
 ALTER TABLE killmail_events
-    ADD COLUMN mail_type ENUM('kill', 'loss') NOT NULL DEFAULT 'loss'
+    ADD COLUMN IF NOT EXISTS mail_type ENUM('kill', 'loss') NOT NULL DEFAULT 'loss'
     AFTER battle_id;
 
-CREATE INDEX idx_killmail_events_mail_type ON killmail_events (mail_type, effective_killmail_at);
+CREATE INDEX IF NOT EXISTS idx_killmail_events_mail_type ON killmail_events (mail_type, effective_killmail_at);
 
 -- 2. Backfill: mark killmails where a tracked alliance/corp member was an
 --    attacker as 'kill'.  Default is 'loss' so we only need to update kills.

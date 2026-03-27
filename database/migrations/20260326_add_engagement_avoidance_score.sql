@@ -5,8 +5,8 @@
 -- against that alliance compared to others.
 
 ALTER TABLE character_graph_intelligence
-    ADD COLUMN engagement_avoidance_score DECIMAL(14,6) NOT NULL DEFAULT 0.000000
+    ADD COLUMN IF NOT EXISTS engagement_avoidance_score DECIMAL(14,6) NOT NULL DEFAULT 0.000000
     AFTER bridge_between_clusters_score;
 
-CREATE INDEX idx_character_graph_intelligence_avoidance
+CREATE INDEX IF NOT EXISTS idx_character_graph_intelligence_avoidance
     ON character_graph_intelligence (engagement_avoidance_score, computed_at);
