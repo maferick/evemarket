@@ -18737,11 +18737,14 @@ function save_killmail_intelligence_settings(array $request): array
     $saved = false;
 
     try {
-        db_transaction(static function () use ($payload): void {
-            db_app_settings_upsert_many((array) ($payload['settings'] ?? []));
-            db_killmail_tracked_alliances_replace((array) ($payload['alliances'] ?? []));
-            db_killmail_tracked_corporations_replace((array) ($payload['corporations'] ?? []));
-        });
+        // Each function manages its own transaction internally.
+        // An outer db_transaction() is not possible here because the tracked-entity
+        // replace functions use CREATE TABLE IF NOT EXISTS as a safety net, and MySQL
+        // implicitly commits on any DDL, which destroys the outer transaction.
+        db_app_settings_upsert_many((array) ($payload['settings'] ?? []));
+        db_killmail_tracked_alliances_replace((array) ($payload['alliances'] ?? []));
+        db_killmail_tracked_corporations_replace((array) ($payload['corporations'] ?? []));
+
         $reloadedSettings = get_settings(array_keys((array) ($payload['settings'] ?? [])));
         foreach ((array) ($payload['settings'] ?? []) as $key => $value) {
             if ((string) ($reloadedSettings[$key] ?? '') !== (string) $value) {
