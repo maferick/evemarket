@@ -48,3 +48,7 @@ from .graph_community_detection import run_graph_community_detection_sync
 from .graph_motif_detection import run_graph_motif_detection_sync
 from .graph_evidence_paths import run_graph_evidence_paths_sync
 from .graph_analyst_recalibration import run_graph_analyst_recalibration
+from .theater_clustering import run_theater_clustering
+from .theater_analysis import run_theater_analysis
+from .theater_graph_integration import run_theater_graph_integration
+from .theater_suspicion import run_theater_suspicion

@@ -24,6 +24,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
         <div class="flex gap-2">
             <a href="/battle-intelligence/battles.php" class="btn-secondary">Anomalous battles</a>
             <a href="/battle-intelligence/query-presets.php" class="btn-secondary">Query presets</a>
+            <a href="/theater-intelligence" class="btn-secondary">Theater Intelligence</a>
         </div>
     </div>
     <p class="mt-4 text-xs text-muted">Computed at <?= htmlspecialchars($computedAt !== '' ? $computedAt : 'unavailable', ENT_QUOTES) ?></p>
