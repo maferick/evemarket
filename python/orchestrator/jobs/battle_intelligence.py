@@ -25,7 +25,7 @@ else:
     from ..neo4j import Neo4jClient, Neo4jConfig
 
 WINDOW_SECONDS = 15 * 60
-MIN_ELIGIBLE_PARTICIPANTS = 100
+MIN_ELIGIBLE_PARTICIPANTS = 10
 MIN_SAMPLE_COUNT = 5
 EPSILON = 1e-6
 ROLLUP_BATCH_SIZE = 1000
@@ -79,7 +79,9 @@ def _battle_size_class(participant_count: int) -> str:
         return "large"
     if participant_count >= 50:
         return "medium"
-    return "small"
+    if participant_count >= 20:
+        return "small"
+    return "micro"
 
 
 def _percentile(sorted_values: list[float], value: float) -> float:

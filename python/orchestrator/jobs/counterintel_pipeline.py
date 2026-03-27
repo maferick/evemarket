@@ -440,7 +440,7 @@ def run_compute_counterintel_pipeline(
                 SELECT br.battle_id, br.system_id, br.started_at, br.ended_at, br.participant_count
                 FROM battle_rollups br
                 WHERE br.eligible_for_suspicion = 1
-                  AND br.participant_count >= 100
+                  AND br.participant_count >= 10
                   AND br.battle_id > %s
                 ORDER BY br.battle_id ASC
                 LIMIT %s
