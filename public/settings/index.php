@@ -115,11 +115,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     'killmail_backfill_start_date' => $backfillStart,
                     'killmail_backfill_end_date' => $backfillEnd,
                     'killmail_backfill_progress' => json_encode([
-                        'current_date' => str_replace('-', '', $backfillStart),
-                        'days_processed' => 0,
-                        'killmails_seen' => 0,
-                        'written' => 0,
-                        'status' => 'starting',
+                        'phase' => 'collecting',
+                        'entity' => 'starting...',
+                        'entities_done' => 0,
+                        'entities_total' => 0,
+                        'killmails_found' => 0,
                         'updated_at' => gmdate('Y-m-d\TH:i:s\Z'),
                     ]),
                 ]);
@@ -1736,12 +1736,12 @@ include __DIR__ . '/../../src/views/partials/header.php';
                             <div>
                                 <p class="text-sm font-semibold text-blue-200">History Backfill Available</p>
                                 <p class="mt-1 text-xs text-muted">
-                                    Fetch historical killmails from zKillboard's R2Z2 history API for <?= date('Y') ?>.
-                                    Each day's killmail IDs are fetched from R2Z2, then full details are loaded from ESI.
-                                    Only killmails matching your tracked alliances and corporations will be stored.
+                                    Fetch historical killmails from the zKillboard API for <?= date('Y') ?>,
+                                    filtered by your tracked alliances and corporations. Full killmail details
+                                    are then loaded from ESI. Already-stored killmails are skipped automatically.
                                 </p>
                             </div>
-                            <button type="submit" name="killmail_backfill_start" value="1" class="shrink-0 rounded-lg border border-blue-400/40 bg-blue-500/10 px-4 py-2 text-sm font-medium text-blue-100 hover:bg-blue-500/20" onclick="this.disabled=true;this.textContent='Starting…';this.form.submit();">
+                            <button type="submit" name="killmail_backfill_start" value="1" class="shrink-0 rounded-lg border border-blue-400/40 bg-blue-500/10 px-4 py-2 text-sm font-medium text-blue-100 hover:bg-blue-500/20" onclick="this.textContent='Starting…';var h=document.createElement('input');h.type='hidden';h.name='killmail_backfill_start';h.value='1';this.form.appendChild(h);this.disabled=true;">
                                 Backfill <?= date('Y') ?>
                             </button>
                         </div>
