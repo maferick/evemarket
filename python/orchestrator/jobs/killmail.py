@@ -375,7 +375,7 @@ def run_killmail_r2z2_stream(context: Any) -> dict[str, Any]:
     sequence_url = str(job_context.get("sequence_url") or "").strip()
     base_url = str(job_context.get("base_url") or "").rstrip("/")
     user_agent = str(job_context.get("user_agent") or "SupplyCore killmail-ingestion/2.0")
-    poll_sleep_seconds = max(10, int(job_context.get("poll_sleep_seconds") or 10))
+    poll_sleep_seconds = max(6, int(job_context.get("poll_sleep_seconds") or 10))
     max_sequences = max(1, int(job_context.get("max_sequences_per_run") or 120))
     batch_size = max(1, min(50, context.batch_size // 20 or 25))
     entity_resolver = KillmailEntityResolver(user_agent)
@@ -467,6 +467,8 @@ def run_killmail_r2z2_stream(context: Any) -> dict[str, Any]:
                 pending_payloads.append(normalized_payload)
                 total_sequence_files_fetched += 1
                 next_sequence = sequence_id + 1
+                # R2Z2 rate limit is 20 req/s; sleep 100ms between fetches to stay at ~10 req/s
+                time.sleep(0.1)
                 if len(pending_payloads) >= batch_size:
                     batch_result, last_processed_sequence = _flush_pending_batch(
                         bridge=bridge,
