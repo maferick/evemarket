@@ -64,8 +64,9 @@ def _fetch_zkb_page(entity_type: str, entity_id: int, year: int, month: int, pag
 
     Returns list of {killmail_id, zkb: {hash, ...}} dicts.
     """
-    url = f"{_ZKB_API_BASE}/losses/{entity_type}/{entity_id}/year/{year}/month/{month:02d}/page/{page}/"
+    url = f"{_ZKB_API_BASE}/{entity_type}/{entity_id}/year/{year}/month/{month:02d}/page/{page}/"
     status, body = _http_get(url, user_agent)
+    logger.info("zKB response: status=%d body_len=%d url=%s", status, len(body), url)
     if status == 404 or status == 429:
         return []
     if status != 200:
