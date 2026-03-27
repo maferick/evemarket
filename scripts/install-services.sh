@@ -384,9 +384,28 @@ configure_local_php "${LOCAL_CONFIG_PATH}" "${APP_ENV}" "${APP_BASE_URL}" "${APP
 
 # ===========================  Python venv  ================================
 
-if [[ ! -x ${VENV_PATH}/bin/python ]]; then
+# The venv may exist from git (checked-in or pulled) but contain broken
+# symlinks and paths from the machine it was originally created on.
+# Always verify the venv's Python actually runs; recreate if it doesn't.
+VENV_OK=false
+if [[ -x ${VENV_PATH}/bin/python ]] && "${VENV_PATH}/bin/python" -c "import sys; sys.exit(0)" 2>/dev/null; then
+  VENV_OK=true
+fi
+
+if [[ ${VENV_OK} == false ]]; then
   echo "Creating orchestrator virtualenv at ${VENV_PATH}"
+  # Remove broken venv if it exists (e.g. pulled from git with wrong symlinks)
+  if [[ -d ${VENV_PATH} ]]; then
+    echo "Removing stale/broken virtualenv"
+    rm -rf "${VENV_PATH}"
+  fi
   "${PYTHON_BIN}" -m venv "${VENV_PATH}"
+fi
+
+# Ensure pip is available inside the venv (some distros create venvs without it)
+if ! "${VENV_PATH}/bin/python" -m pip --version >/dev/null 2>&1; then
+  echo "Bootstrapping pip inside virtualenv"
+  "${VENV_PATH}/bin/python" -m ensurepip --upgrade
 fi
 
 "${VENV_PATH}/bin/python" -m pip install --upgrade pip
