@@ -280,6 +280,7 @@ function setting_sections(): array
         'automation-control' => ['title' => 'Automation Control', 'description' => 'Centralized controls for runtime integrations and recurring job schedules.'],
         'esi-login' => ['title' => 'ESI Login', 'description' => 'Configure EVE SSO credentials and callback behavior.'],
         'data-sync' => ['title' => 'Data Sync', 'description' => 'Control database import and incremental update policies.'],
+        'backup-restore' => ['title' => 'Backup & Restore', 'description' => 'Export settings/configuration snapshots and restore from validated backup files.'],
         'deal-alerts' => ['title' => 'Deal Alerts', 'description' => 'Tune mispriced-listing detection thresholds, popup behavior, and anomaly cadence.'],
         'killmail-intelligence' => ['title' => 'Killmail Intelligence', 'description' => 'Manage zKillboard stream ingestion, tracked entities, and demand prediction foundation.'],
     ];
@@ -461,6 +462,184 @@ function save_settings(array $settings): bool
     }
 
     return true;
+}
+
+function supplycore_backup_data_scope_options(): array
+{
+    return [
+        'none' => 'Settings only (app_settings)',
+        'all' => 'Settings + all database tables',
+    ];
+}
+
+function supplycore_backup_parse_scope(string $scope): string
+{
+    return array_key_exists($scope, supplycore_backup_data_scope_options()) ? $scope : 'none';
+}
+
+function supplycore_backup_selected_tables(string $scope): array
+{
+    if ($scope !== 'all') {
+        return [];
+    }
+
+    try {
+        return array_values(array_filter(
+            db_table_names(),
+            static fn (string $tableName): bool => $tableName !== 'app_settings'
+        ));
+    } catch (Throwable) {
+        return [];
+    }
+}
+
+function supplycore_backup_build_payload(string $scope = 'none'): array
+{
+    $safeScope = supplycore_backup_parse_scope($scope);
+    $settings = get_settings();
+    $tables = supplycore_backup_selected_tables($safeScope);
+    $tablesPayload = [];
+
+    if ($tables !== []) {
+        $tablesPayload = db_tables_export_payload($tables);
+    }
+
+    $fingerprintSeed = [
+        'scope' => $safeScope,
+        'settings' => $settings,
+        'data_row_counts' => array_map(
+            static fn (array $table): int => (int) ($table['row_count'] ?? 0),
+            $tablesPayload
+        ),
+    ];
+    $fingerprint = hash('sha256', json_encode($fingerprintSeed, JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE));
+
+    return [
+        'meta' => [
+            'format' => 'supplycore-backup-v1',
+            'created_at_utc' => gmdate('Y-m-d\TH:i:s\Z'),
+            'app_name' => app_name(),
+            'scope' => $safeScope,
+            'fingerprint' => $fingerprint,
+        ],
+        'settings' => $settings,
+        'data' => [
+            'tables' => $tablesPayload,
+            'table_count' => count($tablesPayload),
+            'row_count_total' => array_sum(array_map(
+                static fn (array $table): int => (int) ($table['row_count'] ?? 0),
+                $tablesPayload
+            )),
+        ],
+    ];
+}
+
+function supplycore_backup_send_download(array $payload): never
+{
+    $scope = (string) (($payload['meta']['scope'] ?? 'none'));
+    $timestamp = gmdate('Ymd_His');
+    $filename = sprintf('supplycore-backup-%s-%s.json', $scope, $timestamp);
+    $json = json_encode($payload, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE);
+    if (!is_string($json)) {
+        throw new RuntimeException('Failed to encode backup payload.');
+    }
+
+    header('Content-Type: application/json; charset=utf-8');
+    header('Content-Disposition: attachment; filename="' . $filename . '"');
+    header('Cache-Control: no-store, no-cache, must-revalidate');
+    header('Pragma: no-cache');
+    echo $json;
+    exit;
+}
+
+function supplycore_backup_decode_uploaded_file(array $file): array
+{
+    $tmp = (string) ($file['tmp_name'] ?? '');
+    if ($tmp === '' || !is_uploaded_file($tmp)) {
+        return ['ok' => false, 'message' => 'No backup file was uploaded.', 'payload' => null];
+    }
+
+    $raw = file_get_contents($tmp);
+    if ($raw === false || trim($raw) === '') {
+        return ['ok' => false, 'message' => 'Uploaded backup file is empty.', 'payload' => null];
+    }
+
+    try {
+        $decoded = json_decode($raw, true, 512, JSON_THROW_ON_ERROR);
+    } catch (Throwable $exception) {
+        return ['ok' => false, 'message' => 'Uploaded file is not valid JSON: ' . $exception->getMessage(), 'payload' => null];
+    }
+
+    if (!is_array($decoded)) {
+        return ['ok' => false, 'message' => 'Uploaded backup payload must be a JSON object.', 'payload' => null];
+    }
+
+    return ['ok' => true, 'message' => 'Backup file loaded.', 'payload' => $decoded];
+}
+
+function supplycore_backup_validate_payload(array $payload): array
+{
+    $format = (string) ($payload['meta']['format'] ?? '');
+    if ($format !== 'supplycore-backup-v1') {
+        return ['ok' => false, 'message' => 'Unsupported backup format. Expected supplycore-backup-v1.'];
+    }
+
+    if (!isset($payload['settings']) || !is_array($payload['settings'])) {
+        return ['ok' => false, 'message' => 'Backup payload is missing a valid settings map.'];
+    }
+
+    $tables = (array) ($payload['data']['tables'] ?? []);
+    foreach ($tables as $tableName => $tablePayload) {
+        if (!is_string($tableName) || $tableName === '') {
+            return ['ok' => false, 'message' => 'Backup payload contains an invalid table key.'];
+        }
+        if (!is_array($tablePayload)) {
+            return ['ok' => false, 'message' => 'Backup payload contains an invalid table payload for ' . $tableName . '.'];
+        }
+        if (!is_array($tablePayload['rows'] ?? null)) {
+            return ['ok' => false, 'message' => 'Backup payload table ' . $tableName . ' has no rows array.'];
+        }
+    }
+
+    return ['ok' => true, 'message' => 'Backup payload validated.'];
+}
+
+function supplycore_backup_restore_payload(array $payload, bool $restoreSettings, bool $restoreData, bool $dryRun = false): array
+{
+    $validation = supplycore_backup_validate_payload($payload);
+    if (($validation['ok'] ?? false) !== true) {
+        return $validation;
+    }
+
+    $settings = (array) ($payload['settings'] ?? []);
+    $tables = (array) ($payload['data']['tables'] ?? []);
+    $tableNames = array_keys($tables);
+    $summary = [
+        'settings_keys' => count($settings),
+        'table_count' => count($tableNames),
+        'table_names' => $tableNames,
+    ];
+
+    if ($dryRun) {
+        return ['ok' => true, 'message' => 'Dry-run completed. Backup payload is valid for restore.', 'summary' => $summary];
+    }
+
+    try {
+        if ($restoreSettings) {
+            save_settings($settings);
+        }
+
+        if ($restoreData && $tables !== []) {
+            $summary['table_restore'] = db_tables_replace_from_payload($tables);
+            db_app_settings_cache_clear();
+        }
+
+        supplycore_runtime_config_refresh();
+    } catch (Throwable $exception) {
+        return ['ok' => false, 'message' => 'Restore failed: ' . $exception->getMessage(), 'summary' => $summary];
+    }
+
+    return ['ok' => true, 'message' => 'Backup restore completed successfully.', 'summary' => $summary];
 }
 
 function item_scope_setting_keys(): array

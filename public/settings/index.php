@@ -237,6 +237,46 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         case 'deal-alerts':
             $saved = save_settings(deal_alert_settings_from_request($_POST));
             break;
+
+        case 'backup-restore':
+            $backupAction = trim((string) ($_POST['backup_action'] ?? 'export'));
+            if ($backupAction === 'export') {
+                try {
+                    $scope = supplycore_backup_parse_scope((string) ($_POST['backup_scope'] ?? 'none'));
+                    $payload = supplycore_backup_build_payload($scope);
+                    supplycore_backup_send_download($payload);
+                } catch (Throwable $exception) {
+                    $saved = false;
+                    $saveMessage = 'Backup export failed: ' . $exception->getMessage();
+                }
+                break;
+            }
+
+            if ($backupAction === 'restore') {
+                $restoreSettings = sanitize_enabled_flag($_POST['restore_settings'] ?? '1') === '1';
+                $restoreData = sanitize_enabled_flag($_POST['restore_data'] ?? '0') === '1';
+                $dryRun = sanitize_enabled_flag($_POST['restore_dry_run'] ?? '1') === '1';
+                $decoded = supplycore_backup_decode_uploaded_file($_FILES['backup_file'] ?? []);
+                if (($decoded['ok'] ?? false) !== true) {
+                    $saved = false;
+                    $saveMessage = (string) ($decoded['message'] ?? 'Backup upload failed.');
+                    break;
+                }
+
+                $restore = supplycore_backup_restore_payload(
+                    (array) ($decoded['payload'] ?? []),
+                    $restoreSettings,
+                    $restoreData,
+                    $dryRun
+                );
+                $saved = (bool) ($restore['ok'] ?? false);
+                $saveMessage = (string) ($restore['message'] ?? 'Restore completed.');
+                break;
+            }
+
+            $saved = false;
+            $saveMessage = 'Unknown backup action requested.';
+            break;
     }
 
     flash('success', $saveMessage ?? ($saved ? 'Settings saved successfully.' : 'Database unavailable. Settings were not persisted.'));
@@ -497,6 +537,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                 ['href' => '/settings?section=killmail-intelligence', 'title' => 'Doctrine + killmail inputs', 'copy' => 'Tracked alliances, corporations, and demand signals that feed readiness and replenishment views.'],
                 ['href' => '/settings?section=ai-briefings', 'title' => 'AI briefings', 'copy' => 'Choose whether background AI summaries run and which provider they use.'],
                 ['href' => '/settings?section=data-sync', 'title' => 'Sync behavior', 'copy' => 'Control update cadence, freshness expectations, and manual run controls.'],
+                ['href' => '/settings?section=backup-restore', 'title' => 'Backup & restore', 'copy' => 'Export settings snapshots and perform safe dry-run restores before applying changes.'],
                 ['href' => '/settings?section=automation-control', 'title' => 'Automation control', 'copy' => 'Centralized toggles for ESI, zKill ingestion, pipelines, and recurring job enablement.'],
             ];
             ?>
@@ -1854,6 +1895,65 @@ include __DIR__ . '/../../src/views/partials/header.php';
 
                 <button class="btn-primary">Save Deal Alert Settings</button>
             </form>
+        <?php elseif ($section === 'backup-restore'): ?>
+            <?php $backupScopes = supplycore_backup_data_scope_options(); ?>
+            <div class="mt-6 grid gap-6 xl:grid-cols-2">
+                <form class="space-y-4 rounded-2xl border border-border bg-black/20 p-4" method="post">
+                    <input type="hidden" name="_token" value="<?= htmlspecialchars(csrf_token(), ENT_QUOTES) ?>">
+                    <input type="hidden" name="section" value="backup-restore">
+                    <input type="hidden" name="backup_action" value="export">
+                    <div>
+                        <p class="text-sm font-semibold text-slate-100">Create backup</p>
+                        <p class="mt-1 text-xs text-muted">Generate a JSON backup that always includes all app settings and can optionally include all database tables.</p>
+                    </div>
+                    <label class="block space-y-2">
+                        <span class="text-sm text-muted">Backup scope</span>
+                        <select name="backup_scope" class="w-full field-input">
+                            <?php foreach ($backupScopes as $scopeKey => $scopeLabel): ?>
+                                <option value="<?= htmlspecialchars($scopeKey, ENT_QUOTES) ?>"><?= htmlspecialchars($scopeLabel, ENT_QUOTES) ?></option>
+                            <?php endforeach; ?>
+                        </select>
+                    </label>
+                    <div class="rounded-xl border border-border bg-black/30 p-3 text-xs text-muted space-y-1">
+                        <p>Smart defaults included: format versioning, UTC timestamp, and fingerprint metadata.</p>
+                        <p>For large datasets, prefer settings-only backups for faster export/import cycles.</p>
+                    </div>
+                    <button class="btn-primary">Download backup JSON</button>
+                </form>
+
+                <form class="space-y-4 rounded-2xl border border-border bg-black/20 p-4" method="post" enctype="multipart/form-data">
+                    <input type="hidden" name="_token" value="<?= htmlspecialchars(csrf_token(), ENT_QUOTES) ?>">
+                    <input type="hidden" name="section" value="backup-restore">
+                    <input type="hidden" name="backup_action" value="restore">
+                    <div>
+                        <p class="text-sm font-semibold text-slate-100">Restore backup</p>
+                        <p class="mt-1 text-xs text-muted">Upload a prior backup JSON, validate with dry-run, then apply settings and optional table data restore.</p>
+                    </div>
+                    <label class="block space-y-2">
+                        <span class="text-sm text-muted">Backup file</span>
+                        <input type="file" name="backup_file" accept="application/json,.json" class="w-full field-input" required>
+                    </label>
+                    <label class="flex items-center gap-3 rounded-lg border border-border bg-black/30 p-3">
+                        <input type="hidden" name="restore_settings" value="0">
+                        <input type="checkbox" name="restore_settings" value="1" checked class="size-4 rounded border-border bg-black">
+                        <span class="text-sm text-slate-200">Restore settings (`app_settings`)</span>
+                    </label>
+                    <label class="flex items-center gap-3 rounded-lg border border-border bg-black/30 p-3">
+                        <input type="hidden" name="restore_data" value="0">
+                        <input type="checkbox" name="restore_data" value="1" class="size-4 rounded border-border bg-black">
+                        <span class="text-sm text-slate-200">Restore table data included in backup</span>
+                    </label>
+                    <label class="flex items-center gap-3 rounded-lg border border-border bg-black/30 p-3">
+                        <input type="hidden" name="restore_dry_run" value="0">
+                        <input type="checkbox" name="restore_dry_run" value="1" checked class="size-4 rounded border-border bg-black">
+                        <span class="text-sm text-slate-200">Dry-run first (validate only, no writes)</span>
+                    </label>
+                    <div class="rounded-xl border border-amber-400/30 bg-amber-500/10 p-3 text-xs text-amber-100">
+                        Data restore truncates selected tables before inserting rows from backup. Keep dry-run enabled until you are ready to apply.
+                    </div>
+                    <button class="btn-primary">Validate / restore backup</button>
+                </form>
+            </div>
         <?php else: ?>
             <form class="mt-6 space-y-4" method="post">
                 <input type="hidden" name="_token" value="<?= htmlspecialchars(csrf_token(), ENT_QUOTES) ?>">

@@ -403,6 +403,136 @@ function db_app_setting_set(string $settingKey, string $value): bool
     return db_app_settings_upsert_many([$settingKey => $value]);
 }
 
+function db_quote_identifier(string $identifier): string
+{
+    if (!preg_match('/^[A-Za-z0-9_]+$/', $identifier)) {
+        throw new InvalidArgumentException('Invalid SQL identifier.');
+    }
+
+    return '`' . str_replace('`', '``', $identifier) . '`';
+}
+
+function db_table_names(): array
+{
+    $rows = db_select('SHOW TABLES');
+    $tables = [];
+    foreach ($rows as $row) {
+        $name = (string) array_values($row)[0];
+        if ($name === '') {
+            continue;
+        }
+        $tables[] = $name;
+    }
+
+    sort($tables, SORT_NATURAL | SORT_FLAG_CASE);
+
+    return $tables;
+}
+
+function db_table_columns(string $tableName): array
+{
+    if (!db_table_exists($tableName)) {
+        return [];
+    }
+
+    $rows = db_select('SHOW COLUMNS FROM ' . db_quote_identifier($tableName));
+    $columns = [];
+    foreach ($rows as $row) {
+        $name = trim((string) ($row['Field'] ?? ''));
+        if ($name === '') {
+            continue;
+        }
+        $columns[] = $name;
+    }
+
+    return $columns;
+}
+
+function db_table_export_rows(string $tableName): array
+{
+    if (!db_table_exists($tableName)) {
+        return [];
+    }
+
+    return db_select('SELECT * FROM ' . db_quote_identifier($tableName));
+}
+
+function db_tables_export_payload(array $tables): array
+{
+    $export = [];
+    foreach ($tables as $tableName) {
+        $safeTable = trim((string) $tableName);
+        if ($safeTable === '' || !db_table_exists($safeTable)) {
+            continue;
+        }
+
+        $rows = db_table_export_rows($safeTable);
+        $export[$safeTable] = [
+            'columns' => db_table_columns($safeTable),
+            'row_count' => count($rows),
+            'rows' => $rows,
+        ];
+    }
+
+    return $export;
+}
+
+function db_tables_replace_from_payload(array $tablesPayload): array
+{
+    $tableNames = array_keys($tablesPayload);
+    $summary = [];
+
+    if ($tableNames === []) {
+        return $summary;
+    }
+
+    db_transaction(static function () use ($tableNames, $tablesPayload, &$summary): void {
+        db_execute('SET FOREIGN_KEY_CHECKS=0');
+
+        try {
+            foreach ($tableNames as $tableName) {
+                $safeTable = trim((string) $tableName);
+                if ($safeTable === '' || !db_table_exists($safeTable)) {
+                    continue;
+                }
+
+                $tableQuoted = db_quote_identifier($safeTable);
+                db_execute('DELETE FROM ' . $tableQuoted);
+
+                $tableRows = (array) ($tablesPayload[$safeTable]['rows'] ?? []);
+                $columns = db_table_columns($safeTable);
+                if ($tableRows === [] || $columns === []) {
+                    $summary[$safeTable] = ['deleted' => true, 'inserted' => 0];
+                    continue;
+                }
+
+                $quotedColumns = implode(', ', array_map(
+                    static fn (string $column): string => db_quote_identifier($column),
+                    $columns
+                ));
+                $placeholders = implode(', ', array_fill(0, count($columns), '?'));
+                $sql = 'INSERT INTO ' . $tableQuoted . ' (' . $quotedColumns . ') VALUES (' . $placeholders . ')';
+                $inserted = 0;
+
+                foreach ($tableRows as $row) {
+                    $values = [];
+                    foreach ($columns as $column) {
+                        $values[] = $row[$column] ?? null;
+                    }
+                    db_execute($sql, $values);
+                    $inserted++;
+                }
+
+                $summary[$safeTable] = ['deleted' => true, 'inserted' => $inserted];
+            }
+        } finally {
+            db_execute('SET FOREIGN_KEY_CHECKS=1');
+        }
+    });
+
+    return $summary;
+}
+
 function db_runtime_schema_checks_enabled(): bool
 {
     static $enabled = null;
