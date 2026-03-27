@@ -5,8 +5,8 @@ Wants=network.target
 
 [Service]
 Type=simple
-User=root
-Group=root
+User=www-data
+Group=www-data
 WorkingDirectory=/var/www/SupplyCore
 EnvironmentFile=-/etc/default/supplycore-worker
 Environment=PYTHONUNBUFFERED=1

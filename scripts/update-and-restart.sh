@@ -28,15 +28,14 @@ CORE_UNITS=(
 )
 
 # Units that are opt-in only — update if already installed, but don't install.
-OPTIN_UNITS=(
-  supplycore-orchestrator.service
-  supplycore-worker@.service
-)
+OPTIN_UNITS=()
 
 # Known stale units that should be stopped, disabled, and removed.
 STALE_UNITS=(
   supplycore-php-compute-worker.service
   supplycore-php-compute-worker@.service
+  supplycore-orchestrator.service
+  supplycore-worker@.service
 )
 
 usage() {

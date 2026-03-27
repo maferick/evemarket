@@ -15,6 +15,20 @@ if ! command -v systemctl >/dev/null 2>&1; then
   exit 1
 fi
 
+# ---------------------------------------------------------------------------
+# Known stale units — stopped, disabled, and removed during installation.
+# ---------------------------------------------------------------------------
+STALE_UNITS=(
+  supplycore-php-compute-worker.service
+  supplycore-php-compute-worker@.service
+  supplycore-orchestrator.service
+  supplycore-worker@.service
+)
+
+# ---------------------------------------------------------------------------
+# Prompt helpers
+# ---------------------------------------------------------------------------
+
 prompt() {
   local message=$1
   local default=${2-}
@@ -106,6 +120,10 @@ escape_php_single_quoted() {
   printf '%s' "$1" | sed -e "s/'/\\\\'/g"
 }
 
+# ---------------------------------------------------------------------------
+# PHP local config
+# ---------------------------------------------------------------------------
+
 configure_local_php() {
   local local_config_path=$1
   local app_env=$2
@@ -167,6 +185,10 @@ PHP
   echo "Wrote PHP config to ${local_config_path}"
 }
 
+# ---------------------------------------------------------------------------
+# Systemd unit rendering
+# ---------------------------------------------------------------------------
+
 render_unit() {
   local template=$1
   local destination=$2
@@ -181,8 +203,9 @@ render_unit() {
     -e "s|/var/www/SupplyCore/.venv-orchestrator|${venv_escaped}|g" \
     -e "s|/var/www/SupplyCore|${app_root_escaped}|g" \
     -e "s|/etc/default/supplycore-worker|${env_file_escaped}|g" \
-    -e "s|User=www-data|User=${user_escaped}|" \
-    -e "s|Group=www-data|Group=${group_escaped}|" \
+    -e "s|/etc/default/supplycore-influx-rollup-export|${env_file_escaped}|g" \
+    -e "s|User=root|User=${user_escaped}|" \
+    -e "s|Group=root|Group=${group_escaped}|" \
     "${template}" > "${destination}"
 }
 
@@ -242,6 +265,38 @@ render_compute_instance_unit() {
   fi
 }
 
+# ---------------------------------------------------------------------------
+# Stale unit cleanup
+# ---------------------------------------------------------------------------
+
+cleanup_stale_units() {
+  local unit dest base_name
+  for unit in "${STALE_UNITS[@]}"; do
+    dest="${SYSTEMD_DIR}/${unit}"
+    if [[ -f "${dest}" ]]; then
+      echo "Removing stale unit ${unit}"
+      systemctl stop "${unit}" 2>/dev/null || true
+      systemctl disable "${unit}" 2>/dev/null || true
+      rm -f "${dest}"
+    fi
+    # Also clean up templated instances
+    base_name="${unit%.service}"
+    while IFS= read -r instance; do
+      [[ -z "${instance}" ]] && continue
+      echo "Stopping stale instance ${instance}"
+      systemctl stop "${instance}" 2>/dev/null || true
+      systemctl disable "${instance}" 2>/dev/null || true
+    done < <(systemctl list-units --type=service --no-legend --plain 2>/dev/null \
+      | awk '{print $1}' \
+      | grep -E "^${base_name}@" \
+      || true)
+  done
+}
+
+# ---------------------------------------------------------------------------
+# Service enablement
+# ---------------------------------------------------------------------------
+
 start_services() {
   local service
   local -a services=("$@")
@@ -256,6 +311,8 @@ start_services() {
     systemctl enable --now "${service}"
   done
 }
+
+# ===========================  Interactive prompts  =========================
 
 APP_ROOT=$(prompt "SupplyCore app root" "${APP_ROOT_DEFAULT}")
 RUN_USER=$(prompt "System user for services" "www-data")
@@ -299,10 +356,12 @@ INSTALL_ZKILL=false
 if prompt_yes_no "Install and enable the dedicated zKill worker?" "Y"; then
   INSTALL_ZKILL=true
 fi
-INSTALL_COMPAT_ORCHESTRATOR=false
-if prompt_yes_no "Install the legacy compatibility worker-pool service (supplycore-orchestrator.service)?" "N"; then
-  INSTALL_COMPAT_ORCHESTRATOR=true
+INSTALL_INFLUX=false
+if prompt_yes_no "Install the InfluxDB rollup export service and timer?" "N"; then
+  INSTALL_INFLUX=true
 fi
+
+# ===========================  Validation  =================================
 
 if [[ ! -d ${APP_ROOT} ]]; then
   echo "App root does not exist: ${APP_ROOT}" >&2
@@ -314,12 +373,16 @@ if [[ ! -f ${APP_ROOT}/python/pyproject.toml ]]; then
   exit 1
 fi
 
+# ===========================  Setup  ======================================
+
 install -d -m 0755 "${SYSTEMD_DIR}"
 install -d -m 0755 "${APP_ROOT}/storage/logs" "${APP_ROOT}/storage/run"
 chown -R "${RUN_USER}:${RUN_GROUP}" "${APP_ROOT}/storage"
 chmod -R u+rwX "${APP_ROOT}/storage"
 
 configure_local_php "${LOCAL_CONFIG_PATH}" "${APP_ENV}" "${APP_BASE_URL}" "${APP_TIMEZONE}" "${DB_HOST}" "${DB_PORT}" "${DB_NAME}" "${DB_USERNAME}" "${DB_PASSWORD}" "${CONFIGURE_LOCAL_PHP}"
+
+# ===========================  Python venv  ================================
 
 if [[ ! -x ${VENV_PATH}/bin/python ]]; then
   echo "Creating orchestrator virtualenv at ${VENV_PATH}"
@@ -330,6 +393,13 @@ fi
 "${VENV_PATH}/bin/python" -m pip install --upgrade "${APP_ROOT}/python"
 "${VENV_PATH}/bin/python" -m orchestrator worker-pool --help >/dev/null
 "${VENV_PATH}/bin/python" -m orchestrator zkill-worker --help >/dev/null
+"${VENV_PATH}/bin/python" -m orchestrator run-job --help >/dev/null
+
+# ===========================  Stale unit cleanup  =========================
+
+cleanup_stale_units
+
+# ===========================  Env file  ===================================
 
 if [[ ! -f ${ENV_FILE} ]]; then
   install -D -m 0644 "${REPO_ROOT}/ops/systemd/supplycore-worker.env.example" "${ENV_FILE}"
@@ -337,14 +407,19 @@ else
   echo "Keeping existing worker environment file at ${ENV_FILE}"
 fi
 
+# ===========================  Render and install units  ====================
+
 render_unit "${REPO_ROOT}/ops/systemd/supplycore-sync-worker.service" "${SYSTEMD_DIR}/supplycore-sync-worker.service"
 render_unit "${REPO_ROOT}/ops/systemd/supplycore-compute-worker.service" "${SYSTEMD_DIR}/supplycore-compute-worker.service"
 render_sync_instance_unit "${SYSTEMD_DIR}/supplycore-sync-worker@.service"
 render_compute_instance_unit "${SYSTEMD_DIR}/supplycore-compute-worker@.service"
 render_unit "${REPO_ROOT}/ops/systemd/supplycore-zkill.service" "${SYSTEMD_DIR}/supplycore-zkill.service"
-if [[ ${INSTALL_COMPAT_ORCHESTRATOR} == true ]]; then
-  render_unit "${REPO_ROOT}/ops/systemd/supplycore-orchestrator.service" "${SYSTEMD_DIR}/supplycore-orchestrator.service"
+if [[ ${INSTALL_INFLUX} == true ]]; then
+  render_unit "${REPO_ROOT}/ops/systemd/supplycore-influx-rollup-export.service" "${SYSTEMD_DIR}/supplycore-influx-rollup-export.service"
+  cp "${REPO_ROOT}/ops/systemd/supplycore-influx-rollup-export.timer" "${SYSTEMD_DIR}/supplycore-influx-rollup-export.timer"
 fi
+
+# ===========================  Enable and start  ===========================
 
 services_to_enable=()
 if (( SYNC_COUNT == 1 )); then
@@ -367,11 +442,14 @@ if [[ ${INSTALL_ZKILL} == true ]]; then
   services_to_enable+=("supplycore-zkill.service")
 fi
 
-if [[ ${INSTALL_COMPAT_ORCHESTRATOR} == true ]]; then
-  services_to_enable+=("supplycore-orchestrator.service")
+if [[ ${INSTALL_INFLUX} == true ]]; then
+  services_to_enable+=("supplycore-influx-rollup-export.service")
+  services_to_enable+=("supplycore-influx-rollup-export.timer")
 fi
 
 start_services "${services_to_enable[@]}"
+
+# ===========================  Summary  ====================================
 
 echo
 echo "SupplyCore services installed successfully."
@@ -380,17 +458,28 @@ echo "Virtualenv: ${VENV_PATH}"
 if [[ -f ${LOCAL_CONFIG_PATH} ]]; then
   echo "PHP config: ${LOCAL_CONFIG_PATH}"
 fi
-echo "Helpful status commands:"
+echo
+echo "Active services:"
 if (( SYNC_COUNT == 1 )); then
   echo "  systemctl status supplycore-sync-worker.service"
 elif (( SYNC_COUNT > 1 )); then
-  echo "  systemctl status supplycore-sync-worker@1.service"
+  for ((i = 1; i <= SYNC_COUNT; i++)); do
+    echo "  systemctl status supplycore-sync-worker@${i}.service"
+  done
 fi
 if (( COMPUTE_COUNT == 1 )); then
   echo "  systemctl status supplycore-compute-worker.service"
 elif (( COMPUTE_COUNT > 1 )); then
-  echo "  systemctl status supplycore-compute-worker@1.service"
+  for ((i = 1; i <= COMPUTE_COUNT; i++)); do
+    echo "  systemctl status supplycore-compute-worker@${i}.service"
+  done
 fi
 if [[ ${INSTALL_ZKILL} == true ]]; then
   echo "  systemctl status supplycore-zkill.service"
 fi
+if [[ ${INSTALL_INFLUX} == true ]]; then
+  echo "  systemctl status supplycore-influx-rollup-export.timer"
+fi
+echo
+echo "Run any registered job manually:"
+echo "  ${VENV_PATH}/bin/python -m orchestrator run-job --job-key <job_key>"
