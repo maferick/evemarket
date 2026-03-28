@@ -81,7 +81,7 @@ def _extract_opponent_fits(db: Any, window_days: int) -> dict[int, dict]:
         INNER JOIN killmail_opponent_alliances koa
             ON koa.alliance_id = ke.victim_alliance_id AND koa.is_active = 1
         WHERE ke.killmail_time >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL %s DAY)
-          AND ki.item_role = 'fitted'
+          AND (ki.item_flag BETWEEN 11 AND 34 OR ki.item_flag BETWEEN 92 AND 94 OR ki.item_flag BETWEEN 125 AND 132)
         ORDER BY ke.sequence_id
     """
     kills: dict[int, dict] = {}
@@ -253,7 +253,7 @@ def _score_modules(
                     ON koa.alliance_id = ke.victim_alliance_id AND koa.is_active = 1
                 WHERE ki.item_type_id IN ({lp})
                   AND ke.killmail_time >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL 30 DAY)
-                  AND ki.item_role = 'fitted'
+                  AND (ki.item_flag BETWEEN 11 AND 34 OR ki.item_flag BETWEEN 92 AND 94 OR ki.item_flag BETWEEN 125 AND 132)
                 GROUP BY ki.item_type_id""",
             tuple(type_id_list),
         )
