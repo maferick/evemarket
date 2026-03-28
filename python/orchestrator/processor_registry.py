@@ -115,7 +115,7 @@ _PROCESSOR_DISPATCH: dict[str, tuple] = {
     "compute_graph_sync_doctrine_dependency": (run_compute_graph_sync_doctrine_dependency, lambda db, cfg: (db, neo4j_runtime(cfg))),
     "compute_graph_sync_battle_intelligence": (run_compute_graph_sync_battle_intelligence, lambda db, cfg: (db, neo4j_runtime(cfg))),
     "compute_graph_derived_relationships": (run_compute_graph_derived_relationships, lambda db, cfg: (db, neo4j_runtime(cfg))),
-    "compute_graph_insights": (run_compute_graph_insights, lambda db, cfg: (db, neo4j_runtime(cfg))),
+    "compute_graph_insights": (run_compute_graph_insights, lambda db, cfg: (db, neo4j_runtime(cfg), influx_runtime(cfg))),
     "compute_graph_prune": (run_compute_graph_prune, lambda db, cfg: (db, neo4j_runtime(cfg))),
     "compute_graph_topology_metrics": (run_compute_graph_topology_metrics, lambda db, cfg: (db, neo4j_runtime(cfg))),
     # Battle intelligence jobs

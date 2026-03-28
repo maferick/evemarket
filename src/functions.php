@@ -29846,3 +29846,48 @@ function supplycore_check_pending_migrations(): array
 
     return ['pending' => count($pending), 'files' => $pending];
 }
+
+// ── Item Criticality Helpers ───────────────────────────────────────────────
+
+function trend_regime_label(string $regime): string
+{
+    return match ($regime) {
+        'spike'   => 'Price Spike',
+        'crash'   => 'Price Crash',
+        'rising'  => 'Rising',
+        'falling' => 'Falling',
+        'stable'  => 'Stable',
+        default   => ucfirst($regime),
+    };
+}
+
+function trend_regime_color_class(string $regime): string
+{
+    return match ($regime) {
+        'spike'   => 'text-red-400',
+        'crash'   => 'text-orange-400',
+        'rising'  => 'text-amber-300',
+        'falling' => 'text-sky-300',
+        'stable'  => 'text-emerald-300',
+        default   => 'text-zinc-400',
+    };
+}
+
+function criticality_tier(float $score): string
+{
+    if ($score >= 70) return 'critical';
+    if ($score >= 45) return 'high';
+    if ($score >= 20) return 'medium';
+    return 'low';
+}
+
+function criticality_tier_color_class(string $tier): string
+{
+    return match ($tier) {
+        'critical' => 'text-red-400',
+        'high'     => 'text-orange-400',
+        'medium'   => 'text-amber-300',
+        'low'      => 'text-zinc-400',
+        default    => 'text-zinc-400',
+    };
+}

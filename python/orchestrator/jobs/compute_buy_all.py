@@ -57,6 +57,7 @@ _SORT_OPTIONS: dict[str, str] = {
     "volume_efficiency": "Volume efficiency",
     "isk_efficiency": "ISK efficiency",
     "margin_percent": "Net margin %",
+    "priority_index": "Priority index",
 }
 
 
@@ -129,7 +130,14 @@ def _load_market_rows(db: SupplyCoreDb, limit: int = 600) -> list[dict[str, Any]
             CASE WHEN COALESCE(alliance.total_sell_volume, 0) < 20 THEN 1 ELSE 0 END AS weak_alliance_stock,
             COALESCE(ids.doctrine_count, 0) AS doctrine_count,
             COALESCE(ids.fit_count, 0) AS dependency_fit_count,
-            COALESCE(ids.dependency_score, 0.0) AS dependency_score
+            COALESCE(ids.dependency_score, 0.0) AS dependency_score,
+            COALESCE(ici.criticality_score, 0.0) AS criticality_score,
+            COALESCE(ici.priority_index, 0.0) AS priority_index,
+            COALESCE(ici.spof_flag, 0) AS spof_flag,
+            COALESCE(ici.trend_score, 0.0) AS trend_score,
+            COALESCE(ici.market_stress_score, 0.0) AS market_stress_score,
+            COALESCE(ici.trend_regime, 'stable') AS trend_regime,
+            COALESCE(ici.substitute_count, 0) AS substitute_count
         FROM market_order_snapshots_summary ref
         LEFT JOIN market_order_snapshots_summary alliance
             ON alliance.type_id = ref.type_id
@@ -142,6 +150,7 @@ def _load_market_rows(db: SupplyCoreDb, limit: int = 600) -> list[dict[str, Any]
            )
         LEFT JOIN ref_item_types rit ON rit.type_id = ref.type_id
         LEFT JOIN item_dependency_score ids ON ids.type_id = ref.type_id
+        LEFT JOIN item_criticality_index ici ON ici.type_id = ref.type_id
         WHERE ref.source_type = 'market_hub'
           AND ref.observed_at = (
                 SELECT MAX(inner_r.observed_at)
@@ -173,7 +182,21 @@ def _ranked_items(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         opportunity_score = to_decimal(row.get("opportunity_score"))
         unit_volume = to_decimal(row.get("unit_volume"), default="1")
 
-        dependency_necessity_boost = min(Decimal("30"), dependency_score * Decimal("0.45"))
+        criticality_score = to_decimal(row.get("criticality_score"))
+        priority_idx = to_decimal(row.get("priority_index"))
+        spof_flag = int(row.get("spof_flag") or 0)
+        trend_score = to_decimal(row.get("trend_score"))
+        market_stress_score = to_decimal(row.get("market_stress_score"))
+        trend_regime = str(row.get("trend_regime") or "stable")
+        substitute_count = max(0, int(row.get("substitute_count") or 0))
+
+        # Use richer criticality when available, fall back to legacy dependency_score
+        if criticality_score > DECIMAL_ZERO:
+            criticality_boost = min(Decimal("35"), criticality_score * Decimal("0.35"))
+        else:
+            criticality_boost = min(Decimal("30"), dependency_score * Decimal("0.45"))
+        trend_urgency_boost = min(Decimal("15"), trend_score * Decimal("0.15"))
+        spof_bonus = Decimal("15") if spof_flag else DECIMAL_ZERO
         doctrine_breadth_boost = min(Decimal("18"), Decimal(doctrine_count) * Decimal("1.8"))
         bottleneck_bonus = Decimal("12") if doctrine_count >= 3 and int(row.get("weak_alliance_stock") or 0) == 1 else DECIMAL_ZERO
 
@@ -181,7 +204,9 @@ def _ranked_items(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             Decimal("100"),
             (risk_score * Decimal("0.50"))
             + (Decimal("35") if int(row.get("missing_in_alliance") or 0) == 1 else DECIMAL_ZERO)
-            + dependency_necessity_boost
+            + criticality_boost
+            + trend_urgency_boost
+            + spof_bonus
             + doctrine_breadth_boost
             + bottleneck_bonus,
         )
@@ -190,11 +215,18 @@ def _ranked_items(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         blended_score = _q2(min(Decimal("100"), mode_rank + min(Decimal("15"), dependency_score * Decimal("0.18"))))
 
         net_profit_per_unit = sell_price - buy_price if buy_price > DECIMAL_ZERO and sell_price > DECIMAL_ZERO else DECIMAL_ZERO
-        graph_reason = (
-            f"Used by {doctrine_count} doctrine(s), {dependency_fit_count} fit(s), dependency score {_q2(dependency_score):.1f}."
-            if dependency_score > DECIMAL_ZERO
-            else "No graph dependency enrichment yet."
-        )
+        reason_parts: list[str] = []
+        if dependency_score > DECIMAL_ZERO:
+            reason_parts.append(f"Used by {doctrine_count} doctrine(s), {dependency_fit_count} fit(s)")
+        if spof_flag:
+            reason_parts.append("SPOF: single point of failure")
+        if substitute_count == 0 and doctrine_count > 0:
+            reason_parts.append("No substitutes")
+        if trend_regime not in ("stable", ""):
+            reason_parts.append(f"Trend: {trend_regime}")
+        if criticality_score > DECIMAL_ZERO:
+            reason_parts.append(f"Criticality {_q2(criticality_score):.1f}")
+        graph_reason = ". ".join(reason_parts) + "." if reason_parts else "No graph dependency enrichment yet."
         total_volume = _q2(unit_volume * Decimal(quantity))
         ranked.append(
             {
@@ -222,6 +254,13 @@ def _ranked_items(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "valid_doctrine_count": doctrine_count,
                 "valid_fits_count": dependency_fit_count,
                 "dependency_score": dependency_score.quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP),
+                "criticality_score": criticality_score.quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP),
+                "priority_index": priority_idx.quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP),
+                "spof_flag": bool(spof_flag),
+                "trend_score": trend_score.quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP),
+                "market_stress_score": market_stress_score.quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP),
+                "trend_regime": trend_regime,
+                "substitute_count": substitute_count,
                 "reason_text": graph_reason,
                 "reason_theme": "Graph dependency priority" if dependency_score > DECIMAL_ZERO else "Market-only priority",
             }

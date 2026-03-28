@@ -15300,3 +15300,45 @@ function db_schema_migrations_all(): array
 {
     return db_select('SELECT filename, file_hash, applied_at, status, error_message FROM schema_migrations ORDER BY filename ASC');
 }
+
+// ── Item Criticality Index ─────────────────────────────────────────────────
+
+function db_item_criticality_index(int $typeId): ?array
+{
+    $rows = db_select(
+        'SELECT ici.*, COALESCE(rit.type_name, CONCAT("Type #", ici.type_id)) AS type_name
+         FROM item_criticality_index ici
+         LEFT JOIN ref_item_types rit ON rit.type_id = ici.type_id
+         WHERE ici.type_id = ?
+         LIMIT 1',
+        [$typeId]
+    );
+    return $rows[0] ?? null;
+}
+
+function db_item_criticality_top(int $limit = 50, string $sort = 'priority_index'): array
+{
+    $allowed = ['priority_index', 'criticality_score', 'trend_score', 'market_stress_score', 'spof_impact_score', 'dependency_score'];
+    $orderCol = in_array($sort, $allowed, true) ? $sort : 'priority_index';
+    return db_select(
+        "SELECT ici.*, COALESCE(rit.type_name, CONCAT('Type #', ici.type_id)) AS type_name
+         FROM item_criticality_index ici
+         LEFT JOIN ref_item_types rit ON rit.type_id = ici.type_id
+         ORDER BY {$orderCol} DESC
+         LIMIT ?",
+        [max(1, min(200, $limit))]
+    );
+}
+
+function db_item_spof_items(int $limit = 30): array
+{
+    return db_select(
+        'SELECT ici.*, COALESCE(rit.type_name, CONCAT("Type #", ici.type_id)) AS type_name
+         FROM item_criticality_index ici
+         LEFT JOIN ref_item_types rit ON rit.type_id = ici.type_id
+         WHERE ici.spof_flag = 1
+         ORDER BY ici.spof_impact_score DESC, ici.criticality_score DESC
+         LIMIT ?',
+        [max(1, min(100, $limit))]
+    );
+}
