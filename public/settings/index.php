@@ -940,7 +940,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                                 <option value="<?= htmlspecialchars($value, ENT_QUOTES) ?>" <?= $selectedProvider === $value ? 'selected' : '' ?>><?= htmlspecialchars($label, ENT_QUOTES) ?></option>
                             <?php endforeach; ?>
                         </select>
-                        <p class="text-xs text-muted">Use <span class="font-medium text-slate-100">Local Ollama</span> for your existing self-hosted API, or switch to <span class="font-medium text-slate-100">Runpod Serverless</span> to submit bearer-authenticated async jobs and poll their status in the background.</p>
+                        <p class="text-xs text-muted">Use <span class="font-medium text-slate-100">Local Ollama</span> for self-hosted CPU/GPU inference, <span class="font-medium text-slate-100">Runpod Serverless</span> for async GPU jobs, or <span class="font-medium text-slate-100">Claude API</span> for fast hosted inference (requires separate API billing at <span class="font-medium text-slate-100">console.anthropic.com</span>).</p>
                     </label>
                     <label class="block space-y-2 md:col-span-2">
                         <span class="text-sm text-muted">Local Ollama API URL</span>
@@ -961,13 +961,27 @@ include __DIR__ . '/../../src/views/partials/header.php';
                             <p class="text-xs text-muted">Stored only when you save settings. Leave blank if you are staying on the local provider.</p>
                         <?php endif; ?>
                     </label>
+                    <label class="block space-y-2 md:col-span-2">
+                        <span class="text-sm text-muted">Claude API Key</span>
+                        <input name="claude_api_key" type="password" value="<?= htmlspecialchars($settingValues['claude_api_key'] ?? ($ollamaConfig['claude_api_key'] ?? ''), ENT_QUOTES) ?>" class="w-full field-input" placeholder="sk-ant-api03-..." />
+                        <?php if (($ollamaConfig['claude_api_key_masked'] ?? '') !== ''): ?>
+                            <p class="text-xs text-muted">Saved key preview: <span class="font-medium text-slate-100"><?= htmlspecialchars((string) $ollamaConfig['claude_api_key_masked'], ENT_QUOTES) ?></span>.</p>
+                        <?php else: ?>
+                            <p class="text-xs text-muted">Get your API key from <span class="font-medium text-slate-100">console.anthropic.com</span>. API usage is billed separately from Claude Pro subscriptions.</p>
+                        <?php endif; ?>
+                    </label>
+                    <label class="block space-y-2 md:col-span-2">
+                        <span class="text-sm text-muted">Claude Model</span>
+                        <input name="claude_model" value="<?= htmlspecialchars($settingValues['claude_model'] ?? ($ollamaConfig['claude_model'] ?? 'claude-sonnet-4-20250514'), ENT_QUOTES) ?>" class="w-full field-input" />
+                        <p class="text-xs text-muted">Recommended: <span class="font-medium text-slate-100">claude-sonnet-4-20250514</span> (fast, cheap) or <span class="font-medium text-slate-100">claude-haiku-4-5-20251001</span> (fastest, cheapest).</p>
+                    </label>
                     <label class="block space-y-2">
-                        <span class="text-sm text-muted">Model Name</span>
+                        <span class="text-sm text-muted">Model Name (Ollama/Runpod)</span>
                         <input name="ollama_model" value="<?= htmlspecialchars($settingValues['ollama_model'] ?? ($ollamaConfig['model'] ?? 'qwen2.5:1.5b-instruct'), ENT_QUOTES) ?>" class="w-full field-input" />
                     </label>
                     <label class="block space-y-2">
                         <span class="text-sm text-muted">Request Timeout (seconds)</span>
-                        <input type="number" min="1" max="300" step="1" name="ollama_timeout" value="<?= htmlspecialchars($settingValues['ollama_timeout'] ?? (string) ($ollamaConfig['timeout'] ?? 20), ENT_QUOTES) ?>" class="w-full field-input" />
+                        <input type="number" min="1" max="600" step="1" name="ollama_timeout" value="<?= htmlspecialchars($settingValues['ollama_timeout'] ?? (string) ($ollamaConfig['timeout'] ?? 20), ENT_QUOTES) ?>" class="w-full field-input" />
                     </label>
                     <label class="block space-y-2 md:col-span-2">
                         <span class="text-sm text-muted">Capability Tier</span>

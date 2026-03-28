@@ -113,7 +113,8 @@ def _load_killmails_for_battles(db: SupplyCoreDb, battle_ids: list[str]) -> list
                 ka.corporation_id AS attacker_corporation_id,
                 ka.alliance_id AS attacker_alliance_id,
                 ka.ship_type_id AS attacker_ship_type_id,
-                ka.damage_done AS attacker_damage_done
+                ka.damage_done AS attacker_damage_done,
+                ka.final_blow AS attacker_final_blow
             FROM killmail_events ke
             LEFT JOIN killmail_attackers ka ON ka.sequence_id = ke.sequence_id
             WHERE ke.battle_id IN ({placeholders})
@@ -342,12 +343,13 @@ def _compute_alliance_summary(
             entry["total_losses"] += 1
             entry["total_isk_lost"] += isk
 
-        # Record kill/damage for attacker alliance (per attacker row)
+        # Record kill for attacker alliance (final blow only, like zKillboard)
         if attacker_alliance > 0:
             entry = alliance_stats.setdefault(attacker_alliance, _empty_alliance_stats(attacker_alliance))
-            entry["total_kills"] += 1
             entry["total_damage"] += attacker_damage
-            entry["total_isk_killed"] += isk
+            if int(km.get("attacker_final_blow") or 0) == 1:
+                entry["total_kills"] += 1
+                entry["total_isk_killed"] += isk
 
     # Finalize
     result: list[dict[str, Any]] = []
@@ -459,7 +461,8 @@ def _compute_participants(
         attacker_damage = float(km.get("attacker_damage_done") or 0)
 
         if attacker_id > 0 and attacker_id in char_stats:
-            char_stats[attacker_id]["kills"] += 1
+            if int(km.get("attacker_final_blow") or 0) == 1:
+                char_stats[attacker_id]["kills"] += 1
             char_stats[attacker_id]["damage_done"] += attacker_damage
             char_times[attacker_id].append(km_time)
 
