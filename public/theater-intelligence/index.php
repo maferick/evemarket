@@ -14,6 +14,9 @@ $offset = ($page - 1) * $perPage;
 
 $theaters = db_theaters_list($perPage, $offset, $regionFilter, $minAnomaly);
 
+// Auto-generate AI battle reports for new theaters that don't have one yet
+theater_ai_summary_generate_pending();
+
 // Load tracked alliances and side labels for matchup display
 $trackedAlliances = db_killmail_tracked_alliances_active();
 $trackedAllianceIds = array_map('intval', array_column($trackedAlliances, 'alliance_id'));

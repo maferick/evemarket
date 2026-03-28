@@ -14754,12 +14754,22 @@ function db_graph_community_overview(int $limit = 30): array
 
 function db_theaters_list(int $limit = 50, int $offset = 0, ?string $regionFilter = null, ?float $minAnomaly = null): array
 {
+    $trackedAllianceIds = array_map('intval', array_column(db_killmail_tracked_alliances_active(), 'alliance_id'));
+    if ($trackedAllianceIds === []) {
+        return [];
+    }
+    $placeholders = implode(',', array_fill(0, count($trackedAllianceIds), '?'));
+
     $sql = 'SELECT t.*, rs.system_name AS primary_system_name, rr.region_name
             FROM theaters t
+            INNER JOIN theater_alliance_summary tas
+                ON tas.theater_id = t.theater_id
+                AND tas.alliance_id IN (' . $placeholders . ')
+                AND tas.participant_count >= 2
             LEFT JOIN ref_systems rs ON rs.system_id = t.primary_system_id
             LEFT JOIN ref_regions rr ON rr.region_id = t.region_id
             WHERE 1=1';
-    $params = [];
+    $params = $trackedAllianceIds;
     if ($regionFilter !== null) {
         $sql .= ' AND t.region_id = ?';
         $params[] = (int)$regionFilter;
@@ -14768,7 +14778,7 @@ function db_theaters_list(int $limit = 50, int $offset = 0, ?string $regionFilte
         $sql .= ' AND t.anomaly_score >= ?';
         $params[] = $minAnomaly;
     }
-    $sql .= ' ORDER BY t.start_time DESC LIMIT ' . max(1, min(200, (int)$limit)) . ' OFFSET ' . max(0, (int)$offset);
+    $sql .= ' GROUP BY t.theater_id ORDER BY t.start_time DESC LIMIT ' . max(1, min(200, (int)$limit)) . ' OFFSET ' . max(0, (int)$offset);
     return db_select($sql, $params);
 }
 
