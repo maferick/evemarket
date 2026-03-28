@@ -10929,6 +10929,7 @@ function killmail_ship_class_label(?int $groupId): string
 function fleet_function_label(string $role): string
 {
     return match ($role) {
+        'fc' => 'FC',
         'mainline_dps' => 'Mainline DPS',
         'capital_dps' => 'Capital DPS',
         'logistics' => 'Logistics',
@@ -10953,6 +10954,7 @@ function fleet_function_label(string $role): string
 function fleet_function_color_class(string $role): string
 {
     return match ($role) {
+        'fc' => 'bg-yellow-900/60 text-yellow-200 ring-1 ring-yellow-400/40',
         'logistics', 'logi' => 'bg-emerald-900/60 text-emerald-300',
         'capital_logistics' => 'bg-emerald-900/60 text-emerald-300',
         'command' => 'bg-amber-900/60 text-amber-300',

@@ -148,6 +148,9 @@ def _load_ship_group_map(db: SupplyCoreDb) -> dict[int, int]:
 
 def _resolve_fleet_function(ship_type_id: int, ship_group_map: dict[int, int]) -> str:
     """Resolve a ship type ID to its fleet function string."""
+    # Monitor (Flag Cruiser) is exclusively used as an FC ship
+    if ship_type_id == 45534:
+        return "fc"
     group_id = ship_group_map.get(ship_type_id, 0)
     return FLEET_FUNCTION_BY_GROUP.get(group_id, "mainline_dps")
 
@@ -406,8 +409,7 @@ def _compute_alliance_summary(
     # since rows are expanded per-attacker from the LEFT JOIN.
     seen_loss_km: set[int] = set()
     seen_kill_km: set[tuple[int, int]] = set()  # (killmail_id, alliance_id)
-    km_alliance_damage: dict[int, dict[int, float]] = {}  # km_id -> {alliance_id -> total_damage}
-    km_isk: dict[int, float] = {}  # km_id -> isk value
+    seen_final_blow_km: set[int] = set()  # killmail_ids where final blow ISK was credited
     for km in killmails:
         km_id = int(km.get("killmail_id") or 0)
         victim_id = int(km.get("victim_character_id") or 0)
@@ -417,6 +419,7 @@ def _compute_alliance_summary(
         attacker_id = int(km.get("attacker_character_id") or 0)
         attacker_alliance = int(km.get("attacker_alliance_id") or 0)
         attacker_damage = float(km.get("attacker_damage_done") or 0)
+        final_blow = int(km.get("attacker_final_blow") or 0)
 
         # Record loss for victim alliance (once per killmail)
         if victim_alliance > 0 and km_id not in seen_loss_km:
@@ -425,8 +428,7 @@ def _compute_alliance_summary(
             entry["total_losses"] += 1
             entry["total_isk_lost"] += isk
 
-        # Record kill for attacker alliance (once per killmail per alliance)
-        # ISK is attributed proportionally by damage dealt, not duplicated.
+        # Record kill involvement for attacker alliance (once per killmail per alliance)
         if attacker_alliance > 0:
             entry = alliance_stats.setdefault(attacker_alliance, _empty_alliance_stats(attacker_alliance))
             entry["total_damage"] += attacker_damage
@@ -434,20 +436,12 @@ def _compute_alliance_summary(
             if kill_key not in seen_kill_km:
                 seen_kill_km.add(kill_key)
                 entry["total_kills"] += 1
-                # Track per-killmail damage by alliance for proportional ISK later
-                km_alliance_damage.setdefault(km_id, {})[attacker_alliance] = \
-                    km_alliance_damage.get(km_id, {}).get(attacker_alliance, 0.0) + attacker_damage
-                km_isk[km_id] = isk
 
-    # Distribute ISK proportionally by damage dealt per alliance
-    for km_id, alliance_damages in km_alliance_damage.items():
-        total_damage = sum(alliance_damages.values())
-        isk = km_isk.get(km_id, 0.0)
-        for aid, dmg in alliance_damages.items():
-            share = dmg / total_damage if total_damage > 0 else 1.0 / len(alliance_damages)
-            entry = alliance_stats.get(aid)
-            if entry is not None:
-                entry["total_isk_killed"] += isk * share
+        # ISK killed credited to the final-blow alliance only (no double-counting)
+        if final_blow and attacker_alliance > 0 and km_id not in seen_final_blow_km:
+            seen_final_blow_km.add(km_id)
+            entry = alliance_stats.setdefault(attacker_alliance, _empty_alliance_stats(attacker_alliance))
+            entry["total_isk_killed"] += isk
 
     # Finalize
     result: list[dict[str, Any]] = []
@@ -528,6 +522,7 @@ def _compute_participants(
                 "corporation_id": corp_id if corp_id > 0 else None,
                 "side": char_sides.get(cid, "third_party"),
                 "ship_type_ids": [],
+                "ships_lost_detail": defaultdict(lambda: {"count": 0, "isk_lost": 0.0}),
                 "kills": 0,
                 "deaths": 0,
                 "damage_done": 0.0,
@@ -569,6 +564,15 @@ def _compute_participants(
             char_stats[victim_id]["isk_lost"] += isk
             char_times[victim_id].append(km_time)
 
+            # Track per-ship-type loss breakdown
+            victim_ship = int(km.get("victim_ship_type_id") or 0)
+            if victim_ship > 0:
+                loss = char_stats[victim_id]["ships_lost_detail"][victim_ship]
+                loss["count"] += 1
+                loss["isk_lost"] += isk
+                if victim_ship not in char_stats[victim_id]["ship_type_ids"]:
+                    char_stats[victim_id]["ship_type_ids"].append(victim_ship)
+
         attacker_id = int(km.get("attacker_character_id") or 0)
         attacker_damage = float(km.get("attacker_damage_done") or 0)
 
@@ -590,6 +594,12 @@ def _compute_participants(
 
         ship_json = json_dumps_safe(stats["ship_type_ids"]) if stats["ship_type_ids"] else None
 
+        lost_detail = dict(stats.get("ships_lost_detail", {}))
+        ships_lost_json = json_dumps_safe([
+            {"ship_type_id": stid, "count": d["count"], "isk_lost": d["isk_lost"]}
+            for stid, d in lost_detail.items()
+        ]) if lost_detail else None
+
         result.append({
             "theater_id": theater_id,
             "character_id": cid,
@@ -598,6 +608,7 @@ def _compute_participants(
             "corporation_id": stats["corporation_id"],
             "side": stats["side"],
             "ship_type_ids": ship_json,
+            "ships_lost_detail": ships_lost_json,
             "kills": stats["kills"],
             "deaths": stats["deaths"],
             "damage_done": stats["damage_done"],
@@ -861,17 +872,17 @@ def _flush_analysis(
                 """
                 INSERT INTO theater_participants (
                     theater_id, character_id, character_name, alliance_id,
-                    corporation_id, side, ship_type_ids, kills, deaths,
+                    corporation_id, side, ship_type_ids, ships_lost_detail, kills, deaths,
                     damage_done, damage_taken, isk_lost, role_proxy,
                     entry_time, exit_time, battles_present,
                     suspicion_score, is_suspicious
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 [
                     (
                         p["theater_id"], p["character_id"], p["character_name"],
                         p["alliance_id"], p["corporation_id"], p["side"],
-                        p["ship_type_ids"], p["kills"], p["deaths"],
+                        p["ship_type_ids"], p["ships_lost_detail"], p["kills"], p["deaths"],
                         p["damage_done"], p["damage_taken"], p["isk_lost"], p["role_proxy"],
                         p["entry_time"], p["exit_time"], p["battles_present"],
                         p["suspicion_score"], p["is_suspicious"],

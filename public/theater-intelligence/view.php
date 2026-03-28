@@ -258,6 +258,17 @@ foreach ($participantsAll as $p) {
             foreach ($ids as $stid) $allShipTypeIds[(int) $stid] = true;
         }
     }
+    // Also collect type IDs from ships_lost_detail for name resolution
+    $lostJson = $p['ships_lost_detail'] ?? null;
+    if (is_string($lostJson)) {
+        $lostArr = json_decode($lostJson, true);
+        if (is_array($lostArr)) {
+            foreach ($lostArr as $entry) {
+                $stid = (int) ($entry['ship_type_id'] ?? 0);
+                if ($stid > 0) $allShipTypeIds[$stid] = true;
+            }
+        }
+    }
 }
 $shipTypeNames = !empty($allShipTypeIds) ? db_market_orders_current_compact_type_names(array_keys($allShipTypeIds)) : [];
 

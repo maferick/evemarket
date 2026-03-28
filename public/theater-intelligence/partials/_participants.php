@@ -98,23 +98,54 @@ foreach ($allForMax as $p) {
                                         if (is_array($decoded)) $shipIds = $decoded;
                                     }
                                 ?>
-                                <tr class="border-b border-border/50 <?= $isSusp ? 'bg-red-900/10' : '' ?>">
+                                <?php
+                                    // Parse ships_lost_detail for display
+                                    $lostDetail = [];
+                                    $lostJson = $p['ships_lost_detail'] ?? null;
+                                    if (is_string($lostJson)) {
+                                        $decoded = json_decode($lostJson, true);
+                                        if (is_array($decoded)) $lostDetail = $decoded;
+                                    }
+                                    // Filter out pods (670=Capsule, 33328=Golden Capsule) for display
+                                    $lostDisplay = array_values(array_filter($lostDetail, static fn(array $e): bool => !in_array((int) ($e['ship_type_id'] ?? 0), [670, 33328], true)));
+                                    // Build ship display string from lost ships (or fall back to ship_type_ids)
+                                    $shipDisplayParts = [];
+                                    $primaryShipIcon = 0;
+                                    if ($lostDisplay !== []) {
+                                        // Sort by ISK lost desc so most expensive ship is primary
+                                        usort($lostDisplay, static fn(array $a, array $b): int => (float) ($b['isk_lost'] ?? 0) <=> (float) ($a['isk_lost'] ?? 0));
+                                        $primaryShipIcon = (int) ($lostDisplay[0]['ship_type_id'] ?? 0);
+                                        foreach ($lostDisplay as $entry) {
+                                            $stid = (int) ($entry['ship_type_id'] ?? 0);
+                                            $cnt = (int) ($entry['count'] ?? 1);
+                                            $name = (string) ($shipTypeNames[$stid] ?? '');
+                                            $shipDisplayParts[] = $cnt > 1 ? ($name . '+' . ($cnt - 1)) : $name;
+                                        }
+                                    } elseif ($shipIds) {
+                                        $primaryShipIcon = (int) $shipIds[0];
+                                        $shipDisplayParts[] = (string) ($shipTypeNames[$primaryShipIcon] ?? '');
+                                        if (count($shipIds) > 1) {
+                                            $shipDisplayParts[0] .= '+' . (count($shipIds) - 1);
+                                        }
+                                    }
+                                ?>
+                                <tr class="border-b border-border/50 <?= $isSusp ? 'bg-red-900/10' : '' ?> <?= $fleetRole === 'fc' ? 'border-l-2 border-l-yellow-400/60' : '' ?>">
                                     <td class="px-2 py-1.5">
-                                        <a class="text-accent text-sm" href="/battle-intelligence/character.php?character_id=<?= (int) ($p['character_id'] ?? 0) ?>">
-                                            <?= htmlspecialchars($charName, ENT_QUOTES) ?>
-                                        </a>
-                                        <?php if ($isSusp): ?>
-                                            <span class="inline-block w-1.5 h-1.5 rounded-full bg-red-400 ml-1" title="Suspicious"></span>
-                                        <?php endif; ?>
+                                        <div class="flex items-center gap-1.5">
+                                            <img src="https://images.evetech.net/characters/<?= (int) ($p['character_id'] ?? 0) ?>/portrait?size=32" alt="" class="w-5 h-5 rounded-full" loading="lazy">
+                                            <a class="text-accent text-sm" href="/battle-intelligence/character.php?character_id=<?= (int) ($p['character_id'] ?? 0) ?>">
+                                                <?= htmlspecialchars($charName, ENT_QUOTES) ?>
+                                            </a>
+                                            <?php if ($isSusp): ?>
+                                                <span class="inline-block w-1.5 h-1.5 rounded-full bg-red-400 ml-1" title="Suspicious"></span>
+                                            <?php endif; ?>
+                                        </div>
                                     </td>
                                     <td class="px-2 py-1.5">
-                                        <?php if ($shipIds): ?>
+                                        <?php if ($primaryShipIcon > 0): ?>
                                             <div class="flex items-center gap-1">
-                                                <img src="https://images.evetech.net/types/<?= (int) ($shipIds[0]) ?>/icon?size=32" alt="" class="w-4 h-4" loading="lazy">
-                                                <span class="text-[11px] text-slate-300 truncate max-w-[6rem]"><?= htmlspecialchars((string) ($shipTypeNames[(int) ($shipIds[0] ?? 0)] ?? ''), ENT_QUOTES) ?></span>
-                                                <?php if (count($shipIds) > 1): ?>
-                                                    <span class="text-[10px] text-muted">+<?= count($shipIds) - 1 ?></span>
-                                                <?php endif; ?>
+                                                <img src="https://images.evetech.net/types/<?= $primaryShipIcon ?>/icon?size=32" alt="" class="w-4 h-4" loading="lazy">
+                                                <span class="text-[11px] text-slate-300 truncate max-w-[8rem]"><?= htmlspecialchars(implode(', ', $shipDisplayParts), ENT_QUOTES) ?></span>
                                             </div>
                                         <?php else: ?>
                                             <span class="text-slate-500 text-xs">-</span>
@@ -195,38 +226,71 @@ foreach ($allForMax as $p) {
                                 $decoded = json_decode($shipJson, true);
                                 if (is_array($decoded)) $shipIds = $decoded;
                             }
+
+                            // Parse ships_lost_detail for display
+                            $lostDetail2 = [];
+                            $lostJson2 = $p['ships_lost_detail'] ?? null;
+                            if (is_string($lostJson2)) {
+                                $decoded2 = json_decode($lostJson2, true);
+                                if (is_array($decoded2)) $lostDetail2 = $decoded2;
+                            }
+                            $lostDisplay2 = array_values(array_filter($lostDetail2, static fn(array $e): bool => !in_array((int) ($e['ship_type_id'] ?? 0), [670, 33328], true)));
+                            $shipDisplayParts2 = [];
+                            $primaryShipIcon2 = 0;
+                            if ($lostDisplay2 !== []) {
+                                usort($lostDisplay2, static fn(array $a, array $b): int => (float) ($b['isk_lost'] ?? 0) <=> (float) ($a['isk_lost'] ?? 0));
+                                $primaryShipIcon2 = (int) ($lostDisplay2[0]['ship_type_id'] ?? 0);
+                                foreach ($lostDisplay2 as $entry2) {
+                                    $stid2 = (int) ($entry2['ship_type_id'] ?? 0);
+                                    $cnt2 = (int) ($entry2['count'] ?? 1);
+                                    $name2 = (string) ($shipTypeNames[$stid2] ?? '');
+                                    $shipDisplayParts2[] = $cnt2 > 1 ? ($name2 . '+' . ($cnt2 - 1)) : $name2;
+                                }
+                            } elseif ($shipIds) {
+                                $primaryShipIcon2 = (int) $shipIds[0];
+                                $shipDisplayParts2[] = (string) ($shipTypeNames[$primaryShipIcon2] ?? '');
+                                if (count($shipIds) > 1) {
+                                    $shipDisplayParts2[0] .= '+' . (count($shipIds) - 1);
+                                }
+                            }
                         ?>
-                        <tr class="border-b border-border/50 <?= $isSusp ? 'bg-red-900/10' : '' ?>">
+                        <tr class="border-b border-border/50 <?= $isSusp ? 'bg-red-900/10' : '' ?> <?= $fleetRole === 'fc' ? 'border-l-2 border-l-yellow-400/60' : '' ?>">
                             <td class="px-3 py-2">
-                                <a class="text-accent text-sm" href="/battle-intelligence/character.php?character_id=<?= (int) ($p['character_id'] ?? 0) ?>">
-                                    <?= htmlspecialchars($charName, ENT_QUOTES) ?>
-                                </a>
-                                <?php if ($isSusp): ?>
-                                    <span class="inline-block w-1.5 h-1.5 rounded-full bg-red-400 ml-1" title="Suspicious"></span>
-                                <?php endif; ?>
-                                <span class="inline-block rounded-full px-1.5 py-0.5 text-[9px] uppercase tracking-wider ml-1 <?= $sideBgClass[$pSide] ?? 'bg-slate-700' ?> <?= $pSideClass ?>">
-                                    <?= htmlspecialchars($sideLabels[$pSide] ?? $pSide, ENT_QUOTES) ?>
-                                </span>
+                                <div class="flex items-center gap-1.5">
+                                    <img src="https://images.evetech.net/characters/<?= (int) ($p['character_id'] ?? 0) ?>/portrait?size=32" alt="" class="w-5 h-5 rounded-full" loading="lazy">
+                                    <a class="text-accent text-sm" href="/battle-intelligence/character.php?character_id=<?= (int) ($p['character_id'] ?? 0) ?>">
+                                        <?= htmlspecialchars($charName, ENT_QUOTES) ?>
+                                    </a>
+                                    <?php if ($isSusp): ?>
+                                        <span class="inline-block w-1.5 h-1.5 rounded-full bg-red-400 ml-1" title="Suspicious"></span>
+                                    <?php endif; ?>
+                                    <span class="inline-block rounded-full px-1.5 py-0.5 text-[9px] uppercase tracking-wider ml-1 <?= $sideBgClass[$pSide] ?? 'bg-slate-700' ?> <?= $pSideClass ?>">
+                                        <?= htmlspecialchars($sideLabels[$pSide] ?? $pSide, ENT_QUOTES) ?>
+                                    </span>
+                                </div>
                             </td>
                             <td class="px-3 py-2 text-slate-300 text-xs">
-                                <?php if (!str_starts_with($resolvedAlliance, 'Alliance #') && !str_starts_with($resolvedAlliance, 'Alliance 0')): ?>
-                                    <span class="text-slate-100"><?= htmlspecialchars($resolvedAlliance, ENT_QUOTES) ?></span>
-                                <?php elseif (!str_starts_with($resolvedCorp, 'Corp #') && !str_starts_with($resolvedCorp, 'Corp 0')): ?>
-                                    <span class="text-slate-300"><?= htmlspecialchars($resolvedCorp, ENT_QUOTES) ?></span>
-                                <?php else: ?>
-                                    <span class="text-slate-500">-</span>
-                                <?php endif; ?>
+                                <div class="flex items-center gap-1.5">
+                                    <?php $allianceId = (int) ($p['alliance_id'] ?? 0); $corpId = (int) ($p['corporation_id'] ?? 0); ?>
+                                    <?php if ($allianceId > 0): ?>
+                                        <img src="https://images.evetech.net/alliances/<?= $allianceId ?>/logo?size=32" alt="" class="w-4 h-4" loading="lazy">
+                                    <?php elseif ($corpId > 0): ?>
+                                        <img src="https://images.evetech.net/corporations/<?= $corpId ?>/logo?size=32" alt="" class="w-4 h-4" loading="lazy">
+                                    <?php endif; ?>
+                                    <?php if (!str_starts_with($resolvedAlliance, 'Alliance #') && !str_starts_with($resolvedAlliance, 'Alliance 0')): ?>
+                                        <span class="text-slate-100"><?= htmlspecialchars($resolvedAlliance, ENT_QUOTES) ?></span>
+                                    <?php elseif (!str_starts_with($resolvedCorp, 'Corp #') && !str_starts_with($resolvedCorp, 'Corp 0')): ?>
+                                        <span class="text-slate-300"><?= htmlspecialchars($resolvedCorp, ENT_QUOTES) ?></span>
+                                    <?php else: ?>
+                                        <span class="text-slate-500">-</span>
+                                    <?php endif; ?>
+                                </div>
                             </td>
                             <td class="px-3 py-2">
-                                <?php if ($shipIds): ?>
+                                <?php if ($primaryShipIcon2 > 0): ?>
                                     <div class="flex items-center gap-1">
-                                        <?php foreach (array_slice($shipIds, 0, 2) as $stid): ?>
-                                            <img src="https://images.evetech.net/types/<?= (int) $stid ?>/icon?size=32" alt="" class="w-5 h-5" loading="lazy" title="<?= htmlspecialchars((string) ($shipTypeNames[(int) $stid] ?? ''), ENT_QUOTES) ?>">
-                                        <?php endforeach; ?>
-                                        <span class="text-[11px] text-slate-300"><?= htmlspecialchars((string) ($shipTypeNames[(int) ($shipIds[0] ?? 0)] ?? ''), ENT_QUOTES) ?></span>
-                                        <?php if (count($shipIds) > 1): ?>
-                                            <span class="text-[10px] text-muted">+<?= count($shipIds) - 1 ?></span>
-                                        <?php endif; ?>
+                                        <img src="https://images.evetech.net/types/<?= $primaryShipIcon2 ?>/icon?size=32" alt="" class="w-5 h-5" loading="lazy">
+                                        <span class="text-[11px] text-slate-300 truncate max-w-[10rem]"><?= htmlspecialchars(implode(', ', $shipDisplayParts2), ENT_QUOTES) ?></span>
                                     </div>
                                 <?php else: ?>
                                     <span class="text-slate-500 text-xs">-</span>
