@@ -209,6 +209,7 @@ def _ensure_constraints_and_indexes(client: Neo4jClient) -> None:
     client.query("CREATE CONSTRAINT corp_corporation_id IF NOT EXISTS FOR (n:Corporation) REQUIRE n.corporation_id IS UNIQUE")
     client.query("CREATE CONSTRAINT ship_type_id IF NOT EXISTS FOR (n:ShipType) REQUIRE n.type_id IS UNIQUE")
     client.query("CREATE CONSTRAINT system_system_id IF NOT EXISTS FOR (n:System) REQUIRE n.system_id IS UNIQUE")
+    client.query("CREATE CONSTRAINT killmail_killmail_id IF NOT EXISTS FOR (n:Killmail) REQUIRE n.killmail_id IS UNIQUE")
 
     client.query("CREATE INDEX character_lookup IF NOT EXISTS FOR (n:Character) ON (n.character_id)")
     client.query("CREATE INDEX battle_lookup IF NOT EXISTS FOR (n:Battle) ON (n.battle_id)")
@@ -1891,3 +1892,107 @@ def run_graph_model_audit(db: SupplyCoreDb, neo4j_raw: dict[str, Any] | None = N
     except Neo4jError as exc:
         summary["error_text"] = str(exc)
     return summary
+
+
+# ── Killmail entity projection ──────────────────────────────────────────────
+
+_KILLMAIL_CURSOR_KEY = "graph_sync_killmail_entity_cursor"
+_KILLMAIL_BATCH = 1000
+
+
+def run_compute_graph_sync_killmail_entities(
+    db: SupplyCoreDb,
+    neo4j_raw: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Project killmail events into Neo4j as Killmail nodes with system/battle relationships."""
+    started = time.perf_counter()
+    job_name = "compute_graph_sync_killmail_entities"
+
+    config = Neo4jConfig.from_runtime(neo4j_raw or {})
+    if not config.enabled:
+        return JobResult.skipped(job_key=job_name, reason="neo4j disabled").to_dict()
+
+    client = Neo4jClient(config)
+    _ensure_constraints_and_indexes(client)
+
+    # Read cursor
+    cursor_row = db.fetch_one(
+        "SELECT last_cursor FROM sync_state WHERE dataset_key = %s",
+        (_KILLMAIL_CURSOR_KEY,),
+    )
+    last_cursor = int(cursor_row["last_cursor"]) if cursor_row and cursor_row.get("last_cursor") else 0
+
+    rows_processed = 0
+    rows_written = 0
+    new_cursor = last_cursor
+
+    while True:
+        batch = db.fetch_all(
+            """
+            SELECT id, killmail_id, solar_system_id, battle_id,
+                   effective_killmail_at, zkb_total_value AS total_value,
+                   victim_ship_type_id
+            FROM killmail_events
+            WHERE id > %s AND battle_id IS NOT NULL
+            ORDER BY id ASC
+            LIMIT %s
+            """,
+            (new_cursor, _KILLMAIL_BATCH),
+        )
+        if not batch:
+            break
+
+        rows_processed += len(batch)
+
+        # Build Neo4j rows
+        neo4j_rows = []
+        for row in batch:
+            neo4j_rows.append({
+                "killmail_id": int(row["killmail_id"]),
+                "solar_system_id": int(row["solar_system_id"]),
+                "battle_id": str(row["battle_id"]),
+                "killed_at": str(row.get("effective_killmail_at") or ""),
+                "total_value": float(row.get("total_value") or 0),
+                "victim_ship_type_id": int(row.get("victim_ship_type_id") or 0),
+            })
+
+        client.query(
+            """
+            UNWIND $rows AS row
+            MERGE (km:Killmail {killmail_id: toInteger(row.killmail_id)})
+              SET km.killed_at = row.killed_at,
+                  km.total_value = toFloat(row.total_value),
+                  km.victim_ship_type_id = toInteger(row.victim_ship_type_id)
+            WITH km, row
+            MERGE (sys:System {system_id: toInteger(row.solar_system_id)})
+            MERGE (km)-[:OCCURRED_IN]->(sys)
+            WITH km, row
+            MERGE (b:Battle {battle_id: row.battle_id})
+            MERGE (km)-[:PART_OF_BATTLE]->(b)
+            """,
+            {"rows": neo4j_rows},
+        )
+        rows_written += len(neo4j_rows)
+        new_cursor = int(batch[-1]["id"])
+
+    # Update cursor
+    if new_cursor > last_cursor:
+        db.execute(
+            """
+            INSERT INTO sync_state (dataset_key, last_cursor, last_row_count, last_synced_at)
+            VALUES (%s, %s, %s, UTC_TIMESTAMP())
+            ON DUPLICATE KEY UPDATE last_cursor = VALUES(last_cursor),
+                                    last_row_count = VALUES(last_row_count),
+                                    last_synced_at = VALUES(last_synced_at)
+            """,
+            (_KILLMAIL_CURSOR_KEY, str(new_cursor), rows_written),
+        )
+
+    duration_ms = int((time.perf_counter() - started) * 1000)
+    return JobResult.success(
+        job_key=job_name,
+        summary=f"Projected {rows_written} killmails into Neo4j.",
+        rows_processed=rows_processed,
+        rows_written=rows_written,
+        duration_ms=duration_ms,
+    ).to_dict()

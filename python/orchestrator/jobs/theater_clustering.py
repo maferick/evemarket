@@ -48,6 +48,11 @@ MIN_THEATER_PARTICIPANTS = 10
 
 BATCH_SIZE = 500
 
+# Gate-distance merge defaults (overridden by app_settings)
+DEFAULT_MAX_GATE_DISTANCE = 5
+DEFAULT_GATE_MERGE_MIN_OVERLAP = 0.05
+DEFAULT_HIGHSEC_THRESHOLD = 0.45
+
 
 def _now_sql() -> str:
     return datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
@@ -104,6 +109,20 @@ class _UnionFind:
 
 # ── Core logic ──────────────────────────────────────────────────────────────
 
+def _load_clustering_settings(db: SupplyCoreDb) -> dict[str, Any]:
+    """Load graph clustering tuning parameters from app_settings."""
+    rows = db.fetch_all(
+        "SELECT setting_key, setting_value FROM app_settings WHERE setting_key LIKE 'universe_graph_%%'"
+    )
+    raw = {r["setting_key"]: r["setting_value"] for r in rows}
+    return {
+        "max_gate_distance": int(raw.get("universe_graph_max_gate_distance", DEFAULT_MAX_GATE_DISTANCE)),
+        "gate_merge_min_overlap": float(raw.get("universe_graph_gate_merge_min_overlap", DEFAULT_GATE_MERGE_MIN_OVERLAP)),
+        "ignore_highsec_adjacency": raw.get("universe_graph_ignore_highsec_adjacency", "0") == "1",
+        "highsec_threshold": float(raw.get("universe_graph_highsec_threshold", DEFAULT_HIGHSEC_THRESHOLD)),
+    }
+
+
 def _load_battles(db: SupplyCoreDb) -> list[dict[str, Any]]:
     """Load all eligible battles with system/constellation/region metadata."""
     return db.fetch_all(
@@ -118,7 +137,8 @@ def _load_battles(db: SupplyCoreDb) -> list[dict[str, Any]]:
             br.battle_size_class,
             rs.constellation_id,
             rs.region_id,
-            rs.system_name
+            rs.system_name,
+            rs.security
         FROM battle_rollups br
         INNER JOIN ref_systems rs ON rs.system_id = br.system_id
         WHERE br.participant_count >= %s
@@ -168,12 +188,15 @@ def _participant_overlap(chars_a: set[int], chars_b: set[int]) -> float:
 def _cluster_battles(
     battles: list[dict[str, Any]],
     participants: dict[str, set[int]],
+    gate_svc: Any | None = None,
+    clustering_settings: dict[str, Any] | None = None,
 ) -> dict[str, list[dict[str, Any]]]:
     """Group battles into theaters using union-find.
 
     Merge criteria:
     1. Same constellation + time overlap → always merge
     2. Same region + time overlap + participant overlap ≥ threshold → merge
+    3. Gate distance ≤ max_gate_distance + time overlap + participant overlap (when Neo4j available)
     """
     uf = _UnionFind()
 
@@ -238,6 +261,42 @@ def _cluster_battles(
                 chars_j = participants.get(bid_j, set())
                 if _participant_overlap(chars_i, chars_j) >= MIN_PARTICIPANT_OVERLAP:
                     uf.union(bid_i, bid_j)
+
+    # Pass 3: Gate-distance-based merging (cross-constellation, cross-region).
+    # Only runs when Neo4j is available and the gate distance service is provided.
+    if gate_svc is not None:
+        settings = clustering_settings or {}
+        max_gate_dist = settings.get("max_gate_distance", DEFAULT_MAX_GATE_DISTANCE)
+        gate_min_overlap = settings.get("gate_merge_min_overlap", DEFAULT_GATE_MERGE_MIN_OVERLAP)
+        ignore_highsec = settings.get("ignore_highsec_adjacency", False)
+        highsec_threshold = settings.get("highsec_threshold", DEFAULT_HIGHSEC_THRESHOLD)
+
+        system_security: dict[int, float] = {
+            int(b["system_id"]): float(b.get("security") or 0)
+            for b in battles
+        }
+
+        for i in range(len(battles)):
+            for j in range(i + 1, len(battles)):
+                bid_i = str(battles[i]["battle_id"])
+                bid_j = str(battles[j]["battle_id"])
+                if uf.find(bid_i) == uf.find(bid_j):
+                    continue
+                if not _times_overlap(battles[i], battles[j]):
+                    continue
+                sys_i = int(battles[i]["system_id"])
+                sys_j = int(battles[j]["system_id"])
+                # Skip highsec adjacency if configured
+                if ignore_highsec:
+                    if (system_security.get(sys_i, 0) >= highsec_threshold
+                            and system_security.get(sys_j, 0) >= highsec_threshold):
+                        continue
+                dist = gate_svc.distance(sys_i, sys_j)
+                if dist is not None and dist <= max_gate_dist:
+                    chars_i = participants.get(bid_i, set())
+                    chars_j = participants.get(bid_j, set())
+                    if _participant_overlap(chars_i, chars_j) >= gate_min_overlap:
+                        uf.union(bid_i, bid_j)
 
     # Collect groups
     raw_groups = uf.groups()
@@ -377,8 +436,10 @@ def _flush_theaters(
                     theater_id, label, primary_system_id, region_id,
                     start_time, end_time, duration_seconds,
                     battle_count, system_count, total_kills, total_isk,
-                    participant_count, anomaly_score, computed_at
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    participant_count, anomaly_score,
+                    max_gate_span, avg_gate_distance, clustering_method,
+                    computed_at
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON DUPLICATE KEY UPDATE
                     label = VALUES(label),
                     primary_system_id = VALUES(primary_system_id),
@@ -389,13 +450,18 @@ def _flush_theaters(
                     battle_count = VALUES(battle_count),
                     system_count = VALUES(system_count),
                     participant_count = VALUES(participant_count),
+                    max_gate_span = VALUES(max_gate_span),
+                    avg_gate_distance = VALUES(avg_gate_distance),
+                    clustering_method = VALUES(clustering_method),
                     computed_at = VALUES(computed_at)
                 """,
                 (
                     t["theater_id"], t["label"], t["primary_system_id"], t["region_id"],
                     t["start_time"], t["end_time"], t["duration_seconds"],
                     t["battle_count"], t["system_count"], t["total_kills"], t["total_isk"],
-                    t["participant_count"], t["anomaly_score"], t["computed_at"],
+                    t["participant_count"], t["anomaly_score"],
+                    t.get("max_gate_span"), t.get("avg_gate_distance"), t.get("clustering_method", "constellation"),
+                    t["computed_at"],
                 ),
             )
             rows_written += max(0, int(cursor.rowcount or 0))
@@ -434,6 +500,7 @@ def _flush_theaters(
 def run_theater_clustering(
     db: SupplyCoreDb,
     runtime: dict[str, Any] | None = None,
+    neo4j_raw: dict[str, Any] | None = None,
     *,
     dry_run: bool = False,
 ) -> dict[str, Any]:
@@ -472,8 +539,23 @@ def run_theater_clustering(
         participants = _load_battle_participants(db, battle_ids)
         _theater_log(runtime, "theater_clustering.participants_loaded", {"battles_with_participants": len(participants)})
 
-        # 3. Cluster battles into theater groups
-        theater_groups = _cluster_battles(battles, participants)
+        # 3. Load clustering settings and optional gate distance service
+        clustering_settings = _load_clustering_settings(db)
+        gate_svc = None
+        try:
+            from ..neo4j import Neo4jClient, Neo4jConfig
+            neo4j_config = Neo4jConfig.from_runtime(neo4j_raw or {})
+            if neo4j_config.enabled:
+                from ..services.gate_distance import GateDistanceService
+                gate_svc = GateDistanceService(
+                    Neo4jClient(neo4j_config),
+                    max_distance=clustering_settings["max_gate_distance"],
+                )
+        except Exception:
+            gate_svc = None  # Graceful degradation
+
+        # 4. Cluster battles into theater groups
+        theater_groups = _cluster_battles(battles, participants, gate_svc, clustering_settings)
         _theater_log(runtime, "theater_clustering.clustered", {"theater_count": len(theater_groups)})
 
         # 4. Build theater rows
@@ -486,6 +568,23 @@ def run_theater_clustering(
             theater_id = _compute_theater_id(battle_ids_in_group)
 
             theater = _build_theater_row(theater_id, group_battles, participants, computed_at)
+
+            # Enrich with gate-distance metrics when available
+            if gate_svc is not None and len(theater["systems"]) > 1:
+                sys_ids = list(theater["systems"].keys())
+                distances: list[int] = []
+                for si in range(len(sys_ids)):
+                    for sj in range(si + 1, len(sys_ids)):
+                        d = gate_svc.distance(int(sys_ids[si]), int(sys_ids[sj]))
+                        if d is not None:
+                            distances.append(d)
+                theater["max_gate_span"] = max(distances) if distances else None
+                theater["avg_gate_distance"] = round(sum(distances) / len(distances), 2) if distances else None
+                theater["clustering_method"] = "gate_distance"
+            else:
+                theater["max_gate_span"] = None
+                theater["avg_gate_distance"] = None
+                theater["clustering_method"] = "constellation"
 
             # Skip tiny theaters
             if theater["participant_count"] < MIN_THEATER_PARTICIPANTS:

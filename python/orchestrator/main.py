@@ -97,6 +97,10 @@ def parse_args() -> argparse.Namespace:
     compute_signals.add_argument("--app-root", default=str(Path(__file__).resolve().parents[2]))
     compute_ew = subparsers.add_parser("compute-economic-warfare", help="Compute economic warfare scores from opponent killmail data")
     compute_ew.add_argument("--app-root", default=str(Path(__file__).resolve().parents[2]))
+    graph_universe = subparsers.add_parser("graph-universe-sync", help="Sync universe topology (systems, stargates) into Neo4j")
+    graph_universe.add_argument("--app-root", default=str(Path(__file__).resolve().parents[2]))
+    graph_killmails = subparsers.add_parser("compute-graph-sync-killmail-entities", help="Project killmail events as nodes into Neo4j")
+    graph_killmails.add_argument("--app-root", default=str(Path(__file__).resolve().parents[2]))
     compute_graph_sync = subparsers.add_parser("compute-graph-sync", help="Incrementally sync doctrine-fit-item graph into Neo4j")
     compute_graph_sync.add_argument("--app-root", default=str(Path(__file__).resolve().parents[2]))
     compute_graph_insights = subparsers.add_parser("compute-graph-insights", help="Compute graph-derived metrics and persist into MariaDB")
@@ -222,6 +226,24 @@ def main() -> int:
         db = SupplyCoreDb(config.raw.get("db", {}))
         from .jobs.compute_economic_warfare import run_compute_economic_warfare
         result = run_compute_economic_warfare(db, influx_runtime(config.raw))
+        print(result)
+        return 0
+    if command == "graph-universe-sync":
+        app_root = Path(args.app_root).resolve()
+        config = load_php_runtime_config(app_root)
+        from .db import SupplyCoreDb
+        db = SupplyCoreDb(config.raw.get("db", {}))
+        from .jobs.graph_universe_sync import run_graph_universe_sync
+        result = run_graph_universe_sync(db, neo4j_runtime(config.raw))
+        print(result)
+        return 0
+    if command == "compute-graph-sync-killmail-entities":
+        app_root = Path(args.app_root).resolve()
+        config = load_php_runtime_config(app_root)
+        from .db import SupplyCoreDb
+        db = SupplyCoreDb(config.raw.get("db", {}))
+        from .jobs.graph_pipeline import run_compute_graph_sync_killmail_entities
+        result = run_compute_graph_sync_killmail_entities(db, neo4j_runtime(config.raw))
         print(result)
         return 0
     if command == "compute-graph-sync":

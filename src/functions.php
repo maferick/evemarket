@@ -18124,6 +18124,8 @@ function static_data_extract_reference_rows_from_jsonl_archive(string $archivePa
         'metagroups.jsonl' => 'meta_groups',
         'invmetagroups.jsonl' => 'meta_groups',
         'types.jsonl' => 'types',
+        'stargates.jsonl' => 'stargates',
+        'mapsolarsystemjumps.jsonl' => 'stargates',
     ];
 
     $records = [
@@ -18137,6 +18139,7 @@ function static_data_extract_reference_rows_from_jsonl_archive(string $archivePa
         'meta_types' => [],
         'meta_groups' => [],
         'types' => [],
+        'stargates' => [],
     ];
 
     foreach ($targets as $fileName => $targetKey) {
@@ -18219,6 +18222,28 @@ function static_data_extract_reference_rows_from_jsonl_archive(string $archivePa
                         'constellation_id' => (int) static_data_record_value($row, ['constellationID', 'constellation_id'], 0),
                         'region_id' => (int) static_data_record_value($row, ['regionID', 'region_id'], 0),
                         'station_type_id' => ($typeId = (int) static_data_record_value($row, ['stationTypeID', 'typeID', 'type_id'], 0)) > 0 ? $typeId : null,
+                    ];
+                }
+                continue;
+            }
+
+            if ($targetKey === 'stargates') {
+                // Handle stargates.jsonl format (stargateID, destinationStargateID, etc.)
+                $stargateId = (int) static_data_record_value($row, ['stargateID', 'stargate_id', '_key']);
+                $systemId = (int) static_data_record_value($row, ['solarSystemID', 'system_id'], 0);
+                $destStargateId = (int) static_data_record_value($row, ['destinationStargateID', 'destination_stargate_id', 'dest_stargate_id'], 0);
+                $destSystemId = (int) static_data_record_value($row, ['destinationSystemID', 'destination_system_id', 'dest_system_id'], 0);
+                // Handle mapsolarsystemjumps.jsonl format (fromSolarSystemID / toSolarSystemID)
+                if ($stargateId <= 0 && $systemId <= 0) {
+                    $systemId = (int) static_data_record_value($row, ['fromSolarSystemID', 'fromRegionID'], 0);
+                    $destSystemId = (int) static_data_record_value($row, ['toSolarSystemID'], 0);
+                }
+                if ($systemId > 0 && $destSystemId > 0) {
+                    $records['stargates'][] = [
+                        'stargate_id' => $stargateId > 0 ? $stargateId : crc32("{$systemId}:{$destSystemId}"),
+                        'system_id' => $systemId,
+                        'dest_stargate_id' => $destStargateId > 0 ? $destStargateId : 0,
+                        'dest_system_id' => $destSystemId,
                     ];
                 }
                 continue;
@@ -18406,12 +18431,13 @@ function static_data_import_reference_data(string $requestedMode = 'auto', bool 
         $marketGroups = $dataset['market_groups'];
         $metaGroups = $dataset['meta_groups'];
         $types = $dataset['types'];
+        $stargates = $dataset['stargates'];
 
         if ($mode === 'full') {
             db_reference_data_truncate_all();
         }
 
-        $rowsWritten = db_transaction(static function () use ($regions, $constellations, $systems, $stations, $categories, $groups, $marketGroups, $metaGroups, $types): int {
+        $rowsWritten = db_transaction(static function () use ($regions, $constellations, $systems, $stations, $categories, $groups, $marketGroups, $metaGroups, $types, $stargates): int {
             $written = 0;
             $written += db_ref_regions_bulk_upsert($regions);
             $written += db_ref_constellations_bulk_upsert($constellations);
@@ -18422,6 +18448,7 @@ function static_data_import_reference_data(string $requestedMode = 'auto', bool 
             $written += db_ref_market_groups_bulk_upsert($marketGroups);
             $written += db_ref_meta_groups_bulk_upsert($metaGroups);
             $written += db_ref_item_types_bulk_upsert($types);
+            $written += db_ref_stargates_bulk_upsert($stargates);
 
             return $written;
         });
@@ -18462,6 +18489,7 @@ function static_data_import_reference_data(string $requestedMode = 'auto', bool 
                     'market_groups' => count($marketGroups),
                     'meta_groups' => count($metaGroups),
                     'item_types' => count($types),
+                    'stargates' => count($stargates),
                 ],
             ], JSON_THROW_ON_ERROR)
         );

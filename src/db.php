@@ -10561,6 +10561,11 @@ function db_ref_npc_stations_bulk_upsert(array $rows, ?int $chunkSize = null): i
     return db_bulk_insert_or_upsert('ref_npc_stations', ['station_id', 'station_name', 'system_id', 'constellation_id', 'region_id', 'station_type_id'], $rows, ['station_name', 'system_id', 'constellation_id', 'region_id', 'station_type_id'], $chunkSize);
 }
 
+function db_ref_stargates_bulk_upsert(array $rows, ?int $chunkSize = null): int
+{
+    return db_bulk_insert_or_upsert('ref_stargates', ['stargate_id', 'system_id', 'dest_stargate_id', 'dest_system_id'], $rows, ['system_id', 'dest_stargate_id', 'dest_system_id'], $chunkSize);
+}
+
 function db_ref_market_groups_bulk_upsert(array $rows, ?int $chunkSize = null): int
 {
     return db_bulk_insert_or_upsert('ref_market_groups', ['market_group_id', 'parent_group_id', 'market_group_name', 'description'], $rows, ['parent_group_id', 'market_group_name', 'description'], $chunkSize);

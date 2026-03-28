@@ -54,6 +54,8 @@ from .jobs.theater_analysis import run_theater_analysis
 from .jobs.theater_graph_integration import run_theater_graph_integration
 from .jobs.theater_suspicion import run_theater_suspicion
 from .jobs.compute_economic_warfare import run_compute_economic_warfare
+from .jobs.graph_universe_sync import run_graph_universe_sync
+from .jobs.graph_pipeline import run_compute_graph_sync_killmail_entities
 
 PYTHON_COMPUTE_PROCESSOR_JOB_KEYS: set[str] = {
     "compute_graph_sync",
@@ -86,6 +88,8 @@ PYTHON_COMPUTE_PROCESSOR_JOB_KEYS: set[str] = {
     "theater_graph_integration",
     "theater_suspicion",
     "compute_economic_warfare",
+    "graph_universe_sync",
+    "compute_graph_sync_killmail_entities",
 }
 
 PYTHON_SYNC_PROCESSOR_JOB_KEYS: set[str] = {
@@ -162,8 +166,11 @@ _PROCESSOR_DISPATCH: dict[str, tuple] = {
     "graph_motif_detection_sync": (run_graph_motif_detection_sync, lambda db, cfg: (db, neo4j_runtime(cfg))),
     "graph_evidence_paths_sync": (run_graph_evidence_paths_sync, lambda db, cfg: (db, neo4j_runtime(cfg))),
     "graph_analyst_recalibration": (run_graph_analyst_recalibration, lambda db, cfg: (db,)),
+    # Universe graph
+    "graph_universe_sync": (run_graph_universe_sync, lambda db, cfg: (db, neo4j_runtime(cfg))),
+    "compute_graph_sync_killmail_entities": (run_compute_graph_sync_killmail_entities, lambda db, cfg: (db, neo4j_runtime(cfg))),
     # Theater intelligence
-    "theater_clustering": (run_theater_clustering, lambda db, cfg: (db, battle_runtime(cfg))),
+    "theater_clustering": (run_theater_clustering, lambda db, cfg: (db, battle_runtime(cfg), neo4j_runtime(cfg))),
     "theater_analysis": (run_theater_analysis, lambda db, cfg: (db, battle_runtime(cfg))),
     "theater_graph_integration": (run_theater_graph_integration, lambda db, cfg: (db, neo4j_runtime(cfg), battle_runtime(cfg))),
     "theater_suspicion": (run_theater_suspicion, lambda db, cfg: (db, battle_runtime(cfg))),
