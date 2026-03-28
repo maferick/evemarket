@@ -35,6 +35,9 @@
                         <span class="text-[10px] uppercase tracking-wider bg-blue-900/60 text-blue-300 rounded-full px-1.5 py-0.5 ml-1">Tracked</span>
                     <?php endif; ?>
                 </h3>
+                <p class="mb-3 text-[11px] uppercase tracking-[0.08em] text-muted">
+                    <?= $side === ($ourSide ?? 'side_a') ? 'Friendly coalition overview' : 'Opposition coalition overview' ?>
+                </p>
 
                 <div class="grid grid-cols-2 gap-x-4 gap-y-2 text-sm">
                     <div>

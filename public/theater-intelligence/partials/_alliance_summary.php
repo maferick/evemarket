@@ -19,7 +19,7 @@
             <tbody>
                 <?php foreach ($allianceSummary as $a): ?>
                     <?php
-                        $aSide = (string) ($a['side'] ?? '');
+                        $aSide = $displaySideForAlliance((int) ($a['alliance_id'] ?? 0), (string) ($a['side'] ?? ''));
                         $eff = (float) ($a['efficiency'] ?? 0);
                         $effClass = $eff >= 0.6 ? 'text-green-400' : ($eff >= 0.4 ? 'text-yellow-400' : 'text-red-400');
                         $aSideColor = $sideColorClass[$aSide] ?? 'text-slate-300';

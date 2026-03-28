@@ -18,6 +18,9 @@
                 <span class="text-slate-500 mx-2">vs</span>
                 <span class="<?= $sideColorClass[$enemySide] ?? 'text-red-300' ?> font-semibold"><?= htmlspecialchars($sideLabels[$enemySide] ?? 'Side B', ENT_QUOTES) ?></span>
             </p>
+            <p class="mt-1 text-xs text-muted">
+                Tracked coalition on this theater: <?= number_format((int) ($trackedAllianceCountsBySide[$ourSide ?? 'side_a'] ?? 0)) ?> alliance<?= ((int) ($trackedAllianceCountsBySide[$ourSide ?? 'side_a'] ?? 0) === 1) ? '' : 's' ?>.
+            </p>
             <p class="mt-1 text-sm text-slate-300">
                 <?= htmlspecialchars((string) ($theater['region_name'] ?? ''), ENT_QUOTES) ?>
                 &middot; <?= htmlspecialchars($theaterStartActual, ENT_QUOTES) ?>

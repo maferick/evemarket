@@ -125,14 +125,29 @@ $sideLabels = [];
 foreach (['side_a', 'side_b'] as $side) {
     $alliances = $displaySideAlliancesByPilots[$side];
     if ($alliances === []) {
-        $sideLabels[$side] = $side === $ourSide ? 'Our Side' : 'Enemy';
+        $sideLabels[$side] = $side === $ourSide ? 'Tracked Coalition' : 'Opposition';
         continue;
     }
     arsort($alliances);
-    $topAllianceId = array_key_first($alliances);
-    $topName = killmail_entity_preferred_name($resolvedEntities, 'alliance', $topAllianceId, '', 'Alliance');
+    $preferredAllianceId = 0;
+    if ($side === $ourSide) {
+        foreach ($alliances as $allianceId => $_pilotCount) {
+            if (in_array((int) $allianceId, $trackedAllianceIds, true)) {
+                $preferredAllianceId = (int) $allianceId;
+                break;
+            }
+        }
+    }
+    if ($preferredAllianceId <= 0) {
+        $preferredAllianceId = (int) array_key_first($alliances);
+    }
+    $preferredName = killmail_entity_preferred_name($resolvedEntities, 'alliance', $preferredAllianceId, '', 'Alliance');
     $otherCount = count($alliances) - 1;
-    $sideLabels[$side] = $topName . ($otherCount > 0 ? " +{$otherCount}" : '');
+    if ($side === $ourSide) {
+        $sideLabels[$side] = $preferredName . ($otherCount > 0 ? " +{$otherCount}" : '');
+    } else {
+        $sideLabels[$side] = $preferredName . ($otherCount > 0 ? " +{$otherCount}" : '');
+    }
 }
 
 $sideColorClass = [
@@ -197,7 +212,7 @@ $participantKillTotal = 0;
 $participantKillTotalsBySide = ['side_a' => 0, 'side_b' => 0];
 foreach ($participantsAll as $row) {
     $kills = (int) ($row['kills'] ?? 0);
-    $side = (string) ($row['side'] ?? 'side_b');
+    $side = $displaySideForAlliance((int) ($row['alliance_id'] ?? 0), (string) ($row['side'] ?? 'side_b'));
     $participantKillTotal += $kills;
     if (isset($participantKillTotalsBySide[$side])) {
         $participantKillTotalsBySide[$side] += $kills;
