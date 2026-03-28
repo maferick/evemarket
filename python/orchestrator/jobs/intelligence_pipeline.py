@@ -21,6 +21,7 @@ from typing import Any
 import json
 
 from ..db import SupplyCoreDb
+from ..eve_constants import HIGH_LOSS_ROLES, LOW_KILL_ROLES
 from ..job_result import JobResult
 from ..json_utils import json_dumps_safe
 from ..neo4j import Neo4jClient, Neo4jConfig, Neo4jError
@@ -305,6 +306,18 @@ def _compute_battle_presence(client: Neo4jClient) -> None:
     )
 
 
+def _compute_fleet_function(client: Neo4jClient) -> None:
+    """Compute primary fleet function per character from most-used ship type."""
+    client.query(
+        """MATCH (c:Character)-[:USED_SHIP]->(s:ShipType)
+           WHERE c.tracked = true AND s.fleet_function IS NOT NULL
+           WITH c, s.fleet_function AS ff, count(*) AS usage
+           ORDER BY usage DESC
+           WITH c, collect(ff)[0] AS primary_ff
+           SET c.primary_fleet_function = primary_ff"""
+    )
+
+
 def _compute_encounter_vs_engagement(client: Neo4jClient) -> None:
     """Step 5.2: Encounter vs engagement per opposing alliance."""
     client.query(
@@ -328,12 +341,19 @@ def _compute_encounter_vs_engagement(client: Neo4jClient) -> None:
 
 
 def _compute_peer_normalisation(client: Neo4jClient) -> None:
-    """Step 5.3: Peer normalisation by ship class and battle size."""
+    """Step 5.3: Peer normalisation by fleet function.
+
+    Compares each character against peers who fly the same fleet function
+    (e.g., tackle vs tackle, logi vs logi) rather than exact ship type.
+    Falls back to ship type if fleet_function is not set.
+    """
     client.query(
         """MATCH (c:Character)-[:USED_SHIP]->(sc:ShipType)
            WHERE c.tracked = true AND c.battles_present > 0
-           MATCH (peer:Character)-[:USED_SHIP]->(sc)
+           WITH c, COALESCE(c.primary_fleet_function, sc.fleet_function, 'mainline_dps') AS my_ff
+           MATCH (peer:Character)-[:USED_SHIP]->(ps:ShipType)
            WHERE peer <> c AND peer.battles_present > 0
+             AND COALESCE(peer.primary_fleet_function, ps.fleet_function, 'mainline_dps') = my_ff
            WITH c,
                 avg(toFloat(peer.kills_total) / peer.battles_present) AS peer_avg_kpb,
                 avg(toFloat(peer.damage_total) / peer.battles_present) AS peer_avg_dpb
@@ -444,33 +464,53 @@ def _compute_score_assembly(client: Neo4jClient, weights: dict[str, float] | Non
 
     Weights are read from analyst recalibration log when available,
     falling back to DEFAULT_WEIGHTS.
+
+    Role-aware adjustments:
+    - HIGH_LOSS_ROLES (tackle, bubble, bomber, scout): suppress loss_without_attack
+      and token_participation signals since dying is expected.
+    - LOW_KILL_ROLES (logi, command, ewar, scout): suppress peer_kill_delta and
+      high_presence_low_output since low kill counts are normal.
     """
     w = weights or DEFAULT_WEIGHTS
     client.query(
         """MATCH (c:Character)
            WHERE c.tracked = true
            WITH c,
-               (COALESCE(c.selective_non_engagement_score, 0) * $w_sne) +
-               (COALESCE(c.peer_norm_kills_delta, 0)  * $w_pnk) +
-               (COALESCE(c.peer_norm_damage_delta, 0) * $w_pnd) +
-               (COALESCE(c.high_presence_low_output_score, 0)  * $w_hplo) +
-               (COALESCE(c.token_participation_score, 0)       * $w_tp) +
-               (COALESCE(c.loss_without_attack_ratio, 0)       * $w_lwa)
+               COALESCE(c.primary_fleet_function, 'mainline_dps') AS ff,
+               COALESCE(c.selective_non_engagement_score, 0) AS sne,
+               COALESCE(c.peer_norm_kills_delta, 0) AS pnk,
+               COALESCE(c.peer_norm_damage_delta, 0) AS pnd,
+               COALESCE(c.high_presence_low_output_score, 0) AS hplo,
+               COALESCE(c.token_participation_score, 0) AS tp,
+               COALESCE(c.loss_without_attack_ratio, 0) AS lwa
+           // Role-aware weight adjustments
+           WITH c, ff, sne, pnk, pnd, hplo, tp, lwa,
+               CASE WHEN ff IN $high_loss_roles THEN 0.0 ELSE $w_lwa END AS eff_w_lwa,
+               CASE WHEN ff IN $high_loss_roles THEN $w_tp * 0.3 ELSE $w_tp END AS eff_w_tp,
+               CASE WHEN ff IN $low_kill_roles THEN $w_pnk * 0.3 ELSE $w_pnk END AS eff_w_pnk,
+               CASE WHEN ff IN $low_kill_roles THEN $w_hplo * 0.3 ELSE $w_hplo END AS eff_w_hplo
+           WITH c, ff,
+               (sne * $w_sne) +
+               (pnk * eff_w_pnk) +
+               (pnd * $w_pnd) +
+               (hplo * eff_w_hplo) +
+               (tp * eff_w_tp) +
+               (lwa * eff_w_lwa)
                AS raw_score,
                [
-                   CASE WHEN COALESCE(c.selective_non_engagement_score, 0) > 0.7
+                   CASE WHEN sne > 0.7
                         THEN 'selective_non_engagement' END,
-                   CASE WHEN COALESCE(c.high_presence_low_output_score, 0) > 0.6
+                   CASE WHEN hplo > 0.6 AND NOT ff IN $low_kill_roles
                         THEN 'high_presence_low_output' END,
-                   CASE WHEN COALESCE(c.token_participation_score, 0) > 0.5
+                   CASE WHEN tp > 0.5 AND NOT ff IN $high_loss_roles
                         THEN 'token_participation' END,
-                   CASE WHEN COALESCE(c.peer_norm_kills_delta, 0) < -0.4
+                   CASE WHEN pnk < -0.4 AND NOT ff IN $low_kill_roles
                         THEN 'peer_kill_delta' END,
-                   CASE WHEN COALESCE(c.peer_norm_damage_delta, 0) < -0.4
+                   CASE WHEN pnd < -0.4
                         THEN 'peer_damage_delta' END,
                    CASE WHEN c.bridge_character = true
                         THEN 'bridge_cluster_member' END,
-                   CASE WHEN COALESCE(c.loss_without_attack_ratio, 0) > 0.7
+                   CASE WHEN lwa > 0.7 AND NOT ff IN $high_loss_roles
                         THEN 'loss_without_attack' END
                ] AS all_flags
            WITH c, raw_score,
@@ -485,6 +525,8 @@ def _compute_score_assembly(client: Neo4jClient, weights: dict[str, float] | Non
             "w_hplo": w.get("high_presence_low_output", 0.15),
             "w_tp": w.get("token_participation", 0.10),
             "w_lwa": w.get("loss_without_attack", 0.10),
+            "high_loss_roles": list(HIGH_LOSS_ROLES),
+            "low_kill_roles": list(LOW_KILL_ROLES),
         },
     )
 
@@ -603,6 +645,7 @@ def _export_suspicion_signals(client: Neo4jClient, db: SupplyCoreDb, computed_at
                toInteger(COALESCE(c.kills_total, 0)) AS kills_total,
                toInteger(COALESCE(c.losses_total, 0)) AS losses_total,
                toInteger(COALESCE(c.damage_total, 0)) AS damage_total,
+               COALESCE(c.primary_fleet_function, 'mainline_dps') AS primary_fleet_function,
                toFloat(COALESCE(c.selective_non_engagement_score, 0)) AS selective_non_engagement_score,
                toFloat(COALESCE(c.high_presence_low_output_score, 0)) AS high_presence_low_output_score,
                toFloat(COALESCE(c.token_participation_score, 0)) AS token_participation_score,
@@ -626,11 +669,12 @@ def _export_suspicion_signals(client: Neo4jClient, db: SupplyCoreDb, computed_at
             cursor.execute(
                 """INSERT INTO character_suspicion_signals
                    (character_id, alliance_id, battles_present, kills_total, losses_total,
-                    damage_total, selective_non_engagement_score, high_presence_low_output_score,
+                    damage_total, primary_fleet_function,
+                    selective_non_engagement_score, high_presence_low_output_score,
                     token_participation_score, loss_without_attack_ratio,
                     peer_normalized_kills_delta, peer_normalized_damage_delta,
                     suspicion_score, suspicion_flags, engagement_rate_by_alliance, computed_at)
-                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
                 (
                     cid,
                     int(r.get("alliance_id") or 0),
@@ -638,6 +682,7 @@ def _export_suspicion_signals(client: Neo4jClient, db: SupplyCoreDb, computed_at
                     int(r.get("kills_total") or 0),
                     int(r.get("losses_total") or 0),
                     int(r.get("damage_total") or 0),
+                    str(r.get("primary_fleet_function") or "mainline_dps"),
                     float(r.get("selective_non_engagement_score") or 0),
                     float(r.get("high_presence_low_output_score") or 0),
                     float(r.get("token_participation_score") or 0),
@@ -808,7 +853,7 @@ def run_intelligence_pipeline(
     # If no new data was added and scores already exist, skip compute stages.
     if not new_data and inspection.get("already_scored", 0) > 0:
         skipped_stages.extend([
-            "battle_presence", "encounter_vs_engagement", "peer_normalisation",
+            "battle_presence", "fleet_function", "encounter_vs_engagement", "peer_normalisation",
             "selective_non_engagement", "high_presence_low_output", "token_participation",
             "loss_pattern", "co_presence_clusters", "score_assembly",
             "shared_alliance_history", "former_allies_attacking", "repeat_targeting",
@@ -817,6 +862,7 @@ def run_intelligence_pipeline(
     else:
         # 4. Suspicion signal computation (ordered).
         _timed("battle_presence", _compute_battle_presence, client)
+        _timed("fleet_function", _compute_fleet_function, client)
         _timed("encounter_vs_engagement", _compute_encounter_vs_engagement, client)
         _timed("peer_normalisation", _compute_peer_normalisation, client)
         _timed("selective_non_engagement", _compute_selective_non_engagement, client)
