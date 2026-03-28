@@ -104,7 +104,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
             </thead>
             <tbody>
                 <?php if ($theaters === []): ?>
-                    <tr><td colspan="13" class="px-3 py-6 text-sm text-muted">No theaters found. Run the theater clustering job to generate data.</td></tr>
+                    <tr><td colspan="12" class="px-3 py-6 text-sm text-muted">No theaters found for tracked alliances.</td></tr>
                 <?php else: ?>
                     <?php foreach ($theaters as $t): ?>
                         <?php

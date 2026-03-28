@@ -11,13 +11,21 @@ $rows = (array) ($data['rows'] ?? []);
 include __DIR__ . '/../../src/views/partials/header.php';
 ?>
 <section class="surface-primary">
-    <h1 class="text-2xl font-semibold text-slate-50">Battle anomaly leaderboard</h1>
-    <p class="mt-2 text-sm text-muted">Sides ranked by enemy overperformance score with sustain + hull context.</p>
+    <div class="flex items-center justify-between gap-4">
+        <div>
+            <h1 class="text-2xl font-semibold text-slate-50">Battle anomaly leaderboard</h1>
+            <p class="mt-2 text-sm text-muted">Sides ranked by enemy overperformance score with sustain + hull context.</p>
+        </div>
+        <a href="/battle-intelligence" class="btn-secondary">Back to leaderboard</a>
+    </div>
 
     <div class="mt-5 table-shell">
         <table class="table-ui">
             <thead><tr class="border-b border-border/70 text-xs uppercase tracking-[0.15em] text-muted"><th class="px-3 py-2 text-left">Battle</th><th class="px-3 py-2 text-left">Side</th><th class="px-3 py-2 text-left">Class</th><th class="px-3 py-2 text-right">Overperf.</th><th class="px-3 py-2 text-right">Sustain</th><th class="px-3 py-2 text-right">Hull</th><th class="px-3 py-2 text-right">Participants</th><th class="px-3 py-2 text-right">Inspect</th></tr></thead>
             <tbody>
+            <?php if ($rows === []): ?>
+                <tr><td colspan="8" class="px-3 py-6 text-sm text-muted">No anomalous battles found for tracked alliances.</td></tr>
+            <?php endif; ?>
             <?php foreach ($rows as $row): ?>
                 <tr class="border-b border-border/50">
                     <td class="px-3 py-2"><?= htmlspecialchars((string) ($row['system_name'] ?? 'Unknown'), ENT_QUOTES) ?><div class="text-xs text-muted"><?= htmlspecialchars((string) ($row['started_at'] ?? ''), ENT_QUOTES) ?></div></td>

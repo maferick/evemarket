@@ -84,6 +84,9 @@ foreach ($allianceSummary as $a) {
         $ourSide = $side;
     }
 }
+if ($ourSide === null) {
+    $ourSide = 'side_a';
+}
 $enemySide = ($ourSide === 'side_a') ? 'side_b' : 'side_a';
 
 // Build human-readable label for each side (dominant alliance name by pilot count)
