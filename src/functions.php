@@ -27058,6 +27058,26 @@ function theater_ai_output_schema(): array
     ];
 }
 
+function theater_ai_summary_read(string $theaterId): ?array
+{
+    $theater = db_theater_detail($theaterId);
+    if ($theater === null) {
+        return null;
+    }
+    $existingSummary = $theater['ai_summary'] ?? null;
+    if ($existingSummary === null || trim((string) $existingSummary) === '') {
+        return null;
+    }
+    return [
+        'headline' => (string) ($theater['ai_headline'] ?? ''),
+        'summary' => (string) $existingSummary,
+        'verdict' => (string) ($theater['ai_verdict'] ?? ''),
+        'model' => (string) ($theater['ai_summary_model'] ?? ''),
+        'generated_at' => (string) ($theater['ai_summary_at'] ?? ''),
+        'cached' => true,
+    ];
+}
+
 function theater_ai_summary_store(string $theaterId, string $headline, string $summary, string $verdict, string $model): void
 {
     db_execute(

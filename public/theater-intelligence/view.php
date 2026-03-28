@@ -127,11 +127,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['regenerate_aar']) && 
     }
     $aarRegenerated = $aiSummary !== null;
 } else {
-    $aiSummary = theater_ai_summary_generate($theaterId);
-    if (is_array($aiSummary) && isset($aiSummary['error'])) {
-        $aarError = (string) $aiSummary['error'];
-        $aiSummary = null;
-    }
+    // On GET, only read existing summary — don't trigger generation
+    $aiSummary = theater_ai_summary_read($theaterId);
 }
 
 include __DIR__ . '/../../src/views/partials/header.php';
