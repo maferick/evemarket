@@ -104,8 +104,8 @@ def _fetch_esi_killmail(killmail_id: int, killmail_hash: str, user_agent: str) -
         "hash": killmail_hash,
         "esi": esi_data,
         "zkb": {},
-        "sequence_id": 0,
-        "requested_sequence_id": 0,
+        "sequence_id": killmail_id,
+        "requested_sequence_id": killmail_id,
         "uploaded_at": int(time.time()),
     }
 
