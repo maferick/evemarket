@@ -176,46 +176,151 @@ def _load_battle_participants_for_theater(
     return all_rows
 
 
+def _load_side_configuration_ids(db: SupplyCoreDb) -> dict[str, set[int]]:
+    """Load configured tracked/opponent alliance/corporation IDs once per job run."""
+    friendly_alliance_rows = db.fetch_all(
+        "SELECT alliance_id FROM killmail_tracked_alliances WHERE is_active = 1"
+    )
+    friendly_corporation_rows = db.fetch_all(
+        "SELECT corporation_id FROM killmail_tracked_corporations WHERE is_active = 1"
+    )
+    opponent_alliance_rows = db.fetch_all(
+        "SELECT alliance_id FROM killmail_opponent_alliances WHERE is_active = 1"
+    )
+    opponent_corporation_rows = db.fetch_all(
+        "SELECT corporation_id FROM killmail_opponent_corporations WHERE is_active = 1"
+    )
+    return {
+        "friendly_alliance_ids": {
+            int(row["alliance_id"]) for row in friendly_alliance_rows if int(row.get("alliance_id") or 0) > 0
+        },
+        "friendly_corporation_ids": {
+            int(row["corporation_id"])
+            for row in friendly_corporation_rows
+            if int(row.get("corporation_id") or 0) > 0
+        },
+        "opponent_alliance_ids": {
+            int(row["alliance_id"]) for row in opponent_alliance_rows if int(row.get("alliance_id") or 0) > 0
+        },
+        "opponent_corporation_ids": {
+            int(row["corporation_id"])
+            for row in opponent_corporation_rows
+            if int(row.get("corporation_id") or 0) > 0
+        },
+    }
+
+
 # ── Side determination ──────────────────────────────────────────────────────
 
 def _determine_sides(
     participants: list[dict[str, Any]],
-) -> tuple[dict[str, str], dict[int, str]]:
+    side_configuration: dict[str, set[int]],
+) -> tuple[dict[str, str], dict[int, str], dict[str, Any]]:
     """Determine the two largest sides and assign characters.
 
     Returns:
         side_labels: mapping side_key → "side_a" or "side_b"
         char_sides:  mapping character_id → "side_a" or "side_b"
+        side_meta:   scoring/debug metadata
     """
     side_counts: dict[str, int] = defaultdict(int)
     char_side_keys: dict[int, str] = {}
+    side_scores: dict[str, dict[str, int]] = {}
+
+    friendly_alliance_ids = side_configuration.get("friendly_alliance_ids", set())
+    friendly_corporation_ids = side_configuration.get("friendly_corporation_ids", set())
+    opponent_alliance_ids = side_configuration.get("opponent_alliance_ids", set())
+    opponent_corporation_ids = side_configuration.get("opponent_corporation_ids", set())
 
     for p in participants:
         side_key = str(p.get("side_key") or "unknown")
         char_id = int(p.get("character_id") or 0)
+        alliance_id = int(p.get("alliance_id") or 0)
+        corporation_id = int(p.get("corporation_id") or 0)
         if char_id <= 0:
             continue
         side_counts[side_key] += 1
         char_side_keys[char_id] = side_key
+        score_entry = side_scores.setdefault(
+            side_key,
+            {"friendly_score": 0, "opponent_score": 0, "participant_count": 0},
+        )
+        score_entry["participant_count"] += 1
+        if alliance_id > 0 and alliance_id in friendly_alliance_ids:
+            score_entry["friendly_score"] += 1
+        if corporation_id > 0 and corporation_id in friendly_corporation_ids:
+            score_entry["friendly_score"] += 1
+        if alliance_id > 0 and alliance_id in opponent_alliance_ids:
+            score_entry["opponent_score"] += 1
+        if corporation_id > 0 and corporation_id in opponent_corporation_ids:
+            score_entry["opponent_score"] += 1
 
     # Rank sides by participant count
     ranked = sorted(side_counts.items(), key=lambda x: -x[1])
 
     side_labels: dict[str, str] = {}
-    if len(ranked) >= 1:
-        side_labels[ranked[0][0]] = "side_a"
-    if len(ranked) >= 2:
-        side_labels[ranked[1][0]] = "side_b"
-    # All others are "side_b" (smaller coalition)
-    for sk in side_counts:
-        if sk not in side_labels:
-            side_labels[sk] = "side_b"
+    total_friendly_matches = sum(entry["friendly_score"] for entry in side_scores.values())
+    total_opponent_matches = sum(entry["opponent_score"] for entry in side_scores.values())
+    used_fallback = total_friendly_matches == 0 and total_opponent_matches == 0
+
+    if used_fallback:
+        if len(ranked) >= 1:
+            side_labels[ranked[0][0]] = "side_a"
+        if len(ranked) >= 2:
+            side_labels[ranked[1][0]] = "side_b"
+        # All others are "side_b" (smaller coalition)
+        for sk in side_counts:
+            if sk not in side_labels:
+                side_labels[sk] = "side_b"
+    else:
+        scored_side_keys = list(side_scores.keys())
+        friendly_ranked = sorted(
+            scored_side_keys,
+            key=lambda sk: (
+                -side_scores[sk]["friendly_score"],
+                side_scores[sk]["opponent_score"],
+                -side_scores[sk]["participant_count"],
+                sk,
+            ),
+        )
+        opponent_ranked = sorted(
+            scored_side_keys,
+            key=lambda sk: (
+                -side_scores[sk]["opponent_score"],
+                side_scores[sk]["friendly_score"],
+                -side_scores[sk]["participant_count"],
+                sk,
+            ),
+        )
+
+        if friendly_ranked:
+            side_labels[friendly_ranked[0]] = "side_a"
+        for sk in opponent_ranked:
+            if sk not in side_labels:
+                side_labels[sk] = "side_b"
+                break
+
+        if "side_b" not in side_labels.values():
+            for sk, _ in ranked:
+                if sk not in side_labels:
+                    side_labels[sk] = "side_b"
+                    break
+
+        for sk in side_counts:
+            if sk not in side_labels:
+                side_labels[sk] = "side_b"
 
     char_sides: dict[int, str] = {}
     for char_id, sk in char_side_keys.items():
         char_sides[char_id] = side_labels.get(sk, "side_b")
 
-    return side_labels, char_sides
+    return side_labels, char_sides, {
+        "used_fallback": used_fallback,
+        "total_friendly_matches": total_friendly_matches,
+        "total_opponent_matches": total_opponent_matches,
+        "side_scores": side_scores,
+        "side_labels": side_labels,
+    }
 
 
 # ── Timeline computation ───────────────────────────────────────────────────
@@ -926,6 +1031,17 @@ def run_theater_analysis(
 
         # Load ship type → group mapping for fleet function resolution
         ship_group_map = _load_ship_group_map(db)
+        side_configuration = _load_side_configuration_ids(db)
+        _theater_log(
+            runtime,
+            "theater_analysis.side_configuration_loaded",
+            {
+                "friendly_alliances": len(side_configuration["friendly_alliance_ids"]),
+                "friendly_corporations": len(side_configuration["friendly_corporation_ids"]),
+                "opponent_alliances": len(side_configuration["opponent_alliance_ids"]),
+                "opponent_corporations": len(side_configuration["opponent_corporation_ids"]),
+            },
+        )
 
         if not theaters:
             finish_job_run(db, job, status="success", rows_processed=0, rows_written=0, meta={"theaters_analyzed": 0})
@@ -952,7 +1068,7 @@ def run_theater_analysis(
             bp_rows = _load_battle_participants_for_theater(db, battle_ids)
 
             # Determine sides
-            side_labels, char_sides = _determine_sides(bp_rows)
+            side_labels, char_sides, side_resolution = _determine_sides(bp_rows, side_configuration)
 
             # Compute timeline
             timeline = _compute_timeline(killmails, char_sides, theater_start, theater_end)
@@ -994,6 +1110,11 @@ def run_theater_analysis(
                 "timeline_buckets": len(timeline),
                 "turning_points": len(turning_points),
                 "anomaly_score": anomaly_score,
+                "side_resolution": "unresolved_fallback_size_based" if side_resolution["used_fallback"] else "configured_entity_match",
+                "friendly_matches": side_resolution["total_friendly_matches"],
+                "opponent_matches": side_resolution["total_opponent_matches"],
+                "side_labels": side_resolution["side_labels"],
+                "side_scores": side_resolution["side_scores"],
             })
 
         finish_job_run(
