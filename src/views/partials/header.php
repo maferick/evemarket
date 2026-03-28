@@ -62,37 +62,50 @@ $pageFreshnessLine = $pageFreshness !== []
             <div class="mb-6 rounded-2xl border border-emerald-500/30 bg-emerald-500/12 px-4 py-3 text-sm text-emerald-100 shadow-[0_0_24px_rgba(34,197,94,0.08)]"><?= htmlspecialchars($notice, ENT_QUOTES) ?></div>
         <?php endif; ?>
         <?php if ($pageFreshness !== []): ?>
+            <?php
+            $freshnessState = (string) ($pageFreshness['state'] ?? 'stale');
+            $freshnessRelative = (string) ($pageFreshness['computed_relative'] ?? 'Unknown');
+            $freshnessAt = (string) ($pageFreshness['computed_at'] ?? '');
+            ?>
             <!-- ui-section:page-freshness:start -->
-            <div class="mb-6 flex flex-wrap items-center justify-between gap-3 rounded-2xl border px-4 py-2 text-sm shadow-[0_0_24px_rgba(15,23,42,0.14)] <?= htmlspecialchars((string) ($pageFreshness['tone'] ?? 'border-amber-400/20 bg-amber-500/10 text-amber-100'), ENT_QUOTES) ?>" data-ui-section="page-freshness">
-                <div>
-                    <p class="font-medium"><?= htmlspecialchars((string) ($pageFreshness['message'] ?? 'Summary freshness unavailable.'), ENT_QUOTES) ?></p>
-                    <p class="mt-1 text-xs opacity-80" data-ui-freshness-target="page-freshness">Last computed <?= htmlspecialchars((string) ($pageFreshness['computed_relative'] ?? 'Never'), ENT_QUOTES) ?> · <?= htmlspecialchars((string) ($pageFreshness['computed_at'] ?? 'Unavailable'), ENT_QUOTES) ?></p>
+            <?php if ($freshnessState === 'fresh'): ?>
+                <!-- Fresh data: no banner shown -->
+            <?php elseif ($freshnessState === 'updating'): ?>
+                <p class="mb-4 text-xs text-slate-500" data-ui-section="page-freshness" data-ui-freshness-target="page-freshness">Refreshing data... · Last snapshot <?= htmlspecialchars($freshnessRelative, ENT_QUOTES) ?></p>
+            <?php elseif ($freshnessState === 'stale'): ?>
+                <div class="mb-4 flex items-center gap-2 text-xs text-amber-300/80" data-ui-section="page-freshness">
+                    <svg viewBox="0 0 16 16" fill="currentColor" class="h-3.5 w-3.5 shrink-0 opacity-70"><path d="M8 1a7 7 0 1 0 0 14A7 7 0 0 0 8 1Zm0 3a.75.75 0 0 1 .75.75v3.5a.75.75 0 0 1-1.5 0v-3.5A.75.75 0 0 1 8 4Zm0 7a.75.75 0 1 0 0-1.5.75.75 0 0 0 0 1.5Z"/></svg>
+                    <span data-ui-freshness-target="page-freshness">Data from <?= htmlspecialchars($freshnessRelative, ENT_QUOTES) ?><?= $freshnessAt !== '' ? ' · ' . htmlspecialchars($freshnessAt, ENT_QUOTES) : '' ?></span>
                 </div>
-                <span class="rounded-full border border-current/20 px-3 py-1 text-[11px] uppercase tracking-[0.14em]"><?= htmlspecialchars((string) ($pageFreshness['label'] ?? 'Unknown'), ENT_QUOTES) ?></span>
-            </div>
+            <?php else: ?>
+                <p class="mb-4 text-xs text-slate-500" data-ui-section="page-freshness" data-ui-freshness-target="page-freshness">Data from <?= htmlspecialchars($freshnessRelative, ENT_QUOTES) ?></p>
+            <?php endif; ?>
             <!-- ui-section:page-freshness:end -->
         <?php endif; ?>
         <?php if ($dealAlertPopupRows !== []): ?>
-            <?php
-            $dealAlertPopupSignature = sha1(json_encode(array_values(array_map(static fn (array $row): string => (string) ($row['alert_key'] ?? ''), $dealAlertPopupRows)), JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE) ?: '');
-            ?>
-            <div class="fixed inset-x-4 top-4 z-50 ml-auto max-w-xl" data-deal-alert-popup data-deal-alert-signature="<?= htmlspecialchars($dealAlertPopupSignature, ENT_QUOTES) ?>" data-deal-alert-dismiss-minutes="<?= max(5, $dealAlertDismissMinutes) ?>">
-                <section class="rounded-[1.6rem] border border-rose-400/35 bg-gradient-to-br from-[#2a0911]/96 via-[#1a0c14]/96 to-[#120811]/96 px-5 py-4 text-rose-50 shadow-[0_28px_90px_rgba(244,63,94,0.28)] backdrop-blur-xl">
-                    <div class="flex items-start justify-between gap-4">
+            <!-- Notification bell trigger (fixed top-right) -->
+            <button type="button" class="fixed right-5 top-5 z-50 flex h-10 w-10 items-center justify-center rounded-full border border-rose-400/30 bg-[#1a0c14]/90 text-rose-100 shadow-[0_4px_24px_rgba(244,63,94,0.25)] backdrop-blur-xl transition hover:bg-rose-500/20" data-alert-bell-toggle aria-label="Open anomaly alerts">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" class="h-5 w-5"><path stroke-linecap="round" stroke-linejoin="round" d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path stroke-linecap="round" stroke-linejoin="round" d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
+                <span class="absolute -right-1 -top-1 flex h-5 min-w-5 items-center justify-center rounded-full bg-rose-500 px-1 text-[10px] font-bold text-white" data-alert-bell-count><?= count($dealAlertPopupRows) ?></span>
+            </button>
+
+            <!-- Slide-out alert drawer -->
+            <div class="fixed inset-0 z-[60] hidden" data-alert-drawer>
+                <div class="absolute inset-0 bg-black/50 backdrop-blur-sm" data-alert-drawer-backdrop></div>
+                <aside class="absolute bottom-0 right-0 top-0 flex w-full max-w-md flex-col border-l border-rose-400/20 bg-gradient-to-b from-[#1a0c14] via-[#120811] to-[#0b0610] shadow-[0_0_60px_rgba(244,63,94,0.15)]">
+                    <div class="flex items-center justify-between border-b border-white/8 px-5 py-4">
                         <div>
-                            <p class="text-[0.68rem] font-semibold uppercase tracking-[0.24em] text-rose-200/80">Immediate market anomaly</p>
-                            <h2 class="mt-2 text-lg font-semibold text-white">Critical / high-confidence deal alerts are active</h2>
-                            <p class="mt-1 text-sm text-rose-100/90">SupplyCore detected listings far below their local historical baseline in the alliance market or reference hub.</p>
+                            <p class="text-[0.68rem] font-semibold uppercase tracking-[0.24em] text-rose-200/80">Market anomalies</p>
+                            <p class="mt-1 text-sm text-rose-100/70"><span data-alert-drawer-count><?= count($dealAlertPopupRows) ?></span> active alerts</p>
                         </div>
                         <div class="flex items-center gap-2">
-                            <a href="/deal-alerts" class="rounded-full border border-rose-200/20 bg-white/8 px-3 py-1 text-xs font-medium text-white hover:bg-white/12">Open deals page</a>
-                            <button type="button" class="rounded-full border border-white/20 bg-black/20 px-2.5 py-1 text-xs font-semibold uppercase tracking-[0.14em] text-white hover:bg-black/35" data-deal-alert-close>Close</button>
+                            <a href="/deal-alerts" class="rounded-full border border-rose-200/20 bg-white/8 px-3 py-1 text-xs font-medium text-white hover:bg-white/12">View all</a>
+                            <button type="button" class="rounded-full border border-white/20 bg-black/20 px-2.5 py-1 text-xs font-semibold uppercase tracking-[0.14em] text-white hover:bg-black/35" data-alert-drawer-close>Close</button>
                         </div>
                     </div>
-
-                    <div class="mt-4 space-y-3">
+                    <div class="flex-1 overflow-y-auto px-5 py-4 space-y-3" data-alert-drawer-list>
                         <?php foreach ($dealAlertPopupRows as $popupRow): ?>
-                            <article class="rounded-2xl border border-white/10 bg-black/20 p-4">
+                            <article class="rounded-2xl border border-white/10 bg-black/20 p-4" data-alert-item data-alert-id="<?= htmlspecialchars((string) ($popupRow['alert_key'] ?? ''), ENT_QUOTES) ?>">
                                 <div class="flex flex-wrap items-start justify-between gap-3">
                                     <div class="min-w-0 flex-1">
                                         <div class="flex flex-wrap items-center gap-2">
@@ -111,54 +124,67 @@ $pageFreshnessLine = $pageFreshness !== []
                                             <?= htmlspecialchars((string) ($popupRow['source_name'] ?? ''), ENT_QUOTES) ?> · Fresh <?= htmlspecialchars((string) ($popupRow['freshness_relative'] ?? 'Unknown'), ENT_QUOTES) ?>
                                         </p>
                                     </div>
-                                    <form method="post" action="/deal-alerts" class="shrink-0">
-                                        <input type="hidden" name="_token" value="<?= htmlspecialchars(csrf_token(), ENT_QUOTES) ?>">
-                                        <input type="hidden" name="alert_action" value="dismiss">
-                                        <input type="hidden" name="alert_key" value="<?= htmlspecialchars((string) ($popupRow['alert_key'] ?? ''), ENT_QUOTES) ?>">
-                                        <input type="hidden" name="severity_rank" value="<?= (int) ($popupRow['severity_rank'] ?? 1) ?>">
-                                        <input type="hidden" name="return_to" value="<?= htmlspecialchars((string) ($_SERVER['REQUEST_URI'] ?? '/deal-alerts'), ENT_QUOTES) ?>">
-                                        <button type="submit" class="rounded-full border border-white/12 bg-white/6 px-3 py-1.5 text-xs font-medium text-white hover:bg-white/12">
-                                            Dismiss <?= $dealAlertDismissMinutes ?>m
-                                        </button>
-                                    </form>
+                                    <button type="button" class="shrink-0 rounded-full border border-white/12 bg-white/6 px-3 py-1.5 text-xs font-medium text-white hover:bg-white/12" data-alert-dismiss="<?= htmlspecialchars((string) ($popupRow['alert_key'] ?? ''), ENT_QUOTES) ?>">
+                                        Dismiss
+                                    </button>
                                 </div>
                             </article>
                         <?php endforeach; ?>
                     </div>
-                </section>
+                </aside>
             </div>
             <script>
                 (() => {
-                    const popup = document.querySelector('[data-deal-alert-popup]');
-                    if (!popup) return;
-                    const signature = popup.getAttribute('data-deal-alert-signature') || '';
-                    const ttlMinutes = Number.parseInt(popup.getAttribute('data-deal-alert-dismiss-minutes') || '120', 10);
-                    const key = `deal-alert-popup:${signature}`;
-                    try {
-                        const raw = window.sessionStorage.getItem(key);
-                        if (raw) {
-                            const expiresAt = Number.parseInt(raw, 10);
-                            if (Number.isFinite(expiresAt) && Date.now() < expiresAt) {
-                                popup.remove();
-                                return;
-                            }
-                            window.sessionStorage.removeItem(key);
-                        }
-                    } catch (error) {
-                        // ignore storage access failures and still allow close interaction
+                    const bell = document.querySelector('[data-alert-bell-toggle]');
+                    const drawer = document.querySelector('[data-alert-drawer]');
+                    if (!bell || !drawer) return;
+                    const backdrop = drawer.querySelector('[data-alert-drawer-backdrop]');
+                    const closeBtn = drawer.querySelector('[data-alert-drawer-close]');
+                    const bellCount = bell.querySelector('[data-alert-bell-count]');
+                    const drawerCount = drawer.querySelector('[data-alert-drawer-count]');
+
+                    function filterDismissed() {
+                        let visible = 0;
+                        drawer.querySelectorAll('[data-alert-item]').forEach(item => {
+                            const id = item.getAttribute('data-alert-id');
+                            try {
+                                const ts = localStorage.getItem('dismissed_alert_' + id);
+                                if (ts && Date.now() < Number(ts)) { item.remove(); return; }
+                                if (ts) localStorage.removeItem('dismissed_alert_' + id);
+                            } catch (e) {}
+                            visible++;
+                        });
+                        updateCount(visible);
+                        if (visible === 0) { bell.classList.add('hidden'); }
                     }
-                    const closeButton = popup.querySelector('[data-deal-alert-close]');
-                    if (!closeButton) return;
-                    closeButton.addEventListener('click', () => {
-                        try {
-                            const minutes = Number.isFinite(ttlMinutes) ? Math.max(5, ttlMinutes) : 120;
-                            const expiresAt = Date.now() + (minutes * 60 * 1000);
-                            window.sessionStorage.setItem(key, String(expiresAt));
-                        } catch (error) {
-                            // no-op
-                        }
-                        popup.remove();
+
+                    function updateCount(n) {
+                        if (bellCount) bellCount.textContent = n;
+                        if (drawerCount) drawerCount.textContent = n;
+                    }
+
+                    function openDrawer() { drawer.classList.remove('hidden'); document.body.style.overflow = 'hidden'; }
+                    function closeDrawer() { drawer.classList.add('hidden'); document.body.style.overflow = ''; }
+
+                    bell.addEventListener('click', openDrawer);
+                    if (backdrop) backdrop.addEventListener('click', closeDrawer);
+                    if (closeBtn) closeBtn.addEventListener('click', closeDrawer);
+                    document.addEventListener('keydown', e => { if (e.key === 'Escape') closeDrawer(); });
+
+                    drawer.querySelectorAll('[data-alert-dismiss]').forEach(btn => {
+                        btn.addEventListener('click', () => {
+                            const id = btn.getAttribute('data-alert-dismiss');
+                            const ttl = 2 * 60 * 60 * 1000; // 2 hours
+                            try { localStorage.setItem('dismissed_alert_' + id, String(Date.now() + ttl)); } catch (e) {}
+                            const item = btn.closest('[data-alert-item]');
+                            if (item) item.remove();
+                            const remaining = drawer.querySelectorAll('[data-alert-item]').length;
+                            updateCount(remaining);
+                            if (remaining === 0) { closeDrawer(); bell.classList.add('hidden'); }
+                        });
                     });
+
+                    filterDismissed();
                 })();
             </script>
         <?php endif; ?>

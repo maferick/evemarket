@@ -203,6 +203,7 @@ function nav_items(): array
             'label' => 'Market Status',
             'path' => '/market-status',
             'icon' => '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" class="h-4 w-4" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M3 6h18"/><path stroke-linecap="round" stroke-linejoin="round" d="M7 12h10"/><path stroke-linecap="round" stroke-linejoin="round" d="M10 18h4"/></svg>',
+            'badge_tooltip' => 'Market analysis views',
             'children' => [
                 ['label' => 'Current Alliance Structure', 'path' => '/market-status/current-alliance'],
                 ['label' => 'Reference Hub Comparison', 'path' => '/market-status/reference-comparison'],
@@ -220,6 +221,7 @@ function nav_items(): array
             'label' => 'History',
             'path' => '/history',
             'icon' => '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" class="h-4 w-4" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M12 8v5l3 2"/><path stroke-linecap="round" stroke-linejoin="round" d="M21 12a9 9 0 1 1-3.3-6.95"/></svg>',
+            'badge_tooltip' => 'Trend windows with data',
             'children' => [
                 ['label' => 'Alliance Structure Trends', 'path' => '/history/alliance-trends'],
                 ['label' => 'Module History', 'path' => '/history/module-history'],
@@ -229,6 +231,7 @@ function nav_items(): array
             'label' => 'Killmail Intelligence',
             'path' => '/killmail-intelligence',
             'icon' => '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" class="h-4 w-4" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M13 3 4 14h6l-1 7 9-11h-6l1-7Z"/></svg>',
+            'badge_tooltip' => 'Intelligence feeds',
             'children' => [
                 ['label' => 'Recent Killmails', 'path' => '/killmail-intelligence'],
             ],
@@ -237,6 +240,7 @@ function nav_items(): array
             'label' => 'Battle Intelligence',
             'path' => '/battle-intelligence',
             'icon' => '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" class="h-4 w-4" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M4 6h16"/><path stroke-linecap="round" stroke-linejoin="round" d="M4 12h16"/><path stroke-linecap="round" stroke-linejoin="round" d="M4 18h16"/><path stroke-linecap="round" stroke-linejoin="round" d="m9 9 3 3 3-3"/></svg>',
+            'badge_tooltip' => 'Battle analysis tools',
             'children' => [
                 ['label' => 'Pilot Lookup', 'path' => '/battle-intelligence/pilot-lookup.php'],
                 ['label' => 'Suspicion Leaderboard', 'path' => '/battle-intelligence'],
@@ -253,6 +257,7 @@ function nav_items(): array
             'label' => 'Activity Priority',
             'path' => '/activity-priority',
             'icon' => '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" class="h-4 w-4" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M4 7h16"/><path stroke-linecap="round" stroke-linejoin="round" d="M6 12h12"/><path stroke-linecap="round" stroke-linejoin="round" d="M9 17h6"/><path stroke-linecap="round" stroke-linejoin="round" d="m15 5 4 4-4 4"/></svg>',
+            'badge_tooltip' => 'Items needing action',
             'children' => [
                 ['label' => 'Doctrine Activity Board', 'path' => '/activity-priority'],
             ],
@@ -261,6 +266,7 @@ function nav_items(): array
             'label' => 'Doctrine Fits',
             'path' => '/doctrine',
             'icon' => '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" class="h-4 w-4" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M5 5h14v14H5z"/><path stroke-linecap="round" stroke-linejoin="round" d="M9 9h6M9 13h6M9 17h4"/></svg>',
+            'badge_tooltip' => 'Doctrine management views',
             'children' => [
                 ['label' => 'Doctrine Groups', 'path' => '/doctrine'],
                 ['label' => 'Fit Overview', 'path' => '/doctrine/fits'],
@@ -30257,4 +30263,39 @@ function ew_meta_group_label(int $metaGroupId): string
         53 => 'Officer',
         default => 'Meta ' . $metaGroupId,
     };
+}
+
+// ---------------------------------------------------------------------------
+// Page cache helpers (DB-backed, works without Redis)
+// ---------------------------------------------------------------------------
+
+function page_cache_get(string $key): mixed
+{
+    $row = db_select_one(
+        "SELECT cache_value FROM page_cache WHERE cache_key = ? AND expires_at > NOW()",
+        [$key]
+    );
+
+    return $row ? json_decode($row['cache_value'], true) : null;
+}
+
+function page_cache_set(string $key, mixed $data, int $ttl = 300): void
+{
+    db_execute(
+        "REPLACE INTO page_cache (cache_key, cache_value, computed_at, expires_at)
+         VALUES (?, ?, NOW(), DATE_ADD(NOW(), INTERVAL ? SECOND))",
+        [$key, json_encode($data, JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE), $ttl]
+    );
+}
+
+function page_cache_clear(string $key): void
+{
+    db_execute("DELETE FROM page_cache WHERE cache_key = ?", [$key]);
+}
+
+function page_cache_flush_expired(): int
+{
+    db_execute("DELETE FROM page_cache WHERE expires_at <= NOW()");
+
+    return 0;
 }

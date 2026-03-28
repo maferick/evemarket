@@ -97,6 +97,19 @@ include __DIR__ . '/../../src/views/partials/header.php';
                             </div>
                             <span class="badge border-cyan-400/18 bg-cyan-500/10 text-cyan-100"><?= doctrine_format_quantity((int) ($group['fit_count'] ?? 0)) ?> primary fits</span>
                         </div>
+                        <?php
+                        $readyCount = (int) ($group['complete_fits_available'] ?? 0);
+                        $targetCount = max(1, (int) ($group['target_fit_count'] ?? 1));
+                        $readinessPercent = min(100, round(($readyCount / $targetCount) * 100, 1));
+                        $readinessColor = $readinessPercent >= 90 ? 'bg-emerald-400/70' : ($readinessPercent >= 70 ? 'bg-amber-400/70' : 'bg-rose-400/70');
+                        $readinessText = $readinessPercent >= 90 ? 'text-emerald-300' : ($readinessPercent >= 70 ? 'text-amber-300' : 'text-rose-300');
+                        ?>
+                        <div class="mt-3 flex items-center gap-3">
+                            <div class="flex-1 h-2 rounded-full bg-white/8 overflow-hidden">
+                                <div class="h-full rounded-full transition-all <?= $readinessColor ?>" style="width: <?= max(1, $readinessPercent) ?>%"></div>
+                            </div>
+                            <span class="text-sm font-semibold tabular-nums <?= $readinessText ?>"><?= $readinessPercent ?>%</span>
+                        </div>
                         <div class="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
                             <div class="surface-tertiary">
                                 <p class="text-xs uppercase tracking-[0.16em] text-slate-500">Fleet ready</p>

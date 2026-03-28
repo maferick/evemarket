@@ -4,30 +4,26 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/../src/bootstrap.php';
 
+// --- Lightweight header data (fast) ---
 $title = 'Command Dashboard';
-$dbStatus = db_connection_status();
-$intel = dashboard_intelligence_data();
-$doctrine = $intel['doctrine'] ?? doctrine_groups_overview_data();
-$pageFreshness = supplycore_page_freshness_view_model((array) ($intel['_freshness'] ?? []));
-$buyAll = buy_all_dashboard_summary();
 $liveRefreshConfig = supplycore_live_refresh_page_config('dashboard');
 $liveRefreshSummary = supplycore_live_refresh_summary($liveRefreshConfig);
 $pageHeaderBadge = 'Alliance logistics intelligence';
 $pageHeaderSummary = 'Focus this page on what changed, what needs action, and where alliance logistics can make or save ISK.';
-$pageHeaderMeta = [
-    [
-        'label' => 'Data freshness',
-        'value' => $pageFreshness['label'] . ' · ' . $pageFreshness['computed_relative'],
-        'caption' => 'Last updated ' . $pageFreshness['computed_at'] . '.',
-    ],
-    [
-        'label' => 'Live updates',
-        'value' => $liveRefreshSummary['mode_label'],
-        'caption' => $liveRefreshSummary['health_message'],
-    ],
-];
+$pageFreshness = [];
 
 include __DIR__ . '/../src/views/partials/header.php';
+
+// Early flush: browser can start rendering the nav shell while we compute
+if (function_exists('ob_flush')) { @ob_flush(); }
+@flush();
+
+// --- Heavy data queries (slow) ---
+$dbStatus = db_connection_status();
+$intel = dashboard_intelligence_data();
+$doctrine = $intel['doctrine'] ?? doctrine_groups_overview_data();
+$dashboardFreshness = supplycore_page_freshness_view_model((array) ($intel['_freshness'] ?? []));
+$buyAll = buy_all_dashboard_summary();
 ?>
 <?php
 $kpiThemes = [
@@ -110,7 +106,22 @@ if ($kpiCards === []) {
         [
             'label' => 'Top Opportunities',
             'value' => '—',
-            'context' => 'No KPI data available yet. Refresh dashboard snapshots to populate intelligence cards.',
+            'context' => 'Computing intelligence... KPI data will appear after the first snapshot completes.',
+        ],
+        [
+            'label' => 'Top Risks',
+            'value' => '—',
+            'context' => 'Awaiting first risk analysis snapshot.',
+        ],
+        [
+            'label' => 'Missing Seed Targets',
+            'value' => '—',
+            'context' => 'Awaiting market coverage data.',
+        ],
+        [
+            'label' => 'Overlap Coverage',
+            'value' => '—',
+            'context' => 'Coverage will show once market orders sync.',
         ],
     ];
 }
@@ -180,6 +191,7 @@ try {
     $dashboardFreshnessCards = [];
 }
 ?>
+<?php ob_start(); // capture KPIs section ?>
 <!-- ui-section:dashboard-kpis:start -->
 <section class="grid gap-4 xl:grid-cols-4" data-ui-section="dashboard-kpis">
     <?php foreach ($kpiCards as $card): ?>
@@ -237,7 +249,9 @@ try {
     <?php endforeach; ?>
 </section>
 <!-- ui-section:dashboard-kpis:end -->
+<?php $sectionKpis = ob_get_clean(); ?>
 
+<?php ob_start(); // capture Buy All section ?>
 <!-- ui-section:dashboard-buyall:start -->
 <section class="mt-8" data-ui-section="dashboard-buyall">
     <article class="surface-primary">
@@ -279,7 +293,7 @@ try {
                     <span class="badge border-orange-400/20 bg-orange-500/10 text-orange-100">Doctrine-critical included</span>
                     <span class="badge border-emerald-400/20 bg-emerald-500/10 text-emerald-100">Positive-margin seed candidates</span>
                 </div>
-                <p class="mt-4 text-sm text-slate-200">The planner keeps doctrine-critical items eligible even when profit data is weak, but otherwise leans toward positive net imports and haul-efficient seeding. Current dashboard summary freshness: <?= htmlspecialchars((string) ($pageFreshness['computed_relative'] ?? 'Unknown'), ENT_QUOTES) ?>.</p>
+                <p class="mt-4 text-sm text-slate-200">The planner keeps doctrine-critical items eligible even when profit data is weak, but otherwise leans toward positive net imports and haul-efficient seeding. Current dashboard summary freshness: <?= htmlspecialchars((string) ($dashboardFreshness['computed_relative'] ?? 'Unknown'), ENT_QUOTES) ?>.</p>
                 <div class="mt-5 flex flex-wrap items-center gap-3">
                     <a href="<?= htmlspecialchars((string) ($buyAll['planner_href'] ?? '/buy-all?mode=blended&page=1'), ENT_QUOTES) ?>" class="btn-primary">Buy All</a>
                     <a href="<?= htmlspecialchars((string) ($buyAll['blended_href'] ?? '/buy-all?mode=blended&page=1'), ENT_QUOTES) ?>" class="btn-secondary">Review blended plan</a>
@@ -289,7 +303,9 @@ try {
     </article>
 </section>
 <!-- ui-section:dashboard-buyall:end -->
+<?php $sectionBuyAll = ob_get_clean(); ?>
 
+<?php ob_start(); // capture Doctrine section ?>
 <!-- ui-section:dashboard-doctrine:start -->
 <section class="mt-8 grid gap-5 xl:grid-cols-[minmax(0,1.3fr)_minmax(320px,0.9fr)]" data-ui-section="dashboard-doctrine">
     <article class="surface-primary">
@@ -442,7 +458,9 @@ try {
     </article>
 </section>
 <!-- ui-section:dashboard-doctrine:end -->
+<?php $sectionDoctrine = ob_get_clean(); ?>
 
+<?php ob_start(); // capture remaining sections (queues, briefings, trends, status) ?>
 <section class="mt-8">
     <article class="surface-secondary">
         <div class="section-header border-b border-white/8 pb-4">
@@ -739,4 +757,13 @@ try {
     <?php endif; ?>
 </section>
 <!-- ui-section:dashboard-queues:end -->
+<?php $sectionRest = ob_get_clean(); ?>
+
+<?php
+// Reordered dashboard: Doctrine first (urgent), then KPIs, then queues/briefings/buy-all/trends
+echo $sectionDoctrine;
+echo $sectionKpis;
+echo $sectionRest;
+echo $sectionBuyAll;
+?>
 <?php include __DIR__ . '/../src/views/partials/footer.php'; ?>

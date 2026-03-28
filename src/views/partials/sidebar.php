@@ -60,7 +60,7 @@
                     <span class="flex h-8 w-8 items-center justify-center rounded-xl border border-white/8 bg-slate-950/70 text-base shadow-[inset_0_1px_0_rgba(255,255,255,0.03)]"><?= $item['icon'] ?></span>
                     <span class="flex-1"><?= htmlspecialchars($item['label'], ENT_QUOTES) ?></span>
                     <?php if ($item['children'] !== []): ?>
-                        <span class="text-xs text-slate-500"><?= count($item['children']) ?></span>
+                        <span class="text-xs text-slate-500" <?php if (!empty($item['badge_tooltip'])): ?>title="<?= htmlspecialchars(count($item['children']) . ' ' . $item['badge_tooltip'], ENT_QUOTES) ?>"<?php endif; ?>><?= count($item['children']) ?></span>
                     <?php endif; ?>
                 </a>
                 <?php if ($item['children'] !== []): ?>

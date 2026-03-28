@@ -156,7 +156,7 @@ $buildPageUrl = static function (int $targetPage) use ($queryParams): string {
                     $alignRight = in_array((string) $column, ['Stock', 'Daily Volume'], true);
                     $thClass = $alignRight ? 'text-right' : '';
                     ?>
-                    <th class="<?= $thClass ?>"><?= htmlspecialchars((string) $column, ENT_QUOTES) ?></th>
+                    <th class="<?= $thClass ?> select-none"><?= htmlspecialchars((string) $column, ENT_QUOTES) ?><span class="ml-1 text-[10px] text-slate-500" data-sort-arrow></span></th>
                 <?php endforeach; ?>
             </tr>
             </thead>
@@ -232,6 +232,73 @@ $buildPageUrl = static function (int $targetPage) use ($queryParams): string {
         </table>
     </div>
 </section>
+
+<?php if (!$hasTableControls): ?>
+    <div class="mt-3 flex items-center gap-3">
+        <label class="block flex-1 max-w-xs">
+            <input type="search" placeholder="Quick filter by name..." class="field-input text-sm" data-table-quick-filter>
+        </label>
+        <span class="text-xs text-slate-500" data-table-filter-count></span>
+    </div>
+<?php endif; ?>
+
+<script>
+(() => {
+    // Client-side column sort on th click
+    document.querySelectorAll('.table-ui').forEach(table => {
+        const headers = table.querySelectorAll('thead th');
+        const tbody = table.querySelector('tbody');
+        if (!tbody || !headers.length) return;
+
+        let sortCol = -1, sortAsc = true;
+
+        headers.forEach((th, idx) => {
+            th.style.cursor = 'pointer';
+            th.title = 'Click to sort';
+            th.addEventListener('click', () => {
+                if (sortCol === idx) { sortAsc = !sortAsc; } else { sortCol = idx; sortAsc = true; }
+
+                // Update header indicators
+                headers.forEach(h => { const a = h.querySelector('[data-sort-arrow]'); if (a) a.textContent = ''; });
+                const arrow = th.querySelector('[data-sort-arrow]');
+                if (arrow) arrow.textContent = sortAsc ? '\u25B2' : '\u25BC';
+
+                const rows = Array.from(tbody.querySelectorAll('tr:not([class*="bg-white"])'));
+                rows.sort((a, b) => {
+                    const aCell = a.cells[idx]?.textContent?.trim() ?? '';
+                    const bCell = b.cells[idx]?.textContent?.trim() ?? '';
+                    const aNum = parseFloat(aCell.replace(/[^0-9.\-+]/g, ''));
+                    const bNum = parseFloat(bCell.replace(/[^0-9.\-+]/g, ''));
+                    if (!isNaN(aNum) && !isNaN(bNum)) return sortAsc ? aNum - bNum : bNum - aNum;
+                    return sortAsc ? aCell.localeCompare(bCell) : bCell.localeCompare(aCell);
+                });
+                rows.forEach(r => tbody.appendChild(r));
+            });
+        });
+    });
+
+    // Quick filter for non-paginated tables
+    const filterInput = document.querySelector('[data-table-quick-filter]');
+    const countEl = document.querySelector('[data-table-filter-count]');
+    if (filterInput) {
+        const tbody = document.querySelector('.table-ui tbody');
+        if (tbody) {
+            filterInput.addEventListener('input', () => {
+                const q = filterInput.value.toLowerCase();
+                let shown = 0;
+                tbody.querySelectorAll('tr').forEach(row => {
+                    if (row.classList.contains('bg-white/[0.05]')) return; // group headers
+                    const text = row.textContent.toLowerCase();
+                    const match = q === '' || text.includes(q);
+                    row.style.display = match ? '' : 'none';
+                    if (match) shown++;
+                });
+                if (countEl) countEl.textContent = q ? shown + ' shown' : '';
+            });
+        }
+    }
+})();
+</script>
 
 <?php if ($modulePageSectionKey !== ''): ?>
     </div>
