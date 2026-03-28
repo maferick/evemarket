@@ -18,6 +18,8 @@ import time
 from datetime import UTC, datetime
 from typing import Any
 
+import json
+
 from ..db import SupplyCoreDb
 from ..job_result import JobResult
 from ..json_utils import json_dumps_safe
@@ -27,9 +29,50 @@ BATCH_SIZE = 500
 RELATIONSHIP_WINDOW_DAYS = 30
 OVERLAP_LOOKBACK_DAYS = 730
 
+# Default suspicion signal weights — can be overridden by analyst recalibration.
+DEFAULT_WEIGHTS = {
+    "selective_non_engagement": 0.35,
+    "peer_norm_kills": -0.20,
+    "peer_norm_damage": -0.20,
+    "high_presence_low_output": 0.15,
+    "token_participation": 0.10,
+    "loss_without_attack": 0.10,
+}
+
 
 def _now_sql() -> str:
     return datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _load_recalibrated_weights(db: SupplyCoreDb) -> dict[str, float]:
+    """Load the latest recalibrated weights from analyst_recalibration_log, or defaults."""
+    weights = dict(DEFAULT_WEIGHTS)
+    try:
+        row = db.fetch_one(
+            "SELECT weight_adjustments FROM analyst_recalibration_log ORDER BY computed_at DESC LIMIT 1"
+        )
+        if row and row.get("weight_adjustments"):
+            saved = json.loads(str(row["weight_adjustments"]))
+            after = saved.get("after")
+            if isinstance(after, dict):
+                weights.update(after)
+    except Exception:
+        pass
+    return weights
+
+
+def _check_quality_gate(db: SupplyCoreDb) -> tuple[bool, float]:
+    """Check whether the latest data quality gate passed. Returns (passed, score)."""
+    try:
+        row = db.fetch_one(
+            "SELECT quality_score, gate_passed FROM graph_data_quality_metrics ORDER BY computed_at DESC LIMIT 1"
+        )
+        if row:
+            return bool(int(row.get("gate_passed") or 0)), float(row.get("quality_score") or 0)
+    except Exception:
+        pass
+    # No quality check has run yet — allow pipeline to proceed.
+    return True, 1.0
 
 
 # ── Step 1: Pre-run inspection ────────────────────────────────────────────
@@ -396,18 +439,23 @@ def _compute_co_presence_clusters(client: Neo4jClient) -> None:
     )
 
 
-def _compute_score_assembly(client: Neo4jClient) -> None:
-    """Step 5.9: Assemble final suspicion score and flags."""
+def _compute_score_assembly(client: Neo4jClient, weights: dict[str, float] | None = None) -> None:
+    """Step 5.9: Assemble final suspicion score and flags.
+
+    Weights are read from analyst recalibration log when available,
+    falling back to DEFAULT_WEIGHTS.
+    """
+    w = weights or DEFAULT_WEIGHTS
     client.query(
         """MATCH (c:Character)
            WHERE c.tracked = true
            WITH c,
-               (COALESCE(c.selective_non_engagement_score, 0) * 0.35) +
-               (COALESCE(c.peer_norm_kills_delta, 0)  * -0.20) +
-               (COALESCE(c.peer_norm_damage_delta, 0) * -0.20) +
-               (COALESCE(c.high_presence_low_output_score, 0)  * 0.15) +
-               (COALESCE(c.token_participation_score, 0)       * 0.10) +
-               (COALESCE(c.loss_without_attack_ratio, 0)       * 0.10)
+               (COALESCE(c.selective_non_engagement_score, 0) * $w_sne) +
+               (COALESCE(c.peer_norm_kills_delta, 0)  * $w_pnk) +
+               (COALESCE(c.peer_norm_damage_delta, 0) * $w_pnd) +
+               (COALESCE(c.high_presence_low_output_score, 0)  * $w_hplo) +
+               (COALESCE(c.token_participation_score, 0)       * $w_tp) +
+               (COALESCE(c.loss_without_attack_ratio, 0)       * $w_lwa)
                AS raw_score,
                [
                    CASE WHEN COALESCE(c.selective_non_engagement_score, 0) > 0.7
@@ -429,7 +477,15 @@ def _compute_score_assembly(client: Neo4jClient) -> None:
                 [f IN all_flags WHERE f IS NOT NULL] AS flags
            SET c.suspicion_score = raw_score,
                c.suspicion_flags = flags,
-               c.computed_at = toString(datetime())"""
+               c.computed_at = toString(datetime())""",
+        {
+            "w_sne": w.get("selective_non_engagement", 0.35),
+            "w_pnk": w.get("peer_norm_kills", -0.20),
+            "w_pnd": w.get("peer_norm_damage", -0.20),
+            "w_hplo": w.get("high_presence_low_output", 0.15),
+            "w_tp": w.get("token_participation", 0.10),
+            "w_lwa": w.get("loss_without_attack", 0.10),
+        },
     )
 
 
@@ -667,6 +723,19 @@ def run_intelligence_pipeline(
             duration_ms=0,
         ).to_dict()
 
+    # Quality gate check — skip compute if data quality is below threshold.
+    gate_passed, quality_score = _check_quality_gate(db)
+    if not gate_passed:
+        return JobResult.failed(
+            job_key="intelligence_pipeline",
+            error=f"Aborted — data quality gate failed (score {quality_score:.4f}). Run graph_data_quality_check for details.",
+            duration_ms=int((time.perf_counter() - started) * 1000),
+            meta={"quality_score": quality_score, "gate_passed": False},
+        ).to_dict()
+
+    # Load analyst-recalibrated weights (falls back to defaults if none exist).
+    recalibrated_weights = _load_recalibrated_weights(db)
+
     client = Neo4jClient(config)
     computed_at = _now_sql()
     run_id = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
@@ -755,7 +824,7 @@ def run_intelligence_pipeline(
         _timed("token_participation", _compute_token_participation, client)
         _timed("loss_pattern", _compute_loss_pattern, client)
         _timed("co_presence_clusters", _compute_co_presence_clusters, client)
-        _timed("score_assembly", _compute_score_assembly, client)
+        _timed("score_assembly", _compute_score_assembly, client, recalibrated_weights)
 
         # 5. Historical alliance overlap.
         _timed("shared_alliance_history", _compute_shared_alliance_history, client)
@@ -788,5 +857,7 @@ def run_intelligence_pipeline(
             "skipped_stages": skipped_stages,
             "suspicion_exported": suspicion_exported,
             "overlap_exported": overlap_exported,
+            "quality_score": quality_score,
+            "recalibrated_weights": recalibrated_weights,
         },
     ).to_dict()
