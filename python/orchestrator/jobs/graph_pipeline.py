@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+import math
 import time
 from pathlib import Path
 from typing import Any
@@ -55,6 +56,19 @@ def _coerce_batch_size(value: Any, *, fallback: int = DEFAULT_BATCH_SIZE) -> int
         return max(100, min(5000, int(value)))
     except (TypeError, ValueError):
         return fallback
+
+
+def _safe_float(value: Any, *, default: float | None = None) -> float | None:
+    """Convert to float and guard against NaN/Infinity for MariaDB writes."""
+    if value is None:
+        return default
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return default
+    if not math.isfinite(numeric):
+        return default
+    return numeric
 
 
 def _sync_state_get(db: SupplyCoreDb, dataset_key: str) -> dict[str, Any] | None:
@@ -1575,31 +1589,31 @@ def _persist_criticality_index(db: SupplyCoreDb, item_data: dict[int, dict[str, 
             tid,
             d.get("doctrine_count", 0),
             d.get("fit_count", 0),
-            d.get("dependency_score", 0),
-            d.get("critical_edge_ratio", 0),
+            _safe_float(d.get("dependency_score"), default=0.0),
+            _safe_float(d.get("critical_edge_ratio"), default=0.0),
             d.get("substitute_count", 0),
-            d.get("substitutability", 1.0),
+            _safe_float(d.get("substitutability"), default=1.0),
             d.get("dependency_depth", 0),
             d.get("spof_flag", 0),
-            d.get("spof_impact_score", 0),
-            d.get("criticality_score", 0),
-            d.get("price_avg_7d"),
-            d.get("price_avg_30d"),
-            d.get("volume_avg_7d"),
-            d.get("volume_avg_30d"),
-            d.get("price_velocity"),
-            d.get("volume_velocity"),
-            d.get("price_volatility"),
+            _safe_float(d.get("spof_impact_score"), default=0.0),
+            _safe_float(d.get("criticality_score"), default=0.0),
+            _safe_float(d.get("price_avg_7d")),
+            _safe_float(d.get("price_avg_30d")),
+            _safe_float(d.get("volume_avg_7d")),
+            _safe_float(d.get("volume_avg_30d")),
+            _safe_float(d.get("price_velocity")),
+            _safe_float(d.get("volume_velocity")),
+            _safe_float(d.get("price_volatility")),
             d.get("trend_regime", "stable"),
-            d.get("trend_score", 0),
-            d.get("market_spread_pct"),
-            d.get("liquidity_score"),
-            d.get("stock_days_remaining"),
-            d.get("market_stress_score", 0),
-            d.get("data_freshness_hrs"),
-            d.get("coverage_ratio"),
-            d.get("confidence_score", 0.5),
-            d.get("priority_index", 0),
+            _safe_float(d.get("trend_score"), default=0.0),
+            _safe_float(d.get("market_spread_pct")),
+            _safe_float(d.get("liquidity_score")),
+            _safe_float(d.get("stock_days_remaining")),
+            _safe_float(d.get("market_stress_score"), default=0.0),
+            _safe_float(d.get("data_freshness_hrs")),
+            _safe_float(d.get("coverage_ratio")),
+            _safe_float(d.get("confidence_score"), default=0.5),
+            _safe_float(d.get("priority_index"), default=0.0),
             d.get("priority_rank"),
             computed_at,
         ))
