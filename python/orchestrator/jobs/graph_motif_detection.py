@@ -179,7 +179,7 @@ def run_graph_motif_detection_sync(db: SupplyCoreDb, neo4j_raw: dict[str, Any] |
         for m in chunk:
             member_ids = m.get("member_ids") or []
             battle_ids = m.get("battle_ids") or []
-            values.append("(%s, %s, %s, %s, %s, %s, %s)")
+            values.append("(%s, %s, %s, %s, %s, %s, %s, %s)")
             params.extend([
                 str(m.get("motif_type") or "unknown"),
                 json_dumps_safe(member_ids),
@@ -188,12 +188,13 @@ def run_graph_motif_detection_sync(db: SupplyCoreDb, neo4j_raw: dict[str, Any] |
                 min(1.0, max(0.0, float(m.get("suspicion_relevance") or 0.0))),
                 computed_at,
                 computed_at,
+                computed_at,
             ])
         if values:
             db.execute(
                 "INSERT INTO graph_motif_detections "
                 "(motif_type, member_ids_json, battle_ids_json, occurrence_count, "
-                "suspicion_relevance, first_seen_at, computed_at) "
+                "suspicion_relevance, first_seen_at, last_seen_at, computed_at) "
                 "VALUES " + ", ".join(values),
                 tuple(params),
             )

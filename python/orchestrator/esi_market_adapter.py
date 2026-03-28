@@ -5,8 +5,9 @@ from datetime import UTC, datetime
 from typing import Any
 from urllib.error import HTTPError
 from urllib.parse import urlencode
-from urllib.request import Request, urlopen
+from urllib.request import Request
 
+from .http_client import ipv4_opener
 from .json_utils import json_loads_safe
 
 ESI_BASE = "https://esi.evetech.net"
@@ -42,7 +43,7 @@ class EsiMarketAdapter:
     def _request_json(self, url: str, token: str | None = None) -> EsiOrdersResponse:
         request = Request(url, headers=self._request_headers(token), method="GET")
         try:
-            with urlopen(request, timeout=self._timeout_seconds) as response:
+            with ipv4_opener.open(request, timeout=self._timeout_seconds) as response:
                 payload = response.read().decode("utf-8")
                 rows = json_loads_safe(payload)
                 if not isinstance(rows, list):
@@ -57,7 +58,7 @@ class EsiMarketAdapter:
     def _request_object(self, url: str, token: str | None = None) -> dict[str, Any]:
         request = Request(url, headers=self._request_headers(token), method="GET")
         try:
-            with urlopen(request, timeout=self._timeout_seconds) as response:
+            with ipv4_opener.open(request, timeout=self._timeout_seconds) as response:
                 payload = json_loads_safe(response.read().decode("utf-8"))
                 if isinstance(payload, dict):
                     return payload
