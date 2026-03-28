@@ -11,15 +11,18 @@
                 <?php endif; ?>
             </h1>
             <p class="mt-1 text-base text-slate-200">
-                <span class="<?= $sideColorClass[$ourSide ?? 'side_a'] ?? 'text-blue-300' ?> font-semibold"><?= htmlspecialchars($sideLabels[$ourSide ?? 'side_a'] ?? 'Side A', ENT_QUOTES) ?></span>
-                <?php if ($ourSide !== null): ?>
-                    <span class="text-[10px] uppercase tracking-wider bg-blue-900/60 text-blue-300 rounded-full px-1.5 py-0.5 ml-1">Tracked</span>
-                <?php endif; ?>
+                <span class="text-blue-300 font-semibold"><?= htmlspecialchars($sideLabels['friendly'] ?? 'Friendlies', ENT_QUOTES) ?></span>
+                <span class="text-[10px] uppercase tracking-wider bg-blue-900/60 text-blue-300 rounded-full px-1.5 py-0.5 ml-1">Friendly</span>
                 <span class="text-slate-500 mx-2">vs</span>
-                <span class="<?= $sideColorClass[$enemySide] ?? 'text-red-300' ?> font-semibold"><?= htmlspecialchars($sideLabels[$enemySide] ?? 'Side B', ENT_QUOTES) ?></span>
+                <span class="text-red-300 font-semibold"><?= htmlspecialchars($sideLabels['opponent'] ?? 'Opposition', ENT_QUOTES) ?></span>
+                <?php $thirdPartyCount = count($sideAlliancesByPilots['third_party'] ?? []); ?>
+                <?php if ($thirdPartyCount > 0): ?>
+                    <span class="text-slate-400 ml-2 text-sm">(+<?= $thirdPartyCount ?> third party)</span>
+                <?php endif; ?>
             </p>
             <p class="mt-1 text-xs text-muted">
-                Tracked coalition on this theater: <?= number_format((int) ($trackedAllianceCountsBySide[$ourSide ?? 'side_a'] ?? 0)) ?> alliance<?= ((int) ($trackedAllianceCountsBySide[$ourSide ?? 'side_a'] ?? 0) === 1) ? '' : 's' ?>.
+                Friendly alliances: <?= number_format(count($sideAlliancesByPilots['friendly'] ?? [])) ?> &middot;
+                Opponent alliances: <?= number_format(count($sideAlliancesByPilots['opponent'] ?? [])) ?>
             </p>
             <p class="mt-1 text-sm text-slate-300">
                 <?= htmlspecialchars((string) ($theater['region_name'] ?? ''), ENT_QUOTES) ?>
