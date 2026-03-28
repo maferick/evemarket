@@ -123,8 +123,14 @@ $anomaly = (float) ($theater['anomaly_score'] ?? 0);
 
 // ── Derived aggregates / data-quality guards ───────────────────────────────
 $timelineKillTotal = 0;
+$timelineSideKills = [
+    'side_a' => 0,
+    'side_b' => 0,
+];
 foreach ($timeline as $row) {
     $timelineKillTotal += (int) ($row['kills'] ?? 0);
+    $timelineSideKills['side_a'] += (int) ($row['side_a_kills'] ?? 0);
+    $timelineSideKills['side_b'] += (int) ($row['side_b_kills'] ?? 0);
 }
 $allianceKillTotal = 0;
 $allianceLossTotal = 0;
@@ -133,11 +139,20 @@ foreach ($allianceSummary as $row) {
     $allianceLossTotal += (int) ($row['total_losses'] ?? 0);
 }
 $participantKillTotal = 0;
+$participantKillTotalsBySide = [
+    'side_a' => 0,
+    'side_b' => 0,
+];
 foreach ($participantsAll as $row) {
-    $participantKillTotal += (int) ($row['kills'] ?? 0);
+    $kills = (int) ($row['kills'] ?? 0);
+    $side = (string) ($row['side'] ?? 'side_b');
+    $participantKillTotal += $kills;
+    if (isset($participantKillTotalsBySide[$side])) {
+        $participantKillTotalsBySide[$side] += $kills;
+    }
 }
 $reportedKillTotal = (int) ($theater['total_kills'] ?? 0);
-$observedKillTotal = max($timelineKillTotal, $allianceKillTotal, $participantKillTotal);
+$observedKillTotal = $timelineKillTotal;
 $displayKillTotal = $reportedKillTotal;
 if ($displayKillTotal <= 0 && $observedKillTotal > 0) {
     $displayKillTotal = $observedKillTotal;
@@ -148,7 +163,7 @@ if ($reportedKillTotal !== $observedKillTotal) {
     $dataQualityNotes[] = 'Theater aggregate kills (' . number_format($reportedKillTotal) . ') differ from observed detail kills (' . number_format($observedKillTotal) . ').';
 }
 if ($allianceKillTotal > 0 && $allianceLossTotal > 0 && abs($allianceKillTotal - $allianceLossTotal) > 0) {
-    $dataQualityNotes[] = 'Alliance summary kills/losses differ (' . number_format($allianceKillTotal) . ' vs ' . number_format($allianceLossTotal) . '). This usually indicates delayed side-attribution refresh.';
+    $dataQualityNotes[] = 'Alliance kill-involvements (' . number_format($allianceKillTotal) . ') differ from losses (' . number_format($allianceLossTotal) . '). This is expected when multiple alliances assist on the same killmail.';
 }
 
 // Build side overview panels from alliance + participant + composition data
@@ -181,7 +196,7 @@ foreach ($allianceSummary as $a) {
         continue;
     }
     $sidePanels[$side]['pilots'] += (int) ($a['participant_count'] ?? 0);
-    $sidePanels[$side]['kills'] += (int) ($a['total_kills'] ?? 0);
+    $sidePanels[$side]['kills'] += (int) ($a['total_kills'] ?? 0); // kill involvements (final blows + assists)
     $sidePanels[$side]['losses'] += (int) ($a['total_losses'] ?? 0);
     $sidePanels[$side]['isk_killed'] += (float) ($a['total_isk_killed'] ?? 0);
     $sidePanels[$side]['isk_lost'] += (float) ($a['total_isk_lost'] ?? 0);
@@ -191,6 +206,8 @@ foreach ($allianceSummary as $a) {
     ];
 }
 foreach ($sidePanels as $side => $data) {
+    $sidePanels[$side]['final_blows'] = (int) ($timelineSideKills[$side] ?? 0);
+    $sidePanels[$side]['kill_involvements'] = (int) ($participantKillTotalsBySide[$side] ?? 0);
     usort($data['alliances'], static fn(array $l, array $r): int => $r['pilots'] <=> $l['pilots']);
     $sidePanels[$side]['alliances'] = array_slice($data['alliances'], 0, 4);
 }
@@ -312,9 +329,10 @@ include __DIR__ . '/../../src/views/partials/header.php';
         <?php foreach ([$ourSide ?? 'side_a', $enemySide] as $panelSide): ?>
             <?php
                 $panel = $sidePanels[$panelSide] ?? [];
-                $panelKills = (int) ($panel['kills'] ?? 0);
+                $panelKills = (int) ($panel['final_blows'] ?? 0);
                 $panelLosses = (int) ($panel['losses'] ?? 0);
                 $panelEff = ($panelKills + $panelLosses) > 0 ? ($panelKills / ($panelKills + $panelLosses)) : 0;
+                $panelInvolvements = (int) ($panel['kill_involvements'] ?? 0);
             ?>
             <article class="rounded-xl border border-border/70 bg-black/20 p-4">
                 <div class="flex items-center justify-between gap-3">
@@ -335,8 +353,9 @@ include __DIR__ . '/../../src/views/partials/header.php';
                         <p class="mt-1 text-slate-50 font-semibold"><?= number_format($panelEff * 100, 1) ?>%</p>
                     </div>
                     <div class="rounded-lg border border-border/50 bg-black/30 p-2">
-                        <p class="text-xs text-muted">Kills / Losses</p>
+                        <p class="text-xs text-muted">Final Blows / Losses</p>
                         <p class="mt-1 text-slate-50 font-semibold"><?= number_format($panelKills) ?> / <?= number_format($panelLosses) ?></p>
+                        <p class="mt-1 text-[10px] text-muted">Kill involvements: <?= number_format($panelInvolvements) ?></p>
                     </div>
                     <div class="rounded-lg border border-border/50 bg-black/30 p-2">
                         <p class="text-xs text-muted">ISK Killed / Lost</p>
@@ -589,7 +608,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                     <th class="px-3 py-2 text-left">Alliance</th>
                     <th class="px-3 py-2 text-left">Side</th>
                     <th class="px-3 py-2 text-right">Pilots</th>
-                    <th class="px-3 py-2 text-right">Kills</th>
+                    <th class="px-3 py-2 text-right">Kill Involvements</th>
                     <th class="px-3 py-2 text-right">Losses</th>
                     <th class="px-3 py-2 text-right">ISK Killed</th>
                     <th class="px-3 py-2 text-right">ISK Lost</th>
@@ -651,7 +670,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                     <th class="px-3 py-2 text-left">Alliance / Corp</th>
                     <th class="px-3 py-2 text-left">Side</th>
                     <th class="px-3 py-2 text-left">Role</th>
-                    <th class="px-3 py-2 text-right">Kills</th>
+                    <th class="px-3 py-2 text-right">Kill Involvements</th>
                     <th class="px-3 py-2 text-right">Deaths</th>
                     <th class="px-3 py-2 text-right">Damage</th>
                     <th class="px-3 py-2 text-right">Battles</th>
