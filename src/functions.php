@@ -10969,6 +10969,16 @@ function fleet_function_color_class(string $role): string
     };
 }
 
+function supplycore_format_isk(float $value): string
+{
+    if ($value <= 0) return '0';
+    if ($value >= 1_000_000_000_000) return number_format($value / 1_000_000_000_000, 2) . 't';
+    if ($value >= 1_000_000_000) return number_format($value / 1_000_000_000, 2) . 'b';
+    if ($value >= 1_000_000) return number_format($value / 1_000_000, 1) . 'm';
+    if ($value >= 1_000) return number_format($value / 1_000, 1) . 'k';
+    return number_format($value, 0);
+}
+
 function killmail_item_empty_message(string $groupKey): string
 {
     return match ($groupKey) {
