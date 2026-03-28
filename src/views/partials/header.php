@@ -61,7 +61,7 @@ $pageFreshnessLine = $pageFreshness !== []
         <?php if ($notice): ?>
             <div class="mb-6 rounded-2xl border border-emerald-500/30 bg-emerald-500/12 px-4 py-3 text-sm text-emerald-100 shadow-[0_0_24px_rgba(34,197,94,0.08)]"><?= htmlspecialchars($notice, ENT_QUOTES) ?></div>
         <?php endif; ?>
-        <?php if ($pageFreshness !== []): ?>
+        <?php if ($pageFreshness !== [] && empty($suppressPageFreshness)): ?>
             <?php
             $freshnessState = (string) ($pageFreshness['state'] ?? 'stale');
             $freshnessRelative = (string) ($pageFreshness['computed_relative'] ?? 'Unknown');
@@ -74,7 +74,7 @@ $pageFreshnessLine = $pageFreshness !== []
                 <p class="mb-4 text-xs text-slate-500" data-ui-section="page-freshness" data-ui-freshness-target="page-freshness">Refreshing data... · Last snapshot <?= htmlspecialchars($freshnessRelative, ENT_QUOTES) ?></p>
             <?php elseif ($freshnessState === 'stale'): ?>
                 <div class="mb-4 flex items-center gap-2 text-xs text-amber-300/80" data-ui-section="page-freshness">
-                    <svg viewBox="0 0 16 16" fill="currentColor" class="h-3.5 w-3.5 shrink-0 opacity-70"><path d="M8 1a7 7 0 1 0 0 14A7 7 0 0 0 8 1Zm0 3a.75.75 0 0 1 .75.75v3.5a.75.75 0 0 1-1.5 0v-3.5A.75.75 0 0 1 8 4Zm0 7a.75.75 0 1 0 0-1.5.75.75 0 0 0 0 1.5Z"/></svg>
+                    <svg viewBox="0 0 16 16" fill="currentColor" width="14" height="14" class="h-3.5 w-3.5 shrink-0 opacity-70"><path d="M8 1a7 7 0 1 0 0 14A7 7 0 0 0 8 1Zm0 3a.75.75 0 0 1 .75.75v3.5a.75.75 0 0 1-1.5 0v-3.5A.75.75 0 0 1 8 4Zm0 7a.75.75 0 1 0 0-1.5.75.75 0 0 0 0 1.5Z"/></svg>
                     <span data-ui-freshness-target="page-freshness">Data from <?= htmlspecialchars($freshnessRelative, ENT_QUOTES) ?><?= $freshnessAt !== '' ? ' · ' . htmlspecialchars($freshnessAt, ENT_QUOTES) : '' ?></span>
                 </div>
             <?php else: ?>

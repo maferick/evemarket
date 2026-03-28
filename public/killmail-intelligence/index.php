@@ -60,6 +60,8 @@ $buildPageUrl = static function (int $targetPage) use ($queryParams): string {
 };
 
 include __DIR__ . '/../../src/views/partials/header.php';
+if (function_exists('ob_flush')) { @ob_flush(); }
+@flush();
 ?>
 <?php if (is_string($error) && trim($error) !== ''): ?>
     <section class="mb-6 rounded-xl border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm text-amber-100">
@@ -167,22 +169,34 @@ include __DIR__ . '/../../src/views/partials/header.php';
                 <span class="mb-1 block text-xs uppercase tracking-[0.18em]">Search losses</span>
                 <input type="search" name="q" value="<?= htmlspecialchars((string) ($filters['search'] ?? ''), ENT_QUOTES) ?>" placeholder="Search ship, system, region, corporation, alliance, sequence, or killmail..." class="w-full field-input">
             </label>
-            <label class="block text-sm text-muted">
+            <?php
+                $selectedAllianceId = (int) ($filters['alliance_id'] ?? 0);
+                $selectedAllianceLabel = '';
+                if ($selectedAllianceId > 0) {
+                    $selectedAllianceLabel = (string) (($filters['alliance_options'] ?? [])[(string) $selectedAllianceId] ?? 'Alliance #' . $selectedAllianceId);
+                }
+                $selectedCorpId = (int) ($filters['corporation_id'] ?? 0);
+                $selectedCorpLabel = '';
+                if ($selectedCorpId > 0) {
+                    $selectedCorpLabel = (string) (($filters['corporation_options'] ?? [])[(string) $selectedCorpId] ?? 'Corporation #' . $selectedCorpId);
+                }
+            ?>
+            <div class="block text-sm text-muted">
                 <span class="mb-1 block text-xs uppercase tracking-[0.18em]">Victim alliance</span>
-                <select name="alliance_id" class="w-full field-select">
-                    <?php foreach ((array) ($filters['alliance_options'] ?? []) as $optionValue => $optionLabel): ?>
-                        <option value="<?= htmlspecialchars((string) $optionValue, ENT_QUOTES) ?>" <?= (string) $optionValue === (string) ($filters['alliance_id'] ?? 0) ? 'selected' : '' ?>><?= htmlspecialchars((string) $optionLabel, ENT_QUOTES) ?></option>
-                    <?php endforeach; ?>
-                </select>
-            </label>
-            <label class="block text-sm text-muted">
+                <div class="relative" data-autocomplete data-autocomplete-url="/api/search-alliances.php">
+                    <input type="hidden" name="alliance_id" value="<?= $selectedAllianceId ?>" data-autocomplete-value>
+                    <input type="search" class="w-full field-input" placeholder="Search alliances..." value="<?= htmlspecialchars($selectedAllianceLabel, ENT_QUOTES) ?>" data-autocomplete-input autocomplete="off">
+                    <ul class="absolute left-0 right-0 top-full z-30 mt-1 hidden max-h-48 overflow-y-auto rounded-xl border border-white/10 bg-[#0d1422] shadow-lg" data-autocomplete-list></ul>
+                </div>
+            </div>
+            <div class="block text-sm text-muted">
                 <span class="mb-1 block text-xs uppercase tracking-[0.18em]">Victim corporation</span>
-                <select name="corporation_id" class="w-full field-select">
-                    <?php foreach ((array) ($filters['corporation_options'] ?? []) as $optionValue => $optionLabel): ?>
-                        <option value="<?= htmlspecialchars((string) $optionValue, ENT_QUOTES) ?>" <?= (string) $optionValue === (string) ($filters['corporation_id'] ?? 0) ? 'selected' : '' ?>><?= htmlspecialchars((string) $optionLabel, ENT_QUOTES) ?></option>
-                    <?php endforeach; ?>
-                </select>
-            </label>
+                <div class="relative" data-autocomplete data-autocomplete-url="/api/search-corporations.php">
+                    <input type="hidden" name="corporation_id" value="<?= $selectedCorpId ?>" data-autocomplete-value>
+                    <input type="search" class="w-full field-input" placeholder="Search corporations..." value="<?= htmlspecialchars($selectedCorpLabel, ENT_QUOTES) ?>" data-autocomplete-input autocomplete="off">
+                    <ul class="absolute left-0 right-0 top-full z-30 mt-1 hidden max-h-48 overflow-y-auto rounded-xl border border-white/10 bg-[#0d1422] shadow-lg" data-autocomplete-list></ul>
+                </div>
+            </div>
             <label class="block text-sm text-muted">
                 <span class="mb-1 block text-xs uppercase tracking-[0.18em]">Page size</span>
                 <select name="page_size" class="w-full field-select">
@@ -239,7 +253,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                         <td class="px-3 py-3 align-top">
                             <div class="flex items-start gap-3">
                                 <?php if ((string) ($row['victim_portrait_url'] ?? '') !== ''): ?>
-                                    <img src="<?= htmlspecialchars((string) $row['victim_portrait_url'], ENT_QUOTES) ?>" alt="" class="h-10 w-10 rounded-xl object-cover">
+                                    <img src="<?= htmlspecialchars((string) $row['victim_portrait_url'], ENT_QUOTES) ?>" alt="" width="40" height="40" loading="lazy" class="h-10 w-10 rounded-xl object-cover">
                                 <?php endif; ?>
                                 <div>
                                     <p class="font-medium text-slate-50"><?= htmlspecialchars((string) ($row['victim_character'] ?? '—'), ENT_QUOTES) ?></p>
@@ -257,7 +271,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                         <td class="px-3 py-3 align-top">
                             <div class="flex items-start gap-3">
                                 <?php if ((string) ($row['final_blow_portrait_url'] ?? '') !== ''): ?>
-                                    <img src="<?= htmlspecialchars((string) $row['final_blow_portrait_url'], ENT_QUOTES) ?>" alt="" class="h-10 w-10 rounded-xl object-cover">
+                                    <img src="<?= htmlspecialchars((string) $row['final_blow_portrait_url'], ENT_QUOTES) ?>" alt="" width="40" height="40" loading="lazy" class="h-10 w-10 rounded-xl object-cover">
                                 <?php endif; ?>
                                 <div>
                                     <p class="font-medium text-slate-50"><?= htmlspecialchars((string) ($row['final_blow_character'] ?? 'Unknown character'), ENT_QUOTES) ?></p>
@@ -269,7 +283,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                         <td class="px-3 py-3 align-top">
                             <div class="flex items-start gap-3">
                                 <?php if ((string) ($row['ship_icon_url'] ?? '') !== ''): ?>
-                                    <img src="<?= htmlspecialchars((string) $row['ship_icon_url'], ENT_QUOTES) ?>" alt="" class="h-10 w-10 rounded-lg bg-black/30 object-contain p-1">
+                                    <img src="<?= htmlspecialchars((string) $row['ship_icon_url'], ENT_QUOTES) ?>" alt="" width="40" height="40" loading="lazy" class="h-10 w-10 rounded-lg bg-black/30 object-contain p-1">
                                 <?php endif; ?>
                                 <div>
                                     <p class="font-medium text-slate-50"><?= htmlspecialchars((string) ($row['ship_type'] ?? '—'), ENT_QUOTES) ?></p>
@@ -327,4 +341,75 @@ include __DIR__ . '/../../src/views/partials/header.php';
 </section>
 <!-- ui-section:killmail-overview-table:end -->
 
+<script>
+(() => {
+    document.querySelectorAll('[data-autocomplete]').forEach(container => {
+        const url = container.getAttribute('data-autocomplete-url');
+        const input = container.querySelector('[data-autocomplete-input]');
+        const hidden = container.querySelector('[data-autocomplete-value]');
+        const list = container.querySelector('[data-autocomplete-list]');
+        if (!url || !input || !hidden || !list) return;
+
+        let debounce = null;
+        let abortCtrl = null;
+
+        function show(results) {
+            list.innerHTML = '';
+            if (results.length === 0) {
+                list.classList.add('hidden');
+                return;
+            }
+            results.forEach(r => {
+                const li = document.createElement('li');
+                li.textContent = r.label;
+                li.className = 'cursor-pointer px-3 py-2 text-sm text-slate-200 hover:bg-sky-500/16';
+                li.addEventListener('mousedown', e => {
+                    e.preventDefault();
+                    hidden.value = r.id;
+                    input.value = r.label;
+                    list.classList.add('hidden');
+                });
+                list.appendChild(li);
+            });
+            list.classList.remove('hidden');
+        }
+
+        input.addEventListener('input', () => {
+            clearTimeout(debounce);
+            const q = input.value.trim();
+            if (q === '') {
+                hidden.value = '0';
+                list.classList.add('hidden');
+                return;
+            }
+            debounce = setTimeout(() => {
+                if (abortCtrl) abortCtrl.abort();
+                abortCtrl = new AbortController();
+                fetch(url + '?q=' + encodeURIComponent(q), { signal: abortCtrl.signal })
+                    .then(r => r.json())
+                    .then(data => show(data.results || []))
+                    .catch(() => {});
+            }, 200);
+        });
+
+        input.addEventListener('blur', () => {
+            setTimeout(() => list.classList.add('hidden'), 150);
+        });
+
+        input.addEventListener('focus', () => {
+            if (input.value.trim() !== '' && list.children.length > 0) {
+                list.classList.remove('hidden');
+            }
+        });
+
+        // Allow clearing
+        input.addEventListener('search', () => {
+            if (input.value === '') {
+                hidden.value = '0';
+                list.classList.add('hidden');
+            }
+        });
+    });
+})();
+</script>
 <?php include __DIR__ . '/../../src/views/partials/footer.php'; ?>
