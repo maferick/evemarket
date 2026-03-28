@@ -135,66 +135,234 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['regenerate_aar']) && 
     $aiSummary = theater_ai_summary_read($theaterId);
 }
 
-include __DIR__ . '/../../src/views/partials/header.php';
-?>
+<?php
+// ── Pre-compute side aggregates for the two-column view ──────────────
+$sideAggregates = ['side_a' => ['pilots' => 0, 'kills' => 0, 'losses' => 0, 'isk_killed' => 0, 'isk_lost' => 0, 'damage' => 0, 'alliances' => []], 'side_b' => ['pilots' => 0, 'kills' => 0, 'losses' => 0, 'isk_killed' => 0, 'isk_lost' => 0, 'damage' => 0, 'alliances' => []]];
+foreach ($allianceSummary as $a) {
+    $s = (string) ($a['side'] ?? '');
+    if (!isset($sideAggregates[$s])) continue;
+    $sideAggregates[$s]['pilots'] += (int) ($a['participant_count'] ?? 0);
+    $sideAggregates[$s]['kills'] += (int) ($a['total_kills'] ?? 0);
+    $sideAggregates[$s]['losses'] += (int) ($a['total_losses'] ?? 0);
+    $sideAggregates[$s]['isk_killed'] += (float) ($a['total_isk_killed'] ?? 0);
+    $sideAggregates[$s]['isk_lost'] += (float) ($a['total_isk_lost'] ?? 0);
+    $sideAggregates[$s]['damage'] += (float) ($a['total_damage'] ?? 0);
+    $sideAggregates[$s]['alliances'][] = $a;
+}
+foreach (['side_a', 'side_b'] as $s) {
+    $total = $sideAggregates[$s]['isk_killed'] + $sideAggregates[$s]['isk_lost'];
+    $sideAggregates[$s]['efficiency'] = $total > 0 ? $sideAggregates[$s]['isk_killed'] / $total : 0;
+}
 
+// Split participants by side for the two-column view
+$participantsBySide = ['side_a' => [], 'side_b' => []];
+// Reload without side filter for the two-column view
+$allParticipants = db_theater_participants($theaterId, null, false, 500);
+$allShipTypeIds = [];
+foreach ($allParticipants as $p) {
+    $s = (string) ($p['side'] ?? '');
+    if (isset($participantsBySide[$s])) {
+        $participantsBySide[$s][] = $p;
+    }
+    // Collect ship type IDs for name resolution
+    $shipIds = json_decode((string) ($p['ship_type_ids'] ?? '[]'), true);
+    if (is_array($shipIds)) {
+        foreach ($shipIds as $sid) {
+            $allShipTypeIds[(int) $sid] = true;
+        }
+    }
+}
+// Resolve ship type names
+$shipTypeNames = $allShipTypeIds !== [] ? db_market_orders_current_compact_type_names(array_keys($allShipTypeIds)) : [];
+// Sort each side by damage done descending
+foreach (['side_a', 'side_b'] as $s) {
+    usort($participantsBySide[$s], static fn($a, $b) => ((float)($b['damage_done'] ?? 0)) <=> ((float)($a['damage_done'] ?? 0)));
+}
+
+$totalIsk = (float) ($theater['total_isk'] ?? 0);
+$totalPilots = $sideAggregates[$ourSide ?? 'side_a']['pilots'] + $sideAggregates[$enemySide]['pilots'];
+$totalKills = (int) ($theater['total_kills'] ?? 0);
+?>
+<?php include __DIR__ . '/../../src/views/partials/header.php'; ?>
+
+<!-- Compact header bar -->
 <section class="surface-primary">
     <a href="/theater-intelligence" class="text-sm text-accent">&#8592; Back to theaters</a>
 
-    <div class="mt-3 flex items-center justify-between gap-4">
-        <div>
-            <p class="text-xs uppercase tracking-[0.16em] text-muted">Theater Intelligence</p>
-            <h1 class="mt-1 text-2xl font-semibold text-slate-50">
-                <?= htmlspecialchars((string) ($theater['primary_system_name'] ?? 'Unknown'), ENT_QUOTES) ?>
-                <?php if ((int) ($theater['system_count'] ?? 0) > 1): ?>
-                    <span class="text-sm text-muted">+<?= (int) ($theater['system_count'] ?? 0) - 1 ?> systems</span>
-                <?php endif; ?>
-            </h1>
-            <p class="mt-1 text-base text-slate-200">
-                <span class="<?= $sideColorClass[$ourSide ?? 'side_a'] ?? 'text-blue-300' ?> font-semibold"><?= htmlspecialchars($sideLabels[$ourSide ?? 'side_a'] ?? 'Side A', ENT_QUOTES) ?></span>
-                <?php if ($ourSide !== null): ?>
-                    <span class="text-[10px] uppercase tracking-wider bg-blue-900/60 text-blue-300 rounded-full px-1.5 py-0.5 ml-1">Tracked</span>
-                <?php endif; ?>
-                <span class="text-slate-500 mx-2">vs</span>
-                <span class="<?= $sideColorClass[$enemySide] ?? 'text-red-300' ?> font-semibold"><?= htmlspecialchars($sideLabels[$enemySide] ?? 'Side B', ENT_QUOTES) ?></span>
-            </p>
-            <p class="mt-1 text-sm text-slate-300">
-                <?= htmlspecialchars((string) ($theater['region_name'] ?? ''), ENT_QUOTES) ?>
-                &middot; <?= htmlspecialchars((string) ($theater['start_time'] ?? ''), ENT_QUOTES) ?>
-                &mdash; <?= htmlspecialchars((string) ($theater['end_time'] ?? ''), ENT_QUOTES) ?>
-            </p>
+    <div class="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1">
+        <div class="flex items-center gap-2">
+            <span class="text-xs uppercase tracking-[0.16em] text-muted">System:</span>
+            <span class="text-slate-50 font-semibold"><?= htmlspecialchars((string) ($theater['primary_system_name'] ?? 'Unknown'), ENT_QUOTES) ?></span>
+            <span class="text-slate-400 text-sm"><?= htmlspecialchars((string) ($theater['region_name'] ?? ''), ENT_QUOTES) ?></span>
+        </div>
+        <div class="flex items-center gap-2">
+            <span class="text-xs uppercase tracking-[0.16em] text-muted">Duration:</span>
+            <span class="text-slate-50 font-semibold"><?= $durationLabel ?></span>
+            <span class="text-xs text-slate-400"><?= htmlspecialchars((string) ($theater['start_time'] ?? ''), ENT_QUOTES) ?> &mdash; <?= htmlspecialchars((string) ($theater['end_time'] ?? ''), ENT_QUOTES) ?></span>
         </div>
     </div>
 
-    <div class="mt-3 grid gap-3 md:grid-cols-6">
-        <div class="surface-tertiary">
-            <p class="text-xs text-muted">Battles</p>
-            <p class="text-lg text-slate-50 font-semibold"><?= (int) ($theater['battle_count'] ?? 0) ?></p>
-        </div>
-        <div class="surface-tertiary">
-            <p class="text-xs text-muted">Systems</p>
-            <p class="text-lg text-slate-50 font-semibold"><?= (int) ($theater['system_count'] ?? 0) ?></p>
-        </div>
-        <div class="surface-tertiary">
-            <p class="text-xs text-muted">Participants</p>
-            <p class="text-lg text-slate-50 font-semibold"><?= number_format((int) ($theater['participant_count'] ?? 0)) ?></p>
-        </div>
-        <div class="surface-tertiary">
-            <p class="text-xs text-muted">Kills</p>
-            <p class="text-lg text-slate-50 font-semibold"><?= number_format((int) ($theater['total_kills'] ?? 0)) ?></p>
-        </div>
-        <div class="surface-tertiary">
-            <p class="text-xs text-muted">Duration</p>
-            <p class="text-lg text-slate-50 font-semibold"><?= $durationLabel ?></p>
-        </div>
-        <div class="surface-tertiary">
-            <p class="text-xs text-muted">Anomaly Score</p>
-            <p class="text-lg font-semibold <?= $anomaly >= 0.6 ? 'text-red-400' : ($anomaly >= 0.3 ? 'text-yellow-400' : 'text-slate-50') ?>">
-                <?= number_format($anomaly, 3) ?>
-            </p>
-        </div>
+    <div class="mt-2 flex flex-wrap items-center gap-x-6 gap-y-1 text-sm text-slate-300">
+        <span>Total ISK: <strong class="text-slate-50"><?= supplycore_format_isk($totalIsk) ?></strong></span>
+        <span>Pilots: <strong class="text-slate-50"><?= number_format($totalPilots) ?></strong></span>
+        <span>Kills: <strong class="text-slate-50"><?= number_format($totalKills) ?></strong></span>
+        <span>Battles: <strong class="text-slate-50"><?= (int) ($theater['battle_count'] ?? 0) ?></strong></span>
+        <?php if ((int) ($theater['system_count'] ?? 0) > 1): ?>
+            <span>Systems: <strong class="text-slate-50"><?= (int) ($theater['system_count'] ?? 0) ?></strong></span>
+        <?php endif; ?>
+        <?php if ($anomaly >= 0.3): ?>
+            <span>Anomaly: <strong class="<?= $anomaly >= 0.6 ? 'text-red-400' : 'text-yellow-400' ?>"><?= number_format($anomaly, 3) ?></strong></span>
+        <?php endif; ?>
     </div>
 </section>
+
+<!-- ═══════ Two-column Battle Report ═══════ -->
+<?php
+$sides = [$ourSide ?? 'side_a', $enemySide];
+$sideHeaders = [
+    $ourSide ?? 'side_a' => $sideLabels[$ourSide ?? 'side_a'] ?? 'Side A',
+    $enemySide => $sideLabels[$enemySide] ?? 'Side B',
+];
+?>
+<div class="mt-4 grid gap-4 xl:grid-cols-2">
+<?php foreach ($sides as $sideKey):
+    $agg = $sideAggregates[$sideKey];
+    $isOur = ($sideKey === ($ourSide ?? 'side_a'));
+    $borderColor = $isOur ? 'border-blue-500/40' : 'border-red-500/40';
+    $headerBg = $isOur ? 'bg-blue-900/30' : 'bg-red-900/30';
+    $headerText = $isOur ? 'text-blue-200' : 'text-red-200';
+    $accentColor = $isOur ? 'text-blue-300' : 'text-red-300';
+    $effClass = $agg['efficiency'] >= 0.6 ? 'text-green-400' : ($agg['efficiency'] >= 0.4 ? 'text-yellow-400' : 'text-red-400');
+?>
+<section class="surface-primary border-t-2 <?= $borderColor ?>">
+    <!-- Side header -->
+    <div class="<?= $headerBg ?> -mx-4 -mt-4 px-4 py-3 rounded-t flex items-center justify-between">
+        <h2 class="text-lg font-semibold <?= $headerText ?>">
+            <?= htmlspecialchars($sideHeaders[$sideKey], ENT_QUOTES) ?>
+            <span class="text-sm font-normal text-slate-400">(<?= number_format($agg['pilots']) ?>)</span>
+        </h2>
+        <?php if ($isOur): ?>
+            <span class="text-[10px] uppercase tracking-wider bg-blue-900/60 text-blue-300 rounded-full px-1.5 py-0.5">Tracked</span>
+        <?php endif; ?>
+    </div>
+
+    <!-- Side stats -->
+    <div class="mt-3 grid grid-cols-2 gap-x-4 gap-y-2 text-sm">
+        <div><span class="text-muted">ISK Lost:</span></div>
+        <div class="text-right font-semibold text-slate-100"><?= supplycore_format_isk($agg['isk_lost']) ?></div>
+
+        <div><span class="text-muted">Efficiency:</span></div>
+        <div class="text-right font-semibold <?= $effClass ?>"><?= number_format($agg['efficiency'] * 100, 1) ?>%</div>
+
+        <div><span class="text-muted">Ships Lost:</span></div>
+        <div class="text-right font-semibold text-slate-100"><?= number_format($agg['losses']) ?></div>
+
+        <div><span class="text-muted">Kills:</span></div>
+        <div class="text-right font-semibold text-slate-100"><?= number_format($agg['kills']) ?></div>
+
+        <div><span class="text-muted">Damage Dealt:</span></div>
+        <div class="text-right font-semibold text-slate-100"><?= supplycore_format_isk($agg['damage']) ?></div>
+    </div>
+
+    <!-- Alliance breakdown -->
+    <?php if ($agg['alliances'] !== []): ?>
+    <div class="mt-4 border-t border-border/40 pt-3">
+        <?php
+        usort($agg['alliances'], static fn($a, $b) => ((int)($b['participant_count'] ?? 0)) <=> ((int)($a['participant_count'] ?? 0)));
+        foreach ($agg['alliances'] as $a):
+            $aid = (int) ($a['alliance_id'] ?? 0);
+            $aName = killmail_entity_preferred_name($resolvedEntities, 'alliance', $aid, (string) ($a['alliance_name'] ?? ''), 'Alliance');
+            $isTracked = in_array($aid, $trackedAllianceIds, true);
+        ?>
+        <div class="flex items-center justify-between py-1 text-sm">
+            <div class="flex items-center gap-2 min-w-0">
+                <?php if ($aid > 0): ?>
+                    <img src="https://images.evetech.net/alliances/<?= $aid ?>/logo?size=32"
+                         alt="" class="w-5 h-5 rounded-sm flex-shrink-0" loading="lazy"
+                         onerror="this.style.display='none'">
+                <?php endif; ?>
+                <span class="text-slate-100 truncate"><?= htmlspecialchars($aName, ENT_QUOTES) ?></span>
+                <?php if ($isTracked): ?>
+                    <span class="text-[9px] uppercase tracking-wider bg-blue-900/60 text-blue-300 rounded-full px-1 py-0.5 flex-shrink-0">Tracked</span>
+                <?php endif; ?>
+            </div>
+            <span class="text-slate-400 text-xs flex-shrink-0 ml-2">(<?= (int) ($a['participant_count'] ?? 0) ?>)</span>
+        </div>
+        <?php endforeach; ?>
+    </div>
+    <?php endif; ?>
+
+    <!-- Participants for this side -->
+    <?php $sideParticipants = $participantsBySide[$sideKey] ?? []; ?>
+    <?php if ($sideParticipants !== []): ?>
+    <div class="mt-4 border-t border-border/40 pt-3">
+        <table class="w-full text-xs">
+            <thead>
+                <tr class="text-muted uppercase tracking-[0.12em]">
+                    <th class="text-left py-1 font-normal">Pilot</th>
+                    <th class="text-left py-1 font-normal">Ship</th>
+                    <th class="text-right py-1 font-normal">Dmg</th>
+                    <th class="text-right py-1 font-normal">K/D</th>
+                    <th class="text-left py-1 pl-2 font-normal">Role</th>
+                </tr>
+            </thead>
+            <tbody>
+                <?php foreach ($sideParticipants as $p):
+                    $charName = killmail_entity_preferred_name($resolvedEntities, 'character', (int) ($p['character_id'] ?? 0), (string) ($p['character_name'] ?? ''), 'Pilot');
+                    $corpName = killmail_entity_preferred_name($resolvedEntities, 'corporation', (int) ($p['corporation_id'] ?? 0), (string) ($p['corporation_name'] ?? ''), 'Corp');
+                    $allyName = killmail_entity_preferred_name($resolvedEntities, 'alliance', (int) ($p['alliance_id'] ?? 0), '', '');
+                    $fleetRole = (string) ($p['role_proxy'] ?? 'mainline_dps');
+                    $pSusp = (float) ($p['suspicion_score'] ?? 0);
+                    $rowBg = (int) ($p['is_suspicious'] ?? 0) ? 'bg-red-900/10' : '';
+                    $dmg = (float) ($p['damage_done'] ?? 0);
+                    // Resolve primary ship type from JSON
+                    $shipIds = json_decode((string) ($p['ship_type_ids'] ?? '[]'), true);
+                    $primaryShipId = is_array($shipIds) && $shipIds !== [] ? (int) $shipIds[0] : 0;
+                    $shipName = $primaryShipId > 0 ? ($shipTypeNames[$primaryShipId] ?? '') : '';
+                    $kills = (int) ($p['kills'] ?? 0);
+                    $deaths = (int) ($p['deaths'] ?? 0);
+                ?>
+                <tr class="border-t border-border/30 <?= $rowBg ?>">
+                    <td class="py-1.5">
+                        <div>
+                            <a class="<?= $accentColor ?> hover:underline" href="/battle-intelligence/character.php?character_id=<?= (int) ($p['character_id'] ?? 0) ?>">
+                                <?= htmlspecialchars($charName, ENT_QUOTES) ?>
+                            </a>
+                        </div>
+                        <div class="text-[10px] text-slate-500">
+                            <?php if ($allyName !== '' && !str_starts_with($allyName, 'Alliance #') && !str_starts_with($allyName, 'Alliance 0') && $allyName !== ''): ?>
+                                <?= htmlspecialchars($allyName, ENT_QUOTES) ?>
+                            <?php elseif (!str_starts_with($corpName, 'Corp #') && !str_starts_with($corpName, 'Corp 0')): ?>
+                                <?= htmlspecialchars($corpName, ENT_QUOTES) ?>
+                            <?php endif; ?>
+                        </div>
+                    </td>
+                    <td class="py-1.5 text-slate-300">
+                        <?php if ($primaryShipId > 0): ?>
+                            <div class="flex items-center gap-1">
+                                <img src="https://images.evetech.net/types/<?= $primaryShipId ?>/icon?size=32" alt="" class="w-4 h-4 rounded-sm flex-shrink-0" loading="lazy" onerror="this.style.display='none'">
+                                <span><?= htmlspecialchars($shipName, ENT_QUOTES) ?></span>
+                            </div>
+                        <?php else: ?>
+                            <span class="text-slate-500">-</span>
+                        <?php endif; ?>
+                    </td>
+                    <td class="py-1.5 text-right text-slate-300"><?= $dmg > 0 ? number_format($dmg, 0) : '-' ?></td>
+                    <td class="py-1.5 text-right text-slate-300"><?= $kills ?>/<?= $deaths ?></td>
+                    <td class="py-1.5 pl-2">
+                        <span class="inline-block rounded-full px-1.5 py-0.5 text-[9px] uppercase tracking-wider <?= fleet_function_color_class($fleetRole) ?>">
+                            <?= htmlspecialchars(fleet_function_label($fleetRole), ENT_QUOTES) ?>
+                        </span>
+                    </td>
+                </tr>
+                <?php endforeach; ?>
+            </tbody>
+        </table>
+    </div>
+    <?php endif; ?>
+</section>
+<?php endforeach; ?>
+</div>
 
 <!-- AI Briefing -->
 <?php if ($aiSummary !== null): ?>

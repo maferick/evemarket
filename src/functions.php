@@ -7683,6 +7683,26 @@ function market_format_isk(mixed $price): string
     return number_format($price, 2, '.', ',') . ' ISK';
 }
 
+function supplycore_format_isk(float $value): string
+{
+    if ($value <= 0) {
+        return '0';
+    }
+    if ($value >= 1_000_000_000_000) {
+        return number_format($value / 1_000_000_000_000, 2) . 't';
+    }
+    if ($value >= 1_000_000_000) {
+        return number_format($value / 1_000_000_000, 2) . 'b';
+    }
+    if ($value >= 1_000_000) {
+        return number_format($value / 1_000_000, 1) . 'm';
+    }
+    if ($value >= 1_000) {
+        return number_format($value / 1_000, 1) . 'k';
+    }
+    return number_format($value, 0);
+}
+
 function market_format_percentage(float $value, int $precision = 1): string
 {
     return number_format($value, $precision, '.', ',') . '%';
