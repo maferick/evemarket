@@ -466,6 +466,7 @@ def _compute_participants(
                 "deaths": 0,
                 "damage_done": 0.0,
                 "damage_taken": 0.0,
+                "isk_lost": 0.0,
                 "role_proxy": role_proxy,
             }
 
@@ -473,6 +474,15 @@ def _compute_participants(
         st = int(p.get("ship_type_id") or 0)
         if st > 0 and st not in char_stats[cid]["ship_type_ids"]:
             char_stats[cid]["ship_type_ids"].append(st)
+
+    # Pre-compute total HP damage taken per killmail (sum of all attacker damage)
+    # so we can assign it to victims correctly instead of using ISK value.
+    km_total_hp_damage: dict[int, float] = defaultdict(float)
+    for km in killmails:
+        km_id = int(km.get("killmail_id") or 0)
+        attacker_damage = float(km.get("attacker_damage_done") or 0)
+        if km_id > 0:
+            km_total_hp_damage[km_id] += attacker_damage
 
     # Process killmails — deduplicate by killmail_id since rows are expanded
     # per-attacker from the LEFT JOIN.
@@ -490,7 +500,10 @@ def _compute_participants(
         if victim_id > 0 and victim_id in char_stats and death_key not in seen_deaths:
             seen_deaths.add(death_key)
             char_stats[victim_id]["deaths"] += 1
-            char_stats[victim_id]["damage_taken"] += isk
+            # damage_taken = total HP damage received (sum of all attacker damage on this killmail)
+            char_stats[victim_id]["damage_taken"] += km_total_hp_damage.get(km_id, 0.0)
+            # isk_lost = ISK value of the ship/fit that was destroyed
+            char_stats[victim_id]["isk_lost"] += isk
             char_times[victim_id].append(km_time)
 
         attacker_id = int(km.get("attacker_character_id") or 0)
@@ -526,6 +539,7 @@ def _compute_participants(
             "deaths": stats["deaths"],
             "damage_done": stats["damage_done"],
             "damage_taken": stats["damage_taken"],
+            "isk_lost": stats["isk_lost"],
             "role_proxy": stats["role_proxy"],
             "entry_time": entry_time,
             "exit_time": exit_time,
@@ -785,17 +799,17 @@ def _flush_analysis(
                 INSERT INTO theater_participants (
                     theater_id, character_id, character_name, alliance_id,
                     corporation_id, side, ship_type_ids, kills, deaths,
-                    damage_done, damage_taken, role_proxy,
+                    damage_done, damage_taken, isk_lost, role_proxy,
                     entry_time, exit_time, battles_present,
                     suspicion_score, is_suspicious
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 [
                     (
                         p["theater_id"], p["character_id"], p["character_name"],
                         p["alliance_id"], p["corporation_id"], p["side"],
                         p["ship_type_ids"], p["kills"], p["deaths"],
-                        p["damage_done"], p["damage_taken"], p["role_proxy"],
+                        p["damage_done"], p["damage_taken"], p["isk_lost"], p["role_proxy"],
                         p["entry_time"], p["exit_time"], p["battles_present"],
                         p["suspicion_score"], p["is_suspicious"],
                     )
