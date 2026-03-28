@@ -27,8 +27,8 @@ INSERT INTO app_settings (setting_key, setting_value) VALUES
 ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value);
 
 -- Schedule entries for new jobs
-INSERT INTO sync_schedules (job_key, enabled, interval_seconds, execution_mode, workload_class)
+INSERT INTO sync_schedules (job_key, enabled, interval_seconds, execution_mode)
 VALUES
-    ('graph_universe_sync', 1, 86400, 'python', 'compute'),
-    ('compute_graph_sync_killmail_entities', 1, 300, 'python', 'compute')
+    ('graph_universe_sync', 1, 86400, 'python'),
+    ('compute_graph_sync_killmail_entities', 1, 300, 'python')
 ON DUPLICATE KEY UPDATE enabled = enabled;
