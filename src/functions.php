@@ -26808,7 +26808,7 @@ function theater_ai_system_prompt(): string
     $config = supplycore_ai_ollama_config();
     $provider = (string) ($config['provider'] ?? 'local');
 
-    if ($provider === 'claude' || $provider === 'groq') {
+    if ($provider === 'claude') {
         return "You are an experienced EVE Online Fleet Commander and military analyst writing a detailed After Action Report (AAR).\n\n"
              . "IMPORTANT INSTRUCTIONS:\n"
              . "- Generate a COMPREHENSIVE, DETAILED report. Aim for 1500-3000 words in the summary field.\n"
@@ -26817,6 +26817,13 @@ function theater_ai_system_prompt(): string
              . "- Analyze the battle data thoroughly. Reference specific alliances, ship types, ISK values, and pilot names.\n"
              . "- Focus on tactical clarity, decision-making, and actionable insights.\n\n"
              . "Return valid JSON with the required fields. The 'summary' field must contain the full multi-section AAR in markdown.";
+    }
+
+    if ($provider === 'groq') {
+        return "You are an EVE Online FC writing a battle AAR.\n"
+             . "Write a structured report (500-1200 words). Use ## headers, **bold**, - bullets.\n"
+             . "Reference alliances, ships, ISK values, pilot names. Be analytical, no fluff.\n"
+             . "Return valid JSON with headline, summary (markdown AAR), and verdict fields.";
     }
 
     // Concise prompt for local Ollama (CPU-friendly)
@@ -26831,6 +26838,9 @@ function theater_ai_system_prompt(): string
 
 function theater_ai_user_prompt(array $facts): string
 {
+    $config = supplycore_ai_ollama_config();
+    $provider = (string) ($config['provider'] ?? 'local');
+
     // Load custom prompt from settings, fall back to default
     $defaults = ai_briefing_setting_defaults();
     $settings = get_settings(ai_briefing_setting_keys());
@@ -26842,6 +26852,26 @@ function theater_ai_user_prompt(array $facts): string
         return $customPrompt . "\n\n---\n\nBATTLE DATA:\n" . $dataJson;
     }
 
+    // Compact prompt for Groq / Ollama (token-conscious)
+    if ($provider === 'groq' || $provider === 'local') {
+        return <<<PROMPT
+Write an AAR covering:
+1. Executive Summary (2-3 sentences: outcome, efficiency, impact)
+2. Battle Overview (how it started, escalated, concluded)
+3. Fleet Composition (doctrines, strengths/weaknesses)
+4. Key Turning Points (2-3 decisive moments)
+5. Tactical Assessment (target calling, positioning, logi/ewar/caps)
+6. Intelligence Signals (unusual behavior, missing pilots, suspicious patterns)
+7. Recommendation (1 concrete improvement)
+
+Verdict from our coalition's perspective: "decisive_victory", "victory", "close_fight", "defeat", "decisive_defeat", or "stalemate".
+
+BATTLE DATA:
+{$dataJson}
+PROMPT;
+    }
+
+    // Full prompt for Claude / capable hosted models
     return <<<PROMPT
 You are an experienced EVE Online Fleet Commander and military analyst.
 
@@ -26908,8 +26938,10 @@ function theater_ai_output_schema(): array
     $config = supplycore_ai_ollama_config();
     $provider = (string) ($config['provider'] ?? 'local');
 
-    if ($provider === 'claude' || $provider === 'groq') {
+    if ($provider === 'claude') {
         $summaryDesc = 'Full structured After Action Report (1500-3000 words). Must include ALL numbered sections from the prompt with detailed analysis. Use markdown: ## for headers, **bold** for emphasis, - for bullets. Each section needs multiple paragraphs or bullet points.';
+    } elseif ($provider === 'groq') {
+        $summaryDesc = 'Structured After Action Report (500-1200 words). Cover all sections from the prompt. Use markdown: ## headers, **bold**, - bullets.';
     } else {
         $summaryDesc = 'Structured After Action Report (300-800 words). Cover the key sections from the prompt. Use markdown: ## for headers, **bold** for emphasis, - for bullets.';
     }
