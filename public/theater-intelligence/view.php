@@ -46,7 +46,7 @@ foreach ($allianceSummary as $row) {
         $entityRequests['alliance'][$id] = $id;
     }
 }
-foreach ($participants as $row) {
+foreach ($participantsAll as $row) {
     if (($id = (int) ($row['character_id'] ?? 0)) > 0) {
         $entityRequests['character'][$id] = $id;
     }
@@ -214,7 +214,7 @@ foreach ($sidePanels as $side => $data) {
 
 // ── Resolve ship type names for participant table ──────────────────────
 $allShipTypeIds = [];
-foreach ($participants as $p) {
+foreach ($participantsAll as $p) {
     $shipJson = $p['ship_type_ids'] ?? null;
     if (is_string($shipJson)) {
         $ids = json_decode($shipJson, true);
