@@ -14431,10 +14431,14 @@ function db_pilot_profile(int $characterId): ?array
     $theaterHistory = db_select(
         'SELECT tp.theater_id, tp.kills, tp.deaths, tp.damage_done, tp.damage_taken,
                 tp.role_proxy, tp.side, tp.battles_present, tp.suspicion_score,
-                t.start_time, t.primary_system_name, t.region_name,
+                t.start_time,
+                COALESCE(rs.system_name, CONCAT("System #", t.primary_system_id)) AS primary_system_name,
+                COALESCE(rr.region_name, CONCAT("Region #", t.region_id)) AS region_name,
                 COALESCE(emc_a.entity_name, CONCAT("Alliance #", tp.alliance_id)) AS alliance_name
          FROM theater_participants tp
          INNER JOIN theaters t ON t.theater_id = tp.theater_id
+         LEFT JOIN ref_systems rs ON rs.system_id = t.primary_system_id
+         LEFT JOIN ref_regions rr ON rr.region_id = t.region_id
          LEFT JOIN entity_metadata_cache emc_a ON emc_a.entity_type = "alliance" AND emc_a.entity_id = tp.alliance_id
          WHERE tp.character_id = ?
          ORDER BY t.start_time DESC
