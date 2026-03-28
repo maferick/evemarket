@@ -637,10 +637,8 @@ def _compute_shared_alliance_history(client: Neo4jClient) -> None:
                rel.overlap_start = overlap_start,
                rel.overlap_end = overlap_end,
                rel.overlap_days = duration.between(
-                   date(CASE WHEN date(h1.started_at) > date(h2.started_at)
-                             THEN h1.started_at ELSE h2.started_at END),
-                   CASE WHEN COALESCE(date(h1.ended_at), date()) < COALESCE(date(h2.ended_at), date())
-                        THEN COALESCE(date(h1.ended_at), date()) ELSE COALESCE(date(h2.ended_at), date()) END
+                   date(overlap_start),
+                   COALESCE(date(overlap_end), date())
                ).days""",
         {"lookback_days": OVERLAP_LOOKBACK_DAYS},
     )

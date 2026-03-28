@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+import math
 import time
 from pathlib import Path
 from typing import Any
@@ -1559,6 +1560,13 @@ def _compute_composite_scores(item_data: dict[int, dict[str, Any]]) -> None:
         )
 
 
+def _sanitize_for_mysql(value: Any) -> Any:
+    """Replace float NaN/Inf with None so MySQL doesn't reject them."""
+    if isinstance(value, float) and (math.isnan(value) or math.isinf(value)):
+        return None
+    return value
+
+
 def _persist_criticality_index(db: SupplyCoreDb, item_data: dict[int, dict[str, Any]], computed_at: str) -> int:
     """Write item_criticality_index table and assign priority_rank."""
     if not item_data:
@@ -1571,7 +1579,7 @@ def _persist_criticality_index(db: SupplyCoreDb, item_data: dict[int, dict[str, 
 
     rows = []
     for tid, d in sorted_items:
-        rows.append((
+        rows.append(tuple(_sanitize_for_mysql(v) for v in (
             tid,
             d.get("doctrine_count", 0),
             d.get("fit_count", 0),
@@ -1602,7 +1610,7 @@ def _persist_criticality_index(db: SupplyCoreDb, item_data: dict[int, dict[str, 
             d.get("priority_index", 0),
             d.get("priority_rank"),
             computed_at,
-        ))
+        )))
 
     with db.transaction() as (_, cursor):
         cursor.execute("DELETE FROM item_criticality_index")

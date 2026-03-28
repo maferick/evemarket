@@ -92,7 +92,7 @@ def _load_suspicion_scores(db: SupplyCoreDb, character_ids: list[int]) -> dict[i
             if cid > 0:
                 result[cid] = score
 
-    # For characters not in suspicion_signals, try battle_actor_features
+    # For characters not in suspicion_signals, derive a score from battle_actor_features
     missing = [cid for cid in character_ids if cid not in result]
     if missing:
         for offset in range(0, len(missing), BATCH_SIZE):
@@ -100,7 +100,8 @@ def _load_suspicion_scores(db: SupplyCoreDb, character_ids: list[int]) -> dict[i
             placeholders = ",".join(["%s"] * len(chunk))
             rows = db.fetch_all(
                 f"""
-                SELECT character_id, MAX(suspicion_score) AS suspicion_score
+                SELECT character_id,
+                       MAX(0.5 * COALESCE(centrality_score, 0) + 0.5 * COALESCE(visibility_score, 0)) AS derived_score
                 FROM battle_actor_features
                 WHERE character_id IN ({placeholders})
                 GROUP BY character_id
@@ -109,7 +110,7 @@ def _load_suspicion_scores(db: SupplyCoreDb, character_ids: list[int]) -> dict[i
             )
             for r in rows:
                 cid = int(r.get("character_id") or 0)
-                score = float(r.get("suspicion_score") or 0)
+                score = float(r.get("derived_score") or 0)
                 if cid > 0:
                     result[cid] = score
 
