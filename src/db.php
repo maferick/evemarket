@@ -14633,7 +14633,7 @@ function db_graph_motif_detections_recent(int $limit = 50): array
            AND EXISTS (
                SELECT 1 FROM battle_participants bp
                WHERE bp.alliance_id IN (' . $placeholders . ')
-                 AND JSON_CONTAINS(gmd.member_ids_json, CAST(bp.character_id AS JSON))
+                 AND JSON_CONTAINS(gmd.member_ids_json, CAST(bp.character_id AS CHAR))
            )
          ORDER BY gmd.suspicion_relevance DESC, gmd.occurrence_count DESC
          LIMIT ' . $safeLimit,
