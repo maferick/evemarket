@@ -14301,6 +14301,11 @@ function db_signals_recent(int $limit = 200): array
 function db_battle_intelligence_top_characters(int $limit = 50): array
 {
     $safeLimit = max(1, min(200, $limit));
+    $trackedAllianceIds = array_map('intval', array_column(db_killmail_tracked_alliances_active(), 'alliance_id'));
+    if ($trackedAllianceIds === []) {
+        return [];
+    }
+    $placeholders = implode(',', array_fill(0, count($trackedAllianceIds), '?'));
 
     return db_select(
         'SELECT ccs.character_id, ccs.review_priority_score, ccs.percentile_rank, ccs.confidence_score, ccs.evidence_count, ccs.computed_at,
@@ -14311,14 +14316,24 @@ function db_battle_intelligence_top_characters(int $limit = 50): array
          FROM character_counterintel_scores ccs
          LEFT JOIN character_counterintel_features ccf ON ccf.character_id = ccs.character_id
          LEFT JOIN entity_metadata_cache emc ON emc.entity_type = "character" AND emc.entity_id = ccs.character_id
+         WHERE ccs.character_id IN (
+             SELECT DISTINCT bp.character_id FROM battle_participants bp
+             WHERE bp.alliance_id IN (' . $placeholders . ')
+         )
          ORDER BY ccs.review_priority_score DESC, ccs.percentile_rank DESC, ccs.evidence_count DESC
-         LIMIT ' . $safeLimit
+         LIMIT ' . $safeLimit,
+        $trackedAllianceIds
     );
 }
 
 function db_battle_intelligence_top_battles(int $limit = 50): array
 {
     $safeLimit = max(1, min(200, $limit));
+    $trackedAllianceIds = array_map('intval', array_column(db_killmail_tracked_alliances_active(), 'alliance_id'));
+    if ($trackedAllianceIds === []) {
+        return [];
+    }
+    $placeholders = implode(',', array_fill(0, count($trackedAllianceIds), '?'));
 
     return db_select(
         'SELECT eos.battle_id, eos.side_key, eos.anomaly_class, eos.overperformance_score, eos.sustain_lift_score,
@@ -14332,8 +14347,13 @@ function db_battle_intelligence_top_battles(int $limit = 50): array
          LEFT JOIN entity_metadata_cache emc_side
              ON emc_side.entity_type = CASE WHEN eos.side_key LIKE "a:%" THEN "alliance" WHEN eos.side_key LIKE "c:%" THEN "corporation" ELSE "" END
              AND emc_side.entity_id = CAST(SUBSTRING(eos.side_key, 3) AS UNSIGNED)
+         WHERE eos.battle_id IN (
+             SELECT DISTINCT bp.battle_id FROM battle_participants bp
+             WHERE bp.alliance_id IN (' . $placeholders . ')
+         )
          ORDER BY eos.overperformance_score DESC, br.participant_count DESC
-         LIMIT ' . $safeLimit
+         LIMIT ' . $safeLimit,
+        $trackedAllianceIds
     );
 }
 
@@ -14598,13 +14618,26 @@ function db_graph_community_top_members(int $communityId, int $limit = 30): arra
 function db_graph_motif_detections_recent(int $limit = 50): array
 {
     $safeLimit = max(1, min(200, $limit));
+    $trackedAllianceIds = array_map('intval', array_column(db_killmail_tracked_alliances_active(), 'alliance_id'));
+    if ($trackedAllianceIds === []) {
+        return [];
+    }
+    $placeholders = implode(',', array_fill(0, count($trackedAllianceIds), '?'));
+
+    // Filter motifs where at least one member belongs to a tracked alliance
     return db_select(
-        'SELECT motif_type, member_ids_json, battle_ids_json, occurrence_count,
-                suspicion_relevance, first_seen_at, last_seen_at, computed_at
-         FROM graph_motif_detections
-         WHERE suspicion_relevance > 0.1
-         ORDER BY suspicion_relevance DESC, occurrence_count DESC
-         LIMIT ' . $safeLimit
+        'SELECT gmd.motif_type, gmd.member_ids_json, gmd.battle_ids_json, gmd.occurrence_count,
+                gmd.suspicion_relevance, gmd.first_seen_at, gmd.last_seen_at, gmd.computed_at
+         FROM graph_motif_detections gmd
+         WHERE gmd.suspicion_relevance > 0.1
+           AND EXISTS (
+               SELECT 1 FROM battle_participants bp
+               WHERE bp.alliance_id IN (' . $placeholders . ')
+                 AND JSON_CONTAINS(gmd.member_ids_json, CAST(bp.character_id AS JSON))
+           )
+         ORDER BY gmd.suspicion_relevance DESC, gmd.occurrence_count DESC
+         LIMIT ' . $safeLimit,
+        $trackedAllianceIds
     );
 }
 
@@ -14704,25 +14737,50 @@ function db_graph_query_preset_execute(string $presetKey, array $params = []): a
     $merged = array_merge($defaultParams, $params);
     $limit = max(1, min(500, (int)($merged['limit'] ?? 50)));
 
-    // Replace the single ? placeholder with the limit
-    return db_select($template, [$limit]);
+    // For character-based presets, inject a tracked-alliance filter so only
+    // characters belonging to our tracked alliances appear in results.
+    $trackedAllianceIds = array_map('intval', array_column(db_killmail_tracked_alliances_active(), 'alliance_id'));
+    $queryParams = [$limit];
+
+    if ($trackedAllianceIds !== [] && stripos($template, 'character_id') !== false && $presetKey !== 'recurring_motifs') {
+        $placeholders = implode(',', array_fill(0, count($trackedAllianceIds), '?'));
+        $trackedCte = 'SELECT _inner.* FROM (' . $template . ') _inner '
+            . 'WHERE _inner.character_id IN (SELECT DISTINCT bp.character_id FROM battle_participants bp WHERE bp.alliance_id IN (' . $placeholders . '))';
+        $template = $trackedCte;
+        $queryParams = array_merge([$limit], $trackedAllianceIds);
+    }
+
+    return db_select($template, $queryParams);
 }
 
 function db_graph_community_overview(int $limit = 30): array
 {
     $safeLimit = max(1, min(100, $limit));
+    $trackedAllianceIds = array_map('intval', array_column(db_killmail_tracked_alliances_active(), 'alliance_id'));
+    if ($trackedAllianceIds === []) {
+        return [];
+    }
+    $placeholders = implode(',', array_fill(0, count($trackedAllianceIds), '?'));
+
     return db_select(
-        'SELECT community_id, community_size,
+        'SELECT gca.community_id, gca.community_size,
                 COUNT(*) AS member_count,
-                SUM(is_bridge) AS bridge_count,
-                AVG(pagerank_score) AS avg_pagerank,
-                MAX(pagerank_score) AS max_pagerank,
-                AVG(betweenness_centrality) AS avg_betweenness
-         FROM graph_community_assignments
-         GROUP BY community_id, community_size
+                SUM(gca.is_bridge) AS bridge_count,
+                AVG(gca.pagerank_score) AS avg_pagerank,
+                MAX(gca.pagerank_score) AS max_pagerank,
+                AVG(gca.betweenness_centrality) AS avg_betweenness
+         FROM graph_community_assignments gca
+         WHERE gca.community_id IN (
+             SELECT gca2.community_id FROM graph_community_assignments gca2
+             INNER JOIN battle_participants bp ON bp.character_id = gca2.character_id
+                 AND bp.alliance_id IN (' . $placeholders . ')
+             GROUP BY gca2.community_id
+         )
+         GROUP BY gca.community_id, gca.community_size
          HAVING member_count >= 3
          ORDER BY member_count DESC
-         LIMIT ' . $safeLimit
+         LIMIT ' . $safeLimit,
+        $trackedAllianceIds
     );
 }
 
@@ -14732,12 +14790,22 @@ function db_graph_community_overview(int $limit = 30): array
 
 function db_theaters_list(int $limit = 50, int $offset = 0, ?string $regionFilter = null, ?float $minAnomaly = null): array
 {
+    $trackedAllianceIds = array_map('intval', array_column(db_killmail_tracked_alliances_active(), 'alliance_id'));
+    if ($trackedAllianceIds === []) {
+        return [];
+    }
+    $placeholders = implode(',', array_fill(0, count($trackedAllianceIds), '?'));
+
     $sql = 'SELECT t.*, rs.system_name AS primary_system_name, rr.region_name
             FROM theaters t
+            INNER JOIN theater_alliance_summary tas
+                ON tas.theater_id = t.theater_id
+                AND tas.alliance_id IN (' . $placeholders . ')
+                AND tas.participant_count >= 2
             LEFT JOIN ref_systems rs ON rs.system_id = t.primary_system_id
             LEFT JOIN ref_regions rr ON rr.region_id = t.region_id
             WHERE 1=1';
-    $params = [];
+    $params = $trackedAllianceIds;
     if ($regionFilter !== null) {
         $sql .= ' AND t.region_id = ?';
         $params[] = (int)$regionFilter;
@@ -14746,7 +14814,7 @@ function db_theaters_list(int $limit = 50, int $offset = 0, ?string $regionFilte
         $sql .= ' AND t.anomaly_score >= ?';
         $params[] = $minAnomaly;
     }
-    $sql .= ' ORDER BY t.start_time DESC LIMIT ' . max(1, min(200, (int)$limit)) . ' OFFSET ' . max(0, (int)$offset);
+    $sql .= ' GROUP BY t.theater_id ORDER BY t.start_time DESC LIMIT ' . max(1, min(200, (int)$limit)) . ' OFFSET ' . max(0, (int)$offset);
     return db_select($sql, $params);
 }
 

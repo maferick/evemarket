@@ -14,20 +14,32 @@ $offset = ($page - 1) * $perPage;
 
 $theaters = db_theaters_list($perPage, $offset, $regionFilter, $minAnomaly);
 
+// Auto-generate AI battle reports for new theaters that don't have one yet
+theater_ai_summary_generate_pending();
+
 // Load tracked alliances and side labels for matchup display
 $trackedAlliances = db_killmail_tracked_alliances_active();
 $trackedAllianceIds = array_map('intval', array_column($trackedAlliances, 'alliance_id'));
 $theaterIds = array_column($theaters, 'theater_id');
 $sideLabelsMap = db_theater_side_labels($theaterIds);
 
-// Load distinct regions that have theaters for the filter dropdown
-$theaterRegions = db_select(
-    'SELECT DISTINCT t.region_id, rr.region_name
-     FROM theaters t
-     LEFT JOIN ref_regions rr ON rr.region_id = t.region_id
-     WHERE t.region_id IS NOT NULL
-     ORDER BY rr.region_name ASC'
-);
+// Load distinct regions that have theaters for the filter dropdown (tracked alliances only)
+$theaterRegions = [];
+if ($trackedAllianceIds !== []) {
+    $regionPlaceholders = implode(',', array_fill(0, count($trackedAllianceIds), '?'));
+    $theaterRegions = db_select(
+        'SELECT DISTINCT t.region_id, rr.region_name
+         FROM theaters t
+         INNER JOIN theater_alliance_summary tas
+             ON tas.theater_id = t.theater_id
+             AND tas.alliance_id IN (' . $regionPlaceholders . ')
+             AND tas.participant_count >= 2
+         LEFT JOIN ref_regions rr ON rr.region_id = t.region_id
+         WHERE t.region_id IS NOT NULL
+         ORDER BY rr.region_name ASC',
+        $trackedAllianceIds
+    );
+}
 
 include __DIR__ . '/../../src/views/partials/header.php';
 ?>
@@ -92,7 +104,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
             </thead>
             <tbody>
                 <?php if ($theaters === []): ?>
-                    <tr><td colspan="13" class="px-3 py-6 text-sm text-muted">No theaters found. Run the theater clustering job to generate data.</td></tr>
+                    <tr><td colspan="12" class="px-3 py-6 text-sm text-muted">No theaters found for tracked alliances.</td></tr>
                 <?php else: ?>
                     <?php foreach ($theaters as $t): ?>
                         <?php

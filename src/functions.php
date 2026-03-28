@@ -26401,22 +26401,18 @@ function theater_ai_summary_generate(string $theaterId, bool $forceRegenerate = 
         return null;
     }
 
-    // Skip if already generated and fresh (< 6 hours old), unless force-regenerating
+    // Skip if already generated, unless force-regenerating
     if (!$forceRegenerate) {
         $existingSummary = $theater['ai_summary'] ?? null;
-        $existingSummaryAt = $theater['ai_summary_at'] ?? null;
-        if ($existingSummary !== null && $existingSummaryAt !== null) {
-            $age = time() - strtotime((string) $existingSummaryAt);
-            if ($age < 21600) {
-                return [
-                    'headline' => (string) ($theater['ai_headline'] ?? ''),
-                    'summary' => (string) $existingSummary,
-                    'verdict' => (string) ($theater['ai_verdict'] ?? ''),
-                    'model' => (string) ($theater['ai_summary_model'] ?? ''),
-                    'generated_at' => (string) $existingSummaryAt,
-                    'cached' => true,
-                ];
-            }
+        if ($existingSummary !== null && trim((string) $existingSummary) !== '') {
+            return [
+                'headline' => (string) ($theater['ai_headline'] ?? ''),
+                'summary' => (string) $existingSummary,
+                'verdict' => (string) ($theater['ai_verdict'] ?? ''),
+                'model' => (string) ($theater['ai_summary_model'] ?? ''),
+                'generated_at' => (string) ($theater['ai_summary_at'] ?? ''),
+                'cached' => true,
+            ];
         }
     }
 
@@ -26733,6 +26729,58 @@ function theater_ai_output_schema(): array
             ],
         ],
         'additionalProperties' => false,
+    ];
+}
+
+function theater_ai_summary_generate_pending(): int
+{
+    if (!supplycore_ai_ollama_enabled()) {
+        return 0;
+    }
+    $trackedAllianceIds = array_map('intval', array_column(db_killmail_tracked_alliances_active(), 'alliance_id'));
+    if ($trackedAllianceIds === []) {
+        return 0;
+    }
+    $placeholders = implode(',', array_fill(0, count($trackedAllianceIds), '?'));
+    $pending = db_select(
+        'SELECT DISTINCT t.theater_id
+         FROM theaters t
+         INNER JOIN theater_alliance_summary tas
+             ON tas.theater_id = t.theater_id
+             AND tas.alliance_id IN (' . $placeholders . ')
+             AND tas.participant_count >= 2
+         WHERE t.ai_summary IS NULL
+         ORDER BY t.start_time DESC
+         LIMIT 5',
+        $trackedAllianceIds
+    );
+    $generated = 0;
+    foreach ($pending as $row) {
+        $result = theater_ai_summary_generate((string) $row['theater_id']);
+        if ($result !== null) {
+            $generated++;
+        }
+    }
+    return $generated;
+}
+
+function theater_ai_summary_read(string $theaterId): ?array
+{
+    $theater = db_theater_detail($theaterId);
+    if ($theater === null) {
+        return null;
+    }
+    $existingSummary = $theater['ai_summary'] ?? null;
+    if ($existingSummary === null || trim((string) $existingSummary) === '') {
+        return null;
+    }
+    return [
+        'headline' => (string) ($theater['ai_headline'] ?? ''),
+        'summary' => (string) $existingSummary,
+        'verdict' => (string) ($theater['ai_verdict'] ?? ''),
+        'model' => (string) ($theater['ai_summary_model'] ?? ''),
+        'generated_at' => (string) ($theater['ai_summary_at'] ?? ''),
+        'cached' => true,
     ];
 }
 

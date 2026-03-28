@@ -84,6 +84,9 @@ foreach ($allianceSummary as $a) {
         $ourSide = $side;
     }
 }
+if ($ourSide === null) {
+    $ourSide = 'side_a';
+}
 $enemySide = ($ourSide === 'side_a') ? 'side_b' : 'side_a';
 
 // Build human-readable label for each side (dominant alliance name by pilot count)
@@ -117,12 +120,13 @@ $durationLabel = $durationSec >= 120 ? number_format($durationSec / 60, 0) . 'm'
 $anomaly = (float) ($theater['anomaly_score'] ?? 0);
 
 // ── Handle AAR regeneration request ──────────────────────────────────
+// Only generate/regenerate on explicit POST. On GET, read the stored summary.
 $aarRegenerated = false;
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['regenerate_aar']) && $_POST['regenerate_aar'] === '1') {
     $aiSummary = theater_ai_summary_generate($theaterId, true);
     $aarRegenerated = $aiSummary !== null;
 } else {
-    $aiSummary = theater_ai_summary_generate($theaterId);
+    $aiSummary = theater_ai_summary_read($theaterId);
 }
 
 include __DIR__ . '/../../src/views/partials/header.php';
