@@ -41,7 +41,10 @@
         </div>
         <div class="surface-tertiary">
             <p class="text-xs text-muted">Distinct Killmails</p>
-            <p class="text-lg text-slate-50 font-semibold"><?= number_format((int) ($theater['total_kills'] ?? 0)) ?></p>
+            <p class="text-lg text-slate-50 font-semibold"><?= number_format($displayKillTotal) ?></p>
+            <?php if ($reportedKillTotal !== $observedKillTotal): ?>
+                <p class="mt-1 text-[10px] text-muted">Stored: <?= number_format($reportedKillTotal) ?> · Observed: <?= number_format($observedKillTotal) ?></p>
+            <?php endif; ?>
         </div>
         <div class="surface-tertiary">
             <p class="text-xs text-muted">Duration</p>
@@ -52,4 +55,15 @@
             <p class="text-lg text-slate-50 font-semibold"><?= supplycore_format_isk($totalIskDestroyed) ?></p>
         </div>
     </div>
+
+    <?php if ($dataQualityNotes !== []): ?>
+        <div class="mt-3 rounded-lg border border-amber-400/30 bg-amber-500/10 p-3">
+            <p class="text-xs uppercase tracking-[0.15em] text-amber-300">Data quality notes</p>
+            <ul class="mt-1 list-disc space-y-1 pl-5 text-sm text-amber-100/90">
+                <?php foreach ($dataQualityNotes as $note): ?>
+                    <li><?= htmlspecialchars($note, ENT_QUOTES) ?></li>
+                <?php endforeach; ?>
+            </ul>
+        </div>
+    <?php endif; ?>
 </section>

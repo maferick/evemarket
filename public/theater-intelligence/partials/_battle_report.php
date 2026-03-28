@@ -25,7 +25,9 @@
                 $agg = $sideAggregates[$side];
                 $colorClass = $sideColorClass[$side] ?? 'text-slate-300';
                 $bgClass = $sideBgClass[$side] ?? 'bg-slate-700';
-                $sideShips = $shipComposition[$side] ?? [];
+                $panelFinalBlows = (int) ($timelineSideKills[$side] ?? 0);
+                $panelInvolvements = (int) ($participantKillTotalsBySide[$side] ?? 0);
+                $sideShips = $fleetShipsBySide[$side] ?? [];
             ?>
             <div class="<?= $bgClass ?> rounded-lg p-4">
                 <h3 class="text-sm font-semibold <?= $colorClass ?> mb-3">
@@ -45,20 +47,13 @@
                         <p class="text-slate-100 font-semibold"><?= number_format($agg['efficiency'] * 100, 1) ?>%</p>
                     </div>
                     <div>
-                        <p class="text-xs text-muted">Kill Involvements</p>
-                        <p class="text-slate-100 font-semibold"><?= number_format($agg['kills']) ?></p>
+                        <p class="text-xs text-muted">Final Blows / Losses</p>
+                        <p class="text-slate-100 font-semibold"><?= number_format($panelFinalBlows) ?> / <?= number_format($agg['losses']) ?></p>
+                        <p class="text-[10px] text-muted">Kill involvements: <?= number_format($panelInvolvements) ?></p>
                     </div>
                     <div>
-                        <p class="text-xs text-muted">Ships Lost</p>
-                        <p class="text-slate-100 font-semibold"><?= number_format($agg['losses']) ?></p>
-                    </div>
-                    <div>
-                        <p class="text-xs text-muted">ISK Killed</p>
-                        <p class="text-slate-100 font-semibold"><?= supplycore_format_isk($agg['isk_killed']) ?></p>
-                    </div>
-                    <div>
-                        <p class="text-xs text-muted">ISK Lost</p>
-                        <p class="text-slate-100 font-semibold"><?= supplycore_format_isk($agg['isk_lost']) ?></p>
+                        <p class="text-xs text-muted">ISK Killed / Lost</p>
+                        <p class="text-slate-100 font-semibold"><?= supplycore_format_isk($agg['isk_killed']) ?> / <?= supplycore_format_isk($agg['isk_lost']) ?></p>
                     </div>
                 </div>
 
@@ -70,7 +65,7 @@
                 <?php if ($sideAlliances): ?>
                     <div class="mt-3 border-t border-slate-700/50 pt-2">
                         <p class="text-[10px] uppercase tracking-wider text-muted mb-1">Alliances</p>
-                        <?php foreach ($sideAlliances as $a): ?>
+                        <?php foreach (array_slice($sideAlliances, 0, 4) as $a): ?>
                             <?php $allianceId = (int) ($a['alliance_id'] ?? 0); ?>
                             <div class="flex items-center gap-2 py-0.5">
                                 <?php if ($allianceId > 0): ?>
@@ -83,17 +78,18 @@
                     </div>
                 <?php endif; ?>
 
-                <!-- Ship composition -->
+                <!-- Ship composition from fleet composition query (grouped by ship_type_id) -->
                 <?php if ($sideShips): ?>
                     <div class="mt-3 border-t border-slate-700/50 pt-2">
-                        <p class="text-[10px] uppercase tracking-wider text-muted mb-1">Ship Types (by appearances)</p>
+                        <p class="text-[10px] uppercase tracking-wider text-muted mb-1">Top Hulls (by appearances)</p>
                         <div class="flex flex-wrap gap-1.5">
-                            <?php $shipCount = 0; foreach ($sideShips as $typeId => $count): ?>
-                                <?php if (++$shipCount > 12) break; ?>
+                            <?php foreach (array_slice($sideShips, 0, 12) as $ship): ?>
                                 <div class="flex items-center gap-1 bg-slate-800/60 rounded px-1.5 py-0.5">
-                                    <img src="https://images.evetech.net/types/<?= (int) $typeId ?>/icon?size=32" alt="" class="w-4 h-4" loading="lazy">
-                                    <span class="text-[11px] text-slate-300"><?= htmlspecialchars((string) ($shipTypeNames[(int) $typeId] ?? "#{$typeId}"), ENT_QUOTES) ?></span>
-                                    <span class="text-[10px] text-muted">x<?= $count ?></span>
+                                    <?php if (($ship['type_id'] ?? 0) > 0): ?>
+                                        <img src="https://images.evetech.net/types/<?= (int) $ship['type_id'] ?>/icon?size=32" alt="" class="w-4 h-4" loading="lazy">
+                                    <?php endif; ?>
+                                    <span class="text-[11px] text-slate-300"><?= htmlspecialchars((string) ($ship['name'] ?? ''), ENT_QUOTES) ?></span>
+                                    <span class="text-[10px] text-muted">x<?= $ship['pilots'] ?></span>
                                 </div>
                             <?php endforeach; ?>
                             <?php if (count($sideShips) > 12): ?>

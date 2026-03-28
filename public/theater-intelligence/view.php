@@ -24,12 +24,14 @@ $battles = db_theater_battles($theaterId);
 $systems = db_theater_systems($theaterId);
 $timeline = db_theater_timeline($theaterId);
 $allianceSummary = db_theater_alliance_summary($theaterId);
+$fleetComposition = db_theater_fleet_composition($theaterId);
 $suspicion = db_theater_suspicion_summary($theaterId);
 $graphSummary = db_theater_graph_summary($theaterId);
 $turningPoints = db_theater_turning_points($theaterId);
 
 $sideFilter = isset($_GET['side']) ? (string) $_GET['side'] : null;
 $suspiciousOnly = isset($_GET['suspicious']) && $_GET['suspicious'] === '1';
+$participantsAll = db_theater_participants($theaterId, null, false, 1000);
 $participants = db_theater_participants($theaterId, $sideFilter, $suspiciousOnly);
 $graphParticipants = db_theater_graph_participants($theaterId);
 
@@ -153,6 +155,64 @@ $durationSec = max(1, (int) ($theater['duration_seconds'] ?? 0));
 $durationLabel = $durationSec >= 120 ? number_format($durationSec / 60, 0) . 'm' : $durationSec . 's';
 $anomaly = (float) ($theater['anomaly_score'] ?? 0);
 $totalIskDestroyed = (float) ($theater['total_isk'] ?? 0);
+
+// ── Derived aggregates / data-quality guards ───────────────────────────
+$timelineKillTotal = 0;
+$timelineSideKills = ['side_a' => 0, 'side_b' => 0];
+foreach ($timeline as $row) {
+    $timelineKillTotal += (int) ($row['kills'] ?? 0);
+    $timelineSideKills['side_a'] += (int) ($row['side_a_kills'] ?? 0);
+    $timelineSideKills['side_b'] += (int) ($row['side_b_kills'] ?? 0);
+}
+
+$allianceKillTotal = 0;
+$allianceLossTotal = 0;
+foreach ($allianceSummary as $row) {
+    $allianceKillTotal += (int) ($row['total_kills'] ?? 0);
+    $allianceLossTotal += (int) ($row['total_losses'] ?? 0);
+}
+
+$participantKillTotal = 0;
+$participantKillTotalsBySide = ['side_a' => 0, 'side_b' => 0];
+foreach ($participantsAll as $row) {
+    $kills = (int) ($row['kills'] ?? 0);
+    $side = (string) ($row['side'] ?? 'side_b');
+    $participantKillTotal += $kills;
+    if (isset($participantKillTotalsBySide[$side])) {
+        $participantKillTotalsBySide[$side] += $kills;
+    }
+}
+
+$reportedKillTotal = (int) ($theater['total_kills'] ?? 0);
+$observedKillTotal = $timelineKillTotal;
+$displayKillTotal = $reportedKillTotal;
+if ($displayKillTotal <= 0 && $observedKillTotal > 0) {
+    $displayKillTotal = $observedKillTotal;
+}
+
+$dataQualityNotes = [];
+if ($reportedKillTotal !== $observedKillTotal) {
+    $dataQualityNotes[] = 'Theater aggregate kills (' . number_format($reportedKillTotal) . ') differ from observed detail kills (' . number_format($observedKillTotal) . ').';
+}
+if ($allianceKillTotal > 0 && $allianceLossTotal > 0 && abs($allianceKillTotal - $allianceLossTotal) > 0) {
+    $dataQualityNotes[] = 'Alliance kill-involvements (' . number_format($allianceKillTotal) . ') differ from losses (' . number_format($allianceLossTotal) . '). This is expected when multiple alliances assist on the same killmail.';
+}
+
+// ── Build fleet composition per side from db_theater_fleet_composition ──
+$fleetShipsBySide = ['side_a' => [], 'side_b' => []];
+foreach ($fleetComposition as $row) {
+    $side = (string) ($row['side'] ?? '');
+    if (!isset($fleetShipsBySide[$side])) continue;
+    $fleetShipsBySide[$side][] = [
+        'name' => (string) ($row['ship_name'] ?? 'Unknown Hull'),
+        'pilots' => (int) ($row['pilot_count'] ?? 0),
+        'type_id' => (int) ($row['ship_type_id'] ?? 0),
+    ];
+}
+foreach ($fleetShipsBySide as $side => $ships) {
+    usort($ships, fn($a, $b) => $b['pilots'] <=> $a['pilots']);
+    $fleetShipsBySide[$side] = $ships;
+}
 
 // ── AAR handling ───────────────────────────────────────────────────────
 $aarRegenerated = false;
