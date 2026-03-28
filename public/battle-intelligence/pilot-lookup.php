@@ -114,7 +114,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
             </div>
 
             <!-- Quick stats -->
-            <div class="mt-4 grid gap-3 md:grid-cols-6">
+            <div class="mt-4 grid gap-3 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-6">
                 <div class="surface-tertiary">
                     <p class="text-xs text-muted">Theaters</p>
                     <p class="text-lg text-slate-50 font-semibold"><?= (int) ($stats['theater_count'] ?? 0) ?></p>
