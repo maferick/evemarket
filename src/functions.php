@@ -2920,8 +2920,6 @@ function scheduler_mark_manual_job_start_requested(string $jobKey, string $event
 
 function run_data_sync_now(?string $jobKey = null): array
 {
-    $lockName = 'cron_tick_runner';
-    $lockAcquired = false;
     $definitions = data_sync_schedule_job_definitions();
     $normalizedJobKey = $jobKey === null ? '' : trim($jobKey);
 
@@ -2982,30 +2980,15 @@ function run_data_sync_now(?string $jobKey = null): array
             ];
         }
 
-        $lockAcquired = runner_lock_acquire($lockName, 0);
-        if (!$lockAcquired) {
-            return [
-                'ok' => false,
-                'message' => 'Run now failed: the scheduler daemon could not be started and the cron runner lock is currently busy.',
-            ];
-        }
-
-        $summary = cron_tick_run();
-
         return [
-            'ok' => true,
-            'message' => 'Run now completed for ' . $jobLabel . '. Forced ' . $forcedJobs . ' schedule(s); processed ' . (int) ($summary['jobs_processed'] ?? 0) . ' job(s), with ' . (int) ($summary['jobs_failed'] ?? 0) . ' failure(s).',
-            'summary' => $summary,
+            'ok' => false,
+            'message' => 'Run now failed: no active scheduler daemon found and the watchdog could not start one. Check that the Python worker services are running.',
         ];
     } catch (Throwable $exception) {
         return [
             'ok' => false,
             'message' => 'Run now failed: ' . scheduler_normalize_error_message($exception->getMessage()),
         ];
-    } finally {
-        if ($lockAcquired) {
-            runner_lock_release($lockName);
-        }
     }
 }
 
@@ -3071,7 +3054,6 @@ function scheduler_reset_process_targets(): array
         scheduler_job_runner_script_path(),
         scheduler_daemon_script_path(),
         scheduler_watchdog_script_path(),
-        dirname(__DIR__) . '/bin/cron_tick.php',
     ];
 
     return array_values(array_unique(array_filter(array_map(static function (string $path): string {
@@ -3218,9 +3200,9 @@ function scheduler_reset_runtime_state_message(array $result): string
     $lockCount = count((array) ($result['released_locks'] ?? []));
     $scheduleCount = (int) ($result['reset_schedule_count'] ?? 0);
 
-    $message = 'Scheduler reset completed. Cleared ' . $scheduleCount . ' locked schedule(s), released ' . $lockCount . ' runner lock(s), and targeted ' . $killedCount . ' PHP scheduler process(es).';
+    $message = 'Scheduler reset completed. Cleared ' . $scheduleCount . ' locked schedule(s), released ' . $lockCount . ' runner lock(s), and targeted ' . $killedCount . ' worker process(es).';
     if ($remainingCount > 0) {
-        $message .= ' Warning: ' . $remainingCount . ' scheduler process(es) still appear to be running and may need manual review.';
+        $message .= ' Warning: ' . $remainingCount . ' worker process(es) still appear to be running and may need manual review.';
     }
 
     return $message;
@@ -4140,7 +4122,7 @@ function supplycore_authoritative_job_registry(): array
         'activity_priority_summary_sync' => ['label' => 'Activity Priority Summary', 'description' => 'Refresh activity-priority summary snapshot.', 'category' => 'real_schedulable', 'enabled_by_default' => false, 'schedulable' => true, 'settings_visible' => true, 'user_visible' => true, 'execution_mode' => 'python', 'default_interval_minutes' => 15, 'default_offset_minutes' => 13, 'priority' => 'normal', 'timeout_seconds' => 180, 'concurrency_policy' => 'single', 'explicitly_configured' => false, 'python_implementation_exists' => true, 'worker_safe' => true, 'review_reason' => 'validated via python worker pool/job runner/manual CLI parity checks.'],
         'analytics_bucket_1h_sync' => ['label' => 'Analytics Buckets (1h)', 'description' => 'Roll up analytics into hourly buckets.', 'category' => 'real_schedulable', 'enabled_by_default' => false, 'schedulable' => true, 'settings_visible' => true, 'user_visible' => true, 'execution_mode' => 'python', 'default_interval_minutes' => 15, 'default_offset_minutes' => 15, 'priority' => 'normal', 'timeout_seconds' => 180, 'concurrency_policy' => 'single', 'explicitly_configured' => false, 'python_implementation_exists' => true, 'worker_safe' => true, 'review_reason' => 'validated via python worker pool/job runner/manual CLI parity checks.'],
         'analytics_bucket_1d_sync' => ['label' => 'Analytics Buckets (1d)', 'description' => 'Roll up analytics into daily buckets.', 'category' => 'real_schedulable', 'enabled_by_default' => false, 'schedulable' => true, 'settings_visible' => true, 'user_visible' => true, 'execution_mode' => 'python', 'default_interval_minutes' => 60, 'default_offset_minutes' => 16, 'priority' => 'normal', 'timeout_seconds' => 240, 'concurrency_policy' => 'single', 'explicitly_configured' => false, 'python_implementation_exists' => true, 'worker_safe' => true, 'review_reason' => 'validated via python worker pool/job runner/manual CLI parity checks.'],
-        'deal_alerts_sync' => ['label' => 'Deal Alerts', 'description' => 'Refresh deal alert materialization.', 'category' => 'real_schedulable', 'enabled_by_default' => false, 'schedulable' => true, 'settings_visible' => true, 'user_visible' => true, 'execution_mode' => 'python', 'default_interval_minutes' => 5, 'default_offset_minutes' => 1, 'priority' => 'high', 'timeout_seconds' => 90, 'concurrency_policy' => 'single', 'explicitly_configured' => true, 'python_implementation_exists' => true, 'worker_safe' => true, 'review_reason' => 'validated via python worker pool/job runner/manual CLI parity checks.'],
+        'deal_alerts_sync' => ['label' => 'Deal Alerts', 'description' => 'Refresh deal alert materialization.', 'category' => 'real_schedulable', 'enabled_by_default' => true, 'schedulable' => true, 'settings_visible' => true, 'user_visible' => true, 'execution_mode' => 'python', 'default_interval_minutes' => 5, 'default_offset_minutes' => 1, 'priority' => 'high', 'timeout_seconds' => 90, 'concurrency_policy' => 'single', 'explicitly_configured' => true, 'python_implementation_exists' => true, 'worker_safe' => true, 'review_reason' => 'validated via python worker pool/job runner/manual CLI parity checks.'],
         'compute_buy_all' => ['label' => 'Compute Buy All', 'description' => 'Compute buy-all opportunity model.', 'category' => 'real_schedulable', 'enabled_by_default' => false, 'schedulable' => true, 'settings_visible' => true, 'user_visible' => true, 'execution_mode' => 'python', 'default_interval_minutes' => 15, 'default_offset_minutes' => 19, 'priority' => 'normal', 'timeout_seconds' => 420, 'concurrency_policy' => 'single', 'explicitly_configured' => true, 'python_implementation_exists' => true, 'worker_safe' => true, 'review_reason' => 'validated via python worker pool/job runner/manual CLI parity checks.'],
         'compute_signals' => ['label' => 'Compute Signals', 'description' => 'Compute market signal features.', 'category' => 'real_schedulable', 'enabled_by_default' => false, 'schedulable' => true, 'settings_visible' => true, 'user_visible' => true, 'execution_mode' => 'python', 'default_interval_minutes' => 15, 'default_offset_minutes' => 20, 'priority' => 'normal', 'timeout_seconds' => 300, 'concurrency_policy' => 'single', 'explicitly_configured' => true, 'python_implementation_exists' => true, 'worker_safe' => true, 'review_reason' => 'validated via python worker pool/job runner/manual CLI parity checks.'],
 
@@ -12390,11 +12372,9 @@ function scheduler_dispatch_background_job(array $job): array
             'resolved_timeout_seconds' => (int) ($timeout['resolved_timeout_seconds'] ?? 0),
             'enforced_timeout_seconds' => (int) ($timeout['enforced_timeout_seconds'] ?? 0),
             'timeout_source' => (string) ($timeout['timeout_source'] ?? 'unknown'),
-            'outcome_reason' => $executionMode === 'python'
-                ? 'Job was dispatched to a background Python worker for controlled heavy-workload execution.'
-                : 'Job was dispatched to a background PHP worker so other due jobs can continue immediately.',
+            'outcome_reason' => 'Job was dispatched to a background worker for controlled execution.',
         ],
-        'summary' => $executionMode === 'python' ? 'Dispatched to a background Python worker.' : 'Dispatched to a background PHP worker.',
+        'summary' => 'Dispatched to a background worker.',
     ];
 }
 
@@ -23524,6 +23504,10 @@ function supplycore_materialized_snapshot_read_or_bootstrap(string $snapshotKey,
     $snapshot = supplycore_materialized_snapshot_fetch($snapshotKey);
     $expired = false;
     if ($snapshot !== null) {
+        $status = trim((string) ($snapshot['meta']['status'] ?? ''));
+        if ($status === 'updating') {
+            $expired = true;
+        }
         $expiresAt = trim((string) ($snapshot['meta']['expires_at'] ?? ''));
         if ($expiresAt !== '' && strtotime($expiresAt) !== false && strtotime($expiresAt) < time()) {
             $expired = true;
@@ -24516,6 +24500,10 @@ function doctrine_snapshot_cache_payload(): ?array
     }
 
     foreach ([$fitSnapshot, $groupSnapshot] as $snap) {
+        $status = trim((string) ($snap['meta']['status'] ?? ''));
+        if ($status === 'updating') {
+            return null;
+        }
         $expiresAt = trim((string) ($snap['meta']['expires_at'] ?? ''));
         if ($expiresAt !== '' && strtotime($expiresAt) !== false && strtotime($expiresAt) < time()) {
             return null;
@@ -24614,6 +24602,8 @@ function doctrine_schedule_intelligence_refresh(string $reason = 'manual'): void
     foreach ([doctrine_fit_snapshot_key(), doctrine_group_snapshot_key(), market_comparison_snapshot_key(), loss_demand_snapshot_key(), dashboard_snapshot_key(), activity_priority_snapshot_key()] as $snapshotKey) {
         supplycore_materialized_snapshot_mark_updating($snapshotKey, $reason);
     }
+
+    supplycore_cache_bust(['doctrine', 'dashboard']);
 
     try {
         db_sync_schedule_force_due_by_job_keys(doctrine_refresh_trigger_job_keys());

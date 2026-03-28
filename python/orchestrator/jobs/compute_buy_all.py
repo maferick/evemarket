@@ -79,10 +79,9 @@ def _php_default_filters(mode: str) -> dict[str, Any]:
 
 
 DEFAULT_REQUESTS: list[dict[str, Any]] = [
-    {"mode": "blended", "sort": "blended_score"},
-    {"mode": "doctrine_critical", "sort": "mode_rank_score"},
-    {"mode": "opportunity", "sort": "mode_rank_score"},
-    {"mode": "seed_backlog", "sort": "necessity_score"},
+    {"mode": mode, "sort": defn["default_sort"]}
+    for mode, defn in _MODE_DEFINITIONS.items()
+    if mode != "custom"
 ]
 
 DECIMAL_ZERO = Decimal("0")
