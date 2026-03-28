@@ -512,8 +512,9 @@ include __DIR__ . '/../../src/views/partials/header.php';
                                 </span>
                             </td>
                             <td class="px-3 py-2">
-                                <span class="inline-block rounded-full bg-slate-700 px-2 py-0.5 text-[10px] uppercase tracking-wider text-slate-300">
-                                    <?= htmlspecialchars((string) ($p['role_proxy'] ?? 'dps'), ENT_QUOTES) ?>
+                                <?php $fleetRole = (string) ($p['role_proxy'] ?? 'mainline_dps'); ?>
+                                <span class="inline-block rounded-full px-2 py-0.5 text-[10px] uppercase tracking-wider <?= fleet_function_color_class($fleetRole) ?>">
+                                    <?= htmlspecialchars(fleet_function_label($fleetRole), ENT_QUOTES) ?>
                                 </span>
                             </td>
                             <td class="px-3 py-2 text-right"><?= (int) ($p['kills'] ?? 0) ?></td>

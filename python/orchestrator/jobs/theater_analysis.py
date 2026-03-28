@@ -43,6 +43,69 @@ MOMENTUM_SMOOTHING_WINDOW = 5  # buckets for momentum moving average
 TURNING_POINT_MAGNITUDE_THRESHOLD = 0.3  # minimum momentum swing to flag
 BATCH_SIZE = 500
 
+# ── Fleet function classification by ship group_id ───────────────────────────
+# Maps EVE item group IDs to fleet functions based on typical fleet roles.
+# See: https://wiki.eveuniversity.org/Ship_classification
+
+FLEET_FUNCTION_BY_GROUP: dict[int, str] = {
+    # Mainline DPS
+    25: "mainline_dps",       # Frigate
+    26: "mainline_dps",       # Cruiser
+    27: "mainline_dps",       # Battleship
+    380: "mainline_dps",      # Destroyer
+    420: "mainline_dps",      # Destroyer (alternate group)
+    419: "mainline_dps",      # Battlecruiser
+    1201: "mainline_dps",     # Attack Battlecruiser
+    358: "mainline_dps",      # Heavy Assault Cruiser
+    1305: "mainline_dps",     # Tactical Destroyer
+    900: "mainline_dps",      # Marauder
+    963: "mainline_dps",      # Strategic Cruiser
+    1972: "mainline_dps",     # Flag Cruiser
+    # Capital DPS
+    485: "capital_dps",       # Dreadnought
+    # Logistics
+    832: "logistics",         # Logistics Cruiser
+    1527: "logistics",        # Logistics Frigate
+    # Capital Logistics
+    1973: "capital_logistics", # Force Auxiliary
+    # Tackle
+    831: "tackle",            # Interceptor
+    324: "tackle",            # Assault Frigate
+    # Heavy Tackle / Bubble Control
+    894: "heavy_tackle",      # Heavy Interdictor
+    541: "bubble_control",    # Interdictor
+    # Command Support / Boosts
+    540: "command",           # Command Ship
+    1534: "command",          # Command Destroyer
+    # Skirmish Control / EWAR
+    893: "ewar",              # Electronic Attack Frigate
+    906: "ewar",              # Combat Recon
+    # Bomber Wing
+    834: "bomber",            # Stealth Bomber
+    898: "bomber",            # Black Ops
+    # Scout / Probe / Hunter & Cyno / Bridge Support
+    830: "scout",             # Covert Ops
+    833: "scout",             # Force Recon
+    # Drone Assist / Utility
+    547: "capital_dps",       # Carrier
+    # Supercapital Projection
+    659: "supercapital",      # Supercarrier
+    30: "supercapital",       # Titan
+    # Non-combat (excluded from fleet function display)
+    29: "non_combat",         # Capsule
+    31: "non_combat",         # Shuttle
+    28: "non_combat",         # Industrial
+    463: "non_combat",        # Mining Barge
+    513: "non_combat",        # Freighter
+    543: "non_combat",        # Exhumer
+    902: "non_combat",        # Jump Freighter
+    941: "non_combat",        # Industrial Command Ship
+    1022: "non_combat",       # Prototype Exploration Ship
+    1202: "non_combat",       # Blockade Runner
+    1203: "non_combat",       # Transport Ship
+    1283: "non_combat",       # Expedition Frigate
+}
+
 
 def _now_sql() -> str:
     return datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
@@ -124,6 +187,18 @@ def _load_killmails_for_battles(db: SupplyCoreDb, battle_ids: list[str]) -> list
         )
         all_rows.extend(rows)
     return all_rows
+
+
+def _load_ship_group_map(db: SupplyCoreDb) -> dict[int, int]:
+    """Load type_id → group_id mapping for fleet function resolution."""
+    rows = db.fetch_all("SELECT type_id, group_id FROM ref_item_types WHERE group_id IS NOT NULL")
+    return {int(r["type_id"]): int(r["group_id"]) for r in rows}
+
+
+def _resolve_fleet_function(ship_type_id: int, ship_group_map: dict[int, int]) -> str:
+    """Resolve a ship type ID to its fleet function string."""
+    group_id = ship_group_map.get(ship_type_id, 0)
+    return FLEET_FUNCTION_BY_GROUP.get(group_id, "mainline_dps")
 
 
 def _load_battle_participants_for_theater(
@@ -393,6 +468,7 @@ def _compute_participants(
     bp_rows: list[dict[str, Any]],
     char_sides: dict[int, str],
     theater_id: str,
+    ship_group_map: dict[int, int] | None = None,
 ) -> list[dict[str, Any]]:
     """Compute per-character stats across the theater."""
     char_stats: dict[int, dict[str, Any]] = {}
@@ -411,17 +487,22 @@ def _compute_participants(
             aid = int(p.get("alliance_id") or 0)
             corp_id = int(p.get("corporation_id") or 0)
             ship_type_id = int(p.get("ship_type_id") or 0)
-            is_logi = int(p.get("is_logi") or 0)
-            is_command = int(p.get("is_command") or 0)
-            is_capital = int(p.get("is_capital") or 0)
 
-            role_proxy = "dps"
-            if is_logi:
-                role_proxy = "logi"
-            elif is_command:
-                role_proxy = "command"
-            elif is_capital:
-                role_proxy = "capital"
+            # Resolve fleet function from ship group
+            if ship_group_map is not None:
+                role_proxy = _resolve_fleet_function(ship_type_id, ship_group_map)
+            else:
+                # Fallback to legacy boolean flags
+                is_logi = int(p.get("is_logi") or 0)
+                is_command = int(p.get("is_command") or 0)
+                is_capital = int(p.get("is_capital") or 0)
+                role_proxy = "mainline_dps"
+                if is_logi:
+                    role_proxy = "logistics"
+                elif is_command:
+                    role_proxy = "command"
+                elif is_capital:
+                    role_proxy = "capital_dps"
 
             char_stats[cid] = {
                 "character_id": cid,
@@ -703,6 +784,9 @@ def run_theater_analysis(
         rows_processed = len(theaters)
         _theater_log(runtime, "theater_analysis.theaters_loaded", {"count": len(theaters)})
 
+        # Load ship type → group mapping for fleet function resolution
+        ship_group_map = _load_ship_group_map(db)
+
         if not theaters:
             finish_job_run(db, job, status="success", rows_processed=0, rows_written=0, meta={"theaters_analyzed": 0})
             duration_ms = int((datetime.now(UTC) - started_monotonic).total_seconds() * 1000)
@@ -740,7 +824,7 @@ def run_theater_analysis(
             alliance_summary = _compute_alliance_summary(killmails, bp_rows, side_labels, char_sides)
 
             # Compute participant stats
-            participant_stats = _compute_participants(killmails, bp_rows, char_sides, theater_id)
+            participant_stats = _compute_participants(killmails, bp_rows, char_sides, theater_id, ship_group_map)
 
             # Compute totals
             total_kills = sum(t["kills"] for t in timeline)

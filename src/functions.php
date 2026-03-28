@@ -10929,6 +10929,49 @@ function killmail_ship_class_label(?int $groupId): string
     return $groupMap[$groupId ?? 0] ?? 'Ship class unavailable';
 }
 
+function fleet_function_label(string $role): string
+{
+    return match ($role) {
+        'mainline_dps' => 'Mainline DPS',
+        'capital_dps' => 'Capital DPS',
+        'logistics' => 'Logistics',
+        'capital_logistics' => 'Capital Logi',
+        'tackle' => 'Tackle',
+        'heavy_tackle' => 'Heavy Tackle',
+        'bubble_control' => 'Bubble Control',
+        'command' => 'Command',
+        'ewar' => 'EWAR',
+        'bomber' => 'Bomber',
+        'scout' => 'Scout',
+        'supercapital' => 'Supercapital',
+        'non_combat' => 'Non-Combat',
+        // Legacy values
+        'dps' => 'DPS',
+        'logi' => 'Logistics',
+        'capital' => 'Capital',
+        default => ucfirst(str_replace('_', ' ', $role)),
+    };
+}
+
+function fleet_function_color_class(string $role): string
+{
+    return match ($role) {
+        'logistics', 'logi' => 'bg-emerald-900/60 text-emerald-300',
+        'capital_logistics' => 'bg-emerald-900/60 text-emerald-300',
+        'command' => 'bg-amber-900/60 text-amber-300',
+        'ewar' => 'bg-purple-900/60 text-purple-300',
+        'tackle' => 'bg-cyan-900/60 text-cyan-300',
+        'heavy_tackle' => 'bg-cyan-900/60 text-cyan-300',
+        'bubble_control' => 'bg-cyan-900/60 text-cyan-300',
+        'bomber' => 'bg-orange-900/60 text-orange-300',
+        'scout' => 'bg-indigo-900/60 text-indigo-300',
+        'capital_dps', 'capital' => 'bg-red-900/60 text-red-300',
+        'supercapital' => 'bg-red-900/60 text-red-200',
+        'non_combat' => 'bg-slate-800 text-slate-500',
+        default => 'bg-slate-700 text-slate-300',
+    };
+}
+
 function killmail_item_empty_message(string $groupKey): string
 {
     return match ($groupKey) {
@@ -26823,7 +26866,7 @@ function theater_ai_build_facts(string $theaterId, array $theater): array
             'kills' => (int) ($tp['kills'] ?? 0),
             'deaths' => (int) ($tp['deaths'] ?? 0),
             'damage_done' => round((float) ($tp['damage_done'] ?? 0)),
-            'role' => (string) ($tp['role_proxy'] ?? 'dps'),
+            'role' => fleet_function_label((string) ($tp['role_proxy'] ?? 'mainline_dps')),
         ];
     }
 
