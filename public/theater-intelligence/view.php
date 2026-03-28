@@ -174,6 +174,22 @@ foreach ($allParticipants as $p) {
 }
 // Resolve ship type names
 $shipTypeNames = $allShipTypeIds !== [] ? db_market_orders_current_compact_type_names(array_keys($allShipTypeIds)) : [];
+
+// Build ship composition per side: ship_type_id → count, sorted by count desc
+$shipComposition = ['side_a' => [], 'side_b' => []];
+foreach (['side_a', 'side_b'] as $s) {
+    $counts = [];
+    foreach ($participantsBySide[$s] as $p) {
+        $shipIds = json_decode((string) ($p['ship_type_ids'] ?? '[]'), true);
+        $primaryShip = is_array($shipIds) && $shipIds !== [] ? (int) $shipIds[0] : 0;
+        if ($primaryShip > 0) {
+            $counts[$primaryShip] = ($counts[$primaryShip] ?? 0) + 1;
+        }
+    }
+    arsort($counts);
+    $shipComposition[$s] = $counts;
+}
+
 // Sort each side by damage done descending
 foreach (['side_a', 'side_b'] as $s) {
     usort($participantsBySide[$s], static fn($a, $b) => ((float)($b['damage_done'] ?? 0)) <=> ((float)($a['damage_done'] ?? 0)));
@@ -216,6 +232,30 @@ $totalKills = (int) ($theater['total_kills'] ?? 0);
     </div>
 </section>
 
+<!-- ═══════ Efficiency bar (full width) ═══════ -->
+<?php
+$ourAgg = $sideAggregates[$ourSide ?? 'side_a'];
+$enemyAgg = $sideAggregates[$enemySide];
+$totalBattleIsk = $ourAgg['isk_lost'] + $enemyAgg['isk_lost'];
+$ourPct = $totalBattleIsk > 0 ? ($enemyAgg['isk_lost'] / $totalBattleIsk) * 100 : 50;
+$enemyPct = 100 - $ourPct;
+?>
+<section class="surface-primary mt-4">
+    <div class="flex items-center justify-between text-sm mb-2">
+        <span class="text-blue-300 font-semibold"><?= htmlspecialchars($sideLabels[$ourSide ?? 'side_a'] ?? 'Side A', ENT_QUOTES) ?></span>
+        <span class="text-xs text-slate-400">ISK Efficiency</span>
+        <span class="text-red-300 font-semibold"><?= htmlspecialchars($sideLabels[$enemySide] ?? 'Side B', ENT_QUOTES) ?></span>
+    </div>
+    <div class="flex h-3 rounded-full overflow-hidden">
+        <div class="bg-blue-500/70 transition-all" style="width:<?= number_format($ourPct, 1) ?>%"></div>
+        <div class="bg-red-500/70 transition-all" style="width:<?= number_format($enemyPct, 1) ?>%"></div>
+    </div>
+    <div class="flex items-center justify-between text-xs text-slate-400 mt-1">
+        <span><?= number_format($ourPct, 1) ?>%</span>
+        <span><?= number_format($enemyPct, 1) ?>%</span>
+    </div>
+</section>
+
 <!-- ═══════ Two-column Battle Report ═══════ -->
 <?php
 $sides = [$ourSide ?? 'side_a', $enemySide];
@@ -232,7 +272,9 @@ $sideHeaders = [
     $headerBg = $isOur ? 'bg-blue-900/30' : 'bg-red-900/30';
     $headerText = $isOur ? 'text-blue-200' : 'text-red-200';
     $accentColor = $isOur ? 'text-blue-300' : 'text-red-300';
+    $barColor = $isOur ? 'bg-blue-500/60' : 'bg-red-500/60';
     $effClass = $agg['efficiency'] >= 0.6 ? 'text-green-400' : ($agg['efficiency'] >= 0.4 ? 'text-yellow-400' : 'text-red-400');
+    $sideShips = $shipComposition[$sideKey] ?? [];
 ?>
 <section class="surface-primary border-t-2 <?= $borderColor ?>">
     <!-- Side header -->
@@ -247,26 +289,22 @@ $sideHeaders = [
     </div>
 
     <!-- Side stats -->
-    <div class="mt-3 grid grid-cols-2 gap-x-4 gap-y-2 text-sm">
-        <div><span class="text-muted">ISK Lost:</span></div>
+    <div class="mt-3 grid grid-cols-2 gap-x-4 gap-y-1.5 text-sm">
+        <div class="text-muted">ISK Lost:</div>
         <div class="text-right font-semibold text-slate-100"><?= supplycore_format_isk($agg['isk_lost']) ?></div>
-
-        <div><span class="text-muted">Efficiency:</span></div>
+        <div class="text-muted">ISK Killed:</div>
+        <div class="text-right font-semibold text-slate-100"><?= supplycore_format_isk($agg['isk_killed']) ?></div>
+        <div class="text-muted">Efficiency:</div>
         <div class="text-right font-semibold <?= $effClass ?>"><?= number_format($agg['efficiency'] * 100, 1) ?>%</div>
-
-        <div><span class="text-muted">Ships Lost:</span></div>
-        <div class="text-right font-semibold text-slate-100"><?= number_format($agg['losses']) ?></div>
-
-        <div><span class="text-muted">Kills:</span></div>
-        <div class="text-right font-semibold text-slate-100"><?= number_format($agg['kills']) ?></div>
-
-        <div><span class="text-muted">Damage Dealt:</span></div>
+        <div class="text-muted">Ships Lost:</div>
+        <div class="text-right font-semibold text-slate-100"><?= number_format($agg['losses']) ?> ships</div>
+        <div class="text-muted">Damage Dealt:</div>
         <div class="text-right font-semibold text-slate-100"><?= supplycore_format_isk($agg['damage']) ?></div>
     </div>
 
     <!-- Alliance breakdown -->
     <?php if ($agg['alliances'] !== []): ?>
-    <div class="mt-4 border-t border-border/40 pt-3">
+    <div class="mt-3 border-t border-border/40 pt-3">
         <?php
         usort($agg['alliances'], static fn($a, $b) => ((int)($b['participant_count'] ?? 0)) <=> ((int)($a['participant_count'] ?? 0)));
         foreach ($agg['alliances'] as $a):
@@ -292,29 +330,54 @@ $sideHeaders = [
     </div>
     <?php endif; ?>
 
+    <!-- Ship composition -->
+    <?php if ($sideShips !== []): ?>
+    <div class="mt-3 border-t border-border/40 pt-3">
+        <p class="text-[10px] uppercase tracking-[0.15em] text-muted mb-2"><?= array_sum($sideShips) ?> ship types</p>
+        <div class="flex flex-wrap gap-1.5">
+            <?php
+            $maxShipCount = max(1, max($sideShips));
+            foreach ($sideShips as $typeId => $count):
+                $sName = $shipTypeNames[$typeId] ?? '';
+            ?>
+            <div class="flex items-center gap-1 rounded bg-slate-800/60 px-1.5 py-0.5 text-[11px]" title="<?= htmlspecialchars($sName, ENT_QUOTES) ?>">
+                <img src="https://images.evetech.net/types/<?= $typeId ?>/icon?size=32" alt="" class="w-4 h-4 rounded-sm" loading="lazy" onerror="this.style.display='none'">
+                <span class="text-slate-300"><?= htmlspecialchars($sName, ENT_QUOTES) ?></span>
+                <span class="text-slate-500 ml-0.5">x<?= $count ?></span>
+            </div>
+            <?php endforeach; ?>
+        </div>
+    </div>
+    <?php endif; ?>
+
     <!-- Participants for this side -->
     <?php $sideParticipants = $participantsBySide[$sideKey] ?? []; ?>
     <?php if ($sideParticipants !== []): ?>
-    <div class="mt-4 border-t border-border/40 pt-3">
+    <div class="mt-3 border-t border-border/40 pt-3">
         <table class="w-full text-xs">
             <thead>
                 <tr class="text-muted uppercase tracking-[0.12em]">
                     <th class="text-left py-1 font-normal">Pilot</th>
                     <th class="text-left py-1 font-normal">Ship</th>
-                    <th class="text-right py-1 font-normal">Dmg</th>
+                    <th class="text-right py-1 font-normal">Dmg Done</th>
+                    <th class="text-right py-1 font-normal">Dmg Taken</th>
                     <th class="text-right py-1 font-normal">K/D</th>
-                    <th class="text-left py-1 pl-2 font-normal">Role</th>
                 </tr>
             </thead>
             <tbody>
-                <?php foreach ($sideParticipants as $p):
+                <?php
+                $maxDmg = max(1, max(array_map(static fn($p) => (float) ($p['damage_done'] ?? 0), $sideParticipants)));
+                foreach ($sideParticipants as $p):
                     $charName = killmail_entity_preferred_name($resolvedEntities, 'character', (int) ($p['character_id'] ?? 0), (string) ($p['character_name'] ?? ''), 'Pilot');
                     $corpName = killmail_entity_preferred_name($resolvedEntities, 'corporation', (int) ($p['corporation_id'] ?? 0), (string) ($p['corporation_name'] ?? ''), 'Corp');
                     $allyName = killmail_entity_preferred_name($resolvedEntities, 'alliance', (int) ($p['alliance_id'] ?? 0), '', '');
                     $fleetRole = (string) ($p['role_proxy'] ?? 'mainline_dps');
                     $pSusp = (float) ($p['suspicion_score'] ?? 0);
-                    $rowBg = (int) ($p['is_suspicious'] ?? 0) ? 'bg-red-900/10' : '';
+                    $isSusp = (int) ($p['is_suspicious'] ?? 0);
+                    $rowBg = $isSusp ? 'bg-red-900/10' : '';
                     $dmg = (float) ($p['damage_done'] ?? 0);
+                    $dmgTaken = (float) ($p['damage_taken'] ?? 0);
+                    $dmgBarWidth = $maxDmg > 0 ? ($dmg / $maxDmg) * 100 : 0;
                     // Resolve primary ship type from JSON
                     $shipIds = json_decode((string) ($p['ship_type_ids'] ?? '[]'), true);
                     $primaryShipId = is_array($shipIds) && $shipIds !== [] ? (int) $shipIds[0] : 0;
@@ -324,35 +387,50 @@ $sideHeaders = [
                 ?>
                 <tr class="border-t border-border/30 <?= $rowBg ?>">
                     <td class="py-1.5">
-                        <div>
-                            <a class="<?= $accentColor ?> hover:underline" href="/battle-intelligence/character.php?character_id=<?= (int) ($p['character_id'] ?? 0) ?>">
-                                <?= htmlspecialchars($charName, ENT_QUOTES) ?>
-                            </a>
-                        </div>
-                        <div class="text-[10px] text-slate-500">
-                            <?php if ($allyName !== '' && !str_starts_with($allyName, 'Alliance #') && !str_starts_with($allyName, 'Alliance 0') && $allyName !== ''): ?>
-                                <?= htmlspecialchars($allyName, ENT_QUOTES) ?>
-                            <?php elseif (!str_starts_with($corpName, 'Corp #') && !str_starts_with($corpName, 'Corp 0')): ?>
-                                <?= htmlspecialchars($corpName, ENT_QUOTES) ?>
+                        <div class="flex items-center gap-1.5">
+                            <?php if ($pSusp >= 0.3): ?>
+                                <span class="w-1.5 h-1.5 rounded-full <?= $pSusp >= 0.5 ? 'bg-red-400' : 'bg-yellow-400' ?> flex-shrink-0" title="Suspicion: <?= number_format($pSusp, 3) ?>"></span>
                             <?php endif; ?>
+                            <div>
+                                <a class="<?= $accentColor ?> hover:underline" href="/battle-intelligence/character.php?character_id=<?= (int) ($p['character_id'] ?? 0) ?>">
+                                    <?= htmlspecialchars($charName, ENT_QUOTES) ?>
+                                </a>
+                                <div class="text-[10px] text-slate-500 flex items-center gap-1">
+                                    <?php if ($allyName !== '' && !str_starts_with($allyName, 'Alliance #') && !str_starts_with($allyName, 'Alliance 0')): ?>
+                                        <?= htmlspecialchars($allyName, ENT_QUOTES) ?>
+                                    <?php elseif (!str_starts_with($corpName, 'Corp #') && !str_starts_with($corpName, 'Corp 0')): ?>
+                                        <?= htmlspecialchars($corpName, ENT_QUOTES) ?>
+                                    <?php endif; ?>
+                                    <span class="inline-block rounded-full px-1 py-0 text-[8px] uppercase tracking-wider <?= fleet_function_color_class($fleetRole) ?>">
+                                        <?= htmlspecialchars(fleet_function_label($fleetRole), ENT_QUOTES) ?>
+                                    </span>
+                                </div>
+                            </div>
                         </div>
                     </td>
                     <td class="py-1.5 text-slate-300">
                         <?php if ($primaryShipId > 0): ?>
                             <div class="flex items-center gap-1">
                                 <img src="https://images.evetech.net/types/<?= $primaryShipId ?>/icon?size=32" alt="" class="w-4 h-4 rounded-sm flex-shrink-0" loading="lazy" onerror="this.style.display='none'">
-                                <span><?= htmlspecialchars($shipName, ENT_QUOTES) ?></span>
+                                <span class="truncate max-w-[80px]" title="<?= htmlspecialchars($shipName, ENT_QUOTES) ?>"><?= htmlspecialchars($shipName, ENT_QUOTES) ?></span>
                             </div>
                         <?php else: ?>
                             <span class="text-slate-500">-</span>
                         <?php endif; ?>
                     </td>
-                    <td class="py-1.5 text-right text-slate-300"><?= $dmg > 0 ? number_format($dmg, 0) : '-' ?></td>
-                    <td class="py-1.5 text-right text-slate-300"><?= $kills ?>/<?= $deaths ?></td>
-                    <td class="py-1.5 pl-2">
-                        <span class="inline-block rounded-full px-1.5 py-0.5 text-[9px] uppercase tracking-wider <?= fleet_function_color_class($fleetRole) ?>">
-                            <?= htmlspecialchars(fleet_function_label($fleetRole), ENT_QUOTES) ?>
-                        </span>
+                    <td class="py-1.5 text-right">
+                        <div class="flex items-center justify-end gap-1">
+                            <span class="text-slate-300"><?= $dmg > 0 ? number_format($dmg, 0) : '-' ?></span>
+                        </div>
+                        <?php if ($dmg > 0): ?>
+                        <div class="mt-0.5 h-[2px] rounded-full bg-slate-700/60 w-full">
+                            <div class="h-full rounded-full <?= $barColor ?>" style="width:<?= number_format($dmgBarWidth, 1) ?>%"></div>
+                        </div>
+                        <?php endif; ?>
+                    </td>
+                    <td class="py-1.5 text-right text-slate-400"><?= $dmgTaken > 0 ? number_format($dmgTaken, 0) : '-' ?></td>
+                    <td class="py-1.5 text-right">
+                        <span class="<?= $deaths > 0 ? 'text-red-300' : 'text-slate-300' ?>"><?= $kills ?>/<?= $deaths ?></span>
                     </td>
                 </tr>
                 <?php endforeach; ?>
