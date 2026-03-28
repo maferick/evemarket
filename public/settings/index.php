@@ -1021,7 +1021,40 @@ include __DIR__ . '/../../src/views/partials/header.php';
                     Configure either the local Ollama API or the Runpod serverless endpoint here, then manage cadence under <a href="/settings?section=data-sync" class="font-medium text-slate-100 hover:text-white">Settings → Data Sync</a> for the <span class="font-medium text-slate-100">rebuild_ai_briefings</span> scheduler job. Runpod requests now submit asynchronously and poll for completion within the configured timeout window. Small tiers stay compact, medium tiers add explanation and deltas, and large tiers unlock richer operator briefings while still keeping deterministic calculations authoritative.
                 </div>
 
-                <button class="btn-primary">Save AI Briefing Settings</button>
+                <div class="flex items-center gap-4">
+                    <button class="btn-primary">Save AI Briefing Settings</button>
+                    <button type="button" id="test-ai-btn" class="btn-secondary" onclick="testAiConnection()">Test AI Connection</button>
+                    <span id="test-ai-result" class="text-sm"></span>
+                </div>
+                <script>
+                function testAiConnection() {
+                    const btn = document.getElementById('test-ai-btn');
+                    const result = document.getElementById('test-ai-result');
+                    btn.disabled = true;
+                    btn.textContent = 'Testing…';
+                    result.textContent = '';
+                    result.className = 'text-sm';
+                    fetch('/settings/test-ai.php', {method: 'POST', headers: {'X-Requested-With': 'XMLHttpRequest'}})
+                        .then(r => r.json())
+                        .then(data => {
+                            if (data.success) {
+                                result.textContent = 'OK — ' + data.provider + ' / ' + data.model + ' (' + data.elapsed_ms + 'ms)';
+                                result.className = 'text-sm text-green-400';
+                            } else {
+                                result.textContent = 'Failed — ' + data.provider + ': ' + (data.error || 'unknown error');
+                                result.className = 'text-sm text-red-400';
+                            }
+                        })
+                        .catch(err => {
+                            result.textContent = 'Request failed: ' + err.message;
+                            result.className = 'text-sm text-red-400';
+                        })
+                        .finally(() => {
+                            btn.disabled = false;
+                            btn.textContent = 'Test AI Connection';
+                        });
+                }
+                </script>
             </form>
         <?php elseif ($section === 'item-scope'): ?>
             <?php
