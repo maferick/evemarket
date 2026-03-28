@@ -1349,9 +1349,9 @@ include __DIR__ . '/../../src/views/partials/header.php';
                         <p class="mt-2 text-xs text-muted"><?= htmlspecialchars(!empty($killmailRuntimeCard['show_latest_failure']) ? (string) ($killmailRuntimeCard['latest_failure_message'] ?? '') : 'Clears automatically after the next successful run.', ENT_QUOTES) ?></p>
                     </article>
                     <article class="rounded-xl border border-border bg-black/20 p-4">
-                        <p class="text-xs uppercase tracking-[0.16em] text-muted">Tracked entities</p>
+                        <p class="text-xs uppercase tracking-[0.16em] text-muted">Tracked friendlies</p>
                         <p class="mt-2 text-sm font-semibold text-slate-50"><?= number_format((int) (($killmailRuntimeCard['tracked_alliance_count'] ?? null) ?: ($killmailStatusSummary['tracked_alliance_count'] ?? 0))) ?> alliances · <?= number_format((int) (($killmailRuntimeCard['tracked_corporation_count'] ?? null) ?: ($killmailStatusSummary['tracked_corporation_count'] ?? 0))) ?> corporations</p>
-                        <p class="mt-2 text-xs text-muted">These determine which victim-side losses are retained for the tracked loss board.</p>
+                        <p class="mt-2 text-xs text-muted">These friendly entities determine which victim-side losses are retained for the tracked loss board.</p>
                     </article>
                 </div>
 
@@ -1375,7 +1375,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
 
                 <div class="grid gap-4 lg:grid-cols-2">
                     <label class="block space-y-2" id="killmail-alliance-search-field">
-                        <span class="text-sm text-muted">Tracked Alliances</span>
+                        <span class="text-sm text-muted">Friendly Alliances (Tracked Loss Board)</span>
                         <textarea name="tracked_alliance_names" id="tracked_alliance_names" rows="4" class="hidden"><?= htmlspecialchars($alliancesText, ENT_QUOTES) ?></textarea>
                         <div class="flex gap-2">
                             <input
@@ -1389,15 +1389,15 @@ include __DIR__ . '/../../src/views/partials/header.php';
                         </div>
                         <p id="tracked_alliance_status" class="text-xs text-muted">
                             <?= htmlspecialchars($trackedAllianceSelections === []
-                                ? 'Search by name, or add an exact numeric alliance ID.'
-                                : ('Tracking ' . count($trackedAllianceSelections) . ' alliance' . (count($trackedAllianceSelections) === 1 ? '' : 's') . '.'), ENT_QUOTES) ?>
+                                ? 'Search by name, or add an exact numeric alliance ID for your friendly side.'
+                                : ('Tracking ' . count($trackedAllianceSelections) . ' friendly alliance' . (count($trackedAllianceSelections) === 1 ? '' : 's') . '.'), ENT_QUOTES) ?>
                         </p>
                         <ul id="tracked_alliance_results" class="hidden max-h-60 overflow-y-auto surface-tertiary"></ul>
                         <div id="tracked_alliance_selected" class="space-y-2 rounded-lg border border-border bg-black/10 p-3"></div>
                     </label>
 
                     <label class="block space-y-2" id="killmail-corporation-search-field">
-                        <span class="text-sm text-muted">Tracked Corporations</span>
+                        <span class="text-sm text-muted">Friendly Corporations (Tracked Loss Board)</span>
                         <textarea name="tracked_corporation_names" id="tracked_corporation_names" rows="4" class="hidden"><?= htmlspecialchars($corporationsText, ENT_QUOTES) ?></textarea>
                         <div class="flex gap-2">
                             <input
@@ -1411,8 +1411,8 @@ include __DIR__ . '/../../src/views/partials/header.php';
                         </div>
                         <p id="tracked_corporation_status" class="text-xs text-muted">
                             <?= htmlspecialchars($trackedCorporationSelections === []
-                                ? 'Search by name, or add an exact numeric corporation ID.'
-                                : ('Tracking ' . count($trackedCorporationSelections) . ' corporation' . (count($trackedCorporationSelections) === 1 ? '' : 's') . '.'), ENT_QUOTES) ?>
+                                ? 'Search by name, or add an exact numeric corporation ID for your friendly side.'
+                                : ('Tracking ' . count($trackedCorporationSelections) . ' friendly corporation' . (count($trackedCorporationSelections) === 1 ? '' : 's') . '.'), ENT_QUOTES) ?>
                         </p>
                         <ul id="tracked_corporation_results" class="hidden max-h-60 overflow-y-auto surface-tertiary"></ul>
                         <div id="tracked_corporation_selected" class="space-y-2 rounded-lg border border-border bg-black/10 p-3"></div>
@@ -1420,12 +1420,13 @@ include __DIR__ . '/../../src/views/partials/header.php';
                 </div>
 
                 <div class="rounded-lg border border-border bg-black/20 p-3 text-sm text-muted space-y-2">
-                    <p>Add alliances and corporations from the lookup, or enter exact numeric IDs when you already know them.</p>
-                    <p>The continuous zKill worker keeps a killmail only when the victim belongs to one of these tracked entities. Attacker-only matches are ignored for the tracked loss board.</p>
-                    <p>Each saved entry is stored locally as <span class="text-slate-100">ID + name</span>, and you can remove anything here before saving if an alliance or corporation leaves the group you care about.</p>
+                    <p>Add your <span class="text-slate-100">friendly</span> alliances and corporations from the lookup, or enter exact numeric IDs when you already know them.</p>
+                    <p>The continuous zKill worker keeps a killmail only when the victim belongs to one of these friendly entities. Attacker-only matches are ignored for the tracked loss board.</p>
+                    <p>Each saved entry is stored locally as <span class="text-slate-100">ID + name</span>, and you can remove anything here before saving if an alliance or corporation moves out of your friendly group.</p>
                 </div>
 
                 <h3 class="text-base font-semibold text-slate-100 mt-6">Tracked Opponents (Economic Warfare)</h3>
+                <p class="mt-1 text-xs text-muted">Use this section for hostile entities. Keep your own coalition in the friendly section above.</p>
 
                 <div class="grid gap-4 lg:grid-cols-2">
                     <label class="block space-y-2" id="killmail-opponent-alliance-search-field">
