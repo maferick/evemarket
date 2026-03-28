@@ -9,7 +9,7 @@
 $friendlyParticipants = [];
 $enemyParticipants = [];
 foreach ($participantsAll as $p) {
-    $pSide = (string) ($p['side'] ?? '');
+    $pSide = $displaySideForAlliance((int) ($p['alliance_id'] ?? 0), (string) ($p['side'] ?? ''));
     if ($pSide === ($ourSide ?? 'side_a')) {
         $friendlyParticipants[] = $p;
     } else {
@@ -42,7 +42,7 @@ foreach ($allForMax as $p) {
     <p class="text-xs text-muted mt-1">Kill Involvements = killmails where pilot was an attacker. Damage Done/Taken = HP damage. ISK Lost = value of ships destroyed.</p>
 
 <?php if ($showSideBySide): ?>
-    <div class="mt-3 grid grid-cols-2 gap-4">
+    <div class="mt-3 grid gap-4 md:grid-cols-2">
         <?php
         $panelSets = [
             ['label' => $sideLabels[$ourSide ?? 'side_a'] ?? 'Friendlies', 'side' => $ourSide ?? 'side_a', 'rows' => $friendlyParticipants, 'colorClass' => 'text-blue-300', 'borderClass' => 'border-blue-500/30'],
@@ -164,7 +164,7 @@ foreach ($allForMax as $p) {
                 <?php else: ?>
                     <?php foreach ($filteredList as $p): ?>
                         <?php
-                            $pSide = (string) ($p['side'] ?? '');
+                            $pSide = $displaySideForAlliance((int) ($p['alliance_id'] ?? 0), (string) ($p['side'] ?? ''));
                             $pSideClass = $sideColorClass[$pSide] ?? 'text-slate-300';
                             $pSusp = (float) ($p['suspicion_score'] ?? 0);
                             $isSusp = (int) ($p['is_suspicious'] ?? 0);

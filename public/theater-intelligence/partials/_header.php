@@ -26,7 +26,7 @@
         </div>
     </div>
 
-    <div class="mt-3 grid grid-cols-6 gap-3">
+    <div class="mt-3 grid gap-3 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-6">
         <div class="surface-tertiary">
             <p class="text-xs text-muted">Battles</p>
             <p class="text-lg text-slate-50 font-semibold"><?= (int) ($theater['battle_count'] ?? 0) ?></p>

@@ -32,7 +32,7 @@ $turningPoints = db_theater_turning_points($theaterId);
 $sideFilter = isset($_GET['side']) ? (string) $_GET['side'] : null;
 $suspiciousOnly = isset($_GET['suspicious']) && $_GET['suspicious'] === '1';
 $participantsAll = db_theater_participants($theaterId, null, false, 1000);
-$participants = db_theater_participants($theaterId, $sideFilter, $suspiciousOnly);
+$participants = $participantsAll;
 $graphParticipants = db_theater_graph_participants($theaterId);
 
 // ── Batch-resolve entity names via ESI (cache + network fallback) ──
@@ -71,28 +71,59 @@ $resolvedEntities = killmail_entity_resolve_batch($entityRequests, true);
 $trackedAlliances = db_killmail_tracked_alliances_active();
 $trackedAllianceIds = array_column($trackedAlliances, 'alliance_id');
 $trackedAllianceIds = array_map('intval', $trackedAllianceIds);
+$trackedAllianceIds = array_values(array_unique($trackedAllianceIds));
 
 $ourSide = null;
-$sideAlliancesByPilots = ['side_a' => [], 'side_b' => []];
+$trackedPilotsBySide = ['side_a' => 0, 'side_b' => 0];
+$trackedAllianceCountsBySide = ['side_a' => 0, 'side_b' => 0];
 foreach ($allianceSummary as $a) {
     $side = (string) ($a['side'] ?? '');
     $aid = (int) ($a['alliance_id'] ?? 0);
     $pilots = (int) ($a['participant_count'] ?? 0);
-    if (isset($sideAlliancesByPilots[$side])) {
-        $sideAlliancesByPilots[$side][$aid] = $pilots;
-    }
-    if ($ourSide === null && in_array($aid, $trackedAllianceIds, true)) {
-        $ourSide = $side;
+    if (isset($trackedPilotsBySide[$side]) && in_array($aid, $trackedAllianceIds, true)) {
+        $trackedPilotsBySide[$side] += $pilots;
+        $trackedAllianceCountsBySide[$side]++;
     }
 }
+
+if ($trackedPilotsBySide['side_a'] > $trackedPilotsBySide['side_b']) {
+    $ourSide = 'side_a';
+} elseif ($trackedPilotsBySide['side_b'] > $trackedPilotsBySide['side_a']) {
+    $ourSide = 'side_b';
+} elseif ($trackedAllianceCountsBySide['side_a'] > $trackedAllianceCountsBySide['side_b']) {
+    $ourSide = 'side_a';
+} elseif ($trackedAllianceCountsBySide['side_b'] > $trackedAllianceCountsBySide['side_a']) {
+    $ourSide = 'side_b';
+}
+
 if ($ourSide === null) {
     $ourSide = 'side_a';
 }
 $enemySide = ($ourSide === 'side_a') ? 'side_b' : 'side_a';
 
+$displaySideForAlliance = static function (int $allianceId, string $fallbackSide) use ($trackedAllianceIds, $ourSide, $enemySide): string {
+    if ($allianceId > 0 && in_array($allianceId, $trackedAllianceIds, true)) {
+        return $ourSide;
+    }
+
+    return $fallbackSide === $ourSide ? $ourSide : $enemySide;
+};
+
+// Ensure tracked alliances always appear on the tracked/friendly side in UI panels.
+$displaySideAlliancesByPilots = ['side_a' => [], 'side_b' => []];
+foreach ($allianceSummary as $a) {
+    $sourceSide = (string) ($a['side'] ?? '');
+    $aid = (int) ($a['alliance_id'] ?? 0);
+    $pilots = (int) ($a['participant_count'] ?? 0);
+    $displaySide = $displaySideForAlliance($aid, $sourceSide);
+    if (isset($displaySideAlliancesByPilots[$displaySide])) {
+        $displaySideAlliancesByPilots[$displaySide][$aid] = ($displaySideAlliancesByPilots[$displaySide][$aid] ?? 0) + $pilots;
+    }
+}
+
 $sideLabels = [];
 foreach (['side_a', 'side_b'] as $side) {
-    $alliances = $sideAlliancesByPilots[$side];
+    $alliances = $displaySideAlliancesByPilots[$side];
     if ($alliances === []) {
         $sideLabels[$side] = $side === $ourSide ? 'Our Side' : 'Enemy';
         continue;
@@ -112,6 +143,25 @@ $sideBgClass = [
     $ourSide ?? 'side_a' => 'bg-blue-900/60',
     $enemySide => 'bg-red-900/60',
 ];
+
+if ($sideFilter !== null || $suspiciousOnly) {
+    $participants = array_values(array_filter(
+        $participantsAll,
+        static function (array $participant) use ($sideFilter, $suspiciousOnly, $displaySideForAlliance): bool {
+            $allianceId = (int) ($participant['alliance_id'] ?? 0);
+            $sourceSide = (string) ($participant['side'] ?? '');
+            $displaySide = $displaySideForAlliance($allianceId, $sourceSide);
+            if ($sideFilter !== null && $displaySide !== $sideFilter) {
+                return false;
+            }
+            if ($suspiciousOnly && (int) ($participant['is_suspicious'] ?? 0) !== 1) {
+                return false;
+            }
+
+            return true;
+        }
+    ));
+}
 
 $title = htmlspecialchars((string) ($theater['primary_system_name'] ?? 'Theater'), ENT_QUOTES) . ' Theater';
 $durationSec = max(1, (int) ($theater['duration_seconds'] ?? 0));
@@ -174,7 +224,7 @@ $sidePanels = [
     'side_b' => ['pilots' => 0, 'kills' => 0, 'losses' => 0, 'isk_killed' => 0.0, 'isk_lost' => 0.0, 'alliances' => [], 'ship_pilots' => 0, 'ships' => []],
 ];
 foreach ($allianceSummary as $a) {
-    $side = (string) ($a['side'] ?? '');
+    $side = $displaySideForAlliance((int) ($a['alliance_id'] ?? 0), (string) ($a['side'] ?? ''));
     if (!isset($sidePanels[$side])) continue;
     $sidePanels[$side]['pilots'] += (int) ($a['participant_count'] ?? 0);
     $sidePanels[$side]['kills'] += (int) ($a['total_kills'] ?? 0);
