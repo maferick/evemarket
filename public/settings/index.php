@@ -975,6 +975,20 @@ include __DIR__ . '/../../src/views/partials/header.php';
                         <input name="claude_model" value="<?= htmlspecialchars($settingValues['claude_model'] ?? ($ollamaConfig['claude_model'] ?? 'claude-sonnet-4-20250514'), ENT_QUOTES) ?>" class="w-full field-input" />
                         <p class="text-xs text-muted">Recommended: <span class="font-medium text-slate-100">claude-sonnet-4-20250514</span> (fast, cheap) or <span class="font-medium text-slate-100">claude-haiku-4-5-20251001</span> (fastest, cheapest).</p>
                     </label>
+                    <label class="block space-y-2 md:col-span-2">
+                        <span class="text-sm text-muted">Groq API Key</span>
+                        <input name="groq_api_key" type="password" value="<?= htmlspecialchars($settingValues['groq_api_key'] ?? ($ollamaConfig['groq_api_key'] ?? ''), ENT_QUOTES) ?>" class="w-full field-input" placeholder="gsk_..." />
+                        <?php if (($ollamaConfig['groq_api_key_masked'] ?? '') !== ''): ?>
+                            <p class="text-xs text-muted">Saved key preview: <span class="font-medium text-slate-100"><?= htmlspecialchars((string) $ollamaConfig['groq_api_key_masked'], ENT_QUOTES) ?></span>.</p>
+                        <?php else: ?>
+                            <p class="text-xs text-muted">Free tier at <span class="font-medium text-slate-100">console.groq.com</span>. Fast inference — great for CPU-only machines.</p>
+                        <?php endif; ?>
+                    </label>
+                    <label class="block space-y-2 md:col-span-2">
+                        <span class="text-sm text-muted">Groq Model</span>
+                        <input name="groq_model" value="<?= htmlspecialchars($settingValues['groq_model'] ?? ($ollamaConfig['groq_model'] ?? 'meta-llama/llama-4-scout-17b-16e-instruct'), ENT_QUOTES) ?>" class="w-full field-input" />
+                        <p class="text-xs text-muted">Recommended: <span class="font-medium text-slate-100">meta-llama/llama-4-scout-17b-16e-instruct</span> (500K TPD) or <span class="font-medium text-slate-100">llama-3.3-70b-versatile</span> (best quality, 100K TPD).</p>
+                    </label>
                     <label class="block space-y-2">
                         <span class="text-sm text-muted">Model Name (Ollama/Runpod)</span>
                         <input name="ollama_model" value="<?= htmlspecialchars($settingValues['ollama_model'] ?? ($ollamaConfig['model'] ?? 'qwen2.5:1.5b-instruct'), ENT_QUOTES) ?>" class="w-full field-input" />

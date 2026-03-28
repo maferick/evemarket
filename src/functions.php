@@ -675,6 +675,8 @@ function ai_briefing_setting_defaults(): array
         'ollama_runpod_api_key' => '',
         'claude_api_key' => '',
         'claude_model' => 'claude-sonnet-4-20250514',
+        'groq_api_key' => '',
+        'groq_model' => 'meta-llama/llama-4-scout-17b-16e-instruct',
         'theater_aar_prompt' => '',
     ];
 }
@@ -816,6 +818,7 @@ function ollama_provider_options(): array
         'local' => 'Local Ollama',
         'runpod' => 'Runpod Serverless',
         'claude' => 'Claude API (Anthropic)',
+        'groq' => 'Groq (Free tier)',
     ];
 }
 
@@ -25269,6 +25272,8 @@ function supplycore_ai_ollama_config(): array
         'runpod_api_key' => sanitize_ollama_runpod_api_key($settings['ollama_runpod_api_key'] ?? $defaults['ollama_runpod_api_key']),
         'claude_api_key' => trim((string) ($settings['claude_api_key'] ?? $defaults['claude_api_key'])),
         'claude_model' => trim((string) ($settings['claude_model'] ?? $defaults['claude_model'])),
+        'groq_api_key' => trim((string) ($settings['groq_api_key'] ?? $defaults['groq_api_key'])),
+        'groq_model' => trim((string) ($settings['groq_model'] ?? $defaults['groq_model'])),
     ];
 
     $inferredTier = supplycore_ai_infer_model_capability_tier((string) ($config['model'] ?? ''));
@@ -25290,6 +25295,9 @@ function supplycore_ai_ollama_config(): array
         'claude_api_key' => (string) ($config['claude_api_key'] ?? ''),
         'claude_api_key_masked' => supplycore_mask_secret((string) ($config['claude_api_key'] ?? '')),
         'claude_model' => (string) ($config['claude_model'] ?? 'claude-sonnet-4-20250514'),
+        'groq_api_key' => (string) ($config['groq_api_key'] ?? ''),
+        'groq_api_key_masked' => supplycore_mask_secret((string) ($config['groq_api_key'] ?? '')),
+        'groq_model' => (string) ($config['groq_model'] ?? 'meta-llama/llama-4-scout-17b-16e-instruct'),
         'inferred_tier' => $inferredTier,
         'capability_tier' => $effectiveTier,
         'strategy' => $strategy,
@@ -26470,6 +26478,63 @@ function supplycore_ai_claude_generate_json(array $config, string $systemPrompt,
     return $decoded;
 }
 
+function supplycore_ai_groq_generate_json(array $config, string $systemPrompt, string $userPrompt, array $schema): array
+{
+    $apiKey = trim((string) ($config['groq_api_key'] ?? ''));
+    if ($apiKey === '') {
+        throw new RuntimeException('Groq API key is not configured');
+    }
+    $model = trim((string) ($config['groq_model'] ?? 'meta-llama/llama-4-scout-17b-16e-instruct'));
+
+    $schemaJson = json_encode($schema, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE);
+
+    $requestPayload = [
+        'model' => $model,
+        'temperature' => 0.2,
+        'max_tokens' => 4096,
+        'response_format' => ['type' => 'json_object'],
+        'messages' => [
+            ['role' => 'system', 'content' => $systemPrompt . "\n\nReturn valid JSON matching this schema:\n" . $schemaJson],
+            ['role' => 'user', 'content' => $userPrompt],
+        ],
+    ];
+
+    $response = http_post_json(
+        'https://api.groq.com/openai/v1/chat/completions',
+        [
+            'Authorization: Bearer ' . $apiKey,
+        ],
+        $requestPayload,
+        max(120, (int) ($config['timeout'] ?? 60))
+    );
+
+    $status = (int) ($response['status'] ?? 0);
+    $json = is_array($response['json'] ?? null) ? $response['json'] : [];
+    if ($status < 200 || $status >= 300) {
+        $errorMsg = (string) ($json['error']['message'] ?? 'unknown');
+        throw new RuntimeException('Groq API returned HTTP ' . $status . ': ' . $errorMsg);
+    }
+
+    $choices = $json['choices'] ?? [];
+    $rawResponse = trim((string) (($choices[0]['message']['content'] ?? '')));
+    if ($rawResponse === '') {
+        throw new RuntimeException('Groq API returned empty response');
+    }
+
+    // Strip markdown JSON fences if present
+    if (str_starts_with($rawResponse, '```')) {
+        $rawResponse = preg_replace('/^```(?:json)?\s*/i', '', $rawResponse);
+        $rawResponse = preg_replace('/\s*```\s*$/', '', $rawResponse);
+    }
+
+    $decoded = json_decode($rawResponse, true);
+    if (!is_array($decoded)) {
+        throw new RuntimeException('Groq API returned malformed JSON');
+    }
+
+    return $decoded;
+}
+
 // ---------------------------------------------------------------------------
 // Theater Intelligence AI Summary
 // ---------------------------------------------------------------------------
@@ -26528,6 +26593,8 @@ function theater_ai_summary_generate(string $theaterId, bool $forceRegenerate = 
         $provider = (string) ($config['provider'] ?? 'local');
         if ($provider === 'claude') {
             $decoded = supplycore_ai_claude_generate_json($config, $systemPrompt, $userPrompt, $schema);
+        } elseif ($provider === 'groq') {
+            $decoded = supplycore_ai_groq_generate_json($config, $systemPrompt, $userPrompt, $schema);
         } elseif ($provider === 'runpod') {
             $decoded = supplycore_ai_runpod_generate_json($config, $systemPrompt, $userPrompt, $schema);
         } else {
@@ -26571,9 +26638,11 @@ function theater_ai_summary_generate(string $theaterId, bool $forceRegenerate = 
             $headline = mb_substr($summary, 0, 80);
         }
 
-        $modelLabel = $provider === 'claude'
-            ? (string) ($config['claude_model'] ?? 'claude-sonnet-4-20250514')
-            : (string) $config['model'];
+        $modelLabel = match ($provider) {
+            'claude' => (string) ($config['claude_model'] ?? 'claude-sonnet-4-20250514'),
+            'groq' => (string) ($config['groq_model'] ?? 'llama-4-scout'),
+            default => (string) $config['model'],
+        };
         theater_ai_summary_store($theaterId, $headline, $summary, $verdict, $modelLabel);
 
         flock($lockFp, LOCK_UN);
@@ -26739,7 +26808,7 @@ function theater_ai_system_prompt(): string
     $config = supplycore_ai_ollama_config();
     $provider = (string) ($config['provider'] ?? 'local');
 
-    if ($provider === 'claude') {
+    if ($provider === 'claude' || $provider === 'groq') {
         return "You are an experienced EVE Online Fleet Commander and military analyst writing a detailed After Action Report (AAR).\n\n"
              . "IMPORTANT INSTRUCTIONS:\n"
              . "- Generate a COMPREHENSIVE, DETAILED report. Aim for 1500-3000 words in the summary field.\n"
@@ -26839,7 +26908,7 @@ function theater_ai_output_schema(): array
     $config = supplycore_ai_ollama_config();
     $provider = (string) ($config['provider'] ?? 'local');
 
-    if ($provider === 'claude') {
+    if ($provider === 'claude' || $provider === 'groq') {
         $summaryDesc = 'Full structured After Action Report (1500-3000 words). Must include ALL numbered sections from the prompt with detailed analysis. Use markdown: ## for headers, **bold** for emphasis, - for bullets. Each section needs multiple paragraphs or bullet points.';
     } else {
         $summaryDesc = 'Structured After Action Report (300-800 words). Cover the key sections from the prompt. Use markdown: ## for headers, **bold** for emphasis, - for bullets.';
