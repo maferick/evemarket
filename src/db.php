@@ -11157,9 +11157,9 @@ function db_economic_warfare_scores(array $filters = [], int $limit = 100, int $
         $where[] = 'ew.type_id IN (
             SELECT hfm.item_type_id FROM hostile_fit_family_modules hfm
             INNER JOIN hostile_fit_families hff ON hff.id = hfm.family_id
-            WHERE JSON_CONTAINS(hff.alliance_ids_json, CAST(? AS JSON))
+            WHERE JSON_CONTAINS(hff.alliance_ids_json, ?)
         )';
-        $params[] = (int) $filters['hostile_alliance_id'];
+        $params[] = json_encode((int) $filters['hostile_alliance_id']);
     }
 
     $whereSql = implode(' AND ', $where);
@@ -11201,8 +11201,8 @@ function db_hostile_fit_families(array $filters = [], int $limit = 100, int $off
         $params[] = (int) $filters['hull_type_id'];
     }
     if (isset($filters['hostile_alliance_id']) && (int) $filters['hostile_alliance_id'] > 0) {
-        $where[] = 'JSON_CONTAINS(hff.alliance_ids_json, CAST(? AS JSON))';
-        $params[] = (int) $filters['hostile_alliance_id'];
+        $where[] = 'JSON_CONTAINS(hff.alliance_ids_json, ?)';
+        $params[] = json_encode((int) $filters['hostile_alliance_id']);
     }
     if (isset($filters['min_confidence']) && (float) $filters['min_confidence'] > 0) {
         $where[] = 'hff.confidence >= ?';
