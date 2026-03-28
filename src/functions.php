@@ -238,6 +238,7 @@ function nav_items(): array
             'path' => '/battle-intelligence',
             'icon' => '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" class="h-4 w-4" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M4 6h16"/><path stroke-linecap="round" stroke-linejoin="round" d="M4 12h16"/><path stroke-linecap="round" stroke-linejoin="round" d="M4 18h16"/><path stroke-linecap="round" stroke-linejoin="round" d="m9 9 3 3 3-3"/></svg>',
             'children' => [
+                ['label' => 'Pilot Lookup', 'path' => '/battle-intelligence/pilot-lookup.php'],
                 ['label' => 'Suspicion Leaderboard', 'path' => '/battle-intelligence'],
                 ['label' => 'Battle Anomalies', 'path' => '/battle-intelligence/battles.php'],
             ],

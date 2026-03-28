@@ -14298,6 +14298,186 @@ function db_signals_recent(int $limit = 200): array
     );
 }
 
+function db_pilot_search(string $query, int $limit = 30): array
+{
+    $q = trim($query);
+    if ($q === '' || mb_strlen($q) < 2) {
+        return [];
+    }
+    $safeLimit = max(1, min(100, $limit));
+    return db_select(
+        'SELECT DISTINCT
+            emc.entity_id AS character_id,
+            emc.entity_name AS character_name,
+            emc_a.entity_name AS alliance_name,
+            emc_c.entity_name AS corporation_name,
+            bp.alliance_id,
+            bp.corporation_id,
+            COUNT(DISTINCT bp.battle_id) AS battle_count,
+            tp.role_proxy AS fleet_function
+         FROM entity_metadata_cache emc
+         LEFT JOIN battle_participants bp ON bp.character_id = emc.entity_id
+         LEFT JOIN entity_metadata_cache emc_a ON emc_a.entity_type = "alliance" AND emc_a.entity_id = bp.alliance_id
+         LEFT JOIN entity_metadata_cache emc_c ON emc_c.entity_type = "corporation" AND emc_c.entity_id = bp.corporation_id
+         LEFT JOIN theater_participants tp ON tp.character_id = emc.entity_id
+         WHERE emc.entity_type = "character"
+           AND emc.entity_name LIKE ?
+         GROUP BY emc.entity_id
+         ORDER BY battle_count DESC, emc.entity_name ASC
+         LIMIT ' . $safeLimit,
+        ['%' . $q . '%']
+    );
+}
+
+function db_pilot_profile(int $characterId): ?array
+{
+    if ($characterId <= 0) {
+        return null;
+    }
+
+    // Core identity
+    $character = db_select_one(
+        'SELECT emc.entity_id AS character_id, emc.entity_name AS character_name
+         FROM entity_metadata_cache emc
+         WHERE emc.entity_type = "character" AND emc.entity_id = ?',
+        [$characterId]
+    );
+    if ($character === null) {
+        return null;
+    }
+
+    // Aggregate stats from theater_participants (most complete source)
+    $theaterStats = db_select_one(
+        'SELECT
+            COUNT(DISTINCT tp.theater_id) AS theater_count,
+            SUM(tp.kills) AS total_kills,
+            SUM(tp.deaths) AS total_deaths,
+            SUM(tp.damage_done) AS total_damage_done,
+            SUM(tp.damage_taken) AS total_damage_taken,
+            SUM(tp.battles_present) AS total_battles
+         FROM theater_participants tp
+         WHERE tp.character_id = ?',
+        [$characterId]
+    );
+
+    // Most recent theater participation for alliance/corp
+    $recentParticipation = db_select_one(
+        'SELECT tp.alliance_id, tp.corporation_id, tp.role_proxy,
+                COALESCE(emc_a.entity_name, CONCAT("Alliance #", tp.alliance_id)) AS alliance_name,
+                COALESCE(emc_c.entity_name, CONCAT("Corp #", tp.corporation_id)) AS corporation_name
+         FROM theater_participants tp
+         LEFT JOIN entity_metadata_cache emc_a ON emc_a.entity_type = "alliance" AND emc_a.entity_id = tp.alliance_id
+         LEFT JOIN entity_metadata_cache emc_c ON emc_c.entity_type = "corporation" AND emc_c.entity_id = tp.corporation_id
+         WHERE tp.character_id = ?
+         ORDER BY tp.entry_time DESC
+         LIMIT 1',
+        [$characterId]
+    );
+
+    // Ship types flown (from theater_participants ship_type_ids JSON)
+    $shipRows = db_select(
+        'SELECT tp.ship_type_ids, tp.role_proxy, tp.theater_id
+         FROM theater_participants tp
+         WHERE tp.character_id = ? AND tp.ship_type_ids IS NOT NULL',
+        [$characterId]
+    );
+    $shipCounts = [];
+    foreach ($shipRows as $sr) {
+        $ids = json_decode((string) ($sr['ship_type_ids'] ?? '[]'), true);
+        if (!is_array($ids)) continue;
+        foreach ($ids as $typeId) {
+            $typeId = (int) $typeId;
+            if ($typeId > 0) {
+                $shipCounts[$typeId] = ($shipCounts[$typeId] ?? 0) + 1;
+            }
+        }
+    }
+    arsort($shipCounts);
+    $topShipIds = array_slice(array_keys($shipCounts), 0, 10);
+    $shipNames = [];
+    if ($topShipIds !== []) {
+        $ph = implode(',', array_fill(0, count($topShipIds), '?'));
+        $shipNameRows = db_select(
+            "SELECT type_id, type_name, group_id FROM ref_item_types WHERE type_id IN ({$ph})",
+            $topShipIds
+        );
+        foreach ($shipNameRows as $sn) {
+            $shipNames[(int) $sn['type_id']] = $sn;
+        }
+    }
+    $shipHistory = [];
+    foreach (array_slice($shipCounts, 0, 10, true) as $typeId => $count) {
+        $info = $shipNames[$typeId] ?? [];
+        $shipHistory[] = [
+            'type_id' => $typeId,
+            'type_name' => (string) ($info['type_name'] ?? "Ship #{$typeId}"),
+            'group_id' => (int) ($info['group_id'] ?? 0),
+            'times_flown' => $count,
+        ];
+    }
+
+    // Suspicion signals (from intelligence pipeline)
+    $suspicion = db_select_one(
+        'SELECT css.*, COALESCE(cao.historical_overlap_score, 0) AS historical_overlap_score,
+                COALESCE(cao.combined_risk_score, 0) AS combined_risk_score,
+                COALESCE(cao.correlated_flag, 0) AS correlated_flag
+         FROM character_suspicion_signals css
+         LEFT JOIN character_alliance_overlap cao ON cao.character_id = css.character_id
+         WHERE css.character_id = ?',
+        [$characterId]
+    );
+
+    // Theater history with performance
+    $theaterHistory = db_select(
+        'SELECT tp.theater_id, tp.kills, tp.deaths, tp.damage_done, tp.damage_taken,
+                tp.role_proxy, tp.side, tp.battles_present, tp.suspicion_score,
+                t.start_time, t.primary_system_name, t.region_name,
+                COALESCE(emc_a.entity_name, CONCAT("Alliance #", tp.alliance_id)) AS alliance_name
+         FROM theater_participants tp
+         INNER JOIN theaters t ON t.theater_id = tp.theater_id
+         LEFT JOIN entity_metadata_cache emc_a ON emc_a.entity_type = "alliance" AND emc_a.entity_id = tp.alliance_id
+         WHERE tp.character_id = ?
+         ORDER BY t.start_time DESC
+         LIMIT 20',
+        [$characterId]
+    );
+
+    // Associates — characters who appear in the same theaters most often
+    $associates = db_select(
+        'SELECT tp2.character_id AS assoc_character_id,
+                COALESCE(emc.entity_name, CONCAT("Character #", tp2.character_id)) AS assoc_name,
+                COALESCE(emc_a.entity_name, "") AS assoc_alliance,
+                COUNT(DISTINCT tp2.theater_id) AS shared_theaters,
+                tp2.role_proxy AS assoc_role
+         FROM theater_participants tp1
+         INNER JOIN theater_participants tp2
+             ON tp2.theater_id = tp1.theater_id
+             AND tp2.side = tp1.side
+             AND tp2.character_id != tp1.character_id
+         LEFT JOIN entity_metadata_cache emc ON emc.entity_type = "character" AND emc.entity_id = tp2.character_id
+         LEFT JOIN entity_metadata_cache emc_a ON emc_a.entity_type = "alliance" AND emc_a.entity_id = tp2.alliance_id
+         WHERE tp1.character_id = ?
+         GROUP BY tp2.character_id
+         ORDER BY shared_theaters DESC
+         LIMIT 20',
+        [$characterId]
+    );
+
+    return [
+        'character' => $character,
+        'alliance_name' => (string) ($recentParticipation['alliance_name'] ?? ''),
+        'corporation_name' => (string) ($recentParticipation['corporation_name'] ?? ''),
+        'alliance_id' => (int) ($recentParticipation['alliance_id'] ?? 0),
+        'corporation_id' => (int) ($recentParticipation['corporation_id'] ?? 0),
+        'fleet_function' => (string) ($recentParticipation['role_proxy'] ?? 'mainline_dps'),
+        'stats' => $theaterStats,
+        'ships' => $shipHistory,
+        'suspicion' => $suspicion,
+        'theater_history' => $theaterHistory,
+        'associates' => $associates,
+    ];
+}
+
 function db_battle_intelligence_top_characters(int $limit = 50): array
 {
     $safeLimit = max(1, min(200, $limit));
