@@ -1,6 +1,6 @@
 """Compute Economic Warfare scores from opponent killmail data.
 
-Phase 1: Extract fitted modules from opponent losses (mail_type IN ('kill','opponent_loss'))
+Phase 1: Extract fitted modules from opponent losses (victim alliance in killmail_opponent_alliances)
 Phase 2: Cluster into fit families per hull type (exact fingerprint + Jaccard merge)
 Phase 3: Score modules on 5 dimensions (doctrine penetration, fit constraint,
          substitution penalty, replacement friction, loss pressure)
@@ -78,8 +78,9 @@ def _extract_opponent_fits(db: Any, window_days: int) -> dict[int, dict]:
                ki.item_type_id, ki.item_flag
         FROM killmail_events ke
         INNER JOIN killmail_items ki ON ki.sequence_id = ke.sequence_id
-        WHERE ke.mail_type IN ('kill', 'opponent_loss')
-          AND ke.killmail_time >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL %s DAY)
+        INNER JOIN killmail_opponent_alliances koa
+            ON koa.alliance_id = ke.victim_alliance_id AND koa.is_active = 1
+        WHERE ke.killmail_time >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL %s DAY)
           AND ki.item_role = 'fitted'
         ORDER BY ke.sequence_id
     """
@@ -248,8 +249,9 @@ def _score_modules(
             f"""SELECT ki.item_type_id, COUNT(*) AS cnt
                 FROM killmail_items ki
                 INNER JOIN killmail_events ke ON ke.sequence_id = ki.sequence_id
+                INNER JOIN killmail_opponent_alliances koa
+                    ON koa.alliance_id = ke.victim_alliance_id AND koa.is_active = 1
                 WHERE ki.item_type_id IN ({lp})
-                  AND ke.mail_type IN ('kill', 'opponent_loss')
                   AND ke.killmail_time >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL 30 DAY)
                   AND ki.item_role = 'fitted'
                 GROUP BY ki.item_type_id""",
