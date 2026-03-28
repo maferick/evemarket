@@ -5,11 +5,16 @@ import time
 from pathlib import Path
 from typing import Any
 
+import logging
+
 from ..db import SupplyCoreDb
 from ..eve_constants import FLEET_FUNCTION_BY_GROUP, SHIP_SIZE_BY_GROUP
+from ..influx import InfluxClient, InfluxConfig, InfluxQueryError
 from ..job_result import JobResult
 from ..json_utils import json_dumps_safe
 from ..neo4j import Neo4jClient, Neo4jConfig, Neo4jError
+
+logger = logging.getLogger(__name__)
 
 GRAPH_BATCH_STATE_KEYS = {
     "doctrine_cursor": "graph_sync_doctrine_dependency_cursor",
@@ -1239,7 +1244,398 @@ def run_compute_graph_topology_metrics(db: SupplyCoreDb, neo4j_raw: dict[str, An
     return result
 
 
-def run_compute_graph_insights(db: SupplyCoreDb, neo4j_raw: dict[str, Any] | None = None) -> dict[str, Any]:
+def _compute_substitutability(db: SupplyCoreDb, item_data: dict[int, dict[str, Any]]) -> None:
+    """Compute substitutability for each item based on group_id peers in the same fits."""
+    type_ids = list(item_data.keys())
+    if not type_ids:
+        return
+
+    # Load group_id for all tracked items
+    placeholders = ",".join(["%s"] * len(type_ids))
+    group_rows = db.fetch_all(
+        f"SELECT type_id, group_id FROM ref_item_types WHERE type_id IN ({placeholders})",
+        tuple(type_ids),
+    )
+    type_to_group: dict[int, int] = {int(r["type_id"]): int(r["group_id"]) for r in group_rows if r.get("group_id")}
+    group_to_types: dict[int, set[int]] = {}
+    for tid, gid in type_to_group.items():
+        group_to_types.setdefault(gid, set()).add(tid)
+
+    for tid, data in item_data.items():
+        gid = type_to_group.get(tid)
+        if gid is None:
+            data["substitute_count"] = 0
+            data["substitutability"] = 0.0
+            continue
+        peers = group_to_types.get(gid, set())
+        # Substitutes are other items in the same group that are also tracked (used in fits)
+        subs = peers & set(type_ids) - {tid}
+        data["substitute_count"] = len(subs)
+        # substitutability: 0 = irreplaceable, 1 = many alternatives
+        data["substitutability"] = min(1.0, len(subs) / 5.0) if subs else 0.0
+
+
+def _compute_spof(item_data: dict[int, dict[str, Any]]) -> None:
+    """Flag single-point-of-failure items and compute impact scores."""
+    for tid, data in item_data.items():
+        dc = data.get("doctrine_count", 0)
+        fc = data.get("fit_count", 0)
+        sc = data.get("substitute_count", 0)
+        # SPOF: used by multiple doctrines but has no/few substitutes
+        spof = (sc == 0 and dc >= 2) or (sc <= 1 and dc >= 3)
+        data["spof_flag"] = 1 if spof else 0
+        data["spof_impact_score"] = float(dc * 10 + fc * 2) if spof else 0.0
+
+
+def _compute_item_trend_metrics(
+    influx_cfg: InfluxConfig | None,
+    item_data: dict[int, dict[str, Any]],
+) -> None:
+    """Query InfluxDB for price/volume/consumption trends and populate item_data."""
+    if influx_cfg is None or not influx_cfg.enabled:
+        logger.info("InfluxDB disabled — skipping trend metrics")
+        return
+
+    try:
+        client = InfluxClient(influx_cfg)
+    except Exception as exc:
+        logger.warning("Failed to create InfluxClient: %s", exc)
+        return
+
+    bucket = influx_cfg.bucket
+
+    # --- Price 7d & 30d moving averages ---
+    try:
+        price_7d_rows = client.query_flux(f"""
+from(bucket: "{bucket}")
+  |> range(start: -8d)
+  |> filter(fn: (r) => r._measurement == "market_item_price")
+  |> filter(fn: (r) => r.window == "1d")
+  |> filter(fn: (r) => r.source_type == "market_hub")
+  |> filter(fn: (r) => r._field == "weighted_price")
+  |> group(columns: ["type_id"])
+  |> mean()
+  |> yield(name: "price_7d")
+""")
+        for row in price_7d_rows:
+            tid = int(row.get("type_id") or 0)
+            if tid in item_data and row.get("_value") is not None:
+                item_data[tid]["price_avg_7d"] = float(row["_value"])
+    except InfluxQueryError as exc:
+        logger.warning("InfluxDB price 7d query failed: %s", exc)
+
+    try:
+        price_30d_rows = client.query_flux(f"""
+from(bucket: "{bucket}")
+  |> range(start: -31d)
+  |> filter(fn: (r) => r._measurement == "market_item_price")
+  |> filter(fn: (r) => r.window == "1d")
+  |> filter(fn: (r) => r.source_type == "market_hub")
+  |> filter(fn: (r) => r._field == "weighted_price")
+  |> group(columns: ["type_id"])
+  |> mean()
+  |> yield(name: "price_30d")
+""")
+        for row in price_30d_rows:
+            tid = int(row.get("type_id") or 0)
+            if tid in item_data and row.get("_value") is not None:
+                item_data[tid]["price_avg_30d"] = float(row["_value"])
+    except InfluxQueryError as exc:
+        logger.warning("InfluxDB price 30d query failed: %s", exc)
+
+    # --- Price volatility (stddev over 30d) ---
+    try:
+        vol_rows = client.query_flux(f"""
+from(bucket: "{bucket}")
+  |> range(start: -31d)
+  |> filter(fn: (r) => r._measurement == "market_item_price")
+  |> filter(fn: (r) => r.window == "1d")
+  |> filter(fn: (r) => r.source_type == "market_hub")
+  |> filter(fn: (r) => r._field == "weighted_price")
+  |> group(columns: ["type_id"])
+  |> stddev()
+  |> yield(name: "price_stddev")
+""")
+        for row in vol_rows:
+            tid = int(row.get("type_id") or 0)
+            if tid in item_data and row.get("_value") is not None:
+                avg_30d = item_data[tid].get("price_avg_30d")
+                if avg_30d and avg_30d > 0:
+                    item_data[tid]["price_volatility"] = float(row["_value"]) / avg_30d
+    except InfluxQueryError as exc:
+        logger.warning("InfluxDB price volatility query failed: %s", exc)
+
+    # --- Volume (stock) 7d & 30d ---
+    try:
+        stock_7d_rows = client.query_flux(f"""
+from(bucket: "{bucket}")
+  |> range(start: -8d)
+  |> filter(fn: (r) => r._measurement == "market_item_stock")
+  |> filter(fn: (r) => r.window == "1d")
+  |> filter(fn: (r) => r._field == "local_stock_units")
+  |> group(columns: ["type_id"])
+  |> mean()
+  |> yield(name: "stock_7d")
+""")
+        for row in stock_7d_rows:
+            tid = int(row.get("type_id") or 0)
+            if tid in item_data and row.get("_value") is not None:
+                item_data[tid]["volume_avg_7d"] = float(row["_value"])
+    except InfluxQueryError as exc:
+        logger.warning("InfluxDB stock 7d query failed: %s", exc)
+
+    try:
+        stock_30d_rows = client.query_flux(f"""
+from(bucket: "{bucket}")
+  |> range(start: -31d)
+  |> filter(fn: (r) => r._measurement == "market_item_stock")
+  |> filter(fn: (r) => r.window == "1d")
+  |> filter(fn: (r) => r._field == "local_stock_units")
+  |> group(columns: ["type_id"])
+  |> mean()
+  |> yield(name: "stock_30d")
+""")
+        for row in stock_30d_rows:
+            tid = int(row.get("type_id") or 0)
+            if tid in item_data and row.get("_value") is not None:
+                item_data[tid]["volume_avg_30d"] = float(row["_value"])
+    except InfluxQueryError as exc:
+        logger.warning("InfluxDB stock 30d query failed: %s", exc)
+
+    # --- Item consumption from killmail losses (30d total) ---
+    try:
+        consumption_rows = client.query_flux(f"""
+from(bucket: "{bucket}")
+  |> range(start: -31d)
+  |> filter(fn: (r) => r._measurement == "killmail_item_loss")
+  |> filter(fn: (r) => r.window == "1d")
+  |> filter(fn: (r) => r._field == "quantity_lost")
+  |> group(columns: ["type_id"])
+  |> sum()
+  |> yield(name: "consumption_30d")
+""")
+        for row in consumption_rows:
+            tid = int(row.get("type_id") or 0)
+            if tid in item_data and row.get("_value") is not None:
+                item_data[tid]["consumption_30d"] = float(row["_value"])
+    except InfluxQueryError as exc:
+        logger.warning("InfluxDB consumption query failed: %s", exc)
+
+    # --- Derived trend metrics ---
+    for tid, data in item_data.items():
+        p7 = data.get("price_avg_7d")
+        p30 = data.get("price_avg_30d")
+        v7 = data.get("volume_avg_7d")
+        v30 = data.get("volume_avg_30d")
+
+        # Price velocity: rate of change
+        if p7 is not None and p30 is not None and p30 > 0:
+            data["price_velocity"] = (p7 - p30) / p30
+        # Volume velocity
+        if v7 is not None and v30 is not None and v30 > 0:
+            data["volume_velocity"] = (v7 - v30) / v30
+
+        # Trend regime classification
+        pv = data.get("price_velocity")
+        if pv is not None:
+            if abs(pv) < 0.05:
+                data["trend_regime"] = "stable"
+            elif pv > 0.20:
+                data["trend_regime"] = "spike"
+            elif pv < -0.20:
+                data["trend_regime"] = "crash"
+            elif pv > 0.05:
+                data["trend_regime"] = "rising"
+            else:
+                data["trend_regime"] = "falling"
+
+        # Composite trend score (0-100)
+        abs_pv = abs(data.get("price_velocity") or 0)
+        abs_vv = abs(data.get("volume_velocity") or 0)
+        volatility = data.get("price_volatility") or 0
+        data["trend_score"] = min(100.0, abs_pv * 40 + abs_vv * 30 + volatility * 30)
+
+        # Data coverage for confidence
+        signals_present = sum(1 for k in ("price_avg_7d", "price_avg_30d", "volume_avg_7d", "volume_avg_30d", "price_volatility") if data.get(k) is not None)
+        data["coverage_ratio"] = signals_present / 5.0
+
+
+def _compute_market_stress(
+    db: SupplyCoreDb,
+    item_data: dict[int, dict[str, Any]],
+) -> None:
+    """Combine current MariaDB market snapshot with InfluxDB consumption data for stress scoring."""
+    market_rows = db.fetch_all("""
+        SELECT hub.type_id,
+            hub.best_sell_price AS hub_sell,
+            hub.best_buy_price AS hub_buy,
+            hub.total_sell_volume AS hub_volume,
+            alliance.total_sell_volume AS alliance_volume,
+            TIMESTAMPDIFF(HOUR, hub.observed_at, NOW()) AS freshness_hrs
+        FROM market_order_snapshots_summary hub
+        LEFT JOIN market_order_snapshots_summary alliance
+            ON alliance.type_id = hub.type_id AND alliance.source_type = 'alliance_structure'
+        WHERE hub.source_type = 'market_hub'
+    """)
+
+    for row in market_rows:
+        tid = int(row.get("type_id") or 0)
+        if tid not in item_data:
+            continue
+
+        data = item_data[tid]
+        hub_sell = float(row.get("hub_sell") or 0)
+        hub_buy = float(row.get("hub_buy") or 0)
+        hub_volume = float(row.get("hub_volume") or 0)
+        alliance_volume = float(row.get("alliance_volume") or 0)
+        freshness_hrs = float(row.get("freshness_hrs") or 0)
+
+        data["data_freshness_hrs"] = freshness_hrs
+
+        # Market spread
+        if hub_sell > 0:
+            data["market_spread_pct"] = (hub_sell - hub_buy) / hub_sell if hub_buy > 0 else 1.0
+
+        # Liquidity: sell volume / average daily volume
+        vol_30d = data.get("volume_avg_30d") or 0
+        if vol_30d > 0:
+            data["liquidity_score"] = hub_volume / vol_30d
+
+        # Stock days remaining: alliance stock / avg daily consumption
+        consumption_30d = data.get("consumption_30d") or 0
+        avg_daily_consumption = consumption_30d / 30.0 if consumption_30d > 0 else 0
+        if avg_daily_consumption > 0:
+            data["stock_days_remaining"] = alliance_volume / avg_daily_consumption
+
+        # Market stress score (0-100)
+        liq = data.get("liquidity_score")
+        spread = data.get("market_spread_pct") or 0
+        stock_days = data.get("stock_days_remaining")
+
+        stress = 0.0
+        if liq is not None:
+            stress += max(0.0, 1.0 - liq) * 40
+        if spread > 0:
+            stress += min(30.0, spread * 30)
+        if stock_days is not None:
+            stress += max(0.0, 10.0 - stock_days) * 3
+        data["market_stress_score"] = min(100.0, stress)
+
+
+def _compute_composite_scores(item_data: dict[int, dict[str, Any]]) -> None:
+    """Compute criticality_score, confidence_score, and priority_index for each item."""
+    for tid, data in item_data.items():
+        dep_score = data.get("dependency_score", 0)
+        cer = data.get("critical_edge_ratio", 0)
+        sub = data.get("substitutability", 1.0)
+        spof = data.get("spof_flag", 0)
+
+        # Criticality score (0-100)
+        criticality = min(100.0,
+            dep_score * 0.3
+            + cer * 20
+            + (1.0 - sub) * 25
+            + spof * 25
+        )
+        data["criticality_score"] = criticality
+
+        # Confidence: based on data coverage and freshness
+        coverage = data.get("coverage_ratio", 0)
+        freshness = data.get("data_freshness_hrs")
+        freshness_factor = 1.0
+        if freshness is not None and freshness > 0:
+            freshness_factor = max(0.3, 1.0 - (freshness / 48.0))
+        data["confidence_score"] = min(1.0, coverage * 0.7 + freshness_factor * 0.3)
+
+        # Priority index (0-100)
+        trend = data.get("trend_score", 0)
+        stress = data.get("market_stress_score", 0)
+        conf = data.get("confidence_score", 0.5)
+        data["priority_index"] = min(100.0,
+            criticality * 0.35
+            + trend * 0.25
+            + stress * 0.30
+            + conf * 10 * 0.10
+        )
+
+
+def _persist_criticality_index(db: SupplyCoreDb, item_data: dict[int, dict[str, Any]], computed_at: str) -> int:
+    """Write item_criticality_index table and assign priority_rank."""
+    if not item_data:
+        return 0
+
+    # Sort by priority_index descending for rank assignment
+    sorted_items = sorted(item_data.items(), key=lambda kv: kv[1].get("priority_index", 0), reverse=True)
+    for rank, (tid, data) in enumerate(sorted_items, start=1):
+        data["priority_rank"] = rank
+
+    rows = []
+    for tid, d in sorted_items:
+        rows.append((
+            tid,
+            d.get("doctrine_count", 0),
+            d.get("fit_count", 0),
+            d.get("dependency_score", 0),
+            d.get("critical_edge_ratio", 0),
+            d.get("substitute_count", 0),
+            d.get("substitutability", 1.0),
+            d.get("dependency_depth", 0),
+            d.get("spof_flag", 0),
+            d.get("spof_impact_score", 0),
+            d.get("criticality_score", 0),
+            d.get("price_avg_7d"),
+            d.get("price_avg_30d"),
+            d.get("volume_avg_7d"),
+            d.get("volume_avg_30d"),
+            d.get("price_velocity"),
+            d.get("volume_velocity"),
+            d.get("price_volatility"),
+            d.get("trend_regime", "stable"),
+            d.get("trend_score", 0),
+            d.get("market_spread_pct"),
+            d.get("liquidity_score"),
+            d.get("stock_days_remaining"),
+            d.get("market_stress_score", 0),
+            d.get("data_freshness_hrs"),
+            d.get("coverage_ratio"),
+            d.get("confidence_score", 0.5),
+            d.get("priority_index", 0),
+            d.get("priority_rank"),
+            computed_at,
+        ))
+
+    with db.transaction() as (_, cursor):
+        cursor.execute("DELETE FROM item_criticality_index")
+    for offset in range(0, len(rows), DEFAULT_BATCH_SIZE):
+        chunk = rows[offset : offset + DEFAULT_BATCH_SIZE]
+        with db.transaction() as (_, cursor):
+            cursor.executemany(
+                """INSERT INTO item_criticality_index (
+                    type_id, doctrine_count, fit_count, dependency_score,
+                    critical_edge_ratio, substitute_count, substitutability,
+                    dependency_depth, spof_flag, spof_impact_score, criticality_score,
+                    price_avg_7d, price_avg_30d, volume_avg_7d, volume_avg_30d,
+                    price_velocity, volume_velocity, price_volatility,
+                    trend_regime, trend_score,
+                    market_spread_pct, liquidity_score, stock_days_remaining,
+                    market_stress_score,
+                    data_freshness_hrs, coverage_ratio, confidence_score,
+                    priority_index, priority_rank, computed_at
+                ) VALUES (
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+                )""",
+                chunk,
+            )
+    return len(rows)
+
+
+def run_compute_graph_insights(
+    db: SupplyCoreDb,
+    neo4j_raw: dict[str, Any] | None = None,
+    influx_raw: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     started = time.perf_counter()
     job_name = "compute_graph_insights"
     config = Neo4jConfig.from_runtime(neo4j_raw or {})
@@ -1251,6 +1647,7 @@ def run_compute_graph_insights(db: SupplyCoreDb, neo4j_raw: dict[str, Any] | Non
     runtime = neo4j_raw or {}
     batch_size = _coerce_batch_size(runtime.get("insights_batch_size") or runtime.get("batch_size"))
 
+    # ── Step 1: Base item dependency scores from Neo4j ──
     item_rows = client.query(
         """
         MATCH (d:Doctrine)-[:USES]->(f:Fit)-[:CONTAINS]->(i:Item)
@@ -1309,6 +1706,63 @@ def run_compute_graph_insights(db: SupplyCoreDb, neo4j_raw: dict[str, Any] | Non
         ],
     )
 
+    # ── Step 2: Critical edge ratio from Neo4j ──
+    critical_edge_rows = client.query(
+        """
+        MATCH (f:Fit)-[:CONTAINS]->(i:Item)
+        WITH i, count(DISTINCT f) AS total_fits
+        OPTIONAL MATCH (f2:Fit)-[:USES_CRITICAL_ITEM]->(i)
+        WITH i, total_fits, count(DISTINCT f2) AS critical_fits
+        RETURN toInteger(i.type_id) AS type_id,
+               toInteger(total_fits) AS total_fits,
+               toInteger(critical_fits) AS critical_fits,
+               toFloat(CASE WHEN total_fits > 0 THEN toFloat(critical_fits) / total_fits ELSE 0 END) AS critical_edge_ratio
+        """
+    )
+
+    # Build unified item_data dict for enrichment
+    item_data: dict[int, dict[str, Any]] = {}
+    for r in item_rows:
+        tid = int(r.get("type_id") or 0)
+        if tid <= 0:
+            continue
+        item_data[tid] = {
+            "doctrine_count": int(r["doctrine_count"]),
+            "fit_count": int(r["fit_count"]),
+            "dependency_score": float(r["dependency_score"]),
+            "critical_edge_ratio": 0.0,
+        }
+
+    for r in critical_edge_rows:
+        tid = int(r.get("type_id") or 0)
+        if tid in item_data:
+            item_data[tid]["critical_edge_ratio"] = float(r.get("critical_edge_ratio") or 0)
+
+    # ── Step 3: Substitutability (MariaDB group_id lookup) ──
+    _compute_substitutability(db, item_data)
+
+    # ── Step 4: SPOF detection ──
+    _compute_spof(item_data)
+
+    # ── Step 5: InfluxDB trend metrics ──
+    influx_cfg = None
+    if influx_raw:
+        influx_cfg = InfluxConfig.from_runtime(influx_raw)
+        if influx_cfg.validate():
+            influx_cfg = None
+    _compute_item_trend_metrics(influx_cfg, item_data)
+
+    # ── Step 6: Market stress ──
+    _compute_market_stress(db, item_data)
+
+    # ── Step 7: Composite scores ──
+    _compute_composite_scores(item_data)
+
+    # ── Step 8: Persist item_criticality_index ──
+    criticality_written = _persist_criticality_index(db, item_data, computed_at)
+    spof_count = sum(1 for d in item_data.values() if d.get("spof_flag"))
+
+    # ── Fit overlap (existing batched logic) ──
     sync_state = _sync_state_get(db, SYNC_DATASET_GRAPH_INSIGHTS_FIT_OVERLAP) or {}
     cursor_fit_id, cursor_other_fit_id = _parse_pair_cursor(sync_state.get("last_cursor"))
     fit_rows_processed = 0
@@ -1400,10 +1854,13 @@ def run_compute_graph_insights(db: SupplyCoreDb, neo4j_raw: dict[str, Any] | Non
         started,
         "success",
         rows_processed=len(item_rows) + len(doctrine_rows) + fit_rows_processed,
-        rows_written=len(item_rows) + len(doctrine_rows) + fit_rows_written,
+        rows_written=len(item_rows) + len(doctrine_rows) + fit_rows_written + criticality_written,
         computed_at=computed_at,
         fit_overlap_batches=batch_count,
         fit_overlap_batch_size=batch_size,
+        criticality_items=criticality_written,
+        spof_items=spof_count,
+        influx_enabled=influx_cfg is not None and influx_cfg.enabled,
     )
     _write_graph_log(config.log_file, "graph.insights.completed", result)
     return result

@@ -226,7 +226,7 @@ def main() -> int:
         config = load_php_runtime_config(app_root)
         from .db import SupplyCoreDb
         db = SupplyCoreDb(config.raw.get("db", {}))
-        result = run_compute_graph_insights(db, neo4j_runtime(config.raw))
+        result = run_compute_graph_insights(db, neo4j_runtime(config.raw), influx_runtime(config.raw))
         print(result)
         return 0
     if command == "compute-graph-sync-doctrine-dependency":
