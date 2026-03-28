@@ -12,11 +12,39 @@ CREATE TABLE IF NOT EXISTS ref_stargates (
     KEY idx_ref_stargates_dest_system (dest_system_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
--- Theater enrichment columns for graph-derived metrics
-ALTER TABLE theaters
-    ADD COLUMN max_gate_span SMALLINT UNSIGNED DEFAULT NULL AFTER anomaly_score,
-    ADD COLUMN avg_gate_distance DECIMAL(6,2) DEFAULT NULL AFTER max_gate_span,
-    ADD COLUMN clustering_method VARCHAR(32) DEFAULT 'constellation' AFTER avg_gate_distance;
+-- Theater enrichment columns for graph-derived metrics (idempotent)
+SET @_col_exists := (
+    SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'theaters' AND COLUMN_NAME = 'max_gate_span'
+);
+SET @_sql := IF(@_col_exists = 0,
+    'ALTER TABLE theaters ADD COLUMN max_gate_span SMALLINT UNSIGNED DEFAULT NULL AFTER anomaly_score',
+    'SELECT 1');
+PREPARE _stmt FROM @_sql;
+EXECUTE _stmt;
+DEALLOCATE PREPARE _stmt;
+
+SET @_col_exists := (
+    SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'theaters' AND COLUMN_NAME = 'avg_gate_distance'
+);
+SET @_sql := IF(@_col_exists = 0,
+    'ALTER TABLE theaters ADD COLUMN avg_gate_distance DECIMAL(6,2) DEFAULT NULL AFTER max_gate_span',
+    'SELECT 1');
+PREPARE _stmt FROM @_sql;
+EXECUTE _stmt;
+DEALLOCATE PREPARE _stmt;
+
+SET @_col_exists := (
+    SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'theaters' AND COLUMN_NAME = 'clustering_method'
+);
+SET @_sql := IF(@_col_exists = 0,
+    'ALTER TABLE theaters ADD COLUMN clustering_method VARCHAR(32) DEFAULT ''constellation'' AFTER avg_gate_distance',
+    'SELECT 1');
+PREPARE _stmt FROM @_sql;
+EXECUTE _stmt;
+DEALLOCATE PREPARE _stmt;
 
 -- Tuning parameters (changeable without code deploys)
 INSERT INTO app_settings (setting_key, setting_value) VALUES
