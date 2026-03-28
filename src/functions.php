@@ -26910,6 +26910,7 @@ function theater_ai_summary_generate(string $theaterId, bool $forceRegenerate = 
 function theater_ai_build_facts(string $theaterId, array $theater): array
 {
     $allianceSummary = db_theater_alliance_summary($theaterId);
+    $participants = db_theater_participants($theaterId, null, false, 1000);
     $turningPoints = db_theater_turning_points($theaterId);
     $systems = db_theater_systems($theaterId);
     $suspicion = db_theater_suspicion_summary($theaterId);
@@ -26918,11 +26919,23 @@ function theater_ai_build_facts(string $theaterId, array $theater): array
     $topPerformers = db_theater_top_performers($theaterId, 10);
 
     $trackedAlliances = db_killmail_tracked_alliances_active();
-    $trackedIds = array_map('intval', array_column($trackedAlliances, 'alliance_id'));
+    $trackedCorporations = db_killmail_tracked_corporations_active();
+    $opponentAlliances = db_killmail_opponent_alliances_active();
+    $opponentCorporations = db_killmail_opponent_corporations_active();
+    $trackedAllianceIds = array_map('intval', array_column($trackedAlliances, 'alliance_id'));
+    $trackedCorporationIds = array_map('intval', array_column($trackedCorporations, 'corporation_id'));
+    $opponentAllianceIds = array_map('intval', array_column($opponentAlliances, 'alliance_id'));
+    $opponentCorporationIds = array_map('intval', array_column($opponentCorporations, 'corporation_id'));
+    $trackedAllianceSet = array_fill_keys($trackedAllianceIds, true);
+    $trackedCorporationSet = array_fill_keys($trackedCorporationIds, true);
+    $opponentAllianceSet = array_fill_keys($opponentAllianceIds, true);
+    $opponentCorporationSet = array_fill_keys($opponentCorporationIds, true);
 
     // Build alliance side data
     $sideData = ['side_a' => [], 'side_b' => []];
-    $ourSide = null;
+    $friendlyScores = ['side_a' => 0, 'side_b' => 0];
+    $opponentScores = ['side_a' => 0, 'side_b' => 0];
+    $sidePilotTotals = ['side_a' => 0, 'side_b' => 0];
     $friendlyIskLost = 0;
     $friendlyIskKilled = 0;
     $enemyIskLost = 0;
@@ -26930,24 +26943,101 @@ function theater_ai_build_facts(string $theaterId, array $theater): array
     foreach ($allianceSummary as $a) {
         $side = (string) ($a['side'] ?? '');
         $aid = (int) ($a['alliance_id'] ?? 0);
+        $participantCount = (int) ($a['participant_count'] ?? 0);
         if (!isset($sideData[$side])) continue;
+        $sidePilotTotals[$side] += max(0, $participantCount);
         $sideData[$side][] = [
             'alliance' => (string) ($a['alliance_name'] ?? "Alliance #{$aid}"),
-            'pilots' => (int) ($a['participant_count'] ?? 0),
+            'pilots' => $participantCount,
             'kills' => (int) ($a['total_kills'] ?? 0),
             'losses' => (int) ($a['total_losses'] ?? 0),
             'isk_killed' => round((float) ($a['total_isk_killed'] ?? 0)),
             'isk_lost' => round((float) ($a['total_isk_lost'] ?? 0)),
             'efficiency' => round((float) ($a['efficiency'] ?? 0) * 100, 1) . '%',
-            'is_tracked' => in_array($aid, $trackedIds, true),
+            'is_tracked' => isset($trackedAllianceSet[$aid]),
         ];
-        if ($ourSide === null && in_array($aid, $trackedIds, true)) {
-            $ourSide = $side;
+        if (isset($trackedAllianceSet[$aid])) {
+            $friendlyScores[$side] += max(1, $participantCount);
+        }
+        if (isset($opponentAllianceSet[$aid])) {
+            $opponentScores[$side] += max(1, $participantCount);
         }
     }
-    $enemySide = ($ourSide === 'side_a') ? 'side_b' : 'side_a';
 
-    foreach ($sideData[$ourSide ?? 'side_a'] as $a) {
+    foreach ($participants as $participant) {
+        $side = (string) ($participant['side'] ?? '');
+        if (!isset($friendlyScores[$side])) {
+            continue;
+        }
+        $allianceId = (int) ($participant['alliance_id'] ?? 0);
+        $corporationId = (int) ($participant['corporation_id'] ?? 0);
+        if ($allianceId > 0 && isset($trackedAllianceSet[$allianceId])) {
+            $friendlyScores[$side]++;
+        }
+        if ($corporationId > 0 && isset($trackedCorporationSet[$corporationId])) {
+            $friendlyScores[$side]++;
+        }
+        if ($allianceId > 0 && isset($opponentAllianceSet[$allianceId])) {
+            $opponentScores[$side]++;
+        }
+        if ($corporationId > 0 && isset($opponentCorporationSet[$corporationId])) {
+            $opponentScores[$side]++;
+        }
+    }
+
+    $friendlyMatched = ($friendlyScores['side_a'] + $friendlyScores['side_b']) > 0;
+    $opponentMatched = ($opponentScores['side_a'] + $opponentScores['side_b']) > 0;
+    $ourSide = null;
+    $resolutionReason = 'fallback';
+
+    if ($friendlyScores['side_a'] > $friendlyScores['side_b']) {
+        $ourSide = 'side_a';
+        $resolutionReason = 'friendly_match';
+    } elseif ($friendlyScores['side_b'] > $friendlyScores['side_a']) {
+        $ourSide = 'side_b';
+        $resolutionReason = 'friendly_match';
+    } elseif ($friendlyMatched && $opponentScores['side_a'] !== $opponentScores['side_b']) {
+        $ourSide = $opponentScores['side_a'] > $opponentScores['side_b'] ? 'side_b' : 'side_a';
+        $resolutionReason = 'opponent_match';
+    } elseif ($friendlyMatched) {
+        if ($sidePilotTotals['side_a'] > $sidePilotTotals['side_b']) {
+            $ourSide = 'side_a';
+        } elseif ($sidePilotTotals['side_b'] > $sidePilotTotals['side_a']) {
+            $ourSide = 'side_b';
+        } else {
+            $ourSide = 'side_a';
+        }
+        $resolutionReason = 'friendly_match';
+    } elseif ($opponentMatched) {
+        $opponentSide = $opponentScores['side_a'] > $opponentScores['side_b'] ? 'side_a' : 'side_b';
+        if ($opponentScores['side_a'] === $opponentScores['side_b']) {
+            $opponentSide = $sidePilotTotals['side_a'] > $sidePilotTotals['side_b'] ? 'side_a' : 'side_b';
+        }
+        $ourSide = $opponentSide === 'side_a' ? 'side_b' : 'side_a';
+        $resolutionReason = 'opponent_match';
+    } else {
+        $ourSide = 'side_a';
+        $resolutionReason = 'fallback';
+    }
+
+    $enemySide = ($ourSide === 'side_a') ? 'side_b' : 'side_a';
+    supplycore_ai_log('theater_ai.side_resolution', [
+        'theater_id' => $theaterId,
+        'friendly_side_scores' => $friendlyScores,
+        'opponent_side_scores' => $opponentScores,
+        'side_pilot_totals' => $sidePilotTotals,
+        'friendly_matched' => $friendlyMatched,
+        'opponent_matched' => $opponentMatched,
+        'tracked_alliance_ids' => $trackedAllianceIds,
+        'tracked_corporation_ids' => $trackedCorporationIds,
+        'opponent_alliance_ids' => $opponentAllianceIds,
+        'opponent_corporation_ids' => $opponentCorporationIds,
+        'resolved_side' => $ourSide,
+        'enemy_side' => $enemySide,
+        'reason' => $resolutionReason,
+    ]);
+
+    foreach ($sideData[$ourSide] as $a) {
         $friendlyIskLost += (float) ($a['isk_lost'] ?? 0);
         $friendlyIskKilled += (float) ($a['isk_killed'] ?? 0);
     }
@@ -26961,7 +27051,7 @@ function theater_ai_build_facts(string $theaterId, array $theater): array
     $enemyComp = [];
     foreach ($fleetComp as $fc) {
         $entry = ((string) $fc['ship_name']) . ' x' . ((int) $fc['pilot_count']);
-        if (($fc['side'] ?? '') === ($ourSide ?? 'side_a')) {
+        if (($fc['side'] ?? '') === $ourSide) {
             $friendlyComp[] = $entry;
         } else {
             $enemyComp[] = $entry;
@@ -26986,7 +27076,7 @@ function theater_ai_build_facts(string $theaterId, array $theater): array
         $performerList[] = [
             'character' => (string) ($tp['character_name'] ?? '?'),
             'alliance' => (string) ($tp['alliance_name'] ?? '?'),
-            'side' => ($tp['side'] ?? '') === ($ourSide ?? 'side_a') ? 'friendly' : 'enemy',
+            'side' => ($tp['side'] ?? '') === $ourSide ? 'friendly' : 'enemy',
             'kills' => (int) ($tp['kills'] ?? 0),
             'deaths' => (int) ($tp['deaths'] ?? 0),
             'damage_done' => round((float) ($tp['damage_done'] ?? 0)),
@@ -26995,7 +27085,7 @@ function theater_ai_build_facts(string $theaterId, array $theater): array
     }
 
     // Friendly alliance names
-    $friendlyNames = array_map(fn($a) => $a['alliance'], $sideData[$ourSide ?? 'side_a']);
+    $friendlyNames = array_map(fn($a) => $a['alliance'], $sideData[$ourSide]);
     $enemyNames = array_map(fn($a) => $a['alliance'], $sideData[$enemySide]);
 
     $totalIsk = $friendlyIskKilled + $enemyIskKilled;
@@ -27013,7 +27103,7 @@ function theater_ai_build_facts(string $theaterId, array $theater): array
         'participant_count' => (int) ($theater['participant_count'] ?? 0),
         'friendly_alliance' => implode(', ', $friendlyNames) ?: 'Unknown',
         'enemy_alliances' => implode(', ', $enemyNames) ?: 'Unknown',
-        'friendly_coalition' => $sideData[$ourSide ?? 'side_a'],
+        'friendly_coalition' => $sideData[$ourSide],
         'enemy_coalition' => $sideData[$enemySide],
         'friendly_isk_lost' => number_format($friendlyIskLost, 0) . ' ISK',
         'enemy_isk_lost' => number_format($enemyIskLost, 0) . ' ISK',
@@ -27029,6 +27119,7 @@ function theater_ai_build_facts(string $theaterId, array $theater): array
         $facts['turning_points'] = array_map(fn($tp) => [
             'time' => (string) ($tp['turning_point_at'] ?? ''),
             'direction' => (string) ($tp['direction'] ?? ''),
+            'side' => theater_ai_side_label_from_direction((string) ($tp['direction'] ?? ''), $ourSide),
             'magnitude' => round((float) ($tp['magnitude'] ?? 0), 3),
             'description' => (string) ($tp['description'] ?? ''),
         ], array_slice($turningPoints, 0, 5));
@@ -27044,6 +27135,24 @@ function theater_ai_build_facts(string $theaterId, array $theater): array
     }
 
     return $facts;
+}
+
+function theater_ai_side_label_from_direction(string $direction, string $friendlySide): string
+{
+    $normalizedDirection = strtolower(trim($direction));
+    if ($normalizedDirection === '') {
+        return 'unknown';
+    }
+    $enemySide = $friendlySide === 'side_a' ? 'side_b' : 'side_a';
+
+    if (str_contains($normalizedDirection, $friendlySide)) {
+        return 'friendly';
+    }
+    if (str_contains($normalizedDirection, $enemySide)) {
+        return 'enemy';
+    }
+
+    return 'unknown';
 }
 
 function theater_ai_system_prompt(): string
