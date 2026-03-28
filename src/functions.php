@@ -903,6 +903,10 @@ function ai_briefing_settings_from_request(array $request): array
         'ollama_capability_tier' => sanitize_ollama_capability_tier($request['ollama_capability_tier'] ?? null),
         'ollama_runpod_url' => sanitize_ollama_runpod_url($request['ollama_runpod_url'] ?? null),
         'ollama_runpod_api_key' => sanitize_ollama_runpod_api_key($request['ollama_runpod_api_key'] ?? null),
+        'claude_api_key' => trim((string) ($request['claude_api_key'] ?? '')),
+        'claude_model' => trim((string) ($request['claude_model'] ?? 'claude-sonnet-4-20250514')),
+        'groq_api_key' => trim((string) ($request['groq_api_key'] ?? '')),
+        'groq_model' => trim((string) ($request['groq_model'] ?? 'meta-llama/llama-4-scout-17b-16e-instruct')),
         'theater_aar_prompt' => mb_substr(trim((string) ($request['theater_aar_prompt'] ?? '')), 0, 8000),
     ];
 }
