@@ -272,6 +272,67 @@ def _parse_csv(raw: str) -> list[str]:
     return [part.strip() for part in raw.split(",") if part.strip()]
 
 
+def _scale_definitions_for_workers(
+    definitions: dict[str, dict[str, Any]],
+    worker_counts: dict[str, int],
+) -> dict[str, dict[str, Any]]:
+    """Scale job intervals based on active worker count per queue.
+
+    With more workers available, immediate/high-priority jobs can run more
+    frequently (shorter intervals) while background jobs get stretched out
+    so they don't burn cycles.  This keeps total scheduling pressure roughly
+    constant regardless of pool size.
+
+    Scaling rules:
+    - immediate + non-background: interval /= sqrt(workers)  → runs faster
+    - background + opportunistic:  interval *= log2(workers)  → runs less often
+    - ESI-facing (min_interval >= 21600): never scaled (respect ESI cache)
+    """
+    import math
+
+    scaled: dict[str, dict[str, Any]] = {}
+    for key, defn in definitions.items():
+        queue = str(defn.get("queue_name") or "default")
+        wc = max(1, worker_counts.get(queue, 1))
+        if wc <= 1:
+            scaled[key] = defn
+            continue
+
+        d = dict(defn)
+        base_interval = int(d.get("min_interval_seconds") or 300)
+        base_staleness = int(d.get("max_staleness_seconds") or base_interval * 2)
+
+        # Never touch very-long-interval jobs (historical syncs with ESI cache)
+        if base_interval >= 21600:
+            scaled[key] = d
+            continue
+
+        freshness = str(d.get("freshness_sensitivity") or "background")
+        is_background = bool(d.get("opportunistic_background", False))
+
+        if freshness == "immediate" and not is_background:
+            # High-priority: run MORE often with more workers
+            scale = math.sqrt(wc)
+            new_interval = max(60, int(base_interval / scale))
+            new_staleness = max(new_interval * 2, int(base_staleness / scale))
+        elif is_background:
+            # Background: run LESS often — don't waste worker slots
+            scale = max(1.0, math.log2(wc))
+            new_interval = min(base_interval * 4, int(base_interval * scale))
+            new_staleness = min(base_staleness * 4, int(base_staleness * scale))
+        else:
+            # Normal: modest speedup
+            scale = wc ** 0.3
+            new_interval = max(120, int(base_interval / scale))
+            new_staleness = max(new_interval * 2, int(base_staleness / scale))
+
+        d["min_interval_seconds"] = new_interval
+        d["max_staleness_seconds"] = new_staleness
+        scaled[key] = d
+
+    return scaled
+
+
 def _write_state_file(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json_dumps_safe(payload, indent=2) + "\n", encoding="utf-8")
@@ -319,6 +380,9 @@ def main(argv: list[str] | None = None) -> int:
     pause_threshold = max(128 * 1024 * 1024, int(worker_settings.get("memory_pause_threshold_bytes", 384 * 1024 * 1024)))
     abort_threshold = max(pause_threshold, int(worker_settings.get("memory_abort_threshold_bytes", 512 * 1024 * 1024)))
     retry_backoff = max(5, int(worker_settings.get("retry_backoff_seconds", 30)))
+    scaled_definitions = dict(WORKER_JOB_DEFINITIONS)
+    worker_counts: dict[str, int] = {}
+    worker_count_refresh_at = 0.0  # force immediate refresh
 
     while True:
         memory_usage = resident_memory_bytes()
@@ -332,7 +396,18 @@ def main(argv: list[str] | None = None) -> int:
             reaped = db.reap_stale_running_jobs()
             if reaped > 0:
                 logger.info("reaped stale running jobs", payload={"event": "worker_pool.reaped_stale", "worker_id": worker_id, "reaped": reaped})
-            seed_result = db.queue_due_recurring_jobs(WORKER_JOB_DEFINITIONS)
+            # Refresh worker counts every 60s to dynamically scale intervals
+            now_mono = time.monotonic()
+            if now_mono >= worker_count_refresh_at:
+                try:
+                    worker_counts = db.count_active_workers()
+                    scaled_definitions = _scale_definitions_for_workers(WORKER_JOB_DEFINITIONS, worker_counts)
+                    if any(v > 1 for v in worker_counts.values()):
+                        logger.info("worker-aware interval scaling active", payload={"event": "worker_pool.scaling_refresh", "worker_id": worker_id, "worker_counts": worker_counts})
+                except Exception:
+                    scaled_definitions = dict(WORKER_JOB_DEFINITIONS)
+                worker_count_refresh_at = now_mono + 60.0
+            seed_result = db.queue_due_recurring_jobs(scaled_definitions)
             job = db.claim_next_worker_job(worker_id, queues=queue_names, workload_classes=workload_classes, execution_modes=execution_modes, lease_seconds=lease_seconds)
             diagnostics = db.worker_claim_diagnostics(queues=queue_names, workload_classes=workload_classes)
         except pymysql.MySQLError as error:
@@ -364,7 +439,7 @@ def main(argv: list[str] | None = None) -> int:
             time.sleep(retry_backoff)
             continue
 
-        _write_state_file(state_file, {"ts": utc_now_iso(), "worker_id": worker_id, "queues": queue_names, "workload_classes": workload_classes, "execution_modes": execution_modes, "seed_result": seed_result, "job": job, "memory_usage_bytes": memory_usage})
+        _write_state_file(state_file, {"ts": utc_now_iso(), "worker_id": worker_id, "queues": queue_names, "workload_classes": workload_classes, "execution_modes": execution_modes, "seed_result": seed_result, "job": job, "memory_usage_bytes": memory_usage, "worker_counts": worker_counts})
 
         if not job:
             if args.once:

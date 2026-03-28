@@ -123,6 +123,26 @@ class SupplyCoreDb:
                  AND lock_expires_at < UTC_TIMESTAMP()"""
         )
 
+    def count_active_workers(self, queue_name: str | None = None) -> dict[str, int]:
+        """Count distinct workers that have claimed jobs in the last 10 minutes, by queue."""
+        rows = self.fetch_all(
+            """SELECT queue_name,
+                      COUNT(DISTINCT locked_by) AS active_workers
+               FROM worker_jobs
+               WHERE locked_by IS NOT NULL
+                 AND status IN ('running', 'queued')
+                 AND (lock_expires_at IS NULL OR lock_expires_at > UTC_TIMESTAMP())
+                 AND locked_at >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL 10 MINUTE)
+               GROUP BY queue_name"""
+        )
+        counts: dict[str, int] = {}
+        for row in rows:
+            qn = str(row.get("queue_name") or "default")
+            counts[qn] = int(row.get("active_workers") or 0)
+        if queue_name is not None:
+            return {"total": counts.get(queue_name, 0)}
+        return counts
+
     def queue_due_recurring_jobs(self, definitions: dict[str, dict[str, Any]], *, only_job_keys: list[str] | None = None) -> dict[str, int]:
         scoped = definitions
         if only_job_keys:
