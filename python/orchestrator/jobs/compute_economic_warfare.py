@@ -225,10 +225,10 @@ def _score_modules(
     if type_id_list:
         mp = ",".join(["%s"] * len(type_id_list))
         market_rows = db.fetch_all(
-            f"""SELECT type_id, sell_price_min, sell_volume_total
+            f"""SELECT type_id, best_sell_price, total_sell_volume
                 FROM market_order_snapshots_summary
                 WHERE type_id IN ({mp})
-                  AND source_type = 'sell'
+                  AND source_type = 'market_hub'
                   AND observed_at >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL 7 DAY)
                 ORDER BY observed_at DESC""",
             tuple(type_id_list),
@@ -237,8 +237,8 @@ def _score_modules(
             tid = int(mr["type_id"])
             if tid not in market_data:
                 market_data[tid] = {
-                    "sell_price": float(mr.get("sell_price_min") or 0),
-                    "sell_volume": int(mr.get("sell_volume_total") or 0),
+                    "sell_price": float(mr.get("best_sell_price") or 0),
+                    "sell_volume": int(mr.get("total_sell_volume") or 0),
                 }
 
     # Load loss pressure (30d destroyed count from killmail_items)
