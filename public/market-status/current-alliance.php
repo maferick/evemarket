@@ -41,10 +41,11 @@ foreach ($summary as $card) {
 $coveragePercent = $trackedTotal > 0 ? round(($stockedCount / $trackedTotal) * 100, 1) : 0;
 $gapCount = max(0, $trackedTotal - $stockedCount);
 
+$suppressPageFreshness = true;
 include __DIR__ . '/../../src/views/partials/header.php';
 ?>
-<!-- Coverage gauge -->
-<section class="surface-secondary mb-6">
+<!-- Coverage gauge (above freshness — most important summary) -->
+<section class="surface-secondary mb-4">
     <div class="flex flex-wrap items-center gap-6">
         <div class="flex-1">
             <div class="flex items-center justify-between gap-3">
@@ -58,6 +59,14 @@ include __DIR__ . '/../../src/views/partials/header.php';
         </div>
     </div>
 </section>
+<?php if ($pageFreshness !== [] && ($pageFreshness['state'] ?? '') === 'stale'): ?>
+    <div class="mb-4 flex items-center gap-2 text-xs text-amber-300/80">
+        <svg viewBox="0 0 16 16" fill="currentColor" width="14" height="14" class="h-3.5 w-3.5 shrink-0 opacity-70"><path d="M8 1a7 7 0 1 0 0 14A7 7 0 0 0 8 1Zm0 3a.75.75 0 0 1 .75.75v3.5a.75.75 0 0 1-1.5 0v-3.5A.75.75 0 0 1 8 4Zm0 7a.75.75 0 1 0 0-1.5.75.75 0 0 0 0 1.5Z"/></svg>
+        <span>Data from <?= htmlspecialchars((string) ($pageFreshness['computed_relative'] ?? 'Unknown'), ENT_QUOTES) ?></span>
+    </div>
+<?php elseif ($pageFreshness !== [] && ($pageFreshness['state'] ?? '') !== 'fresh'): ?>
+    <p class="mb-4 text-xs text-slate-500">Data from <?= htmlspecialchars((string) ($pageFreshness['computed_relative'] ?? 'Unknown'), ENT_QUOTES) ?></p>
+<?php endif; ?>
 <?php
 include __DIR__ . '/../../src/views/partials/module-page.php';
 include __DIR__ . '/../../src/views/partials/footer.php';

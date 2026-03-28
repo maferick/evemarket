@@ -308,3 +308,13 @@
         @apply bg-white/[0.01];
     }
 }
+
+/* Safety net: prevent SVG icons without explicit dimensions from expanding in flex containers */
+@layer base {
+    svg:not([width]):not([height]) {
+        width: 1em;
+        height: 1em;
+        min-width: 0;
+        min-height: 0;
+    }
+}
