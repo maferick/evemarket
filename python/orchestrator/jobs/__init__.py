@@ -11,7 +11,9 @@ from .graph_pipeline import (
     run_compute_graph_sync_doctrine_dependency,
     run_compute_graph_prune,
     run_compute_graph_topology_metrics,
+    run_compute_graph_sync_killmail_entities,
 )
+from .graph_universe_sync import run_graph_universe_sync
 from .battle_intelligence import (
     run_compute_battle_actor_features,
     run_compute_battle_anomalies,
