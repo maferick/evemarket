@@ -84,6 +84,6 @@ CREATE TABLE IF NOT EXISTS economic_warfare_scores (
 
 -- ─── Schedule ─────────────────────────────────────────────────────────────────
 
-INSERT INTO sync_schedules (job_key, enabled, interval_seconds, execution_mode, workload_class)
-VALUES ('compute_economic_warfare', 1, 3600, 'python', 'compute')
+INSERT INTO sync_schedules (job_key, enabled, interval_seconds, execution_mode)
+VALUES ('compute_economic_warfare', 1, 3600, 'python')
 ON DUPLICATE KEY UPDATE enabled = enabled;
