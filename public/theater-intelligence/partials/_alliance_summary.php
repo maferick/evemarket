@@ -19,18 +19,21 @@
             <tbody>
                 <?php foreach ($allianceSummary as $a): ?>
                     <?php
-                        $aSide = $displaySideForAlliance((int) ($a['alliance_id'] ?? 0), (string) ($a['side'] ?? ''));
+                        $aSide = $classifyAlliance((int) ($a['alliance_id'] ?? 0));
                         $eff = (float) ($a['efficiency'] ?? 0);
                         $effClass = $eff >= 0.6 ? 'text-green-400' : ($eff >= 0.4 ? 'text-yellow-400' : 'text-red-400');
                         $aSideColor = $sideColorClass[$aSide] ?? 'text-slate-300';
                         $aSideBg = $sideBgClass[$aSide] ?? 'bg-slate-700';
-                        $isTracked = in_array((int) ($a['alliance_id'] ?? 0), $trackedAllianceIds, true);
+                        $isTracked = $aSide === 'friendly';
+                        $isOpponent = $aSide === 'opponent';
                     ?>
                     <tr class="border-b border-border/50">
                         <td class="px-3 py-2 text-slate-100">
                             <?= htmlspecialchars(killmail_entity_preferred_name($resolvedEntities, 'alliance', (int) ($a['alliance_id'] ?? 0), (string) ($a['alliance_name'] ?? ''), 'Alliance'), ENT_QUOTES) ?>
                             <?php if ($isTracked): ?>
-                                <span class="text-[10px] uppercase tracking-wider bg-blue-900/60 text-blue-300 rounded-full px-1.5 py-0.5 ml-1">Tracked</span>
+                                <span class="text-[10px] uppercase tracking-wider bg-blue-900/60 text-blue-300 rounded-full px-1.5 py-0.5 ml-1">Friendly</span>
+                            <?php elseif ($isOpponent): ?>
+                                <span class="text-[10px] uppercase tracking-wider bg-red-900/60 text-red-300 rounded-full px-1.5 py-0.5 ml-1">Opponent</span>
                             <?php endif; ?>
                         </td>
                         <td class="px-3 py-2 <?= $aSideColor ?>">

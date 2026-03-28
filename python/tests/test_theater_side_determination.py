@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import unittest
 
-from orchestrator.jobs.theater_analysis import _determine_sides
+from orchestrator.jobs.theater_analysis import _determine_sides, _classify_alliance
 
 
 class TheaterSideDeterminationTests(unittest.TestCase):
-    def test_friendly_side_wins_even_when_enemy_side_has_more_pilots(self) -> None:
+    def test_friendly_alliance_classified_as_friendly(self) -> None:
         participants = [
             {"character_id": 1, "side_key": "LEFT", "alliance_id": 9001, "corporation_id": 0},
             {"character_id": 2, "side_key": "RIGHT", "alliance_id": 0, "corporation_id": 0},
@@ -20,10 +20,11 @@ class TheaterSideDeterminationTests(unittest.TestCase):
             "opponent_corporation_ids": set(),
         }
 
-        side_labels, _char_sides, side_meta = _determine_sides(participants, side_configuration)
+        _side_labels, char_sides, side_meta = _determine_sides(participants, side_configuration)
 
-        self.assertEqual(side_labels["LEFT"], "side_a")
-        self.assertFalse(side_meta["used_fallback"])
+        self.assertEqual(char_sides[1], "friendly")
+        self.assertEqual(char_sides[2], "third_party")
+        self.assertEqual(side_meta["total_friendly_matches"], 1)
 
     def test_friendly_corporation_match_without_alliance_match_is_still_friendly(self) -> None:
         participants = [
@@ -39,12 +40,12 @@ class TheaterSideDeterminationTests(unittest.TestCase):
             "opponent_corporation_ids": set(),
         }
 
-        side_labels, _char_sides, side_meta = _determine_sides(participants, side_configuration)
+        _side_labels, char_sides, side_meta = _determine_sides(participants, side_configuration)
 
-        self.assertEqual(side_labels["LEFT"], "side_a")
-        self.assertFalse(side_meta["used_fallback"])
+        self.assertEqual(char_sides[10], "friendly")
+        self.assertEqual(side_meta["total_friendly_matches"], 1)
 
-    def test_friendly_and_opponent_entities_map_to_left_and_right(self) -> None:
+    def test_friendly_and_opponent_entities_classified_correctly(self) -> None:
         participants = [
             {"character_id": 20, "side_key": "LEFT", "alliance_id": 111, "corporation_id": 0},
             {"character_id": 21, "side_key": "LEFT", "alliance_id": 0, "corporation_id": 2222},
@@ -58,13 +59,16 @@ class TheaterSideDeterminationTests(unittest.TestCase):
             "opponent_corporation_ids": {4444},
         }
 
-        side_labels, _char_sides, side_meta = _determine_sides(participants, side_configuration)
+        _side_labels, char_sides, side_meta = _determine_sides(participants, side_configuration)
 
-        self.assertEqual(side_labels["LEFT"], "side_a")
-        self.assertEqual(side_labels["RIGHT"], "side_b")
-        self.assertFalse(side_meta["used_fallback"])
+        self.assertEqual(char_sides[20], "friendly")
+        self.assertEqual(char_sides[21], "friendly")
+        self.assertEqual(char_sides[22], "opponent")
+        self.assertEqual(char_sides[23], "opponent")
+        self.assertEqual(side_meta["total_friendly_matches"], 2)
+        self.assertEqual(side_meta["total_opponent_matches"], 2)
 
-    def test_fallback_only_when_no_configured_entities_match(self) -> None:
+    def test_unmatched_entities_classified_as_third_party(self) -> None:
         participants = [
             {"character_id": 30, "side_key": "LEFT", "alliance_id": 0, "corporation_id": 0},
             {"character_id": 31, "side_key": "RIGHT", "alliance_id": 0, "corporation_id": 0},
@@ -77,11 +81,26 @@ class TheaterSideDeterminationTests(unittest.TestCase):
             "opponent_corporation_ids": {6666},
         }
 
-        side_labels, _char_sides, side_meta = _determine_sides(participants, side_configuration)
+        _side_labels, char_sides, side_meta = _determine_sides(participants, side_configuration)
 
-        self.assertTrue(side_meta["used_fallback"])
-        self.assertEqual(side_labels["RIGHT"], "side_a")
-        self.assertEqual(side_labels["LEFT"], "side_b")
+        self.assertEqual(char_sides[30], "third_party")
+        self.assertEqual(char_sides[31], "third_party")
+        self.assertEqual(char_sides[32], "third_party")
+        self.assertEqual(side_meta["total_third_party"], 3)
+
+    def test_classify_alliance_helper(self) -> None:
+        config = {
+            "friendly_alliance_ids": {100},
+            "friendly_corporation_ids": {200},
+            "opponent_alliance_ids": {300},
+            "opponent_corporation_ids": {400},
+        }
+        self.assertEqual(_classify_alliance(100, 0, config), "friendly")
+        self.assertEqual(_classify_alliance(0, 200, config), "friendly")
+        self.assertEqual(_classify_alliance(300, 0, config), "opponent")
+        self.assertEqual(_classify_alliance(0, 400, config), "opponent")
+        self.assertEqual(_classify_alliance(999, 999, config), "third_party")
+        self.assertEqual(_classify_alliance(0, 0, config), "third_party")
 
 
 if __name__ == "__main__":

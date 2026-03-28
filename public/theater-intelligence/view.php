@@ -67,105 +67,72 @@ foreach ($entityRequests as $type => $ids) {
 }
 $resolvedEntities = killmail_entity_resolve_batch($entityRequests, true);
 
-// ── Determine meaningful side labels from tracked alliances ──────────
+// ── Classify alliances from user settings (friendly/opponent/third_party) ──
 $trackedAlliances = db_killmail_tracked_alliances_active();
-$trackedAllianceIds = array_column($trackedAlliances, 'alliance_id');
-$trackedAllianceIds = array_map('intval', $trackedAllianceIds);
+$trackedAllianceIds = array_map('intval', array_column($trackedAlliances, 'alliance_id'));
 $trackedAllianceIds = array_values(array_unique($trackedAllianceIds));
 
-$ourSide = null;
-$trackedPilotsBySide = ['side_a' => 0, 'side_b' => 0];
-$trackedAllianceCountsBySide = ['side_a' => 0, 'side_b' => 0];
-foreach ($allianceSummary as $a) {
-    $side = (string) ($a['side'] ?? '');
-    $aid = (int) ($a['alliance_id'] ?? 0);
-    $pilots = (int) ($a['participant_count'] ?? 0);
-    if (isset($trackedPilotsBySide[$side]) && in_array($aid, $trackedAllianceIds, true)) {
-        $trackedPilotsBySide[$side] += $pilots;
-        $trackedAllianceCountsBySide[$side]++;
-    }
-}
+$opponentAlliances = db_killmail_opponent_alliances_active();
+$opponentAllianceIds = array_map('intval', array_column($opponentAlliances, 'alliance_id'));
+$opponentAllianceIds = array_values(array_unique($opponentAllianceIds));
 
-if ($trackedPilotsBySide['side_a'] > $trackedPilotsBySide['side_b']) {
-    $ourSide = 'side_a';
-} elseif ($trackedPilotsBySide['side_b'] > $trackedPilotsBySide['side_a']) {
-    $ourSide = 'side_b';
-} elseif ($trackedAllianceCountsBySide['side_a'] > $trackedAllianceCountsBySide['side_b']) {
-    $ourSide = 'side_a';
-} elseif ($trackedAllianceCountsBySide['side_b'] > $trackedAllianceCountsBySide['side_a']) {
-    $ourSide = 'side_b';
-}
-
-if ($ourSide === null) {
-    $ourSide = 'side_a';
-}
-$enemySide = ($ourSide === 'side_a') ? 'side_b' : 'side_a';
-
-$displaySideForAlliance = static function (int $allianceId, string $fallbackSide) use ($trackedAllianceIds, $ourSide, $enemySide): string {
+$classifyAlliance = static function (int $allianceId) use ($trackedAllianceIds, $opponentAllianceIds): string {
     if ($allianceId > 0 && in_array($allianceId, $trackedAllianceIds, true)) {
-        return $ourSide;
+        return 'friendly';
     }
-
-    return $fallbackSide === $ourSide ? $ourSide : $enemySide;
+    if ($allianceId > 0 && in_array($allianceId, $opponentAllianceIds, true)) {
+        return 'opponent';
+    }
+    return 'third_party';
 };
 
-// Ensure tracked alliances always appear on the tracked/friendly side in UI panels.
-$displaySideAlliancesByPilots = ['side_a' => [], 'side_b' => []];
+$ourSide = 'friendly';
+$enemySide = 'opponent';
+
+$sideLabels = [
+    'friendly' => 'Friendlies',
+    'opponent' => 'Opposition',
+    'third_party' => 'Third Party',
+];
+
+// Build friendly/opponent labels from actual alliance names
+$sideAlliancesByPilots = ['friendly' => [], 'opponent' => [], 'third_party' => []];
 foreach ($allianceSummary as $a) {
-    $sourceSide = (string) ($a['side'] ?? '');
     $aid = (int) ($a['alliance_id'] ?? 0);
     $pilots = (int) ($a['participant_count'] ?? 0);
-    $displaySide = $displaySideForAlliance($aid, $sourceSide);
-    if (isset($displaySideAlliancesByPilots[$displaySide])) {
-        $displaySideAlliancesByPilots[$displaySide][$aid] = ($displaySideAlliancesByPilots[$displaySide][$aid] ?? 0) + $pilots;
-    }
+    $classification = $classifyAlliance($aid);
+    $sideAlliancesByPilots[$classification][$aid] = ($sideAlliancesByPilots[$classification][$aid] ?? 0) + $pilots;
 }
 
-$sideLabels = [];
-foreach (['side_a', 'side_b'] as $side) {
-    $alliances = $displaySideAlliancesByPilots[$side];
+foreach (['friendly', 'opponent'] as $side) {
+    $alliances = $sideAlliancesByPilots[$side];
     if ($alliances === []) {
-        $sideLabels[$side] = $side === $ourSide ? 'Tracked Coalition' : 'Opposition';
         continue;
     }
     arsort($alliances);
-    $preferredAllianceId = 0;
-    if ($side === $ourSide) {
-        foreach ($alliances as $allianceId => $_pilotCount) {
-            if (in_array((int) $allianceId, $trackedAllianceIds, true)) {
-                $preferredAllianceId = (int) $allianceId;
-                break;
-            }
-        }
-    }
-    if ($preferredAllianceId <= 0) {
-        $preferredAllianceId = (int) array_key_first($alliances);
-    }
+    $preferredAllianceId = (int) array_key_first($alliances);
     $preferredName = killmail_entity_preferred_name($resolvedEntities, 'alliance', $preferredAllianceId, '', 'Alliance');
     $otherCount = count($alliances) - 1;
-    if ($side === $ourSide) {
-        $sideLabels[$side] = $preferredName . ($otherCount > 0 ? " +{$otherCount}" : '');
-    } else {
-        $sideLabels[$side] = $preferredName . ($otherCount > 0 ? " +{$otherCount}" : '');
-    }
+    $sideLabels[$side] = $preferredName . ($otherCount > 0 ? " +{$otherCount}" : '');
 }
 
 $sideColorClass = [
-    $ourSide ?? 'side_a' => 'text-blue-300',
-    $enemySide => 'text-red-300',
+    'friendly' => 'text-blue-300',
+    'opponent' => 'text-red-300',
+    'third_party' => 'text-slate-400',
 ];
 $sideBgClass = [
-    $ourSide ?? 'side_a' => 'bg-blue-900/60',
-    $enemySide => 'bg-red-900/60',
+    'friendly' => 'bg-blue-900/60',
+    'opponent' => 'bg-red-900/60',
+    'third_party' => 'bg-slate-700/60',
 ];
 
 if ($sideFilter !== null || $suspiciousOnly) {
     $participants = array_values(array_filter(
         $participantsAll,
-        static function (array $participant) use ($sideFilter, $suspiciousOnly, $displaySideForAlliance): bool {
+        static function (array $participant) use ($sideFilter, $suspiciousOnly, $classifyAlliance): bool {
             $allianceId = (int) ($participant['alliance_id'] ?? 0);
-            $sourceSide = (string) ($participant['side'] ?? '');
-            $displaySide = $displaySideForAlliance($allianceId, $sourceSide);
+            $displaySide = $classifyAlliance($allianceId);
             if ($sideFilter !== null && $displaySide !== $sideFilter) {
                 return false;
             }
@@ -196,11 +163,11 @@ if ($battles !== []) {
 
 // ── Derived aggregates / data-quality guards ───────────────────────────
 $timelineKillTotal = 0;
-$timelineSideKills = ['side_a' => 0, 'side_b' => 0];
+$timelineSideKills = ['friendly' => 0, 'opponent' => 0];
 foreach ($timeline as $row) {
     $timelineKillTotal += (int) ($row['kills'] ?? 0);
-    $timelineSideKills['side_a'] += (int) ($row['side_a_kills'] ?? 0);
-    $timelineSideKills['side_b'] += (int) ($row['side_b_kills'] ?? 0);
+    $timelineSideKills['friendly'] += (int) ($row['side_a_kills'] ?? 0);
+    $timelineSideKills['opponent'] += (int) ($row['side_b_kills'] ?? 0);
 }
 $allianceKillTotal = 0;
 $allianceLossTotal = 0;
@@ -209,10 +176,10 @@ foreach ($allianceSummary as $row) {
     $allianceLossTotal += (int) ($row['total_losses'] ?? 0);
 }
 $participantKillTotal = 0;
-$participantKillTotalsBySide = ['side_a' => 0, 'side_b' => 0];
+$participantKillTotalsBySide = ['friendly' => 0, 'opponent' => 0, 'third_party' => 0];
 foreach ($participantsAll as $row) {
     $kills = (int) ($row['kills'] ?? 0);
-    $side = $displaySideForAlliance((int) ($row['alliance_id'] ?? 0), (string) ($row['side'] ?? 'side_b'));
+    $side = $classifyAlliance((int) ($row['alliance_id'] ?? 0));
     $participantKillTotal += $kills;
     if (isset($participantKillTotalsBySide[$side])) {
         $participantKillTotalsBySide[$side] += $kills;
@@ -235,11 +202,12 @@ if ($allianceKillTotal > 0 && $allianceLossTotal > 0 && abs($allianceKillTotal -
 
 // ── Build side panels from alliance + participant + composition data ──
 $sidePanels = [
-    'side_a' => ['pilots' => 0, 'kills' => 0, 'losses' => 0, 'isk_killed' => 0.0, 'isk_lost' => 0.0, 'alliances' => [], 'ship_pilots' => 0, 'ships' => []],
-    'side_b' => ['pilots' => 0, 'kills' => 0, 'losses' => 0, 'isk_killed' => 0.0, 'isk_lost' => 0.0, 'alliances' => [], 'ship_pilots' => 0, 'ships' => []],
+    'friendly' => ['pilots' => 0, 'kills' => 0, 'losses' => 0, 'isk_killed' => 0.0, 'isk_lost' => 0.0, 'alliances' => [], 'ship_pilots' => 0, 'ships' => []],
+    'opponent' => ['pilots' => 0, 'kills' => 0, 'losses' => 0, 'isk_killed' => 0.0, 'isk_lost' => 0.0, 'alliances' => [], 'ship_pilots' => 0, 'ships' => []],
+    'third_party' => ['pilots' => 0, 'kills' => 0, 'losses' => 0, 'isk_killed' => 0.0, 'isk_lost' => 0.0, 'alliances' => [], 'ship_pilots' => 0, 'ships' => []],
 ];
 foreach ($allianceSummary as $a) {
-    $side = $displaySideForAlliance((int) ($a['alliance_id'] ?? 0), (string) ($a['side'] ?? ''));
+    $side = $classifyAlliance((int) ($a['alliance_id'] ?? 0));
     if (!isset($sidePanels[$side])) continue;
     $sidePanels[$side]['pilots'] += (int) ($a['participant_count'] ?? 0);
     $sidePanels[$side]['kills'] += (int) ($a['total_kills'] ?? 0);
@@ -261,8 +229,11 @@ foreach ($sidePanels as $side => $data) {
     $sidePanels[$side]['alliances'] = array_slice($data['alliances'], 0, 4);
 }
 
+// Fleet composition uses side_a/side_b from DB — map to friendly/opponent
+$fleetSideMap = ['side_a' => 'friendly', 'side_b' => 'opponent', 'friendly' => 'friendly', 'opponent' => 'opponent', 'third_party' => 'third_party'];
 foreach ($fleetComposition as $row) {
-    $side = (string) ($row['side'] ?? '');
+    $rawSide = (string) ($row['side'] ?? '');
+    $side = $fleetSideMap[$rawSide] ?? 'third_party';
     if (!isset($sidePanels[$side])) continue;
     $pilots = (int) ($row['pilot_count'] ?? 0);
     $sidePanels[$side]['ship_pilots'] += $pilots;

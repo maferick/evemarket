@@ -1,7 +1,7 @@
 <?php if ($timeline !== []): ?>
 <section class="surface-primary mt-4">
     <h2 class="text-lg font-semibold text-slate-50">Timeline</h2>
-    <p class="text-xs text-muted mt-1"><?= count($timeline) ?> buckets (1-minute intervals). Momentum: positive = <span class="<?= $sideColorClass[$ourSide ?? 'side_a'] ?? '' ?>"><?= htmlspecialchars($sideLabels[$ourSide ?? 'side_a'] ?? 'Side A', ENT_QUOTES) ?></span> winning, negative = <span class="<?= $sideColorClass[$enemySide] ?? '' ?>"><?= htmlspecialchars($sideLabels[$enemySide] ?? 'Side B', ENT_QUOTES) ?></span> winning.</p>
+    <p class="text-xs text-muted mt-1"><?= count($timeline) ?> buckets (1-minute intervals). Momentum: positive = <span class="text-blue-300"><?= htmlspecialchars($sideLabels['friendly'] ?? 'Friendlies', ENT_QUOTES) ?></span> winning, negative = <span class="text-red-300"><?= htmlspecialchars($sideLabels['opponent'] ?? 'Opposition', ENT_QUOTES) ?></span> winning.</p>
 
     <?php if ($turningPoints !== []): ?>
         <div class="mt-2">
@@ -9,7 +9,7 @@
             <?php foreach ($turningPoints as $tp): ?>
                 <?php
                     $tpDir = (string) ($tp['direction'] ?? '');
-                    $tpSide = str_contains($tpDir, 'side_a') ? 'side_a' : 'side_b';
+                    $tpSide = str_contains($tpDir, 'friendly') ? 'friendly' : 'opponent';
                     $tpColor = $sideColorClass[$tpSide] ?? 'text-slate-300';
                     $tpSideLabel = $sideLabels[$tpSide] ?? $tpSide;
                 ?>
@@ -31,8 +31,8 @@
                         <th class="px-3 py-2 text-left">Time</th>
                         <th class="px-3 py-2 text-right">Killmails</th>
                         <th class="px-3 py-2 text-right">ISK</th>
-                        <th class="px-3 py-2 text-right <?= $sideColorClass[$ourSide ?? 'side_a'] ?? '' ?>"><?= htmlspecialchars($sideLabels[$ourSide ?? 'side_a'] ?? 'Side A', ENT_QUOTES) ?></th>
-                        <th class="px-3 py-2 text-right <?= $sideColorClass[$enemySide] ?? '' ?>"><?= htmlspecialchars($sideLabels[$enemySide] ?? 'Side B', ENT_QUOTES) ?></th>
+                        <th class="px-3 py-2 text-right text-blue-300"><?= htmlspecialchars($sideLabels['friendly'] ?? 'Friendlies', ENT_QUOTES) ?></th>
+                        <th class="px-3 py-2 text-right text-red-300"><?= htmlspecialchars($sideLabels['opponent'] ?? 'Opposition', ENT_QUOTES) ?></th>
                         <th class="px-3 py-2 text-right">Momentum</th>
                     </tr>
                 </thead>
@@ -43,8 +43,8 @@
                             <td class="px-3 py-2 text-xs text-slate-300"><?= htmlspecialchars((string) ($t['bucket_time'] ?? ''), ENT_QUOTES) ?></td>
                             <td class="px-3 py-2 text-right"><?= (int) ($t['kills'] ?? 0) ?></td>
                             <td class="px-3 py-2 text-right"><?= supplycore_format_isk((float) ($t['isk_destroyed'] ?? 0)) ?></td>
-                            <td class="px-3 py-2 text-right <?= $sideColorClass[$ourSide ?? 'side_a'] ?? 'text-blue-300' ?>"><?= (int) ($t['side_a_kills'] ?? 0) ?></td>
-                            <td class="px-3 py-2 text-right <?= $sideColorClass[$enemySide] ?? 'text-red-300' ?>"><?= (int) ($t['side_b_kills'] ?? 0) ?></td>
+                            <td class="px-3 py-2 text-right text-blue-300"><?= (int) ($t['side_a_kills'] ?? 0) ?></td>
+                            <td class="px-3 py-2 text-right text-red-300"><?= (int) ($t['side_b_kills'] ?? 0) ?></td>
                             <td class="px-3 py-2 text-right <?= $mom > 0 ? 'text-blue-400' : ($mom < 0 ? 'text-red-400' : 'text-slate-300') ?>">
                                 <?= number_format($mom, 3) ?>
                             </td>

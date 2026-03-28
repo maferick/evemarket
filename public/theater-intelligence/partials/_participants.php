@@ -5,15 +5,18 @@
  * Falls back to single-column when a specific side/suspicious filter is active.
  */
 
-// Split participants by side for the two-column layout
+// Split participants by classification for the multi-column layout
 $friendlyParticipants = [];
 $enemyParticipants = [];
+$thirdPartyParticipants = [];
 foreach ($participantsAll as $p) {
-    $pSide = $displaySideForAlliance((int) ($p['alliance_id'] ?? 0), (string) ($p['side'] ?? ''));
-    if ($pSide === ($ourSide ?? 'side_a')) {
+    $pSide = $classifyAlliance((int) ($p['alliance_id'] ?? 0));
+    if ($pSide === 'friendly') {
         $friendlyParticipants[] = $p;
-    } else {
+    } elseif ($pSide === 'opponent') {
         $enemyParticipants[] = $p;
+    } else {
+        $thirdPartyParticipants[] = $p;
     }
 }
 
@@ -34,8 +37,9 @@ foreach ($allForMax as $p) {
         <h2 class="text-lg font-semibold text-slate-50">Participants</h2>
         <div class="flex gap-2 text-sm">
             <a href="?theater_id=<?= urlencode($theaterId) ?>" class="<?= $sideFilter === null && !$suspiciousOnly ? 'text-slate-50 font-semibold' : 'text-accent' ?>">All</a>
-            <a href="?theater_id=<?= urlencode($theaterId) ?>&side=<?= urlencode($ourSide ?? 'side_a') ?>" class="<?= $sideFilter === ($ourSide ?? 'side_a') ? ($sideColorClass[$ourSide ?? 'side_a'] ?? 'text-blue-300') . ' font-semibold' : 'text-accent' ?>"><?= htmlspecialchars($sideLabels[$ourSide ?? 'side_a'] ?? 'Side A', ENT_QUOTES) ?></a>
-            <a href="?theater_id=<?= urlencode($theaterId) ?>&side=<?= urlencode($enemySide) ?>" class="<?= $sideFilter === $enemySide ? ($sideColorClass[$enemySide] ?? 'text-red-300') . ' font-semibold' : 'text-accent' ?>"><?= htmlspecialchars($sideLabels[$enemySide] ?? 'Side B', ENT_QUOTES) ?></a>
+            <a href="?theater_id=<?= urlencode($theaterId) ?>&side=friendly" class="<?= $sideFilter === 'friendly' ? 'text-blue-300 font-semibold' : 'text-accent' ?>"><?= htmlspecialchars($sideLabels['friendly'] ?? 'Friendlies', ENT_QUOTES) ?></a>
+            <a href="?theater_id=<?= urlencode($theaterId) ?>&side=opponent" class="<?= $sideFilter === 'opponent' ? 'text-red-300 font-semibold' : 'text-accent' ?>"><?= htmlspecialchars($sideLabels['opponent'] ?? 'Opposition', ENT_QUOTES) ?></a>
+            <a href="?theater_id=<?= urlencode($theaterId) ?>&side=third_party" class="<?= $sideFilter === 'third_party' ? 'text-slate-400 font-semibold' : 'text-accent' ?>">Third Party</a>
             <a href="?theater_id=<?= urlencode($theaterId) ?>&suspicious=1" class="<?= $suspiciousOnly ? 'text-yellow-300 font-semibold' : 'text-accent' ?>">Suspicious</a>
         </div>
     </div>
@@ -44,9 +48,15 @@ foreach ($allForMax as $p) {
 <?php if ($showSideBySide): ?>
     <div class="mt-3 grid gap-4 md:grid-cols-2">
         <?php
+        // Merge third party into enemy column for side-by-side display
+        $enemyCombinedParticipants = array_merge($enemyParticipants, $thirdPartyParticipants);
+        $enemyLabel = ($sideLabels['opponent'] ?? 'Opposition');
+        if ($thirdPartyParticipants !== []) {
+            $enemyLabel .= ' + Third Party';
+        }
         $panelSets = [
-            ['label' => $sideLabels[$ourSide ?? 'side_a'] ?? 'Friendlies', 'side' => $ourSide ?? 'side_a', 'rows' => $friendlyParticipants, 'colorClass' => 'text-blue-300', 'borderClass' => 'border-blue-500/30'],
-            ['label' => $sideLabels[$enemySide] ?? 'Enemies', 'side' => $enemySide, 'rows' => $enemyParticipants, 'colorClass' => 'text-red-300', 'borderClass' => 'border-red-500/30'],
+            ['label' => $sideLabels['friendly'] ?? 'Friendlies', 'side' => 'friendly', 'rows' => $friendlyParticipants, 'colorClass' => 'text-blue-300', 'borderClass' => 'border-blue-500/30'],
+            ['label' => $enemyLabel, 'side' => 'opponent', 'rows' => $enemyCombinedParticipants, 'colorClass' => 'text-red-300', 'borderClass' => 'border-red-500/30'],
         ];
         foreach ($panelSets as $panel):
         ?>
@@ -164,7 +174,7 @@ foreach ($allForMax as $p) {
                 <?php else: ?>
                     <?php foreach ($filteredList as $p): ?>
                         <?php
-                            $pSide = $displaySideForAlliance((int) ($p['alliance_id'] ?? 0), (string) ($p['side'] ?? ''));
+                            $pSide = $classifyAlliance((int) ($p['alliance_id'] ?? 0));
                             $pSideClass = $sideColorClass[$pSide] ?? 'text-slate-300';
                             $pSusp = (float) ($p['suspicion_score'] ?? 0);
                             $isSusp = (int) ($p['is_suspicious'] ?? 0);
