@@ -27,13 +27,25 @@ if __package__ in (None, ""):
     if package_root not in sys.path:
         sys.path.insert(0, package_root)
     from orchestrator.db import SupplyCoreDb
-    from orchestrator.eve_constants import FLEET_FUNCTION_BY_GROUP
+    from orchestrator.eve_constants import (
+        FLEET_FUNCTION_BY_GROUP,
+        HULL_WEIGHT,
+        ROLE_COMBAT_WEIGHT,
+        ROLE_MULTIPLIER_WEIGHT,
+        SHIP_SIZE_BY_GROUP,
+    )
     from orchestrator.job_result import JobResult
     from orchestrator.json_utils import json_dumps_safe
     from orchestrator.job_utils import acquire_job_lock, finish_job_run, release_job_lock, start_job_run
 else:
     from ..db import SupplyCoreDb
-    from ..eve_constants import FLEET_FUNCTION_BY_GROUP
+    from ..eve_constants import (
+        FLEET_FUNCTION_BY_GROUP,
+        HULL_WEIGHT,
+        ROLE_COMBAT_WEIGHT,
+        ROLE_MULTIPLIER_WEIGHT,
+        SHIP_SIZE_BY_GROUP,
+    )
     from ..job_result import JobResult
     from ..json_utils import json_dumps_safe
     from ..job_utils import acquire_job_lock, finish_job_run, release_job_lock, start_job_run
@@ -525,6 +537,133 @@ def _compute_participants(
     return result
 
 
+# ── Side composition computation ──────────────────────────────────────────
+
+def _compute_side_composition(
+    bp_rows: list[dict[str, Any]],
+    char_sides: dict[int, str],
+    ship_group_map: dict[int, int],
+    theater_id: str,
+) -> list[dict[str, Any]]:
+    """Compute per-side composition features for force-composition normalization.
+
+    Returns one row per side with hull distribution, role distribution,
+    and composite scores (hull_weight, role_balance, logi_strength, etc.).
+    """
+    # Per-side accumulators
+    sides: dict[str, dict[str, Any]] = {}
+
+    for p in bp_rows:
+        cid = int(p.get("character_id") or 0)
+        if cid <= 0:
+            continue
+        side = char_sides.get(cid, "side_b")
+        ship_type_id = int(p.get("ship_type_id") or 0)
+        group_id = ship_group_map.get(ship_type_id, 0)
+        fleet_fn = FLEET_FUNCTION_BY_GROUP.get(group_id, "mainline_dps")
+        ship_size = SHIP_SIZE_BY_GROUP.get(group_id, "medium")
+
+        if side not in sides:
+            sides[side] = {
+                "theater_id": theater_id,
+                "side": side,
+                "pilots": set(),
+                "hull_counts": {"small": 0, "medium": 0, "large": 0, "capital": 0},
+                "role_counts": {},
+            }
+
+        acc = sides[side]
+        acc["pilots"].add(cid)
+        acc["hull_counts"][ship_size] = acc["hull_counts"].get(ship_size, 0) + 1
+        acc["role_counts"][fleet_fn] = acc["role_counts"].get(fleet_fn, 0) + 1
+
+    result: list[dict[str, Any]] = []
+    for side, acc in sides.items():
+        pilot_count = len(acc["pilots"])
+        hulls = acc["hull_counts"]
+        roles = acc["role_counts"]
+        total_ships = sum(hulls.values()) or 1
+
+        # Hull weight: weighted average hull class power
+        hull_weight_score = sum(
+            count * HULL_WEIGHT.get(sz, 1.0)
+            for sz, count in hulls.items()
+        ) / total_ships
+
+        # Role balance: Shannon entropy of role distribution normalized to [0,1]
+        # Higher = more diverse fleet composition
+        role_total = sum(roles.values()) or 1
+        role_entropy = 0.0
+        for count in roles.values():
+            if count > 0:
+                p = count / role_total
+                role_entropy -= p * math.log2(p)
+        # Normalize: max entropy = log2(num_roles) ≈ 3.7 for 13 combat roles
+        max_entropy = math.log2(13) if len(roles) > 1 else 1.0
+        role_balance_score = min(1.0, role_entropy / max_entropy)
+
+        # Logistics strength: ratio of logi pilots to total
+        logi_count = roles.get("logistics", 0) + roles.get("capital_logistics", 0)
+        logi_strength = logi_count / pilot_count if pilot_count > 0 else 0.0
+
+        # Command strength
+        command_count = roles.get("command", 0)
+        command_strength = command_count / pilot_count if pilot_count > 0 else 0.0
+
+        # Capital ratio
+        capital_count = hulls.get("capital", 0)
+        capital_ratio = capital_count / total_ships
+
+        # Expected performance composite:
+        # Base = hull_weight (bigger ships hit harder)
+        # × (1 + logi_multiplier + command_multiplier + ewar_multiplier) for force multipliers
+        # × sqrt(pilot_count) for Lanchester's square law
+        force_multiplier = 1.0
+        for role, mult in ROLE_MULTIPLIER_WEIGHT.items():
+            role_count = roles.get(role, 0)
+            if role_count > 0 and pilot_count > 0:
+                # Each multiplier role adds its weight proportional to its presence
+                force_multiplier += mult * (role_count / pilot_count)
+
+        # Combat power: sum of role-weighted combat contributions
+        combat_power = sum(
+            count * ROLE_COMBAT_WEIGHT.get(role, 0.5)
+            for role, count in roles.items()
+        ) / total_ships
+
+        # Expected performance = combat_power × hull_weight × force_multiplier × sqrt(N)
+        expected_perf = combat_power * hull_weight_score * force_multiplier * math.sqrt(max(1, pilot_count))
+
+        # Build all role count columns
+        all_roles = [
+            "mainline_dps", "capital_dps", "logistics", "capital_logistics",
+            "tackle", "heavy_tackle", "bubble_control", "command", "ewar",
+            "bomber", "scout", "supercapital", "non_combat",
+        ]
+
+        row = {
+            "theater_id": theater_id,
+            "side": side,
+            "pilot_count": pilot_count,
+            "hull_small_count": hulls.get("small", 0),
+            "hull_medium_count": hulls.get("medium", 0),
+            "hull_large_count": hulls.get("large", 0),
+            "hull_capital_count": hulls.get("capital", 0),
+            "side_hull_weight_score": round(hull_weight_score, 4),
+            "side_role_balance_score": round(role_balance_score, 4),
+            "side_logi_strength_score": round(logi_strength, 4),
+            "side_command_strength_score": round(command_strength, 4),
+            "side_capital_ratio": round(capital_ratio, 4),
+            "side_expected_performance_score": round(expected_perf, 4),
+        }
+        for role in all_roles:
+            row[f"role_{role}"] = roles.get(role, 0)
+
+        result.append(row)
+
+    return result
+
+
 # ── Anomaly scoring ────────────────────────────────────────────────────────
 
 def _compute_anomaly_score(
@@ -585,6 +724,7 @@ def _flush_analysis(
     anomaly_score: float,
     computed_at: str,
     battle_ids: list[str],
+    side_composition_rows: list[dict[str, Any]] | None = None,
 ) -> int:
     """Write analysis results for one theater. Returns rows written."""
     rows_written = 0
@@ -678,6 +818,40 @@ def _flush_analysis(
             )
             rows_written += 1
 
+        # Side composition
+        if side_composition_rows:
+            cursor.execute("DELETE FROM theater_side_composition WHERE theater_id = %s", (theater_id,))
+            for sc in side_composition_rows:
+                cursor.execute(
+                    """
+                    INSERT INTO theater_side_composition (
+                        theater_id, side, pilot_count,
+                        hull_small_count, hull_medium_count, hull_large_count, hull_capital_count,
+                        role_mainline_dps, role_capital_dps, role_logistics, role_capital_logistics,
+                        role_tackle, role_heavy_tackle, role_bubble_control, role_command, role_ewar,
+                        role_bomber, role_scout, role_supercapital, role_non_combat,
+                        side_hull_weight_score, side_role_balance_score,
+                        side_logi_strength_score, side_command_strength_score,
+                        side_capital_ratio, side_expected_performance_score
+                    ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                    """,
+                    (
+                        sc["theater_id"], sc["side"], sc["pilot_count"],
+                        sc["hull_small_count"], sc["hull_medium_count"],
+                        sc["hull_large_count"], sc["hull_capital_count"],
+                        sc["role_mainline_dps"], sc["role_capital_dps"],
+                        sc["role_logistics"], sc["role_capital_logistics"],
+                        sc["role_tackle"], sc["role_heavy_tackle"],
+                        sc["role_bubble_control"], sc["role_command"], sc["role_ewar"],
+                        sc["role_bomber"], sc["role_scout"],
+                        sc["role_supercapital"], sc["role_non_combat"],
+                        sc["side_hull_weight_score"], sc["side_role_balance_score"],
+                        sc["side_logi_strength_score"], sc["side_command_strength_score"],
+                        sc["side_capital_ratio"], sc["side_expected_performance_score"],
+                    ),
+                )
+                rows_written += 1
+
         # Update theater aggregates
         cursor.execute(
             """
@@ -765,6 +939,9 @@ def run_theater_analysis(
             # Compute participant stats
             participant_stats = _compute_participants(killmails, bp_rows, char_sides, theater_id, ship_group_map)
 
+            # Compute side composition features for force-normalization
+            side_composition = _compute_side_composition(bp_rows, char_sides, ship_group_map, theater_id)
+
             # Compute totals
             total_kills = sum(t["kills"] for t in timeline)
             total_isk = sum(t["isk_destroyed"] for t in timeline)
@@ -777,7 +954,7 @@ def run_theater_analysis(
                 written = _flush_analysis(
                     db, theater_id, timeline, alliance_summary, participant_stats,
                     turning_points, total_kills, total_isk, anomaly_score, computed_at,
-                    battle_ids,
+                    battle_ids, side_composition,
                 )
                 rows_written += written
 

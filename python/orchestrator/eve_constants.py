@@ -115,3 +115,40 @@ SHIP_SIZE_BY_GROUP: dict[int, str] = {
     30: "capital",      # Titan
     1973: "capital",    # Force Auxiliary
 }
+
+# ── Hull weight scores for composition normalization ────────────────────────
+# Reflects combat power multiplier per hull size class.
+# A side bringing battleships vs cruisers should be *expected* to outperform.
+HULL_WEIGHT: dict[str, float] = {
+    "small": 1.0,
+    "medium": 2.0,
+    "large": 3.5,
+    "capital": 6.0,
+}
+
+# Fleet function combat power multiplier for composition normalization.
+# Reflects how much a role contributes to raw kill/damage output.
+ROLE_COMBAT_WEIGHT: dict[str, float] = {
+    "mainline_dps": 1.0,
+    "capital_dps": 2.5,
+    "logistics": 0.1,       # Doesn't contribute kills but multiplies fleet survival
+    "capital_logistics": 0.1,
+    "tackle": 0.3,
+    "heavy_tackle": 0.4,
+    "bubble_control": 0.3,
+    "command": 0.2,
+    "ewar": 0.3,
+    "bomber": 0.9,
+    "scout": 0.1,
+    "supercapital": 4.0,
+    "non_combat": 0.0,
+}
+
+# Fleet function force-multiplier contribution (logistics, command, ewar
+# amplify the whole fleet rather than producing kills directly).
+ROLE_MULTIPLIER_WEIGHT: dict[str, float] = {
+    "logistics": 1.5,
+    "capital_logistics": 2.5,
+    "command": 1.3,
+    "ewar": 0.8,
+}

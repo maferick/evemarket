@@ -14298,6 +14298,14 @@ function db_signals_recent(int $limit = 200): array
     );
 }
 
+function db_theater_side_composition(string $theaterId): array
+{
+    return db_select_all(
+        'SELECT * FROM theater_side_composition WHERE theater_id = ? ORDER BY side ASC',
+        [$theaterId]
+    );
+}
+
 function db_pilot_search(string $query, int $limit = 30): array
 {
     $q = trim($query);

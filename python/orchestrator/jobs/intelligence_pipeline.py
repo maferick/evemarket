@@ -463,6 +463,65 @@ def _compute_co_presence_clusters(client: Neo4jClient) -> None:
     )
 
 
+def _compute_composition_adjusted_performance(client: Neo4jClient, db: SupplyCoreDb) -> None:
+    """Compute composition-adjusted performance ratio per character.
+
+    Loads side composition from MariaDB (theater_side_composition +
+    theater_participants) and computes the ratio of the character's
+    side expected_performance vs the opposing side's.
+
+    comp_ratio > 1 → character's side was stronger (outperformance expected)
+    comp_ratio < 1 → character's side was weaker (underperformance expected)
+    comp_ratio = 1 → no composition data or balanced sides
+    """
+    # Load per-character side assignment and expected performance from MariaDB.
+    # For characters in multiple theaters, average across all.
+    rows = db.fetch_all(
+        """SELECT
+               tp.character_id,
+               tp.side AS my_side,
+               my_comp.side_expected_performance_score AS my_expected,
+               opp_comp.side_expected_performance_score AS opp_expected
+           FROM theater_participants tp
+           INNER JOIN theater_side_composition my_comp
+               ON my_comp.theater_id = tp.theater_id AND my_comp.side = tp.side
+           INNER JOIN theater_side_composition opp_comp
+               ON opp_comp.theater_id = tp.theater_id AND opp_comp.side <> tp.side
+           WHERE my_comp.side_expected_performance_score > 0
+             AND opp_comp.side_expected_performance_score > 0"""
+    )
+    if not rows:
+        return
+
+    # Aggregate: average composition advantage ratio per character
+    char_ratios: dict[int, list[float]] = {}
+    for r in rows:
+        cid = int(r.get("character_id") or 0)
+        my_exp = float(r.get("my_expected") or 1.0)
+        opp_exp = float(r.get("opp_expected") or 1.0)
+        if cid > 0 and opp_exp > 0:
+            char_ratios.setdefault(cid, []).append(my_exp / opp_exp)
+
+    # Set on Neo4j Character nodes in batches
+    batch_data = [
+        {"character_id": cid, "comp_ratio": sum(ratios) / len(ratios)}
+        for cid, ratios in char_ratios.items()
+        if ratios
+    ]
+
+    for offset in range(0, len(batch_data), BATCH_SIZE):
+        batch = batch_data[offset:offset + BATCH_SIZE]
+        client.query(
+            """UNWIND $batch AS row
+               CALL {
+                   WITH row
+                   MATCH (c:Character {character_id: row.character_id})
+                   SET c.composition_advantage_ratio = row.comp_ratio
+               } IN TRANSACTIONS OF 500 ROWS""",
+            {"batch": batch},
+        )
+
+
 def _compute_score_assembly(client: Neo4jClient, weights: dict[str, float] | None = None) -> None:
     """Step 5.9: Assemble final suspicion score and flags.
 
@@ -482,29 +541,50 @@ def _compute_score_assembly(client: Neo4jClient, weights: dict[str, float] | Non
            WITH c,
                COALESCE(c.primary_fleet_function, 'mainline_dps') AS ff,
                COALESCE(c.selective_non_engagement_score, 0) AS sne,
-               COALESCE(c.peer_norm_kills_delta, 0) AS pnk,
-               COALESCE(c.peer_norm_damage_delta, 0) AS pnd,
+               COALESCE(c.peer_norm_kills_delta, 0) AS raw_pnk,
+               COALESCE(c.peer_norm_damage_delta, 0) AS raw_pnd,
                COALESCE(c.high_presence_low_output_score, 0) AS hplo,
                COALESCE(c.token_participation_score, 0) AS tp,
-               COALESCE(c.loss_without_attack_ratio, 0) AS lwa
-           // Role-aware weight adjustments
-           WITH c, ff, sne, pnk, pnd, hplo, tp, lwa,
+               COALESCE(c.loss_without_attack_ratio, 0) AS lwa,
+               COALESCE(c.composition_advantage_ratio, 1.0) AS comp_ratio
+
+           // ── Composition-adjusted peer deltas ──
+           // comp_ratio > 1 → stronger side → discount positive outperformance
+           // comp_ratio < 1 → weaker side → discount underperformance
+           WITH c, ff, sne, hplo, tp, lwa, comp_ratio,
+               CASE WHEN comp_ratio < 0.1 THEN 1.0 ELSE comp_ratio END AS safe_ratio,
+               raw_pnk, raw_pnd
+
+           WITH c, ff, sne, hplo, tp, lwa, safe_ratio AS comp_ratio,
+               CASE WHEN raw_pnk >= 0 THEN raw_pnk / safe_ratio
+                    ELSE raw_pnk * safe_ratio END AS pnk,
+               CASE WHEN raw_pnd >= 0 THEN raw_pnd / safe_ratio
+                    ELSE raw_pnd * safe_ratio END AS pnd,
+               // Dampen high_presence_low_output when on weaker side
+               CASE WHEN safe_ratio < 0.7 THEN hplo * safe_ratio
+                    ELSE hplo END AS adj_hplo
+
+           // ── Role-aware weight adjustments ──
+           WITH c, ff, sne, pnk, pnd, adj_hplo, tp, lwa, comp_ratio,
                CASE WHEN ff IN $high_loss_roles THEN 0.0 ELSE $w_lwa END AS eff_w_lwa,
                CASE WHEN ff IN $high_loss_roles THEN $w_tp * 0.3 ELSE $w_tp END AS eff_w_tp,
                CASE WHEN ff IN $low_kill_roles THEN $w_pnk * 0.3 ELSE $w_pnk END AS eff_w_pnk,
                CASE WHEN ff IN $low_kill_roles THEN $w_hplo * 0.3 ELSE $w_hplo END AS eff_w_hplo
-           WITH c, ff,
+
+           // ── Final score assembly ──
+           WITH c, ff, comp_ratio, sne, pnk, pnd, adj_hplo, tp, lwa,
+               eff_w_lwa, eff_w_tp, eff_w_pnk, eff_w_hplo,
                (sne * $w_sne) +
                (pnk * eff_w_pnk) +
                (pnd * $w_pnd) +
-               (hplo * eff_w_hplo) +
+               (adj_hplo * eff_w_hplo) +
                (tp * eff_w_tp) +
                (lwa * eff_w_lwa)
                AS raw_score,
                [
                    CASE WHEN sne > 0.7
                         THEN 'selective_non_engagement' END,
-                   CASE WHEN hplo > 0.6 AND NOT ff IN $low_kill_roles
+                   CASE WHEN adj_hplo > 0.6 AND NOT ff IN $low_kill_roles
                         THEN 'high_presence_low_output' END,
                    CASE WHEN tp > 0.5 AND NOT ff IN $high_loss_roles
                         THEN 'token_participation' END,
@@ -517,10 +597,11 @@ def _compute_score_assembly(client: Neo4jClient, weights: dict[str, float] | Non
                    CASE WHEN lwa > 0.7 AND NOT ff IN $high_loss_roles
                         THEN 'loss_without_attack' END
                ] AS all_flags
-           WITH c, raw_score,
+           WITH c, raw_score, comp_ratio,
                 [f IN all_flags WHERE f IS NOT NULL] AS flags
            SET c.suspicion_score = raw_score,
                c.suspicion_flags = flags,
+               c.composition_advantage_ratio = comp_ratio,
                c.computed_at = toString(datetime())""",
         {
             "w_sne": w.get("selective_non_engagement", 0.35),
@@ -656,6 +737,7 @@ def _export_suspicion_signals(client: Neo4jClient, db: SupplyCoreDb, computed_at
                toFloat(COALESCE(c.loss_without_attack_ratio, 0)) AS loss_without_attack_ratio,
                toFloat(COALESCE(c.peer_norm_kills_delta, 0)) AS peer_norm_kills_delta,
                toFloat(COALESCE(c.peer_norm_damage_delta, 0)) AS peer_norm_damage_delta,
+               toFloat(COALESCE(c.composition_advantage_ratio, 1.0)) AS composition_advantage_ratio,
                toFloat(COALESCE(c.suspicion_score, 0)) AS suspicion_score,
                c.suspicion_flags AS suspicion_flags,
                engagement_rates"""
@@ -677,8 +759,9 @@ def _export_suspicion_signals(client: Neo4jClient, db: SupplyCoreDb, computed_at
                     selective_non_engagement_score, high_presence_low_output_score,
                     token_participation_score, loss_without_attack_ratio,
                     peer_normalized_kills_delta, peer_normalized_damage_delta,
+                    composition_adjusted_delta, side_expected_performance,
                     suspicion_score, suspicion_flags, engagement_rate_by_alliance, computed_at)
-                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
                 (
                     cid,
                     int(r.get("alliance_id") or 0),
@@ -693,6 +776,8 @@ def _export_suspicion_signals(client: Neo4jClient, db: SupplyCoreDb, computed_at
                     float(r.get("loss_without_attack_ratio") or 0),
                     float(r.get("peer_norm_kills_delta") or 0),
                     float(r.get("peer_norm_damage_delta") or 0),
+                    float(r.get("composition_advantage_ratio") or 1.0) - 1.0,  # delta from neutral
+                    float(r.get("composition_advantage_ratio") or 1.0),
                     float(r.get("suspicion_score") or 0),
                     json_dumps_safe(r.get("suspicion_flags") or []),
                     json_dumps_safe(r.get("engagement_rates") or []),
@@ -859,7 +944,8 @@ def run_intelligence_pipeline(
         skipped_stages.extend([
             "battle_presence", "fleet_function", "encounter_vs_engagement", "peer_normalisation",
             "selective_non_engagement", "high_presence_low_output", "token_participation",
-            "loss_pattern", "co_presence_clusters", "score_assembly",
+            "loss_pattern", "co_presence_clusters",
+            "composition_adjusted_performance", "score_assembly",
             "shared_alliance_history", "former_allies_attacking", "repeat_targeting",
             "overlap_score", "cross_system_correlation",
         ])
@@ -874,6 +960,11 @@ def run_intelligence_pipeline(
         _timed("token_participation", _compute_token_participation, client)
         _timed("loss_pattern", _compute_loss_pattern, client)
         _timed("co_presence_clusters", _compute_co_presence_clusters, client)
+
+        # 4b. Composition normalization — compute per-character advantage ratios
+        # from MariaDB side composition data (theater_side_composition).
+        _timed("composition_adjusted_performance", _compute_composition_adjusted_performance, client, db)
+
         _timed("score_assembly", _compute_score_assembly, client, recalibrated_weights)
 
         # 5. Historical alliance overlap.
