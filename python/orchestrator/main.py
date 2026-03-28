@@ -95,6 +95,8 @@ def parse_args() -> argparse.Namespace:
 
     compute_signals = subparsers.add_parser("compute-signals", help="Generate precomputed intelligence signals into MariaDB")
     compute_signals.add_argument("--app-root", default=str(Path(__file__).resolve().parents[2]))
+    compute_ew = subparsers.add_parser("compute-economic-warfare", help="Compute economic warfare scores from opponent killmail data")
+    compute_ew.add_argument("--app-root", default=str(Path(__file__).resolve().parents[2]))
     compute_graph_sync = subparsers.add_parser("compute-graph-sync", help="Incrementally sync doctrine-fit-item graph into Neo4j")
     compute_graph_sync.add_argument("--app-root", default=str(Path(__file__).resolve().parents[2]))
     compute_graph_insights = subparsers.add_parser("compute-graph-insights", help="Compute graph-derived metrics and persist into MariaDB")
@@ -211,6 +213,15 @@ def main() -> int:
         from .db import SupplyCoreDb
         db = SupplyCoreDb(config.raw.get("db", {}))
         result = run_compute_signals(db, influx_runtime(config.raw))
+        print(result)
+        return 0
+    if command == "compute-economic-warfare":
+        app_root = Path(args.app_root).resolve()
+        config = load_php_runtime_config(app_root)
+        from .db import SupplyCoreDb
+        db = SupplyCoreDb(config.raw.get("db", {}))
+        from .jobs.compute_economic_warfare import run_compute_economic_warfare
+        result = run_compute_economic_warfare(db, influx_runtime(config.raw))
         print(result)
         return 0
     if command == "compute-graph-sync":

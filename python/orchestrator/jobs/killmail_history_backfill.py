@@ -59,12 +59,12 @@ def _http_get(url: str, user_agent: str, timeout: int = 30, accept_encoding: boo
         return 0, ""
 
 
-def _fetch_zkb_page(entity_type: str, entity_id: int, year: int, month: int, page: int, user_agent: str) -> list[dict[str, Any]]:
-    """Fetch one page of losses from zKillboard API for an entity+month.
+def _fetch_zkb_page(entity_type: str, entity_id: int, year: int, month: int, page: int, user_agent: str, endpoint: str = "losses") -> list[dict[str, Any]]:
+    """Fetch one page of losses or kills from zKillboard API for an entity+month.
 
     Returns list of {killmail_id, zkb: {hash, ...}} dicts.
     """
-    url = f"{_ZKB_API_BASE}/losses/{entity_type}/{entity_id}/year/{year}/month/{month}/page/{page}/"
+    url = f"{_ZKB_API_BASE}/{endpoint}/{entity_type}/{entity_id}/year/{year}/month/{month}/page/{page}/"
     status, body = _http_get(url, user_agent)
     logger.info("zKB response: status=%d body_len=%d url=%s", status, len(body), url)
     if status == 404 or status == 429:
@@ -116,18 +116,21 @@ def _collect_entity_kills(
     year: int,
     months: list[int],
     user_agent: str,
+    endpoint: str = "losses",
 ) -> dict[int, str]:
     """Collect all {killmail_id: hash} pairs for an entity across months.
 
-    Paginates through all pages for each month.
+    Paginates through all pages for each month. ``endpoint`` can be
+    ``"losses"`` (default — fetches entity deaths) or ``"kills"``
+    (fetches entity kills of others).
     """
     collected: dict[int, str] = {}
 
     for month in months:
         page = 1
         while True:
-            logger.info("zKB fetch: %s/%d year=%d month=%02d page=%d", entity_type, entity_id, year, month, page)
-            results = _fetch_zkb_page(entity_type, entity_id, year, month, page, user_agent)
+            logger.info("zKB fetch: %s/%d year=%d month=%02d page=%d endpoint=%s", entity_type, entity_id, year, month, page, endpoint)
+            results = _fetch_zkb_page(entity_type, entity_id, year, month, page, user_agent, endpoint)
             if not results:
                 logger.info("zKB fetch: no results, moving on")
                 break
@@ -167,6 +170,8 @@ def run_killmail_history_backfill(context: Any) -> dict[str, Any]:
     user_agent = str(job_context.get("user_agent") or "SupplyCore killmail-backfill/1.0")
     tracked_alliances: list[int] = [int(x) for x in (job_context.get("tracked_alliance_ids") or []) if int(x) > 0]
     tracked_corporations: list[int] = [int(x) for x in (job_context.get("tracked_corporation_ids") or []) if int(x) > 0]
+    opponent_alliances: list[int] = [int(x) for x in (job_context.get("opponent_alliance_ids") or []) if int(x) > 0]
+    opponent_corporations: list[int] = [int(x) for x in (job_context.get("opponent_corporation_ids") or []) if int(x) > 0]
 
     if not start_date_str or not end_date_str:
         return {
@@ -174,17 +179,19 @@ def run_killmail_history_backfill(context: Any) -> dict[str, Any]:
             "error": "Missing start_date or end_date in backfill context.",
         }
 
-    if not tracked_alliances and not tracked_corporations:
+    has_tracked = bool(tracked_alliances or tracked_corporations)
+    has_opponents = bool(opponent_alliances or opponent_corporations)
+    if not has_tracked and not has_opponents:
         return {
             "status": "failed",
-            "error": "No tracked alliances or corporations configured.",
+            "error": "No tracked alliances/corporations or opponent entities configured.",
         }
 
     start_date = datetime.strptime(start_date_str, "%Y-%m-%d").replace(tzinfo=UTC)
     end_date = datetime.strptime(end_date_str, "%Y-%m-%d").replace(tzinfo=UTC)
 
-    logger.info("Backfill starting: %s to %s, alliances=%s, corporations=%s",
-                start_date_str, end_date_str, tracked_alliances, tracked_corporations)
+    logger.info("Backfill starting: %s to %s, tracked_alliances=%s, tracked_corps=%s, opponent_alliances=%s, opponent_corps=%s",
+                start_date_str, end_date_str, tracked_alliances, tracked_corporations, opponent_alliances, opponent_corporations)
 
     # Build list of months to query
     year = start_date.year
@@ -202,19 +209,36 @@ def run_killmail_history_backfill(context: Any) -> dict[str, Any]:
     total_skipped_existing = 0
     batch_size = 25
     entities_processed = 0
-    total_entities = len(tracked_alliances) + len(tracked_corporations)
 
-    # Collect killmail IDs from all tracked entities via zKB API
+    # Build entity work items: (entity_type_param, entity_id, endpoint_type)
+    # For tracked entities: fetch /losses/ (their losses = our kills or our losses)
+    # For opponent entities: fetch both /losses/ AND /kills/ for full coverage
+    entity_work: list[tuple[str, int, str]] = []
+    for alliance_id in tracked_alliances:
+        entity_work.append(("allianceID", alliance_id, "losses"))
+    for corp_id in tracked_corporations:
+        entity_work.append(("corporationID", corp_id, "losses"))
+    for alliance_id in opponent_alliances:
+        entity_work.append(("allianceID", alliance_id, "losses"))
+        entity_work.append(("allianceID", alliance_id, "kills"))
+    for corp_id in opponent_corporations:
+        entity_work.append(("corporationID", corp_id, "losses"))
+        entity_work.append(("corporationID", corp_id, "kills"))
+
+    total_entities = len(entity_work)
+
+    # Collect killmail IDs from all entities via zKB API
     all_kills: dict[int, str] = {}
 
-    for alliance_id in tracked_alliances:
+    for entity_type_param, entity_id, endpoint_type in entity_work:
         entities_processed += 1
+        entity_label = f"{entity_type_param.replace('ID', '')} {entity_id} ({endpoint_type})"
         try:
             bridge.call("update-setting", payload={
                 "key": "killmail_backfill_progress",
                 "value": json.dumps({
                     "phase": "collecting",
-                    "entity": f"alliance {alliance_id}",
+                    "entity": entity_label,
                     "entities_done": entities_processed,
                     "entities_total": total_entities,
                     "killmails_found": len(all_kills),
@@ -224,29 +248,7 @@ def run_killmail_history_backfill(context: Any) -> dict[str, Any]:
         except Exception:
             pass
 
-        entity_kills = _collect_entity_kills("allianceID", alliance_id, year, months, user_agent)
-        all_kills.update(entity_kills)
-        # Pause between entities
-        time.sleep(2)
-
-    for corp_id in tracked_corporations:
-        entities_processed += 1
-        try:
-            bridge.call("update-setting", payload={
-                "key": "killmail_backfill_progress",
-                "value": json.dumps({
-                    "phase": "collecting",
-                    "entity": f"corporation {corp_id}",
-                    "entities_done": entities_processed,
-                    "entities_total": total_entities,
-                    "killmails_found": len(all_kills),
-                    "updated_at": utc_now_iso(),
-                }),
-            })
-        except Exception:
-            pass
-
-        entity_kills = _collect_entity_kills("corporationID", corp_id, year, months, user_agent)
+        entity_kills = _collect_entity_kills(entity_type_param, entity_id, year, months, user_agent, endpoint_type)
         all_kills.update(entity_kills)
         time.sleep(2)
 
@@ -343,6 +345,9 @@ def run_killmail_history_backfill(context: Any) -> dict[str, Any]:
         "finished_at": utc_now_iso(),
         "tracked_alliances": len(tracked_alliances),
         "tracked_corporations": len(tracked_corporations),
+        "opponent_alliances": len(opponent_alliances),
+        "opponent_corporations": len(opponent_corporations),
+        "entity_work_items": total_entities,
         "killmails_seen": total_killmails_seen,
         "skipped_existing": total_skipped_existing,
         "esi_fetched": total_esi_fetched,

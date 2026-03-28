@@ -15091,6 +15091,14 @@ function python_bridge_killmail_backfill_context(): array
         static fn (array $row): int => (int) ($row['corporation_id'] ?? 0),
         db_killmail_tracked_corporations_active()
     ));
+    $opponentAllianceIds = array_values(array_map(
+        static fn (array $row): int => (int) ($row['alliance_id'] ?? 0),
+        db_killmail_opponent_alliances_active()
+    ));
+    $opponentCorporationIds = array_values(array_map(
+        static fn (array $row): int => (int) ($row['corporation_id'] ?? 0),
+        db_killmail_opponent_corporations_active()
+    ));
 
     return [
         'start_date' => $startDate !== '' ? $startDate : date('Y') . '-01-01',
@@ -15098,6 +15106,8 @@ function python_bridge_killmail_backfill_context(): array
         'user_agent' => $userAgent . ' killmail-backfill/1.0 (+https://github.com/cvweiss/supplycore)',
         'tracked_alliance_ids' => $trackedAllianceIds,
         'tracked_corporation_ids' => $trackedCorporationIds,
+        'opponent_alliance_ids' => $opponentAllianceIds,
+        'opponent_corporation_ids' => $opponentCorporationIds,
     ];
 }
 
@@ -15316,6 +15326,7 @@ function python_bridge_process_killmail_batch(array $payloads): array
 
     db_killmail_payload_schema_ensure();
     ['alliance_ids' => $trackedAllianceIds, 'corporation_ids' => $trackedCorporationIds] = killmail_active_tracked_entity_ids();
+    ['alliance_ids' => $opponentAllianceIds, 'corporation_ids' => $opponentCorporationIds] = killmail_active_opponent_entity_ids();
 
     $rowsSeen = 0;
     $rowsMatched = 0;
@@ -15334,7 +15345,7 @@ function python_bridge_process_killmail_batch(array $payloads): array
         $rowsSeen++;
         $requestedSequenceId = (int) ($payload['requested_sequence_id'] ?? $payload['sequence_id'] ?? 0);
         try {
-            $result = killmail_persist_r2z2_payload($payload, $trackedAllianceIds, $trackedCorporationIds, false, $requestedSequenceId > 0 ? $requestedSequenceId : null);
+            $result = killmail_persist_r2z2_payload($payload, $trackedAllianceIds, $trackedCorporationIds, false, $requestedSequenceId > 0 ? $requestedSequenceId : null, $opponentAllianceIds, $opponentCorporationIds);
         } catch (Throwable $exception) {
             $rowsFailed++;
             $failureReason = trim($exception->getMessage()) !== '' ? scheduler_normalize_error_message($exception->getMessage()) : 'Killmail write failed.';
@@ -18748,6 +18759,11 @@ function killmail_settings_from_request(array $request): array
         (string) ($request['tracked_corporation_names'] ?? '')
     );
 
+    $resolvedOpponents = killmail_resolve_tracked_entities(
+        (string) ($request['opponent_alliance_names'] ?? ''),
+        (string) ($request['opponent_corporation_names'] ?? '')
+    );
+
     // Note: killmail_ingestion_enabled is NOT included here — it is controlled
     // exclusively from the Automation Control section to avoid accidentally
     // disabling ingestion when saving killmail intelligence settings.
@@ -18765,7 +18781,18 @@ function killmail_settings_from_request(array $request): array
             static fn (array $row): array => ['corporation_id' => (int) ($row['id'] ?? 0), 'label' => $row['label'] ?? null],
             (array) ($resolvedEntities['corporations'] ?? [])
         ),
-        'unresolved' => array_values((array) ($resolvedEntities['unresolved'] ?? [])),
+        'opponent_alliances' => array_map(
+            static fn (array $row): array => ['alliance_id' => (int) ($row['id'] ?? 0), 'label' => $row['label'] ?? null],
+            (array) ($resolvedOpponents['alliances'] ?? [])
+        ),
+        'opponent_corporations' => array_map(
+            static fn (array $row): array => ['corporation_id' => (int) ($row['id'] ?? 0), 'label' => $row['label'] ?? null],
+            (array) ($resolvedOpponents['corporations'] ?? [])
+        ),
+        'unresolved' => array_values(array_merge(
+            (array) ($resolvedEntities['unresolved'] ?? []),
+            (array) ($resolvedOpponents['unresolved'] ?? [])
+        )),
     ];
 }
 
@@ -18782,6 +18809,8 @@ function save_killmail_intelligence_settings(array $request): array
         db_app_settings_upsert_many((array) ($payload['settings'] ?? []));
         db_killmail_tracked_alliances_replace((array) ($payload['alliances'] ?? []));
         db_killmail_tracked_corporations_replace((array) ($payload['corporations'] ?? []));
+        db_killmail_opponent_alliances_replace((array) ($payload['opponent_alliances'] ?? []));
+        db_killmail_opponent_corporations_replace((array) ($payload['opponent_corporations'] ?? []));
 
         $reloadedSettings = get_settings(array_keys((array) ($payload['settings'] ?? [])));
         foreach ((array) ($payload['settings'] ?? []) as $key => $value) {
@@ -18801,6 +18830,18 @@ function save_killmail_intelligence_settings(array $request): array
         if ($reloadedAllianceIds !== $expectedAllianceIds || $reloadedCorporationIds !== $expectedCorporationIds) {
             throw new RuntimeException('Killmail tracked entity readback mismatch after save.');
         }
+
+        $reloadedOpponentAllianceIds = array_values(array_map(static fn (array $row): int => (int) ($row['alliance_id'] ?? 0), db_killmail_opponent_alliances_active()));
+        $reloadedOpponentCorporationIds = array_values(array_map(static fn (array $row): int => (int) ($row['corporation_id'] ?? 0), db_killmail_opponent_corporations_active()));
+        $expectedOpponentAllianceIds = array_values(array_map(static fn (array $row): int => (int) ($row['alliance_id'] ?? 0), (array) ($payload['opponent_alliances'] ?? [])));
+        $expectedOpponentCorporationIds = array_values(array_map(static fn (array $row): int => (int) ($row['corporation_id'] ?? 0), (array) ($payload['opponent_corporations'] ?? [])));
+        sort($reloadedOpponentAllianceIds);
+        sort($reloadedOpponentCorporationIds);
+        sort($expectedOpponentAllianceIds);
+        sort($expectedOpponentCorporationIds);
+        if ($reloadedOpponentAllianceIds !== $expectedOpponentAllianceIds || $reloadedOpponentCorporationIds !== $expectedOpponentCorporationIds) {
+            throw new RuntimeException('Killmail opponent entity readback mismatch after save.');
+        }
         $saved = true;
     } catch (Throwable $e) {
         error_log('[killmail-settings] Save failed: ' . $e->getMessage());
@@ -18816,6 +18857,8 @@ function save_killmail_intelligence_settings(array $request): array
         'settings' => (array) ($payload['settings'] ?? []),
         'alliances' => (array) ($payload['alliances'] ?? []),
         'corporations' => (array) ($payload['corporations'] ?? []),
+        'opponent_alliances' => (array) ($payload['opponent_alliances'] ?? []),
+        'opponent_corporations' => (array) ($payload['opponent_corporations'] ?? []),
         'unresolved' => array_slice((array) ($payload['unresolved'] ?? []), 0, 8),
     ];
 }
@@ -18899,24 +18942,40 @@ function killmail_region_id_from_system(?int $systemId): ?int
 }
 
 
-function killmail_event_matches_tracked_entities(array $event, array $attackers, array $trackedAllianceIds, array $trackedCorporationIds): bool
-{
-    if ($trackedAllianceIds === [] && $trackedCorporationIds === []) {
+function killmail_event_matches_tracked_entities(
+    array $event,
+    array $attackers,
+    array $trackedAllianceIds,
+    array $trackedCorporationIds,
+    array $opponentAllianceIds = [],
+    array $opponentCorporationIds = [],
+): bool {
+    $hasTracked = $trackedAllianceIds !== [] || $trackedCorporationIds !== [];
+    $hasOpponents = $opponentAllianceIds !== [] || $opponentCorporationIds !== [];
+    if (!$hasTracked && !$hasOpponents) {
         return true;
     }
 
-    // Check victim (loss side)
     $victimAllianceId = (int) ($event['victim_alliance_id'] ?? 0);
+    $victimCorporationId = (int) ($event['victim_corporation_id'] ?? 0);
+
+    // Check victim against tracked (loss side)
     if ($victimAllianceId > 0 && isset($trackedAllianceIds[$victimAllianceId])) {
         return true;
     }
-
-    $victimCorporationId = (int) ($event['victim_corporation_id'] ?? 0);
     if ($victimCorporationId > 0 && isset($trackedCorporationIds[$victimCorporationId])) {
         return true;
     }
 
-    // Check attackers (kill side)
+    // Check victim against opponents (opponent_loss)
+    if ($victimAllianceId > 0 && isset($opponentAllianceIds[$victimAllianceId])) {
+        return true;
+    }
+    if ($victimCorporationId > 0 && isset($opponentCorporationIds[$victimCorporationId])) {
+        return true;
+    }
+
+    // Check attackers against tracked (kill side)
     foreach ($attackers as $attacker) {
         if (!is_array($attacker)) {
             continue;
@@ -18927,6 +18986,13 @@ function killmail_event_matches_tracked_entities(array $event, array $attackers,
         }
         $attackerCorporationId = (int) ($attacker['corporation_id'] ?? 0);
         if ($attackerCorporationId > 0 && isset($trackedCorporationIds[$attackerCorporationId])) {
+            return true;
+        }
+        // Check attackers against opponents (opponent_kill)
+        if ($attackerAllianceId > 0 && isset($opponentAllianceIds[$attackerAllianceId])) {
+            return true;
+        }
+        if ($attackerCorporationId > 0 && isset($opponentCorporationIds[$attackerCorporationId])) {
             return true;
         }
     }
@@ -18958,12 +19024,38 @@ function killmail_active_tracked_entity_ids(): array
     ];
 }
 
+function killmail_active_opponent_entity_ids(): array
+{
+    $opponentAllianceIds = [];
+    foreach (db_killmail_opponent_alliances_active() as $row) {
+        $id = (int) ($row['alliance_id'] ?? 0);
+        if ($id > 0) {
+            $opponentAllianceIds[$id] = true;
+        }
+    }
+
+    $opponentCorporationIds = [];
+    foreach (db_killmail_opponent_corporations_active() as $row) {
+        $id = (int) ($row['corporation_id'] ?? 0);
+        if ($id > 0) {
+            $opponentCorporationIds[$id] = true;
+        }
+    }
+
+    return [
+        'alliance_ids' => $opponentAllianceIds,
+        'corporation_ids' => $opponentCorporationIds,
+    ];
+}
+
 function killmail_persist_r2z2_payload(
     array $payload,
     array $trackedAllianceIds,
     array $trackedCorporationIds,
     bool $strictSequenceId = false,
-    ?int $requestedSequenceId = null
+    ?int $requestedSequenceId = null,
+    array $opponentAllianceIds = [],
+    array $opponentCorporationIds = [],
 ): array {
     $transformed = killmail_transform_r2z2_payload($payload);
     $event = (array) ($transformed['event'] ?? []);
@@ -18990,20 +19082,48 @@ function killmail_persist_r2z2_payload(
         ];
     }
 
-    if (!killmail_event_matches_tracked_entities($event, (array) ($transformed['attackers'] ?? []), $trackedAllianceIds, $trackedCorporationIds)) {
+    $attackers = (array) ($transformed['attackers'] ?? []);
+    if (!killmail_event_matches_tracked_entities($event, $attackers, $trackedAllianceIds, $trackedCorporationIds, $opponentAllianceIds, $opponentCorporationIds)) {
         return [
             'status' => 'filtered',
             'sequence_id' => $sequenceId,
         ];
     }
 
-    // Determine mail_type: 'loss' if victim is tracked, 'kill' if attacker is tracked.
-    $mailType = 'kill';
+    // Determine mail_type with priority: own loss/kill > opponent loss/kill.
     $victimAllianceId = (int) ($event['victim_alliance_id'] ?? 0);
     $victimCorporationId = (int) ($event['victim_corporation_id'] ?? 0);
-    if (($victimAllianceId > 0 && isset($trackedAllianceIds[$victimAllianceId]))
-        || ($victimCorporationId > 0 && isset($trackedCorporationIds[$victimCorporationId]))) {
+    $victimIsTracked = ($victimAllianceId > 0 && isset($trackedAllianceIds[$victimAllianceId]))
+        || ($victimCorporationId > 0 && isset($trackedCorporationIds[$victimCorporationId]));
+    $victimIsOpponent = ($victimAllianceId > 0 && isset($opponentAllianceIds[$victimAllianceId]))
+        || ($victimCorporationId > 0 && isset($opponentCorporationIds[$victimCorporationId]));
+
+    $attackerIsTracked = false;
+    $attackerIsOpponent = false;
+    foreach ($attackers as $attacker) {
+        if (!is_array($attacker)) {
+            continue;
+        }
+        $aAlly = (int) ($attacker['alliance_id'] ?? 0);
+        $aCorp = (int) ($attacker['corporation_id'] ?? 0);
+        if (!$attackerIsTracked && (($aAlly > 0 && isset($trackedAllianceIds[$aAlly])) || ($aCorp > 0 && isset($trackedCorporationIds[$aCorp])))) {
+            $attackerIsTracked = true;
+        }
+        if (!$attackerIsOpponent && (($aAlly > 0 && isset($opponentAllianceIds[$aAlly])) || ($aCorp > 0 && isset($opponentCorporationIds[$aCorp])))) {
+            $attackerIsOpponent = true;
+        }
+    }
+
+    if ($victimIsTracked) {
         $mailType = 'loss';
+    } elseif ($attackerIsTracked) {
+        $mailType = 'kill';
+    } elseif ($victimIsOpponent) {
+        $mailType = 'opponent_loss';
+    } elseif ($attackerIsOpponent) {
+        $mailType = 'opponent_kill';
+    } else {
+        $mailType = 'kill';
     }
     $transformed['event']['mail_type'] = $mailType;
 
@@ -19104,6 +19224,7 @@ function sync_killmail_r2z2_stream(string $runMode = 'incremental'): array
         // Ensure any one-time killmail schema migrations run before per-row write transactions begin.
         db_killmail_payload_schema_ensure();
         ['alliance_ids' => $trackedAllianceIds, 'corporation_ids' => $trackedCorporationIds] = killmail_active_tracked_entity_ids();
+        ['alliance_ids' => $opponentAllianceIds, 'corporation_ids' => $opponentCorporationIds] = killmail_active_opponent_entity_ids();
 
         $sequenceProbe = killmail_r2z2_fetch_json(killmail_r2z2_sequence_url());
         $sequenceProbeStatus = (int) ($sequenceProbe['status'] ?? 0);
@@ -19199,7 +19320,9 @@ function sync_killmail_r2z2_stream(string $runMode = 'incremental'): array
                 $trackedAllianceIds,
                 $trackedCorporationIds,
                 true,
-                $nextSequence
+                $nextSequence,
+                $opponentAllianceIds,
+                $opponentCorporationIds,
             );
             $sequenceId = (int) ($result['sequence_id'] ?? 0);
             $statusKey = (string) ($result['status'] ?? 'invalid');
@@ -29889,5 +30012,92 @@ function criticality_tier_color_class(string $tier): string
         'medium'   => 'text-amber-300',
         'low'      => 'text-zinc-400',
         default    => 'text-zinc-400',
+    };
+}
+
+// ── Economic Warfare ─────────────────────────────────────────────────────────
+
+function economic_warfare_page_data(array $filters = []): array
+{
+    $safeFilters = [];
+    if (isset($filters['hostile_alliance_id']) && (int) $filters['hostile_alliance_id'] > 0) {
+        $safeFilters['hostile_alliance_id'] = (int) $filters['hostile_alliance_id'];
+    }
+    if (isset($filters['min_score'])) {
+        $safeFilters['min_score'] = max(0, min(1, (float) $filters['min_score']));
+    }
+    if (isset($filters['meta_group_id']) && (int) $filters['meta_group_id'] > 0) {
+        $safeFilters['meta_group_id'] = (int) $filters['meta_group_id'];
+    }
+
+    $limit = max(1, min(200, (int) ($filters['limit'] ?? 100)));
+    $offset = max(0, (int) ($filters['offset'] ?? 0));
+
+    $summary = db_economic_warfare_summary();
+    $scores = db_economic_warfare_scores($safeFilters, $limit, $offset);
+    $families = db_hostile_fit_families($safeFilters, 50, 0);
+    $hostileAlliances = db_economic_warfare_hostile_alliances();
+
+    $totalFamilies = 0;
+    $totalObservations = 0;
+    foreach ($families as $fam) {
+        $totalFamilies++;
+        $totalObservations += (int) ($fam['observation_count'] ?? 0);
+    }
+
+    $topTarget = null;
+    if ($scores !== []) {
+        $topTarget = $scores[0]['type_name'] ?? ('Type #' . ($scores[0]['type_id'] ?? '?'));
+    }
+
+    return [
+        'summary' => [
+            'modules_scored' => (int) ($summary['modules_scored'] ?? 0),
+            'fit_families' => $totalFamilies,
+            'total_observations' => $totalObservations,
+            'hostile_alliances' => count($hostileAlliances),
+            'top_target' => $topTarget,
+            'avg_replacement_friction' => round((float) ($summary['avg_replacement_friction'] ?? 0), 3),
+            'computed_at' => $summary['computed_at'] ?? null,
+        ],
+        'scores' => $scores,
+        'families' => $families,
+        'hostile_alliances' => $hostileAlliances,
+        'filters' => $safeFilters,
+    ];
+}
+
+function ew_constraint_label(float $score): string
+{
+    if ($score >= 0.7) {
+        return 'high_constraint';
+    }
+    if ($score >= 0.4) {
+        return 'medium_constraint';
+    }
+    return 'low_constraint';
+}
+
+function ew_constraint_color_class(float $score): string
+{
+    if ($score >= 0.7) {
+        return 'text-red-400';
+    }
+    if ($score >= 0.4) {
+        return 'text-amber-300';
+    }
+    return 'text-zinc-400';
+}
+
+function ew_meta_group_label(int $metaGroupId): string
+{
+    return match ($metaGroupId) {
+        1  => 'T1',
+        2  => 'T2',
+        4  => 'Faction',
+        6  => 'Deadspace',
+        14 => 'T3',
+        53 => 'Officer',
+        default => 'Meta ' . $metaGroupId,
     };
 }

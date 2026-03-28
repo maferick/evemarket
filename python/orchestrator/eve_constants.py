@@ -152,3 +152,24 @@ ROLE_MULTIPLIER_WEIGHT: dict[str, float] = {
     "command": 1.3,
     "ewar": 0.8,
 }
+
+# ── Economic Warfare: item flag → slot category mapping (ESI standard) ────────
+
+ITEM_FLAG_CATEGORY: dict[int, str] = {
+    **{f: "high" for f in range(11, 19)},       # high slots (11-18)
+    **{f: "medium" for f in range(19, 27)},      # mid slots (19-26)
+    **{f: "low" for f in range(27, 35)},         # low slots (27-34)
+    **{f: "rig" for f in range(92, 95)},         # rig slots (92-94)
+    87: "drone",                                  # drone bay
+    **{f: "subsystem" for f in range(125, 133)},  # T3 subsystems (125-132)
+}
+
+# Meta group IDs that indicate fitting-optimized module choices.
+# 4=Faction, 6=Deadspace, 14=Tech III — pilots choose these because
+# standard T2 variants don't fit or perform worse in tight fits.
+FITTING_CONSTRAINED_META_GROUPS: frozenset[int] = frozenset({4, 6, 14})
+
+# Type name keywords that indicate a fitting variant module (CPU/PG optimized).
+FITTING_VARIANT_KEYWORDS: tuple[str, ...] = (
+    "Compact", "Restrained", "Scoped", "Enduring", "Ample", "Copious",
+)

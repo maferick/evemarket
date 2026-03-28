@@ -11069,6 +11069,239 @@ function db_killmail_tracked_corporations_active(): array
     return db_select('SELECT corporation_id, label FROM killmail_tracked_corporations WHERE is_active = 1 ORDER BY corporation_id ASC');
 }
 
+function db_killmail_opponent_alliances_active(): array
+{
+    return db_select('SELECT alliance_id, label FROM killmail_opponent_alliances WHERE is_active = 1 ORDER BY alliance_id ASC');
+}
+
+function db_killmail_opponent_corporations_active(): array
+{
+    return db_select('SELECT corporation_id, label FROM killmail_opponent_corporations WHERE is_active = 1 ORDER BY corporation_id ASC');
+}
+
+function db_killmail_opponent_alliances_replace(array $rows): bool
+{
+    db_execute('CREATE TABLE IF NOT EXISTS killmail_opponent_alliances (
+        alliance_id BIGINT UNSIGNED NOT NULL PRIMARY KEY,
+        label VARCHAR(255) DEFAULT NULL,
+        is_active TINYINT(1) NOT NULL DEFAULT 1,
+        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci');
+
+    return db_transaction(static function () use ($rows): bool {
+        db_execute('DELETE FROM killmail_opponent_alliances');
+
+        foreach ($rows as $row) {
+            db_execute(
+                'INSERT INTO killmail_opponent_alliances (alliance_id, label, is_active) VALUES (?, ?, 1)
+                 ON DUPLICATE KEY UPDATE label = VALUES(label), is_active = 1, updated_at = CURRENT_TIMESTAMP',
+                [(int) ($row['alliance_id'] ?? 0), $row['label'] ?? null]
+            );
+        }
+
+        return true;
+    });
+}
+
+function db_killmail_opponent_corporations_replace(array $rows): bool
+{
+    db_execute('CREATE TABLE IF NOT EXISTS killmail_opponent_corporations (
+        corporation_id BIGINT UNSIGNED NOT NULL PRIMARY KEY,
+        label VARCHAR(255) DEFAULT NULL,
+        is_active TINYINT(1) NOT NULL DEFAULT 1,
+        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci');
+
+    return db_transaction(static function () use ($rows): bool {
+        db_execute('DELETE FROM killmail_opponent_corporations');
+
+        foreach ($rows as $row) {
+            db_execute(
+                'INSERT INTO killmail_opponent_corporations (corporation_id, label, is_active) VALUES (?, ?, 1)
+                 ON DUPLICATE KEY UPDATE label = VALUES(label), is_active = 1, updated_at = CURRENT_TIMESTAMP',
+                [(int) ($row['corporation_id'] ?? 0), $row['label'] ?? null]
+            );
+        }
+
+        return true;
+    });
+}
+
+// ── Economic Warfare queries ─────────────────────────────────────────────────
+
+function db_economic_warfare_scores(array $filters = [], int $limit = 100, int $offset = 0): array
+{
+    $where = ['1 = 1'];
+    $params = [];
+
+    if (isset($filters['min_score']) && (float) $filters['min_score'] > 0) {
+        $where[] = 'ew.economic_warfare_score >= ?';
+        $params[] = (float) $filters['min_score'];
+    }
+    if (isset($filters['group_id']) && (int) $filters['group_id'] > 0) {
+        $where[] = 'ew.group_id = ?';
+        $params[] = (int) $filters['group_id'];
+    }
+    if (isset($filters['meta_group_id']) && (int) $filters['meta_group_id'] > 0) {
+        $where[] = 'ew.meta_group_id = ?';
+        $params[] = (int) $filters['meta_group_id'];
+    }
+    if (isset($filters['hostile_alliance_id']) && (int) $filters['hostile_alliance_id'] > 0) {
+        $where[] = 'ew.type_id IN (
+            SELECT hfm.item_type_id FROM hostile_fit_family_modules hfm
+            INNER JOIN hostile_fit_families hff ON hff.id = hfm.family_id
+            WHERE JSON_CONTAINS(hff.alliance_ids_json, CAST(? AS JSON))
+        )';
+        $params[] = (int) $filters['hostile_alliance_id'];
+    }
+
+    $whereSql = implode(' AND ', $where);
+    $params[] = max(1, min(500, $limit));
+    $params[] = max(0, $offset);
+
+    return db_select(
+        "SELECT ew.* FROM economic_warfare_scores ew
+         WHERE {$whereSql}
+         ORDER BY ew.economic_warfare_score DESC
+         LIMIT ? OFFSET ?",
+        $params
+    );
+}
+
+function db_economic_warfare_summary(): array
+{
+    $row = db_select_one(
+        "SELECT
+            COUNT(*) AS modules_scored,
+            SUM(hostile_family_count) AS total_family_refs,
+            MAX(economic_warfare_score) AS max_score,
+            AVG(economic_warfare_score) AS avg_score,
+            AVG(replacement_friction_score) AS avg_replacement_friction,
+            MAX(computed_at) AS computed_at
+         FROM economic_warfare_scores
+         WHERE economic_warfare_score > 0"
+    );
+    return is_array($row) ? $row : [];
+}
+
+function db_hostile_fit_families(array $filters = [], int $limit = 100, int $offset = 0): array
+{
+    $where = ['1 = 1'];
+    $params = [];
+
+    if (isset($filters['hull_type_id']) && (int) $filters['hull_type_id'] > 0) {
+        $where[] = 'hff.hull_type_id = ?';
+        $params[] = (int) $filters['hull_type_id'];
+    }
+    if (isset($filters['hostile_alliance_id']) && (int) $filters['hostile_alliance_id'] > 0) {
+        $where[] = 'JSON_CONTAINS(hff.alliance_ids_json, CAST(? AS JSON))';
+        $params[] = (int) $filters['hostile_alliance_id'];
+    }
+    if (isset($filters['min_confidence']) && (float) $filters['min_confidence'] > 0) {
+        $where[] = 'hff.confidence >= ?';
+        $params[] = (float) $filters['min_confidence'];
+    }
+
+    $whereSql = implode(' AND ', $where);
+    $params[] = max(1, min(500, $limit));
+    $params[] = max(0, $offset);
+
+    return db_select(
+        "SELECT hff.*, rit.type_name AS hull_name
+         FROM hostile_fit_families hff
+         LEFT JOIN ref_item_types rit ON rit.type_id = hff.hull_type_id
+         WHERE {$whereSql}
+         ORDER BY hff.observation_count DESC
+         LIMIT ? OFFSET ?",
+        $params
+    );
+}
+
+function db_hostile_fit_family_modules(int $familyId): array
+{
+    return db_select(
+        "SELECT hfm.*, rit.type_name
+         FROM hostile_fit_family_modules hfm
+         LEFT JOIN ref_item_types rit ON rit.type_id = hfm.item_type_id
+         WHERE hfm.family_id = ?
+         ORDER BY hfm.is_core DESC, hfm.frequency DESC",
+        [$familyId]
+    );
+}
+
+function db_economic_warfare_module_drilldown(int $typeId): array
+{
+    $families = db_select(
+        "SELECT hff.id, hff.hull_type_id, hff.observation_count, hff.confidence,
+                hff.alliance_ids_json, rit.type_name AS hull_name,
+                hfm.frequency, hfm.is_core, hfm.flag_category
+         FROM hostile_fit_family_modules hfm
+         INNER JOIN hostile_fit_families hff ON hff.id = hfm.family_id
+         LEFT JOIN ref_item_types rit ON rit.type_id = hff.hull_type_id
+         WHERE hfm.item_type_id = ?
+         ORDER BY hff.observation_count DESC
+         LIMIT 50",
+        [$typeId]
+    );
+
+    $score = db_select_one(
+        "SELECT * FROM economic_warfare_scores WHERE type_id = ? LIMIT 1",
+        [$typeId]
+    );
+
+    $substitutes = [];
+    if (is_array($score) && (int) ($score['group_id'] ?? 0) > 0) {
+        $substitutes = db_select(
+            "SELECT rit.type_id, rit.type_name, rit.meta_group_id,
+                    ew.economic_warfare_score, ew.fit_constraint_score
+             FROM ref_item_types rit
+             LEFT JOIN economic_warfare_scores ew ON ew.type_id = rit.type_id
+             WHERE rit.group_id = ? AND rit.type_id != ? AND rit.published = 1
+             ORDER BY ew.economic_warfare_score DESC
+             LIMIT 20",
+            [(int) $score['group_id'], $typeId]
+        );
+    }
+
+    return [
+        'score' => $score,
+        'families' => $families,
+        'substitutes' => $substitutes,
+    ];
+}
+
+function db_economic_warfare_hostile_alliances(): array
+{
+    $rows = db_select(
+        "SELECT DISTINCT jt.alliance_id
+         FROM hostile_fit_families hff,
+              JSON_TABLE(hff.alliance_ids_json, '\$[*]' COLUMNS (alliance_id BIGINT PATH '\$')) jt
+         WHERE jt.alliance_id > 0
+         ORDER BY jt.alliance_id ASC
+         LIMIT 200"
+    );
+
+    $allianceIds = array_map(static fn (array $row): int => (int) ($row['alliance_id'] ?? 0), $rows);
+    $result = [];
+    foreach ($allianceIds as $aid) {
+        if ($aid <= 0) {
+            continue;
+        }
+        $label = db_select_one(
+            "SELECT label FROM killmail_opponent_alliances WHERE alliance_id = ? LIMIT 1",
+            [$aid]
+        );
+        $result[] = [
+            'alliance_id' => $aid,
+            'label' => ($label['label'] ?? null) ?: ('Alliance #' . $aid),
+        ];
+    }
+
+    return $result;
+}
+
 function db_sync_schedule_delete_by_job_keys(array $jobKeys): int
 {
     $safeJobKeys = array_values(array_filter(array_map(static fn (mixed $jobKey): string => trim((string) $jobKey), $jobKeys), static fn (string $jobKey): bool => $jobKey !== ''));

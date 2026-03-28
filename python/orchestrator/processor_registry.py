@@ -53,6 +53,7 @@ from .jobs.theater_clustering import run_theater_clustering
 from .jobs.theater_analysis import run_theater_analysis
 from .jobs.theater_graph_integration import run_theater_graph_integration
 from .jobs.theater_suspicion import run_theater_suspicion
+from .jobs.compute_economic_warfare import run_compute_economic_warfare
 
 PYTHON_COMPUTE_PROCESSOR_JOB_KEYS: set[str] = {
     "compute_graph_sync",
@@ -84,6 +85,7 @@ PYTHON_COMPUTE_PROCESSOR_JOB_KEYS: set[str] = {
     "theater_analysis",
     "theater_graph_integration",
     "theater_suspicion",
+    "compute_economic_warfare",
 }
 
 PYTHON_SYNC_PROCESSOR_JOB_KEYS: set[str] = {
@@ -130,6 +132,7 @@ _PROCESSOR_DISPATCH: dict[str, tuple] = {
     # Market / supply intelligence jobs
     "compute_buy_all": (run_compute_buy_all, lambda db, cfg: (db,)),
     "compute_signals": (run_compute_signals, lambda db, cfg: (db, influx_runtime(cfg))),
+    "compute_economic_warfare": (run_compute_economic_warfare, lambda db, cfg: (db, influx_runtime(cfg))),
     # Sync phase jobs
     "market_hub_current_sync": (run_market_hub_current_sync, lambda db, cfg: (db,)),
     "alliance_current_sync": (run_alliance_current_sync, lambda db, cfg: (db,)),

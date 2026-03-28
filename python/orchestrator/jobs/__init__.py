@@ -52,3 +52,4 @@ from .theater_clustering import run_theater_clustering
 from .theater_analysis import run_theater_analysis
 from .theater_graph_integration import run_theater_graph_integration
 from .theater_suspicion import run_theater_suspicion
+from .compute_economic_warfare import run_compute_economic_warfare
