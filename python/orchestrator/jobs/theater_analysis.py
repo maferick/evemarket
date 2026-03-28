@@ -323,9 +323,10 @@ def _compute_alliance_summary(
         if aid > 0 and cid > 0:
             alliance_participants[aid].add(cid)
 
-    # Process killmails for kills/losses/damage — deduplicate losses by
-    # killmail_id (rows are per-attacker), but attacker kills are per-row
+    # Process killmails for kills/losses/damage — deduplicate by killmail_id
+    # since rows are expanded per-attacker from the LEFT JOIN.
     seen_loss_km: set[int] = set()
+    seen_kill_km: set[tuple[int, int]] = set()  # (killmail_id, alliance_id)
     for km in killmails:
         km_id = int(km.get("killmail_id") or 0)
         victim_id = int(km.get("victim_character_id") or 0)
@@ -343,11 +344,13 @@ def _compute_alliance_summary(
             entry["total_losses"] += 1
             entry["total_isk_lost"] += isk
 
-        # Record kill for attacker alliance (final blow only, like zKillboard)
+        # Record kill for attacker alliance (once per killmail per alliance)
         if attacker_alliance > 0:
             entry = alliance_stats.setdefault(attacker_alliance, _empty_alliance_stats(attacker_alliance))
             entry["total_damage"] += attacker_damage
-            if int(km.get("attacker_final_blow") or 0) == 1:
+            kill_key = (km_id, attacker_alliance)
+            if kill_key not in seen_kill_km:
+                seen_kill_km.add(kill_key)
                 entry["total_kills"] += 1
                 entry["total_isk_killed"] += isk
 
@@ -439,9 +442,10 @@ def _compute_participants(
         if st > 0 and st not in char_stats[cid]["ship_type_ids"]:
             char_stats[cid]["ship_type_ids"].append(st)
 
-    # Process killmails — deduplicate deaths by killmail_id (rows are
-    # expanded per-attacker), but attacker kills/damage are per-row
+    # Process killmails — deduplicate by killmail_id since rows are expanded
+    # per-attacker from the LEFT JOIN.
     seen_deaths: set[tuple[int, int]] = set()  # (killmail_id, victim_id)
+    seen_attacker_kills: set[tuple[int, int]] = set()  # (killmail_id, attacker_id)
     for km in killmails:
         km_id = int(km.get("killmail_id") or 0)
         km_time = _parse_dt(km.get("killmail_time"))
@@ -461,10 +465,13 @@ def _compute_participants(
         attacker_damage = float(km.get("attacker_damage_done") or 0)
 
         if attacker_id > 0 and attacker_id in char_stats:
-            if int(km.get("attacker_final_blow") or 0) == 1:
+            # Count kill participation once per (killmail, attacker) pair
+            atk_key = (km_id, attacker_id)
+            if atk_key not in seen_attacker_kills:
+                seen_attacker_kills.add(atk_key)
                 char_stats[attacker_id]["kills"] += 1
+                char_times[attacker_id].append(km_time)
             char_stats[attacker_id]["damage_done"] += attacker_damage
-            char_times[attacker_id].append(km_time)
 
     # Build final rows
     result: list[dict[str, Any]] = []
