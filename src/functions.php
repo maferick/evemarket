@@ -26909,19 +26909,37 @@ function theater_ai_summary_generate(string $theaterId, bool $forceRegenerate = 
 
 function theater_ai_build_facts(string $theaterId, array $theater): array
 {
-    $allianceSummary = db_theater_alliance_summary($theaterId);
-    $participants = db_theater_participants($theaterId, null, false, 1000);
-    $turningPoints = db_theater_turning_points($theaterId);
-    $systems = db_theater_systems($theaterId);
-    $suspicion = db_theater_suspicion_summary($theaterId);
-    $fleetComp = db_theater_fleet_composition($theaterId);
-    $notableKills = db_theater_notable_kills($theaterId, 10);
-    $topPerformers = db_theater_top_performers($theaterId, 10);
+    return theater_ai_build_facts_from_snapshot($theaterId, $theater, [
+        'alliance_summary' => db_theater_alliance_summary($theaterId),
+        'participants' => db_theater_participants($theaterId, null, false, 1000),
+        'turning_points' => db_theater_turning_points($theaterId),
+        'systems' => db_theater_systems($theaterId),
+        'suspicion' => db_theater_suspicion_summary($theaterId),
+        'fleet_comp' => db_theater_fleet_composition($theaterId),
+        'notable_kills' => db_theater_notable_kills($theaterId, 10),
+        'top_performers' => db_theater_top_performers($theaterId, 10),
+        'tracked_alliances' => db_killmail_tracked_alliances_active(),
+        'tracked_corporations' => db_killmail_tracked_corporations_active(),
+        'opponent_alliances' => db_killmail_opponent_alliances_active(),
+        'opponent_corporations' => db_killmail_opponent_corporations_active(),
+    ]);
+}
 
-    $trackedAlliances = db_killmail_tracked_alliances_active();
-    $trackedCorporations = db_killmail_tracked_corporations_active();
-    $opponentAlliances = db_killmail_opponent_alliances_active();
-    $opponentCorporations = db_killmail_opponent_corporations_active();
+function theater_ai_build_facts_from_snapshot(string $theaterId, array $theater, array $snapshot): array
+{
+    $allianceSummary = (array) ($snapshot['alliance_summary'] ?? []);
+    $participants = (array) ($snapshot['participants'] ?? []);
+    $turningPoints = (array) ($snapshot['turning_points'] ?? []);
+    $systems = (array) ($snapshot['systems'] ?? []);
+    $suspicion = $snapshot['suspicion'] ?? null;
+    $fleetComp = (array) ($snapshot['fleet_comp'] ?? []);
+    $notableKills = (array) ($snapshot['notable_kills'] ?? []);
+    $topPerformers = (array) ($snapshot['top_performers'] ?? []);
+
+    $trackedAlliances = (array) ($snapshot['tracked_alliances'] ?? []);
+    $trackedCorporations = (array) ($snapshot['tracked_corporations'] ?? []);
+    $opponentAlliances = (array) ($snapshot['opponent_alliances'] ?? []);
+    $opponentCorporations = (array) ($snapshot['opponent_corporations'] ?? []);
     $trackedAllianceIds = array_map('intval', array_column($trackedAlliances, 'alliance_id'));
     $trackedCorporationIds = array_map('intval', array_column($trackedCorporations, 'corporation_id'));
     $opponentAllianceIds = array_map('intval', array_column($opponentAlliances, 'alliance_id'));
@@ -27000,19 +27018,10 @@ function theater_ai_build_facts(string $theaterId, array $theater): array
         $ourSide = $opponentScores['side_a'] > $opponentScores['side_b'] ? 'side_b' : 'side_a';
         $resolutionReason = 'opponent_match';
     } elseif ($friendlyMatched) {
-        if ($sidePilotTotals['side_a'] > $sidePilotTotals['side_b']) {
-            $ourSide = 'side_a';
-        } elseif ($sidePilotTotals['side_b'] > $sidePilotTotals['side_a']) {
-            $ourSide = 'side_b';
-        } else {
-            $ourSide = 'side_a';
-        }
+        $ourSide = 'side_a';
         $resolutionReason = 'friendly_match';
     } elseif ($opponentMatched) {
         $opponentSide = $opponentScores['side_a'] > $opponentScores['side_b'] ? 'side_a' : 'side_b';
-        if ($opponentScores['side_a'] === $opponentScores['side_b']) {
-            $opponentSide = $sidePilotTotals['side_a'] > $sidePilotTotals['side_b'] ? 'side_a' : 'side_b';
-        }
         $ourSide = $opponentSide === 'side_a' ? 'side_b' : 'side_a';
         $resolutionReason = 'opponent_match';
     } else {

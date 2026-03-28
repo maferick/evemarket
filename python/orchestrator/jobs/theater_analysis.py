@@ -279,7 +279,6 @@ def _determine_sides(
             key=lambda sk: (
                 -side_scores[sk]["friendly_score"],
                 side_scores[sk]["opponent_score"],
-                -side_scores[sk]["participant_count"],
                 sk,
             ),
         )
@@ -288,7 +287,6 @@ def _determine_sides(
             key=lambda sk: (
                 -side_scores[sk]["opponent_score"],
                 side_scores[sk]["friendly_score"],
-                -side_scores[sk]["participant_count"],
                 sk,
             ),
         )
