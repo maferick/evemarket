@@ -15554,7 +15554,7 @@ function db_theater_fleet_composition(string $theaterId): array
                 COUNT(*) AS pilot_count,
                 CASE
                     WHEN tas.side IS NOT NULL THEN tas.side
-                    ELSE 'side_b'
+                    ELSE 'third_party'
                 END AS side
          FROM battle_participants bp
          INNER JOIN theater_battles tb ON tb.battle_id = bp.battle_id

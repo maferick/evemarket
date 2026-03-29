@@ -27013,24 +27013,18 @@ function theater_ai_build_facts(string $theaterId, array $theater): array
 {
     return theater_ai_build_facts_from_snapshot($theaterId, $theater, [
         'alliance_summary' => db_theater_alliance_summary($theaterId),
-        'participants' => db_theater_participants($theaterId, null, false, 1000),
         'turning_points' => db_theater_turning_points($theaterId),
         'systems' => db_theater_systems($theaterId),
         'suspicion' => db_theater_suspicion_summary($theaterId),
         'fleet_comp' => db_theater_fleet_composition($theaterId),
         'notable_kills' => db_theater_notable_kills($theaterId, 10),
         'top_performers' => db_theater_top_performers($theaterId, 10),
-        'tracked_alliances' => db_killmail_tracked_alliances_active(),
-        'tracked_corporations' => db_killmail_tracked_corporations_active(),
-        'opponent_alliances' => db_killmail_opponent_alliances_active(),
-        'opponent_corporations' => db_killmail_opponent_corporations_active(),
     ]);
 }
 
 function theater_ai_build_facts_from_snapshot(string $theaterId, array $theater, array $snapshot): array
 {
     $allianceSummary = (array) ($snapshot['alliance_summary'] ?? []);
-    $participants = (array) ($snapshot['participants'] ?? []);
     $turningPoints = (array) ($snapshot['turning_points'] ?? []);
     $systems = (array) ($snapshot['systems'] ?? []);
     $suspicion = $snapshot['suspicion'] ?? null;
@@ -27038,24 +27032,15 @@ function theater_ai_build_facts_from_snapshot(string $theaterId, array $theater,
     $notableKills = (array) ($snapshot['notable_kills'] ?? []);
     $topPerformers = (array) ($snapshot['top_performers'] ?? []);
 
-    $trackedAlliances = (array) ($snapshot['tracked_alliances'] ?? []);
-    $trackedCorporations = (array) ($snapshot['tracked_corporations'] ?? []);
-    $opponentAlliances = (array) ($snapshot['opponent_alliances'] ?? []);
-    $opponentCorporations = (array) ($snapshot['opponent_corporations'] ?? []);
-    $trackedAllianceIds = array_map('intval', array_column($trackedAlliances, 'alliance_id'));
-    $trackedCorporationIds = array_map('intval', array_column($trackedCorporations, 'corporation_id'));
-    $opponentAllianceIds = array_map('intval', array_column($opponentAlliances, 'alliance_id'));
-    $opponentCorporationIds = array_map('intval', array_column($opponentCorporations, 'corporation_id'));
-    $trackedAllianceSet = array_fill_keys($trackedAllianceIds, true);
-    $trackedCorporationSet = array_fill_keys($trackedCorporationIds, true);
-    $opponentAllianceSet = array_fill_keys($opponentAllianceIds, true);
-    $opponentCorporationSet = array_fill_keys($opponentCorporationIds, true);
+    // The Python theater analysis already classifies sides as "friendly", "opponent", "third_party"
+    // in the theater_alliance_summary, theater_participants, and fleet_composition tables.
+    // We use these directly — no need to re-derive from tracked alliance settings.
+    $ourSide = 'friendly';
+    $enemySide = 'opponent';
 
     // Build alliance side data
-    $sideData = ['side_a' => [], 'side_b' => []];
-    $friendlyScores = ['side_a' => 0, 'side_b' => 0];
-    $opponentScores = ['side_a' => 0, 'side_b' => 0];
-    $sidePilotTotals = ['side_a' => 0, 'side_b' => 0];
+    $sideData = ['friendly' => [], 'opponent' => []];
+    $sidePilotTotals = ['friendly' => 0, 'opponent' => 0];
     $friendlyIskLost = 0;
     $friendlyIskKilled = 0;
     $enemyIskLost = 0;
@@ -27074,79 +27059,8 @@ function theater_ai_build_facts_from_snapshot(string $theaterId, array $theater,
             'isk_killed' => round((float) ($a['total_isk_killed'] ?? 0)),
             'isk_lost' => round((float) ($a['total_isk_lost'] ?? 0)),
             'efficiency' => round((float) ($a['efficiency'] ?? 0) * 100, 1) . '%',
-            'is_tracked' => isset($trackedAllianceSet[$aid]),
         ];
-        if (isset($trackedAllianceSet[$aid])) {
-            $friendlyScores[$side] += max(1, $participantCount);
-        }
-        if (isset($opponentAllianceSet[$aid])) {
-            $opponentScores[$side] += max(1, $participantCount);
-        }
     }
-
-    foreach ($participants as $participant) {
-        $side = (string) ($participant['side'] ?? '');
-        if (!isset($friendlyScores[$side])) {
-            continue;
-        }
-        $allianceId = (int) ($participant['alliance_id'] ?? 0);
-        $corporationId = (int) ($participant['corporation_id'] ?? 0);
-        if ($allianceId > 0 && isset($trackedAllianceSet[$allianceId])) {
-            $friendlyScores[$side]++;
-        }
-        if ($corporationId > 0 && isset($trackedCorporationSet[$corporationId])) {
-            $friendlyScores[$side]++;
-        }
-        if ($allianceId > 0 && isset($opponentAllianceSet[$allianceId])) {
-            $opponentScores[$side]++;
-        }
-        if ($corporationId > 0 && isset($opponentCorporationSet[$corporationId])) {
-            $opponentScores[$side]++;
-        }
-    }
-
-    $friendlyMatched = ($friendlyScores['side_a'] + $friendlyScores['side_b']) > 0;
-    $opponentMatched = ($opponentScores['side_a'] + $opponentScores['side_b']) > 0;
-    $ourSide = null;
-    $resolutionReason = 'fallback';
-
-    if ($friendlyScores['side_a'] > $friendlyScores['side_b']) {
-        $ourSide = 'side_a';
-        $resolutionReason = 'friendly_match';
-    } elseif ($friendlyScores['side_b'] > $friendlyScores['side_a']) {
-        $ourSide = 'side_b';
-        $resolutionReason = 'friendly_match';
-    } elseif ($friendlyMatched && $opponentScores['side_a'] !== $opponentScores['side_b']) {
-        $ourSide = $opponentScores['side_a'] > $opponentScores['side_b'] ? 'side_b' : 'side_a';
-        $resolutionReason = 'opponent_match';
-    } elseif ($friendlyMatched) {
-        $ourSide = 'side_a';
-        $resolutionReason = 'friendly_match';
-    } elseif ($opponentMatched) {
-        $opponentSide = $opponentScores['side_a'] > $opponentScores['side_b'] ? 'side_a' : 'side_b';
-        $ourSide = $opponentSide === 'side_a' ? 'side_b' : 'side_a';
-        $resolutionReason = 'opponent_match';
-    } else {
-        $ourSide = 'side_a';
-        $resolutionReason = 'fallback';
-    }
-
-    $enemySide = ($ourSide === 'side_a') ? 'side_b' : 'side_a';
-    supplycore_ai_log('theater_ai.side_resolution', [
-        'theater_id' => $theaterId,
-        'friendly_side_scores' => $friendlyScores,
-        'opponent_side_scores' => $opponentScores,
-        'side_pilot_totals' => $sidePilotTotals,
-        'friendly_matched' => $friendlyMatched,
-        'opponent_matched' => $opponentMatched,
-        'tracked_alliance_ids' => $trackedAllianceIds,
-        'tracked_corporation_ids' => $trackedCorporationIds,
-        'opponent_alliance_ids' => $opponentAllianceIds,
-        'opponent_corporation_ids' => $opponentCorporationIds,
-        'resolved_side' => $ourSide,
-        'enemy_side' => $enemySide,
-        'reason' => $resolutionReason,
-    ]);
 
     foreach ($sideData[$ourSide] as $a) {
         $friendlyIskLost += (float) ($a['isk_lost'] ?? 0);
@@ -27169,7 +27083,7 @@ function theater_ai_build_facts_from_snapshot(string $theaterId, array $theater,
         ];
         if (($fc['side'] ?? '') === $ourSide) {
             $friendlyComp[] = $entry;
-        } else {
+        } elseif (($fc['side'] ?? '') === $enemySide) {
             $enemyComp[] = $entry;
         }
     }
@@ -27185,7 +27099,7 @@ function theater_ai_build_facts_from_snapshot(string $theaterId, array $theater,
             'alliance' => (string) ($nk['victim_alliance_name'] ?? '?'),
             'isk' => number_format((float) ($nk['isk_value'] ?? 0), 0) . ' ISK',
             'time' => (string) ($nk['kill_time'] ?? ''),
-            'lost_by' => $victimSide === $ourSide ? 'friendly' : ($victimSide !== '' ? 'enemy' : 'unknown'),
+            'lost_by' => $victimSide === $ourSide ? 'friendly' : ($victimSide === $enemySide ? 'enemy' : 'unknown'),
         ];
     }
 
@@ -27276,8 +27190,17 @@ function theater_ai_side_label_from_direction(string $direction, string $friendl
     if ($normalizedDirection === '') {
         return 'unknown';
     }
-    $enemySide = $friendlySide === 'side_a' ? 'side_b' : 'side_a';
 
+    // Turning point directions from Python use "friendly_surge" / "opponent_surge"
+    if (str_contains($normalizedDirection, 'friendly')) {
+        return 'friendly';
+    }
+    if (str_contains($normalizedDirection, 'opponent')) {
+        return 'enemy';
+    }
+
+    // Legacy fallback for side_a/side_b format
+    $enemySide = $friendlySide === 'side_a' ? 'side_b' : 'side_a';
     if (str_contains($normalizedDirection, $friendlySide)) {
         return 'friendly';
     }
@@ -27513,35 +27436,23 @@ function theater_lock_report(string $theaterId): ?array
     // Lock the theater regardless of AI success
     db_execute('UPDATE theaters SET locked_at = NOW() WHERE theater_id = ?', [$theaterId]);
 
-    // Snapshot all view data so locked reports never need live queries
-    theater_snapshot_save($theaterId);
-
     return $aiResult;
 }
 
-function theater_snapshot_save(string $theaterId): void
+function theater_view_snapshot_save(string $theaterId, array $viewState): void
 {
-    $snapshot = [
-        'battles' => db_theater_battles($theaterId),
-        'systems' => db_theater_systems($theaterId),
-        'timeline' => db_theater_timeline($theaterId),
-        'alliance_summary' => db_theater_alliance_summary($theaterId),
-        'fleet_composition' => db_theater_fleet_composition($theaterId),
-        'suspicion' => db_theater_suspicion_summary($theaterId),
-        'graph_summary' => db_theater_graph_summary($theaterId),
-        'turning_points' => db_theater_turning_points($theaterId),
-        'participants' => db_theater_participants($theaterId, null, false, 1000),
-        'graph_participants' => db_theater_graph_participants($theaterId),
-    ];
-
-    $json = json_encode($snapshot, JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE);
+    $json = json_encode($viewState, JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE);
     if ($json !== false) {
         db_execute('UPDATE theaters SET snapshot_data = ? WHERE theater_id = ?', [$json, $theaterId]);
     }
 }
 
-function theater_snapshot_load(string $theaterId, array $theater): ?array
+function theater_view_snapshot_load(array $theater): ?array
 {
+    if (($theater['locked_at'] ?? null) === null) {
+        return null;
+    }
+
     $raw = $theater['snapshot_data'] ?? null;
     if ($raw === null || !is_string($raw) || $raw === '') {
         return null;

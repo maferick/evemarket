@@ -143,7 +143,7 @@ def _compute_graph_summary(
             cid = int(m.get("character_id") or 0)
             side = char_sides.get(cid, "unknown")
             sides_in_cluster.add(side)
-        if "side_a" in sides_in_cluster and "side_b" in sides_in_cluster:
+        if "friendly" in sides_in_cluster and "opponent" in sides_in_cluster:
             suspicious_cluster_count += 1
             cross_side_edge_count += len(members)
 
@@ -282,7 +282,7 @@ def run_theater_graph_integration(
 
             suspicious_clusters = set()
             for cid_val, sides in cluster_sides.items():
-                if "side_a" in sides and "side_b" in sides:
+                if "friendly" in sides and "opponent" in sides:
                     suspicious_clusters.add(cid_val)
 
             for gp in all_graph_rows:
