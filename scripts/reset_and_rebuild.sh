@@ -2,13 +2,18 @@
 # =============================================================================
 # SupplyCore Intelligence Pipeline — Full Reset & Rebuild
 # =============================================================================
-# Clears all computed/derived data and sync cursors, then runs all compute jobs
-# in dependency order until fully rebuilt.
+# Stops all workers, clears all computed/derived data and sync cursors, then
+# runs all compute jobs in dependency order until fully rebuilt, then restarts
+# the workers.
 #
 # KEEPS: ref_* tables, killmail data, market data, doctrine definitions,
 #        entity_metadata_cache, settings, ESI tokens, tracked alliances/corps
 #
-# Usage: bash scripts/reset_and_rebuild.sh
+# Usage: sudo bash scripts/reset_and_rebuild.sh
+#        (requires root for systemctl stop/start)
+#
+# Options:
+#   --no-service-control   Skip stopping/starting workers (for dev/testing)
 # =============================================================================
 
 set -euo pipefail
@@ -16,6 +21,13 @@ set -euo pipefail
 PYTHON="${PYTHON:-/var/www/SupplyCore/.venv-orchestrator/bin/python}"
 PROJECT_DIR="${PROJECT_DIR:-/var/www/SupplyCore}"
 DB_NAME="${DB_NAME:-supplycore}"
+SERVICE_CONTROL=true
+
+for arg in "$@"; do
+    case "$arg" in
+        --no-service-control) SERVICE_CONTROL=false ;;
+    esac
+done
 
 cd "$PROJECT_DIR"
 
@@ -24,8 +36,79 @@ echo " SupplyCore Intelligence Pipeline Reset"
 echo "============================================="
 echo ""
 
+# ── Step 0: Stop all workers ──────────────────────────────────────────────
+# Prevents race conditions: workers writing to tables mid-truncate,
+# re-seeding stale cursors, or failing on missing data.
+STOPPED_SERVICES=()
+
+stop_services() {
+    if [ "$SERVICE_CONTROL" != "true" ]; then
+        echo "[0/5] Skipping service control (--no-service-control)"
+        echo ""
+        return
+    fi
+
+    echo "[0/5] Stopping orchestrator workers and sync services..."
+
+    # Discover all active supplycore worker services
+    local services
+    services=$(systemctl list-units --type=service --state=running --no-legend \
+               | awk '{print $1}' \
+               | grep -E '^supplycore-(sync-worker|compute-worker|zkill)' || true)
+
+    # Also stop the influx timer to prevent it firing mid-rebuild
+    local timers
+    timers=$(systemctl list-units --type=timer --state=active --no-legend \
+             | awk '{print $1}' \
+             | grep -E '^supplycore-' || true)
+
+    if [ -z "$services" ] && [ -z "$timers" ]; then
+        echo "  No running supplycore services found — skipping"
+        echo ""
+        return
+    fi
+
+    for svc in $services $timers; do
+        echo -n "  Stopping $svc... "
+        if systemctl stop "$svc" 2>/dev/null; then
+            STOPPED_SERVICES+=("$svc")
+            echo "✓"
+        else
+            echo "✗ (may need sudo)"
+        fi
+    done
+
+    # Wait for workers to finish any in-flight jobs (graceful SIGTERM → 90s timeout)
+    echo -n "  Waiting for workers to drain... "
+    sleep 3
+    echo "✓"
+    echo ""
+}
+
+restart_services() {
+    if [ "$SERVICE_CONTROL" != "true" ] || [ ${#STOPPED_SERVICES[@]} -eq 0 ]; then
+        return
+    fi
+
+    echo ""
+    echo "[5/5] Restarting stopped services..."
+    for svc in "${STOPPED_SERVICES[@]}"; do
+        echo -n "  Starting $svc... "
+        if systemctl start "$svc" 2>/dev/null; then
+            echo "✓"
+        else
+            echo "✗ (may need sudo)"
+        fi
+    done
+}
+
+# Ensure services are restarted even if the script fails partway through
+trap restart_services EXIT
+
+stop_services
+
 # ── Step 1: Clear sync cursors & job state ──────────────────────────────────
-echo "[1/4] Clearing sync cursors and job state..."
+echo "[1/5] Clearing sync cursors and job state..."
 mysql "$DB_NAME" -e "
 TRUNCATE TABLE sync_state;
 TRUNCATE TABLE graph_sync_state;
@@ -36,7 +119,7 @@ DELETE FROM sync_runs WHERE 1=1;
 echo "  ✓ Sync cursors and job state cleared"
 
 # ── Step 2: Clear all computed/derived tables ───────────────────────────────
-echo "[2/4] Clearing computed/derived tables..."
+echo "[2/5] Clearing computed/derived tables..."
 mysql "$DB_NAME" -e "
 -- Battle intelligence
 TRUNCATE TABLE battle_rollups;
@@ -120,7 +203,7 @@ TRUNCATE TABLE item_priority_snapshots;
 echo "  ✓ All computed tables cleared"
 
 # ── Step 3: Run all compute jobs in order ───────────────────────────────────
-echo "[3/4] Running compute pipeline..."
+echo "[3/5] Running compute pipeline..."
 echo ""
 
 run_job() {
@@ -223,12 +306,20 @@ run_job "compute_economic_warfare" "Economic Warfare"
 
 # ── Step 4: Summary ─────────────────────────────────────────────────────────
 echo ""
+echo "[4/5] Verifying results..."
+mysql "$DB_NAME" -e "
+SELECT 'battle_rollups' AS \`table\`, COUNT(*) AS rows FROM battle_rollups
+UNION ALL SELECT 'theaters', COUNT(*) FROM theaters
+UNION ALL SELECT 'alliance_dossiers', COUNT(*) FROM alliance_dossiers
+UNION ALL SELECT 'threat_corridors', COUNT(*) FROM threat_corridors
+UNION ALL SELECT 'character_suspicion_signals', COUNT(*) FROM character_suspicion_signals;
+"
+
+# Step 5 (restart_services) runs automatically via the EXIT trap
+
+echo ""
 echo "============================================="
 echo " Pipeline rebuild complete!"
 echo "============================================="
 echo ""
-echo "Verify results:"
-echo "  mysql $DB_NAME -e \"SELECT COUNT(*) AS dossiers FROM alliance_dossiers\""
-echo "  mysql $DB_NAME -e \"SELECT COUNT(*) AS corridors FROM threat_corridors\""
-echo "  mysql $DB_NAME -e \"SELECT COUNT(*) AS theaters FROM theaters\""
-echo "  mysql $DB_NAME -e \"SELECT COUNT(*) AS battles FROM battle_rollups\""
+echo "Services will be restarted automatically."
