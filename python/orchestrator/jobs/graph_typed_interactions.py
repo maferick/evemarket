@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import time
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from ..db import SupplyCoreDb
@@ -13,22 +13,27 @@ RELATIONSHIP_WINDOW_DAYS = 90
 SAME_FLEET_MIN_CO_BATTLES = 3
 
 
+def _utc_cutoff_iso(days: int) -> str:
+    return (datetime.now(UTC) - timedelta(days=days)).isoformat()
+
+
 def _create_typed_relationships(client: Neo4jClient, window_days: int) -> dict[str, int]:
     """Create typed Neo4j relationships and return counts per type."""
     counts: dict[str, int] = {}
+    cutoff = _utc_cutoff_iso(window_days)
 
     # Direct combat: A attacked a killmail where B was victim
     result = client.query(
         """
         MATCH (a:Character)-[:ATTACKED_ON]->(k:Killmail)<-[:VICTIM_OF]-(b:Character)
         WHERE a.character_id <> b.character_id
-          AND datetime(COALESCE(k.occurred_at, '1970-01-01T00:00:00Z')) >= datetime() - duration({days: $window_days})
+          AND k.occurred_at >= $cutoff
         WITH a, b, count(DISTINCT k) AS cnt, max(k.occurred_at) AS last_at
         MERGE (a)-[r:DIRECT_COMBAT]->(b)
         SET r.count = cnt, r.last_at = last_at, r.updated_at = datetime()
         RETURN count(r) AS total
         """,
-        {"window_days": window_days},
+        {"cutoff": cutoff},
     )
     counts["direct_combat"] = int((result[0] if result else {}).get("total") or 0)
 
@@ -37,13 +42,13 @@ def _create_typed_relationships(client: Neo4jClient, window_days: int) -> dict[s
         """
         MATCH (a:Character)-[:ATTACKED_ON]->(k:Killmail)<-[:ATTACKED_ON]-(b:Character)
         WHERE a.character_id < b.character_id
-          AND datetime(COALESCE(k.occurred_at, '1970-01-01T00:00:00Z')) >= datetime() - duration({days: $window_days})
+          AND k.occurred_at >= $cutoff
         WITH a, b, count(DISTINCT k) AS cnt, max(k.occurred_at) AS last_at
         MERGE (a)-[r:ASSISTED_KILL]->(b)
         SET r.count = cnt, r.last_at = last_at, r.updated_at = datetime()
         RETURN count(r) AS total
         """,
-        {"window_days": window_days},
+        {"cutoff": cutoff},
     )
     counts["assisted_kill"] = int((result[0] if result else {}).get("total") or 0)
 
@@ -79,8 +84,8 @@ def _export_typed_interactions(client: Neo4jClient, db: SupplyCoreDb, computed_a
             f"""
             MATCH (a:Character)-[r:{rel_type}]->(b:Character)
             RETURN
-                toInteger(a.character_id) AS character_a_id,
-                toInteger(b.character_id) AS character_b_id,
+                a.character_id AS character_a_id,
+                b.character_id AS character_b_id,
                 toInteger(r.count) AS interaction_count,
                 toString(r.last_at) AS last_interaction_at
             """,

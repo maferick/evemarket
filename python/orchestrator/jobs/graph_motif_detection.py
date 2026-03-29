@@ -21,7 +21,7 @@ def _detect_triangles(client: Neo4jClient) -> list[dict[str, Any]]:
         WITH a, b, c, collect(DISTINCT battle.battle_id)[..10] AS battle_ids
         RETURN
             'triangle' AS motif_type,
-            [toInteger(a.character_id), toInteger(b.character_id), toInteger(c.character_id)] AS member_ids,
+            [a.character_id, b.character_id, c.character_id] AS member_ids,
             battle_ids,
             1 AS occurrence_count,
             toFloat(
@@ -45,7 +45,7 @@ def _detect_stars(client: Neo4jClient) -> list[dict[str, Any]]:
         WITH hub, isolated_leaves[..8] AS top_leaves
         RETURN
             'star' AS motif_type,
-            [toInteger(hub.character_id)] + [l IN top_leaves | toInteger(l.character_id)] AS member_ids,
+            [hub.character_id] + [l IN top_leaves | l.character_id] AS member_ids,
             [] AS battle_ids,
             1 AS occurrence_count,
             toFloat(COALESCE(hub.suspicion_score, 0)) AS suspicion_relevance
@@ -69,7 +69,7 @@ def _detect_chains(client: Neo4jClient) -> list[dict[str, Any]]:
         WITH a, b, c, d
         RETURN
             'chain' AS motif_type,
-            [toInteger(a.character_id), toInteger(b.character_id), toInteger(c.character_id), toInteger(d.character_id)] AS member_ids,
+            [a.character_id, b.character_id, c.character_id, d.character_id] AS member_ids,
             [] AS battle_ids,
             1 AS occurrence_count,
             toFloat(
@@ -93,8 +93,8 @@ def _detect_fleet_cores(client: Neo4jClient) -> list[dict[str, Any]]:
           AND d.character_id > c.character_id
         WITH a, b, c, collect(d)[..5] AS extras
         WHERE size(extras) >= 2
-        WITH [toInteger(a.character_id), toInteger(b.character_id), toInteger(c.character_id)]
-             + [e IN extras | toInteger(e.character_id)] AS member_ids,
+        WITH [a.character_id, b.character_id, c.character_id]
+             + [e IN extras | e.character_id] AS member_ids,
              (COALESCE(a.suspicion_score, 0) + COALESCE(b.suspicion_score, 0) + COALESCE(c.suspicion_score, 0)) / 3.0 AS avg_suspicion
         RETURN
             'fleet_core' AS motif_type,
@@ -115,7 +115,7 @@ def _detect_rotating_scouts(client: Neo4jClient) -> list[dict[str, Any]]:
         WHERE COALESCE(cr.side_transition_count, 0) >= 3
         RETURN
             'rotating_scout' AS motif_type,
-            [toInteger(c.character_id)] AS member_ids,
+            [c.character_id] AS member_ids,
             [] AS battle_ids,
             toInteger(cr.side_transition_count) AS occurrence_count,
             toFloat(COALESCE(c.suspicion_score, 0) * 1.5) AS suspicion_relevance

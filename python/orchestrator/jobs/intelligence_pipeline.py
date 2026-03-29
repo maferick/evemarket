@@ -728,7 +728,7 @@ def _export_suspicion_signals(client: Neo4jClient, db: SupplyCoreDb, computed_at
                     engagement_rate: e.engagement_rate
                 }) AS engagement_rates
            RETURN
-               toInteger(c.character_id) AS character_id,
+               c.character_id AS character_id,
                toInteger(alliance_id) AS alliance_id,
                toInteger(COALESCE(c.battles_present, 0)) AS battles_present,
                toInteger(COALESCE(c.kills_total, 0)) AS kills_total,
@@ -800,7 +800,7 @@ def _export_alliance_overlap(client: Neo4jClient, db: SupplyCoreDb, computed_at:
              AND COALESCE(c.historical_overlap_score, 0) > 0
            OPTIONAL MATCH (c)-[:MEMBER_OF_ALLIANCE]->(a:Alliance)
            RETURN
-               toInteger(c.character_id) AS character_id,
+               c.character_id AS character_id,
                toInteger(COALESCE(a.alliance_id, 0)) AS alliance_id,
                toInteger(COALESCE(c.former_allies_attacking, 0)) AS former_allies_attacking,
                toInteger(COALESCE(c.losses_to_former_allies, 0)) AS losses_to_former_allies,
