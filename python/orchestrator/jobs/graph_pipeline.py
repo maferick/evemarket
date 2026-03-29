@@ -1979,11 +1979,12 @@ def run_compute_graph_sync_killmail_entities(
     if new_cursor > last_cursor:
         db.execute(
             """
-            INSERT INTO sync_state (dataset_key, last_cursor, last_row_count, last_synced_at)
-            VALUES (%s, %s, %s, UTC_TIMESTAMP())
+            INSERT INTO sync_state (dataset_key, last_cursor, last_row_count, last_success_at, status)
+            VALUES (%s, %s, %s, UTC_TIMESTAMP(), 'success')
             ON DUPLICATE KEY UPDATE last_cursor = VALUES(last_cursor),
                                     last_row_count = VALUES(last_row_count),
-                                    last_synced_at = VALUES(last_synced_at)
+                                    last_success_at = VALUES(last_success_at),
+                                    status = 'success'
             """,
             (_KILLMAIL_CURSOR_KEY, str(new_cursor), rows_written),
         )

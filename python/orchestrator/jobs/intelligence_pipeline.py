@@ -772,11 +772,11 @@ def _export_suspicion_signals(client: Neo4jClient, db: SupplyCoreDb, computed_at
                     float(r.get("high_presence_low_output_score") or 0),
                     float(r.get("token_participation_score") or 0),
                     float(r.get("loss_without_attack_ratio") or 0),
-                    float(r.get("peer_norm_kills_delta") or 0),
-                    float(r.get("peer_norm_damage_delta") or 0),
-                    float(r.get("composition_advantage_ratio") or 1.0) - 1.0,  # delta from neutral
-                    float(r.get("composition_advantage_ratio") or 1.0),
-                    float(r.get("suspicion_score") or 0),
+                    max(-9999.999999, min(9999.999999, float(r.get("peer_norm_kills_delta") or 0))),
+                    max(-9999.999999, min(9999.999999, float(r.get("peer_norm_damage_delta") or 0))),
+                    max(-9999.999999, min(9999.999999, float(r.get("composition_advantage_ratio") or 1.0) - 1.0)),  # delta from neutral
+                    max(-9999.999999, min(9999.999999, float(r.get("composition_advantage_ratio") or 1.0))),
+                    max(-9999.999999, min(9999.999999, float(r.get("suspicion_score") or 0))),
                     json_dumps_safe(r.get("suspicion_flags") or []),
                     json_dumps_safe(r.get("engagement_rates") or []),
                     computed_at,

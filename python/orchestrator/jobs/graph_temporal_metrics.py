@@ -83,9 +83,9 @@ def run_graph_temporal_metrics_sync(db: SupplyCoreDb, neo4j_raw: dict[str, Any] 
                     int(r.get("kills_total") or 0),
                     int(r.get("losses_total") or 0),
                     int(r.get("damage_total") or 0),
-                    float(r.get("suspicion_score") or 0.0),
-                    float(r.get("co_presence_density") or 0.0),
-                    float(r.get("engagement_rate_avg") or 0.0),
+                    max(-9999.999999, min(9999.999999, float(r.get("suspicion_score") or 0.0))),
+                    max(-9999.999999, min(9999.999999, float(r.get("co_presence_density") or 0.0))),
+                    max(-9999.999999, min(9999.999999, float(r.get("engagement_rate_avg") or 0.0))),
                     computed_at,
                 ])
             if values:
