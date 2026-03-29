@@ -6,6 +6,8 @@ import urllib.request
 from typing import Any
 
 from ..bridge import PhpBridge
+from ..esi_client import EsiClient
+from ..esi_rate_limiter import shared_limiter
 from ..http_client import ipv4_opener
 from ..job_result import JobResult
 from ..worker_runtime import payload_checksum, resident_memory_bytes, utc_now_iso
@@ -289,15 +291,15 @@ def _flush_pending_batch(
 class KillmailEntityResolver:
     def __init__(self, user_agent: str):
         self.user_agent = user_agent
+        self._esi_client = EsiClient(user_agent=user_agent, timeout_seconds=15, limiter=shared_limiter)
         self._character_cache: dict[int, dict[str, Any] | None] = {}
         self._corporation_cache: dict[int, dict[str, Any] | None] = {}
 
-    def _fetch_profile(self, url: str) -> dict[str, Any] | None:
-        status, payload = _http_json(url, self.user_agent)
-        if status != 200 or not isinstance(payload, dict):
-            return None
-
-        return payload
+    def _fetch_profile(self, path: str) -> dict[str, Any] | None:
+        resp = self._esi_client.get(path, params={"datasource": "tranquility"})
+        if resp.ok and isinstance(resp.body, dict):
+            return resp.body
+        return None
 
     def _character_profile(self, character_id: int) -> dict[str, Any] | None:
         if character_id <= 0:
@@ -305,7 +307,7 @@ class KillmailEntityResolver:
 
         if character_id not in self._character_cache:
             self._character_cache[character_id] = self._fetch_profile(
-                f"https://esi.evetech.net/latest/characters/{character_id}/?datasource=tranquility"
+                f"/latest/characters/{character_id}/"
             )
 
         return self._character_cache[character_id]
@@ -316,7 +318,7 @@ class KillmailEntityResolver:
 
         if corporation_id not in self._corporation_cache:
             self._corporation_cache[corporation_id] = self._fetch_profile(
-                f"https://esi.evetech.net/latest/corporations/{corporation_id}/?datasource=tranquility"
+                f"/latest/corporations/{corporation_id}/"
             )
 
         return self._corporation_cache[corporation_id]
