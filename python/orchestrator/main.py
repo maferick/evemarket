@@ -154,7 +154,12 @@ def _print_cli_result(command: str, started_at: float, result: dict[str, Any]) -
 
 def main() -> int:
     args = parse_args()
-    command = args.command or "supervisor"
+    command = args.command
+    if command is None:
+        # No subcommand given – supply defaults that the supervisor subparser would have set.
+        args.app_root = str(Path(__file__).resolve().parents[2])
+        args.verbose = False
+        command = "supervisor"
     if command == "worker-pool":
         return run_worker_pool([
             "--app-root", args.app_root,
