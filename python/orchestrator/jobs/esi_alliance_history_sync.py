@@ -89,24 +89,30 @@ _NOT_CHECKED = object()
 
 
 def _warm_corp_cache(db: SupplyCoreDb) -> int:
-    """Bulk-load known corporation → alliance mappings from entity_metadata_cache."""
+    """Bulk-load known corporation → alliance mappings from entity_metadata_cache.
+
+    Includes corps with no alliance (alliance_id=null) so they don't
+    trigger ESI lookups during derive.
+    """
     rows = db.fetch_all(
         """SELECT entity_id,
                   JSON_UNQUOTE(JSON_EXTRACT(metadata_json, '$.alliance_id')) AS alliance_id
            FROM entity_metadata_cache
            WHERE entity_type = 'corporation'
              AND resolution_status = 'resolved'
-             AND metadata_json IS NOT NULL
-             AND JSON_EXTRACT(metadata_json, '$.alliance_id') IS NOT NULL"""
+             AND metadata_json IS NOT NULL"""
     )
     loaded = 0
     for row in rows:
         corp_id = int(row.get("entity_id") or 0)
+        if corp_id <= 0:
+            continue
         raw_aid = row.get("alliance_id")
-        if corp_id > 0 and raw_aid is not None:
-            aid = int(raw_aid) if str(raw_aid).isdigit() else 0
-            _corp_alliance_cache[corp_id] = aid if aid > 0 else None
-            loaded += 1
+        if raw_aid is not None and str(raw_aid).isdigit() and int(raw_aid) > 0:
+            _corp_alliance_cache[corp_id] = int(raw_aid)
+        else:
+            _corp_alliance_cache[corp_id] = None  # No alliance — still cache it
+        loaded += 1
     return loaded
 
 
