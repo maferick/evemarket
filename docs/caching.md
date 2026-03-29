@@ -284,6 +284,7 @@ No PHP `serialize()` or Python `pickle` — always JSON.
 |----------|----------|
 | Redis down at startup | Gateway works with MariaDB + local memory. Logs warning once. |
 | Redis goes down mid-operation | Current operation completes. Next operation falls back. |
+| Redis payload evicted/missing | MariaDB `esi_cache_entries` checked next. If also missing, conditional ESI request. |
 | Redis restarts (empty) | MariaDB metadata repopulates Redis on first read per endpoint. |
 | Redis slow (>5s timeout) | Operation fails gracefully, marked unavailable until next success. |
 | Redis data corruption | JSON parse failure returns None, endpoint re-fetched from ESI. |
@@ -367,6 +368,7 @@ When PHP encounters an unknown entity ID (e.g. during killmail display):
 |------|-------------------|------------|--------|
 | Market orders | MariaDB `market_orders_current` | none | Python sync jobs |
 | ESI endpoint metadata | MariaDB `esi_endpoint_state` | fast read cache | Python gateway |
+| ESI response payloads | MariaDB `esi_cache_entries` | fast read cache (`esi:payload:v1:*`) | Python gateway |
 | Rate-limit observations | MariaDB `esi_rate_limit_observations` | live bucket state | Python gateway + limiter |
 | Entity names | MariaDB `entity_metadata_cache` | none | Python entity resolver |
 | Structure names | MariaDB `alliance_structure_metadata` | none | Python sync + PHP first-time setup |
