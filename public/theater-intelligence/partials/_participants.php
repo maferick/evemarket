@@ -157,7 +157,7 @@ function _render_participant_row(array $p, array $resolvedEntities, array $shipT
             </div>
         </td>
         <td class="px-2 py-1.5">
-            <span class="inline-flex items-center rounded-full px-2 py-0.5 text-[9px] font-semibold uppercase tracking-[0.14em] border border-white/15 shadow-[inset_0_1px_0_rgba(255,255,255,0.06)] <?= fleet_function_color_class($fleetRole) ?>">
+            <span class="inline-flex items-center rounded-full px-1.5 py-[1px] text-[8px] sm:text-[9px] font-semibold uppercase tracking-[0.12em] border border-white/15 shadow-[inset_0_1px_0_rgba(255,255,255,0.06)] leading-tight <?= fleet_function_color_class($fleetRole) ?>">
                 <?= htmlspecialchars(fleet_function_label($fleetRole), ENT_QUOTES) ?>
             </span>
         </td>
@@ -238,11 +238,11 @@ function _fmt_damage(float $v): string {
                     </span>
                 </h3>
             </div>
-            <div class="flex items-center gap-1.5 mb-2 flex-wrap">
-                <button type="button" class="sc-filter-btn active text-[11px] px-2.5 py-1 rounded bg-blue-600/80 text-slate-100 border border-blue-500/60 cursor-pointer transition-colors" data-filter="all">All</button>
-                <button type="button" class="sc-filter-btn text-[11px] px-2.5 py-1 rounded bg-slate-800 text-slate-400 border border-slate-700 cursor-pointer transition-colors hover:bg-slate-700 hover:text-slate-200" data-filter="dead">&#x2715; Deaths only</button>
-                <button type="button" class="sc-filter-btn text-[11px] px-2.5 py-1 rounded bg-slate-800 text-slate-400 border border-slate-700 cursor-pointer transition-colors hover:bg-slate-700 hover:text-slate-200" data-filter="clean">&#10003; No losses</button>
-                <select class="sc-sort-select text-[11px] bg-slate-800 border border-slate-700 rounded text-slate-400 px-2 py-1 ml-auto cursor-pointer focus:outline-none focus:border-blue-500/60">
+            <div class="flex items-center gap-1 mb-2 flex-wrap">
+                <button type="button" class="sc-filter-btn active text-[10px] px-2 py-0.5 rounded bg-blue-600/80 text-slate-100 border border-blue-500/60 cursor-pointer transition-colors leading-tight" data-filter="all">All</button>
+                <button type="button" class="sc-filter-btn text-[10px] px-2 py-0.5 rounded bg-slate-800 text-slate-400 border border-slate-700 cursor-pointer transition-colors hover:bg-slate-700 hover:text-slate-200 leading-tight" data-filter="dead">&#x2715; Deaths only</button>
+                <button type="button" class="sc-filter-btn text-[10px] px-2 py-0.5 rounded bg-slate-800 text-slate-400 border border-slate-700 cursor-pointer transition-colors hover:bg-slate-700 hover:text-slate-200 leading-tight" data-filter="clean">&#10003; No losses</button>
+                <select class="sc-sort-select text-[10px] bg-slate-800 border border-slate-700 rounded text-slate-400 px-2 py-0.5 ml-auto cursor-pointer focus:outline-none focus:border-blue-500/60 leading-tight">
                     <option value="role_hull" selected>Sort: FC & CAPs, then hull</option>
                     <option value="kd_ratio">Sort: K/D ratio</option>
                     <option value="kills">Sort: kills</option>
@@ -326,16 +326,16 @@ function _fmt_damage(float $v): string {
             filterBtns.forEach(function(btn) {
                 btn.addEventListener('click', function() {
                     filterBtns.forEach(function(b) {
-                        b.className = 'sc-filter-btn text-[11px] px-2.5 py-1 rounded bg-slate-800 text-slate-400 border border-slate-700 cursor-pointer transition-colors hover:bg-slate-700 hover:text-slate-200';
+                        b.className = 'sc-filter-btn text-[10px] px-2 py-0.5 rounded bg-slate-800 text-slate-400 border border-slate-700 cursor-pointer transition-colors hover:bg-slate-700 hover:text-slate-200 leading-tight';
                     });
                     var mode = btn.getAttribute('data-filter');
                     currentFilter = mode;
                     if (mode === 'all') {
-                        btn.className = 'sc-filter-btn active text-[11px] px-2.5 py-1 rounded bg-blue-600/80 text-slate-100 border border-blue-500/60 cursor-pointer transition-colors';
+                        btn.className = 'sc-filter-btn active text-[10px] px-2 py-0.5 rounded bg-blue-600/80 text-slate-100 border border-blue-500/60 cursor-pointer transition-colors leading-tight';
                     } else if (mode === 'dead') {
-                        btn.className = 'sc-filter-btn active text-[11px] px-2.5 py-1 rounded bg-red-900/60 text-red-300 border border-red-600/60 cursor-pointer transition-colors';
+                        btn.className = 'sc-filter-btn active text-[10px] px-2 py-0.5 rounded bg-red-900/60 text-red-300 border border-red-600/60 cursor-pointer transition-colors leading-tight';
                     } else if (mode === 'clean') {
-                        btn.className = 'sc-filter-btn active text-[11px] px-2.5 py-1 rounded bg-green-900/60 text-green-300 border border-green-600/60 cursor-pointer transition-colors';
+                        btn.className = 'sc-filter-btn active text-[10px] px-2 py-0.5 rounded bg-green-900/60 text-green-300 border border-green-600/60 cursor-pointer transition-colors leading-tight';
                     }
                     applyFilter();
                 });
@@ -497,7 +497,7 @@ function _fmt_damage(float $v): string {
                                 </div>
                             </td>
                             <td class="px-3 py-2">
-                                <span class="inline-flex items-center rounded-full px-2.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.14em] border border-white/15 shadow-[inset_0_1px_0_rgba(255,255,255,0.06)] <?= fleet_function_color_class($fleetRole) ?>">
+                                <span class="inline-flex items-center rounded-full px-2 py-[1px] text-[9px] font-semibold uppercase tracking-[0.12em] border border-white/15 shadow-[inset_0_1px_0_rgba(255,255,255,0.06)] leading-tight <?= fleet_function_color_class($fleetRole) ?>">
                                     <?= htmlspecialchars(fleet_function_label($fleetRole), ENT_QUOTES) ?>
                                 </span>
                             </td>

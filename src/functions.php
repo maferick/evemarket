@@ -11002,6 +11002,8 @@ function fleet_function_label(string $role): string
 {
     return match ($role) {
         'fc' => 'FC',
+        'mega' => 'Mega',
+        'micro' => 'Micro',
         'mainline_dps' => 'Mainline DPS',
         'capital_dps' => 'Capital DPS',
         'logistics' => 'Logistics',
@@ -11027,6 +11029,8 @@ function fleet_function_color_class(string $role): string
 {
     return match ($role) {
         'fc' => 'bg-yellow-900/60 text-yellow-200 ring-1 ring-yellow-400/40',
+        'mega' => 'bg-violet-900/60 text-violet-300',
+        'micro' => 'bg-fuchsia-900/60 text-fuchsia-300',
         'logistics', 'logi' => 'bg-emerald-900/60 text-emerald-300',
         'capital_logistics' => 'bg-emerald-900/60 text-emerald-300',
         'command' => 'bg-amber-900/60 text-amber-300',
