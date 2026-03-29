@@ -21,43 +21,100 @@ WEIGHT_IDENTITY = 0.15
 STALE_DAYS = 45
 
 
+def _count_duplicate_relationships_batched(client: Neo4jClient, timeout: int, batch_size: int = 500) -> int:
+    """Count duplicate relationships in batches to avoid cartesian-product timeouts.
+
+    Instead of scanning every pair globally, we iterate Character nodes in
+    cursor-based batches and count duplicates anchored on each batch.  The
+    remaining node labels are checked in a single pass each since they are
+    typically much smaller than Character.
+    """
+    total_dups = 0
+
+    # -- Characters: cursor-based batches ----------------------------------
+    cursor = 0
+    while True:
+        batch_rows = client.query(
+            "MATCH (a:Character) "
+            "WHERE a.character_id > $cursor "
+            "RETURN a.character_id AS cid "
+            "ORDER BY cid ASC LIMIT $limit",
+            {"cursor": cursor, "limit": batch_size},
+            timeout_seconds=timeout,
+        )
+        if not batch_rows:
+            break
+        batch_ids = [int(r["cid"]) for r in batch_rows if int(r.get("cid") or 0) > 0]
+        if not batch_ids:
+            break
+        cursor = batch_ids[-1]
+
+        dup_row = client.query(
+            "UNWIND $ids AS aid "
+            "MATCH (a:Character {character_id: aid})-[r1]->(b) "
+            "MATCH (a)-[r2]->(b) "
+            "WHERE type(r1) = type(r2) AND id(r1) < id(r2) "
+            "RETURN count(r1) AS cnt",
+            {"ids": batch_ids},
+            timeout_seconds=timeout,
+        )
+        total_dups += int((dup_row[0] if dup_row else {}).get("cnt") or 0)
+
+    # -- Non-Character labels: single pass each (much smaller cardinality) -
+    for label in ("Battle", "Alliance", "Corporation", "ShipType", "Fit", "Doctrine"):
+        dup_row = client.query(
+            f"MATCH (a:{label})-[r1]->(b), (a:{label})-[r2]->(b) "
+            "WHERE type(r1) = type(r2) AND id(r1) < id(r2) "
+            "RETURN count(r1) AS cnt",
+            timeout_seconds=timeout,
+        )
+        total_dups += int((dup_row[0] if dup_row else {}).get("cnt") or 0)
+
+    return total_dups
+
+
 def run_graph_data_quality_check(db: SupplyCoreDb, neo4j_raw: dict[str, Any] | None = None) -> dict[str, Any]:
     started = time.perf_counter()
     job_name = "graph_data_quality_check"
-    config = Neo4jConfig.from_runtime(neo4j_raw or {})
+    runtime = neo4j_raw or {}
+    config = Neo4jConfig.from_runtime(runtime)
 
     if not config.enabled:
         return JobResult.skipped(job_key=job_name, reason="neo4j disabled").to_dict()
 
     client = Neo4jClient(config)
     run_id = uuid.uuid4().hex[:16]
+    qc_timeout = max(15, int(runtime.get("quality_check_timeout_seconds") or 60))
+    dup_batch_size = max(50, int(runtime.get("quality_check_dup_batch_size") or 500))
 
     # ── Total characters ──────────────────────────────────────────────
-    total_row = client.query("MATCH (c:Character) RETURN count(c) AS cnt")
+    total_row = client.query("MATCH (c:Character) RETURN count(c) AS cnt", timeout_seconds=qc_timeout)
     characters_total = int((total_row[0] if total_row else {}).get("cnt") or 0)
 
     if characters_total == 0:
         return JobResult.skipped(job_key=job_name, reason="No characters in graph").to_dict()
 
     # ── Characters with at least one relationship ─────────────────────
-    with_battles_row = client.query("MATCH (c:Character) WHERE (c)--() RETURN count(c) AS cnt")
+    with_battles_row = client.query(
+        "MATCH (c:Character) WHERE (c)--() RETURN count(c) AS cnt",
+        timeout_seconds=qc_timeout,
+    )
     characters_with_battles = int((with_battles_row[0] if with_battles_row else {}).get("cnt") or 0)
 
     # ── Orphan characters (no relationships at all) ───────────────────
-    orphan_row = client.query("MATCH (c:Character) WHERE NOT (c)--() RETURN count(c) AS cnt")
+    orphan_row = client.query(
+        "MATCH (c:Character) WHERE NOT (c)--() RETURN count(c) AS cnt",
+        timeout_seconds=qc_timeout,
+    )
     orphan_characters = int((orphan_row[0] if orphan_row else {}).get("cnt") or 0)
 
     # ── Duplicate relationships (same type between same pair) ─────────
-    dup_row = client.query(
-        "MATCH (a)-[r1]->(b), (a)-[r2]->(b) "
-        "WHERE type(r1) = type(r2) AND id(r1) < id(r2) "
-        "RETURN count(r1) AS cnt"
-    )
-    duplicate_relationships = int((dup_row[0] if dup_row else {}).get("cnt") or 0)
+    duplicate_relationships = _count_duplicate_relationships_batched(client, qc_timeout, dup_batch_size)
 
     # ── Missing alliance IDs ──────────────────────────────────────────
     missing_alliance_row = client.query(
-        "MATCH (c:Character) WHERE c.alliance_id IS NULL OR c.alliance_id = 0 RETURN count(c) AS cnt"
+        "MATCH (c:Character) WHERE c.alliance_id IS NULL OR c.alliance_id = 0 RETURN count(c) AS cnt",
+        timeout_seconds=qc_timeout,
     )
     missing_alliance_ids = int((missing_alliance_row[0] if missing_alliance_row else {}).get("cnt") or 0)
 
@@ -67,12 +124,14 @@ def run_graph_data_quality_check(db: SupplyCoreDb, neo4j_raw: dict[str, Any] | N
         "AND c.computed_at < datetime() - duration({days: $days}) "
         "RETURN count(c) AS cnt",
         {"days": STALE_DAYS},
+        timeout_seconds=qc_timeout,
     )
     stale_data_count = int((stale_row[0] if stale_row else {}).get("cnt") or 0)
 
     # ── Identity mismatches (null or zero character_id) ───────────────
     identity_row = client.query(
-        "MATCH (c:Character) WHERE c.character_id IS NULL OR c.character_id = 0 RETURN count(c) AS cnt"
+        "MATCH (c:Character) WHERE c.character_id IS NULL OR c.character_id = 0 RETURN count(c) AS cnt",
+        timeout_seconds=qc_timeout,
     )
     identity_mismatches = int((identity_row[0] if identity_row else {}).get("cnt") or 0)
 
