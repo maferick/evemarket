@@ -7,7 +7,10 @@ name = "supplycore-orchestrator"
 version = "0.1.0"
 description = "Continuous Python worker pool and stream workers for SupplyCore"
 requires-python = ">=3.11"
-dependencies = ["PyMySQL>=1.1,<2", "redis>=5.0,<6"]
+dependencies = ["PyMySQL>=1.1,<2"]
+
+[project.optional-dependencies]
+redis = ["redis>=5.0,<6"]
 
 [tool.setuptools]
 package-dir = {"" = "."}
