@@ -92,6 +92,7 @@ class EsiClient:
         params: dict[str, str | int] | None = None,
         access_token: str | None = None,
         group: str | None = None,
+        extra_headers: dict[str, str] | None = None,
     ) -> EsiResponse:
         """Perform a rate-limited GET request to ESI.
 
@@ -100,6 +101,8 @@ class EsiClient:
         url = self._build_url(path, params)
         token = access_token or self._default_token
         headers = self._build_headers(token)
+        if extra_headers:
+            headers.update(extra_headers)
 
         # Wait for rate-limit budget before sending.
         self._limiter.acquire(group)
@@ -135,6 +138,59 @@ class EsiClient:
 
         except (OSError, TimeoutError) as exc:
             logger.warning("ESI request failed for %s: %s", url, exc)
+            return EsiResponse(status_code=0, body=None, headers={})
+
+    def post(
+        self,
+        path: str,
+        *,
+        body: Any = None,
+        params: dict[str, str | int] | None = None,
+        access_token: str | None = None,
+        group: str | None = None,
+        extra_headers: dict[str, str] | None = None,
+    ) -> EsiResponse:
+        """Perform a rate-limited POST request to ESI.
+
+        Used for endpoints like ``/latest/universe/names/`` and
+        ``/latest/universe/ids/`` which accept JSON arrays via POST.
+        """
+        url = self._build_url(path, params)
+        token = access_token or self._default_token
+        headers = self._build_headers(token)
+        headers["Content-Type"] = "application/json"
+        if extra_headers:
+            headers.update(extra_headers)
+
+        self._limiter.acquire(group)
+
+        encoded_body = json.dumps(body).encode("utf-8") if body is not None else None
+        request = Request(url, data=encoded_body, headers=headers, method="POST")
+        try:
+            with ipv4_opener.open(request, timeout=self._timeout) as response:
+                raw_body = response.read()
+                if response.headers.get("Content-Encoding") == "gzip":
+                    import gzip
+                    raw_body = gzip.decompress(raw_body)
+                body_str = raw_body.decode("utf-8", errors="replace") if isinstance(raw_body, bytes) else raw_body
+                resp_headers = {k: v for k, v in response.headers.items()} if hasattr(response.headers, 'items') else {}
+                status = int(response.status)
+
+                parsed = self._parse_json(body_str)
+                esi_response = EsiResponse(status_code=status, body=parsed, headers=resp_headers)
+                self._limiter.update_from_response(status, resp_headers)
+                return esi_response
+
+        except HTTPError as exc:
+            exc_headers = {}
+            if hasattr(exc, "headers") and exc.headers:
+                exc_headers = {k: v for k, v in exc.headers.items()} if hasattr(exc.headers, 'items') else {}
+            status = int(exc.code)
+            self._limiter.update_from_response(status, exc_headers)
+            return EsiResponse(status_code=status, body=None, headers=exc_headers)
+
+        except (OSError, TimeoutError) as exc:
+            logger.warning("ESI POST request failed for %s: %s", url, exc)
             return EsiResponse(status_code=0, body=None, headers={})
 
     def _build_url(self, path: str, params: dict[str, str | int] | None) -> str:

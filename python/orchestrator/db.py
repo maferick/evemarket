@@ -209,11 +209,43 @@ class SupplyCoreDb:
                     decision_logged += 1
                     continue
 
-            urgency_score = (
-                _priority_rank(str(definition.get("priority") or "normal")) * 1000
-                + min(99_999, int(staleness_seconds))
-                + (150_000 if freshness_sensitivity == "immediate" else 0)
-                + (50_000 if not opportunistic_background else 0)
+            # Freshness-aware scheduling: if all upstream ESI data is still within
+            # its Expires window, defer the job — there's nothing new to fetch.
+            from .scheduler_pressure import compute_esi_freshness, compute_pressure_state
+            source_systems = definition.get("source_systems") or []
+            if "esi" in source_systems:
+                esi_freshness = compute_esi_freshness(self, job_key)
+                if esi_freshness and esi_freshness.all_fresh:
+                    skipped += 1
+                    self.insert_scheduler_planner_decision(
+                        schedule_id=None,
+                        job_key=job_key,
+                        decision_type="rolling_deferred_esi_fresh",
+                        pressure_state="healthy",
+                        reason_text=(
+                            f"Deferred because all {esi_freshness.total_endpoints} upstream ESI endpoints "
+                            f"still have valid data (earliest expiry in {esi_freshness.earliest_expires_seconds:.0f}s)."
+                        ),
+                        decision_json={
+                            "job_key": job_key,
+                            "total_endpoints": esi_freshness.total_endpoints,
+                            "fresh_endpoints": esi_freshness.fresh_endpoints,
+                            "earliest_expires_seconds": esi_freshness.earliest_expires_seconds,
+                        },
+                    )
+                    decision_logged += 1
+                    continue
+
+            # Pressure-aware urgency: scale down under load to reduce contention.
+            pressure = compute_pressure_state(self)
+            urgency_score = int(
+                (
+                    _priority_rank(str(definition.get("priority") or "normal")) * 1000
+                    + min(99_999, int(staleness_seconds))
+                    + (150_000 if freshness_sensitivity == "immediate" else 0)
+                    + (50_000 if not opportunistic_background else 0)
+                )
+                * pressure.urgency_multiplier
             )
             available_seconds = cooldown_seconds if staleness_seconds <= 0 else 0
             payload = json_dumps_safe(
@@ -268,7 +300,7 @@ class SupplyCoreDb:
                 schedule_id=None,
                 job_key=job_key,
                 decision_type="rolling_queued",
-                pressure_state="healthy",
+                pressure_state=pressure.state,
                 reason_text="Queued by rolling planner because a worker was free and this job met freshness/cooldown requirements.",
                 decision_json={
                     "job_key": job_key,
@@ -278,6 +310,9 @@ class SupplyCoreDb:
                     "max_staleness_seconds": max_staleness_seconds,
                     "cooldown_seconds": cooldown_seconds,
                     "opportunistic_background": opportunistic_background,
+                    "pressure_state": pressure.state,
+                    "pressure_running": pressure.running_jobs,
+                    "pressure_queued": pressure.queued_jobs,
                 },
             )
             decision_logged += 1
@@ -308,6 +343,21 @@ class SupplyCoreDb:
         if workload_classes:
             conditions.append("workload_class IN (" + ",".join(["%s"] * len(workload_classes)) + ")")
             params.extend(workload_classes)
+        # Lock-group enforcement: don't claim a job if another job in the
+        # same lock_group is already running.  Jobs with no lock_group (empty
+        # string) are not constrained.
+        conditions.append(
+            """(
+                COALESCE(JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.lock_group')), '') = ''
+                OR JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.lock_group')) NOT IN (
+                    SELECT DISTINCT JSON_UNQUOTE(JSON_EXTRACT(rj.payload_json, '$.lock_group'))
+                    FROM worker_jobs rj
+                    WHERE rj.status = 'running'
+                      AND JSON_UNQUOTE(JSON_EXTRACT(rj.payload_json, '$.lock_group')) != ''
+                      AND JSON_UNQUOTE(JSON_EXTRACT(rj.payload_json, '$.lock_group')) IS NOT NULL
+                )
+            )"""
+        )
 
         with self.transaction() as (_, cursor):
             cursor.execute(
@@ -420,11 +470,25 @@ class SupplyCoreDb:
         )
 
     def retry_worker_job(self, job_id: int, worker_id: str, error: str, retry_delay_seconds: int, result: dict[str, Any]) -> None:
-        row = self.fetch_one("SELECT attempts,max_attempts,retry_delay_seconds FROM worker_jobs WHERE id=%s LIMIT 1", (job_id,)) or {}
+        row = self.fetch_one("SELECT attempts,max_attempts,retry_delay_seconds,job_key FROM worker_jobs WHERE id=%s LIMIT 1", (job_id,)) or {}
         attempts = int(row.get("attempts") or 0)
         max_attempts = max(1, int(row.get("max_attempts") or 1))
         next_status = "dead" if attempts >= max_attempts else "retry"
-        delay = max(5, int(retry_delay_seconds or row.get("retry_delay_seconds") or 30))
+        base_delay = max(5, int(retry_delay_seconds or row.get("retry_delay_seconds") or 30))
+        # Exponential backoff: scale delay by attempt number, capped at 300s.
+        delay = min(300, base_delay * max(1, attempts))
+        # Circuit breaker: if 3+ consecutive failures for this job_key in the
+        # last 10 minutes, extend the cooldown significantly.
+        job_key = str(row.get("job_key") or "")
+        if job_key and next_status == "retry":
+            recent_failures = self.fetch_scalar(
+                """SELECT COUNT(*) FROM worker_jobs
+                   WHERE job_key = %s AND status IN ('retry', 'dead', 'failed')
+                     AND last_finished_at >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL 10 MINUTE)""",
+                (job_key,),
+            )
+            if recent_failures >= 3:
+                delay = min(600, delay * 3)  # Triple the delay under circuit breaker
         self.execute(
             """UPDATE worker_jobs
                 SET status=%s,

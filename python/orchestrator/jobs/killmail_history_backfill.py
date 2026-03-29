@@ -84,25 +84,36 @@ def _fetch_zkb_page(entity_type: str, entity_id: int, year: int, month: int, pag
     return data
 
 
-def _fetch_esi_killmail(killmail_id: int, killmail_hash: str, esi_client: EsiClient) -> dict[str, Any] | None:
+def _fetch_esi_killmail(killmail_id: int, killmail_hash: str, esi_client: EsiClient, gateway: Any = None) -> dict[str, Any] | None:
     """Fetch a single killmail from ESI and wrap in R2Z2-compatible format.
 
-    Rate limiting is handled automatically by the EsiClient.
+    When *gateway* is provided, the request goes through the ESI compliance
+    gateway for Expires-gating, conditional request handling, and distributed
+    rate-limit coordination.  Otherwise falls back to direct EsiClient usage.
     """
-    resp = esi_client.get(f"/latest/killmails/{killmail_id}/{killmail_hash}/")
-    if resp.status_code in (404, 422):
-        return None
-    if resp.is_rate_limited or resp.is_error_limited or resp.status_code == 503:
-        return None
-    if not resp.ok:
-        return None
-    if not isinstance(resp.body, dict):
-        return None
+    path = f"/latest/killmails/{killmail_id}/{killmail_hash}/"
+    if gateway is not None:
+        resp = gateway.get(path, route_template="/latest/killmails/{killmail_id}/{killmail_hash}/")
+        if resp.from_cache or resp.not_modified:
+            return None
+        if not (200 <= resp.status_code < 300) or not isinstance(resp.body, dict):
+            return None
+    else:
+        resp = esi_client.get(path)
+        if resp.status_code in (404, 422):
+            return None
+        if resp.is_rate_limited or resp.is_error_limited or resp.status_code == 503:
+            return None
+        if not resp.ok:
+            return None
+        if not isinstance(resp.body, dict):
+            return None
 
+    body = resp.body
     return {
         "killmail_id": killmail_id,
         "hash": killmail_hash,
-        "esi": resp.body,
+        "esi": body,
         "zkb": {},
         "sequence_id": killmail_id,
         "requested_sequence_id": killmail_id,
@@ -276,6 +287,28 @@ def run_killmail_history_backfill(context: Any) -> dict[str, Any]:
     # Fetch from ESI and process in batches.
     # Rate limiting is handled centrally by EsiClient — no fixed sleep needed.
     esi_client = EsiClient(user_agent=user_agent, timeout_seconds=15, limiter=shared_limiter)
+
+    # Build gateway for ESI compliance lifecycle if Redis is available.
+    _bf_gateway = None
+    try:
+        import os as _os
+        if _os.getenv("REDIS_ENABLED", "0") == "1":
+            from ..esi_gateway import build_gateway
+            _bf_gateway = build_gateway(
+                redis_config={
+                    "enabled": True,
+                    "host": _os.getenv("REDIS_HOST", "127.0.0.1"),
+                    "port": int(_os.getenv("REDIS_PORT", "6379")),
+                    "database": int(_os.getenv("REDIS_DB", "0")),
+                    "password": _os.getenv("REDIS_PASSWORD", ""),
+                    "prefix": _os.getenv("REDIS_PREFIX", "supplycore"),
+                },
+                user_agent=user_agent,
+                timeout_seconds=15,
+            )
+    except Exception:
+        pass
+
     kill_pairs = list(new_kills.items())
     total_to_fetch = len(kill_pairs)
 
@@ -284,7 +317,7 @@ def run_killmail_history_backfill(context: Any) -> dict[str, Any]:
         payloads = []
 
         for km_id, km_hash in batch_pairs:
-            payload = _fetch_esi_killmail(km_id, km_hash, esi_client)
+            payload = _fetch_esi_killmail(km_id, km_hash, esi_client, gateway=_bf_gateway)
             if payload is not None:
                 payloads.append(payload)
                 total_esi_fetched += 1

@@ -9943,130 +9943,24 @@ function killmail_entity_cache_is_current(array $row): bool
     return strtotime($expiresAt) !== false && strtotime($expiresAt) > time();
 }
 
-function killmail_entity_public_endpoint(string $entityType, int $entityId): ?string
-{
-    if ($entityId <= 0) {
-        return null;
-    }
+// Phase 4: removed killmail_entity_public_endpoint() — no longer called after
+// killmail_entity_network_resolve() was converted to queue-only in Phase 2.
 
-    return match ($entityType) {
-        'alliance' => 'https://esi.evetech.net/latest/alliances/' . $entityId . '/?datasource=tranquility',
-        'corporation' => 'https://esi.evetech.net/latest/corporations/' . $entityId . '/?datasource=tranquility',
-        'character' => 'https://esi.evetech.net/latest/characters/' . $entityId . '/?datasource=tranquility',
-        default => null,
-    };
-}
 
 function killmail_entity_network_resolve(array $missingByType): void
 {
-    $dynamicIds = [];
+    // Phase 2: no direct ESI calls from PHP.
+    // Queue all missing entities as pending in entity_metadata_cache.
+    // Python's entity_metadata_resolve_sync job will resolve them asynchronously
+    // via the ESI gateway with proper rate limiting and compliance.
     foreach (['alliance', 'corporation', 'character'] as $type) {
-        foreach ((array) ($missingByType[$type] ?? []) as $id) {
-            $entityId = (int) $id;
-            if ($entityId > 0) {
-                $dynamicIds[$entityId] = $entityId;
-            }
+        $ids = array_values(array_unique(array_filter(
+            array_map(static fn (mixed $id): int => (int) $id, (array) ($missingByType[$type] ?? [])),
+            static fn (int $id): bool => $id > 0
+        )));
+        if ($ids !== []) {
+            db_entity_metadata_cache_mark_pending($type, $ids);
         }
-    }
-
-    $upserts = [];
-    $resolvedByType = ['alliance' => [], 'corporation' => [], 'character' => []];
-
-    if ($dynamicIds !== []) {
-        try {
-            $nameRows = esi_universe_names_lookup(array_values($dynamicIds));
-        } catch (Throwable) {
-            $nameRows = [];
-        }
-
-        foreach ($nameRows as $row) {
-            if (!is_array($row)) {
-                continue;
-            }
-
-            $id = (int) ($row['id'] ?? 0);
-            $type = strtolower(trim((string) ($row['category'] ?? '')));
-            $name = trim((string) ($row['name'] ?? ''));
-            if ($id <= 0 || $name === '' || !isset($resolvedByType[$type])) {
-                continue;
-            }
-
-            $resolvedByType[$type][$id] = true;
-            $upserts[] = [
-                'entity_type' => $type,
-                'entity_id' => $id,
-                'entity_name' => $name,
-                'image_url' => killmail_entity_image_url($type, $id),
-                'metadata_json' => json_encode(['via' => 'universe_names'], JSON_THROW_ON_ERROR),
-                'source_system' => 'esi',
-                'resolution_status' => 'resolved',
-                'expires_at' => killmail_entity_cache_ttl($type),
-                'resolved_at' => gmdate('Y-m-d H:i:s'),
-                'last_error_message' => null,
-            ];
-        }
-    }
-
-    foreach (['alliance', 'corporation', 'character'] as $type) {
-        foreach ((array) ($missingByType[$type] ?? []) as $id) {
-            $entityId = (int) $id;
-            if ($entityId <= 0 || isset($resolvedByType[$type][$entityId])) {
-                continue;
-            }
-
-            $endpoint = killmail_entity_public_endpoint($type, $entityId);
-            if ($endpoint === null) {
-                continue;
-            }
-
-            try {
-                $response = http_get_json($endpoint, [
-                    'Accept: application/json',
-                    'User-Agent: ' . esi_user_agent(),
-                ]);
-            } catch (Throwable $exception) {
-                $response = ['status' => 599, 'json' => [], 'body' => '', 'error_message' => $exception->getMessage()];
-            }
-
-            if (($response['status'] ?? 500) >= 400) {
-                db_entity_metadata_cache_upsert([[
-                    'entity_type' => $type,
-                    'entity_id' => $entityId,
-                    'entity_name' => null,
-                    'image_url' => killmail_entity_image_url($type, $entityId),
-                    'metadata_json' => null,
-                    'source_system' => 'esi',
-                    'resolution_status' => 'failed',
-                    'expires_at' => gmdate('Y-m-d H:i:s', strtotime('+6 hours')),
-                    'resolved_at' => null,
-                    'last_error_message' => 'ESI profile lookup failed with status ' . (int) ($response['status'] ?? 0),
-                ]]);
-                continue;
-            }
-
-            $name = trim((string) ($response['json']['name'] ?? ''));
-            if ($name === '') {
-                continue;
-            }
-
-            $resolvedByType[$type][$entityId] = true;
-            $upserts[] = [
-                'entity_type' => $type,
-                'entity_id' => $entityId,
-                'entity_name' => $name,
-                'image_url' => killmail_entity_image_url($type, $entityId),
-                'metadata_json' => json_encode((array) ($response['json'] ?? []), JSON_THROW_ON_ERROR),
-                'source_system' => 'esi',
-                'resolution_status' => 'resolved',
-                'expires_at' => killmail_entity_cache_ttl($type),
-                'resolved_at' => gmdate('Y-m-d H:i:s'),
-                'last_error_message' => null,
-            ];
-        }
-    }
-
-    if ($upserts !== []) {
-        db_entity_metadata_cache_upsert($upserts);
     }
 }
 
@@ -15064,37 +14958,9 @@ function http_get_json_multi_with_backoff(array $requests, int $maxAttempts = 4,
     return $resolved;
 }
 
-function market_order_page_canonical_rows(
-    array $payload,
-    int $sourceId,
-    string $observedAt,
-    string $sourceType,
-    ?int $locationIdFilter = null
-): array {
-    $rowsSeen = 0;
-    $canonicalRows = [];
+// Phase 4: removed market_order_page_canonical_rows() — only called by
+// the removed sync_market_hub_current_orders().
 
-    foreach ($payload as $order) {
-        if (!is_array($order)) {
-            continue;
-        }
-
-        if ($locationIdFilter !== null && (int) ($order['location_id'] ?? 0) !== $locationIdFilter) {
-            continue;
-        }
-
-        $rowsSeen++;
-        $mapped = canonicalize_esi_market_order($order, $sourceId, $observedAt, $sourceType);
-        if ($mapped !== null) {
-            $canonicalRows[] = $mapped;
-        }
-    }
-
-    return [
-        'rows_seen' => $rowsSeen,
-        'rows' => $canonicalRows,
-    ];
-}
 
 function item_scope_allowed_type_ids(): array
 {
@@ -16286,591 +16152,10 @@ function market_hub_current_sync_daily_canonical_rows(string|int|null $hubRef = 
     return $canonicalRows;
 }
 
-function canonicalize_esi_market_order(array $order, int $sourceId, string $observedAt, string $sourceType = 'alliance_structure'): ?array
-{
-    $orderId = (int) ($order['order_id'] ?? 0);
-    $typeId = (int) ($order['type_id'] ?? 0);
-    if ($orderId <= 0 || $typeId <= 0) {
-        return null;
-    }
-
-    $issuedAt = strtotime((string) ($order['issued'] ?? ''));
-    if ($issuedAt === false) {
-        $issuedAt = time();
-    }
-
-    $duration = max(1, (int) ($order['duration'] ?? 1));
-    $expiresAt = strtotime((string) ($order['expires'] ?? ''));
-    if ($expiresAt === false) {
-        $expiresAt = strtotime('+' . $duration . ' days', $issuedAt);
-    }
-
-    $normalizedSourceType = $sourceType === 'market_hub' ? 'market_hub' : 'alliance_structure';
-
-    return [
-        'source_type' => $normalizedSourceType,
-        'source_id' => $sourceId,
-        'type_id' => $typeId,
-        'order_id' => $orderId,
-        'is_buy_order' => !empty($order['is_buy_order']) ? 1 : 0,
-        'price' => (float) ($order['price'] ?? 0),
-        'volume_remain' => max(0, (int) ($order['volume_remain'] ?? 0)),
-        'volume_total' => max(0, (int) ($order['volume_total'] ?? 0)),
-        'min_volume' => max(1, (int) ($order['min_volume'] ?? 1)),
-        'range' => (string) ($order['range'] ?? 'region'),
-        'duration' => $duration,
-        'issued' => gmdate('Y-m-d H:i:s', $issuedAt),
-        'expires' => gmdate('Y-m-d H:i:s', $expiresAt),
-        'observed_at' => $observedAt,
-    ];
-}
-
-function esi_market_request_headers(array $extraHeaders = []): array
-{
-    $headers = [
-        'Accept: application/json',
-        'X-Compatibility-Date: 2025-12-16',
-        'X-Tenant: tranquility',
-    ];
-
-    foreach ($extraHeaders as $header) {
-        $normalized = trim((string) $header);
-        if ($normalized !== '') {
-            $headers[] = $normalized;
-        }
-    }
-
-    return $headers;
-}
-
-function sync_alliance_structure_orders(int $structureId, string $runMode = 'incremental'): array
-{
-    $result = sync_result_shape();
-    $syncMode = sync_mode_normalize($runMode);
-    $datasetKeyCurrent = sync_dataset_key_alliance_structure_orders_current($structureId);
-    $datasetKeyHistory = sync_dataset_key_alliance_structure_orders_history($structureId);
-
-    if (!is_valid_alliance_structure_id($structureId)) {
-        $result['warnings'][] = 'Invalid alliance structure id. Configure an alliance-owned Upwell structure ID (not an NPC station/region) and ensure ESI login is active.';
-
-        return $result;
-    }
-
-    $context = esi_lookup_context(esi_required_market_structure_scopes());
-    if (($context['ok'] ?? false) !== true) {
-        $result['warnings'][] = (string) ($context['error'] ?? 'Missing ESI context for structure market sync.');
-
-        return $result;
-    }
-
-    $accessToken = (string) ($context['token']['access_token'] ?? '');
-    $observedAt = gmdate('Y-m-d H:i:s');
-    $page = 1;
-    $maxPages = 1;
-    $mappedOrders = [];
-    $pagesProcessed = 0;
-
-    while ($page <= $maxPages) {
-        $response = http_get_json_with_backoff(
-            'https://esi.evetech.net/latest/markets/structures/' . $structureId . '/?page=' . $page,
-            esi_market_request_headers([
-                'Authorization: Bearer ' . $accessToken,
-            ])
-        );
-
-        $status = (int) ($response['status'] ?? 500);
-        if ($status >= 400) {
-            $result['warnings'][] = 'ESI structure market sync failed on page ' . $page . ' with status ' . $status . '.';
-            break;
-        }
-
-        $payload = $response['json'] ?? [];
-        if (!is_array($payload)) {
-            $result['warnings'][] = 'ESI structure market page ' . $page . ' returned a non-array payload.';
-            break;
-        }
-
-        $result['rows_seen'] += count($payload);
-        $pagesProcessed++;
-        foreach ($payload as $order) {
-            if (!is_array($order)) {
-                continue;
-            }
-
-            $mapped = canonicalize_esi_market_order($order, $structureId, $observedAt);
-            if ($mapped !== null) {
-                $mappedOrders[] = $mapped;
-            }
-        }
-
-        $pagesHeader = $response['headers']['x-pages'] ?? '1';
-        if (is_array($pagesHeader)) {
-            $pagesHeader = end($pagesHeader);
-        }
-
-        $maxPages = max(1, (int) $pagesHeader);
-        $page++;
-    }
-
-    $snapshotCursor = 'observed_at:' . $observedAt . ';page:' . max(1, $page - 1);
-    $result['cursor'] = $snapshotCursor;
-
-    $checksum = sync_checksum($mappedOrders);
-
-    $runIdCurrent = db_sync_run_start($datasetKeyCurrent, $syncMode, sync_watermark($datasetKeyCurrent));
-    $runIdHistory = db_sync_run_start($datasetKeyHistory, $syncMode, sync_watermark($datasetKeyHistory));
-    $currentFinished = false;
-    $historyFinished = false;
-
-    try {
-        if ($mappedOrders === []) {
-            sync_run_finalize_success($runIdCurrent, $datasetKeyCurrent, $syncMode, $result['rows_seen'], 0, $snapshotCursor, $checksum);
-            $currentFinished = true;
-            sync_run_finalize_success($runIdHistory, $datasetKeyHistory, $syncMode, $result['rows_seen'], 0, $snapshotCursor, $checksum);
-            $historyFinished = true;
-            $result['checksum'] = $checksum;
-            $result['meta'] = [
-                'operational_market_id' => $structureId,
-                'operational_market' => selected_station_name('alliance_station_id') ?? ('Structure ' . $structureId),
-                'records_fetched' => (int) $result['rows_seen'],
-                'records_inserted' => 0,
-                'records_updated' => 0,
-                'records_skipped' => (int) $result['rows_seen'],
-                'records_deleted' => 0,
-                'api_pages_processed' => $pagesProcessed,
-                'no_changes' => true,
-            ];
-
-            return $result;
-        }
-
-        $writtenCurrent = db_market_orders_current_bulk_upsert($mappedOrders);
-        db_market_source_snapshot_state_upsert([
-            'source_type' => 'alliance_structure',
-            'source_id' => $structureId,
-            'latest_current_observed_at' => $observedAt,
-            'current_order_count' => count($mappedOrders),
-            'current_distinct_type_count' => market_order_distinct_type_count($mappedOrders),
-            'last_synced_at' => $observedAt,
-        ]);
-        sync_run_finalize_success($runIdCurrent, $datasetKeyCurrent, $syncMode, $result['rows_seen'], $writtenCurrent, $snapshotCursor, $checksum);
-        $currentFinished = true;
-
-        $writtenHistory = db_market_orders_history_bulk_insert($mappedOrders);
-        sync_run_finalize_success($runIdHistory, $datasetKeyHistory, $syncMode, $result['rows_seen'], $writtenHistory, $snapshotCursor, $checksum);
-        $historyFinished = true;
-
-        $result['rows_written'] = $writtenCurrent + $writtenHistory;
-        $result['checksum'] = $checksum;
-        $result['meta'] = [
-            'operational_market_id' => $structureId,
-                'operational_market' => selected_station_name('alliance_station_id') ?? ('Structure ' . $structureId),
-            'records_fetched' => (int) $result['rows_seen'],
-            'records_inserted' => 0,
-            'records_updated' => (int) $writtenCurrent,
-            'records_skipped' => max(0, (int) $result['rows_seen'] - (int) $writtenCurrent),
-            'records_deleted' => 0,
-            'history_rows_generated' => (int) $writtenHistory,
-            'api_pages_processed' => $pagesProcessed,
-            'no_changes' => ((int) $writtenCurrent + (int) $writtenHistory) === 0,
-        ];
-
-        return $result;
-    } catch (Throwable $exception) {
-        if (!$currentFinished) {
-            sync_run_finalize_failure($runIdCurrent, $datasetKeyCurrent, $syncMode, $exception->getMessage());
-        }
-
-        if (!$historyFinished) {
-            sync_run_finalize_failure($runIdHistory, $datasetKeyHistory, $syncMode, $exception->getMessage());
-        }
-
-        $result['warnings'][] = 'Alliance structure order sync failed: ' . $exception->getMessage();
-        $result['checksum'] = $checksum;
-
-        return $result;
-    }
-}
-
-function market_hub_reference_context(string|int $hubRef): array
-{
-    $hubKey = trim((string) $hubRef);
-    $hubId = (int) $hubKey;
-    $fallbackName = market_hub_reference_name();
-
-    if ($hubId <= 0) {
-        return [
-            'hub_id' => $hubKey,
-            'hub_name' => $fallbackName,
-            'hub_type' => 'unknown',
-            'api_source' => 'unknown',
-            'region_id' => null,
-            'system_id' => null,
-            'structure_id' => null,
-        ];
-    }
-
-    try {
-        $npcStation = db_ref_npc_station_by_id($hubId);
-    } catch (Throwable) {
-        $npcStation = null;
-    }
-
-    try {
-        $structureMetadata = db_alliance_structure_metadata_get($hubId);
-    } catch (Throwable) {
-        $structureMetadata = null;
-    }
-
-    $looksLikeStructureId = preg_match('/^[1-9][0-9]{9,19}$/', (string) $hubId) === 1;
-    $hasStructureMetadata = $structureMetadata !== null;
-    $preferStructure = $hasStructureMetadata || $looksLikeStructureId;
-
-    if ($npcStation !== null && !$preferStructure) {
-        $systemId = (int) ($npcStation['system_id'] ?? 0);
-        $resolvedSystemId = $systemId > 0 ? $systemId : null;
-
-        try {
-            $regionId = $resolvedSystemId !== null ? db_ref_system_region_id($resolvedSystemId) : null;
-        } catch (Throwable) {
-            $regionId = null;
-        }
-
-        $npcName = trim((string) ($npcStation['station_name'] ?? ''));
-        if ($npcName === '' || is_placeholder_station_name($npcName, $hubId)) {
-            try {
-                $metadata = esi_npc_station_metadata($hubId);
-            } catch (Throwable) {
-                $metadata = null;
-            }
-
-            if ($metadata !== null && trim((string) ($metadata['name'] ?? '')) !== '') {
-                $npcName = trim((string) ($metadata['name'] ?? ''));
-            }
-        }
-
-        return [
-            'hub_id' => (string) $hubId,
-            'hub_name' => $npcName !== '' ? $npcName : $fallbackName,
-            'hub_type' => 'npc_station',
-            'api_source' => 'esi.region_orders',
-            'region_id' => $regionId,
-            'system_id' => $resolvedSystemId,
-            'structure_id' => null,
-        ];
-    }
-
-    if ($preferStructure) {
-        $structureName = trim((string) ($structureMetadata['structure_name'] ?? ''));
-
-        return [
-            'hub_id' => (string) $hubId,
-            'hub_name' => $structureName !== '' ? $structureName : (selected_station_name('market_station_id') ?? ('Structure #' . $hubId)),
-            'hub_type' => 'structure',
-            'api_source' => 'esi.structure_orders',
-            'region_id' => null,
-            'system_id' => null,
-            'structure_id' => $hubId,
-        ];
-    }
-
-    return [
-        'hub_id' => (string) $hubId,
-        'hub_name' => selected_station_name('market_station_id') ?? $fallbackName,
-        'hub_type' => 'unknown',
-        'api_source' => 'unknown',
-        'region_id' => null,
-        'system_id' => null,
-        'structure_id' => null,
-    ];
-}
-
-function sync_market_hub_current_orders(string|int $hubRef, string $runMode = 'incremental'): array
-{
-    $result = sync_result_shape();
-    $syncMode = sync_mode_normalize($runMode);
-    $hubKey = trim((string) $hubRef);
-    if ($hubKey === '') {
-        $result['warnings'][] = 'Market hub reference is required.';
-
-        return $result;
-    }
-
-    $hubContext = market_hub_reference_context($hubKey);
-    $sourceId = sync_source_id_from_hub_ref($hubKey);
-    $datasetKeyCurrent = sync_dataset_key_market_hub_current_orders($hubKey);
-    $datasetKeyHistory = sync_dataset_key_market_hub_orders_history($hubKey);
-    $runIdCurrent = db_sync_run_start($datasetKeyCurrent, $syncMode, sync_watermark($datasetKeyCurrent));
-    $runIdHistory = db_sync_run_start($datasetKeyHistory, $syncMode, sync_watermark($datasetKeyHistory));
-    $currentFinished = false;
-    $historyFinished = false;
-
-    try {
-        $observedAt = gmdate('Y-m-d H:i:s');
-        $page = 1;
-        $maxPages = 1;
-        $canonicalRows = [];
-        $pagesProcessed = 0;
-
-        $selectedHubId = (string) ($hubContext['hub_id'] ?? $hubKey);
-        $selectedHubName = (string) ($hubContext['hub_name'] ?? market_hub_reference_name());
-        $selectedHubType = (string) ($hubContext['hub_type'] ?? 'unknown');
-        $effectiveApiSource = (string) ($hubContext['api_source'] ?? 'unknown');
-        $resolvedRegionId = null;
-        $resolvedStructureId = null;
-
-        if ($selectedHubType === 'structure') {
-            $structureId = (int) ($hubContext['structure_id'] ?? 0);
-            if ($structureId <= 0) {
-                throw new RuntimeException('Hub current sync requires a valid structure ID when the reference hub type is structure.');
-            }
-            $resolvedStructureId = $structureId;
-
-            $context = esi_lookup_context(esi_required_market_structure_scopes());
-            if (($context['ok'] ?? false) !== true) {
-                throw new RuntimeException((string) ($context['error'] ?? 'Missing ESI context for structure market sync.'));
-            }
-
-            $accessToken = (string) ($context['token']['access_token'] ?? '');
-            $requestHeaders = esi_market_request_headers([
-                'Authorization: Bearer ' . $accessToken,
-            ]);
-            $parallelPagesPerBatch = 6;
-
-            $endpoint = 'https://esi.evetech.net/latest/markets/structures/' . $structureId . '/?page=' . $page;
-            $response = http_get_json_with_backoff($endpoint, $requestHeaders);
-            $status = (int) ($response['status'] ?? 500);
-
-            if ($status >= 400) {
-                throw new RuntimeException('ESI structure market sync failed on page ' . $page . ' with status ' . $status . '.');
-            }
-
-            $payload = $response['json'] ?? [];
-            if (!is_array($payload)) {
-                throw new RuntimeException('ESI structure market page ' . $page . ' returned a non-array payload.');
-            }
-
-            $pagesProcessed++;
-            $processedPage = market_order_page_canonical_rows($payload, $sourceId, $observedAt, 'market_hub');
-            $result['rows_seen'] += (int) ($processedPage['rows_seen'] ?? 0);
-            $canonicalRows = array_merge($canonicalRows, $processedPage['rows'] ?? []);
-
-            $pagesHeader = $response['headers']['x-pages'] ?? '1';
-            if (is_array($pagesHeader)) {
-                $pagesHeader = end($pagesHeader);
-            }
-
-            $maxPages = max(1, (int) $pagesHeader);
-            $page++;
-
-            while ($page <= $maxPages) {
-                $batchEndPage = min($maxPages, $page + $parallelPagesPerBatch - 1);
-                $requests = [];
-
-                for ($batchPage = $page; $batchPage <= $batchEndPage; $batchPage++) {
-                    $requests[$batchPage] = [
-                        'url' => 'https://esi.evetech.net/latest/markets/structures/' . $structureId . '/?page=' . $batchPage,
-                        'headers' => $requestHeaders,
-                    ];
-                }
-
-                $responses = http_get_json_multi_with_backoff($requests);
-                ksort($responses, SORT_NUMERIC);
-
-                foreach ($responses as $batchPage => $batchResponse) {
-                    $batchStatus = (int) ($batchResponse['status'] ?? 500);
-                    $batchError = trim((string) ($batchResponse['error'] ?? ''));
-                    if ($batchError !== '') {
-                        throw new RuntimeException('ESI structure market sync failed on page ' . $batchPage . ': ' . $batchError);
-                    }
-
-                    if ($batchStatus >= 400) {
-                        throw new RuntimeException('ESI structure market sync failed on page ' . $batchPage . ' with status ' . $batchStatus . '.');
-                    }
-
-                    $batchPayload = $batchResponse['json'] ?? [];
-                    if (!is_array($batchPayload)) {
-                        throw new RuntimeException('ESI structure market page ' . $batchPage . ' returned a non-array payload.');
-                    }
-
-                    $pagesProcessed++;
-                    $processedPage = market_order_page_canonical_rows($batchPayload, $sourceId, $observedAt, 'market_hub');
-                    $result['rows_seen'] += (int) ($processedPage['rows_seen'] ?? 0);
-                    $canonicalRows = array_merge($canonicalRows, $processedPage['rows'] ?? []);
-                }
-
-                $page = $batchEndPage + 1;
-            }
-
-            $result['cursor'] = 'observed_at:' . $observedAt . ';source:structure;id:' . $structureId . ';page:' . max(1, $page - 1);
-        } elseif ($selectedHubType === 'npc_station') {
-            $regionId = (int) ($hubContext['region_id'] ?? 0);
-            $systemId = (int) ($hubContext['system_id'] ?? 0);
-            $stationId = (int) $hubKey;
-            if ($stationId <= 0 || $systemId <= 0 || $regionId <= 0) {
-                throw new RuntimeException('Missing station→system→region mapping (selected_hub_id=' . $stationId . ', system_id=' . $systemId . ', resolved_region_id=' . $regionId . ').');
-            }
-            $resolvedRegionId = $regionId;
-            $requestHeaders = esi_market_request_headers();
-            $parallelPagesPerBatch = 6;
-
-            $endpoint = 'https://esi.evetech.net/latest/markets/' . $regionId . '/orders/?order_type=all&page=' . $page;
-            $response = http_get_json_with_backoff($endpoint, $requestHeaders);
-            $status = (int) ($response['status'] ?? 500);
-
-            if ($status >= 400) {
-                throw new RuntimeException('ESI region market sync failed on page ' . $page . ' with status ' . $status . '.');
-            }
-
-            $payload = $response['json'] ?? [];
-            if (!is_array($payload)) {
-                throw new RuntimeException('ESI region market page ' . $page . ' returned a non-array payload.');
-            }
-
-            $pagesProcessed++;
-            $processedPage = market_order_page_canonical_rows($payload, $sourceId, $observedAt, 'market_hub', $stationId);
-            $result['rows_seen'] += (int) ($processedPage['rows_seen'] ?? 0);
-            $canonicalRows = array_merge($canonicalRows, $processedPage['rows'] ?? []);
-
-            $pagesHeader = $response['headers']['x-pages'] ?? '1';
-            if (is_array($pagesHeader)) {
-                $pagesHeader = end($pagesHeader);
-            }
-
-            $maxPages = max(1, (int) $pagesHeader);
-            $page++;
-
-            while ($page <= $maxPages) {
-                $batchEndPage = min($maxPages, $page + $parallelPagesPerBatch - 1);
-                $requests = [];
-
-                for ($batchPage = $page; $batchPage <= $batchEndPage; $batchPage++) {
-                    $requests[$batchPage] = [
-                        'url' => 'https://esi.evetech.net/latest/markets/' . $regionId . '/orders/?order_type=all&page=' . $batchPage,
-                        'headers' => $requestHeaders,
-                    ];
-                }
-
-                $responses = http_get_json_multi_with_backoff($requests);
-                ksort($responses, SORT_NUMERIC);
-
-                foreach ($responses as $batchPage => $batchResponse) {
-                    $batchStatus = (int) ($batchResponse['status'] ?? 500);
-                    $batchError = trim((string) ($batchResponse['error'] ?? ''));
-                    if ($batchError !== '') {
-                        throw new RuntimeException('ESI region market sync failed on page ' . $batchPage . ': ' . $batchError);
-                    }
-
-                    if ($batchStatus >= 400) {
-                        throw new RuntimeException('ESI region market sync failed on page ' . $batchPage . ' with status ' . $batchStatus . '.');
-                    }
-
-                    $batchPayload = $batchResponse['json'] ?? [];
-                    if (!is_array($batchPayload)) {
-                        throw new RuntimeException('ESI region market page ' . $batchPage . ' returned a non-array payload.');
-                    }
-
-                    $pagesProcessed++;
-                    $processedPage = market_order_page_canonical_rows($batchPayload, $sourceId, $observedAt, 'market_hub', $stationId);
-                    $result['rows_seen'] += (int) ($processedPage['rows_seen'] ?? 0);
-                    $canonicalRows = array_merge($canonicalRows, $processedPage['rows'] ?? []);
-                }
-
-                $page = $batchEndPage + 1;
-            }
-
-            $result['cursor'] = 'observed_at:' . $observedAt . ';source:region;id:' . $regionId . ';page:' . max(1, $page - 1);
-        } else {
-            throw new RuntimeException('Hub current sync requires selected_hub_type to be structure or npc_station. Received: ' . $selectedHubType . '.');
-        }
-
-        $result['checksum'] = sync_checksum($canonicalRows);
-
-        if ($canonicalRows === []) {
-            $result['warnings'][] = 'No canonical market hub current rows were mapped from ESI payload.';
-            $result['meta'] = [
-                'selected_hub_id' => $selectedHubId,
-                'selected_hub_name' => $selectedHubName,
-                'selected_hub_type' => $selectedHubType,
-                'system_id' => isset($hubContext['system_id']) && $hubContext['system_id'] !== null ? (int) $hubContext['system_id'] : null,
-                'effective_api_source' => $effectiveApiSource,
-                'resolved_region_id' => $resolvedRegionId,
-                'resolved_structure_id' => $resolvedStructureId,
-                'records_fetched' => (int) $result['rows_seen'],
-                'records_inserted' => 0,
-                'records_updated' => 0,
-                'records_skipped' => (int) $result['rows_seen'],
-                'records_deleted' => 0,
-                'api_pages_processed' => $pagesProcessed,
-                'no_changes' => true,
-            ];
-            sync_run_finalize_success($runIdCurrent, $datasetKeyCurrent, $syncMode, $result['rows_seen'], 0, $result['cursor'], $result['checksum']);
-            $currentFinished = true;
-            sync_run_finalize_success($runIdHistory, $datasetKeyHistory, $syncMode, $result['rows_seen'], 0, $result['cursor'], $result['checksum']);
-            $historyFinished = true;
-
-            return $result;
-        }
-
-        $writtenCurrent = db_market_orders_current_bulk_upsert($canonicalRows);
-        db_market_source_snapshot_state_upsert([
-            'source_type' => 'market_hub',
-            'source_id' => $sourceId,
-            'latest_current_observed_at' => $observedAt,
-            'current_order_count' => count($canonicalRows),
-            'current_distinct_type_count' => market_order_distinct_type_count($canonicalRows),
-            'last_synced_at' => $observedAt,
-        ]);
-        sync_run_finalize_success($runIdCurrent, $datasetKeyCurrent, $syncMode, $result['rows_seen'], $writtenCurrent, $result['cursor'], $result['checksum']);
-        $currentFinished = true;
-
-        $writtenHistory = db_market_orders_history_bulk_insert($canonicalRows);
-        sync_run_finalize_success($runIdHistory, $datasetKeyHistory, $syncMode, $result['rows_seen'], $writtenHistory, $result['cursor'], $result['checksum']);
-        $historyFinished = true;
-
-        $result['rows_written'] = $writtenCurrent + $writtenHistory;
-        $result['meta'] = [
-            'selected_hub_id' => $selectedHubId,
-            'selected_hub_name' => $selectedHubName,
-            'selected_hub_type' => $selectedHubType,
-            'system_id' => isset($hubContext['system_id']) && $hubContext['system_id'] !== null ? (int) $hubContext['system_id'] : null,
-            'effective_api_source' => $effectiveApiSource,
-            'resolved_region_id' => $resolvedRegionId,
-            'resolved_structure_id' => $resolvedStructureId,
-            'records_fetched' => (int) $result['rows_seen'],
-            'records_inserted' => 0,
-            'records_updated' => (int) $writtenCurrent,
-            'records_skipped' => max(0, (int) $result['rows_seen'] - (int) $writtenCurrent),
-            'records_deleted' => 0,
-            'history_rows_generated' => (int) $writtenHistory,
-            'api_pages_processed' => $pagesProcessed,
-            'no_changes' => ((int) $writtenCurrent + (int) $writtenHistory) === 0,
-        ];
-
-        return $result;
-    } catch (Throwable $exception) {
-        if (!$currentFinished) {
-            sync_run_finalize_failure($runIdCurrent, $datasetKeyCurrent, $syncMode, $exception->getMessage());
-        }
-
-        if (!$historyFinished) {
-            sync_run_finalize_failure($runIdHistory, $datasetKeyHistory, $syncMode, $exception->getMessage());
-        }
-
-        $result['warnings'][] = 'Hub current sync failed: ' . $exception->getMessage();
-        $result['meta'] = [
-            'selected_hub_id' => (string) ($hubContext['hub_id'] ?? $hubKey),
-            'selected_hub_name' => (string) ($hubContext['hub_name'] ?? market_hub_reference_name()),
-            'selected_hub_type' => (string) ($hubContext['hub_type'] ?? 'unknown'),
-            'system_id' => isset($hubContext['system_id']) && $hubContext['system_id'] !== null ? (int) $hubContext['system_id'] : null,
-            'effective_api_source' => (string) ($hubContext['api_source'] ?? 'unknown'),
-            'resolved_region_id' => isset($hubContext['region_id']) && $hubContext['region_id'] !== null ? (int) $hubContext['region_id'] : null,
-            'resolved_structure_id' => isset($hubContext['structure_id']) && $hubContext['structure_id'] !== null ? (int) $hubContext['structure_id'] : null,
-        ];
-
-        return $result;
-    }
-}
+// Phase 4: removed canonicalize_esi_market_order(), esi_market_request_headers(),
+// sync_alliance_structure_orders(), and sync_market_hub_current_orders().
+// All ESI market sync is now handled by Python (alliance_current_sync.py,
+// market_hub_current_sync.py) via the ESI gateway.
 
 function sync_market_history_from_snapshots(
     string $sourceType,
@@ -17466,33 +16751,50 @@ function esi_universe_names_lookup(array $ids): array
         return [];
     }
 
-    $ch = curl_init('https://esi.evetech.net/latest/universe/names/?datasource=tranquility');
-    curl_setopt_array($ch, [
-        CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_TIMEOUT => 25,
-        CURLOPT_POST => true,
-        CURLOPT_HTTPHEADER => ['Accept: application/json', 'Content-Type: application/json', 'User-Agent: ' . esi_user_agent()],
-        CURLOPT_POSTFIELDS => json_encode($queryIds, JSON_THROW_ON_ERROR),
-    ]);
+    // Phase 2: read from entity_metadata_cache instead of calling ESI directly.
+    // Python's entity_metadata_resolve_sync job resolves pending entities asynchronously.
+    $results = [];
+    $resolvedIds = [];
 
-    $body = curl_exec($ch);
-    $status = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
-    $error = curl_error($ch);
-    curl_close($ch);
-
-    if ($body === false) {
-        throw new RuntimeException('Failed resolving entity IDs from ESI: ' . $error);
+    foreach (['alliance', 'corporation', 'character'] as $type) {
+        $cached = db_entity_metadata_cache_get_many($type, $queryIds);
+        foreach ($cached as $row) {
+            $entityId = (int) ($row['entity_id'] ?? 0);
+            $name = trim((string) ($row['entity_name'] ?? ''));
+            if ($entityId > 0 && $name !== '' && ($row['resolution_status'] ?? '') === 'resolved') {
+                $results[] = [
+                    'id' => $entityId,
+                    'name' => $name,
+                    'category' => (string) ($row['entity_type'] ?? $type),
+                ];
+                $resolvedIds[$entityId] = true;
+            }
+        }
     }
 
-    if ($status !== 200) {
-        throw new RuntimeException('Failed resolving entity IDs from ESI. HTTP status=' . $status);
+    // Queue unresolved IDs for async Python resolution.
+    $unresolvedIds = array_values(array_filter($queryIds, static fn (int $id): bool => !isset($resolvedIds[$id])));
+    if ($unresolvedIds !== []) {
+        try {
+            // Mark as pending for each possible type — the resolver will determine the actual type.
+            db_entity_metadata_cache_mark_pending('character', $unresolvedIds);
+        } catch (Throwable) {
+            // Non-fatal.
+        }
     }
 
-    $decoded = json_decode($body, true);
-
-    return is_array($decoded) ? $decoded : [];
+    return $results;
 }
 
+/**
+ * Search alliances and corporations by name via authenticated ESI character search.
+ *
+ * Requires ``esi-search.search_structures.v1`` scope. Intentionally kept as a
+ * PHP ESI callsite because the killmail entity settings UI needs synchronous
+ * search results for the autocomplete typeahead.
+ *
+ * @todo Phase 3: route through a Python ESI search proxy for rate-limit coordination.
+ */
 function esi_alliance_and_corporation_search(string $query, array $tokenContext): array
 {
     $term = trim($query);
@@ -17587,40 +16889,35 @@ function killmail_public_entity_lookup_by_id(int $id, ?string $type = null): arr
         return [];
     }
 
-    $types = [];
+    // Phase 2: read from entity_metadata_cache instead of calling ESI directly.
     $normalizedType = killmail_entity_type_label($type);
-    if ($normalizedType !== null) {
-        $types[] = $normalizedType;
-    } else {
-        $types = ['Alliance', 'Corporation'];
+    $typesToCheck = $normalizedType !== null ? [strtolower($normalizedType)] : ['alliance', 'corporation'];
+    $results = [];
+
+    foreach ($typesToCheck as $entityType) {
+        $cached = db_entity_metadata_cache_get_many($entityType, [$id]);
+        if (!empty($cached)) {
+            $row = reset($cached);
+            $name = trim((string) ($row['entity_name'] ?? ''));
+            if ($name !== '' && ($row['resolution_status'] ?? '') === 'resolved') {
+                $results[] = esi_entity_result_shape([
+                    'id' => $id,
+                    'name' => $name,
+                    'type' => ucfirst($entityType),
+                ]);
+            }
+        }
     }
 
-    $endpoints = [
-        'Alliance' => 'https://esi.evetech.net/latest/alliances/' . $id . '/?datasource=tranquility',
-        'Corporation' => 'https://esi.evetech.net/latest/corporations/' . $id . '/?datasource=tranquility',
-    ];
-
-    $results = [];
-    foreach ($types as $label) {
-        $response = http_get_json($endpoints[$label], [
-            'Accept: application/json',
-            'User-Agent: ' . esi_user_agent(),
-        ]);
-
-        if (($response['status'] ?? 500) >= 400) {
-            continue;
+    // Queue for async Python resolution if nothing found.
+    if (empty($results)) {
+        try {
+            foreach ($typesToCheck as $entityType) {
+                db_entity_metadata_cache_mark_pending($entityType, [$id]);
+            }
+        } catch (Throwable) {
+            // Non-fatal.
         }
-
-        $name = trim((string) ($response['json']['name'] ?? ''));
-        if ($name === '') {
-            continue;
-        }
-
-        $results[] = esi_entity_result_shape([
-            'id' => $id,
-            'name' => $name,
-            'type' => $label,
-        ]);
     }
 
     return $results;
@@ -17682,18 +16979,25 @@ function killmail_entity_search(string $query, ?string $type = null): array
     return array_slice($rows, 0, 20);
 }
 
+/**
+ * Resolve alliance structure metadata (name) for a player-owned Upwell structure.
+ *
+ * Structures require an authenticated ESI call with ``esi-universe.read_structures.v1``
+ * scope — ESI only returns details for structures where the character has docking rights.
+ * This is intentionally kept as a PHP ESI callsite because settings validation (first-time
+ * structure setup) requires synchronous feedback that the structure exists and is accessible.
+ *
+ * The function reads from the ``alliance_structure_metadata`` DB cache first.
+ * On cache miss, it makes an authenticated ESI call, caches the result, and returns it.
+ * Once cached, subsequent calls (and Python's market sync jobs) use the cached name.
+ */
 function esi_alliance_structure_metadata(int $structureId, array $tokenContext): ?array
 {
     if ($structureId <= 0) {
         return null;
     }
 
-    try {
-        $accessToken = esi_valid_access_token();
-    } catch (Throwable) {
-        return null;
-    }
-
+    // Cache-first: return immediately if we already have the name.
     $cached = db_alliance_structure_metadata_get($structureId);
     if ($cached !== null && trim((string) ($cached['structure_name'] ?? '')) !== '') {
         return [
@@ -17701,6 +17005,15 @@ function esi_alliance_structure_metadata(int $structureId, array $tokenContext):
             'name' => trim((string) $cached['structure_name']),
             'last_verified_at' => $cached['last_verified_at'] ?? null,
         ];
+    }
+
+    // Cache miss — authenticated ESI call required.
+    // Structures are private: ESI only returns data for structures where the
+    // character has docking rights (Keepstars, Fortizars, etc.).
+    try {
+        $accessToken = esi_valid_access_token();
+    } catch (Throwable) {
+        return null;
     }
 
     $response = http_get_json(
@@ -17732,6 +17045,16 @@ function esi_alliance_structure_metadata(int $structureId, array $tokenContext):
     ];
 }
 
+/**
+ * Search for player-owned structures by name via authenticated ESI.
+ *
+ * This requires ``esi-search.search_structures.v1`` scope and only returns
+ * structures where the character has docking rights (Keepstars, Fortizars, etc.).
+ * It is intentionally kept as a PHP ESI callsite because the settings UI needs
+ * synchronous search results during first-time structure setup.
+ *
+ * @todo Phase 3: route through a Python ESI search proxy for rate-limit coordination.
+ */
 function esi_structure_search(string $query, array $tokenContext): array
 {
     $term = trim($query);
@@ -17836,59 +17159,14 @@ function esi_npc_station_search(string $query, array $tokenContext): array
         return [];
     }
 
-    $characterId = (int) ($tokenContext['character_id'] ?? 0);
-    if ($characterId <= 0) {
-        return [];
-    }
-
-    $accessToken = esi_valid_access_token();
-
-    $searchResponse = http_get_json(
-        'https://esi.evetech.net/latest/characters/' . $characterId . '/search/?categories=station&strict=false&search=' . rawurlencode($term),
-        [
-            'Authorization: Bearer ' . $accessToken,
-            'Accept: application/json',
-        ]
-    );
-
-    if (($searchResponse['status'] ?? 500) >= 400) {
-        throw new RuntimeException('Failed to search NPC stations from ESI.');
-    }
-
-    $stationIds = $searchResponse['json']['station'] ?? [];
-    if (!is_array($stationIds)) {
-        return [];
-    }
-
+    // Phase 2: search ref_npc_stations locally instead of calling ESI.
+    $stations = db_ref_npc_station_search($term, 20);
     $results = [];
-    foreach (array_slice($stationIds, 0, 20) as $stationId) {
-        $id = (int) $stationId;
-        if ($id <= 0) {
-            continue;
-        }
-
-        try {
-            $stationResponse = http_get_json(
-                'https://esi.evetech.net/latest/universe/stations/' . $id . '/',
-                ['Accept: application/json']
-            );
-        } catch (Throwable) {
-            continue;
-        }
-
-        if (($stationResponse['status'] ?? 500) >= 400) {
-            continue;
-        }
-
-        $name = trim((string) ($stationResponse['json']['name'] ?? ''));
-        if ($name === '' || mb_stripos($name, $term) === false) {
-            continue;
-        }
-
+    foreach ($stations as $station) {
         $results[] = esi_structure_result_shape([
-            'id' => $id,
-            'name' => $name,
-            'system' => isset($stationResponse['json']['system_id']) ? (string) $stationResponse['json']['system_id'] : null,
+            'id' => (int) ($station['station_id'] ?? 0),
+            'name' => (string) ($station['station_name'] ?? ''),
+            'system' => isset($station['system_id']) ? (string) $station['system_id'] : null,
             'type' => 'NPC Station',
         ]);
     }
@@ -17902,16 +17180,13 @@ function esi_npc_station_metadata(int $stationId): ?array
         return null;
     }
 
-    $response = http_get_json(
-        'https://esi.evetech.net/latest/universe/stations/' . $stationId . '/',
-        ['Accept: application/json']
-    );
-
-    if (($response['status'] ?? 500) >= 400) {
+    // Phase 2: read from ref_npc_stations instead of calling ESI directly.
+    $station = db_ref_npc_station_by_id($stationId);
+    if ($station === null) {
         return null;
     }
 
-    $name = trim((string) ($response['json']['name'] ?? ''));
+    $name = trim((string) ($station['station_name'] ?? ''));
     if ($name === '') {
         return null;
     }
@@ -17919,7 +17194,7 @@ function esi_npc_station_metadata(int $stationId): ?array
     return [
         'id' => $stationId,
         'name' => $name,
-        'system' => isset($response['json']['system_id']) ? (string) $response['json']['system_id'] : null,
+        'system' => isset($station['system_id']) ? (string) $station['system_id'] : null,
         'type' => 'NPC Station',
     ];
 }
@@ -18678,31 +17953,32 @@ function killmail_universe_ids_lookup(array $names): array
         return [];
     }
 
-    $ch = curl_init('https://esi.evetech.net/latest/universe/ids/?datasource=tranquility&language=en');
-    curl_setopt_array($ch, [
-        CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_TIMEOUT => 25,
-        CURLOPT_POST => true,
-        CURLOPT_HTTPHEADER => ['Accept: application/json', 'Content-Type: application/json', 'User-Agent: ' . esi_user_agent()],
-        CURLOPT_POSTFIELDS => json_encode($queryNames, JSON_UNESCAPED_SLASHES),
-    ]);
+    // Phase 2: resolve name→ID from entity_metadata_cache instead of calling ESI.
+    // The entity_metadata_cache is populated by Python's entity_metadata_resolve_sync.
+    $results = [];
+    $placeholders = implode(',', array_fill(0, count($queryNames), '?'));
 
-    $body = curl_exec($ch);
-    $status = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
-    $error = curl_error($ch);
-    curl_close($ch);
-
-    if ($body === false) {
-        throw new RuntimeException('Failed resolving entity names from ESI: ' . $error);
+    foreach (['alliance', 'corporation', 'character'] as $type) {
+        $rows = db_select(
+            "SELECT entity_id, entity_name, entity_type FROM entity_metadata_cache
+             WHERE entity_type = ? AND entity_name IN ($placeholders) AND resolution_status = 'resolved'",
+            array_merge([$type], $queryNames)
+        );
+        $pluralKey = match ($type) {
+            'alliance' => 'alliances',
+            'corporation' => 'corporations',
+            'character' => 'characters',
+            default => $type . 's',
+        };
+        foreach ($rows as $row) {
+            $results[$pluralKey][] = [
+                'id' => (int) ($row['entity_id'] ?? 0),
+                'name' => (string) ($row['entity_name'] ?? ''),
+            ];
+        }
     }
 
-    if ($status !== 200) {
-        throw new RuntimeException('Failed resolving entity names from ESI. HTTP status=' . $status);
-    }
-
-    $decoded = json_decode($body, true);
-
-    return is_array($decoded) ? $decoded : [];
+    return $results;
 }
 
 function killmail_resolve_tracked_entities(string $allianceText, string $corporationText): array
@@ -20396,6 +19672,15 @@ function doctrine_resolve_names_from_esi_ids(array $names): array
     return $resolved;
 }
 
+/**
+ * Search inventory types via authenticated ESI character search.
+ *
+ * Requires ``esi-search.search_structures.v1`` scope. Intentionally kept as a
+ * PHP ESI callsite because the doctrine editor UI needs synchronous search
+ * results for item type autocomplete.
+ *
+ * @todo Phase 3: route through a Python ESI search proxy for rate-limit coordination.
+ */
 function doctrine_search_inventory_type_esi(string $query): ?array
 {
     $term = trim($query);

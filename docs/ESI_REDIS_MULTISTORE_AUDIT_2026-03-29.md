@@ -356,13 +356,38 @@ Track and alert on:
 
 ---
 
-## 10. Only then begin implementation
+## 10. Implementation status
 
-This phase intentionally delivers audit + architecture + plan only.
-No production behavior changes are introduced in this document update.
+All four phases have been implemented:
 
-Immediate next implementation sequence:
-1. Python Redis client + key schema
-2. Python ESI gateway and metadata lifecycle
-3. Python queue/rate lock coordination
-4. PHP ESI callsite removal and read-only alignment
+### Phase 1 — Python ESI gateway with Redis coordination ✓
+- `redis_client.py`, `redis_keys.py` — Redis client with graceful degradation
+- `esi_gateway.py` — Expires-gating, ETag/304, paginated Last-Modified consistency, distributed fetch locks
+- `esi_rate_limiter.py` — Cross-process Redis-backed rate-limit coordination
+- `esi_endpoint_state`, `esi_rate_limit_observations`, `esi_pagination_consistency_events` audit tables
+- All ESI jobs updated to use gateway when Redis is enabled
+
+### Phase 2 — PHP ESI call removal ✓
+- `esi_entity_resolver.py` — Native Python entity resolution (replaces PHP bridge ESI calls)
+- `EsiClient.post()` / `EsiGateway.post()` — POST support for /universe/names/, /universe/ids/
+- 8 PHP ESI functions replaced with cache reads + async queue
+- NPC station lookups use local `ref_npc_stations` table
+- ~590 lines of PHP ESI market sync code removed
+
+### Phase 3 — Queue/rate hardening ✓
+- `scheduler_pressure.py` — Pressure state + ESI freshness calculations
+- Freshness-driven scheduling (skip jobs when ESI data still fresh)
+- Lock-group enforcement at claim time (SQL WHERE clause)
+- Exponential retry backoff + circuit breaker for repeated failures
+
+### Phase 4 — Cleanup ✓
+- Removed dead PHP functions: `canonicalize_esi_market_order`, `esi_market_request_headers`,
+  `sync_alliance_structure_orders`, `sync_market_hub_current_orders`,
+  `market_order_page_canonical_rows`, `killmail_entity_public_endpoint`
+
+### Accepted PHP ESI exceptions (permanent)
+Three authenticated ESI callsites remain in PHP because they require synchronous
+user feedback with OAuth tokens for structure docking rights verification:
+- `esi_alliance_structure_metadata()` — first-time structure setup
+- `esi_structure_search()` — settings UI structure search (docking rights)
+- `esi_alliance_and_corporation_search()` — settings UI entity autocomplete
