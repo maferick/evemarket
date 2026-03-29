@@ -9959,114 +9959,18 @@ function killmail_entity_public_endpoint(string $entityType, int $entityId): ?st
 
 function killmail_entity_network_resolve(array $missingByType): void
 {
-    $dynamicIds = [];
+    // Phase 2: no direct ESI calls from PHP.
+    // Queue all missing entities as pending in entity_metadata_cache.
+    // Python's entity_metadata_resolve_sync job will resolve them asynchronously
+    // via the ESI gateway with proper rate limiting and compliance.
     foreach (['alliance', 'corporation', 'character'] as $type) {
-        foreach ((array) ($missingByType[$type] ?? []) as $id) {
-            $entityId = (int) $id;
-            if ($entityId > 0) {
-                $dynamicIds[$entityId] = $entityId;
-            }
+        $ids = array_values(array_unique(array_filter(
+            array_map(static fn (mixed $id): int => (int) $id, (array) ($missingByType[$type] ?? [])),
+            static fn (int $id): bool => $id > 0
+        )));
+        if ($ids !== []) {
+            db_entity_metadata_cache_mark_pending($type, $ids);
         }
-    }
-
-    $upserts = [];
-    $resolvedByType = ['alliance' => [], 'corporation' => [], 'character' => []];
-
-    if ($dynamicIds !== []) {
-        try {
-            $nameRows = esi_universe_names_lookup(array_values($dynamicIds));
-        } catch (Throwable) {
-            $nameRows = [];
-        }
-
-        foreach ($nameRows as $row) {
-            if (!is_array($row)) {
-                continue;
-            }
-
-            $id = (int) ($row['id'] ?? 0);
-            $type = strtolower(trim((string) ($row['category'] ?? '')));
-            $name = trim((string) ($row['name'] ?? ''));
-            if ($id <= 0 || $name === '' || !isset($resolvedByType[$type])) {
-                continue;
-            }
-
-            $resolvedByType[$type][$id] = true;
-            $upserts[] = [
-                'entity_type' => $type,
-                'entity_id' => $id,
-                'entity_name' => $name,
-                'image_url' => killmail_entity_image_url($type, $id),
-                'metadata_json' => json_encode(['via' => 'universe_names'], JSON_THROW_ON_ERROR),
-                'source_system' => 'esi',
-                'resolution_status' => 'resolved',
-                'expires_at' => killmail_entity_cache_ttl($type),
-                'resolved_at' => gmdate('Y-m-d H:i:s'),
-                'last_error_message' => null,
-            ];
-        }
-    }
-
-    foreach (['alliance', 'corporation', 'character'] as $type) {
-        foreach ((array) ($missingByType[$type] ?? []) as $id) {
-            $entityId = (int) $id;
-            if ($entityId <= 0 || isset($resolvedByType[$type][$entityId])) {
-                continue;
-            }
-
-            $endpoint = killmail_entity_public_endpoint($type, $entityId);
-            if ($endpoint === null) {
-                continue;
-            }
-
-            try {
-                $response = http_get_json($endpoint, [
-                    'Accept: application/json',
-                    'User-Agent: ' . esi_user_agent(),
-                ]);
-            } catch (Throwable $exception) {
-                $response = ['status' => 599, 'json' => [], 'body' => '', 'error_message' => $exception->getMessage()];
-            }
-
-            if (($response['status'] ?? 500) >= 400) {
-                db_entity_metadata_cache_upsert([[
-                    'entity_type' => $type,
-                    'entity_id' => $entityId,
-                    'entity_name' => null,
-                    'image_url' => killmail_entity_image_url($type, $entityId),
-                    'metadata_json' => null,
-                    'source_system' => 'esi',
-                    'resolution_status' => 'failed',
-                    'expires_at' => gmdate('Y-m-d H:i:s', strtotime('+6 hours')),
-                    'resolved_at' => null,
-                    'last_error_message' => 'ESI profile lookup failed with status ' . (int) ($response['status'] ?? 0),
-                ]]);
-                continue;
-            }
-
-            $name = trim((string) ($response['json']['name'] ?? ''));
-            if ($name === '') {
-                continue;
-            }
-
-            $resolvedByType[$type][$entityId] = true;
-            $upserts[] = [
-                'entity_type' => $type,
-                'entity_id' => $entityId,
-                'entity_name' => $name,
-                'image_url' => killmail_entity_image_url($type, $entityId),
-                'metadata_json' => json_encode((array) ($response['json'] ?? []), JSON_THROW_ON_ERROR),
-                'source_system' => 'esi',
-                'resolution_status' => 'resolved',
-                'expires_at' => killmail_entity_cache_ttl($type),
-                'resolved_at' => gmdate('Y-m-d H:i:s'),
-                'last_error_message' => null,
-            ];
-        }
-    }
-
-    if ($upserts !== []) {
-        db_entity_metadata_cache_upsert($upserts);
     }
 }
 
@@ -16339,6 +16243,11 @@ function esi_market_request_headers(array $extraHeaders = []): array
     return $headers;
 }
 
+/**
+ * @deprecated Phase 2: this function is replaced by Python's alliance_current_sync.py.
+ *             All ESI market order fetching is now handled by the Python ESI gateway.
+ *             This function remains for backward compatibility but should not be called.
+ */
 function sync_alliance_structure_orders(int $structureId, string $runMode = 'incremental'): array
 {
     $result = sync_result_shape();
@@ -17462,33 +17371,46 @@ function esi_universe_names_lookup(array $ids): array
         return [];
     }
 
-    $ch = curl_init('https://esi.evetech.net/latest/universe/names/?datasource=tranquility');
-    curl_setopt_array($ch, [
-        CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_TIMEOUT => 25,
-        CURLOPT_POST => true,
-        CURLOPT_HTTPHEADER => ['Accept: application/json', 'Content-Type: application/json', 'User-Agent: ' . esi_user_agent()],
-        CURLOPT_POSTFIELDS => json_encode($queryIds, JSON_THROW_ON_ERROR),
-    ]);
+    // Phase 2: read from entity_metadata_cache instead of calling ESI directly.
+    // Python's entity_metadata_resolve_sync job resolves pending entities asynchronously.
+    $results = [];
+    $resolvedIds = [];
 
-    $body = curl_exec($ch);
-    $status = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
-    $error = curl_error($ch);
-    curl_close($ch);
-
-    if ($body === false) {
-        throw new RuntimeException('Failed resolving entity IDs from ESI: ' . $error);
+    foreach (['alliance', 'corporation', 'character'] as $type) {
+        $cached = db_entity_metadata_cache_get_many($type, $queryIds);
+        foreach ($cached as $row) {
+            $entityId = (int) ($row['entity_id'] ?? 0);
+            $name = trim((string) ($row['entity_name'] ?? ''));
+            if ($entityId > 0 && $name !== '' && ($row['resolution_status'] ?? '') === 'resolved') {
+                $results[] = [
+                    'id' => $entityId,
+                    'name' => $name,
+                    'category' => (string) ($row['entity_type'] ?? $type),
+                ];
+                $resolvedIds[$entityId] = true;
+            }
+        }
     }
 
-    if ($status !== 200) {
-        throw new RuntimeException('Failed resolving entity IDs from ESI. HTTP status=' . $status);
+    // Queue unresolved IDs for async Python resolution.
+    $unresolvedIds = array_values(array_filter($queryIds, static fn (int $id): bool => !isset($resolvedIds[$id])));
+    if ($unresolvedIds !== []) {
+        try {
+            // Mark as pending for each possible type — the resolver will determine the actual type.
+            db_entity_metadata_cache_mark_pending('character', $unresolvedIds);
+        } catch (Throwable) {
+            // Non-fatal.
+        }
     }
 
-    $decoded = json_decode($body, true);
-
-    return is_array($decoded) ? $decoded : [];
+    return $results;
 }
 
+/**
+ * @deprecated Phase 3: migrate this authenticated search to the Python ESI gateway.
+ *             This is one of the last remaining PHP ESI callsites. It only fires on
+ *             user-initiated settings pages, not in automated sync flows.
+ */
 function esi_alliance_and_corporation_search(string $query, array $tokenContext): array
 {
     $term = trim($query);
@@ -17583,40 +17505,35 @@ function killmail_public_entity_lookup_by_id(int $id, ?string $type = null): arr
         return [];
     }
 
-    $types = [];
+    // Phase 2: read from entity_metadata_cache instead of calling ESI directly.
     $normalizedType = killmail_entity_type_label($type);
-    if ($normalizedType !== null) {
-        $types[] = $normalizedType;
-    } else {
-        $types = ['Alliance', 'Corporation'];
+    $typesToCheck = $normalizedType !== null ? [strtolower($normalizedType)] : ['alliance', 'corporation'];
+    $results = [];
+
+    foreach ($typesToCheck as $entityType) {
+        $cached = db_entity_metadata_cache_get_many($entityType, [$id]);
+        if (!empty($cached)) {
+            $row = reset($cached);
+            $name = trim((string) ($row['entity_name'] ?? ''));
+            if ($name !== '' && ($row['resolution_status'] ?? '') === 'resolved') {
+                $results[] = esi_entity_result_shape([
+                    'id' => $id,
+                    'name' => $name,
+                    'type' => ucfirst($entityType),
+                ]);
+            }
+        }
     }
 
-    $endpoints = [
-        'Alliance' => 'https://esi.evetech.net/latest/alliances/' . $id . '/?datasource=tranquility',
-        'Corporation' => 'https://esi.evetech.net/latest/corporations/' . $id . '/?datasource=tranquility',
-    ];
-
-    $results = [];
-    foreach ($types as $label) {
-        $response = http_get_json($endpoints[$label], [
-            'Accept: application/json',
-            'User-Agent: ' . esi_user_agent(),
-        ]);
-
-        if (($response['status'] ?? 500) >= 400) {
-            continue;
+    // Queue for async Python resolution if nothing found.
+    if (empty($results)) {
+        try {
+            foreach ($typesToCheck as $entityType) {
+                db_entity_metadata_cache_mark_pending($entityType, [$id]);
+            }
+        } catch (Throwable) {
+            // Non-fatal.
         }
-
-        $name = trim((string) ($response['json']['name'] ?? ''));
-        if ($name === '') {
-            continue;
-        }
-
-        $results[] = esi_entity_result_shape([
-            'id' => $id,
-            'name' => $name,
-            'type' => $label,
-        ]);
     }
 
     return $results;
@@ -17684,12 +17601,9 @@ function esi_alliance_structure_metadata(int $structureId, array $tokenContext):
         return null;
     }
 
-    try {
-        $accessToken = esi_valid_access_token();
-    } catch (Throwable) {
-        return null;
-    }
-
+    // Phase 2: read from DB cache only — no direct ESI call.
+    // Python's alliance_current_sync and market_hub_current_sync populate
+    // structure metadata via the EsiGateway.
     $cached = db_alliance_structure_metadata_get($structureId);
     if ($cached !== null && trim((string) ($cached['structure_name'] ?? '')) !== '') {
         return [
@@ -17699,35 +17613,21 @@ function esi_alliance_structure_metadata(int $structureId, array $tokenContext):
         ];
     }
 
-    $response = http_get_json(
-        'https://esi.evetech.net/latest/universe/structures/' . $structureId . '/',
-        [
-            'Authorization: Bearer ' . $accessToken,
-            'Accept: application/json',
-        ]
-    );
-
-    if (($response['status'] ?? 500) >= 400) {
-        return null;
+    // Queue for async Python resolution if not cached.
+    try {
+        db_entity_metadata_cache_mark_pending('structure', [$structureId]);
+    } catch (Throwable) {
+        // Non-fatal — the async resolver will pick it up eventually.
     }
 
-    $name = trim((string) ($response['json']['name'] ?? ''));
-    $updated = db_alliance_structure_metadata_upsert(
-        $structureId,
-        $name !== '' ? $name : null,
-        gmdate('Y-m-d H:i:s')
-    );
-    if ($updated) {
-        supplycore_cache_bust('metadata_structures');
-    }
-
-    return [
-        'id' => $structureId,
-        'name' => $name,
-        'last_verified_at' => gmdate('Y-m-d H:i:s'),
-    ];
+    return null;
 }
 
+/**
+ * @deprecated Phase 3: migrate this authenticated structure search to the Python ESI gateway.
+ *             This is one of the last remaining PHP ESI callsites. It only fires on
+ *             user-initiated settings pages, not in automated sync flows.
+ */
 function esi_structure_search(string $query, array $tokenContext): array
 {
     $term = trim($query);
@@ -17832,59 +17732,14 @@ function esi_npc_station_search(string $query, array $tokenContext): array
         return [];
     }
 
-    $characterId = (int) ($tokenContext['character_id'] ?? 0);
-    if ($characterId <= 0) {
-        return [];
-    }
-
-    $accessToken = esi_valid_access_token();
-
-    $searchResponse = http_get_json(
-        'https://esi.evetech.net/latest/characters/' . $characterId . '/search/?categories=station&strict=false&search=' . rawurlencode($term),
-        [
-            'Authorization: Bearer ' . $accessToken,
-            'Accept: application/json',
-        ]
-    );
-
-    if (($searchResponse['status'] ?? 500) >= 400) {
-        throw new RuntimeException('Failed to search NPC stations from ESI.');
-    }
-
-    $stationIds = $searchResponse['json']['station'] ?? [];
-    if (!is_array($stationIds)) {
-        return [];
-    }
-
+    // Phase 2: search ref_npc_stations locally instead of calling ESI.
+    $stations = db_ref_npc_station_search($term, 20);
     $results = [];
-    foreach (array_slice($stationIds, 0, 20) as $stationId) {
-        $id = (int) $stationId;
-        if ($id <= 0) {
-            continue;
-        }
-
-        try {
-            $stationResponse = http_get_json(
-                'https://esi.evetech.net/latest/universe/stations/' . $id . '/',
-                ['Accept: application/json']
-            );
-        } catch (Throwable) {
-            continue;
-        }
-
-        if (($stationResponse['status'] ?? 500) >= 400) {
-            continue;
-        }
-
-        $name = trim((string) ($stationResponse['json']['name'] ?? ''));
-        if ($name === '' || mb_stripos($name, $term) === false) {
-            continue;
-        }
-
+    foreach ($stations as $station) {
         $results[] = esi_structure_result_shape([
-            'id' => $id,
-            'name' => $name,
-            'system' => isset($stationResponse['json']['system_id']) ? (string) $stationResponse['json']['system_id'] : null,
+            'id' => (int) ($station['station_id'] ?? 0),
+            'name' => (string) ($station['station_name'] ?? ''),
+            'system' => isset($station['system_id']) ? (string) $station['system_id'] : null,
             'type' => 'NPC Station',
         ]);
     }
@@ -17898,16 +17753,13 @@ function esi_npc_station_metadata(int $stationId): ?array
         return null;
     }
 
-    $response = http_get_json(
-        'https://esi.evetech.net/latest/universe/stations/' . $stationId . '/',
-        ['Accept: application/json']
-    );
-
-    if (($response['status'] ?? 500) >= 400) {
+    // Phase 2: read from ref_npc_stations instead of calling ESI directly.
+    $station = db_ref_npc_station_by_id($stationId);
+    if ($station === null) {
         return null;
     }
 
-    $name = trim((string) ($response['json']['name'] ?? ''));
+    $name = trim((string) ($station['station_name'] ?? ''));
     if ($name === '') {
         return null;
     }
@@ -17915,7 +17767,7 @@ function esi_npc_station_metadata(int $stationId): ?array
     return [
         'id' => $stationId,
         'name' => $name,
-        'system' => isset($response['json']['system_id']) ? (string) $response['json']['system_id'] : null,
+        'system' => isset($station['system_id']) ? (string) $station['system_id'] : null,
         'type' => 'NPC Station',
     ];
 }
@@ -18674,31 +18526,32 @@ function killmail_universe_ids_lookup(array $names): array
         return [];
     }
 
-    $ch = curl_init('https://esi.evetech.net/latest/universe/ids/?datasource=tranquility&language=en');
-    curl_setopt_array($ch, [
-        CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_TIMEOUT => 25,
-        CURLOPT_POST => true,
-        CURLOPT_HTTPHEADER => ['Accept: application/json', 'Content-Type: application/json', 'User-Agent: ' . esi_user_agent()],
-        CURLOPT_POSTFIELDS => json_encode($queryNames, JSON_UNESCAPED_SLASHES),
-    ]);
+    // Phase 2: resolve name→ID from entity_metadata_cache instead of calling ESI.
+    // The entity_metadata_cache is populated by Python's entity_metadata_resolve_sync.
+    $results = [];
+    $placeholders = implode(',', array_fill(0, count($queryNames), '?'));
 
-    $body = curl_exec($ch);
-    $status = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
-    $error = curl_error($ch);
-    curl_close($ch);
-
-    if ($body === false) {
-        throw new RuntimeException('Failed resolving entity names from ESI: ' . $error);
+    foreach (['alliance', 'corporation', 'character'] as $type) {
+        $rows = db_select(
+            "SELECT entity_id, entity_name, entity_type FROM entity_metadata_cache
+             WHERE entity_type = ? AND entity_name IN ($placeholders) AND resolution_status = 'resolved'",
+            array_merge([$type], $queryNames)
+        );
+        $pluralKey = match ($type) {
+            'alliance' => 'alliances',
+            'corporation' => 'corporations',
+            'character' => 'characters',
+            default => $type . 's',
+        };
+        foreach ($rows as $row) {
+            $results[$pluralKey][] = [
+                'id' => (int) ($row['entity_id'] ?? 0),
+                'name' => (string) ($row['entity_name'] ?? ''),
+            ];
+        }
     }
 
-    if ($status !== 200) {
-        throw new RuntimeException('Failed resolving entity names from ESI. HTTP status=' . $status);
-    }
-
-    $decoded = json_decode($body, true);
-
-    return is_array($decoded) ? $decoded : [];
+    return $results;
 }
 
 function killmail_resolve_tracked_entities(string $allianceText, string $corporationText): array

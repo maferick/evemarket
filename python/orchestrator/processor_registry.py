@@ -174,7 +174,7 @@ _PROCESSOR_DISPATCH: dict[str, tuple] = {
     # Intelligence pipeline
     "esi_character_queue_sync": (run_esi_character_queue_sync, lambda db, cfg: (db,)),
     "esi_alliance_history_sync": (run_esi_alliance_history_sync, lambda db, cfg: (db, cfg)),
-    "entity_metadata_resolve_sync": (run_entity_metadata_resolve_sync, lambda db, cfg: (db, _php_bridge(cfg))),
+    "entity_metadata_resolve_sync": (run_entity_metadata_resolve_sync, lambda db, cfg: (db, cfg)),
     "intelligence_pipeline": (run_intelligence_pipeline, lambda db, cfg: (db, neo4j_runtime(cfg))),
     # Enhanced intelligence platform (KGv2)
     "graph_data_quality_check": (run_graph_data_quality_check, lambda db, cfg: (db, neo4j_runtime(cfg))),

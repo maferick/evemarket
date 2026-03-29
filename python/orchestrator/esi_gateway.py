@@ -240,6 +240,35 @@ class EsiGateway:
         finally:
             self._release_fetch_lock(ep_key, lock_token)
 
+    def post(
+        self,
+        path: str,
+        *,
+        body: Any = None,
+        params: dict[str, str | int] | None = None,
+        access_token: str | None = None,
+        group: str | None = None,
+    ) -> GatewayResponse:
+        """POST request through the gateway (for /universe/names/, /universe/ids/).
+
+        POST endpoints are not cached (they accept variable payloads),
+        but still benefit from rate-limit coordination.
+        """
+        resp = self._client.post(
+            path,
+            body=body,
+            params=params,
+            access_token=access_token,
+            group=group,
+        )
+        self._record_rate_observation(resp.headers, resp.status_code)
+        return GatewayResponse(
+            status_code=resp.status_code,
+            body=resp.body,
+            headers=resp.headers,
+            endpoint_key=f"POST:{path}",
+        )
+
     def get_paginated(
         self,
         path: str,
