@@ -127,6 +127,7 @@ def _find_connected_corridors_neo4j(
             LIMIT 500
             """,
             {"system_ids": active_system_ids, "max_len": max_length},
+            timeout_seconds=90,
         )
         return [list(r["corridor_systems"]) for r in rows]
     except Exception:

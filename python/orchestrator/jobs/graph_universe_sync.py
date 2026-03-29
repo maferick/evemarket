@@ -48,10 +48,11 @@ def run_graph_universe_sync(
     rows_written = 0
 
     # ── Ensure constraints and indexes ──────────────────────────────────
-    client.query("CREATE CONSTRAINT constellation_id IF NOT EXISTS FOR (n:Constellation) REQUIRE n.constellation_id IS UNIQUE")
-    client.query("CREATE CONSTRAINT region_region_id IF NOT EXISTS FOR (n:Region) REQUIRE n.region_id IS UNIQUE")
-    client.query("CREATE INDEX system_security IF NOT EXISTS FOR (n:System) ON (n.security)")
-    client.query("CREATE INDEX system_constellation IF NOT EXISTS FOR (n:System) ON (n.constellation_id)")
+    ddl_timeout = 60
+    client.query("CREATE CONSTRAINT constellation_id IF NOT EXISTS FOR (n:Constellation) REQUIRE n.constellation_id IS UNIQUE", timeout_seconds=ddl_timeout)
+    client.query("CREATE CONSTRAINT region_region_id IF NOT EXISTS FOR (n:Region) REQUIRE n.region_id IS UNIQUE", timeout_seconds=ddl_timeout)
+    client.query("CREATE INDEX system_security IF NOT EXISTS FOR (n:System) ON (n.security)", timeout_seconds=ddl_timeout)
+    client.query("CREATE INDEX system_constellation IF NOT EXISTS FOR (n:System) ON (n.constellation_id)", timeout_seconds=ddl_timeout)
 
     # ── Sync regions ────────────────────────────────────────────────────
     regions = db.fetch_all("SELECT region_id, region_name FROM ref_regions")

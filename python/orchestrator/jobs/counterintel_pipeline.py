@@ -1005,86 +1005,98 @@ def run_compute_counterintel_pipeline(
                             )
 
             if neo4j:
+                neo4j_batch = 500
+                neo4j_timeout = 60
                 if overperformance_rows:
-                    neo4j.query(
-                        """
-                        UNWIND $rows AS row
-                        MERGE (b:Battle {battle_id: row.battle_id})
-                        MERGE (s:BattleSide {side_uid: row.battle_id + '|' + row.side_key})
-                        MERGE (s)-[:BELONGS_TO]->(b)
-                        SET s.overperformance_score = row.overperformance_score,
-                            s.anomaly_class = row.anomaly_class,
-                            s.computed_at = row.computed_at
-                        """,
-                        {"rows": [{**row, "computed_at": computed_at} for row in overperformance_rows]},
-                    )
-                    neo4j.query(
-                        """
-                        UNWIND $rows AS row
-                        MERGE (c:Character {character_id: row.character_id})
-                        MERGE (b:Battle {battle_id: row.battle_id})
-                        MERGE (c)-[r:PRESENT_IN_ANOMALOUS_BATTLE]->(b)
-                        SET r.review_priority_score = row.review_priority_score,
-                            r.computed_at = row.computed_at
-                        """,
-                        {
-                            "rows": [
-                                {"character_id": row["character_id"], "battle_id": p["battle_id"], "review_priority_score": row["review_priority_score"], "computed_at": computed_at}
-                                for row in score_rows
-                                for p in by_character.get(int(row["character_id"]), [])
-                                if f"{p.get('battle_id')}|{p.get('side_key')}" in anomalous_battles
-                            ]
-                        },
-                    )
+                    tagged_rows = [{**row, "computed_at": computed_at} for row in overperformance_rows]
+                    for i in range(0, len(tagged_rows), neo4j_batch):
+                        neo4j.query(
+                            """
+                            UNWIND $rows AS row
+                            MERGE (b:Battle {battle_id: row.battle_id})
+                            MERGE (s:BattleSide {side_uid: row.battle_id + '|' + row.side_key})
+                            MERGE (s)-[:BELONGS_TO]->(b)
+                            SET s.overperformance_score = row.overperformance_score,
+                                s.anomaly_class = row.anomaly_class,
+                                s.computed_at = row.computed_at
+                            """,
+                            {"rows": tagged_rows[i:i + neo4j_batch]},
+                            timeout_seconds=neo4j_timeout,
+                        )
+                    anomalous_battle_rows = [
+                        {"character_id": row["character_id"], "battle_id": p["battle_id"], "review_priority_score": row["review_priority_score"], "computed_at": computed_at}
+                        for row in score_rows
+                        for p in by_character.get(int(row["character_id"]), [])
+                        if f"{p.get('battle_id')}|{p.get('side_key')}" in anomalous_battles
+                    ]
+                    for i in range(0, len(anomalous_battle_rows), neo4j_batch):
+                        neo4j.query(
+                            """
+                            UNWIND $rows AS row
+                            MERGE (c:Character {character_id: row.character_id})
+                            MERGE (b:Battle {battle_id: row.battle_id})
+                            MERGE (c)-[r:PRESENT_IN_ANOMALOUS_BATTLE]->(b)
+                            SET r.review_priority_score = row.review_priority_score,
+                                r.computed_at = row.computed_at
+                            """,
+                            {"rows": anomalous_battle_rows[i:i + neo4j_batch]},
+                            timeout_seconds=neo4j_timeout,
+                        )
                 if copresence_rows:
-                    neo4j.query(
-                        """
-                        UNWIND $rows AS row
-                        MATCH (left:Character {character_id: row.left_character_id})
-                        MATCH (right:Character {character_id: row.right_character_id})
-                        MERGE (left)-[r:CO_PRESENT_WITH]->(right)
-                        SET r.count = toInteger(COALESCE(r.count, 0)) + toInteger(row.count),
-                            r.anomalous_count = toInteger(COALESCE(r.anomalous_count, 0)) + toInteger(row.anomalous_count),
-                            r.source = row.source,
-                            r.computed_at = $computed_at
-                        """,
-                        {"rows": copresence_rows, "computed_at": computed_at},
-                    )
+                    for i in range(0, len(copresence_rows), neo4j_batch):
+                        neo4j.query(
+                            """
+                            UNWIND $rows AS row
+                            MATCH (left:Character {character_id: row.left_character_id})
+                            MATCH (right:Character {character_id: row.right_character_id})
+                            MERGE (left)-[r:CO_PRESENT_WITH]->(right)
+                            SET r.count = toInteger(COALESCE(r.count, 0)) + toInteger(row.count),
+                                r.anomalous_count = toInteger(COALESCE(r.anomalous_count, 0)) + toInteger(row.anomalous_count),
+                                r.source = row.source,
+                                r.computed_at = $computed_at
+                            """,
+                            {"rows": copresence_rows[i:i + neo4j_batch], "computed_at": computed_at},
+                            timeout_seconds=neo4j_timeout,
+                        )
                 if historical_membership_rows:
-                    neo4j.query(
-                        """
-                        UNWIND $rows AS row
-                        WITH row WHERE row.start IS NOT NULL AND row.source IS NOT NULL
-                        MERGE (c:Character {character_id: row.character_id})
-                        MERGE (corp:Corporation {corporation_id: toInteger(row.corporation_id)})
-                        MERGE (c)-[r:HISTORICALLY_IN]->(corp)
-                        SET r.start = COALESCE(row.start, r.start),
-                            r.source = COALESCE(row.source, r.source),
-                            r.end = row.end
-                        """,
-                        {"rows": historical_membership_rows},
-                    )
+                    for i in range(0, len(historical_membership_rows), neo4j_batch):
+                        neo4j.query(
+                            """
+                            UNWIND $rows AS row
+                            WITH row WHERE row.start IS NOT NULL AND row.source IS NOT NULL
+                            MERGE (c:Character {character_id: row.character_id})
+                            MERGE (corp:Corporation {corporation_id: toInteger(row.corporation_id)})
+                            MERGE (c)-[r:HISTORICALLY_IN]->(corp)
+                            SET r.start = COALESCE(row.start, r.start),
+                                r.source = COALESCE(row.source, r.source),
+                                r.end = row.end
+                            """,
+                            {"rows": historical_membership_rows[i:i + neo4j_batch]},
+                            timeout_seconds=neo4j_timeout,
+                        )
                 if corp_alliance_rows:
-                    neo4j.query(
-                        """
-                        UNWIND $rows AS row
-                        MERGE (corp:Corporation {corporation_id: toInteger(row.corporation_id)})
-                        MERGE (alliance:Alliance {alliance_id: toInteger(row.alliance_id)})
-                        MERGE (corp)-[r:IN_ALLIANCE]->(alliance)
-                        SET r.start = CASE
-                                WHEN row.start IS NULL THEN r.start
-                                WHEN r.start IS NULL OR row.start < r.start THEN row.start
-                                ELSE r.start
-                            END,
-                            r.end = CASE
-                                WHEN row.end IS NULL THEN r.end
-                                WHEN r.end IS NULL OR row.end > r.end THEN row.end
-                                ELSE r.end
-                            END,
-                            r.source = row.source
-                        """,
-                        {"rows": corp_alliance_rows},
-                    )
+                    for i in range(0, len(corp_alliance_rows), neo4j_batch):
+                        neo4j.query(
+                            """
+                            UNWIND $rows AS row
+                            MERGE (corp:Corporation {corporation_id: toInteger(row.corporation_id)})
+                            MERGE (alliance:Alliance {alliance_id: toInteger(row.alliance_id)})
+                            MERGE (corp)-[r:IN_ALLIANCE]->(alliance)
+                            SET r.start = CASE
+                                    WHEN row.start IS NULL THEN r.start
+                                    WHEN r.start IS NULL OR row.start < r.start THEN row.start
+                                    ELSE r.start
+                                END,
+                                r.end = CASE
+                                    WHEN row.end IS NULL THEN r.end
+                                    WHEN r.end IS NULL OR row.end > r.end THEN row.end
+                                    ELSE r.end
+                                END,
+                                r.source = row.source
+                            """,
+                            {"rows": corp_alliance_rows[i:i + neo4j_batch]},
+                            timeout_seconds=neo4j_timeout,
+                        )
 
             rows_written += len(hull_rows) + len(overperformance_rows) + len(feature_rows) + len(score_rows) + len(evidence_rows) + org_written
             _sync_state_upsert(db, COUNTERINTEL_DATASET_KEY, last_battle_id, "success", rows_written)
