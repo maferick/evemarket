@@ -15,6 +15,20 @@ if (mb_strlen($q) < 1) {
 }
 
 $latestSequencesSql = db_killmail_latest_sequences_sql();
+
+// Use sargable numeric range instead of CAST(id AS CHAR) LIKE for index-friendly ID prefix search
+$numericPrefix = preg_replace('/[^0-9]/', '', $q);
+$params = [$q];
+if ($numericPrefix !== '' && $numericPrefix !== '0') {
+    $lowerBound = (int) $numericPrefix;
+    $upperBound = (int) ($numericPrefix . str_repeat('9', max(0, 15 - strlen($numericPrefix))));
+    $idCondition = 'OR (e.victim_alliance_id BETWEEN ? AND ?)';
+    $params[] = $lowerBound;
+    $params[] = $upperBound;
+} else {
+    $idCondition = '';
+}
+
 $rows = db_select(
     "SELECT DISTINCT
         e.victim_alliance_id AS entity_id,
@@ -28,11 +42,11 @@ $rows = db_select(
        AND e.victim_alliance_id > 0
        AND (
            ta.label LIKE CONCAT('%', ?, '%')
-           OR CAST(e.victim_alliance_id AS CHAR) LIKE CONCAT(?, '%')
+           {$idCondition}
        )
      ORDER BY entity_label ASC
      LIMIT 25",
-    [$q, $q]
+    $params
 );
 
 $results = [];

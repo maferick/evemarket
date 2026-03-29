@@ -1128,7 +1128,8 @@ function db_killmail_identity_dedupe_enforce(): void
              FROM killmail_events
              WHERE killmail_id = ?
                AND killmail_hash = ?
-             ORDER BY sequence_id DESC',
+             ORDER BY sequence_id DESC
+             LIMIT 1000',
             [$killmailId, $killmailHash]
         );
         if (count($rows) <= 1) {
@@ -1149,9 +1150,11 @@ function db_killmail_identity_dedupe_enforce(): void
         $placeholders = implode(',', array_fill(0, count($sequenceIds), '?'));
         $params = $sequenceIds;
 
-        db_execute("DELETE FROM killmail_attackers WHERE sequence_id IN ({$placeholders})", $params);
-        db_execute("DELETE FROM killmail_items WHERE sequence_id IN ({$placeholders})", $params);
-        db_execute("DELETE FROM killmail_event_payloads WHERE sequence_id IN ({$placeholders})", $params);
+        // Delete child rows first, then parent — order matters for referential integrity
+        $childTables = ['killmail_attackers', 'killmail_items', 'killmail_event_payloads'];
+        foreach ($childTables as $childTable) {
+            db_execute("DELETE FROM {$childTable} WHERE sequence_id IN ({$placeholders})", $params);
+        }
         db_execute("DELETE FROM killmail_events WHERE sequence_id IN ({$placeholders})", $params);
     }
 }
@@ -2492,7 +2495,11 @@ function db_upsert_esi_oauth_token(array $token): bool
 
 function db_latest_esi_oauth_token(): ?array
 {
-    return db_select_one('SELECT * FROM esi_oauth_tokens ORDER BY updated_at DESC, id DESC LIMIT 1');
+    return db_select_one(
+        'SELECT id, character_id, character_name, owner_hash, access_token, refresh_token,
+                token_type, scopes, expires_at, updated_at
+         FROM esi_oauth_tokens ORDER BY updated_at DESC, id DESC LIMIT 1'
+    );
 }
 
 function db_update_esi_oauth_token_refresh(
@@ -6210,7 +6217,7 @@ function db_market_history_daily_aggregate_by_date_type_source(
          WHERE mhd.source_type = ?
            AND mhd.source_id = ?
            AND mhd.trade_date BETWEEN ? AND ?{$typeFilterSql}
-         GROUP BY mhd.trade_date, mhd.type_id, rit.type_name, mhd.source_type, mhd.source_id
+         GROUP BY mhd.trade_date, mhd.type_id
          ORDER BY mhd.trade_date ASC, mhd.type_id ASC",
         $params,
         60,
@@ -7064,65 +7071,38 @@ function db_market_lowest_sell_orders_by_source(string $sourceType, int $sourceI
         return [];
     }
 
+    // Single-scan CTE with window functions replaces 3 separate scans of market_orders_current
     return db_select(
-        "SELECT
-            picked.type_id,
-            rit.type_name,
-            picked.order_id,
-            picked.price,
-            picked.volume_remain,
-            picked.observed_at,
-            COALESCE(summary.sell_order_count, 0) AS sell_order_count,
-            COALESCE(summary.total_sell_volume, 0) AS total_sell_volume
-         FROM (
-            SELECT
-                base.type_id,
-                MIN(base.order_id) AS order_id
-            FROM market_orders_current base
-            INNER JOIN (
-                SELECT type_id, MIN(price) AS min_price
-                FROM market_orders_current
-                WHERE source_type = ?
-                  AND source_id = ?
-                  AND is_buy_order = 0
-                  AND volume_remain > 0
-                GROUP BY type_id
-            ) best
-                ON best.type_id = base.type_id
-               AND best.min_price = base.price
-            WHERE base.source_type = ?
-              AND base.source_id = ?
-              AND base.is_buy_order = 0
-              AND base.volume_remain > 0
-            GROUP BY base.type_id
-         ) lowest
-         INNER JOIN market_orders_current picked
-            ON picked.source_type = ?
-           AND picked.source_id = ?
-           AND picked.type_id = lowest.type_id
-           AND picked.order_id = lowest.order_id
-         LEFT JOIN ref_item_types rit ON rit.type_id = picked.type_id
-         LEFT JOIN (
+        "WITH sell_orders AS (
             SELECT
                 type_id,
-                SUM(volume_remain) AS total_sell_volume,
-                COUNT(*) AS sell_order_count
+                order_id,
+                price,
+                volume_remain,
+                observed_at,
+                ROW_NUMBER() OVER (PARTITION BY type_id ORDER BY price ASC, order_id ASC) AS rn,
+                SUM(volume_remain) OVER (PARTITION BY type_id) AS total_sell_volume,
+                COUNT(*) OVER (PARTITION BY type_id) AS sell_order_count
             FROM market_orders_current
             WHERE source_type = ?
               AND source_id = ?
               AND is_buy_order = 0
               AND volume_remain > 0
-            GROUP BY type_id
-         ) summary
-            ON summary.type_id = picked.type_id
-         ORDER BY picked.price ASC, picked.type_id ASC",
+         )
+         SELECT
+            so.type_id,
+            rit.type_name,
+            so.order_id,
+            so.price,
+            so.volume_remain,
+            so.observed_at,
+            so.sell_order_count,
+            so.total_sell_volume
+         FROM sell_orders so
+         LEFT JOIN ref_item_types rit ON rit.type_id = so.type_id
+         WHERE so.rn = 1
+         ORDER BY so.price ASC, so.type_id ASC",
         [
-            $safeSourceType,
-            $safeSourceId,
-            $safeSourceType,
-            $safeSourceId,
-            $safeSourceType,
-            $safeSourceId,
             $safeSourceType,
             $safeSourceId,
         ]
@@ -7358,10 +7338,14 @@ function db_market_deal_alerts_list(array $filters = [], int $limit = 25, int $o
     $search = trim((string) ($filters['search'] ?? ''));
     if ($search !== '') {
         $numericSearch = preg_replace('/[^0-9]/', '', $search) ?? '';
-        if ($numericSearch !== '') {
-            $where[] = '(rit.type_name LIKE ? OR CAST(a.item_type_id AS CHAR) LIKE ?)';
+        if ($numericSearch !== '' && $numericSearch !== '0') {
+            // Sargable numeric range instead of CAST(item_type_id AS CHAR) LIKE
+            $lowerBound = (int) $numericSearch;
+            $upperBound = (int) ($numericSearch . str_repeat('9', max(0, 15 - strlen($numericSearch))));
+            $where[] = '(rit.type_name LIKE ? OR a.item_type_id BETWEEN ? AND ?)';
             $params[] = '%' . $search . '%';
-            $params[] = '%' . $numericSearch . '%';
+            $params[] = $lowerBound;
+            $params[] = $upperBound;
         } else {
             $where[] = 'rit.type_name LIKE ?';
             $params[] = '%' . $search . '%';
@@ -7416,10 +7400,14 @@ function db_market_deal_alerts_count(array $filters = []): int
     $search = trim((string) ($filters['search'] ?? ''));
     if ($search !== '') {
         $numericSearch = preg_replace('/[^0-9]/', '', $search) ?? '';
-        if ($numericSearch !== '') {
-            $where[] = '(rit.type_name LIKE ? OR CAST(a.item_type_id AS CHAR) LIKE ?)';
+        if ($numericSearch !== '' && $numericSearch !== '0') {
+            // Sargable numeric range instead of CAST(item_type_id AS CHAR) LIKE
+            $lowerBound = (int) $numericSearch;
+            $upperBound = (int) ($numericSearch . str_repeat('9', max(0, 15 - strlen($numericSearch))));
+            $where[] = '(rit.type_name LIKE ? OR a.item_type_id BETWEEN ? AND ?)';
             $params[] = '%' . $search . '%';
-            $params[] = '%' . $numericSearch . '%';
+            $params[] = $lowerBound;
+            $params[] = $upperBound;
         } else {
             $where[] = 'rit.type_name LIKE ?';
             $params[] = '%' . $search . '%';
@@ -11066,22 +11054,26 @@ function db_killmail_tracked_corporations_replace(array $rows): bool
 
 function db_killmail_tracked_alliances_active(): array
 {
-    return db_select('SELECT alliance_id, label FROM killmail_tracked_alliances WHERE is_active = 1 ORDER BY alliance_id ASC');
+    static $cache = null;
+    return $cache ??= db_select('SELECT alliance_id, label FROM killmail_tracked_alliances WHERE is_active = 1 ORDER BY alliance_id ASC');
 }
 
 function db_killmail_tracked_corporations_active(): array
 {
-    return db_select('SELECT corporation_id, label FROM killmail_tracked_corporations WHERE is_active = 1 ORDER BY corporation_id ASC');
+    static $cache = null;
+    return $cache ??= db_select('SELECT corporation_id, label FROM killmail_tracked_corporations WHERE is_active = 1 ORDER BY corporation_id ASC');
 }
 
 function db_killmail_opponent_alliances_active(): array
 {
-    return db_select('SELECT alliance_id, label FROM killmail_opponent_alliances WHERE is_active = 1 ORDER BY alliance_id ASC');
+    static $cache = null;
+    return $cache ??= db_select('SELECT alliance_id, label FROM killmail_opponent_alliances WHERE is_active = 1 ORDER BY alliance_id ASC');
 }
 
 function db_killmail_opponent_corporations_active(): array
 {
-    return db_select('SELECT corporation_id, label FROM killmail_opponent_corporations WHERE is_active = 1 ORDER BY corporation_id ASC');
+    static $cache = null;
+    return $cache ??= db_select('SELECT corporation_id, label FROM killmail_opponent_corporations WHERE is_active = 1 ORDER BY corporation_id ASC');
 }
 
 function db_killmail_opponent_alliances_replace(array $rows): bool
@@ -11279,28 +11271,27 @@ function db_economic_warfare_module_drilldown(int $typeId): array
 
 function db_economic_warfare_hostile_alliances(): array
 {
+    // Single query with LEFT JOIN replaces N+1 pattern (one query per alliance_id)
     $rows = db_select(
-        "SELECT DISTINCT jt.alliance_id
+        "SELECT DISTINCT jt.alliance_id,
+                COALESCE(koa.label, CONCAT('Alliance #', jt.alliance_id)) AS label
          FROM hostile_fit_families hff,
               JSON_TABLE(hff.alliance_ids_json, '\$[*]' COLUMNS (alliance_id BIGINT PATH '\$')) jt
+         LEFT JOIN killmail_opponent_alliances koa ON koa.alliance_id = jt.alliance_id
          WHERE jt.alliance_id > 0
          ORDER BY jt.alliance_id ASC
          LIMIT 200"
     );
 
-    $allianceIds = array_map(static fn (array $row): int => (int) ($row['alliance_id'] ?? 0), $rows);
     $result = [];
-    foreach ($allianceIds as $aid) {
+    foreach ($rows as $row) {
+        $aid = (int) ($row['alliance_id'] ?? 0);
         if ($aid <= 0) {
             continue;
         }
-        $label = db_select_one(
-            "SELECT label FROM killmail_opponent_alliances WHERE alliance_id = ? LIMIT 1",
-            [$aid]
-        );
         $result[] = [
             'alliance_id' => $aid,
-            'label' => ($label['label'] ?? null) ?: ('Alliance #' . $aid),
+            'label' => (string) ($row['label'] ?? 'Alliance #' . $aid),
         ];
     }
 
@@ -11683,16 +11674,31 @@ function db_killmail_overview_page(array $filters = []): array
 
     if ($search !== '') {
         $needle = '%' . $search . '%';
-        $conditions[] = '(
-            CAST(e.sequence_id AS CHAR) LIKE ?
-            OR CAST(e.killmail_id AS CHAR) LIKE ?
-            OR COALESCE(victim_ta.label, \'\') LIKE ?
-            OR COALESCE(victim_tc.label, \'\') LIKE ?
-            OR COALESCE(ship.type_name, \'\') LIKE ?
-            OR COALESCE(system_ref.system_name, \'\') LIKE ?
-            OR COALESCE(region_ref.region_name, \'\') LIKE ?
-        )';
-        array_push($params, $needle, $needle, $needle, $needle, $needle, $needle, $needle);
+        $numericSearch = preg_replace('/[^0-9]/', '', $search);
+        if ($numericSearch !== '' && $numericSearch !== '0') {
+            // Sargable numeric range for sequence_id/killmail_id instead of CAST(...AS CHAR) LIKE
+            $lowerBound = (int) $numericSearch;
+            $upperBound = (int) ($numericSearch . str_repeat('9', max(0, 15 - strlen($numericSearch))));
+            $conditions[] = '(
+                e.sequence_id BETWEEN ? AND ?
+                OR e.killmail_id BETWEEN ? AND ?
+                OR COALESCE(victim_ta.label, \'\') LIKE ?
+                OR COALESCE(victim_tc.label, \'\') LIKE ?
+                OR COALESCE(ship.type_name, \'\') LIKE ?
+                OR COALESCE(system_ref.system_name, \'\') LIKE ?
+                OR COALESCE(region_ref.region_name, \'\') LIKE ?
+            )';
+            array_push($params, $lowerBound, $upperBound, $lowerBound, $upperBound, $needle, $needle, $needle, $needle, $needle);
+        } else {
+            $conditions[] = '(
+                COALESCE(victim_ta.label, \'\') LIKE ?
+                OR COALESCE(victim_tc.label, \'\') LIKE ?
+                OR COALESCE(ship.type_name, \'\') LIKE ?
+                OR COALESCE(system_ref.system_name, \'\') LIKE ?
+                OR COALESCE(region_ref.region_name, \'\') LIKE ?
+            )';
+            array_push($params, $needle, $needle, $needle, $needle, $needle);
+        }
     }
 
     $whereSql = $conditions === [] ? '' : (' WHERE ' . implode(' AND ', $conditions));
@@ -15258,16 +15264,19 @@ function db_theaters_list(int $limit = 50, int $offset = 0, ?string $regionFilte
                 AND tas.alliance_id IN (' . $placeholders . ')
                 AND tas.participant_count >= 2
             LEFT JOIN ref_systems rs ON rs.system_id = t.primary_system_id
-            LEFT JOIN ref_regions rr ON rr.region_id = t.region_id
-            WHERE 1=1';
+            LEFT JOIN ref_regions rr ON rr.region_id = t.region_id';
     $params = $trackedAllianceIds;
+    $conditions = [];
     if ($regionFilter !== null) {
-        $sql .= ' AND t.region_id = ?';
+        $conditions[] = 't.region_id = ?';
         $params[] = (int)$regionFilter;
     }
     if ($minAnomaly !== null) {
-        $sql .= ' AND t.anomaly_score >= ?';
+        $conditions[] = 't.anomaly_score >= ?';
         $params[] = $minAnomaly;
+    }
+    if ($conditions !== []) {
+        $sql .= ' WHERE ' . implode(' AND ', $conditions);
     }
     $sql .= ' GROUP BY t.theater_id ORDER BY t.start_time DESC LIMIT ' . max(1, min(200, (int)$limit)) . ' OFFSET ' . max(0, (int)$offset);
     return db_select($sql, $params);
