@@ -200,19 +200,23 @@ class EsiGateway:
         try:
             meta = self._load_meta(ep_key)
 
-            # Expires-gating: skip request if data is still fresh.
+            # Expires-gating: skip request if data is still fresh AND we have the payload.
             now = time.time()
             if meta and meta.expires_at > now:
                 cached_body = self._load_payload(ep_key)
-                logger.debug("Expires-gated %s (%.0fs remaining, payload=%s)", ep_key, meta.expires_at - now, "hit" if cached_body is not None else "miss")
-                return GatewayResponse(
-                    status_code=meta.last_status_code or 200,
-                    body=cached_body,
-                    headers={},
-                    from_cache=True,
-                    endpoint_key=ep_key,
-                    pages=meta.x_pages,
-                )
+                if cached_body is not None:
+                    logger.debug("Expires-gated %s (%.0fs remaining, payload=hit)", ep_key, meta.expires_at - now)
+                    return GatewayResponse(
+                        status_code=meta.last_status_code or 200,
+                        body=cached_body,
+                        headers={},
+                        from_cache=True,
+                        endpoint_key=ep_key,
+                        pages=meta.x_pages,
+                    )
+                # Payload not in Redis (evicted or Redis down) — fall through
+                # to conditional request.  ESI returns 304 if nothing changed.
+                logger.debug("Expires-gated %s but payload missing, falling through to conditional request", ep_key)
 
             # Check suppression key (429 storm protection).
             if self._is_suppressed(ep_key, group):

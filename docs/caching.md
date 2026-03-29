@@ -284,6 +284,7 @@ No PHP `serialize()` or Python `pickle` — always JSON.
 |----------|----------|
 | Redis down at startup | Gateway works with MariaDB + local memory. Logs warning once. |
 | Redis goes down mid-operation | Current operation completes. Next operation falls back. |
+| Redis payload evicted/missing | Gateway falls through to conditional ESI request (304 if unchanged). |
 | Redis restarts (empty) | MariaDB metadata repopulates Redis on first read per endpoint. |
 | Redis slow (>5s timeout) | Operation fails gracefully, marked unavailable until next success. |
 | Redis data corruption | JSON parse failure returns None, endpoint re-fetched from ESI. |
