@@ -250,24 +250,28 @@ def _load_behavior_metrics(db: SupplyCoreDb, alliance_id: int) -> dict[str, Any]
 
 
 def _query_co_presence_sql(db: SupplyCoreDb, alliance_id: int) -> list[dict]:
-    """SQL fallback: find alliances appearing on the same side in the same battles.
+    """SQL fallback: find alliances fighting on the same side via killmail co-attacker data.
 
-    Semantics are aligned with the Neo4j co-presence query: same-side
-    co-occurrence in battle_participants, grouped by alliance.
+    Two alliances are co-present (same side) when their members appear as
+    co-attackers on the same killmails.  This is more reliable than comparing
+    ``side_key`` which is set per-alliance and therefore cannot express
+    multi-alliance sides.
     """
     rows = db.fetch_all(
         """
-        SELECT bp2.alliance_id AS co_alliance_id,
-               COUNT(DISTINCT bp1.battle_id) AS shared_battles,
-               COUNT(DISTINCT bp2.character_id) AS shared_pilots
-        FROM battle_participants bp1
-        INNER JOIN battle_participants bp2
-             ON bp2.battle_id = bp1.battle_id
-            AND bp2.side_key = bp1.side_key
-            AND bp2.alliance_id <> bp1.alliance_id
-        WHERE bp1.alliance_id = %s
-          AND bp2.alliance_id IS NOT NULL AND bp2.alliance_id > 0
-        GROUP BY bp2.alliance_id
+        SELECT ka2.alliance_id AS co_alliance_id,
+               COUNT(DISTINCT ke.battle_id) AS shared_battles,
+               COUNT(DISTINCT ka2.character_id) AS shared_pilots
+        FROM killmail_attackers ka1
+        INNER JOIN killmail_attackers ka2
+             ON ka2.sequence_id = ka1.sequence_id
+            AND ka2.alliance_id <> ka1.alliance_id
+        INNER JOIN killmail_events ke
+             ON ke.sequence_id = ka1.sequence_id
+            AND ke.battle_id IS NOT NULL
+        WHERE ka1.alliance_id = %s
+          AND ka2.alliance_id IS NOT NULL AND ka2.alliance_id > 0
+        GROUP BY ka2.alliance_id
         HAVING shared_battles >= 2
         ORDER BY shared_battles DESC
         LIMIT 15
@@ -279,28 +283,39 @@ def _query_co_presence_sql(db: SupplyCoreDb, alliance_id: int) -> list[dict]:
 
 
 def _query_enemies_sql(db: SupplyCoreDb, alliance_id: int) -> list[dict]:
-    """SQL fallback: find alliances on opposing sides in the same battles.
+    """SQL fallback: find alliances on opposing sides via killmail attacker/victim data.
 
-    Semantics are aligned with the Neo4j enemy query: opposite-side
-    engagement in battle_participants, grouped by alliance.
+    An alliance is an enemy when our members attack their members (they are
+    victims) or their members attack ours.  This uses the natural
+    attacker-vs-victim relationship from killmails rather than ``side_key``
+    which is set per-alliance and cannot distinguish friend from foe.
     """
     rows = db.fetch_all(
         """
-        SELECT bp2.alliance_id AS enemy_id,
-               COUNT(DISTINCT bp1.battle_id) AS engagements
-        FROM battle_participants bp1
-        INNER JOIN battle_participants bp2
-             ON bp2.battle_id = bp1.battle_id
-            AND bp2.side_key <> bp1.side_key
-            AND bp2.alliance_id <> bp1.alliance_id
-        WHERE bp1.alliance_id = %s
-          AND bp2.alliance_id IS NOT NULL AND bp2.alliance_id > 0
-        GROUP BY bp2.alliance_id
+        SELECT enemy_id, COUNT(DISTINCT battle_id) AS engagements
+        FROM (
+            SELECT ke.victim_alliance_id AS enemy_id, ke.battle_id
+            FROM killmail_attackers ka
+            INNER JOIN killmail_events ke ON ke.sequence_id = ka.sequence_id
+            WHERE ka.alliance_id = %s
+              AND ke.victim_alliance_id IS NOT NULL AND ke.victim_alliance_id > 0
+              AND ke.victim_alliance_id <> %s
+              AND ke.battle_id IS NOT NULL
+            UNION
+            SELECT ka.alliance_id AS enemy_id, ke.battle_id
+            FROM killmail_events ke
+            INNER JOIN killmail_attackers ka ON ka.sequence_id = ke.sequence_id
+            WHERE ke.victim_alliance_id = %s
+              AND ka.alliance_id IS NOT NULL AND ka.alliance_id > 0
+              AND ka.alliance_id <> %s
+              AND ke.battle_id IS NOT NULL
+        ) AS combined
+        GROUP BY enemy_id
         HAVING engagements >= 2
         ORDER BY engagements DESC
         LIMIT 15
         """,
-        (alliance_id,),
+        (alliance_id, alliance_id, alliance_id, alliance_id),
     )
     return [{"alliance_id": int(r["enemy_id"]), "engagements": int(r["engagements"]),
              "source": "sql"} for r in rows]
