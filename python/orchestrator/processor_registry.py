@@ -210,14 +210,13 @@ def run_registered_processor(job_key: str, db: Any, raw_config: dict[str, Any], 
             f"{job_key} (in_compute_registry={in_compute_registry}, in_sync_registry={in_sync_registry})."
         )
     processor_fn, arg_factory = entry
-    args = arg_factory(db, raw_config)
     # Forward verbose if the processor accepts it (keyword-only to avoid breaking positional signatures).
     import inspect
     sig = inspect.signature(processor_fn)
     if "verbose" in sig.parameters:
-        raw_result = processor_fn(*args, verbose=verbose)
+        raw_result = processor_fn(*arg_factory(db, raw_config), verbose=verbose)
     else:
-        raw_result = processor_fn(*args)
+        raw_result = processor_fn(*arg_factory(db, raw_config))
     return JobResult.from_raw(raw_result, job_key=job_key).to_dict()
 
 
