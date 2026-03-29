@@ -1503,16 +1503,29 @@ def _compute_market_stress(
 ) -> None:
     """Combine current MariaDB market snapshot with InfluxDB consumption data for stress scoring."""
     market_rows = db.fetch_all("""
+        WITH hub_latest AS (
+            SELECT type_id, source_id, best_sell_price, best_buy_price,
+                   total_sell_volume, observed_at,
+                   ROW_NUMBER() OVER (PARTITION BY type_id ORDER BY observed_at DESC) AS rn
+            FROM market_order_snapshots_summary
+            WHERE source_type = 'market_hub'
+        ),
+        alliance_latest AS (
+            SELECT type_id, total_sell_volume,
+                   ROW_NUMBER() OVER (PARTITION BY type_id ORDER BY observed_at DESC) AS rn
+            FROM market_order_snapshots_summary
+            WHERE source_type = 'alliance_structure'
+        )
         SELECT hub.type_id,
             hub.best_sell_price AS hub_sell,
             hub.best_buy_price AS hub_buy,
             hub.total_sell_volume AS hub_volume,
             alliance.total_sell_volume AS alliance_volume,
             TIMESTAMPDIFF(HOUR, hub.observed_at, NOW()) AS freshness_hrs
-        FROM market_order_snapshots_summary hub
-        LEFT JOIN market_order_snapshots_summary alliance
-            ON alliance.type_id = hub.type_id AND alliance.source_type = 'alliance_structure'
-        WHERE hub.source_type = 'market_hub'
+        FROM hub_latest hub
+        LEFT JOIN alliance_latest alliance
+            ON alliance.type_id = hub.type_id AND alliance.rn = 1
+        WHERE hub.rn = 1
     """)
 
     for row in market_rows:
