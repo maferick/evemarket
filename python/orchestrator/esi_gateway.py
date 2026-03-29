@@ -514,17 +514,56 @@ class EsiGateway:
             self._redis.set_json(esi_meta_key(meta.endpoint_key), meta.to_dict(), ex=ttl)
 
     def _save_payload(self, ep_key: str, body: Any, expires_at: float) -> None:
-        """Cache response body in Redis (esi:payload:v1:*)."""
-        if not self._redis or not self._redis.available or body is None:
+        """Cache response body in Redis + MariaDB (esi_cache_entries)."""
+        if body is None:
             return
-        ttl = max(_MIN_TTL_SECONDS, min(_MAX_TTL_SECONDS, int(expires_at - time.time())))
-        self._redis.set_json(esi_payload_key(ep_key), body, ex=ttl)
+        # Redis (fast, ephemeral)
+        if self._redis and self._redis.available:
+            ttl = max(_MIN_TTL_SECONDS, min(_MAX_TTL_SECONDS, int(expires_at - time.time())))
+            self._redis.set_json(esi_payload_key(ep_key), body, ex=ttl)
+        # MariaDB (durable, survives Redis restarts)
+        if self._db:
+            try:
+                from datetime import timezone
+                expires_dt = datetime.fromtimestamp(expires_at, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+                self._db.execute(
+                    """INSERT INTO esi_cache_entries (namespace_key, cache_key, payload_json, fetched_at, expires_at)
+                       VALUES ('esi.payload', %s, %s, UTC_TIMESTAMP(), %s)
+                       ON DUPLICATE KEY UPDATE
+                           payload_json = VALUES(payload_json),
+                           fetched_at = VALUES(fetched_at),
+                           expires_at = VALUES(expires_at)""",
+                    (ep_key, json.dumps(body, default=str), expires_dt),
+                )
+            except Exception as exc:
+                logger.debug("Failed to persist payload for %s: %s", ep_key, exc)
 
     def _load_payload(self, ep_key: str) -> Any:
-        """Load cached response body from Redis."""
-        if not self._redis or not self._redis.available:
-            return None
-        return self._redis.get_json(esi_payload_key(ep_key))
+        """Load cached response body: Redis → MariaDB esi_cache_entries."""
+        # 1. Redis (fast)
+        if self._redis and self._redis.available:
+            data = self._redis.get_json(esi_payload_key(ep_key))
+            if data is not None:
+                return data
+        # 2. MariaDB (durable)
+        if self._db:
+            try:
+                row = self._db.fetch_one(
+                    """SELECT payload_json FROM esi_cache_entries
+                       WHERE namespace_key = 'esi.payload' AND cache_key = %s
+                         AND (expires_at IS NULL OR expires_at > UTC_TIMESTAMP())
+                       LIMIT 1""",
+                    (ep_key,),
+                )
+                if row and row.get("payload_json"):
+                    body = json.loads(row["payload_json"]) if isinstance(row["payload_json"], str) else row["payload_json"]
+                    # Repopulate Redis for next hit
+                    if self._redis and self._redis.available and body is not None:
+                        self._redis.set_json(esi_payload_key(ep_key), body, ex=_MIN_TTL_SECONDS)
+                    return body
+            except Exception as exc:
+                logger.debug("Failed to load payload from MariaDB for %s: %s", ep_key, exc)
+        return None
 
     # -- Distributed fetch lock --------------------------------------------
 
