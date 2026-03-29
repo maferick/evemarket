@@ -244,28 +244,40 @@ def run_compute_suspicion_scores_v2(db: SupplyCoreDb, runtime: dict[str, Any] | 
     )
     recent_map = {int(row["character_id"]): row for row in recent}
 
-    support_rows = db.fetch_all(
-        """
-        SELECT
-            x.character_id,
-            x.other_character_id,
-            x.shared_battle_count,
-            x.high_sustain_count
-        FROM (
+    # ── Top graph neighbors: chunked to avoid temp-table overflow ───────
+    # The self-join on battle_actor_features creates O(participants²) pairs per
+    # battle.  Running it for all characters at once can exceed tmp_disk_table_size.
+    # Chunking by character_id keeps each query's intermediate result manageable.
+    all_character_ids = [int(r["character_id"]) for r in rows]
+    NEIGHBOR_CHUNK = 500
+    support_rows: list[dict[str, Any]] = []
+    for chunk_start in range(0, len(all_character_ids), NEIGHBOR_CHUNK):
+        chunk_ids = all_character_ids[chunk_start : chunk_start + NEIGHBOR_CHUNK]
+        placeholders = ",".join(["%s"] * len(chunk_ids))
+        chunk_rows = db.fetch_all(
+            f"""
             SELECT
-                baf1.character_id,
-                baf2.character_id AS other_character_id,
-                COUNT(DISTINCT baf1.battle_id) AS shared_battle_count,
-                SUM(CASE WHEN baf1.participated_in_high_sustain = 1 OR baf2.participated_in_high_sustain = 1 THEN 1 ELSE 0 END) AS high_sustain_count,
-                ROW_NUMBER() OVER (PARTITION BY baf1.character_id ORDER BY COUNT(DISTINCT baf1.battle_id) DESC) AS rn
-            FROM battle_actor_features baf1
-            INNER JOIN character_battle_intelligence cbi_filter ON cbi_filter.character_id = baf1.character_id
-            INNER JOIN battle_actor_features baf2 ON baf2.battle_id = baf1.battle_id AND baf2.character_id <> baf1.character_id
-            GROUP BY baf1.character_id, baf2.character_id
-        ) x
-        WHERE x.rn <= 5
-        """
-    )
+                x.character_id,
+                x.other_character_id,
+                x.shared_battle_count,
+                x.high_sustain_count
+            FROM (
+                SELECT
+                    baf1.character_id,
+                    baf2.character_id AS other_character_id,
+                    COUNT(DISTINCT baf1.battle_id) AS shared_battle_count,
+                    SUM(CASE WHEN baf1.participated_in_high_sustain = 1 OR baf2.participated_in_high_sustain = 1 THEN 1 ELSE 0 END) AS high_sustain_count,
+                    ROW_NUMBER() OVER (PARTITION BY baf1.character_id ORDER BY COUNT(DISTINCT baf1.battle_id) DESC) AS rn
+                FROM battle_actor_features baf1
+                INNER JOIN battle_actor_features baf2 ON baf2.battle_id = baf1.battle_id AND baf2.character_id <> baf1.character_id
+                WHERE baf1.character_id IN ({placeholders})
+                GROUP BY baf1.character_id, baf2.character_id
+            ) x
+            WHERE x.rn <= 5
+            """,
+            tuple(chunk_ids),
+        )
+        support_rows.extend(chunk_rows)
     top_neighbors: dict[int, list[dict[str, Any]]] = {}
     for row in support_rows:
         cid = int(row.get("character_id") or 0)
@@ -277,24 +289,30 @@ def run_compute_suspicion_scores_v2(db: SupplyCoreDb, runtime: dict[str, Any] | 
             }
         )
 
-    # Batch-fetch top 5 supporting battles per character (replaces N+1 per-character queries)
-    top_battles_rows = db.fetch_all(
-        """
-        SELECT tb.character_id, tb.battle_id, tb.side_key, tb.z_efficiency_score
-        FROM (
-            SELECT
-                baf.character_id,
-                baf.battle_id,
-                baf.side_key,
-                COALESCE(bsm.z_efficiency_score, 0) AS z_efficiency_score,
-                ROW_NUMBER() OVER (PARTITION BY baf.character_id ORDER BY ABS(COALESCE(bsm.z_efficiency_score, 0)) DESC) AS rn
-            FROM battle_actor_features baf
-            INNER JOIN character_battle_intelligence cbi_filter ON cbi_filter.character_id = baf.character_id
-            LEFT JOIN battle_side_metrics bsm ON bsm.battle_id = baf.battle_id AND bsm.side_key = baf.side_key
-        ) tb
-        WHERE tb.rn <= 5
-        """
-    )
+    # ── Top supporting battles: chunked to avoid temp-table overflow ────
+    top_battles_rows: list[dict[str, Any]] = []
+    for chunk_start in range(0, len(all_character_ids), NEIGHBOR_CHUNK):
+        chunk_ids = all_character_ids[chunk_start : chunk_start + NEIGHBOR_CHUNK]
+        placeholders = ",".join(["%s"] * len(chunk_ids))
+        chunk_rows = db.fetch_all(
+            f"""
+            SELECT tb.character_id, tb.battle_id, tb.side_key, tb.z_efficiency_score
+            FROM (
+                SELECT
+                    baf.character_id,
+                    baf.battle_id,
+                    baf.side_key,
+                    COALESCE(bsm.z_efficiency_score, 0) AS z_efficiency_score,
+                    ROW_NUMBER() OVER (PARTITION BY baf.character_id ORDER BY ABS(COALESCE(bsm.z_efficiency_score, 0)) DESC) AS rn
+                FROM battle_actor_features baf
+                LEFT JOIN battle_side_metrics bsm ON bsm.battle_id = baf.battle_id AND bsm.side_key = baf.side_key
+                WHERE baf.character_id IN ({placeholders})
+            ) tb
+            WHERE tb.rn <= 5
+            """,
+            tuple(chunk_ids),
+        )
+        top_battles_rows.extend(chunk_rows)
     top_battles_map: dict[int, list[dict[str, Any]]] = {}
     for tb_row in top_battles_rows:
         cid_tb = int(tb_row.get("character_id") or 0)
