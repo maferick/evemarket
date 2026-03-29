@@ -1682,6 +1682,27 @@ def run_compute_graph_insights(
 ) -> dict[str, Any]:
     started = time.perf_counter()
     job_name = "compute_graph_insights"
+    try:
+        return _run_compute_graph_insights_inner(db, neo4j_raw, influx_raw, started)
+    except Exception as exc:
+        import traceback
+        _write_graph_log(
+            Neo4jConfig.from_runtime(neo4j_raw or {}).log_file,
+            "graph.insights.failed",
+            {"error": f"{type(exc).__name__}: {exc}", "traceback": traceback.format_exc()},
+        )
+        return _job_payload(job_name, started, "failed", error_text=f"{type(exc).__name__}: {exc}")
+
+
+def _run_compute_graph_insights_inner(
+    db: SupplyCoreDb,
+    neo4j_raw: dict[str, Any] | None = None,
+    influx_raw: dict[str, Any] | None = None,
+    started: float | None = None,
+) -> dict[str, Any]:
+    if started is None:
+        started = time.perf_counter()
+    job_name = "compute_graph_insights"
     config = Neo4jConfig.from_runtime(neo4j_raw or {})
     if not config.enabled:
         return _job_payload(job_name, started, "skipped", error_text="neo4j disabled")
