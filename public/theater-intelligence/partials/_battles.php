@@ -7,12 +7,12 @@
         }
         $maxParticipants = max($maxParticipants, 1);
         $sizeClasses = [
-            'MICRO' => 'bg-slate-700/60 text-slate-400 border border-slate-600/50',
-            'SMALL' => 'bg-indigo-900/50 text-indigo-300 border border-indigo-500/30',
-            'MEDIUM'=> 'bg-cyan-900/50 text-cyan-300 border border-cyan-500/30',
-            'LARGE' => 'bg-yellow-900/50 text-yellow-300 border border-yellow-500/30',
-            'MEGA'  => 'bg-orange-900/50 text-orange-300 border border-orange-500/30',
-            'ULTRA' => 'bg-red-900/50 text-red-300 border border-red-500/30',
+            'MICRO' => 'bg-slate-900/70 text-slate-300 border border-slate-500/70 ring-1 ring-slate-500/30',
+            'SMALL' => 'bg-indigo-900/60 text-indigo-200 border border-indigo-400/60 ring-1 ring-indigo-400/30',
+            'MEDIUM'=> 'bg-cyan-900/60 text-cyan-200 border border-cyan-400/60 ring-1 ring-cyan-400/30',
+            'LARGE' => 'bg-yellow-900/60 text-yellow-200 border border-yellow-400/70 ring-1 ring-yellow-400/30',
+            'MEGA'  => 'bg-orange-900/60 text-orange-200 border border-orange-400/70 ring-1 ring-orange-400/30',
+            'ULTRA' => 'bg-red-900/60 text-red-200 border border-red-400/70 ring-1 ring-red-400/30',
         ];
     ?>
     <div class="mt-3 table-shell">
@@ -52,7 +52,7 @@
                                 </div>
                             </td>
                             <td class="px-3 py-2" data-val="<?= htmlspecialchars($battleSize, ENT_QUOTES) ?>">
-                                <span class="inline-block rounded-full px-2 py-0.5 text-[10px] uppercase tracking-wider <?= $sizeClass ?>">
+                                <span class="inline-block rounded-full px-2.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.14em] <?= $sizeClass ?>">
                                     <?= htmlspecialchars((string) ($b['battle_size_class'] ?? ''), ENT_QUOTES) ?>
                                 </span>
                             </td>
