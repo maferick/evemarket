@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import time
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from ..db import SupplyCoreDb
@@ -18,6 +18,10 @@ WINDOWS = [
 DRIFT_THRESHOLD = 0.15
 
 
+def _utc_cutoff_iso(days: int) -> str:
+    return (datetime.now(UTC) - timedelta(days=days)).isoformat()
+
+
 def run_graph_temporal_metrics_sync(db: SupplyCoreDb, neo4j_raw: dict[str, Any] | None = None) -> dict[str, Any]:
     started = time.perf_counter()
     job_name = "graph_temporal_metrics_sync"
@@ -31,10 +35,11 @@ def run_graph_temporal_metrics_sync(db: SupplyCoreDb, neo4j_raw: dict[str, Any] 
     total_rows_written = 0
 
     for window_label, window_days in WINDOWS:
+        cutoff = _utc_cutoff_iso(window_days)
         rows = client.query(
             """
             MATCH (c:Character)-[:ON_SIDE]->(:BattleSide)<-[:HAS_SIDE]-(b:Battle)
-            WHERE datetime(COALESCE(b.started_at, '1970-01-01T00:00:00Z')) >= datetime() - duration({days: $window_days})
+            WHERE b.started_at >= $cutoff
             OPTIONAL MATCH (c)-[:ATTACKED_ON]->(k:Killmail)<-[:OCCURRED_IN]-(b)
             OPTIONAL MATCH (c)-[:VICTIM_OF]->(v:Killmail)<-[:OCCURRED_IN]-(b)
             OPTIONAL MATCH (c)-[co:CO_OCCURS_WITH]-(:Character)
@@ -50,7 +55,7 @@ def run_graph_temporal_metrics_sync(db: SupplyCoreDb, neo4j_raw: dict[str, Any] 
                       ELSE 0.0 END AS engagement_rate_avg
             WHERE battles_present > 0
             RETURN
-                toInteger(c.character_id) AS character_id,
+                c.character_id AS character_id,
                 toInteger(battles_present) AS battles_present,
                 toInteger(kills_total) AS kills_total,
                 toInteger(losses_total) AS losses_total,
@@ -59,7 +64,7 @@ def run_graph_temporal_metrics_sync(db: SupplyCoreDb, neo4j_raw: dict[str, Any] 
                 toFloat(co_presence_density) AS co_presence_density,
                 toFloat(engagement_rate_avg) AS engagement_rate_avg
             """,
-            {"window_days": window_days},
+            {"cutoff": cutoff},
         )
 
         if not rows:

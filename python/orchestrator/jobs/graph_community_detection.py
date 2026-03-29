@@ -89,7 +89,7 @@ def _export_community_assignments(client: Neo4jClient, db: SupplyCoreDb, compute
         OPTIONAL MATCH (c)-[r:CO_OCCURS_WITH|DIRECT_COMBAT|ASSISTED_KILL|SAME_FLEET]-(:Character)
         WITH c, count(r) AS degree
         RETURN
-            toInteger(c.character_id) AS character_id,
+            c.character_id AS character_id,
             toInteger(c.community_label) AS community_id,
             toFloat(COALESCE(c.pr, 0.0)) AS pagerank_score,
             toFloat(COALESCE(c.betweenness_approx, 0.0)) AS betweenness_centrality,
@@ -114,7 +114,7 @@ def _export_community_assignments(client: Neo4jClient, db: SupplyCoreDb, compute
         WHERE c.community_label IS NOT NULL AND n.community_label IS NOT NULL
         WITH c, collect(DISTINCT n.community_label) AS neighbor_communities
         WHERE size(neighbor_communities) >= $threshold
-        RETURN toInteger(c.character_id) AS character_id
+        RETURN c.character_id AS character_id
         """,
         {"threshold": BRIDGE_COMMUNITY_THRESHOLD},
     )

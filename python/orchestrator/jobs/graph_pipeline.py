@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 import math
 import time
 from pathlib import Path
@@ -34,6 +34,10 @@ RELATIONSHIP_WINDOW_DAYS = 30
 STALE_DAYS = 45
 DEFAULT_BATCH_SIZE = 1000
 SYNC_DATASET_GRAPH_INSIGHTS_FIT_OVERLAP = "graph_insights_fit_overlap"
+
+
+def _utc_cutoff_iso(days: int) -> str:
+    return (datetime.now(UTC) - timedelta(days=days)).isoformat()
 
 
 def _utc_now_sql() -> str:
@@ -476,7 +480,7 @@ def run_compute_graph_sync_battle_intelligence(db: SupplyCoreDb, neo4j_raw: dict
             MERGE (b)-[:HAS_SIDE]->(side)
 
             WITH row, side, b
-            MERGE (c:Character {character_id: toInteger(row.character_id)})
+            MERGE (c:Character {character_id: row.character_id})
             MERGE (c)-[:PARTICIPATED_IN]->(b)
             MERGE (c)-[:ON_SIDE]->(side)
 
@@ -506,7 +510,7 @@ def run_compute_graph_sync_battle_intelligence(db: SupplyCoreDb, neo4j_raw: dict
             UNWIND $rows AS row
             WITH row
             WHERE toInteger(COALESCE(row.ship_type_id, 0)) > 0
-            MATCH (c:Character {character_id: toInteger(row.character_id)})
+            MATCH (c:Character {character_id: row.character_id})
             MATCH (ship:ShipType {type_id: toInteger(row.ship_type_id)})
             OPTIONAL MATCH (c)-[legacy:FLEW]->(ship)
             DELETE legacy
@@ -600,8 +604,8 @@ def run_compute_graph_derived_relationships(db: SupplyCoreDb, neo4j_raw: dict[st
         anchor_rows = client.query(
             """
             MATCH (c:Character)
-            WHERE toInteger(c.character_id) > $cursor
-            RETURN toInteger(c.character_id) AS character_id
+            WHERE c.character_id > $cursor
+            RETURN c.character_id AS character_id
             ORDER BY character_id ASC
             LIMIT $batch_size
             """,
@@ -614,20 +618,23 @@ def run_compute_graph_derived_relationships(db: SupplyCoreDb, neo4j_raw: dict[st
         if not anchor_ids:
             break
 
+        cutoff = _utc_cutoff_iso(RELATIONSHIP_WINDOW_DAYS)
+        recent_cutoff = _utc_cutoff_iso(7)
+
         client.query(
             """
             UNWIND $anchor_ids AS anchor_id
-            MATCH (c1:Character {character_id: toInteger(anchor_id)})
+            MATCH (c1:Character {character_id: anchor_id})
             MATCH (c1)-[:PARTICIPATED_IN]->(b:Battle)<-[:PARTICIPATED_IN]-(c2:Character)
             WHERE c1.character_id < c2.character_id
-              AND datetime(COALESCE(b.started_at, '1970-01-01T00:00:00Z')) >= datetime() - duration({days:$window_days})
+              AND b.started_at >= $cutoff
             OPTIONAL MATCH (c1)-[:ON_SIDE]->(s1:BattleSide)<-[:HAS_SIDE]-(b)
             OPTIONAL MATCH (c2)-[:ON_SIDE]->(s2:BattleSide)<-[:HAS_SIDE]-(b)
             WITH c1, c2,
-                 min(datetime(COALESCE(b.started_at, '1970-01-01T00:00:00Z'))) AS first_seen,
-                 max(datetime(COALESCE(b.started_at, '1970-01-01T00:00:00Z'))) AS last_seen,
+                 min(b.started_at) AS first_seen,
+                 max(b.started_at) AS last_seen,
                  count(DISTINCT b) AS occurrence_count,
-                 count(DISTINCT CASE WHEN datetime(COALESCE(b.started_at, '1970-01-01T00:00:00Z')) >= datetime() - duration({days:7}) THEN b END) AS recent_occurrence_count,
+                 count(DISTINCT CASE WHEN b.started_at >= $recent_cutoff THEN b END) AS recent_occurrence_count,
                  count(DISTINCT CASE WHEN s1.anomaly_class = 'high_sustain' OR s2.anomaly_class = 'high_sustain' THEN b END) AS high_sustain_battle_count
             WHERE occurrence_count >= $co_threshold
             MERGE (c1)-[r:CO_OCCURS_WITH]->(c2)
@@ -640,12 +647,12 @@ def run_compute_graph_derived_relationships(db: SupplyCoreDb, neo4j_raw: dict[st
                   r.all_time_weight = toFloat(occurrence_count + high_sustain_battle_count * 2),
                   r.weight = toFloat((recent_occurrence_count * 2) + occurrence_count + (high_sustain_battle_count * 2))
             """,
-            {"anchor_ids": anchor_ids, "window_days": RELATIONSHIP_WINDOW_DAYS, "co_threshold": CO_OCCUR_THRESHOLD},
+            {"anchor_ids": anchor_ids, "cutoff": cutoff, "recent_cutoff": recent_cutoff, "co_threshold": CO_OCCUR_THRESHOLD},
         )
         client.query(
             """
             UNWIND $anchor_ids AS anchor_id
-            MATCH (c:Character {character_id: toInteger(anchor_id)})-[r:CO_OCCURS_WITH]->(:Character)
+            MATCH (c:Character {character_id: anchor_id})-[r:CO_OCCURS_WITH]->(:Character)
             WITH c, r ORDER BY r.weight DESC
             WITH c, collect(r) AS rels
             FOREACH(rel IN rels[$top_k..] | DELETE rel)
@@ -655,7 +662,7 @@ def run_compute_graph_derived_relationships(db: SupplyCoreDb, neo4j_raw: dict[st
         client.query(
             """
             UNWIND $anchor_ids AS anchor_id
-            MATCH (c:Character {character_id: toInteger(anchor_id)})-[r:ASSOCIATED_WITH_ANOMALY]->(:Battle)
+            MATCH (c:Character {character_id: anchor_id})-[r:ASSOCIATED_WITH_ANOMALY]->(:Battle)
             WHERE datetime(COALESCE(r.last_seen, '1970-01-01T00:00:00Z')) < datetime() - duration({days:$window_days})
             DELETE r
             """,
@@ -664,12 +671,12 @@ def run_compute_graph_derived_relationships(db: SupplyCoreDb, neo4j_raw: dict[st
         client.query(
             """
             UNWIND $anchor_ids AS anchor_id
-            MATCH (c:Character {character_id: toInteger(anchor_id)})
+            MATCH (c:Character {character_id: anchor_id})
             OPTIONAL MATCH (c)-[:ON_SIDE]->(s:BattleSide)<-[:HAS_SIDE]-(b:Battle)
-            WHERE datetime(COALESCE(b.started_at, '1970-01-01T00:00:00Z')) >= datetime() - duration({days:$window_days})
+            WHERE b.started_at >= $cutoff
             WITH c, collect(DISTINCT s.side_key) AS side_keys,
-                 min(datetime(COALESCE(b.started_at, '1970-01-01T00:00:00Z'))) AS first_seen,
-                 max(datetime(COALESCE(b.started_at, '1970-01-01T00:00:00Z'))) AS last_seen,
+                 min(b.started_at) AS first_seen,
+                 max(b.started_at) AS last_seen,
                  count(DISTINCT b) AS occurrence_count
             WHERE size(side_keys) > 1
             MERGE (c)-[r:CROSSED_SIDES]->(c)
@@ -682,33 +689,33 @@ def run_compute_graph_derived_relationships(db: SupplyCoreDb, neo4j_raw: dict[st
                   r.recent_weight = toFloat(size(side_keys)),
                   r.all_time_weight = toFloat(size(side_keys) + occurrence_count)
             """,
-            {"anchor_ids": anchor_ids, "window_days": RELATIONSHIP_WINDOW_DAYS},
+            {"anchor_ids": anchor_ids, "cutoff": cutoff},
         )
         client.query(
             """
             UNWIND $anchor_ids AS anchor_id
-            MATCH (c:Character {character_id: toInteger(anchor_id)})
+            MATCH (c:Character {character_id: anchor_id})
             OPTIONAL MATCH (c)-[:ON_SIDE]->(s:BattleSide)<-[:HAS_SIDE]-(b:Battle)
-            WHERE datetime(COALESCE(b.started_at, '1970-01-01T00:00:00Z')) >= datetime() - duration({days:$window_days})
+            WHERE b.started_at >= $cutoff
             WITH c, collect(DISTINCT s.side_key) AS side_keys
             WHERE size(side_keys) <= 1
             MATCH (c)-[r:CROSSED_SIDES]->(c)
             DELETE r
             """,
-            {"anchor_ids": anchor_ids, "window_days": RELATIONSHIP_WINDOW_DAYS},
+            {"anchor_ids": anchor_ids, "cutoff": cutoff},
         )
         client.query(
             """
             UNWIND $anchor_ids AS anchor_id
-            MATCH (c:Character {character_id: toInteger(anchor_id)})-[:ON_SIDE]->(s:BattleSide)<-[:HAS_SIDE]-(b:Battle)
+            MATCH (c:Character {character_id: anchor_id})-[:ON_SIDE]->(s:BattleSide)<-[:HAS_SIDE]-(b:Battle)
             WHERE s.anomaly_class IN ['high_sustain', 'low_sustain']
-              AND datetime(COALESCE(b.started_at, '1970-01-01T00:00:00Z')) >= datetime() - duration({days:$window_days})
+              AND b.started_at >= $cutoff
             WITH c, b,
-                 min(datetime(COALESCE(b.started_at, '1970-01-01T00:00:00Z'))) AS first_seen,
-                 max(datetime(COALESCE(b.started_at, '1970-01-01T00:00:00Z'))) AS last_seen,
+                 min(b.started_at) AS first_seen,
+                 max(b.started_at) AS last_seen,
                  count(*) AS occurrence_count,
                  avg(toFloat(s.z_efficiency_score)) AS avg_z_score,
-                 count(CASE WHEN datetime(COALESCE(b.started_at, '1970-01-01T00:00:00Z')) >= datetime() - duration({days:7}) THEN 1 END) AS recent_occurrence_count
+                 count(CASE WHEN b.started_at >= $recent_cutoff THEN 1 END) AS recent_occurrence_count
             WHERE occurrence_count >= $anom_threshold
             MERGE (c)-[r:ASSOCIATED_WITH_ANOMALY]->(b)
               SET r.first_seen = toString(first_seen),
@@ -720,7 +727,7 @@ def run_compute_graph_derived_relationships(db: SupplyCoreDb, neo4j_raw: dict[st
                   r.all_time_weight = toFloat(occurrence_count + avg_z_score),
                   r.count = toInteger(occurrence_count)
             """,
-            {"anchor_ids": anchor_ids, "window_days": RELATIONSHIP_WINDOW_DAYS, "anom_threshold": ANOMALY_ASSOC_THRESHOLD},
+            {"anchor_ids": anchor_ids, "cutoff": cutoff, "recent_cutoff": recent_cutoff, "anom_threshold": ANOMALY_ASSOC_THRESHOLD},
         )
 
         character_cursor = max(anchor_ids)
@@ -1056,7 +1063,7 @@ def run_compute_graph_topology_metrics(db: SupplyCoreDb, neo4j_raw: dict[str, An
              max(COALESCE(cross.side_transition_count, 0)) AS side_transitions,
              avg(COALESCE(anom.avg_z_score, 0.0)) AS anomalous_neighbor_density
         RETURN
-            toInteger(c.character_id) AS character_id,
+            c.character_id AS character_id,
             toFloat(degree_count) AS pagerank_score,
             toFloat(avg_co_weight) AS bridge_score,
             toInteger(side_transitions) AS community_id,
@@ -1074,11 +1081,12 @@ def run_compute_graph_topology_metrics(db: SupplyCoreDb, neo4j_raw: dict[str, An
     # opposing alliance.  A character who consistently has anomalous
     # (high_sustain) battles specifically against one alliance — while
     # fighting normally against all others — is flagged for avoidance.
+    cutoff = _utc_cutoff_iso(RELATIONSHIP_WINDOW_DAYS)
     avoidance_rows = client.query(
         """
         MATCH (c:Character)-[:ON_SIDE]->(my_side:BattleSide)<-[:HAS_SIDE]-(b:Battle)-[:HAS_SIDE]->(opp_side:BattleSide)
         WHERE my_side.side_key <> opp_side.side_key
-          AND datetime(COALESCE(b.started_at, '1970-01-01T00:00:00Z')) >= datetime() - duration({days: $window_days})
+          AND b.started_at >= $cutoff
         MATCH (opp_side)-[:REPRESENTED_BY_ALLIANCE]->(a:Alliance)
         WITH c, a.alliance_id AS opp_alliance,
              collect(DISTINCT b) AS battles,
@@ -1098,12 +1106,12 @@ def run_compute_graph_topology_metrics(db: SupplyCoreDb, neo4j_raw: dict[str, An
                  CASE WHEN s.encounters > mx_enc THEN s.encounters ELSE mx_enc END
              ) AS max_encounters_single
         RETURN
-            toInteger(c.character_id) AS character_id,
+            c.character_id AS character_id,
             toFloat(max_avoidance_delta) AS engagement_avoidance_score,
             toInteger(alliances_faced) AS alliances_encountered,
             toInteger(max_encounters_single) AS max_encounters_single_alliance
         """,
-        {"window_days": RELATIONSHIP_WINDOW_DAYS},
+        {"cutoff": cutoff},
     )
     avoidance_map: dict[int, float] = {}
     for row in avoidance_rows:

@@ -61,7 +61,7 @@ def run_graph_evidence_paths_sync(db: SupplyCoreDb, neo4j_raw: dict[str, Any] | 
         """
         MATCH (c:Character)
         WHERE COALESCE(c.suspicion_score, 0) > $threshold
-        RETURN toInteger(c.character_id) AS character_id,
+        RETURN c.character_id AS character_id,
                COALESCE(c.name, 'Character #' + toString(c.character_id)) AS name,
                toFloat(c.suspicion_score) AS suspicion_score
         ORDER BY c.suspicion_score DESC

@@ -1021,7 +1021,7 @@ def run_compute_counterintel_pipeline(
                     neo4j.query(
                         """
                         UNWIND $rows AS row
-                        MERGE (c:Character {character_id: toInteger(row.character_id)})
+                        MERGE (c:Character {character_id: row.character_id})
                         MERGE (b:Battle {battle_id: row.battle_id})
                         MERGE (c)-[r:PRESENT_IN_ANOMALOUS_BATTLE]->(b)
                         SET r.review_priority_score = row.review_priority_score,
@@ -1040,8 +1040,8 @@ def run_compute_counterintel_pipeline(
                     neo4j.query(
                         """
                         UNWIND $rows AS row
-                        MATCH (left:Character {character_id: toInteger(row.left_character_id)})
-                        MATCH (right:Character {character_id: toInteger(row.right_character_id)})
+                        MATCH (left:Character {character_id: row.left_character_id})
+                        MATCH (right:Character {character_id: row.right_character_id})
                         MERGE (left)-[r:CO_PRESENT_WITH]->(right)
                         SET r.count = toInteger(COALESCE(r.count, 0)) + toInteger(row.count),
                             r.anomalous_count = toInteger(COALESCE(r.anomalous_count, 0)) + toInteger(row.anomalous_count),
@@ -1055,7 +1055,7 @@ def run_compute_counterintel_pipeline(
                         """
                         UNWIND $rows AS row
                         WITH row WHERE row.start IS NOT NULL AND row.source IS NOT NULL
-                        MERGE (c:Character {character_id: toInteger(row.character_id)})
+                        MERGE (c:Character {character_id: row.character_id})
                         MERGE (corp:Corporation {corporation_id: toInteger(row.corporation_id)})
                         MERGE (c)-[r:HISTORICALLY_IN]->(corp)
                         SET r.start = COALESCE(row.start, r.start),
