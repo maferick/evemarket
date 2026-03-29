@@ -122,6 +122,7 @@ def parse_args() -> argparse.Namespace:
     run_job = subparsers.add_parser("run-job", help="Run a Python-native recurring job by job key")
     run_job.add_argument("--app-root", default=str(Path(__file__).resolve().parents[2]))
     run_job.add_argument("--job-key", required=True)
+    run_job.add_argument("--verbose", action="store_true", help="Print step-by-step progress to stderr")
 
     backfill = subparsers.add_parser("killmail-backfill", help="Backfill killmails from R2Z2 history API")
     backfill.add_argument("--app-root", default=str(Path(__file__).resolve().parents[2]))
@@ -349,7 +350,7 @@ def main() -> int:
             return 1
         started_at = time.monotonic()
         try:
-            result = run_registered_processor(job_key, db, config.raw)
+            result = run_registered_processor(job_key, db, config.raw, verbose=getattr(args, "verbose", False))
             _print_cli_result(job_key, started_at, result)
             return 1 if str(result.get("status") or "success").lower() == "failed" else 0
         except Exception as exc:

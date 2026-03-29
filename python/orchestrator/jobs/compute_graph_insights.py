@@ -7,8 +7,8 @@ from ..job_result import JobResult
 from .graph_pipeline import run_compute_graph_insights as run_compute_graph_insights_pipeline
 
 
-def run_compute_graph_insights(db: SupplyCoreDb, neo4j_raw: dict[str, Any] | None = None, influx_raw: dict[str, Any] | None = None) -> dict[str, Any]:
-    raw = run_compute_graph_insights_pipeline(db, neo4j_raw, influx_raw)
+def run_compute_graph_insights(db: SupplyCoreDb, neo4j_raw: dict[str, Any] | None = None, influx_raw: dict[str, Any] | None = None, *, verbose: bool = False) -> dict[str, Any]:
+    raw = run_compute_graph_insights_pipeline(db, neo4j_raw, influx_raw, verbose=verbose)
     raw.setdefault("meta", {})
     raw["meta"]["execution_mode"] = "python"
     return JobResult.from_raw(raw, job_key="compute_graph_insights").to_dict()
