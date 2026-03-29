@@ -235,22 +235,15 @@ class TestNeo4jCoPresence(unittest.TestCase):
             self.assertTrue(CO_PRESENT_REQUIRED_KEYS.issubset(item.keys()),
                           f"Missing keys: {CO_PRESENT_REQUIRED_KEYS - item.keys()}")
 
-    def test_fallback_to_engaged_alliance_path(self) -> None:
-        """When ON_SIDE path returns empty, falls back to ENGAGED_ALLIANCE."""
+    def test_empty_result_returns_empty_list(self) -> None:
+        """When killmail co-attacker query returns empty, returns empty list."""
         client = MagicMock()
-        # First query (ON_SIDE path) returns empty
-        # Second query (ENGAGED_ALLIANCE path) returns results
-        client.query.side_effect = [
-            [],
-            [{"co_alliance_id": 400, "shared_battles": 4, "shared_pilots": 6}],
-        ]
+        client.query.return_value = []
 
         result = _query_co_presence_neo4j(client, 100)
 
-        self.assertEqual(len(result), 1)
-        self.assertEqual(result[0]["alliance_id"], 400)
-        self.assertEqual(result[0]["source"], "neo4j")
-        self.assertEqual(client.query.call_count, 2)
+        self.assertEqual(result, [])
+        self.assertEqual(client.query.call_count, 1)
 
 
 class TestSqlCoPresence(unittest.TestCase):
@@ -326,20 +319,15 @@ class TestNeo4jEnemies(unittest.TestCase):
             self.assertTrue(ENEMY_REQUIRED_KEYS.issubset(item.keys()),
                           f"Missing keys: {ENEMY_REQUIRED_KEYS - item.keys()}")
 
-    def test_fallback_to_on_side_path(self) -> None:
-        """When ENGAGED_ALLIANCE path returns empty, falls back to ON_SIDE."""
+    def test_empty_result_returns_empty_list(self) -> None:
+        """When killmail attacker/victim query returns empty, returns empty list."""
         client = MagicMock()
-        client.query.side_effect = [
-            [],
-            [{"enemy_id": 600, "engagements": 3}],
-        ]
+        client.query.return_value = []
 
         result = _query_enemies_neo4j(client, 100)
 
-        self.assertEqual(len(result), 1)
-        self.assertEqual(result[0]["alliance_id"], 600)
-        self.assertEqual(result[0]["source"], "neo4j")
-        self.assertEqual(client.query.call_count, 2)
+        self.assertEqual(result, [])
+        self.assertEqual(client.query.call_count, 1)
 
 
 class TestSqlEnemies(unittest.TestCase):

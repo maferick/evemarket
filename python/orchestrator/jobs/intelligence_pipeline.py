@@ -320,17 +320,23 @@ def _compute_fleet_function(client: Neo4jClient) -> None:
 
 
 def _compute_encounter_vs_engagement(client: Neo4jClient) -> None:
-    """Step 5.2: Encounter vs engagement per opposing alliance."""
+    """Step 5.2: Encounter vs engagement per opposing alliance.
+
+    Uses killmail attacker/victim relationships to determine opposition
+    rather than BattleSide side_key (which is per-alliance and cannot
+    distinguish friend from foe).  A character "encounters" an enemy
+    alliance when they attack a member of that alliance on a killmail,
+    counted as distinct battles via ``Killmail.battle_id``.
+    """
     client.query(
-        """MATCH (c:Character)-[:ON_SIDE]->(my_side:BattleSide)<-[:HAS_SIDE]-(b:Battle)
-                  -[:HAS_SIDE]->(opp_side:BattleSide)
-           WHERE c.tracked = true AND my_side.side_key <> opp_side.side_key
-           MATCH (opp_side)-[:REPRESENTED_BY_ALLIANCE]->(a:Alliance)
-           WHERE NOT (c)-[:MEMBER_OF_ALLIANCE]->(a)
-           WITH c, a, count(DISTINCT b) AS encountered
-           OPTIONAL MATCH (c)-[:ATTACKED_ON]->(k:Killmail)<-[:VICTIM_OF]-(victim:Character)
-                          -[:MEMBER_OF_ALLIANCE]->(a)
-           WITH c, a, encountered, count(DISTINCT k) AS kills
+        """MATCH (c:Character)-[:ATTACKED_ON]->(k:Killmail)<-[:VICTIM_OF]-(victim:Character)
+                  -[:MEMBER_OF_ALLIANCE]->(a:Alliance)
+           WHERE c.tracked = true
+             AND NOT (c)-[:MEMBER_OF_ALLIANCE]->(a)
+             AND k.battle_id IS NOT NULL AND k.battle_id <> ''
+           WITH c, a,
+                count(DISTINCT k) AS kills,
+                count(DISTINCT k.battle_id) AS encountered
            WITH c, a, encountered, kills,
                 CASE WHEN encountered > 0
                      THEN toFloat(kills) / encountered ELSE 0.0 END AS eng_rate
