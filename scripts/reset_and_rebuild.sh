@@ -21,6 +21,10 @@ set -euo pipefail
 PYTHON="${PYTHON:-/var/www/SupplyCore/.venv-orchestrator/bin/python}"
 PROJECT_DIR="${PROJECT_DIR:-/var/www/SupplyCore}"
 DB_NAME="${DB_NAME:-supplycore}"
+NEO4J_URL="${NEO4J_URL:-http://127.0.0.1:7474}"
+NEO4J_USERNAME="${NEO4J_USERNAME:-neo4j}"
+NEO4J_PASSWORD="${NEO4J_PASSWORD:-${NEO4J_PASS:-}}"
+NEO4J_DATABASE="${NEO4J_DATABASE:-neo4j}"
 SERVICE_CONTROL=true
 
 for arg in "$@"; do
@@ -43,12 +47,12 @@ STOPPED_SERVICES=()
 
 stop_services() {
     if [ "$SERVICE_CONTROL" != "true" ]; then
-        echo "[0/5] Skipping service control (--no-service-control)"
+        echo "[0/6] Skipping service control (--no-service-control)"
         echo ""
         return
     fi
 
-    echo "[0/5] Stopping orchestrator workers and sync services..."
+    echo "[0/6] Stopping orchestrator workers and sync services..."
 
     # Discover all active supplycore worker services
     local services
@@ -91,7 +95,7 @@ restart_services() {
     fi
 
     echo ""
-    echo "[5/5] Restarting stopped services..."
+    echo "[6/6] Restarting stopped services..."
     for svc in "${STOPPED_SERVICES[@]}"; do
         echo -n "  Starting $svc... "
         if systemctl start "$svc" 2>/dev/null; then
@@ -108,7 +112,7 @@ trap restart_services EXIT
 stop_services
 
 # ── Step 1: Clear sync cursors & job state ──────────────────────────────────
-echo "[1/5] Clearing sync cursors and job state..."
+echo "[1/6] Clearing sync cursors and job state..."
 mysql "$DB_NAME" -e "
 TRUNCATE TABLE sync_state;
 TRUNCATE TABLE graph_sync_state;
@@ -119,8 +123,10 @@ DELETE FROM sync_runs WHERE 1=1;
 echo "  ✓ Sync cursors and job state cleared"
 
 # ── Step 2: Clear all computed/derived tables ───────────────────────────────
-echo "[2/5] Clearing computed/derived tables..."
+echo "[2/6] Clearing computed/derived tables..."
 mysql "$DB_NAME" -e "
+SET FOREIGN_KEY_CHECKS = 0;
+
 -- Battle intelligence
 TRUNCATE TABLE battle_rollups;
 TRUNCATE TABLE battle_participants;
@@ -182,7 +188,7 @@ TRUNCATE TABLE killmail_item_loss_1d;
 TRUNCATE TABLE killmail_hull_loss_1d;
 TRUNCATE TABLE killmail_doctrine_activity_1d;
 
--- Buy/signals (items before summary — FK dependency)
+-- Buy/signals
 TRUNCATE TABLE buy_all_precomputed_payloads;
 TRUNCATE TABLE buy_all_items;
 TRUNCATE TABLE buy_all_summary;
@@ -199,11 +205,56 @@ TRUNCATE TABLE ui_refresh_events;
 TRUNCATE TABLE doctrine_fit_snapshots;
 TRUNCATE TABLE doctrine_activity_snapshots;
 TRUNCATE TABLE item_priority_snapshots;
+
+SET FOREIGN_KEY_CHECKS = 1;
 "
 echo "  ✓ All computed tables cleared"
 
-# ── Step 3: Run all compute jobs in order ───────────────────────────────────
-echo "[3/5] Running compute pipeline..."
+# ── Step 3: Clear Neo4j graph database ────────────────────────────────────
+echo "[3/6] Clearing Neo4j graph database..."
+
+neo4j_cypher() {
+    local statement="$1"
+    local payload
+    payload=$(printf '{"statements":[{"statement":"%s"}]}' "$statement")
+    curl -sf -X POST \
+        "${NEO4J_URL}/db/${NEO4J_DATABASE}/tx/commit" \
+        -u "${NEO4J_USERNAME}:${NEO4J_PASSWORD}" \
+        -H "Content-Type: application/json" \
+        -d "$payload" 2>/dev/null
+}
+
+if [ -n "$NEO4J_PASSWORD" ]; then
+    # Delete all relationships first, then all nodes (batched to avoid OOM on large graphs)
+    echo -n "  Deleting relationships... "
+    while true; do
+        result=$(neo4j_cypher "MATCH ()-[r]->() WITH r LIMIT 50000 DELETE r RETURN count(*) AS deleted")
+        deleted=$(echo "$result" | grep -oP '"row":\[\K[0-9]+' | head -1)
+        if [ -z "$deleted" ] || [ "$deleted" -eq 0 ]; then
+            break
+        fi
+        echo -n "${deleted}... "
+    done
+    echo "✓"
+
+    echo -n "  Deleting nodes... "
+    while true; do
+        result=$(neo4j_cypher "MATCH (n) WITH n LIMIT 50000 DETACH DELETE n RETURN count(*) AS deleted")
+        deleted=$(echo "$result" | grep -oP '"row":\[\K[0-9]+' | head -1)
+        if [ -z "$deleted" ] || [ "$deleted" -eq 0 ]; then
+            break
+        fi
+        echo -n "${deleted}... "
+    done
+    echo "✓"
+
+    echo "  ✓ Neo4j graph cleared"
+else
+    echo "  ⚠ NEO4J_PASSWORD not set — skipping Neo4j reset"
+fi
+
+# ── Step 4: Run all compute jobs in order ───────────────────────────────────
+echo "[4/6] Running compute pipeline..."
 echo ""
 
 run_job() {
@@ -304,9 +355,9 @@ run_job "compute_buy_all" "Buy All"
 run_job "compute_signals" "Signals"
 run_job "compute_economic_warfare" "Economic Warfare"
 
-# ── Step 4: Summary ─────────────────────────────────────────────────────────
+# ── Step 5: Summary ─────────────────────────────────────────────────────────
 echo ""
-echo "[4/5] Verifying results..."
+echo "[5/6] Verifying results..."
 mysql "$DB_NAME" -e "
 SELECT 'battle_rollups' AS \`table\`, COUNT(*) AS rows FROM battle_rollups
 UNION ALL SELECT 'theaters', COUNT(*) FROM theaters
@@ -315,7 +366,7 @@ UNION ALL SELECT 'threat_corridors', COUNT(*) FROM threat_corridors
 UNION ALL SELECT 'character_suspicion_signals', COUNT(*) FROM character_suspicion_signals;
 "
 
-# Step 5 (restart_services) runs automatically via the EXIT trap
+# Step 6 (restart_services) runs automatically via the EXIT trap
 
 echo ""
 echo "============================================="
