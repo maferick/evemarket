@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from orchestrator.esi_market_adapter import EsiMarketAdapter
 
 
 class _FakeHeaders(dict):
-    def get(self, key: str, default: str = "1") -> str:
-        return str(super().get(key, default))
+    def get(self, key: str, default: str | None = None) -> str | None:
+        return str(super().get(key, default)) if key in self else default
+
+    def items(self):
+        return super().items()
 
 
 class _FakeHttpResponse:
@@ -31,13 +34,14 @@ class EsiMarketAdapterTests(unittest.TestCase):
     def test_fetch_structure_orders_includes_datasource_query_param(self) -> None:
         captured_url: str | None = None
 
-        def _fake_urlopen(request, timeout: int):  # type: ignore[no-untyped-def]
+        def _fake_urlopen(request, timeout: int):
             nonlocal captured_url
             captured_url = request.full_url
             return _FakeHttpResponse()
 
         adapter = EsiMarketAdapter()
-        with patch("orchestrator.esi_market_adapter.urlopen", side_effect=_fake_urlopen):
+        with patch("orchestrator.esi_client.ipv4_opener") as mock_opener:
+            mock_opener.open = _fake_urlopen
             adapter.fetch_structure_orders(structure_id=10203040, access_token="abc123", page=3)
 
         self.assertIsNotNone(captured_url)
@@ -47,13 +51,14 @@ class EsiMarketAdapterTests(unittest.TestCase):
     def test_bearer_prefix_in_token_is_sanitized(self) -> None:
         captured_auth: str | None = None
 
-        def _fake_urlopen(request, timeout: int):  # type: ignore[no-untyped-def]
+        def _fake_urlopen(request, timeout: int):
             nonlocal captured_auth
             captured_auth = request.headers.get("Authorization")
             return _FakeHttpResponse()
 
         adapter = EsiMarketAdapter()
-        with patch("orchestrator.esi_market_adapter.urlopen", side_effect=_fake_urlopen):
+        with patch("orchestrator.esi_client.ipv4_opener") as mock_opener:
+            mock_opener.open = _fake_urlopen
             adapter.fetch_structure_orders(structure_id=10203040, access_token="Bearer abc123", page=1)
 
         self.assertEqual(captured_auth, "Bearer abc123")

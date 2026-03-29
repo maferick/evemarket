@@ -6,76 +6,29 @@ joining against the existing corp-to-alliance mapping in MariaDB.
 """
 from __future__ import annotations
 
-import json
 import time
-import urllib.error
-import urllib.request
-from datetime import UTC, datetime
 from typing import Any
 
 from ..db import SupplyCoreDb
-from ..http_client import ipv4_opener
+from ..esi_client import EsiClient
+from ..esi_rate_limiter import shared_limiter
 from ..job_result import JobResult
-from ..json_utils import json_dumps_safe
 
-ESI_BASE = "https://esi.evetech.net"
 ESI_USER_AGENT = "SupplyCore intelligence-pipeline/1.0 (alliance-history)"
 BATCH_SIZE = 200
 MAX_RETRIES_PER_CHARACTER = 2
 SKIP_IF_FETCHED_WITHIN_DAYS = 7
 
-
-_esi_error_limit_remain: int = 100
-
-
-def _esi_get_json(url: str, timeout: int = 20) -> tuple[int, Any]:
-    """Perform an ESI GET and return (status_code, parsed_json).
-
-    Reads X-Esi-Error-Limit-Remain header for adaptive backoff.
-    """
-    global _esi_error_limit_remain
-    request = urllib.request.Request(
-        url,
-        method="GET",
-        headers={
-            "Accept": "application/json",
-            "User-Agent": ESI_USER_AGENT,
-        },
-    )
-    try:
-        with ipv4_opener.open(request, timeout=timeout) as response:
-            body = json.loads(response.read().decode("utf-8"))
-            remain = response.headers.get("X-Esi-Error-Limit-Remain")
-            if remain is not None:
-                _esi_error_limit_remain = int(remain)
-            return response.status, body
-    except urllib.error.HTTPError as error:
-        remain = error.headers.get("X-Esi-Error-Limit-Remain") if hasattr(error, "headers") else None
-        if remain is not None:
-            _esi_error_limit_remain = int(remain)
-        return error.code, None
-    except (urllib.error.URLError, OSError, json.JSONDecodeError):
-        return 0, None
-
-
-def _adaptive_sleep() -> None:
-    """Sleep adaptively based on ESI error-limit budget."""
-    if _esi_error_limit_remain < 20:
-        time.sleep(2.0)
-    elif _esi_error_limit_remain < 50:
-        time.sleep(0.5)
-    else:
-        time.sleep(0.2)
+# Module-level EsiClient — shared across all calls within this job.
+_esi_client = EsiClient(user_agent=ESI_USER_AGENT, timeout_seconds=20, limiter=shared_limiter)
 
 
 def _fetch_corporation_history(character_id: int) -> list[dict[str, Any]] | None:
     """Fetch corporation membership history for a single character."""
-    url = f"{ESI_BASE}/v2/characters/{character_id}/corporationhistory/"
-    status, body = _esi_get_json(url)
-    if status == 200 and isinstance(body, list):
-        return body
-    if status in (420, 503):
-        # Rate limited or service unavailable — caller should back off.
+    resp = _esi_client.get(f"/v2/characters/{character_id}/corporationhistory/")
+    if resp.ok and isinstance(resp.body, list):
+        return resp.body
+    if resp.is_error_limited or resp.is_rate_limited or resp.status_code == 503:
         return None
     return None
 
@@ -87,13 +40,11 @@ def _lookup_corp_alliance(corp_id: int) -> int | None:
     """Look up the current alliance for a corporation, cached per session."""
     if corp_id in _corp_alliance_cache:
         return _corp_alliance_cache[corp_id]
-    url = f"{ESI_BASE}/v5/corporations/{corp_id}/"
-    status, body = _esi_get_json(url)
+    resp = _esi_client.get(f"/v5/corporations/{corp_id}/")
     alliance_id = None
-    if status == 200 and isinstance(body, dict):
-        alliance_id = int(body.get("alliance_id") or 0) or None
+    if resp.ok and isinstance(resp.body, dict):
+        alliance_id = int(resp.body.get("alliance_id") or 0) or None
     _corp_alliance_cache[corp_id] = alliance_id
-    _adaptive_sleep()
     return alliance_id
 
 
@@ -210,8 +161,6 @@ def run_esi_alliance_history_sync(db: SupplyCoreDb) -> dict[str, object]:
                 (character_id,),
             )
             total_errors += 1
-            # Back off on rate limit.
-            time.sleep(1)
             continue
 
         total_fetched += 1
@@ -234,9 +183,6 @@ def run_esi_alliance_history_sync(db: SupplyCoreDb) -> dict[str, object]:
             "UPDATE esi_character_queue SET fetch_status = 'done', fetched_at = UTC_TIMESTAMP() WHERE character_id = %s",
             (character_id,),
         )
-
-        # Adaptive rate limiting based on ESI error-limit budget.
-        _adaptive_sleep()
 
     return JobResult.success(
         job_key="esi_alliance_history_sync",

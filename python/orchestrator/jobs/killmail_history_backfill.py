@@ -23,16 +23,18 @@ from datetime import UTC, datetime
 from typing import Any
 
 from ..bridge import PhpBridge
+from ..esi_client import EsiClient
+from ..esi_rate_limiter import shared_limiter
 from ..http_client import ipv4_opener
 from ..worker_runtime import utc_now_iso
 
 logger = logging.getLogger("supplycore.backfill")
 
 _ZKB_API_BASE = "https://zkillboard.com/api"
-_ESI_KILLMAIL_URL = "https://esi.evetech.net/latest/killmails"
 
 
 def _http_get(url: str, user_agent: str, timeout: int = 30, accept_encoding: bool = True) -> tuple[int, str]:
+    """HTTP GET for non-ESI APIs (zKillboard). ESI calls use EsiClient."""
     headers: dict[str, str] = {
         "Accept": "application/json",
         "User-Agent": user_agent,
@@ -82,27 +84,25 @@ def _fetch_zkb_page(entity_type: str, entity_id: int, year: int, month: int, pag
     return data
 
 
-def _fetch_esi_killmail(killmail_id: int, killmail_hash: str, user_agent: str) -> dict[str, Any] | None:
-    """Fetch a single killmail from ESI and wrap in R2Z2-compatible format."""
-    url = f"{_ESI_KILLMAIL_URL}/{killmail_id}/{killmail_hash}/"
-    status, body = _http_get(url, user_agent, timeout=15, accept_encoding=False)
-    if status in (404, 422):
+def _fetch_esi_killmail(killmail_id: int, killmail_hash: str, esi_client: EsiClient) -> dict[str, Any] | None:
+    """Fetch a single killmail from ESI and wrap in R2Z2-compatible format.
+
+    Rate limiting is handled automatically by the EsiClient.
+    """
+    resp = esi_client.get(f"/latest/killmails/{killmail_id}/{killmail_hash}/")
+    if resp.status_code in (404, 422):
         return None
-    if status in (420, 429, 503):
+    if resp.is_rate_limited or resp.is_error_limited or resp.status_code == 503:
         return None
-    if status != 200:
+    if not resp.ok:
         return None
-    try:
-        esi_data = json.loads(body)
-    except json.JSONDecodeError:
-        return None
-    if not isinstance(esi_data, dict):
+    if not isinstance(resp.body, dict):
         return None
 
     return {
         "killmail_id": killmail_id,
         "hash": killmail_hash,
-        "esi": esi_data,
+        "esi": resp.body,
         "zkb": {},
         "sequence_id": killmail_id,
         "requested_sequence_id": killmail_id,
@@ -273,7 +273,9 @@ def run_killmail_history_backfill(context: Any) -> dict[str, Any]:
     total_skipped_existing = total_killmails_seen - len(new_kills)
     logger.info("Dedup: %d already in DB, %d new killmails to fetch from ESI", total_skipped_existing, len(new_kills))
 
-    # Fetch from ESI and process in batches
+    # Fetch from ESI and process in batches.
+    # Rate limiting is handled centrally by EsiClient — no fixed sleep needed.
+    esi_client = EsiClient(user_agent=user_agent, timeout_seconds=15, limiter=shared_limiter)
     kill_pairs = list(new_kills.items())
     total_to_fetch = len(kill_pairs)
 
@@ -282,14 +284,12 @@ def run_killmail_history_backfill(context: Any) -> dict[str, Any]:
         payloads = []
 
         for km_id, km_hash in batch_pairs:
-            payload = _fetch_esi_killmail(km_id, km_hash, user_agent)
+            payload = _fetch_esi_killmail(km_id, km_hash, esi_client)
             if payload is not None:
                 payloads.append(payload)
                 total_esi_fetched += 1
             else:
                 total_esi_failed += 1
-            # Respect ESI rate limits: ~20 req/s
-            time.sleep(0.06)
 
         if payloads:
             try:
