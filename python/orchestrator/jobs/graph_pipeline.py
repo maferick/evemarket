@@ -1679,19 +1679,56 @@ def run_compute_graph_insights(
     db: SupplyCoreDb,
     neo4j_raw: dict[str, Any] | None = None,
     influx_raw: dict[str, Any] | None = None,
+    *,
+    verbose: bool = False,
 ) -> dict[str, Any]:
     started = time.perf_counter()
     job_name = "compute_graph_insights"
+    try:
+        return _run_compute_graph_insights_inner(db, neo4j_raw, influx_raw, started, verbose=verbose)
+    except Exception as exc:
+        import traceback
+        _write_graph_log(
+            Neo4jConfig.from_runtime(neo4j_raw or {}).log_file,
+            "graph.insights.failed",
+            {"error": f"{type(exc).__name__}: {exc}", "traceback": traceback.format_exc()},
+        )
+        return _job_payload(job_name, started, "failed", error_text=f"{type(exc).__name__}: {exc}")
+
+
+def _run_compute_graph_insights_inner(
+    db: SupplyCoreDb,
+    neo4j_raw: dict[str, Any] | None = None,
+    influx_raw: dict[str, Any] | None = None,
+    started: float | None = None,
+    *,
+    verbose: bool = False,
+) -> dict[str, Any]:
+    if started is None:
+        started = time.perf_counter()
+    job_name = "compute_graph_insights"
+
+    import sys
+
+    def _vlog(msg: str) -> None:
+        if not verbose:
+            return
+        elapsed = time.perf_counter() - started  # type: ignore[operator]
+        print(f"[{elapsed:7.2f}s] {msg}", file=sys.stderr, flush=True)
+
     config = Neo4jConfig.from_runtime(neo4j_raw or {})
     if not config.enabled:
+        _vlog("SKIP: neo4j disabled")
         return _job_payload(job_name, started, "skipped", error_text="neo4j disabled")
 
     client = Neo4jClient(config)
     computed_at = _utc_now_sql()
     runtime = neo4j_raw or {}
     batch_size = _coerce_batch_size(runtime.get("insights_batch_size") or runtime.get("batch_size"))
+    _vlog(f"connected to neo4j ({config.url}), batch_size={batch_size}")
 
     # ── Step 1: Base item dependency scores from Neo4j ──
+    _vlog("step 1/8: querying item dependency scores from Neo4j ...")
     item_rows = client.query(
         """
         MATCH (d:Doctrine)-[:USES]->(f:Fit)-[:CONTAINS]->(i:Item)
@@ -1703,6 +1740,7 @@ def run_compute_graph_insights(
         ORDER BY dependency_score DESC, type_id ASC
         """
     )
+    _vlog(f"step 1/8: got {len(item_rows)} item rows, querying doctrine dependency depth ...")
 
     doctrine_rows = client.query(
         """
@@ -1729,6 +1767,7 @@ def run_compute_graph_insights(
         "%s, %s, %s, %s, %s",
         [(int(r["type_id"]), int(r["doctrine_count"]), int(r["fit_count"]), float(r["dependency_score"]), computed_at) for r in item_rows if int(r.get("type_id") or 0) > 0],
     )
+    _vlog(f"step 1/8: got {len(doctrine_rows)} doctrine rows, upserting to MariaDB ...")
 
     doctrine_dependency_rows = [r for r in doctrine_rows if int(r.get("doctrine_id") or 0) > 0]
     _upsert_table(
@@ -1751,6 +1790,7 @@ def run_compute_graph_insights(
     )
 
     # ── Step 2: Critical edge ratio from Neo4j ──
+    _vlog("step 2/8: querying critical edge ratios from Neo4j ...")
     critical_edge_rows = client.query(
         """
         MATCH (f:Fit)-[:CONTAINS]->(i:Item)
@@ -1781,12 +1821,17 @@ def run_compute_graph_insights(
         tid = int(r.get("type_id") or 0)
         if tid in item_data:
             item_data[tid]["critical_edge_ratio"] = float(r.get("critical_edge_ratio") or 0)
+    _vlog(f"step 2/8: done — {len(critical_edge_rows)} edges, {len(item_data)} items in working set")
 
     # ── Step 3: Substitutability (MariaDB group_id lookup) ──
+    _vlog("step 3/8: computing substitutability (MariaDB) ...")
     _compute_substitutability(db, item_data)
+    _vlog("step 3/8: done")
 
     # ── Step 4: SPOF detection ──
+    _vlog("step 4/8: computing SPOF detection ...")
     _compute_spof(item_data)
+    _vlog(f"step 4/8: done — {sum(1 for d in item_data.values() if d.get('spof_flag'))} SPOFs detected")
 
     # ── Step 5: InfluxDB trend metrics ──
     influx_cfg = None
@@ -1794,19 +1839,28 @@ def run_compute_graph_insights(
         influx_cfg = InfluxConfig.from_runtime(influx_raw)
         if influx_cfg.validate():
             influx_cfg = None
+    _vlog(f"step 5/8: computing InfluxDB trend metrics (enabled={influx_cfg is not None and influx_cfg.enabled}) ...")
     _compute_item_trend_metrics(influx_cfg, item_data)
+    _vlog("step 5/8: done")
 
     # ── Step 6: Market stress ──
+    _vlog("step 6/8: computing market stress (MariaDB) ...")
     _compute_market_stress(db, item_data)
+    _vlog("step 6/8: done")
 
     # ── Step 7: Composite scores ──
+    _vlog("step 7/8: computing composite scores ...")
     _compute_composite_scores(item_data)
+    _vlog("step 7/8: done")
 
     # ── Step 8: Persist item_criticality_index ──
+    _vlog(f"step 8/8: persisting criticality index ({len(item_data)} items) ...")
     criticality_written = _persist_criticality_index(db, item_data, computed_at)
     spof_count = sum(1 for d in item_data.values() if d.get("spof_flag"))
+    _vlog(f"step 8/8: done — {criticality_written} rows written, {spof_count} SPOFs")
 
     # ── Fit overlap (existing batched logic) ──
+    _vlog("fit-overlap: starting batched Neo4j sync ...")
     sync_state = _sync_state_get(db, SYNC_DATASET_GRAPH_INSIGHTS_FIT_OVERLAP) or {}
     cursor_fit_id, cursor_other_fit_id = _parse_pair_cursor(sync_state.get("last_cursor"))
     fit_rows_processed = 0
@@ -1857,6 +1911,8 @@ def run_compute_graph_insights(
         fit_rows_processed += len(fit_overlap_rows)
         fit_rows_written += len(upsert_rows)
         batch_count += 1
+        batch_ms = int((time.perf_counter() - batch_started) * 1000)
+        _vlog(f"fit-overlap: batch {batch_count} — {len(fit_overlap_rows)} read, {len(upsert_rows)} written, {batch_ms}ms, cursor={_format_pair_cursor(cursor_fit_id, cursor_other_fit_id)}")
         _sync_state_upsert(
             db,
             SYNC_DATASET_GRAPH_INSIGHTS_FIT_OVERLAP,
@@ -1881,6 +1937,8 @@ def run_compute_graph_insights(
             },
         )
 
+    _vlog(f"fit-overlap: done — {batch_count} batches, {fit_rows_processed} processed, {fit_rows_written} written")
+    _vlog("fit-overlap: pruning stale rows ...")
     db.execute("DELETE FROM fit_overlap_score WHERE computed_at < %s", (computed_at,))
     _sync_state_upsert(
         db,
@@ -1907,6 +1965,8 @@ def run_compute_graph_insights(
         influx_enabled=influx_cfg is not None and influx_cfg.enabled,
     )
     _write_graph_log(config.log_file, "graph.insights.completed", result)
+    total_rows = len(item_rows) + len(doctrine_rows) + fit_rows_written + criticality_written
+    _vlog(f"DONE — total {total_rows} rows written in {time.perf_counter() - started:.2f}s")
     return result
 
 
