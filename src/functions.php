@@ -278,6 +278,12 @@ function nav_items(): array
             ],
         ],
         [
+            'label' => 'Log Viewer',
+            'path' => '/log-viewer',
+            'icon' => '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" class="h-4 w-4" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M9 5H7a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2"/><path stroke-linecap="round" stroke-linejoin="round" d="M9 5a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v0a2 2 0 0 1-2 2h-2a2 2 0 0 1-2-2Z"/><path stroke-linecap="round" stroke-linejoin="round" d="M9 12h6M9 16h6"/></svg>',
+            'children' => [],
+        ],
+        [
             'label' => 'Settings',
             'path' => '/settings',
             'icon' => '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" class="h-4 w-4" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M12 15.5A3.5 3.5 0 1 0 12 8.5a3.5 3.5 0 0 0 0 7Z"/><path stroke-linecap="round" stroke-linejoin="round" d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06A1.65 1.65 0 0 0 15 19.4a1.65 1.65 0 0 0-1 .6 1.65 1.65 0 0 0-.33 1V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-.33-1 1.65 1.65 0 0 0-1-.6 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-.6-1 1.65 1.65 0 0 0-1-.33H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1-.33 1.65 1.65 0 0 0 .6-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-.6 1.65 1.65 0 0 0 .33-1V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 .33 1 1.65 1.65 0 0 0 1 .6 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9c.3.3.5.68.6 1 .23.1.66.1 1 .1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1 .33c-.44.25-.79.6-1.01 1.07Z"/></svg>',
@@ -30357,4 +30363,388 @@ function page_cache_flush_expired(): int
     db_execute("DELETE FROM page_cache WHERE expires_at <= NOW()");
 
     return 0;
+}
+
+// ---------------------------------------------------------------------------
+// Log Viewer
+// ---------------------------------------------------------------------------
+
+function log_viewer_page_data(): array
+{
+    $registry = supplycore_authoritative_job_registry();
+
+    // ── Schedules with current status ─────────────────────────────────
+    $schedules = db_select(
+        "SELECT s.*, cs.latest_status, cs.latest_event_type,
+                cs.last_started_at, cs.last_finished_at,
+                cs.last_success_at, cs.last_failure_at, cs.last_failure_message,
+                cs.current_pressure_state, cs.recent_timeout_count,
+                cs.recent_lock_conflict_count, cs.recent_deferral_count,
+                cs.recent_skip_count, cs.last_planner_decision_type,
+                cs.last_planner_reason_text
+         FROM sync_schedules s
+         LEFT JOIN scheduler_job_current_status cs ON cs.job_key = s.job_key
+         ORDER BY s.job_key"
+    );
+
+    // ── Recent runs (last 200) ────────────────────────────────────────
+    $recentRuns = db_select(
+        "SELECT r.dataset_key, r.run_status, r.started_at, r.finished_at,
+                r.source_rows, r.written_rows, r.error_message,
+                TIMESTAMPDIFF(SECOND, r.started_at, COALESCE(r.finished_at, NOW())) AS duration_seconds
+         FROM sync_runs r
+         ORDER BY r.started_at DESC
+         LIMIT 200"
+    );
+
+    // ── Failed runs (last 24 h) ───────────────────────────────────────
+    $failedRuns = db_select(
+        "SELECT r.dataset_key, r.run_status, r.started_at, r.finished_at,
+                r.error_message,
+                TIMESTAMPDIFF(SECOND, r.started_at, COALESCE(r.finished_at, NOW())) AS duration_seconds
+         FROM sync_runs r
+         WHERE r.run_status = 'failed'
+           AND r.started_at >= DATE_SUB(NOW(), INTERVAL 24 HOUR)
+         ORDER BY r.started_at DESC"
+    );
+
+    // ── Stuck / timed-out runs (running > default timeout) ────────────
+    $defaultTimeout = (int) get_setting('scheduler.default_timeout_seconds', 300);
+    $stuckRuns = db_select(
+        "SELECT r.dataset_key, r.run_status, r.started_at,
+                TIMESTAMPDIFF(SECOND, r.started_at, NOW()) AS running_seconds
+         FROM sync_runs r
+         WHERE r.run_status = 'running'
+           AND r.started_at < DATE_SUB(NOW(), INTERVAL ? SECOND)
+         ORDER BY r.started_at ASC",
+        [$defaultTimeout]
+    );
+
+    // ── Jobs that never ran ───────────────────────────────────────────
+    $neverRan = [];
+    foreach ($schedules as $s) {
+        if ($s['enabled'] && $s['last_run_at'] === null) {
+            $neverRan[] = $s;
+        }
+    }
+
+    // ── Build unified job rows ────────────────────────────────────────
+    $jobs = [];
+    foreach ($schedules as $s) {
+        $key = $s['job_key'];
+        $meta = $registry[$key] ?? [];
+        $label = $meta['label'] ?? $key;
+
+        $status = strtolower(trim((string) ($s['latest_status'] ?? $s['last_status'] ?? 'unknown')));
+        $pressure = strtolower(trim((string) ($s['current_pressure_state'] ?? 'healthy')));
+
+        // Determine health bucket
+        if (!$s['enabled']) {
+            $health = 'disabled';
+            $healthTone = 'border-slate-400/20 bg-slate-500/10 text-slate-300';
+            $healthLabel = 'Disabled';
+        } elseif ($s['last_run_at'] === null) {
+            $health = 'never_ran';
+            $healthTone = 'border-violet-400/20 bg-violet-500/10 text-violet-100';
+            $healthLabel = 'Never ran';
+        } elseif ($status === 'failed' || $status === 'error') {
+            $health = 'failed';
+            $healthTone = 'border-rose-400/20 bg-rose-500/10 text-rose-100';
+            $healthLabel = 'Failed';
+        } elseif ($pressure === 'critical' || ($s['recent_timeout_count'] ?? 0) > 2) {
+            $health = 'timeout';
+            $healthTone = 'border-orange-400/20 bg-orange-500/10 text-orange-100';
+            $healthLabel = 'Timeout';
+        } elseif ($pressure === 'elevated' || $status === 'delayed' || $status === 'degraded') {
+            $health = 'degraded';
+            $healthTone = 'border-amber-400/20 bg-amber-500/10 text-amber-100';
+            $healthLabel = 'Degraded';
+        } elseif ($status === 'running') {
+            $health = 'running';
+            $healthTone = 'border-sky-400/20 bg-sky-500/10 text-sky-100';
+            $healthLabel = 'Running';
+        } elseif ($status === 'success' || $status === 'completed') {
+            $health = 'healthy';
+            $healthTone = 'border-emerald-400/20 bg-emerald-500/10 text-emerald-100';
+            $healthLabel = 'Healthy';
+        } else {
+            $health = 'unknown';
+            $healthTone = 'border-slate-400/20 bg-slate-500/10 text-slate-200';
+            $healthLabel = 'Unknown';
+        }
+
+        // Check overdue: enabled, has interval, last_run_at + interval * 2 < NOW
+        $overdue = false;
+        if ($s['enabled'] && $s['last_run_at'] !== null && (int) $s['interval_seconds'] > 0) {
+            $lastRun = strtotime((string) $s['last_run_at']);
+            if ($lastRun !== false && (time() - $lastRun) > ((int) $s['interval_seconds'] * 2)) {
+                $overdue = true;
+            }
+        }
+
+        $jobs[] = [
+            'job_key' => $key,
+            'label' => $label,
+            'description' => $meta['description'] ?? '',
+            'enabled' => (bool) $s['enabled'],
+            'interval_seconds' => (int) $s['interval_seconds'],
+            'last_run_at' => $s['last_run_at'],
+            'last_run_relative' => supplycore_relative_datetime($s['last_run_at']),
+            'last_success_at' => $s['last_success_at'] ?? null,
+            'last_success_relative' => supplycore_relative_datetime($s['last_success_at'] ?? null),
+            'last_failure_at' => $s['last_failure_at'] ?? null,
+            'last_failure_message' => $s['last_failure_message'] ?? null,
+            'next_run_at' => $s['next_run_at'],
+            'next_run_relative' => supplycore_relative_datetime($s['next_run_at']),
+            'health' => $health,
+            'health_tone' => $healthTone,
+            'health_label' => $healthLabel,
+            'overdue' => $overdue,
+            'pressure_state' => $pressure,
+            'recent_timeout_count' => (int) ($s['recent_timeout_count'] ?? 0),
+            'recent_deferral_count' => (int) ($s['recent_deferral_count'] ?? 0),
+            'recent_skip_count' => (int) ($s['recent_skip_count'] ?? 0),
+            'last_planner_reason' => $s['last_planner_reason_text'] ?? null,
+            'timeout_seconds' => $meta['timeout_seconds'] ?? $defaultTimeout,
+        ];
+    }
+
+    // ── KPI counts ────────────────────────────────────────────────────
+    $totalEnabled = count(array_filter($jobs, fn (array $j) => $j['enabled']));
+    $totalFailed = count(array_filter($jobs, fn (array $j) => $j['health'] === 'failed'));
+    $totalTimeout = count(array_filter($jobs, fn (array $j) => $j['health'] === 'timeout'));
+    $totalNeverRan = count($neverRan);
+    $totalOverdue = count(array_filter($jobs, fn (array $j) => $j['overdue']));
+    $totalHealthy = count(array_filter($jobs, fn (array $j) => $j['health'] === 'healthy'));
+
+    // ── Log files on disk ─────────────────────────────────────────────
+    $logDir = rtrim((string) realpath(__DIR__ . '/../storage/logs'), '/');
+    $logFiles = [];
+    if ($logDir !== '' && is_dir($logDir)) {
+        $entries = scandir($logDir);
+        foreach ($entries as $entry) {
+            if ($entry === '.' || $entry === '..' || $entry === '.gitkeep') {
+                continue;
+            }
+            $fullPath = $logDir . '/' . $entry;
+            if (is_file($fullPath)) {
+                $sizeBytes = filesize($fullPath);
+                $modifiedAt = filemtime($fullPath);
+                $logFiles[] = [
+                    'filename' => $entry,
+                    'size_bytes' => $sizeBytes,
+                    'size_human' => log_viewer_format_bytes($sizeBytes),
+                    'modified_at' => $modifiedAt !== false ? gmdate('Y-m-d H:i:s', $modifiedAt) : null,
+                    'modified_relative' => $modifiedAt !== false ? human_duration_ago(max(0, time() - $modifiedAt)) . ' ago' : 'Unknown',
+                    'tail_lines' => log_viewer_tail_file($fullPath, 5),
+                ];
+            }
+        }
+        usort($logFiles, fn (array $a, array $b) => ($b['size_bytes'] ?? 0) <=> ($a['size_bytes'] ?? 0));
+    }
+
+    return [
+        'jobs' => $jobs,
+        'recent_runs' => $recentRuns,
+        'failed_runs' => $failedRuns,
+        'stuck_runs' => $stuckRuns,
+        'never_ran' => $neverRan,
+        'log_files' => $logFiles,
+        'kpi' => [
+            'total_enabled' => $totalEnabled,
+            'total_failed' => $totalFailed,
+            'total_timeout' => $totalTimeout,
+            'total_never_ran' => $totalNeverRan,
+            'total_overdue' => $totalOverdue,
+            'total_healthy' => $totalHealthy,
+        ],
+    ];
+}
+
+function log_viewer_format_bytes(int|false $bytes): string
+{
+    if ($bytes === false || $bytes < 0) {
+        return '0 B';
+    }
+    if ($bytes < 1024) {
+        return $bytes . ' B';
+    }
+    if ($bytes < 1048576) {
+        return round($bytes / 1024, 1) . ' KB';
+    }
+    return round($bytes / 1048576, 1) . ' MB';
+}
+
+function log_viewer_tail_file(string $path, int $lines = 5): array
+{
+    if (!is_file($path) || !is_readable($path)) {
+        return [];
+    }
+    $fp = fopen($path, 'r');
+    if ($fp === false) {
+        return [];
+    }
+
+    $buffer = [];
+    while (($line = fgets($fp)) !== false) {
+        $buffer[] = rtrim($line, "\r\n");
+        if (count($buffer) > $lines) {
+            array_shift($buffer);
+        }
+    }
+    fclose($fp);
+
+    return $buffer;
+}
+
+function log_viewer_external_health(): array
+{
+    $results = [];
+
+    // ── Neo4j ─────────────────────────────────────────────────────────
+    $neo4jEnabled = (bool) config('neo4j.enabled', false);
+    $neo4jUrl = rtrim((string) config('neo4j.url', 'http://127.0.0.1:7474'), '/');
+    $neo4jTimeout = max(3, (int) config('neo4j.timeout_seconds', 15));
+
+    if ($neo4jEnabled && $neo4jUrl !== '') {
+        $neo4jHealthUrl = $neo4jUrl;
+        $ch = curl_init($neo4jHealthUrl);
+        curl_setopt_array($ch, [
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_TIMEOUT => min($neo4jTimeout, 5),
+            CURLOPT_CONNECTTIMEOUT => 3,
+            CURLOPT_HTTPHEADER => ['Accept: application/json'],
+            CURLOPT_NOBODY => false,
+        ]);
+        $username = (string) config('neo4j.username', 'neo4j');
+        $password = (string) config('neo4j.password', '');
+        if ($username !== '') {
+            curl_setopt($ch, CURLOPT_USERPWD, $username . ':' . $password);
+        }
+        $response = curl_exec($ch);
+        $httpCode = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $curlError = curl_error($ch);
+        $connectTime = round((float) curl_getinfo($ch, CURLINFO_CONNECT_TIME) * 1000);
+        $totalTime = round((float) curl_getinfo($ch, CURLINFO_TOTAL_TIME) * 1000);
+        curl_close($ch);
+
+        $neo4jData = is_string($response) ? @json_decode($response, true) : null;
+        $neo4jVersion = is_array($neo4jData) ? ($neo4jData['neo4j_version'] ?? null) : null;
+
+        if ($httpCode >= 200 && $httpCode < 400) {
+            $results['neo4j'] = [
+                'name' => 'Neo4j',
+                'status' => 'online',
+                'tone' => 'border-emerald-400/20 bg-emerald-500/10 text-emerald-100',
+                'label' => 'Online',
+                'url' => $neo4jUrl,
+                'http_code' => $httpCode,
+                'latency_ms' => $totalTime,
+                'connect_ms' => $connectTime,
+                'version' => $neo4jVersion,
+                'detail' => 'Connected in ' . $totalTime . 'ms',
+            ];
+        } else {
+            $results['neo4j'] = [
+                'name' => 'Neo4j',
+                'status' => 'offline',
+                'tone' => 'border-rose-400/20 bg-rose-500/10 text-rose-100',
+                'label' => 'Offline',
+                'url' => $neo4jUrl,
+                'http_code' => $httpCode,
+                'latency_ms' => $totalTime,
+                'connect_ms' => $connectTime,
+                'version' => null,
+                'detail' => $curlError !== '' ? $curlError : ('HTTP ' . $httpCode),
+            ];
+        }
+    } else {
+        $results['neo4j'] = [
+            'name' => 'Neo4j',
+            'status' => 'disabled',
+            'tone' => 'border-slate-400/20 bg-slate-500/10 text-slate-300',
+            'label' => 'Disabled',
+            'url' => $neo4jUrl ?? '',
+            'http_code' => 0,
+            'latency_ms' => 0,
+            'connect_ms' => 0,
+            'version' => null,
+            'detail' => 'Neo4j integration is disabled in configuration.',
+        ];
+    }
+
+    // ── InfluxDB ──────────────────────────────────────────────────────
+    $influxEnabled = (bool) config('influxdb.enabled', false);
+    $influxUrl = rtrim((string) config('influxdb.url', 'http://127.0.0.1:8086'), '/');
+    $influxTimeout = max(3, (int) config('influxdb.timeout_seconds', 15));
+    $influxToken = (string) config('influxdb.token', '');
+
+    if ($influxEnabled && $influxUrl !== '') {
+        $influxHealthUrl = $influxUrl . '/health';
+        $ch = curl_init($influxHealthUrl);
+        curl_setopt_array($ch, [
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_TIMEOUT => min($influxTimeout, 5),
+            CURLOPT_CONNECTTIMEOUT => 3,
+            CURLOPT_HTTPHEADER => array_filter([
+                'Accept: application/json',
+                $influxToken !== '' ? ('Authorization: Token ' . $influxToken) : null,
+            ]),
+        ]);
+        $response = curl_exec($ch);
+        $httpCode = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $curlError = curl_error($ch);
+        $connectTime = round((float) curl_getinfo($ch, CURLINFO_CONNECT_TIME) * 1000);
+        $totalTime = round((float) curl_getinfo($ch, CURLINFO_TOTAL_TIME) * 1000);
+        curl_close($ch);
+
+        $influxData = is_string($response) ? @json_decode($response, true) : null;
+        $influxStatus = is_array($influxData) ? ($influxData['status'] ?? null) : null;
+        $influxVersion = is_array($influxData) ? ($influxData['version'] ?? null) : null;
+
+        $isHealthy = ($httpCode >= 200 && $httpCode < 400) && ($influxStatus === 'pass' || $influxStatus === null);
+
+        if ($isHealthy) {
+            $results['influxdb'] = [
+                'name' => 'InfluxDB',
+                'status' => 'online',
+                'tone' => 'border-emerald-400/20 bg-emerald-500/10 text-emerald-100',
+                'label' => 'Online',
+                'url' => $influxUrl,
+                'http_code' => $httpCode,
+                'latency_ms' => $totalTime,
+                'connect_ms' => $connectTime,
+                'version' => $influxVersion,
+                'detail' => 'Connected in ' . $totalTime . 'ms',
+            ];
+        } else {
+            $results['influxdb'] = [
+                'name' => 'InfluxDB',
+                'status' => 'offline',
+                'tone' => 'border-rose-400/20 bg-rose-500/10 text-rose-100',
+                'label' => 'Offline',
+                'url' => $influxUrl,
+                'http_code' => $httpCode,
+                'latency_ms' => $totalTime,
+                'connect_ms' => $connectTime,
+                'version' => null,
+                'detail' => $curlError !== '' ? $curlError : ('HTTP ' . $httpCode . ($influxStatus !== null ? ' · status=' . $influxStatus : '')),
+            ];
+        }
+    } else {
+        $results['influxdb'] = [
+            'name' => 'InfluxDB',
+            'status' => 'disabled',
+            'tone' => 'border-slate-400/20 bg-slate-500/10 text-slate-300',
+            'label' => 'Disabled',
+            'url' => $influxUrl ?? '',
+            'http_code' => 0,
+            'latency_ms' => 0,
+            'connect_ms' => 0,
+            'version' => null,
+            'detail' => 'InfluxDB integration is disabled in configuration.',
+        ];
+    }
+
+    return $results;
 }

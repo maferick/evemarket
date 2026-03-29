@@ -30,4 +30,6 @@ RewriteRule ^doctrine/group/?$ doctrine/group.php [L,QSA]
 RewriteRule ^doctrine/fit/?$ doctrine/fit.php [L,QSA]
 RewriteRule ^doctrine/import/?$ doctrine/import.php [L,QSA]
 
+RewriteRule ^log-viewer/?$ log-viewer/index.php [L,QSA]
+
 RewriteRule ^$ index.php [L,QSA]
