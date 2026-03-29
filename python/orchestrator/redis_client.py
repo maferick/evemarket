@@ -58,7 +58,7 @@ class RedisClient:
         except ModuleNotFoundError:
             logger.warning(
                 "Redis is enabled but the 'redis' package is not installed. "
-                "Install it with: pip install 'supplycore-orchestrator[redis]'  "
+                "Install it with:  pip install 'redis>=5.0,<6'  — "
                 "Falling back to process-local state."
             )
             return
