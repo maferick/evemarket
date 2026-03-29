@@ -33,6 +33,7 @@ from .redis_keys import (
     build_endpoint_key,
     esi_fetch_lock_key,
     esi_meta_key,
+    esi_payload_key,
     esi_suppress_key,
 )
 
@@ -202,10 +203,11 @@ class EsiGateway:
             # Expires-gating: skip request if data is still fresh.
             now = time.time()
             if meta and meta.expires_at > now:
-                logger.debug("Expires-gated %s (%.0fs remaining)", ep_key, meta.expires_at - now)
+                cached_body = self._load_payload(ep_key)
+                logger.debug("Expires-gated %s (%.0fs remaining, payload=%s)", ep_key, meta.expires_at - now, "hit" if cached_body is not None else "miss")
                 return GatewayResponse(
                     status_code=meta.last_status_code or 200,
-                    body=None,
+                    body=cached_body,
                     headers={},
                     from_cache=True,
                     endpoint_key=ep_key,
@@ -409,6 +411,7 @@ class EsiGateway:
             meta.x_pages = resp.pages
             meta.success_count += 1
             self._save_meta(meta)
+            self._save_payload(ep_key, resp.body, expires_at)
             self._persist_endpoint_state(meta, route_template, params, identity, page)
             self._record_rate_observation(resp.headers, resp.status_code)
             return GatewayResponse(
@@ -505,6 +508,19 @@ class EsiGateway:
         if self._redis and self._redis.available:
             ttl = max(_MIN_TTL_SECONDS, min(_MAX_TTL_SECONDS, int(meta.expires_at - time.time())))
             self._redis.set_json(esi_meta_key(meta.endpoint_key), meta.to_dict(), ex=ttl)
+
+    def _save_payload(self, ep_key: str, body: Any, expires_at: float) -> None:
+        """Cache response body in Redis (esi:payload:v1:*)."""
+        if not self._redis or not self._redis.available or body is None:
+            return
+        ttl = max(_MIN_TTL_SECONDS, min(_MAX_TTL_SECONDS, int(expires_at - time.time())))
+        self._redis.set_json(esi_payload_key(ep_key), body, ex=ttl)
+
+    def _load_payload(self, ep_key: str) -> Any:
+        """Load cached response body from Redis."""
+        if not self._redis or not self._redis.available:
+            return None
+        return self._redis.get_json(esi_payload_key(ep_key))
 
     # -- Distributed fetch lock --------------------------------------------
 

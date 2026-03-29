@@ -297,10 +297,14 @@ class KillmailEntityResolver:
         self._corporation_cache: dict[int, dict[str, Any] | None] = {}
 
     def _fetch_profile(self, path: str) -> dict[str, Any] | None:
+        """Fetch a profile endpoint.  The gateway caches response bodies in
+        Redis, so Expires-gated hits return the cached payload directly."""
         if self._gateway is not None:
             resp = self._gateway.get(path, params={"datasource": "tranquility"}, route_template=path)
             if resp.from_cache or resp.not_modified:
-                return None
+                if isinstance(resp.body, dict):
+                    return resp.body
+                return None  # Payload not in Redis — cache miss
             if 200 <= resp.status_code < 300 and isinstance(resp.body, dict):
                 return resp.body
             return None

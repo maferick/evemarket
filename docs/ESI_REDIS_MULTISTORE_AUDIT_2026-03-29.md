@@ -169,6 +169,20 @@ Behavior contract:
    - 429: honor Retry-After and set suppression key
 6. For paginated reads: enforce identical Last-Modified across pages in one retrieval cycle.
 
+#### Payload caching (implemented)
+The gateway stores response bodies in Redis (`esi:payload:v1:{endpoint_key}`)
+alongside metadata, with the same Expires-driven TTL. On Expires-gate hits,
+the cached body is returned in the `GatewayResponse` so callers get the payload
+without making an ESI request.
+
+This eliminates the previous "body-swallow" issue where Expires-gated responses
+returned `body=None`, breaking lookup/enrichment endpoints that need the payload
+(character/corporation profiles, individual killmails).
+
+For corporation → alliance lookups, `entity_metadata_cache` in MariaDB provides
+an additional durable cache tier that survives Redis restarts and is bulk-loaded
+at job start for fast in-memory access.
+
 #### PHP role
 - No ESI requests.
 - Read-only consumer of Redis/MariaDB results prepared by Python.
