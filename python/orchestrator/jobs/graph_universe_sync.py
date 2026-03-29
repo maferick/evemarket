@@ -133,11 +133,11 @@ def run_graph_universe_sync(
     now_sql = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
     db.execute(
         """
-        INSERT INTO graph_sync_state (sync_key, last_synced_at, rows_synced, meta_json)
-        VALUES (%s, %s, %s, NULL)
-        ON DUPLICATE KEY UPDATE last_synced_at = VALUES(last_synced_at), rows_synced = VALUES(rows_synced)
+        INSERT INTO graph_sync_state (sync_key, last_synced_at)
+        VALUES (%s, %s)
+        ON DUPLICATE KEY UPDATE last_synced_at = VALUES(last_synced_at)
         """,
-        ("graph_universe_sync", now_sql, rows_written),
+        ("graph_universe_sync", now_sql),
     )
 
     duration_ms = int((time.perf_counter() - started) * 1000)
