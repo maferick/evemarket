@@ -10136,13 +10136,68 @@ function killmail_entity_resolve_batch(array $requests, bool $allowNetworkFallba
 
 function killmail_prime_entity_metadata(array $requests): void
 {
-    try {
-        killmail_entity_resolve_batch($requests, true);
-    } catch (Throwable) {
-        foreach ($requests as $type => $ids) {
-            db_entity_metadata_cache_mark_pending((string) $type, (array) $ids);
+    $maxAttempts = 2;
+    for ($attempt = 1; $attempt <= $maxAttempts; $attempt++) {
+        try {
+            killmail_entity_resolve_batch($requests, true);
+            return;
+        } catch (Throwable $e) {
+            if ($attempt < $maxAttempts) {
+                usleep(500_000); // 500ms backoff before retry
+                continue;
+            }
+            error_log('[entity-cache] Failed to resolve entities after ' . $maxAttempts . ' attempts: ' . $e->getMessage());
+            foreach ($requests as $type => $ids) {
+                db_entity_metadata_cache_mark_pending((string) $type, (array) $ids);
+            }
         }
     }
+}
+
+/**
+ * Background resolver: fetch pending/failed/expired entities from the cache table
+ * and resolve them via ESI network calls. Designed to be called from a background
+ * job (Python bridge or CLI), never from a page-load path.
+ *
+ * Returns summary stats for the job result.
+ */
+function killmail_entity_resolve_pending(int $batchSize = 500, int $retryAfterMinutes = 30): array
+{
+    $pending = db_entity_metadata_cache_pending($batchSize, $retryAfterMinutes);
+
+    $totalPending = array_sum(array_map('count', $pending));
+    if ($totalPending === 0) {
+        return [
+            'total_pending' => 0,
+            'resolved' => 0,
+            'failed' => 0,
+            'skipped' => 0,
+        ];
+    }
+
+    killmail_entity_network_resolve($pending);
+
+    // Re-read cache to count successes
+    $resolved = 0;
+    $failed = 0;
+    foreach ($pending as $type => $ids) {
+        foreach ($ids as $id) {
+            $rows = db_entity_metadata_cache_get_many($type, [$id]);
+            $row = $rows[$id] ?? null;
+            if (is_array($row) && ($row['resolution_status'] ?? '') === 'resolved' && trim((string) ($row['entity_name'] ?? '')) !== '') {
+                $resolved++;
+            } else {
+                $failed++;
+            }
+        }
+    }
+
+    return [
+        'total_pending' => $totalPending,
+        'resolved' => $resolved,
+        'failed' => $failed,
+        'skipped' => 0,
+    ];
 }
 
 function killmail_resolved_entity(array $resolved, string $type, ?int $id, ?string $fallbackName = null): array
@@ -11323,7 +11378,7 @@ function killmail_overview_data(): array
             $overviewResolutionRequests[$type] = array_values($ids);
         }
 
-        $resolvedOverviewEntities = killmail_entity_resolve_batch($overviewResolutionRequests, true);
+        $resolvedOverviewEntities = killmail_entity_resolve_batch($overviewResolutionRequests, false);
 
         $allianceOptions = ['0' => 'All alliances'];
         foreach ((array) ($options['alliances'] ?? []) as $row) {

@@ -65,7 +65,7 @@ foreach ($graphParticipants as $row) {
 foreach ($entityRequests as $type => $ids) {
     $entityRequests[$type] = array_values($ids);
 }
-$resolvedEntities = killmail_entity_resolve_batch($entityRequests, true);
+$resolvedEntities = killmail_entity_resolve_batch($entityRequests, false);
 
 // ── Classify alliances from user settings (friendly/opponent/third_party) ──
 $trackedAlliances = db_killmail_tracked_alliances_active();
