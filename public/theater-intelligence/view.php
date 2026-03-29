@@ -303,16 +303,20 @@ foreach ($participantsAll as $p) {
 }
 $shipTypeNames = !empty($allShipTypeIds) ? db_market_orders_current_compact_type_names(array_keys($allShipTypeIds)) : [];
 
-// ── Handle AAR regeneration request ──────────────────────────────────
-$aarRegenerated = false;
+// ── Handle lock / AI generation request ──────────────────────────────
 $aarError = null;
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['regenerate_aar']) && $_POST['regenerate_aar'] === '1') {
-    $aiSummary = theater_ai_summary_generate($theaterId, true);
+$justLocked = false;
+$isLocked = theater_is_locked($theater);
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['lock_report']) && $_POST['lock_report'] === '1' && !$isLocked) {
+    $aiSummary = theater_lock_report($theaterId);
     if (is_array($aiSummary) && isset($aiSummary['error'])) {
         $aarError = (string) $aiSummary['error'];
         $aiSummary = null;
     }
-    $aarRegenerated = $aiSummary !== null;
+    $justLocked = true;
+    $isLocked = true;
+    // Reload theater to get updated locked_at
+    $theater = db_theater_detail($theaterId);
 } else {
     $aiSummary = theater_ai_summary_read($theaterId);
 }

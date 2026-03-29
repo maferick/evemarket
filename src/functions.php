@@ -27416,6 +27416,7 @@ function theater_ai_summary_generate_pending(): int
              AND tas.alliance_id IN (' . $placeholders . ')
              AND tas.participant_count >= 2
          WHERE t.ai_summary IS NULL
+           AND t.locked_at IS NOT NULL
          ORDER BY t.start_time DESC
          LIMIT 5',
         $trackedAllianceIds
@@ -27456,6 +27457,33 @@ function theater_ai_summary_store(string $theaterId, string $headline, string $s
         'UPDATE theaters SET ai_headline = ?, ai_summary = ?, ai_verdict = ?, ai_summary_model = ?, ai_summary_at = NOW() WHERE theater_id = ?',
         [$headline, $summary, $verdict, $model, $theaterId]
     );
+}
+
+function theater_lock_report(string $theaterId): ?array
+{
+    $theater = db_theater_detail($theaterId);
+    if ($theater === null) {
+        return ['error' => 'Theater not found'];
+    }
+    if (($theater['locked_at'] ?? null) !== null) {
+        return ['error' => 'Battle report is already locked'];
+    }
+
+    // Generate AI summary at lock time
+    $aiResult = null;
+    if (supplycore_ai_ollama_enabled()) {
+        $aiResult = theater_ai_summary_generate($theaterId, true);
+    }
+
+    // Lock the theater regardless of AI success
+    db_execute('UPDATE theaters SET locked_at = NOW() WHERE theater_id = ?', [$theaterId]);
+
+    return $aiResult;
+}
+
+function theater_is_locked(array $theater): bool
+{
+    return ($theater['locked_at'] ?? null) !== null;
 }
 
 function theater_ai_verdict_label(string $verdict): string

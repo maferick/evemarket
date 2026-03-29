@@ -3,7 +3,15 @@
 
     <div class="mt-3 flex items-start justify-between gap-4">
         <div class="flex-1">
-            <p class="text-xs uppercase tracking-[0.16em] text-muted">Battle Intelligence — Theater Detail</p>
+            <div class="flex items-center gap-2">
+                <p class="text-xs uppercase tracking-[0.16em] text-muted">Battle Intelligence — Theater Detail</p>
+                <?php if ($isLocked): ?>
+                    <span class="inline-flex items-center gap-1 rounded-full bg-amber-600/20 border border-amber-500/30 px-2 py-0.5 text-[10px] uppercase tracking-wider text-amber-300">
+                        <svg class="h-2.5 w-2.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" /></svg>
+                        Locked
+                    </span>
+                <?php endif; ?>
+            </div>
             <h1 class="mt-1 text-2xl font-semibold text-slate-50">
                 <?= htmlspecialchars((string) ($theater['primary_system_name'] ?? 'Unknown'), ENT_QUOTES) ?>
                 <?php if ((int) ($theater['system_count'] ?? 0) > 1): ?>

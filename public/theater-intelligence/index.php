@@ -158,7 +158,11 @@ include __DIR__ . '/../../src/views/partials/header.php';
                                         <?= htmlspecialchars(theater_ai_verdict_label($listVerdict), ENT_QUOTES) ?>
                                     </span>
                                 <?php else: ?>
-                                    <span class="text-slate-500 text-xs">Pending</span>
+                                    <?php if (($t['locked_at'] ?? null) !== null): ?>
+                                        <span class="text-amber-400 text-xs">Locked</span>
+                                    <?php else: ?>
+                                        <span class="text-slate-500 text-xs">Unlocked</span>
+                                    <?php endif; ?>
                                 <?php endif; ?>
                             </td>
                             <td class="px-3 py-3">
