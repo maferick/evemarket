@@ -200,7 +200,7 @@ _PROCESSOR_DISPATCH: dict[str, tuple] = {
 }
 
 
-def run_registered_processor(job_key: str, db: Any, raw_config: dict[str, Any]) -> dict[str, Any]:
+def run_registered_processor(job_key: str, db: Any, raw_config: dict[str, Any], *, verbose: bool = False) -> dict[str, Any]:
     entry = _PROCESSOR_DISPATCH.get(job_key)
     if entry is None:
         in_compute_registry = job_key in PYTHON_COMPUTE_PROCESSOR_JOB_KEYS
@@ -210,7 +210,13 @@ def run_registered_processor(job_key: str, db: Any, raw_config: dict[str, Any]) 
             f"{job_key} (in_compute_registry={in_compute_registry}, in_sync_registry={in_sync_registry})."
         )
     processor_fn, arg_factory = entry
-    raw_result = processor_fn(*arg_factory(db, raw_config))
+    # Forward verbose if the processor accepts it (keyword-only to avoid breaking positional signatures).
+    import inspect
+    sig = inspect.signature(processor_fn)
+    if "verbose" in sig.parameters:
+        raw_result = processor_fn(*arg_factory(db, raw_config), verbose=verbose)
+    else:
+        raw_result = processor_fn(*arg_factory(db, raw_config))
     return JobResult.from_raw(raw_result, job_key=job_key).to_dict()
 
 

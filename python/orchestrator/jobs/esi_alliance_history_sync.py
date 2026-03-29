@@ -10,7 +10,9 @@ request handling, and distributed rate-limit coordination.
 """
 from __future__ import annotations
 
+import sys
 import time
+import traceback
 from typing import Any
 
 from ..db import SupplyCoreDb
@@ -130,12 +132,21 @@ def _derive_alliance_history(
     return periods
 
 
-def run_esi_alliance_history_sync(db: SupplyCoreDb, raw_config: dict[str, Any] | None = None) -> dict[str, object]:
+def run_esi_alliance_history_sync(db: SupplyCoreDb, raw_config: dict[str, Any] | None = None, *, verbose: bool = False) -> dict[str, object]:
     """Fetch ESI corporation history for queued characters, derive alliance history."""
     _init_gateway(db, raw_config)
     started = time.perf_counter()
 
+    def _vlog(msg: str) -> None:
+        if not verbose:
+            return
+        elapsed = time.perf_counter() - started
+        print(f"[{elapsed:7.2f}s] {msg}", file=sys.stderr, flush=True)
+
+    _vlog(f"gateway={'redis' if _gateway else 'direct'}, batch_size={BATCH_SIZE}")
+
     # Fetch batch of pending characters, skipping recently fetched ones.
+    _vlog("querying pending characters ...")
     batch = db.fetch_all(
         """SELECT character_id FROM esi_character_queue
            WHERE fetch_status = 'pending'
@@ -146,6 +157,7 @@ def run_esi_alliance_history_sync(db: SupplyCoreDb, raw_config: dict[str, Any] |
     )
 
     if not batch:
+        _vlog("no pending characters — done")
         return JobResult.success(
             job_key="esi_alliance_history_sync",
             summary="No pending characters in ESI queue.",
@@ -154,67 +166,96 @@ def run_esi_alliance_history_sync(db: SupplyCoreDb, raw_config: dict[str, Any] |
             duration_ms=int((time.perf_counter() - started) * 1000),
         ).to_dict()
 
+    _vlog(f"got {len(batch)} characters to process")
+
     total_fetched = 0
     total_written = 0
     total_errors = 0
     total_skipped = 0
 
-    for row in batch:
+    for idx, row in enumerate(batch):
         character_id = int(row["character_id"])
+        char_started = time.perf_counter()
 
-        # Skip if already fetched recently.  If all existing periods are closed
-        # (ended_at IS NOT NULL) the history is immutable — skip regardless of age.
-        existing = db.fetch_all(
-            """SELECT fetched_at, ended_at FROM character_alliance_history
-               WHERE character_id = %s
-               ORDER BY started_at DESC""",
-            (character_id,),
-        )
-        if existing:
-            has_open_period = any(r.get("ended_at") is None for r in existing)
-            latest_fetch = existing[0].get("fetched_at")
-            recently_fetched = latest_fetch and db.fetch_scalar(
-                "SELECT %s >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL %s DAY)",
-                (latest_fetch, SKIP_IF_FETCHED_WITHIN_DAYS),
-            )
-            if not has_open_period or recently_fetched:
-                db.execute(
-                    "UPDATE esi_character_queue SET fetch_status = 'done', fetched_at = UTC_TIMESTAMP() WHERE character_id = %s",
-                    (character_id,),
-                )
-                total_skipped += 1
-                continue
-
-        corp_history = _fetch_corporation_history(character_id)
-
-        if corp_history is None:
-            db.execute(
-                "UPDATE esi_character_queue SET fetch_status = 'error', last_error = 'ESI unavailable or rate limited' WHERE character_id = %s",
+        try:
+            # Skip if already fetched recently.  If all existing periods are closed
+            # (ended_at IS NOT NULL) the history is immutable — skip regardless of age.
+            existing = db.fetch_all(
+                """SELECT fetched_at, ended_at FROM character_alliance_history
+                   WHERE character_id = %s
+                   ORDER BY started_at DESC""",
                 (character_id,),
             )
-            total_errors += 1
-            continue
-
-        total_fetched += 1
-        periods = _derive_alliance_history(character_id, corp_history)
-
-        if periods:
-            for char_id, alliance_id, started_at, ended_at in periods:
-                db.execute(
-                    """INSERT INTO character_alliance_history
-                       (character_id, alliance_id, started_at, ended_at, fetched_at)
-                       VALUES (%s, %s, %s, %s, UTC_TIMESTAMP())
-                       ON DUPLICATE KEY UPDATE
-                           ended_at = VALUES(ended_at),
-                           fetched_at = VALUES(fetched_at)""",
-                    (char_id, alliance_id, started_at, ended_at),
+            if existing:
+                has_open_period = any(r.get("ended_at") is None for r in existing)
+                latest_fetch = existing[0].get("fetched_at")
+                recently_fetched = latest_fetch and db.fetch_scalar(
+                    "SELECT %s >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL %s DAY)",
+                    (latest_fetch, SKIP_IF_FETCHED_WITHIN_DAYS),
                 )
-                total_written += 1
+                if not has_open_period or recently_fetched:
+                    db.execute(
+                        "UPDATE esi_character_queue SET fetch_status = 'done', fetched_at = UTC_TIMESTAMP() WHERE character_id = %s",
+                        (character_id,),
+                    )
+                    total_skipped += 1
+                    _vlog(f"  [{idx + 1}/{len(batch)}] char {character_id}: skipped (immutable or recent)")
+                    continue
 
-        db.execute(
-            "UPDATE esi_character_queue SET fetch_status = 'done', fetched_at = UTC_TIMESTAMP() WHERE character_id = %s",
-            (character_id,),
-        )
+            _vlog(f"  [{idx + 1}/{len(batch)}] char {character_id}: fetching corp history from ESI ...")
+            esi_started = time.perf_counter()
+            corp_history = _fetch_corporation_history(character_id)
+            esi_ms = int((time.perf_counter() - esi_started) * 1000)
+
+            if corp_history is None:
+                db.execute(
+                    "UPDATE esi_character_queue SET fetch_status = 'error', last_error = 'ESI unavailable or rate limited' WHERE character_id = %s",
+                    (character_id,),
+                )
+                total_errors += 1
+                _vlog(f"  [{idx + 1}/{len(batch)}] char {character_id}: ESI error ({esi_ms}ms)")
+                continue
+
+            total_fetched += 1
+            unique_corps = len({int(e.get("corporation_id") or 0) for e in corp_history if int(e.get("corporation_id") or 0) > 0})
+            cached_corps = sum(1 for e in corp_history if int(e.get("corporation_id") or 0) in _corp_alliance_cache)
+            _vlog(f"  [{idx + 1}/{len(batch)}] char {character_id}: got {len(corp_history)} entries, {unique_corps} corps ({cached_corps} cached), deriving alliances ...")
+
+            derive_started = time.perf_counter()
+            periods = _derive_alliance_history(character_id, corp_history)
+            derive_ms = int((time.perf_counter() - derive_started) * 1000)
+
+            if periods:
+                for char_id, alliance_id, started_at, ended_at in periods:
+                    db.execute(
+                        """INSERT INTO character_alliance_history
+                           (character_id, alliance_id, started_at, ended_at, fetched_at)
+                           VALUES (%s, %s, %s, %s, UTC_TIMESTAMP())
+                           ON DUPLICATE KEY UPDATE
+                               ended_at = VALUES(ended_at),
+                               fetched_at = VALUES(fetched_at)""",
+                        (char_id, alliance_id, started_at, ended_at),
+                    )
+                    total_written += 1
+
+            db.execute(
+                "UPDATE esi_character_queue SET fetch_status = 'done', fetched_at = UTC_TIMESTAMP() WHERE character_id = %s",
+                (character_id,),
+            )
+            char_ms = int((time.perf_counter() - char_started) * 1000)
+            _vlog(f"  [{idx + 1}/{len(batch)}] char {character_id}: done — {len(periods)} periods written, esi={esi_ms}ms derive={derive_ms}ms total={char_ms}ms")
+
+        except Exception as exc:
+            total_errors += 1
+            db.execute(
+                "UPDATE esi_character_queue SET fetch_status = 'error', last_error = %s WHERE character_id = %s",
+                (f"{type(exc).__name__}: {exc}"[:500], character_id),
+            )
+            _vlog(f"  [{idx + 1}/{len(batch)}] char {character_id}: EXCEPTION {type(exc).__name__}: {exc}")
+            if verbose:
+                traceback.print_exc(file=sys.stderr)
+
+    _vlog(f"DONE — {total_fetched} fetched, {total_written} written, {total_errors} errors, {total_skipped} skipped, cache={len(_corp_alliance_cache)} corps")
 
     return JobResult.success(
         job_key="esi_alliance_history_sync",
