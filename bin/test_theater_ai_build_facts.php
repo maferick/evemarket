@@ -28,113 +28,89 @@ function theater_fixture_base(): array
     ];
 }
 
-function build_snapshot(array $allianceSummary, array $participants, array $trackedAlliances, array $trackedCorporations, array $opponentAlliances, array $opponentCorporations): array
+function build_snapshot(array $allianceSummary, array $extra = []): array
 {
-    return [
+    return array_merge([
         'alliance_summary' => $allianceSummary,
-        'participants' => $participants,
         'turning_points' => [],
         'systems' => [['system_name' => 'MJ-5F9']],
         'suspicion' => null,
         'fleet_comp' => [],
         'notable_kills' => [],
         'top_performers' => [],
-        'tracked_alliances' => $trackedAlliances,
-        'tracked_corporations' => $trackedCorporations,
-        'opponent_alliances' => $opponentAlliances,
-        'opponent_corporations' => $opponentCorporations,
-    ];
+    ], $extra);
 }
 
-// Case 1: Enemy has more pilots, but configured friendly side must still be left/friendly.
+// Case 1: Friendly alliance on "friendly" side, enemy on "opponent" side.
 $facts = theater_ai_build_facts_from_snapshot(
     'fixture-1',
     theater_fixture_base(),
-    build_snapshot(
-        [
-            ['side' => 'side_a', 'alliance_id' => 1001, 'alliance_name' => 'Friendly Alliance', 'participant_count' => 3, 'total_kills' => 5, 'total_losses' => 2, 'total_isk_killed' => 500, 'total_isk_lost' => 250, 'efficiency' => 0.66],
-            ['side' => 'side_b', 'alliance_id' => 2002, 'alliance_name' => 'Enemy Blob', 'participant_count' => 9, 'total_kills' => 2, 'total_losses' => 5, 'total_isk_killed' => 250, 'total_isk_lost' => 500, 'efficiency' => 0.33],
-        ],
-        [
-            ['side' => 'side_a', 'alliance_id' => 1001, 'corporation_id' => 0],
-            ['side' => 'side_b', 'alliance_id' => 2002, 'corporation_id' => 0],
-            ['side' => 'side_b', 'alliance_id' => 2002, 'corporation_id' => 0],
-            ['side' => 'side_b', 'alliance_id' => 2002, 'corporation_id' => 0],
-        ],
-        [['alliance_id' => 1001, 'label' => 'Friendly Alliance']],
-        [],
-        [],
-        []
-    )
+    build_snapshot([
+        ['side' => 'friendly', 'alliance_id' => 1001, 'alliance_name' => 'Fraternity.', 'participant_count' => 3, 'total_kills' => 5, 'total_losses' => 2, 'total_isk_killed' => 500, 'total_isk_lost' => 250, 'efficiency' => 0.66],
+        ['side' => 'opponent', 'alliance_id' => 2002, 'alliance_name' => 'Goonswarm Federation', 'participant_count' => 9, 'total_kills' => 2, 'total_losses' => 5, 'total_isk_killed' => 250, 'total_isk_lost' => 500, 'efficiency' => 0.33],
+    ])
 );
-theater_guardrail_assert(($facts['friendly_coalition'][0]['alliance'] ?? '') === 'Friendly Alliance', 'Friendly side must stay side_a/left even when side_b has more pilots.');
+theater_guardrail_assert(($facts['friendly_coalition'][0]['alliance'] ?? '') === 'Fraternity.', 'Friendly alliance must be in friendly_coalition.');
+theater_guardrail_assert(($facts['enemy_coalition'][0]['alliance'] ?? '') === 'Goonswarm Federation', 'Opponent alliance must be in enemy_coalition.');
+theater_guardrail_assert($facts['friendly_pilots'] === 3, 'Friendly pilots must be 3.');
+theater_guardrail_assert($facts['enemy_pilots'] === 9, 'Enemy pilots must be 9.');
+theater_guardrail_assert($facts['friendly_isk_killed'] === '500 ISK', 'Friendly ISK killed must be 500.');
+theater_guardrail_assert($facts['friendly_isk_lost'] === '250 ISK', 'Friendly ISK lost must be 250.');
+theater_guardrail_assert($facts['efficiency'] === '66.7%', 'Efficiency must be 66.7%.');
 
-// Case 2 (regression): settings-driven tracked entities configured via corporations only.
+// Case 2: Third-party alliances are excluded from both sides.
 $facts = theater_ai_build_facts_from_snapshot(
     'fixture-2',
     theater_fixture_base(),
-    build_snapshot(
-        [
-            ['side' => 'side_a', 'alliance_id' => 0, 'alliance_name' => 'Unknown Alliance', 'participant_count' => 2, 'total_kills' => 4, 'total_losses' => 1, 'total_isk_killed' => 400, 'total_isk_lost' => 100, 'efficiency' => 0.8],
-            ['side' => 'side_b', 'alliance_id' => 3003, 'alliance_name' => 'Large Hostiles', 'participant_count' => 8, 'total_kills' => 1, 'total_losses' => 4, 'total_isk_killed' => 100, 'total_isk_lost' => 400, 'efficiency' => 0.2],
-        ],
-        [
-            ['side' => 'side_a', 'alliance_id' => 0, 'corporation_id' => 4242],
-            ['side' => 'side_a', 'alliance_id' => 0, 'corporation_id' => 4242],
-            ['side' => 'side_b', 'alliance_id' => 3003, 'corporation_id' => 0],
-            ['side' => 'side_b', 'alliance_id' => 3003, 'corporation_id' => 0],
-            ['side' => 'side_b', 'alliance_id' => 3003, 'corporation_id' => 0],
-        ],
-        [],
-        [['corporation_id' => 4242, 'label' => 'Tracked Corp']],
-        [],
-        []
-    )
+    build_snapshot([
+        ['side' => 'friendly', 'alliance_id' => 1001, 'alliance_name' => 'Our Alliance', 'participant_count' => 5, 'total_kills' => 8, 'total_losses' => 1, 'total_isk_killed' => 800, 'total_isk_lost' => 100, 'efficiency' => 0.89],
+        ['side' => 'opponent', 'alliance_id' => 2002, 'alliance_name' => 'Enemy Alliance', 'participant_count' => 4, 'total_kills' => 1, 'total_losses' => 8, 'total_isk_killed' => 100, 'total_isk_lost' => 800, 'efficiency' => 0.11],
+        ['side' => 'third_party', 'alliance_id' => 3003, 'alliance_name' => 'Neutral Corp', 'participant_count' => 2, 'total_kills' => 1, 'total_losses' => 0, 'total_isk_killed' => 50, 'total_isk_lost' => 0, 'efficiency' => 1.0],
+    ])
 );
-theater_guardrail_assert(($facts['friendly_coalition'][0]['alliance'] ?? '') === 'Unknown Alliance', 'Corporation-only tracked entities from settings must still anchor the friendly side.');
+theater_guardrail_assert(count($facts['friendly_coalition']) === 1, 'Only friendly alliance should be in friendly_coalition.');
+theater_guardrail_assert(count($facts['enemy_coalition']) === 1, 'Only opponent alliance should be in enemy_coalition.');
+theater_guardrail_assert($facts['friendly_pilots'] === 5, 'Third-party pilots must not be counted.');
 
-// Case 3: Both configured friendlies and opponents are present and must map left/right.
+// Case 3: Fleet composition sides match correctly.
 $facts = theater_ai_build_facts_from_snapshot(
     'fixture-3',
     theater_fixture_base(),
     build_snapshot(
         [
-            ['side' => 'side_a', 'alliance_id' => 1111, 'alliance_name' => 'Blue Team', 'participant_count' => 4, 'total_kills' => 6, 'total_losses' => 2, 'total_isk_killed' => 600, 'total_isk_lost' => 200, 'efficiency' => 0.75],
-            ['side' => 'side_b', 'alliance_id' => 2222, 'alliance_name' => 'Red Team', 'participant_count' => 4, 'total_kills' => 2, 'total_losses' => 6, 'total_isk_killed' => 200, 'total_isk_lost' => 600, 'efficiency' => 0.25],
+            ['side' => 'friendly', 'alliance_id' => 1001, 'alliance_name' => 'Blue Team', 'participant_count' => 4, 'total_kills' => 6, 'total_losses' => 2, 'total_isk_killed' => 600, 'total_isk_lost' => 200, 'efficiency' => 0.75],
+            ['side' => 'opponent', 'alliance_id' => 2222, 'alliance_name' => 'Red Team', 'participant_count' => 4, 'total_kills' => 2, 'total_losses' => 6, 'total_isk_killed' => 200, 'total_isk_lost' => 600, 'efficiency' => 0.25],
         ],
         [
-            ['side' => 'side_a', 'alliance_id' => 1111, 'corporation_id' => 7771],
-            ['side' => 'side_b', 'alliance_id' => 2222, 'corporation_id' => 8882],
-        ],
-        [['alliance_id' => 1111, 'label' => 'Blue Team']],
-        [],
-        [['alliance_id' => 2222, 'label' => 'Red Team']],
-        []
+            'fleet_comp' => [
+                ['ship_name' => 'Maelstrom', 'ship_group' => 'Battleship', 'pilot_count' => 20, 'side' => 'friendly'],
+                ['ship_name' => 'Raven', 'ship_group' => 'Battleship', 'pilot_count' => 15, 'side' => 'opponent'],
+            ],
+        ]
     )
 );
-theater_guardrail_assert(($facts['friendly_coalition'][0]['alliance'] ?? '') === 'Blue Team', 'Configured friendly alliance must always resolve to friendly/left.');
-theater_guardrail_assert(($facts['enemy_coalition'][0]['alliance'] ?? '') === 'Red Team', 'Configured opponent alliance must always resolve to enemy/right.');
+theater_guardrail_assert(count($facts['friendly_fleet_composition']) === 1, 'Friendly fleet must have 1 entry.');
+theater_guardrail_assert(($facts['friendly_fleet_composition'][0]['ship'] ?? '') === 'Maelstrom', 'Friendly fleet must contain Maelstrom.');
+theater_guardrail_assert(count($facts['enemy_fleet_composition']) === 1, 'Enemy fleet must have 1 entry.');
+theater_guardrail_assert(($facts['enemy_fleet_composition'][0]['ship'] ?? '') === 'Raven', 'Enemy fleet must contain Raven.');
 
-// Case 4: Fallback occurs only when no configured entities match either side.
+// Case 4: Notable kills lost_by correctly assigned.
 $facts = theater_ai_build_facts_from_snapshot(
     'fixture-4',
     theater_fixture_base(),
     build_snapshot(
         [
-            ['side' => 'side_a', 'alliance_id' => 7001, 'alliance_name' => 'Small Group', 'participant_count' => 2, 'total_kills' => 1, 'total_losses' => 3, 'total_isk_killed' => 100, 'total_isk_lost' => 300, 'efficiency' => 0.25],
-            ['side' => 'side_b', 'alliance_id' => 7002, 'alliance_name' => 'Large Group', 'participant_count' => 7, 'total_kills' => 3, 'total_losses' => 1, 'total_isk_killed' => 300, 'total_isk_lost' => 100, 'efficiency' => 0.75],
+            ['side' => 'friendly', 'alliance_id' => 1001, 'alliance_name' => 'Us', 'participant_count' => 5, 'total_kills' => 3, 'total_losses' => 1, 'total_isk_killed' => 300, 'total_isk_lost' => 100, 'efficiency' => 0.75],
         ],
         [
-            ['side' => 'side_a', 'alliance_id' => 7001, 'corporation_id' => 70011],
-            ['side' => 'side_b', 'alliance_id' => 7002, 'corporation_id' => 70021],
-            ['side' => 'side_b', 'alliance_id' => 7002, 'corporation_id' => 70022],
-        ],
-        [['alliance_id' => 9991, 'label' => 'Not Present Friendly']],
-        [['corporation_id' => 9992, 'label' => 'Not Present Friendly Corp']],
-        [['alliance_id' => 9993, 'label' => 'Not Present Opponent']],
-        [['corporation_id' => 9994, 'label' => 'Not Present Opponent Corp']]
+            'notable_kills' => [
+                ['victim_name' => 'EnemyPilot', 'ship_name' => 'Titan', 'ship_group' => 'Titan', 'victim_alliance_name' => 'Them', 'isk_value' => 100000000000, 'kill_time' => '2026-03-27 00:10:00', 'victim_side' => 'opponent'],
+                ['victim_name' => 'FriendlyPilot', 'ship_name' => 'Dread', 'ship_group' => 'Dreadnought', 'victim_alliance_name' => 'Us', 'isk_value' => 5000000000, 'kill_time' => '2026-03-27 00:12:00', 'victim_side' => 'friendly'],
+            ],
+        ]
     )
 );
-theater_guardrail_assert(($facts['friendly_coalition'][0]['alliance'] ?? '') === 'Small Group', 'Fallback should only occur when no configured entities match; side_a remains friendly by default.');
+theater_guardrail_assert(($facts['notable_kills'][0]['lost_by'] ?? '') === 'enemy', 'Opponent victim must be lost_by=enemy.');
+theater_guardrail_assert(($facts['notable_kills'][1]['lost_by'] ?? '') === 'friendly', 'Friendly victim must be lost_by=friendly.');
 
 fwrite(STDOUT, "Theater AI side resolution guardrails passed.\n");

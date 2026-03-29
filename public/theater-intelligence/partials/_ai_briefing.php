@@ -25,18 +25,35 @@
         <?php
             $rawSummary = (string) ($aiSummary['summary'] ?? '');
             $rendered = htmlspecialchars($rawSummary, ENT_QUOTES);
+            // Bold and italic
             $rendered = preg_replace('/\*\*(.+?)\*\*/', '<strong>$1</strong>', $rendered);
             $rendered = preg_replace('/\*(.+?)\*/', '<em>$1</em>', $rendered);
+            // Markdown headers: ## Header and ### Header
+            $rendered = preg_replace('/^###\s+(.+)$/m', '<h4>$1</h4>', $rendered);
+            $rendered = preg_replace('/^##\s+(.+)$/m', '<h3>$1</h3>', $rendered);
+            // Numbered section headers: 1. **Title**
             $rendered = preg_replace('/^(\d+)\.\s*<strong>(.+?)<\/strong>/m', '<h3>$1. $2</h3>', $rendered);
+            // Bullet lists
             $rendered = preg_replace_callback('/(?:^- .+$\n?)+/m', static function (array $m): string {
                 $items = preg_split('/\n/', trim($m[0]));
                 $lis = '';
                 foreach ($items as $item) {
                     $text = preg_replace('/^- /', '', $item);
-                    $lis .= '<li>' . $text . '</li>';
+                    if ($text !== '') $lis .= '<li>' . $text . '</li>';
                 }
                 return '<ul>' . $lis . '</ul>';
             }, $rendered);
+            // Numbered lists (1. item, 2. item)
+            $rendered = preg_replace_callback('/(?:^\d+\.\s+.+$\n?)+/m', static function (array $m): string {
+                $items = preg_split('/\n/', trim($m[0]));
+                $lis = '';
+                foreach ($items as $item) {
+                    $text = preg_replace('/^\d+\.\s+/', '', $item);
+                    if ($text !== '') $lis .= '<li>' . $text . '</li>';
+                }
+                return '<ol>' . $lis . '</ol>';
+            }, $rendered);
+            // Paragraphs
             $rendered = preg_replace('/\n{2,}/', '</p><p>', $rendered);
             $rendered = str_replace("\n", '<br>', $rendered);
             echo '<p>' . $rendered . '</p>';
