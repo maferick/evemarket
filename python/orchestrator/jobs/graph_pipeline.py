@@ -588,9 +588,10 @@ def run_compute_graph_derived_relationships(db: SupplyCoreDb, neo4j_raw: dict[st
 
     client = Neo4jClient(config)
     runtime = neo4j_raw or {}
-    character_batch_size = _coerce_batch_size(runtime.get("derived_character_batch_size") or runtime.get("batch_size"), fallback=300)
+    derived_timeout = max(15, int(runtime.get("derived_timeout_seconds") or 120))
+    character_batch_size = _coerce_batch_size(runtime.get("derived_character_batch_size") or runtime.get("batch_size"), fallback=50)
     fit_batch_size = _coerce_batch_size(runtime.get("derived_fit_batch_size") or runtime.get("batch_size"), fallback=200)
-    max_character_batches = max(1, int(runtime.get("derived_character_max_batches_per_run") or 4))
+    max_character_batches = max(1, int(runtime.get("derived_character_max_batches_per_run") or 10))
     max_fit_batches = max(1, int(runtime.get("derived_fit_max_batches_per_run") or 3))
     total_processed = 0
     total_written = 0
@@ -598,6 +599,10 @@ def run_compute_graph_derived_relationships(db: SupplyCoreDb, neo4j_raw: dict[st
     character_cursor = _parse_int_cursor((_sync_state_get(db, GRAPH_BATCH_STATE_KEYS["derived_character_cursor"]) or {}).get("last_cursor"))
     fit_cursor = _parse_int_cursor((_sync_state_get(db, GRAPH_BATCH_STATE_KEYS["derived_fit_cursor"]) or {}).get("last_cursor"))
 
+    # This job is cursor-based and resumable: each batch advances the cursor,
+    # which is persisted to the database.  If a timeout or error occurs mid-batch
+    # the cursor from the *previous* successful batch is already saved, so the
+    # next run picks up where this one left off without losing progress.
     character_batches = 0
     while character_batches < max_character_batches:
         batch_started = time.perf_counter()
@@ -621,114 +626,135 @@ def run_compute_graph_derived_relationships(db: SupplyCoreDb, neo4j_raw: dict[st
         cutoff = _utc_cutoff_iso(RELATIONSHIP_WINDOW_DAYS)
         recent_cutoff = _utc_cutoff_iso(7)
 
-        client.query(
-            """
-            UNWIND $anchor_ids AS anchor_id
-            MATCH (c1:Character {character_id: anchor_id})
-            MATCH (c1)-[:PARTICIPATED_IN]->(b:Battle)<-[:PARTICIPATED_IN]-(c2:Character)
-            WHERE c1.character_id < c2.character_id
-              AND b.started_at >= $cutoff
-            OPTIONAL MATCH (c1)-[:ON_SIDE]->(s1:BattleSide)<-[:HAS_SIDE]-(b)
-            OPTIONAL MATCH (c2)-[:ON_SIDE]->(s2:BattleSide)<-[:HAS_SIDE]-(b)
-            WITH c1, c2,
-                 min(b.started_at) AS first_seen,
-                 max(b.started_at) AS last_seen,
-                 count(DISTINCT b) AS occurrence_count,
-                 count(DISTINCT CASE WHEN b.started_at >= $recent_cutoff THEN b END) AS recent_occurrence_count,
-                 count(DISTINCT CASE WHEN s1.anomaly_class = 'high_sustain' OR s2.anomaly_class = 'high_sustain' THEN b END) AS high_sustain_battle_count
-            WHERE occurrence_count >= $co_threshold
-            MERGE (c1)-[r:CO_OCCURS_WITH]->(c2)
-              SET r.first_seen = toString(first_seen),
-                  r.last_seen = toString(last_seen),
-                  r.occurrence_count = toInteger(occurrence_count),
-                  r.recent_occurrence_count = toInteger(recent_occurrence_count),
-                  r.high_sustain_battle_count = toInteger(high_sustain_battle_count),
-                  r.recent_weight = toFloat(recent_occurrence_count * 2 + high_sustain_battle_count),
-                  r.all_time_weight = toFloat(occurrence_count + high_sustain_battle_count * 2),
-                  r.weight = toFloat((recent_occurrence_count * 2) + occurrence_count + (high_sustain_battle_count * 2))
-            """,
-            {"anchor_ids": anchor_ids, "cutoff": cutoff, "recent_cutoff": recent_cutoff, "co_threshold": CO_OCCUR_THRESHOLD},
-        )
-        client.query(
-            """
-            UNWIND $anchor_ids AS anchor_id
-            MATCH (c:Character {character_id: anchor_id})-[r:CO_OCCURS_WITH]->(:Character)
-            WITH c, r ORDER BY r.weight DESC
-            WITH c, collect(r) AS rels
-            FOREACH(rel IN rels[$top_k..] | DELETE rel)
-            """,
-            {"anchor_ids": anchor_ids, "top_k": TOP_K_CHARACTER_EDGES},
-        )
-        client.query(
-            """
-            UNWIND $anchor_ids AS anchor_id
-            MATCH (c:Character {character_id: anchor_id})-[r:ASSOCIATED_WITH_ANOMALY]->(:Battle)
-            WHERE datetime(COALESCE(r.last_seen, '1970-01-01T00:00:00Z')) < datetime() - duration({days:$window_days})
-            DELETE r
-            """,
-            {"anchor_ids": anchor_ids, "window_days": RELATIONSHIP_WINDOW_DAYS},
-        )
-        client.query(
-            """
-            UNWIND $anchor_ids AS anchor_id
-            MATCH (c:Character {character_id: anchor_id})
-            OPTIONAL MATCH (c)-[:ON_SIDE]->(s:BattleSide)<-[:HAS_SIDE]-(b:Battle)
-            WHERE b.started_at >= $cutoff
-            WITH c, collect(DISTINCT s.side_key) AS side_keys,
-                 min(b.started_at) AS first_seen,
-                 max(b.started_at) AS last_seen,
-                 count(DISTINCT b) AS occurrence_count
-            WHERE size(side_keys) > 1
-            MERGE (c)-[r:CROSSED_SIDES]->(c)
-              SET r.first_seen = toString(first_seen),
-                  r.last_seen = toString(last_seen),
-                  r.occurrence_count = toInteger(occurrence_count),
-                  r.recent_occurrence_count = toInteger(occurrence_count),
-                  r.side_count = size(side_keys),
-                  r.side_transition_count = size(side_keys) - 1,
-                  r.recent_weight = toFloat(size(side_keys)),
-                  r.all_time_weight = toFloat(size(side_keys) + occurrence_count)
-            """,
-            {"anchor_ids": anchor_ids, "cutoff": cutoff},
-        )
-        client.query(
-            """
-            UNWIND $anchor_ids AS anchor_id
-            MATCH (c:Character {character_id: anchor_id})
-            OPTIONAL MATCH (c)-[:ON_SIDE]->(s:BattleSide)<-[:HAS_SIDE]-(b:Battle)
-            WHERE b.started_at >= $cutoff
-            WITH c, collect(DISTINCT s.side_key) AS side_keys
-            WHERE size(side_keys) <= 1
-            MATCH (c)-[r:CROSSED_SIDES]->(c)
-            DELETE r
-            """,
-            {"anchor_ids": anchor_ids, "cutoff": cutoff},
-        )
-        client.query(
-            """
-            UNWIND $anchor_ids AS anchor_id
-            MATCH (c:Character {character_id: anchor_id})-[:ON_SIDE]->(s:BattleSide)<-[:HAS_SIDE]-(b:Battle)
-            WHERE s.anomaly_class IN ['high_sustain', 'low_sustain']
-              AND b.started_at >= $cutoff
-            WITH c, b,
-                 min(b.started_at) AS first_seen,
-                 max(b.started_at) AS last_seen,
-                 count(*) AS occurrence_count,
-                 avg(toFloat(s.z_efficiency_score)) AS avg_z_score,
-                 count(CASE WHEN b.started_at >= $recent_cutoff THEN 1 END) AS recent_occurrence_count
-            WHERE occurrence_count >= $anom_threshold
-            MERGE (c)-[r:ASSOCIATED_WITH_ANOMALY]->(b)
-              SET r.first_seen = toString(first_seen),
-                  r.last_seen = toString(last_seen),
-                  r.occurrence_count = toInteger(occurrence_count),
-                  r.recent_occurrence_count = toInteger(recent_occurrence_count),
-                  r.avg_z_score = toFloat(avg_z_score),
-                  r.recent_weight = toFloat(recent_occurrence_count + avg_z_score),
-                  r.all_time_weight = toFloat(occurrence_count + avg_z_score),
-                  r.count = toInteger(occurrence_count)
-            """,
-            {"anchor_ids": anchor_ids, "cutoff": cutoff, "recent_cutoff": recent_cutoff, "anom_threshold": ANOMALY_ASSOC_THRESHOLD},
-        )
+        try:
+            client.query(
+                """
+                UNWIND $anchor_ids AS anchor_id
+                MATCH (c1:Character {character_id: anchor_id})
+                MATCH (c1)-[:PARTICIPATED_IN]->(b:Battle)<-[:PARTICIPATED_IN]-(c2:Character)
+                WHERE c1.character_id < c2.character_id
+                  AND b.started_at >= $cutoff
+                OPTIONAL MATCH (c1)-[:ON_SIDE]->(s1:BattleSide)<-[:HAS_SIDE]-(b)
+                OPTIONAL MATCH (c2)-[:ON_SIDE]->(s2:BattleSide)<-[:HAS_SIDE]-(b)
+                WITH c1, c2,
+                     min(b.started_at) AS first_seen,
+                     max(b.started_at) AS last_seen,
+                     count(DISTINCT b) AS occurrence_count,
+                     count(DISTINCT CASE WHEN b.started_at >= $recent_cutoff THEN b END) AS recent_occurrence_count,
+                     count(DISTINCT CASE WHEN s1.anomaly_class = 'high_sustain' OR s2.anomaly_class = 'high_sustain' THEN b END) AS high_sustain_battle_count
+                WHERE occurrence_count >= $co_threshold
+                MERGE (c1)-[r:CO_OCCURS_WITH]->(c2)
+                  SET r.first_seen = toString(first_seen),
+                      r.last_seen = toString(last_seen),
+                      r.occurrence_count = toInteger(occurrence_count),
+                      r.recent_occurrence_count = toInteger(recent_occurrence_count),
+                      r.high_sustain_battle_count = toInteger(high_sustain_battle_count),
+                      r.recent_weight = toFloat(recent_occurrence_count * 2 + high_sustain_battle_count),
+                      r.all_time_weight = toFloat(occurrence_count + high_sustain_battle_count * 2),
+                      r.weight = toFloat((recent_occurrence_count * 2) + occurrence_count + (high_sustain_battle_count * 2))
+                """,
+                {"anchor_ids": anchor_ids, "cutoff": cutoff, "recent_cutoff": recent_cutoff, "co_threshold": CO_OCCUR_THRESHOLD},
+                timeout_seconds=derived_timeout,
+            )
+            client.query(
+                """
+                UNWIND $anchor_ids AS anchor_id
+                MATCH (c:Character {character_id: anchor_id})-[r:CO_OCCURS_WITH]->(:Character)
+                WITH c, r ORDER BY r.weight DESC
+                WITH c, collect(r) AS rels
+                FOREACH(rel IN rels[$top_k..] | DELETE rel)
+                """,
+                {"anchor_ids": anchor_ids, "top_k": TOP_K_CHARACTER_EDGES},
+                timeout_seconds=derived_timeout,
+            )
+            client.query(
+                """
+                UNWIND $anchor_ids AS anchor_id
+                MATCH (c:Character {character_id: anchor_id})-[r:ASSOCIATED_WITH_ANOMALY]->(:Battle)
+                WHERE datetime(COALESCE(r.last_seen, '1970-01-01T00:00:00Z')) < datetime() - duration({days:$window_days})
+                DELETE r
+                """,
+                {"anchor_ids": anchor_ids, "window_days": RELATIONSHIP_WINDOW_DAYS},
+                timeout_seconds=derived_timeout,
+            )
+            client.query(
+                """
+                UNWIND $anchor_ids AS anchor_id
+                MATCH (c:Character {character_id: anchor_id})
+                OPTIONAL MATCH (c)-[:ON_SIDE]->(s:BattleSide)<-[:HAS_SIDE]-(b:Battle)
+                WHERE b.started_at >= $cutoff
+                WITH c, collect(DISTINCT s.side_key) AS side_keys,
+                     min(b.started_at) AS first_seen,
+                     max(b.started_at) AS last_seen,
+                     count(DISTINCT b) AS occurrence_count
+                WHERE size(side_keys) > 1
+                MERGE (c)-[r:CROSSED_SIDES]->(c)
+                  SET r.first_seen = toString(first_seen),
+                      r.last_seen = toString(last_seen),
+                      r.occurrence_count = toInteger(occurrence_count),
+                      r.recent_occurrence_count = toInteger(occurrence_count),
+                      r.side_count = size(side_keys),
+                      r.side_transition_count = size(side_keys) - 1,
+                      r.recent_weight = toFloat(size(side_keys)),
+                      r.all_time_weight = toFloat(size(side_keys) + occurrence_count)
+                """,
+                {"anchor_ids": anchor_ids, "cutoff": cutoff},
+                timeout_seconds=derived_timeout,
+            )
+            client.query(
+                """
+                UNWIND $anchor_ids AS anchor_id
+                MATCH (c:Character {character_id: anchor_id})
+                OPTIONAL MATCH (c)-[:ON_SIDE]->(s:BattleSide)<-[:HAS_SIDE]-(b:Battle)
+                WHERE b.started_at >= $cutoff
+                WITH c, collect(DISTINCT s.side_key) AS side_keys
+                WHERE size(side_keys) <= 1
+                MATCH (c)-[r:CROSSED_SIDES]->(c)
+                DELETE r
+                """,
+                {"anchor_ids": anchor_ids, "cutoff": cutoff},
+                timeout_seconds=derived_timeout,
+            )
+            client.query(
+                """
+                UNWIND $anchor_ids AS anchor_id
+                MATCH (c:Character {character_id: anchor_id})-[:ON_SIDE]->(s:BattleSide)<-[:HAS_SIDE]-(b:Battle)
+                WHERE s.anomaly_class IN ['high_sustain', 'low_sustain']
+                  AND b.started_at >= $cutoff
+                WITH c, b,
+                     min(b.started_at) AS first_seen,
+                     max(b.started_at) AS last_seen,
+                     count(*) AS occurrence_count,
+                     avg(toFloat(s.z_efficiency_score)) AS avg_z_score,
+                     count(CASE WHEN b.started_at >= $recent_cutoff THEN 1 END) AS recent_occurrence_count
+                WHERE occurrence_count >= $anom_threshold
+                MERGE (c)-[r:ASSOCIATED_WITH_ANOMALY]->(b)
+                  SET r.first_seen = toString(first_seen),
+                      r.last_seen = toString(last_seen),
+                      r.occurrence_count = toInteger(occurrence_count),
+                      r.recent_occurrence_count = toInteger(recent_occurrence_count),
+                      r.avg_z_score = toFloat(avg_z_score),
+                      r.recent_weight = toFloat(recent_occurrence_count + avg_z_score),
+                      r.all_time_weight = toFloat(occurrence_count + avg_z_score),
+                      r.count = toInteger(occurrence_count)
+                """,
+                {"anchor_ids": anchor_ids, "cutoff": cutoff, "recent_cutoff": recent_cutoff, "anom_threshold": ANOMALY_ASSOC_THRESHOLD},
+                timeout_seconds=derived_timeout,
+            )
+        except (Neo4jError, OSError) as exc:
+            # Save cursor from last *completed* batch so the next run resumes
+            # without re-processing already-finished batches.
+            _sync_state_upsert(
+                db,
+                GRAPH_BATCH_STATE_KEYS["derived_character_cursor"],
+                sync_mode="incremental",
+                status="error",
+                last_success_at=None,
+                last_cursor=_format_int_cursor(character_cursor),
+                last_row_count=total_written,
+                last_error_message=str(exc)[:500],
+            )
+            raise
 
         character_cursor = max(anchor_ids)
         character_batches += 1
