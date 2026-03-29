@@ -15302,7 +15302,13 @@ function db_theaters_list(int $limit = 50, int $offset = 0, ?string $regionFilte
     }
     $placeholders = implode(',', array_fill(0, count($trackedAllianceIds), '?'));
 
-    $sql = 'SELECT t.*, rs.system_name AS primary_system_name, rr.region_name
+    $sql = 'SELECT t.theater_id, t.label, t.primary_system_id, t.region_id,
+                   t.start_time, t.end_time, t.duration_seconds,
+                   t.battle_count, t.system_count, t.total_kills, t.total_isk,
+                   t.participant_count, t.anomaly_score, t.computed_at, t.locked_at,
+                   t.ai_headline, t.ai_verdict, t.ai_summary_model, t.ai_summary_at,
+                   t.created_at, t.updated_at,
+                   rs.system_name AS primary_system_name, rr.region_name
             FROM theaters t
             INNER JOIN theater_alliance_summary tas
                 ON tas.theater_id = t.theater_id
@@ -15336,6 +15342,20 @@ function db_theater_detail(string $theaterId): ?array
          LEFT JOIN ref_regions rr ON rr.region_id = t.region_id
          WHERE t.theater_id = ?',
         [$theaterId]
+    );
+}
+
+function db_theaters_locked(): array
+{
+    return db_select(
+        'SELECT t.theater_id, t.locked_at, t.ai_headline, t.ai_verdict, t.ai_summary_model, t.ai_summary_at,
+                t.start_time, t.end_time, t.total_kills, t.participant_count,
+                rs.system_name AS primary_system_name, rr.region_name
+         FROM theaters t
+         LEFT JOIN ref_systems rs ON rs.system_id = t.primary_system_id
+         LEFT JOIN ref_regions rr ON rr.region_id = t.region_id
+         WHERE t.locked_at IS NOT NULL
+         ORDER BY t.locked_at DESC'
     );
 }
 
@@ -15530,6 +15550,7 @@ function db_theater_fleet_composition(string $theaterId): array
     return db_select(
         "SELECT bp.ship_type_id,
                 COALESCE(rit.type_name, CONCAT('Type #', bp.ship_type_id)) AS ship_name,
+                COALESCE(rig.group_name, '') AS ship_group,
                 COUNT(*) AS pilot_count,
                 CASE
                     WHEN tas.side IS NOT NULL THEN tas.side
@@ -15538,13 +15559,14 @@ function db_theater_fleet_composition(string $theaterId): array
          FROM battle_participants bp
          INNER JOIN theater_battles tb ON tb.battle_id = bp.battle_id
          LEFT JOIN ref_item_types rit ON rit.type_id = bp.ship_type_id
+         LEFT JOIN ref_item_groups rig ON rig.group_id = rit.group_id
          LEFT JOIN theater_alliance_summary tas
               ON tas.theater_id = tb.theater_id
               AND tas.alliance_id = bp.alliance_id
          WHERE tb.theater_id = ?
            AND bp.ship_type_id IS NOT NULL
            AND bp.ship_type_id > 0
-         GROUP BY bp.ship_type_id, rit.type_name, side
+         GROUP BY bp.ship_type_id, rit.type_name, rig.group_name, side
          ORDER BY pilot_count DESC",
         [$theaterId]
     );
@@ -15561,7 +15583,9 @@ function db_theater_notable_kills(string $theaterId, int $limit = 10): array
                 ke.effective_killmail_at AS kill_time,
                 COALESCE(emc_v.entity_name, CONCAT("Character #", ke.victim_character_id)) AS victim_name,
                 COALESCE(rit.type_name, CONCAT("Type #", ke.victim_ship_type_id)) AS ship_name,
-                COALESCE(emc_a.entity_name, CONCAT("Alliance #", ke.victim_alliance_id)) AS victim_alliance_name
+                COALESCE(rig.group_name, "") AS ship_group,
+                COALESCE(emc_a.entity_name, CONCAT("Alliance #", ke.victim_alliance_id)) AS victim_alliance_name,
+                COALESCE(tas.side, "") AS victim_side
          FROM killmail_events ke
          INNER JOIN theater_battles tb ON tb.battle_id = ke.battle_id
          LEFT JOIN entity_metadata_cache emc_v
@@ -15569,6 +15593,10 @@ function db_theater_notable_kills(string $theaterId, int $limit = 10): array
          LEFT JOIN entity_metadata_cache emc_a
               ON emc_a.entity_type = "alliance" AND emc_a.entity_id = ke.victim_alliance_id
          LEFT JOIN ref_item_types rit ON rit.type_id = ke.victim_ship_type_id
+         LEFT JOIN ref_item_groups rig ON rig.group_id = rit.group_id
+         LEFT JOIN theater_alliance_summary tas
+              ON tas.theater_id = tb.theater_id
+              AND tas.alliance_id = ke.victim_alliance_id
          WHERE tb.theater_id = ?
            AND ke.zkb_total_value IS NOT NULL
          ORDER BY ke.zkb_total_value DESC
@@ -15588,12 +15616,16 @@ function db_theater_top_performers(string $theaterId, int $limit = 10): array
                 tp.damage_done,
                 tp.role_proxy,
                 tp.battles_present,
-                COALESCE(emc_a.entity_name, CONCAT("Alliance #", tp.alliance_id)) AS alliance_name
+                COALESCE(emc_a.entity_name, CONCAT("Alliance #", tp.alliance_id)) AS alliance_name,
+                COALESCE(rit.type_name, "") AS ship_name,
+                COALESCE(rig.group_name, "") AS ship_group
          FROM theater_participants tp
          LEFT JOIN entity_metadata_cache emc
               ON emc.entity_type = "character" AND emc.entity_id = tp.character_id
          LEFT JOIN entity_metadata_cache emc_a
               ON emc_a.entity_type = "alliance" AND emc_a.entity_id = tp.alliance_id
+         LEFT JOIN ref_item_types rit ON rit.type_id = tp.flying_ship_type_id
+         LEFT JOIN ref_item_groups rig ON rig.group_id = rit.group_id
          WHERE tp.theater_id = ?
          ORDER BY tp.damage_done DESC
          LIMIT ' . max(1, min(50, $limit)),

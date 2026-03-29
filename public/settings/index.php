@@ -65,6 +65,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $saved = save_settings(ai_briefing_settings_from_request($_POST));
             break;
 
+        case 'ai-report-management':
+            $unlockTheaterId = trim((string) ($_POST['unlock_theater_id'] ?? ''));
+            if ($unlockTheaterId !== '') {
+                $unlockResult = theater_unlock_report($unlockTheaterId);
+                $saved = (bool) ($unlockResult['ok'] ?? false);
+                $saveMessage = $saved
+                    ? 'Theater report unlocked and AI briefing cleared.'
+                    : ('Unlock failed: ' . (string) ($unlockResult['error'] ?? 'Unknown error'));
+            }
+            break;
+
         case 'automation-control':
             $automationAction = trim((string) ($_POST['automation_action'] ?? 'save-flags'));
             if ($automationAction === 'enable-all-jobs') {
@@ -568,6 +579,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                 ['href' => '/settings?section=deal-alerts', 'title' => 'Deal alerts', 'copy' => 'Tune how aggressively SupplyCore flags profitable market anomalies.'],
                 ['href' => '/settings?section=killmail-intelligence', 'title' => 'Doctrine + killmail inputs', 'copy' => 'Tracked alliances, corporations, and demand signals that feed readiness and replenishment views.'],
                 ['href' => '/settings?section=ai-briefings', 'title' => 'AI briefings', 'copy' => 'Choose whether background AI summaries run and which provider they use.'],
+                ['href' => '/settings?section=ai-report-management', 'title' => 'AI report management', 'copy' => 'Unlock locked theater reports and clear AI briefings so they can be regenerated.'],
                 ['href' => '/settings?section=data-sync', 'title' => 'Sync behavior', 'copy' => 'Control update cadence, freshness expectations, and manual run controls.'],
                 ['href' => '/settings?section=backup-restore', 'title' => 'Backup & restore', 'copy' => 'Export settings snapshots and perform safe dry-run restores before applying changes.'],
                 ['href' => '/settings?section=automation-control', 'title' => 'Automation control', 'copy' => 'Centralized toggles for ESI, zKill ingestion, pipelines, and recurring job enablement.'],
@@ -1062,6 +1074,96 @@ include __DIR__ . '/../../src/views/partials/header.php';
                 }
                 </script>
             </form>
+        <?php elseif ($section === 'ai-report-management'): ?>
+            <?php $lockedTheaters = db_theaters_locked(); ?>
+            <div class="mt-6 space-y-6">
+                <div class="rounded-2xl border border-white/8 bg-white/[0.03] px-4 py-3 text-sm text-muted">
+                    Locked theater reports have their AI briefing frozen. Unlocking a report clears the AI-generated briefing and allows you to regenerate it with the <span class="font-medium text-slate-100">Lock &amp; Generate AI Report</span> button on the theater view page.
+                </div>
+
+                <?php if ($lockedTheaters === []): ?>
+                    <div class="rounded-2xl border border-white/8 bg-white/[0.03] p-6 text-center text-sm text-muted">
+                        No locked theater reports found.
+                    </div>
+                <?php else: ?>
+                    <div class="overflow-x-auto rounded-2xl border border-white/8">
+                        <table class="w-full text-sm">
+                            <thead>
+                                <tr class="border-b border-white/8 bg-white/[0.03] text-left text-xs uppercase tracking-[0.16em] text-muted">
+                                    <th class="px-4 py-3">Theater</th>
+                                    <th class="px-4 py-3">Date</th>
+                                    <th class="px-4 py-3">Kills</th>
+                                    <th class="px-4 py-3">Pilots</th>
+                                    <th class="px-4 py-3">AI Verdict</th>
+                                    <th class="px-4 py-3">AI Model</th>
+                                    <th class="px-4 py-3">Locked At</th>
+                                    <th class="px-4 py-3"></th>
+                                </tr>
+                            </thead>
+                            <tbody class="divide-y divide-white/5">
+                                <?php foreach ($lockedTheaters as $lt): ?>
+                                    <?php
+                                        $ltSystem = (string) ($lt['primary_system_name'] ?? 'Unknown');
+                                        $ltRegion = (string) ($lt['region_name'] ?? '');
+                                        $ltVerdict = (string) ($lt['ai_verdict'] ?? '');
+                                        $ltHeadline = (string) ($lt['ai_headline'] ?? '');
+                                        $ltModel = (string) ($lt['ai_summary_model'] ?? '');
+                                        $ltLockedAt = (string) ($lt['locked_at'] ?? '');
+                                        $ltStartTime = (string) ($lt['start_time'] ?? '');
+                                        $ltTheaterId = (string) ($lt['theater_id'] ?? '');
+                                        $ltHasAi = $ltHeadline !== '' || $ltVerdict !== '';
+                                    ?>
+                                    <tr class="hover:bg-white/[0.02]">
+                                        <td class="px-4 py-3">
+                                            <a href="/theater-intelligence/view.php?theater_id=<?= htmlspecialchars(urlencode($ltTheaterId), ENT_QUOTES) ?>" class="font-medium text-slate-100 hover:text-white">
+                                                <?= htmlspecialchars($ltSystem, ENT_QUOTES) ?>
+                                            </a>
+                                            <?php if ($ltRegion !== ''): ?>
+                                                <span class="text-muted">(<?= htmlspecialchars($ltRegion, ENT_QUOTES) ?>)</span>
+                                            <?php endif; ?>
+                                            <?php if ($ltHeadline !== ''): ?>
+                                                <p class="mt-0.5 text-xs text-muted truncate max-w-xs" title="<?= htmlspecialchars($ltHeadline, ENT_QUOTES) ?>"><?= htmlspecialchars($ltHeadline, ENT_QUOTES) ?></p>
+                                            <?php endif; ?>
+                                        </td>
+                                        <td class="px-4 py-3 text-muted whitespace-nowrap"><?= htmlspecialchars(substr($ltStartTime, 0, 10), ENT_QUOTES) ?></td>
+                                        <td class="px-4 py-3 text-muted"><?= (int) ($lt['total_kills'] ?? 0) ?></td>
+                                        <td class="px-4 py-3 text-muted"><?= (int) ($lt['participant_count'] ?? 0) ?></td>
+                                        <td class="px-4 py-3">
+                                            <?php if ($ltVerdict !== ''): ?>
+                                                <span class="inline-flex rounded-full px-2 py-0.5 text-[10px] uppercase tracking-wider
+                                                    <?= match($ltVerdict) {
+                                                        'decisive_victory' => 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30',
+                                                        'victory' => 'bg-green-500/20 text-green-300 border border-green-500/30',
+                                                        'close_fight' => 'bg-amber-500/20 text-amber-300 border border-amber-500/30',
+                                                        'defeat' => 'bg-red-500/20 text-red-300 border border-red-500/30',
+                                                        'decisive_defeat' => 'bg-red-600/20 text-red-200 border border-red-600/30',
+                                                        'stalemate' => 'bg-slate-500/20 text-slate-300 border border-slate-500/30',
+                                                        default => 'bg-white/10 text-muted border border-white/10',
+                                                    } ?>"><?= htmlspecialchars(theater_ai_verdict_label($ltVerdict), ENT_QUOTES) ?></span>
+                                            <?php else: ?>
+                                                <span class="text-xs text-muted">No AI</span>
+                                            <?php endif; ?>
+                                        </td>
+                                        <td class="px-4 py-3 text-xs text-muted"><?= $ltModel !== '' ? htmlspecialchars($ltModel, ENT_QUOTES) : '—' ?></td>
+                                        <td class="px-4 py-3 text-xs text-muted whitespace-nowrap"><?= htmlspecialchars($ltLockedAt, ENT_QUOTES) ?></td>
+                                        <td class="px-4 py-3 text-right">
+                                            <form method="POST" class="inline" onsubmit="return confirm('Unlock this theater report and clear its AI briefing? You can regenerate it from the theater view page.');">
+                                                <input type="hidden" name="_token" value="<?= htmlspecialchars(csrf_token(), ENT_QUOTES) ?>">
+                                                <input type="hidden" name="section" value="ai-report-management">
+                                                <input type="hidden" name="unlock_theater_id" value="<?= htmlspecialchars($ltTheaterId, ENT_QUOTES) ?>">
+                                                <button type="submit" class="inline-flex items-center gap-1.5 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-1.5 text-xs font-medium text-amber-200 transition hover:bg-amber-500/20">
+                                                    <svg class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M8 11V7a4 4 0 118 0m-4 8v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2z" /></svg>
+                                                    Unlock &amp; Clear AI
+                                                </button>
+                                            </form>
+                                        </td>
+                                    </tr>
+                                <?php endforeach; ?>
+                            </tbody>
+                        </table>
+                    </div>
+                <?php endif; ?>
+            </div>
         <?php elseif ($section === 'item-scope'): ?>
             <?php
                 $itemScopeConfig = $itemScope['config'] ?? item_scope_default_config();

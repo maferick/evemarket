@@ -19,21 +19,35 @@ if ($theater === null) {
     exit;
 }
 
-// ── Load all theater data ──────────────────────────────────────────────
-$battles = db_theater_battles($theaterId);
-$systems = db_theater_systems($theaterId);
-$timeline = db_theater_timeline($theaterId);
-$allianceSummary = db_theater_alliance_summary($theaterId);
-$fleetComposition = db_theater_fleet_composition($theaterId);
-$suspicion = db_theater_suspicion_summary($theaterId);
-$graphSummary = db_theater_graph_summary($theaterId);
-$turningPoints = db_theater_turning_points($theaterId);
+// ── Load all theater data (from snapshot if locked, otherwise live) ────
+$snapshot = theater_snapshot_load($theaterId, $theater);
+if ($snapshot !== null) {
+    $battles = (array) ($snapshot['battles'] ?? []);
+    $systems = (array) ($snapshot['systems'] ?? []);
+    $timeline = (array) ($snapshot['timeline'] ?? []);
+    $allianceSummary = (array) ($snapshot['alliance_summary'] ?? []);
+    $fleetComposition = (array) ($snapshot['fleet_composition'] ?? []);
+    $suspicion = $snapshot['suspicion'] ?? null;
+    $graphSummary = $snapshot['graph_summary'] ?? null;
+    $turningPoints = (array) ($snapshot['turning_points'] ?? []);
+    $participantsAll = (array) ($snapshot['participants'] ?? []);
+    $graphParticipants = (array) ($snapshot['graph_participants'] ?? []);
+} else {
+    $battles = db_theater_battles($theaterId);
+    $systems = db_theater_systems($theaterId);
+    $timeline = db_theater_timeline($theaterId);
+    $allianceSummary = db_theater_alliance_summary($theaterId);
+    $fleetComposition = db_theater_fleet_composition($theaterId);
+    $suspicion = db_theater_suspicion_summary($theaterId);
+    $graphSummary = db_theater_graph_summary($theaterId);
+    $turningPoints = db_theater_turning_points($theaterId);
+    $participantsAll = db_theater_participants($theaterId, null, false, 1000);
+    $graphParticipants = db_theater_graph_participants($theaterId);
+}
 
 $sideFilter = isset($_GET['side']) ? (string) $_GET['side'] : null;
 $suspiciousOnly = isset($_GET['suspicious']) && $_GET['suspicious'] === '1';
-$participantsAll = db_theater_participants($theaterId, null, false, 1000);
 $participants = $participantsAll;
-$graphParticipants = db_theater_graph_participants($theaterId);
 
 // ── Batch-resolve entity names via ESI (cache + network fallback) ──
 $entityRequests = [
