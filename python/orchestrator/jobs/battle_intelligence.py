@@ -126,6 +126,21 @@ def _sync_state_cursor_get(db: SupplyCoreDb, dataset_key: str) -> int:
         return 0
 
 
+def _validate_killmail_cursor(db: SupplyCoreDb, cursor: int) -> int:
+    """Reset cursor to 0 if it is ahead of the actual max sequence_id.
+
+    This handles external sequence resets (e.g. zKill renumbering) that would
+    otherwise strand the cursor above all new data forever.
+    """
+    if cursor <= 0:
+        return cursor
+    row = db.fetch_one("SELECT MAX(sequence_id) AS max_seq FROM killmail_events")
+    max_seq = int(row.get("max_seq") or 0) if row else 0
+    if max_seq > 0 and cursor > max_seq:
+        return 0
+    return cursor
+
+
 def _sync_state_cursor_upsert(
     db: SupplyCoreDb,
     dataset_key: str,
@@ -236,6 +251,7 @@ def run_compute_battle_rollups(db: SupplyCoreDb, runtime: dict[str, Any] | None 
     rows_written = 0
     computed_at = _now_sql()
     cursor_start = _sync_state_cursor_get(db, SYNC_STATE_KEY_BATTLE_ROLLUPS_CURSOR)
+    cursor_start = _validate_killmail_cursor(db, cursor_start)
     cursor_end = cursor_start
     batch_count = 0
     _sync_state_cursor_upsert(db, SYNC_STATE_KEY_BATTLE_ROLLUPS_CURSOR, status="running", last_cursor=cursor_start, last_row_count=0)
@@ -553,6 +569,7 @@ def run_compute_battle_target_metrics(db: SupplyCoreDb, runtime: dict[str, Any] 
     computed_at = _now_sql()
     unscored_targets = 0
     cursor_start = _sync_state_cursor_get(db, SYNC_STATE_KEY_BATTLE_TARGET_CURSOR)
+    cursor_start = _validate_killmail_cursor(db, cursor_start)
     cursor_end = cursor_start
     batch_count = 0
     _sync_state_cursor_upsert(db, SYNC_STATE_KEY_BATTLE_TARGET_CURSOR, status="running", last_cursor=cursor_start, last_row_count=0)
