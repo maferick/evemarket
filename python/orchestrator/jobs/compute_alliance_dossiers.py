@@ -250,24 +250,28 @@ def _load_behavior_metrics(db: SupplyCoreDb, alliance_id: int) -> dict[str, Any]
 
 
 def _query_co_presence_sql(db: SupplyCoreDb, alliance_id: int) -> list[dict]:
-    """SQL fallback: find alliances appearing on the same side in the same battles.
+    """SQL fallback: find alliances fighting on the same side via killmail co-attacker data.
 
-    Semantics are aligned with the Neo4j co-presence query: same-side
-    co-occurrence in battle_participants, grouped by alliance.
+    Two alliances are co-present (same side) when their members appear as
+    co-attackers on the same killmails.  This is more reliable than comparing
+    ``side_key`` which is set per-alliance and therefore cannot express
+    multi-alliance sides.
     """
     rows = db.fetch_all(
         """
-        SELECT bp2.alliance_id AS co_alliance_id,
-               COUNT(DISTINCT bp1.battle_id) AS shared_battles,
-               COUNT(DISTINCT bp2.character_id) AS shared_pilots
-        FROM battle_participants bp1
-        INNER JOIN battle_participants bp2
-             ON bp2.battle_id = bp1.battle_id
-            AND bp2.side_key = bp1.side_key
-            AND bp2.alliance_id <> bp1.alliance_id
-        WHERE bp1.alliance_id = %s
-          AND bp2.alliance_id IS NOT NULL AND bp2.alliance_id > 0
-        GROUP BY bp2.alliance_id
+        SELECT ka2.alliance_id AS co_alliance_id,
+               COUNT(DISTINCT ke.battle_id) AS shared_battles,
+               COUNT(DISTINCT ka2.character_id) AS shared_pilots
+        FROM killmail_attackers ka1
+        INNER JOIN killmail_attackers ka2
+             ON ka2.sequence_id = ka1.sequence_id
+            AND ka2.alliance_id <> ka1.alliance_id
+        INNER JOIN killmail_events ke
+             ON ke.sequence_id = ka1.sequence_id
+            AND ke.battle_id IS NOT NULL
+        WHERE ka1.alliance_id = %s
+          AND ka2.alliance_id IS NOT NULL AND ka2.alliance_id > 0
+        GROUP BY ka2.alliance_id
         HAVING shared_battles >= 2
         ORDER BY shared_battles DESC
         LIMIT 15
@@ -279,28 +283,39 @@ def _query_co_presence_sql(db: SupplyCoreDb, alliance_id: int) -> list[dict]:
 
 
 def _query_enemies_sql(db: SupplyCoreDb, alliance_id: int) -> list[dict]:
-    """SQL fallback: find alliances on opposing sides in the same battles.
+    """SQL fallback: find alliances on opposing sides via killmail attacker/victim data.
 
-    Semantics are aligned with the Neo4j enemy query: opposite-side
-    engagement in battle_participants, grouped by alliance.
+    An alliance is an enemy when our members attack their members (they are
+    victims) or their members attack ours.  This uses the natural
+    attacker-vs-victim relationship from killmails rather than ``side_key``
+    which is set per-alliance and cannot distinguish friend from foe.
     """
     rows = db.fetch_all(
         """
-        SELECT bp2.alliance_id AS enemy_id,
-               COUNT(DISTINCT bp1.battle_id) AS engagements
-        FROM battle_participants bp1
-        INNER JOIN battle_participants bp2
-             ON bp2.battle_id = bp1.battle_id
-            AND bp2.side_key <> bp1.side_key
-            AND bp2.alliance_id <> bp1.alliance_id
-        WHERE bp1.alliance_id = %s
-          AND bp2.alliance_id IS NOT NULL AND bp2.alliance_id > 0
-        GROUP BY bp2.alliance_id
+        SELECT enemy_id, COUNT(DISTINCT battle_id) AS engagements
+        FROM (
+            SELECT ke.victim_alliance_id AS enemy_id, ke.battle_id
+            FROM killmail_attackers ka
+            INNER JOIN killmail_events ke ON ke.sequence_id = ka.sequence_id
+            WHERE ka.alliance_id = %s
+              AND ke.victim_alliance_id IS NOT NULL AND ke.victim_alliance_id > 0
+              AND ke.victim_alliance_id <> %s
+              AND ke.battle_id IS NOT NULL
+            UNION
+            SELECT ka.alliance_id AS enemy_id, ke.battle_id
+            FROM killmail_events ke
+            INNER JOIN killmail_attackers ka ON ka.sequence_id = ke.sequence_id
+            WHERE ke.victim_alliance_id = %s
+              AND ka.alliance_id IS NOT NULL AND ka.alliance_id > 0
+              AND ka.alliance_id <> %s
+              AND ke.battle_id IS NOT NULL
+        ) AS combined
+        GROUP BY enemy_id
         HAVING engagements >= 2
         ORDER BY engagements DESC
         LIMIT 15
         """,
-        (alliance_id,),
+        (alliance_id, alliance_id, alliance_id, alliance_id),
     )
     return [{"alliance_id": int(r["enemy_id"]), "engagements": int(r["engagements"]),
              "source": "sql"} for r in rows]
@@ -309,54 +324,25 @@ def _query_enemies_sql(db: SupplyCoreDb, alliance_id: int) -> list[dict]:
 def _query_co_presence_neo4j(neo4j_client: Any, alliance_id: int) -> list[dict]:
     """Query Neo4j for alliances whose members fight on the same side.
 
-    Primary path: ON_SIDE → BattleSide — ensures same-side co-presence
-    (not just same-battle, which would conflate allies with enemies).
-
-    Fallback path: ENGAGED_ALLIANCE — alliances whose characters engage
-    the same target alliances (coalition alignment signal).
+    Uses killmail co-attacker relationships: two alliances are co-present
+    when their members appear as co-attackers (both ``ATTACKED_ON``) on the
+    same ``Killmail`` node.  The ``battle_id`` property on the Killmail is
+    used to count distinct shared battles.
 
     Returns canonical contract: ``{alliance_id, shared_battles, shared_pilots, source}``.
     """
     if neo4j_client is None:
         return []
     try:
-        # Primary: ON_SIDE path — same BattleSide = same side in battle
-        # This is semantically equivalent to the SQL fallback (same side_key)
         rows = neo4j_client.query(
             """
             MATCH (a:Alliance {alliance_id: $aid})<-[:MEMBER_OF_ALLIANCE]-(c:Character)
-                  -[:ON_SIDE]->(side:BattleSide)<-[:ON_SIDE]-(c2:Character)
+                  -[:ATTACKED_ON]->(k:Killmail)<-[:ATTACKED_ON]-(c2:Character)
                   -[:MEMBER_OF_ALLIANCE]->(a2:Alliance)
             WHERE a2.alliance_id <> $aid
+              AND k.battle_id IS NOT NULL AND k.battle_id <> ''
             WITH a2.alliance_id AS co_alliance_id,
-                 COUNT(DISTINCT side) AS shared_battles,
-                 COUNT(DISTINCT c2) AS shared_pilots
-            WHERE shared_battles >= 2
-            RETURN co_alliance_id, shared_battles, shared_pilots
-            ORDER BY shared_battles DESC
-            LIMIT 15
-            """,
-            {"aid": alliance_id},
-        )
-        if rows:
-            return [{"alliance_id": int(r["co_alliance_id"]),
-                     "shared_battles": int(r["shared_battles"]),
-                     "shared_pilots": int(r["shared_pilots"]),
-                     "source": "neo4j"} for r in rows]
-
-        # Fallback: ENGAGED_ALLIANCE path (intelligence_pipeline)
-        # Alliances whose characters engage the same target alliances
-        rows = neo4j_client.query(
-            """
-            MATCH (a:Alliance {alliance_id: $aid})<-[:MEMBER_OF_ALLIANCE]-(c:Character)
-                  -[:ENGAGED_ALLIANCE]->(target:Alliance)
-            WITH target, collect(DISTINCT c) AS our_chars
-            MATCH (c2:Character)-[:ENGAGED_ALLIANCE]->(target)
-            WHERE NOT c2 IN our_chars
-            MATCH (c2)-[:MEMBER_OF_ALLIANCE]->(a2:Alliance)
-            WHERE a2.alliance_id <> $aid
-            WITH a2.alliance_id AS co_alliance_id,
-                 COUNT(DISTINCT target) AS shared_battles,
+                 COUNT(DISTINCT k.battle_id) AS shared_battles,
                  COUNT(DISTINCT c2) AS shared_pilots
             WHERE shared_battles >= 2
             RETURN co_alliance_id, shared_battles, shared_pilots
@@ -376,46 +362,34 @@ def _query_co_presence_neo4j(neo4j_client: Any, alliance_id: int) -> list[dict]:
 def _query_enemies_neo4j(neo4j_client: Any, alliance_id: int) -> list[dict]:
     """Query Neo4j for alliances most often on the opposing side.
 
-    Primary: ENGAGED_ALLIANCE (intelligence_pipeline) — direct engagement
-    relationships with encounter counts.
-
-    Fallback: ON_SIDE/HAS_SIDE path (battle_intelligence sync) — opposite
-    side representation, semantically equivalent to the SQL fallback.
+    Uses killmail attacker/victim relationships.  An alliance is an enemy
+    when our members attack their members (they are victims on a ``Killmail``
+    we ``ATTACKED_ON``) or vice-versa.  Both directions are combined via
+    ``CALL {} UNION ALL`` and de-duplicated by ``battle_id``.
 
     Returns canonical contract: ``{alliance_id, engagements, source}``.
     """
     if neo4j_client is None:
         return []
     try:
-        # Primary: ENGAGED_ALLIANCE — direct engagement relationships
         rows = neo4j_client.query(
             """
-            MATCH (a:Alliance {alliance_id: $aid})<-[:MEMBER_OF_ALLIANCE]-(c:Character)
-                  -[e:ENGAGED_ALLIANCE]->(enemy:Alliance)
-            WHERE enemy.alliance_id <> $aid
-            WITH enemy.alliance_id AS enemy_id,
-                 SUM(e.encounters) AS total_encounters,
-                 COUNT(DISTINCT c) AS engaging_pilots
-            WHERE total_encounters >= 2
-            RETURN enemy_id, total_encounters AS engagements
-            ORDER BY engagements DESC
-            LIMIT 15
-            """,
-            {"aid": alliance_id},
-        )
-        if rows:
-            return [{"alliance_id": int(r["enemy_id"]), "engagements": int(r["engagements"]),
-                     "source": "neo4j"} for r in rows]
-
-        # Fallback: ON_SIDE/HAS_SIDE path — opposite side in battle
-        rows = neo4j_client.query(
-            """
-            MATCH (a:Alliance {alliance_id: $aid})<-[:MEMBER_OF_ALLIANCE]-(c:Character)
-                  -[:ON_SIDE]->(my_side:BattleSide)<-[:HAS_SIDE]-(b:Battle)
-                  -[:HAS_SIDE]->(opp_side:BattleSide)-[:REPRESENTED_BY_ALLIANCE]->(enemy:Alliance)
-            WHERE my_side.side_key <> opp_side.side_key
-              AND enemy.alliance_id <> $aid
-            WITH enemy.alliance_id AS enemy_id, COUNT(DISTINCT b) AS engagements
+            CALL {
+                MATCH (a:Alliance {alliance_id: $aid})<-[:MEMBER_OF_ALLIANCE]-(c:Character)
+                      -[:ATTACKED_ON]->(k:Killmail)<-[:VICTIM_OF]-(v:Character)
+                      -[:MEMBER_OF_ALLIANCE]->(e:Alliance)
+                WHERE e.alliance_id <> $aid
+                  AND k.battle_id IS NOT NULL AND k.battle_id <> ''
+                RETURN e.alliance_id AS enemy_id, k.battle_id AS bid
+                UNION ALL
+                MATCH (a:Alliance {alliance_id: $aid})<-[:MEMBER_OF_ALLIANCE]-(c:Character)
+                      -[:VICTIM_OF]->(k:Killmail)<-[:ATTACKED_ON]-(att:Character)
+                      -[:MEMBER_OF_ALLIANCE]->(e:Alliance)
+                WHERE e.alliance_id <> $aid
+                  AND k.battle_id IS NOT NULL AND k.battle_id <> ''
+                RETURN e.alliance_id AS enemy_id, k.battle_id AS bid
+            }
+            WITH enemy_id, COUNT(DISTINCT bid) AS engagements
             WHERE engagements >= 2
             RETURN enemy_id, engagements
             ORDER BY engagements DESC
