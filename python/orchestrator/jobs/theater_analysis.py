@@ -485,6 +485,13 @@ def _compute_participants(
     char_stats: dict[int, dict[str, Any]] = {}
     char_battles: dict[int, set[str]] = defaultdict(set)
     char_times: dict[int, list[datetime]] = defaultdict(list)
+    # Track ship type frequency per character for role + flying ship resolution
+    char_ship_counts: dict[int, dict[int, int]] = defaultdict(lambda: defaultdict(int))
+
+    # Group IDs that are non-combat (pods, shuttles, industrials, etc.)
+    _NON_COMBAT_GROUP_IDS: frozenset[int] = frozenset(
+        gid for gid, role in FLEET_FUNCTION_BY_GROUP.items() if role == "non_combat"
+    )
 
     # Initialize from battle participants
     for p in bp_rows:
@@ -497,23 +504,6 @@ def _compute_participants(
         if cid not in char_stats:
             aid = int(p.get("alliance_id") or 0)
             corp_id = int(p.get("corporation_id") or 0)
-            ship_type_id = int(p.get("ship_type_id") or 0)
-
-            # Resolve fleet function from ship group
-            if ship_group_map is not None:
-                role_proxy = _resolve_fleet_function(ship_type_id, ship_group_map)
-            else:
-                # Fallback to legacy boolean flags
-                is_logi = int(p.get("is_logi") or 0)
-                is_command = int(p.get("is_command") or 0)
-                is_capital = int(p.get("is_capital") or 0)
-                role_proxy = "mainline_dps"
-                if is_logi:
-                    role_proxy = "logistics"
-                elif is_command:
-                    role_proxy = "command"
-                elif is_capital:
-                    role_proxy = "capital_dps"
 
             char_stats[cid] = {
                 "character_id": cid,
@@ -528,13 +518,17 @@ def _compute_participants(
                 "damage_done": 0.0,
                 "damage_taken": 0.0,
                 "isk_lost": 0.0,
-                "role_proxy": role_proxy,
+                "role_proxy": "mainline_dps",  # placeholder, resolved after all data
+                "flying_ship_type_id": None,
             }
 
         # Track ship types
         st = int(p.get("ship_type_id") or 0)
         if st > 0 and st not in char_stats[cid]["ship_type_ids"]:
             char_stats[cid]["ship_type_ids"].append(st)
+        # Count ship type frequency from battle participation
+        if st > 0:
+            char_ship_counts[cid][st] += 1
 
     # Pre-compute total HP damage taken per killmail (sum of all attacker damage)
     km_total_hp_damage: dict[int, float] = defaultdict(float)
@@ -583,7 +577,40 @@ def _compute_participants(
                 seen_attacker_kills.add(atk_key)
                 char_stats[attacker_id]["kills"] += 1
                 char_times[attacker_id].append(km_time)
+                # Count attacker ship type for flying ship resolution
+                atk_ship = int(km.get("attacker_ship_type_id") or 0)
+                if atk_ship > 0:
+                    char_ship_counts[attacker_id][atk_ship] += 1
             char_stats[attacker_id]["damage_done"] += attacker_damage
+
+    # ── Resolve flying ship + role from most-common non-pod ship ──────────
+    for cid, stats in char_stats.items():
+        counts = char_ship_counts.get(cid, {})
+        if not counts:
+            continue
+
+        # Find the most common ship that isn't non-combat (pods, shuttles, etc.)
+        best_ship = 0
+        best_count = 0
+        fallback_ship = 0
+        fallback_count = 0
+        for stid, cnt in counts.items():
+            group_id = (ship_group_map or {}).get(stid, 0)
+            if group_id in _NON_COMBAT_GROUP_IDS:
+                # Track as fallback in case ALL ships are non-combat
+                if cnt > fallback_count:
+                    fallback_ship = stid
+                    fallback_count = cnt
+            else:
+                if cnt > best_count:
+                    best_ship = stid
+                    best_count = cnt
+
+        flying_ship = best_ship if best_ship > 0 else fallback_ship
+        if flying_ship > 0:
+            stats["flying_ship_type_id"] = flying_ship
+            if ship_group_map is not None:
+                stats["role_proxy"] = _resolve_fleet_function(flying_ship, ship_group_map)
 
     # Build final rows
     result: list[dict[str, Any]] = []
@@ -609,6 +636,7 @@ def _compute_participants(
             "side": stats["side"],
             "ship_type_ids": ship_json,
             "ships_lost_detail": ships_lost_json,
+            "flying_ship_type_id": stats.get("flying_ship_type_id"),
             "kills": stats["kills"],
             "deaths": stats["deaths"],
             "damage_done": stats["damage_done"],
@@ -872,17 +900,19 @@ def _flush_analysis(
                 """
                 INSERT INTO theater_participants (
                     theater_id, character_id, character_name, alliance_id,
-                    corporation_id, side, ship_type_ids, ships_lost_detail, kills, deaths,
+                    corporation_id, side, ship_type_ids, ships_lost_detail,
+                    flying_ship_type_id, kills, deaths,
                     damage_done, damage_taken, isk_lost, role_proxy,
                     entry_time, exit_time, battles_present,
                     suspicion_score, is_suspicious
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 [
                     (
                         p["theater_id"], p["character_id"], p["character_name"],
                         p["alliance_id"], p["corporation_id"], p["side"],
-                        p["ship_type_ids"], p["ships_lost_detail"], p["kills"], p["deaths"],
+                        p["ship_type_ids"], p["ships_lost_detail"],
+                        p.get("flying_ship_type_id"), p["kills"], p["deaths"],
                         p["damage_done"], p["damage_taken"], p["isk_lost"], p["role_proxy"],
                         p["entry_time"], p["exit_time"], p["battles_present"],
                         p["suspicion_score"], p["is_suspicious"],

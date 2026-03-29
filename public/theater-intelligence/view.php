@@ -286,6 +286,9 @@ foreach ($participantsAll as $p) {
             foreach ($ids as $stid) $allShipTypeIds[(int) $stid] = true;
         }
     }
+    // Collect flying_ship_type_id for name resolution
+    $flyingShip = (int) ($p['flying_ship_type_id'] ?? 0);
+    if ($flyingShip > 0) $allShipTypeIds[$flyingShip] = true;
     // Also collect type IDs from ships_lost_detail for name resolution
     $lostJson = $p['ships_lost_detail'] ?? null;
     if (is_string($lostJson)) {
