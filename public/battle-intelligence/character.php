@@ -19,6 +19,48 @@ $communityInfo = db_graph_community_assignments($characterId);
 $evidencePaths = db_character_evidence_paths($characterId);
 $analystFeedback = db_analyst_feedback_for_character($characterId);
 
+// Resolve corporation names for org history timeline
+$orgCorpNames = [];
+if ($orgHistory !== []) {
+    $historyRecords = (array) ($orgHistory['history'] ?? []);
+    $corpIds = array_filter(array_unique(array_map(static fn(array $r): int => (int) ($r['corporation_id'] ?? 0), $historyRecords)), static fn(int $id): bool => $id > 0);
+    if ($corpIds !== []) {
+        $corpRows = db_entity_metadata_cache_get_many('corporation', $corpIds);
+        foreach ($corpRows as $cr) {
+            $orgCorpNames[(int) $cr['entity_id']] = (string) $cr['entity_name'];
+        }
+    }
+}
+
+// Resolve community members for display
+$communityMembers = [];
+if (is_array($communityInfo) && ((int) ($communityInfo['community_id'] ?? 0)) !== 0) {
+    $communityMembers = db_graph_community_top_members((int) $communityInfo['community_id'], 10);
+}
+
+// Resolve character names for evidence paths
+$pathNodeNames = [];
+if ($evidencePaths !== []) {
+    $pathCharIds = [];
+    foreach ($evidencePaths as $ep) {
+        $nodes = json_decode((string) ($ep['path_nodes_json'] ?? '[]'), true);
+        if (is_array($nodes)) {
+            foreach ($nodes as $node) {
+                if (($node['type'] ?? '') === 'Character' && is_numeric($node['id'] ?? null)) {
+                    $pathCharIds[] = (int) $node['id'];
+                }
+            }
+        }
+    }
+    $pathCharIds = array_unique($pathCharIds);
+    if ($pathCharIds !== []) {
+        $charRows = db_entity_metadata_cache_get_many('character', $pathCharIds);
+        foreach ($charRows as $cr) {
+            $pathNodeNames[(int) $cr['entity_id']] = (string) $cr['entity_name'];
+        }
+    }
+}
+
 // Handle feedback submission
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['feedback_label']) && $characterId > 0) {
     $label = (string) $_POST['feedback_label'];
@@ -125,6 +167,83 @@ function ci_progress_bar(float $value, string $barColor = 'bg-cyan-500', float $
     return '<div class="mt-1 h-1.5 w-full rounded-full bg-slate-700/60 overflow-hidden">'
          . '<div class="h-full rounded-full ' . $barColor . '" style="width:' . number_format($pct, 1) . '%"></div>'
          . '</div>';
+}
+
+/** Render an evidence path from structured node data, using resolved names. */
+function ci_render_evidence_path(string $nodesJson, string $edgesJson, array $nameMap): string
+{
+    $nodes = json_decode($nodesJson, true);
+    if (!is_array($nodes) || $nodes === []) {
+        return '<span class="text-muted">No path data</span>';
+    }
+
+    $edges = json_decode($edgesJson, true);
+    if (!is_array($edges)) {
+        $edges = [];
+    }
+
+    $html = '';
+    foreach ($nodes as $i => $node) {
+        $type = (string) ($node['type'] ?? 'Unknown');
+        $id = $node['id'] ?? null;
+        $rawName = (string) ($node['name'] ?? '');
+        $flagged = !empty($node['flagged']);
+
+        // Try resolved name first, fall back to node name, then short ID
+        if ($type === 'Character' && is_numeric($id) && isset($nameMap[(int) $id])) {
+            $displayName = $nameMap[(int) $id];
+        } elseif ($rawName !== '' && !is_numeric($rawName)) {
+            $displayName = $rawName;
+        } elseif (is_numeric($id)) {
+            $displayName = $type . ' #' . $id;
+        } else {
+            $displayName = '?';
+        }
+
+        // Edge label between nodes
+        if ($i > 0 && isset($edges[$i - 1])) {
+            $edgeType = (string) ($edges[$i - 1]['type'] ?? '?');
+            $readableEdge = strtolower(str_replace('_', ' ', $edgeType));
+            $html .= ' <span class="text-muted">&rarr;</span> <span class="text-[11px] text-slate-500 italic">' . htmlspecialchars($readableEdge, ENT_QUOTES) . '</span> <span class="text-muted">&rarr;</span> ';
+        }
+
+        // Node display
+        $nameClass = $flagged ? 'text-red-400 font-semibold' : ($i === 0 ? 'text-cyan-400' : 'text-slate-100');
+        if ($type === 'Character' && is_numeric($id)) {
+            $html .= '<a href="?character_id=' . (int) $id . '" class="' . $nameClass . ' hover:underline">' . htmlspecialchars($displayName, ENT_QUOTES) . '</a>';
+        } else {
+            $html .= '<span class="' . $nameClass . '">' . htmlspecialchars($displayName, ENT_QUOTES) . '</span>';
+        }
+
+        if ($flagged) {
+            $html .= ' <span class="text-[10px] rounded-full bg-red-900/60 text-red-300 px-1.5 py-0.5">flagged</span>';
+        }
+    }
+
+    return $html;
+}
+
+/** Format a date string like "2022/01/05 04:25" into a human-friendly relative duration. */
+function ci_corp_duration(string $startDate, ?string $endDate): string
+{
+    $start = strtotime(str_replace('/', '-', $startDate));
+    $end = $endDate !== null ? strtotime(str_replace('/', '-', $endDate)) : time();
+    if ($start === false || $end === false || $end <= $start) {
+        return '';
+    }
+    $days = (int) round(($end - $start) / 86400);
+    if ($days < 1) {
+        return '< 1 day';
+    }
+    if ($days < 30) {
+        return $days . 'd';
+    }
+    $months = (int) round($days / 30.44);
+    if ($months < 12) {
+        return $months . 'mo';
+    }
+    $years = round($days / 365.25, 1);
+    return rtrim(rtrim(number_format($years, 1), '0'), '.') . 'y';
 }
 
 /** Render a plain-English one-line verdict based on key metrics. */
@@ -260,7 +379,57 @@ include __DIR__ . '/../../src/views/partials/header.php';
             </div>
         </div>
 
-        <details class="mt-4 surface-tertiary"><summary class="cursor-pointer text-sm text-slate-100">Org history cache context</summary><pre class="mt-3 overflow-auto text-xs text-slate-300"><?= htmlspecialchars(json_encode(['source' => (string) ($character['org_history_source'] ?? ''), 'fetched_at' => (string) ($character['org_history_fetched_at'] ?? ''), 'corp_hops_180d' => (int) ($character['corp_hops_180d'] ?? 0), 'short_tenure_hops_180d' => (int) ($character['short_tenure_hops_180d'] ?? 0), 'hostile_adjacent_hops_180d' => (int) ($character['hostile_adjacent_hops_180d'] ?? 0), 'history' => $orgHistory], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) ?: '{}', ENT_QUOTES) ?></pre></details>
+        <!-- Org history timeline -->
+        <?php
+            $historyRecords = array_reverse((array) ($orgHistory['history'] ?? []));
+            $orgInfo = (array) ($orgHistory['info'] ?? []);
+            $currentCorpId = isset($orgInfo[0]) ? (int) ($orgInfo[0]['corporation_id'] ?? 0) : 0;
+        ?>
+        <?php if ($historyRecords !== []): ?>
+        <h2 class="mt-6 text-lg font-semibold text-slate-100">Corporation history</h2>
+        <p class="mt-1 text-xs text-muted">Timeline of corp memberships. Short stays and frequent moves can indicate spy alts.</p>
+        <div class="mt-3 space-y-0">
+            <?php foreach ($historyRecords as $idx => $rec):
+                $corpId = (int) ($rec['corporation_id'] ?? 0);
+                $corpName = $orgCorpNames[$corpId] ?? ('Corp #' . $corpId);
+                $startDate = (string) ($rec['start_date'] ?? '');
+                $endDate = $rec['end_date'] ?? null;
+                $duration = ci_corp_duration($startDate, $endDate);
+                $isCurrent = $endDate === null;
+                $isShort = false;
+                if ($startDate !== '' && $endDate !== null) {
+                    $daysDiff = (int) round((strtotime(str_replace('/', '-', $endDate)) - strtotime(str_replace('/', '-', $startDate))) / 86400);
+                    $isShort = $daysDiff < 30;
+                }
+            ?>
+                <div class="flex items-start gap-3 <?= $idx > 0 ? '' : '' ?>">
+                    <div class="flex flex-col items-center">
+                        <div class="h-3 w-3 rounded-full mt-1 <?= $isCurrent ? 'bg-green-500' : ($isShort ? 'bg-red-500' : 'bg-slate-500') ?>"></div>
+                        <?php if ($idx < count($historyRecords) - 1): ?>
+                            <div class="w-0.5 h-8 bg-slate-700"></div>
+                        <?php endif; ?>
+                    </div>
+                    <div class="pb-3">
+                        <p class="text-sm <?= $isCurrent ? 'text-green-400 font-semibold' : ($isShort ? 'text-red-400' : 'text-slate-100') ?>">
+                            <?= htmlspecialchars($corpName, ENT_QUOTES) ?>
+                            <?php if ($duration !== ''): ?>
+                                <span class="text-xs text-muted ml-1">(<?= $duration ?>)</span>
+                            <?php endif; ?>
+                            <?php if ($isCurrent): ?>
+                                <span class="text-[10px] rounded-full bg-green-900/60 text-green-300 px-1.5 py-0.5 ml-1">current</span>
+                            <?php elseif ($isShort): ?>
+                                <span class="text-[10px] rounded-full bg-red-900/60 text-red-300 px-1.5 py-0.5 ml-1">short stay</span>
+                            <?php endif; ?>
+                        </p>
+                        <p class="text-[11px] text-muted"><?= htmlspecialchars($startDate, ENT_QUOTES) ?><?= $endDate !== null ? ' &mdash; ' . htmlspecialchars($endDate, ENT_QUOTES) : ' &mdash; present' ?></p>
+                    </div>
+                </div>
+            <?php endforeach; ?>
+        </div>
+        <details class="mt-2 surface-tertiary"><summary class="cursor-pointer text-[11px] text-muted">Show raw org data</summary><pre class="mt-2 overflow-auto text-[11px] text-slate-400"><?= htmlspecialchars(json_encode(['source' => (string) ($character['org_history_source'] ?? ''), 'fetched_at' => (string) ($character['org_history_fetched_at'] ?? ''), 'corp_hops_180d' => (int) ($character['corp_hops_180d'] ?? 0), 'short_tenure_hops_180d' => (int) ($character['short_tenure_hops_180d'] ?? 0), 'hostile_adjacent_hops_180d' => (int) ($character['hostile_adjacent_hops_180d'] ?? 0), 'history' => $orgHistory], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) ?: '{}', ENT_QUOTES) ?></pre></details>
+        <?php else: ?>
+        <details class="mt-4 surface-tertiary"><summary class="cursor-pointer text-sm text-slate-100">Org history (no records)</summary><p class="mt-2 text-xs text-muted">No corporation history data available.</p></details>
+        <?php endif; ?>
 
         <!-- Evidence rows -->
         <h2 class="mt-6 text-lg font-semibold text-slate-100">Evidence breakdown</h2>
@@ -314,14 +483,68 @@ include __DIR__ . '/../../src/views/partials/header.php';
         <?php endif; ?>
 
         <?php if (is_array($communityInfo)): ?>
-        <h2 class="mt-6 text-lg font-semibold text-slate-100">Community assignment</h2>
-        <p class="mt-1 text-xs text-muted">Graph-based grouping showing who this character is connected to and how important they are in the network.</p>
-        <div class="mt-3 grid gap-3 md:grid-cols-4">
-            <div class="surface-tertiary"><p class="text-xs text-muted">Community</p><p class="mt-1 text-lg text-slate-100">#<?= (int) ($communityInfo['community_id'] ?? 0) ?> <span class="text-xs text-muted">(<?= (int) ($communityInfo['community_size'] ?? 0) ?> members)</span></p></div>
-            <div class="surface-tertiary"><p class="text-xs text-muted">PageRank</p><p class="mt-1 text-lg text-slate-100"><?= number_format((float) ($communityInfo['pagerank_score'] ?? 0), 4) ?></p><p class="mt-0.5 text-[11px] text-muted">Importance in the network (higher = more central)</p></div>
-            <div class="surface-tertiary"><p class="text-xs text-muted">Betweenness</p><p class="mt-1 text-lg text-slate-100"><?= number_format((float) ($communityInfo['betweenness_centrality'] ?? 0), 4) ?></p><p class="mt-0.5 text-[11px] text-muted">Sits between many groups (higher = more bridging)</p></div>
-            <div class="surface-tertiary"><p class="text-xs text-muted">Connections / Bridge</p><p class="mt-1 text-lg text-slate-100"><?= (int) ($communityInfo['degree_centrality'] ?? 0) ?> connections / <?= ((int) ($communityInfo['is_bridge'] ?? 0)) ? '<span class="text-yellow-400 font-semibold">Yes</span>' : '<span class="text-green-400">No</span>' ?></p><p class="mt-0.5 text-[11px] text-muted">Direct links and whether they bridge communities</p></div>
+        <?php
+            $communitySize = (int) ($communityInfo['community_size'] ?? 0);
+            $pagerank = (float) ($communityInfo['pagerank_score'] ?? 0);
+            $betweenness = (float) ($communityInfo['betweenness_centrality'] ?? 0);
+            $degree = (int) ($communityInfo['degree_centrality'] ?? 0);
+            $isBridge = (bool) ((int) ($communityInfo['is_bridge'] ?? 0));
+        ?>
+        <h2 class="mt-6 text-lg font-semibold text-slate-100">Community &amp; network</h2>
+        <p class="mt-1 text-xs text-muted">This character belongs to a group of <?= $communitySize ?> connected pilots. Their role in the network:</p>
+        <div class="mt-3 grid gap-3 md:grid-cols-3">
+            <div class="surface-tertiary">
+                <p class="text-xs text-muted">Network importance</p>
+                <p class="mt-1 text-lg text-slate-100">
+                    <?php if ($pagerank >= 0.5): ?>
+                        <span class="text-yellow-400">High influence</span>
+                    <?php elseif ($pagerank >= 0.1): ?>
+                        <span class="text-slate-100">Moderate influence</span>
+                    <?php else: ?>
+                        <span class="text-slate-400">Low influence</span>
+                    <?php endif; ?>
+                </p>
+                <p class="mt-0.5 text-[11px] text-muted">PageRank <?= number_format($pagerank, 4) ?> &mdash; how central they are to the group</p>
+            </div>
+            <div class="surface-tertiary">
+                <p class="text-xs text-muted">Bridging role</p>
+                <p class="mt-1 text-lg text-slate-100">
+                    <?php if ($isBridge): ?>
+                        <span class="text-yellow-400 font-semibold">Bridge node</span> &mdash; connects separate groups
+                    <?php elseif ($betweenness > 0.1): ?>
+                        <span class="text-slate-100">Partial bridge</span>
+                    <?php else: ?>
+                        <span class="text-green-400">Not a bridge</span> &mdash; stays within group
+                    <?php endif; ?>
+                </p>
+                <p class="mt-0.5 text-[11px] text-muted">Betweenness <?= number_format($betweenness, 4) ?> &mdash; how much they sit between clusters</p>
+            </div>
+            <div class="surface-tertiary">
+                <p class="text-xs text-muted">Direct connections</p>
+                <p class="mt-1 text-lg text-slate-100"><?= $degree ?> pilot<?= $degree !== 1 ? 's' : '' ?></p>
+                <p class="mt-0.5 text-[11px] text-muted">Characters directly linked in the co-occurrence graph</p>
+            </div>
         </div>
+
+        <?php if ($communityMembers !== []): ?>
+        <div class="mt-3 surface-tertiary">
+            <p class="text-xs text-muted mb-2">Community members (top <?= count($communityMembers) ?> of <?= $communitySize ?>)</p>
+            <div class="flex flex-wrap gap-2">
+                <?php foreach ($communityMembers as $cm):
+                    $isCurrentChar = ((int) ($cm['character_id'] ?? 0)) === $characterId;
+                    $memberBridge = (bool) ((int) ($cm['is_bridge'] ?? 0));
+                ?>
+                    <a href="?character_id=<?= (int) ($cm['character_id'] ?? 0) ?>" class="inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs <?= $isCurrentChar ? 'bg-cyan-900/60 text-cyan-300 font-semibold' : 'bg-slate-700/60 text-slate-300 hover:bg-slate-600/60' ?>">
+                        <?= htmlspecialchars((string) ($cm['character_name'] ?? 'Unknown'), ENT_QUOTES) ?>
+                        <?php if ($memberBridge): ?>
+                            <span class="text-yellow-400" title="Bridge node">&#9670;</span>
+                        <?php endif; ?>
+                    </a>
+                <?php endforeach; ?>
+            </div>
+        </div>
+        <?php endif; ?>
+
         <?php endif; ?>
 
         <?php if ($typedInteractions !== []): ?>
@@ -362,13 +585,24 @@ include __DIR__ . '/../../src/views/partials/header.php';
         <p class="mt-1 text-xs text-muted">Chains of connections linking this character to known suspicious actors. Stronger scores = more concerning.</p>
         <div class="mt-3 space-y-2">
             <?php foreach ($evidencePaths as $ep): ?>
-                <?php $pathScore = (float) ($ep['path_score'] ?? 0); ?>
+                <?php
+                    $pathScore = (float) ($ep['path_score'] ?? 0);
+                    $nodesJson = (string) ($ep['path_nodes_json'] ?? '[]');
+                    $edgesJson = (string) ($ep['path_edges_json'] ?? '[]');
+                    $hasStructuredData = $nodesJson !== '[]' && $nodesJson !== '';
+                ?>
                 <div class="surface-tertiary">
                     <div class="flex items-center justify-between">
                         <span class="text-xs text-muted">Path #<?= (int) ($ep['path_rank'] ?? 0) ?></span>
                         <span class="text-xs font-semibold <?= ci_metric_color($pathScore, 0.4, 0.6) ?>">Strength: <?= number_format($pathScore * 100, 0) ?>%</span>
                     </div>
-                    <p class="mt-1 text-sm text-slate-100"><?= htmlspecialchars((string) ($ep['path_description'] ?? ''), ENT_QUOTES) ?></p>
+                    <div class="mt-1 text-sm leading-relaxed">
+                        <?php if ($hasStructuredData): ?>
+                            <?= ci_render_evidence_path($nodesJson, $edgesJson, $pathNodeNames) ?>
+                        <?php else: ?>
+                            <span class="text-slate-100"><?= htmlspecialchars((string) ($ep['path_description'] ?? ''), ENT_QUOTES) ?></span>
+                        <?php endif; ?>
+                    </div>
                     <?= ci_progress_bar($pathScore, $pathScore >= 0.6 ? 'bg-red-500' : ($pathScore >= 0.4 ? 'bg-yellow-500' : 'bg-cyan-500')) ?>
                 </div>
             <?php endforeach; ?>
