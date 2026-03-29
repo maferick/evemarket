@@ -3,6 +3,11 @@
 Tracks token budgets per rate-limit group based on ESI response headers.
 Thread-safe for use across concurrent workers in the same process.
 
+When a :class:`~orchestrator.redis_client.RedisClient` is injected via
+:meth:`EsiRateLimiter.set_redis`, the limiter shares state across
+processes through Redis keys.  Without Redis, behaviour is unchanged
+(process-local only).
+
 ESI rate limiting docs:
   - Each route belongs to a rate-limit group with a fixed token budget per window.
   - Token costs: 2xx=2, 3xx=1, 4xx=5, 5xx=0 (429 costs 0).
@@ -12,11 +17,16 @@ ESI rate limiting docs:
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 import threading
 import time
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .redis_client import RedisClient
 
 logger = logging.getLogger("supplycore.esi_rate_limiter")
 
@@ -98,6 +108,16 @@ class EsiRateLimiter:
         # Track the "last known group" so acquire() can check the right bucket
         # even when the caller doesn't know the group ahead of time.
         self._last_group: str | None = None
+        # Optional Redis client for cross-process coordination.
+        self._redis: RedisClient | None = None
+
+    def set_redis(self, redis: RedisClient) -> None:
+        """Inject a Redis client for cross-process rate-limit coordination.
+
+        Called after construction because the singleton is created at
+        import time before Redis config is available.
+        """
+        self._redis = redis
 
     def _get_bucket(self, group: str) -> _GroupBucket:
         if group not in self._groups:
@@ -109,7 +129,14 @@ class EsiRateLimiter:
 
         If ``group`` is None, checks the last-seen group (or uses a
         conservative global delay if no headers have been seen yet).
+
+        When Redis is available, the limiter also checks shared
+        retry-after suppression keys and cross-process remaining counts
+        (most-conservative-wins strategy).
         """
+        # Check Redis retry-after suppression before taking the lock.
+        self._check_redis_retry_after(group)
+
         with self._lock:
             # Respect global Retry-After first.
             now = time.monotonic()
@@ -130,6 +157,9 @@ class EsiRateLimiter:
             bucket = self._get_bucket(resolved_group)
             if not bucket.initialized:
                 return
+
+            # Merge Redis shared state (most-conservative-wins).
+            self._merge_redis_ratelimit(resolved_group, bucket)
 
             safe_floor = int(bucket.max_tokens * self._safety_margin)
             if bucket.remaining > safe_floor:
@@ -155,6 +185,9 @@ class EsiRateLimiter:
 
         Call this after every ESI response.  ``headers`` should be a dict
         (or dict-like) of HTTP response headers.
+
+        When Redis is available, the shared ratelimit and retry-after
+        state is also written so other processes can see it.
         """
         if headers is None:
             return
@@ -172,10 +205,11 @@ class EsiRateLimiter:
 
         with self._lock:
             # Handle 429 Retry-After.
+            retry_after_seconds: float = 0.0
             if status_code == 429 and retry_after is not None:
                 try:
-                    seconds = float(retry_after)
-                    self._retry_after_deadline = time.monotonic() + seconds
+                    retry_after_seconds = float(retry_after)
+                    self._retry_after_deadline = time.monotonic() + retry_after_seconds
                     logger.warning("ESI 429: Retry-After %s seconds", retry_after)
                 except ValueError:
                     pass
@@ -197,6 +231,69 @@ class EsiRateLimiter:
 
                 bucket.initialized = True
                 bucket.last_updated = time.monotonic()
+
+                # Publish to Redis for cross-process coordination.
+                self._publish_redis_ratelimit(group, bucket, retry_after_seconds)
+
+    # -- Redis coordination helpers ----------------------------------------
+
+    def _check_redis_retry_after(self, group: str | None) -> None:
+        """If a Redis retry-after suppression key exists, sleep for it."""
+        if self._redis is None or not self._redis.available:
+            return
+        resolved = group or self._last_group
+        if resolved is None:
+            return
+        from .redis_keys import esi_retry_after_key
+        raw = self._redis.get(esi_retry_after_key(resolved))
+        if raw is not None:
+            try:
+                deadline = float(raw)
+                wait = deadline - time.time()
+                if wait > 0:
+                    logger.info("Redis retry-after suppression (%s): waiting %.1fs", resolved, wait)
+                    time.sleep(wait)
+            except (ValueError, TypeError):
+                pass
+
+    def _merge_redis_ratelimit(self, group: str, bucket: _GroupBucket) -> None:
+        """Read shared ratelimit state from Redis and take the lower remaining."""
+        if self._redis is None or not self._redis.available:
+            return
+        from .redis_keys import esi_ratelimit_key
+        data = self._redis.get_json(esi_ratelimit_key(group))
+        if data and isinstance(data, dict):
+            try:
+                redis_remaining = int(data.get("remaining", bucket.remaining))
+                if redis_remaining < bucket.remaining:
+                    bucket.remaining = redis_remaining
+            except (ValueError, TypeError):
+                pass
+
+    def _publish_redis_ratelimit(self, group: str, bucket: _GroupBucket, retry_after_seconds: float) -> None:
+        """Write current bucket state to Redis for cross-process visibility."""
+        if self._redis is None or not self._redis.available:
+            return
+        from .redis_keys import esi_ratelimit_key, esi_retry_after_key
+        # Ratelimit state — TTL slightly longer than the window.
+        ttl = int(bucket.window_seconds) + 60
+        self._redis.set_json(
+            esi_ratelimit_key(group),
+            {
+                "remaining": bucket.remaining,
+                "max_tokens": bucket.max_tokens,
+                "window_seconds": bucket.window_seconds,
+            },
+            ex=ttl,
+        )
+        # Retry-after suppression key.
+        if retry_after_seconds > 0:
+            deadline = time.time() + retry_after_seconds
+            self._redis.set(
+                esi_retry_after_key(group),
+                str(deadline),
+                ex=int(retry_after_seconds) + 5,
+            )
 
     @property
     def stats(self) -> dict[str, dict[str, object]]:

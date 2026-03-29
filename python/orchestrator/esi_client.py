@@ -92,6 +92,7 @@ class EsiClient:
         params: dict[str, str | int] | None = None,
         access_token: str | None = None,
         group: str | None = None,
+        extra_headers: dict[str, str] | None = None,
     ) -> EsiResponse:
         """Perform a rate-limited GET request to ESI.
 
@@ -100,6 +101,8 @@ class EsiClient:
         url = self._build_url(path, params)
         token = access_token or self._default_token
         headers = self._build_headers(token)
+        if extra_headers:
+            headers.update(extra_headers)
 
         # Wait for rate-limit budget before sending.
         self._limiter.acquire(group)

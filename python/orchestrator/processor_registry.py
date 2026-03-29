@@ -155,8 +155,8 @@ _PROCESSOR_DISPATCH: dict[str, tuple] = {
     "compute_signals": (run_compute_signals, lambda db, cfg: (db, influx_runtime(cfg))),
     "compute_economic_warfare": (run_compute_economic_warfare, lambda db, cfg: (db, influx_runtime(cfg))),
     # Sync phase jobs
-    "market_hub_current_sync": (run_market_hub_current_sync, lambda db, cfg: (db,)),
-    "alliance_current_sync": (run_alliance_current_sync, lambda db, cfg: (db,)),
+    "market_hub_current_sync": (run_market_hub_current_sync, lambda db, cfg: (db, cfg)),
+    "alliance_current_sync": (run_alliance_current_sync, lambda db, cfg: (db, cfg)),
     "market_hub_historical_sync": (run_market_hub_historical_sync, lambda db, cfg: (db,)),
     "alliance_historical_sync": (run_alliance_historical_sync, lambda db, cfg: (db,)),
     "current_state_refresh_sync": (run_current_state_refresh_sync, lambda db, cfg: (db,)),
@@ -173,7 +173,7 @@ _PROCESSOR_DISPATCH: dict[str, tuple] = {
     "market_hub_local_history_sync": (run_market_hub_local_history_sync, lambda db, cfg: (db,)),
     # Intelligence pipeline
     "esi_character_queue_sync": (run_esi_character_queue_sync, lambda db, cfg: (db,)),
-    "esi_alliance_history_sync": (run_esi_alliance_history_sync, lambda db, cfg: (db,)),
+    "esi_alliance_history_sync": (run_esi_alliance_history_sync, lambda db, cfg: (db, cfg)),
     "entity_metadata_resolve_sync": (run_entity_metadata_resolve_sync, lambda db, cfg: (db, _php_bridge(cfg))),
     "intelligence_pipeline": (run_intelligence_pipeline, lambda db, cfg: (db, neo4j_runtime(cfg))),
     # Enhanced intelligence platform (KGv2)

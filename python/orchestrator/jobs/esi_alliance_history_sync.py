@@ -3,6 +3,10 @@
 Processes characters from ``esi_character_queue`` in batches, fetching their
 corporation history from ESI and deriving alliance membership periods by
 joining against the existing corp-to-alliance mapping in MariaDB.
+
+When an :class:`~orchestrator.esi_gateway.EsiGateway` is available (Redis
+enabled), requests go through the gateway for Expires-gating, conditional
+request handling, and distributed rate-limit coordination.
 """
 from __future__ import annotations
 
@@ -22,14 +26,41 @@ SKIP_IF_FETCHED_WITHIN_DAYS = 7
 # Module-level EsiClient — shared across all calls within this job.
 _esi_client = EsiClient(user_agent=ESI_USER_AGENT, timeout_seconds=20, limiter=shared_limiter)
 
+# Module-level gateway — set per run via _init_gateway().
+_gateway: Any = None  # EsiGateway | None
+
+
+def _init_gateway(db: SupplyCoreDb, raw_config: dict[str, Any] | None) -> None:
+    """Initialize the module-level gateway from config (called once per run)."""
+    global _gateway
+    redis_cfg = dict((raw_config or {}).get("redis") or {})
+    if redis_cfg.get("enabled"):
+        from ..esi_gateway import build_gateway
+        _gateway = build_gateway(db=db, redis_config=redis_cfg, user_agent=ESI_USER_AGENT, timeout_seconds=20)
+    else:
+        _gateway = None
+
+
+def _esi_get(path: str) -> Any:
+    """Fetch via gateway if available, otherwise direct client."""
+    if _gateway is not None:
+        resp = _gateway.get(path, route_template=path)
+        if resp.from_cache or resp.not_modified:
+            return None  # Treat as no-new-data
+        if 200 <= resp.status_code < 300:
+            return resp.body
+        return None
+    resp = _esi_client.get(path)
+    if resp.ok:
+        return resp.body
+    return None
+
 
 def _fetch_corporation_history(character_id: int) -> list[dict[str, Any]] | None:
     """Fetch corporation membership history for a single character."""
-    resp = _esi_client.get(f"/v2/characters/{character_id}/corporationhistory/")
-    if resp.ok and isinstance(resp.body, list):
-        return resp.body
-    if resp.is_error_limited or resp.is_rate_limited or resp.status_code == 503:
-        return None
+    body = _esi_get(f"/v2/characters/{character_id}/corporationhistory/")
+    if isinstance(body, list):
+        return body
     return None
 
 
@@ -40,10 +71,10 @@ def _lookup_corp_alliance(corp_id: int) -> int | None:
     """Look up the current alliance for a corporation, cached per session."""
     if corp_id in _corp_alliance_cache:
         return _corp_alliance_cache[corp_id]
-    resp = _esi_client.get(f"/v5/corporations/{corp_id}/")
+    body = _esi_get(f"/v5/corporations/{corp_id}/")
     alliance_id = None
-    if resp.ok and isinstance(resp.body, dict):
-        alliance_id = int(resp.body.get("alliance_id") or 0) or None
+    if isinstance(body, dict):
+        alliance_id = int(body.get("alliance_id") or 0) or None
     _corp_alliance_cache[corp_id] = alliance_id
     return alliance_id
 
@@ -99,8 +130,9 @@ def _derive_alliance_history(
     return periods
 
 
-def run_esi_alliance_history_sync(db: SupplyCoreDb) -> dict[str, object]:
+def run_esi_alliance_history_sync(db: SupplyCoreDb, raw_config: dict[str, Any] | None = None) -> dict[str, object]:
     """Fetch ESI corporation history for queued characters, derive alliance history."""
+    _init_gateway(db, raw_config)
     started = time.perf_counter()
 
     # Fetch batch of pending characters, skipping recently fetched ones.

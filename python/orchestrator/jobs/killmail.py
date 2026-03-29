@@ -289,13 +289,21 @@ def _flush_pending_batch(
 
 
 class KillmailEntityResolver:
-    def __init__(self, user_agent: str):
+    def __init__(self, user_agent: str, gateway: Any = None):
         self.user_agent = user_agent
         self._esi_client = EsiClient(user_agent=user_agent, timeout_seconds=15, limiter=shared_limiter)
+        self._gateway = gateway  # Optional EsiGateway for compliance lifecycle
         self._character_cache: dict[int, dict[str, Any] | None] = {}
         self._corporation_cache: dict[int, dict[str, Any] | None] = {}
 
     def _fetch_profile(self, path: str) -> dict[str, Any] | None:
+        if self._gateway is not None:
+            resp = self._gateway.get(path, params={"datasource": "tranquility"}, route_template=path)
+            if resp.from_cache or resp.not_modified:
+                return None
+            if 200 <= resp.status_code < 300 and isinstance(resp.body, dict):
+                return resp.body
+            return None
         resp = self._esi_client.get(path, params={"datasource": "tranquility"})
         if resp.ok and isinstance(resp.body, dict):
             return resp.body
@@ -400,7 +408,27 @@ def run_killmail_r2z2_stream(context: Any) -> dict[str, Any]:
     poll_sleep_seconds = max(6, int(job_context.get("poll_sleep_seconds") or 10))
     max_sequences = max(1, int(job_context.get("max_sequences_per_run") or 10000))
     batch_size = max(1, min(50, context.batch_size // 20 or 25))
-    entity_resolver = KillmailEntityResolver(user_agent)
+    # Build gateway for ESI compliance lifecycle if Redis is available.
+    _km_gateway = None
+    try:
+        import os
+        if os.getenv("REDIS_ENABLED", "0") == "1":
+            from ..esi_gateway import build_gateway
+            _km_gateway = build_gateway(
+                redis_config={
+                    "enabled": True,
+                    "host": os.getenv("REDIS_HOST", "127.0.0.1"),
+                    "port": int(os.getenv("REDIS_PORT", "6379")),
+                    "database": int(os.getenv("REDIS_DB", "0")),
+                    "password": os.getenv("REDIS_PASSWORD", ""),
+                    "prefix": os.getenv("REDIS_PREFIX", "supplycore"),
+                },
+                user_agent=user_agent,
+                timeout_seconds=15,
+            )
+    except Exception:
+        pass
+    entity_resolver = KillmailEntityResolver(user_agent, gateway=_km_gateway)
 
     if sequence_url == "" or base_url == "":
         raise RuntimeError("Killmail Python worker requires both sequence and base R2Z2 URLs.")

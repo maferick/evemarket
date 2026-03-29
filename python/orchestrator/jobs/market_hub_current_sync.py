@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 from ..db import SupplyCoreDb
 from ..esi_market_adapter import EsiMarketAdapter, parse_esi_datetime
 from .sync_runtime import run_sync_phase_job
@@ -16,8 +18,11 @@ def _normalize_source_kind(source_kind: str, source_id: int) -> str:
     return "npc_station" if 0 < source_id < 1_000_000_00000 else "player_structure"
 
 
-def _processor(db: SupplyCoreDb) -> dict[str, object]:
-    adapter = EsiMarketAdapter(timeout_seconds=30)
+def _processor(db: SupplyCoreDb, raw_config: dict[str, Any] | None = None) -> dict[str, object]:
+    from ..esi_gateway import build_gateway
+    redis_cfg = dict((raw_config or {}).get("redis") or {})
+    gateway = build_gateway(db=db, redis_config=redis_cfg) if redis_cfg.get("enabled") else None
+    adapter = EsiMarketAdapter(timeout_seconds=30, gateway=gateway)
     sources: list[dict[str, object]] = []
     fetch_from_settings = getattr(db, "fetch_market_hub_sources_from_settings", None)
     if callable(fetch_from_settings):
@@ -135,5 +140,5 @@ def _processor(db: SupplyCoreDb) -> dict[str, object]:
     }
 
 
-def run_market_hub_current_sync(db: SupplyCoreDb) -> dict[str, object]:
-    return run_sync_phase_job(db, job_key="market_hub_current_sync", phase="A", objective="market snapshots", processor=_processor)
+def run_market_hub_current_sync(db: SupplyCoreDb, raw_config: dict[str, Any] | None = None) -> dict[str, object]:
+    return run_sync_phase_job(db, job_key="market_hub_current_sync", phase="A", objective="market snapshots", processor=lambda d: _processor(d, raw_config))
