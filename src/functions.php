@@ -27160,7 +27160,12 @@ function theater_ai_build_facts_from_snapshot(string $theaterId, array $theater,
     $friendlyComp = [];
     $enemyComp = [];
     foreach ($fleetComp as $fc) {
-        $entry = ((string) $fc['ship_name']) . ' x' . ((int) $fc['pilot_count']);
+        $shipGroup = (string) ($fc['ship_group'] ?? '');
+        $entry = [
+            'ship' => (string) $fc['ship_name'],
+            'class' => $shipGroup !== '' ? $shipGroup : 'Unknown',
+            'pilots' => (int) $fc['pilot_count'],
+        ];
         if (($fc['side'] ?? '') === $ourSide) {
             $friendlyComp[] = $entry;
         } else {
@@ -27171,19 +27176,24 @@ function theater_ai_build_facts_from_snapshot(string $theaterId, array $theater,
     // Build notable kills
     $notableKillList = [];
     foreach ($notableKills as $nk) {
+        $victimSide = (string) ($nk['victim_side'] ?? '');
         $notableKillList[] = [
             'victim' => (string) ($nk['victim_name'] ?? '?'),
             'ship' => (string) ($nk['ship_name'] ?? '?'),
+            'ship_class' => (string) ($nk['ship_group'] ?? ''),
             'alliance' => (string) ($nk['victim_alliance_name'] ?? '?'),
             'isk' => number_format((float) ($nk['isk_value'] ?? 0), 0) . ' ISK',
             'time' => (string) ($nk['kill_time'] ?? ''),
+            'lost_by' => $victimSide === $ourSide ? 'friendly' : ($victimSide !== '' ? 'enemy' : 'unknown'),
         ];
     }
 
     // Build top performers
     $performerList = [];
     foreach ($topPerformers as $tp) {
-        $performerList[] = [
+        $shipName = (string) ($tp['ship_name'] ?? '');
+        $shipGroup = (string) ($tp['ship_group'] ?? '');
+        $entry = [
             'character' => (string) ($tp['character_name'] ?? '?'),
             'alliance' => (string) ($tp['alliance_name'] ?? '?'),
             'side' => ($tp['side'] ?? '') === $ourSide ? 'friendly' : 'enemy',
@@ -27192,6 +27202,13 @@ function theater_ai_build_facts_from_snapshot(string $theaterId, array $theater,
             'damage_done' => round((float) ($tp['damage_done'] ?? 0)),
             'role' => fleet_function_label((string) ($tp['role_proxy'] ?? 'mainline_dps')),
         ];
+        if ($shipName !== '') {
+            $entry['ship'] = $shipName;
+        }
+        if ($shipGroup !== '') {
+            $entry['ship_class'] = $shipGroup;
+        }
+        $performerList[] = $entry;
     }
 
     // Friendly alliance names
@@ -27215,8 +27232,13 @@ function theater_ai_build_facts_from_snapshot(string $theaterId, array $theater,
         'enemy_alliances' => implode(', ', $enemyNames) ?: 'Unknown',
         'friendly_coalition' => $sideData[$ourSide],
         'enemy_coalition' => $sideData[$enemySide],
+        'friendly_pilots' => $sidePilotTotals[$ourSide],
+        'enemy_pilots' => $sidePilotTotals[$enemySide],
+        'friendly_isk_killed' => number_format($friendlyIskKilled, 0) . ' ISK',
         'friendly_isk_lost' => number_format($friendlyIskLost, 0) . ' ISK',
+        'enemy_isk_killed' => number_format($enemyIskKilled, 0) . ' ISK',
         'enemy_isk_lost' => number_format($enemyIskLost, 0) . ' ISK',
+        'total_isk_destroyed' => number_format($friendlyIskKilled + $enemyIskKilled, 0) . ' ISK',
         'efficiency' => $efficiency . '%',
         'friendly_fleet_composition' => array_slice($friendlyComp, 0, 20),
         'enemy_fleet_composition' => array_slice($enemyComp, 0, 20),
@@ -27277,7 +27299,9 @@ function theater_ai_system_prompt(): string
              . "- Follow ALL numbered sections in the user prompt. Each section must have substantial content.\n"
              . "- Use markdown formatting: ## for section headers, **bold** for emphasis, - for bullet points.\n"
              . "- Analyze the battle data thoroughly. Reference specific alliances, ship types, ISK values, and pilot names.\n"
-             . "- Focus on tactical clarity, decision-making, and actionable insights.\n\n"
+             . "- Focus on tactical clarity, decision-making, and actionable insights.\n"
+             . "- CRITICAL: The data distinguishes 'friendly' (our coalition) from 'enemy' (opposing coalition). Pay close attention to which side is which. The AAR is from the FRIENDLY perspective. Do NOT confuse the two sides.\n"
+             . "- The 'efficiency' field is our ISK efficiency. Above 50% means we destroyed more ISK than we lost.\n\n"
              . "Return valid JSON with the required fields. The 'summary' field must contain the full multi-section AAR in markdown.";
     }
 
@@ -27310,6 +27334,16 @@ You are an experienced EVE Online Fleet Commander and military analyst.
 Generate a clear, structured After Action Report (AAR) based on the provided battle data.
 
 Focus on tactical clarity, decision-making, and actionable insights. Avoid fluff.
+
+IMPORTANT DATA CONTEXT:
+- "friendly" = our coalition (listed in "friendly_alliance" and "friendly_coalition")
+- "enemy" = the opposing coalition (listed in "enemy_alliances" and "enemy_coalition")
+- The AAR is written from the perspective of the FRIENDLY coalition
+- "friendly_isk_killed" = ISK value destroyed BY our side; "friendly_isk_lost" = ISK value WE lost
+- "efficiency" = our ISK efficiency (friendly_isk_killed / total ISK destroyed)
+- In "notable_kills", "lost_by" indicates which side lost the ship ("friendly" = we lost it, "enemy" = we killed it)
+- In "fleet_composition", each entry has "ship" (name), "class" (ship group e.g. Battleship), and "pilots" (count)
+- In "top_performers", "side" indicates which coalition the pilot belongs to
 
 
 OUTPUT FORMAT:
