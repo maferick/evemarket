@@ -182,10 +182,10 @@ TRUNCATE TABLE killmail_item_loss_1d;
 TRUNCATE TABLE killmail_hull_loss_1d;
 TRUNCATE TABLE killmail_doctrine_activity_1d;
 
--- Buy/signals
+-- Buy/signals (items before summary — FK dependency)
 TRUNCATE TABLE buy_all_precomputed_payloads;
-TRUNCATE TABLE buy_all_summary;
 TRUNCATE TABLE buy_all_items;
+TRUNCATE TABLE buy_all_summary;
 TRUNCATE TABLE signals;
 
 -- Deal alerts
