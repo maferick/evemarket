@@ -41,6 +41,11 @@ function _render_participant_row(array $p, array $resolvedEntities, array $shipT
     $isSusp = (int) ($p['is_suspicious'] ?? 0);
     $charName = killmail_entity_preferred_name($resolvedEntities, 'character', (int) ($p['character_id'] ?? 0), (string) ($p['character_name'] ?? ''), 'Character');
     $fleetRole = (string) ($p['role_proxy'] ?? 'mainline_dps');
+    $roleRank = match ($fleetRole) {
+        'fc' => 0,
+        'supercapital', 'capital_dps', 'capital_logistics', 'capital' => 1,
+        default => 2,
+    };
     $kills = (int) ($p['kills'] ?? 0);
     $deaths = (int) ($p['deaths'] ?? 0);
     $dmgDone = (float) ($p['damage_done'] ?? 0);
@@ -102,6 +107,7 @@ function _render_participant_row(array $p, array $resolvedEntities, array $shipT
 
     // ── Row data attributes for client-side filtering/sorting ──
     $kdRatio = $deaths > 0 ? $kills / $deaths : $kills;
+    $sortHull = strtolower(trim($flyingShipName !== '' ? $flyingShipName : 'zzzz-unknown'));
 
     ob_start();
     ?>
@@ -109,6 +115,8 @@ function _render_participant_row(array $p, array $resolvedEntities, array $shipT
         data-deaths="<?= $deaths ?>"
         data-kills="<?= $kills ?>"
         data-kd="<?= number_format($kdRatio, 4) ?>"
+        data-role-rank="<?= $roleRank ?>"
+        data-hull="<?= htmlspecialchars($sortHull, ENT_QUOTES) ?>"
         data-damage="<?= $dmgDone ?>"
         data-isk="<?= $iskLost ?>">
         <td class="px-2 py-1.5">
@@ -149,7 +157,7 @@ function _render_participant_row(array $p, array $resolvedEntities, array $shipT
             </div>
         </td>
         <td class="px-2 py-1.5">
-            <span class="inline-block rounded-full px-1.5 py-0.5 text-[9px] uppercase tracking-wider <?= fleet_function_color_class($fleetRole) ?>">
+            <span class="inline-flex items-center rounded-full px-2 py-0.5 text-[9px] font-semibold uppercase tracking-[0.14em] border border-white/15 shadow-[inset_0_1px_0_rgba(255,255,255,0.06)] <?= fleet_function_color_class($fleetRole) ?>">
                 <?= htmlspecialchars(fleet_function_label($fleetRole), ENT_QUOTES) ?>
             </span>
         </td>
@@ -235,6 +243,7 @@ function _fmt_damage(float $v): string {
                 <button type="button" class="sc-filter-btn text-[11px] px-2.5 py-1 rounded bg-slate-800 text-slate-400 border border-slate-700 cursor-pointer transition-colors hover:bg-slate-700 hover:text-slate-200" data-filter="dead">&#x2715; Deaths only</button>
                 <button type="button" class="sc-filter-btn text-[11px] px-2.5 py-1 rounded bg-slate-800 text-slate-400 border border-slate-700 cursor-pointer transition-colors hover:bg-slate-700 hover:text-slate-200" data-filter="clean">&#10003; No losses</button>
                 <select class="sc-sort-select text-[11px] bg-slate-800 border border-slate-700 rounded text-slate-400 px-2 py-1 ml-auto cursor-pointer focus:outline-none focus:border-blue-500/60">
+                    <option value="role_hull" selected>Sort: FC & CAPs, then hull</option>
                     <option value="kd_ratio">Sort: K/D ratio</option>
                     <option value="kills">Sort: kills</option>
                     <option value="isk_lost">Sort: ISK lost</option>
@@ -295,6 +304,15 @@ function _fmt_damage(float $v): string {
 
             function applySort(mode) {
                 allRows.sort(function(a, b) {
+                    if (mode === 'role_hull') {
+                        var roleCmp = parseInt(a.dataset.roleRank || '99', 10) - parseInt(b.dataset.roleRank || '99', 10);
+                        if (roleCmp !== 0) return roleCmp;
+                        var hullA = (a.dataset.hull || '');
+                        var hullB = (b.dataset.hull || '');
+                        var hullCmp = hullA.localeCompare(hullB);
+                        if (hullCmp !== 0) return hullCmp;
+                        return parseFloat(b.dataset.kd) - parseFloat(a.dataset.kd);
+                    }
                     if (mode === 'kd_ratio') return parseFloat(b.dataset.kd) - parseFloat(a.dataset.kd);
                     if (mode === 'kills') return parseInt(b.dataset.kills) - parseInt(a.dataset.kills);
                     if (mode === 'isk_lost') return parseFloat(b.dataset.isk) - parseFloat(a.dataset.isk);
@@ -327,6 +345,7 @@ function _fmt_damage(float $v): string {
                 sortSelect.addEventListener('change', function() {
                     applySort(sortSelect.value);
                 });
+                applySort(sortSelect.value || 'role_hull');
             }
         });
     })();
@@ -478,7 +497,7 @@ function _fmt_damage(float $v): string {
                                 </div>
                             </td>
                             <td class="px-3 py-2">
-                                <span class="inline-block rounded-full px-2 py-0.5 text-[10px] uppercase tracking-wider <?= fleet_function_color_class($fleetRole) ?>">
+                                <span class="inline-flex items-center rounded-full px-2.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.14em] border border-white/15 shadow-[inset_0_1px_0_rgba(255,255,255,0.06)] <?= fleet_function_color_class($fleetRole) ?>">
                                     <?= htmlspecialchars(fleet_function_label($fleetRole), ENT_QUOTES) ?>
                                 </span>
                             </td>
