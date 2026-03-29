@@ -2041,7 +2041,7 @@ def run_compute_graph_sync_killmail_entities(
                    effective_killmail_at, zkb_total_value AS total_value,
                    victim_ship_type_id
             FROM killmail_events
-            WHERE id > %s AND battle_id IS NOT NULL
+            WHERE id > %s
             ORDER BY id ASC
             LIMIT %s
             """,
@@ -2058,7 +2058,7 @@ def run_compute_graph_sync_killmail_entities(
             neo4j_rows.append({
                 "killmail_id": int(row["killmail_id"]),
                 "solar_system_id": int(row["solar_system_id"]),
-                "battle_id": str(row["battle_id"]),
+                "battle_id": str(row["battle_id"]) if row.get("battle_id") else None,
                 "killed_at": str(row.get("effective_killmail_at") or ""),
                 "total_value": float(row.get("total_value") or 0),
                 "victim_ship_type_id": int(row.get("victim_ship_type_id") or 0),
@@ -2075,8 +2075,10 @@ def run_compute_graph_sync_killmail_entities(
             MERGE (sys:System {system_id: toInteger(row.solar_system_id)})
             MERGE (km)-[:OCCURRED_IN]->(sys)
             WITH km, row
-            MERGE (b:Battle {battle_id: row.battle_id})
-            MERGE (km)-[:PART_OF_BATTLE]->(b)
+            FOREACH (_ IN CASE WHEN row.battle_id IS NOT NULL THEN [1] ELSE [] END |
+              MERGE (b:Battle {battle_id: row.battle_id})
+              MERGE (km)-[:PART_OF_BATTLE]->(b)
+            )
             """,
             {"rows": neo4j_rows},
         )
