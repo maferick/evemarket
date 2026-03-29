@@ -17407,9 +17407,13 @@ function esi_universe_names_lookup(array $ids): array
 }
 
 /**
- * @deprecated Phase 3: migrate this authenticated search to the Python ESI gateway.
- *             This is one of the last remaining PHP ESI callsites. It only fires on
- *             user-initiated settings pages, not in automated sync flows.
+ * Search alliances and corporations by name via authenticated ESI character search.
+ *
+ * Requires ``esi-search.search_structures.v1`` scope. Intentionally kept as a
+ * PHP ESI callsite because the killmail entity settings UI needs synchronous
+ * search results for the autocomplete typeahead.
+ *
+ * @todo Phase 3: route through a Python ESI search proxy for rate-limit coordination.
  */
 function esi_alliance_and_corporation_search(string $query, array $tokenContext): array
 {
@@ -17595,15 +17599,25 @@ function killmail_entity_search(string $query, ?string $type = null): array
     return array_slice($rows, 0, 20);
 }
 
+/**
+ * Resolve alliance structure metadata (name) for a player-owned Upwell structure.
+ *
+ * Structures require an authenticated ESI call with ``esi-universe.read_structures.v1``
+ * scope — ESI only returns details for structures where the character has docking rights.
+ * This is intentionally kept as a PHP ESI callsite because settings validation (first-time
+ * structure setup) requires synchronous feedback that the structure exists and is accessible.
+ *
+ * The function reads from the ``alliance_structure_metadata`` DB cache first.
+ * On cache miss, it makes an authenticated ESI call, caches the result, and returns it.
+ * Once cached, subsequent calls (and Python's market sync jobs) use the cached name.
+ */
 function esi_alliance_structure_metadata(int $structureId, array $tokenContext): ?array
 {
     if ($structureId <= 0) {
         return null;
     }
 
-    // Phase 2: read from DB cache only — no direct ESI call.
-    // Python's alliance_current_sync and market_hub_current_sync populate
-    // structure metadata via the EsiGateway.
+    // Cache-first: return immediately if we already have the name.
     $cached = db_alliance_structure_metadata_get($structureId);
     if ($cached !== null && trim((string) ($cached['structure_name'] ?? '')) !== '') {
         return [
@@ -17613,20 +17627,53 @@ function esi_alliance_structure_metadata(int $structureId, array $tokenContext):
         ];
     }
 
-    // Queue for async Python resolution if not cached.
+    // Cache miss — authenticated ESI call required.
+    // Structures are private: ESI only returns data for structures where the
+    // character has docking rights (Keepstars, Fortizars, etc.).
     try {
-        db_entity_metadata_cache_mark_pending('structure', [$structureId]);
+        $accessToken = esi_valid_access_token();
     } catch (Throwable) {
-        // Non-fatal — the async resolver will pick it up eventually.
+        return null;
     }
 
-    return null;
+    $response = http_get_json(
+        'https://esi.evetech.net/latest/universe/structures/' . $structureId . '/',
+        [
+            'Authorization: Bearer ' . $accessToken,
+            'Accept: application/json',
+        ]
+    );
+
+    if (($response['status'] ?? 500) >= 400) {
+        return null;
+    }
+
+    $name = trim((string) ($response['json']['name'] ?? ''));
+    $updated = db_alliance_structure_metadata_upsert(
+        $structureId,
+        $name !== '' ? $name : null,
+        gmdate('Y-m-d H:i:s')
+    );
+    if ($updated) {
+        supplycore_cache_bust('metadata_structures');
+    }
+
+    return [
+        'id' => $structureId,
+        'name' => $name,
+        'last_verified_at' => gmdate('Y-m-d H:i:s'),
+    ];
 }
 
 /**
- * @deprecated Phase 3: migrate this authenticated structure search to the Python ESI gateway.
- *             This is one of the last remaining PHP ESI callsites. It only fires on
- *             user-initiated settings pages, not in automated sync flows.
+ * Search for player-owned structures by name via authenticated ESI.
+ *
+ * This requires ``esi-search.search_structures.v1`` scope and only returns
+ * structures where the character has docking rights (Keepstars, Fortizars, etc.).
+ * It is intentionally kept as a PHP ESI callsite because the settings UI needs
+ * synchronous search results during first-time structure setup.
+ *
+ * @todo Phase 3: route through a Python ESI search proxy for rate-limit coordination.
  */
 function esi_structure_search(string $query, array $tokenContext): array
 {
