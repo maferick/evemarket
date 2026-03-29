@@ -1054,10 +1054,13 @@ def run_compute_counterintel_pipeline(
                     neo4j.query(
                         """
                         UNWIND $rows AS row
+                        WITH row WHERE row.start IS NOT NULL AND row.source IS NOT NULL
                         MERGE (c:Character {character_id: toInteger(row.character_id)})
                         MERGE (corp:Corporation {corporation_id: toInteger(row.corporation_id)})
-                        MERGE (c)-[r:HISTORICALLY_IN {start: row.start, source: row.source}]->(corp)
-                        SET r.end = row.end
+                        MERGE (c)-[r:HISTORICALLY_IN]->(corp)
+                        SET r.start = COALESCE(row.start, r.start),
+                            r.source = COALESCE(row.source, r.source),
+                            r.end = row.end
                         """,
                         {"rows": historical_membership_rows},
                     )

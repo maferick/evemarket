@@ -139,6 +139,11 @@ def run_graph_universe_sync(
         """,
         ("graph_universe_sync", now_sql),
     )
+    db.upsert_sync_state(
+        dataset_key="graph_universe_sync",
+        status="success",
+        row_count=rows_written,
+    )
 
     duration_ms = int((time.perf_counter() - started) * 1000)
     return JobResult.success(

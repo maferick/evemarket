@@ -88,10 +88,14 @@ def run_graph_evidence_paths_sync(db: SupplyCoreDb, neo4j_raw: dict[str, Any] | 
             continue
 
         # Find shortest paths to other suspicious or notable entities
+        # Use explicit relationship types and shortestPath to avoid
+        # unbounded variable-length expansion that causes timeouts.
         path_rows = client.query(
             """
             MATCH (c:Character {character_id: $char_id})
-            MATCH p = (c)-[*1..4]-(target)
+            MATCH p = shortestPath(
+                (c)-[:SHARED_ALLIANCE_WITH|CO_OCCURS_WITH|DIRECT_COMBAT|ASSISTED_KILL|SAME_FLEET|CROSSED_SIDES|ASSOCIATED_WITH_ANOMALY|ON_SIDE|ATTACKED_ON|VICTIM_OF*1..4]-(target)
+            )
             WHERE (target:Character OR target:Alliance OR target:Battle)
               AND target <> c
               AND (target:Alliance OR target:Battle OR COALESCE(target.suspicion_score, 0) > 0.3)
