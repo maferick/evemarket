@@ -441,7 +441,7 @@ function _fmt_damage(float $v): string {
                                 <div class="flex items-center gap-1.5">
                                     <?php $allianceId = (int) ($p['alliance_id'] ?? 0); $corpId = (int) ($p['corporation_id'] ?? 0); ?>
                                     <?php if ($allianceId > 0): ?>
-                                        <img src="https://images.evetech.net/alliances/<?= $allianceId ?>/logo?size=32" alt="" class="w-4 h-4" loading="lazy">
+                                        <img src="https://images.evetech.net/alliances/<?= $allianceId ?>/logo?size=64" alt="" class="w-5 h-5" loading="lazy">
                                     <?php elseif ($corpId > 0): ?>
                                         <img src="https://images.evetech.net/corporations/<?= $corpId ?>/logo?size=32" alt="" class="w-4 h-4" loading="lazy">
                                     <?php endif; ?>
