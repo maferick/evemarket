@@ -15339,6 +15339,20 @@ function db_theater_detail(string $theaterId): ?array
     );
 }
 
+function db_theaters_locked(): array
+{
+    return db_select(
+        'SELECT t.theater_id, t.locked_at, t.ai_headline, t.ai_verdict, t.ai_summary_model, t.ai_summary_at,
+                t.start_time, t.end_time, t.total_kills, t.participant_count,
+                rs.system_name AS primary_system_name, rr.region_name
+         FROM theaters t
+         LEFT JOIN ref_systems rs ON rs.system_id = t.primary_system_id
+         LEFT JOIN ref_regions rr ON rr.region_id = t.region_id
+         WHERE t.locked_at IS NOT NULL
+         ORDER BY t.locked_at DESC'
+    );
+}
+
 function db_theater_battles(string $theaterId): array
 {
     return db_select(

@@ -306,6 +306,7 @@ function setting_sections(): array
         'backup-restore' => ['title' => 'Backup & Restore', 'description' => 'Export settings/configuration snapshots and restore from validated backup files.'],
         'deal-alerts' => ['title' => 'Deal Alerts', 'description' => 'Tune mispriced-listing detection thresholds, popup behavior, and anomaly cadence.'],
         'killmail-intelligence' => ['title' => 'Killmail Intelligence', 'description' => 'Manage zKillboard stream ingestion, tracked entities, and demand prediction foundation.'],
+        'ai-report-management' => ['title' => 'AI Report Management', 'description' => 'Unlock locked theater reports and clear generated AI briefings so they can be regenerated.'],
     ];
 }
 
@@ -27518,6 +27519,24 @@ function theater_lock_report(string $theaterId): ?array
 function theater_is_locked(array $theater): bool
 {
     return ($theater['locked_at'] ?? null) !== null;
+}
+
+function theater_unlock_report(string $theaterId): array
+{
+    $theater = db_theater_detail($theaterId);
+    if ($theater === null) {
+        return ['ok' => false, 'error' => 'Theater not found'];
+    }
+    if (($theater['locked_at'] ?? null) === null) {
+        return ['ok' => false, 'error' => 'Theater is not locked'];
+    }
+
+    db_execute(
+        'UPDATE theaters SET locked_at = NULL, ai_headline = NULL, ai_summary = NULL, ai_verdict = NULL, ai_summary_model = NULL, ai_summary_at = NULL WHERE theater_id = ?',
+        [$theaterId]
+    );
+
+    return ['ok' => true];
 }
 
 function theater_ai_verdict_label(string $verdict): string
