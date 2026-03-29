@@ -46,7 +46,7 @@ class Neo4jClient:
     def _endpoint(self) -> str:
         return f"{self._config.url}/db/{self._config.database}/tx/commit"
 
-    def query(self, statement: str, parameters: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    def query(self, statement: str, parameters: dict[str, Any] | None = None, *, timeout_seconds: int | None = None) -> list[dict[str, Any]]:
         payload = {
             "statements": [
                 {
@@ -68,7 +68,8 @@ class Neo4jClient:
             },
         )
         try:
-            with ipv4_opener.open(request, timeout=self._config.timeout_seconds) as response:
+            effective_timeout = timeout_seconds if timeout_seconds is not None else self._config.timeout_seconds
+            with ipv4_opener.open(request, timeout=effective_timeout) as response:
                 body = json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as error:
             details = error.read().decode("utf-8", errors="replace")
