@@ -21,10 +21,6 @@ set -euo pipefail
 PYTHON="${PYTHON:-/var/www/SupplyCore/.venv-orchestrator/bin/python}"
 PROJECT_DIR="${PROJECT_DIR:-/var/www/SupplyCore}"
 DB_NAME="${DB_NAME:-supplycore}"
-NEO4J_URL="${NEO4J_URL:-http://127.0.0.1:7474}"
-NEO4J_USERNAME="${NEO4J_USERNAME:-neo4j}"
-NEO4J_PASSWORD="${NEO4J_PASSWORD:-${NEO4J_PASS:-}}"
-NEO4J_DATABASE="${NEO4J_DATABASE:-neo4j}"
 SERVICE_CONTROL=true
 
 for arg in "$@"; do
@@ -212,6 +208,19 @@ echo "  ✓ All computed tables cleared"
 
 # ── Step 3: Clear Neo4j graph database ────────────────────────────────────
 echo "[3/6] Clearing Neo4j graph database..."
+
+# Read Neo4j config from app_settings (database-backed), fall back to env vars
+db_setting() {
+    mysql -N -s "$DB_NAME" -e "SELECT setting_value FROM app_settings WHERE setting_key = '$1' LIMIT 1" 2>/dev/null
+}
+
+NEO4J_URL="${NEO4J_URL:-$(db_setting 'neo4j.url')}"
+NEO4J_URL="${NEO4J_URL:-http://127.0.0.1:7474}"
+NEO4J_USERNAME="${NEO4J_USERNAME:-$(db_setting 'neo4j.username')}"
+NEO4J_USERNAME="${NEO4J_USERNAME:-neo4j}"
+NEO4J_PASSWORD="${NEO4J_PASSWORD:-$(db_setting 'neo4j.password')}"
+NEO4J_DATABASE="${NEO4J_DATABASE:-$(db_setting 'neo4j.database')}"
+NEO4J_DATABASE="${NEO4J_DATABASE:-neo4j}"
 
 neo4j_cypher() {
     local statement="$1"
