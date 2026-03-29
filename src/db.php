@@ -15665,11 +15665,12 @@ function db_alliance_dossier(int $allianceId): ?array
 {
     $rows = db_select(
         'SELECT ad.*,
-                ra.alliance_name AS ref_alliance_name,
+                emc.entity_name AS ref_alliance_name,
                 rr.region_name AS primary_region_name,
                 rs.system_name AS primary_system_name
          FROM alliance_dossiers ad
-         LEFT JOIN ref_alliances ra ON ra.alliance_id = ad.alliance_id
+         LEFT JOIN entity_metadata_cache emc
+              ON emc.entity_type = \'alliance\' AND emc.entity_id = ad.alliance_id
          LEFT JOIN ref_regions rr ON rr.region_id = ad.primary_region_id
          LEFT JOIN ref_systems rs ON rs.system_id = ad.primary_system_id
          WHERE ad.alliance_id = ?
