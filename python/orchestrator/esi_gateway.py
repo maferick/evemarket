@@ -64,6 +64,10 @@ def build_gateway(
         # Share Redis with the process-wide rate limiter.
         shared_limiter.set_redis(redis)
 
+    # Share DB with the rate limiter for MariaDB fallback when Redis is down.
+    if db is not None:
+        shared_limiter.set_db(db)
+
     client = EsiClient(user_agent=user_agent, timeout_seconds=timeout_seconds, limiter=shared_limiter)
     return EsiGateway(client=client, redis=redis, db=db)
 
@@ -442,13 +446,57 @@ class EsiGateway:
     # -- Metadata cache ----------------------------------------------------
 
     def _load_meta(self, endpoint_key: str) -> EndpointMeta | None:
-        """Load metadata from Redis, falling back to local cache."""
+        """Load metadata: Redis → MariaDB → local in-memory cache."""
+        # 1. Try Redis (fast, cross-process).
         if self._redis and self._redis.available:
             data = self._redis.get_json(esi_meta_key(endpoint_key))
             if data and isinstance(data, dict):
                 meta = EndpointMeta.from_dict(data)
                 self._local_meta[endpoint_key] = meta
                 return meta
+
+        # 2. Fall back to MariaDB (durable, survives Redis restarts).
+        if self._db:
+            try:
+                row = self._db.fetch_one(
+                    """SELECT endpoint_key, etag, last_modified, expires_at,
+                              last_status_code, page_number, last_checked_at,
+                              success_count, not_modified_count, error_count
+                       FROM esi_endpoint_state
+                       WHERE endpoint_key = %s LIMIT 1""",
+                    (endpoint_key,),
+                )
+                if row and row.get("expires_at"):
+                    from datetime import timezone
+                    expires_dt = row["expires_at"]
+                    if hasattr(expires_dt, "timestamp"):
+                        expires_ts = expires_dt.replace(tzinfo=timezone.utc).timestamp()
+                    else:
+                        expires_ts = 0.0
+                    checked_dt = row.get("last_checked_at")
+                    checked_ts = checked_dt.replace(tzinfo=timezone.utc).timestamp() if checked_dt and hasattr(checked_dt, "timestamp") else 0.0
+                    meta = EndpointMeta(
+                        endpoint_key=endpoint_key,
+                        etag=row.get("etag"),
+                        last_modified=row.get("last_modified"),
+                        expires_at=expires_ts,
+                        last_status_code=int(row.get("last_status_code") or 0),
+                        x_pages=int(row.get("page_number") or 1),
+                        last_checked_at=checked_ts,
+                        success_count=int(row.get("success_count") or 0),
+                        not_modified_count=int(row.get("not_modified_count") or 0),
+                        error_count=int(row.get("error_count") or 0),
+                    )
+                    self._local_meta[endpoint_key] = meta
+                    # Repopulate Redis if it's available again.
+                    if self._redis and self._redis.available and meta.expires_at > time.time():
+                        ttl = max(_MIN_TTL_SECONDS, min(_MAX_TTL_SECONDS, int(meta.expires_at - time.time())))
+                        self._redis.set_json(esi_meta_key(endpoint_key), meta.to_dict(), ex=ttl)
+                    return meta
+            except Exception as exc:
+                logger.debug("MariaDB metadata fallback failed for %s: %s", endpoint_key, exc)
+
+        # 3. Last resort: process-local in-memory cache.
         return self._local_meta.get(endpoint_key)
 
     def _save_meta(self, meta: EndpointMeta) -> None:

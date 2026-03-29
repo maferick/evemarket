@@ -110,6 +110,8 @@ class EsiRateLimiter:
         self._last_group: str | None = None
         # Optional Redis client for cross-process coordination.
         self._redis: RedisClient | None = None
+        # Optional DB handle for MariaDB fallback.
+        self._db: Any = None
 
     def set_redis(self, redis: RedisClient) -> None:
         """Inject a Redis client for cross-process rate-limit coordination.
@@ -118,6 +120,10 @@ class EsiRateLimiter:
         import time before Redis config is available.
         """
         self._redis = redis
+
+    def set_db(self, db: Any) -> None:
+        """Inject a DB handle for MariaDB fallback when Redis is unavailable."""
+        self._db = db
 
     def _get_bucket(self, group: str) -> _GroupBucket:
         if group not in self._groups:
@@ -257,17 +263,47 @@ class EsiRateLimiter:
                 pass
 
     def _merge_redis_ratelimit(self, group: str, bucket: _GroupBucket) -> None:
-        """Read shared ratelimit state from Redis and take the lower remaining."""
-        if self._redis is None or not self._redis.available:
-            return
-        from .redis_keys import esi_ratelimit_key
-        data = self._redis.get_json(esi_ratelimit_key(group))
-        if data and isinstance(data, dict):
+        """Read shared ratelimit state and take the lower remaining.
+
+        Tries Redis first for low-latency cross-process coordination.
+        Falls back to the most recent MariaDB observation when Redis
+        is unavailable (survives Redis restarts).
+        """
+        # 1. Try Redis (fast, cross-process).
+        if self._redis and self._redis.available:
+            from .redis_keys import esi_ratelimit_key
+            data = self._redis.get_json(esi_ratelimit_key(group))
+            if data and isinstance(data, dict):
+                try:
+                    redis_remaining = int(data.get("remaining", bucket.remaining))
+                    if redis_remaining < bucket.remaining:
+                        bucket.remaining = redis_remaining
+                except (ValueError, TypeError):
+                    pass
+                return
+
+        # 2. Fall back to MariaDB observations (durable, survives Redis restarts).
+        if self._db and not bucket.initialized:
             try:
-                redis_remaining = int(data.get("remaining", bucket.remaining))
-                if redis_remaining < bucket.remaining:
-                    bucket.remaining = redis_remaining
-            except (ValueError, TypeError):
+                row = self._db.fetch_one(
+                    """SELECT x_ratelimit_remaining, retry_after_seconds
+                       FROM esi_rate_limit_observations
+                       WHERE ratelimit_group = %s
+                         AND observed_at >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL 15 MINUTE)
+                       ORDER BY observed_at DESC LIMIT 1""",
+                    (group,),
+                )
+                if row:
+                    db_remaining = int(row.get("x_ratelimit_remaining") or bucket.remaining)
+                    if db_remaining < bucket.remaining:
+                        bucket.remaining = db_remaining
+                    retry_after = int(row.get("retry_after_seconds") or 0)
+                    if retry_after > 0:
+                        self._retry_after_deadline = max(
+                            self._retry_after_deadline,
+                            time.monotonic() + retry_after,
+                        )
+            except Exception:
                 pass
 
     def _publish_redis_ratelimit(self, group: str, bucket: _GroupBucket, retry_after_seconds: float) -> None:

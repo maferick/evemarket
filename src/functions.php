@@ -19668,6 +19668,15 @@ function doctrine_resolve_names_from_esi_ids(array $names): array
     return $resolved;
 }
 
+/**
+ * Search inventory types via authenticated ESI character search.
+ *
+ * Requires ``esi-search.search_structures.v1`` scope. Intentionally kept as a
+ * PHP ESI callsite because the doctrine editor UI needs synchronous search
+ * results for item type autocomplete.
+ *
+ * @todo Phase 3: route through a Python ESI search proxy for rate-limit coordination.
+ */
 function doctrine_search_inventory_type_esi(string $query): ?array
 {
     $term = trim($query);
