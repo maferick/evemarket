@@ -41,6 +41,7 @@ from .rebuild_ai_briefings import run_rebuild_ai_briefings
 from .forecasting_ai_sync import run_forecasting_ai_sync
 from .market_hub_local_history_sync import run_market_hub_local_history_sync
 from .esi_character_queue_sync import run_esi_character_queue_sync
+from .entity_metadata_resolve_sync import run_entity_metadata_resolve_sync
 from .esi_alliance_history_sync import run_esi_alliance_history_sync
 from .intelligence_pipeline import run_intelligence_pipeline
 from .graph_data_quality import run_graph_data_quality_check

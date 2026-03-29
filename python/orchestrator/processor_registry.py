@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
+from .bridge import PhpBridge
 from .job_context import battle_runtime, influx_runtime, neo4j_runtime
 from .job_result import JobResult
 from .jobs import (
@@ -41,6 +43,7 @@ from .jobs import (
 from .jobs.market_comparison_summary_sync import run_market_comparison_summary_sync
 from .jobs.esi_character_queue_sync import run_esi_character_queue_sync
 from .jobs.esi_alliance_history_sync import run_esi_alliance_history_sync
+from .jobs.entity_metadata_resolve_sync import run_entity_metadata_resolve_sync
 from .jobs.intelligence_pipeline import run_intelligence_pipeline
 from .jobs.graph_data_quality import run_graph_data_quality_check
 from .jobs.graph_temporal_metrics import run_graph_temporal_metrics_sync
@@ -58,6 +61,14 @@ from .jobs.graph_universe_sync import run_graph_universe_sync
 from .jobs.graph_pipeline import run_compute_graph_sync_killmail_entities, run_graph_model_audit
 from .jobs.compute_alliance_dossiers import run_compute_alliance_dossiers
 from .jobs.compute_threat_corridors import run_compute_threat_corridors
+
+
+def _php_bridge(cfg: dict[str, Any]) -> PhpBridge:
+    paths = cfg.get("paths", {})
+    php_binary = str(paths.get("php_binary", "php"))
+    app_root = Path(str(paths.get("app_root", "."))).resolve()
+    return PhpBridge(php_binary, app_root)
+
 
 PYTHON_COMPUTE_PROCESSOR_JOB_KEYS: set[str] = {
     "compute_graph_sync",
@@ -116,6 +127,7 @@ PYTHON_SYNC_PROCESSOR_JOB_KEYS: set[str] = {
     "market_hub_local_history_sync",
     "esi_character_queue_sync",
     "esi_alliance_history_sync",
+    "entity_metadata_resolve_sync",
 }
 PYTHON_PROCESSOR_JOB_KEYS: set[str] = PYTHON_COMPUTE_PROCESSOR_JOB_KEYS | PYTHON_SYNC_PROCESSOR_JOB_KEYS
 
@@ -162,6 +174,7 @@ _PROCESSOR_DISPATCH: dict[str, tuple] = {
     # Intelligence pipeline
     "esi_character_queue_sync": (run_esi_character_queue_sync, lambda db, cfg: (db,)),
     "esi_alliance_history_sync": (run_esi_alliance_history_sync, lambda db, cfg: (db,)),
+    "entity_metadata_resolve_sync": (run_entity_metadata_resolve_sync, lambda db, cfg: (db, _php_bridge(cfg))),
     "intelligence_pipeline": (run_intelligence_pipeline, lambda db, cfg: (db, neo4j_runtime(cfg))),
     # Enhanced intelligence platform (KGv2)
     "graph_data_quality_check": (run_graph_data_quality_check, lambda db, cfg: (db, neo4j_runtime(cfg))),

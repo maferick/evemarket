@@ -10748,6 +10748,51 @@ function db_entity_metadata_cache_mark_pending(string $entityType, array $entity
     return db_entity_metadata_cache_upsert($rows);
 }
 
+/**
+ * Fetch entity IDs from entity_metadata_cache that need resolution:
+ * - resolution_status = 'pending'
+ * - resolution_status = 'failed' and last attempt was over $retryAfterMinutes ago
+ * - resolution_status = 'resolved' but expires_at has passed (stale)
+ *
+ * Returns ['alliance' => [id, ...], 'corporation' => [...], 'character' => [...]]
+ */
+function db_entity_metadata_cache_pending(int $limit = 500, int $retryAfterMinutes = 30): array
+{
+    $now = gmdate('Y-m-d H:i:s');
+    $retryThreshold = gmdate('Y-m-d H:i:s', strtotime("-{$retryAfterMinutes} minutes"));
+
+    $rows = db_query(
+        "SELECT entity_type, entity_id
+         FROM entity_metadata_cache
+         WHERE (
+             resolution_status = 'pending'
+             OR (resolution_status = 'failed' AND updated_at < ?)
+             OR (resolution_status = 'resolved' AND expires_at IS NOT NULL AND expires_at < ?)
+         )
+         AND entity_type IN ('alliance', 'corporation', 'character')
+         ORDER BY
+             CASE resolution_status
+                 WHEN 'pending' THEN 0
+                 WHEN 'failed' THEN 1
+                 ELSE 2
+             END ASC,
+             updated_at ASC
+         LIMIT ?",
+        [$retryThreshold, $now, $limit]
+    );
+
+    $result = ['alliance' => [], 'corporation' => [], 'character' => []];
+    foreach ($rows as $row) {
+        $type = (string) $row['entity_type'];
+        $id = (int) $row['entity_id'];
+        if ($id > 0 && isset($result[$type])) {
+            $result[$type][] = $id;
+        }
+    }
+
+    return $result;
+}
+
 function db_killmail_event_upsert(array $event): bool
 {
     db_killmail_payload_schema_ensure();

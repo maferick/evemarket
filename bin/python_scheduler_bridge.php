@@ -236,6 +236,14 @@ try {
         python_scheduler_bridge_output(['ok' => true, 'result' => $result]);
     }
 
+    if ($action === 'resolve-pending-entities') {
+        $input = python_scheduler_bridge_read_stdin_json();
+        $batchSize = max(1, min(2000, (int) ($input['batch_size'] ?? 500)));
+        $retryAfterMinutes = max(1, (int) ($input['retry_after_minutes'] ?? 30));
+        $result = killmail_entity_resolve_pending($batchSize, $retryAfterMinutes);
+        python_scheduler_bridge_output(['ok' => true, 'result' => $result]);
+    }
+
     throw new InvalidArgumentException('Unknown or missing --action value.');
 } catch (Throwable $exception) {
     python_scheduler_bridge_output([
