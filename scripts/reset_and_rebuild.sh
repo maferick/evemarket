@@ -115,8 +115,20 @@ TRUNCATE TABLE graph_sync_state;
 TRUNCATE TABLE job_runs;
 TRUNCATE TABLE compute_job_locks;
 DELETE FROM sync_runs WHERE 1=1;
+
+-- Worker queue & scheduler operational tables
+TRUNCATE TABLE worker_jobs;
+TRUNCATE TABLE scheduler_job_events;
+TRUNCATE TABLE scheduler_job_resource_metrics;
+TRUNCATE TABLE scheduler_profiling_runs;
+TRUNCATE TABLE scheduler_profiling_samples;
+TRUNCATE TABLE scheduler_profiling_pairings;
+TRUNCATE TABLE scheduler_schedule_snapshots;
+TRUNCATE TABLE scheduler_tuning_actions;
+TRUNCATE TABLE scheduler_planner_decisions;
+DELETE FROM scheduler_job_current_status WHERE 1=1;
 "
-echo "  ✓ Sync cursors and job state cleared"
+echo "  ✓ Sync cursors, job state, and scheduler counters cleared"
 
 # ── Step 2: Clear all computed/derived tables ───────────────────────────────
 echo "[2/6] Clearing computed/derived tables..."
