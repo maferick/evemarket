@@ -91,6 +91,84 @@ include __DIR__ . '/../../src/views/partials/header.php';
     </div>
 </section>
 
+<!-- System Activity Heatmap -->
+<?php if ($topSystems !== []): ?>
+<section class="surface-primary mt-4">
+    <h2 class="text-sm font-semibold text-slate-200 uppercase tracking-wider">System Activity Heatmap</h2>
+    <p class="mt-1 text-xs text-muted">Battle concentration across systems. Larger, brighter cells indicate higher activity.</p>
+    <div class="mt-3 flex flex-wrap gap-1.5">
+        <?php
+            $maxBattles = max(1, max(array_column($topSystems, 'battle_count')));
+            foreach ($topSystems as $sys):
+                $bc = (int) ($sys['battle_count'] ?? 0);
+                $intensity = $bc / $maxBattles;
+                // Map intensity to color: low=slate, medium=amber, high=red
+                if ($intensity >= 0.7) {
+                    $bg = 'rgba(239, 68, 68, ' . number_format(0.3 + $intensity * 0.6, 2) . ')';
+                    $border = 'rgba(239, 68, 68, 0.5)';
+                    $text = '#fca5a5';
+                } elseif ($intensity >= 0.4) {
+                    $bg = 'rgba(245, 158, 11, ' . number_format(0.2 + $intensity * 0.5, 2) . ')';
+                    $border = 'rgba(245, 158, 11, 0.4)';
+                    $text = '#fcd34d';
+                } elseif ($intensity >= 0.15) {
+                    $bg = 'rgba(52, 214, 255, ' . number_format(0.1 + $intensity * 0.4, 2) . ')';
+                    $border = 'rgba(52, 214, 255, 0.3)';
+                    $text = '#67e8f9';
+                } else {
+                    $bg = 'rgba(100, 116, 139, ' . number_format(0.15 + $intensity * 0.3, 2) . ')';
+                    $border = 'rgba(100, 116, 139, 0.3)';
+                    $text = '#94a3b8';
+                }
+                // Size based on intensity
+                $size = $intensity >= 0.5 ? 'px-3 py-2' : ($intensity >= 0.2 ? 'px-2.5 py-1.5' : 'px-2 py-1');
+        ?>
+            <div class="rounded-md <?= $size ?> text-center cursor-default transition-transform hover:scale-105"
+                 style="background: <?= $bg ?>; border: 1px solid <?= $border ?>;"
+                 title="<?= htmlspecialchars((string) ($sys['system_name'] ?? ''), ENT_QUOTES) ?>: <?= number_format($bc) ?> battles<?= isset($sys['region_name']) ? ' (' . htmlspecialchars($sys['region_name'], ENT_QUOTES) . ')' : '' ?>">
+                <span class="text-xs font-medium whitespace-nowrap" style="color: <?= $text ?>;"><?= htmlspecialchars((string) ($sys['system_name'] ?? ''), ENT_QUOTES) ?></span>
+                <span class="block text-[10px] opacity-70" style="color: <?= $text ?>;"><?= number_format($bc) ?></span>
+            </div>
+        <?php endforeach; ?>
+    </div>
+
+    <!-- Region breakdown bar -->
+    <?php if ($topRegions !== []): ?>
+        <?php $totalRegionBattles = max(1, array_sum(array_column($topRegions, 'battle_count'))); ?>
+        <div class="mt-4">
+            <h3 class="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">Region Distribution</h3>
+            <div class="h-6 rounded-lg overflow-hidden flex">
+                <?php
+                    $regionColors = ['#ef4444', '#f59e0b', '#34d6ff', '#8b5cf6', '#10b981', '#ec4899', '#6366f1', '#14b8a6'];
+                    foreach (array_slice($topRegions, 0, 8) as $idx => $reg):
+                        $regBattles = (int) ($reg['battle_count'] ?? 0);
+                        $pct = $regBattles / $totalRegionBattles * 100;
+                        if ($pct < 2) continue;
+                        $color = $regionColors[$idx % count($regionColors)];
+                ?>
+                    <div class="h-full flex items-center justify-center overflow-hidden transition-all hover:brightness-125"
+                         style="width: <?= number_format($pct, 1) ?>%; background: <?= $color ?>33; border-right: 1px solid rgba(0,0,0,0.3);"
+                         title="<?= htmlspecialchars((string) ($reg['region_name'] ?? ''), ENT_QUOTES) ?>: <?= number_format($regBattles) ?> battles (<?= number_format($pct, 0) ?>%)">
+                        <?php if ($pct >= 8): ?>
+                            <span class="text-[10px] font-medium truncate px-1" style="color: <?= $color ?>;"><?= htmlspecialchars((string) ($reg['region_name'] ?? ''), ENT_QUOTES) ?></span>
+                        <?php endif; ?>
+                    </div>
+                <?php endforeach; ?>
+            </div>
+            <div class="mt-1.5 flex flex-wrap gap-x-3 gap-y-0.5">
+                <?php foreach (array_slice($topRegions, 0, 8) as $idx => $reg): ?>
+                    <?php $color = $regionColors[$idx % count($regionColors)]; ?>
+                    <span class="text-[10px] text-muted flex items-center gap-1">
+                        <span class="inline-block w-2 h-2 rounded-sm" style="background: <?= $color ?>;"></span>
+                        <?= htmlspecialchars((string) ($reg['region_name'] ?? ''), ENT_QUOTES) ?> (<?= number_format((int) ($reg['battle_count'] ?? 0)) ?>)
+                    </span>
+                <?php endforeach; ?>
+            </div>
+        </div>
+    <?php endif; ?>
+</section>
+<?php endif; ?>
+
 <div class="mt-4 grid gap-4 lg:grid-cols-2">
     <!-- Co-Present Alliances (Graph-derived) -->
     <section class="surface-primary">
@@ -175,12 +253,34 @@ include __DIR__ . '/../../src/views/partials/header.php';
         <?php if ($topShipClasses === []): ?>
             <p class="mt-3 text-sm text-muted">No ship data.</p>
         <?php else: ?>
-            <h3 class="mt-2 text-xs font-semibold text-slate-400 uppercase tracking-wider">Ship Classes</h3>
-            <div class="mt-2 space-y-1">
+            <?php
+                $roleLabels = ['dps' => 'DPS', 'logistics' => 'Logistics', 'command' => 'Command', 'capital' => 'Capital', 'unknown' => 'Unknown'];
+                $roleColors = [
+                    'dps' => 'bg-red-900/60 text-red-300',
+                    'logistics' => 'bg-emerald-900/60 text-emerald-300',
+                    'command' => 'bg-amber-900/60 text-amber-300',
+                    'capital' => 'bg-purple-900/60 text-purple-300',
+                ];
+                $maxClassCount = max(1, max(array_column($topShipClasses, 'count')));
+            ?>
+            <h3 class="mt-2 text-xs font-semibold text-slate-400 uppercase tracking-wider">Fleet Roles</h3>
+            <div class="mt-2 space-y-1.5">
                 <?php foreach (array_slice($topShipClasses, 0, 6) as $sc): ?>
-                    <div class="flex items-center justify-between text-sm">
-                        <span class="text-slate-300"><?= htmlspecialchars((string) ($sc['ship_class'] ?? $sc['fleet_function'] ?? ''), ENT_QUOTES) ?></span>
-                        <span class="text-xs text-muted"><?= (int) ($sc['count'] ?? 0) ?></span>
+                    <?php
+                        $role = (string) ($sc['class'] ?? $sc['ship_class'] ?? $sc['fleet_function'] ?? 'unknown');
+                        $label = $roleLabels[$role] ?? ucfirst($role);
+                        $count = (int) ($sc['count'] ?? 0);
+                        $pct = $count / $maxClassCount * 100;
+                        $barColor = $roleColors[$role] ?? 'bg-slate-700/60 text-slate-400';
+                    ?>
+                    <div>
+                        <div class="flex items-center justify-between text-sm mb-0.5">
+                            <span class="text-slate-300"><?= htmlspecialchars($label, ENT_QUOTES) ?></span>
+                            <span class="text-xs text-muted"><?= number_format($count) ?></span>
+                        </div>
+                        <div class="h-1.5 rounded-full bg-slate-800 overflow-hidden">
+                            <div class="h-full rounded-full <?= $barColor ?>" style="width: <?= number_format($pct, 1) ?>%"></div>
+                        </div>
                     </div>
                 <?php endforeach; ?>
             </div>
@@ -191,8 +291,8 @@ include __DIR__ . '/../../src/views/partials/header.php';
             <div class="mt-2 space-y-1">
                 <?php foreach (array_slice($topShipTypes, 0, 6) as $st): ?>
                     <div class="flex items-center justify-between text-sm">
-                        <span class="text-slate-300"><?= htmlspecialchars((string) ($st['ship_name'] ?? $st['type_name'] ?? ''), ENT_QUOTES) ?></span>
-                        <span class="text-xs text-muted"><?= (int) ($st['count'] ?? 0) ?></span>
+                        <span class="text-slate-300"><?= htmlspecialchars((string) ($st['name'] ?? $st['ship_name'] ?? $st['type_name'] ?? ''), ENT_QUOTES) ?></span>
+                        <span class="text-xs text-muted"><?= number_format((int) ($st['count'] ?? 0)) ?></span>
                     </div>
                 <?php endforeach; ?>
             </div>
@@ -203,11 +303,32 @@ include __DIR__ . '/../../src/views/partials/header.php';
     <section class="surface-primary">
         <h2 class="text-sm font-semibold text-slate-200 uppercase tracking-wider">Behavior Profile</h2>
         <?php if ($behavior !== []): ?>
+            <?php
+                $behaviorDisplay = [
+                    'avg_engagement_rate' => ['label' => 'Engagement Rate', 'format' => 'pct'],
+                    'avg_token_participation' => ['label' => 'Token Participation', 'format' => 'pct'],
+                    'posture' => ['label' => 'Posture', 'format' => 'text'],
+                    'total_appearances' => ['label' => 'Total Appearances', 'format' => 'int'],
+                    'high_sustain_count' => ['label' => 'High Sustain Fights', 'format' => 'int'],
+                    'low_sustain_count' => ['label' => 'Low Sustain Fights', 'format' => 'int'],
+                ];
+            ?>
             <div class="mt-3 space-y-2">
-                <?php foreach ($behavior as $key => $val): ?>
+                <?php foreach ($behaviorDisplay as $key => $meta): ?>
+                    <?php if (!isset($behavior[$key])) continue; ?>
+                    <?php
+                        $val = $behavior[$key];
+                        if ($meta['format'] === 'pct') {
+                            $display = number_format((float) $val * 100, 1) . '%';
+                        } elseif ($meta['format'] === 'int') {
+                            $display = number_format((int) $val);
+                        } else {
+                            $display = ucfirst(htmlspecialchars((string) $val, ENT_QUOTES));
+                        }
+                    ?>
                     <div class="flex items-center justify-between text-sm">
-                        <span class="text-muted"><?= htmlspecialchars(ucfirst(str_replace('_', ' ', (string) $key)), ENT_QUOTES) ?></span>
-                        <span class="text-slate-300"><?= is_numeric($val) ? number_format((float) $val, 2) : htmlspecialchars((string) $val, ENT_QUOTES) ?></span>
+                        <span class="text-muted"><?= $meta['label'] ?></span>
+                        <span class="text-slate-300"><?= $display ?></span>
                     </div>
                 <?php endforeach; ?>
             </div>
@@ -216,16 +337,32 @@ include __DIR__ . '/../../src/views/partials/header.php';
         <?php endif; ?>
 
         <?php if ($trend !== []): ?>
+            <?php
+                $trendLabels = [
+                    'battles_7d' => 'Last 7 days',
+                    'battles_8_30d' => '8–30 days ago',
+                    'battles_31_90d' => '31–90 days ago',
+                    'activity_trend' => 'Trend',
+                ];
+                $trendIcons = ['rising' => '↑', 'declining' => '↓', 'stable' => '→'];
+                $trendColors = [
+                    'rising' => 'text-red-300',
+                    'declining' => 'text-green-300',
+                    'stable' => 'text-slate-300',
+                ];
+            ?>
             <h3 class="mt-4 text-xs font-semibold text-slate-400 uppercase tracking-wider">Activity Trend</h3>
             <div class="mt-2 space-y-1.5">
-                <?php foreach ($trend as $window => $data): ?>
-                    <?php
-                        $battles = is_array($data) ? (int) ($data['battles'] ?? 0) : (int) $data;
-                        $label = is_string($window) ? htmlspecialchars($window, ENT_QUOTES) : $window;
-                    ?>
+                <?php foreach ($trendLabels as $key => $label): ?>
+                    <?php if (!isset($trend[$key])) continue; ?>
+                    <?php $val = $trend[$key]; ?>
                     <div class="flex items-center justify-between text-sm">
                         <span class="text-muted"><?= $label ?></span>
-                        <span class="text-slate-300"><?= number_format($battles) ?> battles</span>
+                        <?php if ($key === 'activity_trend'): ?>
+                            <span class="font-medium <?= $trendColors[$val] ?? 'text-slate-300' ?>"><?= $trendIcons[$val] ?? '' ?> <?= ucfirst(htmlspecialchars((string) $val, ENT_QUOTES)) ?></span>
+                        <?php else: ?>
+                            <span class="text-slate-300"><?= number_format((int) $val) ?> battles</span>
+                        <?php endif; ?>
                     </div>
                 <?php endforeach; ?>
             </div>

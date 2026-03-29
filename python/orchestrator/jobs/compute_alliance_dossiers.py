@@ -204,6 +204,54 @@ def _load_behavior_metrics(db: SupplyCoreDb, alliance_id: int) -> dict[str, Any]
     }
 
 
+def _query_co_presence_sql(db: SupplyCoreDb, alliance_id: int) -> list[dict]:
+    """SQL fallback: find alliances appearing in the same battles (same side)."""
+    rows = db.fetch_all(
+        """
+        SELECT bp2.alliance_id AS co_alliance_id,
+               COUNT(DISTINCT bp1.battle_id) AS co_battles,
+               COUNT(DISTINCT bp2.character_id) AS co_pilots
+        FROM battle_participants bp1
+        INNER JOIN battle_participants bp2
+             ON bp2.battle_id = bp1.battle_id
+            AND bp2.side_key = bp1.side_key
+            AND bp2.alliance_id <> bp1.alliance_id
+        WHERE bp1.alliance_id = %s
+          AND bp2.alliance_id IS NOT NULL AND bp2.alliance_id > 0
+        GROUP BY bp2.alliance_id
+        HAVING co_battles >= 2
+        ORDER BY co_battles DESC
+        LIMIT 15
+        """,
+        (alliance_id,),
+    )
+    return [{"alliance_id": int(r["co_alliance_id"]), "co_battles": int(r["co_battles"]),
+             "co_pilots": int(r["co_pilots"])} for r in rows]
+
+
+def _query_enemies_sql(db: SupplyCoreDb, alliance_id: int) -> list[dict]:
+    """SQL fallback: find alliances on opposing sides in the same battles."""
+    rows = db.fetch_all(
+        """
+        SELECT bp2.alliance_id AS enemy_id,
+               COUNT(DISTINCT bp1.battle_id) AS engagements
+        FROM battle_participants bp1
+        INNER JOIN battle_participants bp2
+             ON bp2.battle_id = bp1.battle_id
+            AND bp2.side_key <> bp1.side_key
+            AND bp2.alliance_id <> bp1.alliance_id
+        WHERE bp1.alliance_id = %s
+          AND bp2.alliance_id IS NOT NULL AND bp2.alliance_id > 0
+        GROUP BY bp2.alliance_id
+        HAVING engagements >= 2
+        ORDER BY engagements DESC
+        LIMIT 15
+        """,
+        (alliance_id,),
+    )
+    return [{"alliance_id": int(r["enemy_id"]), "engagements": int(r["engagements"])} for r in rows]
+
+
 def _query_co_presence_neo4j(neo4j_client: Any, alliance_id: int) -> list[dict]:
     """Query Neo4j for alliances that frequently co-appear in the same battles."""
     if neo4j_client is None:
@@ -415,7 +463,11 @@ def run_compute_alliance_dossiers(
             trend = _compute_trend(db, aid)
 
             co_present = _query_co_presence_neo4j(neo4j_client, aid)
+            if not co_present:
+                co_present = _query_co_presence_sql(db, aid)
             enemies = _query_enemies_neo4j(neo4j_client, aid)
+            if not enemies:
+                enemies = _query_enemies_sql(db, aid)
 
             for cp in co_present:
                 all_ally_ids.add(cp["alliance_id"])
