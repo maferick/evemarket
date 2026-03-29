@@ -203,25 +203,26 @@ def _job_payload(job_name: str, started_at: float, status: str, **kwargs: Any) -
 
 
 def _ensure_constraints_and_indexes(client: Neo4jClient) -> None:
-    client.query("CREATE CONSTRAINT character_character_id IF NOT EXISTS FOR (n:Character) REQUIRE n.character_id IS UNIQUE")
-    client.query("CREATE CONSTRAINT battle_battle_id IF NOT EXISTS FOR (n:Battle) REQUIRE n.battle_id IS UNIQUE")
-    client.query("CREATE CONSTRAINT doctrine_doctrine_id IF NOT EXISTS FOR (n:Doctrine) REQUIRE n.doctrine_id IS UNIQUE")
-    client.query("CREATE CONSTRAINT fit_fit_id IF NOT EXISTS FOR (n:Fit) REQUIRE n.fit_id IS UNIQUE")
-    client.query("CREATE CONSTRAINT item_type_id IF NOT EXISTS FOR (n:Item) REQUIRE n.type_id IS UNIQUE")
-    client.query("CREATE CONSTRAINT side_side_uid IF NOT EXISTS FOR (n:BattleSide) REQUIRE n.side_uid IS UNIQUE")
-    client.query("CREATE CONSTRAINT alliance_alliance_id IF NOT EXISTS FOR (n:Alliance) REQUIRE n.alliance_id IS UNIQUE")
-    client.query("CREATE CONSTRAINT corp_corporation_id IF NOT EXISTS FOR (n:Corporation) REQUIRE n.corporation_id IS UNIQUE")
-    client.query("CREATE CONSTRAINT ship_type_id IF NOT EXISTS FOR (n:ShipType) REQUIRE n.type_id IS UNIQUE")
-    client.query("CREATE CONSTRAINT system_system_id IF NOT EXISTS FOR (n:System) REQUIRE n.system_id IS UNIQUE")
-    client.query("CREATE CONSTRAINT killmail_killmail_id IF NOT EXISTS FOR (n:Killmail) REQUIRE n.killmail_id IS UNIQUE")
+    ddl_timeout = 60
+    client.query("CREATE CONSTRAINT character_character_id IF NOT EXISTS FOR (n:Character) REQUIRE n.character_id IS UNIQUE", timeout_seconds=ddl_timeout)
+    client.query("CREATE CONSTRAINT battle_battle_id IF NOT EXISTS FOR (n:Battle) REQUIRE n.battle_id IS UNIQUE", timeout_seconds=ddl_timeout)
+    client.query("CREATE CONSTRAINT doctrine_doctrine_id IF NOT EXISTS FOR (n:Doctrine) REQUIRE n.doctrine_id IS UNIQUE", timeout_seconds=ddl_timeout)
+    client.query("CREATE CONSTRAINT fit_fit_id IF NOT EXISTS FOR (n:Fit) REQUIRE n.fit_id IS UNIQUE", timeout_seconds=ddl_timeout)
+    client.query("CREATE CONSTRAINT item_type_id IF NOT EXISTS FOR (n:Item) REQUIRE n.type_id IS UNIQUE", timeout_seconds=ddl_timeout)
+    client.query("CREATE CONSTRAINT side_side_uid IF NOT EXISTS FOR (n:BattleSide) REQUIRE n.side_uid IS UNIQUE", timeout_seconds=ddl_timeout)
+    client.query("CREATE CONSTRAINT alliance_alliance_id IF NOT EXISTS FOR (n:Alliance) REQUIRE n.alliance_id IS UNIQUE", timeout_seconds=ddl_timeout)
+    client.query("CREATE CONSTRAINT corp_corporation_id IF NOT EXISTS FOR (n:Corporation) REQUIRE n.corporation_id IS UNIQUE", timeout_seconds=ddl_timeout)
+    client.query("CREATE CONSTRAINT ship_type_id IF NOT EXISTS FOR (n:ShipType) REQUIRE n.type_id IS UNIQUE", timeout_seconds=ddl_timeout)
+    client.query("CREATE CONSTRAINT system_system_id IF NOT EXISTS FOR (n:System) REQUIRE n.system_id IS UNIQUE", timeout_seconds=ddl_timeout)
+    client.query("CREATE CONSTRAINT killmail_killmail_id IF NOT EXISTS FOR (n:Killmail) REQUIRE n.killmail_id IS UNIQUE", timeout_seconds=ddl_timeout)
 
-    client.query("CREATE INDEX character_lookup IF NOT EXISTS FOR (n:Character) ON (n.character_id)")
-    client.query("CREATE INDEX battle_lookup IF NOT EXISTS FOR (n:Battle) ON (n.battle_id)")
-    client.query("CREATE INDEX battle_started_lookup IF NOT EXISTS FOR (n:Battle) ON (n.started_at)")
-    client.query("CREATE INDEX doctrine_lookup IF NOT EXISTS FOR (n:Doctrine) ON (n.doctrine_id)")
-    client.query("CREATE INDEX fit_lookup IF NOT EXISTS FOR (n:Fit) ON (n.fit_id)")
-    client.query("CREATE INDEX item_lookup IF NOT EXISTS FOR (n:Item) ON (n.type_id)")
-    client.query("CREATE INDEX side_key_lookup IF NOT EXISTS FOR (n:BattleSide) ON (n.side_key)")
+    client.query("CREATE INDEX character_lookup IF NOT EXISTS FOR (n:Character) ON (n.character_id)", timeout_seconds=ddl_timeout)
+    client.query("CREATE INDEX battle_lookup IF NOT EXISTS FOR (n:Battle) ON (n.battle_id)", timeout_seconds=ddl_timeout)
+    client.query("CREATE INDEX battle_started_lookup IF NOT EXISTS FOR (n:Battle) ON (n.started_at)", timeout_seconds=ddl_timeout)
+    client.query("CREATE INDEX doctrine_lookup IF NOT EXISTS FOR (n:Doctrine) ON (n.doctrine_id)", timeout_seconds=ddl_timeout)
+    client.query("CREATE INDEX fit_lookup IF NOT EXISTS FOR (n:Fit) ON (n.fit_id)", timeout_seconds=ddl_timeout)
+    client.query("CREATE INDEX item_lookup IF NOT EXISTS FOR (n:Item) ON (n.type_id)", timeout_seconds=ddl_timeout)
+    client.query("CREATE INDEX side_key_lookup IF NOT EXISTS FOR (n:BattleSide) ON (n.side_key)", timeout_seconds=ddl_timeout)
 
 
 def _snapshot_graph_health(client: Neo4jClient) -> dict[str, Any]:
