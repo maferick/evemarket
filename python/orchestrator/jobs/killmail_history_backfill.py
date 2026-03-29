@@ -89,14 +89,18 @@ def _fetch_esi_killmail(killmail_id: int, killmail_hash: str, esi_client: EsiCli
 
     When *gateway* is provided, the request goes through the ESI compliance
     gateway for Expires-gating, conditional request handling, and distributed
-    rate-limit coordination.  Otherwise falls back to direct EsiClient usage.
+    rate-limit coordination.  The gateway caches response bodies in Redis,
+    so Expires-gated hits return the payload directly.
     """
     path = f"/latest/killmails/{killmail_id}/{killmail_hash}/"
     if gateway is not None:
         resp = gateway.get(path, route_template="/latest/killmails/{killmail_id}/{killmail_hash}/")
         if resp.from_cache or resp.not_modified:
-            return None
-        if not (200 <= resp.status_code < 300) or not isinstance(resp.body, dict):
+            if isinstance(resp.body, dict):
+                pass  # Use cached payload — fall through to body extraction
+            else:
+                return None  # Payload not in Redis cache
+        elif not (200 <= resp.status_code < 300) or not isinstance(resp.body, dict):
             return None
     else:
         resp = esi_client.get(path)

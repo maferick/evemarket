@@ -245,7 +245,7 @@ All keys are version-prefixed (`v1`) and use the configured prefix
 | Key pattern | Purpose | TTL |
 |-------------|---------|-----|
 | `esi:meta:v1:{endpoint_key}` | Endpoint metadata (etag, expires, etc.) | Expires-driven (60s–3600s) |
-| `esi:payload:v1:{endpoint_key}` | Optional cached response body | Expires-driven |
+| `esi:payload:v1:{endpoint_key}` | Cached response body | Expires-driven |
 | `esi:ratelimit:v1:{group}:{identity}` | Rate-limit bucket state | Window + 60s |
 | `esi:retry_after:v1:{group}:{identity}` | Retry-after deadline (Unix timestamp) | Retry-After + 5s |
 | `esi:suppress:v1:{endpoint_or_group}` | Request suppression (429 storm protection) | Retry-After + 5s |
