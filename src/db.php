@@ -15302,7 +15302,13 @@ function db_theaters_list(int $limit = 50, int $offset = 0, ?string $regionFilte
     }
     $placeholders = implode(',', array_fill(0, count($trackedAllianceIds), '?'));
 
-    $sql = 'SELECT t.*, rs.system_name AS primary_system_name, rr.region_name
+    $sql = 'SELECT t.theater_id, t.label, t.primary_system_id, t.region_id,
+                   t.start_time, t.end_time, t.duration_seconds,
+                   t.battle_count, t.system_count, t.total_kills, t.total_isk,
+                   t.participant_count, t.anomaly_score, t.computed_at, t.locked_at,
+                   t.ai_headline, t.ai_verdict, t.ai_summary_model, t.ai_summary_at,
+                   t.created_at, t.updated_at,
+                   rs.system_name AS primary_system_name, rr.region_name
             FROM theaters t
             INNER JOIN theater_alliance_summary tas
                 ON tas.theater_id = t.theater_id

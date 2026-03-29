@@ -27513,7 +27513,46 @@ function theater_lock_report(string $theaterId): ?array
     // Lock the theater regardless of AI success
     db_execute('UPDATE theaters SET locked_at = NOW() WHERE theater_id = ?', [$theaterId]);
 
+    // Snapshot all view data so locked reports never need live queries
+    theater_snapshot_save($theaterId);
+
     return $aiResult;
+}
+
+function theater_snapshot_save(string $theaterId): void
+{
+    $snapshot = [
+        'battles' => db_theater_battles($theaterId),
+        'systems' => db_theater_systems($theaterId),
+        'timeline' => db_theater_timeline($theaterId),
+        'alliance_summary' => db_theater_alliance_summary($theaterId),
+        'fleet_composition' => db_theater_fleet_composition($theaterId),
+        'suspicion' => db_theater_suspicion_summary($theaterId),
+        'graph_summary' => db_theater_graph_summary($theaterId),
+        'turning_points' => db_theater_turning_points($theaterId),
+        'participants' => db_theater_participants($theaterId, null, false, 1000),
+        'graph_participants' => db_theater_graph_participants($theaterId),
+    ];
+
+    $json = json_encode($snapshot, JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE);
+    if ($json !== false) {
+        db_execute('UPDATE theaters SET snapshot_data = ? WHERE theater_id = ?', [$json, $theaterId]);
+    }
+}
+
+function theater_snapshot_load(string $theaterId, array $theater): ?array
+{
+    $raw = $theater['snapshot_data'] ?? null;
+    if ($raw === null || !is_string($raw) || $raw === '') {
+        return null;
+    }
+
+    $data = json_decode($raw, true);
+    if (!is_array($data)) {
+        return null;
+    }
+
+    return $data;
 }
 
 function theater_is_locked(array $theater): bool
@@ -27532,7 +27571,7 @@ function theater_unlock_report(string $theaterId): array
     }
 
     db_execute(
-        'UPDATE theaters SET locked_at = NULL, ai_headline = NULL, ai_summary = NULL, ai_verdict = NULL, ai_summary_model = NULL, ai_summary_at = NULL WHERE theater_id = ?',
+        'UPDATE theaters SET locked_at = NULL, ai_headline = NULL, ai_summary = NULL, ai_verdict = NULL, ai_summary_model = NULL, ai_summary_at = NULL, snapshot_data = NULL WHERE theater_id = ?',
         [$theaterId]
     );
 
