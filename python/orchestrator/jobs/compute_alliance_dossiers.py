@@ -115,15 +115,13 @@ def _load_ship_summary(db: SupplyCoreDb, alliance_id: int) -> dict[str, Any]:
         """
         SELECT bp.ship_type_id,
                COALESCE(rit.type_name, CONCAT('Type #', bp.ship_type_id)) AS ship_name,
-               baf.fleet_function,
+               bp.is_logi, bp.is_command, bp.is_capital,
                COUNT(*) AS usage_count
         FROM battle_participants bp
-        LEFT JOIN battle_actor_features baf
-             ON baf.battle_id = bp.battle_id AND baf.character_id = bp.character_id
         LEFT JOIN ref_item_types rit ON rit.type_id = bp.ship_type_id
         WHERE bp.alliance_id = %s
           AND bp.ship_type_id IS NOT NULL AND bp.ship_type_id > 0
-        GROUP BY bp.ship_type_id, baf.fleet_function
+        GROUP BY bp.ship_type_id, bp.is_logi, bp.is_command, bp.is_capital
         ORDER BY usage_count DESC
         LIMIT 30
         """,
@@ -133,7 +131,15 @@ def _load_ship_summary(db: SupplyCoreDb, alliance_id: int) -> dict[str, Any]:
     ship_types: list[dict] = []
     class_totals: dict[str, int] = defaultdict(int)
     for s in ships:
-        fn = s.get("fleet_function") or "unknown"
+        # Derive fleet role from boolean flags
+        if int(s.get("is_logi") or 0):
+            fn = "logistics"
+        elif int(s.get("is_command") or 0):
+            fn = "command"
+        elif int(s.get("is_capital") or 0):
+            fn = "capital"
+        else:
+            fn = "dps"
         class_totals[fn] += int(s.get("usage_count") or 0)
         ship_types.append({
             "type_id": int(s.get("ship_type_id") or 0),
