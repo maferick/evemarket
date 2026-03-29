@@ -259,6 +259,7 @@ def run_compute_suspicion_scores_v2(db: SupplyCoreDb, runtime: dict[str, Any] | 
                 SUM(CASE WHEN baf1.participated_in_high_sustain = 1 OR baf2.participated_in_high_sustain = 1 THEN 1 ELSE 0 END) AS high_sustain_count,
                 ROW_NUMBER() OVER (PARTITION BY baf1.character_id ORDER BY COUNT(DISTINCT baf1.battle_id) DESC) AS rn
             FROM battle_actor_features baf1
+            INNER JOIN character_battle_intelligence cbi_filter ON cbi_filter.character_id = baf1.character_id
             INNER JOIN battle_actor_features baf2 ON baf2.battle_id = baf1.battle_id AND baf2.character_id <> baf1.character_id
             GROUP BY baf1.character_id, baf2.character_id
         ) x
@@ -273,6 +274,35 @@ def run_compute_suspicion_scores_v2(db: SupplyCoreDb, runtime: dict[str, Any] | 
                 "character_id": int(row.get("other_character_id") or 0),
                 "weight": float(row.get("shared_battle_count") or 0.0),
                 "high_sustain_battle_count": int(row.get("high_sustain_count") or 0),
+            }
+        )
+
+    # Batch-fetch top 5 supporting battles per character (replaces N+1 per-character queries)
+    top_battles_rows = db.fetch_all(
+        """
+        SELECT tb.character_id, tb.battle_id, tb.side_key, tb.z_efficiency_score
+        FROM (
+            SELECT
+                baf.character_id,
+                baf.battle_id,
+                baf.side_key,
+                COALESCE(bsm.z_efficiency_score, 0) AS z_efficiency_score,
+                ROW_NUMBER() OVER (PARTITION BY baf.character_id ORDER BY ABS(COALESCE(bsm.z_efficiency_score, 0)) DESC) AS rn
+            FROM battle_actor_features baf
+            INNER JOIN character_battle_intelligence cbi_filter ON cbi_filter.character_id = baf.character_id
+            LEFT JOIN battle_side_metrics bsm ON bsm.battle_id = baf.battle_id AND bsm.side_key = baf.side_key
+        ) tb
+        WHERE tb.rn <= 5
+        """
+    )
+    top_battles_map: dict[int, list[dict[str, Any]]] = {}
+    for tb_row in top_battles_rows:
+        cid_tb = int(tb_row.get("character_id") or 0)
+        top_battles_map.setdefault(cid_tb, []).append(
+            {
+                "battle_id": tb_row.get("battle_id"),
+                "side_key": tb_row.get("side_key"),
+                "z_efficiency_score": float(tb_row.get("z_efficiency_score") or 0.0),
             }
         )
 
@@ -347,17 +377,7 @@ def run_compute_suspicion_scores_v2(db: SupplyCoreDb, runtime: dict[str, Any] | 
         }
 
         evidence_count = len(top_neighbors.get(cid, [])) + int(recent_row.get("recent_battle_count") or 0)
-        top_supporting_battles = db.fetch_all(
-            """
-            SELECT baf.battle_id, baf.side_key, COALESCE(bsm.z_efficiency_score, 0) AS z_efficiency_score
-            FROM battle_actor_features baf
-            LEFT JOIN battle_side_metrics bsm ON bsm.battle_id = baf.battle_id AND bsm.side_key = baf.side_key
-            WHERE baf.character_id = %s
-            ORDER BY ABS(COALESCE(bsm.z_efficiency_score,0)) DESC
-            LIMIT 5
-            """,
-            (cid,),
-        )
+        top_supporting_battles = top_battles_map.get(cid, [])
 
         score_payload.append(
             (
