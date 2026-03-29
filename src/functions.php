@@ -243,6 +243,9 @@ function nav_items(): array
             'badge_tooltip' => 'Battle analysis tools',
             'children' => [
                 ['label' => 'Theater Overview', 'path' => '/theater-intelligence'],
+                ['label' => 'Theater Map', 'path' => '/theater-map'],
+                ['label' => 'Threat Corridors', 'path' => '/threat-corridors'],
+                ['label' => 'Alliance Dossiers', 'path' => '/alliance-dossiers'],
                 ['label' => 'Pilot Lookup', 'path' => '/battle-intelligence/pilot-lookup.php'],
                 ['label' => 'Suspicion Leaderboard', 'path' => '/battle-intelligence'],
                 ['label' => 'Battle Anomalies', 'path' => '/battle-intelligence/battles.php'],

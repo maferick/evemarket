@@ -56,6 +56,8 @@ from .jobs.theater_suspicion import run_theater_suspicion
 from .jobs.compute_economic_warfare import run_compute_economic_warfare
 from .jobs.graph_universe_sync import run_graph_universe_sync
 from .jobs.graph_pipeline import run_compute_graph_sync_killmail_entities
+from .jobs.compute_alliance_dossiers import run_compute_alliance_dossiers
+from .jobs.compute_threat_corridors import run_compute_threat_corridors
 
 PYTHON_COMPUTE_PROCESSOR_JOB_KEYS: set[str] = {
     "compute_graph_sync",
@@ -90,6 +92,8 @@ PYTHON_COMPUTE_PROCESSOR_JOB_KEYS: set[str] = {
     "compute_economic_warfare",
     "graph_universe_sync",
     "compute_graph_sync_killmail_entities",
+    "compute_alliance_dossiers",
+    "compute_threat_corridors",
 }
 
 PYTHON_SYNC_PROCESSOR_JOB_KEYS: set[str] = {
@@ -174,6 +178,9 @@ _PROCESSOR_DISPATCH: dict[str, tuple] = {
     "theater_analysis": (run_theater_analysis, lambda db, cfg: (db, battle_runtime(cfg))),
     "theater_graph_integration": (run_theater_graph_integration, lambda db, cfg: (db, neo4j_runtime(cfg), battle_runtime(cfg))),
     "theater_suspicion": (run_theater_suspicion, lambda db, cfg: (db, battle_runtime(cfg))),
+    # Intelligence expansion — dossiers & threat corridors
+    "compute_alliance_dossiers": (run_compute_alliance_dossiers, lambda db, cfg: (db, neo4j_runtime(cfg))),
+    "compute_threat_corridors": (run_compute_threat_corridors, lambda db, cfg: (db, neo4j_runtime(cfg))),
 }
 
 

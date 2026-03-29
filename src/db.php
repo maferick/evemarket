@@ -15636,3 +15636,242 @@ function db_item_spof_items(int $limit = 30): array
         [max(1, min(100, $limit))]
     );
 }
+
+// ---------------------------------------------------------------------------
+// Alliance Dossiers
+// ---------------------------------------------------------------------------
+
+function db_alliance_dossiers_list(int $limit = 100, int $offset = 0, ?string $search = null): array
+{
+    $where = '';
+    $params = [];
+    if ($search !== null && trim($search) !== '') {
+        $where = 'WHERE ad.alliance_name LIKE ?';
+        $params[] = '%' . trim($search) . '%';
+    }
+    $params[] = max(1, min(200, $limit));
+    $params[] = max(0, $offset);
+    return db_select(
+        "SELECT ad.*
+         FROM alliance_dossiers ad
+         {$where}
+         ORDER BY ad.recent_battles DESC, ad.total_battles DESC
+         LIMIT ? OFFSET ?",
+        $params
+    );
+}
+
+function db_alliance_dossier(int $allianceId): ?array
+{
+    $rows = db_select(
+        'SELECT ad.*,
+                ra.alliance_name AS ref_alliance_name,
+                rr.region_name AS primary_region_name,
+                rs.system_name AS primary_system_name
+         FROM alliance_dossiers ad
+         LEFT JOIN ref_alliances ra ON ra.alliance_id = ad.alliance_id
+         LEFT JOIN ref_regions rr ON rr.region_id = ad.primary_region_id
+         LEFT JOIN ref_systems rs ON rs.system_id = ad.primary_system_id
+         WHERE ad.alliance_id = ?
+         LIMIT 1',
+        [$allianceId]
+    );
+    $row = $rows[0] ?? null;
+    if ($row === null) {
+        return null;
+    }
+    // Decode JSON columns
+    foreach (['top_co_present_json', 'top_enemies_json', 'top_regions_json', 'top_systems_json', 'top_ship_classes_json', 'top_ship_types_json', 'behavior_summary_json', 'trend_summary_json'] as $col) {
+        $raw = $row[$col] ?? null;
+        $key = str_replace('_json', '', $col);
+        $row[$key] = (is_string($raw) && trim($raw) !== '') ? (json_decode($raw, true) ?? []) : [];
+    }
+    return $row;
+}
+
+function db_alliance_dossiers_count(?string $search = null): int
+{
+    $where = '';
+    $params = [];
+    if ($search !== null && trim($search) !== '') {
+        $where = 'WHERE alliance_name LIKE ?';
+        $params[] = '%' . trim($search) . '%';
+    }
+    $rows = db_select("SELECT COUNT(*) AS cnt FROM alliance_dossiers {$where}", $params);
+    return (int) ($rows[0]['cnt'] ?? 0);
+}
+
+// ---------------------------------------------------------------------------
+// System Threat Scores (Theater Map)
+// ---------------------------------------------------------------------------
+
+function db_system_threat_scores(string $threatLevel = 'all', int $limit = 500): array
+{
+    $where = '';
+    $params = [];
+    if ($threatLevel !== 'all') {
+        $where = 'WHERE sts.threat_level = ?';
+        $params[] = $threatLevel;
+    }
+    $params[] = max(1, min(2000, $limit));
+    return db_select(
+        "SELECT sts.*, rs.system_name, rs.x, rs.y, rs.z, rs.security,
+                rc.constellation_name, rr.region_name, rr.region_id
+         FROM system_threat_scores sts
+         LEFT JOIN ref_systems rs ON rs.system_id = sts.system_id
+         LEFT JOIN ref_constellations rc ON rc.constellation_id = rs.constellation_id
+         LEFT JOIN ref_regions rr ON rr.region_id = rs.region_id
+         {$where}
+         ORDER BY sts.hotspot_score DESC
+         LIMIT ?",
+        $params
+    );
+}
+
+function db_system_threat_score(int $systemId): ?array
+{
+    $rows = db_select(
+        'SELECT sts.*, rs.system_name, rs.x, rs.y, rs.z, rs.security,
+                rc.constellation_name, rr.region_name
+         FROM system_threat_scores sts
+         LEFT JOIN ref_systems rs ON rs.system_id = sts.system_id
+         LEFT JOIN ref_constellations rc ON rc.constellation_id = rs.constellation_id
+         LEFT JOIN ref_regions rr ON rr.region_id = rs.region_id
+         WHERE sts.system_id = ?
+         LIMIT 1',
+        [$systemId]
+    );
+    return $rows[0] ?? null;
+}
+
+function db_theater_map_systems(int $regionId = 0): array
+{
+    $where = 'WHERE sts.hotspot_score > 0';
+    $params = [];
+    if ($regionId > 0) {
+        $where .= ' AND rs.region_id = ?';
+        $params[] = $regionId;
+    }
+    $params[] = 2000;
+    return db_select(
+        "SELECT sts.system_id, sts.battle_count, sts.recent_battle_count,
+                sts.total_kills, sts.total_isk_destroyed, sts.threat_level,
+                sts.hotspot_score, sts.dominant_hostile_name, sts.last_battle_at,
+                rs.system_name, rs.x, rs.y, rs.z, rs.security,
+                rr.region_id, rr.region_name
+         FROM system_threat_scores sts
+         INNER JOIN ref_systems rs ON rs.system_id = sts.system_id
+         LEFT JOIN ref_regions rr ON rr.region_id = rs.region_id
+         {$where}
+         ORDER BY sts.hotspot_score DESC
+         LIMIT ?",
+        $params
+    );
+}
+
+function db_theater_map_regions(): array
+{
+    return db_select(
+        'SELECT rr.region_id, rr.region_name, COUNT(sts.system_id) AS threat_systems,
+                SUM(sts.battle_count) AS total_battles, MAX(sts.hotspot_score) AS max_hotspot
+         FROM system_threat_scores sts
+         INNER JOIN ref_systems rs ON rs.system_id = sts.system_id
+         INNER JOIN ref_regions rr ON rr.region_id = rs.region_id
+         WHERE sts.hotspot_score > 0
+         GROUP BY rr.region_id, rr.region_name
+         ORDER BY total_battles DESC',
+        []
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Threat Corridors
+// ---------------------------------------------------------------------------
+
+function db_threat_corridors_list(int $limit = 50, int $offset = 0, int $regionId = 0): array
+{
+    $where = 'WHERE tc.is_active = 1';
+    $params = [];
+    if ($regionId > 0) {
+        $where .= ' AND tc.region_id = ?';
+        $params[] = $regionId;
+    }
+    $params[] = max(1, min(200, $limit));
+    $params[] = max(0, $offset);
+    $rows = db_select(
+        "SELECT tc.*, rr.region_name
+         FROM threat_corridors tc
+         LEFT JOIN ref_regions rr ON rr.region_id = tc.region_id
+         {$where}
+         ORDER BY tc.corridor_score DESC
+         LIMIT ? OFFSET ?",
+        $params
+    );
+    foreach ($rows as &$row) {
+        $row['system_ids'] = json_decode($row['system_ids_json'] ?? '[]', true) ?: [];
+        $row['system_names'] = json_decode($row['system_names_json'] ?? '[]', true) ?: [];
+        $row['hostile_alliance_ids'] = json_decode($row['hostile_alliance_ids_json'] ?? '[]', true) ?: [];
+    }
+    unset($row);
+    return $rows;
+}
+
+function db_threat_corridor(int $corridorId): ?array
+{
+    $rows = db_select(
+        'SELECT tc.*, rr.region_name
+         FROM threat_corridors tc
+         LEFT JOIN ref_regions rr ON rr.region_id = tc.region_id
+         WHERE tc.corridor_id = ?
+         LIMIT 1',
+        [$corridorId]
+    );
+    $row = $rows[0] ?? null;
+    if ($row === null) {
+        return null;
+    }
+    $row['system_ids'] = json_decode($row['system_ids_json'] ?? '[]', true) ?: [];
+    $row['system_names'] = json_decode($row['system_names_json'] ?? '[]', true) ?: [];
+    $row['hostile_alliance_ids'] = json_decode($row['hostile_alliance_ids_json'] ?? '[]', true) ?: [];
+    return $row;
+}
+
+function db_threat_corridor_systems(int $corridorId): array
+{
+    return db_select(
+        'SELECT tcs.*, rs.system_name, rs.security,
+                sts.threat_level, sts.hotspot_score, sts.dominant_hostile_name
+         FROM threat_corridor_systems tcs
+         LEFT JOIN ref_systems rs ON rs.system_id = tcs.system_id
+         LEFT JOIN system_threat_scores sts ON sts.system_id = tcs.system_id
+         WHERE tcs.corridor_id = ?
+         ORDER BY tcs.position_in_corridor ASC',
+        [$corridorId]
+    );
+}
+
+function db_threat_corridors_count(int $regionId = 0): int
+{
+    $where = 'WHERE is_active = 1';
+    $params = [];
+    if ($regionId > 0) {
+        $where .= ' AND region_id = ?';
+        $params[] = $regionId;
+    }
+    $rows = db_select("SELECT COUNT(*) AS cnt FROM threat_corridors {$where}", $params);
+    return (int) ($rows[0]['cnt'] ?? 0);
+}
+
+function db_threat_corridor_regions(): array
+{
+    return db_select(
+        'SELECT rr.region_id, rr.region_name, COUNT(tc.corridor_id) AS corridor_count,
+                MAX(tc.corridor_score) AS max_score
+         FROM threat_corridors tc
+         INNER JOIN ref_regions rr ON rr.region_id = tc.region_id
+         WHERE tc.is_active = 1
+         GROUP BY rr.region_id, rr.region_name
+         ORDER BY corridor_count DESC',
+        []
+    );
+}
