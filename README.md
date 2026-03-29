@@ -1,8 +1,51 @@
+<div align="center">
+
 # SupplyCore Foundation
 
-A production-oriented baseline for **SupplyCore** built with **PHP 8+, MySQL, Apache2**, and a modern **Tailwind CSS v4 + shadcn/ui-inspired** interface.
+**EVE Online Intelligence Platform**
 
-This repository establishes a clean architecture that can scale from an initial dashboard/settings app into a complete market, trading, and ESI-integrated platform.
+[![PHP 8+](https://img.shields.io/badge/PHP-8%2B-777BB4?logo=php&logoColor=white)](https://www.php.net/)
+[![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![MariaDB](https://img.shields.io/badge/MariaDB-003545?logo=mariadb&logoColor=white)](https://mariadb.org/)
+[![Neo4j](https://img.shields.io/badge/Neo4j-4581C3?logo=neo4j&logoColor=white)](https://neo4j.com/)
+[![InfluxDB](https://img.shields.io/badge/InfluxDB-22ADF6?logo=influxdb&logoColor=white)](https://www.influxdata.com/)
+[![Tailwind CSS](https://img.shields.io/badge/Tailwind_CSS-v4-06B6D4?logo=tailwindcss&logoColor=white)](https://tailwindcss.com/)
+[![License](https://img.shields.io/badge/License-Proprietary-red.svg)]()
+
+A production-grade dual-runtime data intelligence platform for EVE Online market analysis, battle intelligence, doctrine management, and counterintelligence — built with a **PHP control plane** and a **Python execution engine**.
+
+[Architecture](docs/ARCHITECTURE.md) | [CLI Manual](docs/CLI_MANUAL.md) | [Operations Guide](docs/OPERATIONS_GUIDE.md) | [Battle Runbook](docs/BATTLE_INTELLIGENCE_RUNBOOK.md)
+
+</div>
+
+---
+
+## Table of Contents
+
+- [Features](#features-included)
+- [Project Structure](#project-structure)
+- [Quick Start](#quick-start-local)
+- [Configuration](#configuration-strategy)
+- [Runtime Settings](#runtime-configuration-model)
+- [Redis Integration](#redis-integration-notes)
+- [AI Briefings](#ai-briefings)
+- [InfluxDB Rollup Offload](#influxdb-historical-rollup-offload)
+- [Battle Intelligence](#battle-intelligence-operations)
+- [Precomputed Intelligence Pipeline](#precomputed-intelligence-pipeline-mariadb--influxdb--python)
+- [Deployment & Operations](#deployment--operations)
+  - [Systemd Services](#systemd-deployment)
+  - [Worker Model](#continuous-worker-model)
+  - [Queue Execution](#queue-backed-execution)
+  - [Worker Commands](#worker-commands)
+  - [Reset & Rebuild](#rebuild--reset-cli)
+  - [Troubleshooting](#troubleshooting)
+- [Killmail Intelligence](#killmail-intelligence-foundation-zkillboard-r2z2)
+- [Doctrine Intelligence](#doctrine-intelligence-snapshots)
+- [EVE Static Data Import](#eve-static-data-import-pipeline)
+- [Architecture Guidelines](#architecture-guidelines)
+- [Further Documentation](#further-documentation)
+
+---
 
 ## Features Included
 
@@ -854,3 +897,25 @@ The current importer reads required datasets directly from the official JSONL ZI
 
 Static data is used only for non-live, non-authenticated reference metadata.
 Do **not** use static data as a source for token-scoped character data, alliance structure auth state, live market feeds, or account-level real-time information.
+
+---
+
+## Further Documentation
+
+| Document | Description |
+|----------|-------------|
+| [Architecture Overview](docs/ARCHITECTURE.md) | System architecture, tech stack, data flow, and component diagram |
+| [CLI Manual](docs/CLI_MANUAL.md) | Complete command reference with syntax, options, and execution order |
+| [Operations Guide](docs/OPERATIONS_GUIDE.md) | Reset, rebuild, deployment, and maintenance procedures |
+| [AGENTS.md](AGENTS.md) | Development rules, coding standards, and architecture manifesto |
+| [Battle Intelligence Runbook](docs/BATTLE_INTELLIGENCE_RUNBOOK.md) | Operator runbook for battle intelligence pipeline |
+| [Battle Intelligence Validation](docs/BATTLE_INTELLIGENCE_VALIDATION.md) | SQL validation queries for battle intelligence output |
+| [Counterintel Validation](docs/COUNTERINTEL_PIPELINE_VALIDATION.md) | SQL/Cypher validation for counter-intelligence pipeline |
+| [Graph Intelligence](docs/GRAPH_INTELLIGENCE.md) | Neo4j graph model, anchor nodes, derived relationships |
+| [Graph Model Audit](docs/GRAPH_MODEL_AUDIT.md) | Neo4j graph scaling and suspicion scoring v2 |
+| [InfluxDB Rollup Offload](docs/INFLUXDB_ROLLUP_OFFLOAD.md) | Historical rollup export to InfluxDB |
+| [Authoritative Job Matrix](docs/AUTHORITATIVE_JOB_MATRIX.md) | Job registry source of truth |
+| [Batching Defaults](docs/BATCHING_DEFAULTS.md) | Rules for batched, resumable jobs |
+| [Python-Only Workers](docs/PYTHON_ONLY_WORKERS.md) | Python-native worker architecture runbook |
+| [Sync Unification Matrix](docs/SYNC_UNIFICATION_MATRIX.md) | Python sync job standardization tracking |
+| [Database Optimization](database/OPTIMIZATION_AUDIT.md) | Database architecture audit and optimization notes |
