@@ -23,6 +23,7 @@ CORE_UNITS=(
   supplycore-compute-worker.service
   supplycore-compute-worker@.service
   supplycore-zkill.service
+  supplycore-evewho-runner.service
   supplycore-influx-rollup-export.service
   supplycore-influx-rollup-export.timer
 )

@@ -1,0 +1,24 @@
+[Unit]
+Description=SupplyCore EveWho alliance lookup continuous runner
+After=network-online.target mariadb.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+WorkingDirectory=/var/www/SupplyCore
+Environment=SUPPLYCORE_EVEWHO_LOOP_SLEEP=30
+EnvironmentFile=-/etc/default/supplycore-worker
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/var/www/SupplyCore/.venv-orchestrator/bin/python /var/www/SupplyCore/bin/python_orchestrator.py evewho-alliance-runner --app-root /var/www/SupplyCore --loop-sleep ${SUPPLYCORE_EVEWHO_LOOP_SLEEP}
+Restart=always
+RestartSec=10
+KillSignal=SIGTERM
+TimeoutStopSec=90
+MemoryMax=1G
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

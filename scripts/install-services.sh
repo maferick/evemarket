@@ -356,6 +356,10 @@ INSTALL_ZKILL=false
 if prompt_yes_no "Install and enable the dedicated zKill worker?" "Y"; then
   INSTALL_ZKILL=true
 fi
+INSTALL_EVEWHO=false
+if prompt_yes_no "Install and enable the dedicated EveWho alliance lookup runner?" "N"; then
+  INSTALL_EVEWHO=true
+fi
 INSTALL_INFLUX=false
 if prompt_yes_no "Install the InfluxDB rollup export service and timer?" "N"; then
   INSTALL_INFLUX=true
@@ -424,6 +428,7 @@ fi
 "${VENV_PATH}/bin/python" -m pip install --upgrade "${APP_ROOT}/python"
 "${VENV_PATH}/bin/python" -m orchestrator worker-pool --help >/dev/null
 "${VENV_PATH}/bin/python" -m orchestrator zkill-worker --help >/dev/null
+"${VENV_PATH}/bin/python" -m orchestrator evewho-alliance-runner --help >/dev/null
 "${VENV_PATH}/bin/python" -m orchestrator run-job --help >/dev/null
 
 # ===========================  Stale unit cleanup  =========================
@@ -445,6 +450,7 @@ render_unit "${REPO_ROOT}/ops/systemd/supplycore-compute-worker.service" "${SYST
 render_sync_instance_unit "${SYSTEMD_DIR}/supplycore-sync-worker@.service"
 render_compute_instance_unit "${SYSTEMD_DIR}/supplycore-compute-worker@.service"
 render_unit "${REPO_ROOT}/ops/systemd/supplycore-zkill.service" "${SYSTEMD_DIR}/supplycore-zkill.service"
+render_unit "${REPO_ROOT}/ops/systemd/supplycore-evewho-runner.service" "${SYSTEMD_DIR}/supplycore-evewho-runner.service"
 if [[ ${INSTALL_INFLUX} == true ]]; then
   render_unit "${REPO_ROOT}/ops/systemd/supplycore-influx-rollup-export.service" "${SYSTEMD_DIR}/supplycore-influx-rollup-export.service"
   cp "${REPO_ROOT}/ops/systemd/supplycore-influx-rollup-export.timer" "${SYSTEMD_DIR}/supplycore-influx-rollup-export.timer"
@@ -477,6 +483,10 @@ fi
 
 if [[ ${INSTALL_ZKILL} == true ]]; then
   services_to_enable+=("supplycore-zkill.service")
+fi
+
+if [[ ${INSTALL_EVEWHO} == true ]]; then
+  services_to_enable+=("supplycore-evewho-runner.service")
 fi
 
 if [[ ${INSTALL_INFLUX} == true ]]; then
@@ -513,6 +523,9 @@ elif (( COMPUTE_COUNT > 1 )); then
 fi
 if [[ ${INSTALL_ZKILL} == true ]]; then
   echo "  systemctl status supplycore-zkill.service"
+fi
+if [[ ${INSTALL_EVEWHO} == true ]]; then
+  echo "  systemctl status supplycore-evewho-runner.service"
 fi
 if [[ ${INSTALL_INFLUX} == true ]]; then
   echo "  systemctl status supplycore-influx-rollup-export.timer"
