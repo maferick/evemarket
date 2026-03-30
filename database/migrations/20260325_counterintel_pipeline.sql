@@ -77,9 +77,18 @@ CREATE TABLE IF NOT EXISTS character_counterintel_scores (
 CREATE TABLE IF NOT EXISTS character_counterintel_evidence (
     character_id BIGINT UNSIGNED NOT NULL,
     evidence_key VARCHAR(120) NOT NULL,
+    window_label VARCHAR(40) NOT NULL DEFAULT 'all_time',
     evidence_value DECIMAL(16,6) DEFAULT NULL,
+    expected_value DECIMAL(16,6) DEFAULT NULL,
+    deviation_value DECIMAL(16,6) DEFAULT NULL,
+    z_score DECIMAL(12,6) DEFAULT NULL,
+    mad_score DECIMAL(12,6) DEFAULT NULL,
+    cohort_percentile DECIMAL(10,6) DEFAULT NULL,
+    confidence_flag VARCHAR(20) NOT NULL DEFAULT 'low',
     evidence_text VARCHAR(500) NOT NULL,
     evidence_payload_json LONGTEXT DEFAULT NULL,
     computed_at DATETIME NOT NULL,
-    PRIMARY KEY (character_id, evidence_key)
+    PRIMARY KEY (character_id, evidence_key, window_label),
+    KEY idx_counterintel_evidence_signal_percentile (evidence_key, cohort_percentile),
+    KEY idx_counterintel_evidence_character_computed (character_id, computed_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

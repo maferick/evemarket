@@ -22,6 +22,7 @@ from .battle_intelligence import (
     run_compute_suspicion_scores,
 )
 from .behavioral_intelligence_v2 import run_compute_behavioral_baselines, run_compute_suspicion_scores_v2
+from .compute_cohort_baselines import run_compute_cohort_baselines
 from .counterintel_pipeline import run_compute_counterintel_pipeline
 from .evewho_enrichment_sync import run_evewho_enrichment_sync
 from .evewho_alliance_member_sync import run_evewho_alliance_member_sync

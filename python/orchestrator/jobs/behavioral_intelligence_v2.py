@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import bisect
 import math
+import statistics
 import time
+from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, datetime
 from typing import Any
@@ -45,6 +47,44 @@ def _bounded(value: float, scale: float = 1.0) -> float:
     if scale <= 0:
         scale = 1.0
     return max(0.0, min(1.0, value / scale))
+
+
+def _bv2_cohort_normalize(evidence_rows: list[dict[str, Any]]) -> None:
+    """Enrich evidence rows in-place with cohort statistics."""
+    by_key: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in evidence_rows:
+        if row.get("evidence_value") is not None:
+            by_key[row["evidence_key"]].append(row)
+
+    for key, rows in by_key.items():
+        values = [float(r["evidence_value"]) for r in rows]
+        n = len(values)
+        if n == 0:
+            continue
+
+        mean = statistics.mean(values)
+        std = statistics.pstdev(values) if n > 1 else 0.0
+        median = statistics.median(values)
+        diffs = [abs(v - median) for v in values]
+        mad = statistics.median(diffs) if diffs else 0.0
+        sorted_vals = sorted(values)
+
+        for row in rows:
+            raw = float(row["evidence_value"])
+            dev = raw - mean
+            row["expected_value"] = round(mean, 6)
+            row["deviation_value"] = round(dev, 6)
+            row["z_score"] = round(dev / std, 6) if std > 0 else 0.0
+            row["mad_score"] = round((raw - median) / (mad * 1.4826), 6) if mad > 0 else 0.0
+            row["cohort_percentile"] = round(
+                bisect.bisect_right(sorted_vals, raw) / max(1, n), 6
+            )
+            if n >= 10:
+                row["confidence_flag"] = "high"
+            elif n >= 5:
+                row["confidence_flag"] = "medium"
+            else:
+                row["confidence_flag"] = "low"
 
 
 def _ensure_character_suspicion_scores_schema(db: SupplyCoreDb) -> None:
@@ -404,6 +444,7 @@ def run_compute_suspicion_scores_v2(
         )
 
     score_payload: list[tuple[Any, ...]] = []
+    bv2_evidence_rows: list[dict[str, Any]] = []
     for row in rows:
         cid = int(row.get("character_id") or 0)
         eligible = int(row.get("eligible_battle_count") or 0)
@@ -498,6 +539,42 @@ def run_compute_suspicion_scores_v2(
             )
         )
 
+        # Emit per-component evidence rows for the normalized output layer.
+        for comp_key, comp_val in components.items():
+            bv2_evidence_rows.append({
+                "character_id": cid,
+                "evidence_key": f"bv2_{comp_key}",
+                "window_label": "all_time",
+                "evidence_value": round(float(comp_val), 6),
+                "evidence_text": next(
+                    (flag for flag in evidence_flags if comp_key.replace("_", " ") in flag.lower()),
+                    f"{comp_key} weighted component = {comp_val:.4f}",
+                ),
+                "evidence_payload_json": json_dumps_safe({
+                    "component": comp_key,
+                    "weight": SUSPICION_V2_WEIGHTS.get(comp_key, 0.0),
+                    "weighted_value": round(float(comp_val), 6),
+                    "all_time_score": round(all_time_score, 6),
+                }),
+            })
+        bv2_evidence_rows.append({
+            "character_id": cid,
+            "evidence_key": "bv2_suspicion_score",
+            "window_label": "all_time",
+            "evidence_value": round(all_time_score, 6),
+            "evidence_text": f"behavioral suspicion score {all_time_score:.4f}",
+            "evidence_payload_json": json_dumps_safe({"all_time": round(all_time_score, 6), "recent": round(recent_score, 6), "momentum": round(momentum, 6)}),
+        })
+        if recent_score != all_time_score:
+            bv2_evidence_rows.append({
+                "character_id": cid,
+                "evidence_key": "bv2_suspicion_score",
+                "window_label": "recent",
+                "evidence_value": round(recent_score, 6),
+                "evidence_text": f"recent behavioral suspicion score {recent_score:.4f} (momentum {momentum:+.4f})",
+                "evidence_payload_json": json_dumps_safe({"all_time": round(all_time_score, 6), "recent": round(recent_score, 6), "momentum": round(momentum, 6)}),
+            })
+
     sorted_scores = sorted(float(r[4]) for r in score_payload)
     total = float(max(len(sorted_scores), 1))
 
@@ -529,6 +606,9 @@ def run_compute_suspicion_scores_v2(
             )
         )
 
+    # ── Cohort-normalize the behavioral evidence rows ────────────
+    _bv2_cohort_normalize(bv2_evidence_rows)
+
     with db.transaction() as (_, cursor):
         cursor.execute("DELETE FROM character_suspicion_scores")
         if insert_tuples:
@@ -557,6 +637,36 @@ def run_compute_suspicion_scores_v2(
                 """,
                 insert_tuples,
             )
+        if bv2_evidence_rows:
+            for ev in bv2_evidence_rows:
+                cursor.execute(
+                    """
+                    INSERT INTO character_counterintel_evidence (
+                        character_id, evidence_key, window_label,
+                        evidence_value, expected_value, deviation_value,
+                        z_score, mad_score, cohort_percentile, confidence_flag,
+                        evidence_text, evidence_payload_json, computed_at
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON DUPLICATE KEY UPDATE
+                        evidence_value = VALUES(evidence_value),
+                        expected_value = VALUES(expected_value),
+                        deviation_value = VALUES(deviation_value),
+                        z_score = VALUES(z_score),
+                        mad_score = VALUES(mad_score),
+                        cohort_percentile = VALUES(cohort_percentile),
+                        confidence_flag = VALUES(confidence_flag),
+                        evidence_text = VALUES(evidence_text),
+                        evidence_payload_json = VALUES(evidence_payload_json),
+                        computed_at = VALUES(computed_at)
+                    """,
+                    (
+                        ev["character_id"], ev["evidence_key"], ev.get("window_label", "all_time"),
+                        ev["evidence_value"], ev.get("expected_value"), ev.get("deviation_value"),
+                        ev.get("z_score"), ev.get("mad_score"), ev.get("cohort_percentile"),
+                        ev.get("confidence_flag", "low"),
+                        ev["evidence_text"], ev["evidence_payload_json"], computed_at,
+                    ),
+                )
 
     return JobResult.success(
         job_key="compute_suspicion_scores_v2",

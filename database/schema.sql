@@ -1733,12 +1733,21 @@ CREATE TABLE IF NOT EXISTS character_counterintel_scores (
 CREATE TABLE IF NOT EXISTS character_counterintel_evidence (
     character_id BIGINT UNSIGNED NOT NULL,
     evidence_key VARCHAR(120) NOT NULL,
+    window_label VARCHAR(40) NOT NULL DEFAULT 'all_time',
     evidence_value DECIMAL(16,6) DEFAULT NULL,
+    expected_value DECIMAL(16,6) DEFAULT NULL,
+    deviation_value DECIMAL(16,6) DEFAULT NULL,
+    z_score DECIMAL(12,6) DEFAULT NULL,
+    mad_score DECIMAL(12,6) DEFAULT NULL,
+    cohort_percentile DECIMAL(10,6) DEFAULT NULL,
+    confidence_flag VARCHAR(20) NOT NULL DEFAULT 'low',
     evidence_text VARCHAR(500) NOT NULL,
     evidence_payload_json LONGTEXT DEFAULT NULL,
     computed_at DATETIME NOT NULL,
-    PRIMARY KEY (character_id, evidence_key),
-    KEY idx_character_counterintel_evidence_computed (computed_at)
+    PRIMARY KEY (character_id, evidence_key, window_label),
+    KEY idx_character_counterintel_evidence_computed (computed_at),
+    KEY idx_counterintel_evidence_signal_percentile (evidence_key, cohort_percentile),
+    KEY idx_counterintel_evidence_character_computed (character_id, computed_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS battle_participants (
@@ -2813,6 +2822,32 @@ CREATE TABLE IF NOT EXISTS character_alliance_overlap (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 
+CREATE TABLE IF NOT EXISTS character_cohort_membership (
+    character_id BIGINT UNSIGNED NOT NULL,
+    cohort_key VARCHAR(80) NOT NULL,
+    valid_from DATETIME NOT NULL,
+    valid_to DATETIME DEFAULT NULL,
+    computed_at DATETIME NOT NULL,
+    PRIMARY KEY (character_id, cohort_key),
+    KEY idx_character_cohort_membership_cohort (cohort_key, valid_from),
+    KEY idx_character_cohort_membership_computed (computed_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS cohort_feature_baselines (
+    cohort_key VARCHAR(80) NOT NULL,
+    feature_key VARCHAR(120) NOT NULL,
+    window_label VARCHAR(40) NOT NULL,
+    mean DECIMAL(14,6) NOT NULL DEFAULT 0.000000,
+    stddev DECIMAL(14,6) NOT NULL DEFAULT 0.000000,
+    median DECIMAL(14,6) NOT NULL DEFAULT 0.000000,
+    mad DECIMAL(14,6) NOT NULL DEFAULT 0.000000,
+    sample_count INT UNSIGNED NOT NULL DEFAULT 0,
+    computed_at DATETIME NOT NULL,
+    PRIMARY KEY (cohort_key, feature_key, window_label),
+    KEY idx_cohort_feature_baselines_feature (feature_key, window_label),
+    KEY idx_cohort_feature_baselines_computed (computed_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 CREATE TABLE IF NOT EXISTS character_feature_windows (
     character_id                     BIGINT UNSIGNED NOT NULL,
     window_label                     ENUM('7d','30d','90d','lifetime') NOT NULL,
@@ -2979,6 +3014,7 @@ INSERT INTO sync_schedules (
     ('compute_battle_target_metrics', 1, 10, 600, 1320, 22, 'normal', 'single', 'python', 420, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
     ('compute_battle_anomalies', 1, 10, 600, 1380, 23, 'normal', 'single', 'python', 420, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
     ('compute_battle_actor_features', 1, 10, 600, 1440, 24, 'normal', 'single', 'python', 420, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
+    ('compute_cohort_baselines', 1, 15, 900, 1550, 25, 'normal', 'single', 'python', 420, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
     ('compute_counterintel_pipeline', 1, 15, 900, 1560, 26, 'high', 'single', 'python', 900, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
     ('compute_suspicion_scores', 1, 10, 600, 1500, 25, 'normal', 'single', 'python', 420, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
     ('compute_character_feature_windows', 1, 30, 1800, 1620, 27, 'normal', 'single', 'python', 900, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL)

@@ -13,6 +13,7 @@ from .jobs import (
     run_compute_battle_target_metrics,
     run_compute_behavioral_baselines,
     run_compute_buy_all,
+    run_compute_cohort_baselines,
     run_compute_graph_derived_relationships,
     run_compute_graph_insights,
     run_compute_graph_prune,
@@ -83,6 +84,7 @@ PYTHON_COMPUTE_PROCESSOR_JOB_KEYS: set[str] = {
     "compute_graph_prune",
     "compute_graph_topology_metrics",
     "compute_behavioral_baselines",
+    "compute_cohort_baselines",
     "compute_suspicion_scores_v2",
     "compute_buy_all",
     "compute_signals",
@@ -151,6 +153,7 @@ _PROCESSOR_DISPATCH: dict[str, tuple] = {
     "compute_graph_topology_metrics": (run_compute_graph_topology_metrics, lambda db, cfg: (db, neo4j_runtime(cfg))),
     # Battle intelligence jobs
     "compute_behavioral_baselines": (run_compute_behavioral_baselines, lambda db, cfg: (db, battle_runtime(cfg))),
+    "compute_cohort_baselines": (run_compute_cohort_baselines, lambda db, cfg: (db, battle_runtime(cfg), neo4j_runtime(cfg))),
     "compute_suspicion_scores_v2": (run_compute_suspicion_scores_v2, lambda db, cfg: (db, battle_runtime(cfg), neo4j_runtime(cfg))),
     "compute_battle_rollups": (run_compute_battle_rollups, lambda db, cfg: (db, battle_runtime(cfg))),
     "compute_battle_target_metrics": (run_compute_battle_target_metrics, lambda db, cfg: (db, battle_runtime(cfg))),
