@@ -326,39 +326,58 @@ writes to the same market order tables.
 
 ## PHP and ESI
 
-PHP **never calls ESI** for automated data flows. It reads from:
+PHP reads cached data from MariaDB and Redis where available, and
+calls ESI directly only when needed for immediate results:
 
 - `entity_metadata_cache` — resolved entity names (alliance, corp, character)
 - `alliance_structure_metadata` — structure names (populated by Python or first-time setup)
 - `ref_npc_stations` — NPC station names (static reference data)
 - `market_orders_current` — market order data (populated by Python sync jobs)
 
-### Accepted PHP ESI exceptions
+### Immediate entity resolution (cache miss → ESI fetch)
 
-Four authenticated callsites remain in PHP for synchronous UI interactions
-that require an OAuth token and cannot be deferred to async resolution:
+When PHP encounters an unknown entity ID (e.g. during killmail display)
+and neither Redis nor MariaDB has it cached, PHP fetches it **immediately**
+from ESI while the requesting process waits:
 
-| Function | Endpoint | Why it stays |
-|----------|----------|-------------|
-| `esi_alliance_structure_metadata()` | `/universe/structures/{id}/` | First-time structure setup — ESI only returns data for structures where the character has docking rights |
-| `esi_structure_search()` | `/characters/{id}/search/?categories=structure` | Settings UI structure search — only returns dockable structures |
-| `esi_alliance_and_corporation_search()` | `/characters/{id}/search/?categories=alliance,corporation` | Settings UI entity autocomplete |
-| `doctrine_search_inventory_type_esi()` | `/characters/{id}/search/?categories=inventory_type` | Doctrine editor item type autocomplete |
+1. PHP checks `entity_metadata_cache` (Redis → MariaDB) — if resolved and
+   current, use it
+2. If missing or stale: call `esi_universe_names_fetch()` which POSTs to
+   ESI's public `/latest/universe/names/` endpoint (no auth required,
+   up to 1000 IDs per request, 10-second timeout)
+3. On success: upsert resolved names into `entity_metadata_cache` and
+   return the real name immediately — **no placeholder, no waiting for
+   a background job**
+4. If ESI is unreachable (5xx, timeout, network error): fall back to
+   marking the entity as `pending` via `db_entity_metadata_cache_mark_pending()`
+   so Python's `entity_metadata_resolve_sync` background job can pick it
+   up when ESI recovers. A placeholder ("Unknown alliance") is shown
+   until then.
 
-All four are user-initiated (settings pages only), not automated sync.
-They use `http_get_json()` directly with an OAuth token.
+This applies to all ESI entity resolution paths:
+- `killmail_entity_resolve_batch()` — battle/theater/killmail intelligence pages
+- `esi_universe_names_lookup()` — general entity name lookups
+- `killmail_public_entity_lookup_by_id()` — entity search by ID
 
-### Async entity resolution
+The background Python `entity_metadata_resolve_sync` job still runs on
+its 60-second schedule to catch any entities that were marked pending
+during ESI outages or to refresh stale entries.
 
-When PHP encounters an unknown entity ID (e.g. during killmail display):
+### Accepted PHP ESI callsites
 
-1. PHP checks `entity_metadata_cache` — if resolved, use it
-2. If missing: call `db_entity_metadata_cache_mark_pending()` to queue it
-3. Return placeholder text ("Unknown Alliance")
-4. Python's `entity_metadata_resolve_sync` job picks up pending entries
-5. Resolves via ESI `/universe/names/` through the gateway
-6. Writes result to `entity_metadata_cache`
-7. Next page load shows the resolved name
+Five callsites in PHP make direct ESI requests:
+
+| Function | Endpoint | Auth | Purpose |
+|----------|----------|------|---------|
+| `esi_universe_names_fetch()` | `POST /latest/universe/names/` | Public (none) | Immediate entity resolution on cache miss |
+| `esi_alliance_structure_metadata()` | `/universe/structures/{id}/` | OAuth | First-time structure setup (docking rights required) |
+| `esi_structure_search()` | `/characters/{id}/search/?categories=structure` | OAuth | Settings UI structure search |
+| `esi_alliance_and_corporation_search()` | `/characters/{id}/search/?categories=alliance,corporation` | OAuth | Settings UI entity autocomplete |
+| `doctrine_search_inventory_type_esi()` | `/characters/{id}/search/?categories=inventory_type` | OAuth | Doctrine editor item type autocomplete |
+
+The authenticated callsites are user-initiated (settings pages only).
+`esi_universe_names_fetch()` is the only public-endpoint callsite and
+is invoked automatically on cache miss to provide immediate results.
 
 ---
 
@@ -370,7 +389,7 @@ When PHP encounters an unknown entity ID (e.g. during killmail display):
 | ESI endpoint metadata | MariaDB `esi_endpoint_state` | fast read cache | Python gateway |
 | ESI response payloads | MariaDB `esi_cache_entries` | fast read cache (`esi:payload:v1:*`) | Python gateway |
 | Rate-limit observations | MariaDB `esi_rate_limit_observations` | live bucket state | Python gateway + limiter |
-| Entity names | MariaDB `entity_metadata_cache` | none | Python entity resolver |
+| Entity names | MariaDB `entity_metadata_cache` | none | PHP immediate fetch + Python background resolver |
 | Structure names | MariaDB `alliance_structure_metadata` | none | Python sync + PHP first-time setup |
 | NPC station names | MariaDB `ref_npc_stations` | none | Static reference data |
 | Pagination events | MariaDB `esi_pagination_consistency_events` | none | Python gateway |
