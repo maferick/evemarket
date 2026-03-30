@@ -161,8 +161,6 @@ def _ensure_schema(client: Neo4jClient) -> None:
         "CREATE CONSTRAINT IF NOT EXISTS FOR (cp:ComputeCheckpoint) REQUIRE cp.run_id IS UNIQUE",
         "CREATE INDEX IF NOT EXISTS FOR (k:Killmail) ON (k.battle_id)",
         "CREATE INDEX IF NOT EXISTS FOR (c:Character) ON (c.tracked)",
-        "CREATE INDEX IF NOT EXISTS FOR (sig:DetectionSignal) ON (sig.character_id, sig.signal_key, sig.window_label)",
-        "CREATE INDEX IF NOT EXISTS FOR (sig:DetectionSignal) ON (sig.signal_key, sig.cohort_percentile)",
     ]:
         try:
             client.query(stmt)
@@ -904,45 +902,6 @@ def _export_suspicion_signals(client: Neo4jClient, db: SupplyCoreDb, computed_at
                         ev["evidence_text"], ev["evidence_payload_json"], computed_at,
                     ),
                 )
-
-    # Write DetectionSignal nodes to Neo4j.
-    if evidence_rows:
-        neo4j_signal_rows = []
-        for ev in evidence_rows:
-            neo4j_signal_rows.append({
-                "character_id": int(ev["character_id"]),
-                "signal_key": ev["evidence_key"],
-                "window_label": ev.get("window_label", "all_time"),
-                "raw_value": float(ev["evidence_value"]) if ev.get("evidence_value") is not None else 0.0,
-                "expected_value": float(ev["expected_value"]) if ev.get("expected_value") is not None else 0.0,
-                "deviation_value": float(ev["deviation_value"]) if ev.get("deviation_value") is not None else 0.0,
-                "z_score": float(ev["z_score"]) if ev.get("z_score") is not None else 0.0,
-                "cohort_percentile": float(ev["cohort_percentile"]) if ev.get("cohort_percentile") is not None else 0.0,
-                "confidence_flag": ev.get("confidence_flag", "low"),
-                "computed_at": computed_at,
-            })
-        for i in range(0, len(neo4j_signal_rows), BATCH_SIZE):
-            client.query(
-                """
-                UNWIND $rows AS row
-                MERGE (c:Character {character_id: row.character_id})
-                MERGE (sig:DetectionSignal {
-                    character_id: row.character_id,
-                    signal_key: row.signal_key,
-                    window_label: row.window_label
-                })
-                MERGE (c)-[:HAS_SIGNAL]->(sig)
-                SET sig.raw_value = row.raw_value,
-                    sig.expected_value = row.expected_value,
-                    sig.deviation_value = row.deviation_value,
-                    sig.z_score = row.z_score,
-                    sig.cohort_percentile = row.cohort_percentile,
-                    sig.confidence_flag = row.confidence_flag,
-                    sig.source = 'intelligence_pipeline',
-                    sig.computed_at = row.computed_at
-                """,
-                {"rows": neo4j_signal_rows[i:i + BATCH_SIZE]},
-            )
 
     return len(rows)
 

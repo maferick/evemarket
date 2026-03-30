@@ -1153,46 +1153,6 @@ def run_compute_counterintel_pipeline(
                             timeout_seconds=neo4j_timeout,
                         )
 
-                # Write normalized detection signals to Neo4j Character nodes.
-                if evidence_rows:
-                    neo4j_signal_rows = []
-                    for ev in evidence_rows:
-                        neo4j_signal_rows.append({
-                            "character_id": int(ev["character_id"]),
-                            "signal_key": ev["evidence_key"],
-                            "window_label": ev.get("window_label", "all_time"),
-                            "raw_value": float(ev["evidence_value"]) if ev.get("evidence_value") is not None else 0.0,
-                            "expected_value": float(ev["expected_value"]) if ev.get("expected_value") is not None else 0.0,
-                            "deviation_value": float(ev["deviation_value"]) if ev.get("deviation_value") is not None else 0.0,
-                            "z_score": float(ev["z_score"]) if ev.get("z_score") is not None else 0.0,
-                            "cohort_percentile": float(ev["cohort_percentile"]) if ev.get("cohort_percentile") is not None else 0.0,
-                            "confidence_flag": ev.get("confidence_flag", "low"),
-                            "computed_at": computed_at,
-                        })
-                    for i in range(0, len(neo4j_signal_rows), neo4j_batch):
-                        neo4j.query(
-                            """
-                            UNWIND $rows AS row
-                            MERGE (c:Character {character_id: row.character_id})
-                            MERGE (sig:DetectionSignal {
-                                character_id: row.character_id,
-                                signal_key: row.signal_key,
-                                window_label: row.window_label
-                            })
-                            MERGE (c)-[:HAS_SIGNAL]->(sig)
-                            SET sig.raw_value = row.raw_value,
-                                sig.expected_value = row.expected_value,
-                                sig.deviation_value = row.deviation_value,
-                                sig.z_score = row.z_score,
-                                sig.cohort_percentile = row.cohort_percentile,
-                                sig.confidence_flag = row.confidence_flag,
-                                sig.source = 'counterintel_pipeline',
-                                sig.computed_at = row.computed_at
-                            """,
-                            {"rows": neo4j_signal_rows[i:i + neo4j_batch]},
-                            timeout_seconds=neo4j_timeout,
-                        )
-
             rows_written += len(hull_rows) + len(overperformance_rows) + len(feature_rows) + len(score_rows) + len(evidence_rows) + org_written
             _sync_state_upsert(db, COUNTERINTEL_DATASET_KEY, last_battle_id, "success", rows_written)
 
