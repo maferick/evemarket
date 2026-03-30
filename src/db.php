@@ -15120,6 +15120,46 @@ function db_character_temporal_metrics(int $characterId): array
     );
 }
 
+function db_character_copresence_signals(int $characterId): array
+{
+    if ($characterId <= 0) {
+        return [];
+    }
+    return db_select(
+        'SELECT window_label, pair_frequency_delta, out_of_cluster_ratio,
+                out_of_cluster_ratio_delta, expected_cluster_decay,
+                total_edge_weight, unique_associates, recurring_pair_count,
+                cohort_percentile, computed_at
+         FROM character_copresence_signals
+         WHERE character_id = ?
+         ORDER BY FIELD(window_label, "7d", "30d", "90d")',
+        [$characterId]
+    );
+}
+
+function db_character_copresence_top_edges(int $characterId, string $windowLabel = '30d', int $limit = 15): array
+{
+    if ($characterId <= 0) {
+        return [];
+    }
+    $safeLimit = max(1, min(50, $limit));
+    return db_select(
+        'SELECT cce.character_id_a, cce.character_id_b, cce.event_type,
+                cce.edge_weight, cce.event_count, cce.last_event_at, cce.system_id,
+                CASE WHEN cce.character_id_a = ? THEN cce.character_id_b ELSE cce.character_id_a END AS other_character_id,
+                COALESCE(emc.entity_name, CONCAT("Character #", CASE WHEN cce.character_id_a = ? THEN cce.character_id_b ELSE cce.character_id_a END)) AS other_character_name
+         FROM character_copresence_edges cce
+         LEFT JOIN entity_metadata_cache emc
+             ON emc.entity_type = "character"
+             AND emc.entity_id = CASE WHEN cce.character_id_a = ? THEN cce.character_id_b ELSE cce.character_id_a END
+         WHERE (cce.character_id_a = ? OR cce.character_id_b = ?)
+           AND cce.window_label = ?
+         ORDER BY cce.edge_weight DESC
+         LIMIT ' . $safeLimit,
+        [$characterId, $characterId, $characterId, $characterId, $characterId, $windowLabel]
+    );
+}
+
 function db_character_typed_interactions(int $characterId, int $limit = 50): array
 {
     if ($characterId <= 0) {
@@ -15340,6 +15380,37 @@ function db_analyst_feedback_save(int $characterId, string $label, float $confid
          VALUES (?, ?, ?, ?, ?)'
     )->execute([$characterId, $label, $confidence, $notes, $contextJson]);
     return true;
+}
+
+function db_character_feature_histograms(int $characterId): array
+{
+    if ($characterId <= 0) {
+        return [];
+    }
+    return db_select(
+        'SELECT window_label, hour_histogram, weekday_histogram, computed_at
+         FROM character_feature_histograms
+         WHERE character_id = ?
+         ORDER BY FIELD(window_label, "7d", "30d", "90d", "lifetime")',
+        [$characterId]
+    );
+}
+
+function db_character_temporal_behavior_signals(int $characterId): array
+{
+    if ($characterId <= 0) {
+        return [];
+    }
+    return db_select(
+        'SELECT evidence_key, window_label, evidence_value, expected_value,
+                deviation_value, z_score, mad_score, cohort_percentile,
+                confidence_flag, evidence_text, evidence_payload_json, computed_at
+         FROM character_counterintel_evidence
+         WHERE character_id = ?
+           AND evidence_key IN ("active_hour_shift", "weekday_profile_shift", "cadence_burstiness", "reactivation_after_dormancy")
+         ORDER BY FIELD(evidence_key, "active_hour_shift", "weekday_profile_shift", "cadence_burstiness", "reactivation_after_dormancy")',
+        [$characterId]
+    );
 }
 
 function db_analyst_recalibration_log(int $limit = 20): array
