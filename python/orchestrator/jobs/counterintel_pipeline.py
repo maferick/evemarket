@@ -539,7 +539,7 @@ def run_compute_counterintel_pipeline(
             org_written = _enrich_org_history_cache(db, list(by_character.keys()), user_agent, org_cache_ttl_hours, org_max_fetches, org_fetch_batch_size)
 
             org_rows = db.fetch_all(
-                "SELECT character_id, corp_hops_180d, short_tenure_hops_180d, history_json, source_endpoint FROM character_org_history_cache WHERE source = 'evewho' AND character_id IN ("
+                "SELECT character_id, corp_hops_180d, short_tenure_hops_180d, history_json, source_endpoint FROM character_org_history_cache WHERE source = 'evewho' AND (expires_at IS NULL OR expires_at > UTC_TIMESTAMP()) AND character_id IN ("
                 + ",".join(["%s"] * len(by_character))
                 + ")",
                 tuple(by_character.keys()) if by_character else tuple([0]),
@@ -550,6 +550,7 @@ def run_compute_counterintel_pipeline(
                 SELECT character_id, alliance_id, corporation_id, source_endpoint, fetched_at, expires_at
                 FROM character_org_alliance_adjacency_snapshots
                 WHERE source = 'evewho'
+                  AND (expires_at IS NULL OR expires_at > UTC_TIMESTAMP())
                   AND character_id IN ("""
                 + ",".join(["%s"] * len(by_character))
                 + ")",
