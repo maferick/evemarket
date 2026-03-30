@@ -22,13 +22,13 @@ if __package__ in (None, ""):
     from orchestrator.db import SupplyCoreDb
     from orchestrator.job_result import JobResult
     from orchestrator.json_utils import json_dumps_safe
-    from orchestrator.job_utils import acquire_job_lock, finish_job_run, release_job_lock, start_job_run
+    from orchestrator.job_utils import finish_job_run, start_job_run
     from orchestrator.neo4j import Neo4jClient, Neo4jConfig
 else:
     from ..db import SupplyCoreDb
     from ..job_result import JobResult
     from ..json_utils import json_dumps_safe
-    from ..job_utils import acquire_job_lock, finish_job_run, release_job_lock, start_job_run
+    from ..job_utils import finish_job_run, start_job_run
     from ..neo4j import Neo4jClient, Neo4jConfig
 
 BATCH_SIZE = 500
@@ -231,11 +231,6 @@ def run_theater_graph_integration(
     if not config.enabled:
         return JobResult.skipped(job_key="theater_graph_integration", reason="neo4j disabled").to_dict()
 
-    lock_key = "theater_graph_integration"
-    owner = acquire_job_lock(db, lock_key, ttl_seconds=900)
-    if owner is None:
-        return JobResult.skipped(job_key="theater_graph_integration", reason="lock-not-acquired").to_dict()
-
     job = start_job_run(db, "theater_graph_integration")
     started_monotonic = datetime.now(UTC)
     rows_processed = 0
@@ -317,5 +312,3 @@ def run_theater_graph_integration(
         finish_job_run(db, job, status="failed", rows_processed=rows_processed, rows_written=rows_written, error_text=str(exc))
         _theater_log(runtime, "theater_graph_integration.job.failed", {"error": str(exc)})
         raise
-    finally:
-        release_job_lock(db, lock_key, owner)

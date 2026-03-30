@@ -23,12 +23,12 @@ if __package__ in (None, ""):
     from orchestrator.db import SupplyCoreDb
     from orchestrator.job_result import JobResult
     from orchestrator.json_utils import json_dumps_safe
-    from orchestrator.job_utils import acquire_job_lock, finish_job_run, release_job_lock, start_job_run
+    from orchestrator.job_utils import finish_job_run, start_job_run
 else:
     from ..db import SupplyCoreDb
     from ..job_result import JobResult
     from ..json_utils import json_dumps_safe
-    from ..job_utils import acquire_job_lock, finish_job_run, release_job_lock, start_job_run
+    from ..job_utils import finish_job_run, start_job_run
 
 RECENT_DAYS = 30
 MIN_CORRIDOR_BATTLES = 3
@@ -380,12 +380,8 @@ def run_compute_threat_corridors(
     dry_run: bool = False,
 ) -> dict[str, Any]:
     """Compute threat corridors and system threat scores."""
-    lock_key = "compute_threat_corridors"
-    owner = acquire_job_lock(db, lock_key, ttl_seconds=900)
-    if owner is None:
-        return JobResult.skipped(job_key=lock_key, reason="lock-not-acquired").to_dict()
-
-    job = start_job_run(db, lock_key)
+    job_key = "compute_threat_corridors"
+    job = start_job_run(db, job_key)
     started = datetime.now(UTC)
     computed_at = _now_sql()
     rows_processed = 0
@@ -402,7 +398,7 @@ def run_compute_threat_corridors(
 
         if not system_data:
             finish_job_run(db, job, status="success", rows_processed=0, rows_written=0)
-            return JobResult.success(job_key=lock_key, summary="No system activity found.",
+            return JobResult.success(job_key=job_key, summary="No system activity found.",
                                     rows_processed=0, rows_written=0, duration_ms=0).to_dict()
 
         # Find active systems (at least 2 battles)
@@ -463,7 +459,7 @@ def run_compute_threat_corridors(
                              "active_system_count": len(active_systems), "corridor_source": corridor_source,
                              "raw_corridors_found": len(raw_corridors)})
         return JobResult.success(
-            job_key=lock_key,
+            job_key=job_key,
             summary=f"Found {len(scored)} threat corridors across {len(system_data)} active systems.",
             rows_processed=rows_processed,
             rows_written=rows_written,
@@ -473,5 +469,3 @@ def run_compute_threat_corridors(
     except Exception as exc:
         finish_job_run(db, job, status="failed", rows_processed=rows_processed, rows_written=rows_written, error_text=str(exc))
         raise
-    finally:
-        release_job_lock(db, lock_key, owner)

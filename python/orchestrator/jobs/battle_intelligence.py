@@ -15,13 +15,13 @@ if __package__ in (None, ""):
     from orchestrator.db import SupplyCoreDb
     from orchestrator.job_result import JobResult
     from orchestrator.json_utils import json_dumps_safe
-    from orchestrator.job_utils import acquire_job_lock, finish_job_run, release_job_lock, start_job_run
+    from orchestrator.job_utils import finish_job_run, start_job_run
     from orchestrator.neo4j import Neo4jClient, Neo4jConfig
 else:
     from ..db import SupplyCoreDb
     from ..job_result import JobResult
     from ..json_utils import json_dumps_safe
-    from ..job_utils import acquire_job_lock, finish_job_run, release_job_lock, start_job_run
+    from ..job_utils import finish_job_run, start_job_run
     from ..neo4j import Neo4jClient, Neo4jConfig
 
 WINDOW_SECONDS = 15 * 60
@@ -263,13 +263,6 @@ def _neo4j_sync_participation(db: SupplyCoreDb, neo4j_raw: dict[str, Any] | None
 
 
 def run_compute_battle_rollups(db: SupplyCoreDb, runtime: dict[str, Any] | None = None, *, dry_run: bool = False) -> dict[str, Any]:
-    lock_key = "compute_battle_rollups"
-    owner = acquire_job_lock(db, lock_key, ttl_seconds=900)
-    if owner is None:
-        result = JobResult.skipped(job_key="compute_battle_rollups", reason="lock-not-acquired").to_dict()
-        _battle_log(runtime, "battle_intelligence.job.skipped", result)
-        return result
-
     job = start_job_run(db, "compute_battle_rollups")
     started_monotonic = datetime.now(UTC)
     rows_processed = 0
@@ -575,18 +568,9 @@ def run_compute_battle_rollups(db: SupplyCoreDb, runtime: dict[str, Any] | None 
             {"job_name": "compute_battle_rollups", "status": "failed", "rows_processed": rows_processed, "rows_written": rows_written, "error_text": str(exc), "dry_run": dry_run},
         )
         raise
-    finally:
-        release_job_lock(db, lock_key, owner)
 
 
 def run_compute_battle_target_metrics(db: SupplyCoreDb, runtime: dict[str, Any] | None = None, *, dry_run: bool = False) -> dict[str, Any]:
-    lock_key = "compute_battle_target_metrics"
-    owner = acquire_job_lock(db, lock_key, ttl_seconds=900)
-    if owner is None:
-        result = JobResult.skipped(job_key="compute_battle_target_metrics", reason="lock-not-acquired").to_dict()
-        _battle_log(runtime, "battle_intelligence.job.skipped", result)
-        return result
-
     job = start_job_run(db, "compute_battle_target_metrics")
     started_monotonic = datetime.now(UTC)
     rows_processed = 0
@@ -775,18 +759,9 @@ def run_compute_battle_target_metrics(db: SupplyCoreDb, runtime: dict[str, Any] 
         finish_job_run(db, job, status="failed", rows_processed=rows_processed, rows_written=rows_written, error_text=str(exc))
         _battle_log(runtime, "battle_intelligence.job.failed", {"job_name": "compute_battle_target_metrics", "status": "failed", "error_text": str(exc), "rows_processed": rows_processed, "rows_written": rows_written, "dry_run": dry_run})
         raise
-    finally:
-        release_job_lock(db, lock_key, owner)
 
 
 def run_compute_battle_anomalies(db: SupplyCoreDb, runtime: dict[str, Any] | None = None, *, dry_run: bool = False) -> dict[str, Any]:
-    lock_key = "compute_battle_anomalies"
-    owner = acquire_job_lock(db, lock_key, ttl_seconds=900)
-    if owner is None:
-        result = JobResult.skipped(job_key="compute_battle_anomalies", reason="lock-not-acquired").to_dict()
-        _battle_log(runtime, "battle_intelligence.job.skipped", result)
-        return result
-
     job = start_job_run(db, "compute_battle_anomalies")
     started_monotonic = datetime.now(UTC)
     rows_processed = 0
@@ -954,8 +929,6 @@ def run_compute_battle_anomalies(db: SupplyCoreDb, runtime: dict[str, Any] | Non
         finish_job_run(db, job, status="failed", rows_processed=rows_processed, rows_written=rows_written, error_text=str(exc))
         _battle_log(runtime, "battle_intelligence.job.failed", {"job_name": "compute_battle_anomalies", "status": "failed", "error_text": str(exc), "rows_processed": rows_processed, "rows_written": rows_written, "dry_run": dry_run})
         raise
-    finally:
-        release_job_lock(db, lock_key, owner)
 
 
 def run_compute_battle_actor_features(
@@ -965,13 +938,6 @@ def run_compute_battle_actor_features(
     *,
     dry_run: bool = False,
 ) -> dict[str, Any]:
-    lock_key = "compute_battle_actor_features"
-    owner = acquire_job_lock(db, lock_key, ttl_seconds=900)
-    if owner is None:
-        result = JobResult.skipped(job_key="compute_battle_actor_features", reason="lock-not-acquired").to_dict()
-        _battle_log(runtime, "battle_intelligence.job.skipped", result)
-        return result
-
     job = start_job_run(db, "compute_battle_actor_features")
     started_monotonic = datetime.now(UTC)
     rows_processed = 0
@@ -1066,8 +1032,6 @@ def run_compute_battle_actor_features(
         finish_job_run(db, job, status="failed", rows_processed=rows_processed, rows_written=rows_written, error_text=str(exc))
         _battle_log(runtime, "battle_intelligence.job.failed", {"job_name": "compute_battle_actor_features", "status": "failed", "error_text": str(exc), "rows_processed": rows_processed, "rows_written": rows_written, "dry_run": dry_run})
         raise
-    finally:
-        release_job_lock(db, lock_key, owner)
 
 
 def run_compute_suspicion_scores(db: SupplyCoreDb, runtime: dict[str, Any] | None = None, *, dry_run: bool = False) -> dict[str, Any]:
@@ -1076,13 +1040,6 @@ def run_compute_suspicion_scores(db: SupplyCoreDb, runtime: dict[str, Any] | Non
     # - scheduler-dispatched Python runtime
     # - manual Python CLI invocation
     # Missing runtime values only disable optional file logging via `_battle_log`.
-    lock_key = "compute_suspicion_scores"
-    owner = acquire_job_lock(db, lock_key, ttl_seconds=900)
-    if owner is None:
-        result = JobResult.skipped(job_key="compute_suspicion_scores", reason="lock-not-acquired").to_dict()
-        _battle_log(runtime, "battle_intelligence.job.skipped", result)
-        return result
-
     job = start_job_run(db, "compute_suspicion_scores")
     started_monotonic = datetime.now(UTC)
     rows_processed = 0
@@ -1364,5 +1321,3 @@ def run_compute_suspicion_scores(db: SupplyCoreDb, runtime: dict[str, Any] | Non
         finish_job_run(db, job, status="failed", rows_processed=rows_processed, rows_written=rows_written, error_text=str(exc))
         _battle_log(runtime, "battle_intelligence.job.failed", {"job_name": "compute_suspicion_scores", "status": "failed", "error_text": str(exc), "rows_processed": rows_processed, "rows_written": rows_written, "dry_run": dry_run})
         raise
-    finally:
-        release_job_lock(db, lock_key, owner)

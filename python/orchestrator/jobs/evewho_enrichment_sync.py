@@ -20,7 +20,7 @@ from typing import Any
 from ..db import SupplyCoreDb
 from ..evewho_adapter import EveWhoAdapter
 from ..job_result import JobResult
-from ..job_utils import acquire_job_lock, finish_job_run, release_job_lock, start_job_run
+from ..job_utils import finish_job_run, start_job_run
 from ..json_utils import json_dumps_safe
 from ..neo4j import Neo4jClient, Neo4jConfig, Neo4jError
 
@@ -279,12 +279,7 @@ def run_evewho_enrichment_sync(
     dry_run: bool = False,
 ) -> dict[str, Any]:
     """Main entry point for the EveWho enrichment sync job."""
-    lock_key = JOB_KEY
-    owner = acquire_job_lock(db, lock_key, ttl_seconds=900)
-    if owner is None:
-        return JobResult.skipped(job_key=lock_key, reason="lock-not-acquired").to_dict()
-
-    job = start_job_run(db, lock_key)
+    job = start_job_run(db, JOB_KEY)
     started = time.perf_counter()
     rows_processed = 0
     rows_written = 0
@@ -299,8 +294,7 @@ def run_evewho_enrichment_sync(
         neo4j_config = Neo4jConfig.from_runtime(neo4j_raw or {})
         if not neo4j_config.enabled:
             finish_job_run(db, job, status="skipped", rows_processed=0, rows_written=0, error_text="Neo4j disabled")
-            release_job_lock(db, lock_key, owner)
-            return JobResult.skipped(job_key=lock_key, reason="neo4j-disabled").to_dict()
+            return JobResult.skipped(job_key=JOB_KEY, reason="neo4j-disabled").to_dict()
 
         neo4j = Neo4jClient(neo4j_config)
         adapter = EveWhoAdapter(user_agent)
@@ -332,9 +326,8 @@ def run_evewho_enrichment_sync(
                 "duration_ms": duration_ms,
             },
         )
-        release_job_lock(db, lock_key, owner)
         return JobResult.success(
-            job_key=lock_key,
+            job_key=JOB_KEY,
             rows_seen=rows_processed,
             rows_written=rows_written,
             summary=f"Enriched {rows_written}/{rows_processed} characters in {batch_count} batch(es), {duration_ms}ms",
@@ -343,9 +336,8 @@ def run_evewho_enrichment_sync(
     except Exception as e:
         duration_ms = int((time.perf_counter() - started) * 1000)
         finish_job_run(db, job, status="failed", rows_processed=rows_processed, rows_written=rows_written, error_text=str(e)[:500])
-        release_job_lock(db, lock_key, owner)
         return JobResult.failed(
-            job_key=lock_key,
+            job_key=JOB_KEY,
             error=str(e),
             rows_seen=rows_processed,
             rows_written=rows_written,
