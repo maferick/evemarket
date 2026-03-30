@@ -2808,6 +2808,7 @@ function data_sync_pipeline_setting_defaults(): array
         'alliance_history_pipeline_enabled' => '1',
         'hub_history_pipeline_enabled' => '1',
         'market_hub_local_history_pipeline_enabled' => '1',
+        'graph_derived_relationships_enabled' => '0',
         ...data_sync_market_history_retention_defaults(),
         'static_data_source_url' => 'https://developers.eveonline.com/static-data/eve-online-static-data-latest-jsonl.zip',
         'redis_cache_enabled' => config('redis.enabled', false) ? '1' : '0',
@@ -2841,6 +2842,7 @@ function data_sync_pipeline_setting_value(array $settings, string $key): string
         'alliance_history_pipeline_enabled',
         'hub_history_pipeline_enabled',
         'market_hub_local_history_pipeline_enabled',
+        'graph_derived_relationships_enabled',
         'redis_cache_enabled',
         'redis_locking_enabled' => sanitize_pipeline_enabled($value),
         'incremental_strategy' => sanitize_incremental_strategy((string) $value),
@@ -6925,6 +6927,7 @@ function automation_runtime_settings_from_request(array $request): array
         'alliance_history_pipeline_enabled' => sanitize_pipeline_enabled($request['alliance_history_pipeline_enabled'] ?? null),
         'hub_history_pipeline_enabled' => sanitize_pipeline_enabled($request['hub_history_pipeline_enabled'] ?? null),
         'market_hub_local_history_pipeline_enabled' => sanitize_pipeline_enabled($request['market_hub_local_history_pipeline_enabled'] ?? null),
+        'graph_derived_relationships_enabled' => sanitize_pipeline_enabled($request['graph_derived_relationships_enabled'] ?? null),
     ];
 }
 
