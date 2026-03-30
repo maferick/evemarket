@@ -30040,6 +30040,22 @@ function log_viewer_page_data(): array
         $status = strtolower(trim((string) ($s['latest_status'] ?? $s['last_status'] ?? 'unknown')));
         $pressure = strtolower(trim((string) ($s['current_pressure_state'] ?? 'healthy')));
 
+        // Detect stuck "running" jobs: status is running but last_started_at is
+        // older than the job's timeout (or a generous fallback).  These are
+        // almost certainly zombie processes whose workers crashed without
+        // reporting a final status.
+        $isStuckRunning = false;
+        if ($status === 'running' && $s['last_run_at'] !== null) {
+            $startedTs = strtotime((string) ($s['last_started_at'] ?? $s['last_run_at']));
+            $stuckThreshold = max((int) ($meta['timeout_seconds'] ?? $defaultTimeout), (int) $s['interval_seconds']) * 2;
+            if ($stuckThreshold < 600) {
+                $stuckThreshold = 600; // at least 10 minutes
+            }
+            if ($startedTs !== false && (time() - $startedTs) > $stuckThreshold) {
+                $isStuckRunning = true;
+            }
+        }
+
         // Determine health bucket
         if (!$s['enabled']) {
             $health = 'disabled';
@@ -30049,10 +30065,10 @@ function log_viewer_page_data(): array
             $health = 'never_ran';
             $healthTone = 'border-violet-400/20 bg-violet-500/10 text-violet-100';
             $healthLabel = 'Never ran';
-        } elseif ($status === 'failed' || $status === 'error') {
-            $health = 'failed';
+        } elseif ($status === 'failed' || $status === 'error' || $isStuckRunning) {
+            $health = $isStuckRunning ? 'stuck' : 'failed';
             $healthTone = 'border-rose-400/20 bg-rose-500/10 text-rose-100';
-            $healthLabel = 'Failed';
+            $healthLabel = $isStuckRunning ? 'Stuck' : 'Failed';
         } elseif ($pressure === 'critical' || ($s['recent_timeout_count'] ?? 0) > 2) {
             $health = 'timeout';
             $healthTone = 'border-orange-400/20 bg-orange-500/10 text-orange-100';
@@ -30066,21 +30082,40 @@ function log_viewer_page_data(): array
             $healthTone = 'border-sky-400/20 bg-sky-500/10 text-sky-100';
             $healthLabel = 'Running';
         } elseif ($status === 'success' || $status === 'completed') {
-            $health = 'healthy';
-            $healthTone = 'border-emerald-400/20 bg-emerald-500/10 text-emerald-100';
-            $healthLabel = 'Healthy';
+            // If the job reports success but has never actually succeeded
+            // (last_success_at is NULL), demote it to "Unhealthy" so the
+            // operator knows it has not produced useful output yet.
+            $hasEverSucceeded = ($s['last_success_at'] ?? null) !== null;
+            if ($hasEverSucceeded) {
+                $health = 'healthy';
+                $healthTone = 'border-emerald-400/20 bg-emerald-500/10 text-emerald-100';
+                $healthLabel = 'Healthy';
+            } else {
+                $health = 'unhealthy';
+                $healthTone = 'border-amber-400/20 bg-amber-500/10 text-amber-100';
+                $healthLabel = 'Unhealthy';
+            }
         } else {
             $health = 'unknown';
             $healthTone = 'border-slate-400/20 bg-slate-500/10 text-slate-200';
             $healthLabel = 'Unknown';
         }
 
-        // Check overdue: enabled, has interval, last_run_at + interval * 2 < NOW
+        // Check overdue: enabled, has interval, last_run_at + interval * 2 < NOW.
+        // Also flag enabled jobs that have *never* run as overdue when they've
+        // existed for longer than twice their interval (created_at based).
         $overdue = false;
-        if ($s['enabled'] && $s['last_run_at'] !== null && (int) $s['interval_seconds'] > 0) {
-            $lastRun = strtotime((string) $s['last_run_at']);
-            if ($lastRun !== false && (time() - $lastRun) > ((int) $s['interval_seconds'] * 2)) {
-                $overdue = true;
+        if ($s['enabled'] && (int) $s['interval_seconds'] > 0) {
+            if ($s['last_run_at'] !== null) {
+                $lastRun = strtotime((string) $s['last_run_at']);
+                if ($lastRun !== false && (time() - $lastRun) > ((int) $s['interval_seconds'] * 2)) {
+                    $overdue = true;
+                }
+            } elseif (($s['created_at'] ?? null) !== null) {
+                $createdAt = strtotime((string) $s['created_at']);
+                if ($createdAt !== false && (time() - $createdAt) > ((int) $s['interval_seconds'] * 2)) {
+                    $overdue = true;
+                }
             }
         }
 
@@ -30113,7 +30148,7 @@ function log_viewer_page_data(): array
 
     // ── KPI counts ────────────────────────────────────────────────────
     $totalEnabled = count(array_filter($jobs, fn (array $j) => $j['enabled']));
-    $totalFailed = count(array_filter($jobs, fn (array $j) => $j['health'] === 'failed'));
+    $totalFailed = count(array_filter($jobs, fn (array $j) => $j['health'] === 'failed' || $j['health'] === 'stuck'));
     $totalTimeout = count(array_filter($jobs, fn (array $j) => $j['health'] === 'timeout'));
     $totalNeverRan = count($neverRan);
     $totalOverdue = count(array_filter($jobs, fn (array $j) => $j['overdue']));
