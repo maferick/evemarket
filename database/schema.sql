@@ -3017,7 +3017,8 @@ INSERT INTO sync_schedules (
     ('compute_cohort_baselines', 1, 15, 900, 1550, 25, 'normal', 'single', 'python', 420, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
     ('compute_counterintel_pipeline', 1, 15, 900, 1560, 26, 'high', 'single', 'python', 900, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
     ('compute_suspicion_scores', 1, 10, 600, 1500, 25, 'normal', 'single', 'python', 420, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
-    ('compute_character_feature_windows', 1, 30, 1800, 1620, 27, 'normal', 'single', 'python', 900, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL)
+    ('compute_character_feature_windows', 1, 30, 1800, 1620, 27, 'normal', 'single', 'python', 900, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
+    ('temporal_behavior_detection', 1, 30, 1800, 1680, 28, 'normal', 'single', 'python', 600, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL)
 ON DUPLICATE KEY UPDATE
     enabled = VALUES(enabled),
     interval_minutes = VALUES(interval_minutes),
