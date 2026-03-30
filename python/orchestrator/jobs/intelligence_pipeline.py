@@ -752,20 +752,12 @@ def _export_suspicion_signals(client: Neo4jClient, db: SupplyCoreDb, computed_at
 
     with db.transaction() as (_, cursor):
         cursor.execute("DELETE FROM character_suspicion_signals")
+        batch: list[tuple[Any, ...]] = []
         for r in rows:
             cid = int(r.get("character_id") or 0)
             if cid <= 0:
                 continue
-            cursor.execute(
-                """INSERT INTO character_suspicion_signals
-                   (character_id, alliance_id, battles_present, kills_total, losses_total,
-                    damage_total, primary_fleet_function,
-                    selective_non_engagement_score, high_presence_low_output_score,
-                    token_participation_score, loss_without_attack_ratio,
-                    peer_normalized_kills_delta, peer_normalized_damage_delta,
-                    composition_adjusted_delta, side_expected_performance,
-                    suspicion_score, suspicion_flags, engagement_rate_by_alliance, computed_at)
-                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+            batch.append(
                 (
                     cid,
                     int(r.get("alliance_id") or 0),
@@ -787,6 +779,19 @@ def _export_suspicion_signals(client: Neo4jClient, db: SupplyCoreDb, computed_at
                     json_dumps_safe(r.get("engagement_rates") or []),
                     computed_at,
                 ),
+            )
+        if batch:
+            cursor.executemany(
+                """INSERT INTO character_suspicion_signals
+                   (character_id, alliance_id, battles_present, kills_total, losses_total,
+                    damage_total, primary_fleet_function,
+                    selective_non_engagement_score, high_presence_low_output_score,
+                    token_participation_score, loss_without_attack_ratio,
+                    peer_normalized_kills_delta, peer_normalized_damage_delta,
+                    composition_adjusted_delta, side_expected_performance,
+                    suspicion_score, suspicion_flags, engagement_rate_by_alliance, computed_at)
+                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                batch,
             )
 
     return len(rows)
@@ -816,16 +821,12 @@ def _export_alliance_overlap(client: Neo4jClient, db: SupplyCoreDb, computed_at:
 
     with db.transaction() as (_, cursor):
         cursor.execute("DELETE FROM character_alliance_overlap")
+        batch: list[tuple[Any, ...]] = []
         for r in rows:
             cid = int(r.get("character_id") or 0)
             if cid <= 0:
                 continue
-            cursor.execute(
-                """INSERT INTO character_alliance_overlap
-                   (character_id, alliance_id, former_allies_attacking, losses_to_former_allies,
-                    repeat_former_ally_attackers, total_repeat_kills_by_former,
-                    historical_overlap_score, correlated_flag, combined_risk_score, computed_at)
-                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+            batch.append(
                 (
                     cid,
                     int(r.get("alliance_id") or 0),
@@ -838,6 +839,15 @@ def _export_alliance_overlap(client: Neo4jClient, db: SupplyCoreDb, computed_at:
                     float(r.get("combined_risk_score") or 0),
                     computed_at,
                 ),
+            )
+        if batch:
+            cursor.executemany(
+                """INSERT INTO character_alliance_overlap
+                   (character_id, alliance_id, former_allies_attacking, losses_to_former_allies,
+                    repeat_former_ally_attackers, total_repeat_kills_by_former,
+                    historical_overlap_score, correlated_flag, combined_risk_score, computed_at)
+                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                batch,
             )
 
     return len(rows)

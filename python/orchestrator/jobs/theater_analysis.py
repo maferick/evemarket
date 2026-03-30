@@ -852,31 +852,35 @@ def _flush_analysis(
         cursor.execute("DELETE FROM theater_participants WHERE theater_id = %s", (theater_id,))
 
         # Clean turning points for battles in this theater
-        for bid in battle_ids:
-            cursor.execute("DELETE FROM battle_turning_points WHERE battle_id = %s", (bid,))
+        if battle_ids:
+            placeholders = ",".join(["%s"] * len(battle_ids))
+            cursor.execute(f"DELETE FROM battle_turning_points WHERE battle_id IN ({placeholders})", tuple(battle_ids))
 
         # Timeline
-        for t in timeline_rows:
-            cursor.execute(
+        if timeline_rows:
+            cursor.executemany(
                 """
                 INSERT INTO theater_timeline (
                     theater_id, bucket_time, bucket_seconds, kills, isk_destroyed,
                     side_a_kills, side_b_kills, side_a_isk, side_b_isk, momentum_score
                 ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
-                (
-                    theater_id, t["bucket_time"], TIMELINE_BUCKET_SECONDS,
-                    t["kills"], t["isk_destroyed"],
-                    t["side_a_kills"], t["side_b_kills"],
-                    t["side_a_isk"], t["side_b_isk"],
-                    t["momentum_score"],
-                ),
+                [
+                    (
+                        theater_id, t["bucket_time"], TIMELINE_BUCKET_SECONDS,
+                        t["kills"], t["isk_destroyed"],
+                        t["side_a_kills"], t["side_b_kills"],
+                        t["side_a_isk"], t["side_b_isk"],
+                        t["momentum_score"],
+                    )
+                    for t in timeline_rows
+                ],
             )
-            rows_written += 1
+            rows_written += len(timeline_rows)
 
         # Alliance summary
-        for a in alliance_rows:
-            cursor.execute(
+        if alliance_rows:
+            cursor.executemany(
                 """
                 INSERT INTO theater_alliance_summary (
                     theater_id, alliance_id, alliance_name, side,
@@ -884,14 +888,17 @@ def _flush_analysis(
                     total_damage, total_isk_lost, total_isk_killed, efficiency
                 ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
-                (
-                    theater_id, a["alliance_id"], a["alliance_name"], a["side"],
-                    a["participant_count"], a["total_kills"], a["total_losses"],
-                    a["total_damage"], a["total_isk_lost"], a["total_isk_killed"],
-                    a["efficiency"],
-                ),
+                [
+                    (
+                        theater_id, a["alliance_id"], a["alliance_name"], a["side"],
+                        a["participant_count"], a["total_kills"], a["total_losses"],
+                        a["total_damage"], a["total_isk_lost"], a["total_isk_killed"],
+                        a["efficiency"],
+                    )
+                    for a in alliance_rows
+                ],
             )
-            rows_written += 1
+            rows_written += len(alliance_rows)
 
         # Participants (batch insert)
         for chunk_start in range(0, len(participant_rows), BATCH_SIZE):
@@ -923,36 +930,35 @@ def _flush_analysis(
             rows_written += len(chunk)
 
         # Turning points
-        for tp in turning_points:
-            # Assign to the first battle in the theater (convention)
+        if turning_points:
             bid = battle_ids[0] if battle_ids else theater_id
-            cursor.execute(
+            cursor.executemany(
                 """
                 INSERT INTO battle_turning_points (
                     battle_id, turning_point_at, direction, magnitude, description
                 ) VALUES (%s, %s, %s, %s, %s)
                 """,
-                (bid, tp["bucket_time"], tp["direction"], tp["magnitude"], tp["description"]),
+                [(bid, tp["bucket_time"], tp["direction"], tp["magnitude"], tp["description"]) for tp in turning_points],
             )
-            rows_written += 1
+            rows_written += len(turning_points)
 
         # Side composition
         if side_composition_rows:
             cursor.execute("DELETE FROM theater_side_composition WHERE theater_id = %s", (theater_id,))
-            for sc in side_composition_rows:
-                cursor.execute(
-                    """
-                    INSERT INTO theater_side_composition (
-                        theater_id, side, pilot_count,
-                        hull_small_count, hull_medium_count, hull_large_count, hull_capital_count,
-                        role_mainline_dps, role_capital_dps, role_logistics, role_capital_logistics,
-                        role_tackle, role_heavy_tackle, role_bubble_control, role_command, role_ewar,
-                        role_bomber, role_scout, role_supercapital, role_non_combat,
-                        side_hull_weight_score, side_role_balance_score,
-                        side_logi_strength_score, side_command_strength_score,
-                        side_capital_ratio, side_expected_performance_score
-                    ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                    """,
+            cursor.executemany(
+                """
+                INSERT INTO theater_side_composition (
+                    theater_id, side, pilot_count,
+                    hull_small_count, hull_medium_count, hull_large_count, hull_capital_count,
+                    role_mainline_dps, role_capital_dps, role_logistics, role_capital_logistics,
+                    role_tackle, role_heavy_tackle, role_bubble_control, role_command, role_ewar,
+                    role_bomber, role_scout, role_supercapital, role_non_combat,
+                    side_hull_weight_score, side_role_balance_score,
+                    side_logi_strength_score, side_command_strength_score,
+                    side_capital_ratio, side_expected_performance_score
+                ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                """,
+                [
                     (
                         sc["theater_id"], sc["side"], sc["pilot_count"],
                         sc["hull_small_count"], sc["hull_medium_count"],
@@ -966,9 +972,11 @@ def _flush_analysis(
                         sc["side_hull_weight_score"], sc["side_role_balance_score"],
                         sc["side_logi_strength_score"], sc["side_command_strength_score"],
                         sc["side_capital_ratio"], sc["side_expected_performance_score"],
-                    ),
-                )
-                rows_written += 1
+                    )
+                    for sc in side_composition_rows
+                ],
+            )
+            rows_written += len(side_composition_rows)
 
         # Update theater aggregates
         cursor.execute(

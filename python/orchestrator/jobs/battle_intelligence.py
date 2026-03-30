@@ -392,11 +392,16 @@ def run_compute_battle_rollups(db: SupplyCoreDb, runtime: dict[str, Any] | None 
             batch_written = 0
             if not dry_run:
                 with db.transaction() as (_, cursor):
+                    rollup_batch = []
                     for battle in battles.values():
                         started = datetime.strptime(str(battle["started_at"]), "%Y-%m-%d %H:%M:%S")
                         ended = datetime.strptime(str(battle["ended_at"]), "%Y-%m-%d %H:%M:%S")
                         duration_seconds = max(1, int((ended - started).total_seconds()))
-                        cursor.execute(
+                        rollup_batch.append(
+                            (str(battle["battle_id"]), int(battle["system_id"]), str(battle["started_at"]), str(battle["ended_at"]), duration_seconds, computed_at),
+                        )
+                    if rollup_batch:
+                        cursor.executemany(
                             """
                             INSERT INTO battle_rollups (
                                 battle_id, system_id, started_at, ended_at, duration_seconds,
@@ -414,16 +419,32 @@ def run_compute_battle_rollups(db: SupplyCoreDb, runtime: dict[str, Any] | None 
                                     VALUES(computed_at),
                                     computed_at
                                 )
-                            """
-                            ,
-                            (str(battle["battle_id"]), int(battle["system_id"]), str(battle["started_at"]), str(battle["ended_at"]), duration_seconds, computed_at),
+                            """,
+                            rollup_batch,
                         )
-                        batch_written += max(0, int(cursor.rowcount or 0))
+                        batch_written += len(rollup_batch)
 
+                    participant_batch = []
                     for participant in participant_rows.values():
                         ship_type_id = int(participant.get("ship_type_id") or 0)
                         flags = role_map.get(ship_type_id, (0, 0, 0))
-                        cursor.execute(
+                        participant_batch.append(
+                            (
+                                str(participant["battle_id"]),
+                                int(participant["character_id"]),
+                                participant.get("corporation_id"),
+                                participant.get("alliance_id"),
+                                str(participant["side_key"]),
+                                participant.get("ship_type_id"),
+                                int(flags[0]),
+                                int(flags[1]),
+                                int(flags[2]),
+                                int(participant.get("participation_count") or 0),
+                                computed_at,
+                            ),
+                        )
+                    if participant_batch:
+                        cursor.executemany(
                             """
                             INSERT INTO battle_participants (
                                 battle_id, character_id, corporation_id, alliance_id, side_key, ship_type_id,
@@ -440,41 +461,48 @@ def run_compute_battle_rollups(db: SupplyCoreDb, runtime: dict[str, Any] | None 
                                 participation_count = participation_count + VALUES(participation_count),
                                 computed_at = VALUES(computed_at)
                             """,
-                            (
-                                str(participant["battle_id"]),
-                                int(participant["character_id"]),
-                                participant.get("corporation_id"),
-                                participant.get("alliance_id"),
-                                str(participant["side_key"]),
-                                participant.get("ship_type_id"),
-                                int(flags[0]),
-                                int(flags[1]),
-                                int(flags[2]),
-                                int(participant.get("participation_count") or 0),
-                                computed_at,
-                            ),
+                            participant_batch,
                         )
-                        batch_written += max(0, int(cursor.rowcount or 0))
+                        batch_written += len(participant_batch)
 
-                    for battle_id_value, sequence_id in killmail_assignments:
-                        cursor.execute(
+                    if killmail_assignments:
+                        cursor.executemany(
                             "UPDATE killmail_events SET battle_id = %s WHERE sequence_id = %s AND COALESCE(battle_id, '') <> %s",
-                            (battle_id_value, sequence_id, battle_id_value),
+                            [(bid, sid, bid) for bid, sid in killmail_assignments],
                         )
-                        batch_written += max(0, int(cursor.rowcount or 0))
+                        batch_written += len(killmail_assignments)
 
-                    for battle_id_value in touched_battles:
+                    if touched_battles:
+                        tb_list = list(touched_battles)
+                        tb_placeholders = ",".join(["%s"] * len(tb_list))
+                        # Compute participant counts for all touched battles in one query.
                         cursor.execute(
-                            """
-                            SELECT COUNT(*) AS participant_count
+                            f"""
+                            SELECT battle_id, COUNT(*) AS participant_count
                             FROM battle_participants
-                            WHERE battle_id = %s
+                            WHERE battle_id IN ({tb_placeholders})
+                            GROUP BY battle_id
                             """,
-                            (battle_id_value,),
+                            tuple(tb_list),
                         )
-                        summary_row = cursor.fetchone() or {}
-                        participant_count = int(summary_row.get("participant_count") or 0)
-                        cursor.execute(
+                        counts = {str(r["battle_id"]): int(r["participant_count"]) for r in cursor.fetchall()}
+                        update_batch = []
+                        for battle_id_value in tb_list:
+                            participant_count = counts.get(str(battle_id_value), 0)
+                            update_batch.append(
+                                (
+                                    participant_count,
+                                    1 if participant_count >= MIN_ELIGIBLE_PARTICIPANTS else 0,
+                                    _battle_size_class(participant_count),
+                                    computed_at,
+                                    battle_id_value,
+                                    participant_count,
+                                    1 if participant_count >= MIN_ELIGIBLE_PARTICIPANTS else 0,
+                                    _battle_size_class(participant_count),
+                                    computed_at,
+                                ),
+                            )
+                        cursor.executemany(
                             """
                             UPDATE battle_rollups
                             SET participant_count = %s,
@@ -489,19 +517,9 @@ def run_compute_battle_rollups(db: SupplyCoreDb, runtime: dict[str, Any] | None 
                                 OR computed_at <> %s
                               )
                             """,
-                            (
-                                participant_count,
-                                1 if participant_count >= MIN_ELIGIBLE_PARTICIPANTS else 0,
-                                _battle_size_class(participant_count),
-                                computed_at,
-                                battle_id_value,
-                                participant_count,
-                                1 if participant_count >= MIN_ELIGIBLE_PARTICIPANTS else 0,
-                                _battle_size_class(participant_count),
-                                computed_at,
-                            ),
+                            update_batch,
                         )
-                        batch_written += max(0, int(cursor.rowcount or 0))
+                        batch_written += len(update_batch)
 
             cursor_end = max_sequence_id
             rows_written += batch_written
@@ -827,6 +845,8 @@ def run_compute_battle_anomalies(db: SupplyCoreDb, runtime: dict[str, Any] | Non
                 cursor.execute("DELETE FROM battle_side_metrics")
 
                 efficiency_sorted = sorted((float(item["efficiency_score"]) for item in shaped))
+                metrics_batch: list[tuple[Any, ...]] = []
+                anomalies_batch: list[tuple[Any, ...]] = []
                 for item in shaped:
                     mean, stddev = stats.get(str(item["battle_size_class"]), (0.0, 0.0))
                     z = _safe_div(float(item["efficiency_score"]) - mean, stddev, 0.0) if stddev > 0 else 0.0
@@ -837,14 +857,7 @@ def run_compute_battle_anomalies(db: SupplyCoreDb, runtime: dict[str, Any] | Non
                     elif z < -1.0:
                         anomaly_class = "low_sustain"
 
-                    cursor.execute(
-                        """
-                        INSERT INTO battle_side_metrics (
-                            battle_id, side_key, participant_count, logi_count, command_count, capital_count,
-                            total_kills, kill_rate_per_minute, median_sustain_factor, average_sustain_factor,
-                            switch_pressure, efficiency_score, z_efficiency_score, computed_at
-                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                        """,
+                    metrics_batch.append(
                         (
                             str(item["battle_id"]),
                             str(item["side_key"]),
@@ -870,12 +883,7 @@ def run_compute_battle_anomalies(db: SupplyCoreDb, runtime: dict[str, Any] | Non
                         "z_efficiency_score": z,
                         "peer_group": item["battle_size_class"],
                     }
-                    cursor.execute(
-                        """
-                        INSERT INTO battle_anomalies (
-                            battle_id, side_key, anomaly_class, z_efficiency_score, percentile_rank, explanation_json, computed_at
-                        ) VALUES (%s, %s, %s, %s, %s, %s, %s)
-                        """,
+                    anomalies_batch.append(
                         (
                             str(item["battle_id"]),
                             str(item["side_key"]),
@@ -885,6 +893,26 @@ def run_compute_battle_anomalies(db: SupplyCoreDb, runtime: dict[str, Any] | Non
                             json_dumps_safe(explanation),
                             computed_at,
                         ),
+                    )
+                if metrics_batch:
+                    cursor.executemany(
+                        """
+                        INSERT INTO battle_side_metrics (
+                            battle_id, side_key, participant_count, logi_count, command_count, capital_count,
+                            total_kills, kill_rate_per_minute, median_sustain_factor, average_sustain_factor,
+                            switch_pressure, efficiency_score, z_efficiency_score, computed_at
+                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        """,
+                        metrics_batch,
+                    )
+                if anomalies_batch:
+                    cursor.executemany(
+                        """
+                        INSERT INTO battle_anomalies (
+                            battle_id, side_key, anomaly_class, z_efficiency_score, percentile_rank, explanation_json, computed_at
+                        ) VALUES (%s, %s, %s, %s, %s, %s, %s)
+                        """,
+                        anomalies_batch,
                     )
         rows_written = len(shaped) * 2
 
