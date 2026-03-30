@@ -37,6 +37,7 @@ from .worker_pool import main as run_worker_pool
 from .zkill_worker import main as run_zkill_worker
 from .processor_registry import run_registered_processor, PYTHON_PROCESSOR_JOB_KEYS
 from .jobs.killmail_history_backfill import run_killmail_history_backfill
+from .jobs.killmail_full_history_backfill import run_killmail_full_history_backfill
 
 
 def parse_args() -> argparse.Namespace:
@@ -142,6 +143,10 @@ def parse_args() -> argparse.Namespace:
     backfill = subparsers.add_parser("killmail-backfill", help="Backfill killmails from R2Z2 history API")
     backfill.add_argument("--app-root", default=str(Path(__file__).resolve().parents[2]))
     backfill.add_argument("--verbose", action="store_true")
+
+    full_backfill = subparsers.add_parser("killmail-full-history-backfill", help="Backfill ALL killmails day-by-day from R2Z2 daily history dumps")
+    full_backfill.add_argument("--app-root", default=str(Path(__file__).resolve().parents[2]))
+    full_backfill.add_argument("--verbose", action="store_true")
 
     for command, help_text in [
         ("compute-battle-rollups", "Cluster killmails into deterministic battle rollups and participants"),
@@ -376,6 +381,22 @@ def main() -> int:
         configure_logging(verbose=args.verbose, log_file=config.log_file)
         ctx = BackfillContext(app_root=app_root, php_binary=config.php_binary)
         result = run_killmail_history_backfill(ctx)
+        print(json.dumps(result, default=str))
+        return 0 if result.get("status") == "success" else 1
+
+    if command == "killmail-full-history-backfill":
+        from dataclasses import dataclass
+
+        @dataclass
+        class FullBackfillContext:
+            app_root: Path
+            php_binary: str
+
+        app_root = Path(args.app_root).resolve()
+        config = load_php_runtime_config(app_root)
+        configure_logging(verbose=args.verbose, log_file=config.log_file)
+        ctx = FullBackfillContext(app_root=app_root, php_binary=config.php_binary)
+        result = run_killmail_full_history_backfill(ctx)
         print(json.dumps(result, default=str))
         return 0 if result.get("status") == "success" else 1
 

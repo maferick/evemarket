@@ -15206,6 +15206,23 @@ function python_bridge_killmail_backfill_context(): array
     ];
 }
 
+function python_bridge_killmail_full_history_backfill_context(): array
+{
+    $userAgent = trim((string) get_setting('app_name', 'SupplyCore'));
+    if ($userAgent === '') {
+        $userAgent = 'SupplyCore';
+    }
+
+    $startDate = trim((string) get_setting('killmail_backfill_start_date', ''));
+    $lastCompletedDate = trim((string) get_setting('killmail_full_history_backfill_last_date', ''));
+
+    return [
+        'start_date' => $startDate !== '' ? $startDate : date('Y') . '-01-01',
+        'last_completed_date' => $lastCompletedDate,
+        'user_agent' => $userAgent . ' killmail-full-history-backfill/1.0 (+https://github.com/cvweiss/supplycore)',
+    ];
+}
+
 function killmail_backfill_needed(): bool
 {
     $yearStart = date('Y') . '-01-01 00:00:00';
@@ -15401,7 +15418,7 @@ function python_bridge_post_sync_result(string $jobKey, string $status, int $row
     ];
 }
 
-function python_bridge_process_killmail_batch(array $payloads): array
+function python_bridge_process_killmail_batch(array $payloads, bool $skipEntityFilter = false): array
 {
     if ($payloads === []) {
         return [
@@ -15440,7 +15457,7 @@ function python_bridge_process_killmail_batch(array $payloads): array
         $rowsSeen++;
         $requestedSequenceId = (int) ($payload['requested_sequence_id'] ?? $payload['sequence_id'] ?? 0);
         try {
-            $result = killmail_persist_r2z2_payload($payload, $trackedAllianceIds, $trackedCorporationIds, false, $requestedSequenceId > 0 ? $requestedSequenceId : null, $opponentAllianceIds, $opponentCorporationIds);
+            $result = killmail_persist_r2z2_payload($payload, $trackedAllianceIds, $trackedCorporationIds, false, $requestedSequenceId > 0 ? $requestedSequenceId : null, $opponentAllianceIds, $opponentCorporationIds, $skipEntityFilter);
         } catch (Throwable $exception) {
             $rowsFailed++;
             $failureReason = trim($exception->getMessage()) !== '' ? scheduler_normalize_error_message($exception->getMessage()) : 'Killmail write failed.';
@@ -18749,6 +18766,7 @@ function killmail_persist_r2z2_payload(
     ?int $requestedSequenceId = null,
     array $opponentAllianceIds = [],
     array $opponentCorporationIds = [],
+    bool $skipEntityFilter = false,
 ): array {
     $transformed = killmail_transform_r2z2_payload($payload);
     $event = (array) ($transformed['event'] ?? []);
@@ -18776,7 +18794,7 @@ function killmail_persist_r2z2_payload(
     }
 
     $attackers = (array) ($transformed['attackers'] ?? []);
-    if (!killmail_event_matches_tracked_entities($event, $attackers, $trackedAllianceIds, $trackedCorporationIds, $opponentAllianceIds, $opponentCorporationIds)) {
+    if (!$skipEntityFilter && !killmail_event_matches_tracked_entities($event, $attackers, $trackedAllianceIds, $trackedCorporationIds, $opponentAllianceIds, $opponentCorporationIds)) {
         return [
             'status' => 'filtered',
             'sequence_id' => $sequenceId,
@@ -18816,7 +18834,7 @@ function killmail_persist_r2z2_payload(
     } elseif ($attackerIsOpponent) {
         $mailType = 'opponent_kill';
     } else {
-        $mailType = 'kill';
+        $mailType = $skipEntityFilter ? 'third_party' : 'kill';
     }
     $transformed['event']['mail_type'] = $mailType;
 

@@ -1261,7 +1261,7 @@ CREATE TABLE IF NOT EXISTS killmail_events (
     victim_ship_type_id INT UNSIGNED DEFAULT NULL,
     victim_damage_taken BIGINT UNSIGNED DEFAULT NULL,
     battle_id CHAR(64) DEFAULT NULL,
-    mail_type ENUM('kill', 'loss') NOT NULL DEFAULT 'loss',
+    mail_type ENUM('kill', 'loss', 'opponent_loss', 'opponent_kill', 'third_party') NOT NULL DEFAULT 'loss',
     zkb_total_value DECIMAL(20,2) DEFAULT NULL,
     zkb_fitted_value DECIMAL(20,2) DEFAULT NULL,
     zkb_dropped_value DECIMAL(20,2) DEFAULT NULL,
