@@ -4145,6 +4145,10 @@ function supplycore_authoritative_job_registry(): array
         'compute_graph_topology_metrics' => ['label' => 'Graph Topology Metrics', 'description' => 'Child graph task for topology metric derivation.', 'category' => 'real_schedulable', 'enabled_by_default' => true, 'schedulable' => false, 'settings_visible' => true, 'user_visible' => true, 'execution_mode' => 'python', 'default_interval_minutes' => 15, 'default_offset_minutes' => 30, 'priority' => 'normal', 'timeout_seconds' => 420, 'concurrency_policy' => 'background', 'explicitly_configured' => false, 'parent_job_key' => 'compute_graph_sync', 'python_implementation_exists' => true, 'worker_safe' => true, 'notes' => 'Triggered by compute_graph_sync.'],
         'compute_behavioral_baselines' => ['label' => 'Behavioral Baselines', 'description' => 'Child battle task for baseline features.', 'category' => 'real_schedulable', 'enabled_by_default' => true, 'schedulable' => false, 'settings_visible' => true, 'user_visible' => true, 'execution_mode' => 'python', 'default_interval_minutes' => 15, 'default_offset_minutes' => 31, 'priority' => 'normal', 'timeout_seconds' => 420, 'concurrency_policy' => 'background', 'explicitly_configured' => false, 'parent_job_key' => 'compute_suspicion_scores_v2', 'python_implementation_exists' => true, 'worker_safe' => true, 'notes' => 'Triggered by compute_suspicion_scores_v2.'],
         'compute_suspicion_scores_v2' => ['label' => 'Suspicion Scores V2', 'description' => 'Primary suspicion pipeline v2.', 'category' => 'real_schedulable', 'enabled_by_default' => false, 'schedulable' => true, 'settings_visible' => true, 'user_visible' => true, 'execution_mode' => 'python', 'default_interval_minutes' => 15, 'default_offset_minutes' => 32, 'priority' => 'normal', 'timeout_seconds' => 420, 'concurrency_policy' => 'single', 'explicitly_configured' => true, 'python_implementation_exists' => true, 'worker_safe' => true],
+        'compute_economic_warfare' => ['label' => 'Economic Warfare', 'description' => 'Score hostile-fit modules across doctrine penetration, fit constraint, substitution penalty, replacement friction, and loss pressure.', 'category' => 'real_schedulable', 'enabled_by_default' => true, 'schedulable' => true, 'settings_visible' => true, 'user_visible' => true, 'execution_mode' => 'python', 'default_interval_minutes' => 30, 'default_offset_minutes' => 0, 'priority' => 'normal', 'timeout_seconds' => 600, 'concurrency_policy' => 'single', 'explicitly_configured' => true, 'python_implementation_exists' => true, 'worker_safe' => true],
+        'graph_universe_sync' => ['label' => 'Graph Universe', 'description' => 'Sync EVE universe topology (systems, constellations, regions, stargates) into Neo4j.', 'category' => 'real_schedulable', 'enabled_by_default' => true, 'schedulable' => true, 'settings_visible' => true, 'user_visible' => true, 'execution_mode' => 'python', 'default_interval_minutes' => 360, 'default_offset_minutes' => 0, 'priority' => 'normal', 'timeout_seconds' => 600, 'concurrency_policy' => 'single', 'explicitly_configured' => true, 'python_implementation_exists' => true, 'worker_safe' => true],
+        'compute_graph_sync_killmail_entities' => ['label' => 'Graph Killmail Entities', 'description' => 'Project killmail events into Neo4j as Killmail nodes with system and battle relationships.', 'category' => 'real_schedulable', 'enabled_by_default' => true, 'schedulable' => true, 'settings_visible' => true, 'user_visible' => true, 'execution_mode' => 'python', 'default_interval_minutes' => 10, 'default_offset_minutes' => 0, 'priority' => 'normal', 'timeout_seconds' => 420, 'concurrency_policy' => 'single', 'explicitly_configured' => true, 'python_implementation_exists' => true, 'worker_safe' => true],
+        'entity_metadata_resolve_sync' => ['label' => 'Entity Metadata Resolve', 'description' => 'Resolve pending entity metadata (characters, corps, alliances) via ESI.', 'category' => 'real_schedulable', 'enabled_by_default' => true, 'schedulable' => true, 'settings_visible' => true, 'user_visible' => true, 'execution_mode' => 'python', 'default_interval_minutes' => 5, 'default_offset_minutes' => 0, 'priority' => 'normal', 'timeout_seconds' => 180, 'concurrency_policy' => 'single', 'explicitly_configured' => true, 'python_implementation_exists' => true, 'worker_safe' => true],
         'esi_character_queue_sync' => ['label' => 'ESI Character Queue', 'description' => 'Populate ESI character queue from loss killmail attackers.', 'category' => 'real_schedulable', 'enabled_by_default' => false, 'schedulable' => true, 'settings_visible' => true, 'user_visible' => true, 'execution_mode' => 'python', 'default_interval_minutes' => 1, 'default_offset_minutes' => 0, 'priority' => 'normal', 'timeout_seconds' => 180, 'concurrency_policy' => 'single', 'explicitly_configured' => true, 'python_implementation_exists' => true, 'worker_safe' => true],
         'esi_alliance_history_sync' => ['label' => 'ESI Alliance History', 'description' => 'Fetch ESI corporation history and derive alliance membership periods.', 'category' => 'real_schedulable', 'enabled_by_default' => false, 'schedulable' => true, 'settings_visible' => true, 'user_visible' => true, 'execution_mode' => 'python', 'default_interval_minutes' => 1, 'default_offset_minutes' => 0, 'priority' => 'normal', 'timeout_seconds' => 600, 'concurrency_policy' => 'single', 'explicitly_configured' => true, 'python_implementation_exists' => true, 'worker_safe' => true],
         'evewho_enrichment_sync' => ['label' => 'EveWho Enrichment Sync', 'description' => 'Batch-enrich characters from EveWho into Neo4j intelligence graph (corp history, alliance membership).', 'category' => 'real_schedulable', 'enabled_by_default' => false, 'schedulable' => true, 'settings_visible' => true, 'user_visible' => true, 'execution_mode' => 'python', 'default_interval_minutes' => 10, 'default_offset_minutes' => 37, 'priority' => 'normal', 'timeout_seconds' => 600, 'concurrency_policy' => 'single', 'explicitly_configured' => true, 'python_implementation_exists' => true, 'worker_safe' => true],
@@ -4236,6 +4240,10 @@ function worker_job_registry_definitions(): array
         'compute_battle_anomalies' => ['workload_class' => 'compute', 'execution_mode' => 'python', 'queue_name' => 'compute', 'priority' => 'normal', 'interval_seconds' => 600, 'timeout_seconds' => 420, 'memory_limit_mb' => 1024, 'retry_delay_seconds' => 90, 'max_attempts' => 4],
         'compute_battle_actor_features' => ['workload_class' => 'compute', 'execution_mode' => 'python', 'queue_name' => 'compute', 'priority' => 'normal', 'interval_seconds' => 600, 'timeout_seconds' => 420, 'memory_limit_mb' => 1024, 'retry_delay_seconds' => 90, 'max_attempts' => 4],
         'compute_counterintel_pipeline' => ['workload_class' => 'compute', 'execution_mode' => 'python', 'queue_name' => 'compute', 'priority' => 'high', 'interval_seconds' => 900, 'timeout_seconds' => 900, 'memory_limit_mb' => 1024, 'retry_delay_seconds' => 120, 'max_attempts' => 4],
+        'compute_economic_warfare' => ['workload_class' => 'compute', 'execution_mode' => 'python', 'queue_name' => 'compute', 'priority' => 'normal', 'interval_seconds' => 1800, 'timeout_seconds' => 600, 'memory_limit_mb' => 1024, 'retry_delay_seconds' => 60, 'max_attempts' => 3],
+        'graph_universe_sync' => ['workload_class' => 'compute', 'execution_mode' => 'python', 'queue_name' => 'compute', 'priority' => 'normal', 'interval_seconds' => 21600, 'timeout_seconds' => 600, 'memory_limit_mb' => 768, 'retry_delay_seconds' => 120, 'max_attempts' => 3],
+        'compute_graph_sync_killmail_entities' => ['workload_class' => 'compute', 'execution_mode' => 'python', 'queue_name' => 'compute', 'priority' => 'normal', 'interval_seconds' => 600, 'timeout_seconds' => 420, 'memory_limit_mb' => 768, 'retry_delay_seconds' => 30, 'max_attempts' => 4],
+        'entity_metadata_resolve_sync' => ['workload_class' => 'sync', 'execution_mode' => 'python', 'queue_name' => 'sync', 'priority' => 'normal', 'interval_seconds' => 300, 'timeout_seconds' => 180, 'memory_limit_mb' => 384, 'retry_delay_seconds' => 30, 'max_attempts' => 4],
         'evewho_enrichment_sync' => ['workload_class' => 'sync', 'execution_mode' => 'python', 'queue_name' => 'sync', 'priority' => 'normal', 'interval_seconds' => 600, 'timeout_seconds' => 600, 'memory_limit_mb' => 512, 'retry_delay_seconds' => 60, 'max_attempts' => 4],
         'compute_suspicion_scores' => ['workload_class' => 'compute', 'execution_mode' => 'python', 'queue_name' => 'compute', 'priority' => 'normal', 'interval_seconds' => 600, 'timeout_seconds' => 420, 'memory_limit_mb' => 1024, 'retry_delay_seconds' => 90, 'max_attempts' => 4],
     ];
@@ -30111,11 +30119,53 @@ function log_viewer_page_data(): array
         ];
     }
 
+    // ── Include registry jobs missing from sync_schedules ────────────
+    $scheduledKeys = array_column($jobs, 'job_key');
+    $scheduledKeySet = array_flip($scheduledKeys);
+    foreach ($registry as $regKey => $regMeta) {
+        if (isset($scheduledKeySet[$regKey])) {
+            continue;
+        }
+        // Only show user-visible, schedulable jobs (skip internal/child tasks).
+        if (empty($regMeta['user_visible']) || empty($regMeta['schedulable'])) {
+            continue;
+        }
+        // Skip child jobs (have a parent_job_key).
+        if (!empty($regMeta['parent_job_key'])) {
+            continue;
+        }
+        $jobs[] = [
+            'job_key' => $regKey,
+            'label' => $regMeta['label'] ?? $regKey,
+            'description' => $regMeta['description'] ?? '',
+            'enabled' => !empty($regMeta['enabled_by_default']),
+            'interval_seconds' => ((int) ($regMeta['default_interval_minutes'] ?? 30)) * 60,
+            'last_run_at' => null,
+            'last_run_relative' => 'Never',
+            'last_success_at' => null,
+            'last_success_relative' => 'Never',
+            'last_failure_at' => null,
+            'last_failure_message' => null,
+            'next_run_at' => null,
+            'next_run_relative' => 'Not scheduled',
+            'health' => 'never_ran',
+            'health_tone' => 'border-violet-400/20 bg-violet-500/10 text-violet-100',
+            'health_label' => 'Never ran',
+            'overdue' => false,
+            'pressure_state' => 'healthy',
+            'recent_timeout_count' => 0,
+            'recent_deferral_count' => 0,
+            'recent_skip_count' => 0,
+            'last_planner_reason' => 'No schedule row — job exists in registry but has not been provisioned into sync_schedules yet.',
+            'timeout_seconds' => $regMeta['timeout_seconds'] ?? $defaultTimeout,
+        ];
+    }
+
     // ── KPI counts ────────────────────────────────────────────────────
     $totalEnabled = count(array_filter($jobs, fn (array $j) => $j['enabled']));
     $totalFailed = count(array_filter($jobs, fn (array $j) => $j['health'] === 'failed'));
     $totalTimeout = count(array_filter($jobs, fn (array $j) => $j['health'] === 'timeout'));
-    $totalNeverRan = count($neverRan);
+    $totalNeverRan = count(array_filter($jobs, fn (array $j) => $j['health'] === 'never_ran'));
     $totalOverdue = count(array_filter($jobs, fn (array $j) => $j['overdue']));
     $totalHealthy = count(array_filter($jobs, fn (array $j) => $j['health'] === 'healthy'));
 
