@@ -738,6 +738,7 @@ class SupplyCoreDb:
             """UPDATE sync_schedules
                SET last_status = %s,
                    last_run_at = UTC_TIMESTAMP(),
+                   last_finished_at = UTC_TIMESTAMP(),
                    locked_until = NULL
                WHERE job_key = %s AND execution_mode = 'python'""",
             (status[:20], job_key[:120]),
