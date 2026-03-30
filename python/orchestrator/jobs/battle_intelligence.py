@@ -127,10 +127,15 @@ def _sync_state_cursor_get(db: SupplyCoreDb, dataset_key: str) -> int:
 
 
 def _validate_killmail_cursor(db: SupplyCoreDb, cursor: int) -> int:
-    """Reset cursor to 0 if it is ahead of the actual max sequence_id.
+    """Reset cursor if it is ahead of data or if unprocessed killmails exist below it.
 
-    This handles external sequence resets (e.g. zKill renumbering) that would
-    otherwise strand the cursor above all new data forever.
+    This handles two scenarios:
+    1. External sequence resets (e.g. zKill renumbering) that strand the cursor
+       above all new data.
+    2. Mixed sequence_id numbering caused by historical backfill using killmail_id
+       as sequence_id while the live R2Z2 stream uses its own sequence numbering.
+       In that case, recently ingested killmails may sit below the cursor and
+       never get picked up by the rollup.
     """
     if cursor <= 0:
         return cursor
@@ -138,6 +143,26 @@ def _validate_killmail_cursor(db: SupplyCoreDb, cursor: int) -> int:
     max_seq = int(row.get("max_seq") or 0) if row else 0
     if max_seq > 0 and cursor > max_seq:
         return 0
+    # Detect unprocessed killmails below the cursor.  These appear when the
+    # history backfill inserts rows with sequence_id = killmail_id (high range)
+    # while the live stream inserts rows with R2Z2 sequence numbers (lower
+    # range).  The cursor advances past the backfill data and the live rows
+    # become invisible.  We look for recently-created rows that still lack a
+    # battle_id assignment — a strong signal they were never seen by the rollup.
+    gap_row = db.fetch_one(
+        """
+        SELECT MIN(sequence_id) AS min_unprocessed
+        FROM killmail_events
+        WHERE sequence_id < %s
+          AND solar_system_id IS NOT NULL
+          AND battle_id IS NULL
+          AND created_at >= (UTC_TIMESTAMP() - INTERVAL 24 HOUR)
+        """,
+        (cursor,),
+    )
+    min_unprocessed = int(gap_row.get("min_unprocessed") or 0) if gap_row else 0
+    if min_unprocessed > 0:
+        return max(0, min_unprocessed - 1)
     return cursor
 
 

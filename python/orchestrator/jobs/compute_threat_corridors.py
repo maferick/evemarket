@@ -115,7 +115,7 @@ def _find_connected_corridors_neo4j(
             """
             UNWIND $system_ids AS start_id
             MATCH (s1:System {system_id: start_id})
-            MATCH path = (s1)-[:CONNECTS_TO*1..""" + str(max_length - 1) + """]->(s2:System)
+            MATCH path = (s1)-[:CONNECTS_TO*1..""" + str(max_length - 1) + """]-(s2:System)
             WHERE s2.system_id IN $system_ids
               AND s1.system_id < s2.system_id
               AND ALL(n IN nodes(path) WHERE n.system_id IN $system_ids)
@@ -152,6 +152,41 @@ def _find_connected_corridors_sql(db: SupplyCoreDb, active_system_ids: set[int])
     )
 
     return [[int(r["sys_a"]), int(r["sys_b"])] for r in rows]
+
+
+def _find_connected_corridors_constellation(
+    db: SupplyCoreDb,
+    active_system_ids: set[int],
+    system_data: dict[int, dict[str, Any]],
+) -> list[list[int]]:
+    """Fallback: group co-constellation active systems into corridors.
+
+    When stargate adjacency data is unavailable, systems sharing a
+    constellation are treated as connected.  Within each constellation
+    systems are sorted by battle count (descending) and capped at
+    MAX_CORRIDOR_LENGTH to form a single corridor.
+    """
+    if not active_system_ids:
+        return []
+
+    constellation_groups: dict[int, list[int]] = defaultdict(list)
+    placeholders = ",".join(["%s"] * len(active_system_ids))
+    rows = db.fetch_all(
+        f"SELECT system_id, constellation_id FROM ref_systems WHERE system_id IN ({placeholders})",
+        tuple(active_system_ids),
+    )
+    for r in rows:
+        constellation_groups[int(r["constellation_id"])].append(int(r["system_id"]))
+
+    corridors: list[list[int]] = []
+    for _cid, sids in constellation_groups.items():
+        if len(sids) < 2:
+            continue
+        # Sort by battle activity descending, cap length
+        sids.sort(key=lambda s: system_data.get(s, {}).get("total_battles", 0), reverse=True)
+        corridors.append(sids[:MAX_CORRIDOR_LENGTH])
+
+    return corridors
 
 
 def _score_corridor(
@@ -383,11 +418,21 @@ def run_compute_threat_corridors(
         except Exception:
             neo4j_client = None
 
-        # Find connected corridors
+        # Find connected corridors (Neo4j → stargate SQL → constellation fallback)
+        raw_corridors: list[list[int]] = []
+        corridor_source = "none"
         if neo4j_client is not None:
             raw_corridors = _find_connected_corridors_neo4j(neo4j_client, list(active_systems))
-        else:
+            if raw_corridors:
+                corridor_source = "neo4j"
+        if not raw_corridors:
             raw_corridors = _find_connected_corridors_sql(db, active_systems)
+            if raw_corridors:
+                corridor_source = "stargate_sql"
+        if not raw_corridors:
+            raw_corridors = _find_connected_corridors_constellation(db, active_systems, system_data)
+            if raw_corridors:
+                corridor_source = "constellation"
 
         # Score and filter corridors
         scored: list[dict[str, Any]] = []
@@ -414,7 +459,9 @@ def run_compute_threat_corridors(
 
         duration_ms = int((datetime.now(UTC) - started).total_seconds() * 1000)
         finish_job_run(db, job, status="success", rows_processed=rows_processed, rows_written=rows_written,
-                       meta={"corridor_count": len(scored), "systems_scored": len(system_data)})
+                       meta={"corridor_count": len(scored), "systems_scored": len(system_data),
+                             "active_system_count": len(active_systems), "corridor_source": corridor_source,
+                             "raw_corridors_found": len(raw_corridors)})
         return JobResult.success(
             job_key=lock_key,
             summary=f"Found {len(scored)} threat corridors across {len(system_data)} active systems.",

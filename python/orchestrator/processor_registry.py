@@ -24,6 +24,7 @@ from .jobs import (
     run_compute_suspicion_scores,
     run_compute_suspicion_scores_v2,
     run_compute_counterintel_pipeline,
+    run_evewho_enrichment_sync,
     run_market_hub_current_sync,
     run_alliance_current_sync,
     run_market_hub_historical_sync,
@@ -88,6 +89,7 @@ PYTHON_COMPUTE_PROCESSOR_JOB_KEYS: set[str] = {
     "compute_battle_actor_features",
     "compute_suspicion_scores",
     "compute_counterintel_pipeline",
+    "evewho_enrichment_sync",
     "intelligence_pipeline",
     "graph_data_quality_check",
     "graph_temporal_metrics_sync",
@@ -150,6 +152,7 @@ _PROCESSOR_DISPATCH: dict[str, tuple] = {
     "compute_battle_actor_features": (run_compute_battle_actor_features, lambda db, cfg: (db, neo4j_runtime(cfg), battle_runtime(cfg))),
     "compute_suspicion_scores": (run_compute_suspicion_scores, lambda db, cfg: (db, battle_runtime(cfg))),
     "compute_counterintel_pipeline": (run_compute_counterintel_pipeline, lambda db, cfg: (db, neo4j_runtime(cfg), battle_runtime(cfg))),
+    "evewho_enrichment_sync": (run_evewho_enrichment_sync, lambda db, cfg: (db, neo4j_runtime(cfg), battle_runtime(cfg))),
     # Market / supply intelligence jobs
     "compute_buy_all": (run_compute_buy_all, lambda db, cfg: (db,)),
     "compute_signals": (run_compute_signals, lambda db, cfg: (db, influx_runtime(cfg))),
