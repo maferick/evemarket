@@ -120,6 +120,47 @@ def _load_dotenv_defaults(app_root: Path) -> None:
         os.environ.setdefault(key, parsed[0] if parsed else "")
 
 
+def resolve_app_root(fallback_file: str | None = None) -> str:
+    """Return the SupplyCore app root directory.
+
+    Resolution order:
+    1. ``SUPPLYCORE_APP_ROOT`` environment variable (if set and directory exists).
+    2. ``Path(fallback_file).resolve().parents[2]`` — works when running from
+       the source tree (``python/orchestrator/<module>.py``).
+    3. Current working directory as a last-ditch fallback.
+
+    The candidate is validated by checking for a ``bin/`` directory that is
+    characteristic of the SupplyCore project layout.
+    """
+
+    def _is_valid_root(p: Path) -> bool:
+        return (p / "bin").is_dir() and (p / "storage").is_dir()
+
+    # 1. Explicit env var
+    env_root = os.getenv("SUPPLYCORE_APP_ROOT", "").strip()
+    if env_root:
+        candidate = Path(env_root).resolve()
+        if _is_valid_root(candidate):
+            return str(candidate)
+
+    # 2. Relative to the calling module's file path
+    if fallback_file is not None:
+        candidate = Path(fallback_file).resolve().parents[2]
+        if _is_valid_root(candidate):
+            return str(candidate)
+
+    # 3. Current working directory (or walk upward)
+    cwd = Path.cwd().resolve()
+    for ancestor in [cwd, *cwd.parents]:
+        if _is_valid_root(ancestor):
+            return str(ancestor)
+
+    # Ultimate fallback (preserves previous behaviour)
+    if fallback_file is not None:
+        return str(Path(fallback_file).resolve().parents[2])
+    return str(cwd)
+
+
 def _resolve_php_binary() -> str:
     explicit = os.getenv("PHP_BINARY", "").strip()
     if explicit:

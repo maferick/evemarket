@@ -14,7 +14,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from .bridge import PhpBridge
-from .config import load_php_runtime_config
+from .config import load_php_runtime_config, resolve_app_root
 from .db import SupplyCoreDb
 from .json_utils import json_dumps_safe
 
@@ -1040,7 +1040,7 @@ def _bulk_upsert(db: SupplyCoreDb, table: str, columns: list[str], rows: list[di
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Rebuild derived data model with live progress reporting")
-    parser.add_argument("--app-root", default=str(Path(__file__).resolve().parents[2]))
+    parser.add_argument("--app-root", default=resolve_app_root(__file__))
     parser.add_argument("--mode", default="rebuild-all-derived", choices=["rebuild-current-only", "rebuild-rollups-only", "rebuild-all-derived", "full-reset"])
     parser.add_argument("--window-days", type=int, default=30)
     parser.add_argument("--full-reset", action="store_true")

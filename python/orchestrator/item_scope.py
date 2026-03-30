@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any, Callable, TypeVar
 
 from .bridge import PhpBridge
+from .config import resolve_app_root
 
 T = TypeVar("T")
 
@@ -12,7 +13,7 @@ T = TypeVar("T")
 def load_allowed_type_ids(*, php_binary: str | None = None, app_root: Path | None = None) -> set[int]:
     """Load authoritative allowed type IDs from PHP settings-driven scope context."""
     resolved_php_binary = php_binary or os.environ.get("SUPPLYCORE_PHP_BINARY", "php")
-    resolved_app_root = app_root or Path(__file__).resolve().parents[2]
+    resolved_app_root = app_root or Path(resolve_app_root(__file__))
     bridge = PhpBridge(resolved_php_binary, resolved_app_root)
     response = bridge.call("item-scope-context")
     context = dict(response.get("context", {}))

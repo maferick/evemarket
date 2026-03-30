@@ -27,7 +27,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from .config import load_php_runtime_config
+from .config import load_php_runtime_config, resolve_app_root
 from .json_utils import json_dumps_safe
 from .logging_utils import configure_logging
 from .worker_runtime import resident_memory_bytes, utc_now_iso
@@ -40,7 +40,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Run the dedicated continuous EveWho alliance lookup runner.",
     )
-    parser.add_argument("--app-root", default=str(Path(__file__).resolve().parents[2]))
+    parser.add_argument("--app-root", default=resolve_app_root(__file__))
     parser.add_argument(
         "--loop-sleep", type=int, default=30,
         help="Seconds to sleep between cycles (default: 30).",

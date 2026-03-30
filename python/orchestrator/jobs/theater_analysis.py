@@ -23,9 +23,8 @@ from pathlib import Path
 from typing import Any
 
 if __package__ in (None, ""):
-    package_root = str(Path(__file__).resolve().parents[2])
-    if package_root not in sys.path:
-        sys.path.insert(0, package_root)
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+    from orchestrator.config import resolve_app_root  # noqa: F401
     from orchestrator.db import SupplyCoreDb
     from orchestrator.eve_constants import (
         FLEET_FUNCTION_BY_GROUP,
@@ -38,6 +37,7 @@ if __package__ in (None, ""):
     from orchestrator.json_utils import json_dumps_safe
     from orchestrator.job_utils import finish_job_run, start_job_run
 else:
+    from ..config import resolve_app_root  # noqa: F401
     from ..db import SupplyCoreDb
     from ..eve_constants import (
         FLEET_FUNCTION_BY_GROUP,
