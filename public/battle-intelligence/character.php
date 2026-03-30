@@ -19,6 +19,10 @@ $communityInfo = db_graph_community_assignments($characterId);
 $evidencePaths = db_character_evidence_paths($characterId);
 $analystFeedback = db_analyst_feedback_for_character($characterId);
 
+// Generalized co-presence signals and top edges
+$copresenceSignals = db_character_copresence_signals($characterId);
+$copresenceEdges = db_character_copresence_top_edges($characterId, '30d', 15);
+
 // Neo4j intelligence graph signals (EveWho corp history)
 $neo4jIntel = (bool) config('neo4j.enabled', false) ? db_neo4j_character_intelligence($characterId) : null;
 
@@ -514,6 +518,74 @@ include __DIR__ . '/../../src/views/partials/header.php';
                 </div>
             <?php endforeach; ?>
         </div>
+        <?php endif; ?>
+
+        <?php if ($copresenceSignals !== []): ?>
+        <h2 class="mt-6 text-lg font-semibold text-slate-100">Co-presence detection signals</h2>
+        <p class="mt-1 text-xs text-muted">Generalized co-presence metrics across battle, side, system, engagement, and area event types. Deltas show change since last computation.</p>
+        <div class="mt-3 grid gap-3 md:grid-cols-3">
+            <?php foreach ($copresenceSignals as $cs): ?>
+                <?php
+                    $csWindow = (string) ($cs['window_label'] ?? '');
+                    $csTitle = match ($csWindow) {
+                        '7d' => 'Last 7 days',
+                        '30d' => 'Last 30 days',
+                        '90d' => 'Last 90 days',
+                        default => $csWindow . ' window',
+                    };
+                    $pairDelta = (float) ($cs['pair_frequency_delta'] ?? 0);
+                    $oocRatio = (float) ($cs['out_of_cluster_ratio'] ?? 0);
+                    $oocDelta = (float) ($cs['out_of_cluster_ratio_delta'] ?? 0);
+                    $clusterDecay = (float) ($cs['expected_cluster_decay'] ?? 0);
+                    $totalWeight = (float) ($cs['total_edge_weight'] ?? 0);
+                    $uniqueAssoc = (int) ($cs['unique_associates'] ?? 0);
+                    $recurringPairs = (int) ($cs['recurring_pair_count'] ?? 0);
+                    $cohortPct = (float) ($cs['cohort_percentile'] ?? 0);
+                ?>
+                <div class="surface-tertiary">
+                    <p class="text-xs text-muted font-semibold"><?= htmlspecialchars($csTitle, ENT_QUOTES) ?></p>
+                    <div class="mt-2 grid grid-cols-2 gap-1 text-sm">
+                        <span class="text-muted">Edge weight</span><span class="text-slate-100 text-right"><?= number_format($totalWeight, 1) ?></span>
+                        <span class="text-muted">Unique associates</span><span class="text-slate-100 text-right"><?= $uniqueAssoc ?></span>
+                        <span class="text-muted">Recurring pairs</span><span class="text-right <?= $recurringPairs >= 5 ? 'text-yellow-400' : 'text-slate-100' ?>"><?= $recurringPairs ?></span>
+                        <span class="text-muted">Pair freq &Delta;</span><span class="text-right <?= $pairDelta > 2.0 ? 'text-red-400' : ($pairDelta > 0.5 ? 'text-yellow-400' : 'text-slate-100') ?>"><?= ($pairDelta >= 0 ? '+' : '') . number_format($pairDelta, 1) ?></span>
+                        <span class="text-muted">Out-of-cluster</span><span class="text-right <?= $oocRatio >= 0.4 ? 'text-red-400' : ($oocRatio >= 0.2 ? 'text-yellow-400' : 'text-green-400') ?>"><?= number_format($oocRatio * 100, 0) ?>%</span>
+                        <span class="text-muted">OOC &Delta;</span><span class="text-right <?= $oocDelta > 0.1 ? 'text-red-400' : ($oocDelta > 0 ? 'text-yellow-400' : 'text-slate-100') ?>"><?= ($oocDelta >= 0 ? '+' : '') . number_format($oocDelta * 100, 0) ?>%</span>
+                        <span class="text-muted">Cluster decay</span><span class="text-right <?= $clusterDecay >= 0.3 ? 'text-red-400' : ($clusterDecay >= 0.1 ? 'text-yellow-400' : 'text-green-400') ?>"><?= number_format($clusterDecay * 100, 0) ?>%</span>
+                        <span class="text-muted">Cohort %ile</span><span class="text-right <?= $cohortPct >= 0.9 ? 'text-red-400' : ($cohortPct >= 0.7 ? 'text-yellow-400' : 'text-slate-100') ?>"><?= number_format($cohortPct * 100, 0) ?>%</span>
+                    </div>
+                    <?= ci_progress_bar($cohortPct, $cohortPct >= 0.9 ? 'bg-red-500' : ($cohortPct >= 0.7 ? 'bg-yellow-500' : 'bg-cyan-500')) ?>
+                </div>
+            <?php endforeach; ?>
+        </div>
+        <?php endif; ?>
+
+        <?php if ($copresenceEdges !== []): ?>
+        <h2 class="mt-6 text-lg font-semibold text-slate-100">Top co-presence edges (30d)</h2>
+        <p class="mt-1 text-xs text-muted">Strongest pairwise connections by event type. Higher weight = more frequent co-appearance.</p>
+        <div class="mt-3 table-shell"><table class="table-ui"><thead><tr class="border-b border-border/70 text-xs text-muted uppercase"><th class="px-3 py-2 text-left">Character</th><th class="px-3 py-2 text-left">Event type</th><th class="px-3 py-2 text-right">Weight</th><th class="px-3 py-2 text-right">Count</th><th class="px-3 py-2 text-right">Last seen</th></tr></thead><tbody>
+        <?php foreach ($copresenceEdges as $ce): ?>
+            <?php
+                $ceType = (string) ($ce['event_type'] ?? '');
+                $ceTypeLabel = ucwords(str_replace('_', ' ', $ceType));
+                $ceTypeBg = match ($ceType) {
+                    'same_battle' => 'bg-red-900/60 text-red-300',
+                    'same_side' => 'bg-blue-900/60 text-blue-300',
+                    'same_system_time_window' => 'bg-purple-900/60 text-purple-300',
+                    'related_engagement' => 'bg-orange-900/60 text-orange-300',
+                    'same_operational_area' => 'bg-green-900/60 text-green-300',
+                    default => 'bg-slate-700 text-slate-300',
+                };
+            ?>
+            <tr class="border-b border-border/40">
+                <td class="px-3 py-2"><a class="text-accent" href="?character_id=<?= (int) ($ce['other_character_id'] ?? 0) ?>"><?= htmlspecialchars((string) ($ce['other_character_name'] ?? 'Unknown'), ENT_QUOTES) ?></a></td>
+                <td class="px-3 py-2"><span class="inline-block rounded-full px-2 py-0.5 text-[10px] uppercase tracking-wider <?= $ceTypeBg ?>"><?= htmlspecialchars($ceTypeLabel, ENT_QUOTES) ?></span></td>
+                <td class="px-3 py-2 text-right font-mono text-sm"><?= number_format((float) ($ce['edge_weight'] ?? 0), 1) ?></td>
+                <td class="px-3 py-2 text-right"><?= (int) ($ce['event_count'] ?? 0) ?></td>
+                <td class="px-3 py-2 text-right text-xs text-muted"><?= htmlspecialchars((string) ($ce['last_event_at'] ?? ''), ENT_QUOTES) ?></td>
+            </tr>
+        <?php endforeach; ?>
+        </tbody></table></div>
         <?php endif; ?>
 
         <?php if (is_array($communityInfo)): ?>
