@@ -14,7 +14,7 @@ flagged but still tracked.
 from __future__ import annotations
 
 import time
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from typing import Any
 
 from ..db import SupplyCoreDb
@@ -28,7 +28,6 @@ JOB_KEY = "evewho_enrichment_sync"
 DATASET_KEY = "evewho_enrichment_sync_cursor"
 DEFAULT_BATCH_SIZE = 10
 DEFAULT_MAX_BATCHES = 5
-DEFAULT_ENRICHMENT_TTL_HOURS = 24
 MAX_ATTEMPTS = 3
 
 
@@ -99,24 +98,6 @@ def _mark_failed(db: SupplyCoreDb, character_id: int, error: str) -> None:
         (MAX_ATTEMPTS, str(error)[:500], character_id),
     )
 
-
-def _is_recently_enriched(neo4j: Neo4jClient, character_id: int, ttl_hours: int) -> bool:
-    """Check if a character was enriched in Neo4j within the TTL window."""
-    try:
-        rows = neo4j.query(
-            'MATCH (c:Character {character_id: $id}) RETURN c.enriched_at AS enriched_at',
-            {"id": character_id},
-        )
-        if not rows:
-            return False
-        enriched_at = rows[0].get("enriched_at")
-        if not enriched_at:
-            return False
-        # Neo4j returns ISO datetime strings
-        dt = datetime.fromisoformat(str(enriched_at).replace("Z", "+00:00"))
-        return (datetime.now(UTC) - dt) < timedelta(hours=ttl_hours)
-    except (Neo4jError, ValueError, TypeError):
-        return False
 
 
 def _enrich_character_to_neo4j(
@@ -222,7 +203,6 @@ def _process_batch(
     neo4j: Neo4jClient,
     adapter: EveWhoAdapter,
     batch: list[dict[str, Any]],
-    ttl_hours: int,
 ) -> tuple[int, int]:
     """Process a single batch. Returns (processed, written)."""
     processed = 0
@@ -233,11 +213,6 @@ def _process_batch(
         processed += 1
 
         try:
-            # Skip if recently enriched in Neo4j
-            if _is_recently_enriched(neo4j, character_id, ttl_hours):
-                _mark_done(db, character_id)
-                continue
-
             # Fetch from EveWho
             _, payload = adapter.fetch_character(character_id)
             if not payload:
@@ -288,7 +263,6 @@ def run_evewho_enrichment_sync(
     try:
         batch_size = max(1, min(50, int(runtime.get("evewho_enrichment_batch_size") or DEFAULT_BATCH_SIZE)))
         max_batches = max(1, min(20, int(runtime.get("evewho_enrichment_max_batches") or DEFAULT_MAX_BATCHES)))
-        ttl_hours = max(1, int(runtime.get("evewho_enrichment_ttl_hours") or DEFAULT_ENRICHMENT_TTL_HOURS))
         user_agent = str(runtime.get("evewho_user_agent") or "SupplyCore Intelligence Platform / contact@supplycore.app")
 
         neo4j_config = Neo4jConfig.from_runtime(neo4j_raw or {})
@@ -306,7 +280,7 @@ def run_evewho_enrichment_sync(
                 break
 
             batch_count += 1
-            processed, written = _process_batch(db, neo4j, adapter, batch, ttl_hours)
+            processed, written = _process_batch(db, neo4j, adapter, batch)
             rows_processed += processed
             rows_written += written
 
@@ -322,7 +296,6 @@ def run_evewho_enrichment_sync(
             meta={
                 "batches": batch_count,
                 "batch_size": batch_size,
-                "ttl_hours": ttl_hours,
                 "duration_ms": duration_ms,
             },
         )
