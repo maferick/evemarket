@@ -43,13 +43,17 @@ CREATE TABLE IF NOT EXISTS scheduler_dag_log (
 
 -- 4. Backfill concurrency_group from existing lock_group values
 UPDATE sync_schedules ss
-  JOIN LATERAL (
-       SELECT JSON_UNQUOTE(JSON_EXTRACT(wj.payload_json, '$.lock_group')) AS lg
-         FROM worker_jobs wj
-        WHERE wj.job_key = ss.job_key
-          AND wj.payload_json IS NOT NULL
-        ORDER BY wj.id DESC
-        LIMIT 1
-  ) sub ON sub.lg IS NOT NULL AND sub.lg != ''
+  JOIN (
+       SELECT wj1.job_key,
+              JSON_UNQUOTE(JSON_EXTRACT(wj1.payload_json, '$.lock_group')) AS lg
+         FROM worker_jobs wj1
+        INNER JOIN (
+              SELECT job_key, MAX(id) AS max_id
+                FROM worker_jobs
+               WHERE payload_json IS NOT NULL
+               GROUP BY job_key
+        ) wj2 ON wj1.id = wj2.max_id
+        HAVING lg IS NOT NULL AND lg != ''
+  ) sub ON sub.job_key = ss.job_key
    SET ss.concurrency_group = sub.lg
  WHERE ss.concurrency_group = '' OR ss.concurrency_group IS NULL;
