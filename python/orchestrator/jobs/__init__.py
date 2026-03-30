@@ -24,6 +24,7 @@ from .battle_intelligence import (
 from .behavioral_intelligence_v2 import run_compute_behavioral_baselines, run_compute_suspicion_scores_v2
 from .counterintel_pipeline import run_compute_counterintel_pipeline
 from .evewho_enrichment_sync import run_evewho_enrichment_sync
+from .evewho_alliance_member_sync import run_evewho_alliance_member_sync
 
 
 from .market_hub_current_sync import run_market_hub_current_sync
