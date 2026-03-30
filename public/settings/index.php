@@ -2558,6 +2558,22 @@ include __DIR__ . '/../../src/views/partials/header.php';
                                         <?php endforeach; ?>
                                     </div>
                                 <?php endif; ?>
+                                <?php
+                                    $syncWarningIssues = array_filter((array) ($schedule['issues'] ?? []), static fn (array $issue): bool => in_array((string) ($issue['type'] ?? ''), ['missing_token', 'sync_warning'], true));
+                                ?>
+                                <?php if ($syncWarningIssues !== []): ?>
+                                    <?php foreach ($syncWarningIssues as $syncWarning): ?>
+                                        <div class="mt-3 rounded-lg border <?= (string) ($syncWarning['severity'] ?? 'high') === 'critical' ? 'border-rose-400/40 bg-rose-500/10' : 'border-amber-400/40 bg-amber-500/10' ?> p-3">
+                                            <div class="flex items-start gap-2">
+                                                <span class="mt-0.5 text-base leading-none"><?= (string) ($syncWarning['severity'] ?? 'high') === 'critical' ? '&#9888;' : '&#9888;' ?></span>
+                                                <div>
+                                                    <p class="text-sm font-medium <?= (string) ($syncWarning['severity'] ?? 'high') === 'critical' ? 'text-rose-100' : 'text-amber-100' ?>"><?= htmlspecialchars((string) ($syncWarning['title'] ?? ''), ENT_QUOTES) ?></p>
+                                                    <p class="mt-1 text-xs <?= (string) ($syncWarning['severity'] ?? 'high') === 'critical' ? 'text-rose-200/70' : 'text-amber-200/70' ?>"><?= htmlspecialchars((string) ($syncWarning['description'] ?? ''), ENT_QUOTES) ?></p>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    <?php endforeach; ?>
+                                <?php endif; ?>
                                 <div class="mt-3 flex flex-wrap items-center gap-2">
                                     <?php if (!empty($schedule['needs_attention_action'])): ?>
                                         <button type="submit" name="data_sync_action" value="stop-investigate-job" class="inline-flex items-center rounded-full border border-amber-400/40 bg-amber-500/10 px-2.5 py-1 text-[11px] font-medium uppercase tracking-[0.14em] text-amber-100 hover:bg-amber-500/20" formaction="/settings?section=data-sync&amp;job_action_job_key=<?= urlencode($jobKey) ?>" formnovalidate>
