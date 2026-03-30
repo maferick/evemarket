@@ -6,6 +6,54 @@ require_once __DIR__ . '/../../src/bootstrap.php';
 
 $sections = setting_sections();
 $section = active_section();
+$sectionAliases = setting_section_aliases();
+$sectionChildren = [
+    'workspace' => [
+        'general' => 'Workspace Settings',
+    ],
+    'market-scope' => [
+        'trading-stations' => 'Trading Destinations',
+        'item-scope' => 'Item Scope',
+    ],
+    'ai-alerts' => [
+        'ai-briefings' => 'AI Briefings',
+        'ai-report-management' => 'Report Management',
+        'deal-alerts' => 'Deal Alerts',
+        'killmail-intelligence' => 'Killmail Intelligence',
+    ],
+    'automation-sync' => [
+        'automation-control' => 'Automation Control',
+        'esi-login' => 'ESI Authentication',
+        'data-sync' => 'Sync Operations',
+    ],
+    'backup-restore' => [
+        'backup-restore' => 'Backup & Restore',
+    ],
+    'runtime-diagnostics' => [
+        'runtime-config' => 'Runtime Config',
+    ],
+];
+$requestedSection = (string) ($_GET['section'] ?? 'workspace');
+$requestedSubsection = trim((string) ($_GET['subsection'] ?? ''));
+$knownChildren = $sectionChildren[$section] ?? [];
+$activeSubsection = array_key_first($knownChildren) ?? 'general';
+if (array_key_exists($requestedSubsection, $knownChildren)) {
+    $activeSubsection = $requestedSubsection;
+} elseif (array_key_exists($requestedSection, $sectionAliases)) {
+    $legacySubsection = $requestedSection;
+    if (array_key_exists($legacySubsection, $knownChildren)) {
+        $activeSubsection = $legacySubsection;
+    }
+}
+
+$sectionUrl = static function (string $parentKey, ?string $childKey = null): string {
+    $query = '/settings?section=' . urlencode($parentKey);
+    if ($childKey !== null) {
+        $query .= '&subsection=' . urlencode($childKey);
+    }
+
+    return $query;
+};
 $title = 'Settings';
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
@@ -505,10 +553,10 @@ include __DIR__ . '/../../src/views/partials/header.php';
 ?>
 <div class="grid gap-6 xl:grid-cols-[260px_1fr]">
     <aside class="surface-secondary">
-        <h2 class="px-3 text-sm font-medium">Configuration Areas</h2>
+        <h2 class="px-3 text-sm font-medium">Settings</h2>
         <div class="mt-3 space-y-1">
             <?php foreach ($sections as $key => $meta): ?>
-                <a href="/settings?section=<?= urlencode($key) ?>"
+                <a href="<?= htmlspecialchars($sectionUrl($key), ENT_QUOTES) ?>"
                    class="block rounded-lg px-3 py-2 text-sm <?= $section === $key ? 'bg-accent/20 text-white' : 'text-muted hover:bg-white/5 hover:text-slate-100' ?>">
                     <?= htmlspecialchars($meta['title'], ENT_QUOTES) ?>
                 </a>
@@ -519,6 +567,16 @@ include __DIR__ . '/../../src/views/partials/header.php';
     <section class="surface-primary">
         <h2 class="text-xl font-semibold"><?= htmlspecialchars($sections[$section]['title'], ENT_QUOTES) ?></h2>
         <p class="mt-1 text-sm text-muted"><?= htmlspecialchars($sections[$section]['description'], ENT_QUOTES) ?></p>
+        <?php if (($sectionChildren[$section] ?? []) !== []): ?>
+            <div class="mt-4 flex flex-wrap gap-2">
+                <?php foreach ($sectionChildren[$section] as $subsectionKey => $subsectionLabel): ?>
+                    <a href="<?= htmlspecialchars($sectionUrl($section, $subsectionKey), ENT_QUOTES) ?>"
+                       class="inline-flex items-center rounded-full border px-3 py-1.5 text-xs uppercase tracking-[0.14em] <?= $activeSubsection === $subsectionKey ? 'border-accent/60 bg-accent/20 text-slate-100' : 'border-border text-muted hover:bg-white/5 hover:text-slate-100' ?>">
+                        <?= htmlspecialchars($subsectionLabel, ENT_QUOTES) ?>
+                    </a>
+                <?php endforeach; ?>
+            </div>
+        <?php endif; ?>
 
         <?php if (!$dbStatus['ok']): ?>
             <div class="mt-4 rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm text-amber-200">
@@ -526,7 +584,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
             </div>
         <?php endif; ?>
 
-        <?php if ($section === 'runtime-config'): ?>
+        <?php if ($activeSubsection === 'runtime-config'): ?>
             <div class="mt-6 space-y-6">
                 <section class="rounded-2xl border border-border bg-black/20 p-4">
                     <p class="text-sm font-semibold text-slate-100">Database connection (env-only)</p>
@@ -571,18 +629,18 @@ include __DIR__ . '/../../src/views/partials/header.php';
                     <button class="btn-primary">Save runtime settings</button>
                 </form>
             </div>
-        <?php elseif ($section === 'general'): ?>
+        <?php elseif ($activeSubsection === 'general'): ?>
             <?php
             $businessConfigCards = [
-                ['href' => '/settings?section=trading-stations', 'title' => 'Trading stations', 'copy' => 'Reference hub and alliance destination used by market, doctrine, and buy-all workflows.'],
-                ['href' => '/settings?section=item-scope', 'title' => 'Item scope', 'copy' => 'Control which items matter for trading, doctrine readiness, and restock decisions.'],
-                ['href' => '/settings?section=deal-alerts', 'title' => 'Deal alerts', 'copy' => 'Tune how aggressively SupplyCore flags profitable market anomalies.'],
-                ['href' => '/settings?section=killmail-intelligence', 'title' => 'Doctrine + killmail inputs', 'copy' => 'Tracked alliances, corporations, and demand signals that feed readiness and replenishment views.'],
-                ['href' => '/settings?section=ai-briefings', 'title' => 'AI briefings', 'copy' => 'Choose whether background AI summaries run and which provider they use.'],
-                ['href' => '/settings?section=ai-report-management', 'title' => 'AI report management', 'copy' => 'Unlock locked theater reports and clear AI briefings so they can be regenerated.'],
-                ['href' => '/settings?section=data-sync', 'title' => 'Sync behavior', 'copy' => 'Control update cadence, freshness expectations, and manual run controls.'],
-                ['href' => '/settings?section=backup-restore', 'title' => 'Backup & restore', 'copy' => 'Export settings snapshots and perform safe dry-run restores before applying changes.'],
-                ['href' => '/settings?section=automation-control', 'title' => 'Automation control', 'copy' => 'Centralized toggles for ESI, zKill ingestion, pipelines, and recurring job enablement.'],
+                ['href' => $sectionUrl('market-scope', 'trading-stations'), 'title' => 'Trading stations', 'copy' => 'Reference hub and alliance destination used by market, doctrine, and buy-all workflows.'],
+                ['href' => $sectionUrl('market-scope', 'item-scope'), 'title' => 'Item scope', 'copy' => 'Control which items matter for trading, doctrine readiness, and restock decisions.'],
+                ['href' => $sectionUrl('ai-alerts', 'deal-alerts'), 'title' => 'Deal alerts', 'copy' => 'Tune how aggressively SupplyCore flags profitable market anomalies.'],
+                ['href' => $sectionUrl('ai-alerts', 'killmail-intelligence'), 'title' => 'Doctrine + killmail inputs', 'copy' => 'Tracked alliances, corporations, and demand signals that feed readiness and replenishment views.'],
+                ['href' => $sectionUrl('ai-alerts', 'ai-briefings'), 'title' => 'AI briefings', 'copy' => 'Choose whether background AI summaries run and which provider they use.'],
+                ['href' => $sectionUrl('ai-alerts', 'ai-report-management'), 'title' => 'AI report management', 'copy' => 'Unlock locked theater reports and clear AI briefings so they can be regenerated.'],
+                ['href' => $sectionUrl('automation-sync', 'data-sync'), 'title' => 'Sync behavior', 'copy' => 'Control update cadence, freshness expectations, and manual run controls.'],
+                ['href' => $sectionUrl('backup-restore', 'backup-restore'), 'title' => 'Backup & restore', 'copy' => 'Export settings snapshots and perform safe dry-run restores before applying changes.'],
+                ['href' => $sectionUrl('automation-sync', 'automation-control'), 'title' => 'Automation control', 'copy' => 'Centralized toggles for ESI, zKill ingestion, pipelines, and recurring job enablement.'],
             ];
             ?>
             <div class="mt-6 space-y-6">
@@ -646,7 +704,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                         <div class="rounded-xl border border-border bg-black/30 p-4">
                             <p class="text-sm font-semibold text-slate-100">System status</p>
                             <p class="mt-2 text-sm text-slate-300"><?= htmlspecialchars((string) ($settingsSystemStatus['reason'] ?? 'Status unavailable.'), ENT_QUOTES) ?></p>
-                            <p class="mt-1 text-xs text-muted">Open <a href="/settings?section=data-sync" class="text-slate-100 underline decoration-dotted underline-offset-4">Data Sync</a> for scheduler state, runtime activity, and recovery controls.</p>
+                            <p class="mt-1 text-xs text-muted">Open <a href="<?= htmlspecialchars($sectionUrl('automation-sync', 'data-sync'), ENT_QUOTES) ?>" class="text-slate-100 underline decoration-dotted underline-offset-4">Sync Operations</a> for scheduler state, runtime activity, and recovery controls.</p>
                         </div>
                     </div>
                 </details>
@@ -694,7 +752,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                     </form>
                 </details>
             </div>
-        <?php elseif ($section === 'trading-stations'): ?>
+        <?php elseif ($activeSubsection === 'trading-stations'): ?>
             <form class="mt-6 space-y-4" method="post">
                 <input type="hidden" name="_token" value="<?= htmlspecialchars(csrf_token(), ENT_QUOTES) ?>">
                 <input type="hidden" name="section" value="trading-stations">
@@ -905,7 +963,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                     });
                 })();
             </script>
-        <?php elseif ($section === 'ai-briefings'): ?>
+        <?php elseif ($activeSubsection === 'ai-briefings'): ?>
             <form class="mt-6 space-y-6" method="post">
                 <input type="hidden" name="_token" value="<?= htmlspecialchars(csrf_token(), ENT_QUOTES) ?>">
                 <input type="hidden" name="section" value="ai-briefings">
@@ -1036,7 +1094,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                 </div>
 
                 <div class="rounded-2xl border border-white/8 bg-white/[0.03] px-4 py-3 text-sm text-muted">
-                    Configure either the local Ollama API or the Runpod serverless endpoint here, then manage cadence under <a href="/settings?section=data-sync" class="font-medium text-slate-100 hover:text-white">Settings → Data Sync</a> for the <span class="font-medium text-slate-100">rebuild_ai_briefings</span> scheduler job. Runpod requests now submit asynchronously and poll for completion within the configured timeout window. Small tiers stay compact, medium tiers add explanation and deltas, and large tiers unlock richer operator briefings while still keeping deterministic calculations authoritative.
+                    Configure either the local Ollama API or the Runpod serverless endpoint here, then manage cadence under <a href="<?= htmlspecialchars($sectionUrl('automation-sync', 'data-sync'), ENT_QUOTES) ?>" class="font-medium text-slate-100 hover:text-white">Settings → Automation &amp; Sync</a> for the <span class="font-medium text-slate-100">rebuild_ai_briefings</span> scheduler job. Runpod requests now submit asynchronously and poll for completion within the configured timeout window. Small tiers stay compact, medium tiers add explanation and deltas, and large tiers unlock richer operator briefings while still keeping deterministic calculations authoritative.
                 </div>
 
                 <div class="flex items-center gap-4">
@@ -1074,7 +1132,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                 }
                 </script>
             </form>
-        <?php elseif ($section === 'ai-report-management'): ?>
+        <?php elseif ($activeSubsection === 'ai-report-management'): ?>
             <?php $lockedTheaters = db_theaters_locked(); ?>
             <div class="mt-6 space-y-6">
                 <div class="rounded-2xl border border-white/8 bg-white/[0.03] px-4 py-3 text-sm text-muted">
@@ -1164,7 +1222,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                     </div>
                 <?php endif; ?>
             </div>
-        <?php elseif ($section === 'item-scope'): ?>
+        <?php elseif ($activeSubsection === 'item-scope'): ?>
             <?php
                 $itemScopeConfig = $itemScope['config'] ?? item_scope_default_config();
                 $itemScopeCatalog = $itemScope['catalog'] ?? ['categories' => [], 'groups' => [], 'market_groups' => [], 'meta_groups' => []];
@@ -1390,7 +1448,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
 
                 <button class="btn-primary">Save Item Scope</button>
             </form>
-        <?php elseif ($section === 'killmail-intelligence'): ?>
+        <?php elseif ($activeSubsection === 'killmail-intelligence'): ?>
             <?php
                 $trackedAllianceSelections = array_values(array_map(static fn (array $row): array => [
                     'id' => (int) ($row['alliance_id'] ?? 0),
@@ -1460,7 +1518,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                 <div class="flex items-center gap-3 rounded-lg border border-border bg-black/20 p-3">
                     <span class="inline-flex size-4 items-center justify-center rounded border <?= ($settingValues['killmail_ingestion_enabled'] ?? '0') === '1' ? 'border-emerald-500/60 bg-emerald-500/20 text-emerald-300' : 'border-border bg-black/40 text-slate-500' ?> text-xs"><?= ($settingValues['killmail_ingestion_enabled'] ?? '0') === '1' ? '✓' : '' ?></span>
                     <span class="text-sm">zKillboard R2Z2 ingestion <?= ($settingValues['killmail_ingestion_enabled'] ?? '0') === '1' ? 'enabled' : 'disabled' ?></span>
-                    <a href="/settings?section=automation-control" class="ml-auto text-xs text-slate-400 underline decoration-dotted underline-offset-4">Change in Automation Control</a>
+                    <a href="<?= htmlspecialchars($sectionUrl('automation-sync', 'automation-control'), ENT_QUOTES) ?>" class="ml-auto text-xs text-slate-400 underline decoration-dotted underline-offset-4">Change in Automation Control</a>
                 </div>
 
                 <div class="grid gap-4 md:grid-cols-2">
@@ -2012,7 +2070,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                 <p class="text-sm text-muted">Ingestion consumes R2Z2 as an ordered stream and keeps killmails only when a tracked alliance or corporation appears on the victim side. That keeps the board focused on tracked losses while leaving attacker details available only inside each stored loss.</p>
                 <button class="btn-primary">Save Killmail Intelligence Settings</button>
             </form>
-        <?php elseif ($section === 'automation-control'): ?>
+        <?php elseif ($activeSubsection === 'automation-control'): ?>
             <form class="mt-6 space-y-5" method="post">
                 <input type="hidden" name="_token" value="<?= htmlspecialchars(csrf_token(), ENT_QUOTES) ?>">
                 <input type="hidden" name="section" value="automation-control">
@@ -2104,7 +2162,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                     </div>
                 </section>
             </form>
-        <?php elseif ($section === 'esi-login'): ?>
+        <?php elseif ($activeSubsection === 'esi-login'): ?>
             <form class="mt-6 space-y-4" method="post">
                 <input type="hidden" name="_token" value="<?= htmlspecialchars(csrf_token(), ENT_QUOTES) ?>">
                 <input type="hidden" name="section" value="esi-login">
@@ -2127,7 +2185,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                 <div class="flex items-center gap-3 rounded-lg border border-border bg-black/20 p-3">
                     <span class="inline-flex size-4 items-center justify-center rounded border <?= ($settingValues['esi_enabled'] ?? '0') === '1' ? 'border-emerald-500/60 bg-emerald-500/20 text-emerald-300' : 'border-border bg-black/40 text-slate-500' ?> text-xs"><?= ($settingValues['esi_enabled'] ?? '0') === '1' ? '✓' : '' ?></span>
                     <span class="text-sm">ESI OAuth login <?= ($settingValues['esi_enabled'] ?? '0') === '1' ? 'enabled' : 'disabled' ?></span>
-                    <a href="/settings?section=automation-control" class="ml-auto text-xs text-slate-400 underline decoration-dotted underline-offset-4">Change in Automation Control</a>
+                    <a href="<?= htmlspecialchars($sectionUrl('automation-sync', 'automation-control'), ENT_QUOTES) ?>" class="ml-auto text-xs text-slate-400 underline decoration-dotted underline-offset-4">Change in Automation Control</a>
                 </div>
                 <div class="flex flex-wrap items-center gap-3">
                     <button class="btn-primary">Save ESI Login Settings</button>
@@ -2153,7 +2211,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                     <?php endif; ?>
                 <?php endif; ?>
             </div>
-        <?php elseif ($section === 'deal-alerts'): ?>
+        <?php elseif ($activeSubsection === 'deal-alerts'): ?>
             <form class="mt-6 space-y-5" method="post">
                 <input type="hidden" name="_token" value="<?= htmlspecialchars(csrf_token(), ENT_QUOTES) ?>">
                 <input type="hidden" name="section" value="deal-alerts">
@@ -2237,7 +2295,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
 
                 <button class="btn-primary">Save Deal Alert Settings</button>
             </form>
-        <?php elseif ($section === 'backup-restore'): ?>
+        <?php elseif ($activeSubsection === 'backup-restore'): ?>
             <?php $backupScopes = supplycore_backup_data_scope_options(); ?>
             <div class="mt-6 grid gap-6 xl:grid-cols-2">
                 <form class="space-y-4 rounded-2xl border border-border bg-black/20 p-4" method="post">
@@ -2303,7 +2361,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                 <div class="flex items-center gap-3 rounded-lg border border-border bg-black/20 p-3">
                     <span class="inline-flex size-4 items-center justify-center rounded border <?= ($dataSyncSettingValues['incremental_updates_enabled'] ?? '1') === '1' ? 'border-emerald-500/60 bg-emerald-500/20 text-emerald-300' : 'border-border bg-black/40 text-slate-500' ?> text-xs"><?= ($dataSyncSettingValues['incremental_updates_enabled'] ?? '1') === '1' ? '✓' : '' ?></span>
                     <span class="text-sm">Incremental database updates <?= ($dataSyncSettingValues['incremental_updates_enabled'] ?? '1') === '1' ? 'enabled' : 'disabled' ?></span>
-                    <a href="/settings?section=automation-control" class="ml-auto text-xs text-slate-400 underline decoration-dotted underline-offset-4">Change in Automation Control</a>
+                    <a href="<?= htmlspecialchars($sectionUrl('automation-sync', 'automation-control'), ENT_QUOTES) ?>" class="ml-auto text-xs text-slate-400 underline decoration-dotted underline-offset-4">Change in Automation Control</a>
                 </div>
                 <label class="block space-y-2">
                     <span class="text-sm text-muted">Incremental Strategy</span>
@@ -2344,7 +2402,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                         <p class="text-sm text-slate-100">Data freshness summary</p>
                         <p class="mt-1 text-xs text-muted">Keep the visible view centered on datasets, last successful refreshes, freshness, and only the latest failures.</p>
                         <p class="mt-2 text-xs text-muted">
-                            <a class="underline decoration-dotted underline-offset-4 hover:text-slate-100" href="/settings?section=data-sync&amp;show_sync_diagnostics=<?= $showSyncDiagnostics ? '0' : '1' ?>">
+                            <a class="underline decoration-dotted underline-offset-4 hover:text-slate-100" href="<?= htmlspecialchars($sectionUrl('automation-sync', 'data-sync'), ENT_QUOTES) ?>&amp;show_sync_diagnostics=<?= $showSyncDiagnostics ? '0' : '1' ?>">
                                 <?= $showSyncDiagnostics ? 'Hide advanced diagnostics' : 'Show advanced diagnostics' ?>
                             </a>
                         </p>
@@ -2576,12 +2634,12 @@ include __DIR__ . '/../../src/views/partials/header.php';
                                 <?php endif; ?>
                                 <div class="mt-3 flex flex-wrap items-center gap-2">
                                     <?php if (!empty($schedule['needs_attention_action'])): ?>
-                                        <button type="submit" name="data_sync_action" value="stop-investigate-job" class="inline-flex items-center rounded-full border border-amber-400/40 bg-amber-500/10 px-2.5 py-1 text-[11px] font-medium uppercase tracking-[0.14em] text-amber-100 hover:bg-amber-500/20" formaction="/settings?section=data-sync&amp;job_action_job_key=<?= urlencode($jobKey) ?>" formnovalidate>
+                                        <button type="submit" name="data_sync_action" value="stop-investigate-job" class="inline-flex items-center rounded-full border border-amber-400/40 bg-amber-500/10 px-2.5 py-1 text-[11px] font-medium uppercase tracking-[0.14em] text-amber-100 hover:bg-amber-500/20" formaction="<?= htmlspecialchars($sectionUrl('automation-sync', 'data-sync'), ENT_QUOTES) ?>&amp;job_action_job_key=<?= urlencode($jobKey) ?>" formnovalidate>
                                             <span>Stop &amp; investigate</span>
                                         </button>
                                     <?php endif; ?>
                                     <?php if ((string) ($schedule['last_result'] ?? '') === 'failed'): ?>
-                                        <button type="submit" name="data_sync_action" value="retry-job" class="inline-flex items-center rounded-full border border-emerald-400/40 bg-emerald-500/10 px-2.5 py-1 text-[11px] font-medium uppercase tracking-[0.14em] text-emerald-100 hover:bg-emerald-500/20" formaction="/settings?section=data-sync&amp;job_action_job_key=<?= urlencode($jobKey) ?>" formnovalidate>
+                                        <button type="submit" name="data_sync_action" value="retry-job" class="inline-flex items-center rounded-full border border-emerald-400/40 bg-emerald-500/10 px-2.5 py-1 text-[11px] font-medium uppercase tracking-[0.14em] text-emerald-100 hover:bg-emerald-500/20" formaction="<?= htmlspecialchars($sectionUrl('automation-sync', 'data-sync'), ENT_QUOTES) ?>&amp;job_action_job_key=<?= urlencode($jobKey) ?>" formnovalidate>
                                             <span>Retry now</span>
                                         </button>
                                     <?php endif; ?>
@@ -2984,7 +3042,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                             <p class="text-sm text-muted">Pipeline toggles</p>
                             <p class="mt-1 text-xs text-muted">Pipeline runtime flags are managed centrally from Automation Control.</p>
                         </div>
-                        <a href="/settings?section=automation-control" class="shrink-0 text-xs text-slate-400 underline decoration-dotted underline-offset-4">Automation Control →</a>
+                        <a href="<?= htmlspecialchars($sectionUrl('automation-sync', 'automation-control'), ENT_QUOTES) ?>" class="shrink-0 text-xs text-slate-400 underline decoration-dotted underline-offset-4">Automation Control →</a>
                     </div>
                     <?php
                         $pipelineFlags = [

@@ -295,18 +295,29 @@ function nav_items(): array
 function setting_sections(): array
 {
     return [
-        'runtime-config' => ['title' => 'Runtime Config', 'description' => 'Authoritative runtime configuration stored in app_settings and merged over app.php defaults.'],
-        'general' => ['title' => 'General Settings', 'description' => 'Core application behavior and preferences.'],
-        'trading-stations' => ['title' => 'Trading Stations', 'description' => 'Configure your reference market hub and operational trading destination.'],
-        'item-scope' => ['title' => 'Item Scope', 'description' => 'Control which item classes are operationally relevant across market, doctrine, and loss-demand analytics.'],
-        'ai-briefings' => ['title' => 'AI Briefings', 'description' => 'Configure either a local Ollama endpoint or a Runpod serverless endpoint for doctrine briefing summaries.'],
-        'automation-control' => ['title' => 'Automation Control', 'description' => 'Centralized controls for runtime integrations and recurring job schedules.'],
-        'esi-login' => ['title' => 'ESI Login', 'description' => 'Configure EVE SSO credentials and callback behavior.'],
-        'data-sync' => ['title' => 'Data Sync', 'description' => 'Control database import and incremental update policies.'],
+        'workspace' => ['title' => 'Workspace', 'description' => 'Branding, identity labels, timezone, and default currency for this SupplyCore workspace.'],
+        'market-scope' => ['title' => 'Market & Scope', 'description' => 'Reference hubs, operational destinations, and item scope boundaries for trading and readiness.'],
+        'ai-alerts' => ['title' => 'AI & Alerts', 'description' => 'AI briefing behavior, report controls, deal alert thresholds, and killmail intelligence inputs.'],
+        'automation-sync' => ['title' => 'Automation & Sync', 'description' => 'ESI authentication, pipeline toggles, scheduler controls, and manual run operations.'],
         'backup-restore' => ['title' => 'Backup & Restore', 'description' => 'Export settings/configuration snapshots and restore from validated backup files.'],
-        'deal-alerts' => ['title' => 'Deal Alerts', 'description' => 'Tune mispriced-listing detection thresholds, popup behavior, and anomaly cadence.'],
-        'killmail-intelligence' => ['title' => 'Killmail Intelligence', 'description' => 'Manage zKillboard stream ingestion, tracked entities, and demand prediction foundation.'],
-        'ai-report-management' => ['title' => 'AI Report Management', 'description' => 'Unlock locked theater reports and clear generated AI briefings so they can be regenerated.'],
+        'runtime-diagnostics' => ['title' => 'Runtime Diagnostics', 'description' => 'Advanced scheduler internals, runtime transport state, and recovery controls.'],
+    ];
+}
+
+function setting_section_aliases(): array
+{
+    return [
+        'general' => 'workspace',
+        'trading-stations' => 'market-scope',
+        'item-scope' => 'market-scope',
+        'ai-briefings' => 'ai-alerts',
+        'ai-report-management' => 'ai-alerts',
+        'deal-alerts' => 'ai-alerts',
+        'killmail-intelligence' => 'ai-alerts',
+        'automation-control' => 'automation-sync',
+        'esi-login' => 'automation-sync',
+        'data-sync' => 'automation-sync',
+        'runtime-config' => 'runtime-diagnostics',
     ];
 }
 
@@ -438,9 +449,13 @@ function migrate_local_config_to_app_settings(string $localConfigPath): array
 
 function active_section(): string
 {
-    $section = $_GET['section'] ?? 'general';
+    $section = (string) ($_GET['section'] ?? 'workspace');
+    $aliases = setting_section_aliases();
+    if (array_key_exists($section, $aliases)) {
+        $section = (string) $aliases[$section];
+    }
 
-    return array_key_exists($section, setting_sections()) ? $section : 'general';
+    return array_key_exists($section, setting_sections()) ? $section : 'workspace';
 }
 
 function get_settings(array $keys = []): array
