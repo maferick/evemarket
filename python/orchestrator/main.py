@@ -160,6 +160,11 @@ def parse_args() -> argparse.Namespace:
         parser_job.add_argument("--dry-run", action="store_true", help="Compute and log counters without writing MariaDB tables.")
         parser_job.add_argument("--verbose", action="store_true")
 
+    evewho_sync = subparsers.add_parser("evewho-enrichment-sync", help="Batch-enrich characters from EveWho into Neo4j")
+    evewho_sync.add_argument("--app-root", default=str(Path(__file__).resolve().parents[2]))
+    evewho_sync.add_argument("--dry-run", action="store_true", help="Compute without writing to Neo4j or MariaDB.")
+    evewho_sync.add_argument("--verbose", action="store_true")
+
     scheduler_graph = subparsers.add_parser("scheduler-graph", help="Display the DAG-based job dependency graph and execution tiers")
     scheduler_graph.add_argument("--app-root", default=str(Path(__file__).resolve().parents[2]))
     scheduler_graph.add_argument("--validate", action="store_true", help="Validate the graph and report issues")
@@ -464,6 +469,18 @@ def main() -> int:
                 {"status": "failed", "error_text": str(exc), "rows_processed": 0, "rows_written": 0},
             )
             return 1
+
+    if command == "evewho-enrichment-sync":
+        app_root = Path(args.app_root).resolve()
+        config = load_php_runtime_config(app_root)
+        configure_logging(verbose=args.verbose, log_file=config.log_file)
+        from .db import SupplyCoreDb
+        db = SupplyCoreDb(config.raw.get("db", {}))
+        from .jobs.evewho_enrichment_sync import run_evewho_enrichment_sync
+        started_at = time.monotonic()
+        result = run_evewho_enrichment_sync(db, neo4j_runtime(config.raw), battle_runtime(config.raw), dry_run=bool(args.dry_run))
+        _print_cli_result(command, started_at, result)
+        return 0 if str(result.get("status") or "success") != "failed" else 1
 
     if command == "scheduler-graph":
         configure_logging(verbose=args.verbose)
