@@ -679,6 +679,60 @@ class SupplyCoreDb:
             (job_key[:120], event_type[:40], payload_json, round(duration_seconds, 2)),
         )
 
+    def upsert_scheduler_job_current_status(
+        self,
+        *,
+        job_key: str,
+        status: str,
+        event_type: str = "completion",
+        pressure_state: str = "healthy",
+        failure_message: str | None = None,
+    ) -> int:
+        """Mirror the PHP ``db_scheduler_job_current_status_upsert`` so that
+        Python-executed jobs are visible in the log-viewer and settings pages.
+        """
+        is_success = status in ("success", "completed", "skipped", "skipped_no_change",
+                                "skipped_within_freshness_window", "forced_refresh_due_to_staleness")
+        is_failure = status in ("failed", "error", "timeout")
+        now_sql = "UTC_TIMESTAMP()"
+
+        return self.execute(
+            f"""INSERT INTO scheduler_job_current_status (
+                    job_key, dataset_key, latest_status, latest_event_type,
+                    last_started_at, last_finished_at,
+                    last_success_at, last_failure_at, last_failure_message,
+                    current_pressure_state, last_event_at
+                ) VALUES (
+                    %s, %s, %s, %s,
+                    {now_sql}, {now_sql},
+                    {"" + now_sql if is_success else "NULL"},
+                    {"" + now_sql if is_failure else "NULL"},
+                    %s,
+                    %s, {now_sql}
+                )
+                ON DUPLICATE KEY UPDATE
+                    latest_status = VALUES(latest_status),
+                    latest_event_type = COALESCE(VALUES(latest_event_type), latest_event_type),
+                    last_started_at = COALESCE(VALUES(last_started_at), last_started_at),
+                    last_finished_at = COALESCE(VALUES(last_finished_at), last_finished_at),
+                    last_success_at = COALESCE(VALUES(last_success_at), last_success_at),
+                    last_failure_at = COALESCE(VALUES(last_failure_at), last_failure_at),
+                    last_failure_message = CASE
+                        WHEN VALUES(last_failure_at) IS NOT NULL THEN VALUES(last_failure_message)
+                        ELSE last_failure_message
+                    END,
+                    current_pressure_state = COALESCE(VALUES(current_pressure_state), current_pressure_state),
+                    last_event_at = VALUES(last_event_at)""",
+            (
+                job_key[:190],
+                f"scheduler.job.{job_key[:170]}",
+                status[:40],
+                event_type[:50],
+                failure_message[:500] if failure_message else None,
+                pressure_state[:32],
+            ),
+        )
+
     def update_sync_schedule_status(self, *, job_key: str, status: str, snapshot_json: str) -> int:
         return self.execute(
             """UPDATE sync_schedules

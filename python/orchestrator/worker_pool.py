@@ -197,6 +197,16 @@ def _finalize_job(db: SupplyCoreDb, job_key: str, result: dict[str, Any], logger
     except Exception as exc:
         logger.warning("sync_schedule status update failed", payload={"event": "worker_pool.finalize.schedule_error", "job_key": job_key, "error": str(exc)})
 
+    try:
+        db.upsert_scheduler_job_current_status(
+            job_key=job_key,
+            status=status,
+            event_type="finished" if status != "failed" else "failure",
+            failure_message=error_text,
+        )
+    except Exception as exc:
+        logger.warning("scheduler_job_current_status upsert failed", payload={"event": "worker_pool.finalize.current_status_error", "job_key": job_key, "error": str(exc)})
+
     mapping = _UI_REFRESH_JOB_MAP.get(job_key)
     if mapping and status in ("success", "skipped"):
         try:
