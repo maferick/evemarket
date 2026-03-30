@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import bisect
 import math
 import sys
 from collections import defaultdict
@@ -87,12 +88,7 @@ def _battle_size_class(participant_count: int) -> str:
 def _percentile(sorted_values: list[float], value: float) -> float:
     if not sorted_values:
         return 0.0
-    below = 0
-    for candidate in sorted_values:
-        if candidate <= value:
-            below += 1
-        else:
-            break
+    below = bisect.bisect_right(sorted_values, value)
     return _safe_div(float(below), float(len(sorted_values)), 0.0)
 
 
@@ -1079,6 +1075,16 @@ def run_compute_suspicion_scores(db: SupplyCoreDb, runtime: dict[str, Any] | Non
             by_character[character_id].append(row)
             battle_side_index[str(row.get("battle_id"))].append(row)
 
+        # Pre-compute global eligible z-efficiency totals so each character
+        # can derive "absent enemy" stats in O(1) instead of O(n_characters).
+        global_eligible_z_sum = 0.0
+        global_eligible_count = 0
+        for row in actor_rows:
+            if int(row.get("eligible_for_suspicion") or 0) == 1:
+                z = float(row.get("z_efficiency_score") or 0.0)
+                global_eligible_z_sum += z
+                global_eligible_count += 1
+
         intelligence_rows: list[dict[str, Any]] = []
         score_rows: list[dict[str, Any]] = []
 
@@ -1125,17 +1131,14 @@ def run_compute_suspicion_scores(db: SupplyCoreDb, runtime: dict[str, Any] | Non
                     if str(other.get("side_key")) == side_key:
                         continue
                     present_enemy_z.append(float(other.get("z_efficiency_score") or 0.0))
-            absent_enemy_z: list[float] = []
-            for other_character_id, other_rows in by_character.items():
-                if other_character_id == character_id:
-                    continue
-                for other in other_rows:
-                    if str(other.get("battle_id")) in eligible_battle_ids:
-                        continue
-                    if int(other.get("eligible_for_suspicion") or 0) == 1:
-                        absent_enemy_z.append(float(other.get("z_efficiency_score") or 0.0))
-            present_avg = _safe_div(sum(present_enemy_z), float(len(present_enemy_z)), 0.0)
-            absent_avg = _safe_div(sum(absent_enemy_z), float(len(absent_enemy_z)), 0.0)
+            present_sum = sum(present_enemy_z)
+            present_count = len(present_enemy_z)
+            present_avg = _safe_div(present_sum, float(present_count), 0.0)
+            # Derive absent stats from pre-computed global totals instead of
+            # iterating all other characters (eliminates O(n²) inner loop).
+            absent_count = global_eligible_count - present_count
+            absent_sum = global_eligible_z_sum - present_sum
+            absent_avg = _safe_div(absent_sum, float(absent_count), 0.0)
             enemy_eff_uplift = present_avg - absent_avg
             ally_eff_uplift = _safe_div(sum(float(row.get("z_efficiency_score") or 0.0) for row in eligible_rows), float(max(len(eligible_rows), 1)), 0.0)
 
@@ -1235,61 +1238,70 @@ def run_compute_suspicion_scores(db: SupplyCoreDb, runtime: dict[str, Any] | Non
                 cursor.execute("DELETE FROM character_battle_intelligence")
                 cursor.execute("DELETE FROM character_suspicion_scores")
 
-                for row in intelligence_rows:
-                    cursor.execute(
-                    """
-                    INSERT INTO character_battle_intelligence (
-                        character_id, total_battle_count, eligible_battle_count, high_sustain_battle_count,
-                        low_sustain_battle_count, high_sustain_frequency, low_sustain_frequency,
-                        cross_side_battle_count, cross_side_rate, enemy_efficiency_uplift, ally_efficiency_uplift,
-                        role_weight, anomalous_battle_density, computed_at
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                    """,
-                    (
-                        int(row["character_id"]),
-                        int(row["total_battle_count"]),
-                        int(row["eligible_battle_count"]),
-                        int(row["high_sustain_battle_count"]),
-                        int(row["low_sustain_battle_count"]),
-                        float(row["high_sustain_frequency"]),
-                        float(row["low_sustain_frequency"]),
-                        int(row["cross_side_battle_count"]),
-                        float(row["cross_side_rate"]),
-                        float(row["enemy_efficiency_uplift"]),
-                        float(row["ally_efficiency_uplift"]),
-                        float(row["role_weight"]),
-                        float(row["anomalous_battle_density"]),
-                        computed_at,
-                    ),
-                )
+                if intelligence_rows:
+                    cursor.executemany(
+                        """
+                        INSERT INTO character_battle_intelligence (
+                            character_id, total_battle_count, eligible_battle_count, high_sustain_battle_count,
+                            low_sustain_battle_count, high_sustain_frequency, low_sustain_frequency,
+                            cross_side_battle_count, cross_side_rate, enemy_efficiency_uplift, ally_efficiency_uplift,
+                            role_weight, anomalous_battle_density, computed_at
+                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        """,
+                        [
+                            (
+                                int(row["character_id"]),
+                                int(row["total_battle_count"]),
+                                int(row["eligible_battle_count"]),
+                                int(row["high_sustain_battle_count"]),
+                                int(row["low_sustain_battle_count"]),
+                                float(row["high_sustain_frequency"]),
+                                float(row["low_sustain_frequency"]),
+                                int(row["cross_side_battle_count"]),
+                                float(row["cross_side_rate"]),
+                                float(row["enemy_efficiency_uplift"]),
+                                float(row["ally_efficiency_uplift"]),
+                                float(row["role_weight"]),
+                                float(row["anomalous_battle_density"]),
+                                computed_at,
+                            )
+                            for row in intelligence_rows
+                        ],
+                    )
 
+                # Pre-compute percentile ranks before insert.
+                score_tuples = []
                 for row in score_rows:
                     percentile_rank = _percentile(scores_sorted, float(row["suspicion_score"]))
-                    cursor.execute(
-                    """
-                    INSERT INTO character_suspicion_scores (
-                        character_id, suspicion_score, percentile_rank, high_sustain_frequency,
-                        low_sustain_frequency, cross_side_rate, enemy_efficiency_uplift, role_weight,
-                        supporting_battle_count, top_supporting_battles_json, top_graph_neighbors_json,
-                        explanation_json, computed_at
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                    """,
-                    (
-                        int(row["character_id"]),
-                        float(row["suspicion_score"]),
-                        float(percentile_rank),
-                        float(row["high_sustain_frequency"]),
-                        float(row["low_sustain_frequency"]),
-                        float(row["cross_side_rate"]),
-                        float(row["enemy_efficiency_uplift"]),
-                        float(row["role_weight"]),
-                        int(row["supporting_battle_count"]),
-                        str(row["top_supporting_battles_json"]),
-                        str(row["top_graph_neighbors_json"]),
-                        str(row["explanation_json"]),
-                        computed_at,
-                    ),
-                )
+                    score_tuples.append(
+                        (
+                            int(row["character_id"]),
+                            float(row["suspicion_score"]),
+                            float(percentile_rank),
+                            float(row["high_sustain_frequency"]),
+                            float(row["low_sustain_frequency"]),
+                            float(row["cross_side_rate"]),
+                            float(row["enemy_efficiency_uplift"]),
+                            float(row["role_weight"]),
+                            int(row["supporting_battle_count"]),
+                            str(row["top_supporting_battles_json"]),
+                            str(row["top_graph_neighbors_json"]),
+                            str(row["explanation_json"]),
+                            computed_at,
+                        )
+                    )
+                if score_tuples:
+                    cursor.executemany(
+                        """
+                        INSERT INTO character_suspicion_scores (
+                            character_id, suspicion_score, percentile_rank, high_sustain_frequency,
+                            low_sustain_frequency, cross_side_rate, enemy_efficiency_uplift, role_weight,
+                            supporting_battle_count, top_supporting_battles_json, top_graph_neighbors_json,
+                            explanation_json, computed_at
+                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        """,
+                        score_tuples,
+                    )
         rows_written = len(intelligence_rows) + len(score_rows)
 
         finish_job_run(

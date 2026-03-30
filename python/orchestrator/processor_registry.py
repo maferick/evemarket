@@ -147,7 +147,7 @@ _PROCESSOR_DISPATCH: dict[str, tuple] = {
     "compute_graph_topology_metrics": (run_compute_graph_topology_metrics, lambda db, cfg: (db, neo4j_runtime(cfg))),
     # Battle intelligence jobs
     "compute_behavioral_baselines": (run_compute_behavioral_baselines, lambda db, cfg: (db, battle_runtime(cfg))),
-    "compute_suspicion_scores_v2": (run_compute_suspicion_scores_v2, lambda db, cfg: (db, battle_runtime(cfg))),
+    "compute_suspicion_scores_v2": (run_compute_suspicion_scores_v2, lambda db, cfg: (db, battle_runtime(cfg), neo4j_runtime(cfg))),
     "compute_battle_rollups": (run_compute_battle_rollups, lambda db, cfg: (db, battle_runtime(cfg))),
     "compute_battle_target_metrics": (run_compute_battle_target_metrics, lambda db, cfg: (db, battle_runtime(cfg))),
     "compute_battle_anomalies": (run_compute_battle_anomalies, lambda db, cfg: (db, battle_runtime(cfg))),

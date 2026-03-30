@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+import bisect
 import math
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, datetime
 from typing import Any
 
 from ..db import SupplyCoreDb
 from ..job_result import JobResult
 from ..json_utils import json_dumps_safe
+from ..neo4j import Neo4jClient, Neo4jConfig
 
 MIN_SAMPLE_COUNT = 5
 
@@ -192,7 +195,53 @@ def run_compute_behavioral_baselines(db: SupplyCoreDb, runtime: dict[str, Any] |
     ).to_dict()
 
 
-def run_compute_suspicion_scores_v2(db: SupplyCoreDb, runtime: dict[str, Any] | None = None) -> dict[str, Any]:
+def _fetch_neighbors_from_neo4j(
+    neo4j: Neo4jClient, character_ids: list[int],
+) -> dict[int, list[dict[str, Any]]]:
+    """Use the pre-computed CO_OCCURS_WITH graph edges for top neighbors."""
+    CYPHER_CHUNK = 5000
+    result: dict[int, list[dict[str, Any]]] = {}
+    for offset in range(0, len(character_ids), CYPHER_CHUNK):
+        chunk = character_ids[offset : offset + CYPHER_CHUNK]
+        rows = neo4j.query(
+            """
+            UNWIND $ids AS cid
+            MATCH (c:Character {character_id: cid})-[r:CO_OCCURS_WITH]-(other:Character)
+            WITH c.character_id AS character_id,
+                 other.character_id AS other_character_id,
+                 r.occurrence_count AS shared_battle_count,
+                 COALESCE(r.high_sustain_battle_count, 0) AS high_sustain_count
+            ORDER BY character_id, shared_battle_count DESC
+            WITH character_id, collect({
+                other_character_id: other_character_id,
+                shared_battle_count: shared_battle_count,
+                high_sustain_count: high_sustain_count
+            })[..5] AS top5
+            UNWIND top5 AS t
+            RETURN character_id,
+                   t.other_character_id AS other_character_id,
+                   t.shared_battle_count AS shared_battle_count,
+                   t.high_sustain_count AS high_sustain_count
+            """,
+            {"ids": chunk},
+        )
+        for row in rows:
+            cid = int(row.get("character_id") or 0)
+            result.setdefault(cid, []).append(
+                {
+                    "character_id": int(row.get("other_character_id") or 0),
+                    "weight": float(row.get("shared_battle_count") or 0.0),
+                    "high_sustain_battle_count": int(row.get("high_sustain_count") or 0),
+                }
+            )
+    return result
+
+
+def run_compute_suspicion_scores_v2(
+    db: SupplyCoreDb,
+    runtime: dict[str, Any] | None = None,
+    neo4j_config: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     started = time.perf_counter()
     computed_at = _now_sql()
     _ensure_character_suspicion_scores_schema(db)
@@ -244,17 +293,21 @@ def run_compute_suspicion_scores_v2(db: SupplyCoreDb, runtime: dict[str, Any] | 
     )
     recent_map = {int(row["character_id"]): row for row in recent}
 
-    # ── Top graph neighbors: chunked to avoid temp-table overflow ───────
-    # The self-join on battle_actor_features creates O(participants²) pairs per
-    # battle.  Running it for all characters at once can exceed tmp_disk_table_size.
-    # Chunking by character_id keeps each query's intermediate result manageable.
+    # ── Top graph neighbors + top supporting battles: parallel chunked ──
+    # Each chunk gets its own DB connection (db.fetch_all opens/closes one),
+    # so we can safely run chunks across threads.
     all_character_ids = [int(r["character_id"]) for r in rows]
-    NEIGHBOR_CHUNK = 500
-    support_rows: list[dict[str, Any]] = []
-    for chunk_start in range(0, len(all_character_ids), NEIGHBOR_CHUNK):
-        chunk_ids = all_character_ids[chunk_start : chunk_start + NEIGHBOR_CHUNK]
+    NEIGHBOR_CHUNK = 2000
+    MAX_WORKERS = 4
+
+    # Try Neo4j for neighbor data — the CO_OCCURS_WITH edges are pre-computed
+    # and much faster to traverse than a self-join in MySQL.
+    neo4j_cfg = Neo4jConfig.from_runtime(neo4j_config or {})
+    use_neo4j_neighbors = neo4j_cfg.enabled
+
+    def _fetch_neighbor_chunk(chunk_ids: list[int]) -> list[dict[str, Any]]:
         placeholders = ",".join(["%s"] * len(chunk_ids))
-        chunk_rows = db.fetch_all(
+        return db.fetch_all(
             f"""
             SELECT
                 x.character_id,
@@ -277,24 +330,10 @@ def run_compute_suspicion_scores_v2(db: SupplyCoreDb, runtime: dict[str, Any] | 
             """,
             tuple(chunk_ids),
         )
-        support_rows.extend(chunk_rows)
-    top_neighbors: dict[int, list[dict[str, Any]]] = {}
-    for row in support_rows:
-        cid = int(row.get("character_id") or 0)
-        top_neighbors.setdefault(cid, []).append(
-            {
-                "character_id": int(row.get("other_character_id") or 0),
-                "weight": float(row.get("shared_battle_count") or 0.0),
-                "high_sustain_battle_count": int(row.get("high_sustain_count") or 0),
-            }
-        )
 
-    # ── Top supporting battles: chunked to avoid temp-table overflow ────
-    top_battles_rows: list[dict[str, Any]] = []
-    for chunk_start in range(0, len(all_character_ids), NEIGHBOR_CHUNK):
-        chunk_ids = all_character_ids[chunk_start : chunk_start + NEIGHBOR_CHUNK]
+    def _fetch_battles_chunk(chunk_ids: list[int]) -> list[dict[str, Any]]:
         placeholders = ",".join(["%s"] * len(chunk_ids))
-        chunk_rows = db.fetch_all(
+        return db.fetch_all(
             f"""
             SELECT tb.character_id, tb.battle_id, tb.side_key, tb.z_efficiency_score
             FROM (
@@ -312,7 +351,47 @@ def run_compute_suspicion_scores_v2(db: SupplyCoreDb, runtime: dict[str, Any] | 
             """,
             tuple(chunk_ids),
         )
-        top_battles_rows.extend(chunk_rows)
+
+    chunks = [
+        all_character_ids[i : i + NEIGHBOR_CHUNK]
+        for i in range(0, len(all_character_ids), NEIGHBOR_CHUNK)
+    ]
+
+    top_battles_rows: list[dict[str, Any]] = []
+
+    if use_neo4j_neighbors:
+        # Fast path: read pre-computed CO_OCCURS_WITH from the graph.
+        neo4j = Neo4jClient(neo4j_cfg)
+        top_neighbors = _fetch_neighbors_from_neo4j(neo4j, all_character_ids)
+        # Only need top-battles from MySQL — run those in parallel.
+        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
+            for result_rows in pool.map(_fetch_battles_chunk, chunks):
+                top_battles_rows.extend(result_rows)
+    else:
+        # Fallback: parallel MySQL self-join for neighbors + top battles.
+        support_rows: list[dict[str, Any]] = []
+        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
+            neighbor_futures = {pool.submit(_fetch_neighbor_chunk, c): "neighbor" for c in chunks}
+            battle_futures = {pool.submit(_fetch_battles_chunk, c): "battle" for c in chunks}
+            all_futures = {**neighbor_futures, **battle_futures}
+            for future in as_completed(all_futures):
+                result_rows = future.result()
+                if all_futures[future] == "neighbor":
+                    support_rows.extend(result_rows)
+                else:
+                    top_battles_rows.extend(result_rows)
+
+        top_neighbors: dict[int, list[dict[str, Any]]] = {}
+        for row in support_rows:
+            cid = int(row.get("character_id") or 0)
+            top_neighbors.setdefault(cid, []).append(
+                {
+                    "character_id": int(row.get("other_character_id") or 0),
+                    "weight": float(row.get("shared_battle_count") or 0.0),
+                    "high_sustain_battle_count": int(row.get("high_sustain_count") or 0),
+                }
+            )
+
     top_battles_map: dict[int, list[dict[str, Any]]] = {}
     for tb_row in top_battles_rows:
         cid_tb = int(tb_row.get("character_id") or 0)
@@ -419,13 +498,41 @@ def run_compute_suspicion_scores_v2(db: SupplyCoreDb, runtime: dict[str, Any] | 
             )
         )
 
-    sorted_scores = sorted((float(r[4]) for r in score_payload))
+    sorted_scores = sorted(float(r[4]) for r in score_payload)
+    total = float(max(len(sorted_scores), 1))
+
+    # Pre-compute percentile ranks using bisect (O(n log n) total).
+    insert_tuples = []
+    for row in score_payload:
+        score = float(row[4])
+        percentile = _safe_div(float(bisect.bisect_right(sorted_scores, score)), total, 0.0)
+        insert_tuples.append(
+            (
+                int(row[0]),
+                float(row[1]),
+                float(row[2]),
+                float(row[3]),
+                float(row[4]),
+                float(percentile),
+                float(row[5]),
+                float(row[6]),
+                float(row[7]),
+                float(row[8]),
+                float(row[9]),
+                int(row[10]),
+                int(row[11]),
+                int(row[12]),
+                row[13],
+                row[14],
+                row[15],
+                row[16],
+            )
+        )
+
     with db.transaction() as (_, cursor):
         cursor.execute("DELETE FROM character_suspicion_scores")
-        for row in score_payload:
-            score = float(row[4])
-            percentile = _safe_div(float(sum(1 for x in sorted_scores if x <= score)), float(max(len(sorted_scores), 1)), 0.0)
-            cursor.execute(
+        if insert_tuples:
+            cursor.executemany(
                 """
                 INSERT INTO character_suspicion_scores (
                     character_id,
@@ -448,26 +555,7 @@ def run_compute_suspicion_scores_v2(db: SupplyCoreDb, runtime: dict[str, Any] | 
                     computed_at
                 ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                 """,
-                (
-                    int(row[0]),
-                    float(row[1]),
-                    float(row[2]),
-                    float(row[3]),
-                    float(row[4]),
-                    float(percentile),
-                    float(row[5]),
-                    float(row[6]),
-                    float(row[7]),
-                    float(row[8]),
-                    float(row[9]),
-                    int(row[10]),
-                    int(row[11]),
-                    int(row[12]),
-                    row[13],
-                    row[14],
-                    row[15],
-                    row[16],
-                ),
+                insert_tuples,
             )
 
     return JobResult.success(
