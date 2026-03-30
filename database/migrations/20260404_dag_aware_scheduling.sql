@@ -42,12 +42,14 @@ CREATE TABLE IF NOT EXISTS scheduler_dag_log (
   COMMENT='Audit log for DAG scheduler dispatch decisions';
 
 -- 4. Backfill concurrency_group from existing lock_group values
-UPDATE sync_schedules
-   SET concurrency_group = COALESCE(
-       (SELECT JSON_UNQUOTE(JSON_EXTRACT(
-           (SELECT payload_json FROM worker_jobs wj WHERE wj.job_key = sync_schedules.job_key ORDER BY id DESC LIMIT 1),
-           '$.lock_group'
-       )), ''),
-       ''
-   )
- WHERE concurrency_group = '' OR concurrency_group IS NULL;
+UPDATE sync_schedules ss
+  JOIN LATERAL (
+       SELECT JSON_UNQUOTE(JSON_EXTRACT(wj.payload_json, '$.lock_group')) AS lg
+         FROM worker_jobs wj
+        WHERE wj.job_key = ss.job_key
+          AND wj.payload_json IS NOT NULL
+        ORDER BY wj.id DESC
+        LIMIT 1
+  ) sub ON sub.lg IS NOT NULL AND sub.lg != ''
+   SET ss.concurrency_group = sub.lg
+ WHERE ss.concurrency_group = '' OR ss.concurrency_group IS NULL;
