@@ -22,6 +22,15 @@ from collections import defaultdict
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+def _ensure_utc(dt: datetime | None) -> datetime | None:
+    """Return *dt* as a UTC-aware datetime; treat naive values as UTC."""
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=UTC)
+    return dt
+
+
 from ..db import SupplyCoreDb
 from ..job_result import JobResult
 from ..job_utils import finish_job_run, start_job_run
@@ -212,7 +221,7 @@ def _compute_window_features(
     """
     if window_delta is not None:
         cutoff = now_dt - window_delta
-        rows = [p for p in participations if p["started_at"] and p["started_at"] >= cutoff]
+        rows = [p for p in participations if p["started_at"] and _ensure_utc(p["started_at"]) >= cutoff]
     else:
         rows = participations
 
@@ -385,7 +394,7 @@ def run_compute_character_feature_windows(
                     # Track battles per character per window for co-presence
                     cutoff = (now_dt - wdelta) if wdelta else None
                     for p in parts:
-                        if cutoff is None or (p["started_at"] and p["started_at"] >= cutoff):
+                        if cutoff is None or (p["started_at"] and _ensure_utc(p["started_at"]) >= cutoff):
                             char_battles[cid][wlabel].add(str(p["battle_id"]))
 
             # Enrich co-presence counts
