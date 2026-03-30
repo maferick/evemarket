@@ -453,6 +453,12 @@ include __DIR__ . '/partials/_timeline.php';
 include __DIR__ . '/partials/_alliance_summary.php';
 include __DIR__ . '/partials/_participants.php';
 include __DIR__ . '/partials/_suspicion.php';
+
+// Queue battle participants for EveWho enrichment (idempotent — skips already-queued)
+if (isset($participantsAll) && $participantsAll !== []) {
+    db_enrichment_queue_from_battle($participantsAll);
+}
+
 include __DIR__ . '/partials/_cross_alliance_history.php';
 
 include __DIR__ . '/../../src/views/partials/footer.php';
