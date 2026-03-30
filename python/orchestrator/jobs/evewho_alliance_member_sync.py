@@ -573,7 +573,8 @@ def run_evewho_alliance_member_sync(
             return JobResult.skipped(job_key=JOB_KEY, reason="neo4j-disabled").to_dict()
 
         neo4j = Neo4jClient(neo4j_config)
-        adapter = EveWhoAdapter(user_agent)
+        rate_limit = max(1, int(runtime.get("evewho_rate_limit_requests") or 0)) if runtime.get("evewho_rate_limit_requests") else None
+        adapter = EveWhoAdapter(user_agent, rate_limit_requests=rate_limit) if rate_limit else EveWhoAdapter(user_agent)
         esi = EsiClient(user_agent=user_agent)
 
         checkpoint = _load_checkpoint(db)
