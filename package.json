@@ -4,6 +4,10 @@
   "scripts": {
     "build:css": "npx @tailwindcss/cli -i ./resources/styles/app.css -o ./public/assets/css/app.css --minify"
   },
+  "dependencies": {
+    "neo4j-driver": "^5.x",
+    "mysql2": "^3.x"
+  },
   "devDependencies": {
     "@tailwindcss/cli": "^4.1.13",
     "tailwindcss": "^4.1.13"

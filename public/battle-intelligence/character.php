@@ -19,6 +19,9 @@ $communityInfo = db_graph_community_assignments($characterId);
 $evidencePaths = db_character_evidence_paths($characterId);
 $analystFeedback = db_analyst_feedback_for_character($characterId);
 
+// Neo4j intelligence graph signals (EveWho corp history)
+$neo4jIntel = (bool) config('neo4j.enabled', false) ? db_neo4j_character_intelligence($characterId) : null;
+
 // Resolve corporation names for org history timeline
 $orgCorpNames = [];
 if ($orgHistory !== []) {
@@ -156,6 +159,9 @@ function ci_evidence_label(string $key): string
         'anomalous_presence_rate' => 'Anomalous presence rate',
         'presence_rate_delta' => 'Presence rate delta',
         'org_history_movement_180d' => 'Corp movement (180 days)',
+        'neo4j_cross_side_overlap' => 'Cross-side corp overlap',
+        'neo4j_recent_defector' => 'Recent defector',
+        'neo4j_hostile_adjacency' => 'Hostile corp adjacency',
     ];
     return $map[$key] ?? ucwords(str_replace('_', ' ', $key));
 }
@@ -434,7 +440,35 @@ include __DIR__ . '/../../src/views/partials/header.php';
         <!-- Evidence rows -->
         <h2 class="mt-6 text-lg font-semibold text-slate-100">Evidence breakdown</h2>
         <p class="mt-1 text-xs text-muted">Each signal that contributes to the overall suspicion score.</p>
-        <div class="mt-3 table-shell"><table class="table-ui"><thead><tr class="border-b border-border/70 text-xs text-muted uppercase"><th class="px-3 py-2 text-left">Signal</th><th class="px-3 py-2 text-right">Weight</th><th class="px-3 py-2 text-left">What it means</th></tr></thead><tbody><?php foreach ($evidence as $evidenceRow): ?><tr class="border-b border-border/40"><td class="px-3 py-2 text-sm"><?= htmlspecialchars(ci_evidence_label((string) ($evidenceRow['evidence_key'] ?? '')), ENT_QUOTES) ?></td><td class="px-3 py-2 text-right font-mono text-sm <?= ci_metric_color((float) ($evidenceRow['evidence_value'] ?? 0), 0.3, 0.7) ?>"><?= htmlspecialchars(number_format((float) ($evidenceRow['evidence_value'] ?? 0), 2), ENT_QUOTES) ?></td><td class="px-3 py-2"><div class="text-sm text-slate-300"><?= htmlspecialchars((string) ($evidenceRow['evidence_text'] ?? ''), ENT_QUOTES) ?></div><?php if (is_array($evidenceRow['evidence_payload'] ?? null)): ?><details class="mt-1"><summary class="text-[11px] text-muted cursor-pointer">Show raw data</summary><pre class="mt-1 overflow-auto text-[11px] text-slate-400"><?= htmlspecialchars(json_encode($evidenceRow['evidence_payload'], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) ?: '{}', ENT_QUOTES) ?></pre></details><?php endif; ?></td></tr><?php endforeach; ?></tbody></table></div>
+        <div class="mt-3 table-shell"><table class="table-ui"><thead><tr class="border-b border-border/70 text-xs text-muted uppercase"><th class="px-3 py-2 text-left">Signal</th><th class="px-3 py-2 text-right">Weight</th><th class="px-3 py-2 text-left">What it means</th></tr></thead><tbody><?php foreach ($evidence as $evidenceRow): ?><tr class="border-b border-border/40"><td class="px-3 py-2 text-sm"><?= htmlspecialchars(ci_evidence_label((string) ($evidenceRow['evidence_key'] ?? '')), ENT_QUOTES) ?></td><td class="px-3 py-2 text-right font-mono text-sm <?= ci_metric_color((float) ($evidenceRow['evidence_value'] ?? 0), 0.3, 0.7) ?>"><?= htmlspecialchars(number_format((float) ($evidenceRow['evidence_value'] ?? 0), 2), ENT_QUOTES) ?></td><td class="px-3 py-2"><div class="text-sm text-slate-300"><?= htmlspecialchars((string) ($evidenceRow['evidence_text'] ?? ''), ENT_QUOTES) ?></div><?php if (is_array($evidenceRow['evidence_payload'] ?? null)): ?><details class="mt-1"><summary class="text-[11px] text-muted cursor-pointer">Show raw data</summary><pre class="mt-1 overflow-auto text-[11px] text-slate-400"><?= htmlspecialchars(json_encode($evidenceRow['evidence_payload'], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) ?: '{}', ENT_QUOTES) ?></pre></details><?php endif; ?></td></tr><?php endforeach; ?>
+<?php if (is_array($neo4jIntel)): ?>
+<?php
+    $neo4jOverlap = (int) ($neo4jIntel['enemy_overlap_count'] ?? 0);
+    $neo4jSharedCorps = (int) ($neo4jIntel['shared_corps'] ?? 0);
+    $neo4jDefector = (bool) ($neo4jIntel['is_recent_defector'] ?? false);
+    $neo4jDefectorCorp = (string) ($neo4jIntel['defector_corp_name'] ?? '');
+    $neo4jDefectorDays = (int) ($neo4jIntel['defector_days_ago'] ?? 0);
+    $neo4jHostileNeighbors = (int) ($neo4jIntel['hostile_neighbors'] ?? 0);
+
+    // Cross-side corp overlap signal
+    $overlapWeight = min(1.0, $neo4jSharedCorps > 0 ? 0.35 : 0.0);
+    $overlapText = $neo4jSharedCorps > 0
+        ? "Was in {$neo4jSharedCorps} corp(s) alongside {$neo4jOverlap} current enemies"
+        : 'No cross-side corp history found';
+?>
+<?php if ($neo4jSharedCorps > 0): ?>
+<tr class="border-b border-border/40 bg-orange-950/20"><td class="px-3 py-2 text-sm"><?= htmlspecialchars(ci_evidence_label('neo4j_cross_side_overlap'), ENT_QUOTES) ?></td><td class="px-3 py-2 text-right font-mono text-sm <?= ci_metric_color($overlapWeight, 0.3, 0.7) ?>"><?= number_format($overlapWeight, 2) ?></td><td class="px-3 py-2"><div class="text-sm text-slate-300"><?= htmlspecialchars($overlapText, ENT_QUOTES) ?></div></td></tr>
+<?php endif; ?>
+<?php if ($neo4jDefector): ?>
+<?php $defectorWeight = 0.60; ?>
+<tr class="border-b border-border/40 bg-red-950/20"><td class="px-3 py-2 text-sm"><?= htmlspecialchars(ci_evidence_label('neo4j_recent_defector'), ENT_QUOTES) ?></td><td class="px-3 py-2 text-right font-mono text-sm <?= ci_metric_color($defectorWeight, 0.3, 0.7) ?>"><?= number_format($defectorWeight, 2) ?></td><td class="px-3 py-2"><div class="text-sm text-slate-300">Left <?= htmlspecialchars($neo4jDefectorCorp, ENT_QUOTES) ?> <?= $neo4jDefectorDays ?> days ago</div></td></tr>
+<?php endif; ?>
+<?php if ($neo4jHostileNeighbors > 0): ?>
+<?php $adjacencyWeight = min(1.0, 0.20); ?>
+<tr class="border-b border-border/40 bg-orange-950/20"><td class="px-3 py-2 text-sm"><?= htmlspecialchars(ci_evidence_label('neo4j_hostile_adjacency'), ENT_QUOTES) ?></td><td class="px-3 py-2 text-right font-mono text-sm <?= ci_metric_color($adjacencyWeight, 0.3, 0.7) ?>"><?= number_format($adjacencyWeight, 2) ?></td><td class="px-3 py-2"><div class="text-sm text-slate-300">Corp also contains <?= $neo4jHostileNeighbors ?> hostile pilot(s)</div></td></tr>
+<?php endif; ?>
+<?php endif; ?>
+</tbody></table></div>
 
         <!-- Supporting battles -->
         <h2 class="mt-6 text-lg font-semibold text-slate-100">Supporting battles</h2>

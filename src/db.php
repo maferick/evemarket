@@ -15998,3 +15998,291 @@ function db_threat_corridor_regions(): array
         []
     );
 }
+
+// ---------------------------------------------------------------------------
+// Neo4j Intelligence Graph — PHP query layer (HTTP transactional endpoint)
+// ---------------------------------------------------------------------------
+
+/**
+ * Execute a Cypher query against Neo4j via HTTP API.
+ * Returns array of result rows or empty array on failure / disabled.
+ */
+function neo4j_query(string $cypher, array $parameters = []): array
+{
+    if (!(bool) config('neo4j.enabled', false)) {
+        return [];
+    }
+
+    $baseUrl = rtrim((string) config('neo4j.url', 'http://127.0.0.1:7474'), '/');
+    $database = (string) config('neo4j.database', 'neo4j');
+    $url = $baseUrl . '/db/' . $database . '/tx/commit';
+    $timeout = max(3, (int) config('neo4j.timeout_seconds', 15));
+
+    $payload = json_encode([
+        'statements' => [[
+            'statement' => $cypher,
+            'parameters' => (object) $parameters,
+            'resultDataContents' => ['row'],
+        ]],
+    ]);
+
+    $ch = curl_init($url);
+    curl_setopt_array($ch, [
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_POST => true,
+        CURLOPT_POSTFIELDS => $payload,
+        CURLOPT_TIMEOUT => $timeout,
+        CURLOPT_CONNECTTIMEOUT => 3,
+        CURLOPT_HTTPHEADER => [
+            'Content-Type: application/json',
+            'Accept: application/json',
+        ],
+    ]);
+
+    $username = (string) config('neo4j.username', 'neo4j');
+    $password = (string) config('neo4j.password', '');
+    if ($username !== '') {
+        curl_setopt($ch, CURLOPT_USERPWD, $username . ':' . $password);
+    }
+
+    $response = curl_exec($ch);
+    $httpCode = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
+
+    if ($httpCode < 200 || $httpCode >= 300 || !is_string($response)) {
+        return [];
+    }
+
+    $data = json_decode($response, true);
+    if (!is_array($data) || !empty($data['errors'])) {
+        return [];
+    }
+
+    $results = $data['results'][0] ?? null;
+    if (!is_array($results)) {
+        return [];
+    }
+
+    $columns = (array) ($results['columns'] ?? []);
+    $rows = [];
+    foreach ((array) ($results['data'] ?? []) as $datum) {
+        $row = [];
+        foreach ($columns as $i => $col) {
+            $row[$col] = $datum['row'][$i] ?? null;
+        }
+        $rows[] = $row;
+    }
+
+    return $rows;
+}
+
+/**
+ * Cross-side shared corp history for a theater/battle.
+ * Returns hostile pilots who previously served in the same corp as a friendly pilot.
+ */
+function db_neo4j_cross_side_shared_history(string $battleId, int $limit = 200): array
+{
+    return neo4j_query(
+        'MATCH (hostile:Character)-[:PARTICIPATED_IN {side: "hostile"}]->(b:Battle {battle_id: $battleId})
+         MATCH (friendly:Character)-[:PARTICIPATED_IN {side: "friendly"}]->(b)
+         MATCH (hostile)-[:MEMBER_OF]->(corp:Corporation)<-[:MEMBER_OF]-(friendly)
+         WHERE NOT corp.is_npc
+         RETURN
+           hostile.character_id AS hostile_id,
+           hostile.name AS hostile_pilot,
+           friendly.character_id AS friendly_id,
+           friendly.name AS friendly_pilot,
+           corp.corporation_id AS shared_corp_id,
+           corp.name AS shared_corp_name
+         ORDER BY hostile.name
+         LIMIT $limit',
+        ['battleId' => $battleId, 'limit' => $limit]
+    );
+}
+
+/**
+ * Recent defectors: hostile pilots who left a friendly-aligned corp within N days.
+ */
+function db_neo4j_recent_defectors(string $battleId, int $withinDays = 90): array
+{
+    return neo4j_query(
+        'MATCH (c:Character)-[:PARTICIPATED_IN {side: "hostile"}]->(b:Battle {battle_id: $battleId})
+         MATCH (c)-[m:MEMBER_OF]->(corp:Corporation)
+         WHERE m.to IS NOT NULL
+           AND NOT corp.is_npc
+           AND duration.inDays(m.to, datetime()).days < $withinDays
+         MATCH (friendly:Character)-[:PARTICIPATED_IN {side: "friendly"}]->(b)
+         MATCH (friendly)-[:MEMBER_OF]->(corp)
+         RETURN DISTINCT
+           c.character_id AS character_id,
+           c.name AS pilot_name,
+           corp.name AS corp_name,
+           corp.corporation_id AS corp_id,
+           toString(m.to) AS left_on,
+           duration.inDays(m.to, datetime()).days AS days_ago
+         ORDER BY days_ago ASC
+         LIMIT 50',
+        ['battleId' => $battleId, 'withinDays' => $withinDays]
+    );
+}
+
+/**
+ * Alliance infiltration risk score for a battle.
+ */
+function db_neo4j_alliance_infiltration_risk(string $battleId, int $friendlyAllianceId): array
+{
+    $rows = neo4j_query(
+        'MATCH (hostile:Character)-[:PARTICIPATED_IN {side: "hostile"}]->(b:Battle {battle_id: $battleId})
+         MATCH (friendly_corp:Corporation)<-[:PART_OF]-(:Alliance {alliance_id: $friendlyAllianceId})
+         MATCH (hostile)-[m:MEMBER_OF]->(friendly_corp)
+         WHERE NOT friendly_corp.is_npc
+         RETURN
+           count(DISTINCT hostile) AS pilots_with_friendly_history,
+           count(DISTINCT CASE WHEN duration.inDays(m.to, datetime()).days < 90
+             THEN hostile END) AS recent_defectors,
+           count(DISTINCT CASE WHEN m.is_short_stay
+             THEN hostile END) AS short_stay_visits',
+        ['battleId' => $battleId, 'friendlyAllianceId' => $friendlyAllianceId]
+    );
+    return $rows[0] ?? ['pilots_with_friendly_history' => 0, 'recent_defectors' => 0, 'short_stay_visits' => 0];
+}
+
+/**
+ * Cross-side corp overlap for a specific character in a battle context.
+ */
+function db_neo4j_character_cross_side_overlap(int $characterId, string $battleId): array
+{
+    return neo4j_query(
+        'MATCH (c:Character {character_id: $charId})-[:PARTICIPATED_IN]->(b:Battle {battle_id: $battleId})
+         MATCH (c)-[:MEMBER_OF]->(corp:Corporation)<-[:MEMBER_OF]-(other:Character)
+         MATCH (other)-[p:PARTICIPATED_IN]->(b)
+         WHERE NOT corp.is_npc AND p.side <> "friendly"
+         RETURN
+           corp.name AS corp_name,
+           corp.corporation_id AS corp_id,
+           count(DISTINCT other) AS enemy_count
+         ORDER BY enemy_count DESC
+         LIMIT 20',
+        ['charId' => $characterId, 'battleId' => $battleId]
+    );
+}
+
+/**
+ * Character-level Neo4j intelligence summary: corp overlap count, defector status, hostile adjacency.
+ */
+function db_neo4j_character_intelligence(int $characterId): array
+{
+    // Cross-side overlap count (across all battles)
+    $overlapRows = neo4j_query(
+        'MATCH (c:Character {character_id: $charId})-[:MEMBER_OF]->(corp:Corporation)<-[:MEMBER_OF]-(other:Character)
+         WHERE NOT corp.is_npc
+         MATCH (other)-[:PARTICIPATED_IN {side: "hostile"}]->(:Battle)
+         RETURN
+           count(DISTINCT corp) AS shared_corps,
+           count(DISTINCT other) AS enemy_overlap_count',
+        ['charId' => $characterId]
+    );
+
+    // Recent defector status (left any corp that has friendly members in last 90d)
+    $defectorRows = neo4j_query(
+        'MATCH (c:Character {character_id: $charId})-[m:MEMBER_OF]->(corp:Corporation)
+         WHERE m.to IS NOT NULL
+           AND NOT corp.is_npc
+           AND duration.inDays(m.to, datetime()).days < 90
+         MATCH (friendly:Character)-[:PARTICIPATED_IN {side: "friendly"}]->(:Battle)
+         MATCH (friendly)-[:MEMBER_OF]->(corp)
+         RETURN
+           corp.name AS corp_name,
+           duration.inDays(m.to, datetime()).days AS days_ago
+         ORDER BY days_ago ASC
+         LIMIT 1',
+        ['charId' => $characterId]
+    );
+
+    // Hostile corp adjacency
+    $adjacencyRows = neo4j_query(
+        'MATCH (c:Character {character_id: $charId})-[:MEMBER_OF]->(corp:Corporation)<-[:MEMBER_OF]-(other:Character)
+         WHERE NOT corp.is_npc
+         MATCH (other)-[:PARTICIPATED_IN {side: "hostile"}]->(:Battle)
+         RETURN count(DISTINCT other) AS hostile_neighbors',
+        ['charId' => $characterId]
+    );
+
+    $overlap = $overlapRows[0] ?? ['shared_corps' => 0, 'enemy_overlap_count' => 0];
+    $defector = $defectorRows[0] ?? null;
+    $adjacency = $adjacencyRows[0] ?? ['hostile_neighbors' => 0];
+
+    return [
+        'shared_corps' => (int) ($overlap['shared_corps'] ?? 0),
+        'enemy_overlap_count' => (int) ($overlap['enemy_overlap_count'] ?? 0),
+        'is_recent_defector' => $defector !== null,
+        'defector_corp_name' => $defector['corp_name'] ?? null,
+        'defector_days_ago' => $defector !== null ? (int) ($defector['days_ago'] ?? 0) : null,
+        'hostile_neighbors' => (int) ($adjacency['hostile_neighbors'] ?? 0),
+    ];
+}
+
+// ---------------------------------------------------------------------------
+// Enrichment Queue — MySQL helpers (PHP side)
+// ---------------------------------------------------------------------------
+
+/**
+ * Queue characters from a battle for EveWho enrichment.
+ * Hostile characters get priority boost.
+ */
+function db_enrichment_queue_from_battle(array $participants): void
+{
+    if ($participants === []) {
+        return;
+    }
+
+    $values = [];
+    $params = [];
+    foreach ($participants as $p) {
+        $charId = (int) ($p['character_id'] ?? 0);
+        if ($charId <= 0) {
+            continue;
+        }
+        $score = (float) ($p['suspicion_score'] ?? 0);
+        $side = (string) ($p['side'] ?? '');
+        $priority = ($side === 'hostile' || $side === 'opponent') ? $score * 2 : $score;
+        $values[] = '(?, "pending", ?, NOW())';
+        $params[] = $charId;
+        $params[] = round($priority, 4);
+    }
+
+    if ($values === []) {
+        return;
+    }
+
+    db_execute(
+        'INSERT INTO enrichment_queue (character_id, status, priority, queued_at)
+         VALUES ' . implode(', ', $values) . '
+         ON DUPLICATE KEY UPDATE
+           status = IF(status = "done", status, VALUES(status)),
+           priority = GREATEST(priority, VALUES(priority))',
+        $params
+    );
+}
+
+/**
+ * Get enrichment progress for display.
+ */
+function db_enrichment_queue_progress(array $characterIds): array
+{
+    if ($characterIds === []) {
+        return ['total' => 0, 'done' => 0, 'pending' => 0, 'processing' => 0, 'failed' => 0];
+    }
+
+    $placeholders = implode(',', array_fill(0, count($characterIds), '?'));
+    $rows = db_select(
+        "SELECT status, COUNT(*) AS cnt FROM enrichment_queue WHERE character_id IN ({$placeholders}) GROUP BY status",
+        $characterIds
+    );
+
+    $result = ['total' => count($characterIds), 'done' => 0, 'pending' => 0, 'processing' => 0, 'failed' => 0];
+    foreach ($rows as $row) {
+        $result[(string) $row['status']] = (int) $row['cnt'];
+    }
+    return $result;
+}
