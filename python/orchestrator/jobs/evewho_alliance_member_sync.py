@@ -346,7 +346,7 @@ def run_evewho_alliance_member_sync(
                         "alliance_id": alliance_id,
                         "last_char_id": member["character_id"],
                         "total_written": total_written,
-                    }, "partial", total_written)
+                    }, "running", total_written)
                     break
 
                 char_id = member["character_id"]
@@ -407,7 +407,7 @@ def run_evewho_alliance_member_sync(
 
         # If we completed all alliances, clear the checkpoint
         if budget_remaining > 0:
-            _save_checkpoint(db, {}, "complete", total_written)
+            _save_checkpoint(db, {}, "success", total_written)
 
         duration_ms = int((time.perf_counter() - started) * 1000)
         error_text = "; ".join(errors) if errors else None
@@ -451,6 +451,8 @@ def run_evewho_alliance_member_sync(
         return JobResult.failed(
             job_key=JOB_KEY,
             error=str(e),
-            rows_seen=total_members_found,
-            rows_written=total_written,
+            meta={
+                "rows_seen": total_members_found,
+                "rows_written": total_written,
+            },
         ).to_dict()
