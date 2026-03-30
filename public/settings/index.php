@@ -168,7 +168,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         case 'killmail-intelligence':
             if (isset($_POST['killmail_backfill_start'])) {
                 // Trigger history backfill as a background process
-                $backfillStart = date('Y') . '-01-01';
+                $defaultBackfillStart = date('Y') . '-01-01';
+                $requestedBackfillStart = sanitize_backfill_start_date($_POST['killmail_backfill_start_date'] ?? '');
+                $backfillStart = $requestedBackfillStart !== '' ? $requestedBackfillStart : $defaultBackfillStart;
                 $backfillEnd = date('Y-m-d');
                 save_settings([
                     'killmail_backfill_start_date' => $backfillStart,
@@ -391,6 +393,7 @@ $settingValues = get_settings([
     'killmail_ingestion_poll_sleep_seconds',
     'killmail_ingestion_max_sequences_per_run',
     'killmail_demand_prediction_mode',
+    'killmail_backfill_start_date',
     'scheduler_operational_profile',
     'incremental_updates_enabled',
     'incremental_strategy',
@@ -2024,6 +2027,9 @@ include __DIR__ . '/../../src/views/partials/header.php';
                     $backfillNeeded = killmail_backfill_needed();
                     $backfillProgress = killmail_backfill_progress();
                     $backfillRunning = $backfillProgress !== null;
+                    $defaultKillmailBackfillStart = date('Y') . '-01-01';
+                    $configuredKillmailBackfillStart = sanitize_backfill_start_date($settingValues['killmail_backfill_start_date'] ?? '');
+                    $killmailBackfillStartInput = $configuredKillmailBackfillStart !== '' ? $configuredKillmailBackfillStart : $defaultKillmailBackfillStart;
                 ?>
                 <?php if ($backfillRunning): ?>
                     <div class="rounded-2xl border border-amber-500/30 bg-amber-500/5 px-4 py-3">
@@ -2051,7 +2057,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                     </div>
                 <?php elseif ($backfillNeeded): ?>
                     <div class="rounded-2xl border border-blue-500/30 bg-blue-500/5 px-4 py-3">
-                        <div class="flex items-center justify-between gap-4">
+                        <div class="flex flex-col gap-4">
                             <div>
                                 <p class="text-sm font-semibold text-blue-200">History Backfill Available</p>
                                 <p class="mt-1 text-xs text-muted">
@@ -2060,9 +2066,21 @@ include __DIR__ . '/../../src/views/partials/header.php';
                                     are then loaded from ESI. Already-stored killmails are skipped automatically.
                                 </p>
                             </div>
-                            <button type="submit" name="killmail_backfill_start" value="1" class="shrink-0 rounded-lg border border-blue-400/40 bg-blue-500/10 px-4 py-2 text-sm font-medium text-blue-100 hover:bg-blue-500/20" onclick="this.textContent='Starting…';var h=document.createElement('input');h.type='hidden';h.name='killmail_backfill_start';h.value='1';this.form.appendChild(h);this.disabled=true;">
-                                Backfill <?= date('Y') ?>
-                            </button>
+                            <div class="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+                                <label class="block max-w-xs space-y-1">
+                                    <span class="text-xs font-medium uppercase tracking-[0.14em] text-blue-100/80">Backfill start date</span>
+                                    <input
+                                        type="date"
+                                        name="killmail_backfill_start_date"
+                                        value="<?= htmlspecialchars($killmailBackfillStartInput, ENT_QUOTES) ?>"
+                                        max="<?= htmlspecialchars(date('Y-m-d'), ENT_QUOTES) ?>"
+                                        class="w-full field-input"
+                                    />
+                                </label>
+                                <button type="submit" name="killmail_backfill_start" value="1" class="shrink-0 rounded-lg border border-blue-400/40 bg-blue-500/10 px-4 py-2 text-sm font-medium text-blue-100 hover:bg-blue-500/20" onclick="this.textContent='Starting…';var h=document.createElement('input');h.type='hidden';h.name='killmail_backfill_start';h.value='1';this.form.appendChild(h);this.disabled=true;">
+                                    Start backfill
+                                </button>
+                            </div>
                         </div>
                     </div>
                 <?php endif; ?>
