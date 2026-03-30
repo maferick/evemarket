@@ -583,6 +583,8 @@ def run_compute_graph_sync_battle_intelligence(db: SupplyCoreDb, neo4j_raw: dict
 def run_compute_graph_derived_relationships(db: SupplyCoreDb, neo4j_raw: dict[str, Any] | None = None) -> dict[str, Any]:
     started = time.perf_counter()
     job_name = "compute_graph_derived_relationships"
+    if db.fetch_app_setting("graph_derived_relationships_enabled", "0") != "1":
+        return _job_payload(job_name, started, "skipped", error_text="graph derived relationships disabled")
     config = Neo4jConfig.from_runtime(neo4j_raw or {})
     if not config.enabled:
         return _job_payload(job_name, started, "skipped", error_text="neo4j disabled")
