@@ -4236,6 +4236,7 @@ function worker_job_registry_definitions(): array
         'compute_battle_anomalies' => ['workload_class' => 'compute', 'execution_mode' => 'python', 'queue_name' => 'compute', 'priority' => 'normal', 'interval_seconds' => 600, 'timeout_seconds' => 420, 'memory_limit_mb' => 1024, 'retry_delay_seconds' => 90, 'max_attempts' => 4],
         'compute_battle_actor_features' => ['workload_class' => 'compute', 'execution_mode' => 'python', 'queue_name' => 'compute', 'priority' => 'normal', 'interval_seconds' => 600, 'timeout_seconds' => 420, 'memory_limit_mb' => 1024, 'retry_delay_seconds' => 90, 'max_attempts' => 4],
         'compute_counterintel_pipeline' => ['workload_class' => 'compute', 'execution_mode' => 'python', 'queue_name' => 'compute', 'priority' => 'high', 'interval_seconds' => 900, 'timeout_seconds' => 900, 'memory_limit_mb' => 1024, 'retry_delay_seconds' => 120, 'max_attempts' => 4],
+        'evewho_enrichment_sync' => ['workload_class' => 'sync', 'execution_mode' => 'python', 'queue_name' => 'sync', 'priority' => 'normal', 'interval_seconds' => 600, 'timeout_seconds' => 600, 'memory_limit_mb' => 512, 'retry_delay_seconds' => 60, 'max_attempts' => 4],
         'compute_suspicion_scores' => ['workload_class' => 'compute', 'execution_mode' => 'python', 'queue_name' => 'compute', 'priority' => 'normal', 'interval_seconds' => 600, 'timeout_seconds' => 420, 'memory_limit_mb' => 1024, 'retry_delay_seconds' => 90, 'max_attempts' => 4],
     ];
 }

@@ -89,7 +89,6 @@ PYTHON_COMPUTE_PROCESSOR_JOB_KEYS: set[str] = {
     "compute_battle_actor_features",
     "compute_suspicion_scores",
     "compute_counterintel_pipeline",
-    "evewho_enrichment_sync",
     "intelligence_pipeline",
     "graph_data_quality_check",
     "graph_temporal_metrics_sync",
@@ -130,6 +129,7 @@ PYTHON_SYNC_PROCESSOR_JOB_KEYS: set[str] = {
     "esi_character_queue_sync",
     "esi_alliance_history_sync",
     "entity_metadata_resolve_sync",
+    "evewho_enrichment_sync",
 }
 PYTHON_PROCESSOR_JOB_KEYS: set[str] = PYTHON_COMPUTE_PROCESSOR_JOB_KEYS | PYTHON_SYNC_PROCESSOR_JOB_KEYS
 
