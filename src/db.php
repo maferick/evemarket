@@ -33,6 +33,14 @@ function supplycore_base_config(): array
     $loaded = require __DIR__ . '/config/app.php';
     $config = is_array($loaded) ? $loaded : [];
 
+    $localPath = __DIR__ . '/config/local.php';
+    if (is_file($localPath)) {
+        $local = (static fn(string $p): mixed => require $p)($localPath);
+        if (is_array($local)) {
+            $config = array_replace_recursive($config, $local);
+        }
+    }
+
     return $config;
 }
 
