@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-return [
+$config = [
     'app' => [
         'name' => 'SupplyCore',
         'env' => getenv('APP_ENV') ?: 'development',
@@ -90,3 +90,16 @@ return [
         'zkill_state_file' => 'storage/run/zkill-heartbeat.json',
     ],
 ];
+
+$localConfigPath = __DIR__ . '/local.php';
+if (is_file($localConfigPath)) {
+    $localConfig = (static function (string $path): mixed {
+        return require $path;
+    })($localConfigPath);
+
+    if (is_array($localConfig)) {
+        $config = array_replace_recursive($config, $localConfig);
+    }
+}
+
+return $config;
