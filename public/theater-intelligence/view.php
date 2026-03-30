@@ -453,5 +453,6 @@ include __DIR__ . '/partials/_timeline.php';
 include __DIR__ . '/partials/_alliance_summary.php';
 include __DIR__ . '/partials/_participants.php';
 include __DIR__ . '/partials/_suspicion.php';
+include __DIR__ . '/partials/_cross_alliance_history.php';
 
 include __DIR__ . '/../../src/views/partials/footer.php';
