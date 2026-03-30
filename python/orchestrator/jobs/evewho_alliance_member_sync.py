@@ -164,8 +164,8 @@ def _enrich_character_to_neo4j(
         if h_corp_id <= 0:
             continue
         is_npc = h_corp_id < 2_000_000
-        start_raw = str(h.get("start_date") or "").strip().replace(" ", "T")
-        end_raw = str(h.get("end_date") or "").strip().replace(" ", "T") if h.get("end_date") else None
+        start_raw = str(h.get("start_date") or "").strip().replace(" ", "T").replace("/", "-")
+        end_raw = str(h.get("end_date") or "").strip().replace(" ", "T").replace("/", "-") if h.get("end_date") else None
         if not start_raw:
             continue
 
