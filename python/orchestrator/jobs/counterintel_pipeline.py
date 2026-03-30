@@ -10,7 +10,7 @@ from typing import Any
 
 from ..db import SupplyCoreDb
 from ..job_result import JobResult
-from ..job_utils import acquire_job_lock, finish_job_run, release_job_lock, start_job_run
+from ..job_utils import finish_job_run, start_job_run
 from ..http_client import ipv4_opener
 from ..json_utils import json_dumps_safe
 from ..neo4j import Neo4jClient, Neo4jConfig
@@ -407,10 +407,6 @@ def run_compute_counterintel_pipeline(
     dry_run: bool = False,
 ) -> dict[str, Any]:
     lock_key = "compute_counterintel_pipeline"
-    owner = acquire_job_lock(db, lock_key, ttl_seconds=1200)
-    if owner is None:
-        return JobResult.skipped(job_key=lock_key, reason="lock-not-acquired").to_dict()
-
     job = start_job_run(db, lock_key)
     started = time.perf_counter()
     rows_processed = 0
@@ -1127,5 +1123,3 @@ def run_compute_counterintel_pipeline(
         finish_job_run(db, job, status="failed", rows_processed=rows_processed, rows_written=rows_written, error_text=str(exc))
         _sync_state_upsert(db, COUNTERINTEL_DATASET_KEY, "", "failed", rows_written)
         raise
-    finally:
-        release_job_lock(db, lock_key, owner)

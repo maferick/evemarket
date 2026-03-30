@@ -67,12 +67,12 @@ if __package__ in (None, ""):
     from orchestrator.db import SupplyCoreDb
     from orchestrator.job_result import JobResult
     from orchestrator.json_utils import json_dumps_safe
-    from orchestrator.job_utils import acquire_job_lock, finish_job_run, release_job_lock, start_job_run
+    from orchestrator.job_utils import finish_job_run, start_job_run
 else:
     from ..db import SupplyCoreDb
     from ..job_result import JobResult
     from ..json_utils import json_dumps_safe
-    from ..job_utils import acquire_job_lock, finish_job_run, release_job_lock, start_job_run
+    from ..job_utils import finish_job_run, start_job_run
 
 BATCH_SIZE = 200
 RECENT_DAYS = 30
@@ -521,12 +521,8 @@ def run_compute_alliance_dossiers(
     dry_run: bool = False,
 ) -> dict[str, Any]:
     """Compute alliance dossiers and persist to MariaDB."""
-    lock_key = "compute_alliance_dossiers"
-    owner = acquire_job_lock(db, lock_key, ttl_seconds=1800)
-    if owner is None:
-        return JobResult.skipped(job_key=lock_key, reason="lock-not-acquired").to_dict()
-
-    job = start_job_run(db, lock_key)
+    job_key = "compute_alliance_dossiers"
+    job = start_job_run(db, job_key)
     started = datetime.now(UTC)
     computed_at = _now_sql()
     rows_processed = 0
@@ -548,7 +544,7 @@ def run_compute_alliance_dossiers(
 
         if not alliances:
             finish_job_run(db, job, status="success", rows_processed=0, rows_written=0)
-            return JobResult.success(job_key=lock_key, summary="No alliances with battles found.",
+            return JobResult.success(job_key=job_key, summary="No alliances with battles found.",
                                     rows_processed=0, rows_written=0, duration_ms=0).to_dict()
 
         # Collect all alliance IDs for name resolution
@@ -637,7 +633,7 @@ def run_compute_alliance_dossiers(
         finish_job_run(db, job, status="success", rows_processed=rows_processed, rows_written=rows_written,
                        meta={"dossier_count": len(dossiers)})
         return JobResult.success(
-            job_key=lock_key,
+            job_key=job_key,
             summary=f"Computed {len(dossiers)} alliance dossiers.",
             rows_processed=rows_processed,
             rows_written=rows_written,
@@ -647,5 +643,3 @@ def run_compute_alliance_dossiers(
     except Exception as exc:
         finish_job_run(db, job, status="failed", rows_processed=rows_processed, rows_written=rows_written, error_text=str(exc))
         raise
-    finally:
-        release_job_lock(db, lock_key, owner)

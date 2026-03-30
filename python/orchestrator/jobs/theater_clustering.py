@@ -25,12 +25,12 @@ if __package__ in (None, ""):
     from orchestrator.db import SupplyCoreDb
     from orchestrator.job_result import JobResult
     from orchestrator.json_utils import json_dumps_safe
-    from orchestrator.job_utils import acquire_job_lock, finish_job_run, release_job_lock, start_job_run
+    from orchestrator.job_utils import finish_job_run, start_job_run
 else:
     from ..db import SupplyCoreDb
     from ..job_result import JobResult
     from ..json_utils import json_dumps_safe
-    from ..job_utils import acquire_job_lock, finish_job_run, release_job_lock, start_job_run
+    from ..job_utils import finish_job_run, start_job_run
 
 # ── Configuration ────────────────────────────────────────────────────────────
 
@@ -505,13 +505,6 @@ def run_theater_clustering(
     dry_run: bool = False,
 ) -> dict[str, Any]:
     """Cluster battles into theaters and persist results."""
-    lock_key = "theater_clustering"
-    owner = acquire_job_lock(db, lock_key, ttl_seconds=900)
-    if owner is None:
-        result = JobResult.skipped(job_key="theater_clustering", reason="lock-not-acquired").to_dict()
-        _theater_log(runtime, "theater_clustering.job.skipped", result)
-        return result
-
     job = start_job_run(db, "theater_clustering")
     started_monotonic = datetime.now(UTC)
     rows_processed = 0
@@ -656,5 +649,3 @@ def run_theater_clustering(
         finish_job_run(db, job, status="failed", rows_processed=rows_processed, rows_written=rows_written, error_text=str(exc))
         _theater_log(runtime, "theater_clustering.job.failed", {"status": "failed", "error": str(exc)})
         raise
-    finally:
-        release_job_lock(db, lock_key, owner)
