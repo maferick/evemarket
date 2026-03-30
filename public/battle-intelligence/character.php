@@ -19,6 +19,10 @@ $communityInfo = db_graph_community_assignments($characterId);
 $evidencePaths = db_character_evidence_paths($characterId);
 $analystFeedback = db_analyst_feedback_for_character($characterId);
 
+// Temporal behavior detection signals
+$temporalBehaviorSignals = db_character_temporal_behavior_signals($characterId);
+$featureHistograms = db_character_feature_histograms($characterId);
+
 // Neo4j intelligence graph signals (EveWho corp history)
 $neo4jIntel = (bool) config('neo4j.enabled', false) ? db_neo4j_character_intelligence($characterId) : null;
 
@@ -162,6 +166,10 @@ function ci_evidence_label(string $key): string
         'neo4j_cross_side_overlap' => 'Cross-side corp overlap',
         'neo4j_recent_defector' => 'Recent defector',
         'neo4j_hostile_adjacency' => 'Hostile corp adjacency',
+        'active_hour_shift' => 'Active hour shift',
+        'weekday_profile_shift' => 'Weekday profile shift',
+        'cadence_burstiness' => 'Cadence burstiness',
+        'reactivation_after_dormancy' => 'Reactivation after dormancy',
     ];
     return $map[$key] ?? ucwords(str_replace('_', ' ', $key));
 }
@@ -514,6 +522,125 @@ include __DIR__ . '/../../src/views/partials/header.php';
                 </div>
             <?php endforeach; ?>
         </div>
+        <?php endif; ?>
+
+        <?php if ($temporalBehaviorSignals !== [] || $featureHistograms !== []): ?>
+        <h2 class="mt-6 text-lg font-semibold text-slate-100">Temporal behavior analysis</h2>
+        <p class="mt-1 text-xs text-muted">Hour-of-day and day-of-week cadence profiling. Detects schedule shifts, bursty activity patterns, and reactivation after dormancy.</p>
+
+        <?php if ($temporalBehaviorSignals !== []): ?>
+        <div class="mt-3 grid gap-3 md:grid-cols-2">
+            <?php foreach ($temporalBehaviorSignals as $tbs):
+                $eKey = (string) ($tbs['evidence_key'] ?? '');
+                $eVal = (float) ($tbs['evidence_value'] ?? 0);
+                $zScore = (float) ($tbs['z_score'] ?? 0);
+                $madScore = (float) ($tbs['mad_score'] ?? 0);
+                $percentile = (float) ($tbs['cohort_percentile'] ?? 0);
+                $confidence = (string) ($tbs['confidence_flag'] ?? 'low');
+                $eText = (string) ($tbs['evidence_text'] ?? '');
+                $payload = json_decode((string) ($tbs['evidence_payload_json'] ?? '{}'), true);
+
+                $signalLabel = match ($eKey) {
+                    'active_hour_shift' => 'Active Hour Shift',
+                    'weekday_profile_shift' => 'Weekday Profile Shift',
+                    'cadence_burstiness' => 'Cadence Burstiness',
+                    'reactivation_after_dormancy' => 'Reactivation After Dormancy',
+                    default => ucwords(str_replace('_', ' ', $eKey)),
+                };
+                $signalIcon = match ($eKey) {
+                    'active_hour_shift' => '&#9201;',
+                    'weekday_profile_shift' => '&#128197;',
+                    'cadence_burstiness' => '&#9889;',
+                    'reactivation_after_dormancy' => '&#128064;',
+                    default => '&#9679;',
+                };
+
+                $severityBg = $eVal >= 0.5 ? 'bg-red-900/40 border-red-800/60' : ($eVal >= 0.25 ? 'bg-yellow-900/40 border-yellow-800/60' : 'bg-slate-800/60 border-border/40');
+                $barColor = $eVal >= 0.5 ? 'bg-red-500' : ($eVal >= 0.25 ? 'bg-yellow-500' : 'bg-cyan-500');
+                $confidenceBadge = match ($confidence) {
+                    'high' => 'bg-green-900/60 text-green-300',
+                    'medium' => 'bg-yellow-900/60 text-yellow-300',
+                    default => 'bg-slate-700 text-slate-400',
+                };
+            ?>
+                <div class="rounded-lg border p-3 <?= $severityBg ?>">
+                    <div class="flex items-center justify-between">
+                        <span class="text-sm font-semibold text-slate-100"><span class="mr-1"><?= $signalIcon ?></span><?= htmlspecialchars($signalLabel, ENT_QUOTES) ?></span>
+                        <span class="inline-block rounded-full px-2 py-0.5 text-[10px] uppercase tracking-wider <?= $confidenceBadge ?>"><?= htmlspecialchars($confidence, ENT_QUOTES) ?></span>
+                    </div>
+                    <div class="mt-2 h-1.5 w-full rounded-full bg-slate-700/60 overflow-hidden"><div class="h-full rounded-full <?= $barColor ?>" style="width: <?= min(100, round($eVal * 100)) ?>%"></div></div>
+                    <div class="mt-2 grid grid-cols-3 gap-2 text-xs">
+                        <div><span class="text-muted">Score</span><br><span class="font-mono text-slate-100"><?= number_format($eVal, 3) ?></span></div>
+                        <div><span class="text-muted">z-score</span><br><span class="font-mono <?= abs($zScore) >= 2.0 ? 'text-red-300' : 'text-slate-100' ?>"><?= number_format($zScore, 2) ?></span></div>
+                        <div><span class="text-muted">Percentile</span><br><span class="font-mono text-slate-100"><?= number_format($percentile * 100, 0) ?>%</span></div>
+                    </div>
+                    <p class="mt-2 text-[11px] text-muted"><?= htmlspecialchars($eText, ENT_QUOTES) ?></p>
+                    <?php if ($eKey === 'active_hour_shift' && is_array($payload)): ?>
+                        <?php $cusum = $payload['cusum'] ?? []; ?>
+                        <?php if (($cusum['alarm'] ?? false)): ?>
+                            <p class="mt-1 text-[11px] text-red-400">CUSUM alarm triggered (max <?= number_format((float) ($cusum['cusum_max'] ?? 0), 2) ?>, n=<?= (int) ($cusum['sample_count'] ?? 0) ?>)</p>
+                        <?php endif; ?>
+                    <?php endif; ?>
+                    <?php if ($eKey === 'reactivation_after_dormancy' && is_array($payload) && ($payload['reactivated'] ?? false)): ?>
+                        <p class="mt-1 text-[11px] text-yellow-400">Dormant for <?= number_format((float) ($payload['dormancy_days'] ?? 0), 0) ?> days, then <?= (int) ($payload['recent_burst_count'] ?? 0) ?> events in the last week</p>
+                    <?php endif; ?>
+                    <details class="mt-1"><summary class="text-[11px] text-muted cursor-pointer">Raw data</summary><pre class="mt-1 overflow-auto text-[11px] text-slate-400"><?= htmlspecialchars(json_encode($payload, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) ?: '{}', ENT_QUOTES) ?></pre></details>
+                </div>
+            <?php endforeach; ?>
+        </div>
+        <?php endif; ?>
+
+        <?php if ($featureHistograms !== []): ?>
+        <div class="mt-4 grid gap-3 md:grid-cols-2">
+            <?php foreach ($featureHistograms as $fh):
+                $wl = (string) ($fh['window_label'] ?? '');
+                $windowTitle = match ($wl) {
+                    '7d' => 'Last 7 days',
+                    '30d' => 'Last 30 days',
+                    '90d' => 'Last 90 days',
+                    'lifetime' => 'Lifetime',
+                    default => $wl,
+                };
+                $hourHist = json_decode((string) ($fh['hour_histogram'] ?? '{}'), true) ?: [];
+                $dowHist = json_decode((string) ($fh['weekday_histogram'] ?? '{}'), true) ?: [];
+                $hourMax = max(1, max(array_values($hourHist) ?: [1]));
+                $dowMax = max(1, max(array_values($dowHist) ?: [1]));
+                $dowLabels = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+            ?>
+                <div class="surface-tertiary">
+                    <p class="text-xs text-muted font-semibold mb-2"><?= htmlspecialchars($windowTitle, ENT_QUOTES) ?> activity profile</p>
+                    <p class="text-[10px] text-muted mb-1">Hour of day (EVE time)</p>
+                    <div class="flex items-end gap-px h-10">
+                        <?php for ($h = 0; $h < 24; $h++):
+                            $count = (int) ($hourHist[(string) $h] ?? 0);
+                            $pct = round(($count / $hourMax) * 100);
+                            $barBg = $count > 0 ? ($pct >= 70 ? 'bg-cyan-400' : 'bg-cyan-700') : 'bg-slate-700/40';
+                        ?>
+                            <div class="flex-1 rounded-t <?= $barBg ?>" style="height: <?= max(2, $pct) ?>%" title="<?= $h ?>:00 — <?= $count ?> events"></div>
+                        <?php endfor; ?>
+                    </div>
+                    <div class="flex gap-px text-[8px] text-muted mt-0.5">
+                        <?php for ($h = 0; $h < 24; $h += 6): ?>
+                            <span class="flex-1"><?= $h ?></span>
+                        <?php endfor; ?>
+                    </div>
+                    <p class="text-[10px] text-muted mt-2 mb-1">Day of week</p>
+                    <div class="flex items-end gap-1 h-8">
+                        <?php for ($d = 1; $d <= 7; $d++):
+                            $count = (int) ($dowHist[(string) $d] ?? 0);
+                            $pct = round(($count / $dowMax) * 100);
+                            $barBg = $count > 0 ? ($pct >= 70 ? 'bg-purple-400' : 'bg-purple-700') : 'bg-slate-700/40';
+                        ?>
+                            <div class="flex-1 text-center">
+                                <div class="rounded-t <?= $barBg ?> mx-auto" style="height: <?= max(2, $pct) ?>%; width: 100%"></div>
+                                <span class="text-[8px] text-muted"><?= $dowLabels[$d - 1] ?? $d ?></span>
+                            </div>
+                        <?php endfor; ?>
+                    </div>
+                </div>
+            <?php endforeach; ?>
+        </div>
+        <?php endif; ?>
         <?php endif; ?>
 
         <?php if (is_array($communityInfo)): ?>
