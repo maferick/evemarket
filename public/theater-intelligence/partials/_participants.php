@@ -25,6 +25,41 @@ foreach ($participantsAll as $p) {
 $showSideBySide = ($sideFilter === null && !$suspiciousOnly);
 $filteredList = $showSideBySide ? [] : $participants;
 
+function _is_monitor_or_flag_ship_name(string $shipName): bool {
+    $normalized = strtolower(trim($shipName));
+    return $normalized !== '' && (str_contains($normalized, 'monitor') || str_contains($normalized, 'flag cruiser'));
+}
+
+function _participant_flying_ship_name(array $participant, array $shipTypeNames): string {
+    $flyingShipId = (int) ($participant['flying_ship_type_id'] ?? 0);
+    if ($flyingShipId > 0) {
+        return (string) ($shipTypeNames[$flyingShipId] ?? '');
+    }
+
+    $shipJson = $participant['ship_type_ids'] ?? null;
+    if (!is_string($shipJson)) {
+        return '';
+    }
+    $decoded = json_decode($shipJson, true);
+    if (!is_array($decoded) || $decoded === []) {
+        return '';
+    }
+    $fallbackShipId = (int) $decoded[0];
+    if ($fallbackShipId <= 0) {
+        return '';
+    }
+
+    return (string) ($shipTypeNames[$fallbackShipId] ?? '');
+}
+
+$hasMonitorOrFlagShips = false;
+foreach ($participantsAll as $participantRow) {
+    if (_is_monitor_or_flag_ship_name(_participant_flying_ship_name($participantRow, $shipTypeNames))) {
+        $hasMonitorOrFlagShips = true;
+        break;
+    }
+}
+
 // Compute max damage across ALL participants for consistent bar scaling
 $maxDamageDone = 0;
 $allForMax = $showSideBySide ? $participantsAll : $participants;
@@ -37,7 +72,7 @@ foreach ($allForMax as $p) {
  * Render a single participant row for the side-by-side table.
  * Extracted to avoid duplicating HTML across both panels.
  */
-function _render_participant_row(array $p, array $resolvedEntities, array $shipTypeNames, float $maxDmgForPanel): string {
+function _render_participant_row(array $p, array $resolvedEntities, array $shipTypeNames, float $maxDmgForPanel, bool $hasMonitorOrFlagShips): string {
     $isSusp = (int) ($p['is_suspicious'] ?? 0);
     $charName = killmail_entity_preferred_name($resolvedEntities, 'character', (int) ($p['character_id'] ?? 0), (string) ($p['character_name'] ?? ''), 'Character');
     $fleetRole = (string) ($p['role_proxy'] ?? 'mainline_dps');
@@ -70,6 +105,14 @@ function _render_participant_row(array $p, array $resolvedEntities, array $shipT
         if ($shipIds) {
             $flyingShipId = (int) $shipIds[0];
             $flyingShipName = (string) ($shipTypeNames[$flyingShipId] ?? '');
+        }
+    }
+
+    if ($fleetRole === 'command') {
+        if (_is_monitor_or_flag_ship_name($flyingShipName)) {
+            $fleetRole = 'links';
+        } elseif (!$hasMonitorOrFlagShips) {
+            $fleetRole = 'fc_links';
         }
     }
 
@@ -157,7 +200,7 @@ function _render_participant_row(array $p, array $resolvedEntities, array $shipT
             </div>
         </td>
         <td class="px-2 py-1.5">
-            <span class="inline-flex items-center rounded-full px-1.5 py-[1px] text-[8px] sm:text-[9px] font-semibold uppercase tracking-[0.12em] border border-white/15 shadow-[inset_0_1px_0_rgba(255,255,255,0.06)] leading-tight <?= fleet_function_color_class($fleetRole) ?>">
+            <span class="inline-flex items-center rounded-full px-[6px] py-[4px] text-[8px] font-semibold uppercase tracking-[0.12em] leading-none <?= fleet_function_color_class($fleetRole) ?> border border-[rgba(204,255,0,0.2)] text-[#ccff00] shadow-[0_0_5px_2px_rgba(204,255,0,0.7)] [text-shadow:0_0_3px_rgb(204,255,0)]">
                 <?= htmlspecialchars(fleet_function_label($fleetRole), ENT_QUOTES) ?>
             </span>
         </td>
@@ -268,7 +311,7 @@ function _fmt_damage(float $v): string {
                             <tr><td colspan="7" class="px-2 py-4 text-sm text-muted text-center">No participants.</td></tr>
                         <?php else: ?>
                             <?php foreach ($panel['rows'] as $p): ?>
-                                <?= _render_participant_row($p, $resolvedEntities, $shipTypeNames, $panelMaxDmg) ?>
+                                <?= _render_participant_row($p, $resolvedEntities, $shipTypeNames, $panelMaxDmg, $hasMonitorOrFlagShips) ?>
                             <?php endforeach; ?>
                         <?php endif; ?>
                     </tbody>
@@ -410,6 +453,14 @@ function _fmt_damage(float $v): string {
                                 }
                             }
 
+                            if ($fleetRole === 'command') {
+                                if (_is_monitor_or_flag_ship_name($flyingShipName2)) {
+                                    $fleetRole = 'links';
+                                } elseif (!$hasMonitorOrFlagShips) {
+                                    $fleetRole = 'fc_links';
+                                }
+                            }
+
                             // Lost ship
                             $lostDetail2 = [];
                             $lostJson2 = $p['ships_lost_detail'] ?? null;
@@ -497,7 +548,7 @@ function _fmt_damage(float $v): string {
                                 </div>
                             </td>
                             <td class="px-3 py-2">
-                                <span class="inline-flex items-center rounded-full px-2 py-[1px] text-[9px] font-semibold uppercase tracking-[0.12em] border border-white/15 shadow-[inset_0_1px_0_rgba(255,255,255,0.06)] leading-tight <?= fleet_function_color_class($fleetRole) ?>">
+                                <span class="inline-flex items-center rounded-full px-[6px] py-[4px] text-[8px] font-semibold uppercase tracking-[0.12em] leading-none <?= fleet_function_color_class($fleetRole) ?> border border-[rgba(204,255,0,0.2)] text-[#ccff00] shadow-[0_0_5px_2px_rgba(204,255,0,0.7)] [text-shadow:0_0_3px_rgb(204,255,0)]">
                                     <?= htmlspecialchars(fleet_function_label($fleetRole), ENT_QUOTES) ?>
                                 </span>
                             </td>

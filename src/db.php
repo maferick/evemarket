@@ -15287,6 +15287,37 @@ function db_analyst_feedback_save(int $characterId, string $label, float $confid
     return true;
 }
 
+function db_character_feature_histograms(int $characterId): array
+{
+    if ($characterId <= 0) {
+        return [];
+    }
+    return db_select(
+        'SELECT window_label, hour_histogram, weekday_histogram, computed_at
+         FROM character_feature_histograms
+         WHERE character_id = ?
+         ORDER BY FIELD(window_label, "7d", "30d", "90d", "lifetime")',
+        [$characterId]
+    );
+}
+
+function db_character_temporal_behavior_signals(int $characterId): array
+{
+    if ($characterId <= 0) {
+        return [];
+    }
+    return db_select(
+        'SELECT evidence_key, window_label, evidence_value, expected_value,
+                deviation_value, z_score, mad_score, cohort_percentile,
+                confidence_flag, evidence_text, evidence_payload_json, computed_at
+         FROM character_counterintel_evidence
+         WHERE character_id = ?
+           AND evidence_key IN ("active_hour_shift", "weekday_profile_shift", "cadence_burstiness", "reactivation_after_dormancy")
+         ORDER BY FIELD(evidence_key, "active_hour_shift", "weekday_profile_shift", "cadence_burstiness", "reactivation_after_dormancy")',
+        [$characterId]
+    );
+}
+
 function db_analyst_recalibration_log(int $limit = 20): array
 {
     $safeLimit = max(1, min(100, $limit));

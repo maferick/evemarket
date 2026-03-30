@@ -4170,6 +4170,7 @@ function supplycore_authoritative_job_registry(): array
         'evewho_alliance_member_sync' => ['label' => 'EveWho Alliance Member Sync', 'description' => 'Iterative graph crawl of opponent alliances via EveWho (org sweep + character discovery). Uses half the API rate limit; the dedicated CLI runner uses the other half.', 'category' => 'real_schedulable', 'enabled_by_default' => false, 'schedulable' => true, 'settings_visible' => true, 'user_visible' => true, 'execution_mode' => 'python', 'default_interval_minutes' => 30, 'default_offset_minutes' => 38, 'priority' => 'normal', 'timeout_seconds' => 3600, 'concurrency_policy' => 'single', 'explicitly_configured' => true, 'python_implementation_exists' => true, 'worker_safe' => true],
         'intelligence_pipeline' => ['label' => 'Intelligence Pipeline', 'description' => 'Neo4j suspicion signals, alliance overlap, cross-system correlation, and MariaDB export.', 'category' => 'real_schedulable', 'enabled_by_default' => false, 'schedulable' => true, 'settings_visible' => true, 'user_visible' => true, 'execution_mode' => 'python', 'default_interval_minutes' => 30, 'default_offset_minutes' => 36, 'priority' => 'high', 'timeout_seconds' => 900, 'concurrency_policy' => 'single', 'explicitly_configured' => true, 'python_implementation_exists' => true, 'worker_safe' => true],
         'compute_character_feature_windows' => ['label' => 'Character Feature Windows', 'description' => 'Compute per-character feature snapshots for 7d/30d/90d/lifetime windows (battles, systems, histograms, org transitions, graph metrics).', 'category' => 'real_schedulable', 'enabled_by_default' => true, 'schedulable' => true, 'settings_visible' => true, 'user_visible' => true, 'execution_mode' => 'python', 'default_interval_minutes' => 30, 'default_offset_minutes' => 27, 'priority' => 'normal', 'timeout_seconds' => 900, 'concurrency_policy' => 'single', 'explicitly_configured' => true, 'python_implementation_exists' => true, 'worker_safe' => true],
+        'temporal_behavior_detection' => ['label' => 'Temporal Behavior Detection', 'description' => 'Detect hour-of-day and day-of-week cadence shifts per character. Computes active-hour shift, weekday profile divergence, burstiness index, and reactivation-after-dormancy signals using JSD, CUSUM, and z-score analysis.', 'category' => 'real_schedulable', 'enabled_by_default' => true, 'schedulable' => true, 'settings_visible' => true, 'user_visible' => true, 'execution_mode' => 'python', 'default_interval_minutes' => 30, 'default_offset_minutes' => 28, 'priority' => 'normal', 'timeout_seconds' => 600, 'concurrency_policy' => 'single', 'explicitly_configured' => true, 'python_implementation_exists' => true, 'worker_safe' => true],
 
         // Disabled/review-needed jobs.
         'alliance_current_sync' => ['label' => 'Alliance Current', 'description' => 'Sync current alliance structure market orders.', 'category' => 'real_schedulable', 'enabled_by_default' => false, 'schedulable' => true, 'settings_visible' => true, 'user_visible' => true, 'execution_mode' => 'python', 'default_interval_minutes' => 4, 'default_offset_minutes' => 2, 'priority' => 'medium', 'timeout_seconds' => 180, 'concurrency_policy' => 'single', 'explicitly_configured' => true, 'python_implementation_exists' => true, 'worker_safe' => true, 'review_reason' => 'validated via python worker pool/job runner/manual CLI parity checks.'],
@@ -11052,6 +11053,8 @@ function fleet_function_label(string $role): string
         'heavy_tackle' => 'Heavy Tackle',
         'bubble_control' => 'Bubble Control',
         'command' => 'Command',
+        'links' => 'Links',
+        'fc_links' => 'FC/Links',
         'ewar' => 'EWAR',
         'bomber' => 'Bomber',
         'scout' => 'Scout',
@@ -11074,6 +11077,8 @@ function fleet_function_color_class(string $role): string
         'logistics', 'logi' => 'bg-emerald-900/60 text-emerald-300',
         'capital_logistics' => 'bg-emerald-900/60 text-emerald-300',
         'command' => 'bg-amber-900/60 text-amber-300',
+        'links' => 'bg-lime-900/60 text-lime-200 ring-1 ring-lime-400/50',
+        'fc_links' => 'bg-lime-900/60 text-lime-100 ring-1 ring-lime-300/60',
         'ewar' => 'bg-purple-900/60 text-purple-300',
         'tackle' => 'bg-cyan-900/60 text-cyan-300',
         'heavy_tackle' => 'bg-cyan-900/60 text-cyan-300',
