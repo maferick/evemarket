@@ -137,6 +137,12 @@ def parse_args() -> argparse.Namespace:
         parser_job = subparsers.add_parser(command, help=help_text)
         parser_job.add_argument("--app-root", default=str(Path(__file__).resolve().parents[2]))
         parser_job.add_argument("--dry-run", action="store_true", help="Compute and log counters without writing MariaDB tables.")
+
+    scheduler_graph = subparsers.add_parser("scheduler-graph", help="Display the DAG-based job dependency graph and execution tiers")
+    scheduler_graph.add_argument("--app-root", default=str(Path(__file__).resolve().parents[2]))
+    scheduler_graph.add_argument("--validate", action="store_true", help="Validate the graph and report issues")
+    scheduler_graph.add_argument("--json", dest="output_json", action="store_true", help="Output graph as JSON instead of human-readable text")
+
     return parser.parse_args()
 
 
@@ -401,6 +407,51 @@ def main() -> int:
                 {"status": "failed", "error_text": str(exc), "rows_processed": 0, "rows_written": 0},
             )
             return 1
+
+    if command == "scheduler-graph":
+        from .scheduling_graph import (
+            build_graph,
+            format_graph_summary,
+            validate_graph,
+        )
+        from .worker_registry import WORKER_JOB_DEFINITIONS as _defs
+
+        if args.validate:
+            nodes = build_graph(_defs)
+            issues = validate_graph(nodes)
+            if issues:
+                for issue in issues:
+                    print(f"  ERROR: {issue}")
+                return 1
+            print(f"Graph valid: {len(nodes)} jobs, no cycles or missing dependencies.")
+            return 0
+
+        if args.output_json:
+            from .scheduling_graph import _topological_tiers
+            nodes = build_graph(_defs)
+            tiers, job_tier = _topological_tiers(nodes)
+            output = {
+                "job_count": len(nodes),
+                "tier_count": len(tiers),
+                "tiers": {
+                    str(i): tier_jobs for i, tier_jobs in enumerate(tiers)
+                },
+                "jobs": {
+                    k: {
+                        "depends_on": list(n.depends_on),
+                        "concurrency_group": n.concurrency_group,
+                        "priority": n.priority,
+                        "resource_cost": n.resource_cost,
+                        "tier": job_tier[k],
+                    }
+                    for k, n in sorted(nodes.items())
+                },
+            }
+            print(json.dumps(output, indent=2))
+            return 0
+
+        print(format_graph_summary(_defs))
+        return 0
 
     app_root = Path(args.app_root).resolve()
     config = load_php_runtime_config(app_root)

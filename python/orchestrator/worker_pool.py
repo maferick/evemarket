@@ -21,6 +21,11 @@ from .job_result import JobResult
 from .json_utils import json_dumps_safe, make_json_safe
 from .logging_utils import LoggerAdapter, configure_logging
 from .processor_registry import audit_enabled_python_jobs, run_registered_processor
+from .scheduling_graph import (
+    build_graph,
+    compute_scheduling_plan,
+    filter_by_concurrency_groups,
+)
 from .worker_registry import WORKER_JOB_DEFINITIONS
 from .worker_runtime import resident_memory_bytes, utc_now_iso
 
@@ -409,7 +414,53 @@ def main(argv: list[str] | None = None) -> int:
                     scaled_definitions = dict(WORKER_JOB_DEFINITIONS)
                 worker_count_refresh_at = now_mono + 60.0
             seed_result = db.queue_due_recurring_jobs(scaled_definitions)
-            job = db.claim_next_worker_job(worker_id, queues=queue_names, workload_classes=workload_classes, execution_modes=execution_modes, lease_seconds=lease_seconds)
+
+            # ── DAG-aware dispatch ────────────────────────────────────
+            # 1. Gather current state from the database.
+            running_keys = db.get_running_job_keys()
+            completed_keys = db.get_recently_completed_job_keys(within_seconds=7200)
+            queued_keys = db.get_queued_job_keys()
+
+            # 2. Compute the scheduling plan — which jobs are ready?
+            plan = compute_scheduling_plan(
+                definitions=scaled_definitions,
+                due_job_keys=queued_keys,
+                completed_job_keys=completed_keys,
+                running_job_keys=running_keys,
+            )
+
+            # 3. Filter by concurrency groups to avoid resource contention.
+            graph_nodes = build_graph(scaled_definitions)
+            dispatchable, cg_deferred = filter_by_concurrency_groups(
+                plan.ready_jobs, running_keys, graph_nodes,
+            )
+
+            # Log scheduling decisions periodically for visibility.
+            if plan.blocked_jobs or cg_deferred:
+                logger.info(
+                    "dag scheduler plan",
+                    payload={
+                        "event": "worker_pool.dag_plan",
+                        "worker_id": worker_id,
+                        "ready_count": len(plan.ready_jobs),
+                        "dispatchable_count": len(dispatchable),
+                        "blocked_count": len(plan.blocked_jobs),
+                        "cg_deferred_count": len(cg_deferred),
+                        "blocked_jobs": {k: v for k, v in list(plan.blocked_jobs.items())[:10]},
+                        "cg_deferred": {k: v for k, v in list(cg_deferred.items())[:10]},
+                        "running": sorted(running_keys)[:15],
+                    },
+                )
+
+            # 4. Claim one job from the dispatchable set.
+            job = db.claim_next_worker_job(
+                worker_id,
+                queues=queue_names,
+                workload_classes=workload_classes,
+                execution_modes=execution_modes,
+                lease_seconds=lease_seconds,
+                dispatchable_job_keys=dispatchable if dispatchable else None,
+            )
             diagnostics = db.worker_claim_diagnostics(queues=queue_names, workload_classes=workload_classes)
         except pymysql.MySQLError as error:
             logger.warning(
@@ -440,7 +491,22 @@ def main(argv: list[str] | None = None) -> int:
             time.sleep(retry_backoff)
             continue
 
-        _write_state_file(state_file, {"ts": utc_now_iso(), "worker_id": worker_id, "queues": queue_names, "workload_classes": workload_classes, "execution_modes": execution_modes, "seed_result": seed_result, "job": job, "memory_usage_bytes": memory_usage, "worker_counts": worker_counts})
+        _write_state_file(state_file, {
+            "ts": utc_now_iso(),
+            "worker_id": worker_id,
+            "queues": queue_names,
+            "workload_classes": workload_classes,
+            "execution_modes": execution_modes,
+            "seed_result": seed_result,
+            "job": job,
+            "memory_usage_bytes": memory_usage,
+            "worker_counts": worker_counts,
+            "dag_scheduler": {
+                "dispatchable": dispatchable[:20] if dispatchable else [],
+                "blocked_count": len(plan.blocked_jobs) if plan else 0,
+                "running_count": len(running_keys),
+            },
+        })
 
         if not job:
             if args.once:

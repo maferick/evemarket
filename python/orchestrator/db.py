@@ -258,7 +258,8 @@ class SupplyCoreDb:
                     "freshness_sensitivity": freshness_sensitivity,
                     "runtime_class": str(definition.get("runtime_class") or ""),
                     "resource_cost": str(definition.get("resource_cost") or ""),
-                    "lock_group": str(definition.get("lock_group") or ""),
+                    "concurrency_group": str(definition.get("concurrency_group") or definition.get("lock_group") or ""),
+                    "depends_on": list(definition.get("depends_on") or []),
                     "opportunistic_background": opportunistic_background,
                     "staleness_seconds": staleness_seconds,
                     "urgency_score": urgency_score,
@@ -327,7 +328,18 @@ class SupplyCoreDb:
         workload_classes: list[str],
         execution_modes: list[str],
         lease_seconds: int,
+        dispatchable_job_keys: list[str] | None = None,
     ) -> dict[str, Any] | None:
+        """Claim the next eligible job from the queue.
+
+        When *dispatchable_job_keys* is provided (from the scheduling graph),
+        only jobs in that set are eligible.  This replaces the old lock-group
+        SQL subquery with DAG-aware, concurrency-group-aware filtering done
+        in Python before we touch the database.
+
+        When *dispatchable_job_keys* is ``None`` (legacy / fallback), the old
+        concurrency-group SQL filter is used instead.
+        """
         safe_worker_id = worker_id.strip()[:190]
         if not safe_worker_id:
             return None
@@ -343,21 +355,30 @@ class SupplyCoreDb:
         if workload_classes:
             conditions.append("workload_class IN (" + ",".join(["%s"] * len(workload_classes)) + ")")
             params.extend(workload_classes)
-        # Lock-group enforcement: don't claim a job if another job in the
-        # same lock_group is already running.  Jobs with no lock_group (empty
-        # string) are not constrained.
-        conditions.append(
-            """(
-                COALESCE(JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.lock_group')), '') = ''
-                OR JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.lock_group')) NOT IN (
-                    SELECT DISTINCT JSON_UNQUOTE(JSON_EXTRACT(rj.payload_json, '$.lock_group'))
-                    FROM worker_jobs rj
-                    WHERE rj.status = 'running'
-                      AND JSON_UNQUOTE(JSON_EXTRACT(rj.payload_json, '$.lock_group')) != ''
-                      AND JSON_UNQUOTE(JSON_EXTRACT(rj.payload_json, '$.lock_group')) IS NOT NULL
-                )
-            )"""
-        )
+
+        if dispatchable_job_keys is not None:
+            # DAG-aware mode: the scheduling graph already determined which
+            # jobs are safe to run (dependencies met, concurrency groups free).
+            if not dispatchable_job_keys:
+                return None  # nothing dispatchable right now
+            conditions.append("job_key IN (" + ",".join(["%s"] * len(dispatchable_job_keys)) + ")")
+            params.extend(dispatchable_job_keys)
+        else:
+            # Legacy fallback: concurrency-group enforcement via SQL.
+            # Don't claim a job if another job in the same concurrency_group
+            # (stored as lock_group in payload) is already running.
+            conditions.append(
+                """(
+                    COALESCE(JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.concurrency_group')), '') = ''
+                    OR JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.concurrency_group')) NOT IN (
+                        SELECT DISTINCT JSON_UNQUOTE(JSON_EXTRACT(rj.payload_json, '$.concurrency_group'))
+                        FROM worker_jobs rj
+                        WHERE rj.status = 'running'
+                          AND JSON_UNQUOTE(JSON_EXTRACT(rj.payload_json, '$.concurrency_group')) != ''
+                          AND JSON_UNQUOTE(JSON_EXTRACT(rj.payload_json, '$.concurrency_group')) IS NOT NULL
+                    )
+                )"""
+            )
 
         with self.transaction() as (_, cursor):
             cursor.execute(
@@ -421,6 +442,39 @@ class SupplyCoreDb:
             )
         except Exception:
             return
+
+    # ------------------------------------------------------------------
+    # DAG scheduling helpers
+    # ------------------------------------------------------------------
+
+    def get_running_job_keys(self) -> set[str]:
+        """Return the set of job_keys that are currently running."""
+        rows = self.fetch_all(
+            "SELECT DISTINCT job_key FROM worker_jobs WHERE status = 'running'"
+        )
+        return {str(r["job_key"]) for r in rows if r.get("job_key")}
+
+    def get_recently_completed_job_keys(self, within_seconds: int = 7200) -> set[str]:
+        """Return job_keys that completed successfully within the given window.
+
+        Used by the scheduling graph to determine whether upstream dependencies
+        are satisfied — if a dependency completed recently, the downstream job
+        can proceed even if the dependency isn't currently due.
+        """
+        rows = self.fetch_all(
+            """SELECT DISTINCT job_key FROM worker_jobs
+               WHERE status = 'completed'
+                 AND last_finished_at >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL %s SECOND)""",
+            (max(60, within_seconds),),
+        )
+        return {str(r["job_key"]) for r in rows if r.get("job_key")}
+
+    def get_queued_job_keys(self) -> set[str]:
+        """Return job_keys that are currently queued or in retry."""
+        rows = self.fetch_all(
+            "SELECT DISTINCT job_key FROM worker_jobs WHERE status IN ('queued', 'retry')"
+        )
+        return {str(r["job_key"]) for r in rows if r.get("job_key")}
 
     def worker_claim_diagnostics(self, *, queues: list[str], workload_classes: list[str]) -> dict[str, Any]:
         clauses = ["execution_mode='python'"]
