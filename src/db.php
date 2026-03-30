@@ -8380,6 +8380,7 @@ function db_sync_schedule_mark_success(int $scheduleId, ?array $runtime = null):
             'last_execution_context_json' => $runtime['last_execution_context_json'] ?? null,
             'last_no_change_skip_at' => $runtime['last_no_change_skip_at'] ?? null,
             'last_no_change_reason' => $runtime['last_no_change_reason'] ?? null,
+            'last_warnings_json' => $runtime['last_warnings_json'] ?? null,
             'last_event_at' => $finishedAt,
         ]);
     }
@@ -9579,6 +9580,7 @@ function db_scheduler_job_current_status_ensure(): void
     db_ensure_table_column('scheduler_job_current_status', 'last_execution_context_json', 'LONGTEXT DEFAULT NULL AFTER last_change_detection_json');
     db_ensure_table_column('scheduler_job_current_status', 'last_no_change_skip_at', 'DATETIME DEFAULT NULL AFTER last_execution_context_json');
     db_ensure_table_column('scheduler_job_current_status', 'last_no_change_reason', 'VARCHAR(500) DEFAULT NULL AFTER last_no_change_skip_at');
+    db_ensure_table_column('scheduler_job_current_status', 'last_warnings_json', 'LONGTEXT DEFAULT NULL AFTER last_no_change_reason');
 }
 
 function db_scheduler_job_current_status_upsert(string $jobKey, array $status): bool
@@ -9641,6 +9643,12 @@ function db_scheduler_job_current_status_upsert(string $jobKey, array $status): 
             ? $status['last_execution_context_json']
             : json_encode($status['last_execution_context_json'], JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE);
     }
+    $lastWarningsJson = null;
+    if (array_key_exists('last_warnings_json', $status) && $status['last_warnings_json'] !== null) {
+        $lastWarningsJson = is_string($status['last_warnings_json'])
+            ? $status['last_warnings_json']
+            : json_encode($status['last_warnings_json'], JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE);
+    }
     $changeAware = array_key_exists('change_aware', $status) && $status['change_aware'] !== null
         ? (!empty($status['change_aware']) ? 1 : 0)
         : (!empty($current['change_aware']) ? 1 : 0);
@@ -9668,12 +9676,13 @@ function db_scheduler_job_current_status_upsert(string $jobKey, array $status): 
             last_execution_context_json,
             last_no_change_skip_at,
             last_no_change_reason,
+            last_warnings_json,
             last_resource_metrics_summary_json,
             last_planner_decision_type,
             last_planner_reason_text,
             last_planner_decided_at,
             last_event_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON DUPLICATE KEY UPDATE
             dataset_key = COALESCE(VALUES(dataset_key), dataset_key),
             latest_status = VALUES(latest_status),
@@ -9701,6 +9710,7 @@ function db_scheduler_job_current_status_upsert(string $jobKey, array $status): 
                 WHEN VALUES(last_no_change_reason) IS NULL AND VALUES(last_no_change_skip_at) IS NULL THEN last_no_change_reason
                 ELSE VALUES(last_no_change_reason)
             END,
+            last_warnings_json = VALUES(last_warnings_json),
             last_resource_metrics_summary_json = COALESCE(VALUES(last_resource_metrics_summary_json), last_resource_metrics_summary_json),
             last_planner_decision_type = COALESCE(VALUES(last_planner_decision_type), last_planner_decision_type),
             last_planner_reason_text = COALESCE(VALUES(last_planner_reason_text), last_planner_reason_text),
@@ -9731,6 +9741,7 @@ function db_scheduler_job_current_status_upsert(string $jobKey, array $status): 
             array_key_exists('last_no_change_reason', $status) && $status['last_no_change_reason'] !== null
                 ? mb_substr(trim((string) $status['last_no_change_reason']), 0, 500)
                 : null,
+            $lastWarningsJson,
             $resourceSummaryJson,
             $lastPlannerDecisionType,
             $lastPlannerReasonText,
@@ -9745,7 +9756,7 @@ function db_scheduler_job_current_status_fetch_map(array $jobKeys = []): array
     db_scheduler_job_current_status_ensure();
 
     $params = [];
-    $sql = 'SELECT job_key, dataset_key, latest_status, latest_event_type, last_started_at, last_finished_at, last_success_at, last_failure_at, last_failure_message, current_pressure_state, last_pressure_state, recent_timeout_count, recent_lock_conflict_count, recent_deferral_count, recent_skip_count, change_aware, dependencies_json, last_change_detection_json, last_execution_context_json, last_no_change_skip_at, last_no_change_reason, last_resource_metrics_summary_json, last_planner_decision_type, last_planner_reason_text, last_planner_decided_at, last_event_at, created_at, updated_at
+    $sql = 'SELECT job_key, dataset_key, latest_status, latest_event_type, last_started_at, last_finished_at, last_success_at, last_failure_at, last_failure_message, current_pressure_state, last_pressure_state, recent_timeout_count, recent_lock_conflict_count, recent_deferral_count, recent_skip_count, change_aware, dependencies_json, last_change_detection_json, last_execution_context_json, last_no_change_skip_at, last_no_change_reason, last_warnings_json, last_resource_metrics_summary_json, last_planner_decision_type, last_planner_reason_text, last_planner_decided_at, last_event_at, created_at, updated_at
             FROM scheduler_job_current_status';
 
     $normalizedKeys = array_values(array_filter(array_map(static fn (mixed $jobKey): string => trim((string) $jobKey), $jobKeys), static fn (string $jobKey): bool => $jobKey !== ''));
@@ -9768,6 +9779,14 @@ function db_scheduler_job_current_status_fetch_map(array $jobKeys = []): array
             $decoded = json_decode($summaryJson, true);
             if (is_array($decoded)) {
                 $row['last_resource_metrics_summary'] = $decoded;
+            }
+        }
+        $row['last_warnings'] = [];
+        $warningsJson = $row['last_warnings_json'] ?? null;
+        if (is_string($warningsJson) && trim($warningsJson) !== '') {
+            $decodedWarnings = json_decode($warningsJson, true);
+            if (is_array($decodedWarnings)) {
+                $row['last_warnings'] = $decodedWarnings;
             }
         }
         foreach ([

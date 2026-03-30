@@ -6227,6 +6227,35 @@ function scheduler_console_detect_job_issues(array $job, int $memoryThresholdByt
         ];
     }
 
+    $lastWarnings = (array) ($job['last_warnings'] ?? []);
+    foreach ($lastWarnings as $warning) {
+        $warningLower = strtolower((string) $warning);
+        if (str_contains($warningLower, 'no active esi oauth token') || str_contains($warningLower, 'oauth token')) {
+            $issues[] = [
+                'severity' => 'critical',
+                'type' => 'missing_token',
+                'job_key' => $jobKey,
+                'job_label' => $jobLabel,
+                'title' => 'Missing ESI token',
+                'description' => (string) $warning,
+                'action_label' => 'Configure ESI token',
+            ];
+            break;
+        }
+    }
+
+    if ($lastWarnings !== [] && !array_filter($issues, static fn (array $issue): bool => ($issue['type'] ?? '') === 'missing_token')) {
+        $issues[] = [
+            'severity' => 'high',
+            'type' => 'sync_warning',
+            'job_key' => $jobKey,
+            'job_label' => $jobLabel,
+            'title' => 'Sync warning',
+            'description' => (string) $lastWarnings[0],
+            'action_label' => 'Investigate',
+        ];
+    }
+
     return $issues;
 }
 
@@ -6578,6 +6607,7 @@ function sync_schedule_settings_view_model(): array
                 : null,
             'last_change_detection' => $changeDetection,
             'last_execution_context' => $executionContext,
+            'last_warnings' => (array) ($statusProjection['last_warnings'] ?? []),
             'upstream_dependency_labels' => array_values(array_filter(array_map(
                 static fn (array $signal): string => (string) ($signal['label'] ?? $signal['signal_key'] ?? ''),
                 (array) ($dependencyMetadata['upstream_signals'] ?? [])
@@ -13904,6 +13934,7 @@ function scheduler_run_job(array $job): array
                     'change_aware' => !empty($changeDecision['change_aware']),
                     'dependencies_json' => $dependencyMetadata,
                     'last_change_detection_json' => $changeContext,
+                    'last_warnings_json' => $warnings !== [] ? $warnings : null,
                 ]);
             }
             db_scheduler_job_event_insert($jobKey, 'finished', [
@@ -13926,6 +13957,7 @@ function scheduler_run_job(array $job): array
                     'dependencies_json' => $dependencyMetadata,
                     'last_change_detection_json' => $changeContext,
                     'last_execution_context_json' => $changeContext,
+                    'last_warnings_json' => $warnings !== [] ? $warnings : null,
                 ]);
             }
             db_scheduler_job_event_insert($jobKey, $status, [
@@ -15461,6 +15493,7 @@ function scheduler_finalize_python_job_result(array $job, array $pythonResult): 
             db_sync_schedule_mark_success($scheduleId, scheduler_job_runtime_snapshot($jobKey, $status) + [
                 'last_duration_seconds' => $durationSeconds,
                 'current_pressure_state' => $job['current_pressure_state'] ?? 'healthy',
+                'last_warnings_json' => $warnings !== [] ? $warnings : null,
             ]);
         }
         db_scheduler_job_event_insert($jobKey, $status === 'skipped' ? 'skipped' : 'finished', [
@@ -15469,6 +15502,7 @@ function scheduler_finalize_python_job_result(array $job, array $pythonResult): 
             'rows_seen' => $rowsSeen,
             'rows_written' => $rowsWritten,
             'summary' => $summary,
+            'warnings' => $warnings,
             'meta' => $meta,
         ], 0, $durationSeconds);
     }
