@@ -65,6 +65,7 @@ from .jobs.compute_alliance_dossiers import run_compute_alliance_dossiers
 from .jobs.compute_threat_corridors import run_compute_threat_corridors
 from .jobs.cache_expiry_cleanup_sync import run_cache_expiry_cleanup_sync
 from .jobs.evewho_alliance_member_sync import run_evewho_alliance_member_sync
+from .jobs.character_feature_windows import run_compute_character_feature_windows
 
 
 def _php_bridge(cfg: dict[str, Any]) -> PhpBridge:
@@ -111,6 +112,7 @@ PYTHON_COMPUTE_PROCESSOR_JOB_KEYS: set[str] = {
     "compute_alliance_dossiers",
     "compute_threat_corridors",
     "graph_model_audit",
+    "compute_character_feature_windows",
 }
 
 PYTHON_SYNC_PROCESSOR_JOB_KEYS: set[str] = {
@@ -208,6 +210,8 @@ _PROCESSOR_DISPATCH: dict[str, tuple] = {
     "compute_threat_corridors": (run_compute_threat_corridors, lambda db, cfg: (db, neo4j_runtime(cfg))),
     # Graph audit
     "graph_model_audit": (run_graph_model_audit, lambda db, cfg: (db, neo4j_runtime(cfg))),
+    # Character feature windows
+    "compute_character_feature_windows": (run_compute_character_feature_windows, lambda db, cfg: (db,)),
     # Maintenance
     "cache_expiry_cleanup_sync": (run_cache_expiry_cleanup_sync, lambda db, cfg: (db,)),
 }
