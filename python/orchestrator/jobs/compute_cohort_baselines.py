@@ -468,40 +468,10 @@ def run_compute_cohort_baselines(
                 )
             neo4j_rows_synced += len(score_neo4j_rows)
 
-        # 6d. Set feature baselines on Cohort nodes, one Cypher per feature key
-        #     to avoid APOC dependency for dynamic property names.
-        for feature_key in COHORT_FEATURE_KEYS:
-            feature_rows: list[dict[str, Any]] = []
-            for cohort_key in cohort_members:
-                s = cohort_stats.get((cohort_key, feature_key))
-                if s is None:
-                    continue
-                feature_rows.append({
-                    "cohort_key": cohort_key,
-                    "mean": float(s["mean"]),
-                    "stddev": float(s["stddev"]),
-                    "median": float(s["median"]),
-                    "mad": float(s["mad"]),
-                })
-            if not feature_rows:
-                continue
-            # Property names are static per query — safe to interpolate the
-            # feature_key since it comes from COHORT_FEATURE_KEYS constant.
-            cypher = f"""
-                UNWIND $rows AS row
-                MATCH (co:Cohort {{cohort_key: row.cohort_key}})
-                SET co.{feature_key}_mean = toFloat(row.mean),
-                    co.{feature_key}_stddev = toFloat(row.stddev),
-                    co.{feature_key}_median = toFloat(row.median),
-                    co.{feature_key}_mad = toFloat(row.mad)
-            """
-            for i in range(0, len(feature_rows), NEO4J_BATCH):
-                neo4j.query(
-                    cypher,
-                    {"rows": feature_rows[i:i + NEO4J_BATCH]},
-                    timeout_seconds=NEO4J_TIMEOUT,
-                )
-            neo4j_rows_synced += len(feature_rows)
+        # Per-feature baseline statistics (mean/stddev/median/MAD) stay in
+        # MySQL's cohort_feature_baselines only — consistent with the rest of
+        # the codebase where analytical tables are MySQL-primary and Neo4j
+        # holds graph structure for traversal.
 
     duration_ms = int((time.perf_counter() - started) * 1000)
     return JobResult.success(
