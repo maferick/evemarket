@@ -30,6 +30,11 @@ $featureHistograms = db_character_feature_histograms($characterId);
 // Neo4j intelligence graph signals (EveWho corp history)
 $neo4jIntel = (bool) config('neo4j.enabled', false) ? db_neo4j_character_intelligence($characterId) : null;
 
+// Movement footprint data
+$movementFootprints = db_character_movement_footprints($characterId);
+$systemDistribution = db_character_system_distribution($characterId, '30d', 15);
+$neo4jMovement = (bool) config('neo4j.enabled', false) ? db_neo4j_character_movement_graph($characterId) : null;
+
 // Resolve corporation names for org history timeline
 $orgCorpNames = [];
 if ($orgHistory !== []) {
@@ -170,6 +175,10 @@ function ci_evidence_label(string $key): string
         'neo4j_cross_side_overlap' => 'Cross-side corp overlap',
         'neo4j_recent_defector' => 'Recent defector',
         'neo4j_hostile_adjacency' => 'Hostile corp adjacency',
+        'footprint_expansion' => 'Footprint expansion',
+        'footprint_contraction' => 'Footprint contraction',
+        'new_area_entry' => 'New area entry',
+        'hostile_overlap_change' => 'Hostile overlap change',
         'active_hour_shift' => 'Active hour shift',
         'weekday_profile_shift' => 'Weekday profile shift',
         'cadence_burstiness' => 'Cadence burstiness',
@@ -526,6 +535,152 @@ include __DIR__ . '/../../src/views/partials/header.php';
                 </div>
             <?php endforeach; ?>
         </div>
+        <?php endif; ?>
+
+        <?php if ($movementFootprints !== []): ?>
+        <h2 class="mt-6 text-lg font-semibold text-slate-100">Movement footprint</h2>
+        <p class="mt-1 text-xs text-muted">Geographic operational footprint across time windows. Sudden expansion, contraction, or hostile-overlap shifts can indicate operational changes.</p>
+
+        <!-- Footprint signal cards -->
+        <?php
+            $fp30 = null;
+            foreach ($movementFootprints as $mf) {
+                if (($mf['window_label'] ?? '') === '30d') { $fp30 = $mf; break; }
+            }
+            if ($fp30 === null && $movementFootprints !== []) {
+                $fp30 = $movementFootprints[0];
+            }
+        ?>
+        <?php if ($fp30 !== null): ?>
+        <?php
+            $fpExpansion = (float) ($fp30['footprint_expansion_score'] ?? 0);
+            $fpContraction = (float) ($fp30['footprint_contraction_score'] ?? 0);
+            $fpNewArea = (float) ($fp30['new_area_entry_score'] ?? 0);
+            $fpHostileChange = (float) ($fp30['hostile_overlap_change_score'] ?? 0);
+            $fpCohortPctile = (float) ($fp30['cohort_percentile_footprint'] ?? 0);
+        ?>
+        <div class="mt-3 grid gap-3 md:grid-cols-4">
+            <div class="surface-tertiary">
+                <p class="text-xs text-muted">Expansion</p>
+                <p class="mt-1 text-lg <?= ci_metric_color($fpExpansion, 0.3, 0.6) ?>"><?= number_format($fpExpansion * 100, 0) ?>%</p>
+                <?= ci_progress_bar($fpExpansion, $fpExpansion >= 0.6 ? 'bg-red-500' : ($fpExpansion >= 0.3 ? 'bg-yellow-500' : 'bg-cyan-500')) ?>
+                <p class="mt-1 text-[11px] text-muted">Operating in more systems than before</p>
+            </div>
+            <div class="surface-tertiary">
+                <p class="text-xs text-muted">Contraction</p>
+                <p class="mt-1 text-lg <?= ci_metric_color($fpContraction, 0.3, 0.6) ?>"><?= number_format($fpContraction * 100, 0) ?>%</p>
+                <?= ci_progress_bar($fpContraction, $fpContraction >= 0.6 ? 'bg-red-500' : ($fpContraction >= 0.3 ? 'bg-yellow-500' : 'bg-cyan-500')) ?>
+                <p class="mt-1 text-[11px] text-muted">Operating in fewer systems than before</p>
+            </div>
+            <div class="surface-tertiary">
+                <p class="text-xs text-muted">New area entry</p>
+                <p class="mt-1 text-lg <?= ci_metric_color($fpNewArea, 0.3, 0.6) ?>"><?= number_format($fpNewArea * 100, 0) ?>%</p>
+                <?= ci_progress_bar($fpNewArea, $fpNewArea >= 0.6 ? 'bg-red-500' : ($fpNewArea >= 0.3 ? 'bg-yellow-500' : 'bg-cyan-500')) ?>
+                <p class="mt-1 text-[11px] text-muted">Regions not previously seen in</p>
+            </div>
+            <div class="surface-tertiary">
+                <p class="text-xs text-muted">Hostile overlap shift</p>
+                <p class="mt-1 text-lg <?= ci_metric_color($fpHostileChange, 0.3, 0.6) ?>"><?= number_format($fpHostileChange * 100, 0) ?>%</p>
+                <?= ci_progress_bar($fpHostileChange, $fpHostileChange >= 0.6 ? 'bg-red-500' : ($fpHostileChange >= 0.3 ? 'bg-yellow-500' : 'bg-cyan-500')) ?>
+                <p class="mt-1 text-[11px] text-muted">Change in overlap with hostile-active systems</p>
+            </div>
+        </div>
+        <?php if ($fpCohortPctile > 0): ?>
+        <p class="mt-2 text-xs text-muted">Cohort footprint percentile: <span class="<?= $fpCohortPctile >= 0.9 ? 'text-red-400' : ($fpCohortPctile >= 0.7 ? 'text-yellow-400' : 'text-slate-100') ?>"><?= number_format($fpCohortPctile * 100, 0) ?>%</span> &mdash; higher means larger operational area relative to peers</p>
+        <?php endif; ?>
+        <?php endif; ?>
+
+        <!-- Per-window footprint table -->
+        <div class="mt-3 grid gap-3 md:grid-cols-<?= min(4, count($movementFootprints)) ?>">
+            <?php foreach ($movementFootprints as $mf): ?>
+                <?php
+                    $wLabel = (string) ($mf['window_label'] ?? '');
+                    $wTitle = match ($wLabel) {
+                        '7d' => 'Last 7 days',
+                        '30d' => 'Last 30 days',
+                        '90d' => 'Last 90 days',
+                        'lifetime' => 'Lifetime',
+                        default => $wLabel . ' window',
+                    };
+                    $uniqueSys = (int) ($mf['unique_systems_count'] ?? 0);
+                    $uniqueReg = (int) ($mf['unique_regions_count'] ?? 0);
+                    $battlesWin = (int) ($mf['battles_in_window'] ?? 0);
+                    $sysEntropy = (float) ($mf['system_entropy'] ?? 0);
+                    $sysHhi = (float) ($mf['system_hhi'] ?? 0);
+                    $hostileRatio = (float) ($mf['hostile_system_overlap_ratio'] ?? 0);
+                    $jsDivSys = $mf['js_divergence_systems'] ?? null;
+                    $cosDist = $mf['cosine_distance_systems'] ?? null;
+                    $domRatio = (float) ($mf['dominant_system_ratio'] ?? 0);
+                ?>
+                <div class="surface-tertiary">
+                    <p class="text-xs text-muted font-semibold"><?= htmlspecialchars($wTitle, ENT_QUOTES) ?></p>
+                    <div class="mt-2 grid grid-cols-2 gap-1 text-sm">
+                        <span class="text-muted">Systems</span><span class="text-slate-100 text-right"><?= $uniqueSys ?></span>
+                        <span class="text-muted">Regions</span><span class="text-slate-100 text-right"><?= $uniqueReg ?></span>
+                        <span class="text-muted">Battles</span><span class="text-slate-100 text-right"><?= $battlesWin ?></span>
+                        <span class="text-muted">Entropy</span><span class="text-right text-slate-100"><?= number_format($sysEntropy, 2) ?> bits</span>
+                        <span class="text-muted">Concentration</span><span class="text-right <?= $sysHhi >= 0.5 ? 'text-yellow-400' : 'text-slate-100' ?>"><?= number_format($sysHhi * 100, 0) ?>% HHI</span>
+                        <span class="text-muted">Dominant sys</span><span class="text-right text-slate-100"><?= number_format($domRatio * 100, 0) ?>%</span>
+                        <span class="text-muted">Hostile overlap</span><span class="text-right <?= ci_metric_color($hostileRatio, 0.3, 0.6) ?>"><?= number_format($hostileRatio * 100, 0) ?>%</span>
+                        <?php if ($jsDivSys !== null): ?>
+                        <span class="text-muted">JS divergence</span><span class="text-right <?= (float) $jsDivSys >= 0.3 ? 'text-yellow-400' : 'text-slate-100' ?>"><?= number_format((float) $jsDivSys, 4) ?></span>
+                        <?php endif; ?>
+                        <?php if ($cosDist !== null): ?>
+                        <span class="text-muted">Cosine dist</span><span class="text-right text-slate-100"><?= number_format((float) $cosDist, 4) ?></span>
+                        <?php endif; ?>
+                    </div>
+                </div>
+            <?php endforeach; ?>
+        </div>
+
+        <!-- System distribution table (30d) -->
+        <?php if ($systemDistribution !== []): ?>
+        <h3 class="mt-4 text-sm font-semibold text-slate-100">System distribution (30 days)</h3>
+        <div class="mt-2 table-shell">
+            <table class="table-ui">
+                <thead><tr class="border-b border-border/70 text-xs text-muted uppercase">
+                    <th class="px-3 py-2 text-left">System</th>
+                    <th class="px-3 py-2 text-left">Region</th>
+                    <th class="px-3 py-2 text-right">Security</th>
+                    <th class="px-3 py-2 text-right">Battles</th>
+                    <th class="px-3 py-2 text-right">Share</th>
+                    <th class="px-3 py-2 text-left" style="width:120px"></th>
+                </tr></thead>
+                <tbody>
+                <?php foreach ($systemDistribution as $sd): ?>
+                    <?php
+                        $sec = (float) ($sd['security'] ?? 0);
+                        $secColor = $sec >= 0.5 ? 'text-green-400' : ($sec >= 0.1 ? 'text-yellow-400' : 'text-red-400');
+                        $shareRatio = (float) ($sd['ratio'] ?? 0);
+                    ?>
+                    <tr class="border-b border-border/40">
+                        <td class="px-3 py-2 text-sm"><?= htmlspecialchars((string) ($sd['system_name'] ?? ''), ENT_QUOTES) ?></td>
+                        <td class="px-3 py-2 text-sm text-muted"><?= htmlspecialchars((string) ($sd['region_name'] ?? ''), ENT_QUOTES) ?></td>
+                        <td class="px-3 py-2 text-right text-sm <?= $secColor ?>"><?= number_format($sec, 1) ?></td>
+                        <td class="px-3 py-2 text-right text-sm"><?= (int) ($sd['battle_count'] ?? 0) ?></td>
+                        <td class="px-3 py-2 text-right text-sm"><?= number_format($shareRatio * 100, 1) ?>%</td>
+                        <td class="px-3 py-2"><?= ci_progress_bar($shareRatio, 'bg-cyan-500') ?></td>
+                    </tr>
+                <?php endforeach; ?>
+                </tbody>
+            </table>
+        </div>
+        <?php endif; ?>
+
+        <!-- Neo4j movement graph data -->
+        <?php if (is_array($neo4jMovement) && !empty($neo4jMovement['co_located_characters'])): ?>
+        <h3 class="mt-4 text-sm font-semibold text-slate-100">Co-located characters (Neo4j)</h3>
+        <p class="mt-1 text-xs text-muted">Characters frequently seen in the same battle locations (3+ shared battles).</p>
+        <div class="mt-2 flex flex-wrap gap-2">
+            <?php foreach ($neo4jMovement['co_located_characters'] as $cl): ?>
+                <a href="?character_id=<?= (int) ($cl['character_id'] ?? 0) ?>" class="inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs bg-slate-700/60 text-slate-300 hover:bg-slate-600/60">
+                    Character #<?= (int) ($cl['character_id'] ?? 0) ?>
+                    <span class="text-muted">(<?= (int) ($cl['shared_battles'] ?? 0) ?> battles)</span>
+                </a>
+            <?php endforeach; ?>
+        </div>
+        <?php endif; ?>
+
         <?php endif; ?>
 
         <?php if ($copresenceSignals !== []): ?>
