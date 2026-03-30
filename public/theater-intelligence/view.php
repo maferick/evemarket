@@ -356,11 +356,20 @@ if ($viewSnapshot !== null && !$pendingLock) {
         $rawSide = (string) ($row['side'] ?? '');
         $side = $fleetSideMap[$rawSide] ?? 'third_party';
         if (!isset($sidePanels[$side])) continue;
+        $shipTypeId = (int) ($row['ship_type_id'] ?? 0);
+        $shipName = (string) ($row['ship_name'] ?? 'Unknown Hull');
+        $normalizedShipName = strtolower(trim($shipName));
+        $isCapsuleHull = in_array($shipTypeId, [670, 33328], true)
+            || str_contains($normalizedShipName, 'capsule')
+            || str_contains($normalizedShipName, 'pod');
+        if ($isCapsuleHull) {
+            continue;
+        }
         $pilots = (int) ($row['pilot_count'] ?? 0);
         $sidePanels[$side]['ship_pilots'] += $pilots;
         $sidePanels[$side]['ships'][] = [
-            'name' => (string) ($row['ship_name'] ?? 'Unknown Hull'),
-            'type_id' => (int) ($row['ship_type_id'] ?? 0),
+            'name' => $shipName,
+            'type_id' => $shipTypeId,
             'pilots' => $pilots,
         ];
     }
