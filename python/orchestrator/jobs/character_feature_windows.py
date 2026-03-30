@@ -123,14 +123,14 @@ def _fetch_org_transitions(
     params: list[Any] = list(character_ids)
     where_cutoff = ""
     if cutoff:
-        where_cutoff = "AND event_date >= %s"
+        where_cutoff = "AND event_at >= %s"
         params.append(cutoff)
     rows = db.fetch_all(
         f"""
         SELECT
             character_id,
-            SUM(CASE WHEN event_type = 'corp_change' THEN 1 ELSE 0 END) AS corp_transitions,
-            SUM(CASE WHEN event_type = 'alliance_change' THEN 1 ELSE 0 END) AS alliance_transitions
+            SUM(CASE WHEN event_type = 'joined' THEN 1 ELSE 0 END) AS corp_transitions,
+            SUM(CASE WHEN event_type = 'departed' THEN 1 ELSE 0 END) AS alliance_transitions
         FROM character_org_history_events
         WHERE character_id IN ({placeholders})
           {where_cutoff}
