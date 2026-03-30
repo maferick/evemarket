@@ -3039,7 +3039,7 @@ INSERT INTO sync_schedules (
     ('compute_graph_sync', 0, 10, 600, 1020, 17, 'normal', 'single', 'python', 420, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
     ('compute_graph_sync_doctrine_dependency', 1, 10, 600, 1080, 18, 'normal', 'single', 'python', 420, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
     ('compute_graph_sync_battle_intelligence', 1, 10, 600, 1140, 19, 'normal', 'single', 'python', 420, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
-    ('compute_graph_derived_relationships', 0, 10, 600, 1200, 20, 'normal', 'single', 'python', 420, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
+    ('compute_graph_derived_relationships', 1, 10, 600, 1200, 20, 'normal', 'single', 'python', 420, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
     ('compute_graph_insights', 0, 10, 600, 1230, 20, 'normal', 'single', 'python', 420, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
     ('compute_graph_prune', 1, 15, 900, 1240, 20, 'normal', 'single', 'python', 420, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
     ('compute_graph_topology_metrics', 1, 15, 900, 1245, 20, 'normal', 'single', 'python', 420, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
