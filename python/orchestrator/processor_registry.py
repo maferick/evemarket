@@ -62,6 +62,7 @@ from .jobs.graph_universe_sync import run_graph_universe_sync
 from .jobs.graph_pipeline import run_compute_graph_sync_killmail_entities, run_graph_model_audit
 from .jobs.compute_alliance_dossiers import run_compute_alliance_dossiers
 from .jobs.compute_threat_corridors import run_compute_threat_corridors
+from .jobs.cache_expiry_cleanup_sync import run_cache_expiry_cleanup_sync
 
 
 def _php_bridge(cfg: dict[str, Any]) -> PhpBridge:
@@ -130,6 +131,7 @@ PYTHON_SYNC_PROCESSOR_JOB_KEYS: set[str] = {
     "esi_alliance_history_sync",
     "entity_metadata_resolve_sync",
     "evewho_enrichment_sync",
+    "cache_expiry_cleanup_sync",
 }
 PYTHON_PROCESSOR_JOB_KEYS: set[str] = PYTHON_COMPUTE_PROCESSOR_JOB_KEYS | PYTHON_SYNC_PROCESSOR_JOB_KEYS
 
@@ -200,6 +202,8 @@ _PROCESSOR_DISPATCH: dict[str, tuple] = {
     "compute_threat_corridors": (run_compute_threat_corridors, lambda db, cfg: (db, neo4j_runtime(cfg))),
     # Graph audit
     "graph_model_audit": (run_graph_model_audit, lambda db, cfg: (db, neo4j_runtime(cfg))),
+    # Maintenance
+    "cache_expiry_cleanup_sync": (run_cache_expiry_cleanup_sync, lambda db, cfg: (db,)),
 }
 
 
