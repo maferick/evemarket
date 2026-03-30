@@ -42,6 +42,10 @@ try {
         python_scheduler_bridge_output(['ok' => true, 'context' => python_bridge_killmail_backfill_context()]);
     }
 
+    if ($action === 'killmail-full-history-backfill-context') {
+        python_scheduler_bridge_output(['ok' => true, 'context' => python_bridge_killmail_full_history_backfill_context()]);
+    }
+
     if ($action === 'update-setting') {
         $input = python_scheduler_bridge_read_stdin_json();
         $key = trim((string) ($input['key'] ?? ''));
@@ -125,7 +129,8 @@ try {
             ),
             static fn (array $row): bool => $row !== []
         ));
-        $result = python_bridge_process_killmail_batch($payloads);
+        $skipEntityFilter = (bool) ($input['skip_entity_filter'] ?? false);
+        $result = python_bridge_process_killmail_batch($payloads, $skipEntityFilter);
         python_scheduler_bridge_output(['ok' => true, 'result' => $result]);
     }
 
