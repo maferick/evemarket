@@ -326,10 +326,15 @@ Target files:
 - update: `python/orchestrator/esi_rate_limiter.py`
 - update: ESI jobs/adapters to use gateway
 
-### Phase 2 — remove PHP ESI execution
-1. Decommission PHP direct ESI callsites in `src/functions.php`.
-2. Route PHP to Python-produced data only (Redis first, MariaDB fallback).
+### Phase 2 — remove PHP ESI execution (revised)
+1. Decommission PHP direct ESI callsites in `src/functions.php` for automated sync.
+2. Route PHP to Python-produced data only (Redis first, MariaDB fallback) for
+   market/killmail data flows.
 3. Add schema migrations for durable ESI endpoint/rate/pagination audit tables.
+4. **Entity resolution exception:** PHP calls ESI's public
+   `POST /latest/universe/names/` synchronously on cache miss via
+   `esi_universe_names_fetch()` for immediate results. Falls back to
+   async pending queue if ESI is unreachable.
 
 ### Phase 3 — queue/rate hardening
 1. Freshness-driven scheduling (Expires-aware next due).
@@ -388,12 +393,16 @@ All four phases have been implemented:
 - `esi_endpoint_state`, `esi_rate_limit_observations`, `esi_pagination_consistency_events` audit tables
 - All ESI jobs updated to use gateway when Redis is enabled
 
-### Phase 2 — PHP ESI call removal ✓
-- `esi_entity_resolver.py` — Native Python entity resolution (replaces PHP bridge ESI calls)
+### Phase 2 — PHP ESI call removal ✓ (revised: immediate entity resolution restored)
+- `esi_entity_resolver.py` — Native Python entity resolution (background resolver)
 - `EsiClient.post()` / `EsiGateway.post()` — POST support for /universe/names/, /universe/ids/
-- 8 PHP ESI functions replaced with cache reads + async queue
+- 8 PHP ESI market/sync functions replaced with cache reads
 - NPC station lookups use local `ref_npc_stations` table
 - ~590 lines of PHP ESI market sync code removed
+- **Entity resolution restored to synchronous:** `esi_universe_names_fetch()`
+  calls ESI's public `POST /latest/universe/names/` on cache miss so the
+  requesting process gets real data immediately (10s timeout). Falls back
+  to async pending queue only when ESI is unreachable.
 
 ### Phase 3 — Queue/rate hardening ✓
 - `scheduler_pressure.py` — Pressure state + ESI freshness calculations
@@ -406,9 +415,16 @@ All four phases have been implemented:
   `sync_alliance_structure_orders`, `sync_market_hub_current_orders`,
   `market_order_page_canonical_rows`, `killmail_entity_public_endpoint`
 
-### Accepted PHP ESI exceptions (permanent)
-Three authenticated ESI callsites remain in PHP because they require synchronous
-user feedback with OAuth tokens for structure docking rights verification:
-- `esi_alliance_structure_metadata()` — first-time structure setup
-- `esi_structure_search()` — settings UI structure search (docking rights)
-- `esi_alliance_and_corporation_search()` — settings UI entity autocomplete
+### Accepted PHP ESI callsites (permanent)
+Five callsites in PHP make direct ESI requests:
+
+| Function | Endpoint | Auth | Purpose |
+|----------|----------|------|---------|
+| `esi_universe_names_fetch()` | `POST /latest/universe/names/` | Public | Immediate entity resolution on cache miss |
+| `esi_alliance_structure_metadata()` | `/universe/structures/{id}/` | OAuth | First-time structure setup (docking rights) |
+| `esi_structure_search()` | `/characters/{id}/search/?categories=structure` | OAuth | Settings UI structure search |
+| `esi_alliance_and_corporation_search()` | `/characters/{id}/search/?categories=alliance,corporation` | OAuth | Settings UI entity autocomplete |
+| `doctrine_search_inventory_type_esi()` | `/characters/{id}/search/?categories=inventory_type` | OAuth | Doctrine editor item type autocomplete |
+
+The authenticated callsites are user-initiated (settings pages only).
+`esi_universe_names_fetch()` is invoked automatically on cache miss.

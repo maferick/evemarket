@@ -98,6 +98,8 @@
 - Python is the **only** runtime for background processing
 - Scheduler definitions in PHP are **metadata-only**
 - No logic duplication between runtimes
+- PHP may call ESI's public `/universe/names/` endpoint synchronously on
+  cache miss for immediate entity resolution (see [Caching](caching.md))
 
 ---
 

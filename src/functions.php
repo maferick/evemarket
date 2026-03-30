@@ -9988,17 +9988,84 @@ function killmail_entity_cache_is_current(array $row): bool
 
 function killmail_entity_network_resolve(array $missingByType): void
 {
-    // Phase 2: no direct ESI calls from PHP.
-    // Queue all missing entities as pending in entity_metadata_cache.
-    // Python's entity_metadata_resolve_sync job will resolve them asynchronously
-    // via the ESI gateway with proper rate limiting and compliance.
+    $allIds = [];
     foreach (['alliance', 'corporation', 'character'] as $type) {
         $ids = array_values(array_unique(array_filter(
             array_map(static fn (mixed $id): int => (int) $id, (array) ($missingByType[$type] ?? [])),
             static fn (int $id): bool => $id > 0
         )));
+        foreach ($ids as $id) {
+            $allIds[$id] = true;
+        }
+    }
+
+    if ($allIds === []) {
+        return;
+    }
+
+    $idsToResolve = array_keys($allIds);
+
+    // Attempt immediate ESI fetch. The /universe/names/ endpoint is public
+    // (no auth required) and accepts up to 1000 IDs per request.
+    $resolved = esi_universe_names_fetch($idsToResolve);
+
+    if ($resolved === null) {
+        // ESI is unreachable — fall back to marking pending so the background
+        // Python job can pick them up when ESI recovers.
+        foreach (['alliance', 'corporation', 'character'] as $type) {
+            $ids = array_values(array_unique(array_filter(
+                array_map(static fn (mixed $id): int => (int) $id, (array) ($missingByType[$type] ?? [])),
+                static fn (int $id): bool => $id > 0
+            )));
+            if ($ids !== []) {
+                db_entity_metadata_cache_mark_pending($type, $ids);
+            }
+        }
+        return;
+    }
+
+    // Upsert resolved names into entity_metadata_cache.
+    $resolvedIds = [];
+    $upserts = [];
+    $now = gmdate('Y-m-d H:i:s');
+    $expiresAt = gmdate('Y-m-d H:i:s', time() + 86400); // 24 hours
+
+    foreach ($resolved as $entry) {
+        $entityId = (int) ($entry['id'] ?? 0);
+        $name = trim((string) ($entry['name'] ?? ''));
+        $category = strtolower(trim((string) ($entry['category'] ?? '')));
+
+        if ($entityId <= 0 || $name === '' || !in_array($category, ['alliance', 'corporation', 'character'], true)) {
+            continue;
+        }
+
+        $resolvedIds[$entityId] = true;
+        $upserts[] = [
+            'entity_type' => $category,
+            'entity_id' => $entityId,
+            'entity_name' => $name,
+            'image_url' => killmail_entity_image_url($category, $entityId),
+            'metadata_json' => null,
+            'source_system' => 'esi',
+            'resolution_status' => 'resolved',
+            'expires_at' => $expiresAt,
+            'resolved_at' => $now,
+            'last_error_message' => null,
+        ];
+    }
+
+    if ($upserts !== []) {
+        db_entity_metadata_cache_upsert($upserts);
+    }
+
+    // Mark any IDs that ESI didn't return (invalid/deleted entities) as failed.
+    foreach (['alliance', 'corporation', 'character'] as $type) {
+        $ids = array_values(array_unique(array_filter(
+            array_map(static fn (mixed $id): int => (int) $id, (array) ($missingByType[$type] ?? [])),
+            static fn (int $id): bool => $id > 0 && !isset($resolvedIds[$id])
+        )));
         if ($ids !== []) {
-            db_entity_metadata_cache_mark_pending($type, $ids);
+            db_entity_metadata_cache_mark_pending($type, $ids, 'ESI returned no result for this entity');
         }
     }
 }
@@ -10032,13 +10099,25 @@ function killmail_entity_resolve_batch(array $requests, bool $allowNetworkFallba
                 continue;
             }
 
-            if ($allowNetworkFallback && !killmail_entity_cache_is_current($row)) {
+            if (!killmail_entity_cache_is_current($row)) {
                 $missingByType[$type][] = $id;
             }
         }
     }
 
-    if ($allowNetworkFallback) {
+    // Always attempt immediate ESI fetch for missing/stale entities.
+    // esi_universe_names_fetch() inside killmail_entity_network_resolve() will
+    // return the data synchronously while the caller waits. If ESI is down it
+    // falls back to marking them pending for the background Python job.
+    $hasMissing = false;
+    foreach ($missingByType as $ids) {
+        if ($ids !== []) {
+            $hasMissing = true;
+            break;
+        }
+    }
+
+    if ($hasMissing) {
         killmail_entity_network_resolve($missingByType);
         $cacheRowsByType = killmail_entity_cache_rows_by_type($normalized);
     }
@@ -16731,6 +16810,70 @@ function esi_user_agent(): string
         : 'SupplyCore supplycore/1.0 (+https://github.com/cvweiss/supplycore)';
 }
 
+/**
+ * Fetch entity names from ESI's /universe/names/ endpoint (public, no auth).
+ *
+ * Accepts up to 1000 IDs. Returns an array of [{id, name, category}] on
+ * success, or null if ESI is unreachable / returned an error so the caller
+ * can fall back gracefully.
+ */
+function esi_universe_names_fetch(array $ids): ?array
+{
+    $ids = array_values(array_unique(array_filter(
+        array_map(static fn (mixed $id): int => (int) $id, $ids),
+        static fn (int $id): bool => $id > 0
+    )));
+
+    if ($ids === []) {
+        return [];
+    }
+
+    // ESI accepts max 1000 IDs per request — chunk if needed.
+    $results = [];
+    foreach (array_chunk($ids, 1000) as $chunk) {
+        try {
+            $response = http_post_json(
+                'https://esi.evetech.net/latest/universe/names/?datasource=tranquility',
+                [
+                    'Accept: application/json',
+                    'User-Agent: ' . esi_user_agent(),
+                ],
+                $chunk,
+                10 // 10 second timeout — caller is waiting
+            );
+
+            $status = (int) ($response['status'] ?? 0);
+
+            if ($status >= 500 || $status === 0) {
+                // ESI is down — signal caller to use fallback.
+                error_log('[esi-fetch] ESI /universe/names/ returned status ' . $status . ' — falling back to async resolution');
+                return null;
+            }
+
+            if ($status === 404) {
+                // All IDs were invalid — not an error, just no results for this chunk.
+                continue;
+            }
+
+            if ($status >= 400) {
+                error_log('[esi-fetch] ESI /universe/names/ returned status ' . $status);
+                return null;
+            }
+
+            if (is_array($response['json'] ?? null)) {
+                foreach ($response['json'] as $entry) {
+                    $results[] = $entry;
+                }
+            }
+        } catch (Throwable $e) {
+            error_log('[esi-fetch] ESI /universe/names/ request failed: ' . $e->getMessage());
+            return null;
+        }
+    }
+
+    return $results;
+}
+
 function esi_lookup_context(array $requiredScopes = []): array
 {
     $enabled = get_setting('esi_enabled', '0') === '1';
@@ -16815,14 +16958,59 @@ function esi_universe_names_lookup(array $ids): array
         }
     }
 
-    // Queue unresolved IDs for async Python resolution.
+    // Fetch unresolved IDs immediately from ESI while the caller waits.
     $unresolvedIds = array_values(array_filter($queryIds, static fn (int $id): bool => !isset($resolvedIds[$id])));
     if ($unresolvedIds !== []) {
-        try {
-            // Mark as pending for each possible type — the resolver will determine the actual type.
-            db_entity_metadata_cache_mark_pending('character', $unresolvedIds);
-        } catch (Throwable) {
-            // Non-fatal.
+        $fetched = esi_universe_names_fetch($unresolvedIds);
+
+        if ($fetched !== null) {
+            // ESI responded — upsert into cache and add to results.
+            $upserts = [];
+            $now = gmdate('Y-m-d H:i:s');
+            $expiresAt = gmdate('Y-m-d H:i:s', time() + 86400);
+
+            foreach ($fetched as $entry) {
+                $entityId = (int) ($entry['id'] ?? 0);
+                $name = trim((string) ($entry['name'] ?? ''));
+                $category = strtolower(trim((string) ($entry['category'] ?? '')));
+
+                if ($entityId <= 0 || $name === '') {
+                    continue;
+                }
+
+                $results[] = [
+                    'id' => $entityId,
+                    'name' => $name,
+                    'category' => $category,
+                ];
+                $resolvedIds[$entityId] = true;
+
+                if (in_array($category, ['alliance', 'corporation', 'character'], true)) {
+                    $upserts[] = [
+                        'entity_type' => $category,
+                        'entity_id' => $entityId,
+                        'entity_name' => $name,
+                        'image_url' => killmail_entity_image_url($category, $entityId),
+                        'metadata_json' => null,
+                        'source_system' => 'esi',
+                        'resolution_status' => 'resolved',
+                        'expires_at' => $expiresAt,
+                        'resolved_at' => $now,
+                        'last_error_message' => null,
+                    ];
+                }
+            }
+
+            if ($upserts !== []) {
+                db_entity_metadata_cache_upsert($upserts);
+            }
+        } else {
+            // ESI is down — fall back to marking pending for background resolution.
+            try {
+                db_entity_metadata_cache_mark_pending('character', $unresolvedIds);
+            } catch (Throwable) {
+                // Non-fatal.
+            }
         }
     }
 
@@ -16952,14 +17140,63 @@ function killmail_public_entity_lookup_by_id(int $id, ?string $type = null): arr
         }
     }
 
-    // Queue for async Python resolution if nothing found.
+    // Fetch immediately from ESI if nothing found in cache.
     if (empty($results)) {
-        try {
-            foreach ($typesToCheck as $entityType) {
-                db_entity_metadata_cache_mark_pending($entityType, [$id]);
+        $fetched = esi_universe_names_fetch([$id]);
+
+        if ($fetched !== null) {
+            $upserts = [];
+            $now = gmdate('Y-m-d H:i:s');
+            $expiresAt = gmdate('Y-m-d H:i:s', time() + 86400);
+
+            foreach ($fetched as $entry) {
+                $entityId = (int) ($entry['id'] ?? 0);
+                $name = trim((string) ($entry['name'] ?? ''));
+                $category = strtolower(trim((string) ($entry['category'] ?? '')));
+
+                if ($entityId !== $id || $name === '') {
+                    continue;
+                }
+
+                $categoryLabel = ucfirst($category);
+                if ($normalizedType !== null && $categoryLabel !== $normalizedType) {
+                    continue;
+                }
+
+                $results[] = esi_entity_result_shape([
+                    'id' => $entityId,
+                    'name' => $name,
+                    'type' => $categoryLabel,
+                ]);
+
+                if (in_array($category, ['alliance', 'corporation', 'character'], true)) {
+                    $upserts[] = [
+                        'entity_type' => $category,
+                        'entity_id' => $entityId,
+                        'entity_name' => $name,
+                        'image_url' => killmail_entity_image_url($category, $entityId),
+                        'metadata_json' => null,
+                        'source_system' => 'esi',
+                        'resolution_status' => 'resolved',
+                        'expires_at' => $expiresAt,
+                        'resolved_at' => $now,
+                        'last_error_message' => null,
+                    ];
+                }
             }
-        } catch (Throwable) {
-            // Non-fatal.
+
+            if ($upserts !== []) {
+                db_entity_metadata_cache_upsert($upserts);
+            }
+        } else {
+            // ESI is down — fall back to marking pending for background resolution.
+            try {
+                foreach ($typesToCheck as $entityType) {
+                    db_entity_metadata_cache_mark_pending($entityType, [$id]);
+                }
+            } catch (Throwable) {
+                // Non-fatal.
+            }
         }
     }
 
