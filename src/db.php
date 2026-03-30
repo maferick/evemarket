@@ -35,9 +35,13 @@ function supplycore_base_config(): array
 
     $localPath = __DIR__ . '/config/local.php';
     if (is_file($localPath)) {
-        $local = (static fn(string $p): mixed => require $p)($localPath);
-        if (is_array($local)) {
-            $config = array_replace_recursive($config, $local);
+        try {
+            $local = (static fn(string $p): mixed => require $p)($localPath);
+            if (is_array($local)) {
+                $config = array_replace_recursive($config, $local);
+            }
+        } catch (\Throwable $e) {
+            error_log('supplycore_base_config: failed to load local.php: ' . $e->getMessage());
         }
     }
 
