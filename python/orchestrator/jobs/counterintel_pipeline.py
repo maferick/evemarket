@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import bisect
 from collections import defaultdict
 from datetime import UTC, datetime, timedelta
 import json
+import math
+import statistics
 import time
 import urllib.error
 import urllib.request
@@ -29,6 +32,44 @@ def _safe_div(numerator: float, denominator: float, default: float = 0.0) -> flo
     if denominator <= 0:
         return default
     return numerator / denominator
+
+
+def _cohort_normalize(evidence_rows: list[dict[str, Any]]) -> None:
+    """Enrich evidence rows in-place with cohort statistics (z_score, mad_score, cohort_percentile, confidence_flag)."""
+    by_key: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in evidence_rows:
+        if row.get("evidence_value") is not None:
+            by_key[row["evidence_key"]].append(row)
+
+    for key, rows in by_key.items():
+        values = [float(r["evidence_value"]) for r in rows]
+        n = len(values)
+        if n == 0:
+            continue
+
+        mean = statistics.mean(values)
+        std = statistics.pstdev(values) if n > 1 else 0.0
+        median = statistics.median(values)
+        diffs = [abs(v - median) for v in values]
+        mad = statistics.median(diffs) if diffs else 0.0
+        sorted_vals = sorted(values)
+
+        for row in rows:
+            raw = float(row["evidence_value"])
+            dev = raw - mean
+            row["expected_value"] = round(mean, 6)
+            row["deviation_value"] = round(dev, 6)
+            row["z_score"] = round(dev / std, 6) if std > 0 else 0.0
+            row["mad_score"] = round((raw - median) / (mad * 1.4826), 6) if mad > 0 else 0.0
+            row["cohort_percentile"] = round(
+                bisect.bisect_right(sorted_vals, raw) / max(1, n), 6
+            )
+            if n >= 10:
+                row["confidence_flag"] = "high"
+            elif n >= 5:
+                row["confidence_flag"] = "medium"
+            else:
+                row["confidence_flag"] = "low"
 
 
 def _sync_state_get(db: SupplyCoreDb, dataset_key: str) -> dict[str, Any] | None:
@@ -806,14 +847,14 @@ def run_compute_counterintel_pipeline(
                     }
                 )
                 character_evidence_rows = [
-                    {"character_id": character_id, "evidence_key": "anomalous_battle_presence_count", "evidence_value": float(anomaly_hits), "evidence_text": f"present in {anomaly_hits}/{anomalous_battle_denominator} anomalous large battle-sides", "evidence_payload_json": numerator_denominator_payload},
-                    {"character_id": character_id, "evidence_key": "anomalous_presence_rate", "evidence_value": anomalous_rate, "evidence_text": f"anomalous presence rate {anomalous_rate:.3f} ({anomaly_hits}/{anomalous_battle_denominator}) vs control {control_rate:.3f} ({control_hits}/{control_battle_denominator})", "evidence_payload_json": numerator_denominator_payload},
-                    {"character_id": character_id, "evidence_key": "presence_rate_delta", "evidence_value": presence_delta, "evidence_text": f"presence delta {presence_delta:.3f}, lift {presence_lift:.3f}", "evidence_payload_json": numerator_denominator_payload},
-                    {"character_id": character_id, "evidence_key": "enemy_sustain_lift", "evidence_value": enemy_sustain_lift, "evidence_text": f"enemy sustain lift {enemy_sustain_lift:.3f} when present", "evidence_payload_json": survival_lift_payload},
-                    {"character_id": character_id, "evidence_key": "enemy_same_hull_survival_lift_detail", "evidence_value": enemy_sustain_lift, "evidence_text": f"same-hull enemy survival lift {enemy_sustain_lift:.3f} across {len(sustain_lifts)} samples (min {enemy_sustain_min:.3f}, max {enemy_sustain_max:.3f})", "evidence_payload_json": survival_lift_payload},
-                    {"character_id": character_id, "evidence_key": "graph_copresence_cluster_proximity", "evidence_value": cluster_proximity, "evidence_text": f"graph bridge {bridge:.3f}, anomalous co-presence density {anomalous_rate:.3f}, cluster proximity {cluster_proximity:.3f}", "evidence_payload_json": graph_payload},
-                    {"character_id": character_id, "evidence_key": "org_history_movement_180d", "evidence_value": corp_hop_frequency, "evidence_text": f"org movement over 180d: {corp_hops} hops, {short_hops} short-tenure, {hostile_hops} hostile-adjacent, ratio {short_ratio:.3f}", "evidence_payload_json": org_history_payload},
-                    {"character_id": character_id, "evidence_key": "repeatability_across_battles_windows", "evidence_value": repeatability, "evidence_text": f"repeatability {repeatability:.3f}: {repeatability_distinct_battles} anomalous battles across {repeatability_weeks} weekly and {repeatability_months} monthly windows", "evidence_payload_json": repeatability_payload},
+                    {"character_id": character_id, "evidence_key": "anomalous_battle_presence_count", "window_label": "all_time", "evidence_value": float(anomaly_hits), "evidence_text": f"present in {anomaly_hits}/{anomalous_battle_denominator} anomalous large battle-sides", "evidence_payload_json": numerator_denominator_payload},
+                    {"character_id": character_id, "evidence_key": "anomalous_presence_rate", "window_label": "all_time", "evidence_value": anomalous_rate, "evidence_text": f"anomalous presence rate {anomalous_rate:.3f} ({anomaly_hits}/{anomalous_battle_denominator}) vs control {control_rate:.3f} ({control_hits}/{control_battle_denominator})", "evidence_payload_json": numerator_denominator_payload},
+                    {"character_id": character_id, "evidence_key": "presence_rate_delta", "window_label": "all_time", "evidence_value": presence_delta, "evidence_text": f"presence delta {presence_delta:.3f}, lift {presence_lift:.3f}", "evidence_payload_json": numerator_denominator_payload},
+                    {"character_id": character_id, "evidence_key": "enemy_sustain_lift", "window_label": "all_time", "evidence_value": enemy_sustain_lift, "evidence_text": f"enemy sustain lift {enemy_sustain_lift:.3f} when present", "evidence_payload_json": survival_lift_payload},
+                    {"character_id": character_id, "evidence_key": "enemy_same_hull_survival_lift_detail", "window_label": "all_time", "evidence_value": enemy_sustain_lift, "evidence_text": f"same-hull enemy survival lift {enemy_sustain_lift:.3f} across {len(sustain_lifts)} samples (min {enemy_sustain_min:.3f}, max {enemy_sustain_max:.3f})", "evidence_payload_json": survival_lift_payload},
+                    {"character_id": character_id, "evidence_key": "graph_copresence_cluster_proximity", "window_label": "all_time", "evidence_value": cluster_proximity, "evidence_text": f"graph bridge {bridge:.3f}, anomalous co-presence density {anomalous_rate:.3f}, cluster proximity {cluster_proximity:.3f}", "evidence_payload_json": graph_payload},
+                    {"character_id": character_id, "evidence_key": "org_history_movement_180d", "window_label": "180d", "evidence_value": corp_hop_frequency, "evidence_text": f"org movement over 180d: {corp_hops} hops, {short_hops} short-tenure, {hostile_hops} hostile-adjacent, ratio {short_ratio:.3f}", "evidence_payload_json": org_history_payload},
+                    {"character_id": character_id, "evidence_key": "repeatability_across_battles_windows", "window_label": "all_time", "evidence_value": repeatability, "evidence_text": f"repeatability {repeatability:.3f}: {repeatability_distinct_battles} anomalous battles across {repeatability_weeks} weekly and {repeatability_months} monthly windows", "evidence_payload_json": repeatability_payload},
                 ]
                 evidence_rows.extend(character_evidence_rows)
                 score_rows.append({"character_id": character_id, "review_priority_score": review_score, "confidence_score": min(1.0, _safe_div(float(anomaly_hits + control_hits), 8.0, 0.0)), "evidence_count": len(character_evidence_rows)})
@@ -821,6 +862,8 @@ def run_compute_counterintel_pipeline(
             sorted_scores = sorted([float(row["review_priority_score"]) for row in score_rows])
             for row in score_rows:
                 row["percentile_rank"] = _safe_div(float(sum(1 for x in sorted_scores if x <= float(row["review_priority_score"]))), float(max(1, len(sorted_scores))), 0.0)
+
+            _cohort_normalize(evidence_rows)
 
             if not dry_run:
                 with db.transaction() as (_, cursor_db):
@@ -916,15 +959,30 @@ def run_compute_counterintel_pipeline(
                         cursor_db.execute(
                             """
                             INSERT INTO character_counterintel_evidence (
-                                character_id, evidence_key, evidence_value, evidence_text, evidence_payload_json, computed_at
-                            ) VALUES (%s, %s, %s, %s, %s, %s)
+                                character_id, evidence_key, window_label,
+                                evidence_value, expected_value, deviation_value,
+                                z_score, mad_score, cohort_percentile, confidence_flag,
+                                evidence_text, evidence_payload_json, computed_at
+                            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                             ON DUPLICATE KEY UPDATE
                                 evidence_value = VALUES(evidence_value),
+                                expected_value = VALUES(expected_value),
+                                deviation_value = VALUES(deviation_value),
+                                z_score = VALUES(z_score),
+                                mad_score = VALUES(mad_score),
+                                cohort_percentile = VALUES(cohort_percentile),
+                                confidence_flag = VALUES(confidence_flag),
                                 evidence_text = VALUES(evidence_text),
                                 evidence_payload_json = VALUES(evidence_payload_json),
                                 computed_at = VALUES(computed_at)
                             """,
-                            (row["character_id"], row["evidence_key"], row["evidence_value"], row["evidence_text"], row["evidence_payload_json"], computed_at),
+                            (
+                                row["character_id"], row["evidence_key"], row.get("window_label", "all_time"),
+                                row["evidence_value"], row.get("expected_value"), row.get("deviation_value"),
+                                row.get("z_score"), row.get("mad_score"), row.get("cohort_percentile"),
+                                row.get("confidence_flag", "low"),
+                                row["evidence_text"], row["evidence_payload_json"], computed_at,
+                            ),
                         )
                     if battles:
                         for battle in battles:

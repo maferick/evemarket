@@ -15022,10 +15022,13 @@ function db_battle_intelligence_character_evidence(int $characterId, int $limit 
     $safeLimit = max(1, min(200, $limit));
 
     return db_select(
-        'SELECT character_id, evidence_key, evidence_value, evidence_text, evidence_payload_json, computed_at
+        'SELECT character_id, evidence_key, window_label, evidence_value,
+                expected_value, deviation_value, z_score, mad_score,
+                cohort_percentile, confidence_flag,
+                evidence_text, evidence_payload_json, computed_at
          FROM character_counterintel_evidence
          WHERE character_id = ?
-         ORDER BY COALESCE(ABS(evidence_value), 0) DESC, evidence_key ASC
+         ORDER BY COALESCE(ABS(deviation_value), COALESCE(ABS(evidence_value), 0)) DESC, evidence_key ASC, window_label ASC
          LIMIT ' . $safeLimit,
         [$characterId]
     );
