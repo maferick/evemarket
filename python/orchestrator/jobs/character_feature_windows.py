@@ -1,9 +1,14 @@
 """Compute per-character feature snapshots across time windows (7d/30d/90d/lifetime).
 
 Reads battle participation, killmail events, org history, and graph metrics
-to produce a canonical feature row per character per window.  Histogram data
-(hour-of-day, day-of-week) is stored in a companion table to keep the main
-feature rows compact.
+(materialized from Neo4j by ``compute_graph_topology_metrics``) to produce a
+canonical feature row per character per window.  Histogram data (hour-of-day,
+day-of-week) is stored in a companion table to keep the main feature rows
+compact.
+
+All output is written to MariaDB.  Graph-derived columns (pagerank, bridge
+score, community, etc.) are read from ``character_graph_intelligence`` which is
+already populated from Neo4j by the graph pipeline.
 
 Incremental processing: uses a cursor on ``battle_rollups.battle_id`` to avoid
 reprocessing the full battle history on every run.
@@ -21,7 +26,6 @@ from ..db import SupplyCoreDb
 from ..job_result import JobResult
 from ..job_utils import finish_job_run, start_job_run
 from ..json_utils import json_dumps_safe
-from ..neo4j import Neo4jClient, Neo4jConfig
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -148,13 +152,27 @@ def _fetch_graph_metrics(
     db: SupplyCoreDb,
     character_ids: list[int],
 ) -> dict[int, dict[str, Any]]:
-    """Return latest graph intelligence metrics for the given characters."""
+    """Return Neo4j-derived graph metrics already materialized in MariaDB.
+
+    The ``character_graph_intelligence`` table is populated by
+    ``compute_graph_topology_metrics`` which reads topology data from Neo4j
+    and stores the results in MariaDB.
+    """
     if not character_ids:
         return {}
     placeholders = ",".join(["%s"] * len(character_ids))
     rows = db.fetch_all(
         f"""
-        SELECT character_id, pagerank_score, bridge_score, community_id
+        SELECT
+            character_id,
+            pagerank_score,
+            bridge_score,
+            community_id,
+            co_occurrence_density,
+            anomalous_co_occurrence_density,
+            anomalous_neighbor_density,
+            recurrence_centrality,
+            engagement_avoidance_score
         FROM character_graph_intelligence
         WHERE character_id IN ({placeholders})
         """,
@@ -165,6 +183,11 @@ def _fetch_graph_metrics(
             "pagerank": float(r.get("pagerank_score") or 0),
             "bridge": float(r.get("bridge_score") or 0),
             "community_id": int(r.get("community_id") or 0),
+            "co_occurrence_density": float(r.get("co_occurrence_density") or 0),
+            "anomalous_co_occurrence_density": float(r.get("anomalous_co_occurrence_density") or 0),
+            "anomalous_neighbor_density": float(r.get("anomalous_neighbor_density") or 0),
+            "recurrence_centrality": float(r.get("recurrence_centrality") or 0),
+            "engagement_avoidance_score": float(r.get("engagement_avoidance_score") or 0),
         }
         for r in rows
     }
@@ -273,105 +296,11 @@ def _enrich_co_presence(
 
 
 # ---------------------------------------------------------------------------
-# Neo4j sync — project feature windows onto Character nodes
-# ---------------------------------------------------------------------------
-
-_NEO4J_BATCH_SIZE = 500
-_NEO4J_TIMEOUT = 60
-
-_NEO4J_UPSERT_CYPHER = """
-UNWIND $rows AS row
-MERGE (c:Character {character_id: row.character_id})
-SET c.fw_battles_7d         = toInteger(row.battles_7d),
-    c.fw_battles_30d        = toInteger(row.battles_30d),
-    c.fw_battles_90d        = toInteger(row.battles_90d),
-    c.fw_battles_lifetime   = toInteger(row.battles_lifetime),
-    c.fw_systems_7d         = toInteger(row.systems_7d),
-    c.fw_systems_30d        = toInteger(row.systems_30d),
-    c.fw_systems_90d        = toInteger(row.systems_90d),
-    c.fw_systems_lifetime   = toInteger(row.systems_lifetime),
-    c.fw_associates_7d      = toInteger(row.associates_7d),
-    c.fw_associates_30d     = toInteger(row.associates_30d),
-    c.fw_associates_90d     = toInteger(row.associates_90d),
-    c.fw_associates_lifetime = toInteger(row.associates_lifetime),
-    c.fw_co_presence_7d     = toInteger(row.co_presence_7d),
-    c.fw_co_presence_30d    = toInteger(row.co_presence_30d),
-    c.fw_co_presence_90d    = toInteger(row.co_presence_90d),
-    c.fw_co_presence_lifetime = toInteger(row.co_presence_lifetime),
-    c.fw_corp_transitions_7d  = toInteger(row.corp_transitions_7d),
-    c.fw_corp_transitions_30d = toInteger(row.corp_transitions_30d),
-    c.fw_corp_transitions_90d = toInteger(row.corp_transitions_90d),
-    c.fw_corp_transitions_lifetime = toInteger(row.corp_transitions_lifetime),
-    c.fw_alliance_transitions_30d = toInteger(row.alliance_transitions_30d),
-    c.fw_alliance_transitions_90d = toInteger(row.alliance_transitions_90d),
-    c.fw_alliance_transitions_lifetime = toInteger(row.alliance_transitions_lifetime),
-    c.fw_dominant_region_id = toInteger(row.dominant_region_id),
-    c.fw_dominant_region_ratio = toFloat(row.dominant_region_ratio),
-    c.fw_computed_at        = row.computed_at
-"""
-
-
-def _build_neo4j_rows(
-    character_features: dict[int, dict[str, dict[str, Any]]],
-    computed_at: str,
-) -> list[dict[str, Any]]:
-    """Flatten per-character per-window features into one Neo4j row per character.
-
-    Window-specific columns become ``<metric>_<window>`` properties so each
-    Character node carries the full multi-window snapshot as flat properties.
-    """
-    rows: list[dict[str, Any]] = []
-    for cid, windows in character_features.items():
-        row: dict[str, Any] = {"character_id": cid, "computed_at": computed_at}
-        for wlabel in ("7d", "30d", "90d", "lifetime"):
-            feat = windows.get(wlabel, {})
-            row[f"battles_{wlabel}"] = feat.get("battles_total", 0)
-            row[f"systems_{wlabel}"] = feat.get("unique_systems", 0)
-            row[f"associates_{wlabel}"] = feat.get("recurring_associates", 0)
-            row[f"co_presence_{wlabel}"] = feat.get("co_presence_count", 0)
-            row[f"corp_transitions_{wlabel}"] = feat.get("corp_transitions", 0)
-            row[f"alliance_transitions_{wlabel}"] = feat.get("alliance_transitions", 0)
-        # Dominant region comes from the lifetime window (most representative)
-        lifetime = windows.get("lifetime", {})
-        row["dominant_region_id"] = lifetime.get("dominant_region_id", 0)
-        row["dominant_region_ratio"] = lifetime.get("dominant_region_ratio", 0.0)
-        rows.append(row)
-    return rows
-
-
-def _neo4j_sync_feature_windows(
-    neo4j_raw: dict[str, Any] | None,
-    character_features: dict[int, dict[str, dict[str, Any]]],
-    computed_at: str,
-) -> dict[str, Any]:
-    """Project feature window snapshots onto Character nodes in Neo4j."""
-    if not neo4j_raw:
-        return {"status": "skipped", "reason": "no neo4j config"}
-    if not character_features:
-        return {"status": "skipped", "reason": "no characters"}
-
-    try:
-        neo4j = Neo4jClient(Neo4jConfig.from_dict(neo4j_raw))
-    except Exception as exc:
-        return {"status": "skipped", "reason": f"neo4j init failed: {exc}"}
-
-    rows = _build_neo4j_rows(character_features, computed_at)
-    written = 0
-    for i in range(0, len(rows), _NEO4J_BATCH_SIZE):
-        batch = rows[i : i + _NEO4J_BATCH_SIZE]
-        neo4j.query(_NEO4J_UPSERT_CYPHER, {"rows": batch}, timeout_seconds=_NEO4J_TIMEOUT)
-        written += len(batch)
-
-    return {"status": "success", "characters_synced": written}
-
-
-# ---------------------------------------------------------------------------
 # Main job entry point
 # ---------------------------------------------------------------------------
 
 def run_compute_character_feature_windows(
     db: SupplyCoreDb,
-    neo4j_raw: dict[str, Any] | None = None,
     runtime: dict[str, Any] | None = None,
     *,
     dry_run: bool = False,
@@ -382,7 +311,6 @@ def run_compute_character_feature_windows(
     started = time.perf_counter()
     rows_processed = 0
     rows_written = 0
-    neo4j_results: list[dict[str, Any]] = []
     computed_at = _now_sql()
     now_dt = datetime.now(UTC)
     runtime = runtime or {}
@@ -437,7 +365,7 @@ def run_compute_character_feature_windows(
                 cutoff_str = (now_dt - wdelta).strftime("%Y-%m-%d") if wdelta else None
                 org_by_window[wlabel] = _fetch_org_transitions(db, character_ids, cutoff_str)
 
-            # Fetch graph metrics (window-agnostic snapshot)
+            # Fetch graph metrics — sourced from Neo4j via character_graph_intelligence
             graph_metrics = _fetch_graph_metrics(db, character_ids)
 
             # Compute features per character per window
@@ -463,7 +391,7 @@ def run_compute_character_feature_windows(
             # Enrich co-presence counts
             _enrich_co_presence(character_features, char_battles, battle_chars)
 
-            # Upsert
+            # Upsert to MariaDB
             if not dry_run:
                 with db.transaction() as (_, cur):
                     for cid, windows in character_features.items():
@@ -532,20 +460,12 @@ def run_compute_character_feature_windows(
                                 ),
                             )
 
-            # Sync to Neo4j
-            if not dry_run:
-                neo_result = _neo4j_sync_feature_windows(neo4j_raw, character_features, computed_at)
-            else:
-                neo_result = {"status": "skipped", "reason": "dry-run"}
-            neo4j_results.append(neo_result)
-
             _sync_state_upsert(db, DATASET_KEY, last_battle_id, "success", rows_written)
 
         duration_ms = int((time.perf_counter() - started) * 1000)
-        neo4j_total = sum(r.get("characters_synced", 0) for r in neo4j_results)
         result = JobResult.success(
             job_key=lock_key,
-            summary=f"Computed feature windows across {batch_count} batches, wrote {rows_written} feature rows, synced {neo4j_total} characters to Neo4j.",
+            summary=f"Computed feature windows across {batch_count} batches, wrote {rows_written} feature rows.",
             rows_processed=rows_processed,
             rows_written=0 if dry_run else rows_written,
             duration_ms=duration_ms,
@@ -555,7 +475,6 @@ def run_compute_character_feature_windows(
                 "cursor": last_battle_id,
                 "dry_run": dry_run,
                 "windows": [w[0] for w in WINDOW_DEFS],
-                "neo4j": neo4j_results,
             },
             checkpoint_before=cursor,
             checkpoint_after=last_battle_id,
