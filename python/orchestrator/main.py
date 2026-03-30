@@ -35,6 +35,7 @@ from .rebuild_data_model import main as run_rebuild_data_model
 from .supervisor import run_supervisor
 from .worker_pool import main as run_worker_pool
 from .zkill_worker import main as run_zkill_worker
+from .evewho_alliance_lookup_runner import main as run_evewho_alliance_runner
 from .processor_registry import run_registered_processor, PYTHON_PROCESSOR_JOB_KEYS
 from .jobs.killmail_history_backfill import run_killmail_history_backfill
 from .jobs.killmail_full_history_backfill import run_killmail_full_history_backfill
@@ -62,6 +63,12 @@ def parse_args() -> argparse.Namespace:
     zkill.add_argument("--poll-sleep", type=int, default=10)
     zkill.add_argument("--once", action="store_true")
     zkill.add_argument("--verbose", action="store_true")
+
+    evewho_runner = subparsers.add_parser("evewho-alliance-runner", help="Run the dedicated continuous EveWho alliance lookup runner (uses half the API rate limit)")
+    evewho_runner.add_argument("--app-root", default=str(Path(__file__).resolve().parents[2]))
+    evewho_runner.add_argument("--loop-sleep", type=int, default=30, help="Seconds to sleep between cycles (default: 30)")
+    evewho_runner.add_argument("--once", action="store_true", help="Run one cycle then exit")
+    evewho_runner.add_argument("--verbose", action="store_true")
 
     rebuild = subparsers.add_parser("rebuild-data-model", help="Run the live-progress derived rebuild workflow")
     rebuild.add_argument("--app-root", default=str(Path(__file__).resolve().parents[2]))
@@ -209,6 +216,13 @@ def main() -> int:
         return run_zkill_worker([
             "--app-root", args.app_root,
             "--poll-sleep", str(args.poll_sleep),
+            *( ["--once"] if args.once else [] ),
+            *( ["--verbose"] if args.verbose else [] ),
+        ])
+    if command == "evewho-alliance-runner":
+        return run_evewho_alliance_runner([
+            "--app-root", args.app_root,
+            "--loop-sleep", str(args.loop_sleep),
             *( ["--once"] if args.once else [] ),
             *( ["--verbose"] if args.verbose else [] ),
         ])

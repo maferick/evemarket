@@ -156,8 +156,8 @@ _PROCESSOR_DISPATCH: dict[str, tuple] = {
     "compute_battle_actor_features": (run_compute_battle_actor_features, lambda db, cfg: (db, neo4j_runtime(cfg), battle_runtime(cfg))),
     "compute_suspicion_scores": (run_compute_suspicion_scores, lambda db, cfg: (db, battle_runtime(cfg))),
     "compute_counterintel_pipeline": (run_compute_counterintel_pipeline, lambda db, cfg: (db, neo4j_runtime(cfg), battle_runtime(cfg))),
-    "evewho_enrichment_sync": (run_evewho_enrichment_sync, lambda db, cfg: (db, neo4j_runtime(cfg), battle_runtime(cfg))),
-    "evewho_alliance_member_sync": (run_evewho_alliance_member_sync, lambda db, cfg: (db, neo4j_runtime(cfg), battle_runtime(cfg))),
+    "evewho_enrichment_sync": (run_evewho_enrichment_sync, lambda db, cfg: (db, neo4j_runtime(cfg), {**battle_runtime(cfg), "evewho_rate_limit_requests": 5})),
+    "evewho_alliance_member_sync": (run_evewho_alliance_member_sync, lambda db, cfg: (db, neo4j_runtime(cfg), {**battle_runtime(cfg), "evewho_rate_limit_requests": 5})),
     # Market / supply intelligence jobs
     "compute_buy_all": (run_compute_buy_all, lambda db, cfg: (db,)),
     "compute_signals": (run_compute_signals, lambda db, cfg: (db, influx_runtime(cfg))),

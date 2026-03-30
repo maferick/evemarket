@@ -25,10 +25,22 @@ RETRY_BACKOFF_SECONDS = 2.0
 
 
 class EveWhoAdapter:
-    """Adapter for the EveWho public API with built-in rate limiting and retries."""
+    """Adapter for the EveWho public API with built-in rate limiting and retries.
 
-    def __init__(self, user_agent: str = DEFAULT_USER_AGENT):
+    The ``rate_limit_requests`` parameter controls how many requests this
+    adapter instance may issue per window.  When two processes share the
+    same upstream quota (e.g. a CLI runner and the web worker pool), each
+    should be created with half the global limit so the combined traffic
+    stays within bounds.
+    """
+
+    def __init__(
+        self,
+        user_agent: str = DEFAULT_USER_AGENT,
+        rate_limit_requests: int = RATE_LIMIT_REQUESTS,
+    ):
         self._user_agent = user_agent
+        self._rate_limit_requests = max(1, rate_limit_requests)
         self._request_timestamps: list[float] = []
 
     def _rate_limit_wait(self) -> None:
@@ -36,7 +48,7 @@ class EveWhoAdapter:
         now = time.monotonic()
         cutoff = now - RATE_LIMIT_WINDOW_SECONDS
         self._request_timestamps = [t for t in self._request_timestamps if t > cutoff]
-        if len(self._request_timestamps) >= RATE_LIMIT_REQUESTS:
+        if len(self._request_timestamps) >= self._rate_limit_requests:
             oldest = self._request_timestamps[0]
             sleep_for = (oldest + RATE_LIMIT_WINDOW_SECONDS) - now + 0.1
             if sleep_for > 0:
