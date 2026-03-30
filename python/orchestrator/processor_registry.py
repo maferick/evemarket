@@ -208,7 +208,7 @@ _PROCESSOR_DISPATCH: dict[str, tuple] = {
     # Graph audit
     "graph_model_audit": (run_graph_model_audit, lambda db, cfg: (db, neo4j_runtime(cfg))),
     # Character feature windows
-    "compute_character_feature_windows": (run_compute_character_feature_windows, lambda db, cfg: (db,)),
+    "compute_character_feature_windows": (run_compute_character_feature_windows, lambda db, cfg: (db, neo4j_runtime(cfg))),
     # Maintenance
     "cache_expiry_cleanup_sync": (run_cache_expiry_cleanup_sync, lambda db, cfg: (db,)),
 }
