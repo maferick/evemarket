@@ -1046,11 +1046,16 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--full-reset", action="store_true")
     parser.add_argument("--enable-partitioned-history", dest="enable_partitioned_history", action="store_true", default=True)
     parser.add_argument("--disable-partitioned-history", dest="enable_partitioned_history", action="store_false")
+    parser.add_argument("--verbose", action="store_true")
     return parser.parse_args(argv)
 
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv or sys.argv[1:])
+    from .logging_utils import configure_logging
+    from .config import load_php_runtime_config
+    config = load_php_runtime_config(Path(args.app_root).resolve())
+    configure_logging(verbose=args.verbose, log_file=config.log_file)
     runner = RebuildRunner(Path(args.app_root), args)
     return runner.run()
 

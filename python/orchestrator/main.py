@@ -69,6 +69,7 @@ def parse_args() -> argparse.Namespace:
     rebuild.add_argument("--full-reset", action="store_true")
     rebuild.add_argument("--enable-partitioned-history", dest="enable_partitioned_history", action="store_true", default=True)
     rebuild.add_argument("--disable-partitioned-history", dest="enable_partitioned_history", action="store_false")
+    rebuild.add_argument("--verbose", action="store_true")
 
     influx_export = subparsers.add_parser("influx-rollup-export", help="Export selected historical rollups to InfluxDB")
     influx_export.add_argument("--app-root", default=str(Path(__file__).resolve().parents[2]))
@@ -92,33 +93,47 @@ def parse_args() -> argparse.Namespace:
 
     compute_buy_all = subparsers.add_parser("compute-buy-all", help="Materialize Buy All planner data into precomputed MariaDB tables")
     compute_buy_all.add_argument("--app-root", default=str(Path(__file__).resolve().parents[2]))
+    compute_buy_all.add_argument("--verbose", action="store_true")
 
     compute_signals = subparsers.add_parser("compute-signals", help="Generate precomputed intelligence signals into MariaDB")
     compute_signals.add_argument("--app-root", default=str(Path(__file__).resolve().parents[2]))
+    compute_signals.add_argument("--verbose", action="store_true")
     compute_ew = subparsers.add_parser("compute-economic-warfare", help="Compute economic warfare scores from opponent killmail data")
     compute_ew.add_argument("--app-root", default=str(Path(__file__).resolve().parents[2]))
+    compute_ew.add_argument("--verbose", action="store_true")
     graph_universe = subparsers.add_parser("graph-universe-sync", help="Sync universe topology (systems, stargates) into Neo4j")
     graph_universe.add_argument("--app-root", default=str(Path(__file__).resolve().parents[2]))
+    graph_universe.add_argument("--verbose", action="store_true")
     graph_killmails = subparsers.add_parser("compute-graph-sync-killmail-entities", help="Project killmail events as nodes into Neo4j")
     graph_killmails.add_argument("--app-root", default=str(Path(__file__).resolve().parents[2]))
+    graph_killmails.add_argument("--verbose", action="store_true")
     compute_graph_sync = subparsers.add_parser("compute-graph-sync", help="Incrementally sync doctrine-fit-item graph into Neo4j")
     compute_graph_sync.add_argument("--app-root", default=str(Path(__file__).resolve().parents[2]))
+    compute_graph_sync.add_argument("--verbose", action="store_true")
     compute_graph_insights = subparsers.add_parser("compute-graph-insights", help="Compute graph-derived metrics and persist into MariaDB")
     compute_graph_insights.add_argument("--app-root", default=str(Path(__file__).resolve().parents[2]))
+    compute_graph_insights.add_argument("--verbose", action="store_true")
     compute_graph_sync_doctrine = subparsers.add_parser("compute-graph-sync-doctrine-dependency", help="Sync doctrine/fit/item anchors into Neo4j")
     compute_graph_sync_doctrine.add_argument("--app-root", default=str(Path(__file__).resolve().parents[2]))
+    compute_graph_sync_doctrine.add_argument("--verbose", action="store_true")
     compute_graph_sync_battle = subparsers.add_parser("compute-graph-sync-battle-intelligence", help="Sync battle/actor anchors into Neo4j")
     compute_graph_sync_battle.add_argument("--app-root", default=str(Path(__file__).resolve().parents[2]))
+    compute_graph_sync_battle.add_argument("--verbose", action="store_true")
     compute_graph_derived = subparsers.add_parser("compute-graph-derived-relationships", help="Build derived graph relationships")
     compute_graph_derived.add_argument("--app-root", default=str(Path(__file__).resolve().parents[2]))
+    compute_graph_derived.add_argument("--verbose", action="store_true")
     compute_graph_prune = subparsers.add_parser("compute-graph-prune", help="Prune stale low-signal graph edges")
     compute_graph_prune.add_argument("--app-root", default=str(Path(__file__).resolve().parents[2]))
+    compute_graph_prune.add_argument("--verbose", action="store_true")
     compute_graph_topology = subparsers.add_parser("compute-graph-topology-metrics", help="Materialize graph topology metrics to MariaDB")
     compute_graph_topology.add_argument("--app-root", default=str(Path(__file__).resolve().parents[2]))
+    compute_graph_topology.add_argument("--verbose", action="store_true")
     compute_behavioral = subparsers.add_parser("compute-behavioral-baselines", help="Compute character behavioral baselines")
     compute_behavioral.add_argument("--app-root", default=str(Path(__file__).resolve().parents[2]))
+    compute_behavioral.add_argument("--verbose", action="store_true")
     compute_suspicion_v2 = subparsers.add_parser("compute-suspicion-scores-v2", help="Compute suspicion scoring v2")
     compute_suspicion_v2.add_argument("--app-root", default=str(Path(__file__).resolve().parents[2]))
+    compute_suspicion_v2.add_argument("--verbose", action="store_true")
     run_job = subparsers.add_parser("run-job", help="Run a Python-native recurring job by job key")
     run_job.add_argument("--app-root", default=str(Path(__file__).resolve().parents[2]))
     run_job.add_argument("--job-key", required=True)
@@ -126,6 +141,7 @@ def parse_args() -> argparse.Namespace:
 
     backfill = subparsers.add_parser("killmail-backfill", help="Backfill killmails from R2Z2 history API")
     backfill.add_argument("--app-root", default=str(Path(__file__).resolve().parents[2]))
+    backfill.add_argument("--verbose", action="store_true")
 
     for command, help_text in [
         ("compute-battle-rollups", "Cluster killmails into deterministic battle rollups and participants"),
@@ -137,11 +153,13 @@ def parse_args() -> argparse.Namespace:
         parser_job = subparsers.add_parser(command, help=help_text)
         parser_job.add_argument("--app-root", default=str(Path(__file__).resolve().parents[2]))
         parser_job.add_argument("--dry-run", action="store_true", help="Compute and log counters without writing MariaDB tables.")
+        parser_job.add_argument("--verbose", action="store_true")
 
     scheduler_graph = subparsers.add_parser("scheduler-graph", help="Display the DAG-based job dependency graph and execution tiers")
     scheduler_graph.add_argument("--app-root", default=str(Path(__file__).resolve().parents[2]))
     scheduler_graph.add_argument("--validate", action="store_true", help="Validate the graph and report issues")
     scheduler_graph.add_argument("--json", dest="output_json", action="store_true", help="Output graph as JSON instead of human-readable text")
+    scheduler_graph.add_argument("--verbose", action="store_true")
 
     return parser.parse_args()
 
@@ -191,6 +209,7 @@ def main() -> int:
             "--window-days", str(args.window_days),
             *( ["--full-reset"] if args.full_reset else [] ),
             *( ["--enable-partitioned-history"] if args.enable_partitioned_history else ["--disable-partitioned-history"] ),
+            *( ["--verbose"] if args.verbose else [] ),
         ])
     if command == "influx-rollup-export":
         return run_influx_rollup_export([
@@ -218,6 +237,7 @@ def main() -> int:
     if command == "compute-buy-all":
         app_root = Path(args.app_root).resolve()
         config = load_php_runtime_config(app_root)
+        configure_logging(verbose=args.verbose, log_file=config.log_file)
         from .db import SupplyCoreDb
         db = SupplyCoreDb(config.raw.get("db", {}))
         result = run_compute_buy_all(db)
@@ -226,6 +246,7 @@ def main() -> int:
     if command == "compute-signals":
         app_root = Path(args.app_root).resolve()
         config = load_php_runtime_config(app_root)
+        configure_logging(verbose=args.verbose, log_file=config.log_file)
         from .db import SupplyCoreDb
         db = SupplyCoreDb(config.raw.get("db", {}))
         result = run_compute_signals(db, influx_runtime(config.raw))
@@ -234,6 +255,7 @@ def main() -> int:
     if command == "compute-economic-warfare":
         app_root = Path(args.app_root).resolve()
         config = load_php_runtime_config(app_root)
+        configure_logging(verbose=args.verbose, log_file=config.log_file)
         from .db import SupplyCoreDb
         db = SupplyCoreDb(config.raw.get("db", {}))
         from .jobs.compute_economic_warfare import run_compute_economic_warfare
@@ -243,6 +265,7 @@ def main() -> int:
     if command == "graph-universe-sync":
         app_root = Path(args.app_root).resolve()
         config = load_php_runtime_config(app_root)
+        configure_logging(verbose=args.verbose, log_file=config.log_file)
         from .db import SupplyCoreDb
         db = SupplyCoreDb(config.raw.get("db", {}))
         from .jobs.graph_universe_sync import run_graph_universe_sync
@@ -252,6 +275,7 @@ def main() -> int:
     if command == "compute-graph-sync-killmail-entities":
         app_root = Path(args.app_root).resolve()
         config = load_php_runtime_config(app_root)
+        configure_logging(verbose=args.verbose, log_file=config.log_file)
         from .db import SupplyCoreDb
         db = SupplyCoreDb(config.raw.get("db", {}))
         from .jobs.graph_pipeline import run_compute_graph_sync_killmail_entities
@@ -261,6 +285,7 @@ def main() -> int:
     if command == "compute-graph-sync":
         app_root = Path(args.app_root).resolve()
         config = load_php_runtime_config(app_root)
+        configure_logging(verbose=args.verbose, log_file=config.log_file)
         from .db import SupplyCoreDb
         db = SupplyCoreDb(config.raw.get("db", {}))
         result = run_compute_graph_sync(db, neo4j_runtime(config.raw))
@@ -269,6 +294,7 @@ def main() -> int:
     if command == "compute-graph-insights":
         app_root = Path(args.app_root).resolve()
         config = load_php_runtime_config(app_root)
+        configure_logging(verbose=args.verbose, log_file=config.log_file)
         from .db import SupplyCoreDb
         db = SupplyCoreDb(config.raw.get("db", {}))
         result = run_compute_graph_insights(db, neo4j_runtime(config.raw), influx_runtime(config.raw))
@@ -277,6 +303,7 @@ def main() -> int:
     if command == "compute-graph-sync-doctrine-dependency":
         app_root = Path(args.app_root).resolve()
         config = load_php_runtime_config(app_root)
+        configure_logging(verbose=args.verbose, log_file=config.log_file)
         from .db import SupplyCoreDb
         db = SupplyCoreDb(config.raw.get("db", {}))
         result = run_compute_graph_sync_doctrine_dependency(db, neo4j_runtime(config.raw))
@@ -285,6 +312,7 @@ def main() -> int:
     if command == "compute-graph-sync-battle-intelligence":
         app_root = Path(args.app_root).resolve()
         config = load_php_runtime_config(app_root)
+        configure_logging(verbose=args.verbose, log_file=config.log_file)
         from .db import SupplyCoreDb
         db = SupplyCoreDb(config.raw.get("db", {}))
         result = run_compute_graph_sync_battle_intelligence(db, neo4j_runtime(config.raw))
@@ -293,6 +321,7 @@ def main() -> int:
     if command == "compute-graph-derived-relationships":
         app_root = Path(args.app_root).resolve()
         config = load_php_runtime_config(app_root)
+        configure_logging(verbose=args.verbose, log_file=config.log_file)
         from .db import SupplyCoreDb
         db = SupplyCoreDb(config.raw.get("db", {}))
         result = run_compute_graph_derived_relationships(db, neo4j_runtime(config.raw))
@@ -301,6 +330,7 @@ def main() -> int:
     if command == "compute-graph-prune":
         app_root = Path(args.app_root).resolve()
         config = load_php_runtime_config(app_root)
+        configure_logging(verbose=args.verbose, log_file=config.log_file)
         from .db import SupplyCoreDb
         db = SupplyCoreDb(config.raw.get("db", {}))
         result = run_compute_graph_prune(db, neo4j_runtime(config.raw))
@@ -309,6 +339,7 @@ def main() -> int:
     if command == "compute-graph-topology-metrics":
         app_root = Path(args.app_root).resolve()
         config = load_php_runtime_config(app_root)
+        configure_logging(verbose=args.verbose, log_file=config.log_file)
         from .db import SupplyCoreDb
         db = SupplyCoreDb(config.raw.get("db", {}))
         result = run_compute_graph_topology_metrics(db, neo4j_runtime(config.raw))
@@ -317,6 +348,7 @@ def main() -> int:
     if command == "compute-behavioral-baselines":
         app_root = Path(args.app_root).resolve()
         config = load_php_runtime_config(app_root)
+        configure_logging(verbose=args.verbose, log_file=config.log_file)
         from .db import SupplyCoreDb
         db = SupplyCoreDb(config.raw.get("db", {}))
         result = run_compute_behavioral_baselines(db, battle_runtime(config.raw))
@@ -325,6 +357,7 @@ def main() -> int:
     if command == "compute-suspicion-scores-v2":
         app_root = Path(args.app_root).resolve()
         config = load_php_runtime_config(app_root)
+        configure_logging(verbose=args.verbose, log_file=config.log_file)
         from .db import SupplyCoreDb
         db = SupplyCoreDb(config.raw.get("db", {}))
         result = run_compute_suspicion_scores_v2(db, battle_runtime(config.raw))
@@ -340,6 +373,7 @@ def main() -> int:
 
         app_root = Path(args.app_root).resolve()
         config = load_php_runtime_config(app_root)
+        configure_logging(verbose=args.verbose, log_file=config.log_file)
         ctx = BackfillContext(app_root=app_root, php_binary=config.php_binary)
         result = run_killmail_history_backfill(ctx)
         print(json.dumps(result, default=str))
@@ -348,6 +382,7 @@ def main() -> int:
     if command == "run-job":
         app_root = Path(args.app_root).resolve()
         config = load_php_runtime_config(app_root)
+        configure_logging(verbose=args.verbose, log_file=config.log_file)
         from .db import SupplyCoreDb
         db = SupplyCoreDb(config.raw.get("db", {}))
         job_key = str(args.job_key).strip()
@@ -377,6 +412,7 @@ def main() -> int:
     }:
         app_root = Path(args.app_root).resolve()
         config = load_php_runtime_config(app_root)
+        configure_logging(verbose=args.verbose, log_file=config.log_file)
         from .db import SupplyCoreDb
 
         db = SupplyCoreDb(config.raw.get("db", {}))
@@ -409,6 +445,7 @@ def main() -> int:
             return 1
 
     if command == "scheduler-graph":
+        configure_logging(verbose=args.verbose)
         from .scheduling_graph import (
             build_graph,
             format_graph_summary,
