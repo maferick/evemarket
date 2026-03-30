@@ -5,13 +5,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .config import load_php_runtime_config
+from .config import load_php_runtime_config, resolve_app_root
 from .influx import InfluxClient, InfluxConfig, InfluxQueryError
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Inspect SupplyCore InfluxDB rollup exports")
-    parser.add_argument("--app-root", default=str(Path(__file__).resolve().parents[2]))
+    parser.add_argument("--app-root", default=resolve_app_root(__file__))
     parser.add_argument("--dataset", action="append", default=[], help="Limit inspection to one or more dataset keys or measurement names.")
     parser.add_argument("--limit", type=int, default=5, help="Sample point limit for the sample command.")
     parser.add_argument("--group-by", action="append", default=[], help="Optional tag key(s) to group the sample summary by.")

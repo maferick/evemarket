@@ -15,7 +15,7 @@ import pymysql
 import zipfile
 from datetime import datetime, timedelta, timezone
 
-from .config import load_php_runtime_config
+from .config import load_php_runtime_config, resolve_app_root
 from .db import SupplyCoreDb
 from .job_result import JobResult
 from .json_utils import json_dumps_safe, make_json_safe
@@ -273,7 +273,7 @@ class HeartbeatThread(threading.Thread):
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run the SupplyCore Python-only worker pool.")
-    parser.add_argument("--app-root", default=str(Path(__file__).resolve().parents[2]))
+    parser.add_argument("--app-root", default=resolve_app_root(__file__))
     parser.add_argument("--worker-id", default="")
     parser.add_argument("--queues", default="sync,compute")
     parser.add_argument("--workload-classes", default="sync,compute")

@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
 
-from .config import load_php_runtime_config
+from .config import load_php_runtime_config, resolve_app_root
 from .db import SupplyCoreDb
 from .influx import InfluxConfig, InfluxWriter, encode_point
 from .logging_utils import configure_logging, LoggerAdapter
@@ -206,7 +206,7 @@ DATASET_MAP = {dataset.key: dataset for dataset in DATASETS}
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Export SupplyCore historical rollups from MariaDB to InfluxDB")
-    parser.add_argument("--app-root", default=str(Path(__file__).resolve().parents[2]))
+    parser.add_argument("--app-root", default=resolve_app_root(__file__))
     parser.add_argument("--dataset", action="append", default=[])
     parser.add_argument("--full", action="store_true")
     parser.add_argument("--dry-run", action="store_true")

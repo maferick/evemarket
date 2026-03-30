@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from .bridge import PhpBridge
-from .config import load_php_runtime_config
+from .config import load_php_runtime_config, resolve_app_root
 from .db import SupplyCoreDb
 from .job_result import JobResult
 from .json_utils import json_dumps_safe
@@ -61,7 +61,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--schedule-id", type=int, required=True, help="Claimed sync_schedules.id to execute.")
     parser.add_argument(
         "--app-root",
-        default=str(Path(__file__).resolve().parents[2]),
+        default=resolve_app_root(__file__),
         help="Path to the SupplyCore repository/app root.",
     )
     parser.add_argument("--dry-run", action="store_true", help="Run job in dry-run mode when supported.")
