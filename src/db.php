@@ -15215,6 +15215,101 @@ function db_character_evidence_paths(int $characterId, int $limit = 10): array
     );
 }
 
+// ---------------------------------------------------------------------------
+// Movement footprint queries
+// ---------------------------------------------------------------------------
+
+function db_character_movement_footprints(int $characterId): array
+{
+    if ($characterId <= 0) {
+        return [];
+    }
+    return db_select(
+        'SELECT window_label, unique_systems_count, unique_regions_count,
+                unique_constellations_count, battles_in_window,
+                top_systems_json, top_regions_json,
+                system_entropy, system_hhi, region_entropy, region_hhi,
+                dominant_system_id, dominant_system_ratio,
+                dominant_region_id, dominant_region_ratio,
+                js_divergence_systems, cosine_distance_systems,
+                js_divergence_regions, cosine_distance_regions,
+                hostile_system_overlap_count, hostile_system_overlap_ratio,
+                hostile_region_overlap_count, hostile_region_overlap_ratio,
+                footprint_expansion_score, footprint_contraction_score,
+                new_area_entry_score, hostile_overlap_change_score,
+                cohort_z_footprint_size, cohort_z_entropy, cohort_z_hostile_overlap,
+                cohort_percentile_footprint,
+                computed_at, prev_computed_at
+         FROM character_movement_footprints
+         WHERE character_id = ?
+         ORDER BY FIELD(window_label, "7d", "30d", "90d", "lifetime")',
+        [$characterId]
+    );
+}
+
+function db_character_system_distribution(int $characterId, string $windowLabel = '30d', int $limit = 20): array
+{
+    if ($characterId <= 0) {
+        return [];
+    }
+    $safeLimit = max(1, min(100, $limit));
+    return db_select(
+        'SELECT csd.system_id, csd.region_id, csd.battle_count, csd.ratio,
+                COALESCE(rs.system_name, CONCAT("System #", csd.system_id)) AS system_name,
+                COALESCE(rr.region_name, CONCAT("Region #", csd.region_id)) AS region_name,
+                rs.security
+         FROM character_system_distribution csd
+         LEFT JOIN ref_systems rs ON rs.system_id = csd.system_id
+         LEFT JOIN ref_regions rr ON rr.region_id = csd.region_id
+         WHERE csd.character_id = ?
+           AND csd.window_label = ?
+         ORDER BY csd.battle_count DESC
+         LIMIT ' . $safeLimit,
+        [$characterId, $windowLabel]
+    );
+}
+
+/** Query Neo4j for geographic movement patterns — which regions this character has traversed through corp members. */
+function db_neo4j_character_movement_graph(int $characterId): ?array
+{
+    if ($characterId <= 0 || !(bool) config('neo4j.enabled', false)) {
+        return null;
+    }
+
+    // Regions where this character has been active via battle participation
+    $regionRows = neo4j_query(
+        'MATCH (c:Character {character_id: $charId})-[:PARTICIPATED_IN]->(b:Battle)
+         MATCH (b)-[:LOCATED_IN]->(sys)
+         RETURN
+           sys.region_id AS region_id,
+           count(DISTINCT b) AS battle_count,
+           collect(DISTINCT sys.system_id)[..5] AS sample_systems
+         ORDER BY battle_count DESC
+         LIMIT 10',
+        ['charId' => $characterId]
+    );
+
+    // Characters who share the same operational footprint (co-located in same systems)
+    $coLocatedRows = neo4j_query(
+        'MATCH (c:Character {character_id: $charId})-[:PARTICIPATED_IN]->(b:Battle)
+         MATCH (other:Character)-[:PARTICIPATED_IN]->(b)
+         WHERE other.character_id <> $charId
+         WITH other, count(DISTINCT b) AS shared_battles
+         WHERE shared_battles >= 3
+         RETURN
+           other.character_id AS character_id,
+           shared_battles
+         ORDER BY shared_battles DESC
+         LIMIT 15',
+        ['charId' => $characterId]
+    );
+
+    return [
+        'regions' => $regionRows ?: [],
+        'co_located_characters' => $coLocatedRows ?: [],
+    ];
+}
+
 function db_analyst_feedback_for_character(int $characterId): array
 {
     if ($characterId <= 0) {

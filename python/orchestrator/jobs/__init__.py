@@ -61,3 +61,4 @@ from .theater_suspicion import run_theater_suspicion
 from .compute_economic_warfare import run_compute_economic_warfare
 from .cache_expiry_cleanup_sync import run_cache_expiry_cleanup_sync
 from .character_feature_windows import run_compute_character_feature_windows
+from .character_movement_footprints import run_compute_character_movement_footprints
