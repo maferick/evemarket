@@ -9,6 +9,7 @@ from typing import Any
 
 from ..db import SupplyCoreDb
 from ..job_result import JobResult
+from ..neo4j import Neo4jClient, Neo4jConfig
 
 # ---------------------------------------------------------------------------
 # Feature keys sourced from character_battle_intelligence + graph + baselines.
@@ -127,11 +128,15 @@ def _assign_cohorts(
 def run_compute_cohort_baselines(
     db: SupplyCoreDb,
     runtime: dict[str, Any] | None = None,
+    neo4j_config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     started = time.perf_counter()
     computed_at = _now_sql()
     now = datetime.now(UTC)
     runtime = runtime or {}
+
+    neo4j_cfg = Neo4jConfig.from_runtime(neo4j_config or {})
+    neo4j = Neo4jClient(neo4j_cfg) if neo4j_cfg.enabled else None
 
     # Resolve own alliance_id from app_settings if available.
     own_alliance_row = db.fetch_one(
@@ -375,6 +380,129 @@ def run_compute_cohort_baselines(
                 update_payload,
             )
 
+    # ── Step 6: Sync cohort data to Neo4j ─────────────────────────────────
+    neo4j_rows_synced = 0
+    if neo4j:
+        NEO4J_BATCH = 500
+        NEO4J_TIMEOUT = 60
+
+        # 6a. Create/update Cohort nodes with baseline statistics.
+        cohort_node_rows: list[dict[str, Any]] = []
+        for cohort_key, members in cohort_members.items():
+            cohort_node_rows.append({
+                "cohort_key": cohort_key,
+                "member_count": len(members),
+                "computed_at": computed_at,
+            })
+        if cohort_node_rows:
+            for i in range(0, len(cohort_node_rows), NEO4J_BATCH):
+                neo4j.query(
+                    """
+                    UNWIND $rows AS row
+                    MERGE (co:Cohort {cohort_key: row.cohort_key})
+                    SET co.member_count = toInteger(row.member_count),
+                        co.computed_at = row.computed_at
+                    """,
+                    {"rows": cohort_node_rows[i:i + NEO4J_BATCH]},
+                    timeout_seconds=NEO4J_TIMEOUT,
+                )
+            neo4j_rows_synced += len(cohort_node_rows)
+
+        # 6b. Create BELONGS_TO_COHORT relationships (character → cohort).
+        membership_neo4j_rows: list[dict[str, Any]] = []
+        for cid, cohorts in character_cohorts.items():
+            for cohort_key in cohorts:
+                membership_neo4j_rows.append({
+                    "character_id": cid,
+                    "cohort_key": cohort_key,
+                    "computed_at": computed_at,
+                })
+        if membership_neo4j_rows:
+            # Clear stale relationships first.
+            neo4j.query(
+                "MATCH (:Character)-[r:BELONGS_TO_COHORT]->(:Cohort) WHERE r.computed_at <> $computed_at DELETE r",
+                {"computed_at": computed_at},
+                timeout_seconds=NEO4J_TIMEOUT,
+            )
+            for i in range(0, len(membership_neo4j_rows), NEO4J_BATCH):
+                neo4j.query(
+                    """
+                    UNWIND $rows AS row
+                    MERGE (c:Character {character_id: row.character_id})
+                    MERGE (co:Cohort {cohort_key: row.cohort_key})
+                    MERGE (c)-[r:BELONGS_TO_COHORT]->(co)
+                    SET r.computed_at = row.computed_at
+                    """,
+                    {"rows": membership_neo4j_rows[i:i + NEO4J_BATCH]},
+                    timeout_seconds=NEO4J_TIMEOUT,
+                )
+            neo4j_rows_synced += len(membership_neo4j_rows)
+
+        # 6c. Set cohort-relative scores on Character nodes.
+        score_neo4j_rows: list[dict[str, Any]] = []
+        for z_score, mad_dev, percentile, cid in update_payload:
+            primary = max(
+                character_cohorts.get(cid, ["combat_active"]),
+                key=lambda c: COHORT_PRIORITY.get(c, 0),
+            )
+            score_neo4j_rows.append({
+                "character_id": cid,
+                "cohort_z_score": float(z_score),
+                "cohort_mad_deviation": float(mad_dev),
+                "cohort_percentile": float(percentile),
+                "primary_cohort": primary,
+            })
+        if score_neo4j_rows:
+            for i in range(0, len(score_neo4j_rows), NEO4J_BATCH):
+                neo4j.query(
+                    """
+                    UNWIND $rows AS row
+                    MATCH (c:Character {character_id: row.character_id})
+                    SET c.cohort_z_score = toFloat(row.cohort_z_score),
+                        c.cohort_mad_deviation = toFloat(row.cohort_mad_deviation),
+                        c.cohort_percentile = toFloat(row.cohort_percentile),
+                        c.primary_cohort = row.primary_cohort
+                    """,
+                    {"rows": score_neo4j_rows[i:i + NEO4J_BATCH]},
+                    timeout_seconds=NEO4J_TIMEOUT,
+                )
+            neo4j_rows_synced += len(score_neo4j_rows)
+
+        # 6d. Set feature baselines on Cohort nodes, one Cypher per feature key
+        #     to avoid APOC dependency for dynamic property names.
+        for feature_key in COHORT_FEATURE_KEYS:
+            feature_rows: list[dict[str, Any]] = []
+            for cohort_key in cohort_members:
+                s = cohort_stats.get((cohort_key, feature_key))
+                if s is None:
+                    continue
+                feature_rows.append({
+                    "cohort_key": cohort_key,
+                    "mean": float(s["mean"]),
+                    "stddev": float(s["stddev"]),
+                    "median": float(s["median"]),
+                    "mad": float(s["mad"]),
+                })
+            if not feature_rows:
+                continue
+            # Property names are static per query — safe to interpolate the
+            # feature_key since it comes from COHORT_FEATURE_KEYS constant.
+            cypher = f"""
+                UNWIND $rows AS row
+                MATCH (co:Cohort {{cohort_key: row.cohort_key}})
+                SET co.{feature_key}_mean = toFloat(row.mean),
+                    co.{feature_key}_stddev = toFloat(row.stddev),
+                    co.{feature_key}_median = toFloat(row.median),
+                    co.{feature_key}_mad = toFloat(row.mad)
+            """
+            for i in range(0, len(feature_rows), NEO4J_BATCH):
+                neo4j.query(
+                    cypher,
+                    {"rows": feature_rows[i:i + NEO4J_BATCH]},
+                    timeout_seconds=NEO4J_TIMEOUT,
+                )
+            neo4j_rows_synced += len(feature_rows)
+
     duration_ms = int((time.perf_counter() - started) * 1000)
     return JobResult.success(
         job_key="compute_cohort_baselines",
@@ -391,5 +519,6 @@ def run_compute_cohort_baselines(
             "computed_at": computed_at,
             "cohort_sizes": {k: len(v) for k, v in cohort_members.items()},
             "features_computed": len(baseline_payload),
+            "neo4j_rows_synced": neo4j_rows_synced,
         },
     ).to_dict()
