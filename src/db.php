@@ -6618,6 +6618,23 @@ function db_sync_run_finish(
     );
 }
 
+function db_sync_runs_reap_stale(int $staleGraceSeconds = 300): int
+{
+    $safeGrace = max(60, min(7200, $staleGraceSeconds));
+    $stmt = db()->prepare(
+        "UPDATE sync_runs
+         SET run_status = 'failed',
+             finished_at = UTC_TIMESTAMP(),
+             error_message = 'Reaped: run exceeded timeout while still marked as running (worker likely crashed).',
+             updated_at = CURRENT_TIMESTAMP
+         WHERE run_status = 'running'
+           AND started_at < DATE_SUB(UTC_TIMESTAMP(), INTERVAL ? SECOND)"
+    );
+    $stmt->execute([$safeGrace]);
+
+    return (int) $stmt->rowCount();
+}
+
 function db_sync_run_latest_by_dataset(string $datasetKey): ?array
 {
     return db_select_one(

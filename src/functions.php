@@ -3486,6 +3486,13 @@ function scheduler_daemon_recover_runtime_state(string $ownerToken, ?callable $l
         $recoveredCount += $staleSchedules;
     }
 
+    $staleRuns = db_sync_runs_reap_stale(scheduler_daemon_watchdog_grace_seconds());
+    if ($staleRuns > 0) {
+        $details['reaped_sync_run_count'] = $staleRuns;
+        $messageParts[] = 'Reaped ' . $staleRuns . ' stuck sync_runs row(s).';
+        $recoveredCount += $staleRuns;
+    }
+
     $message = $messageParts !== [] ? implode(' ', $messageParts) : 'No stale scheduler runtime artifacts required recovery.';
     scheduler_daemon_write_heartbeat($ownerToken, [
         'status' => 'running',
@@ -3714,8 +3721,10 @@ function scheduler_watchdog_run(?callable $logger = null): array
 
     $recoveryMessage = 'Watchdog observed a stale or stopped scheduler daemon and prepared recovery.';
     $recoveredSchedules = db_sync_schedule_recover_stale_running_jobs($recoveryMessage, scheduler_daemon_watchdog_grace_seconds());
+    $reapedRuns = db_sync_runs_reap_stale(scheduler_daemon_watchdog_grace_seconds());
     $result['recovery'] = [
         'recovered_schedule_count' => $recoveredSchedules,
+        'reaped_sync_run_count' => $reapedRuns,
         'message' => $recoveryMessage,
     ];
 
