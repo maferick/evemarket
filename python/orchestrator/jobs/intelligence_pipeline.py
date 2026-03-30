@@ -14,7 +14,10 @@ progress for resumable runs.
 """
 from __future__ import annotations
 
+import bisect
+import statistics
 import time
+from collections import defaultdict
 from datetime import UTC, datetime
 from typing import Any
 
@@ -43,6 +46,55 @@ DEFAULT_WEIGHTS = {
 
 def _now_sql() -> str:
     return datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
+
+
+# Signal keys exported by the intelligence pipeline.
+_INTEL_SIGNAL_KEYS = [
+    "selective_non_engagement_score",
+    "high_presence_low_output_score",
+    "token_participation_score",
+    "loss_without_attack_ratio",
+    "peer_normalized_kills_delta",
+    "peer_normalized_damage_delta",
+]
+
+
+def _intel_cohort_normalize(evidence_rows: list[dict[str, Any]]) -> None:
+    """Enrich evidence rows in-place with cohort statistics."""
+    by_key: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in evidence_rows:
+        if row.get("evidence_value") is not None:
+            by_key[row["evidence_key"]].append(row)
+
+    for key, rows in by_key.items():
+        values = [float(r["evidence_value"]) for r in rows]
+        n = len(values)
+        if n == 0:
+            continue
+
+        mean = statistics.mean(values)
+        std = statistics.pstdev(values) if n > 1 else 0.0
+        median = statistics.median(values)
+        diffs = [abs(v - median) for v in values]
+        mad = statistics.median(diffs) if diffs else 0.0
+        sorted_vals = sorted(values)
+
+        for row in rows:
+            raw = float(row["evidence_value"])
+            dev = raw - mean
+            row["expected_value"] = round(mean, 6)
+            row["deviation_value"] = round(dev, 6)
+            row["z_score"] = round(dev / std, 6) if std > 0 else 0.0
+            row["mad_score"] = round((raw - median) / (mad * 1.4826), 6) if mad > 0 else 0.0
+            row["cohort_percentile"] = round(
+                bisect.bisect_right(sorted_vals, raw) / max(1, n), 6
+            )
+            if n >= 10:
+                row["confidence_flag"] = "high"
+            elif n >= 5:
+                row["confidence_flag"] = "medium"
+            else:
+                row["confidence_flag"] = "low"
 
 
 def _load_recalibrated_weights(db: SupplyCoreDb) -> dict[str, float]:
@@ -109,6 +161,8 @@ def _ensure_schema(client: Neo4jClient) -> None:
         "CREATE CONSTRAINT IF NOT EXISTS FOR (cp:ComputeCheckpoint) REQUIRE cp.run_id IS UNIQUE",
         "CREATE INDEX IF NOT EXISTS FOR (k:Killmail) ON (k.battle_id)",
         "CREATE INDEX IF NOT EXISTS FOR (c:Character) ON (c.tracked)",
+        "CREATE INDEX IF NOT EXISTS FOR (sig:DetectionSignal) ON (sig.character_id, sig.signal_key, sig.window_label)",
+        "CREATE INDEX IF NOT EXISTS FOR (sig:DetectionSignal) ON (sig.signal_key, sig.cohort_percentile)",
     ]:
         try:
             client.query(stmt)
@@ -792,6 +846,102 @@ def _export_suspicion_signals(client: Neo4jClient, db: SupplyCoreDb, computed_at
                     suspicion_score, suspicion_flags, engagement_rate_by_alliance, computed_at)
                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
                 batch,
+            )
+
+        # Emit normalized per-signal evidence rows.
+        evidence_rows: list[dict[str, Any]] = []
+        for r in rows:
+            cid = int(r.get("character_id") or 0)
+            if cid <= 0:
+                continue
+            flags = r.get("suspicion_flags") or []
+            for sig_key in _INTEL_SIGNAL_KEYS:
+                raw = float(r.get(sig_key) or 0.0)
+                triggered = any(sig_key.replace("_score", "").replace("_ratio", "").replace("_delta", "") in (f or "") for f in flags)
+                evidence_rows.append({
+                    "character_id": cid,
+                    "evidence_key": f"neo4j_{sig_key}",
+                    "window_label": "all_time",
+                    "evidence_value": round(raw, 6),
+                    "evidence_text": f"{sig_key} = {raw:.4f}" + (" [FLAGGED]" if triggered else ""),
+                    "evidence_payload_json": json_dumps_safe({
+                        "signal_key": sig_key,
+                        "raw_value": round(raw, 6),
+                        "suspicion_score": float(r.get("suspicion_score") or 0),
+                        "flagged": triggered,
+                        "source": "intelligence_pipeline",
+                    }),
+                })
+
+        _intel_cohort_normalize(evidence_rows)
+
+        if evidence_rows:
+            for ev in evidence_rows:
+                cursor.execute(
+                    """INSERT INTO character_counterintel_evidence (
+                        character_id, evidence_key, window_label,
+                        evidence_value, expected_value, deviation_value,
+                        z_score, mad_score, cohort_percentile, confidence_flag,
+                        evidence_text, evidence_payload_json, computed_at
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON DUPLICATE KEY UPDATE
+                        evidence_value = VALUES(evidence_value),
+                        expected_value = VALUES(expected_value),
+                        deviation_value = VALUES(deviation_value),
+                        z_score = VALUES(z_score),
+                        mad_score = VALUES(mad_score),
+                        cohort_percentile = VALUES(cohort_percentile),
+                        confidence_flag = VALUES(confidence_flag),
+                        evidence_text = VALUES(evidence_text),
+                        evidence_payload_json = VALUES(evidence_payload_json),
+                        computed_at = VALUES(computed_at)
+                    """,
+                    (
+                        ev["character_id"], ev["evidence_key"], ev.get("window_label", "all_time"),
+                        ev["evidence_value"], ev.get("expected_value"), ev.get("deviation_value"),
+                        ev.get("z_score"), ev.get("mad_score"), ev.get("cohort_percentile"),
+                        ev.get("confidence_flag", "low"),
+                        ev["evidence_text"], ev["evidence_payload_json"], computed_at,
+                    ),
+                )
+
+    # Write DetectionSignal nodes to Neo4j.
+    if evidence_rows:
+        neo4j_signal_rows = []
+        for ev in evidence_rows:
+            neo4j_signal_rows.append({
+                "character_id": int(ev["character_id"]),
+                "signal_key": ev["evidence_key"],
+                "window_label": ev.get("window_label", "all_time"),
+                "raw_value": float(ev["evidence_value"]) if ev.get("evidence_value") is not None else 0.0,
+                "expected_value": float(ev["expected_value"]) if ev.get("expected_value") is not None else 0.0,
+                "deviation_value": float(ev["deviation_value"]) if ev.get("deviation_value") is not None else 0.0,
+                "z_score": float(ev["z_score"]) if ev.get("z_score") is not None else 0.0,
+                "cohort_percentile": float(ev["cohort_percentile"]) if ev.get("cohort_percentile") is not None else 0.0,
+                "confidence_flag": ev.get("confidence_flag", "low"),
+                "computed_at": computed_at,
+            })
+        for i in range(0, len(neo4j_signal_rows), BATCH_SIZE):
+            client.query(
+                """
+                UNWIND $rows AS row
+                MERGE (c:Character {character_id: row.character_id})
+                MERGE (sig:DetectionSignal {
+                    character_id: row.character_id,
+                    signal_key: row.signal_key,
+                    window_label: row.window_label
+                })
+                MERGE (c)-[:HAS_SIGNAL]->(sig)
+                SET sig.raw_value = row.raw_value,
+                    sig.expected_value = row.expected_value,
+                    sig.deviation_value = row.deviation_value,
+                    sig.z_score = row.z_score,
+                    sig.cohort_percentile = row.cohort_percentile,
+                    sig.confidence_flag = row.confidence_flag,
+                    sig.source = 'intelligence_pipeline',
+                    sig.computed_at = row.computed_at
+                """,
+                {"rows": neo4j_signal_rows[i:i + BATCH_SIZE]},
             )
 
     return len(rows)
