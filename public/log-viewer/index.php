@@ -35,7 +35,7 @@ if (!in_array($filter, $validFilters, true)) {
 }
 
 $filteredJobs = match ($filter) {
-    'failed' => array_filter($jobs, fn (array $j) => $j['health'] === 'failed'),
+    'failed' => array_filter($jobs, fn (array $j) => $j['health'] === 'failed' || $j['health'] === 'stuck'),
     'timeout' => array_filter($jobs, fn (array $j) => $j['health'] === 'timeout'),
     'never_ran' => array_filter($jobs, fn (array $j) => $j['health'] === 'never_ran'),
     'overdue' => array_filter($jobs, fn (array $j) => $j['overdue']),
