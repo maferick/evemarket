@@ -27,7 +27,7 @@ import math
 import statistics
 import time
 from collections import defaultdict
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 from typing import Any
 
 from ..db import SupplyCoreDb
@@ -226,6 +226,13 @@ def _detect_reactivation(
     }
 
 
+def _ensure_utc(dt: datetime) -> datetime:
+    """Ensure a datetime is UTC-aware; assume naive datetimes are already UTC."""
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=UTC)
+    return dt
+
+
 # ---------------------------------------------------------------------------
 # Data fetch helpers
 # ---------------------------------------------------------------------------
@@ -283,12 +290,12 @@ def _fetch_killmail_timestamps(db: SupplyCoreDb) -> dict[int, list[datetime]]:
         cid = int(r["character_id"])
         ts = r["ts"]
         if isinstance(ts, datetime):
-            result[cid].append(ts)
+            result[cid].append(_ensure_utc(ts))
     for r in attacker_rows:
         cid = int(r["character_id"])
         ts = r["ts"]
         if isinstance(ts, datetime):
-            result[cid].append(ts)
+            result[cid].append(_ensure_utc(ts))
 
     # Sort per character
     for cid in result:
@@ -313,7 +320,7 @@ def _fetch_battle_timestamps(db: SupplyCoreDb) -> dict[int, list[datetime]]:
         cid = int(r["character_id"])
         ts = r["ts"]
         if isinstance(ts, datetime):
-            result[cid].append(ts)
+            result[cid].append(_ensure_utc(ts))
     for cid in result:
         result[cid].sort()
     return dict(result)
