@@ -2813,6 +2813,38 @@ CREATE TABLE IF NOT EXISTS character_alliance_overlap (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 
+CREATE TABLE IF NOT EXISTS character_feature_windows (
+    character_id                     BIGINT UNSIGNED NOT NULL,
+    window_label                     ENUM('7d','30d','90d','lifetime') NOT NULL,
+    battles_total                    INT UNSIGNED NOT NULL DEFAULT 0,
+    unique_systems                   INT UNSIGNED NOT NULL DEFAULT 0,
+    recurring_associates             INT UNSIGNED NOT NULL DEFAULT 0,
+    co_presence_count                INT UNSIGNED NOT NULL DEFAULT 0,
+    corp_transitions                 SMALLINT UNSIGNED NOT NULL DEFAULT 0,
+    alliance_transitions             SMALLINT UNSIGNED NOT NULL DEFAULT 0,
+    dominant_region_id               INT UNSIGNED NOT NULL DEFAULT 0,
+    dominant_region_ratio            DECIMAL(8,6) NOT NULL DEFAULT 0.000000,
+    graph_pagerank                   DECIMAL(12,6) NOT NULL DEFAULT 0.000000,
+    graph_bridge_score               DECIMAL(12,6) NOT NULL DEFAULT 0.000000,
+    graph_community_id               INT NOT NULL DEFAULT 0,
+    computed_at                      DATETIME NOT NULL,
+    PRIMARY KEY (character_id, window_label),
+    KEY idx_cfw_computed (computed_at),
+    KEY idx_cfw_battles (window_label, battles_total),
+    KEY idx_cfw_region (window_label, dominant_region_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS character_feature_histograms (
+    character_id                     BIGINT UNSIGNED NOT NULL,
+    window_label                     ENUM('7d','30d','90d','lifetime') NOT NULL,
+    hour_histogram                   JSON NOT NULL,
+    weekday_histogram                JSON NOT NULL,
+    computed_at                      DATETIME NOT NULL,
+    PRIMARY KEY (character_id, window_label),
+    KEY idx_cfh_computed (computed_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+
 INSERT INTO trading_stations (station_name, station_type) VALUES
     ('Rens VI - Moon 8 - Brutor Tribe Treasury', 'market'),
     ('Amarr VIII (Oris) - Emperor Family Academy', 'market'),
@@ -2948,7 +2980,8 @@ INSERT INTO sync_schedules (
     ('compute_battle_anomalies', 1, 10, 600, 1380, 23, 'normal', 'single', 'python', 420, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
     ('compute_battle_actor_features', 1, 10, 600, 1440, 24, 'normal', 'single', 'python', 420, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
     ('compute_counterintel_pipeline', 1, 15, 900, 1560, 26, 'high', 'single', 'python', 900, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
-    ('compute_suspicion_scores', 1, 10, 600, 1500, 25, 'normal', 'single', 'python', 420, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL)
+    ('compute_suspicion_scores', 1, 10, 600, 1500, 25, 'normal', 'single', 'python', 420, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
+    ('compute_character_feature_windows', 1, 30, 1800, 1620, 27, 'normal', 'single', 'python', 900, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL)
 ON DUPLICATE KEY UPDATE
     enabled = VALUES(enabled),
     interval_minutes = VALUES(interval_minutes),
