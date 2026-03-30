@@ -3,9 +3,10 @@
 Two-phase approach per run:
 
 Phase 1 (Org-Level Sweep):
-  For each opponent alliance, fetch the full member list via /api/allilist.
-  For each corp within that alliance, fetch /api/corpjoined and /api/corpdeparted.
-  Batch-upsert Character, Corporation, Alliance nodes and relationships into Neo4j.
+  For each opponent alliance, fetch corporation IDs via ESI, then for each corp
+  fetch members via EveWho /api/corplist and movement events via /api/corpjoined
+  and /api/corpdeparted.  Batch-upsert Character, Corporation, Alliance nodes
+  and relationships into Neo4j.
   Queue departed/new characters into enrichment_queue for deep enrichment.
 
 Phase 2 (Character Discovery):
@@ -26,6 +27,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from ..db import SupplyCoreDb
+from ..esi_client import EsiClient
 from ..evewho_adapter import EveWhoAdapter
 from ..job_result import JobResult
 from ..job_utils import finish_job_run, start_job_run
@@ -106,12 +108,27 @@ def _safe_int(row: dict[str, Any], keys: list[str]) -> int | None:
     return None
 
 
-def _group_members_by_corp(payload: dict[str, Any]) -> dict[int, list[dict[str, Any]]]:
-    """Walk the nested allilist response and group characters by corporation_id.
+def _fetch_alliance_corp_ids(esi: EsiClient, alliance_id: int) -> list[int]:
+    """Fetch corporation IDs belonging to an alliance via ESI.
 
-    Returns {corp_id: [{"character_id": int, "name": str}, ...]}.
+    Returns sorted list of corporation IDs, or empty list on failure.
     """
-    by_corp: dict[int, list[dict[str, Any]]] = {}
+    resp = esi.get(f"/latest/alliances/{alliance_id}/corporations/")
+    if resp.ok and isinstance(resp.body, list):
+        return sorted(int(c) for c in resp.body if isinstance(c, (int, float)) and int(c) > 0)
+    log.warning("ESI alliance corps failed for %d (status %s)", alliance_id, resp.status_code)
+    return []
+
+
+def _extract_corplist_members(payload: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """Extract members from an EveWho /api/corplist response.
+
+    Returns [{"character_id": int, "name": str}, ...].
+    """
+    if not payload:
+        return []
+
+    members: list[dict[str, Any]] = []
     seen_ids: set[int] = set()
 
     stack: list[Any] = [payload]
@@ -121,13 +138,11 @@ def _group_members_by_corp(payload: dict[str, Any]) -> dict[int, list[dict[str, 
             char_id = _safe_int(current, ["character_id", "characterID", "char_id"])
             if char_id and char_id > 0 and char_id not in seen_ids:
                 seen_ids.add(char_id)
-                corp_id = _safe_int(current, ["corporation_id", "corporationID", "corp_id"]) or 0
                 name = str(current.get("name") or current.get("characterName") or "")
-                if corp_id > 0:
-                    by_corp.setdefault(corp_id, []).append({
-                        "character_id": char_id,
-                        "name": name,
-                    })
+                members.append({
+                    "character_id": char_id,
+                    "name": name,
+                })
             for value in current.values():
                 if isinstance(value, (dict, list)):
                     stack.append(value)
@@ -136,7 +151,7 @@ def _group_members_by_corp(payload: dict[str, Any]) -> dict[int, list[dict[str, 
                 if isinstance(item, (dict, list)):
                     stack.append(item)
 
-    return by_corp
+    return members
 
 
 def _extract_corp_events(payload: dict[str, Any] | None) -> list[dict[str, Any]]:
@@ -559,6 +574,7 @@ def run_evewho_alliance_member_sync(
 
         neo4j = Neo4jClient(neo4j_config)
         adapter = EveWhoAdapter(user_agent)
+        esi = EsiClient(user_agent=user_agent)
 
         checkpoint = _load_checkpoint(db)
         phase = int(checkpoint.get("p") or 1)
@@ -588,22 +604,17 @@ def run_evewho_alliance_member_sync(
                 if resume_alliance_id > 0 and alliance_id < resume_alliance_id:
                     continue
 
-                log.info("Fetching allilist for alliance %d ...", alliance_id)
-                _, allilist_payload = adapter.fetch_allilist(alliance_id)
+                log.info("Fetching corp IDs for alliance %d via ESI ...", alliance_id)
+                corp_ids = _fetch_alliance_corp_ids(esi, alliance_id)
                 api_calls += 1
 
-                if not allilist_payload:
-                    log.warning("Empty allilist for alliance %d", alliance_id)
-                    errors.append(f"Empty allilist for alliance {alliance_id}")
+                if not corp_ids:
+                    log.warning("No corps found for alliance %d", alliance_id)
+                    errors.append(f"No corps for alliance {alliance_id}")
                     continue
 
-                members_by_corp = _group_members_by_corp(allilist_payload)
-                member_count = sum(len(v) for v in members_by_corp.values())
-                total_members_found += member_count
                 alliances_processed += 1
-                log.info("Alliance %d: %d members across %d corps", alliance_id, member_count, len(members_by_corp))
-
-                corp_ids = sorted(members_by_corp.keys())
+                log.info("Alliance %d: %d corps to process", alliance_id, len(corp_ids))
 
                 for corp_id in corp_ids:
                     if api_calls >= api_budget:
@@ -618,7 +629,11 @@ def run_evewho_alliance_member_sync(
                     if alliance_id == resume_alliance_id and resume_corp_id > 0 and corp_id <= resume_corp_id:
                         continue
 
-                    members = members_by_corp[corp_id]
+                    # Fetch current members for this corp
+                    _, corplist_payload = adapter.fetch_corplist(corp_id)
+                    api_calls += 1
+                    members = _extract_corplist_members(corplist_payload)
+                    total_members_found += len(members)
 
                     # Fetch join/depart events for this corp
                     _, joined_payload = adapter.fetch_corpjoined(corp_id)
