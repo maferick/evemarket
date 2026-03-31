@@ -16180,6 +16180,142 @@ function db_threat_corridor_regions(): array
     );
 }
 
+function db_threat_corridor_graph_subgraph(array $corridorSystemIds, int $surroundingHops = 1): array
+{
+    $corridorSystemIds = array_values(array_unique(array_map('intval', $corridorSystemIds)));
+    $corridorSystemIds = array_values(array_filter($corridorSystemIds, static fn (int $sid): bool => $sid > 0));
+    if ($corridorSystemIds === []) {
+        return ['nodes' => [], 'edges' => []];
+    }
+
+    $surroundingHops = max(0, min(3, $surroundingHops));
+    $nodeIds = [];
+    $edgePairs = [];
+
+    $neoRows = neo4j_query(
+        '
+        UNWIND $corridor_ids AS corridor_id
+        MATCH (c:System {system_id: corridor_id})
+        MATCH (c)-[:CONNECTS_TO*0..' . $surroundingHops . ']-(n:System)
+        WITH collect(DISTINCT n.system_id) AS node_ids
+        UNWIND node_ids AS a_id
+        MATCH (a:System {system_id: a_id})-[:CONNECTS_TO]-(b:System)
+        WHERE b.system_id IN node_ids AND a.system_id < b.system_id
+        RETURN node_ids,
+               collect(DISTINCT [a.system_id, b.system_id]) AS edge_pairs
+        ',
+        ['corridor_ids' => $corridorSystemIds]
+    );
+
+    if ($neoRows !== []) {
+        $row = $neoRows[0];
+        $nodeIds = array_values(array_unique(array_map('intval', (array) ($row['node_ids'] ?? []))));
+        foreach ((array) ($row['edge_pairs'] ?? []) as $pair) {
+            $a = (int) ($pair[0] ?? 0);
+            $b = (int) ($pair[1] ?? 0);
+            if ($a <= 0 || $b <= 0 || $a === $b) {
+                continue;
+            }
+            $key = $a < $b ? ($a . ':' . $b) : ($b . ':' . $a);
+            $edgePairs[$key] = [$a, $b];
+        }
+    }
+
+    if ($nodeIds === []) {
+        $nodeIds = $corridorSystemIds;
+        $frontier = $corridorSystemIds;
+        $seen = array_fill_keys($corridorSystemIds, true);
+        for ($hop = 0; $hop < $surroundingHops; $hop++) {
+            if ($frontier === []) {
+                break;
+            }
+            $placeholders = implode(',', array_fill(0, count($frontier), '?'));
+            $rows = db_select(
+                "SELECT system_id, dest_system_id
+                 FROM ref_stargates
+                 WHERE system_id IN ({$placeholders})",
+                $frontier
+            );
+            $nextFrontier = [];
+            foreach ($rows as $r) {
+                $a = (int) ($r['system_id'] ?? 0);
+                $b = (int) ($r['dest_system_id'] ?? 0);
+                if ($a <= 0 || $b <= 0 || $a === $b) {
+                    continue;
+                }
+                if (!isset($seen[$b])) {
+                    $seen[$b] = true;
+                    $nextFrontier[] = $b;
+                }
+            }
+            $frontier = array_values(array_unique($nextFrontier));
+        }
+        $nodeIds = array_map('intval', array_keys($seen));
+        if ($nodeIds !== []) {
+            $nodePlaceholders = implode(',', array_fill(0, count($nodeIds), '?'));
+            $rows = db_select(
+                "SELECT system_id, dest_system_id
+                 FROM ref_stargates
+                 WHERE system_id IN ({$nodePlaceholders})
+                   AND dest_system_id IN ({$nodePlaceholders})
+                   AND system_id < dest_system_id",
+                array_merge($nodeIds, $nodeIds)
+            );
+            foreach ($rows as $r) {
+                $a = (int) ($r['system_id'] ?? 0);
+                $b = (int) ($r['dest_system_id'] ?? 0);
+                if ($a <= 0 || $b <= 0 || $a === $b) {
+                    continue;
+                }
+                $edgePairs[$a . ':' . $b] = [$a, $b];
+            }
+        }
+    }
+
+    if ($nodeIds === []) {
+        return ['nodes' => [], 'edges' => []];
+    }
+
+    $nodePlaceholders = implode(',', array_fill(0, count($nodeIds), '?'));
+    $nodes = db_select(
+        "SELECT rs.system_id, rs.system_name, rs.security, sts.threat_level
+         FROM ref_systems rs
+         LEFT JOIN system_threat_scores sts ON sts.system_id = rs.system_id
+         WHERE rs.system_id IN ({$nodePlaceholders})",
+        $nodeIds
+    );
+    $nodeMap = [];
+    foreach ($nodes as $row) {
+        $sid = (int) ($row['system_id'] ?? 0);
+        if ($sid <= 0) {
+            continue;
+        }
+        $nodeMap[$sid] = [
+            'system_id' => $sid,
+            'system_name' => (string) ($row['system_name'] ?? (string) $sid),
+            'security' => (float) ($row['security'] ?? 0.0),
+            'threat_level' => (string) ($row['threat_level'] ?? ''),
+        ];
+    }
+    foreach ($nodeIds as $sid) {
+        $sid = (int) $sid;
+        if ($sid <= 0 || isset($nodeMap[$sid])) {
+            continue;
+        }
+        $nodeMap[$sid] = [
+            'system_id' => $sid,
+            'system_name' => (string) $sid,
+            'security' => 0.0,
+            'threat_level' => '',
+        ];
+    }
+
+    return [
+        'nodes' => array_values($nodeMap),
+        'edges' => array_values($edgePairs),
+    ];
+}
+
 // ---------------------------------------------------------------------------
 // Neo4j Intelligence Graph — PHP query layer (HTTP transactional endpoint)
 // ---------------------------------------------------------------------------
