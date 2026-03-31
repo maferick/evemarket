@@ -3,8 +3,7 @@
 Finds killmail_events rows where zkb_total_value IS NULL, fetches the zkb
 metadata from the zKillboard API, and updates the rows via the PHP bridge.
 
-Usage (via worker job system or direct):
-    python -m orchestrator.jobs.killmail_zkb_repair
+Runs as a registered processor job via the worker pool.
 """
 
 from __future__ import annotations
@@ -14,6 +13,7 @@ import logging
 import time
 import urllib.error
 import urllib.request
+from pathlib import Path
 from typing import Any
 
 from ..bridge import PhpBridge
@@ -62,11 +62,30 @@ def _fetch_zkb_metadata(killmail_id: int, user_agent: str) -> dict[str, Any]:
     return {}
 
 
-def run_killmail_zkb_repair(context: Any) -> dict[str, Any]:
-    """Repair killmails with missing zkb metadata."""
+def _build_bridge(cfg: dict[str, Any]) -> PhpBridge:
+    """Build a PhpBridge from the worker config dict."""
+    paths = cfg.get("paths", {})
+    php_binary = str(paths.get("php_binary", "php"))
+    app_root = Path(str(paths.get("app_root", "."))).resolve()
+    return PhpBridge(php_binary, app_root)
+
+
+def run_killmail_zkb_repair(db: Any, cfg: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Repair killmails with missing zkb metadata.
+
+    Accepts (db,) or (db, cfg) from the processor registry dispatch.
+    Uses the PHP bridge for DB writes, or falls back to direct DB queries.
+    """
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
-    bridge = PhpBridge(context.php_binary, context.app_root)
     user_agent = "SupplyCore killmail-zkb-repair/1.0"
+
+    # Build bridge if config is available, otherwise use db directly.
+    bridge: PhpBridge | None = None
+    if cfg:
+        try:
+            bridge = _build_bridge(cfg)
+        except Exception:
+            pass
 
     started_at = utc_now_iso()
     total_found = 0
@@ -75,20 +94,26 @@ def run_killmail_zkb_repair(context: Any) -> dict[str, Any]:
     total_failed = 0
     total_zkb_empty = 0
 
-    offset = 0
     while True:
         # Get batch of killmails missing zkb data
-        try:
-            response = bridge.call(
-                "killmails-missing-zkb",
-                payload={"limit": BATCH_SIZE, "offset": 0},  # Always offset=0 since repaired rows disappear from query
+        if bridge:
+            try:
+                response = bridge.call(
+                    "killmails-missing-zkb",
+                    payload={"limit": BATCH_SIZE, "offset": 0},
+                )
+                rows = response.get("rows") or []
+                total_remaining = int(response.get("total") or 0)
+            except Exception as e:
+                logger.error("Failed to fetch killmails missing zkb via bridge: %s", e)
+                break
+        else:
+            rows = db.fetch_all(
+                "SELECT killmail_id, killmail_hash FROM killmail_events "
+                "WHERE zkb_total_value IS NULL ORDER BY killmail_id ASC LIMIT %s",
+                (BATCH_SIZE,),
             )
-        except Exception as e:
-            logger.error("Failed to fetch killmails missing zkb: %s", e)
-            break
-
-        rows = response.get("rows") or []
-        total_remaining = int(response.get("total") or 0)
+            total_remaining = len(rows)  # Approximate
 
         if not rows:
             logger.info("No more killmails with missing zkb data.")
@@ -114,37 +139,52 @@ def run_killmail_zkb_repair(context: Any) -> dict[str, Any]:
 
             time.sleep(ZKB_REQUEST_DELAY)
 
-        # Send updates to PHP bridge
+        # Send updates
         if updates:
-            try:
-                result = bridge.call(
-                    "repair-killmail-zkb",
-                    payload={"updates": updates},
-                )
-                batch_result = result.get("result") or {}
-                total_updated += int(batch_result.get("updated") or 0)
-                total_failed += int(batch_result.get("failed") or 0)
-                logger.info("Repair batch: updated=%d failed=%d", batch_result.get("updated", 0), batch_result.get("failed", 0))
-            except Exception as e:
-                logger.error("Failed to send repair batch: %s", e)
-                total_failed += len(updates)
+            if bridge:
+                try:
+                    result = bridge.call(
+                        "repair-killmail-zkb",
+                        payload={"updates": updates},
+                    )
+                    batch_result = result.get("result") or {}
+                    total_updated += int(batch_result.get("updated") or 0)
+                    total_failed += int(batch_result.get("failed") or 0)
+                    logger.info("Repair batch: updated=%d failed=%d", batch_result.get("updated", 0), batch_result.get("failed", 0))
+                except Exception as e:
+                    logger.error("Failed to send repair batch: %s", e)
+                    total_failed += len(updates)
+            else:
+                # Direct DB update fallback
+                for update in updates:
+                    km_id = update["killmail_id"]
+                    zkb = update["zkb"]
+                    try:
+                        db.execute(
+                            "UPDATE killmail_events SET zkb_total_value = %s WHERE killmail_id = %s AND zkb_total_value IS NULL",
+                            (float(zkb["totalValue"]), km_id),
+                        )
+                        total_updated += 1
+                    except Exception:
+                        total_failed += 1
 
-        # Progress update
-        try:
-            bridge.call("update-setting", payload={
-                "key": "killmail_zkb_repair_progress",
-                "value": json.dumps({
-                    "found": total_found,
-                    "fetched": total_fetched,
-                    "updated": total_updated,
-                    "failed": total_failed,
-                    "zkb_empty": total_zkb_empty,
-                    "remaining": total_remaining - len(rows),
-                    "updated_at": utc_now_iso(),
-                }),
-            })
-        except Exception:
-            pass
+        # Progress update (via bridge if available)
+        if bridge:
+            try:
+                bridge.call("update-setting", payload={
+                    "key": "killmail_zkb_repair_progress",
+                    "value": json.dumps({
+                        "found": total_found,
+                        "fetched": total_fetched,
+                        "updated": total_updated,
+                        "failed": total_failed,
+                        "zkb_empty": total_zkb_empty,
+                        "remaining": total_remaining - len(rows),
+                        "updated_at": utc_now_iso(),
+                    }),
+                })
+            except Exception:
+                pass
 
         # Safety: if we processed a batch but updated nothing, we're stuck
         if not updates and total_zkb_empty >= len(rows):
@@ -152,13 +192,14 @@ def run_killmail_zkb_repair(context: Any) -> dict[str, Any]:
             break
 
     # Clear progress
-    try:
-        bridge.call("update-setting", payload={
-            "key": "killmail_zkb_repair_progress",
-            "value": "",
-        })
-    except Exception:
-        pass
+    if bridge:
+        try:
+            bridge.call("update-setting", payload={
+                "key": "killmail_zkb_repair_progress",
+                "value": "",
+            })
+        except Exception:
+            pass
 
     return {
         "status": "success",
