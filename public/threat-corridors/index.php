@@ -6,6 +6,8 @@ require_once __DIR__ . '/../../src/bootstrap.php';
 $title = 'Battle Intelligence — Threat Corridors';
 
 $regionId = isset($_GET['region_id']) ? (int) $_GET['region_id'] : 0;
+$surroundingHops = isset($_GET['surrounding_hops']) ? (int) $_GET['surrounding_hops'] : 1;
+$surroundingHops = max(0, min(3, $surroundingHops));
 $page = max(1, (int) ($_GET['page'] ?? 1));
 $perPage = 30;
 $offset = ($page - 1) * $perPage;
@@ -45,6 +47,14 @@ include __DIR__ . '/../../src/views/partials/header.php';
                 <?php endforeach; ?>
             </select>
         </div>
+        <div>
+            <label class="text-xs text-muted block mb-1">Surrounding Jumps</label>
+            <select name="surrounding_hops" class="w-44 rounded bg-slate-800 border border-border px-2 py-1.5 text-sm text-slate-100">
+                <?php for ($i = 0; $i <= 3; $i++): ?>
+                    <option value="<?= $i ?>" <?= $surroundingHops === $i ? 'selected' : '' ?>><?= $i ?> jumps</option>
+                <?php endfor; ?>
+            </select>
+        </div>
         <button type="submit" class="btn-secondary h-fit">Filter</button>
         <?php if ($regionId > 0): ?>
             <a href="/threat-corridors" class="text-sm text-accent">Clear</a>
@@ -63,6 +73,8 @@ include __DIR__ . '/../../src/views/partials/header.php';
                     $scorePct = $score > 0 ? min(100, $score * 10) : 0;
                     $length = (int) ($c['corridor_length'] ?? 0);
                     $systemNames = $c['system_names'] ?? [];
+                    $corridorId = (int) ($c['corridor_id'] ?? 0);
+                    $mapPath = supplycore_threat_corridor_graph_svg($corridorId, (array) ($c['system_ids'] ?? []), $surroundingHops);
                     $routeLabel = $systemNames !== [] ? implode(' → ', array_map(fn($n) => htmlspecialchars((string) $n, ENT_QUOTES), $systemNames)) : ($length . ' systems');
                     $regionName = htmlspecialchars((string) ($c['region_name'] ?? ''), ENT_QUOTES);
 
@@ -130,6 +142,19 @@ include __DIR__ . '/../../src/views/partials/header.php';
                             <?php endif; ?>
                         </div>
                     <?php endif; ?>
+
+                    <?php if (is_string($mapPath) && $mapPath !== ''): ?>
+                        <div class="mt-3 rounded border border-border/60 bg-slate-950/60 p-2">
+                            <div class="flex items-center justify-between gap-2">
+                                <p class="text-[10px] uppercase tracking-[0.15em] text-muted">Corridor Graph</p>
+                                <p class="text-[10px] text-muted">Outer ring: security · Inner core: threat</p>
+                            </div>
+                            <img src="<?= htmlspecialchars($mapPath, ENT_QUOTES) ?>"
+                                 alt="Threat corridor graph for corridor #<?= $corridorId ?>"
+                                 class="mt-2 w-full rounded border border-border/50 bg-slate-950"
+                                 loading="lazy">
+                        </div>
+                    <?php endif; ?>
                 </div>
             <?php endforeach; ?>
         </div>
@@ -139,10 +164,10 @@ include __DIR__ . '/../../src/views/partials/header.php';
                 <span>Showing <?= number_format($offset + 1) ?>–<?= number_format(min($offset + $perPage, $totalCount)) ?> of <?= number_format($totalCount) ?></span>
                 <div class="flex gap-2">
                     <?php if ($page > 1): ?>
-                        <a href="?page=<?= $page - 1 ?><?= $regionId > 0 ? '&region_id=' . $regionId : '' ?>" class="btn-secondary text-xs">Previous</a>
+                        <a href="?page=<?= $page - 1 ?><?= $regionId > 0 ? '&region_id=' . $regionId : '' ?>&surrounding_hops=<?= $surroundingHops ?>" class="btn-secondary text-xs">Previous</a>
                     <?php endif; ?>
                     <?php if ($page < $totalPages): ?>
-                        <a href="?page=<?= $page + 1 ?><?= $regionId > 0 ? '&region_id=' . $regionId : '' ?>" class="btn-secondary text-xs">Next</a>
+                        <a href="?page=<?= $page + 1 ?><?= $regionId > 0 ? '&region_id=' . $regionId : '' ?>&surrounding_hops=<?= $surroundingHops ?>" class="btn-secondary text-xs">Next</a>
                     <?php endif; ?>
                 </div>
             </div>

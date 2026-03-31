@@ -30620,3 +30620,173 @@ function log_viewer_external_health(): array
 
     return $results;
 }
+
+function supplycore_threat_corridor_map_cache_minutes(): int
+{
+    return max(5, min(240, (int) get_setting('threat_corridor_map_cache_minutes', '20')));
+}
+
+function supplycore_threat_corridor_graph_svg(int $corridorId, array $corridorSystemIds, int $surroundingHops = 1): ?string
+{
+    $corridorSystemIds = array_values(array_unique(array_map('intval', $corridorSystemIds)));
+    $corridorSystemIds = array_values(array_filter($corridorSystemIds, static fn (int $sid): bool => $sid > 0));
+    if ($corridorId <= 0 || $corridorSystemIds === []) {
+        return null;
+    }
+    $surroundingHops = max(0, min(3, $surroundingHops));
+    $cacheDir = dirname(__DIR__) . '/storage/cache/threat-corridor-maps';
+    if (!is_dir($cacheDir) && !@mkdir($cacheDir, 0775, true) && !is_dir($cacheDir)) {
+        return null;
+    }
+    $cacheFile = sprintf('%s/corridor-%d-h%d.svg', $cacheDir, $corridorId, $surroundingHops);
+    $cacheTtl = supplycore_threat_corridor_map_cache_minutes() * 60;
+    if (is_file($cacheFile) && ((time() - (int) filemtime($cacheFile)) < $cacheTtl)) {
+        return '/storage/cache/threat-corridor-maps/' . basename($cacheFile);
+    }
+    $graph = db_threat_corridor_graph_subgraph($corridorSystemIds, $surroundingHops);
+    $nodes = (array) ($graph['nodes'] ?? []);
+    $edges = (array) ($graph['edges'] ?? []);
+    if ($nodes === []) {
+        return null;
+    }
+
+    $corridorSet = array_fill_keys($corridorSystemIds, true);
+    $nodeMap = [];
+    foreach ($nodes as $node) {
+        $sid = (int) ($node['system_id'] ?? 0);
+        if ($sid <= 0) {
+            continue;
+        }
+        $nodeMap[$sid] = [
+            'system_id' => $sid,
+            'name' => (string) ($node['system_name'] ?? (string) $sid),
+            'security' => (float) ($node['security'] ?? 0.0),
+            'threat_level' => strtolower((string) ($node['threat_level'] ?? '')),
+            'is_corridor' => isset($corridorSet[$sid]),
+        ];
+    }
+    if ($nodeMap === []) {
+        return null;
+    }
+
+    $nodeIds = array_keys($nodeMap);
+    $positions = [];
+    $seed = max(11, $corridorId * 131 + ($surroundingHops * 17));
+    mt_srand($seed);
+    foreach ($nodeIds as $sid) {
+        $positions[$sid] = ['x' => mt_rand(50, 950) / 1000.0, 'y' => mt_rand(50, 950) / 1000.0, 'vx' => 0.0, 'vy' => 0.0];
+    }
+    $nodeCount = max(1, count($nodeIds));
+    $k = sqrt(1.0 / $nodeCount);
+    for ($iter = 0; $iter < 200; $iter++) {
+        foreach ($nodeIds as $sid) {
+            $positions[$sid]['vx'] = 0.0;
+            $positions[$sid]['vy'] = 0.0;
+        }
+        $idsLen = count($nodeIds);
+        for ($i = 0; $i < $idsLen; $i++) {
+            $a = $nodeIds[$i];
+            for ($j = $i + 1; $j < $idsLen; $j++) {
+                $b = $nodeIds[$j];
+                $dx = $positions[$a]['x'] - $positions[$b]['x'];
+                $dy = $positions[$a]['y'] - $positions[$b]['y'];
+                $dist = max(0.001, sqrt(($dx * $dx) + ($dy * $dy)));
+                $force = ($k * $k) / $dist;
+                $fx = ($dx / $dist) * $force;
+                $fy = ($dy / $dist) * $force;
+                $positions[$a]['vx'] += $fx;
+                $positions[$a]['vy'] += $fy;
+                $positions[$b]['vx'] -= $fx;
+                $positions[$b]['vy'] -= $fy;
+            }
+        }
+        foreach ($edges as $edge) {
+            $a = (int) ($edge[0] ?? 0);
+            $b = (int) ($edge[1] ?? 0);
+            if (!isset($positions[$a], $positions[$b])) {
+                continue;
+            }
+            $dx = $positions[$a]['x'] - $positions[$b]['x'];
+            $dy = $positions[$a]['y'] - $positions[$b]['y'];
+            $dist = max(0.001, sqrt(($dx * $dx) + ($dy * $dy)));
+            $force = ($dist * $dist) / max(0.001, $k);
+            $fx = ($dx / $dist) * $force * 0.015;
+            $fy = ($dy / $dist) * $force * 0.015;
+            $positions[$a]['vx'] -= $fx;
+            $positions[$a]['vy'] -= $fy;
+            $positions[$b]['vx'] += $fx;
+            $positions[$b]['vy'] += $fy;
+        }
+        $temp = max(0.01, 0.12 - ($iter * 0.0005));
+        foreach ($nodeIds as $sid) {
+            $positions[$sid]['x'] += max(-$temp, min($temp, $positions[$sid]['vx']));
+            $positions[$sid]['y'] += max(-$temp, min($temp, $positions[$sid]['vy']));
+            $positions[$sid]['x'] = max(0.03, min(0.97, $positions[$sid]['x']));
+            $positions[$sid]['y'] = max(0.07, min(0.93, $positions[$sid]['y']));
+        }
+    }
+
+    $width = 760;
+    $height = 250;
+    $pad = 24;
+    $sx = static fn (float $x): float => $pad + ($x * ($width - ($pad * 2)));
+    $sy = static fn (float $y): float => $pad + ($y * ($height - ($pad * 2)));
+    $securityColor = static function (float $sec): string {
+        if ($sec >= 0.5) {
+            return '#10b981';
+        }
+        if ($sec > 0.0) {
+            return '#f59e0b';
+        }
+        return '#ef4444';
+    };
+    $threatColor = static function (string $threatLevel): string {
+        return match ($threatLevel) {
+            'critical' => '#ef4444',
+            'high' => '#f97316',
+            'medium' => '#eab308',
+            'low' => '#3b82f6',
+            default => '#94a3b8',
+        };
+    };
+
+    $svg = [];
+    $svg[] = '<svg xmlns="http://www.w3.org/2000/svg" width="' . $width . '" height="' . $height . '" viewBox="0 0 ' . $width . ' ' . $height . '">';
+    $svg[] = '<defs><style><![CDATA['
+        . '.label-c{font:600 11px Inter,Segoe UI,sans-serif;fill:#e2e8f0}'
+        . '.node-surround:hover + .label-s{opacity:1}'
+        . '.label-s{font:500 10px Inter,Segoe UI,sans-serif;fill:#94a3b8;opacity:0;transition:opacity .2s ease}'
+        . ']]></style></defs>';
+    $svg[] = '<rect x="0" y="0" width="' . $width . '" height="' . $height . '" rx="12" fill="#020617"/>';
+
+    foreach ($edges as $edge) {
+        $a = (int) ($edge[0] ?? 0);
+        $b = (int) ($edge[1] ?? 0);
+        if (!isset($positions[$a], $positions[$b])) {
+            continue;
+        }
+        $svg[] = '<line x1="' . number_format($sx((float) $positions[$a]['x']), 2, '.', '') . '" y1="' . number_format($sy((float) $positions[$a]['y']), 2, '.', '') . '" x2="' . number_format($sx((float) $positions[$b]['x']), 2, '.', '') . '" y2="' . number_format($sy((float) $positions[$b]['y']), 2, '.', '') . '" stroke="#334155" stroke-opacity="0.8" stroke-width="1.2"/>';
+    }
+    foreach ($nodeMap as $sid => $node) {
+        if (!isset($positions[$sid])) {
+            continue;
+        }
+        $x = number_format($sx((float) $positions[$sid]['x']), 2, '.', '');
+        $y = number_format($sy((float) $positions[$sid]['y']), 2, '.', '');
+        $outer = $securityColor((float) $node['security']);
+        $inner = $threatColor((string) $node['threat_level']);
+        $safeName = htmlspecialchars((string) $node['name'], ENT_QUOTES);
+        $title = $safeName . ' | sec=' . number_format((float) $node['security'], 1) . ' | threat=' . ($node['threat_level'] !== '' ? $node['threat_level'] : 'unknown');
+        if ($node['is_corridor'] === true) {
+            $svg[] = '<g><circle cx="' . $x . '" cy="' . $y . '" r="8.8" fill="none" stroke="' . $outer . '" stroke-width="2.6"/><circle cx="' . $x . '" cy="' . $y . '" r="5.2" fill="' . $inner . '" stroke="#0f172a" stroke-width="1.1"><title>' . htmlspecialchars($title, ENT_QUOTES) . '</title></circle><text class="label-c" x="' . ($x + 10) . '" y="' . ($y - 8) . '">' . $safeName . '</text></g>';
+        } else {
+            $svg[] = '<g><circle class="node-surround" cx="' . $x . '" cy="' . $y . '" r="6.1" fill="none" stroke="' . $outer . '" stroke-width="1.7"><title>' . htmlspecialchars($title, ENT_QUOTES) . '</title></circle><circle cx="' . $x . '" cy="' . $y . '" r="3.5" fill="' . $inner . '" stroke="#0f172a" stroke-width="1"/><text class="label-s" x="' . ($x + 8) . '" y="' . ($y - 6) . '">' . $safeName . '</text></g>';
+        }
+    }
+    $svg[] = '</svg>';
+    if (@file_put_contents($cacheFile, implode('', $svg)) === false) {
+        return null;
+    }
+
+    return '/storage/cache/threat-corridor-maps/' . basename($cacheFile);
+}
