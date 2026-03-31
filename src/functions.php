@@ -15785,6 +15785,77 @@ function market_hub_local_history_source(): string
     return 'market_hub_current_sync';
 }
 
+function market_hub_reference_context(string|int $hubRef): array
+{
+    $hubString = trim((string) $hubRef);
+
+    if ($hubString === '') {
+        return [
+            'hub_name'     => null,
+            'hub_type'     => 'unknown',
+            'api_source'   => 'unknown',
+            'region_id'    => null,
+            'structure_id' => null,
+        ];
+    }
+
+    $isNumeric = preg_match('/^[1-9][0-9]*$/', $hubString) === 1;
+    $hubId = $isNumeric ? (int) $hubString : 0;
+
+    // Player structures have 10–20 digit IDs
+    if ($hubId > 0 && preg_match('/^[1-9][0-9]{9,19}$/', $hubString) === 1) {
+        try {
+            $meta = db_alliance_structure_metadata_get($hubId);
+        } catch (Throwable) {
+            $meta = null;
+        }
+        $name = trim((string) ($meta['structure_name'] ?? ''));
+
+        return [
+            'hub_name'     => $name !== '' ? $name : null,
+            'hub_type'     => 'player_structure',
+            'api_source'   => 'esi_structure',
+            'region_id'    => null,
+            'structure_id' => $hubId,
+        ];
+    }
+
+    // NPC station
+    if ($hubId > 0) {
+        try {
+            $station = db_ref_npc_station_by_id($hubId);
+        } catch (Throwable) {
+            $station = null;
+        }
+        $name = $station !== null ? trim((string) ($station['station_name'] ?? '')) : '';
+        if ($name !== '' && is_placeholder_station_name($name, $hubId)) {
+            $name = '';
+        }
+
+        try {
+            $regionId = db_ref_npc_station_region_id($hubId);
+        } catch (Throwable) {
+            $regionId = null;
+        }
+
+        return [
+            'hub_name'     => $name !== '' ? $name : null,
+            'hub_type'     => 'npc_station',
+            'api_source'   => 'esi_npc_station',
+            'region_id'    => $regionId,
+            'structure_id' => null,
+        ];
+    }
+
+    return [
+        'hub_name'     => null,
+        'hub_type'     => 'unknown',
+        'api_source'   => 'unknown',
+        'region_id'    => null,
+        'structure_id' => null,
+    ];
+}
+
 function market_hub_current_sync_latest_dataset(string|int|null $hubRef = null): array
 {
     $resolvedHubRef = trim((string) ($hubRef ?? market_hub_setting_reference()));
@@ -17496,9 +17567,14 @@ function esi_npc_station_search(string $query, array $tokenContext): array
     $stations = db_ref_npc_station_search($term, 20);
     $results = [];
     foreach ($stations as $station) {
+        $stationId = (int) ($station['station_id'] ?? 0);
+        $name = (string) ($station['station_name'] ?? '');
+        if ($stationId <= 0 || is_placeholder_station_name($name, $stationId)) {
+            continue;
+        }
         $results[] = esi_structure_result_shape([
-            'id' => (int) ($station['station_id'] ?? 0),
-            'name' => (string) ($station['station_name'] ?? ''),
+            'id' => $stationId,
+            'name' => $name,
             'system' => isset($station['system_id']) ? (string) $station['system_id'] : null,
             'type' => 'NPC Station',
         ]);
@@ -17520,7 +17596,7 @@ function esi_npc_station_metadata(int $stationId): ?array
     }
 
     $name = trim((string) ($station['station_name'] ?? ''));
-    if ($name === '') {
+    if ($name === '' || is_placeholder_station_name($name, $stationId)) {
         return null;
     }
 
