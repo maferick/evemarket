@@ -30970,10 +30970,11 @@ function supplycore_theater_map_svg(string $theaterId, array $systemIds, int $ho
     }
     $hops = max(1, min(2, $hops));
 
-    // Single system: reuse existing radial map (shows 2-hop neighborhood)
-    if (count($systemIds) === 1) {
-        return supplycore_system_area_svg($systemIds[0], 2);
-    }
+    // Single-system battles: show 1-hop gate neighbours via neo4j using the
+    // same compact horizontal layout as multi-system battles, rather than the
+    // tall 2-hop radial map (which left most of the canvas empty).
+    // The radial helper (supplycore_system_area_svg) is kept for the dedicated
+    // system-map page; here we want consistency and connected-system context.
 
     $cacheDir = dirname(__DIR__) . '/public/threat-corridors/svg';
     if (!is_dir($cacheDir) && !@mkdir($cacheDir, 0775, true) && !is_dir($cacheDir)) {

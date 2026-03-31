@@ -374,6 +374,46 @@ if ($viewSnapshot !== null && !$pendingLock) {
             'pilots' => $pilots,
         ];
     }
+    // ── Top-hulls补丁: pilots whose flying_ship_type_id is a capsule are skipped
+    // by the fleet-composition query filter above, so their real ships never
+    // appear in the "Top Hulls" list.  Walk participants and credit their
+    // highest-ISK non-pod lost ship instead.
+    $_podTypeIdsFC = [670, 33328];
+    $extraShipCounts = [];   // side → [type_id => ['name'=>…, 'pilots'=>…]]
+    foreach ($participantsAll as $_p) {
+        $_flyId = (int) ($_p['flying_ship_type_id'] ?? 0);
+        if ($_flyId > 0 && !in_array($_flyId, $_podTypeIdsFC, true)) {
+            continue; // already counted by fleet composition query
+        }
+        $_pSide = $classifyAlliance((int) ($_p['alliance_id'] ?? 0));
+        if (!isset($sidePanels[$_pSide])) continue;
+        // Find the best non-pod lost ship for this pilot
+        $_lostJson = $_p['ships_lost_detail'] ?? null;
+        if (!is_string($_lostJson)) continue;
+        $_lostArr = json_decode($_lostJson, true);
+        if (!is_array($_lostArr) || $_lostArr === []) continue;
+        $_nonPod = array_values(array_filter($_lostArr, static fn(array $e): bool => !in_array((int) ($e['ship_type_id'] ?? 0), [670, 33328], true)));
+        if ($_nonPod === []) continue;
+        usort($_nonPod, static fn(array $a, array $b): int => (float) ($b['isk_lost'] ?? 0) <=> (float) ($a['isk_lost'] ?? 0));
+        $_bestId = (int) ($_nonPod[0]['ship_type_id'] ?? 0);
+        if ($_bestId <= 0) continue;
+        if (!isset($extraShipCounts[$_pSide][$_bestId])) {
+            $extraShipCounts[$_pSide][$_bestId] = ['type_id' => $_bestId, 'name' => '', 'pilots' => 0];
+        }
+        $extraShipCounts[$_pSide][$_bestId]['pilots']++;
+    }
+    // Merge extras into sidePanels (names resolved after ship-type name lookup below)
+    foreach ($extraShipCounts as $_side => $_ships) {
+        foreach ($_ships as $_sid => $_info) {
+            $sidePanels[$_side]['ships'][] = [
+                'type_id' => $_info['type_id'],
+                'name'    => '', // placeholder — filled after name resolution
+                'pilots'  => $_info['pilots'],
+            ];
+            $sidePanels[$_side]['ship_pilots'] += $_info['pilots'];
+        }
+    }
+
     foreach ($sidePanels as $side => $data) {
         usort($data['ships'], static fn(array $l, array $r): int => $r['pilots'] <=> $l['pilots']);
         $sidePanels[$side]['ships'] = array_slice($data['ships'], 0, 12);
@@ -405,6 +445,16 @@ if ($viewSnapshot !== null && !$pendingLock) {
         }
     }
     $shipTypeNames = !empty($allShipTypeIds) ? db_market_orders_current_compact_type_names(array_keys($allShipTypeIds)) : [];
+
+    // Fill ship names for any extra top-hull entries added from lost-ship fallback
+    foreach ($sidePanels as $side => $data) {
+        foreach ($sidePanels[$side]['ships'] as &$_sh) {
+            if ($_sh['name'] === '' && $_sh['type_id'] > 0) {
+                $_sh['name'] = (string) ($shipTypeNames[$_sh['type_id']] ?? ('Type #' . $_sh['type_id']));
+            }
+        }
+        unset($_sh);
+    }
 
     // ── Handle pending lock: save full view snapshot ──────────────────────
     if ($pendingLock) {

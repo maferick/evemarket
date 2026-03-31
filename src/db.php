@@ -15809,6 +15809,7 @@ function db_theater_final_blows_by_side(string $theaterId): array
               AND tas.alliance_id = ka.alliance_id
          WHERE tb.theater_id = ?
            AND ka.final_blow = 1
+           AND ke.victim_ship_type_id NOT IN (670, 33328)
          GROUP BY side",
         [$theaterId]
     );
