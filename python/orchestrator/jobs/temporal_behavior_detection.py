@@ -364,7 +364,7 @@ def _neo4j_write_batch(neo4j: Neo4jClient, batch: list[dict[str, Any]]) -> None:
             c.weekday_profile_shift = row.weekday_profile_shift,
             c.cadence_burstiness = row.cadence_burstiness,
             c.reactivation_after_dormancy = row.reactivation_after_dormancy,
-            c.temporal_anomaly_computed_at = datetime()
+            c.temporal_anomaly_computed_at = toString(datetime())
         WITH c, row
         WHERE row.active_hour_shift > 0.3
            OR row.weekday_profile_shift > 0.3

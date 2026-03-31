@@ -91,11 +91,11 @@ def _query_graph_metrics(client: Neo4jClient, character_ids: list[int]) -> list[
     rows = client.query(
         """
         UNWIND $char_ids AS cid
-        MATCH (c:Character {id: cid})
+        MATCH (c:Character {character_id: cid})
         OPTIONAL MATCH (c)-[r:CO_OCCURS_WITH]-()
         WITH c, count(r) AS co_count
         RETURN
-            c.id AS character_id,
+            c.character_id AS character_id,
             COALESCE(c.community_label, 0) AS cluster_id,
             COALESCE(c.betweenness_approx, 0.0) AS bridge_score,
             COALESCE(c.pr, 0.0) AS pagerank,

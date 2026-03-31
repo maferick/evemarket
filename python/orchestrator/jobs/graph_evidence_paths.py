@@ -129,7 +129,7 @@ def run_graph_evidence_paths_sync(db: SupplyCoreDb, neo4j_raw: dict[str, Any] | 
                         WHEN n:Corporation THEN 'Corporation'
                         ELSE 'Unknown' END,
                     id: COALESCE(n.character_id, n.alliance_id, n.battle_id, n.corporation_id, id(n)),
-                    name: COALESCE(n.name, n.character_name, n.alliance_name, toString(COALESCE(n.character_id, n.alliance_id, n.battle_id, ''))),
+                    name: COALESCE(n.name, toString(COALESCE(n.character_id, n.alliance_id, n.battle_id, ''))),
                     flagged: CASE WHEN n:Character AND COALESCE(n.suspicion_score, 0) > 0.5 THEN true ELSE false END
                 }] AS path_nodes_data,
                 [r IN rels | {
