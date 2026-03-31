@@ -141,33 +141,63 @@ include __DIR__ . '/../../src/views/partials/header.php';
 
                         <?php if (is_string($mapPath) && $mapPath !== ''): ?>
                             <?php $dialogId = 'corridor-graph-dialog-' . $corridorId; ?>
-                            <div class="corridor-graph w-full shrink-0 self-start rounded border border-border/60 bg-slate-950/60 p-2 lg:ml-auto lg:w-[320px] lg:min-w-[320px] lg:max-w-[320px]">
-                                <div class="flex items-center justify-between gap-2">
-                                    <p class="text-[10px] uppercase tracking-[0.15em] text-muted">Corridor Graph</p>
+                            <div class="corridor-graph w-full shrink-0 self-start rounded-lg border border-border/40 bg-slate-950 overflow-hidden lg:ml-auto lg:w-[320px] lg:min-w-[320px] lg:max-w-[320px]">
+                                <div class="flex items-center justify-between gap-2 px-2.5 py-1.5 border-b border-border/30 bg-slate-900/60">
+                                    <p class="text-[10px] uppercase tracking-[0.15em] text-slate-500">Route Map</p>
                                     <button type="button"
                                             data-dialog-open="<?= htmlspecialchars($dialogId, ENT_QUOTES) ?>"
-                                            class="text-[10px] text-accent hover:text-accent/80">Pop out</button>
+                                            class="flex items-center gap-1 text-[10px] text-slate-400 hover:text-slate-100 transition-colors">
+                                        <svg width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M1 9L9 1M9 1H5M9 1V5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                                        Expand
+                                    </button>
                                 </div>
-                                <p class="text-[10px] text-muted">Corridor links highlighted in red · Adjacent links in slate · Outer ring: security · Inner core: threat</p>
                                 <img src="<?= htmlspecialchars($mapPath, ENT_QUOTES) ?>"
                                      alt="Threat corridor graph for corridor #<?= $corridorId ?>"
-                                     class="mt-2 h-[180px] w-full object-contain cursor-zoom-in"
+                                     class="h-[180px] w-full object-contain cursor-zoom-in"
                                      data-dialog-open="<?= htmlspecialchars($dialogId, ENT_QUOTES) ?>"
                                      loading="lazy">
                             </div>
 
-                            <dialog id="<?= htmlspecialchars($dialogId, ENT_QUOTES) ?>" class="rounded-xl border border-border/60 bg-slate-950/95 p-0 text-slate-100 backdrop:bg-black/70">
-                                <div class="w-[min(92vw,960px)] p-3">
-                                    <div class="mb-2 flex items-center justify-between">
-                                        <p class="text-xs uppercase tracking-[0.15em] text-muted">Corridor #<?= $corridorId ?> graph</p>
+                            <dialog id="<?= htmlspecialchars($dialogId, ENT_QUOTES) ?>"
+                                    class="rounded-xl border border-white/8 bg-slate-950 p-0 text-slate-100 shadow-2xl backdrop:bg-black/80 backdrop:backdrop-blur-sm w-[min(92vw,980px)] max-h-[90vh]">
+                                <div class="flex flex-col">
+                                    <div class="flex items-center justify-between gap-3 px-4 py-2.5 border-b border-white/8 bg-slate-900/70 shrink-0">
+                                        <div class="min-w-0">
+                                            <p class="text-[10px] uppercase tracking-[0.15em] text-slate-500">Route Map · Corridor #<?= $corridorId ?></p>
+                                            <p class="mt-0.5 text-xs text-slate-200 font-medium truncate" title="<?= htmlspecialchars(implode(' → ', $systemNames), ENT_QUOTES) ?>"><?= $routeLabel ?></p>
+                                        </div>
                                         <button type="button"
                                                 data-dialog-close="<?= htmlspecialchars($dialogId, ENT_QUOTES) ?>"
-                                                class="rounded border border-border/60 px-2 py-1 text-xs text-slate-200 hover:bg-slate-800/70">Close</button>
+                                                class="flex shrink-0 items-center justify-center w-7 h-7 rounded border border-white/10 text-slate-400 hover:text-slate-100 hover:bg-slate-700/60 transition-colors">
+                                            <svg width="11" height="11" viewBox="0 0 11 11" fill="none"><path d="M1 1l9 9M10 1L1 10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+                                        </button>
                                     </div>
-                                    <img src="<?= htmlspecialchars($mapPath, ENT_QUOTES) ?>"
-                                         alt="Expanded threat corridor graph for corridor #<?= $corridorId ?>"
-                                         class="w-full"
-                                         loading="lazy">
+                                    <div class="overflow-auto bg-[#04080f]">
+                                        <img src="<?= htmlspecialchars($mapPath, ENT_QUOTES) ?>"
+                                             alt="Expanded threat corridor graph for corridor #<?= $corridorId ?>"
+                                             class="w-full"
+                                             loading="lazy">
+                                    </div>
+                                    <div class="flex flex-wrap items-center gap-x-5 gap-y-1 px-4 py-2 border-t border-white/8 bg-slate-900/50 shrink-0">
+                                        <span class="text-[10px] text-slate-500 flex items-center gap-1.5">
+                                            <span class="inline-block w-5 h-0.5 rounded" style="background:#fbbf24"></span>Corridor highway
+                                        </span>
+                                        <span class="text-[10px] text-slate-500 flex items-center gap-1.5">
+                                            <span class="inline-block w-5 h-0.5 rounded" style="background:#1e3a5f;opacity:.8"></span>Stargate connections
+                                        </span>
+                                        <span class="text-[10px] text-slate-500 flex items-center gap-1.5">
+                                            <span class="inline-block w-2.5 h-2.5 rounded-full border" style="border-color:#10b981"></span>High-sec outer ring
+                                        </span>
+                                        <span class="text-[10px] text-slate-500 flex items-center gap-1.5">
+                                            <span class="inline-block w-2.5 h-2.5 rounded-full border" style="border-color:#f59e0b"></span>Low-sec
+                                        </span>
+                                        <span class="text-[10px] text-slate-500 flex items-center gap-1.5">
+                                            <span class="inline-block w-2.5 h-2.5 rounded-full border" style="border-color:#ef4444"></span>Null-sec
+                                        </span>
+                                        <span class="text-[10px] text-slate-500 flex items-center gap-1.5">
+                                            <span class="inline-block w-2.5 h-2.5 rounded-full" style="background:#ef4444"></span>Critical threat core
+                                        </span>
+                                    </div>
                                 </div>
                             </dialog>
                         <?php endif; ?>
