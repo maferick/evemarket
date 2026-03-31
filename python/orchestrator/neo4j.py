@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import json
 from dataclasses import dataclass
+import time
 from typing import Any
 import urllib.error
 import urllib.request
@@ -38,6 +39,18 @@ class Neo4jError(RuntimeError):
     pass
 
 
+_TRANSIENT_RETRY_LIMIT = 3
+_TRANSIENT_BASE_SLEEP = 0.5
+
+
+def _is_transient_error(errors: list) -> bool:
+    """Return True when the first Neo4j error has a transient (retryable) code."""
+    if not errors:
+        return False
+    code = str(errors[0].get("code", ""))
+    return code.startswith("Neo.TransientError.")
+
+
 class Neo4jClient:
     def __init__(self, config: Neo4jConfig):
         self._config = config
@@ -57,29 +70,36 @@ class Neo4jClient:
             ]
         }
         auth = base64.b64encode(f"{self._config.username}:{self._config.password}".encode("utf-8")).decode("ascii")
-        request = urllib.request.Request(
-            self._endpoint,
-            data=json_dumps_safe(payload).encode("utf-8"),
-            method="POST",
-            headers={
-                "Authorization": f"Basic {auth}",
-                "Content-Type": "application/json",
-                "Accept": "application/json",
-            },
-        )
-        try:
-            effective_timeout = timeout_seconds if timeout_seconds is not None else self._config.timeout_seconds
-            with ipv4_opener.open(request, timeout=effective_timeout) as response:
-                body = json.loads(response.read().decode("utf-8"))
-        except urllib.error.HTTPError as error:
-            details = error.read().decode("utf-8", errors="replace")
-            raise Neo4jError(f"Neo4j query failed ({error.code}): {details}") from error
-        except urllib.error.URLError as error:
-            raise Neo4jError(f"Neo4j query failed: {error.reason}") from error
+        effective_timeout = timeout_seconds if timeout_seconds is not None else self._config.timeout_seconds
 
-        errors = body.get("errors") or []
-        if errors:
-            raise Neo4jError(str(errors[0]))
+        for attempt in range(_TRANSIENT_RETRY_LIMIT + 1):
+            request = urllib.request.Request(
+                self._endpoint,
+                data=json_dumps_safe(payload).encode("utf-8"),
+                method="POST",
+                headers={
+                    "Authorization": f"Basic {auth}",
+                    "Content-Type": "application/json",
+                    "Accept": "application/json",
+                },
+            )
+            try:
+                with ipv4_opener.open(request, timeout=effective_timeout) as response:
+                    body = json.loads(response.read().decode("utf-8"))
+            except urllib.error.HTTPError as error:
+                details = error.read().decode("utf-8", errors="replace")
+                raise Neo4jError(f"Neo4j query failed ({error.code}): {details}") from error
+            except urllib.error.URLError as error:
+                raise Neo4jError(f"Neo4j query failed: {error.reason}") from error
+
+            errors = body.get("errors") or []
+            if errors:
+                if attempt < _TRANSIENT_RETRY_LIMIT and _is_transient_error(errors):
+                    time.sleep(_TRANSIENT_BASE_SLEEP * (2 ** attempt))
+                    continue
+                raise Neo4jError(str(errors[0]))
+
+            break
 
         results = body.get("results") or []
         if not results:
