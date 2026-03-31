@@ -23695,6 +23695,30 @@ function supplycore_ui_refresh_section_version_definitions(): array
                 return supplycore_ui_refresh_version_from_sync_state('killmail_overview_version', [sync_dataset_key_killmail_r2z2_stream()], ['killmail_overview', 'loss_aware_views'], ['killmail-overview-summary', 'killmail-overview-status', 'killmail-overview-table']);
             },
         ],
+        'log_viewer_version' => [
+            'domains' => ['scheduler'],
+            'ui_sections' => ['log-viewer-kpi', 'log-viewer-jobs', 'log-viewer-runs'],
+            'resolver' => static function (): array {
+                // Use a time-based fingerprint so the version bumps on every job completion.
+                // The log viewer is inherently real-time — we always want to show the latest state.
+                $fingerprint = hash('xxh3', gmdate('Y-m-d H:i:s'));
+                return [
+                    'section_key' => 'log_viewer_version',
+                    'fingerprint' => $fingerprint,
+                    'domains' => ['scheduler'],
+                    'ui_sections' => ['log-viewer-kpi', 'log-viewer-jobs', 'log-viewer-runs'],
+                    'freshness' => [
+                        'computed_at' => gmdate('Y-m-d H:i:s'),
+                        'freshness_state' => 'fresh',
+                        'freshness_label' => 'Fresh',
+                        'status' => 'ready',
+                    ],
+                    'metadata' => [
+                        'source' => 'scheduler_job_current_status',
+                    ],
+                ];
+            },
+        ],
     ];
 }
 
@@ -23903,21 +23927,26 @@ function supplycore_ui_refresh_publish_for_job_result(array $result): ?array
         }
     }
 
+    // Always include the scheduler domain and log-viewer sections so the
+    // log viewer page auto-refreshes via SSE whenever any job finishes.
+    $mergedDomains = array_values(array_unique(array_merge($domains, ['scheduler'])));
+    $mergedSections = array_values(array_unique(array_merge($uiSections, ['log-viewer-kpi', 'log-viewer-jobs', 'log-viewer-runs'])));
+
     $eventPayload = [
         'event_type' => 'job_completed',
         'event_key' => $jobKey . ':' . $status . ':' . gmdate('YmdHis', strtotime($finishedAt) ?: time()),
         'job_key' => $jobKey,
         'job_status' => $status,
         'finished_at' => gmdate('Y-m-d H:i:s', strtotime($finishedAt) ?: time()),
-        'domains_json' => json_encode($domains, JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE),
-        'ui_sections_json' => json_encode($uiSections, JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE),
+        'domains_json' => json_encode($mergedDomains, JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE),
+        'ui_sections_json' => json_encode($mergedSections, JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE),
         'section_versions_json' => json_encode($changedVersions, JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE),
         'payload_json' => json_encode([
             'job_name' => $jobKey,
             'finished_at' => $finishedAt,
             'state' => $status,
-            'affected_data_domains' => $domains,
-            'affected_ui_sections' => $uiSections,
+            'affected_data_domains' => $mergedDomains,
+            'affected_ui_sections' => $mergedSections,
             'freshness_versions' => $allVersions,
             'changed_versions' => $changedVersions,
         ], JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE),
@@ -23944,13 +23973,41 @@ function supplycore_ui_refresh_publish_for_job_result(array $result): ?array
         }
     }
 
+    // Bump the log_viewer_version so the log viewer page auto-refreshes
+    if ($eventId > 0) {
+        $logViewerResolved = supplycore_ui_refresh_resolve_version('log_viewer_version');
+        if ($logViewerResolved !== null) {
+            $logViewerStored = db_ui_refresh_section_version_get('log_viewer_version');
+            $logViewerCounter = max(0, (int) ($logViewerStored['version_counter'] ?? 0)) + 1;
+            db_ui_refresh_section_version_upsert([
+                'section_key' => 'log_viewer_version',
+                'version_counter' => $logViewerCounter,
+                'fingerprint' => (string) ($logViewerResolved['fingerprint'] ?? ''),
+                'domains_json' => json_encode(['scheduler'], JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE),
+                'ui_sections_json' => json_encode(['log-viewer-kpi', 'log-viewer-jobs', 'log-viewer-runs'], JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE),
+                'metadata_json' => json_encode(['freshness' => $logViewerResolved['freshness'] ?? [], 'metadata' => $logViewerResolved['metadata'] ?? []], JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE),
+                'last_job_key' => $jobKey,
+                'last_status' => $status,
+                'last_event_id' => $eventId,
+                'last_finished_at' => gmdate('Y-m-d H:i:s', strtotime($finishedAt) ?: time()),
+            ]);
+            $changedVersions['log_viewer_version'] = [
+                'section_key' => 'log_viewer_version',
+                'version' => $logViewerCounter,
+                'fingerprint' => (string) ($logViewerResolved['fingerprint'] ?? ''),
+                'domains' => ['scheduler'],
+                'ui_sections' => ['log-viewer-kpi', 'log-viewer-jobs', 'log-viewer-runs'],
+            ];
+        }
+    }
+
     return [
         'event_id' => $eventId,
         'job_name' => $jobKey,
         'finished_at' => $finishedAt,
         'state' => $status,
-        'affected_data_domains' => $domains,
-        'affected_ui_sections' => $uiSections,
+        'affected_data_domains' => $mergedDomains,
+        'affected_ui_sections' => $mergedSections,
         'freshness_versions' => $allVersions,
         'changed_versions' => $changedVersions,
     ];
@@ -24115,6 +24172,18 @@ function supplycore_live_refresh_page_registry(): array
                 'killmail-overview-summary' => ['version_keys' => ['killmail_overview_version']],
                 'killmail-overview-status' => ['version_keys' => ['killmail_overview_version']],
                 'killmail-overview-table' => ['version_keys' => ['killmail_overview_version']],
+            ],
+        ],
+        'log_viewer' => [
+            'path' => '/log-viewer/index.php',
+            'public_path' => '/log-viewer',
+            'script' => dirname(__DIR__) . '/public/log-viewer/index.php',
+            'domains' => ['scheduler'],
+            'version_keys' => ['log_viewer_version'],
+            'sections' => [
+                'log-viewer-kpi' => ['version_keys' => ['log_viewer_version']],
+                'log-viewer-jobs' => ['version_keys' => ['log_viewer_version']],
+                'log-viewer-runs' => ['version_keys' => ['log_viewer_version']],
             ],
         ],
     ];
@@ -30038,18 +30107,45 @@ function log_viewer_page_data(): array
          ORDER BY s.job_key"
     );
 
-    // ── Recent runs (last 200) ────────────────────────────────────────
-    $recentRuns = db_select(
+    // ── Recent runs — one row per job showing latest run ───────────────
+    // Instead of 200 raw rows (mostly noise), show the most recent run per
+    // unique job, plus any currently running or failed runs for context.
+    $recentRunsRaw = db_select(
         "SELECT r.dataset_key, r.run_status, r.started_at, r.finished_at,
                 r.source_rows, r.written_rows, r.error_message,
                 TIMESTAMPDIFF(SECOND, r.started_at, COALESCE(r.finished_at, NOW())) AS duration_seconds
          FROM sync_runs r
          ORDER BY r.started_at DESC
-         LIMIT 200"
+         LIMIT 500"
     );
 
-    // ── Failed runs (last 24 h) ───────────────────────────────────────
-    $failedRuns = db_select(
+    // Build a compact view: latest run per job + all running/failed entries
+    $recentByJob = [];
+    $recentExtra = []; // running or failed entries beyond the first per job
+    foreach ($recentRunsRaw as $run) {
+        $key = $run['dataset_key'];
+        $isNotable = $run['run_status'] === 'running' || $run['run_status'] === 'failed';
+
+        if (!isset($recentByJob[$key])) {
+            $recentByJob[$key] = $run;
+            $recentByJob[$key]['recent_success_count'] = $run['run_status'] === 'success' ? 1 : 0;
+        } else {
+            if ($run['run_status'] === 'success') {
+                $recentByJob[$key]['recent_success_count'] = ($recentByJob[$key]['recent_success_count'] ?? 0) + 1;
+            }
+            if ($isNotable) {
+                $recentExtra[] = $run;
+            }
+        }
+    }
+
+    // Merge: all notable extras + latest per job, sorted by started_at desc
+    $recentRuns = array_merge(array_values($recentByJob), $recentExtra);
+    usort($recentRuns, fn (array $a, array $b) => strcmp((string) ($b['started_at'] ?? ''), (string) ($a['started_at'] ?? '')));
+    $recentRuns = array_slice($recentRuns, 0, 80);
+
+    // ── Failed runs (last 24 h) — grouped by job + error pattern ──────
+    $failedRunsRaw = db_select(
         "SELECT r.dataset_key, r.run_status, r.started_at, r.finished_at,
                 r.error_message,
                 TIMESTAMPDIFF(SECOND, r.started_at, COALESCE(r.finished_at, NOW())) AS duration_seconds
@@ -30059,9 +30155,31 @@ function log_viewer_page_data(): array
          ORDER BY r.started_at DESC"
     );
 
+    // Group failures by job + error signature (first 120 chars) for deduplication
+    $failedRunsGrouped = [];
+    foreach ($failedRunsRaw as $run) {
+        $errSig = substr(trim((string) ($run['error_message'] ?? '')), 0, 120);
+        $groupKey = $run['dataset_key'] . '|' . $errSig;
+        if (!isset($failedRunsGrouped[$groupKey])) {
+            $failedRunsGrouped[$groupKey] = [
+                'dataset_key' => $run['dataset_key'],
+                'error_message' => $run['error_message'],
+                'count' => 0,
+                'latest_started_at' => $run['started_at'],
+                'oldest_started_at' => $run['started_at'],
+                'duration_seconds' => $run['duration_seconds'],
+            ];
+        }
+        $failedRunsGrouped[$groupKey]['count']++;
+        if ($run['started_at'] < $failedRunsGrouped[$groupKey]['oldest_started_at']) {
+            $failedRunsGrouped[$groupKey]['oldest_started_at'] = $run['started_at'];
+        }
+    }
+    $failedRuns = array_values($failedRunsGrouped);
+
     // ── Stuck / timed-out runs (running > default timeout) ────────────
     $defaultTimeout = (int) get_setting('scheduler.default_timeout_seconds', 300);
-    $stuckRuns = db_select(
+    $stuckRunsRaw = db_select(
         "SELECT r.dataset_key, r.run_status, r.started_at,
                 TIMESTAMPDIFF(SECOND, r.started_at, NOW()) AS running_seconds
          FROM sync_runs r
@@ -30070,6 +30188,32 @@ function log_viewer_page_data(): array
          ORDER BY r.started_at ASC",
         [$defaultTimeout]
     );
+
+    // Group stuck runs by job name for a cleaner display
+    $stuckRunsGrouped = [];
+    foreach ($stuckRunsRaw as $run) {
+        $key = $run['dataset_key'];
+        if (!isset($stuckRunsGrouped[$key])) {
+            $stuckRunsGrouped[$key] = [
+                'dataset_key' => $key,
+                'count' => 0,
+                'oldest_started_at' => $run['started_at'],
+                'newest_started_at' => $run['started_at'],
+                'max_running_seconds' => (float) $run['running_seconds'],
+                'min_running_seconds' => (float) $run['running_seconds'],
+            ];
+        }
+        $stuckRunsGrouped[$key]['count']++;
+        if ($run['started_at'] < $stuckRunsGrouped[$key]['oldest_started_at']) {
+            $stuckRunsGrouped[$key]['oldest_started_at'] = $run['started_at'];
+            $stuckRunsGrouped[$key]['max_running_seconds'] = (float) $run['running_seconds'];
+        }
+        if ($run['started_at'] > $stuckRunsGrouped[$key]['newest_started_at']) {
+            $stuckRunsGrouped[$key]['newest_started_at'] = $run['started_at'];
+            $stuckRunsGrouped[$key]['min_running_seconds'] = (float) $run['running_seconds'];
+        }
+    }
+    $stuckRuns = array_values($stuckRunsGrouped);
 
     // ── Jobs that never ran ───────────────────────────────────────────
     $neverRan = [];
