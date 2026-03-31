@@ -15224,7 +15224,11 @@ function python_bridge_killmail_full_history_backfill_context(): array
         $userAgent = 'SupplyCore';
     }
 
-    $startDate = trim((string) get_setting('killmail_backfill_start_date', ''));
+    // Prefer the dedicated full-history start date; fall back to the shared backfill start date.
+    $startDate = trim((string) get_setting('killmail_backfill.full_history_start_date', ''));
+    if ($startDate === '') {
+        $startDate = trim((string) get_setting('killmail_backfill_start_date', ''));
+    }
     $lastCompletedDate = trim((string) get_setting('killmail_full_history_backfill_last_date', ''));
 
     return [
