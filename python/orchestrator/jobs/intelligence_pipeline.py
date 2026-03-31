@@ -997,26 +997,6 @@ def run_intelligence_pipeline(
     recalibrated_weights = _load_recalibrated_weights(db)
 
     client = Neo4jClient(config)
-
-    # ── Defensive dedup sweep ────────────────────────────────────────────
-    # Catch any duplicate relationships before they accumulate.  Runs in
-    # small batches so it's cheap when there are no duplicates (single
-    # read-only query) and self-healing when there are.
-    for rel_type in ("PART_OF", "MEMBER_OF", "CURRENT_CORP"):
-        _dedup_total = 0
-        while True:
-            _dup_rows = client.query(
-                f"MATCH (a)-[r1:{rel_type}]->(b), (a)-[r2:{rel_type}]->(b) "
-                "WHERE elementId(r1) < elementId(r2) "
-                "WITH r2 LIMIT 5000 DELETE r2 RETURN count(*) AS deleted",
-            )
-            _deleted = int((_dup_rows[0] if _dup_rows else {}).get("deleted") or 0)
-            _dedup_total += _deleted
-            if _deleted == 0:
-                break
-        if _dedup_total > 0:
-            import logging
-            logging.getLogger(__name__).warning("Dedup sweep: removed %d duplicate %s relationships", _dedup_total, rel_type)
     computed_at = _now_sql()
     run_id = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
     stage_timings: dict[str, int] = {}
