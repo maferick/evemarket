@@ -3,11 +3,14 @@ from __future__ import annotations
 import bisect
 import math
 import sys
+import time
 from collections import defaultdict
 from datetime import UTC, datetime
 import hashlib
 from pathlib import Path
 from typing import Any
+
+import pymysql.err
 
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -391,135 +394,160 @@ def run_compute_battle_rollups(db: SupplyCoreDb, runtime: dict[str, Any] | None 
 
             batch_written = 0
             if not dry_run:
-                with db.transaction() as (_, cursor):
-                    rollup_batch = []
-                    for battle in battles.values():
-                        started = datetime.strptime(str(battle["started_at"]), "%Y-%m-%d %H:%M:%S")
-                        ended = datetime.strptime(str(battle["ended_at"]), "%Y-%m-%d %H:%M:%S")
-                        duration_seconds = max(1, int((ended - started).total_seconds()))
-                        rollup_batch.append(
-                            (str(battle["battle_id"]), int(battle["system_id"]), str(battle["started_at"]), str(battle["ended_at"]), duration_seconds, computed_at),
-                        )
-                    if rollup_batch:
-                        cursor.executemany(
-                            """
-                            INSERT INTO battle_rollups (
-                                battle_id, system_id, started_at, ended_at, duration_seconds,
-                                participant_count, eligible_for_suspicion, battle_size_class, computed_at
-                            ) VALUES (%s, %s, %s, %s, %s, 0, 0, 'small', %s)
-                            ON DUPLICATE KEY UPDATE
-                                system_id = VALUES(system_id),
-                                started_at = LEAST(started_at, VALUES(started_at)),
-                                ended_at = GREATEST(ended_at, VALUES(ended_at)),
-                                duration_seconds = TIMESTAMPDIFF(SECOND, LEAST(started_at, VALUES(started_at)), GREATEST(ended_at, VALUES(ended_at))),
-                                computed_at = IF(
-                                    system_id <> VALUES(system_id)
-                                    OR started_at <> LEAST(started_at, VALUES(started_at))
-                                    OR ended_at <> GREATEST(ended_at, VALUES(ended_at)),
-                                    VALUES(computed_at),
-                                    computed_at
+                rollup_batch = []
+                for battle in battles.values():
+                    started = datetime.strptime(str(battle["started_at"]), "%Y-%m-%d %H:%M:%S")
+                    ended = datetime.strptime(str(battle["ended_at"]), "%Y-%m-%d %H:%M:%S")
+                    duration_seconds = max(1, int((ended - started).total_seconds()))
+                    rollup_batch.append(
+                        (str(battle["battle_id"]), int(battle["system_id"]), str(battle["started_at"]), str(battle["ended_at"]), duration_seconds, computed_at),
+                    )
+                # Sort by battle_id so concurrent transactions acquire locks in the same order.
+                rollup_batch.sort(key=lambda r: r[0])
+
+                participant_batch = []
+                for participant in participant_rows.values():
+                    ship_type_id = int(participant.get("ship_type_id") or 0)
+                    flags = role_map.get(ship_type_id, (0, 0, 0))
+                    participant_batch.append(
+                        (
+                            str(participant["battle_id"]),
+                            int(participant["character_id"]),
+                            participant.get("corporation_id"),
+                            participant.get("alliance_id"),
+                            str(participant["side_key"]),
+                            participant.get("ship_type_id"),
+                            int(flags[0]),
+                            int(flags[1]),
+                            int(flags[2]),
+                            int(participant.get("participation_count") or 0),
+                            computed_at,
+                        ),
+                    )
+                # Sort by (battle_id, character_id) for consistent lock ordering.
+                participant_batch.sort(key=lambda r: (r[0], r[1]))
+
+                # Sort killmail assignments by sequence_id for consistent lock ordering.
+                sorted_killmail_assignments = sorted(killmail_assignments, key=lambda x: x[1])
+
+                _DEADLOCK_RETRIES = 3
+                for _attempt in range(_DEADLOCK_RETRIES + 1):
+                    try:
+                        with db.transaction() as (_, cursor):
+                            if rollup_batch:
+                                cursor.executemany(
+                                    """
+                                    INSERT INTO battle_rollups (
+                                        battle_id, system_id, started_at, ended_at, duration_seconds,
+                                        participant_count, eligible_for_suspicion, battle_size_class, computed_at
+                                    ) VALUES (%s, %s, %s, %s, %s, 0, 0, 'small', %s)
+                                    ON DUPLICATE KEY UPDATE
+                                        system_id = VALUES(system_id),
+                                        started_at = LEAST(started_at, VALUES(started_at)),
+                                        ended_at = GREATEST(ended_at, VALUES(ended_at)),
+                                        duration_seconds = TIMESTAMPDIFF(SECOND, LEAST(started_at, VALUES(started_at)), GREATEST(ended_at, VALUES(ended_at))),
+                                        computed_at = IF(
+                                            system_id <> VALUES(system_id)
+                                            OR started_at <> LEAST(started_at, VALUES(started_at))
+                                            OR ended_at <> GREATEST(ended_at, VALUES(ended_at)),
+                                            VALUES(computed_at),
+                                            computed_at
+                                        )
+                                    """,
+                                    rollup_batch,
                                 )
-                            """,
-                            rollup_batch,
-                        )
-                        batch_written += len(rollup_batch)
+                                batch_written += len(rollup_batch)
 
-                    participant_batch = []
-                    for participant in participant_rows.values():
-                        ship_type_id = int(participant.get("ship_type_id") or 0)
-                        flags = role_map.get(ship_type_id, (0, 0, 0))
-                        participant_batch.append(
-                            (
-                                str(participant["battle_id"]),
-                                int(participant["character_id"]),
-                                participant.get("corporation_id"),
-                                participant.get("alliance_id"),
-                                str(participant["side_key"]),
-                                participant.get("ship_type_id"),
-                                int(flags[0]),
-                                int(flags[1]),
-                                int(flags[2]),
-                                int(participant.get("participation_count") or 0),
-                                computed_at,
-                            ),
-                        )
-                    if participant_batch:
-                        cursor.executemany(
-                            """
-                            INSERT INTO battle_participants (
-                                battle_id, character_id, corporation_id, alliance_id, side_key, ship_type_id,
-                                is_logi, is_command, is_capital, participation_count, computed_at
-                            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                            ON DUPLICATE KEY UPDATE
-                                corporation_id = COALESCE(VALUES(corporation_id), corporation_id),
-                                alliance_id = COALESCE(VALUES(alliance_id), alliance_id),
-                                side_key = IF(side_key = 'unknown' AND VALUES(side_key) <> 'unknown', VALUES(side_key), side_key),
-                                ship_type_id = COALESCE(VALUES(ship_type_id), ship_type_id),
-                                is_logi = GREATEST(is_logi, VALUES(is_logi)),
-                                is_command = GREATEST(is_command, VALUES(is_command)),
-                                is_capital = GREATEST(is_capital, VALUES(is_capital)),
-                                participation_count = participation_count + VALUES(participation_count),
-                                computed_at = VALUES(computed_at)
-                            """,
-                            participant_batch,
-                        )
-                        batch_written += len(participant_batch)
+                            if participant_batch:
+                                cursor.executemany(
+                                    """
+                                    INSERT INTO battle_participants (
+                                        battle_id, character_id, corporation_id, alliance_id, side_key, ship_type_id,
+                                        is_logi, is_command, is_capital, participation_count, computed_at
+                                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                    ON DUPLICATE KEY UPDATE
+                                        corporation_id = COALESCE(VALUES(corporation_id), corporation_id),
+                                        alliance_id = COALESCE(VALUES(alliance_id), alliance_id),
+                                        side_key = IF(side_key = 'unknown' AND VALUES(side_key) <> 'unknown', VALUES(side_key), side_key),
+                                        ship_type_id = COALESCE(VALUES(ship_type_id), ship_type_id),
+                                        is_logi = GREATEST(is_logi, VALUES(is_logi)),
+                                        is_command = GREATEST(is_command, VALUES(is_command)),
+                                        is_capital = GREATEST(is_capital, VALUES(is_capital)),
+                                        participation_count = participation_count + VALUES(participation_count),
+                                        computed_at = VALUES(computed_at)
+                                    """,
+                                    participant_batch,
+                                )
+                                batch_written += len(participant_batch)
 
-                    if killmail_assignments:
-                        cursor.executemany(
-                            "UPDATE killmail_events SET battle_id = %s WHERE sequence_id = %s AND COALESCE(battle_id, '') <> %s",
-                            [(bid, sid, bid) for bid, sid in killmail_assignments],
-                        )
-                        batch_written += len(killmail_assignments)
+                            if sorted_killmail_assignments:
+                                cursor.executemany(
+                                    "UPDATE killmail_events SET battle_id = %s WHERE sequence_id = %s AND COALESCE(battle_id, '') <> %s",
+                                    [(bid, sid, bid) for bid, sid in sorted_killmail_assignments],
+                                )
+                                batch_written += len(sorted_killmail_assignments)
 
-                    if touched_battles:
-                        tb_list = list(touched_battles)
-                        tb_placeholders = ",".join(["%s"] * len(tb_list))
-                        # Compute participant counts for all touched battles in one query.
-                        cursor.execute(
-                            f"""
-                            SELECT battle_id, COUNT(*) AS participant_count
-                            FROM battle_participants
-                            WHERE battle_id IN ({tb_placeholders})
-                            GROUP BY battle_id
-                            """,
-                            tuple(tb_list),
-                        )
-                        counts = {str(r["battle_id"]): int(r["participant_count"]) for r in cursor.fetchall()}
-                        update_batch = []
-                        for battle_id_value in tb_list:
-                            participant_count = counts.get(str(battle_id_value), 0)
-                            update_batch.append(
-                                (
-                                    participant_count,
-                                    1 if participant_count >= MIN_ELIGIBLE_PARTICIPANTS else 0,
-                                    _battle_size_class(participant_count),
-                                    computed_at,
-                                    battle_id_value,
-                                    participant_count,
-                                    1 if participant_count >= MIN_ELIGIBLE_PARTICIPANTS else 0,
-                                    _battle_size_class(participant_count),
-                                    computed_at,
-                                ),
-                            )
-                        cursor.executemany(
-                            """
-                            UPDATE battle_rollups
-                            SET participant_count = %s,
-                                eligible_for_suspicion = %s,
-                                battle_size_class = %s,
-                                computed_at = %s
-                            WHERE battle_id = %s
-                              AND (
-                                participant_count <> %s
-                                OR eligible_for_suspicion <> %s
-                                OR battle_size_class <> %s
-                                OR computed_at <> %s
-                              )
-                            """,
-                            update_batch,
-                        )
-                        batch_written += len(update_batch)
+                            if touched_battles:
+                                tb_list = sorted(touched_battles)
+                                tb_placeholders = ",".join(["%s"] * len(tb_list))
+                                # Compute participant counts for all touched battles in one query.
+                                cursor.execute(
+                                    f"""
+                                    SELECT battle_id, COUNT(*) AS participant_count
+                                    FROM battle_participants
+                                    WHERE battle_id IN ({tb_placeholders})
+                                    GROUP BY battle_id
+                                    """,
+                                    tuple(tb_list),
+                                )
+                                counts = {str(r["battle_id"]): int(r["participant_count"]) for r in cursor.fetchall()}
+                                update_batch = []
+                                for battle_id_value in tb_list:
+                                    participant_count = counts.get(str(battle_id_value), 0)
+                                    update_batch.append(
+                                        (
+                                            participant_count,
+                                            1 if participant_count >= MIN_ELIGIBLE_PARTICIPANTS else 0,
+                                            _battle_size_class(participant_count),
+                                            computed_at,
+                                            battle_id_value,
+                                            participant_count,
+                                            1 if participant_count >= MIN_ELIGIBLE_PARTICIPANTS else 0,
+                                            _battle_size_class(participant_count),
+                                            computed_at,
+                                        ),
+                                    )
+                                # Sort by battle_id (index 4) for consistent lock ordering.
+                                update_batch.sort(key=lambda r: r[4])
+                                cursor.executemany(
+                                    """
+                                    UPDATE battle_rollups
+                                    SET participant_count = %s,
+                                        eligible_for_suspicion = %s,
+                                        battle_size_class = %s,
+                                        computed_at = %s
+                                    WHERE battle_id = %s
+                                      AND (
+                                        participant_count <> %s
+                                        OR eligible_for_suspicion <> %s
+                                        OR battle_size_class <> %s
+                                        OR computed_at <> %s
+                                      )
+                                    """,
+                                    update_batch,
+                                )
+                                batch_written += len(update_batch)
+                        break  # transaction committed successfully
+                    except Exception as _exc:
+                        if (
+                            _attempt < _DEADLOCK_RETRIES
+                            and isinstance(_exc, pymysql.err.OperationalError)
+                            and _exc.args[0] == 1213
+                        ):
+                            batch_written = 0
+                            time.sleep(0.2 * (2 ** _attempt))
+                            continue
+                        raise
 
             cursor_end = max_sequence_id
             rows_written += batch_written
