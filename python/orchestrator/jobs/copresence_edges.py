@@ -68,6 +68,15 @@ def _safe_div(num: float, den: float, default: float = 0.0) -> float:
     return num / den if den > 0 else default
 
 
+def _ensure_utc(dt: datetime | None) -> datetime | None:
+    """Ensure a datetime is timezone-aware (UTC).  DB drivers often return naive datetimes."""
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=UTC)
+    return dt
+
+
 # ---------------------------------------------------------------------------
 # Sync-state helpers
 # ---------------------------------------------------------------------------
@@ -226,7 +235,7 @@ def _generate_battle_edges(
         if len(chars) < 2:
             continue
 
-        battle_time = chars[0].get("started_at")
+        battle_time = _ensure_utc(chars[0].get("started_at"))
         system_id = int(chars[0].get("system_id") or 0) or None
 
         for wlabel, wdelta in window_defs:
@@ -273,6 +282,7 @@ def _generate_system_time_edges(
     for p in participations:
         sid = int(p.get("system_id") or 0)
         if sid > 0 and p.get("started_at"):
+            p["started_at"] = _ensure_utc(p["started_at"])
             system_events[sid].append(p)
 
     proximity = timedelta(hours=SYSTEM_TIME_PROXIMITY_HOURS)
