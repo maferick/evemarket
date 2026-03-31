@@ -166,6 +166,9 @@ def _job_payload(job_name: str, started_at: float, status: str, **kwargs: Any) -
     rows_processed = int(kwargs.pop("rows_processed", 0))
     rows_written = int(kwargs.pop("rows_written", 0))
     error_text = str(kwargs.pop("error_text", "")) or None
+    # Pop has_more before building graph_meta so it surfaces as a canonical
+    # top-level field rather than being buried inside meta.
+    has_more = bool(kwargs.pop("has_more", False))
 
     graph_meta = {
         "nodes_created": int(kwargs.pop("nodes_created", 0)),
@@ -198,6 +201,7 @@ def _job_payload(job_name: str, started_at: float, status: str, **kwargs: Any) -
         rows_written=rows_written,
         rows_seen=rows_processed,
         duration_ms=duration_ms,
+        has_more=has_more,
         meta=graph_meta,
     ).to_dict()
 

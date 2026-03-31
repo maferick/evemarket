@@ -207,6 +207,23 @@ def _finalize_job(db: SupplyCoreDb, job_key: str, result: dict[str, Any], logger
     except Exception as exc:
         logger.warning("scheduler_job_current_status upsert failed", payload={"event": "worker_pool.finalize.current_status_error", "job_key": job_key, "error": str(exc)})
 
+    # If the job processed a full set of batches and still has items queued,
+    # advance next_due_at to now so the job is re-queued immediately on the
+    # next scheduler poll instead of waiting for the full schedule interval.
+    has_more = bool(result.get("has_more"))
+    if has_more and status == "success":
+        try:
+            db.advance_next_due_at(job_key)
+            logger.info(
+                "has_more: advancing next_due_at to drain remaining queue",
+                payload={"event": "worker_pool.finalize.has_more_requeue", "job_key": job_key},
+            )
+        except Exception as exc:
+            logger.warning(
+                "has_more: advance_next_due_at failed",
+                payload={"event": "worker_pool.finalize.has_more_requeue_error", "job_key": job_key, "error": str(exc)},
+            )
+
     mapping = _UI_REFRESH_JOB_MAP.get(job_key)
     if mapping and status in ("success", "skipped"):
         try:

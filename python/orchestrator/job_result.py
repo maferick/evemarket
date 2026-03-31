@@ -95,6 +95,7 @@ class JobResult:
     batches_completed: int = 0
     checkpoint_before: str | None = None
     checkpoint_after: str | None = None
+    has_more: bool = False
     error_text: str | None = None
     warnings: list[str] = field(default_factory=list)
     meta: dict[str, Any] = field(default_factory=dict)
@@ -152,12 +153,18 @@ class JobResult:
             "status", "summary", "started_at", "finished_at", "duration_ms",
             "rows_seen", "rows_processed", "rows_written", "rows_skipped",
             "rows_failed", "batches_completed", "checkpoint_before",
-            "checkpoint_after", "error_text", "error", "warnings", "meta",
+            "checkpoint_after", "has_more", "error_text", "error", "warnings", "meta",
             "computed_at",
         }
         for key, value in safe.items():
             if key not in _CANONICAL_KEYS and key not in raw_meta:
                 raw_meta[key] = value
+
+        # has_more may be set at top level or inside meta (graph_pipeline sets it in meta).
+        has_more = bool(
+            raw.get("has_more")
+            or (raw.get("meta") or {}).get("has_more")
+        )
 
         return cls(
             status=status,
@@ -173,6 +180,7 @@ class JobResult:
             batches_completed=_safe_int(raw.get("batches_completed")),
             checkpoint_before=raw.get("checkpoint_before"),
             checkpoint_after=raw.get("checkpoint_after"),
+            has_more=has_more,
             error_text=error_text,
             warnings=warnings,
             meta=raw_meta,
@@ -191,6 +199,7 @@ class JobResult:
         duration_ms: int = 0,
         meta: dict[str, Any] | None = None,
         warnings: list[str] | None = None,
+        has_more: bool = False,
         **kwargs: Any,
     ) -> JobResult:
         """Convenience builder for a successful result."""
@@ -209,6 +218,7 @@ class JobResult:
             batches_completed=kwargs.get("batches_completed", 0),
             checkpoint_before=kwargs.get("checkpoint_before"),
             checkpoint_after=kwargs.get("checkpoint_after"),
+            has_more=has_more,
             error_text=None,
             warnings=warnings or [],
             meta={
@@ -290,6 +300,7 @@ class JobResult:
             "batches_completed": self.batches_completed,
             "checkpoint_before": self.checkpoint_before,
             "checkpoint_after": self.checkpoint_after,
+            "has_more": self.has_more,
             "error_text": self.error_text,
             "warnings": list(self.warnings),
             "meta": dict(self.meta),

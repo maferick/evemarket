@@ -471,6 +471,9 @@ def run_compute_character_feature_windows(
 
             _sync_state_upsert(db, DATASET_KEY, last_battle_id, "success", rows_written)
 
+        # has_more is true when we hit the batch cap without draining the cursor.
+        has_more = batch_count == max_batches
+
         duration_ms = int((time.perf_counter() - started) * 1000)
         result = JobResult.success(
             job_key=lock_key,
@@ -479,6 +482,7 @@ def run_compute_character_feature_windows(
             rows_written=0 if dry_run else rows_written,
             duration_ms=duration_ms,
             batches_completed=batch_count,
+            has_more=has_more,
             meta={
                 "computed_at": computed_at,
                 "cursor": last_battle_id,

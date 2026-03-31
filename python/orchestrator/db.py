@@ -738,6 +738,19 @@ class SupplyCoreDb:
             (status[:20], job_key[:120]),
         )
 
+    def advance_next_due_at(self, job_key: str) -> int:
+        """Reset next_due_at to now so a job with remaining work is re-queued immediately.
+
+        Called after a successful run that returned has_more=True — the job hit its
+        max_batches limit but still has items in the queue.  Setting next_due_at to
+        UTC_TIMESTAMP() makes queue_due_recurring_jobs pick it up on the very next
+        poll cycle instead of waiting for the full scheduled interval.
+        """
+        return self.execute(
+            "UPDATE sync_schedules SET next_due_at = UTC_TIMESTAMP() WHERE job_key = %s AND enabled = 1",
+            (job_key[:120],),
+        )
+
     def refresh_market_order_current_projection(self, *, source_type: str) -> dict[str, int]:
         rows_processed = self.fetch_scalar(
             "SELECT COUNT(*) AS c FROM market_orders_current WHERE source_type = %s",
