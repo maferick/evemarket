@@ -30981,7 +30981,7 @@ function supplycore_theater_map_svg(string $theaterId, array $systemIds, int $ho
         return null;
     }
     $cacheKey = substr(md5($theaterId . ':' . implode(',', $systemIds)), 0, 12);
-    $cacheFile = sprintf('%s/theater-%s-h%d-v1.svg', $cacheDir, $cacheKey, $hops);
+    $cacheFile = sprintf('%s/theater-%s-h%d-v2.svg', $cacheDir, $cacheKey, $hops);
     $cacheTtl = supplycore_threat_corridor_map_cache_minutes() * 60;
     if (is_file($cacheFile) && ((time() - (int) filemtime($cacheFile)) < $cacheTtl)) {
         return '/threat-corridors/svg/' . basename($cacheFile);
