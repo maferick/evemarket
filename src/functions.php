@@ -30638,7 +30638,7 @@ function supplycore_threat_corridor_graph_svg(int $corridorId, array $corridorSy
     if (!is_dir($cacheDir) && !@mkdir($cacheDir, 0775, true) && !is_dir($cacheDir)) {
         return null;
     }
-    $cacheFile = sprintf('%s/corridor-%d-h%d-v3.svg', $cacheDir, $corridorId, $surroundingHops);
+    $cacheFile = sprintf('%s/corridor-%d-h%d-v4.svg', $cacheDir, $corridorId, $surroundingHops);
     $cacheTtl = supplycore_threat_corridor_map_cache_minutes() * 60;
     if (is_file($cacheFile) && ((time() - (int) filemtime($cacheFile)) < $cacheTtl)) {
         return '/threat-corridors/svg/' . basename($cacheFile);
@@ -30798,11 +30798,24 @@ function supplycore_threat_corridor_graph_svg(int $corridorId, array $corridorSy
 
     $svg = [];
     $svg[] = '<svg xmlns="http://www.w3.org/2000/svg" width="' . $width . '" height="' . $height . '" viewBox="0 0 ' . $width . ' ' . $height . '">';
-    $svg[] = '<defs><style><![CDATA['
+    $svg[] = '<defs>'
+        . '<filter id="hwy-glow" x="-40%" y="-40%" width="180%" height="180%">'
+        . '<feGaussianBlur stdDeviation="3.5" result="blur"/>'
+        . '<feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>'
+        . '</filter>'
+        . '<filter id="node-glow" x="-60%" y="-60%" width="220%" height="220%">'
+        . '<feGaussianBlur stdDeviation="2.2" result="blur"/>'
+        . '<feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>'
+        . '</filter>'
+        . '<style><![CDATA['
         . '.label-c{font:600 11px Inter,Segoe UI,sans-serif;fill:#e2e8f0}'
         . '.node-surround:hover + .label-s{opacity:1}'
-        . '.label-s{font:500 10px Inter,Segoe UI,sans-serif;fill:#94a3b8;opacity:.75;transition:opacity .2s ease}'
-        . ']]></style></defs>';
+        . '.label-s{font:500 10px Inter,Segoe UI,sans-serif;fill:#64748b;opacity:.8;transition:opacity .2s ease}'
+        . ']]></style>'
+        . '</defs>';
+    $svg[] = '<rect width="' . $width . '" height="' . $height . '" fill="#04080f"/>';
+
+    // Pass 1: non-corridor stargate connections (background layer)
     foreach ($edges as $edge) {
         $a = (int) ($edge[0] ?? 0);
         $b = (int) ($edge[1] ?? 0);
@@ -30811,13 +30824,39 @@ function supplycore_threat_corridor_graph_svg(int $corridorId, array $corridorSy
         }
         $left = min($a, $b);
         $right = max($a, $b);
-        $edgeKey = $left . ':' . $right;
-        $isCorridorPathEdge = isset($corridorPathEdges[$edgeKey]);
-        $stroke = $isCorridorPathEdge ? '#f87171' : '#64748b';
-        $strokeOpacity = $isCorridorPathEdge ? '0.95' : '0.68';
-        $strokeWidth = $isCorridorPathEdge ? '2.8' : '1.35';
-        $svg[] = '<line x1="' . number_format($sx((float) $positions[$a]['x']), 2, '.', '') . '" y1="' . number_format($sy((float) $positions[$a]['y']), 2, '.', '') . '" x2="' . number_format($sx((float) $positions[$b]['x']), 2, '.', '') . '" y2="' . number_format($sy((float) $positions[$b]['y']), 2, '.', '') . '" stroke="' . $stroke . '" stroke-opacity="' . $strokeOpacity . '" stroke-width="' . $strokeWidth . '"/>';
+        if (isset($corridorPathEdges[$left . ':' . $right])) {
+            continue;
+        }
+        $x1 = number_format($sx((float) $positions[$a]['x']), 2, '.', '');
+        $y1 = number_format($sy((float) $positions[$a]['y']), 2, '.', '');
+        $x2 = number_format($sx((float) $positions[$b]['x']), 2, '.', '');
+        $y2 = number_format($sy((float) $positions[$b]['y']), 2, '.', '');
+        $svg[] = '<line x1="' . $x1 . '" y1="' . $y1 . '" x2="' . $x2 . '" y2="' . $y2 . '" stroke="#1e3a5f" stroke-opacity="0.55" stroke-width="1.1"/>';
     }
+
+    // Pass 2: corridor highway edges (foreground layer, golden glow)
+    foreach ($edges as $edge) {
+        $a = (int) ($edge[0] ?? 0);
+        $b = (int) ($edge[1] ?? 0);
+        if (!isset($positions[$a], $positions[$b])) {
+            continue;
+        }
+        $left = min($a, $b);
+        $right = max($a, $b);
+        if (!isset($corridorPathEdges[$left . ':' . $right])) {
+            continue;
+        }
+        $x1 = number_format($sx((float) $positions[$a]['x']), 2, '.', '');
+        $y1 = number_format($sy((float) $positions[$a]['y']), 2, '.', '');
+        $x2 = number_format($sx((float) $positions[$b]['x']), 2, '.', '');
+        $y2 = number_format($sy((float) $positions[$b]['y']), 2, '.', '');
+        // Wide ambient glow
+        $svg[] = '<line x1="' . $x1 . '" y1="' . $y1 . '" x2="' . $x2 . '" y2="' . $y2 . '" stroke="#92400e" stroke-opacity="0.45" stroke-width="9" stroke-linecap="round"/>';
+        // Core bright line
+        $svg[] = '<line x1="' . $x1 . '" y1="' . $y1 . '" x2="' . $x2 . '" y2="' . $y2 . '" stroke="#fbbf24" stroke-opacity="0.88" stroke-width="2.6" stroke-linecap="round" filter="url(#hwy-glow)"/>';
+    }
+
+    // Nodes
     foreach ($nodeMap as $sid => $node) {
         if (!isset($positions[$sid])) {
             continue;
@@ -30829,9 +30868,21 @@ function supplycore_threat_corridor_graph_svg(int $corridorId, array $corridorSy
         $safeName = htmlspecialchars((string) $node['name'], ENT_QUOTES);
         $title = $safeName . ' | sec=' . number_format((float) $node['security'], 1) . ' | threat=' . ($node['threat_level'] !== '' ? $node['threat_level'] : 'unknown');
         if ($node['is_corridor'] === true) {
-            $svg[] = '<g><circle cx="' . $x . '" cy="' . $y . '" r="8.8" fill="none" stroke="' . $outer . '" stroke-width="2.6"/><circle cx="' . $x . '" cy="' . $y . '" r="5.2" fill="' . $inner . '" stroke="#0f172a" stroke-width="1.1"><title>' . htmlspecialchars($title, ENT_QUOTES) . '</title></circle><text class="label-c" x="' . ($x + 10) . '" y="' . ($y - 8) . '">' . $safeName . '</text></g>';
+            $svg[] = '<g filter="url(#node-glow)">'
+                . '<circle cx="' . $x . '" cy="' . $y . '" r="9.5" fill="none" stroke="' . $outer . '" stroke-width="2.2" stroke-opacity="0.9"/>'
+                . '<circle cx="' . $x . '" cy="' . $y . '" r="5.5" fill="' . $inner . '" stroke="#04080f" stroke-width="1.2">'
+                . '<title>' . htmlspecialchars($title, ENT_QUOTES) . '</title>'
+                . '</circle>'
+                . '</g>'
+                . '<text class="label-c" x="' . ($x + 12) . '" y="' . ($y + 4) . '">' . $safeName . '</text>';
         } else {
-            $svg[] = '<g><circle class="node-surround" cx="' . $x . '" cy="' . $y . '" r="6.1" fill="none" stroke="' . $outer . '" stroke-width="1.7"><title>' . htmlspecialchars($title, ENT_QUOTES) . '</title></circle><circle cx="' . $x . '" cy="' . $y . '" r="3.5" fill="' . $inner . '" stroke="#0f172a" stroke-width="1"/><text class="label-s" x="' . ($x + 8) . '" y="' . ($y - 6) . '">' . $safeName . '</text></g>';
+            $svg[] = '<g>'
+                . '<circle class="node-surround" cx="' . $x . '" cy="' . $y . '" r="5.5" fill="none" stroke="' . $outer . '" stroke-width="1.5" stroke-opacity="0.7">'
+                . '<title>' . htmlspecialchars($title, ENT_QUOTES) . '</title>'
+                . '</circle>'
+                . '<circle cx="' . $x . '" cy="' . $y . '" r="2.8" fill="' . $inner . '" stroke="#04080f" stroke-width="0.8"/>'
+                . '<text class="label-s" x="' . ($x + 7) . '" y="' . ($y + 4) . '">' . $safeName . '</text>'
+                . '</g>';
         }
     }
     $svg[] = '</svg>';
