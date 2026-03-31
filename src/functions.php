@@ -246,7 +246,6 @@ function nav_items(): array
                 ['label' => 'Theater Map', 'path' => '/theater-map'],
                 ['label' => 'Threat Corridors', 'path' => '/threat-corridors'],
                 ['label' => 'Alliance Dossiers', 'path' => '/alliance-dossiers'],
-                ['label' => 'Pilot Profile', 'path' => '/battle-intelligence/pilot-profile.php'],
                 ['label' => 'Pilot Lookup', 'path' => '/battle-intelligence/pilot-lookup.php'],
                 ['label' => 'Suspicion Leaderboard', 'path' => '/battle-intelligence'],
                 ['label' => 'Battle Anomalies', 'path' => '/battle-intelligence/battles.php'],
