@@ -316,7 +316,12 @@ function ci_verdict_summary(array $char): string
 include __DIR__ . '/../../src/views/partials/header.php';
 ?>
 <section class="surface-primary">
-    <a href="/battle-intelligence" class="text-sm text-accent">&larr; Back to leaderboard</a>
+    <div class="flex flex-wrap items-center gap-4">
+        <a href="/battle-intelligence" class="text-sm text-accent">&larr; Back to leaderboard</a>
+        <?php if ($characterId > 0): ?>
+            <a href="/battle-intelligence/pilot-profile.php?character_id=<?= $characterId ?>" class="text-sm text-accent">Consolidated profile &rarr;</a>
+        <?php endif; ?>
+    </div>
     <?php if (!is_array($character)): ?>
         <p class="mt-4 text-sm text-muted">No character intelligence found.</p>
     <?php else: ?>

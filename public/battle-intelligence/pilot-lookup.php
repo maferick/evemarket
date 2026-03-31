@@ -70,7 +70,8 @@ include __DIR__ . '/../../src/views/partials/header.php';
                             </td>
                             <td class="px-3 py-2 text-right"><?= (int) ($r['battle_count'] ?? 0) ?></td>
                             <td class="px-3 py-2 text-right">
-                                <a href="?character_id=<?= (int) ($r['character_id'] ?? 0) ?>" class="text-accent text-sm">View</a>
+                                <a href="/battle-intelligence/pilot-profile.php?character_id=<?= (int) ($r['character_id'] ?? 0) ?>" class="text-accent text-sm">Profile</a>
+                                <a href="?character_id=<?= (int) ($r['character_id'] ?? 0) ?>" class="text-slate-400 text-sm ml-3">Lookup</a>
                             </td>
                         </tr>
                     <?php endforeach; ?>
@@ -223,7 +224,10 @@ include __DIR__ . '/../../src/views/partials/header.php';
                 </div>
             </div>
             <?php if ((int) ($suspicion['character_id'] ?? 0) > 0): ?>
-                <p class="mt-2"><a href="/battle-intelligence/character.php?character_id=<?= (int) $suspicion['character_id'] ?>" class="text-accent text-sm">Full counterintel dossier &rarr;</a></p>
+                <p class="mt-2 flex gap-4">
+                    <a href="/battle-intelligence/pilot-profile.php?character_id=<?= (int) $suspicion['character_id'] ?>" class="text-accent text-sm">Consolidated profile &rarr;</a>
+                    <a href="/battle-intelligence/character.php?character_id=<?= (int) $suspicion['character_id'] ?>" class="text-accent text-sm">Full counterintel dossier &rarr;</a>
+                </p>
             <?php endif; ?>
             <?php endif; ?>
 
