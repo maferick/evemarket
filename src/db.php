@@ -15798,8 +15798,8 @@ function db_theater_final_blows_by_side(string $theaterId): array
     $rows = db_select(
         "SELECT
             CASE
-                WHEN tas.side = 'side_a' THEN 'friendly'
-                WHEN tas.side = 'side_b' THEN 'opponent'
+                WHEN tas.side = 'friendly' THEN 'friendly'
+                WHEN tas.side = 'opponent' THEN 'opponent'
                 ELSE 'third_party'
             END AS side,
             COUNT(*) AS final_blows
