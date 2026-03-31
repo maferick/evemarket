@@ -141,7 +141,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
 
                         <?php if (is_string($mapPath) && $mapPath !== ''): ?>
                             <?php $dialogId = 'corridor-graph-dialog-' . $corridorId; ?>
-                            <div class="w-full lg:ml-auto lg:w-72 xl:w-80 shrink-0 rounded border border-border/60 bg-slate-950/60 p-2">
+                            <div class="corridor-graph w-full shrink-0 self-start rounded border border-border/60 bg-slate-950/60 p-2 lg:ml-auto lg:w-[320px] lg:min-w-[320px] lg:max-w-[320px]">
                                 <div class="flex items-center justify-between gap-2">
                                     <p class="text-[10px] uppercase tracking-[0.15em] text-muted">Corridor Graph</p>
                                     <button type="button"
@@ -151,7 +151,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                                 <p class="text-[10px] text-muted">Corridor links highlighted in red · Adjacent links in slate · Outer ring: security · Inner core: threat</p>
                                 <img src="<?= htmlspecialchars($mapPath, ENT_QUOTES) ?>"
                                      alt="Threat corridor graph for corridor #<?= $corridorId ?>"
-                                     class="mt-2 h-36 w-full object-contain rounded border border-border/50 bg-slate-950 cursor-zoom-in"
+                                     class="mt-2 h-[180px] w-full object-contain rounded border border-border/50 bg-slate-950 cursor-zoom-in"
                                      data-dialog-open="<?= htmlspecialchars($dialogId, ENT_QUOTES) ?>"
                                      loading="lazy">
                             </div>
