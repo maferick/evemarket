@@ -169,41 +169,39 @@ class SupplyCoreDb:
                 decision_logged += 1
                 continue
 
-            min_interval_seconds = max(60, int(definition.get("min_interval_seconds") or definition.get("interval_seconds") or 300))
-            max_staleness_seconds = max(min_interval_seconds, int(definition.get("max_staleness_seconds") or (min_interval_seconds * 2)))
             cooldown_seconds = max(0, int(definition.get("cooldown_seconds") or 0))
             opportunistic_background = bool(definition.get("opportunistic_background", False))
             freshness_sensitivity = str(definition.get("freshness_sensitivity") or "background")
-            last_finished = self.fetch_one(
-                "SELECT MAX(last_finished_at) AS last_finished_at FROM worker_jobs WHERE job_key = %s",
+
+            # Use sync_schedules.next_due_at as the single source of truth for
+            # when a job should run — no hidden hardcoded intervals.
+            schedule_row = self.fetch_one(
+                "SELECT next_due_at FROM sync_schedules WHERE job_key = %s AND enabled = 1 LIMIT 1",
                 (job_key,),
             )
-            next_due_seconds = 0
-            staleness_seconds = max_staleness_seconds
-            if last_finished and last_finished.get("last_finished_at"):
+            overdue_seconds = 0
+            if schedule_row and schedule_row.get("next_due_at"):
                 timing = self.fetch_one(
                     """SELECT
-                        GREATEST(0, TIMESTAMPDIFF(SECOND, UTC_TIMESTAMP(), DATE_ADD(%s, INTERVAL %s SECOND))) AS next_due_seconds,
-                        GREATEST(0, TIMESTAMPDIFF(SECOND, DATE_ADD(%s, INTERVAL %s SECOND), UTC_TIMESTAMP())) AS staleness_seconds
+                        GREATEST(0, TIMESTAMPDIFF(SECOND, UTC_TIMESTAMP(), %s)) AS wait_seconds,
+                        GREATEST(0, TIMESTAMPDIFF(SECOND, %s, UTC_TIMESTAMP())) AS overdue_seconds
                         """,
-                    (last_finished["last_finished_at"], min_interval_seconds, last_finished["last_finished_at"], min_interval_seconds),
+                    (schedule_row["next_due_at"], schedule_row["next_due_at"]),
                 ) or {}
-                next_due_seconds = max(0, int(timing.get("next_due_seconds") or 0))
-                staleness_seconds = max(0, int(timing.get("staleness_seconds") or 0))
-                if next_due_seconds > 0 and staleness_seconds < max_staleness_seconds:
+                wait_seconds = max(0, int(timing.get("wait_seconds") or 0))
+                overdue_seconds = max(0, int(timing.get("overdue_seconds") or 0))
+                if wait_seconds > 0:
                     skipped += 1
                     self.insert_scheduler_planner_decision(
                         schedule_id=None,
                         job_key=job_key,
-                        decision_type="rolling_deferred_cooldown",
+                        decision_type="rolling_deferred_schedule",
                         pressure_state="healthy",
-                        reason_text="Deferred because minimum interval has not elapsed and max staleness has not been reached.",
+                        reason_text=f"Deferred because sync_schedules.next_due_at is {wait_seconds}s in the future.",
                         decision_json={
                             "job_key": job_key,
-                            "next_due_seconds": next_due_seconds,
-                            "staleness_seconds": staleness_seconds,
-                            "min_interval_seconds": min_interval_seconds,
-                            "max_staleness_seconds": max_staleness_seconds,
+                            "wait_seconds": wait_seconds,
+                            "next_due_at": str(schedule_row["next_due_at"]),
                         },
                     )
                     decision_logged += 1
@@ -241,19 +239,17 @@ class SupplyCoreDb:
             urgency_score = int(
                 (
                     _priority_rank(str(definition.get("priority") or "normal")) * 1000
-                    + min(99_999, int(staleness_seconds))
+                    + min(99_999, int(overdue_seconds))
                     + (150_000 if freshness_sensitivity == "immediate" else 0)
                     + (50_000 if not opportunistic_background else 0)
                 )
                 * pressure.urgency_multiplier
             )
-            available_seconds = cooldown_seconds if staleness_seconds <= 0 else 0
+            available_seconds = cooldown_seconds
             payload = json_dumps_safe(
                 {
                     "recurring": True,
                     "rolling_planner": True,
-                    "min_interval_seconds": min_interval_seconds,
-                    "max_staleness_seconds": max_staleness_seconds,
                     "cooldown_seconds": cooldown_seconds,
                     "freshness_sensitivity": freshness_sensitivity,
                     "runtime_class": str(definition.get("runtime_class") or ""),
@@ -261,7 +257,7 @@ class SupplyCoreDb:
                     "concurrency_group": str(definition.get("concurrency_group") or definition.get("lock_group") or ""),
                     "depends_on": list(definition.get("depends_on") or []),
                     "opportunistic_background": opportunistic_background,
-                    "staleness_seconds": staleness_seconds,
+                    "overdue_seconds": overdue_seconds,
                     "urgency_score": urgency_score,
                 }
             )
@@ -306,9 +302,7 @@ class SupplyCoreDb:
                 decision_json={
                     "job_key": job_key,
                     "urgency_score": urgency_score,
-                    "staleness_seconds": staleness_seconds,
-                    "min_interval_seconds": min_interval_seconds,
-                    "max_staleness_seconds": max_staleness_seconds,
+                    "overdue_seconds": overdue_seconds,
                     "cooldown_seconds": cooldown_seconds,
                     "opportunistic_background": opportunistic_background,
                     "pressure_state": pressure.state,
