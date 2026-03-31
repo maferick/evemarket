@@ -435,7 +435,7 @@ def main(argv: list[str] | None = None) -> int:
             "seed_result": seed_result,
             "job": job,
             "memory_usage_bytes": memory_usage,
-            "worker_counts": worker_counts,
+            "worker_counts": diagnostics,
             "dag_scheduler": {
                 "dispatchable": dispatchable[:20] if dispatchable else [],
                 "blocked_count": len(plan.blocked_jobs) if plan else 0,
