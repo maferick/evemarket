@@ -1,9 +1,9 @@
-"""EveWho Neo4j Enrichment Sync — batch-enriches characters from EveWho into Neo4j.
+"""ESI Neo4j Enrichment Sync — batch-enriches characters from ESI into Neo4j.
 
 This job processes the enrichment_queue table in bounded batches:
 
 1. Claims a batch of pending characters (highest priority first)
-2. Fetches corp history from EveWho via the adapter layer
+2. Fetches character info and corp history from ESI
 3. Upserts Character, Corporation, Alliance nodes and MEMBER_OF relationships
    into Neo4j
 4. Updates queue status and sync_state cursor
@@ -18,10 +18,9 @@ from datetime import UTC, datetime
 from typing import Any
 
 from ..db import SupplyCoreDb
-from ..evewho_adapter import EveWhoAdapter
+from ..esi_client import EsiClient
 from ..job_result import JobResult
 from ..job_utils import finish_job_run, start_job_run
-from ..json_utils import json_dumps_safe
 from ..neo4j import Neo4jClient, Neo4jConfig, Neo4jError
 
 JOB_KEY = "evewho_enrichment_sync"
@@ -98,6 +97,35 @@ def _mark_failed(db: SupplyCoreDb, character_id: int, error: str) -> None:
         (MAX_ATTEMPTS, str(error)[:500], character_id),
     )
 
+
+
+def _compute_end_dates(esi_history: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Compute end_date for each ESI corporation history entry.
+
+    ESI returns history entries without end_date.  The end_date of entry N is
+    the start_date of the chronologically next entry.  The most recent entry
+    (last in chronological order) has no end_date.
+    """
+    if not esi_history:
+        return []
+    # Sort ascending by record_id (canonical ordering per ESI spec)
+    sorted_history = sorted(esi_history, key=lambda h: int(h.get("record_id") or 0))
+    result: list[dict[str, Any]] = []
+    for i, entry in enumerate(sorted_history):
+        corp_id = int(entry.get("corporation_id") or 0)
+        if corp_id <= 0:
+            continue
+        start_date = str(entry.get("start_date") or "").strip()
+        end_date: str | None = None
+        if i + 1 < len(sorted_history):
+            end_date = str(sorted_history[i + 1].get("start_date") or "").strip() or None
+        result.append({
+            "corporation_id": corp_id,
+            "start_date": start_date,
+            "end_date": end_date,
+            "is_deleted": bool(entry.get("is_deleted", False)),
+        })
+    return result
 
 
 def _enrich_character_to_neo4j(
@@ -203,7 +231,7 @@ def _enrich_character_to_neo4j(
 def _process_batch(
     db: SupplyCoreDb,
     neo4j: Neo4jClient,
-    adapter: EveWhoAdapter,
+    esi: EsiClient,
     batch: list[dict[str, Any]],
 ) -> tuple[int, int]:
     """Process a single batch. Returns (processed, written)."""
@@ -215,24 +243,25 @@ def _process_batch(
         processed += 1
 
         try:
-            # Fetch from EveWho
-            _, payload = adapter.fetch_character(character_id)
-            if not payload:
-                _mark_failed(db, character_id, "EveWho returned empty/null response")
+            # Fetch character info from ESI
+            info_resp = esi.get(f"/characters/{character_id}/")
+            if not info_resp.ok or not isinstance(info_resp.body, dict):
+                _mark_failed(db, character_id, f"ESI character info failed (status {info_resp.status_code})")
                 continue
 
-            # Extract info — EveWho returns {info: [{...}], history: [{...}]}
-            info_list = payload.get("info")
-            if isinstance(info_list, list) and info_list:
-                info = info_list[0]
-            elif isinstance(payload.get("character_id"), int):
-                info = payload
+            esi_info = info_resp.body
+            info = {
+                "name": esi_info.get("name") or "",
+                "sec_status": esi_info.get("security_status") or 0.0,
+                "corporation_id": esi_info.get("corporation_id") or 0,
+                "alliance_id": esi_info.get("alliance_id") or 0,
+            }
+
+            # Fetch corporation history from ESI
+            hist_resp = esi.get(f"/characters/{character_id}/corporationhistory")
+            if hist_resp.ok and isinstance(hist_resp.body, list):
+                history = _compute_end_dates(hist_resp.body)
             else:
-                _mark_failed(db, character_id, "No character info in EveWho response")
-                continue
-
-            history = payload.get("history") or payload.get("corporation_history") or []
-            if not isinstance(history, list):
                 history = []
 
             # Write to Neo4j
@@ -273,8 +302,7 @@ def run_evewho_enrichment_sync(
             return JobResult.skipped(job_key=JOB_KEY, reason="neo4j-disabled").to_dict()
 
         neo4j = Neo4jClient(neo4j_config)
-        rate_limit = max(1, int(runtime.get("evewho_rate_limit_requests") or 0)) if runtime.get("evewho_rate_limit_requests") else None
-        adapter = EveWhoAdapter(user_agent, rate_limit_requests=rate_limit) if rate_limit else EveWhoAdapter(user_agent)
+        esi = EsiClient(user_agent=user_agent)
 
         batch_count = 0
         exhausted = False
@@ -285,7 +313,7 @@ def run_evewho_enrichment_sync(
                 break
 
             batch_count += 1
-            processed, written = _process_batch(db, neo4j, adapter, batch)
+            processed, written = _process_batch(db, neo4j, esi, batch)
             rows_processed += processed
             rows_written += written
 

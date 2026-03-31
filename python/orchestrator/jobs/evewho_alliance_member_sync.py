@@ -311,7 +311,40 @@ def _apply_depart_events(
 
 
 # ---------------------------------------------------------------------------
-# Character enrichment (Phase 2) — reused from original implementation
+# ESI character history helper
+# ---------------------------------------------------------------------------
+
+def _compute_end_dates(esi_history: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Compute end_date for each ESI corporation history entry.
+
+    ESI returns history entries without end_date.  The end_date of entry N is
+    the start_date of the chronologically next entry.  The most recent entry
+    (last in chronological order) has no end_date.
+    """
+    if not esi_history:
+        return []
+    # Sort ascending by record_id (canonical ordering per ESI spec)
+    sorted_history = sorted(esi_history, key=lambda h: int(h.get("record_id") or 0))
+    result: list[dict[str, Any]] = []
+    for i, entry in enumerate(sorted_history):
+        corp_id = int(entry.get("corporation_id") or 0)
+        if corp_id <= 0:
+            continue
+        start_date = str(entry.get("start_date") or "").strip()
+        end_date: str | None = None
+        if i + 1 < len(sorted_history):
+            end_date = str(sorted_history[i + 1].get("start_date") or "").strip() or None
+        result.append({
+            "corporation_id": corp_id,
+            "start_date": start_date,
+            "end_date": end_date,
+            "is_deleted": bool(entry.get("is_deleted", False)),
+        })
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Character enrichment (Phase 2)
 # ---------------------------------------------------------------------------
 
 def _enrich_character_to_neo4j(
@@ -750,25 +783,28 @@ def run_evewho_alliance_member_sync(
                     break
 
                 try:
-                    _, char_payload = adapter.fetch_character(char_id)
+                    # Fetch character info from ESI
+                    info_resp = esi.get(f"/characters/{char_id}/")
                     api_calls += 1
 
-                    if not char_payload:
-                        _mark_enrichment_failed(db, char_id, "Empty response from EveWho")
+                    if not info_resp.ok or not isinstance(info_resp.body, dict):
+                        _mark_enrichment_failed(db, char_id, f"ESI character info failed (status {info_resp.status_code})")
                         continue
 
-                    # Extract info
-                    info_list = char_payload.get("info")
-                    if isinstance(info_list, list) and info_list:
-                        info = info_list[0]
-                    elif isinstance(char_payload.get("character_id"), int):
-                        info = char_payload
+                    esi_info = info_resp.body
+                    info = {
+                        "name": esi_info.get("name") or "",
+                        "sec_status": esi_info.get("security_status") or 0.0,
+                        "corporation_id": esi_info.get("corporation_id") or 0,
+                        "alliance_id": esi_info.get("alliance_id") or 0,
+                    }
+
+                    # Fetch corporation history from ESI
+                    hist_resp = esi.get(f"/characters/{char_id}/corporationhistory")
+                    api_calls += 1
+                    if hist_resp.ok and isinstance(hist_resp.body, list):
+                        history = _compute_end_dates(hist_resp.body)
                     else:
-                        _mark_enrichment_failed(db, char_id, "No info in response")
-                        continue
-
-                    history = char_payload.get("history") or char_payload.get("corporation_history") or []
-                    if not isinstance(history, list):
                         history = []
 
                     _enrich_character_to_neo4j(neo4j, char_id, info, history)
