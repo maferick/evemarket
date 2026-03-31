@@ -324,7 +324,7 @@ $attentionCount = $kpi['total_failed'] + $kpi['total_timeout'] + $kpi['total_ove
                         <th class="text-left">Status</th>
                         <th class="text-left">Last run</th>
                         <th class="text-right">Duration</th>
-                        <th class="text-right">Rows</th>
+                        <th class="text-right" title="written rows / source rows read">Written / Read</th>
                         <th class="text-right">Recent OK</th>
                         <th class="text-left">Error</th>
                     </tr>
@@ -350,7 +350,26 @@ $attentionCount = $kpi['total_failed'] + $kpi['total_timeout'] + $kpi['total_ove
                             <td><span class="badge <?= $statusBadge ?>"><?= htmlspecialchars(ucfirst($run['run_status']), ENT_QUOTES) ?></span></td>
                             <td class="text-slate-300"><?= htmlspecialchars(supplycore_relative_datetime($run['started_at']), ENT_QUOTES) ?></td>
                             <td class="text-right text-slate-300"><?= htmlspecialchars(human_duration_seconds((float) ($run['duration_seconds'] ?? 0)), ENT_QUOTES) ?></td>
-                            <td class="text-right text-slate-300"><?= (int) $run['written_rows'] ?> / <?= (int) $run['source_rows'] ?></td>
+                            <?php
+                                $written = (int) $run['written_rows'];
+                                $source  = (int) $run['source_rows'];
+                                if ($written === 0 && $source === 0) {
+                                    $rowsTone = 'text-slate-500';
+                                    $rowsTitle = 'Nothing to process';
+                                } elseif ($written === 0 && $source > 0) {
+                                    $rowsTone = 'text-slate-400';
+                                    $rowsTitle = 'All source rows already up to date — nothing written';
+                                } elseif ($written > $source) {
+                                    $rowsTone = 'text-sky-300';
+                                    $rowsTitle = 'Fanout: one source row produced multiple output rows';
+                                } else {
+                                    $rowsTone = 'text-slate-300';
+                                    $rowsTitle = 'Normal write';
+                                }
+                            ?>
+                            <td class="text-right <?= $rowsTone ?>" title="<?= $rowsTitle ?>">
+                                <?= number_format($written) ?> / <?= number_format($source) ?>
+                            </td>
                             <td class="text-right">
                                 <?php if ($recentSuccessCount > 1): ?>
                                     <span class="text-xs text-emerald-300"><?= $recentSuccessCount ?> runs</span>
