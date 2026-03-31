@@ -156,8 +156,8 @@ def _inspect_graph(client: Neo4jClient) -> dict[str, Any]:
 def _ensure_schema(client: Neo4jClient) -> None:
     """Create constraints and indexes if they don't already exist."""
     for stmt in [
-        "CREATE CONSTRAINT IF NOT EXISTS FOR (k:Killmail) REQUIRE k.id IS UNIQUE",
-        "CREATE CONSTRAINT IF NOT EXISTS FOR (sc:ShipClass) REQUIRE sc.id IS UNIQUE",
+        "CREATE CONSTRAINT killmail_killmail_id IF NOT EXISTS FOR (k:Killmail) REQUIRE k.killmail_id IS UNIQUE",
+        "CREATE CONSTRAINT shipclass_ship_class_id IF NOT EXISTS FOR (sc:ShipClass) REQUIRE sc.ship_class_id IS UNIQUE",
         "CREATE CONSTRAINT IF NOT EXISTS FOR (cp:ComputeCheckpoint) REQUIRE cp.run_id IS UNIQUE",
         "CREATE INDEX IF NOT EXISTS FOR (k:Killmail) ON (k.battle_id)",
         "CREATE INDEX IF NOT EXISTS FOR (c:Character) ON (c.tracked)",
@@ -192,7 +192,7 @@ def _gap_fill_killmails(client: Neo4jClient, db: SupplyCoreDb) -> int:
     for offset in range(0, len(killmails), BATCH_SIZE):
         batch = killmails[offset:offset + BATCH_SIZE]
         params = [{
-            "id": int(r["killmail_id"]),
+            "killmail_id": int(r["killmail_id"]),
             "battle_id": str(r.get("battle_id") or ""),
             "damage": int(r.get("victim_damage_taken") or 0),
             "mail_type": str(r.get("mail_type") or "loss"),
@@ -203,7 +203,7 @@ def _gap_fill_killmails(client: Neo4jClient, db: SupplyCoreDb) -> int:
             """UNWIND $batch AS km
                CALL {
                    WITH km
-                   MERGE (k:Killmail {id: km.id})
+                   MERGE (k:Killmail {killmail_id: km.killmail_id})
                    SET k.battle_id = km.battle_id,
                        k.damage = km.damage,
                        k.mail_type = km.mail_type,
@@ -237,7 +237,7 @@ def _gap_fill_killmails(client: Neo4jClient, db: SupplyCoreDb) -> int:
                CALL {
                    WITH atk
                    MATCH (c:Character {character_id: atk.character_id})
-                   MATCH (k:Killmail {id: atk.killmail_id})
+                   MATCH (k:Killmail {killmail_id: atk.killmail_id})
                    MERGE (c)-[r:ATTACKED_ON]->(k)
                    SET r.damage = atk.damage,
                        r.final_blow = atk.final_blow
@@ -267,7 +267,7 @@ def _gap_fill_killmails(client: Neo4jClient, db: SupplyCoreDb) -> int:
                CALL {
                    WITH v
                    MATCH (c:Character {character_id: v.character_id})
-                   MATCH (k:Killmail {id: v.killmail_id})
+                   MATCH (k:Killmail {killmail_id: v.killmail_id})
                    MERGE (c)-[r:VICTIM_OF]->(k)
                    SET r.ship_type_id = v.ship_type_id
                } IN TRANSACTIONS OF 500 ROWS""",

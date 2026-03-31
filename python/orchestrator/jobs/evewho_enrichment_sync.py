@@ -141,7 +141,7 @@ def _enrich_character_to_neo4j(
         MERGE (c:Character {character_id: $id})
         SET c.name = $name,
             c.sec_status = $sec,
-            c.enriched_at = datetime(),
+            c.enriched_at = toString(datetime()),
             c.enriched = true
         """,
         {
@@ -174,8 +174,8 @@ def _enrich_character_to_neo4j(
             WITH a
             MATCH (corp:Corporation {corporation_id: $corpId})
             MERGE (corp)-[r:PART_OF]->(a)
-            ON CREATE SET r.as_of = datetime()
-            ON MATCH  SET r.as_of = datetime()
+            ON CREATE SET r.as_of = toString(datetime())
+            ON MATCH  SET r.as_of = toString(datetime())
             """,
             {"allianceId": alliance_id, "corpId": corp_id},
         )

@@ -30,7 +30,7 @@ def _create_typed_relationships(client: Neo4jClient, window_days: int) -> dict[s
           AND k.occurred_at >= $cutoff
         WITH a, b, count(DISTINCT k) AS cnt, max(k.occurred_at) AS last_at
         MERGE (a)-[r:DIRECT_COMBAT]->(b)
-        SET r.count = cnt, r.last_at = last_at, r.updated_at = datetime()
+        SET r.count = cnt, r.last_at = last_at, r.updated_at = toString(datetime())
         RETURN count(r) AS total
         """,
         {"cutoff": cutoff},
@@ -45,7 +45,7 @@ def _create_typed_relationships(client: Neo4jClient, window_days: int) -> dict[s
           AND k.occurred_at >= $cutoff
         WITH a, b, count(DISTINCT k) AS cnt, max(k.occurred_at) AS last_at
         MERGE (a)-[r:ASSISTED_KILL]->(b)
-        SET r.count = cnt, r.last_at = last_at, r.updated_at = datetime()
+        SET r.count = cnt, r.last_at = last_at, r.updated_at = toString(datetime())
         RETURN count(r) AS total
         """,
         {"cutoff": cutoff},
@@ -60,7 +60,7 @@ def _create_typed_relationships(client: Neo4jClient, window_days: int) -> dict[s
         WITH a, b, count(DISTINCT s) AS co_battles
         WHERE co_battles >= $min_co_battles
         MERGE (a)-[r:SAME_FLEET]->(b)
-        SET r.count = co_battles, r.updated_at = datetime()
+        SET r.count = co_battles, r.updated_at = toString(datetime())
         RETURN count(r) AS total
         """,
         {"min_co_battles": SAME_FLEET_MIN_CO_BATTLES},

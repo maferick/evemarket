@@ -238,17 +238,17 @@ def _neo4j_sync_participation(db: SupplyCoreDb, neo4j_raw: dict[str, Any] | None
         return {"status": "success", "rows_written": 0}
 
     client = Neo4jClient(config)
-    client.query("CREATE CONSTRAINT battle_id IF NOT EXISTS FOR (b:Battle) REQUIRE b.id IS UNIQUE")
-    client.query("CREATE CONSTRAINT character_id IF NOT EXISTS FOR (c:Character) REQUIRE c.id IS UNIQUE")
+    client.query("CREATE CONSTRAINT battle_battle_id IF NOT EXISTS FOR (b:Battle) REQUIRE b.battle_id IS UNIQUE")
+    client.query("CREATE CONSTRAINT character_character_id IF NOT EXISTS FOR (c:Character) REQUIRE c.character_id IS UNIQUE")
 
     client.query(
         """
         UNWIND $rows AS row
-        MERGE (b:Battle {id: row.battle_id})
+        MERGE (b:Battle {battle_id: row.battle_id})
           SET b.system_id = row.system_id,
               b.started_at = row.started_at,
               b.ended_at = row.ended_at
-        MERGE (c:Character {id: row.character_id})
+        MERGE (c:Character {character_id: row.character_id})
         MERGE (c)-[r:PARTICIPATED_IN]->(b)
           SET r.side_key = row.side_key,
               r.centrality = row.centrality_score,

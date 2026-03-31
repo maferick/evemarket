@@ -1136,7 +1136,7 @@ def run_compute_counterintel_pipeline(
                             UNWIND $rows AS row
                             MERGE (corp:Corporation {corporation_id: toInteger(row.corporation_id)})
                             MERGE (alliance:Alliance {alliance_id: toInteger(row.alliance_id)})
-                            MERGE (corp)-[r:IN_ALLIANCE]->(alliance)
+                            MERGE (corp)-[r:PART_OF]->(alliance)
                             SET r.start = CASE
                                     WHEN row.start IS NULL THEN r.start
                                     WHEN r.start IS NULL OR row.start < r.start THEN row.start
