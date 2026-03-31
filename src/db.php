@@ -10576,6 +10576,13 @@ function db_reference_data_truncate_all(): void
     db_execute('TRUNCATE TABLE ref_systems');
     db_execute('TRUNCATE TABLE ref_constellations');
     db_execute('TRUNCATE TABLE ref_regions');
+    // Truncate name-construction support tables (best-effort; may not exist on older installs).
+    try {
+        db_execute('TRUNCATE TABLE ref_celestials');
+        db_execute('TRUNCATE TABLE ref_npc_corporations');
+        db_execute('TRUNCATE TABLE ref_station_operations');
+    } catch (Throwable) {
+    }
 }
 
 function db_ref_regions_bulk_upsert(array $rows, ?int $chunkSize = null): int
@@ -10595,7 +10602,28 @@ function db_ref_systems_bulk_upsert(array $rows, ?int $chunkSize = null): int
 
 function db_ref_npc_stations_bulk_upsert(array $rows, ?int $chunkSize = null): int
 {
-    return db_bulk_insert_or_upsert('ref_npc_stations', ['station_id', 'station_name', 'system_id', 'constellation_id', 'region_id', 'station_type_id'], $rows, ['station_name', 'system_id', 'constellation_id', 'region_id', 'station_type_id'], $chunkSize);
+    return db_bulk_insert_or_upsert(
+        'ref_npc_stations',
+        ['station_id', 'station_name', 'system_id', 'constellation_id', 'region_id', 'station_type_id', 'orbit_id', 'owner_id', 'operation_id', 'use_operation_name'],
+        $rows,
+        ['station_name', 'system_id', 'constellation_id', 'region_id', 'station_type_id', 'orbit_id', 'owner_id', 'operation_id', 'use_operation_name'],
+        $chunkSize
+    );
+}
+
+function db_ref_npc_corporations_bulk_upsert(array $rows, ?int $chunkSize = null): int
+{
+    return db_bulk_insert_or_upsert('ref_npc_corporations', ['corp_id', 'corp_name'], $rows, ['corp_name'], $chunkSize);
+}
+
+function db_ref_station_operations_bulk_upsert(array $rows, ?int $chunkSize = null): int
+{
+    return db_bulk_insert_or_upsert('ref_station_operations', ['operation_id', 'operation_name'], $rows, ['operation_name'], $chunkSize);
+}
+
+function db_ref_celestials_bulk_upsert(array $rows, ?int $chunkSize = null): int
+{
+    return db_bulk_insert_or_upsert('ref_celestials', ['celestial_id', 'celestial_type', 'parent_id', 'celestial_index', 'system_id'], $rows, ['celestial_type', 'parent_id', 'celestial_index', 'system_id'], $chunkSize);
 }
 
 function db_ref_stargates_bulk_upsert(array $rows, ?int $chunkSize = null): int
