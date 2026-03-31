@@ -45,6 +45,7 @@ if ($viewSnapshot !== null && !$pendingLock) {
     $turningPoints = (array) ($viewSnapshot['turning_points'] ?? []);
     $participantsAll = (array) ($viewSnapshot['participants'] ?? []);
     $graphParticipants = (array) ($viewSnapshot['graph_participants'] ?? []);
+    $structureKills = (array) ($viewSnapshot['structure_kills'] ?? []);
     $resolvedEntities = (array) ($viewSnapshot['resolved_entities'] ?? []);
     $shipTypeNames = (array) ($viewSnapshot['ship_type_names'] ?? []);
     $trackedAllianceIds = (array) ($viewSnapshot['tracked_alliance_ids'] ?? []);
@@ -122,6 +123,7 @@ if ($viewSnapshot !== null && !$pendingLock) {
     $turningPoints = db_theater_turning_points($theaterId);
     $participantsAll = db_theater_participants($theaterId, null, false, 1000);
     $graphParticipants = db_theater_graph_participants($theaterId);
+    $structureKills = db_theater_structure_kills($theaterId);
 
     $sideFilter = isset($_GET['side']) ? (string) $_GET['side'] : null;
     $suspiciousOnly = isset($_GET['suspicious']) && $_GET['suspicious'] === '1';
@@ -152,6 +154,14 @@ if ($viewSnapshot !== null && !$pendingLock) {
     foreach ($graphParticipants as $row) {
         if (($id = (int) ($row['character_id'] ?? 0)) > 0) {
             $entityRequests['character'][$id] = $id;
+        }
+    }
+    foreach ($structureKills as $row) {
+        if (($id = (int) ($row['victim_alliance_id'] ?? 0)) > 0) {
+            $entityRequests['alliance'][$id] = $id;
+        }
+        if (($id = (int) ($row['victim_corporation_id'] ?? 0)) > 0) {
+            $entityRequests['corporation'][$id] = $id;
         }
     }
     foreach ($entityRequests as $type => $ids) {
@@ -438,6 +448,12 @@ if ($viewSnapshot !== null && !$pendingLock) {
             }
         }
     }
+    // Collect structure ship type IDs so they resolve in the participant table
+    foreach ($structureKills as $sk) {
+        $stid = (int) ($sk['victim_ship_type_id'] ?? 0);
+        if ($stid > 0) $allShipTypeIds[$stid] = true;
+    }
+
     $shipTypeNames = !empty($allShipTypeIds) ? db_market_orders_current_compact_type_names(array_keys($allShipTypeIds)) : [];
 
     // Fill ship names for any extra top-hull entries added from lost-ship fallback
@@ -473,6 +489,7 @@ if ($viewSnapshot !== null && !$pendingLock) {
             'turning_points' => $turningPoints,
             'participants' => $participantsAll,
             'graph_participants' => $graphParticipants,
+            'structure_kills' => $structureKills,
             'resolved_entities' => $resolvedEntities,
             'ship_type_names' => $shipTypeNames,
             'tracked_alliance_ids' => $trackedAllianceIds,
