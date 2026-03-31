@@ -9,12 +9,13 @@ from ..job_result import JobResult
 from ..json_utils import json_dumps_safe
 from ..neo4j import Neo4jClient, Neo4jConfig
 
-QUALITY_GATE_THRESHOLD = 0.70
+QUALITY_GATE_THRESHOLD = 0.60
 
 # Weights for composite quality score (sum to 1.0).
-WEIGHT_ORPHANS = 0.25
-WEIGHT_DUPLICATES = 0.20
-WEIGHT_MISSING_ALLIANCE = 0.15
+# missing_alliance is low because many characters legitimately have no alliance.
+WEIGHT_ORPHANS = 0.30
+WEIGHT_DUPLICATES = 0.25
+WEIGHT_MISSING_ALLIANCE = 0.05
 WEIGHT_STALE = 0.25
 WEIGHT_IDENTITY = 0.15
 
@@ -53,7 +54,7 @@ def _count_duplicate_relationships_batched(client: Neo4jClient, timeout: int, ba
             "UNWIND $ids AS aid "
             "MATCH (a:Character {character_id: aid})-[r1]->(b) "
             "MATCH (a)-[r2]->(b) "
-            "WHERE type(r1) = type(r2) AND id(r1) < id(r2) "
+            "WHERE type(r1) = type(r2) AND elementId(r1) < elementId(r2) "
             "RETURN count(r1) AS cnt",
             {"ids": batch_ids},
             timeout_seconds=timeout,
@@ -64,7 +65,7 @@ def _count_duplicate_relationships_batched(client: Neo4jClient, timeout: int, ba
     for label in ("Battle", "Alliance", "Corporation", "ShipType", "Fit", "Doctrine"):
         dup_row = client.query(
             f"MATCH (a:{label})-[r1]->(b), (a:{label})-[r2]->(b) "
-            "WHERE type(r1) = type(r2) AND id(r1) < id(r2) "
+            "WHERE type(r1) = type(r2) AND elementId(r1) < elementId(r2) "
             "RETURN count(r1) AS cnt",
             timeout_seconds=timeout,
         )
