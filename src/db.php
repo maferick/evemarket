@@ -15764,29 +15764,62 @@ function db_theater_side_labels(array $theaterIds): array
 
 function db_theater_fleet_composition(string $theaterId): array
 {
+    // Use flying_ship_type_id from theater_participants (the non-pod combat ship each pilot flew)
+    // rather than battle_participants.ship_type_id which may be recorded as the capsule when a
+    // pilot loses their ship and is subsequently podded.
     return db_select(
-        "SELECT bp.ship_type_id,
-                COALESCE(rit.type_name, CONCAT('Type #', bp.ship_type_id)) AS ship_name,
+        "SELECT tp.flying_ship_type_id AS ship_type_id,
+                COALESCE(rit.type_name, CONCAT('Type #', tp.flying_ship_type_id)) AS ship_name,
                 COALESCE(rig.group_name, '') AS ship_group,
                 COUNT(*) AS pilot_count,
                 CASE
                     WHEN tas.side IS NOT NULL THEN tas.side
                     ELSE 'third_party'
                 END AS side
-         FROM battle_participants bp
-         INNER JOIN theater_battles tb ON tb.battle_id = bp.battle_id
-         LEFT JOIN ref_item_types rit ON rit.type_id = bp.ship_type_id
+         FROM theater_participants tp
+         LEFT JOIN ref_item_types rit ON rit.type_id = tp.flying_ship_type_id
          LEFT JOIN ref_item_groups rig ON rig.group_id = rit.group_id
          LEFT JOIN theater_alliance_summary tas
-              ON tas.theater_id = tb.theater_id
-              AND tas.alliance_id = bp.alliance_id
-         WHERE tb.theater_id = ?
-           AND bp.ship_type_id IS NOT NULL
-           AND bp.ship_type_id > 0
-         GROUP BY bp.ship_type_id, rit.type_name, rig.group_name, side
+              ON tas.theater_id = tp.theater_id
+              AND tas.alliance_id = tp.alliance_id
+         WHERE tp.theater_id = ?
+           AND tp.flying_ship_type_id IS NOT NULL
+           AND tp.flying_ship_type_id > 0
+         GROUP BY tp.flying_ship_type_id, rit.type_name, rig.group_name, side
          ORDER BY pilot_count DESC",
         [$theaterId]
     );
+}
+
+function db_theater_final_blows_by_side(string $theaterId): array
+{
+    $rows = db_select(
+        "SELECT
+            CASE
+                WHEN tas.side = 'side_a' THEN 'friendly'
+                WHEN tas.side = 'side_b' THEN 'opponent'
+                ELSE 'third_party'
+            END AS side,
+            COUNT(*) AS final_blows
+         FROM killmail_attackers ka
+         INNER JOIN killmail_events ke ON ke.sequence_id = ka.sequence_id
+         INNER JOIN theater_battles tb ON tb.battle_id = ke.battle_id
+         LEFT JOIN theater_alliance_summary tas
+              ON tas.theater_id = tb.theater_id
+              AND tas.alliance_id = ka.alliance_id
+         WHERE tb.theater_id = ?
+           AND ka.final_blow = 1
+         GROUP BY side",
+        [$theaterId]
+    );
+    $result = ['friendly' => 0, 'opponent' => 0, 'third_party' => 0];
+    foreach ($rows as $row) {
+        $side = (string) ($row['side'] ?? 'third_party');
+        if (isset($result[$side])) {
+            $result[$side] = (int) ($row['final_blows'] ?? 0);
+        }
+    }
+    return $result;
 }
 
 function db_theater_notable_kills(string $theaterId, int $limit = 10): array

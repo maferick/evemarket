@@ -341,8 +341,9 @@ if ($viewSnapshot !== null && !$pendingLock) {
             'pilots' => (int) ($a['participant_count'] ?? 0),
         ];
     }
+    $finalBlowsBySide = db_theater_final_blows_by_side($theaterId);
     foreach ($sidePanels as $side => $data) {
-        $sidePanels[$side]['final_blows'] = (int) ($timelineSideKills[$side] ?? 0);
+        $sidePanels[$side]['final_blows'] = (int) ($finalBlowsBySide[$side] ?? 0);
         $sidePanels[$side]['kill_involvements'] = (int) ($participantKillTotalsBySide[$side] ?? 0);
         $totalIsk = $data['isk_killed'] + $data['isk_lost'];
         $sidePanels[$side]['efficiency'] = $totalIsk > 0 ? $data['isk_killed'] / $totalIsk : 0.0;
@@ -450,6 +451,21 @@ if ($viewSnapshot !== null && !$pendingLock) {
     }
 }
 
+// ── Final-blows fallback for snapshots with stale (zero) timeline data ───────
+// When both sides show 0 final blows but losses exist, derive from opponent losses:
+// every ship loss has exactly one final-blow attacker on the other side.
+if (
+    ($sidePanels['friendly']['final_blows'] ?? 0) === 0
+    && ($sidePanels['opponent']['final_blows'] ?? 0) === 0
+) {
+    $derivedFriendlyFb = ($sidePanels['opponent']['losses'] ?? 0) + ($sidePanels['third_party']['losses'] ?? 0);
+    $derivedOpponentFb = $sidePanels['friendly']['losses'] ?? 0;
+    if ($derivedFriendlyFb > 0 || $derivedOpponentFb > 0) {
+        $sidePanels['friendly']['final_blows'] = $derivedFriendlyFb;
+        $sidePanels['opponent']['final_blows'] = $derivedOpponentFb;
+    }
+}
+
 include __DIR__ . '/../../src/views/partials/header.php';
 
 // ── Render partials ────────────────────────────────────────────────────
@@ -457,7 +473,7 @@ include __DIR__ . '/partials/_header.php';
 include __DIR__ . '/partials/_battle_report.php';
 include __DIR__ . '/partials/_ai_briefing.php';
 include __DIR__ . '/partials/_battles.php';
-include __DIR__ . '/partials/_systems.php';
+include __DIR__ . '/partials/_location_map.php';
 include __DIR__ . '/partials/_timeline.php';
 include __DIR__ . '/partials/_alliance_summary.php';
 include __DIR__ . '/partials/_participants.php';
