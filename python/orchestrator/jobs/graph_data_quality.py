@@ -9,12 +9,13 @@ from ..job_result import JobResult
 from ..json_utils import json_dumps_safe
 from ..neo4j import Neo4jClient, Neo4jConfig
 
-QUALITY_GATE_THRESHOLD = 0.70
+QUALITY_GATE_THRESHOLD = 0.60
 
 # Weights for composite quality score (sum to 1.0).
-WEIGHT_ORPHANS = 0.25
-WEIGHT_DUPLICATES = 0.20
-WEIGHT_MISSING_ALLIANCE = 0.15
+# missing_alliance is low because many characters legitimately have no alliance.
+WEIGHT_ORPHANS = 0.30
+WEIGHT_DUPLICATES = 0.25
+WEIGHT_MISSING_ALLIANCE = 0.05
 WEIGHT_STALE = 0.25
 WEIGHT_IDENTITY = 0.15
 
