@@ -527,6 +527,33 @@ if (
     }
 }
 
+// ── Loss-count correction: count ALL killmail victims, including corp-only ───
+// The alliance_summary only tracks losses for victims WITH an alliance.
+// Victims without an alliance (corp-only players) were silently dropped,
+// causing opposition losses to be understated.  Query killmail_events directly
+// for accurate totals.
+$rawLossesByVictimAlliance = db_theater_losses_by_victim_alliance($theaterId);
+if ($rawLossesByVictimAlliance !== []) {
+    $correctedLosses = ['friendly' => 0, 'opponent' => 0, 'third_party' => 0];
+    $correctedIskLost = ['friendly' => 0.0, 'opponent' => 0.0, 'third_party' => 0.0];
+    foreach ($rawLossesByVictimAlliance as $row) {
+        $side = $classifyAlliance((int) ($row['victim_alliance_id'] ?? 0));
+        $correctedLosses[$side] += (int) ($row['losses'] ?? 0);
+        $correctedIskLost[$side] += (float) ($row['isk_lost'] ?? 0);
+    }
+    foreach (['friendly', 'opponent', 'third_party'] as $side) {
+        if (isset($sidePanels[$side]) && $correctedLosses[$side] >= ($sidePanels[$side]['losses'] ?? 0)) {
+            $sidePanels[$side]['losses'] = $correctedLosses[$side];
+            $sidePanels[$side]['isk_lost'] = $correctedIskLost[$side];
+            // Recompute efficiency with corrected ISK
+            $totalIsk = ($sidePanels[$side]['isk_killed'] ?? 0) + $correctedIskLost[$side];
+            $sidePanels[$side]['efficiency'] = $totalIsk > 0
+                ? ($sidePanels[$side]['isk_killed'] ?? 0) / $totalIsk
+                : 0.0;
+        }
+    }
+}
+
 include __DIR__ . '/../../src/views/partials/header.php';
 
 // ── Render partials ────────────────────────────────────────────────────

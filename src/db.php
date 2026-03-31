@@ -15874,6 +15874,30 @@ function db_theater_final_blows_by_side(string $theaterId): array
     return $result;
 }
 
+/**
+ * Count losses per victim alliance directly from killmail_events.
+ *
+ * Unlike the alliance_summary (which misses victims without an alliance),
+ * this query counts ALL killmails in the theater grouped by victim_alliance_id
+ * so the caller can classify each group with its own closure.
+ *
+ * @return list<array{victim_alliance_id: int, losses: int, isk_lost: float}>
+ */
+function db_theater_losses_by_victim_alliance(string $theaterId): array
+{
+    return db_select(
+        "SELECT
+            COALESCE(ke.victim_alliance_id, 0) AS victim_alliance_id,
+            COUNT(DISTINCT ke.killmail_id) AS losses,
+            COALESCE(SUM(ke.zkb_total_value), 0) AS isk_lost
+         FROM killmail_events ke
+         INNER JOIN theater_battles tb ON tb.battle_id = ke.battle_id
+         WHERE tb.theater_id = ?
+         GROUP BY ke.victim_alliance_id",
+        [$theaterId]
+    );
+}
+
 function db_theater_notable_kills(string $theaterId, int $limit = 10): array
 {
     return db_select(
