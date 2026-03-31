@@ -145,7 +145,7 @@ try {
         $input = python_scheduler_bridge_read_stdin_json();
         $limit = max(1, min(1000, (int) ($input['limit'] ?? 500)));
         $offset = max(0, (int) ($input['offset'] ?? 0));
-        $rows = db_select_all(
+        $rows = db_select(
             'SELECT killmail_id, killmail_hash FROM killmail_events WHERE zkb_total_value IS NULL ORDER BY killmail_id ASC LIMIT ? OFFSET ?',
             [$limit, $offset]
         );
