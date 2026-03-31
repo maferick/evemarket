@@ -30638,7 +30638,7 @@ function supplycore_threat_corridor_graph_svg(int $corridorId, array $corridorSy
     if (!is_dir($cacheDir) && !@mkdir($cacheDir, 0775, true) && !is_dir($cacheDir)) {
         return null;
     }
-    $cacheFile = sprintf('%s/corridor-%d-h%d.svg', $cacheDir, $corridorId, $surroundingHops);
+    $cacheFile = sprintf('%s/corridor-%d-h%d-v2.svg', $cacheDir, $corridorId, $surroundingHops);
     $cacheTtl = supplycore_threat_corridor_map_cache_minutes() * 60;
     if (is_file($cacheFile) && ((time() - (int) filemtime($cacheFile)) < $cacheTtl)) {
         return '/threat-corridors/svg/' . basename($cacheFile);
@@ -30681,64 +30681,99 @@ function supplycore_threat_corridor_graph_svg(int $corridorId, array $corridorSy
     }
 
     $nodeIds = array_keys($nodeMap);
-    $positions = [];
-    $seed = max(11, $corridorId * 131 + ($surroundingHops * 17));
-    mt_srand($seed);
-    foreach ($nodeIds as $sid) {
-        $positions[$sid] = ['x' => mt_rand(50, 950) / 1000.0, 'y' => mt_rand(50, 950) / 1000.0, 'vx' => 0.0, 'vy' => 0.0];
+    $adjacency = [];
+    foreach ($edges as $edge) {
+        $a = (int) ($edge[0] ?? 0);
+        $b = (int) ($edge[1] ?? 0);
+        if ($a <= 0 || $b <= 0 || $a === $b || !isset($nodeMap[$a], $nodeMap[$b])) {
+            continue;
+        }
+        $adjacency[$a][] = $b;
+        $adjacency[$b][] = $a;
     }
-    $nodeCount = max(1, count($nodeIds));
-    $k = sqrt(1.0 / $nodeCount);
-    for ($iter = 0; $iter < 200; $iter++) {
-        foreach ($nodeIds as $sid) {
-            $positions[$sid]['vx'] = 0.0;
-            $positions[$sid]['vy'] = 0.0;
-        }
-        $idsLen = count($nodeIds);
-        for ($i = 0; $i < $idsLen; $i++) {
-            $a = $nodeIds[$i];
-            for ($j = $i + 1; $j < $idsLen; $j++) {
-                $b = $nodeIds[$j];
-                $dx = $positions[$a]['x'] - $positions[$b]['x'];
-                $dy = $positions[$a]['y'] - $positions[$b]['y'];
-                $dist = max(0.001, sqrt(($dx * $dx) + ($dy * $dy)));
-                $force = ($k * $k) / $dist;
-                $fx = ($dx / $dist) * $force;
-                $fy = ($dy / $dist) * $force;
-                $positions[$a]['vx'] += $fx;
-                $positions[$a]['vy'] += $fy;
-                $positions[$b]['vx'] -= $fx;
-                $positions[$b]['vy'] -= $fy;
-            }
-        }
-        foreach ($edges as $edge) {
-            $a = (int) ($edge[0] ?? 0);
-            $b = (int) ($edge[1] ?? 0);
-            if (!isset($positions[$a], $positions[$b])) {
-                continue;
-            }
-            $dx = $positions[$a]['x'] - $positions[$b]['x'];
-            $dy = $positions[$a]['y'] - $positions[$b]['y'];
-            $dist = max(0.001, sqrt(($dx * $dx) + ($dy * $dy)));
-            $force = ($dist * $dist) / max(0.001, $k);
-            $fx = ($dx / $dist) * $force * 0.015;
-            $fy = ($dy / $dist) * $force * 0.015;
-            $positions[$a]['vx'] -= $fx;
-            $positions[$a]['vy'] -= $fy;
-            $positions[$b]['vx'] += $fx;
-            $positions[$b]['vy'] += $fy;
-        }
-        $temp = max(0.01, 0.12 - ($iter * 0.0005));
-        foreach ($nodeIds as $sid) {
-            $positions[$sid]['x'] += max(-$temp, min($temp, $positions[$sid]['vx']));
-            $positions[$sid]['y'] += max(-$temp, min($temp, $positions[$sid]['vy']));
-            $positions[$sid]['x'] = max(0.03, min(0.97, $positions[$sid]['x']));
-            $positions[$sid]['y'] = max(0.07, min(0.93, $positions[$sid]['y']));
+    foreach ($nodeIds as $sid) {
+        if (!isset($adjacency[$sid])) {
+            $adjacency[$sid] = [];
         }
     }
 
-    $width = 640;
-    $height = 220;
+    $corridorIndexMap = [];
+    foreach ($corridorSystemIds as $idx => $sid) {
+        $sid = (int) $sid;
+        if ($sid > 0 && isset($nodeMap[$sid])) {
+            $corridorIndexMap[$sid] = $idx;
+        }
+    }
+    if ($corridorIndexMap === []) {
+        $fallbackCorridorId = (int) ($nodeIds[0] ?? 0);
+        if ($fallbackCorridorId > 0) {
+            $corridorIndexMap[$fallbackCorridorId] = 0;
+            $nodeMap[$fallbackCorridorId]['is_corridor'] = true;
+        }
+    }
+
+    $distance = [];
+    $nearestCorridor = [];
+    $queue = [];
+    foreach ($corridorIndexMap as $sid => $idx) {
+        $distance[$sid] = 0;
+        $nearestCorridor[$sid] = $sid;
+        $queue[] = $sid;
+    }
+    while ($queue !== []) {
+        $current = array_shift($queue);
+        $currentDistance = (int) ($distance[$current] ?? 0);
+        foreach ($adjacency[$current] as $neighbor) {
+            if (!isset($distance[$neighbor]) || $distance[$neighbor] > ($currentDistance + 1)) {
+                $distance[$neighbor] = $currentDistance + 1;
+                $nearestCorridor[$neighbor] = (int) ($nearestCorridor[$current] ?? $current);
+                $queue[] = $neighbor;
+            }
+        }
+    }
+
+    $positions = [];
+    $corridorNodeIds = array_keys($corridorIndexMap);
+    usort($corridorNodeIds, static function (int $a, int $b) use ($corridorIndexMap): int {
+        return ($corridorIndexMap[$a] ?? 0) <=> ($corridorIndexMap[$b] ?? 0);
+    });
+    $corridorCount = count($corridorNodeIds);
+    foreach ($corridorNodeIds as $idx => $sid) {
+        $x = $corridorCount > 1 ? (0.12 + ((0.76 * $idx) / ($corridorCount - 1))) : 0.5;
+        $positions[$sid] = ['x' => $x, 'y' => 0.5];
+    }
+
+    $ringSlots = [];
+    foreach ($nodeIds as $sid) {
+        if (isset($positions[$sid])) {
+            continue;
+        }
+        $anchorId = (int) ($nearestCorridor[$sid] ?? 0);
+        if ($anchorId <= 0 || !isset($positions[$anchorId])) {
+            $anchorId = (int) ($corridorNodeIds[0] ?? 0);
+            if ($anchorId <= 0 || !isset($positions[$anchorId])) {
+                $anchorId = $sid;
+                $positions[$anchorId] = ['x' => 0.5, 'y' => 0.5];
+            }
+        }
+        $hop = max(1, min(3, (int) ($distance[$sid] ?? 1)));
+        $slotKey = $anchorId . ':' . $hop;
+        $ringSlots[$slotKey] = (int) ($ringSlots[$slotKey] ?? 0);
+        $slotIndex = $ringSlots[$slotKey];
+        $ringSlots[$slotKey] = $slotIndex + 1;
+        $slotCount = max(6, count($adjacency[$anchorId]) * 2);
+        $angle = (($slotIndex % $slotCount) / $slotCount) * (2 * M_PI);
+        $radius = 0.12 + ((float) $hop * 0.07);
+        $x = ((float) $positions[$anchorId]['x']) + (cos($angle) * $radius);
+        $y = ((float) $positions[$anchorId]['y']) + (sin($angle) * $radius * 0.85);
+        $positions[$sid] = [
+            'x' => max(0.03, min(0.97, $x)),
+            'y' => max(0.08, min(0.92, $y)),
+        ];
+    }
+
+    $width = 900;
+    $height = 330;
     $pad = 24;
     $sx = static fn (float $x): float => $pad + ($x * ($width - ($pad * 2)));
     $sy = static fn (float $y): float => $pad + ($y * ($height - ($pad * 2)));
@@ -30780,9 +30815,9 @@ function supplycore_threat_corridor_graph_svg(int $corridorId, array $corridorSy
         $right = max($a, $b);
         $edgeKey = $left . ':' . $right;
         $isCorridorPathEdge = isset($corridorPathEdges[$edgeKey]);
-        $stroke = $isCorridorPathEdge ? '#f87171' : '#334155';
-        $strokeOpacity = $isCorridorPathEdge ? '0.95' : '0.8';
-        $strokeWidth = $isCorridorPathEdge ? '2.6' : '1.2';
+        $stroke = $isCorridorPathEdge ? '#f87171' : '#64748b';
+        $strokeOpacity = $isCorridorPathEdge ? '0.95' : '0.68';
+        $strokeWidth = $isCorridorPathEdge ? '2.8' : '1.35';
         $svg[] = '<line x1="' . number_format($sx((float) $positions[$a]['x']), 2, '.', '') . '" y1="' . number_format($sy((float) $positions[$a]['y']), 2, '.', '') . '" x2="' . number_format($sx((float) $positions[$b]['x']), 2, '.', '') . '" y2="' . number_format($sy((float) $positions[$b]['y']), 2, '.', '') . '" stroke="' . $stroke . '" stroke-opacity="' . $strokeOpacity . '" stroke-width="' . $strokeWidth . '"/>';
     }
     foreach ($nodeMap as $sid => $node) {
