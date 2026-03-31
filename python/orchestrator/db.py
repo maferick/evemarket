@@ -455,23 +455,45 @@ class SupplyCoreDb:
         are satisfied — if a dependency completed recently, the downstream job
         can proceed even if the dependency isn't currently due.
 
-        NOTE: We intentionally do NOT filter on ``status = 'completed'``.
-        Recurring jobs share a single ``unique_key`` row.  The moment a job
-        finishes and the scheduler re-queues it, ``status`` flips back to
-        ``'queued'``, removing the row from a ``status='completed'`` query.
-        This would cause every downstream job to appear permanently blocked.
-        Instead we use ``last_finished_at`` (preserved across re-queues) and
-        ``last_error IS NULL`` (cleared by complete_worker_job) to identify
-        jobs that last ran successfully, regardless of their current status.
+        Checks BOTH ``worker_jobs`` (Python worker pool path) AND
+        ``sync_schedules`` (PHP scheduler daemon path).  The PHP daemon
+        dispatches jobs as background processes that update ``sync_schedules``
+        but never touch ``worker_jobs``.  Without checking both tables,
+        downstream jobs in the DAG would appear permanently blocked whenever
+        their upstream dependency was last run by the PHP daemon rather than
+        the Python worker pool.
         """
-        rows = self.fetch_all(
+        safe_window = max(60, within_seconds)
+
+        # Source 1: worker_jobs — jobs completed by the Python worker pool.
+        worker_rows = self.fetch_all(
             """SELECT DISTINCT job_key FROM worker_jobs
                WHERE last_finished_at IS NOT NULL
                  AND last_finished_at >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL %s SECOND)
                  AND last_error IS NULL""",
-            (max(60, within_seconds),),
+            (safe_window,),
         )
-        return {str(r["job_key"]) for r in rows if r.get("job_key")}
+        completed = {str(r["job_key"]) for r in worker_rows if r.get("job_key")}
+
+        # Source 2: sync_schedules — jobs completed by the PHP scheduler daemon
+        # background dispatch path.  These update last_finished_at and
+        # last_status in sync_schedules but never create worker_jobs rows.
+        try:
+            schedule_rows = self.fetch_all(
+                """SELECT DISTINCT job_key FROM sync_schedules
+                   WHERE enabled = 1
+                     AND last_finished_at IS NOT NULL
+                     AND last_finished_at >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL %s SECOND)
+                     AND last_status IN ('success', 'skipped', 'skipped_no_change',
+                                         'skipped_within_freshness_window',
+                                         'forced_refresh_due_to_staleness')""",
+                (safe_window,),
+            )
+            completed.update(str(r["job_key"]) for r in schedule_rows if r.get("job_key"))
+        except Exception:
+            pass  # sync_schedules may not have the expected columns; degrade gracefully
+
+        return completed
 
     def get_queued_job_keys(self) -> set[str]:
         """Return job_keys that are currently queued or in retry."""

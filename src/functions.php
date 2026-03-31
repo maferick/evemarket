@@ -4945,6 +4945,14 @@ function scheduler_starvation_deferral_threshold(array $job): int
         return 2;
     }
 
+    // Compute pipeline jobs with tight intervals (<=15 min) need faster
+    // starvation recovery to avoid permanent overdue status when competing
+    // with high-priority sync jobs for concurrency slots.
+    $intervalMinutes = (int) ($job['interval_minutes'] ?? 0);
+    if ($intervalMinutes > 0 && $intervalMinutes <= 15) {
+        return 3;
+    }
+
     return 4;
 }
 
@@ -13465,6 +13473,18 @@ function scheduler_should_defer_due_job(array $job, string $pressure): bool
 
     if ($pressure === 'healthy') {
         return false;
+    }
+
+    // Never defer jobs that are significantly overdue (past 2x their interval).
+    // This prevents pipeline compute jobs from being permanently starved by
+    // high-priority sync jobs that consume all concurrency slots.
+    $scheduledFor = trim((string) ($job['next_due_at'] ?? $job['next_run_at'] ?? ''));
+    $intervalSeconds = max(60, (int) ($job['interval_minutes'] ?? 5) * 60);
+    if ($scheduledFor !== '' && strtotime($scheduledFor) !== false) {
+        $overdueSeconds = max(0, time() - (int) strtotime($scheduledFor));
+        if ($overdueSeconds >= $intervalSeconds * 2) {
+            return false;
+        }
     }
 
     if ($pressure === 'busy') {
