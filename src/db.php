@@ -15649,6 +15649,23 @@ function db_theater_participants(string $theaterId, ?string $sideFilter = null, 
     return db_select($sql, $params);
 }
 
+function db_theater_structure_kills(string $theaterId): array
+{
+    return db_select(
+        'SELECT tsk.*,
+                COALESCE(emc_a.entity_name, CONCAT("Alliance #", tsk.victim_alliance_id)) AS alliance_name,
+                COALESCE(emc_c.entity_name, CONCAT("Corp #", tsk.victim_corporation_id)) AS corporation_name
+         FROM theater_structure_kills tsk
+         LEFT JOIN entity_metadata_cache emc_a
+              ON emc_a.entity_type = "alliance" AND emc_a.entity_id = tsk.victim_alliance_id
+         LEFT JOIN entity_metadata_cache emc_c
+              ON emc_c.entity_type = "corporation" AND emc_c.entity_id = tsk.victim_corporation_id
+         WHERE tsk.theater_id = ?
+         ORDER BY tsk.isk_lost DESC',
+        [$theaterId]
+    );
+}
+
 function db_theater_suspicion_summary(string $theaterId): ?array
 {
     return db_select_one(

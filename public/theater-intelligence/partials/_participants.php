@@ -21,6 +21,22 @@ foreach ($participantsAll as $p) {
     }
 }
 
+// Split structure kills by owning alliance side
+$friendlyStructureKills = [];
+$enemyStructureKills = [];
+$thirdPartyStructureKills = [];
+$structureKills = $structureKills ?? [];
+foreach ($structureKills as $sk) {
+    $skSide = $classifyAlliance((int) ($sk['victim_alliance_id'] ?? 0));
+    if ($skSide === 'friendly') {
+        $friendlyStructureKills[] = $sk;
+    } elseif ($skSide === 'opponent') {
+        $enemyStructureKills[] = $sk;
+    } else {
+        $thirdPartyStructureKills[] = $sk;
+    }
+}
+
 // When a specific filter is active, show single filtered list
 $showSideBySide = ($sideFilter === null && !$suspiciousOnly);
 $filteredList = $showSideBySide ? [] : $participants;
@@ -102,7 +118,8 @@ function _render_participant_row(array $p, array $resolvedEntities, array $shipT
         $decoded = json_decode($lostJson, true);
         if (is_array($decoded)) $lostDetail = $decoded;
     }
-    // Filter out pods
+    // Filter out pods (for ship display), and separately collect pod losses for the indicator
+    $_podIds = [670, 33328];
     $lostDisplay = array_values(array_filter($lostDetail, static fn(array $e): bool => !in_array((int) ($e['ship_type_id'] ?? 0), [670, 33328], true)));
     if ($lostDisplay !== []) {
         usort($lostDisplay, static fn(array $a, array $b): int => (float) ($b['isk_lost'] ?? 0) <=> (float) ($a['isk_lost'] ?? 0));
@@ -112,6 +129,16 @@ function _render_participant_row(array $p, array $resolvedEntities, array $shipT
         $lostShipCount = 0;
         foreach ($lostDisplay as $entry) {
             $lostShipCount += (int) ($entry['count'] ?? 1);
+        }
+    }
+
+    // ── Capsule (pod) losses — shown as a secondary indicator ──
+    $podIsk = 0.0;
+    $wasPodded = false;
+    foreach ($lostDetail as $_pe) {
+        if (in_array((int) ($_pe['ship_type_id'] ?? 0), [670, 33328], true)) {
+            $podIsk += (float) ($_pe['isk_lost'] ?? 0);
+            $wasPodded = true;
         }
     }
 
@@ -219,6 +246,12 @@ function _render_participant_row(array $p, array $resolvedEntities, array $shipT
                         <span class="text-[10px] text-red-500/60">&darr; lost<?= $lostShipCount > 1 ? ' &times;' . $lostShipCount : '' ?></span>
                     </div>
                 <?php endif; ?>
+                <?php if ($wasPodded): ?>
+                    <div class="flex items-center gap-1 opacity-80" title="Capsule also destroyed">
+                        <img class="w-3 h-3 flex-shrink-0 opacity-50" src="https://images.evetech.net/types/670/icon?size=32" loading="lazy">
+                        <span class="text-[10px] text-orange-400/80">+ Pod<?= $podIsk > 0 ? ' (' . supplycore_format_isk($podIsk) . ')' : '' ?></span>
+                    </div>
+                <?php endif; ?>
             </div>
         </td>
         <td class="px-2 py-1.5">
@@ -259,6 +292,81 @@ function _fmt_damage(float $v): string {
     if ($v >= 1e3) return number_format($v / 1e3, 0) . 'k';
     return number_format($v, 0);
 }
+
+/**
+ * Render a single structure-kill row for the participant table.
+ * Structures have no pilot character, K/D, or damage — only an owning
+ * corp/alliance, hull type, and ISK lost.
+ */
+function _render_structure_row(array $sk, array $resolvedEntities, array $shipTypeNames): string {
+    $allianceId = (int) ($sk['victim_alliance_id'] ?? 0);
+    $corpId     = (int) ($sk['victim_corporation_id'] ?? 0);
+    $shipTypeId = (int) ($sk['victim_ship_type_id'] ?? 0);
+    $iskLost    = (float) ($sk['isk_lost'] ?? 0);
+    $shipName   = $shipTypeId > 0
+        ? (string) ($shipTypeNames[$shipTypeId] ?? ('Structure #' . $shipTypeId))
+        : 'Unknown Structure';
+
+    // Prefer corp name, fall back to alliance name
+    $orgName = '';
+    if ($corpId > 0) {
+        $orgName = killmail_entity_preferred_name($resolvedEntities, 'corporation', $corpId, (string) ($sk['corporation_name'] ?? ''), 'Corp');
+    }
+    if (($orgName === '' || str_starts_with($orgName, 'Corp #')) && $allianceId > 0) {
+        $orgName = killmail_entity_preferred_name($resolvedEntities, 'alliance', $allianceId, (string) ($sk['alliance_name'] ?? ''), 'Alliance');
+    }
+    if ($orgName === '') {
+        $orgName = 'Unknown';
+    }
+
+    ob_start();
+    ?>
+    <tr class="border-b border-border/50 hover:bg-slate-800/40 transition-colors border-l-2 border-l-orange-500/40 bg-orange-950/5"
+        data-deaths="1"
+        data-kills="0"
+        data-kd="0.0000"
+        data-role-rank="99"
+        data-hull="zzz-structure"
+        data-damage="0"
+        data-isk="<?= $iskLost ?>">
+        <td class="px-2 py-1.5">
+            <div class="flex items-center gap-1.5">
+                <span class="text-orange-500/70 text-sm leading-none flex-shrink-0" title="Structure">&#x1F3DB;</span>
+                <span class="text-xs text-slate-400 truncate max-w-[8rem]" title="<?= htmlspecialchars($orgName, ENT_QUOTES) ?>">
+                    <?= htmlspecialchars($orgName, ENT_QUOTES) ?>
+                </span>
+                <span class="inline-flex items-center justify-center w-3.5 h-3.5 rounded-full bg-orange-950 ring-1 ring-orange-500/60 text-[8px] text-orange-400 flex-shrink-0" title="Structure destroyed">&#x2715;</span>
+            </div>
+        </td>
+        <td class="px-2 py-1.5">
+            <div class="flex items-center gap-1">
+                <?php if ($shipTypeId > 0): ?>
+                    <img class="w-4 h-4 flex-shrink-0" src="https://images.evetech.net/types/<?= $shipTypeId ?>/icon?size=32" loading="lazy">
+                <?php endif; ?>
+                <span class="text-[11px] text-orange-300/80 truncate max-w-[6rem]"><?= htmlspecialchars($shipName, ENT_QUOTES) ?></span>
+            </div>
+        </td>
+        <td class="px-2 py-1.5">
+            <span class="inline-flex items-center rounded-full px-[6px] py-[4px] text-[8px] font-semibold uppercase tracking-[0.12em] leading-none bg-orange-950/60 border border-orange-500/30 text-orange-400">
+                Structure
+            </span>
+        </td>
+        <td class="px-2 py-1.5 text-right text-xs text-slate-600">&mdash;</td>
+        <td class="px-2 py-1.5 text-right text-xs text-slate-600">&mdash;</td>
+        <td class="px-2 py-1.5 text-right">
+            <?php if ($iskLost > 0): ?>
+                <span class="text-xs text-red-400"><?= supplycore_format_isk($iskLost) ?></span>
+            <?php else: ?>
+                <span class="text-xs text-slate-600">&mdash;</span>
+            <?php endif; ?>
+        </td>
+        <td class="px-2 py-1.5 text-right">
+            <span class="text-xs text-slate-600">&mdash;</span>
+        </td>
+    </tr>
+    <?php
+    return ob_get_clean();
+}
 ?>
 <section class="surface-primary mt-4">
     <div class="flex items-center justify-between gap-4">
@@ -282,8 +390,8 @@ function _fmt_damage(float $v): string {
             $enemyLabel .= ' + Third Party';
         }
         $panelSets = [
-            ['label' => $sideLabels['friendly'] ?? 'Friendlies', 'side' => 'friendly', 'rows' => $friendlyParticipants, 'colorClass' => 'text-blue-300', 'borderClass' => 'border-blue-500/30', 'badgeClass' => 'bg-green-950 text-green-400 ring-1 ring-green-600/60', 'badgeLabel' => 'Friendly'],
-            ['label' => $enemyLabel, 'side' => 'opponent', 'rows' => $enemyCombinedParticipants, 'colorClass' => 'text-red-300', 'borderClass' => 'border-red-500/30', 'badgeClass' => 'bg-red-950 text-red-400 ring-1 ring-red-600/60', 'badgeLabel' => 'Opponent'],
+            ['label' => $sideLabels['friendly'] ?? 'Friendlies', 'side' => 'friendly', 'rows' => $friendlyParticipants, 'structure_kills' => $friendlyStructureKills, 'colorClass' => 'text-blue-300', 'borderClass' => 'border-blue-500/30', 'badgeClass' => 'bg-green-950 text-green-400 ring-1 ring-green-600/60', 'badgeLabel' => 'Friendly'],
+            ['label' => $enemyLabel, 'side' => 'opponent', 'rows' => $enemyCombinedParticipants, 'structure_kills' => array_merge($enemyStructureKills, $thirdPartyStructureKills), 'colorClass' => 'text-red-300', 'borderClass' => 'border-red-500/30', 'badgeClass' => 'bg-red-950 text-red-400 ring-1 ring-red-600/60', 'badgeLabel' => 'Opponent'],
         ];
         foreach ($panelSets as $panel):
             // Max damage for this panel
@@ -299,7 +407,7 @@ function _fmt_damage(float $v): string {
                     <?= htmlspecialchars($panel['label'], ENT_QUOTES) ?>
                     <span class="<?= $panel['badgeClass'] ?> text-[10px] rounded px-1.5 py-0.5 ml-1.5"><?= $panel['badgeLabel'] ?></span>
                     <span class="text-muted font-normal text-xs ml-1" data-panel-count>
-                        (<?= count($panel['rows']) ?>)
+                        (<?= count($panel['rows']) + count($panel['structure_kills'] ?? []) ?>)
                     </span>
                 </h3>
             </div>
@@ -329,11 +437,14 @@ function _fmt_damage(float $v): string {
                         </tr>
                     </thead>
                     <tbody class="sc-tbody">
-                        <?php if ($panel['rows'] === []): ?>
+                        <?php if ($panel['rows'] === [] && ($panel['structure_kills'] ?? []) === []): ?>
                             <tr><td colspan="7" class="px-2 py-4 text-sm text-muted text-center">No participants.</td></tr>
                         <?php else: ?>
                             <?php foreach ($panel['rows'] as $p): ?>
                                 <?= _render_participant_row($p, $resolvedEntities, $shipTypeNames, $panelMaxDmg, $hasMonitorOrFlagShips) ?>
+                            <?php endforeach; ?>
+                            <?php foreach (($panel['structure_kills'] ?? []) as $sk): ?>
+                                <?= _render_structure_row($sk, $resolvedEntities, $shipTypeNames) ?>
                             <?php endforeach; ?>
                         <?php endif; ?>
                     </tbody>
@@ -567,6 +678,22 @@ function _fmt_damage(float $v): string {
                                             <span class="text-[10px] text-red-500/60">&darr; lost<?= $lostShipCount2 > 1 ? ' &times;' . $lostShipCount2 : '' ?></span>
                                         </div>
                                     <?php endif; ?>
+                                    <?php
+                                        $podIsk2 = 0.0;
+                                        $wasPodded2 = false;
+                                        foreach ($lostDetail2 as $_pe2) {
+                                            if (in_array((int) ($_pe2['ship_type_id'] ?? 0), [670, 33328], true)) {
+                                                $podIsk2 += (float) ($_pe2['isk_lost'] ?? 0);
+                                                $wasPodded2 = true;
+                                            }
+                                        }
+                                    ?>
+                                    <?php if ($wasPodded2): ?>
+                                        <div class="flex items-center gap-1 opacity-80" title="Capsule also destroyed">
+                                            <img class="w-3 h-3 flex-shrink-0 opacity-50" src="https://images.evetech.net/types/670/icon?size=32" loading="lazy">
+                                            <span class="text-[10px] text-orange-400/80">+ Pod<?= $podIsk2 > 0 ? ' (' . supplycore_format_isk($podIsk2) . ')' : '' ?></span>
+                                        </div>
+                                    <?php endif; ?>
                                 </div>
                             </td>
                             <td class="px-3 py-2">
@@ -597,6 +724,72 @@ function _fmt_damage(float $v): string {
                             <td class="px-3 py-2 text-right">
                                 <a class="text-accent text-sm" href="/battle-intelligence/character.php?character_id=<?= (int) ($p['character_id'] ?? 0) ?>">Intel</a>
                             </td>
+                        </tr>
+                    <?php endforeach; ?>
+                    <?php
+                        // Structure rows in single-column view — filter by side if active
+                        $filteredStructures = array_values(array_filter(
+                            $structureKills,
+                            static function (array $sk) use ($sideFilter, $classifyAlliance): bool {
+                                if ($sideFilter === null) return true;
+                                return $classifyAlliance((int) ($sk['victim_alliance_id'] ?? 0)) === $sideFilter;
+                            }
+                        ));
+                    ?>
+                    <?php foreach ($filteredStructures as $sk): ?>
+                        <?php
+                            $skAllianceId = (int) ($sk['victim_alliance_id'] ?? 0);
+                            $skCorpId     = (int) ($sk['victim_corporation_id'] ?? 0);
+                            $skShipTypeId = (int) ($sk['victim_ship_type_id'] ?? 0);
+                            $skIskLost    = (float) ($sk['isk_lost'] ?? 0);
+                            $skShipName   = $skShipTypeId > 0 ? (string) ($shipTypeNames[$skShipTypeId] ?? 'Structure #' . $skShipTypeId) : 'Unknown Structure';
+                            $skSide       = $classifyAlliance($skAllianceId);
+                            $skSideClass  = $sideColorClass[$skSide] ?? 'text-slate-300';
+                            $skOrgName    = '';
+                            if ($skCorpId > 0) {
+                                $skOrgName = killmail_entity_preferred_name($resolvedEntities, 'corporation', $skCorpId, (string) ($sk['corporation_name'] ?? ''), 'Corp');
+                            }
+                            if (($skOrgName === '' || str_starts_with($skOrgName, 'Corp #')) && $skAllianceId > 0) {
+                                $skOrgName = killmail_entity_preferred_name($resolvedEntities, 'alliance', $skAllianceId, (string) ($sk['alliance_name'] ?? ''), 'Alliance');
+                            }
+                            if ($skOrgName === '') $skOrgName = 'Unknown';
+                        ?>
+                        <tr class="border-b border-border/50 border-l-2 border-l-orange-500/40 bg-orange-950/5">
+                            <td class="px-3 py-2">
+                                <div class="flex items-center gap-1.5">
+                                    <span class="text-orange-500/70 text-sm leading-none flex-shrink-0" title="Structure">&#x1F3DB;</span>
+                                    <span class="text-sm text-slate-400 truncate" title="<?= htmlspecialchars($skOrgName, ENT_QUOTES) ?>"><?= htmlspecialchars($skOrgName, ENT_QUOTES) ?></span>
+                                    <span class="inline-flex items-center justify-center w-3.5 h-3.5 rounded-full bg-orange-950 ring-1 ring-orange-500/60 text-[8px] text-orange-400 flex-shrink-0" title="Structure destroyed">&#x2715;</span>
+                                    <span class="inline-block rounded-full px-1.5 py-0.5 text-[9px] uppercase tracking-wider ml-1 <?= $sideBgClass[$skSide] ?? 'bg-slate-700' ?> <?= $skSideClass ?>">
+                                        <?= htmlspecialchars($sideLabels[$skSide] ?? $skSide, ENT_QUOTES) ?>
+                                    </span>
+                                </div>
+                            </td>
+                            <td class="px-3 py-2 text-slate-300 text-xs">
+                                <div class="flex items-center gap-1.5">
+                                    <?php if ($skAllianceId > 0): ?>
+                                        <img src="https://images.evetech.net/alliances/<?= $skAllianceId ?>/logo?size=64" alt="" class="w-5 h-5" loading="lazy">
+                                        <span class="text-slate-100"><?= htmlspecialchars($skOrgName, ENT_QUOTES) ?></span>
+                                    <?php endif; ?>
+                                </div>
+                            </td>
+                            <td class="px-3 py-2">
+                                <div class="flex items-center gap-1">
+                                    <?php if ($skShipTypeId > 0): ?>
+                                        <img class="w-4 h-4" src="https://images.evetech.net/types/<?= $skShipTypeId ?>/icon?size=32" loading="lazy">
+                                    <?php endif; ?>
+                                    <span class="text-[11px] text-orange-300/80 truncate max-w-[8rem]"><?= htmlspecialchars($skShipName, ENT_QUOTES) ?></span>
+                                </div>
+                            </td>
+                            <td class="px-3 py-2">
+                                <span class="inline-flex items-center rounded-full px-[6px] py-[4px] text-[8px] font-semibold uppercase tracking-[0.12em] leading-none bg-orange-950/60 border border-orange-500/30 text-orange-400">Structure</span>
+                            </td>
+                            <td class="px-3 py-2 text-right text-xs text-slate-600">&mdash;</td>
+                            <td class="px-3 py-2 text-right text-xs text-slate-600">&mdash;</td>
+                            <td class="px-3 py-2 text-right text-xs text-slate-600">&mdash;</td>
+                            <td class="px-3 py-2 text-right text-xs <?= $skIskLost > 0 ? 'text-red-300' : 'text-slate-500' ?>"><?= $skIskLost > 0 ? supplycore_format_isk($skIskLost) : '&mdash;' ?></td>
+                            <td class="px-3 py-2 text-right text-xs text-slate-600">&mdash;</td>
+                            <td class="px-3 py-2 text-right text-xs text-slate-600">&mdash;</td>
                         </tr>
                     <?php endforeach; ?>
                 <?php endif; ?>

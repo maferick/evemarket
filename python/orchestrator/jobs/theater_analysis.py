@@ -123,6 +123,7 @@ def _load_killmails_for_battles(db: SupplyCoreDb, battle_ids: list[str]) -> list
                 ke.victim_alliance_id,
                 ke.victim_ship_type_id,
                 COALESCE(ke.zkb_total_value, 0) AS total_value,
+                COALESCE(ke.zkb_npc, 0) AS zkb_npc,
                 ka.character_id AS attacker_character_id,
                 ka.corporation_id AS attacker_corporation_id,
                 ka.alliance_id AS attacker_alliance_id,
@@ -653,6 +654,63 @@ def _compute_participants(
     return result
 
 
+# ── Structure kill detection ───────────────────────────────────────────────
+
+def _compute_structure_kills(
+    killmails: list[dict[str, Any]],
+    side_configuration: dict[str, set[int]],
+    theater_id: str,
+) -> list[dict[str, Any]]:
+    """Detect player-owned structure killmails (victim has no character, but has alliance).
+
+    Structures cannot appear in theater_participants (character_id PK), so they
+    are stored separately in theater_structure_kills.  A killmail is classified
+    as a structure kill when:
+      - victim_character_id == 0  (no pilot — only structures/deployables have this)
+      - victim_alliance_id > 0    (player-owned — filters out NPC entities)
+      - zkb_npc == 0              (sanity guard: not flagged as an NPC engagement)
+    """
+    seen: set[int] = set()
+    result: list[dict[str, Any]] = []
+
+    for km in killmails:
+        km_id = int(km.get("killmail_id") or 0)
+        if km_id <= 0 or km_id in seen:
+            continue
+
+        victim_char = int(km.get("victim_character_id") or 0)
+        victim_alliance = int(km.get("victim_alliance_id") or 0)
+        zkb_npc = int(km.get("zkb_npc") or 0)
+
+        # Only player-owned structures: no pilot, has an owning alliance, not NPC
+        if victim_char != 0 or victim_alliance <= 0 or zkb_npc:
+            continue
+
+        seen.add(km_id)
+
+        victim_corp = int(km.get("victim_corporation_id") or 0)
+        side = _classify_alliance(victim_alliance, victim_corp, side_configuration)
+        isk = float(km.get("total_value") or 0)
+        km_time = km.get("killmail_time")
+        if isinstance(km_time, datetime):
+            killed_at = km_time.strftime("%Y-%m-%d %H:%M:%S")
+        else:
+            killed_at = str(km_time) if km_time else None
+
+        result.append({
+            "theater_id": theater_id,
+            "killmail_id": km_id,
+            "victim_corporation_id": victim_corp if victim_corp > 0 else None,
+            "victim_alliance_id": victim_alliance,
+            "victim_ship_type_id": int(km.get("victim_ship_type_id") or 0),
+            "isk_lost": isk,
+            "side": side,
+            "killed_at": killed_at,
+        })
+
+    return result
+
+
 # ── Side composition computation ──────────────────────────────────────────
 
 def _compute_side_composition(
@@ -841,6 +899,7 @@ def _flush_analysis(
     computed_at: str,
     battle_ids: list[str],
     side_composition_rows: list[dict[str, Any]] | None = None,
+    structure_kill_rows: list[dict[str, Any]] | None = None,
 ) -> int:
     """Write analysis results for one theater. Returns rows written."""
     rows_written = 0
@@ -850,6 +909,7 @@ def _flush_analysis(
         cursor.execute("DELETE FROM theater_timeline WHERE theater_id = %s", (theater_id,))
         cursor.execute("DELETE FROM theater_alliance_summary WHERE theater_id = %s", (theater_id,))
         cursor.execute("DELETE FROM theater_participants WHERE theater_id = %s", (theater_id,))
+        cursor.execute("DELETE FROM theater_structure_kills WHERE theater_id = %s", (theater_id,))
 
         # Clean turning points for battles in this theater
         if battle_ids:
@@ -978,6 +1038,27 @@ def _flush_analysis(
             )
             rows_written += len(side_composition_rows)
 
+        # Structure kills
+        if structure_kill_rows:
+            cursor.executemany(
+                """
+                INSERT INTO theater_structure_kills (
+                    theater_id, killmail_id, victim_corporation_id, victim_alliance_id,
+                    victim_ship_type_id, isk_lost, side, killed_at
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                [
+                    (
+                        s["theater_id"], s["killmail_id"],
+                        s["victim_corporation_id"], s["victim_alliance_id"],
+                        s["victim_ship_type_id"], s["isk_lost"],
+                        s["side"], s["killed_at"],
+                    )
+                    for s in structure_kill_rows
+                ],
+            )
+            rows_written += len(structure_kill_rows)
+
         # Update theater aggregates
         cursor.execute(
             """
@@ -1069,6 +1150,9 @@ def run_theater_analysis(
             # Compute participant stats
             participant_stats = _compute_participants(killmails, bp_rows, char_sides, theater_id, ship_group_map)
 
+            # Detect structure kills (player-owned structures with no victim character)
+            structure_kills = _compute_structure_kills(killmails, side_configuration, theater_id)
+
             # Compute side composition features for force-normalization
             side_composition = _compute_side_composition(bp_rows, char_sides, ship_group_map, theater_id)
 
@@ -1084,7 +1168,7 @@ def run_theater_analysis(
                 written = _flush_analysis(
                     db, theater_id, timeline, alliance_summary, participant_stats,
                     turning_points, total_kills, total_isk, anomaly_score, computed_at,
-                    battle_ids, side_composition,
+                    battle_ids, side_composition, structure_kills,
                 )
                 rows_written += written
 
@@ -1093,6 +1177,7 @@ def run_theater_analysis(
                 "theater_id": theater_id,
                 "kills": total_kills,
                 "participants": len(participant_stats),
+                "structure_kills": len(structure_kills),
                 "alliances": len(alliance_summary),
                 "timeline_buckets": len(timeline),
                 "turning_points": len(turning_points),
