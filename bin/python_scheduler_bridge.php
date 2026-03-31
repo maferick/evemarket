@@ -149,7 +149,8 @@ try {
             'SELECT killmail_id, killmail_hash FROM killmail_events WHERE zkb_total_value IS NULL ORDER BY killmail_id ASC LIMIT ? OFFSET ?',
             [$limit, $offset]
         );
-        $total = (int) db_select_value('SELECT COUNT(*) FROM killmail_events WHERE zkb_total_value IS NULL');
+        $totalRow = db_select_one('SELECT COUNT(*) AS total FROM killmail_events WHERE zkb_total_value IS NULL');
+        $total = (int) ($totalRow['total'] ?? 0);
         python_scheduler_bridge_output(['ok' => true, 'rows' => $rows, 'total' => $total]);
     }
 
