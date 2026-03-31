@@ -161,6 +161,9 @@ def _ensure_schema(client: Neo4jClient) -> None:
         "CREATE CONSTRAINT IF NOT EXISTS FOR (cp:ComputeCheckpoint) REQUIRE cp.run_id IS UNIQUE",
         "CREATE INDEX IF NOT EXISTS FOR (k:Killmail) ON (k.battle_id)",
         "CREATE INDEX IF NOT EXISTS FOR (c:Character) ON (c.tracked)",
+        # Relationship indexes — speed up duplicate detection and quality checks.
+        "CREATE INDEX IF NOT EXISTS FOR ()-[r:PART_OF]-() ON (r.as_of)",
+        "CREATE INDEX IF NOT EXISTS FOR ()-[r:CURRENT_CORP]-() ON (r.as_of)",
     ]:
         try:
             client.query(stmt)
