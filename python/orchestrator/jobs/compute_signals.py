@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any
@@ -55,7 +56,9 @@ from(bucket: "{config.bucket}")
 
 
 def run_compute_signals(db: SupplyCoreDb, influx_raw: dict[str, Any] | None = None) -> dict[str, Any]:
-    computed_at = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
+    _started_at = datetime.now(UTC)
+    _start_mono = time.monotonic()
+    computed_at = _started_at.strftime("%Y-%m-%d %H:%M:%S")
     rows = db.fetch_all(
         """
         SELECT
@@ -190,11 +193,15 @@ def run_compute_signals(db: SupplyCoreDb, influx_raw: dict[str, Any] | None = No
             )
             created += 1
 
+    _finished_at = datetime.now(UTC)
     return JobResult.success(
         job_key="compute_signals",
         summary=f"Generated {created} intelligence signals from {len(rows)} buy-all items.",
         rows_processed=len(rows),
         rows_written=created,
+        started_at=_started_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        finished_at=_finished_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        duration_ms=int((time.monotonic() - _start_mono) * 1000),
         meta={"computed_at": computed_at, "signals_created": created},
     ).to_dict()
 

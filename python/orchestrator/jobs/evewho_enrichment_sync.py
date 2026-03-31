@@ -341,6 +341,7 @@ def run_evewho_enrichment_sync(
             rows_seen=rows_processed,
             rows_written=rows_written,
             has_more=has_more,
+            duration_ms=duration_ms,
             summary=f"Enriched {rows_written}/{rows_processed} characters in {batch_count} batch(es), {duration_ms}ms",
         ).to_dict()
 

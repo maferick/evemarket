@@ -269,6 +269,8 @@ def run_market_comparison_summary(context: Any) -> dict[str, Any]:
         rows_processed=stats.progress.rows_processed,
         batches_completed=stats.progress.batches_completed,
         started_at=stats.started_at_iso,
+        finished_at=utc_now_iso(),
+        duration_ms=stats.duration_ms(),
         meta={
             "execution_mode": "python",
             "snapshot_generated_at": freshness.get("computed_at"),

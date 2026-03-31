@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from hashlib import sha256
@@ -113,8 +114,34 @@ def _filters_hash(filters: dict[str, Any]) -> str:
 
 
 def _load_market_rows(db: SupplyCoreDb, limit: int = 600) -> list[dict[str, Any]]:
+    # CTEs pre-compute the latest snapshot per source once each, replacing the
+    # two correlated subqueries that previously re-ran for every candidate row.
     return db.fetch_all(
         """
+        WITH hub_snapshot AS (
+            SELECT h.*
+            FROM market_order_snapshots_summary h
+            JOIN (
+                SELECT source_id, MAX(observed_at) AS latest_at
+                FROM market_order_snapshots_summary
+                WHERE source_type = 'market_hub'
+                GROUP BY source_id
+            ) hl ON hl.source_id = h.source_id
+                AND h.observed_at = hl.latest_at
+            WHERE h.source_type = 'market_hub'
+        ),
+        alliance_snapshot AS (
+            SELECT a.*
+            FROM market_order_snapshots_summary a
+            JOIN (
+                SELECT source_id, MAX(observed_at) AS latest_at
+                FROM market_order_snapshots_summary
+                WHERE source_type = 'alliance_structure'
+                GROUP BY source_id
+            ) al ON al.source_id = a.source_id
+                AND a.observed_at = al.latest_at
+            WHERE a.source_type = 'alliance_structure'
+        )
         SELECT
             ref.type_id,
             COALESCE(rit.type_name, CONCAT('Type #', ref.type_id)) AS type_name,
@@ -138,26 +165,11 @@ def _load_market_rows(db: SupplyCoreDb, limit: int = 600) -> list[dict[str, Any]
             COALESCE(ici.market_stress_score, 0.0) AS market_stress_score,
             COALESCE(ici.trend_regime, 'stable') AS trend_regime,
             COALESCE(ici.substitute_count, 0) AS substitute_count
-        FROM market_order_snapshots_summary ref
-        LEFT JOIN market_order_snapshots_summary alliance
-            ON alliance.type_id = ref.type_id
-           AND alliance.source_type = 'alliance_structure'
-           AND alliance.observed_at = (
-                SELECT MAX(inner_a.observed_at)
-                FROM market_order_snapshots_summary inner_a
-                WHERE inner_a.source_type = 'alliance_structure'
-                  AND inner_a.source_id = alliance.source_id
-           )
+        FROM hub_snapshot ref
+        LEFT JOIN alliance_snapshot alliance ON alliance.type_id = ref.type_id
         LEFT JOIN ref_item_types rit ON rit.type_id = ref.type_id
         LEFT JOIN item_dependency_score ids ON ids.type_id = ref.type_id
         LEFT JOIN item_criticality_index ici ON ici.type_id = ref.type_id
-        WHERE ref.source_type = 'market_hub'
-          AND ref.observed_at = (
-                SELECT MAX(inner_r.observed_at)
-                FROM market_order_snapshots_summary inner_r
-                WHERE inner_r.source_type = 'market_hub'
-                  AND inner_r.source_id = ref.source_id
-          )
         ORDER BY opportunity_score DESC, risk_score DESC, ref.type_id ASC
         LIMIT %s
         """,
@@ -336,7 +348,9 @@ def _doctrine_freshness(db: SupplyCoreDb) -> dict[str, Any]:
 
 
 def run_compute_buy_all(db: SupplyCoreDb, requests: list[dict[str, Any]] | None = None) -> dict[str, Any]:
-    computed_at = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
+    _started_at = datetime.now(UTC)
+    _start_mono = time.monotonic()
+    computed_at = _started_at.strftime("%Y-%m-%d %H:%M:%S")
     planned_requests = requests or DEFAULT_REQUESTS
     market_rows = _load_market_rows(db)
     allowed_type_ids = load_allowed_type_ids()
@@ -362,12 +376,20 @@ def run_compute_buy_all(db: SupplyCoreDb, requests: list[dict[str, Any]] | None 
     }
     doctrine_freshness = _doctrine_freshness(db)
 
+    # Pre-serialize item JSON once — page_items is identical for every request.
+    page_items = items[:120]
+    _item_json_cache: dict[int, str] = {
+        int(item.get("type_id") or 0): json.dumps(
+            item, separators=(",", ":"), ensure_ascii=False, default=_decimal_json_default
+        )
+        for item in page_items
+    }
+
     for request in planned_requests:
         mode = str(request.get("mode") or "blended")
         sort = str(request.get("sort") or "blended_score")
         filters = _php_default_filters(mode)
         filters_hash = _filters_hash(filters)
-        page_items = items[:120]
 
         generated_at_iso = datetime.now(UTC).isoformat()
         total_buy_cost = _q2(sum((
@@ -458,6 +480,8 @@ def run_compute_buy_all(db: SupplyCoreDb, requests: list[dict[str, Any]] | None 
         summary_json = json.dumps(payload["summary"], separators=(",", ":"), ensure_ascii=False, default=_decimal_json_default)
         payload_json = json.dumps(payload, separators=(",", ":"), ensure_ascii=False, default=_decimal_json_default)
         with db.transaction() as (_, cursor):
+            # id = LAST_INSERT_ID(id) makes cursor.lastrowid return the existing
+            # row's PK on UPDATE, eliminating the follow-up SELECT.
             cursor.execute(
                 """
                 INSERT INTO buy_all_summary (mode_key, sort_key, filters_hash, summary_json, payload_json, computed_at)
@@ -466,34 +490,30 @@ def run_compute_buy_all(db: SupplyCoreDb, requests: list[dict[str, Any]] | None 
                     summary_json = VALUES(summary_json),
                     payload_json = VALUES(payload_json),
                     computed_at = VALUES(computed_at),
-                    updated_at = CURRENT_TIMESTAMP
+                    updated_at = CURRENT_TIMESTAMP,
+                    id = LAST_INSERT_ID(id)
                 """,
                 (mode, sort, filters_hash, summary_json, payload_json, computed_at),
             )
-            cursor.execute(
-                "SELECT id FROM buy_all_summary WHERE mode_key = %s AND sort_key = %s AND filters_hash = %s LIMIT 1",
-                (mode, sort, filters_hash),
-            )
-            summary_row = cursor.fetchone() or {}
-            summary_id = int(summary_row.get("id") or 0)
+            summary_id = int(cursor.lastrowid or 0)
             if summary_id <= 0:
                 raise RuntimeError("Failed to resolve summary_id for buy-all precompute.")
 
             cursor.execute("DELETE FROM buy_all_items WHERE summary_id = %s", (summary_id,))
-            for item in page_items:
-                cursor.execute(
-                    """
-                    INSERT INTO buy_all_items (summary_id, page_number, rank_position, type_id, quantity, mode_rank_score, necessity_score, profit_score, item_json, computed_at)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                    ON DUPLICATE KEY UPDATE
-                        rank_position = VALUES(rank_position),
-                        quantity = VALUES(quantity),
-                        mode_rank_score = VALUES(mode_rank_score),
-                        necessity_score = VALUES(necessity_score),
-                        profit_score = VALUES(profit_score),
-                        item_json = VALUES(item_json),
-                        computed_at = VALUES(computed_at)
-                    """,
+            cursor.executemany(
+                """
+                INSERT INTO buy_all_items (summary_id, page_number, rank_position, type_id, quantity, mode_rank_score, necessity_score, profit_score, item_json, computed_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON DUPLICATE KEY UPDATE
+                    rank_position = VALUES(rank_position),
+                    quantity = VALUES(quantity),
+                    mode_rank_score = VALUES(mode_rank_score),
+                    necessity_score = VALUES(necessity_score),
+                    profit_score = VALUES(profit_score),
+                    item_json = VALUES(item_json),
+                    computed_at = VALUES(computed_at)
+                """,
+                [
                     (
                         summary_id,
                         1,
@@ -503,19 +523,26 @@ def run_compute_buy_all(db: SupplyCoreDb, requests: list[dict[str, Any]] | None 
                         to_decimal(item.get("mode_rank_score")),
                         to_decimal(item.get("necessity_score")),
                         to_decimal(item.get("profit_score")),
-                        json.dumps(item, separators=(",", ":"), ensure_ascii=False, default=_decimal_json_default),
+                        _item_json_cache[int(item.get("type_id") or 0)],
                         computed_at,
-                    ),
-                )
-                rows_written += 1
+                    )
+                    for item in page_items
+                ],
+            )
+            rows_written += len(page_items)
 
         created += 1
 
+    _finished_at = datetime.now(UTC)
+    _duration_ms = int((time.monotonic() - _start_mono) * 1000)
     return JobResult.success(
         job_key="compute_buy_all",
         summary=f"Precomputed {created} buy-all request(s) with {rows_written} item rows.",
         rows_processed=rows_processed,
         rows_written=rows_written,
+        started_at=_started_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        finished_at=_finished_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        duration_ms=_duration_ms,
         meta={
             "computed_at": computed_at,
             "requests": created,
