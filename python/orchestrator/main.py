@@ -424,6 +424,7 @@ def main() -> int:
         config = load_php_runtime_config(app_root)
         configure_logging(verbose=args.verbose, log_file=config.log_file)
         from .db import SupplyCoreDb
+        from .bridge import PhpBridge
         db = SupplyCoreDb(config.raw.get("db", {}))
         job_key = str(args.job_key).strip()
         if job_key not in PYTHON_PROCESSOR_JOB_KEYS:
@@ -432,16 +433,16 @@ def main() -> int:
         started_at = time.monotonic()
         try:
             result = run_registered_processor(job_key, db, config.raw, verbose=getattr(args, "verbose", False))
-            _print_cli_result(job_key, started_at, result)
-            return 1 if str(result.get("status") or "success").lower() == "failed" else 0
         except Exception as exc:
             import traceback
-            _print_cli_result(
-                job_key,
-                started_at,
-                {"status": "failed", "error_text": f"{type(exc).__name__}: {exc}", "traceback": traceback.format_exc(), "rows_processed": 0, "rows_written": 0},
-            )
-            return 1
+            result = {"status": "failed", "error_text": f"{type(exc).__name__}: {exc}", "traceback": traceback.format_exc(), "rows_processed": 0, "rows_written": 0}
+        _print_cli_result(job_key, started_at, result)
+        try:
+            bridge = PhpBridge(config.php_binary, app_root)
+            bridge.call("finalize-job-by-key", args=[f"--job-key={job_key}"], payload=result)
+        except Exception:
+            pass
+        return 1 if str(result.get("status") or "success").lower() == "failed" else 0
 
     if command in {
         "compute-battle-rollups",
