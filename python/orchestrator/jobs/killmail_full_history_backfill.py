@@ -1,14 +1,16 @@
-"""Backfill ALL killmails day-by-day from R2Z2 daily history dumps.
+"""Backfill ALL killmails month-by-month from the zKillboard public API.
 
-Uses the zkillboard daily history endpoint to fetch every killmail ID+hash
-for each calendar day, then enriches via ESI.  All killmails are stored
-regardless of entity affiliation — non-matching ones get mail_type='third_party'.
+Fetches full killmail data (including victim, attackers, and zkb metadata)
+directly from the zKillboard API in pages of up to 1,000, eliminating the
+need for individual ESI calls.  All killmails are stored regardless of entity
+affiliation — non-matching ones get mail_type='third_party'.
 
-R2Z2 daily history:
-  https://r2z2.zkillboard.com/history/{YYYYMMDD}.json
+zKillboard full-history API:
+  https://zkillboard.com/api/year/{Y}/month/{M}/page/{P}/
 
-ESI killmail detail:
-  https://esi.evetech.net/latest/killmails/{id}/{hash}/
+Progress is tracked by last-completed month so the runner can resume after
+interruption without re-fetching already-stored kills (deduplication handles
+any overlap within the current month).
 """
 
 from __future__ import annotations
@@ -18,29 +20,26 @@ import logging
 import time
 import urllib.error
 import urllib.request
+from calendar import monthrange
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 from ..bridge import PhpBridge
-from ..esi_client import EsiClient
-from ..esi_rate_limiter import shared_limiter
 from ..http_client import ipv4_opener
 from ..worker_runtime import utc_now_iso
 
 logger = logging.getLogger("supplycore.full_history_backfill")
 
-_R2Z2_HISTORY_BASE = "https://r2z2.zkillboard.com/history"
+_ZKB_API_BASE = "https://zkillboard.com/api"
 
 
-def _http_get(url: str, user_agent: str, timeout: int = 30, accept_encoding: bool = True) -> tuple[int, str]:
-    """HTTP GET for non-ESI APIs (R2Z2 history). ESI calls use EsiClient."""
+def _http_get(url: str, user_agent: str, timeout: int = 30) -> tuple[int, str]:
+    """HTTP GET with gzip support."""
     headers: dict[str, str] = {
         "Accept": "application/json",
+        "Accept-Encoding": "gzip",
         "User-Agent": user_agent,
     }
-    if accept_encoding:
-        headers["Accept-Encoding"] = "gzip"
-
     request = urllib.request.Request(url, headers=headers)
     try:
         with ipv4_opener.open(request, timeout=timeout) as response:
@@ -52,119 +51,91 @@ def _http_get(url: str, user_agent: str, timeout: int = 30, accept_encoding: boo
             if isinstance(body, bytes):
                 body = body.decode("utf-8", errors="replace")
             return status, body
-    except urllib.error.HTTPError as error:
-        return int(error.code), ""
-    except (urllib.error.URLError, OSError, TimeoutError) as error:
-        logger.warning("HTTP request failed for %s: %s", url, error)
+    except urllib.error.HTTPError as exc:
+        return int(exc.code), ""
+    except (urllib.error.URLError, OSError, TimeoutError) as exc:
+        logger.warning("HTTP request failed for %s: %s", url, exc)
         return 0, ""
 
 
-def _fetch_daily_dump(day: date, user_agent: str, max_retries: int = 3) -> dict[int, str]:
-    """Fetch the R2Z2 daily history dump for a given date.
+def _fetch_zkb_page(year: int, month: int, page: int, user_agent: str) -> list[dict[str, Any]]:
+    """Fetch one page of all killmails for a year/month from zKillboard.
 
-    Returns {killmail_id: hash} dict.  Retries on transient failures.
+    Returns a list of killmail entries (up to 1,000) each containing full
+    killmail data plus a 'zkb' sub-object with hash, values, and flags.
+    Returns an empty list when there are no more pages or on error.
     """
-    url = f"{_R2Z2_HISTORY_BASE}/{day.strftime('%Y%m%d')}.json"
-
-    for attempt in range(max_retries):
+    url = f"{_ZKB_API_BASE}/year/{year}/month/{month}/page/{page}/"
+    for attempt in range(3):
         status, body = _http_get(url, user_agent)
         if status == 200 and body.strip():
             try:
                 data = json.loads(body)
             except json.JSONDecodeError:
-                logger.warning("Invalid JSON from %s on attempt %d", url, attempt + 1)
+                logger.warning("Invalid JSON from %s attempt %d", url, attempt + 1)
                 time.sleep(2 ** attempt)
                 continue
-            if isinstance(data, dict):
-                return {int(km_id): str(km_hash) for km_id, km_hash in data.items() if km_hash}
-            return {}
+            if isinstance(data, list):
+                return data
+            return []
         if status == 404:
-            logger.info("No history dump available for %s (404)", day.isoformat())
-            return {}
-        logger.warning("R2Z2 history fetch failed: status=%d url=%s attempt=%d", status, url, attempt + 1)
+            return []
+        if status == 429:
+            logger.warning("zKB rate limited on %s, waiting 60s", url)
+            time.sleep(60)
+            continue
+        if status == 0:
+            time.sleep(2 ** attempt)
+            continue
+        logger.warning("zKB page fetch: status=%d url=%s attempt=%d", status, url, attempt + 1)
         time.sleep(2 ** attempt)
-
-    logger.error("R2Z2 history fetch exhausted retries for %s", day.isoformat())
-    return {}
+    return []
 
 
-_ZKB_API_BASE = "https://zkillboard.com/api"
+def _entry_to_payload(entry: dict[str, Any]) -> dict[str, Any] | None:
+    """Convert a zKillboard API entry to the bridge payload format.
 
-
-def _fetch_zkb_metadata(killmail_id: int, user_agent: str) -> dict[str, Any]:
-    """Fetch zkb metadata (totalValue, points, etc.) for a single killmail from zKillboard API.
-
-    Returns the zkb dict, or empty dict on failure.
+    Sets uploaded_at to the actual killmail time so backfilled kills
+    show their real date rather than the date of the backfill run.
     """
-    url = f"{_ZKB_API_BASE}/killID/{killmail_id}/"
-    status, body = _http_get(url, user_agent)
-    if status != 200 or not body.strip():
-        return {}
+    km_id = int(entry.get("killmail_id") or 0)
+    zkb = entry.get("zkb") or {}
+    km_hash = str(zkb.get("hash") or "")
+    if not km_id or not km_hash:
+        return None
+
+    killmail_time_str = str(entry.get("killmail_time") or "")
     try:
-        data = json.loads(body)
-    except json.JSONDecodeError:
-        return {}
-    if isinstance(data, list) and len(data) > 0 and isinstance(data[0], dict):
-        return data[0].get("zkb") or {}
-    return {}
+        uploaded_at = int(
+            datetime.fromisoformat(killmail_time_str.replace("Z", "+00:00")).timestamp()
+        )
+    except (ValueError, AttributeError):
+        uploaded_at = int(time.time())
 
+    # Reconstruct ESI-compatible body from top-level zKillboard fields.
+    esi_body: dict[str, Any] = {
+        "killmail_id": km_id,
+        "killmail_time": killmail_time_str,
+        "solar_system_id": entry.get("solar_system_id"),
+        "victim": entry.get("victim") or {},
+        "attackers": entry.get("attackers") or [],
+    }
+    if "war_id" in entry:
+        esi_body["war_id"] = entry["war_id"]
 
-def _fetch_zkb_metadata_batch(killmail_ids: list[int], user_agent: str) -> dict[int, dict[str, Any]]:
-    """Fetch zkb metadata for a batch of killmail IDs from zKillboard API.
-
-    Returns {killmail_id: zkb_dict} for successfully fetched killmails.
-    Rate-limits requests to be polite to the zKB API (~1 req/sec).
-    """
-    result: dict[int, dict[str, Any]] = {}
-    for km_id in killmail_ids:
-        zkb = _fetch_zkb_metadata(km_id, user_agent)
-        if zkb:
-            result[km_id] = zkb
-        time.sleep(1)  # Be polite to zKB API
-    return result
-
-
-def _fetch_esi_killmail(killmail_id: int, killmail_hash: str, esi_client: EsiClient, gateway: Any = None, zkb_data: dict[str, Any] | None = None) -> dict[str, Any] | None:
-    """Fetch a single killmail from ESI and wrap in R2Z2-compatible format.
-
-    *zkb_data*, when provided, is the full zKillboard metadata dict
-    (totalValue, points, npc, etc.) to include in the payload.
-    """
-    path = f"/latest/killmails/{killmail_id}/{killmail_hash}/"
-    if gateway is not None:
-        resp = gateway.get(path, route_template="/latest/killmails/{killmail_id}/{killmail_hash}/")
-        if resp.from_cache or resp.not_modified:
-            if isinstance(resp.body, dict):
-                pass
-            else:
-                return None
-        elif not (200 <= resp.status_code < 300) or not isinstance(resp.body, dict):
-            return None
-    else:
-        resp = esi_client.get(path)
-        if resp.status_code in (404, 422):
-            return None
-        if resp.is_rate_limited or resp.is_error_limited or resp.status_code == 503:
-            return None
-        if not resp.ok:
-            return None
-        if not isinstance(resp.body, dict):
-            return None
-
-    body = resp.body
     return {
-        "killmail_id": killmail_id,
-        "hash": killmail_hash,
-        "esi": body,
-        "zkb": zkb_data if zkb_data else {},
-        "sequence_id": killmail_id,
-        "requested_sequence_id": killmail_id,
-        "uploaded_at": int(time.time()),
+        "killmail_id": km_id,
+        "hash": km_hash,
+        "esi": esi_body,
+        "zkb": zkb,
+        "sequence_id": km_id,
+        "requested_sequence_id": km_id,
+        "uploaded_at": uploaded_at,
     }
 
 
 def run_killmail_full_history_backfill(context: Any) -> dict[str, Any]:
-    """Backfill ALL killmails day-by-day from R2Z2 daily history dumps."""
+    """Backfill ALL killmails month-by-month from the zKillboard API."""
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
     bridge = PhpBridge(context.php_binary, context.app_root)
     bridge_response = bridge.call("killmail-full-history-backfill-context")
@@ -178,169 +149,150 @@ def run_killmail_full_history_backfill(context: Any) -> dict[str, Any]:
         return {"status": "failed", "error": "Missing start_date in backfill context."}
 
     start_date = datetime.strptime(start_date_str, "%Y-%m-%d").replace(tzinfo=UTC).date()
-
-    # Resume from day after last completed, or start from configured start_date
-    if last_completed_str:
-        resume_date = datetime.strptime(last_completed_str, "%Y-%m-%d").replace(tzinfo=UTC).date()
-        current_date = resume_date + timedelta(days=1)
-        logger.info("Resuming from %s (last completed: %s)", current_date.isoformat(), last_completed_str)
-    else:
-        current_date = start_date
-        logger.info("Starting fresh from %s", current_date.isoformat())
-
-    # Process through yesterday (today's dump may be incomplete)
     yesterday = (datetime.now(UTC) - timedelta(days=1)).date()
 
-    if current_date > yesterday:
+    # Determine starting year/month.
+    # Resume from the same month as last_completed — dedup handles any already-stored kills.
+    if last_completed_str:
+        last_completed = datetime.strptime(last_completed_str, "%Y-%m-%d").replace(tzinfo=UTC).date()
+        current_year = last_completed.year
+        current_month = last_completed.month
+        logger.info("Resuming from %04d-%02d (last completed: %s)", current_year, current_month, last_completed_str)
+    else:
+        current_year = start_date.year
+        current_month = start_date.month
+        logger.info("Starting fresh from %04d-%02d", current_year, current_month)
+
+    if date(current_year, current_month, 1) > yesterday:
         return {"status": "success", "message": "Already up to date.", "last_completed_date": last_completed_str}
 
     started_at = utc_now_iso()
-    batch_size = 25
-    total_days_processed = 0
+    batch_size = 100
+    total_months_processed = 0
     total_killmails_seen = 0
     total_skipped_existing = 0
-    total_esi_fetched = 0
-    total_esi_failed = 0
     total_written = 0
     total_filtered = 0
     total_duplicates = 0
 
-    # Build ESI client and optional gateway
-    esi_client = EsiClient(user_agent=user_agent, timeout_seconds=15, limiter=shared_limiter)
-    gateway = None
-    try:
-        import os as _os
-        if _os.getenv("REDIS_ENABLED", "0") == "1":
-            from ..esi_gateway import build_gateway
-            gateway = build_gateway(
-                redis_config={
-                    "enabled": True,
-                    "host": _os.getenv("REDIS_HOST", "127.0.0.1"),
-                    "port": int(_os.getenv("REDIS_PORT", "6379")),
-                    "database": int(_os.getenv("REDIS_DB", "0")),
-                    "password": _os.getenv("REDIS_PASSWORD", ""),
-                    "prefix": _os.getenv("REDIS_PREFIX", "supplycore"),
-                },
-                user_agent=user_agent,
-                timeout_seconds=15,
-            )
-    except Exception:
-        pass
+    while date(current_year, current_month, 1) <= yesterday:
+        month_label = f"{current_year:04d}-{current_month:02d}"
+        logger.info("Processing month %s ...", month_label)
 
-    while current_date <= yesterday:
-        day_label = current_date.isoformat()
-        logger.info("Processing %s ...", day_label)
+        page = 1
+        month_seen = 0
+        month_skipped = 0
+        month_written = 0
 
-        # 1. Fetch daily dump
-        daily_kills = _fetch_daily_dump(current_date, user_agent)
-        day_total = len(daily_kills)
-        total_killmails_seen += day_total
-        logger.info("  %s: %d killmails in daily dump", day_label, day_total)
+        while True:
+            logger.info("  %s page %d ...", month_label, page)
+            entries = _fetch_zkb_page(current_year, current_month, page, user_agent)
 
-        if day_total == 0:
-            # No kills for this day (or fetch failed) — mark complete and move on
-            _save_last_completed(bridge, current_date)
-            current_date += timedelta(days=1)
-            total_days_processed += 1
-            continue
+            if not entries:
+                logger.info("  %s: no more results at page %d", month_label, page)
+                break
 
-        # 2. Deduplicate against existing DB entries
-        all_km_ids = list(daily_kills.keys())
-        existing_ids: set[int] = set()
-        for chunk_start in range(0, len(all_km_ids), 500):
-            chunk = all_km_ids[chunk_start:chunk_start + 500]
-            try:
-                existing_response = bridge.call(
-                    "killmail-ids-existing",
-                    payload={"killmail_ids": chunk},
-                )
-                existing_ids.update(int(x) for x in (existing_response.get("existing") or []))
-            except Exception:
-                pass
+            # For the current/last month, drop any kills after yesterday.
+            if current_year == yesterday.year and current_month == yesterday.month:
+                filtered: list[dict[str, Any]] = []
+                for e in entries:
+                    try:
+                        km_time = datetime.fromisoformat(
+                            str(e.get("killmail_time") or "").replace("Z", "+00:00")
+                        ).date()
+                        if km_time <= yesterday:
+                            filtered.append(e)
+                    except (ValueError, AttributeError):
+                        filtered.append(e)
+                entries = filtered
 
-        new_kills = {km_id: km_hash for km_id, km_hash in daily_kills.items() if km_id not in existing_ids}
-        day_skipped = day_total - len(new_kills)
-        total_skipped_existing += day_skipped
-        logger.info("  %s: %d already in DB, %d new to fetch", day_label, day_skipped, len(new_kills))
+            month_seen += len(entries)
+            total_killmails_seen += len(entries)
 
-        # 3. Fetch from ESI and process in batches
-        kill_pairs = list(new_kills.items())
-        day_esi_fetched = 0
-        day_esi_failed = 0
-        day_written = 0
-        day_filtered = 0
-        day_duplicates = 0
-
-        for batch_start in range(0, len(kill_pairs), batch_size):
-            batch_pairs = kill_pairs[batch_start:batch_start + batch_size]
-            payloads = []
-
-            # Pre-fetch zkb metadata for the batch from zKillboard API
-            batch_km_ids = [km_id for km_id, _ in batch_pairs]
-            zkb_batch = _fetch_zkb_metadata_batch(batch_km_ids, user_agent)
-
-            for km_id, km_hash in batch_pairs:
-                zkb_data = zkb_batch.get(km_id) or {}
-                payload = _fetch_esi_killmail(km_id, km_hash, esi_client, gateway=gateway, zkb_data=zkb_data)
-                if payload is not None:
-                    payloads.append(payload)
-                    day_esi_fetched += 1
-                else:
-                    day_esi_failed += 1
-
-            if payloads:
+            # Deduplicate against the DB.
+            all_km_ids = [int(e.get("killmail_id") or 0) for e in entries if e.get("killmail_id")]
+            existing_ids: set[int] = set()
+            for chunk_start in range(0, len(all_km_ids), 500):
+                chunk = all_km_ids[chunk_start:chunk_start + 500]
                 try:
-                    result = bridge.call(
-                        "process-killmail-batch",
-                        payload={"payloads": payloads, "skip_entity_filter": True},
+                    existing_response = bridge.call(
+                        "killmail-ids-existing",
+                        payload={"killmail_ids": chunk},
                     )
-                    batch_result = result.get("result") or {}
-                    day_written += int(batch_result.get("rows_written") or 0)
-                    day_filtered += int(batch_result.get("filtered") or 0)
-                    day_duplicates += int(batch_result.get("duplicates") or 0)
+                    existing_ids.update(int(x) for x in (existing_response.get("existing") or []))
                 except Exception:
                     pass
 
-            if (batch_start + len(batch_pairs)) % 250 == 0 or batch_start + len(batch_pairs) >= len(kill_pairs):
-                logger.info("  %s: ESI progress %d/%d (fetched=%d failed=%d written=%d)",
-                            day_label, batch_start + len(batch_pairs), len(kill_pairs),
-                            day_esi_fetched, day_esi_failed, day_written)
+            new_entries = [e for e in entries if int(e.get("killmail_id") or 0) not in existing_ids]
+            page_skipped = len(entries) - len(new_entries)
+            month_skipped += page_skipped
+            total_skipped_existing += page_skipped
 
-        total_esi_fetched += day_esi_fetched
-        total_esi_failed += day_esi_failed
-        total_written += day_written
-        total_filtered += day_filtered
-        total_duplicates += day_duplicates
+            # Convert entries to bridge payloads and process in batches.
+            payloads = [p for e in new_entries if (p := _entry_to_payload(e)) is not None]
 
-        # 4. Mark day complete
-        _save_last_completed(bridge, current_date)
-        total_days_processed += 1
+            for batch_start in range(0, len(payloads), batch_size):
+                batch = payloads[batch_start:batch_start + batch_size]
+                try:
+                    result = bridge.call(
+                        "process-killmail-batch",
+                        payload={"payloads": batch, "skip_entity_filter": True},
+                    )
+                    batch_result = result.get("result") or {}
+                    written = int(batch_result.get("rows_written") or 0)
+                    filtered_count = int(batch_result.get("filtered") or 0)
+                    duplicates = int(batch_result.get("duplicates") or 0)
+                    month_written += written
+                    total_written += written
+                    total_filtered += filtered_count
+                    total_duplicates += duplicates
+                except Exception:
+                    pass
 
-        # Update overall progress
-        try:
-            bridge.call("update-setting", payload={
-                "key": "killmail_full_history_backfill_progress",
-                "value": json.dumps({
-                    "phase": "fetching",
-                    "current_date": day_label,
-                    "days_processed": total_days_processed,
-                    "killmails_seen": total_killmails_seen,
-                    "skipped_existing": total_skipped_existing,
-                    "esi_fetched": total_esi_fetched,
-                    "esi_failed": total_esi_failed,
-                    "written": total_written,
-                    "updated_at": utc_now_iso(),
-                }),
-            })
-        except Exception:
-            pass
+            logger.info("  %s page %d: seen=%d skipped=%d new=%d written=%d",
+                        month_label, page, len(entries), page_skipped, len(new_entries), month_written)
 
-        logger.info("  %s complete: fetched=%d failed=%d written=%d filtered=%d duplicates=%d",
-                    day_label, day_esi_fetched, day_esi_failed, day_written, day_filtered, day_duplicates)
+            # Update progress.
+            try:
+                bridge.call("update-setting", payload={
+                    "key": "killmail_full_history_backfill_progress",
+                    "value": json.dumps({
+                        "phase": "fetching",
+                        "current_month": month_label,
+                        "page": page,
+                        "months_processed": total_months_processed,
+                        "killmails_seen": total_killmails_seen,
+                        "skipped_existing": total_skipped_existing,
+                        "written": total_written,
+                        "updated_at": utc_now_iso(),
+                    }),
+                })
+            except Exception:
+                pass
 
-        current_date += timedelta(days=1)
+            # zKillboard returns at most 1,000 per page; fewer means last page.
+            if len(entries) < 1000:
+                break
 
-    # Clear progress
+            page += 1
+            time.sleep(1)  # Be polite to zKB API.
+
+        # Mark month complete (last day of month, capped at yesterday).
+        last_day_of_month = date(current_year, current_month, monthrange(current_year, current_month)[1])
+        _save_last_completed(bridge, min(last_day_of_month, yesterday))
+        total_months_processed += 1
+
+        logger.info("Month %s complete: seen=%d skipped=%d written=%d",
+                    month_label, month_seen, month_skipped, month_written)
+
+        # Advance to next month.
+        if current_month == 12:
+            current_year += 1
+            current_month = 1
+        else:
+            current_month += 1
+
+    # Clear progress indicator.
     try:
         bridge.call("update-setting", payload={
             "key": "killmail_full_history_backfill_progress",
@@ -353,11 +305,9 @@ def run_killmail_full_history_backfill(context: Any) -> dict[str, Any]:
         "status": "success",
         "started_at": started_at,
         "finished_at": utc_now_iso(),
-        "days_processed": total_days_processed,
+        "months_processed": total_months_processed,
         "killmails_seen": total_killmails_seen,
         "skipped_existing": total_skipped_existing,
-        "esi_fetched": total_esi_fetched,
-        "esi_failed": total_esi_failed,
         "written": total_written,
         "filtered": total_filtered,
         "duplicates": total_duplicates,
