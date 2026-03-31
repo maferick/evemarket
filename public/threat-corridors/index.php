@@ -98,12 +98,13 @@ include __DIR__ . '/../../src/views/partials/header.php';
                     }
                 ?>
                 <div class="rounded-lg border border-border/50 bg-slate-900/50 p-4">
-                    <div class="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                    <div class="flex flex-col gap-3 lg:flex-row lg:items-start">
                         <div class="flex-1 min-w-0">
                             <div class="flex items-center gap-2 flex-wrap">
                                 <span class="inline-block rounded-full px-2 py-0.5 text-[10px] uppercase tracking-wider <?= $badgeClass ?>"><?= $label ?></span>
                                 <span class="text-xs text-muted"><?= $regionName ?></span>
                                 <span class="text-xs text-muted"><?= $length ?> systems</span>
+                                <span class="text-xs text-slate-200 font-semibold">Score: <?= number_format($score, 1) ?></span>
                             </div>
                             <p class="mt-1.5 text-sm text-slate-200 font-medium truncate" title="<?= htmlspecialchars(implode(' → ', $systemNames), ENT_QUOTES) ?>"><?= $routeLabel ?></p>
 
@@ -138,24 +139,19 @@ include __DIR__ . '/../../src/views/partials/header.php';
                             <?php endif; ?>
                         </div>
 
-                        <div class="text-right shrink-0">
-                            <p class="text-lg font-semibold text-slate-100"><?= number_format($score, 1) ?></p>
-                            <p class="text-[10px] text-muted uppercase">Score</p>
-                        </div>
-
                         <?php if (is_string($mapPath) && $mapPath !== ''): ?>
                             <?php $dialogId = 'corridor-graph-dialog-' . $corridorId; ?>
-                            <div class="w-full lg:w-[24rem] shrink-0 rounded border border-border/60 bg-slate-950/60 p-2">
+                            <div class="w-full lg:w-1/2 lg:ml-auto shrink-0 rounded border border-border/60 bg-slate-950/60 p-2">
                                 <div class="flex items-center justify-between gap-2">
                                     <p class="text-[10px] uppercase tracking-[0.15em] text-muted">Corridor Graph</p>
                                     <button type="button"
                                             data-dialog-open="<?= htmlspecialchars($dialogId, ENT_QUOTES) ?>"
                                             class="text-[10px] text-accent hover:text-accent/80">Pop out</button>
                                 </div>
-                                <p class="text-[10px] text-muted">Corridor links highlighted in red · Outer ring: security · Inner core: threat</p>
+                                <p class="text-[10px] text-muted">Corridor links highlighted in red · Adjacent links in slate · Outer ring: security · Inner core: threat</p>
                                 <img src="<?= htmlspecialchars($mapPath, ENT_QUOTES) ?>"
                                      alt="Threat corridor graph for corridor #<?= $corridorId ?>"
-                                     class="mt-2 w-full max-h-56 object-contain rounded border border-border/50 bg-slate-950 cursor-zoom-in"
+                                     class="mt-2 w-full max-h-72 object-contain rounded border border-border/50 bg-slate-950 cursor-zoom-in"
                                      data-dialog-open="<?= htmlspecialchars($dialogId, ENT_QUOTES) ?>"
                                      loading="lazy">
                             </div>
