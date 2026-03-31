@@ -715,6 +715,8 @@ def run_market_hub_local_history(context: Any) -> dict[str, Any]:
             rows_skipped=max(0, history_row_count - rows_written),
             batches_completed=stats.progress.batches_completed,
             started_at=stats.started_at_iso,
+            finished_at=utc_now_iso(),
+            duration_ms=stats.duration_ms(),
             meta={
                 "execution_mode": "python",
                 "source_type": "market_hub",

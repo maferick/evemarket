@@ -864,6 +864,7 @@ def run_evewho_alliance_member_sync(
             job_key=JOB_KEY,
             rows_seen=total_members_found,
             rows_written=total_written + total_enriched,
+            duration_ms=duration_ms,
             summary=(
                 f"Graph crawl: Phase {'1→2' if phase >= 2 else '1'} | "
                 f"{alliances_processed} alliances, {corps_processed} corps swept | "
