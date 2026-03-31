@@ -8151,6 +8151,9 @@ function db_sync_schedule_registry_columns_ensure(): void
     db_ensure_table_index('sync_schedules', 'idx_sync_schedules_due_lookup', 'INDEX idx_sync_schedules_due_lookup (enabled, current_state, next_due_at, locked_until, id)');
     db_ensure_table_index('sync_schedules', 'idx_sync_schedules_backfill_lookup', 'INDEX idx_sync_schedules_backfill_lookup (enabled, allow_backfill, current_state, degraded_until, locked_until, next_due_at, last_finished_at, id)');
     db_ensure_table_index('sync_schedules', 'idx_sync_schedules_running_lookup', 'INDEX idx_sync_schedules_running_lookup (enabled, current_state, locked_until, last_started_at, id)');
+    db_ensure_table_column('sync_runs', 'summary', 'VARCHAR(500) DEFAULT NULL');
+    db_ensure_table_column('scheduler_job_current_status', 'last_run_summary', 'VARCHAR(500) DEFAULT NULL');
+
     db_ensure_table_index('sync_runs', 'idx_sync_runs_created_at', 'INDEX idx_sync_runs_created_at (created_at)');
 }
 

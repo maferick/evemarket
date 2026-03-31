@@ -142,6 +142,7 @@ def _finalize_job(db: SupplyCoreDb, job_key: str, result: dict[str, Any], logger
     rows_written = max(0, int(result.get("rows_written") or 0))
     duration_ms = max(0, int(result.get("duration_ms") or 0))
     error_text = str(result.get("error_text") or result.get("error") or result.get("summary") or "") if status == "failed" else None
+    summary = str(result.get("summary") or "")[:500] or None
 
     dataset_key = f"scheduler.job.{job_key}"
     try:
@@ -163,6 +164,7 @@ def _finalize_job(db: SupplyCoreDb, job_key: str, result: dict[str, Any], logger
             rows_written=rows_written,
             status=status,
             error=error_text,
+            summary=summary,
         )
     except Exception as exc:
         logger.warning("sync_run insert failed", payload={"event": "worker_pool.finalize.sync_run_error", "job_key": job_key, "error": str(exc)})
@@ -203,6 +205,7 @@ def _finalize_job(db: SupplyCoreDb, job_key: str, result: dict[str, Any], logger
             status=status,
             event_type="finished" if status != "failed" else "failure",
             failure_message=error_text,
+            last_run_summary=summary,
         )
     except Exception as exc:
         logger.warning("scheduler_job_current_status upsert failed", payload={"event": "worker_pool.finalize.current_status_error", "job_key": job_key, "error": str(exc)})
@@ -253,7 +256,7 @@ def _finalize_job(db: SupplyCoreDb, job_key: str, result: dict[str, Any], logger
             job_key=job_key,
             job_status=status,
             domains_json=json_dumps_safe(["scheduler"]),
-            ui_sections_json=json_dumps_safe(["log-viewer-kpi", "log-viewer-jobs", "log-viewer-runs"]),
+            ui_sections_json=json_dumps_safe(["log-viewer-kpi", "log-viewer-jobs", "log-viewer-runs", "log-viewer-backlog"]),
         )
         db.bump_ui_refresh_section_versions(
             version_keys=["log_viewer_version"],

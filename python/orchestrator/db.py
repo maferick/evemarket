@@ -659,11 +659,11 @@ class SupplyCoreDb:
             )
         return bumped
 
-    def insert_sync_run(self, *, dataset_key: str, rows_seen: int, rows_written: int, status: str, error: str | None = None) -> int:
+    def insert_sync_run(self, *, dataset_key: str, rows_seen: int, rows_written: int, status: str, error: str | None = None, summary: str | None = None) -> int:
         return self.insert(
-            """INSERT INTO sync_runs (dataset_key, run_mode, run_status, started_at, finished_at, cursor_start, cursor_end, source_rows, written_rows, error_message)
-               VALUES (%s, 'incremental', %s, UTC_TIMESTAMP(), UTC_TIMESTAMP(), NULL, NULL, %s, %s, %s)""",
-            (dataset_key[:190], status[:20], max(0, rows_seen), max(0, rows_written), error[:500] if error else None),
+            """INSERT INTO sync_runs (dataset_key, run_mode, run_status, started_at, finished_at, cursor_start, cursor_end, source_rows, written_rows, error_message, summary)
+               VALUES (%s, 'incremental', %s, UTC_TIMESTAMP(), UTC_TIMESTAMP(), NULL, NULL, %s, %s, %s, %s)""",
+            (dataset_key[:190], status[:20], max(0, rows_seen), max(0, rows_written), error[:500] if error else None, summary[:500] if summary else None),
         )
 
     def insert_scheduler_job_event(self, *, job_key: str, event_type: str, payload_json: str, duration_seconds: float) -> int:
@@ -681,6 +681,7 @@ class SupplyCoreDb:
         event_type: str = "completion",
         pressure_state: str = "healthy",
         failure_message: str | None = None,
+        last_run_summary: str | None = None,
     ) -> int:
         """Mirror the PHP ``db_scheduler_job_current_status_upsert`` so that
         Python-executed jobs are visible in the log-viewer and settings pages.
@@ -695,14 +696,14 @@ class SupplyCoreDb:
                     job_key, dataset_key, latest_status, latest_event_type,
                     last_started_at, last_finished_at,
                     last_success_at, last_failure_at, last_failure_message,
-                    current_pressure_state, last_event_at
+                    current_pressure_state, last_event_at, last_run_summary
                 ) VALUES (
                     %s, %s, %s, %s,
                     {now_sql}, {now_sql},
                     {"" + now_sql if is_success else "NULL"},
                     {"" + now_sql if is_failure else "NULL"},
                     %s,
-                    %s, {now_sql}
+                    %s, {now_sql}, %s
                 )
                 ON DUPLICATE KEY UPDATE
                     latest_status = VALUES(latest_status),
@@ -716,7 +717,8 @@ class SupplyCoreDb:
                         ELSE last_failure_message
                     END,
                     current_pressure_state = COALESCE(VALUES(current_pressure_state), current_pressure_state),
-                    last_event_at = VALUES(last_event_at)""",
+                    last_event_at = VALUES(last_event_at),
+                    last_run_summary = COALESCE(VALUES(last_run_summary), last_run_summary)""",
             (
                 job_key[:190],
                 f"scheduler.job.{job_key[:170]}",
@@ -724,6 +726,7 @@ class SupplyCoreDb:
                 event_type[:50],
                 failure_message[:500] if failure_message else None,
                 pressure_state[:32],
+                last_run_summary[:500] if last_run_summary else None,
             ),
         )
 
