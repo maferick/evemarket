@@ -1156,6 +1156,8 @@ def run_compute_counterintel_pipeline(
             rows_written += len(hull_rows) + len(overperformance_rows) + len(feature_rows) + len(score_rows) + len(evidence_rows) + org_written
             _sync_state_upsert(db, COUNTERINTEL_DATASET_KEY, last_battle_id, "success", rows_written)
 
+        has_more = batch_count == max_batches
+
         duration_ms = int((time.perf_counter() - started) * 1000)
         result = JobResult.success(
             job_key=lock_key,
@@ -1164,6 +1166,7 @@ def run_compute_counterintel_pipeline(
             rows_written=0 if dry_run else rows_written,
             duration_ms=duration_ms,
             batches_completed=batch_count,
+            has_more=has_more,
             meta={
                 "computed_at": computed_at,
                 "rows_would_write": rows_written if dry_run else rows_written,

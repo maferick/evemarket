@@ -606,6 +606,10 @@ def run_compute_copresence_edges(
 
             _sync_state_upsert(db, DATASET_KEY, last_battle_id, "success", rows_written)
 
+        # has_more is true when we hit the batch cap (cursor-based: hitting the cap
+        # means the cursor advanced on every iteration so more battles likely remain).
+        has_more = batch_count == max_batches
+
         if not all_character_ids:
             duration_ms = int((time.perf_counter() - started) * 1000)
             result = JobResult.success(
@@ -613,6 +617,7 @@ def run_compute_copresence_edges(
                 summary="No characters to process.",
                 rows_processed=0,
                 rows_written=0,
+                has_more=has_more,
                 duration_ms=duration_ms,
             ).to_dict()
             finish_job_run(db, job, status="success", rows_processed=0, rows_written=0, meta=result)
@@ -768,6 +773,7 @@ def run_compute_copresence_edges(
             rows_written=rows_written + signals_written,
             duration_ms=duration_ms,
             batches_completed=batch_count,
+            has_more=has_more,
             meta={
                 "computed_at": computed_at,
                 "cursor": last_battle_id,

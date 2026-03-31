@@ -752,6 +752,8 @@ def run_compute_character_movement_footprints(
             # Also update cohort z-scores on the footprint rows
             _update_cohort_scores(db, all_evidence)
 
+        has_more = batch_count == max_batches
+
         duration_ms = int((time.perf_counter() - started) * 1000)
         result = JobResult.success(
             job_key=lock_key,
@@ -760,6 +762,7 @@ def run_compute_character_movement_footprints(
             rows_written=0 if dry_run else rows_written,
             duration_ms=duration_ms,
             batches_completed=batch_count,
+            has_more=has_more,
             meta={
                 "computed_at": computed_at,
                 "cursor": last_battle_id,

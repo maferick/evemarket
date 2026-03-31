@@ -277,15 +277,20 @@ def run_evewho_enrichment_sync(
         adapter = EveWhoAdapter(user_agent, rate_limit_requests=rate_limit) if rate_limit else EveWhoAdapter(user_agent)
 
         batch_count = 0
+        exhausted = False
         while batch_count < max_batches:
             batch = _claim_batch(db, batch_size)
             if not batch:
+                exhausted = True
                 break
 
             batch_count += 1
             processed, written = _process_batch(db, neo4j, adapter, batch)
             rows_processed += processed
             rows_written += written
+
+        # has_more is true when we hit the batch cap without emptying the queue.
+        has_more = not exhausted and batch_count == max_batches
 
         # Update sync state cursor with progress
         _sync_state_upsert(db, str(rows_written), "success", rows_written)
@@ -300,12 +305,14 @@ def run_evewho_enrichment_sync(
                 "batches": batch_count,
                 "batch_size": batch_size,
                 "duration_ms": duration_ms,
+                "has_more": has_more,
             },
         )
         return JobResult.success(
             job_key=JOB_KEY,
             rows_seen=rows_processed,
             rows_written=rows_written,
+            has_more=has_more,
             summary=f"Enriched {rows_written}/{rows_processed} characters in {batch_count} batch(es), {duration_ms}ms",
         ).to_dict()
 
