@@ -454,11 +454,21 @@ class SupplyCoreDb:
         Used by the scheduling graph to determine whether upstream dependencies
         are satisfied — if a dependency completed recently, the downstream job
         can proceed even if the dependency isn't currently due.
+
+        NOTE: We intentionally do NOT filter on ``status = 'completed'``.
+        Recurring jobs share a single ``unique_key`` row.  The moment a job
+        finishes and the scheduler re-queues it, ``status`` flips back to
+        ``'queued'``, removing the row from a ``status='completed'`` query.
+        This would cause every downstream job to appear permanently blocked.
+        Instead we use ``last_finished_at`` (preserved across re-queues) and
+        ``last_error IS NULL`` (cleared by complete_worker_job) to identify
+        jobs that last ran successfully, regardless of their current status.
         """
         rows = self.fetch_all(
             """SELECT DISTINCT job_key FROM worker_jobs
-               WHERE status = 'completed'
-                 AND last_finished_at >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL %s SECOND)""",
+               WHERE last_finished_at IS NOT NULL
+                 AND last_finished_at >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL %s SECOND)
+                 AND last_error IS NULL""",
             (max(60, within_seconds),),
         )
         return {str(r["job_key"]) for r in rows if r.get("job_key")}
