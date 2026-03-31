@@ -31,8 +31,9 @@ function _is_monitor_or_flag_ship_name(string $shipName): bool {
 }
 
 function _participant_flying_ship_name(array $participant, array $shipTypeNames): string {
+    $_podIds = [670, 33328];
     $flyingShipId = (int) ($participant['flying_ship_type_id'] ?? 0);
-    if ($flyingShipId > 0) {
+    if ($flyingShipId > 0 && !in_array($flyingShipId, $_podIds, true)) {
         return (string) ($shipTypeNames[$flyingShipId] ?? '');
     }
 
@@ -44,12 +45,13 @@ function _participant_flying_ship_name(array $participant, array $shipTypeNames)
     if (!is_array($decoded) || $decoded === []) {
         return '';
     }
-    $fallbackShipId = (int) $decoded[0];
-    if ($fallbackShipId <= 0) {
-        return '';
+    foreach ($decoded as $stid) {
+        $stid = (int) $stid;
+        if ($stid > 0 && !in_array($stid, $_podIds, true)) {
+            return (string) ($shipTypeNames[$stid] ?? '');
+        }
     }
-
-    return (string) ($shipTypeNames[$fallbackShipId] ?? '');
+    return '';
 }
 
 $hasMonitorOrFlagShips = false;
@@ -88,35 +90,8 @@ function _render_participant_row(array $p, array $resolvedEntities, array $shipT
     $dmgPct = $maxDmgForPanel > 0 ? ($dmgDone / $maxDmgForPanel) * 100 : 0;
     $hasDeath = $deaths > 0;
 
-    // ── Flying ship (most common attacker ship) ──
-    $flyingShipId = (int) ($p['flying_ship_type_id'] ?? 0);
-    $flyingShipName = '';
-    if ($flyingShipId > 0) {
-        $flyingShipName = (string) ($shipTypeNames[$flyingShipId] ?? '');
-    }
-    // Fallback to first ship_type_ids entry if no flying_ship_type_id
-    if ($flyingShipId <= 0) {
-        $shipIds = [];
-        $shipJson = $p['ship_type_ids'] ?? null;
-        if (is_string($shipJson)) {
-            $decoded = json_decode($shipJson, true);
-            if (is_array($decoded)) $shipIds = $decoded;
-        }
-        if ($shipIds) {
-            $flyingShipId = (int) $shipIds[0];
-            $flyingShipName = (string) ($shipTypeNames[$flyingShipId] ?? '');
-        }
-    }
-
-    if ($fleetRole === 'command') {
-        if (_is_monitor_or_flag_ship_name($flyingShipName)) {
-            $fleetRole = 'links';
-        } elseif (!$hasMonitorOrFlagShips) {
-            $fleetRole = 'fc_links';
-        }
-    }
-
-    // ── Lost ship (highest-ISK non-pod from ships_lost_detail) ──
+    // ── Lost ship (highest-ISK non-pod from ships_lost_detail) — computed first ──
+    // so we can fall back to it when the flying ship is only a capsule.
     $lostShipId = 0;
     $lostShipName = '';
     $lostShipCount = 0;
@@ -138,7 +113,54 @@ function _render_participant_row(array $p, array $resolvedEntities, array $shipT
         foreach ($lostDisplay as $entry) {
             $lostShipCount += (int) ($entry['count'] ?? 1);
         }
-        $lostSameAsFlying = ($lostShipId === $flyingShipId);
+    }
+
+    // ── Flying ship (most common attacker ship, never a bare capsule) ──
+    // A capsule is always the pilot's escape pod / "driver" — the actual ship
+    // they flew is what matters for display.  If the analysis resolved flying
+    // ship to a capsule (because the pilot only appeared as a victim), use the
+    // best non-pod ship from their loss record instead.
+    $_podTypeIds = [670, 33328];
+    $flyingShipId = (int) ($p['flying_ship_type_id'] ?? 0);
+    $flyingShipName = '';
+    if ($flyingShipId > 0 && !in_array($flyingShipId, $_podTypeIds, true)) {
+        $flyingShipName = (string) ($shipTypeNames[$flyingShipId] ?? '');
+    } else {
+        // flying_ship_type_id is absent or is a capsule — prefer the highest-ISK
+        // lost ship (already filtered to non-pod above), then fall back to
+        // ship_type_ids list (also skipping pods).
+        $flyingShipId = 0;
+        if ($lostShipId > 0) {
+            $flyingShipId   = $lostShipId;
+            $flyingShipName = $lostShipName;
+        } else {
+            $shipIds = [];
+            $shipJson = $p['ship_type_ids'] ?? null;
+            if (is_string($shipJson)) {
+                $decoded = json_decode($shipJson, true);
+                if (is_array($decoded)) $shipIds = $decoded;
+            }
+            foreach ($shipIds as $stid) {
+                $stid = (int) $stid;
+                if ($stid > 0 && !in_array($stid, $_podTypeIds, true)) {
+                    $flyingShipId   = $stid;
+                    $flyingShipName = (string) ($shipTypeNames[$stid] ?? '');
+                    break;
+                }
+            }
+        }
+    }
+
+    // When flying ship came from the loss record, mark it so the row doesn't
+    // also render a redundant "lost" badge for the same hull.
+    $lostSameAsFlying = ($lostShipId > 0 && $lostShipId === $flyingShipId);
+
+    if ($fleetRole === 'command') {
+        if (_is_monitor_or_flag_ship_name($flyingShipName)) {
+            $fleetRole = 'links';
+        } elseif (!$hasMonitorOrFlagShips) {
+            $fleetRole = 'fc_links';
+        }
     }
 
     // ── Death styling ──
