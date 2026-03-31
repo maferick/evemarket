@@ -30638,7 +30638,7 @@ function supplycore_threat_corridor_graph_svg(int $corridorId, array $corridorSy
     if (!is_dir($cacheDir) && !@mkdir($cacheDir, 0775, true) && !is_dir($cacheDir)) {
         return null;
     }
-    $cacheFile = sprintf('%s/corridor-%d-h%d-v2.svg', $cacheDir, $corridorId, $surroundingHops);
+    $cacheFile = sprintf('%s/corridor-%d-h%d-v3.svg', $cacheDir, $corridorId, $surroundingHops);
     $cacheTtl = supplycore_threat_corridor_map_cache_minutes() * 60;
     if (is_file($cacheFile) && ((time() - (int) filemtime($cacheFile)) < $cacheTtl)) {
         return '/threat-corridors/svg/' . basename($cacheFile);
@@ -30803,8 +30803,6 @@ function supplycore_threat_corridor_graph_svg(int $corridorId, array $corridorSy
         . '.node-surround:hover + .label-s{opacity:1}'
         . '.label-s{font:500 10px Inter,Segoe UI,sans-serif;fill:#94a3b8;opacity:.75;transition:opacity .2s ease}'
         . ']]></style></defs>';
-    $svg[] = '<rect x="0" y="0" width="' . $width . '" height="' . $height . '" rx="12" fill="#020617"/>';
-
     foreach ($edges as $edge) {
         $a = (int) ($edge[0] ?? 0);
         $b = (int) ($edge[1] ?? 0);

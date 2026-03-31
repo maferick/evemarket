@@ -151,7 +151,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                                 <p class="text-[10px] text-muted">Corridor links highlighted in red · Adjacent links in slate · Outer ring: security · Inner core: threat</p>
                                 <img src="<?= htmlspecialchars($mapPath, ENT_QUOTES) ?>"
                                      alt="Threat corridor graph for corridor #<?= $corridorId ?>"
-                                     class="mt-2 h-[180px] w-full object-contain rounded border border-border/50 bg-slate-950 cursor-zoom-in"
+                                     class="mt-2 h-[180px] w-full object-contain cursor-zoom-in"
                                      data-dialog-open="<?= htmlspecialchars($dialogId, ENT_QUOTES) ?>"
                                      loading="lazy">
                             </div>
@@ -166,7 +166,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                                     </div>
                                     <img src="<?= htmlspecialchars($mapPath, ENT_QUOTES) ?>"
                                          alt="Expanded threat corridor graph for corridor #<?= $corridorId ?>"
-                                         class="w-full rounded border border-border/50 bg-slate-950"
+                                         class="w-full"
                                          loading="lazy">
                                 </div>
                             </dialog>
