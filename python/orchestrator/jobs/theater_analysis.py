@@ -423,9 +423,12 @@ def _compute_alliance_summary(
         final_blow = int(km.get("attacker_final_blow") or 0)
 
         # Record loss for victim alliance (once per killmail)
-        if victim_alliance > 0 and km_id not in seen_loss_km:
+        # When the victim has no alliance (corp-only), group under alliance_id = 0
+        # so losses are still counted (they'll be classified as third_party).
+        if km_id not in seen_loss_km:
             seen_loss_km.add(km_id)
-            entry = alliance_stats.setdefault(victim_alliance, _empty_alliance_stats(victim_alliance))
+            loss_key = victim_alliance if victim_alliance > 0 else 0
+            entry = alliance_stats.setdefault(loss_key, _empty_alliance_stats(loss_key))
             entry["total_losses"] += 1
             entry["total_isk_lost"] += isk
 
