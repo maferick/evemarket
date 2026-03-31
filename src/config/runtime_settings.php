@@ -102,4 +102,11 @@ return [
             'rebuild.progress_interval_seconds' => ['type' => 'int', 'default' => 2, 'editable' => true, 'sensitive' => false, 'env_only' => false, 'database_backed' => true],
         ],
     ],
+    'killmail_backfill' => [
+        'title' => 'Killmail backfill',
+        'description' => 'Full history killmail backfill runner. Change the start date to trigger a re-backfill from that date.',
+        'fields' => [
+            'killmail_backfill.full_history_start_date' => ['type' => 'string', 'default' => '', 'editable' => true, 'sensitive' => false, 'env_only' => false, 'database_backed' => true],
+        ],
+    ],
 ];
