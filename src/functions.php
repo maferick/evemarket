@@ -30479,7 +30479,8 @@ function log_viewer_page_data(): array
                 cs.current_pressure_state, cs.recent_timeout_count,
                 cs.recent_lock_conflict_count, cs.recent_deferral_count,
                 cs.recent_skip_count, cs.last_planner_decision_type,
-                cs.last_planner_reason_text
+                cs.last_planner_reason_text,
+                cs.last_run_summary
          FROM sync_schedules s
          LEFT JOIN scheduler_job_current_status cs ON cs.job_key = s.job_key
          ORDER BY s.job_key"
@@ -30490,7 +30491,7 @@ function log_viewer_page_data(): array
     // unique job, plus any currently running or failed runs for context.
     $recentRunsRaw = db_select(
         "SELECT r.dataset_key, r.run_status, r.started_at, r.finished_at,
-                r.source_rows, r.written_rows, r.error_message,
+                r.source_rows, r.written_rows, r.error_message, r.summary,
                 TIMESTAMPDIFF(SECOND, r.started_at, COALESCE(r.finished_at, NOW())) AS duration_seconds
          FROM sync_runs r
          ORDER BY r.started_at DESC
@@ -30713,6 +30714,7 @@ function log_viewer_page_data(): array
             'recent_deferral_count' => (int) ($s['recent_deferral_count'] ?? 0),
             'recent_skip_count' => (int) ($s['recent_skip_count'] ?? 0),
             'last_planner_reason' => $s['last_planner_reason_text'] ?? null,
+            'last_run_summary' => $s['last_run_summary'] ?? null,
             'timeout_seconds' => $meta['timeout_seconds'] ?? $defaultTimeout,
         ];
     }
@@ -30755,6 +30757,7 @@ function log_viewer_page_data(): array
             'recent_deferral_count' => 0,
             'recent_skip_count' => 0,
             'last_planner_reason' => 'No schedule row — job exists in registry but has not been provisioned into sync_schedules yet.',
+            'last_run_summary' => null,
             'timeout_seconds' => $regMeta['timeout_seconds'] ?? $defaultTimeout,
         ];
     }
@@ -30793,6 +30796,33 @@ function log_viewer_page_data(): array
         usort($logFiles, fn (array $a, array $b) => ($b['size_bytes'] ?? 0) <=> ($a['size_bytes'] ?? 0));
     }
 
+    // ── Worker job queue depth (backlog) ─────────────────────────────────
+    $workerQueueRaw = db_select(
+        "SELECT status, queue_name, COUNT(*) AS cnt
+         FROM worker_jobs
+         WHERE status IN ('queued', 'running', 'retry')
+         GROUP BY status, queue_name"
+    );
+    $backlogQueue = ['queued' => 0, 'running' => 0, 'retry' => 0, 'total' => 0];
+    $backlogByQueue = [];
+    foreach ($workerQueueRaw as $row) {
+        $s = $row['status'];
+        $q = $row['queue_name'] ?? 'default';
+        $cnt = (int) $row['cnt'];
+        $backlogQueue[$s] = ($backlogQueue[$s] ?? 0) + $cnt;
+        $backlogQueue['total'] += $cnt;
+        $backlogByQueue[$q][$s] = $cnt;
+    }
+
+    // ── Overdue job details ───────────────────────────────────────────
+    $overdueJobs = array_filter($jobs, fn (array $j) => $j['overdue'] && $j['health'] !== 'disabled');
+    usort($overdueJobs, function (array $a, array $b) {
+        $aAge = $a['last_run_at'] ? (time() - strtotime((string) $a['last_run_at'])) : PHP_INT_MAX;
+        $bAge = $b['last_run_at'] ? (time() - strtotime((string) $b['last_run_at'])) : PHP_INT_MAX;
+        return $bAge <=> $aAge;
+    });
+    $overdueJobsList = array_values($overdueJobs);
+
     return [
         'jobs' => $jobs,
         'recent_runs' => $recentRuns,
@@ -30807,6 +30837,11 @@ function log_viewer_page_data(): array
             'total_never_ran' => $totalNeverRan,
             'total_overdue' => $totalOverdue,
             'total_healthy' => $totalHealthy,
+        ],
+        'backlog' => [
+            'queue' => $backlogQueue,
+            'by_queue' => $backlogByQueue,
+            'overdue_jobs' => $overdueJobsList,
         ],
     ];
 }

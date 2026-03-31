@@ -20,6 +20,7 @@ $neverRan = $pageData['never_ran'];
 $logFiles = $pageData['log_files'];
 $kpi = $pageData['kpi'];
 $recentRuns = $pageData['recent_runs'];
+$backlog = $pageData['backlog'];
 
 // Determine page freshness from data
 $pageFreshness = [];
@@ -83,6 +84,70 @@ $attentionCount = $kpi['total_failed'] + $kpi['total_timeout'] + $kpi['total_ove
     </article>
 </section>
 <!-- ui-section:log-viewer-kpi:end -->
+
+<!-- ═══════════════════════════════════════════════════════════════════════════
+     Backlog Overview — real-time queue depth and overdue jobs
+     ══════════════════════════════════════════════════════════════════════════ -->
+<!-- ui-section:log-viewer-backlog:start -->
+<section class="mt-8" data-ui-section="log-viewer-backlog">
+    <h2 class="section-title mb-4">Backlog Overview</h2>
+    <div class="grid gap-4 sm:grid-cols-3 mb-6">
+        <article class="kpi-card">
+            <p class="eyebrow">Queued</p>
+            <p class="mt-3 metric-value text-[2rem] <?= $backlog['queue']['queued'] > 0 ? 'text-sky-100' : 'text-slate-400' ?>"><?= $backlog['queue']['queued'] ?></p>
+            <p class="mt-2 text-sm text-slate-300">Jobs waiting to be picked up by a worker.</p>
+        </article>
+        <article class="kpi-card">
+            <p class="eyebrow">Running</p>
+            <p class="mt-3 metric-value text-[2rem] <?= $backlog['queue']['running'] > 0 ? 'text-emerald-100' : 'text-slate-400' ?>"><?= $backlog['queue']['running'] ?></p>
+            <p class="mt-2 text-sm text-slate-300">Jobs currently executing across all workers.</p>
+        </article>
+        <article class="kpi-card">
+            <p class="eyebrow">Retry</p>
+            <p class="mt-3 metric-value text-[2rem] <?= $backlog['queue']['retry'] > 0 ? 'text-amber-100' : 'text-slate-400' ?>"><?= $backlog['queue']['retry'] ?></p>
+            <p class="mt-2 text-sm text-slate-300">Jobs waiting to retry after a transient failure.</p>
+        </article>
+    </div>
+    <?php if ($backlog['overdue_jobs'] !== []): ?>
+    <div class="rounded-2xl border border-amber-400/20 bg-amber-500/6 p-1">
+        <div class="table-shell overflow-x-auto">
+            <table class="table-ui w-full">
+                <thead>
+                    <tr>
+                        <th class="text-left">Job</th>
+                        <th class="text-left">Last run</th>
+                        <th class="text-right">Overdue by</th>
+                        <th class="text-left">Interval</th>
+                        <th class="text-left">Status</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <?php foreach ($backlog['overdue_jobs'] as $oj): ?>
+                        <?php
+                        $overdueBy = $oj['last_run_at']
+                            ? max(0, time() - strtotime((string) $oj['last_run_at']) - (int) $oj['interval_seconds'])
+                            : null;
+                        ?>
+                        <tr>
+                            <td>
+                                <p class="font-medium text-white"><?= htmlspecialchars($oj['label'], ENT_QUOTES) ?></p>
+                                <p class="mt-0.5 text-xs text-slate-400"><?= htmlspecialchars($oj['job_key'], ENT_QUOTES) ?></p>
+                            </td>
+                            <td class="text-slate-300"><?= htmlspecialchars($oj['last_run_relative'], ENT_QUOTES) ?></td>
+                            <td class="text-right font-semibold text-amber-200"><?= $overdueBy !== null ? htmlspecialchars(human_duration_seconds((float) $overdueBy), ENT_QUOTES) : 'Never ran' ?></td>
+                            <td class="text-slate-300"><?= $oj['interval_seconds'] > 0 ? htmlspecialchars(human_duration_seconds((float) $oj['interval_seconds']), ENT_QUOTES) : '-' ?></td>
+                            <td>
+                                <span class="badge <?= htmlspecialchars($oj['health_tone'], ENT_QUOTES) ?>"><?= htmlspecialchars($oj['health_label'], ENT_QUOTES) ?></span>
+                            </td>
+                        </tr>
+                    <?php endforeach; ?>
+                </tbody>
+            </table>
+        </div>
+    </div>
+    <?php endif; ?>
+</section>
+<!-- ui-section:log-viewer-backlog:end -->
 
 <!-- ═══════════════════════════════════════════════════════════════════════════
      External Services — compact inline cards
@@ -265,6 +330,8 @@ $attentionCount = $kpi['total_failed'] + $kpi['total_timeout'] + $kpi['total_ove
                                     <p class="text-xs text-slate-400"><?= $job['recent_deferral_count'] ?> deferral(s)</p>
                                 <?php elseif ($job['last_planner_reason']): ?>
                                     <p class="truncate text-xs text-slate-400" title="<?= htmlspecialchars($job['last_planner_reason'], ENT_QUOTES) ?>"><?= htmlspecialchars($job['last_planner_reason'], ENT_QUOTES) ?></p>
+                                <?php elseif ($job['last_run_summary']): ?>
+                                    <p class="truncate text-xs text-slate-400" title="<?= htmlspecialchars($job['last_run_summary'], ENT_QUOTES) ?>"><?= htmlspecialchars($job['last_run_summary'], ENT_QUOTES) ?></p>
                                 <?php else: ?>
                                     <span class="text-xs text-slate-500">-</span>
                                 <?php endif; ?>
@@ -326,7 +393,7 @@ $attentionCount = $kpi['total_failed'] + $kpi['total_timeout'] + $kpi['total_ove
                         <th class="text-right">Duration</th>
                         <th class="text-right" title="written rows / source rows read">Written / Read</th>
                         <th class="text-right">Recent OK</th>
-                        <th class="text-left">Error</th>
+                        <th class="text-left">Summary / Error</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -377,7 +444,13 @@ $attentionCount = $kpi['total_failed'] + $kpi['total_timeout'] + $kpi['total_ove
                                     <span class="text-xs text-slate-500">-</span>
                                 <?php endif; ?>
                             </td>
-                            <td class="max-w-xs truncate text-xs text-rose-200" title="<?= htmlspecialchars((string) ($run['error_message'] ?? ''), ENT_QUOTES) ?>"><?= htmlspecialchars((string) ($run['error_message'] ?? ''), ENT_QUOTES) ?></td>
+                            <td class="max-w-xs">
+                                <?php if (!empty($run['error_message'])): ?>
+                                    <p class="truncate text-xs text-rose-200" title="<?= htmlspecialchars((string) $run['error_message'], ENT_QUOTES) ?>"><?= htmlspecialchars((string) $run['error_message'], ENT_QUOTES) ?></p>
+                                <?php elseif (!empty($run['summary'])): ?>
+                                    <p class="truncate text-xs text-slate-400" title="<?= htmlspecialchars((string) $run['summary'], ENT_QUOTES) ?>"><?= htmlspecialchars((string) $run['summary'], ENT_QUOTES) ?></p>
+                                <?php endif; ?>
+                            </td>
                         </tr>
                     <?php endforeach; ?>
                 </tbody>
