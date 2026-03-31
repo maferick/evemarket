@@ -54,7 +54,7 @@ def _count_duplicate_relationships_batched(client: Neo4jClient, timeout: int, ba
             "UNWIND $ids AS aid "
             "MATCH (a:Character {character_id: aid})-[r1]->(b) "
             "MATCH (a)-[r2]->(b) "
-            "WHERE type(r1) = type(r2) AND id(r1) < id(r2) "
+            "WHERE type(r1) = type(r2) AND elementId(r1) < elementId(r2) "
             "RETURN count(r1) AS cnt",
             {"ids": batch_ids},
             timeout_seconds=timeout,
@@ -65,7 +65,7 @@ def _count_duplicate_relationships_batched(client: Neo4jClient, timeout: int, ba
     for label in ("Battle", "Alliance", "Corporation", "ShipType", "Fit", "Doctrine"):
         dup_row = client.query(
             f"MATCH (a:{label})-[r1]->(b), (a:{label})-[r2]->(b) "
-            "WHERE type(r1) = type(r2) AND id(r1) < id(r2) "
+            "WHERE type(r1) = type(r2) AND elementId(r1) < elementId(r2) "
             "RETURN count(r1) AS cnt",
             timeout_seconds=timeout,
         )

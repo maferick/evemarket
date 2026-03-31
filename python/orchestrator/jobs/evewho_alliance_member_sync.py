@@ -236,7 +236,9 @@ def _batch_upsert_corp_members(
             MERGE (a:Alliance {alliance_id: $allianceId})
             WITH a
             MERGE (corp:Corporation {corporation_id: $corpId})
-            MERGE (corp)-[:PART_OF {as_of: datetime()}]->(a)
+            MERGE (corp)-[r:PART_OF]->(a)
+            ON CREATE SET r.as_of = datetime()
+            ON MATCH  SET r.as_of = datetime()
             """,
             {"allianceId": alliance_id, "corpId": corp_id},
         )
@@ -355,7 +357,9 @@ def _enrich_character_to_neo4j(
             MERGE (a:Alliance {alliance_id: $allianceId})
             WITH a
             MATCH (corp:Corporation {corporation_id: $corpId})
-            MERGE (corp)-[:PART_OF {as_of: datetime()}]->(a)
+            MERGE (corp)-[r:PART_OF]->(a)
+            ON CREATE SET r.as_of = datetime()
+            ON MATCH  SET r.as_of = datetime()
             """,
             {"allianceId": alliance_id, "corpId": corp_id},
         )
