@@ -68,6 +68,7 @@ from .jobs.evewho_alliance_member_sync import run_evewho_alliance_member_sync
 from .jobs.character_feature_windows import run_compute_character_feature_windows
 from .jobs.copresence_edges import run_compute_copresence_edges
 from .jobs.temporal_behavior_detection import run_temporal_behavior_detection
+from .jobs.killmail_zkb_repair import run_killmail_zkb_repair
 
 
 def _php_bridge(cfg: dict[str, Any]) -> PhpBridge:
@@ -118,6 +119,7 @@ PYTHON_COMPUTE_PROCESSOR_JOB_KEYS: set[str] = {
     "compute_character_feature_windows",
     "compute_copresence_edges",
     "temporal_behavior_detection",
+    "killmail_zkb_repair",
 }
 
 PYTHON_SYNC_PROCESSOR_JOB_KEYS: set[str] = {
@@ -224,6 +226,8 @@ _PROCESSOR_DISPATCH: dict[str, tuple] = {
     "temporal_behavior_detection": (run_temporal_behavior_detection, lambda db, cfg: (db, {"neo4j": neo4j_runtime(cfg)})),
     # Maintenance
     "cache_expiry_cleanup_sync": (run_cache_expiry_cleanup_sync, lambda db, cfg: (db,)),
+    # Killmail repair
+    "killmail_zkb_repair": (run_killmail_zkb_repair, lambda db, cfg: (db, cfg)),
 }
 
 
