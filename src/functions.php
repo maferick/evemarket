@@ -30634,14 +30634,14 @@ function supplycore_threat_corridor_graph_svg(int $corridorId, array $corridorSy
         return null;
     }
     $surroundingHops = max(0, min(3, $surroundingHops));
-    $cacheDir = dirname(__DIR__) . '/storage/cache/threat-corridor-maps';
+    $cacheDir = dirname(__DIR__) . '/public/threat-corridors/svg';
     if (!is_dir($cacheDir) && !@mkdir($cacheDir, 0775, true) && !is_dir($cacheDir)) {
         return null;
     }
     $cacheFile = sprintf('%s/corridor-%d-h%d.svg', $cacheDir, $corridorId, $surroundingHops);
     $cacheTtl = supplycore_threat_corridor_map_cache_minutes() * 60;
     if (is_file($cacheFile) && ((time() - (int) filemtime($cacheFile)) < $cacheTtl)) {
-        return '/storage/cache/threat-corridor-maps/' . basename($cacheFile);
+        return '/threat-corridors/svg/' . basename($cacheFile);
     }
     $graph = db_threat_corridor_graph_subgraph($corridorSystemIds, $surroundingHops);
     $nodes = (array) ($graph['nodes'] ?? []);
@@ -30788,5 +30788,5 @@ function supplycore_threat_corridor_graph_svg(int $corridorId, array $corridorSy
         return null;
     }
 
-    return '/storage/cache/threat-corridor-maps/' . basename($cacheFile);
+    return '/threat-corridors/svg/' . basename($cacheFile);
 }
