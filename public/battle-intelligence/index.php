@@ -131,7 +131,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
             <?php foreach ($motifs as $motif): ?>
                 <tr class="border-b border-border/50">
                     <td class="px-3 py-2"><span class="inline-block rounded-full bg-slate-700 px-2 py-0.5 text-[10px] uppercase tracking-wider text-slate-300"><?= htmlspecialchars((string) ($motif['motif_type'] ?? ''), ENT_QUOTES) ?></span></td>
-                    <td class="px-3 py-2 text-xs font-mono max-w-xs overflow-auto"><?= htmlspecialchars((string) ($motif['member_ids_json'] ?? '[]'), ENT_QUOTES) ?></td>
+                    <td class="px-3 py-2 text-xs max-w-xs"><?php $memberIds = json_decode((string) ($motif['member_ids_json'] ?? '[]'), true); if (is_array($memberIds) && $memberIds !== []): ?><span class="text-slate-400 mr-1"><?= count($memberIds) ?> member<?= count($memberIds) !== 1 ? 's' : '' ?>:</span><?php foreach ($memberIds as $mIdx => $mId): ?><?php if ($mIdx > 0): ?><span class="text-slate-600">, </span><?php endif; ?><a class="text-accent hover:underline" href="/battle-intelligence/character.php?character_id=<?= urlencode((string) (int) $mId) ?>">#<?= (int) $mId ?></a><?php endforeach; ?><?php else: ?><span class="text-muted">—</span><?php endif; ?></td>
                     <td class="px-3 py-2 text-right"><?= (int) ($motif['occurrence_count'] ?? 0) ?></td>
                     <td class="px-3 py-2 text-right"><?= number_format((float) ($motif['suspicion_relevance'] ?? 0), 4) ?></td>
                     <td class="px-3 py-2 text-right text-xs text-muted"><?= htmlspecialchars((string) ($motif['last_seen_at'] ?? $motif['computed_at'] ?? ''), ENT_QUOTES) ?></td>
