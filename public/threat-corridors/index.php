@@ -98,7 +98,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                     }
                 ?>
                 <div class="rounded-lg border border-border/50 bg-slate-900/50 p-4">
-                    <div class="flex items-start justify-between gap-3">
+                    <div class="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
                         <div class="flex-1 min-w-0">
                             <div class="flex items-center gap-2 flex-wrap">
                                 <span class="inline-block rounded-full px-2 py-0.5 text-[10px] uppercase tracking-wider <?= $badgeClass ?>"><?= $label ?></span>
@@ -106,55 +106,76 @@ include __DIR__ . '/../../src/views/partials/header.php';
                                 <span class="text-xs text-muted"><?= $length ?> systems</span>
                             </div>
                             <p class="mt-1.5 text-sm text-slate-200 font-medium truncate" title="<?= htmlspecialchars(implode(' → ', $systemNames), ENT_QUOTES) ?>"><?= $routeLabel ?></p>
+
+                            <div class="mt-3 h-1.5 rounded-full bg-slate-800 overflow-hidden">
+                                <div class="h-full rounded-full <?= $barColor ?> transition-all" style="width: <?= number_format($scorePct, 1) ?>%"></div>
+                            </div>
+
+                            <div class="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted">
+                                <span>Battles: <?= number_format((int) ($c['battle_count'] ?? 0)) ?></span>
+                                <span>Recent: <?= number_format((int) ($c['recent_battle_count'] ?? 0)) ?></span>
+                                <span>ISK: <?= supplycore_format_isk((float) ($c['total_isk_destroyed'] ?? 0)) ?></span>
+                                <?php if ($c['last_activity_at']): ?>
+                                    <span>Last: <?= date('M j, H:i', strtotime($c['last_activity_at'])) ?></span>
+                                <?php endif; ?>
+                            </div>
+
+                            <?php
+                                $hostileIds = $c['hostile_alliance_ids'] ?? [];
+                                if ($hostileIds !== []):
+                            ?>
+                                <div class="mt-2 flex items-center gap-1">
+                                    <span class="text-[10px] text-muted uppercase tracking-wider mr-1">Hostiles:</span>
+                                    <?php foreach (array_slice($hostileIds, 0, 8) as $hid): ?>
+                                        <img src="https://images.evetech.net/alliances/<?= (int) $hid ?>/logo?size=32"
+                                             alt="" class="w-4 h-4 rounded" loading="lazy"
+                                             title="Alliance #<?= (int) $hid ?>">
+                                    <?php endforeach; ?>
+                                    <?php if (count($hostileIds) > 8): ?>
+                                        <span class="text-xs text-muted">+<?= count($hostileIds) - 8 ?></span>
+                                    <?php endif; ?>
+                                </div>
+                            <?php endif; ?>
                         </div>
+
                         <div class="text-right shrink-0">
                             <p class="text-lg font-semibold text-slate-100"><?= number_format($score, 1) ?></p>
                             <p class="text-[10px] text-muted uppercase">Score</p>
                         </div>
-                    </div>
 
-                    <div class="mt-3 h-1.5 rounded-full bg-slate-800 overflow-hidden">
-                        <div class="h-full rounded-full <?= $barColor ?> transition-all" style="width: <?= number_format($scorePct, 1) ?>%"></div>
-                    </div>
+                        <?php if (is_string($mapPath) && $mapPath !== ''): ?>
+                            <?php $dialogId = 'corridor-graph-dialog-' . $corridorId; ?>
+                            <div class="w-full lg:w-[24rem] shrink-0 rounded border border-border/60 bg-slate-950/60 p-2">
+                                <div class="flex items-center justify-between gap-2">
+                                    <p class="text-[10px] uppercase tracking-[0.15em] text-muted">Corridor Graph</p>
+                                    <button type="button"
+                                            data-dialog-open="<?= htmlspecialchars($dialogId, ENT_QUOTES) ?>"
+                                            class="text-[10px] text-accent hover:text-accent/80">Pop out</button>
+                                </div>
+                                <p class="text-[10px] text-muted">Corridor links highlighted in red · Outer ring: security · Inner core: threat</p>
+                                <img src="<?= htmlspecialchars($mapPath, ENT_QUOTES) ?>"
+                                     alt="Threat corridor graph for corridor #<?= $corridorId ?>"
+                                     class="mt-2 w-full max-h-56 object-contain rounded border border-border/50 bg-slate-950 cursor-zoom-in"
+                                     data-dialog-open="<?= htmlspecialchars($dialogId, ENT_QUOTES) ?>"
+                                     loading="lazy">
+                            </div>
 
-                    <div class="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted">
-                        <span>Battles: <?= number_format((int) ($c['battle_count'] ?? 0)) ?></span>
-                        <span>Recent: <?= number_format((int) ($c['recent_battle_count'] ?? 0)) ?></span>
-                        <span>ISK: <?= supplycore_format_isk((float) ($c['total_isk_destroyed'] ?? 0)) ?></span>
-                        <?php if ($c['last_activity_at']): ?>
-                            <span>Last: <?= date('M j, H:i', strtotime($c['last_activity_at'])) ?></span>
+                            <dialog id="<?= htmlspecialchars($dialogId, ENT_QUOTES) ?>" class="rounded-xl border border-border/60 bg-slate-950/95 p-0 text-slate-100 backdrop:bg-black/70">
+                                <div class="w-[min(92vw,960px)] p-3">
+                                    <div class="mb-2 flex items-center justify-between">
+                                        <p class="text-xs uppercase tracking-[0.15em] text-muted">Corridor #<?= $corridorId ?> graph</p>
+                                        <button type="button"
+                                                data-dialog-close="<?= htmlspecialchars($dialogId, ENT_QUOTES) ?>"
+                                                class="rounded border border-border/60 px-2 py-1 text-xs text-slate-200 hover:bg-slate-800/70">Close</button>
+                                    </div>
+                                    <img src="<?= htmlspecialchars($mapPath, ENT_QUOTES) ?>"
+                                         alt="Expanded threat corridor graph for corridor #<?= $corridorId ?>"
+                                         class="w-full rounded border border-border/50 bg-slate-950"
+                                         loading="lazy">
+                                </div>
+                            </dialog>
                         <?php endif; ?>
                     </div>
-
-                    <?php
-                        $hostileIds = $c['hostile_alliance_ids'] ?? [];
-                        if ($hostileIds !== []):
-                    ?>
-                        <div class="mt-2 flex items-center gap-1">
-                            <span class="text-[10px] text-muted uppercase tracking-wider mr-1">Hostiles:</span>
-                            <?php foreach (array_slice($hostileIds, 0, 8) as $hid): ?>
-                                <img src="https://images.evetech.net/alliances/<?= (int) $hid ?>/logo?size=32"
-                                     alt="" class="w-4 h-4 rounded" loading="lazy"
-                                     title="Alliance #<?= (int) $hid ?>">
-                            <?php endforeach; ?>
-                            <?php if (count($hostileIds) > 8): ?>
-                                <span class="text-xs text-muted">+<?= count($hostileIds) - 8 ?></span>
-                            <?php endif; ?>
-                        </div>
-                    <?php endif; ?>
-
-                    <?php if (is_string($mapPath) && $mapPath !== ''): ?>
-                        <div class="mt-3 rounded border border-border/60 bg-slate-950/60 p-2">
-                            <div class="flex items-center justify-between gap-2">
-                                <p class="text-[10px] uppercase tracking-[0.15em] text-muted">Corridor Graph</p>
-                                <p class="text-[10px] text-muted">Outer ring: security · Inner core: threat</p>
-                            </div>
-                            <img src="<?= htmlspecialchars($mapPath, ENT_QUOTES) ?>"
-                                 alt="Threat corridor graph for corridor #<?= $corridorId ?>"
-                                 class="mt-2 w-full rounded border border-border/50 bg-slate-950"
-                                 loading="lazy">
-                        </div>
-                    <?php endif; ?>
                 </div>
             <?php endforeach; ?>
         </div>
@@ -174,5 +195,39 @@ include __DIR__ . '/../../src/views/partials/header.php';
         <?php endif; ?>
     <?php endif; ?>
 </section>
+
+<script>
+document.querySelectorAll('[data-dialog-open]').forEach((trigger) => {
+    trigger.addEventListener('click', () => {
+        const dialogId = trigger.getAttribute('data-dialog-open');
+        if (!dialogId) {
+            return;
+        }
+        const dialog = document.getElementById(dialogId);
+        if (dialog && typeof dialog.showModal === 'function') {
+            dialog.showModal();
+        }
+    });
+});
+document.querySelectorAll('[data-dialog-close]').forEach((trigger) => {
+    trigger.addEventListener('click', () => {
+        const dialogId = trigger.getAttribute('data-dialog-close');
+        if (!dialogId) {
+            return;
+        }
+        const dialog = document.getElementById(dialogId);
+        if (dialog && typeof dialog.close === 'function') {
+            dialog.close();
+        }
+    });
+});
+document.querySelectorAll('dialog').forEach((dialog) => {
+    dialog.addEventListener('click', (event) => {
+        if (event.target === dialog && typeof dialog.close === 'function') {
+            dialog.close();
+        }
+    });
+});
+</script>
 
 <?php include __DIR__ . '/../../src/views/partials/footer.php'; ?>

@@ -30651,6 +30651,17 @@ function supplycore_threat_corridor_graph_svg(int $corridorId, array $corridorSy
     }
 
     $corridorSet = array_fill_keys($corridorSystemIds, true);
+    $corridorPathEdges = [];
+    for ($i = 0, $n = count($corridorSystemIds) - 1; $i < $n; $i++) {
+        $a = (int) $corridorSystemIds[$i];
+        $b = (int) $corridorSystemIds[$i + 1];
+        if ($a <= 0 || $b <= 0 || $a === $b) {
+            continue;
+        }
+        $left = min($a, $b);
+        $right = max($a, $b);
+        $corridorPathEdges[$left . ':' . $right] = true;
+    }
     $nodeMap = [];
     foreach ($nodes as $node) {
         $sid = (int) ($node['system_id'] ?? 0);
@@ -30726,8 +30737,8 @@ function supplycore_threat_corridor_graph_svg(int $corridorId, array $corridorSy
         }
     }
 
-    $width = 760;
-    $height = 250;
+    $width = 640;
+    $height = 220;
     $pad = 24;
     $sx = static fn (float $x): float => $pad + ($x * ($width - ($pad * 2)));
     $sy = static fn (float $y): float => $pad + ($y * ($height - ($pad * 2)));
@@ -30755,7 +30766,7 @@ function supplycore_threat_corridor_graph_svg(int $corridorId, array $corridorSy
     $svg[] = '<defs><style><![CDATA['
         . '.label-c{font:600 11px Inter,Segoe UI,sans-serif;fill:#e2e8f0}'
         . '.node-surround:hover + .label-s{opacity:1}'
-        . '.label-s{font:500 10px Inter,Segoe UI,sans-serif;fill:#94a3b8;opacity:0;transition:opacity .2s ease}'
+        . '.label-s{font:500 10px Inter,Segoe UI,sans-serif;fill:#94a3b8;opacity:.75;transition:opacity .2s ease}'
         . ']]></style></defs>';
     $svg[] = '<rect x="0" y="0" width="' . $width . '" height="' . $height . '" rx="12" fill="#020617"/>';
 
@@ -30765,7 +30776,14 @@ function supplycore_threat_corridor_graph_svg(int $corridorId, array $corridorSy
         if (!isset($positions[$a], $positions[$b])) {
             continue;
         }
-        $svg[] = '<line x1="' . number_format($sx((float) $positions[$a]['x']), 2, '.', '') . '" y1="' . number_format($sy((float) $positions[$a]['y']), 2, '.', '') . '" x2="' . number_format($sx((float) $positions[$b]['x']), 2, '.', '') . '" y2="' . number_format($sy((float) $positions[$b]['y']), 2, '.', '') . '" stroke="#334155" stroke-opacity="0.8" stroke-width="1.2"/>';
+        $left = min($a, $b);
+        $right = max($a, $b);
+        $edgeKey = $left . ':' . $right;
+        $isCorridorPathEdge = isset($corridorPathEdges[$edgeKey]);
+        $stroke = $isCorridorPathEdge ? '#f87171' : '#334155';
+        $strokeOpacity = $isCorridorPathEdge ? '0.95' : '0.8';
+        $strokeWidth = $isCorridorPathEdge ? '2.6' : '1.2';
+        $svg[] = '<line x1="' . number_format($sx((float) $positions[$a]['x']), 2, '.', '') . '" y1="' . number_format($sy((float) $positions[$a]['y']), 2, '.', '') . '" x2="' . number_format($sx((float) $positions[$b]['x']), 2, '.', '') . '" y2="' . number_format($sy((float) $positions[$b]['y']), 2, '.', '') . '" stroke="' . $stroke . '" stroke-opacity="' . $strokeOpacity . '" stroke-width="' . $strokeWidth . '"/>';
     }
     foreach ($nodeMap as $sid => $node) {
         if (!isset($positions[$sid])) {
