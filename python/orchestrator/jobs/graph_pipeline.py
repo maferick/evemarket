@@ -2032,7 +2032,7 @@ def run_compute_graph_sync_killmail_entities(
         "SELECT last_cursor FROM sync_state WHERE dataset_key = %s",
         (_KILLMAIL_CURSOR_KEY,),
     )
-    last_cursor = int(cursor_row["last_cursor"]) if cursor_row and cursor_row.get("last_cursor") else 0
+    last_cursor = _parse_int_cursor(cursor_row["last_cursor"]) if cursor_row else 0
 
     rows_processed = 0
     rows_written = 0
@@ -2149,7 +2149,7 @@ def run_compute_graph_sync_killmail_edges(
         "SELECT last_cursor FROM sync_state WHERE dataset_key = %s",
         (_KM_ATTACKER_EDGE_CURSOR_KEY,),
     )
-    last_attacker_cursor = int(cursor_row["last_cursor"]) if cursor_row and cursor_row.get("last_cursor") else 0
+    last_attacker_cursor = _parse_int_cursor(cursor_row["last_cursor"]) if cursor_row else 0
     new_attacker_cursor = last_attacker_cursor
 
     while True:
@@ -2205,7 +2205,7 @@ def run_compute_graph_sync_killmail_edges(
         "SELECT last_cursor FROM sync_state WHERE dataset_key = %s",
         (_KM_VICTIM_EDGE_CURSOR_KEY,),
     )
-    last_victim_cursor = int(cursor_row["last_cursor"]) if cursor_row and cursor_row.get("last_cursor") else 0
+    last_victim_cursor = _parse_int_cursor(cursor_row["last_cursor"]) if cursor_row else 0
     new_victim_cursor = last_victim_cursor
 
     while True:
