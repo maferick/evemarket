@@ -224,7 +224,7 @@ def main(argv: list[str] | None = None) -> int:
                 "status": status,
                 "start_date": current_start_date,
                 "up_to_date": up_to_date,
-                "days_processed": result.get("days_processed", 0),
+                "months_processed": result.get("months_processed", 0),
                 "written": result.get("written", 0),
             },
         )
