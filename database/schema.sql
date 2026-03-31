@@ -1024,6 +1024,7 @@ CREATE TABLE IF NOT EXISTS scheduler_job_current_status (
     last_planner_reason_text VARCHAR(500) DEFAULT NULL,
     last_planner_decided_at DATETIME DEFAULT NULL,
     last_event_at DATETIME DEFAULT NULL,
+    last_run_summary VARCHAR(500) DEFAULT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     KEY idx_scheduler_job_current_status_dataset (dataset_key),
