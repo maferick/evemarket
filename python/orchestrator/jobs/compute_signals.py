@@ -65,8 +65,8 @@ def run_compute_signals(db: SupplyCoreDb, influx_raw: dict[str, Any] | None = No
             MAX(bai.profit_score) AS profit_score,
             MAX(CASE WHEN rit.type_name IS NULL OR rit.type_name = '' THEN CONCAT('Type #', bai.type_id) ELSE rit.type_name END) AS type_name,
             MAX(COALESCE(bai.quantity, 0)) AS planner_qty,
-            MAX(COALESCE(mh.best_sell_price, mh.best_buy_price, 0)) AS hub_price,
-            MAX(COALESCE(asrc.best_sell_price, asrc.best_buy_price, 0)) AS alliance_price,
+            MAX(COALESCE(mh.hub_price, 0)) AS hub_price,
+            MAX(COALESCE(asrc.alliance_price, 0)) AS alliance_price,
             MAX(COALESCE(asrc.total_sell_volume, 0)) AS alliance_volume,
             MAX(COALESCE(ids.dependency_score, 0.0)) AS dependency_score,
             MAX(COALESCE(ids.doctrine_count, 0)) AS doctrine_count,
@@ -74,8 +74,23 @@ def run_compute_signals(db: SupplyCoreDb, influx_raw: dict[str, Any] | None = No
         FROM buy_all_items bai
         INNER JOIN buy_all_summary bas ON bas.id = bai.summary_id
         LEFT JOIN ref_item_types rit ON rit.type_id = bai.type_id
-        LEFT JOIN market_order_snapshots_summary mh ON mh.type_id = bai.type_id AND mh.source_type = 'market_hub'
-        LEFT JOIN market_order_snapshots_summary asrc ON asrc.type_id = bai.type_id AND asrc.source_type = 'alliance_structure'
+        LEFT JOIN (
+            SELECT type_id,
+                   MAX(COALESCE(best_sell_price, best_buy_price, 0)) AS hub_price
+            FROM market_order_snapshots_summary
+            WHERE source_type = 'market_hub'
+              AND observed_at >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL 24 HOUR)
+            GROUP BY type_id
+        ) mh ON mh.type_id = bai.type_id
+        LEFT JOIN (
+            SELECT type_id,
+                   MAX(COALESCE(best_sell_price, best_buy_price, 0)) AS alliance_price,
+                   MAX(COALESCE(total_sell_volume, 0)) AS total_sell_volume
+            FROM market_order_snapshots_summary
+            WHERE source_type = 'alliance_structure'
+              AND observed_at >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL 24 HOUR)
+            GROUP BY type_id
+        ) asrc ON asrc.type_id = bai.type_id
         LEFT JOIN item_dependency_score ids ON ids.type_id = bai.type_id
         WHERE bas.computed_at >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL 24 HOUR)
         GROUP BY bai.type_id
