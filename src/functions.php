@@ -30638,7 +30638,7 @@ function supplycore_threat_corridor_graph_svg(int $corridorId, array $corridorSy
     if (!is_dir($cacheDir) && !@mkdir($cacheDir, 0775, true) && !is_dir($cacheDir)) {
         return null;
     }
-    $cacheFile = sprintf('%s/corridor-%d-h%d-v4.svg', $cacheDir, $corridorId, $surroundingHops);
+    $cacheFile = sprintf('%s/corridor-%d-h%d-v5.svg', $cacheDir, $corridorId, $surroundingHops);
     $cacheTtl = supplycore_threat_corridor_map_cache_minutes() * 60;
     if (is_file($cacheFile) && ((time() - (int) filemtime($cacheFile)) < $cacheTtl)) {
         return '/threat-corridors/svg/' . basename($cacheFile);
@@ -30743,7 +30743,8 @@ function supplycore_threat_corridor_graph_svg(int $corridorId, array $corridorSy
         $positions[$sid] = ['x' => $x, 'y' => 0.5];
     }
 
-    $ringSlots = [];
+    // Pre-group surrounding nodes by their nearest corridor anchor
+    $surroundingByAnchor = [];
     foreach ($nodeIds as $sid) {
         if (isset($positions[$sid])) {
             continue;
@@ -30757,19 +30758,79 @@ function supplycore_threat_corridor_graph_svg(int $corridorId, array $corridorSy
             }
         }
         $hop = max(1, min(3, (int) ($distance[$sid] ?? 1)));
-        $slotKey = $anchorId . ':' . $hop;
-        $ringSlots[$slotKey] = (int) ($ringSlots[$slotKey] ?? 0);
-        $slotIndex = $ringSlots[$slotKey];
-        $ringSlots[$slotKey] = $slotIndex + 1;
-        $slotCount = max(6, count($adjacency[$anchorId]) * 2);
-        $angle = (($slotIndex % $slotCount) / $slotCount) * (2 * M_PI);
-        $radius = 0.12 + ((float) $hop * 0.07);
-        $x = ((float) $positions[$anchorId]['x']) + (cos($angle) * $radius);
-        $y = ((float) $positions[$anchorId]['y']) + (sin($angle) * $radius * 0.85);
-        $positions[$sid] = [
-            'x' => max(0.03, min(0.97, $x)),
-            'y' => max(0.08, min(0.92, $y)),
-        ];
+        $surroundingByAnchor[$anchorId][] = ['sid' => $sid, 'hop' => $hop];
+    }
+
+    // For each corridor anchor, compute angles pointing toward adjacent corridor nodes
+    // Surrounding nodes must avoid these directions so they spread above/below the corridor line
+    $corridorNeighborAngles = [];
+    foreach ($corridorNodeIds as $idx => $cSid) {
+        $blocked = [];
+        if ($idx > 0) {
+            $prevSid = $corridorNodeIds[$idx - 1];
+            $dx = ((float) $positions[$prevSid]['x']) - ((float) $positions[$cSid]['x']);
+            $dy = ((float) $positions[$prevSid]['y']) - ((float) $positions[$cSid]['y']);
+            $blocked[] = atan2($dy, $dx);
+        }
+        if ($idx < ($corridorCount - 1)) {
+            $nextSid = $corridorNodeIds[$idx + 1];
+            $dx = ((float) $positions[$nextSid]['x']) - ((float) $positions[$cSid]['x']);
+            $dy = ((float) $positions[$nextSid]['y']) - ((float) $positions[$cSid]['y']);
+            $blocked[] = atan2($dy, $dx);
+        }
+        $corridorNeighborAngles[$cSid] = $blocked;
+    }
+
+    // Place surrounding nodes while avoiding corridor directions
+    $exclusionZone = M_PI * 0.28; // ~50° exclusion around each corridor direction
+    foreach ($surroundingByAnchor as $anchorId => $anchorNodes) {
+        $blockedAngles = $corridorNeighborAngles[$anchorId] ?? [];
+        usort($anchorNodes, static fn (array $a, array $b): int => $a['hop'] <=> $b['hop'] ?: $a['sid'] <=> $b['sid']);
+        $byHop = [];
+        foreach ($anchorNodes as $nodeInfo) {
+            $byHop[$nodeInfo['hop']][] = $nodeInfo['sid'];
+        }
+        foreach ($byHop as $hop => $hopSids) {
+            $n = count($hopSids);
+            $radius = 0.12 + ((float) $hop * 0.07);
+            // Generate candidate angles around the circle (starting from top), filtered to avoid blocked zones
+            $steps = 360;
+            $candidates = [];
+            for ($step = 0; $step < $steps; $step++) {
+                $angle = (2.0 * M_PI / $steps) * $step - M_PI / 2.0;
+                $inBlocked = false;
+                foreach ($blockedAngles as $ba) {
+                    $diff = fmod(abs($angle - $ba), 2.0 * M_PI);
+                    if ($diff > M_PI) {
+                        $diff = 2.0 * M_PI - $diff;
+                    }
+                    if ($diff < $exclusionZone) {
+                        $inBlocked = true;
+                        break;
+                    }
+                }
+                if (!$inBlocked) {
+                    $candidates[] = $angle;
+                }
+            }
+            if ($candidates === []) {
+                // Fallback: use full circle if all angles were excluded
+                for ($step = 0; $step < $steps; $step++) {
+                    $candidates[] = (2.0 * M_PI / $steps) * $step - M_PI / 2.0;
+                }
+            }
+            $nc = count($candidates);
+            foreach ($hopSids as $i => $sid) {
+                $candidateIdx = min((int) round($i * ($nc / $n)), $nc - 1);
+                $angle = $candidates[$candidateIdx];
+                $x = ((float) $positions[$anchorId]['x']) + (cos($angle) * $radius);
+                $y = ((float) $positions[$anchorId]['y']) + (sin($angle) * $radius * 0.85);
+                $positions[$sid] = [
+                    'x' => max(0.03, min(0.97, $x)),
+                    'y' => max(0.08, min(0.92, $y)),
+                ];
+            }
+        }
     }
 
     $width = 900;
@@ -30886,6 +30947,275 @@ function supplycore_threat_corridor_graph_svg(int $corridorId, array $corridorSy
         }
     }
     $svg[] = '</svg>';
+    if (@file_put_contents($cacheFile, implode('', $svg)) === false) {
+        return null;
+    }
+
+    return '/threat-corridors/svg/' . basename($cacheFile);
+}
+
+/**
+ * Generate a radial neighborhood SVG map centered on a single system.
+ * Hop-1 neighbors form an inner ring; hop-2 neighbors an outer ring.
+ * Returns the public URL of the cached SVG, or null on failure.
+ */
+function supplycore_system_area_svg(int $systemId, int $hops = 2): ?string
+{
+    if ($systemId <= 0) {
+        return null;
+    }
+    $hops = max(1, min(3, $hops));
+    $cacheDir = dirname(__DIR__) . '/public/threat-corridors/svg';
+    if (!is_dir($cacheDir) && !@mkdir($cacheDir, 0775, true) && !is_dir($cacheDir)) {
+        return null;
+    }
+    $cacheFile = sprintf('%s/system-%d-h%d-v1.svg', $cacheDir, $systemId, $hops);
+    $cacheTtl = supplycore_threat_corridor_map_cache_minutes() * 60;
+    if (is_file($cacheFile) && ((time() - (int) filemtime($cacheFile)) < $cacheTtl)) {
+        return '/threat-corridors/svg/' . basename($cacheFile);
+    }
+
+    $graph = db_threat_corridor_graph_subgraph([$systemId], $hops);
+    $nodes = (array) ($graph['nodes'] ?? []);
+    $edges = (array) ($graph['edges'] ?? []);
+    if ($nodes === []) {
+        return null;
+    }
+
+    $nodeMap = [];
+    foreach ($nodes as $node) {
+        $sid = (int) ($node['system_id'] ?? 0);
+        if ($sid <= 0) {
+            continue;
+        }
+        $nodeMap[$sid] = [
+            'system_id'   => $sid,
+            'name'        => (string) ($node['system_name'] ?? (string) $sid),
+            'security'    => (float) ($node['security'] ?? 0.0),
+            'threat_level' => strtolower((string) ($node['threat_level'] ?? '')),
+            'is_focal'    => ($sid === $systemId),
+        ];
+    }
+    if (!isset($nodeMap[$systemId])) {
+        return null;
+    }
+
+    $nodeIds = array_keys($nodeMap);
+    $adjacency = array_fill_keys($nodeIds, []);
+    foreach ($edges as $edge) {
+        $a = (int) ($edge[0] ?? 0);
+        $b = (int) ($edge[1] ?? 0);
+        if ($a <= 0 || $b <= 0 || $a === $b || !isset($nodeMap[$a], $nodeMap[$b])) {
+            continue;
+        }
+        $adjacency[$a][] = $b;
+        $adjacency[$b][] = $a;
+    }
+
+    // BFS from focal to determine hop distances and parents
+    $distance = [$systemId => 0];
+    $bfsParent = [$systemId => null];
+    $queue = [$systemId];
+    while ($queue !== []) {
+        $cur = array_shift($queue);
+        foreach ($adjacency[$cur] as $nb) {
+            if (!isset($distance[$nb])) {
+                $distance[$nb] = $distance[$cur] + 1;
+                $bfsParent[$nb] = $cur;
+                $queue[] = $nb;
+            }
+        }
+    }
+
+    // Radial layout: focal at center, hop-1 in inner ring, hop-2 in outer ring
+    $positions = [$systemId => ['x' => 0.5, 'y' => 0.5, 'angle' => 0.0]];
+
+    $hop1 = array_values(array_filter($nodeIds, static fn (int $s): bool => ($distance[$s] ?? PHP_INT_MAX) === 1));
+    sort($hop1);
+    $n1 = count($hop1);
+    $r1 = 0.22;
+    $parentAngle = [];
+    foreach ($hop1 as $i => $sid) {
+        $angle = $n1 > 0 ? ((2.0 * M_PI / $n1) * $i - M_PI / 2.0) : 0.0;
+        $parentAngle[$sid] = $angle;
+        $positions[$sid] = [
+            'x'     => max(0.05, min(0.95, 0.5 + cos($angle) * $r1)),
+            'y'     => max(0.06, min(0.94, 0.5 + sin($angle) * $r1 * 0.82)),
+            'angle' => $angle,
+        ];
+    }
+
+    $hop2ByParent = [];
+    foreach ($nodeIds as $sid) {
+        if (($distance[$sid] ?? PHP_INT_MAX) !== 2) {
+            continue;
+        }
+        $par = $bfsParent[$sid] ?? null;
+        if ($par === null || !isset($parentAngle[$par])) {
+            continue;
+        }
+        $hop2ByParent[$par][] = $sid;
+    }
+    $r2 = 0.41;
+    $sectorWidth = $n1 > 0 ? (2.0 * M_PI / $n1) : (2.0 * M_PI);
+    foreach ($hop2ByParent as $parId => $children) {
+        sort($children);
+        $nc = count($children);
+        $pa = $parentAngle[$parId] ?? 0.0;
+        $spread = min($sectorWidth * 0.72, M_PI * 0.55);
+        foreach ($children as $ci => $sid) {
+            $frac = $nc > 1 ? (($ci / ($nc - 1)) - 0.5) : 0.0;
+            $angle = $pa + ($frac * $spread);
+            $positions[$sid] = [
+                'x'     => max(0.03, min(0.97, 0.5 + cos($angle) * $r2)),
+                'y'     => max(0.04, min(0.96, 0.5 + sin($angle) * $r2 * 0.82)),
+                'angle' => $angle,
+            ];
+        }
+    }
+
+    // Fallback for any orphaned nodes
+    foreach ($nodeIds as $sid) {
+        if (!isset($positions[$sid])) {
+            $positions[$sid] = ['x' => 0.5, 'y' => 0.5, 'angle' => 0.0];
+        }
+    }
+
+    $width  = 900;
+    $height = 700;
+    $pad    = 30;
+    $sx = static fn (float $x): float => $pad + ($x * ($width  - ($pad * 2)));
+    $sy = static fn (float $y): float => $pad + ($y * ($height - ($pad * 2)));
+    $securityColor = static function (float $sec): string {
+        if ($sec >= 0.5) {
+            return '#10b981';
+        }
+        if ($sec > 0.0) {
+            return '#f59e0b';
+        }
+        return '#ef4444';
+    };
+    $threatColor = static function (string $tl): string {
+        return match ($tl) {
+            'critical' => '#ef4444',
+            'high'     => '#f97316',
+            'medium'   => '#eab308',
+            'low'      => '#3b82f6',
+            default    => '#94a3b8',
+        };
+    };
+
+    $svg = [];
+    $svg[] = '<svg xmlns="http://www.w3.org/2000/svg" width="' . $width . '" height="' . $height . '" viewBox="0 0 ' . $width . ' ' . $height . '">';
+    $svg[] = '<defs>'
+        . '<filter id="focal-glow" x="-100%" y="-100%" width="300%" height="300%">'
+        . '<feGaussianBlur stdDeviation="5" result="blur"/>'
+        . '<feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>'
+        . '</filter>'
+        . '<filter id="node-glow" x="-60%" y="-60%" width="220%" height="220%">'
+        . '<feGaussianBlur stdDeviation="2.2" result="blur"/>'
+        . '<feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>'
+        . '</filter>'
+        . '<style><![CDATA['
+        . '.lbl-f{font:700 12px Inter,Segoe UI,sans-serif;fill:#f1f5f9}'
+        . '.lbl-f-sub{font:500 9px Inter,Segoe UI,sans-serif;fill:#94a3b8}'
+        . '.lbl-1{font:600 10.5px Inter,Segoe UI,sans-serif;fill:#cbd5e1}'
+        . '.lbl-2{font:500 9.5px Inter,Segoe UI,sans-serif;fill:#64748b}'
+        . ']]></style>'
+        . '</defs>';
+    $svg[] = '<rect width="' . $width . '" height="' . $height . '" fill="#04080f"/>';
+
+    // Edges: focal→hop1 are slightly brighter; all others dim
+    $drawnEdges = [];
+    foreach ($edges as $edge) {
+        $a = (int) ($edge[0] ?? 0);
+        $b = (int) ($edge[1] ?? 0);
+        if (!isset($positions[$a], $positions[$b])) {
+            continue;
+        }
+        $key = min($a, $b) . ':' . max($a, $b);
+        if (isset($drawnEdges[$key])) {
+            continue;
+        }
+        $drawnEdges[$key] = true;
+        $x1 = number_format($sx((float) $positions[$a]['x']), 2, '.', '');
+        $y1 = number_format($sy((float) $positions[$a]['y']), 2, '.', '');
+        $x2 = number_format($sx((float) $positions[$b]['x']), 2, '.', '');
+        $y2 = number_format($sy((float) $positions[$b]['y']), 2, '.', '');
+        if ($a === $systemId || $b === $systemId) {
+            $svg[] = '<line x1="' . $x1 . '" y1="' . $y1 . '" x2="' . $x2 . '" y2="' . $y2 . '" stroke="#2d5a9e" stroke-opacity="0.85" stroke-width="1.7"/>';
+        } else {
+            $svg[] = '<line x1="' . $x1 . '" y1="' . $y1 . '" x2="' . $x2 . '" y2="' . $y2 . '" stroke="#1e3a5f" stroke-opacity="0.50" stroke-width="1.0"/>';
+        }
+    }
+
+    // Nodes and labels; labels positioned away from center to avoid edge overlap
+    foreach ($nodeMap as $sid => $node) {
+        if (!isset($positions[$sid])) {
+            continue;
+        }
+        $px   = (float) $positions[$sid]['x'];
+        $py   = (float) $positions[$sid]['y'];
+        $cx   = number_format($sx($px), 2, '.', '');
+        $cy   = number_format($sy($py), 2, '.', '');
+        $outer = $securityColor((float) $node['security']);
+        $inner = $threatColor((string) $node['threat_level']);
+        $hop  = $distance[$sid] ?? 0;
+        $safeName = htmlspecialchars((string) $node['name'], ENT_QUOTES);
+        $secFmt   = number_format((float) $node['security'], 2);
+        $titleAttr = $safeName . ' | sec=' . $secFmt . ' | threat=' . ($node['threat_level'] !== '' ? $node['threat_level'] : 'unknown');
+
+        // Label direction: push away from center
+        $onLeft = $px < 0.5;
+        $labelAnchor = $onLeft ? 'end' : 'start';
+        $labelOffsetX = $onLeft ? -11 : 11;
+        $labelY = number_format($sy($py), 2, '.', '');
+
+        if ($node['is_focal']) {
+            $svg[] = '<g filter="url(#focal-glow)">'
+                . '<circle cx="' . $cx . '" cy="' . $cy . '" r="16" fill="none" stroke="' . $outer . '" stroke-width="2.5" stroke-opacity="0.9"/>'
+                . '<circle cx="' . $cx . '" cy="' . $cy . '" r="8.5" fill="' . $inner . '" stroke="#04080f" stroke-width="1.5">'
+                . '<title>' . htmlspecialchars($titleAttr, ENT_QUOTES) . '</title>'
+                . '</circle>'
+                . '</g>'
+                . '<text class="lbl-f" x="' . ($sx($px) + 20) . '" y="' . ($sy($py) - 4) . '">' . $safeName . '</text>'
+                . '<text class="lbl-f-sub" x="' . ($sx($px) + 20) . '" y="' . ($sy($py) + 11) . '">' . $secFmt . '</text>';
+        } elseif ($hop === 1) {
+            $lx = number_format($sx($px) + $labelOffsetX, 2, '.', '');
+            $svg[] = '<g filter="url(#node-glow)">'
+                . '<circle cx="' . $cx . '" cy="' . $cy . '" r="9.5" fill="none" stroke="' . $outer . '" stroke-width="2.0" stroke-opacity="0.88"/>'
+                . '<circle cx="' . $cx . '" cy="' . $cy . '" r="5.5" fill="' . $inner . '" stroke="#04080f" stroke-width="1.2">'
+                . '<title>' . htmlspecialchars($titleAttr, ENT_QUOTES) . '</title>'
+                . '</circle>'
+                . '</g>'
+                . '<text class="lbl-1" x="' . $lx . '" y="' . ($sy($py) + 4) . '" text-anchor="' . $labelAnchor . '">' . $safeName . '</text>';
+        } else {
+            $lx = number_format($sx($px) + $labelOffsetX, 2, '.', '');
+            $svg[] = '<g>'
+                . '<circle cx="' . $cx . '" cy="' . $cy . '" r="5.5" fill="none" stroke="' . $outer . '" stroke-width="1.5" stroke-opacity="0.72">'
+                . '<title>' . htmlspecialchars($titleAttr, ENT_QUOTES) . '</title>'
+                . '</circle>'
+                . '<circle cx="' . $cx . '" cy="' . $cy . '" r="2.8" fill="' . $inner . '" stroke="#04080f" stroke-width="0.8"/>'
+                . '<text class="lbl-2" x="' . $lx . '" y="' . ($sy($py) + 3) . '" text-anchor="' . $labelAnchor . '">' . $safeName . '</text>'
+                . '</g>';
+        }
+    }
+
+    // Legend
+    $lx = $width - $pad - 2;
+    $ly = $height - $pad - 2;
+    $svg[] = '<g opacity="0.7">'
+        . '<text x="' . $lx . '" y="' . ($ly - 54) . '" text-anchor="end" style="font:600 9px Inter,Segoe UI,sans-serif;fill:#475569;letter-spacing:.06em">SECURITY</text>'
+        . '<circle cx="' . ($lx - 90) . '" cy="' . ($ly - 40) . '" r="4" fill="none" stroke="#10b981" stroke-width="1.5"/>'
+        . '<text x="' . ($lx - 83) . '" y="' . ($ly - 36) . '" style="font:500 9px Inter,Segoe UI,sans-serif;fill:#64748b">High-sec (≥0.5)</text>'
+        . '<circle cx="' . ($lx - 90) . '" cy="' . ($ly - 24) . '" r="4" fill="none" stroke="#f59e0b" stroke-width="1.5"/>'
+        . '<text x="' . ($lx - 83) . '" y="' . ($ly - 20) . '" style="font:500 9px Inter,Segoe UI,sans-serif;fill:#64748b">Low-sec (0–0.5)</text>'
+        . '<circle cx="' . ($lx - 90) . '" cy="' . ($ly - 8) . '" r="4" fill="none" stroke="#ef4444" stroke-width="1.5"/>'
+        . '<text x="' . ($lx - 83) . '" y="' . ($ly - 4) . '" style="font:500 9px Inter,Segoe UI,sans-serif;fill:#64748b">Null-sec (≤0)</text>'
+        . '</g>';
+
+    $svg[] = '</svg>';
+
     if (@file_put_contents($cacheFile, implode('', $svg)) === false) {
         return null;
     }
