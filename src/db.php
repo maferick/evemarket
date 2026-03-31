@@ -11548,7 +11548,8 @@ function db_killmail_overview_filter_options(): array
           AND ta.is_active = 1
          WHERE e.victim_alliance_id IS NOT NULL
            AND e.victim_alliance_id > 0
-         ORDER BY entity_label ASC"
+         ORDER BY entity_label ASC
+         LIMIT 200"
     );
 
     $corporations = db_select(
@@ -11562,7 +11563,8 @@ function db_killmail_overview_filter_options(): array
           AND tc.is_active = 1
          WHERE e.victim_corporation_id IS NOT NULL
            AND e.victim_corporation_id > 0
-         ORDER BY entity_label ASC"
+         ORDER BY entity_label ASC
+         LIMIT 200"
     );
 
     return [

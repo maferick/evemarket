@@ -11368,19 +11368,11 @@ function killmail_overview_data(): array
             'region' => [],
         ];
 
-        foreach ((array) ($options['alliances'] ?? []) as $row) {
-            $id = (int) ($row['entity_id'] ?? 0);
-            if ($id > 0) {
-                $overviewResolutionRequests['alliance'][$id] = $id;
-            }
-        }
-
-        foreach ((array) ($options['corporations'] ?? []) as $row) {
-            $id = (int) ($row['entity_id'] ?? 0);
-            if ($id > 0) {
-                $overviewResolutionRequests['corporation'][$id] = $id;
-            }
-        }
+        // Filter option entities (alliances/corporations for the dropdowns) are intentionally
+        // excluded from the resolution batch. Their labels are already provided by the DB
+        // query via entity_label, so there is no need to trigger ESI network calls for them
+        // on every page load. Adding potentially hundreds of distinct entities here was the
+        // primary cause of slow page loads.
 
         foreach ((array) ($listing['rows'] ?? []) as $row) {
             $allianceId = (int) ($row['victim_alliance_id'] ?? 0);
