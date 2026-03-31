@@ -8,6 +8,8 @@ $title = 'Log Viewer';
 $pageHeaderBadge = 'System health at a glance';
 $pageHeaderSummary = 'Monitor job runs, failures, timeouts, and external service connectivity. Fix issues before they cascade.';
 
+$liveRefreshConfig = supplycore_live_refresh_page_config('log_viewer');
+
 $pageData = log_viewer_page_data();
 $externalHealth = log_viewer_external_health();
 
@@ -51,11 +53,18 @@ $attentionCount = $kpi['total_failed'] + $kpi['total_timeout'] + $kpi['total_ove
 <!-- ═══════════════════════════════════════════════════════════════════════════
      KPI Cards
      ══════════════════════════════════════════════════════════════════════════ -->
-<section class="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+<!-- ui-section:log-viewer-kpi:start -->
+<section class="grid gap-4 sm:grid-cols-2 xl:grid-cols-4" data-ui-section="log-viewer-kpi">
     <article class="kpi-card">
         <p class="eyebrow">Needs attention</p>
         <p class="mt-3 metric-value text-[2.35rem] <?= $attentionCount > 0 ? 'text-rose-100' : 'text-emerald-100' ?>"><?= $attentionCount ?></p>
-        <p class="mt-2 text-sm text-slate-300">Failed, timed-out, or overdue jobs requiring action.</p>
+        <p class="mt-2 text-sm text-slate-300">
+            <?php if ($attentionCount === 0): ?>
+                All systems operational.
+            <?php else: ?>
+                <?= $kpi['total_failed'] ?> failed · <?= $kpi['total_timeout'] ?> timed out · <?= $kpi['total_overdue'] ?> overdue
+            <?php endif; ?>
+        </p>
     </article>
     <article class="kpi-card">
         <p class="eyebrow">Healthy jobs</p>
@@ -73,36 +82,22 @@ $attentionCount = $kpi['total_failed'] + $kpi['total_timeout'] + $kpi['total_ove
         <p class="mt-2 text-sm text-slate-300">Active scheduled jobs out of total registered.</p>
     </article>
 </section>
+<!-- ui-section:log-viewer-kpi:end -->
 
 <!-- ═══════════════════════════════════════════════════════════════════════════
-     External Services
+     External Services — compact inline cards
      ══════════════════════════════════════════════════════════════════════════ -->
 <section class="mt-8">
     <h2 class="section-title mb-4">External Services</h2>
     <div class="grid gap-4 sm:grid-cols-2">
         <?php foreach ($externalHealth as $svcKey => $svc): ?>
-            <article class="rounded-2xl border p-5 <?= htmlspecialchars($svc['tone'], ENT_QUOTES) ?>">
-                <div class="flex items-start justify-between gap-3">
-                    <div>
-                        <p class="text-xs font-semibold uppercase tracking-[0.16em] text-current/70"><?= htmlspecialchars($svc['name'], ENT_QUOTES) ?></p>
-                        <h3 class="mt-2 text-lg font-semibold text-white"><?= htmlspecialchars($svc['label'], ENT_QUOTES) ?></h3>
-                        <p class="mt-2 text-sm text-slate-200"><?= htmlspecialchars($svc['detail'], ENT_QUOTES) ?></p>
+            <article class="rounded-2xl border p-4 <?= htmlspecialchars($svc['tone'], ENT_QUOTES) ?>">
+                <div class="flex items-center justify-between gap-3">
+                    <div class="flex items-center gap-3">
+                        <span class="badge <?= htmlspecialchars($svc['tone'], ENT_QUOTES) ?>"><?= htmlspecialchars($svc['label'], ENT_QUOTES) ?></span>
+                        <span class="font-medium text-white"><?= htmlspecialchars($svc['name'], ENT_QUOTES) ?></span>
                     </div>
-                    <span class="badge <?= htmlspecialchars($svc['tone'], ENT_QUOTES) ?>"><?= htmlspecialchars($svc['label'], ENT_QUOTES) ?></span>
-                </div>
-                <div class="mt-4 grid gap-3 text-sm text-slate-200 sm:grid-cols-3">
-                    <div class="rounded-lg border border-white/10 bg-black/20 p-3">
-                        <p class="text-xs uppercase tracking-[0.16em] text-slate-400">Latency</p>
-                        <p class="mt-2 font-semibold text-white"><?= $svc['latency_ms'] ?>ms</p>
-                    </div>
-                    <div class="rounded-lg border border-white/10 bg-black/20 p-3">
-                        <p class="text-xs uppercase tracking-[0.16em] text-slate-400">Version</p>
-                        <p class="mt-2 font-semibold text-white"><?= htmlspecialchars((string) ($svc['version'] ?? 'N/A'), ENT_QUOTES) ?></p>
-                    </div>
-                    <div class="rounded-lg border border-white/10 bg-black/20 p-3">
-                        <p class="text-xs uppercase tracking-[0.16em] text-slate-400">Endpoint</p>
-                        <p class="mt-2 font-semibold text-white truncate" title="<?= htmlspecialchars($svc['url'], ENT_QUOTES) ?>"><?= htmlspecialchars($svc['url'], ENT_QUOTES) ?></p>
-                    </div>
+                    <span class="text-sm text-slate-300"><?= $svc['latency_ms'] ?>ms<?php if ($svc['version']): ?> · <?= htmlspecialchars((string) $svc['version'], ENT_QUOTES) ?><?php endif; ?></span>
                 </div>
             </article>
         <?php endforeach; ?>
@@ -110,7 +105,7 @@ $attentionCount = $kpi['total_failed'] + $kpi['total_timeout'] + $kpi['total_ove
 </section>
 
 <!-- ═══════════════════════════════════════════════════════════════════════════
-     Stuck / Timed-out Runs (if any)
+     Stuck / Timed-out Runs — grouped by job
      ══════════════════════════════════════════════════════════════════════════ -->
 <?php if ($stuckRuns !== []): ?>
 <section class="mt-8">
@@ -121,7 +116,9 @@ $attentionCount = $kpi['total_failed'] + $kpi['total_timeout'] + $kpi['total_ove
                 <thead>
                     <tr>
                         <th class="text-left">Job</th>
-                        <th class="text-left">Started</th>
+                        <th class="text-right">Stuck instances</th>
+                        <th class="text-left">Oldest</th>
+                        <th class="text-left">Newest</th>
                         <th class="text-right">Running for</th>
                     </tr>
                 </thead>
@@ -129,8 +126,14 @@ $attentionCount = $kpi['total_failed'] + $kpi['total_timeout'] + $kpi['total_ove
                     <?php foreach ($stuckRuns as $run): ?>
                         <tr>
                             <td class="font-medium text-white"><?= htmlspecialchars($run['dataset_key'], ENT_QUOTES) ?></td>
-                            <td class="text-slate-300"><?= htmlspecialchars(supplycore_format_datetime($run['started_at']), ENT_QUOTES) ?></td>
-                            <td class="text-right font-semibold text-orange-200"><?= htmlspecialchars(human_duration_seconds((float) $run['running_seconds']), ENT_QUOTES) ?></td>
+                            <td class="text-right">
+                                <span class="inline-flex items-center rounded-full border border-orange-400/25 bg-orange-500/12 px-2.5 py-0.5 text-xs font-semibold text-orange-100">
+                                    <?= $run['count'] ?>
+                                </span>
+                            </td>
+                            <td class="text-slate-300"><?= htmlspecialchars(supplycore_format_datetime($run['oldest_started_at']), ENT_QUOTES) ?></td>
+                            <td class="text-slate-300"><?= htmlspecialchars(supplycore_format_datetime($run['newest_started_at']), ENT_QUOTES) ?></td>
+                            <td class="text-right font-semibold text-orange-200"><?= htmlspecialchars(human_duration_seconds((float) $run['max_running_seconds']), ENT_QUOTES) ?></td>
                         </tr>
                     <?php endforeach; ?>
                 </tbody>
@@ -141,7 +144,7 @@ $attentionCount = $kpi['total_failed'] + $kpi['total_timeout'] + $kpi['total_ove
 <?php endif; ?>
 
 <!-- ═══════════════════════════════════════════════════════════════════════════
-     Recent Failures (24 h)
+     Recent Failures — grouped by error pattern
      ══════════════════════════════════════════════════════════════════════════ -->
 <?php if ($failedRuns !== []): ?>
 <section class="mt-8">
@@ -152,8 +155,9 @@ $attentionCount = $kpi['total_failed'] + $kpi['total_timeout'] + $kpi['total_ove
                 <thead>
                     <tr>
                         <th class="text-left">Job</th>
-                        <th class="text-left">Started</th>
-                        <th class="text-right">Duration</th>
+                        <th class="text-right">Occurrences</th>
+                        <th class="text-left">Last seen</th>
+                        <th class="text-left">First seen</th>
                         <th class="text-left">Error</th>
                     </tr>
                 </thead>
@@ -161,9 +165,16 @@ $attentionCount = $kpi['total_failed'] + $kpi['total_timeout'] + $kpi['total_ove
                     <?php foreach ($failedRuns as $run): ?>
                         <tr>
                             <td class="font-medium text-white"><?= htmlspecialchars($run['dataset_key'], ENT_QUOTES) ?></td>
-                            <td class="text-slate-300"><?= htmlspecialchars(supplycore_relative_datetime($run['started_at']), ENT_QUOTES) ?></td>
-                            <td class="text-right text-slate-300"><?= htmlspecialchars(human_duration_seconds((float) $run['duration_seconds']), ENT_QUOTES) ?></td>
-                            <td class="max-w-xs truncate text-rose-200" title="<?= htmlspecialchars((string) ($run['error_message'] ?? ''), ENT_QUOTES) ?>"><?= htmlspecialchars((string) ($run['error_message'] ?? 'No message'), ENT_QUOTES) ?></td>
+                            <td class="text-right">
+                                <span class="inline-flex items-center rounded-full border <?= $run['count'] > 3 ? 'border-rose-400/25 bg-rose-500/12 text-rose-100' : 'border-amber-400/25 bg-amber-500/12 text-amber-100' ?> px-2.5 py-0.5 text-xs font-semibold">
+                                    <?= $run['count'] ?>&times;
+                                </span>
+                            </td>
+                            <td class="text-slate-300"><?= htmlspecialchars(supplycore_relative_datetime($run['latest_started_at']), ENT_QUOTES) ?></td>
+                            <td class="text-slate-300"><?= htmlspecialchars(supplycore_relative_datetime($run['oldest_started_at']), ENT_QUOTES) ?></td>
+                            <td class="max-w-sm">
+                                <p class="truncate text-xs text-rose-200" title="<?= htmlspecialchars((string) ($run['error_message'] ?? ''), ENT_QUOTES) ?>"><?= htmlspecialchars((string) ($run['error_message'] ?? 'No message'), ENT_QUOTES) ?></p>
+                            </td>
                         </tr>
                     <?php endforeach; ?>
                 </tbody>
@@ -176,7 +187,8 @@ $attentionCount = $kpi['total_failed'] + $kpi['total_timeout'] + $kpi['total_ove
 <!-- ═══════════════════════════════════════════════════════════════════════════
      Job Status Table
      ══════════════════════════════════════════════════════════════════════════ -->
-<section class="mt-8">
+<!-- ui-section:log-viewer-jobs:start -->
+<section class="mt-8" data-ui-section="log-viewer-jobs">
     <div class="mb-4 flex flex-wrap items-center justify-between gap-3">
         <h2 class="section-title">All Jobs</h2>
         <div class="flex flex-wrap gap-2">
@@ -264,44 +276,45 @@ $attentionCount = $kpi['total_failed'] + $kpi['total_timeout'] + $kpi['total_ove
         </div>
     </div>
 </section>
+<!-- ui-section:log-viewer-jobs:end -->
 
 <!-- ═══════════════════════════════════════════════════════════════════════════
-     Log Files on Disk
+     Log Files on Disk — collapsible, cleaner
      ══════════════════════════════════════════════════════════════════════════ -->
 <?php if ($logFiles !== []): ?>
 <section class="mt-8">
     <h2 class="section-title mb-4">Log Files</h2>
-    <div class="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+    <div class="space-y-2">
         <?php foreach ($logFiles as $lf): ?>
-            <article class="surface-secondary rounded-2xl p-4">
-                <div class="flex items-start justify-between gap-2">
-                    <div>
-                        <p class="font-medium text-white"><?= htmlspecialchars($lf['filename'], ENT_QUOTES) ?></p>
-                        <p class="mt-1 text-xs text-slate-400"><?= htmlspecialchars($lf['size_human'], ENT_QUOTES) ?> · modified <?= htmlspecialchars($lf['modified_relative'], ENT_QUOTES) ?></p>
+            <details class="group rounded-2xl border border-white/8 bg-white/[0.02]">
+                <summary class="flex cursor-pointer items-center justify-between gap-3 px-5 py-3 text-sm">
+                    <div class="flex items-center gap-3">
+                        <span class="font-medium text-white"><?= htmlspecialchars($lf['filename'], ENT_QUOTES) ?></span>
+                        <span class="text-xs text-slate-400"><?= htmlspecialchars($lf['size_human'], ENT_QUOTES) ?></span>
                     </div>
-                    <span class="badge border-white/10 bg-white/5 text-slate-300"><?= htmlspecialchars($lf['size_human'], ENT_QUOTES) ?></span>
-                </div>
+                    <span class="text-xs text-slate-500">modified <?= htmlspecialchars($lf['modified_relative'], ENT_QUOTES) ?></span>
+                </summary>
                 <?php if ($lf['tail_lines'] !== []): ?>
-                    <div class="mt-3 rounded-lg border border-white/8 bg-black/30 p-3">
-                        <p class="mb-2 text-[0.65rem] font-semibold uppercase tracking-[0.2em] text-slate-500">Last <?= count($lf['tail_lines']) ?> lines</p>
-                        <pre class="max-h-32 overflow-auto text-[0.7rem] leading-relaxed text-slate-300"><?php
+                    <div class="border-t border-white/8 px-5 py-3">
+                        <pre class="max-h-48 overflow-auto rounded-lg bg-black/30 p-3 text-[0.7rem] leading-relaxed text-slate-300"><?php
                             foreach ($lf['tail_lines'] as $line) {
                                 echo htmlspecialchars($line, ENT_QUOTES) . "\n";
                             }
                         ?></pre>
                     </div>
                 <?php endif; ?>
-            </article>
+            </details>
         <?php endforeach; ?>
     </div>
 </section>
 <?php endif; ?>
 
 <!-- ═══════════════════════════════════════════════════════════════════════════
-     Recent Runs Timeline
+     Recent Runs — deduplicated, one row per job with run count
      ══════════════════════════════════════════════════════════════════════════ -->
-<section class="mt-8">
-    <h2 class="section-title mb-4">Recent Runs <span class="text-sm font-normal text-slate-400">(last 200)</span></h2>
+<!-- ui-section:log-viewer-runs:start -->
+<section class="mt-8" data-ui-section="log-viewer-runs">
+    <h2 class="section-title mb-4">Recent Runs</h2>
     <div class="rounded-2xl border border-white/8 bg-white/[0.02] p-1">
         <div class="table-shell overflow-x-auto">
             <table class="table-ui w-full">
@@ -309,9 +322,10 @@ $attentionCount = $kpi['total_failed'] + $kpi['total_timeout'] + $kpi['total_ove
                     <tr>
                         <th class="text-left">Job</th>
                         <th class="text-left">Status</th>
-                        <th class="text-left">Started</th>
+                        <th class="text-left">Last run</th>
                         <th class="text-right">Duration</th>
                         <th class="text-right">Rows</th>
+                        <th class="text-right">Recent OK</th>
                         <th class="text-left">Error</th>
                     </tr>
                 </thead>
@@ -329,6 +343,7 @@ $attentionCount = $kpi['total_failed'] + $kpi['total_timeout'] + $kpi['total_ove
                             'running' => 'border-sky-400/20 bg-sky-500/10 text-sky-100',
                             default => 'border-slate-400/20 bg-slate-500/10 text-slate-200',
                         };
+                        $recentSuccessCount = (int) ($run['recent_success_count'] ?? 0);
                     ?>
                         <tr class="<?= $runTone ?>">
                             <td class="font-medium text-white"><?= htmlspecialchars($run['dataset_key'], ENT_QUOTES) ?></td>
@@ -336,6 +351,13 @@ $attentionCount = $kpi['total_failed'] + $kpi['total_timeout'] + $kpi['total_ove
                             <td class="text-slate-300"><?= htmlspecialchars(supplycore_relative_datetime($run['started_at']), ENT_QUOTES) ?></td>
                             <td class="text-right text-slate-300"><?= htmlspecialchars(human_duration_seconds((float) ($run['duration_seconds'] ?? 0)), ENT_QUOTES) ?></td>
                             <td class="text-right text-slate-300"><?= (int) $run['written_rows'] ?> / <?= (int) $run['source_rows'] ?></td>
+                            <td class="text-right">
+                                <?php if ($recentSuccessCount > 1): ?>
+                                    <span class="text-xs text-emerald-300"><?= $recentSuccessCount ?> runs</span>
+                                <?php else: ?>
+                                    <span class="text-xs text-slate-500">-</span>
+                                <?php endif; ?>
+                            </td>
                             <td class="max-w-xs truncate text-xs text-rose-200" title="<?= htmlspecialchars((string) ($run['error_message'] ?? ''), ENT_QUOTES) ?>"><?= htmlspecialchars((string) ($run['error_message'] ?? ''), ENT_QUOTES) ?></td>
                         </tr>
                     <?php endforeach; ?>
@@ -344,5 +366,6 @@ $attentionCount = $kpi['total_failed'] + $kpi['total_timeout'] + $kpi['total_ove
         </div>
     </div>
 </section>
+<!-- ui-section:log-viewer-runs:end -->
 
 <?php include __DIR__ . '/../../src/views/partials/footer.php'; ?>

@@ -229,6 +229,24 @@ def _finalize_job(db: SupplyCoreDb, job_key: str, result: dict[str, Any], logger
         except Exception as exc:
             logger.warning("ui_refresh publish failed", payload={"event": "worker_pool.finalize.ui_refresh_error", "job_key": job_key, "error": str(exc)})
 
+    # Always bump the log_viewer_version so the log viewer page auto-refreshes
+    # via SSE whenever any job finishes (success or failure).
+    try:
+        event_id = db.insert_ui_refresh_event(
+            job_key=job_key,
+            job_status=status,
+            domains_json=json_dumps_safe(["scheduler"]),
+            ui_sections_json=json_dumps_safe(["log-viewer-kpi", "log-viewer-jobs", "log-viewer-runs"]),
+        )
+        db.bump_ui_refresh_section_versions(
+            version_keys=["log_viewer_version"],
+            job_key=job_key,
+            job_status=status,
+            event_id=event_id,
+        )
+    except Exception as exc:
+        logger.warning("log_viewer ui_refresh publish failed", payload={"event": "worker_pool.finalize.log_viewer_refresh_error", "job_key": job_key, "error": str(exc)})
+
 
 @dataclass(slots=True)
 class WorkerPoolContext:
