@@ -1,6 +1,7 @@
 .env
 .DS_Store
 /vendor/
+/node_modules/
 /.idea/
 /.vscode/
 __pycache__/
