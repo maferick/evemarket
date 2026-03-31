@@ -30955,6 +30955,317 @@ function supplycore_threat_corridor_graph_svg(int $corridorId, array $corridorSy
 }
 
 /**
+ * Generate a battle-theater map SVG showing all combat systems and their stargate neighbors.
+ * Single-system theaters use a radial layout (delegates to supplycore_system_area_svg).
+ * Multi-system theaters use a corridor-style horizontal layout with all battle systems
+ * highlighted in amber and adjacent systems shown around them.
+ * Returns the public URL of the cached SVG, or null on failure.
+ */
+function supplycore_theater_map_svg(string $theaterId, array $systemIds, int $hops = 1): ?string
+{
+    $systemIds = array_values(array_unique(array_map('intval', $systemIds)));
+    $systemIds = array_values(array_filter($systemIds, static fn(int $sid): bool => $sid > 0));
+    if ($systemIds === [] || $theaterId === '') {
+        return null;
+    }
+    $hops = max(1, min(2, $hops));
+
+    // Single system: reuse existing radial map (shows 2-hop neighborhood)
+    if (count($systemIds) === 1) {
+        return supplycore_system_area_svg($systemIds[0], 2);
+    }
+
+    $cacheDir = dirname(__DIR__) . '/public/threat-corridors/svg';
+    if (!is_dir($cacheDir) && !@mkdir($cacheDir, 0775, true) && !is_dir($cacheDir)) {
+        return null;
+    }
+    $cacheKey = substr(md5($theaterId . ':' . implode(',', $systemIds)), 0, 12);
+    $cacheFile = sprintf('%s/theater-%s-h%d-v1.svg', $cacheDir, $cacheKey, $hops);
+    $cacheTtl = supplycore_threat_corridor_map_cache_minutes() * 60;
+    if (is_file($cacheFile) && ((time() - (int) filemtime($cacheFile)) < $cacheTtl)) {
+        return '/threat-corridors/svg/' . basename($cacheFile);
+    }
+
+    $graph = db_threat_corridor_graph_subgraph($systemIds, $hops);
+    $nodes = (array) ($graph['nodes'] ?? []);
+    $edges = (array) ($graph['edges'] ?? []);
+    if ($nodes === []) {
+        return null;
+    }
+
+    $battleSet = array_fill_keys($systemIds, true);
+
+    $nodeMap = [];
+    foreach ($nodes as $node) {
+        $sid = (int) ($node['system_id'] ?? 0);
+        if ($sid <= 0) {
+            continue;
+        }
+        $nodeMap[$sid] = [
+            'system_id'   => $sid,
+            'name'        => (string) ($node['system_name'] ?? (string) $sid),
+            'security'    => (float) ($node['security'] ?? 0.0),
+            'is_battle'   => isset($battleSet[$sid]),
+        ];
+    }
+    if ($nodeMap === []) {
+        return null;
+    }
+
+    $nodeIds = array_keys($nodeMap);
+    $adjacency = [];
+    foreach ($nodeIds as $sid) {
+        $adjacency[$sid] = [];
+    }
+    foreach ($edges as $edge) {
+        $a = (int) ($edge[0] ?? 0);
+        $b = (int) ($edge[1] ?? 0);
+        if ($a <= 0 || $b <= 0 || $a === $b || !isset($nodeMap[$a], $nodeMap[$b])) {
+            continue;
+        }
+        $adjacency[$a][] = $b;
+        $adjacency[$b][] = $a;
+    }
+
+    // Battle-system edges: any edge where both endpoints are battle systems
+    $battleEdges = [];
+    foreach ($edges as $edge) {
+        $a = (int) ($edge[0] ?? 0);
+        $b = (int) ($edge[1] ?? 0);
+        if ($a <= 0 || $b <= 0 || $a === $b) {
+            continue;
+        }
+        if (isset($battleSet[$a], $battleSet[$b])) {
+            $battleEdges[min($a, $b) . ':' . max($a, $b)] = true;
+        }
+    }
+
+    // Layout: battle systems spread horizontally
+    $battleNodeIds = array_values(array_filter($nodeIds, static fn(int $sid): bool => isset($battleSet[$sid])));
+    sort($battleNodeIds);
+    $battleCount = count($battleNodeIds);
+    $positions = [];
+    foreach ($battleNodeIds as $idx => $sid) {
+        $x = $battleCount > 1 ? (0.10 + ((0.80 * $idx) / ($battleCount - 1))) : 0.5;
+        $positions[$sid] = ['x' => $x, 'y' => 0.5];
+    }
+
+    // BFS from all battle systems to assign surrounding nodes to nearest anchor
+    $distance    = [];
+    $nearestBattle = [];
+    $queue = [];
+    foreach ($battleNodeIds as $sid) {
+        $distance[$sid]     = 0;
+        $nearestBattle[$sid] = $sid;
+        $queue[] = $sid;
+    }
+    while ($queue !== []) {
+        $cur = array_shift($queue);
+        foreach ($adjacency[$cur] as $nb) {
+            if (!isset($distance[$nb])) {
+                $distance[$nb]      = $distance[$cur] + 1;
+                $nearestBattle[$nb] = (int) ($nearestBattle[$cur] ?? $cur);
+                $queue[] = $nb;
+            }
+        }
+    }
+
+    // Blocked angles per battle node (directions toward adjacent battle systems)
+    $battleNeighborAngles = [];
+    foreach ($battleNodeIds as $idx => $sid) {
+        $blocked = [];
+        if ($idx > 0) {
+            $prevSid  = $battleNodeIds[$idx - 1];
+            $blocked[] = atan2(
+                ((float) $positions[$prevSid]['y']) - ((float) $positions[$sid]['y']),
+                ((float) $positions[$prevSid]['x']) - ((float) $positions[$sid]['x'])
+            );
+        }
+        if ($idx < ($battleCount - 1)) {
+            $nextSid  = $battleNodeIds[$idx + 1];
+            $blocked[] = atan2(
+                ((float) $positions[$nextSid]['y']) - ((float) $positions[$sid]['y']),
+                ((float) $positions[$nextSid]['x']) - ((float) $positions[$sid]['x'])
+            );
+        }
+        $battleNeighborAngles[$sid] = $blocked;
+    }
+
+    // Place surrounding nodes avoiding corridor directions
+    $surroundingByAnchor = [];
+    foreach ($nodeIds as $sid) {
+        if (isset($positions[$sid])) {
+            continue;
+        }
+        $anchorId = (int) ($nearestBattle[$sid] ?? 0);
+        if ($anchorId <= 0 || !isset($positions[$anchorId])) {
+            $anchorId = (int) ($battleNodeIds[0] ?? 0);
+        }
+        $surroundingByAnchor[$anchorId][] = ['sid' => $sid, 'hop' => max(1, (int) ($distance[$sid] ?? 1))];
+    }
+
+    $exclusionZone = M_PI * 0.28;
+    foreach ($surroundingByAnchor as $anchorId => $anchorNodes) {
+        $blockedAngles = $battleNeighborAngles[$anchorId] ?? [];
+        usort($anchorNodes, static fn(array $a, array $b): int => $a['hop'] <=> $b['hop'] ?: $a['sid'] <=> $b['sid']);
+        $byHop = [];
+        foreach ($anchorNodes as $ni) {
+            $byHop[$ni['hop']][] = $ni['sid'];
+        }
+        foreach ($byHop as $hop => $hopSids) {
+            $n = count($hopSids);
+            $radius = 0.11 + ((float) $hop * 0.08);
+            $steps = 360;
+            $candidates = [];
+            for ($step = 0; $step < $steps; $step++) {
+                $angle = (2.0 * M_PI / $steps) * $step - M_PI / 2.0;
+                $inBlocked = false;
+                foreach ($blockedAngles as $ba) {
+                    $diff = fmod(abs($angle - $ba), 2.0 * M_PI);
+                    if ($diff > M_PI) {
+                        $diff = 2.0 * M_PI - $diff;
+                    }
+                    if ($diff < $exclusionZone) {
+                        $inBlocked = true;
+                        break;
+                    }
+                }
+                if (!$inBlocked) {
+                    $candidates[] = $angle;
+                }
+            }
+            if ($candidates === []) {
+                for ($step = 0; $step < $steps; $step++) {
+                    $candidates[] = (2.0 * M_PI / $steps) * $step - M_PI / 2.0;
+                }
+            }
+            $nc = count($candidates);
+            foreach ($hopSids as $i => $sid) {
+                $candidateIdx = min((int) round($i * ($nc / $n)), $nc - 1);
+                $angle = $candidates[$candidateIdx];
+                $positions[$sid] = [
+                    'x' => max(0.03, min(0.97, ((float) $positions[$anchorId]['x']) + cos($angle) * $radius)),
+                    'y' => max(0.08, min(0.92, ((float) $positions[$anchorId]['y']) + sin($angle) * $radius * 0.80)),
+                ];
+            }
+        }
+    }
+
+    $width  = 900;
+    $height = 340;
+    $pad    = 24;
+    $sx = static fn(float $x): float => $pad + ($x * ($width  - ($pad * 2)));
+    $sy = static fn(float $y): float => $pad + ($y * ($height - ($pad * 2)));
+    $securityColor = static function(float $sec): string {
+        if ($sec >= 0.5) return '#10b981';
+        if ($sec > 0.0)  return '#f59e0b';
+        return '#ef4444';
+    };
+
+    $svg = [];
+    $svg[] = '<svg xmlns="http://www.w3.org/2000/svg" width="' . $width . '" height="' . $height . '" viewBox="0 0 ' . $width . ' ' . $height . '">';
+    $svg[] = '<defs>'
+        . '<filter id="battle-glow" x="-40%" y="-40%" width="180%" height="180%">'
+        . '<feGaussianBlur stdDeviation="3.5" result="blur"/>'
+        . '<feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>'
+        . '</filter>'
+        . '<style><![CDATA['
+        . '.lbl-b{font:700 11px Inter,Segoe UI,sans-serif;fill:#fef3c7}'
+        . '.lbl-s{font:500 10px Inter,Segoe UI,sans-serif;fill:#64748b;opacity:.85}'
+        . ']]></style>'
+        . '</defs>';
+    $svg[] = '<rect width="' . $width . '" height="' . $height . '" fill="#04080f"/>';
+
+    // Pass 1: non-battle edges
+    $drawnEdges = [];
+    foreach ($edges as $edge) {
+        $a = (int) ($edge[0] ?? 0);
+        $b = (int) ($edge[1] ?? 0);
+        if (!isset($positions[$a], $positions[$b])) {
+            continue;
+        }
+        $key = min($a, $b) . ':' . max($a, $b);
+        if (isset($drawnEdges[$key]) || isset($battleEdges[$key])) {
+            continue;
+        }
+        $drawnEdges[$key] = true;
+        $x1 = number_format($sx((float) $positions[$a]['x']), 2, '.', '');
+        $y1 = number_format($sy((float) $positions[$a]['y']), 2, '.', '');
+        $x2 = number_format($sx((float) $positions[$b]['x']), 2, '.', '');
+        $y2 = number_format($sy((float) $positions[$b]['y']), 2, '.', '');
+        $svg[] = '<line x1="' . $x1 . '" y1="' . $y1 . '" x2="' . $x2 . '" y2="' . $y2 . '" stroke="#1e3a5f" stroke-opacity="0.55" stroke-width="1.1"/>';
+    }
+
+    // Pass 2: battle-system edges (amber glow)
+    foreach ($battleEdges as $key => $_) {
+        [$a, $b] = array_map('intval', explode(':', $key));
+        if (!isset($positions[$a], $positions[$b])) {
+            continue;
+        }
+        $x1 = number_format($sx((float) $positions[$a]['x']), 2, '.', '');
+        $y1 = number_format($sy((float) $positions[$a]['y']), 2, '.', '');
+        $x2 = number_format($sx((float) $positions[$b]['x']), 2, '.', '');
+        $y2 = number_format($sy((float) $positions[$b]['y']), 2, '.', '');
+        $svg[] = '<line x1="' . $x1 . '" y1="' . $y1 . '" x2="' . $x2 . '" y2="' . $y2 . '" stroke="#92400e" stroke-opacity="0.45" stroke-width="9" stroke-linecap="round"/>';
+        $svg[] = '<line x1="' . $x1 . '" y1="' . $y1 . '" x2="' . $x2 . '" y2="' . $y2 . '" stroke="#fbbf24" stroke-opacity="0.88" stroke-width="2.6" stroke-linecap="round" filter="url(#battle-glow)"/>';
+    }
+
+    // Nodes
+    foreach ($nodeMap as $sid => $node) {
+        if (!isset($positions[$sid])) {
+            continue;
+        }
+        $cx = number_format($sx((float) $positions[$sid]['x']), 2, '.', '');
+        $cy = number_format($sy((float) $positions[$sid]['y']), 2, '.', '');
+        $outer = $securityColor((float) $node['security']);
+        $safeName = htmlspecialchars((string) $node['name'], ENT_QUOTES);
+        $secFmt   = number_format((float) $node['security'], 1);
+        $title    = $safeName . ' | sec=' . $secFmt;
+        if ($node['is_battle']) {
+            $nx = number_format($sx((float) $positions[$sid]['x']) + 14, 2, '.', '');
+            $ny1 = number_format($sy((float) $positions[$sid]['y']) - 3, 2, '.', '');
+            $ny2 = number_format($sy((float) $positions[$sid]['y']) + 11, 2, '.', '');
+            $svg[] = '<g filter="url(#battle-glow)">'
+                . '<circle cx="' . $cx . '" cy="' . $cy . '" r="11" fill="none" stroke="#fbbf24" stroke-width="2.2" stroke-opacity="0.9"/>'
+                . '<circle cx="' . $cx . '" cy="' . $cy . '" r="6" fill="' . $outer . '" stroke="#04080f" stroke-width="1.5">'
+                . '<title>' . htmlspecialchars($title, ENT_QUOTES) . '</title>'
+                . '</circle>'
+                . '</g>'
+                . '<text class="lbl-b" x="' . $nx . '" y="' . $ny1 . '">' . $safeName . '</text>'
+                . '<text style="font:500 9px Inter,Segoe UI,sans-serif;fill:#92400e" x="' . $nx . '" y="' . $ny2 . '">' . $secFmt . '</text>';
+        } else {
+            $nx = number_format($sx((float) $positions[$sid]['x']) + 7, 2, '.', '');
+            $ny = number_format($sy((float) $positions[$sid]['y']) + 4, 2, '.', '');
+            $svg[] = '<g>'
+                . '<circle cx="' . $cx . '" cy="' . $cy . '" r="5" fill="none" stroke="' . $outer . '" stroke-width="1.5" stroke-opacity="0.7">'
+                . '<title>' . htmlspecialchars($title, ENT_QUOTES) . '</title>'
+                . '</circle>'
+                . '<circle cx="' . $cx . '" cy="' . $cy . '" r="2.5" fill="' . $outer . '" fill-opacity="0.5" stroke="#04080f" stroke-width="0.8"/>'
+                . '<text class="lbl-s" x="' . $nx . '" y="' . $ny . '">' . $safeName . '</text>'
+                . '</g>';
+        }
+    }
+
+    // Legend
+    $lx = $width - $pad - 2;
+    $ly = $height - $pad - 4;
+    $svg[] = '<g opacity="0.75">'
+        . '<circle cx="' . ($lx - 108) . '" cy="' . ($ly - 10) . '" r="5" fill="none" stroke="#fbbf24" stroke-width="1.8"/>'
+        . '<text x="' . ($lx - 100) . '" y="' . ($ly - 6) . '" style="font:500 9px Inter,Segoe UI,sans-serif;fill:#64748b">Battle system</text>'
+        . '<circle cx="' . ($lx - 108) . '" cy="' . $ly . '" r="3.5" fill="none" stroke="#64748b" stroke-width="1.2"/>'
+        . '<text x="' . ($lx - 100) . '" y="' . ($ly + 4) . '" style="font:500 9px Inter,Segoe UI,sans-serif;fill:#64748b">Adjacent system</text>'
+        . '</g>';
+
+    $svg[] = '</svg>';
+
+    if (@file_put_contents($cacheFile, implode('', $svg)) === false) {
+        return null;
+    }
+
+    return '/threat-corridors/svg/' . basename($cacheFile);
+}
+
+/**
  * Generate a radial neighborhood SVG map centered on a single system.
  * Hop-1 neighbors form an inner ring; hop-2 neighbors an outer ring.
  * Returns the public URL of the cached SVG, or null on failure.
