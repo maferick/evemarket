@@ -221,6 +221,23 @@ try {
         python_scheduler_bridge_output(['ok' => true, 'result' => $result]);
     }
 
+    if ($action === 'finalize-job-by-key') {
+        $jobKey = trim((string) ($options['job-key'] ?? ''));
+        if ($jobKey === '') {
+            throw new InvalidArgumentException('Argument --job-key is required for finalize-job-by-key.');
+        }
+
+        $rows = db_sync_schedule_fetch_by_job_keys([$jobKey]);
+        $job = is_array($rows) && count($rows) > 0 ? $rows[0] : null;
+        if (!is_array($job)) {
+            throw new RuntimeException('No scheduler job found for job key ' . $jobKey . '.');
+        }
+
+        $input = python_scheduler_bridge_read_stdin_json();
+        $result = scheduler_finalize_python_job_result($job, $input);
+        python_scheduler_bridge_output(['ok' => true, 'result' => $result]);
+    }
+
     if ($action === 'sync-run-start') {
         $input = python_scheduler_bridge_read_stdin_json();
         $datasetKey = trim((string) ($input['dataset_key'] ?? ''));
