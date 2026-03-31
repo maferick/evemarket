@@ -14696,7 +14696,7 @@ function db_signals_recent(int $limit = 200): array
 
 function db_theater_side_composition(string $theaterId): array
 {
-    return db_select_all(
+    return db_select(
         'SELECT * FROM theater_side_composition WHERE theater_id = ? ORDER BY side ASC',
         [$theaterId]
     );
