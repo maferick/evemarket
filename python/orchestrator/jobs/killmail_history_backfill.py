@@ -84,13 +84,16 @@ def _fetch_zkb_page(entity_type: str, entity_id: int, year: int, month: int, pag
     return data
 
 
-def _fetch_esi_killmail(killmail_id: int, killmail_hash: str, esi_client: EsiClient, gateway: Any = None) -> dict[str, Any] | None:
+def _fetch_esi_killmail(killmail_id: int, killmail_hash: str, esi_client: EsiClient, gateway: Any = None, zkb_data: dict[str, Any] | None = None) -> dict[str, Any] | None:
     """Fetch a single killmail from ESI and wrap in R2Z2-compatible format.
 
     When *gateway* is provided, the request goes through the ESI compliance
     gateway for Expires-gating, conditional request handling, and distributed
     rate-limit coordination.  The gateway caches response bodies in Redis,
     so Expires-gated hits return the payload directly.
+
+    *zkb_data*, when provided, is the full zKillboard metadata dict
+    (totalValue, points, npc, etc.) to include in the payload.
     """
     path = f"/latest/killmails/{killmail_id}/{killmail_hash}/"
     if gateway is not None:
@@ -118,7 +121,7 @@ def _fetch_esi_killmail(killmail_id: int, killmail_hash: str, esi_client: EsiCli
         "killmail_id": killmail_id,
         "hash": killmail_hash,
         "esi": body,
-        "zkb": {},
+        "zkb": zkb_data if zkb_data else {},
         "sequence_id": killmail_id,
         "requested_sequence_id": killmail_id,
         "uploaded_at": int(time.time()),
@@ -132,14 +135,17 @@ def _collect_entity_kills(
     months: list[int],
     user_agent: str,
     endpoint: str = "losses",
-) -> dict[int, str]:
-    """Collect all {killmail_id: hash} pairs for an entity across months.
+) -> dict[int, dict[str, Any]]:
+    """Collect all {killmail_id: {hash, zkb}} dicts for an entity across months.
 
     Paginates through all pages for each month. ``endpoint`` can be
     ``"losses"`` (default — fetches entity deaths) or ``"kills"``
     (fetches entity kills of others).
+
+    Returns a mapping of killmail_id → {"hash": str, "zkb": dict} where
+    ``zkb`` contains the full zKillboard metadata (totalValue, points, etc.).
     """
-    collected: dict[int, str] = {}
+    collected: dict[int, dict[str, Any]] = {}
 
     for month in months:
         page = 1
@@ -155,7 +161,7 @@ def _collect_entity_kills(
                 zkb = entry.get("zkb") or {}
                 km_hash = str(zkb.get("hash", ""))
                 if km_id > 0 and km_hash:
-                    collected[km_id] = km_hash
+                    collected[km_id] = {"hash": km_hash, "zkb": zkb}
 
             logger.info("zKB fetch: got %d results, total collected=%d", len(results), len(collected))
 
@@ -284,7 +290,7 @@ def run_killmail_history_backfill(context: Any) -> dict[str, Any]:
         except Exception:
             pass
 
-    new_kills = {km_id: km_hash for km_id, km_hash in all_kills.items() if km_id not in existing_ids}
+    new_kills = {km_id: km_info for km_id, km_info in all_kills.items() if km_id not in existing_ids}
     total_skipped_existing = total_killmails_seen - len(new_kills)
     logger.info("Dedup: %d already in DB, %d new killmails to fetch from ESI", total_skipped_existing, len(new_kills))
 
@@ -320,8 +326,10 @@ def run_killmail_history_backfill(context: Any) -> dict[str, Any]:
         batch_pairs = kill_pairs[batch_start:batch_start + batch_size]
         payloads = []
 
-        for km_id, km_hash in batch_pairs:
-            payload = _fetch_esi_killmail(km_id, km_hash, esi_client, gateway=_bf_gateway)
+        for km_id, km_info in batch_pairs:
+            km_hash = km_info["hash"]
+            zkb_data = km_info.get("zkb") or {}
+            payload = _fetch_esi_killmail(km_id, km_hash, esi_client, gateway=_bf_gateway, zkb_data=zkb_data)
             if payload is not None:
                 payloads.append(payload)
                 total_esi_fetched += 1

@@ -134,6 +134,25 @@ try {
         python_scheduler_bridge_output(['ok' => true, 'result' => $result]);
     }
 
+    if ($action === 'repair-killmail-zkb') {
+        $input = python_scheduler_bridge_read_stdin_json();
+        $updates = (array) ($input['updates'] ?? []);
+        $result = python_bridge_repair_killmail_zkb($updates);
+        python_scheduler_bridge_output(['ok' => true, 'result' => $result]);
+    }
+
+    if ($action === 'killmails-missing-zkb') {
+        $input = python_scheduler_bridge_read_stdin_json();
+        $limit = max(1, min(1000, (int) ($input['limit'] ?? 500)));
+        $offset = max(0, (int) ($input['offset'] ?? 0));
+        $rows = db_select_all(
+            'SELECT killmail_id, killmail_hash FROM killmail_events WHERE zkb_total_value IS NULL ORDER BY killmail_id ASC LIMIT ? OFFSET ?',
+            [$limit, $offset]
+        );
+        $total = (int) db_select_value('SELECT COUNT(*) FROM killmail_events WHERE zkb_total_value IS NULL');
+        python_scheduler_bridge_output(['ok' => true, 'rows' => $rows, 'total' => $total]);
+    }
+
     if ($action === 'worker-runtime-config') {
         $runtime = orchestrator_runtime_config_export();
         python_scheduler_bridge_output([

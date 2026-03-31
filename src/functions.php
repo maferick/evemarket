@@ -15578,6 +15578,68 @@ function python_bridge_process_killmail_batch(array $payloads, bool $skipEntityF
     ];
 }
 
+function python_bridge_repair_killmail_zkb(array $updates): array
+{
+    $updated = 0;
+    $failed = 0;
+
+    foreach ($updates as $entry) {
+        $killmailId = (int) ($entry['killmail_id'] ?? 0);
+        $zkb = is_array($entry['zkb'] ?? null) ? $entry['zkb'] : [];
+
+        if ($killmailId <= 0 || $zkb === []) {
+            $failed++;
+            continue;
+        }
+
+        $totalValue = isset($zkb['totalValue']) && is_numeric($zkb['totalValue']) ? (float) $zkb['totalValue'] : null;
+        $fittedValue = isset($zkb['fittedValue']) && is_numeric($zkb['fittedValue']) ? (float) $zkb['fittedValue'] : null;
+        $droppedValue = isset($zkb['droppedValue']) && is_numeric($zkb['droppedValue']) ? (float) $zkb['droppedValue'] : null;
+        $destroyedValue = isset($zkb['destroyedValue']) && is_numeric($zkb['destroyedValue']) ? (float) $zkb['destroyedValue'] : null;
+        $points = isset($zkb['points']) && is_numeric($zkb['points']) ? (int) $zkb['points'] : null;
+        $npc = isset($zkb['npc']) ? (!empty($zkb['npc']) ? 1 : 0) : null;
+        $solo = isset($zkb['solo']) ? (!empty($zkb['solo']) ? 1 : 0) : null;
+        $awox = isset($zkb['awox']) ? (!empty($zkb['awox']) ? 1 : 0) : null;
+
+        if ($totalValue === null) {
+            $failed++;
+            continue;
+        }
+
+        try {
+            db_execute(
+                'UPDATE killmail_events SET
+                    zkb_total_value = ?,
+                    zkb_fitted_value = COALESCE(?, zkb_fitted_value),
+                    zkb_dropped_value = COALESCE(?, zkb_dropped_value),
+                    zkb_destroyed_value = COALESCE(?, zkb_destroyed_value),
+                    zkb_points = COALESCE(?, zkb_points),
+                    zkb_npc = COALESCE(?, zkb_npc),
+                    zkb_solo = COALESCE(?, zkb_solo),
+                    zkb_awox = COALESCE(?, zkb_awox)
+                 WHERE killmail_id = ? AND zkb_total_value IS NULL',
+                [$totalValue, $fittedValue, $droppedValue, $destroyedValue, $points, $npc, $solo, $awox, $killmailId]
+            );
+
+            // Also update the stored zkb_json in killmail_event_payloads
+            $zkbJson = json_encode($zkb, JSON_UNESCAPED_SLASHES);
+            db_execute(
+                'UPDATE killmail_event_payloads p
+                 INNER JOIN killmail_events e ON e.sequence_id = p.sequence_id
+                 SET p.zkb_json = ?
+                 WHERE e.killmail_id = ? AND (p.zkb_json IS NULL OR p.zkb_json = \'{}\' OR p.zkb_json = \'\')',
+                [$zkbJson, $killmailId]
+            );
+
+            $updated++;
+        } catch (Throwable $e) {
+            $failed++;
+        }
+    }
+
+    return ['updated' => $updated, 'failed' => $failed];
+}
+
 function python_bridge_run_job_handler(string $jobKey, string $reason = 'python-fallback'): array
 {
     $definitions = scheduler_job_definitions();
