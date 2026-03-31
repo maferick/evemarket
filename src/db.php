@@ -16200,7 +16200,7 @@ function db_threat_corridor_graph_subgraph(array $corridorSystemIds, int $surrou
         WITH collect(DISTINCT n.system_id) AS node_ids
         UNWIND node_ids AS a_id
         MATCH (a:System {system_id: a_id})-[:CONNECTS_TO]-(b:System)
-        WHERE b.system_id IN node_ids AND a.system_id < b.system_id
+        WHERE b.system_id IN node_ids
         RETURN node_ids,
                collect(DISTINCT [a.system_id, b.system_id]) AS edge_pairs
         ',
@@ -16216,8 +16216,9 @@ function db_threat_corridor_graph_subgraph(array $corridorSystemIds, int $surrou
             if ($a <= 0 || $b <= 0 || $a === $b) {
                 continue;
             }
-            $key = $a < $b ? ($a . ':' . $b) : ($b . ':' . $a);
-            $edgePairs[$key] = [$a, $b];
+            $left = min($a, $b);
+            $right = max($a, $b);
+            $edgePairs[$left . ':' . $right] = [$left, $right];
         }
     }
 
@@ -16257,8 +16258,7 @@ function db_threat_corridor_graph_subgraph(array $corridorSystemIds, int $surrou
                 "SELECT system_id, dest_system_id
                  FROM ref_stargates
                  WHERE system_id IN ({$nodePlaceholders})
-                   AND dest_system_id IN ({$nodePlaceholders})
-                   AND system_id < dest_system_id",
+                   AND dest_system_id IN ({$nodePlaceholders})",
                 array_merge($nodeIds, $nodeIds)
             );
             foreach ($rows as $r) {
@@ -16267,7 +16267,9 @@ function db_threat_corridor_graph_subgraph(array $corridorSystemIds, int $surrou
                 if ($a <= 0 || $b <= 0 || $a === $b) {
                     continue;
                 }
-                $edgePairs[$a . ':' . $b] = [$a, $b];
+                $left = min($a, $b);
+                $right = max($a, $b);
+                $edgePairs[$left . ':' . $right] = [$left, $right];
             }
         }
     }
