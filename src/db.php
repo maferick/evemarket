@@ -1046,6 +1046,7 @@ function db_killmail_overview_schema_ensure(): void
     db_ensure_table_index('killmail_events', 'idx_killmail_events_battle', 'INDEX idx_killmail_events_battle (battle_id, effective_killmail_at)');
     db_killmail_identity_dedupe_enforce();
     db_ensure_table_index('killmail_events', 'uniq_killmail_identity', 'UNIQUE KEY uniq_killmail_identity (killmail_id, killmail_hash)');
+    db_ensure_table_index('killmail_attackers', 'idx_attacker_final_blow', 'INDEX idx_attacker_final_blow (sequence_id, final_blow, attacker_index)');
 
     $legacyEventJsonSql = db_table_has_column('killmail_events', 'zkb_json') ? "NULLIF(e.zkb_json, '')" : 'NULL';
     $zkbJsonSql = "COALESCE(NULLIF(p.zkb_json, ''), {$legacyEventJsonSql}, '{}')";

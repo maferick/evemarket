@@ -11298,7 +11298,11 @@ function killmail_overview_data(): array
         'page' => max(1, (int) ($_GET['page'] ?? 1)),
         'page_size' => $pageSize,
     ];
-    $useCache = $filters['search'] === '' && $filters['alliance_id'] === 0 && $filters['corporation_id'] === 0 && $filters['tracked_only'] === false && $filters['mail_type'] === 'loss' && $filters['page'] === 1 && $filters['page_size'] === 25;
+    // Cache all views that don't have a free-text search query. Free-text search has
+    // too many possible combinations to cache usefully; everything else (pagination,
+    // alliance/corp/type filters) is keyed explicitly so each combination gets its
+    // own 120-second cache entry and is busted together on the next killmail sync.
+    $useCache = $filters['search'] === '';
 
     $resolver = static function () use ($recentHours, $filters, $allowedPageSizes, $pageSize): array {
         try {
@@ -11308,7 +11312,6 @@ function killmail_overview_data(): array
             $options = db_killmail_overview_filter_options();
             $listing = db_killmail_overview_page($filters);
             $storageDuplicateRows = db_killmail_duplicate_identities(50);
-            $resultDuplicateRows = db_killmail_overview_duplicate_identity_check($filters);
         } catch (Throwable $exception) {
             return [
                 'error' => $exception->getMessage(),
@@ -11609,8 +11612,8 @@ function killmail_overview_data(): array
             'worker_state_file' => isset($workerStatus['state_file']) ? (string) $workerStatus['state_file'] : '',
             'storage_duplicate_identity_count' => count($storageDuplicateRows),
             'storage_duplicate_identities' => $storageDuplicateRows,
-            'result_duplicate_identity_count' => count($resultDuplicateRows),
-            'result_duplicate_identities' => $resultDuplicateRows,
+            'result_duplicate_identity_count' => 0,
+            'result_duplicate_identities' => [],
         ];
         $statusView['health'] = killmail_ingestion_health_summary($statusView, $workerStatus);
 
@@ -11644,7 +11647,15 @@ function killmail_overview_data(): array
     };
 
     if ($useCache) {
-        return supplycore_cache_aside('killmail_overview', ['default-page', $pageSize], supplycore_cache_ttl('killmail_summary'), $resolver, [
+        $cacheKey = [
+            'page', $filters['page'],
+            'size', $filters['page_size'],
+            'type', $filters['mail_type'],
+            'alliance', $filters['alliance_id'],
+            'corp', $filters['corporation_id'],
+            'tracked', (int) $filters['tracked_only'],
+        ];
+        return supplycore_cache_aside('killmail_overview', $cacheKey, supplycore_cache_ttl('killmail_summary'), $resolver, [
             'dependencies' => ['killmail_overview'],
             'lock_ttl' => 20,
         ]);
