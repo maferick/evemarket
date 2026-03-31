@@ -88,8 +88,48 @@ def _fetch_daily_dump(day: date, user_agent: str, max_retries: int = 3) -> dict[
     return {}
 
 
-def _fetch_esi_killmail(killmail_id: int, killmail_hash: str, esi_client: EsiClient, gateway: Any = None) -> dict[str, Any] | None:
-    """Fetch a single killmail from ESI and wrap in R2Z2-compatible format."""
+_ZKB_API_BASE = "https://zkillboard.com/api"
+
+
+def _fetch_zkb_metadata(killmail_id: int, user_agent: str) -> dict[str, Any]:
+    """Fetch zkb metadata (totalValue, points, etc.) for a single killmail from zKillboard API.
+
+    Returns the zkb dict, or empty dict on failure.
+    """
+    url = f"{_ZKB_API_BASE}/killID/{killmail_id}/"
+    status, body = _http_get(url, user_agent)
+    if status != 200 or not body.strip():
+        return {}
+    try:
+        data = json.loads(body)
+    except json.JSONDecodeError:
+        return {}
+    if isinstance(data, list) and len(data) > 0 and isinstance(data[0], dict):
+        return data[0].get("zkb") or {}
+    return {}
+
+
+def _fetch_zkb_metadata_batch(killmail_ids: list[int], user_agent: str) -> dict[int, dict[str, Any]]:
+    """Fetch zkb metadata for a batch of killmail IDs from zKillboard API.
+
+    Returns {killmail_id: zkb_dict} for successfully fetched killmails.
+    Rate-limits requests to be polite to the zKB API (~1 req/sec).
+    """
+    result: dict[int, dict[str, Any]] = {}
+    for km_id in killmail_ids:
+        zkb = _fetch_zkb_metadata(km_id, user_agent)
+        if zkb:
+            result[km_id] = zkb
+        time.sleep(1)  # Be polite to zKB API
+    return result
+
+
+def _fetch_esi_killmail(killmail_id: int, killmail_hash: str, esi_client: EsiClient, gateway: Any = None, zkb_data: dict[str, Any] | None = None) -> dict[str, Any] | None:
+    """Fetch a single killmail from ESI and wrap in R2Z2-compatible format.
+
+    *zkb_data*, when provided, is the full zKillboard metadata dict
+    (totalValue, points, npc, etc.) to include in the payload.
+    """
     path = f"/latest/killmails/{killmail_id}/{killmail_hash}/"
     if gateway is not None:
         resp = gateway.get(path, route_template="/latest/killmails/{killmail_id}/{killmail_hash}/")
@@ -116,7 +156,7 @@ def _fetch_esi_killmail(killmail_id: int, killmail_hash: str, esi_client: EsiCli
         "killmail_id": killmail_id,
         "hash": killmail_hash,
         "esi": body,
-        "zkb": {},
+        "zkb": zkb_data if zkb_data else {},
         "sequence_id": killmail_id,
         "requested_sequence_id": killmail_id,
         "uploaded_at": int(time.time()),
@@ -235,8 +275,13 @@ def run_killmail_full_history_backfill(context: Any) -> dict[str, Any]:
             batch_pairs = kill_pairs[batch_start:batch_start + batch_size]
             payloads = []
 
+            # Pre-fetch zkb metadata for the batch from zKillboard API
+            batch_km_ids = [km_id for km_id, _ in batch_pairs]
+            zkb_batch = _fetch_zkb_metadata_batch(batch_km_ids, user_agent)
+
             for km_id, km_hash in batch_pairs:
-                payload = _fetch_esi_killmail(km_id, km_hash, esi_client, gateway=gateway)
+                zkb_data = zkb_batch.get(km_id) or {}
+                payload = _fetch_esi_killmail(km_id, km_hash, esi_client, gateway=gateway, zkb_data=zkb_data)
                 if payload is not None:
                     payloads.append(payload)
                     day_esi_fetched += 1
