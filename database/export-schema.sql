@@ -1815,7 +1815,6 @@ INSERT INTO app_settings (setting_key, setting_value) VALUES
     ('market_order_snapshots_summary_read_mode', 'legacy'),
     ('market_order_snapshots_summary_write_mode', 'legacy'),
     ('killmail_ingestion_enabled', '0'),
-    ('graph_derived_relationships_enabled', '0'),
     ('killmail_r2z2_sequence_url', 'https://r2z2.zkillboard.com/ephemeral/sequence.json'),
     ('killmail_r2z2_base_url', 'https://r2z2.zkillboard.com/ephemeral'),
     ('killmail_ingestion_poll_sleep_seconds', '10'),

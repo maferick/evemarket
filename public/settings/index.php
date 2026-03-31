@@ -403,7 +403,6 @@ $settingValues = get_settings([
     'alliance_history_pipeline_enabled',
     'hub_history_pipeline_enabled',
     'market_hub_local_history_pipeline_enabled',
-    'graph_derived_relationships_enabled',
     'alliance_current_backfill_start_date',
     'alliance_history_backfill_start_date',
     'hub_history_backfill_start_date',
@@ -2136,11 +2135,6 @@ include __DIR__ . '/../../src/views/partials/header.php';
                             <span class="text-sm">Hub local history pipeline</span>
                         </label>
                     </div>
-                    <label class="flex items-center gap-3 rounded-lg border border-border bg-black/20 p-3">
-                        <input type="hidden" name="graph_derived_relationships_enabled" value="0">
-                        <input type="checkbox" name="graph_derived_relationships_enabled" value="1" <?= ($dataSyncSettingValues['graph_derived_relationships_enabled'] ?? '0') === '1' ? 'checked' : '' ?> class="size-4 rounded border-border bg-black">
-                        <span class="text-sm">Enable graph derived relationships</span>
-                    </label>
                     <button class="btn-primary" name="automation_action" value="save-flags">Save Runtime Toggles</button>
                 </section>
 
@@ -3074,7 +3068,6 @@ include __DIR__ . '/../../src/views/partials/header.php';
                             ['key' => 'alliance_history_pipeline_enabled', 'label' => 'Alliance history/backfill pipeline'],
                             ['key' => 'hub_history_pipeline_enabled', 'label' => 'Market hub history pipeline'],
                             ['key' => 'market_hub_local_history_pipeline_enabled', 'label' => 'Hub snapshot-history refresh pipeline'],
-                            ['key' => 'graph_derived_relationships_enabled', 'label' => 'Graph derived relationships'],
                         ];
                         foreach ($pipelineFlags as $flag):
                             $flagEnabled = ($dataSyncSettingValues[$flag['key']] ?? '1') === '1';
