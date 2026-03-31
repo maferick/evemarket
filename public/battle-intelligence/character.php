@@ -319,7 +319,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
     <div class="flex flex-wrap items-center gap-4">
         <a href="/battle-intelligence" class="text-sm text-accent">&larr; Back to leaderboard</a>
         <?php if ($characterId > 0): ?>
-            <a href="/battle-intelligence/pilot-profile.php?character_id=<?= $characterId ?>" class="text-sm text-accent">Consolidated profile &rarr;</a>
+            <a href="/battle-intelligence/pilot-lookup.php?character_id=<?= $characterId ?>" class="text-sm text-accent">Pilot lookup &rarr;</a>
         <?php endif; ?>
     </div>
     <?php if (!is_array($character)): ?>
