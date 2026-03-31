@@ -70,9 +70,6 @@ if ($viewSnapshot !== null && !$pendingLock) {
         if ($allianceId > 0 && in_array($allianceId, $opponentAllianceIds, true)) {
             return 'opponent';
         }
-        if ($allianceId > 0) {
-            return 'opponent';
-        }
         return 'third_party';
     };
 
@@ -176,9 +173,6 @@ if ($viewSnapshot !== null && !$pendingLock) {
             return 'friendly';
         }
         if ($allianceId > 0 && in_array($allianceId, $opponentAllianceIds, true)) {
-            return 'opponent';
-        }
-        if ($allianceId > 0) {
             return 'opponent';
         }
         return 'third_party';
