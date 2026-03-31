@@ -1,7 +1,20 @@
+<?php
+// Compute mini-map URL (1-hop gate neighbours from neo4j/stargates)
+$_miniMapUrl = null;
+if (isset($systems, $theaterId) && $systems !== []) {
+    $_miniMapSystemIds = array_values(array_filter(
+        array_map(static fn(array $s): int => (int) ($s['system_id'] ?? 0), $systems),
+        static fn(int $id): bool => $id > 0
+    ));
+    if ($_miniMapSystemIds !== []) {
+        $_miniMapUrl = supplycore_theater_map_svg($theaterId, $_miniMapSystemIds, 1);
+    }
+}
+?>
 <section class="surface-primary">
     <a href="/theater-intelligence" class="text-sm text-accent">&#8592; Back to Theater Overview</a>
 
-    <div class="mt-3 flex items-start justify-center gap-4">
+    <div class="mt-3 flex items-start gap-4">
         <div class="flex-1 text-center">
             <div class="flex items-center justify-center gap-2">
                 <p class="text-xs uppercase tracking-[0.16em] text-muted">Battle Intelligence — Theater Detail</p>
@@ -36,6 +49,11 @@
                 <span>Hostile: <?= number_format(count($sideAlliancesByPilots['opponent'] ?? [])) ?> alliances</span>
             </div>
         </div>
+        <?php if ($_miniMapUrl !== null): ?>
+        <div class="hidden md:block flex-shrink-0 self-center" style="width:260px">
+            <img src="<?= htmlspecialchars($_miniMapUrl, ENT_QUOTES) ?>" alt="Battle location" class="w-full rounded border border-slate-700/40" style="aspect-ratio:900/340" loading="lazy">
+        </div>
+        <?php endif; ?>
     </div>
 
     <div class="mt-3 grid gap-3 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-6">

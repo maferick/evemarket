@@ -523,7 +523,6 @@ include __DIR__ . '/partials/_header.php';
 include __DIR__ . '/partials/_battle_report.php';
 include __DIR__ . '/partials/_ai_briefing.php';
 include __DIR__ . '/partials/_battles.php';
-include __DIR__ . '/partials/_location_map.php';
 include __DIR__ . '/partials/_timeline.php';
 include __DIR__ . '/partials/_alliance_summary.php';
 include __DIR__ . '/partials/_participants.php';
