@@ -2074,7 +2074,8 @@ def run_compute_graph_sync_killmail_entities(
             MERGE (km:Killmail {killmail_id: toInteger(row.killmail_id)})
               SET km.killed_at = row.killed_at,
                   km.total_value = toFloat(row.total_value),
-                  km.victim_ship_type_id = toInteger(row.victim_ship_type_id)
+                  km.victim_ship_type_id = toInteger(row.victim_ship_type_id),
+                  km.battle_id = row.battle_id
             WITH km, row
             MERGE (sys:System {system_id: toInteger(row.solar_system_id)})
             MERGE (km)-[:OCCURRED_IN]->(sys)
@@ -2107,6 +2108,157 @@ def run_compute_graph_sync_killmail_entities(
     return JobResult.success(
         job_key=job_name,
         summary=f"Projected {rows_written} killmails into Neo4j.",
+        rows_processed=rows_processed,
+        rows_written=rows_written,
+        duration_ms=duration_ms,
+    ).to_dict()
+
+
+# ── Killmail attacker/victim edge projection ─────────────────────────────────
+
+_KM_ATTACKER_EDGE_CURSOR_KEY = "graph_sync_killmail_attacker_edges_cursor"
+_KM_VICTIM_EDGE_CURSOR_KEY = "graph_sync_killmail_victim_edges_cursor"
+_KM_EDGE_BATCH = 2000
+
+
+def run_compute_graph_sync_killmail_edges(
+    db: SupplyCoreDb,
+    neo4j_raw: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Sync ATTACKED_ON and VICTIM_OF edges from killmail_attackers/killmail_events into Neo4j.
+
+    Only processes killmails that belong to a battle (battle_id IS NOT NULL).
+    Characters and Killmail nodes must already exist (written by
+    compute_graph_sync_battle_intelligence and compute_graph_sync_killmail_entities).
+    These edges are required by the alliance dossier co-presence and enemy queries.
+    """
+    started = time.perf_counter()
+    job_name = "compute_graph_sync_killmail_edges"
+
+    config = Neo4jConfig.from_runtime(neo4j_raw or {})
+    if not config.enabled:
+        return JobResult.skipped(job_key=job_name, reason="neo4j disabled").to_dict()
+
+    client = Neo4jClient(config)
+    batch_size = _coerce_batch_size((neo4j_raw or {}).get("batch_size"), fallback=_KM_EDGE_BATCH)
+    rows_processed = 0
+    rows_written = 0
+
+    # ── Attacker edges (ATTACKED_ON) ─────────────────────────────────────────
+    cursor_row = db.fetch_one(
+        "SELECT last_cursor FROM sync_state WHERE dataset_key = %s",
+        (_KM_ATTACKER_EDGE_CURSOR_KEY,),
+    )
+    last_attacker_cursor = int(cursor_row["last_cursor"]) if cursor_row and cursor_row.get("last_cursor") else 0
+    new_attacker_cursor = last_attacker_cursor
+
+    while True:
+        batch = db.fetch_all(
+            """
+            SELECT ka.character_id, ke.killmail_id
+            FROM killmail_attackers ka
+            INNER JOIN killmail_events ke ON ke.sequence_id = ka.sequence_id
+            WHERE ka.character_id IS NOT NULL AND ka.character_id > 0
+              AND ke.battle_id IS NOT NULL
+              AND ke.killmail_id > %s
+            ORDER BY ke.killmail_id ASC
+            LIMIT %s
+            """,
+            (new_attacker_cursor, batch_size),
+        )
+        if not batch:
+            break
+
+        rows_processed += len(batch)
+        neo4j_rows = [
+            {"character_id": int(r["character_id"]), "killmail_id": int(r["killmail_id"])}
+            for r in batch
+        ]
+
+        client.query(
+            """
+            UNWIND $rows AS row
+            MATCH (c:Character {character_id: toInteger(row.character_id)})
+            MATCH (km:Killmail {killmail_id: toInteger(row.killmail_id)})
+            MERGE (c)-[:ATTACKED_ON]->(km)
+            """,
+            {"rows": neo4j_rows},
+        )
+        rows_written += len(neo4j_rows)
+        new_attacker_cursor = int(batch[-1]["killmail_id"])
+
+    if new_attacker_cursor > last_attacker_cursor:
+        db.execute(
+            """
+            INSERT INTO sync_state (dataset_key, last_cursor, last_row_count, last_success_at, status)
+            VALUES (%s, %s, %s, UTC_TIMESTAMP(), 'success')
+            ON DUPLICATE KEY UPDATE last_cursor = VALUES(last_cursor),
+                                    last_row_count = VALUES(last_row_count),
+                                    last_success_at = VALUES(last_success_at),
+                                    status = 'success'
+            """,
+            (_KM_ATTACKER_EDGE_CURSOR_KEY, str(new_attacker_cursor), rows_written),
+        )
+
+    # ── Victim edges (VICTIM_OF) ──────────────────────────────────────────────
+    cursor_row = db.fetch_one(
+        "SELECT last_cursor FROM sync_state WHERE dataset_key = %s",
+        (_KM_VICTIM_EDGE_CURSOR_KEY,),
+    )
+    last_victim_cursor = int(cursor_row["last_cursor"]) if cursor_row and cursor_row.get("last_cursor") else 0
+    new_victim_cursor = last_victim_cursor
+
+    while True:
+        batch = db.fetch_all(
+            """
+            SELECT ke.victim_character_id AS character_id, ke.killmail_id
+            FROM killmail_events ke
+            WHERE ke.victim_character_id IS NOT NULL AND ke.victim_character_id > 0
+              AND ke.battle_id IS NOT NULL
+              AND ke.killmail_id > %s
+            ORDER BY ke.killmail_id ASC
+            LIMIT %s
+            """,
+            (new_victim_cursor, batch_size),
+        )
+        if not batch:
+            break
+
+        rows_processed += len(batch)
+        neo4j_rows = [
+            {"character_id": int(r["character_id"]), "killmail_id": int(r["killmail_id"])}
+            for r in batch
+        ]
+
+        client.query(
+            """
+            UNWIND $rows AS row
+            MATCH (c:Character {character_id: toInteger(row.character_id)})
+            MATCH (km:Killmail {killmail_id: toInteger(row.killmail_id)})
+            MERGE (c)-[:VICTIM_OF]->(km)
+            """,
+            {"rows": neo4j_rows},
+        )
+        rows_written += len(neo4j_rows)
+        new_victim_cursor = int(batch[-1]["killmail_id"])
+
+    if new_victim_cursor > last_victim_cursor:
+        db.execute(
+            """
+            INSERT INTO sync_state (dataset_key, last_cursor, last_row_count, last_success_at, status)
+            VALUES (%s, %s, %s, UTC_TIMESTAMP(), 'success')
+            ON DUPLICATE KEY UPDATE last_cursor = VALUES(last_cursor),
+                                    last_row_count = VALUES(last_row_count),
+                                    last_success_at = VALUES(last_success_at),
+                                    status = 'success'
+            """,
+            (_KM_VICTIM_EDGE_CURSOR_KEY, str(new_victim_cursor), rows_written),
+        )
+
+    duration_ms = int((time.perf_counter() - started) * 1000)
+    return JobResult.success(
+        job_key=job_name,
+        summary=f"Synced {rows_written} killmail edges (ATTACKED_ON + VICTIM_OF) into Neo4j.",
         rows_processed=rows_processed,
         rows_written=rows_written,
         duration_ms=duration_ms,

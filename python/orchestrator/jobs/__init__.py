@@ -12,6 +12,7 @@ from .graph_pipeline import (
     run_compute_graph_prune,
     run_compute_graph_topology_metrics,
     run_compute_graph_sync_killmail_entities,
+    run_compute_graph_sync_killmail_edges,
 )
 from .graph_universe_sync import run_graph_universe_sync
 from .battle_intelligence import (

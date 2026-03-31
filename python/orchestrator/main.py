@@ -122,6 +122,9 @@ def parse_args() -> argparse.Namespace:
     graph_killmails = subparsers.add_parser("compute-graph-sync-killmail-entities", help="Project killmail events as nodes into Neo4j")
     graph_killmails.add_argument("--app-root", default=resolve_app_root(__file__))
     graph_killmails.add_argument("--verbose", action="store_true")
+    graph_killmail_edges = subparsers.add_parser("compute-graph-sync-killmail-edges", help="Sync ATTACKED_ON and VICTIM_OF edges from battle killmails into Neo4j")
+    graph_killmail_edges.add_argument("--app-root", default=resolve_app_root(__file__))
+    graph_killmail_edges.add_argument("--verbose", action="store_true")
     compute_graph_sync = subparsers.add_parser("compute-graph-sync", help="Incrementally sync doctrine-fit-item graph into Neo4j")
     compute_graph_sync.add_argument("--app-root", default=resolve_app_root(__file__))
     compute_graph_sync.add_argument("--verbose", action="store_true")
@@ -318,6 +321,16 @@ def main() -> int:
         db = SupplyCoreDb(config.raw.get("db", {}))
         from .jobs.graph_pipeline import run_compute_graph_sync_killmail_entities
         result = run_compute_graph_sync_killmail_entities(db, neo4j_runtime(config.raw))
+        print(result)
+        return 0
+    if command == "compute-graph-sync-killmail-edges":
+        app_root = Path(args.app_root).resolve()
+        config = load_php_runtime_config(app_root)
+        configure_logging(verbose=args.verbose, log_file=config.log_file)
+        from .db import SupplyCoreDb
+        db = SupplyCoreDb(config.raw.get("db", {}))
+        from .jobs.graph_pipeline import run_compute_graph_sync_killmail_edges
+        result = run_compute_graph_sync_killmail_edges(db, neo4j_runtime(config.raw))
         print(result)
         return 0
     if command == "compute-graph-sync":

@@ -326,6 +326,7 @@ run_job "graph_universe_sync" "Graph Universe Sync"
 run_job_until_done "compute_graph_sync" "Graph Entity Sync"
 run_job_until_done "compute_graph_sync_battle_intelligence" "Graph Battle Intelligence"
 run_job "compute_graph_sync_killmail_entities" "Graph Killmail Entities"
+run_job "compute_graph_sync_killmail_edges" "Graph Killmail Edges"
 run_job_until_done "compute_graph_sync_doctrine_dependency" "Graph Doctrine Dependencies"
 
 echo ""
