@@ -17876,6 +17876,16 @@ function static_data_extract_reference_rows_from_jsonl_archive(string $archivePa
         'mapsolarsystems.jsonl' => 'systems',
         'npcstations.jsonl' => 'stations',
         'stations.jsonl' => 'stations',
+        'npcCorporations.jsonl' => 'npc_corps',
+        'npccorporations.jsonl' => 'npc_corps',
+        'staOperations.jsonl' => 'station_operations',
+        'staoperations.jsonl' => 'station_operations',
+        'stationOperations.jsonl' => 'station_operations',
+        'stationoperations.jsonl' => 'station_operations',
+        'mapPlanets.jsonl' => 'planets',
+        'mapplanets.jsonl' => 'planets',
+        'mapMoons.jsonl' => 'moons',
+        'mapmoons.jsonl' => 'moons',
         'categories.jsonl' => 'categories',
         'invcategories.jsonl' => 'categories',
         'groups.jsonl' => 'groups',
@@ -17895,6 +17905,9 @@ function static_data_extract_reference_rows_from_jsonl_archive(string $archivePa
         'constellations' => [],
         'systems' => [],
         'stations' => [],
+        'npc_corps' => [],
+        'station_operations' => [],
+        'celestials' => [],
         'categories' => [],
         'groups' => [],
         'market_groups' => [],
@@ -17967,6 +17980,103 @@ function static_data_extract_reference_rows_from_jsonl_archive(string $archivePa
                         'security' => (float) static_data_record_value($row, ['securityStatus', 'security', 'security_status'], 0),
                     ];
                 }
+                // Also extract nested planet/moon data for station orbit name construction.
+                // The JSONL format converts integer-keyed dicts to lists with a _key field.
+                if ($systemId > 0) {
+                    $planets = static_data_record_value($row, ['planets'], []);
+                    if (is_array($planets)) {
+                        foreach ($planets as $pKey => $planet) {
+                            if (!is_array($planet)) {
+                                continue;
+                            }
+                            $planetId = (int) (($planet['_key'] ?? null) ?? $pKey);
+                            if ($planetId <= 0) {
+                                continue;
+                            }
+                            $celestialIndex = (int) static_data_record_value($planet, ['celestialIndex', 'celestial_index'], 0);
+                            $records['celestials'][] = [
+                                'celestial_id' => $planetId,
+                                'celestial_type' => 1,
+                                'parent_id' => $systemId,
+                                'celestial_index' => $celestialIndex > 0 ? $celestialIndex : null,
+                                'system_id' => $systemId,
+                            ];
+                            $moons = static_data_record_value($planet, ['moons'], []);
+                            if (is_array($moons)) {
+                                foreach ($moons as $mKey => $moon) {
+                                    if (!is_array($moon)) {
+                                        continue;
+                                    }
+                                    $moonId = (int) (($moon['_key'] ?? null) ?? $mKey);
+                                    if ($moonId <= 0) {
+                                        continue;
+                                    }
+                                    $orbitIndex = (int) static_data_record_value($moon, ['orbitIndex', 'orbit_index'], 0);
+                                    $records['celestials'][] = [
+                                        'celestial_id' => $moonId,
+                                        'celestial_type' => 2,
+                                        'parent_id' => $planetId,
+                                        'celestial_index' => $orbitIndex > 0 ? $orbitIndex : null,
+                                        'system_id' => $systemId,
+                                    ];
+                                }
+                            }
+                        }
+                    }
+                }
+                continue;
+            }
+
+            if ($targetKey === 'planets') {
+                // Separate mapPlanets.jsonl file (not all SDE variants include this).
+                $planetId = (int) static_data_record_value($row, ['planetID', 'planet_id', '_key']);
+                $systemId = (int) static_data_record_value($row, ['solarSystemID', 'system_id'], 0);
+                $celestialIndex = (int) static_data_record_value($row, ['celestialIndex', 'celestial_index'], 0);
+                if ($planetId > 0 && $systemId > 0) {
+                    $records['celestials'][] = [
+                        'celestial_id' => $planetId,
+                        'celestial_type' => 1,
+                        'parent_id' => $systemId,
+                        'celestial_index' => $celestialIndex > 0 ? $celestialIndex : null,
+                        'system_id' => $systemId,
+                    ];
+                }
+                continue;
+            }
+
+            if ($targetKey === 'moons') {
+                // Separate mapMoons.jsonl file (not all SDE variants include this).
+                $moonId = (int) static_data_record_value($row, ['moonID', 'moon_id', '_key']);
+                $planetId = (int) static_data_record_value($row, ['planetID', 'planet_id'], 0);
+                $systemId = (int) static_data_record_value($row, ['solarSystemID', 'system_id'], 0);
+                $orbitIndex = (int) static_data_record_value($row, ['orbitIndex', 'orbit_index'], 0);
+                if ($moonId > 0 && $planetId > 0 && $systemId > 0) {
+                    $records['celestials'][] = [
+                        'celestial_id' => $moonId,
+                        'celestial_type' => 2,
+                        'parent_id' => $planetId,
+                        'celestial_index' => $orbitIndex > 0 ? $orbitIndex : null,
+                        'system_id' => $systemId,
+                    ];
+                }
+                continue;
+            }
+
+            if ($targetKey === 'npc_corps') {
+                $corpId = (int) static_data_record_value($row, ['corporationID', 'corporation_id', '_key']);
+                $corpName = static_data_localized_text(static_data_record_value($row, ['corporationName', 'corporation_name', 'name']));
+                if ($corpId > 0 && $corpName !== null) {
+                    $records['npc_corps'][] = ['corp_id' => $corpId, 'corp_name' => $corpName];
+                }
+                continue;
+            }
+
+            if ($targetKey === 'station_operations') {
+                $operationId = (int) static_data_record_value($row, ['operationID', 'operation_id', '_key']);
+                $operationName = static_data_localized_text(static_data_record_value($row, ['operationName', 'operation_name', 'name']));
+                if ($operationId > 0 && $operationName !== null) {
+                    $records['station_operations'][] = ['operation_id' => $operationId, 'operation_name' => $operationName];
+                }
                 continue;
             }
 
@@ -17977,6 +18087,11 @@ function static_data_extract_reference_rows_from_jsonl_archive(string $archivePa
                     if ($name === null) {
                         $name = 'Station ' . $stationId;
                     }
+                    $orbitId = (int) static_data_record_value($row, ['orbitID', 'orbit_id'], 0);
+                    $ownerId = (int) static_data_record_value($row, ['ownerID', 'owner_id'], 0);
+                    $operationId = (int) static_data_record_value($row, ['operationID', 'operation_id'], 0);
+                    $useOperationNameRaw = static_data_record_value($row, ['useOperationName', 'use_operation_name'], false);
+                    $useOperationName = ($useOperationNameRaw === true || (int) $useOperationNameRaw === 1) ? 1 : 0;
                     $records['stations'][] = [
                         'station_id' => $stationId,
                         'station_name' => $name,
@@ -17984,6 +18099,10 @@ function static_data_extract_reference_rows_from_jsonl_archive(string $archivePa
                         'constellation_id' => (int) static_data_record_value($row, ['constellationID', 'constellation_id'], 0),
                         'region_id' => (int) static_data_record_value($row, ['regionID', 'region_id'], 0),
                         'station_type_id' => ($typeId = (int) static_data_record_value($row, ['stationTypeID', 'typeID', 'type_id'], 0)) > 0 ? $typeId : null,
+                        'orbit_id' => $orbitId > 0 ? $orbitId : null,
+                        'owner_id' => $ownerId > 0 ? $ownerId : null,
+                        'operation_id' => $operationId > 0 ? $operationId : null,
+                        'use_operation_name' => $useOperationName,
                     ];
                 }
                 continue;
@@ -18132,7 +18251,171 @@ function static_data_extract_reference_rows_from_jsonl_archive(string $archivePa
         static fn (array $row): bool => (int) ($row['category_id'] ?? 0) > 0
     ));
 
+    // Deduplicate celestials: separate planet/moon files may overlap with nested data.
+    if ($records['celestials'] !== []) {
+        $uniqueCelestials = [];
+        foreach ($records['celestials'] as $cel) {
+            $id = (int) ($cel['celestial_id'] ?? 0);
+            if ($id > 0) {
+                $uniqueCelestials[$id] = $cel;
+            }
+        }
+        $records['celestials'] = array_values($uniqueCelestials);
+    }
+
     return $records;
+}
+
+function static_data_int_to_roman_numeral(int $n): string
+{
+    static $map = [
+        '',
+        'I', 'II', 'III', 'IV', 'V', 'VI', 'VII', 'VIII', 'IX', 'X',
+        'XI', 'XII', 'XIII', 'XIV', 'XV', 'XVI', 'XVII', 'XVIII', 'XIX', 'XX',
+        'XXI', 'XXII', 'XXIII', 'XXIV', 'XXV',
+    ];
+
+    if ($n >= 1 && $n <= 25) {
+        return $map[$n];
+    }
+
+    return (string) $n;
+}
+
+/**
+ * Construct real names for NPC stations that currently have placeholder names
+ * ("Station <id>" format). The new official EVE SDE does not include station names;
+ * they must be built from:
+ *   <orbitName> - <corporationName> [<operationName>]
+ * where orbitName is the name of the planet or moon the station orbits.
+ *
+ * Returns the number of station names updated.
+ */
+function static_data_build_npc_station_names(): int
+{
+    // Load all stations that have placeholder names and have enough lookup data.
+    $stations = db_select(
+        "SELECT ns.station_id, ns.station_name, ns.orbit_id, ns.owner_id, ns.operation_id,
+                ns.use_operation_name, ns.system_id, sys.system_name
+         FROM ref_npc_stations ns
+         LEFT JOIN ref_systems sys ON sys.system_id = ns.system_id
+         WHERE ns.station_name REGEXP '^Station[[:space:]#]+[0-9]+'
+            OR ns.station_name REGEXP '^Station[0-9]+'
+         ORDER BY ns.station_id ASC
+         LIMIT 10000"
+    );
+
+    if ($stations === []) {
+        return 0;
+    }
+
+    // Load NPC corporation names.
+    $corps = [];
+    try {
+        foreach (db_select('SELECT corp_id, corp_name FROM ref_npc_corporations LIMIT 20000') as $row) {
+            $corps[(int) $row['corp_id']] = (string) $row['corp_name'];
+        }
+    } catch (Throwable) {
+        // Table may not exist yet on older installs; skip corp name enrichment.
+    }
+
+    // Load station operation names.
+    $operations = [];
+    try {
+        foreach (db_select('SELECT operation_id, operation_name FROM ref_station_operations LIMIT 2000') as $row) {
+            $operations[(int) $row['operation_id']] = (string) $row['operation_name'];
+        }
+    } catch (Throwable) {
+        // Table may not exist yet; skip operation name enrichment.
+    }
+
+    // Load celestials (planets + moons) with system context for orbit name resolution.
+    // For moons (type=2) we also join the parent planet to get its celestial_index.
+    $celestials = [];
+    try {
+        $rows = db_select(
+            "SELECT c.celestial_id, c.celestial_type, c.parent_id, c.celestial_index,
+                    c.system_id, sys.system_name,
+                    p.celestial_index AS planet_celestial_index
+             FROM ref_celestials c
+             LEFT JOIN ref_systems sys ON sys.system_id = c.system_id
+             LEFT JOIN ref_celestials p ON p.celestial_id = c.parent_id AND c.celestial_type = 2
+             LIMIT 200000"
+        );
+        foreach ($rows as $row) {
+            $celestials[(int) $row['celestial_id']] = $row;
+        }
+    } catch (Throwable) {
+        // Table may not exist yet; fall back to system-name-only orbit name.
+    }
+
+    // Construct and batch-update names.
+    $count = 0;
+    foreach ($stations as $station) {
+        $stationId = (int) $station['station_id'];
+        $orbitId = (int) ($station['orbit_id'] ?? 0);
+        $ownerId = (int) ($station['owner_id'] ?? 0);
+        $operationId = (int) ($station['operation_id'] ?? 0);
+        $useOperationName = (bool) ($station['use_operation_name'] ?? false);
+        $systemName = (string) ($station['system_name'] ?? '');
+
+        // Resolve orbit name (planet or moon name).
+        $orbitName = '';
+        if ($orbitId > 0 && isset($celestials[$orbitId])) {
+            $cel = $celestials[$orbitId];
+            $celSystemName = (string) ($cel['system_name'] ?? $systemName);
+            $celType = (int) $cel['celestial_type'];
+            $celIndex = (int) ($cel['celestial_index'] ?? 0);
+
+            if ($celType === 1) {
+                // Planet: "<SystemName> <Roman(celestialIndex)>"
+                $orbitName = $celSystemName;
+                if ($celIndex > 0) {
+                    $orbitName .= ' ' . static_data_int_to_roman_numeral($celIndex);
+                }
+            } elseif ($celType === 2) {
+                // Moon: "<SystemName> <Roman(planetIndex)> - Moon <moonIndex>"
+                $planetIndex = (int) ($cel['planet_celestial_index'] ?? 0);
+                $orbitName = $celSystemName;
+                if ($planetIndex > 0) {
+                    $orbitName .= ' ' . static_data_int_to_roman_numeral($planetIndex);
+                }
+                if ($celIndex > 0) {
+                    $orbitName .= ' - Moon ' . $celIndex;
+                }
+            }
+        }
+
+        // Fall back to system name if the orbit celestial is unknown.
+        if ($orbitName === '' && $systemName !== '') {
+            $orbitName = $systemName;
+        }
+
+        if ($orbitName === '') {
+            continue;
+        }
+
+        $corpName = $ownerId > 0 ? ($corps[$ownerId] ?? '') : '';
+        $operationName = ($useOperationName && $operationId > 0) ? ($operations[$operationId] ?? '') : '';
+
+        if ($corpName !== '') {
+            $name = $orbitName . ' - ' . $corpName;
+            if ($operationName !== '') {
+                $name .= ' ' . $operationName;
+            }
+        } else {
+            // No corporation name available; use orbit name only as best effort.
+            $name = $orbitName;
+        }
+
+        db_execute(
+            'UPDATE ref_npc_stations SET station_name = ? WHERE station_id = ?',
+            [$name, $stationId]
+        );
+        $count++;
+    }
+
+    return $count;
 }
 
 function static_data_import_reference_data(string $requestedMode = 'auto', bool $force = false): array
@@ -18188,6 +18471,9 @@ function static_data_import_reference_data(string $requestedMode = 'auto', bool 
         $constellations = $dataset['constellations'];
         $systems = $dataset['systems'];
         $stations = $dataset['stations'];
+        $npcCorps = $dataset['npc_corps'];
+        $stationOperations = $dataset['station_operations'];
+        $celestials = $dataset['celestials'];
         $categories = $dataset['categories'];
         $groups = $dataset['groups'];
         $marketGroups = $dataset['market_groups'];
@@ -18199,12 +18485,15 @@ function static_data_import_reference_data(string $requestedMode = 'auto', bool 
             db_reference_data_truncate_all();
         }
 
-        $rowsWritten = db_transaction(static function () use ($regions, $constellations, $systems, $stations, $categories, $groups, $marketGroups, $metaGroups, $types, $stargates): int {
+        $rowsWritten = db_transaction(static function () use ($regions, $constellations, $systems, $stations, $npcCorps, $stationOperations, $celestials, $categories, $groups, $marketGroups, $metaGroups, $types, $stargates): int {
             $written = 0;
             $written += db_ref_regions_bulk_upsert($regions);
             $written += db_ref_constellations_bulk_upsert($constellations);
             $written += db_ref_systems_bulk_upsert($systems);
             $written += db_ref_npc_stations_bulk_upsert($stations);
+            $written += db_ref_npc_corporations_bulk_upsert($npcCorps);
+            $written += db_ref_station_operations_bulk_upsert($stationOperations);
+            $written += db_ref_celestials_bulk_upsert($celestials);
             $written += db_ref_item_categories_bulk_upsert($categories);
             $written += db_ref_item_groups_bulk_upsert($groups);
             $written += db_ref_market_groups_bulk_upsert($marketGroups);
@@ -18227,6 +18516,11 @@ function static_data_import_reference_data(string $requestedMode = 'auto', bool 
                     OR ns.constellation_id < 20000001 OR ns.constellation_id > 21000000)"
         );
 
+        // Construct real station names for any stations that still have placeholder names.
+        // The new official SDE does not include station names directly; they must be built
+        // from orbit celestial name + NPC corporation name + station operation name.
+        $namesBuilt = static_data_build_npc_station_names();
+
         $finishedAt = gmdate('Y-m-d H:i:s');
         db_static_data_import_state_upsert(
             $sourceKey,
@@ -18246,12 +18540,16 @@ function static_data_import_reference_data(string $requestedMode = 'auto', bool 
                     'constellations' => count($constellations),
                     'systems' => count($systems),
                     'npc_stations' => count($stations),
+                    'npc_corps' => count($npcCorps),
+                    'station_operations' => count($stationOperations),
+                    'celestials' => count($celestials),
                     'item_categories' => count($categories),
                     'item_groups' => count($groups),
                     'market_groups' => count($marketGroups),
                     'meta_groups' => count($metaGroups),
                     'item_types' => count($types),
                     'stargates' => count($stargates),
+                    'station_names_built' => $namesBuilt,
                 ],
             ], JSON_THROW_ON_ERROR)
         );
