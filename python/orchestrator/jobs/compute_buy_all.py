@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from hashlib import sha256
@@ -336,7 +337,9 @@ def _doctrine_freshness(db: SupplyCoreDb) -> dict[str, Any]:
 
 
 def run_compute_buy_all(db: SupplyCoreDb, requests: list[dict[str, Any]] | None = None) -> dict[str, Any]:
-    computed_at = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
+    _started_at = datetime.now(UTC)
+    _start_mono = time.monotonic()
+    computed_at = _started_at.strftime("%Y-%m-%d %H:%M:%S")
     planned_requests = requests or DEFAULT_REQUESTS
     market_rows = _load_market_rows(db)
     allowed_type_ids = load_allowed_type_ids()
@@ -511,11 +514,16 @@ def run_compute_buy_all(db: SupplyCoreDb, requests: list[dict[str, Any]] | None 
 
         created += 1
 
+    _finished_at = datetime.now(UTC)
+    _duration_ms = int((time.monotonic() - _start_mono) * 1000)
     return JobResult.success(
         job_key="compute_buy_all",
         summary=f"Precomputed {created} buy-all request(s) with {rows_written} item rows.",
         rows_processed=rows_processed,
         rows_written=rows_written,
+        started_at=_started_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        finished_at=_finished_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        duration_ms=_duration_ms,
         meta={
             "computed_at": computed_at,
             "requests": created,
