@@ -79,6 +79,17 @@ RECENT_DAYS = 30
 TOP_K = 10
 
 
+def _dossier_log(runtime: dict[str, Any] | None, event: str, payload: dict[str, Any]) -> None:
+    log_path = str(((runtime or {}).get("log_file") or "")).strip()
+    if log_path == "":
+        return
+    path = Path(log_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    record = {"event": event, "timestamp": datetime.now(UTC).isoformat(), **payload}
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json_dumps_safe(record) + "\n")
+
+
 def _now_sql() -> str:
     return datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
 
@@ -528,6 +539,8 @@ def run_compute_alliance_dossiers(
     rows_processed = 0
     rows_written = 0
 
+    _dossier_log(runtime, "alliance_dossiers.job.started", {"dry_run": dry_run, "computed_at": computed_at})
+
     try:
         # Initialize Neo4j client if available
         neo4j_client = None
@@ -632,14 +645,17 @@ def run_compute_alliance_dossiers(
         duration_ms = int((datetime.now(UTC) - started).total_seconds() * 1000)
         finish_job_run(db, job, status="success", rows_processed=rows_processed, rows_written=rows_written,
                        meta={"dossier_count": len(dossiers)})
-        return JobResult.success(
+        result = JobResult.success(
             job_key=job_key,
             summary=f"Computed {len(dossiers)} alliance dossiers.",
             rows_processed=rows_processed,
             rows_written=rows_written,
             duration_ms=duration_ms,
         ).to_dict()
+        _dossier_log(runtime, "alliance_dossiers.job.success", result)
+        return result
 
     except Exception as exc:
         finish_job_run(db, job, status="failed", rows_processed=rows_processed, rows_written=rows_written, error_text=str(exc))
+        _dossier_log(runtime, "alliance_dossiers.job.failed", {"status": "failed", "error_text": str(exc), "rows_processed": rows_processed, "rows_written": rows_written, "dry_run": dry_run})
         raise
