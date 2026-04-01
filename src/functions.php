@@ -29074,15 +29074,22 @@ function buy_all_planner_data_uncached(array $query = []): array
         if ($exactDeficitQuantity > 0) {
             $finalPlannerQuantity = max($exactDeficitQuantity, $finalPlannerQuantity);
         }
-        // Cap buy quantity to what is actually available in the hub.
-        // When the planner wants more than the hub has on sell, the
-        // recommendation is reduced and flagged so the user can see the
-        // constraint and plan multiple buy runs if needed.
+        // Proportionate hub cap: limit the buy to a reasonable share of
+        // hub sell volume so we don't wipe out the market and spike prices.
+        // Buy up to 50% of hub stock when demand exceeds availability;
+        // if 50% of hub still covers the full demand, buy the full amount.
         $hubCapped = false;
-        if ($hubAvailableQuantity > 0 && $finalPlannerQuantity > $hubAvailableQuantity) {
-            $finalPlannerQuantity = $hubAvailableQuantity;
-            $hubCapped = true;
+        $uncappedPlannerQuantity = $finalPlannerQuantity;
+        if ($hubAvailableQuantity > 0 && $finalPlannerQuantity > 0) {
+            $hubBuyLimit = (int) floor($hubAvailableQuantity * 0.50);
+            if ($finalPlannerQuantity > $hubBuyLimit && $hubBuyLimit > 0) {
+                $finalPlannerQuantity = $hubBuyLimit;
+                $hubCapped = true;
+            }
         }
+        $hubPctOfStock = $hubAvailableQuantity > 0
+            ? round(($finalPlannerQuantity / $hubAvailableQuantity) * 100.0, 1)
+            : 0.0;
         if ($finalPlannerQuantity <= 0) {
             continue;
         }
@@ -29234,6 +29241,8 @@ function buy_all_planner_data_uncached(array $query = []): array
             'alliance_price_observed_at' => $market['alliance_last_observed_at'] ?? ($allianceHistoryByType[$typeId]['observed_at'] ?? null),
             'hub_available_quantity' => $hubAvailableQuantity,
             'hub_capped' => $hubCapped,
+            'hub_pct_of_stock' => $hubPctOfStock,
+            'uncapped_planner_quantity' => $uncappedPlannerQuantity,
             'stock_observed_at' => $market['alliance_last_observed_at'] ?? null,
             'dependency_score' => round($dependencyScore, 4),
             'criticality_score' => round($criticalityScore, 4),

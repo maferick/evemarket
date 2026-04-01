@@ -246,7 +246,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                                 <td class="px-4 py-3 align-top">
                                     <p class="font-semibold text-white"><?= htmlspecialchars((string) ($item['final_planner_quantity'] ?? $item['quantity'] ?? 0), ENT_QUOTES) ?></p>
                                     <p class="mt-1 text-xs text-slate-500">Short by <?= htmlspecialchars((string) ($item['exact_deficit_quantity'] ?? 0), ENT_QUOTES) ?> · target <?= htmlspecialchars((string) ($item['operational_recommended_quantity'] ?? 0), ENT_QUOTES) ?></p>
-                                    <p class="mt-1 text-xs <?= !empty($item['hub_capped']) ? 'text-amber-300' : 'text-slate-500' ?>">Hub stock <?= htmlspecialchars(number_format((int) ($item['hub_available_quantity'] ?? 0)), ENT_QUOTES) ?><?= !empty($item['hub_capped']) ? ' · capped' : '' ?></p>
+                                    <p class="mt-1 text-xs <?= !empty($item['hub_capped']) ? 'text-amber-300' : 'text-slate-500' ?>">Hub <?= htmlspecialchars(number_format((int) ($item['hub_available_quantity'] ?? 0)), ENT_QUOTES) ?> avail · <?= htmlspecialchars(number_format((float) ($item['hub_pct_of_stock'] ?? 0), 0), ENT_QUOTES) ?>% of stock<?= !empty($item['hub_capped']) ? ' · capped from ' . htmlspecialchars(number_format((int) ($item['uncapped_planner_quantity'] ?? 0)), ENT_QUOTES) : '' ?></p>
                                 </td>
                                 <td class="px-4 py-3 align-top">
                                     <p class="font-semibold text-white"><?= htmlspecialchars(number_format((float) ($item['final_priority_score'] ?? 0.0), 1), ENT_QUOTES) ?></p>
