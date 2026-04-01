@@ -25,6 +25,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             exit;
         }
 
+        if ($action === 'csv_preview') {
+            $preview = doctrine_csv_import_build_preview();
+            doctrine_bulk_import_preview_store($preview);
+            flash('success', 'CSV import preview built for ' . (int) ($preview['counts']['total'] ?? 0) . ' fits.');
+            header('Location: /doctrine/import');
+            exit;
+        }
+
         if ($action === 'save_preview') {
             $saveResult = doctrine_bulk_import_save_from_request($_POST);
             if (($saveResult['ok'] ?? false) === true) {
@@ -116,6 +124,45 @@ include __DIR__ . '/../../src/views/partials/header.php';
         <article class="surface-secondary">
             <div class="section-header">
                 <div>
+                    <p class="eyebrow">CSV fit data ingest</p>
+                    <h2 class="mt-2 section-title">CSV Fit & Doctrine Importer</h2>
+                    <p class="mt-2 text-sm text-slate-400">Upload a CSV (or tab-separated) file exported from your fit pipeline. Each row represents one item in a fit, grouped by <code class="text-slate-300">fit_id</code>. Type IDs are used directly — no ESI resolution needed.</p>
+                </div>
+                <span class="badge border-violet-400/20 bg-violet-500/10 text-violet-100">CSV ingest</span>
+            </div>
+
+            <form method="post" enctype="multipart/form-data" class="space-y-5">
+                <input type="hidden" name="_token" value="<?= htmlspecialchars(csrf_token(), ENT_QUOTES) ?>">
+                <input type="hidden" name="action" value="csv_preview">
+
+                <label class="block">
+                    <span class="mb-2 block field-label">Fit CSV / TSV file</span>
+                    <input type="file" name="csv_files[]" accept=".csv,.tsv,.txt,text/csv,text/tab-separated-values,text/plain" multiple class="field-input py-3">
+                    <span class="mt-2 block text-xs text-slate-500">Required columns: <code>fit_id</code>, <code>type_id</code>, <code>type_name</code>, <code>fit_qty</code>, <code>fit_name</code>, <code>ship_name_x</code>, <code>ship_id_x</code>, <code>category_name</code>. Market columns (price, hulls, stock, etc.) are ignored.</span>
+                </label>
+
+                <div class="grid gap-3 md:grid-cols-3">
+                    <div class="surface-tertiary">
+                        <p class="text-xs uppercase tracking-[0.16em] text-slate-500">1 · Upload</p>
+                        <p class="mt-2 text-sm text-slate-200">CSV file with fit items, one row per item per fit.</p>
+                    </div>
+                    <div class="surface-tertiary">
+                        <p class="text-xs uppercase tracking-[0.16em] text-slate-500">2 · Preview</p>
+                        <p class="mt-2 text-sm text-slate-200">Fits are grouped by <code class="text-slate-300">fit_id</code>. Review item counts, assign doctrine groups, and resolve conflicts.</p>
+                    </div>
+                    <div class="surface-tertiary">
+                        <p class="text-xs uppercase tracking-[0.16em] text-slate-500">3 · Save</p>
+                        <p class="mt-2 text-sm text-slate-200">Create, update, skip, or flag rows for manual review.</p>
+                    </div>
+                </div>
+
+                <button type="submit" class="btn-primary">Build CSV preview</button>
+            </form>
+        </article>
+
+        <article class="surface-secondary">
+            <div class="section-header">
+                <div>
                     <p class="eyebrow">Normalization rules</p>
                     <h2 class="mt-2 section-title">What SupplyCore persists</h2>
                 </div>
@@ -158,7 +205,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
     </div>
 
     <?php if ($rows === []): ?>
-        <div class="surface-tertiary text-sm text-slate-400">No import preview is active. Upload Winter Coalition HTML pages to stage a bulk ingest batch.</div>
+        <div class="surface-tertiary text-sm text-slate-400">No import preview is active. Upload Winter Coalition HTML pages or a CSV fit file to stage a bulk ingest batch.</div>
     <?php else: ?>
         <form method="post" class="space-y-4">
             <input type="hidden" name="_token" value="<?= htmlspecialchars(csrf_token(), ENT_QUOTES) ?>">
