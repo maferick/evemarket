@@ -107,7 +107,7 @@ $data = supplycore_cache_aside('killmail_summary', [$sequenceId], supplycore_cac
         'ship' => [
             'name' => $victimShip['name'],
             'type_id' => $victimShip['id'],
-            'render_url' => $victimShip['id'] !== null ? killmail_entity_image_url('type', (int) $victimShip['id'], 'render', 512) : null,
+            'render_url' => $victimShip['id'] !== null ? killmail_entity_image_url('type', (int) $victimShip['id'], 'render', 256) : null,
             'class' => killmail_ship_class_label(isset($victimShip['metadata']['group_id']) ? (int) $victimShip['metadata']['group_id'] : null),
         ],
         'location' => [

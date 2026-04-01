@@ -889,10 +889,10 @@ function _render_structure_row(array $sk, array $resolvedEntities, array $shipTy
 </section>
 
 <!-- Killmail detail modal -->
-<div id="sc-km-modal-overlay" class="fixed inset-0 z-[9999] hidden">
+<div id="sc-km-modal-overlay" class="fixed inset-0 z-[9999] hidden" style="margin:0;padding:0;border:0;">
     <div class="absolute inset-0 bg-black/70 backdrop-blur-sm" onclick="window._scKmModalClose()"></div>
-    <div class="absolute right-0 top-0 bottom-0 w-full max-w-lg overflow-y-auto surface-primary border-l border-border shadow-2xl shadow-black/50 transform transition-transform duration-200" id="sc-km-modal-panel">
-        <div class="sticky top-0 z-10 flex items-center justify-between gap-3 px-5 py-3 bg-slate-900/95 border-b border-border backdrop-blur-sm">
+    <div class="absolute right-0 top-0 bottom-0 overflow-y-auto border-l border-slate-700/60 shadow-2xl shadow-black/50" id="sc-km-modal-panel" style="width:28rem;max-width:100vw;background:#0b1120;">
+        <div class="sticky top-0 z-10 flex items-center justify-between gap-3 px-5 py-3 border-b border-slate-700/60 backdrop-blur-sm" style="background:rgba(11,17,32,0.95);">
             <h3 class="text-sm font-semibold text-slate-50 tracking-wide uppercase">Killmail Detail</h3>
             <button onclick="window._scKmModalClose()" class="text-slate-400 hover:text-slate-100 transition-colors text-lg leading-none px-1">&times;</button>
         </div>
@@ -936,8 +936,8 @@ function _render_structure_row(array $sk, array $resolvedEntities, array $shipTy
 
         // Ship render + name
         if (ship.render_url) {
-            html += '<div class="rounded-xl overflow-hidden bg-slate-800/50 mb-4">';
-            html += '<img src="' + esc(ship.render_url) + '" alt="' + esc(ship.name) + '" class="w-full max-h-64 object-contain" loading="eager">';
+            html += '<div class="rounded-xl overflow-hidden bg-slate-800/50 mb-4" style="max-height:12rem;">';
+            html += '<img src="' + esc(ship.render_url) + '" alt="' + esc(ship.name) + '" class="w-full object-contain" style="max-height:12rem;" loading="eager">';
             html += '</div>';
         }
 
@@ -1032,7 +1032,7 @@ function _render_structure_row(array $sk, array $resolvedEntities, array $shipTy
                 if (!group || !group.rows || group.rows.length === 0) continue;
                 var clr = roleColors[rk] || 'text-slate-300';
                 var bdr = roleBorders[rk] || 'border-slate-600/30';
-                html += '<details class="mb-2 rounded-lg border ' + bdr + ' bg-black/20 overflow-hidden">';
+                html += '<details open class="mb-2 rounded-lg border ' + bdr + ' bg-black/20 overflow-hidden">';
                 html += '<summary class="flex items-center justify-between gap-2 px-3 py-2 cursor-pointer select-none hover:bg-slate-800/40 transition-colors">';
                 html += '<span class="text-xs font-medium ' + clr + '">' + esc(group.label || rk) + '</span>';
                 html += '<span class="text-[10px] text-muted rounded-full border border-border bg-black/20 px-2 py-0.5">' + group.total + ' items</span>';
