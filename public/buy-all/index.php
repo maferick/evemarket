@@ -351,6 +351,28 @@ include __DIR__ . '/../../src/views/partials/header.php';
 
 <script>
 (function () {
+    // Mode selection visual feedback
+    var modeRadios = document.querySelectorAll('input[type="radio"][name="mode"]');
+    modeRadios.forEach(function (radio) {
+        radio.addEventListener('change', function () {
+            modeRadios.forEach(function (r) {
+                var label = r.closest('label');
+                if (!label) return;
+                if (r.checked) {
+                    label.className = label.className
+                        .replace(/border-white\/8/g, 'border-cyan-400/30')
+                        .replace(/bg-slate-950\/40/g, 'bg-cyan-500/10')
+                        .replace(/text-slate-200/g, 'text-cyan-50');
+                } else {
+                    label.className = label.className
+                        .replace(/border-cyan-400\/30/g, 'border-white/8')
+                        .replace(/bg-cyan-500\/10/g, 'bg-slate-950/40')
+                        .replace(/text-cyan-50/g, 'text-slate-200');
+                }
+            });
+        });
+    });
+
     function rebuildClipboardFromSelection() {
         const rows = document.querySelectorAll('[data-buyall-item]');
         const lines = [];
