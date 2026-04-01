@@ -1005,7 +1005,7 @@ def _upsert_table(db: SupplyCoreDb, table_name: str, columns: str, placeholders:
     for offset in range(0, len(rows), batch_size):
         chunk = rows[offset : offset + batch_size]
         with db.transaction() as (_, cursor):
-            cursor.executemany(f"INSERT INTO {table_name} ({columns}) VALUES ({placeholders})", chunk)
+            cursor.executemany(f"INSERT IGNORE INTO {table_name} ({columns}) VALUES ({placeholders})", chunk)
 
 
 def _ensure_doctrine_dependency_depth_schema(db: SupplyCoreDb) -> None:

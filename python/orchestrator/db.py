@@ -1036,6 +1036,17 @@ class SupplyCoreDb:
                 )
             )
 
+        # Deduplicate by order_id; the ESI API occasionally returns the same
+        # order_id twice for a source, which would violate unique_source_order_current.
+        seen_order_ids: set[int] = set()
+        deduped_orders: list[tuple[Any, ...]] = []
+        for row_tuple in safe_orders:
+            oid = row_tuple[3]
+            if oid not in seen_order_ids:
+                seen_order_ids.add(oid)
+                deduped_orders.append(row_tuple)
+        safe_orders = deduped_orders
+
         with self.transaction() as (_, cursor):
             cursor.execute(
                 "DELETE FROM market_orders_current WHERE source_type = %s AND source_id = %s",
