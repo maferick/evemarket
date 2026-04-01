@@ -90,7 +90,7 @@ foreach ($allForMax as $p) {
  * Render a single participant row for the side-by-side table.
  * Extracted to avoid duplicating HTML across both panels.
  */
-function _render_participant_row(array $p, array $resolvedEntities, array $shipTypeNames, float $maxDmgForPanel, bool $hasMonitorOrFlagShips): string {
+function _render_participant_row(array $p, array $resolvedEntities, array $shipTypeNames, float $maxDmgForPanel, bool $hasMonitorOrFlagShips, array $victimKmLookup = []): string {
     $isSusp = (int) ($p['is_suspicious'] ?? 0);
     $charName = killmail_entity_preferred_name($resolvedEntities, 'character', (int) ($p['character_id'] ?? 0), (string) ($p['character_name'] ?? ''), 'Character');
     $fleetRole = (string) ($p['role_proxy'] ?? 'mainline_dps');
@@ -234,15 +234,22 @@ function _render_participant_row(array $p, array $resolvedEntities, array $shipT
                     </div>
                 <?php endif; ?>
                 <?php
-                    // Extract killmail sequence IDs for clickable lost-ship links
-                    $lostKillmailIds = [];
-                    foreach ($lostDisplay as $ld) {
-                        foreach ((array) ($ld['killmail_ids'] ?? []) as $kmRef) {
-                            $seqId = (int) ($kmRef['sequence_id'] ?? 0);
-                            if ($seqId > 0) $lostKillmailIds[] = $seqId;
+                    // Resolve sequence_id for clickable lost-ship link.
+                    // Primary: battle-based lookup from view.php (works for all theaters).
+                    // Fallback: killmail_ids embedded in ships_lost_detail JSON (new data only).
+                    $charId = (int) ($p['character_id'] ?? 0);
+                    $firstLostSeqId = 0;
+                    if ($lostShipId > 0 && $charId > 0 && isset($victimKmLookup[$charId][$lostShipId])) {
+                        $firstLostSeqId = $victimKmLookup[$charId][$lostShipId];
+                    }
+                    if ($firstLostSeqId === 0) {
+                        foreach ($lostDisplay as $ld) {
+                            foreach ((array) ($ld['killmail_ids'] ?? []) as $kmRef) {
+                                $seqId = (int) ($kmRef['sequence_id'] ?? 0);
+                                if ($seqId > 0) { $firstLostSeqId = $seqId; break 2; }
+                            }
                         }
                     }
-                    $firstLostSeqId = $lostKillmailIds[0] ?? 0;
                 ?>
                 <?php if ($lostShipId > 0 && !$lostSameAsFlying): ?>
                     <div class="flex items-center gap-1 <?= $firstLostSeqId > 0 ? 'cursor-pointer hover:brightness-125 transition-all' : '' ?>"<?= $firstLostSeqId > 0 ? ' data-km-seq="' . $firstLostSeqId . '" onclick="window._scKmModal(' . $firstLostSeqId . ')"' : '' ?>>
@@ -309,12 +316,17 @@ function _fmt_damage(float $v): string {
  * Structures have no pilot character, K/D, or damage — only an owning
  * corp/alliance, hull type, and ISK lost.
  */
-function _render_structure_row(array $sk, array $resolvedEntities, array $shipTypeNames): string {
+function _render_structure_row(array $sk, array $resolvedEntities, array $shipTypeNames, array $killmailSeqLookup = []): string {
     $allianceId = (int) ($sk['victim_alliance_id'] ?? 0);
     $corpId     = (int) ($sk['victim_corporation_id'] ?? 0);
     $shipTypeId = (int) ($sk['victim_ship_type_id'] ?? 0);
     $iskLost    = (float) ($sk['isk_lost'] ?? 0);
+    $skKmId     = (int) ($sk['killmail_id'] ?? 0);
     $skSeqId    = (int) ($sk['sequence_id'] ?? 0);
+    // Fallback: use the battle-based lookup if the JOIN didn't resolve sequence_id
+    if ($skSeqId === 0 && $skKmId > 0 && isset($killmailSeqLookup[$skKmId])) {
+        $skSeqId = $killmailSeqLookup[$skKmId];
+    }
     $shipName   = $shipTypeId > 0
         ? (string) ($shipTypeNames[$shipTypeId] ?? ('Structure #' . $shipTypeId))
         : 'Unknown Structure';
@@ -453,10 +465,10 @@ function _render_structure_row(array $sk, array $resolvedEntities, array $shipTy
                             <tr><td colspan="7" class="px-2 py-4 text-sm text-muted text-center">No participants.</td></tr>
                         <?php else: ?>
                             <?php foreach ($panel['rows'] as $p): ?>
-                                <?= _render_participant_row($p, $resolvedEntities, $shipTypeNames, $panelMaxDmg, $hasMonitorOrFlagShips) ?>
+                                <?= _render_participant_row($p, $resolvedEntities, $shipTypeNames, $panelMaxDmg, $hasMonitorOrFlagShips, $victimKmLookup ?? []) ?>
                             <?php endforeach; ?>
                             <?php foreach (($panel['structure_kills'] ?? []) as $sk): ?>
-                                <?= _render_structure_row($sk, $resolvedEntities, $shipTypeNames) ?>
+                                <?= _render_structure_row($sk, $resolvedEntities, $shipTypeNames, $killmailSeqLookup ?? []) ?>
                             <?php endforeach; ?>
                         <?php endif; ?>
                     </tbody>
@@ -678,14 +690,20 @@ function _render_structure_row(array $sk, array $resolvedEntities, array $shipTy
                                         </div>
                                     <?php endif; ?>
                                     <?php
-                                        $lostKillmailIds2 = [];
-                                        foreach ($lostDisplay2 as $ld2) {
-                                            foreach ((array) ($ld2['killmail_ids'] ?? []) as $kmRef2) {
-                                                $seqId2 = (int) ($kmRef2['sequence_id'] ?? 0);
-                                                if ($seqId2 > 0) $lostKillmailIds2[] = $seqId2;
+                                        // Resolve sequence_id for clickable lost-ship link.
+                                        $charId2 = (int) ($p['character_id'] ?? 0);
+                                        $firstLostSeqId2 = 0;
+                                        if ($lostShipId2 > 0 && $charId2 > 0 && isset($victimKmLookup[$charId2][$lostShipId2])) {
+                                            $firstLostSeqId2 = $victimKmLookup[$charId2][$lostShipId2];
+                                        }
+                                        if ($firstLostSeqId2 === 0) {
+                                            foreach ($lostDisplay2 as $ld2) {
+                                                foreach ((array) ($ld2['killmail_ids'] ?? []) as $kmRef2) {
+                                                    $seqId2 = (int) ($kmRef2['sequence_id'] ?? 0);
+                                                    if ($seqId2 > 0) { $firstLostSeqId2 = $seqId2; break 2; }
+                                                }
                                             }
                                         }
-                                        $firstLostSeqId2 = $lostKillmailIds2[0] ?? 0;
                                     ?>
                                     <?php if ($lostShipId2 > 0 && !$lostSameAsFlying2): ?>
                                         <div class="flex items-center gap-1 <?= $firstLostSeqId2 > 0 ? 'cursor-pointer hover:brightness-125 transition-all' : '' ?>"<?= $firstLostSeqId2 > 0 ? ' data-km-seq="' . $firstLostSeqId2 . '" onclick="window._scKmModal(' . $firstLostSeqId2 . ')"' : '' ?>>
@@ -764,7 +782,11 @@ function _render_structure_row(array $sk, array $resolvedEntities, array $shipTy
                             $skCorpId     = (int) ($sk['victim_corporation_id'] ?? 0);
                             $skShipTypeId = (int) ($sk['victim_ship_type_id'] ?? 0);
                             $skIskLost    = (float) ($sk['isk_lost'] ?? 0);
+                            $skKmId3      = (int) ($sk['killmail_id'] ?? 0);
                             $skSeqId3     = (int) ($sk['sequence_id'] ?? 0);
+                            if ($skSeqId3 === 0 && $skKmId3 > 0 && isset($killmailSeqLookup[$skKmId3])) {
+                                $skSeqId3 = $killmailSeqLookup[$skKmId3];
+                            }
                             $skShipName   = $skShipTypeId > 0 ? (string) ($shipTypeNames[$skShipTypeId] ?? 'Structure #' . $skShipTypeId) : 'Unknown Structure';
                             $skSide       = $classifyAlliance($skAllianceId, $skCorpId);
                             $skSideClass  = $sideColorClass[$skSide] ?? 'text-slate-300';

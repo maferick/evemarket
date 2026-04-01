@@ -659,6 +659,31 @@ include __DIR__ . '/partials/_ai_briefing.php';
 include __DIR__ . '/partials/_battles.php';
 include __DIR__ . '/partials/_timeline.php';
 include __DIR__ . '/partials/_alliance_summary.php';
+// ── Build killmail lookup for clickable lost-ship links ──────────────
+// This runs a lightweight query against killmail_events for the theater's
+// battles so every participant's lost ship can link to its killmail detail,
+// regardless of whether ships_lost_detail JSON has been updated with
+// killmail_ids by the analysis pipeline.
+$theaterBattleIds = array_map(static fn(array $b): string => (string) ($b['battle_id'] ?? ''), $battles);
+$theaterBattleIds = array_filter($theaterBattleIds, static fn(string $id): bool => $id !== '');
+$victimKillmailRows = $theaterBattleIds !== [] ? db_theater_victim_killmails_by_battles($theaterBattleIds) : [];
+// character_id → [ship_type_id → sequence_id] (first match wins)
+$victimKmLookup = [];
+// killmail_id → sequence_id (for structure kills)
+$killmailSeqLookup = [];
+foreach ($victimKillmailRows as $vkr) {
+    $cid = (int) ($vkr['victim_character_id'] ?? 0);
+    $stid = (int) ($vkr['victim_ship_type_id'] ?? 0);
+    $seq = (int) ($vkr['sequence_id'] ?? 0);
+    $kmId = (int) ($vkr['killmail_id'] ?? 0);
+    if ($cid > 0 && $stid > 0 && $seq > 0 && !isset($victimKmLookup[$cid][$stid])) {
+        $victimKmLookup[$cid][$stid] = $seq;
+    }
+    if ($kmId > 0 && $seq > 0) {
+        $killmailSeqLookup[$kmId] = $seq;
+    }
+}
+
 include __DIR__ . '/partials/_participants.php';
 include __DIR__ . '/partials/_suspicion.php';
 
