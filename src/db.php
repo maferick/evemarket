@@ -15843,6 +15843,30 @@ function db_theater_structure_kills(string $theaterId): array
     );
 }
 
+/**
+ * Look up all victim killmails for the given battle IDs.
+ * Returns rows with sequence_id, killmail_id, victim_character_id, victim_ship_type_id
+ * so the theater participants view can link lost ships to killmail details.
+ */
+function db_theater_victim_killmails_by_battles(array $battleIds): array
+{
+    if ($battleIds === []) {
+        return [];
+    }
+
+    $placeholders = implode(',', array_fill(0, count($battleIds), '?'));
+
+    return db_select(
+        "SELECT ke.sequence_id, ke.killmail_id, ke.victim_character_id, ke.victim_ship_type_id
+         FROM killmail_events ke
+         WHERE ke.battle_id IN ({$placeholders})
+           AND ke.victim_character_id IS NOT NULL
+           AND ke.victim_character_id > 0
+         ORDER BY ke.sequence_id ASC",
+        array_values($battleIds)
+    );
+}
+
 function db_theater_suspicion_summary(string $theaterId): ?array
 {
     return db_select_one(
