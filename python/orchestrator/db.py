@@ -73,6 +73,12 @@ class SupplyCoreDb:
                 return int(cursor.execute(sql))
             return int(cursor.execute(sql, params))
 
+    def execute_many(self, sql: str, params_seq: Sequence[Sequence[Any]]) -> int:
+        with self.cursor() as (connection, cursor):
+            cursor.executemany(sql, params_seq)
+            connection.commit()
+            return int(cursor.rowcount)
+
     def insert(self, sql: str, params: Sequence[Any] | None = None) -> int:
         with self.cursor() as (connection, cursor):
             if params is None:
