@@ -24,6 +24,7 @@
     pendingVersionKeys: new Set(),
     refreshTimer: null,
     pollingTimer: null,
+    autoRefreshTimer: null,
     stream: null,
   };
 
@@ -41,6 +42,7 @@
   const pageSections = config.sections || {};
   const debounceMs = Number(config.debounce_ms || 1200);
   const pollIntervalMs = Number(config.poll_interval_ms || 30000);
+  const autoRefreshMs = Number(config.auto_refresh_ms || 60000);
 
   function relativeTime(isoValue) {
     if (!isoValue) {
@@ -189,6 +191,22 @@
     });
   }
 
+  /**
+   * Swap a section's DOM with a crossfade using the View Transitions API.
+   * Falls back to an instant swap + CSS flash for older browsers.
+   */
+  function transitionSwap(current, replacement) {
+    if (document.startViewTransition) {
+      current.style.viewTransitionName = 'ui-section-' + (current.dataset.uiSection || 'default');
+      replacement.style.viewTransitionName = 'ui-section-' + (current.dataset.uiSection || 'default');
+      document.startViewTransition(() => {
+        current.replaceWith(replacement);
+      });
+    } else {
+      current.replaceWith(replacement);
+    }
+  }
+
   async function refreshSection(sectionKey) {
     const params = new URLSearchParams({
       section: sectionKey,
@@ -218,7 +236,7 @@
       return;
     }
 
-    current.replaceWith(replacement);
+    transitionSwap(current, replacement);
     state.lastSectionRefreshAt[sectionKey] = new Date().toISOString();
     flashSection(sectionKey);
     updateFreshnessBadges(sectionKey);
@@ -346,6 +364,44 @@
     }
   }
 
+  /**
+   * Periodic auto-refresh: unconditionally refreshes all page sections on an
+   * interval so data stays current even when the backend hasn't published a
+   * version bump (e.g. relative timestamps, freshness badges).
+   * Only runs while the tab is visible.
+   */
+  function refreshAllSections() {
+    if (document.hidden) {
+      return;
+    }
+
+    const allSections = Object.keys(pageSections);
+    (async () => {
+      for (const sectionKey of allSections) {
+        try {
+          await refreshSection(sectionKey);
+        } catch (error) {
+          console.warn('Auto-refresh failed for section.', sectionKey, error);
+        }
+      }
+    })();
+  }
+
+  function startAutoRefresh() {
+    if (state.autoRefreshTimer) {
+      window.clearInterval(state.autoRefreshTimer);
+    }
+    state.autoRefreshTimer = window.setInterval(refreshAllSections, autoRefreshMs);
+  }
+
+  // Pause/resume auto-refresh when tab visibility changes
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) {
+      refreshAllSections();
+    }
+  });
+
   renderDiagnostics();
   startStream();
+  startAutoRefresh();
 })();

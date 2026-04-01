@@ -24706,6 +24706,7 @@ function supplycore_live_refresh_page_config(string $pageId): ?array
         'transport' => 'sse',
         'debounce_ms' => 1200,
         'poll_interval_ms' => 30000,
+        'auto_refresh_ms' => 60000,
         'query_string' => http_build_query($_GET),
     ];
 }

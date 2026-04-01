@@ -452,6 +452,41 @@
     }
 }
 
+/* ── Live refresh transitions ── */
+@layer base {
+    [data-ui-section] {
+        view-transition-name: var(--ui-section-name);
+    }
+
+    ::view-transition-old(*) {
+        animation: ui-refresh-fade-out 0.32s ease-out both;
+    }
+
+    ::view-transition-new(*) {
+        animation: ui-refresh-fade-in 0.38s ease-out 0.06s both;
+    }
+
+    @keyframes ui-refresh-fade-out {
+        from { opacity: 1; filter: blur(0); }
+        to   { opacity: 0; filter: blur(1px); }
+    }
+
+    @keyframes ui-refresh-fade-in {
+        from { opacity: 0; transform: translateY(3px); filter: blur(1px); }
+        to   { opacity: 1; transform: translateY(0);   filter: blur(0); }
+    }
+
+    /* Fallback flash for browsers without View Transitions */
+    .ui-refresh-flash {
+        animation: ui-refresh-flash-pulse 0.5s ease-out;
+    }
+
+    @keyframes ui-refresh-flash-pulse {
+        0%   { opacity: 0.4; }
+        100% { opacity: 1; }
+    }
+}
+
 /* Safety net: prevent SVG icons without explicit dimensions from expanding in flex containers */
 @layer base {
     svg:not([width]):not([height]):not(.system-overview-map__svg):not(.sysmap-modal__svg) {
