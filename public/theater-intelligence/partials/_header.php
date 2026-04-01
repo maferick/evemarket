@@ -5,8 +5,8 @@
     <a href="/theater-intelligence" class="text-sm text-accent">&#8592; Back to Theater Overview</a>
 
     <div class="mt-3 flex flex-col md:flex-row items-start gap-4">
-        <div class="flex-1 text-center md:text-left">
-            <div class="flex items-center justify-center md:justify-start gap-2">
+        <div class="flex-1 text-center">
+            <div class="flex items-center justify-center gap-2">
                 <p class="text-xs uppercase tracking-[0.16em] text-muted">Battle Intelligence — Theater Detail</p>
                 <?php if ($isLocked): ?>
                     <span class="inline-flex items-center gap-1 rounded-full bg-amber-600/20 border border-amber-500/30 px-2 py-0.5 text-[10px] uppercase tracking-wider text-amber-300">
@@ -21,7 +21,7 @@
                     <span class="text-sm text-muted font-normal">+<?= (int) ($theater['system_count'] ?? 0) - 1 ?> systems</span>
                 <?php endif; ?>
             </h1>
-            <div class="mt-2 flex flex-wrap items-center justify-center md:justify-start gap-2 text-base">
+            <div class="mt-2 flex flex-wrap items-center justify-center gap-2 text-base">
                 <span class="text-blue-300 font-semibold"><?= htmlspecialchars($sideLabels['friendly'] ?? 'Friendlies', ENT_QUOTES) ?></span>
                 <span class="text-[10px] uppercase tracking-wider bg-blue-900/60 text-blue-300 rounded-full px-1.5 py-0.5">Friendly</span>
                 <span class="text-slate-500">vs</span>
@@ -32,7 +32,7 @@
                     <span class="text-slate-400 text-sm">(+<?= $thirdPartyCount ?> unidentified)</span>
                 <?php endif; ?>
             </div>
-            <div class="mt-2 flex flex-wrap justify-center md:justify-start gap-x-4 gap-y-1 text-xs text-muted">
+            <div class="mt-2 flex flex-wrap justify-center gap-x-4 gap-y-1 text-xs text-muted">
                 <span><?= htmlspecialchars((string) ($theater['region_name'] ?? ''), ENT_QUOTES) ?></span>
                 <span><?= htmlspecialchars($theaterStartActual, ENT_QUOTES) ?> — <?= htmlspecialchars($theaterEndActual, ENT_QUOTES) ?></span>
                 <span>Friendly: <?= number_format(count($sideAlliancesByPilots['friendly'] ?? [])) ?> alliances</span>

@@ -17996,6 +17996,7 @@ function static_data_extract_reference_rows_from_jsonl_archive(string $archivePa
         'invmetagroups.jsonl' => 'meta_groups',
         'types.jsonl' => 'types',
         'stargates.jsonl' => 'stargates',
+        'mapstargates.jsonl' => 'stargates',
         'mapsolarsystemjumps.jsonl' => 'stargates',
     ];
 

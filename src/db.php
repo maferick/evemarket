@@ -16480,8 +16480,19 @@ function db_threat_corridor_graph_subgraph(array $corridorSystemIds, int $surrou
         }
     }
 
-    if ($nodeIds === []) {
+    // Fall through to SQL if Neo4j returned only the corridor systems themselves
+    // (hop-0 self-match) without actually expanding to surrounding neighbors.
+    $corridorSet = array_fill_keys($corridorSystemIds, true);
+    $neoExpanded = false;
+    foreach ($nodeIds as $nid) {
+        if (!isset($corridorSet[$nid])) {
+            $neoExpanded = true;
+            break;
+        }
+    }
+    if ($nodeIds === [] || (!$neoExpanded && $surroundingHops > 0)) {
         $nodeIds = $corridorSystemIds;
+        $edgePairs = [];
         $frontier = $corridorSystemIds;
         $seen = array_fill_keys($corridorSystemIds, true);
         for ($hop = 0; $hop < $surroundingHops; $hop++) {
