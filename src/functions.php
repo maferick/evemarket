@@ -18209,11 +18209,18 @@ function static_data_extract_reference_rows_from_jsonl_archive(string $archivePa
             }
 
             if ($targetKey === 'stargates') {
-                // Handle stargates.jsonl format (stargateID, destinationStargateID, etc.)
+                // Handle stargates.jsonl / mapStargates.jsonl formats
                 $stargateId = (int) static_data_record_value($row, ['stargateID', 'stargate_id', '_key']);
                 $systemId = (int) static_data_record_value($row, ['solarSystemID', 'system_id'], 0);
                 $destStargateId = (int) static_data_record_value($row, ['destinationStargateID', 'destination_stargate_id', 'dest_stargate_id'], 0);
                 $destSystemId = (int) static_data_record_value($row, ['destinationSystemID', 'destination_system_id', 'dest_system_id'], 0);
+                // CCP SDE nested format: {"destination": {"solarSystemID": ..., "stargateID": ...}}
+                if ($destSystemId <= 0 && isset($row['destination']) && is_array($row['destination'])) {
+                    $destSystemId = (int) ($row['destination']['solarSystemID'] ?? $row['destination']['system_id'] ?? 0);
+                    if ($destStargateId <= 0) {
+                        $destStargateId = (int) ($row['destination']['stargateID'] ?? $row['destination']['stargate_id'] ?? 0);
+                    }
+                }
                 // Handle mapsolarsystemjumps.jsonl format (fromSolarSystemID / toSolarSystemID)
                 if ($stargateId <= 0 && $systemId <= 0) {
                     $systemId = (int) static_data_record_value($row, ['fromSolarSystemID', 'fromRegionID'], 0);
