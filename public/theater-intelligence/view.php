@@ -243,8 +243,14 @@ if ($viewSnapshot !== null && !$pendingLock) {
             continue;
         }
         arsort($alliances);
-        $preferredAllianceId = (int) array_key_first($alliances);
-        $preferredName = killmail_entity_preferred_name($resolvedEntities, 'alliance', $preferredAllianceId, '', 'Alliance');
+        $preferredKey = (string) array_key_first($alliances);
+        if (str_starts_with($preferredKey, 'c:')) {
+            $preferredId = (int) substr($preferredKey, 2);
+            $preferredName = killmail_entity_preferred_name($resolvedEntities, 'corporation', $preferredId, '', 'Corporation');
+        } else {
+            $preferredId = (int) substr($preferredKey, 2);
+            $preferredName = killmail_entity_preferred_name($resolvedEntities, 'alliance', $preferredId, '', 'Alliance');
+        }
         $otherCount = count($alliances) - 1;
         $sideLabels[$side] = $preferredName . ($otherCount > 0 ? " +{$otherCount}" : '');
     }
@@ -257,9 +263,17 @@ if ($viewSnapshot !== null && !$pendingLock) {
     ];
     $opponentAlliances = $sideAlliancesByPilots['opponent'];
     arsort($opponentAlliances);
-    foreach ($opponentAlliances as $aid => $pilots) {
-        $name = killmail_entity_preferred_name($resolvedEntities, 'alliance', (int) $aid, '', 'Alliance');
-        $entry = ['alliance_id' => (int) $aid, 'name' => $name, 'pilots' => $pilots];
+    foreach ($opponentAlliances as $groupKey => $pilots) {
+        $groupKey = (string) $groupKey;
+        if (str_starts_with($groupKey, 'c:')) {
+            $entityId = (int) substr($groupKey, 2);
+            $name = killmail_entity_preferred_name($resolvedEntities, 'corporation', $entityId, '', 'Corporation');
+            $entry = ['alliance_id' => 0, 'corporation_id' => $entityId, 'name' => $name, 'pilots' => $pilots];
+        } else {
+            $entityId = (int) substr($groupKey, 2);
+            $name = killmail_entity_preferred_name($resolvedEntities, 'alliance', $entityId, '', 'Alliance');
+            $entry = ['alliance_id' => $entityId, 'name' => $name, 'pilots' => $pilots];
+        }
         $opponentModel['opponents'][] = $entry;
         if ($opponentModel['primary_opponent'] === null) {
             $opponentModel['primary_opponent'] = $entry;
