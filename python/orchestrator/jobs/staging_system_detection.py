@@ -85,7 +85,7 @@ def run_staging_system_detection(
             for sys_id in battle_sys_ids:
                 nearby_rows = client.query(
                     f"""
-                    MATCH (s:System {{system_id: $sysId}})-[:CONNECTS_TO*1..{MAX_GATE_DISTANCE}]-(n:System)
+                    MATCH (s:System {{system_id: $sysId}})-[:CONNECTS_TO|JUMP_BRIDGE*1..{MAX_GATE_DISTANCE}]-(n:System)
                     RETURN DISTINCT n.system_id AS nearby_id
                     """,
                     {"sysId": sys_id},

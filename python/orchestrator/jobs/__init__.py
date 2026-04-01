@@ -70,3 +70,4 @@ from .escalation_detection import run_escalation_detection
 from .shell_corp_detection import run_shell_corp_detection
 from .staging_system_detection import run_staging_system_detection
 from .pre_op_join_detection import run_pre_op_join_detection
+from .jump_bridge_sync import run_jump_bridge_sync

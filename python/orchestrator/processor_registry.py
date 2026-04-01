@@ -74,6 +74,7 @@ from .jobs.escalation_detection import run_escalation_detection
 from .jobs.shell_corp_detection import run_shell_corp_detection
 from .jobs.staging_system_detection import run_staging_system_detection
 from .jobs.pre_op_join_detection import run_pre_op_join_detection
+from .jobs.jump_bridge_sync import run_jump_bridge_sync
 from .jobs.killmail_zkb_repair import run_killmail_zkb_repair
 
 
@@ -130,6 +131,7 @@ PYTHON_COMPUTE_PROCESSOR_JOB_KEYS: set[str] = {
     "shell_corp_detection",
     "staging_system_detection",
     "pre_op_join_detection",
+    "jump_bridge_sync",
     "killmail_zkb_repair",
 }
 
@@ -243,6 +245,7 @@ _PROCESSOR_DISPATCH: dict[str, tuple] = {
     "shell_corp_detection": (run_shell_corp_detection, lambda db, cfg: (db, neo4j_runtime(cfg))),
     "staging_system_detection": (run_staging_system_detection, lambda db, cfg: (db, neo4j_runtime(cfg))),
     "pre_op_join_detection": (run_pre_op_join_detection, lambda db, cfg: (db,)),
+    "jump_bridge_sync": (run_jump_bridge_sync, lambda db, cfg: (db, neo4j_runtime(cfg))),
     # Maintenance
     "cache_expiry_cleanup_sync": (run_cache_expiry_cleanup_sync, lambda db, cfg: (db,)),
     # Killmail repair

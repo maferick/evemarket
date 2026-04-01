@@ -16354,10 +16354,10 @@ function db_threat_corridor_graph_subgraph(array $corridorSystemIds, int $surrou
         '
         UNWIND $corridor_ids AS corridor_id
         MATCH (c:System {system_id: corridor_id})
-        MATCH (c)-[:CONNECTS_TO*0..' . $surroundingHops . ']-(n:System)
+        MATCH (c)-[:CONNECTS_TO|JUMP_BRIDGE*0..' . $surroundingHops . ']-(n:System)
         WITH collect(DISTINCT n.system_id) AS node_ids
         UNWIND node_ids AS a_id
-        MATCH (a:System {system_id: a_id})-[:CONNECTS_TO]-(b:System)
+        MATCH (a:System {system_id: a_id})-[:CONNECTS_TO|JUMP_BRIDGE]-(b:System)
         WHERE b.system_id IN node_ids
         RETURN node_ids,
                collect(DISTINCT [a.system_id, b.system_id]) AS edge_pairs

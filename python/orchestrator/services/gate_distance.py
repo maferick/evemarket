@@ -40,7 +40,7 @@ class GateDistanceService:
         result = self._client.query(
             f"""
             MATCH (a:System {{system_id: $from_sys}}), (b:System {{system_id: $to_sys}})
-            MATCH path = shortestPath((a)-[:CONNECTS_TO*..{self._max_distance}]->(b))
+            MATCH path = shortestPath((a)-[:CONNECTS_TO|JUMP_BRIDGE*..{self._max_distance}]->(b))
             RETURN length(path) AS distance
             """,
             {"from_sys": system_a, "to_sys": system_b},
