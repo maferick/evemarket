@@ -20,7 +20,8 @@
             <thead>
                 <tr class="border-b border-border/70 text-xs uppercase tracking-[0.15em] text-muted">
                     <th data-sort class="px-3 py-2 text-left cursor-pointer select-none hover:text-slate-200">System <span class="sort-indicator">↕</span></th>
-                    <th data-sort class="px-3 py-2 text-right cursor-pointer select-none hover:text-slate-200">Participants <span class="sort-indicator">↕</span></th>
+                    <th data-sort class="px-3 py-2 text-right cursor-pointer select-none hover:text-slate-200">Kills <span class="sort-indicator">↕</span></th>
+                    <th data-sort class="px-3 py-2 text-right cursor-pointer select-none hover:text-slate-200">Pilots <span class="sort-indicator">↕</span></th>
                     <th data-sort class="px-3 py-2 text-left cursor-pointer select-none hover:text-slate-200">Size <span class="sort-indicator">↕</span></th>
                     <th data-sort class="px-3 py-2 text-left cursor-pointer select-none hover:text-slate-200">Start <span class="sort-indicator">↕</span></th>
                     <th data-sort class="px-3 py-2 text-left cursor-pointer select-none hover:text-slate-200">End <span class="sort-indicator">↕</span></th>
@@ -30,11 +31,12 @@
             </thead>
             <tbody>
                 <?php if ($battles === []): ?>
-                    <tr><td colspan="7" class="px-3 py-6 text-sm text-muted">No battles linked.</td></tr>
+                    <tr><td colspan="8" class="px-3 py-6 text-sm text-muted">No battles linked.</td></tr>
                 <?php else: ?>
                     <?php foreach ($battles as $b): ?>
                         <?php
                             $participants = (int) ($b['participant_count'] ?? 0);
+                            $killCount = (int) ($b['kill_count'] ?? 0);
                             $participantPct = (int) round(($participants / $maxParticipants) * 100);
                             $battleSize = strtoupper((string) ($b['battle_size_class'] ?? 'MICRO'));
                             $sizeClass = $sizeClasses[$battleSize] ?? $sizeClasses['MICRO'];
@@ -43,6 +45,7 @@
                         ?>
                         <tr class="border-b border-border/50">
                             <td class="px-3 py-2 text-slate-100" data-val="<?= htmlspecialchars((string) ($b['system_name'] ?? '-'), ENT_QUOTES) ?>"><?= htmlspecialchars((string) ($b['system_name'] ?? '-'), ENT_QUOTES) ?></td>
+                            <td class="px-3 py-2 text-right" data-val="<?= $killCount ?>"><?= number_format($killCount) ?></td>
                             <td class="px-3 py-2 text-right" data-val="<?= $participants ?>">
                                 <div class="flex items-center justify-end gap-2">
                                     <div class="w-16 h-1.5 rounded-full bg-slate-700 overflow-hidden">
