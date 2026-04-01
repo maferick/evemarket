@@ -32044,3 +32044,215 @@ function supplycore_system_area_svg(int $systemId, int $hops = 2): ?string
 
     return '/threat-corridors/svg/' . basename($cacheFile);
 }
+
+// ---------------------------------------------------------------------------
+//  CSV Fit & Doctrine Group Importer
+// ---------------------------------------------------------------------------
+
+function doctrine_parse_csv_fits(string $csvContent): array
+{
+    $lines = preg_split('/\R/', $csvContent);
+    if ($lines === false || count($lines) < 2) {
+        throw new RuntimeException('CSV must contain a header row and at least one data row.');
+    }
+
+    $headerLine = array_shift($lines);
+    $delimiter = str_contains($headerLine, "\t") ? "\t" : ',';
+    $headers = array_map('trim', str_getcsv($headerLine, $delimiter));
+
+    $required = ['fit_id', 'type_id', 'type_name', 'fit_qty', 'fit_name', 'ship_name_x', 'ship_id_x', 'category_name'];
+    $missing = array_diff($required, $headers);
+    if ($missing !== []) {
+        throw new RuntimeException('CSV is missing required columns: ' . implode(', ', $missing));
+    }
+
+    $fitRows = [];
+    foreach ($lines as $line) {
+        $trimmed = trim($line);
+        if ($trimmed === '') {
+            continue;
+        }
+
+        $fields = str_getcsv($trimmed, $delimiter);
+        if (count($fields) !== count($headers)) {
+            continue;
+        }
+
+        $row = array_combine($headers, $fields);
+        if ($row === false) {
+            continue;
+        }
+
+        $fitId = (int) ($row['fit_id'] ?? 0);
+        if ($fitId <= 0) {
+            continue;
+        }
+
+        if (!isset($fitRows[$fitId])) {
+            $fitRows[$fitId] = [
+                'fit_id' => $fitId,
+                'fit_name' => trim((string) ($row['fit_name'] ?? '')),
+                'ship_name' => trim((string) ($row['ship_name_x'] ?? $row['ship_name_y'] ?? '')),
+                'ship_type_id' => (int) ($row['ship_id_x'] ?? $row['ship_id_y'] ?? 0),
+                'ship_target' => (int) ($row['ship_target'] ?? 0),
+                'items' => [],
+            ];
+        }
+
+        $typeId = (int) ($row['type_id'] ?? 0);
+        $typeName = trim((string) ($row['type_name'] ?? ''));
+        $quantity = max(1, (int) ($row['fit_qty'] ?? 1));
+        $categoryName = trim((string) ($row['category_name'] ?? 'Module'));
+
+        if ($typeId <= 0 || $typeName === '') {
+            continue;
+        }
+
+        $fitRows[$fitId]['items'][] = [
+            'type_id' => $typeId,
+            'item_name' => $typeName,
+            'quantity' => $quantity,
+            'category_name' => $categoryName,
+        ];
+    }
+
+    return array_values($fitRows);
+}
+
+function doctrine_csv_slot_category(string $categoryName): string
+{
+    return match (strtolower(trim($categoryName))) {
+        'ship' => 'Hull',
+        'drone' => 'Drone Bay',
+        'charge' => 'Cargo',
+        default => 'Items',
+    };
+}
+
+function doctrine_csv_import_build_preview(): array
+{
+    $csvFiles = doctrine_uploaded_files('csv_files');
+    if ($csvFiles === []) {
+        throw new RuntimeException('Upload at least one CSV file containing fit data.');
+    }
+
+    $rows = [];
+    foreach ($csvFiles as $file) {
+        $body = (string) file_get_contents($file['tmp_name']);
+        if (trim($body) === '') {
+            continue;
+        }
+
+        $fits = doctrine_parse_csv_fits($body);
+        foreach ($fits as $fitData) {
+            $shipName = (string) ($fitData['ship_name'] ?? 'Unknown Hull');
+            $shipTypeId = (int) ($fitData['ship_type_id'] ?? 0);
+            $fitName = (string) ($fitData['fit_name'] ?? '');
+            $shipTarget = (int) ($fitData['ship_target'] ?? 0);
+
+            $resolvedItems = [];
+            $lineNum = 0;
+            foreach ((array) ($fitData['items'] ?? []) as $csvItem) {
+                $lineNum++;
+                $catName = (string) ($csvItem['category_name'] ?? 'Module');
+                $slotCategory = doctrine_csv_slot_category($catName);
+                $sourceRole = doctrine_source_role_from_category($slotCategory);
+
+                $resolvedItems[] = [
+                    'line_number' => $lineNum,
+                    'slot_category' => $slotCategory,
+                    'source_role' => $sourceRole,
+                    'item_name' => (string) ($csvItem['item_name'] ?? ''),
+                    'type_id' => (int) ($csvItem['type_id'] ?? 0),
+                    'quantity' => max(1, (int) ($csvItem['quantity'] ?? 1)),
+                    'resolution_source' => 'ref',
+                    'is_stock_tracked' => true,
+                ];
+            }
+
+            $shipResolved = [
+                'item_name' => $shipName,
+                'type_id' => $shipTypeId > 0 ? $shipTypeId : null,
+                'resolution_source' => $shipTypeId > 0 ? 'ref' : 'missing',
+            ];
+            $resolvedItems = doctrine_ensure_hull_item($resolvedItems, $shipResolved, $shipName);
+
+            $unresolved = [];
+            if ($shipTypeId <= 0) {
+                $unresolved[] = $shipName;
+            }
+
+            $warnings = [];
+            $fingerprintHash = doctrine_fit_item_fingerprint($resolvedItems);
+            $status = doctrine_fit_status_from_warnings($warnings, $unresolved, 'none');
+
+            $fit = [
+                'fit_name' => mb_substr($fitName, 0, 190),
+                'ship_name' => $shipName,
+                'ship_type_id' => $shipTypeId > 0 ? $shipTypeId : null,
+                'source_type' => 'buyall',
+                'source_format' => 'buyall',
+                'source_reference' => (string) ($file['name'] ?? ''),
+                'notes' => null,
+                'import_body' => doctrine_csv_build_buyall_body($shipName, $resolvedItems),
+                'raw_html' => null,
+                'raw_buyall' => null,
+                'raw_eft' => null,
+                'metadata_json' => json_encode(['group_labels' => [], 'source_reference' => (string) ($file['name'] ?? ''), 'detected_source_type' => 'csv'], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
+                'parse_warnings_json' => json_encode($warnings, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
+                'parse_status' => $status['parse_status'],
+                'review_status' => $status['review_status'],
+                'conflict_state' => 'none',
+                'fingerprint_hash' => $fingerprintHash,
+                'warning_count' => $status['warning_count'],
+                'item_count' => count($resolvedItems),
+                'unresolved_count' => count($unresolved),
+            ];
+
+            if ($shipTarget > 0) {
+                $fit['target_fleet_size_override'] = $shipTarget;
+            }
+
+            $resolved = [
+                'fit' => $fit,
+                'items' => $resolvedItems,
+                'ship' => $shipResolved,
+                'unresolved' => $unresolved,
+                'warnings' => $warnings,
+                'metadata' => ['group_labels' => []],
+                'ship_missing' => $shipTypeId <= 0,
+                'hull_is_stock_tracked' => true,
+                'hull_tracking_default_reason' => '',
+            ];
+
+            $draft = doctrine_attach_conflicts_to_draft(doctrine_prepare_fit_draft($resolved));
+            $draft['source_filename'] = (string) ($file['name'] ?? '') . ' (fit #' . (int) ($fitData['fit_id'] ?? 0) . ')';
+            $draft['source_type_label'] = 'CSV';
+            $rows[] = $draft;
+        }
+    }
+
+    return [
+        'created_at' => gmdate('Y-m-d H:i:s'),
+        'rows' => $rows,
+        'counts' => [
+            'total' => count($rows),
+            'ready' => count(array_filter($rows, static fn (array $row): bool => (($row['fit']['parse_status'] ?? 'ready') === 'ready'))),
+            'review' => count(array_filter($rows, static fn (array $row): bool => (($row['fit']['parse_status'] ?? 'ready') === 'review'))),
+        ],
+    ];
+}
+
+function doctrine_csv_build_buyall_body(string $shipName, array $items): string
+{
+    $lines = [$shipName];
+    foreach ($items as $item) {
+        if (strcasecmp((string) ($item['slot_category'] ?? ''), 'Hull') === 0) {
+            continue;
+        }
+        $qty = max(1, (int) ($item['quantity'] ?? 1));
+        $name = (string) ($item['item_name'] ?? '');
+        $lines[] = $qty > 1 ? ($qty . 'x ' . $name) : $name;
+    }
+    return implode("\n", $lines);
+}
