@@ -15691,10 +15691,16 @@ function db_theater_battles(string $theaterId): array
 {
     return db_select(
         'SELECT tb.*, br.system_id, br.started_at, br.ended_at, br.participant_count,
-                br.battle_size_class, rs.system_name
+                br.battle_size_class, rs.system_name,
+                COALESCE(kc.kill_count, 0) AS kill_count
          FROM theater_battles tb
          INNER JOIN battle_rollups br ON br.battle_id = tb.battle_id
          LEFT JOIN ref_systems rs ON rs.system_id = br.system_id
+         LEFT JOIN (
+             SELECT battle_id, COUNT(DISTINCT killmail_id) AS kill_count
+             FROM killmail_events
+             GROUP BY battle_id
+         ) kc ON kc.battle_id = tb.battle_id
          WHERE tb.theater_id = ?
          ORDER BY br.started_at ASC',
         [$theaterId]
