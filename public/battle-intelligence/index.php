@@ -136,7 +136,14 @@ include __DIR__ . '/../../src/views/partials/header.php';
             <tbody>
             <?php foreach ($communities as $comm): ?>
                 <tr class="border-b border-border/50">
-                    <td class="px-3 py-2 text-slate-100">#<?= (int) ($comm['community_id'] ?? 0) ?></td>
+                    <td class="px-3 py-2 text-slate-100">
+                        <?php if (($comm['top_member_name'] ?? '') !== ''): ?>
+                            <?= htmlspecialchars((string) $comm['top_member_name'], ENT_QUOTES) ?>'s cluster
+                            <span class="ml-1 text-[10px] text-muted">#<?= (int) ($comm['community_id'] ?? 0) ?></span>
+                        <?php else: ?>
+                            #<?= (int) ($comm['community_id'] ?? 0) ?>
+                        <?php endif; ?>
+                    </td>
                     <td class="px-3 py-2 text-right"><?= (int) ($comm['member_count'] ?? 0) ?></td>
                     <td class="px-3 py-2 text-right"><?= (int) ($comm['bridge_count'] ?? 0) ?></td>
                     <td class="px-3 py-2 text-right"><?= number_format((float) ($comm['avg_pagerank'] ?? 0), 4) ?></td>

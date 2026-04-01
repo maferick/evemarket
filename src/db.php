@@ -15525,7 +15525,14 @@ function db_graph_community_overview(int $limit = 30): array
                 SUM(gca.is_bridge) AS bridge_count,
                 AVG(gca.pagerank_score) AS avg_pagerank,
                 MAX(gca.pagerank_score) AS max_pagerank,
-                AVG(gca.betweenness_centrality) AS avg_betweenness
+                AVG(gca.betweenness_centrality) AS avg_betweenness,
+                (SELECT COALESCE(emc.entity_name, CONCAT(\'Character #\', top_m.character_id))
+                 FROM graph_community_assignments top_m
+                 LEFT JOIN entity_metadata_cache emc
+                     ON emc.entity_type = \'character\' AND emc.entity_id = top_m.character_id
+                 WHERE top_m.community_id = gca.community_id
+                 ORDER BY top_m.pagerank_score DESC
+                 LIMIT 1) AS top_member_name
          FROM graph_community_assignments gca
          WHERE gca.community_id IN (
              SELECT gca2.community_id FROM graph_community_assignments gca2
