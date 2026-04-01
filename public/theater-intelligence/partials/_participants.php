@@ -233,17 +233,28 @@ function _render_participant_row(array $p, array $resolvedEntities, array $shipT
                         <span class="text-[11px] text-slate-400 truncate max-w-[6rem]"><?= htmlspecialchars($flyingShipName, ENT_QUOTES) ?></span>
                     </div>
                 <?php endif; ?>
+                <?php
+                    // Extract killmail sequence IDs for clickable lost-ship links
+                    $lostKillmailIds = [];
+                    foreach ($lostDisplay as $ld) {
+                        foreach ((array) ($ld['killmail_ids'] ?? []) as $kmRef) {
+                            $seqId = (int) ($kmRef['sequence_id'] ?? 0);
+                            if ($seqId > 0) $lostKillmailIds[] = $seqId;
+                        }
+                    }
+                    $firstLostSeqId = $lostKillmailIds[0] ?? 0;
+                ?>
                 <?php if ($lostShipId > 0 && !$lostSameAsFlying): ?>
-                    <div class="flex items-center gap-1">
+                    <div class="flex items-center gap-1 <?= $firstLostSeqId > 0 ? 'cursor-pointer hover:brightness-125 transition-all' : '' ?>"<?= $firstLostSeqId > 0 ? ' data-km-seq="' . $firstLostSeqId . '" onclick="window._scKmModal(' . $firstLostSeqId . ')"' : '' ?>>
                         <img class="w-4 h-4 flex-shrink-0" src="https://images.evetech.net/types/<?= $lostShipId ?>/icon?size=32" loading="lazy">
-                        <span class="text-[11px] text-red-400 truncate max-w-[5rem]"><?= htmlspecialchars($lostShipName, ENT_QUOTES) ?></span>
+                        <span class="text-[11px] text-red-400 truncate max-w-[5rem] <?= $firstLostSeqId > 0 ? 'underline decoration-red-500/30 underline-offset-2' : '' ?>"><?= htmlspecialchars($lostShipName, ENT_QUOTES) ?></span>
                         <?php if ($lostShipCount > 1): ?>
                             <span class="text-[10px] text-red-500">&times;<?= $lostShipCount ?></span>
                         <?php endif; ?>
                     </div>
                 <?php elseif ($lostSameAsFlying && $hasDeath): ?>
-                    <div class="flex items-center gap-1 opacity-70">
-                        <span class="text-[10px] text-red-500/60">&darr; lost<?= $lostShipCount > 1 ? ' &times;' . $lostShipCount : '' ?></span>
+                    <div class="flex items-center gap-1 opacity-70 <?= $firstLostSeqId > 0 ? 'cursor-pointer hover:brightness-125 transition-all' : '' ?>"<?= $firstLostSeqId > 0 ? ' data-km-seq="' . $firstLostSeqId . '" onclick="window._scKmModal(' . $firstLostSeqId . ')"' : '' ?>>
+                        <span class="text-[10px] text-red-500/60 <?= $firstLostSeqId > 0 ? 'underline decoration-red-500/30 underline-offset-2' : '' ?>">&darr; lost<?= $lostShipCount > 1 ? ' &times;' . $lostShipCount : '' ?></span>
                     </div>
                 <?php endif; ?>
                 <?php if ($wasPodded): ?>
@@ -303,6 +314,7 @@ function _render_structure_row(array $sk, array $resolvedEntities, array $shipTy
     $corpId     = (int) ($sk['victim_corporation_id'] ?? 0);
     $shipTypeId = (int) ($sk['victim_ship_type_id'] ?? 0);
     $iskLost    = (float) ($sk['isk_lost'] ?? 0);
+    $skSeqId    = (int) ($sk['sequence_id'] ?? 0);
     $shipName   = $shipTypeId > 0
         ? (string) ($shipTypeNames[$shipTypeId] ?? ('Structure #' . $shipTypeId))
         : 'Unknown Structure';
@@ -339,11 +351,11 @@ function _render_structure_row(array $sk, array $resolvedEntities, array $shipTy
             </div>
         </td>
         <td class="px-2 py-1.5">
-            <div class="flex items-center gap-1">
+            <div class="flex items-center gap-1 <?= $skSeqId > 0 ? 'cursor-pointer hover:brightness-125 transition-all' : '' ?>"<?= $skSeqId > 0 ? ' data-km-seq="' . $skSeqId . '" onclick="window._scKmModal(' . $skSeqId . ')"' : '' ?>>
                 <?php if ($shipTypeId > 0): ?>
                     <img class="w-4 h-4 flex-shrink-0" src="https://images.evetech.net/types/<?= $shipTypeId ?>/icon?size=32" loading="lazy">
                 <?php endif; ?>
-                <span class="text-[11px] text-orange-300/80 truncate max-w-[6rem]"><?= htmlspecialchars($shipName, ENT_QUOTES) ?></span>
+                <span class="text-[11px] text-orange-300/80 truncate max-w-[6rem] <?= $skSeqId > 0 ? 'underline decoration-orange-500/30 underline-offset-2' : '' ?>"><?= htmlspecialchars($shipName, ENT_QUOTES) ?></span>
             </div>
         </td>
         <td class="px-2 py-1.5">
@@ -665,17 +677,27 @@ function _render_structure_row(array $sk, array $resolvedEntities, array $shipTy
                                             <span class="text-[11px] text-slate-400 truncate max-w-[6rem]"><?= htmlspecialchars($flyingShipName2, ENT_QUOTES) ?></span>
                                         </div>
                                     <?php endif; ?>
+                                    <?php
+                                        $lostKillmailIds2 = [];
+                                        foreach ($lostDisplay2 as $ld2) {
+                                            foreach ((array) ($ld2['killmail_ids'] ?? []) as $kmRef2) {
+                                                $seqId2 = (int) ($kmRef2['sequence_id'] ?? 0);
+                                                if ($seqId2 > 0) $lostKillmailIds2[] = $seqId2;
+                                            }
+                                        }
+                                        $firstLostSeqId2 = $lostKillmailIds2[0] ?? 0;
+                                    ?>
                                     <?php if ($lostShipId2 > 0 && !$lostSameAsFlying2): ?>
-                                        <div class="flex items-center gap-1">
+                                        <div class="flex items-center gap-1 <?= $firstLostSeqId2 > 0 ? 'cursor-pointer hover:brightness-125 transition-all' : '' ?>"<?= $firstLostSeqId2 > 0 ? ' data-km-seq="' . $firstLostSeqId2 . '" onclick="window._scKmModal(' . $firstLostSeqId2 . ')"' : '' ?>>
                                             <img class="w-4 h-4" src="https://images.evetech.net/types/<?= $lostShipId2 ?>/icon?size=32" loading="lazy">
-                                            <span class="text-[11px] text-red-400 truncate max-w-[5rem]"><?= htmlspecialchars($lostShipName2, ENT_QUOTES) ?></span>
+                                            <span class="text-[11px] text-red-400 truncate max-w-[5rem] <?= $firstLostSeqId2 > 0 ? 'underline decoration-red-500/30 underline-offset-2' : '' ?>"><?= htmlspecialchars($lostShipName2, ENT_QUOTES) ?></span>
                                             <?php if ($lostShipCount2 > 1): ?>
                                                 <span class="text-[10px] text-red-500">&times;<?= $lostShipCount2 ?></span>
                                             <?php endif; ?>
                                         </div>
                                     <?php elseif ($lostSameAsFlying2 && $hasDeath): ?>
-                                        <div class="flex items-center gap-1 opacity-70">
-                                            <span class="text-[10px] text-red-500/60">&darr; lost<?= $lostShipCount2 > 1 ? ' &times;' . $lostShipCount2 : '' ?></span>
+                                        <div class="flex items-center gap-1 opacity-70 <?= $firstLostSeqId2 > 0 ? 'cursor-pointer hover:brightness-125 transition-all' : '' ?>"<?= $firstLostSeqId2 > 0 ? ' data-km-seq="' . $firstLostSeqId2 . '" onclick="window._scKmModal(' . $firstLostSeqId2 . ')"' : '' ?>>
+                                            <span class="text-[10px] text-red-500/60 <?= $firstLostSeqId2 > 0 ? 'underline decoration-red-500/30 underline-offset-2' : '' ?>">&darr; lost<?= $lostShipCount2 > 1 ? ' &times;' . $lostShipCount2 : '' ?></span>
                                         </div>
                                     <?php endif; ?>
                                     <?php
@@ -742,6 +764,7 @@ function _render_structure_row(array $sk, array $resolvedEntities, array $shipTy
                             $skCorpId     = (int) ($sk['victim_corporation_id'] ?? 0);
                             $skShipTypeId = (int) ($sk['victim_ship_type_id'] ?? 0);
                             $skIskLost    = (float) ($sk['isk_lost'] ?? 0);
+                            $skSeqId3     = (int) ($sk['sequence_id'] ?? 0);
                             $skShipName   = $skShipTypeId > 0 ? (string) ($shipTypeNames[$skShipTypeId] ?? 'Structure #' . $skShipTypeId) : 'Unknown Structure';
                             $skSide       = $classifyAlliance($skAllianceId, $skCorpId);
                             $skSideClass  = $sideColorClass[$skSide] ?? 'text-slate-300';
@@ -774,11 +797,11 @@ function _render_structure_row(array $sk, array $resolvedEntities, array $shipTy
                                 </div>
                             </td>
                             <td class="px-3 py-2">
-                                <div class="flex items-center gap-1">
+                                <div class="flex items-center gap-1 <?= $skSeqId3 > 0 ? 'cursor-pointer hover:brightness-125 transition-all' : '' ?>"<?= $skSeqId3 > 0 ? ' data-km-seq="' . $skSeqId3 . '" onclick="window._scKmModal(' . $skSeqId3 . ')"' : '' ?>>
                                     <?php if ($skShipTypeId > 0): ?>
                                         <img class="w-4 h-4" src="https://images.evetech.net/types/<?= $skShipTypeId ?>/icon?size=32" loading="lazy">
                                     <?php endif; ?>
-                                    <span class="text-[11px] text-orange-300/80 truncate max-w-[8rem]"><?= htmlspecialchars($skShipName, ENT_QUOTES) ?></span>
+                                    <span class="text-[11px] text-orange-300/80 truncate max-w-[8rem] <?= $skSeqId3 > 0 ? 'underline decoration-orange-500/30 underline-offset-2' : '' ?>"><?= htmlspecialchars($skShipName, ENT_QUOTES) ?></span>
                                 </div>
                             </td>
                             <td class="px-3 py-2">
@@ -798,3 +821,176 @@ function _render_structure_row(array $sk, array $resolvedEntities, array $shipTy
     </div>
 <?php endif; ?>
 </section>
+
+<!-- Killmail detail modal -->
+<div id="sc-km-modal-overlay" class="fixed inset-0 z-[9999] hidden">
+    <div class="absolute inset-0 bg-black/70 backdrop-blur-sm" onclick="window._scKmModalClose()"></div>
+    <div class="absolute right-0 top-0 bottom-0 w-full max-w-lg overflow-y-auto surface-primary border-l border-border shadow-2xl shadow-black/50 transform transition-transform duration-200" id="sc-km-modal-panel">
+        <div class="sticky top-0 z-10 flex items-center justify-between gap-3 px-5 py-3 bg-slate-900/95 border-b border-border backdrop-blur-sm">
+            <h3 class="text-sm font-semibold text-slate-50 tracking-wide uppercase">Killmail Detail</h3>
+            <button onclick="window._scKmModalClose()" class="text-slate-400 hover:text-slate-100 transition-colors text-lg leading-none px-1">&times;</button>
+        </div>
+        <div id="sc-km-modal-body" class="p-5">
+            <div class="flex items-center justify-center py-12">
+                <div class="w-5 h-5 border-2 border-blue-500/40 border-t-blue-400 rounded-full animate-spin"></div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+(function() {
+    var overlay = document.getElementById('sc-km-modal-overlay');
+    var body = document.getElementById('sc-km-modal-body');
+    var panel = document.getElementById('sc-km-modal-panel');
+    var cache = {};
+
+    function fmtIsk(v) {
+        if (v == null) return '—';
+        if (v >= 1e9) return (v / 1e9).toFixed(1) + 'B';
+        if (v >= 1e6) return (v / 1e6).toFixed(1) + 'M';
+        if (v >= 1e3) return (v / 1e3).toFixed(0) + 'k';
+        return v.toFixed(0);
+    }
+
+    function esc(s) {
+        var el = document.createElement('span');
+        el.textContent = s || '';
+        return el.innerHTML;
+    }
+
+    function renderKm(d) {
+        var ship = d.ship || {};
+        var victim = d.victim || {};
+        var loc = d.location || {};
+        var attackers = d.top_attackers || [];
+        var fb = d.final_blow;
+
+        var html = '';
+
+        // Ship render + name
+        if (ship.render_url) {
+            html += '<div class="rounded-xl overflow-hidden bg-slate-800/50 mb-4">';
+            html += '<img src="' + esc(ship.render_url) + '" alt="' + esc(ship.name) + '" class="w-full aspect-square object-contain" loading="eager">';
+            html += '</div>';
+        }
+
+        // Ship info header
+        html += '<div class="mb-4">';
+        html += '<p class="text-xs uppercase tracking-[0.2em] text-muted">Loss</p>';
+        html += '<h2 class="mt-1 text-2xl font-semibold text-slate-50">' + esc(ship.name || 'Unknown Ship') + '</h2>';
+        if (ship['class']) html += '<p class="mt-1 text-sm text-slate-400">' + esc(ship['class']) + '</p>';
+        html += '</div>';
+
+        // Value + Time + Location
+        html += '<div class="grid grid-cols-3 gap-3 mb-4">';
+        html += '<div class="surface-tertiary"><p class="text-[10px] uppercase tracking-wider text-muted">Value</p><p class="mt-1 text-sm font-semibold text-slate-50">' + esc(d.value || '—') + '</p></div>';
+        html += '<div class="surface-tertiary"><p class="text-[10px] uppercase tracking-wider text-muted">Time</p><p class="mt-1 text-sm font-semibold text-slate-50">' + esc(d.killmail_time || '—') + '</p></div>';
+        html += '<div class="surface-tertiary"><p class="text-[10px] uppercase tracking-wider text-muted">System</p><p class="mt-1 text-sm font-semibold text-slate-50">' + esc(loc.system || '—') + '</p><p class="text-[10px] text-muted">' + esc(loc.region || '') + '</p></div>';
+        html += '</div>';
+
+        // Victim
+        html += '<div class="surface-tertiary mb-4">';
+        html += '<p class="text-[10px] uppercase tracking-wider text-muted mb-2">Victim</p>';
+        html += '<div class="flex items-center gap-3">';
+        if (victim.character_id) {
+            html += '<img src="https://images.evetech.net/characters/' + victim.character_id + '/portrait?size=64" alt="" class="w-10 h-10 rounded-lg">';
+        }
+        html += '<div>';
+        html += '<p class="text-sm font-medium text-slate-50">' + esc(victim.character_name || 'Unknown') + '</p>';
+        html += '<p class="text-xs text-slate-400">' + esc(victim.corporation_display || '') + (victim.alliance_display ? ' / ' + esc(victim.alliance_display) : '') + '</p>';
+        html += '<p class="text-xs text-muted mt-0.5">Damage taken: ' + esc(victim.damage_taken || '0') + '</p>';
+        html += '</div></div></div>';
+
+        // Final blow
+        if (fb) {
+            html += '<div class="surface-tertiary mb-4">';
+            html += '<p class="text-[10px] uppercase tracking-wider text-muted mb-2">Final blow</p>';
+            html += '<div class="flex items-center gap-3">';
+            if (fb.character_id) {
+                html += '<img src="https://images.evetech.net/characters/' + fb.character_id + '/portrait?size=64" alt="" class="w-8 h-8 rounded-lg">';
+            }
+            html += '<div class="flex-1 min-w-0">';
+            html += '<p class="text-sm text-slate-100">' + esc(fb.character_name || 'Unknown') + '</p>';
+            html += '<p class="text-xs text-slate-400">' + esc(fb.corporation_display || '') + '</p>';
+            html += '</div>';
+            if (fb.ship_type_id) {
+                html += '<div class="flex items-center gap-1">';
+                html += '<img class="w-5 h-5" src="https://images.evetech.net/types/' + fb.ship_type_id + '/icon?size=32">';
+                html += '<span class="text-xs text-slate-400">' + esc(fb.ship_display || '') + '</span>';
+                html += '</div>';
+            }
+            html += '</div></div>';
+        }
+
+        // Top attackers
+        if (attackers.length > 0) {
+            html += '<div class="surface-tertiary mb-4">';
+            html += '<p class="text-[10px] uppercase tracking-wider text-muted mb-2">Top attackers <span class="text-slate-500">(' + d.attacker_count + ' total)</span></p>';
+            html += '<div class="space-y-1.5">';
+            for (var i = 0; i < attackers.length; i++) {
+                var a = attackers[i];
+                html += '<div class="flex items-center gap-2 text-xs">';
+                if (a.character_id) {
+                    html += '<img src="https://images.evetech.net/characters/' + a.character_id + '/portrait?size=32" alt="" class="w-5 h-5 rounded-full flex-shrink-0">';
+                } else {
+                    html += '<span class="w-5 h-5 rounded-full bg-slate-700 flex-shrink-0"></span>';
+                }
+                html += '<span class="text-slate-200 truncate">' + esc(a.character_name || 'Unknown') + '</span>';
+                if (a.ship_type_id) {
+                    html += '<img class="w-4 h-4 flex-shrink-0 ml-auto" src="https://images.evetech.net/types/' + a.ship_type_id + '/icon?size=32">';
+                }
+                html += '<span class="text-slate-500 flex-shrink-0 min-w-[3rem] text-right">' + a.damage_done.toLocaleString() + '</span>';
+                if (a.final_blow) html += '<span class="text-[9px] text-yellow-400 flex-shrink-0">FB</span>';
+                html += '</div>';
+            }
+            html += '</div></div>';
+        }
+
+        // Links
+        html += '<div class="flex gap-2 mt-4">';
+        html += '<a href="' + esc(d.detail_url || '#') + '" class="flex-1 text-center text-xs px-3 py-2 rounded-lg bg-blue-600/20 border border-blue-500/30 text-blue-300 hover:bg-blue-600/30 transition-colors">Full detail</a>';
+        html += '<a href="' + esc(d.zkb_url || '#') + '" target="_blank" rel="noopener" class="flex-1 text-center text-xs px-3 py-2 rounded-lg bg-slate-700/50 border border-slate-600/30 text-slate-300 hover:bg-slate-700/80 transition-colors">zKillboard</a>';
+        html += '</div>';
+
+        return html;
+    }
+
+    window._scKmModal = function(seqId) {
+        overlay.classList.remove('hidden');
+        document.body.style.overflow = 'hidden';
+
+        if (cache[seqId]) {
+            body.innerHTML = renderKm(cache[seqId]);
+            return;
+        }
+
+        body.innerHTML = '<div class="flex items-center justify-center py-12"><div class="w-5 h-5 border-2 border-blue-500/40 border-t-blue-400 rounded-full animate-spin"></div></div>';
+
+        fetch('/api/killmail-summary.php?sequence_id=' + seqId)
+            .then(function(r) { return r.json(); })
+            .then(function(d) {
+                if (d.error) {
+                    body.innerHTML = '<div class="text-sm text-red-400 py-8 text-center">' + esc(d.error) + '</div>';
+                    return;
+                }
+                cache[seqId] = d;
+                body.innerHTML = renderKm(d);
+            })
+            .catch(function(err) {
+                body.innerHTML = '<div class="text-sm text-red-400 py-8 text-center">Failed to load killmail.</div>';
+            });
+    };
+
+    window._scKmModalClose = function() {
+        overlay.classList.add('hidden');
+        document.body.style.overflow = '';
+    };
+
+    document.addEventListener('keydown', function(e) {
+        if (e.key === 'Escape' && !overlay.classList.contains('hidden')) {
+            window._scKmModalClose();
+        }
+    });
+})();
+</script>
