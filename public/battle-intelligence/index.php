@@ -132,6 +132,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                 <th class="px-3 py-2 text-right">Avg PageRank</th>
                 <th class="px-3 py-2 text-right">Max PageRank</th>
                 <th class="px-3 py-2 text-right">Avg betweenness</th>
+                <th class="px-3 py-2 text-right">View</th>
             </tr></thead>
             <tbody>
             <?php foreach ($communities as $comm): ?>
@@ -149,6 +150,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                     <td class="px-3 py-2 text-right"><?= number_format((float) ($comm['avg_pagerank'] ?? 0), 4) ?></td>
                     <td class="px-3 py-2 text-right"><?= number_format((float) ($comm['max_pagerank'] ?? 0), 4) ?></td>
                     <td class="px-3 py-2 text-right"><?= number_format((float) ($comm['avg_betweenness'] ?? 0), 4) ?></td>
+                    <td class="px-3 py-2 text-right"><a class="text-accent" href="/battle-intelligence/community.php?community_id=<?= urlencode((string) ((int) ($comm['community_id'] ?? 0))) ?>">View</a></td>
                 </tr>
             <?php endforeach; ?>
             </tbody>
