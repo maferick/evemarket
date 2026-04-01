@@ -20,7 +20,7 @@ if ($_mapSystemIds === []) {
     return;
 }
 
-$_graph = db_threat_corridor_graph_subgraph($_mapSystemIds, 1);
+$_graph = db_threat_corridor_graph_subgraph($_mapSystemIds, 2);
 $_nodes = (array) ($_graph['nodes'] ?? []);
 $_edges = (array) ($_graph['edges'] ?? []);
 if ($_nodes === []) {
