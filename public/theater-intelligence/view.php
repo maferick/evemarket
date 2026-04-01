@@ -63,12 +63,21 @@ if ($viewSnapshot !== null && !$pendingLock) {
     $reportedKillTotal = (int) ($viewSnapshot['reported_kill_total'] ?? 0);
     $observedKillTotal = (int) ($viewSnapshot['observed_kill_total'] ?? 0);
 
-    // Reconstruct classify closure from saved alliance IDs
-    $classifyAlliance = static function (int $allianceId) use ($trackedAllianceIds, $opponentAllianceIds): string {
+    $trackedCorporationIds = (array) ($viewSnapshot['tracked_corporation_ids'] ?? []);
+    $opponentCorporationIds = (array) ($viewSnapshot['opponent_corporation_ids'] ?? []);
+
+    // Reconstruct classify closure from saved alliance/corporation IDs
+    $classifyAlliance = static function (int $allianceId, int $corporationId = 0) use ($trackedAllianceIds, $opponentAllianceIds, $trackedCorporationIds, $opponentCorporationIds): string {
         if ($allianceId > 0 && in_array($allianceId, $trackedAllianceIds, true)) {
             return 'friendly';
         }
+        if ($corporationId > 0 && in_array($corporationId, $trackedCorporationIds, true)) {
+            return 'friendly';
+        }
         if ($allianceId > 0 && in_array($allianceId, $opponentAllianceIds, true)) {
+            return 'opponent';
+        }
+        if ($corporationId > 0 && in_array($corporationId, $opponentCorporationIds, true)) {
             return 'opponent';
         }
         return 'third_party';
@@ -93,7 +102,8 @@ if ($viewSnapshot !== null && !$pendingLock) {
             $participantsAll,
             static function (array $participant) use ($sideFilter, $suspiciousOnly, $classifyAlliance): bool {
                 $allianceId = (int) ($participant['alliance_id'] ?? 0);
-                $displaySide = $classifyAlliance($allianceId);
+                $corporationId = (int) ($participant['corporation_id'] ?? 0);
+                $displaySide = $classifyAlliance($allianceId, $corporationId);
                 if ($sideFilter !== null && $displaySide !== $sideFilter) {
                     return false;
                 }
@@ -139,6 +149,9 @@ if ($viewSnapshot !== null && !$pendingLock) {
         if (($id = (int) ($row['alliance_id'] ?? 0)) > 0) {
             $entityRequests['alliance'][$id] = $id;
         }
+        if (($id = (int) ($row['corporation_id'] ?? 0)) > 0) {
+            $entityRequests['corporation'][$id] = $id;
+        }
     }
     foreach ($participantsAll as $row) {
         if (($id = (int) ($row['character_id'] ?? 0)) > 0) {
@@ -169,7 +182,7 @@ if ($viewSnapshot !== null && !$pendingLock) {
     }
     $resolvedEntities = killmail_entity_resolve_batch($entityRequests, false);
 
-    // ── Classify alliances from user settings (friendly/opponent/third_party) ──
+    // ── Classify alliances/corporations from user settings (friendly/opponent/third_party) ──
     $trackedAlliances = db_killmail_tracked_alliances_active();
     $trackedAllianceIds = array_map('intval', array_column($trackedAlliances, 'alliance_id'));
     $trackedAllianceIds = array_values(array_unique($trackedAllianceIds));
@@ -178,11 +191,25 @@ if ($viewSnapshot !== null && !$pendingLock) {
     $opponentAllianceIds = array_map('intval', array_column($opponentAlliances, 'alliance_id'));
     $opponentAllianceIds = array_values(array_unique($opponentAllianceIds));
 
-    $classifyAlliance = static function (int $allianceId) use ($trackedAllianceIds, $opponentAllianceIds): string {
+    $trackedCorporations = db_killmail_tracked_corporations_active();
+    $trackedCorporationIds = array_map('intval', array_column($trackedCorporations, 'corporation_id'));
+    $trackedCorporationIds = array_values(array_unique($trackedCorporationIds));
+
+    $opponentCorporations = db_killmail_opponent_corporations_active();
+    $opponentCorporationIds = array_map('intval', array_column($opponentCorporations, 'corporation_id'));
+    $opponentCorporationIds = array_values(array_unique($opponentCorporationIds));
+
+    $classifyAlliance = static function (int $allianceId, int $corporationId = 0) use ($trackedAllianceIds, $opponentAllianceIds, $trackedCorporationIds, $opponentCorporationIds): string {
         if ($allianceId > 0 && in_array($allianceId, $trackedAllianceIds, true)) {
             return 'friendly';
         }
+        if ($corporationId > 0 && in_array($corporationId, $trackedCorporationIds, true)) {
+            return 'friendly';
+        }
         if ($allianceId > 0 && in_array($allianceId, $opponentAllianceIds, true)) {
+            return 'opponent';
+        }
+        if ($corporationId > 0 && in_array($corporationId, $opponentCorporationIds, true)) {
             return 'opponent';
         }
         return 'third_party';
@@ -197,13 +224,16 @@ if ($viewSnapshot !== null && !$pendingLock) {
         'third_party' => 'Third Party',
     ];
 
-    // Build friendly/opponent lists from actual alliance names
+    // Build friendly/opponent lists from actual alliance/corporation names
     $sideAlliancesByPilots = ['friendly' => [], 'opponent' => [], 'third_party' => []];
     foreach ($allianceSummary as $a) {
         $aid = (int) ($a['alliance_id'] ?? 0);
+        $corpId = (int) ($a['corporation_id'] ?? 0);
         $pilots = (int) ($a['participant_count'] ?? 0);
-        $classification = $classifyAlliance($aid);
-        $sideAlliancesByPilots[$classification][$aid] = ($sideAlliancesByPilots[$classification][$aid] ?? 0) + $pilots;
+        $classification = $classifyAlliance($aid, $corpId);
+        // Use a composite key to distinguish corp-only entries from alliance entries
+        $groupKey = $aid > 0 ? "a:{$aid}" : "c:{$corpId}";
+        $sideAlliancesByPilots[$classification][$groupKey] = ($sideAlliancesByPilots[$classification][$groupKey] ?? 0) + $pilots;
     }
 
     // Generate smart opponent labels supporting multiple hostile alliances
@@ -257,7 +287,8 @@ if ($viewSnapshot !== null && !$pendingLock) {
             $participantsAll,
             static function (array $participant) use ($sideFilter, $suspiciousOnly, $classifyAlliance): bool {
                 $allianceId = (int) ($participant['alliance_id'] ?? 0);
-                $displaySide = $classifyAlliance($allianceId);
+                $corporationId = (int) ($participant['corporation_id'] ?? 0);
+                $displaySide = $classifyAlliance($allianceId, $corporationId);
                 if ($sideFilter !== null && $displaySide !== $sideFilter) {
                     return false;
                 }
@@ -304,7 +335,7 @@ if ($viewSnapshot !== null && !$pendingLock) {
     $participantKillTotalsBySide = ['friendly' => 0, 'opponent' => 0, 'third_party' => 0];
     foreach ($participantsAll as $row) {
         $kills = (int) ($row['kills'] ?? 0);
-        $side = $classifyAlliance((int) ($row['alliance_id'] ?? 0));
+        $side = $classifyAlliance((int) ($row['alliance_id'] ?? 0), (int) ($row['corporation_id'] ?? 0));
         $participantKillTotal += $kills;
         if (isset($participantKillTotalsBySide[$side])) {
             $participantKillTotalsBySide[$side] += $kills;
@@ -332,16 +363,25 @@ if ($viewSnapshot !== null && !$pendingLock) {
         'third_party' => ['pilots' => 0, 'kills' => 0, 'losses' => 0, 'isk_killed' => 0.0, 'isk_lost' => 0.0, 'alliances' => [], 'ship_pilots' => 0, 'ships' => []],
     ];
     foreach ($allianceSummary as $a) {
-        $side = $classifyAlliance((int) ($a['alliance_id'] ?? 0));
+        $aid = (int) ($a['alliance_id'] ?? 0);
+        $corpId = (int) ($a['corporation_id'] ?? 0);
+        $side = $classifyAlliance($aid, $corpId);
         if (!isset($sidePanels[$side])) continue;
         $sidePanels[$side]['pilots'] += (int) ($a['participant_count'] ?? 0);
         $sidePanels[$side]['kills'] += (int) ($a['total_kills'] ?? 0);
         $sidePanels[$side]['losses'] += (int) ($a['total_losses'] ?? 0);
         $sidePanels[$side]['isk_killed'] += (float) ($a['total_isk_killed'] ?? 0);
         $sidePanels[$side]['isk_lost'] += (float) ($a['total_isk_lost'] ?? 0);
+        // For corp-only entries, resolve as corporation; otherwise as alliance
+        if ($aid > 0) {
+            $entryName = killmail_entity_preferred_name($resolvedEntities, 'alliance', $aid, (string) ($a['alliance_name'] ?? ''), 'Alliance');
+        } else {
+            $entryName = killmail_entity_preferred_name($resolvedEntities, 'corporation', $corpId, (string) ($a['alliance_name'] ?? ''), 'Corporation');
+        }
         $sidePanels[$side]['alliances'][] = [
-            'alliance_id' => (int) ($a['alliance_id'] ?? 0),
-            'name' => killmail_entity_preferred_name($resolvedEntities, 'alliance', (int) ($a['alliance_id'] ?? 0), (string) ($a['alliance_name'] ?? ''), 'Alliance'),
+            'alliance_id' => $aid,
+            'corporation_id' => $corpId,
+            'name' => $entryName,
             'pilots' => (int) ($a['participant_count'] ?? 0),
         ];
     }
@@ -389,7 +429,7 @@ if ($viewSnapshot !== null && !$pendingLock) {
         if ($_flyId > 0 && !in_array($_flyId, $_podTypeIdsFC, true)) {
             continue; // already counted by fleet composition query
         }
-        $_pSide = $classifyAlliance((int) ($_p['alliance_id'] ?? 0));
+        $_pSide = $classifyAlliance((int) ($_p['alliance_id'] ?? 0), (int) ($_p['corporation_id'] ?? 0));
         if (!isset($sidePanels[$_pSide])) continue;
         // Find the best non-pod lost ship for this pilot
         $_lostJson = $_p['ships_lost_detail'] ?? null;
@@ -494,6 +534,8 @@ if ($viewSnapshot !== null && !$pendingLock) {
             'ship_type_names' => $shipTypeNames,
             'tracked_alliance_ids' => $trackedAllianceIds,
             'opponent_alliance_ids' => $opponentAllianceIds,
+            'tracked_corporation_ids' => $trackedCorporationIds,
+            'opponent_corporation_ids' => $opponentCorporationIds,
             'side_labels' => $sideLabels,
             'side_alliances_by_pilots' => $sideAlliancesByPilots,
             'opponent_model' => $opponentModel,
@@ -537,7 +579,7 @@ if ($rawLossesByVictimAlliance !== []) {
     $correctedLosses = ['friendly' => 0, 'opponent' => 0, 'third_party' => 0];
     $correctedIskLost = ['friendly' => 0.0, 'opponent' => 0.0, 'third_party' => 0.0];
     foreach ($rawLossesByVictimAlliance as $row) {
-        $side = $classifyAlliance((int) ($row['victim_alliance_id'] ?? 0));
+        $side = $classifyAlliance((int) ($row['victim_alliance_id'] ?? 0), (int) ($row['victim_corporation_id'] ?? 0));
         $correctedLosses[$side] += (int) ($row['losses'] ?? 0);
         $correctedIskLost[$side] += (float) ($row['isk_lost'] ?? 0);
     }

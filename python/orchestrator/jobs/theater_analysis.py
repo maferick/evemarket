@@ -383,77 +383,83 @@ def _compute_alliance_summary(
     side_configuration: dict[str, set[int]],
     char_sides: dict[int, str],
 ) -> list[dict[str, Any]]:
-    """Compute per-alliance summary across the theater."""
-    # alliance_id → accumulated stats
-    alliance_stats: dict[int, dict[str, Any]] = {}
+    """Compute per-alliance (or per-corporation for allianceless entities) summary.
 
-    # Get alliance names from participants
-    alliance_names: dict[int, str] = {}
+    Grouping key is (alliance_id, corporation_id):
+      - Entities WITH an alliance  → (alliance_id, 0)
+      - Entities WITHOUT an alliance → (0, corporation_id)
+    This ensures NPC-corp / allianceless-corp pilots get their own row
+    instead of being lumped under a single alliance_id=0 bucket.
+    """
+    # (alliance_id, corporation_id) → accumulated stats
+    group_stats: dict[tuple[int, int], dict[str, Any]] = {}
 
-    # Track which characters belong to which alliance
-    char_alliance: dict[int, int] = {}
+    def _group_key_for(alliance_id: int, corporation_id: int) -> tuple[int, int]:
+        if alliance_id > 0:
+            return (alliance_id, 0)
+        if corporation_id > 0:
+            return (0, corporation_id)
+        return (0, 0)
+
+    def _get_entry(key: tuple[int, int]) -> dict[str, Any]:
+        return group_stats.setdefault(key, _empty_alliance_stats(key[0], key[1]))
+
+    # Count participants per group
+    group_participants: dict[tuple[int, int], set[int]] = defaultdict(set)
     for p in bp_rows:
         aid = int(p.get("alliance_id") or 0)
+        corp_id = int(p.get("corporation_id") or 0)
         cid = int(p.get("character_id") or 0)
-        if cid > 0 and aid > 0:
-            char_alliance[cid] = aid
-
-    # Count participants per alliance
-    alliance_participants: dict[int, set[int]] = defaultdict(set)
-    for p in bp_rows:
-        aid = int(p.get("alliance_id") or 0)
-        cid = int(p.get("character_id") or 0)
-        if aid > 0 and cid > 0:
-            alliance_participants[aid].add(cid)
+        if cid > 0 and (aid > 0 or corp_id > 0):
+            gk = _group_key_for(aid, corp_id)
+            group_participants[gk].add(cid)
 
     # Process killmails for kills/losses/damage — deduplicate by killmail_id
     # since rows are expanded per-attacker from the LEFT JOIN.
     seen_loss_km: set[int] = set()
-    seen_kill_km: set[tuple[int, int]] = set()  # (killmail_id, alliance_id)
-    seen_final_blow_km: set[int] = set()  # killmail_ids where final blow ISK was credited
+    seen_kill_km: set[tuple[int, tuple[int, int]]] = set()
+    seen_final_blow_km: set[int] = set()
     for km in killmails:
         km_id = int(km.get("killmail_id") or 0)
-        victim_id = int(km.get("victim_character_id") or 0)
         victim_alliance = int(km.get("victim_alliance_id") or 0)
+        victim_corp = int(km.get("victim_corporation_id") or 0)
         isk = float(km.get("total_value") or 0)
 
-        attacker_id = int(km.get("attacker_character_id") or 0)
         attacker_alliance = int(km.get("attacker_alliance_id") or 0)
+        attacker_corp = int(km.get("attacker_corporation_id") or 0)
         attacker_damage = float(km.get("attacker_damage_done") or 0)
         final_blow = int(km.get("attacker_final_blow") or 0)
 
-        # Record loss for victim alliance (once per killmail)
-        # When the victim has no alliance (corp-only), group under alliance_id = 0
-        # so losses are still counted (they'll be classified as third_party).
+        # Record loss for victim group (once per killmail)
         if km_id not in seen_loss_km:
             seen_loss_km.add(km_id)
-            loss_key = victim_alliance if victim_alliance > 0 else 0
-            entry = alliance_stats.setdefault(loss_key, _empty_alliance_stats(loss_key))
+            loss_key = _group_key_for(victim_alliance, victim_corp)
+            entry = _get_entry(loss_key)
             entry["total_losses"] += 1
             entry["total_isk_lost"] += isk
 
-        # Record kill involvement for attacker alliance (once per killmail per alliance)
-        if attacker_alliance > 0:
-            entry = alliance_stats.setdefault(attacker_alliance, _empty_alliance_stats(attacker_alliance))
+        # Record kill involvement for attacker group (once per killmail per group)
+        atk_key = _group_key_for(attacker_alliance, attacker_corp)
+        if atk_key != (0, 0):
+            entry = _get_entry(atk_key)
             entry["total_damage"] += attacker_damage
-            kill_key = (km_id, attacker_alliance)
+            kill_key = (km_id, atk_key)
             if kill_key not in seen_kill_km:
                 seen_kill_km.add(kill_key)
                 entry["total_kills"] += 1
 
-        # ISK killed credited to the final-blow alliance only (no double-counting)
-        if final_blow and attacker_alliance > 0 and km_id not in seen_final_blow_km:
+        # ISK killed credited to the final-blow group only (no double-counting)
+        if final_blow and atk_key != (0, 0) and km_id not in seen_final_blow_km:
             seen_final_blow_km.add(km_id)
-            entry = alliance_stats.setdefault(attacker_alliance, _empty_alliance_stats(attacker_alliance))
+            entry = _get_entry(atk_key)
             entry["total_isk_killed"] += isk
 
     # Finalize
     result: list[dict[str, Any]] = []
-    for aid, stats in alliance_stats.items():
-        stats["participant_count"] = len(alliance_participants.get(aid, set()))
-        # Classify alliance directly from user settings
-        stats["side"] = _classify_alliance(aid, 0, side_configuration)
-        # Efficiency
+    for gk, stats in group_stats.items():
+        aid, corp_id = gk
+        stats["participant_count"] = len(group_participants.get(gk, set()))
+        stats["side"] = _classify_alliance(aid, corp_id, side_configuration)
         total_isk = stats["total_isk_killed"] + stats["total_isk_lost"]
         stats["efficiency"] = round(_safe_div(stats["total_isk_killed"], total_isk, 0.0), 4)
         result.append(stats)
@@ -461,9 +467,10 @@ def _compute_alliance_summary(
     return result
 
 
-def _empty_alliance_stats(alliance_id: int) -> dict[str, Any]:
+def _empty_alliance_stats(alliance_id: int, corporation_id: int = 0) -> dict[str, Any]:
     return {
         "alliance_id": alliance_id,
+        "corporation_id": corporation_id,
         "alliance_name": None,
         "side": "third_party",
         "participant_count": 0,
@@ -946,14 +953,15 @@ def _flush_analysis(
             cursor.executemany(
                 """
                 INSERT INTO theater_alliance_summary (
-                    theater_id, alliance_id, alliance_name, side,
+                    theater_id, alliance_id, corporation_id, alliance_name, side,
                     participant_count, total_kills, total_losses,
                     total_damage, total_isk_lost, total_isk_killed, efficiency
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 [
                     (
-                        theater_id, a["alliance_id"], a["alliance_name"], a["side"],
+                        theater_id, a["alliance_id"], a.get("corporation_id", 0),
+                        a["alliance_name"], a["side"],
                         a["participant_count"], a["total_kills"], a["total_losses"],
                         a["total_damage"], a["total_isk_lost"], a["total_isk_killed"],
                         a["efficiency"],

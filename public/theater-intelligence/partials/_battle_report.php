@@ -65,9 +65,12 @@
                     <p class="text-[10px] uppercase tracking-wider text-muted px-4 py-2">Alliances</p>
                     <?php foreach ($panelAlliances as $allianceRow): ?>
                         <?php $allianceId = (int) ($allianceRow['alliance_id'] ?? 0); ?>
+                        <?php $corporationId = (int) ($allianceRow['corporation_id'] ?? 0); ?>
                         <div class="flex items-center gap-2.5 px-4 py-2">
                             <?php if ($allianceId > 0): ?>
                                 <img src="https://images.evetech.net/alliances/<?= $allianceId ?>/logo?size=64" alt="" class="w-5 h-5 rounded-sm" loading="lazy">
+                            <?php elseif ($corporationId > 0): ?>
+                                <img src="https://images.evetech.net/corporations/<?= $corporationId ?>/logo?size=64" alt="" class="w-5 h-5 rounded-sm" loading="lazy">
                             <?php endif; ?>
                             <span class="text-xs text-slate-200 flex-1 truncate"><?= htmlspecialchars((string) ($allianceRow['name'] ?? ''), ENT_QUOTES) ?></span>
                             <span class="text-xs text-muted"><?= number_format((int) ($allianceRow['pilots'] ?? 0)) ?> pilots</span>
@@ -139,9 +142,12 @@
                     <p class="text-[10px] uppercase tracking-wider text-muted px-4 py-2">Opponent Alliances</p>
                     <?php foreach ($opponentAlliances as $allianceRow): ?>
                         <?php $allianceId = (int) ($allianceRow['alliance_id'] ?? 0); ?>
+                        <?php $corporationId = (int) ($allianceRow['corporation_id'] ?? 0); ?>
                         <div class="flex items-center gap-2.5 px-4 py-2">
                             <?php if ($allianceId > 0): ?>
                                 <img src="https://images.evetech.net/alliances/<?= $allianceId ?>/logo?size=64" alt="" class="w-5 h-5 rounded-sm" loading="lazy">
+                            <?php elseif ($corporationId > 0): ?>
+                                <img src="https://images.evetech.net/corporations/<?= $corporationId ?>/logo?size=64" alt="" class="w-5 h-5 rounded-sm" loading="lazy">
                             <?php endif; ?>
                             <span class="text-xs text-slate-200 flex-1 truncate"><?= htmlspecialchars((string) ($allianceRow['name'] ?? ''), ENT_QUOTES) ?></span>
                             <span class="text-xs text-muted"><?= number_format((int) ($allianceRow['pilots'] ?? 0)) ?> pilots</span>
@@ -156,9 +162,12 @@
                     <p class="text-[10px] uppercase tracking-wider text-slate-400 px-4 py-2">Third Party</p>
                     <?php foreach ($tpAlliances as $allianceRow): ?>
                         <?php $allianceId = (int) ($allianceRow['alliance_id'] ?? 0); ?>
+                        <?php $corporationId = (int) ($allianceRow['corporation_id'] ?? 0); ?>
                         <div class="flex items-center gap-2.5 px-4 py-2">
                             <?php if ($allianceId > 0): ?>
                                 <img src="https://images.evetech.net/alliances/<?= $allianceId ?>/logo?size=64" alt="" class="w-5 h-5 rounded-sm" loading="lazy">
+                            <?php elseif ($corporationId > 0): ?>
+                                <img src="https://images.evetech.net/corporations/<?= $corporationId ?>/logo?size=64" alt="" class="w-5 h-5 rounded-sm" loading="lazy">
                             <?php endif; ?>
                             <span class="text-xs text-slate-400 flex-1 truncate"><?= htmlspecialchars((string) ($allianceRow['name'] ?? ''), ENT_QUOTES) ?></span>
                             <span class="text-xs text-muted"><?= number_format((int) ($allianceRow['pilots'] ?? 0)) ?> pilots</span>

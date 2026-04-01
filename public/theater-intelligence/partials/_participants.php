@@ -11,7 +11,7 @@ $friendlyParticipants = [];
 $enemyParticipants = [];
 $thirdPartyParticipants = [];
 foreach ($participantsAll as $p) {
-    $pSide = $classifyAlliance((int) ($p['alliance_id'] ?? 0));
+    $pSide = $classifyAlliance((int) ($p['alliance_id'] ?? 0), (int) ($p['corporation_id'] ?? 0));
     if ($pSide === 'friendly') {
         $friendlyParticipants[] = $p;
     } elseif ($pSide === 'opponent') {
@@ -27,7 +27,7 @@ $enemyStructureKills = [];
 $thirdPartyStructureKills = [];
 $structureKills = $structureKills ?? [];
 foreach ($structureKills as $sk) {
-    $skSide = $classifyAlliance((int) ($sk['victim_alliance_id'] ?? 0));
+    $skSide = $classifyAlliance((int) ($sk['victim_alliance_id'] ?? 0), (int) ($sk['victim_corporation_id'] ?? 0));
     if ($skSide === 'friendly') {
         $friendlyStructureKills[] = $sk;
     } elseif ($skSide === 'opponent') {
@@ -551,7 +551,7 @@ function _render_structure_row(array $sk, array $resolvedEntities, array $shipTy
                 <?php else: ?>
                     <?php foreach ($filteredList as $p): ?>
                         <?php
-                            $pSide = $classifyAlliance((int) ($p['alliance_id'] ?? 0));
+                            $pSide = $classifyAlliance((int) ($p['alliance_id'] ?? 0), (int) ($p['corporation_id'] ?? 0));
                             $pSideClass = $sideColorClass[$pSide] ?? 'text-slate-300';
                             $pSusp = (float) ($p['suspicion_score'] ?? 0);
                             $isSusp = (int) ($p['is_suspicious'] ?? 0);
@@ -732,7 +732,7 @@ function _render_structure_row(array $sk, array $resolvedEntities, array $shipTy
                             $structureKills,
                             static function (array $sk) use ($sideFilter, $classifyAlliance): bool {
                                 if ($sideFilter === null) return true;
-                                return $classifyAlliance((int) ($sk['victim_alliance_id'] ?? 0)) === $sideFilter;
+                                return $classifyAlliance((int) ($sk['victim_alliance_id'] ?? 0), (int) ($sk['victim_corporation_id'] ?? 0)) === $sideFilter;
                             }
                         ));
                     ?>
@@ -743,7 +743,7 @@ function _render_structure_row(array $sk, array $resolvedEntities, array $shipTy
                             $skShipTypeId = (int) ($sk['victim_ship_type_id'] ?? 0);
                             $skIskLost    = (float) ($sk['isk_lost'] ?? 0);
                             $skShipName   = $skShipTypeId > 0 ? (string) ($shipTypeNames[$skShipTypeId] ?? 'Structure #' . $skShipTypeId) : 'Unknown Structure';
-                            $skSide       = $classifyAlliance($skAllianceId);
+                            $skSide       = $classifyAlliance($skAllianceId, $skCorpId);
                             $skSideClass  = $sideColorClass[$skSide] ?? 'text-slate-300';
                             $skOrgName    = '';
                             if ($skCorpId > 0) {
