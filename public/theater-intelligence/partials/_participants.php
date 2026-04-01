@@ -1057,16 +1057,16 @@ function _render_structure_row(array $sk, array $resolvedEntities, array $shipTy
                 html += '<div class="px-3 pb-2 space-y-1">';
                 for (var ii = 0; ii < group.rows.length; ii++) {
                     var item = group.rows[ii];
-                    html += '<div class="flex items-center gap-2 py-1">';
+                    html += '<div style="display:flex;align-items:center;gap:0.375rem;padding:0.25rem 0;">';
                     if (item.type_id > 0) {
-                        html += '<img class="w-5 h-5 rounded flex-shrink-0 bg-black/30 p-0.5" src="https://images.evetech.net/types/' + item.type_id + '/icon?size=32" loading="lazy">';
+                        html += '<img style="width:1.25rem;height:1.25rem;flex-shrink:0;background:rgba(0,0,0,0.3);padding:1px;border-radius:0.25rem;" src="https://images.evetech.net/types/' + item.type_id + '/icon?size=32" loading="lazy">';
                     }
-                    html += '<span class="text-xs text-slate-200 truncate flex-1">' + esc(item.name) + '</span>';
+                    html += '<span style="font-size:0.75rem;color:#e2e8f0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0;">' + esc(item.name) + '</span>';
                     if (item.quantity > 1) {
-                        html += '<span class="text-[10px] text-slate-500 flex-shrink-0">&times;' + item.quantity + '</span>';
+                        html += '<span style="font-size:0.625rem;color:#64748b;flex-shrink:0;white-space:nowrap;min-width:2rem;text-align:right;">&times;' + item.quantity.toLocaleString() + '</span>';
                     }
                     if (item.total_price != null) {
-                        html += '<span class="text-[10px] text-yellow-500/70 flex-shrink-0">' + fmtIsk(item.total_price) + '</span>';
+                        html += '<span style="font-size:0.625rem;color:rgba(234,179,8,0.7);flex-shrink:0;white-space:nowrap;min-width:3rem;text-align:right;">' + fmtIsk(item.total_price) + '</span>';
                     }
                     html += '</div>';
                 }
