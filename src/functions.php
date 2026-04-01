@@ -3993,6 +3993,12 @@ function orchestrator_runtime_config_export(): array
         ],
         'battle_intelligence' => [
             'log_file' => supplycore_worker_log_path('battle-intelligence.log', (string) config('battle_intelligence.log_file', 'storage/logs/battle-intelligence.log')),
+            'counterintel_batch_size' => max(10, min(200, (int) config('battle_intelligence.counterintel_batch_size', 200))),
+            'counterintel_max_batches' => max(1, min(20, (int) config('battle_intelligence.counterintel_max_batches', 20))),
+            'evewho_user_agent' => (string) config('battle_intelligence.evewho_user_agent', 'SupplyCoreCounterIntel/1.0 (+https://supplycore)'),
+            'evewho_cache_ttl_hours' => max(6, (int) config('battle_intelligence.evewho_cache_ttl_hours', 24)),
+            'evewho_max_fetches_per_run' => max(5, (int) config('battle_intelligence.evewho_max_fetches_per_run', 100)),
+            'evewho_fetch_batch_size' => max(1, (int) config('battle_intelligence.evewho_fetch_batch_size', 20)),
         ],
         'paths' => [
             'app_root' => $appRoot,
