@@ -237,7 +237,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                     </thead>
                     <tbody class="divide-y divide-white/8 text-slate-200">
                         <?php foreach ((array) ($activePageData['items'] ?? []) as $item): ?>
-                            <tr data-buyall-item data-buyall-name="<?= htmlspecialchars((string) ($item['item_name'] ?? ''), ENT_QUOTES) ?>" data-buyall-qty="<?= (int) ($item['final_planner_quantity'] ?? $item['quantity'] ?? 0) ?>" data-buyall-sell="<?= htmlspecialchars(isset($item['sell_price']) && $item['sell_price'] !== null ? number_format((float) $item['sell_price'], 2, '.', '') : '', ENT_QUOTES) ?>">
+                            <tr data-buyall-item data-buyall-name="<?= htmlspecialchars((string) ($item['item_name'] ?? ''), ENT_QUOTES) ?>" data-buyall-qty="<?= (int) ($item['final_planner_quantity'] ?? $item['quantity'] ?? 0) ?>" data-buyall-sell="<?= htmlspecialchars(isset($item['sell_price']) && $item['sell_price'] !== null ? number_format((float) $item['sell_price'], 2, '.', '') : '', ENT_QUOTES) ?>" data-buyall-hub="<?= (int) ($item['hub_available_quantity'] ?? 0) ?>">
                                 <td class="px-4 py-3 align-top"><input type="checkbox" checked class="buyall-item-check"></td>
                                 <td class="px-4 py-3 align-top">
                                     <p class="font-semibold text-white"><?= htmlspecialchars((string) ($item['item_name'] ?? ''), ENT_QUOTES) ?></p>
@@ -246,6 +246,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                                 <td class="px-4 py-3 align-top">
                                     <p class="font-semibold text-white"><?= htmlspecialchars((string) ($item['final_planner_quantity'] ?? $item['quantity'] ?? 0), ENT_QUOTES) ?></p>
                                     <p class="mt-1 text-xs text-slate-500">Short by <?= htmlspecialchars((string) ($item['exact_deficit_quantity'] ?? 0), ENT_QUOTES) ?> · target <?= htmlspecialchars((string) ($item['operational_recommended_quantity'] ?? 0), ENT_QUOTES) ?></p>
+                                    <p class="mt-1 text-xs <?= !empty($item['hub_capped']) ? 'text-amber-300' : 'text-slate-500' ?>">Hub stock <?= htmlspecialchars(number_format((int) ($item['hub_available_quantity'] ?? 0)), ENT_QUOTES) ?><?= !empty($item['hub_capped']) ? ' · capped' : '' ?></p>
                                 </td>
                                 <td class="px-4 py-3 align-top">
                                     <p class="font-semibold text-white"><?= htmlspecialchars(number_format((float) ($item['final_priority_score'] ?? 0.0), 1), ENT_QUOTES) ?></p>
@@ -396,16 +397,17 @@ include __DIR__ . '/../../src/views/partials/header.php';
     function rebuildClipboardFromSelection() {
         const rows = document.querySelectorAll('[data-buyall-item]');
         const lines = [];
-        const pricingLines = ['Item\tQty\tSell Price\tTotal Sell'];
+        const pricingLines = ['Item\tQty\tSell Price\tTotal Sell\tHub Stock'];
         rows.forEach(function (row) {
             const cb = row.querySelector('.buyall-item-check');
             if (cb && cb.checked) {
                 var name = row.getAttribute('data-buyall-name');
                 var qty = row.getAttribute('data-buyall-qty');
                 var sell = row.getAttribute('data-buyall-sell');
+                var hub = row.getAttribute('data-buyall-hub') || '0';
                 lines.push(name + ' ' + qty);
                 var sellTotal = (sell && parseFloat(sell) > 0) ? (parseFloat(sell) * parseInt(qty, 10)).toFixed(2) : '';
-                pricingLines.push(name + '\t' + qty + '\t' + (sell || '') + '\t' + sellTotal);
+                pricingLines.push(name + '\t' + qty + '\t' + (sell || '') + '\t' + sellTotal + '\t' + hub);
             }
         });
         const textarea = document.getElementById('buy-all-current');

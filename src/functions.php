@@ -28846,15 +28846,16 @@ function buy_all_pack_pages(array $items): array
             . ' · Low ' . doctrine_format_quantity((int) ($page['low_necessity_count'] ?? 0));
         $page['clipboard_text'] = implode("\n", array_filter($lines, static fn (string $line): bool => trim($line) !== ''));
 
-        // Pricing export: TSV with sell price and totals for spreadsheet use.
-        $pricingLines = ["Item\tQty\tSell Price\tTotal Sell"];
+        // Pricing export: TSV with sell price, hub stock and totals for spreadsheet use.
+        $pricingLines = ["Item\tQty\tSell Price\tTotal Sell\tHub Stock"];
         foreach ((array) ($page['items'] ?? []) as $row) {
             $name = trim((string) ($row['item_name'] ?? ''));
             $qty = (int) ($row['quantity'] ?? 0);
             $sellPrice = isset($row['sell_price']) && $row['sell_price'] !== null ? number_format((float) $row['sell_price'], 2, '.', '') : '';
             $sellTotal = isset($row['sell_price']) && $row['sell_price'] !== null ? number_format((float) $row['sell_price'] * $qty, 2, '.', '') : '';
+            $hubStock = (string) (int) ($row['hub_available_quantity'] ?? 0);
             if ($name !== '' && $qty > 0) {
-                $pricingLines[] = "{$name}\t{$qty}\t{$sellPrice}\t{$sellTotal}";
+                $pricingLines[] = "{$name}\t{$qty}\t{$sellPrice}\t{$sellTotal}\t{$hubStock}";
             }
         }
         $page['clipboard_pricing_text'] = implode("\n", $pricingLines);
@@ -29047,6 +29048,7 @@ function buy_all_planner_data_uncached(array $query = []): array
         $exactDeficitQuantity = max(0, (int) ($demand['exact_deficit_quantity'] ?? 0));
         $seedFloor = max(0, (int) ($thresholds['min_alliance_sell_volume'] ?? 0) - $localQty);
         $referenceVolume = max(0, (int) ($market['reference_total_sell_volume'] ?? 0));
+        $hubAvailableQuantity = $referenceVolume;
         $velocityBuffer = max(0, min(500, (int) ceil($referenceVolume * (((bool) ($market['missing_in_alliance'] ?? false)) ? 0.20 : 0.12))));
         $economicRecommendedQuantity = max(0, min(500, max($seedFloor, $velocityBuffer)));
         $blockedFitImpact = max(0, (int) ($demand['deterministic_blocked_fits'] ?? 0));
@@ -29071,6 +29073,15 @@ function buy_all_planner_data_uncached(array $query = []): array
         }
         if ($exactDeficitQuantity > 0) {
             $finalPlannerQuantity = max($exactDeficitQuantity, $finalPlannerQuantity);
+        }
+        // Cap buy quantity to what is actually available in the hub.
+        // When the planner wants more than the hub has on sell, the
+        // recommendation is reduced and flagged so the user can see the
+        // constraint and plan multiple buy runs if needed.
+        $hubCapped = false;
+        if ($hubAvailableQuantity > 0 && $finalPlannerQuantity > $hubAvailableQuantity) {
+            $finalPlannerQuantity = $hubAvailableQuantity;
+            $hubCapped = true;
         }
         if ($finalPlannerQuantity <= 0) {
             continue;
@@ -29221,6 +29232,8 @@ function buy_all_planner_data_uncached(array $query = []): array
             'pricing_completeness' => $buyPrice !== null && $sellPrice !== null ? 'complete' : 'partial',
             'hub_price_observed_at' => $market['reference_last_observed_at'] ?? ($hubHistoryByType[$typeId]['observed_at'] ?? null),
             'alliance_price_observed_at' => $market['alliance_last_observed_at'] ?? ($allianceHistoryByType[$typeId]['observed_at'] ?? null),
+            'hub_available_quantity' => $hubAvailableQuantity,
+            'hub_capped' => $hubCapped,
             'stock_observed_at' => $market['alliance_last_observed_at'] ?? null,
             'dependency_score' => round($dependencyScore, 4),
             'criticality_score' => round($criticalityScore, 4),
