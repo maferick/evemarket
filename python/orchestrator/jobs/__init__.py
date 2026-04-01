@@ -65,3 +65,8 @@ from .cache_expiry_cleanup_sync import run_cache_expiry_cleanup_sync
 from .character_feature_windows import run_compute_character_feature_windows
 from .character_movement_footprints import run_compute_character_movement_footprints
 from .temporal_behavior_detection import run_temporal_behavior_detection
+from .battle_type_classification import run_battle_type_classification
+from .escalation_detection import run_escalation_detection
+from .shell_corp_detection import run_shell_corp_detection
+from .staging_system_detection import run_staging_system_detection
+from .pre_op_join_detection import run_pre_op_join_detection
