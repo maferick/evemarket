@@ -23730,17 +23730,13 @@ function doctrine_operational_snapshot_build(bool $persistSnapshots = false, str
 
 function doctrine_operational_snapshot(): array
 {
-    return supplycore_cache_aside('doctrine', ['operational-snapshot'], supplycore_cache_ttl('doctrine_summary'), static function (): array {
-        $snapshot = doctrine_snapshot_cache_payload();
-        if ($snapshot !== null) {
-            return $snapshot;
-        }
+    // Always compute live — caching removed per operator request.
+    $snapshot = doctrine_snapshot_cache_payload();
+    if ($snapshot !== null) {
+        return $snapshot;
+    }
 
-        return doctrine_operational_snapshot_build(false, 'cached-read-fallback');
-    }, [
-        'dependencies' => ['doctrine', 'market_compare', 'killmail_overview'],
-        'lock_ttl' => 20,
-    ]);
+    return doctrine_operational_snapshot_build(false, 'live');
 }
 
 function supplycore_summary_refresh_interval_seconds(): int
@@ -28875,30 +28871,7 @@ function buy_all_precomputed_empty_payload(array $request, string $reason): arra
 
 function buy_all_planner_data(array $query = []): array
 {
-    $request = buy_all_request($query);
-    $filtersHash = hash('sha256', json_encode((array) ($request['filters'] ?? []), JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE));
-    $row = db_buy_all_summary_latest((string) ($request['mode'] ?? 'blended'), (string) ($request['sort'] ?? 'blended_score'), $filtersHash, 3600);
-    if (is_array($row) && isset($row['payload_json'])) {
-        $decoded = json_decode((string) $row['payload_json'], true);
-        if (is_array($decoded)) {
-            $decoded['request'] = $request;
-            $computedAtRaw = isset($row['computed_at']) ? (string) $row['computed_at'] : '';
-            $computedAtTs = $computedAtRaw !== '' ? (int) (strtotime($computedAtRaw) ?: 0) : 0;
-            $isStale = $computedAtTs > 0 ? ((time() - $computedAtTs) > 600) : true;
-            if (!isset($decoded['summary']) || !is_array($decoded['summary'])) {
-                $decoded['summary'] = [];
-            }
-            $decoded['summary']['precompute_state'] = $isStale ? 'stale' : 'fresh';
-            $decoded['summary']['precompute_message'] = $isStale
-                ? 'Planner data is stale (older than 10 minutes). Latest data is still shown.'
-                : 'Planner data is fresh and precomputed.';
-            $decoded['summary']['computed_at'] = $computedAtRaw;
-
-            return $decoded;
-        }
-    }
-
-    // No precomputed data matches the current filter combination — compute live.
+    // Always compute live — precomputed cache removed per operator request.
     return buy_all_planner_data_uncached($query);
 }
 
