@@ -32186,6 +32186,8 @@ function doctrine_csv_import_build_preview(): array
             $fingerprintHash = doctrine_fit_item_fingerprint($resolvedItems);
             $status = doctrine_fit_status_from_warnings($warnings, $unresolved, 'none');
 
+            $detectedLabels = doctrine_csv_detect_group_labels($fitName, $shipName);
+
             $fit = [
                 'fit_name' => mb_substr($fitName, 0, 190),
                 'ship_name' => $shipName,
@@ -32198,7 +32200,7 @@ function doctrine_csv_import_build_preview(): array
                 'raw_html' => null,
                 'raw_buyall' => null,
                 'raw_eft' => null,
-                'metadata_json' => json_encode(['group_labels' => [], 'source_reference' => (string) ($file['name'] ?? ''), 'detected_source_type' => 'csv'], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
+                'metadata_json' => json_encode(['group_labels' => $detectedLabels, 'source_reference' => (string) ($file['name'] ?? ''), 'detected_source_type' => 'csv'], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
                 'parse_warnings_json' => json_encode($warnings, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
                 'parse_status' => $status['parse_status'],
                 'review_status' => $status['review_status'],
@@ -32219,7 +32221,7 @@ function doctrine_csv_import_build_preview(): array
                 'ship' => $shipResolved,
                 'unresolved' => $unresolved,
                 'warnings' => $warnings,
-                'metadata' => ['group_labels' => []],
+                'metadata' => ['group_labels' => $detectedLabels],
                 'ship_missing' => $shipTypeId <= 0,
                 'hull_is_stock_tracked' => true,
                 'hull_tracking_default_reason' => '',
@@ -32255,4 +32257,233 @@ function doctrine_csv_build_buyall_body(string $shipName, array $items): string
         $lines[] = $qty > 1 ? ($qty . 'x ' . $name) : $name;
     }
     return implode("\n", $lines);
+}
+
+/**
+ * Best-effort extraction of doctrine group labels from WinterCo-style fit names.
+ *
+ * Fit names typically follow the pattern:
+ *   [YYMMDD] [WC|WC-EN|WCEN|FRT] [DoctrineName][-Role] [ShipName] [vX.X] [- Variant]
+ *
+ * Examples:
+ *   "2407 WC Shield Keres v2.0 - AB Refit"           → Shield
+ *   "2202 WC AHACs-DPS Deimos v1.2"                  → AHACs
+ *   "2211 WC Kikistuka-Logi Kirin v1.1 MWD/..."      → Kikistuka
+ *   "2301 WC TFI - Links Damnation v1.2"             → TFI
+ *   "2202 WC Hurricane - Bellicose - Ewar"            → Hurricane
+ *   "WC-EN - Shield Web Loki (AB refit) v1.0"        → Shield
+ *   "2206 WCEN Entosis - Drake V1.0"                  → Entosis
+ *   "2403 WC-EN Bombing Purifier v3.0"                → Bombing
+ *   "2307 WC Retri-Links Pontifex v1.1"               → Retri
+ *
+ * The ship name (from the CSV ship_name column) is used as an anchor to isolate
+ * the doctrine context that precedes it. Known role keywords (DPS, Logi, Links,
+ * etc.) are stripped to surface just the doctrine family name.
+ *
+ * Returns an array of detected labels (usually zero or one).
+ */
+function doctrine_csv_detect_group_labels(string $fitName, string $shipName): array
+{
+    $clean = $fitName;
+
+    // Strip corrupted unicode / non-ASCII characters and everything after '/' (common junk trailer)
+    $slashPos = strpos($clean, '/');
+    if ($slashPos !== false) {
+        $clean = substr($clean, 0, $slashPos);
+    }
+    $clean = (string) preg_replace('/[^\x20-\x7E]+/', '', $clean);
+    $clean = trim($clean);
+    if ($clean === '') {
+        return [];
+    }
+
+    // Strip leading date prefix (4–6 digits, e.g. "2407", "230801")
+    $clean = trim((string) preg_replace('/^\d{4,6}\s+/', '', $clean));
+
+    // Strip alliance / coalition prefix: WC-EN, WCEN, WC, FRT (with optional trailing separator)
+    $clean = trim((string) preg_replace('/^(WC-EN|WCEN|WC|FRT)\b\s*[-–]?\s*/i', '', $clean));
+
+    // Strip version strings anywhere: v1.0, V2.5, 1.2 (standalone word-bounded)
+    $clean = trim((string) preg_replace('/\b[vV]\d+\.\d+\b/', '', $clean));
+    $clean = trim((string) preg_replace('/\b\d+\.\d+\b/', '', $clean));
+
+    // Strip trailing propulsion / refit modifiers after " - "
+    $clean = trim((string) preg_replace('/\s*[-–]\s*(AB\s*Refit|MWD\s*Refit|AB|MWD|DPS)\s*$/i', '', $clean));
+
+    // Strip parenthetical and bracketed modifiers: (AB Refit), (MWD), (Nullified), (N.E.), [No Probes]
+    $clean = trim((string) preg_replace('/\s*\([^)]*\)/', '', $clean));
+    $clean = trim((string) preg_replace('/\s*\[[^\]]*\]/', '', $clean));
+
+    // Collapse whitespace
+    $clean = trim((string) preg_replace('/\s+/', ' ', $clean));
+    if ($clean === '') {
+        return [];
+    }
+
+    $shipNorm = trim($shipName);
+    if ($shipNorm === '') {
+        return [];
+    }
+
+    // --- Locate the ship name in the cleaned fit name ---
+    $pos = stripos($clean, $shipNorm);
+
+    // If ship name is not found or starts the string, try to detect from
+    // the whole cleaned string (e.g. "Hurricane T2 - DPS" where ship=Hurricane).
+    if ($pos === false || $pos === 0) {
+        return doctrine_csv_detect_group_labels_ship_at_start($clean, $shipNorm, $pos);
+    }
+
+    // Everything before the ship name is the doctrine context
+    $before = trim(rtrim(substr($clean, 0, $pos), " \t-–"));
+    if ($before === '') {
+        return [];
+    }
+
+    return doctrine_csv_extract_doctrine_from_context($before, $shipNorm);
+}
+
+/**
+ * Handle the edge case where the ship name is at position 0 or absent.
+ *
+ * When the ship name starts the cleaned string (e.g. "Hurricane T2 - DPS"),
+ * it may itself be the doctrine name if role/variant text follows.
+ * When the ship name is not found at all, we attempt to split the text
+ * on known separators and look for a recognizable doctrine compound.
+ */
+function doctrine_csv_detect_group_labels_ship_at_start(string $clean, string $shipNorm, int|false $pos): array
+{
+    if ($pos === 0) {
+        $afterShip = trim(substr($clean, strlen($shipNorm)));
+        $afterShip = trim($afterShip, " \t-–");
+        if ($afterShip === '') {
+            return [];
+        }
+
+        // Check if afterShip contains role / variant words → ship name is doctrine
+        $afterWords = (array) preg_split('/[\s\-–]+/', strtolower($afterShip));
+        $hasRole = array_intersect($afterWords, doctrine_csv_role_keywords()) !== [];
+        if ($hasRole) {
+            return [$shipNorm];
+        }
+
+        // After-ship text exists but has no role words → not clearly a doctrine prefix
+        return [];
+    }
+
+    // Ship name not found at all → try extracting from leading segment
+    $segments = (array) preg_split('/\s+[-–]\s+/', $clean, 2);
+    $firstSeg = trim($segments[0] ?? '');
+    if ($firstSeg === '' || strcasecmp($firstSeg, $clean) === 0) {
+        return [];
+    }
+
+    $label = doctrine_csv_strip_role_words($firstSeg);
+    if ($label !== '' && strcasecmp($label, $shipNorm) !== 0) {
+        return [$label];
+    }
+
+    return [];
+}
+
+/**
+ * Extract the doctrine family name from the text that precedes the ship name.
+ *
+ * Splits on " - " (spaced dashes) to separate major segments, then within
+ * each segment handles hyphen-compounds (e.g. "AHACs-DPS" → "AHACs").
+ * Known role keywords are stripped; the first meaningful segment is returned.
+ */
+function doctrine_csv_extract_doctrine_from_context(string $context, string $shipNorm): array
+{
+    // Split on spaced dashes: "TFI - Links" → ["TFI", "Links"]
+    $majorParts = (array) preg_split('/\s+[-–]\s+/', $context);
+
+    foreach ($majorParts as $part) {
+        $part = trim($part);
+        if ($part === '') {
+            continue;
+        }
+
+        // Handle hyphenated compounds like "AHACs-DPS", "Kikistuka-Logi"
+        if (str_contains($part, '-')) {
+            $subParts = explode('-', $part);
+            $kept = [];
+            foreach ($subParts as $sub) {
+                $sub = trim($sub);
+                if ($sub !== '' && !in_array(strtolower($sub), doctrine_csv_role_keywords(), true)) {
+                    $kept[] = $sub;
+                }
+            }
+            // If every sub-part was a role keyword, keep the original compound as doctrine
+            // (e.g. "Tackle-Tackle" → "Tackle", "HD-Tackle" → "HD-Tackle")
+            if ($kept === []) {
+                $first = trim($subParts[0] ?? '');
+                if ($first !== '') {
+                    $kept[] = $first;
+                }
+            }
+            $part = implode('-', $kept);
+        }
+
+        // Strip trailing / leading role words from space-separated tokens
+        $label = doctrine_csv_strip_role_words($part);
+        if ($label !== '' && strcasecmp($label, $shipNorm) !== 0) {
+            return [$label];
+        }
+    }
+
+    return [];
+}
+
+/**
+ * Strip known role keywords from the edges of a space-separated label.
+ *
+ * "Shield DPS LR" → "Shield"
+ * "Fast Tackle" → "Fast Tackle" (both are role-ish, keep original)
+ * "Ewar" → "" (pure role)
+ */
+function doctrine_csv_strip_role_words(string $label): string
+{
+    $words = (array) preg_split('/\s+/', trim($label));
+    if ($words === []) {
+        return '';
+    }
+
+    $roleWords = doctrine_csv_role_keywords();
+    $original = $words;
+
+    // Strip from the end
+    while (count($words) > 1 && in_array(strtolower(end($words)), $roleWords, true)) {
+        array_pop($words);
+    }
+    // Strip from the start
+    while (count($words) > 1 && in_array(strtolower($words[0]), $roleWords, true)) {
+        array_shift($words);
+    }
+
+    $result = trim(implode(' ', $words));
+
+    // If the result is a single role keyword, the whole label was roles.
+    // In that case return the first word of the original as the doctrine name,
+    // since it's likely the doctrine identity (e.g. "Tackle", "Bomber", "Newbro").
+    if ($result !== '' && in_array(strtolower($result), $roleWords, true)) {
+        $result = trim($original[0]);
+    }
+
+    return $result;
+}
+
+/**
+ * Canonical list of role / modifier keywords that describe a fit's role
+ * within a doctrine, not the doctrine name itself.
+ *
+ * @return string[] Lowercase keywords.
+ */
+function doctrine_csv_role_keywords(): array
+{
+    return [
+        'dps', 'logi', 'links', 'link', 'support', 'tackle', 'ewar', 'fc',
+        'web', 'torpedo', 'dictor', 'newbro', 'dp', 'arty', 'meta', 'neut',
+        't1', 't2', 'lr', 'fast', 'fleet', 'burst',
+    ];
 }

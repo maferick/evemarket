@@ -279,7 +279,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                                                 <span class="badge border-white/10 bg-white/[0.04] text-slate-200"><?= htmlspecialchars((string) $label, ENT_QUOTES) ?></span>
                                         <?php endforeach; ?>
                                         <?php if ((array) ($row['detected_group_labels'] ?? []) === []): ?>
-                                            <span class="text-xs text-slate-500">No HTML group labels detected</span>
+                                            <span class="text-xs text-slate-500">No group labels detected</span>
                                         <?php endif; ?>
                                     </div>
                                     <select multiple name="row_group_ids[<?= htmlspecialchars($sourceKey, ENT_QUOTES) ?>][]" class="field-input min-h-[8rem]">
