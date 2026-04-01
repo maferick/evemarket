@@ -275,7 +275,7 @@ $_svgId = 'sysmap-' . substr(md5($theaterId), 0, 6);
             $_y2 = number_format($_sy((float) $_positions[$_b]['y']), 1, '.', '');
         ?>
         <line x1="<?= $_x1 ?>" y1="<?= $_y1 ?>" x2="<?= $_x2 ?>" y2="<?= $_y2 ?>"
-              stroke="#1e3a5f" stroke-opacity="0.5" stroke-width="1.2" stroke-dasharray="4,4"/>
+              stroke="#3b82f6" stroke-opacity="0.35" stroke-width="1.2" stroke-dasharray="4,3"/>
         <?php endforeach; ?>
 
         <!-- Gate connections: battle-to-battle edges (highlighted) -->
@@ -341,17 +341,17 @@ $_svgId = 'sysmap-' . substr(md5($theaterId), 0, 6);
                 $_labelX = number_format($_sx((float) $_positions[$_sid]['x']) + 11, 1, '.', '');
                 $_labelY = number_format($_sy((float) $_positions[$_sid]['y']) + 4, 1, '.', '');
         ?>
-        <g class="system-overview-map__adj-node" opacity="0.75">
+        <g class="system-overview-map__adj-node">
             <title><?= $_safeName ?> (<?= $_secFmt ?>)</title>
             <!-- Outer ring -->
             <circle cx="<?= $_cx ?>" cy="<?= $_cy ?>" r="5"
-                    fill="none" stroke="<?= $_color ?>" stroke-width="1" stroke-opacity="0.5"/>
+                    fill="none" stroke="<?= $_color ?>" stroke-width="1.2" stroke-opacity="0.75"/>
             <!-- Core dot -->
             <circle cx="<?= $_cx ?>" cy="<?= $_cy ?>" r="2.5"
-                    fill="<?= $_color ?>" fill-opacity="0.45" stroke="#0a1019" stroke-width="0.6"/>
+                    fill="<?= $_color ?>" fill-opacity="0.7" stroke="#0a1019" stroke-width="0.6"/>
             <!-- Label -->
             <text x="<?= $_labelX ?>" y="<?= $_labelY ?>"
-                  style="font:500 9px Inter,Segoe UI,system-ui,sans-serif;fill:#64748b;opacity:0.8"><?= $_safeName ?></text>
+                  style="font:500 9px Inter,Segoe UI,system-ui,sans-serif;fill:#94a3b8"><?= $_safeName ?></text>
         </g>
         <?php endif; ?>
         <?php endforeach; ?>
