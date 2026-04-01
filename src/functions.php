@@ -29086,7 +29086,11 @@ function buy_all_planner_data_uncached(array $query = []): array
         if ($netMarginPercent !== null) {
             $profitBase += min(24.0, max(0.0, $netMarginPercent) * 0.9);
         }
-        $profitBase += min(22.0, max(0.0, (float) ($market['opportunity_score'] ?? 0.0)) * 0.22);
+        // Only credit opportunity_score when both buy and sell prices are known —
+        // partial pricing means the opportunity is unverifiable.
+        if ($buyPrice !== null && $sellPrice !== null) {
+            $profitBase += min(22.0, max(0.0, (float) ($market['opportunity_score'] ?? 0.0)) * 0.22);
+        }
         if ($volumeEfficiency !== null) {
             $profitBase += min(16.0, max(0.0, $volumeEfficiency) / 250.0 * 16.0);
         }
@@ -29196,6 +29200,11 @@ function buy_all_planner_data_uncached(array $query = []): array
             continue;
         }
         if ($candidate['net_profit_total'] === null && $request['mode'] === 'opportunity' && !$candidate['is_doctrine_critical']) {
+            continue;
+        }
+        // Skip non-doctrine items with partial pricing — they produce no actionable
+        // buy signal and pollute the planner with unverifiable "opportunities".
+        if ($candidate['pricing_completeness'] === 'partial' && !$candidate['is_doctrine_linked'] && !$candidate['is_doctrine_critical'] && $exactDeficitQuantity <= 0) {
             continue;
         }
 
