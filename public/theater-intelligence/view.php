@@ -236,6 +236,13 @@ if ($viewSnapshot !== null && !$pendingLock) {
         $sideAlliancesByPilots[$classification][$groupKey] = ($sideAlliancesByPilots[$classification][$groupKey] ?? 0) + $pilots;
     }
 
+    // If no alliances are configured as opponents, promote third-party alliances so the
+    // opponent label resolves to a real name instead of the generic "Opposition" fallback.
+    if ($sideAlliancesByPilots['opponent'] === [] && $sideAlliancesByPilots['third_party'] !== []) {
+        $sideAlliancesByPilots['opponent'] = $sideAlliancesByPilots['third_party'];
+        $sideAlliancesByPilots['third_party'] = [];
+    }
+
     // Generate smart opponent labels supporting multiple hostile alliances
     foreach (['friendly', 'opponent'] as $side) {
         $alliances = $sideAlliancesByPilots[$side];
@@ -608,6 +615,39 @@ if ($rawLossesByVictimAlliance !== []) {
                 : 0.0;
         }
     }
+}
+
+// ── Promote third-party to opponent when no opponents are configured ─────────
+// Handles both fresh renders and locked snapshots saved before this logic existed.
+// The sideAlliancesByPilots promotion may have already run in the live path —
+// this is idempotent and also fixes snapshots where opponent is still empty.
+if (($sideAlliancesByPilots['opponent'] ?? []) === [] && ($sideAlliancesByPilots['third_party'] ?? []) !== []) {
+    $sideAlliancesByPilots['opponent'] = $sideAlliancesByPilots['third_party'];
+    $sideAlliancesByPilots['third_party'] = [];
+    // Re-derive the opponent display label
+    $_tpAll = $sideAlliancesByPilots['opponent'];
+    arsort($_tpAll);
+    $_tpKey = (string) array_key_first($_tpAll);
+    if (str_starts_with($_tpKey, 'c:')) {
+        $_tpName = killmail_entity_preferred_name($resolvedEntities, 'corporation', (int) substr($_tpKey, 2), '', 'Corporation');
+    } else {
+        $_tpName = killmail_entity_preferred_name($resolvedEntities, 'alliance', (int) substr($_tpKey, 2), '', 'Alliance');
+    }
+    $_tpOthers = count($_tpAll) - 1;
+    $sideLabels['opponent'] = $_tpName . ($_tpOthers > 0 ? " +{$_tpOthers}" : '');
+    unset($_tpAll, $_tpKey, $_tpName, $_tpOthers);
+}
+// Promote sidePanels when no configured opponents — ensures the battle report
+// renders the hostiles under the named opponent panel, not "Third Party".
+if (($sideAlliancesByPilots['opponent'] ?? []) !== [] && ($sideAlliancesByPilots['third_party'] ?? []) === []
+    && ($sidePanels['opponent']['pilots'] ?? 0) === 0 && ($sidePanels['third_party']['pilots'] ?? 0) > 0) {
+    $sidePanels['opponent'] = $sidePanels['third_party'];
+    $sidePanels['third_party'] = [
+        'pilots' => 0, 'kills' => 0, 'losses' => 0,
+        'isk_killed' => 0.0, 'isk_lost' => 0.0,
+        'alliances' => [], 'ship_pilots' => 0, 'ships' => [],
+        'final_blows' => 0, 'kill_involvements' => 0, 'efficiency' => 0.0,
+    ];
 }
 
 include __DIR__ . '/../../src/views/partials/header.php';
