@@ -72,14 +72,4 @@
         </div>
     </div>
 
-    <?php if ($dataQualityNotes !== []): ?>
-        <div class="mt-3 rounded-lg border border-amber-400/30 bg-amber-500/10 p-3">
-            <p class="text-xs uppercase tracking-[0.15em] text-amber-300">Data quality notes</p>
-            <ul class="mt-1 list-disc space-y-1 pl-5 text-sm text-amber-100/90">
-                <?php foreach ($dataQualityNotes as $note): ?>
-                    <li><?= htmlspecialchars($note, ENT_QUOTES) ?></li>
-                <?php endforeach; ?>
-            </ul>
-        </div>
-    <?php endif; ?>
 </section>

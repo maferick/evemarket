@@ -197,5 +197,13 @@
             <?php endif; ?>
         </div>
     </div>
+
+    <?php if ($dataQualityNotes !== []): ?>
+        <div class="mt-3 pt-2 border-t border-white/5">
+            <?php foreach ($dataQualityNotes as $note): ?>
+                <p class="text-[10px] text-slate-500 leading-relaxed"><?= htmlspecialchars($note, ENT_QUOTES) ?></p>
+            <?php endforeach; ?>
+        </div>
+    <?php endif; ?>
 </section>
 <?php endif; ?>
