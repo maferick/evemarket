@@ -983,6 +983,46 @@ def run_compute_battle_anomalies(db: SupplyCoreDb, runtime: dict[str, Any] | Non
         raise
 
 
+def _queue_enrichment(db: SupplyCoreDb, actor_rows: list[dict[str, Any]]) -> None:
+    """Queue battle participants for EveWho/ESI enrichment.
+
+    Inserts unique character_ids into enrichment_queue so that
+    evewho_enrichment_sync can populate their corp history into Neo4j.
+    Priority is based on visibility_score — higher visibility characters
+    (capitals, logi, command) are enriched first.
+    """
+    # Deduplicate and pick highest visibility per character
+    char_priority: dict[int, float] = {}
+    for row in actor_rows:
+        cid = int(row.get("character_id") or 0)
+        if cid <= 0:
+            continue
+        vis = float(row.get("visibility_score") or row.get("participation_count") or 1)
+        if cid not in char_priority or vis > char_priority[cid]:
+            char_priority[cid] = vis
+
+    if not char_priority:
+        return
+
+    BATCH = 500
+    items = list(char_priority.items())
+    for offset in range(0, len(items), BATCH):
+        chunk = items[offset:offset + BATCH]
+        placeholders = ",".join(["(%s, 'pending', %s, UTC_TIMESTAMP())"] * len(chunk))
+        params: list[int | float] = []
+        for cid, priority in chunk:
+            params.extend([cid, round(priority, 4)])
+        db.execute(
+            f"""
+            INSERT INTO enrichment_queue (character_id, status, priority, queued_at)
+            VALUES {placeholders}
+            ON DUPLICATE KEY UPDATE
+                priority = GREATEST(priority, VALUES(priority))
+            """,
+            tuple(params),
+        )
+
+
 def run_compute_battle_actor_features(
     db: SupplyCoreDb,
     neo4j_raw: dict[str, Any] | None = None,
@@ -1054,6 +1094,11 @@ def run_compute_battle_actor_features(
                         ),
                     )
         rows_written = len(rows)
+
+        # Queue all battle participants for EveWho/ESI enrichment so that
+        # cross-alliance history is populated before users view theater pages.
+        if not dry_run and rows:
+            _queue_enrichment(db, rows)
 
         neo_result = {"status": "skipped", "reason": "dry-run"} if dry_run else _neo4j_sync_participation(db, neo4j_raw)
         finish_job_run(
