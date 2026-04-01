@@ -147,7 +147,6 @@ def import_jb_list_to_db(
         owner = r.get("owner", "")
         insert_rows.append((
             from_id, to_id, None, owner, source, 1, imported_at,
-            None, owner, source, 1, imported_at,
         ))
 
     if insert_rows:
@@ -158,8 +157,10 @@ def import_jb_list_to_db(
                  owner_name, source, is_active, imported_at)
             VALUES (%s, %s, %s, %s, %s, %s, %s)
             ON DUPLICATE KEY UPDATE
-                owner_alliance_id = %s, owner_name = %s,
-                source = %s, is_active = %s, imported_at = %s
+                owner_alliance_id = VALUES(owner_alliance_id),
+                owner_name = VALUES(owner_name),
+                source = VALUES(source), is_active = VALUES(is_active),
+                imported_at = VALUES(imported_at)
             """,
             insert_rows,
         )

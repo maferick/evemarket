@@ -146,11 +146,6 @@ def run_pre_op_join_detection(
                 evidence_text,
                 json_dumps_safe(payload),
                 computed_at,
-                # ON DUPLICATE KEY UPDATE values:
-                float(days_after), float(PRE_OP_WINDOW_DAYS),
-                float(PRE_OP_WINDOW_DAYS - days_after),
-                z_score, z_score, None, confidence,
-                evidence_text, json_dumps_safe(payload), computed_at,
             ))
 
         if insert_rows:
@@ -164,11 +159,15 @@ def run_pre_op_join_detection(
                      computed_at)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON DUPLICATE KEY UPDATE
-                    evidence_value = %s, expected_value = %s,
-                    deviation_value = %s, z_score = %s, mad_score = %s,
-                    cohort_percentile = %s, confidence_flag = %s,
-                    evidence_text = %s, evidence_payload_json = %s,
-                    computed_at = %s
+                    evidence_value = VALUES(evidence_value),
+                    expected_value = VALUES(expected_value),
+                    deviation_value = VALUES(deviation_value),
+                    z_score = VALUES(z_score), mad_score = VALUES(mad_score),
+                    cohort_percentile = VALUES(cohort_percentile),
+                    confidence_flag = VALUES(confidence_flag),
+                    evidence_text = VALUES(evidence_text),
+                    evidence_payload_json = VALUES(evidence_payload_json),
+                    computed_at = VALUES(computed_at)
                 """,
                 insert_rows,
             )
