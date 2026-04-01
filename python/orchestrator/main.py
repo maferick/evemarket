@@ -32,6 +32,7 @@ from .jobs.battle_intelligence import (
 )
 from .logging_utils import configure_logging
 from .rebuild_data_model import main as run_rebuild_data_model
+from .loop_runner import main as run_loop_runner
 from .supervisor import run_supervisor
 from .worker_pool import main as run_worker_pool
 from .zkill_worker import main as run_zkill_worker
@@ -58,6 +59,16 @@ def parse_args() -> argparse.Namespace:
     worker_pool.add_argument("--execution-modes", default="python,php")
     worker_pool.add_argument("--once", action="store_true")
     worker_pool.add_argument("--verbose", action="store_true")
+
+    loop_runner = subparsers.add_parser("loop-runner", help="Simple tier-by-tier loop runner (replaces worker-pool)")
+    loop_runner.add_argument("--app-root", default=resolve_app_root(__file__))
+    loop_runner.add_argument("--max-parallel", type=int, default=6, help="Max concurrent jobs per tier (default: 6)")
+    loop_runner.add_argument("--fast-pause", type=float, default=5.0, help="Seconds to pause between fast-loop cycles (default: 5)")
+    loop_runner.add_argument("--background-pause", type=float, default=30.0, help="Seconds to pause between background-loop cycles (default: 30)")
+    loop_runner.add_argument("--once", action="store_true", help="Run one cycle and exit")
+    loop_runner.add_argument("--fast-only", action="store_true", help="Only run fast loop")
+    loop_runner.add_argument("--background-only", action="store_true", help="Only run background loop")
+    loop_runner.add_argument("--verbose", action="store_true")
 
     zkill = subparsers.add_parser("zkill-worker", help="Run the dedicated zKill continuous worker")
     zkill.add_argument("--app-root", default=resolve_app_root(__file__))
@@ -220,6 +231,17 @@ def main() -> int:
             "--workload-classes", args.workload_classes,
             "--execution-modes", args.execution_modes,
             *( ["--once"] if args.once else [] ),
+            *( ["--verbose"] if args.verbose else [] ),
+        ])
+    if command == "loop-runner":
+        return run_loop_runner([
+            "--app-root", args.app_root,
+            "--max-parallel", str(args.max_parallel),
+            "--fast-pause", str(args.fast_pause),
+            "--background-pause", str(args.background_pause),
+            *( ["--once"] if args.once else [] ),
+            *( ["--fast-only"] if args.fast_only else [] ),
+            *( ["--background-only"] if args.background_only else [] ),
             *( ["--verbose"] if args.verbose else [] ),
         ])
     if command == "zkill-worker":
