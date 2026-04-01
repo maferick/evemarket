@@ -16759,13 +16759,14 @@ function db_pipeline_observatory_data(): array
 
     // ── Stage 2: Entity resolution ───────────────────────────────────────────
     $entitiesResolved   = (int) (db_select_one("SELECT COUNT(*) AS cnt FROM entity_metadata_cache") ?? [])['cnt'] ?? 0;
+    $charactersResolved = (int) (db_select_one("SELECT COUNT(*) AS cnt FROM entity_metadata_cache WHERE entity_type = 'character'") ?? [])['cnt'] ?? 0;
     $allianceHistories  = (int) (db_select_one("SELECT COUNT(DISTINCT character_id) AS cnt FROM character_alliance_history") ?? [])['cnt'] ?? 0;
 
     // Unique characters across killmails (attackers + victims)
     $uniqueCharacters = (int) (db_select_one(
         "SELECT COUNT(DISTINCT character_id) AS cnt FROM killmail_attackers WHERE character_id IS NOT NULL AND character_id > 0"
     ) ?? [])['cnt'] ?? 0;
-    $entityCoverage = $uniqueCharacters > 0 ? min(100, round($entitiesResolved / $uniqueCharacters * 100, 1)) : 0;
+    $entityCoverage = $uniqueCharacters > 0 ? min(100, round($charactersResolved / $uniqueCharacters * 100, 1)) : 0;
 
     // ── Stage 3: Graph enrichment ────────────────────────────────────────────
     $communities       = (int) (db_select_one("SELECT COUNT(DISTINCT community_id) AS cnt FROM graph_community_assignments") ?? [])['cnt'] ?? 0;
@@ -16775,7 +16776,9 @@ function db_pipeline_observatory_data(): array
     $evidencePaths     = (int) (db_select_one("SELECT COUNT(*) AS cnt FROM character_evidence_paths") ?? [])['cnt'] ?? 0;
 
     // ── Stage 4: Intelligence ────────────────────────────────────────────────
-    $suspicionScored   = (int) (db_select_one("SELECT COUNT(*) AS cnt FROM character_counterintel_scores") ?? [])['cnt'] ?? 0;
+    $suspicionScoredV2  = (int) (db_select_one("SELECT COUNT(*) AS cnt FROM character_suspicion_scores") ?? [])['cnt'] ?? 0;
+    $suspicionScoredCI  = (int) (db_select_one("SELECT COUNT(*) AS cnt FROM character_counterintel_scores") ?? [])['cnt'] ?? 0;
+    $suspicionScored    = max($suspicionScoredV2, $suspicionScoredCI);
     $dossiers          = (int) (db_select_one("SELECT COUNT(*) AS cnt FROM alliance_dossiers") ?? [])['cnt'] ?? 0;
     $threatCorridors   = (int) (db_select_one("SELECT COUNT(*) AS cnt FROM threat_corridors") ?? [])['cnt'] ?? 0;
 
@@ -16875,6 +16878,7 @@ function db_pipeline_observatory_data(): array
             'market_orders'     => $marketOrders,
             'unique_characters' => $uniqueCharacters,
             'entities_resolved' => $entitiesResolved,
+            'characters_resolved' => $charactersResolved,
             'entity_coverage'   => $entityCoverage,
             'alliance_histories' => $allianceHistories,
             'communities'       => $communities,
