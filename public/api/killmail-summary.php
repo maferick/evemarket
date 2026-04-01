@@ -26,7 +26,9 @@ $data = supplycore_cache_aside('killmail_summary', [$sequenceId], supplycore_cac
 
     $attackers = db_killmail_attackers_by_sequence($sequenceId);
 
-    $resolutionRequests = killmail_entity_resolution_requests($event, $attackers, []);
+    $items = db_killmail_items_by_sequence($sequenceId);
+
+    $resolutionRequests = killmail_entity_resolution_requests($event, $attackers, $items);
     $resolvedEntities = killmail_entity_resolve_batch($resolutionRequests, false);
 
     $victimCharacter = killmail_resolved_entity($resolvedEntities, 'character', isset($event['victim_character_id']) ? (int) $event['victim_character_id'] : null);
@@ -45,6 +47,27 @@ $data = supplycore_cache_aside('killmail_summary', [$sequenceId], supplycore_cac
     $region = killmail_resolved_entity($resolvedEntities, 'region', isset($event['region_id']) ? (int) $event['region_id'] : null, isset($event['region_name']) ? (string) $event['region_name'] : null);
 
     $estimatedValue = killmail_value_amount($zkb);
+
+    // Group items by role (fitted/destroyed/dropped)
+    $groupedItems = killmail_loss_item_groups($items, $resolvedEntities);
+    $itemSummary = [];
+    foreach ($groupedItems as $role => $group) {
+        $rows = [];
+        foreach ((array) ($group['rows'] ?? []) as $itemRow) {
+            $rows[] = [
+                'name' => (string) ($itemRow['item_name'] ?? 'Unknown'),
+                'type_id' => (int) ($itemRow['item_type_id'] ?? 0),
+                'quantity' => (int) ($itemRow['quantity'] ?? 1),
+                'state' => (string) ($itemRow['state_label'] ?? ''),
+                'flag' => $itemRow['item_flag'] ?? null,
+            ];
+        }
+        $itemSummary[$role] = [
+            'label' => (string) ($group['label'] ?? $role),
+            'total' => (int) ($group['total_quantity'] ?? 0),
+            'rows' => $rows,
+        ];
+    }
 
     // Format top attackers (limit to 5)
     $formattedAttackers = [];
@@ -96,6 +119,7 @@ $data = supplycore_cache_aside('killmail_summary', [$sequenceId], supplycore_cac
         'attacker_count' => count($attackers),
         'top_attackers' => array_slice($formattedAttackers, 0, 5),
         'final_blow' => $finalBlow,
+        'items' => $itemSummary,
         'zkb_url' => 'https://zkillboard.com/kill/' . (int) ($event['killmail_id'] ?? 0) . '/',
         'detail_url' => '/killmail-intelligence/view.php?sequence_id=' . $sequenceId,
     ];

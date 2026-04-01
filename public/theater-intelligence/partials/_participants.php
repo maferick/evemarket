@@ -947,6 +947,48 @@ function _render_structure_row(array $sk, array $resolvedEntities, array $shipTy
             html += '</div></div>';
         }
 
+        // Fitted modules / items
+        var items = d.items || {};
+        var roleOrder = ['fitted', 'destroyed', 'dropped'];
+        var roleColors = {fitted: 'text-slate-300', destroyed: 'text-red-400', dropped: 'text-emerald-400'};
+        var roleBorders = {fitted: 'border-slate-600/30', destroyed: 'border-red-500/20', dropped: 'border-emerald-500/20'};
+        var hasAnyItems = false;
+        for (var ri = 0; ri < roleOrder.length; ri++) {
+            var rk = roleOrder[ri];
+            if (items[rk] && items[rk].rows && items[rk].rows.length > 0) { hasAnyItems = true; break; }
+        }
+        if (hasAnyItems) {
+            html += '<div class="mb-4">';
+            html += '<p class="text-[10px] uppercase tracking-[0.2em] text-muted mb-2">Modules & cargo</p>';
+            for (var ri = 0; ri < roleOrder.length; ri++) {
+                var rk = roleOrder[ri];
+                var group = items[rk];
+                if (!group || !group.rows || group.rows.length === 0) continue;
+                var clr = roleColors[rk] || 'text-slate-300';
+                var bdr = roleBorders[rk] || 'border-slate-600/30';
+                html += '<details class="mb-2 rounded-lg border ' + bdr + ' bg-black/20 overflow-hidden">';
+                html += '<summary class="flex items-center justify-between gap-2 px-3 py-2 cursor-pointer select-none hover:bg-slate-800/40 transition-colors">';
+                html += '<span class="text-xs font-medium ' + clr + '">' + esc(group.label || rk) + '</span>';
+                html += '<span class="text-[10px] text-muted rounded-full border border-border bg-black/20 px-2 py-0.5">' + group.total + ' items</span>';
+                html += '</summary>';
+                html += '<div class="px-3 pb-2 space-y-1">';
+                for (var ii = 0; ii < group.rows.length; ii++) {
+                    var item = group.rows[ii];
+                    html += '<div class="flex items-center gap-2 py-1">';
+                    if (item.type_id > 0) {
+                        html += '<img class="w-5 h-5 rounded flex-shrink-0 bg-black/30 p-0.5" src="https://images.evetech.net/types/' + item.type_id + '/icon?size=32" loading="lazy">';
+                    }
+                    html += '<span class="text-xs text-slate-200 truncate flex-1">' + esc(item.name) + '</span>';
+                    if (item.quantity > 1) {
+                        html += '<span class="text-[10px] text-slate-500 flex-shrink-0">&times;' + item.quantity + '</span>';
+                    }
+                    html += '</div>';
+                }
+                html += '</div></details>';
+            }
+            html += '</div>';
+        }
+
         // Links
         html += '<div class="flex gap-2 mt-4">';
         html += '<a href="' + esc(d.detail_url || '#') + '" class="flex-1 text-center text-xs px-3 py-2 rounded-lg bg-blue-600/20 border border-blue-500/30 text-blue-300 hover:bg-blue-600/30 transition-colors">Full detail</a>';
