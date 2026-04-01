@@ -1,14 +1,13 @@
-"""EveWho Alliance Member Sync — iterative graph crawl of tracked & opponent orgs.
+"""EveWho Alliance Member Sync — iterative graph crawl of opponent orgs.
 
 Two-phase approach per run:
 
 Phase 1 (Org-Level Sweep):
-  For each tracked (friendly) alliance AND each opponent alliance, fetch
-  corporation IDs via ESI, then for each corp fetch members via EveWho
-  /api/corplist and movement events via /api/corpjoined and /api/corpdeparted.
-  Batch-upsert Character, Corporation, Alliance nodes and relationships into
-  Neo4j.  Queue departed/new characters into enrichment_queue for deep
-  enrichment.
+  For each opponent alliance, fetch corporation IDs via ESI, then for each corp
+  fetch members via EveWho /api/corplist and movement events via /api/corpjoined
+  and /api/corpdeparted.  Batch-upsert Character, Corporation, Alliance nodes
+  and relationships into Neo4j.
+  Queue departed/new characters into enrichment_queue for deep enrichment.
 
 Phase 2 (Character Discovery):
   Pick characters from enrichment_queue and fetch their full history via
@@ -40,7 +39,7 @@ JOB_KEY = "evewho_alliance_member_sync"
 DATASET_KEY = "evewho_alliance_member_sync_cursor"
 
 # Defaults — overridable via runtime config
-DEFAULT_API_BUDGET = 200          # max API calls per invocation
+DEFAULT_API_BUDGET = 100          # max API calls per invocation
 DEFAULT_CHAR_BUDGET = 30          # max character enrichments in phase 2
 DEFAULT_DEPARTED_PRIORITY = 8.0   # enrichment_queue priority for departed chars
 DEFAULT_NEW_MEMBER_PRIORITY = 2.0 # enrichment_queue priority for new members
@@ -516,30 +515,15 @@ def _mark_enrichment_failed(db: SupplyCoreDb, character_id: int, error: str) -> 
 # Org discovery from character history
 # ---------------------------------------------------------------------------
 
-def _load_tracked_alliance_ids(db: SupplyCoreDb) -> set[int]:
-    """Return the set of friendly/tracked alliance IDs."""
-    rows = db.fetch_all(
-        "SELECT alliance_id FROM killmail_tracked_alliances WHERE is_active = 1"
-    )
-    return {int(r["alliance_id"]) for r in rows if int(r.get("alliance_id") or 0) > 0}
-
-
 def _discover_orgs_from_history(
     db: SupplyCoreDb,
     info: dict[str, Any],
     history: list[dict[str, Any]],
-    tracked_alliance_ids: set[int] | None = None,
 ) -> tuple[int, int]:
     """Insert newly-discovered corps/alliances into opponent tables.
 
-    Alliances that are already in killmail_tracked_alliances (friendly) are
-    skipped to avoid accidentally classifying coalition members as opponents.
-
     Returns (corps_discovered, alliances_discovered).
     """
-    if tracked_alliance_ids is None:
-        tracked_alliance_ids = _load_tracked_alliance_ids(db)
-
     corps_found = 0
     alliances_found = 0
 
@@ -573,8 +557,7 @@ def _discover_orgs_from_history(
         if affected > 0:
             corps_found += 1
 
-    # Skip alliances that are tracked (friendly) — don't add them as opponents
-    for aid in alliance_ids - tracked_alliance_ids:
+    for aid in alliance_ids:
         affected = db.execute(
             """
             INSERT IGNORE INTO killmail_opponent_alliances
@@ -642,23 +625,11 @@ def run_evewho_alliance_member_sync(
         if phase <= 1:
             log.info("Phase 1: Org-level sweep")
 
-            # Sweep both tracked (friendly) alliances and opponent alliances.
-            # Friendly alliances are swept first so coalition members get
-            # imported into the graph with full history visibility.
-            tracked_rows = db.fetch_all(
-                "SELECT alliance_id, label FROM killmail_tracked_alliances WHERE is_active = 1 ORDER BY alliance_id ASC"
-            )
-            opponent_rows = db.fetch_all(
+            alliance_rows = db.fetch_all(
                 "SELECT alliance_id, label FROM killmail_opponent_alliances WHERE is_active = 1 ORDER BY alliance_id ASC"
             )
-            tracked_ids = {int(r["alliance_id"]) for r in tracked_rows if int(r.get("alliance_id") or 0) > 0}
-            opponent_ids = {int(r["alliance_id"]) for r in opponent_rows if int(r.get("alliance_id") or 0) > 0}
-            # Merge, friendly first, then opponents not already in tracked
-            alliance_ids = sorted(tracked_ids) + sorted(opponent_ids - tracked_ids)
-            log.info(
-                "Found %d alliances to sweep (%d tracked, %d opponent)",
-                len(alliance_ids), len(tracked_ids), len(opponent_ids),
-            )
+            alliance_ids = [int(r["alliance_id"]) for r in alliance_rows if int(r.get("alliance_id") or 0) > 0]
+            log.info("Found %d opponent alliances to sweep", len(alliance_ids))
 
             phase1_done = True
 
@@ -801,10 +772,6 @@ def run_evewho_alliance_member_sync(
             remaining_char_budget = min(char_budget, api_budget - api_calls)
             log.info("Phase 2: Character discovery (budget: %d)", remaining_char_budget)
 
-            # Pre-load tracked alliance IDs so org discovery doesn't classify
-            # friendly alliances as opponents.
-            friendly_alliance_ids = _load_tracked_alliance_ids(db)
-
             char_ids = _claim_enrichment_batch(db, remaining_char_budget)
             if not char_ids:
                 log.info("Phase 2: No characters in enrichment queue")
@@ -844,7 +811,7 @@ def run_evewho_alliance_member_sync(
                     total_enriched += 1
 
                     # Discover new orgs from this character's history
-                    c_disc, a_disc = _discover_orgs_from_history(db, info, history, friendly_alliance_ids)
+                    c_disc, a_disc = _discover_orgs_from_history(db, info, history)
                     corps_discovered += c_disc
                     alliances_discovered += a_disc
                     if c_disc or a_disc:
