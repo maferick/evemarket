@@ -223,6 +223,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                 <table class="min-w-full divide-y divide-white/8 text-sm">
                     <thead class="bg-white/[0.03] text-left text-xs uppercase tracking-[0.16em] text-slate-500">
                         <tr>
+                            <th class="px-4 py-3"><input type="checkbox" checked data-buyall-select-all title="Select / deselect all"></th>
                             <th class="px-4 py-3">Item</th>
                             <th class="px-4 py-3">Planner qty</th>
                             <th class="px-4 py-3">Priority</th>
@@ -236,7 +237,8 @@ include __DIR__ . '/../../src/views/partials/header.php';
                     </thead>
                     <tbody class="divide-y divide-white/8 text-slate-200">
                         <?php foreach ((array) ($activePageData['items'] ?? []) as $item): ?>
-                            <tr>
+                            <tr data-buyall-item data-buyall-name="<?= htmlspecialchars((string) ($item['item_name'] ?? ''), ENT_QUOTES) ?>" data-buyall-qty="<?= (int) ($item['final_planner_quantity'] ?? $item['quantity'] ?? 0) ?>">
+                                <td class="px-4 py-3 align-top"><input type="checkbox" checked class="buyall-item-check"></td>
                                 <td class="px-4 py-3 align-top">
                                     <p class="font-semibold text-white"><?= htmlspecialchars((string) ($item['item_name'] ?? ''), ENT_QUOTES) ?></p>
                                     <p class="mt-1 text-xs text-slate-500"><?= htmlspecialchars((string) ($item['hull_class_label'] ?? 'Subcap'), ENT_QUOTES) ?> · <?= htmlspecialchars((string) ($item['valid_doctrine_count'] ?? 0), ENT_QUOTES) ?> doctrines · <?= htmlspecialchars((string) ($item['valid_fits_count'] ?? 0), ENT_QUOTES) ?> fits</p>
@@ -348,31 +350,67 @@ include __DIR__ . '/../../src/views/partials/header.php';
 <!-- ui-section:buyall-results:end -->
 
 <script>
-document.addEventListener('click', function (event) {
-    const button = event.target.closest('[data-copy-target], [data-copy-text]');
-    if (!button || !navigator.clipboard) {
-        return;
+(function () {
+    function rebuildClipboardFromSelection() {
+        const rows = document.querySelectorAll('[data-buyall-item]');
+        const lines = [];
+        rows.forEach(function (row) {
+            const cb = row.querySelector('.buyall-item-check');
+            if (cb && cb.checked) {
+                lines.push(row.getAttribute('data-buyall-name') + ' ' + row.getAttribute('data-buyall-qty'));
+            }
+        });
+        const textarea = document.getElementById('buy-all-current');
+        if (textarea) {
+            textarea.value = lines.join('\n');
+        }
     }
 
-    let text = '';
-    const targetId = button.getAttribute('data-copy-target');
-    if (targetId) {
-        const target = document.getElementById(targetId);
-        text = target ? target.value : '';
-    } else {
-        text = button.getAttribute('data-copy-text') || '';
-    }
+    // Select-all checkbox
+    document.addEventListener('change', function (event) {
+        if (event.target.hasAttribute('data-buyall-select-all')) {
+            var checked = event.target.checked;
+            document.querySelectorAll('.buyall-item-check').forEach(function (cb) { cb.checked = checked; });
+            rebuildClipboardFromSelection();
+        }
+        if (event.target.classList.contains('buyall-item-check')) {
+            rebuildClipboardFromSelection();
+            // Update select-all state
+            var allChecks = document.querySelectorAll('.buyall-item-check');
+            var selectAll = document.querySelector('[data-buyall-select-all]');
+            if (selectAll && allChecks.length > 0) {
+                selectAll.checked = Array.from(allChecks).every(function (c) { return c.checked; });
+            }
+        }
+    });
 
-    if (text === '') {
-        return;
-    }
+    // Copy-to-clipboard
+    document.addEventListener('click', function (event) {
+        var button = event.target.closest('[data-copy-target], [data-copy-text]');
+        if (!button || !navigator.clipboard) {
+            return;
+        }
 
-    navigator.clipboard.writeText(text);
-    const original = button.textContent;
-    button.textContent = 'Copied';
-    window.setTimeout(() => {
-        button.textContent = original;
-    }, 1200);
-});
+        var text = '';
+        var targetId = button.getAttribute('data-copy-target');
+        if (targetId) {
+            var target = document.getElementById(targetId);
+            text = target ? target.value : '';
+        } else {
+            text = button.getAttribute('data-copy-text') || '';
+        }
+
+        if (text === '') {
+            return;
+        }
+
+        navigator.clipboard.writeText(text);
+        var original = button.textContent;
+        button.textContent = 'Copied';
+        window.setTimeout(function () {
+            button.textContent = original;
+        }, 1200);
+    });
+})();
 </script>
 <?php include __DIR__ . '/../../src/views/partials/footer.php'; ?>
