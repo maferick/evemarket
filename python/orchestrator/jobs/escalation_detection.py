@@ -226,8 +226,6 @@ def run_escalation_detection(
                 seq_rows.append((
                     sid, bid, ordinal, int(b["system_id"]),
                     pc, cc, isk, b["started_at"], computed_at,
-                    ordinal, int(b["system_id"]), pc, cc, isk,
-                    b["started_at"], computed_at,
                 ))
 
             # Determine primary aggressor/defender from largest battle
@@ -247,10 +245,6 @@ def run_escalation_detection(
                 len(chain), peak_participants, peak_capitals, total_isk,
                 grade, aggressor_aid, defender_aid,
                 chain[0]["started_at"], chain[-1]["started_at"], computed_at,
-                region_id, constellation_id,
-                len(chain), peak_participants, peak_capitals, total_isk,
-                grade, aggressor_aid, defender_aid,
-                chain[0]["started_at"], chain[-1]["started_at"], computed_at,
             ))
 
         if seq_rows:
@@ -262,9 +256,11 @@ def run_escalation_detection(
                      started_at, computed_at)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON DUPLICATE KEY UPDATE
-                    ordinal = %s, system_id = %s, participant_count = %s,
-                    capital_count = %s, isk_destroyed = %s,
-                    started_at = %s, computed_at = %s
+                    ordinal = VALUES(ordinal), system_id = VALUES(system_id),
+                    participant_count = VALUES(participant_count),
+                    capital_count = VALUES(capital_count),
+                    isk_destroyed = VALUES(isk_destroyed),
+                    started_at = VALUES(started_at), computed_at = VALUES(computed_at)
                 """,
                 seq_rows,
             )
@@ -281,11 +277,15 @@ def run_escalation_detection(
                      first_battle_at, last_battle_at, computed_at)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON DUPLICATE KEY UPDATE
-                    region_id = %s, constellation_id = %s,
-                    battle_count = %s, peak_participants = %s, peak_capitals = %s,
-                    total_isk_destroyed = %s, escalation_grade = %s,
-                    primary_aggressor_alliance_id = %s, primary_defender_alliance_id = %s,
-                    first_battle_at = %s, last_battle_at = %s, computed_at = %s
+                    region_id = VALUES(region_id), constellation_id = VALUES(constellation_id),
+                    battle_count = VALUES(battle_count), peak_participants = VALUES(peak_participants),
+                    peak_capitals = VALUES(peak_capitals),
+                    total_isk_destroyed = VALUES(total_isk_destroyed),
+                    escalation_grade = VALUES(escalation_grade),
+                    primary_aggressor_alliance_id = VALUES(primary_aggressor_alliance_id),
+                    primary_defender_alliance_id = VALUES(primary_defender_alliance_id),
+                    first_battle_at = VALUES(first_battle_at), last_battle_at = VALUES(last_battle_at),
+                    computed_at = VALUES(computed_at)
                 """,
                 summary_rows,
             )

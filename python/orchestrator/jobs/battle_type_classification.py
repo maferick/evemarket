@@ -214,8 +214,6 @@ def run_battle_type_classification(
                 insert_rows.append((
                     bid, battle_type, confidence,
                     json_dumps_safe(features), computed_at,
-                    battle_type, confidence,
-                    json_dumps_safe(features), computed_at,
                 ))
 
             rows_processed += len(battles)
@@ -227,8 +225,8 @@ def run_battle_type_classification(
                         (battle_id, battle_type, confidence, features_json, computed_at)
                     VALUES (%s, %s, %s, %s, %s)
                     ON DUPLICATE KEY UPDATE
-                        battle_type = %s, confidence = %s,
-                        features_json = %s, computed_at = %s
+                        battle_type = VALUES(battle_type), confidence = VALUES(confidence),
+                        features_json = VALUES(features_json), computed_at = VALUES(computed_at)
                     """,
                     insert_rows,
                 )

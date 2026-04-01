@@ -200,9 +200,6 @@ def run_staging_system_detection(
                     len(pilots), len(nearby_battles),
                     round(avg_jump, 2), 0,  # pre_battle_appearances placeholder
                     json_dumps_safe(features), computed_at,
-                    staging_score, len(pilots), len(nearby_battles),
-                    round(avg_jump, 2), 0,
-                    json_dumps_safe(features), computed_at,
                 ))
 
         if insert_rows:
@@ -214,10 +211,13 @@ def run_staging_system_detection(
                      pre_battle_appearances, features_json, computed_at)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON DUPLICATE KEY UPDATE
-                    staging_score = %s, unique_pilots_7d = %s,
-                    battles_within_2j = %s, avg_jump_to_battle = %s,
-                    pre_battle_appearances = %s,
-                    features_json = %s, computed_at = %s
+                    staging_score = VALUES(staging_score),
+                    unique_pilots_7d = VALUES(unique_pilots_7d),
+                    battles_within_2j = VALUES(battles_within_2j),
+                    avg_jump_to_battle = VALUES(avg_jump_to_battle),
+                    pre_battle_appearances = VALUES(pre_battle_appearances),
+                    features_json = VALUES(features_json),
+                    computed_at = VALUES(computed_at)
                 """,
                 insert_rows,
             )

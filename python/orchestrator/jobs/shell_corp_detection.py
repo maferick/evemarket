@@ -230,9 +230,6 @@ def run_shell_corp_detection(
                     cid, aid, member_count, age_days,
                     round(turnover, 4), km_count, unique_members, avg_tenure,
                     shell_s, json_dumps_safe(flags), computed_at,
-                    aid, member_count, age_days,
-                    round(turnover, 4), km_count, unique_members, avg_tenure,
-                    shell_s, json_dumps_safe(flags), computed_at,
                 ))
 
         rows_processed = len(corp_data)
@@ -246,10 +243,13 @@ def run_shell_corp_detection(
                      avg_member_tenure_days, shell_score, flags_json, computed_at)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON DUPLICATE KEY UPDATE
-                    alliance_id = %s, member_count = %s, age_days = %s,
-                    turnover_ratio_90d = %s, killmail_count_90d = %s,
-                    unique_members_90d = %s, avg_member_tenure_days = %s,
-                    shell_score = %s, flags_json = %s, computed_at = %s
+                    alliance_id = VALUES(alliance_id), member_count = VALUES(member_count),
+                    age_days = VALUES(age_days), turnover_ratio_90d = VALUES(turnover_ratio_90d),
+                    killmail_count_90d = VALUES(killmail_count_90d),
+                    unique_members_90d = VALUES(unique_members_90d),
+                    avg_member_tenure_days = VALUES(avg_member_tenure_days),
+                    shell_score = VALUES(shell_score), flags_json = VALUES(flags_json),
+                    computed_at = VALUES(computed_at)
                 """,
                 insert_rows,
             )
