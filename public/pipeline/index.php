@@ -73,7 +73,8 @@ $stages = [
         'health' => $stageHealth['resolution'] ?? ['total_jobs' => 0, 'succeeded' => 0, 'failed' => 0, 'pct' => 0, 'last_success' => null],
         'metrics' => [
             ['label' => 'Unique characters', 'value' => _po_fmt($kpis['unique_characters'])],
-            ['label' => 'Entities resolved', 'value' => _po_fmt($kpis['entities_resolved'])],
+            ['label' => 'Characters resolved', 'value' => _po_fmt($kpis['characters_resolved'])],
+            ['label' => 'All entities',      'value' => _po_fmt($kpis['entities_resolved'])],
             ['label' => 'Coverage',          'value' => $kpis['entity_coverage'] . '%'],
             ['label' => 'Alliance histories', 'value' => _po_fmt($kpis['alliance_histories'])],
         ],
@@ -259,7 +260,7 @@ $overallPct = $stageCount > 0 ? round($overallPct / $stageCount) : 0;
         $coverageCards = [
             [
                 'label'   => 'Entity Resolution',
-                'detail'  => _po_fmt($kpis['entities_resolved']) . ' of ' . _po_fmt($kpis['unique_characters']) . ' characters',
+                'detail'  => _po_fmt($kpis['characters_resolved']) . ' of ' . _po_fmt($kpis['unique_characters']) . ' characters',
                 'pct'     => $kpis['entity_coverage'],
             ],
             [
