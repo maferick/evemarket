@@ -77,6 +77,14 @@ if ($evidencePaths !== []) {
     }
 }
 
+// Handle on-demand intelligence computation
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['compute_intelligence']) && $characterId > 0) {
+    $result = compute_character_intelligence_on_demand($characterId);
+    flash('success', (string) ($result['message'] ?? 'Computation finished.'));
+    header('Location: /battle-intelligence/character.php?character_id=' . $characterId);
+    exit;
+}
+
 // Handle feedback submission
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['feedback_label']) && $characterId > 0) {
     $label = (string) $_POST['feedback_label'];
@@ -323,7 +331,16 @@ include __DIR__ . '/../../src/views/partials/header.php';
         <?php endif; ?>
     </div>
     <?php if (!is_array($character)): ?>
-        <p class="mt-4 text-sm text-muted">No character intelligence found.</p>
+        <div class="mt-4">
+            <p class="text-sm text-muted">No character intelligence found.</p>
+            <?php if ($characterId > 0): ?>
+                <form method="POST" class="mt-3 inline">
+                    <input type="hidden" name="compute_intelligence" value="1">
+                    <button type="submit" class="btn btn-sm btn-accent">Compute now</button>
+                    <span class="ml-2 text-xs text-muted">Analyze this character's battle history and generate intelligence scores immediately.</span>
+                </form>
+            <?php endif; ?>
+        </div>
     <?php else: ?>
         <?php
             $riskLevel = ci_risk_level((float) ($character['review_priority_score'] ?? 0));

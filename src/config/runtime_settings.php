@@ -81,9 +81,15 @@ return [
     ],
     'battle_intelligence' => [
         'title' => 'Battle intelligence',
-        'description' => 'Battle intelligence module runtime settings.',
+        'description' => 'Battle intelligence module runtime settings, including the counterintel pipeline that scores character suspicion.',
         'fields' => [
             'battle_intelligence.log_file' => ['type' => 'string', 'default' => 'storage/logs/battle-intelligence.log', 'editable' => true, 'sensitive' => false, 'env_only' => false, 'database_backed' => true],
+            'battle_intelligence.counterintel_batch_size' => ['type' => 'int', 'default' => 200, 'editable' => true, 'sensitive' => false, 'env_only' => false, 'database_backed' => true],
+            'battle_intelligence.counterintel_max_batches' => ['type' => 'int', 'default' => 20, 'editable' => true, 'sensitive' => false, 'env_only' => false, 'database_backed' => true],
+            'battle_intelligence.evewho_user_agent' => ['type' => 'string', 'default' => 'SupplyCoreCounterIntel/1.0 (+https://supplycore)', 'editable' => true, 'sensitive' => false, 'env_only' => false, 'database_backed' => true],
+            'battle_intelligence.evewho_cache_ttl_hours' => ['type' => 'int', 'default' => 24, 'editable' => true, 'sensitive' => false, 'env_only' => false, 'database_backed' => true],
+            'battle_intelligence.evewho_max_fetches_per_run' => ['type' => 'int', 'default' => 100, 'editable' => true, 'sensitive' => false, 'env_only' => false, 'database_backed' => true],
+            'battle_intelligence.evewho_fetch_batch_size' => ['type' => 'int', 'default' => 20, 'editable' => true, 'sensitive' => false, 'env_only' => false, 'database_backed' => true],
         ],
     ],
     'orchestrator' => [

@@ -19,8 +19,8 @@ from ..json_utils import json_dumps_safe
 from ..neo4j import Neo4jClient, Neo4jConfig
 
 COUNTERINTEL_DATASET_KEY = "compute_counterintel_pipeline_cursor"
-DEFAULT_BATTLE_BATCH_SIZE = 40
-DEFAULT_MAX_BATCHES = 4
+DEFAULT_BATTLE_BATCH_SIZE = 200
+DEFAULT_MAX_BATCHES = 20
 DEFAULT_EVEWHO_BATCH_SIZE = 20
 
 
