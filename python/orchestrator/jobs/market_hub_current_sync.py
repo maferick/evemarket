@@ -45,7 +45,7 @@ def _processor(db: SupplyCoreDb, raw_config: dict[str, Any] | None = None) -> di
             continue
         orders: list[dict[str, object]] = []
         resolved_region_id = region_id
-        filter_location_id: int | None = source_id if source_kind == "player_structure" else None
+        filter_location_id: int | None = source_id
         structure_orders_mode = False
 
         try:
