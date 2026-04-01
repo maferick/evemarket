@@ -19,17 +19,25 @@
             <tbody>
                 <?php foreach ($allianceSummary as $a): ?>
                     <?php
-                        $aSide = $classifyAlliance((int) ($a['alliance_id'] ?? 0));
+                        $aAllianceId = (int) ($a['alliance_id'] ?? 0);
+                        $aCorporationId = (int) ($a['corporation_id'] ?? 0);
+                        $aSide = $classifyAlliance($aAllianceId, $aCorporationId);
                         $eff = (float) ($a['efficiency'] ?? 0);
                         $effClass = $eff >= 0.6 ? 'text-green-400' : ($eff >= 0.4 ? 'text-yellow-400' : 'text-red-400');
                         $aSideColor = $sideColorClass[$aSide] ?? 'text-slate-300';
                         $aSideBg = $sideBgClass[$aSide] ?? 'bg-slate-700';
                         $isTracked = $aSide === 'friendly';
                         $isOpponent = $aSide === 'opponent';
+                        // Resolve name: use corporation for corp-only entries
+                        if ($aAllianceId > 0) {
+                            $aDisplayName = killmail_entity_preferred_name($resolvedEntities, 'alliance', $aAllianceId, (string) ($a['alliance_name'] ?? ''), 'Alliance');
+                        } else {
+                            $aDisplayName = killmail_entity_preferred_name($resolvedEntities, 'corporation', $aCorporationId, (string) ($a['alliance_name'] ?? ''), 'Corporation');
+                        }
                     ?>
                     <tr class="border-b border-border/50">
                         <td class="px-3 py-2 text-slate-100">
-                            <?= htmlspecialchars(killmail_entity_preferred_name($resolvedEntities, 'alliance', (int) ($a['alliance_id'] ?? 0), (string) ($a['alliance_name'] ?? ''), 'Alliance'), ENT_QUOTES) ?>
+                            <?= htmlspecialchars($aDisplayName, ENT_QUOTES) ?>
                             <?php if ($isTracked): ?>
                                 <span class="text-[10px] uppercase tracking-wider bg-blue-900/60 text-blue-300 rounded-full px-1.5 py-0.5 ml-1">Friendly</span>
                             <?php elseif ($isOpponent): ?>

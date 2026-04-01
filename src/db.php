@@ -15673,10 +15673,18 @@ function db_theater_alliance_summary(string $theaterId): array
 {
     return db_select(
         'SELECT tas.*,
-                COALESCE(emc.entity_name, tas.alliance_name, CONCAT("Alliance #", tas.alliance_id)) AS alliance_name
+                CASE
+                    WHEN tas.alliance_id > 0
+                        THEN COALESCE(emc_a.entity_name, tas.alliance_name, CONCAT("Alliance #", tas.alliance_id))
+                    WHEN tas.corporation_id > 0
+                        THEN COALESCE(emc_c.entity_name, CONCAT("Corporation #", tas.corporation_id))
+                    ELSE COALESCE(tas.alliance_name, "Unknown")
+                END AS alliance_name
          FROM theater_alliance_summary tas
-         LEFT JOIN entity_metadata_cache emc
-              ON emc.entity_type = "alliance" AND emc.entity_id = tas.alliance_id
+         LEFT JOIN entity_metadata_cache emc_a
+              ON emc_a.entity_type = "alliance" AND emc_a.entity_id = tas.alliance_id AND tas.alliance_id > 0
+         LEFT JOIN entity_metadata_cache emc_c
+              ON emc_c.entity_type = "corporation" AND emc_c.entity_id = tas.corporation_id AND tas.corporation_id > 0
          WHERE tas.theater_id = ?
          ORDER BY tas.total_isk_killed DESC',
         [$theaterId]
@@ -15785,11 +15793,19 @@ function db_theater_side_labels(array $theaterIds): array
     }
     $placeholders = implode(',', array_fill(0, count($theaterIds), '?'));
     $rows = db_select(
-        "SELECT tas.theater_id, tas.alliance_id, tas.side, tas.participant_count,
-                COALESCE(emc.entity_name, tas.alliance_name, CONCAT('Alliance #', tas.alliance_id)) AS alliance_name
+        "SELECT tas.theater_id, tas.alliance_id, tas.corporation_id, tas.side, tas.participant_count,
+                CASE
+                    WHEN tas.alliance_id > 0
+                        THEN COALESCE(emc_a.entity_name, tas.alliance_name, CONCAT('Alliance #', tas.alliance_id))
+                    WHEN tas.corporation_id > 0
+                        THEN COALESCE(emc_c.entity_name, CONCAT('Corporation #', tas.corporation_id))
+                    ELSE COALESCE(tas.alliance_name, 'Unknown')
+                END AS alliance_name
          FROM theater_alliance_summary tas
-         LEFT JOIN entity_metadata_cache emc
-              ON emc.entity_type = 'alliance' AND emc.entity_id = tas.alliance_id
+         LEFT JOIN entity_metadata_cache emc_a
+              ON emc_a.entity_type = 'alliance' AND emc_a.entity_id = tas.alliance_id AND tas.alliance_id > 0
+         LEFT JOIN entity_metadata_cache emc_c
+              ON emc_c.entity_type = 'corporation' AND emc_c.entity_id = tas.corporation_id AND tas.corporation_id > 0
          WHERE tas.theater_id IN ({$placeholders})
          ORDER BY tas.participant_count DESC",
         $theaterIds
@@ -15861,7 +15877,8 @@ function db_theater_fleet_composition(string $theaterId): array
          LEFT JOIN ref_item_groups rig ON rig.group_id = rit.group_id
          LEFT JOIN theater_alliance_summary tas
               ON tas.theater_id = tp.theater_id
-              AND tas.alliance_id = tp.alliance_id
+              AND tas.alliance_id = COALESCE(tp.alliance_id, 0)
+              AND tas.corporation_id = CASE WHEN COALESCE(tp.alliance_id, 0) > 0 THEN 0 ELSE COALESCE(tp.corporation_id, 0) END
          WHERE tp.theater_id = ?
            AND tp.flying_ship_type_id IS NOT NULL
            AND tp.flying_ship_type_id > 0
@@ -15886,7 +15903,8 @@ function db_theater_final_blows_by_side(string $theaterId): array
          INNER JOIN theater_battles tb ON tb.battle_id = ke.battle_id
          LEFT JOIN theater_alliance_summary tas
               ON tas.theater_id = tb.theater_id
-              AND tas.alliance_id = ka.alliance_id
+              AND tas.alliance_id = COALESCE(ka.alliance_id, 0)
+              AND tas.corporation_id = CASE WHEN COALESCE(ka.alliance_id, 0) > 0 THEN 0 ELSE COALESCE(ka.corporation_id, 0) END
          WHERE tb.theater_id = ?
            AND ka.final_blow = 1
            AND (ka.character_id IS NULL OR ka.character_id != ke.victim_character_id)
@@ -15917,12 +15935,13 @@ function db_theater_losses_by_victim_alliance(string $theaterId): array
     return db_select(
         "SELECT
             COALESCE(ke.victim_alliance_id, 0) AS victim_alliance_id,
+            COALESCE(ke.victim_corporation_id, 0) AS victim_corporation_id,
             COUNT(DISTINCT ke.killmail_id) AS losses,
             COALESCE(SUM(ke.zkb_total_value), 0) AS isk_lost
          FROM killmail_events ke
          INNER JOIN theater_battles tb ON tb.battle_id = ke.battle_id
          WHERE tb.theater_id = ?
-         GROUP BY ke.victim_alliance_id",
+         GROUP BY ke.victim_alliance_id, ke.victim_corporation_id",
         [$theaterId]
     );
 }
@@ -15951,7 +15970,8 @@ function db_theater_notable_kills(string $theaterId, int $limit = 10): array
          LEFT JOIN ref_item_groups rig ON rig.group_id = rit.group_id
          LEFT JOIN theater_alliance_summary tas
               ON tas.theater_id = tb.theater_id
-              AND tas.alliance_id = ke.victim_alliance_id
+              AND tas.alliance_id = COALESCE(ke.victim_alliance_id, 0)
+              AND tas.corporation_id = CASE WHEN COALESCE(ke.victim_alliance_id, 0) > 0 THEN 0 ELSE COALESCE(ke.victim_corporation_id, 0) END
          WHERE tb.theater_id = ?
            AND ke.zkb_total_value IS NOT NULL
          ORDER BY ke.zkb_total_value DESC
