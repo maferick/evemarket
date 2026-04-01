@@ -894,11 +894,12 @@ function _render_structure_row(array $sk, array $resolvedEntities, array $shipTy
 <?php endif; ?>
 </section>
 
-<!-- Killmail detail modal -->
-<div id="sc-km-modal-overlay" class="fixed inset-0 z-[9999] hidden" style="margin:0;padding:0;border:0;">
-    <div class="absolute inset-0 bg-black/70 backdrop-blur-sm" onclick="window._scKmModalClose()"></div>
-    <div class="absolute right-0 top-0 bottom-0 overflow-y-auto border-l border-slate-700/60 shadow-2xl shadow-black/50" id="sc-km-modal-panel" style="width:28rem;max-width:100vw;background:#0b1120;">
-        <div class="sticky top-0 z-10 flex items-center justify-between gap-3 px-5 py-3 border-b border-slate-700/60 backdrop-blur-sm" style="background:rgba(11,17,32,0.95);">
+<!-- Killmail detail modal — appended to <body> via JS to escape stacking context -->
+<template id="sc-km-modal-tpl">
+<div id="sc-km-modal-overlay" class="hidden" style="position:fixed;inset:0;z-index:99999;margin:0;padding:0;border:0;">
+    <div style="position:absolute;inset:0;background:rgba(0,0,0,0.7);backdrop-filter:blur(4px);" onclick="window._scKmModalClose()"></div>
+    <div id="sc-km-modal-panel" style="position:absolute;right:0;top:0;bottom:0;width:28rem;max-width:100vw;background:#0b1120;overflow-y:auto;border-left:1px solid rgba(100,116,139,0.4);box-shadow:-8px 0 30px rgba(0,0,0,0.5);">
+        <div style="position:sticky;top:0;z-index:10;display:flex;align-items:center;justify-content:space-between;gap:0.75rem;padding:0.75rem 1.25rem;border-bottom:1px solid rgba(100,116,139,0.4);background:rgba(11,17,32,0.97);backdrop-filter:blur(4px);">
             <h3 class="text-sm font-semibold text-slate-50 tracking-wide uppercase">Killmail Detail</h3>
             <button onclick="window._scKmModalClose()" class="text-slate-400 hover:text-slate-100 transition-colors text-lg leading-none px-1">&times;</button>
         </div>
@@ -909,9 +910,16 @@ function _render_structure_row(array $sk, array $resolvedEntities, array $shipTy
         </div>
     </div>
 </div>
+</template>
 
 <script>
 (function() {
+    // Move modal from <template> to <body> so it escapes all stacking contexts
+    var tpl = document.getElementById('sc-km-modal-tpl');
+    if (tpl) {
+        document.body.appendChild(tpl.content.cloneNode(true));
+        tpl.remove();
+    }
     var overlay = document.getElementById('sc-km-modal-overlay');
     var body = document.getElementById('sc-km-modal-body');
     var panel = document.getElementById('sc-km-modal-panel');
