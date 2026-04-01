@@ -99,11 +99,12 @@ def _processor(db: SupplyCoreDb) -> dict[str, object]:
         "rows_written": rows_written,
     }
     db.upsert_intelligence_snapshot(
-        snapshot_key="doctrine_fit_db_state",
+        snapshot_key="doctrine_fit_intelligence",
         payload_json=json_dumps_safe(snapshot_payload),
         metadata_json=json_dumps_safe({
             "source": "doctrine_item_stock_1d+doctrine_fit_activity_1d",
             "reason": "scheduler:python",
+            "refresh_interval_seconds": 900,
             "fit_count": len(fit_summaries),
         }),
         expires_seconds=900,
@@ -114,7 +115,7 @@ def _processor(db: SupplyCoreDb) -> dict[str, object]:
         "rows_written": rows_written,
         "warnings": [] if rows_processed > 0 else ["No active doctrine fits found while building doctrine intelligence."],
         "summary": f"Updated doctrine intelligence stock/activity rows ({rows_written} upserts).",
-        "meta": {"bucket_start": "CURDATE", "snapshot_key": "doctrine_fit_db_state"},
+        "meta": {"bucket_start": "CURDATE", "snapshot_key": "doctrine_fit_intelligence"},
     }
 
 
