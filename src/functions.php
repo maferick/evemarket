@@ -28418,6 +28418,10 @@ function buy_all_item_impact_map(array $fits, array $itemsByFitId, array $market
         $groupNames = $primaryGroupName !== '' ? [$primaryGroupName] : [];
         $hullClass = doctrine_fit_hull_class($fit, $fitItems, $metadataByType);
         $activityModifier = buy_all_fit_activity_pressure_modifier($fit, $hullClass);
+        // Doctrine key: fits in the same doctrine share a fleet target and are
+        // alternatives, so we deduplicate by taking the MAX across fits within
+        // each doctrine.  Ungrouped fits get their own key to avoid collapsing.
+        $doctrineKey = $primaryGroupName !== '' ? $primaryGroupName : ('_fit_' . $fitId);
 
         foreach ($fitItems as $item) {
             if (array_key_exists('is_stock_tracked', $item) && !(bool) $item['is_stock_tracked']) {
@@ -28433,6 +28437,7 @@ function buy_all_item_impact_map(array $fits, array $itemsByFitId, array $market
             $localStock = max(0, (int) (($marketByTypeId[$typeId]['alliance_total_sell_volume'] ?? 0)));
             $itemFitCapacity = intdiv($localStock, $requiredQty);
             $itemBlockType = doctrine_item_block_type($item, $metadataByType);
+            // Per-fit deficit kept for affected_fits detail display.
             $exactDeficitQuantity = $itemBlockType === 'hard_blocker' ? max(0, ($targetReadyFits * $requiredQty) - $localStock) : 0;
             $supportDeficitQuantity = $itemBlockType !== 'hard_blocker' ? max(0, ($targetReadyFits * $requiredQty) - $localStock) : 0;
             $deterministicBlockedFits = ((int) ($supply['bottleneck_type_id'] ?? 0) === $typeId && $itemBlockType === 'hard_blocker')
@@ -28460,14 +28465,35 @@ function buy_all_item_impact_map(array $fits, array $itemsByFitId, array $market
                     'activity_modifier_count' => 0,
                     'activity_pressure_modifier' => 1.0,
                     'affected_fits' => [],
+                    '_doctrine_peaks' => [],
+                    '_local_stock' => $localStock,
                 ];
             }
 
-            $impactByType[$typeId]['target_ready_fits'] += $targetReadyFits;
-            $impactByType[$typeId]['total_target_shortfall'] += $targetShortfall;
-            $impactByType[$typeId]['deterministic_blocked_fits'] += $deterministicBlockedFits;
-            $impactByType[$typeId]['exact_deficit_quantity'] += $exactDeficitQuantity;
-            $impactByType[$typeId]['support_deficit_quantity'] += $supportDeficitQuantity;
+            // Track per-doctrine peaks.  Fits within the same doctrine are
+            // alternative ship choices sharing one fleet target, so we keep
+            // only the highest-demand variant per doctrine.
+            if (!isset($impactByType[$typeId]['_doctrine_peaks'][$doctrineKey])) {
+                $impactByType[$typeId]['_doctrine_peaks'][$doctrineKey] = [
+                    'target_ready_fits' => 0,
+                    'target_shortfall' => 0,
+                    'deterministic_blocked_fits' => 0,
+                    'hard_demand_quantity' => 0,
+                    'soft_demand_quantity' => 0,
+                ];
+            }
+            $peak = &$impactByType[$typeId]['_doctrine_peaks'][$doctrineKey];
+            $peak['target_ready_fits'] = max($peak['target_ready_fits'], $targetReadyFits);
+            $peak['target_shortfall'] = max($peak['target_shortfall'], $targetShortfall);
+            $peak['deterministic_blocked_fits'] = max($peak['deterministic_blocked_fits'], $deterministicBlockedFits);
+            if ($itemBlockType === 'hard_blocker') {
+                $peak['hard_demand_quantity'] = max($peak['hard_demand_quantity'], $targetReadyFits * $requiredQty);
+            } else {
+                $peak['soft_demand_quantity'] = max($peak['soft_demand_quantity'], $targetReadyFits * $requiredQty);
+            }
+            unset($peak);
+
+            // Per-fit fields that are not doctrine-deduplicated.
             $impactByType[$typeId]['required_quantity_total'] += $requiredQty;
             $impactByType[$typeId]['valid_fit_names'][$fitName] = true;
             $impactByType[$typeId]['valid_fit_ids'][$fitId] = true;
@@ -28512,12 +28538,31 @@ function buy_all_item_impact_map(array $fits, array $itemsByFitId, array $market
     }
 
     foreach ($impactByType as $typeId => &$impact) {
+        // Compute doctrine-deduplicated aggregates from per-doctrine peaks.
+        // Each doctrine contributes its single highest-demand fit variant;
+        // local stock is subtracted once from the total demand across doctrines.
+        $localStock = (int) ($impact['_local_stock'] ?? 0);
+        $totalTargetReadyFits = 0;
+        $totalTargetShortfall = 0;
+        $totalBlockedFits = 0;
+        $totalHardDemand = 0;
+        $totalSoftDemand = 0;
+        foreach ((array) ($impact['_doctrine_peaks'] ?? []) as $peak) {
+            $totalTargetReadyFits += (int) ($peak['target_ready_fits'] ?? 0);
+            $totalTargetShortfall += (int) ($peak['target_shortfall'] ?? 0);
+            $totalBlockedFits += (int) ($peak['deterministic_blocked_fits'] ?? 0);
+            $totalHardDemand += (int) ($peak['hard_demand_quantity'] ?? 0);
+            $totalSoftDemand += (int) ($peak['soft_demand_quantity'] ?? 0);
+        }
+        $impact['target_ready_fits'] = $totalTargetReadyFits;
+        $impact['total_target_shortfall'] = $totalTargetShortfall;
+        $impact['deterministic_blocked_fits'] = min($totalBlockedFits, $totalTargetShortfall);
+        $impact['exact_deficit_quantity'] = max(0, $totalHardDemand - $localStock);
+        $impact['support_deficit_quantity'] = max(0, $totalSoftDemand - $localStock);
+        unset($impact['_doctrine_peaks'], $impact['_local_stock']);
+
         $impact['valid_doctrine_count'] = count((array) ($impact['valid_doctrine_names'] ?? []));
         $impact['valid_fits_count'] = count((array) ($impact['valid_fit_ids'] ?? []));
-        $impact['deterministic_blocked_fits'] = min(
-            max(0, (int) ($impact['deterministic_blocked_fits'] ?? 0)),
-            max(0, (int) ($impact['total_target_shortfall'] ?? 0))
-        );
         $impact['activity_pressure_modifier'] = round(
             (float) ($impact['activity_modifier_count'] ?? 0) > 0
                 ? ((float) ($impact['activity_modifier_total'] ?? 0.0) / (float) ($impact['activity_modifier_count'] ?? 1))
@@ -28800,6 +28845,19 @@ function buy_all_pack_pages(array $items): array
             . ' · Medium ' . doctrine_format_quantity((int) ($page['medium_necessity_count'] ?? 0))
             . ' · Low ' . doctrine_format_quantity((int) ($page['low_necessity_count'] ?? 0));
         $page['clipboard_text'] = implode("\n", array_filter($lines, static fn (string $line): bool => trim($line) !== ''));
+
+        // Pricing export: TSV with sell price and totals for spreadsheet use.
+        $pricingLines = ["Item\tQty\tSell Price\tTotal Sell"];
+        foreach ((array) ($page['items'] ?? []) as $row) {
+            $name = trim((string) ($row['item_name'] ?? ''));
+            $qty = (int) ($row['quantity'] ?? 0);
+            $sellPrice = isset($row['sell_price']) && $row['sell_price'] !== null ? number_format((float) $row['sell_price'], 2, '.', '') : '';
+            $sellTotal = isset($row['sell_price']) && $row['sell_price'] !== null ? number_format((float) $row['sell_price'] * $qty, 2, '.', '') : '';
+            if ($name !== '' && $qty > 0) {
+                $pricingLines[] = "{$name}\t{$qty}\t{$sellPrice}\t{$sellTotal}";
+            }
+        }
+        $page['clipboard_pricing_text'] = implode("\n", $pricingLines);
     }
     unset($page);
 

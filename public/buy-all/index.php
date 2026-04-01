@@ -237,7 +237,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                     </thead>
                     <tbody class="divide-y divide-white/8 text-slate-200">
                         <?php foreach ((array) ($activePageData['items'] ?? []) as $item): ?>
-                            <tr data-buyall-item data-buyall-name="<?= htmlspecialchars((string) ($item['item_name'] ?? ''), ENT_QUOTES) ?>" data-buyall-qty="<?= (int) ($item['final_planner_quantity'] ?? $item['quantity'] ?? 0) ?>">
+                            <tr data-buyall-item data-buyall-name="<?= htmlspecialchars((string) ($item['item_name'] ?? ''), ENT_QUOTES) ?>" data-buyall-qty="<?= (int) ($item['final_planner_quantity'] ?? $item['quantity'] ?? 0) ?>" data-buyall-sell="<?= htmlspecialchars(isset($item['sell_price']) && $item['sell_price'] !== null ? number_format((float) $item['sell_price'], 2, '.', '') : '', ENT_QUOTES) ?>">
                                 <td class="px-4 py-3 align-top"><input type="checkbox" checked class="buyall-item-check"></td>
                                 <td class="px-4 py-3 align-top">
                                     <p class="font-semibold text-white"><?= htmlspecialchars((string) ($item['item_name'] ?? ''), ENT_QUOTES) ?></p>
@@ -330,6 +330,26 @@ include __DIR__ . '/../../src/views/partials/header.php';
         <article class="surface-secondary">
             <div class="section-header border-b border-white/8 pb-4">
                 <div>
+                    <p class="eyebrow">Pricing export</p>
+                    <h2 class="mt-2 section-title">Copy with sell prices</h2>
+                    <p class="mt-2 section-copy">Tab-separated format with sell price and total sell value per item. Paste directly into a spreadsheet.</p>
+                </div>
+            </div>
+            <?php if ($activePageData !== null): ?>
+                <div class="mt-4 space-y-3">
+                    <div class="flex flex-wrap items-center gap-2">
+                        <button type="button" class="btn-primary" data-copy-target="buy-all-pricing-current">Copy pricing</button>
+                    </div>
+                    <textarea id="buy-all-pricing-current" class="field-input h-72 w-full font-mono text-sm" readonly><?= htmlspecialchars((string) ($activePageData['clipboard_pricing_text'] ?? ''), ENT_QUOTES) ?></textarea>
+                </div>
+            <?php else: ?>
+                <div class="surface-tertiary mt-4 text-sm text-slate-400">No pricing data is available until the planner produces at least one page.</div>
+            <?php endif; ?>
+        </article>
+
+        <article class="surface-secondary">
+            <div class="section-header border-b border-white/8 pb-4">
+                <div>
                     <p class="eyebrow">Page totals</p>
                     <h2 class="mt-2 section-title">Current page economics</h2>
                 </div>
@@ -376,15 +396,25 @@ include __DIR__ . '/../../src/views/partials/header.php';
     function rebuildClipboardFromSelection() {
         const rows = document.querySelectorAll('[data-buyall-item]');
         const lines = [];
+        const pricingLines = ['Item\tQty\tSell Price\tTotal Sell'];
         rows.forEach(function (row) {
             const cb = row.querySelector('.buyall-item-check');
             if (cb && cb.checked) {
-                lines.push(row.getAttribute('data-buyall-name') + ' ' + row.getAttribute('data-buyall-qty'));
+                var name = row.getAttribute('data-buyall-name');
+                var qty = row.getAttribute('data-buyall-qty');
+                var sell = row.getAttribute('data-buyall-sell');
+                lines.push(name + ' ' + qty);
+                var sellTotal = (sell && parseFloat(sell) > 0) ? (parseFloat(sell) * parseInt(qty, 10)).toFixed(2) : '';
+                pricingLines.push(name + '\t' + qty + '\t' + (sell || '') + '\t' + sellTotal);
             }
         });
         const textarea = document.getElementById('buy-all-current');
         if (textarea) {
             textarea.value = lines.join('\n');
+        }
+        const pricingTextarea = document.getElementById('buy-all-pricing-current');
+        if (pricingTextarea) {
+            pricingTextarea.value = pricingLines.join('\n');
         }
     }
 
