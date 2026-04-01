@@ -225,6 +225,28 @@ function _render_participant_row(array $p, array $resolvedEntities, array $shipT
                 <?php endif; ?>
             </div>
         </td>
+        <?php
+            // Resolve killmail sequence_id for this participant.
+            // Primary: battle-based lookup from view.php (works for all theaters).
+            // Fallback: killmail_ids embedded in ships_lost_detail JSON (new data only).
+            $charId = (int) ($p['character_id'] ?? 0);
+            $kmSeqId = 0;
+            // Try flying ship first, then lost ship
+            if ($flyingShipId > 0 && $charId > 0 && isset($victimKmLookup[$charId][$flyingShipId])) {
+                $kmSeqId = $victimKmLookup[$charId][$flyingShipId];
+            }
+            if ($kmSeqId === 0 && $lostShipId > 0 && $charId > 0 && isset($victimKmLookup[$charId][$lostShipId])) {
+                $kmSeqId = $victimKmLookup[$charId][$lostShipId];
+            }
+            if ($kmSeqId === 0) {
+                foreach ($lostDisplay as $ld) {
+                    foreach ((array) ($ld['killmail_ids'] ?? []) as $kmRef) {
+                        $seqId = (int) ($kmRef['sequence_id'] ?? 0);
+                        if ($seqId > 0) { $kmSeqId = $seqId; break 2; }
+                    }
+                }
+            }
+        ?>
         <td class="px-2 py-1.5">
             <div class="flex flex-col gap-0.5">
                 <?php if ($flyingShipId > 0): ?>
@@ -234,34 +256,27 @@ function _render_participant_row(array $p, array $resolvedEntities, array $shipT
                     </div>
                 <?php endif; ?>
                 <?php
-                    // Resolve sequence_id for clickable lost-ship link.
-                    // Primary: battle-based lookup from view.php (works for all theaters).
-                    // Fallback: killmail_ids embedded in ships_lost_detail JSON (new data only).
-                    $charId = (int) ($p['character_id'] ?? 0);
-                    $firstLostSeqId = 0;
+                    // When pilot has multiple deaths, make individual ships clickable
+                    // so each loss can be inspected independently
+                    $shipClickable = ($deaths > 1 && $kmSeqId > 0);
+                    // For the lost ship specifically, resolve its own sequence_id
+                    $lostSeqId = 0;
                     if ($lostShipId > 0 && $charId > 0 && isset($victimKmLookup[$charId][$lostShipId])) {
-                        $firstLostSeqId = $victimKmLookup[$charId][$lostShipId];
+                        $lostSeqId = $victimKmLookup[$charId][$lostShipId];
                     }
-                    if ($firstLostSeqId === 0) {
-                        foreach ($lostDisplay as $ld) {
-                            foreach ((array) ($ld['killmail_ids'] ?? []) as $kmRef) {
-                                $seqId = (int) ($kmRef['sequence_id'] ?? 0);
-                                if ($seqId > 0) { $firstLostSeqId = $seqId; break 2; }
-                            }
-                        }
-                    }
+                    if ($lostSeqId === 0) $lostSeqId = $kmSeqId;
                 ?>
                 <?php if ($lostShipId > 0 && !$lostSameAsFlying): ?>
-                    <div class="flex items-center gap-1 <?= $firstLostSeqId > 0 ? 'cursor-pointer hover:brightness-125 transition-all' : '' ?>"<?= $firstLostSeqId > 0 ? ' data-km-seq="' . $firstLostSeqId . '" onclick="window._scKmModal(' . $firstLostSeqId . ')"' : '' ?>>
+                    <div class="flex items-center gap-1 <?= $shipClickable && $lostSeqId > 0 ? 'cursor-pointer hover:brightness-125 transition-all' : '' ?>"<?= $shipClickable && $lostSeqId > 0 ? ' onclick="window._scKmModal(' . $lostSeqId . ')"' : '' ?>>
                         <img class="w-4 h-4 flex-shrink-0" src="https://images.evetech.net/types/<?= $lostShipId ?>/icon?size=32" loading="lazy">
-                        <span class="text-[11px] text-red-400 truncate max-w-[5rem] <?= $firstLostSeqId > 0 ? 'underline decoration-red-500/30 underline-offset-2' : '' ?>"><?= htmlspecialchars($lostShipName, ENT_QUOTES) ?></span>
+                        <span class="text-[11px] text-red-400 truncate max-w-[5rem] <?= $shipClickable && $lostSeqId > 0 ? 'underline decoration-red-500/30 underline-offset-2' : '' ?>"><?= htmlspecialchars($lostShipName, ENT_QUOTES) ?></span>
                         <?php if ($lostShipCount > 1): ?>
                             <span class="text-[10px] text-red-500">&times;<?= $lostShipCount ?></span>
                         <?php endif; ?>
                     </div>
                 <?php elseif ($lostSameAsFlying && $hasDeath): ?>
-                    <div class="flex items-center gap-1 opacity-70 <?= $firstLostSeqId > 0 ? 'cursor-pointer hover:brightness-125 transition-all' : '' ?>"<?= $firstLostSeqId > 0 ? ' data-km-seq="' . $firstLostSeqId . '" onclick="window._scKmModal(' . $firstLostSeqId . ')"' : '' ?>>
-                        <span class="text-[10px] text-red-500/60 <?= $firstLostSeqId > 0 ? 'underline decoration-red-500/30 underline-offset-2' : '' ?>">&darr; lost<?= $lostShipCount > 1 ? ' &times;' . $lostShipCount : '' ?></span>
+                    <div class="flex items-center gap-1 opacity-70 <?= $shipClickable && $lostSeqId > 0 ? 'cursor-pointer hover:brightness-125 transition-all' : '' ?>"<?= $shipClickable && $lostSeqId > 0 ? ' onclick="window._scKmModal(' . $lostSeqId . ')"' : '' ?>>
+                        <span class="text-[10px] text-red-500/60 <?= $shipClickable && $lostSeqId > 0 ? 'underline decoration-red-500/30 underline-offset-2' : '' ?>">&darr; lost<?= $lostShipCount > 1 ? ' &times;' . $lostShipCount : '' ?></span>
                     </div>
                 <?php endif; ?>
                 <?php if ($wasPodded): ?>
@@ -297,7 +312,11 @@ function _render_participant_row(array $p, array $resolvedEntities, array $shipT
             <?php endif; ?>
         </td>
         <td class="px-2 py-1.5 text-right">
-            <a class="text-accent text-[11px]" href="/battle-intelligence/character.php?character_id=<?= (int) ($p['character_id'] ?? 0) ?>">Intel</a>
+            <?php if ($kmSeqId > 0): ?>
+                <a class="text-red-400 text-[11px] cursor-pointer hover:text-red-300 transition-colors" onclick="window._scKmModal(<?= $kmSeqId ?>)">Killmail</a>
+            <?php else: ?>
+                <a class="text-accent text-[11px]" href="/battle-intelligence/character.php?character_id=<?= (int) ($p['character_id'] ?? 0) ?>">Intel</a>
+            <?php endif; ?>
         </td>
     </tr>
     <?php
@@ -363,11 +382,11 @@ function _render_structure_row(array $sk, array $resolvedEntities, array $shipTy
             </div>
         </td>
         <td class="px-2 py-1.5">
-            <div class="flex items-center gap-1 <?= $skSeqId > 0 ? 'cursor-pointer hover:brightness-125 transition-all' : '' ?>"<?= $skSeqId > 0 ? ' data-km-seq="' . $skSeqId . '" onclick="window._scKmModal(' . $skSeqId . ')"' : '' ?>>
+            <div class="flex items-center gap-1">
                 <?php if ($shipTypeId > 0): ?>
                     <img class="w-4 h-4 flex-shrink-0" src="https://images.evetech.net/types/<?= $shipTypeId ?>/icon?size=32" loading="lazy">
                 <?php endif; ?>
-                <span class="text-[11px] text-orange-300/80 truncate max-w-[6rem] <?= $skSeqId > 0 ? 'underline decoration-orange-500/30 underline-offset-2' : '' ?>"><?= htmlspecialchars($shipName, ENT_QUOTES) ?></span>
+                <span class="text-[11px] text-orange-300/80 truncate max-w-[6rem]"><?= htmlspecialchars($shipName, ENT_QUOTES) ?></span>
             </div>
         </td>
         <td class="px-2 py-1.5">
@@ -385,7 +404,11 @@ function _render_structure_row(array $sk, array $resolvedEntities, array $shipTy
             <?php endif; ?>
         </td>
         <td class="px-2 py-1.5 text-right">
-            <span class="text-xs text-slate-600">&mdash;</span>
+            <?php if ($skSeqId > 0): ?>
+                <a class="text-red-400 text-[11px] cursor-pointer hover:text-red-300 transition-colors" onclick="window._scKmModal(<?= $skSeqId ?>)">Killmail</a>
+            <?php else: ?>
+                <span class="text-xs text-slate-600">&mdash;</span>
+            <?php endif; ?>
         </td>
     </tr>
     <?php
@@ -681,6 +704,25 @@ function _render_structure_row(array $sk, array $resolvedEntities, array $shipTy
                                     <?php endif; ?>
                                 </div>
                             </td>
+                            <?php
+                                // Resolve killmail sequence_id for this participant
+                                $charId2 = (int) ($p['character_id'] ?? 0);
+                                $kmSeqId2 = 0;
+                                if ($flyingShipId2 > 0 && $charId2 > 0 && isset($victimKmLookup[$charId2][$flyingShipId2])) {
+                                    $kmSeqId2 = $victimKmLookup[$charId2][$flyingShipId2];
+                                }
+                                if ($kmSeqId2 === 0 && $lostShipId2 > 0 && $charId2 > 0 && isset($victimKmLookup[$charId2][$lostShipId2])) {
+                                    $kmSeqId2 = $victimKmLookup[$charId2][$lostShipId2];
+                                }
+                                if ($kmSeqId2 === 0) {
+                                    foreach ($lostDisplay2 as $ld2) {
+                                        foreach ((array) ($ld2['killmail_ids'] ?? []) as $kmRef2) {
+                                            $seqId2 = (int) ($kmRef2['sequence_id'] ?? 0);
+                                            if ($seqId2 > 0) { $kmSeqId2 = $seqId2; break 2; }
+                                        }
+                                    }
+                                }
+                            ?>
                             <td class="px-3 py-2">
                                 <div class="flex flex-col gap-0.5">
                                     <?php if ($flyingShipId2 > 0): ?>
@@ -690,32 +732,24 @@ function _render_structure_row(array $sk, array $resolvedEntities, array $shipTy
                                         </div>
                                     <?php endif; ?>
                                     <?php
-                                        // Resolve sequence_id for clickable lost-ship link.
-                                        $charId2 = (int) ($p['character_id'] ?? 0);
-                                        $firstLostSeqId2 = 0;
+                                        $shipClickable2 = ($deaths > 1 && $kmSeqId2 > 0);
+                                        $lostSeqId2 = 0;
                                         if ($lostShipId2 > 0 && $charId2 > 0 && isset($victimKmLookup[$charId2][$lostShipId2])) {
-                                            $firstLostSeqId2 = $victimKmLookup[$charId2][$lostShipId2];
+                                            $lostSeqId2 = $victimKmLookup[$charId2][$lostShipId2];
                                         }
-                                        if ($firstLostSeqId2 === 0) {
-                                            foreach ($lostDisplay2 as $ld2) {
-                                                foreach ((array) ($ld2['killmail_ids'] ?? []) as $kmRef2) {
-                                                    $seqId2 = (int) ($kmRef2['sequence_id'] ?? 0);
-                                                    if ($seqId2 > 0) { $firstLostSeqId2 = $seqId2; break 2; }
-                                                }
-                                            }
-                                        }
+                                        if ($lostSeqId2 === 0) $lostSeqId2 = $kmSeqId2;
                                     ?>
                                     <?php if ($lostShipId2 > 0 && !$lostSameAsFlying2): ?>
-                                        <div class="flex items-center gap-1 <?= $firstLostSeqId2 > 0 ? 'cursor-pointer hover:brightness-125 transition-all' : '' ?>"<?= $firstLostSeqId2 > 0 ? ' data-km-seq="' . $firstLostSeqId2 . '" onclick="window._scKmModal(' . $firstLostSeqId2 . ')"' : '' ?>>
+                                        <div class="flex items-center gap-1 <?= $shipClickable2 && $lostSeqId2 > 0 ? 'cursor-pointer hover:brightness-125 transition-all' : '' ?>"<?= $shipClickable2 && $lostSeqId2 > 0 ? ' onclick="window._scKmModal(' . $lostSeqId2 . ')"' : '' ?>>
                                             <img class="w-4 h-4" src="https://images.evetech.net/types/<?= $lostShipId2 ?>/icon?size=32" loading="lazy">
-                                            <span class="text-[11px] text-red-400 truncate max-w-[5rem] <?= $firstLostSeqId2 > 0 ? 'underline decoration-red-500/30 underline-offset-2' : '' ?>"><?= htmlspecialchars($lostShipName2, ENT_QUOTES) ?></span>
+                                            <span class="text-[11px] text-red-400 truncate max-w-[5rem] <?= $shipClickable2 && $lostSeqId2 > 0 ? 'underline decoration-red-500/30 underline-offset-2' : '' ?>"><?= htmlspecialchars($lostShipName2, ENT_QUOTES) ?></span>
                                             <?php if ($lostShipCount2 > 1): ?>
                                                 <span class="text-[10px] text-red-500">&times;<?= $lostShipCount2 ?></span>
                                             <?php endif; ?>
                                         </div>
                                     <?php elseif ($lostSameAsFlying2 && $hasDeath): ?>
-                                        <div class="flex items-center gap-1 opacity-70 <?= $firstLostSeqId2 > 0 ? 'cursor-pointer hover:brightness-125 transition-all' : '' ?>"<?= $firstLostSeqId2 > 0 ? ' data-km-seq="' . $firstLostSeqId2 . '" onclick="window._scKmModal(' . $firstLostSeqId2 . ')"' : '' ?>>
-                                            <span class="text-[10px] text-red-500/60 <?= $firstLostSeqId2 > 0 ? 'underline decoration-red-500/30 underline-offset-2' : '' ?>">&darr; lost<?= $lostShipCount2 > 1 ? ' &times;' . $lostShipCount2 : '' ?></span>
+                                        <div class="flex items-center gap-1 opacity-70 <?= $shipClickable2 && $lostSeqId2 > 0 ? 'cursor-pointer hover:brightness-125 transition-all' : '' ?>"<?= $shipClickable2 && $lostSeqId2 > 0 ? ' onclick="window._scKmModal(' . $lostSeqId2 . ')"' : '' ?>>
+                                            <span class="text-[10px] text-red-500/60 <?= $shipClickable2 && $lostSeqId2 > 0 ? 'underline decoration-red-500/30 underline-offset-2' : '' ?>">&darr; lost<?= $lostShipCount2 > 1 ? ' &times;' . $lostShipCount2 : '' ?></span>
                                         </div>
                                     <?php endif; ?>
                                     <?php
@@ -762,7 +796,11 @@ function _render_structure_row(array $sk, array $resolvedEntities, array $shipTy
                                 <?php endif; ?>
                             </td>
                             <td class="px-3 py-2 text-right">
-                                <a class="text-accent text-sm" href="/battle-intelligence/character.php?character_id=<?= (int) ($p['character_id'] ?? 0) ?>">Intel</a>
+                                <?php if ($kmSeqId2 > 0): ?>
+                                    <a class="text-red-400 text-sm cursor-pointer hover:text-red-300 transition-colors" onclick="window._scKmModal(<?= $kmSeqId2 ?>)">Killmail</a>
+                                <?php else: ?>
+                                    <a class="text-accent text-sm" href="/battle-intelligence/character.php?character_id=<?= (int) ($p['character_id'] ?? 0) ?>">Intel</a>
+                                <?php endif; ?>
                             </td>
                         </tr>
                     <?php endforeach; ?>
@@ -819,11 +857,11 @@ function _render_structure_row(array $sk, array $resolvedEntities, array $shipTy
                                 </div>
                             </td>
                             <td class="px-3 py-2">
-                                <div class="flex items-center gap-1 <?= $skSeqId3 > 0 ? 'cursor-pointer hover:brightness-125 transition-all' : '' ?>"<?= $skSeqId3 > 0 ? ' data-km-seq="' . $skSeqId3 . '" onclick="window._scKmModal(' . $skSeqId3 . ')"' : '' ?>>
+                                <div class="flex items-center gap-1">
                                     <?php if ($skShipTypeId > 0): ?>
                                         <img class="w-4 h-4" src="https://images.evetech.net/types/<?= $skShipTypeId ?>/icon?size=32" loading="lazy">
                                     <?php endif; ?>
-                                    <span class="text-[11px] text-orange-300/80 truncate max-w-[8rem] <?= $skSeqId3 > 0 ? 'underline decoration-orange-500/30 underline-offset-2' : '' ?>"><?= htmlspecialchars($skShipName, ENT_QUOTES) ?></span>
+                                    <span class="text-[11px] text-orange-300/80 truncate max-w-[8rem]"><?= htmlspecialchars($skShipName, ENT_QUOTES) ?></span>
                                 </div>
                             </td>
                             <td class="px-3 py-2">
@@ -834,7 +872,13 @@ function _render_structure_row(array $sk, array $resolvedEntities, array $shipTy
                             <td class="px-3 py-2 text-right text-xs text-slate-600">&mdash;</td>
                             <td class="px-3 py-2 text-right text-xs <?= $skIskLost > 0 ? 'text-red-300' : 'text-slate-500' ?>"><?= $skIskLost > 0 ? supplycore_format_isk($skIskLost) : '&mdash;' ?></td>
                             <td class="px-3 py-2 text-right text-xs text-slate-600">&mdash;</td>
-                            <td class="px-3 py-2 text-right text-xs text-slate-600">&mdash;</td>
+                            <td class="px-3 py-2 text-right">
+                                <?php if ($skSeqId3 > 0): ?>
+                                    <a class="text-red-400 text-sm cursor-pointer hover:text-red-300 transition-colors" onclick="window._scKmModal(<?= $skSeqId3 ?>)">Killmail</a>
+                                <?php else: ?>
+                                    <span class="text-xs text-slate-600">&mdash;</span>
+                                <?php endif; ?>
+                            </td>
                         </tr>
                     <?php endforeach; ?>
                 <?php endif; ?>
@@ -893,7 +937,7 @@ function _render_structure_row(array $sk, array $resolvedEntities, array $shipTy
         // Ship render + name
         if (ship.render_url) {
             html += '<div class="rounded-xl overflow-hidden bg-slate-800/50 mb-4">';
-            html += '<img src="' + esc(ship.render_url) + '" alt="' + esc(ship.name) + '" class="w-full aspect-square object-contain" loading="eager">';
+            html += '<img src="' + esc(ship.render_url) + '" alt="' + esc(ship.name) + '" class="w-full max-h-64 object-contain" loading="eager">';
             html += '</div>';
         }
 
