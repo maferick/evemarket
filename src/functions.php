@@ -1376,6 +1376,7 @@ function item_scope_metadata_by_type_ids(array $typeIds): array
                 'meta_group_id' => isset($row['meta_group_id']) ? (int) $row['meta_group_id'] : null,
                 'meta_group_name' => (string) ($row['meta_group_name'] ?? ''),
                 'published' => (int) ($row['published'] ?? 0) === 1,
+                'volume' => isset($row['volume']) ? (float) $row['volume'] : 0.0,
                 'market_group_path_ids' => $marketGroupPathIds,
                 'market_group_path_names' => $marketGroupPathNames,
             ];
