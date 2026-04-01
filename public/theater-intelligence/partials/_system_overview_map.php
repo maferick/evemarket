@@ -182,10 +182,10 @@ foreach ($_surroundingByAnchor as $_anchorId => $_anchorNodes) {
     }
 }
 
-// ── SVG dimensions — wide landscape for full-width display ──
-$_svgW = 960;
-$_svgH = 340;
-$_pad  = 40;
+// ── SVG dimensions — fits the side-panel (420px wide) ──
+$_svgW = 480;
+$_svgH = 380;
+$_pad  = 36;
 $_sx = static fn(float $x): float => $_pad + ($x * ($_svgW - ($_pad * 2)));
 $_sy = static fn(float $y): float => $_pad + ($y * ($_svgH - ($_pad * 2)));
 $_secColor = static function (float $sec): string {
@@ -202,7 +202,7 @@ $_secColor = static function (float $sec): string {
 $_svgId = 'sysmap-' . substr(md5($theaterId), 0, 6);
 ?>
 
-<div class="system-overview-map mt-4" id="<?= $_svgId ?>-wrap">
+<div class="system-overview-map" id="<?= $_svgId ?>-wrap">
     <div class="system-overview-map__header">
         <svg class="system-overview-map__icon" viewBox="0 0 16 16" fill="none">
             <circle cx="4" cy="4" r="2" fill="#2f9bff" opacity="0.7"/>
