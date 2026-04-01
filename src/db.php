@@ -16746,7 +16746,9 @@ function db_pipeline_observatory_data(): array
     $evidencePaths     = (int) (db_select_one("SELECT COUNT(*) AS cnt FROM character_evidence_paths") ?? [])['cnt'] ?? 0;
 
     // ── Stage 4: Intelligence ────────────────────────────────────────────────
-    $suspicionScored   = (int) (db_select_one("SELECT COUNT(*) AS cnt FROM character_counterintel_scores") ?? [])['cnt'] ?? 0;
+    $suspicionScoredV2  = (int) (db_select_one("SELECT COUNT(*) AS cnt FROM character_suspicion_scores") ?? [])['cnt'] ?? 0;
+    $suspicionScoredCI  = (int) (db_select_one("SELECT COUNT(*) AS cnt FROM character_counterintel_scores") ?? [])['cnt'] ?? 0;
+    $suspicionScored    = max($suspicionScoredV2, $suspicionScoredCI);
     $dossiers          = (int) (db_select_one("SELECT COUNT(*) AS cnt FROM alliance_dossiers") ?? [])['cnt'] ?? 0;
     $threatCorridors   = (int) (db_select_one("SELECT COUNT(*) AS cnt FROM threat_corridors") ?? [])['cnt'] ?? 0;
 
