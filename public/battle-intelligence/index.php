@@ -34,13 +34,13 @@ include __DIR__ . '/../../src/views/partials/header.php';
             <thead>
             <tr class="border-b border-border/70 text-xs uppercase tracking-[0.15em] text-muted">
                 <th class="px-3 py-2 text-left">Character</th>
-                <th class="px-3 py-2 text-right">Review priority</th>
-                <th class="px-3 py-2 text-right">Percentile</th>
-                <th class="px-3 py-2 text-right">Confidence</th>
-                <th class="px-3 py-2 text-right">Repeatability</th>
-                <th class="px-3 py-2 text-right">Enemy sustain lift</th>
-                <th class="px-3 py-2 text-right">Corp hops (180d)</th>
-                <th class="px-3 py-2 text-right">Evidence</th>
+                <th class="px-3 py-2 text-right" title="Overall suspicion level — based on battle clustering, anomaly signals, and cross-side patterns">Priority</th>
+                <th class="px-3 py-2 text-right" title="How suspicious this character is compared to everyone else (100% = most suspicious in the dataset)">Percentile</th>
+                <th class="px-3 py-2 text-right" title="How much data backs up this score — low confidence means fewer battles to draw from">Confidence</th>
+                <th class="px-3 py-2 text-right" title="Whether suspicious patterns keep showing up across multiple battles, not just once">Repeatability</th>
+                <th class="px-3 py-2 text-right" title="Whether enemy logistics ships survive unusually well when this character is present">Enemy sustain lift</th>
+                <th class="px-3 py-2 text-right" title="How often this character switched corporations in the last 180 days — frequent hops can indicate cover identity use">Corp hops (180d)</th>
+                <th class="px-3 py-2 text-right" title="Number of battles feeding into this character's score">Evidence</th>
                 <th class="px-3 py-2 text-right">Inspect</th>
             </tr>
             </thead>
@@ -49,14 +49,50 @@ include __DIR__ . '/../../src/views/partials/header.php';
                 <tr><td colspan="9" class="px-3 py-6 text-sm text-muted">No scored characters yet. Run compute_counterintel_pipeline.</td></tr>
             <?php else: ?>
                 <?php foreach ($rows as $row): ?>
+                    <?php
+                    $priorityScore = (float) ($row['review_priority_score'] ?? 0);
+                    if ($priorityScore > 0.15) {
+                        $priorityLabel = 'CRITICAL';
+                        $priorityClass = 'bg-red-900/60 text-red-300 border border-red-800/50';
+                    } elseif ($priorityScore > 0.05) {
+                        $priorityLabel = 'HIGH';
+                        $priorityClass = 'bg-orange-900/60 text-orange-300 border border-orange-800/50';
+                    } elseif ($priorityScore > 0.01) {
+                        $priorityLabel = 'ELEVATED';
+                        $priorityClass = 'bg-amber-900/60 text-amber-300 border border-amber-800/50';
+                    } elseif ($priorityScore > 0) {
+                        $priorityLabel = 'WATCH';
+                        $priorityClass = 'bg-yellow-900/60 text-yellow-400 border border-yellow-800/50';
+                    } else {
+                        $priorityLabel = null;
+                        $priorityClass = '';
+                    }
+
+                    $pct = (float) ($row['percentile_rank'] ?? 0) * 100;
+                    $pctClass = $pct >= 99.9 ? 'text-red-400 font-semibold' : ($pct >= 90 ? 'text-orange-400' : ($pct >= 70 ? 'text-amber-400' : 'text-slate-400'));
+
+                    $confidenceVal = (float) ($row['confidence_score'] ?? 0);
+                    $repeatabilityVal = (float) ($row['repeatability_score'] ?? 0);
+                    $sustainVal = (float) ($row['enemy_sustain_lift'] ?? 0);
+                    $corpHopsVal = (float) ($row['corp_hop_frequency_180d'] ?? 0);
+                    ?>
                     <tr class="border-b border-border/50">
                         <td class="px-3 py-2 text-slate-100"><?= htmlspecialchars((string) ($row['character_name'] ?? 'Unknown'), ENT_QUOTES) ?></td>
-                        <td class="px-3 py-2 text-right"><?= htmlspecialchars(number_format((float) ($row['review_priority_score'] ?? 0), 4), ENT_QUOTES) ?></td>
-                        <td class="px-3 py-2 text-right"><?= htmlspecialchars(number_format((float) ($row['percentile_rank'] ?? 0) * 100, 1), ENT_QUOTES) ?>%</td>
-                        <td class="px-3 py-2 text-right"><?= htmlspecialchars(number_format((float) ($row['confidence_score'] ?? 0), 3), ENT_QUOTES) ?></td>
-                        <td class="px-3 py-2 text-right"><?= htmlspecialchars(number_format((float) ($row['repeatability_score'] ?? 0), 3), ENT_QUOTES) ?></td>
-                        <td class="px-3 py-2 text-right"><?= htmlspecialchars(number_format((float) ($row['enemy_sustain_lift'] ?? 0), 3), ENT_QUOTES) ?></td>
-                        <td class="px-3 py-2 text-right"><?= htmlspecialchars(number_format((float) ($row['corp_hop_frequency_180d'] ?? 0), 3), ENT_QUOTES) ?></td>
+                        <td class="px-3 py-2 text-right">
+                            <?php if ($priorityLabel !== null): ?>
+                                <span class="inline-flex items-center gap-1.5 rounded px-2 py-0.5 text-xs font-medium <?= $priorityClass ?>">
+                                    <?= $priorityLabel ?>
+                                    <span class="text-[10px] opacity-60"><?= number_format($priorityScore, 4) ?></span>
+                                </span>
+                            <?php else: ?>
+                                <span class="text-muted text-xs">—</span>
+                            <?php endif; ?>
+                        </td>
+                        <td class="px-3 py-2 text-right"><span class="<?= $pctClass ?>"><?= number_format($pct, 1) ?>%</span></td>
+                        <td class="px-3 py-2 text-right"><?php if ($confidenceVal <= 0): ?><span class="text-muted">—</span><?php elseif ($confidenceVal >= 0.6): ?><span class="text-orange-400"><?= number_format($confidenceVal, 3) ?></span><?php else: ?><span class="text-slate-300"><?= number_format($confidenceVal, 3) ?></span><?php endif; ?></td>
+                        <td class="px-3 py-2 text-right"><?php if ($repeatabilityVal <= 0): ?><span class="text-muted">—</span><?php elseif ($repeatabilityVal >= 0.6): ?><span class="text-orange-400"><?= number_format($repeatabilityVal, 3) ?></span><?php else: ?><span class="text-slate-300"><?= number_format($repeatabilityVal, 3) ?></span><?php endif; ?></td>
+                        <td class="px-3 py-2 text-right"><?php if ($sustainVal <= 0): ?><span class="text-muted">—</span><?php elseif ($sustainVal >= 0.6): ?><span class="text-orange-400"><?= number_format($sustainVal, 3) ?></span><?php else: ?><span class="text-slate-300"><?= number_format($sustainVal, 3) ?></span><?php endif; ?></td>
+                        <td class="px-3 py-2 text-right"><?php if ($corpHopsVal <= 0): ?><span class="text-muted">—</span><?php elseif ($corpHopsVal >= 0.6): ?><span class="text-orange-400"><?= number_format($corpHopsVal, 3) ?></span><?php else: ?><span class="text-slate-300"><?= number_format($corpHopsVal, 3) ?></span><?php endif; ?></td>
                         <td class="px-3 py-2 text-right"><?= (int) ($row['evidence_count'] ?? 0) ?></td>
                         <td class="px-3 py-2 text-right"><a class="text-accent" href="/battle-intelligence/character.php?character_id=<?= urlencode((string) ((int) ($row['character_id'] ?? 0))) ?>">Drilldown</a></td>
                     </tr>
@@ -73,8 +109,8 @@ include __DIR__ . '/../../src/views/partials/header.php';
     <div class="mt-3 grid gap-3 md:grid-cols-4">
         <div class="surface-tertiary">
             <p class="text-xs text-muted">Quality score</p>
-            <p class="mt-1 text-xl <?= ((float) ($dataQuality['quality_score'] ?? 0)) >= 0.7 ? 'text-green-400' : 'text-red-400' ?>"><?= htmlspecialchars(number_format((float) ($dataQuality['quality_score'] ?? 0), 4), ENT_QUOTES) ?></p>
-            <p class="text-xs text-muted mt-1">Gate <?= ((int) ($dataQuality['gate_passed'] ?? 0)) ? 'PASSED' : 'FAILED' ?></p>
+            <p class="mt-1 text-xl <?= ((float) ($dataQuality['quality_score'] ?? 0)) >= 0.7 ? 'text-green-400' : 'text-red-400' ?>"><?= htmlspecialchars(number_format((float) ($dataQuality['quality_score'] ?? 0) * 100, 1), ENT_QUOTES) ?>%</p>
+            <p class="text-xs mt-1 <?= ((int) ($dataQuality['gate_passed'] ?? 0)) ? 'text-green-400' : 'text-red-400' ?>">Gate <?= ((int) ($dataQuality['gate_passed'] ?? 0)) ? 'PASSED' : 'FAILED' ?></p>
         </div>
         <div class="surface-tertiary"><p class="text-xs text-muted">Characters (total / with battles)</p><p class="mt-1 text-base text-slate-100"><?= number_format((int) ($dataQuality['characters_total'] ?? 0)) ?> / <?= number_format((int) ($dataQuality['characters_with_battles'] ?? 0)) ?></p></div>
         <div class="surface-tertiary"><p class="text-xs text-muted">Orphans / Stale / Missing alliance</p><p class="mt-1 text-base text-slate-100"><?= number_format((int) ($dataQuality['orphan_characters'] ?? 0)) ?> / <?= number_format((int) ($dataQuality['stale_data_count'] ?? 0)) ?> / <?= number_format((int) ($dataQuality['missing_alliance_ids'] ?? 0)) ?></p></div>
@@ -100,7 +136,14 @@ include __DIR__ . '/../../src/views/partials/header.php';
             <tbody>
             <?php foreach ($communities as $comm): ?>
                 <tr class="border-b border-border/50">
-                    <td class="px-3 py-2 text-slate-100">#<?= (int) ($comm['community_id'] ?? 0) ?></td>
+                    <td class="px-3 py-2 text-slate-100">
+                        <?php if (($comm['top_member_name'] ?? '') !== ''): ?>
+                            <?= htmlspecialchars((string) $comm['top_member_name'], ENT_QUOTES) ?>'s cluster
+                            <span class="ml-1 text-[10px] text-muted">#<?= (int) ($comm['community_id'] ?? 0) ?></span>
+                        <?php else: ?>
+                            #<?= (int) ($comm['community_id'] ?? 0) ?>
+                        <?php endif; ?>
+                    </td>
                     <td class="px-3 py-2 text-right"><?= (int) ($comm['member_count'] ?? 0) ?></td>
                     <td class="px-3 py-2 text-right"><?= (int) ($comm['bridge_count'] ?? 0) ?></td>
                     <td class="px-3 py-2 text-right"><?= number_format((float) ($comm['avg_pagerank'] ?? 0), 4) ?></td>
