@@ -65,18 +65,25 @@ $data = supplycore_cache_aside('killmail_summary', [$sequenceId], supplycore_cac
     if ($allTypeIds !== []) {
         $typeIdList = array_keys($allTypeIds);
         $placeholders = implode(',', array_fill(0, count($typeIdList), '?'));
+        // Get the latest avg_price per type_id using a correlated subquery
         $priceRows = db_select(
-            "SELECT type_id, avg_price
-             FROM market_item_price_1d
-             WHERE type_id IN ({$placeholders})
-             ORDER BY bucket_start DESC
-             LIMIT " . count($typeIdList),
+            "SELECT p.type_id, p.avg_price
+             FROM market_item_price_1d p
+             INNER JOIN (
+                 SELECT type_id, MAX(bucket_start) AS max_bucket
+                 FROM market_item_price_1d
+                 WHERE type_id IN ({$placeholders})
+                   AND avg_price IS NOT NULL
+                   AND avg_price > 0
+                 GROUP BY type_id
+             ) latest ON latest.type_id = p.type_id AND latest.max_bucket = p.bucket_start",
             $typeIdList
         );
         foreach ($priceRows as $pr) {
             $tid = (int) ($pr['type_id'] ?? 0);
-            if ($tid > 0 && !isset($priceMap[$tid])) {
-                $priceMap[$tid] = (float) ($pr['avg_price'] ?? 0);
+            $price = (float) ($pr['avg_price'] ?? 0);
+            if ($tid > 0 && $price > 0) {
+                $priceMap[$tid] = $price;
             }
         }
     }
