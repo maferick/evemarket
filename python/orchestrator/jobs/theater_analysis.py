@@ -115,6 +115,7 @@ def _load_killmails_for_battles(db: SupplyCoreDb, battle_ids: list[str]) -> list
             f"""
             SELECT
                 ke.killmail_id,
+                ke.sequence_id,
                 ke.solar_system_id AS system_id,
                 ke.effective_killmail_at AS killmail_time,
                 ke.battle_id,
@@ -523,7 +524,7 @@ def _compute_participants(
                 "corporation_id": corp_id if corp_id > 0 else None,
                 "side": char_sides.get(cid, "third_party"),
                 "ship_type_ids": [],
-                "ships_lost_detail": defaultdict(lambda: {"count": 0, "isk_lost": 0.0}),
+                "ships_lost_detail": defaultdict(lambda: {"count": 0, "isk_lost": 0.0, "killmail_ids": []}),
                 "kills": 0,
                 "deaths": 0,
                 "damage_done": 0.0,
@@ -575,6 +576,9 @@ def _compute_participants(
                 loss = char_stats[victim_id]["ships_lost_detail"][victim_ship]
                 loss["count"] += 1
                 loss["isk_lost"] += isk
+                seq_id = int(km.get("sequence_id") or 0)
+                if km_id > 0:
+                    loss["killmail_ids"].append({"killmail_id": km_id, "sequence_id": seq_id})
                 if victim_ship not in char_stats[victim_id]["ship_type_ids"]:
                     char_stats[victim_id]["ship_type_ids"].append(victim_ship)
 
@@ -634,7 +638,7 @@ def _compute_participants(
 
         lost_detail = dict(stats.get("ships_lost_detail", {}))
         ships_lost_json = json_dumps_safe([
-            {"ship_type_id": stid, "count": d["count"], "isk_lost": d["isk_lost"]}
+            {"ship_type_id": stid, "count": d["count"], "isk_lost": d["isk_lost"], "killmail_ids": d.get("killmail_ids", [])}
             for stid, d in lost_detail.items()
         ]) if lost_detail else None
 
