@@ -10634,6 +10634,58 @@ function db_ref_stargates_bulk_upsert(array $rows, ?int $chunkSize = null): int
     return db_bulk_insert_or_upsert('ref_stargates', ['stargate_id', 'system_id', 'dest_stargate_id', 'dest_system_id'], $rows, ['system_id', 'dest_stargate_id', 'dest_system_id'], $chunkSize);
 }
 
+/**
+ * Fetch all systems in the given constellation(s) with their internal gate connections.
+ * Returns ['nodes' => [...], 'edges' => [...]] in the same format as db_threat_corridor_graph_subgraph().
+ */
+function db_constellation_graph(array $constellationIds): array
+{
+    $constellationIds = array_values(array_unique(array_filter(array_map('intval', $constellationIds), static fn(int $id): bool => $id > 0)));
+    if ($constellationIds === []) {
+        return ['nodes' => [], 'edges' => []];
+    }
+
+    $ph = implode(',', array_fill(0, count($constellationIds), '?'));
+    $systems = db_select(
+        "SELECT rs.system_id, rs.system_name, rs.security, rs.constellation_id,
+                rc.constellation_name
+         FROM ref_systems rs
+         LEFT JOIN ref_constellations rc ON rc.constellation_id = rs.constellation_id
+         WHERE rs.constellation_id IN ({$ph})",
+        $constellationIds
+    );
+
+    if ($systems === []) {
+        return ['nodes' => [], 'edges' => []];
+    }
+
+    $systemIds = array_map(static fn(array $r): int => (int) $r['system_id'], $systems);
+    $sysPh = implode(',', array_fill(0, count($systemIds), '?'));
+    $edges = db_select(
+        "SELECT system_id, dest_system_id
+         FROM ref_stargates
+         WHERE system_id IN ({$sysPh})
+           AND dest_system_id IN ({$sysPh})",
+        array_merge($systemIds, $systemIds)
+    );
+
+    $edgePairs = [];
+    foreach ($edges as $r) {
+        $a = (int) $r['system_id'];
+        $b = (int) $r['dest_system_id'];
+        if ($a > 0 && $b > 0 && $a !== $b) {
+            $left = min($a, $b);
+            $right = max($a, $b);
+            $edgePairs[$left . ':' . $right] = [$left, $right];
+        }
+    }
+
+    return [
+        'nodes' => $systems,
+        'edges' => array_values($edgePairs),
+    ];
+}
+
 function db_ref_market_groups_bulk_upsert(array $rows, ?int $chunkSize = null): int
 {
     return db_bulk_insert_or_upsert('ref_market_groups', ['market_group_id', 'parent_group_id', 'market_group_name', 'description'], $rows, ['parent_group_id', 'market_group_name', 'description'], $chunkSize);
