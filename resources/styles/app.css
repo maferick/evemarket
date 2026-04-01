@@ -309,9 +309,49 @@
     }
 }
 
+/* ── System Overview Map (theater-intelligence header) ───────────────── */
+@layer components {
+    .system-overview-map {
+        @apply flex-shrink-0 rounded-[1.3rem] border border-sky-400/12 overflow-hidden;
+        background: linear-gradient(135deg, #0a1019 0%, #060a12 100%);
+        box-shadow:
+            inset 0 1px 0 rgba(255,255,255,0.03),
+            0 8px 32px rgba(2,6,23,0.5);
+        width: 360px;
+        min-width: 280px;
+    }
+
+    .system-overview-map__header {
+        @apply flex items-center gap-1.5 px-3.5 py-2 text-[10px] uppercase tracking-[0.18em] text-slate-500 border-b border-white/5;
+        font-weight: 600;
+    }
+
+    .system-overview-map__icon {
+        width: 14px;
+        height: 14px;
+        flex-shrink: 0;
+    }
+
+    .system-overview-map__svg {
+        display: block;
+        width: 100%;
+        height: auto;
+        min-width: 0;
+        min-height: 0;
+    }
+
+    /* Responsive: stack below on small screens */
+    @media (max-width: 767px) {
+        .system-overview-map {
+            width: 100%;
+            min-width: 0;
+        }
+    }
+}
+
 /* Safety net: prevent SVG icons without explicit dimensions from expanding in flex containers */
 @layer base {
-    svg:not([width]):not([height]) {
+    svg:not([width]):not([height]):not(.system-overview-map__svg) {
         width: 1em;
         height: 1em;
         min-width: 0;
