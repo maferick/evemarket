@@ -302,6 +302,7 @@ class JobResult:
             "checkpoint_after": self.checkpoint_after,
             "has_more": self.has_more,
             "error_text": self.error_text,
+            "error": self.error_text,
             "warnings": list(self.warnings),
             "meta": dict(self.meta),
         })
