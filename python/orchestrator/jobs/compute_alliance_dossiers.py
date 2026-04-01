@@ -337,23 +337,27 @@ def _query_co_presence_neo4j(neo4j_client: Any, alliance_id: int) -> list[dict]:
 
     Uses killmail co-attacker relationships: two alliances are co-present
     when their members appear as co-attackers (both ``ATTACKED_ON``) on the
-    same ``Killmail`` node.  The ``battle_id`` property on the Killmail is
-    used to count distinct shared battles.
+    same ``Killmail`` node.  Traverses the CURRENT_CORP → PART_OF chain to
+    resolve alliance membership, as MEMBER_OF_ALLIANCE edges are sparse.
 
     Returns canonical contract: ``{alliance_id, shared_battles, shared_pilots, source}``.
+    Note: ``shared_battles`` counts distinct shared killmails (not battle rollups).
     """
     if neo4j_client is None:
         return []
     try:
         rows = neo4j_client.query(
             """
-            MATCH (a:Alliance {alliance_id: $aid})<-[:MEMBER_OF_ALLIANCE]-(c:Character)
-                  -[:ATTACKED_ON]->(k:Killmail)<-[:ATTACKED_ON]-(c2:Character)
-                  -[:MEMBER_OF_ALLIANCE]->(a2:Alliance)
+            MATCH (a:Alliance {alliance_id: $aid})
+                  <-[:PART_OF]-(:Corporation)
+                  <-[:CURRENT_CORP]-(c:Character)
+                  -[:ATTACKED_ON]->(k:Killmail)
+                  <-[:ATTACKED_ON]-(c2:Character)
+                  -[:CURRENT_CORP]->(:Corporation)
+                  -[:PART_OF]->(a2:Alliance)
             WHERE a2.alliance_id <> $aid
-              AND k.battle_id IS NOT NULL AND k.battle_id <> ''
             WITH a2.alliance_id AS co_alliance_id,
-                 COUNT(DISTINCT k.battle_id) AS shared_battles,
+                 COUNT(DISTINCT k) AS shared_battles,
                  COUNT(DISTINCT c2) AS shared_pilots
             WHERE shared_battles >= 2
             RETURN co_alliance_id, shared_battles, shared_pilots
