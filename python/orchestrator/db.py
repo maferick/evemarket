@@ -752,6 +752,7 @@ class SupplyCoreDb:
                     last_failure_at = COALESCE(VALUES(last_failure_at), last_failure_at),
                     last_failure_message = CASE
                         WHEN VALUES(last_failure_at) IS NOT NULL THEN VALUES(last_failure_message)
+                        WHEN VALUES(last_success_at) IS NOT NULL THEN NULL
                         ELSE last_failure_message
                     END,
                     current_pressure_state = COALESCE(VALUES(current_pressure_state), current_pressure_state),
@@ -774,9 +775,10 @@ class SupplyCoreDb:
                SET last_status = %s,
                    last_run_at = UTC_TIMESTAMP(),
                    last_finished_at = UTC_TIMESTAMP(),
-                   locked_until = NULL
+                   locked_until = NULL,
+                   last_error = CASE WHEN %s = 'success' THEN NULL ELSE last_error END
                WHERE job_key = %s AND execution_mode = 'python'""",
-            (status[:20], job_key[:120]),
+            (status[:20], status[:20], job_key[:120]),
         )
 
     def advance_next_due_at(self, job_key: str) -> int:
