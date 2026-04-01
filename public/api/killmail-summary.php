@@ -50,21 +50,61 @@ $data = supplycore_cache_aside('killmail_summary', [$sequenceId], supplycore_cac
 
     // Group items by role (fitted/destroyed/dropped)
     $groupedItems = killmail_loss_item_groups($items, $resolvedEntities);
+
+    // Batch-fetch market prices for all item type IDs + hull
+    $allTypeIds = [];
+    $shipTypeId = $victimShip['id'] !== null ? (int) $victimShip['id'] : 0;
+    if ($shipTypeId > 0) $allTypeIds[$shipTypeId] = true;
+    foreach ($groupedItems as $group) {
+        foreach ((array) ($group['rows'] ?? []) as $itemRow) {
+            $tid = (int) ($itemRow['item_type_id'] ?? 0);
+            if ($tid > 0) $allTypeIds[$tid] = true;
+        }
+    }
+    $priceMap = [];
+    if ($allTypeIds !== []) {
+        $typeIdList = array_keys($allTypeIds);
+        $placeholders = implode(',', array_fill(0, count($typeIdList), '?'));
+        $priceRows = db_select(
+            "SELECT type_id, avg_price
+             FROM market_item_price_1d
+             WHERE type_id IN ({$placeholders})
+             ORDER BY bucket_start DESC
+             LIMIT " . count($typeIdList),
+            $typeIdList
+        );
+        foreach ($priceRows as $pr) {
+            $tid = (int) ($pr['type_id'] ?? 0);
+            if ($tid > 0 && !isset($priceMap[$tid])) {
+                $priceMap[$tid] = (float) ($pr['avg_price'] ?? 0);
+            }
+        }
+    }
+
     $itemSummary = [];
     foreach ($groupedItems as $role => $group) {
         $rows = [];
+        $groupValue = 0.0;
         foreach ((array) ($group['rows'] ?? []) as $itemRow) {
+            $tid = (int) ($itemRow['item_type_id'] ?? 0);
+            $qty = (int) ($itemRow['quantity'] ?? 1);
+            $unitPrice = $priceMap[$tid] ?? null;
+            $totalPrice = $unitPrice !== null ? $unitPrice * $qty : null;
+            if ($totalPrice !== null) $groupValue += $totalPrice;
             $rows[] = [
                 'name' => (string) ($itemRow['item_name'] ?? 'Unknown'),
-                'type_id' => (int) ($itemRow['item_type_id'] ?? 0),
-                'quantity' => (int) ($itemRow['quantity'] ?? 1),
+                'type_id' => $tid,
+                'quantity' => $qty,
                 'state' => (string) ($itemRow['state_label'] ?? ''),
                 'flag' => $itemRow['item_flag'] ?? null,
+                'unit_price' => $unitPrice,
+                'total_price' => $totalPrice,
             ];
         }
         $itemSummary[$role] = [
             'label' => (string) ($group['label'] ?? $role),
             'total' => (int) ($group['total_quantity'] ?? 0),
+            'total_value' => $groupValue > 0 ? $groupValue : null,
             'rows' => $rows,
         ];
     }
@@ -109,6 +149,7 @@ $data = supplycore_cache_aside('killmail_summary', [$sequenceId], supplycore_cac
             'type_id' => $victimShip['id'],
             'render_url' => $victimShip['id'] !== null ? killmail_entity_image_url('type', (int) $victimShip['id'], 'render', 256) : null,
             'class' => killmail_ship_class_label(isset($victimShip['metadata']['group_id']) ? (int) $victimShip['metadata']['group_id'] : null),
+            'hull_price' => $shipTypeId > 0 && isset($priceMap[$shipTypeId]) ? $priceMap[$shipTypeId] : null,
         ],
         'location' => [
             'system' => $system['name'],
