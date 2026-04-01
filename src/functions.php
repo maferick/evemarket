@@ -23022,6 +23022,7 @@ function doctrine_operational_supply(array $rows, array $items, array $fit, arra
     $totalScore = round($scoreLossPressure + $scoreStockGap + $scoreDepletion + $scoreBottleneck, 2);
 
     return $base + $availability + $targetPlan + [
+        'operationally_owned' => true,
         'hull_class' => $doctrineClass,
         'hull_class_label' => doctrine_hull_class_label($doctrineClass),
         'doctrine_class' => $doctrineClass,
