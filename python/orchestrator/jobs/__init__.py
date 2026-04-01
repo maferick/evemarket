@@ -27,6 +27,7 @@ from .compute_cohort_baselines import run_compute_cohort_baselines
 from .counterintel_pipeline import run_compute_counterintel_pipeline
 from .evewho_enrichment_sync import run_evewho_enrichment_sync
 from .evewho_alliance_member_sync import run_evewho_alliance_member_sync
+from .tracked_alliance_member_sync import run_tracked_alliance_member_sync
 
 
 from .market_hub_current_sync import run_market_hub_current_sync

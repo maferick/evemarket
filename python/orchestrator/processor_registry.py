@@ -65,6 +65,7 @@ from .jobs.compute_alliance_dossiers import run_compute_alliance_dossiers
 from .jobs.compute_threat_corridors import run_compute_threat_corridors
 from .jobs.cache_expiry_cleanup_sync import run_cache_expiry_cleanup_sync
 from .jobs.evewho_alliance_member_sync import run_evewho_alliance_member_sync
+from .jobs.tracked_alliance_member_sync import run_tracked_alliance_member_sync
 from .jobs.character_feature_windows import run_compute_character_feature_windows
 from .jobs.copresence_edges import run_compute_copresence_edges
 from .jobs.temporal_behavior_detection import run_temporal_behavior_detection
@@ -144,6 +145,7 @@ PYTHON_SYNC_PROCESSOR_JOB_KEYS: set[str] = {
     "entity_metadata_resolve_sync",
     "evewho_enrichment_sync",
     "evewho_alliance_member_sync",
+    "tracked_alliance_member_sync",
     "cache_expiry_cleanup_sync",
 }
 PYTHON_PROCESSOR_JOB_KEYS: set[str] = PYTHON_COMPUTE_PROCESSOR_JOB_KEYS | PYTHON_SYNC_PROCESSOR_JOB_KEYS
@@ -170,6 +172,7 @@ _PROCESSOR_DISPATCH: dict[str, tuple] = {
     "compute_counterintel_pipeline": (run_compute_counterintel_pipeline, lambda db, cfg: (db, neo4j_runtime(cfg), battle_runtime(cfg))),
     "evewho_enrichment_sync": (run_evewho_enrichment_sync, lambda db, cfg: (db, neo4j_runtime(cfg), {**battle_runtime(cfg), "evewho_rate_limit_requests": 5})),
     "evewho_alliance_member_sync": (run_evewho_alliance_member_sync, lambda db, cfg: (db, neo4j_runtime(cfg), {**battle_runtime(cfg), "evewho_rate_limit_requests": 5})),
+    "tracked_alliance_member_sync": (run_tracked_alliance_member_sync, lambda db, cfg: (db, neo4j_runtime(cfg), {**battle_runtime(cfg), "evewho_rate_limit_requests": 5})),
     # Market / supply intelligence jobs
     "compute_buy_all": (run_compute_buy_all, lambda db, cfg: (db,)),
     "compute_signals": (run_compute_signals, lambda db, cfg: (db, influx_runtime(cfg))),
