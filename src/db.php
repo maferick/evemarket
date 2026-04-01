@@ -16743,3 +16743,155 @@ function db_enrichment_queue_progress(array $characterIds): array
     }
     return $result;
 }
+
+/**
+ * Pipeline Observatory — aggregated counts and status for all pipeline stages.
+ *
+ * Returns a structured array with KPIs, per-stage metrics, and recent activity.
+ * All queries are simple COUNTs or MAX() on existing tables — no new tables needed.
+ */
+function db_pipeline_observatory_data(): array
+{
+    // ── Stage 1: Collection counts ───────────────────────────────────────────
+    $killmails       = (int) (db_select_one("SELECT COUNT(*) AS cnt FROM killmail_events") ?? [])['cnt'] ?? 0;
+    $attackerRecords = (int) (db_select_one("SELECT COUNT(*) AS cnt FROM killmail_attackers") ?? [])['cnt'] ?? 0;
+    $marketOrders    = (int) (db_select_one("SELECT COUNT(*) AS cnt FROM market_orders_current") ?? [])['cnt'] ?? 0;
+
+    // ── Stage 2: Entity resolution ───────────────────────────────────────────
+    $entitiesResolved   = (int) (db_select_one("SELECT COUNT(*) AS cnt FROM entity_metadata_cache") ?? [])['cnt'] ?? 0;
+    $allianceHistories  = (int) (db_select_one("SELECT COUNT(DISTINCT character_id) AS cnt FROM character_alliance_history") ?? [])['cnt'] ?? 0;
+
+    // Unique characters across killmails (attackers + victims)
+    $uniqueCharacters = (int) (db_select_one(
+        "SELECT COUNT(DISTINCT character_id) AS cnt FROM killmail_attackers WHERE character_id IS NOT NULL AND character_id > 0"
+    ) ?? [])['cnt'] ?? 0;
+    $entityCoverage = $uniqueCharacters > 0 ? min(100, round($entitiesResolved / $uniqueCharacters * 100, 1)) : 0;
+
+    // ── Stage 3: Graph enrichment ────────────────────────────────────────────
+    $communities       = (int) (db_select_one("SELECT COUNT(DISTINCT community_id) AS cnt FROM graph_community_assignments") ?? [])['cnt'] ?? 0;
+    $communityMembers  = (int) (db_select_one("SELECT COUNT(*) AS cnt FROM graph_community_assignments") ?? [])['cnt'] ?? 0;
+    $motifs            = (int) (db_select_one("SELECT COUNT(*) AS cnt FROM graph_motif_detections") ?? [])['cnt'] ?? 0;
+    $copresenceEdges   = (int) (db_select_one("SELECT COUNT(*) AS cnt FROM character_copresence_edges") ?? [])['cnt'] ?? 0;
+    $evidencePaths     = (int) (db_select_one("SELECT COUNT(*) AS cnt FROM character_evidence_paths") ?? [])['cnt'] ?? 0;
+
+    // ── Stage 4: Intelligence ────────────────────────────────────────────────
+    $suspicionScored   = (int) (db_select_one("SELECT COUNT(*) AS cnt FROM character_counterintel_scores") ?? [])['cnt'] ?? 0;
+    $dossiers          = (int) (db_select_one("SELECT COUNT(*) AS cnt FROM alliance_dossiers") ?? [])['cnt'] ?? 0;
+    $threatCorridors   = (int) (db_select_one("SELECT COUNT(*) AS cnt FROM threat_corridors") ?? [])['cnt'] ?? 0;
+
+    // Unique alliances in battles for dossier coverage
+    $alliancesInBattles = (int) (db_select_one(
+        "SELECT COUNT(DISTINCT alliance_id) AS cnt FROM killmail_attackers WHERE alliance_id IS NOT NULL AND alliance_id > 0"
+    ) ?? [])['cnt'] ?? 0;
+    $dossierCoverage = $alliancesInBattles > 0 ? min(100, round($dossiers / $alliancesInBattles * 100, 1)) : 0;
+    $suspicionCoverage = $uniqueCharacters > 0 ? min(100, round($suspicionScored / $uniqueCharacters * 100, 1)) : 0;
+
+    // ── Stage 5: Analytics ───────────────────────────────────────────────────
+    $snapshots = (int) (db_select_one("SELECT COUNT(*) AS cnt FROM intelligence_snapshots") ?? [])['cnt'] ?? 0;
+
+    // ── Job health summary from scheduler ────────────────────────────────────
+    $jobStats = db_select(
+        "SELECT latest_status, COUNT(*) AS cnt FROM scheduler_job_current_status GROUP BY latest_status"
+    );
+    $jobHealth = ['success' => 0, 'failed' => 0, 'running' => 0, 'skipped' => 0, 'unknown' => 0];
+    foreach ($jobStats as $row) {
+        $s = (string) $row['latest_status'];
+        if (isset($jobHealth[$s])) {
+            $jobHealth[$s] = (int) $row['cnt'];
+        } else {
+            $jobHealth['unknown'] += (int) $row['cnt'];
+        }
+    }
+    $jobHealth['total'] = array_sum($jobHealth);
+
+    // ── Recent job activity (last 15 completions) ────────────────────────────
+    $recentRuns = db_select(
+        "SELECT job_name, status, duration_ms, rows_processed, rows_written, started_at, finished_at
+         FROM job_runs
+         WHERE status IN ('success', 'failed', 'skipped')
+         ORDER BY finished_at DESC
+         LIMIT 15"
+    );
+
+    // ── Per-stage last-run timestamps ────────────────────────────────────────
+    $stageJobKeys = [
+        'collection'  => ['market_hub_current_sync', 'esi_character_queue_sync', 'esi_alliance_history_sync', 'evewho_enrichment_sync', 'evewho_alliance_member_sync'],
+        'resolution'  => ['entity_metadata_resolve_sync', 'esi_alliance_history_sync'],
+        'graph'       => ['compute_graph_sync', 'graph_community_detection_sync', 'graph_motif_detection_sync', 'graph_typed_interactions_sync', 'graph_temporal_metrics_sync', 'graph_evidence_paths_sync', 'compute_copresence_edges', 'compute_graph_sync_killmail_entities', 'compute_graph_sync_killmail_edges'],
+        'intelligence' => ['compute_suspicion_scores_v2', 'compute_alliance_dossiers', 'compute_threat_corridors', 'compute_counterintel_pipeline', 'intelligence_pipeline', 'compute_battle_rollups'],
+        'analytics'   => ['dashboard_summary_sync', 'analytics_bucket_1h_sync', 'analytics_bucket_1d_sync', 'rebuild_ai_briefings', 'forecasting_ai_sync'],
+    ];
+
+    $allJobKeys = [];
+    foreach ($stageJobKeys as $keys) {
+        $allJobKeys = array_merge($allJobKeys, $keys);
+    }
+    $allJobKeys = array_values(array_unique($allJobKeys));
+
+    $stageHealth = [];
+    if ($allJobKeys !== []) {
+        $placeholders = implode(',', array_fill(0, count($allJobKeys), '?'));
+        $statusRows = db_select(
+            "SELECT job_key, latest_status, last_success_at, last_failure_at
+             FROM scheduler_job_current_status
+             WHERE job_key IN ({$placeholders})",
+            $allJobKeys
+        );
+        $statusByKey = [];
+        foreach ($statusRows as $row) {
+            $statusByKey[(string) $row['job_key']] = $row;
+        }
+
+        foreach ($stageJobKeys as $stage => $keys) {
+            $succeeded = 0;
+            $failed = 0;
+            $lastSuccess = null;
+            foreach ($keys as $k) {
+                $info = $statusByKey[$k] ?? null;
+                if ($info === null) continue;
+                if ($info['latest_status'] === 'success') $succeeded++;
+                if ($info['latest_status'] === 'failed') $failed++;
+                if ($info['last_success_at'] !== null) {
+                    if ($lastSuccess === null || $info['last_success_at'] > $lastSuccess) {
+                        $lastSuccess = $info['last_success_at'];
+                    }
+                }
+            }
+            $total = count($keys);
+            $stageHealth[$stage] = [
+                'total_jobs'    => $total,
+                'succeeded'     => $succeeded,
+                'failed'        => $failed,
+                'pct'           => $total > 0 ? round($succeeded / $total * 100) : 0,
+                'last_success'  => $lastSuccess,
+            ];
+        }
+    }
+
+    return [
+        'kpis' => [
+            'killmails'         => $killmails,
+            'attacker_records'  => $attackerRecords,
+            'market_orders'     => $marketOrders,
+            'unique_characters' => $uniqueCharacters,
+            'entities_resolved' => $entitiesResolved,
+            'entity_coverage'   => $entityCoverage,
+            'alliance_histories' => $allianceHistories,
+            'communities'       => $communities,
+            'community_members' => $communityMembers,
+            'motifs'            => $motifs,
+            'copresence_edges'  => $copresenceEdges,
+            'evidence_paths'    => $evidencePaths,
+            'suspicion_scored'  => $suspicionScored,
+            'suspicion_coverage' => $suspicionCoverage,
+            'dossiers'          => $dossiers,
+            'dossier_coverage'  => $dossierCoverage,
+            'alliances_in_battles' => $alliancesInBattles,
+            'threat_corridors'  => $threatCorridors,
+            'snapshots'         => $snapshots,
+        ],
+        'job_health'   => $jobHealth,
+        'stage_health' => $stageHealth,
+        'recent_runs'  => $recentRuns,
+    ];
+}
