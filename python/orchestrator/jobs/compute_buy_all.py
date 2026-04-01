@@ -293,7 +293,7 @@ def _ranked_items(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
 def _freshness_card(db: SupplyCoreDb, source_type: str, label: str) -> dict[str, Any]:
     """Build a freshness card for a given market snapshot source type."""
     row = db.fetch_one(
-        "SELECT MAX(observed_at) AS latest FROM market_order_snapshots_summary WHERE source_type = %s",
+        "SELECT MAX(observed_at) AS latest FROM market_order_current_projection WHERE source_type = %s",
         (source_type,),
     )
     latest = row.get("latest") if row else None
@@ -325,7 +325,7 @@ def _doctrine_freshness(db: SupplyCoreDb) -> dict[str, Any]:
     """Build a freshness card for the doctrine intelligence dataset."""
     row = db.fetch_one(
         "SELECT MAX(updated_at) AS latest FROM intelligence_snapshots WHERE snapshot_key = %s",
-        ("doctrine_fit_intelligence",),
+        ("doctrine_fit_db_state",),
     )
     latest = row.get("latest") if row else None
     if latest is None:
