@@ -15548,6 +15548,28 @@ function db_graph_community_overview(int $limit = 30): array
     );
 }
 
+function db_counterintel_scores_for_characters(array $characterIds): array
+{
+    $ids = array_map('intval', array_filter($characterIds, static fn($id): bool => ((int) $id) > 0));
+    if ($ids === []) {
+        return [];
+    }
+    $placeholders = implode(',', array_fill(0, count($ids), '?'));
+
+    $rows = db_select(
+        'SELECT ccs.character_id, ccs.review_priority_score, ccs.percentile_rank, ccs.confidence_score
+         FROM character_counterintel_scores ccs
+         WHERE ccs.character_id IN (' . $placeholders . ')',
+        $ids
+    );
+
+    $indexed = [];
+    foreach ($rows as $r) {
+        $indexed[(int) $r['character_id']] = $r;
+    }
+    return $indexed;
+}
+
 // ---------------------------------------------------------------------------
 // Theater intelligence
 // ---------------------------------------------------------------------------
