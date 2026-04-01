@@ -40,8 +40,8 @@ def run_graph_temporal_metrics_sync(db: SupplyCoreDb, neo4j_raw: dict[str, Any] 
             """
             MATCH (c:Character)-[:ON_SIDE]->(:BattleSide)<-[:HAS_SIDE]-(b:Battle)
             WHERE b.started_at >= $cutoff
-            OPTIONAL MATCH (c)-[:ATTACKED_ON]->(k:Killmail)<-[:OCCURRED_IN]-(b)
-            OPTIONAL MATCH (c)-[:VICTIM_OF]->(v:Killmail)<-[:OCCURRED_IN]-(b)
+            OPTIONAL MATCH (c)-[:ATTACKED_ON]->(k:Killmail)-[:PART_OF_BATTLE]->(b)
+            OPTIONAL MATCH (c)-[:VICTIM_OF]->(v:Killmail)-[:PART_OF_BATTLE]->(b)
             OPTIONAL MATCH (c)-[co:CO_OCCURS_WITH]-(:Character)
             WITH c,
                  count(DISTINCT b) AS battles_present,

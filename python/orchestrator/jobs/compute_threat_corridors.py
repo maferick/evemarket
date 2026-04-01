@@ -115,7 +115,7 @@ def _find_connected_corridors_neo4j(
             """
             UNWIND $system_ids AS start_id
             MATCH (s1:System {system_id: start_id})
-            MATCH path = (s1)-[:CONNECTS_TO*1..""" + str(max_length - 1) + """]-(s2:System)
+            MATCH path = (s1)-[:CONNECTS_TO|JUMP_BRIDGE*1..""" + str(max_length - 1) + """]-(s2:System)
             WHERE s2.system_id IN $system_ids
               AND s1.system_id < s2.system_id
               AND ALL(n IN nodes(path) WHERE n.system_id IN $system_ids)

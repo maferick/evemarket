@@ -327,14 +327,14 @@ def _mark_tracked_characters(client: Neo4jClient, db: SupplyCoreDb) -> None:
 
     if alliance_ids:
         client.query(
-            """MATCH (c:Character)-[:MEMBER_OF_ALLIANCE]->(a:Alliance)
+            """MATCH (c:Character)-[:CURRENT_CORP]->(:Corporation)-[:PART_OF]->(a:Alliance)
                WHERE a.alliance_id IN $alliance_ids
                SET c.tracked = true""",
             {"alliance_ids": alliance_ids},
         )
     if corp_ids:
         client.query(
-            """MATCH (c:Character)-[:MEMBER_OF_CORPORATION]->(corp:Corporation)
+            """MATCH (c:Character)-[:CURRENT_CORP]->(corp:Corporation)
                WHERE corp.corporation_id IN $corp_ids
                SET c.tracked = true""",
             {"corp_ids": corp_ids},
@@ -385,20 +385,16 @@ def _compute_encounter_vs_engagement(client: Neo4jClient) -> None:
     """
     client.query(
         """MATCH (c:Character)-[:ATTACKED_ON]->(k:Killmail)<-[:VICTIM_OF]-(victim:Character)
-                  -[:MEMBER_OF_ALLIANCE]->(a:Alliance)
+                  -[:CURRENT_CORP]->(:Corporation)-[:PART_OF]->(a:Alliance)
            WHERE c.tracked = true
-             AND NOT (c)-[:MEMBER_OF_ALLIANCE]->(a)
-             AND k.battle_id IS NOT NULL AND k.battle_id <> ''
+             AND NOT (c)-[:CURRENT_CORP]->(:Corporation)-[:PART_OF]->(a)
            WITH c, a,
-                count(DISTINCT k) AS kills,
-                count(DISTINCT k.battle_id) AS encountered
-           WITH c, a, encountered, kills,
-                CASE WHEN encountered > 0
-                     THEN toFloat(kills) / encountered ELSE 0.0 END AS eng_rate
+                count(DISTINCT k) AS kills
+           WHERE kills > 0
            MERGE (c)-[rel:ENGAGED_ALLIANCE]->(a)
-           SET rel.encounters = encountered,
+           SET rel.encounters = kills,
                rel.kills = kills,
-               rel.engagement_rate = eng_rate"""
+               rel.engagement_rate = 1.0"""
     )
 
 
@@ -774,7 +770,7 @@ def _export_suspicion_signals(client: Neo4jClient, db: SupplyCoreDb, computed_at
         """MATCH (c:Character)
            WHERE c.tracked = true
              AND size(COALESCE(c.suspicion_flags, [])) >= 2
-           OPTIONAL MATCH (c)-[:MEMBER_OF_ALLIANCE]->(a:Alliance)
+           OPTIONAL MATCH (c)-[:CURRENT_CORP]->(:Corporation)-[:PART_OF]->(a:Alliance)
            OPTIONAL MATCH (c)-[e:ENGAGED_ALLIANCE]->(ea:Alliance)
            WITH c, COALESCE(a.alliance_id, 0) AS alliance_id,
                 collect({
@@ -915,7 +911,7 @@ def _export_alliance_overlap(client: Neo4jClient, db: SupplyCoreDb, computed_at:
         """MATCH (c:Character)
            WHERE c.tracked = true
              AND COALESCE(c.historical_overlap_score, 0) > 0
-           OPTIONAL MATCH (c)-[:MEMBER_OF_ALLIANCE]->(a:Alliance)
+           OPTIONAL MATCH (c)-[:CURRENT_CORP]->(:Corporation)-[:PART_OF]->(a:Alliance)
            RETURN
                c.character_id AS character_id,
                toInteger(COALESCE(a.alliance_id, 0)) AS alliance_id,

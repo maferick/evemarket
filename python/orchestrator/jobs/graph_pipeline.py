@@ -2127,7 +2127,8 @@ def run_compute_graph_sync_killmail_edges(
 ) -> dict[str, Any]:
     """Sync ATTACKED_ON and VICTIM_OF edges from killmail_attackers/killmail_events into Neo4j.
 
-    Only processes killmails that belong to a battle (battle_id IS NOT NULL).
+    Processes ALL killmails regardless of battle assignment so that co-presence
+    queries can determine friendly vs hostile alliances from the full dataset.
     Characters and Killmail nodes must already exist (written by
     compute_graph_sync_battle_intelligence and compute_graph_sync_killmail_entities).
     These edges are required by the alliance dossier co-presence and enemy queries.
@@ -2159,7 +2160,6 @@ def run_compute_graph_sync_killmail_edges(
             FROM killmail_attackers ka
             INNER JOIN killmail_events ke ON ke.sequence_id = ka.sequence_id
             WHERE ka.character_id IS NOT NULL AND ka.character_id > 0
-              AND ke.battle_id IS NOT NULL
               AND ke.killmail_id > %s
             ORDER BY ke.killmail_id ASC
             LIMIT %s
@@ -2214,7 +2214,6 @@ def run_compute_graph_sync_killmail_edges(
             SELECT ke.victim_character_id AS character_id, ke.killmail_id
             FROM killmail_events ke
             WHERE ke.victim_character_id IS NOT NULL AND ke.victim_character_id > 0
-              AND ke.battle_id IS NOT NULL
               AND ke.killmail_id > %s
             ORDER BY ke.killmail_id ASC
             LIMIT %s
