@@ -23,6 +23,11 @@ STALE_UNITS=(
   supplycore-php-compute-worker@.service
   supplycore-orchestrator.service
   supplycore-worker@.service
+  # Legacy queue-based workers — replaced by supplycore-loop-runner.service
+  supplycore-sync-worker.service
+  supplycore-sync-worker@.service
+  supplycore-compute-worker.service
+  supplycore-compute-worker@.service
 )
 
 # ---------------------------------------------------------------------------
@@ -350,8 +355,22 @@ if [[ ${CONFIGURE_LOCAL_PHP} == true ]]; then
   DB_PASSWORD=$(prompt_secret "Database password" true)
 fi
 
-SYNC_COUNT=$(prompt_number "How many sync workers should be enabled?" "1")
-COMPUTE_COUNT=$(prompt_number "How many compute workers should be enabled?" "1")
+INSTALL_LOOP_RUNNER=true
+if ! prompt_yes_no "Install the loop runner (replaces separate sync/compute workers)?" "Y"; then
+  INSTALL_LOOP_RUNNER=false
+fi
+LOOP_RUNNER_MAX_PARALLEL=6
+if [[ ${INSTALL_LOOP_RUNNER} == true ]]; then
+  LOOP_RUNNER_MAX_PARALLEL=$(prompt_number "Max parallel jobs per tier for the loop runner?" "6")
+fi
+
+# Legacy worker counts — only used if loop runner is NOT installed.
+SYNC_COUNT=0
+COMPUTE_COUNT=0
+if [[ ${INSTALL_LOOP_RUNNER} == false ]]; then
+  SYNC_COUNT=$(prompt_number "How many sync workers should be enabled?" "1")
+  COMPUTE_COUNT=$(prompt_number "How many compute workers should be enabled?" "1")
+fi
 INSTALL_ZKILL=false
 if prompt_yes_no "Install and enable the dedicated zKill worker?" "Y"; then
   INSTALL_ZKILL=true
@@ -426,6 +445,7 @@ fi
 
 "${VENV_PATH}/bin/python" -m pip install --upgrade pip
 "${VENV_PATH}/bin/python" -m pip install --upgrade "${APP_ROOT}/python"
+"${VENV_PATH}/bin/python" -m orchestrator loop-runner --help >/dev/null
 "${VENV_PATH}/bin/python" -m orchestrator worker-pool --help >/dev/null
 "${VENV_PATH}/bin/python" -m orchestrator zkill-worker --help >/dev/null
 "${VENV_PATH}/bin/python" -m orchestrator evewho-alliance-runner --help >/dev/null
@@ -444,6 +464,12 @@ else
 fi
 
 # ===========================  Render and install units  ====================
+
+render_unit "${REPO_ROOT}/ops/systemd/supplycore-loop-runner.service" "${SYSTEMD_DIR}/supplycore-loop-runner.service"
+# Patch max-parallel if the user chose a non-default value.
+if [[ ${INSTALL_LOOP_RUNNER} == true && ${LOOP_RUNNER_MAX_PARALLEL} -ne 6 ]]; then
+  sed -i "s|--max-parallel 6|--max-parallel ${LOOP_RUNNER_MAX_PARALLEL}|" "${SYSTEMD_DIR}/supplycore-loop-runner.service"
+fi
 
 render_unit "${REPO_ROOT}/ops/systemd/supplycore-sync-worker.service" "${SYSTEMD_DIR}/supplycore-sync-worker.service"
 render_unit "${REPO_ROOT}/ops/systemd/supplycore-compute-worker.service" "${SYSTEMD_DIR}/supplycore-compute-worker.service"
@@ -465,20 +491,25 @@ fi
 # ===========================  Enable and start  ===========================
 
 services_to_enable=()
-if (( SYNC_COUNT == 1 )); then
-  services_to_enable+=("supplycore-sync-worker.service")
-elif (( SYNC_COUNT > 1 )); then
-  for ((i = 1; i <= SYNC_COUNT; i++)); do
-    services_to_enable+=("supplycore-sync-worker@${i}.service")
-  done
-fi
 
-if (( COMPUTE_COUNT == 1 )); then
-  services_to_enable+=("supplycore-compute-worker.service")
-elif (( COMPUTE_COUNT > 1 )); then
-  for ((i = 1; i <= COMPUTE_COUNT; i++)); do
-    services_to_enable+=("supplycore-compute-worker@${i}.service")
-  done
+if [[ ${INSTALL_LOOP_RUNNER} == true ]]; then
+  services_to_enable+=("supplycore-loop-runner.service")
+else
+  if (( SYNC_COUNT == 1 )); then
+    services_to_enable+=("supplycore-sync-worker.service")
+  elif (( SYNC_COUNT > 1 )); then
+    for ((i = 1; i <= SYNC_COUNT; i++)); do
+      services_to_enable+=("supplycore-sync-worker@${i}.service")
+    done
+  fi
+
+  if (( COMPUTE_COUNT == 1 )); then
+    services_to_enable+=("supplycore-compute-worker.service")
+  elif (( COMPUTE_COUNT > 1 )); then
+    for ((i = 1; i <= COMPUTE_COUNT; i++)); do
+      services_to_enable+=("supplycore-compute-worker@${i}.service")
+    done
+  fi
 fi
 
 if [[ ${INSTALL_ZKILL} == true ]]; then
@@ -507,19 +538,23 @@ if [[ -f ${LOCAL_CONFIG_PATH} ]]; then
 fi
 echo
 echo "Active services:"
-if (( SYNC_COUNT == 1 )); then
-  echo "  systemctl status supplycore-sync-worker.service"
-elif (( SYNC_COUNT > 1 )); then
-  for ((i = 1; i <= SYNC_COUNT; i++)); do
-    echo "  systemctl status supplycore-sync-worker@${i}.service"
-  done
-fi
-if (( COMPUTE_COUNT == 1 )); then
-  echo "  systemctl status supplycore-compute-worker.service"
-elif (( COMPUTE_COUNT > 1 )); then
-  for ((i = 1; i <= COMPUTE_COUNT; i++)); do
-    echo "  systemctl status supplycore-compute-worker@${i}.service"
-  done
+if [[ ${INSTALL_LOOP_RUNNER} == true ]]; then
+  echo "  systemctl status supplycore-loop-runner.service"
+else
+  if (( SYNC_COUNT == 1 )); then
+    echo "  systemctl status supplycore-sync-worker.service"
+  elif (( SYNC_COUNT > 1 )); then
+    for ((i = 1; i <= SYNC_COUNT; i++)); do
+      echo "  systemctl status supplycore-sync-worker@${i}.service"
+    done
+  fi
+  if (( COMPUTE_COUNT == 1 )); then
+    echo "  systemctl status supplycore-compute-worker.service"
+  elif (( COMPUTE_COUNT > 1 )); then
+    for ((i = 1; i <= COMPUTE_COUNT; i++)); do
+      echo "  systemctl status supplycore-compute-worker@${i}.service"
+    done
+  fi
 fi
 if [[ ${INSTALL_ZKILL} == true ]]; then
   echo "  systemctl status supplycore-zkill.service"
