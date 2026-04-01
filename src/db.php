@@ -13781,6 +13781,54 @@ function db_doctrine_fit_bulk_update_metadata(array $fitIds, array $changes): in
     return count($fitIds);
 }
 
+function db_doctrine_fit_bulk_set_primary(array $fitIds, int $groupId): int
+{
+    doctrine_db_ensure_schema();
+
+    $fitIds = array_values(array_unique(array_filter(array_map('intval', $fitIds), static fn (int $id): bool => $id > 0)));
+    if ($fitIds === [] || $groupId <= 0) {
+        return 0;
+    }
+
+    return db_transaction(static function () use ($fitIds, $groupId): int {
+        $fitPlaceholders = implode(', ', array_fill(0, count($fitIds), '?'));
+
+        // Demote any existing primary memberships for these fits to support.
+        db_execute(
+            "UPDATE doctrine_fit_groups SET membership_role = 'support'
+             WHERE doctrine_fit_id IN ({$fitPlaceholders}) AND membership_role = 'primary'",
+            $fitIds
+        );
+
+        // Ensure all selected fits have a membership row for the target group, then promote to primary.
+        foreach ($fitIds as $fitId) {
+            $exists = db_select_one(
+                'SELECT doctrine_fit_id FROM doctrine_fit_groups WHERE doctrine_fit_id = ? AND doctrine_group_id = ?',
+                [$fitId, $groupId]
+            );
+            if ($exists === null) {
+                db_execute(
+                    "INSERT INTO doctrine_fit_groups (doctrine_fit_id, doctrine_group_id, membership_role) VALUES (?, ?, 'primary')",
+                    [$fitId, $groupId]
+                );
+            } else {
+                db_execute(
+                    "UPDATE doctrine_fit_groups SET membership_role = 'primary' WHERE doctrine_fit_id = ? AND doctrine_group_id = ?",
+                    [$fitId, $groupId]
+                );
+            }
+        }
+
+        // Update doctrine_fits.doctrine_group_id to the new primary group.
+        db_execute(
+            "UPDATE doctrine_fits SET doctrine_group_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id IN ({$fitPlaceholders})",
+            array_merge([$groupId], $fitIds)
+        );
+
+        return count($fitIds);
+    });
+}
+
 function db_doctrine_group_suggestions_for_fit(string $fitName, ?int $shipTypeId = null, int $excludeFitId = 0): array
 {
     doctrine_db_ensure_schema();

@@ -59,6 +59,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 db_doctrine_fit_bulk_update_metadata($fitIds, ['notes' => $bulkNotes]);
                 flash('success', 'Updated notes for ' . count($fitIds) . ' fits.');
                 break;
+            case 'set_primary':
+                if ($selectedGroupIds === []) {
+                    throw new RuntimeException('Select a doctrine group to set as primary owner.');
+                }
+                db_doctrine_fit_bulk_set_primary($fitIds, $selectedGroupIds[0]);
+                doctrine_schedule_intelligence_refresh('fit-bulk-set-primary');
+                flash('success', 'Set primary owner for ' . count($fitIds) . ' fits.');
+                break;
         }
 
         if ($bulkAction !== '') {
@@ -169,13 +177,14 @@ include __DIR__ . '/../../src/views/partials/header.php';
                 <span class="mb-2 block field-label">Bulk action</span>
                 <select name="bulk_action" class="field-input">
                     <option value="">Choose action</option>
-                    <option value="delete">Bulk delete selected fits</option>
+                    <option value="set_primary">Set primary owner (include in buyall &amp; readiness)</option>
                     <option value="assign_groups">Bulk assign doctrine groups</option>
                     <option value="replace_groups">Bulk move/replace doctrine groups</option>
                     <option value="remove_groups">Bulk remove doctrine groups</option>
                     <option value="append_notes">Bulk edit metadata notes</option>
                     <option value="mark_review">Bulk mark fits for review</option>
                     <option value="mark_reparse">Bulk mark fits for reparse</option>
+                    <option value="delete">Bulk delete selected fits</option>
                 </select>
             </label>
             <label class="block">

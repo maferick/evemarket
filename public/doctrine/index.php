@@ -77,11 +77,30 @@ include __DIR__ . '/../../src/views/partials/header.php';
             <div class="flex flex-wrap gap-3">
                 <a href="/doctrine/fits" class="btn-secondary">Fit overview</a>
                 <a href="/doctrine/import" class="btn-primary">Bulk import</a>
+                <button type="button" class="btn-secondary" onclick="document.getElementById('doctrine-create-group').toggleAttribute('open')">+ New group</button>
             </div>
         </div>
 
+        <details id="doctrine-create-group" class="mt-4 rounded-[1.4rem] border border-cyan-400/20 bg-cyan-500/5 p-4">
+            <summary class="cursor-pointer list-none text-sm font-semibold text-cyan-100">Create new doctrine group</summary>
+            <form method="post" class="mt-4 grid gap-4 md:grid-cols-[1fr_1fr_auto]">
+                <input type="hidden" name="_token" value="<?= htmlspecialchars(csrf_token(), ENT_QUOTES) ?>">
+                <label class="block">
+                    <span class="mb-2 block field-label">Group name</span>
+                    <input type="text" name="group_name" class="field-input" maxlength="190" placeholder="e.g. Muninn Mainline">
+                </label>
+                <label class="block">
+                    <span class="mb-2 block field-label">Description</span>
+                    <input type="text" name="description" class="field-input" placeholder="What this doctrine group covers">
+                </label>
+                <div class="flex items-end">
+                    <button type="submit" class="btn-primary">Create group</button>
+                </div>
+            </form>
+        </details>
+
         <?php if ($groups === []): ?>
-            <div class="surface-tertiary text-sm text-slate-400">No doctrine groups yet. Create one, then import Winter Coalition HTML pages or EFT fallback payloads in bulk.</div>
+            <div class="surface-tertiary text-sm text-slate-400">No doctrine groups yet. Create one above, then import Winter Coalition HTML pages or EFT fallback payloads in bulk.</div>
         <?php else: ?>
             <div class="space-y-4">
                 <?php foreach ($groups as $group): ?>
@@ -279,20 +298,9 @@ include __DIR__ . '/../../src/views/partials/header.php';
                     <div>
                         <p class="eyebrow">New group</p>
                         <h3 class="mt-2 text-lg font-semibold text-white">Create doctrine group</h3>
+                        <p class="mt-2 text-sm text-slate-400">Use the <button type="button" class="text-cyan-200 underline" onclick="document.getElementById('doctrine-create-group').setAttribute('open','');window.scrollTo({top:0,behavior:'smooth'})">+ New group</button> button at the top of the page.</p>
                     </div>
                 </div>
-                <form method="post" class="space-y-4">
-                    <input type="hidden" name="_token" value="<?= htmlspecialchars(csrf_token(), ENT_QUOTES) ?>">
-                    <label class="block">
-                        <span class="mb-2 block field-label">Group name</span>
-                        <input type="text" name="group_name" class="field-input" maxlength="190" placeholder="e.g. Muninn Mainline">
-                    </label>
-                    <label class="block">
-                        <span class="mb-2 block field-label">Description</span>
-                        <textarea name="description" class="field-input" style="min-height: 8rem;" placeholder="What this doctrine group covers and who owns the restock workflow."></textarea>
-                    </label>
-                    <button type="submit" class="btn-primary w-full justify-center">Save group</button>
-                </form>
             </article>
             <article class="surface-tertiary">
                 <div class="section-header">

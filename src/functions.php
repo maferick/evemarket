@@ -28890,10 +28890,8 @@ function buy_all_planner_data(array $query = []): array
         }
     }
 
-    return buy_all_precomputed_empty_payload(
-        $request,
-        'No recent precomputed Buy All payload was found. Run python compute_buy_all to refresh planner data.'
-    );
+    // No precomputed data matches the current filter combination — compute live.
+    return buy_all_planner_data_uncached($query);
 }
 
 function buy_all_precompute_refresh_defaults(): array
