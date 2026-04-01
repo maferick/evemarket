@@ -16133,6 +16133,52 @@ function db_item_criticality_top(int $limit = 50, string $sort = 'priority_index
     );
 }
 
+function db_item_graph_intelligence_by_type_ids(array $typeIds): array
+{
+    $typeIds = array_values(array_unique(array_filter(array_map('intval', $typeIds), static fn (int $id): bool => $id > 0)));
+    if ($typeIds === []) {
+        return [];
+    }
+    $placeholders = implode(', ', array_fill(0, count($typeIds), '?'));
+
+    // Prefer item_criticality_index (richer), fall back to item_dependency_score.
+    $rows = db_select(
+        "SELECT
+            ids.type_id,
+            COALESCE(ici.dependency_score, ids.dependency_score, 0.0) AS dependency_score,
+            COALESCE(ici.doctrine_count, ids.doctrine_count, 0) AS graph_doctrine_count,
+            COALESCE(ici.fit_count, ids.fit_count, 0) AS graph_fit_count,
+            COALESCE(ici.criticality_score, 0.0) AS criticality_score,
+            COALESCE(ici.priority_index, 0.0) AS priority_index,
+            COALESCE(ici.spof_flag, 0) AS spof_flag,
+            COALESCE(ici.trend_score, 0.0) AS trend_score,
+            COALESCE(ici.substitute_count, 0) AS substitute_count
+         FROM item_dependency_score ids
+         LEFT JOIN item_criticality_index ici ON ici.type_id = ids.type_id
+         WHERE ids.type_id IN ({$placeholders})
+         UNION
+         SELECT
+            ici2.type_id,
+            COALESCE(ici2.dependency_score, 0.0) AS dependency_score,
+            COALESCE(ici2.doctrine_count, 0) AS graph_doctrine_count,
+            COALESCE(ici2.fit_count, 0) AS graph_fit_count,
+            COALESCE(ici2.criticality_score, 0.0) AS criticality_score,
+            COALESCE(ici2.priority_index, 0.0) AS priority_index,
+            COALESCE(ici2.spof_flag, 0) AS spof_flag,
+            COALESCE(ici2.trend_score, 0.0) AS trend_score,
+            COALESCE(ici2.substitute_count, 0) AS substitute_count
+         FROM item_criticality_index ici2
+         WHERE ici2.type_id IN ({$placeholders})
+           AND ici2.type_id NOT IN (SELECT type_id FROM item_dependency_score WHERE type_id IN ({$placeholders}))",
+        array_merge($typeIds, $typeIds, $typeIds)
+    );
+    $indexed = [];
+    foreach ($rows as $row) {
+        $indexed[(int) $row['type_id']] = $row;
+    }
+    return $indexed;
+}
+
 function db_item_spof_items(int $limit = 30): array
 {
     return db_select(

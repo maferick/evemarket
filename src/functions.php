@@ -28581,7 +28581,14 @@ function buy_all_reason_meta(array $candidate): array
         return ['code' => 'low_volume_high_margin_import', 'text' => 'Low-volume, high-margin import candidate.', 'theme' => 'High-margin imports'];
     }
     if (!empty($candidate['is_doctrine_linked'])) {
+        $depScore = (float) ($candidate['dependency_score'] ?? 0.0);
+        if ($depScore > 0.0) {
+            return ['code' => 'graph_dependency_replenishment', 'text' => 'Doctrine-linked replenishment: used by ' . doctrine_format_quantity((int) ($candidate['valid_doctrine_count'] ?? 0)) . ' doctrines, ' . doctrine_format_quantity((int) ($candidate['valid_fits_count'] ?? 0)) . ' fits.', 'theme' => 'Graph dependency priority'];
+        }
         return ['code' => 'enabled_item_replenishment_candidate', 'text' => 'Doctrine-linked replenishment candidate from valid fit relationships.', 'theme' => 'Doctrine replenishment'];
+    }
+    if ((float) ($candidate['dependency_score'] ?? 0.0) > 0.0) {
+        return ['code' => 'graph_dependency_priority', 'text' => 'Graph intelligence suggests priority from doctrine dependency network.', 'theme' => 'Graph dependency priority'];
     }
 
     return ['code' => 'local_price_dislocation', 'text' => 'Local price dislocation or stock pressure suggests action.', 'theme' => 'Market dislocations'];
@@ -28981,12 +28988,21 @@ function buy_all_planner_data_uncached(array $query = []): array
     $allianceHistoryByType = buy_all_latest_market_history_by_type('alliance_structure', $allianceStructureId, $candidateTypeIds, 14);
     $hubHistoryByType = buy_all_latest_market_history_by_type('market_hub', $hubSourceId, $candidateTypeIds, 14);
 
+    // Graph intelligence enrichment — dependency scores, criticality, SPOF flags.
+    $graphIntelByType = [];
+    try {
+        $graphIntelByType = db_item_graph_intelligence_by_type_ids($candidateTypeIds);
+    } catch (Throwable) {
+        // Tables may not exist yet; degrade gracefully.
+    }
+
     $rankedItems = [];
     foreach ($candidateTypeIds as $typeId) {
         $market = $marketByTypeId[$typeId] ?? [];
         $global = $globalByTypeId[$typeId] ?? [];
         $missing = $topMissingByTypeId[$typeId] ?? [];
         $demand = $doctrineDemandByType[$typeId] ?? [];
+        $graphIntel = $graphIntelByType[$typeId] ?? [];
         $meta = $typeMetadataById[$typeId] ?? [];
         $itemName = trim((string) (($meta['type_name'] ?? $market['type_name'] ?? $global['type_name'] ?? $missing['item_name'] ?? ('Type #' . $typeId))));
         if ($itemName === '') {
@@ -29048,6 +29064,9 @@ function buy_all_planner_data_uncached(array $query = []): array
         if (isset($market['alliance_best_sell_price']) && $market['alliance_best_sell_price'] !== null) {
             $sellPrice = (float) $market['alliance_best_sell_price'];
             $sellPriceBasis = 'Alliance best sell';
+        } elseif (isset($market['alliance_best_buy_price']) && $market['alliance_best_buy_price'] !== null) {
+            $sellPrice = (float) $market['alliance_best_buy_price'];
+            $sellPriceBasis = 'Alliance best buy fallback';
         } elseif (isset($allianceHistoryByType[$typeId]['close_price']) && $allianceHistoryByType[$typeId]['close_price'] !== null) {
             $sellPrice = (float) $allianceHistoryByType[$typeId]['close_price'];
             $sellPriceBasis = 'Alliance historical close fallback';
@@ -29104,7 +29123,12 @@ function buy_all_planner_data_uncached(array $query = []): array
             $modeRankScore += 10.0;
         }
         $finalPriorityScore = min(100.0, max(0.0, round($modeRankScore, 2)));
-        $blendedScore = min(100.0, max(0.0, round(($necessityScore * 0.56) + ($profitScore * 0.44), 2)));
+
+        // Graph intelligence boost — aligns with Python compute_buy_all scoring.
+        $dependencyScore = max(0.0, (float) ($graphIntel['dependency_score'] ?? 0.0));
+        $criticalityScore = max(0.0, (float) ($graphIntel['criticality_score'] ?? 0.0));
+        $graphDependencyBoost = min(15.0, $dependencyScore * 0.18);
+        $blendedScore = min(100.0, max(0.0, round(($necessityScore * 0.56) + ($profitScore * 0.44) + $graphDependencyBoost, 2)));
         $isDoctrineCritical = $exactDeficitQuantity > 0 || $bottleneckFitCount > 0 || $blockedFitImpact > 0;
 
         $candidate = [
@@ -29142,12 +29166,12 @@ function buy_all_planner_data_uncached(array $query = []): array
             'reason_code' => '',
             'reason_text' => '',
             'reason_theme' => '',
-            'is_doctrine_linked' => $doctrineFitImpact > 0 || !empty($global['is_doctrine_item']),
+            'is_doctrine_linked' => $doctrineFitImpact > 0 || !empty($global['is_doctrine_item']) || (float) ($graphIntel['dependency_score'] ?? 0.0) > 0.0,
             'is_doctrine_critical' => $isDoctrineCritical,
             'hull_class' => (string) ($demand['hull_class'] ?? 'subcap'),
             'hull_class_label' => (string) ($demand['hull_class_label'] ?? 'Subcap'),
-            'valid_doctrine_count' => max(0, (int) ($demand['valid_doctrine_count'] ?? 0)),
-            'valid_fits_count' => max(0, (int) ($demand['valid_fits_count'] ?? 0)),
+            'valid_doctrine_count' => max((int) ($demand['valid_doctrine_count'] ?? 0), (int) ($graphIntel['graph_doctrine_count'] ?? 0)),
+            'valid_fits_count' => max((int) ($demand['valid_fits_count'] ?? 0), (int) ($graphIntel['graph_fit_count'] ?? 0)),
             'target_ready_fits' => $targetReadyFits,
             'activity_pressure_modifier' => $activityPressureModifier,
             'exact_deficit_fit_count' => max(0, (int) ($demand['exact_deficit_fit_count'] ?? 0)),
@@ -29165,6 +29189,12 @@ function buy_all_planner_data_uncached(array $query = []): array
             'hub_price_observed_at' => $market['reference_last_observed_at'] ?? ($hubHistoryByType[$typeId]['observed_at'] ?? null),
             'alliance_price_observed_at' => $market['alliance_last_observed_at'] ?? ($allianceHistoryByType[$typeId]['observed_at'] ?? null),
             'stock_observed_at' => $market['alliance_last_observed_at'] ?? null,
+            'dependency_score' => round($dependencyScore, 4),
+            'criticality_score' => round($criticalityScore, 4),
+            'priority_index' => round(max(0.0, (float) ($graphIntel['priority_index'] ?? 0.0)), 4),
+            'spof_flag' => (bool) (int) ($graphIntel['spof_flag'] ?? 0),
+            'trend_score' => round(max(0.0, (float) ($graphIntel['trend_score'] ?? 0.0)), 4),
+            'substitute_count' => max(0, (int) ($graphIntel['substitute_count'] ?? 0)),
         ];
         $reason = buy_all_reason_meta($candidate);
         $candidate['reason_code'] = $reason['code'];
