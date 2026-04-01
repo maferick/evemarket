@@ -215,7 +215,7 @@ _PROCESSOR_DISPATCH: dict[str, tuple] = {
     "theater_suspicion": (run_theater_suspicion, lambda db, cfg: (db, battle_runtime(cfg))),
     # Intelligence expansion — dossiers & threat corridors
     "compute_alliance_dossiers": (run_compute_alliance_dossiers, lambda db, cfg: (db, None, neo4j_runtime(cfg))),
-    "compute_threat_corridors": (run_compute_threat_corridors, lambda db, cfg: (db, neo4j_runtime(cfg))),
+    "compute_threat_corridors": (run_compute_threat_corridors, lambda db, cfg: (db, None, neo4j_runtime(cfg))),
     # Graph audit
     "graph_model_audit": (run_graph_model_audit, lambda db, cfg: (db, neo4j_runtime(cfg))),
     # Character feature windows
