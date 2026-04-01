@@ -29329,20 +29329,6 @@ function buy_all_planner_data_uncached(array $query = []): array
     $hubFreshness = supplycore_page_freshness_view_model((array) ($marketOutcomes['_freshness'] ?? []));
     $doctrineFreshness = supplycore_page_freshness_view_model((array) ($doctrineSnapshot['_freshness'] ?? []));
     $stockFreshness = $hubFreshness;
-    if ($marketRows !== []) {
-        $timestamps = array_values(array_filter(array_map(static fn (array $row): ?string => isset($row['alliance_last_observed_at']) ? (string) $row['alliance_last_observed_at'] : null, $marketRows)));
-        rsort($timestamps);
-        $latestStock = $timestamps[0] ?? null;
-        $stockFreshness = [
-            'state' => $latestStock !== null && (time() - (strtotime($latestStock) ?: 0)) <= supplycore_summary_stale_after_seconds() ? 'fresh' : 'stale',
-            'label' => $latestStock !== null && (time() - (strtotime($latestStock) ?: 0)) <= supplycore_summary_stale_after_seconds() ? 'Fresh' : 'Stale',
-            'computed_at' => supplycore_format_datetime($latestStock),
-            'computed_relative' => supplycore_relative_datetime($latestStock),
-            'tone' => $latestStock !== null && (time() - (strtotime($latestStock) ?: 0)) <= supplycore_summary_stale_after_seconds() ? 'border-emerald-400/20 bg-emerald-500/10 text-emerald-100' : 'border-amber-400/20 bg-amber-500/10 text-amber-100',
-            'message' => 'Alliance stock freshness for the current planner inputs.',
-            'reason' => '',
-        ];
-    }
 
     $result = [
         'request' => $request,

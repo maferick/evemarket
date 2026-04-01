@@ -139,6 +139,7 @@ def _processor(db: SupplyCoreDb) -> dict[str, object]:
         metadata_json=json_dumps_safe({
             "source": "market_order_current_projection",
             "reason": "scheduler:python",
+            "refresh_interval_seconds": 900,
             "row_count": len(evaluated),
             "alliance_structure_id": alliance_structure_id,
             "reference_source_id": reference_source_id,

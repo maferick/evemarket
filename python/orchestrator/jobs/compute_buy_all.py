@@ -325,7 +325,7 @@ def _doctrine_freshness(db: SupplyCoreDb) -> dict[str, Any]:
     """Build a freshness card for the doctrine intelligence dataset."""
     row = db.fetch_one(
         "SELECT MAX(updated_at) AS latest FROM intelligence_snapshots WHERE snapshot_key = %s",
-        ("doctrine_fit_db_state",),
+        ("doctrine_fit_intelligence",),
     )
     latest = row.get("latest") if row else None
     if latest is None:
