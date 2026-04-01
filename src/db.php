@@ -12795,7 +12795,7 @@ function db_doctrine_fits_all(): array
             df.updated_at,
             MAX(CASE WHEN dfg.membership_role = 'primary' THEN dfg.doctrine_group_id END) AS primary_group_id,
             GROUP_CONCAT(DISTINCT dfg.doctrine_group_id ORDER BY dfg.doctrine_group_id SEPARATOR ',') AS group_ids_csv,
-            GROUP_CONCAT(DISTINCT dg.group_name ORDER BY dg.group_name SEPARATOR '||') AS group_names_csv,
+            GROUP_CONCAT(DISTINCT dg.group_name ORDER BY dfg.doctrine_group_id SEPARATOR '||') AS group_names_csv,
             GROUP_CONCAT(DISTINCT CONCAT(dfg.doctrine_group_id, ':', dfg.membership_role) ORDER BY CASE dfg.membership_role WHEN 'primary' THEN 0 WHEN 'support' THEN 1 ELSE 2 END, dfg.doctrine_group_id SEPARATOR ',') AS membership_roles_csv,
             GROUP_CONCAT(DISTINCT CONCAT(dg.group_name, ':', dfg.membership_role) ORDER BY CASE dfg.membership_role WHEN 'primary' THEN 0 WHEN 'support' THEN 1 ELSE 2 END, dg.group_name SEPARATOR '||') AS membership_names_csv
          FROM doctrine_fits df
@@ -12882,7 +12882,7 @@ function db_doctrine_fit_by_id(int $fitId): ?array
             pg.group_name AS primary_group_name,
             MAX(CASE WHEN dfg.membership_role = 'primary' THEN dfg.doctrine_group_id END) AS primary_group_id,
             GROUP_CONCAT(DISTINCT dfg.doctrine_group_id ORDER BY dfg.doctrine_group_id SEPARATOR ',') AS group_ids_csv,
-            GROUP_CONCAT(DISTINCT dg.group_name ORDER BY dg.group_name SEPARATOR '||') AS group_names_csv,
+            GROUP_CONCAT(DISTINCT dg.group_name ORDER BY dfg.doctrine_group_id SEPARATOR '||') AS group_names_csv,
             GROUP_CONCAT(DISTINCT CONCAT(dfg.doctrine_group_id, ':', dfg.membership_role) ORDER BY CASE dfg.membership_role WHEN 'primary' THEN 0 WHEN 'support' THEN 1 ELSE 2 END, dfg.doctrine_group_id SEPARATOR ',') AS membership_roles_csv,
             GROUP_CONCAT(DISTINCT CONCAT(dg.group_name, ':', dfg.membership_role) ORDER BY CASE dfg.membership_role WHEN 'primary' THEN 0 WHEN 'support' THEN 1 ELSE 2 END, dg.group_name SEPARATOR '||') AS membership_names_csv
          FROM doctrine_fits df

@@ -21484,10 +21484,25 @@ function doctrine_bulk_import_selected_memberships(array $row, array $post): arr
         $existingMemberships[(int) ($membership['group_id'] ?? 0)] = doctrine_normalize_membership_role((string) ($membership['membership_role'] ?? 'support'));
     }
 
-    foreach ($groupIds as $index => $groupId) {
+    // If no explicit primary selected, fall back to any existing primary membership
+    if ($primaryGroupId <= 0) {
+        foreach ($existingMemberships as $gId => $role) {
+            if ($role === 'primary') {
+                $primaryGroupId = $gId;
+                break;
+            }
+        }
+    }
+
+    // If still no primary and exactly one group, auto-assign it as primary
+    if ($primaryGroupId <= 0 && count($groupIds) === 1) {
+        $primaryGroupId = $groupIds[0];
+    }
+
+    foreach ($groupIds as $groupId) {
         $role = $groupId === $primaryGroupId
             ? 'primary'
-            : doctrine_normalize_membership_role($existingMemberships[$groupId] ?? ($index === 0 && $primaryGroupId <= 0 ? 'primary' : 'support'));
+            : doctrine_normalize_membership_role($existingMemberships[$groupId] ?? 'support');
         $memberships[] = [
             'group_id' => $groupId,
             'membership_role' => $role,
