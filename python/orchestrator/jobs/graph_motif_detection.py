@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+import logging
 import time
 from datetime import UTC, datetime
 from typing import Any
 
+logger = logging.getLogger(__name__)
+
 from ..db import SupplyCoreDb
 from ..job_result import JobResult
 from ..json_utils import json_dumps_safe
-from ..neo4j import Neo4jClient, Neo4jConfig
+from ..neo4j import Neo4jClient, Neo4jConfig, Neo4jError
 
 
 def _detect_triangles(client: Neo4jClient) -> list[dict[str, Any]]:
@@ -147,13 +150,25 @@ def run_graph_motif_detection_sync(db: SupplyCoreDb, neo4j_raw: dict[str, Any] |
     ]
 
     counts_by_type: dict[str, int] = {}
+    failed_detectors: list[str] = []
     for motif_name, detector_fn in detectors:
         try:
             results = detector_fn(client)
             all_motifs.extend(results)
             counts_by_type[motif_name] = len(results)
-        except Exception:
+        except (Neo4jError, OSError) as exc:
+            logger.error("Motif detector %s failed: %s", motif_name, exc)
             counts_by_type[motif_name] = 0
+            failed_detectors.append(motif_name)
+
+    if failed_detectors:
+        duration_ms = int((time.perf_counter() - started) * 1000)
+        return JobResult.failed(
+            job_key=job_name,
+            error=f"Detectors failed: {', '.join(failed_detectors)}",
+            duration_ms=duration_ms,
+            meta={"counts": counts_by_type, "failed": failed_detectors},
+        ).to_dict()
 
     if not all_motifs:
         duration_ms = int((time.perf_counter() - started) * 1000)
