@@ -77,7 +77,7 @@ sort($_battleNodeIds);
 $_battleCount = count($_battleNodeIds);
 $_positions = [];
 foreach ($_battleNodeIds as $_idx => $_sid) {
-    $_x = $_battleCount > 1 ? (0.12 + ((0.76 * $_idx) / ($_battleCount - 1))) : 0.5;
+    $_x = $_battleCount > 1 ? (0.10 + ((0.80 * $_idx) / ($_battleCount - 1))) : 0.5;
     $_positions[$_sid] = ['x' => $_x, 'y' => 0.48];
 }
 
@@ -182,10 +182,10 @@ foreach ($_surroundingByAnchor as $_anchorId => $_anchorNodes) {
     }
 }
 
-// ── SVG dimensions ──
-$_svgW = 420;
-$_svgH = 320;
-$_pad  = 28;
+// ── SVG dimensions — wide landscape for full-width display ──
+$_svgW = 960;
+$_svgH = 340;
+$_pad  = 40;
 $_sx = static fn(float $x): float => $_pad + ($x * ($_svgW - ($_pad * 2)));
 $_sy = static fn(float $y): float => $_pad + ($y * ($_svgH - ($_pad * 2)));
 $_secColor = static function (float $sec): string {
@@ -202,7 +202,7 @@ $_secColor = static function (float $sec): string {
 $_svgId = 'sysmap-' . substr(md5($theaterId), 0, 6);
 ?>
 
-<div class="system-overview-map" id="<?= $_svgId ?>-wrap">
+<div class="system-overview-map mt-4" id="<?= $_svgId ?>-wrap">
     <div class="system-overview-map__header">
         <svg class="system-overview-map__icon" viewBox="0 0 16 16" fill="none">
             <circle cx="4" cy="4" r="2" fill="#2f9bff" opacity="0.7"/>
@@ -212,6 +212,7 @@ $_svgId = 'sysmap-' . substr(md5($theaterId), 0, 6);
             <line x1="12" y1="6" x2="7" y2="12" stroke="#2f9bff" stroke-width="0.6" opacity="0.4"/>
         </svg>
         <span>System Overview</span>
+        <span class="system-overview-map__count"><?= count($_battleNodeIds) ?> battle <?= count($_battleNodeIds) === 1 ? 'system' : 'systems' ?> &middot; <?= count($_nodeMap) - count($_battleNodeIds) ?> adjacent</span>
     </div>
 
     <svg xmlns="http://www.w3.org/2000/svg"
@@ -221,28 +222,42 @@ $_svgId = 'sysmap-' . substr(md5($theaterId), 0, 6);
          aria-label="Star map showing battle systems and gate connections">
         <defs>
             <!-- Battle system glow -->
-            <filter id="<?= $_svgId ?>-glow" x="-50%" y="-50%" width="200%" height="200%">
-                <feGaussianBlur stdDeviation="4" result="blur"/>
+            <filter id="<?= $_svgId ?>-glow" x="-60%" y="-60%" width="220%" height="220%">
+                <feGaussianBlur stdDeviation="5" result="blur"/>
                 <feComposite in="SourceGraphic" in2="blur" operator="over"/>
             </filter>
             <filter id="<?= $_svgId ?>-glow-line" x="-20%" y="-20%" width="140%" height="140%">
-                <feGaussianBlur stdDeviation="2.5" result="blur"/>
+                <feGaussianBlur stdDeviation="3" result="blur"/>
                 <feComposite in="SourceGraphic" in2="blur" operator="over"/>
             </filter>
             <!-- Subtle grid pattern -->
-            <pattern id="<?= $_svgId ?>-grid" width="24" height="24" patternUnits="userSpaceOnUse">
-                <circle cx="12" cy="12" r="0.4" fill="rgba(148,163,184,0.08)"/>
+            <pattern id="<?= $_svgId ?>-grid" width="28" height="28" patternUnits="userSpaceOnUse">
+                <circle cx="14" cy="14" r="0.5" fill="rgba(148,163,184,0.06)"/>
             </pattern>
             <!-- Radial gradient for background depth -->
-            <radialGradient id="<?= $_svgId ?>-bg" cx="50%" cy="45%" r="60%">
+            <radialGradient id="<?= $_svgId ?>-bg" cx="50%" cy="45%" r="65%">
                 <stop offset="0%" stop-color="#0e1726"/>
                 <stop offset="100%" stop-color="#060a12"/>
             </radialGradient>
+            <!-- Nebula-like ambient glow behind battle clusters -->
+            <filter id="<?= $_svgId ?>-nebula" x="-100%" y="-100%" width="300%" height="300%">
+                <feGaussianBlur stdDeviation="40" result="blur"/>
+            </filter>
         </defs>
 
         <!-- Background -->
-        <rect width="<?= $_svgW ?>" height="<?= $_svgH ?>" rx="12" fill="url(#<?= $_svgId ?>-bg)"/>
-        <rect width="<?= $_svgW ?>" height="<?= $_svgH ?>" rx="12" fill="url(#<?= $_svgId ?>-grid)"/>
+        <rect width="<?= $_svgW ?>" height="<?= $_svgH ?>" rx="16" fill="url(#<?= $_svgId ?>-bg)"/>
+        <rect width="<?= $_svgW ?>" height="<?= $_svgH ?>" rx="16" fill="url(#<?= $_svgId ?>-grid)"/>
+
+        <!-- Nebula ambient glow behind battle systems -->
+        <?php foreach ($_battleNodeIds as $_sid):
+            if (!isset($_positions[$_sid])) { continue; }
+            $_cx = number_format($_sx((float) $_positions[$_sid]['x']), 1, '.', '');
+            $_cy = number_format($_sy((float) $_positions[$_sid]['y']), 1, '.', '');
+        ?>
+        <circle cx="<?= $_cx ?>" cy="<?= $_cy ?>" r="60" fill="#2f9bff" fill-opacity="0.04"
+                filter="url(#<?= $_svgId ?>-nebula)"/>
+        <?php endforeach; ?>
 
         <!-- Gate connections: non-battle edges -->
         <?php
@@ -260,7 +275,7 @@ $_svgId = 'sysmap-' . substr(md5($theaterId), 0, 6);
             $_y2 = number_format($_sy((float) $_positions[$_b]['y']), 1, '.', '');
         ?>
         <line x1="<?= $_x1 ?>" y1="<?= $_y1 ?>" x2="<?= $_x2 ?>" y2="<?= $_y2 ?>"
-              stroke="#1e3a5f" stroke-opacity="0.45" stroke-width="1" stroke-dasharray="3,3"/>
+              stroke="#1e3a5f" stroke-opacity="0.5" stroke-width="1.2" stroke-dasharray="4,4"/>
         <?php endforeach; ?>
 
         <!-- Gate connections: battle-to-battle edges (highlighted) -->
@@ -274,11 +289,11 @@ $_svgId = 'sysmap-' . substr(md5($theaterId), 0, 6);
         ?>
         <!-- Outer glow -->
         <line x1="<?= $_x1 ?>" y1="<?= $_y1 ?>" x2="<?= $_x2 ?>" y2="<?= $_y2 ?>"
-              stroke="#2f9bff" stroke-opacity="0.15" stroke-width="8" stroke-linecap="round"
+              stroke="#2f9bff" stroke-opacity="0.12" stroke-width="10" stroke-linecap="round"
               filter="url(#<?= $_svgId ?>-glow-line)"/>
         <!-- Core line -->
         <line x1="<?= $_x1 ?>" y1="<?= $_y1 ?>" x2="<?= $_x2 ?>" y2="<?= $_y2 ?>"
-              stroke="#2f9bff" stroke-opacity="0.7" stroke-width="1.5" stroke-linecap="round"/>
+              stroke="#2f9bff" stroke-opacity="0.75" stroke-width="2" stroke-linecap="round"/>
         <?php endforeach; ?>
 
         <!-- System nodes -->
@@ -291,68 +306,66 @@ $_svgId = 'sysmap-' . substr(md5($theaterId), 0, 6);
             $_secFmt = number_format((float) $_node['security'], 1);
 
             if ($_node['is_battle']):
-                // Battle system — prominent node with glow
                 $_labelX = number_format($_sx((float) $_positions[$_sid]['x']), 1, '.', '');
-                $_labelY = number_format($_sy((float) $_positions[$_sid]['y']) - 18, 1, '.', '');
-                $_secY   = number_format($_sy((float) $_positions[$_sid]['y']) + 20, 1, '.', '');
+                $_labelY = number_format($_sy((float) $_positions[$_sid]['y']) - 22, 1, '.', '');
+                $_secY   = number_format($_sy((float) $_positions[$_sid]['y']) + 24, 1, '.', '');
         ?>
         <g class="system-overview-map__battle-node">
             <title><?= $_safeName ?> (<?= $_secFmt ?>)</title>
             <!-- Outer pulse ring -->
-            <circle cx="<?= $_cx ?>" cy="<?= $_cy ?>" r="14" fill="none"
-                    stroke="#2f9bff" stroke-width="0.6" stroke-opacity="0.3">
-                <animate attributeName="r" values="14;18;14" dur="3s" repeatCount="indefinite"/>
-                <animate attributeName="stroke-opacity" values="0.3;0.08;0.3" dur="3s" repeatCount="indefinite"/>
+            <circle cx="<?= $_cx ?>" cy="<?= $_cy ?>" r="16" fill="none"
+                    stroke="#2f9bff" stroke-width="0.7" stroke-opacity="0.35">
+                <animate attributeName="r" values="16;22;16" dur="3s" repeatCount="indefinite"/>
+                <animate attributeName="stroke-opacity" values="0.35;0.06;0.35" dur="3s" repeatCount="indefinite"/>
             </circle>
             <!-- Glow halo -->
-            <circle cx="<?= $_cx ?>" cy="<?= $_cy ?>" r="10"
-                    fill="#2f9bff" fill-opacity="0.08"
-                    stroke="#2f9bff" stroke-width="1.5" stroke-opacity="0.5"
+            <circle cx="<?= $_cx ?>" cy="<?= $_cy ?>" r="12"
+                    fill="#2f9bff" fill-opacity="0.06"
+                    stroke="#2f9bff" stroke-width="1.8" stroke-opacity="0.5"
                     filter="url(#<?= $_svgId ?>-glow)"/>
             <!-- Core circle -->
-            <circle cx="<?= $_cx ?>" cy="<?= $_cy ?>" r="5"
-                    fill="<?= $_color ?>" stroke="#0a1019" stroke-width="1.5"/>
+            <circle cx="<?= $_cx ?>" cy="<?= $_cy ?>" r="6.5"
+                    fill="<?= $_color ?>" stroke="#0a1019" stroke-width="2"/>
             <!-- Inner bright dot -->
-            <circle cx="<?= $_cx ?>" cy="<?= $_cy ?>" r="2" fill="#fff" fill-opacity="0.7"/>
+            <circle cx="<?= $_cx ?>" cy="<?= $_cy ?>" r="2.5" fill="#fff" fill-opacity="0.75"/>
             <!-- System name -->
             <text x="<?= $_labelX ?>" y="<?= $_labelY ?>"
                   text-anchor="middle"
-                  style="font:600 10px Inter,Segoe UI,system-ui,sans-serif;fill:#eef5ff;text-shadow:0 0 6px rgba(47,155,255,0.4)"><?= $_safeName ?></text>
+                  style="font:700 12px Inter,Segoe UI,system-ui,sans-serif;fill:#eef5ff"><?= $_safeName ?></text>
             <!-- Security badge -->
             <text x="<?= $_labelX ?>" y="<?= $_secY ?>"
                   text-anchor="middle"
-                  style="font:500 8px Inter,Segoe UI,system-ui,sans-serif;fill:<?= $_color ?>;opacity:0.8"><?= $_secFmt ?></text>
+                  style="font:600 9px Inter,Segoe UI,system-ui,sans-serif;fill:<?= $_color ?>;opacity:0.85"><?= $_secFmt ?></text>
         </g>
         <?php else:
-                // Adjacent system — subtle node
-                $_labelX = number_format($_sx((float) $_positions[$_sid]['x']) + 9, 1, '.', '');
-                $_labelY = number_format($_sy((float) $_positions[$_sid]['y']) + 3, 1, '.', '');
+                $_labelX = number_format($_sx((float) $_positions[$_sid]['x']) + 11, 1, '.', '');
+                $_labelY = number_format($_sy((float) $_positions[$_sid]['y']) + 4, 1, '.', '');
         ?>
-        <g class="system-overview-map__adj-node" opacity="0.7">
+        <g class="system-overview-map__adj-node" opacity="0.75">
             <title><?= $_safeName ?> (<?= $_secFmt ?>)</title>
             <!-- Outer ring -->
-            <circle cx="<?= $_cx ?>" cy="<?= $_cy ?>" r="4"
-                    fill="none" stroke="<?= $_color ?>" stroke-width="0.8" stroke-opacity="0.5"/>
+            <circle cx="<?= $_cx ?>" cy="<?= $_cy ?>" r="5"
+                    fill="none" stroke="<?= $_color ?>" stroke-width="1" stroke-opacity="0.5"/>
             <!-- Core dot -->
-            <circle cx="<?= $_cx ?>" cy="<?= $_cy ?>" r="2"
-                    fill="<?= $_color ?>" fill-opacity="0.4" stroke="#0a1019" stroke-width="0.5"/>
+            <circle cx="<?= $_cx ?>" cy="<?= $_cy ?>" r="2.5"
+                    fill="<?= $_color ?>" fill-opacity="0.45" stroke="#0a1019" stroke-width="0.6"/>
             <!-- Label -->
             <text x="<?= $_labelX ?>" y="<?= $_labelY ?>"
-                  style="font:400 8px Inter,Segoe UI,system-ui,sans-serif;fill:#64748b;opacity:0.7"><?= $_safeName ?></text>
+                  style="font:500 9px Inter,Segoe UI,system-ui,sans-serif;fill:#64748b;opacity:0.8"><?= $_safeName ?></text>
         </g>
         <?php endif; ?>
         <?php endforeach; ?>
 
         <!-- Legend -->
-        <g transform="translate(<?= $_svgW - 130 ?>, <?= $_svgH - 32 ?>)" opacity="0.6">
-            <circle cx="0" cy="0" r="4" fill="none" stroke="#2f9bff" stroke-width="1"/>
-            <circle cx="0" cy="0" r="1.8" fill="#fff" fill-opacity="0.5"/>
-            <text x="8" y="3" style="font:400 7.5px Inter,Segoe UI,system-ui,sans-serif;fill:#64748b">Battle</text>
-            <circle cx="52" cy="0" r="2.5" fill="none" stroke="#64748b" stroke-width="0.8"/>
-            <circle cx="52" cy="0" r="1.2" fill="#64748b" fill-opacity="0.4"/>
-            <text x="58" y="3" style="font:400 7.5px Inter,Segoe UI,system-ui,sans-serif;fill:#64748b">Adjacent</text>
-            <line x1="90" y1="0" x2="105" y2="0" stroke="#1e3a5f" stroke-width="1" stroke-dasharray="2,2" stroke-opacity="0.6"/>
-            <text x="108" y="3" style="font:400 7.5px Inter,Segoe UI,system-ui,sans-serif;fill:#64748b">Gate</text>
+        <g transform="translate(<?= $_svgW - 200 ?>, <?= $_svgH - 28 ?>)" opacity="0.55">
+            <circle cx="0" cy="0" r="5" fill="none" stroke="#2f9bff" stroke-width="1.2"/>
+            <circle cx="0" cy="0" r="2.2" fill="#fff" fill-opacity="0.6"/>
+            <text x="10" y="4" style="font:500 9px Inter,Segoe UI,system-ui,sans-serif;fill:#64748b">Battle system</text>
+            <circle cx="90" cy="0" r="3.5" fill="none" stroke="#64748b" stroke-width="0.9"/>
+            <circle cx="90" cy="0" r="1.5" fill="#64748b" fill-opacity="0.4"/>
+            <text x="98" y="4" style="font:500 9px Inter,Segoe UI,system-ui,sans-serif;fill:#64748b">Adjacent</text>
+            <line x1="148" y1="0" x2="168" y2="0" stroke="#1e3a5f" stroke-width="1.2" stroke-dasharray="3,3" stroke-opacity="0.6"/>
+            <text x="173" y="4" style="font:500 9px Inter,Segoe UI,system-ui,sans-serif;fill:#64748b">Gate</text>
         </g>
     </svg>
 </div>
