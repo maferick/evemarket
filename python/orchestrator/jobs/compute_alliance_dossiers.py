@@ -380,7 +380,10 @@ def _query_enemies_neo4j(neo4j_client: Any, alliance_id: int) -> list[dict]:
     Uses killmail attacker/victim relationships.  An alliance is an enemy
     when our members attack their members (they are victims on a ``Killmail``
     we ``ATTACKED_ON``) or vice-versa.  Both directions are combined via
-    ``CALL {} UNION ALL`` and de-duplicated by ``battle_id``.
+    ``CALL {} UNION ALL`` and counted as distinct killmails.
+
+    Traverses CURRENT_CORP → PART_OF chain for alliance membership since
+    MEMBER_OF_ALLIANCE edges are sparse.
 
     Returns canonical contract: ``{alliance_id, engagements, source}``.
     """
@@ -390,21 +393,27 @@ def _query_enemies_neo4j(neo4j_client: Any, alliance_id: int) -> list[dict]:
         rows = neo4j_client.query(
             """
             CALL {
-                MATCH (a:Alliance {alliance_id: $aid})<-[:MEMBER_OF_ALLIANCE]-(c:Character)
-                      -[:ATTACKED_ON]->(k:Killmail)<-[:VICTIM_OF]-(v:Character)
-                      -[:MEMBER_OF_ALLIANCE]->(e:Alliance)
+                MATCH (a:Alliance {alliance_id: $aid})
+                      <-[:PART_OF]-(:Corporation)
+                      <-[:CURRENT_CORP]-(c:Character)
+                      -[:ATTACKED_ON]->(k:Killmail)
+                      <-[:VICTIM_OF]-(v:Character)
+                      -[:CURRENT_CORP]->(:Corporation)
+                      -[:PART_OF]->(e:Alliance)
                 WHERE e.alliance_id <> $aid
-                  AND k.battle_id IS NOT NULL AND k.battle_id <> ''
-                RETURN e.alliance_id AS enemy_id, k.battle_id AS bid
+                RETURN e.alliance_id AS enemy_id, k.killmail_id AS kid
                 UNION ALL
-                MATCH (a:Alliance {alliance_id: $aid})<-[:MEMBER_OF_ALLIANCE]-(c:Character)
-                      -[:VICTIM_OF]->(k:Killmail)<-[:ATTACKED_ON]-(att:Character)
-                      -[:MEMBER_OF_ALLIANCE]->(e:Alliance)
+                MATCH (a:Alliance {alliance_id: $aid})
+                      <-[:PART_OF]-(:Corporation)
+                      <-[:CURRENT_CORP]-(c:Character)
+                      -[:VICTIM_OF]->(k:Killmail)
+                      <-[:ATTACKED_ON]-(att:Character)
+                      -[:CURRENT_CORP]->(:Corporation)
+                      -[:PART_OF]->(e:Alliance)
                 WHERE e.alliance_id <> $aid
-                  AND k.battle_id IS NOT NULL AND k.battle_id <> ''
-                RETURN e.alliance_id AS enemy_id, k.battle_id AS bid
+                RETURN e.alliance_id AS enemy_id, k.killmail_id AS kid
             }
-            WITH enemy_id, COUNT(DISTINCT bid) AS engagements
+            WITH enemy_id, COUNT(DISTINCT kid) AS engagements
             WHERE engagements >= 2
             RETURN enemy_id, engagements
             ORDER BY engagements DESC

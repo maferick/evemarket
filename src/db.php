@@ -15353,7 +15353,7 @@ function db_neo4j_character_movement_graph(int $characterId): ?array
     // Regions where this character has been active via battle participation
     $regionRows = neo4j_query(
         'MATCH (c:Character {character_id: $charId})-[:PARTICIPATED_IN]->(b:Battle)
-         MATCH (b)-[:LOCATED_IN]->(sys)
+         MATCH (b)-[:IN_SYSTEM]->(sys)
          RETURN
            sys.region_id AS region_id,
            count(DISTINCT b) AS battle_count,
@@ -16631,7 +16631,7 @@ function db_neo4j_character_cross_side_overlap(int $characterId, string $battleI
 {
     return neo4j_query(
         'MATCH (c:Character {character_id: $charId})-[:PARTICIPATED_IN]->(b:Battle {battle_id: $battleId})
-         MATCH (c)-[:MEMBER_OF]->(corp:Corporation)<-[:MEMBER_OF]-(other:Character)
+         MATCH (c)-[:CURRENT_CORP]->(corp:Corporation)<-[:CURRENT_CORP]-(other:Character)
          MATCH (other)-[p:PARTICIPATED_IN]->(b)
          WHERE NOT corp.is_npc AND p.side <> "friendly"
          RETURN
@@ -16651,7 +16651,7 @@ function db_neo4j_character_intelligence(int $characterId): array
 {
     // Cross-side overlap count (across all battles)
     $overlapRows = neo4j_query(
-        'MATCH (c:Character {character_id: $charId})-[:MEMBER_OF]->(corp:Corporation)<-[:MEMBER_OF]-(other:Character)
+        'MATCH (c:Character {character_id: $charId})-[:CURRENT_CORP]->(corp:Corporation)<-[:CURRENT_CORP]-(other:Character)
          WHERE NOT corp.is_npc
          MATCH (other)-[:PARTICIPATED_IN {side: "hostile"}]->(:Battle)
          RETURN
@@ -16678,7 +16678,7 @@ function db_neo4j_character_intelligence(int $characterId): array
 
     // Hostile corp adjacency
     $adjacencyRows = neo4j_query(
-        'MATCH (c:Character {character_id: $charId})-[:MEMBER_OF]->(corp:Corporation)<-[:MEMBER_OF]-(other:Character)
+        'MATCH (c:Character {character_id: $charId})-[:CURRENT_CORP]->(corp:Corporation)<-[:CURRENT_CORP]-(other:Character)
          WHERE NOT corp.is_npc
          MATCH (other)-[:PARTICIPATED_IN {side: "hostile"}]->(:Battle)
          RETURN count(DISTINCT other) AS hostile_neighbors',
