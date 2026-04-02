@@ -253,44 +253,56 @@ function _render_participant_row(array $p, array $resolvedEntities, array $shipT
             }
         ?>
         <td class="px-2 py-1.5">
-            <div class="flex flex-col gap-0.5">
+            <div class="flex items-center gap-0.5 flex-wrap">
                 <?php
-                    // Resolve sequence_id for the flying ship
-                    $flyingSeqId = 0;
-                    if ($flyingShipId > 0 && $charId > 0 && isset($victimKmLookup[$charId][$flyingShipId])) {
-                        $flyingSeqId = $victimKmLookup[$charId][$flyingShipId];
+                    // ── Build flat list of loss icons (each individual ship, expanded from counts) ──
+                    $lossIcons = [];
+                    // Non-pod losses first
+                    foreach ($lostDisplay as $ld) {
+                        $stid = (int) ($ld['ship_type_id'] ?? 0);
+                        $sname = (string) ($shipTypeNames[$stid] ?? 'Unknown');
+                        $cnt = max(1, (int) ($ld['count'] ?? 1));
+                        $kmIds = (array) ($ld['killmail_ids'] ?? []);
+                        for ($i = 0; $i < $cnt; $i++) {
+                            $seqId = 0;
+                            if (isset($kmIds[$i]['sequence_id'])) {
+                                $seqId = (int) $kmIds[$i]['sequence_id'];
+                            } elseif ($stid > 0 && $charId > 0 && isset($victimKmLookup[$charId][$stid])) {
+                                $seqId = $victimKmLookup[$charId][$stid];
+                            }
+                            $lossIcons[] = ['type_id' => $stid, 'name' => $sname, 'seq_id' => $seqId, 'pod' => false];
+                        }
                     }
-                    // For the lost ship specifically, resolve its own sequence_id
-                    $lostSeqId = 0;
-                    if ($lostShipId > 0 && $charId > 0 && isset($victimKmLookup[$charId][$lostShipId])) {
-                        $lostSeqId = $victimKmLookup[$charId][$lostShipId];
+                    // Pod losses
+                    foreach ($lostDetail as $_pe) {
+                        $ptid = (int) ($_pe['ship_type_id'] ?? 0);
+                        if (!in_array($ptid, [670, 33328], true)) continue;
+                        $cnt = max(1, (int) ($_pe['count'] ?? 1));
+                        $kmIds = (array) ($_pe['killmail_ids'] ?? []);
+                        for ($i = 0; $i < $cnt; $i++) {
+                            $seqId = 0;
+                            if (isset($kmIds[$i]['sequence_id'])) {
+                                $seqId = (int) $kmIds[$i]['sequence_id'];
+                            } elseif ($ptid > 0 && $charId > 0 && isset($victimKmLookup[$charId][$ptid])) {
+                                $seqId = $victimKmLookup[$charId][$ptid];
+                            }
+                            $lossIcons[] = ['type_id' => $ptid, 'name' => 'Capsule', 'seq_id' => $seqId, 'pod' => true];
+                        }
                     }
-                    if ($lostSeqId === 0) $lostSeqId = $kmSeqId;
                 ?>
-                <?php if ($flyingShipId > 0): ?>
-                    <div class="flex items-center gap-1 <?= $flyingSeqId > 0 ? 'cursor-pointer hover:brightness-125 transition-all' : 'opacity-60' ?>"<?= $flyingSeqId > 0 ? ' onclick="window._scKmModal(' . $flyingSeqId . ')"' : '' ?>>
-                        <img class="w-4 h-4 flex-shrink-0" src="https://images.evetech.net/types/<?= $flyingShipId ?>/icon?size=32" loading="lazy">
-                        <span class="text-[11px] text-slate-400 truncate max-w-[6rem] <?= $flyingSeqId > 0 ? 'underline decoration-slate-500/40 underline-offset-2' : '' ?>"><?= htmlspecialchars($flyingShipName, ENT_QUOTES) ?></span>
-                    </div>
-                <?php endif; ?>
-                <?php if ($lostShipId > 0 && !$lostSameAsFlying): ?>
-                    <div class="flex items-center gap-1 <?= $lostSeqId > 0 ? 'cursor-pointer hover:brightness-125 transition-all' : '' ?>"<?= $lostSeqId > 0 ? ' onclick="window._scKmModal(' . $lostSeqId . ')"' : '' ?>>
-                        <img class="w-4 h-4 flex-shrink-0" src="https://images.evetech.net/types/<?= $lostShipId ?>/icon?size=32" loading="lazy">
-                        <span class="text-[11px] text-red-400 truncate max-w-[5rem] <?= $lostSeqId > 0 ? 'underline decoration-red-500/30 underline-offset-2' : '' ?>"><?= htmlspecialchars($lostShipName, ENT_QUOTES) ?></span>
-                        <?php if ($lostShipCount > 1): ?>
-                            <span class="text-[10px] text-red-500">&times;<?= $lostShipCount ?></span>
-                        <?php endif; ?>
-                    </div>
-                <?php elseif ($lostSameAsFlying && $hasDeath): ?>
-                    <div class="flex items-center gap-1 opacity-70 <?= $lostSeqId > 0 ? 'cursor-pointer hover:brightness-125 transition-all' : '' ?>"<?= $lostSeqId > 0 ? ' onclick="window._scKmModal(' . $lostSeqId . ')"' : '' ?>>
-                        <span class="text-[10px] text-red-500/60 <?= $lostSeqId > 0 ? 'underline decoration-red-500/30 underline-offset-2' : '' ?>">&darr; lost<?= $lostShipCount > 1 ? ' &times;' . $lostShipCount : '' ?></span>
-                    </div>
-                <?php endif; ?>
-                <?php if ($wasPodded): ?>
-                    <div class="flex items-center gap-1 opacity-80" title="Capsule also destroyed">
-                        <img class="w-3 h-3 flex-shrink-0 opacity-50" src="https://images.evetech.net/types/670/icon?size=32" loading="lazy">
-                        <span class="text-[10px] text-orange-400/80">+ Pod<?= $podIsk > 0 ? ' (' . supplycore_format_isk($podIsk) . ')' : '' ?></span>
-                    </div>
+                <?php if ($lossIcons !== []): ?>
+                    <?php foreach ($lossIcons as $li): ?>
+                        <img class="<?= $li['pod'] ? 'w-3 h-3 opacity-60' : 'w-4 h-4' ?> flex-shrink-0 rounded-sm ring-1 ring-red-500/30 <?= $li['seq_id'] > 0 ? 'cursor-pointer hover:brightness-125 hover:ring-red-400/60 transition-all' : '' ?>"
+                             src="https://images.evetech.net/types/<?= $li['type_id'] ?>/icon?size=32"
+                             title="<?= htmlspecialchars($li['name'], ENT_QUOTES) ?>"
+                             loading="lazy"
+                             <?= $li['seq_id'] > 0 ? 'onclick="window._scKmModal(' . $li['seq_id'] . ')"' : '' ?>>
+                    <?php endforeach; ?>
+                <?php elseif ($flyingShipId > 0): ?>
+                    <img class="w-4 h-4 flex-shrink-0 rounded-sm opacity-50"
+                         src="https://images.evetech.net/types/<?= $flyingShipId ?>/icon?size=32"
+                         title="<?= htmlspecialchars($flyingShipName, ENT_QUOTES) ?>"
+                         loading="lazy">
                 <?php endif; ?>
             </div>
         </td>
