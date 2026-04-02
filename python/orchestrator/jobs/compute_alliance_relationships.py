@@ -544,7 +544,6 @@ def _push_to_neo4j(
                     UNWIND $edges AS e
                     MATCH (a1:Alliance {alliance_id: e.source})
                     MATCH (a2:Alliance {alliance_id: e.target})
-                    MATCH (r:Region {region_id: e.region_id})
                     MERGE (a1)-[cf:CEASEFIRE_WITH {region_id: e.region_id}]-(a2)
                     SET cf.co_attacks = e.co_attacks,
                         cf.weight_30d = e.weight_30d,
@@ -608,8 +607,13 @@ def _neo4j_detect_ceasefires(neo4j_client: Any) -> list[dict]:
             MATCH (a1:Alliance)-[h:HOSTILE_TO]->(a2:Alliance)
             WHERE (a1)-[:ALLIED_WITH]-(a2)
             OPTIONAL MATCH (a1)-[cf:CEASEFIRE_WITH]-(a2)
+            OPTIONAL MATCH (reg:Region {region_id: cf.region_id})
             WITH a1, a2, h,
-                 COLLECT(DISTINCT {region_id: cf.region_id, co_attacks: cf.co_attacks}) AS ceasefire_regions
+                 COLLECT(DISTINCT {
+                     region_id: cf.region_id,
+                     region_name: COALESCE(reg.name, 'Unknown'),
+                     co_attacks: cf.co_attacks
+                 }) AS ceasefire_regions
             RETURN a1.alliance_id AS alliance_a,
                    a2.alliance_id AS alliance_b,
                    a1.name AS name_a,
