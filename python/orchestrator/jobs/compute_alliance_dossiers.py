@@ -221,7 +221,7 @@ def _load_ship_summary(db: SupplyCoreDb, alliance_id: int) -> dict[str, Any]:
         WHERE ka.alliance_id = %s
           AND ka.ship_type_id IS NOT NULL AND ka.ship_type_id > 0
           AND ke.zkb_npc = 0
-        GROUP BY ka.ship_type_id
+        GROUP BY ka.ship_type_id, rit.type_name, rig.group_name, rmg.market_group_name
         ORDER BY usage_count DESC
         LIMIT 30
         """,
