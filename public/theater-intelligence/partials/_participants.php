@@ -37,6 +37,11 @@ foreach ($structureKills as $sk) {
     }
 }
 
+// Detect 2 vs 3 column mode (mirrors _battle_report.php logic)
+$_hasOpponent = $enemyParticipants !== [];
+$_hasThirdParty = $thirdPartyParticipants !== [];
+$_isThreeColumnParticipants = $_hasOpponent && $_hasThirdParty;
+
 // When a specific filter is active, show single filtered list
 $showSideBySide = ($sideFilter === null && !$suspiciousOnly);
 $filteredList = $showSideBySide ? [] : $participants;
@@ -290,7 +295,12 @@ function _render_participant_row(array $p, array $resolvedEntities, array $shipT
             </div>
         </td>
         <td class="px-2 py-1.5">
-            <span class="inline-flex items-center rounded-full px-[6px] py-[4px] text-[8px] font-semibold uppercase tracking-[0.12em] leading-none <?= fleet_function_color_class($fleetRole) ?> border border-[rgba(204,255,0,0.2)] text-[#ccff00] shadow-[0_0_5px_2px_rgba(204,255,0,0.7)] [text-shadow:0_0_3px_rgb(204,255,0)]">
+            <?php
+                $roleGlowCls = $fleetRole === 'fc'
+                    ? 'border border-[rgba(204,255,0,0.2)] text-[#ccff00] shadow-[0_0_5px_2px_rgba(204,255,0,0.7)] [text-shadow:0_0_3px_rgb(204,255,0)]'
+                    : '';
+            ?>
+            <span class="inline-flex items-center rounded-full px-[6px] py-[4px] text-[8px] font-semibold uppercase tracking-[0.12em] leading-none <?= fleet_function_color_class($fleetRole) ?> <?= $roleGlowCls ?>">
                 <?= htmlspecialchars(fleet_function_label($fleetRole), ENT_QUOTES) ?>
             </span>
         </td>
@@ -418,8 +428,19 @@ function _render_structure_row(array $sk, array $resolvedEntities, array $shipTy
 }
 ?>
 <section class="surface-primary mt-4">
-    <div class="flex items-center justify-between gap-4">
+    <div class="flex items-center justify-between gap-4 flex-wrap">
         <h2 class="text-lg font-semibold text-slate-50">Participants</h2>
+        <?php if ($showSideBySide): ?>
+        <div class="flex gap-1 text-xs items-center flex-wrap" id="sc-coalition-tabs">
+            <button type="button" class="sc-coalition-tab active px-2.5 py-1 rounded-md bg-slate-700 text-slate-100 border border-slate-600 cursor-pointer transition-colors font-medium" data-coalition="all">All</button>
+            <button type="button" class="sc-coalition-tab px-2.5 py-1 rounded-md bg-slate-800/60 text-blue-300 border border-slate-700/60 cursor-pointer transition-colors hover:bg-blue-900/30 hover:border-blue-500/40" data-coalition="friendly"><?= htmlspecialchars($sideLabels['friendly'] ?? 'Friendlies', ENT_QUOTES) ?></button>
+            <button type="button" class="sc-coalition-tab px-2.5 py-1 rounded-md bg-slate-800/60 text-red-300 border border-slate-700/60 cursor-pointer transition-colors hover:bg-red-900/30 hover:border-red-500/40" data-coalition="opponent"><?= htmlspecialchars($sideLabels['opponent'] ?? 'Opposition', ENT_QUOTES) ?></button>
+            <?php if ($_isThreeColumnParticipants): ?>
+            <button type="button" class="sc-coalition-tab px-2.5 py-1 rounded-md bg-slate-800/60 text-amber-300 border border-slate-700/60 cursor-pointer transition-colors hover:bg-amber-900/30 hover:border-amber-500/40" data-coalition="third_party"><?= htmlspecialchars($sideLabels['third_party'] ?? 'Third Party', ENT_QUOTES) ?></button>
+            <?php endif; ?>
+            <a href="?theater_id=<?= urlencode($theaterId) ?>&suspicious=1" class="px-2.5 py-1 rounded-md bg-slate-800/60 text-yellow-400/80 border border-slate-700/60 cursor-pointer transition-colors hover:bg-yellow-900/20 hover:border-yellow-500/40 no-underline">Suspicious</a>
+        </div>
+        <?php else: ?>
         <div class="flex gap-2 text-sm">
             <a href="?theater_id=<?= urlencode($theaterId) ?>" class="<?= $sideFilter === null && !$suspiciousOnly ? 'text-slate-50 font-semibold' : 'text-accent' ?>">All</a>
             <a href="?theater_id=<?= urlencode($theaterId) ?>&side=friendly" class="<?= $sideFilter === 'friendly' ? 'text-blue-300 font-semibold' : 'text-accent' ?>"><?= htmlspecialchars($sideLabels['friendly'] ?? 'Friendlies', ENT_QUOTES) ?></a>
@@ -427,21 +448,35 @@ function _render_structure_row(array $sk, array $resolvedEntities, array $shipTy
             <a href="?theater_id=<?= urlencode($theaterId) ?>&side=third_party" class="<?= $sideFilter === 'third_party' ? 'text-amber-300 font-semibold' : 'text-accent' ?>"><?= htmlspecialchars($sideLabels['third_party'] ?? 'Third Party', ENT_QUOTES) ?></a>
             <a href="?theater_id=<?= urlencode($theaterId) ?>&suspicious=1" class="<?= $suspiciousOnly ? 'text-yellow-300 font-semibold' : 'text-accent' ?>">Suspicious</a>
         </div>
+        <?php endif; ?>
     </div>
     <p class="text-xs text-muted mt-1">Kill Involvements = killmails where pilot was an attacker. Damage Done = HP damage. ISK Lost = total value of all ships destroyed.</p>
 
 <?php if ($showSideBySide): ?>
-    <div class="mt-3 grid gap-4 md:grid-cols-2">
+    <?php
+        $_participantGridCols = $_isThreeColumnParticipants ? 'lg:grid-cols-3 md:grid-cols-2' : 'md:grid-cols-2';
+    ?>
+    <div class="mt-3 grid gap-4 <?= $_participantGridCols ?>">
         <?php
-        $enemyCombinedParticipants = array_merge($enemyParticipants, $thirdPartyParticipants);
-        $enemyLabel = ($sideLabels['opponent'] ?? 'Opposition');
-        if ($thirdPartyParticipants !== []) {
-            $enemyLabel .= ' + Third Party';
+        if ($_isThreeColumnParticipants) {
+            // 3-column: separate panels for each side
+            $panelSets = [
+                ['label' => $sideLabels['friendly'] ?? 'Friendlies', 'side' => 'friendly', 'rows' => $friendlyParticipants, 'structure_kills' => $friendlyStructureKills, 'colorClass' => 'text-blue-300', 'borderClass' => 'border-blue-500/30', 'badgeClass' => 'bg-blue-950 text-blue-400 ring-1 ring-blue-600/60', 'badgeLabel' => 'Friendly'],
+                ['label' => $sideLabels['opponent'] ?? 'Opposition', 'side' => 'opponent', 'rows' => $enemyParticipants, 'structure_kills' => $enemyStructureKills, 'colorClass' => 'text-red-300', 'borderClass' => 'border-red-500/30', 'badgeClass' => 'bg-red-950 text-red-400 ring-1 ring-red-600/60', 'badgeLabel' => 'Hostile'],
+                ['label' => $sideLabels['third_party'] ?? 'Third Party', 'side' => 'third_party', 'rows' => $thirdPartyParticipants, 'structure_kills' => $thirdPartyStructureKills, 'colorClass' => 'text-amber-300', 'borderClass' => 'border-amber-500/30', 'badgeClass' => 'bg-amber-950 text-amber-400 ring-1 ring-amber-600/60', 'badgeLabel' => 'Third Party'],
+            ];
+        } else {
+            // 2-column: merge opponent + third party
+            $enemyCombinedParticipants = array_merge($enemyParticipants, $thirdPartyParticipants);
+            $enemyLabel = ($sideLabels['opponent'] ?? 'Opposition');
+            if ($thirdPartyParticipants !== []) {
+                $enemyLabel .= ' + Third Party';
+            }
+            $panelSets = [
+                ['label' => $sideLabels['friendly'] ?? 'Friendlies', 'side' => 'friendly', 'rows' => $friendlyParticipants, 'structure_kills' => $friendlyStructureKills, 'colorClass' => 'text-blue-300', 'borderClass' => 'border-blue-500/30', 'badgeClass' => 'bg-blue-950 text-blue-400 ring-1 ring-blue-600/60', 'badgeLabel' => 'Friendly'],
+                ['label' => $enemyLabel, 'side' => 'opponent', 'rows' => $enemyCombinedParticipants, 'structure_kills' => array_merge($enemyStructureKills, $thirdPartyStructureKills), 'colorClass' => 'text-red-300', 'borderClass' => 'border-red-500/30', 'badgeClass' => 'bg-red-950 text-red-400 ring-1 ring-red-600/60', 'badgeLabel' => 'Opponent'],
+            ];
         }
-        $panelSets = [
-            ['label' => $sideLabels['friendly'] ?? 'Friendlies', 'side' => 'friendly', 'rows' => $friendlyParticipants, 'structure_kills' => $friendlyStructureKills, 'colorClass' => 'text-blue-300', 'borderClass' => 'border-blue-500/30', 'badgeClass' => 'bg-green-950 text-green-400 ring-1 ring-green-600/60', 'badgeLabel' => 'Friendly'],
-            ['label' => $enemyLabel, 'side' => 'opponent', 'rows' => $enemyCombinedParticipants, 'structure_kills' => array_merge($enemyStructureKills, $thirdPartyStructureKills), 'colorClass' => 'text-red-300', 'borderClass' => 'border-red-500/30', 'badgeClass' => 'bg-red-950 text-red-400 ring-1 ring-red-600/60', 'badgeLabel' => 'Opponent'],
-        ];
         foreach ($panelSets as $panel):
             // Max damage for this panel
             $panelMaxDmg = 0;
@@ -450,7 +485,7 @@ function _render_structure_row(array $sk, array $resolvedEntities, array $shipTy
                 if ($d > $panelMaxDmg) $panelMaxDmg = $d;
             }
         ?>
-        <div data-panel="<?= $panel['side'] ?>">
+        <div data-panel="<?= $panel['side'] ?>" class="border-t-2 <?= $panel['borderClass'] ?> pt-2">
             <div class="flex items-center justify-between mb-2">
                 <h3 class="text-sm font-semibold <?= $panel['colorClass'] ?>">
                     <?= htmlspecialchars($panel['label'], ENT_QUOTES) ?>
@@ -475,14 +510,14 @@ function _render_structure_row(array $sk, array $resolvedEntities, array $shipTy
             <div class="overflow-x-auto border border-slate-800 rounded-md">
                 <table class="table-ui w-full">
                     <thead>
-                        <tr class="border-b border-border/70 text-[11px] uppercase tracking-[0.15em] text-muted">
-                            <th class="px-2 py-2 text-left" style="width:150px">Pilot</th>
-                            <th class="px-2 py-2 text-left" style="width:120px">Ship</th>
-                            <th class="px-2 py-2 text-left" style="width:80px">Role</th>
-                            <th class="px-2 py-2 text-right" style="width:64px">K/D</th>
-                            <th class="px-2 py-2 text-right" style="width:90px">Damage</th>
-                            <th class="px-2 py-2 text-right" style="width:80px">ISK Lost</th>
-                            <th class="px-2 py-2 text-right" style="width:40px"></th>
+                        <tr class="border-b border-border/70 text-[10px] uppercase tracking-[0.12em] text-muted">
+                            <th class="px-1.5 py-1.5 text-left">Pilot</th>
+                            <th class="px-1.5 py-1.5 text-left">Ship</th>
+                            <th class="px-1.5 py-1.5 text-left">Role</th>
+                            <th class="px-1.5 py-1.5 text-right">K/D</th>
+                            <th class="px-1.5 py-1.5 text-right">Damage</th>
+                            <th class="px-1.5 py-1.5 text-right">ISK Lost</th>
+                            <th class="px-1.5 py-1.5 text-right"></th>
                         </tr>
                     </thead>
                     <tbody class="sc-tbody">
@@ -572,6 +607,52 @@ function _render_structure_row(array $sk, array $resolvedEntities, array $shipTy
                 });
                 applySort(sortSelect.value || 'role_hull');
             }
+        });
+    })();
+
+    // Coalition tab switcher — show/hide entire panels + expand to full-width
+    (function() {
+        var tabContainer = document.getElementById('sc-coalition-tabs');
+        if (!tabContainer) return;
+        var tabs = tabContainer.querySelectorAll('.sc-coalition-tab');
+        var grid = tabContainer.closest('.surface-primary').querySelector('.grid[class*="grid-cols"]');
+        if (!grid) return;
+        var panels = grid.querySelectorAll('[data-panel]');
+
+        tabs.forEach(function(tab) {
+            tab.addEventListener('click', function() {
+                var coalition = tab.getAttribute('data-coalition');
+
+                // Reset all tab styles
+                tabs.forEach(function(t) {
+                    t.className = 'sc-coalition-tab px-2.5 py-1 rounded-md bg-slate-800/60 border border-slate-700/60 cursor-pointer transition-colors';
+                    // Restore per-side text color
+                    var c = t.getAttribute('data-coalition');
+                    if (c === 'friendly') t.classList.add('text-blue-300', 'hover:bg-blue-900/30', 'hover:border-blue-500/40');
+                    else if (c === 'opponent') t.classList.add('text-red-300', 'hover:bg-red-900/30', 'hover:border-red-500/40');
+                    else if (c === 'third_party') t.classList.add('text-amber-300', 'hover:bg-amber-900/30', 'hover:border-amber-500/40');
+                    else t.classList.add('text-slate-400', 'hover:bg-slate-700');
+                });
+
+                // Highlight active tab
+                tab.className = 'sc-coalition-tab active px-2.5 py-1 rounded-md bg-slate-700 text-slate-100 border border-slate-600 cursor-pointer transition-colors font-medium';
+
+                if (coalition === 'all') {
+                    // Show all panels, restore grid
+                    panels.forEach(function(p) { p.style.display = ''; p.classList.remove('col-span-full'); });
+                } else {
+                    // Show only selected panel at full width
+                    panels.forEach(function(p) {
+                        if (p.getAttribute('data-panel') === coalition) {
+                            p.style.display = '';
+                            p.classList.add('col-span-full');
+                        } else {
+                            p.style.display = 'none';
+                            p.classList.remove('col-span-full');
+                        }
+                    });
+                }
+            });
         });
     })();
     </script>
@@ -777,7 +858,12 @@ function _render_structure_row(array $sk, array $resolvedEntities, array $shipTy
                                 </div>
                             </td>
                             <td class="px-3 py-2">
-                                <span class="inline-flex items-center rounded-full px-[6px] py-[4px] text-[8px] font-semibold uppercase tracking-[0.12em] leading-none <?= fleet_function_color_class($fleetRole) ?> border border-[rgba(204,255,0,0.2)] text-[#ccff00] shadow-[0_0_5px_2px_rgba(204,255,0,0.7)] [text-shadow:0_0_3px_rgb(204,255,0)]">
+                                <?php
+                                    $roleGlowCls2 = $fleetRole === 'fc'
+                                        ? 'border border-[rgba(204,255,0,0.2)] text-[#ccff00] shadow-[0_0_5px_2px_rgba(204,255,0,0.7)] [text-shadow:0_0_3px_rgb(204,255,0)]'
+                                        : '';
+                                ?>
+                                <span class="inline-flex items-center rounded-full px-[6px] py-[4px] text-[8px] font-semibold uppercase tracking-[0.12em] leading-none <?= fleet_function_color_class($fleetRole) ?> <?= $roleGlowCls2 ?>">
                                     <?= htmlspecialchars(fleet_function_label($fleetRole), ENT_QUOTES) ?>
                                 </span>
                             </td>
