@@ -244,7 +244,7 @@ if ($viewSnapshot !== null && !$pendingLock) {
     }
 
     // Generate smart opponent labels supporting multiple hostile alliances
-    foreach (['friendly', 'opponent'] as $side) {
+    foreach (['friendly', 'opponent', 'third_party'] as $side) {
         $alliances = $sideAlliancesByPilots[$side];
         if ($alliances === []) {
             continue;

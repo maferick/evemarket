@@ -15,7 +15,9 @@
             <span class="text-[10px] uppercase tracking-wider bg-red-900/60 text-red-300 rounded-full px-1.5 py-0.5">Hostile</span>
             <?php $thirdPartyCount = count($sideAlliancesByPilots['third_party'] ?? []); ?>
             <?php if ($thirdPartyCount > 0): ?>
-                <span class="text-slate-400 text-sm">(+<?= $thirdPartyCount ?> unidentified)</span>
+                <span class="text-slate-500">vs</span>
+                <span class="text-amber-300 font-semibold"><?= proxy_e($sideLabels['third_party'] ?? 'Third Party') ?></span>
+                <span class="text-[10px] uppercase tracking-wider bg-amber-900/60 text-amber-300 rounded-full px-1.5 py-0.5">Third Party</span>
             <?php endif; ?>
         </div>
         <div class="mt-2 flex flex-wrap justify-center gap-x-4 gap-y-1 text-xs text-muted">
@@ -23,6 +25,9 @@
             <span><?= proxy_e($theaterStartActual) ?> — <?= proxy_e($theaterEndActual) ?></span>
             <span>Friendly: <?= number_format(count($sideAlliancesByPilots['friendly'] ?? [])) ?> alliances</span>
             <span>Hostile: <?= number_format(count($sideAlliancesByPilots['opponent'] ?? [])) ?> alliances</span>
+            <?php if (count($sideAlliancesByPilots['third_party'] ?? []) > 0): ?>
+                <span>Third Party: <?= number_format(count($sideAlliancesByPilots['third_party'])) ?> alliances</span>
+            <?php endif; ?>
         </div>
     </div>
 

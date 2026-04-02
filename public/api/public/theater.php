@@ -117,7 +117,7 @@ if ($viewSnapshot !== null) {
         $sideAlliancesByPilots['opponent'] = $sideAlliancesByPilots['third_party'];
         $sideAlliancesByPilots['third_party'] = [];
     }
-    foreach (['friendly', 'opponent'] as $side) {
+    foreach (['friendly', 'opponent', 'third_party'] as $side) {
         $alliances = $sideAlliancesByPilots[$side];
         if ($alliances === []) continue;
         arsort($alliances);
