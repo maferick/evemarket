@@ -4,198 +4,140 @@
     $enemyPanel = $sidePanels['opponent'] ?? [];
     $thirdPartyPanel = $sidePanels['third_party'] ?? [];
 
-    // Merge third party into enemy side for the overview
-    $enemyCombinedIskLost = ($enemyPanel['isk_lost'] ?? 0) + ($thirdPartyPanel['isk_lost'] ?? 0);
-    $enemyCombinedIskKilled = ($enemyPanel['isk_killed'] ?? 0) + ($thirdPartyPanel['isk_killed'] ?? 0);
-    $enemyCombinedPilots = ($enemyPanel['pilots'] ?? 0) + ($thirdPartyPanel['pilots'] ?? 0);
-    $enemyCombinedLosses = ($enemyPanel['losses'] ?? 0) + ($thirdPartyPanel['losses'] ?? 0);
-    $enemyCombinedTotalIsk = $enemyCombinedIskKilled + $enemyCombinedIskLost;
-    $enemyCombinedEfficiency = $enemyCombinedTotalIsk > 0 ? $enemyCombinedIskKilled / $enemyCombinedTotalIsk : 0.0;
+    $hasOpponent = ($enemyPanel['pilots'] ?? 0) > 0;
+    $hasThirdParty = ($thirdPartyPanel['pilots'] ?? 0) > 0;
+    $isThreeColumn = $hasOpponent && $hasThirdParty;
 
+    // Compute per-panel efficiency
+    $ourTotalIsk = ($ourPanel['isk_killed'] ?? 0) + ($ourPanel['isk_lost'] ?? 0);
+    $ourEfficiency = $ourTotalIsk > 0 ? ($ourPanel['isk_killed'] ?? 0) / $ourTotalIsk : 0.0;
+
+    $enemyTotalIsk = ($enemyPanel['isk_killed'] ?? 0) + ($enemyPanel['isk_lost'] ?? 0);
+    $enemyEfficiency = $enemyTotalIsk > 0 ? ($enemyPanel['isk_killed'] ?? 0) / $enemyTotalIsk : 0.0;
+
+    $tpTotalIsk = ($thirdPartyPanel['isk_killed'] ?? 0) + ($thirdPartyPanel['isk_lost'] ?? 0);
+    $tpEfficiency = $tpTotalIsk > 0 ? ($thirdPartyPanel['isk_killed'] ?? 0) / $tpTotalIsk : 0.0;
+
+    // Efficiency bar: friendly ISK destroyed vs opponent+third_party ISK destroyed (how much each side lost)
+    $enemyCombinedIskLost = ($enemyPanel['isk_lost'] ?? 0) + ($thirdPartyPanel['isk_lost'] ?? 0);
     $totalIskBothSides = ($ourPanel['isk_lost'] ?? 0) + $enemyCombinedIskLost;
     $ourBarPct = $totalIskBothSides > 0 ? ($enemyCombinedIskLost / $totalIskBothSides) * 100 : 50;
-    $enemyBarPct = 100 - $ourBarPct;
+
+    if ($isThreeColumn) {
+        // 3-segment bar: friendly, opponent, third_party based on ISK destroyed (what they killed)
+        $totalIskDestAll = ($ourPanel['isk_killed'] ?? 0) + ($enemyPanel['isk_killed'] ?? 0) + ($thirdPartyPanel['isk_killed'] ?? 0);
+        $ourBarPct = $totalIskDestAll > 0 ? (($ourPanel['isk_killed'] ?? 0) / $totalIskDestAll) * 100 : 33.3;
+        $enemyBarPct = $totalIskDestAll > 0 ? (($enemyPanel['isk_killed'] ?? 0) / $totalIskDestAll) * 100 : 33.3;
+        $tpBarPct = 100 - $ourBarPct - $enemyBarPct;
+    } else {
+        $enemyBarPct = 100 - $ourBarPct;
+        // When no opponent, the "enemy" panel is the promoted third party
+        $enemyEfficiency = $hasOpponent ? $enemyEfficiency : $tpEfficiency;
+    }
+
+    $gridCols = $isThreeColumn ? 'md:grid-cols-3' : 'md:grid-cols-2';
 ?>
 <section class="surface-primary mt-4">
     <!-- Efficiency Bar -->
     <div class="flex items-center gap-3 mb-3">
-        <span class="text-xs font-semibold text-blue-300"><?= number_format(($ourPanel['efficiency'] ?? 0) * 100, 1) ?>%</span>
+        <span class="text-xs font-semibold text-blue-300"><?= number_format($ourEfficiency * 100, 1) ?>%</span>
         <div class="flex-1 h-3 rounded-full overflow-hidden bg-slate-800 flex shadow-inner">
             <div class="bg-blue-500 h-full transition-all" style="width: <?= number_format($ourBarPct, 1) ?>%"></div>
             <div class="bg-red-500 h-full transition-all" style="width: <?= number_format($enemyBarPct, 1) ?>%"></div>
+            <?php if ($isThreeColumn): ?>
+                <div class="bg-amber-500 h-full transition-all" style="width: <?= number_format($tpBarPct, 1) ?>%"></div>
+            <?php endif; ?>
         </div>
-        <span class="text-xs font-semibold text-red-300"><?= number_format($enemyCombinedEfficiency * 100, 1) ?>%</span>
+        <?php if ($isThreeColumn): ?>
+            <span class="text-xs font-semibold text-red-300"><?= number_format($enemyEfficiency * 100, 1) ?>%</span>
+            <span class="text-xs font-semibold text-amber-300"><?= number_format($tpEfficiency * 100, 1) ?>%</span>
+        <?php else: ?>
+            <span class="text-xs font-semibold text-red-300"><?= number_format($enemyEfficiency * 100, 1) ?>%</span>
+        <?php endif; ?>
     </div>
 
-    <!-- Two-column side comparison -->
-    <div class="grid gap-4 md:grid-cols-2">
+    <!-- Dynamic column layout -->
+    <div class="grid gap-4 <?= $gridCols ?>">
         <!-- Friendly panel -->
-        <div class="coalition-panel rounded-lg overflow-hidden border border-blue-500/25">
-            <div class="bg-blue-900/40 px-4 py-3 flex items-center justify-between border-b border-blue-500/20">
-                <h3 class="text-sm font-semibold text-blue-300"><?= htmlspecialchars($sideLabels['friendly'] ?? 'Friendlies', ENT_QUOTES) ?></h3>
-                <span class="text-[10px] uppercase tracking-wider bg-blue-900/60 text-blue-300 rounded-full px-1.5 py-0.5 ml-1">Friendly</span>
-            </div>
-            <div class="px-4 pt-3">
-            <p class="mb-3 text-[11px] uppercase tracking-[0.08em] text-muted">Friendly coalition overview</p>
-            </div>
+        <?php
+            $panelData = $ourPanel;
+            $panelLabel = htmlspecialchars($sideLabels['friendly'] ?? 'Friendlies', ENT_QUOTES);
+            $panelBadge = 'Friendly';
+            $panelBorderColor = 'border-blue-500/25';
+            $panelHeaderBg = 'bg-blue-900/40';
+            $panelHeaderBorder = 'border-blue-500/20';
+            $panelTextColor = 'text-blue-300';
+            $panelBadgeBg = 'bg-blue-900/60';
+            $panelSubtitle = 'Friendly coalition overview';
+            $panelAlliancesLabel = 'Alliances';
+            $panelAllianceTextColor = 'text-slate-200';
+            $panelHeaderExtra = '';
+        ?>
+        <?php include __DIR__ . '/_battle_report_panel.php'; ?>
 
-            <div class="grid grid-cols-2 divide-x divide-y divide-white/5 border-b border-white/5 text-sm">
-                <div class="px-4 py-3">
-                    <p class="text-xs text-muted">Unique Pilots</p>
-                    <p class="text-slate-100 font-semibold"><?= number_format((int) ($ourPanel['pilots'] ?? 0)) ?></p>
-                </div>
-                <div class="px-4 py-3">
-                    <p class="text-xs text-muted">ISK Efficiency</p>
-                    <p class="text-slate-100 font-semibold"><?= number_format(($ourPanel['efficiency'] ?? 0) * 100, 1) ?>%</p>
-                </div>
-                <div class="px-4 py-3">
-                    <p class="text-xs text-muted">Final Blows / Losses</p>
-                    <p class="text-slate-100 font-semibold"><?= number_format((int) ($ourPanel['final_blows'] ?? 0)) ?> / <?= number_format((int) ($ourPanel['losses'] ?? 0)) ?></p>
-                    <p class="text-[10px] text-muted">Kill involvements: <?= number_format((int) ($ourPanel['kill_involvements'] ?? 0)) ?></p>
-                </div>
-                <div class="px-4 py-3">
-                    <p class="text-xs text-muted">ISK Killed / Lost</p>
-                    <p class="text-slate-100 font-semibold"><?= supplycore_format_isk((float) ($ourPanel['isk_killed'] ?? 0)) ?> / <?= supplycore_format_isk((float) ($ourPanel['isk_lost'] ?? 0)) ?></p>
-                </div>
-            </div>
+        <!-- Opponent panel -->
+        <?php
+            $panelData = $enemyPanel;
+            $panelLabel = htmlspecialchars($sideLabels['opponent'] ?? 'Opposition', ENT_QUOTES);
+            $panelBadge = 'Hostile';
+            $panelBorderColor = 'border-red-500/25';
+            $panelHeaderBg = 'bg-red-900/40';
+            $panelHeaderBorder = 'border-red-500/20';
+            $panelTextColor = 'text-red-300';
+            $panelBadgeBg = 'bg-red-900/60';
+            $panelSubtitle = 'Opposition coalition overview';
+            $panelAlliancesLabel = 'Opponent Alliances';
+            $panelAllianceTextColor = 'text-slate-200';
+            if (!$isThreeColumn && $hasThirdParty) {
+                $panelHeaderExtra = '<span class="text-slate-400 text-xs font-normal ml-1">+ Third Party</span>';
+            } else {
+                $panelHeaderExtra = '';
+            }
+        ?>
+        <?php if (!$isThreeColumn): ?>
+            <?php
+                // Merge third party into opponent for 2-column display
+                $panelData = [
+                    'pilots' => ($enemyPanel['pilots'] ?? 0) + ($thirdPartyPanel['pilots'] ?? 0),
+                    'efficiency' => $enemyEfficiency,
+                    'final_blows' => ($enemyPanel['final_blows'] ?? 0) + ($thirdPartyPanel['final_blows'] ?? 0),
+                    'losses' => ($enemyPanel['losses'] ?? 0) + ($thirdPartyPanel['losses'] ?? 0),
+                    'kill_involvements' => ($enemyPanel['kill_involvements'] ?? 0) + ($thirdPartyPanel['kill_involvements'] ?? 0),
+                    'isk_killed' => ($enemyPanel['isk_killed'] ?? 0) + ($thirdPartyPanel['isk_killed'] ?? 0),
+                    'isk_lost' => ($enemyPanel['isk_lost'] ?? 0) + ($thirdPartyPanel['isk_lost'] ?? 0),
+                    'alliances' => $enemyPanel['alliances'] ?? [],
+                    'ships' => (static function() use ($enemyPanel, $thirdPartyPanel) {
+                        $merged = array_merge($enemyPanel['ships'] ?? [], $thirdPartyPanel['ships'] ?? []);
+                        usort($merged, static fn(array $l, array $r): int => ($r['pilots'] ?? 0) <=> ($l['pilots'] ?? 0));
+                        return array_slice($merged, 0, 12);
+                    })(),
+                ];
+                // Show third party alliances as a sub-section
+                $panelThirdPartyAlliances = $thirdPartyPanel['alliances'] ?? [];
+            ?>
+            <?php include __DIR__ . '/_battle_report_panel_merged.php'; ?>
+        <?php else: ?>
+            <?php include __DIR__ . '/_battle_report_panel.php'; ?>
+        <?php endif; ?>
 
-            <?php $panelAlliances = $ourPanel['alliances'] ?? []; ?>
-            <?php if ($panelAlliances): ?>
-                <div class="divide-y divide-white/5">
-                    <p class="text-[10px] uppercase tracking-wider text-muted px-4 py-2">Alliances</p>
-                    <?php foreach ($panelAlliances as $allianceRow): ?>
-                        <?php $allianceId = (int) ($allianceRow['alliance_id'] ?? 0); ?>
-                        <?php $corporationId = (int) ($allianceRow['corporation_id'] ?? 0); ?>
-                        <div class="flex items-center gap-2.5 px-4 py-2">
-                            <?php if ($allianceId > 0): ?>
-                                <img src="https://images.evetech.net/alliances/<?= $allianceId ?>/logo?size=64" alt="" class="w-5 h-5 rounded-sm" loading="lazy">
-                            <?php elseif ($corporationId > 0): ?>
-                                <img src="https://images.evetech.net/corporations/<?= $corporationId ?>/logo?size=64" alt="" class="w-5 h-5 rounded-sm" loading="lazy">
-                            <?php endif; ?>
-                            <span class="text-xs text-slate-200 flex-1 truncate"><?= htmlspecialchars((string) ($allianceRow['name'] ?? ''), ENT_QUOTES) ?></span>
-                            <span class="text-xs text-muted"><?= number_format((int) ($allianceRow['pilots'] ?? 0)) ?> pilots</span>
-                        </div>
-                    <?php endforeach; ?>
-                </div>
-            <?php endif; ?>
-
-            <?php $panelShips = $ourPanel['ships'] ?? []; ?>
-            <?php if ($panelShips): ?>
-                <div class="mt-3 border-t border-slate-700/50 px-4 py-2">
-                    <p class="text-[10px] uppercase tracking-wider text-muted mb-1">Top Hulls (by appearances)</p>
-                    <div class="flex flex-wrap gap-2">
-                        <?php foreach (array_slice($panelShips, 0, 12) as $ship): ?>
-                            <div class="flex flex-col items-center gap-1 bg-slate-800/50 border border-white/6 rounded-md px-2 py-2 min-w-[72px]">
-                                <?php if (($ship['type_id'] ?? 0) > 0): ?>
-                                    <img src="https://images.evetech.net/types/<?= (int) $ship['type_id'] ?>/render?size=64" alt="" class="w-12 h-12 object-contain" loading="lazy">
-                                <?php endif; ?>
-                                <span class="text-[11px] text-slate-300 text-center leading-tight max-w-[68px] truncate"><?= htmlspecialchars((string) ($ship['name'] ?? ''), ENT_QUOTES) ?></span>
-                                <span class="text-[10px] text-slate-500 font-semibold">x<?= (int) ($ship['pilots'] ?? 0) ?></span>
-                            </div>
-                        <?php endforeach; ?>
-                        <?php if (count($panelShips) > 12): ?>
-                            <span class="text-[10px] text-muted self-center">+<?= count($panelShips) - 12 ?> more</span>
-                        <?php endif; ?>
-                    </div>
-                </div>
-            <?php endif; ?>
-        </div>
-
-        <!-- Opposition + Third Party panel -->
-        <div class="coalition-panel rounded-lg overflow-hidden border border-red-500/25">
-            <div class="bg-red-900/40 px-4 py-3 flex items-center justify-between border-b border-red-500/20">
-                <h3 class="text-sm font-semibold text-red-300">
-                    <?= htmlspecialchars($sideLabels['opponent'] ?? 'Opposition', ENT_QUOTES) ?>
-                    <?php if (($thirdPartyPanel['pilots'] ?? 0) > 0): ?>
-                        <span class="text-slate-400 text-xs font-normal ml-1">+ Third Party</span>
-                    <?php endif; ?>
-                </h3>
-                <span class="text-[10px] uppercase tracking-wider bg-red-900/60 text-red-300 rounded-full px-1.5 py-0.5 ml-1">Hostile</span>
-            </div>
-            <div class="px-4 pt-3">
-            <p class="mb-3 text-[11px] uppercase tracking-[0.08em] text-muted">Opposition coalition overview</p>
-            </div>
-
-            <div class="grid grid-cols-2 divide-x divide-y divide-white/5 border-b border-white/5 text-sm">
-                <div class="px-4 py-3">
-                    <p class="text-xs text-muted">Unique Pilots</p>
-                    <p class="text-slate-100 font-semibold"><?= number_format($enemyCombinedPilots) ?></p>
-                </div>
-                <div class="px-4 py-3">
-                    <p class="text-xs text-muted">ISK Efficiency</p>
-                    <p class="text-slate-100 font-semibold"><?= number_format($enemyCombinedEfficiency * 100, 1) ?>%</p>
-                </div>
-                <div class="px-4 py-3">
-                    <p class="text-xs text-muted">Final Blows / Losses</p>
-                    <p class="text-slate-100 font-semibold"><?= number_format((int) ($enemyPanel['final_blows'] ?? 0) + (int) ($thirdPartyPanel['final_blows'] ?? 0)) ?> / <?= number_format($enemyCombinedLosses) ?></p>
-                    <p class="text-[10px] text-muted">Kill involvements: <?= number_format((int) ($enemyPanel['kill_involvements'] ?? 0) + (int) ($thirdPartyPanel['kill_involvements'] ?? 0)) ?></p>
-                </div>
-                <div class="px-4 py-3">
-                    <p class="text-xs text-muted">ISK Killed / Lost</p>
-                    <p class="text-slate-100 font-semibold"><?= supplycore_format_isk($enemyCombinedIskKilled) ?> / <?= supplycore_format_isk($enemyCombinedIskLost) ?></p>
-                </div>
-            </div>
-
-            <?php $opponentAlliances = $enemyPanel['alliances'] ?? []; ?>
-            <?php if ($opponentAlliances): ?>
-                <div class="divide-y divide-white/5">
-                    <p class="text-[10px] uppercase tracking-wider text-muted px-4 py-2">Opponent Alliances</p>
-                    <?php foreach ($opponentAlliances as $allianceRow): ?>
-                        <?php $allianceId = (int) ($allianceRow['alliance_id'] ?? 0); ?>
-                        <?php $corporationId = (int) ($allianceRow['corporation_id'] ?? 0); ?>
-                        <div class="flex items-center gap-2.5 px-4 py-2">
-                            <?php if ($allianceId > 0): ?>
-                                <img src="https://images.evetech.net/alliances/<?= $allianceId ?>/logo?size=64" alt="" class="w-5 h-5 rounded-sm" loading="lazy">
-                            <?php elseif ($corporationId > 0): ?>
-                                <img src="https://images.evetech.net/corporations/<?= $corporationId ?>/logo?size=64" alt="" class="w-5 h-5 rounded-sm" loading="lazy">
-                            <?php endif; ?>
-                            <span class="text-xs text-slate-200 flex-1 truncate"><?= htmlspecialchars((string) ($allianceRow['name'] ?? ''), ENT_QUOTES) ?></span>
-                            <span class="text-xs text-muted"><?= number_format((int) ($allianceRow['pilots'] ?? 0)) ?> pilots</span>
-                        </div>
-                    <?php endforeach; ?>
-                </div>
-            <?php endif; ?>
-
-            <?php $tpAlliances = $thirdPartyPanel['alliances'] ?? []; ?>
-            <?php if ($tpAlliances): ?>
-                <div class="divide-y divide-white/5 border-t border-slate-700/50">
-                    <p class="text-[10px] uppercase tracking-wider text-slate-400 px-4 py-2">Third Party</p>
-                    <?php foreach ($tpAlliances as $allianceRow): ?>
-                        <?php $allianceId = (int) ($allianceRow['alliance_id'] ?? 0); ?>
-                        <?php $corporationId = (int) ($allianceRow['corporation_id'] ?? 0); ?>
-                        <div class="flex items-center gap-2.5 px-4 py-2">
-                            <?php if ($allianceId > 0): ?>
-                                <img src="https://images.evetech.net/alliances/<?= $allianceId ?>/logo?size=64" alt="" class="w-5 h-5 rounded-sm" loading="lazy">
-                            <?php elseif ($corporationId > 0): ?>
-                                <img src="https://images.evetech.net/corporations/<?= $corporationId ?>/logo?size=64" alt="" class="w-5 h-5 rounded-sm" loading="lazy">
-                            <?php endif; ?>
-                            <span class="text-xs text-slate-400 flex-1 truncate"><?= htmlspecialchars((string) ($allianceRow['name'] ?? ''), ENT_QUOTES) ?></span>
-                            <span class="text-xs text-muted"><?= number_format((int) ($allianceRow['pilots'] ?? 0)) ?> pilots</span>
-                        </div>
-                    <?php endforeach; ?>
-                </div>
-            <?php endif; ?>
-
-            <?php $panelShips = array_merge($enemyPanel['ships'] ?? [], $thirdPartyPanel['ships'] ?? []); ?>
-            <?php usort($panelShips, static fn(array $l, array $r): int => ($r['pilots'] ?? 0) <=> ($l['pilots'] ?? 0)); ?>
-            <?php $panelShips = array_slice($panelShips, 0, 12); ?>
-            <?php if ($panelShips): ?>
-                <div class="mt-3 border-t border-slate-700/50 px-4 py-2">
-                    <p class="text-[10px] uppercase tracking-wider text-muted mb-1">Top Hulls (by appearances)</p>
-                    <div class="flex flex-wrap gap-2">
-                        <?php foreach ($panelShips as $ship): ?>
-                            <div class="flex flex-col items-center gap-1 bg-slate-800/50 border border-white/6 rounded-md px-2 py-2 min-w-[72px]">
-                                <?php if (($ship['type_id'] ?? 0) > 0): ?>
-                                    <img src="https://images.evetech.net/types/<?= (int) $ship['type_id'] ?>/render?size=64" alt="" class="w-12 h-12 object-contain" loading="lazy">
-                                <?php endif; ?>
-                                <span class="text-[11px] text-slate-300 text-center leading-tight max-w-[68px] truncate"><?= htmlspecialchars((string) ($ship['name'] ?? ''), ENT_QUOTES) ?></span>
-                                <span class="text-[10px] text-slate-500 font-semibold">x<?= (int) ($ship['pilots'] ?? 0) ?></span>
-                            </div>
-                        <?php endforeach; ?>
-                    </div>
-                </div>
-            <?php endif; ?>
-        </div>
+        <?php if ($isThreeColumn): ?>
+            <!-- Third Party panel -->
+            <?php
+                $panelData = $thirdPartyPanel;
+                $panelLabel = htmlspecialchars($sideLabels['third_party'] ?? 'Third Party', ENT_QUOTES);
+                $panelBadge = 'Third Party';
+                $panelBorderColor = 'border-amber-500/25';
+                $panelHeaderBg = 'bg-amber-900/40';
+                $panelHeaderBorder = 'border-amber-500/20';
+                $panelTextColor = 'text-amber-300';
+                $panelBadgeBg = 'bg-amber-900/60';
+                $panelSubtitle = 'Third party overview';
+                $panelAlliancesLabel = 'Alliances';
+                $panelAllianceTextColor = 'text-slate-200';
+                $panelHeaderExtra = '';
+            ?>
+            <?php include __DIR__ . '/_battle_report_panel.php'; ?>
+        <?php endif; ?>
     </div>
 
     <?php if ($dataQualityNotes !== []): ?>
