@@ -5,6 +5,10 @@
  * Shows pilots grouped by alliance → corporation in side-by-side columns,
  * with ship type renders, dead-pilot highlighting, and an ISK summary header.
  *
+ * Matches br.evetools.org styling: dark navy team backgrounds (#000011),
+ * gold character names, dark red (#480000) destroyed-pilot rows,
+ * corp/alliance icons on the right, #333 headers.
+ *
  * Expects the same variables as _battle_report.php plus:
  *   $participantsAll, $classifyAlliance, $resolvedEntities, $shipTypeNames
  */
@@ -20,7 +24,6 @@ $_podTypeIds = [670, 33328];
 
 /**
  * Group an array of participants by alliance, then corporation.
- * Returns: [ ['alliance_id'=>int, 'alliance_name'=>string, 'corps'=>[ ['corporation_id'=>int, 'corporation_name'=>string, 'pilots'=>[...]] ] ] ]
  */
 function _classic_group_participants(array $participants, array $resolvedEntities, array $shipTypeNames): array {
     global $_podTypeIds;
@@ -57,7 +60,6 @@ function _classic_group_participants(array $participants, array $resolvedEntitie
             $flyingShipName = (string) ($shipTypeNames[$flyingShipId] ?? '');
         } else {
             $flyingShipId = 0;
-            // Try ships_lost_detail
             $lostJson = $p['ships_lost_detail'] ?? null;
             if (is_string($lostJson)) {
                 $lostArr = json_decode($lostJson, true);
@@ -72,7 +74,6 @@ function _classic_group_participants(array $participants, array $resolvedEntitie
                     }
                 }
             }
-            // Try ship_type_ids
             if ($flyingShipId === 0) {
                 $shipJson = $p['ship_type_ids'] ?? null;
                 if (is_string($shipJson)) {
@@ -96,6 +97,8 @@ function _classic_group_participants(array $participants, array $resolvedEntitie
 
         $byAlliance[$key]['corps'][$corpKey]['pilots'][] = [
             'character_id' => (int) ($p['character_id'] ?? 0),
+            'alliance_id' => $aid,
+            'corporation_id' => $cid,
             'character_name' => $charName,
             'flying_ship_id' => $flyingShipId,
             'flying_ship_name' => $flyingShipName,
@@ -110,7 +113,6 @@ function _classic_group_participants(array $participants, array $resolvedEntitie
     // Sort alliances by pilot count descending
     uasort($byAlliance, static fn(array $a, array $b): int => $b['pilot_count'] <=> $a['pilot_count']);
 
-    // Convert corps from assoc to indexed and sort by pilot count
     foreach ($byAlliance as &$allianceGroup) {
         $corps = array_values($allianceGroup['corps']);
         usort($corps, static fn(array $a, array $b): int => count($b['pilots']) <=> count($a['pilots']));
@@ -125,7 +127,6 @@ $hasOpponent = ($sidePanels['opponent']['pilots'] ?? 0) > 0;
 $hasThirdParty = ($sidePanels['third_party']['pilots'] ?? 0) > 0;
 $isThreeColumn = $hasOpponent && $hasThirdParty;
 
-// When 2-column mode, merge opponent + third_party
 if (!$isThreeColumn) {
     $classicSides['opponent'] = array_merge($classicSides['opponent'], $classicSides['third_party']);
     $classicSides['third_party'] = [];
@@ -138,18 +139,31 @@ $groupedThirdParty = $isThreeColumn ? _classic_group_participants($classicSides[
 // Compute summary stats per side
 $classicStats = [];
 foreach (['friendly', 'opponent', 'third_party'] as $side) {
-    $pilots = 0; $iskDestroyed = 0; $iskLost = 0; $shipsLost = 0;
+    $pilots = 0; $shipsLost = 0;
     foreach ($classicSides[$side] as $p) {
         $pilots++;
-        $iskLost += (float) ($p['isk_lost'] ?? 0);
         $shipsLost += (int) ($p['deaths'] ?? 0);
     }
+    $totalIskK = (float) ($sidePanels[$side]['isk_killed'] ?? 0);
+    $totalIskL = (float) ($sidePanels[$side]['isk_lost'] ?? 0);
     $classicStats[$side] = [
         'pilots' => $pilots,
-        'isk_destroyed' => (float) ($sidePanels[$side]['isk_killed'] ?? 0),
-        'isk_lost' => (float) ($sidePanels[$side]['isk_lost'] ?? 0),
+        'isk_destroyed' => $totalIskK,
+        'isk_lost' => $totalIskL,
         'ships_lost' => $shipsLost,
+        'efficiency' => ($totalIskK + $totalIskL) > 0 ? ($totalIskK / ($totalIskK + $totalIskL)) * 100 : 0,
     ];
+}
+
+// Find top damage dealer across all sides for green highlight
+$_classicTopDmg = 0;
+$_classicTopDmgChar = 0;
+foreach ($participantsAll as $p) {
+    $d = (float) ($p['damage_done'] ?? 0);
+    if ($d > $_classicTopDmg) {
+        $_classicTopDmg = $d;
+        $_classicTopDmgChar = (int) ($p['character_id'] ?? 0);
+    }
 }
 
 $gridCols = $isThreeColumn ? 'lg:grid-cols-3 md:grid-cols-2' : 'md:grid-cols-2';
@@ -158,32 +172,16 @@ $classicPanelConfig = [
     [
         'side' => 'friendly',
         'label' => htmlspecialchars($sideLabels['friendly'] ?? 'Friendlies', ENT_QUOTES),
+        'teamLetter' => 'A',
         'groups' => $groupedFriendly,
         'stats' => $classicStats['friendly'],
-        'headerBg' => 'bg-[#2a4a2a]',
-        'headerBorder' => 'border-green-700/50',
-        'headerText' => 'text-green-300',
-        'panelBorder' => 'border-green-800/40',
-        'allianceBg' => 'bg-green-950/30',
-        'allianceBorder' => 'border-green-900/40',
-        'corpBg' => 'bg-green-950/15',
-        'accentColor' => 'text-green-400',
-        'barColor' => 'bg-green-500',
     ],
     [
         'side' => 'opponent',
-        'label' => htmlspecialchars($sideLabels['opponent'] ?? 'Opposition', ENT_QUOTES) . (!$isThreeColumn && $hasThirdParty ? ' <span class="text-slate-400 text-xs font-normal">+ Third Party</span>' : ''),
+        'label' => htmlspecialchars($sideLabels['opponent'] ?? 'Opposition', ENT_QUOTES) . (!$isThreeColumn && $hasThirdParty ? ' <span style="color:#888;font-weight:normal;font-size:11px">+ Third Party</span>' : ''),
+        'teamLetter' => 'B',
         'groups' => $groupedOpponent,
         'stats' => $classicStats['opponent'],
-        'headerBg' => 'bg-[#4a2a2a]',
-        'headerBorder' => 'border-red-700/50',
-        'headerText' => 'text-red-300',
-        'panelBorder' => 'border-red-800/40',
-        'allianceBg' => 'bg-red-950/30',
-        'allianceBorder' => 'border-red-900/40',
-        'corpBg' => 'bg-red-950/15',
-        'accentColor' => 'text-red-400',
-        'barColor' => 'bg-red-500',
     ],
 ];
 
@@ -191,17 +189,9 @@ if ($isThreeColumn) {
     $classicPanelConfig[] = [
         'side' => 'third_party',
         'label' => htmlspecialchars($sideLabels['third_party'] ?? 'Third Party', ENT_QUOTES),
+        'teamLetter' => 'C',
         'groups' => $groupedThirdParty,
         'stats' => $classicStats['third_party'],
-        'headerBg' => 'bg-[#3a3a20]',
-        'headerBorder' => 'border-amber-700/50',
-        'headerText' => 'text-amber-300',
-        'panelBorder' => 'border-amber-800/40',
-        'allianceBg' => 'bg-amber-950/30',
-        'allianceBorder' => 'border-amber-900/40',
-        'corpBg' => 'bg-amber-950/15',
-        'accentColor' => 'text-amber-400',
-        'barColor' => 'bg-amber-500',
     ];
 }
 
@@ -214,132 +204,186 @@ $friendlyBarPct = $totalIskK > 0 ? ($friendlyIskK / $totalIskK) * 100 : ($isThre
 $opponentBarPct = $totalIskK > 0 ? ($opponentIskK / $totalIskK) * 100 : ($isThreeColumn ? 33.3 : 50);
 $tpBarPct = $isThreeColumn ? (100 - $friendlyBarPct - $opponentBarPct) : 0;
 ?>
-<!-- Classic (br.evetools.org-style) Summary -->
-<div class="mb-4">
-    <!-- Efficiency bar -->
-    <div class="flex items-center gap-2 mb-3">
-        <span class="text-xs font-semibold text-green-300"><?= number_format($friendlyBarPct, 1) ?>%</span>
-        <div class="flex-1 h-2.5 rounded overflow-hidden bg-slate-800 flex">
-            <div class="<?= $classicPanelConfig[0]['barColor'] ?> h-full transition-all" style="width: <?= number_format($friendlyBarPct, 1) ?>%"></div>
-            <div class="<?= $classicPanelConfig[1]['barColor'] ?> h-full transition-all" style="width: <?= number_format($opponentBarPct, 1) ?>%"></div>
-            <?php if ($isThreeColumn): ?>
-                <div class="bg-amber-500 h-full transition-all" style="width: <?= number_format($tpBarPct, 1) ?>%"></div>
-            <?php endif; ?>
-        </div>
-        <span class="text-xs font-semibold text-red-300"><?= number_format($opponentBarPct, 1) ?>%</span>
+<style>
+    .br-classic-panel { background: #000011; border: 1px solid #444; color: #eee; }
+    .br-classic-header { background: #333; text-align: center; padding: 6px 10px; border-bottom: 1px solid #444; }
+    .br-classic-header h4 { margin: 0; font-size: 13px; font-weight: 600; color: #eee; }
+    .br-classic-stats { padding: 5px 10px; border-bottom: 1px solid #444; font-size: 12px; }
+    .br-classic-stats-row { display: flex; justify-content: space-between; padding: 2px 0; }
+    .br-classic-stats-label { color: #ccc; }
+    .br-classic-stats-value { font-weight: 700; color: #eee; }
+    .br-classic-alliance { display: flex; align-items: center; gap: 6px; padding: 4px 8px; background: rgba(51,51,51,0.5); border-bottom: 1px solid #444; }
+    .br-classic-corp { display: flex; align-items: center; gap: 5px; padding: 3px 8px 3px 16px; background: rgba(40,40,40,0.6); border-bottom: 1px solid #333; }
+    .br-classic-pilot { display: flex; align-items: center; gap: 6px; padding: 2px 6px; border-bottom: 1px solid #222; transition: background 0.1s; }
+    .br-classic-pilot:hover { background: #282828; }
+    .br-classic-pilot.dead { background: #480000; }
+    .br-classic-pilot.dead:hover { background: #580000; }
+    .br-classic-ship-icon { width: 32px; height: 34px; border-radius: 6px; flex-shrink: 0; object-fit: cover; }
+    .br-classic-ship-icon.dead { opacity: 0.45; }
+    .br-classic-pilot-body { flex: 1; min-width: 0; }
+    .br-classic-pilot-top { display: flex; justify-content: space-between; align-items: baseline; gap: 4px; }
+    .br-classic-pilot-name { color: gold; font-weight: 700; font-size: 12px; text-decoration: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .br-classic-pilot-name:hover { text-decoration: underline; }
+    .br-classic-pilot.dead .br-classic-pilot-name { color: #c9a84c; }
+    .br-classic-loss-value { color: #f00000; font-size: 11px; font-weight: 700; white-space: nowrap; flex-shrink: 0; }
+    .br-classic-pilot-bottom { display: flex; justify-content: space-between; align-items: baseline; gap: 4px; }
+    .br-classic-ship-name { color: #e0e0e0; font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .br-classic-dmg { color: #888; font-size: 10px; white-space: nowrap; flex-shrink: 0; }
+    .br-classic-dmg.top { color: #00FF00; font-weight: 700; }
+    .br-classic-org-icons { display: flex; gap: 2px; flex-shrink: 0; align-items: center; }
+    .br-classic-org-icon { width: 28px; height: 28px; border-radius: 3px; }
+    .br-classic-eff-bar { display: flex; height: 8px; border-radius: 2px; overflow: hidden; background: #222; }
+    .br-classic-eff-bar .seg-a { background: #3b7; }
+    .br-classic-eff-bar .seg-b { background: #b33; }
+    .br-classic-eff-bar .seg-c { background: #b90; }
+    .br-classic-no-pilots { text-align: center; padding: 16px; color: #555; font-size: 12px; }
+</style>
+
+<!-- Efficiency bar -->
+<div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;">
+    <span style="font-size:11px;font-weight:600;color:#6c6"><?= number_format($friendlyBarPct, 1) ?>%</span>
+    <div class="br-classic-eff-bar" style="flex:1;">
+        <div class="seg-a" style="width:<?= number_format($friendlyBarPct, 1) ?>%"></div>
+        <div class="seg-b" style="width:<?= number_format($opponentBarPct, 1) ?>%"></div>
         <?php if ($isThreeColumn): ?>
-            <span class="text-xs font-semibold text-amber-300"><?= number_format($tpBarPct, 1) ?>%</span>
+            <div class="seg-c" style="width:<?= number_format($tpBarPct, 1) ?>%"></div>
         <?php endif; ?>
     </div>
-
-    <!-- Summary stats row -->
-    <div class="grid <?= $gridCols ?> gap-4 mb-4">
-        <?php foreach ($classicPanelConfig as $cfg): ?>
-        <div class="flex justify-between items-center px-3 py-2 rounded <?= $cfg['headerBg'] ?> border <?= $cfg['headerBorder'] ?>">
-            <div>
-                <span class="text-sm font-semibold <?= $cfg['headerText'] ?>"><?= $cfg['label'] ?></span>
-                <span class="text-xs text-slate-400 ml-2"><?= $cfg['stats']['pilots'] ?> pilots</span>
-            </div>
-            <div class="flex gap-4 text-xs">
-                <div class="text-center">
-                    <div class="text-slate-500 text-[10px] uppercase tracking-wider">ISK Destroyed</div>
-                    <div class="text-green-400 font-semibold"><?= supplycore_format_isk($cfg['stats']['isk_destroyed']) ?></div>
-                </div>
-                <div class="text-center">
-                    <div class="text-slate-500 text-[10px] uppercase tracking-wider">ISK Lost</div>
-                    <div class="text-red-400 font-semibold"><?= supplycore_format_isk($cfg['stats']['isk_lost']) ?></div>
-                </div>
-                <div class="text-center">
-                    <div class="text-slate-500 text-[10px] uppercase tracking-wider">Ships Lost</div>
-                    <div class="text-slate-300 font-semibold"><?= $cfg['stats']['ships_lost'] ?></div>
-                </div>
-            </div>
-        </div>
-        <?php endforeach; ?>
-    </div>
+    <span style="font-size:11px;font-weight:600;color:#c66"><?= number_format($opponentBarPct, 1) ?>%</span>
+    <?php if ($isThreeColumn): ?>
+        <span style="font-size:11px;font-weight:600;color:#cc6"><?= number_format($tpBarPct, 1) ?>%</span>
+    <?php endif; ?>
 </div>
 
-<!-- Side-by-side pilot lists grouped by alliance/corporation -->
-<div class="grid <?= $gridCols ?> gap-4">
+<!-- Side-by-side team panels -->
+<div class="grid <?= $gridCols ?>" style="gap:12px;">
     <?php foreach ($classicPanelConfig as $cfg): ?>
-    <div class="rounded border <?= $cfg['panelBorder'] ?> overflow-hidden">
-        <!-- Side header -->
-        <div class="<?= $cfg['headerBg'] ?> px-3 py-2 border-b <?= $cfg['headerBorder'] ?>">
-            <span class="text-sm font-semibold <?= $cfg['headerText'] ?>"><?= $cfg['label'] ?></span>
-            <span class="text-xs text-slate-400 ml-1">(<?= $cfg['stats']['pilots'] ?>)</span>
+    <div class="br-classic-panel">
+        <!-- Team header -->
+        <div class="br-classic-header">
+            <h4>Team <?= $cfg['teamLetter'] ?> — <?= $cfg['label'] ?> (<?= $cfg['stats']['pilots'] ?>)</h4>
+        </div>
+
+        <!-- Stats block -->
+        <div class="br-classic-stats">
+            <div class="br-classic-stats-row">
+                <span class="br-classic-stats-label">ISK Lost</span>
+                <span class="br-classic-stats-value"><?= supplycore_format_isk($cfg['stats']['isk_lost']) ?></span>
+            </div>
+            <div class="br-classic-stats-row">
+                <span class="br-classic-stats-label">Efficiency</span>
+                <span class="br-classic-stats-value"><?= number_format($cfg['stats']['efficiency'], 1) ?>%</span>
+            </div>
+            <div class="br-classic-stats-row">
+                <span class="br-classic-stats-label">Ships Lost</span>
+                <span class="br-classic-stats-value"><?= $cfg['stats']['ships_lost'] ?> ships</span>
+            </div>
+            <div class="br-classic-stats-row">
+                <span class="br-classic-stats-label">Inflicted Damage</span>
+                <span class="br-classic-stats-value"><?= supplycore_format_isk($cfg['stats']['isk_destroyed']) ?></span>
+            </div>
+        </div>
+
+        <!-- Column header (like evetools) -->
+        <div style="display:flex;justify-content:space-between;padding:4px 8px;background:#333;border-bottom:1px solid #444;font-size:11px;">
+            <div>
+                <span style="color:gold;font-weight:600;">Pilot</span>
+                <span style="color:#888;margin-left:8px;">Ship</span>
+            </div>
+            <div style="display:flex;gap:8px;align-items:center;">
+                <span style="color:gold;font-size:10px;">loss value</span>
+                <span style="color:#888;font-size:10px;">Corp</span>
+                <span style="color:#888;font-size:10px;">Ally</span>
+            </div>
         </div>
 
         <?php if ($cfg['groups'] === []): ?>
-            <div class="px-3 py-4 text-xs text-slate-500 text-center">No pilots</div>
+            <div class="br-classic-no-pilots">No pilots</div>
         <?php endif; ?>
 
         <?php foreach ($cfg['groups'] as $allianceGroup): ?>
             <!-- Alliance header -->
-            <div class="flex items-center gap-2 px-3 py-1.5 <?= $cfg['allianceBg'] ?> border-b <?= $cfg['allianceBorder'] ?>">
+            <div class="br-classic-alliance">
                 <?php if ($allianceGroup['alliance_id'] > 0): ?>
-                    <img src="https://images.evetech.net/alliances/<?= $allianceGroup['alliance_id'] ?>/logo?size=64" alt="" class="w-5 h-5 rounded-sm" loading="lazy">
+                    <img src="https://images.evetech.net/alliances/<?= $allianceGroup['alliance_id'] ?>/logo?size=64" alt="" style="width:18px;height:18px;border-radius:2px;" loading="lazy">
                 <?php endif; ?>
-                <span class="text-xs font-semibold <?= $cfg['headerText'] ?> flex-1 truncate">
+                <span style="font-size:11px;font-weight:600;color:#ddd;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
                     <?= htmlspecialchars($allianceGroup['alliance_name'] ?: 'No Alliance', ENT_QUOTES) ?>
                 </span>
-                <span class="text-[10px] text-slate-500"><?= $allianceGroup['pilot_count'] ?></span>
+                <span style="font-size:10px;color:#888;">(<?= $allianceGroup['pilot_count'] ?>)</span>
             </div>
 
             <?php foreach ($allianceGroup['corps'] as $corp): ?>
                 <!-- Corporation header -->
-                <div class="flex items-center gap-2 px-3 py-1 <?= $cfg['corpBg'] ?> border-b border-slate-700/30">
+                <div class="br-classic-corp">
                     <?php if ($corp['corporation_id'] > 0): ?>
-                        <img src="https://images.evetech.net/corporations/<?= $corp['corporation_id'] ?>/logo?size=64" alt="" class="w-4 h-4 rounded-sm" loading="lazy">
+                        <img src="https://images.evetech.net/corporations/<?= $corp['corporation_id'] ?>/logo?size=64" alt="" style="width:15px;height:15px;border-radius:2px;" loading="lazy">
                     <?php endif; ?>
-                    <span class="text-[11px] text-slate-400 flex-1 truncate"><?= htmlspecialchars($corp['corporation_name'], ENT_QUOTES) ?></span>
-                    <span class="text-[10px] text-slate-600"><?= count($corp['pilots']) ?></span>
+                    <span style="font-size:10px;color:#999;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
+                        <?= htmlspecialchars($corp['corporation_name'], ENT_QUOTES) ?>
+                    </span>
+                    <span style="font-size:10px;color:#666;">(<?= count($corp['pilots']) ?>)</span>
                 </div>
 
                 <!-- Pilot rows -->
                 <?php foreach ($corp['pilots'] as $pilot): ?>
-                    <?php $isDead = $pilot['deaths'] > 0; ?>
-                    <div class="flex items-center gap-2 px-3 py-1 border-b border-slate-800/50 hover:bg-slate-800/30 transition-colors <?= $isDead ? 'bg-red-950/20' : '' ?>">
-                        <!-- Ship render -->
-                        <div class="relative flex-shrink-0">
-                            <?php if ($pilot['flying_ship_id'] > 0): ?>
-                                <img src="https://images.evetech.net/types/<?= $pilot['flying_ship_id'] ?>/render?size=64"
-                                     alt="" class="w-8 h-8 rounded-sm <?= $isDead ? 'opacity-50' : '' ?>" loading="lazy"
-                                     title="<?= htmlspecialchars($pilot['flying_ship_name'], ENT_QUOTES) ?>">
-                                <?php if ($isDead): ?>
-                                    <div class="absolute inset-0 flex items-center justify-center">
-                                        <span class="text-red-500 text-lg font-bold leading-none" style="text-shadow: 0 0 3px rgba(0,0,0,0.8)">&#x2715;</span>
-                                    </div>
-                                <?php endif; ?>
-                            <?php else: ?>
-                                <div class="w-8 h-8 rounded-sm bg-slate-800 flex items-center justify-center">
-                                    <span class="text-slate-600 text-[10px]">?</span>
-                                </div>
-                            <?php endif; ?>
-                        </div>
+                    <?php
+                        $isDead = $pilot['deaths'] > 0;
+                        $isTopDmg = $pilot['character_id'] === $_classicTopDmgChar && $_classicTopDmg > 0;
+                    ?>
+                    <div class="br-classic-pilot <?= $isDead ? 'dead' : '' ?>">
+                        <!-- Ship icon -->
+                        <?php if ($pilot['flying_ship_id'] > 0): ?>
+                            <img src="https://images.evetech.net/types/<?= $pilot['flying_ship_id'] ?>/render?size=64"
+                                 alt="" class="br-classic-ship-icon <?= $isDead ? 'dead' : '' ?>" loading="lazy"
+                                 title="<?= htmlspecialchars($pilot['flying_ship_name'], ENT_QUOTES) ?>">
+                        <?php else: ?>
+                            <div class="br-classic-ship-icon" style="background:#111;display:flex;align-items:center;justify-content:center;">
+                                <span style="color:#444;font-size:10px;">?</span>
+                            </div>
+                        <?php endif; ?>
 
-                        <!-- Character name + ship name -->
-                        <div class="min-w-0 flex-1">
-                            <a class="text-xs font-medium truncate leading-tight block <?= $isDead ? 'text-red-300/70' : 'text-accent' ?>"
-                               href="/battle-intelligence/character.php?character_id=<?= $pilot['character_id'] ?>"
-                               title="<?= htmlspecialchars($pilot['character_name'], ENT_QUOTES) ?>">
-                                <?= htmlspecialchars($pilot['character_name'], ENT_QUOTES) ?>
-                            </a>
-                            <div class="text-[10px] text-slate-500 truncate leading-tight">
-                                <?= htmlspecialchars($pilot['flying_ship_name'] ?: '—', ENT_QUOTES) ?>
+                        <!-- Pilot info (name + ship) -->
+                        <div class="br-classic-pilot-body">
+                            <div class="br-classic-pilot-top">
+                                <a class="br-classic-pilot-name"
+                                   href="/battle-intelligence/character.php?character_id=<?= $pilot['character_id'] ?>"
+                                   title="<?= htmlspecialchars($pilot['character_name'], ENT_QUOTES) ?>">
+                                    <?= htmlspecialchars($pilot['character_name'], ENT_QUOTES) ?>
+                                </a>
+                                <?php if ($isDead && $pilot['isk_lost'] > 0): ?>
+                                    <span class="br-classic-loss-value"><?= supplycore_format_isk($pilot['isk_lost']) ?></span>
+                                <?php endif; ?>
+                            </div>
+                            <div class="br-classic-pilot-bottom">
+                                <span class="br-classic-ship-name"><?= htmlspecialchars($pilot['flying_ship_name'] ?: '—', ENT_QUOTES) ?></span>
+                                <?php if ($pilot['damage_done'] > 0): ?>
+                                    <span class="br-classic-dmg <?= $isTopDmg ? 'top' : '' ?>" title="Damage done">
+                                        <?php
+                                            $dmg = $pilot['damage_done'];
+                                            if ($dmg >= 1e9) echo number_format($dmg / 1e9, 2) . 'b';
+                                            elseif ($dmg >= 1e6) echo number_format($dmg / 1e6, 1) . 'M';
+                                            elseif ($dmg >= 1e3) echo number_format($dmg / 1e3, 1) . 'k';
+                                            else echo number_format($dmg, 0);
+                                        ?>
+                                    </span>
+                                <?php endif; ?>
                             </div>
                         </div>
 
-                        <!-- Damage done -->
-                        <?php if ($pilot['damage_done'] > 0): ?>
-                            <span class="text-[10px] text-slate-500 flex-shrink-0" title="Damage done">
-                                <?php
-                                    $dmg = $pilot['damage_done'];
-                                    if ($dmg >= 1e6) echo number_format($dmg / 1e6, 1) . 'M';
-                                    elseif ($dmg >= 1e3) echo number_format($dmg / 1e3, 0) . 'k';
-                                    else echo number_format($dmg, 0);
-                                ?>
-                            </span>
-                        <?php endif; ?>
+                        <!-- Corp + Alliance icons (right side, like evetools) -->
+                        <div class="br-classic-org-icons">
+                            <?php if ($pilot['corporation_id'] > 0): ?>
+                                <img src="https://images.evetech.net/corporations/<?= $pilot['corporation_id'] ?>/logo?size=64"
+                                     alt="" class="br-classic-org-icon" loading="lazy"
+                                     title="<?= htmlspecialchars($corp['corporation_name'], ENT_QUOTES) ?>">
+                            <?php endif; ?>
+                            <?php if ($pilot['alliance_id'] > 0): ?>
+                                <img src="https://images.evetech.net/alliances/<?= $pilot['alliance_id'] ?>/logo?size=64"
+                                     alt="" class="br-classic-org-icon" loading="lazy"
+                                     title="<?= htmlspecialchars($allianceGroup['alliance_name'], ENT_QUOTES) ?>">
+                            <?php endif; ?>
+                        </div>
                     </div>
                 <?php endforeach; ?>
             <?php endforeach; ?>
