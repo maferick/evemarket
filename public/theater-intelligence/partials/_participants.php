@@ -206,6 +206,61 @@ function _render_participant_row(array $p, array $resolvedEntities, array $shipT
     $kdRatio = $deaths > 0 ? $kills / $deaths : $kills;
     $sortHull = strtolower(trim($flyingShipName !== '' ? $flyingShipName : 'zzzz-unknown'));
 
+    // Resolve killmail sequence_id for this participant.
+    $charId = (int) ($p['character_id'] ?? 0);
+    $kmSeqId = 0;
+    if ($flyingShipId > 0 && $charId > 0 && isset($victimKmLookup[$charId][$flyingShipId])) {
+        $kmSeqId = $victimKmLookup[$charId][$flyingShipId];
+    }
+    if ($kmSeqId === 0 && $lostShipId > 0 && $charId > 0 && isset($victimKmLookup[$charId][$lostShipId])) {
+        $kmSeqId = $victimKmLookup[$charId][$lostShipId];
+    }
+    if ($kmSeqId === 0) {
+        foreach ($lostDisplay as $ld) {
+            foreach ((array) ($ld['killmail_ids'] ?? []) as $kmRef) {
+                $seqId = (int) ($kmRef['sequence_id'] ?? 0);
+                if ($seqId > 0) { $kmSeqId = $seqId; break 2; }
+            }
+        }
+    }
+
+    // Build flat list of loss icons
+    $lossIcons = [];
+    foreach ($lostDisplay as $ld) {
+        $stid = (int) ($ld['ship_type_id'] ?? 0);
+        $sname = (string) ($shipTypeNames[$stid] ?? 'Unknown');
+        $cnt = max(1, (int) ($ld['count'] ?? 1));
+        $kmIds = (array) ($ld['killmail_ids'] ?? []);
+        for ($i = 0; $i < $cnt; $i++) {
+            $seqId = 0;
+            if (isset($kmIds[$i]['sequence_id'])) {
+                $seqId = (int) $kmIds[$i]['sequence_id'];
+            } elseif ($stid > 0 && $charId > 0 && isset($victimKmLookup[$charId][$stid])) {
+                $seqId = $victimKmLookup[$charId][$stid];
+            }
+            $lossIcons[] = ['type_id' => $stid, 'name' => $sname, 'seq_id' => $seqId, 'pod' => false];
+        }
+    }
+    foreach ($lostDetail as $_pe) {
+        $ptid = (int) ($_pe['ship_type_id'] ?? 0);
+        if (!in_array($ptid, [670, 33328], true)) continue;
+        $cnt = max(1, (int) ($_pe['count'] ?? 1));
+        $kmIds = (array) ($_pe['killmail_ids'] ?? []);
+        for ($i = 0; $i < $cnt; $i++) {
+            $seqId = 0;
+            if (isset($kmIds[$i]['sequence_id'])) {
+                $seqId = (int) $kmIds[$i]['sequence_id'];
+            } elseif ($ptid > 0 && $charId > 0 && isset($victimKmLookup[$charId][$ptid])) {
+                $seqId = $victimKmLookup[$charId][$ptid];
+            }
+            $lossIcons[] = ['type_id' => $ptid, 'name' => 'Capsule', 'seq_id' => $seqId, 'pod' => true];
+        }
+    }
+
+    $roleGlowCls = $fleetRole === 'fc'
+        ? 'border border-[rgba(204,255,0,0.2)] text-[#ccff00] shadow-[0_0_5px_2px_rgba(204,255,0,0.7)] [text-shadow:0_0_3px_rgb(204,255,0)]'
+        : '';
+
     ob_start();
     ?>
     <tr class="border-b border-border/50 hover:bg-slate-800/40 transition-colors <?= $hasDeath ? 'border-l-2 border-l-red-500/40 bg-red-950/5' : '' ?> <?= $fleetRole === 'fc' ? 'border-l-2 border-l-yellow-400/60' : '' ?>"
@@ -216,130 +271,68 @@ function _render_participant_row(array $p, array $resolvedEntities, array $shipT
         data-hull="<?= htmlspecialchars($sortHull, ENT_QUOTES) ?>"
         data-damage="<?= $dmgDone ?>"
         data-isk="<?= $iskLost ?>">
-        <td class="px-2 py-1.5">
+        <!-- Pilot: portrait + ship icon overlay, name + ship name below -->
+        <td class="px-1.5 py-1">
             <div class="flex items-center gap-1.5">
-                <img src="https://images.evetech.net/characters/<?= (int) ($p['character_id'] ?? 0) ?>/portrait?size=32" alt="" class="w-5 h-5 rounded-full flex-shrink-0" loading="lazy">
-                <a class="text-accent text-xs truncate max-w-[8rem]" href="/battle-intelligence/character.php?character_id=<?= (int) ($p['character_id'] ?? 0) ?>" title="<?= htmlspecialchars($charName, ENT_QUOTES) ?>">
-                    <?= htmlspecialchars($charName, ENT_QUOTES) ?>
-                </a>
-                <?php if ($isSusp): ?>
-                    <span class="inline-block w-1.5 h-1.5 rounded-full bg-red-400 flex-shrink-0" title="Suspicious"></span>
-                <?php endif; ?>
-                <?php if ($hasDeath): ?>
-                    <span class="inline-flex items-center justify-center w-3.5 h-3.5 rounded-full bg-red-950 ring-1 ring-red-500/60 text-[8px] text-red-400 flex-shrink-0" title="<?= $deaths ?> loss(es)">&#x2715;</span>
-                <?php endif; ?>
+                <div class="relative flex-shrink-0">
+                    <img src="https://images.evetech.net/characters/<?= (int) ($p['character_id'] ?? 0) ?>/portrait?size=64" alt="" class="w-8 h-8 rounded flex-shrink-0" loading="lazy">
+                    <?php if ($flyingShipId > 0): ?>
+                        <img src="https://images.evetech.net/types/<?= $flyingShipId ?>/icon?size=64" alt="" class="absolute -bottom-0.5 -right-0.5 w-5 h-5 rounded-sm border border-slate-900 flex-shrink-0 <?= $hasDeath ? 'ring-1 ring-red-500/50' : '' ?>" title="<?= htmlspecialchars($flyingShipName, ENT_QUOTES) ?>" loading="lazy">
+                    <?php endif; ?>
+                </div>
+                <div class="min-w-0 flex-1">
+                    <div class="flex items-center gap-1">
+                        <a class="text-accent text-xs font-medium truncate leading-tight" href="/battle-intelligence/character.php?character_id=<?= (int) ($p['character_id'] ?? 0) ?>" title="<?= htmlspecialchars($charName, ENT_QUOTES) ?>">
+                            <?= htmlspecialchars($charName, ENT_QUOTES) ?>
+                        </a>
+                        <?php if ($isSusp): ?>
+                            <span class="inline-block w-1.5 h-1.5 rounded-full bg-red-400 flex-shrink-0" title="Suspicious"></span>
+                        <?php endif; ?>
+                        <?php if ($hasDeath): ?>
+                            <span class="inline-flex items-center justify-center w-3.5 h-3.5 rounded-full bg-red-950 ring-1 ring-red-500/60 text-[8px] text-red-400 flex-shrink-0 <?= $kmSeqId > 0 ? 'cursor-pointer hover:bg-red-900 transition-colors' : '' ?>" title="<?= $deaths ?> loss(es)" <?= $kmSeqId > 0 ? 'onclick="window._scKmModal(' . $kmSeqId . ')"' : '' ?>>&#x2715;</span>
+                        <?php endif; ?>
+                    </div>
+                    <div class="text-[10px] text-slate-500 truncate leading-tight"><?= htmlspecialchars($flyingShipName !== '' ? $flyingShipName : '—', ENT_QUOTES) ?></div>
+                </div>
             </div>
         </td>
-        <?php
-            // Resolve killmail sequence_id for this participant.
-            // Primary: battle-based lookup from view.php (works for all theaters).
-            // Fallback: killmail_ids embedded in ships_lost_detail JSON (new data only).
-            $charId = (int) ($p['character_id'] ?? 0);
-            $kmSeqId = 0;
-            // Try flying ship first, then lost ship
-            if ($flyingShipId > 0 && $charId > 0 && isset($victimKmLookup[$charId][$flyingShipId])) {
-                $kmSeqId = $victimKmLookup[$charId][$flyingShipId];
-            }
-            if ($kmSeqId === 0 && $lostShipId > 0 && $charId > 0 && isset($victimKmLookup[$charId][$lostShipId])) {
-                $kmSeqId = $victimKmLookup[$charId][$lostShipId];
-            }
-            if ($kmSeqId === 0) {
-                foreach ($lostDisplay as $ld) {
-                    foreach ((array) ($ld['killmail_ids'] ?? []) as $kmRef) {
-                        $seqId = (int) ($kmRef['sequence_id'] ?? 0);
-                        if ($seqId > 0) { $kmSeqId = $seqId; break 2; }
-                    }
-                }
-            }
-        ?>
-        <td class="px-2 py-1.5">
+        <!-- Lost ships (icons) -->
+        <td class="px-1 py-1">
             <div class="flex items-center gap-0.5 flex-wrap">
-                <?php
-                    // ── Build flat list of loss icons (each individual ship, expanded from counts) ──
-                    $lossIcons = [];
-                    // Non-pod losses first
-                    foreach ($lostDisplay as $ld) {
-                        $stid = (int) ($ld['ship_type_id'] ?? 0);
-                        $sname = (string) ($shipTypeNames[$stid] ?? 'Unknown');
-                        $cnt = max(1, (int) ($ld['count'] ?? 1));
-                        $kmIds = (array) ($ld['killmail_ids'] ?? []);
-                        for ($i = 0; $i < $cnt; $i++) {
-                            $seqId = 0;
-                            if (isset($kmIds[$i]['sequence_id'])) {
-                                $seqId = (int) $kmIds[$i]['sequence_id'];
-                            } elseif ($stid > 0 && $charId > 0 && isset($victimKmLookup[$charId][$stid])) {
-                                $seqId = $victimKmLookup[$charId][$stid];
-                            }
-                            $lossIcons[] = ['type_id' => $stid, 'name' => $sname, 'seq_id' => $seqId, 'pod' => false];
-                        }
-                    }
-                    // Pod losses
-                    foreach ($lostDetail as $_pe) {
-                        $ptid = (int) ($_pe['ship_type_id'] ?? 0);
-                        if (!in_array($ptid, [670, 33328], true)) continue;
-                        $cnt = max(1, (int) ($_pe['count'] ?? 1));
-                        $kmIds = (array) ($_pe['killmail_ids'] ?? []);
-                        for ($i = 0; $i < $cnt; $i++) {
-                            $seqId = 0;
-                            if (isset($kmIds[$i]['sequence_id'])) {
-                                $seqId = (int) $kmIds[$i]['sequence_id'];
-                            } elseif ($ptid > 0 && $charId > 0 && isset($victimKmLookup[$charId][$ptid])) {
-                                $seqId = $victimKmLookup[$charId][$ptid];
-                            }
-                            $lossIcons[] = ['type_id' => $ptid, 'name' => 'Capsule', 'seq_id' => $seqId, 'pod' => true];
-                        }
-                    }
-                ?>
                 <?php if ($lossIcons !== []): ?>
                     <?php foreach ($lossIcons as $li): ?>
-                        <img class="<?= $li['pod'] ? 'w-3 h-3 opacity-60' : 'w-4 h-4' ?> flex-shrink-0 rounded-sm ring-1 ring-red-500/30 <?= $li['seq_id'] > 0 ? 'cursor-pointer hover:brightness-125 hover:ring-red-400/60 transition-all' : '' ?>"
-                             src="https://images.evetech.net/types/<?= $li['type_id'] ?>/icon?size=32"
+                        <img class="<?= $li['pod'] ? 'w-4 h-4 opacity-60' : 'w-5 h-5' ?> flex-shrink-0 rounded-sm ring-1 ring-red-500/30 <?= $li['seq_id'] > 0 ? 'cursor-pointer hover:brightness-125 hover:ring-red-400/60 transition-all' : '' ?>"
+                             src="https://images.evetech.net/types/<?= $li['type_id'] ?>/icon?size=64"
                              title="<?= htmlspecialchars($li['name'], ENT_QUOTES) ?>"
                              loading="lazy"
                              <?= $li['seq_id'] > 0 ? 'onclick="window._scKmModal(' . $li['seq_id'] . ')"' : '' ?>>
                     <?php endforeach; ?>
-                <?php elseif ($flyingShipId > 0): ?>
-                    <img class="w-4 h-4 flex-shrink-0 rounded-sm opacity-50"
-                         src="https://images.evetech.net/types/<?= $flyingShipId ?>/icon?size=32"
-                         title="<?= htmlspecialchars($flyingShipName, ENT_QUOTES) ?>"
-                         loading="lazy">
                 <?php endif; ?>
             </div>
         </td>
-        <td class="px-2 py-1.5">
-            <?php
-                $roleGlowCls = $fleetRole === 'fc'
-                    ? 'border border-[rgba(204,255,0,0.2)] text-[#ccff00] shadow-[0_0_5px_2px_rgba(204,255,0,0.7)] [text-shadow:0_0_3px_rgb(204,255,0)]'
-                    : '';
-            ?>
-            <span class="inline-flex items-center rounded-full px-[6px] py-[4px] text-[8px] font-semibold uppercase tracking-[0.12em] leading-none <?= fleet_function_color_class($fleetRole) ?> <?= $roleGlowCls ?>">
+        <!-- Role badge -->
+        <td class="px-1 py-1">
+            <span class="inline-flex items-center rounded-full px-[5px] py-[3px] text-[8px] font-semibold uppercase tracking-[0.1em] leading-none <?= fleet_function_color_class($fleetRole) ?> <?= $roleGlowCls ?>">
                 <?= htmlspecialchars(fleet_function_label($fleetRole), ENT_QUOTES) ?>
             </span>
         </td>
-        <td class="px-2 py-1.5 text-right text-xs whitespace-nowrap">
+        <!-- K/D -->
+        <td class="px-1 py-1 text-right text-xs whitespace-nowrap">
             <span class="text-green-400"><?= $kills ?></span><span class="text-slate-600 mx-px">/</span><span class="<?= $deathCls ?>"><?= $deaths ?></span>
         </td>
-        <td class="px-2 py-1.5 text-right">
+        <!-- Damage bar + value -->
+        <td class="px-1 py-1 text-right">
             <div class="flex items-center justify-end gap-1">
-                <div class="w-10 h-[3px] rounded-full bg-slate-800 overflow-hidden">
+                <div class="w-8 h-[3px] rounded-full bg-slate-800 overflow-hidden">
                     <div class="h-full bg-blue-500/50 rounded-full" style="width: <?= number_format($dmgPct, 1) ?>%"></div>
                 </div>
-                <span class="text-[11px] text-slate-400 min-w-[3.2rem] text-right"><?= _fmt_damage($dmgDone) ?></span>
+                <span class="text-[10px] text-slate-400"><?= _fmt_damage($dmgDone) ?></span>
             </div>
         </td>
-        <td class="px-2 py-1.5 text-right relative overflow-hidden">
+        <!-- ISK Lost -->
+        <td class="px-1 py-1 text-right">
             <?php if ($iskLost > 0): ?>
-                <?php $iskMaxForPanel = 1; /* will be set via JS data attr */ ?>
-                <span class="text-xs text-red-400"><?= supplycore_format_isk($iskLost) ?></span>
-            <?php else: ?>
-                <span class="text-xs text-slate-600">&mdash;</span>
-            <?php endif; ?>
-        </td>
-        <td class="px-2 py-1.5 text-right">
-            <?php if ($kmSeqId > 0): ?>
-                <a class="text-red-400 text-[11px] cursor-pointer hover:text-red-300 transition-colors" onclick="window._scKmModal(<?= $kmSeqId ?>)">Killmail</a>
-            <?php else: ?>
-                <a class="text-accent text-[11px]" href="/battle-intelligence/character.php?character_id=<?= (int) ($p['character_id'] ?? 0) ?>">Intel</a>
+                <span class="text-[10px] text-red-400"><?= supplycore_format_isk($iskLost) ?></span>
             <?php endif; ?>
         </td>
     </tr>
@@ -396,42 +389,37 @@ function _render_structure_row(array $sk, array $resolvedEntities, array $shipTy
         data-hull="zzz-structure"
         data-damage="0"
         data-isk="<?= $iskLost ?>">
-        <td class="px-2 py-1.5">
+        <td class="px-1.5 py-1">
             <div class="flex items-center gap-1.5">
-                <span class="text-orange-500/70 text-sm leading-none flex-shrink-0" title="Structure">&#x1F3DB;</span>
-                <span class="text-xs text-slate-400 truncate max-w-[8rem]" title="<?= htmlspecialchars($orgName, ENT_QUOTES) ?>">
-                    <?= htmlspecialchars($orgName, ENT_QUOTES) ?>
-                </span>
-                <span class="inline-flex items-center justify-center w-3.5 h-3.5 rounded-full bg-orange-950 ring-1 ring-orange-500/60 text-[8px] text-orange-400 flex-shrink-0" title="Structure destroyed">&#x2715;</span>
+                <div class="relative flex-shrink-0">
+                    <?php if ($shipTypeId > 0): ?>
+                        <img class="w-8 h-8 rounded flex-shrink-0" src="https://images.evetech.net/types/<?= $shipTypeId ?>/icon?size=64" loading="lazy">
+                    <?php else: ?>
+                        <span class="flex items-center justify-center w-8 h-8 rounded bg-orange-950/40 text-orange-500/70 text-sm">&#x1F3DB;</span>
+                    <?php endif; ?>
+                </div>
+                <div class="min-w-0 flex-1">
+                    <div class="flex items-center gap-1">
+                        <span class="text-xs text-slate-400 truncate leading-tight" title="<?= htmlspecialchars($orgName, ENT_QUOTES) ?>">
+                            <?= htmlspecialchars($orgName, ENT_QUOTES) ?>
+                        </span>
+                        <span class="inline-flex items-center justify-center w-3.5 h-3.5 rounded-full bg-orange-950 ring-1 ring-orange-500/60 text-[8px] text-orange-400 flex-shrink-0 <?= $skSeqId > 0 ? 'cursor-pointer hover:bg-orange-900 transition-colors' : '' ?>" title="Structure destroyed" <?= $skSeqId > 0 ? 'onclick="window._scKmModal(' . $skSeqId . ')"' : '' ?>>&#x2715;</span>
+                    </div>
+                    <div class="text-[10px] text-orange-300/60 truncate leading-tight"><?= htmlspecialchars($shipName, ENT_QUOTES) ?></div>
+                </div>
             </div>
         </td>
-        <td class="px-2 py-1.5">
-            <div class="flex items-center gap-1">
-                <?php if ($shipTypeId > 0): ?>
-                    <img class="w-4 h-4 flex-shrink-0" src="https://images.evetech.net/types/<?= $shipTypeId ?>/icon?size=32" loading="lazy">
-                <?php endif; ?>
-                <span class="text-[11px] text-orange-300/80 truncate max-w-[6rem]"><?= htmlspecialchars($shipName, ENT_QUOTES) ?></span>
-            </div>
-        </td>
-        <td class="px-2 py-1.5">
-            <span class="inline-flex items-center rounded-full px-[6px] py-[4px] text-[8px] font-semibold uppercase tracking-[0.12em] leading-none bg-orange-950/60 border border-orange-500/30 text-orange-400">
+        <td class="px-1 py-1"></td>
+        <td class="px-1 py-1">
+            <span class="inline-flex items-center rounded-full px-[5px] py-[3px] text-[8px] font-semibold uppercase tracking-[0.1em] leading-none bg-orange-950/60 border border-orange-500/30 text-orange-400">
                 Structure
             </span>
         </td>
-        <td class="px-2 py-1.5 text-right text-xs text-slate-600">&mdash;</td>
-        <td class="px-2 py-1.5 text-right text-xs text-slate-600">&mdash;</td>
-        <td class="px-2 py-1.5 text-right">
+        <td class="px-1 py-1 text-right text-xs text-slate-600">&mdash;</td>
+        <td class="px-1 py-1 text-right text-xs text-slate-600">&mdash;</td>
+        <td class="px-1 py-1 text-right">
             <?php if ($iskLost > 0): ?>
-                <span class="text-xs text-red-400"><?= supplycore_format_isk($iskLost) ?></span>
-            <?php else: ?>
-                <span class="text-xs text-slate-600">&mdash;</span>
-            <?php endif; ?>
-        </td>
-        <td class="px-2 py-1.5 text-right">
-            <?php if ($skSeqId > 0): ?>
-                <a class="text-red-400 text-[11px] cursor-pointer hover:text-red-300 transition-colors" onclick="window._scKmModal(<?= $skSeqId ?>)">Killmail</a>
-            <?php else: ?>
-                <span class="text-xs text-slate-600">&mdash;</span>
+                <span class="text-[10px] text-red-400"><?= supplycore_format_isk($iskLost) ?></span>
             <?php endif; ?>
         </td>
     </tr>
@@ -519,22 +507,29 @@ function _render_structure_row(array $sk, array $resolvedEntities, array $shipTy
                     <option value="damage">Sort: damage</option>
                 </select>
             </div>
-            <div class="overflow-x-auto border border-slate-800 rounded-md">
-                <table class="table-ui w-full">
+            <div class="border border-slate-800 rounded-md">
+                <table class="table-ui w-full table-fixed">
+                    <colgroup>
+                        <col class="w-[40%]">
+                        <col>
+                        <col>
+                        <col>
+                        <col>
+                        <col>
+                    </colgroup>
                     <thead>
-                        <tr class="border-b border-border/70 text-[10px] uppercase tracking-[0.12em] text-muted">
-                            <th class="px-1.5 py-1.5 text-left">Pilot</th>
-                            <th class="px-1.5 py-1.5 text-left">Ship</th>
-                            <th class="px-1.5 py-1.5 text-left">Role</th>
-                            <th class="px-1.5 py-1.5 text-right">K/D</th>
-                            <th class="px-1.5 py-1.5 text-right">Damage</th>
-                            <th class="px-1.5 py-1.5 text-right">ISK Lost</th>
-                            <th class="px-1.5 py-1.5 text-right"></th>
+                        <tr class="border-b border-border/70 text-[10px] uppercase tracking-[0.1em] text-muted">
+                            <th class="px-1.5 py-1 text-left">Pilot</th>
+                            <th class="px-1.5 py-1 text-left">Ship</th>
+                            <th class="px-1.5 py-1 text-left">Role</th>
+                            <th class="px-1.5 py-1 text-right">K/D</th>
+                            <th class="px-1.5 py-1 text-right">Damage</th>
+                            <th class="px-1.5 py-1 text-right whitespace-nowrap">ISK Lost</th>
                         </tr>
                     </thead>
                     <tbody class="sc-tbody">
                         <?php if ($panel['rows'] === [] && ($panel['structure_kills'] ?? []) === []): ?>
-                            <tr><td colspan="7" class="px-2 py-4 text-sm text-muted text-center">No participants.</td></tr>
+                            <tr><td colspan="6" class="px-2 py-4 text-sm text-muted text-center">No participants.</td></tr>
                         <?php else: ?>
                             <?php foreach ($panel['rows'] as $p): ?>
                                 <?= _render_participant_row($p, $resolvedEntities, $shipTypeNames, $panelMaxDmg, $hasMonitorOrFlagShips, $victimKmLookup ?? []) ?>
