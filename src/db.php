@@ -15749,13 +15749,14 @@ function db_theater_battles(string $theaterId): array
          INNER JOIN battle_rollups br ON br.battle_id = tb.battle_id
          LEFT JOIN ref_systems rs ON rs.system_id = br.system_id
          LEFT JOIN (
-             SELECT battle_id, COUNT(DISTINCT killmail_id) AS kill_count
-             FROM killmail_events
-             GROUP BY battle_id
+             SELECT ke.battle_id, COUNT(DISTINCT ke.killmail_id) AS kill_count
+             FROM killmail_events ke
+             WHERE ke.battle_id IN (SELECT tb2.battle_id FROM theater_battles tb2 WHERE tb2.theater_id = ?)
+             GROUP BY ke.battle_id
          ) kc ON kc.battle_id = tb.battle_id
          WHERE tb.theater_id = ?
          ORDER BY br.started_at ASC',
-        [$theaterId]
+        [$theaterId, $theaterId]
     );
 }
 
