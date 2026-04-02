@@ -31496,7 +31496,7 @@ function supplycore_threat_corridor_graph_svg(int $corridorId, array $corridorSy
     if (!is_dir($cacheDir) && !@mkdir($cacheDir, 0775, true) && !is_dir($cacheDir)) {
         return null;
     }
-    $cacheFile = sprintf('%s/corridor-%d-h%d-v5.svg', $cacheDir, $corridorId, $surroundingHops);
+    $cacheFile = sprintf('%s/corridor-%d-h%d-v6.svg', $cacheDir, $corridorId, $surroundingHops);
     $cacheTtl = supplycore_threat_corridor_map_cache_minutes() * 60;
     if (is_file($cacheFile) && ((time() - (int) filemtime($cacheFile)) < $cacheTtl)) {
         return '/threat-corridors/svg/' . basename($cacheFile);
@@ -31597,7 +31597,7 @@ function supplycore_threat_corridor_graph_svg(int $corridorId, array $corridorSy
     });
     $corridorCount = count($corridorNodeIds);
     foreach ($corridorNodeIds as $idx => $sid) {
-        $x = $corridorCount > 1 ? (0.12 + ((0.76 * $idx) / ($corridorCount - 1))) : 0.5;
+        $x = $corridorCount > 1 ? (0.18 + ((0.64 * $idx) / ($corridorCount - 1))) : 0.5;
         $positions[$sid] = ['x' => $x, 'y' => 0.5];
     }
 
@@ -31640,7 +31640,7 @@ function supplycore_threat_corridor_graph_svg(int $corridorId, array $corridorSy
     }
 
     // Place surrounding nodes while avoiding corridor directions
-    $exclusionZone = M_PI * 0.28; // ~50° exclusion around each corridor direction
+    $exclusionZone = M_PI * 0.22; // ~40° exclusion around each corridor direction
     foreach ($surroundingByAnchor as $anchorId => $anchorNodes) {
         $blockedAngles = $corridorNeighborAngles[$anchorId] ?? [];
         usort($anchorNodes, static fn (array $a, array $b): int => $a['hop'] <=> $b['hop'] ?: $a['sid'] <=> $b['sid']);
@@ -31650,7 +31650,7 @@ function supplycore_threat_corridor_graph_svg(int $corridorId, array $corridorSy
         }
         foreach ($byHop as $hop => $hopSids) {
             $n = count($hopSids);
-            $radius = 0.12 + ((float) $hop * 0.07);
+            $radius = 0.13 + ((float) $hop * 0.065);
             // Generate candidate angles around the circle (starting from top), filtered to avoid blocked zones
             $steps = 360;
             $candidates = [];
@@ -31692,8 +31692,8 @@ function supplycore_threat_corridor_graph_svg(int $corridorId, array $corridorSy
     }
 
     $width = 900;
-    $height = 330;
-    $pad = 24;
+    $height = 450;
+    $pad = 28;
     $sx = static fn (float $x): float => $pad + ($x * ($width - ($pad * 2)));
     $sy = static fn (float $y): float => $pad + ($y * ($height - ($pad * 2)));
     $securityColor = static function (float $sec): string {
@@ -31727,9 +31727,9 @@ function supplycore_threat_corridor_graph_svg(int $corridorId, array $corridorSy
         . '<feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>'
         . '</filter>'
         . '<style><![CDATA['
-        . '.label-c{font:600 11px Inter,Segoe UI,sans-serif;fill:#e2e8f0}'
-        . '.node-surround:hover + .label-s{opacity:1}'
-        . '.label-s{font:500 10px Inter,Segoe UI,sans-serif;fill:#64748b;opacity:.8;transition:opacity .2s ease}'
+        . '.label-c{font:700 11px Inter,Segoe UI,sans-serif;fill:#e2e8f0}'
+        . '.label-s{font:500 9.5px Inter,Segoe UI,sans-serif;fill:#cbd5e1}'
+        . '.label-t{font:600 8px Inter,Segoe UI,sans-serif;letter-spacing:.04em}'
         . ']]></style>'
         . '</defs>';
     $svg[] = '<rect width="' . $width . '" height="' . $height . '" fill="#04080f"/>';
@@ -31750,7 +31750,7 @@ function supplycore_threat_corridor_graph_svg(int $corridorId, array $corridorSy
         $y1 = number_format($sy((float) $positions[$a]['y']), 2, '.', '');
         $x2 = number_format($sx((float) $positions[$b]['x']), 2, '.', '');
         $y2 = number_format($sy((float) $positions[$b]['y']), 2, '.', '');
-        $svg[] = '<line x1="' . $x1 . '" y1="' . $y1 . '" x2="' . $x2 . '" y2="' . $y2 . '" stroke="#1e3a5f" stroke-opacity="0.55" stroke-width="1.1"/>';
+        $svg[] = '<line x1="' . $x1 . '" y1="' . $y1 . '" x2="' . $x2 . '" y2="' . $y2 . '" stroke="#374151" stroke-opacity="0.7" stroke-width="1.5"/>';
     }
 
     // Pass 2: corridor highway edges (foreground layer, golden glow)
@@ -31775,33 +31775,46 @@ function supplycore_threat_corridor_graph_svg(int $corridorId, array $corridorSy
         $svg[] = '<line x1="' . $x1 . '" y1="' . $y1 . '" x2="' . $x2 . '" y2="' . $y2 . '" stroke="#fbbf24" stroke-opacity="0.88" stroke-width="2.6" stroke-linecap="round" filter="url(#hwy-glow)"/>';
     }
 
-    // Nodes
+    // Nodes – pill-shaped rounded rectangles with labels inside
     foreach ($nodeMap as $sid => $node) {
         if (!isset($positions[$sid])) {
             continue;
         }
-        $x = number_format($sx((float) $positions[$sid]['x']), 2, '.', '');
-        $y = number_format($sy((float) $positions[$sid]['y']), 2, '.', '');
+        $px = $sx((float) $positions[$sid]['x']);
+        $py = $sy((float) $positions[$sid]['y']);
         $outer = $securityColor((float) $node['security']);
         $inner = $threatColor((string) $node['threat_level']);
         $safeName = htmlspecialchars((string) $node['name'], ENT_QUOTES);
+        $threatLabel = ($node['threat_level'] !== '') ? strtoupper((string) $node['threat_level']) : '';
+        $hasThreat = $threatLabel !== '';
         $title = $safeName . ' | sec=' . number_format((float) $node['security'], 1) . ' | threat=' . ($node['threat_level'] !== '' ? $node['threat_level'] : 'unknown');
+        $titleEsc = htmlspecialchars($title, ENT_QUOTES);
         if ($node['is_corridor'] === true) {
+            $nameLen = mb_strlen((string) $node['name']);
+            $pw = max(82, (int) ($nameLen * 7.8) + 28);
+            $ph = $hasThreat ? 38 : 26;
+            $rx = (int) ($ph / 2);
             $svg[] = '<g filter="url(#node-glow)">'
-                . '<circle cx="' . $x . '" cy="' . $y . '" r="9.5" fill="none" stroke="' . $outer . '" stroke-width="2.2" stroke-opacity="0.9"/>'
-                . '<circle cx="' . $x . '" cy="' . $y . '" r="5.5" fill="' . $inner . '" stroke="#04080f" stroke-width="1.2">'
-                . '<title>' . htmlspecialchars($title, ENT_QUOTES) . '</title>'
-                . '</circle>'
-                . '</g>'
-                . '<text class="label-c" x="' . ($x + 12) . '" y="' . ($y + 4) . '">' . $safeName . '</text>';
+                . '<rect x="' . number_format($px - $pw / 2, 2, '.', '') . '" y="' . number_format($py - $ph / 2, 2, '.', '') . '" width="' . $pw . '" height="' . $ph . '" rx="' . $rx . '" fill="#0f172a" stroke="' . $outer . '" stroke-width="2.2" stroke-opacity="0.9"/>'
+                . '<text class="label-c" x="' . number_format($px, 2, '.', '') . '" y="' . number_format($py + ($hasThreat ? -3 : 4), 2, '.', '') . '" text-anchor="middle">' . $safeName . '</text>';
+            if ($hasThreat) {
+                $svg[] = '<text class="label-t" x="' . number_format($px, 2, '.', '') . '" y="' . number_format($py + 12, 2, '.', '') . '" text-anchor="middle" fill="' . $inner . '">' . $threatLabel . '</text>';
+            }
+            $svg[] = '<title>' . $titleEsc . '</title></g>';
         } else {
+            $nameLen = mb_strlen((string) $node['name']);
+            $pw = max(62, (int) ($nameLen * 6.8) + 20);
+            $ph = $hasThreat ? 32 : 22;
+            $rx = (int) ($ph / 2);
             $svg[] = '<g>'
-                . '<circle class="node-surround" cx="' . $x . '" cy="' . $y . '" r="5.5" fill="none" stroke="' . $outer . '" stroke-width="1.5" stroke-opacity="0.7">'
-                . '<title>' . htmlspecialchars($title, ENT_QUOTES) . '</title>'
-                . '</circle>'
-                . '<circle cx="' . $x . '" cy="' . $y . '" r="2.8" fill="' . $inner . '" stroke="#04080f" stroke-width="0.8"/>'
-                . '<text class="label-s" x="' . ($x + 7) . '" y="' . ($y + 4) . '">' . $safeName . '</text>'
-                . '</g>';
+                . '<rect x="' . number_format($px - $pw / 2, 2, '.', '') . '" y="' . number_format($py - $ph / 2, 2, '.', '') . '" width="' . $pw . '" height="' . $ph . '" rx="' . $rx . '" fill="#0a0f1a" stroke="' . $outer . '" stroke-width="1.5" stroke-opacity="0.7">'
+                . '<title>' . $titleEsc . '</title>'
+                . '</rect>'
+                . '<text class="label-s" x="' . number_format($px, 2, '.', '') . '" y="' . number_format($py + ($hasThreat ? -2 : 4), 2, '.', '') . '" text-anchor="middle">' . $safeName . '</text>';
+            if ($hasThreat) {
+                $svg[] = '<text class="label-t" x="' . number_format($px, 2, '.', '') . '" y="' . number_format($py + 11, 2, '.', '') . '" text-anchor="middle" fill="' . $inner . '">' . $threatLabel . '</text>';
+            }
+            $svg[] = '</g>';
         }
     }
     $svg[] = '</svg>';
@@ -31839,7 +31852,7 @@ function supplycore_theater_map_svg(string $theaterId, array $systemIds, int $ho
         return null;
     }
     $cacheKey = substr(md5($theaterId . ':' . implode(',', $systemIds)), 0, 12);
-    $cacheFile = sprintf('%s/theater-%s-h%d-v2.svg', $cacheDir, $cacheKey, $hops);
+    $cacheFile = sprintf('%s/theater-%s-h%d-v3.svg', $cacheDir, $cacheKey, $hops);
     $cacheTtl = supplycore_threat_corridor_map_cache_minutes() * 60;
     if (is_file($cacheFile) && ((time() - (int) filemtime($cacheFile)) < $cacheTtl)) {
         return '/threat-corridors/svg/' . basename($cacheFile);
@@ -32011,8 +32024,8 @@ function supplycore_theater_map_svg(string $theaterId, array $systemIds, int $ho
     }
 
     $width  = 900;
-    $height = 340;
-    $pad    = 24;
+    $height = 450;
+    $pad    = 28;
     $sx = static fn(float $x): float => $pad + ($x * ($width  - ($pad * 2)));
     $sy = static fn(float $y): float => $pad + ($y * ($height - ($pad * 2)));
     $securityColor = static function(float $sec): string {
@@ -32030,7 +32043,8 @@ function supplycore_theater_map_svg(string $theaterId, array $systemIds, int $ho
         . '</filter>'
         . '<style><![CDATA['
         . '.lbl-b{font:700 11px Inter,Segoe UI,sans-serif;fill:#fef3c7}'
-        . '.lbl-s{font:500 10px Inter,Segoe UI,sans-serif;fill:#64748b;opacity:.85}'
+        . '.lbl-s{font:500 9.5px Inter,Segoe UI,sans-serif;fill:#cbd5e1}'
+        . '.lbl-sec{font:600 8px Inter,Segoe UI,sans-serif;letter-spacing:.04em}'
         . ']]></style>'
         . '</defs>';
     $svg[] = '<rect width="' . $width . '" height="' . $height . '" fill="#04080f"/>';
@@ -32052,7 +32066,7 @@ function supplycore_theater_map_svg(string $theaterId, array $systemIds, int $ho
         $y1 = number_format($sy((float) $positions[$a]['y']), 2, '.', '');
         $x2 = number_format($sx((float) $positions[$b]['x']), 2, '.', '');
         $y2 = number_format($sy((float) $positions[$b]['y']), 2, '.', '');
-        $svg[] = '<line x1="' . $x1 . '" y1="' . $y1 . '" x2="' . $x2 . '" y2="' . $y2 . '" stroke="#1e3a5f" stroke-opacity="0.55" stroke-width="1.1"/>';
+        $svg[] = '<line x1="' . $x1 . '" y1="' . $y1 . '" x2="' . $x2 . '" y2="' . $y2 . '" stroke="#374151" stroke-opacity="0.7" stroke-width="1.5"/>';
     }
 
     // Pass 2: battle-system edges (amber glow)
@@ -32069,38 +32083,38 @@ function supplycore_theater_map_svg(string $theaterId, array $systemIds, int $ho
         $svg[] = '<line x1="' . $x1 . '" y1="' . $y1 . '" x2="' . $x2 . '" y2="' . $y2 . '" stroke="#fbbf24" stroke-opacity="0.88" stroke-width="2.6" stroke-linecap="round" filter="url(#battle-glow)"/>';
     }
 
-    // Nodes
+    // Nodes – pill-shaped rounded rectangles with labels inside
     foreach ($nodeMap as $sid => $node) {
         if (!isset($positions[$sid])) {
             continue;
         }
-        $cx = number_format($sx((float) $positions[$sid]['x']), 2, '.', '');
-        $cy = number_format($sy((float) $positions[$sid]['y']), 2, '.', '');
+        $px = $sx((float) $positions[$sid]['x']);
+        $py = $sy((float) $positions[$sid]['y']);
         $outer = $securityColor((float) $node['security']);
         $safeName = htmlspecialchars((string) $node['name'], ENT_QUOTES);
         $secFmt   = number_format((float) $node['security'], 1);
         $title    = $safeName . ' | sec=' . $secFmt;
+        $titleEsc = htmlspecialchars($title, ENT_QUOTES);
         if ($node['is_battle']) {
-            $nx = number_format($sx((float) $positions[$sid]['x']) + 14, 2, '.', '');
-            $ny1 = number_format($sy((float) $positions[$sid]['y']) - 3, 2, '.', '');
-            $ny2 = number_format($sy((float) $positions[$sid]['y']) + 11, 2, '.', '');
+            $nameLen = mb_strlen((string) $node['name']);
+            $pw = max(82, (int) ($nameLen * 7.8) + 28);
+            $ph = 38;
+            $rx = (int) ($ph / 2);
             $svg[] = '<g filter="url(#battle-glow)">'
-                . '<circle cx="' . $cx . '" cy="' . $cy . '" r="11" fill="none" stroke="#fbbf24" stroke-width="2.2" stroke-opacity="0.9"/>'
-                . '<circle cx="' . $cx . '" cy="' . $cy . '" r="6" fill="' . $outer . '" stroke="#04080f" stroke-width="1.5">'
-                . '<title>' . htmlspecialchars($title, ENT_QUOTES) . '</title>'
-                . '</circle>'
-                . '</g>'
-                . '<text class="lbl-b" x="' . $nx . '" y="' . $ny1 . '">' . $safeName . '</text>'
-                . '<text style="font:500 9px Inter,Segoe UI,sans-serif;fill:#92400e" x="' . $nx . '" y="' . $ny2 . '">' . $secFmt . '</text>';
+                . '<rect x="' . number_format($px - $pw / 2, 2, '.', '') . '" y="' . number_format($py - $ph / 2, 2, '.', '') . '" width="' . $pw . '" height="' . $ph . '" rx="' . $rx . '" fill="#1a1207" stroke="#fbbf24" stroke-width="2.2" stroke-opacity="0.9"/>'
+                . '<text class="lbl-b" x="' . number_format($px, 2, '.', '') . '" y="' . number_format($py - 3, 2, '.', '') . '" text-anchor="middle">' . $safeName . '</text>'
+                . '<text class="lbl-sec" x="' . number_format($px, 2, '.', '') . '" y="' . number_format($py + 12, 2, '.', '') . '" text-anchor="middle" fill="#92400e">' . $secFmt . '</text>'
+                . '<title>' . $titleEsc . '</title></g>';
         } else {
-            $nx = number_format($sx((float) $positions[$sid]['x']) + 7, 2, '.', '');
-            $ny = number_format($sy((float) $positions[$sid]['y']) + 4, 2, '.', '');
+            $nameLen = mb_strlen((string) $node['name']);
+            $pw = max(62, (int) ($nameLen * 6.8) + 20);
+            $ph = 32;
+            $rx = (int) ($ph / 2);
             $svg[] = '<g>'
-                . '<circle cx="' . $cx . '" cy="' . $cy . '" r="5" fill="none" stroke="' . $outer . '" stroke-width="1.5" stroke-opacity="0.7">'
-                . '<title>' . htmlspecialchars($title, ENT_QUOTES) . '</title>'
-                . '</circle>'
-                . '<circle cx="' . $cx . '" cy="' . $cy . '" r="2.5" fill="' . $outer . '" fill-opacity="0.5" stroke="#04080f" stroke-width="0.8"/>'
-                . '<text class="lbl-s" x="' . $nx . '" y="' . $ny . '">' . $safeName . '</text>'
+                . '<rect x="' . number_format($px - $pw / 2, 2, '.', '') . '" y="' . number_format($py - $ph / 2, 2, '.', '') . '" width="' . $pw . '" height="' . $ph . '" rx="' . $rx . '" fill="#0a0f1a" stroke="' . $outer . '" stroke-width="1.5" stroke-opacity="0.7">'
+                . '<title>' . $titleEsc . '</title></rect>'
+                . '<text class="lbl-s" x="' . number_format($px, 2, '.', '') . '" y="' . number_format($py - 2, 2, '.', '') . '" text-anchor="middle">' . $safeName . '</text>'
+                . '<text class="lbl-sec" x="' . number_format($px, 2, '.', '') . '" y="' . number_format($py + 11, 2, '.', '') . '" text-anchor="middle" fill="' . $outer . '">' . $secFmt . '</text>'
                 . '</g>';
         }
     }
@@ -32109,10 +32123,10 @@ function supplycore_theater_map_svg(string $theaterId, array $systemIds, int $ho
     $lx = $width - $pad - 2;
     $ly = $height - $pad - 4;
     $svg[] = '<g opacity="0.75">'
-        . '<circle cx="' . ($lx - 108) . '" cy="' . ($ly - 10) . '" r="5" fill="none" stroke="#fbbf24" stroke-width="1.8"/>'
-        . '<text x="' . ($lx - 100) . '" y="' . ($ly - 6) . '" style="font:500 9px Inter,Segoe UI,sans-serif;fill:#64748b">Battle system</text>'
-        . '<circle cx="' . ($lx - 108) . '" cy="' . $ly . '" r="3.5" fill="none" stroke="#64748b" stroke-width="1.2"/>'
-        . '<text x="' . ($lx - 100) . '" y="' . ($ly + 4) . '" style="font:500 9px Inter,Segoe UI,sans-serif;fill:#64748b">Adjacent system</text>'
+        . '<rect x="' . ($lx - 120) . '" y="' . ($ly - 18) . '" width="50" height="16" rx="8" fill="#1a1207" stroke="#fbbf24" stroke-width="1.5"/>'
+        . '<text x="' . ($lx - 65) . '" y="' . ($ly - 6) . '" style="font:500 9px Inter,Segoe UI,sans-serif;fill:#64748b">Battle system</text>'
+        . '<rect x="' . ($lx - 120) . '" y="' . ($ly - 0) . '" width="50" height="16" rx="8" fill="#0a0f1a" stroke="#64748b" stroke-width="1.2"/>'
+        . '<text x="' . ($lx - 65) . '" y="' . ($ly + 12) . '" style="font:500 9px Inter,Segoe UI,sans-serif;fill:#64748b">Adjacent system</text>'
         . '</g>';
 
     $svg[] = '</svg>';
@@ -32139,7 +32153,7 @@ function supplycore_system_area_svg(int $systemId, int $hops = 2): ?string
     if (!is_dir($cacheDir) && !@mkdir($cacheDir, 0775, true) && !is_dir($cacheDir)) {
         return null;
     }
-    $cacheFile = sprintf('%s/system-%d-h%d-v1.svg', $cacheDir, $systemId, $hops);
+    $cacheFile = sprintf('%s/system-%d-h%d-v2.svg', $cacheDir, $systemId, $hops);
     $cacheTtl = supplycore_threat_corridor_map_cache_minutes() * 60;
     if (is_file($cacheFile) && ((time() - (int) filemtime($cacheFile)) < $cacheTtl)) {
         return '/threat-corridors/svg/' . basename($cacheFile);
@@ -32290,7 +32304,8 @@ function supplycore_system_area_svg(int $systemId, int $hops = 2): ?string
         . '.lbl-f{font:700 12px Inter,Segoe UI,sans-serif;fill:#f1f5f9}'
         . '.lbl-f-sub{font:500 9px Inter,Segoe UI,sans-serif;fill:#94a3b8}'
         . '.lbl-1{font:600 10.5px Inter,Segoe UI,sans-serif;fill:#cbd5e1}'
-        . '.lbl-2{font:500 9.5px Inter,Segoe UI,sans-serif;fill:#64748b}'
+        . '.lbl-2{font:500 9.5px Inter,Segoe UI,sans-serif;fill:#94a3b8}'
+        . '.lbl-t{font:600 8px Inter,Segoe UI,sans-serif;letter-spacing:.04em}'
         . ']]></style>'
         . '</defs>';
     $svg[] = '<rect width="' . $width . '" height="' . $height . '" fill="#04080f"/>';
@@ -32313,61 +32328,66 @@ function supplycore_system_area_svg(int $systemId, int $hops = 2): ?string
         $x2 = number_format($sx((float) $positions[$b]['x']), 2, '.', '');
         $y2 = number_format($sy((float) $positions[$b]['y']), 2, '.', '');
         if ($a === $systemId || $b === $systemId) {
-            $svg[] = '<line x1="' . $x1 . '" y1="' . $y1 . '" x2="' . $x2 . '" y2="' . $y2 . '" stroke="#2d5a9e" stroke-opacity="0.85" stroke-width="1.7"/>';
+            $svg[] = '<line x1="' . $x1 . '" y1="' . $y1 . '" x2="' . $x2 . '" y2="' . $y2 . '" stroke="#3b6db5" stroke-opacity="0.85" stroke-width="1.8"/>';
         } else {
-            $svg[] = '<line x1="' . $x1 . '" y1="' . $y1 . '" x2="' . $x2 . '" y2="' . $y2 . '" stroke="#1e3a5f" stroke-opacity="0.50" stroke-width="1.0"/>';
+            $svg[] = '<line x1="' . $x1 . '" y1="' . $y1 . '" x2="' . $x2 . '" y2="' . $y2 . '" stroke="#374151" stroke-opacity="0.65" stroke-width="1.4"/>';
         }
     }
 
-    // Nodes and labels; labels positioned away from center to avoid edge overlap
+    // Nodes – pill-shaped rounded rectangles with labels inside
     foreach ($nodeMap as $sid => $node) {
         if (!isset($positions[$sid])) {
             continue;
         }
-        $px   = (float) $positions[$sid]['x'];
-        $py   = (float) $positions[$sid]['y'];
-        $cx   = number_format($sx($px), 2, '.', '');
-        $cy   = number_format($sy($py), 2, '.', '');
+        $npx  = $sx((float) $positions[$sid]['x']);
+        $npy  = $sy((float) $positions[$sid]['y']);
         $outer = $securityColor((float) $node['security']);
         $inner = $threatColor((string) $node['threat_level']);
         $hop  = $distance[$sid] ?? 0;
         $safeName = htmlspecialchars((string) $node['name'], ENT_QUOTES);
+        $threatLabel = ($node['threat_level'] !== '') ? strtoupper((string) $node['threat_level']) : '';
+        $hasThreat = $threatLabel !== '';
         $secFmt   = number_format((float) $node['security'], 2);
         $titleAttr = $safeName . ' | sec=' . $secFmt . ' | threat=' . ($node['threat_level'] !== '' ? $node['threat_level'] : 'unknown');
-
-        // Label direction: push away from center
-        $onLeft = $px < 0.5;
-        $labelAnchor = $onLeft ? 'end' : 'start';
-        $labelOffsetX = $onLeft ? -11 : 11;
-        $labelY = number_format($sy($py), 2, '.', '');
+        $titleEsc = htmlspecialchars($titleAttr, ENT_QUOTES);
 
         if ($node['is_focal']) {
+            $nameLen = mb_strlen((string) $node['name']);
+            $pw = max(90, (int) ($nameLen * 8.2) + 30);
+            $ph = $hasThreat ? 42 : 28;
+            $rx = (int) ($ph / 2);
             $svg[] = '<g filter="url(#focal-glow)">'
-                . '<circle cx="' . $cx . '" cy="' . $cy . '" r="16" fill="none" stroke="' . $outer . '" stroke-width="2.5" stroke-opacity="0.9"/>'
-                . '<circle cx="' . $cx . '" cy="' . $cy . '" r="8.5" fill="' . $inner . '" stroke="#04080f" stroke-width="1.5">'
-                . '<title>' . htmlspecialchars($titleAttr, ENT_QUOTES) . '</title>'
-                . '</circle>'
-                . '</g>'
-                . '<text class="lbl-f" x="' . ($sx($px) + 20) . '" y="' . ($sy($py) - 4) . '">' . $safeName . '</text>'
-                . '<text class="lbl-f-sub" x="' . ($sx($px) + 20) . '" y="' . ($sy($py) + 11) . '">' . $secFmt . '</text>';
+                . '<rect x="' . number_format($npx - $pw / 2, 2, '.', '') . '" y="' . number_format($npy - $ph / 2, 2, '.', '') . '" width="' . $pw . '" height="' . $ph . '" rx="' . $rx . '" fill="#0f172a" stroke="' . $outer . '" stroke-width="2.5" stroke-opacity="0.9"/>'
+                . '<text class="lbl-f" x="' . number_format($npx, 2, '.', '') . '" y="' . number_format($npy + ($hasThreat ? -4 : 5), 2, '.', '') . '" text-anchor="middle">' . $safeName . '</text>';
+            if ($hasThreat) {
+                $svg[] = '<text class="lbl-t" x="' . number_format($npx, 2, '.', '') . '" y="' . number_format($npy + 12, 2, '.', '') . '" text-anchor="middle" fill="' . $inner . '">' . $threatLabel . '</text>';
+            }
+            $svg[] = '<title>' . $titleEsc . '</title></g>';
         } elseif ($hop === 1) {
-            $lx = number_format($sx($px) + $labelOffsetX, 2, '.', '');
+            $nameLen = mb_strlen((string) $node['name']);
+            $pw = max(72, (int) ($nameLen * 7.2) + 24);
+            $ph = $hasThreat ? 36 : 24;
+            $rx = (int) ($ph / 2);
             $svg[] = '<g filter="url(#node-glow)">'
-                . '<circle cx="' . $cx . '" cy="' . $cy . '" r="9.5" fill="none" stroke="' . $outer . '" stroke-width="2.0" stroke-opacity="0.88"/>'
-                . '<circle cx="' . $cx . '" cy="' . $cy . '" r="5.5" fill="' . $inner . '" stroke="#04080f" stroke-width="1.2">'
-                . '<title>' . htmlspecialchars($titleAttr, ENT_QUOTES) . '</title>'
-                . '</circle>'
-                . '</g>'
-                . '<text class="lbl-1" x="' . $lx . '" y="' . ($sy($py) + 4) . '" text-anchor="' . $labelAnchor . '">' . $safeName . '</text>';
+                . '<rect x="' . number_format($npx - $pw / 2, 2, '.', '') . '" y="' . number_format($npy - $ph / 2, 2, '.', '') . '" width="' . $pw . '" height="' . $ph . '" rx="' . $rx . '" fill="#0f172a" stroke="' . $outer . '" stroke-width="2.0" stroke-opacity="0.88"/>'
+                . '<text class="lbl-1" x="' . number_format($npx, 2, '.', '') . '" y="' . number_format($npy + ($hasThreat ? -2 : 4), 2, '.', '') . '" text-anchor="middle">' . $safeName . '</text>';
+            if ($hasThreat) {
+                $svg[] = '<text class="lbl-t" x="' . number_format($npx, 2, '.', '') . '" y="' . number_format($npy + 12, 2, '.', '') . '" text-anchor="middle" fill="' . $inner . '">' . $threatLabel . '</text>';
+            }
+            $svg[] = '<title>' . $titleEsc . '</title></g>';
         } else {
-            $lx = number_format($sx($px) + $labelOffsetX, 2, '.', '');
+            $nameLen = mb_strlen((string) $node['name']);
+            $pw = max(62, (int) ($nameLen * 6.8) + 20);
+            $ph = $hasThreat ? 32 : 22;
+            $rx = (int) ($ph / 2);
             $svg[] = '<g>'
-                . '<circle cx="' . $cx . '" cy="' . $cy . '" r="5.5" fill="none" stroke="' . $outer . '" stroke-width="1.5" stroke-opacity="0.72">'
-                . '<title>' . htmlspecialchars($titleAttr, ENT_QUOTES) . '</title>'
-                . '</circle>'
-                . '<circle cx="' . $cx . '" cy="' . $cy . '" r="2.8" fill="' . $inner . '" stroke="#04080f" stroke-width="0.8"/>'
-                . '<text class="lbl-2" x="' . $lx . '" y="' . ($sy($py) + 3) . '" text-anchor="' . $labelAnchor . '">' . $safeName . '</text>'
-                . '</g>';
+                . '<rect x="' . number_format($npx - $pw / 2, 2, '.', '') . '" y="' . number_format($npy - $ph / 2, 2, '.', '') . '" width="' . $pw . '" height="' . $ph . '" rx="' . $rx . '" fill="#0a0f1a" stroke="' . $outer . '" stroke-width="1.5" stroke-opacity="0.72">'
+                . '<title>' . $titleEsc . '</title></rect>'
+                . '<text class="lbl-2" x="' . number_format($npx, 2, '.', '') . '" y="' . number_format($npy + ($hasThreat ? -1 : 4), 2, '.', '') . '" text-anchor="middle">' . $safeName . '</text>';
+            if ($hasThreat) {
+                $svg[] = '<text class="lbl-t" x="' . number_format($npx, 2, '.', '') . '" y="' . number_format($npy + 11, 2, '.', '') . '" text-anchor="middle" fill="' . $inner . '">' . $threatLabel . '</text>';
+            }
+            $svg[] = '</g>';
         }
     }
 
@@ -32375,13 +32395,13 @@ function supplycore_system_area_svg(int $systemId, int $hops = 2): ?string
     $lx = $width - $pad - 2;
     $ly = $height - $pad - 2;
     $svg[] = '<g opacity="0.7">'
-        . '<text x="' . $lx . '" y="' . ($ly - 54) . '" text-anchor="end" style="font:600 9px Inter,Segoe UI,sans-serif;fill:#475569;letter-spacing:.06em">SECURITY</text>'
-        . '<circle cx="' . ($lx - 90) . '" cy="' . ($ly - 40) . '" r="4" fill="none" stroke="#10b981" stroke-width="1.5"/>'
-        . '<text x="' . ($lx - 83) . '" y="' . ($ly - 36) . '" style="font:500 9px Inter,Segoe UI,sans-serif;fill:#64748b">High-sec (≥0.5)</text>'
-        . '<circle cx="' . ($lx - 90) . '" cy="' . ($ly - 24) . '" r="4" fill="none" stroke="#f59e0b" stroke-width="1.5"/>'
-        . '<text x="' . ($lx - 83) . '" y="' . ($ly - 20) . '" style="font:500 9px Inter,Segoe UI,sans-serif;fill:#64748b">Low-sec (0–0.5)</text>'
-        . '<circle cx="' . ($lx - 90) . '" cy="' . ($ly - 8) . '" r="4" fill="none" stroke="#ef4444" stroke-width="1.5"/>'
-        . '<text x="' . ($lx - 83) . '" y="' . ($ly - 4) . '" style="font:500 9px Inter,Segoe UI,sans-serif;fill:#64748b">Null-sec (≤0)</text>'
+        . '<text x="' . $lx . '" y="' . ($ly - 58) . '" text-anchor="end" style="font:600 9px Inter,Segoe UI,sans-serif;fill:#475569;letter-spacing:.06em">SECURITY</text>'
+        . '<rect x="' . ($lx - 100) . '" y="' . ($ly - 50) . '" width="40" height="14" rx="7" fill="#0a0f1a" stroke="#10b981" stroke-width="1.3"/>'
+        . '<text x="' . ($lx - 55) . '" y="' . ($ly - 39) . '" style="font:500 9px Inter,Segoe UI,sans-serif;fill:#64748b">High-sec (&ge;0.5)</text>'
+        . '<rect x="' . ($lx - 100) . '" y="' . ($ly - 34) . '" width="40" height="14" rx="7" fill="#0a0f1a" stroke="#f59e0b" stroke-width="1.3"/>'
+        . '<text x="' . ($lx - 55) . '" y="' . ($ly - 23) . '" style="font:500 9px Inter,Segoe UI,sans-serif;fill:#64748b">Low-sec (0&ndash;0.5)</text>'
+        . '<rect x="' . ($lx - 100) . '" y="' . ($ly - 18) . '" width="40" height="14" rx="7" fill="#0a0f1a" stroke="#ef4444" stroke-width="1.3"/>'
+        . '<text x="' . ($lx - 55) . '" y="' . ($ly - 7) . '" style="font:500 9px Inter,Segoe UI,sans-serif;fill:#64748b">Null-sec (&le;0)</text>'
         . '</g>';
 
     $svg[] = '</svg>';
