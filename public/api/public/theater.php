@@ -181,7 +181,12 @@ if ($viewSnapshot !== null) {
         if (isset($participantKillTotalsBySide[$side])) $participantKillTotalsBySide[$side] += $kills;
     }
 
-    $finalBlowsBySide = db_theater_final_blows_by_side($theaterId);
+    $finalBlowsByGroup = db_theater_final_blows_by_attacker_group($theaterId);
+    $finalBlowsBySide = ['friendly' => 0, 'opponent' => 0, 'third_party' => 0];
+    foreach ($finalBlowsByGroup as $fbRow) {
+        $fbSide = $classifyAlliance((int) ($fbRow['alliance_id'] ?? 0), (int) ($fbRow['corporation_id'] ?? 0));
+        $finalBlowsBySide[$fbSide] += (int) ($fbRow['final_blows'] ?? 0);
+    }
     foreach ($sidePanels as $side => $data) {
         $sidePanels[$side]['final_blows'] = (int) ($finalBlowsBySide[$side] ?? 0);
         $sidePanels[$side]['kill_involvements'] = (int) ($participantKillTotalsBySide[$side] ?? 0);
@@ -287,13 +292,18 @@ if ($viewSnapshot !== null) {
 
 // ── Post-processing (applies to both paths) ──
 
-// Final-blows fallback
-if (($sidePanels['friendly']['final_blows'] ?? 0) === 0 && ($sidePanels['opponent']['final_blows'] ?? 0) === 0) {
-    $derivedFriendlyFb = ($sidePanels['opponent']['losses'] ?? 0) + ($sidePanels['third_party']['losses'] ?? 0);
-    $derivedOpponentFb = $sidePanels['friendly']['losses'] ?? 0;
-    if ($derivedFriendlyFb > 0 || $derivedOpponentFb > 0) {
-        $sidePanels['friendly']['final_blows'] = $derivedFriendlyFb;
-        $sidePanels['opponent']['final_blows'] = $derivedOpponentFb;
+// Final-blows correction: classify using PHP closure for consistency
+$fbByGroup = db_theater_final_blows_by_attacker_group($theaterId);
+if ($fbByGroup !== []) {
+    $correctedFb = ['friendly' => 0, 'opponent' => 0, 'third_party' => 0];
+    foreach ($fbByGroup as $fbRow) {
+        $fbSide = $classifyAlliance((int) ($fbRow['alliance_id'] ?? 0), (int) ($fbRow['corporation_id'] ?? 0));
+        $correctedFb[$fbSide] += (int) ($fbRow['final_blows'] ?? 0);
+    }
+    foreach (['friendly', 'opponent', 'third_party'] as $side) {
+        if (isset($sidePanels[$side])) {
+            $sidePanels[$side]['final_blows'] = $correctedFb[$side];
+        }
     }
 }
 
