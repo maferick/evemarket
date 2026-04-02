@@ -651,6 +651,19 @@ def run_compute_alliance_dossiers(
                 if enemies:
                     logger.info("alliance %d: enemies from SQL fallback (%d results)", aid, len(enemies))
 
+            # Deduplicate: if an alliance appears in both co-present and
+            # enemies, keep it only in the list where the count is higher.
+            co_map = {cp["alliance_id"]: cp.get("shared_battles") or cp.get("count", 0) for cp in co_present}
+            en_map = {en["alliance_id"]: en.get("engagements") or en.get("count", 0) for en in enemies}
+            overlap = set(co_map) & set(en_map)
+            if overlap:
+                logger.info("alliance %d: %d overlapping alliances in co-present/enemies, deduplicating", aid, len(overlap))
+                for oid in overlap:
+                    if en_map[oid] >= co_map[oid]:
+                        co_present = [cp for cp in co_present if cp["alliance_id"] != oid]
+                    else:
+                        enemies = [en for en in enemies if en["alliance_id"] != oid]
+
             for cp in co_present:
                 all_ally_ids.add(cp["alliance_id"])
             for en in enemies:
