@@ -62,6 +62,7 @@ from .jobs.compute_economic_warfare import run_compute_economic_warfare
 from .jobs.graph_universe_sync import run_graph_universe_sync
 from .jobs.graph_pipeline import run_compute_graph_sync_killmail_entities, run_compute_graph_sync_killmail_edges, run_graph_model_audit
 from .jobs.compute_alliance_dossiers import run_compute_alliance_dossiers
+from .jobs.compute_alliance_relationships import run_compute_alliance_relationships
 from .jobs.compute_threat_corridors import run_compute_threat_corridors
 from .jobs.cache_expiry_cleanup_sync import run_cache_expiry_cleanup_sync
 from .jobs.evewho_alliance_member_sync import run_evewho_alliance_member_sync
@@ -121,6 +122,7 @@ PYTHON_COMPUTE_PROCESSOR_JOB_KEYS: set[str] = {
     "compute_graph_sync_killmail_entities",
     "compute_graph_sync_killmail_edges",
     "compute_alliance_dossiers",
+    "compute_alliance_relationships",
     "compute_threat_corridors",
     "graph_model_audit",
     "compute_character_feature_windows",
@@ -230,6 +232,7 @@ _PROCESSOR_DISPATCH: dict[str, tuple] = {
     "theater_suspicion": (run_theater_suspicion, lambda db, cfg: (db, battle_runtime(cfg))),
     # Intelligence expansion — dossiers & threat corridors
     "compute_alliance_dossiers": (run_compute_alliance_dossiers, lambda db, cfg: (db, None, neo4j_runtime(cfg))),
+    "compute_alliance_relationships": (run_compute_alliance_relationships, lambda db, cfg: (db, None, neo4j_runtime(cfg))),
     "compute_threat_corridors": (run_compute_threat_corridors, lambda db, cfg: (db, None, neo4j_runtime(cfg))),
     # Graph audit
     "graph_model_audit": (run_graph_model_audit, lambda db, cfg: (db, neo4j_runtime(cfg))),
