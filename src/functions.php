@@ -18759,7 +18759,7 @@ function killmail_poll_sleep_seconds(): int
 
 function killmail_max_sequences_per_run(): int
 {
-    return max(1, min(5000, (int) get_setting('killmail_ingestion_max_sequences_per_run', '120')));
+    return max(1, min(5000, (int) get_setting('killmail_ingestion_max_sequences_per_run', '5000')));
 }
 
 function killmail_parse_entity_lines(string $text): array
@@ -19012,7 +19012,7 @@ function killmail_settings_from_request(array $request): array
     return [
         'settings' => [
             'killmail_ingestion_poll_sleep_seconds' => (string) max(6, min(300, (int) ($request['killmail_ingestion_poll_sleep_seconds'] ?? 10))),
-            'killmail_ingestion_max_sequences_per_run' => (string) max(1, min(5000, (int) ($request['killmail_ingestion_max_sequences_per_run'] ?? 120))),
+            'killmail_ingestion_max_sequences_per_run' => (string) max(1, min(5000, (int) ($request['killmail_ingestion_max_sequences_per_run'] ?? 5000))),
             'killmail_demand_prediction_mode' => trim((string) ($request['killmail_demand_prediction_mode'] ?? 'baseline')),
         ],
         'alliances' => array_map(
@@ -19582,7 +19582,7 @@ function sync_killmail_r2z2_stream(string $runMode = 'incremental'): array
                 continue;
             }
 
-            if ($statusKey !== 'written') {
+            if ($statusKey !== 'written' && $statusKey !== 'written_untracked') {
                 throw new RuntimeException('Killmail ingestion returned an unexpected persistence status: ' . $statusKey);
             }
 
