@@ -435,6 +435,14 @@ def run_compute_threat_corridors(
         seen_hashes: set[str] = set()
 
         for corridor_systems in raw_corridors:
+            # Deduplicate while preserving order (graph traversals can revisit nodes)
+            seen_sids: set[int] = set()
+            deduped: list[int] = []
+            for sid in corridor_systems:
+                if sid not in seen_sids:
+                    seen_sids.add(sid)
+                    deduped.append(sid)
+            corridor_systems = deduped
             if len(corridor_systems) < 2:
                 continue
             ch = _corridor_hash(corridor_systems)
