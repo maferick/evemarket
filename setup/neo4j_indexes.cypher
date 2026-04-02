@@ -38,3 +38,13 @@ CREATE INDEX alliance_id IF NOT EXISTS FOR (n:Alliance) ON (n.alliance_id);
 CREATE INDEX member_from IF NOT EXISTS FOR ()-[r:MEMBER_OF]-() ON (r.from);
 CREATE INDEX part_of_as_of IF NOT EXISTS FOR ()-[r:PART_OF]-() ON (r.as_of);
 CREATE INDEX current_corp_as_of IF NOT EXISTS FOR ()-[r:CURRENT_CORP]-() ON (r.as_of);
+
+// ── Alliance relationship graph (computed from killmail co-occurrence) ─────
+CREATE INDEX allied_with_weight IF NOT EXISTS FOR ()-[r:ALLIED_WITH]-() ON (r.weight_30d);
+CREATE INDEX hostile_to_weight IF NOT EXISTS FOR ()-[r:HOSTILE_TO]-() ON (r.weight_30d);
+CREATE INDEX allied_with_computed IF NOT EXISTS FOR ()-[r:ALLIED_WITH]-() ON (r.computed_at);
+CREATE INDEX hostile_to_computed IF NOT EXISTS FOR ()-[r:HOSTILE_TO]-() ON (r.computed_at);
+CREATE INDEX allied_with_killmails IF NOT EXISTS FOR ()-[r:ALLIED_WITH]-() ON (r.shared_killmails);
+CREATE INDEX hostile_to_engagements IF NOT EXISTS FOR ()-[r:HOSTILE_TO]-() ON (r.engagements);
+CREATE INDEX ceasefire_region IF NOT EXISTS FOR ()-[r:CEASEFIRE_WITH]-() ON (r.region_id);
+CREATE INDEX ceasefire_computed IF NOT EXISTS FOR ()-[r:CEASEFIRE_WITH]-() ON (r.computed_at);
