@@ -16389,37 +16389,31 @@ function db_theater_fleet_composition(string $theaterId): array
     );
 }
 
-function db_theater_final_blows_by_side(string $theaterId): array
+/**
+ * Count final blows per attacker alliance/corporation for a theater.
+ *
+ * Returns raw per-group counts so the caller can classify sides consistently
+ * using the same closure as kills/losses (avoids mismatch with Python's
+ * graph-inferred side stored in theater_alliance_summary).
+ *
+ * @return list<array{alliance_id: int, corporation_id: int, final_blows: int}>
+ */
+function db_theater_final_blows_by_attacker_group(string $theaterId): array
 {
-    $rows = db_select(
+    return db_select(
         "SELECT
-            CASE
-                WHEN tas.side = 'friendly' THEN 'friendly'
-                WHEN tas.side = 'opponent' THEN 'opponent'
-                ELSE 'third_party'
-            END AS side,
+            COALESCE(ka.alliance_id, 0) AS alliance_id,
+            COALESCE(ka.corporation_id, 0) AS corporation_id,
             COUNT(*) AS final_blows
          FROM killmail_attackers ka
          INNER JOIN killmail_events ke ON ke.sequence_id = ka.sequence_id
          INNER JOIN theater_battles tb ON tb.battle_id = ke.battle_id
-         LEFT JOIN theater_alliance_summary tas
-              ON tas.theater_id = tb.theater_id
-              AND tas.alliance_id = COALESCE(ka.alliance_id, 0)
-              AND tas.corporation_id = CASE WHEN COALESCE(ka.alliance_id, 0) > 0 THEN 0 ELSE COALESCE(ka.corporation_id, 0) END
          WHERE tb.theater_id = ?
            AND ka.final_blow = 1
            AND (ka.character_id IS NULL OR ka.character_id != ke.victim_character_id)
-         GROUP BY side",
+         GROUP BY COALESCE(ka.alliance_id, 0), COALESCE(ka.corporation_id, 0)",
         [$theaterId]
     );
-    $result = ['friendly' => 0, 'opponent' => 0, 'third_party' => 0];
-    foreach ($rows as $row) {
-        $side = (string) ($row['side'] ?? 'third_party');
-        if (isset($result[$side])) {
-            $result[$side] = (int) ($row['final_blows'] ?? 0);
-        }
-    }
-    return $result;
 }
 
 /**
