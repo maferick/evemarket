@@ -71,6 +71,82 @@ function get_passphrase(string $context = 'Vault passphrase'): string
 $vaultFile = __DIR__ . '/../.config.vault';
 $command   = $argv[1] ?? '';
 
+// --- Provision from SupplyCore ---
+if ($command === '--provision') {
+    $provisionUrl = $argv[2] ?? '';
+    if ($provisionUrl === '') {
+        err("Usage: php bin/configure.php --provision <provision-url>");
+        info("The provision URL is provided by SupplyCore when you generate a provisioning token.");
+        info("Example: php bin/configure.php --provision 'https://supplycore.example.com/api/public/provision.php?token=abc123'");
+        exit(1);
+    }
+
+    out("\n\033[1m╔══════════════════════════════════════════════════════╗\033[0m\n");
+    out("\033[1m║   SupplyCore Public Proxy — Remote Provisioning      ║\033[0m\n");
+    out("\033[1m╚══════════════════════════════════════════════════════╝\033[0m\n\n");
+
+    info("Fetching configuration from SupplyCore...");
+
+    $ch = curl_init();
+    curl_setopt_array($ch, [
+        CURLOPT_URL            => $provisionUrl,
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_TIMEOUT        => 15,
+        CURLOPT_CONNECTTIMEOUT => 5,
+        CURLOPT_FOLLOWLOCATION => false,
+        CURLOPT_SSL_VERIFYPEER => true,
+        CURLOPT_HTTPHEADER     => ['Accept: application/json'],
+    ]);
+
+    $response  = curl_exec($ch);
+    $httpCode  = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    $curlError = curl_error($ch);
+    curl_close($ch);
+
+    if ($response === false || $curlError !== '') {
+        err("Connection failed: {$curlError}");
+        exit(1);
+    }
+
+    if ($httpCode !== 200) {
+        $decoded = json_decode((string) $response, true);
+        $msg = is_array($decoded) ? (string) ($decoded['error'] ?? "HTTP {$httpCode}") : "HTTP {$httpCode}";
+        err("Provisioning failed: {$msg}");
+        exit(1);
+    }
+
+    $decoded = json_decode((string) $response, true);
+    if (!is_array($decoded) || !is_array($decoded['config'] ?? null)) {
+        err("Invalid response from SupplyCore.");
+        exit(1);
+    }
+
+    $config = $decoded['config'];
+    ok("Received configuration from SupplyCore.");
+    info("Endpoint:   " . ($config['supplycore_url'] ?? '(unknown)'));
+    info("API Key:    " . ($config['api_key_id'] ?? '(unknown)'));
+    info("Site Name:  " . ($config['site_name'] ?? '(unknown)'));
+
+    // Auto-generate a strong passphrase
+    $passphrase = bin2hex(random_bytes(24));
+
+    $blob = vault_encrypt($config, $passphrase);
+    file_put_contents($vaultFile, $blob);
+    chmod($vaultFile, 0600);
+
+    out("\n");
+    ok("Configuration encrypted and saved.");
+    info("Vault file: {$vaultFile}");
+    info("Blob size:  " . strlen($blob) . " bytes");
+
+    out("\n\033[1m  Set this environment variable on the proxy server:\033[0m\n\n");
+    out("  \033[33mexport PROXY_CONFIG_KEY='{$passphrase}'\033[0m\n\n");
+    info("Add it to your systemd unit, Apache envvars, or .bashrc.");
+    info("The provisioning token has been consumed and cannot be reused.");
+    out("\n");
+    exit(0);
+}
+
 // --- Show current config ---
 if ($command === '--show') {
     if (!file_exists($vaultFile)) {

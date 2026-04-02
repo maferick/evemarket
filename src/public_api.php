@@ -160,3 +160,131 @@ function public_api_respond(array $data, int $cacheSeconds = 60): never
     echo json_encode($data, JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE);
     exit;
 }
+
+// ── Proxy Provisioning Tokens ─────────────────────────────────────────
+
+/**
+ * Create a single-use provisioning token for remote proxy setup.
+ *
+ * The token is stored in app_settings alongside the API key it provisions.
+ * Tokens expire after $ttlMinutes (default 10). Once consumed the token
+ * is deleted — it cannot be reused.
+ *
+ * @param  string $keyId      API key ID to provision (must already exist)
+ * @param  int    $ttlMinutes Token lifetime in minutes
+ * @return string 64-char hex token
+ */
+function public_api_provision_token_create(string $keyId, int $ttlMinutes = 10): string
+{
+    $keys = public_api_keys_load();
+    if (!isset($keys[$keyId])) {
+        throw new RuntimeException("API key '{$keyId}' does not exist.");
+    }
+
+    $token = bin2hex(random_bytes(32));
+
+    $tokens = public_api_provision_tokens_load();
+
+    // Purge any expired tokens while we're here
+    $now = time();
+    foreach ($tokens as $t => $entry) {
+        if (($entry['expires_at'] ?? 0) < $now) {
+            unset($tokens[$t]);
+        }
+    }
+
+    $tokens[$token] = [
+        'key_id'     => $keyId,
+        'created_at' => date('Y-m-d H:i:s'),
+        'expires_at' => $now + ($ttlMinutes * 60),
+    ];
+
+    public_api_provision_tokens_save($tokens);
+
+    return $token;
+}
+
+/**
+ * Consume a provisioning token and return the proxy configuration.
+ *
+ * Returns null if the token is invalid, expired, or already consumed.
+ * On success the token is immediately deleted.
+ *
+ * @param  string $token  The provisioning token
+ * @return array|null     Proxy config array or null
+ */
+function public_api_provision_token_consume(string $token): ?array
+{
+    $tokens = public_api_provision_tokens_load();
+
+    if (!isset($tokens[$token])) {
+        return null;
+    }
+
+    $entry = $tokens[$token];
+    $now   = time();
+
+    // Expired?
+    if (($entry['expires_at'] ?? 0) < $now) {
+        unset($tokens[$token]);
+        public_api_provision_tokens_save($tokens);
+        return null;
+    }
+
+    $keyId = (string) ($entry['key_id'] ?? '');
+    $keys  = public_api_keys_load();
+
+    if (!isset($keys[$keyId])) {
+        // Key was revoked after token was created
+        unset($tokens[$token]);
+        public_api_provision_tokens_save($tokens);
+        return null;
+    }
+
+    $keyEntry = $keys[$keyId];
+
+    // Delete the token (single-use)
+    unset($tokens[$token]);
+    public_api_provision_tokens_save($tokens);
+
+    // Build the proxy configuration payload
+    $baseUrl = rtrim((string) get_setting('app_base_url', ''), '/');
+
+    return [
+        'supplycore_url' => $baseUrl,
+        'api_key_id'     => $keyId,
+        'api_secret'     => (string) ($keyEntry['secret'] ?? ''),
+        'timeout'        => 15,
+        'site_name'      => (string) get_setting('app_name', 'Battle Reports'),
+    ];
+}
+
+/**
+ * Load provisioning tokens from app_settings.
+ */
+function public_api_provision_tokens_load(): array
+{
+    $raw = db_select_one(
+        "SELECT setting_value FROM app_settings WHERE setting_key = 'provision_tokens' LIMIT 1"
+    );
+    if ($raw === null) {
+        return [];
+    }
+    $decoded = json_decode((string) ($raw['setting_value'] ?? ''), true);
+    return is_array($decoded) ? $decoded : [];
+}
+
+/**
+ * Persist provisioning tokens to app_settings.
+ */
+function public_api_provision_tokens_save(array $tokens): void
+{
+    $json = json_encode($tokens, JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT);
+
+    $existing = db_select_one("SELECT 1 FROM app_settings WHERE setting_key = 'provision_tokens' LIMIT 1");
+    if ($existing !== null) {
+        db_execute("UPDATE app_settings SET setting_value = ? WHERE setting_key = 'provision_tokens'", [$json]);
+    } else {
+        db_execute("INSERT INTO app_settings (setting_key, setting_value) VALUES ('provision_tokens', ?)", [$json]);
+    }
+}
