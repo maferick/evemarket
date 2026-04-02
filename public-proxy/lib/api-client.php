@@ -13,13 +13,20 @@ function proxy_config(): array
 {
     static $config = null;
     if ($config === null) {
-        $path = __DIR__ . '/../config.php';
-        if (!file_exists($path)) {
-            http_response_code(500);
-            echo 'Configuration file missing. Copy config.example.php to config.php and fill in the values.';
-            exit;
+        // Prefer encrypted vault over plaintext config
+        require_once __DIR__ . '/config-vault.php';
+        $config = vault_load();
+
+        if ($config === null) {
+            // Fall back to plaintext config.php
+            $path = __DIR__ . '/../config.php';
+            if (!file_exists($path)) {
+                http_response_code(500);
+                echo 'Configuration missing. Run "php bin/configure.php" to create an encrypted vault, or copy config.example.php to config.php.';
+                exit;
+            }
+            $config = require $path;
         }
-        $config = require $path;
     }
     return $config;
 }
