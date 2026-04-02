@@ -1,8 +1,14 @@
-"""Alliance Dossier computation — graph-powered intelligence briefs per alliance.
+"""Alliance Dossier computation — killmail-powered intelligence briefs per alliance.
 
-Queries Neo4j for alliance relationship patterns (co-presence, engagement,
-geographic spread) and MariaDB for aggregate combat statistics. Results are
-materialized to the ``alliance_dossiers`` table for PHP consumption.
+Derives alliance intelligence from ALL killmails (including ``mail_type='untracked'``)
+rather than only clustered battles.  This gives visibility into small-gang, blops,
+gate camps, and structure bashes that fall below the battle clustering threshold
+(20+ participants).  Battle counts are retained as supplementary metrics.
+
+Queries MariaDB ``killmail_events`` / ``killmail_attackers`` for geography, fleet
+composition, behavior, and trends.  Co-presence and enemy data comes from the
+pre-computed ``alliance_relationships`` table (built by ``compute_alliance_relationships``
+from all killmails), with Neo4j and SQL fallbacks.
 
 Payload Contract (JSON columns stored in alliance_dossiers)
 -----------------------------------------------------------
@@ -10,20 +16,20 @@ Payload Contract (JSON columns stored in alliance_dossiers)
 **top_co_present_json** — alliances co-occurring on the same side::
 
     [{"alliance_id": int, "alliance_name": str, "shared_battles": int,
-      "shared_pilots": int, "source": "neo4j"|"sql"}]
+      "shared_pilots": int, "source": "relationship_graph"|"neo4j"|"sql"}]
 
 **top_enemies_json** — alliances fought against on opposing sides::
 
     [{"alliance_id": int, "alliance_name": str, "engagements": int,
-      "source": "neo4j"|"sql"}]
+      "source": "relationship_graph"|"neo4j"|"sql"}]
 
 **top_regions_json**::
 
-    [{"region_id": int, "region_name": str, "battle_count": int}]
+    [{"region_id": int, "region_name": str, "killmail_count": int}]
 
 **top_systems_json**::
 
-    [{"system_id": int, "system_name": str, "region_name": str, "battle_count": int}]
+    [{"system_id": int, "system_name": str, "region_name": str, "killmail_count": int}]
 
 **top_ship_classes_json**::
 
@@ -35,15 +41,17 @@ Payload Contract (JSON columns stored in alliance_dossiers)
 
 **behavior_summary_json**::
 
-    {"avg_engagement_rate": float, "avg_token_participation": float,
-     "posture": str, "total_appearances": int,
-     "high_sustain_count": int, "low_sustain_count": int}
+    {"kills_per_week": float, "avg_gang_size": float, "solo_ratio": float,
+     "total_kills": int, "total_losses": int, "kill_loss_ratio": float,
+     "posture": str, "active_pilots": int}
 
-    Posture values: "committed", "opportunistic", "infrequent", "balanced"
+    Posture values: "aggressive", "opportunistic", "infrequent", "balanced"
 
 **trend_summary_json**::
 
-    {"battles_7d": int, "battles_8_30d": int, "battles_31_90d": int,
+    {"killmails_7d": int, "killmails_8_30d": int, "killmails_31_90d": int,
+     "isk_destroyed_7d": float, "isk_destroyed_8_30d": float,
+     "isk_destroyed_31_90d": float,
      "activity_trend": "rising"|"declining"|"stable"}
 """
 
@@ -94,65 +102,88 @@ def _now_sql() -> str:
     return datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
 
 
-def _load_alliances_with_battles(db: SupplyCoreDb, min_battles: int = 2) -> list[dict[str, Any]]:
-    """Load alliances that have participated in at least min_battles battles."""
+def _load_alliances_with_activity(db: SupplyCoreDb, min_killmails: int = 5) -> list[dict[str, Any]]:
+    """Load alliances with killmail activity from attacker data.
+
+    An alliance qualifies if its members appear as attackers on at least
+    ``min_killmails`` distinct killmails.  This captures all combat activity,
+    not just clustered battles.
+    """
     return db.fetch_all(
         """
-        SELECT bp.alliance_id,
-               COALESCE(emc.entity_name, CONCAT('Alliance #', bp.alliance_id)) AS alliance_name,
-               COUNT(DISTINCT bp.battle_id) AS total_battles,
-               COUNT(DISTINCT CASE WHEN br.started_at >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL %s DAY)
-                     THEN bp.battle_id END) AS recent_battles,
-               MIN(br.started_at) AS first_seen_at,
-               MAX(br.started_at) AS last_seen_at
-        FROM battle_participants bp
-        INNER JOIN battle_rollups br ON br.battle_id = bp.battle_id
+        SELECT ka.alliance_id,
+               COALESCE(emc.entity_name, CONCAT('Alliance #', ka.alliance_id)) AS alliance_name,
+               COUNT(DISTINCT ka.sequence_id) AS total_killmails,
+               COUNT(DISTINCT CASE WHEN ke.killmail_time >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL %s DAY)
+                     THEN ka.sequence_id END) AS recent_killmails,
+               COUNT(DISTINCT CASE WHEN ke.battle_id IS NOT NULL THEN ke.battle_id END) AS total_battles,
+               COUNT(DISTINCT CASE WHEN ke.battle_id IS NOT NULL
+                     AND ke.killmail_time >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL %s DAY)
+                     THEN ke.battle_id END) AS recent_battles,
+               COALESCE(SUM(ke.zkb_total_value), 0) AS total_isk_destroyed,
+               COALESCE(SUM(CASE WHEN ke.killmail_time >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL %s DAY)
+                     THEN ke.zkb_total_value ELSE 0 END), 0) AS recent_isk_destroyed,
+               COUNT(DISTINCT ka.character_id) AS active_pilots,
+               COUNT(DISTINCT CASE WHEN ke.killmail_time >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL %s DAY)
+                     THEN ka.character_id END) AS recent_active_pilots,
+               MIN(ke.killmail_time) AS first_seen_at,
+               MAX(ke.killmail_time) AS last_seen_at
+        FROM killmail_attackers ka
+        INNER JOIN killmail_events ke ON ke.sequence_id = ka.sequence_id
         LEFT JOIN entity_metadata_cache emc
-             ON emc.entity_type = 'alliance' AND emc.entity_id = bp.alliance_id
-        WHERE bp.alliance_id IS NOT NULL AND bp.alliance_id > 0
-        GROUP BY bp.alliance_id
-        HAVING total_battles >= %s
-        ORDER BY recent_battles DESC, total_battles DESC
+             ON emc.entity_type = 'alliance' AND emc.entity_id = ka.alliance_id
+        WHERE ka.alliance_id IS NOT NULL AND ka.alliance_id > 0
+          AND ke.zkb_npc = 0
+        GROUP BY ka.alliance_id
+        HAVING total_killmails >= %s
+        ORDER BY recent_killmails DESC, total_killmails DESC
         """,
-        (RECENT_DAYS, min_battles),
+        (RECENT_DAYS, RECENT_DAYS, RECENT_DAYS, RECENT_DAYS, min_killmails),
     )
 
 
 def _load_geographic_summary(db: SupplyCoreDb, alliance_id: int) -> dict[str, Any]:
-    """Load geographic concentration from MariaDB battle data."""
-    regions = db.fetch_all(
+    """Load geographic concentration from all killmail data.
+
+    Counts killmails where the alliance's members participated as attackers,
+    grouped by solar system.  This captures small-gang activity that never
+    clusters into a battle.
+    """
+    rows = db.fetch_all(
         """
-        SELECT br.system_id, rs.system_name, rs.region_id, rr.region_name,
-               rs.constellation_id, rc.constellation_name,
-               COUNT(DISTINCT bp.battle_id) AS battle_count
-        FROM battle_participants bp
-        INNER JOIN battle_rollups br ON br.battle_id = bp.battle_id
-        LEFT JOIN ref_systems rs ON rs.system_id = br.system_id
+        SELECT ke.solar_system_id AS system_id,
+               rs.system_name, rs.region_id, rr.region_name,
+               COUNT(DISTINCT ka.sequence_id) AS killmail_count
+        FROM killmail_attackers ka
+        INNER JOIN killmail_events ke ON ke.sequence_id = ka.sequence_id
+        LEFT JOIN ref_systems rs ON rs.system_id = ke.solar_system_id
         LEFT JOIN ref_regions rr ON rr.region_id = rs.region_id
-        LEFT JOIN ref_constellations rc ON rc.constellation_id = rs.constellation_id
-        WHERE bp.alliance_id = %s
-        GROUP BY br.system_id
-        ORDER BY battle_count DESC
+        WHERE ka.alliance_id = %s
+          AND ke.zkb_npc = 0
+          AND ke.solar_system_id IS NOT NULL
+        GROUP BY ke.solar_system_id
+        ORDER BY killmail_count DESC
+        LIMIT 50
         """,
         (alliance_id,),
     )
 
     region_totals: dict[int, dict] = {}
     system_totals: list[dict] = []
-    for r in regions:
+    for r in rows:
         rid = int(r.get("region_id") or 0)
         if rid > 0:
             if rid not in region_totals:
-                region_totals[rid] = {"region_id": rid, "region_name": r.get("region_name", ""), "battle_count": 0}
-            region_totals[rid]["battle_count"] += int(r.get("battle_count") or 0)
+                region_totals[rid] = {"region_id": rid, "region_name": r.get("region_name", ""), "killmail_count": 0}
+            region_totals[rid]["killmail_count"] += int(r.get("killmail_count") or 0)
         system_totals.append({
             "system_id": int(r.get("system_id") or 0),
             "system_name": r.get("system_name", ""),
             "region_name": r.get("region_name", ""),
-            "battle_count": int(r.get("battle_count") or 0),
+            "killmail_count": int(r.get("killmail_count") or 0),
         })
 
-    top_regions = sorted(region_totals.values(), key=lambda x: x["battle_count"], reverse=True)[:TOP_K]
+    top_regions = sorted(region_totals.values(), key=lambda x: x["killmail_count"], reverse=True)[:TOP_K]
     top_systems = system_totals[:TOP_K]
     primary_region = top_regions[0] if top_regions else None
     primary_system = top_systems[0] if top_systems else None
@@ -166,18 +197,29 @@ def _load_geographic_summary(db: SupplyCoreDb, alliance_id: int) -> dict[str, An
 
 
 def _load_ship_summary(db: SupplyCoreDb, alliance_id: int) -> dict[str, Any]:
-    """Load ship class and type preferences."""
+    """Load ship class and type preferences from all killmail attacker data.
+
+    Uses ``killmail_attackers.ship_type_id`` which captures the ship each
+    pilot was flying on every killmail — much richer than battle_participants
+    which only records one ship per battle.
+
+    Fleet function is derived from ``ref_item_types`` group metadata when
+    available, falling back to a simple "dps" classification.
+    """
     ships = db.fetch_all(
         """
-        SELECT bp.ship_type_id,
-               COALESCE(rit.type_name, CONCAT('Type #', bp.ship_type_id)) AS ship_name,
-               bp.is_logi, bp.is_command, bp.is_capital,
+        SELECT ka.ship_type_id,
+               COALESCE(rit.type_name, CONCAT('Type #', ka.ship_type_id)) AS ship_name,
+               COALESCE(rit.group_name, '') AS group_name,
+               COALESCE(rit.market_group_name, '') AS market_group_name,
                COUNT(*) AS usage_count
-        FROM battle_participants bp
-        LEFT JOIN ref_item_types rit ON rit.type_id = bp.ship_type_id
-        WHERE bp.alliance_id = %s
-          AND bp.ship_type_id IS NOT NULL AND bp.ship_type_id > 0
-        GROUP BY bp.ship_type_id, bp.is_logi, bp.is_command, bp.is_capital
+        FROM killmail_attackers ka
+        INNER JOIN killmail_events ke ON ke.sequence_id = ka.sequence_id
+        LEFT JOIN ref_item_types rit ON rit.type_id = ka.ship_type_id
+        WHERE ka.alliance_id = %s
+          AND ka.ship_type_id IS NOT NULL AND ka.ship_type_id > 0
+          AND ke.zkb_npc = 0
+        GROUP BY ka.ship_type_id
         ORDER BY usage_count DESC
         LIMIT 30
         """,
@@ -187,15 +229,10 @@ def _load_ship_summary(db: SupplyCoreDb, alliance_id: int) -> dict[str, Any]:
     ship_types: list[dict] = []
     class_totals: dict[str, int] = defaultdict(int)
     for s in ships:
-        # Derive fleet role from boolean flags
-        if int(s.get("is_logi") or 0):
-            fn = "logistics"
-        elif int(s.get("is_command") or 0):
-            fn = "command"
-        elif int(s.get("is_capital") or 0):
-            fn = "capital"
-        else:
-            fn = "dps"
+        fn = _classify_fleet_function(
+            s.get("group_name", ""),
+            s.get("market_group_name", ""),
+        )
         class_totals[fn] += int(s.get("usage_count") or 0)
         ship_types.append({
             "type_id": int(s.get("ship_type_id") or 0),
@@ -212,51 +249,115 @@ def _load_ship_summary(db: SupplyCoreDb, alliance_id: int) -> dict[str, Any]:
     }
 
 
+# Keywords used for fleet function classification from group/market group names
+_LOGI_KEYWORDS = {"logistics", "remote armor", "remote shield", "remote repair", "fax", "force auxiliary"}
+_COMMAND_KEYWORDS = {"command", "strategic cruiser", "command destroyer", "command ship"}
+_CAPITAL_KEYWORDS = {"capital", "dreadnought", "carrier", "supercarrier", "titan", "force auxiliary"}
+
+
+def _classify_fleet_function(group_name: str, market_group_name: str) -> str:
+    """Classify a ship into a fleet function based on group metadata."""
+    combined = (group_name + " " + market_group_name).lower()
+    if any(kw in combined for kw in _LOGI_KEYWORDS):
+        return "logistics"
+    if any(kw in combined for kw in _CAPITAL_KEYWORDS):
+        return "capital"
+    if any(kw in combined for kw in _COMMAND_KEYWORDS):
+        return "command"
+    return "dps"
+
+
 def _load_behavior_metrics(db: SupplyCoreDb, alliance_id: int) -> dict[str, Any]:
-    """Load engagement rate, token participation, overperformance from battle actor features."""
+    """Load behavioral profile from all killmail data.
+
+    Metrics:
+    - kills_per_week: average weekly kill rate over the last 90 days
+    - avg_gang_size: average number of co-attackers on their kills
+    - solo_ratio: fraction of kills with exactly 1 attacker
+    - total_kills: killmails where alliance members were attackers
+    - total_losses: killmails where alliance members were victims
+    - kill_loss_ratio: kills / max(losses, 1)
+    - posture: classified from activity patterns
+    - active_pilots: distinct characters on killmails (last 90d)
+    """
     row = db.fetch_one(
         """
-        SELECT AVG(baf.centrality_score) AS avg_centrality,
-               AVG(baf.visibility_score) AS avg_visibility,
-               SUM(CASE WHEN baf.participated_in_high_sustain = 1 THEN 1 ELSE 0 END) AS high_sustain_count,
-               SUM(CASE WHEN baf.participated_in_low_sustain = 1 THEN 1 ELSE 0 END) AS low_sustain_count,
-               COUNT(*) AS total_appearances
-        FROM battle_actor_features baf
-        INNER JOIN battle_participants bp
-             ON bp.battle_id = baf.battle_id AND bp.character_id = baf.character_id
-        WHERE bp.alliance_id = %s
+        SELECT COUNT(DISTINCT ka.sequence_id) AS total_kills,
+               COUNT(DISTINCT ka.character_id) AS active_pilots,
+               MIN(ke.killmail_time) AS earliest_kill,
+               MAX(ke.killmail_time) AS latest_kill
+        FROM killmail_attackers ka
+        INNER JOIN killmail_events ke ON ke.sequence_id = ka.sequence_id
+        WHERE ka.alliance_id = %s
+          AND ke.zkb_npc = 0
+          AND ke.killmail_time >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL 90 DAY)
         """,
         (alliance_id,),
     )
 
-    total = int(row.get("total_appearances") or 0) if row else 0
-    high_sustain = int(row.get("high_sustain_count") or 0) if row else 0
-    low_sustain = int(row.get("low_sustain_count") or 0) if row else 0
+    total_kills = int(row.get("total_kills") or 0) if row else 0
+    active_pilots = int(row.get("active_pilots") or 0) if row else 0
 
-    if total > 0:
-        commitment_ratio = high_sustain / total
-        token_ratio = low_sustain / total
-    else:
-        commitment_ratio = 0.0
-        token_ratio = 0.0
+    # Calculate kills per week over 90 day window
+    kills_per_week = round(total_kills / max(1, 90 / 7), 2)
 
-    # Determine posture
-    if commitment_ratio >= 0.5:
-        posture = "committed"
-    elif token_ratio >= 0.4:
+    # Average gang size: how many attackers per killmail on average
+    gang_row = db.fetch_one(
+        """
+        SELECT AVG(attacker_count) AS avg_gang_size,
+               SUM(CASE WHEN attacker_count = 1 THEN 1 ELSE 0 END) AS solo_kills,
+               COUNT(*) AS total_counted
+        FROM (
+            SELECT ka.sequence_id, COUNT(*) AS attacker_count
+            FROM killmail_attackers ka
+            INNER JOIN killmail_events ke ON ke.sequence_id = ka.sequence_id
+            WHERE ka.alliance_id = %s
+              AND ke.zkb_npc = 0
+              AND ke.killmail_time >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL 90 DAY)
+            GROUP BY ka.sequence_id
+        ) sub
+        """,
+        (alliance_id,),
+    )
+
+    avg_gang_size = round(float(gang_row.get("avg_gang_size") or 0), 1) if gang_row else 0.0
+    solo_kills = int(gang_row.get("solo_kills") or 0) if gang_row else 0
+    total_counted = int(gang_row.get("total_counted") or 0) if gang_row else 0
+    solo_ratio = round(solo_kills / max(total_counted, 1), 4)
+
+    # Count losses (alliance members as victims)
+    loss_row = db.fetch_one(
+        """
+        SELECT COUNT(*) AS total_losses
+        FROM killmail_events
+        WHERE victim_alliance_id = %s
+          AND zkb_npc = 0
+          AND killmail_time >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL 90 DAY)
+        """,
+        (alliance_id,),
+    )
+    total_losses = int(loss_row.get("total_losses") or 0) if loss_row else 0
+    kl_ratio = round(total_kills / max(total_losses, 1), 2)
+
+    # Determine posture from activity patterns
+    if kills_per_week >= 50 and avg_gang_size >= 10:
+        posture = "aggressive"
+    elif kills_per_week >= 10 and avg_gang_size < 8:
         posture = "opportunistic"
-    elif total < 5:
+    elif total_kills < 10:
         posture = "infrequent"
     else:
         posture = "balanced"
 
     return {
-        "avg_engagement_rate": round(commitment_ratio, 4),
-        "avg_token_participation": round(token_ratio, 4),
+        "kills_per_week": kills_per_week,
+        "avg_gang_size": avg_gang_size,
+        "solo_ratio": solo_ratio,
+        "total_kills": total_kills,
+        "total_losses": total_losses,
+        "kill_loss_ratio": kl_ratio,
         "posture": posture,
-        "total_appearances": total,
-        "high_sustain_count": high_sustain,
-        "low_sustain_count": low_sustain,
+        "active_pilots": active_pilots,
     }
 
 
@@ -314,14 +415,13 @@ def _query_co_presence_sql(db: SupplyCoreDb, alliance_id: int) -> list[dict]:
     """SQL fallback: find alliances fighting on the same side via killmail co-attacker data.
 
     Two alliances are co-present (same side) when their members appear as
-    co-attackers on the same killmails.  This is more reliable than comparing
-    ``side_key`` which is set per-alliance and therefore cannot express
-    multi-alliance sides.
+    co-attackers on the same killmails.  Uses ALL killmails, not just
+    battle-linked ones.
     """
     rows = db.fetch_all(
         """
         SELECT ka2.alliance_id AS co_alliance_id,
-               COUNT(DISTINCT ke.battle_id) AS shared_battles,
+               COUNT(DISTINCT ka1.sequence_id) AS shared_battles,
                COUNT(DISTINCT ka2.character_id) AS shared_pilots
         FROM killmail_attackers ka1
         INNER JOIN killmail_attackers ka2
@@ -329,7 +429,7 @@ def _query_co_presence_sql(db: SupplyCoreDb, alliance_id: int) -> list[dict]:
             AND ka2.alliance_id <> ka1.alliance_id
         INNER JOIN killmail_events ke
              ON ke.sequence_id = ka1.sequence_id
-            AND ke.battle_id IS NOT NULL
+            AND ke.zkb_npc = 0
         WHERE ka1.alliance_id = %s
           AND ka2.alliance_id IS NOT NULL AND ka2.alliance_id > 0
         GROUP BY ka2.alliance_id
@@ -347,29 +447,27 @@ def _query_enemies_sql(db: SupplyCoreDb, alliance_id: int) -> list[dict]:
     """SQL fallback: find alliances on opposing sides via killmail attacker/victim data.
 
     An alliance is an enemy when our members attack their members (they are
-    victims) or their members attack ours.  This uses the natural
-    attacker-vs-victim relationship from killmails rather than ``side_key``
-    which is set per-alliance and cannot distinguish friend from foe.
+    victims) or their members attack ours.  Uses ALL killmails.
     """
     rows = db.fetch_all(
         """
-        SELECT enemy_id, COUNT(DISTINCT battle_id) AS engagements
+        SELECT enemy_id, COUNT(DISTINCT killmail_id) AS engagements
         FROM (
-            SELECT ke.victim_alliance_id AS enemy_id, ke.battle_id
+            SELECT ke.victim_alliance_id AS enemy_id, ke.sequence_id AS killmail_id
             FROM killmail_attackers ka
             INNER JOIN killmail_events ke ON ke.sequence_id = ka.sequence_id
             WHERE ka.alliance_id = %s
               AND ke.victim_alliance_id IS NOT NULL AND ke.victim_alliance_id > 0
               AND ke.victim_alliance_id <> %s
-              AND ke.battle_id IS NOT NULL
+              AND ke.zkb_npc = 0
             UNION
-            SELECT ka.alliance_id AS enemy_id, ke.battle_id
+            SELECT ka.alliance_id AS enemy_id, ke.sequence_id AS killmail_id
             FROM killmail_events ke
             INNER JOIN killmail_attackers ka ON ka.sequence_id = ke.sequence_id
             WHERE ke.victim_alliance_id = %s
               AND ka.alliance_id IS NOT NULL AND ka.alliance_id > 0
               AND ka.alliance_id <> %s
-              AND ke.battle_id IS NOT NULL
+              AND ke.zkb_npc = 0
         ) AS combined
         GROUP BY enemy_id
         HAVING engagements >= 2
@@ -478,33 +576,49 @@ def _query_enemies_neo4j(neo4j_client: Any, alliance_id: int) -> list[dict]:
 
 
 def _compute_trend(db: SupplyCoreDb, alliance_id: int) -> dict[str, Any]:
-    """Compute recent vs historical activity trend."""
+    """Compute recent vs historical activity trend from all killmail data.
+
+    Uses killmail counts and ISK destroyed in rolling windows for a much
+    more granular signal than battle-only trends.
+    """
     row = db.fetch_one(
         """
         SELECT
-            COUNT(DISTINCT CASE WHEN br.started_at >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL 7 DAY)
-                  THEN bp.battle_id END) AS battles_7d,
-            COUNT(DISTINCT CASE WHEN br.started_at >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL 30 DAY)
-                  AND br.started_at < DATE_SUB(UTC_TIMESTAMP(), INTERVAL 7 DAY)
-                  THEN bp.battle_id END) AS battles_8_30d,
-            COUNT(DISTINCT CASE WHEN br.started_at >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL 90 DAY)
-                  AND br.started_at < DATE_SUB(UTC_TIMESTAMP(), INTERVAL 30 DAY)
-                  THEN bp.battle_id END) AS battles_31_90d
-        FROM battle_participants bp
-        INNER JOIN battle_rollups br ON br.battle_id = bp.battle_id
-        WHERE bp.alliance_id = %s
+            COUNT(DISTINCT CASE WHEN ke.killmail_time >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL 7 DAY)
+                  THEN ka.sequence_id END) AS killmails_7d,
+            COUNT(DISTINCT CASE WHEN ke.killmail_time >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL 30 DAY)
+                  AND ke.killmail_time < DATE_SUB(UTC_TIMESTAMP(), INTERVAL 7 DAY)
+                  THEN ka.sequence_id END) AS killmails_8_30d,
+            COUNT(DISTINCT CASE WHEN ke.killmail_time >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL 90 DAY)
+                  AND ke.killmail_time < DATE_SUB(UTC_TIMESTAMP(), INTERVAL 30 DAY)
+                  THEN ka.sequence_id END) AS killmails_31_90d,
+            COALESCE(SUM(CASE WHEN ke.killmail_time >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL 7 DAY)
+                  THEN ke.zkb_total_value ELSE 0 END), 0) AS isk_destroyed_7d,
+            COALESCE(SUM(CASE WHEN ke.killmail_time >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL 30 DAY)
+                  AND ke.killmail_time < DATE_SUB(UTC_TIMESTAMP(), INTERVAL 7 DAY)
+                  THEN ke.zkb_total_value ELSE 0 END), 0) AS isk_destroyed_8_30d,
+            COALESCE(SUM(CASE WHEN ke.killmail_time >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL 90 DAY)
+                  AND ke.killmail_time < DATE_SUB(UTC_TIMESTAMP(), INTERVAL 30 DAY)
+                  THEN ke.zkb_total_value ELSE 0 END), 0) AS isk_destroyed_31_90d
+        FROM killmail_attackers ka
+        INNER JOIN killmail_events ke ON ke.sequence_id = ka.sequence_id
+        WHERE ka.alliance_id = %s
+          AND ke.zkb_npc = 0
         """,
         (alliance_id,),
     )
 
-    b7 = int(row.get("battles_7d") or 0) if row else 0
-    b8_30 = int(row.get("battles_8_30d") or 0) if row else 0
-    b31_90 = int(row.get("battles_31_90d") or 0) if row else 0
+    k7 = int(row.get("killmails_7d") or 0) if row else 0
+    k8_30 = int(row.get("killmails_8_30d") or 0) if row else 0
+    k31_90 = int(row.get("killmails_31_90d") or 0) if row else 0
+    isk_7d = round(float(row.get("isk_destroyed_7d") or 0), 2) if row else 0.0
+    isk_8_30d = round(float(row.get("isk_destroyed_8_30d") or 0), 2) if row else 0.0
+    isk_31_90d = round(float(row.get("isk_destroyed_31_90d") or 0), 2) if row else 0.0
 
-    # Normalize to weekly rate
-    weekly_recent = b7
-    weekly_mid = b8_30 / max(1, 23 / 7)  # ~3.3 weeks
-    weekly_old = b31_90 / max(1, 60 / 7)  # ~8.6 weeks
+    # Normalize to weekly rate for trend detection
+    weekly_recent = k7
+    weekly_mid = k8_30 / max(1, 23 / 7)  # ~3.3 weeks
+    weekly_old = k31_90 / max(1, 60 / 7)  # ~8.6 weeks
 
     if weekly_recent > weekly_mid * 1.5:
         trend = "rising"
@@ -514,9 +628,12 @@ def _compute_trend(db: SupplyCoreDb, alliance_id: int) -> dict[str, Any]:
         trend = "stable"
 
     return {
-        "battles_7d": b7,
-        "battles_8_30d": b8_30,
-        "battles_31_90d": b31_90,
+        "killmails_7d": k7,
+        "killmails_8_30d": k8_30,
+        "killmails_31_90d": k31_90,
+        "isk_destroyed_7d": isk_7d,
+        "isk_destroyed_8_30d": isk_8_30d,
+        "isk_destroyed_31_90d": isk_31_90d,
         "activity_trend": trend,
     }
 
@@ -547,16 +664,26 @@ def _flush_dossiers(db: SupplyCoreDb, dossiers: list[dict[str, Any]]) -> int:
                     """
                     INSERT INTO alliance_dossiers (
                         alliance_id, alliance_name, total_battles, recent_battles,
+                        total_killmails, recent_killmails,
+                        total_isk_destroyed, recent_isk_destroyed,
+                        active_pilots, recent_active_pilots,
                         first_seen_at, last_seen_at, primary_region_id, primary_system_id,
                         avg_engagement_rate, avg_token_participation, avg_overperformance,
                         posture, top_co_present_json, top_enemies_json,
                         top_regions_json, top_systems_json, top_ship_classes_json,
                         top_ship_types_json, behavior_summary_json, trend_summary_json,
                         computed_at
-                    ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                    ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                     ON DUPLICATE KEY UPDATE
                         alliance_name=VALUES(alliance_name), total_battles=VALUES(total_battles),
-                        recent_battles=VALUES(recent_battles), first_seen_at=VALUES(first_seen_at),
+                        recent_battles=VALUES(recent_battles),
+                        total_killmails=VALUES(total_killmails),
+                        recent_killmails=VALUES(recent_killmails),
+                        total_isk_destroyed=VALUES(total_isk_destroyed),
+                        recent_isk_destroyed=VALUES(recent_isk_destroyed),
+                        active_pilots=VALUES(active_pilots),
+                        recent_active_pilots=VALUES(recent_active_pilots),
+                        first_seen_at=VALUES(first_seen_at),
                         last_seen_at=VALUES(last_seen_at), primary_region_id=VALUES(primary_region_id),
                         primary_system_id=VALUES(primary_system_id),
                         avg_engagement_rate=VALUES(avg_engagement_rate),
@@ -574,9 +701,15 @@ def _flush_dossiers(db: SupplyCoreDb, dossiers: list[dict[str, Any]]) -> int:
                         computed_at=VALUES(computed_at)
                     """,
                     (
-                        d["alliance_id"], d["alliance_name"], d["total_battles"], d["recent_battles"],
-                        d["first_seen_at"], d["last_seen_at"], d["primary_region_id"], d["primary_system_id"],
-                        d["avg_engagement_rate"], d["avg_token_participation"], d.get("avg_overperformance"),
+                        d["alliance_id"], d["alliance_name"],
+                        d["total_battles"], d["recent_battles"],
+                        d["total_killmails"], d["recent_killmails"],
+                        d["total_isk_destroyed"], d["recent_isk_destroyed"],
+                        d["active_pilots"], d["recent_active_pilots"],
+                        d["first_seen_at"], d["last_seen_at"],
+                        d["primary_region_id"], d["primary_system_id"],
+                        d["avg_engagement_rate"], d["avg_token_participation"],
+                        d.get("avg_overperformance"),
                         d["posture"], d["top_co_present_json"], d["top_enemies_json"],
                         d["top_regions_json"], d["top_systems_json"], d["top_ship_classes_json"],
                         d["top_ship_types_json"], d["behavior_summary_json"], d["trend_summary_json"],
@@ -615,12 +748,12 @@ def run_compute_alliance_dossiers(
         except Exception:
             neo4j_client = None
 
-        alliances = _load_alliances_with_battles(db, min_battles=2)
+        alliances = _load_alliances_with_activity(db, min_killmails=5)
         rows_processed = len(alliances)
 
         if not alliances:
             finish_job_run(db, job, status="success", rows_processed=0, rows_written=0)
-            return JobResult.success(job_key=job_key, summary="No alliances with battles found.",
+            return JobResult.success(job_key=job_key, summary="No alliances with killmail activity found.",
                                     rows_processed=0, rows_written=0, duration_ms=0).to_dict()
 
         # Collect all alliance IDs for name resolution
@@ -674,13 +807,19 @@ def run_compute_alliance_dossiers(
                 "alliance_name": a.get("alliance_name", ""),
                 "total_battles": int(a.get("total_battles") or 0),
                 "recent_battles": int(a.get("recent_battles") or 0),
+                "total_killmails": int(a.get("total_killmails") or 0),
+                "recent_killmails": int(a.get("recent_killmails") or 0),
+                "total_isk_destroyed": float(a.get("total_isk_destroyed") or 0),
+                "recent_isk_destroyed": float(a.get("recent_isk_destroyed") or 0),
+                "active_pilots": int(a.get("active_pilots") or 0),
+                "recent_active_pilots": int(a.get("recent_active_pilots") or 0),
                 "first_seen_at": a.get("first_seen_at"),
                 "last_seen_at": a.get("last_seen_at"),
                 "primary_region_id": geo["primary_region_id"],
                 "primary_system_id": geo["primary_system_id"],
-                "avg_engagement_rate": behavior["avg_engagement_rate"],
-                "avg_token_participation": behavior["avg_token_participation"],
-                "avg_overperformance": None,
+                "avg_engagement_rate": behavior.get("kills_per_week", 0),
+                "avg_token_participation": behavior.get("solo_ratio", 0),
+                "avg_overperformance": behavior.get("kill_loss_ratio"),
                 "posture": behavior["posture"],
                 "top_co_present_json": json_dumps_safe(co_present),
                 "top_enemies_json": json_dumps_safe(enemies),
