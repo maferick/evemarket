@@ -15543,6 +15543,9 @@ function python_bridge_process_killmail_batch(array $payloads, bool $skipEntityF
             $rowsWriteAttempted++;
             $rowsWritten++;
             $rowsMatched++;
+        } elseif ($status === 'written_untracked') {
+            $rowsWriteAttempted++;
+            $rowsWritten++;
         }
 
         $lastProcessedSequence = $sequenceId;
@@ -19292,14 +19295,9 @@ function killmail_persist_r2z2_payload(
     }
 
     $attackers = (array) ($transformed['attackers'] ?? []);
-    if (!$skipEntityFilter && !killmail_event_matches_tracked_entities($event, $attackers, $trackedAllianceIds, $trackedCorporationIds, $opponentAllianceIds, $opponentCorporationIds)) {
-        return [
-            'status' => 'filtered',
-            'sequence_id' => $sequenceId,
-        ];
-    }
 
-    // Determine mail_type with priority: own loss/kill > opponent loss/kill.
+    // Determine mail_type with priority: own loss/kill > opponent loss/kill > untracked.
+    // All killmails are now persisted (untracked ones for alliance relationship graph).
     $victimAllianceId = (int) ($event['victim_alliance_id'] ?? 0);
     $victimCorporationId = (int) ($event['victim_corporation_id'] ?? 0);
     $victimIsTracked = ($victimAllianceId > 0 && isset($trackedAllianceIds[$victimAllianceId]))
@@ -19331,8 +19329,10 @@ function killmail_persist_r2z2_payload(
         $mailType = 'opponent_loss';
     } elseif ($attackerIsOpponent) {
         $mailType = 'opponent_kill';
+    } elseif ($skipEntityFilter) {
+        $mailType = 'third_party';
     } else {
-        $mailType = $skipEntityFilter ? 'third_party' : 'kill';
+        $mailType = 'untracked';
     }
     $transformed['event']['mail_type'] = $mailType;
 
@@ -19349,7 +19349,7 @@ function killmail_persist_r2z2_payload(
     });
 
     return [
-        'status' => 'written',
+        'status' => $mailType === 'untracked' ? 'written_untracked' : 'written',
         'sequence_id' => $sequenceId,
     ];
 }

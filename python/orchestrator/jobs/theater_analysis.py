@@ -215,37 +215,154 @@ def _load_side_configuration_ids(db: SupplyCoreDb) -> dict[str, set[int]]:
     }
 
 
+# ── Alliance relationship graph cache ──────────────────────────────────────
+
+def _load_alliance_relationship_graph(db: SupplyCoreDb) -> dict[int, dict[str, list[dict]]]:
+    """Load the computed alliance relationship graph for side inference.
+
+    Returns a dict keyed by alliance_id, each containing:
+      { "allied": [{"target": int, "confidence": float, "shared_killmails": int}],
+        "hostile": [{"target": int, "confidence": float, "shared_killmails": int}] }
+    """
+    graph: dict[int, dict[str, list[dict]]] = {}
+
+    rows = db.fetch_all(
+        """
+        SELECT source_alliance_id, target_alliance_id, relationship_type,
+               confidence, shared_killmails
+        FROM alliance_relationships
+        WHERE confidence >= 0.15
+        ORDER BY source_alliance_id, relationship_type, confidence DESC
+        """
+    )
+
+    for r in rows:
+        src = int(r["source_alliance_id"])
+        if src not in graph:
+            graph[src] = {"allied": [], "hostile": []}
+        entry = {
+            "target": int(r["target_alliance_id"]),
+            "confidence": float(r.get("confidence") or 0),
+            "shared_killmails": int(r.get("shared_killmails") or 0),
+        }
+        rel_type = str(r.get("relationship_type") or "")
+        if rel_type == "allied":
+            graph[src]["allied"].append(entry)
+        elif rel_type == "hostile":
+            graph[src]["hostile"].append(entry)
+
+    return graph
+
+
+# Minimum confidence threshold for graph-inferred side classification.
+# Below this, the alliance stays as third_party even if edges exist.
+_GRAPH_INFERENCE_MIN_CONFIDENCE = 0.3
+
+
+def _infer_side_from_graph(
+    alliance_id: int,
+    relationship_graph: dict[int, dict[str, list[dict]]],
+    friendly_alliance_ids: set[int],
+    opponent_alliance_ids: set[int],
+) -> tuple[str, float]:
+    """Infer side classification from the alliance relationship graph.
+
+    Checks if the alliance has strong 'allied' edges to known friendlies
+    or known opponents. Returns (inferred_side, confidence).
+
+    Returns ("third_party", 0.0) if no strong signal found.
+    """
+    if alliance_id <= 0 or alliance_id not in relationship_graph:
+        return "third_party", 0.0
+
+    allied_edges = relationship_graph[alliance_id].get("allied", [])
+    if not allied_edges:
+        return "third_party", 0.0
+
+    # Score how strongly this alliance is connected to each known side
+    friendly_score = 0.0
+    opponent_score = 0.0
+    friendly_count = 0
+    opponent_count = 0
+
+    for edge in allied_edges:
+        target = edge["target"]
+        conf = edge["confidence"]
+        if target in friendly_alliance_ids:
+            friendly_score += conf
+            friendly_count += 1
+        elif target in opponent_alliance_ids:
+            opponent_score += conf
+            opponent_count += 1
+
+    # Need at least one edge with sufficient confidence to infer
+    if friendly_score <= 0 and opponent_score <= 0:
+        return "third_party", 0.0
+
+    # If strongly allied with friendlies and not with opponents → friendly
+    if friendly_score > opponent_score and friendly_score >= _GRAPH_INFERENCE_MIN_CONFIDENCE:
+        return "friendly", round(friendly_score / max(1, friendly_count), 4)
+
+    # If strongly allied with opponents and not with friendlies → opponent
+    if opponent_score > friendly_score and opponent_score >= _GRAPH_INFERENCE_MIN_CONFIDENCE:
+        return "opponent", round(opponent_score / max(1, opponent_count), 4)
+
+    # Ambiguous — connected to both sides, leave as third_party
+    return "third_party", 0.0
+
+
 # ── Side determination ──────────────────────────────────────────────────────
 
 def _classify_alliance(
     alliance_id: int,
     corporation_id: int,
     side_configuration: dict[str, set[int]],
-) -> str:
-    """Classify an entity as friendly/opponent/third_party from user settings only."""
+    relationship_graph: dict[int, dict[str, list[dict]]] | None = None,
+) -> tuple[str, str]:
+    """Classify an entity as friendly/opponent/third_party.
+
+    Priority:
+      1. Explicit user configuration (tracked alliances/corps) — always wins.
+      2. Alliance relationship graph inference — if graph data available.
+      3. Default to third_party.
+
+    Returns (classification, source) where source is 'config' or 'graph'.
+    """
     friendly_alliance_ids = side_configuration.get("friendly_alliance_ids", set())
     friendly_corporation_ids = side_configuration.get("friendly_corporation_ids", set())
     opponent_alliance_ids = side_configuration.get("opponent_alliance_ids", set())
     opponent_corporation_ids = side_configuration.get("opponent_corporation_ids", set())
 
+    # 1. Explicit configuration always takes priority
     if (alliance_id > 0 and alliance_id in friendly_alliance_ids) or \
        (corporation_id > 0 and corporation_id in friendly_corporation_ids):
-        return "friendly"
+        return "friendly", "config"
     if (alliance_id > 0 and alliance_id in opponent_alliance_ids) or \
        (corporation_id > 0 and corporation_id in opponent_corporation_ids):
-        return "opponent"
-    return "third_party"
+        return "opponent", "config"
+
+    # 2. Graph-based inference for unknown alliances
+    if relationship_graph and alliance_id > 0:
+        inferred, confidence = _infer_side_from_graph(
+            alliance_id, relationship_graph, friendly_alliance_ids, opponent_alliance_ids,
+        )
+        if inferred != "third_party":
+            return inferred, "graph"
+
+    return "third_party", "none"
 
 
 def _determine_sides(
     participants: list[dict[str, Any]],
     side_configuration: dict[str, set[int]],
+    relationship_graph: dict[int, dict[str, list[dict]]] | None = None,
 ) -> tuple[dict[str, str], dict[int, str], dict[str, Any]]:
-    """Classify each character as friendly/opponent/third_party from user settings.
+    """Classify each character as friendly/opponent/third_party.
 
-    Side is determined ONLY from configured tracked alliances (friendly),
-    tracked opponents (opponent), with everything else as third_party.
-    No inference from battle participation or side_key grouping.
+    Side is determined from:
+      1. Configured tracked alliances (friendly) / tracked opponents (opponent)
+      2. Alliance relationship graph inference (for unknowns)
+      3. Everything else remains third_party
 
     Returns:
         side_labels: empty dict (kept for API compatibility)
@@ -254,6 +371,7 @@ def _determine_sides(
     """
     char_sides: dict[int, str] = {}
     counts = {"friendly": 0, "opponent": 0, "third_party": 0}
+    source_counts = {"config": 0, "graph": 0, "none": 0}
 
     for p in participants:
         char_id = int(p.get("character_id") or 0)
@@ -261,15 +379,21 @@ def _determine_sides(
             continue
         alliance_id = int(p.get("alliance_id") or 0)
         corporation_id = int(p.get("corporation_id") or 0)
-        classification = _classify_alliance(alliance_id, corporation_id, side_configuration)
+        classification, source = _classify_alliance(
+            alliance_id, corporation_id, side_configuration, relationship_graph,
+        )
         char_sides[char_id] = classification
         counts[classification] += 1
+        source_counts[source] += 1
 
     return {}, char_sides, {
         "used_fallback": False,
+        "used_graph_inference": source_counts["graph"] > 0,
         "total_friendly_matches": counts["friendly"],
         "total_opponent_matches": counts["opponent"],
         "total_third_party": counts["third_party"],
+        "graph_inferred_count": source_counts["graph"],
+        "config_classified_count": source_counts["config"],
         "side_scores": {},
         "side_labels": {},
     }
@@ -383,6 +507,7 @@ def _compute_alliance_summary(
     bp_rows: list[dict[str, Any]],
     side_configuration: dict[str, set[int]],
     char_sides: dict[int, str],
+    relationship_graph: dict[int, dict[str, list[dict]]] | None = None,
 ) -> list[dict[str, Any]]:
     """Compute per-alliance (or per-corporation for allianceless entities) summary.
 
@@ -460,7 +585,7 @@ def _compute_alliance_summary(
     for gk, stats in group_stats.items():
         aid, corp_id = gk
         stats["participant_count"] = len(group_participants.get(gk, set()))
-        stats["side"] = _classify_alliance(aid, corp_id, side_configuration)
+        stats["side"], _ = _classify_alliance(aid, corp_id, side_configuration, relationship_graph)
         total_isk = stats["total_isk_killed"] + stats["total_isk_lost"]
         stats["efficiency"] = round(_safe_div(stats["total_isk_killed"], total_isk, 0.0), 4)
         result.append(stats)
@@ -674,6 +799,7 @@ def _compute_structure_kills(
     killmails: list[dict[str, Any]],
     side_configuration: dict[str, set[int]],
     theater_id: str,
+    relationship_graph: dict[int, dict[str, list[dict]]] | None = None,
 ) -> list[dict[str, Any]]:
     """Detect player-owned structure killmails (victim has no character, but has alliance).
 
@@ -703,7 +829,7 @@ def _compute_structure_kills(
         seen.add(km_id)
 
         victim_corp = int(km.get("victim_corporation_id") or 0)
-        side = _classify_alliance(victim_alliance, victim_corp, side_configuration)
+        side, _ = _classify_alliance(victim_alliance, victim_corp, side_configuration, relationship_graph)
         isk = float(km.get("total_value") or 0)
         km_time = km.get("killmail_time")
         if isinstance(km_time, datetime):
@@ -1115,6 +1241,7 @@ def run_theater_analysis(
         # Load ship type → group mapping for fleet function resolution
         ship_group_map = _load_ship_group_map(db)
         side_configuration = _load_side_configuration_ids(db)
+        relationship_graph = _load_alliance_relationship_graph(db)
         _theater_log(
             runtime,
             "theater_analysis.side_configuration_loaded",
@@ -1151,7 +1278,7 @@ def run_theater_analysis(
             bp_rows = _load_battle_participants_for_theater(db, battle_ids)
 
             # Determine sides
-            side_labels, char_sides, side_resolution = _determine_sides(bp_rows, side_configuration)
+            side_labels, char_sides, side_resolution = _determine_sides(bp_rows, side_configuration, relationship_graph)
 
             # Compute timeline
             timeline = _compute_timeline(killmails, char_sides, theater_start, theater_end)
@@ -1160,13 +1287,13 @@ def run_theater_analysis(
             turning_points = _detect_turning_points(timeline)
 
             # Compute alliance summary
-            alliance_summary = _compute_alliance_summary(killmails, bp_rows, side_configuration, char_sides)
+            alliance_summary = _compute_alliance_summary(killmails, bp_rows, side_configuration, char_sides, relationship_graph)
 
             # Compute participant stats
             participant_stats = _compute_participants(killmails, bp_rows, char_sides, theater_id, ship_group_map)
 
             # Detect structure kills (player-owned structures with no victim character)
-            structure_kills = _compute_structure_kills(killmails, side_configuration, theater_id)
+            structure_kills = _compute_structure_kills(killmails, side_configuration, theater_id, relationship_graph)
 
             # Compute side composition features for force-normalization
             side_composition = _compute_side_composition(bp_rows, char_sides, ship_group_map, theater_id)

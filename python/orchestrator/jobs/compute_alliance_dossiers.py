@@ -260,6 +260,56 @@ def _load_behavior_metrics(db: SupplyCoreDb, alliance_id: int) -> dict[str, Any]
     }
 
 
+def _query_co_presence_from_relationship_graph(db: SupplyCoreDb, alliance_id: int) -> list[dict]:
+    """Primary source: read pre-computed allied edges from alliance_relationships.
+
+    This table is built from ALL killmails (including untracked) by
+    compute_alliance_relationships, giving much richer data than battle-only queries.
+    """
+    rows = db.fetch_all(
+        """
+        SELECT target_alliance_id AS co_alliance_id,
+               shared_killmails AS shared_battles,
+               shared_pilots,
+               confidence
+        FROM alliance_relationships
+        WHERE source_alliance_id = %s
+          AND relationship_type = 'allied'
+          AND confidence >= 0.15
+        ORDER BY confidence DESC, shared_killmails DESC
+        LIMIT 15
+        """,
+        (alliance_id,),
+    )
+    return [{"alliance_id": int(r["co_alliance_id"]),
+             "shared_battles": int(r["shared_battles"]),
+             "shared_pilots": int(r.get("shared_pilots") or 0),
+             "confidence": float(r.get("confidence") or 0),
+             "source": "relationship_graph"} for r in rows]
+
+
+def _query_enemies_from_relationship_graph(db: SupplyCoreDb, alliance_id: int) -> list[dict]:
+    """Primary source: read pre-computed hostile edges from alliance_relationships."""
+    rows = db.fetch_all(
+        """
+        SELECT target_alliance_id AS enemy_id,
+               shared_killmails AS engagements,
+               confidence
+        FROM alliance_relationships
+        WHERE source_alliance_id = %s
+          AND relationship_type = 'hostile'
+          AND confidence >= 0.15
+        ORDER BY confidence DESC, shared_killmails DESC
+        LIMIT 15
+        """,
+        (alliance_id,),
+    )
+    return [{"alliance_id": int(r["enemy_id"]),
+             "engagements": int(r["engagements"]),
+             "confidence": float(r.get("confidence") or 0),
+             "source": "relationship_graph"} for r in rows]
+
+
 def _query_co_presence_sql(db: SupplyCoreDb, alliance_id: int) -> list[dict]:
     """SQL fallback: find alliances fighting on the same side via killmail co-attacker data.
 
@@ -584,12 +634,18 @@ def run_compute_alliance_dossiers(
             behavior = _load_behavior_metrics(db, aid)
             trend = _compute_trend(db, aid)
 
-            co_present = _query_co_presence_neo4j(neo4j_client, aid)
+            # Prefer pre-computed relationship graph (built from ALL killmails),
+            # then Neo4j, then raw SQL as final fallback.
+            co_present = _query_co_presence_from_relationship_graph(db, aid)
+            if not co_present:
+                co_present = _query_co_presence_neo4j(neo4j_client, aid)
             if not co_present:
                 co_present = _query_co_presence_sql(db, aid)
                 if co_present:
                     logger.info("alliance %d: co-presence from SQL fallback (%d results)", aid, len(co_present))
-            enemies = _query_enemies_neo4j(neo4j_client, aid)
+            enemies = _query_enemies_from_relationship_graph(db, aid)
+            if not enemies:
+                enemies = _query_enemies_neo4j(neo4j_client, aid)
             if not enemies:
                 enemies = _query_enemies_sql(db, aid)
                 if enemies:

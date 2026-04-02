@@ -95,12 +95,48 @@ class TheaterSideDeterminationTests(unittest.TestCase):
             "opponent_alliance_ids": {300},
             "opponent_corporation_ids": {400},
         }
-        self.assertEqual(_classify_alliance(100, 0, config), "friendly")
-        self.assertEqual(_classify_alliance(0, 200, config), "friendly")
-        self.assertEqual(_classify_alliance(300, 0, config), "opponent")
-        self.assertEqual(_classify_alliance(0, 400, config), "opponent")
-        self.assertEqual(_classify_alliance(999, 999, config), "third_party")
-        self.assertEqual(_classify_alliance(0, 0, config), "third_party")
+        self.assertEqual(_classify_alliance(100, 0, config), ("friendly", "config"))
+        self.assertEqual(_classify_alliance(0, 200, config), ("friendly", "config"))
+        self.assertEqual(_classify_alliance(300, 0, config), ("opponent", "config"))
+        self.assertEqual(_classify_alliance(0, 400, config), ("opponent", "config"))
+        self.assertEqual(_classify_alliance(999, 999, config), ("third_party", "none"))
+        self.assertEqual(_classify_alliance(0, 0, config), ("third_party", "none"))
+
+    def test_classify_alliance_graph_inference(self) -> None:
+        """Graph-based inference classifies unknown alliances by their relationships."""
+        config = {
+            "friendly_alliance_ids": {100},
+            "friendly_corporation_ids": set(),
+            "opponent_alliance_ids": {300},
+            "opponent_corporation_ids": set(),
+        }
+        # Alliance 500 is allied with friendly 100 (high confidence)
+        # Alliance 600 is allied with opponent 300 (high confidence)
+        graph = {
+            500: {
+                "allied": [{"target": 100, "confidence": 0.8, "shared_killmails": 50}],
+                "hostile": [],
+            },
+            600: {
+                "allied": [{"target": 300, "confidence": 0.7, "shared_killmails": 30}],
+                "hostile": [],
+            },
+            700: {
+                "allied": [
+                    {"target": 100, "confidence": 0.5, "shared_killmails": 20},
+                    {"target": 300, "confidence": 0.5, "shared_killmails": 20},
+                ],
+                "hostile": [],
+            },
+        }
+        # 500 should be inferred as friendly
+        self.assertEqual(_classify_alliance(500, 0, config, graph), ("friendly", "graph"))
+        # 600 should be inferred as opponent
+        self.assertEqual(_classify_alliance(600, 0, config, graph), ("opponent", "graph"))
+        # 700 is ambiguous — allied with both sides equally → third_party
+        self.assertEqual(_classify_alliance(700, 0, config, graph), ("third_party", "none"))
+        # Config always overrides graph
+        self.assertEqual(_classify_alliance(100, 0, config, graph), ("friendly", "config"))
 
 
     def test_one_friendly_vs_one_hostile(self) -> None:

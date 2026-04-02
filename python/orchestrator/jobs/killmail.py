@@ -391,20 +391,8 @@ def run_killmail_r2z2_stream(context: Any) -> dict[str, Any]:
 
     tracked_alliance_count = max(0, int(job_context.get("tracked_alliance_count") or 0))
     tracked_corporation_count = max(0, int(job_context.get("tracked_corporation_count") or 0))
-    tracked_entity_count = tracked_alliance_count + tracked_corporation_count
-    if tracked_entity_count <= 0:
-        return JobResult.skipped(
-            job_key="killmail_r2z2_sync",
-            reason="Killmail ingestion is enabled, but no tracked alliances or corporations are configured.",
-            meta={
-                "execution_mode": "python",
-                "cursor": str(job_context.get("cursor") or "0"),
-                "checksum": payload_checksum({"cursor": job_context.get("cursor") or "0", "rows_written": 0}),
-                "tracked_alliance_count": tracked_alliance_count,
-                "tracked_corporation_count": tracked_corporation_count,
-                "tracked_entity_count": tracked_entity_count,
-            },
-        ).to_dict()
+    # Note: ingestion no longer requires tracked entities — all killmails are saved
+    # (untracked ones get mail_type='untracked' for alliance relationship graph).
 
     sequence_url = str(job_context.get("sequence_url") or "").strip()
     base_url = str(job_context.get("base_url") or "").rstrip("/")
