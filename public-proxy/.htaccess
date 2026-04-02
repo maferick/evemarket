@@ -1,0 +1,10 @@
+RewriteEngine On
+
+# Serve existing files directly
+RewriteCond %{REQUEST_FILENAME} -f
+RewriteRule ^ - [L]
+
+# Friendly routes
+RewriteRule ^theater/?$ theater.php [L,QSA]
+RewriteRule ^killmail/?$ killmail.php [L,QSA]
+RewriteRule ^$ index.php [L,QSA]
