@@ -19014,6 +19014,8 @@ function killmail_settings_from_request(array $request): array
             'killmail_ingestion_poll_sleep_seconds' => (string) max(6, min(300, (int) ($request['killmail_ingestion_poll_sleep_seconds'] ?? 10))),
             'killmail_ingestion_max_sequences_per_run' => (string) max(1, min(5000, (int) ($request['killmail_ingestion_max_sequences_per_run'] ?? 5000))),
             'killmail_demand_prediction_mode' => trim((string) ($request['killmail_demand_prediction_mode'] ?? 'baseline')),
+            'friendly_coalition_name' => trim(mb_substr(trim((string) ($request['friendly_coalition_name'] ?? '')), 0, 100)),
+            'opponent_coalition_name' => trim(mb_substr(trim((string) ($request['opponent_coalition_name'] ?? '')), 0, 100)),
         ],
         'alliances' => array_map(
             static fn (array $row): array => ['alliance_id' => (int) ($row['id'] ?? 0), 'label' => $row['label'] ?? null],

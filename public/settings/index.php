@@ -393,6 +393,8 @@ $settingValues = get_settings([
     'killmail_ingestion_poll_sleep_seconds',
     'killmail_ingestion_max_sequences_per_run',
     'killmail_demand_prediction_mode',
+    'friendly_coalition_name',
+    'opponent_coalition_name',
     'killmail_backfill_start_date',
     'scheduler_operational_profile',
     'incremental_updates_enabled',
@@ -1533,6 +1535,19 @@ include __DIR__ . '/../../src/views/partials/header.php';
                     <label class="block space-y-2">
                         <span class="text-sm text-muted">Max Sequences Per Run</span>
                         <input type="number" min="1" max="5000" step="1" name="killmail_ingestion_max_sequences_per_run" value="<?= htmlspecialchars($settingValues['killmail_ingestion_max_sequences_per_run'] ?? '5000', ENT_QUOTES) ?>" class="w-full field-input" />
+                    </label>
+                </div>
+
+                <h3 class="text-base font-semibold text-slate-100 mt-6">Coalition Names</h3>
+                <p class="mt-1 text-xs text-muted">Optional display names for each side in battle reports. When set, this name replaces the largest alliance name in the side header (e.g. "WinterCo" instead of "Fraternity.").</p>
+                <div class="grid gap-4 lg:grid-cols-2 mt-2">
+                    <label class="block space-y-2">
+                        <span class="text-sm text-muted">Friendly Coalition Name</span>
+                        <input type="text" name="friendly_coalition_name" maxlength="100" placeholder="e.g. WinterCo" value="<?= htmlspecialchars((string) ($settingValues['friendly_coalition_name'] ?? ''), ENT_QUOTES) ?>" class="w-full field-input" />
+                    </label>
+                    <label class="block space-y-2">
+                        <span class="text-sm text-muted">Opponent Coalition Name</span>
+                        <input type="text" name="opponent_coalition_name" maxlength="100" placeholder="e.g. Imperium" value="<?= htmlspecialchars((string) ($settingValues['opponent_coalition_name'] ?? ''), ENT_QUOTES) ?>" class="w-full field-input" />
                     </label>
                 </div>
 
