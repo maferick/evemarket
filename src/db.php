@@ -16669,7 +16669,7 @@ function db_alliance_dossiers_list(int $limit = 100, int $offset = 0, ?string $s
         "SELECT ad.*
          FROM alliance_dossiers ad
          {$where}
-         ORDER BY ad.recent_battles DESC, ad.total_battles DESC
+         ORDER BY ad.recent_killmails DESC, ad.total_killmails DESC
          LIMIT ? OFFSET ?",
         $params
     );

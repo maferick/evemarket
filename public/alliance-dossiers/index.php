@@ -3,7 +3,7 @@
 declare(strict_types=1);
 require_once __DIR__ . '/../../src/bootstrap.php';
 
-$title = 'Battle Intelligence — Alliance Dossiers';
+$title = 'Alliance Dossiers — Killmail Intelligence';
 
 $search = isset($_GET['q']) ? trim((string) $_GET['q']) : null;
 $page = max(1, (int) ($_GET['page'] ?? 1));
@@ -20,9 +20,9 @@ include __DIR__ . '/../../src/views/partials/header.php';
 <section class="surface-primary">
     <div class="flex items-center justify-between gap-4">
         <div>
-            <p class="text-xs uppercase tracking-[0.16em] text-muted">Battle Intelligence</p>
+            <p class="text-xs uppercase tracking-[0.16em] text-muted">Alliance Intelligence</p>
             <h1 class="mt-1 text-2xl font-semibold text-slate-50">Alliance Dossiers</h1>
-            <p class="mt-2 text-sm text-muted">Graph-powered intelligence briefs for alliances observed in battle. Co-presence networks, enemy relationships, fleet composition, and behavioral posture — all derived from Neo4j graph analysis.</p>
+            <p class="mt-2 text-sm text-muted">Intelligence briefs derived from all killmail activity — kills, losses, fleet composition, geographic presence, and relationship networks. Covers all engagement types from solo kills to coalition warfare.</p>
         </div>
         <div class="flex gap-2">
             <a href="/theater-intelligence" class="btn-secondary">Theater Overview</a>
@@ -54,15 +54,16 @@ include __DIR__ . '/../../src/views/partials/header.php';
                     <th class="px-3 py-2 text-left">Alliance</th>
                     <th class="px-3 py-2 text-left">Posture</th>
                     <th class="px-3 py-2 text-left">Primary Region</th>
-                    <th class="px-3 py-2 text-right">Battles</th>
-                    <th class="px-3 py-2 text-right">Recent</th>
-                    <th class="px-3 py-2 text-right">Engagement Rate</th>
+                    <th class="px-3 py-2 text-right">Killmails</th>
+                    <th class="px-3 py-2 text-right">Recent (30d)</th>
+                    <th class="px-3 py-2 text-right">ISK Destroyed</th>
+                    <th class="px-3 py-2 text-right">Pilots</th>
                     <th class="px-3 py-2 text-left">Last Seen</th>
                 </tr>
             </thead>
             <tbody>
                 <?php if ($dossiers === []): ?>
-                    <tr><td colspan="7" class="px-3 py-6 text-center text-muted">No alliance dossiers computed yet. Run the <code>compute_alliance_dossiers</code> job to populate.</td></tr>
+                    <tr><td colspan="8" class="px-3 py-6 text-center text-muted">No alliance dossiers computed yet. Run the <code>compute_alliance_dossiers</code> job to populate.</td></tr>
                 <?php endif; ?>
                 <?php foreach ($dossiers as $d): ?>
                     <?php
@@ -70,10 +71,11 @@ include __DIR__ . '/../../src/views/partials/header.php';
                         $allianceName = htmlspecialchars((string) ($d['alliance_name'] ?? 'Alliance #' . $allianceId), ENT_QUOTES);
                         $posture = (string) ($d['posture'] ?? 'unknown');
                         $postureColors = [
-                            'committed'     => 'bg-red-900/60 text-red-300',
+                            'aggressive'    => 'bg-red-900/60 text-red-300',
                             'opportunistic' => 'bg-purple-900/60 text-purple-300',
                             'balanced'      => 'bg-amber-900/60 text-amber-300',
                             'infrequent'    => 'bg-slate-700/60 text-slate-400',
+                            'committed'     => 'bg-red-900/60 text-red-300',
                         ];
                         $postureClass = $postureColors[$posture] ?? 'bg-slate-700/60 text-slate-300';
                         $regionJson = $d['top_regions_json'] ?? null;
@@ -84,8 +86,22 @@ include __DIR__ . '/../../src/views/partials/header.php';
                                 $primaryRegion = htmlspecialchars($regions[0]['region_name'], ENT_QUOTES);
                             }
                         }
-                        $engRate = $d['avg_engagement_rate'] !== null ? number_format((float) $d['avg_engagement_rate'] * 100, 1) . '%' : '—';
+                        $totalKillmails = (int) ($d['total_killmails'] ?? $d['total_battles'] ?? 0);
+                        $recentKillmails = (int) ($d['recent_killmails'] ?? $d['recent_battles'] ?? 0);
+                        $totalIsk = (float) ($d['total_isk_destroyed'] ?? 0);
+                        $activePilots = (int) ($d['active_pilots'] ?? 0);
                         $lastSeen = $d['last_seen_at'] ? date('M j, Y', strtotime($d['last_seen_at'])) : '—';
+
+                        // Format ISK value
+                        if ($totalIsk >= 1e12) {
+                            $iskDisplay = number_format($totalIsk / 1e12, 1) . 'T';
+                        } elseif ($totalIsk >= 1e9) {
+                            $iskDisplay = number_format($totalIsk / 1e9, 1) . 'B';
+                        } elseif ($totalIsk >= 1e6) {
+                            $iskDisplay = number_format($totalIsk / 1e6, 1) . 'M';
+                        } else {
+                            $iskDisplay = number_format($totalIsk, 0);
+                        }
                     ?>
                     <tr class="border-b border-border/40 hover:bg-slate-800/40 transition-colors">
                         <td class="px-3 py-2">
@@ -100,9 +116,10 @@ include __DIR__ . '/../../src/views/partials/header.php';
                             <span class="inline-block rounded-full px-2 py-0.5 text-[10px] uppercase tracking-wider <?= $postureClass ?>"><?= ucfirst($posture) ?></span>
                         </td>
                         <td class="px-3 py-2 text-sm text-slate-300"><?= $primaryRegion ?></td>
-                        <td class="px-3 py-2 text-right text-sm text-slate-200"><?= number_format((int) ($d['total_battles'] ?? 0)) ?></td>
-                        <td class="px-3 py-2 text-right text-sm text-slate-200"><?= number_format((int) ($d['recent_battles'] ?? 0)) ?></td>
-                        <td class="px-3 py-2 text-right text-sm text-slate-200"><?= $engRate ?></td>
+                        <td class="px-3 py-2 text-right text-sm text-slate-200"><?= number_format($totalKillmails) ?></td>
+                        <td class="px-3 py-2 text-right text-sm text-slate-200"><?= number_format($recentKillmails) ?></td>
+                        <td class="px-3 py-2 text-right text-sm text-slate-200"><?= $iskDisplay ?></td>
+                        <td class="px-3 py-2 text-right text-sm text-slate-200"><?= number_format($activePilots) ?></td>
                         <td class="px-3 py-2 text-sm text-muted"><?= $lastSeen ?></td>
                     </tr>
                 <?php endforeach; ?>

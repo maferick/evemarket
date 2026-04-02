@@ -23,10 +23,11 @@ $title = $allianceName . ' — Alliance Dossier';
 
 $posture = (string) ($dossier['posture'] ?? 'unknown');
 $postureColors = [
-    'committed'     => 'bg-red-900/60 text-red-300 ring-1 ring-red-400/30',
+    'aggressive'    => 'bg-red-900/60 text-red-300 ring-1 ring-red-400/30',
     'opportunistic' => 'bg-purple-900/60 text-purple-300 ring-1 ring-purple-400/30',
     'balanced'      => 'bg-amber-900/60 text-amber-300 ring-1 ring-amber-400/30',
     'infrequent'    => 'bg-slate-700/60 text-slate-400 ring-1 ring-slate-500/30',
+    'committed'     => 'bg-red-900/60 text-red-300 ring-1 ring-red-400/30',
 ];
 $postureClass = $postureColors[$posture] ?? 'bg-slate-700/60 text-slate-300';
 
@@ -63,26 +64,44 @@ include __DIR__ . '/../../src/views/partials/header.php';
         </div>
     </div>
 
+    <?php
+        $totalKillmails = (int) ($dossier['total_killmails'] ?? $dossier['total_battles'] ?? 0);
+        $recentKillmails = (int) ($dossier['recent_killmails'] ?? $dossier['recent_battles'] ?? 0);
+        $totalIsk = (float) ($dossier['total_isk_destroyed'] ?? 0);
+        $activePilots = (int) ($dossier['active_pilots'] ?? 0);
+        $klRatio = $dossier['avg_overperformance'] !== null ? (float) $dossier['avg_overperformance'] : null;
+
+        // Format ISK
+        if ($totalIsk >= 1e12) {
+            $iskDisplay = number_format($totalIsk / 1e12, 1) . 'T';
+        } elseif ($totalIsk >= 1e9) {
+            $iskDisplay = number_format($totalIsk / 1e9, 1) . 'B';
+        } elseif ($totalIsk >= 1e6) {
+            $iskDisplay = number_format($totalIsk / 1e6, 1) . 'M';
+        } else {
+            $iskDisplay = number_format($totalIsk, 0);
+        }
+    ?>
     <div class="mt-4 grid gap-3 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-6">
         <div class="surface-tertiary">
-            <p class="text-xs text-muted">Total Battles</p>
-            <p class="text-lg text-slate-50 font-semibold"><?= number_format((int) ($dossier['total_battles'] ?? 0)) ?></p>
+            <p class="text-xs text-muted">Total Killmails</p>
+            <p class="text-lg text-slate-50 font-semibold"><?= number_format($totalKillmails) ?></p>
         </div>
         <div class="surface-tertiary">
-            <p class="text-xs text-muted">Recent Battles</p>
-            <p class="text-lg text-slate-50 font-semibold"><?= number_format((int) ($dossier['recent_battles'] ?? 0)) ?></p>
+            <p class="text-xs text-muted">Recent (30d)</p>
+            <p class="text-lg text-slate-50 font-semibold"><?= number_format($recentKillmails) ?></p>
         </div>
         <div class="surface-tertiary">
-            <p class="text-xs text-muted">Engagement Rate</p>
-            <p class="text-lg text-slate-50 font-semibold"><?= $dossier['avg_engagement_rate'] !== null ? number_format((float) $dossier['avg_engagement_rate'] * 100, 1) . '%' : '—' ?></p>
+            <p class="text-xs text-muted">ISK Destroyed</p>
+            <p class="text-lg text-slate-50 font-semibold"><?= $iskDisplay ?></p>
         </div>
         <div class="surface-tertiary">
-            <p class="text-xs text-muted">Token Participation</p>
-            <p class="text-lg text-slate-50 font-semibold"><?= $dossier['avg_token_participation'] !== null ? number_format((float) $dossier['avg_token_participation'] * 100, 1) . '%' : '—' ?></p>
+            <p class="text-xs text-muted">Active Pilots</p>
+            <p class="text-lg text-slate-50 font-semibold"><?= number_format($activePilots) ?></p>
         </div>
         <div class="surface-tertiary">
-            <p class="text-xs text-muted">Overperformance</p>
-            <p class="text-lg text-slate-50 font-semibold"><?= $dossier['avg_overperformance'] !== null ? number_format((float) $dossier['avg_overperformance'], 2) : '—' ?></p>
+            <p class="text-xs text-muted">K/L Ratio</p>
+            <p class="text-lg text-slate-50 font-semibold"><?= $klRatio !== null ? number_format($klRatio, 2) : '—' ?></p>
         </div>
         <div class="surface-tertiary">
             <p class="text-xs text-muted">Last Active</p>
@@ -95,12 +114,13 @@ include __DIR__ . '/../../src/views/partials/header.php';
 <?php if ($topSystems !== []): ?>
 <section class="surface-primary mt-4">
     <h2 class="text-sm font-semibold text-slate-200 uppercase tracking-wider">System Activity Heatmap</h2>
-    <p class="mt-1 text-xs text-muted">Battle concentration across systems. Larger, brighter cells indicate higher activity.</p>
+    <p class="mt-1 text-xs text-muted">Killmail concentration across systems. Larger, brighter cells indicate higher activity.</p>
     <div class="mt-3 flex flex-wrap gap-1.5">
         <?php
-            $maxBattles = max(1, max(array_column($topSystems, 'battle_count')));
+            $countKey = isset($topSystems[0]['killmail_count']) ? 'killmail_count' : 'battle_count';
+            $maxBattles = max(1, max(array_column($topSystems, $countKey)));
             foreach ($topSystems as $sys):
-                $bc = (int) ($sys['battle_count'] ?? 0);
+                $bc = (int) ($sys[$countKey] ?? 0);
                 $intensity = $bc / $maxBattles;
                 // Map intensity to color: low=slate, medium=amber, high=red
                 if ($intensity >= 0.7) {
@@ -125,7 +145,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
         ?>
             <div class="rounded-md <?= $size ?> text-center cursor-default transition-transform hover:scale-105"
                  style="background: <?= $bg ?>; border: 1px solid <?= $border ?>;"
-                 title="<?= htmlspecialchars((string) ($sys['system_name'] ?? ''), ENT_QUOTES) ?>: <?= number_format($bc) ?> battles<?= isset($sys['region_name']) ? ' (' . htmlspecialchars($sys['region_name'], ENT_QUOTES) . ')' : '' ?>">
+                 title="<?= htmlspecialchars((string) ($sys['system_name'] ?? ''), ENT_QUOTES) ?>: <?= number_format($bc) ?> killmails<?= isset($sys['region_name']) ? ' (' . htmlspecialchars($sys['region_name'], ENT_QUOTES) . ')' : '' ?>">
                 <span class="text-xs font-medium whitespace-nowrap" style="color: <?= $text ?>;"><?= htmlspecialchars((string) ($sys['system_name'] ?? ''), ENT_QUOTES) ?></span>
                 <span class="block text-[10px] opacity-70" style="color: <?= $text ?>;"><?= number_format($bc) ?></span>
             </div>
@@ -134,21 +154,24 @@ include __DIR__ . '/../../src/views/partials/header.php';
 
     <!-- Region breakdown bar -->
     <?php if ($topRegions !== []): ?>
-        <?php $totalRegionBattles = max(1, array_sum(array_column($topRegions, 'battle_count'))); ?>
+        <?php
+            $regionCountKey = isset($topRegions[0]['killmail_count']) ? 'killmail_count' : 'battle_count';
+            $totalRegionBattles = max(1, array_sum(array_column($topRegions, $regionCountKey)));
+        ?>
         <div class="mt-4">
             <h3 class="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">Region Distribution</h3>
             <div class="h-6 rounded-lg overflow-hidden flex">
                 <?php
                     $regionColors = ['#ef4444', '#f59e0b', '#34d6ff', '#8b5cf6', '#10b981', '#ec4899', '#6366f1', '#14b8a6'];
                     foreach (array_slice($topRegions, 0, 8) as $idx => $reg):
-                        $regBattles = (int) ($reg['battle_count'] ?? 0);
+                        $regBattles = (int) ($reg[$regionCountKey] ?? 0);
                         $pct = $regBattles / $totalRegionBattles * 100;
                         if ($pct < 2) continue;
                         $color = $regionColors[$idx % count($regionColors)];
                 ?>
                     <div class="h-full flex items-center justify-center overflow-hidden transition-all hover:brightness-125"
                          style="width: <?= number_format($pct, 1) ?>%; background: <?= $color ?>33; border-right: 1px solid rgba(0,0,0,0.3);"
-                         title="<?= htmlspecialchars((string) ($reg['region_name'] ?? ''), ENT_QUOTES) ?>: <?= number_format($regBattles) ?> battles (<?= number_format($pct, 0) ?>%)">
+                         title="<?= htmlspecialchars((string) ($reg['region_name'] ?? ''), ENT_QUOTES) ?>: <?= number_format($regBattles) ?> killmails (<?= number_format($pct, 0) ?>%)">
                         <?php if ($pct >= 8): ?>
                             <span class="text-[10px] font-medium truncate px-1" style="color: <?= $color ?>;"><?= htmlspecialchars((string) ($reg['region_name'] ?? ''), ENT_QUOTES) ?></span>
                         <?php endif; ?>
@@ -160,7 +183,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                     <?php $color = $regionColors[$idx % count($regionColors)]; ?>
                     <span class="text-[10px] text-muted flex items-center gap-1">
                         <span class="inline-block w-2 h-2 rounded-sm" style="background: <?= $color ?>;"></span>
-                        <?= htmlspecialchars((string) ($reg['region_name'] ?? ''), ENT_QUOTES) ?> (<?= number_format((int) ($reg['battle_count'] ?? 0)) ?>)
+                        <?= htmlspecialchars((string) ($reg['region_name'] ?? ''), ENT_QUOTES) ?> (<?= number_format((int) ($reg[$regionCountKey] ?? 0)) ?>)
                     </span>
                 <?php endforeach; ?>
             </div>
@@ -244,11 +267,12 @@ include __DIR__ . '/../../src/views/partials/header.php';
         <?php if ($topRegions === []): ?>
             <p class="mt-3 text-sm text-muted">No geographic data.</p>
         <?php else: ?>
+            <?php $geoCountKey = isset($topRegions[0]['killmail_count']) ? 'killmail_count' : 'battle_count'; ?>
             <div class="mt-3 space-y-1">
                 <?php foreach (array_slice($topRegions, 0, 8) as $r): ?>
                     <div class="flex items-center justify-between text-sm">
                         <span class="text-slate-300"><?= htmlspecialchars((string) ($r['region_name'] ?? ''), ENT_QUOTES) ?></span>
-                        <span class="text-xs text-muted"><?= (int) ($r['battle_count'] ?? 0) ?> battles</span>
+                        <span class="text-xs text-muted"><?= number_format((int) ($r[$geoCountKey] ?? 0)) ?> kills</span>
                     </div>
                 <?php endforeach; ?>
             </div>
@@ -258,9 +282,10 @@ include __DIR__ . '/../../src/views/partials/header.php';
             <h3 class="mt-4 text-xs font-semibold text-slate-400 uppercase tracking-wider">Top Systems</h3>
             <div class="mt-2 space-y-1">
                 <?php foreach (array_slice($topSystems, 0, 6) as $s): ?>
+                    <?php $sysCountKey = isset($s['killmail_count']) ? 'killmail_count' : 'battle_count'; ?>
                     <div class="flex items-center justify-between text-sm">
                         <span class="text-slate-300"><?= htmlspecialchars((string) ($s['system_name'] ?? ''), ENT_QUOTES) ?></span>
-                        <span class="text-xs text-muted"><?= (int) ($s['battle_count'] ?? 0) ?></span>
+                        <span class="text-xs text-muted"><?= number_format((int) ($s[$sysCountKey] ?? 0)) ?></span>
                     </div>
                 <?php endforeach; ?>
             </div>
@@ -325,12 +350,14 @@ include __DIR__ . '/../../src/views/partials/header.php';
         <?php if ($behavior !== []): ?>
             <?php
                 $behaviorDisplay = [
-                    'avg_engagement_rate' => ['label' => 'Engagement Rate', 'format' => 'pct'],
-                    'avg_token_participation' => ['label' => 'Token Participation', 'format' => 'pct'],
+                    'kills_per_week' => ['label' => 'Kills / Week', 'format' => 'float'],
+                    'avg_gang_size' => ['label' => 'Avg Gang Size', 'format' => 'float'],
+                    'solo_ratio' => ['label' => 'Solo Ratio', 'format' => 'pct'],
+                    'total_kills' => ['label' => 'Total Kills (90d)', 'format' => 'int'],
+                    'total_losses' => ['label' => 'Total Losses (90d)', 'format' => 'int'],
+                    'kill_loss_ratio' => ['label' => 'K/L Ratio', 'format' => 'float'],
                     'posture' => ['label' => 'Posture', 'format' => 'text'],
-                    'total_appearances' => ['label' => 'Total Appearances', 'format' => 'int'],
-                    'high_sustain_count' => ['label' => 'High Sustain Fights', 'format' => 'int'],
-                    'low_sustain_count' => ['label' => 'Low Sustain Fights', 'format' => 'int'],
+                    'active_pilots' => ['label' => 'Active Pilots (90d)', 'format' => 'int'],
                 ];
             ?>
             <div class="mt-3 space-y-2">
@@ -342,6 +369,8 @@ include __DIR__ . '/../../src/views/partials/header.php';
                             $display = number_format((float) $val * 100, 1) . '%';
                         } elseif ($meta['format'] === 'int') {
                             $display = number_format((int) $val);
+                        } elseif ($meta['format'] === 'float') {
+                            $display = number_format((float) $val, 1);
                         } else {
                             $display = ucfirst(htmlspecialchars((string) $val, ENT_QUOTES));
                         }
@@ -358,12 +387,23 @@ include __DIR__ . '/../../src/views/partials/header.php';
 
         <?php if ($trend !== []): ?>
             <?php
-                $trendLabels = [
-                    'battles_7d' => 'Last 7 days',
-                    'battles_8_30d' => '8–30 days ago',
-                    'battles_31_90d' => '31–90 days ago',
-                    'activity_trend' => 'Trend',
-                ];
+                // Support both old (battle) and new (killmail) keys
+                $trendLabels = [];
+                if (isset($trend['killmails_7d'])) {
+                    $trendLabels = [
+                        'killmails_7d' => 'Last 7 days',
+                        'killmails_8_30d' => '8–30 days ago',
+                        'killmails_31_90d' => '31–90 days ago',
+                        'activity_trend' => 'Trend',
+                    ];
+                } else {
+                    $trendLabels = [
+                        'battles_7d' => 'Last 7 days',
+                        'battles_8_30d' => '8–30 days ago',
+                        'battles_31_90d' => '31–90 days ago',
+                        'activity_trend' => 'Trend',
+                    ];
+                }
                 $trendIcons = ['rising' => '↑', 'declining' => '↓', 'stable' => '→'];
                 $trendColors = [
                     'rising' => 'text-red-300',
@@ -381,7 +421,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                         <?php if ($key === 'activity_trend'): ?>
                             <span class="font-medium <?= $trendColors[$val] ?? 'text-slate-300' ?>"><?= $trendIcons[$val] ?? '' ?> <?= ucfirst(htmlspecialchars((string) $val, ENT_QUOTES)) ?></span>
                         <?php else: ?>
-                            <span class="text-slate-300"><?= number_format((int) $val) ?> battles</span>
+                            <span class="text-slate-300"><?= number_format((int) $val) ?> killmails</span>
                         <?php endif; ?>
                     </div>
                 <?php endforeach; ?>
@@ -392,10 +432,9 @@ include __DIR__ . '/../../src/views/partials/header.php';
 
 <section class="surface-primary mt-4">
     <p class="text-xs text-muted">Dossier computed at <?= htmlspecialchars((string) ($dossier['computed_at'] ?? ''), ENT_QUOTES) ?>.
+        Intelligence derived from all killmail activity including small-gang, blops, and gate camps.
         <?php if ($cpSource === 'sql' || $enSource === 'sql'): ?>
-            Some data sourced from SQL fallback — Neo4j graph may need a rebuild via <code class="text-[10px]">reset_and_rebuild.sh</code>.
-        <?php else: ?>
-            Graph-derived metrics sourced from Neo4j co-occurrence and engagement analysis.
+            Some relationship data sourced from SQL fallback — Neo4j graph may need a rebuild via <code class="text-[10px]">reset_and_rebuild.sh</code>.
         <?php endif; ?>
     </p>
 </section>
