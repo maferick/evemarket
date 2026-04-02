@@ -131,6 +131,18 @@ if ($viewSnapshot !== null) {
         $sideLabels[$side] = $preferredName . ($otherCount > 0 ? " +{$otherCount}" : '');
     }
 
+    // Override side labels with coalition names when configured
+    $friendlyCoalitionName = trim((string) db_app_setting_get('friendly_coalition_name', ''));
+    $opponentCoalitionName = trim((string) db_app_setting_get('opponent_coalition_name', ''));
+    if ($friendlyCoalitionName !== '' && $sideAlliancesByPilots['friendly'] !== []) {
+        $otherCount = count($sideAlliancesByPilots['friendly']) - 1;
+        $sideLabels['friendly'] = $friendlyCoalitionName . ($otherCount > 0 ? " +{$otherCount}" : '');
+    }
+    if ($opponentCoalitionName !== '' && $sideAlliancesByPilots['opponent'] !== []) {
+        $otherCount = count($sideAlliancesByPilots['opponent']) - 1;
+        $sideLabels['opponent'] = $opponentCoalitionName . ($otherCount > 0 ? " +{$otherCount}" : '');
+    }
+
     // Opponent model
     $opponentModel = ['primary_opponent' => null, 'opponents' => [], 'opponent_summary_label' => $sideLabels['opponent']];
     $opponentAlliancesSorted = $sideAlliancesByPilots['opponent'];
