@@ -1532,7 +1532,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                     </label>
                     <label class="block space-y-2">
                         <span class="text-sm text-muted">Max Sequences Per Run</span>
-                        <input type="number" min="1" max="5000" step="1" name="killmail_ingestion_max_sequences_per_run" value="<?= htmlspecialchars($settingValues['killmail_ingestion_max_sequences_per_run'] ?? '120', ENT_QUOTES) ?>" class="w-full field-input" />
+                        <input type="number" min="1" max="5000" step="1" name="killmail_ingestion_max_sequences_per_run" value="<?= htmlspecialchars($settingValues['killmail_ingestion_max_sequences_per_run'] ?? '5000', ENT_QUOTES) ?>" class="w-full field-input" />
                     </label>
                 </div>
 

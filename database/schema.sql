@@ -2983,7 +2983,7 @@ INSERT INTO app_settings (setting_key, setting_value) VALUES
     ('killmail_r2z2_sequence_url', 'https://r2z2.zkillboard.com/ephemeral/sequence.json'),
     ('killmail_r2z2_base_url', 'https://r2z2.zkillboard.com/ephemeral'),
     ('killmail_ingestion_poll_sleep_seconds', '10'),
-    ('killmail_ingestion_max_sequences_per_run', '120'),
+    ('killmail_ingestion_max_sequences_per_run', '5000'),
     ('killmail_demand_prediction_mode', 'baseline'),
     ('analytics_bucket_1h_retention_days', '14'),
     ('analytics_bucket_1d_retention_days', '180'),

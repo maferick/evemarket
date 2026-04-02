@@ -101,6 +101,24 @@ def _sleep_with_budget(seconds: int, deadline: float) -> bool:
     return time.monotonic() < deadline
 
 
+def _existing_killmail_ids(bridge: PhpBridge, killmail_ids: list[int]) -> set[int]:
+    """Batch-check which killmail IDs already exist in the database.
+
+    Returns a set of IDs that are already stored so that callers can skip
+    expensive entity-enrichment ESI calls for known duplicates.
+    """
+    if not killmail_ids:
+        return set()
+    try:
+        response = bridge.call("killmail-ids-existing", payload={"killmail_ids": killmail_ids})
+        existing = response.get("existing")
+        if isinstance(existing, list):
+            return {int(x) for x in existing if x is not None}
+    except Exception:
+        pass
+    return set()
+
+
 def _flush_batch(bridge: PhpBridge, pending_payloads: list[dict[str, Any]]) -> dict[str, Any]:
     if not pending_payloads:
         return {
@@ -237,7 +255,22 @@ def _flush_pending_batch(
     logger_context: Any,
     started_at: float,
     totals: dict[str, int],
+    entity_resolver: Any = None,
 ) -> tuple[dict[str, Any], int | None]:
+    # Enrich only payloads whose killmail_id is NOT already stored.  This
+    # avoids expensive ESI character/corporation profile lookups for duplicates
+    # that the PHP layer will skip anyway.
+    if entity_resolver is not None and pending_payloads:
+        killmail_ids = []
+        for p in pending_payloads:
+            km_id = int(p.get("killmail_id") or 0)
+            if km_id > 0:
+                killmail_ids.append(km_id)
+        already_stored = _existing_killmail_ids(bridge, killmail_ids) if killmail_ids else set()
+        for p in pending_payloads:
+            km_id = int(p.get("killmail_id") or 0)
+            if km_id <= 0 or km_id not in already_stored:
+                entity_resolver.enrich_payload(p)
     batch_result = _flush_batch(bridge, pending_payloads)
     batch_meta = dict(batch_result.get("meta") or {})
     batch_last_processed = batch_result.get("last_processed_sequence")
@@ -458,6 +491,12 @@ def run_killmail_r2z2_stream(context: Any) -> dict[str, Any]:
     checkpoint_updates = 0
     checkpoint_failures = 0
     first_failure_message = ""
+    # Adaptive fetch delay: use a shorter delay when catching up (consecutive
+    # 200s indicate we are behind the live tip). At the live tip (404s appear)
+    # we revert to the standard 100ms to stay well under R2Z2's 20 req/s cap.
+    _FETCH_DELAY_CATCHUP = 0.02   # 20ms ~= 50 req/s when behind (R2Z2 allows 20 req/s; burst is OK for short runs)
+    _FETCH_DELAY_NORMAL = 0.1     # 100ms ~= 10 req/s at the live tip
+    consecutive_ok = 0
 
     try:
         while time.monotonic() < deadline and total_sequence_files_fetched < max_sequences:
@@ -503,14 +542,17 @@ def run_killmail_r2z2_stream(context: Any) -> dict[str, Any]:
                         f"R2Z2 sequence {sequence_id} returned HTTP 200 with malformed non-object JSON payload."
                     )
 
-                normalized_payload = entity_resolver.enrich_payload(normalized_payload)
+                # Defer entity enrichment until flush time — see _enrich_and_flush_batch.
                 normalized_payload["requested_sequence_id"] = sequence_id
                 normalized_payload["sequence_id"] = int(normalized_payload.get("sequence_id") or sequence_id)
                 pending_payloads.append(normalized_payload)
                 total_sequence_files_fetched += 1
                 next_sequence = sequence_id + 1
-                # R2Z2 rate limit is 20 req/s; sleep 100ms between fetches to stay at ~10 req/s
-                time.sleep(0.1)
+                consecutive_ok += 1
+                # Adaptive rate limiting: shorter delay when catching up (many
+                # consecutive 200s), standard delay near the live tip.
+                fetch_delay = _FETCH_DELAY_CATCHUP if consecutive_ok > 20 else _FETCH_DELAY_NORMAL
+                time.sleep(fetch_delay)
                 if len(pending_payloads) >= batch_size:
                     batch_result, last_processed_sequence = _flush_pending_batch(
                         bridge=bridge,
@@ -524,6 +566,7 @@ def run_killmail_r2z2_stream(context: Any) -> dict[str, Any]:
                             "rows_seen": totals["rows_seen"],
                             "rows_written": totals["rows_written"],
                         },
+                        entity_resolver=entity_resolver,
                     )
                     pending_payloads = []
                     batches_flushed += 1
@@ -566,6 +609,7 @@ def run_killmail_r2z2_stream(context: Any) -> dict[str, Any]:
                             "rows_seen": totals["rows_seen"],
                             "rows_written": totals["rows_written"],
                         },
+                        entity_resolver=entity_resolver,
                     )
                     pending_payloads = []
                     batches_flushed += 1
@@ -608,6 +652,7 @@ def run_killmail_r2z2_stream(context: Any) -> dict[str, Any]:
                         "rows_seen": totals["rows_seen"],
                         "rows_written": totals["rows_written"],
                     },
+                    entity_resolver=entity_resolver,
                 )
                 pending_payloads = []
                 batches_flushed += 1
@@ -620,6 +665,7 @@ def run_killmail_r2z2_stream(context: Any) -> dict[str, Any]:
 
             if status == 404:
                 total_sequence_404s += 1
+                consecutive_ok = 0  # back at the live tip — use normal delay
                 context.emit(
                     "zkill.sequence_fetch",
                     {
@@ -638,6 +684,7 @@ def run_killmail_r2z2_stream(context: Any) -> dict[str, Any]:
 
             if status in (403, 429):
                 total_rate_limits += 1
+                consecutive_ok = 0
                 context.emit(
                     "zkill.sequence_fetch",
                     {
@@ -680,6 +727,7 @@ def run_killmail_r2z2_stream(context: Any) -> dict[str, Any]:
                     "rows_seen": totals["rows_seen"],
                     "rows_written": totals["rows_written"],
                 },
+                entity_resolver=entity_resolver,
             )
             pending_payloads = []
             batches_flushed += 1
