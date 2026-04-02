@@ -164,7 +164,10 @@ def _load_market_rows(db: SupplyCoreDb, limit: int = 600) -> list[dict[str, Any]
             COALESCE(ici.trend_score, 0.0) AS trend_score,
             COALESCE(ici.market_stress_score, 0.0) AS market_stress_score,
             COALESCE(ici.trend_regime, 'stable') AS trend_regime,
-            COALESCE(ici.substitute_count, 0) AS substitute_count
+            COALESCE(ici.substitute_count, 0) AS substitute_count,
+            ici.consumption_30d,
+            ici.avg_daily_consumption,
+            ici.stock_days_remaining
         FROM hub_snapshot ref
         LEFT JOIN alliance_snapshot alliance ON alliance.type_id = ref.type_id
         LEFT JOIN ref_item_types rit ON rit.type_id = ref.type_id
@@ -185,8 +188,24 @@ def _ranked_items(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             continue
         buy_price = to_decimal(row.get("buy_price"))
         sell_price = to_decimal(row.get("sell_price"))
-        quantity = max(1, int(to_decimal(row.get("reference_total_sell_volume")) * Decimal("0.06")))
-        quantity = min(500, quantity)
+        alliance_stock = max(0, int(row.get("alliance_total_sell_volume") or 0))
+        avg_daily = float(row.get("avg_daily_consumption") or 0)
+        consumption_30d_val = row.get("consumption_30d")
+        stock_days_val = row.get("stock_days_remaining")
+        runway_days = 30
+
+        # Consumption-based prediction: buy enough for the target runway minus current stock.
+        if avg_daily > 0:
+            runway_demand = int(Decimal(str(avg_daily * runway_days)).to_integral_value(rounding=ROUND_HALF_UP))
+            consumption_qty = max(0, runway_demand - alliance_stock)
+        else:
+            consumption_qty = 0
+
+        # Legacy economic fallback: 6% of hub volume.
+        economic_qty = max(1, int(to_decimal(row.get("reference_total_sell_volume")) * Decimal("0.06")))
+        economic_qty = min(500, economic_qty)
+
+        quantity = max(consumption_qty, economic_qty)
         dependency_score = to_decimal(row.get("dependency_score"))
         doctrine_count = max(0, int(row.get("doctrine_count") or 0))
         dependency_fit_count = max(0, int(row.get("dependency_fit_count") or 0))
@@ -273,6 +292,11 @@ def _ranked_items(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "market_stress_score": market_stress_score.quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP),
                 "trend_regime": trend_regime,
                 "substitute_count": substitute_count,
+                "consumption_30d": float(consumption_30d_val) if consumption_30d_val is not None else None,
+                "avg_daily_consumption": avg_daily if avg_daily > 0 else None,
+                "stock_days_remaining": float(stock_days_val) if stock_days_val is not None else None,
+                "consumption_recommended_quantity": consumption_qty,
+                "runway_days_target": runway_days,
                 "reason_text": graph_reason,
                 "reason_theme": "Graph dependency priority" if dependency_score > DECIMAL_ZERO else "Market-only priority",
             }

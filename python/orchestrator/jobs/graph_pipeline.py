@@ -1558,6 +1558,7 @@ def _compute_market_stress(
         # Stock days remaining: alliance stock / avg daily consumption
         consumption_30d = data.get("consumption_30d") or 0
         avg_daily_consumption = consumption_30d / 30.0 if consumption_30d > 0 else 0
+        data["avg_daily_consumption"] = avg_daily_consumption
         if avg_daily_consumption > 0:
             data["stock_days_remaining"] = alliance_volume / avg_daily_consumption
 
@@ -1656,6 +1657,8 @@ def _persist_criticality_index(db: SupplyCoreDb, item_data: dict[int, dict[str, 
             d.get("market_spread_pct"),
             d.get("liquidity_score"),
             d.get("stock_days_remaining"),
+            d.get("consumption_30d"),
+            d.get("avg_daily_consumption"),
             d.get("market_stress_score", 0),
             d.get("data_freshness_hrs"),
             d.get("coverage_ratio"),
@@ -1679,13 +1682,14 @@ def _persist_criticality_index(db: SupplyCoreDb, item_data: dict[int, dict[str, 
                     price_velocity, volume_velocity, price_volatility,
                     trend_regime, trend_score,
                     market_spread_pct, liquidity_score, stock_days_remaining,
+                    consumption_30d, avg_daily_consumption,
                     market_stress_score,
                     data_freshness_hrs, coverage_ratio, confidence_score,
                     priority_index, priority_rank, computed_at
                 ) VALUES (
                     %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
                     %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
                 )""",
                 chunk,
             )

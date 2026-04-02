@@ -245,7 +245,16 @@ include __DIR__ . '/../../src/views/partials/header.php';
                                 </td>
                                 <td class="px-4 py-3 align-top">
                                     <p class="font-semibold text-white"><?= htmlspecialchars((string) ($item['final_planner_quantity'] ?? $item['quantity'] ?? 0), ENT_QUOTES) ?></p>
-                                    <p class="mt-1 text-xs text-slate-500">Short by <?= htmlspecialchars((string) ($item['exact_deficit_quantity'] ?? 0), ENT_QUOTES) ?> · target <?= htmlspecialchars((string) ($item['operational_recommended_quantity'] ?? 0), ENT_QUOTES) ?></p>
+                                    <?php
+                                        $hasConsumptionData = ($item['avg_daily_consumption'] ?? null) !== null && (float) ($item['avg_daily_consumption'] ?? 0) > 0.0;
+                                        $stockDays = ($item['stock_days_remaining'] ?? null) !== null ? (float) $item['stock_days_remaining'] : null;
+                                    ?>
+                                    <?php if ($hasConsumptionData): ?>
+                                        <p class="mt-1 text-xs <?= $stockDays !== null && $stockDays < 7 ? 'text-rose-300' : ($stockDays !== null && $stockDays < 14 ? 'text-amber-300' : 'text-slate-500') ?>">Burns <?= htmlspecialchars(number_format((float) ($item['avg_daily_consumption'] ?? 0), 1), ENT_QUOTES) ?>/day · <?= $stockDays !== null ? htmlspecialchars(number_format($stockDays, 0), ENT_QUOTES) . 'd remaining' : 'no stock data' ?></p>
+                                        <p class="mt-1 text-xs text-slate-500"><?= htmlspecialchars(number_format((float) ($item['consumption_30d'] ?? 0), 0), ENT_QUOTES) ?> lost in 30d · <?= htmlspecialchars((string) ($item['runway_days_target'] ?? 30), ENT_QUOTES) ?>d runway target</p>
+                                    <?php else: ?>
+                                        <p class="mt-1 text-xs text-slate-500">Short by <?= htmlspecialchars((string) ($item['exact_deficit_quantity'] ?? 0), ENT_QUOTES) ?> · target <?= htmlspecialchars((string) ($item['operational_recommended_quantity'] ?? 0), ENT_QUOTES) ?></p>
+                                    <?php endif; ?>
                                     <p class="mt-1 text-xs <?= !empty($item['hub_capped']) ? 'text-amber-300' : 'text-slate-500' ?>">Hub <?= htmlspecialchars(number_format((int) ($item['hub_available_quantity'] ?? 0)), ENT_QUOTES) ?> avail · <?= htmlspecialchars(number_format((float) ($item['hub_pct_of_stock'] ?? 0), 0), ENT_QUOTES) ?>% of stock<?= !empty($item['hub_capped']) ? ' · capped from ' . htmlspecialchars(number_format((int) ($item['uncapped_planner_quantity'] ?? 0)), ENT_QUOTES) : '' ?></p>
                                 </td>
                                 <td class="px-4 py-3 align-top">
@@ -282,6 +291,9 @@ include __DIR__ . '/../../src/views/partials/header.php';
                                         <summary class="cursor-pointer list-none text-xs font-medium text-slate-100">More detail</summary>
                                         <div class="mt-2 space-y-2">
                                             <p class="text-xs text-slate-500">Reason code <?= htmlspecialchars((string) ($item['reason_code'] ?? ''), ENT_QUOTES) ?> · necessity <?= htmlspecialchars(number_format((float) ($item['necessity_score'] ?? 0.0), 1), ENT_QUOTES) ?> · profit <?= htmlspecialchars(number_format((float) ($item['profit_score'] ?? 0.0), 1), ENT_QUOTES) ?> · blended <?= htmlspecialchars(number_format((float) ($item['blended_score'] ?? 0.0), 1), ENT_QUOTES) ?></p>
+                                            <?php if (($item['avg_daily_consumption'] ?? null) !== null && (float) ($item['avg_daily_consumption'] ?? 0) > 0.0): ?>
+                                                <p class="text-xs text-cyan-200/85">Consumption: <?= htmlspecialchars(number_format((float) ($item['consumption_30d'] ?? 0), 0), ENT_QUOTES) ?> lost in 30d · <?= htmlspecialchars(number_format((float) ($item['avg_daily_consumption'] ?? 0), 1), ENT_QUOTES) ?>/day avg · stock <?= ($item['stock_days_remaining'] ?? null) !== null ? htmlspecialchars(number_format((float) $item['stock_days_remaining'], 1), ENT_QUOTES) . 'd' : 'N/A' ?> · consumption qty <?= htmlspecialchars((string) ($item['consumption_recommended_quantity'] ?? 0), ENT_QUOTES) ?> · doctrine qty <?= htmlspecialchars((string) ($item['operational_recommended_quantity'] ?? 0), ENT_QUOTES) ?></p>
+                                            <?php endif; ?>
                                             <?php foreach ($affectedFits as $affectedFit): ?>
                                                 <div class="rounded-lg border border-white/8 bg-white/[0.03] px-3 py-2">
                                                     <p class="text-xs font-semibold text-slate-100"><?= htmlspecialchars((string) ($affectedFit['fit_name'] ?? 'Doctrine fit'), ENT_QUOTES) ?></p>
