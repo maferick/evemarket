@@ -9,3 +9,5 @@ __pycache__/
 *.egg-info/
 /python/build/
 .venv*/
+public-proxy/.config.vault
+public-proxy/config.php
