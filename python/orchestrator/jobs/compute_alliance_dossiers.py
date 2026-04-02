@@ -210,12 +210,14 @@ def _load_ship_summary(db: SupplyCoreDb, alliance_id: int) -> dict[str, Any]:
         """
         SELECT ka.ship_type_id,
                COALESCE(rit.type_name, CONCAT('Type #', ka.ship_type_id)) AS ship_name,
-               COALESCE(rit.group_name, '') AS group_name,
-               COALESCE(rit.market_group_name, '') AS market_group_name,
+               COALESCE(rig.group_name, '') AS group_name,
+               COALESCE(rmg.market_group_name, '') AS market_group_name,
                COUNT(*) AS usage_count
         FROM killmail_attackers ka
         INNER JOIN killmail_events ke ON ke.sequence_id = ka.sequence_id
         LEFT JOIN ref_item_types rit ON rit.type_id = ka.ship_type_id
+        LEFT JOIN ref_item_groups rig ON rig.group_id = rit.group_id
+        LEFT JOIN ref_market_groups rmg ON rmg.market_group_id = rit.market_group_id
         WHERE ka.alliance_id = %s
           AND ka.ship_type_id IS NOT NULL AND ka.ship_type_id > 0
           AND ke.zkb_npc = 0
