@@ -31803,11 +31803,11 @@ function supplycore_threat_corridor_graph_svg(int $corridorId, array $corridorSy
             $svg[] = '<title>' . $titleEsc . '</title></g>';
         } else {
             $nameLen = mb_strlen((string) $node['name']);
-            $pw = max(62, (int) ($nameLen * 6.8) + 20);
-            $ph = $hasThreat ? 32 : 22;
+            $pw = max(70, (int) ($nameLen * 7.2) + 22);
+            $ph = $hasThreat ? 34 : 24;
             $rx = (int) ($ph / 2);
-            $svg[] = '<g>'
-                . '<rect x="' . number_format($px - $pw / 2, 2, '.', '') . '" y="' . number_format($py - $ph / 2, 2, '.', '') . '" width="' . $pw . '" height="' . $ph . '" rx="' . $rx . '" fill="#0a0f1a" stroke="' . $outer . '" stroke-width="1.5" stroke-opacity="0.7">'
+            $svg[] = '<g filter="url(#node-glow)">'
+                . '<rect x="' . number_format($px - $pw / 2, 2, '.', '') . '" y="' . number_format($py - $ph / 2, 2, '.', '') . '" width="' . $pw . '" height="' . $ph . '" rx="' . $rx . '" fill="#111827" stroke="' . $outer . '" stroke-width="1.8" stroke-opacity="0.9">'
                 . '<title>' . $titleEsc . '</title>'
                 . '</rect>'
                 . '<text class="label-s" x="' . number_format($px, 2, '.', '') . '" y="' . number_format($py + ($hasThreat ? -2 : 4), 2, '.', '') . '" text-anchor="middle">' . $safeName . '</text>';
@@ -32107,11 +32107,11 @@ function supplycore_theater_map_svg(string $theaterId, array $systemIds, int $ho
                 . '<title>' . $titleEsc . '</title></g>';
         } else {
             $nameLen = mb_strlen((string) $node['name']);
-            $pw = max(62, (int) ($nameLen * 6.8) + 20);
-            $ph = 32;
+            $pw = max(70, (int) ($nameLen * 7.2) + 22);
+            $ph = 34;
             $rx = (int) ($ph / 2);
-            $svg[] = '<g>'
-                . '<rect x="' . number_format($px - $pw / 2, 2, '.', '') . '" y="' . number_format($py - $ph / 2, 2, '.', '') . '" width="' . $pw . '" height="' . $ph . '" rx="' . $rx . '" fill="#0a0f1a" stroke="' . $outer . '" stroke-width="1.5" stroke-opacity="0.7">'
+            $svg[] = '<g filter="url(#battle-glow)">'
+                . '<rect x="' . number_format($px - $pw / 2, 2, '.', '') . '" y="' . number_format($py - $ph / 2, 2, '.', '') . '" width="' . $pw . '" height="' . $ph . '" rx="' . $rx . '" fill="#111827" stroke="' . $outer . '" stroke-width="1.8" stroke-opacity="0.9">'
                 . '<title>' . $titleEsc . '</title></rect>'
                 . '<text class="lbl-s" x="' . number_format($px, 2, '.', '') . '" y="' . number_format($py - 2, 2, '.', '') . '" text-anchor="middle">' . $safeName . '</text>'
                 . '<text class="lbl-sec" x="' . number_format($px, 2, '.', '') . '" y="' . number_format($py + 11, 2, '.', '') . '" text-anchor="middle" fill="' . $outer . '">' . $secFmt . '</text>'
@@ -32125,7 +32125,7 @@ function supplycore_theater_map_svg(string $theaterId, array $systemIds, int $ho
     $svg[] = '<g opacity="0.75">'
         . '<rect x="' . ($lx - 120) . '" y="' . ($ly - 18) . '" width="50" height="16" rx="8" fill="#1a1207" stroke="#fbbf24" stroke-width="1.5"/>'
         . '<text x="' . ($lx - 65) . '" y="' . ($ly - 6) . '" style="font:500 9px Inter,Segoe UI,sans-serif;fill:#64748b">Battle system</text>'
-        . '<rect x="' . ($lx - 120) . '" y="' . ($ly - 0) . '" width="50" height="16" rx="8" fill="#0a0f1a" stroke="#64748b" stroke-width="1.2"/>'
+        . '<rect x="' . ($lx - 120) . '" y="' . ($ly - 0) . '" width="50" height="16" rx="8" fill="#111827" stroke="#64748b" stroke-width="1.2"/>'
         . '<text x="' . ($lx - 65) . '" y="' . ($ly + 12) . '" style="font:500 9px Inter,Segoe UI,sans-serif;fill:#64748b">Adjacent system</text>'
         . '</g>';
 
@@ -32377,11 +32377,11 @@ function supplycore_system_area_svg(int $systemId, int $hops = 2): ?string
             $svg[] = '<title>' . $titleEsc . '</title></g>';
         } else {
             $nameLen = mb_strlen((string) $node['name']);
-            $pw = max(62, (int) ($nameLen * 6.8) + 20);
-            $ph = $hasThreat ? 32 : 22;
+            $pw = max(70, (int) ($nameLen * 7.2) + 22);
+            $ph = $hasThreat ? 34 : 24;
             $rx = (int) ($ph / 2);
-            $svg[] = '<g>'
-                . '<rect x="' . number_format($npx - $pw / 2, 2, '.', '') . '" y="' . number_format($npy - $ph / 2, 2, '.', '') . '" width="' . $pw . '" height="' . $ph . '" rx="' . $rx . '" fill="#0a0f1a" stroke="' . $outer . '" stroke-width="1.5" stroke-opacity="0.72">'
+            $svg[] = '<g filter="url(#node-glow)">'
+                . '<rect x="' . number_format($npx - $pw / 2, 2, '.', '') . '" y="' . number_format($npy - $ph / 2, 2, '.', '') . '" width="' . $pw . '" height="' . $ph . '" rx="' . $rx . '" fill="#111827" stroke="' . $outer . '" stroke-width="1.8" stroke-opacity="0.9">'
                 . '<title>' . $titleEsc . '</title></rect>'
                 . '<text class="lbl-2" x="' . number_format($npx, 2, '.', '') . '" y="' . number_format($npy + ($hasThreat ? -1 : 4), 2, '.', '') . '" text-anchor="middle">' . $safeName . '</text>';
             if ($hasThreat) {
@@ -32396,11 +32396,11 @@ function supplycore_system_area_svg(int $systemId, int $hops = 2): ?string
     $ly = $height - $pad - 2;
     $svg[] = '<g opacity="0.7">'
         . '<text x="' . $lx . '" y="' . ($ly - 58) . '" text-anchor="end" style="font:600 9px Inter,Segoe UI,sans-serif;fill:#475569;letter-spacing:.06em">SECURITY</text>'
-        . '<rect x="' . ($lx - 100) . '" y="' . ($ly - 50) . '" width="40" height="14" rx="7" fill="#0a0f1a" stroke="#10b981" stroke-width="1.3"/>'
+        . '<rect x="' . ($lx - 100) . '" y="' . ($ly - 50) . '" width="40" height="14" rx="7" fill="#111827" stroke="#10b981" stroke-width="1.3"/>'
         . '<text x="' . ($lx - 55) . '" y="' . ($ly - 39) . '" style="font:500 9px Inter,Segoe UI,sans-serif;fill:#64748b">High-sec (&ge;0.5)</text>'
-        . '<rect x="' . ($lx - 100) . '" y="' . ($ly - 34) . '" width="40" height="14" rx="7" fill="#0a0f1a" stroke="#f59e0b" stroke-width="1.3"/>'
+        . '<rect x="' . ($lx - 100) . '" y="' . ($ly - 34) . '" width="40" height="14" rx="7" fill="#111827" stroke="#f59e0b" stroke-width="1.3"/>'
         . '<text x="' . ($lx - 55) . '" y="' . ($ly - 23) . '" style="font:500 9px Inter,Segoe UI,sans-serif;fill:#64748b">Low-sec (0&ndash;0.5)</text>'
-        . '<rect x="' . ($lx - 100) . '" y="' . ($ly - 18) . '" width="40" height="14" rx="7" fill="#0a0f1a" stroke="#ef4444" stroke-width="1.3"/>'
+        . '<rect x="' . ($lx - 100) . '" y="' . ($ly - 18) . '" width="40" height="14" rx="7" fill="#111827" stroke="#ef4444" stroke-width="1.3"/>'
         . '<text x="' . ($lx - 55) . '" y="' . ($ly - 7) . '" style="font:500 9px Inter,Segoe UI,sans-serif;fill:#64748b">Null-sec (&le;0)</text>'
         . '</g>';
 
