@@ -6192,6 +6192,352 @@ FLUX;
     return array_slice($normalizedRows, 0, $safeTypeLimit * $safeDays);
 }
 
+/**
+ * InfluxDB-backed daily aggregate by date/type/source.
+ * Returns the same row shape as db_market_history_daily_aggregate_by_date_type_source().
+ */
+function db_market_history_daily_aggregate_influx(
+    string $sourceType,
+    int $sourceId,
+    string $startDate,
+    string $endDate
+): array {
+    if (!db_influx_read_enabled() || $sourceId <= 0) {
+        return [];
+    }
+
+    $bucket = trim((string) config('influxdb.bucket', 'supplycore_rollups'));
+    if ($bucket === '') {
+        return [];
+    }
+
+    $qBucket = addslashes($bucket);
+    $qSourceType = addslashes($sourceType);
+    $safeSourceId = (string) $sourceId;
+    $rangeStart = $startDate . 'T00:00:00Z';
+    $rangeStop = date('Y-m-d', strtotime($endDate . ' +1 day')) . 'T00:00:00Z';
+
+    $priceFlux = <<<FLUX
+from(bucket: "{$qBucket}")
+  |> range(start: {$rangeStart}, stop: {$rangeStop})
+  |> filter(fn: (r) => r._measurement == "market_item_price")
+  |> filter(fn: (r) => r.window == "1d")
+  |> filter(fn: (r) => r.source_type == "{$qSourceType}")
+  |> filter(fn: (r) => r.source_id == "{$safeSourceId}")
+  |> filter(fn: (r) => r._field == "weighted_price" or r._field == "listing_count")
+  |> pivot(rowKey: ["_time", "type_id"], columnKey: ["_field"], valueColumn: "_value")
+  |> keep(columns: ["_time", "type_id", "weighted_price", "listing_count"])
+FLUX;
+
+    $stockFlux = <<<FLUX
+from(bucket: "{$qBucket}")
+  |> range(start: {$rangeStart}, stop: {$rangeStop})
+  |> filter(fn: (r) => r._measurement == "market_item_stock")
+  |> filter(fn: (r) => r.window == "1d")
+  |> filter(fn: (r) => r.source_type == "{$qSourceType}")
+  |> filter(fn: (r) => r.source_id == "{$safeSourceId}")
+  |> filter(fn: (r) => r._field == "local_stock_units" or r._field == "listing_count")
+  |> pivot(rowKey: ["_time", "type_id"], columnKey: ["_field"], valueColumn: "_value")
+  |> keep(columns: ["_time", "type_id", "local_stock_units", "listing_count"])
+FLUX;
+
+    $priceRows = db_influx_query_rows($priceFlux);
+    if ($priceRows === []) {
+        return [];
+    }
+    $stockRows = db_influx_query_rows($stockFlux);
+
+    $stockByKey = [];
+    foreach ($stockRows as $row) {
+        $typeId = max(0, (int) ($row['type_id'] ?? 0));
+        $time = trim((string) ($row['_time'] ?? ''));
+        if ($typeId <= 0 || $time === '') {
+            continue;
+        }
+        $tradeDate = gmdate('Y-m-d', strtotime($time) ?: 0);
+        if ($tradeDate === '1970-01-01') {
+            continue;
+        }
+        $stockByKey[$tradeDate . ':' . $typeId] = [
+            'volume' => max(0, (int) round((float) ($row['local_stock_units'] ?? 0))),
+            'order_count' => max(0, (int) round((float) ($row['listing_count'] ?? 0))),
+        ];
+    }
+
+    $typeIds = [];
+    $results = [];
+    foreach ($priceRows as $row) {
+        $typeId = max(0, (int) ($row['type_id'] ?? 0));
+        $time = trim((string) ($row['_time'] ?? ''));
+        if ($typeId <= 0 || $time === '') {
+            continue;
+        }
+        $tradeDate = gmdate('Y-m-d', strtotime($time) ?: 0);
+        if ($tradeDate === '1970-01-01') {
+            continue;
+        }
+        $key = $tradeDate . ':' . $typeId;
+        if (isset($results[$key])) {
+            continue;
+        }
+        $typeIds[$typeId] = $typeId;
+        $stock = $stockByKey[$key] ?? ['volume' => 0, 'order_count' => 0];
+        $results[$key] = [
+            'trade_date' => $tradeDate,
+            'type_id' => $typeId,
+            'type_name' => '',
+            'source_type' => $sourceType,
+            'source_id' => $sourceId,
+            'avg_close_price' => max(0.0, (float) ($row['weighted_price'] ?? 0)),
+            'total_volume' => $stock['volume'],
+            'total_order_count' => $stock['order_count'],
+            'last_observed_at' => gmdate('Y-m-d H:i:s', strtotime($time) ?: 0),
+        ];
+    }
+
+    if ($results === []) {
+        return [];
+    }
+
+    $typeNamesById = [];
+    foreach (db_ref_item_types_by_ids(array_values($typeIds)) as $typeRow) {
+        $tid = max(0, (int) ($typeRow['type_id'] ?? 0));
+        if ($tid > 0) {
+            $typeNamesById[$tid] = (string) ($typeRow['type_name'] ?? '');
+        }
+    }
+
+    $rows = array_values($results);
+    foreach ($rows as &$r) {
+        $r['type_name'] = $typeNamesById[(int) $r['type_id']] ?? '';
+    }
+    unset($r);
+
+    usort($rows, static fn (array $a, array $b): int => strcmp($a['trade_date'], $b['trade_date']) ?: ($a['type_id'] <=> $b['type_id']));
+
+    return $rows;
+}
+
+/**
+ * InfluxDB-backed stock health series.
+ * Returns the same row shape as db_market_orders_history_stock_health_series().
+ */
+function db_market_history_stock_health_influx(
+    string $sourceType,
+    int $sourceId,
+    string $startDate,
+    string $endDate
+): array {
+    if (!db_influx_read_enabled() || $sourceId <= 0) {
+        return [];
+    }
+
+    $bucket = trim((string) config('influxdb.bucket', 'supplycore_rollups'));
+    if ($bucket === '') {
+        return [];
+    }
+
+    $qBucket = addslashes($bucket);
+    $qSourceType = addslashes($sourceType);
+    $safeSourceId = (string) $sourceId;
+    $rangeStart = $startDate . 'T00:00:00Z';
+    $rangeStop = date('Y-m-d', strtotime($endDate . ' +1 day')) . 'T00:00:00Z';
+
+    $flux = <<<FLUX
+from(bucket: "{$qBucket}")
+  |> range(start: {$rangeStart}, stop: {$rangeStop})
+  |> filter(fn: (r) => r._measurement == "market_item_stock")
+  |> filter(fn: (r) => r.window == "1d")
+  |> filter(fn: (r) => r.source_type == "{$qSourceType}")
+  |> filter(fn: (r) => r.source_id == "{$safeSourceId}")
+  |> filter(fn: (r) => r._field == "local_stock_units" or r._field == "listing_count")
+  |> pivot(rowKey: ["_time", "type_id"], columnKey: ["_field"], valueColumn: "_value")
+  |> keep(columns: ["_time", "type_id", "local_stock_units", "listing_count"])
+FLUX;
+
+    $influxRows = db_influx_query_rows($flux);
+    if ($influxRows === []) {
+        return [];
+    }
+
+    $typeIds = [];
+    $results = [];
+    foreach ($influxRows as $row) {
+        $typeId = max(0, (int) ($row['type_id'] ?? 0));
+        $time = trim((string) ($row['_time'] ?? ''));
+        if ($typeId <= 0 || $time === '') {
+            continue;
+        }
+        $tradeDate = gmdate('Y-m-d', strtotime($time) ?: 0);
+        if ($tradeDate === '1970-01-01') {
+            continue;
+        }
+        $key = $tradeDate . ':' . $typeId;
+        if (isset($results[$key])) {
+            continue;
+        }
+        $typeIds[$typeId] = $typeId;
+        $results[$key] = [
+            'observed_date' => $tradeDate,
+            'type_id' => $typeId,
+            'type_name' => '',
+            'sell_volume' => max(0, (int) round((float) ($row['local_stock_units'] ?? 0))),
+            'buy_volume' => 0,
+            'sell_order_count' => max(0, (int) round((float) ($row['listing_count'] ?? 0))),
+            'buy_order_count' => 0,
+            'avg_sell_price' => null,
+            'avg_buy_price' => null,
+            'last_observed_at' => gmdate('Y-m-d H:i:s', strtotime($time) ?: 0),
+        ];
+    }
+
+    if ($results === []) {
+        return [];
+    }
+
+    $typeNamesById = [];
+    foreach (db_ref_item_types_by_ids(array_values($typeIds)) as $typeRow) {
+        $tid = max(0, (int) ($typeRow['type_id'] ?? 0));
+        if ($tid > 0) {
+            $typeNamesById[$tid] = (string) ($typeRow['type_name'] ?? '');
+        }
+    }
+
+    $rows = array_values($results);
+    foreach ($rows as &$r) {
+        $r['type_name'] = $typeNamesById[(int) $r['type_id']] ?? '';
+    }
+    unset($r);
+
+    usort($rows, static fn (array $a, array $b): int => strcmp($a['observed_date'], $b['observed_date']) ?: ($a['type_id'] <=> $b['type_id']));
+
+    return $rows;
+}
+
+/**
+ * InfluxDB-backed deviation series (alliance vs hub prices).
+ * Returns the same row shape as db_market_history_daily_deviation_series().
+ */
+function db_market_history_deviation_influx(
+    int $allianceStructureId,
+    int $hubSourceId,
+    string $startDate,
+    string $endDate
+): array {
+    if (!db_influx_read_enabled() || $allianceStructureId <= 0 || $hubSourceId <= 0) {
+        return [];
+    }
+
+    $bucket = trim((string) config('influxdb.bucket', 'supplycore_rollups'));
+    if ($bucket === '') {
+        return [];
+    }
+
+    $qBucket = addslashes($bucket);
+    $safeAllianceId = (string) $allianceStructureId;
+    $safeHubId = (string) $hubSourceId;
+    $rangeStart = $startDate . 'T00:00:00Z';
+    $rangeStop = date('Y-m-d', strtotime($endDate . ' +1 day')) . 'T00:00:00Z';
+
+    $buildFlux = static function (string $sourceType, string $sourceId) use ($qBucket, $rangeStart, $rangeStop): string {
+        return <<<FLUX
+from(bucket: "{$qBucket}")
+  |> range(start: {$rangeStart}, stop: {$rangeStop})
+  |> filter(fn: (r) => r._measurement == "market_item_price")
+  |> filter(fn: (r) => r.window == "1d")
+  |> filter(fn: (r) => r.source_type == "{$sourceType}")
+  |> filter(fn: (r) => r.source_id == "{$sourceId}")
+  |> filter(fn: (r) => r._field == "weighted_price" or r._field == "listing_count")
+  |> pivot(rowKey: ["_time", "type_id"], columnKey: ["_field"], valueColumn: "_value")
+  |> keep(columns: ["_time", "type_id", "weighted_price", "listing_count"])
+FLUX;
+    };
+
+    $allianceRows = db_influx_query_rows($buildFlux('alliance_structure', $safeAllianceId));
+    if ($allianceRows === []) {
+        return [];
+    }
+    $hubRows = db_influx_query_rows($buildFlux('market_hub', $safeHubId));
+
+    $hubByKey = [];
+    foreach ($hubRows as $row) {
+        $typeId = max(0, (int) ($row['type_id'] ?? 0));
+        $time = trim((string) ($row['_time'] ?? ''));
+        if ($typeId <= 0 || $time === '') {
+            continue;
+        }
+        $tradeDate = gmdate('Y-m-d', strtotime($time) ?: 0);
+        if ($tradeDate === '1970-01-01') {
+            continue;
+        }
+        $hubByKey[$tradeDate . ':' . $typeId] = [
+            'price' => max(0.0, (float) ($row['weighted_price'] ?? 0)),
+            'order_count' => max(0, (int) round((float) ($row['listing_count'] ?? 0))),
+        ];
+    }
+
+    if ($hubByKey === []) {
+        return [];
+    }
+
+    $typeIds = [];
+    $results = [];
+    foreach ($allianceRows as $row) {
+        $typeId = max(0, (int) ($row['type_id'] ?? 0));
+        $time = trim((string) ($row['_time'] ?? ''));
+        if ($typeId <= 0 || $time === '') {
+            continue;
+        }
+        $tradeDate = gmdate('Y-m-d', strtotime($time) ?: 0);
+        if ($tradeDate === '1970-01-01') {
+            continue;
+        }
+        $key = $tradeDate . ':' . $typeId;
+        if (isset($results[$key]) || !isset($hubByKey[$key])) {
+            continue;
+        }
+        $alliancePrice = max(0.0, (float) ($row['weighted_price'] ?? 0));
+        $hubPrice = $hubByKey[$key]['price'];
+        $deviationPercent = $hubPrice > 0 ? (($alliancePrice - $hubPrice) / $hubPrice) * 100 : null;
+
+        $typeIds[$typeId] = $typeId;
+        $results[$key] = [
+            'trade_date' => $tradeDate,
+            'type_id' => $typeId,
+            'type_name' => '',
+            'alliance_close_price' => $alliancePrice,
+            'hub_close_price' => $hubPrice,
+            'deviation_percent' => $deviationPercent,
+            'alliance_volume' => 0,
+            'hub_volume' => 0,
+            'alliance_order_count' => max(0, (int) round((float) ($row['listing_count'] ?? 0))),
+            'hub_order_count' => $hubByKey[$key]['order_count'],
+        ];
+    }
+
+    if ($results === []) {
+        return [];
+    }
+
+    $typeNamesById = [];
+    foreach (db_ref_item_types_by_ids(array_values($typeIds)) as $typeRow) {
+        $tid = max(0, (int) ($typeRow['type_id'] ?? 0));
+        if ($tid > 0) {
+            $typeNamesById[$tid] = (string) ($typeRow['type_name'] ?? '');
+        }
+    }
+
+    $rows = array_values($results);
+    foreach ($rows as &$r) {
+        $r['type_name'] = $typeNamesById[(int) $r['type_id']] ?? '';
+    }
+    unset($r);
+
+    usort($rows, static fn (array $a, array $b): int => strcmp($a['trade_date'], $b['trade_date']) ?: ($a['type_id'] <=> $b['type_id']));
+
+    return $rows;
+}
+
 function db_market_history_daily_aggregate_by_date_type_source(
     string $sourceType,
     int $sourceId,
@@ -6199,6 +6545,13 @@ function db_market_history_daily_aggregate_by_date_type_source(
     string $endDate,
     array $typeIds = []
 ): array {
+    if ($typeIds === [] && db_influx_read_enabled()) {
+        $influxRows = db_market_history_daily_aggregate_influx($sourceType, $sourceId, $startDate, $endDate);
+        if ($influxRows !== []) {
+            return $influxRows;
+        }
+    }
+
     $params = [$sourceType, $sourceId, $startDate, $endDate];
     $typeFilterSql = '';
     $rawTypeFilterSql = '';
@@ -6245,6 +6598,13 @@ function db_market_history_daily_deviation_series(
     string $endDate,
     array $typeIds = []
 ): array {
+    if ($typeIds === [] && db_influx_read_enabled()) {
+        $influxRows = db_market_history_deviation_influx($allianceStructureId, $hubSourceId, $startDate, $endDate);
+        if ($influxRows !== []) {
+            return $influxRows;
+        }
+    }
+
     $params = [$allianceStructureId, $hubSourceId, $startDate, $endDate];
     $typeFilterSql = '';
 
@@ -6302,6 +6662,13 @@ function db_market_orders_history_stock_health_series(
     array $typeIds = [],
     bool $allowRawFallback = false
 ): array {
+    if ($typeIds === [] && db_influx_read_enabled()) {
+        $influxRows = db_market_history_stock_health_influx($sourceType, $sourceId, $startDate, $endDate);
+        if ($influxRows !== []) {
+            return $influxRows;
+        }
+    }
+
     $rows = db_market_item_stock_window_summaries($sourceType, $sourceId, $startDate, $endDate, $typeIds);
     if ($rows !== [] || $allowRawFallback === false) {
         return $rows;
