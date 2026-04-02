@@ -28185,6 +28185,18 @@ function buy_all_hauling_cost_per_m3(): float
     return 250.0;
 }
 
+/**
+ * Target runway in days for consumption-based buy quantity predictions.
+ *
+ * When an item has killmail-derived burn-rate data the planner recommends
+ * enough units to cover this many days of expected consumption beyond the
+ * current stock level.
+ */
+function buy_all_runway_days(): int
+{
+    return 30;
+}
+
 function buy_all_page_item_type_limit(): int
 {
     return 100;
@@ -28624,6 +28636,17 @@ function buy_all_reason_meta(array $candidate): array
             'code' => 'exact_doctrine_deficit',
             'text' => 'Exact doctrine deficit for ' . doctrine_format_quantity($exactDeficitFitCount) . ' ' . $hullClassLabel . ' fits.',
             'theme' => 'Exact doctrine deficit',
+        ];
+    }
+    $consumptionQty = max(0, (int) ($candidate['consumption_recommended_quantity'] ?? 0));
+    $avgDaily = ($candidate['avg_daily_consumption'] ?? null) !== null ? (float) $candidate['avg_daily_consumption'] : null;
+    $stockDays = ($candidate['stock_days_remaining'] ?? null) !== null ? (float) $candidate['stock_days_remaining'] : null;
+    if ($consumptionQty > 0 && $avgDaily !== null && $avgDaily > 0.0) {
+        $daysLabel = $stockDays !== null ? number_format($stockDays, 0) . 'd remaining' : 'low stock';
+        return [
+            'code' => 'consumption_runway_prediction',
+            'text' => 'Burns ' . number_format($avgDaily, 1) . '/day (' . $daysLabel . '); buying ' . doctrine_format_quantity($consumptionQty) . ' for ' . (int) ($candidate['runway_days_target'] ?? 30) . '-day runway.',
+            'theme' => 'Consumption runway prediction',
         ];
     }
     if ((bool) ($candidate['missing_in_alliance'] ?? false) && (($candidate['net_profit_total'] ?? null) !== null) && (float) ($candidate['net_profit_total'] ?? 0.0) > 0.0) {
@@ -29069,16 +29092,41 @@ function buy_all_planner_data_uncached(array $query = []): array
         $blockedFitImpact = max(0, (int) ($demand['deterministic_blocked_fits'] ?? 0));
         $targetReadyFits = max(0, (int) ($demand['target_ready_fits'] ?? 0));
         $activityPressureModifier = max(1.0, (float) ($demand['activity_pressure_modifier'] ?? 1.0));
+
+        // -----------------------------------------------------------------
+        // Consumption-based prediction: use killmail burn-rate data to
+        // calculate how many units we need to sustain a target runway.
+        // -----------------------------------------------------------------
+        $consumption30d = ($graphIntel['consumption_30d'] ?? null) !== null ? (float) $graphIntel['consumption_30d'] : null;
+        $avgDailyConsumption = ($graphIntel['avg_daily_consumption'] ?? null) !== null ? (float) $graphIntel['avg_daily_consumption'] : null;
+        $stockDaysRemaining = ($graphIntel['stock_days_remaining'] ?? null) !== null ? (float) $graphIntel['stock_days_remaining'] : null;
+        $runwayDays = buy_all_runway_days();
+        $consumptionRecommendedQuantity = 0;
+
+        if ($avgDailyConsumption !== null && $avgDailyConsumption > 0.0) {
+            // Units needed to cover the full runway from zero, minus what we already have.
+            $runwayDemand = (int) ceil($avgDailyConsumption * $runwayDays);
+            $consumptionRecommendedQuantity = max(0, $runwayDemand - $localQty);
+        }
+
+        // Legacy doctrine-deficit operational recommendation (kept as a floor).
         $operationalBuffer = $exactDeficitQuantity > 0
             ? (int) ceil($exactDeficitQuantity * max(0.0, min(0.35, $activityPressureModifier - 1.0)))
             : 0;
         $operationalRecommendedQuantity = $exactDeficitQuantity > 0
             ? ($exactDeficitQuantity + $operationalBuffer)
             : ($blockedFitImpact > 0 ? (int) max(1, ceil(((int) ($demand['required_quantity_total'] ?? 0) / max(1, (int) ($demand['valid_fits_count'] ?? 1))) * $blockedFitImpact)) : 0);
+
         $economicRecommendedQuantity = buy_all_round_quantity(max(0, $economicRecommendedQuantity));
         $operationalRecommendedQuantity = buy_all_round_quantity(max(0, $operationalRecommendedQuantity));
-        $finalPlannerQuantity = max($operationalRecommendedQuantity, $economicRecommendedQuantity);
-        if ($blockedFitImpact <= 0 && $exactDeficitQuantity <= 0 && $economicRecommendedQuantity <= 0 && !((bool) ($market['missing_in_alliance'] ?? false))) {
+        $consumptionRecommendedQuantity = buy_all_round_quantity(max(0, $consumptionRecommendedQuantity));
+
+        // The final quantity is the largest of the three signals:
+        // 1. Consumption-based runway prediction (preferred when burn-rate data exists)
+        // 2. Doctrine-deficit operational recommendation (hard floor for doctrine readiness)
+        // 3. Economic / seed recommendation (market opportunity)
+        $finalPlannerQuantity = max($consumptionRecommendedQuantity, $operationalRecommendedQuantity, $economicRecommendedQuantity);
+        if ($blockedFitImpact <= 0 && $exactDeficitQuantity <= 0 && $economicRecommendedQuantity <= 0 && $consumptionRecommendedQuantity <= 0 && !((bool) ($market['missing_in_alliance'] ?? false))) {
             $finalPlannerQuantity = 0;
         }
         if ($unitVolume >= 50000.0 && $finalPlannerQuantity > 5) {
@@ -29204,6 +29252,7 @@ function buy_all_planner_data_uncached(array $query = []): array
             'quantity' => $finalPlannerQuantity,
             'exact_deficit_quantity' => $exactDeficitQuantity,
             'operational_recommended_quantity' => $operationalRecommendedQuantity,
+            'consumption_recommended_quantity' => $consumptionRecommendedQuantity,
             'economic_recommended_quantity' => $economicRecommendedQuantity,
             'final_planner_quantity' => $finalPlannerQuantity,
             'buy_price' => $buyPrice,
@@ -29265,6 +29314,10 @@ function buy_all_planner_data_uncached(array $query = []): array
             'spof_flag' => (bool) (int) ($graphIntel['spof_flag'] ?? 0),
             'trend_score' => round(max(0.0, (float) ($graphIntel['trend_score'] ?? 0.0)), 4),
             'substitute_count' => max(0, (int) ($graphIntel['substitute_count'] ?? 0)),
+            'consumption_30d' => $consumption30d,
+            'avg_daily_consumption' => $avgDailyConsumption,
+            'stock_days_remaining' => $stockDaysRemaining,
+            'runway_days_target' => $runwayDays,
         ];
         $reason = buy_all_reason_meta($candidate);
         $candidate['reason_code'] = $reason['code'];

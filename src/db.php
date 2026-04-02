@@ -16605,7 +16605,10 @@ function db_item_graph_intelligence_by_type_ids(array $typeIds): array
             COALESCE(ici.priority_index, 0.0) AS priority_index,
             COALESCE(ici.spof_flag, 0) AS spof_flag,
             COALESCE(ici.trend_score, 0.0) AS trend_score,
-            COALESCE(ici.substitute_count, 0) AS substitute_count
+            COALESCE(ici.substitute_count, 0) AS substitute_count,
+            ici.consumption_30d,
+            ici.avg_daily_consumption,
+            ici.stock_days_remaining
          FROM item_dependency_score ids
          LEFT JOIN item_criticality_index ici ON ici.type_id = ids.type_id
          WHERE ids.type_id IN ({$placeholders})
@@ -16619,7 +16622,10 @@ function db_item_graph_intelligence_by_type_ids(array $typeIds): array
             COALESCE(ici2.priority_index, 0.0) AS priority_index,
             COALESCE(ici2.spof_flag, 0) AS spof_flag,
             COALESCE(ici2.trend_score, 0.0) AS trend_score,
-            COALESCE(ici2.substitute_count, 0) AS substitute_count
+            COALESCE(ici2.substitute_count, 0) AS substitute_count,
+            ici2.consumption_30d,
+            ici2.avg_daily_consumption,
+            ici2.stock_days_remaining
          FROM item_criticality_index ici2
          WHERE ici2.type_id IN ({$placeholders})
            AND ici2.type_id NOT IN (SELECT type_id FROM item_dependency_score WHERE type_id IN ({$placeholders}))",
