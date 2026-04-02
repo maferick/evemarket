@@ -31496,12 +31496,15 @@ function supplycore_threat_corridor_graph_svg(int $corridorId, array $corridorSy
     if (!is_dir($cacheDir) && !@mkdir($cacheDir, 0775, true) && !is_dir($cacheDir)) {
         return null;
     }
-    $cacheFile = sprintf('%s/corridor-%d-h%d-v6.svg', $cacheDir, $corridorId, $surroundingHops);
+    $cacheFile = sprintf('%s/corridor-%d-h%d-v7.svg', $cacheDir, $corridorId, $surroundingHops);
     $cacheTtl = supplycore_threat_corridor_map_cache_minutes() * 60;
     if (is_file($cacheFile) && ((time() - (int) filemtime($cacheFile)) < $cacheTtl)) {
         return '/threat-corridors/svg/' . basename($cacheFile);
     }
-    $graph = db_threat_corridor_graph_subgraph($corridorSystemIds, $surroundingHops);
+    // Fetch one extra hop beyond the render boundary so we can show stub edges
+    // hinting at connectivity beyond the visible graph
+    $fetchHops = min(3, $surroundingHops + 1);
+    $graph = db_threat_corridor_graph_subgraph($corridorSystemIds, $fetchHops);
     $nodes = (array) ($graph['nodes'] ?? []);
     $edges = (array) ($graph['edges'] ?? []);
     if ($nodes === []) {
@@ -31587,6 +31590,14 @@ function supplycore_threat_corridor_graph_svg(int $corridorId, array $corridorSy
                 $nearestCorridor[$neighbor] = (int) ($nearestCorridor[$current] ?? $current);
                 $queue[] = $neighbor;
             }
+        }
+    }
+
+    // Mark boundary nodes: beyond the requested hops, used only for stub edges
+    $boundarySet = [];
+    foreach ($nodeIds as $sid) {
+        if (!isset($corridorSet[$sid]) && ($distance[$sid] ?? PHP_INT_MAX) > $surroundingHops) {
+            $boundarySet[$sid] = true;
         }
     }
 
@@ -31734,11 +31745,43 @@ function supplycore_threat_corridor_graph_svg(int $corridorId, array $corridorSy
         . '</defs>';
     $svg[] = '<rect width="' . $width . '" height="' . $height . '" fill="#04080f"/>';
 
+    // Pass 0: boundary stub edges – short faded lines hinting at off-screen connections
+    foreach ($edges as $edge) {
+        $a = (int) ($edge[0] ?? 0);
+        $b = (int) ($edge[1] ?? 0);
+        if (!isset($positions[$a], $positions[$b])) {
+            continue;
+        }
+        $aB = isset($boundarySet[$a]);
+        $bB = isset($boundarySet[$b]);
+        if (!$aB && !$bB) {
+            continue; // both rendered – handled later
+        }
+        if ($aB && $bB) {
+            continue; // both beyond boundary – skip entirely
+        }
+        // One rendered, one boundary: draw stub from rendered node partway toward boundary
+        $rendered = $aB ? $b : $a;
+        $boundary = $aB ? $a : $b;
+        $rx = $sx((float) $positions[$rendered]['x']);
+        $ry = $sy((float) $positions[$rendered]['y']);
+        $bx = $sx((float) $positions[$boundary]['x']);
+        $by = $sy((float) $positions[$boundary]['y']);
+        // Stub extends 55% of the way toward the boundary node
+        $mx = $rx + ($bx - $rx) * 0.55;
+        $my = $ry + ($by - $ry) * 0.55;
+        $svg[] = '<line x1="' . number_format($rx, 2, '.', '') . '" y1="' . number_format($ry, 2, '.', '') . '" x2="' . number_format($mx, 2, '.', '') . '" y2="' . number_format($my, 2, '.', '') . '" stroke="#374151" stroke-opacity="0.35" stroke-width="1.2" stroke-dasharray="4 3"/>';
+    }
+
     // Pass 1: non-corridor stargate connections (background layer)
     foreach ($edges as $edge) {
         $a = (int) ($edge[0] ?? 0);
         $b = (int) ($edge[1] ?? 0);
         if (!isset($positions[$a], $positions[$b])) {
+            continue;
+        }
+        // Skip edges involving boundary nodes (handled above)
+        if (isset($boundarySet[$a]) || isset($boundarySet[$b])) {
             continue;
         }
         $left = min($a, $b);
@@ -31777,7 +31820,7 @@ function supplycore_threat_corridor_graph_svg(int $corridorId, array $corridorSy
 
     // Nodes – pill-shaped rounded rectangles with labels inside
     foreach ($nodeMap as $sid => $node) {
-        if (!isset($positions[$sid])) {
+        if (!isset($positions[$sid]) || isset($boundarySet[$sid])) {
             continue;
         }
         $px = $sx((float) $positions[$sid]['x']);
@@ -31852,13 +31895,15 @@ function supplycore_theater_map_svg(string $theaterId, array $systemIds, int $ho
         return null;
     }
     $cacheKey = substr(md5($theaterId . ':' . implode(',', $systemIds)), 0, 12);
-    $cacheFile = sprintf('%s/theater-%s-h%d-v3.svg', $cacheDir, $cacheKey, $hops);
+    $cacheFile = sprintf('%s/theater-%s-h%d-v4.svg', $cacheDir, $cacheKey, $hops);
     $cacheTtl = supplycore_threat_corridor_map_cache_minutes() * 60;
     if (is_file($cacheFile) && ((time() - (int) filemtime($cacheFile)) < $cacheTtl)) {
         return '/threat-corridors/svg/' . basename($cacheFile);
     }
 
-    $graph = db_threat_corridor_graph_subgraph($systemIds, $hops);
+    // Fetch one extra hop for boundary stub edges
+    $fetchHops = min(3, $hops + 1);
+    $graph = db_threat_corridor_graph_subgraph($systemIds, $fetchHops);
     $nodes = (array) ($graph['nodes'] ?? []);
     $edges = (array) ($graph['edges'] ?? []);
     if ($nodes === []) {
@@ -31939,6 +31984,14 @@ function supplycore_theater_map_svg(string $theaterId, array $systemIds, int $ho
                 $nearestBattle[$nb] = (int) ($nearestBattle[$cur] ?? $cur);
                 $queue[] = $nb;
             }
+        }
+    }
+
+    // Mark boundary nodes: beyond the requested hops, used only for stub edges
+    $theaterBoundarySet = [];
+    foreach ($nodeIds as $sid) {
+        if (!isset($battleSet[$sid]) && ($distance[$sid] ?? PHP_INT_MAX) > $hops) {
+            $theaterBoundarySet[$sid] = true;
         }
     }
 
@@ -32049,12 +32102,41 @@ function supplycore_theater_map_svg(string $theaterId, array $systemIds, int $ho
         . '</defs>';
     $svg[] = '<rect width="' . $width . '" height="' . $height . '" fill="#04080f"/>';
 
+    // Pass 0: boundary stub edges
+    foreach ($edges as $edge) {
+        $a = (int) ($edge[0] ?? 0);
+        $b = (int) ($edge[1] ?? 0);
+        if (!isset($positions[$a], $positions[$b])) {
+            continue;
+        }
+        $aB = isset($theaterBoundarySet[$a]);
+        $bB = isset($theaterBoundarySet[$b]);
+        if (!$aB && !$bB) {
+            continue;
+        }
+        if ($aB && $bB) {
+            continue;
+        }
+        $rendered = $aB ? $b : $a;
+        $boundary = $aB ? $a : $b;
+        $rx = $sx((float) $positions[$rendered]['x']);
+        $ry = $sy((float) $positions[$rendered]['y']);
+        $bx = $sx((float) $positions[$boundary]['x']);
+        $by = $sy((float) $positions[$boundary]['y']);
+        $mx = $rx + ($bx - $rx) * 0.55;
+        $my = $ry + ($by - $ry) * 0.55;
+        $svg[] = '<line x1="' . number_format($rx, 2, '.', '') . '" y1="' . number_format($ry, 2, '.', '') . '" x2="' . number_format($mx, 2, '.', '') . '" y2="' . number_format($my, 2, '.', '') . '" stroke="#374151" stroke-opacity="0.35" stroke-width="1.2" stroke-dasharray="4 3"/>';
+    }
+
     // Pass 1: non-battle edges
     $drawnEdges = [];
     foreach ($edges as $edge) {
         $a = (int) ($edge[0] ?? 0);
         $b = (int) ($edge[1] ?? 0);
         if (!isset($positions[$a], $positions[$b])) {
+            continue;
+        }
+        if (isset($theaterBoundarySet[$a]) || isset($theaterBoundarySet[$b])) {
             continue;
         }
         $key = min($a, $b) . ':' . max($a, $b);
@@ -32085,7 +32167,7 @@ function supplycore_theater_map_svg(string $theaterId, array $systemIds, int $ho
 
     // Nodes – pill-shaped rounded rectangles with labels inside
     foreach ($nodeMap as $sid => $node) {
-        if (!isset($positions[$sid])) {
+        if (!isset($positions[$sid]) || isset($theaterBoundarySet[$sid])) {
             continue;
         }
         $px = $sx((float) $positions[$sid]['x']);
@@ -32153,13 +32235,15 @@ function supplycore_system_area_svg(int $systemId, int $hops = 2): ?string
     if (!is_dir($cacheDir) && !@mkdir($cacheDir, 0775, true) && !is_dir($cacheDir)) {
         return null;
     }
-    $cacheFile = sprintf('%s/system-%d-h%d-v2.svg', $cacheDir, $systemId, $hops);
+    $cacheFile = sprintf('%s/system-%d-h%d-v3.svg', $cacheDir, $systemId, $hops);
     $cacheTtl = supplycore_threat_corridor_map_cache_minutes() * 60;
     if (is_file($cacheFile) && ((time() - (int) filemtime($cacheFile)) < $cacheTtl)) {
         return '/threat-corridors/svg/' . basename($cacheFile);
     }
 
-    $graph = db_threat_corridor_graph_subgraph([$systemId], $hops);
+    // Fetch one extra hop for boundary stub edges
+    $fetchHops = min(3, $hops + 1);
+    $graph = db_threat_corridor_graph_subgraph([$systemId], $fetchHops);
     $nodes = (array) ($graph['nodes'] ?? []);
     $edges = (array) ($graph['edges'] ?? []);
     if ($nodes === []) {
@@ -32211,6 +32295,14 @@ function supplycore_system_area_svg(int $systemId, int $hops = 2): ?string
         }
     }
 
+    // Mark boundary nodes: beyond the requested hops, used only for stub edges
+    $areaBoundarySet = [];
+    foreach ($nodeIds as $sid) {
+        if ($sid !== $systemId && ($distance[$sid] ?? PHP_INT_MAX) > $hops) {
+            $areaBoundarySet[$sid] = true;
+        }
+    }
+
     // Radial layout: focal at center, hop-1 in inner ring, hop-2 in outer ring
     $positions = [$systemId => ['x' => 0.5, 'y' => 0.5, 'angle' => 0.0]];
 
@@ -32254,6 +32346,23 @@ function supplycore_system_area_svg(int $systemId, int $hops = 2): ?string
                 'x'     => max(0.03, min(0.97, 0.5 + cos($angle) * $r2)),
                 'y'     => max(0.04, min(0.96, 0.5 + sin($angle) * $r2 * 0.82)),
                 'angle' => $angle,
+            ];
+        }
+    }
+
+    // Position boundary nodes (beyond render hops) in an outer ring for stub edge direction
+    $r3 = 0.55;
+    foreach ($nodeIds as $sid) {
+        if (isset($positions[$sid]) || !isset($areaBoundarySet[$sid])) {
+            continue;
+        }
+        $par = $bfsParent[$sid] ?? null;
+        if ($par !== null && isset($positions[$par])) {
+            $pa = (float) ($positions[$par]['angle'] ?? 0.0);
+            $positions[$sid] = [
+                'x'     => max(0.01, min(0.99, 0.5 + cos($pa) * $r3)),
+                'y'     => max(0.01, min(0.99, 0.5 + sin($pa) * $r3 * 0.82)),
+                'angle' => $pa,
             ];
         }
     }
@@ -32310,12 +32419,41 @@ function supplycore_system_area_svg(int $systemId, int $hops = 2): ?string
         . '</defs>';
     $svg[] = '<rect width="' . $width . '" height="' . $height . '" fill="#04080f"/>';
 
+    // Boundary stub edges – short faded lines hinting at off-screen connections
+    foreach ($edges as $edge) {
+        $a = (int) ($edge[0] ?? 0);
+        $b = (int) ($edge[1] ?? 0);
+        if (!isset($positions[$a], $positions[$b])) {
+            continue;
+        }
+        $aB = isset($areaBoundarySet[$a]);
+        $bB = isset($areaBoundarySet[$b]);
+        if (!$aB && !$bB) {
+            continue;
+        }
+        if ($aB && $bB) {
+            continue;
+        }
+        $rendered = $aB ? $b : $a;
+        $boundary = $aB ? $a : $b;
+        $rx = $sx((float) $positions[$rendered]['x']);
+        $ry = $sy((float) $positions[$rendered]['y']);
+        $bx = $sx((float) $positions[$boundary]['x']);
+        $by = $sy((float) $positions[$boundary]['y']);
+        $mx = $rx + ($bx - $rx) * 0.55;
+        $my = $ry + ($by - $ry) * 0.55;
+        $svg[] = '<line x1="' . number_format($rx, 2, '.', '') . '" y1="' . number_format($ry, 2, '.', '') . '" x2="' . number_format($mx, 2, '.', '') . '" y2="' . number_format($my, 2, '.', '') . '" stroke="#374151" stroke-opacity="0.35" stroke-width="1.2" stroke-dasharray="4 3"/>';
+    }
+
     // Edges: focal→hop1 are slightly brighter; all others dim
     $drawnEdges = [];
     foreach ($edges as $edge) {
         $a = (int) ($edge[0] ?? 0);
         $b = (int) ($edge[1] ?? 0);
         if (!isset($positions[$a], $positions[$b])) {
+            continue;
+        }
+        if (isset($areaBoundarySet[$a]) || isset($areaBoundarySet[$b])) {
             continue;
         }
         $key = min($a, $b) . ':' . max($a, $b);
@@ -32336,7 +32474,7 @@ function supplycore_system_area_svg(int $systemId, int $hops = 2): ?string
 
     // Nodes – pill-shaped rounded rectangles with labels inside
     foreach ($nodeMap as $sid => $node) {
-        if (!isset($positions[$sid])) {
+        if (!isset($positions[$sid]) || isset($areaBoundarySet[$sid])) {
             continue;
         }
         $npx  = $sx((float) $positions[$sid]['x']);
