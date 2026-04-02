@@ -36,6 +36,27 @@ Source of truth: `supplycore_authoritative_job_registry()` in `src/functions.php
 | deal_alerts_sync | real_disabled_review | yes | yes | no | no | no | yes |  | Python-native processor not implemented yet. |
 | compute_buy_all | real_disabled_review | yes | yes | no | yes | no | yes |  | Exists but disabled until validated worker-safe. |
 | compute_signals | real_disabled_review | yes | yes | no | yes | no | yes |  | Exists but disabled until validated worker-safe. |
+| compute_cohort_baselines | real_schedulable | yes | yes | yes | yes | yes | yes |  | Normalizes suspicion scores against cohort baselines. |
+| compute_copresence_edges | real_schedulable | yes | yes | yes | yes | yes | yes |  | Generalized co-presence edges from battle participation. |
+| graph_data_quality_check | real_schedulable | yes | yes | yes | yes | yes | yes |  | Validates Neo4j graph integrity. |
+| graph_temporal_metrics_sync | real_schedulable | yes | yes | yes | yes | yes | yes |  | Time-windowed graph metrics on Neo4j nodes. |
+| graph_typed_interactions_sync | real_schedulable | yes | yes | yes | yes | yes | yes |  | Typed interaction edges in Neo4j. |
+| graph_community_detection_sync | real_schedulable | yes | yes | yes | yes | yes | yes |  | Community detection on intelligence graph. |
+| graph_motif_detection_sync | real_schedulable | yes | yes | yes | yes | yes | yes |  | Structural motif detection in graph. |
+| graph_evidence_paths_sync | real_schedulable | yes | yes | yes | yes | yes | yes |  | Evidence paths between suspicious entities. |
+| graph_analyst_recalibration | real_schedulable | yes | yes | yes | yes | yes | yes |  | Recalibrate suspicion weights from analyst feedback. |
+| compute_graph_sync_killmail_edges | real_schedulable | yes | yes | yes | yes | yes | yes |  | ATTACKED_ON/VICTIM_OF edges in Neo4j. |
+| graph_model_audit | real_schedulable | yes | yes | yes | yes | yes | yes |  | Neo4j schema audit. |
+| theater_clustering | real_schedulable | yes | yes | yes | yes | yes | yes |  | Spatial/temporal battle clustering into theaters. |
+| theater_analysis | real_schedulable | yes | yes | yes | yes | yes | yes |  | Theater-level metrics and composition. |
+| theater_graph_integration | real_schedulable | yes | yes | yes | yes | yes | yes |  | Project theaters into Neo4j. |
+| theater_suspicion | real_schedulable | yes | yes | yes | yes | yes | yes |  | Theater-level suspicion summaries. |
+| compute_alliance_relationships | real_schedulable | yes | yes | yes | yes | yes | yes |  | Allied/hostile graph from killmail co-occurrence. |
+| compute_alliance_dossiers | real_schedulable | yes | yes | yes | yes | yes | yes |  | Per-alliance intelligence briefs. |
+| compute_threat_corridors | real_schedulable | yes | yes | yes | yes | yes | yes |  | Geographic threat paths and system threat scores. |
+| tracked_alliance_member_sync | real_schedulable | yes | yes | no | yes | yes | yes |  | Alliance membership rosters via EveWho. |
+| killmail_zkb_repair | real_schedulable | yes | yes | no | yes | yes | yes |  | Backfill missing zKB metadata. |
+| cache_expiry_cleanup_sync | real_schedulable | yes | yes | yes | yes | yes | yes |  | Purge expired cache entries. |
 | killmail_r2z2_sync | external_integrated | yes | no | yes | yes | yes | yes |  | Managed through zKill adapter boundary. |
 
 ## Internal/helper/non-schedulable entries
