@@ -11834,7 +11834,19 @@ function db_corp_contacts_all(): array
              ORDER BY source ASC, contact_type ASC, standing DESC"
         );
     } catch (Throwable) {
-        return [];
+        // Fallback: source column may not exist yet (migration pending).
+        try {
+            return array_map(
+                static fn (array $row): array => array_merge($row, ['source' => 'esi']),
+                db_select(
+                    "SELECT corporation_id, contact_id, contact_type, standing, label_ids, 'esi' AS source, fetched_at
+                     FROM corp_contacts
+                     ORDER BY contact_type ASC, standing DESC"
+                )
+            );
+        } catch (Throwable) {
+            return [];
+        }
     }
 }
 
@@ -11916,11 +11928,30 @@ function db_corp_contact_standing(int $entityId, string $entityType = 'alliance'
 }
 
 /**
+ * Ensure the source column exists on corp_contacts (handles pre-migration tables).
+ */
+function db_corp_contacts_ensure_source_column(): void
+{
+    try {
+        db_execute(
+            "ALTER TABLE corp_contacts
+                ADD COLUMN source ENUM('esi', 'manual') NOT NULL DEFAULT 'esi' AFTER label_ids,
+                ADD KEY idx_source (source)"
+        );
+    } catch (Throwable) {
+        // Column already exists — nothing to do.
+    }
+}
+
+/**
  * Replace all manual corp contacts with the given list.
  * Each entry: ['contact_id' => int, 'contact_type' => string, 'standing' => float]
  */
 function db_corp_contacts_manual_replace(array $contacts): void
 {
+    // Ensure the source column exists before writing manual contacts.
+    db_corp_contacts_ensure_source_column();
+
     db_execute('DELETE FROM corp_contacts WHERE source = ?', ['manual']);
 
     foreach ($contacts as $c) {
