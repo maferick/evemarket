@@ -550,6 +550,7 @@ if ($dbStatus['ok']) {
         $trackedCorporations = db_killmail_tracked_corporations_active();
         $opponentAlliances = db_killmail_opponent_alliances_active();
         $opponentCorporations = db_killmail_opponent_corporations_active();
+        $corpContactsStandings = db_corp_contacts_by_standing();
         $killmailStatus = db_killmail_ingestion_status();
         $killmailWorkerStatus = zkill_worker_runtime_status();
     } catch (Throwable) {
@@ -557,6 +558,7 @@ if ($dbStatus['ok']) {
         $trackedCorporations = [];
         $opponentAlliances = [];
         $opponentCorporations = [];
+        $corpContactsStandings = ['friendly_alliance_ids' => [], 'friendly_corporation_ids' => [], 'hostile_alliance_ids' => [], 'hostile_corporation_ids' => []];
         $killmailStatus = null;
         $killmailWorkerStatus = [];
     }
@@ -1547,6 +1549,24 @@ include __DIR__ . '/../../src/views/partials/header.php';
                 $opponentCorporationsText = implode("
 ", array_map(static fn (array $row): string => (string) $row['id'] . ' | ' . (string) $row['name'], $opponentCorporationSelections));
 
+                // Build corp contacts display data with resolved names
+                $corpContactsList = db_corp_contacts_all();
+                $contactAllianceIds = array_values(array_unique(array_filter(array_map(
+                    static fn (array $c): int => $c['contact_type'] === 'alliance' ? (int) $c['contact_id'] : 0,
+                    $corpContactsList
+                ), static fn (int $id): bool => $id > 0)));
+                $contactCorpIds = array_values(array_unique(array_filter(array_map(
+                    static fn (array $c): int => $c['contact_type'] === 'corporation' ? (int) $c['contact_id'] : 0,
+                    $corpContactsList
+                ), static fn (int $id): bool => $id > 0)));
+                $contactNameMap = [];
+                foreach (db_entity_metadata_cache_get_many('alliance', $contactAllianceIds) as $e) {
+                    $contactNameMap['alliance:' . (int) $e['entity_id']] = (string) $e['entity_name'];
+                }
+                foreach (db_entity_metadata_cache_get_many('corporation', $contactCorpIds) as $e) {
+                    $contactNameMap['corporation:' . (int) $e['entity_id']] = (string) $e['entity_name'];
+                }
+
                 $statusState = is_array($killmailStatus['state'] ?? null) ? $killmailStatus['state'] : [];
                 $killmailHealth = is_array($killmailStatusSummary['health'] ?? null) ? $killmailStatusSummary['health'] : [];
             ?>
@@ -1718,6 +1738,69 @@ include __DIR__ . '/../../src/views/partials/header.php';
                     <p>Opponent entities are tracked separately from your own alliances/corporations. The system fetches <span class="text-slate-100">all kills and losses</span> for these entities — not just fights involving you.</p>
                     <p>This powers the <span class="text-slate-100">Economic Warfare</span> page: hostile fit family reconstruction, module scoring, and supply pressure analysis across their full engagement history.</p>
                 </div>
+
+                <?php if ($corpContactsList !== []): ?>
+                <h3 class="text-base font-semibold text-slate-100 mt-6">In-Game Corp Contacts (ESI Standings)</h3>
+                <p class="mt-1 text-xs text-muted">These contacts are synced from your corporation's in-game standings via ESI. They serve as a fallback for side classification in Theater Intelligence when no manual tracked/opponent alliances are configured above.</p>
+
+                <div class="grid gap-4 lg:grid-cols-2 mt-2">
+                    <?php
+                        $friendlyContacts = array_filter($corpContactsList, static fn (array $c): bool => (float) $c['standing'] > 0);
+                        $hostileContacts = array_filter($corpContactsList, static fn (array $c): bool => (float) $c['standing'] < 0);
+                    ?>
+                    <div class="space-y-2">
+                        <span class="text-sm text-blue-300">Friendly (positive standing)</span>
+                        <?php if ($friendlyContacts === []): ?>
+                            <p class="text-xs text-muted">No friendly contacts found.</p>
+                        <?php else: ?>
+                            <div class="max-h-72 overflow-y-auto rounded-lg border border-border bg-black/10 divide-y divide-border/50">
+                                <?php foreach ($friendlyContacts as $c):
+                                    $cId = (int) $c['contact_id'];
+                                    $cType = (string) $c['contact_type'];
+                                    $cStanding = (float) $c['standing'];
+                                    $cName = $contactNameMap[$cType . ':' . $cId] ?? ucfirst($cType) . ' #' . $cId;
+                                ?>
+                                <div class="flex items-center justify-between px-3 py-2">
+                                    <div>
+                                        <span class="text-sm text-slate-100"><?= htmlspecialchars($cName, ENT_QUOTES) ?></span>
+                                        <span class="ml-2 text-xs text-muted"><?= htmlspecialchars(ucfirst($cType), ENT_QUOTES) ?></span>
+                                    </div>
+                                    <span class="text-xs font-mono text-blue-400">+<?= number_format($cStanding, 1) ?></span>
+                                </div>
+                                <?php endforeach; ?>
+                            </div>
+                        <?php endif; ?>
+                    </div>
+                    <div class="space-y-2">
+                        <span class="text-sm text-red-300">Hostile (negative standing)</span>
+                        <?php if ($hostileContacts === []): ?>
+                            <p class="text-xs text-muted">No hostile contacts found.</p>
+                        <?php else: ?>
+                            <div class="max-h-72 overflow-y-auto rounded-lg border border-border bg-black/10 divide-y divide-border/50">
+                                <?php foreach ($hostileContacts as $c):
+                                    $cId = (int) $c['contact_id'];
+                                    $cType = (string) $c['contact_type'];
+                                    $cStanding = (float) $c['standing'];
+                                    $cName = $contactNameMap[$cType . ':' . $cId] ?? ucfirst($cType) . ' #' . $cId;
+                                ?>
+                                <div class="flex items-center justify-between px-3 py-2">
+                                    <div>
+                                        <span class="text-sm text-slate-100"><?= htmlspecialchars($cName, ENT_QUOTES) ?></span>
+                                        <span class="ml-2 text-xs text-muted"><?= htmlspecialchars(ucfirst($cType), ENT_QUOTES) ?></span>
+                                    </div>
+                                    <span class="text-xs font-mono text-red-400"><?= number_format($cStanding, 1) ?></span>
+                                </div>
+                                <?php endforeach; ?>
+                            </div>
+                        <?php endif; ?>
+                    </div>
+                </div>
+
+                <div class="rounded-lg border border-cyan-500/20 bg-cyan-500/5 p-3 text-sm text-muted space-y-2">
+                    <p>These standings are read-only and synced automatically from ESI. To change them, update your corporation's contacts in-game and wait for the next sync.</p>
+                    <p>When no friendly/opponent alliances are configured manually above, Theater Intelligence uses these contacts to classify sides: <span class="text-blue-300">positive standing = friendly</span>, <span class="text-red-300">negative standing = opponent</span>.</p>
+                </div>
+                <?php endif; ?>
 
                 <script>
                     (() => {
