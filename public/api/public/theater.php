@@ -94,6 +94,30 @@ if ($viewSnapshot !== null) {
     $opponentCorporations = db_killmail_opponent_corporations_active();
     $opponentCorporationIds = array_values(array_unique(array_map('intval', array_column($opponentCorporations, 'corporation_id'))));
 
+    // Merge ESI alliance/corp contacts (positive standing = friendly, negative = hostile).
+    // Only add IDs not already in the explicit config to preserve user overrides.
+    $esiContacts = db_corp_contacts_by_standing();
+    foreach ($esiContacts['friendly_alliance_ids'] as $id) {
+        if (!in_array($id, $opponentAllianceIds, true) && !in_array($id, $trackedAllianceIds, true)) {
+            $trackedAllianceIds[] = $id;
+        }
+    }
+    foreach ($esiContacts['friendly_corporation_ids'] as $id) {
+        if (!in_array($id, $opponentCorporationIds, true) && !in_array($id, $trackedCorporationIds, true)) {
+            $trackedCorporationIds[] = $id;
+        }
+    }
+    foreach ($esiContacts['hostile_alliance_ids'] as $id) {
+        if (!in_array($id, $trackedAllianceIds, true) && !in_array($id, $opponentAllianceIds, true)) {
+            $opponentAllianceIds[] = $id;
+        }
+    }
+    foreach ($esiContacts['hostile_corporation_ids'] as $id) {
+        if (!in_array($id, $trackedCorporationIds, true) && !in_array($id, $opponentCorporationIds, true)) {
+            $opponentCorporationIds[] = $id;
+        }
+    }
+
     $classifyAlliance = static function (int $allianceId, int $corporationId = 0) use ($trackedAllianceIds, $opponentAllianceIds, $trackedCorporationIds, $opponentCorporationIds): string {
         if ($allianceId > 0 && in_array($allianceId, $trackedAllianceIds, true)) return 'friendly';
         if ($corporationId > 0 && in_array($corporationId, $trackedCorporationIds, true)) return 'friendly';
@@ -308,6 +332,28 @@ if ($viewSnapshot !== null) {
 
 // Ensure $classifyAlliance closure exists (fast path restores vars but not the closure)
 if (!isset($classifyAlliance)) {
+    // Merge ESI alliance/corp contacts into the snapshot-restored IDs
+    $esiContacts = db_corp_contacts_by_standing();
+    foreach ($esiContacts['friendly_alliance_ids'] as $_id) {
+        if (!in_array($_id, $opponentAllianceIds, true) && !in_array($_id, $trackedAllianceIds, true)) {
+            $trackedAllianceIds[] = $_id;
+        }
+    }
+    foreach ($esiContacts['friendly_corporation_ids'] as $_id) {
+        if (!in_array($_id, $opponentCorporationIds, true) && !in_array($_id, $trackedCorporationIds, true)) {
+            $trackedCorporationIds[] = $_id;
+        }
+    }
+    foreach ($esiContacts['hostile_alliance_ids'] as $_id) {
+        if (!in_array($_id, $trackedAllianceIds, true) && !in_array($_id, $opponentAllianceIds, true)) {
+            $opponentAllianceIds[] = $_id;
+        }
+    }
+    foreach ($esiContacts['hostile_corporation_ids'] as $_id) {
+        if (!in_array($_id, $trackedCorporationIds, true) && !in_array($_id, $opponentCorporationIds, true)) {
+            $opponentCorporationIds[] = $_id;
+        }
+    }
     $classifyAlliance = static function (int $allianceId, int $corporationId = 0) use ($trackedAllianceIds, $opponentAllianceIds, $trackedCorporationIds, $opponentCorporationIds): string {
         if ($allianceId > 0 && in_array($allianceId, $trackedAllianceIds, true)) return 'friendly';
         if ($corporationId > 0 && in_array($corporationId, $trackedCorporationIds, true)) return 'friendly';
