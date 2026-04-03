@@ -193,37 +193,29 @@ if ($viewSnapshot !== null) {
         if (isset($participantKillTotalsBySide[$side])) $participantKillTotalsBySide[$side] += $kills;
     }
 
+    // ── Final-blow-based ISK killed & kills ─────────────────────────
+    // Each side's isk_killed = sum of ISK from killmails where that side
+    // got the final blow.  Each side's kills = final blow count.
     $finalBlowsByGroup = db_theater_final_blows_by_attacker_group($theaterId);
     $finalBlowsBySide = ['friendly' => 0, 'opponent' => 0, 'third_party' => 0];
+    $iskKilledBySide  = ['friendly' => 0.0, 'opponent' => 0.0, 'third_party' => 0.0];
     foreach ($finalBlowsByGroup as $fbRow) {
         $fbSide = $classifyAlliance((int) ($fbRow['alliance_id'] ?? 0), (int) ($fbRow['corporation_id'] ?? 0));
         $finalBlowsBySide[$fbSide] += (int) ($fbRow['final_blows'] ?? 0);
+        $iskKilledBySide[$fbSide]  += (float) ($fbRow['isk_killed'] ?? 0);
     }
-    // ── Loss-based ISK killed & efficiency (strict two-side model) ──────
-    // Canonical rule: isk_killed for a side = opposing side's isk_lost.
-    // Third-party losses are tracked for total_isk_destroyed but excluded
-    // from the friendly-vs-opponent efficiency calculation.
-    $friendlyLost = $sidePanels['friendly']['isk_lost'];
-    $opponentLost = $sidePanels['opponent']['isk_lost'];
-    $twoSideTotal = $friendlyLost + $opponentLost;
 
-    // friendly_isk_killed == opponent_isk_lost  (and vice versa)
-    $sidePanels['friendly']['isk_killed'] = $opponentLost;
-    $sidePanels['opponent']['isk_killed'] = $friendlyLost;
-    $sidePanels['third_party']['isk_killed'] = 0.0;
+    foreach (['friendly', 'opponent', 'third_party'] as $side) {
+        $sidePanels[$side]['isk_killed'] = $iskKilledBySide[$side];
+        $sidePanels[$side]['kills'] = $finalBlowsBySide[$side];
+    }
 
-    // Ship kills derived from opposing side's losses (same principle as ISK).
-    $sidePanels['friendly']['kills'] = $sidePanels['opponent']['losses'];
-    $sidePanels['opponent']['kills'] = $sidePanels['friendly']['losses'];
-    // Third party keeps its accumulated kill-involvement count from the
-    // alliance summary — the two-side derivation doesn't apply to them.
-
-    // efficiency = isk_killed / (isk_killed + isk_lost)  — two-side, symmetric
-    $sidePanels['friendly']['efficiency'] = $twoSideTotal > 0
-        ? $opponentLost / $twoSideTotal : 0.0;
-    $sidePanels['opponent']['efficiency'] = $twoSideTotal > 0
-        ? $friendlyLost / $twoSideTotal : 0.0;
-    $sidePanels['third_party']['efficiency'] = 0.0;
+    // efficiency = isk_killed / (isk_killed + isk_lost) per side
+    foreach (['friendly', 'opponent', 'third_party'] as $side) {
+        $total = $sidePanels[$side]['isk_killed'] + $sidePanels[$side]['isk_lost'];
+        $sidePanels[$side]['efficiency'] = $total > 0
+            ? $sidePanels[$side]['isk_killed'] / $total : 0.0;
+    }
 
     foreach ($sidePanels as $side => $data) {
         $sidePanels[$side]['final_blows'] = (int) ($finalBlowsBySide[$side] ?? 0);
@@ -339,20 +331,9 @@ if (!isset($classifyAlliance)) {
     };
 }
 
-// Final-blows correction: classify using PHP closure for consistency
-$fbByGroup = db_theater_final_blows_by_attacker_group($theaterId);
-if ($fbByGroup !== []) {
-    $correctedFb = ['friendly' => 0, 'opponent' => 0, 'third_party' => 0];
-    foreach ($fbByGroup as $fbRow) {
-        $fbSide = $classifyAlliance((int) ($fbRow['alliance_id'] ?? 0), (int) ($fbRow['corporation_id'] ?? 0));
-        $correctedFb[$fbSide] += (int) ($fbRow['final_blows'] ?? 0);
-    }
-    foreach (['friendly', 'opponent', 'third_party'] as $side) {
-        if (isset($sidePanels[$side])) {
-            $sidePanels[$side]['final_blows'] = $correctedFb[$side];
-        }
-    }
-}
+// Final-blows correction is no longer needed here — final blows and
+// ISK killed are now computed from db_theater_final_blows_by_attacker_group()
+// in the main side-panel build above.
 
 // Promote third-party to opponent when no opponents configured
 if (($sideAlliancesByPilots['opponent'] ?? []) === [] && ($sideAlliancesByPilots['third_party'] ?? []) !== []) {

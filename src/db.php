@@ -16702,7 +16702,7 @@ function db_theater_fleet_composition(string $theaterId): array
  * using the same closure as kills/losses (avoids mismatch with Python's
  * graph-inferred side stored in theater_alliance_summary).
  *
- * @return list<array{alliance_id: int, corporation_id: int, final_blows: int}>
+ * @return list<array{alliance_id: int, corporation_id: int, final_blows: int, isk_killed: float}>
  */
 function db_theater_final_blows_by_attacker_group(string $theaterId): array
 {
@@ -16710,7 +16710,8 @@ function db_theater_final_blows_by_attacker_group(string $theaterId): array
         "SELECT
             COALESCE(ka.alliance_id, 0) AS alliance_id,
             COALESCE(ka.corporation_id, 0) AS corporation_id,
-            COUNT(*) AS final_blows
+            COUNT(*) AS final_blows,
+            COALESCE(SUM(ke.zkb_total_value), 0) AS isk_killed
          FROM killmail_attackers ka
          INNER JOIN killmail_events ke ON ke.sequence_id = ka.sequence_id
          INNER JOIN theater_battles tb ON tb.battle_id = ke.battle_id
