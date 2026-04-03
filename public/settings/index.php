@@ -34,6 +34,8 @@ $sectionChildren = [
     ],
     'runtime-diagnostics' => [
         'runtime-config' => 'Runtime Config',
+        'redis-test' => 'Redis Test',
+        'neo4j-test' => 'Neo4j Test',
         'influxdb-test' => 'InfluxDB Test',
     ],
 ];
@@ -78,6 +80,281 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 supplycore_runtime_config_refresh();
             }
             break;
+
+        case 'redis-test':
+            $redisHost = trim((string) config('redis.host', '127.0.0.1'));
+            $redisPort = (int) config('redis.port', 6379);
+            $redisPassword = (string) config('redis.password', '');
+            $redisDatabase = (int) config('redis.database', 0);
+            $redisConnectTimeout = (float) config('redis.connect_timeout', 1.5);
+            $redisReadTimeout = (float) config('redis.read_timeout', 1.5);
+            $testResults = [];
+
+            // 1. TCP connection
+            $connectStart = microtime(true);
+            $sock = @stream_socket_client(
+                sprintf('tcp://%s:%d', $redisHost, $redisPort),
+                $errCode,
+                $errMsg,
+                $redisConnectTimeout
+            );
+            $connectMs = round((microtime(true) - $connectStart) * 1000);
+
+            if (!is_resource($sock)) {
+                $testResults['connect'] = [
+                    'label' => 'TCP connection',
+                    'ok' => false,
+                    'detail' => ($errMsg !== '' ? $errMsg : 'Connection refused') . ' · ' . $connectMs . 'ms',
+                ];
+            } else {
+                stream_set_timeout($sock, (int) $redisReadTimeout, (int) (($redisReadTimeout - floor($redisReadTimeout)) * 1_000_000));
+                $testResults['connect'] = [
+                    'label' => 'TCP connection',
+                    'ok' => true,
+                    'detail' => $redisHost . ':' . $redisPort . ' · ' . $connectMs . 'ms',
+                ];
+
+                // Helper to send a raw RESP command and read response
+                $redisSend = static function (array $parts) use ($sock): string {
+                    $cmd = '*' . count($parts) . "\r\n";
+                    foreach ($parts as $p) {
+                        $p = (string) $p;
+                        $cmd .= '$' . strlen($p) . "\r\n" . $p . "\r\n";
+                    }
+                    fwrite($sock, $cmd);
+                    $line = fgets($sock, 4096);
+                    if ($line === false) {
+                        return '-ERR no response';
+                    }
+                    $prefix = $line[0] ?? '';
+                    $payload = rtrim(substr($line, 1), "\r\n");
+                    if ($prefix === '$') {
+                        $len = (int) $payload;
+                        if ($len < 0) {
+                            return '(nil)';
+                        }
+                        $data = '';
+                        $remaining = $len + 2;
+                        while (strlen($data) < $remaining) {
+                            $chunk = fread($sock, $remaining - strlen($data));
+                            if ($chunk === false || $chunk === '') {
+                                break;
+                            }
+                            $data .= $chunk;
+                        }
+                        return rtrim($data, "\r\n");
+                    }
+                    return $prefix . $payload;
+                };
+
+                // 2. Authentication
+                if ($redisPassword !== '') {
+                    $authReply = $redisSend(['AUTH', $redisPassword]);
+                    $testResults['auth'] = [
+                        'label' => 'Authentication',
+                        'ok' => $authReply === '+OK',
+                        'detail' => $authReply === '+OK' ? 'Authenticated' : trim($authReply, '-+'),
+                    ];
+                } else {
+                    // Try PING to see if no-auth works
+                    $pingReply = $redisSend(['PING']);
+                    $noAuthOk = $pingReply === '+PONG';
+                    $testResults['auth'] = [
+                        'label' => 'Authentication',
+                        'ok' => $noAuthOk,
+                        'detail' => $noAuthOk ? 'No password required' : 'Server requires authentication: ' . trim($pingReply, '-+'),
+                    ];
+                }
+
+                // 3. SELECT database
+                if (($testResults['auth']['ok'] ?? false)) {
+                    if ($redisDatabase > 0) {
+                        $selectReply = $redisSend(['SELECT', (string) $redisDatabase]);
+                        $testResults['database'] = [
+                            'label' => 'SELECT database ' . $redisDatabase,
+                            'ok' => $selectReply === '+OK',
+                            'detail' => $selectReply === '+OK' ? 'Selected' : trim($selectReply, '-+'),
+                        ];
+                    }
+
+                    // 4. PING
+                    $pingReply = $redisSend(['PING']);
+                    $testResults['ping'] = [
+                        'label' => 'PING',
+                        'ok' => $pingReply === '+PONG',
+                        'detail' => $pingReply === '+PONG' ? 'PONG' : trim($pingReply, '-+'),
+                    ];
+
+                    // 5. Write/Read test
+                    $testKey = 'supplycore:connection_test:' . bin2hex(random_bytes(8));
+                    $setReply = $redisSend(['SET', $testKey, 'ok', 'EX', '10']);
+                    $getReply = $redisSend(['GET', $testKey]);
+                    $redisSend(['DEL', $testKey]);
+
+                    $testResults['write_read'] = [
+                        'label' => 'Write / Read test',
+                        'ok' => $setReply === '+OK' && $getReply === 'ok',
+                        'detail' => $setReply === '+OK' && $getReply === 'ok'
+                            ? 'SET + GET + DEL succeeded'
+                            : 'SET: ' . trim($setReply, '-+') . ' · GET: ' . ($getReply === 'ok' ? 'ok' : trim($getReply, '-+')),
+                    ];
+
+                    // 6. Server info (version)
+                    $infoReply = $redisSend(['INFO', 'server']);
+                    $redisVersion = null;
+                    if (preg_match('/redis_version:(\S+)/', $infoReply, $m)) {
+                        $redisVersion = $m[1];
+                    }
+                    $testResults['info'] = [
+                        'label' => 'Server info',
+                        'ok' => $redisVersion !== null,
+                        'detail' => $redisVersion !== null ? 'Redis ' . $redisVersion : 'Could not retrieve server info',
+                        'version' => $redisVersion,
+                    ];
+                }
+
+                fclose($sock);
+            }
+
+            $allPassed = array_reduce($testResults, fn(bool $carry, array $r) => $carry && $r['ok'], true);
+            $_SESSION['redis_test_results'] = $testResults;
+            flash('success', $allPassed ? 'All Redis tests passed.' : 'Some Redis tests failed – see results below.');
+            header('Location: /settings?section=runtime-diagnostics&subsection=redis-test');
+            exit;
+
+        case 'neo4j-test':
+            $neo4jUrl = rtrim((string) config('neo4j.url', 'http://127.0.0.1:7474'), '/');
+            $neo4jUsername = (string) config('neo4j.username', 'neo4j');
+            $neo4jPassword = (string) config('neo4j.password', '');
+            $neo4jDatabase = (string) config('neo4j.database', 'neo4j');
+            $neo4jTimeout = max(3, (int) config('neo4j.timeout_seconds', 15));
+            $testResults = [];
+
+            // 1. Health / discovery endpoint
+            $ch = curl_init($neo4jUrl);
+            curl_setopt_array($ch, [
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_TIMEOUT => min($neo4jTimeout, 5),
+                CURLOPT_CONNECTTIMEOUT => 3,
+                CURLOPT_HTTPHEADER => ['Accept: application/json'],
+            ]);
+            if ($neo4jUsername !== '') {
+                curl_setopt($ch, CURLOPT_USERPWD, $neo4jUsername . ':' . $neo4jPassword);
+            }
+            $healthBody = curl_exec($ch);
+            $healthCode = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            $healthError = curl_error($ch);
+            $healthLatency = round((float) curl_getinfo($ch, CURLINFO_TOTAL_TIME) * 1000);
+            curl_close($ch);
+
+            $healthData = is_string($healthBody) ? @json_decode($healthBody, true) : null;
+            $neo4jVersion = is_array($healthData) ? ($healthData['neo4j_version'] ?? null) : null;
+
+            $testResults['health'] = [
+                'label' => 'Discovery endpoint',
+                'ok' => $healthCode >= 200 && $healthCode < 400,
+                'detail' => $healthError !== '' ? $healthError : ('HTTP ' . $healthCode . ' · ' . $healthLatency . 'ms'),
+                'version' => $neo4jVersion,
+            ];
+
+            // 2. Authentication check (the health endpoint already uses basic auth)
+            $testResults['auth'] = [
+                'label' => 'Authentication',
+                'ok' => $healthCode >= 200 && $healthCode < 400,
+                'detail' => $healthCode === 401 ? 'Invalid credentials' : ($healthCode === 403 ? 'Forbidden' : ($healthCode >= 200 && $healthCode < 400 ? 'Authenticated as ' . $neo4jUsername : 'HTTP ' . $healthCode)),
+            ];
+
+            // 3. Transactional query test
+            if ($healthCode >= 200 && $healthCode < 400) {
+                $txUrl = $neo4jUrl . '/db/' . $neo4jDatabase . '/tx/commit';
+                $cypher = json_encode([
+                    'statements' => [[
+                        'statement' => 'RETURN 1 AS ping',
+                        'resultDataContents' => ['row'],
+                    ]],
+                ]);
+                $ch = curl_init($txUrl);
+                curl_setopt_array($ch, [
+                    CURLOPT_RETURNTRANSFER => true,
+                    CURLOPT_POST => true,
+                    CURLOPT_POSTFIELDS => $cypher,
+                    CURLOPT_TIMEOUT => min($neo4jTimeout, 5),
+                    CURLOPT_CONNECTTIMEOUT => 3,
+                    CURLOPT_HTTPHEADER => [
+                        'Content-Type: application/json',
+                        'Accept: application/json',
+                    ],
+                ]);
+                if ($neo4jUsername !== '') {
+                    curl_setopt($ch, CURLOPT_USERPWD, $neo4jUsername . ':' . $neo4jPassword);
+                }
+                $queryBody = curl_exec($ch);
+                $queryCode = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+                $queryError = curl_error($ch);
+                $queryLatency = round((float) curl_getinfo($ch, CURLINFO_TOTAL_TIME) * 1000);
+                curl_close($ch);
+
+                $queryData = is_string($queryBody) ? @json_decode($queryBody, true) : null;
+                $queryErrors = is_array($queryData) ? ($queryData['errors'] ?? []) : [];
+                $queryRow = $queryData['results'][0]['data'][0]['row'][0] ?? null;
+
+                $testResults['query'] = [
+                    'label' => 'Cypher query (RETURN 1)',
+                    'ok' => $queryCode >= 200 && $queryCode < 300 && $queryErrors === [] && $queryRow === 1,
+                    'detail' => $queryError !== ''
+                        ? $queryError
+                        : ('HTTP ' . $queryCode . ' · ' . $queryLatency . 'ms'
+                            . ($queryErrors !== [] ? ' · ' . ($queryErrors[0]['message'] ?? 'query error') : '')
+                            . ($queryRow === 1 ? ' · result=1' : '')),
+                ];
+
+                // 4. Database access – check db exists via a label count query
+                $dbCypher = json_encode([
+                    'statements' => [[
+                        'statement' => 'CALL db.labels() YIELD label RETURN count(label) AS labelCount',
+                        'resultDataContents' => ['row'],
+                    ]],
+                ]);
+                $ch = curl_init($txUrl);
+                curl_setopt_array($ch, [
+                    CURLOPT_RETURNTRANSFER => true,
+                    CURLOPT_POST => true,
+                    CURLOPT_POSTFIELDS => $dbCypher,
+                    CURLOPT_TIMEOUT => min($neo4jTimeout, 5),
+                    CURLOPT_CONNECTTIMEOUT => 3,
+                    CURLOPT_HTTPHEADER => [
+                        'Content-Type: application/json',
+                        'Accept: application/json',
+                    ],
+                ]);
+                if ($neo4jUsername !== '') {
+                    curl_setopt($ch, CURLOPT_USERPWD, $neo4jUsername . ':' . $neo4jPassword);
+                }
+                $dbBody = curl_exec($ch);
+                $dbCode = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+                $dbError = curl_error($ch);
+                curl_close($ch);
+
+                $dbData = is_string($dbBody) ? @json_decode($dbBody, true) : null;
+                $dbErrors = is_array($dbData) ? ($dbData['errors'] ?? []) : [];
+                $labelCount = $dbData['results'][0]['data'][0]['row'][0] ?? null;
+
+                $testResults['database'] = [
+                    'label' => 'Database "' . $neo4jDatabase . '"',
+                    'ok' => $dbCode >= 200 && $dbCode < 300 && $dbErrors === [],
+                    'detail' => $dbError !== ''
+                        ? $dbError
+                        : ($dbErrors !== []
+                            ? ($dbErrors[0]['message'] ?? 'database error')
+                            : ($labelCount !== null ? $labelCount . ' label(s) found' : 'Accessible')),
+                ];
+            }
+
+            $allPassed = array_reduce($testResults, fn(bool $carry, array $r) => $carry && $r['ok'], true);
+            $_SESSION['neo4j_test_results'] = $testResults;
+            flash('success', $allPassed ? 'All Neo4j tests passed.' : 'Some Neo4j tests failed – see results below.');
+            header('Location: /settings?section=runtime-diagnostics&subsection=neo4j-test');
+            exit;
 
         case 'influxdb-test':
             $influxTestUrl = rtrim((string) config('influxdb.url', 'http://127.0.0.1:8086'), '/');
@@ -851,6 +1128,118 @@ include __DIR__ . '/../../src/views/partials/header.php';
                     <?php endforeach; ?>
                     <button class="btn-primary">Save runtime settings</button>
                 </form>
+            </div>
+        <?php elseif ($activeSubsection === 'redis-test'): ?>
+            <?php
+            $redisTestEnabled = (bool) config('redis.enabled', false);
+            $redisTestHost = trim((string) config('redis.host', '127.0.0.1'));
+            $redisTestPort = (int) config('redis.port', 6379);
+            $redisTestDatabase = (int) config('redis.database', 0);
+            $redisTestPassword = (string) config('redis.password', '');
+            $redisTestResults = $_SESSION['redis_test_results'] ?? null;
+            unset($_SESSION['redis_test_results']);
+            ?>
+            <div class="mt-6 space-y-6">
+                <section class="rounded-2xl border border-border bg-black/20 p-4">
+                    <p class="text-sm font-semibold text-slate-100">Redis Connection Test</p>
+                    <p class="mt-1 text-xs text-muted">Run a full connectivity test against your configured Redis instance. This will check TCP connection, authentication, PING, write/read, and server info.</p>
+
+                    <div class="mt-4 grid gap-3 md:grid-cols-2">
+                        <p class="text-sm text-slate-200">Host: <span class="font-mono text-slate-100"><?= htmlspecialchars($redisTestHost, ENT_QUOTES) ?></span></p>
+                        <p class="text-sm text-slate-200">Port: <span class="font-mono text-slate-100"><?= $redisTestPort ?></span></p>
+                        <p class="text-sm text-slate-200">Database: <span class="font-mono text-slate-100"><?= $redisTestDatabase ?></span></p>
+                        <p class="text-sm text-slate-200">Password: <span class="font-mono text-slate-100"><?= $redisTestPassword !== '' ? '••••' . htmlspecialchars(substr($redisTestPassword, -4), ENT_QUOTES) : '(none)' ?></span></p>
+                        <p class="text-sm text-slate-200">Enabled: <span class="font-mono text-slate-100"><?= $redisTestEnabled ? 'yes' : 'no' ?></span></p>
+                    </div>
+
+                    <form method="post" class="mt-4">
+                        <input type="hidden" name="_token" value="<?= htmlspecialchars(csrf_token(), ENT_QUOTES) ?>">
+                        <input type="hidden" name="section" value="redis-test">
+                        <button class="btn-primary">Test Connection</button>
+                    </form>
+                </section>
+
+                <?php if (is_array($redisTestResults) && $redisTestResults !== []): ?>
+                    <section class="rounded-2xl border border-border bg-black/20 p-4">
+                        <p class="text-sm font-semibold text-slate-100">Test Results</p>
+                        <div class="mt-4 space-y-3">
+                            <?php foreach ($redisTestResults as $testKey => $testResult): ?>
+                                <?php
+                                $isOk = (bool) ($testResult['ok'] ?? false);
+                                $tone = $isOk
+                                    ? 'border-emerald-400/20 bg-emerald-500/10 text-emerald-100'
+                                    : 'border-rose-400/20 bg-rose-500/10 text-rose-100';
+                                ?>
+                                <div class="flex items-start gap-3 rounded-lg border p-3 <?= $tone ?>">
+                                    <span class="mt-0.5 text-lg"><?= $isOk ? '&#10003;' : '&#10007;' ?></span>
+                                    <div>
+                                        <p class="text-sm font-medium"><?= htmlspecialchars((string) ($testResult['label'] ?? $testKey), ENT_QUOTES) ?></p>
+                                        <p class="text-xs opacity-80"><?= htmlspecialchars((string) ($testResult['detail'] ?? ''), ENT_QUOTES) ?></p>
+                                        <?php if (!empty($testResult['version'])): ?>
+                                            <p class="text-xs opacity-60">Version: <?= htmlspecialchars((string) $testResult['version'], ENT_QUOTES) ?></p>
+                                        <?php endif; ?>
+                                    </div>
+                                </div>
+                            <?php endforeach; ?>
+                        </div>
+                    </section>
+                <?php endif; ?>
+            </div>
+        <?php elseif ($activeSubsection === 'neo4j-test'): ?>
+            <?php
+            $neo4jTestEnabled = (bool) config('neo4j.enabled', false);
+            $neo4jTestUrl = rtrim((string) config('neo4j.url', 'http://127.0.0.1:7474'), '/');
+            $neo4jTestUsername = (string) config('neo4j.username', 'neo4j');
+            $neo4jTestPassword = (string) config('neo4j.password', '');
+            $neo4jTestDatabase = (string) config('neo4j.database', 'neo4j');
+            $neo4jTestResults = $_SESSION['neo4j_test_results'] ?? null;
+            unset($_SESSION['neo4j_test_results']);
+            ?>
+            <div class="mt-6 space-y-6">
+                <section class="rounded-2xl border border-border bg-black/20 p-4">
+                    <p class="text-sm font-semibold text-slate-100">Neo4j Connection Test</p>
+                    <p class="mt-1 text-xs text-muted">Run a full connectivity test against your configured Neo4j instance. This will check the discovery endpoint, authentication, Cypher query execution, and database access.</p>
+
+                    <div class="mt-4 grid gap-3 md:grid-cols-2">
+                        <p class="text-sm text-slate-200">URL: <span class="font-mono text-slate-100"><?= htmlspecialchars($neo4jTestUrl, ENT_QUOTES) ?></span></p>
+                        <p class="text-sm text-slate-200">Username: <span class="font-mono text-slate-100"><?= htmlspecialchars($neo4jTestUsername, ENT_QUOTES) ?></span></p>
+                        <p class="text-sm text-slate-200">Password: <span class="font-mono text-slate-100"><?= $neo4jTestPassword !== '' ? '••••' . htmlspecialchars(substr($neo4jTestPassword, -4), ENT_QUOTES) : '(not set)' ?></span></p>
+                        <p class="text-sm text-slate-200">Database: <span class="font-mono text-slate-100"><?= htmlspecialchars($neo4jTestDatabase, ENT_QUOTES) ?></span></p>
+                        <p class="text-sm text-slate-200">Enabled: <span class="font-mono text-slate-100"><?= $neo4jTestEnabled ? 'yes' : 'no' ?></span></p>
+                    </div>
+
+                    <form method="post" class="mt-4">
+                        <input type="hidden" name="_token" value="<?= htmlspecialchars(csrf_token(), ENT_QUOTES) ?>">
+                        <input type="hidden" name="section" value="neo4j-test">
+                        <button class="btn-primary">Test Connection</button>
+                    </form>
+                </section>
+
+                <?php if (is_array($neo4jTestResults) && $neo4jTestResults !== []): ?>
+                    <section class="rounded-2xl border border-border bg-black/20 p-4">
+                        <p class="text-sm font-semibold text-slate-100">Test Results</p>
+                        <div class="mt-4 space-y-3">
+                            <?php foreach ($neo4jTestResults as $testKey => $testResult): ?>
+                                <?php
+                                $isOk = (bool) ($testResult['ok'] ?? false);
+                                $tone = $isOk
+                                    ? 'border-emerald-400/20 bg-emerald-500/10 text-emerald-100'
+                                    : 'border-rose-400/20 bg-rose-500/10 text-rose-100';
+                                ?>
+                                <div class="flex items-start gap-3 rounded-lg border p-3 <?= $tone ?>">
+                                    <span class="mt-0.5 text-lg"><?= $isOk ? '&#10003;' : '&#10007;' ?></span>
+                                    <div>
+                                        <p class="text-sm font-medium"><?= htmlspecialchars((string) ($testResult['label'] ?? $testKey), ENT_QUOTES) ?></p>
+                                        <p class="text-xs opacity-80"><?= htmlspecialchars((string) ($testResult['detail'] ?? ''), ENT_QUOTES) ?></p>
+                                        <?php if (!empty($testResult['version'])): ?>
+                                            <p class="text-xs opacity-60">Version: <?= htmlspecialchars((string) $testResult['version'], ENT_QUOTES) ?></p>
+                                        <?php endif; ?>
+                                    </div>
+                                </div>
+                            <?php endforeach; ?>
+                        </div>
+                    </section>
+                <?php endif; ?>
             </div>
         <?php elseif ($activeSubsection === 'influxdb-test'): ?>
             <?php
