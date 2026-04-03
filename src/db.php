@@ -16289,6 +16289,13 @@ function db_counterintel_scores_for_characters(array $characterIds): array
 function db_theaters_list(int $limit = 50, int $offset = 0, ?string $regionFilter = null, ?float $minAnomaly = null): array
 {
     $trackedAllianceIds = array_map('intval', array_column(db_killmail_tracked_alliances_active(), 'alliance_id'));
+
+    // Fall back to in-game corp contacts when no tracked alliances are configured
+    if ($trackedAllianceIds === []) {
+        $contacts = db_corp_contacts_by_standing();
+        $trackedAllianceIds = array_map('intval', $contacts['friendly_alliance_ids'] ?? []);
+    }
+
     if ($trackedAllianceIds === []) {
         return [];
     }
@@ -16560,6 +16567,14 @@ function db_theater_side_labels(array $theaterIds): array
     // Load tracked/opponent alliance IDs for runtime classification
     $trackedAllianceIds = array_map('intval', array_column(db_killmail_tracked_alliances_active(), 'alliance_id'));
     $opponentAllianceIds = array_map('intval', array_column(db_killmail_opponent_alliances_active(), 'alliance_id'));
+
+    // Fall back to in-game corp contacts when no tracked/opponent alliances are configured
+    if ($trackedAllianceIds === [] && $opponentAllianceIds === []) {
+        $contacts = db_corp_contacts_by_standing();
+        $trackedAllianceIds = array_map('intval', $contacts['friendly_alliance_ids'] ?? []);
+        $opponentAllianceIds = array_map('intval', $contacts['hostile_alliance_ids'] ?? []);
+    }
+
     $trackedSet = array_flip($trackedAllianceIds);
     $opponentSet = array_flip($opponentAllianceIds);
 
