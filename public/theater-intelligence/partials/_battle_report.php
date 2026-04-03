@@ -115,7 +115,6 @@
                         'pilots' => ($enemyPanel['pilots'] ?? 0) + ($thirdPartyPanel['pilots'] ?? 0),
                         'efficiency' => $enemyEfficiency,
                         'kills' => ($enemyPanel['kills'] ?? 0) + ($thirdPartyPanel['kills'] ?? 0),
-                        'final_blows' => ($enemyPanel['final_blows'] ?? 0) + ($thirdPartyPanel['final_blows'] ?? 0),
                         'losses' => ($enemyPanel['losses'] ?? 0) + ($thirdPartyPanel['losses'] ?? 0),
                         'kill_involvements' => ($enemyPanel['kill_involvements'] ?? 0) + ($thirdPartyPanel['kill_involvements'] ?? 0),
                         'isk_killed' => ($enemyPanel['isk_killed'] ?? 0) + ($thirdPartyPanel['isk_killed'] ?? 0),
