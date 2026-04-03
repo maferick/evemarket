@@ -10,7 +10,7 @@ $rows = (array) ($data['rows'] ?? []);
 $computedAt = (string) ($data['computed_at'] ?? '');
 $dataQuality = db_graph_data_quality_latest();
 $motifs = db_graph_motif_detections_recent(10);
-$communities = db_graph_community_overview(10);
+$communities = db_graph_community_overview_preferred(10);
 
 include __DIR__ . '/../../src/views/partials/header.php';
 ?>

@@ -193,6 +193,16 @@ function db(): PDO
     );
 
     try {
+        $socket = trim((string) supplycore_base_config_value('db.socket', ''));
+        if ($socket !== '') {
+            $dsn = sprintf(
+                'mysql:unix_socket=%s;dbname=%s;charset=%s',
+                $socket,
+                (string) supplycore_base_config_value('db.database', ''),
+                (string) supplycore_base_config_value('db.charset', 'utf8mb4')
+            );
+        }
+
         $pdo = new PDO(
             $dsn,
             (string) supplycore_base_config_value('db.username', ''),
@@ -202,8 +212,15 @@ function db(): PDO
                 PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
                 PDO::ATTR_EMULATE_PREPARES => false,
                 PDO::MYSQL_ATTR_USE_BUFFERED_QUERY => true,
+                PDO::ATTR_STRINGIFY_FETCHES => false,
             ]
         );
+
+        // Session-level optimizer tuning: use histogram statistics for better
+        // cardinality estimation (requires ANALYZE TABLE ... PERSISTENT FOR ALL).
+        // Level 4 = use histogram-based selectivity for all conditions.
+        $pdo->exec('SET SESSION optimizer_use_condition_selectivity = 4');
+
     } catch (Throwable $exception) {
         $connectionError = 'Database connection failed: ' . $exception->getMessage();
         throw new RuntimeException($connectionError, 0, $exception);
@@ -18039,4 +18056,544 @@ function db_pipeline_observatory_data(): array
         'stage_health' => $stageHealth,
         'recent_runs'  => $recentRuns,
     ];
+}
+
+// ===========================================================================
+// Neo4j offload: graph-native query alternatives
+// ===========================================================================
+// These functions try Neo4j first for queries that are inherently graph
+// traversals, falling back to the existing MariaDB path when Neo4j is
+// disabled or returns empty results.
+
+/**
+ * Community overview with Neo4j-first path.
+ *
+ * The MariaDB version does a heavy correlated subquery through
+ * graph_community_assignments + battle_participants + entity_metadata_cache.
+ * Neo4j can answer "communities with members who participated in battles for
+ * these alliances" natively via label-filtered traversal.
+ */
+function db_graph_community_overview_neo4j(int $limit = 30): array
+{
+    if (!(bool) config('neo4j.enabled', false)) {
+        return [];
+    }
+
+    $trackedAllianceIds = array_map('intval', array_column(db_killmail_tracked_alliances_active(), 'alliance_id'));
+    if ($trackedAllianceIds === []) {
+        return [];
+    }
+
+    $safeLimit = max(1, min(100, $limit));
+
+    $rows = neo4j_query(
+        'MATCH (c:Character)-[:PARTICIPATED_IN]->(b:Battle)
+         WHERE c.alliance_id IN $allianceIds AND c.community_id IS NOT NULL
+         WITH c.community_id AS community_id, collect(DISTINCT c.character_id) AS member_ids
+         WHERE size(member_ids) >= 3
+         UNWIND member_ids AS mid
+         MATCH (m:Character {character_id: mid})
+         WITH community_id,
+              count(m) AS member_count,
+              sum(CASE WHEN m.betweenness_approx > 0.1 THEN 1 ELSE 0 END) AS bridge_count,
+              avg(COALESCE(m.pr, 0.0)) AS avg_pagerank,
+              max(COALESCE(m.pr, 0.0)) AS max_pagerank,
+              avg(COALESCE(m.betweenness_approx, 0.0)) AS avg_betweenness,
+              head(collect(m.name)[..1]) AS top_member_name
+         RETURN community_id, member_count, bridge_count, avg_pagerank,
+                max_pagerank, avg_betweenness,
+                COALESCE(top_member_name, "Unknown") AS top_member_name
+         ORDER BY member_count DESC
+         LIMIT $lim',
+        ['allianceIds' => $trackedAllianceIds, 'lim' => $safeLimit]
+    );
+
+    if ($rows !== []) {
+        return array_map(static function (array $row): array {
+            return [
+                'community_id'     => (string) ($row['community_id'] ?? ''),
+                'community_size'   => (int) ($row['member_count'] ?? 0),
+                'member_count'     => (int) ($row['member_count'] ?? 0),
+                'bridge_count'     => (int) ($row['bridge_count'] ?? 0),
+                'avg_pagerank'     => (float) ($row['avg_pagerank'] ?? 0.0),
+                'max_pagerank'     => (float) ($row['max_pagerank'] ?? 0.0),
+                'avg_betweenness'  => (float) ($row['avg_betweenness'] ?? 0.0),
+                'top_member_name'  => (string) ($row['top_member_name'] ?? 'Unknown'),
+            ];
+        }, $rows);
+    }
+
+    return [];
+}
+
+/**
+ * Constellation graph via Neo4j universe topology.
+ *
+ * The MariaDB version requires two queries (ref_systems + ref_stargates self-join).
+ * Neo4j traverses CONNECTS_TO relationships natively with a single Cypher query.
+ */
+function db_constellation_graph_neo4j(array $constellationIds): array
+{
+    if (!(bool) config('neo4j.enabled', false)) {
+        return ['nodes' => [], 'edges' => []];
+    }
+
+    $constellationIds = array_values(array_unique(array_filter(array_map('intval', $constellationIds), static fn(int $id): bool => $id > 0)));
+    if ($constellationIds === []) {
+        return ['nodes' => [], 'edges' => []];
+    }
+
+    $rows = neo4j_query(
+        'MATCH (s:System)-[:IN_CONSTELLATION]->(c:Constellation)
+         WHERE c.constellation_id IN $constellationIds
+         WITH collect(s) AS systems, collect(s.system_id) AS sysIds
+         UNWIND systems AS s
+         OPTIONAL MATCH (s)-[:CONNECTS_TO]-(other:System)
+         WHERE other.system_id IN sysIds
+         RETURN s.system_id AS system_id, s.name AS system_name,
+                s.security AS security, s.constellation_id AS constellation_id,
+                collect(DISTINCT other.system_id) AS connected_to',
+        ['constellationIds' => $constellationIds]
+    );
+
+    if ($rows === []) {
+        return ['nodes' => [], 'edges' => []];
+    }
+
+    $nodes = [];
+    $edgePairs = [];
+    foreach ($rows as $row) {
+        $sid = (int) ($row['system_id'] ?? 0);
+        if ($sid <= 0) {
+            continue;
+        }
+        $nodes[] = [
+            'system_id'        => $sid,
+            'system_name'      => (string) ($row['system_name'] ?? ''),
+            'security'         => (float) ($row['security'] ?? 0.0),
+            'constellation_id' => (int) ($row['constellation_id'] ?? 0),
+        ];
+        foreach ((array) ($row['connected_to'] ?? []) as $destId) {
+            $destId = (int) $destId;
+            if ($destId > 0 && $destId !== $sid) {
+                $left = min($sid, $destId);
+                $right = max($sid, $destId);
+                $edgePairs[$left . ':' . $right] = [$left, $right];
+            }
+        }
+    }
+
+    return [
+        'nodes' => $nodes,
+        'edges' => array_values($edgePairs),
+    ];
+}
+
+/**
+ * Co-presence top edges via Neo4j.
+ *
+ * MariaDB must scan both character_id_a and character_id_b columns with OR
+ * conditions. Neo4j traverses CO_OCCURS_WITH edges bidirectionally natively.
+ */
+function db_character_copresence_top_edges_neo4j(int $characterId, string $windowLabel = '30d', int $limit = 15): array
+{
+    if ($characterId <= 0 || !(bool) config('neo4j.enabled', false)) {
+        return [];
+    }
+
+    $safeLimit = max(1, min(50, $limit));
+
+    return neo4j_query(
+        'MATCH (c:Character {character_id: $charId})-[r:CO_OCCURS_WITH]-(other:Character)
+         WHERE r.recent_weight IS NOT NULL
+         RETURN other.character_id AS other_character_id,
+                COALESCE(other.name, "Character #" + toString(other.character_id)) AS other_character_name,
+                r.occurrence_count AS event_count,
+                CASE $window
+                    WHEN "7d" THEN COALESCE(r.recent_weight, 0.0)
+                    WHEN "90d" THEN COALESCE(r.all_time_weight, 0.0)
+                    ELSE COALESCE(r.weight, 0.0)
+                END AS edge_weight,
+                r.last_seen AS last_event_at
+         ORDER BY edge_weight DESC
+         LIMIT $lim',
+        ['charId' => $characterId, 'window' => $windowLabel, 'lim' => $safeLimit]
+    );
+}
+
+/**
+ * Item dependency/criticality via Neo4j doctrine→fit→item graph.
+ *
+ * The MariaDB version uses a UNION + NOT IN subquery across two tables.
+ * Neo4j can traverse Doctrine-[:USES]->Fit-[:CONTAINS]->Item natively
+ * and compute dependency/criticality in a single traversal.
+ */
+function db_item_graph_intelligence_by_type_ids_neo4j(array $typeIds): array
+{
+    if (!(bool) config('neo4j.enabled', false)) {
+        return [];
+    }
+
+    $typeIds = array_values(array_unique(array_filter(array_map('intval', $typeIds), static fn (int $id): bool => $id > 0)));
+    if ($typeIds === []) {
+        return [];
+    }
+
+    $rows = neo4j_query(
+        'UNWIND $typeIds AS tid
+         MATCH (i:Item {type_id: tid})
+         OPTIONAL MATCH (f:Fit)-[:CONTAINS]->(i)
+         OPTIONAL MATCH (d:Doctrine)-[:USES]->(f)
+         OPTIONAL MATCH (f)-[cr:USES_CRITICAL_ITEM]->(i)
+         WITH i.type_id AS type_id,
+              count(DISTINCT d) AS doctrine_count,
+              count(DISTINCT f) AS fit_count,
+              COALESCE(max(cr.criticality_score), 0.0) AS criticality_score,
+              count(DISTINCT f) * 1.0 / (CASE WHEN count(DISTINCT d) > 0 THEN count(DISTINCT d) ELSE 1 END) AS dependency_score
+         RETURN type_id, dependency_score, doctrine_count AS graph_doctrine_count,
+                fit_count AS graph_fit_count, criticality_score
+         ORDER BY type_id',
+        ['typeIds' => $typeIds]
+    );
+
+    if ($rows === []) {
+        return [];
+    }
+
+    $indexed = [];
+    foreach ($rows as $row) {
+        $indexed[(int) $row['type_id']] = $row;
+    }
+    return $indexed;
+}
+
+/**
+ * Alliance relationship graph via Neo4j.
+ *
+ * Returns ALLIED_WITH and HOSTILE_TO edges for a given set of alliance IDs.
+ * This is a pure graph query that MariaDB can only serve from materialized
+ * read-model tables, while Neo4j has the edges as first-class relationships.
+ */
+function db_alliance_relationship_graph_neo4j(array $allianceIds, int $limit = 50): array
+{
+    if (!(bool) config('neo4j.enabled', false)) {
+        return ['allies' => [], 'hostiles' => []];
+    }
+
+    $allianceIds = array_values(array_unique(array_filter(array_map('intval', $allianceIds), static fn(int $id): bool => $id > 0)));
+    if ($allianceIds === []) {
+        return ['allies' => [], 'hostiles' => []];
+    }
+
+    $safeLimit = max(1, min(200, $limit));
+
+    $allies = neo4j_query(
+        'MATCH (a:Alliance)-[r:ALLIED_WITH]-(b:Alliance)
+         WHERE a.alliance_id IN $ids
+         RETURN a.alliance_id AS source_id, COALESCE(a.name, "") AS source_name,
+                b.alliance_id AS target_id, COALESCE(b.name, "") AS target_name,
+                r.weight_30d AS weight, r.shared_killmails AS shared_killmails,
+                r.computed_at AS computed_at
+         ORDER BY r.weight_30d DESC
+         LIMIT $lim',
+        ['ids' => $allianceIds, 'lim' => $safeLimit]
+    );
+
+    $hostiles = neo4j_query(
+        'MATCH (a:Alliance)-[r:HOSTILE_TO]-(b:Alliance)
+         WHERE a.alliance_id IN $ids
+         RETURN a.alliance_id AS source_id, COALESCE(a.name, "") AS source_name,
+                b.alliance_id AS target_id, COALESCE(b.name, "") AS target_name,
+                r.weight_30d AS weight, r.engagements AS engagements,
+                r.computed_at AS computed_at
+         ORDER BY r.weight_30d DESC
+         LIMIT $lim',
+        ['ids' => $allianceIds, 'lim' => $safeLimit]
+    );
+
+    return [
+        'allies'   => $allies ?: [],
+        'hostiles' => $hostiles ?: [],
+    ];
+}
+
+// ===========================================================================
+// Wrappers: Neo4j-preferred with MariaDB fallback
+// ===========================================================================
+
+/**
+ * Community overview: tries Neo4j first, falls back to MariaDB.
+ */
+function db_graph_community_overview_preferred(int $limit = 30): array
+{
+    $neo4jRows = db_graph_community_overview_neo4j($limit);
+    if ($neo4jRows !== []) {
+        return $neo4jRows;
+    }
+    return db_graph_community_overview($limit);
+}
+
+/**
+ * Constellation graph: tries Neo4j first, falls back to MariaDB.
+ */
+function db_constellation_graph_preferred(array $constellationIds): array
+{
+    $neo4jResult = db_constellation_graph_neo4j($constellationIds);
+    if ($neo4jResult['nodes'] !== []) {
+        return $neo4jResult;
+    }
+    return db_constellation_graph($constellationIds);
+}
+
+/**
+ * Co-presence top edges: tries Neo4j first, falls back to MariaDB.
+ */
+function db_character_copresence_top_edges_preferred(int $characterId, string $windowLabel = '30d', int $limit = 15): array
+{
+    $neo4jRows = db_character_copresence_top_edges_neo4j($characterId, $windowLabel, $limit);
+    if ($neo4jRows !== []) {
+        return $neo4jRows;
+    }
+    return db_character_copresence_top_edges($characterId, $windowLabel, $limit);
+}
+
+/**
+ * Item graph intelligence: tries Neo4j first, falls back to MariaDB.
+ */
+function db_item_graph_intelligence_by_type_ids_preferred(array $typeIds): array
+{
+    $neo4jResult = db_item_graph_intelligence_by_type_ids_neo4j($typeIds);
+    if ($neo4jResult !== []) {
+        return $neo4jResult;
+    }
+    return db_item_graph_intelligence_by_type_ids($typeIds);
+}
+
+// ===========================================================================
+// InfluxDB offload: time-series query alternatives
+// ===========================================================================
+// These functions extend the existing InfluxDB read-path to cover additional
+// time-series queries that currently run entirely on MariaDB.
+
+/**
+ * Killmail hull loss window summaries via InfluxDB.
+ *
+ * Replaces the MariaDB GROUP BY DATE(effective_killmail_at), victim_ship_type_id
+ * pattern with a native InfluxDB aggregateWindow query.
+ */
+function db_killmail_hull_loss_window_summaries_influx(array $hullTypeIds, int $hours = 24 * 7): array
+{
+    if (!db_influx_read_enabled()) {
+        return [];
+    }
+
+    $normalizedTypeIds = array_values(array_unique(array_filter(array_map('intval', $hullTypeIds), static fn (int $id): bool => $id > 0)));
+    if ($normalizedTypeIds === []) {
+        return [];
+    }
+
+    $filterParts = [];
+    foreach ($normalizedTypeIds as $tid) {
+        $filterParts[] = 'r.hull_type_id == "' . $tid . '"';
+    }
+    $typeFilter = implode(' or ', $filterParts);
+    $safeHours = max(24, min(24 * 30, $hours));
+
+    $flux = 'from(bucket: "' . db_influx_bucket() . '")
+  |> range(start: -' . $safeHours . 'h)
+  |> filter(fn: (r) => r._measurement == "killmail_hull_loss" and r.window == "1d")
+  |> filter(fn: (r) => ' . $typeFilter . ')
+  |> filter(fn: (r) => r._field == "loss_count" or r._field == "victim_count" or r._field == "killmail_count")
+  |> pivot(rowKey: ["_time", "hull_type_id"], columnKey: ["_field"], valueColumn: "_value")
+  |> group(columns: ["hull_type_id"])
+  |> sum(column: "loss_count")
+  |> yield(name: "hull_loss_summary")';
+
+    $rows = db_influx_query_rows($flux);
+    if ($rows === []) {
+        return [];
+    }
+
+    return array_map(static function (array $row): array {
+        return [
+            'hull_type_id'  => (int) ($row['hull_type_id'] ?? 0),
+            'loss_count'    => (int) ($row['loss_count'] ?? 0),
+            'victim_count'  => (int) ($row['victim_count'] ?? 0),
+            'killmail_count' => (int) ($row['killmail_count'] ?? 0),
+        ];
+    }, $rows);
+}
+
+/**
+ * Killmail item loss window summaries via InfluxDB.
+ *
+ * Replaces the MariaDB GROUP BY on killmail_item_loss_1d/1h with a native
+ * InfluxDB query using aggregateWindow and time-range filtering.
+ */
+function db_killmail_item_loss_window_summaries_influx(array $typeIds, int $hours = 24 * 7): array
+{
+    if (!db_influx_read_enabled()) {
+        return [];
+    }
+
+    $normalizedTypeIds = array_values(array_unique(array_filter(array_map('intval', $typeIds), static fn (int $id): bool => $id > 0)));
+    if ($normalizedTypeIds === []) {
+        return [];
+    }
+
+    $filterParts = [];
+    foreach ($normalizedTypeIds as $tid) {
+        $filterParts[] = 'r.type_id == "' . $tid . '"';
+    }
+    $typeFilter = implode(' or ', $filterParts);
+    $safeHours = max(24, min(24 * 30, $hours));
+
+    $flux = 'from(bucket: "' . db_influx_bucket() . '")
+  |> range(start: -' . $safeHours . 'h)
+  |> filter(fn: (r) => r._measurement == "killmail_item_loss" and r.window == "1d")
+  |> filter(fn: (r) => ' . $typeFilter . ')
+  |> filter(fn: (r) => r._field == "loss_count" or r._field == "quantity_lost" or r._field == "victim_count" or r._field == "killmail_count")
+  |> pivot(rowKey: ["_time", "type_id"], columnKey: ["_field"], valueColumn: "_value")
+  |> group(columns: ["type_id"])
+  |> sum(column: "quantity_lost")
+  |> yield(name: "item_loss_summary")';
+
+    $rows = db_influx_query_rows($flux);
+    if ($rows === []) {
+        return [];
+    }
+
+    return array_map(static function (array $row): array {
+        return [
+            'type_id'       => (int) ($row['type_id'] ?? 0),
+            'loss_count'    => (int) ($row['loss_count'] ?? 0),
+            'quantity_lost' => (int) ($row['quantity_lost'] ?? 0),
+            'victim_count'  => (int) ($row['victim_count'] ?? 0),
+            'killmail_count' => (int) ($row['killmail_count'] ?? 0),
+        ];
+    }, $rows);
+}
+
+/**
+ * Doctrine fit activity trend via InfluxDB.
+ *
+ * Replaces MariaDB scan of doctrine_fit_activity_1d for long-range trend views.
+ */
+function db_doctrine_fit_activity_trend_influx(int $fitId, string $startDate, string $endDate): array
+{
+    if (!db_influx_read_enabled() || $fitId <= 0) {
+        return [];
+    }
+
+    $flux = 'from(bucket: "' . db_influx_bucket() . '")
+  |> range(start: ' . $startDate . 'T00:00:00Z, stop: ' . $endDate . 'T23:59:59Z)
+  |> filter(fn: (r) => r._measurement == "doctrine_fit_activity" and r.window == "1d" and r.fit_id == "' . $fitId . '")
+  |> filter(fn: (r) => r._field == "hull_loss_count" or r._field == "doctrine_item_loss_count" or r._field == "complete_fits_available" or r._field == "fit_gap" or r._field == "priority_score" or r._field == "resupply_pressure")
+  |> pivot(rowKey: ["_time", "fit_id"], columnKey: ["_field"], valueColumn: "_value")
+  |> sort(columns: ["_time"])
+  |> yield(name: "fit_activity_trend")';
+
+    $rows = db_influx_query_rows($flux);
+    if ($rows === []) {
+        return [];
+    }
+
+    return array_map(static function (array $row): array {
+        return [
+            'bucket_start'              => (string) ($row['_time'] ?? ''),
+            'fit_id'                    => (int) ($row['fit_id'] ?? 0),
+            'hull_loss_count'           => (int) ($row['hull_loss_count'] ?? 0),
+            'doctrine_item_loss_count'  => (int) ($row['doctrine_item_loss_count'] ?? 0),
+            'complete_fits_available'   => (int) ($row['complete_fits_available'] ?? 0),
+            'fit_gap'                   => (int) ($row['fit_gap'] ?? 0),
+            'priority_score'            => (float) ($row['priority_score'] ?? 0.0),
+            'resupply_pressure'         => (float) ($row['resupply_pressure'] ?? 0.0),
+        ];
+    }, $rows);
+}
+
+/**
+ * Doctrine group activity trend via InfluxDB.
+ */
+function db_doctrine_group_activity_trend_influx(int $groupId, string $startDate, string $endDate): array
+{
+    if (!db_influx_read_enabled() || $groupId <= 0) {
+        return [];
+    }
+
+    $flux = 'from(bucket: "' . db_influx_bucket() . '")
+  |> range(start: ' . $startDate . 'T00:00:00Z, stop: ' . $endDate . 'T23:59:59Z)
+  |> filter(fn: (r) => r._measurement == "doctrine_group_activity" and r.window == "1d" and r.group_id == "' . $groupId . '")
+  |> filter(fn: (r) => r._field == "hull_loss_count" or r._field == "doctrine_item_loss_count" or r._field == "complete_fits_available" or r._field == "fit_gap" or r._field == "priority_score" or r._field == "resupply_pressure")
+  |> pivot(rowKey: ["_time", "group_id"], columnKey: ["_field"], valueColumn: "_value")
+  |> sort(columns: ["_time"])
+  |> yield(name: "group_activity_trend")';
+
+    $rows = db_influx_query_rows($flux);
+    if ($rows === []) {
+        return [];
+    }
+
+    return array_map(static function (array $row): array {
+        return [
+            'bucket_start'              => (string) ($row['_time'] ?? ''),
+            'group_id'                  => (int) ($row['group_id'] ?? 0),
+            'hull_loss_count'           => (int) ($row['hull_loss_count'] ?? 0),
+            'doctrine_item_loss_count'  => (int) ($row['doctrine_item_loss_count'] ?? 0),
+            'complete_fits_available'   => (int) ($row['complete_fits_available'] ?? 0),
+            'fit_gap'                   => (int) ($row['fit_gap'] ?? 0),
+            'priority_score'            => (float) ($row['priority_score'] ?? 0.0),
+            'resupply_pressure'         => (float) ($row['resupply_pressure'] ?? 0.0),
+        ];
+    }, $rows);
+}
+
+/**
+ * Market item stock window summaries with InfluxDB-first path.
+ *
+ * Extends db_market_item_stock_window_summaries() to try InfluxDB first when
+ * read_mode is 'preferred' or 'primary', reducing MariaDB load for stock
+ * trend pages.
+ */
+function db_market_item_stock_window_summaries_preferred(
+    string $sourceType,
+    int $sourceId,
+    string $startDate,
+    string $endDate,
+    array $typeIds = []
+): array {
+    $readMode = db_influx_read_mode();
+
+    if ($typeIds === [] && $readMode === 'primary') {
+        $influxRows = db_market_item_stock_window_summaries_influx($sourceType, $sourceId, $startDate, $endDate);
+        if ($influxRows !== []) {
+            return $influxRows;
+        }
+    }
+
+    if ($typeIds === [] && $readMode === 'preferred') {
+        $influxRows = db_market_item_stock_window_summaries_influx($sourceType, $sourceId, $startDate, $endDate);
+        if ($influxRows !== []) {
+            return $influxRows;
+        }
+    }
+
+    $rows = db_market_item_stock_window_summaries($sourceType, $sourceId, $startDate, $endDate, $typeIds);
+
+    if ($rows === [] && $typeIds === [] && $readMode === 'fallback') {
+        $influxRows = db_market_item_stock_window_summaries_influx($sourceType, $sourceId, $startDate, $endDate);
+        if ($influxRows !== []) {
+            return $influxRows;
+        }
+    }
+
+    return $rows;
+}
+
+/**
+ * Return the configured InfluxDB bucket name.
+ */
+function db_influx_bucket(): string
+{
+    return (string) config('influxdb.bucket', 'supplycore_rollups');
 }

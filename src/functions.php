@@ -28917,7 +28917,7 @@ function buy_all_planner_data_uncached(array $query = []): array
     // Graph intelligence enrichment — dependency scores, criticality, SPOF flags.
     $graphIntelByType = [];
     try {
-        $graphIntelByType = db_item_graph_intelligence_by_type_ids($candidateTypeIds);
+        $graphIntelByType = db_item_graph_intelligence_by_type_ids_preferred($candidateTypeIds);
     } catch (Throwable) {
         // Tables may not exist yet; degrade gracefully.
     }

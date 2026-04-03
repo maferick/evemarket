@@ -199,6 +199,122 @@ Defaults used when no setting exists:
 - Immediate long-run storage savings will come primarily from pruning `market_order_snapshots_summary` in addition to `market_orders_history`.
 - Scheduler/event tables now have explicit caps, preventing silent long-term accumulation.
 
+## Phase 2: MariaDB server tuning + Neo4j/InfluxDB offload (2026-04-13)
+
+### Source inputs
+
+- https://mariadb.org/mariadb-30x-faster/ — histogram-based optimizer statistics
+- https://github.com/VolkanSah/optimize-MySQL-MariaDB — InnoDB buffer/I/O tuning
+- https://medium.com/@x0goe/5-mariadb-performance-tuning-techniques — thread pool, slow log, EXPLAIN analysis
+- Full query-path audit of `src/db.php` (~18k lines, 200+ query functions)
+- Full audit of Neo4j and InfluxDB usage in PHP and Python code
+
+### Server-level MariaDB tuning
+
+New file: `setup/mariadb_performance.cnf`
+
+Key settings applied:
+- **InnoDB buffer pool**: 8G with 4 instances, dump/load on shutdown/startup
+- **Redo log**: 512M for better write throughput during market order ingestion
+- **Flush behavior**: `innodb_flush_log_at_trx_commit = 2` (1-second flush) + `O_DIRECT`
+- **I/O capacity**: 2000/4000 for SSD workloads
+- **Thread pool**: `pool-of-threads` with `thread_pool_size = 4` (match CPU cores)
+- **Temp tables**: 128M to keep GROUP BY results in memory (market snapshots, killmail aggregates)
+- **Sort/join buffers**: 4M each for heavy JOIN queries
+- **Query cache**: disabled (Redis handles app-level caching; QC causes mutex contention on writes)
+- **Optimizer**: all switches enabled, `use_stat_tables = PREFERABLY_FOR_QUERIES`, histogram size 254
+
+### Persistent histogram statistics (up to 30x query speedup)
+
+New migration: `database/migrations/20260413_mariadb_performance_tuning.sql`
+
+Runs `ANALYZE TABLE ... PERSISTENT FOR ALL` on all 60+ tables. Combined with
+`optimizer_use_condition_selectivity = 4` (set at session level in `db()`), this
+gives the MariaDB optimizer histogram-based cardinality estimates for every column.
+The biggest impact is on multi-table JOINs in market, killmail, and intelligence queries.
+
+### PDO connection tuning
+
+In `src/db.php` `db()` function:
+- Added Unix socket support when `DB_SOCKET` is set (avoids TCP overhead for local connections)
+- Added `SET SESSION optimizer_use_condition_selectivity = 4` on every connection
+- Added `PDO::ATTR_STRINGIFY_FETCHES => false` for proper numeric type handling
+
+### Missing indexes (20+ new indexes)
+
+High-impact indexes added in the migration:
+
+| Table | Index | Why |
+|---|---|---|
+| `killmail_events` | `(effective_killmail_at)` | Overview page ORDER BY, time-range filters |
+| `killmail_events` | `(mail_type, effective_killmail_at)` | Overview page mail_type filter |
+| `killmail_events` | `(victim_alliance_id, effective_killmail_at)` | Alliance filter on overview |
+| `killmail_events` | `(victim_corporation_id, effective_killmail_at)` | Corp filter on overview |
+| `killmail_attackers` | `(sequence_id, final_blow, attacker_index)` | Correlated subquery for final_blow lookup |
+| `entity_metadata_cache` | `(entity_type, entity_id)` | JOIN pattern used across all intelligence pages |
+| `corp_contacts` | `(contact_type, contact_id, standing)` | Tracked matching in killmail queries |
+| `character_copresence_edges` | `(character_id_a, window_label, edge_weight)` | Co-presence lookups with ordering |
+| `character_copresence_edges` | `(character_id_b, window_label, edge_weight)` | Bidirectional edge lookups |
+| `character_typed_interactions` | `(character_a_id, interaction_count)` | Character interaction lookups |
+| `character_typed_interactions` | `(character_b_id, interaction_count)` | Bidirectional lookups |
+| `graph_community_assignments` | `(community_id, pagerank_score)` | Community aggregation queries |
+| `item_criticality_index` | `(spof_flag, spof_impact_score, criticality_score)` | SPOF item queries |
+| `economic_warfare_scores` | `(economic_warfare_score)` | Score-based ordering |
+| `economic_warfare_scores` | `(group_id, economic_warfare_score)` | Group filtering |
+| `market_history_daily` | `(source_type, source_id, trade_date, type_id)` | Aggregate query pattern |
+| `market_history_daily` | `(source_type, source_id, type_id, trade_date)` | Deviation self-join |
+| `alliance_dossiers` | `(recent_killmails, total_killmails)` | Ordering by activity |
+
+### Neo4j offload: graph-native query alternatives
+
+Added Neo4j-first query functions with MariaDB fallback for 5 graph-intensive operations:
+
+| Function | What it offloads | MariaDB pain point |
+|---|---|---|
+| `db_graph_community_overview_neo4j()` | Community overview with member counts, bridges | Correlated subquery through battle_participants + graph_community_assignments |
+| `db_constellation_graph_neo4j()` | Universe topology (constellation maps) | Two SQL queries + self-join on ref_stargates |
+| `db_character_copresence_top_edges_neo4j()` | Character co-occurrence edges | OR on two columns + ORDER BY edge_weight |
+| `db_item_graph_intelligence_by_type_ids_neo4j()` | Doctrine→Fit→Item dependency scores | UNION + NOT IN subquery across two tables |
+| `db_alliance_relationship_graph_neo4j()` | Alliance ALLIED_WITH / HOSTILE_TO edges | Pure graph query not practical in SQL |
+
+Each has a `_preferred()` wrapper that tries Neo4j first, falls back to MariaDB.
+Callers updated:
+- `public/battle-intelligence/index.php` → `db_graph_community_overview_preferred()`
+- `public/battle-intelligence/character.php` → `db_character_copresence_top_edges_preferred()`
+- `public/battle-intelligence/pilot-lookup.php` → `db_character_copresence_top_edges_preferred()`
+- `public/theater-intelligence/partials/_system_overview_map.php` → `db_constellation_graph_preferred()`
+- `src/functions.php` → `db_item_graph_intelligence_by_type_ids_preferred()`
+
+### InfluxDB offload: additional time-series query paths
+
+Added InfluxDB-first query functions for time-series workloads:
+
+| Function | What it offloads | MariaDB pain point |
+|---|---|---|
+| `db_killmail_hull_loss_window_summaries_influx()` | Hull loss aggregation by time window | GROUP BY DATE + victim_ship_type_id on killmail tables |
+| `db_killmail_item_loss_window_summaries_influx()` | Item loss aggregation by time window | GROUP BY DATE + item_type_id with quantity calculations |
+| `db_doctrine_fit_activity_trend_influx()` | Fit activity long-range trend | Full table scan of doctrine_fit_activity_1d |
+| `db_doctrine_group_activity_trend_influx()` | Group activity long-range trend | Full table scan of doctrine_group_activity_1d |
+| `db_market_item_stock_window_summaries_preferred()` | Stock summaries with read-mode routing | Extends existing InfluxDB fallback to stock window queries |
+
+### Expected impact from Phase 2
+
+**Query optimization:**
+- Histogram statistics → up to 30x speedup on complex multi-table JOINs
+- 20+ new indexes → eliminate full table scans on hot filter/sort paths
+- Session optimizer level 4 → better join-order decisions on every query
+
+**Server tuning:**
+- InnoDB buffer pool → dramatically fewer disk reads for market history queries
+- Thread pool → reduced context-switching under concurrent load
+- Larger temp tables → fewer disk-spill temp tables for GROUP BY aggregations
+
+**Offload to Neo4j:**
+- Community overview, constellation maps, co-presence edges, item intelligence, alliance graphs → graph-native traversal instead of SQL JOIN chains
+
+**Offload to InfluxDB:**
+- Killmail loss summaries, doctrine activity trends, stock window queries → native time-series aggregation instead of SQL GROUP BY DATE patterns
+
 ## Follow-up plan for riskier phases
 
 1. **Killmail raw archive split**: move `raw_killmail_json` and `zkb_json` to an archive table keyed by `sequence_id` once volume justifies it.
@@ -206,3 +322,5 @@ Defaults used when no setting exists:
 3. **Current-state compaction**: consider a separate current best-price/volume projection table if market page count or concurrency grows materially.
 4. **Summary retention tiers**: keep 30-day fine-grain snapshot summaries and optionally roll older summary data into hourly/daily source-level aggregates.
 5. **Scheduler log severity model**: if control-plane volume rises, split “current health” from “full audit” more aggressively and downgrade verbose JSON payload retention.
+6. **InfluxDB primary mode for all trend pages**: once export is validated, switch market price/stock/killmail trend pages to `influxdb.read_mode = primary`.
+7. **Neo4j expanded queries**: once validated, route additional graph queries (motif detections, evidence paths, alliance dossier relationship maps) through Neo4j.

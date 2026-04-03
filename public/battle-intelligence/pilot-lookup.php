@@ -42,7 +42,7 @@ if ($characterId > 0) {
         $title = htmlspecialchars((string) ($profile['character']['character_name'] ?? 'Unknown'), ENT_QUOTES) . ' - Pilot Lookup';
         $temporalMetrics   = db_character_temporal_metrics($characterId);
         $copresenceSignals = db_character_copresence_signals($characterId);
-        $copresenceEdges   = db_character_copresence_top_edges($characterId, '30d', 15);
+        $copresenceEdges   = db_character_copresence_top_edges_preferred($characterId, '30d', 15);
 
         // Load full character intelligence data
         $ciData = battle_intelligence_character_data($characterId);

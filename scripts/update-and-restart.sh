@@ -11,8 +11,15 @@ REFRESH_DEPS=0
 CLEAR_CACHE=0
 RUN_MIGRATIONS=1
 SYNC_UNITS=1
+BUILD_ASSETS=0
+ANALYZE_TABLES=0
+GRACEFUL_STOP=0
+HEALTH_CHECK=1
 BRANCH=""
 EXPLICIT_SERVICES=()
+
+# Timeout (seconds) to wait for a service to become active after restart.
+HEALTH_CHECK_TIMEOUT=30
 
 # Services that should always be installed if not already present.
 # The orchestrator and legacy worker@ are opt-in only (installed via
@@ -24,6 +31,8 @@ CORE_UNITS=(
   supplycore-compute-worker@.service
   supplycore-zkill.service
   supplycore-evewho-runner.service
+  supplycore-backfill-runner.service
+  supplycore-loop-runner.service
   supplycore-influx-rollup-export.service
   supplycore-influx-rollup-export.timer
 )
@@ -47,25 +56,40 @@ Options:
   --app-root PATH        SupplyCore repository root (default: ${APP_ROOT_DEFAULT})
   --branch NAME          Optional branch to checkout before pull
   --refresh-deps         Run python dependency refresh (pip install --upgrade ./python)
+  --build-assets         Rebuild Tailwind CSS assets (npm run build:css)
   --clear-cache          Clear runtime cache files under storage/cache
+  --analyze-tables       Run ANALYZE TABLE PERSISTENT FOR ALL after migrations
+  --graceful-stop        Stop services gracefully before pulling (avoids mid-job restarts)
   --service NAME         Restart only these services (repeatable; overrides auto-discovery)
   --no-migrations        Skip running database migrations
   --no-sync-units        Skip syncing systemd unit files from ops/systemd/
+  --no-health-check      Skip post-restart health verification
   --dry-run              Print actions without executing mutating commands
   --verbose              Print each command before executing
   -h, --help             Show this help
 
 This script:
-  1. Pulls the latest code from git
-  2. Syncs systemd unit files from ops/systemd/ to ${SYSTEMD_DIR}
-  3. Removes known stale service units
-  4. Runs database migrations
-  5. Restarts all active supplycore-* services
+  1. Optionally stops services gracefully (--graceful-stop)
+  2. Pulls the latest code from git (stashing local changes if needed)
+  3. Optionally refreshes Python dependencies and rebuilds CSS assets
+  4. Syncs systemd unit files from ops/systemd/ to ${SYSTEMD_DIR}
+  5. Removes known stale service units
+  6. Runs database migrations
+  7. Restarts all active supplycore-* services
+  8. Verifies services are healthy after restart
 USAGE
 }
 
 log() {
   printf '[%s] %s\n' "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" "$*"
+}
+
+log_warn() {
+  printf '[%s] WARNING: %s\n' "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" "$*" >&2
+}
+
+log_error() {
+  printf '[%s] ERROR: %s\n' "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" "$*" >&2
 }
 
 run_cmd() {
@@ -93,8 +117,20 @@ parse_args() {
         REFRESH_DEPS=1
         shift
         ;;
+      --build-assets)
+        BUILD_ASSETS=1
+        shift
+        ;;
       --clear-cache)
         CLEAR_CACHE=1
+        shift
+        ;;
+      --analyze-tables)
+        ANALYZE_TABLES=1
+        shift
+        ;;
+      --graceful-stop)
+        GRACEFUL_STOP=1
         shift
         ;;
       --service)
@@ -107,6 +143,10 @@ parse_args() {
         ;;
       --no-sync-units)
         SYNC_UNITS=0
+        shift
+        ;;
+      --no-health-check)
+        HEALTH_CHECK=0
         shift
         ;;
       --dry-run)
@@ -128,6 +168,53 @@ parse_args() {
         ;;
     esac
   done
+}
+
+preflight_checks() {
+  if [[ ! -d "${APP_ROOT}/.git" ]]; then
+    log_error "App root is not a git repository: ${APP_ROOT}"
+    exit 1
+  fi
+
+  if ! command -v systemctl >/dev/null 2>&1; then
+    log_error "systemctl is required for service restart operations."
+    exit 1
+  fi
+
+  # Warn if not running as root (systemctl operations will fail)
+  if [[ ${DRY_RUN} -eq 0 && $(id -u) -ne 0 ]]; then
+    log_warn "Not running as root. Systemd operations may fail; consider: sudo $0 $*"
+  fi
+}
+
+git_update() {
+  cd "${APP_ROOT}"
+
+  # Stash any uncommitted changes before pull to avoid failures
+  local stashed=0
+  if [[ -n "$(git status --porcelain 2>/dev/null)" ]]; then
+    log "Stashing uncommitted local changes"
+    run_cmd git stash push -m "update-and-restart auto-stash $(date -u +'%Y%m%dT%H%M%SZ')"
+    stashed=1
+  fi
+
+  if [[ -n "${BRANCH}" ]]; then
+    run_cmd git checkout "${BRANCH}"
+  fi
+
+  run_cmd git fetch --all --prune
+
+  # Try fast-forward first; if that fails (diverged), let the user know
+  if ! run_cmd git pull --ff-only 2>/dev/null; then
+    log_warn "Fast-forward pull failed (branch may have diverged). Attempting merge pull."
+    run_cmd git pull --no-edit
+  fi
+
+  # Restore stashed changes
+  if [[ ${stashed} -eq 1 ]]; then
+    log "Restoring stashed local changes"
+    run_cmd git stash pop || log_warn "Could not restore stash cleanly. Check 'git stash list'."
+  fi
 }
 
 sync_systemd_units() {
@@ -259,52 +346,157 @@ run_migrations() {
   local php_bin
   php_bin=$(command -v php 2>/dev/null || true)
   if [[ -z "${php_bin}" ]]; then
-    log "php not found on PATH; skipping database migrations."
+    log_warn "php not found on PATH; skipping database migrations."
     return 0
   fi
 
   log "Running database migrations via PHP"
-  run_cmd "${php_bin}" "${APP_ROOT}/bin/run-migrations.php"
+  if ! run_cmd "${php_bin}" "${APP_ROOT}/bin/run-migrations.php"; then
+    log_error "Database migrations failed! Services will NOT be restarted to avoid schema mismatch."
+    log_error "Fix migration errors, then re-run this script."
+    exit 1
+  fi
+}
+
+run_analyze_tables() {
+  local php_bin
+  php_bin=$(command -v php 2>/dev/null || true)
+  if [[ -z "${php_bin}" ]]; then
+    log_warn "php not found; skipping ANALYZE TABLE."
+    return 0
+  fi
+
+  log "Running ANALYZE TABLE PERSISTENT FOR ALL on key tables"
+  # Use the migration SQL directly — it contains all ANALYZE TABLE statements
+  local analyze_sql="${APP_ROOT}/database/migrations/20260413_mariadb_performance_tuning.sql"
+  if [[ -f "${analyze_sql}" ]]; then
+    local mysql_bin
+    mysql_bin=$(command -v mysql 2>/dev/null || true)
+    if [[ -n "${mysql_bin}" ]]; then
+      # Extract just the ANALYZE TABLE lines and run them
+      run_cmd bash -c "grep -i '^ANALYZE TABLE' '${analyze_sql}' | ${mysql_bin} --defaults-file=/etc/mysql/debian.cnf supplycore 2>/dev/null || ${mysql_bin} supplycore"
+    else
+      log_warn "mysql client not found; skipping ANALYZE TABLE."
+    fi
+  else
+    log_warn "ANALYZE TABLE migration not found at ${analyze_sql}; skipping."
+  fi
+}
+
+build_assets() {
+  local npm_bin
+  npm_bin=$(command -v npm 2>/dev/null || true)
+  if [[ -z "${npm_bin}" ]]; then
+    log_warn "npm not found on PATH; skipping asset build."
+    return 0
+  fi
+
+  if [[ ! -f "${APP_ROOT}/package.json" ]]; then
+    log "No package.json found; skipping asset build."
+    return 0
+  fi
+
+  cd "${APP_ROOT}"
+
+  # Install deps if node_modules is missing
+  if [[ ! -d "${APP_ROOT}/node_modules" ]]; then
+    log "Installing npm dependencies"
+    run_cmd "${npm_bin}" ci --no-audit --no-fund 2>/dev/null || run_cmd "${npm_bin}" install --no-audit --no-fund
+  fi
+
+  log "Building Tailwind CSS assets"
+  run_cmd "${npm_bin}" run build:css
+}
+
+stop_services_gracefully() {
+  log "Stopping services gracefully before update"
+  local -a services_to_stop=()
+
+  if [[ ${#EXPLICIT_SERVICES[@]} -gt 0 ]]; then
+    services_to_stop=("${EXPLICIT_SERVICES[@]}")
+  else
+    while IFS= read -r svc; do
+      [[ -n "${svc}" ]] && services_to_stop+=("${svc}")
+    done < <(discover_services)
+  fi
+
+  for svc in "${services_to_stop[@]}"; do
+    log "Stopping ${svc}"
+    run_cmd systemctl stop "${svc}" 2>/dev/null || log_warn "Could not stop ${svc}"
+  done
+}
+
+verify_service_health() {
+  local svc=$1
+  local timeout=${HEALTH_CHECK_TIMEOUT}
+
+  # Timers just need to be active (loaded), not "running"
+  if [[ "${svc}" == *.timer ]]; then
+    if systemctl is-active --quiet "${svc}" 2>/dev/null; then
+      return 0
+    fi
+    return 1
+  fi
+
+  # For oneshot services, check they didn't fail
+  local svc_type
+  svc_type=$(systemctl show -p Type --value "${svc}" 2>/dev/null || true)
+  if [[ "${svc_type}" == "oneshot" ]]; then
+    local result
+    result=$(systemctl show -p Result --value "${svc}" 2>/dev/null || true)
+    [[ "${result}" == "success" || "${result}" == "" ]]
+    return $?
+  fi
+
+  # For long-running services, wait up to timeout for active state
+  local elapsed=0
+  while [[ ${elapsed} -lt ${timeout} ]]; do
+    if systemctl is-active --quiet "${svc}" 2>/dev/null; then
+      return 0
+    fi
+    sleep 2
+    elapsed=$((elapsed + 2))
+  done
+
+  return 1
 }
 
 # ------------------------------------------------------------------
 parse_args "$@"
-
-if [[ ! -d "${APP_ROOT}/.git" ]]; then
-  echo "App root is not a git repository: ${APP_ROOT}" >&2
-  exit 1
-fi
-
-if ! command -v systemctl >/dev/null 2>&1; then
-  echo "systemctl is required for service restart operations." >&2
-  exit 1
-fi
+preflight_checks
 
 log "Starting update-and-restart"
-log "app_root=${APP_ROOT} dry_run=${DRY_RUN} refresh_deps=${REFRESH_DEPS} clear_cache=${CLEAR_CACHE} run_migrations=${RUN_MIGRATIONS} sync_units=${SYNC_UNITS}"
+log "app_root=${APP_ROOT} dry_run=${DRY_RUN} refresh_deps=${REFRESH_DEPS} build_assets=${BUILD_ASSETS} clear_cache=${CLEAR_CACHE} run_migrations=${RUN_MIGRATIONS} sync_units=${SYNC_UNITS} graceful_stop=${GRACEFUL_STOP} analyze_tables=${ANALYZE_TABLES}"
 
-cd "${APP_ROOT}"
-
-# ------- Git update -------
-if [[ -n "${BRANCH}" ]]; then
-  run_cmd git checkout "${BRANCH}"
+# ------- Graceful stop (optional) -------
+if [[ ${GRACEFUL_STOP} -eq 1 ]]; then
+  stop_services_gracefully
 fi
 
-run_cmd git fetch --all --prune
-run_cmd git pull --ff-only
+# ------- Git update -------
+git_update
 
 # ------- Python dependencies -------
 if [[ ${REFRESH_DEPS} -eq 1 ]]; then
+  log "Refreshing Python dependencies"
   if [[ -x "${APP_ROOT}/.venv-orchestrator/bin/python" ]]; then
     run_cmd "${APP_ROOT}/.venv-orchestrator/bin/python" -m pip install --upgrade "${APP_ROOT}/python"
-  else
+  elif command -v python3 >/dev/null 2>&1; then
     run_cmd python3 -m pip install --upgrade "${APP_ROOT}/python"
+  else
+    log_warn "No python3 found; skipping dependency refresh."
   fi
+fi
+
+# ------- Build CSS assets -------
+if [[ ${BUILD_ASSETS} -eq 1 ]]; then
+  build_assets
 fi
 
 # ------- Cache -------
 if [[ ${CLEAR_CACHE} -eq 1 ]]; then
-  run_cmd bash -lc "rm -rf '${APP_ROOT}/storage/cache/'*"
+  log "Clearing runtime cache"
+  run_cmd rm -rf "${APP_ROOT}/storage/cache/"*
 fi
 
 # ------- Sync systemd units -------
@@ -315,6 +507,11 @@ fi
 # ------- Database migrations -------
 if [[ ${RUN_MIGRATIONS} -eq 1 ]]; then
   run_migrations
+fi
+
+# ------- ANALYZE TABLE (optional) -------
+if [[ ${ANALYZE_TABLES} -eq 1 ]]; then
+  run_analyze_tables
 fi
 
 # ------- Service discovery and restart -------
@@ -335,14 +532,63 @@ if [[ ${#RESTART_SERVICES[@]} -eq 0 ]]; then
   log "No services found to restart."
 fi
 
+FAILED_SERVICES=()
 for svc in "${RESTART_SERVICES[@]}"; do
   log "Restarting ${svc}"
-  run_cmd systemctl restart "${svc}" || log "WARNING: failed to restart ${svc}"
+  if ! run_cmd systemctl restart "${svc}"; then
+    log_warn "Failed to restart ${svc}"
+    FAILED_SERVICES+=("${svc}")
+  fi
 done
 
-log "Post-restart status checks"
-for svc in "${RESTART_SERVICES[@]}"; do
-  run_cmd systemctl --no-pager --full status "${svc}" || true
-done
+# ------- Health verification -------
+if [[ ${HEALTH_CHECK} -eq 1 && ${#RESTART_SERVICES[@]} -gt 0 && ${DRY_RUN} -eq 0 ]]; then
+  log "Verifying service health (timeout: ${HEALTH_CHECK_TIMEOUT}s per service)"
+  # Short initial settle time
+  sleep 2
 
-log "Completed update-and-restart"
+  UNHEALTHY_SERVICES=()
+  for svc in "${RESTART_SERVICES[@]}"; do
+    # Skip already-failed services
+    local skip=false
+    for failed in "${FAILED_SERVICES[@]+"${FAILED_SERVICES[@]}"}"; do
+      if [[ "${failed}" == "${svc}" ]]; then
+        skip=true
+        break
+      fi
+    done
+    [[ ${skip} == true ]] && continue
+
+    if verify_service_health "${svc}"; then
+      log "  OK: ${svc}"
+    else
+      log_warn "  UNHEALTHY: ${svc}"
+      UNHEALTHY_SERVICES+=("${svc}")
+    fi
+  done
+
+  if [[ ${#UNHEALTHY_SERVICES[@]} -gt 0 || ${#FAILED_SERVICES[@]} -gt 0 ]]; then
+    log_warn "Some services are unhealthy after restart:"
+    for svc in "${FAILED_SERVICES[@]+"${FAILED_SERVICES[@]}"}"; do
+      log_warn "  FAILED:    ${svc}"
+    done
+    for svc in "${UNHEALTHY_SERVICES[@]+"${UNHEALTHY_SERVICES[@]}"}"; do
+      log_warn "  UNHEALTHY: ${svc}"
+      # Print the last few journal lines to aid debugging
+      journalctl -u "${svc}" --no-pager -n 10 --since "-2 min" 2>/dev/null || true
+    done
+  fi
+else
+  # Fallback: dump status for manual review
+  for svc in "${RESTART_SERVICES[@]}"; do
+    run_cmd systemctl --no-pager --full status "${svc}" || true
+  done
+fi
+
+TOTAL_FAILED=$(( ${#FAILED_SERVICES[@]} + ${#UNHEALTHY_SERVICES[@]:-0} ))
+if [[ ${TOTAL_FAILED} -gt 0 ]]; then
+  log_warn "Completed update-and-restart with ${TOTAL_FAILED} issue(s)"
+  exit 1
+fi
+
+log "Completed update-and-restart successfully"
