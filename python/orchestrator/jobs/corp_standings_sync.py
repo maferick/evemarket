@@ -1,19 +1,19 @@
-"""Corporation Standings & Contacts Sync.
+"""Corporation & Alliance Standings & Contacts Sync.
 
-Fetches two ESI endpoints for each tracked corporation:
+Fetches ESI endpoints for each tracked corporation (and its alliance):
 
 1. ``/corporations/{id}/standings`` — NPC standings (agents, NPC corps, factions).
    Scope: ``esi-corporations.read_standings.v1``
 
-2. ``/corporations/{id}/contacts/`` — Player contacts (characters, corps, alliances).
+2. ``/corporations/{id}/contacts/`` — Corp-level player contacts.
    Scope: ``esi-corporations.read_contacts.v1``
 
-The contacts data is the primary source for determining which player alliances
-and corporations are friendly or hostile from the in-game diplomatic perspective.
-The standings data supplements this with NPC faction alignment.
+3. ``/alliances/{id}/contacts/`` — Alliance-level player contacts.
+   Scope: ``esi-alliances.read_contacts.v1``
 
-Both routes are part of the ESI rate-limit group ``corp-member``
-(300 tokens / 15 min).
+The alliance contacts are the primary diplomatic standings.  Corporation
+contacts supplement them.  Both are stored in ``corp_contacts`` and used for
+theater side classification.
 """
 
 from __future__ import annotations
@@ -30,8 +30,9 @@ log = logging.getLogger(__name__)
 
 JOB_KEY = "corp_standings_sync"
 
-# ESI rate-limit group for both endpoints.
+# ESI rate-limit groups.
 _ESI_GROUP = "corp-member"
+_ESI_GROUP_ALLIANCE = "alliance-member"
 
 
 def _processor(db: SupplyCoreDb, raw_config: dict[str, Any] | None = None) -> dict[str, object]:
@@ -128,6 +129,24 @@ def _processor(db: SupplyCoreDb, raw_config: dict[str, Any] | None = None) -> di
         except Exception as exc:
             warnings.append(f"Failed to fetch contacts for corporation {corp_id}: {exc}")
 
+        # ── Alliance contacts ───────────────────────────────────────────
+        alliance_id = _resolve_alliance_id(gateway, db, corp_id, access_token)
+        if alliance_id:
+            try:
+                ally_contacts, ally_error = _fetch_alliance_contacts(gateway, alliance_id, access_token)
+                rows_processed += len(ally_contacts)
+                if ally_contacts:
+                    written = _upsert_contacts(db, corp_id, ally_contacts, now_sql)
+                    rows_written += written
+                    log.info("Alliance %d (corp %d): %d alliance contacts upserted.", alliance_id, corp_id, written)
+                else:
+                    log.info("Alliance %d (corp %d): 0 alliance contact entries.", alliance_id, corp_id)
+                if ally_error:
+                    warnings.append(ally_error)
+                _queue_contact_names(db, ally_contacts)
+            except Exception as exc:
+                warnings.append(f"Failed to fetch alliance contacts for alliance {alliance_id} (corp {corp_id}): {exc}")
+
         # Update sync state for this corporation.
         db.execute(
             """
@@ -146,7 +165,7 @@ def _processor(db: SupplyCoreDb, raw_config: dict[str, Any] | None = None) -> di
         "rows_processed": rows_processed,
         "rows_written": rows_written,
         "warnings": warnings,
-        "summary": f"Synced standings + contacts for {len(corp_ids)} corporation(s) ({rows_written} upserts).",
+        "summary": f"Synced standings + corp/alliance contacts for {len(corp_ids)} corporation(s) ({rows_written} upserts).",
         "meta": {"corporation_ids": corp_ids},
     }
 
@@ -305,6 +324,93 @@ def _fetch_contacts(gateway, corp_id: int, access_token: str) -> tuple[list[dict
             break
         if resp.status_code != 200:
             log.warning("ESI contacts for corp %d returned %d", corp_id, resp.status_code)
+            continue
+        body = resp.body
+        if isinstance(body, list):
+            all_contacts.extend(body)
+
+    return all_contacts, error_msg
+
+
+# ── Alliance contact helpers ─────────────────────────────────────────────────
+
+def _resolve_alliance_id(gateway, db: SupplyCoreDb, corp_id: int, access_token: str) -> int | None:
+    """Look up the alliance_id for a corporation, using the entity cache or ESI."""
+    # Check entity_metadata_cache first.
+    row = db.fetch_one(
+        """SELECT metadata_json FROM entity_metadata_cache
+           WHERE entity_type = 'corporation' AND entity_id = %s
+             AND resolution_status = 'resolved'
+             AND metadata_json IS NOT NULL""",
+        (corp_id,),
+    )
+    if row and row.get("metadata_json"):
+        try:
+            meta = row["metadata_json"]
+            if isinstance(meta, str):
+                import json as _json
+                meta = _json.loads(meta)
+            aid = int(meta.get("alliance_id") or 0)
+            if aid > 0:
+                return aid
+        except (ValueError, TypeError, KeyError):
+            pass
+
+    # Fall back to ESI.
+    if gateway is None:
+        return None
+    try:
+        resp = gateway.get(
+            f"/v5/corporations/{corp_id}/",
+            access_token=None,
+            group="esi-characters",
+            route_template="/corporations/{corporation_id}/",
+            identity=f"corp:{corp_id}",
+        )
+        if resp.status_code == 200 and isinstance(resp.body, dict):
+            aid = int(resp.body.get("alliance_id") or 0)
+            return aid if aid > 0 else None
+    except Exception as exc:
+        log.warning("Failed to look up alliance for corp %d: %s", corp_id, exc)
+    return None
+
+
+def _fetch_alliance_contacts(gateway, alliance_id: int, access_token: str) -> tuple[list[dict[str, Any]], str | None]:
+    """Fetch all pages of contacts for an alliance.
+
+    ESI endpoint: GET /alliances/{alliance_id}/contacts/
+    Scope: esi-alliances.read_contacts.v1
+    Returns: (contacts_list, optional_error_message)
+    """
+    if gateway is None:
+        return [], None
+
+    all_contacts: list[dict[str, Any]] = []
+    error_msg: str | None = None
+    path = f"/latest/alliances/{alliance_id}/contacts/"
+
+    responses = gateway.get_paginated(
+        path,
+        access_token=access_token,
+        group=_ESI_GROUP_ALLIANCE,
+        route_template="/alliances/{alliance_id}/contacts/",
+        identity=f"alliance:{alliance_id}",
+        max_pages=20,
+    )
+
+    for resp in responses:
+        if resp.status_code == 304:
+            continue
+        if resp.status_code in (401, 403):
+            error_msg = (
+                f"ESI alliance contacts for alliance {alliance_id} returned {resp.status_code} — "
+                f"token expired or missing scope esi-alliances.read_contacts.v1. "
+                f"Re-authenticate with updated scopes in Settings → ESI Auth."
+            )
+            log.warning("%s", error_msg)
+            break
+        if resp.status_code != 200:
+            log.warning("ESI alliance contacts for %d returned %d", alliance_id, resp.status_code)
             continue
         body = resp.body
         if isinstance(body, list):
