@@ -16642,10 +16642,12 @@ function db_theaters_list(int $limit = 50, int $offset = 0, ?string $regionFilte
 {
     $trackedAllianceIds = array_map('intval', array_column(db_killmail_tracked_alliances_active(), 'alliance_id'));
 
-    // Fall back to in-game corp contacts when no tracked alliances are configured
-    if ($trackedAllianceIds === []) {
-        $contacts = db_corp_contacts_by_standing();
-        $trackedAllianceIds = array_map('intval', $contacts['friendly_alliance_ids'] ?? []);
+    // Always merge in-game corp contacts (ESI alliance standings) with explicit config
+    $contacts = db_corp_contacts_by_standing();
+    foreach (array_map('intval', $contacts['friendly_alliance_ids'] ?? []) as $id) {
+        if ($id > 0 && !in_array($id, $trackedAllianceIds, true)) {
+            $trackedAllianceIds[] = $id;
+        }
     }
 
     if ($trackedAllianceIds === []) {
@@ -16920,11 +16922,17 @@ function db_theater_side_labels(array $theaterIds): array
     $trackedAllianceIds = array_map('intval', array_column(db_killmail_tracked_alliances_active(), 'alliance_id'));
     $opponentAllianceIds = array_map('intval', array_column(db_killmail_opponent_alliances_active(), 'alliance_id'));
 
-    // Fall back to in-game corp contacts when no tracked/opponent alliances are configured
-    if ($trackedAllianceIds === [] && $opponentAllianceIds === []) {
-        $contacts = db_corp_contacts_by_standing();
-        $trackedAllianceIds = array_map('intval', $contacts['friendly_alliance_ids'] ?? []);
-        $opponentAllianceIds = array_map('intval', $contacts['hostile_alliance_ids'] ?? []);
+    // Always merge in-game corp contacts (ESI alliance standings) with explicit config
+    $contacts = db_corp_contacts_by_standing();
+    foreach (array_map('intval', $contacts['friendly_alliance_ids'] ?? []) as $id) {
+        if ($id > 0 && !in_array($id, $opponentAllianceIds, true) && !in_array($id, $trackedAllianceIds, true)) {
+            $trackedAllianceIds[] = $id;
+        }
+    }
+    foreach (array_map('intval', $contacts['hostile_alliance_ids'] ?? []) as $id) {
+        if ($id > 0 && !in_array($id, $trackedAllianceIds, true) && !in_array($id, $opponentAllianceIds, true)) {
+            $opponentAllianceIds[] = $id;
+        }
     }
 
     $trackedSet = array_flip($trackedAllianceIds);
