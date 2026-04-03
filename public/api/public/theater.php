@@ -168,39 +168,11 @@ if ($viewSnapshot !== null) {
     }
     $resolvedEntities = killmail_entity_resolve_batch($entityRequests, false);
 
-    // Classify alliances/corporations
-    $trackedAlliances = db_killmail_tracked_alliances_active();
-    $trackedAllianceIds = array_values(array_unique(array_map('intval', array_column($trackedAlliances, 'alliance_id'))));
-    $opponentAlliances = db_killmail_opponent_alliances_active();
-    $opponentAllianceIds = array_values(array_unique(array_map('intval', array_column($opponentAlliances, 'alliance_id'))));
-    $trackedCorporations = db_killmail_tracked_corporations_active();
-    $trackedCorporationIds = array_values(array_unique(array_map('intval', array_column($trackedCorporations, 'corporation_id'))));
-    $opponentCorporations = db_killmail_opponent_corporations_active();
-    $opponentCorporationIds = array_values(array_unique(array_map('intval', array_column($opponentCorporations, 'corporation_id'))));
-
-    // Merge ESI alliance/corp contacts (positive standing = friendly, negative = hostile).
-    // Only add IDs not already in the explicit config to preserve user overrides.
-    $esiContacts = db_corp_contacts_by_standing();
-    foreach ($esiContacts['friendly_alliance_ids'] as $id) {
-        if (!in_array($id, $opponentAllianceIds, true) && !in_array($id, $trackedAllianceIds, true)) {
-            $trackedAllianceIds[] = $id;
-        }
-    }
-    foreach ($esiContacts['friendly_corporation_ids'] as $id) {
-        if (!in_array($id, $opponentCorporationIds, true) && !in_array($id, $trackedCorporationIds, true)) {
-            $trackedCorporationIds[] = $id;
-        }
-    }
-    foreach ($esiContacts['hostile_alliance_ids'] as $id) {
-        if (!in_array($id, $trackedAllianceIds, true) && !in_array($id, $opponentAllianceIds, true)) {
-            $opponentAllianceIds[] = $id;
-        }
-    }
-    foreach ($esiContacts['hostile_corporation_ids'] as $id) {
-        if (!in_array($id, $trackedCorporationIds, true) && !in_array($id, $opponentCorporationIds, true)) {
-            $opponentCorporationIds[] = $id;
-        }
-    }
+    // Classify alliances/corporations from ESI contacts + manual additions
+    $trackedAllianceIds = array_values(array_unique(array_map('intval', array_column(db_killmail_tracked_alliances_active(), 'alliance_id'))));
+    $opponentAllianceIds = array_values(array_unique(array_map('intval', array_column(db_killmail_opponent_alliances_active(), 'alliance_id'))));
+    $trackedCorporationIds = array_values(array_unique(array_map('intval', array_column(db_killmail_tracked_corporations_active(), 'corporation_id'))));
+    $opponentCorporationIds = array_values(array_unique(array_map('intval', array_column(db_killmail_opponent_corporations_active(), 'corporation_id'))));
 
     $classifyAlliance = static function (int $allianceId, int $corporationId = 0) use ($trackedAllianceIds, $opponentAllianceIds, $trackedCorporationIds, $opponentCorporationIds): string {
         if ($allianceId > 0 && in_array($allianceId, $trackedAllianceIds, true)) return 'friendly';

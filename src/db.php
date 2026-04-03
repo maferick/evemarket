@@ -11869,25 +11869,93 @@ function db_killmail_tracked_corporations_replace(array $rows): bool
 function db_killmail_tracked_alliances_active(): array
 {
     static $cache = null;
-    return $cache ??= db_select('SELECT alliance_id, label FROM killmail_tracked_alliances WHERE is_active = 1 ORDER BY alliance_id ASC');
+    if ($cache !== null) {
+        return $cache;
+    }
+    $contacts = db_corp_contacts_by_standing();
+    $ids = array_values(array_unique(array_filter(array_map('intval', $contacts['friendly_alliance_ids'] ?? []), static fn (int $id): bool => $id > 0)));
+    if ($ids === []) {
+        return $cache = [];
+    }
+    $names = db_entity_metadata_cache_get_many('alliance', $ids);
+    $nameMap = [];
+    foreach ($names as $n) {
+        $nameMap[(int) $n['entity_id']] = (string) $n['entity_name'];
+    }
+    $rows = [];
+    foreach ($ids as $id) {
+        $rows[] = ['alliance_id' => $id, 'label' => $nameMap[$id] ?? null];
+    }
+    return $cache = $rows;
 }
 
 function db_killmail_tracked_corporations_active(): array
 {
     static $cache = null;
-    return $cache ??= db_select('SELECT corporation_id, label FROM killmail_tracked_corporations WHERE is_active = 1 ORDER BY corporation_id ASC');
+    if ($cache !== null) {
+        return $cache;
+    }
+    $contacts = db_corp_contacts_by_standing();
+    $ids = array_values(array_unique(array_filter(array_map('intval', $contacts['friendly_corporation_ids'] ?? []), static fn (int $id): bool => $id > 0)));
+    if ($ids === []) {
+        return $cache = [];
+    }
+    $names = db_entity_metadata_cache_get_many('corporation', $ids);
+    $nameMap = [];
+    foreach ($names as $n) {
+        $nameMap[(int) $n['entity_id']] = (string) $n['entity_name'];
+    }
+    $rows = [];
+    foreach ($ids as $id) {
+        $rows[] = ['corporation_id' => $id, 'label' => $nameMap[$id] ?? null];
+    }
+    return $cache = $rows;
 }
 
 function db_killmail_opponent_alliances_active(): array
 {
     static $cache = null;
-    return $cache ??= db_select('SELECT alliance_id, label FROM killmail_opponent_alliances WHERE is_active = 1 ORDER BY alliance_id ASC');
+    if ($cache !== null) {
+        return $cache;
+    }
+    $contacts = db_corp_contacts_by_standing();
+    $ids = array_values(array_unique(array_filter(array_map('intval', $contacts['hostile_alliance_ids'] ?? []), static fn (int $id): bool => $id > 0)));
+    if ($ids === []) {
+        return $cache = [];
+    }
+    $names = db_entity_metadata_cache_get_many('alliance', $ids);
+    $nameMap = [];
+    foreach ($names as $n) {
+        $nameMap[(int) $n['entity_id']] = (string) $n['entity_name'];
+    }
+    $rows = [];
+    foreach ($ids as $id) {
+        $rows[] = ['alliance_id' => $id, 'label' => $nameMap[$id] ?? null];
+    }
+    return $cache = $rows;
 }
 
 function db_killmail_opponent_corporations_active(): array
 {
     static $cache = null;
-    return $cache ??= db_select('SELECT corporation_id, label FROM killmail_opponent_corporations WHERE is_active = 1 ORDER BY corporation_id ASC');
+    if ($cache !== null) {
+        return $cache;
+    }
+    $contacts = db_corp_contacts_by_standing();
+    $ids = array_values(array_unique(array_filter(array_map('intval', $contacts['hostile_corporation_ids'] ?? []), static fn (int $id): bool => $id > 0)));
+    if ($ids === []) {
+        return $cache = [];
+    }
+    $names = db_entity_metadata_cache_get_many('corporation', $ids);
+    $nameMap = [];
+    foreach ($names as $n) {
+        $nameMap[(int) $n['entity_id']] = (string) $n['entity_name'];
+    }
+    $rows = [];
+    foreach ($ids as $id) {
+        $rows[] = ['corporation_id' => $id, 'label' => $nameMap[$id] ?? null];
+    }
+    return $cache = $rows;
 }
 
 function db_killmail_opponent_alliances_replace(array $rows): bool
@@ -16642,14 +16710,6 @@ function db_theaters_list(int $limit = 50, int $offset = 0, ?string $regionFilte
 {
     $trackedAllianceIds = array_map('intval', array_column(db_killmail_tracked_alliances_active(), 'alliance_id'));
 
-    // Always merge in-game corp contacts (ESI alliance standings) with explicit config
-    $contacts = db_corp_contacts_by_standing();
-    foreach (array_map('intval', $contacts['friendly_alliance_ids'] ?? []) as $id) {
-        if ($id > 0 && !in_array($id, $trackedAllianceIds, true)) {
-            $trackedAllianceIds[] = $id;
-        }
-    }
-
     if ($trackedAllianceIds === []) {
         return [];
     }
@@ -16918,22 +16978,9 @@ function db_theater_side_labels(array $theaterIds): array
         $theaterIds
     );
 
-    // Load tracked/opponent alliance IDs for runtime classification
+    // Load friendly/hostile alliance IDs from ESI contacts (+ manual additions)
     $trackedAllianceIds = array_map('intval', array_column(db_killmail_tracked_alliances_active(), 'alliance_id'));
     $opponentAllianceIds = array_map('intval', array_column(db_killmail_opponent_alliances_active(), 'alliance_id'));
-
-    // Always merge in-game corp contacts (ESI alliance standings) with explicit config
-    $contacts = db_corp_contacts_by_standing();
-    foreach (array_map('intval', $contacts['friendly_alliance_ids'] ?? []) as $id) {
-        if ($id > 0 && !in_array($id, $opponentAllianceIds, true) && !in_array($id, $trackedAllianceIds, true)) {
-            $trackedAllianceIds[] = $id;
-        }
-    }
-    foreach (array_map('intval', $contacts['hostile_alliance_ids'] ?? []) as $id) {
-        if ($id > 0 && !in_array($id, $trackedAllianceIds, true) && !in_array($id, $opponentAllianceIds, true)) {
-            $opponentAllianceIds[] = $id;
-        }
-    }
 
     $trackedSet = array_flip($trackedAllianceIds);
     $opponentSet = array_flip($opponentAllianceIds);

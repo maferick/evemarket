@@ -201,10 +201,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
             $killmailSave = save_killmail_intelligence_settings($_POST);
             $saved = (bool) ($killmailSave['ok'] ?? false);
-            $unresolved = (array) ($killmailSave['unresolved'] ?? []);
-            if ($unresolved !== []) {
-                $saveMessage = 'Some names were not resolved: ' . implode('; ', $unresolved);
-            }
             break;
 
         case 'data-sync':
@@ -537,8 +533,6 @@ if ($dbStatus['ok']) {
 
 $trackedAlliances = [];
 $trackedCorporations = [];
-$opponentAlliances = [];
-$opponentCorporations = [];
 $killmailStatus = null;
 $killmailWorkerStatus = [];
 $killmailStatusSummary = [];
@@ -549,16 +543,12 @@ if ($dbStatus['ok']) {
     try {
         $trackedAlliances = db_killmail_tracked_alliances_active();
         $trackedCorporations = db_killmail_tracked_corporations_active();
-        $opponentAlliances = db_killmail_opponent_alliances_active();
-        $opponentCorporations = db_killmail_opponent_corporations_active();
         $corpContactsStandings = db_corp_contacts_by_standing();
         $killmailStatus = db_killmail_ingestion_status();
         $killmailWorkerStatus = zkill_worker_runtime_status();
     } catch (Throwable) {
         $trackedAlliances = [];
         $trackedCorporations = [];
-        $opponentAlliances = [];
-        $opponentCorporations = [];
         $corpContactsStandings = ['friendly_alliance_ids' => [], 'friendly_corporation_ids' => [], 'hostile_alliance_ids' => [], 'hostile_corporation_ids' => []];
         $killmailStatus = null;
         $killmailWorkerStatus = [];
@@ -1520,36 +1510,6 @@ include __DIR__ . '/../../src/views/partials/header.php';
             </form>
         <?php elseif ($activeSubsection === 'killmail-intelligence'): ?>
             <?php
-                $trackedAllianceSelections = array_values(array_map(static fn (array $row): array => [
-                    'id' => (int) ($row['alliance_id'] ?? 0),
-                    'name' => (string) ($row['label'] ?? ('Alliance #' . (int) ($row['alliance_id'] ?? 0))),
-                    'type' => 'Alliance',
-                ], array_filter($trackedAlliances, static fn (array $row): bool => (int) ($row['alliance_id'] ?? 0) > 0)));
-                $trackedCorporationSelections = array_values(array_map(static fn (array $row): array => [
-                    'id' => (int) ($row['corporation_id'] ?? 0),
-                    'name' => (string) ($row['label'] ?? ('Corporation #' . (int) ($row['corporation_id'] ?? 0))),
-                    'type' => 'Corporation',
-                ], array_filter($trackedCorporations, static fn (array $row): bool => (int) ($row['corporation_id'] ?? 0) > 0)));
-                $alliancesText = implode("
-", array_map(static fn (array $row): string => (string) $row['id'] . ' | ' . (string) $row['name'], $trackedAllianceSelections));
-                $corporationsText = implode("
-", array_map(static fn (array $row): string => (string) $row['id'] . ' | ' . (string) $row['name'], $trackedCorporationSelections));
-
-                $opponentAllianceSelections = array_values(array_map(static fn (array $row): array => [
-                    'id' => (int) ($row['alliance_id'] ?? 0),
-                    'name' => (string) ($row['label'] ?? ('Alliance #' . (int) ($row['alliance_id'] ?? 0))),
-                    'type' => 'Alliance',
-                ], array_filter($opponentAlliances, static fn (array $row): bool => (int) ($row['alliance_id'] ?? 0) > 0)));
-                $opponentCorporationSelections = array_values(array_map(static fn (array $row): array => [
-                    'id' => (int) ($row['corporation_id'] ?? 0),
-                    'name' => (string) ($row['label'] ?? ('Corporation #' . (int) ($row['corporation_id'] ?? 0))),
-                    'type' => 'Corporation',
-                ], array_filter($opponentCorporations, static fn (array $row): bool => (int) ($row['corporation_id'] ?? 0) > 0)));
-                $opponentAlliancesText = implode("
-", array_map(static fn (array $row): string => (string) $row['id'] . ' | ' . (string) $row['name'], $opponentAllianceSelections));
-                $opponentCorporationsText = implode("
-", array_map(static fn (array $row): string => (string) $row['id'] . ' | ' . (string) $row['name'], $opponentCorporationSelections));
-
                 // Build corp contacts display data with resolved names
                 $corpContactsList = db_corp_contacts_all();
                 $esiContacts = array_filter($corpContactsList, static fn (array $c): bool =>
@@ -1678,112 +1638,6 @@ include __DIR__ . '/../../src/views/partials/header.php';
                         <span class="text-sm text-muted">Opponent Coalition Name</span>
                         <input type="text" name="opponent_coalition_name" maxlength="100" placeholder="e.g. Imperium" value="<?= htmlspecialchars((string) ($settingValues['opponent_coalition_name'] ?? ''), ENT_QUOTES) ?>" class="w-full field-input" />
                     </label>
-                </div>
-
-                <div class="grid gap-4 lg:grid-cols-2">
-                    <label class="block space-y-2" id="killmail-alliance-search-field">
-                        <span class="text-sm text-muted">Friendly Alliances (Tracked Loss Board)</span>
-                        <textarea name="tracked_alliance_names" id="tracked_alliance_names" rows="4" class="hidden"><?= htmlspecialchars($alliancesText, ENT_QUOTES) ?></textarea>
-                        <div class="flex gap-2">
-                            <input
-                                type="text"
-                                id="tracked_alliance_search"
-                                autocomplete="off"
-                                placeholder="Search alliances by name or add an exact alliance ID"
-                                class="w-full field-input"
-                            />
-                            <button type="button" id="tracked_alliance_add" class="rounded-lg border border-border bg-black/30 px-3 py-2 text-sm text-slate-100 transition hover:bg-white/5">Add</button>
-                        </div>
-                        <p id="tracked_alliance_status" class="text-xs text-muted">
-                            <?= htmlspecialchars($trackedAllianceSelections === []
-                                ? 'Search by name, or add an exact numeric alliance ID for your friendly side.'
-                                : ('Tracking ' . count($trackedAllianceSelections) . ' friendly alliance' . (count($trackedAllianceSelections) === 1 ? '' : 's') . '.'), ENT_QUOTES) ?>
-                        </p>
-                        <ul id="tracked_alliance_results" class="hidden max-h-60 overflow-y-auto surface-tertiary"></ul>
-                        <div id="tracked_alliance_selected" class="space-y-2 rounded-lg border border-border bg-black/10 p-3"></div>
-                    </label>
-
-                    <label class="block space-y-2" id="killmail-corporation-search-field">
-                        <span class="text-sm text-muted">Friendly Corporations (Tracked Loss Board)</span>
-                        <textarea name="tracked_corporation_names" id="tracked_corporation_names" rows="4" class="hidden"><?= htmlspecialchars($corporationsText, ENT_QUOTES) ?></textarea>
-                        <div class="flex gap-2">
-                            <input
-                                type="text"
-                                id="tracked_corporation_search"
-                                autocomplete="off"
-                                placeholder="Search corporations by name or add an exact corporation ID"
-                                class="w-full field-input"
-                            />
-                            <button type="button" id="tracked_corporation_add" class="rounded-lg border border-border bg-black/30 px-3 py-2 text-sm text-slate-100 transition hover:bg-white/5">Add</button>
-                        </div>
-                        <p id="tracked_corporation_status" class="text-xs text-muted">
-                            <?= htmlspecialchars($trackedCorporationSelections === []
-                                ? 'Search by name, or add an exact numeric corporation ID for your friendly side.'
-                                : ('Tracking ' . count($trackedCorporationSelections) . ' friendly corporation' . (count($trackedCorporationSelections) === 1 ? '' : 's') . '.'), ENT_QUOTES) ?>
-                        </p>
-                        <ul id="tracked_corporation_results" class="hidden max-h-60 overflow-y-auto surface-tertiary"></ul>
-                        <div id="tracked_corporation_selected" class="space-y-2 rounded-lg border border-border bg-black/10 p-3"></div>
-                    </label>
-                </div>
-
-                <div class="rounded-lg border border-border bg-black/20 p-3 text-sm text-muted space-y-2">
-                    <p>Add your <span class="text-slate-100">friendly</span> alliances and corporations from the lookup, or enter exact numeric IDs when you already know them.</p>
-                    <p>The continuous zKill worker keeps a killmail only when the victim belongs to one of these friendly entities. Attacker-only matches are ignored for the tracked loss board.</p>
-                    <p>Each saved entry is stored locally as <span class="text-slate-100">ID + name</span>, and you can remove anything here before saving if an alliance or corporation moves out of your friendly group.</p>
-                </div>
-
-                <h3 class="text-base font-semibold text-slate-100 mt-6">Tracked Opponents (Economic Warfare)</h3>
-                <p class="mt-1 text-xs text-muted">Use this section for hostile entities. Keep your own coalition in the friendly section above.</p>
-
-                <div class="grid gap-4 lg:grid-cols-2">
-                    <label class="block space-y-2" id="killmail-opponent-alliance-search-field">
-                        <span class="text-sm text-muted">Opponent Alliances</span>
-                        <textarea name="opponent_alliance_names" id="opponent_alliance_names" rows="4" class="hidden"><?= htmlspecialchars($opponentAlliancesText, ENT_QUOTES) ?></textarea>
-                        <div class="flex gap-2">
-                            <input
-                                type="text"
-                                id="opponent_alliance_search"
-                                autocomplete="off"
-                                placeholder="Search alliances by name or add an exact alliance ID"
-                                class="w-full field-input"
-                            />
-                            <button type="button" id="opponent_alliance_add" class="rounded-lg border border-border bg-black/30 px-3 py-2 text-sm text-slate-100 transition hover:bg-white/5">Add</button>
-                        </div>
-                        <p id="opponent_alliance_status" class="text-xs text-muted">
-                            <?= htmlspecialchars($opponentAllianceSelections === []
-                                ? 'Search by name, or add an exact numeric alliance ID.'
-                                : ('Tracking ' . count($opponentAllianceSelections) . ' opponent alliance' . (count($opponentAllianceSelections) === 1 ? '' : 's') . '.'), ENT_QUOTES) ?>
-                        </p>
-                        <ul id="opponent_alliance_results" class="hidden max-h-60 overflow-y-auto surface-tertiary"></ul>
-                        <div id="opponent_alliance_selected" class="space-y-2 rounded-lg border border-border bg-black/10 p-3"></div>
-                    </label>
-
-                    <label class="block space-y-2" id="killmail-opponent-corporation-search-field">
-                        <span class="text-sm text-muted">Opponent Corporations</span>
-                        <textarea name="opponent_corporation_names" id="opponent_corporation_names" rows="4" class="hidden"><?= htmlspecialchars($opponentCorporationsText, ENT_QUOTES) ?></textarea>
-                        <div class="flex gap-2">
-                            <input
-                                type="text"
-                                id="opponent_corporation_search"
-                                autocomplete="off"
-                                placeholder="Search corporations by name or add an exact corporation ID"
-                                class="w-full field-input"
-                            />
-                            <button type="button" id="opponent_corporation_add" class="rounded-lg border border-border bg-black/30 px-3 py-2 text-sm text-slate-100 transition hover:bg-white/5">Add</button>
-                        </div>
-                        <p id="opponent_corporation_status" class="text-xs text-muted">
-                            <?= htmlspecialchars($opponentCorporationSelections === []
-                                ? 'Search by name, or add an exact numeric corporation ID.'
-                                : ('Tracking ' . count($opponentCorporationSelections) . ' opponent corporation' . (count($opponentCorporationSelections) === 1 ? '' : 's') . '.'), ENT_QUOTES) ?>
-                        </p>
-                        <ul id="opponent_corporation_results" class="hidden max-h-60 overflow-y-auto surface-tertiary"></ul>
-                        <div id="opponent_corporation_selected" class="space-y-2 rounded-lg border border-border bg-black/10 p-3"></div>
-                    </label>
-                </div>
-
-                <div class="rounded-lg border border-red-500/20 bg-red-500/5 p-3 text-sm text-muted space-y-2">
-                    <p>Opponent entities are tracked separately from your own alliances/corporations. The system fetches <span class="text-slate-100">all kills and losses</span> for these entities — not just fights involving you.</p>
-                    <p>This powers the <span class="text-slate-100">Economic Warfare</span> page: hostile fit family reconstruction, module scoring, and supply pressure analysis across their full engagement history.</p>
                 </div>
 
                 <h3 class="text-base font-semibold text-slate-100 mt-6">Corp Contacts (ESI + Manual Standings)</h3>
@@ -2233,50 +2087,6 @@ include __DIR__ . '/../../src/views/partials/header.php';
 
                             renderSelected();
                         };
-
-                        createTrackedEntityPicker({
-                            inputId: 'tracked_alliance_search',
-                            addButtonId: 'tracked_alliance_add',
-                            hiddenId: 'tracked_alliance_names',
-                            resultsId: 'tracked_alliance_results',
-                            statusId: 'tracked_alliance_status',
-                            selectedId: 'tracked_alliance_selected',
-                            allowedType: 'Alliance',
-                            initialItems: <?= json_encode($trackedAllianceSelections, JSON_THROW_ON_ERROR) ?>,
-                        });
-
-                        createTrackedEntityPicker({
-                            inputId: 'tracked_corporation_search',
-                            addButtonId: 'tracked_corporation_add',
-                            hiddenId: 'tracked_corporation_names',
-                            resultsId: 'tracked_corporation_results',
-                            statusId: 'tracked_corporation_status',
-                            selectedId: 'tracked_corporation_selected',
-                            allowedType: 'Corporation',
-                            initialItems: <?= json_encode($trackedCorporationSelections, JSON_THROW_ON_ERROR) ?>,
-                        });
-
-                        createTrackedEntityPicker({
-                            inputId: 'opponent_alliance_search',
-                            addButtonId: 'opponent_alliance_add',
-                            hiddenId: 'opponent_alliance_names',
-                            resultsId: 'opponent_alliance_results',
-                            statusId: 'opponent_alliance_status',
-                            selectedId: 'opponent_alliance_selected',
-                            allowedType: 'Alliance',
-                            initialItems: <?= json_encode($opponentAllianceSelections, JSON_THROW_ON_ERROR) ?>,
-                        });
-
-                        createTrackedEntityPicker({
-                            inputId: 'opponent_corporation_search',
-                            addButtonId: 'opponent_corporation_add',
-                            hiddenId: 'opponent_corporation_names',
-                            resultsId: 'opponent_corporation_results',
-                            statusId: 'opponent_corporation_status',
-                            selectedId: 'opponent_corporation_selected',
-                            allowedType: 'Corporation',
-                            initialItems: <?= json_encode($opponentCorporationSelections, JSON_THROW_ON_ERROR) ?>,
-                        });
 
                         // Manual corp contact pickers
                         createTrackedEntityPicker({
