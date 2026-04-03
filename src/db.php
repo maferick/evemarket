@@ -11791,7 +11791,9 @@ function db_theater_standing_discrepancies(string $theaterId): array
 {
     try {
         // Find cases where a "friendly" entity killed another "friendly" entity
-        // by looking at killmail attacker/victim alliance pairs within the theater
+        // by looking at killmail attacker/victim alliance pairs within the theater.
+        // Exclude AOE weapons (smartbombs group=141, bombs group=1015) — splash
+        // damage is not intentional hostile action and does not affect standings.
         return db_select(
             "SELECT
                 ka.alliance_id AS attacker_alliance_id,
@@ -11807,6 +11809,9 @@ function db_theater_standing_discrepancies(string $theaterId): array
                AND ka.alliance_id > 0
                AND ke.victim_alliance_id > 0
                AND ka.alliance_id != ke.victim_alliance_id
+               AND (ka.weapon_type_id IS NULL OR ka.weapon_type_id NOT IN (
+                   SELECT rit.type_id FROM ref_item_types rit WHERE rit.group_id IN (141, 1015)
+               ))
              GROUP BY ka.alliance_id, ka.corporation_id,
                       ke.victim_alliance_id, ke.victim_corporation_id
              HAVING cross_kills >= 1
