@@ -17,11 +17,15 @@ $theaters = db_theaters_list($perPage, $offset, $regionFilter, $minAnomaly);
 $theaterIds = array_column($theaters, 'theater_id');
 $sideLabelsMap = db_theater_side_labels($theaterIds);
 
-// Tracked alliances for the region filter dropdown
+// Tracked alliances for the region filter dropdown (fall back to corp contacts)
 $trackedAlliances = db_killmail_tracked_alliances_active();
 $trackedAllianceIds = array_map('intval', array_column($trackedAlliances, 'alliance_id'));
+if ($trackedAllianceIds === []) {
+    $contacts = db_corp_contacts_by_standing();
+    $trackedAllianceIds = array_map('intval', $contacts['friendly_alliance_ids'] ?? []);
+}
 
-// Load distinct regions that have theaters for the filter dropdown (tracked alliances only)
+// Load distinct regions that have theaters for the filter dropdown
 $theaterRegions = [];
 if ($trackedAllianceIds !== []) {
     $regionPlaceholders = implode(',', array_fill(0, count($trackedAllianceIds), '?'));
