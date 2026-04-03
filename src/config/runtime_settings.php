@@ -53,6 +53,8 @@ return [
         'fields' => [
             'influxdb.enabled' => ['type' => 'bool', 'default' => false, 'editable' => true, 'sensitive' => false, 'env_only' => false, 'database_backed' => true],
             'influxdb.read_enabled' => ['type' => 'bool', 'default' => false, 'editable' => true, 'sensitive' => false, 'env_only' => false, 'database_backed' => true],
+            'influxdb.read_mode' => ['type' => 'string', 'default' => 'disabled', 'editable' => true, 'sensitive' => false, 'env_only' => false, 'database_backed' => true],
+            'influxdb.write_on_rollup' => ['type' => 'bool', 'default' => false, 'editable' => true, 'sensitive' => false, 'env_only' => false, 'database_backed' => true],
             'influxdb.url' => ['type' => 'string', 'default' => 'http://127.0.0.1:8086', 'editable' => true, 'sensitive' => false, 'env_only' => false, 'database_backed' => true],
             'influxdb.org' => ['type' => 'string', 'default' => '', 'editable' => true, 'sensitive' => false, 'env_only' => false, 'database_backed' => true],
             'influxdb.bucket' => ['type' => 'string', 'default' => 'supplycore_rollups', 'editable' => true, 'sensitive' => false, 'env_only' => false, 'database_backed' => true],

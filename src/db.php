@@ -2431,6 +2431,21 @@ function db_market_item_stock_window_summaries(string $sourceType, int $sourceId
 {
     db_time_series_analytics_ensure_schema();
 
+    $readMode = db_influx_read_mode();
+
+    // In 'primary' mode, skip MariaDB entirely for unfiltered queries.
+    if ($typeIds === [] && $readMode === 'primary') {
+        return db_market_item_stock_window_summaries_influx($sourceType, $sourceId, $startDate, $endDate);
+    }
+
+    // In 'preferred' mode, try InfluxDB first for unfiltered queries.
+    if ($typeIds === [] && $readMode === 'preferred') {
+        $influxRows = db_market_item_stock_window_summaries_influx($sourceType, $sourceId, $startDate, $endDate);
+        if ($influxRows !== []) {
+            return $influxRows;
+        }
+    }
+
     $params = [$sourceType, $sourceId, $startDate, $endDate];
     $typeFilterSql = '';
     if ($typeIds !== []) {
@@ -2442,7 +2457,7 @@ function db_market_item_stock_window_summaries(string $sourceType, int $sourceId
         $params = array_merge($params, $normalizedTypeIds);
     }
 
-    return db_select_cached(
+    $mariaRows = db_select_cached(
         "SELECT
             mis.bucket_start AS observed_date,
             mis.type_id,
@@ -2469,6 +2484,16 @@ function db_market_item_stock_window_summaries(string $sourceType, int $sourceId
         60,
         'market.item-stock.daily'
     );
+
+    // In 'fallback' mode, try InfluxDB when MariaDB returned nothing.
+    if ($mariaRows === [] && $typeIds === [] && $readMode === 'fallback') {
+        $influxRows = db_market_item_stock_window_summaries_influx($sourceType, $sourceId, $startDate, $endDate);
+        if ($influxRows !== []) {
+            return $influxRows;
+        }
+    }
+
+    return $mariaRows;
 }
 
 function db_upsert_esi_oauth_token(array $token): bool
@@ -5995,7 +6020,53 @@ function db_market_history_daily_recent_window(string $sourceType, int $sourceId
 
 function db_influx_read_enabled(): bool
 {
-    return (bool) config('influxdb.enabled', false) && (bool) config('influxdb.read_enabled', false);
+    if ((bool) config('influxdb.enabled', false) && (bool) config('influxdb.read_enabled', false)) {
+        return true;
+    }
+
+    $readMode = db_influx_read_mode();
+    return $readMode === 'preferred' || $readMode === 'primary';
+}
+
+/**
+ * Return the active InfluxDB read mode.
+ *
+ * Modes:
+ *   disabled   – never read from InfluxDB (default / legacy).
+ *   fallback   – try InfluxDB only when MariaDB returns empty.
+ *   preferred  – try InfluxDB first; fall back to MariaDB on empty/error.
+ *   primary    – use InfluxDB exclusively; MariaDB is not queried for
+ *                time-series analytics at all.
+ *
+ * The mode is resolved from ``influxdb.read_mode`` (new) with backward
+ * compatibility for the older boolean ``influxdb.read_enabled`` flag.
+ */
+function db_influx_read_mode(): string
+{
+    static $resolved = null;
+    if ($resolved !== null) {
+        return $resolved;
+    }
+
+    if (!(bool) config('influxdb.enabled', false)) {
+        $resolved = 'disabled';
+        return $resolved;
+    }
+
+    $explicit = trim((string) config('influxdb.read_mode', ''));
+    if (in_array($explicit, ['disabled', 'fallback', 'preferred', 'primary'], true)) {
+        $resolved = $explicit;
+        return $resolved;
+    }
+
+    // Backward compatibility: honour the legacy boolean flag.
+    if ((bool) config('influxdb.read_enabled', false)) {
+        $resolved = 'preferred';
+        return $resolved;
+    }
+
+    $resolved = 'disabled';
+    return $resolved;
 }
 
 function db_influx_query_rows(string $flux): array
@@ -6343,7 +6414,7 @@ function db_market_history_stock_health_influx(
     $rangeStart = $startDate . 'T00:00:00Z';
     $rangeStop = date('Y-m-d', strtotime($endDate . ' +1 day')) . 'T00:00:00Z';
 
-    $flux = <<<FLUX
+    $stockFlux = <<<FLUX
 from(bucket: "{$qBucket}")
   |> range(start: {$rangeStart}, stop: {$rangeStop})
   |> filter(fn: (r) => r._measurement == "market_item_stock")
@@ -6355,9 +6426,35 @@ from(bucket: "{$qBucket}")
   |> keep(columns: ["_time", "type_id", "local_stock_units", "listing_count"])
 FLUX;
 
-    $influxRows = db_influx_query_rows($flux);
+    $priceFlux = <<<FLUX
+from(bucket: "{$qBucket}")
+  |> range(start: {$rangeStart}, stop: {$rangeStop})
+  |> filter(fn: (r) => r._measurement == "market_item_price")
+  |> filter(fn: (r) => r.window == "1d")
+  |> filter(fn: (r) => r.source_type == "{$qSourceType}")
+  |> filter(fn: (r) => r.source_id == "{$safeSourceId}")
+  |> filter(fn: (r) => r._field == "avg_price")
+  |> pivot(rowKey: ["_time", "type_id"], columnKey: ["_field"], valueColumn: "_value")
+  |> keep(columns: ["_time", "type_id", "avg_price"])
+FLUX;
+
+    $influxRows = db_influx_query_rows($stockFlux);
     if ($influxRows === []) {
         return [];
+    }
+    $influxPriceRows = db_influx_query_rows($priceFlux);
+
+    $priceByKey = [];
+    foreach ($influxPriceRows as $row) {
+        $typeId = max(0, (int) ($row['type_id'] ?? 0));
+        $time = trim((string) ($row['_time'] ?? ''));
+        if ($typeId <= 0 || $time === '') {
+            continue;
+        }
+        $tradeDate = gmdate('Y-m-d', strtotime($time) ?: 0);
+        if ($tradeDate !== '1970-01-01') {
+            $priceByKey[$tradeDate . ':' . $typeId] = max(0.0, (float) ($row['avg_price'] ?? 0));
+        }
     }
 
     $typeIds = [];
@@ -6385,9 +6482,132 @@ FLUX;
             'buy_volume' => 0,
             'sell_order_count' => max(0, (int) round((float) ($row['listing_count'] ?? 0))),
             'buy_order_count' => 0,
-            'avg_sell_price' => null,
+            'avg_sell_price' => isset($priceByKey[$key]) ? $priceByKey[$key] : null,
             'avg_buy_price' => null,
             'last_observed_at' => gmdate('Y-m-d H:i:s', strtotime($time) ?: 0),
+        ];
+    }
+
+    if ($results === []) {
+        return [];
+    }
+
+    $typeNamesById = [];
+    foreach (db_ref_item_types_by_ids(array_values($typeIds)) as $typeRow) {
+        $tid = max(0, (int) ($typeRow['type_id'] ?? 0));
+        if ($tid > 0) {
+            $typeNamesById[$tid] = (string) ($typeRow['type_name'] ?? '');
+        }
+    }
+
+    $rows = array_values($results);
+    foreach ($rows as &$r) {
+        $r['type_name'] = $typeNamesById[(int) $r['type_id']] ?? '';
+    }
+    unset($r);
+
+    usort($rows, static fn (array $a, array $b): int => strcmp($a['observed_date'], $b['observed_date']) ?: ($a['type_id'] <=> $b['type_id']));
+
+    return $rows;
+}
+
+/**
+ * InfluxDB-backed stock window summaries with price data.
+ * Returns the same row shape as db_market_item_stock_window_summaries().
+ */
+function db_market_item_stock_window_summaries_influx(
+    string $sourceType,
+    int $sourceId,
+    string $startDate,
+    string $endDate
+): array {
+    if (!db_influx_read_enabled() || $sourceId <= 0) {
+        return [];
+    }
+
+    $bucket = trim((string) config('influxdb.bucket', 'supplycore_rollups'));
+    if ($bucket === '') {
+        return [];
+    }
+
+    $qBucket = addslashes($bucket);
+    $qSourceType = addslashes($sourceType);
+    $safeSourceId = (string) $sourceId;
+    $rangeStart = $startDate . 'T00:00:00Z';
+    $rangeStop = date('Y-m-d', strtotime($endDate . ' +1 day')) . 'T00:00:00Z';
+
+    $stockFlux = <<<FLUX
+from(bucket: "{$qBucket}")
+  |> range(start: {$rangeStart}, stop: {$rangeStop})
+  |> filter(fn: (r) => r._measurement == "market_item_stock")
+  |> filter(fn: (r) => r.window == "1d")
+  |> filter(fn: (r) => r.source_type == "{$qSourceType}")
+  |> filter(fn: (r) => r.source_id == "{$safeSourceId}")
+  |> filter(fn: (r) => r._field == "local_stock_units" or r._field == "listing_count")
+  |> pivot(rowKey: ["_time", "type_id"], columnKey: ["_field"], valueColumn: "_value")
+  |> keep(columns: ["_time", "type_id", "local_stock_units", "listing_count"])
+FLUX;
+
+    $priceFlux = <<<FLUX
+from(bucket: "{$qBucket}")
+  |> range(start: {$rangeStart}, stop: {$rangeStop})
+  |> filter(fn: (r) => r._measurement == "market_item_price")
+  |> filter(fn: (r) => r.window == "1d")
+  |> filter(fn: (r) => r.source_type == "{$qSourceType}")
+  |> filter(fn: (r) => r.source_id == "{$safeSourceId}")
+  |> filter(fn: (r) => r._field == "avg_price")
+  |> pivot(rowKey: ["_time", "type_id"], columnKey: ["_field"], valueColumn: "_value")
+  |> keep(columns: ["_time", "type_id", "avg_price"])
+FLUX;
+
+    $stockRows = db_influx_query_rows($stockFlux);
+    if ($stockRows === []) {
+        return [];
+    }
+    $priceRows = db_influx_query_rows($priceFlux);
+
+    $priceByKey = [];
+    foreach ($priceRows as $row) {
+        $typeId = max(0, (int) ($row['type_id'] ?? 0));
+        $time = trim((string) ($row['_time'] ?? ''));
+        if ($typeId <= 0 || $time === '') {
+            continue;
+        }
+        $tradeDate = gmdate('Y-m-d', strtotime($time) ?: 0);
+        if ($tradeDate === '1970-01-01') {
+            continue;
+        }
+        $priceByKey[$tradeDate . ':' . $typeId] = max(0.0, (float) ($row['avg_price'] ?? 0));
+    }
+
+    $typeIds = [];
+    $results = [];
+    foreach ($stockRows as $row) {
+        $typeId = max(0, (int) ($row['type_id'] ?? 0));
+        $time = trim((string) ($row['_time'] ?? ''));
+        if ($typeId <= 0 || $time === '') {
+            continue;
+        }
+        $tradeDate = gmdate('Y-m-d', strtotime($time) ?: 0);
+        if ($tradeDate === '1970-01-01') {
+            continue;
+        }
+        $key = $tradeDate . ':' . $typeId;
+        if (isset($results[$key])) {
+            continue;
+        }
+        $typeIds[$typeId] = $typeId;
+        $results[$key] = [
+            'observed_date' => $tradeDate,
+            'type_id' => $typeId,
+            'type_name' => '',
+            'sell_volume' => max(0, (int) round((float) ($row['local_stock_units'] ?? 0))),
+            'buy_volume' => 0,
+            'sell_order_count' => max(0, (int) round((float) ($row['listing_count'] ?? 0))),
+            'buy_order_count' => 0,
+            'avg_sell_price' => isset($priceByKey[$key]) ? $priceByKey[$key] : null,
+            'avg_buy_price' => null,
+            'last_observed_at' => $tradeDate . ' 00:00:00',
         ];
     }
 
@@ -6545,7 +6765,15 @@ function db_market_history_daily_aggregate_by_date_type_source(
     string $endDate,
     array $typeIds = []
 ): array {
-    if ($typeIds === [] && db_influx_read_enabled()) {
+    $readMode = db_influx_read_mode();
+
+    // In 'primary' mode, InfluxDB is the only source for time-series reads.
+    if ($typeIds === [] && $readMode === 'primary') {
+        return db_market_history_daily_aggregate_influx($sourceType, $sourceId, $startDate, $endDate);
+    }
+
+    // In 'preferred' mode, try InfluxDB first; fall back to MariaDB on empty.
+    if ($typeIds === [] && $readMode === 'preferred') {
         $influxRows = db_market_history_daily_aggregate_influx($sourceType, $sourceId, $startDate, $endDate);
         if ($influxRows !== []) {
             return $influxRows;
@@ -6567,7 +6795,7 @@ function db_market_history_daily_aggregate_by_date_type_source(
         $params = array_merge($params, $normalizedTypeIds);
     }
 
-    return db_select_cached(
+    $mariaRows = db_select_cached(
         "SELECT
             mhd.trade_date,
             mhd.type_id,
@@ -6589,6 +6817,16 @@ function db_market_history_daily_aggregate_by_date_type_source(
         60,
         'market.history.aggregate'
     );
+
+    // In 'fallback' mode, try InfluxDB only when MariaDB returned nothing.
+    if ($mariaRows === [] && $typeIds === [] && $readMode === 'fallback') {
+        $influxRows = db_market_history_daily_aggregate_influx($sourceType, $sourceId, $startDate, $endDate);
+        if ($influxRows !== []) {
+            return $influxRows;
+        }
+    }
+
+    return $mariaRows;
 }
 
 function db_market_history_daily_deviation_series(
@@ -6598,7 +6836,13 @@ function db_market_history_daily_deviation_series(
     string $endDate,
     array $typeIds = []
 ): array {
-    if ($typeIds === [] && db_influx_read_enabled()) {
+    $readMode = db_influx_read_mode();
+
+    if ($typeIds === [] && $readMode === 'primary') {
+        return db_market_history_deviation_influx($allianceStructureId, $hubSourceId, $startDate, $endDate);
+    }
+
+    if ($typeIds === [] && $readMode === 'preferred') {
         $influxRows = db_market_history_deviation_influx($allianceStructureId, $hubSourceId, $startDate, $endDate);
         if ($influxRows !== []) {
             return $influxRows;
@@ -6619,7 +6863,7 @@ function db_market_history_daily_deviation_series(
         $params = array_merge($params, $normalizedTypeIds);
     }
 
-    return db_select_cached(
+    $mariaRows = db_select_cached(
         "SELECT
             a.trade_date,
             a.type_id,
@@ -6649,6 +6893,15 @@ function db_market_history_daily_deviation_series(
         60,
         'market.history.deviation'
     );
+
+    if ($mariaRows === [] && $typeIds === [] && $readMode === 'fallback') {
+        $influxRows = db_market_history_deviation_influx($allianceStructureId, $hubSourceId, $startDate, $endDate);
+        if ($influxRows !== []) {
+            return $influxRows;
+        }
+    }
+
+    return $mariaRows;
 }
 
 // UI paths that depend on long-lived market history must read from the
@@ -6662,7 +6915,15 @@ function db_market_orders_history_stock_health_series(
     array $typeIds = [],
     bool $allowRawFallback = false
 ): array {
-    if ($typeIds === [] && db_influx_read_enabled()) {
+    $readMode = db_influx_read_mode();
+
+    // In 'primary' mode, InfluxDB is the only source.
+    if ($typeIds === [] && $readMode === 'primary') {
+        return db_market_history_stock_health_influx($sourceType, $sourceId, $startDate, $endDate);
+    }
+
+    // In 'preferred' mode, try InfluxDB first.
+    if ($typeIds === [] && ($readMode === 'preferred')) {
         $influxRows = db_market_history_stock_health_influx($sourceType, $sourceId, $startDate, $endDate);
         if ($influxRows !== []) {
             return $influxRows;
@@ -6670,6 +6931,15 @@ function db_market_orders_history_stock_health_series(
     }
 
     $rows = db_market_item_stock_window_summaries($sourceType, $sourceId, $startDate, $endDate, $typeIds);
+
+    // In 'fallback' mode, try InfluxDB when MariaDB rollups are empty.
+    if ($rows === [] && $typeIds === [] && $readMode === 'fallback') {
+        $influxRows = db_market_history_stock_health_influx($sourceType, $sourceId, $startDate, $endDate);
+        if ($influxRows !== []) {
+            return $influxRows;
+        }
+    }
+
     if ($rows !== [] || $allowRawFallback === false) {
         return $rows;
     }

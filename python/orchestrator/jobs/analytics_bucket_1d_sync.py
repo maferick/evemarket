@@ -1,7 +1,68 @@
 from __future__ import annotations
 
 from ..db import SupplyCoreDb
+from ..influx_writer import RollupInfluxBridge
 from .sync_runtime import run_sync_phase_job
+
+
+def _dual_write_stock(db: SupplyCoreDb, bridge: RollupInfluxBridge) -> None:
+    if not bridge.enabled:
+        return
+    rows = db.fetch_all(
+        "SELECT bucket_start, source_type, source_id, type_id, sample_count, "
+        "stock_units_sum, listing_count_sum, local_stock_units, listing_count "
+        "FROM market_item_stock_1d "
+        "WHERE bucket_start >= DATE_SUB(UTC_DATE(), INTERVAL 14 DAY)"
+    )
+    for row in rows:
+        bridge.enqueue_market_stock(
+            bucket_start=row["bucket_start"],
+            source_type=row["source_type"],
+            source_id=int(row["source_id"]),
+            type_id=int(row["type_id"]),
+            window="1d",
+            fields={
+                "sample_count": int(row.get("sample_count") or 0),
+                "stock_units_sum": int(row.get("stock_units_sum") or 0),
+                "listing_count_sum": int(row.get("listing_count_sum") or 0),
+                "local_stock_units": int(row.get("local_stock_units") or 0),
+                "listing_count": int(row.get("listing_count") or 0),
+            },
+        )
+    bridge.flush()
+
+
+def _dual_write_price(db: SupplyCoreDb, bridge: RollupInfluxBridge) -> None:
+    if not bridge.enabled:
+        return
+    rows = db.fetch_all(
+        "SELECT bucket_start, source_type, source_id, type_id, sample_count, "
+        "listing_count_sum, avg_price_sum, weighted_price_numerator, weighted_price_denominator, "
+        "listing_count, min_price, max_price, avg_price, weighted_price "
+        "FROM market_item_price_1d "
+        "WHERE bucket_start >= DATE_SUB(UTC_DATE(), INTERVAL 14 DAY)"
+    )
+    for row in rows:
+        bridge.enqueue_market_price(
+            bucket_start=row["bucket_start"],
+            source_type=row["source_type"],
+            source_id=int(row["source_id"]),
+            type_id=int(row["type_id"]),
+            window="1d",
+            fields={
+                "sample_count": int(row.get("sample_count") or 0),
+                "listing_count_sum": int(row.get("listing_count_sum") or 0),
+                "avg_price_sum": float(row.get("avg_price_sum") or 0),
+                "weighted_price_numerator": float(row.get("weighted_price_numerator") or 0),
+                "weighted_price_denominator": float(row.get("weighted_price_denominator") or 0),
+                "listing_count": int(row.get("listing_count") or 0),
+                "min_price": float(row.get("min_price") or 0),
+                "max_price": float(row.get("max_price") or 0),
+                "avg_price": float(row.get("avg_price") or 0),
+                "weighted_price": float(row.get("weighted_price") or 0),
+            },
+        )
+    bridge.flush()
 
 
 def _processor(db: SupplyCoreDb) -> dict[str, object]:
@@ -58,12 +119,31 @@ def _processor(db: SupplyCoreDb) -> dict[str, object]:
                 listing_count = VALUES(listing_count), min_price = VALUES(min_price), max_price = VALUES(max_price),
                 avg_price = VALUES(avg_price), weighted_price = VALUES(weighted_price)"""
     )
+
+    # Dual-write to InfluxDB when enabled — reads back the freshly upserted
+    # rollup rows so InfluxDB stays in sync without a separate export pass.
+    influx_written = 0
+    try:
+        bridge = RollupInfluxBridge.from_config(db._config) if hasattr(db, '_config') else None
+        if bridge is None:
+            from ..config import load_php_runtime_config, resolve_app_root
+            from pathlib import Path
+            config = load_php_runtime_config(Path(resolve_app_root(__file__)))
+            bridge = RollupInfluxBridge.from_config(config)
+        if bridge.enabled:
+            _dual_write_stock(db, bridge)
+            _dual_write_price(db, bridge)
+            influx_written = bridge.written_count
+    except Exception as exc:
+        import sys
+        print(f"[analytics_bucket_1d_sync] InfluxDB dual-write failed (non-fatal): {exc}", file=sys.stderr)
+
     return {
         "rows_processed": rows_processed,
         "rows_written": stock_written + price_written,
         "warnings": [] if rows_processed > 0 else ["No history rows available in the last 14d for daily analytics buckets."],
-        "summary": f"Upserted {stock_written} stock and {price_written} price daily bucket rows.",
-        "meta": {"window_days": 14},
+        "summary": f"Upserted {stock_written} stock and {price_written} price daily bucket rows. InfluxDB: {influx_written} points.",
+        "meta": {"window_days": 14, "influx_points_written": influx_written},
     }
 
 

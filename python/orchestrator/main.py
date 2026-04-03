@@ -117,6 +117,12 @@ def parse_args() -> argparse.Namespace:
     influx_sample.add_argument("--group-by", action="append", default=[], help="Optional tag keys to group summary output by.")
     influx_sample.add_argument("--verbose", action="store_true")
 
+    influx_validate = subparsers.add_parser("influx-validate", help="Validate InfluxDB data against MariaDB rollup tables for migration parity")
+    influx_validate.add_argument("--app-root", default=resolve_app_root(__file__))
+    influx_validate.add_argument("--dataset", action="append", default=[], help="Limit validation to one or more dataset keys.")
+    influx_validate.add_argument("--days", type=int, default=14, help="Compare the last N days of data.")
+    influx_validate.add_argument("--verbose", action="store_true")
+
     compute_buy_all = subparsers.add_parser("compute-buy-all", help="Materialize Buy All planner data into precomputed MariaDB tables")
     compute_buy_all.add_argument("--app-root", default=resolve_app_root(__file__))
     compute_buy_all.add_argument("--verbose", action="store_true")
@@ -295,6 +301,14 @@ def main() -> int:
             *(sum([["--dataset", dataset] for dataset in args.dataset], [])),
             "--limit", str(args.limit),
             *(sum([["--group-by", group] for group in args.group_by], [])),
+            *( ["--verbose"] if args.verbose else [] ),
+        ])
+    if command == "influx-validate":
+        from .influx_validate import validate_main as run_influx_validate
+        return run_influx_validate([
+            "--app-root", args.app_root,
+            *(sum([["--dataset", dataset] for dataset in args.dataset], [])),
+            "--days", str(args.days),
             *( ["--verbose"] if args.verbose else [] ),
         ])
     if command == "compute-buy-all":
