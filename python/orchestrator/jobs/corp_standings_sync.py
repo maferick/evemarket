@@ -112,7 +112,7 @@ def _processor(db: SupplyCoreDb, raw_config: dict[str, Any] | None = None) -> di
 
         # ── Player contacts ──────────────────────────────────────────────
         try:
-            contacts = _fetch_contacts(gateway, corp_id, access_token)
+            contacts, contacts_error = _fetch_contacts(gateway, corp_id, access_token)
             rows_processed += len(contacts)
             if contacts:
                 written = _upsert_contacts(db, corp_id, contacts, now_sql)
@@ -120,6 +120,8 @@ def _processor(db: SupplyCoreDb, raw_config: dict[str, Any] | None = None) -> di
                 log.info("Corp %d: %d player contacts upserted.", corp_id, written)
             else:
                 log.info("Corp %d: 0 player contacts entries.", corp_id)
+            if contacts_error:
+                warnings.append(contacts_error)
         except Exception as exc:
             warnings.append(f"Failed to fetch contacts for corporation {corp_id}: {exc}")
 
@@ -264,17 +266,18 @@ def _upsert_standings(
 
 # ── Player contacts fetcher ───────────────────────────────────────────────────
 
-def _fetch_contacts(gateway, corp_id: int, access_token: str) -> list[dict[str, Any]]:
+def _fetch_contacts(gateway, corp_id: int, access_token: str) -> tuple[list[dict[str, Any]], str | None]:
     """Fetch all pages of player contacts for a corporation.
 
     ESI endpoint: GET /corporations/{corporation_id}/contacts/
-    Returns: [{"contact_id": int, "contact_type": str, "standing": float, "label_ids": [int]}]
+    Returns: (contacts_list, optional_error_message)
     """
     if gateway is None:
         log.warning("No ESI gateway available; skipping contacts fetch for %d.", corp_id)
-        return []
+        return [], None
 
     all_contacts: list[dict[str, Any]] = []
+    error_msg: str | None = None
     path = f"/latest/corporations/{corp_id}/contacts/"
 
     responses = gateway.get_paginated(
@@ -289,12 +292,13 @@ def _fetch_contacts(gateway, corp_id: int, access_token: str) -> list[dict[str, 
     for resp in responses:
         if resp.status_code == 304:
             continue
-        if resp.status_code == 403:
-            log.warning(
-                "ESI contacts for corp %d returned 403 — missing scope "
-                "esi-corporations.read_contacts.v1? Re-authenticate with updated scopes.",
-                corp_id,
+        if resp.status_code in (401, 403):
+            error_msg = (
+                f"ESI contacts for corporation {corp_id} returned {resp.status_code} — "
+                f"token expired or missing scope esi-corporations.read_contacts.v1. "
+                f"Re-authenticate with updated scopes in Settings → ESI Auth."
             )
+            log.warning("%s", error_msg)
             break
         if resp.status_code != 200:
             log.warning("ESI contacts for corp %d returned %d", corp_id, resp.status_code)
@@ -303,7 +307,7 @@ def _fetch_contacts(gateway, corp_id: int, access_token: str) -> list[dict[str, 
         if isinstance(body, list):
             all_contacts.extend(body)
 
-    return all_contacts
+    return all_contacts, error_msg
 
 
 def _upsert_contacts(
