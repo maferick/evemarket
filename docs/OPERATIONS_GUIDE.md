@@ -201,7 +201,7 @@ bash scripts/reset_and_rebuild.sh --no-service-control
 | Doctrine definitions | `doctrine_groups`, `doctrine_fits`, `doctrine_fit_items` |
 | Entity metadata | `entity_metadata_cache` |
 | Configuration | `app_settings`, `esi_oauth_tokens` |
-| Tracked entities | `killmail_tracked_alliances`, `killmail_tracked_corporations` |
+| Tracked entities | `corp_contacts` (ESI + manual standings) |
 
 **Rebuild phases** (executed in order):
 

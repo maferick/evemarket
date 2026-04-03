@@ -14,7 +14,7 @@
 #   - entity_metadata_cache (character/corp/alliance name cache)
 #   - esi_oauth_tokens      (ESI authentication — you don't want to re-auth)
 #   - esi_cache_namespaces  (ESI cache config, not data)
-#   - killmail_tracked_alliances / killmail_tracked_corporations (tracking config)
+#   - corp_contacts (ESI + manual standings — the source of truth for side classification)
 #   - trading_stations      (configured market hubs)
 #   - doctrine_groups / doctrine_fits / doctrine_fit_groups / doctrine_fit_items
 #   - graph_query_presets   (saved Neo4j query presets)
@@ -270,8 +270,6 @@ DELETE FROM threat_corridor_systems WHERE 1=1;
 DELETE FROM threat_corridors WHERE 1=1;
 
 -- Economic warfare
-TRUNCATE TABLE killmail_opponent_alliances;
-TRUNCATE TABLE killmail_opponent_corporations;
 TRUNCATE TABLE hostile_fit_families;
 TRUNCATE TABLE hostile_fit_family_modules;
 TRUNCATE TABLE economic_warfare_scores;

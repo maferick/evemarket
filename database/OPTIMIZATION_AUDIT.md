@@ -47,8 +47,8 @@
 | `killmail_items` | history/detail child | 68.9k rows, append-heavy | Good decomposition out of raw killmail JSON. |
 | `killmail_item_loss_1d` | materialized/static page summary | 21.5k rows, hot-read | Good daily rollup. |
 | `killmail_item_loss_1h` | materialized/static page summary | 38.8k rows, hot-read | Good short-window rollup; retention already exists. |
-| `killmail_tracked_alliances` | scheduler/control-plane | 3 rows, static | Small control table. |
-| `killmail_tracked_corporations` | scheduler/control-plane | 0 rows | Small control table. |
+| ~~`killmail_tracked_alliances`~~ | _removed_ | — | Replaced by `corp_contacts` (standing > 0). |
+| ~~`killmail_tracked_corporations`~~ | _removed_ | — | Replaced by `corp_contacts` (standing > 0). |
 | `market_deal_alerts_current` | current-state operational | 0 rows in sample, hot-read when enabled | Denormalized `source_name` is acceptable because this is a page-serving current-state table. |
 | `market_deal_alert_dismissals` | audit/log/event | 0 rows | Small audit table. |
 | `market_history_daily` | history/time-series | 65.7k rows, read-heavy | Proper daily history table keyed by IDs. |
