@@ -1,0 +1,7 @@
+.config.vault
+config.php
+docker-compose.yml
+Dockerfile
+.dockerignore
+.git
+.gitignore
