@@ -118,10 +118,10 @@ def _load_suspicion_scores(db: SupplyCoreDb, character_ids: list[int]) -> dict[i
 
 
 def _load_tracked_alliance_ids(db: SupplyCoreDb) -> set[int]:
-    """Load alliance IDs that are being tracked (if table exists)."""
+    """Load friendly alliance IDs from ESI contacts (positive standing)."""
     try:
         rows = db.fetch_all(
-            "SELECT alliance_id FROM tracked_alliances WHERE active = 1"
+            "SELECT contact_id AS alliance_id FROM corp_contacts WHERE contact_type = 'alliance' AND standing > 0"
         )
         return {int(r["alliance_id"]) for r in rows if int(r.get("alliance_id") or 0) > 0}
     except Exception:

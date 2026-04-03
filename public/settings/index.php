@@ -543,13 +543,11 @@ if ($dbStatus['ok']) {
     try {
         $trackedAlliances = db_killmail_tracked_alliances_active();
         $trackedCorporations = db_killmail_tracked_corporations_active();
-        $corpContactsStandings = db_corp_contacts_by_standing();
         $killmailStatus = db_killmail_ingestion_status();
         $killmailWorkerStatus = zkill_worker_runtime_status();
     } catch (Throwable) {
         $trackedAlliances = [];
         $trackedCorporations = [];
-        $corpContactsStandings = ['friendly_alliance_ids' => [], 'friendly_corporation_ids' => [], 'hostile_alliance_ids' => [], 'hostile_corporation_ids' => []];
         $killmailStatus = null;
         $killmailWorkerStatus = [];
     }

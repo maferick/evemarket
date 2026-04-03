@@ -18807,44 +18807,6 @@ function killmail_max_sequences_per_run(): int
     return max(1, min(5000, (int) get_setting('killmail_ingestion_max_sequences_per_run', '5000')));
 }
 
-function killmail_parse_entity_lines(string $text): array
-{
-    $rows = [];
-    foreach (preg_split('/\R+/', $text) as $line) {
-        $line = trim((string) $line);
-        if ($line === '') {
-            continue;
-        }
-
-        if (preg_match('/^([0-9]{1,20})(?:\s*[|,:-]\s*(.+))?$/', $line, $m) !== 1) {
-            continue;
-        }
-
-        $rows[] = [
-            'id' => (int) $m[1],
-            'label' => isset($m[2]) ? trim($m[2]) : null,
-        ];
-    }
-
-    return $rows;
-}
-
-function killmail_parse_entity_name_lines(string $text): array
-{
-    $names = [];
-
-    foreach (preg_split('/\R+/', $text) as $line) {
-        $name = trim((string) $line);
-        if ($name === '') {
-            continue;
-        }
-
-        $names[(string) $name] = (string) $name;
-    }
-
-    return array_values($names);
-}
-
 function killmail_universe_ids_lookup(array $names): array
 {
     $queryNames = array_values(array_filter(array_map(static fn (mixed $name): string => trim((string) $name), $names), static fn (string $name): bool => $name !== ''));
