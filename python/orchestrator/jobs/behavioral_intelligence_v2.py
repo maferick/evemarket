@@ -632,6 +632,7 @@ def run_compute_suspicion_scores_v2(
     # ── Cohort-normalize the behavioral evidence rows ────────────
     _bv2_cohort_normalize(bv2_evidence_rows)
 
+    BATCH_SIZE = 500
     suspicion_ids: set[int] = set()
     with db.transaction() as (_, cursor):
         for i in range(0, len(insert_tuples), BATCH_SIZE):
