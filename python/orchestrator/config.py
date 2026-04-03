@@ -252,6 +252,8 @@ def load_php_runtime_config(app_root: Path) -> OrchestratorConfig:
         "influx": {
             "enabled": os.getenv("INFLUXDB_ENABLED", "0") == "1",
             "read_enabled": os.getenv("INFLUXDB_READ_ENABLED", "0") == "1",
+            "read_mode": os.getenv("INFLUXDB_READ_MODE", "disabled"),
+            "write_on_rollup": os.getenv("INFLUXDB_WRITE_ON_ROLLUP", "0") == "1",
             "url": os.getenv("INFLUXDB_URL", "http://127.0.0.1:8086").rstrip("/"),
             "org": os.getenv("INFLUXDB_ORG", ""),
             "bucket": os.getenv("INFLUXDB_BUCKET", "supplycore_rollups"),
@@ -261,6 +263,8 @@ def load_php_runtime_config(app_root: Path) -> OrchestratorConfig:
         "influxdb": {
             "enabled": os.getenv("INFLUXDB_ENABLED", "0") == "1",
             "read_enabled": os.getenv("INFLUXDB_READ_ENABLED", "0") == "1",
+            "read_mode": os.getenv("INFLUXDB_READ_MODE", "disabled"),
+            "write_on_rollup": os.getenv("INFLUXDB_WRITE_ON_ROLLUP", "0") == "1",
             "url": os.getenv("INFLUXDB_URL", "http://127.0.0.1:8086").rstrip("/"),
             "org": os.getenv("INFLUXDB_ORG", ""),
             "bucket": os.getenv("INFLUXDB_BUCKET", "supplycore_rollups"),
