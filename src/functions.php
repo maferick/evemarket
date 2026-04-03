@@ -27372,8 +27372,9 @@ function theater_ai_build_facts_from_snapshot(string $theaterId, array $theater,
     $friendlyNames = array_map(fn($a) => $a['alliance'], $sideData[$ourSide]);
     $enemyNames = array_map(fn($a) => $a['alliance'], $sideData[$enemySide]);
 
-    $totalIsk = $friendlyIskKilled + $enemyIskKilled;
-    $efficiency = $totalIsk > 0 ? round(($friendlyIskKilled / $totalIsk) * 100, 1) : 0;
+    // Loss-based efficiency matching br.evetools.org: efficiency = 1 - our_losses / total_losses
+    $totalLosses = $friendlyIskLost + $enemyIskLost;
+    $efficiency = $totalLosses > 0 ? round((1.0 - $friendlyIskLost / $totalLosses) * 100, 1) : 0;
 
     $facts = [
         'theater_id' => $theaterId,
@@ -27391,11 +27392,11 @@ function theater_ai_build_facts_from_snapshot(string $theaterId, array $theater,
         'enemy_coalition' => $sideData[$enemySide],
         'friendly_pilots' => $sidePilotTotals[$ourSide],
         'enemy_pilots' => $sidePilotTotals[$enemySide],
-        'friendly_isk_killed' => number_format($friendlyIskKilled, 0) . ' ISK',
+        'friendly_isk_killed' => number_format($enemyIskLost, 0) . ' ISK',
         'friendly_isk_lost' => number_format($friendlyIskLost, 0) . ' ISK',
-        'enemy_isk_killed' => number_format($enemyIskKilled, 0) . ' ISK',
+        'enemy_isk_killed' => number_format($friendlyIskLost, 0) . ' ISK',
         'enemy_isk_lost' => number_format($enemyIskLost, 0) . ' ISK',
-        'total_isk_destroyed' => number_format($friendlyIskKilled + $enemyIskKilled, 0) . ' ISK',
+        'total_isk_destroyed' => number_format($friendlyIskLost + $enemyIskLost, 0) . ' ISK',
         'efficiency' => $efficiency . '%',
         'friendly_fleet_composition' => array_slice($friendlyComp, 0, 20),
         'enemy_fleet_composition' => array_slice($enemyComp, 0, 20),

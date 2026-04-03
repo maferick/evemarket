@@ -424,11 +424,23 @@ if ($viewSnapshot !== null && !$pendingLock) {
         $fbSide = $classifyAlliance((int) ($fbRow['alliance_id'] ?? 0), (int) ($fbRow['corporation_id'] ?? 0));
         $finalBlowsBySide[$fbSide] += (int) ($fbRow['final_blows'] ?? 0);
     }
+    // Compute total ISK lost across all sides for loss-based efficiency
+    // (matching br.evetools.org: efficiency = 1 - our_losses / total_losses).
+    $totalIskLostAllSides = 0.0;
+    foreach ($sidePanels as $data) {
+        $totalIskLostAllSides += $data['isk_lost'];
+    }
+    // Derive side-level isk_killed from opposing sides' losses (avoids double-counting
+    // that occurs when summing per-alliance isk_killed across groups on the same side).
+    foreach ($sidePanels as $side => $data) {
+        $sidePanels[$side]['isk_killed'] = $totalIskLostAllSides - $data['isk_lost'];
+    }
     foreach ($sidePanels as $side => $data) {
         $sidePanels[$side]['final_blows'] = (int) ($finalBlowsBySide[$side] ?? 0);
         $sidePanels[$side]['kill_involvements'] = (int) ($participantKillTotalsBySide[$side] ?? 0);
-        $totalIsk = $data['isk_killed'] + $data['isk_lost'];
-        $sidePanels[$side]['efficiency'] = $totalIsk > 0 ? $data['isk_killed'] / $totalIsk : 0.0;
+        $sidePanels[$side]['efficiency'] = $totalIskLostAllSides > 0
+            ? 1.0 - $data['isk_lost'] / $totalIskLostAllSides
+            : 0.0;
         usort($data['alliances'], static fn(array $l, array $r): int => $r['pilots'] <=> $l['pilots']);
         $sidePanels[$side]['alliances'] = array_slice($data['alliances'], 0, 4);
     }

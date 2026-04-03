@@ -544,7 +544,6 @@ def _compute_alliance_summary(
     # since rows are expanded per-attacker from the LEFT JOIN.
     seen_loss_km: set[int] = set()
     seen_kill_km: set[tuple[int, tuple[int, int]]] = set()
-    seen_final_blow_km: set[int] = set()
     for km in killmails:
         km_id = int(km.get("killmail_id") or 0)
         victim_alliance = int(km.get("victim_alliance_id") or 0)
@@ -554,7 +553,6 @@ def _compute_alliance_summary(
         attacker_alliance = int(km.get("attacker_alliance_id") or 0)
         attacker_corp = int(km.get("attacker_corporation_id") or 0)
         attacker_damage = float(km.get("attacker_damage_done") or 0)
-        final_blow = int(km.get("attacker_final_blow") or 0)
 
         # Record loss for victim group (once per killmail)
         if km_id not in seen_loss_km:
@@ -564,7 +562,10 @@ def _compute_alliance_summary(
             entry["total_losses"] += 1
             entry["total_isk_lost"] += isk
 
-        # Record kill involvement for attacker group (once per killmail per group)
+        # Record kill involvement for attacker group (once per killmail per group).
+        # ISK killed is credited to every participating group, matching the
+        # standard EVE battle-report convention (br.evetools.org) where each
+        # group that had attackers on a killmail gets the full ISK credit.
         atk_key = _group_key_for(attacker_alliance, attacker_corp)
         if atk_key != (0, 0):
             entry = _get_entry(atk_key)
@@ -573,12 +574,7 @@ def _compute_alliance_summary(
             if kill_key not in seen_kill_km:
                 seen_kill_km.add(kill_key)
                 entry["total_kills"] += 1
-
-        # ISK killed credited to the final-blow group only (no double-counting)
-        if final_blow and atk_key != (0, 0) and km_id not in seen_final_blow_km:
-            seen_final_blow_km.add(km_id)
-            entry = _get_entry(atk_key)
-            entry["total_isk_killed"] += isk
+                entry["total_isk_killed"] += isk
 
     # Finalize
     result: list[dict[str, Any]] = []
