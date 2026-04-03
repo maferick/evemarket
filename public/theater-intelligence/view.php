@@ -441,7 +441,8 @@ if ($viewSnapshot !== null && !$pendingLock) {
     // friendly_kills == opponent_losses (how many enemy ships died).
     $sidePanels['friendly']['kills'] = $sidePanels['opponent']['losses'];
     $sidePanels['opponent']['kills'] = $sidePanels['friendly']['losses'];
-    $sidePanels['third_party']['kills'] = 0;
+    // Third party keeps its accumulated kill-involvement count from the
+    // alliance summary — the two-side derivation doesn't apply to them.
 
     // efficiency = isk_killed / (isk_killed + isk_lost)  — two-side, symmetric
     $sidePanels['friendly']['efficiency'] = $twoSideTotal > 0
