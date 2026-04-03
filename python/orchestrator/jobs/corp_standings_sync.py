@@ -1,19 +1,24 @@
-"""Corporation Standings Sync — ESI /corporations/{id}/standings.
+"""Corporation Standings & Contacts Sync.
 
-Fetches NPC standings (agents, NPC corps, factions) for each tracked
-corporation via ESI.  The standings data is stored in ``corp_standings``
-and used by:
-  - Theater analysis for side classification (standings-aware inference)
-  - Alliance overview for betrayal detection (standing vs dynamic behavior)
+Fetches two ESI endpoints for each tracked corporation:
 
-Requires scope: ``esi-corporations.read_standings.v1``
+1. ``/corporations/{id}/standings`` — NPC standings (agents, NPC corps, factions).
+   Scope: ``esi-corporations.read_standings.v1``
 
-This route is part of the ESI rate-limit group ``corp-member``
+2. ``/corporations/{id}/contacts/`` — Player contacts (characters, corps, alliances).
+   Scope: ``esi-corporations.read_contacts.v1``
+
+The contacts data is the primary source for determining which player alliances
+and corporations are friendly or hostile from the in-game diplomatic perspective.
+The standings data supplements this with NPC faction alignment.
+
+Both routes are part of the ESI rate-limit group ``corp-member``
 (300 tokens / 15 min).
 """
 
 from __future__ import annotations
 
+import json
 import logging
 from datetime import UTC, datetime
 from typing import Any
@@ -25,7 +30,7 @@ log = logging.getLogger(__name__)
 
 JOB_KEY = "corp_standings_sync"
 
-# ESI rate-limit group for this endpoint.
+# ESI rate-limit group for both endpoints.
 _ESI_GROUP = "corp-member"
 
 
@@ -62,7 +67,66 @@ def _processor(db: SupplyCoreDb, raw_config: dict[str, Any] | None = None) -> di
             "summary": "Skipped — no tracked corporations configured.",
         }
 
-    # Ensure the table exists (idempotent).
+    _ensure_tables(db)
+
+    rows_processed = 0
+    rows_written = 0
+    now_sql = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
+
+    for corp_id in corp_ids:
+        # ── NPC standings ────────────────────────────────────────────────
+        try:
+            standings = _fetch_standings(gateway, corp_id, access_token)
+            rows_processed += len(standings)
+            if standings:
+                written = _upsert_standings(db, corp_id, standings, now_sql)
+                rows_written += written
+                log.info("Corp %d: %d NPC standings upserted.", corp_id, written)
+            else:
+                log.info("Corp %d: 0 NPC standings entries.", corp_id)
+        except Exception as exc:
+            warnings.append(f"Failed to fetch NPC standings for corporation {corp_id}: {exc}")
+
+        # ── Player contacts ──────────────────────────────────────────────
+        try:
+            contacts = _fetch_contacts(gateway, corp_id, access_token)
+            rows_processed += len(contacts)
+            if contacts:
+                written = _upsert_contacts(db, corp_id, contacts, now_sql)
+                rows_written += written
+                log.info("Corp %d: %d player contacts upserted.", corp_id, written)
+            else:
+                log.info("Corp %d: 0 player contacts entries.", corp_id)
+        except Exception as exc:
+            warnings.append(f"Failed to fetch contacts for corporation {corp_id}: {exc}")
+
+        # Update sync state for this corporation.
+        db.execute(
+            """
+            INSERT INTO sync_state (dataset_key, sync_mode, status, last_success_at, last_row_count)
+            VALUES (%s, 'full', 'success', UTC_TIMESTAMP(), %s)
+            ON DUPLICATE KEY UPDATE
+                status = 'success',
+                last_success_at = UTC_TIMESTAMP(),
+                last_row_count = VALUES(last_row_count),
+                updated_at = UTC_TIMESTAMP()
+            """,
+            [f"corp_standings.{corp_id}", rows_written],
+        )
+
+    return {
+        "rows_processed": rows_processed,
+        "rows_written": rows_written,
+        "warnings": warnings,
+        "summary": f"Synced standings + contacts for {len(corp_ids)} corporation(s) ({rows_written} upserts).",
+        "meta": {"corporation_ids": corp_ids},
+    }
+
+
+# ── Table creation ────────────────────────────────────────────────────────────
+
+def _ensure_tables(db: SupplyCoreDb) -> None:
+    """Ensure both corp_standings and corp_contacts tables exist (idempotent)."""
     db.execute("""
         CREATE TABLE IF NOT EXISTS corp_standings (
             id              BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
@@ -78,52 +142,29 @@ def _processor(db: SupplyCoreDb, raw_config: dict[str, Any] | None = None) -> di
             KEY idx_from_id (from_id)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     """)
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS corp_contacts (
+            id              BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+            corporation_id  BIGINT UNSIGNED NOT NULL,
+            contact_id      BIGINT UNSIGNED NOT NULL,
+            contact_type    ENUM('character', 'corporation', 'alliance', 'faction') NOT NULL,
+            standing        DOUBLE NOT NULL,
+            label_ids       JSON DEFAULT NULL,
+            fetched_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            created_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            UNIQUE KEY uq_corp_contact (corporation_id, contact_id, contact_type),
+            KEY idx_corp_type (corporation_id, contact_type),
+            KEY idx_contact_id (contact_id),
+            KEY idx_standing (corporation_id, standing)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    """)
 
-    rows_processed = 0
-    rows_written = 0
-    now_sql = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
 
-    for corp_id in corp_ids:
-        try:
-            standings = _fetch_standings(gateway, corp_id, access_token)
-        except Exception as exc:
-            warnings.append(f"Failed to fetch standings for corporation {corp_id}: {exc}")
-            continue
-
-        rows_processed += len(standings)
-
-        if not standings:
-            log.info("Corporation %d returned 0 standings entries.", corp_id)
-            continue
-
-        written = _upsert_standings(db, corp_id, standings, now_sql)
-        rows_written += written
-
-        # Update sync state for this corporation.
-        db.execute(
-            """
-            INSERT INTO sync_state (dataset_key, sync_mode, status, last_success_at, last_row_count)
-            VALUES (%s, 'full', 'success', UTC_TIMESTAMP(), %s)
-            ON DUPLICATE KEY UPDATE
-                status = 'success',
-                last_success_at = UTC_TIMESTAMP(),
-                last_row_count = VALUES(last_row_count),
-                updated_at = UTC_TIMESTAMP()
-            """,
-            [f"corp_standings.{corp_id}", written],
-        )
-
-    return {
-        "rows_processed": rows_processed,
-        "rows_written": rows_written,
-        "warnings": warnings,
-        "summary": f"Synced standings for {len(corp_ids)} corporation(s) ({rows_written} upserts).",
-        "meta": {"corporation_ids": corp_ids},
-    }
-
+# ── NPC standings fetcher ─────────────────────────────────────────────────────
 
 def _fetch_standings(gateway, corp_id: int, access_token: str) -> list[dict[str, Any]]:
-    """Fetch all pages of standings for a corporation."""
+    """Fetch all pages of NPC standings for a corporation."""
     if gateway is None:
         log.warning("No ESI gateway available; skipping standings fetch for %d.", corp_id)
         return []
@@ -159,7 +200,7 @@ def _upsert_standings(
     standings: list[dict[str, Any]],
     fetched_at: str,
 ) -> int:
-    """Upsert standings into corp_standings table. Returns rows written."""
+    """Upsert NPC standings into corp_standings table. Returns rows written."""
     written = 0
 
     for entry in standings:
@@ -186,11 +227,94 @@ def _upsert_standings(
     return written
 
 
+# ── Player contacts fetcher ───────────────────────────────────────────────────
+
+def _fetch_contacts(gateway, corp_id: int, access_token: str) -> list[dict[str, Any]]:
+    """Fetch all pages of player contacts for a corporation.
+
+    ESI endpoint: GET /corporations/{corporation_id}/contacts/
+    Returns: [{"contact_id": int, "contact_type": str, "standing": float, "label_ids": [int]}]
+    """
+    if gateway is None:
+        log.warning("No ESI gateway available; skipping contacts fetch for %d.", corp_id)
+        return []
+
+    all_contacts: list[dict[str, Any]] = []
+    path = f"/latest/corporations/{corp_id}/contacts/"
+
+    responses = gateway.get_paginated(
+        path,
+        access_token=access_token,
+        group=_ESI_GROUP,
+        route_template="/corporations/{corporation_id}/contacts/",
+        identity=f"corp:{corp_id}",
+        max_pages=20,
+    )
+
+    for resp in responses:
+        if resp.status_code == 304:
+            continue
+        if resp.status_code == 403:
+            log.warning(
+                "ESI contacts for corp %d returned 403 — missing scope "
+                "esi-corporations.read_contacts.v1? Re-authenticate with updated scopes.",
+                corp_id,
+            )
+            break
+        if resp.status_code != 200:
+            log.warning("ESI contacts for corp %d returned %d", corp_id, resp.status_code)
+            continue
+        body = resp.body
+        if isinstance(body, list):
+            all_contacts.extend(body)
+
+    return all_contacts
+
+
+def _upsert_contacts(
+    db: SupplyCoreDb,
+    corp_id: int,
+    contacts: list[dict[str, Any]],
+    fetched_at: str,
+) -> int:
+    """Upsert player contacts into corp_contacts table. Returns rows written."""
+    written = 0
+    valid_types = ("character", "corporation", "alliance", "faction")
+
+    for entry in contacts:
+        contact_id = int(entry.get("contact_id") or 0)
+        contact_type = str(entry.get("contact_type") or "").strip()
+        standing = float(entry.get("standing") or 0)
+        label_ids = entry.get("label_ids")
+
+        if contact_id <= 0 or contact_type not in valid_types:
+            continue
+
+        # Serialize label_ids as JSON if present.
+        label_json = json.dumps(label_ids) if label_ids else None
+
+        db.execute(
+            """
+            INSERT INTO corp_contacts (corporation_id, contact_id, contact_type, standing, label_ids, fetched_at)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            ON DUPLICATE KEY UPDATE
+                standing = VALUES(standing),
+                label_ids = VALUES(label_ids),
+                fetched_at = VALUES(fetched_at),
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            [corp_id, contact_id, contact_type, standing, label_json, fetched_at],
+        )
+        written += 1
+
+    return written
+
+
 def run_corp_standings_sync(db: SupplyCoreDb, raw_config: dict[str, Any] | None = None) -> dict[str, object]:
     return run_sync_phase_job(
         db,
         job_key=JOB_KEY,
         phase="A",
-        objective="corporation standings",
+        objective="corporation standings & contacts",
         processor=lambda d: _processor(d, raw_config),
     )

@@ -66,8 +66,19 @@ if ($viewSnapshot !== null && !$pendingLock) {
     $trackedCorporationIds = (array) ($viewSnapshot['tracked_corporation_ids'] ?? []);
     $opponentCorporationIds = (array) ($viewSnapshot['opponent_corporation_ids'] ?? []);
 
-    // Reconstruct classify closure from saved alliance/corporation IDs
-    $classifyAlliance = static function (int $allianceId, int $corporationId = 0) use ($trackedAllianceIds, $opponentAllianceIds, $trackedCorporationIds, $opponentCorporationIds): string {
+    // Load live in-game corp contacts for the snapshot path too.
+    $corpContacts = db_corp_contacts_by_standing();
+    $contactFriendlyAllianceIds = array_values(array_unique(array_map('intval', $corpContacts['friendly_alliance_ids'] ?? [])));
+    $contactFriendlyCorpIds = array_values(array_unique(array_map('intval', $corpContacts['friendly_corporation_ids'] ?? [])));
+    $contactHostileAllianceIds = array_values(array_unique(array_map('intval', $corpContacts['hostile_alliance_ids'] ?? [])));
+    $contactHostileCorpIds = array_values(array_unique(array_map('intval', $corpContacts['hostile_corporation_ids'] ?? [])));
+
+    // Reconstruct classify closure from saved alliance/corporation IDs + live contacts
+    $classifyAlliance = static function (int $allianceId, int $corporationId = 0) use (
+        $trackedAllianceIds, $opponentAllianceIds, $trackedCorporationIds, $opponentCorporationIds,
+        $contactFriendlyAllianceIds, $contactFriendlyCorpIds, $contactHostileAllianceIds, $contactHostileCorpIds
+    ): string {
+        // 1. Explicit user configuration always takes priority
         if ($allianceId > 0 && in_array($allianceId, $trackedAllianceIds, true)) {
             return 'friendly';
         }
@@ -78,6 +89,19 @@ if ($viewSnapshot !== null && !$pendingLock) {
             return 'opponent';
         }
         if ($corporationId > 0 && in_array($corporationId, $opponentCorporationIds, true)) {
+            return 'opponent';
+        }
+        // 2. In-game corp contacts (ESI diplomatic standings)
+        if ($allianceId > 0 && in_array($allianceId, $contactFriendlyAllianceIds, true)) {
+            return 'friendly';
+        }
+        if ($corporationId > 0 && in_array($corporationId, $contactFriendlyCorpIds, true)) {
+            return 'friendly';
+        }
+        if ($allianceId > 0 && in_array($allianceId, $contactHostileAllianceIds, true)) {
+            return 'opponent';
+        }
+        if ($corporationId > 0 && in_array($corporationId, $contactHostileCorpIds, true)) {
             return 'opponent';
         }
         return 'third_party';
@@ -202,7 +226,19 @@ if ($viewSnapshot !== null && !$pendingLock) {
     $opponentCorporationIds = array_map('intval', array_column($opponentCorporations, 'corporation_id'));
     $opponentCorporationIds = array_values(array_unique($opponentCorporationIds));
 
-    $classifyAlliance = static function (int $allianceId, int $corporationId = 0) use ($trackedAllianceIds, $opponentAllianceIds, $trackedCorporationIds, $opponentCorporationIds): string {
+    // Load in-game corp contacts (player diplomatic standings from ESI).
+    // Positive standing = blue (friendly), negative = red (hostile).
+    $corpContacts = db_corp_contacts_by_standing();
+    $contactFriendlyAllianceIds = array_values(array_unique(array_map('intval', $corpContacts['friendly_alliance_ids'] ?? [])));
+    $contactFriendlyCorpIds = array_values(array_unique(array_map('intval', $corpContacts['friendly_corporation_ids'] ?? [])));
+    $contactHostileAllianceIds = array_values(array_unique(array_map('intval', $corpContacts['hostile_alliance_ids'] ?? [])));
+    $contactHostileCorpIds = array_values(array_unique(array_map('intval', $corpContacts['hostile_corporation_ids'] ?? [])));
+
+    $classifyAlliance = static function (int $allianceId, int $corporationId = 0) use (
+        $trackedAllianceIds, $opponentAllianceIds, $trackedCorporationIds, $opponentCorporationIds,
+        $contactFriendlyAllianceIds, $contactFriendlyCorpIds, $contactHostileAllianceIds, $contactHostileCorpIds
+    ): string {
+        // 1. Explicit user configuration always takes priority
         if ($allianceId > 0 && in_array($allianceId, $trackedAllianceIds, true)) {
             return 'friendly';
         }
@@ -213,6 +249,19 @@ if ($viewSnapshot !== null && !$pendingLock) {
             return 'opponent';
         }
         if ($corporationId > 0 && in_array($corporationId, $opponentCorporationIds, true)) {
+            return 'opponent';
+        }
+        // 2. In-game corp contacts (ESI diplomatic standings)
+        if ($allianceId > 0 && in_array($allianceId, $contactFriendlyAllianceIds, true)) {
+            return 'friendly';
+        }
+        if ($corporationId > 0 && in_array($corporationId, $contactFriendlyCorpIds, true)) {
+            return 'friendly';
+        }
+        if ($allianceId > 0 && in_array($allianceId, $contactHostileAllianceIds, true)) {
+            return 'opponent';
+        }
+        if ($corporationId > 0 && in_array($corporationId, $contactHostileCorpIds, true)) {
             return 'opponent';
         }
         return 'third_party';

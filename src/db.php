@@ -11818,6 +11818,103 @@ function db_theater_standing_discrepancies(string $theaterId): array
     }
 }
 
+// ── Corporation contacts queries (player diplomatic standings) ───────────────
+
+/**
+ * Load all player contacts from corp_contacts.
+ * These are the in-game diplomatic standings toward player entities.
+ * Positive standing = blue (friendly), negative = red (hostile).
+ */
+function db_corp_contacts_all(): array
+{
+    try {
+        return db_select(
+            'SELECT corporation_id, contact_id, contact_type, standing, label_ids, fetched_at
+             FROM corp_contacts
+             ORDER BY corporation_id ASC, contact_type ASC, standing DESC'
+        );
+    } catch (Throwable) {
+        return [];
+    }
+}
+
+/**
+ * Load player contacts classified by standing polarity.
+ * Returns a structured array with alliance_ids and corporation_ids
+ * grouped as friendly (standing > 0) or hostile (standing < 0).
+ *
+ * This is the primary function used for side classification from in-game standings.
+ *
+ * @return array{friendly_alliance_ids: int[], friendly_corporation_ids: int[],
+ *               hostile_alliance_ids: int[], hostile_corporation_ids: int[]}
+ */
+function db_corp_contacts_by_standing(): array
+{
+    $result = [
+        'friendly_alliance_ids' => [],
+        'friendly_corporation_ids' => [],
+        'hostile_alliance_ids' => [],
+        'hostile_corporation_ids' => [],
+    ];
+
+    try {
+        $contacts = db_select(
+            "SELECT contact_id, contact_type, standing
+             FROM corp_contacts
+             WHERE contact_type IN ('alliance', 'corporation')
+               AND standing != 0
+             ORDER BY ABS(standing) DESC"
+        );
+    } catch (Throwable) {
+        return $result;
+    }
+
+    foreach ($contacts as $c) {
+        $contactId = (int) ($c['contact_id'] ?? 0);
+        $contactType = (string) ($c['contact_type'] ?? '');
+        $standing = (float) ($c['standing'] ?? 0);
+
+        if ($contactId <= 0) {
+            continue;
+        }
+
+        if ($standing > 0) {
+            if ($contactType === 'alliance') {
+                $result['friendly_alliance_ids'][] = $contactId;
+            } elseif ($contactType === 'corporation') {
+                $result['friendly_corporation_ids'][] = $contactId;
+            }
+        } elseif ($standing < 0) {
+            if ($contactType === 'alliance') {
+                $result['hostile_alliance_ids'][] = $contactId;
+            } elseif ($contactType === 'corporation') {
+                $result['hostile_corporation_ids'][] = $contactId;
+            }
+        }
+    }
+
+    return $result;
+}
+
+/**
+ * Get the in-game standing for a specific alliance or corporation
+ * from corp_contacts. Returns the standing value or null if not found.
+ */
+function db_corp_contact_standing(int $entityId, string $entityType = 'alliance'): ?float
+{
+    try {
+        $row = db_select_one(
+            'SELECT standing FROM corp_contacts
+             WHERE contact_id = ? AND contact_type = ?
+             LIMIT 1',
+            [$entityId, $entityType]
+        );
+        return $row !== null ? (float) $row['standing'] : null;
+    } catch (Throwable) {
+        return null;
+    }
+}
+
 // ── Economic Warfare queries ─────────────────────────────────────────────────
 
 function db_economic_warfare_scores(array $filters = [], int $limit = 100, int $offset = 0): array

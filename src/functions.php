@@ -14793,6 +14793,20 @@ function esi_default_scopes(): array
         'esi-search.search_structures.v1',
         'esi-universe.read_structures.v1',
         'esi-markets.structure_markets.v1',
+        'esi-corporations.read_standings.v1',
+        'esi-corporations.read_contacts.v1',
+    ];
+}
+
+/**
+ * Scopes required for corporation standings & contacts.
+ * Used to warn the user if their token is missing these scopes.
+ */
+function esi_required_corp_standings_scopes(): array
+{
+    return [
+        'esi-corporations.read_standings.v1',
+        'esi-corporations.read_contacts.v1',
     ];
 }
 

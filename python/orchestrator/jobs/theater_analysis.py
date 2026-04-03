@@ -182,7 +182,12 @@ def _load_battle_participants_for_theater(
 
 
 def _load_side_configuration_ids(db: SupplyCoreDb) -> dict[str, set[int]]:
-    """Load configured tracked/opponent alliance/corporation IDs once per job run."""
+    """Load configured tracked/opponent alliance/corporation IDs once per job run.
+
+    Sources (merged, config takes priority over contacts):
+      1. User-configured tracked/opponent lists (killmail_tracked_*, killmail_opponent_*)
+      2. In-game corp contacts from ESI (corp_contacts — positive=friendly, negative=hostile)
+    """
     friendly_alliance_rows = db.fetch_all(
         "SELECT alliance_id FROM killmail_tracked_alliances WHERE is_active = 1"
     )
@@ -195,23 +200,60 @@ def _load_side_configuration_ids(db: SupplyCoreDb) -> dict[str, set[int]]:
     opponent_corporation_rows = db.fetch_all(
         "SELECT corporation_id FROM killmail_opponent_corporations WHERE is_active = 1"
     )
+
+    friendly_alliance_ids: set[int] = {
+        int(row["alliance_id"]) for row in friendly_alliance_rows if int(row.get("alliance_id") or 0) > 0
+    }
+    friendly_corporation_ids: set[int] = {
+        int(row["corporation_id"])
+        for row in friendly_corporation_rows
+        if int(row.get("corporation_id") or 0) > 0
+    }
+    opponent_alliance_ids: set[int] = {
+        int(row["alliance_id"]) for row in opponent_alliance_rows if int(row.get("alliance_id") or 0) > 0
+    }
+    opponent_corporation_ids: set[int] = {
+        int(row["corporation_id"])
+        for row in opponent_corporation_rows
+        if int(row.get("corporation_id") or 0) > 0
+    }
+
+    # Merge in-game corp contacts (ESI diplomatic standings).
+    # Positive standing = friendly, negative = hostile.
+    # Only add IDs not already in the explicit config to preserve user overrides.
+    try:
+        contact_rows = db.fetch_all(
+            """SELECT contact_id, contact_type, standing
+               FROM corp_contacts
+               WHERE contact_type IN ('alliance', 'corporation')
+                 AND standing != 0"""
+        )
+        for row in contact_rows:
+            contact_id = int(row.get("contact_id") or 0)
+            contact_type = str(row.get("contact_type") or "")
+            standing = float(row.get("standing") or 0)
+            if contact_id <= 0:
+                continue
+
+            if standing > 0:
+                if contact_type == "alliance" and contact_id not in opponent_alliance_ids:
+                    friendly_alliance_ids.add(contact_id)
+                elif contact_type == "corporation" and contact_id not in opponent_corporation_ids:
+                    friendly_corporation_ids.add(contact_id)
+            elif standing < 0:
+                if contact_type == "alliance" and contact_id not in friendly_alliance_ids:
+                    opponent_alliance_ids.add(contact_id)
+                elif contact_type == "corporation" and contact_id not in friendly_corporation_ids:
+                    opponent_corporation_ids.add(contact_id)
+    except Exception:
+        # corp_contacts table may not exist yet — graceful fallback.
+        pass
+
     return {
-        "friendly_alliance_ids": {
-            int(row["alliance_id"]) for row in friendly_alliance_rows if int(row.get("alliance_id") or 0) > 0
-        },
-        "friendly_corporation_ids": {
-            int(row["corporation_id"])
-            for row in friendly_corporation_rows
-            if int(row.get("corporation_id") or 0) > 0
-        },
-        "opponent_alliance_ids": {
-            int(row["alliance_id"]) for row in opponent_alliance_rows if int(row.get("alliance_id") or 0) > 0
-        },
-        "opponent_corporation_ids": {
-            int(row["corporation_id"])
-            for row in opponent_corporation_rows
-            if int(row.get("corporation_id") or 0) > 0
-        },
+        "friendly_alliance_ids": friendly_alliance_ids,
+        "friendly_corporation_ids": friendly_corporation_ids,
+        "opponent_alliance_ids": opponent_alliance_ids,
+        "opponent_corporation_ids": opponent_corporation_ids,
     }
 
 
