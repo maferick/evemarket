@@ -29,6 +29,9 @@ $sectionChildren = [
     'backup-restore' => [
         'backup-restore' => 'Backup & Restore',
     ],
+    'integrations' => [
+        'public-api' => 'Public API',
+    ],
     'runtime-diagnostics' => [
         'runtime-config' => 'Runtime Config',
     ],
@@ -363,6 +366,59 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
             $saved = false;
             $saveMessage = 'Unknown backup action requested.';
+            break;
+
+        case 'public-api':
+            require_once __DIR__ . '/../../src/public_api.php';
+            $apiAction = trim((string) ($_POST['api_action'] ?? ''));
+
+            if ($apiAction === 'generate-key') {
+                $label = trim((string) ($_POST['api_key_label'] ?? ''));
+                $allowedIpsRaw = trim((string) ($_POST['api_key_allowed_ips'] ?? ''));
+                if ($label === '') {
+                    $saved = false;
+                    $saveMessage = 'API key label is required.';
+                    break;
+                }
+                $allowedIps = $allowedIpsRaw !== ''
+                    ? array_values(array_filter(array_map('trim', explode(',', $allowedIpsRaw))))
+                    : [];
+                $newKey = public_api_key_generate($label, $allowedIps);
+                $saved = true;
+                $saveMessage = 'API key created: ' . $newKey['key_id'] . '. Secret (shown once): ' . $newKey['secret'];
+                break;
+            }
+
+            if ($apiAction === 'revoke-key') {
+                $revokeKeyId = trim((string) ($_POST['revoke_key_id'] ?? ''));
+                if ($revokeKeyId !== '' && public_api_key_revoke($revokeKeyId)) {
+                    $saved = true;
+                    $saveMessage = 'API key ' . $revokeKeyId . ' has been revoked.';
+                } else {
+                    $saved = false;
+                    $saveMessage = 'Could not revoke the specified API key.';
+                }
+                break;
+            }
+
+            if ($apiAction === 'generate-token') {
+                $tokenKeyId = trim((string) ($_POST['token_key_id'] ?? ''));
+                $ttl = max(1, min(60, (int) ($_POST['token_ttl'] ?? 10)));
+                try {
+                    $provisionToken = public_api_provision_token_create($tokenKeyId, $ttl);
+                    $baseUrl = rtrim((string) get_setting('app_base_url', ''), '/');
+                    $provisionUrl = $baseUrl . '/api/public/provision.php?token=' . urlencode($provisionToken);
+                    $saved = true;
+                    $saveMessage = 'Provisioning URL (expires in ' . $ttl . ' min): ' . $provisionUrl;
+                } catch (Throwable $e) {
+                    $saved = false;
+                    $saveMessage = 'Token generation failed: ' . $e->getMessage();
+                }
+                break;
+            }
+
+            $saved = false;
+            $saveMessage = 'Unknown API action.';
             break;
     }
 
@@ -2386,6 +2442,109 @@ include __DIR__ . '/../../src/views/partials/header.php';
                     </div>
                     <button class="btn-primary">Validate / restore backup</button>
                 </form>
+            </div>
+        <?php elseif ($activeSubsection === 'public-api'): ?>
+            <?php
+            require_once __DIR__ . '/../../src/public_api.php';
+            $apiKeys = public_api_keys_load();
+            $baseUrl = rtrim((string) get_setting('app_base_url', ''), '/');
+            $flashMessage = flash('success');
+            ?>
+            <div class="mt-6 space-y-6">
+                <?php if ($flashMessage !== null): ?>
+                    <div class="rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-200 break-all">
+                        <?= htmlspecialchars($flashMessage, ENT_QUOTES) ?>
+                    </div>
+                <?php endif; ?>
+
+                <!-- Existing API Keys -->
+                <section class="rounded-2xl border border-border bg-black/20 p-4 space-y-4">
+                    <div>
+                        <p class="text-sm font-semibold text-slate-100">API Keys</p>
+                        <p class="mt-1 text-xs text-muted">Registered HMAC key pairs for external integrations. Secrets are not shown after creation.</p>
+                    </div>
+
+                    <?php if ($apiKeys === []): ?>
+                        <p class="text-sm text-muted">No API keys configured yet.</p>
+                    <?php else: ?>
+                        <div class="space-y-3">
+                            <?php foreach ($apiKeys as $keyId => $keyEntry): ?>
+                                <div class="flex flex-wrap items-center gap-3 rounded-xl border border-border bg-black/30 p-3">
+                                    <div class="min-w-0 flex-1">
+                                        <p class="text-sm font-medium text-slate-100"><?= htmlspecialchars((string) ($keyEntry['label'] ?? ''), ENT_QUOTES) ?></p>
+                                        <p class="mt-0.5 font-mono text-xs text-muted"><?= htmlspecialchars($keyId, ENT_QUOTES) ?></p>
+                                        <?php if (($keyEntry['allowed_ips'] ?? []) !== []): ?>
+                                            <p class="mt-0.5 text-xs text-muted">IP allowlist: <?= htmlspecialchars(implode(', ', (array) $keyEntry['allowed_ips']), ENT_QUOTES) ?></p>
+                                        <?php endif; ?>
+                                        <p class="mt-0.5 text-xs text-muted">Created: <?= htmlspecialchars((string) ($keyEntry['created_at'] ?? '-'), ENT_QUOTES) ?></p>
+                                    </div>
+                                    <div class="flex items-center gap-2">
+                                        <!-- Generate provisioning token -->
+                                        <form method="post" class="inline">
+                                            <input type="hidden" name="_token" value="<?= htmlspecialchars(csrf_token(), ENT_QUOTES) ?>">
+                                            <input type="hidden" name="section" value="public-api">
+                                            <input type="hidden" name="api_action" value="generate-token">
+                                            <input type="hidden" name="token_key_id" value="<?= htmlspecialchars($keyId, ENT_QUOTES) ?>">
+                                            <label class="sr-only" for="ttl_<?= htmlspecialchars($keyId, ENT_QUOTES) ?>">TTL (minutes)</label>
+                                            <select name="token_ttl" id="ttl_<?= htmlspecialchars($keyId, ENT_QUOTES) ?>" class="field-input py-1 text-xs">
+                                                <option value="5">5 min</option>
+                                                <option value="10" selected>10 min</option>
+                                                <option value="30">30 min</option>
+                                                <option value="60">60 min</option>
+                                            </select>
+                                            <button type="submit" class="rounded-lg border border-accent/40 bg-accent/10 px-3 py-1.5 text-xs font-medium text-slate-100 hover:bg-accent/20">Export Token</button>
+                                        </form>
+                                        <!-- Revoke key -->
+                                        <form method="post" class="inline" onsubmit="return confirm('Revoke this API key? Any integrations using it will stop working.')">
+                                            <input type="hidden" name="_token" value="<?= htmlspecialchars(csrf_token(), ENT_QUOTES) ?>">
+                                            <input type="hidden" name="section" value="public-api">
+                                            <input type="hidden" name="api_action" value="revoke-key">
+                                            <input type="hidden" name="revoke_key_id" value="<?= htmlspecialchars($keyId, ENT_QUOTES) ?>">
+                                            <button type="submit" class="rounded-lg border border-rose-400/40 bg-rose-500/10 px-3 py-1.5 text-xs font-medium text-rose-100 hover:bg-rose-500/20">Revoke</button>
+                                        </form>
+                                    </div>
+                                </div>
+                            <?php endforeach; ?>
+                        </div>
+                    <?php endif; ?>
+                </section>
+
+                <!-- Generate New Key -->
+                <section class="rounded-2xl border border-border bg-black/20 p-4">
+                    <form method="post" class="space-y-4">
+                        <input type="hidden" name="_token" value="<?= htmlspecialchars(csrf_token(), ENT_QUOTES) ?>">
+                        <input type="hidden" name="section" value="public-api">
+                        <input type="hidden" name="api_action" value="generate-key">
+                        <div>
+                            <p class="text-sm font-semibold text-slate-100">Create new API key</p>
+                            <p class="mt-1 text-xs text-muted">Generate an HMAC key pair for a new integration. The secret is shown once after creation — copy it immediately.</p>
+                        </div>
+                        <label class="block space-y-2">
+                            <span class="text-sm text-muted">Label</span>
+                            <input type="text" name="api_key_label" placeholder="e.g. Alliance proxy, Restock bot" class="w-full field-input" required>
+                        </label>
+                        <label class="block space-y-2">
+                            <span class="text-sm text-muted">Allowed IPs (optional, comma-separated)</span>
+                            <input type="text" name="api_key_allowed_ips" placeholder="e.g. 203.0.113.10, 198.51.100.5" class="w-full field-input">
+                        </label>
+                        <button class="btn-primary">Generate API key</button>
+                    </form>
+                </section>
+
+                <!-- How provisioning works -->
+                <section class="rounded-2xl border border-border bg-black/20 p-4 space-y-3">
+                    <p class="text-sm font-semibold text-slate-100">How provisioning tokens work</p>
+                    <div class="space-y-2 text-xs text-muted">
+                        <p>Click <strong class="text-slate-200">Export Token</strong> next to an API key to generate a single-use provisioning URL.</p>
+                        <p>Send the URL to whoever is setting up the remote proxy. When they open it, the proxy receives the full connection config (endpoint, key ID, secret) and the token is consumed — it cannot be reused.</p>
+                        <p>Tokens expire after the selected TTL. If the token expires unused, generate a new one.</p>
+                    </div>
+                    <?php if ($baseUrl === ''): ?>
+                        <div class="rounded-xl border border-amber-400/30 bg-amber-500/10 p-3 text-xs text-amber-100">
+                            <strong>Warning:</strong> <code>app_base_url</code> is not set. Provisioning URLs will be incomplete. Set it in Workspace Settings or your <code>.env</code> file.
+                        </div>
+                    <?php endif; ?>
+                </section>
             </div>
         <?php else: ?>
             <form class="mt-6 space-y-4" method="post">
