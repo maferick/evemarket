@@ -86,6 +86,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 'brand_tagline' => sanitize_brand_label((string) ($_POST['brand_tagline'] ?? brand_tagline()), 'Alliance logistics intelligence platform'),
                 'brand_logo_path' => sanitize_brand_asset_path((string) ($_POST['brand_logo_path'] ?? brand_logo_path()), '/assets/branding/supplycore-logo.svg'),
                 'brand_favicon_path' => sanitize_brand_asset_path((string) ($_POST['brand_favicon_path'] ?? brand_favicon_path()), '/assets/branding/supplycore-favicon.svg'),
+                'app_base_url' => sanitize_app_base_url((string) ($_POST['app_base_url'] ?? '')),
                 'app_timezone' => sanitize_timezone((string) ($_POST['app_timezone'] ?? 'UTC')),
                 'default_currency' => sanitize_currency((string) ($_POST['default_currency'] ?? 'ISK')),
             ]);
@@ -798,6 +799,11 @@ include __DIR__ . '/../../src/views/partials/header.php';
                         <label class="block space-y-2">
                             <span class="text-sm text-muted">Favicon path</span>
                             <input name="brand_favicon_path" value="<?= htmlspecialchars($settingValues['brand_favicon_path'] ?? brand_favicon_path(), ENT_QUOTES) ?>" class="w-full field-input" />
+                        </label>
+                        <label class="block space-y-2">
+                            <span class="text-sm text-muted">Base URL</span>
+                            <input name="app_base_url" value="<?= htmlspecialchars(get_setting('app_base_url', ''), ENT_QUOTES) ?>" placeholder="e.g. https://supplycore.example.com" class="w-full field-input" />
+                            <span class="text-xs text-muted">Public URL used in provisioning tokens and external integrations. Include the scheme (https://).</span>
                         </label>
                         <div class="grid gap-4 md:grid-cols-2">
                             <label class="block space-y-2">
