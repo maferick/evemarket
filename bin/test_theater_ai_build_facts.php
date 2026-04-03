@@ -113,4 +113,40 @@ $facts = theater_ai_build_facts_from_snapshot(
 theater_guardrail_assert(($facts['notable_kills'][0]['lost_by'] ?? '') === 'enemy', 'Opponent victim must be lost_by=enemy.');
 theater_guardrail_assert(($facts['notable_kills'][1]['lost_by'] ?? '') === 'friendly', 'Friendly victim must be lost_by=friendly.');
 
+// ── ISK invariant validation ─────────────────────────────────────────────
+
+// Case 5: Strict two-side ISK model — friendly_isk_killed == enemy_isk_lost, symmetric efficiency.
+$facts = theater_ai_build_facts_from_snapshot(
+    'fixture-isk-1',
+    theater_fixture_base(),
+    build_snapshot([
+        ['side' => 'friendly', 'alliance_id' => 1001, 'alliance_name' => 'Blue', 'participant_count' => 10, 'total_kills' => 8, 'total_losses' => 3, 'total_isk_killed' => 900, 'total_isk_lost' => 300, 'efficiency' => 0.75],
+        ['side' => 'opponent', 'alliance_id' => 2002, 'alliance_name' => 'Red', 'participant_count' => 8, 'total_kills' => 3, 'total_losses' => 8, 'total_isk_killed' => 300, 'total_isk_lost' => 900, 'efficiency' => 0.25],
+    ])
+);
+theater_guardrail_assert($facts['friendly_isk_killed'] === '900 ISK', 'friendly_isk_killed must equal enemy_isk_lost (900).');
+theater_guardrail_assert($facts['enemy_isk_killed'] === '300 ISK', 'enemy_isk_killed must equal friendly_isk_lost (300).');
+theater_guardrail_assert($facts['friendly_isk_lost'] === '300 ISK', 'friendly_isk_lost must be 300.');
+theater_guardrail_assert($facts['enemy_isk_lost'] === '900 ISK', 'enemy_isk_lost must be 900.');
+theater_guardrail_assert($facts['total_isk_destroyed'] === '1,200 ISK', 'total_isk_destroyed must equal sum of all losses (1200).');
+theater_guardrail_assert($facts['efficiency'] === '75%', 'Efficiency must be 75% = 900/(900+300).');
+
+// Case 6: Third-party losses included in total_isk_destroyed but excluded from efficiency.
+$facts = theater_ai_build_facts_from_snapshot(
+    'fixture-isk-2',
+    theater_fixture_base(),
+    build_snapshot([
+        ['side' => 'friendly', 'alliance_id' => 1001, 'alliance_name' => 'Us', 'participant_count' => 5, 'total_kills' => 4, 'total_losses' => 2, 'total_isk_killed' => 400, 'total_isk_lost' => 200, 'efficiency' => 0.67],
+        ['side' => 'opponent', 'alliance_id' => 2002, 'alliance_name' => 'Them', 'participant_count' => 5, 'total_kills' => 2, 'total_losses' => 4, 'total_isk_killed' => 200, 'total_isk_lost' => 400, 'efficiency' => 0.33],
+        ['side' => 'third_party', 'alliance_id' => 3003, 'alliance_name' => 'Neutral', 'participant_count' => 1, 'total_kills' => 0, 'total_losses' => 1, 'total_isk_killed' => 0, 'total_isk_lost' => 100, 'efficiency' => 0.0],
+    ])
+);
+// friendly_isk_killed = enemy_isk_lost (400), NOT enemy_lost + third_party_lost
+theater_guardrail_assert($facts['friendly_isk_killed'] === '400 ISK', 'friendly_isk_killed must be 400 (enemy_isk_lost only, no third party).');
+theater_guardrail_assert($facts['enemy_isk_killed'] === '200 ISK', 'enemy_isk_killed must be 200 (friendly_isk_lost only).');
+// total_isk_destroyed includes all three sides: 200 + 400 + 100 = 700
+theater_guardrail_assert($facts['total_isk_destroyed'] === '700 ISK', 'total_isk_destroyed must include third-party losses (700).');
+// Efficiency is two-side only: 400 / (400 + 200) = 66.7% — third party excluded
+theater_guardrail_assert($facts['efficiency'] === '66.7%', 'Efficiency must exclude third-party losses: 66.7% = 400/(400+200).');
+
 fwrite(STDOUT, "Theater AI side resolution guardrails passed.\n");

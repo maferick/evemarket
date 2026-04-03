@@ -27294,17 +27294,27 @@ function theater_ai_build_facts_from_snapshot(string $theaterId, array $theater,
     $ourSide = 'friendly';
     $enemySide = 'opponent';
 
-    // Build alliance side data
+    // Build alliance side data — track losses per side (friendly, opponent, third_party)
     $sideData = ['friendly' => [], 'opponent' => []];
     $sidePilotTotals = ['friendly' => 0, 'opponent' => 0];
-    $friendlyIskLost = 0;
-    $friendlyIskKilled = 0;
-    $enemyIskLost = 0;
-    $enemyIskKilled = 0;
+    $friendlyIskLost = 0.0;
+    $enemyIskLost = 0.0;
+    $thirdPartyIskLost = 0.0;
     foreach ($allianceSummary as $a) {
         $side = (string) ($a['side'] ?? '');
         $aid = (int) ($a['alliance_id'] ?? 0);
         $participantCount = (int) ($a['participant_count'] ?? 0);
+        $iskLost = (float) ($a['total_isk_lost'] ?? 0);
+
+        // Accumulate ISK lost for ALL sides (including third_party)
+        if ($side === 'friendly') {
+            $friendlyIskLost += $iskLost;
+        } elseif ($side === 'opponent') {
+            $enemyIskLost += $iskLost;
+        } else {
+            $thirdPartyIskLost += $iskLost;
+        }
+
         if (!isset($sideData[$side])) continue;
         $sidePilotTotals[$side] += max(0, $participantCount);
         $sideData[$side][] = [
@@ -27313,18 +27323,9 @@ function theater_ai_build_facts_from_snapshot(string $theaterId, array $theater,
             'kills' => (int) ($a['total_kills'] ?? 0),
             'losses' => (int) ($a['total_losses'] ?? 0),
             'isk_killed' => round((float) ($a['total_isk_killed'] ?? 0)),
-            'isk_lost' => round((float) ($a['total_isk_lost'] ?? 0)),
+            'isk_lost' => round($iskLost),
             'efficiency' => round((float) ($a['efficiency'] ?? 0) * 100, 1) . '%',
         ];
-    }
-
-    foreach ($sideData[$ourSide] as $a) {
-        $friendlyIskLost += (float) ($a['isk_lost'] ?? 0);
-        $friendlyIskKilled += (float) ($a['isk_killed'] ?? 0);
-    }
-    foreach ($sideData[$enemySide] as $a) {
-        $enemyIskLost += (float) ($a['isk_lost'] ?? 0);
-        $enemyIskKilled += (float) ($a['isk_killed'] ?? 0);
     }
 
     // Build fleet composition per side
@@ -27386,8 +27387,11 @@ function theater_ai_build_facts_from_snapshot(string $theaterId, array $theater,
     $friendlyNames = array_map(fn($a) => $a['alliance'], $sideData[$ourSide]);
     $enemyNames = array_map(fn($a) => $a['alliance'], $sideData[$enemySide]);
 
-    $totalIsk = $friendlyIskKilled + $enemyIskKilled;
-    $efficiency = $totalIsk > 0 ? round(($friendlyIskKilled / $totalIsk) * 100, 1) : 0;
+    // Two-side efficiency: isk_killed / (isk_killed + isk_lost)
+    // friendly_isk_killed == enemy_isk_lost, so: enemy_lost / (enemy_lost + friendly_lost)
+    // Third-party losses excluded from efficiency — included only in total_isk_destroyed.
+    $twoSideTotal = $friendlyIskLost + $enemyIskLost;
+    $efficiency = $twoSideTotal > 0 ? round(($enemyIskLost / $twoSideTotal) * 100, 1) : 0;
 
     $facts = [
         'theater_id' => $theaterId,
@@ -27405,11 +27409,11 @@ function theater_ai_build_facts_from_snapshot(string $theaterId, array $theater,
         'enemy_coalition' => $sideData[$enemySide],
         'friendly_pilots' => $sidePilotTotals[$ourSide],
         'enemy_pilots' => $sidePilotTotals[$enemySide],
-        'friendly_isk_killed' => number_format($friendlyIskKilled, 0) . ' ISK',
+        'friendly_isk_killed' => number_format($enemyIskLost, 0) . ' ISK',
         'friendly_isk_lost' => number_format($friendlyIskLost, 0) . ' ISK',
-        'enemy_isk_killed' => number_format($enemyIskKilled, 0) . ' ISK',
+        'enemy_isk_killed' => number_format($friendlyIskLost, 0) . ' ISK',
         'enemy_isk_lost' => number_format($enemyIskLost, 0) . ' ISK',
-        'total_isk_destroyed' => number_format($friendlyIskKilled + $enemyIskKilled, 0) . ' ISK',
+        'total_isk_destroyed' => number_format($friendlyIskLost + $enemyIskLost + $thirdPartyIskLost, 0) . ' ISK',
         'efficiency' => $efficiency . '%',
         'friendly_fleet_composition' => array_slice($friendlyComp, 0, 20),
         'enemy_fleet_composition' => array_slice($enemyComp, 0, 20),

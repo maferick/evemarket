@@ -14,7 +14,7 @@ from __future__ import annotations
 import hashlib
 import sys
 from collections import defaultdict
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -45,6 +45,15 @@ MIN_PARTICIPANT_OVERLAP = 0.10  # 10%
 
 # Minimum number of participants across all battles for a theater to be stored.
 MIN_THEATER_PARTICIPANTS = 10
+
+# Minimum participants for a battle to be a clustering seed.  Battles below
+# this threshold are not used to *form* theaters but can be absorbed into an
+# existing theater via sub-threshold absorption.
+MIN_CLUSTERING_SEED_PARTICIPANTS = MIN_THEATER_PARTICIPANTS
+
+# Time margin (seconds) for sub-threshold absorption: how far outside the
+# theater's time window to look for small battles in the same systems.
+ABSORPTION_MARGIN_SECONDS = 5 * 60  # 5 minutes
 
 BATCH_SIZE = 500
 
@@ -110,16 +119,23 @@ class _UnionFind:
 # ── Core logic ──────────────────────────────────────────────────────────────
 
 def _load_clustering_settings(db: SupplyCoreDb) -> dict[str, Any]:
-    """Load graph clustering tuning parameters from app_settings."""
+    """Load clustering and engagement expansion parameters from app_settings."""
     rows = db.fetch_all(
-        "SELECT setting_key, setting_value FROM app_settings WHERE setting_key LIKE 'universe_graph_%%'"
+        "SELECT setting_key, setting_value FROM app_settings "
+        "WHERE setting_key LIKE 'universe_graph_%%' OR setting_key LIKE 'theater_%%'"
     )
     raw = {r["setting_key"]: r["setting_value"] for r in rows}
     return {
+        # Gate-distance merge settings
         "max_gate_distance": int(raw.get("universe_graph_max_gate_distance", DEFAULT_MAX_GATE_DISTANCE)),
         "gate_merge_min_overlap": float(raw.get("universe_graph_gate_merge_min_overlap", DEFAULT_GATE_MERGE_MIN_OVERLAP)),
         "ignore_highsec_adjacency": raw.get("universe_graph_ignore_highsec_adjacency", "0") == "1",
         "highsec_threshold": float(raw.get("universe_graph_highsec_threshold", DEFAULT_HIGHSEC_THRESHOLD)),
+        # Engagement expansion settings
+        "theater_time_window_seconds": int(raw.get("theater_time_window_seconds", THEATER_TIME_WINDOW_SECONDS)),
+        "theater_min_participants": int(raw.get("theater_min_participants", MIN_THEATER_PARTICIPANTS)),
+        "theater_absorption_margin_seconds": int(raw.get("theater_absorption_margin_seconds", ABSORPTION_MARGIN_SECONDS)),
+        "theater_min_participant_overlap": float(raw.get("theater_min_participant_overlap", MIN_PARTICIPANT_OVERLAP)),
     }
 
 
@@ -307,6 +323,123 @@ def _cluster_battles(
             theater_groups[root] = theater_battles
 
     return theater_groups
+
+
+# ── Sub-threshold battle absorption ──────────────────────────────────────────
+
+def _load_sub_threshold_battles(
+    db: SupplyCoreDb,
+    system_ids: list[int],
+    time_start: str,
+    time_end: str,
+    already_assigned: set[str],
+    margin_seconds: int = ABSORPTION_MARGIN_SECONDS,
+) -> list[dict[str, Any]]:
+    """Load battles below the clustering-seed threshold in the given systems/window.
+
+    These are small skirmishes (< MIN_CLUSTERING_SEED_PARTICIPANTS) that were
+    excluded from the main clustering pass but likely belong to the same
+    engagement.  Only returns battles not already assigned to a theater.
+    """
+    if not system_ids or not time_start or not time_end:
+        return []
+
+    try:
+        dt_start = datetime.strptime(time_start, "%Y-%m-%d %H:%M:%S").replace(tzinfo=UTC)
+        dt_end = datetime.strptime(time_end, "%Y-%m-%d %H:%M:%S").replace(tzinfo=UTC)
+    except (ValueError, TypeError):
+        return []
+
+    exp_start = (dt_start - timedelta(seconds=margin_seconds)).strftime("%Y-%m-%d %H:%M:%S")
+    exp_end = (dt_end + timedelta(seconds=margin_seconds)).strftime("%Y-%m-%d %H:%M:%S")
+
+    sys_ph = ",".join(["%s"] * len(system_ids))
+    rows = db.fetch_all(
+        f"""
+        SELECT
+            br.battle_id,
+            br.system_id,
+            br.started_at,
+            br.ended_at,
+            br.duration_seconds,
+            br.participant_count,
+            br.battle_size_class,
+            rs.constellation_id,
+            rs.region_id,
+            rs.system_name,
+            rs.security
+        FROM battle_rollups br
+        INNER JOIN ref_systems rs ON rs.system_id = br.system_id
+        WHERE br.system_id IN ({sys_ph})
+          AND br.participant_count < %s
+          AND br.participant_count > 0
+          AND br.started_at <= %s
+          AND br.ended_at >= %s
+        ORDER BY br.started_at ASC
+        """,
+        (*system_ids, MIN_CLUSTERING_SEED_PARTICIPANTS, exp_end, exp_start),
+    )
+
+    return [r for r in rows if str(r["battle_id"]) not in already_assigned]
+
+
+def _absorb_sub_threshold_battles(
+    db: SupplyCoreDb,
+    theater_groups: dict[str, list[dict[str, Any]]],
+    participants: dict[str, set[int]],
+    computed_at: str,
+) -> dict[str, int]:
+    """Absorb sub-threshold battles into existing theaters.
+
+    For each theater, find small battles in the theater's systems within its
+    time window (+ margin) and add them to the theater.  This captures early
+    skirmishes, stragglers, and third-party kills that weren't large enough
+    to seed their own theater.
+
+    Returns diagnostics: {theater_id: absorbed_count}.
+    """
+    # Collect all battle_ids already assigned to any theater
+    assigned: set[str] = set()
+    for group_battles in theater_groups.values():
+        for b in group_battles:
+            assigned.add(str(b["battle_id"]))
+
+    diagnostics: dict[str, int] = {}
+    for root, group_battles in list(theater_groups.items()):
+        # Determine theater's systems and time window
+        system_ids: list[int] = []
+        starts: list[datetime] = []
+        ends: list[datetime] = []
+        for b in group_battles:
+            sys_id = int(b.get("system_id") or 0)
+            if sys_id > 0 and sys_id not in system_ids:
+                system_ids.append(sys_id)
+            s = b["started_at"]
+            e = b["ended_at"]
+            if isinstance(s, str):
+                s = datetime.strptime(s, "%Y-%m-%d %H:%M:%S").replace(tzinfo=UTC)
+            if isinstance(e, str):
+                e = datetime.strptime(e, "%Y-%m-%d %H:%M:%S").replace(tzinfo=UTC)
+            starts.append(s)
+            ends.append(e)
+
+        if not starts or not ends or not system_ids:
+            continue
+
+        time_start = min(starts).strftime("%Y-%m-%d %H:%M:%S")
+        time_end = max(ends).strftime("%Y-%m-%d %H:%M:%S")
+
+        sub_battles = _load_sub_threshold_battles(
+            db, system_ids, time_start, time_end, assigned,
+        )
+        if sub_battles:
+            for sb in sub_battles:
+                bid = str(sb["battle_id"])
+                assigned.add(bid)
+                group_battles.append(sb)
+            diagnostics[root] = len(sub_battles)
+
+    return diagnostics
 
 
 def _compute_theater_id(battle_ids: list[str]) -> str:
@@ -551,7 +684,19 @@ def run_theater_clustering(
         theater_groups = _cluster_battles(battles, participants, gate_svc, clustering_settings)
         _theater_log(runtime, "theater_clustering.clustered", {"theater_count": len(theater_groups)})
 
-        # 4. Build theater rows
+        # 4b. Absorb sub-threshold battles into existing theaters.
+        # Small skirmishes (< MIN_CLUSTERING_SEED_PARTICIPANTS) in the same
+        # systems/time window are captured here so they are not lost from the
+        # engagement's event set.
+        absorption_diag = _absorb_sub_threshold_battles(db, theater_groups, participants, computed_at)
+        if absorption_diag:
+            total_absorbed = sum(absorption_diag.values())
+            _theater_log(runtime, "theater_clustering.sub_threshold_absorbed", {
+                "theaters_with_absorptions": len(absorption_diag),
+                "total_battles_absorbed": total_absorbed,
+            })
+
+        # 5. Build theater rows
         theater_rows: list[dict[str, Any]] = []
         battle_assignments: list[tuple[str, str, int, float, str | None]] = []
         system_rows: list[tuple[str, int, str | None, int, float, int, float, str | None]] = []

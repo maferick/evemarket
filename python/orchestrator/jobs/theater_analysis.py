@@ -57,6 +57,26 @@ MOMENTUM_SMOOTHING_WINDOW = 5  # buckets for momentum moving average
 TURNING_POINT_MAGNITUDE_THRESHOLD = 0.3  # minimum momentum swing to flag
 BATCH_SIZE = 500
 
+# Engagement expansion: extend the theater's time window by this many seconds
+# on each end when querying for additional killmails in the theater's systems.
+# This captures kills at engagement boundaries (early scouts, stragglers,
+# cleanup kills, third-party opportunists).
+ENGAGEMENT_EXPANSION_MARGIN_SECONDS = 5 * 60  # 5 minutes
+
+
+def _load_expansion_settings(db: SupplyCoreDb) -> dict[str, int]:
+    """Load engagement expansion settings from app_settings."""
+    rows = db.fetch_all(
+        "SELECT setting_key, setting_value FROM app_settings "
+        "WHERE setting_key LIKE 'theater_expansion_%%'"
+    )
+    raw = {r["setting_key"]: r["setting_value"] for r in rows}
+    return {
+        "margin_seconds": int(raw.get(
+            "theater_expansion_margin_seconds", ENGAGEMENT_EXPANSION_MARGIN_SECONDS,
+        )),
+    }
+
 
 def _now_sql() -> str:
     return datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
@@ -95,6 +115,15 @@ def _load_theaters(db: SupplyCoreDb) -> list[dict[str, Any]]:
     )
 
 
+def _load_theater_system_ids(db: SupplyCoreDb, theater_id: str) -> list[int]:
+    """Load system IDs for a theater (from theater_systems table)."""
+    rows = db.fetch_all(
+        "SELECT system_id FROM theater_systems WHERE theater_id = %s",
+        (theater_id,),
+    )
+    return [int(r["system_id"]) for r in rows if int(r.get("system_id") or 0) > 0]
+
+
 def _load_theater_battle_ids(db: SupplyCoreDb, theater_id: str) -> list[str]:
     rows = db.fetch_all(
         "SELECT battle_id FROM theater_battles WHERE theater_id = %s",
@@ -103,17 +132,7 @@ def _load_theater_battle_ids(db: SupplyCoreDb, theater_id: str) -> list[str]:
     return [str(r["battle_id"]) for r in rows]
 
 
-def _load_killmails_for_battles(db: SupplyCoreDb, battle_ids: list[str]) -> list[dict[str, Any]]:
-    """Load killmail events for the given battles."""
-    if not battle_ids:
-        return []
-    all_rows: list[dict[str, Any]] = []
-    for offset in range(0, len(battle_ids), BATCH_SIZE):
-        chunk = battle_ids[offset:offset + BATCH_SIZE]
-        placeholders = ",".join(["%s"] * len(chunk))
-        rows = db.fetch_all(
-            f"""
-            SELECT
+_KM_SELECT_COLS = """
                 ke.killmail_id,
                 ke.sequence_id,
                 ke.solar_system_id AS system_id,
@@ -131,6 +150,20 @@ def _load_killmails_for_battles(db: SupplyCoreDb, battle_ids: list[str]) -> list
                 ka.ship_type_id AS attacker_ship_type_id,
                 ka.damage_done AS attacker_damage_done,
                 ka.final_blow AS attacker_final_blow
+"""
+
+
+def _load_killmails_for_battles(db: SupplyCoreDb, battle_ids: list[str]) -> list[dict[str, Any]]:
+    """Load killmail events for the given battles."""
+    if not battle_ids:
+        return []
+    all_rows: list[dict[str, Any]] = []
+    for offset in range(0, len(battle_ids), BATCH_SIZE):
+        chunk = battle_ids[offset:offset + BATCH_SIZE]
+        placeholders = ",".join(["%s"] * len(chunk))
+        rows = db.fetch_all(
+            f"""
+            SELECT {_KM_SELECT_COLS}
             FROM killmail_events ke
             LEFT JOIN killmail_attackers ka ON ka.sequence_id = ke.sequence_id
             WHERE ke.battle_id IN ({placeholders})
@@ -140,6 +173,148 @@ def _load_killmails_for_battles(db: SupplyCoreDb, battle_ids: list[str]) -> list
         )
         all_rows.extend(rows)
     return all_rows
+
+
+def _load_expanded_killmails(
+    db: SupplyCoreDb,
+    battle_ids: list[str],
+    system_ids: list[int],
+    time_start: str,
+    time_end: str,
+    margin_seconds: int = ENGAGEMENT_EXPANSION_MARGIN_SECONDS,
+) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    """Load killmails for the theater with engagement expansion.
+
+    Returns (killmails, diagnostics) where killmails includes:
+    1. All killmails from the theater's constituent battles (base set)
+    2. Additional killmails in the theater's systems within the expanded time
+       window that share at least one entity (character, corporation, or
+       alliance) with the base set — the overlap guard prevents pulling in
+       unrelated kills from busy systems.
+
+    Diagnostics dict contains counts for auditing:
+    - base_killmail_ids: unique killmails from battle_id match
+    - expanded_killmail_ids: unique killmails from system+time query
+    - expansion_passed_overlap: new killmails that passed the overlap check
+    - expansion_rejected_no_overlap: new killmails rejected (no entity match)
+    """
+    # Step 1: Load base killmails from theater battles
+    base_rows = _load_killmails_for_battles(db, battle_ids)
+
+    # Collect unique killmail IDs and entity fingerprints from base set
+    base_km_ids: set[int] = set()
+    base_character_ids: set[int] = set()
+    base_corporation_ids: set[int] = set()
+    base_alliance_ids: set[int] = set()
+    for row in base_rows:
+        km_id = int(row.get("killmail_id") or 0)
+        if km_id > 0:
+            base_km_ids.add(km_id)
+        for prefix in ("victim_", "attacker_"):
+            cid = int(row.get(f"{prefix}character_id") or 0)
+            corp = int(row.get(f"{prefix}corporation_id") or 0)
+            ally = int(row.get(f"{prefix}alliance_id") or 0)
+            if cid > 0:
+                base_character_ids.add(cid)
+            if corp > 0:
+                base_corporation_ids.add(corp)
+            if ally > 0:
+                base_alliance_ids.add(ally)
+
+    # Step 2: Query for additional killmails in the same systems + expanded window
+    if not system_ids or not time_start or not time_end:
+        return base_rows, {
+            "base_killmail_ids": len(base_km_ids),
+            "expanded_killmail_ids": 0,
+            "expansion_passed_overlap": 0,
+            "expansion_rejected_no_overlap": 0,
+        }
+
+    try:
+        dt_start = datetime.strptime(time_start, "%Y-%m-%d %H:%M:%S").replace(tzinfo=UTC)
+        dt_end = datetime.strptime(time_end, "%Y-%m-%d %H:%M:%S").replace(tzinfo=UTC)
+    except (ValueError, TypeError):
+        return base_rows, {
+            "base_killmail_ids": len(base_km_ids),
+            "expanded_killmail_ids": 0,
+            "expansion_passed_overlap": 0,
+            "expansion_rejected_no_overlap": 0,
+        }
+
+    expanded_start = (dt_start - timedelta(seconds=margin_seconds)).strftime("%Y-%m-%d %H:%M:%S")
+    expanded_end = (dt_end + timedelta(seconds=margin_seconds)).strftime("%Y-%m-%d %H:%M:%S")
+
+    sys_placeholders = ",".join(["%s"] * len(system_ids))
+    expansion_rows = db.fetch_all(
+        f"""
+        SELECT {_KM_SELECT_COLS}
+        FROM killmail_events ke
+        LEFT JOIN killmail_attackers ka ON ka.sequence_id = ke.sequence_id
+        WHERE ke.solar_system_id IN ({sys_placeholders})
+          AND ke.effective_killmail_at BETWEEN %s AND %s
+        ORDER BY ke.effective_killmail_at ASC
+        """,
+        (*system_ids, expanded_start, expanded_end),
+    )
+
+    # Step 3: Filter expansion rows — only include killmails that share at
+    # least one entity (character, corporation, or alliance) with the base set.
+    # This prevents contaminating the theater with unrelated noise in busy
+    # systems (e.g. staging systems, trade hubs).
+    expansion_km_ids: set[int] = set()
+    new_km_ids_passed: set[int] = set()
+    new_km_ids_rejected: set[int] = set()
+
+    # First pass: determine which new killmail IDs pass the overlap check.
+    # A killmail passes if ANY of its rows (victim or attacker) share an entity.
+    new_candidate_ids: set[int] = set()
+    for row in expansion_rows:
+        km_id = int(row.get("killmail_id") or 0)
+        if km_id > 0:
+            expansion_km_ids.add(km_id)
+            if km_id not in base_km_ids:
+                new_candidate_ids.add(km_id)
+
+    # For each candidate, check entity overlap across all its rows
+    candidate_overlap: dict[int, bool] = {kid: False for kid in new_candidate_ids}
+    for row in expansion_rows:
+        km_id = int(row.get("killmail_id") or 0)
+        if km_id not in new_candidate_ids or candidate_overlap.get(km_id, False):
+            continue
+        # Check if any entity on this row matches the base set
+        for prefix in ("victim_", "attacker_"):
+            cid = int(row.get(f"{prefix}character_id") or 0)
+            corp = int(row.get(f"{prefix}corporation_id") or 0)
+            ally = int(row.get(f"{prefix}alliance_id") or 0)
+            if (cid > 0 and cid in base_character_ids) or \
+               (corp > 0 and corp in base_corporation_ids) or \
+               (ally > 0 and ally in base_alliance_ids):
+                candidate_overlap[km_id] = True
+                break
+
+    for km_id, passed in candidate_overlap.items():
+        if passed:
+            new_km_ids_passed.add(km_id)
+        else:
+            new_km_ids_rejected.add(km_id)
+
+    # Step 4: Merge passed rows into the base set
+    if new_km_ids_passed:
+        for row in expansion_rows:
+            km_id = int(row.get("killmail_id") or 0)
+            if km_id in new_km_ids_passed:
+                base_rows.append(row)
+
+    # Re-sort by time
+    base_rows.sort(key=lambda r: str(r.get("killmail_time") or ""))
+
+    diagnostics = {
+        "base_killmail_ids": len(base_km_ids),
+        "expanded_killmail_ids": len(expansion_km_ids),
+        "expansion_passed_overlap": len(new_km_ids_passed),
+        "expansion_rejected_no_overlap": len(new_km_ids_rejected),
+    }
+    return base_rows, diagnostics
 
 
 def _load_ship_group_map(db: SupplyCoreDb) -> dict[int, int]:
@@ -586,7 +761,6 @@ def _compute_alliance_summary(
     # since rows are expanded per-attacker from the LEFT JOIN.
     seen_loss_km: set[int] = set()
     seen_kill_km: set[tuple[int, tuple[int, int]]] = set()
-    seen_final_blow_km: set[int] = set()
     for km in killmails:
         km_id = int(km.get("killmail_id") or 0)
         victim_alliance = int(km.get("victim_alliance_id") or 0)
@@ -596,7 +770,6 @@ def _compute_alliance_summary(
         attacker_alliance = int(km.get("attacker_alliance_id") or 0)
         attacker_corp = int(km.get("attacker_corporation_id") or 0)
         attacker_damage = float(km.get("attacker_damage_done") or 0)
-        final_blow = int(km.get("attacker_final_blow") or 0)
 
         # Record loss for victim group (once per killmail)
         if km_id not in seen_loss_km:
@@ -606,7 +779,10 @@ def _compute_alliance_summary(
             entry["total_losses"] += 1
             entry["total_isk_lost"] += isk
 
-        # Record kill involvement for attacker group (once per killmail per group)
+        # Record kill involvement for attacker group (once per killmail per group).
+        # Per-alliance total_isk_killed is analytics metadata — credited to every
+        # participating group (not just final blow).  Side-level ISK killed and
+        # efficiency are derived from victim losses in the PHP presentation layer.
         atk_key = _group_key_for(attacker_alliance, attacker_corp)
         if atk_key != (0, 0):
             entry = _get_entry(atk_key)
@@ -615,12 +791,7 @@ def _compute_alliance_summary(
             if kill_key not in seen_kill_km:
                 seen_kill_km.add(kill_key)
                 entry["total_kills"] += 1
-
-        # ISK killed credited to the final-blow group only (no double-counting)
-        if final_blow and atk_key != (0, 0) and km_id not in seen_final_blow_km:
-            seen_final_blow_km.add(km_id)
-            entry = _get_entry(atk_key)
-            entry["total_isk_killed"] += isk
+                entry["total_isk_killed"] += isk
 
     # Finalize
     result: list[dict[str, Any]] = []
@@ -1280,6 +1451,10 @@ def run_theater_analysis(
         rows_processed = len(theaters)
         _theater_log(runtime, "theater_analysis.theaters_loaded", {"count": len(theaters)})
 
+        # Load configuration
+        expansion_settings = _load_expansion_settings(db)
+        expansion_margin = expansion_settings["margin_seconds"]
+
         # Load ship type → group mapping for fleet function resolution
         ship_group_map = _load_ship_group_map(db)
         side_configuration = _load_side_configuration_ids(db)
@@ -1308,13 +1483,31 @@ def run_theater_analysis(
             theater_start = _parse_dt(theater["start_time"])
             theater_end = _parse_dt(theater["end_time"])
 
-            # Load constituent battles
+            # Load constituent battles and theater systems
             battle_ids = _load_theater_battle_ids(db, theater_id)
             if not battle_ids:
                 continue
+            system_ids = _load_theater_system_ids(db, theater_id)
 
-            # Load killmails
-            killmails = _load_killmails_for_battles(db, battle_ids)
+            # Load killmails with engagement expansion — pulls in kills from
+            # the theater's systems within an expanded time window, capturing
+            # sub-threshold battles, boundary-split kills, and third-party
+            # opportunists that belong to the same engagement.
+            time_start = theater_start.strftime("%Y-%m-%d %H:%M:%S") if theater_start else ""
+            time_end = theater_end.strftime("%Y-%m-%d %H:%M:%S") if theater_end else ""
+            killmails, expansion_diag = _load_expanded_killmails(
+                db, battle_ids, system_ids, time_start, time_end,
+                margin_seconds=expansion_margin,
+            )
+            _theater_log(runtime, "theater_analysis.killmails_loaded", {
+                "theater_id": theater_id,
+                "battle_count": len(battle_ids),
+                "system_count": len(system_ids),
+                "base_killmail_ids": expansion_diag["base_killmail_ids"],
+                "expanded_killmail_ids": expansion_diag["expanded_killmail_ids"],
+                "expansion_passed_overlap": expansion_diag["expansion_passed_overlap"],
+                "expansion_rejected_no_overlap": expansion_diag["expansion_rejected_no_overlap"],
+            })
 
             # Load battle participants for side determination
             bp_rows = _load_battle_participants_for_theater(db, battle_ids)
