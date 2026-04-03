@@ -28665,6 +28665,16 @@ function buy_all_reason_meta(array $candidate): array
             'theme' => 'Consumption runway prediction',
         ];
     }
+    $lossQty = max(0, (int) ($candidate['loss_recommended_quantity'] ?? 0));
+    $lossRate = ($candidate['loss_daily_rate'] ?? null) !== null ? (float) $candidate['loss_daily_rate'] : null;
+    $lossWindow = $candidate['loss_rate_window'] ?? null;
+    if ($lossQty > 0 && $lossRate !== null && $lossRate > 0.0 && $lossWindow !== null) {
+        return [
+            'code' => 'loss_history_prediction',
+            'text' => 'Loses ' . number_format($lossRate, 1) . '/day (based on ' . $lossWindow . ' history); buying ' . doctrine_format_quantity($lossQty) . ' for ' . (int) ($candidate['runway_days_target'] ?? 30) . '-day runway.',
+            'theme' => 'Loss history prediction',
+        ];
+    }
     if ((bool) ($candidate['missing_in_alliance'] ?? false) && (($candidate['net_profit_total'] ?? null) !== null) && (float) ($candidate['net_profit_total'] ?? 0.0) > 0.0) {
         return ['code' => 'profitable_import_spread', 'text' => 'Profitable import candidate but not doctrine-blocking.', 'theme' => 'Profitable seeding'];
     }
@@ -29084,6 +29094,20 @@ function buy_all_planner_data_uncached(array $query = []): array
         // Tables may not exist yet; degrade gracefully.
     }
 
+    // Loss-history enrichment — actual killmail losses over 1d/7d/14d/30d windows.
+    $lossDataByType = [];
+    try {
+        $lossRows = db_killmail_item_loss_window_summaries($candidateTypeIds, 24 * 30);
+        foreach ($lossRows as $lossRow) {
+            $lossTypeId = (int) ($lossRow['type_id'] ?? 0);
+            if ($lossTypeId > 0) {
+                $lossDataByType[$lossTypeId] = $lossRow;
+            }
+        }
+    } catch (Throwable) {
+        // Degrade gracefully if table not populated yet.
+    }
+
     $rankedItems = [];
     foreach ($candidateTypeIds as $typeId) {
         $market = $marketByTypeId[$typeId] ?? [];
@@ -29100,11 +29124,8 @@ function buy_all_planner_data_uncached(array $query = []): array
         $unitVolume = max(0.0, (float) ($meta['volume'] ?? 0.0));
         $localQty = max(0, (int) ($market['alliance_total_sell_volume'] ?? 0));
         $exactDeficitQuantity = max(0, (int) ($demand['exact_deficit_quantity'] ?? 0));
-        $seedFloor = max(0, (int) ($thresholds['min_alliance_sell_volume'] ?? 0) - $localQty);
         $referenceVolume = max(0, (int) ($market['reference_total_sell_volume'] ?? 0));
         $hubAvailableQuantity = $referenceVolume;
-        $velocityBuffer = max(0, min(500, (int) ceil($referenceVolume * (((bool) ($market['missing_in_alliance'] ?? false)) ? 0.20 : 0.12))));
-        $economicRecommendedQuantity = max(0, min(500, max($seedFloor, $velocityBuffer)));
         $blockedFitImpact = max(0, (int) ($demand['deterministic_blocked_fits'] ?? 0));
         $targetReadyFits = max(0, (int) ($demand['target_ready_fits'] ?? 0));
         $activityPressureModifier = max(1.0, (float) ($demand['activity_pressure_modifier'] ?? 1.0));
@@ -29125,6 +29146,53 @@ function buy_all_planner_data_uncached(array $query = []): array
             $consumptionRecommendedQuantity = max(0, $runwayDemand - $localQty);
         }
 
+        // -----------------------------------------------------------------
+        // Loss-history-based prediction: use actual killmail loss data
+        // across 1d/7d/14d/30d windows to calculate a 30-day backlog.
+        // Replaces the old economic/velocity-buffer fallback.
+        // -----------------------------------------------------------------
+        $lossData = $lossDataByType[$typeId] ?? null;
+        $lossQuantity1d = $lossData !== null ? max(0, (int) ($lossData['quantity_24h'] ?? 0)) : 0;
+        $lossQuantity7d = $lossData !== null ? max(0, (int) ($lossData['quantity_7d'] ?? 0)) : 0;
+        $lossQuantity14d = $lossData !== null ? max(0, (int) ($lossData['quantity_14d'] ?? 0)) : 0;
+        $lossQuantity30d = $lossData !== null ? max(0, (int) ($lossData['quantity_window'] ?? 0)) : 0;
+
+        $lossRate7d = $lossQuantity7d / 7.0;
+        $lossRate14d = $lossQuantity14d / 14.0;
+        $lossRate30d = $lossQuantity30d / 30.0;
+
+        // Choose best loss rate: prefer shorter windows when they have enough
+        // data points (≥3 killmails) to avoid extrapolating from outliers.
+        $lossEvents7d = $lossData !== null ? max(0, (int) ($lossData['losses_7d'] ?? 0)) : 0;
+        $lossEvents14d = $lossData !== null ? max(0, (int) ($lossData['losses_14d'] ?? 0)) : 0;
+
+        if ($lossEvents7d >= 3) {
+            $bestLossRate = $lossRate7d;
+            $lossRateWindow = '7d';
+        } elseif ($lossEvents14d >= 3) {
+            $bestLossRate = $lossRate14d;
+            $lossRateWindow = '14d';
+        } elseif ($lossQuantity30d > 0) {
+            $bestLossRate = $lossRate30d;
+            $lossRateWindow = '30d';
+        } else {
+            $bestLossRate = 0.0;
+            $lossRateWindow = null;
+        }
+
+        $lossRecommendedQuantity = 0;
+        if ($bestLossRate > 0.0) {
+            $lossRunwayDemand = (int) ceil($bestLossRate * $runwayDays);
+            $lossRecommendedQuantity = max(0, $lossRunwayDemand - $localQty);
+        }
+
+        // Minimal seed floor: only for items with zero loss AND zero
+        // consumption data (e.g. newly added to a doctrine). Capped at 50.
+        $seedFloor = max(0, (int) ($thresholds['min_alliance_sell_volume'] ?? 0) - $localQty);
+        $economicRecommendedQuantity = ($lossRecommendedQuantity <= 0 && $consumptionRecommendedQuantity <= 0)
+            ? max(0, min(50, $seedFloor))
+            : 0;
+
         // Legacy doctrine-deficit operational recommendation (kept as a floor).
         $operationalBuffer = $exactDeficitQuantity > 0
             ? (int) ceil($exactDeficitQuantity * max(0.0, min(0.35, $activityPressureModifier - 1.0)))
@@ -29136,13 +29204,15 @@ function buy_all_planner_data_uncached(array $query = []): array
         $economicRecommendedQuantity = buy_all_round_quantity(max(0, $economicRecommendedQuantity));
         $operationalRecommendedQuantity = buy_all_round_quantity(max(0, $operationalRecommendedQuantity));
         $consumptionRecommendedQuantity = buy_all_round_quantity(max(0, $consumptionRecommendedQuantity));
+        $lossRecommendedQuantity = buy_all_round_quantity(max(0, $lossRecommendedQuantity));
 
-        // The final quantity is the largest of the three signals:
-        // 1. Consumption-based runway prediction (preferred when burn-rate data exists)
-        // 2. Doctrine-deficit operational recommendation (hard floor for doctrine readiness)
-        // 3. Economic / seed recommendation (market opportunity)
-        $finalPlannerQuantity = max($consumptionRecommendedQuantity, $operationalRecommendedQuantity, $economicRecommendedQuantity);
-        if ($blockedFitImpact <= 0 && $exactDeficitQuantity <= 0 && $economicRecommendedQuantity <= 0 && $consumptionRecommendedQuantity <= 0 && !((bool) ($market['missing_in_alliance'] ?? false))) {
+        // The final quantity is the largest of the four signals:
+        // 1. Consumption-based runway prediction (preferred when graph pipeline data exists)
+        // 2. Loss-history-based 30-day backlog (actual killmail losses)
+        // 3. Doctrine-deficit operational recommendation (hard floor for doctrine readiness)
+        // 4. Minimal seed floor (only when all other signals are zero)
+        $finalPlannerQuantity = max($consumptionRecommendedQuantity, $lossRecommendedQuantity, $operationalRecommendedQuantity, $economicRecommendedQuantity);
+        if ($blockedFitImpact <= 0 && $exactDeficitQuantity <= 0 && $economicRecommendedQuantity <= 0 && $consumptionRecommendedQuantity <= 0 && $lossRecommendedQuantity <= 0 && !((bool) ($market['missing_in_alliance'] ?? false))) {
             $finalPlannerQuantity = 0;
         }
         if ($unitVolume >= 50000.0 && $finalPlannerQuantity > 5) {
@@ -29270,6 +29340,13 @@ function buy_all_planner_data_uncached(array $query = []): array
             'operational_recommended_quantity' => $operationalRecommendedQuantity,
             'consumption_recommended_quantity' => $consumptionRecommendedQuantity,
             'economic_recommended_quantity' => $economicRecommendedQuantity,
+            'loss_recommended_quantity' => $lossRecommendedQuantity,
+            'loss_quantity_1d' => $lossQuantity1d,
+            'loss_quantity_7d' => $lossQuantity7d,
+            'loss_quantity_14d' => $lossQuantity14d,
+            'loss_quantity_30d' => $lossQuantity30d,
+            'loss_daily_rate' => round($bestLossRate, 2),
+            'loss_rate_window' => $lossRateWindow,
             'final_planner_quantity' => $finalPlannerQuantity,
             'buy_price' => $buyPrice,
             'buy_price_basis' => $buyPriceBasis,
