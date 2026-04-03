@@ -15,6 +15,8 @@ from ..neo4j import Neo4jClient, Neo4jConfig, Neo4jError
 
 def _detect_triangles(client: Neo4jClient) -> list[dict[str, Any]]:
     """Detect triangle motifs: 3 characters mutually co-occurring."""
+    # Triangle detection is the most expensive graph query (triple join on
+    # CO_OCCURS_WITH), so it needs a higher timeout than the default.
     return client.query(
         """
         MATCH (a:Character)-[:CO_OCCURS_WITH]-(b:Character)-[:CO_OCCURS_WITH]-(c:Character)-[:CO_OCCURS_WITH]-(a)
@@ -31,7 +33,8 @@ def _detect_triangles(client: Neo4jClient) -> list[dict[str, Any]]:
                 (COALESCE(a.suspicion_score, 0) + COALESCE(b.suspicion_score, 0) + COALESCE(c.suspicion_score, 0)) / 3.0
             ) AS suspicion_relevance
         LIMIT 500
-        """
+        """,
+        timeout_seconds=60,
     )
 
 
@@ -182,8 +185,8 @@ def run_graph_motif_detection_sync(db: SupplyCoreDb, neo4j_raw: dict[str, Any] |
             meta={"counts": counts_by_type},
         ).to_dict()
 
-    # Truncate and re-insert
-    db.execute("DELETE FROM graph_motif_detections")
+    # Truncate and re-insert using retry-aware transactions to avoid deadlocks.
+    db.run_in_transaction(lambda _conn, cur: cur.execute("DELETE FROM graph_motif_detections"))
 
     batch_size = 500
     total_written = 0
@@ -206,13 +209,14 @@ def run_graph_motif_detection_sync(db: SupplyCoreDb, neo4j_raw: dict[str, Any] |
                 computed_at,
             ])
         if values:
-            db.execute(
+            sql = (
                 "INSERT INTO graph_motif_detections "
                 "(motif_type, member_ids_json, battle_ids_json, occurrence_count, "
                 "suspicion_relevance, first_seen_at, last_seen_at, computed_at) "
-                "VALUES " + ", ".join(values),
-                tuple(params),
+                "VALUES " + ", ".join(values)
             )
+            sql_params = tuple(params)
+            db.run_in_transaction(lambda _conn, cur: cur.execute(sql, sql_params))
             total_written += len(values)
 
     db.upsert_intelligence_snapshot(

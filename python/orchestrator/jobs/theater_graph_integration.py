@@ -169,7 +169,7 @@ def _flush_graph_data(
 ) -> int:
     rows_written = 0
 
-    with db.transaction() as (_, cursor):
+    with db.transaction_with_retry() as (_, cursor):
         cursor.execute("DELETE FROM theater_graph_participants WHERE theater_id = %s", (theater_id,))
         cursor.execute("DELETE FROM theater_graph_summary WHERE theater_id = %s", (theater_id,))
 

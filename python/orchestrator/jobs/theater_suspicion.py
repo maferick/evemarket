@@ -173,7 +173,7 @@ def run_theater_suspicion(
             scored_count = 0
 
             if not dry_run:
-                with db.transaction() as (_, cursor):
+                with db.transaction_with_retry() as (_, cursor):
                     for p in participants:
                         cid = int(p["character_id"])
                         aid = int(p.get("alliance_id") or 0)

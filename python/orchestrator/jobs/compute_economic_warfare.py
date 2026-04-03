@@ -372,7 +372,7 @@ def _write_families(db: Any, families: list[dict]) -> int:
     now_str = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
     rows_written = 0
 
-    with db.transaction() as (_, cursor):
+    with db.transaction_with_retry() as (_, cursor):
         for fam in families:
             hull = fam["hull_type_id"]
             fp = fam["fingerprint"]
@@ -434,7 +434,7 @@ def _write_scores(db: Any, scored: list[dict]) -> int:
         return 0
 
     rows_written = 0
-    with db.transaction() as (_, cursor):
+    with db.transaction_with_retry() as (_, cursor):
         for s in scored:
             cursor.execute(
                 """REPLACE INTO economic_warfare_scores
