@@ -2398,10 +2398,12 @@ function db_killmail_item_loss_window_summaries(array $typeIds, int $hours = 24 
             SUM(CASE WHEN bucket_start >= (UTC_TIMESTAMP() - INTERVAL 24 HOUR) THEN quantity_lost ELSE 0 END) AS quantity_24h,
             SUM(CASE WHEN bucket_start >= (UTC_TIMESTAMP() - INTERVAL 3 DAY) THEN quantity_lost ELSE 0 END) AS quantity_3d,
             SUM(CASE WHEN bucket_start >= (UTC_TIMESTAMP() - INTERVAL 7 DAY) THEN quantity_lost ELSE 0 END) AS quantity_7d,
+            SUM(CASE WHEN bucket_start >= (UTC_TIMESTAMP() - INTERVAL 14 DAY) THEN quantity_lost ELSE 0 END) AS quantity_14d,
             SUM(quantity_lost) AS quantity_window,
             SUM(CASE WHEN bucket_start >= (UTC_TIMESTAMP() - INTERVAL 24 HOUR) THEN killmail_count ELSE 0 END) AS losses_24h,
             SUM(CASE WHEN bucket_start >= (UTC_TIMESTAMP() - INTERVAL 3 DAY) THEN killmail_count ELSE 0 END) AS losses_3d,
             SUM(CASE WHEN bucket_start >= (UTC_TIMESTAMP() - INTERVAL 7 DAY) THEN killmail_count ELSE 0 END) AS losses_7d,
+            SUM(CASE WHEN bucket_start >= (UTC_TIMESTAMP() - INTERVAL 14 DAY) THEN killmail_count ELSE 0 END) AS losses_14d,
             SUM(killmail_count) AS losses_window,
             MAX(bucket_start) AS latest_loss_at
          FROM killmail_item_loss_1h

@@ -180,8 +180,33 @@ def _load_market_rows(db: SupplyCoreDb, limit: int = 600) -> list[dict[str, Any]
     )
 
 
-def _ranked_items(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _load_loss_summaries(db: SupplyCoreDb, type_ids: list[int]) -> dict[int, dict[str, Any]]:
+    """Load killmail item loss summaries across 1d/7d/14d/30d windows."""
+    if not type_ids:
+        return {}
+    placeholders = ",".join(["%s"] * len(type_ids))
+    rows = db.fetch_all(
+        f"""SELECT type_id,
+            SUM(CASE WHEN bucket_start >= (UTC_TIMESTAMP() - INTERVAL 24 HOUR) THEN quantity_lost ELSE 0 END) AS quantity_24h,
+            SUM(CASE WHEN bucket_start >= (UTC_TIMESTAMP() - INTERVAL 7 DAY) THEN quantity_lost ELSE 0 END) AS quantity_7d,
+            SUM(CASE WHEN bucket_start >= (UTC_TIMESTAMP() - INTERVAL 14 DAY) THEN quantity_lost ELSE 0 END) AS quantity_14d,
+            SUM(quantity_lost) AS quantity_30d,
+            SUM(CASE WHEN bucket_start >= (UTC_TIMESTAMP() - INTERVAL 7 DAY) THEN killmail_count ELSE 0 END) AS losses_7d,
+            SUM(CASE WHEN bucket_start >= (UTC_TIMESTAMP() - INTERVAL 14 DAY) THEN killmail_count ELSE 0 END) AS losses_14d
+         FROM killmail_item_loss_1h
+         WHERE bucket_start >= (UTC_TIMESTAMP() - INTERVAL 720 HOUR)
+           AND doctrine_fit_id IS NULL AND doctrine_group_id IS NULL
+           AND type_id IN ({placeholders})
+         GROUP BY type_id""",
+        tuple(type_ids),
+    )
+    return {int(r["type_id"]): r for r in rows if int(r.get("type_id") or 0) > 0}
+
+
+def _ranked_items(rows: list[dict[str, Any]], loss_by_type: dict[int, dict[str, Any]] | None = None) -> list[dict[str, Any]]:
     ranked: list[dict[str, Any]] = []
+    if loss_by_type is None:
+        loss_by_type = {}
     for row in rows:
         type_id = int(row.get("type_id") or 0)
         if type_id <= 0:
@@ -201,11 +226,41 @@ def _ranked_items(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         else:
             consumption_qty = 0
 
-        # Legacy economic fallback: 6% of hub volume.
-        economic_qty = max(1, int(to_decimal(row.get("reference_total_sell_volume")) * Decimal("0.06")))
-        economic_qty = min(500, economic_qty)
+        # Loss-history-based prediction: actual killmail losses across time windows.
+        loss_data = loss_by_type.get(type_id)
+        loss_qty_1d = max(0, int(loss_data["quantity_24h"] or 0)) if loss_data else 0
+        loss_qty_7d = max(0, int(loss_data["quantity_7d"] or 0)) if loss_data else 0
+        loss_qty_14d = max(0, int(loss_data["quantity_14d"] or 0)) if loss_data else 0
+        loss_qty_30d = max(0, int(loss_data["quantity_30d"] or 0)) if loss_data else 0
+        loss_events_7d = max(0, int(loss_data["losses_7d"] or 0)) if loss_data else 0
+        loss_events_14d = max(0, int(loss_data["losses_14d"] or 0)) if loss_data else 0
 
-        quantity = max(consumption_qty, economic_qty)
+        loss_rate_7d = loss_qty_7d / 7.0
+        loss_rate_14d = loss_qty_14d / 14.0
+        loss_rate_30d = loss_qty_30d / 30.0
+
+        if loss_events_7d >= 3:
+            best_loss_rate = loss_rate_7d
+            loss_rate_window = "7d"
+        elif loss_events_14d >= 3:
+            best_loss_rate = loss_rate_14d
+            loss_rate_window = "14d"
+        elif loss_qty_30d > 0:
+            best_loss_rate = loss_rate_30d
+            loss_rate_window = "30d"
+        else:
+            best_loss_rate = 0.0
+            loss_rate_window = None
+
+        loss_qty = 0
+        if best_loss_rate > 0.0:
+            loss_runway_demand = int(Decimal(str(best_loss_rate * runway_days)).to_integral_value(rounding=ROUND_HALF_UP))
+            loss_qty = max(0, loss_runway_demand - alliance_stock)
+
+        # Minimal seed floor: only when both loss and consumption data are absent.
+        economic_qty = max(0, min(50, max(0, 20 - alliance_stock))) if (loss_qty <= 0 and consumption_qty <= 0) else 0
+
+        quantity = max(consumption_qty, loss_qty, economic_qty)
         dependency_score = to_decimal(row.get("dependency_score"))
         doctrine_count = max(0, int(row.get("doctrine_count") or 0))
         dependency_fit_count = max(0, int(row.get("dependency_fit_count") or 0))
@@ -296,6 +351,13 @@ def _ranked_items(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "avg_daily_consumption": avg_daily if avg_daily > 0 else None,
                 "stock_days_remaining": float(stock_days_val) if stock_days_val is not None else None,
                 "consumption_recommended_quantity": consumption_qty,
+                "loss_recommended_quantity": loss_qty,
+                "loss_quantity_1d": loss_qty_1d,
+                "loss_quantity_7d": loss_qty_7d,
+                "loss_quantity_14d": loss_qty_14d,
+                "loss_quantity_30d": loss_qty_30d,
+                "loss_daily_rate": round(best_loss_rate, 2) if best_loss_rate > 0 else None,
+                "loss_rate_window": loss_rate_window,
                 "runway_days_target": runway_days,
                 "reason_text": graph_reason,
                 "reason_theme": "Graph dependency priority" if dependency_score > DECIMAL_ZERO else "Market-only priority",
@@ -383,7 +445,15 @@ def run_compute_buy_all(db: SupplyCoreDb, requests: list[dict[str, Any]] | None 
         allowed_type_ids,
         type_id_getter=lambda row: int(row.get("type_id") or 0),
     )
-    items = _ranked_items(scoped_market_rows)
+
+    # Load loss history for all candidate type IDs.
+    candidate_type_ids = [int(r.get("type_id") or 0) for r in scoped_market_rows if int(r.get("type_id") or 0) > 0]
+    try:
+        loss_by_type = _load_loss_summaries(db, candidate_type_ids)
+    except Exception:
+        loss_by_type = {}
+
+    items = _ranked_items(scoped_market_rows, loss_by_type=loss_by_type)
     created = 0
     rows_written = 0
     rows_processed = len(scoped_market_rows)
