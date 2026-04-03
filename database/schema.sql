@@ -3017,7 +3017,7 @@ INSERT INTO app_settings (setting_key, setting_value) VALUES
     ('esi_client_id', '961316f6177d4a0283fef0bd72fbd224'),
     ('esi_client_secret', 'eat_iasVmhqov40Ud568JVAyctOErv5E6AgV_3S6eiZ'),
     ('esi_callback_url', 'http://192.168.178.47/callback'),
-    ('esi_scopes', 'publicData esi-location.read_location.v1 esi-search.search_structures.v1 esi-universe.read_structures.v1 esi-markets.structure_markets.v1'),
+    ('esi_scopes', 'publicData esi-location.read_location.v1 esi-search.search_structures.v1 esi-universe.read_structures.v1 esi-markets.structure_markets.v1 esi-corporations.read_standings.v1 esi-corporations.read_contacts.v1'),
     ('ollama_enabled', '0'),
     ('ollama_url', 'http://localhost:11434/api'),
     ('ollama_model', 'qwen2.5:1.5b-instruct'),
