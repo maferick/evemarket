@@ -70,7 +70,16 @@ function supplycore_request_perf_init(): void
             'repeated_patterns' => $repeatedPatterns,
         ];
 
-        error_log(json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE));
+        $logFile = dirname(__DIR__) . '/logs/request_perf.log';
+        $logDir = dirname($logFile);
+        if (!is_dir($logDir)) {
+            @mkdir($logDir, 0755, true);
+        }
+        @file_put_contents(
+            $logFile,
+            date('Y-m-d H:i:s') . ' ' . json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE) . "\n",
+            FILE_APPEND | LOCK_EX
+        );
     });
 }
 

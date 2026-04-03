@@ -11,3 +11,4 @@ __pycache__/
 .venv*/
 public-proxy/.config.vault
 public-proxy/config.php
+/logs/
