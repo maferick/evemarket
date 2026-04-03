@@ -34,6 +34,21 @@
     $gridCols = $isThreeColumn ? 'md:grid-cols-3' : 'md:grid-cols-2';
 ?>
 <section class="surface-primary mt-4">
+    <!-- View Toggle -->
+    <div class="flex items-center justify-end mb-3">
+        <div class="inline-flex rounded-md border border-slate-700 overflow-hidden text-xs" role="group">
+            <button type="button" id="sc-br-view-summary" class="px-3 py-1.5 font-medium transition-colors bg-slate-700 text-slate-100" onclick="window._scBrToggle('summary')">
+                Summary
+            </button>
+            <button type="button" id="sc-br-view-classic" class="px-3 py-1.5 font-medium transition-colors bg-slate-800/60 text-slate-400 hover:text-slate-200" onclick="window._scBrToggle('classic')">
+                Classic
+            </button>
+        </div>
+    </div>
+
+    <!-- Summary view (default) -->
+    <div id="sc-br-summary">
+
     <!-- Efficiency Bar -->
     <div class="flex items-center gap-3 mb-3">
         <span class="text-xs font-semibold text-blue-300"><?= number_format($ourEfficiency * 100, 1) ?>%</span>
@@ -141,6 +156,13 @@
         <?php endif; ?>
     </div>
 
+    </div><!-- /sc-br-summary -->
+
+    <!-- Classic view (br.evetools.org-style) -->
+    <div id="sc-br-classic" style="display: none;">
+        <?php include __DIR__ . '/_battle_report_classic.php'; ?>
+    </div>
+
     <?php if ($dataQualityNotes !== []): ?>
         <div class="mt-3 pt-2 border-t border-white/5">
             <?php foreach ($dataQualityNotes as $note): ?>
@@ -149,4 +171,33 @@
         </div>
     <?php endif; ?>
 </section>
+
+<script>
+(function() {
+    var KEY = 'sc_br_view';
+    window._scBrToggle = function(view) {
+        var summary = document.getElementById('sc-br-summary');
+        var classic = document.getElementById('sc-br-classic');
+        var btnSummary = document.getElementById('sc-br-view-summary');
+        var btnClassic = document.getElementById('sc-br-view-classic');
+        if (!summary || !classic) return;
+        if (view === 'classic') {
+            summary.style.display = 'none';
+            classic.style.display = '';
+            btnSummary.className = 'px-3 py-1.5 font-medium transition-colors bg-slate-800/60 text-slate-400 hover:text-slate-200';
+            btnClassic.className = 'px-3 py-1.5 font-medium transition-colors bg-slate-700 text-slate-100';
+        } else {
+            summary.style.display = '';
+            classic.style.display = 'none';
+            btnSummary.className = 'px-3 py-1.5 font-medium transition-colors bg-slate-700 text-slate-100';
+            btnClassic.className = 'px-3 py-1.5 font-medium transition-colors bg-slate-800/60 text-slate-400 hover:text-slate-200';
+        }
+        try { localStorage.setItem(KEY, view); } catch(e) {}
+    };
+    try {
+        var saved = localStorage.getItem(KEY);
+        if (saved === 'classic') window._scBrToggle('classic');
+    } catch(e) {}
+})();
+</script>
 <?php endif; ?>

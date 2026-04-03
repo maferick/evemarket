@@ -36,6 +36,8 @@ $sideLabels         = (array) ($data['side_labels'] ?? ['friendly' => 'Friendlie
 $sideAlliancesByPilots = (array) ($data['side_alliances_by_pilots'] ?? []);
 $sidePanels         = (array) ($data['side_panels'] ?? []);
 $dataQualityNotes   = (array) ($data['data_quality_notes'] ?? []);
+$killmails          = (array) ($data['killmails'] ?? []);
+$mapSvg             = $data['map_svg'] ?? null;
 $durationLabel      = (string) ($data['duration_label'] ?? '0m');
 $totalIskDestroyed  = (float) ($data['total_isk_destroyed'] ?? 0);
 $theaterStartActual = (string) ($data['theater_start_actual'] ?? '');
@@ -87,11 +89,13 @@ $systemName = proxy_e((string) ($theater['primary_system_name'] ?? 'Unknown'));
     <main class="proxy-main">
 
         <?php include __DIR__ . '/partials/_header.php'; ?>
+        <?php include __DIR__ . '/partials/_location_map.php'; ?>
         <?php include __DIR__ . '/partials/_battle_report.php'; ?>
         <?php include __DIR__ . '/partials/_battles.php'; ?>
         <?php include __DIR__ . '/partials/_timeline.php'; ?>
         <?php include __DIR__ . '/partials/_alliance_summary.php'; ?>
         <?php include __DIR__ . '/partials/_participants.php'; ?>
+        <?php include __DIR__ . '/partials/_killmails.php'; ?>
 
     </main>
 </div>
