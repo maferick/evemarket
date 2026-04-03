@@ -18807,44 +18807,6 @@ function killmail_max_sequences_per_run(): int
     return max(1, min(5000, (int) get_setting('killmail_ingestion_max_sequences_per_run', '5000')));
 }
 
-function killmail_parse_entity_lines(string $text): array
-{
-    $rows = [];
-    foreach (preg_split('/\R+/', $text) as $line) {
-        $line = trim((string) $line);
-        if ($line === '') {
-            continue;
-        }
-
-        if (preg_match('/^([0-9]{1,20})(?:\s*[|,:-]\s*(.+))?$/', $line, $m) !== 1) {
-            continue;
-        }
-
-        $rows[] = [
-            'id' => (int) $m[1],
-            'label' => isset($m[2]) ? trim($m[2]) : null,
-        ];
-    }
-
-    return $rows;
-}
-
-function killmail_parse_entity_name_lines(string $text): array
-{
-    $names = [];
-
-    foreach (preg_split('/\R+/', $text) as $line) {
-        $name = trim((string) $line);
-        if ($name === '') {
-            continue;
-        }
-
-        $names[(string) $name] = (string) $name;
-    }
-
-    return array_values($names);
-}
-
 function killmail_universe_ids_lookup(array $names): array
 {
     $queryNames = array_values(array_filter(array_map(static fn (mixed $name): string => trim((string) $name), $names), static fn (string $name): bool => $name !== ''));
@@ -18880,177 +18842,8 @@ function killmail_universe_ids_lookup(array $names): array
     return $results;
 }
 
-function killmail_resolve_tracked_entities(string $allianceText, string $corporationText): array
-{
-    $allianceLines = killmail_parse_entity_name_lines($allianceText);
-    $corporationLines = killmail_parse_entity_name_lines($corporationText);
-    $parsedAllianceRows = killmail_parse_entity_lines($allianceText);
-    $parsedCorporationRows = killmail_parse_entity_lines($corporationText);
-
-    $allianceById = [];
-    $corporationById = [];
-    $lookupNames = [];
-
-    foreach ($parsedAllianceRows as $row) {
-        $id = (int) ($row['id'] ?? 0);
-        if ($id <= 0) {
-            continue;
-        }
-
-        $allianceById[$id] = [
-            'id' => $id,
-            'label' => isset($row['label']) && trim((string) $row['label']) !== '' ? trim((string) $row['label']) : null,
-        ];
-    }
-
-    foreach ($parsedCorporationRows as $row) {
-        $id = (int) ($row['id'] ?? 0);
-        if ($id <= 0) {
-            continue;
-        }
-
-        $corporationById[$id] = [
-            'id' => $id,
-            'label' => isset($row['label']) && trim((string) $row['label']) !== '' ? trim((string) $row['label']) : null,
-        ];
-    }
-
-    foreach ($allianceById as $id => $row) {
-        if (($row['label'] ?? null) !== null) {
-            continue;
-        }
-
-        foreach (killmail_public_entity_lookup_by_id($id, 'alliance') as $resolved) {
-            $name = trim((string) ($resolved['name'] ?? ''));
-            if ($name === '') {
-                continue;
-            }
-
-            $allianceById[$id]['label'] = $name;
-            break;
-        }
-    }
-
-    foreach ($corporationById as $id => $row) {
-        if (($row['label'] ?? null) !== null) {
-            continue;
-        }
-
-        foreach (killmail_public_entity_lookup_by_id($id, 'corporation') as $resolved) {
-            $name = trim((string) ($resolved['name'] ?? ''));
-            if ($name === '') {
-                continue;
-            }
-
-            $corporationById[$id]['label'] = $name;
-            break;
-        }
-    }
-
-    foreach ($allianceLines as $line) {
-        if (preg_match('/^[1-9][0-9]{1,20}(?:\s*[|,:-]\s*.+)?$/', $line) === 1) {
-            continue;
-        }
-
-        $lookupNames[$line] = true;
-    }
-
-    foreach ($corporationLines as $line) {
-        if (preg_match('/^[1-9][0-9]{1,20}(?:\s*[|,:-]\s*.+)?$/', $line) === 1) {
-            continue;
-        }
-
-        $lookupNames[$line] = true;
-    }
-
-    $unresolved = [];
-
-    if ($lookupNames !== []) {
-        try {
-            $resolved = killmail_universe_ids_lookup(array_keys($lookupNames));
-
-            foreach ((array) ($resolved['alliances'] ?? []) as $row) {
-                $name = trim((string) ($row['name'] ?? ''));
-                $id = (int) ($row['id'] ?? 0);
-                if ($id <= 0 || $name === '' || !in_array($name, $allianceLines, true)) {
-                    continue;
-                }
-
-                $allianceById[$id] = ['id' => $id, 'label' => $name];
-            }
-
-            foreach ((array) ($resolved['corporations'] ?? []) as $row) {
-                $name = trim((string) ($row['name'] ?? ''));
-                $id = (int) ($row['id'] ?? 0);
-                if ($id <= 0 || $name === '' || !in_array($name, $corporationLines, true)) {
-                    continue;
-                }
-
-                $corporationById[$id] = ['id' => $id, 'label' => $name];
-            }
-        } catch (Throwable $exception) {
-            $unresolved[] = 'Unable to resolve names from ESI right now; use the lookup field or numeric IDs. ' . $exception->getMessage();
-        }
-    }
-
-    foreach ($allianceLines as $line) {
-        if (preg_match('/^[1-9][0-9]{1,20}(?:\s*[|,:-]\s*.+)?$/', $line) === 1) {
-            continue;
-        }
-
-        $found = false;
-        foreach ($allianceById as $row) {
-            if (($row['label'] ?? '') === $line) {
-                $found = true;
-                break;
-            }
-        }
-
-        if (!$found) {
-            $unresolved[] = 'Alliance not found: ' . $line;
-        }
-    }
-
-    foreach ($corporationLines as $line) {
-        if (preg_match('/^[1-9][0-9]{1,20}(?:\s*[|,:-]\s*.+)?$/', $line) === 1) {
-            continue;
-        }
-
-        $found = false;
-        foreach ($corporationById as $row) {
-            if (($row['label'] ?? '') === $line) {
-                $found = true;
-                break;
-            }
-        }
-
-        if (!$found) {
-            $unresolved[] = 'Corporation not found: ' . $line;
-        }
-    }
-
-    ksort($allianceById);
-    ksort($corporationById);
-
-    return [
-        'alliances' => array_values($allianceById),
-        'corporations' => array_values($corporationById),
-        'unresolved' => $unresolved,
-    ];
-}
-
 function killmail_settings_from_request(array $request): array
 {
-    $resolvedEntities = killmail_resolve_tracked_entities(
-        (string) ($request['tracked_alliance_names'] ?? ''),
-        (string) ($request['tracked_corporation_names'] ?? '')
-    );
-
-    $resolvedOpponents = killmail_resolve_tracked_entities(
-        (string) ($request['opponent_alliance_names'] ?? ''),
-        (string) ($request['opponent_corporation_names'] ?? '')
-    );
-
     // Note: killmail_ingestion_enabled is NOT included here — it is controlled
     // exclusively from the Automation Control section to avoid accidentally
     // disabling ingestion when saving killmail intelligence settings.
@@ -19062,32 +18855,12 @@ function killmail_settings_from_request(array $request): array
             'friendly_coalition_name' => trim(mb_substr(trim((string) ($request['friendly_coalition_name'] ?? '')), 0, 100)),
             'opponent_coalition_name' => trim(mb_substr(trim((string) ($request['opponent_coalition_name'] ?? '')), 0, 100)),
         ],
-        'alliances' => array_map(
-            static fn (array $row): array => ['alliance_id' => (int) ($row['id'] ?? 0), 'label' => $row['label'] ?? null],
-            (array) ($resolvedEntities['alliances'] ?? [])
-        ),
-        'corporations' => array_map(
-            static fn (array $row): array => ['corporation_id' => (int) ($row['id'] ?? 0), 'label' => $row['label'] ?? null],
-            (array) ($resolvedEntities['corporations'] ?? [])
-        ),
-        'opponent_alliances' => array_map(
-            static fn (array $row): array => ['alliance_id' => (int) ($row['id'] ?? 0), 'label' => $row['label'] ?? null],
-            (array) ($resolvedOpponents['alliances'] ?? [])
-        ),
-        'opponent_corporations' => array_map(
-            static fn (array $row): array => ['corporation_id' => (int) ($row['id'] ?? 0), 'label' => $row['label'] ?? null],
-            (array) ($resolvedOpponents['corporations'] ?? [])
-        ),
         'manual_contacts' => killmail_parse_manual_contacts(
             (string) ($request['manual_friendly_alliance_contacts'] ?? ''),
             (string) ($request['manual_friendly_corporation_contacts'] ?? ''),
             (string) ($request['manual_hostile_alliance_contacts'] ?? ''),
             (string) ($request['manual_hostile_corporation_contacts'] ?? '')
         ),
-        'unresolved' => array_values(array_merge(
-            (array) ($resolvedEntities['unresolved'] ?? []),
-            (array) ($resolvedOpponents['unresolved'] ?? [])
-        )),
     ];
 }
 
@@ -19125,15 +18898,7 @@ function save_killmail_intelligence_settings(array $request): array
     $saved = false;
 
     try {
-        // Each function manages its own transaction internally.
-        // An outer db_transaction() is not possible here because the tracked-entity
-        // replace functions use CREATE TABLE IF NOT EXISTS as a safety net, and MySQL
-        // implicitly commits on any DDL, which destroys the outer transaction.
         db_app_settings_upsert_many((array) ($payload['settings'] ?? []));
-        db_killmail_tracked_alliances_replace((array) ($payload['alliances'] ?? []));
-        db_killmail_tracked_corporations_replace((array) ($payload['corporations'] ?? []));
-        db_killmail_opponent_alliances_replace((array) ($payload['opponent_alliances'] ?? []));
-        db_killmail_opponent_corporations_replace((array) ($payload['opponent_corporations'] ?? []));
         db_corp_contacts_manual_replace((array) ($payload['manual_contacts'] ?? []));
 
         $reloadedSettings = get_settings(array_keys((array) ($payload['settings'] ?? [])));
@@ -19143,29 +18908,6 @@ function save_killmail_intelligence_settings(array $request): array
             }
         }
 
-        $reloadedAllianceIds = array_values(array_map(static fn (array $row): int => (int) ($row['alliance_id'] ?? 0), db_killmail_tracked_alliances_active()));
-        $reloadedCorporationIds = array_values(array_map(static fn (array $row): int => (int) ($row['corporation_id'] ?? 0), db_killmail_tracked_corporations_active()));
-        $expectedAllianceIds = array_values(array_map(static fn (array $row): int => (int) ($row['alliance_id'] ?? 0), (array) ($payload['alliances'] ?? [])));
-        $expectedCorporationIds = array_values(array_map(static fn (array $row): int => (int) ($row['corporation_id'] ?? 0), (array) ($payload['corporations'] ?? [])));
-        sort($reloadedAllianceIds);
-        sort($reloadedCorporationIds);
-        sort($expectedAllianceIds);
-        sort($expectedCorporationIds);
-        if ($reloadedAllianceIds !== $expectedAllianceIds || $reloadedCorporationIds !== $expectedCorporationIds) {
-            throw new RuntimeException('Killmail tracked entity readback mismatch after save.');
-        }
-
-        $reloadedOpponentAllianceIds = array_values(array_map(static fn (array $row): int => (int) ($row['alliance_id'] ?? 0), db_killmail_opponent_alliances_active()));
-        $reloadedOpponentCorporationIds = array_values(array_map(static fn (array $row): int => (int) ($row['corporation_id'] ?? 0), db_killmail_opponent_corporations_active()));
-        $expectedOpponentAllianceIds = array_values(array_map(static fn (array $row): int => (int) ($row['alliance_id'] ?? 0), (array) ($payload['opponent_alliances'] ?? [])));
-        $expectedOpponentCorporationIds = array_values(array_map(static fn (array $row): int => (int) ($row['corporation_id'] ?? 0), (array) ($payload['opponent_corporations'] ?? [])));
-        sort($reloadedOpponentAllianceIds);
-        sort($reloadedOpponentCorporationIds);
-        sort($expectedOpponentAllianceIds);
-        sort($expectedOpponentCorporationIds);
-        if ($reloadedOpponentAllianceIds !== $expectedOpponentAllianceIds || $reloadedOpponentCorporationIds !== $expectedOpponentCorporationIds) {
-            throw new RuntimeException('Killmail opponent entity readback mismatch after save.');
-        }
         $saved = true;
     } catch (Throwable $e) {
         error_log('[killmail-settings] Save failed: ' . $e->getMessage());
@@ -19179,11 +18921,6 @@ function save_killmail_intelligence_settings(array $request): array
     return [
         'ok' => $saved,
         'settings' => (array) ($payload['settings'] ?? []),
-        'alliances' => (array) ($payload['alliances'] ?? []),
-        'corporations' => (array) ($payload['corporations'] ?? []),
-        'opponent_alliances' => (array) ($payload['opponent_alliances'] ?? []),
-        'opponent_corporations' => (array) ($payload['opponent_corporations'] ?? []),
-        'unresolved' => array_slice((array) ($payload['unresolved'] ?? []), 0, 8),
     ];
 }
 

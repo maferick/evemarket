@@ -395,36 +395,15 @@ if ($viewSnapshot !== null && !$pendingLock) {
     }
     $resolvedEntities = killmail_entity_resolve_batch($entityRequests, false);
 
-    // ── Classify alliances/corporations from user settings (friendly/opponent/third_party) ──
-    $trackedAlliances = db_killmail_tracked_alliances_active();
-    $trackedAllianceIds = array_map('intval', array_column($trackedAlliances, 'alliance_id'));
-    $trackedAllianceIds = array_values(array_unique($trackedAllianceIds));
-
-    $opponentAlliances = db_killmail_opponent_alliances_active();
-    $opponentAllianceIds = array_map('intval', array_column($opponentAlliances, 'alliance_id'));
-    $opponentAllianceIds = array_values(array_unique($opponentAllianceIds));
-
-    $trackedCorporations = db_killmail_tracked_corporations_active();
-    $trackedCorporationIds = array_map('intval', array_column($trackedCorporations, 'corporation_id'));
-    $trackedCorporationIds = array_values(array_unique($trackedCorporationIds));
-
-    $opponentCorporations = db_killmail_opponent_corporations_active();
-    $opponentCorporationIds = array_map('intval', array_column($opponentCorporations, 'corporation_id'));
-    $opponentCorporationIds = array_values(array_unique($opponentCorporationIds));
-
-    // Load in-game corp contacts (player diplomatic standings from ESI).
-    // Positive standing = blue (friendly), negative = red (hostile).
-    $corpContacts = db_corp_contacts_by_standing();
-    $contactFriendlyAllianceIds = array_values(array_unique(array_map('intval', $corpContacts['friendly_alliance_ids'] ?? [])));
-    $contactFriendlyCorpIds = array_values(array_unique(array_map('intval', $corpContacts['friendly_corporation_ids'] ?? [])));
-    $contactHostileAllianceIds = array_values(array_unique(array_map('intval', $corpContacts['hostile_alliance_ids'] ?? [])));
-    $contactHostileCorpIds = array_values(array_unique(array_map('intval', $corpContacts['hostile_corporation_ids'] ?? [])));
+    // ── Classify alliances/corporations from ESI contacts + manual additions ──
+    $trackedAllianceIds = array_values(array_unique(array_map('intval', array_column(db_killmail_tracked_alliances_active(), 'alliance_id'))));
+    $opponentAllianceIds = array_values(array_unique(array_map('intval', array_column(db_killmail_opponent_alliances_active(), 'alliance_id'))));
+    $trackedCorporationIds = array_values(array_unique(array_map('intval', array_column(db_killmail_tracked_corporations_active(), 'corporation_id'))));
+    $opponentCorporationIds = array_values(array_unique(array_map('intval', array_column(db_killmail_opponent_corporations_active(), 'corporation_id'))));
 
     $classifyAlliance = static function (int $allianceId, int $corporationId = 0) use (
-        $trackedAllianceIds, $opponentAllianceIds, $trackedCorporationIds, $opponentCorporationIds,
-        $contactFriendlyAllianceIds, $contactFriendlyCorpIds, $contactHostileAllianceIds, $contactHostileCorpIds
+        $trackedAllianceIds, $opponentAllianceIds, $trackedCorporationIds, $opponentCorporationIds
     ): string {
-        // 1. Explicit user configuration always takes priority
         if ($allianceId > 0 && in_array($allianceId, $trackedAllianceIds, true)) {
             return 'friendly';
         }
@@ -435,19 +414,6 @@ if ($viewSnapshot !== null && !$pendingLock) {
             return 'opponent';
         }
         if ($corporationId > 0 && in_array($corporationId, $opponentCorporationIds, true)) {
-            return 'opponent';
-        }
-        // 2. In-game corp contacts (ESI diplomatic standings)
-        if ($allianceId > 0 && in_array($allianceId, $contactFriendlyAllianceIds, true)) {
-            return 'friendly';
-        }
-        if ($corporationId > 0 && in_array($corporationId, $contactFriendlyCorpIds, true)) {
-            return 'friendly';
-        }
-        if ($allianceId > 0 && in_array($allianceId, $contactHostileAllianceIds, true)) {
-            return 'opponent';
-        }
-        if ($corporationId > 0 && in_array($corporationId, $contactHostileCorpIds, true)) {
             return 'opponent';
         }
         return 'third_party';

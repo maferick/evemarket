@@ -548,9 +548,9 @@ def _discover_orgs_from_history(
     for cid in corp_ids:
         affected = db.execute(
             """
-            INSERT IGNORE INTO killmail_opponent_corporations
-                (corporation_id, label, is_active, source)
-            VALUES (%s, NULL, 1, 'discovered')
+            INSERT INTO corp_contacts (corporation_id, contact_id, contact_type, standing, source)
+            VALUES (0, %s, 'corporation', -10.0, 'manual')
+            ON DUPLICATE KEY UPDATE standing = standing
             """,
             (cid,),
         )
@@ -560,9 +560,9 @@ def _discover_orgs_from_history(
     for aid in alliance_ids:
         affected = db.execute(
             """
-            INSERT IGNORE INTO killmail_opponent_alliances
-                (alliance_id, label, is_active, source)
-            VALUES (%s, NULL, 1, 'discovered')
+            INSERT INTO corp_contacts (corporation_id, contact_id, contact_type, standing, source)
+            VALUES (0, %s, 'alliance', -10.0, 'manual')
+            ON DUPLICATE KEY UPDATE standing = standing
             """,
             (aid,),
         )
@@ -626,7 +626,7 @@ def run_evewho_alliance_member_sync(
             log.info("Phase 1: Org-level sweep")
 
             alliance_rows = db.fetch_all(
-                "SELECT alliance_id, label FROM killmail_opponent_alliances WHERE is_active = 1 ORDER BY alliance_id ASC"
+                "SELECT contact_id AS alliance_id, NULL AS label FROM corp_contacts WHERE contact_type = 'alliance' AND standing < 0 ORDER BY contact_id ASC"
             )
             alliance_ids = [int(r["alliance_id"]) for r in alliance_rows if int(r.get("alliance_id") or 0) > 0]
             log.info("Found %d opponent alliances to sweep", len(alliance_ids))
@@ -729,7 +729,7 @@ def run_evewho_alliance_member_sync(
             # Also sweep standalone opponent corps not tied to any alliance
             if phase1_done and api_calls < api_budget:
                 standalone_rows = db.fetch_all(
-                    "SELECT corporation_id, label FROM killmail_opponent_corporations WHERE is_active = 1 ORDER BY corporation_id ASC"
+                    "SELECT contact_id AS corporation_id, NULL AS label FROM corp_contacts WHERE contact_type = 'corporation' AND standing < 0 ORDER BY contact_id ASC"
                 )
                 for row in standalone_rows:
                     if api_calls >= api_budget:

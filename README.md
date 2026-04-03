@@ -800,8 +800,7 @@ SupplyCore now includes a first-pass killmail intelligence ingestion foundation 
   - `killmail_events`
   - `killmail_attackers`
   - `killmail_items`
-  - `killmail_tracked_alliances`
-  - `killmail_tracked_corporations`
+  - `corp_contacts` (ESI + manual standings — replaces old tracked alliance/corporation tables)
   - `entity_metadata_cache`
 - Resolution model:
   - prefer local reference tables for item types, solar systems, and regions

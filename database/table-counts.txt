@@ -25,8 +25,8 @@ killmail_hull_loss_1d: 929
 killmail_items: 68851
 killmail_item_loss_1d: 21507
 killmail_item_loss_1h: 38764
-killmail_tracked_alliances: 3
-killmail_tracked_corporations: 0
+## killmail_tracked_alliances: removed (now corp_contacts)
+## killmail_tracked_corporations: removed (now corp_contacts)
 market_deal_alerts_current: 0
 market_deal_alert_dismissals: 0
 market_history_daily: 65653

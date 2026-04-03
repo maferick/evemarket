@@ -388,9 +388,9 @@ def run_tracked_alliance_member_sync(
         resume_char_offset = int(checkpoint.get("char_offset") or 0)
         total_written = int(checkpoint.get("written") or 0)
 
-        # Fetch tracked alliances
+        # Fetch friendly alliances from ESI contacts (positive standing)
         alliance_rows = db.fetch_all(
-            "SELECT alliance_id, label FROM killmail_tracked_alliances WHERE is_active = 1 ORDER BY alliance_id ASC"
+            "SELECT contact_id AS alliance_id FROM corp_contacts WHERE contact_type = 'alliance' AND standing > 0 ORDER BY contact_id ASC"
         )
         alliance_ids = [int(r["alliance_id"]) for r in alliance_rows if int(r.get("alliance_id") or 0) > 0]
         log.info("Found %d tracked alliances", len(alliance_ids))

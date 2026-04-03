@@ -1568,23 +1568,8 @@ CREATE TABLE IF NOT EXISTS killmail_items (
     KEY idx_item_role (item_role)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
-CREATE TABLE IF NOT EXISTS killmail_tracked_alliances (
-    alliance_id BIGINT UNSIGNED PRIMARY KEY,
-    label VARCHAR(190) DEFAULT NULL,
-    is_active TINYINT(1) NOT NULL DEFAULT 1,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    KEY idx_active (is_active)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-
-CREATE TABLE IF NOT EXISTS killmail_tracked_corporations (
-    corporation_id BIGINT UNSIGNED PRIMARY KEY,
-    label VARCHAR(190) DEFAULT NULL,
-    is_active TINYINT(1) NOT NULL DEFAULT 1,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    KEY idx_active (is_active)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+-- NOTE: killmail_tracked_alliances and killmail_tracked_corporations tables removed.
+-- Tracked/opponent entities are now managed via corp_contacts (standing > 0 = friendly, standing < 0 = hostile).
 
 CREATE TABLE IF NOT EXISTS battle_rollups (
     battle_id CHAR(64) PRIMARY KEY,
