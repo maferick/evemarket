@@ -542,12 +542,12 @@ for svc in "${RESTART_SERVICES[@]}"; do
 done
 
 # ------- Health verification -------
+UNHEALTHY_SERVICES=()
 if [[ ${HEALTH_CHECK} -eq 1 && ${#RESTART_SERVICES[@]} -gt 0 && ${DRY_RUN} -eq 0 ]]; then
   log "Verifying service health (timeout: ${HEALTH_CHECK_TIMEOUT}s per service)"
   # Short initial settle time
   sleep 2
 
-  UNHEALTHY_SERVICES=()
   for svc in "${RESTART_SERVICES[@]}"; do
     # Skip already-failed services
     skip=false
@@ -585,7 +585,7 @@ else
   done
 fi
 
-TOTAL_FAILED=$(( ${#FAILED_SERVICES[@]} + ${#UNHEALTHY_SERVICES[@]:-0} ))
+TOTAL_FAILED=$(( ${#FAILED_SERVICES[@]} + ${#UNHEALTHY_SERVICES[@]} ))
 if [[ ${TOTAL_FAILED} -gt 0 ]]; then
   log_warn "Completed update-and-restart with ${TOTAL_FAILED} issue(s)"
   exit 1
