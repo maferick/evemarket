@@ -212,6 +212,11 @@ if ($viewSnapshot !== null) {
     $sidePanels['opponent']['isk_killed'] = $friendlyLost;
     $sidePanels['third_party']['isk_killed'] = 0.0;
 
+    // Ship kills derived from opposing side's losses (same principle as ISK).
+    $sidePanels['friendly']['kills'] = $sidePanels['opponent']['losses'];
+    $sidePanels['opponent']['kills'] = $sidePanels['friendly']['losses'];
+    $sidePanels['third_party']['kills'] = 0;
+
     // efficiency = isk_killed / (isk_killed + isk_lost)  — two-side, symmetric
     $sidePanels['friendly']['efficiency'] = $twoSideTotal > 0
         ? $opponentLost / $twoSideTotal : 0.0;
