@@ -3,10 +3,10 @@
 Fetches two ESI endpoints for each tracked corporation:
 
 1. ``/corporations/{id}/standings`` — NPC standings (agents, NPC corps, factions).
-   Scope: ``esi-characters.read_standings.v1``
+   Scope: ``esi-corporations.read_standings.v1``
 
 2. ``/corporations/{id}/contacts/`` — Player contacts (characters, corps, alliances).
-   Scope: ``esi-characters.write_contacts.v1``
+   Scope: ``esi-corporations.read_contacts.v1``
 
 The contacts data is the primary source for determining which player alliances
 and corporations are friendly or hostile from the in-game diplomatic perspective.
@@ -257,7 +257,7 @@ def _fetch_contacts(gateway, corp_id: int, access_token: str) -> list[dict[str, 
         if resp.status_code == 403:
             log.warning(
                 "ESI contacts for corp %d returned 403 — missing scope "
-                "esi-characters.write_contacts.v1? Re-authenticate with updated scopes.",
+                "esi-corporations.read_contacts.v1? Re-authenticate with updated scopes.",
                 corp_id,
             )
             break

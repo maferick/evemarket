@@ -14792,9 +14792,9 @@ function esi_default_scopes(): array
         'esi-location.read_location.v1',
         'esi-search.search_structures.v1',
         'esi-universe.read_structures.v1',
-        'esi-characters.write_contacts.v1',
         'esi-markets.structure_markets.v1',
-        'esi-characters.read_standings.v1',
+        'esi-corporations.read_standings.v1',
+        'esi-corporations.read_contacts.v1',
     ];
 }
 
@@ -14805,8 +14805,8 @@ function esi_default_scopes(): array
 function esi_required_corp_standings_scopes(): array
 {
     return [
-        'esi-characters.read_standings.v1',
-        'esi-characters.write_contacts.v1',
+        'esi-corporations.read_standings.v1',
+        'esi-corporations.read_contacts.v1',
     ];
 }
 
