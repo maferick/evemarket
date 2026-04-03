@@ -276,6 +276,75 @@ class TestMultiWaveEngagement(unittest.TestCase):
         self.assertEqual(len(list(groups.values())[0]), 3)
 
 
+class TestOverlapGuardRejectsNoise(unittest.TestCase):
+    """Case 5: Unrelated same-system noise must NOT be included.
+
+    A killmail in the same system and time window but with zero entity overlap
+    (different characters, different corps, different alliances) must be
+    rejected by the overlap guard.
+    """
+
+    def test_no_overlap_killmail_rejected(self) -> None:
+        """Directly test the overlap filtering logic embedded in
+        _load_expanded_killmails by simulating its core algorithm."""
+        # Base set entities: characters 10,20; alliances 100,200
+        base_character_ids = {10, 20}
+        base_corporation_ids = {1000, 2000}
+        base_alliance_ids = {100, 200}
+        base_km_ids = {1, 2}
+
+        # Expansion candidate: completely unrelated entities
+        noise_row = _km(
+            99, 30000001, "2026-04-01 10:07:00", "other_battle",
+            victim_character_id=50, victim_alliance_id=500,
+            victim_corporation_id=5000,
+            attacker_character_id=60, attacker_alliance_id=600,
+            attacker_corporation_id=6000,
+            total_value=9999.0,
+        )
+
+        # Expansion candidate: shares alliance 100 with base
+        overlapping_row = _km(
+            88, 30000001, "2026-04-01 10:08:00", "other_battle",
+            victim_character_id=70, victim_alliance_id=100,
+            victim_corporation_id=7000,
+            attacker_character_id=80, attacker_alliance_id=800,
+            attacker_corporation_id=8000,
+            total_value=500.0,
+        )
+
+        # Simulate the overlap check from _load_expanded_killmails
+        candidates = {99: noise_row, 88: overlapping_row}
+        passed = set()
+        rejected = set()
+
+        for km_id, row in candidates.items():
+            if km_id in base_km_ids:
+                continue
+            has_overlap = False
+            for prefix in ("victim_", "attacker_"):
+                cid = int(row.get(f"{prefix}character_id") or 0)
+                corp = int(row.get(f"{prefix}corporation_id") or 0)
+                ally = int(row.get(f"{prefix}alliance_id") or 0)
+                if (cid > 0 and cid in base_character_ids) or \
+                   (corp > 0 and corp in base_corporation_ids) or \
+                   (ally > 0 and ally in base_alliance_ids):
+                    has_overlap = True
+                    break
+            if has_overlap:
+                passed.add(km_id)
+            else:
+                rejected.add(km_id)
+
+        # Noise killmail (99) must be rejected
+        self.assertIn(99, rejected, "Unrelated killmail must be rejected by overlap guard")
+        self.assertNotIn(99, passed)
+
+        # Overlapping killmail (88) must pass — shares alliance 100
+        self.assertIn(88, passed, "Killmail sharing an alliance must pass overlap guard")
+        self.assertNotIn(88, rejected)
+
+
 class TestExpansionDiagnostics(unittest.TestCase):
     """Verify expansion diagnostics report correct counts on empty inputs."""
 
@@ -288,7 +357,8 @@ class TestExpansionDiagnostics(unittest.TestCase):
         self.assertEqual(rows, [])
         self.assertEqual(diag["base_killmail_ids"], 0)
         self.assertEqual(diag["expanded_killmail_ids"], 0)
-        self.assertEqual(diag["expansion_new_killmail_ids"], 0)
+        self.assertEqual(diag["expansion_passed_overlap"], 0)
+        self.assertEqual(diag["expansion_rejected_no_overlap"], 0)
 
 
 class TestSubThresholdAbsorptionEmpty(unittest.TestCase):

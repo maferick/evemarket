@@ -188,35 +188,48 @@ def _load_expanded_killmails(
     Returns (killmails, diagnostics) where killmails includes:
     1. All killmails from the theater's constituent battles (base set)
     2. Additional killmails in the theater's systems within the expanded time
-       window that were NOT in the base battle set (expansion set)
-
-    This captures sub-threshold battles, boundary-split kills, third-party
-    opportunists, and cleanup kills that belong to the same engagement.
+       window that share at least one entity (character, corporation, or
+       alliance) with the base set — the overlap guard prevents pulling in
+       unrelated kills from busy systems.
 
     Diagnostics dict contains counts for auditing:
-    - base_killmail_ids: count from battle_id match
-    - expanded_killmail_ids: count from system+time expansion
-    - expansion_new_killmail_ids: IDs only in expansion (not in base)
+    - base_killmail_ids: unique killmails from battle_id match
+    - expanded_killmail_ids: unique killmails from system+time query
+    - expansion_passed_overlap: new killmails that passed the overlap check
+    - expansion_rejected_no_overlap: new killmails rejected (no entity match)
     """
     # Step 1: Load base killmails from theater battles
     base_rows = _load_killmails_for_battles(db, battle_ids)
 
-    # Collect unique killmail IDs from base set
+    # Collect unique killmail IDs and entity fingerprints from base set
     base_km_ids: set[int] = set()
+    base_character_ids: set[int] = set()
+    base_corporation_ids: set[int] = set()
+    base_alliance_ids: set[int] = set()
     for row in base_rows:
         km_id = int(row.get("killmail_id") or 0)
         if km_id > 0:
             base_km_ids.add(km_id)
+        for prefix in ("victim_", "attacker_"):
+            cid = int(row.get(f"{prefix}character_id") or 0)
+            corp = int(row.get(f"{prefix}corporation_id") or 0)
+            ally = int(row.get(f"{prefix}alliance_id") or 0)
+            if cid > 0:
+                base_character_ids.add(cid)
+            if corp > 0:
+                base_corporation_ids.add(corp)
+            if ally > 0:
+                base_alliance_ids.add(ally)
 
     # Step 2: Query for additional killmails in the same systems + expanded window
     if not system_ids or not time_start or not time_end:
         return base_rows, {
             "base_killmail_ids": len(base_km_ids),
             "expanded_killmail_ids": 0,
-            "expansion_new_killmail_ids": 0,
+            "expansion_passed_overlap": 0,
+            "expansion_rejected_no_overlap": 0,
         }
 
-    # Expand the time window by the margin on each side
     try:
         dt_start = datetime.strptime(time_start, "%Y-%m-%d %H:%M:%S").replace(tzinfo=UTC)
         dt_end = datetime.strptime(time_end, "%Y-%m-%d %H:%M:%S").replace(tzinfo=UTC)
@@ -224,7 +237,8 @@ def _load_expanded_killmails(
         return base_rows, {
             "base_killmail_ids": len(base_km_ids),
             "expanded_killmail_ids": 0,
-            "expansion_new_killmail_ids": 0,
+            "expansion_passed_overlap": 0,
+            "expansion_rejected_no_overlap": 0,
         }
 
     expanded_start = (dt_start - timedelta(seconds=margin_seconds)).strftime("%Y-%m-%d %H:%M:%S")
@@ -243,19 +257,52 @@ def _load_expanded_killmails(
         (*system_ids, expanded_start, expanded_end),
     )
 
-    # Collect expansion killmail IDs
+    # Step 3: Filter expansion rows — only include killmails that share at
+    # least one entity (character, corporation, or alliance) with the base set.
+    # This prevents contaminating the theater with unrelated noise in busy
+    # systems (e.g. staging systems, trade hubs).
     expansion_km_ids: set[int] = set()
+    new_km_ids_passed: set[int] = set()
+    new_km_ids_rejected: set[int] = set()
+
+    # First pass: determine which new killmail IDs pass the overlap check.
+    # A killmail passes if ANY of its rows (victim or attacker) share an entity.
+    new_candidate_ids: set[int] = set()
     for row in expansion_rows:
         km_id = int(row.get("killmail_id") or 0)
         if km_id > 0:
             expansion_km_ids.add(km_id)
+            if km_id not in base_km_ids:
+                new_candidate_ids.add(km_id)
 
-    # Merge: add only rows whose killmail_id is NOT already in the base set
-    new_km_ids = expansion_km_ids - base_km_ids
-    if new_km_ids:
+    # For each candidate, check entity overlap across all its rows
+    candidate_overlap: dict[int, bool] = {kid: False for kid in new_candidate_ids}
+    for row in expansion_rows:
+        km_id = int(row.get("killmail_id") or 0)
+        if km_id not in new_candidate_ids or candidate_overlap.get(km_id, False):
+            continue
+        # Check if any entity on this row matches the base set
+        for prefix in ("victim_", "attacker_"):
+            cid = int(row.get(f"{prefix}character_id") or 0)
+            corp = int(row.get(f"{prefix}corporation_id") or 0)
+            ally = int(row.get(f"{prefix}alliance_id") or 0)
+            if (cid > 0 and cid in base_character_ids) or \
+               (corp > 0 and corp in base_corporation_ids) or \
+               (ally > 0 and ally in base_alliance_ids):
+                candidate_overlap[km_id] = True
+                break
+
+    for km_id, passed in candidate_overlap.items():
+        if passed:
+            new_km_ids_passed.add(km_id)
+        else:
+            new_km_ids_rejected.add(km_id)
+
+    # Step 4: Merge passed rows into the base set
+    if new_km_ids_passed:
         for row in expansion_rows:
             km_id = int(row.get("killmail_id") or 0)
-            if km_id in new_km_ids:
+            if km_id in new_km_ids_passed:
                 base_rows.append(row)
 
     # Re-sort by time
@@ -264,7 +311,8 @@ def _load_expanded_killmails(
     diagnostics = {
         "base_killmail_ids": len(base_km_ids),
         "expanded_killmail_ids": len(expansion_km_ids),
-        "expansion_new_killmail_ids": len(new_km_ids),
+        "expansion_passed_overlap": len(new_km_ids_passed),
+        "expansion_rejected_no_overlap": len(new_km_ids_rejected),
     }
     return base_rows, diagnostics
 
@@ -1415,7 +1463,8 @@ def run_theater_analysis(
                 "system_count": len(system_ids),
                 "base_killmail_ids": expansion_diag["base_killmail_ids"],
                 "expanded_killmail_ids": expansion_diag["expanded_killmail_ids"],
-                "expansion_new_killmail_ids": expansion_diag["expansion_new_killmail_ids"],
+                "expansion_passed_overlap": expansion_diag["expansion_passed_overlap"],
+                "expansion_rejected_no_overlap": expansion_diag["expansion_rejected_no_overlap"],
             })
 
             # Load battle participants for side determination
