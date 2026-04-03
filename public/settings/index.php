@@ -159,12 +159,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             break;
 
         case 'esi-login':
+            // Note: esi_enabled is NOT saved here — it is controlled exclusively
+            // from Automation Control to avoid accidentally disabling ESI login.
             $saved = save_settings([
                 'esi_client_id' => trim($_POST['esi_client_id'] ?? ''),
                 'esi_client_secret' => trim($_POST['esi_client_secret'] ?? ''),
                 'esi_callback_url' => trim($_POST['esi_callback_url'] ?? ''),
                 'esi_scopes' => trim($_POST['esi_scopes'] ?? implode(' ', esi_default_scopes())),
-                'esi_enabled' => isset($_POST['esi_enabled']) ? '1' : '0',
             ]);
             break;
 
