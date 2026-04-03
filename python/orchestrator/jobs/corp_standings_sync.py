@@ -422,7 +422,7 @@ def _fetch_alliance_contacts(gateway, alliance_id: int, access_token: str) -> tu
 def _queue_contact_names(db: SupplyCoreDb, contacts: list[dict[str, Any]]) -> None:
     """Queue contact entity IDs for background name resolution."""
     ids_by_type: dict[str, list[int]] = {}
-    resolvable_types = ("character", "corporation", "alliance")
+    resolvable_types = ("corporation", "alliance")
     for entry in contacts:
         contact_id = int(entry.get("contact_id") or 0)
         contact_type = str(entry.get("contact_type") or "").strip()
@@ -455,7 +455,7 @@ def _upsert_contacts(
 ) -> int:
     """Upsert player contacts into corp_contacts table. Returns rows written."""
     written = 0
-    valid_types = ("character", "corporation", "alliance", "faction")
+    valid_types = ("corporation", "alliance", "faction")
 
     for entry in contacts:
         contact_id = int(entry.get("contact_id") or 0)
