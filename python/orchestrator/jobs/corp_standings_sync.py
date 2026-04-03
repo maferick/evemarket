@@ -173,15 +173,27 @@ def _ensure_tables(db: SupplyCoreDb) -> None:
             contact_type    ENUM('character', 'corporation', 'alliance', 'faction') NOT NULL,
             standing        DOUBLE NOT NULL,
             label_ids       JSON DEFAULT NULL,
+            source          ENUM('esi', 'manual') NOT NULL DEFAULT 'esi',
             fetched_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
             created_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
             updated_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
             UNIQUE KEY uq_corp_contact (corporation_id, contact_id, contact_type),
             KEY idx_corp_type (corporation_id, contact_type),
             KEY idx_contact_id (contact_id),
-            KEY idx_standing (corporation_id, standing)
+            KEY idx_standing (corporation_id, standing),
+            KEY idx_source (source)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     """)
+
+    # Ensure source column exists on tables created before the migration.
+    try:
+        db.execute("""
+            ALTER TABLE corp_contacts
+                ADD COLUMN source ENUM('esi', 'manual') NOT NULL DEFAULT 'esi' AFTER label_ids,
+                ADD KEY idx_source (source)
+        """)
+    except Exception:
+        pass  # Column already exists
 
 
 # ── NPC standings fetcher ─────────────────────────────────────────────────────
