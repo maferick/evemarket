@@ -8769,7 +8769,7 @@ function db_sync_schedule_registry_columns_ensure(): void
     db_ensure_table_column('sync_schedules', 'backfill_priority', "VARCHAR(20) NOT NULL DEFAULT 'normal'");
     db_ensure_table_column('sync_schedules', 'min_backfill_gap_seconds', 'INT UNSIGNED NOT NULL DEFAULT 900');
     db_ensure_table_column('sync_schedules', 'max_early_start_seconds', 'INT UNSIGNED NOT NULL DEFAULT 0');
-    db_ensure_table_column('sync_schedules', 'execution_mode', "VARCHAR(16) NOT NULL DEFAULT 'php'");
+    db_ensure_table_column('sync_schedules', 'execution_mode', "VARCHAR(16) NOT NULL DEFAULT 'python'");
     db_ensure_table_column('sync_schedules', 'last_execution_mode', "VARCHAR(32) NOT NULL DEFAULT 'scheduled'");
 
     db_execute(
@@ -8784,8 +8784,8 @@ function db_sync_schedule_registry_columns_ensure(): void
              resource_class = COALESCE(NULLIF(resource_class, ''), 'learning'),
              current_pressure_state = COALESCE(NULLIF(current_pressure_state, ''), 'healthy'),
              execution_mode = CASE
-                WHEN LOWER(COALESCE(NULLIF(execution_mode, ''), 'php')) = 'python' THEN 'python'
-                ELSE 'php'
+                WHEN LOWER(COALESCE(NULLIF(execution_mode, ''), 'python')) = 'php' THEN 'php'
+                ELSE 'python'
              END,
              allow_parallel = IFNULL(allow_parallel, 1),
              prefers_solo = IFNULL(prefers_solo, 0),
@@ -9312,7 +9312,7 @@ function db_sync_schedule_ensure_job(string $jobKey, int $enabled, int $interval
     $maxEarlyStartSeconds = max(0, min(86400, (int) ($options['max_early_start_seconds'] ?? 0)));
     $latencySensitive = !empty($options['latency_sensitive']) ? 1 : 0;
     $userFacing = !empty($options['user_facing']) ? 1 : 0;
-    $executionMode = strtolower(trim((string) ($options['execution_mode'] ?? 'php'))) === 'python' ? 'python' : 'php';
+    $executionMode = strtolower(trim((string) ($options['execution_mode'] ?? 'python'))) === 'php' ? 'php' : 'python';
     $tuningMode = ($options['tuning_mode'] ?? 'automatic') === 'manual' ? 'manual' : 'automatic';
     $discoveredFromCode = !empty($options['discovered_from_code']) ? 1 : 0;
     $explicitlyConfigured = array_key_exists('explicitly_configured', $options) && !$options['explicitly_configured'] ? 0 : 1;
@@ -9418,7 +9418,7 @@ function db_sync_schedule_upsert(string $jobKey, int $enabled, int $intervalSeco
     $maxEarlyStartSeconds = max(0, min(86400, (int) ($options['max_early_start_seconds'] ?? ($existing['max_early_start_seconds'] ?? 0))));
     $latencySensitive = !empty($options['latency_sensitive'] ?? $existing['latency_sensitive'] ?? 0) ? 1 : 0;
     $userFacing = !empty($options['user_facing'] ?? $existing['user_facing'] ?? 0) ? 1 : 0;
-    $executionMode = strtolower(trim((string) ($options['execution_mode'] ?? ($existing['execution_mode'] ?? 'php')))) === 'python' ? 'python' : 'php';
+    $executionMode = strtolower(trim((string) ($options['execution_mode'] ?? ($existing['execution_mode'] ?? 'python')))) === 'php' ? 'php' : 'python';
     $tuningMode = ($options['tuning_mode'] ?? ($existing['tuning_mode'] ?? 'automatic')) === 'manual' ? 'manual' : 'automatic';
     $discoveredFromCode = !empty($options['discovered_from_code'] ?? $existing['discovered_from_code'] ?? 0) ? 1 : 0;
     $explicitlyConfigured = array_key_exists('explicitly_configured', $options)

@@ -259,29 +259,64 @@ def run_compute_cohort_baselines(
         for cohort_key in cohorts:
             membership_payload.append((cid, cohort_key, computed_at, computed_at))
 
+    BATCH_SIZE = 500
     with db.transaction() as (_, cursor):
-        cursor.execute("DELETE FROM character_cohort_membership")
-        if membership_payload:
+        membership_ids: set[tuple[int, str]] = set()
+        for i in range(0, len(membership_payload), BATCH_SIZE):
+            batch = membership_payload[i : i + BATCH_SIZE]
             cursor.executemany(
                 """
                 INSERT INTO character_cohort_membership (
                     character_id, cohort_key, valid_from, computed_at
                 ) VALUES (%s, %s, %s, %s)
+                ON DUPLICATE KEY UPDATE
+                    valid_from = VALUES(valid_from),
+                    computed_at = VALUES(computed_at)
                 """,
-                membership_payload,
+                batch,
             )
+            for row in batch:
+                membership_ids.add((int(row[0]), str(row[1])))
 
-        cursor.execute("DELETE FROM cohort_feature_baselines")
-        if baseline_payload:
+        # Remove stale membership rows.
+        if membership_ids:
+            cid_set = {cid for cid, _ in membership_ids}
+            placeholders = ",".join(["%s"] * len(cid_set))
+            cursor.execute(
+                f"DELETE FROM character_cohort_membership WHERE computed_at < %s AND character_id IN ({placeholders})",
+                tuple([computed_at, *cid_set]),
+            )
+        elif not membership_payload:
+            cursor.execute("DELETE FROM character_cohort_membership")
+
+        baseline_keys: set[tuple[str, str, str]] = set()
+        for i in range(0, len(baseline_payload), BATCH_SIZE):
+            batch = baseline_payload[i : i + BATCH_SIZE]
             cursor.executemany(
                 """
                 INSERT INTO cohort_feature_baselines (
                     cohort_key, feature_key, window_label,
                     mean, stddev, median, mad, sample_count, computed_at
                 ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON DUPLICATE KEY UPDATE
+                    mean = VALUES(mean),
+                    stddev = VALUES(stddev),
+                    median = VALUES(median),
+                    mad = VALUES(mad),
+                    sample_count = VALUES(sample_count),
+                    computed_at = VALUES(computed_at)
                 """,
-                baseline_payload,
+                batch,
             )
+
+        # Remove stale baseline rows by computed_at.
+        if baseline_payload:
+            cursor.execute(
+                "DELETE FROM cohort_feature_baselines WHERE computed_at < %s",
+                (computed_at,),
+            )
+        elif not baseline_payload:
+            cursor.execute("DELETE FROM cohort_feature_baselines")
 
     # ── Step 5: Compute per-character cohort-relative scores ──────────────
     # For each character pick the most specific cohort they belong to.

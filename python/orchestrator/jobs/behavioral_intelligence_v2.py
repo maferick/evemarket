@@ -206,9 +206,12 @@ def run_compute_behavioral_baselines(db: SupplyCoreDb, runtime: dict[str, Any] |
             )
         )
 
+    # Upsert current batch and delete stale rows not in this computation.
+    current_ids: set[int] = set()
+    BATCH_SIZE = 500
     with db.transaction() as (_, cursor):
-        cursor.execute("DELETE FROM character_behavioral_baselines")
-        if payload:
+        for i in range(0, len(payload), BATCH_SIZE):
+            batch = payload[i : i + BATCH_SIZE]
             cursor.executemany(
                 """
                 INSERT INTO character_behavioral_baselines (
@@ -221,9 +224,29 @@ def run_compute_behavioral_baselines(db: SupplyCoreDb, runtime: dict[str, Any] |
                     anomaly_delta_score,
                     computed_at
                 ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
+                ON DUPLICATE KEY UPDATE
+                    normal_battle_frequency = VALUES(normal_battle_frequency),
+                    normal_co_occurrence_density = VALUES(normal_co_occurrence_density),
+                    low_sustain_participation_frequency = VALUES(low_sustain_participation_frequency),
+                    expected_enemy_efficiency = VALUES(expected_enemy_efficiency),
+                    role_adjusted_baseline = VALUES(role_adjusted_baseline),
+                    anomaly_delta_score = VALUES(anomaly_delta_score),
+                    computed_at = VALUES(computed_at)
                 """,
-                payload,
+                batch,
             )
+            for row in batch:
+                current_ids.add(int(row[0]))
+
+        # Remove rows for characters no longer in the computed set.
+        if current_ids:
+            placeholders = ",".join(["%s"] * len(current_ids))
+            cursor.execute(
+                f"DELETE FROM character_behavioral_baselines WHERE character_id NOT IN ({placeholders})",
+                tuple(current_ids),
+            )
+        elif not payload:
+            cursor.execute("DELETE FROM character_behavioral_baselines")
 
     return JobResult.success(
         job_key="compute_behavioral_baselines",
@@ -609,9 +632,10 @@ def run_compute_suspicion_scores_v2(
     # ── Cohort-normalize the behavioral evidence rows ────────────
     _bv2_cohort_normalize(bv2_evidence_rows)
 
+    suspicion_ids: set[int] = set()
     with db.transaction() as (_, cursor):
-        cursor.execute("DELETE FROM character_suspicion_scores")
-        if insert_tuples:
+        for i in range(0, len(insert_tuples), BATCH_SIZE):
+            batch = insert_tuples[i : i + BATCH_SIZE]
             cursor.executemany(
                 """
                 INSERT INTO character_suspicion_scores (
@@ -634,9 +658,39 @@ def run_compute_suspicion_scores_v2(
                     explanation_json,
                     computed_at
                 ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                ON DUPLICATE KEY UPDATE
+                    suspicion_score_recent = VALUES(suspicion_score_recent),
+                    suspicion_score_all_time = VALUES(suspicion_score_all_time),
+                    suspicion_momentum = VALUES(suspicion_momentum),
+                    suspicion_score = VALUES(suspicion_score),
+                    percentile_rank = VALUES(percentile_rank),
+                    high_sustain_frequency = VALUES(high_sustain_frequency),
+                    low_sustain_frequency = VALUES(low_sustain_frequency),
+                    cross_side_rate = VALUES(cross_side_rate),
+                    enemy_efficiency_uplift = VALUES(enemy_efficiency_uplift),
+                    role_weight = VALUES(role_weight),
+                    supporting_battle_count = VALUES(supporting_battle_count),
+                    support_evidence_count = VALUES(support_evidence_count),
+                    community_id = VALUES(community_id),
+                    top_supporting_battles_json = VALUES(top_supporting_battles_json),
+                    top_graph_neighbors_json = VALUES(top_graph_neighbors_json),
+                    explanation_json = VALUES(explanation_json),
+                    computed_at = VALUES(computed_at)
                 """,
-                insert_tuples,
+                batch,
             )
+            for row in batch:
+                suspicion_ids.add(int(row[0]))
+
+        # Remove stale suspicion scores not in the current computation.
+        if suspicion_ids:
+            placeholders = ",".join(["%s"] * len(suspicion_ids))
+            cursor.execute(
+                f"DELETE FROM character_suspicion_scores WHERE character_id NOT IN ({placeholders})",
+                tuple(suspicion_ids),
+            )
+        elif not insert_tuples:
+            cursor.execute("DELETE FROM character_suspicion_scores")
         if bv2_evidence_rows:
             for ev in bv2_evidence_rows:
                 cursor.execute(

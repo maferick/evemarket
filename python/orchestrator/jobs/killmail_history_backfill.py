@@ -17,48 +17,20 @@ from __future__ import annotations
 import json
 import logging
 import time
-import urllib.error
-import urllib.request
 from datetime import UTC, datetime
 from typing import Any
 
 from ..bridge import PhpBridge
 from ..esi_client import EsiClient
 from ..esi_rate_limiter import shared_limiter
-from ..http_client import ipv4_opener
 from ..worker_runtime import utc_now_iso
+from ..zkill_adapter import ZKillAdapter
 
 logger = logging.getLogger("supplycore.backfill")
 
-_ZKB_API_BASE = "https://zkillboard.com/api"
 
-
-def _http_get(url: str, user_agent: str, timeout: int = 30, accept_encoding: bool = True) -> tuple[int, str]:
-    """HTTP GET for non-ESI APIs (zKillboard). ESI calls use EsiClient."""
-    headers: dict[str, str] = {
-        "Accept": "application/json",
-        "User-Agent": user_agent,
-    }
-    if accept_encoding:
-        headers["Accept-Encoding"] = "gzip"
-
-    request = urllib.request.Request(url, headers=headers)
-    try:
-        with ipv4_opener.open(request, timeout=timeout) as response:
-            status = int(getattr(response, "status", response.getcode()))
-            body = response.read()
-            # Handle gzip encoding
-            if response.headers.get("Content-Encoding") == "gzip":
-                import gzip
-                body = gzip.decompress(body)
-            if isinstance(body, bytes):
-                body = body.decode("utf-8", errors="replace")
-            return status, body
-    except urllib.error.HTTPError as error:
-        return int(error.code), ""
-    except (urllib.error.URLError, OSError, TimeoutError) as error:
-        logger.warning("HTTP request failed for %s: %s", url, error)
-        return 0, ""
+# Module-level adapter instance set during run; job functions receive it as a parameter.
+_zkill: ZKillAdapter | None = None
 
 
 def _fetch_zkb_page(entity_type: str, entity_id: int, year: int, month: int, page: int, user_agent: str, endpoint: str = "losses") -> list[dict[str, Any]]:
@@ -66,18 +38,11 @@ def _fetch_zkb_page(entity_type: str, entity_id: int, year: int, month: int, pag
 
     Returns list of {killmail_id, zkb: {hash, ...}} dicts.
     """
-    url = f"{_ZKB_API_BASE}/{endpoint}/{entity_type}/{entity_id}/year/{year}/month/{month}/page/{page}/"
-    status, body = _http_get(url, user_agent)
-    logger.info("zKB response: status=%d body_len=%d url=%s", status, len(body), url)
-    if status == 404 or status == 429:
-        return []
-    if status != 200:
-        return []
-    if not body.strip():
-        return []
-    try:
-        data = json.loads(body)
-    except json.JSONDecodeError:
+    global _zkill
+    if _zkill is None:
+        _zkill = ZKillAdapter(user_agent=user_agent)
+    data = _zkill.fetch_entity_page(entity_type, entity_id, year, month, page, endpoint)
+    if not data:
         return []
     if not isinstance(data, list):
         return []

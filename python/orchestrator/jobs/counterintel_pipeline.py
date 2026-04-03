@@ -7,14 +7,12 @@ import json
 import math
 import statistics
 import time
-import urllib.error
-import urllib.request
 from typing import Any
 
 from ..db import SupplyCoreDb
+from ..evewho_adapter import EveWhoAdapter
 from ..job_result import JobResult
 from ..job_utils import finish_job_run, start_job_run
-from ..http_client import ipv4_opener
 from ..json_utils import json_dumps_safe
 from ..neo4j import Neo4jClient, Neo4jConfig
 
@@ -93,21 +91,8 @@ def _sync_state_upsert(db: SupplyCoreDb, dataset_key: str, cursor: str, status: 
     )
 
 
-def _http_json(url: str, user_agent: str, timeout_seconds: int = 20) -> dict[str, Any] | None:
-    request = urllib.request.Request(url, headers={"Accept": "application/json", "User-Agent": user_agent})
-    try:
-        with ipv4_opener.open(request, timeout=timeout_seconds) as response:
-            if int(getattr(response, "status", response.getcode())) != 200:
-                return None
-            body = response.read().decode("utf-8", errors="replace")
-    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError):
-        return None
 
-    try:
-        parsed = json.loads(body)
-    except json.JSONDecodeError:
-        return None
-    return parsed if isinstance(parsed, dict) else None
+# _http_json removed — use EveWhoAdapter from evewho_adapter module instead.
 
 
 def _parse_iso_datetime(value: Any) -> datetime | None:
@@ -194,32 +179,8 @@ def _extract_first_int(row: dict[str, Any], keys: list[str]) -> int | None:
     return None
 
 
-class EveWhoAdapter:
-    def __init__(self, user_agent: str):
-        self._user_agent = user_agent
 
-    def _fetch_endpoint(self, endpoint_path: str) -> dict[str, Any] | None:
-        return _http_json(f"https://evewho.com{endpoint_path}", self._user_agent)
-
-    def fetch_character(self, character_id: int) -> tuple[str, dict[str, Any] | None]:
-        endpoint = f"/api/character/{character_id}"
-        return endpoint, self._fetch_endpoint(endpoint)
-
-    def fetch_corplist(self, corp_id: int) -> tuple[str, dict[str, Any] | None]:
-        endpoint = f"/api/corplist/{corp_id}"
-        return endpoint, self._fetch_endpoint(endpoint)
-
-    def fetch_allilist(self, alliance_id: int) -> tuple[str, dict[str, Any] | None]:
-        endpoint = f"/api/allilist/{alliance_id}"
-        return endpoint, self._fetch_endpoint(endpoint)
-
-    def fetch_corpdeparted(self, corp_id: int) -> tuple[str, dict[str, Any] | None]:
-        endpoint = f"/api/corpdeparted/{corp_id}"
-        return endpoint, self._fetch_endpoint(endpoint)
-
-    def fetch_corpjoined(self, corp_id: int) -> tuple[str, dict[str, Any] | None]:
-        endpoint = f"/api/corpjoined/{corp_id}"
-        return endpoint, self._fetch_endpoint(endpoint)
+# Local EveWhoAdapter removed — use shared EveWhoAdapter from evewho_adapter module (imported above).
 
 
 def _enrich_org_history_cache(db: SupplyCoreDb, character_ids: list[int], user_agent: str, ttl_hours: int, max_fetches: int, fetch_batch_size: int) -> int:

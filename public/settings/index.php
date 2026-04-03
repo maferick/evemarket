@@ -189,8 +189,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         'updated_at' => gmdate('Y-m-d\TH:i:s\Z'),
                     ]),
                 ]);
-                $pythonBin = '/var/www/SupplyCore/.venv-orchestrator/bin/python';
-                $appRoot = realpath(__DIR__ . '/../..') ?: '/var/www/SupplyCore';
+                $pythonBin = scheduler_python_binary();
+                $appRoot = dirname(__DIR__, 2);
                 $cmd = escapeshellarg($pythonBin) . ' ' . escapeshellarg($appRoot . '/bin/python_orchestrator.py')
                      . ' killmail-backfill --app-root ' . escapeshellarg($appRoot)
                      . ' >> ' . escapeshellarg($appRoot . '/storage/logs/killmail-backfill.log') . ' 2>&1 &';
