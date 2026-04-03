@@ -51,6 +51,90 @@ if ($viewSnapshot !== null) {
     $displayKillTotal   = (int) ($viewSnapshot['display_kill_total'] ?? 0);
     $reportedKillTotal  = (int) ($viewSnapshot['reported_kill_total'] ?? 0);
     $observedKillTotal  = (int) ($viewSnapshot['observed_kill_total'] ?? 0);
+
+    // Load live in-game corp contacts so snapshot classifications reflect current standings
+    $corpContacts = db_corp_contacts_by_standing();
+    $contactFriendlyAllianceIds = array_values(array_unique(array_map('intval', $corpContacts['friendly_alliance_ids'] ?? [])));
+    $contactFriendlyCorpIds = array_values(array_unique(array_map('intval', $corpContacts['friendly_corporation_ids'] ?? [])));
+    $contactHostileAllianceIds = array_values(array_unique(array_map('intval', $corpContacts['hostile_alliance_ids'] ?? [])));
+    $contactHostileCorpIds = array_values(array_unique(array_map('intval', $corpContacts['hostile_corporation_ids'] ?? [])));
+
+    // Merge ESI contacts into the tracked/opponent ID lists for the response
+    foreach ($contactFriendlyAllianceIds as $id) {
+        if (!in_array($id, $opponentAllianceIds, true) && !in_array($id, $trackedAllianceIds, true)) {
+            $trackedAllianceIds[] = $id;
+        }
+    }
+    foreach ($contactFriendlyCorpIds as $id) {
+        if (!in_array($id, $opponentCorporationIds, true) && !in_array($id, $trackedCorporationIds, true)) {
+            $trackedCorporationIds[] = $id;
+        }
+    }
+    foreach ($contactHostileAllianceIds as $id) {
+        if (!in_array($id, $trackedAllianceIds, true) && !in_array($id, $opponentAllianceIds, true)) {
+            $opponentAllianceIds[] = $id;
+        }
+    }
+    foreach ($contactHostileCorpIds as $id) {
+        if (!in_array($id, $trackedCorporationIds, true) && !in_array($id, $opponentCorporationIds, true)) {
+            $opponentCorporationIds[] = $id;
+        }
+    }
+
+    // Rebuild classify closure with live standings
+    $classifyAlliance = static function (int $allianceId, int $corporationId = 0) use (
+        $trackedAllianceIds, $opponentAllianceIds, $trackedCorporationIds, $opponentCorporationIds
+    ): string {
+        if ($allianceId > 0 && in_array($allianceId, $trackedAllianceIds, true)) return 'friendly';
+        if ($corporationId > 0 && in_array($corporationId, $trackedCorporationIds, true)) return 'friendly';
+        if ($allianceId > 0 && in_array($allianceId, $opponentAllianceIds, true)) return 'opponent';
+        if ($corporationId > 0 && in_array($corporationId, $opponentCorporationIds, true)) return 'opponent';
+        return 'third_party';
+    };
+
+    // Reclassify side panels from alliance summary using live standings
+    $sideAlliancesByPilots = ['friendly' => [], 'opponent' => [], 'third_party' => []];
+    foreach ($allianceSummary as $a) {
+        $aid = (int) ($a['alliance_id'] ?? 0);
+        $corpId = (int) ($a['corporation_id'] ?? 0);
+        $pilots = (int) ($a['participant_count'] ?? 0);
+        $classification = $classifyAlliance($aid, $corpId);
+        $groupKey = $aid > 0 ? "a:{$aid}" : "c:{$corpId}";
+        $sideAlliancesByPilots[$classification][$groupKey] = ($sideAlliancesByPilots[$classification][$groupKey] ?? 0) + $pilots;
+    }
+    if ($sideAlliancesByPilots['opponent'] === [] && $sideAlliancesByPilots['third_party'] !== []) {
+        $sideAlliancesByPilots['opponent'] = $sideAlliancesByPilots['third_party'];
+        $sideAlliancesByPilots['third_party'] = [];
+    }
+
+    // Rebuild side labels
+    $sideLabels = ['friendly' => 'Friendlies', 'opponent' => 'Opposition', 'third_party' => 'Third Party'];
+    foreach (['friendly', 'opponent', 'third_party'] as $_side) {
+        $_alliances = $sideAlliancesByPilots[$_side];
+        if ($_alliances === []) continue;
+        arsort($_alliances);
+        $_preferredKey = (string) array_key_first($_alliances);
+        if (str_starts_with($_preferredKey, 'c:')) {
+            $_preferredName = killmail_entity_preferred_name($resolvedEntities, 'corporation', (int) substr($_preferredKey, 2), '', 'Corporation');
+        } else {
+            $_preferredName = killmail_entity_preferred_name($resolvedEntities, 'alliance', (int) substr($_preferredKey, 2), '', 'Alliance');
+        }
+        $_otherCount = count($_alliances) - 1;
+        $sideLabels[$_side] = $_preferredName . ($_otherCount > 0 ? " +{$_otherCount}" : '');
+    }
+    unset($_side, $_alliances, $_preferredKey, $_preferredName, $_otherCount);
+
+    // Override with configured coalition names
+    $friendlyCoalitionName = trim((string) db_app_setting_get('friendly_coalition_name', ''));
+    $opponentCoalitionName = trim((string) db_app_setting_get('opponent_coalition_name', ''));
+    if ($friendlyCoalitionName !== '' && $sideAlliancesByPilots['friendly'] !== []) {
+        $otherCount = count($sideAlliancesByPilots['friendly']) - 1;
+        $sideLabels['friendly'] = $friendlyCoalitionName . ($otherCount > 0 ? " +{$otherCount}" : '');
+    }
+    if ($opponentCoalitionName !== '' && $sideAlliancesByPilots['opponent'] !== []) {
+        $otherCount = count($sideAlliancesByPilots['opponent']) - 1;
+        $sideLabels['opponent'] = $opponentCoalitionName . ($otherCount > 0 ? " +{$otherCount}" : '');
+    }
 } else {
     // ── Slow path: compute everything from scratch ──
 

@@ -394,7 +394,7 @@ def _load_side_configuration_ids(db: SupplyCoreDb) -> dict[str, set[int]]:
     }
 
     # Merge in-game corp contacts (ESI diplomatic standings).
-    # Positive standing = friendly, negative = hostile.
+    # Positive standing = friendly, negative = hostile, zero = third party.
     # Only add IDs not already in the explicit config to preserve user overrides.
     try:
         contact_rows = db.fetch_all(
