@@ -306,6 +306,7 @@ function setting_sections(): array
         'ai-alerts' => ['title' => 'AI & Alerts', 'description' => 'AI briefing behavior, report controls, deal alert thresholds, and killmail intelligence inputs.'],
         'automation-sync' => ['title' => 'Automation & Sync', 'description' => 'ESI authentication, pipeline toggles, scheduler controls, and manual run operations.'],
         'backup-restore' => ['title' => 'Backup & Restore', 'description' => 'Export settings/configuration snapshots and restore from validated backup files.'],
+        'integrations' => ['title' => 'Integrations', 'description' => 'Public API keys, provisioning tokens, and external proxy configuration.'],
         'runtime-diagnostics' => ['title' => 'Runtime Diagnostics', 'description' => 'Advanced scheduler internals, runtime transport state, and recovery controls.'],
     ];
 }
@@ -323,6 +324,7 @@ function setting_section_aliases(): array
         'automation-control' => 'automation-sync',
         'esi-login' => 'automation-sync',
         'data-sync' => 'automation-sync',
+        'public-api' => 'integrations',
         'runtime-config' => 'runtime-diagnostics',
     ];
 }
