@@ -1,5 +1,6 @@
 <section class="surface-primary">
-    <div class="text-center">
+    <a href="./" class="text-sm text-blue-400 hover:text-blue-300">&larr; Back to Theater Overview</a>
+    <div class="mt-3 text-center">
         <p class="text-xs uppercase tracking-widest text-muted">Battle Report — Theater Detail</p>
         <h1 class="mt-1 text-2xl font-semibold text-slate-50">
             <?= proxy_e((string) ($theater['primary_system_name'] ?? 'Unknown')) ?>

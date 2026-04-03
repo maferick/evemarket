@@ -99,8 +99,8 @@
                                     </td>
                                     <td class="px-2 py-1.5 text-slate-300"><?= proxy_e($flyingShipName($p)) ?></td>
                                     <td class="px-2 py-1.5 text-right"><?= number_format((int) ($p['damage_done'] ?? 0)) ?></td>
-                                    <td class="px-2 py-1.5 text-right"><?= (int) ($p['kill_count'] ?? 0) ?></td>
-                                    <td class="px-2 py-1.5 text-right"><?= (int) ($p['loss_count'] ?? 0) ?></td>
+                                    <td class="px-2 py-1.5 text-right"><?= (int) ($p['kills'] ?? $p['kill_count'] ?? 0) ?></td>
+                                    <td class="px-2 py-1.5 text-right"><?= (int) ($p['deaths'] ?? $p['loss_count'] ?? 0) ?></td>
                                 </tr>
                             <?php endforeach; ?>
                         </tbody>

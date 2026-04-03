@@ -347,6 +347,62 @@ foreach ($participantsAll as $p) {
     $cleanParticipants[] = $p;
 }
 
+// ── Killmails: load victim killmails for all battles in this theater ──
+$battleIds = array_values(array_filter(array_map(
+    static fn(array $b): int => (int) ($b['battle_id'] ?? 0),
+    $battles
+), static fn(int $id): bool => $id > 0));
+$killmails = $battleIds !== [] ? db_theater_victim_killmails_by_battles($battleIds) : [];
+
+// Resolve victim ship names and enrich killmail rows
+$killmailShipIds = array_values(array_unique(array_filter(
+    array_map(static fn(array $km): int => (int) ($km['victim_ship_type_id'] ?? 0), $killmails),
+    static fn(int $id): bool => $id > 0
+)));
+$killmailShipNames = $killmailShipIds !== [] ? db_market_orders_current_compact_type_names($killmailShipIds) : [];
+
+// Build a character_id → name lookup from participants
+$charNameMap = [];
+foreach ($participantsAll as $p) {
+    $cid = (int) ($p['character_id'] ?? 0);
+    if ($cid > 0) {
+        $charNameMap[$cid] = (string) ($p['character_name'] ?? '');
+    }
+}
+
+$cleanKillmails = [];
+foreach ($killmails as $km) {
+    $victimCharId = (int) ($km['victim_character_id'] ?? 0);
+    $victimShipId = (int) ($km['victim_ship_type_id'] ?? 0);
+    $cleanKillmails[] = [
+        'sequence_id'        => (int) ($km['sequence_id'] ?? 0),
+        'killmail_id'        => (int) ($km['killmail_id'] ?? 0),
+        'victim_character_id'   => $victimCharId,
+        'victim_character_name' => $charNameMap[$victimCharId] ?? '',
+        'victim_ship_type_id'   => $victimShipId,
+        'victim_ship_name'      => (string) ($killmailShipNames[$victimShipId] ?? ''),
+    ];
+}
+
+// ── SVG map: generate/read the cached theater map ──
+$mapSvg = null;
+$mapSystemIds = array_values(array_filter(
+    array_map(static fn(array $s): int => (int) ($s['system_id'] ?? 0), $systems),
+    static fn(int $id): bool => $id > 0
+));
+if ($mapSystemIds !== []) {
+    $svgPath = supplycore_theater_map_svg($theaterId, $mapSystemIds, 1);
+    if ($svgPath !== null) {
+        $svgFullPath = dirname(__DIR__, 2) . $svgPath;
+        if (is_file($svgFullPath)) {
+            $mapSvg = file_get_contents($svgFullPath);
+            if ($mapSvg === false) {
+                $mapSvg = null;
+            }
+        }
+    }
+}
+
 // ── Build response ──
 $response = [
     'theater' => [
@@ -383,6 +439,8 @@ $response = [
     'display_kill_total'    => $displayKillTotal,
     'reported_kill_total'   => $reportedKillTotal,
     'observed_kill_total'   => $observedKillTotal,
+    'killmails'             => $cleanKillmails,
+    'map_svg'               => $mapSvg,
 ];
 
 // Unlocked theaters are live data — shorter cache
