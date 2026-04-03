@@ -1557,7 +1557,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                     && in_array((string) ($c['contact_type'] ?? ''), ['alliance', 'corporation', 'faction'], true)
                 );
                 $manualContacts = array_filter($corpContactsList, static fn (array $c): bool => ((string) ($c['source'] ?? 'esi')) === 'manual');
-                $contactIdsByType = ['alliance' => [], 'corporation' => []];
+                $contactIdsByType = ['alliance' => [], 'corporation' => [], 'character' => []];
                 foreach ($corpContactsList as $c) {
                     $cType = (string) $c['contact_type'];
                     $cId = (int) $c['contact_id'];
