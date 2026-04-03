@@ -73,3 +73,4 @@ from .pre_op_join_detection import run_pre_op_join_detection
 from .jump_bridge_sync import run_jump_bridge_sync
 from .killmail_untracked_retention import run_killmail_untracked_retention
 from .compute_alliance_relationships import run_compute_alliance_relationships
+from .corp_standings_sync import run_corp_standings_sync

@@ -11670,6 +11670,251 @@ function db_killmail_opponent_corporations_replace(array $rows): bool
     });
 }
 
+// ── Corporation standings queries ────────────────────────────────────────────
+
+/**
+ * Load all corporation standings (from ESI /corporations/{id}/standings).
+ * Returns standings for all tracked corporations, grouped by corporation_id.
+ */
+function db_corp_standings_all(): array
+{
+    try {
+        return db_select(
+            'SELECT corporation_id, from_id, from_type, standing, fetched_at
+             FROM corp_standings
+             ORDER BY corporation_id ASC, from_type ASC, standing DESC'
+        );
+    } catch (Throwable) {
+        return [];
+    }
+}
+
+/**
+ * Load corporation standings for a specific corporation.
+ */
+function db_corp_standings_for(int $corporationId): array
+{
+    try {
+        return db_select(
+            'SELECT from_id, from_type, standing, fetched_at
+             FROM corp_standings
+             WHERE corporation_id = ?
+             ORDER BY from_type ASC, standing DESC',
+            [$corporationId]
+        );
+    } catch (Throwable) {
+        return [];
+    }
+}
+
+/**
+ * Load faction standings for tracked corporations.
+ * These are the most useful for understanding political alignment.
+ */
+function db_corp_standings_factions(): array
+{
+    try {
+        return db_select(
+            "SELECT cs.corporation_id, cs.from_id, cs.standing, cs.fetched_at,
+                    COALESCE(emc.entity_name, CONCAT('Faction #', cs.from_id)) AS faction_name
+             FROM corp_standings cs
+             LEFT JOIN entity_metadata_cache emc
+                ON emc.entity_id = cs.from_id AND emc.entity_type = 'faction'
+             WHERE cs.from_type = 'faction'
+             ORDER BY cs.corporation_id ASC, cs.standing DESC"
+        );
+    } catch (Throwable) {
+        return [];
+    }
+}
+
+/**
+ * Detect standing discrepancies for a theater.
+ *
+ * Compares how alliances are classified (friendly/opponent) vs how they
+ * actually behave in a theater (who they kill/get killed by).
+ * A "betrayal" is when a friendly alliance kills more friendlies than opponents,
+ * or when an opponent alliance helps friendlies more than it hurts them.
+ *
+ * @param array $allianceSummary  The theater_alliance_summary rows
+ * @param array $killmails        Raw killmail data for cross-reference
+ * @param callable $classifyFn    The $classifyAlliance closure
+ * @return array Map of alliance_id/corporation_id → discrepancy info
+ */
+function compute_standing_discrepancies(array $allianceSummary, callable $classifyFn): array
+{
+    $discrepancies = [];
+
+    foreach ($allianceSummary as $a) {
+        $aid = (int) ($a['alliance_id'] ?? 0);
+        $corpId = (int) ($a['corporation_id'] ?? 0);
+        $side = $classifyFn($aid, $corpId);
+        $kills = (int) ($a['total_kills'] ?? 0);
+        $losses = (int) ($a['total_losses'] ?? 0);
+        $iskKilled = (float) ($a['total_isk_killed'] ?? 0);
+        $iskLost = (float) ($a['total_isk_lost'] ?? 0);
+
+        // Skip entities with no significant activity
+        if ($kills + $losses < 2) {
+            continue;
+        }
+
+        // We can't determine who they killed from the summary alone,
+        // so we flag based on the relationship graph data if available.
+        $key = $aid > 0 ? "a:{$aid}" : "c:{$corpId}";
+        $discrepancies[$key] = [
+            'alliance_id' => $aid,
+            'corporation_id' => $corpId,
+            'configured_side' => $side,
+            'kills' => $kills,
+            'losses' => $losses,
+            'isk_killed' => $iskKilled,
+            'isk_lost' => $iskLost,
+            'discrepancy_type' => null,
+        ];
+    }
+
+    return $discrepancies;
+}
+
+/**
+ * Detect betrayals by analyzing cross-side kill relationships within a theater.
+ *
+ * Examines theater participants to find alliances classified as 'friendly'
+ * that have hostile interactions against other friendlies, or 'opponent'
+ * alliances cooperating with friendlies.
+ *
+ * @param int $theaterId
+ * @return array Alliance/corp IDs with betrayal indicators
+ */
+function db_theater_standing_discrepancies(string $theaterId): array
+{
+    try {
+        // Find cases where a "friendly" entity killed another "friendly" entity
+        // by looking at killmail attacker/victim alliance pairs within the theater
+        return db_select(
+            "SELECT
+                ka.alliance_id AS attacker_alliance_id,
+                ka.corporation_id AS attacker_corporation_id,
+                ke.victim_alliance_id,
+                ke.victim_corporation_id,
+                COUNT(DISTINCT ke.killmail_id) AS cross_kills,
+                SUM(COALESCE(ke.zkb_total_value, 0)) AS cross_isk
+             FROM theater_battles tb
+             JOIN killmail_events ke ON ke.battle_id = tb.battle_id
+             JOIN killmail_attackers ka ON ka.sequence_id = ke.sequence_id
+             WHERE tb.theater_id = ?
+               AND ka.alliance_id > 0
+               AND ke.victim_alliance_id > 0
+               AND ka.alliance_id != ke.victim_alliance_id
+             GROUP BY ka.alliance_id, ka.corporation_id,
+                      ke.victim_alliance_id, ke.victim_corporation_id
+             HAVING cross_kills >= 1
+             ORDER BY cross_kills DESC",
+            [$theaterId]
+        );
+    } catch (Throwable) {
+        return [];
+    }
+}
+
+// ── Corporation contacts queries (player diplomatic standings) ───────────────
+
+/**
+ * Load all player contacts from corp_contacts.
+ * These are the in-game diplomatic standings toward player entities.
+ * Positive standing = blue (friendly), negative = red (hostile).
+ */
+function db_corp_contacts_all(): array
+{
+    try {
+        return db_select(
+            'SELECT corporation_id, contact_id, contact_type, standing, label_ids, fetched_at
+             FROM corp_contacts
+             ORDER BY corporation_id ASC, contact_type ASC, standing DESC'
+        );
+    } catch (Throwable) {
+        return [];
+    }
+}
+
+/**
+ * Load player contacts classified by standing polarity.
+ * Returns a structured array with alliance_ids and corporation_ids
+ * grouped as friendly (standing > 0) or hostile (standing < 0).
+ *
+ * This is the primary function used for side classification from in-game standings.
+ *
+ * @return array{friendly_alliance_ids: int[], friendly_corporation_ids: int[],
+ *               hostile_alliance_ids: int[], hostile_corporation_ids: int[]}
+ */
+function db_corp_contacts_by_standing(): array
+{
+    $result = [
+        'friendly_alliance_ids' => [],
+        'friendly_corporation_ids' => [],
+        'hostile_alliance_ids' => [],
+        'hostile_corporation_ids' => [],
+    ];
+
+    try {
+        $contacts = db_select(
+            "SELECT contact_id, contact_type, standing
+             FROM corp_contacts
+             WHERE contact_type IN ('alliance', 'corporation')
+               AND standing != 0
+             ORDER BY ABS(standing) DESC"
+        );
+    } catch (Throwable) {
+        return $result;
+    }
+
+    foreach ($contacts as $c) {
+        $contactId = (int) ($c['contact_id'] ?? 0);
+        $contactType = (string) ($c['contact_type'] ?? '');
+        $standing = (float) ($c['standing'] ?? 0);
+
+        if ($contactId <= 0) {
+            continue;
+        }
+
+        if ($standing > 0) {
+            if ($contactType === 'alliance') {
+                $result['friendly_alliance_ids'][] = $contactId;
+            } elseif ($contactType === 'corporation') {
+                $result['friendly_corporation_ids'][] = $contactId;
+            }
+        } elseif ($standing < 0) {
+            if ($contactType === 'alliance') {
+                $result['hostile_alliance_ids'][] = $contactId;
+            } elseif ($contactType === 'corporation') {
+                $result['hostile_corporation_ids'][] = $contactId;
+            }
+        }
+    }
+
+    return $result;
+}
+
+/**
+ * Get the in-game standing for a specific alliance or corporation
+ * from corp_contacts. Returns the standing value or null if not found.
+ */
+function db_corp_contact_standing(int $entityId, string $entityType = 'alliance'): ?float
+{
+    try {
+        $row = db_select_one(
+            'SELECT standing FROM corp_contacts
+             WHERE contact_id = ? AND contact_type = ?
+             LIMIT 1',
+            [$entityId, $entityType]
+        );
+        return $row !== null ? (float) $row['standing'] : null;
+    } catch (Throwable) {
+        return null;
+    }
+}
+
 // ── Economic Warfare queries ─────────────────────────────────────────────────
 
 function db_economic_warfare_scores(array $filters = [], int $limit = 100, int $offset = 0): array
