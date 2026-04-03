@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from ..neo4j import Neo4jClient
+
+logger = logging.getLogger(__name__)
 
 
 class GateDistanceService:
@@ -37,14 +40,21 @@ class GateDistanceService:
             self._cache[key] = None
             return None
 
-        result = self._client.query(
-            f"""
-            MATCH (a:System {{system_id: $from_sys}}), (b:System {{system_id: $to_sys}})
-            MATCH path = shortestPath((a)-[:CONNECTS_TO|JUMP_BRIDGE*..{self._max_distance}]->(b))
-            RETURN length(path) AS distance
-            """,
-            {"from_sys": system_a, "to_sys": system_b},
-        )
+        try:
+            result = self._client.query(
+                f"""
+                MATCH (a:System {{system_id: $from_sys}}), (b:System {{system_id: $to_sys}})
+                MATCH path = shortestPath((a)-[:CONNECTS_TO|JUMP_BRIDGE*..{self._max_distance}]->(b))
+                RETURN length(path) AS distance
+                """,
+                {"from_sys": system_a, "to_sys": system_b},
+            )
+        except Exception:
+            logger.warning("Neo4j query failed for %s -> %s, disabling gate distance",
+                           system_a, system_b, exc_info=True)
+            self._client = None
+            self._cache[key] = None
+            return None
         dist = int(result[0]["distance"]) if result else None
         self._cache[key] = dist
         return dist

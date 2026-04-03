@@ -43,12 +43,17 @@ _TRANSIENT_RETRY_LIMIT = 3
 _TRANSIENT_BASE_SLEEP = 0.5
 
 
+_RETRYABLE_CODES = frozenset({
+    "Neo.DatabaseError.General.UnknownError",
+})
+
+
 def _is_transient_error(errors: list) -> bool:
     """Return True when the first Neo4j error has a transient (retryable) code."""
     if not errors:
         return False
     code = str(errors[0].get("code", ""))
-    return code.startswith("Neo.TransientError.")
+    return code.startswith("Neo.TransientError.") or code in _RETRYABLE_CODES
 
 
 class Neo4jClient:

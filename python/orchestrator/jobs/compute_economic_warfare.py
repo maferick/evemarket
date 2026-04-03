@@ -78,10 +78,14 @@ def _extract_opponent_fits(db: Any, window_days: int) -> dict[int, dict]:
                ki.item_type_id, ki.item_flag
         FROM killmail_events ke
         INNER JOIN killmail_items ki ON ki.sequence_id = ke.sequence_id
-        INNER JOIN corp_contacts cc
-            ON cc.contact_id = ke.victim_alliance_id AND cc.contact_type = 'alliance' AND cc.standing < 0
         WHERE ke.killmail_time >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL %s DAY)
           AND (ki.item_flag BETWEEN 11 AND 34 OR ki.item_flag BETWEEN 92 AND 94 OR ki.item_flag BETWEEN 125 AND 132)
+          AND EXISTS (
+              SELECT 1 FROM corp_contacts cc
+              WHERE cc.contact_id = ke.victim_alliance_id
+                AND cc.contact_type = 'alliance'
+                AND cc.standing < 0
+          )
         ORDER BY ke.sequence_id
     """
     kills: dict[int, dict] = {}
@@ -412,7 +416,7 @@ def _write_families(db: Any, families: list[dict]) -> int:
 
             # Write per-module membership
             for (type_id, flag_cat), cnt in fam["module_counts"].items():
-                freq = round(cnt / obs, 4) if obs > 0 else 1.0
+                freq = min(round(cnt / obs, 4), 99.9999) if obs > 0 else 1.0
                 is_core = 1 if freq >= _CORE_FREQUENCY_THRESHOLD else 0
                 cursor.execute(
                     """INSERT INTO hostile_fit_family_modules
