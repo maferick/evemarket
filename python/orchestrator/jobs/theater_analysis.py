@@ -563,9 +563,9 @@ def _compute_alliance_summary(
             entry["total_isk_lost"] += isk
 
         # Record kill involvement for attacker group (once per killmail per group).
-        # ISK killed is credited to every participating group, matching the
-        # standard EVE battle-report convention (br.evetools.org) where each
-        # group that had attackers on a killmail gets the full ISK credit.
+        # Per-alliance total_isk_killed is analytics metadata — credited to every
+        # participating group (not just final blow).  Side-level ISK killed and
+        # efficiency are derived from victim losses in the PHP presentation layer.
         atk_key = _group_key_for(attacker_alliance, attacker_corp)
         if atk_key != (0, 0):
             entry = _get_entry(atk_key)

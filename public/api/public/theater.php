@@ -176,8 +176,8 @@ if ($viewSnapshot !== null) {
         $sidePanels[$side]['pilots'] += (int) ($a['participant_count'] ?? 0);
         $sidePanels[$side]['kills'] += (int) ($a['total_kills'] ?? 0);
         $sidePanels[$side]['losses'] += (int) ($a['total_losses'] ?? 0);
-        $sidePanels[$side]['isk_killed'] += (float) ($a['total_isk_killed'] ?? 0);
         $sidePanels[$side]['isk_lost'] += (float) ($a['total_isk_lost'] ?? 0);
+        // NOTE: isk_killed is derived from opposing side's losses below — not accumulated here.
         if ($aid > 0) {
             $entryName = killmail_entity_preferred_name($resolvedEntities, 'alliance', $aid, (string) ($a['alliance_name'] ?? ''), 'Alliance');
         } else {
@@ -199,23 +199,29 @@ if ($viewSnapshot !== null) {
         $fbSide = $classifyAlliance((int) ($fbRow['alliance_id'] ?? 0), (int) ($fbRow['corporation_id'] ?? 0));
         $finalBlowsBySide[$fbSide] += (int) ($fbRow['final_blows'] ?? 0);
     }
-    // Compute total ISK lost across all sides for loss-based efficiency
-    // (matching br.evetools.org: efficiency = 1 - our_losses / total_losses).
-    $totalIskLostAllSides = 0.0;
-    foreach ($sidePanels as $data) {
-        $totalIskLostAllSides += $data['isk_lost'];
-    }
-    // Derive side-level isk_killed from opposing sides' losses (avoids double-counting
-    // that occurs when summing per-alliance isk_killed across groups on the same side).
-    foreach ($sidePanels as $side => $data) {
-        $sidePanels[$side]['isk_killed'] = $totalIskLostAllSides - $data['isk_lost'];
-    }
+    // ── Loss-based ISK killed & efficiency (strict two-side model) ──────
+    // Canonical rule: isk_killed for a side = opposing side's isk_lost.
+    // Third-party losses are tracked for total_isk_destroyed but excluded
+    // from the friendly-vs-opponent efficiency calculation.
+    $friendlyLost = $sidePanels['friendly']['isk_lost'];
+    $opponentLost = $sidePanels['opponent']['isk_lost'];
+    $twoSideTotal = $friendlyLost + $opponentLost;
+
+    // friendly_isk_killed == opponent_isk_lost  (and vice versa)
+    $sidePanels['friendly']['isk_killed'] = $opponentLost;
+    $sidePanels['opponent']['isk_killed'] = $friendlyLost;
+    $sidePanels['third_party']['isk_killed'] = 0.0;
+
+    // efficiency = isk_killed / (isk_killed + isk_lost)  — two-side, symmetric
+    $sidePanels['friendly']['efficiency'] = $twoSideTotal > 0
+        ? $opponentLost / $twoSideTotal : 0.0;
+    $sidePanels['opponent']['efficiency'] = $twoSideTotal > 0
+        ? $friendlyLost / $twoSideTotal : 0.0;
+    $sidePanels['third_party']['efficiency'] = 0.0;
+
     foreach ($sidePanels as $side => $data) {
         $sidePanels[$side]['final_blows'] = (int) ($finalBlowsBySide[$side] ?? 0);
         $sidePanels[$side]['kill_involvements'] = (int) ($participantKillTotalsBySide[$side] ?? 0);
-        $sidePanels[$side]['efficiency'] = $totalIskLostAllSides > 0
-            ? 1.0 - $data['isk_lost'] / $totalIskLostAllSides
-            : 0.0;
         usort($data['alliances'], static fn(array $l, array $r): int => $r['pilots'] <=> $l['pilots']);
         $sidePanels[$side]['alliances'] = array_slice($data['alliances'], 0, 4);
     }
