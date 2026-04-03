@@ -32,6 +32,7 @@ sys.modules["orchestrator.jobs"] = _stub_jobs_init
 
 # Now import the specific modules we need
 from orchestrator.jobs.theater_analysis import (  # noqa: E402
+    _build_character_ledger,
     _compute_alliance_summary,
     _compute_timeline,
     _load_expanded_killmails,
@@ -138,7 +139,8 @@ class TestCleanTwoSideFight(unittest.TestCase):
         }
         char_sides = {10: "friendly", 20: "opponent"}
 
-        summary = _compute_alliance_summary(kms, bp_rows, side_configuration, char_sides)
+        character_ledger = _build_character_ledger(kms)
+        summary = _compute_alliance_summary(character_ledger, bp_rows, side_configuration, char_sides)
 
         friendly = [s for s in summary if s["alliance_id"] == 100][0]
         opponent = [s for s in summary if s["alliance_id"] == 200][0]
@@ -184,15 +186,22 @@ class TestThirdPartyFinalBlow(unittest.TestCase):
         }
         char_sides = {10: "friendly", 20: "opponent", 30: "third_party"}
 
-        summary = _compute_alliance_summary(kms, bp_rows, side_configuration, char_sides)
+        character_ledger = _build_character_ledger(kms)
+        summary = _compute_alliance_summary(character_ledger, bp_rows, side_configuration, char_sides)
 
         opponent = [s for s in summary if s["alliance_id"] == 200][0]
         friendly = [s for s in summary if s["alliance_id"] == 100][0]
+        third_party = [s for s in summary if s["alliance_id"] == 300][0]
 
         # Enemy STILL lost 1000 ISK regardless of who got final blow
         self.assertEqual(opponent["total_isk_lost"], 1000.0)
-        # Friendly gets ISK killed credit (they participated)
-        self.assertEqual(friendly["total_isk_killed"], 1000.0)
+        # ISK killed now goes to the final-blow group (third party), not friendly
+        self.assertEqual(third_party["total_isk_killed"], 1000.0)
+        self.assertEqual(third_party["total_kills"], 1)
+        # Friendly has contributed_kills but no final kill / ISK killed
+        self.assertEqual(friendly["total_isk_killed"], 0.0)
+        self.assertEqual(friendly["total_contributed_kills"], 1)
+        self.assertEqual(friendly["total_kills"], 0)
 
 
 class TestThirdPartyVictimInSameEngagement(unittest.TestCase):

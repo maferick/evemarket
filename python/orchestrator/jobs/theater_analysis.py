@@ -717,10 +717,91 @@ def _detect_turning_points(
     return turning_points
 
 
+# ── Per-character ledger (source of truth) ─────────────────────────────────
+
+
+def _empty_ledger_entry() -> dict[str, Any]:
+    return {
+        "final_kills": 0,
+        "contributed_kills": 0,
+        "losses": 0,
+        "isk_killed": 0.0,
+        "isk_lost": 0.0,
+        "damage_done": 0.0,
+    }
+
+
+def _build_character_ledger(
+    killmails: list[dict[str, Any]],
+) -> dict[int, dict[str, Any]]:
+    """Build per-character stats from killmails — the single source of truth.
+
+    For each killmail (expanded per-attacker via LEFT JOIN):
+      - Victim: losses += 1, isk_lost += total_value  (once per killmail_id)
+      - Final blow attacker: final_kills += 1, isk_killed += total_value
+      - Every listed attacker: contributed_kills += 1
+        (includes zero-damage; dedup by killmail_id + attacker_character_id)
+
+    Invariants across the full set:
+      sum(losses)      == number of unique killmails
+      sum(final_kills) == number of unique killmails
+      sum(isk_lost)    == total destroyed ISK
+      sum(isk_killed)  == total destroyed ISK
+      sum(contributed_kills) >= number of unique killmails
+    """
+    ledger: dict[int, dict[str, Any]] = {}
+    seen_victim: set[int] = set()             # killmail_id
+    seen_final_blow: set[int] = set()         # killmail_id
+    seen_attacker: set[tuple[int, int]] = set()  # (killmail_id, attacker_character_id)
+
+    for km in killmails:
+        km_id = int(km.get("killmail_id") or 0)
+        if km_id <= 0:
+            continue
+
+        isk = float(km.get("total_value") or 0)
+
+        # ── Victim (once per killmail) ────────────────────────────────
+        victim_id = int(km.get("victim_character_id") or 0)
+        if victim_id > 0 and km_id not in seen_victim:
+            seen_victim.add(km_id)
+            entry = ledger.setdefault(victim_id, _empty_ledger_entry())
+            entry["losses"] += 1
+            entry["isk_lost"] += isk
+
+        # ── Attacker ─────────────────────────────────────────────────
+        attacker_id = int(km.get("attacker_character_id") or 0)
+        if attacker_id <= 0:
+            continue
+
+        # Final blow (once per killmail)
+        is_final = int(km.get("attacker_final_blow") or 0)
+        if is_final == 1 and km_id not in seen_final_blow:
+            seen_final_blow.add(km_id)
+            entry = ledger.setdefault(attacker_id, _empty_ledger_entry())
+            entry["final_kills"] += 1
+            entry["isk_killed"] += isk
+
+        # Contributed kill — every listed attacker, including dmg=0
+        atk_key = (km_id, attacker_id)
+        if atk_key not in seen_attacker:
+            seen_attacker.add(atk_key)
+            entry = ledger.setdefault(attacker_id, _empty_ledger_entry())
+            entry["contributed_kills"] += 1
+
+        # Damage accumulation (raw per-row, no dedup needed)
+        attacker_damage = float(km.get("attacker_damage_done") or 0)
+        if attacker_damage > 0:
+            entry = ledger.setdefault(attacker_id, _empty_ledger_entry())
+            entry["damage_done"] += attacker_damage
+
+    return ledger
+
+
 # ── Alliance summary computation ───────────────────────────────────────────
 
 def _compute_alliance_summary(
-    killmails: list[dict[str, Any]],
+    character_ledger: dict[int, dict[str, Any]],
     bp_rows: list[dict[str, Any]],
     side_configuration: dict[str, set[int]],
     char_sides: dict[int, str],
@@ -728,13 +809,16 @@ def _compute_alliance_summary(
 ) -> list[dict[str, Any]]:
     """Compute per-alliance (or per-corporation for allianceless entities) summary.
 
+    Derives all totals from the per-character ledger — no direct killmail
+    processing.  This guarantees that group totals are exact rollups of
+    character truth.
+
     Grouping key is (alliance_id, corporation_id):
       - Entities WITH an alliance  → (alliance_id, 0)
       - Entities WITHOUT an alliance → (0, corporation_id)
     This ensures NPC-corp / allianceless-corp pilots get their own row
     instead of being lumped under a single alliance_id=0 bucket.
     """
-    # (alliance_id, corporation_id) → accumulated stats
     group_stats: dict[tuple[int, int], dict[str, Any]] = {}
 
     def _group_key_for(alliance_id: int, corporation_id: int) -> tuple[int, int]:
@@ -747,51 +831,39 @@ def _compute_alliance_summary(
     def _get_entry(key: tuple[int, int]) -> dict[str, Any]:
         return group_stats.setdefault(key, _empty_alliance_stats(key[0], key[1]))
 
-    # Count participants per group
+    # Build group membership and roll up character ledger entries.
+    # Each character appears once in bp_rows (per battle); collect unique
+    # characters per group key and accumulate their ledger stats.
     group_participants: dict[tuple[int, int], set[int]] = defaultdict(set)
+    seen_char_in_group: set[tuple[int, tuple[int, int]]] = set()
+
     for p in bp_rows:
         aid = int(p.get("alliance_id") or 0)
         corp_id = int(p.get("corporation_id") or 0)
         cid = int(p.get("character_id") or 0)
-        if cid > 0 and (aid > 0 or corp_id > 0):
-            gk = _group_key_for(aid, corp_id)
-            group_participants[gk].add(cid)
+        if cid <= 0 or (aid <= 0 and corp_id <= 0):
+            continue
 
-    # Process killmails for kills/losses/damage — deduplicate by killmail_id
-    # since rows are expanded per-attacker from the LEFT JOIN.
-    seen_loss_km: set[int] = set()
-    seen_kill_km: set[tuple[int, tuple[int, int]]] = set()
-    for km in killmails:
-        km_id = int(km.get("killmail_id") or 0)
-        victim_alliance = int(km.get("victim_alliance_id") or 0)
-        victim_corp = int(km.get("victim_corporation_id") or 0)
-        isk = float(km.get("total_value") or 0)
+        gk = _group_key_for(aid, corp_id)
+        group_participants[gk].add(cid)
 
-        attacker_alliance = int(km.get("attacker_alliance_id") or 0)
-        attacker_corp = int(km.get("attacker_corporation_id") or 0)
-        attacker_damage = float(km.get("attacker_damage_done") or 0)
+        # Roll up this character's ledger into the group (once per char+group)
+        char_group_key = (cid, gk)
+        if char_group_key in seen_char_in_group:
+            continue
+        seen_char_in_group.add(char_group_key)
 
-        # Record loss for victim group (once per killmail)
-        if km_id not in seen_loss_km:
-            seen_loss_km.add(km_id)
-            loss_key = _group_key_for(victim_alliance, victim_corp)
-            entry = _get_entry(loss_key)
-            entry["total_losses"] += 1
-            entry["total_isk_lost"] += isk
+        ledger_entry = character_ledger.get(cid)
+        if ledger_entry is None:
+            continue
 
-        # Record kill involvement for attacker group (once per killmail per group).
-        # Per-alliance total_isk_killed is analytics metadata — credited to every
-        # participating group (not just final blow).  Side-level ISK killed and
-        # efficiency are derived from victim losses in the PHP presentation layer.
-        atk_key = _group_key_for(attacker_alliance, attacker_corp)
-        if atk_key != (0, 0):
-            entry = _get_entry(atk_key)
-            entry["total_damage"] += attacker_damage
-            kill_key = (km_id, atk_key)
-            if kill_key not in seen_kill_km:
-                seen_kill_km.add(kill_key)
-                entry["total_kills"] += 1
-                entry["total_isk_killed"] += isk
+        entry = _get_entry(gk)
+        entry["total_kills"] += ledger_entry["final_kills"]
+        entry["total_contributed_kills"] += ledger_entry["contributed_kills"]
+        entry["total_losses"] += ledger_entry["losses"]
+        entry["total_isk_killed"] += ledger_entry["isk_killed"]
+        entry["total_isk_lost"] += ledger_entry["isk_lost"]
+        entry["total_damage"] += ledger_entry["damage_done"]
 
     # Finalize
     result: list[dict[str, Any]] = []
@@ -814,6 +886,7 @@ def _empty_alliance_stats(alliance_id: int, corporation_id: int = 0) -> dict[str
         "side": "third_party",
         "participant_count": 0,
         "total_kills": 0,
+        "total_contributed_kills": 0,
         "total_losses": 0,
         "total_damage": 0.0,
         "total_isk_lost": 0.0,
@@ -830,18 +903,26 @@ def _compute_participants(
     char_sides: dict[int, str],
     theater_id: str,
     ship_group_map: dict[int, int] | None = None,
+    character_ledger: dict[int, dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
-    """Compute per-character stats across the theater."""
+    """Compute per-character stats across the theater.
+
+    Core stats (kills, deaths, isk_killed, isk_lost, damage_done) are taken
+    from the character_ledger which is the single source of truth.
+    Ship resolution, role inference, entry/exit times, and damage_taken
+    are still derived from killmail rows.
+    """
     char_stats: dict[int, dict[str, Any]] = {}
     char_battles: dict[int, set[str]] = defaultdict(set)
     char_times: dict[int, list[datetime]] = defaultdict(list)
-    # Track ship type frequency per character for role + flying ship resolution
     char_ship_counts: dict[int, dict[int, int]] = defaultdict(lambda: defaultdict(int))
 
-    # Group IDs that are non-combat (pods, shuttles, industrials, etc.)
     _NON_COMBAT_GROUP_IDS: frozenset[int] = frozenset(
         gid for gid, role in FLEET_FUNCTION_BY_GROUP.items() if role == "non_combat"
     )
+
+    if character_ledger is None:
+        character_ledger = {}
 
     # Initialize from battle participants
     for p in bp_rows:
@@ -854,6 +935,7 @@ def _compute_participants(
         if cid not in char_stats:
             aid = int(p.get("alliance_id") or 0)
             corp_id = int(p.get("corporation_id") or 0)
+            ledger = character_ledger.get(cid, _empty_ledger_entry())
 
             char_stats[cid] = {
                 "character_id": cid,
@@ -863,12 +945,16 @@ def _compute_participants(
                 "side": char_sides.get(cid, "third_party"),
                 "ship_type_ids": [],
                 "ships_lost_detail": defaultdict(lambda: {"count": 0, "isk_lost": 0.0, "killmail_ids": []}),
-                "kills": 0,
-                "deaths": 0,
-                "damage_done": 0.0,
-                "damage_taken": 0.0,
-                "isk_lost": 0.0,
-                "role_proxy": "mainline_dps",  # placeholder, resolved after all data
+                # Canonical stats from ledger
+                "kills": ledger["final_kills"],          # kills = final kills
+                "final_kills": ledger["final_kills"],
+                "contributed_kills": ledger["contributed_kills"],
+                "deaths": ledger["losses"],
+                "damage_done": ledger["damage_done"],
+                "damage_taken": 0.0,                     # computed below from killmails
+                "isk_killed": ledger["isk_killed"],
+                "isk_lost": ledger["isk_lost"],
+                "role_proxy": "mainline_dps",
                 "flying_ship_type_id": None,
             }
 
@@ -876,7 +962,6 @@ def _compute_participants(
         st = int(p.get("ship_type_id") or 0)
         if st > 0 and st not in char_stats[cid]["ship_type_ids"]:
             char_stats[cid]["ship_type_ids"].append(st)
-        # Count ship type frequency from battle participation
         if st > 0:
             char_ship_counts[cid][st] += 1
 
@@ -888,10 +973,11 @@ def _compute_participants(
         if km_id > 0:
             km_total_hp_damage[km_id] += attacker_damage
 
-    # Process killmails — deduplicate by killmail_id since rows are expanded
-    # per-attacker from the LEFT JOIN.
-    seen_deaths: set[tuple[int, int]] = set()  # (killmail_id, victim_id)
-    seen_attacker_kills: set[tuple[int, int]] = set()  # (killmail_id, attacker_id)
+    # Process killmails for damage_taken, ship loss detail, timestamps, and
+    # attacker ship counts — stats that require killmail-row-level data.
+    # Core kill/death/ISK stats come from the ledger above.
+    seen_deaths: set[tuple[int, int]] = set()
+    seen_attacker_time: set[tuple[int, int]] = set()
     for km in killmails:
         km_id = int(km.get("killmail_id") or 0)
         km_time = _parse_dt(km.get("killmail_time"))
@@ -899,16 +985,13 @@ def _compute_participants(
         victim_id = int(km.get("victim_character_id") or 0)
         isk = float(km.get("total_value") or 0)
 
-        # Count death only once per (killmail, victim) pair
+        # Damage taken + ship loss detail (once per killmail per victim)
         death_key = (km_id, victim_id)
         if victim_id > 0 and victim_id in char_stats and death_key not in seen_deaths:
             seen_deaths.add(death_key)
-            char_stats[victim_id]["deaths"] += 1
             char_stats[victim_id]["damage_taken"] += km_total_hp_damage.get(km_id, 0.0)
-            char_stats[victim_id]["isk_lost"] += isk
             char_times[victim_id].append(km_time)
 
-            # Track per-ship-type loss breakdown
             victim_ship = int(km.get("victim_ship_type_id") or 0)
             if victim_ship > 0:
                 loss = char_stats[victim_id]["ships_lost_detail"][victim_ship]
@@ -920,21 +1003,16 @@ def _compute_participants(
                 if victim_ship not in char_stats[victim_id]["ship_type_ids"]:
                     char_stats[victim_id]["ship_type_ids"].append(victim_ship)
 
+        # Attacker timestamps and ship counts
         attacker_id = int(km.get("attacker_character_id") or 0)
-        attacker_damage = float(km.get("attacker_damage_done") or 0)
-
         if attacker_id > 0 and attacker_id in char_stats:
-            # Count kill participation once per (killmail, attacker) pair
             atk_key = (km_id, attacker_id)
-            if atk_key not in seen_attacker_kills:
-                seen_attacker_kills.add(atk_key)
-                char_stats[attacker_id]["kills"] += 1
+            if atk_key not in seen_attacker_time:
+                seen_attacker_time.add(atk_key)
                 char_times[attacker_id].append(km_time)
-                # Count attacker ship type for flying ship resolution
                 atk_ship = int(km.get("attacker_ship_type_id") or 0)
                 if atk_ship > 0:
                     char_ship_counts[attacker_id][atk_ship] += 1
-            char_stats[attacker_id]["damage_done"] += attacker_damage
 
     # ── Resolve flying ship + role from most-common non-pod ship ──────────
     for cid, stats in char_stats.items():
@@ -942,7 +1020,6 @@ def _compute_participants(
         if not counts:
             continue
 
-        # Find the most common ship that isn't non-combat (pods, shuttles, etc.)
         best_ship = 0
         best_count = 0
         fallback_ship = 0
@@ -950,7 +1027,6 @@ def _compute_participants(
         for stid, cnt in counts.items():
             group_id = (ship_group_map or {}).get(stid, 0)
             if group_id in _NON_COMBAT_GROUP_IDS:
-                # Track as fallback in case ALL ships are non-combat
                 if cnt > fallback_count:
                     fallback_ship = stid
                     fallback_count = cnt
@@ -990,16 +1066,19 @@ def _compute_participants(
             "ship_type_ids": ship_json,
             "ships_lost_detail": ships_lost_json,
             "flying_ship_type_id": stats.get("flying_ship_type_id"),
-            "kills": stats["kills"],
+            "kills": stats["kills"],                        # = final_kills
+            "final_kills": stats["final_kills"],
+            "contributed_kills": stats["contributed_kills"],
             "deaths": stats["deaths"],
             "damage_done": stats["damage_done"],
             "damage_taken": stats["damage_taken"],
+            "isk_killed": stats["isk_killed"],
             "isk_lost": stats["isk_lost"],
             "role_proxy": stats["role_proxy"],
             "entry_time": entry_time,
             "exit_time": exit_time,
             "battles_present": len(char_battles.get(cid, set())),
-            "suspicion_score": None,  # populated in theater_suspicion phase
+            "suspicion_score": None,
             "is_suspicious": 0,
         })
 
@@ -1297,15 +1376,16 @@ def _flush_analysis(
                 """
                 INSERT INTO theater_alliance_summary (
                     theater_id, alliance_id, corporation_id, alliance_name, side,
-                    participant_count, total_kills, total_losses,
+                    participant_count, total_kills, total_contributed_kills, total_losses,
                     total_damage, total_isk_lost, total_isk_killed, efficiency
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 [
                     (
                         theater_id, a["alliance_id"], a.get("corporation_id", 0),
                         a["alliance_name"], a["side"],
-                        a["participant_count"], a["total_kills"], a["total_losses"],
+                        a["participant_count"], a["total_kills"],
+                        a["total_contributed_kills"], a["total_losses"],
                         a["total_damage"], a["total_isk_lost"], a["total_isk_killed"],
                         a["efficiency"],
                     )
@@ -1322,18 +1402,21 @@ def _flush_analysis(
                 INSERT INTO theater_participants (
                     theater_id, character_id, character_name, alliance_id,
                     corporation_id, side, ship_type_ids, ships_lost_detail,
-                    flying_ship_type_id, kills, deaths,
+                    flying_ship_type_id, kills, final_kills, contributed_kills,
+                    isk_killed, deaths,
                     damage_done, damage_taken, isk_lost, role_proxy,
                     entry_time, exit_time, battles_present,
                     suspicion_score, is_suspicious
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 [
                     (
                         p["theater_id"], p["character_id"], p["character_name"],
                         p["alliance_id"], p["corporation_id"], p["side"],
                         p["ship_type_ids"], p["ships_lost_detail"],
-                        p.get("flying_ship_type_id"), p["kills"], p["deaths"],
+                        p.get("flying_ship_type_id"), p["kills"],
+                        p["final_kills"], p["contributed_kills"],
+                        p["isk_killed"], p["deaths"],
                         p["damage_done"], p["damage_taken"], p["isk_lost"], p["role_proxy"],
                         p["entry_time"], p["exit_time"], p["battles_present"],
                         p["suspicion_score"], p["is_suspicious"],
@@ -1521,11 +1604,14 @@ def run_theater_analysis(
             # Detect turning points
             turning_points = _detect_turning_points(timeline)
 
-            # Compute alliance summary
-            alliance_summary = _compute_alliance_summary(killmails, bp_rows, side_configuration, char_sides, relationship_graph)
+            # Build per-character ledger — single source of truth
+            character_ledger = _build_character_ledger(killmails)
 
-            # Compute participant stats
-            participant_stats = _compute_participants(killmails, bp_rows, char_sides, theater_id, ship_group_map)
+            # Compute alliance summary from character ledger
+            alliance_summary = _compute_alliance_summary(character_ledger, bp_rows, side_configuration, char_sides, relationship_graph)
+
+            # Compute participant stats from character ledger
+            participant_stats = _compute_participants(killmails, bp_rows, char_sides, theater_id, ship_group_map, character_ledger)
 
             # Detect structure kills (player-owned structures with no victim character)
             structure_kills = _compute_structure_kills(killmails, side_configuration, theater_id, relationship_graph)

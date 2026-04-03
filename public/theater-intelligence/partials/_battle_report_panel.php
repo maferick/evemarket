@@ -19,7 +19,7 @@
         <div class="px-4 py-3">
             <p class="text-xs text-muted">Kills / Losses</p>
             <p class="text-slate-100 font-semibold"><?= number_format((int) ($panelData['kills'] ?? 0)) ?> / <?= number_format((int) ($panelData['losses'] ?? 0)) ?></p>
-            <p class="text-[10px] text-muted">Final blows: <?= number_format((int) ($panelData['final_blows'] ?? 0)) ?></p>
+            <p class="text-[10px] text-muted">Kill involvements: <?= number_format((int) ($panelData['kill_involvements'] ?? 0)) ?></p>
         </div>
         <div class="px-4 py-3">
             <p class="text-xs text-muted">ISK Killed / Lost</p>
