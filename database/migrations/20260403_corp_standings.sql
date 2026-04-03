@@ -20,7 +20,7 @@ CREATE TABLE IF NOT EXISTS corp_standings (
 -- Corporation contacts from ESI /corporations/{corporation_id}/contacts/
 -- Tracks diplomatic standings toward PLAYER entities (characters, corporations, alliances).
 -- This is the primary source for friendly/opponent classification from in-game standings.
--- Requires scope: esi-corporations.read_contacts.v1
+-- Requires scope: esi-characters.write_contacts.v1
 
 CREATE TABLE IF NOT EXISTS corp_contacts (
     id              BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
