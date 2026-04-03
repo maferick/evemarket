@@ -356,6 +356,64 @@ def _load_battle_participants_for_theater(
     return all_rows
 
 
+def _supplement_bp_rows_from_killmails(
+    bp_rows: list[dict[str, Any]],
+    killmails: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], int]:
+    """Add synthetic bp entries for characters in killmails but not in bp_rows.
+
+    Engagement expansion can pull in killmails whose participants aren't in
+    battle_participants (sub-threshold battles, boundary kills, etc.).
+    Without this, their ISK is counted in the timeline total but silently
+    excluded from alliance_summary and participant stats.
+
+    Returns (supplemented_bp_rows, count_of_new_characters).
+    """
+    existing_cids: set[int] = set()
+    for p in bp_rows:
+        cid = int(p.get("character_id") or 0)
+        if cid > 0:
+            existing_cids.add(cid)
+
+    new_chars: dict[int, dict[str, Any]] = {}
+
+    for km in killmails:
+        # Victim
+        vid = int(km.get("victim_character_id") or 0)
+        if vid > 0 and vid not in existing_cids and vid not in new_chars:
+            new_chars[vid] = {
+                "character_id": vid,
+                "alliance_id": int(km.get("victim_alliance_id") or 0),
+                "corporation_id": int(km.get("victim_corporation_id") or 0),
+                "battle_id": str(km.get("battle_id") or ""),
+                "side_key": None,
+                "ship_type_id": int(km.get("victim_ship_type_id") or 0),
+                "is_logi": 0,
+                "is_command": 0,
+                "is_capital": 0,
+            }
+
+        # Attacker
+        aid = int(km.get("attacker_character_id") or 0)
+        if aid > 0 and aid not in existing_cids and aid not in new_chars:
+            new_chars[aid] = {
+                "character_id": aid,
+                "alliance_id": int(km.get("attacker_alliance_id") or 0),
+                "corporation_id": int(km.get("attacker_corporation_id") or 0),
+                "battle_id": str(km.get("battle_id") or ""),
+                "side_key": None,
+                "ship_type_id": int(km.get("attacker_ship_type_id") or 0),
+                "is_logi": 0,
+                "is_command": 0,
+                "is_capital": 0,
+            }
+
+    if not new_chars:
+        return bp_rows, 0
+
+    return bp_rows + list(new_chars.values()), len(new_chars)
+
+
 def _load_side_configuration_ids(db: SupplyCoreDb) -> dict[str, set[int]]:
     """Load friendly/hostile alliance/corporation IDs from ESI contacts + manual additions.
 
@@ -1564,6 +1622,19 @@ def run_theater_analysis(
 
             # Load battle participants for side determination
             bp_rows = _load_battle_participants_for_theater(db, battle_ids)
+
+            # Supplement bp_rows with characters from expanded killmails that
+            # aren't in battle_participants — ensures their ISK is included
+            # in alliance summary and participant stats.
+            original_bp_count = len(bp_rows)
+            bp_rows, supplemented_count = _supplement_bp_rows_from_killmails(bp_rows, killmails)
+            if supplemented_count > 0:
+                _theater_log(runtime, "theater_analysis.bp_supplemented", {
+                    "theater_id": theater_id,
+                    "original_bp_rows": original_bp_count,
+                    "supplemented_characters": supplemented_count,
+                    "total_bp_rows": len(bp_rows),
+                })
 
             # Determine sides
             side_labels, char_sides, side_resolution = _determine_sides(bp_rows, side_configuration, relationship_graph)
