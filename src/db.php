@@ -11829,9 +11829,9 @@ function db_corp_contacts_all(): array
 {
     try {
         return db_select(
-            'SELECT corporation_id, contact_id, contact_type, standing, label_ids, fetched_at
+            "SELECT corporation_id, contact_id, contact_type, standing, label_ids, COALESCE(source, 'esi') AS source, fetched_at
              FROM corp_contacts
-             ORDER BY corporation_id ASC, contact_type ASC, standing DESC'
+             ORDER BY source ASC, contact_type ASC, standing DESC"
         );
     } catch (Throwable) {
         return [];
@@ -11912,6 +11912,52 @@ function db_corp_contact_standing(int $entityId, string $entityType = 'alliance'
         return $row !== null ? (float) $row['standing'] : null;
     } catch (Throwable) {
         return null;
+    }
+}
+
+/**
+ * Replace all manual corp contacts with the given list.
+ * Each entry: ['contact_id' => int, 'contact_type' => string, 'standing' => float]
+ */
+function db_corp_contacts_manual_replace(array $contacts): void
+{
+    db_execute('DELETE FROM corp_contacts WHERE source = ?', ['manual']);
+
+    foreach ($contacts as $c) {
+        $contactId = (int) ($c['contact_id'] ?? 0);
+        $contactType = (string) ($c['contact_type'] ?? '');
+        $standing = (float) ($c['standing'] ?? 0);
+
+        if ($contactId <= 0 || !in_array($contactType, ['alliance', 'corporation'], true) || $standing == 0) {
+            continue;
+        }
+
+        db_execute(
+            "INSERT INTO corp_contacts (corporation_id, contact_id, contact_type, standing, source, fetched_at)
+             VALUES (0, ?, ?, ?, 'manual', UTC_TIMESTAMP())
+             ON DUPLICATE KEY UPDATE
+                standing = VALUES(standing),
+                source = 'manual',
+                updated_at = CURRENT_TIMESTAMP",
+            [$contactId, $contactType, $standing]
+        );
+    }
+}
+
+/**
+ * Fetch all manually added corp contacts.
+ */
+function db_corp_contacts_manual(): array
+{
+    try {
+        return db_select(
+            "SELECT contact_id, contact_type, standing
+             FROM corp_contacts
+             WHERE source = 'manual'
+             ORDER BY standing DESC, contact_type ASC"
+        );
+    } catch (Throwable) {
+        return [];
     }
 }
 
