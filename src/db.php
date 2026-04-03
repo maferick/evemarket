@@ -16706,26 +16706,22 @@ function db_theater_fleet_composition(string $theaterId): array
     // Use flying_ship_type_id from theater_participants (the non-pod combat ship each pilot flew)
     // rather than battle_participants.ship_type_id which may be recorded as the capsule when a
     // pilot loses their ship and is subsequently podded.
+    // Includes alliance_id/corporation_id so PHP can classify sides using live standings.
     return db_select(
         "SELECT tp.flying_ship_type_id AS ship_type_id,
                 COALESCE(rit.type_name, CONCAT('Type #', tp.flying_ship_type_id)) AS ship_name,
                 COALESCE(rig.group_name, '') AS ship_group,
-                COUNT(*) AS pilot_count,
-                CASE
-                    WHEN tas.side IS NOT NULL THEN tas.side
-                    ELSE 'third_party'
-                END AS side
+                COALESCE(tp.alliance_id, 0) AS alliance_id,
+                COALESCE(tp.corporation_id, 0) AS corporation_id,
+                COUNT(*) AS pilot_count
          FROM theater_participants tp
          LEFT JOIN ref_item_types rit ON rit.type_id = tp.flying_ship_type_id
          LEFT JOIN ref_item_groups rig ON rig.group_id = rit.group_id
-         LEFT JOIN theater_alliance_summary tas
-              ON tas.theater_id = tp.theater_id
-              AND tas.alliance_id = COALESCE(tp.alliance_id, 0)
-              AND tas.corporation_id = CASE WHEN COALESCE(tp.alliance_id, 0) > 0 THEN 0 ELSE COALESCE(tp.corporation_id, 0) END
          WHERE tp.theater_id = ?
            AND tp.flying_ship_type_id IS NOT NULL
            AND tp.flying_ship_type_id > 0
-         GROUP BY tp.flying_ship_type_id, rit.type_name, rig.group_name, side
+         GROUP BY tp.flying_ship_type_id, rit.type_name, rig.group_name,
+                  COALESCE(tp.alliance_id, 0), COALESCE(tp.corporation_id, 0)
          ORDER BY pilot_count DESC",
         [$theaterId]
     );

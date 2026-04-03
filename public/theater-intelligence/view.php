@@ -107,6 +107,192 @@ if ($viewSnapshot !== null && !$pendingLock) {
         return 'third_party';
     };
 
+    // ── Rebuild side panels from snapshot data using live standings ───────
+    // Snapshot-saved panels may use stale side classification. Reclassify
+    // alliances and ships using the live $classifyAlliance closure.
+    $sideAlliancesByPilots = ['friendly' => [], 'opponent' => [], 'third_party' => []];
+    foreach ($allianceSummary as $a) {
+        $aid = (int) ($a['alliance_id'] ?? 0);
+        $corpId = (int) ($a['corporation_id'] ?? 0);
+        $pilots = (int) ($a['participant_count'] ?? 0);
+        $classification = $classifyAlliance($aid, $corpId);
+        $groupKey = $aid > 0 ? "a:{$aid}" : "c:{$corpId}";
+        $sideAlliancesByPilots[$classification][$groupKey] = ($sideAlliancesByPilots[$classification][$groupKey] ?? 0) + $pilots;
+    }
+
+    if ($sideAlliancesByPilots['opponent'] === [] && $sideAlliancesByPilots['third_party'] !== []) {
+        $sideAlliancesByPilots['opponent'] = $sideAlliancesByPilots['third_party'];
+        $sideAlliancesByPilots['third_party'] = [];
+    }
+
+    // Rebuild side labels
+    $sideLabels = ['friendly' => 'Friendlies', 'opponent' => 'Opposition', 'third_party' => 'Third Party'];
+    foreach (['friendly', 'opponent', 'third_party'] as $_side) {
+        $_alliances = $sideAlliancesByPilots[$_side];
+        if ($_alliances === []) continue;
+        arsort($_alliances);
+        $_preferredKey = (string) array_key_first($_alliances);
+        if (str_starts_with($_preferredKey, 'c:')) {
+            $_preferredName = killmail_entity_preferred_name($resolvedEntities, 'corporation', (int) substr($_preferredKey, 2), '', 'Corporation');
+        } else {
+            $_preferredName = killmail_entity_preferred_name($resolvedEntities, 'alliance', (int) substr($_preferredKey, 2), '', 'Alliance');
+        }
+        $_otherCount = count($_alliances) - 1;
+        $sideLabels[$_side] = $_preferredName . ($_otherCount > 0 ? " +{$_otherCount}" : '');
+    }
+    unset($_side, $_alliances, $_preferredKey, $_preferredName, $_otherCount);
+
+    $friendlyCoalitionName = trim((string) db_app_setting_get('friendly_coalition_name', ''));
+    $opponentCoalitionName = trim((string) db_app_setting_get('opponent_coalition_name', ''));
+    if ($friendlyCoalitionName !== '' && $sideAlliancesByPilots['friendly'] !== []) {
+        $otherCount = count($sideAlliancesByPilots['friendly']) - 1;
+        $sideLabels['friendly'] = $friendlyCoalitionName . ($otherCount > 0 ? " +{$otherCount}" : '');
+    }
+    if ($opponentCoalitionName !== '' && $sideAlliancesByPilots['opponent'] !== []) {
+        $otherCount = count($sideAlliancesByPilots['opponent']) - 1;
+        $sideLabels['opponent'] = $opponentCoalitionName . ($otherCount > 0 ? " +{$otherCount}" : '');
+    }
+
+    // Rebuild opponent model
+    $opponentModel = ['primary_opponent' => null, 'opponents' => [], 'opponent_summary_label' => $sideLabels['opponent']];
+    $_opAll = $sideAlliancesByPilots['opponent'];
+    arsort($_opAll);
+    foreach ($_opAll as $_gk => $_pilots) {
+        $_gk = (string) $_gk;
+        if (str_starts_with($_gk, 'c:')) {
+            $_eid = (int) substr($_gk, 2);
+            $_name = killmail_entity_preferred_name($resolvedEntities, 'corporation', $_eid, '', 'Corporation');
+            $_entry = ['alliance_id' => 0, 'corporation_id' => $_eid, 'name' => $_name, 'pilots' => $_pilots];
+        } else {
+            $_eid = (int) substr($_gk, 2);
+            $_name = killmail_entity_preferred_name($resolvedEntities, 'alliance', $_eid, '', 'Alliance');
+            $_entry = ['alliance_id' => $_eid, 'name' => $_name, 'pilots' => $_pilots];
+        }
+        $opponentModel['opponents'][] = $_entry;
+        if ($opponentModel['primary_opponent'] === null) {
+            $opponentModel['primary_opponent'] = $_entry;
+        }
+    }
+    if ($opponentModel['opponents'] === []) {
+        $opponentModel['opponent_summary_label'] = 'Unclassified Hostiles';
+    } elseif (count($opponentModel['opponents']) === 1) {
+        $opponentModel['opponent_summary_label'] = $opponentModel['primary_opponent']['name'];
+    }
+    unset($_opAll, $_gk, $_pilots, $_eid, $_name, $_entry);
+
+    // Rebuild side panels (alliance stats + ships)
+    $sidePanels = [
+        'friendly'    => ['pilots' => 0, 'kills' => 0, 'losses' => 0, 'isk_killed' => 0.0, 'isk_lost' => 0.0, 'alliances' => [], 'ship_pilots' => 0, 'ships' => [], 'kill_involvements' => 0, 'efficiency' => 0.0],
+        'opponent'    => ['pilots' => 0, 'kills' => 0, 'losses' => 0, 'isk_killed' => 0.0, 'isk_lost' => 0.0, 'alliances' => [], 'ship_pilots' => 0, 'ships' => [], 'kill_involvements' => 0, 'efficiency' => 0.0],
+        'third_party' => ['pilots' => 0, 'kills' => 0, 'losses' => 0, 'isk_killed' => 0.0, 'isk_lost' => 0.0, 'alliances' => [], 'ship_pilots' => 0, 'ships' => [], 'kill_involvements' => 0, 'efficiency' => 0.0],
+    ];
+    foreach ($allianceSummary as $a) {
+        $aid = (int) ($a['alliance_id'] ?? 0);
+        $corpId = (int) ($a['corporation_id'] ?? 0);
+        $_side = $classifyAlliance($aid, $corpId);
+        if (!isset($sidePanels[$_side])) continue;
+        $sidePanels[$_side]['pilots'] += (int) ($a['participant_count'] ?? 0);
+        $sidePanels[$_side]['kills'] += (int) ($a['total_kills'] ?? 0);
+        $sidePanels[$_side]['losses'] += (int) ($a['total_losses'] ?? 0);
+        $sidePanels[$_side]['isk_killed'] += (float) ($a['total_isk_killed'] ?? 0);
+        $sidePanels[$_side]['isk_lost'] += (float) ($a['total_isk_lost'] ?? 0);
+        if ($aid > 0) {
+            $entryName = killmail_entity_preferred_name($resolvedEntities, 'alliance', $aid, (string) ($a['alliance_name'] ?? ''), 'Alliance');
+        } else {
+            $entryName = killmail_entity_preferred_name($resolvedEntities, 'corporation', $corpId, (string) ($a['alliance_name'] ?? ''), 'Corporation');
+        }
+        $sidePanels[$_side]['alliances'][] = [
+            'alliance_id' => $aid,
+            'corporation_id' => $corpId,
+            'name' => $entryName,
+            'pilots' => (int) ($a['participant_count'] ?? 0),
+        ];
+    }
+    foreach (['friendly', 'opponent', 'third_party'] as $_side) {
+        $total = $sidePanels[$_side]['isk_killed'] + $sidePanels[$_side]['isk_lost'];
+        $sidePanels[$_side]['efficiency'] = $total > 0
+            ? $sidePanels[$_side]['isk_killed'] / $total : 0.0;
+    }
+    // kill_involvements from participant data
+    $participantKillTotalsBySide = ['friendly' => 0, 'opponent' => 0, 'third_party' => 0];
+    foreach ($participantsAll as $_row) {
+        $_ck = (int) ($_row['contributed_kills'] ?? $_row['kills'] ?? 0);
+        $_ps = $classifyAlliance((int) ($_row['alliance_id'] ?? 0), (int) ($_row['corporation_id'] ?? 0));
+        if (isset($participantKillTotalsBySide[$_ps])) {
+            $participantKillTotalsBySide[$_ps] += $_ck;
+        }
+    }
+    foreach ($sidePanels as $_side => $_data) {
+        $sidePanels[$_side]['kill_involvements'] = (int) ($participantKillTotalsBySide[$_side] ?? 0);
+        usort($_data['alliances'], static fn(array $l, array $r): int => $r['pilots'] <=> $l['pilots']);
+        $sidePanels[$_side]['alliances'] = array_slice($_data['alliances'], 0, 4);
+    }
+    unset($_side, $_data, $_row, $_ck, $_ps);
+
+    // Rebuild ships from fleet composition using live standings
+    foreach ($fleetComposition as $_row) {
+        $fcAllianceId = (int) ($_row['alliance_id'] ?? 0);
+        $fcCorpId = (int) ($_row['corporation_id'] ?? 0);
+        // For old snapshots without alliance_id, fall back to stored side
+        if ($fcAllianceId <= 0 && $fcCorpId <= 0 && isset($_row['side'])) {
+            $_fleetSideMap = ['side_a' => 'friendly', 'side_b' => 'opponent', 'friendly' => 'friendly', 'opponent' => 'opponent', 'third_party' => 'third_party'];
+            $_side = $_fleetSideMap[(string) $_row['side']] ?? 'third_party';
+        } else {
+            $_side = $classifyAlliance($fcAllianceId, $fcCorpId);
+        }
+        if (!isset($sidePanels[$_side])) continue;
+        $shipTypeId = (int) ($_row['ship_type_id'] ?? 0);
+        $shipName = (string) ($_row['ship_name'] ?? 'Unknown Hull');
+        $normalizedShipName = strtolower(trim($shipName));
+        $isCapsuleHull = in_array($shipTypeId, [670, 33328], true)
+            || str_contains($normalizedShipName, 'capsule')
+            || str_contains($normalizedShipName, 'pod');
+        if ($isCapsuleHull) continue;
+        $pilots = (int) ($_row['pilot_count'] ?? 0);
+        $sidePanels[$_side]['ship_pilots'] += $pilots;
+        $sidePanels[$_side]['ships'][] = [
+            'name' => $shipName,
+            'type_id' => $shipTypeId,
+            'pilots' => $pilots,
+        ];
+    }
+    unset($_row, $_side, $_fleetSideMap);
+    // Pod fallback for pilots whose flying_ship is a capsule
+    $_podTypeIdsFC = [670, 33328];
+    $extraShipCounts = [];
+    foreach ($participantsAll as $_p) {
+        $_flyId = (int) ($_p['flying_ship_type_id'] ?? 0);
+        if ($_flyId > 0 && !in_array($_flyId, $_podTypeIdsFC, true)) continue;
+        $_pSide = $classifyAlliance((int) ($_p['alliance_id'] ?? 0), (int) ($_p['corporation_id'] ?? 0));
+        if (!isset($sidePanels[$_pSide])) continue;
+        $_lostJson = $_p['ships_lost_detail'] ?? null;
+        if (!is_string($_lostJson)) continue;
+        $_lostArr = json_decode($_lostJson, true);
+        if (!is_array($_lostArr) || $_lostArr === []) continue;
+        $_nonPod = array_values(array_filter($_lostArr, static fn(array $e): bool => !in_array((int) ($e['ship_type_id'] ?? 0), [670, 33328], true)));
+        if ($_nonPod === []) continue;
+        usort($_nonPod, static fn(array $a, array $b): int => (float) ($b['isk_lost'] ?? 0) <=> (float) ($a['isk_lost'] ?? 0));
+        $_bestId = (int) ($_nonPod[0]['ship_type_id'] ?? 0);
+        if ($_bestId <= 0) continue;
+        if (!isset($extraShipCounts[$_pSide][$_bestId])) {
+            $extraShipCounts[$_pSide][$_bestId] = ['type_id' => $_bestId, 'name' => '', 'pilots' => 0];
+        }
+        $extraShipCounts[$_pSide][$_bestId]['pilots']++;
+    }
+    foreach ($extraShipCounts as $_side => $_ships) {
+        foreach ($_ships as $_entry) {
+            $sidePanels[$_side]['ship_pilots'] += $_entry['pilots'];
+            $sidePanels[$_side]['ships'][] = $_entry;
+        }
+    }
+    unset($_podTypeIdsFC, $extraShipCounts, $_p, $_flyId, $_pSide, $_lostJson, $_lostArr, $_nonPod, $_bestId, $_side, $_ships, $_entry);
+
+    foreach ($sidePanels as $_side => $_data) {
+        usort($_data['ships'], static fn(array $l, array $r): int => $r['pilots'] <=> $l['pilots']);
+        $sidePanels[$_side]['ships'] = array_slice($_data['ships'], 0, 12);
+    }
+    unset($_side, $_data);
+
     $sideColorClass = [
         'friendly' => 'text-blue-300',
         'opponent' => 'text-red-300',
@@ -487,11 +673,11 @@ if ($viewSnapshot !== null && !$pendingLock) {
         $sidePanels[$side]['alliances'] = array_slice($data['alliances'], 0, 4);
     }
 
-    // Fleet composition uses side_a/side_b from DB — map to friendly/opponent
-    $fleetSideMap = ['side_a' => 'friendly', 'side_b' => 'opponent', 'friendly' => 'friendly', 'opponent' => 'opponent', 'third_party' => 'third_party'];
+    // Fleet composition: classify side using live standings (same as alliance panels)
     foreach ($fleetComposition as $row) {
-        $rawSide = (string) ($row['side'] ?? '');
-        $side = $fleetSideMap[$rawSide] ?? 'third_party';
+        $fcAllianceId = (int) ($row['alliance_id'] ?? 0);
+        $fcCorpId = (int) ($row['corporation_id'] ?? 0);
+        $side = $classifyAlliance($fcAllianceId, $fcCorpId);
         if (!isset($sidePanels[$side])) continue;
         $shipTypeId = (int) ($row['ship_type_id'] ?? 0);
         $shipName = (string) ($row['ship_name'] ?? 'Unknown Hull');
