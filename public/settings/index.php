@@ -34,6 +34,7 @@ $sectionChildren = [
     ],
     'runtime-diagnostics' => [
         'runtime-config' => 'Runtime Config',
+        'influxdb-test' => 'InfluxDB Test',
     ],
 ];
 $requestedSection = (string) ($_GET['section'] ?? 'workspace');
@@ -77,6 +78,175 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 supplycore_runtime_config_refresh();
             }
             break;
+
+        case 'influxdb-test':
+            $influxTestUrl = rtrim((string) config('influxdb.url', 'http://127.0.0.1:8086'), '/');
+            $influxTestToken = trim((string) config('influxdb.token', ''));
+            $influxTestOrg = trim((string) config('influxdb.org', ''));
+            $influxTestBucket = trim((string) config('influxdb.bucket', 'supplycore_rollups'));
+            $influxTestTimeout = max(3, (int) config('influxdb.timeout_seconds', 15));
+            $testResults = [];
+
+            // 1. Health check
+            $ch = curl_init($influxTestUrl . '/health');
+            curl_setopt_array($ch, [
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_TIMEOUT => min($influxTestTimeout, 5),
+                CURLOPT_CONNECTTIMEOUT => 3,
+                CURLOPT_HTTPHEADER => array_filter([
+                    'Accept: application/json',
+                    $influxTestToken !== '' ? ('Authorization: Token ' . $influxTestToken) : null,
+                ]),
+            ]);
+            $healthBody = curl_exec($ch);
+            $healthCode = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            $healthError = curl_error($ch);
+            $healthLatency = round((float) curl_getinfo($ch, CURLINFO_TOTAL_TIME) * 1000);
+            curl_close($ch);
+
+            $healthData = is_string($healthBody) ? @json_decode($healthBody, true) : null;
+            $testResults['health'] = [
+                'label' => 'Health endpoint',
+                'ok' => $healthCode >= 200 && $healthCode < 400,
+                'detail' => $healthError !== '' ? $healthError : ('HTTP ' . $healthCode . ' · ' . ($healthData['status'] ?? 'unknown') . ' · ' . $healthLatency . 'ms'),
+                'version' => $healthData['version'] ?? null,
+            ];
+
+            // 2. Auth / bucket check – list buckets filtered by name
+            if ($influxTestToken !== '' && $influxTestOrg !== '') {
+                $bucketsEndpoint = $influxTestUrl . '/api/v2/buckets?org=' . rawurlencode($influxTestOrg) . '&name=' . rawurlencode($influxTestBucket);
+                $ch = curl_init($bucketsEndpoint);
+                curl_setopt_array($ch, [
+                    CURLOPT_RETURNTRANSFER => true,
+                    CURLOPT_TIMEOUT => min($influxTestTimeout, 5),
+                    CURLOPT_CONNECTTIMEOUT => 3,
+                    CURLOPT_HTTPHEADER => [
+                        'Authorization: Token ' . $influxTestToken,
+                        'Accept: application/json',
+                    ],
+                ]);
+                $bucketsBody = curl_exec($ch);
+                $bucketsCode = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+                $bucketsError = curl_error($ch);
+                curl_close($ch);
+
+                $bucketsData = is_string($bucketsBody) ? @json_decode($bucketsBody, true) : null;
+                $bucketFound = false;
+                if (is_array($bucketsData) && is_array($bucketsData['buckets'] ?? null)) {
+                    foreach ($bucketsData['buckets'] as $b) {
+                        if (($b['name'] ?? '') === $influxTestBucket) {
+                            $bucketFound = true;
+                            break;
+                        }
+                    }
+                }
+
+                $testResults['auth'] = [
+                    'label' => 'Authentication',
+                    'ok' => $bucketsCode >= 200 && $bucketsCode < 300,
+                    'detail' => $bucketsError !== '' ? $bucketsError : ('HTTP ' . $bucketsCode . ($bucketsCode === 401 ? ' · invalid token' : ($bucketsCode === 403 ? ' · forbidden' : ''))),
+                ];
+
+                $testResults['bucket'] = [
+                    'label' => 'Bucket "' . $influxTestBucket . '"',
+                    'ok' => $bucketFound,
+                    'detail' => $bucketFound ? 'Found' : ($bucketsCode >= 200 && $bucketsCode < 300 ? 'Bucket not found in organization' : 'Could not verify (auth failed)'),
+                ];
+            } else {
+                $testResults['auth'] = [
+                    'label' => 'Authentication',
+                    'ok' => false,
+                    'detail' => 'Token or org not configured',
+                ];
+            }
+
+            // 3. Write test – write a single test point and delete it
+            if (($testResults['auth']['ok'] ?? false) && ($testResults['bucket']['ok'] ?? false)) {
+                $testTimestamp = time();
+                $lineProtocol = 'supplycore_connection_test,source=settings test_value=1i ' . $testTimestamp;
+                $writeEndpoint = $influxTestUrl . '/api/v2/write?org=' . rawurlencode($influxTestOrg)
+                    . '&bucket=' . rawurlencode($influxTestBucket)
+                    . '&precision=s';
+                $ch = curl_init($writeEndpoint);
+                curl_setopt_array($ch, [
+                    CURLOPT_RETURNTRANSFER => true,
+                    CURLOPT_POST => true,
+                    CURLOPT_POSTFIELDS => $lineProtocol,
+                    CURLOPT_TIMEOUT => min($influxTestTimeout, 5),
+                    CURLOPT_CONNECTTIMEOUT => 3,
+                    CURLOPT_HTTPHEADER => [
+                        'Authorization: Token ' . $influxTestToken,
+                        'Content-Type: text/plain',
+                    ],
+                ]);
+                $writeBody = curl_exec($ch);
+                $writeCode = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+                $writeError = curl_error($ch);
+                curl_close($ch);
+
+                $testResults['write'] = [
+                    'label' => 'Write test',
+                    'ok' => $writeCode >= 200 && $writeCode < 300,
+                    'detail' => $writeError !== '' ? $writeError : ('HTTP ' . $writeCode . ($writeCode === 204 ? ' · OK' : (' · ' . trim((string) $writeBody)))),
+                ];
+
+                // 4. Query test – read back the test point
+                $flux = 'from(bucket: "' . $influxTestBucket . '") |> range(start: -1m) |> filter(fn: (r) => r._measurement == "supplycore_connection_test") |> limit(n: 1)';
+                $queryEndpoint = $influxTestUrl . '/api/v2/query?org=' . rawurlencode($influxTestOrg);
+                $ch = curl_init($queryEndpoint);
+                curl_setopt_array($ch, [
+                    CURLOPT_RETURNTRANSFER => true,
+                    CURLOPT_POST => true,
+                    CURLOPT_POSTFIELDS => $flux,
+                    CURLOPT_TIMEOUT => min($influxTestTimeout, 5),
+                    CURLOPT_CONNECTTIMEOUT => 3,
+                    CURLOPT_HTTPHEADER => [
+                        'Authorization: Token ' . $influxTestToken,
+                        'Content-Type: application/vnd.flux',
+                        'Accept: application/csv',
+                    ],
+                ]);
+                $queryBody = curl_exec($ch);
+                $queryCode = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+                $queryError = curl_error($ch);
+                curl_close($ch);
+
+                $queryHasRows = is_string($queryBody) && preg_match('/supplycore_connection_test/', $queryBody);
+                $testResults['query'] = [
+                    'label' => 'Query test',
+                    'ok' => $queryCode >= 200 && $queryCode < 300,
+                    'detail' => $queryError !== '' ? $queryError : ('HTTP ' . $queryCode . ($queryHasRows ? ' · test row returned' : ' · no rows (write may be buffered)')),
+                ];
+
+                // 5. Clean up – delete the test measurement
+                $deleteEndpoint = $influxTestUrl . '/api/v2/delete?org=' . rawurlencode($influxTestOrg)
+                    . '&bucket=' . rawurlencode($influxTestBucket);
+                $deletePayload = json_encode([
+                    'start' => gmdate('Y-m-d\TH:i:s\Z', $testTimestamp - 1),
+                    'stop' => gmdate('Y-m-d\TH:i:s\Z', $testTimestamp + 1),
+                    'predicate' => '_measurement="supplycore_connection_test"',
+                ]);
+                $ch = curl_init($deleteEndpoint);
+                curl_setopt_array($ch, [
+                    CURLOPT_RETURNTRANSFER => true,
+                    CURLOPT_POST => true,
+                    CURLOPT_POSTFIELDS => $deletePayload,
+                    CURLOPT_TIMEOUT => min($influxTestTimeout, 5),
+                    CURLOPT_CONNECTTIMEOUT => 3,
+                    CURLOPT_HTTPHEADER => [
+                        'Authorization: Token ' . $influxTestToken,
+                        'Content-Type: application/json',
+                    ],
+                ]);
+                curl_exec($ch);
+                curl_close($ch);
+            }
+
+            $allPassed = array_reduce($testResults, fn(bool $carry, array $r) => $carry && $r['ok'], true);
+            $_SESSION['influxdb_test_results'] = $testResults;
+            flash('success', $allPassed ? 'All InfluxDB tests passed.' : 'Some InfluxDB tests failed – see results below.');
+            header('Location: /settings?section=runtime-diagnostics&subsection=influxdb-test');
+            exit;
 
         case 'general':
             $saved = save_settings([
@@ -681,6 +851,62 @@ include __DIR__ . '/../../src/views/partials/header.php';
                     <?php endforeach; ?>
                     <button class="btn-primary">Save runtime settings</button>
                 </form>
+            </div>
+        <?php elseif ($activeSubsection === 'influxdb-test'): ?>
+            <?php
+            $influxTestEnabled = (bool) config('influxdb.enabled', false);
+            $influxTestCurrentUrl = rtrim((string) config('influxdb.url', 'http://127.0.0.1:8086'), '/');
+            $influxTestCurrentOrg = trim((string) config('influxdb.org', ''));
+            $influxTestCurrentBucket = trim((string) config('influxdb.bucket', 'supplycore_rollups'));
+            $influxTestCurrentToken = trim((string) config('influxdb.token', ''));
+            $influxTestResults = $_SESSION['influxdb_test_results'] ?? null;
+            unset($_SESSION['influxdb_test_results']);
+            ?>
+            <div class="mt-6 space-y-6">
+                <section class="rounded-2xl border border-border bg-black/20 p-4">
+                    <p class="text-sm font-semibold text-slate-100">InfluxDB Connection Test</p>
+                    <p class="mt-1 text-xs text-muted">Run a full connectivity test against your configured InfluxDB instance. This will check health, authentication, bucket access, write, and query capabilities.</p>
+
+                    <div class="mt-4 grid gap-3 md:grid-cols-2">
+                        <p class="text-sm text-slate-200">URL: <span class="font-mono text-slate-100"><?= htmlspecialchars($influxTestCurrentUrl, ENT_QUOTES) ?></span></p>
+                        <p class="text-sm text-slate-200">Org: <span class="font-mono text-slate-100"><?= htmlspecialchars($influxTestCurrentOrg !== '' ? $influxTestCurrentOrg : '(not set)', ENT_QUOTES) ?></span></p>
+                        <p class="text-sm text-slate-200">Bucket: <span class="font-mono text-slate-100"><?= htmlspecialchars($influxTestCurrentBucket, ENT_QUOTES) ?></span></p>
+                        <p class="text-sm text-slate-200">Token: <span class="font-mono text-slate-100"><?= $influxTestCurrentToken !== '' ? '••••' . htmlspecialchars(substr($influxTestCurrentToken, -4), ENT_QUOTES) : '(not set)' ?></span></p>
+                        <p class="text-sm text-slate-200">Enabled: <span class="font-mono text-slate-100"><?= $influxTestEnabled ? 'yes' : 'no' ?></span></p>
+                    </div>
+
+                    <form method="post" class="mt-4">
+                        <input type="hidden" name="_token" value="<?= htmlspecialchars(csrf_token(), ENT_QUOTES) ?>">
+                        <input type="hidden" name="section" value="influxdb-test">
+                        <button class="btn-primary">Test Connection</button>
+                    </form>
+                </section>
+
+                <?php if (is_array($influxTestResults) && $influxTestResults !== []): ?>
+                    <section class="rounded-2xl border border-border bg-black/20 p-4">
+                        <p class="text-sm font-semibold text-slate-100">Test Results</p>
+                        <div class="mt-4 space-y-3">
+                            <?php foreach ($influxTestResults as $testKey => $testResult): ?>
+                                <?php
+                                $isOk = (bool) ($testResult['ok'] ?? false);
+                                $tone = $isOk
+                                    ? 'border-emerald-400/20 bg-emerald-500/10 text-emerald-100'
+                                    : 'border-rose-400/20 bg-rose-500/10 text-rose-100';
+                                ?>
+                                <div class="flex items-start gap-3 rounded-lg border p-3 <?= $tone ?>">
+                                    <span class="mt-0.5 text-lg"><?= $isOk ? '&#10003;' : '&#10007;' ?></span>
+                                    <div>
+                                        <p class="text-sm font-medium"><?= htmlspecialchars((string) ($testResult['label'] ?? $testKey), ENT_QUOTES) ?></p>
+                                        <p class="text-xs opacity-80"><?= htmlspecialchars((string) ($testResult['detail'] ?? ''), ENT_QUOTES) ?></p>
+                                        <?php if (!empty($testResult['version'])): ?>
+                                            <p class="text-xs opacity-60">Version: <?= htmlspecialchars((string) $testResult['version'], ENT_QUOTES) ?></p>
+                                        <?php endif; ?>
+                                    </div>
+                                </div>
+                            <?php endforeach; ?>
+                        </div>
+                    </section>
+                <?php endif; ?>
             </div>
         <?php elseif ($activeSubsection === 'general'): ?>
             <?php
