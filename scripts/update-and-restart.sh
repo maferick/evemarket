@@ -550,7 +550,7 @@ if [[ ${HEALTH_CHECK} -eq 1 && ${#RESTART_SERVICES[@]} -gt 0 && ${DRY_RUN} -eq 0
   UNHEALTHY_SERVICES=()
   for svc in "${RESTART_SERVICES[@]}"; do
     # Skip already-failed services
-    local skip=false
+    skip=false
     for failed in "${FAILED_SERVICES[@]+"${FAILED_SERVICES[@]}"}"; do
       if [[ "${failed}" == "${svc}" ]]; then
         skip=true
