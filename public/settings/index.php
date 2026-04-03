@@ -1566,14 +1566,13 @@ include __DIR__ . '/../../src/views/partials/header.php';
                 $contactCorpIds = array_keys($contactIdsByType['corporation']);
                 $contactCharacterIds = array_keys($contactIdsByType['character']);
                 $contactNameMap = [];
-                foreach (db_entity_metadata_cache_get_many('alliance', $contactAllianceIds) as $e) {
-                    $contactNameMap['alliance:' . (int) $e['entity_id']] = (string) $e['entity_name'];
-                }
-                foreach (db_entity_metadata_cache_get_many('corporation', $contactCorpIds) as $e) {
-                    $contactNameMap['corporation:' . (int) $e['entity_id']] = (string) $e['entity_name'];
-                }
-                foreach (db_entity_metadata_cache_get_many('character', $contactCharacterIds) as $e) {
-                    $contactNameMap['character:' . (int) $e['entity_id']] = (string) $e['entity_name'];
+                foreach (['alliance' => $contactAllianceIds, 'corporation' => $contactCorpIds, 'character' => $contactCharacterIds] as $cacheType => $cacheIds) {
+                    foreach (db_entity_metadata_cache_get_many($cacheType, $cacheIds) as $e) {
+                        $name = trim((string) ($e['entity_name'] ?? ''));
+                        if ($name !== '') {
+                            $contactNameMap[$cacheType . ':' . (int) $e['entity_id']] = $name;
+                        }
+                    }
                 }
 
                 // Queue any unresolved contact IDs for background name resolution

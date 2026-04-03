@@ -14796,6 +14796,7 @@ function esi_default_scopes(): array
         'esi-markets.structure_markets.v1',
         'esi-corporations.read_standings.v1',
         'esi-corporations.read_contacts.v1',
+        'esi-alliances.read_contacts.v1',
     ];
 }
 
@@ -14808,6 +14809,7 @@ function esi_required_corp_standings_scopes(): array
     return [
         'esi-corporations.read_standings.v1',
         'esi-corporations.read_contacts.v1',
+        'esi-alliances.read_contacts.v1',
     ];
 }
 
