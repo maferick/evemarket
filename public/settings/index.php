@@ -1554,20 +1554,41 @@ include __DIR__ . '/../../src/views/partials/header.php';
                 $corpContactsList = db_corp_contacts_all();
                 $esiContacts = array_filter($corpContactsList, static fn (array $c): bool => ((string) ($c['source'] ?? 'esi')) === 'esi');
                 $manualContacts = array_filter($corpContactsList, static fn (array $c): bool => ((string) ($c['source'] ?? 'esi')) === 'manual');
-                $contactAllianceIds = array_values(array_unique(array_filter(array_map(
-                    static fn (array $c): int => $c['contact_type'] === 'alliance' ? (int) $c['contact_id'] : 0,
-                    $corpContactsList
-                ), static fn (int $id): bool => $id > 0)));
-                $contactCorpIds = array_values(array_unique(array_filter(array_map(
-                    static fn (array $c): int => $c['contact_type'] === 'corporation' ? (int) $c['contact_id'] : 0,
-                    $corpContactsList
-                ), static fn (int $id): bool => $id > 0)));
+                $contactIdsByType = ['alliance' => [], 'corporation' => [], 'character' => []];
+                foreach ($corpContactsList as $c) {
+                    $cType = (string) $c['contact_type'];
+                    $cId = (int) $c['contact_id'];
+                    if ($cId > 0 && isset($contactIdsByType[$cType])) {
+                        $contactIdsByType[$cType][$cId] = true;
+                    }
+                }
+                $contactAllianceIds = array_keys($contactIdsByType['alliance']);
+                $contactCorpIds = array_keys($contactIdsByType['corporation']);
+                $contactCharacterIds = array_keys($contactIdsByType['character']);
                 $contactNameMap = [];
                 foreach (db_entity_metadata_cache_get_many('alliance', $contactAllianceIds) as $e) {
                     $contactNameMap['alliance:' . (int) $e['entity_id']] = (string) $e['entity_name'];
                 }
                 foreach (db_entity_metadata_cache_get_many('corporation', $contactCorpIds) as $e) {
                     $contactNameMap['corporation:' . (int) $e['entity_id']] = (string) $e['entity_name'];
+                }
+                foreach (db_entity_metadata_cache_get_many('character', $contactCharacterIds) as $e) {
+                    $contactNameMap['character:' . (int) $e['entity_id']] = (string) $e['entity_name'];
+                }
+
+                // Queue any unresolved contact IDs for background name resolution
+                $unresolvedByType = [];
+                foreach ($contactIdsByType as $cType => $idMap) {
+                    foreach (array_keys($idMap) as $cId) {
+                        if (!isset($contactNameMap[$cType . ':' . $cId])) {
+                            $unresolvedByType[$cType][] = $cId;
+                        }
+                    }
+                }
+                foreach ($unresolvedByType as $cType => $ids) {
+                    if ($ids !== []) {
+                        db_entity_metadata_cache_mark_pending($cType, $ids);
+                    }
                 }
 
                 // Prepare manual contact picker selections
@@ -1768,8 +1789,12 @@ include __DIR__ . '/../../src/views/partials/header.php';
 
                 <?php if ($esiContacts !== []): ?>
                 <?php
-                    $esiFriendly = array_filter($esiContacts, static fn (array $c): bool => (float) $c['standing'] > 0);
-                    $esiHostile = array_filter($esiContacts, static fn (array $c): bool => (float) $c['standing'] < 0);
+                    $esiFriendly10 = array_filter($esiContacts, static fn (array $c): bool => (float) $c['standing'] >= 10.0);
+                    $esiFriendly5  = array_filter($esiContacts, static fn (array $c): bool => (float) $c['standing'] > 0 && (float) $c['standing'] < 10.0);
+                    $esiHostile5   = array_filter($esiContacts, static fn (array $c): bool => (float) $c['standing'] < 0 && (float) $c['standing'] > -10.0);
+                    $esiHostile10  = array_filter($esiContacts, static fn (array $c): bool => (float) $c['standing'] <= -10.0);
+                    $esiFriendly = array_merge($esiFriendly10, $esiFriendly5);
+                    $esiHostile = array_merge($esiHostile10, $esiHostile5);
                 ?>
                 <p class="text-xs uppercase tracking-[0.14em] text-muted mt-4 mb-2">ESI Synced (read-only)</p>
                 <div class="grid gap-4 lg:grid-cols-2">
@@ -1779,18 +1804,27 @@ include __DIR__ . '/../../src/views/partials/header.php';
                             <p class="text-xs text-muted">No friendly contacts from ESI.</p>
                         <?php else: ?>
                             <div class="max-h-72 overflow-y-auto rounded-lg border border-border bg-black/10 divide-y divide-border/50">
-                                <?php foreach ($esiFriendly as $c):
+                                <?php
+                                    $prevStandingGroup = null;
+                                    foreach ($esiFriendly as $c):
                                     $cId = (int) $c['contact_id'];
                                     $cType = (string) $c['contact_type'];
                                     $cStanding = (float) $c['standing'];
                                     $cName = $contactNameMap[$cType . ':' . $cId] ?? ucfirst($cType) . ' #' . $cId;
+                                    $standingGroup = $cStanding >= 10.0 ? '+10' : '+5';
+                                    if ($standingGroup !== $prevStandingGroup):
+                                        $prevStandingGroup = $standingGroup;
                                 ?>
+                                <div class="px-3 py-1.5 bg-blue-500/5">
+                                    <span class="text-xs font-semibold uppercase tracking-wider <?= $cStanding >= 10.0 ? 'text-blue-300' : 'text-sky-400' ?>">Standing <?= $standingGroup ?></span>
+                                </div>
+                                <?php endif; ?>
                                 <div class="flex items-center justify-between px-3 py-2">
                                     <div>
                                         <span class="text-sm text-slate-100"><?= htmlspecialchars($cName, ENT_QUOTES) ?></span>
                                         <span class="ml-2 text-xs text-muted"><?= htmlspecialchars(ucfirst($cType), ENT_QUOTES) ?></span>
                                     </div>
-                                    <span class="text-xs font-mono text-blue-400">+<?= number_format($cStanding, 1) ?></span>
+                                    <span class="text-xs font-mono <?= $cStanding >= 10.0 ? 'text-blue-400' : 'text-sky-400' ?>">+<?= number_format($cStanding, 1) ?></span>
                                 </div>
                                 <?php endforeach; ?>
                             </div>
@@ -1802,18 +1836,27 @@ include __DIR__ . '/../../src/views/partials/header.php';
                             <p class="text-xs text-muted">No hostile contacts from ESI.</p>
                         <?php else: ?>
                             <div class="max-h-72 overflow-y-auto rounded-lg border border-border bg-black/10 divide-y divide-border/50">
-                                <?php foreach ($esiHostile as $c):
+                                <?php
+                                    $prevStandingGroup = null;
+                                    foreach ($esiHostile as $c):
                                     $cId = (int) $c['contact_id'];
                                     $cType = (string) $c['contact_type'];
                                     $cStanding = (float) $c['standing'];
                                     $cName = $contactNameMap[$cType . ':' . $cId] ?? ucfirst($cType) . ' #' . $cId;
+                                    $standingGroup = $cStanding <= -10.0 ? '-10' : '-5';
+                                    if ($standingGroup !== $prevStandingGroup):
+                                        $prevStandingGroup = $standingGroup;
                                 ?>
+                                <div class="px-3 py-1.5 bg-red-500/5">
+                                    <span class="text-xs font-semibold uppercase tracking-wider <?= $cStanding <= -10.0 ? 'text-red-300' : 'text-orange-400' ?>">Standing <?= $standingGroup ?></span>
+                                </div>
+                                <?php endif; ?>
                                 <div class="flex items-center justify-between px-3 py-2">
                                     <div>
                                         <span class="text-sm text-slate-100"><?= htmlspecialchars($cName, ENT_QUOTES) ?></span>
                                         <span class="ml-2 text-xs text-muted"><?= htmlspecialchars(ucfirst($cType), ENT_QUOTES) ?></span>
                                     </div>
-                                    <span class="text-xs font-mono text-red-400"><?= number_format($cStanding, 1) ?></span>
+                                    <span class="text-xs font-mono <?= $cStanding <= -10.0 ? 'text-red-400' : 'text-orange-400' ?>"><?= number_format($cStanding, 1) ?></span>
                                 </div>
                                 <?php endforeach; ?>
                             </div>

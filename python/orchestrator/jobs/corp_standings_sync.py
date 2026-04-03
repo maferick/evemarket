@@ -122,6 +122,9 @@ def _processor(db: SupplyCoreDb, raw_config: dict[str, Any] | None = None) -> di
                 log.info("Corp %d: 0 player contacts entries.", corp_id)
             if contacts_error:
                 warnings.append(contacts_error)
+
+            # Queue contact entity IDs for background name resolution
+            _queue_contact_names(db, contacts)
         except Exception as exc:
             warnings.append(f"Failed to fetch contacts for corporation {corp_id}: {exc}")
 
@@ -308,6 +311,34 @@ def _fetch_contacts(gateway, corp_id: int, access_token: str) -> tuple[list[dict
             all_contacts.extend(body)
 
     return all_contacts, error_msg
+
+
+def _queue_contact_names(db: SupplyCoreDb, contacts: list[dict[str, Any]]) -> None:
+    """Queue contact entity IDs for background name resolution."""
+    ids_by_type: dict[str, list[int]] = {}
+    resolvable_types = ("character", "corporation", "alliance")
+    for entry in contacts:
+        contact_id = int(entry.get("contact_id") or 0)
+        contact_type = str(entry.get("contact_type") or "").strip()
+        if contact_id > 0 and contact_type in resolvable_types:
+            ids_by_type.setdefault(contact_type, []).append(contact_id)
+
+    now = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
+    for entity_type, entity_ids in ids_by_type.items():
+        unique_ids = sorted(set(entity_ids))
+        for eid in unique_ids:
+            db.execute(
+                """
+                INSERT INTO entity_metadata_cache (entity_type, entity_id, source_system, resolution_status, last_requested_at)
+                VALUES (%s, %s, 'queue', 'pending', %s)
+                ON DUPLICATE KEY UPDATE
+                    last_requested_at = VALUES(last_requested_at)
+                """,
+                [entity_type, eid, now],
+            )
+    if ids_by_type:
+        total = sum(len(v) for v in ids_by_type.values())
+        log.info("Queued %d contact entities for name resolution.", total)
 
 
 def _upsert_contacts(
