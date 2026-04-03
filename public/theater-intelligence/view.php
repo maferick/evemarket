@@ -419,11 +419,12 @@ if ($viewSnapshot !== null && !$pendingLock) {
     $participantKillTotal = 0;
     $participantKillTotalsBySide = ['friendly' => 0, 'opponent' => 0, 'third_party' => 0];
     foreach ($participantsAll as $row) {
-        $kills = (int) ($row['kills'] ?? 0);
+        // contributed_kills = listed-on-killmail involvement count (including zero-damage)
+        $contributedKills = (int) ($row['contributed_kills'] ?? $row['kills'] ?? 0);
         $side = $classifyAlliance((int) ($row['alliance_id'] ?? 0), (int) ($row['corporation_id'] ?? 0));
-        $participantKillTotal += $kills;
+        $participantKillTotal += $contributedKills;
         if (isset($participantKillTotalsBySide[$side])) {
-            $participantKillTotalsBySide[$side] += $kills;
+            $participantKillTotalsBySide[$side] += $contributedKills;
         }
     }
     $reportedKillTotal = (int) ($theater['total_kills'] ?? 0);
@@ -437,15 +438,17 @@ if ($viewSnapshot !== null && !$pendingLock) {
     if ($reportedKillTotal !== $observedKillTotal) {
         $dataQualityNotes[] = 'Theater aggregate kills (' . number_format($reportedKillTotal) . ') differ from observed detail kills (' . number_format($observedKillTotal) . ').';
     }
-    if ($allianceKillTotal > 0 && $allianceLossTotal > 0 && abs($allianceKillTotal - $allianceLossTotal) > 0) {
-        $dataQualityNotes[] = 'Alliance kill-involvements (' . number_format($allianceKillTotal) . ') differ from losses (' . number_format($allianceLossTotal) . '). This is expected when multiple alliances assist on the same killmail.';
-    }
+    // total_kills in alliance_summary now means final kills (= losses count).
+    // Contributed kills (kill_involvements) may exceed final kills — that's normal.
 
-    // ── Build side panels from alliance + participant + composition data ──
+    // ── Build side panels from alliance summary (derived from character ledger) ──
+    // total_kills = final kills, total_isk_killed = final-blow-owned ISK.
+    // All stats are rolled up from the per-character ledger — no loss-based
+    // shortcuts or separate DB queries needed.
     $sidePanels = [
-        'friendly' => ['pilots' => 0, 'kills' => 0, 'losses' => 0, 'isk_killed' => 0.0, 'isk_lost' => 0.0, 'alliances' => [], 'ship_pilots' => 0, 'ships' => []],
-        'opponent' => ['pilots' => 0, 'kills' => 0, 'losses' => 0, 'isk_killed' => 0.0, 'isk_lost' => 0.0, 'alliances' => [], 'ship_pilots' => 0, 'ships' => []],
-        'third_party' => ['pilots' => 0, 'kills' => 0, 'losses' => 0, 'isk_killed' => 0.0, 'isk_lost' => 0.0, 'alliances' => [], 'ship_pilots' => 0, 'ships' => []],
+        'friendly'    => ['pilots' => 0, 'kills' => 0, 'losses' => 0, 'isk_killed' => 0.0, 'isk_lost' => 0.0, 'alliances' => [], 'ship_pilots' => 0, 'ships' => [], 'kill_involvements' => 0, 'efficiency' => 0.0],
+        'opponent'    => ['pilots' => 0, 'kills' => 0, 'losses' => 0, 'isk_killed' => 0.0, 'isk_lost' => 0.0, 'alliances' => [], 'ship_pilots' => 0, 'ships' => [], 'kill_involvements' => 0, 'efficiency' => 0.0],
+        'third_party' => ['pilots' => 0, 'kills' => 0, 'losses' => 0, 'isk_killed' => 0.0, 'isk_lost' => 0.0, 'alliances' => [], 'ship_pilots' => 0, 'ships' => [], 'kill_involvements' => 0, 'efficiency' => 0.0],
     ];
     foreach ($allianceSummary as $a) {
         $aid = (int) ($a['alliance_id'] ?? 0);
@@ -453,11 +456,10 @@ if ($viewSnapshot !== null && !$pendingLock) {
         $side = $classifyAlliance($aid, $corpId);
         if (!isset($sidePanels[$side])) continue;
         $sidePanels[$side]['pilots'] += (int) ($a['participant_count'] ?? 0);
-        $sidePanels[$side]['kills'] += (int) ($a['total_kills'] ?? 0);
+        $sidePanels[$side]['kills'] += (int) ($a['total_kills'] ?? 0);             // final kills
         $sidePanels[$side]['losses'] += (int) ($a['total_losses'] ?? 0);
+        $sidePanels[$side]['isk_killed'] += (float) ($a['total_isk_killed'] ?? 0); // final-blow ISK
         $sidePanels[$side]['isk_lost'] += (float) ($a['total_isk_lost'] ?? 0);
-        // NOTE: isk_killed is derived from opposing side's losses below — not accumulated here.
-        // For corp-only entries, resolve as corporation; otherwise as alliance
         if ($aid > 0) {
             $entryName = killmail_entity_preferred_name($resolvedEntities, 'alliance', $aid, (string) ($a['alliance_name'] ?? ''), 'Alliance');
         } else {
@@ -470,41 +472,16 @@ if ($viewSnapshot !== null && !$pendingLock) {
             'pilots' => (int) ($a['participant_count'] ?? 0),
         ];
     }
-    $finalBlowsByGroup = db_theater_final_blows_by_attacker_group($theaterId);
-    $finalBlowsBySide = ['friendly' => 0, 'opponent' => 0, 'third_party' => 0];
-    foreach ($finalBlowsByGroup as $fbRow) {
-        $fbSide = $classifyAlliance((int) ($fbRow['alliance_id'] ?? 0), (int) ($fbRow['corporation_id'] ?? 0));
-        $finalBlowsBySide[$fbSide] += (int) ($fbRow['final_blows'] ?? 0);
+
+    // Efficiency = isk_killed / (isk_killed + isk_lost) per side
+    foreach (['friendly', 'opponent', 'third_party'] as $side) {
+        $total = $sidePanels[$side]['isk_killed'] + $sidePanels[$side]['isk_lost'];
+        $sidePanels[$side]['efficiency'] = $total > 0
+            ? $sidePanels[$side]['isk_killed'] / $total : 0.0;
     }
-    // ── Loss-based ISK killed & efficiency (strict two-side model) ──────
-    // Canonical rule: isk_killed for a side = opposing side's isk_lost.
-    // Third-party losses are tracked for total_isk_destroyed but excluded
-    // from the friendly-vs-opponent efficiency calculation.
-    $friendlyLost = $sidePanels['friendly']['isk_lost'];
-    $opponentLost = $sidePanels['opponent']['isk_lost'];
-    $twoSideTotal = $friendlyLost + $opponentLost;
 
-    // friendly_isk_killed == opponent_isk_lost  (and vice versa)
-    $sidePanels['friendly']['isk_killed'] = $opponentLost;
-    $sidePanels['opponent']['isk_killed'] = $friendlyLost;
-    $sidePanels['third_party']['isk_killed'] = 0.0;
-
-    // Ship kills derived from opposing side's losses (same principle as ISK).
-    // friendly_kills == opponent_losses (how many enemy ships died).
-    $sidePanels['friendly']['kills'] = $sidePanels['opponent']['losses'];
-    $sidePanels['opponent']['kills'] = $sidePanels['friendly']['losses'];
-    // Third party keeps its accumulated kill-involvement count from the
-    // alliance summary — the two-side derivation doesn't apply to them.
-
-    // efficiency = isk_killed / (isk_killed + isk_lost)  — two-side, symmetric
-    $sidePanels['friendly']['efficiency'] = $twoSideTotal > 0
-        ? $opponentLost / $twoSideTotal : 0.0;
-    $sidePanels['opponent']['efficiency'] = $twoSideTotal > 0
-        ? $friendlyLost / $twoSideTotal : 0.0;
-    $sidePanels['third_party']['efficiency'] = 0.0;
-
+    // kill_involvements = sum of contributed_kills (listed-on-killmail) per side
     foreach ($sidePanels as $side => $data) {
-        $sidePanels[$side]['final_blows'] = (int) ($finalBlowsBySide[$side] ?? 0);
         $sidePanels[$side]['kill_involvements'] = (int) ($participantKillTotalsBySide[$side] ?? 0);
         usort($data['alliances'], static fn(array $l, array $r): int => $r['pilots'] <=> $l['pilots']);
         $sidePanels[$side]['alliances'] = array_slice($data['alliances'], 0, 4);
@@ -669,50 +646,10 @@ if ($viewSnapshot !== null && !$pendingLock) {
     }
 }
 
-// ── Final-blows correction: classify using PHP closure for consistency ────────
-// The Python job may classify sides via graph inference, but PHP uses explicit
-// tracked/opponent config.  Re-derive final blows from killmail_attackers
-// so they match the same classification used for kills and losses.
-$fbByGroup = db_theater_final_blows_by_attacker_group($theaterId);
-if ($fbByGroup !== []) {
-    $correctedFb = ['friendly' => 0, 'opponent' => 0, 'third_party' => 0];
-    foreach ($fbByGroup as $fbRow) {
-        $fbSide = $classifyAlliance((int) ($fbRow['alliance_id'] ?? 0), (int) ($fbRow['corporation_id'] ?? 0));
-        $correctedFb[$fbSide] += (int) ($fbRow['final_blows'] ?? 0);
-    }
-    foreach (['friendly', 'opponent', 'third_party'] as $side) {
-        if (isset($sidePanels[$side])) {
-            $sidePanels[$side]['final_blows'] = $correctedFb[$side];
-        }
-    }
-}
-
-// ── Loss-count correction: count ALL killmail victims, including corp-only ───
-// The alliance_summary only tracks losses for victims WITH an alliance.
-// Victims without an alliance (corp-only players) were silently dropped,
-// causing opposition losses to be understated.  Query killmail_events directly
-// for accurate totals.
-$rawLossesByVictimAlliance = db_theater_losses_by_victim_alliance($theaterId);
-if ($rawLossesByVictimAlliance !== []) {
-    $correctedLosses = ['friendly' => 0, 'opponent' => 0, 'third_party' => 0];
-    $correctedIskLost = ['friendly' => 0.0, 'opponent' => 0.0, 'third_party' => 0.0];
-    foreach ($rawLossesByVictimAlliance as $row) {
-        $side = $classifyAlliance((int) ($row['victim_alliance_id'] ?? 0), (int) ($row['victim_corporation_id'] ?? 0));
-        $correctedLosses[$side] += (int) ($row['losses'] ?? 0);
-        $correctedIskLost[$side] += (float) ($row['isk_lost'] ?? 0);
-    }
-    foreach (['friendly', 'opponent', 'third_party'] as $side) {
-        if (isset($sidePanels[$side]) && $correctedLosses[$side] >= ($sidePanels[$side]['losses'] ?? 0)) {
-            $sidePanels[$side]['losses'] = $correctedLosses[$side];
-            $sidePanels[$side]['isk_lost'] = $correctedIskLost[$side];
-            // Recompute efficiency with corrected ISK
-            $totalIsk = ($sidePanels[$side]['isk_killed'] ?? 0) + $correctedIskLost[$side];
-            $sidePanels[$side]['efficiency'] = $totalIsk > 0
-                ? ($sidePanels[$side]['isk_killed'] ?? 0) / $totalIsk
-                : 0.0;
-        }
-    }
-}
+// No final-blows correction or loss-count correction needed — all stats
+// are derived from the per-character ledger via alliance_summary.  The
+// ledger processes each killmail exactly once, crediting the victim with
+// losses/isk_lost and the final-blow attacker with kills/isk_killed.
 
 // ── Promote third-party to opponent when no opponents are configured ─────────
 // Handles both fresh renders and locked snapshots saved before this logic existed.
@@ -743,7 +680,7 @@ if (($sideAlliancesByPilots['opponent'] ?? []) !== [] && ($sideAlliancesByPilots
         'pilots' => 0, 'kills' => 0, 'losses' => 0,
         'isk_killed' => 0.0, 'isk_lost' => 0.0,
         'alliances' => [], 'ship_pilots' => 0, 'ships' => [],
-        'final_blows' => 0, 'kill_involvements' => 0, 'efficiency' => 0.0,
+        'kill_involvements' => 0, 'efficiency' => 0.0,
     ];
 }
 
