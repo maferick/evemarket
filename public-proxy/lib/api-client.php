@@ -2,6 +2,13 @@
 
 declare(strict_types=1);
 
+// Block known AI crawlers before any work. Mirror of src/bootstrap.php.
+if (preg_match('/ClaudeBot|GPTBot|CCBot|anthropic-ai|ChatGPT-User|Bytespider|PetalBot|Google-Extended/i', $_SERVER['HTTP_USER_AGENT'] ?? '')) {
+    http_response_code(403);
+    header('Content-Type: text/plain');
+    exit('Forbidden');
+}
+
 /**
  * SupplyCore Public API Client — HMAC-authenticated HTTP requests.
  *
