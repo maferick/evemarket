@@ -1000,12 +1000,14 @@ def run_compute_graph_prune(db: SupplyCoreDb, neo4j_raw: dict[str, Any] | None =
 
 def _upsert_table(db: SupplyCoreDb, table_name: str, columns: str, placeholders: str, rows: list[tuple[Any, ...]]) -> None:
     batch_size = DEFAULT_BATCH_SIZE
-    with db.transaction() as (_, cursor):
-        cursor.execute(f"DELETE FROM {table_name}")
+    db.run_in_transaction(lambda _conn, cur: cur.execute(f"DELETE FROM {table_name}"))
     for offset in range(0, len(rows), batch_size):
         chunk = rows[offset : offset + batch_size]
-        with db.transaction() as (_, cursor):
-            cursor.executemany(f"INSERT IGNORE INTO {table_name} ({columns}) VALUES ({placeholders})", chunk)
+        db.run_in_transaction(
+            lambda _conn, cur, c=chunk: cur.executemany(
+                f"INSERT IGNORE INTO {table_name} ({columns}) VALUES ({placeholders})", c
+            )
+        )
 
 
 def _ensure_doctrine_dependency_depth_schema(db: SupplyCoreDb) -> None:

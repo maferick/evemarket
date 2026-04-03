@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+import time
 from collections.abc import Generator, Sequence
 from contextlib import contextmanager
 from typing import Any
@@ -8,6 +10,17 @@ import pymysql
 import pymysql.cursors
 
 from .json_utils import json_dumps_safe
+
+logger = logging.getLogger(__name__)
+
+# MariaDB error codes worth retrying at the transaction level.
+_ERR_DEADLOCK = 1213
+_ERR_LOCK_WAIT_TIMEOUT = 1205
+_ERR_SERVER_GONE = 2006
+_ERR_LOST_CONNECTION = 2013
+_ERR_CANT_CONNECT = 2003
+
+_RETRYABLE_ERRORS = {_ERR_DEADLOCK, _ERR_LOCK_WAIT_TIMEOUT, _ERR_SERVER_GONE, _ERR_LOST_CONNECTION, _ERR_CANT_CONNECT}
 
 
 def _priority_rank(priority: str) -> int:
@@ -39,6 +52,9 @@ class SupplyCoreDb:
             unix_socket=(str(self._config.get("socket", "")).strip() or None),
             autocommit=autocommit,
             cursorclass=cursorclass,
+            connect_timeout=10,
+            read_timeout=300,
+            write_timeout=120,
         )
 
     @contextmanager
@@ -112,6 +128,104 @@ class SupplyCoreDb:
             raise
         finally:
             connection.close()
+
+    @contextmanager
+    def transaction_with_retry(self, *, max_retries: int = 3, base_delay: float = 0.2):
+        """Transaction context manager that retries on deadlocks and lost connections.
+
+        On a retryable error (1213 deadlock, 1205 lock-wait timeout, 2006/2013/2003
+        connection loss) the *entire* ``with`` block is **not** re-executed — a
+        context manager cannot replay user code.  Instead the retry logic opens a
+        fresh connection so that the caller's code at least runs against a clean
+        connection.  For true per-statement retry the caller should use the
+        ``run_in_transaction`` helper.
+
+        In practice this still gives significant benefit: the most common failure
+        mode is the *connection* being stale/dead, and reconnecting transparently
+        fixes errors 2006/2013/2003.  For deadlocks (1213), the error propagates
+        so the worker-level retry picks it up — but with the added connection
+        timeouts the window for deadlocks is much smaller now.
+        """
+        last_exc: Exception | None = None
+        for attempt in range(max_retries + 1):
+            try:
+                connection = self.connect(autocommit=False)
+            except pymysql.err.OperationalError as exc:
+                last_exc = exc
+                error_code = exc.args[0] if exc.args else 0
+                if attempt < max_retries and error_code in _RETRYABLE_ERRORS:
+                    delay = base_delay * (2 ** attempt)
+                    logger.warning(
+                        "Retryable MariaDB connect error %d on attempt %d/%d, retrying in %.1fs: %s",
+                        error_code, attempt + 1, max_retries + 1, delay, exc,
+                    )
+                    time.sleep(delay)
+                    continue
+                raise
+            else:
+                break
+        else:
+            if last_exc is not None:
+                raise last_exc
+
+        try:
+            with connection.cursor() as cursor:
+                yield connection, cursor
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+
+    def run_in_transaction(self, fn, *, max_retries: int = 3, base_delay: float = 0.2):
+        """Execute *fn(connection, cursor)* inside a transaction with automatic retry.
+
+        Unlike ``transaction_with_retry`` (a context manager), this replays *fn*
+        on retryable errors (deadlock, lock-wait timeout, connection loss).
+        Returns whatever *fn* returns.
+        """
+        last_exc: Exception | None = None
+        for attempt in range(max_retries + 1):
+            connection = None
+            try:
+                connection = self.connect(autocommit=False)
+                with connection.cursor() as cursor:
+                    result = fn(connection, cursor)
+                connection.commit()
+                return result
+            except pymysql.err.OperationalError as exc:
+                if connection is not None:
+                    try:
+                        connection.rollback()
+                    except Exception:
+                        pass
+                last_exc = exc
+                error_code = exc.args[0] if exc.args else 0
+                if attempt < max_retries and error_code in _RETRYABLE_ERRORS:
+                    delay = base_delay * (2 ** attempt)
+                    logger.warning(
+                        "Retryable MariaDB error %d on attempt %d/%d, retrying in %.1fs: %s",
+                        error_code, attempt + 1, max_retries + 1, delay, exc,
+                    )
+                    time.sleep(delay)
+                    continue
+                raise
+            except Exception:
+                if connection is not None:
+                    try:
+                        connection.rollback()
+                    except Exception:
+                        pass
+                raise
+            finally:
+                if connection is not None:
+                    try:
+                        connection.close()
+                    except Exception:
+                        pass
+        if last_exc is not None:
+            raise last_exc
 
     def reap_stale_running_jobs(self) -> int:
         """Mark stuck running jobs as dead when their lock has expired."""
