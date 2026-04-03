@@ -1,0 +1,21 @@
+services:
+  supplycore-proxy:
+    build: .
+    container_name: supplycore-proxy
+    restart: unless-stopped
+    ports:
+      - "8080:80"
+    environment:
+      # ── Required ──────────────────────────────────────────
+      # Base URL of your SupplyCore instance (no trailing slash)
+      - SUPPLYCORE_URL=https://supplycore.example.com
+      # API key ID (starts with pk_)
+      - API_KEY_ID=pk_your_key_id_here
+      # API shared secret (64-char hex string)
+      - API_SECRET=your_shared_secret_here
+
+      # ── Optional ──────────────────────────────────────────
+      # Request timeout in seconds (default: 15)
+      #- TIMEOUT=15
+      # Site branding shown in the proxy header (default: Battle Reports)
+      #- SITE_NAME=Battle Reports
