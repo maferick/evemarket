@@ -2252,6 +2252,21 @@ function sanitize_currency(string $currency): string
     return $currency;
 }
 
+function sanitize_app_base_url(string $value): string
+{
+    $url = rtrim(trim($value), '/');
+
+    if ($url === '') {
+        return '';
+    }
+
+    if (!preg_match('/^https?:\/\/.+/i', $url)) {
+        return '';
+    }
+
+    return mb_substr($url, 0, 255);
+}
+
 function sanitize_market_station_selection(?string $value): string
 {
     $stationIdValue = trim((string) $value);
