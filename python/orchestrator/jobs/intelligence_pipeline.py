@@ -317,10 +317,10 @@ def _gap_fill_alliance_history(client: Neo4jClient, db: SupplyCoreDb) -> int:
 def _mark_tracked_characters(client: Neo4jClient, db: SupplyCoreDb) -> None:
     """Set tracked=true on characters belonging to tracked alliances/corps."""
     tracked_alliances = db.fetch_all(
-        "SELECT alliance_id FROM killmail_tracked_alliances WHERE is_active = 1"
+        "SELECT contact_id AS alliance_id FROM corp_contacts WHERE contact_type = 'alliance' AND standing > 0"
     )
     tracked_corps = db.fetch_all(
-        "SELECT corporation_id FROM killmail_tracked_corporations WHERE is_active = 1"
+        "SELECT contact_id AS corporation_id FROM corp_contacts WHERE contact_type = 'corporation' AND standing > 0"
     )
     alliance_ids = [int(r["alliance_id"]) for r in tracked_alliances]
     corp_ids = [int(r["corporation_id"]) for r in tracked_corps]

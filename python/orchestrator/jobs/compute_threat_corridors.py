@@ -389,7 +389,7 @@ def run_compute_threat_corridors(
 
     try:
         # Load tracked alliances to distinguish hostile from friendly
-        tracked_rows = db.fetch_all("SELECT alliance_id FROM killmail_tracked_alliances WHERE is_active = 1")
+        tracked_rows = db.fetch_all("SELECT contact_id AS alliance_id FROM corp_contacts WHERE contact_type = 'alliance' AND standing > 0")
         tracked_alliance_ids = {int(r["alliance_id"]) for r in tracked_rows if int(r.get("alliance_id") or 0) > 0}
 
         # Load system battle activity

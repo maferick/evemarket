@@ -11812,60 +11812,6 @@ function db_killmail_items_replace(int $sequenceId, array $rows): int
     });
 }
 
-function db_killmail_tracked_alliances_replace(array $rows): bool
-{
-    // DDL must run OUTSIDE the transaction — MySQL implicitly commits on CREATE TABLE,
-    // which would break any enclosing transaction (e.g. save_killmail_intelligence_settings).
-    db_execute('CREATE TABLE IF NOT EXISTS killmail_tracked_alliances (
-        alliance_id BIGINT UNSIGNED NOT NULL PRIMARY KEY,
-        label VARCHAR(255) DEFAULT NULL,
-        is_active TINYINT(1) NOT NULL DEFAULT 1,
-        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-        updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci');
-
-    return db_transaction(static function () use ($rows): bool {
-        db_execute('DELETE FROM killmail_tracked_alliances');
-
-        foreach ($rows as $row) {
-            db_execute(
-                'INSERT INTO killmail_tracked_alliances (alliance_id, label, is_active) VALUES (?, ?, 1)
-                 ON DUPLICATE KEY UPDATE label = VALUES(label), is_active = 1, updated_at = CURRENT_TIMESTAMP',
-                [(int) ($row['alliance_id'] ?? 0), $row['label'] ?? null]
-            );
-        }
-
-        return true;
-    });
-}
-
-function db_killmail_tracked_corporations_replace(array $rows): bool
-{
-    // DDL must run OUTSIDE the transaction — MySQL implicitly commits on CREATE TABLE,
-    // which would break any enclosing transaction (e.g. save_killmail_intelligence_settings).
-    db_execute('CREATE TABLE IF NOT EXISTS killmail_tracked_corporations (
-        corporation_id BIGINT UNSIGNED NOT NULL PRIMARY KEY,
-        label VARCHAR(255) DEFAULT NULL,
-        is_active TINYINT(1) NOT NULL DEFAULT 1,
-        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-        updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci');
-
-    return db_transaction(static function () use ($rows): bool {
-        db_execute('DELETE FROM killmail_tracked_corporations');
-
-        foreach ($rows as $row) {
-            db_execute(
-                'INSERT INTO killmail_tracked_corporations (corporation_id, label, is_active) VALUES (?, ?, 1)
-                 ON DUPLICATE KEY UPDATE label = VALUES(label), is_active = 1, updated_at = CURRENT_TIMESTAMP',
-                [(int) ($row['corporation_id'] ?? 0), $row['label'] ?? null]
-            );
-        }
-
-        return true;
-    });
-}
-
 function db_killmail_tracked_alliances_active(): array
 {
     static $cache = null;
@@ -11956,56 +11902,6 @@ function db_killmail_opponent_corporations_active(): array
         $rows[] = ['corporation_id' => $id, 'label' => $nameMap[$id] ?? null];
     }
     return $cache = $rows;
-}
-
-function db_killmail_opponent_alliances_replace(array $rows): bool
-{
-    db_execute('CREATE TABLE IF NOT EXISTS killmail_opponent_alliances (
-        alliance_id BIGINT UNSIGNED NOT NULL PRIMARY KEY,
-        label VARCHAR(255) DEFAULT NULL,
-        is_active TINYINT(1) NOT NULL DEFAULT 1,
-        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-        updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci');
-
-    return db_transaction(static function () use ($rows): bool {
-        db_execute('DELETE FROM killmail_opponent_alliances');
-
-        foreach ($rows as $row) {
-            db_execute(
-                'INSERT INTO killmail_opponent_alliances (alliance_id, label, is_active) VALUES (?, ?, 1)
-                 ON DUPLICATE KEY UPDATE label = VALUES(label), is_active = 1, updated_at = CURRENT_TIMESTAMP',
-                [(int) ($row['alliance_id'] ?? 0), $row['label'] ?? null]
-            );
-        }
-
-        return true;
-    });
-}
-
-function db_killmail_opponent_corporations_replace(array $rows): bool
-{
-    db_execute('CREATE TABLE IF NOT EXISTS killmail_opponent_corporations (
-        corporation_id BIGINT UNSIGNED NOT NULL PRIMARY KEY,
-        label VARCHAR(255) DEFAULT NULL,
-        is_active TINYINT(1) NOT NULL DEFAULT 1,
-        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-        updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci');
-
-    return db_transaction(static function () use ($rows): bool {
-        db_execute('DELETE FROM killmail_opponent_corporations');
-
-        foreach ($rows as $row) {
-            db_execute(
-                'INSERT INTO killmail_opponent_corporations (corporation_id, label, is_active) VALUES (?, ?, 1)
-                 ON DUPLICATE KEY UPDATE label = VALUES(label), is_active = 1, updated_at = CURRENT_TIMESTAMP',
-                [(int) ($row['corporation_id'] ?? 0), $row['label'] ?? null]
-            );
-        }
-
-        return true;
-    });
 }
 
 // ── Corporation standings queries ────────────────────────────────────────────
@@ -12483,10 +12379,11 @@ function db_economic_warfare_hostile_alliances(): array
     // Single query with LEFT JOIN replaces N+1 pattern (one query per alliance_id)
     $rows = db_select(
         "SELECT DISTINCT jt.alliance_id,
-                COALESCE(koa.label, CONCAT('Alliance #', jt.alliance_id)) AS label
+                COALESCE(emc.entity_name, CONCAT('Alliance #', jt.alliance_id)) AS label
          FROM hostile_fit_families hff,
               JSON_TABLE(hff.alliance_ids_json, '\$[*]' COLUMNS (alliance_id BIGINT PATH '\$')) jt
-         LEFT JOIN killmail_opponent_alliances koa ON koa.alliance_id = jt.alliance_id
+         LEFT JOIN entity_metadata_cache emc
+           ON emc.entity_type = 'alliance' AND emc.entity_id = jt.alliance_id
          WHERE jt.alliance_id > 0
          ORDER BY jt.alliance_id ASC
          LIMIT 200"
@@ -12529,14 +12426,14 @@ function db_killmail_tracked_match_sql(string $eventAlias = 'e'): string
 
     return "(
         {$eventAlias}.victim_alliance_id IN (
-            SELECT ta.alliance_id
-            FROM killmail_tracked_alliances ta
-            WHERE ta.is_active = 1
+            SELECT cc.contact_id
+            FROM corp_contacts cc
+            WHERE cc.contact_type = 'alliance' AND cc.standing > 0
         )
         OR {$eventAlias}.victim_corporation_id IN (
-            SELECT tc.corporation_id
-            FROM killmail_tracked_corporations tc
-            WHERE tc.is_active = 1
+            SELECT cc.contact_id
+            FROM corp_contacts cc
+            WHERE cc.contact_type = 'corporation' AND cc.standing > 0
         )
     )";
 }
@@ -12564,10 +12461,10 @@ function db_killmail_tracked_matches_sql(?string $effectiveAfterSql = null, ?str
                 0 AS matches_victim_corporation,
                 0 AS matches_attacker_alliance,
                 0 AS matches_attacker_corporation
-            FROM killmail_tracked_alliances ta
+            FROM corp_contacts cc
             INNER JOIN killmail_events e
-                ON e.victim_alliance_id = ta.alliance_id{$effectiveFilterSql}{$sequenceFilterSql}
-            WHERE ta.is_active = 1
+                ON e.victim_alliance_id = cc.contact_id{$effectiveFilterSql}{$sequenceFilterSql}
+            WHERE cc.contact_type = 'alliance' AND cc.standing > 0
 
             UNION ALL
 
@@ -12577,10 +12474,10 @@ function db_killmail_tracked_matches_sql(?string $effectiveAfterSql = null, ?str
                 1 AS matches_victim_corporation,
                 0 AS matches_attacker_alliance,
                 0 AS matches_attacker_corporation
-            FROM killmail_tracked_corporations tc
+            FROM corp_contacts cc
             INNER JOIN killmail_events e
-                ON e.victim_corporation_id = tc.corporation_id{$effectiveFilterSql}{$sequenceFilterSql}
-            WHERE tc.is_active = 1
+                ON e.victim_corporation_id = cc.contact_id{$effectiveFilterSql}{$sequenceFilterSql}
+            WHERE cc.contact_type = 'corporation' AND cc.standing > 0
         ) matched
         GROUP BY matched.sequence_id
     )";
@@ -12592,9 +12489,9 @@ function db_killmail_ingestion_status(): array
     $latest = db_select_one('SELECT MAX(sequence_id) AS max_sequence_id, MAX(uploaded_at) AS max_uploaded_at, MAX(created_at) AS max_created_at FROM killmail_events');
     $latestRun = db_sync_run_latest_by_dataset('killmail.r2z2.stream');
     $trackedCounts = db_select_one(
-        'SELECT
-            (SELECT COUNT(*) FROM killmail_tracked_alliances WHERE is_active = 1) AS tracked_alliance_count,
-            (SELECT COUNT(*) FROM killmail_tracked_corporations WHERE is_active = 1) AS tracked_corporation_count'
+        "SELECT
+            (SELECT COUNT(DISTINCT contact_id) FROM corp_contacts WHERE contact_type = 'alliance' AND standing > 0) AS tracked_alliance_count,
+            (SELECT COUNT(DISTINCT contact_id) FROM corp_contacts WHERE contact_type = 'corporation' AND standing > 0) AS tracked_corporation_count"
     );
 
     return [
@@ -12656,12 +12553,11 @@ function db_killmail_overview_filter_options(): array
     $alliances = db_select(
         "SELECT DISTINCT
             e.victim_alliance_id AS entity_id,
-            COALESCE(NULLIF(ta.label, ''), CONCAT('Alliance #', e.victim_alliance_id)) AS entity_label
+            COALESCE(emc.entity_name, CONCAT('Alliance #', e.victim_alliance_id)) AS entity_label
          FROM {$latestSequencesSql} latest
          INNER JOIN killmail_events e ON e.sequence_id = latest.sequence_id
-         LEFT JOIN killmail_tracked_alliances ta
-           ON ta.alliance_id = e.victim_alliance_id
-          AND ta.is_active = 1
+         LEFT JOIN entity_metadata_cache emc
+           ON emc.entity_type = 'alliance' AND emc.entity_id = e.victim_alliance_id
          WHERE e.victim_alliance_id IS NOT NULL
            AND e.victim_alliance_id > 0
          ORDER BY entity_label ASC
@@ -12671,12 +12567,11 @@ function db_killmail_overview_filter_options(): array
     $corporations = db_select(
         "SELECT DISTINCT
             e.victim_corporation_id AS entity_id,
-            COALESCE(NULLIF(tc.label, ''), CONCAT('Corporation #', e.victim_corporation_id)) AS entity_label
+            COALESCE(emc.entity_name, CONCAT('Corporation #', e.victim_corporation_id)) AS entity_label
          FROM {$latestSequencesSql} latest
          INNER JOIN killmail_events e ON e.sequence_id = latest.sequence_id
-         LEFT JOIN killmail_tracked_corporations tc
-           ON tc.corporation_id = e.victim_corporation_id
-          AND tc.is_active = 1
+         LEFT JOIN entity_metadata_cache emc
+           ON emc.entity_type = 'corporation' AND emc.entity_id = e.victim_corporation_id
          WHERE e.victim_corporation_id IS NOT NULL
            AND e.victim_corporation_id > 0
          ORDER BY entity_label ASC
@@ -12720,13 +12615,13 @@ function db_killmail_overview_row(int $sequenceId): ?array
             e.zkb_awox,
             e.created_at,
             e.updated_at,
-            COALESCE(NULLIF(victim_tc.label, ''), '') AS victim_corporation_label,
-            COALESCE(NULLIF(victim_ta.label, ''), '') AS victim_alliance_label,
+            '' AS victim_corporation_label,
+            '' AS victim_alliance_label,
             COALESCE(NULLIF(ship.type_name, ''), '') AS ship_type_name,
             COALESCE(NULLIF(system_ref.system_name, ''), '') AS system_name,
             COALESCE(NULLIF(region_ref.region_name, ''), '') AS region_name,
-            CASE WHEN victim_ta.alliance_id IS NULL THEN 0 ELSE 1 END AS matches_victim_alliance,
-            CASE WHEN victim_tc.corporation_id IS NULL THEN 0 ELSE 1 END AS matches_victim_corporation,
+            CASE WHEN victim_ta.contact_id IS NULL THEN 0 ELSE 1 END AS matches_victim_alliance,
+            CASE WHEN victim_tc.contact_id IS NULL THEN 0 ELSE 1 END AS matches_victim_corporation,
             COALESCE(tracked.matches_attacker_alliance, 0) AS matches_attacker_alliance,
             COALESCE(tracked.matches_attacker_corporation, 0) AS matches_attacker_corporation,
             CASE WHEN {$matchSql} THEN 1 ELSE 0 END AS matched_tracked
@@ -12736,12 +12631,12 @@ function db_killmail_overview_row(int $sequenceId): ?array
          LEFT JOIN ref_item_types ship ON ship.type_id = e.victim_ship_type_id
          LEFT JOIN ref_systems system_ref ON system_ref.system_id = e.solar_system_id
          LEFT JOIN ref_regions region_ref ON region_ref.region_id = e.region_id
-         LEFT JOIN killmail_tracked_alliances victim_ta
-           ON victim_ta.alliance_id = e.victim_alliance_id
-          AND victim_ta.is_active = 1
-         LEFT JOIN killmail_tracked_corporations victim_tc
-           ON victim_tc.corporation_id = e.victim_corporation_id
-          AND victim_tc.is_active = 1
+         LEFT JOIN corp_contacts victim_ta
+           ON victim_ta.contact_id = e.victim_alliance_id
+          AND victim_ta.contact_type = 'alliance' AND victim_ta.standing > 0
+         LEFT JOIN corp_contacts victim_tc
+           ON victim_tc.contact_id = e.victim_corporation_id
+          AND victim_tc.contact_type = 'corporation' AND victim_tc.standing > 0
          WHERE e.sequence_id = ?
          LIMIT 1",
         [$sequenceId]
@@ -12854,12 +12749,16 @@ function db_killmail_overview_page(array $filters = []): array
         LEFT JOIN ref_item_types ship ON ship.type_id = e.victim_ship_type_id
         LEFT JOIN ref_systems system_ref ON system_ref.system_id = e.solar_system_id
         LEFT JOIN ref_regions region_ref ON region_ref.region_id = e.region_id
-        LEFT JOIN killmail_tracked_alliances victim_ta
-          ON victim_ta.alliance_id = e.victim_alliance_id
-         AND victim_ta.is_active = 1
-        LEFT JOIN killmail_tracked_corporations victim_tc
-          ON victim_tc.corporation_id = e.victim_corporation_id
-         AND victim_tc.is_active = 1";
+        LEFT JOIN corp_contacts victim_ta
+          ON victim_ta.contact_id = e.victim_alliance_id
+         AND victim_ta.contact_type = 'alliance' AND victim_ta.standing > 0
+        LEFT JOIN corp_contacts victim_tc
+          ON victim_tc.contact_id = e.victim_corporation_id
+         AND victim_tc.contact_type = 'corporation' AND victim_tc.standing > 0
+        LEFT JOIN entity_metadata_cache emc_va
+          ON emc_va.entity_type = 'alliance' AND emc_va.entity_id = e.victim_alliance_id
+        LEFT JOIN entity_metadata_cache emc_vc
+          ON emc_vc.entity_type = 'corporation' AND emc_vc.entity_id = e.victim_corporation_id";
 
     $conditions = [];
     $params = [];
@@ -12893,8 +12792,8 @@ function db_killmail_overview_page(array $filters = []): array
             $conditions[] = '(
                 e.sequence_id BETWEEN ? AND ?
                 OR e.killmail_id BETWEEN ? AND ?
-                OR COALESCE(victim_ta.label, \'\') LIKE ?
-                OR COALESCE(victim_tc.label, \'\') LIKE ?
+                OR COALESCE(emc_va.entity_name, \'\') LIKE ?
+                OR COALESCE(emc_vc.entity_name, \'\') LIKE ?
                 OR COALESCE(ship.type_name, \'\') LIKE ?
                 OR COALESCE(system_ref.system_name, \'\') LIKE ?
                 OR COALESCE(region_ref.region_name, \'\') LIKE ?
@@ -12902,8 +12801,8 @@ function db_killmail_overview_page(array $filters = []): array
             array_push($params, $lowerBound, $upperBound, $lowerBound, $upperBound, $needle, $needle, $needle, $needle, $needle);
         } else {
             $conditions[] = '(
-                COALESCE(victim_ta.label, \'\') LIKE ?
-                OR COALESCE(victim_tc.label, \'\') LIKE ?
+                COALESCE(emc_va.entity_name, \'\') LIKE ?
+                OR COALESCE(emc_vc.entity_name, \'\') LIKE ?
                 OR COALESCE(ship.type_name, \'\') LIKE ?
                 OR COALESCE(system_ref.system_name, \'\') LIKE ?
                 OR COALESCE(region_ref.region_name, \'\') LIKE ?
@@ -12949,8 +12848,8 @@ function db_killmail_overview_page(array $filters = []): array
             e.zkb_npc,
             e.zkb_solo,
             e.zkb_awox,
-            COALESCE(NULLIF(victim_tc.label, ''), CONCAT('Corporation #', e.victim_corporation_id)) AS victim_corporation_label,
-            COALESCE(NULLIF(victim_ta.label, ''), CONCAT('Alliance #', e.victim_alliance_id)) AS victim_alliance_label,
+            COALESCE(emc_vc.entity_name, CONCAT('Corporation #', e.victim_corporation_id)) AS victim_corporation_label,
+            COALESCE(emc_va.entity_name, CONCAT('Alliance #', e.victim_alliance_id)) AS victim_alliance_label,
             COALESCE(NULLIF(ship.type_name, ''), CONCAT('Type #', e.victim_ship_type_id)) AS ship_type_name,
             COALESCE(NULLIF(system_ref.system_name, ''), CONCAT('System #', e.solar_system_id)) AS system_name,
             COALESCE(NULLIF(region_ref.region_name, ''), CONCAT('Region #', e.region_id)) AS region_name,

@@ -357,45 +357,15 @@ def _load_battle_participants_for_theater(
 
 
 def _load_side_configuration_ids(db: SupplyCoreDb) -> dict[str, set[int]]:
-    """Load configured tracked/opponent alliance/corporation IDs once per job run.
+    """Load friendly/hostile alliance/corporation IDs from ESI contacts + manual additions.
 
-    Sources (merged, config takes priority over contacts):
-      1. User-configured tracked/opponent lists (killmail_tracked_*, killmail_opponent_*)
-      2. In-game corp contacts from ESI (corp_contacts — positive=friendly, negative=hostile)
+    Source: corp_contacts table (positive standing = friendly, negative = hostile).
     """
-    friendly_alliance_rows = db.fetch_all(
-        "SELECT alliance_id FROM killmail_tracked_alliances WHERE is_active = 1"
-    )
-    friendly_corporation_rows = db.fetch_all(
-        "SELECT corporation_id FROM killmail_tracked_corporations WHERE is_active = 1"
-    )
-    opponent_alliance_rows = db.fetch_all(
-        "SELECT alliance_id FROM killmail_opponent_alliances WHERE is_active = 1"
-    )
-    opponent_corporation_rows = db.fetch_all(
-        "SELECT corporation_id FROM killmail_opponent_corporations WHERE is_active = 1"
-    )
+    friendly_alliance_ids: set[int] = set()
+    friendly_corporation_ids: set[int] = set()
+    opponent_alliance_ids: set[int] = set()
+    opponent_corporation_ids: set[int] = set()
 
-    friendly_alliance_ids: set[int] = {
-        int(row["alliance_id"]) for row in friendly_alliance_rows if int(row.get("alliance_id") or 0) > 0
-    }
-    friendly_corporation_ids: set[int] = {
-        int(row["corporation_id"])
-        for row in friendly_corporation_rows
-        if int(row.get("corporation_id") or 0) > 0
-    }
-    opponent_alliance_ids: set[int] = {
-        int(row["alliance_id"]) for row in opponent_alliance_rows if int(row.get("alliance_id") or 0) > 0
-    }
-    opponent_corporation_ids: set[int] = {
-        int(row["corporation_id"])
-        for row in opponent_corporation_rows
-        if int(row.get("corporation_id") or 0) > 0
-    }
-
-    # Merge in-game corp contacts (ESI diplomatic standings).
-    # Positive standing = friendly, negative = hostile, zero = third party.
-    # Only add IDs not already in the explicit config to preserve user overrides.
     try:
         contact_rows = db.fetch_all(
             """SELECT contact_id, contact_type, standing
@@ -411,14 +381,14 @@ def _load_side_configuration_ids(db: SupplyCoreDb) -> dict[str, set[int]]:
                 continue
 
             if standing > 0:
-                if contact_type == "alliance" and contact_id not in opponent_alliance_ids:
+                if contact_type == "alliance":
                     friendly_alliance_ids.add(contact_id)
-                elif contact_type == "corporation" and contact_id not in opponent_corporation_ids:
+                elif contact_type == "corporation":
                     friendly_corporation_ids.add(contact_id)
             elif standing < 0:
-                if contact_type == "alliance" and contact_id not in friendly_alliance_ids:
+                if contact_type == "alliance":
                     opponent_alliance_ids.add(contact_id)
-                elif contact_type == "corporation" and contact_id not in friendly_corporation_ids:
+                elif contact_type == "corporation":
                     opponent_corporation_ids.add(contact_id)
     except Exception:
         # corp_contacts table may not exist yet — graceful fallback.

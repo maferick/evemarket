@@ -53,9 +53,9 @@ def _processor(db: SupplyCoreDb, raw_config: dict[str, Any] | None = None) -> di
             "summary": "Skipped — no ESI OAuth token available.",
         }
 
-    # Load tracked corporations — these are the user's own corps.
+    # Load friendly corporations from ESI contacts (positive standing).
     tracked_corps = db.fetch_all(
-        "SELECT corporation_id FROM killmail_tracked_corporations WHERE is_active = 1"
+        "SELECT contact_id AS corporation_id FROM corp_contacts WHERE contact_type = 'corporation' AND standing > 0"
     )
     corp_ids = [int(r["corporation_id"]) for r in tracked_corps if int(r.get("corporation_id") or 0) > 0]
 

@@ -32,16 +32,16 @@ if ($numericPrefix !== '' && $numericPrefix !== '0') {
 $rows = db_select(
     "SELECT DISTINCT
         e.victim_alliance_id AS entity_id,
-        COALESCE(NULLIF(ta.label, ''), CONCAT('Alliance #', e.victim_alliance_id)) AS entity_label
+        COALESCE(emc.entity_name, CONCAT('Alliance #', e.victim_alliance_id)) AS entity_label
      FROM {$latestSequencesSql} latest
      INNER JOIN killmail_events e ON e.sequence_id = latest.sequence_id
-     LEFT JOIN killmail_tracked_alliances ta
-       ON ta.alliance_id = e.victim_alliance_id
-      AND ta.is_active = 1
+     LEFT JOIN entity_metadata_cache emc
+       ON emc.entity_type = 'alliance'
+      AND emc.entity_id = e.victim_alliance_id
      WHERE e.victim_alliance_id IS NOT NULL
        AND e.victim_alliance_id > 0
        AND (
-           ta.label LIKE CONCAT('%', ?, '%')
+           emc.entity_name LIKE CONCAT('%', ?, '%')
            {$idCondition}
        )
      ORDER BY entity_label ASC
