@@ -94,6 +94,9 @@ if ($viewSnapshot !== null && !$pendingLock) {
         'third_party' => 'bg-slate-700/60',
     ];
 
+    // Standing discrepancies are always computed live (lightweight query)
+    $standingDiscrepancies = [];
+
     $sideFilter = isset($_GET['side']) ? (string) $_GET['side'] : null;
     $suspiciousOnly = isset($_GET['suspicious']) && $_GET['suspicious'] === '1';
     $participants = $participantsAll;
@@ -678,6 +681,62 @@ include __DIR__ . '/partials/_battle_report.php';
 include __DIR__ . '/partials/_ai_briefing.php';
 include __DIR__ . '/partials/_battles.php';
 include __DIR__ . '/partials/_timeline.php';
+// ── Betrayal detection: cross-side kill analysis ─────────────────────
+// Detect alliances classified as "friendly" that are killing other friendlies,
+// or "opponents" that are cooperating with friendlies — standing discrepancies.
+$standingDiscrepancies = [];
+if (isset($theaterId) && $theaterId !== '') {
+    $crossSideKills = db_theater_standing_discrepancies($theaterId);
+    foreach ($crossSideKills as $csk) {
+        $atkAllianceId = (int) ($csk['attacker_alliance_id'] ?? 0);
+        $atkCorpId = (int) ($csk['attacker_corporation_id'] ?? 0);
+        $victimAllianceId = (int) ($csk['victim_alliance_id'] ?? 0);
+        $victimCorpId = (int) ($csk['victim_corporation_id'] ?? 0);
+        $crossKills = (int) ($csk['cross_kills'] ?? 0);
+        $crossIsk = (float) ($csk['cross_isk'] ?? 0);
+
+        $attackerSide = $classifyAlliance($atkAllianceId, $atkCorpId);
+        $victimSide = $classifyAlliance($victimAllianceId, $victimCorpId);
+
+        // Betrayal: friendly attacking friendly
+        if ($attackerSide === 'friendly' && $victimSide === 'friendly' && $crossKills >= 1) {
+            $key = $atkAllianceId > 0 ? "a:{$atkAllianceId}" : "c:{$atkCorpId}";
+            if (!isset($standingDiscrepancies[$key])) {
+                $standingDiscrepancies[$key] = [
+                    'alliance_id' => $atkAllianceId,
+                    'corporation_id' => $atkCorpId,
+                    'type' => 'betrayal',
+                    'label' => 'Friendly Fire',
+                    'cross_kills' => 0,
+                    'cross_isk' => 0.0,
+                ];
+            }
+            $standingDiscrepancies[$key]['cross_kills'] += $crossKills;
+            $standingDiscrepancies[$key]['cross_isk'] += $crossIsk;
+        }
+
+        // Defection: opponent helping friendlies by killing opponents
+        if ($attackerSide === 'opponent' && $victimSide === 'opponent' && $crossKills >= 1) {
+            $key = $atkAllianceId > 0 ? "a:{$atkAllianceId}" : "c:{$atkCorpId}";
+            if (!isset($standingDiscrepancies[$key])) {
+                $standingDiscrepancies[$key] = [
+                    'alliance_id' => $atkAllianceId,
+                    'corporation_id' => $atkCorpId,
+                    'type' => 'internal_conflict',
+                    'label' => 'Internal Conflict',
+                    'cross_kills' => 0,
+                    'cross_isk' => 0.0,
+                ];
+            }
+            $standingDiscrepancies[$key]['cross_kills'] += $crossKills;
+            $standingDiscrepancies[$key]['cross_isk'] += $crossIsk;
+        }
+
+        // Switched sides: opponent killing friendlies (expected but track volume)
+        // or friendly killing opponents (expected — this is normal combat)
+    }
+}
+
 include __DIR__ . '/partials/_alliance_summary.php';
 // ── Build killmail lookup for clickable lost-ship links ──────────────
 // This runs a lightweight query against killmail_events for the theater's
