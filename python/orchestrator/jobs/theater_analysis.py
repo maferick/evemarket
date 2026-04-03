@@ -394,13 +394,14 @@ def _load_side_configuration_ids(db: SupplyCoreDb) -> dict[str, set[int]]:
     }
 
     # Merge in-game corp contacts (ESI diplomatic standings).
-    # Standing >= 0 (including neutral) = friendly, negative = hostile.
+    # Positive standing = friendly, negative = hostile, zero = third party.
     # Only add IDs not already in the explicit config to preserve user overrides.
     try:
         contact_rows = db.fetch_all(
             """SELECT contact_id, contact_type, standing
                FROM corp_contacts
-               WHERE contact_type IN ('alliance', 'corporation')"""
+               WHERE contact_type IN ('alliance', 'corporation')
+                 AND standing != 0"""
         )
         for row in contact_rows:
             contact_id = int(row.get("contact_id") or 0)
@@ -409,7 +410,7 @@ def _load_side_configuration_ids(db: SupplyCoreDb) -> dict[str, set[int]]:
             if contact_id <= 0:
                 continue
 
-            if standing >= 0:
+            if standing > 0:
                 if contact_type == "alliance" and contact_id not in opponent_alliance_ids:
                     friendly_alliance_ids.add(contact_id)
                 elif contact_type == "corporation" and contact_id not in opponent_corporation_ids:
