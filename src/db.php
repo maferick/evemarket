@@ -12149,7 +12149,6 @@ function db_corp_contacts_by_standing(): array
             "SELECT contact_id, contact_type, standing
              FROM corp_contacts
              WHERE contact_type IN ('alliance', 'corporation')
-               AND standing != 0
              ORDER BY ABS(standing) DESC"
         );
     } catch (Throwable) {
@@ -12165,7 +12164,7 @@ function db_corp_contacts_by_standing(): array
             continue;
         }
 
-        if ($standing > 0) {
+        if ($standing >= 0) {
             if ($contactType === 'alliance') {
                 $result['friendly_alliance_ids'][] = $contactId;
             } elseif ($contactType === 'corporation') {
