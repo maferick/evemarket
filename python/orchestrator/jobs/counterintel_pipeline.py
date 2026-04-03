@@ -684,19 +684,24 @@ def run_compute_counterintel_pipeline(
 
             # Batch-update hostile_adjacent_hops_180d in the org cache
             if not dry_run:
-                with db.transaction() as (_, cursor_hostile):
-                    for cid, hops in hostile_hops_by_character.items():
-                        if hops > 0:
-                            cursor_hostile.execute(
-                                "UPDATE character_org_history_cache SET hostile_adjacent_hops_180d = %s WHERE character_id = %s AND source = 'evewho'",
-                                (hops, cid),
-                            )
+                hostile_updates = [(hops, cid) for cid, hops in hostile_hops_by_character.items() if hops > 0]
+                if hostile_updates:
+                    with db.transaction() as (_, cursor_hostile):
+                        cursor_hostile.executemany(
+                            "UPDATE character_org_history_cache SET hostile_adjacent_hops_180d = %s WHERE character_id = %s AND source = 'evewho'",
+                            hostile_updates,
+                        )
 
             feature_rows: list[dict[str, Any]] = []
             score_rows: list[dict[str, Any]] = []
             evidence_rows: list[dict[str, Any]] = []
             control_membership_rows: list[tuple[str, str, int]] = []
             anomalous_battle_denominator = len(anomalous_battles)
+
+            # Pre-index overperformance_rows by battle_id for O(1) lookup
+            overperformance_by_battle: dict[str, list[dict[str, Any]]] = defaultdict(list)
+            for over in overperformance_rows:
+                overperformance_by_battle[str(over["battle_id"])].append(over)
             control_battle_denominator = len(control_battles)
             battle_started_by_id = {str(row.get("battle_id") or ""): row.get("started_at") for row in battles}
             for character_id, presences in by_character.items():
@@ -723,8 +728,8 @@ def run_compute_counterintel_pipeline(
                     if isinstance(started_dt, datetime):
                         repeatability_windows_7d.add(started_dt.strftime("%Y-W%U"))
                         repeatability_windows_30d.add(started_dt.strftime("%Y-%m"))
-                    for over in overperformance_rows:
-                        if over["battle_id"] == battle_id and over["side_key"] != side_key:
+                    for over in overperformance_by_battle.get(battle_id, ()):
+                        if over["side_key"] != side_key:
                             sustain_lifts.append(float(over["sustain_lift_score"]))
                 anomalous_rate = _safe_div(float(anomaly_hits), float(max(1, anomalous_battle_denominator)), 0.0)
                 control_rate = _safe_div(float(control_hits), float(max(1, control_battle_denominator)), 0.0)
