@@ -21,7 +21,7 @@ $analystFeedback = db_analyst_feedback_for_character($characterId);
 
 // Generalized co-presence signals and top edges
 $copresenceSignals = db_character_copresence_signals($characterId);
-$copresenceEdges = db_character_copresence_top_edges($characterId, '30d', 15);
+$copresenceEdges = db_character_copresence_top_edges_preferred($characterId, '30d', 15);
 
 // Temporal behavior detection signals
 $temporalBehaviorSignals = db_character_temporal_behavior_signals($characterId);

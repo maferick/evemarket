@@ -42,7 +42,7 @@ if ($_constellationIds === []) {
     $_constellationIds = array_values(array_filter(array_map(static fn(array $r): int => (int) $r['constellation_id'], $_constRows), static fn(int $id): bool => $id > 0));
 }
 
-$_constGraph = $_constellationIds !== [] ? db_constellation_graph($_constellationIds) : ['nodes' => [], 'edges' => []];
+$_constGraph = $_constellationIds !== [] ? db_constellation_graph_preferred($_constellationIds) : ['nodes' => [], 'edges' => []];
 $_constNodes = (array) ($_constGraph['nodes'] ?? []);
 $_constEdges = (array) ($_constGraph['edges'] ?? []);
 

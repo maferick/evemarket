@@ -1,0 +1,115 @@
+# SupplyCore MariaDB Performance Tuning
+#
+# Derived from:
+#   - https://mariadb.org/mariadb-30x-faster/  (ANALYZE TABLE / histogram statistics)
+#   - https://github.com/VolkanSah/optimize-MySQL-MariaDB  (InnoDB buffer + I/O tuning)
+#   - https://medium.com/@x0goe/5-mariadb-performance-tuning-techniques  (thread pool + slow log)
+#
+# Copy this file to /etc/mysql/mariadb.conf.d/99-supplycore-tuning.cnf (or include it)
+# and restart MariaDB.  Adjust values marked [TUNE] to your host's available RAM and CPU.
+#
+# After applying, run the companion migration to generate persistent table statistics:
+#   mysql supplycore < database/migrations/<date>_analyze_table_persistent_stats.sql
+
+[mysqld]
+
+# ── InnoDB Buffer Pool ──────────────────────────────────────────────────────
+# Rule of thumb: 60-80% of total RAM for dedicated DB servers.
+# SupplyCore's working set is dominated by market_orders_history (107M+ rows)
+# and market_order_snapshots_summary (6M+ rows).
+# [TUNE] Set to ~70% of your host RAM. Examples: 4G (8GB), 8G (16GB), 24G (32GB)
+innodb_buffer_pool_size         = 8G
+innodb_buffer_pool_instances    = 4
+innodb_buffer_pool_dump_at_shutdown = ON
+innodb_buffer_pool_load_at_startup = ON
+
+# ── InnoDB Transaction Log ──────────────────────────────────────────────────
+# Larger redo logs improve write throughput for bulk inserts (market order ingestion).
+# [TUNE] 512M is safe for most setups; 1G for high-write hosts.
+innodb_log_file_size            = 512M
+innodb_log_buffer_size          = 32M
+
+# ── InnoDB Flush Behavior ───────────────────────────────────────────────────
+# flush_log_at_trx_commit = 2: flush log every second instead of every commit.
+# Acceptable for SupplyCore because market data is re-fetchable from ESI.
+# Set to 1 if you need strict ACID on every commit.
+innodb_flush_log_at_trx_commit  = 2
+innodb_flush_method             = O_DIRECT
+
+# ── InnoDB I/O Capacity ─────────────────────────────────────────────────────
+# [TUNE] SSD defaults. Use 200/400 for spinning disks.
+innodb_io_capacity              = 2000
+innodb_io_capacity_max          = 4000
+
+# ── InnoDB Misc ─────────────────────────────────────────────────────────────
+innodb_file_per_table           = ON
+innodb_stats_on_metadata        = OFF
+innodb_stats_persistent         = ON
+innodb_stats_auto_recalc        = ON
+
+# ── Thread Pool (MariaDB-specific) ──────────────────────────────────────────
+# Reduces context-switching under concurrent page loads + background sync jobs.
+# [TUNE] Set thread_pool_size to CPU core count.
+thread_handling                 = pool-of-threads
+thread_pool_size                = 4
+thread_pool_max_threads         = 200
+thread_pool_idle_timeout        = 60
+
+# ── Connection & Thread Cache ───────────────────────────────────────────────
+max_connections                 = 200
+thread_cache_size               = 32
+
+# ── Table Cache ─────────────────────────────────────────────────────────────
+# SupplyCore has 69+ tables; generous cache avoids repeated opens.
+table_open_cache                = 4096
+table_definition_cache          = 2048
+open_files_limit                = 8192
+
+# ── Temp Tables ─────────────────────────────────────────────────────────────
+# GROUP BY heavy queries (market snapshots, killmail aggregates) benefit from
+# larger in-memory temp tables before spilling to disk.
+tmp_table_size                  = 128M
+max_heap_table_size             = 128M
+
+# ── Sort & Join Buffers ─────────────────────────────────────────────────────
+# Per-session buffers. Generous defaults help the heavy market JOIN queries.
+sort_buffer_size                = 4M
+join_buffer_size                = 4M
+read_buffer_size                = 2M
+read_rnd_buffer_size            = 2M
+
+# ── Query Cache ─────────────────────────────────────────────────────────────
+# Disable. SupplyCore uses Redis for application-level caching.
+# The built-in query cache causes mutex contention on write-heavy workloads.
+query_cache_type                = 0
+query_cache_size                = 0
+
+# ── Optimizer Enhancements ──────────────────────────────────────────────────
+# Enable all optimizer switches for better join order and subquery optimization.
+# engine_condition_pushdown helps partition pruning on market_orders_history_p.
+optimizer_switch                = 'index_merge=on,index_merge_union=on,index_merge_sort_union=on,index_merge_intersection=on,engine_condition_pushdown=on,index_condition_pushdown=on,derived_merge=on,derived_with_keys=on,firstmatch=on,loosescan=on,materialization=on,in_to_exists=on,semijoin=on,partial_match_rowid_merge=on,partial_match_table_scan=on,subquery_cache=on,mrr=on,mrr_cost_based=on,mrr_sort_keys=on,outer_join_with_cache=on,semijoin_with_cache=on,join_cache_incremental=on,join_cache_hashed=on,join_cache_bka=on,optimize_join_buffer_size=on,table_elimination=on,extended_keys=on,exists_to_in=on,orderby_uses_equalities=on,condition_pushdown_for_derived=on,split_materialized=on,condition_pushdown_for_subquery=on,rowid_filter=on,condition_pushdown_from_having=on'
+
+# Use histogram-based statistics for better cardinality estimation.
+# Combined with ANALYZE TABLE ... PERSISTENT FOR ALL this gives up to 30x
+# speedup on complex joins (see mariadb.org/mariadb-30x-faster).
+use_stat_tables                 = PREFERABLY_FOR_QUERIES
+histogram_size                  = 254
+histogram_type                  = DOUBLE_PREC_HB
+
+# ── Slow Query Log ──────────────────────────────────────────────────────────
+# Enable for ongoing performance monitoring.
+slow_query_log                  = ON
+slow_query_log_file             = /var/log/mysql/supplycore-slow.log
+long_query_time                 = 1
+log_queries_not_using_indexes   = ON
+
+# ── Binary Logging ──────────────────────────────────────────────────────────
+# Enable only if you need replication or point-in-time recovery.
+# Uncomment the following if needed:
+# binlog_format                 = ROW
+# sync_binlog                   = 1
+# binlog_expire_logs_seconds    = 864000
+
+# ── Character Set ───────────────────────────────────────────────────────────
+character-set-server            = utf8mb4
+collation-server                = utf8mb4_unicode_ci
