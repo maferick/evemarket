@@ -1552,9 +1552,12 @@ include __DIR__ . '/../../src/views/partials/header.php';
 
                 // Build corp contacts display data with resolved names
                 $corpContactsList = db_corp_contacts_all();
-                $esiContacts = array_filter($corpContactsList, static fn (array $c): bool => ((string) ($c['source'] ?? 'esi')) === 'esi');
+                $esiContacts = array_filter($corpContactsList, static fn (array $c): bool =>
+                    ((string) ($c['source'] ?? 'esi')) === 'esi'
+                    && in_array((string) ($c['contact_type'] ?? ''), ['alliance', 'corporation', 'faction'], true)
+                );
                 $manualContacts = array_filter($corpContactsList, static fn (array $c): bool => ((string) ($c['source'] ?? 'esi')) === 'manual');
-                $contactIdsByType = ['alliance' => [], 'corporation' => [], 'character' => []];
+                $contactIdsByType = ['alliance' => [], 'corporation' => []];
                 foreach ($corpContactsList as $c) {
                     $cType = (string) $c['contact_type'];
                     $cId = (int) $c['contact_id'];
