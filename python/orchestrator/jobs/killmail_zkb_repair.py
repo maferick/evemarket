@@ -11,55 +11,16 @@ from __future__ import annotations
 import json
 import logging
 import time
-import urllib.error
-import urllib.request
 from pathlib import Path
 from typing import Any
 
 from ..bridge import PhpBridge
-from ..http_client import ipv4_opener
 from ..worker_runtime import utc_now_iso
+from ..zkill_adapter import ZKillAdapter
 
 logger = logging.getLogger("supplycore.killmail_zkb_repair")
 
-_ZKB_API_BASE = "https://zkillboard.com/api"
 BATCH_SIZE = 500
-ZKB_REQUEST_DELAY = 1.0  # seconds between zKB API requests
-
-
-def _http_get(url: str, user_agent: str, timeout: int = 30) -> tuple[int, str]:
-    headers = {
-        "Accept": "application/json",
-        "User-Agent": user_agent,
-    }
-    request = urllib.request.Request(url, headers=headers)
-    try:
-        with ipv4_opener.open(request, timeout=timeout) as response:
-            status = int(getattr(response, "status", response.getcode()))
-            body = response.read()
-            if isinstance(body, bytes):
-                body = body.decode("utf-8", errors="replace")
-            return status, body
-    except urllib.error.HTTPError as error:
-        return int(error.code), ""
-    except (urllib.error.URLError, OSError, TimeoutError) as error:
-        logger.warning("HTTP request failed for %s: %s", url, error)
-        return 0, ""
-
-
-def _fetch_zkb_metadata(killmail_id: int, user_agent: str) -> dict[str, Any]:
-    """Fetch zkb metadata for a single killmail from zKillboard API."""
-    url = f"{_ZKB_API_BASE}/killID/{killmail_id}/"
-    status, body = _http_get(url, user_agent)
-    if status != 200 or not body.strip():
-        return {}
-    try:
-        data = json.loads(body)
-    except json.JSONDecodeError:
-        return {}
-    if isinstance(data, list) and len(data) > 0 and isinstance(data[0], dict):
-        return data[0].get("zkb") or {}
-    return {}
 
 
 def _build_bridge(cfg: dict[str, Any]) -> PhpBridge:
@@ -78,6 +39,7 @@ def run_killmail_zkb_repair(db: Any, cfg: dict[str, Any] | None = None) -> dict[
     """
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
     user_agent = "SupplyCore killmail-zkb-repair/1.0"
+    zkill = ZKillAdapter(user_agent=user_agent)
 
     # Build bridge if config is available, otherwise use db directly.
     bridge: PhpBridge | None = None
@@ -129,15 +91,13 @@ def run_killmail_zkb_repair(db: Any, cfg: dict[str, Any] | None = None) -> dict[
             if km_id <= 0:
                 continue
 
-            zkb = _fetch_zkb_metadata(km_id, user_agent)
+            zkb = zkill.fetch_kill_metadata(km_id)
             total_fetched += 1
 
             if zkb and zkb.get("totalValue") is not None:
                 updates.append({"killmail_id": km_id, "zkb": zkb})
             else:
                 total_zkb_empty += 1
-
-            time.sleep(ZKB_REQUEST_DELAY)
 
         # Send updates
         if updates:

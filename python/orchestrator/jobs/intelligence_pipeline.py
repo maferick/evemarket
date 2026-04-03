@@ -801,13 +801,15 @@ def _export_suspicion_signals(client: Neo4jClient, db: SupplyCoreDb, computed_at
     if not rows:
         return 0
 
+    BATCH_SIZE = 500
+    signal_ids: set[int] = set()
     with db.transaction() as (_, cursor):
-        cursor.execute("DELETE FROM character_suspicion_signals")
         batch: list[tuple[Any, ...]] = []
         for r in rows:
             cid = int(r.get("character_id") or 0)
             if cid <= 0:
                 continue
+            signal_ids.add(cid)
             batch.append(
                 (
                     cid,
@@ -831,7 +833,8 @@ def _export_suspicion_signals(client: Neo4jClient, db: SupplyCoreDb, computed_at
                     computed_at,
                 ),
             )
-        if batch:
+        for i in range(0, len(batch), BATCH_SIZE):
+            chunk = batch[i : i + BATCH_SIZE]
             cursor.executemany(
                 """INSERT INTO character_suspicion_signals
                    (character_id, alliance_id, battles_present, kills_total, losses_total,
@@ -841,9 +844,38 @@ def _export_suspicion_signals(client: Neo4jClient, db: SupplyCoreDb, computed_at
                     peer_normalized_kills_delta, peer_normalized_damage_delta,
                     composition_adjusted_delta, side_expected_performance,
                     suspicion_score, suspicion_flags, engagement_rate_by_alliance, computed_at)
-                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
-                batch,
+                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                   ON DUPLICATE KEY UPDATE
+                    alliance_id = VALUES(alliance_id),
+                    battles_present = VALUES(battles_present),
+                    kills_total = VALUES(kills_total),
+                    losses_total = VALUES(losses_total),
+                    damage_total = VALUES(damage_total),
+                    primary_fleet_function = VALUES(primary_fleet_function),
+                    selective_non_engagement_score = VALUES(selective_non_engagement_score),
+                    high_presence_low_output_score = VALUES(high_presence_low_output_score),
+                    token_participation_score = VALUES(token_participation_score),
+                    loss_without_attack_ratio = VALUES(loss_without_attack_ratio),
+                    peer_normalized_kills_delta = VALUES(peer_normalized_kills_delta),
+                    peer_normalized_damage_delta = VALUES(peer_normalized_damage_delta),
+                    composition_adjusted_delta = VALUES(composition_adjusted_delta),
+                    side_expected_performance = VALUES(side_expected_performance),
+                    suspicion_score = VALUES(suspicion_score),
+                    suspicion_flags = VALUES(suspicion_flags),
+                    engagement_rate_by_alliance = VALUES(engagement_rate_by_alliance),
+                    computed_at = VALUES(computed_at)""",
+                chunk,
             )
+
+        # Remove stale signal rows not in the current computation.
+        if signal_ids:
+            placeholders = ",".join(["%s"] * len(signal_ids))
+            cursor.execute(
+                f"DELETE FROM character_suspicion_signals WHERE character_id NOT IN ({placeholders})",
+                tuple(signal_ids),
+            )
+        elif not batch:
+            cursor.execute("DELETE FROM character_suspicion_signals")
 
         # Emit normalized per-signal evidence rows.
         evidence_rows: list[dict[str, Any]] = []
@@ -927,13 +959,14 @@ def _export_alliance_overlap(client: Neo4jClient, db: SupplyCoreDb, computed_at:
     if not rows:
         return 0
 
+    overlap_ids: set[int] = set()
     with db.transaction() as (_, cursor):
-        cursor.execute("DELETE FROM character_alliance_overlap")
         batch: list[tuple[Any, ...]] = []
         for r in rows:
             cid = int(r.get("character_id") or 0)
             if cid <= 0:
                 continue
+            overlap_ids.add(cid)
             batch.append(
                 (
                     cid,
@@ -948,15 +981,36 @@ def _export_alliance_overlap(client: Neo4jClient, db: SupplyCoreDb, computed_at:
                     computed_at,
                 ),
             )
-        if batch:
+        for i in range(0, len(batch), BATCH_SIZE):
+            chunk = batch[i : i + BATCH_SIZE]
             cursor.executemany(
                 """INSERT INTO character_alliance_overlap
                    (character_id, alliance_id, former_allies_attacking, losses_to_former_allies,
                     repeat_former_ally_attackers, total_repeat_kills_by_former,
                     historical_overlap_score, correlated_flag, combined_risk_score, computed_at)
-                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
-                batch,
+                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                   ON DUPLICATE KEY UPDATE
+                    alliance_id = VALUES(alliance_id),
+                    former_allies_attacking = VALUES(former_allies_attacking),
+                    losses_to_former_allies = VALUES(losses_to_former_allies),
+                    repeat_former_ally_attackers = VALUES(repeat_former_ally_attackers),
+                    total_repeat_kills_by_former = VALUES(total_repeat_kills_by_former),
+                    historical_overlap_score = VALUES(historical_overlap_score),
+                    correlated_flag = VALUES(correlated_flag),
+                    combined_risk_score = VALUES(combined_risk_score),
+                    computed_at = VALUES(computed_at)""",
+                chunk,
             )
+
+        # Remove stale overlap rows not in the current computation.
+        if overlap_ids:
+            placeholders = ",".join(["%s"] * len(overlap_ids))
+            cursor.execute(
+                f"DELETE FROM character_alliance_overlap WHERE character_id NOT IN ({placeholders})",
+                tuple(overlap_ids),
+            )
+        elif not batch:
+            cursor.execute("DELETE FROM character_alliance_overlap")
 
     return len(rows)
 
