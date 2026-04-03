@@ -1551,6 +1551,8 @@ include __DIR__ . '/../../src/views/partials/header.php';
 
                 // Build corp contacts display data with resolved names
                 $corpContactsList = db_corp_contacts_all();
+                $esiContacts = array_filter($corpContactsList, static fn (array $c): bool => ((string) ($c['source'] ?? 'esi')) === 'esi');
+                $manualContacts = array_filter($corpContactsList, static fn (array $c): bool => ((string) ($c['source'] ?? 'esi')) === 'manual');
                 $contactAllianceIds = array_values(array_unique(array_filter(array_map(
                     static fn (array $c): int => $c['contact_type'] === 'alliance' ? (int) $c['contact_id'] : 0,
                     $corpContactsList
@@ -1566,6 +1568,27 @@ include __DIR__ . '/../../src/views/partials/header.php';
                 foreach (db_entity_metadata_cache_get_many('corporation', $contactCorpIds) as $e) {
                     $contactNameMap['corporation:' . (int) $e['entity_id']] = (string) $e['entity_name'];
                 }
+
+                // Prepare manual contact picker selections
+                $manualFriendlyAllianceSelections = [];
+                $manualFriendlyCorporationSelections = [];
+                $manualHostileAllianceSelections = [];
+                $manualHostileCorporationSelections = [];
+                foreach ($manualContacts as $mc) {
+                    $mcId = (int) $mc['contact_id'];
+                    $mcType = (string) $mc['contact_type'];
+                    $mcStanding = (float) $mc['standing'];
+                    $mcName = $contactNameMap[$mcType . ':' . $mcId] ?? ucfirst($mcType) . ' #' . $mcId;
+                    $entry = ['id' => $mcId, 'name' => $mcName, 'type' => ucfirst($mcType)];
+                    if ($mcStanding > 0 && $mcType === 'alliance') { $manualFriendlyAllianceSelections[] = $entry; }
+                    elseif ($mcStanding > 0 && $mcType === 'corporation') { $manualFriendlyCorporationSelections[] = $entry; }
+                    elseif ($mcStanding < 0 && $mcType === 'alliance') { $manualHostileAllianceSelections[] = $entry; }
+                    elseif ($mcStanding < 0 && $mcType === 'corporation') { $manualHostileCorporationSelections[] = $entry; }
+                }
+                $manualFriendlyAlliancesText = implode("\n", array_map(static fn (array $r): string => $r['id'] . ' | ' . $r['name'], $manualFriendlyAllianceSelections));
+                $manualFriendlyCorporationsText = implode("\n", array_map(static fn (array $r): string => $r['id'] . ' | ' . $r['name'], $manualFriendlyCorporationSelections));
+                $manualHostileAlliancesText = implode("\n", array_map(static fn (array $r): string => $r['id'] . ' | ' . $r['name'], $manualHostileAllianceSelections));
+                $manualHostileCorporationsText = implode("\n", array_map(static fn (array $r): string => $r['id'] . ' | ' . $r['name'], $manualHostileCorporationSelections));
 
                 $statusState = is_array($killmailStatus['state'] ?? null) ? $killmailStatus['state'] : [];
                 $killmailHealth = is_array($killmailStatusSummary['health'] ?? null) ? $killmailStatusSummary['health'] : [];
@@ -1739,22 +1762,23 @@ include __DIR__ . '/../../src/views/partials/header.php';
                     <p>This powers the <span class="text-slate-100">Economic Warfare</span> page: hostile fit family reconstruction, module scoring, and supply pressure analysis across their full engagement history.</p>
                 </div>
 
-                <?php if ($corpContactsList !== []): ?>
-                <h3 class="text-base font-semibold text-slate-100 mt-6">In-Game Corp Contacts (ESI Standings)</h3>
-                <p class="mt-1 text-xs text-muted">These contacts are synced from your corporation's in-game standings via ESI. They serve as a fallback for side classification in Theater Intelligence when no manual tracked/opponent alliances are configured above.</p>
+                <h3 class="text-base font-semibold text-slate-100 mt-6">Corp Contacts (ESI + Manual Standings)</h3>
+                <p class="mt-1 text-xs text-muted">ESI contacts are synced from your corporation's in-game standings. You can also add manual contacts below — these are preserved across ESI syncs and used for theater side classification.</p>
 
-                <div class="grid gap-4 lg:grid-cols-2 mt-2">
-                    <?php
-                        $friendlyContacts = array_filter($corpContactsList, static fn (array $c): bool => (float) $c['standing'] > 0);
-                        $hostileContacts = array_filter($corpContactsList, static fn (array $c): bool => (float) $c['standing'] < 0);
-                    ?>
+                <?php if ($esiContacts !== []): ?>
+                <?php
+                    $esiFriendly = array_filter($esiContacts, static fn (array $c): bool => (float) $c['standing'] > 0);
+                    $esiHostile = array_filter($esiContacts, static fn (array $c): bool => (float) $c['standing'] < 0);
+                ?>
+                <p class="text-xs uppercase tracking-[0.14em] text-muted mt-4 mb-2">ESI Synced (read-only)</p>
+                <div class="grid gap-4 lg:grid-cols-2">
                     <div class="space-y-2">
                         <span class="text-sm text-blue-300">Friendly (positive standing)</span>
-                        <?php if ($friendlyContacts === []): ?>
-                            <p class="text-xs text-muted">No friendly contacts found.</p>
+                        <?php if ($esiFriendly === []): ?>
+                            <p class="text-xs text-muted">No friendly contacts from ESI.</p>
                         <?php else: ?>
                             <div class="max-h-72 overflow-y-auto rounded-lg border border-border bg-black/10 divide-y divide-border/50">
-                                <?php foreach ($friendlyContacts as $c):
+                                <?php foreach ($esiFriendly as $c):
                                     $cId = (int) $c['contact_id'];
                                     $cType = (string) $c['contact_type'];
                                     $cStanding = (float) $c['standing'];
@@ -1773,11 +1797,11 @@ include __DIR__ . '/../../src/views/partials/header.php';
                     </div>
                     <div class="space-y-2">
                         <span class="text-sm text-red-300">Hostile (negative standing)</span>
-                        <?php if ($hostileContacts === []): ?>
-                            <p class="text-xs text-muted">No hostile contacts found.</p>
+                        <?php if ($esiHostile === []): ?>
+                            <p class="text-xs text-muted">No hostile contacts from ESI.</p>
                         <?php else: ?>
                             <div class="max-h-72 overflow-y-auto rounded-lg border border-border bg-black/10 divide-y divide-border/50">
-                                <?php foreach ($hostileContacts as $c):
+                                <?php foreach ($esiHostile as $c):
                                     $cId = (int) $c['contact_id'];
                                     $cType = (string) $c['contact_type'];
                                     $cStanding = (float) $c['standing'];
@@ -1795,12 +1819,65 @@ include __DIR__ . '/../../src/views/partials/header.php';
                         <?php endif; ?>
                     </div>
                 </div>
-
-                <div class="rounded-lg border border-cyan-500/20 bg-cyan-500/5 p-3 text-sm text-muted space-y-2">
-                    <p>These standings are read-only and synced automatically from ESI. To change them, update your corporation's contacts in-game and wait for the next sync.</p>
-                    <p>When no friendly/opponent alliances are configured manually above, Theater Intelligence uses these contacts to classify sides: <span class="text-blue-300">positive standing = friendly</span>, <span class="text-red-300">negative standing = opponent</span>.</p>
-                </div>
                 <?php endif; ?>
+
+                <p class="text-xs uppercase tracking-[0.14em] text-muted mt-4 mb-2">Manual Contacts (editable)</p>
+                <p class="text-xs text-muted mb-2">Add alliances or corporations here to supplement ESI standings. Friendly contacts get +10.0 standing, hostile contacts get -10.0.</p>
+
+                <div class="grid gap-4 lg:grid-cols-2">
+                    <div class="space-y-3">
+                        <span class="text-sm text-blue-300">Friendly Alliances</span>
+                        <textarea name="manual_friendly_alliance_contacts" id="manual_friendly_alliance_contacts" class="hidden"><?= htmlspecialchars($manualFriendlyAlliancesText, ENT_QUOTES) ?></textarea>
+                        <div class="flex gap-2">
+                            <input type="text" id="manual_friendly_alliance_search" autocomplete="off" placeholder="Search alliances or enter ID" class="w-full field-input" />
+                            <button type="button" id="manual_friendly_alliance_add" class="rounded-lg border border-border bg-black/30 px-3 py-2 text-sm text-slate-100 transition hover:bg-white/5">Add</button>
+                        </div>
+                        <p id="manual_friendly_alliance_status" class="text-xs text-muted"><?= htmlspecialchars($manualFriendlyAllianceSelections === [] ? 'No manual friendly alliances.' : count($manualFriendlyAllianceSelections) . ' manual friendly alliance' . (count($manualFriendlyAllianceSelections) === 1 ? '' : 's') . '.', ENT_QUOTES) ?></p>
+                        <ul id="manual_friendly_alliance_results" class="hidden max-h-60 overflow-y-auto surface-tertiary"></ul>
+                        <div id="manual_friendly_alliance_selected" class="space-y-2 rounded-lg border border-border bg-black/10 p-3"></div>
+                    </div>
+                    <div class="space-y-3">
+                        <span class="text-sm text-blue-300">Friendly Corporations</span>
+                        <textarea name="manual_friendly_corporation_contacts" id="manual_friendly_corporation_contacts" class="hidden"><?= htmlspecialchars($manualFriendlyCorporationsText, ENT_QUOTES) ?></textarea>
+                        <div class="flex gap-2">
+                            <input type="text" id="manual_friendly_corporation_search" autocomplete="off" placeholder="Search corporations or enter ID" class="w-full field-input" />
+                            <button type="button" id="manual_friendly_corporation_add" class="rounded-lg border border-border bg-black/30 px-3 py-2 text-sm text-slate-100 transition hover:bg-white/5">Add</button>
+                        </div>
+                        <p id="manual_friendly_corporation_status" class="text-xs text-muted"><?= htmlspecialchars($manualFriendlyCorporationSelections === [] ? 'No manual friendly corporations.' : count($manualFriendlyCorporationSelections) . ' manual friendly corporation' . (count($manualFriendlyCorporationSelections) === 1 ? '' : 's') . '.', ENT_QUOTES) ?></p>
+                        <ul id="manual_friendly_corporation_results" class="hidden max-h-60 overflow-y-auto surface-tertiary"></ul>
+                        <div id="manual_friendly_corporation_selected" class="space-y-2 rounded-lg border border-border bg-black/10 p-3"></div>
+                    </div>
+                </div>
+
+                <div class="grid gap-4 lg:grid-cols-2 mt-3">
+                    <div class="space-y-3">
+                        <span class="text-sm text-red-300">Hostile Alliances</span>
+                        <textarea name="manual_hostile_alliance_contacts" id="manual_hostile_alliance_contacts" class="hidden"><?= htmlspecialchars($manualHostileAlliancesText, ENT_QUOTES) ?></textarea>
+                        <div class="flex gap-2">
+                            <input type="text" id="manual_hostile_alliance_search" autocomplete="off" placeholder="Search alliances or enter ID" class="w-full field-input" />
+                            <button type="button" id="manual_hostile_alliance_add" class="rounded-lg border border-border bg-black/30 px-3 py-2 text-sm text-slate-100 transition hover:bg-white/5">Add</button>
+                        </div>
+                        <p id="manual_hostile_alliance_status" class="text-xs text-muted"><?= htmlspecialchars($manualHostileAllianceSelections === [] ? 'No manual hostile alliances.' : count($manualHostileAllianceSelections) . ' manual hostile alliance' . (count($manualHostileAllianceSelections) === 1 ? '' : 's') . '.', ENT_QUOTES) ?></p>
+                        <ul id="manual_hostile_alliance_results" class="hidden max-h-60 overflow-y-auto surface-tertiary"></ul>
+                        <div id="manual_hostile_alliance_selected" class="space-y-2 rounded-lg border border-border bg-black/10 p-3"></div>
+                    </div>
+                    <div class="space-y-3">
+                        <span class="text-sm text-red-300">Hostile Corporations</span>
+                        <textarea name="manual_hostile_corporation_contacts" id="manual_hostile_corporation_contacts" class="hidden"><?= htmlspecialchars($manualHostileCorporationsText, ENT_QUOTES) ?></textarea>
+                        <div class="flex gap-2">
+                            <input type="text" id="manual_hostile_corporation_search" autocomplete="off" placeholder="Search corporations or enter ID" class="w-full field-input" />
+                            <button type="button" id="manual_hostile_corporation_add" class="rounded-lg border border-border bg-black/30 px-3 py-2 text-sm text-slate-100 transition hover:bg-white/5">Add</button>
+                        </div>
+                        <p id="manual_hostile_corporation_status" class="text-xs text-muted"><?= htmlspecialchars($manualHostileCorporationSelections === [] ? 'No manual hostile corporations.' : count($manualHostileCorporationSelections) . ' manual hostile corporation' . (count($manualHostileCorporationSelections) === 1 ? '' : 's') . '.', ENT_QUOTES) ?></p>
+                        <ul id="manual_hostile_corporation_results" class="hidden max-h-60 overflow-y-auto surface-tertiary"></ul>
+                        <div id="manual_hostile_corporation_selected" class="space-y-2 rounded-lg border border-border bg-black/10 p-3"></div>
+                    </div>
+                </div>
+
+                <div class="rounded-lg border border-cyan-500/20 bg-cyan-500/5 p-3 text-sm text-muted space-y-2 mt-3">
+                    <p>ESI contacts are read-only — update them in-game and wait for the next sync. Manual contacts are saved with this form and persist across syncs.</p>
+                    <p>Theater Intelligence uses these contacts to classify sides: <span class="text-blue-300">positive standing = friendly</span>, <span class="text-red-300">negative standing = opponent</span>.</p>
+                </div>
 
                 <script>
                     (() => {
@@ -2153,6 +2230,51 @@ include __DIR__ . '/../../src/views/partials/header.php';
                             selectedId: 'opponent_corporation_selected',
                             allowedType: 'Corporation',
                             initialItems: <?= json_encode($opponentCorporationSelections, JSON_THROW_ON_ERROR) ?>,
+                        });
+
+                        // Manual corp contact pickers
+                        createTrackedEntityPicker({
+                            inputId: 'manual_friendly_alliance_search',
+                            addButtonId: 'manual_friendly_alliance_add',
+                            hiddenId: 'manual_friendly_alliance_contacts',
+                            resultsId: 'manual_friendly_alliance_results',
+                            statusId: 'manual_friendly_alliance_status',
+                            selectedId: 'manual_friendly_alliance_selected',
+                            allowedType: 'Alliance',
+                            initialItems: <?= json_encode($manualFriendlyAllianceSelections, JSON_THROW_ON_ERROR) ?>,
+                        });
+
+                        createTrackedEntityPicker({
+                            inputId: 'manual_friendly_corporation_search',
+                            addButtonId: 'manual_friendly_corporation_add',
+                            hiddenId: 'manual_friendly_corporation_contacts',
+                            resultsId: 'manual_friendly_corporation_results',
+                            statusId: 'manual_friendly_corporation_status',
+                            selectedId: 'manual_friendly_corporation_selected',
+                            allowedType: 'Corporation',
+                            initialItems: <?= json_encode($manualFriendlyCorporationSelections, JSON_THROW_ON_ERROR) ?>,
+                        });
+
+                        createTrackedEntityPicker({
+                            inputId: 'manual_hostile_alliance_search',
+                            addButtonId: 'manual_hostile_alliance_add',
+                            hiddenId: 'manual_hostile_alliance_contacts',
+                            resultsId: 'manual_hostile_alliance_results',
+                            statusId: 'manual_hostile_alliance_status',
+                            selectedId: 'manual_hostile_alliance_selected',
+                            allowedType: 'Alliance',
+                            initialItems: <?= json_encode($manualHostileAllianceSelections, JSON_THROW_ON_ERROR) ?>,
+                        });
+
+                        createTrackedEntityPicker({
+                            inputId: 'manual_hostile_corporation_search',
+                            addButtonId: 'manual_hostile_corporation_add',
+                            hiddenId: 'manual_hostile_corporation_contacts',
+                            resultsId: 'manual_hostile_corporation_results',
+                            statusId: 'manual_hostile_corporation_status',
+                            selectedId: 'manual_hostile_corporation_selected',
+                            allowedType: 'Corporation',
+                            initialItems: <?= json_encode($manualHostileCorporationSelections, JSON_THROW_ON_ERROR) ?>,
                         });
                     })();
                 </script>

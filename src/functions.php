@@ -19065,11 +19065,45 @@ function killmail_settings_from_request(array $request): array
             static fn (array $row): array => ['corporation_id' => (int) ($row['id'] ?? 0), 'label' => $row['label'] ?? null],
             (array) ($resolvedOpponents['corporations'] ?? [])
         ),
+        'manual_contacts' => killmail_parse_manual_contacts(
+            (string) ($request['manual_friendly_alliance_contacts'] ?? ''),
+            (string) ($request['manual_friendly_corporation_contacts'] ?? ''),
+            (string) ($request['manual_hostile_alliance_contacts'] ?? ''),
+            (string) ($request['manual_hostile_corporation_contacts'] ?? '')
+        ),
         'unresolved' => array_values(array_merge(
             (array) ($resolvedEntities['unresolved'] ?? []),
             (array) ($resolvedOpponents['unresolved'] ?? [])
         )),
     ];
+}
+
+/**
+ * Parse manual contact entries from "ID | Name" textarea format (4 fields: friendly/hostile x alliance/corporation).
+ * Friendly entries get +10 standing, hostile get -10.
+ */
+function killmail_parse_manual_contacts(string $friendlyAlliances, string $friendlyCorporations, string $hostileAlliances, string $hostileCorporations): array
+{
+    $contacts = [];
+    $parse = static function (string $raw, string $type, float $standing) use (&$contacts): void {
+        foreach (explode("\n", $raw) as $line) {
+            $line = trim($line);
+            if ($line === '') {
+                continue;
+            }
+            $parts = explode('|', $line, 2);
+            $id = (int) trim($parts[0] ?? '');
+            if ($id <= 0) {
+                continue;
+            }
+            $contacts[] = ['contact_id' => $id, 'contact_type' => $type, 'standing' => $standing];
+        }
+    };
+    $parse($friendlyAlliances, 'alliance', 10.0);
+    $parse($friendlyCorporations, 'corporation', 10.0);
+    $parse($hostileAlliances, 'alliance', -10.0);
+    $parse($hostileCorporations, 'corporation', -10.0);
+    return $contacts;
 }
 
 function save_killmail_intelligence_settings(array $request): array
@@ -19087,6 +19121,7 @@ function save_killmail_intelligence_settings(array $request): array
         db_killmail_tracked_corporations_replace((array) ($payload['corporations'] ?? []));
         db_killmail_opponent_alliances_replace((array) ($payload['opponent_alliances'] ?? []));
         db_killmail_opponent_corporations_replace((array) ($payload['opponent_corporations'] ?? []));
+        db_corp_contacts_manual_replace((array) ($payload['manual_contacts'] ?? []));
 
         $reloadedSettings = get_settings(array_keys((array) ($payload['settings'] ?? [])));
         foreach ((array) ($payload['settings'] ?? []) as $key => $value) {

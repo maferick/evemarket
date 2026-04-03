@@ -318,12 +318,12 @@ def _upsert_contacts(
 
         db.execute(
             """
-            INSERT INTO corp_contacts (corporation_id, contact_id, contact_type, standing, label_ids, fetched_at)
-            VALUES (%s, %s, %s, %s, %s, %s)
+            INSERT INTO corp_contacts (corporation_id, contact_id, contact_type, standing, label_ids, source, fetched_at)
+            VALUES (%s, %s, %s, %s, %s, 'esi', %s)
             ON DUPLICATE KEY UPDATE
-                standing = VALUES(standing),
-                label_ids = VALUES(label_ids),
-                fetched_at = VALUES(fetched_at),
+                standing = IF(source = 'manual', standing, VALUES(standing)),
+                label_ids = IF(source = 'manual', label_ids, VALUES(label_ids)),
+                fetched_at = IF(source = 'manual', fetched_at, VALUES(fetched_at)),
                 updated_at = CURRENT_TIMESTAMP
             """,
             [corp_id, contact_id, contact_type, standing, label_json, fetched_at],
