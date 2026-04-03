@@ -304,6 +304,17 @@ if ($viewSnapshot !== null) {
 
 // ── Post-processing (applies to both paths) ──
 
+// Ensure $classifyAlliance closure exists (fast path restores vars but not the closure)
+if (!isset($classifyAlliance)) {
+    $classifyAlliance = static function (int $allianceId, int $corporationId = 0) use ($trackedAllianceIds, $opponentAllianceIds, $trackedCorporationIds, $opponentCorporationIds): string {
+        if ($allianceId > 0 && in_array($allianceId, $trackedAllianceIds, true)) return 'friendly';
+        if ($corporationId > 0 && in_array($corporationId, $trackedCorporationIds, true)) return 'friendly';
+        if ($allianceId > 0 && in_array($allianceId, $opponentAllianceIds, true)) return 'opponent';
+        if ($corporationId > 0 && in_array($corporationId, $opponentCorporationIds, true)) return 'opponent';
+        return 'third_party';
+    };
+}
+
 // Final-blows correction: classify using PHP closure for consistency
 $fbByGroup = db_theater_final_blows_by_attacker_group($theaterId);
 if ($fbByGroup !== []) {
