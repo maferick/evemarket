@@ -58,8 +58,31 @@ def _processor(db: SupplyCoreDb, raw_config: dict[str, Any] | None = None) -> di
     )
     corp_ids = [int(r["corporation_id"]) for r in tracked_corps if int(r.get("corporation_id") or 0) > 0]
 
+    # Fall back to the ESI token's character → corporation when no tracked corps exist
     if not corp_ids:
-        warnings.append("No tracked corporations configured. Add your corporation in Settings → Killmail Intelligence.")
+        token_row = db.fetch_one(
+            "SELECT character_id FROM esi_oauth_tokens ORDER BY updated_at DESC, id DESC LIMIT 1"
+        )
+        character_id = int((token_row or {}).get("character_id") or 0)
+        if character_id > 0 and gateway is not None:
+            try:
+                resp = gateway.get(
+                    f"/latest/characters/{character_id}/",
+                    access_token=None,
+                    group="esi-characters",
+                    route_template="/characters/{character_id}/",
+                    identity=f"char:{character_id}",
+                )
+                if resp.status_code == 200 and isinstance(resp.body, dict):
+                    derived_corp = int(resp.body.get("corporation_id") or 0)
+                    if derived_corp > 0:
+                        corp_ids = [derived_corp]
+                        log.info("No tracked corporations; derived corp %d from ESI character %d.", derived_corp, character_id)
+            except Exception as exc:
+                warnings.append(f"Failed to derive corporation from ESI character {character_id}: {exc}")
+
+    if not corp_ids:
+        warnings.append("No tracked corporations configured and could not derive corporation from ESI token. Add your corporation in Settings → Killmail Intelligence.")
         return {
             "rows_processed": 0,
             "rows_written": 0,
