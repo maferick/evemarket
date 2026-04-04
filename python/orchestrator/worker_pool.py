@@ -416,6 +416,9 @@ def main(argv: list[str] | None = None) -> int:
             reaped = db.reap_stale_running_jobs()
             if reaped > 0:
                 logger.info("reaped stale running jobs", payload={"event": "worker_pool.reaped_stale", "worker_id": worker_id, "reaped": reaped})
+            reaped_queued = db.reap_stale_queued_jobs(stale_seconds=3600)
+            if reaped_queued > 0:
+                logger.info("reaped stale queued jobs", payload={"event": "worker_pool.reaped_stale_queued", "worker_id": worker_id, "reaped": reaped_queued})
 
             # ── Scope job definitions to this worker's queues ─────────
             # Each worker instance (sync vs compute) must only queue and
