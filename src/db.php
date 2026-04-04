@@ -17617,6 +17617,76 @@ function db_threat_corridor_graph_subgraph(array $corridorSystemIds, int $surrou
     ];
 }
 
+/**
+ * Find the shortest route between two solar systems via stargates.
+ *
+ * Returns an ordered array of system IDs from $srcSystemId to $dstSystemId
+ * (inclusive), or an empty array when no path exists.
+ *
+ * Tries Neo4j shortestPath first; falls back to BFS over ref_stargates.
+ */
+function db_shortest_route_between_systems(int $srcSystemId, int $dstSystemId): array
+{
+    if ($srcSystemId <= 0 || $dstSystemId <= 0 || $srcSystemId === $dstSystemId) {
+        return [$srcSystemId];
+    }
+
+    // --- Neo4j attempt ---
+    $neoRows = neo4j_query(
+        '
+        MATCH (src:System {system_id: $src_id}), (dst:System {system_id: $dst_id})
+        MATCH p = shortestPath((src)-[:CONNECTS_TO*..50]-(dst))
+        RETURN [n IN nodes(p) | n.system_id] AS route
+        ',
+        ['src_id' => $srcSystemId, 'dst_id' => $dstSystemId]
+    );
+    if ($neoRows !== []) {
+        $route = array_map('intval', (array) ($neoRows[0]['route'] ?? []));
+        if (count($route) >= 2) {
+            return $route;
+        }
+    }
+
+    // --- SQL BFS fallback ---
+    $maxHops = 50;
+    $prev = [$srcSystemId => -1];
+    $frontier = [$srcSystemId];
+    $found = false;
+    for ($hop = 0; $hop < $maxHops && $frontier !== []; $hop++) {
+        $placeholders = implode(',', array_fill(0, count($frontier), '?'));
+        $rows = db_select(
+            "SELECT system_id, dest_system_id FROM ref_stargates WHERE system_id IN ({$placeholders})",
+            $frontier
+        );
+        $nextFrontier = [];
+        foreach ($rows as $r) {
+            $nb = (int) ($r['dest_system_id'] ?? 0);
+            if ($nb <= 0 || isset($prev[$nb])) {
+                continue;
+            }
+            $prev[$nb] = (int) ($r['system_id'] ?? 0);
+            if ($nb === $dstSystemId) {
+                $found = true;
+                break 2;
+            }
+            $nextFrontier[] = $nb;
+        }
+        $frontier = array_values(array_unique($nextFrontier));
+    }
+
+    if (!$found) {
+        return [];
+    }
+
+    $route = [];
+    $cur = $dstSystemId;
+    while ($cur !== -1) {
+        $route[] = $cur;
+        $cur = $prev[$cur] ?? -1;
+    }
+    return array_reverse($route);
+}
+
 // ---------------------------------------------------------------------------
 // Neo4j Intelligence Graph — PHP query layer (HTTP transactional endpoint)
 // ---------------------------------------------------------------------------
