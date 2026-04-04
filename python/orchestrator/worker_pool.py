@@ -136,25 +136,32 @@ class _JobLogWriter:
                 pass
 
 
-def _attach_job_log_handler(log_path: Path) -> _logging.FileHandler:
+def _attach_job_log_handler(log_path: Path) -> _logging.FileHandler | None:
     """Attach a JSON file handler to the ``orchestrator`` logger hierarchy.
 
     Returns the handler so the caller can remove it when the job finishes.
     This routes all ``logging.getLogger(__name__)`` calls from job modules
-    into the per-job log file.
+    into the per-job log file.  Returns ``None`` if the handler could not be
+    created (e.g. permission error) so the caller can skip detachment.
     """
-    job_logger = _logging.getLogger("orchestrator")
-    job_logger.setLevel(_logging.DEBUG)
-    handler = _logging.FileHandler(log_path, encoding="utf-8")
-    handler.setFormatter(JsonFormatter())
-    job_logger.addHandler(handler)
-    job_logger.propagate = False
-    return handler
+    try:
+        job_logger = _logging.getLogger("orchestrator")
+        job_logger.setLevel(_logging.DEBUG)
+        handler = _logging.FileHandler(log_path, encoding="utf-8")
+        handler.setFormatter(JsonFormatter())
+        job_logger.addHandler(handler)
+        job_logger.propagate = False
+        return handler
+    except OSError:
+        return None
 
 
-def _detach_job_log_handler(handler: _logging.FileHandler) -> None:
+def _detach_job_log_handler(handler: _logging.FileHandler | None) -> None:
+    if handler is None:
+        return
     job_logger = _logging.getLogger("orchestrator")
     job_logger.removeHandler(handler)
+    job_logger.propagate = True
     handler.close()
 
 
@@ -543,11 +550,12 @@ def main(argv: list[str] | None = None) -> int:
         )
 
         job_log = _JobLogWriter(app_root, context.job_key)
-        log_handler = _attach_job_log_handler(job_log._log_path)
+        log_handler: _logging.FileHandler | None = None
         stop_event = threading.Event()
         heartbeat = HeartbeatThread(db, worker_id, int(job.get("id") or 0), lease_seconds, stop_event)
         heartbeat.start()
         try:
+            log_handler = _attach_job_log_handler(job_log._log_path)
             job_log.write_event("worker_pool.job_started", {"worker_id": worker_id, "job_id": int(job.get("id") or 0), "job_key": context.job_key})
             result = _process_job(context)
             db.complete_worker_job(int(job.get("id") or 0), worker_id, result)
