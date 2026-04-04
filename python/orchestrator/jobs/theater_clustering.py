@@ -758,8 +758,9 @@ def _flush_theaters(
 
         # Delete existing battle/system rows for theaters we're re-inserting
         if new_theater_ids:
-            cursor.execute(f"DELETE FROM theater_systems WHERE theater_id IN ({id_placeholders})", tuple(new_theater_ids))
-            cursor.execute(f"DELETE FROM theater_battles WHERE theater_id IN ({id_placeholders})", tuple(new_theater_ids))
+            new_id_placeholders = ",".join(["%s"] * len(new_theater_ids))
+            cursor.execute(f"DELETE FROM theater_systems WHERE theater_id IN ({new_id_placeholders})", tuple(new_theater_ids))
+            cursor.execute(f"DELETE FROM theater_battles WHERE theater_id IN ({new_id_placeholders})", tuple(new_theater_ids))
 
         # Upsert theaters — preserve analysis fields (total_kills, total_isk, anomaly_score)
         for t in theaters:
