@@ -10,12 +10,12 @@ Group=www-data
 WorkingDirectory=/var/www/SupplyCore
 EnvironmentFile=-/etc/default/supplycore-worker
 Environment=PYTHONUNBUFFERED=1
-ExecStart=/var/www/SupplyCore/.venv-orchestrator/bin/python /var/www/SupplyCore/bin/python_orchestrator.py loop-runner --app-root /var/www/SupplyCore --max-parallel 6 --fast-pause 5 --background-pause 30
+ExecStart=/var/www/SupplyCore/.venv-orchestrator/bin/python /var/www/SupplyCore/bin/python_orchestrator.py loop-runner --app-root /var/www/SupplyCore --max-parallel 3 --fast-pause 5 --background-pause 30
 Restart=always
 RestartSec=5
 KillSignal=SIGTERM
 TimeoutStopSec=120
-MemoryMax=2G
+MemoryMax=3G
 StandardOutput=append:/var/www/SupplyCore/storage/logs/worker.log
 StandardError=append:/var/www/SupplyCore/storage/logs/worker.log
 
