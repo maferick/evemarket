@@ -32057,17 +32057,68 @@ function supplycore_theater_map_svg(string $theaterId, array $systemIds, int $ho
         return null;
     }
     $cacheKey = substr(md5($theaterId . ':' . implode(',', $systemIds)), 0, 12);
-    $cacheFile = sprintf('%s/theater-%s-h%d-v5.svg', $cacheDir, $cacheKey, $hops);
+    $cacheFile = sprintf('%s/theater-%s-h%d-v6.svg', $cacheDir, $cacheKey, $hops);
     $cacheTtl = supplycore_threat_corridor_map_cache_minutes() * 60;
     if (is_file($cacheFile) && ((time() - (int) filemtime($cacheFile)) < $cacheTtl)) {
         return '/threat-corridors/svg/' . basename($cacheFile);
     }
 
-    // Fetch one extra hop for boundary stub edges
+    // Pre-fetch shortest routes between every pair of battle systems so that
+    // intermediate systems are included in the graph even when battles are
+    // many jumps apart (the hop-limited subgraph fetch alone would miss them).
+    $preRoutes = []; // src:dst => [system_id, ...]
+    $routeExtraIds = [];
+    if (count($systemIds) >= 2) {
+        for ($ri = 0; $ri < count($systemIds) - 1; $ri++) {
+            for ($rj = $ri + 1; $rj < count($systemIds); $rj++) {
+                $route = db_shortest_route_between_systems($systemIds[$ri], $systemIds[$rj]);
+                if (count($route) >= 2) {
+                    $preRoutes[$systemIds[$ri] . ':' . $systemIds[$rj]] = $route;
+                    foreach ($route as $rsid) {
+                        $routeExtraIds[$rsid] = true;
+                    }
+                }
+            }
+        }
+    }
+
+    // Fetch one extra hop for boundary stub edges around battle systems
     $fetchHops = min(3, $hops + 1);
     $graph = db_threat_corridor_graph_subgraph($systemIds, $fetchHops);
     $nodes = (array) ($graph['nodes'] ?? []);
     $edges = (array) ($graph['edges'] ?? []);
+
+    // Merge in route-intermediate systems (with 1-hop context for their
+    // connecting edges) so the full corridor is rendered.
+    $routeOnlyIds = array_diff(array_keys($routeExtraIds), $systemIds);
+    if ($routeOnlyIds !== []) {
+        $routeGraph = db_threat_corridor_graph_subgraph(array_values($routeOnlyIds), 1);
+        $routeNodes = (array) ($routeGraph['nodes'] ?? []);
+        $routeEdges = (array) ($routeGraph['edges'] ?? []);
+        // Merge nodes (avoid duplicates by system_id)
+        $existingIds = [];
+        foreach ($nodes as $n) {
+            $existingIds[(int) ($n['system_id'] ?? 0)] = true;
+        }
+        foreach ($routeNodes as $rn) {
+            if (!isset($existingIds[(int) ($rn['system_id'] ?? 0)])) {
+                $nodes[] = $rn;
+            }
+        }
+        // Merge edges (avoid duplicates by normalized key)
+        $existingEdges = [];
+        foreach ($edges as $e) {
+            $existingEdges[min($e[0], $e[1]) . ':' . max($e[0], $e[1])] = true;
+        }
+        foreach ($routeEdges as $re) {
+            $ek = min($re[0], $re[1]) . ':' . max($re[0], $re[1]);
+            if (!isset($existingEdges[$ek])) {
+                $edges[] = $re;
+                $existingEdges[$ek] = true;
+            }
+        }
+    }
+
     if ($nodes === []) {
         return null;
     }
@@ -32115,6 +32166,35 @@ function supplycore_theater_map_svg(string $theaterId, array $systemIds, int $ho
     // intermediate (non-battle) systems.
     $battleEdges = [];
     $routeNodeSet = []; // intermediate nodes on the route
+
+    // Seed route edges and intermediates from pre-fetched routes so
+    // we don't depend solely on the in-memory BFS (which may miss edges
+    // if the subgraph fetch didn't fully connect distant clusters).
+    foreach ($preRoutes as $route) {
+        for ($pi = 0; $pi < count($route) - 1; $pi++) {
+            $a = $route[$pi];
+            $b = $route[$pi + 1];
+            if (!isset($nodeMap[$a], $nodeMap[$b])) {
+                continue;
+            }
+            $key = min($a, $b) . ':' . max($a, $b);
+            $battleEdges[$key] = true;
+            if (!isset($battleSet[$a])) {
+                $routeNodeSet[$a] = true;
+            }
+            if (!isset($battleSet[$b])) {
+                $routeNodeSet[$b] = true;
+            }
+            // Ensure adjacency includes this edge
+            if (!in_array($b, $adjacency[$a] ?? [], true)) {
+                $adjacency[$a][] = $b;
+            }
+            if (!in_array($a, $adjacency[$b] ?? [], true)) {
+                $adjacency[$b][] = $a;
+            }
+        }
+    }
+
     if (count($battleNodeIds) >= 2) {
         for ($bi = 0; $bi < count($battleNodeIds) - 1; $bi++) {
             for ($bj = $bi + 1; $bj < count($battleNodeIds); $bj++) {
@@ -32167,6 +32247,35 @@ function supplycore_theater_map_svg(string $theaterId, array $systemIds, int $ho
     foreach ($battleNodeIds as $idx => $sid) {
         $x = $battleCount > 1 ? (0.10 + ((0.80 * $idx) / ($battleCount - 1))) : 0.5;
         $positions[$sid] = ['x' => $x, 'y' => 0.5];
+    }
+
+    // Position route-intermediate nodes linearly between their battle endpoints
+    // so the full corridor is visible rather than clustering around anchors.
+    foreach ($preRoutes as $routeKey => $route) {
+        $routeLen = count($route);
+        if ($routeLen < 3) {
+            continue; // no intermediates
+        }
+        $srcSid = $route[0];
+        $dstSid = $route[$routeLen - 1];
+        if (!isset($positions[$srcSid], $positions[$dstSid])) {
+            continue;
+        }
+        $srcPos = $positions[$srcSid];
+        $dstPos = $positions[$dstSid];
+        for ($ri = 1; $ri < $routeLen - 1; $ri++) {
+            $sid = $route[$ri];
+            if (isset($positions[$sid]) || !isset($nodeMap[$sid])) {
+                continue;
+            }
+            $t = (float) $ri / (float) ($routeLen - 1);
+            // Slight sinusoidal offset on y to avoid overlapping the straight line
+            $yOff = sin($t * M_PI) * 0.08;
+            $positions[$sid] = [
+                'x' => max(0.03, min(0.97, $srcPos['x'] + ($dstPos['x'] - $srcPos['x']) * $t)),
+                'y' => max(0.08, min(0.92, $srcPos['y'] + ($dstPos['y'] - $srcPos['y']) * $t - $yOff)),
+            ];
+        }
     }
 
     // BFS from all battle systems to assign surrounding nodes to nearest anchor
@@ -32391,6 +32500,19 @@ function supplycore_theater_map_svg(string $theaterId, array $systemIds, int $ho
                 . '<text class="lbl-b" x="' . number_format($px, 2, '.', '') . '" y="' . number_format($py - 3, 2, '.', '') . '" text-anchor="middle">' . $safeName . '</text>'
                 . '<text class="lbl-sec" x="' . number_format($px, 2, '.', '') . '" y="' . number_format($py + 12, 2, '.', '') . '" text-anchor="middle" fill="#92400e">' . $secFmt . '</text>'
                 . '<title>' . $titleEsc . '</title></g>';
+        } elseif (isset($routeNodeSet[$sid])) {
+            // Route-intermediate node: amber dashed border to distinguish from
+            // plain adjacent systems.
+            $nameLen = mb_strlen((string) $node['name']);
+            $pw = max(70, (int) ($nameLen * 7.2) + 22);
+            $ph = 34;
+            $rx = (int) ($ph / 2);
+            $svg[] = '<g>'
+                . '<rect x="' . number_format($px - $pw / 2, 2, '.', '') . '" y="' . number_format($py - $ph / 2, 2, '.', '') . '" width="' . $pw . '" height="' . $ph . '" rx="' . $rx . '" fill="#111827" stroke="#fbbf24" stroke-width="1.5" stroke-opacity="0.8" stroke-dasharray="5 3">'
+                . '<title>' . $titleEsc . '</title></rect>'
+                . '<text class="lbl-s" x="' . number_format($px, 2, '.', '') . '" y="' . number_format($py - 2, 2, '.', '') . '" text-anchor="middle">' . $safeName . '</text>'
+                . '<text class="lbl-sec" x="' . number_format($px, 2, '.', '') . '" y="' . number_format($py + 11, 2, '.', '') . '" text-anchor="middle" fill="' . $outer . '">' . $secFmt . '</text>'
+                . '</g>';
         } else {
             $nameLen = mb_strlen((string) $node['name']);
             $pw = max(70, (int) ($nameLen * 7.2) + 22);
@@ -32406,14 +32528,22 @@ function supplycore_theater_map_svg(string $theaterId, array $systemIds, int $ho
     }
 
     // Legend
+    $hasRoute = $routeNodeSet !== [];
+    $legendRows = $hasRoute ? 3 : 2;
     $lx = $width - $pad - 2;
     $ly = $height - $pad - 4;
-    $svg[] = '<g opacity="0.75">'
-        . '<rect x="' . ($lx - 120) . '" y="' . ($ly - 18) . '" width="50" height="16" rx="8" fill="#1a1207" stroke="#fbbf24" stroke-width="1.5"/>'
-        . '<text x="' . ($lx - 65) . '" y="' . ($ly - 6) . '" style="font:500 9px Inter,Segoe UI,sans-serif;fill:#64748b">Battle system</text>'
-        . '<rect x="' . ($lx - 120) . '" y="' . ($ly - 0) . '" width="50" height="16" rx="8" fill="#111827" stroke="#64748b" stroke-width="1.2"/>'
-        . '<text x="' . ($lx - 65) . '" y="' . ($ly + 12) . '" style="font:500 9px Inter,Segoe UI,sans-serif;fill:#64748b">Adjacent system</text>'
-        . '</g>';
+    $legendY = $ly - (($legendRows - 1) * 18);
+    $svg[] = '<g opacity="0.75">';
+    $svg[] = '<rect x="' . ($lx - 120) . '" y="' . ($legendY) . '" width="50" height="16" rx="8" fill="#1a1207" stroke="#fbbf24" stroke-width="1.5"/>'
+        . '<text x="' . ($lx - 65) . '" y="' . ($legendY + 12) . '" style="font:500 9px Inter,Segoe UI,sans-serif;fill:#64748b">Battle system</text>';
+    if ($hasRoute) {
+        $svg[] = '<rect x="' . ($lx - 120) . '" y="' . ($legendY + 18) . '" width="50" height="16" rx="8" fill="#111827" stroke="#fbbf24" stroke-width="1.2" stroke-dasharray="3 2"/>'
+            . '<text x="' . ($lx - 65) . '" y="' . ($legendY + 30) . '" style="font:500 9px Inter,Segoe UI,sans-serif;fill:#64748b">Route system</text>';
+    }
+    $adjY = $legendY + ($hasRoute ? 36 : 18);
+    $svg[] = '<rect x="' . ($lx - 120) . '" y="' . ($adjY) . '" width="50" height="16" rx="8" fill="#111827" stroke="#64748b" stroke-width="1.2"/>'
+        . '<text x="' . ($lx - 65) . '" y="' . ($adjY + 12) . '" style="font:500 9px Inter,Segoe UI,sans-serif;fill:#64748b">Adjacent system</text>';
+    $svg[] = '</g>';
 
     $svg[] = '</svg>';
 
