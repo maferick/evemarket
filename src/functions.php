@@ -27219,7 +27219,6 @@ function theater_ai_build_facts(string $theaterId, array $theater): array
         'alliance_summary' => db_theater_alliance_summary($theaterId),
         'turning_points' => db_theater_turning_points($theaterId),
         'systems' => db_theater_systems($theaterId),
-        'suspicion' => db_theater_suspicion_summary($theaterId),
         'fleet_comp' => db_theater_fleet_composition($theaterId),
         'notable_kills' => db_theater_notable_kills($theaterId, 10),
         'top_performers' => db_theater_top_performers($theaterId, 10),
@@ -27231,7 +27230,6 @@ function theater_ai_build_facts_from_snapshot(string $theaterId, array $theater,
     $allianceSummary = (array) ($snapshot['alliance_summary'] ?? []);
     $turningPoints = (array) ($snapshot['turning_points'] ?? []);
     $systems = (array) ($snapshot['systems'] ?? []);
-    $suspicion = $snapshot['suspicion'] ?? null;
     $fleetComp = (array) ($snapshot['fleet_comp'] ?? []);
     $notableKills = (array) ($snapshot['notable_kills'] ?? []);
     $topPerformers = (array) ($snapshot['top_performers'] ?? []);
@@ -27367,7 +27365,6 @@ function theater_ai_build_facts_from_snapshot(string $theaterId, array $theater,
         'enemy_fleet_composition' => array_slice($enemyComp, 0, 20),
         'notable_kills' => $notableKillList,
         'top_performers' => $performerList,
-        'anomaly_score' => round((float) ($theater['anomaly_score'] ?? 0), 3),
     ];
 
     if ($turningPoints !== []) {
@@ -27378,15 +27375,6 @@ function theater_ai_build_facts_from_snapshot(string $theaterId, array $theater,
             'magnitude' => round((float) ($tp['magnitude'] ?? 0), 3),
             'description' => (string) ($tp['description'] ?? ''),
         ], array_slice($turningPoints, 0, 5));
-    }
-
-    if (is_array($suspicion)) {
-        $facts['suspicion'] = [
-            'suspicious_characters' => (int) ($suspicion['suspicious_character_count'] ?? 0),
-            'tracked_alliance_suspicious' => (int) ($suspicion['tracked_alliance_suspicious_count'] ?? 0),
-            'max_score' => round((float) ($suspicion['max_suspicion_score'] ?? 0), 3),
-            'avg_score' => round((float) ($suspicion['avg_suspicion_score'] ?? 0), 3),
-        ];
     }
 
     return $facts;
@@ -27431,7 +27419,8 @@ function theater_ai_system_prompt(): string
              . "- Follow ALL numbered sections in the user prompt. Each section must have substantial content.\n"
              . "- Use markdown formatting: ## for section headers, **bold** for emphasis, - for bullet points.\n"
              . "- Analyze the battle data thoroughly. Reference specific alliances, ship types, ISK values, and pilot names.\n"
-             . "- Focus on tactical clarity, decision-making, and actionable insights.\n"
+             . "- Focus on what the data shows: kills, ISK values, ship types, timelines, systems, and pilot stats.\n"
+             . "- Do NOT speculate about things not in the data (target calling, positioning, EWAR, logistics, comms, intel leaks, pilot behavior).\n"
              . "- CRITICAL PERSPECTIVE RULES:\n"
              . "  * The AAR is ALWAYS written from the perspective of the 'friendly' coalition — these are OUR pilots, OUR fleets, OUR losses.\n"
              . "  * 'enemy' / 'opponent' is the OTHER side — they are the hostiles.\n"
@@ -27450,7 +27439,8 @@ function theater_ai_system_prompt(): string
          . "- Write a clear, structured AAR (300-800 words).\n"
          . "- Use ## headers, **bold**, and - bullets.\n"
          . "- Reference alliances, ships, ISK values from the data.\n"
-         . "- Focus on what happened, who won, and why.\n\n"
+         . "- Focus on what happened, who won, and why based on the data.\n"
+         . "- Only state things derivable from kills, ISK, ships, timestamps. Do not speculate about EWAR, target calling, positioning, or pilot behavior.\n\n"
          . "Return valid JSON with the required fields.";
 }
 
@@ -27497,36 +27487,22 @@ DATA CONTEXT:
 OUTPUT FORMAT:
 
 1. Executive Summary
-Provide a 2-3 sentence high-level outcome (win/loss, strategic impact, efficiency).
+Provide a 2-3 sentence high-level outcome (win/loss, ISK efficiency, kill totals).
 
 2. Battle Overview
-Briefly describe how the fight started, escalated, and concluded.
+Describe the timeline: when the fight started, how long it lasted, and how the kill tempo evolved. Reference specific timestamps and systems from the data.
 
 3. Fleet Composition Analysis
-Compare doctrines, ship types, and relative strengths/weaknesses.
+Compare ship types, ship classes, and pilot counts on each side. Note any doctrinal advantages or mismatches visible in the composition data.
 
-4. Key Turning Points
-Identify 2-4 decisive moments that influenced the outcome.
+4. Key Losses & Kills
+Highlight the most expensive ships destroyed on each side, who lost them, and when. Reference ISK values and ship classes from the notable_kills data.
 
-5. Tactical Assessment
-Evaluate:
-- Target calling effectiveness
-- Positioning and grid control
-- Use of logistics / ewar / caps (if applicable)
+5. Performance Breakdown
+Using the top_performers data, highlight which pilots had the most kills and damage dealt. Note kill/death ratios and which ships they were flying.
 
-6. Performance Insights
-Highlight:
-- Overperformance (what worked well)
-- Underperformance (mistakes, inefficiencies)
-
-7. Risk & Intelligence Signals
-Note anomalies such as:
-- Unusual pilot behavior
-- Missing expected participation
-- Suspicious patterns or potential intel leaks
-
-8. Recommendations
-Provide 1 concrete improvement for future engagements.
+6. Recommendations
+Based on the fleet composition and losses, provide 1 concrete suggestion for future engagements (e.g. doctrine choice, fleet size, ship class gaps).
 
 ---
 
@@ -27535,6 +27511,8 @@ STYLE GUIDELINES:
 - Avoid roleplay or storytelling fluff
 - Use short paragraphs and bullet points where useful
 - Prioritize insights over description
+- ONLY state things that can be directly derived from the provided data (kills, ISK, ships, timestamps, systems, pilot stats)
+- Do NOT speculate about target calling, positioning, EWAR usage, logistics performance, comms, intel leaks, or pilot behavior — these cannot be determined from killmail data
 
 ---
 
