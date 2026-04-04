@@ -4,6 +4,11 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/../../src/bootstrap.php';
 
+// Release the session file lock immediately — this endpoint never writes
+// session data, and holding the lock for the full 60 s stream lifetime
+// blocks every other request from the same browser session on session_start().
+session_write_close();
+
 $pageId = trim((string) ($_GET['page_id'] ?? ''));
 $config = supplycore_live_refresh_page_config($pageId);
 if ($config === null) {

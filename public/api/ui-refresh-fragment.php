@@ -4,6 +4,10 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/../../src/bootstrap.php';
 
+// Release the session file lock early — fragment rendering is read-only for
+// session data and we don't want to block concurrent requests.
+session_write_close();
+
 $requestStart = microtime(true);
 
 header('Content-Type: application/json; charset=UTF-8');

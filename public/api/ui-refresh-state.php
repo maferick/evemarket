@@ -4,6 +4,9 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/../../src/bootstrap.php';
 
+// Release the session file lock early — this endpoint is read-only.
+session_write_close();
+
 $requestStart = microtime(true);
 
 header('Content-Type: application/json; charset=UTF-8');
