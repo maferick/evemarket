@@ -19,7 +19,8 @@ from .config import load_php_runtime_config, resolve_app_root
 from .db import SupplyCoreDb
 from .job_result import JobResult
 from .json_utils import json_dumps_safe, make_json_safe
-from .logging_utils import LoggerAdapter, configure_logging
+import logging as _logging
+from .logging_utils import JsonFormatter, LoggerAdapter, configure_logging
 from .processor_registry import audit_enabled_python_jobs, run_registered_processor
 from .scheduling_graph import (
     build_graph,
@@ -133,6 +134,28 @@ class _JobLogWriter:
                     old_archive.unlink(missing_ok=True)
             except ValueError:
                 pass
+
+
+def _attach_job_log_handler(log_path: Path) -> _logging.FileHandler:
+    """Attach a JSON file handler to the ``orchestrator`` logger hierarchy.
+
+    Returns the handler so the caller can remove it when the job finishes.
+    This routes all ``logging.getLogger(__name__)`` calls from job modules
+    into the per-job log file.
+    """
+    job_logger = _logging.getLogger("orchestrator")
+    job_logger.setLevel(_logging.DEBUG)
+    handler = _logging.FileHandler(log_path, encoding="utf-8")
+    handler.setFormatter(JsonFormatter())
+    job_logger.addHandler(handler)
+    job_logger.propagate = False
+    return handler
+
+
+def _detach_job_log_handler(handler: _logging.FileHandler) -> None:
+    job_logger = _logging.getLogger("orchestrator")
+    job_logger.removeHandler(handler)
+    handler.close()
 
 
 def _finalize_job(db: SupplyCoreDb, job_key: str, result: dict[str, Any], logger: LoggerAdapter) -> None:
@@ -520,6 +543,7 @@ def main(argv: list[str] | None = None) -> int:
         )
 
         job_log = _JobLogWriter(app_root, context.job_key)
+        log_handler = _attach_job_log_handler(job_log._log_path)
         stop_event = threading.Event()
         heartbeat = HeartbeatThread(db, worker_id, int(job.get("id") or 0), lease_seconds, stop_event)
         heartbeat.start()
@@ -547,6 +571,7 @@ def main(argv: list[str] | None = None) -> int:
             if args.once:
                 return 1
         finally:
+            _detach_job_log_handler(log_handler)
             stop_event.set()
             heartbeat.join(timeout=1)
 
