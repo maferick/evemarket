@@ -16949,11 +16949,12 @@ function db_theater_fleet_composition(string $theaterId): array
     // Use flying_ship_type_id from theater_participants (the non-pod combat ship each pilot flew)
     // rather than battle_participants.ship_type_id which may be recorded as the capsule when a
     // pilot loses their ship and is subsequently podded.
-    // Includes alliance_id/corporation_id so PHP can classify sides using live standings.
+    // Includes side from Python theater analysis so PHP can split into friendly/enemy compositions.
     return db_select(
         "SELECT tp.flying_ship_type_id AS ship_type_id,
                 COALESCE(rit.type_name, CONCAT('Type #', tp.flying_ship_type_id)) AS ship_name,
                 COALESCE(rig.group_name, '') AS ship_group,
+                tp.side,
                 COALESCE(tp.alliance_id, 0) AS alliance_id,
                 COALESCE(tp.corporation_id, 0) AS corporation_id,
                 COUNT(*) AS pilot_count
@@ -16964,7 +16965,7 @@ function db_theater_fleet_composition(string $theaterId): array
            AND tp.flying_ship_type_id IS NOT NULL
            AND tp.flying_ship_type_id > 0
          GROUP BY tp.flying_ship_type_id, rit.type_name, rig.group_name,
-                  COALESCE(tp.alliance_id, 0), COALESCE(tp.corporation_id, 0)
+                  tp.side, COALESCE(tp.alliance_id, 0), COALESCE(tp.corporation_id, 0)
          ORDER BY pilot_count DESC",
         [$theaterId]
     );
