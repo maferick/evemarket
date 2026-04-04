@@ -6,10 +6,13 @@ require_once __DIR__ . '/../../src/bootstrap.php';
 
 $characterId = max(0, (int) ($_GET['character_id'] ?? 0));
 $title = 'Character Intelligence';
-$data = battle_intelligence_character_data($characterId);
+
+// Two-lane intelligence: blended summary drives the headline.
+$blended   = db_character_blended_intelligence($characterId);
+$data      = battle_intelligence_character_data($characterId);
 $character = $data['character'] ?? null;
-$battles = (array) ($data['battles'] ?? []);
-$evidence = (array) ($data['evidence'] ?? []);
+$battles   = (array) ($data['battles'] ?? []);
+$evidence  = (array) ($data['evidence'] ?? []);
 $orgHistory = (array) ($data['org_history'] ?? []);
 
 // KGv2 enhanced data
@@ -116,7 +119,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
             <a href="/battle-intelligence/pilot-lookup.php?character_id=<?= $characterId ?>" class="text-sm text-accent">Pilot lookup &rarr;</a>
         <?php endif; ?>
     </div>
-    <?php if (!is_array($character)): ?>
+    <?php if ($blended === null && !is_array($character)): ?>
         <div class="mt-4">
             <p class="text-sm text-muted">No character intelligence found.</p>
             <?php if ($characterId > 0): ?>
@@ -128,55 +131,132 @@ include __DIR__ . '/../../src/views/partials/header.php';
             <?php endif; ?>
         </div>
     <?php else: ?>
-        <?php $dataSource = (string) ($character['data_source'] ?? 'counterintel'); ?>
+        <?php
+            // Blended headline values.
+            $bldScore      = (float) ($blended['blended_score']      ?? ($character['review_priority_score'] ?? 0));
+            $bldPct        = (float) ($blended['blended_percentile'] ?? ($character['percentile_rank'] ?? 0));
+            $bldConf       = (float) ($blended['blended_confidence'] ?? ($character['confidence_score'] ?? 0));
+            $bldSource     = (string) ($blended['evidence_source']   ?? 'battle_only');
+            $bldL1Weight   = (float) ($blended['lane1_weight']       ?? 1.0);
+            $bldL2Weight   = (float) ($blended['lane2_weight']       ?? 0.0);
+            $bldSoloKills  = (int)   ($blended['solo_kill_count']    ?? 0);
+            $bldGangKills  = (int)   ($blended['gang_kill_count']    ?? 0);
+            $bldLargeBatt  = (int)   ($blended['large_battle_count'] ?? 0);
+            $bldCharName   = (string) ($blended['character_name']    ?? $character['character_name'] ?? 'Unknown');
+            $bldRisk       = ci_risk_level($bldScore);
+
+            // Per-lane values for detail sections below.
+            $l1Score = $blended !== null ? $blended['lane1_score'] : null;
+            $l2Score = $blended !== null ? $blended['lane2_score'] : null;
+
+            // Lane 1 detail (may come from counterintel, suspicion_v2, or below_threshold).
+            $dataSource        = (string) ($character['data_source'] ?? 'counterintel');
+            $priorityScore     = (float) ($character['review_priority_score'] ?? 0);
+            $confidenceScore   = (float) ($character['confidence_score'] ?? 0);
+            $percentileRank    = (float) ($character['percentile_rank'] ?? 0);
+            $repeatabilityScore = (float) ($character['repeatability_score'] ?? 0);
+            $evidenceCount     = (int)   ($character['evidence_count'] ?? 0);
+            $enemySustainLift  = (float) ($character['enemy_sustain_lift'] ?? 0);
+            $hullLift          = (float) ($character['enemy_same_hull_survival_lift'] ?? 0);
+            $bridgeScore       = (float) ($character['graph_bridge_score'] ?? 0);
+            $coPres            = (float) ($character['co_presence_anomalous_density'] ?? 0);
+            $corpHops          = (float) ($character['corp_hop_frequency_180d'] ?? 0);
+            $shortTenure       = (float) ($character['short_tenure_ratio_180d'] ?? 0);
+            $riskLevel         = ci_risk_level($priorityScore);
+
+            // Evidence source labels.
+            $sourceLabels = [
+                'battle_only'              => ['label' => 'Battle intelligence',   'color' => 'text-cyan-300',    'tip' => 'Scored from large-battle (10+ participants) statistical model only.'],
+                'behavioral_only'          => ['label' => 'Behavioral signals',    'color' => 'text-amber-300',   'tip' => 'Scored from small-engagement behavioral model only. No large-battle data.'],
+                'mixed_battle_dominant'    => ['label' => 'Mixed · battle-led',    'color' => 'text-emerald-300', 'tip' => 'Both lanes active. Large-battle evidence dominates (10+ battles).'],
+                'mixed_balanced'           => ['label' => 'Mixed · balanced',      'color' => 'text-emerald-300', 'tip' => 'Both lanes active with roughly equal weight.'],
+                'mixed_behavioral_dominant' => ['label' => 'Mixed · behavioral-led', 'color' => 'text-amber-300', 'tip' => 'Both lanes active. Behavioral evidence dominates (few large battles).'],
+            ];
+            $srcLabel = $sourceLabels[$bldSource] ?? ['label' => $bldSource, 'color' => 'text-slate-400', 'tip' => ''];
+        ?>
+
         <?php if ($dataSource === 'suspicion_v2'): ?>
             <div class="mt-3 rounded border border-amber-500/30 bg-amber-950/30 px-4 py-2.5 text-sm text-amber-200/90">
-                <strong>Limited data</strong> &mdash; showing batch suspicion scores. The full counter-intel pipeline has not processed this character yet.
-                <?php if ($characterId > 0): ?>
-                    <form method="POST" class="mt-1.5 inline">
-                        <input type="hidden" name="compute_intelligence" value="1">
-                        <button type="submit" class="btn btn-sm btn-accent">Compute full analysis</button>
-                    </form>
-                <?php endif; ?>
+                <strong>Lane 1 limited</strong> &mdash; showing batch suspicion scores. Full counter-intel pipeline has not processed this character.
+                <form method="POST" class="mt-1.5 inline">
+                    <input type="hidden" name="compute_intelligence" value="1">
+                    <button type="submit" class="btn btn-sm btn-accent">Compute full analysis</button>
+                </form>
             </div>
         <?php elseif ($dataSource === 'below_threshold'): ?>
             <div class="mt-3 rounded border border-slate-500/30 bg-slate-800/50 px-4 py-2.5 text-sm text-slate-300">
-                <strong>Insufficient data</strong> &mdash; this character has <?= (int) ($character['total_battle_count'] ?? 0) ?> battle(s) (<?= (int) ($character['eligible_battle_count'] ?? 0) ?> eligible), below the minimum of 5 required for scoring. Scores below are placeholder zeros.
-                <?php if ($characterId > 0): ?>
-                    <form method="POST" class="mt-1.5 inline">
-                        <input type="hidden" name="compute_intelligence" value="1">
-                        <button type="submit" class="btn btn-sm btn-accent">Compute now</button>
-                        <span class="ml-2 text-xs text-muted">On-demand computation may still produce results with fewer battles.</span>
-                    </form>
-                <?php endif; ?>
+                <strong>Lane 1 insufficient</strong> &mdash; <?= (int) ($character['eligible_battle_count'] ?? 0) ?> eligible battles (min 5 required). Behavioral signals still apply.
             </div>
         <?php endif; ?>
-        <?php
-            $riskLevel = ci_risk_level((float) ($character['review_priority_score'] ?? 0));
-            $priorityScore = (float) ($character['review_priority_score'] ?? 0);
-            $confidenceScore = (float) ($character['confidence_score'] ?? 0);
-            $percentileRank = (float) ($character['percentile_rank'] ?? 0);
-            $repeatabilityScore = (float) ($character['repeatability_score'] ?? 0);
-            $evidenceCount = (int) ($character['evidence_count'] ?? 0);
-            $enemySustainLift = (float) ($character['enemy_sustain_lift'] ?? 0);
-            $hullLift = (float) ($character['enemy_same_hull_survival_lift'] ?? 0);
-            $bridgeScore = (float) ($character['graph_bridge_score'] ?? 0);
-            $coPres = (float) ($character['co_presence_anomalous_density'] ?? 0);
-            $corpHops = (float) ($character['corp_hop_frequency_180d'] ?? 0);
-            $shortTenure = (float) ($character['short_tenure_ratio_180d'] ?? 0);
-        ?>
-        <div class="mt-2 flex items-center gap-3">
-            <h1 class="text-2xl font-semibold text-slate-50"><?= htmlspecialchars((string) ($character['character_name'] ?? 'Unknown'), ENT_QUOTES) ?></h1>
-            <span class="inline-block rounded-full px-3 py-0.5 text-xs font-semibold uppercase tracking-wider <?= $riskLevel['bg'] ?> <?= $riskLevel['text'] ?>"><?= $riskLevel['label'] ?> risk</span>
+
+        <!-- ── Blended headline ────────────────────────────────────────── -->
+        <div class="mt-3 flex items-start gap-3 flex-wrap">
+            <h1 class="text-2xl font-semibold text-slate-50"><?= htmlspecialchars($bldCharName, ENT_QUOTES) ?></h1>
+            <span class="inline-block rounded-full px-3 py-0.5 text-xs font-semibold uppercase tracking-wider <?= $bldRisk['bg'] ?> <?= $bldRisk['text'] ?>"><?= $bldRisk['label'] ?> risk</span>
+            <span class="inline-block rounded-full px-3 py-0.5 text-xs font-medium border border-white/10 <?= $srcLabel['color'] ?>" title="<?= htmlspecialchars($srcLabel['tip'], ENT_QUOTES) ?>"><?= htmlspecialchars($srcLabel['label'], ENT_QUOTES) ?></span>
         </div>
 
-        <!-- Verdict summary -->
-        <div class="mt-3 rounded border border-border/40 bg-slate-800/50 px-4 py-3 text-sm text-slate-300 leading-relaxed">
+        <?php if (is_array($character)): ?>
+        <div class="mt-2 rounded border border-border/40 bg-slate-800/50 px-4 py-3 text-sm text-slate-300 leading-relaxed">
             <?= ci_verdict_summary($character) ?>
         </div>
+        <?php endif; ?>
 
-        <!-- Primary metrics -->
-        <div class="mt-4 grid gap-3 md:grid-cols-3">
+        <!-- ── Blended top-level metrics ─────────────────────────────────── -->
+        <div class="mt-4 grid gap-3 md:grid-cols-4">
+            <div class="surface-tertiary">
+                <p class="text-xs text-muted">Blended risk score</p>
+                <p class="mt-1 text-xl <?= $bldRisk['text'] ?>"><?= number_format($bldScore * 100, 1) ?>%</p>
+                <?= ci_progress_bar($bldScore, $bldRisk['bar']) ?>
+                <p class="mt-1 text-[11px] text-muted">Top <?= number_format((1 - $bldPct) * 100, 1) ?>% &middot; <?= number_format($bldConf * 100, 0) ?>% confidence</p>
+            </div>
+            <div class="surface-tertiary">
+                <p class="text-xs text-muted">Lane 1 &mdash; Battle intelligence</p>
+                <?php if ($l1Score !== null): ?>
+                    <p class="mt-1 text-base <?= ci_metric_color((float)$l1Score, 0.3, 0.6) ?>"><?= number_format((float)$l1Score * 100, 1) ?>%</p>
+                    <p class="mt-0.5 text-xs text-muted"><?= number_format($bldL1Weight * 100, 0) ?>% weight &middot; <?= $bldLargeBatt ?> large battle<?= $bldLargeBatt !== 1 ? 's' : '' ?></p>
+                <?php else: ?>
+                    <p class="mt-1 text-base text-slate-500">No data</p>
+                    <p class="mt-0.5 text-xs text-muted">No large-battle (10+) participation</p>
+                <?php endif; ?>
+                <p class="mt-1 text-[11px] text-muted">Statistical battle-context model</p>
+            </div>
+            <div class="surface-tertiary">
+                <p class="text-xs text-muted">Lane 2 &mdash; Behavioral signals</p>
+                <?php if ($l2Score !== null): ?>
+                    <p class="mt-1 text-base <?= ci_metric_color((float)$l2Score, 0.3, 0.6) ?>"><?= number_format((float)$l2Score * 100, 1) ?>%</p>
+                    <p class="mt-0.5 text-xs text-muted"><?= number_format($bldL2Weight * 100, 0) ?>% weight &middot; <?= $bldSoloKills ?> solo/gank, <?= $bldGangKills ?> gang</p>
+                <?php else: ?>
+                    <p class="mt-1 text-base text-slate-500">No data</p>
+                    <p class="mt-0.5 text-xs text-muted">No small-engagement activity found</p>
+                <?php endif; ?>
+                <p class="mt-1 text-[11px] text-muted">Intent &amp; pattern model (1–9 participants)</p>
+            </div>
+            <div class="surface-tertiary">
+                <p class="text-xs text-muted">Coverage breakdown</p>
+                <div class="mt-1.5 space-y-1">
+                    <div class="flex justify-between text-xs">
+                        <span class="text-slate-400">Large battles (10+)</span>
+                        <span class="font-mono"><?= $bldLargeBatt ?></span>
+                    </div>
+                    <div class="flex justify-between text-xs">
+                        <span class="text-slate-400">Small gang (5–9)</span>
+                        <span class="font-mono"><?= $bldGangKills ?></span>
+                    </div>
+                    <div class="flex justify-between text-xs">
+                        <span class="text-slate-400">Solo / gank (1–4)</span>
+                        <span class="font-mono"><?= $bldSoloKills ?></span>
+                    </div>
+                </div>
+                <p class="mt-1 text-[11px] text-muted">How much data backs each lane</p>
+            </div>
+        </div>
+
+        <!-- Legacy Lane 1 detail metrics (secondary) -->
+        <?php if (is_array($character)): ?>
+        <details class="mt-4" <?= $bldSource === 'battle_only' ? 'open' : '' ?>>
+            <summary class="cursor-pointer text-sm font-semibold text-slate-300">Lane 1 detail &mdash; battle intelligence metrics</summary>
+            <div class="mt-3 grid gap-3 md:grid-cols-3">
             <div class="surface-tertiary">
                 <p class="text-xs text-muted">Review priority</p>
                 <p class="mt-1 text-xl <?= $riskLevel['text'] ?>"><?= number_format($priorityScore * 100, 1) ?>%</p>
@@ -321,15 +401,19 @@ include __DIR__ . '/../../src/views/partials/header.php';
 <?php endif; ?>
 <?php endif; ?>
 </tbody></table></div>
+        </details><!-- end Lane 1 detail -->
+        <?php endif; // is_array($character) for Lane 1 details ?>
 
-        <!-- Behavioral scoring (Lane 2: small-engagement patterns) -->
+        <!-- ── Lane 2: Behavioral scoring (small-engagement patterns) ──── -->
         <?php if (is_array($behavioralScore)): ?>
         <?php
             $behRisk = (float) ($behavioralScore['behavioral_risk_score'] ?? 0);
             $behPercentile = (float) ($behavioralScore['percentile_rank'] ?? 0);
             $behConfidence = (string) ($behavioralScore['confidence_tier'] ?? 'low');
             $behTotalKills = (int) ($behavioralScore['total_kill_count'] ?? 0);
-            $behSmallKills = (int) ($behavioralScore['small_kill_count'] ?? 0);
+            $behSoloKills  = (int) ($behavioralScore['solo_kill_count']  ?? 0);
+            $behGangKills  = (int) ($behavioralScore['gang_kill_count']   ?? 0);
+            $behSmallKills = $behSoloKills + $behGangKills;
             $behLargeBattles = (int) ($behavioralScore['large_battle_count'] ?? 0);
             $behFleetAbsence = (float) ($behavioralScore['fleet_absence_ratio'] ?? 0);
             $behContinuation = (float) ($behavioralScore['post_engagement_continuation_rate'] ?? 0);
@@ -339,8 +423,8 @@ include __DIR__ . '/../../src/views/partials/header.php';
             $behGeo = (float) ($behavioralScore['geographic_concentration_score'] ?? 0);
             $behTemporal = (float) ($behavioralScore['temporal_regularity_score'] ?? 0);
         ?>
-        <h2 class="mt-6 text-lg font-semibold text-slate-100">Behavioral patterns <span class="text-xs font-normal text-slate-500">(all engagements incl. small kills)</span></h2>
-        <p class="mt-1 text-xs text-muted">Signals derived from behavior across all killmail activity &mdash; not just large battles. Focuses on intent patterns.</p>
+        <h2 class="mt-6 text-lg font-semibold text-slate-100">Lane 2 &mdash; Behavioral patterns <span class="text-xs font-normal text-slate-500">(solo 1–4 · gang 5–9 participants)</span></h2>
+        <p class="mt-1 text-xs text-muted">Intent-based signals from sub-battle activity. These answer <em>how suspicious is their behavior over time</em>, not <em>how abnormal are their battle statistics</em>.</p>
 
         <div class="mt-3 grid gap-3 md:grid-cols-4">
             <div class="surface-tertiary">
@@ -352,7 +436,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
             <div class="surface-tertiary">
                 <p class="text-xs text-muted">Fleet absence</p>
                 <p class="mt-1 text-base text-slate-100"><?= number_format($behFleetAbsence * 100, 0) ?>% small-only</p>
-                <p class="mt-0.5 text-xs text-muted"><?= $behSmallKills ?> small kills &middot; <?= $behLargeBattles ?> large battles</p>
+                <p class="mt-0.5 text-xs text-muted"><?= $behSoloKills ?> solo/gank &middot; <?= $behGangKills ?> gang &middot; <?= $behLargeBattles ?> battles</p>
                 <p class="mt-1 text-[11px] text-muted">Active in small kills but absent from fleet ops</p>
             </div>
             <div class="surface-tertiary">

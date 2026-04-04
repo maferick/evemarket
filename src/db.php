@@ -16265,6 +16265,105 @@ function db_battle_intelligence_character_evidence(int $characterId, int $limit 
     );
 }
 
+/**
+ * Produce a blended two-lane intelligence summary for a character.
+ *
+ * Lane 1  — battle intelligence  (counterintel / suspicion scores)
+ * Lane 2  — behavioral scoring   (all-engagement behavioral pipeline)
+ *
+ * Blending rules
+ *   large_battles >= 10  → Lane 1 weight 0.65 / Lane 2 weight 0.35
+ *   large_battles  5–9   → Lane 1 weight 0.50 / Lane 2 weight 0.50
+ *   large_battles  1–4   → Lane 1 weight 0.35 / Lane 2 weight 0.65
+ *   large_battles  0     → Lane 2 only (behavioral only)
+ *   no behavioral data   → Lane 1 only
+ *
+ * Returns null only if there is no data at all in either lane.
+ */
+function db_character_blended_intelligence(int $characterId): ?array
+{
+    if ($characterId <= 0) {
+        return null;
+    }
+
+    // Fetch both lanes.
+    $lane1 = db_battle_intelligence_character($characterId);
+    $behavioral = db_character_behavioral_score($characterId);
+
+    if ($lane1 === null && $behavioral === null) {
+        return null;
+    }
+
+    $l1Score     = (float) ($lane1['review_priority_score'] ?? 0.0);
+    $l1Pct       = (float) ($lane1['percentile_rank'] ?? 0.0);
+    $l1Confidence = (float) ($lane1['confidence_score'] ?? 0.0);
+    $l1Source    = (string) ($lane1['data_source'] ?? 'none');
+
+    $l2Score     = (float) ($behavioral['behavioral_risk_score'] ?? 0.0);
+    $l2Pct       = (float) ($behavioral['percentile_rank'] ?? 0.0);
+    $l2Tier      = (string) ($behavioral['confidence_tier'] ?? 'low');
+    $largeBattles = (int) ($behavioral['large_battle_count'] ?? 0);
+    $soloKills   = (int) ($behavioral['solo_kill_count'] ?? 0);
+    $gangKills   = (int) ($behavioral['gang_kill_count'] ?? 0);
+
+    // Determine coverage source and blend weights.
+    $hasLane1 = $lane1 !== null;
+    $hasLane2 = $behavioral !== null;
+
+    if ($hasLane1 && $hasLane2) {
+        if ($largeBattles >= 10) {
+            $w1 = 0.65; $w2 = 0.35;
+            $evidenceSource = 'mixed_battle_dominant';
+        } elseif ($largeBattles >= 5) {
+            $w1 = 0.50; $w2 = 0.50;
+            $evidenceSource = 'mixed_balanced';
+        } elseif ($largeBattles >= 1) {
+            $w1 = 0.35; $w2 = 0.65;
+            $evidenceSource = 'mixed_behavioral_dominant';
+        } else {
+            $w1 = 0.0; $w2 = 1.0;
+            $evidenceSource = 'behavioral_only';
+        }
+    } elseif ($hasLane1) {
+        $w1 = 1.0; $w2 = 0.0;
+        $evidenceSource = 'battle_only';
+    } else {
+        $w1 = 0.0; $w2 = 1.0;
+        $evidenceSource = 'behavioral_only';
+    }
+
+    $blendedScore = round($w1 * $l1Score + $w2 * $l2Score, 6);
+    $blendedPct   = round($w1 * $l1Pct   + $w2 * $l2Pct,   6);
+
+    // Overall confidence: blend confidence scores, capped by data quality.
+    $l2ConfidenceNumeric = match ($l2Tier) { 'high' => 0.9, 'medium' => 0.6, 'low' => 0.3, default => 0.1 };
+    $blendedConfidence = $hasLane1 && $hasLane2
+        ? round(($w1 * $l1Confidence + $w2 * $l2ConfidenceNumeric), 4)
+        : ($hasLane1 ? $l1Confidence : $l2ConfidenceNumeric);
+
+    return [
+        'character_id'       => $characterId,
+        'character_name'     => $lane1['character_name'] ?? $behavioral['character_name'] ?? null,
+        'blended_score'      => $blendedScore,
+        'blended_percentile' => $blendedPct,
+        'blended_confidence' => $blendedConfidence,
+        'evidence_source'    => $evidenceSource,
+        'lane1_score'        => $hasLane1 ? $l1Score : null,
+        'lane1_percentile'   => $hasLane1 ? $l1Pct   : null,
+        'lane1_source'       => $hasLane1 ? $l1Source : null,
+        'lane1_weight'       => $w1,
+        'lane2_score'        => $hasLane2 ? $l2Score : null,
+        'lane2_percentile'   => $hasLane2 ? $l2Pct   : null,
+        'lane2_confidence'   => $hasLane2 ? $l2Tier  : null,
+        'lane2_weight'       => $w2,
+        'solo_kill_count'    => $soloKills,
+        'gang_kill_count'    => $gangKills,
+        'large_battle_count' => $largeBattles,
+        'lane1_raw'          => $lane1,
+        'lane2_raw'          => $behavioral,
+    ];
+}
+
 function db_character_behavioral_score(int $characterId): ?array
 {
     if ($characterId <= 0) {

@@ -59,3 +59,8 @@ CREATE TABLE IF NOT EXISTS small_engagement_copresence (
 INSERT INTO scheduler_jobs (job_key, enabled, interval_minutes, interval_seconds, offset_seconds, priority_order, priority_tier, concurrency_mode, execution_mode, timeout_seconds, created_at, updated_at, current_status, trigger_mode, max_retries, retry_count)
 VALUES ('compute_behavioral_scoring', 1, 60, 3600, 1740, 29, 'normal', 'single', 'python', 1800, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1)
 ON DUPLICATE KEY UPDATE enabled = 1, interval_minutes = 60, timeout_seconds = 1800;
+
+-- Add tier breakdown columns (solo 1-4, gang 5-9, battle 10+)
+ALTER TABLE character_behavioral_scores
+    CHANGE COLUMN small_kill_count solo_kill_count INT UNSIGNED NOT NULL DEFAULT 0,
+    ADD COLUMN gang_kill_count INT UNSIGNED NOT NULL DEFAULT 0 AFTER solo_kill_count;

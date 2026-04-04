@@ -1,17 +1,14 @@
 """Lane 2: Small-engagement behavioral scoring.
 
-Scores characters based on behavioral patterns across ALL engagements, not just
-large battles.  Focuses on signals that reveal intent rather than statistical
-battle-context anomalies:
+Engagement tiers
+----------------
+  Solo / gank   1–4  participants  → behavioral signals only
+  Small gang    5–9  participants  → behavioral signals + light statistical context
+  Full battle   10+  participants  → covered by Lane 1 (counterintel / suspicion pipeline)
 
-- Fleet-absence ratio (small kills vs large battles)
-- Post-engagement continuation rate
-- Kill participation concentration (asymmetric / opportunistic kills)
-- Geographic concentration
-- Temporal regularity / burst signature
-- Companion consistency (who they repeatedly fly with in small groups)
-- Cross-side appearances in small engagements
-- Asymmetry preference (only show up for easy kills?)
+For each character we compute 8 behavioral signals from solo/gang activity and
+store them separately from Lane 1 scores.  A blended headline is produced by
+db_character_blended_intelligence() in PHP, not here.
 """
 
 from __future__ import annotations
@@ -30,22 +27,23 @@ from ..json_utils import json_dumps_safe
 from ..job_utils import finish_job_run, start_job_run
 
 
-# Characters need at least this many kill participations to be scored.
+# ── Engagement tier thresholds ────────────────────────────────────────────────
+TIER_SOLO_MAX = 4      # 1–4  participants: behavioral only
+TIER_GANG_MAX = 9      # 5–9  participants: behavioral + light statistical
+TIER_BATTLE_MIN = 10   # 10+  participants: full Lane 1 battle model
+
+# Minimum kill participations to produce a score.
 MIN_KILL_PARTICIPATIONS = 3
 
-# Large battle threshold — matches Lane 1 definition.
-LARGE_BATTLE_THRESHOLD = 20
-
-# Time window for post-engagement continuation (minutes).
+# Post-engagement continuation window (minutes).
 CONTINUATION_WINDOW_MINUTES = 30
 
-# Time window for "same engagement cluster" grouping (seconds).
-CLUSTER_WINDOW_SECONDS = 15 * 60
-
-# Lookback days for the scoring window.
+# Lookback window for scoring.
 LOOKBACK_DAYS = 90
 
-# Behavioral score weights (sum to 1.0).
+# Behavioral signal weights (must sum to 1.0).
+# Gang-tier weight is slightly lower on companion/cross-side since context is
+# larger, but still behaviorally meaningful.
 BEHAVIORAL_WEIGHTS: dict[str, float] = {
     "fleet_absence_ratio": 0.15,
     "post_engagement_continuation_rate": 0.10,
@@ -56,6 +54,10 @@ BEHAVIORAL_WEIGHTS: dict[str, float] = {
     "cross_side_small_rate": 0.15,
     "asymmetry_preference": 0.10,
 }
+
+# Gang tier (5-9) contribution to behavioral signals is discounted slightly
+# because the context is richer than pure solo/gank.
+GANG_TIER_WEIGHT = 0.7  # multiply gang-kill contribution by this factor
 
 BATCH_SIZE = 5000
 
@@ -88,7 +90,7 @@ def _percentile(sorted_vals: list[float], value: float) -> float:
 
 
 def _gini(values: list[float]) -> float:
-    """Gini coefficient for measuring concentration (0 = uniform, 1 = concentrated)."""
+    """Gini coefficient for concentration (0 = uniform, 1 = concentrated)."""
     n = len(values)
     if n <= 1 or sum(values) == 0:
         return 0.0
@@ -102,10 +104,19 @@ def _gini(values: list[float]) -> float:
     return _bounded(2.0 * area / n * n / (n - 1))
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# Main pipeline
-# ═══════════════════════════════════════════════════════════════════════════════
+def _parse_dt(value: Any) -> datetime | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value
+    raw = str(value).strip()
+    try:
+        return datetime.fromisoformat(raw)
+    except (ValueError, TypeError):
+        return None
 
+
+# ── Main pipeline ─────────────────────────────────────────────────────────────
 
 def run_compute_behavioral_scoring(
     db: SupplyCoreDb,
@@ -113,7 +124,7 @@ def run_compute_behavioral_scoring(
     *,
     dry_run: bool = False,
 ) -> dict[str, Any]:
-    """Compute behavioral risk scores for all characters with kill activity."""
+    """Compute Lane 2 behavioral risk scores from all killmail activity."""
 
     lock_key = "compute_behavioral_scoring"
     job = start_job_run(db, lock_key)
@@ -126,11 +137,7 @@ def run_compute_behavioral_scoring(
     cutoff = (datetime.now(UTC) - timedelta(days=lookback_days)).strftime("%Y-%m-%d %H:%M:%S")
 
     try:
-        # ── Step 1: Load all kill participations ──────────────────────────
-        # For each character, gather their kills: timestamp, system, victim,
-        # co-attackers, alliance affiliations, and whether it was part of a
-        # large battle.
-
+        # ── Step 1: Load all kill participations within the lookback window ──
         kill_rows = db.fetch_all(
             """
             SELECT
@@ -147,13 +154,9 @@ def run_compute_behavioral_scoring(
                 ke.victim_character_id,
                 ke.victim_alliance_id,
                 ke.victim_corporation_id,
-                ke.victim_ship_type_id,
                 ke.zkb_total_value,
-                ke.zkb_solo,
-                ke.zkb_awox,
                 ke.battle_id,
-                COALESCE(br.participant_count, 0) AS battle_participant_count,
-                COALESCE(br.eligible_for_suspicion, 0) AS eligible_for_suspicion
+                COALESCE(br.participant_count, 0) AS battle_participant_count
             FROM killmail_attackers ka
             INNER JOIN killmail_events ke ON ke.sequence_id = ka.sequence_id
             LEFT JOIN battle_rollups br ON br.battle_id = ke.battle_id
@@ -165,37 +168,31 @@ def run_compute_behavioral_scoring(
         )
         rows_processed = len(kill_rows)
 
-        # ── Step 2: Index by character ────────────────────────────────────
+        # Index by character; also build kill → attacker list for copresence.
         by_character: dict[int, list[dict[str, Any]]] = defaultdict(list)
-        # Also build a kill -> attackers index for copresence.
         kill_attackers: dict[int, list[int]] = defaultdict(list)
-
         for row in kill_rows:
             cid = int(row["character_id"])
             by_character[cid].append(row)
-            seq = int(row["sequence_id"])
-            kill_attackers[seq].append(cid)
+            kill_attackers[int(row["sequence_id"])].append(cid)
+        del kill_rows
 
-        del kill_rows  # free memory
-
-        # ── Step 3: Also load large-battle participation counts ───────────
+        # ── Step 2: Lane 1 large-battle counts (10+ participants) ────────────
         large_battle_counts: dict[int, int] = {}
-        lb_rows = db.fetch_all(
+        for row in db.fetch_all(
             """
             SELECT bp.character_id, COUNT(DISTINCT bp.battle_id) AS cnt
             FROM battle_participants bp
             INNER JOIN battle_rollups br ON br.battle_id = bp.battle_id
-            WHERE br.eligible_for_suspicion = 1
+            WHERE br.participant_count >= %s
               AND br.started_at >= %s
             GROUP BY bp.character_id
             """,
-            (cutoff,),
-        )
-        for row in lb_rows:
+            (TIER_BATTLE_MIN, cutoff),
+        ):
             large_battle_counts[int(row["character_id"])] = int(row["cnt"])
-        del lb_rows
 
-        # ── Step 4: Compute per-character behavioral signals ──────────────
+        # ── Step 3: Per-character behavioral computation ──────────────────────
         score_rows: list[dict[str, Any]] = []
         signal_rows: list[dict[str, Any]] = []
         copresence_map: dict[tuple[int, int], dict[str, Any]] = {}
@@ -206,90 +203,78 @@ def run_compute_behavioral_scoring(
                 continue
 
             large_battle_count = large_battle_counts.get(character_id, 0)
-            small_kills = [k for k in kills if int(k["battle_participant_count"]) < LARGE_BATTLE_THRESHOLD]
+
+            # Classify kills into tiers by participant count.
+            solo_kills = [k for k in kills if int(k["battle_participant_count"]) <= TIER_SOLO_MAX]
+            gang_kills  = [k for k in kills if TIER_SOLO_MAX < int(k["battle_participant_count"]) <= TIER_GANG_MAX]
+            # Kills in large battles (10+) are Lane 1 territory; we track them
+            # only for the fleet-absence ratio.
+            small_kills = solo_kills + gang_kills  # both sub-battle tiers
+            solo_kill_count = len(solo_kills)
+            gang_kill_count  = len(gang_kills)
             small_kill_count = len(small_kills)
 
-            # ── Fleet-absence ratio ───────────────────────────────────
-            # High = active in small kills, absent from large fleet ops.
+            # ── Fleet-absence ratio ───────────────────────────────────────────
+            # High = operates mostly in sub-battle engagements vs fleet ops.
             fleet_absence_ratio = _safe_div(
                 float(small_kill_count),
                 float(small_kill_count + large_battle_count),
             )
 
-            # ── Post-engagement continuation rate ─────────────────────
-            # After appearing on a kill, does this character continue
-            # participating in nearby activity, or disappear?
+            # ── Post-engagement continuation rate ─────────────────────────────
+            # After a kill, does this character stay engaged or vanish?
+            # Measured across all kills (solo + gang + battle) to capture the
+            # "one precise kill then gone" pattern.
+            sorted_kills = sorted(kills, key=lambda k: str(k["killmail_time"]))
             continuation_hits = 0
             continuation_eligible = 0
-            sorted_kills = sorted(kills, key=lambda k: str(k["killmail_time"]))
             for i, kill in enumerate(sorted_kills[:-1]):
-                t0 = kill["killmail_time"]
-                if not t0:
+                t0 = _parse_dt(kill["killmail_time"])
+                if t0 is None:
                     continue
-                if isinstance(t0, str):
-                    try:
-                        t0 = datetime.fromisoformat(t0)
-                    except (ValueError, TypeError):
-                        continue
                 continuation_eligible += 1
                 for j in range(i + 1, min(i + 10, len(sorted_kills))):
-                    t1 = sorted_kills[j]["killmail_time"]
-                    if isinstance(t1, str):
-                        try:
-                            t1 = datetime.fromisoformat(t1)
-                        except (ValueError, TypeError):
-                            break
+                    t1 = _parse_dt(sorted_kills[j]["killmail_time"])
+                    if t1 is None:
+                        break
                     diff = (t1 - t0).total_seconds()
                     if diff <= CONTINUATION_WINDOW_MINUTES * 60:
                         continuation_hits += 1
                         break
                     if diff > CONTINUATION_WINDOW_MINUTES * 60:
                         break
-            post_engagement_continuation_rate = _safe_div(
-                float(continuation_hits),
-                float(continuation_eligible),
+            post_engagement_continuation_rate = _safe_div(float(continuation_hits), float(continuation_eligible))
+
+            # ── Kill concentration (asymmetric fight preference) ───────────────
+            # Fraction of ALL kills where there are 5+ attackers.  Gang kills
+            # are expected to have more attackers so they contribute less to this
+            # signal — only solo-tier is fully suspicious for asymmetry.
+            attacker_counts_solo = [len(kill_attackers.get(int(k["sequence_id"]), [])) for k in solo_kills]
+            attacker_counts_gang = [len(kill_attackers.get(int(k["sequence_id"]), [])) for k in gang_kills]
+            asymmetric_solo = sum(1 for c in attacker_counts_solo if c >= 5)
+            # For gangs (5-9 participants), a 5:1 attacker ratio is less noteworthy —
+            # use a higher threshold (all attackers, i.e., fully one-sided).
+            asymmetric_gang = sum(1 for c in attacker_counts_gang if c >= 8)
+            kill_concentration = _safe_div(
+                float(asymmetric_solo + asymmetric_gang * GANG_TIER_WEIGHT),
+                float(max(1, solo_kill_count + gang_kill_count)),
             )
 
-            # ── Kill concentration score ──────────────────────────────
-            # Do they only appear on high-value / highly asymmetric kills?
-            attacker_counts = []
-            for kill in kills:
-                seq = int(kill["sequence_id"])
-                attacker_counts.append(len(kill_attackers.get(seq, [])))
-            avg_attackers_per_kill = statistics.mean(attacker_counts) if attacker_counts else 1.0
-            # Higher score = more concentrated on easy/asymmetric kills
-            # (many attackers vs few = ganking behavior)
-            asymmetric_kills = sum(1 for c in attacker_counts if c >= 5)
-            kill_concentration = _safe_div(float(asymmetric_kills), float(total_kill_count))
-
-            # ── Geographic concentration ──────────────────────────────
-            # How focused is their activity geographically?
+            # ── Geographic concentration ──────────────────────────────────────
+            # Computed from solo + gang kills only (not large battles).
             system_counts: dict[int, int] = defaultdict(int)
-            for kill in kills:
+            for kill in small_kills:
                 sys_id = int(kill["solar_system_id"] or 0)
                 if sys_id > 0:
                     system_counts[sys_id] += 1
-            if system_counts:
-                geo_gini = _gini(list(system_counts.values()))
-            else:
-                geo_gini = 0.0
+            geo_gini = _gini(list(system_counts.values())) if system_counts else 0.0
 
-            # ── Temporal regularity ───────────────────────────────────
-            # How regular/bursty is their activity?  Bursty = suspicious.
-            timestamps = []
-            for kill in sorted_kills:
-                t = kill["killmail_time"]
-                if isinstance(t, str):
-                    try:
-                        t = datetime.fromisoformat(t)
-                    except (ValueError, TypeError):
-                        continue
-                if t:
-                    timestamps.append(t)
-
+            # ── Temporal burstiness ───────────────────────────────────────────
+            # Computed from all kills to capture overall activity rhythm.
+            timestamps = [_parse_dt(k["killmail_time"]) for k in sorted_kills]
+            timestamps = [t for t in timestamps if t is not None]
             temporal_regularity = 0.0
             if len(timestamps) >= 3:
-                # Burstiness index: B = (σ - μ) / (σ + μ) of inter-event intervals
                 intervals = [
                     (timestamps[i + 1] - timestamps[i]).total_seconds()
                     for i in range(len(timestamps) - 1)
@@ -299,83 +284,69 @@ def run_compute_behavioral_scoring(
                     mu = statistics.mean(intervals)
                     sigma = statistics.pstdev(intervals)
                     burstiness = (sigma - mu) / (sigma + mu) if (sigma + mu) > 0 else 0.0
-                    # B ranges from -1 (perfectly regular) to +1 (perfectly bursty)
-                    # Map to 0..1 where 1 = very bursty (suspicious)
                     temporal_regularity = _bounded((burstiness + 1.0) / 2.0)
 
-            # ── Companion consistency ─────────────────────────────────
-            # In small engagements, does this character repeatedly fly
-            # with the same small group of people?
-            companion_counts: dict[int, int] = defaultdict(int)
-            for kill in small_kills:
-                seq = int(kill["sequence_id"])
-                for companion_id in kill_attackers.get(seq, []):
-                    if companion_id != character_id:
-                        companion_counts[companion_id] += 1
+            # ── Companion consistency ─────────────────────────────────────────
+            # Solo-tier companions are fully weighted; gang-tier companions are
+            # discounted because larger groups naturally have more co-fliers.
+            companion_counts: dict[int, float] = defaultdict(float)
+            for kill in solo_kills:
+                for comp in kill_attackers.get(int(kill["sequence_id"]), []):
+                    if comp != character_id:
+                        companion_counts[comp] += 1.0
+            for kill in gang_kills:
+                for comp in kill_attackers.get(int(kill["sequence_id"]), []):
+                    if comp != character_id:
+                        companion_counts[comp] += GANG_TIER_WEIGHT
 
             companion_consistency = 0.0
             if companion_counts and small_kill_count >= 3:
-                # What fraction of small kills share at least one recurring companion?
-                recurring = {cid: cnt for cid, cnt in companion_counts.items() if cnt >= 2}
+                recurring = {cid: w for cid, w in companion_counts.items() if w >= 2.0}
                 if recurring:
                     kills_with_recurring = 0
                     for kill in small_kills:
-                        seq = int(kill["sequence_id"])
-                        attackers = set(kill_attackers.get(seq, []))
+                        attackers = set(kill_attackers.get(int(kill["sequence_id"]), []))
                         if attackers.intersection(recurring.keys()):
                             kills_with_recurring += 1
-                    companion_consistency = _safe_div(
-                        float(kills_with_recurring),
-                        float(small_kill_count),
-                    )
+                    companion_consistency = _safe_div(float(kills_with_recurring), float(small_kill_count))
 
-                    # Build copresence edges for top companions.
-                    for comp_id, cnt in sorted(recurring.items(), key=lambda x: -x[1])[:20]:
+                    # Build copresence edges (top 20 recurring companions).
+                    for comp_id, weight in sorted(recurring.items(), key=lambda x: -x[1])[:20]:
                         a, b = min(character_id, comp_id), max(character_id, comp_id)
                         key = (a, b)
-                        if key not in copresence_map:
-                            # Find shared kills for metadata.
-                            shared_victims: set[int] = set()
-                            shared_systems: set[int] = set()
-                            last_event = ""
-                            for kill in small_kills:
-                                seq = int(kill["sequence_id"])
-                                if comp_id in kill_attackers.get(seq, []):
-                                    v = int(kill["victim_character_id"] or 0)
-                                    if v > 0:
-                                        shared_victims.add(v)
-                                    s = int(kill["solar_system_id"] or 0)
-                                    if s > 0:
-                                        shared_systems.add(s)
-                                    t = str(kill["killmail_time"] or "")
-                                    if t > last_event:
-                                        last_event = t
-                            copresence_map[key] = {
-                                "character_id_a": a,
-                                "character_id_b": b,
-                                "co_kill_count": cnt,
-                                "unique_victim_count": len(shared_victims),
-                                "unique_system_count": len(shared_systems),
-                                "edge_weight": round(math.log1p(cnt) * (1.0 + 0.3 * len(shared_systems)), 6),
-                                "last_event_at": last_event or computed_at,
-                            }
-                        else:
-                            existing = copresence_map[key]
-                            existing["co_kill_count"] = max(existing["co_kill_count"], cnt)
+                        shared_victims: set[int] = set()
+                        shared_systems: set[int] = set()
+                        last_event = ""
+                        for kill in small_kills:
+                            if comp_id in kill_attackers.get(int(kill["sequence_id"]), []):
+                                v = int(kill["victim_character_id"] or 0)
+                                if v > 0:
+                                    shared_victims.add(v)
+                                s = int(kill["solar_system_id"] or 0)
+                                if s > 0:
+                                    shared_systems.add(s)
+                                t = str(kill["killmail_time"] or "")
+                                if t > last_event:
+                                    last_event = t
+                        edge = {
+                            "character_id_a": a,
+                            "character_id_b": b,
+                            "co_kill_count": int(weight + 0.5),
+                            "unique_victim_count": len(shared_victims),
+                            "unique_system_count": len(shared_systems),
+                            "edge_weight": round(math.log1p(weight) * (1.0 + 0.3 * len(shared_systems)), 6),
+                            "last_event_at": last_event or computed_at,
+                        }
+                        if key not in copresence_map or copresence_map[key]["edge_weight"] < edge["edge_weight"]:
+                            copresence_map[key] = edge
 
-            # ── Cross-side rate (small engagements) ───────────────────
-            # How often does this character appear on different sides in
-            # small kills?  Measured by alliance/corp of victim vs attacker.
+            # ── Cross-side rate (solo + gang only) ────────────────────────────
+            # Attacking your own alliance in small engagements.
             own_alliances: set[int] = set()
-            victim_alliances_attacked: set[int] = set()
             for kill in small_kills:
-                own_a = int(kill["alliance_id"] or 0)
-                if own_a > 0:
-                    own_alliances.add(own_a)
-                victim_a = int(kill["victim_alliance_id"] or 0)
-                if victim_a > 0:
-                    victim_alliances_attacked.add(victim_a)
-            # Cross-side = attacking your own alliance members.
+                a = int(kill["alliance_id"] or 0)
+                if a > 0:
+                    own_alliances.add(a)
             cross_side_kills = sum(
                 1 for k in small_kills
                 if int(k["victim_alliance_id"] or 0) > 0
@@ -383,25 +354,17 @@ def run_compute_behavioral_scoring(
             )
             cross_side_small_rate = _safe_div(float(cross_side_kills), float(small_kill_count))
 
-            # ── Asymmetry preference ──────────────────────────────────
-            # Does this character only show up for extremely one-sided fights?
-            asymmetry_scores = []
-            for kill in small_kills:
-                seq = int(kill["sequence_id"])
-                n_attackers = len(kill_attackers.get(seq, []))
-                # A solo kill = 1 attacker vs 1 victim = ratio 1.0
-                # A 10v1 gank = ratio 10.0
-                asymmetry_scores.append(float(n_attackers))
+            # ── Asymmetry preference (solo tier only) ─────────────────────────
+            # Only meaningful in 1-4 participant context.
             asymmetry_preference = 0.0
-            if asymmetry_scores:
-                # Fraction of small kills with >= 5:1 ratio.
-                high_asymmetry = sum(1 for a in asymmetry_scores if a >= 5)
-                asymmetry_preference = _safe_div(float(high_asymmetry), float(len(asymmetry_scores)))
+            if attacker_counts_solo:
+                high_asym = sum(1 for c in attacker_counts_solo if c >= 5)
+                asymmetry_preference = _safe_div(float(high_asym), float(len(attacker_counts_solo)))
 
-            # ── Composite score ───────────────────────────────────────
+            # ── Composite behavioral risk score ───────────────────────────────
             components = {
                 "fleet_absence_ratio": fleet_absence_ratio,
-                "post_engagement_continuation_rate": 1.0 - post_engagement_continuation_rate,  # invert: LOW continuation = suspicious
+                "post_engagement_continuation_rate": 1.0 - post_engagement_continuation_rate,
                 "kill_concentration_score": kill_concentration,
                 "geographic_concentration_score": geo_gini,
                 "temporal_regularity_score": temporal_regularity,
@@ -409,7 +372,6 @@ def run_compute_behavioral_scoring(
                 "cross_side_small_rate": cross_side_small_rate,
                 "asymmetry_preference": asymmetry_preference,
             }
-
             behavioral_risk_score = sum(
                 BEHAVIORAL_WEIGHTS[k] * _bounded(v) for k, v in components.items()
             )
@@ -417,47 +379,58 @@ def run_compute_behavioral_scoring(
             score_rows.append({
                 "character_id": character_id,
                 "behavioral_risk_score": round(behavioral_risk_score, 6),
-                "confidence_tier": _confidence_tier(total_kill_count),
+                "confidence_tier": _confidence_tier(small_kill_count),
                 "total_kill_count": total_kill_count,
-                "small_kill_count": small_kill_count,
+                "solo_kill_count": solo_kill_count,
+                "gang_kill_count": gang_kill_count,
                 "large_battle_count": large_battle_count,
                 **{k: round(v, 6) for k, v in components.items()},
             })
 
-            # ── Individual signals ────────────────────────────────────
-            signal_defs = [
-                ("fleet_absence_ratio", fleet_absence_ratio, f"small kills {small_kill_count}, large battles {large_battle_count}, ratio {fleet_absence_ratio:.3f}"),
-                ("post_engagement_continuation", post_engagement_continuation_rate, f"continued within {CONTINUATION_WINDOW_MINUTES}m in {continuation_hits}/{continuation_eligible} cases"),
-                ("kill_concentration", kill_concentration, f"{asymmetric_kills}/{total_kill_count} kills with 5+ attackers"),
-                ("geographic_concentration", geo_gini, f"Gini {geo_gini:.3f} across {len(system_counts)} systems"),
-                ("temporal_burstiness", temporal_regularity, f"burstiness index {temporal_regularity:.3f} from {len(timestamps)} events"),
-                ("companion_consistency", companion_consistency, f"{len({c for c, n in companion_counts.items() if n >= 2})} recurring companions in {small_kill_count} small kills"),
-                ("cross_side_small", cross_side_small_rate, f"{cross_side_kills}/{small_kill_count} small kills against own alliance"),
-                ("asymmetry_preference", asymmetry_preference, f"preference for 5:1+ asymmetric kills: {asymmetry_preference:.3f}"),
-            ]
-
-            for sig_key, sig_value, sig_text in signal_defs:
+            # ── Individual signals ────────────────────────────────────────────
+            recurring_companion_count = len({c for c, w in companion_counts.items() if w >= 2.0})
+            for sig_key, sig_value, sig_text in [
+                ("fleet_absence_ratio", fleet_absence_ratio,
+                 f"{solo_kill_count} solo/gank + {gang_kill_count} gang kills vs {large_battle_count} large battles"),
+                ("post_engagement_continuation", post_engagement_continuation_rate,
+                 f"continued within {CONTINUATION_WINDOW_MINUTES}m in {continuation_hits}/{continuation_eligible} cases"),
+                ("kill_concentration", kill_concentration,
+                 f"{asymmetric_solo} solo asymmetric, {asymmetric_gang} gang one-sided of {total_kill_count} kills"),
+                ("geographic_concentration", geo_gini,
+                 f"Gini {geo_gini:.3f} across {len(system_counts)} systems (small engagements)"),
+                ("temporal_burstiness", temporal_regularity,
+                 f"burstiness {temporal_regularity:.3f} from {len(timestamps)} events"),
+                ("companion_consistency", companion_consistency,
+                 f"{recurring_companion_count} recurring companions across {small_kill_count} sub-battle kills"),
+                ("cross_side_small", cross_side_small_rate,
+                 f"{cross_side_kills}/{small_kill_count} small kills against own alliance"),
+                ("asymmetry_preference", asymmetry_preference,
+                 f"solo-tier 5:1+ gank preference: {asymmetry_preference:.3f}"),
+            ]:
                 signal_rows.append({
                     "character_id": character_id,
                     "signal_key": sig_key,
                     "window_label": f"{lookback_days}d",
                     "signal_value": round(sig_value, 6),
-                    "confidence_flag": _confidence_tier(total_kill_count),
+                    "confidence_flag": _confidence_tier(small_kill_count),
                     "signal_text": sig_text,
                     "signal_payload_json": json_dumps_safe({
-                        "total_kill_count": total_kill_count,
-                        "small_kill_count": small_kill_count,
+                        "solo_kill_count": solo_kill_count,
+                        "gang_kill_count": gang_kill_count,
                         "large_battle_count": large_battle_count,
                         "lookback_days": lookback_days,
+                        "tier_solo_max": TIER_SOLO_MAX,
+                        "tier_gang_max": TIER_GANG_MAX,
+                        "tier_battle_min": TIER_BATTLE_MIN,
                     }),
                 })
 
-        # ── Step 5: Percentile ranks ──────────────────────────────────
+        # ── Step 4: Percentile ranks ──────────────────────────────────────────
         sorted_scores = sorted(float(r["behavioral_risk_score"]) for r in score_rows)
         for row in score_rows:
             row["percentile_rank"] = round(_percentile(sorted_scores, float(row["behavioral_risk_score"])), 6)
 
-        # ── Step 6: Write results ─────────────────────────────────────
+        # ── Step 5: Write ─────────────────────────────────────────────────────
         if not dry_run and score_rows:
             with db.transaction() as (_, cursor):
                 cursor.execute("DELETE FROM character_behavioral_scores")
@@ -465,27 +438,23 @@ def run_compute_behavioral_scoring(
                 cursor.execute("DELETE FROM small_engagement_copresence WHERE window_label = %s", (f"{lookback_days}d",))
 
                 for i in range(0, len(score_rows), BATCH_SIZE):
-                    batch = score_rows[i:i + BATCH_SIZE]
                     cursor.executemany(
                         """
                         INSERT INTO character_behavioral_scores (
                             character_id, behavioral_risk_score, percentile_rank, confidence_tier,
-                            total_kill_count, small_kill_count, large_battle_count,
+                            total_kill_count, solo_kill_count, gang_kill_count, large_battle_count,
                             fleet_absence_ratio, post_engagement_continuation_rate,
                             kill_concentration_score, geographic_concentration_score,
                             temporal_regularity_score, companion_consistency_score,
                             cross_side_small_rate, asymmetry_preference, computed_at
-                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                         """,
                         [
                             (
-                                int(r["character_id"]),
-                                float(r["behavioral_risk_score"]),
-                                float(r["percentile_rank"]),
-                                str(r["confidence_tier"]),
-                                int(r["total_kill_count"]),
-                                int(r["small_kill_count"]),
-                                int(r["large_battle_count"]),
+                                int(r["character_id"]), float(r["behavioral_risk_score"]),
+                                float(r["percentile_rank"]), str(r["confidence_tier"]),
+                                int(r["total_kill_count"]), int(r["solo_kill_count"]),
+                                int(r["gang_kill_count"]), int(r["large_battle_count"]),
                                 float(r["fleet_absence_ratio"]),
                                 float(r["post_engagement_continuation_rate"]),
                                 float(r["kill_concentration_score"]),
@@ -493,47 +462,40 @@ def run_compute_behavioral_scoring(
                                 float(r["temporal_regularity_score"]),
                                 float(r["companion_consistency_score"]),
                                 float(r["cross_side_small_rate"]),
-                                float(r["asymmetry_preference"]),
-                                computed_at,
+                                float(r["asymmetry_preference"]), computed_at,
                             )
-                            for r in batch
+                            for r in score_rows[i:i + BATCH_SIZE]
                         ],
                     )
 
                 for i in range(0, len(signal_rows), BATCH_SIZE):
-                    batch = signal_rows[i:i + BATCH_SIZE]
                     cursor.executemany(
                         """
                         INSERT INTO character_behavioral_signals (
                             character_id, signal_key, window_label, signal_value,
                             confidence_flag, signal_text, signal_payload_json, computed_at
-                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                        ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
                         """,
                         [
                             (
-                                int(r["character_id"]),
-                                str(r["signal_key"]),
-                                str(r["window_label"]),
-                                float(r["signal_value"]),
-                                str(r["confidence_flag"]),
-                                str(r["signal_text"]),
-                                str(r["signal_payload_json"]),
-                                computed_at,
+                                int(r["character_id"]), str(r["signal_key"]),
+                                str(r["window_label"]), float(r["signal_value"]),
+                                str(r["confidence_flag"]), str(r["signal_text"]),
+                                str(r["signal_payload_json"]), computed_at,
                             )
-                            for r in batch
+                            for r in signal_rows[i:i + BATCH_SIZE]
                         ],
                     )
 
                 copresence_rows = list(copresence_map.values())
                 for i in range(0, len(copresence_rows), BATCH_SIZE):
-                    batch = copresence_rows[i:i + BATCH_SIZE]
                     cursor.executemany(
                         """
                         INSERT INTO small_engagement_copresence (
                             character_id_a, character_id_b, window_label,
                             co_kill_count, unique_victim_count, unique_system_count,
                             edge_weight, last_event_at, computed_at
-                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
                         ON DUPLICATE KEY UPDATE
                             co_kill_count = VALUES(co_kill_count),
                             unique_victim_count = VALUES(unique_victim_count),
@@ -544,26 +506,25 @@ def run_compute_behavioral_scoring(
                         """,
                         [
                             (
-                                int(r["character_id_a"]),
-                                int(r["character_id_b"]),
-                                f"{lookback_days}d",
-                                int(r["co_kill_count"]),
-                                int(r["unique_victim_count"]),
-                                int(r["unique_system_count"]),
-                                float(r["edge_weight"]),
-                                str(r["last_event_at"]),
-                                computed_at,
+                                int(r["character_id_a"]), int(r["character_id_b"]),
+                                f"{lookback_days}d", int(r["co_kill_count"]),
+                                int(r["unique_victim_count"]), int(r["unique_system_count"]),
+                                float(r["edge_weight"]), str(r["last_event_at"]), computed_at,
                             )
-                            for r in batch
+                            for r in copresence_rows[i:i + BATCH_SIZE]
                         ],
                     )
-
             rows_written = len(score_rows) + len(signal_rows) + len(copresence_rows)
 
         duration_ms = int((time.perf_counter() - started) * 1000)
         result = JobResult.success(
             job_key=lock_key,
-            summary=f"Scored {len(score_rows)} characters ({len(copresence_map)} copresence edges) from {rows_processed} kill participations.",
+            summary=(
+                f"Scored {len(score_rows)} characters "
+                f"({len(copresence_map)} copresence edges) "
+                f"from {rows_processed} kill participations. "
+                f"Tiers: solo ≤{TIER_SOLO_MAX}, gang {TIER_SOLO_MAX+1}–{TIER_GANG_MAX}, battle ≥{TIER_BATTLE_MIN}."
+            ),
             rows_processed=rows_processed,
             rows_written=0 if dry_run else rows_written,
             duration_ms=duration_ms,
@@ -573,6 +534,11 @@ def run_compute_behavioral_scoring(
                 "signal_rows": len(signal_rows),
                 "copresence_edges": len(copresence_map),
                 "lookback_days": lookback_days,
+                "tier_thresholds": {
+                    "solo_max": TIER_SOLO_MAX,
+                    "gang_max": TIER_GANG_MAX,
+                    "battle_min": TIER_BATTLE_MIN,
+                },
                 "dry_run": dry_run,
             },
         ).to_dict()
