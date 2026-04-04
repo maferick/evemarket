@@ -243,6 +243,27 @@ class SupplyCoreDb:
                  AND lock_expires_at < UTC_TIMESTAMP()"""
         )
 
+    def reap_stale_queued_jobs(self, stale_seconds: int = 3600) -> int:
+        """Mark queued jobs that have been waiting too long as failed.
+
+        This cleans up orphaned rows — e.g. jobs that were queued by a
+        worker that can't claim them (wrong queue) or jobs that were
+        permanently blocked by the DAG scheduler.  Without this, stale
+        'queued' rows prevent ``queue_due_recurring_jobs`` from ever
+        re-evaluating the job (the ``existing`` check skips it).
+        """
+        safe = max(600, stale_seconds)
+        return self.execute(
+            """UPDATE worker_jobs
+               SET status = 'failed',
+                   last_error = 'Reaped: queued for too long without being claimed',
+                   last_finished_at = UTC_TIMESTAMP()
+               WHERE status = 'queued'
+                 AND available_at < DATE_SUB(UTC_TIMESTAMP(), INTERVAL %s SECOND)
+                 AND locked_by IS NULL""",
+            (safe,),
+        )
+
     def count_active_workers(self, queue_name: str | None = None) -> dict[str, int]:
         """Count distinct workers that have claimed jobs in the last 10 minutes, by queue."""
         rows = self.fetch_all(

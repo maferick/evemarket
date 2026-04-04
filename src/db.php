@@ -9097,12 +9097,21 @@ function db_sync_schedule_mark_success(int $scheduleId, ?array $runtime = null):
     if ($updated && $jobKey !== '') {
         $finishedAt = gmdate('Y-m-d H:i:s');
         $isSkipLike = in_array($lastResult, ['skipped', 'skipped_no_change', 'skipped_within_freshness_window'], true);
+        // Preserve last_success_at for skip-like results so the change-aware
+        // freshness ceiling (requires_forced_periodic_refresh) eventually
+        // triggers.  Previously skips reset last_success_at to now(), which
+        // prevented the forced-refresh safety net from ever firing — jobs
+        // with unchanging upstream data would be skipped indefinitely.
+        $currentStatus = db_scheduler_job_current_status_fetch_map([$jobKey])[$jobKey] ?? [];
+        $lastSuccessAtValue = $isSkipLike
+            ? ($currentStatus['last_success_at'] ?? $finishedAt)
+            : $finishedAt;
         db_scheduler_job_current_status_upsert($jobKey, [
             'latest_status' => $lastResult,
             'latest_event_type' => 'completion',
             'last_started_at' => $schedule['last_started_at'] ?? null,
             'last_finished_at' => $finishedAt,
-            'last_success_at' => $finishedAt,
+            'last_success_at' => $lastSuccessAtValue,
             'last_failure_at' => $isSkipLike ? ($runtime['last_failure_at'] ?? null) : null,
             'last_failure_message' => null,
             'current_pressure_state' => $runtime['current_pressure_state'] ?? ($schedule['current_pressure_state'] ?? 'healthy'),
