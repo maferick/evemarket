@@ -27432,7 +27432,14 @@ function theater_ai_system_prompt(): string
              . "- Use markdown formatting: ## for section headers, **bold** for emphasis, - for bullet points.\n"
              . "- Analyze the battle data thoroughly. Reference specific alliances, ship types, ISK values, and pilot names.\n"
              . "- Focus on tactical clarity, decision-making, and actionable insights.\n"
-             . "- CRITICAL: The data distinguishes 'friendly' (our coalition) from 'enemy' (opposing coalition). Pay close attention to which side is which. The AAR is from the FRIENDLY perspective. Do NOT confuse the two sides.\n"
+             . "- CRITICAL PERSPECTIVE RULES:\n"
+             . "  * The AAR is ALWAYS written from the perspective of the 'friendly' coalition — these are OUR pilots, OUR fleets, OUR losses.\n"
+             . "  * 'enemy' / 'opponent' is the OTHER side — they are the hostiles.\n"
+             . "  * The 'friendly_alliance' field in the battle data tells you exactly which alliances are on OUR side. Use 'we/our/us' when referring to them.\n"
+             . "  * Use 'the enemy' or refer to hostile alliances by name when discussing the opposing side.\n"
+             . "  * If the friendly side LOST the fight, write a loss analysis from our perspective — do NOT write a victory report for the enemy. Frame it as what WE need to improve, what went wrong for US, and how WE can do better.\n"
+             . "  * The headline must reflect OUR outcome (e.g. 'Defeat in X-7OMU' not 'Enemy Victory in X-7OMU').\n"
+             . "  * NEVER frame the report as congratulating or praising the enemy's performance. Analyze their tactics objectively but the tone is always from our side.\n"
              . "- The 'efficiency' field is our ISK efficiency. Above 50% means we destroyed more ISK than we lost.\n\n"
              . "Return valid JSON with the required fields. The 'summary' field must contain the full multi-section AAR in markdown.";
     }
@@ -27460,6 +27467,9 @@ function theater_ai_user_prompt(array $facts): string
         return $customPrompt . "\n\n---\n\nBATTLE DATA:\n" . $dataJson;
     }
 
+    $friendlyLabel = (string) ($facts['friendly_alliance'] ?? 'Unknown');
+    $enemyLabel = (string) ($facts['enemy_alliances'] ?? 'Unknown');
+
     return <<<PROMPT
 You are an experienced EVE Online Fleet Commander and military analyst.
 
@@ -27467,10 +27477,16 @@ Generate a clear, structured After Action Report (AAR) based on the provided bat
 
 Focus on tactical clarity, decision-making, and actionable insights. Avoid fluff.
 
-IMPORTANT DATA CONTEXT:
-- "friendly" = our coalition (listed in "friendly_alliance" and "friendly_coalition")
-- "enemy" = the opposing coalition (listed in "enemy_alliances" and "enemy_coalition")
-- The AAR is written from the perspective of the FRIENDLY coalition
+CRITICAL — WHO WE ARE:
+- OUR coalition ("friendly" in the data) is: {$friendlyLabel}
+- THE ENEMY ("enemy" in the data) is: {$enemyLabel}
+- This AAR is written FOR and FROM the perspective of {$friendlyLabel}. Use "we/our/us" when referring to {$friendlyLabel}.
+- If we lost the fight, this is a LOSS REPORT — analyze what went wrong for US and how WE improve. Do NOT write a victory report for the enemy.
+- The headline must describe OUR outcome (e.g. "Defeat in X-7OMU — 26% ISK Efficiency" not "Enemy Prevails in X-7OMU").
+
+DATA CONTEXT:
+- "friendly" = our coalition ({$friendlyLabel})
+- "enemy" = the opposing coalition ({$enemyLabel})
 - "friendly_isk_killed" = ISK value destroyed BY our side; "friendly_isk_lost" = ISK value WE lost
 - "efficiency" = our ISK efficiency (friendly_isk_killed / total ISK destroyed)
 - In "notable_kills", "lost_by" indicates which side lost the ship ("friendly" = we lost it, "enemy" = we killed it)
@@ -27522,7 +27538,7 @@ STYLE GUIDELINES:
 
 ---
 
-Determine the verdict from our coalition's perspective: one of "decisive_victory", "victory", "close_fight", "defeat", "decisive_defeat", or "stalemate".
+Determine the verdict from {$friendlyLabel}'s perspective: one of "decisive_victory", "victory", "close_fight", "defeat", "decisive_defeat", or "stalemate". If {$friendlyLabel} lost the ISK war and the fight, the verdict MUST be "defeat" or "decisive_defeat", NOT "victory".
 
 ---
 
