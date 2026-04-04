@@ -45,7 +45,10 @@ def _processor(db: SupplyCoreDb, raw_config: dict[str, Any] | None = None) -> di
     warnings: list[str] = []
 
     if not access_token:
-        warnings.append("No active ESI OAuth token found; corporation standings were not fetched.")
+        warnings.append(
+            "No active ESI OAuth token found and automatic refresh failed. "
+            "Re-authenticate in Settings → ESI Auth to restore standings sync."
+        )
         return {
             "rows_processed": 0,
             "rows_written": 0,
