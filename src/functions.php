@@ -7176,6 +7176,104 @@ function automation_runtime_manageable_job_keys(): array
     return $jobKeys;
 }
 
+function automation_runtime_job_group(string $jobKey): string
+{
+    static $map = [
+        // Market & Trading
+        'market_hub_current_sync' => 'Market & Trading',
+        'market_hub_historical_sync' => 'Market & Trading',
+        'market_hub_local_history_sync' => 'Market & Trading',
+        'alliance_current_sync' => 'Market & Trading',
+        'alliance_historical_sync' => 'Market & Trading',
+        'current_state_refresh_sync' => 'Market & Trading',
+        'deal_alerts_sync' => 'Market & Trading',
+        'compute_buy_all' => 'Market & Trading',
+        'compute_signals' => 'Market & Trading',
+        'market_comparison_summary_sync' => 'Market & Trading',
+        'loss_demand_summary_sync' => 'Market & Trading',
+        'compute_economic_warfare' => 'Market & Trading',
+
+        // Battle Analysis
+        'compute_battle_actor_features' => 'Battle Analysis',
+        'compute_battle_anomalies' => 'Battle Analysis',
+        'compute_battle_rollups' => 'Battle Analysis',
+        'compute_battle_target_metrics' => 'Battle Analysis',
+        'battle_type_classification' => 'Battle Analysis',
+        'escalation_detection' => 'Battle Analysis',
+
+        // Counterintel & Suspicion
+        'compute_counterintel_pipeline' => 'Counterintel & Suspicion',
+        'compute_suspicion_scores' => 'Counterintel & Suspicion',
+        'compute_suspicion_scores_v2' => 'Counterintel & Suspicion',
+        'compute_behavioral_baselines' => 'Counterintel & Suspicion',
+        'compute_behavioral_scoring' => 'Counterintel & Suspicion',
+        'temporal_behavior_detection' => 'Counterintel & Suspicion',
+        'compute_character_feature_windows' => 'Counterintel & Suspicion',
+        'shell_corp_detection' => 'Counterintel & Suspicion',
+        'pre_op_join_detection' => 'Counterintel & Suspicion',
+        'compute_cohort_baselines' => 'Counterintel & Suspicion',
+        'compute_copresence_edges' => 'Counterintel & Suspicion',
+
+        // Intelligence Graph
+        'compute_graph_sync' => 'Intelligence Graph',
+        'compute_graph_insights' => 'Intelligence Graph',
+        'compute_graph_derived_relationships' => 'Intelligence Graph',
+        'compute_graph_sync_killmail_entities' => 'Intelligence Graph',
+        'compute_graph_sync_killmail_edges' => 'Intelligence Graph',
+        'compute_graph_sync_doctrine_dependency' => 'Intelligence Graph',
+        'compute_graph_sync_battle_intelligence' => 'Intelligence Graph',
+        'compute_graph_prune' => 'Intelligence Graph',
+        'compute_graph_topology_metrics' => 'Intelligence Graph',
+        'graph_data_quality_check' => 'Intelligence Graph',
+        'graph_temporal_metrics_sync' => 'Intelligence Graph',
+        'graph_typed_interactions_sync' => 'Intelligence Graph',
+        'graph_community_detection_sync' => 'Intelligence Graph',
+        'graph_motif_detection_sync' => 'Intelligence Graph',
+        'graph_evidence_paths_sync' => 'Intelligence Graph',
+        'graph_analyst_recalibration' => 'Intelligence Graph',
+        'graph_model_audit' => 'Intelligence Graph',
+        'graph_universe_sync' => 'Intelligence Graph',
+
+        // Theater Intelligence
+        'theater_clustering' => 'Theater Intelligence',
+        'theater_analysis' => 'Theater Intelligence',
+        'theater_graph_integration' => 'Theater Intelligence',
+        'theater_suspicion' => 'Theater Intelligence',
+
+        // Alliance Intelligence
+        'compute_alliance_relationships' => 'Alliance Intelligence',
+        'compute_alliance_dossiers' => 'Alliance Intelligence',
+        'compute_threat_corridors' => 'Alliance Intelligence',
+        'staging_system_detection' => 'Alliance Intelligence',
+        'intelligence_pipeline' => 'Alliance Intelligence',
+
+        // Data Ingestion & ESI
+        'esi_character_queue_sync' => 'Data Ingestion & ESI',
+        'esi_alliance_history_sync' => 'Data Ingestion & ESI',
+        'entity_metadata_resolve_sync' => 'Data Ingestion & ESI',
+        'evewho_enrichment_sync' => 'Data Ingestion & ESI',
+        'evewho_alliance_member_sync' => 'Data Ingestion & ESI',
+        'tracked_alliance_member_sync' => 'Data Ingestion & ESI',
+        'corp_standings_sync' => 'Data Ingestion & ESI',
+        'jump_bridge_sync' => 'Data Ingestion & ESI',
+
+        // Dashboard & Analytics
+        'dashboard_summary_sync' => 'Dashboard & Analytics',
+        'activity_priority_summary_sync' => 'Dashboard & Analytics',
+        'analytics_bucket_1h_sync' => 'Dashboard & Analytics',
+        'analytics_bucket_1d_sync' => 'Dashboard & Analytics',
+        'doctrine_intelligence_sync' => 'Dashboard & Analytics',
+        'rebuild_ai_briefings' => 'Dashboard & Analytics',
+        'forecasting_ai_sync' => 'Dashboard & Analytics',
+
+        // System Maintenance
+        'cache_expiry_cleanup_sync' => 'System Maintenance',
+        'killmail_zkb_repair' => 'System Maintenance',
+    ];
+
+    return $map[$jobKey] ?? 'Other';
+}
+
 function automation_runtime_jobs_overview(): array
 {
     scheduler_registry_bootstrap();
@@ -7203,13 +7301,13 @@ function automation_runtime_jobs_overview(): array
             'enabled' => $enabled === 1,
             'interval_minutes' => (int) ($row['interval_minutes'] ?? ($definition['default_interval_minutes'] ?? 30)),
             'next_due_at' => (string) ($row['next_due_at'] ?? $row['next_run_at'] ?? ''),
-            'review_reason' => (string) ($entry['review_reason'] ?? ''),
             'worker_safe' => !empty($entry['worker_safe']),
             'category' => (string) ($entry['category'] ?? 'real_schedulable'),
+            'group' => automation_runtime_job_group($jobKey),
         ];
     }
 
-    usort($jobs, static fn (array $a, array $b): int => strcmp((string) ($a['label'] ?? ''), (string) ($b['label'] ?? '')));
+    usort($jobs, static fn (array $a, array $b): int => strcmp((string) ($a['group'] ?? ''), (string) ($b['group'] ?? '')) ?: strcmp((string) ($a['label'] ?? ''), (string) ($b['label'] ?? '')));
 
     return $jobs;
 }

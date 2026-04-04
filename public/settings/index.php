@@ -2901,30 +2901,39 @@ include __DIR__ . '/../../src/views/partials/header.php';
                         <button type="submit" name="automation_action" value="enable-all-jobs" class="rounded-lg border border-emerald-400/40 bg-emerald-500/10 px-4 py-2 text-sm font-medium text-emerald-100 hover:bg-emerald-500/20">Enable all recurring jobs</button>
                         <button type="submit" name="automation_action" value="disable-all-jobs" class="rounded-lg border border-rose-400/40 bg-rose-500/10 px-4 py-2 text-sm font-medium text-rose-100 hover:bg-rose-500/20">Disable all recurring jobs</button>
                     </div>
-                    <div class="grid gap-3 md:grid-cols-2">
-                        <?php foreach ($automationJobs as $job): ?>
-                            <label class="rounded-lg border border-border bg-black/30 p-3">
-                                <span class="flex items-start justify-between gap-2">
-                                    <span>
-                                        <span class="text-sm text-slate-100"><?= htmlspecialchars((string) ($job['label'] ?? $job['job_key']), ENT_QUOTES) ?></span>
-                                        <span class="mt-1 block text-xs text-muted font-mono"><?= htmlspecialchars((string) ($job['job_key'] ?? ''), ENT_QUOTES) ?></span>
-                                    </span>
-                                    <span class="text-xs <?= !empty($job['enabled']) ? 'text-emerald-200' : 'text-amber-200' ?>"><?= !empty($job['enabled']) ? 'enabled' : 'disabled' ?></span>
-                                </span>
-                                <span class="mt-2 block text-xs text-muted">Every <?= (int) ($job['interval_minutes'] ?? 0) ?> min · next <?= htmlspecialchars((string) (($job['next_due_at'] ?? '') !== '' ? $job['next_due_at'] : 'not scheduled'), ENT_QUOTES) ?></span>
-                                <?php if (trim((string) ($job['review_reason'] ?? '')) !== ''): ?>
-                                    <span class="mt-1 block text-xs text-amber-200"><?= htmlspecialchars((string) ($job['review_reason'] ?? ''), ENT_QUOTES) ?></span>
-                                <?php endif; ?>
-                                <span class="mt-2 flex items-center gap-2 text-xs text-muted">
-                                    <input type="checkbox" name="managed_job_keys[]" value="<?= htmlspecialchars((string) ($job['job_key'] ?? ''), ENT_QUOTES) ?>" class="size-4 rounded border-border bg-black">
-                                    Select
-                                </span>
-                            </label>
-                        <?php endforeach; ?>
-                        <?php if ($automationJobs === []): ?>
-                            <div class="rounded-lg border border-dashed border-border bg-black/20 p-3 text-xs text-muted md:col-span-2">No manageable recurring jobs were discovered.</div>
-                        <?php endif; ?>
-                    </div>
+                    <?php
+                    $jobsByGroup = [];
+                    foreach ($automationJobs as $job) {
+                        $group = (string) ($job['group'] ?? 'Other');
+                        $jobsByGroup[$group][] = $job;
+                    }
+                    ?>
+                    <?php foreach ($jobsByGroup as $groupName => $groupJobs): ?>
+                        <div class="space-y-2">
+                            <p class="text-xs font-semibold uppercase tracking-[0.14em] text-slate-400"><?= htmlspecialchars($groupName, ENT_QUOTES) ?></p>
+                            <div class="grid gap-3 md:grid-cols-2">
+                                <?php foreach ($groupJobs as $job): ?>
+                                    <label class="rounded-lg border border-border bg-black/30 p-3">
+                                        <span class="flex items-start justify-between gap-2">
+                                            <span>
+                                                <span class="text-sm text-slate-100"><?= htmlspecialchars((string) ($job['label'] ?? $job['job_key']), ENT_QUOTES) ?></span>
+                                                <span class="mt-1 block text-xs text-muted font-mono"><?= htmlspecialchars((string) ($job['job_key'] ?? ''), ENT_QUOTES) ?></span>
+                                            </span>
+                                            <span class="text-xs <?= !empty($job['enabled']) ? 'text-emerald-200' : 'text-amber-200' ?>"><?= !empty($job['enabled']) ? 'enabled' : 'disabled' ?></span>
+                                        </span>
+                                        <span class="mt-2 block text-xs text-muted">Every <?= (int) ($job['interval_minutes'] ?? 0) ?> min · next <?= htmlspecialchars((string) (($job['next_due_at'] ?? '') !== '' ? $job['next_due_at'] : 'not scheduled'), ENT_QUOTES) ?></span>
+                                        <span class="mt-2 flex items-center gap-2 text-xs text-muted">
+                                            <input type="checkbox" name="managed_job_keys[]" value="<?= htmlspecialchars((string) ($job['job_key'] ?? ''), ENT_QUOTES) ?>" class="size-4 rounded border-border bg-black">
+                                            Select
+                                        </span>
+                                    </label>
+                                <?php endforeach; ?>
+                            </div>
+                        </div>
+                    <?php endforeach; ?>
+                    <?php if ($automationJobs === []): ?>
+                        <div class="rounded-lg border border-dashed border-border bg-black/20 p-3 text-xs text-muted">No manageable recurring jobs were discovered.</div>
+                    <?php endif; ?>
                     <div class="flex flex-wrap gap-2">
                         <button type="submit" name="automation_action" value="enable-selected-jobs" class="rounded-lg border border-emerald-400/40 bg-emerald-500/10 px-4 py-2 text-sm font-medium text-emerald-100 hover:bg-emerald-500/20">Enable selected jobs</button>
                         <button type="submit" name="automation_action" value="disable-selected-jobs" class="rounded-lg border border-rose-400/40 bg-rose-500/10 px-4 py-2 text-sm font-medium text-rose-100 hover:bg-rose-500/20">Disable selected jobs</button>
@@ -3644,9 +3653,6 @@ include __DIR__ . '/../../src/views/partials/header.php';
                                             <div class="rounded-lg border border-border bg-black/30 p-3">
                                                 <div class="flex items-center justify-between gap-2"><span class="font-medium text-slate-100"><?= htmlspecialchars((string) ($schedule['label'] ?? $schedule['job_key']), ENT_QUOTES) ?></span><span><?= htmlspecialchars((string) (($schedule['registry_category'] ?? '') === 'external_integrated' ? 'external' : 'review-needed'), ENT_QUOTES) ?></span></div>
                                                 <p class="mt-1"><?= htmlspecialchars((string) ($schedule['job_key'] ?? ''), ENT_QUOTES) ?></p>
-                                                <?php if (trim((string) ($schedule['review_reason'] ?? '')) !== ''): ?>
-                                                    <p class="mt-1 text-amber-200"><?= htmlspecialchars((string) ($schedule['review_reason'] ?? ''), ENT_QUOTES) ?></p>
-                                                <?php endif; ?>
                                             </div>
                                         <?php endforeach; ?>
                                     </div>
