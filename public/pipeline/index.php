@@ -98,7 +98,7 @@ $stages = [
         'icon'  => '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" class="h-5 w-5"><path stroke-linecap="round" stroke-linejoin="round" d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2Z"/><path stroke-linecap="round" stroke-linejoin="round" d="M12 6v6l4 2"/></svg>',
         'health' => $stageHealth['intelligence'] ?? ['total_jobs' => 0, 'succeeded' => 0, 'failed' => 0, 'pct' => 0, 'last_success' => null],
         'metrics' => [
-            ['label' => 'Characters scored',  'value' => _po_fmt($kpis['suspicion_scored'])],
+            ['label' => 'Characters scored',  'value' => _po_fmt($kpis['suspicion_scored']) . ($kpis['suspicion_below_threshold'] > 0 ? ' · ' . _po_fmt($kpis['suspicion_below_threshold']) . ' insufficient data' : '')],
             ['label' => 'Scoring coverage',   'value' => $kpis['suspicion_coverage'] . '%'],
             ['label' => 'Alliance dossiers',  'value' => _po_fmt($kpis['dossiers']) . ' / ' . _po_fmt($kpis['alliances_in_battles'])],
             ['label' => 'Dossier coverage',   'value' => $kpis['dossier_coverage'] . '%'],
@@ -266,6 +266,7 @@ $overallPct = $stageCount > 0 ? round($overallPct / $stageCount) : 0;
             [
                 'label'   => 'Suspicion Scoring',
                 'detail'  => _po_fmt($kpis['suspicion_scored']) . ' of ' . _po_fmt($kpis['unique_characters']) . ' characters',
+                'sub'     => $kpis['suspicion_below_threshold'] > 0 ? _po_fmt($kpis['suspicion_below_threshold']) . ' below min-battle threshold' : null,
                 'pct'     => $kpis['suspicion_coverage'],
             ],
             [
@@ -286,6 +287,9 @@ $overallPct = $stageCount > 0 ? round($overallPct / $stageCount) : 0;
                     <div class="h-full rounded-full <?= _po_bar_color($pct) ?>" style="width: <?= $pct ?>%"></div>
                 </div>
                 <p class="mt-1.5 text-[0.65rem] text-slate-500"><?= htmlspecialchars($cc['detail'], ENT_QUOTES) ?></p>
+                <?php if (!empty($cc['sub'])): ?>
+                    <p class="text-[0.6rem] text-slate-600"><?= htmlspecialchars($cc['sub'], ENT_QUOTES) ?></p>
+                <?php endif; ?>
             </div>
         <?php endforeach; ?>
     </div>

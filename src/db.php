@@ -16087,6 +16087,7 @@ function db_battle_intelligence_character(int $characterId): ?array
         return null;
     }
 
+    // Primary: counterintel scores (full-featured pipeline)
     $row = db_select_one(
         'SELECT ccs.character_id, ccs.review_priority_score, ccs.percentile_rank, ccs.confidence_score, ccs.evidence_count, ccs.computed_at,
                 ccf.anomalous_battle_presence_count, ccf.control_battle_presence_count, ccf.anomalous_battle_denominator, ccf.control_battle_denominator, ccf.anomalous_presence_rate, ccf.control_presence_rate,
@@ -16094,7 +16095,8 @@ function db_battle_intelligence_character(int $characterId): ?array
                 ccf.corp_hop_frequency_180d, ccf.short_tenure_ratio_180d, ccf.repeatability_score,
                 coh.source AS org_history_source, coh.current_corporation_id, coh.current_alliance_id, coh.corp_hops_180d, coh.short_tenure_hops_180d,
                 coh.hostile_adjacent_hops_180d, coh.history_json AS org_history_json, coh.fetched_at AS org_history_fetched_at,
-                COALESCE(emc.entity_name, CONCAT("Character #", ccs.character_id)) AS character_name
+                COALESCE(emc.entity_name, CONCAT("Character #", ccs.character_id)) AS character_name,
+                "counterintel" AS data_source
          FROM character_counterintel_scores ccs
          LEFT JOIN character_counterintel_features ccf ON ccf.character_id = ccs.character_id
          LEFT JOIN character_org_history_cache coh ON coh.character_id = ccs.character_id
@@ -16105,6 +16107,65 @@ function db_battle_intelligence_character(int $characterId): ?array
             )
          LEFT JOIN entity_metadata_cache emc ON emc.entity_type = "character" AND emc.entity_id = ccs.character_id
          WHERE ccs.character_id = ?
+         LIMIT 1',
+        [$characterId]
+    );
+
+    if ($row) {
+        return $row;
+    }
+
+    // Fallback: suspicion scores (v2 batch pipeline — fewer features but wider coverage)
+    $row = db_select_one(
+        'SELECT css.character_id, css.suspicion_score AS review_priority_score, css.percentile_rank,
+                0.0 AS confidence_score, css.support_evidence_count AS evidence_count, css.computed_at,
+                0 AS anomalous_battle_presence_count, 0 AS control_battle_presence_count,
+                0 AS anomalous_battle_denominator, 0 AS control_battle_denominator,
+                0.0 AS anomalous_presence_rate, 0.0 AS control_presence_rate,
+                0.0 AS enemy_same_hull_survival_lift,
+                css.high_sustain_frequency AS enemy_sustain_lift,
+                0.0 AS co_presence_anomalous_density, 0.0 AS graph_bridge_score,
+                0.0 AS corp_hop_frequency_180d, 0.0 AS short_tenure_ratio_180d, 0.0 AS repeatability_score,
+                coh.source AS org_history_source, coh.current_corporation_id, coh.current_alliance_id, coh.corp_hops_180d, coh.short_tenure_hops_180d,
+                coh.hostile_adjacent_hops_180d, coh.history_json AS org_history_json, coh.fetched_at AS org_history_fetched_at,
+                COALESCE(emc.entity_name, CONCAT("Character #", css.character_id)) AS character_name,
+                "suspicion_v2" AS data_source
+         FROM character_suspicion_scores css
+         LEFT JOIN character_org_history_cache coh ON coh.character_id = css.character_id
+            AND coh.fetched_at = (
+                SELECT MAX(coh2.fetched_at)
+                FROM character_org_history_cache coh2
+                WHERE coh2.character_id = css.character_id
+            )
+         LEFT JOIN entity_metadata_cache emc ON emc.entity_type = "character" AND emc.entity_id = css.character_id
+         WHERE css.character_id = ?
+         LIMIT 1',
+        [$characterId]
+    );
+
+    if ($row) {
+        return $row;
+    }
+
+    // Minimal fallback: battle intelligence only (character exists in battles but below scoring threshold)
+    $row = db_select_one(
+        'SELECT cbi.character_id, 0.0 AS review_priority_score, 0.0 AS percentile_rank,
+                0.0 AS confidence_score, 0 AS evidence_count, cbi.computed_at,
+                0 AS anomalous_battle_presence_count, 0 AS control_battle_presence_count,
+                0 AS anomalous_battle_denominator, 0 AS control_battle_denominator,
+                0.0 AS anomalous_presence_rate, 0.0 AS control_presence_rate,
+                0.0 AS enemy_same_hull_survival_lift, 0.0 AS enemy_sustain_lift,
+                0.0 AS co_presence_anomalous_density, 0.0 AS graph_bridge_score,
+                0.0 AS corp_hop_frequency_180d, 0.0 AS short_tenure_ratio_180d, 0.0 AS repeatability_score,
+                NULL AS org_history_source, NULL AS current_corporation_id, NULL AS current_alliance_id,
+                NULL AS corp_hops_180d, NULL AS short_tenure_hops_180d, NULL AS hostile_adjacent_hops_180d,
+                NULL AS org_history_json, NULL AS org_history_fetched_at,
+                COALESCE(emc.entity_name, CONCAT("Character #", cbi.character_id)) AS character_name,
+                "below_threshold" AS data_source,
+                cbi.eligible_battle_count, cbi.total_battle_count
+         FROM character_battle_intelligence cbi
+         LEFT JOIN entity_metadata_cache emc ON emc.entity_type = "character" AND emc.entity_id = cbi.character_id
+         WHERE cbi.character_id = ?
          LIMIT 1',
         [$characterId]
     );
@@ -18096,6 +18157,9 @@ function db_pipeline_observatory_data(): array
     $suspicionScoredV2  = (int) (db_select_one("SELECT COUNT(*) AS cnt FROM character_suspicion_scores") ?? [])['cnt'] ?? 0;
     $suspicionScoredCI  = (int) (db_select_one("SELECT COUNT(*) AS cnt FROM character_counterintel_scores") ?? [])['cnt'] ?? 0;
     $suspicionScored    = max($suspicionScoredV2, $suspicionScoredCI);
+    $suspicionBelowThreshold = (int) (db_select_one(
+        "SELECT COUNT(*) AS cnt FROM character_battle_intelligence WHERE eligible_battle_count < 5"
+    ) ?? [])['cnt'] ?? 0;
     $dossiers          = (int) (db_select_one("SELECT COUNT(*) AS cnt FROM alliance_dossiers") ?? [])['cnt'] ?? 0;
     $threatCorridors   = (int) (db_select_one("SELECT COUNT(*) AS cnt FROM threat_corridors") ?? [])['cnt'] ?? 0;
 
@@ -18205,6 +18269,7 @@ function db_pipeline_observatory_data(): array
             'evidence_paths'    => $evidencePaths,
             'suspicion_scored'  => $suspicionScored,
             'suspicion_coverage' => $suspicionCoverage,
+            'suspicion_below_threshold' => $suspicionBelowThreshold,
             'dossiers'          => $dossiers,
             'dossier_coverage'  => $dossierCoverage,
             'alliances_in_battles' => $alliancesInBattles,
