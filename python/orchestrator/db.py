@@ -1118,20 +1118,10 @@ class SupplyCoreDb:
         if token != "":
             return token
 
-        cached = self.fetch_one(
-            """SELECT JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.access_token')) AS access_token
-                FROM esi_cache_entries
-                WHERE namespace_key = 'cache.esi.oauth.token'
-                  AND cache_key = 'latest'
-                  AND (expires_at IS NULL OR expires_at > UTC_TIMESTAMP())
-                ORDER BY updated_at DESC, id DESC
-                LIMIT 1"""
-        ) or {}
-        cached_token = str(cached.get("access_token") or "").strip()
-        if cached_token != "":
-            return cached_token
-
-        # No valid token found — try to refresh using the stored refresh_token.
+        # Primary token expired — go straight to refresh.  The old cache
+        # fallback (esi_cache_entries) is intentionally skipped: after a
+        # re-authentication the cache may still hold a revoked token with a
+        # NULL or stale expires_at, causing persistent 401s from ESI.
         return self._try_refresh_esi_token()
 
     def _try_refresh_esi_token(self) -> str | None:

@@ -290,9 +290,10 @@ def _run_loop(
     shutdown_event: threading.Event,
     pause_between_cycles: float,
     run_once: bool = False,
+    known_external_keys: set[str] | None = None,
 ) -> None:
     """Run the tier-by-tier loop continuously (or once)."""
-    graph_nodes = build_graph(definitions)
+    graph_nodes = build_graph(definitions, known_external_keys=known_external_keys)
     tiers, _tier_map = _topological_tiers(graph_nodes)
     cycle = 0
 
@@ -469,11 +470,18 @@ def main(argv: list[str] | None = None) -> int:
 
     threads: list[threading.Thread] = []
 
+    # Each loop needs to know about the other loop's job keys so that
+    # cross-loop dependencies are silently stripped instead of logged as
+    # "unknown jobs" warnings.
+    fast_keys = set(fast_defs.keys())
+    bg_keys = set(bg_defs.keys())
+
     if not args.background_only and fast_defs:
         fast_thread = threading.Thread(
             target=_run_loop,
             args=("fast", fast_defs, db, raw_config, logger,
                   args.max_parallel, shutdown_event, args.fast_pause, args.once),
+            kwargs={"known_external_keys": bg_keys},
             name="fast-loop",
             daemon=True,
         )
@@ -484,6 +492,7 @@ def main(argv: list[str] | None = None) -> int:
             target=_run_loop,
             args=("background", bg_defs, db, raw_config, logger,
                   args.max_parallel, shutdown_event, args.background_pause, args.once),
+            kwargs={"known_external_keys": fast_keys},
             name="background-loop",
             daemon=True,
         )
