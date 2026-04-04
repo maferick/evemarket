@@ -109,13 +109,18 @@ def _detect_triangles(client: Neo4jClient) -> list[dict[str, Any]]:
 def _detect_stars(client: Neo4jClient) -> list[dict[str, Any]]:
     """Detect star motifs: 1 hub connected to 4+ others who don't connect to each other.
 
-    Uses UNWIND + OPTIONAL MATCH instead of a nested list comprehension with
-    pattern matching, which avoids the O(n^2) per-hub cost that caused timeouts.
+    Uses directed CO_OCCURS_WITH (always low->high character_id) to halve
+    intermediate results.  Caps leaf collection at 30 per hub to bound the
+    UNWIND fan-out, and uses OPTIONAL MATCH + count instead of nested list
+    comprehension pattern matching.
     """
     return client.query(
         """
-        MATCH (hub:Character)-[:CO_OCCURS_WITH]-(leaf:Character)
-        WITH hub, collect(leaf) AS leaves
+        MATCH (hub:Character)-[:CO_OCCURS_WITH]->(out:Character)
+        WITH hub, collect(out) AS out_leaves
+        OPTIONAL MATCH (in_leaf:Character)-[:CO_OCCURS_WITH]->(hub)
+        WITH hub, out_leaves + collect(in_leaf) AS all_leaves
+        WITH hub, all_leaves[..30] AS leaves
         WHERE size(leaves) >= 4
         UNWIND leaves AS l1
         OPTIONAL MATCH (l1)-[ie:CO_OCCURS_WITH]-(l2)
@@ -138,18 +143,21 @@ def _detect_stars(client: Neo4jClient) -> list[dict[str, Any]]:
 
 
 def _detect_chains(client: Neo4jClient) -> list[dict[str, Any]]:
-    """Detect chain motifs: A→B→C→D with no shortcuts (intelligence relay pattern)."""
+    """Detect chain motifs: A→B→C→D with no shortcuts (intelligence relay pattern).
+
+    Uses directed CO_OCCURS_WITH edges (low→high character_id) to halve
+    intermediate results vs undirected matching.  The NOT EXISTS filters
+    verify no shortcut edges exist between non-adjacent chain members.
+    """
     return client.query(
         """
-        MATCH (a:Character)-[:CO_OCCURS_WITH]-(b:Character)-[:CO_OCCURS_WITH]-(c:Character)-[:CO_OCCURS_WITH]-(d:Character)
-        WHERE a.character_id <> d.character_id
-          AND a.character_id <> c.character_id
-          AND b.character_id <> d.character_id
-          AND NOT (a)-[:CO_OCCURS_WITH]-(c)
-          AND NOT (a)-[:CO_OCCURS_WITH]-(d)
-          AND NOT (b)-[:CO_OCCURS_WITH]-(d)
-          AND a.character_id < d.character_id
-        WITH a, b, c, d
+        MATCH (a:Character)-[:CO_OCCURS_WITH]->(b:Character)-[:CO_OCCURS_WITH]->(c:Character)-[:CO_OCCURS_WITH]->(d:Character)
+        WHERE a.character_id < b.character_id
+          AND b.character_id < c.character_id
+          AND c.character_id < d.character_id
+          AND NOT EXISTS { (a)-[:CO_OCCURS_WITH]->(c) }
+          AND NOT EXISTS { (a)-[:CO_OCCURS_WITH]->(d) }
+          AND NOT EXISTS { (b)-[:CO_OCCURS_WITH]->(d) }
         RETURN
             'chain' AS motif_type,
             [a.character_id, b.character_id, c.character_id, d.character_id] AS member_ids,
@@ -160,7 +168,8 @@ def _detect_chains(client: Neo4jClient) -> list[dict[str, Any]]:
                  COALESCE(c.suspicion_score, 0) + COALESCE(d.suspicion_score, 0)) / 4.0
             ) AS suspicion_relevance
         LIMIT 300
-        """
+        """,
+        timeout_seconds=30,
     )
 
 
@@ -186,7 +195,8 @@ def _detect_fleet_cores(client: Neo4jClient) -> list[dict[str, Any]]:
             1 AS occurrence_count,
             toFloat(avg_suspicion) AS suspicion_relevance
         LIMIT 200
-        """
+        """,
+        timeout_seconds=30,
     )
 
 
@@ -204,7 +214,8 @@ def _detect_rotating_scouts(client: Neo4jClient) -> list[dict[str, Any]]:
             toFloat(COALESCE(c.suspicion_score, 0) * 1.5) AS suspicion_relevance
         ORDER BY cr.side_transition_count DESC
         LIMIT 200
-        """
+        """,
+        timeout_seconds=15,
     )
 
 
