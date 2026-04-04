@@ -208,6 +208,37 @@ if ($viewSnapshot !== null && !$pendingLock) {
             'pilots' => (int) ($a['participant_count'] ?? 0),
         ];
     }
+    // Fold structure kills into side panels (structures have no pilot so they
+    // are excluded from the character ledger; add their ISK as losses on the
+    // victim side and as kills on the opposing side(s)).
+    $activeSides = array_keys(array_filter($sidePanels, static fn(array $p): bool => ($p['pilots'] ?? 0) > 0));
+    foreach ($structureKills as $sk) {
+        $skSide = (string) ($sk['side'] ?? '');
+        $skIsk = (float) ($sk['isk_lost'] ?? 0);
+        if ($skIsk <= 0 || !isset($sidePanels[$skSide])) continue;
+
+        // Add loss to victim side
+        $sidePanels[$skSide]['isk_lost'] += $skIsk;
+        $sidePanels[$skSide]['losses'] += 1;
+
+        // Credit kill ISK to opposing side(s)
+        $oppSides = array_filter($activeSides, static fn(string $s): bool => $s !== $skSide);
+        if (count($oppSides) === 1) {
+            $opp = reset($oppSides);
+            $sidePanels[$opp]['isk_killed'] += $skIsk;
+            $sidePanels[$opp]['kills'] += 1;
+        } elseif (count($oppSides) > 1) {
+            // Split evenly among opposing sides (rare 3-way case)
+            $share = $skIsk / count($oppSides);
+            foreach ($oppSides as $opp) {
+                $sidePanels[$opp]['isk_killed'] += $share;
+            }
+            // Credit kill count to first opposing side only to avoid double-counting
+            $sidePanels[reset($oppSides)]['kills'] += 1;
+        }
+    }
+    unset($activeSides, $sk, $skSide, $skIsk, $oppSides, $opp, $share);
+
     foreach (['friendly', 'opponent', 'third_party'] as $_side) {
         $total = $sidePanels[$_side]['isk_killed'] + $sidePanels[$_side]['isk_lost'];
         $sidePanels[$_side]['efficiency'] = $total > 0
