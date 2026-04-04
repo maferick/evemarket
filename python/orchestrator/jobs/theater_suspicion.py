@@ -173,31 +173,37 @@ def run_theater_suspicion(
             scored_count = 0
 
             if not dry_run:
+                # Pre-compute all update tuples and stats in one pass
+                update_batch: list[tuple[Any, ...]] = []
+                for p in participants:
+                    cid = int(p["character_id"])
+                    aid = int(p.get("alliance_id") or 0)
+                    score = suspicion_map.get(cid)
+                    is_suspicious = 1 if (score is not None and score >= SUSPICION_THRESHOLD) else 0
+
+                    if score is not None:
+                        scored_count += 1
+                        total_score += score
+                        max_score = max(max_score, score)
+                        if is_suspicious:
+                            suspicious_count += 1
+                            if aid in tracked_alliances:
+                                tracked_suspicious_count += 1
+
+                    update_batch.append((score, is_suspicious, theater_id, cid))
+
                 with db.transaction_with_retry() as (_, cursor):
-                    for p in participants:
-                        cid = int(p["character_id"])
-                        aid = int(p.get("alliance_id") or 0)
-                        score = suspicion_map.get(cid)
-                        is_suspicious = 1 if (score is not None and score >= SUSPICION_THRESHOLD) else 0
-
-                        if score is not None:
-                            scored_count += 1
-                            total_score += score
-                            max_score = max(max_score, score)
-                            if is_suspicious:
-                                suspicious_count += 1
-                                if aid in tracked_alliances:
-                                    tracked_suspicious_count += 1
-
-                        cursor.execute(
+                    # Batch UPDATE all participants at once
+                    if update_batch:
+                        cursor.executemany(
                             """
                             UPDATE theater_participants
                             SET suspicion_score = %s, is_suspicious = %s
                             WHERE theater_id = %s AND character_id = %s
                             """,
-                            (score, is_suspicious, theater_id, cid),
+                            update_batch,
                         )
-                        rows_written += max(0, int(cursor.rowcount or 0))
+                        rows_written += len(update_batch)
 
                     # Upsert theater_suspicion_summary
                     avg_score = (total_score / scored_count) if scored_count > 0 else 0.0
