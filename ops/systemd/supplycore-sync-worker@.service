@@ -15,7 +15,7 @@ Restart=always
 RestartSec=5
 KillSignal=SIGTERM
 TimeoutStopSec=90
-MemoryMax=768M
+MemoryMax=2G
 StandardOutput=append:/var/www/SupplyCore/storage/logs/worker.log
 StandardError=append:/var/www/SupplyCore/storage/logs/worker.log
 
