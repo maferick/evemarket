@@ -130,6 +130,131 @@ function supplycore_perf_track_repeated_pattern(string $name, string $pattern): 
 
 supplycore_request_perf_init();
 
+function supplycore_perf_debug_enabled(): bool
+{
+    return isset($_GET['debug']) && $_GET['debug'] === 'perf';
+}
+
+function supplycore_perf_debug_footer(): string
+{
+    if (!supplycore_perf_debug_enabled()) {
+        return '';
+    }
+
+    $metrics = supplycore_request_perf_ref();
+    $startedAt = (float) ($metrics['started_at'] ?? microtime(true));
+    $totalMs = (microtime(true) - $startedAt) * 1000.0;
+    $peakMemMb = memory_get_peak_usage(true) / 1048576;
+
+    $db = function_exists('db_performance_snapshot') ? db_performance_snapshot() : [];
+    $queryCount = (int) ($db['query_count'] ?? 0);
+    $queryTimeMs = (float) ($db['query_time_ms'] ?? 0.0);
+    $topQueries = (array) ($db['top_queries'] ?? []);
+    $dbCalls = (array) ($db['calls'] ?? []);
+
+    $functionSummaries = [];
+    foreach ((array) ($metrics['functions'] ?? []) as $name => $entry) {
+        $functionSummaries[] = [
+            'name' => $name,
+            'count' => (int) ($entry['count'] ?? 0),
+            'total_ms' => round((float) ($entry['total_ms'] ?? 0.0), 2),
+        ];
+    }
+    usort($functionSummaries, static fn(array $a, array $b): int => (int) (($b['total_ms'] * 1000) - ($a['total_ms'] * 1000)));
+
+    $overheadMs = $totalMs - $queryTimeMs;
+    foreach ($functionSummaries as $fn) {
+        // Don't double-subtract — function time includes query time
+    }
+
+    $uri = (string) ($_SERVER['REQUEST_URI'] ?? '/');
+    $path = (string) (parse_url($uri, PHP_URL_PATH) ?: '/');
+
+    // Format a duration with color coding
+    $fmtMs = static function (float $ms): string {
+        $val = number_format($ms, 1);
+        if ($ms > 1000) return '<span class="text-rose-300 font-semibold">' . $val . ' ms</span>';
+        if ($ms > 200) return '<span class="text-amber-300">' . $val . ' ms</span>';
+        return '<span class="text-emerald-300">' . $val . ' ms</span>';
+    };
+
+    $html = '';
+    $html .= '<div id="perf-debug-panel" class="mt-6 rounded-2xl border border-amber-400/20 bg-amber-500/5 px-5 py-4 text-xs font-mono text-slate-300">';
+    $html .= '<div class="flex items-center justify-between gap-4 cursor-pointer select-none" onclick="document.getElementById(\'perf-debug-detail\').classList.toggle(\'hidden\')">';
+    $html .= '<div class="flex flex-wrap items-center gap-x-5 gap-y-1">';
+    $html .= '<span class="text-[0.65rem] font-semibold uppercase tracking-[0.2em] text-amber-200/80">Perf Debug</span>';
+    $html .= '<span>Total: ' . $fmtMs($totalMs) . '</span>';
+    $html .= '<span>DB: ' . $fmtMs($queryTimeMs) . ' (' . $queryCount . ' queries)</span>';
+    $html .= '<span>PHP: ' . $fmtMs($totalMs - $queryTimeMs) . '</span>';
+    $html .= '<span>Mem: ' . number_format($peakMemMb, 1) . ' MB</span>';
+    $html .= '</div>';
+    $html .= '<span class="text-amber-200/50 text-[10px]">click to expand</span>';
+    $html .= '</div>';
+
+    // Expandable detail section
+    $html .= '<div id="perf-debug-detail" class="hidden mt-4 space-y-4">';
+
+    // --- Function timings ---
+    if ($functionSummaries !== []) {
+        $html .= '<div>';
+        $html .= '<p class="text-[0.6rem] font-semibold uppercase tracking-[0.2em] text-slate-400 mb-2">Function timings (slowest first)</p>';
+        $html .= '<table class="w-full text-left"><thead><tr class="text-slate-500"><th class="pr-4 pb-1">Function</th><th class="pr-4 pb-1 text-right">Calls</th><th class="pb-1 text-right">Time</th></tr></thead><tbody>';
+        foreach (array_slice($functionSummaries, 0, 20) as $fn) {
+            $html .= '<tr class="border-t border-white/5">';
+            $html .= '<td class="pr-4 py-0.5 text-slate-200 truncate max-w-xs">' . htmlspecialchars($fn['name'], ENT_QUOTES) . '</td>';
+            $html .= '<td class="pr-4 py-0.5 text-right text-slate-400">' . $fn['count'] . '</td>';
+            $html .= '<td class="py-0.5 text-right">' . $fmtMs($fn['total_ms']) . '</td>';
+            $html .= '</tr>';
+        }
+        $html .= '</tbody></table>';
+        $html .= '</div>';
+    }
+
+    // --- Top DB queries ---
+    if ($topQueries !== []) {
+        $html .= '<div>';
+        $html .= '<p class="text-[0.6rem] font-semibold uppercase tracking-[0.2em] text-slate-400 mb-2">Top DB queries</p>';
+        $html .= '<table class="w-full text-left"><thead><tr class="text-slate-500"><th class="pr-4 pb-1">Query</th><th class="pr-4 pb-1 text-right">Runs</th><th class="pb-1 text-right">Time</th></tr></thead><tbody>';
+        foreach (array_slice($topQueries, 0, 10) as $q) {
+            $html .= '<tr class="border-t border-white/5">';
+            $html .= '<td class="pr-4 py-0.5 text-slate-200 truncate max-w-md text-[11px]">' . htmlspecialchars((string) ($q['sql_preview'] ?? ''), ENT_QUOTES) . '</td>';
+            $html .= '<td class="pr-4 py-0.5 text-right text-slate-400">' . (int) ($q['count'] ?? 0) . '</td>';
+            $html .= '<td class="py-0.5 text-right">' . $fmtMs((float) ($q['total_ms'] ?? 0.0)) . '</td>';
+            $html .= '</tr>';
+        }
+        $html .= '</tbody></table>';
+        $html .= '</div>';
+    }
+
+    // --- DB helper calls ---
+    if ($dbCalls !== []) {
+        $html .= '<div>';
+        $html .= '<p class="text-[0.6rem] font-semibold uppercase tracking-[0.2em] text-slate-400 mb-2">DB helper calls</p>';
+        $html .= '<table class="w-full text-left"><thead><tr class="text-slate-500"><th class="pr-4 pb-1">Call</th><th class="pr-4 pb-1 text-right">Count</th><th class="pb-1 text-right">Time</th></tr></thead><tbody>';
+        foreach ($dbCalls as $callName => $callStats) {
+            $html .= '<tr class="border-t border-white/5">';
+            $html .= '<td class="pr-4 py-0.5 text-slate-200">' . htmlspecialchars((string) $callName, ENT_QUOTES) . '</td>';
+            $html .= '<td class="pr-4 py-0.5 text-right text-slate-400">' . (int) ($callStats['count'] ?? 0) . '</td>';
+            $html .= '<td class="py-0.5 text-right">' . $fmtMs((float) ($callStats['total_ms'] ?? 0.0)) . '</td>';
+            $html .= '</tr>';
+        }
+        $html .= '</tbody></table>';
+        $html .= '</div>';
+    }
+
+    // --- Request info ---
+    $html .= '<div class="text-slate-500 pt-2 border-t border-white/5">';
+    $html .= 'Path: ' . htmlspecialchars($path, ENT_QUOTES);
+    $html .= ' · PHP ' . PHP_VERSION;
+    $html .= ' · ' . date('H:i:s');
+    $html .= '</div>';
+
+    $html .= '</div>'; // end detail
+    $html .= '</div>'; // end panel
+
+    return $html;
+}
+
 function app_name(): string
 {
     $configured = trim((string) get_setting('app_name', config('app.name', 'SupplyCore')));
