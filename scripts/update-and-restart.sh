@@ -499,6 +499,18 @@ if [[ ${CLEAR_CACHE} -eq 1 ]]; then
   run_cmd rm -rf "${APP_ROOT}/storage/cache/"*
 fi
 
+# ------- Storage permissions -------
+fix_storage_permissions() {
+  local storage_dir="${APP_ROOT}/storage"
+  if [[ ! -d "${storage_dir}" ]]; then
+    log "No storage directory found at ${storage_dir}; skipping permission fix."
+    return 0
+  fi
+  log "Fixing storage ownership (www-data:www-data)"
+  run_cmd chown -R www-data:www-data "${storage_dir}"
+}
+fix_storage_permissions
+
 # ------- Sync systemd units -------
 if [[ ${SYNC_UNITS} -eq 1 ]]; then
   sync_systemd_units
