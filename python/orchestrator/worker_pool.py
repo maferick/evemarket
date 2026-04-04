@@ -416,7 +416,21 @@ def main(argv: list[str] | None = None) -> int:
             reaped = db.reap_stale_running_jobs()
             if reaped > 0:
                 logger.info("reaped stale running jobs", payload={"event": "worker_pool.reaped_stale", "worker_id": worker_id, "reaped": reaped})
-            seed_result = db.queue_due_recurring_jobs(WORKER_JOB_DEFINITIONS)
+
+            # ── Scope job definitions to this worker's queues ─────────
+            # Each worker instance (sync vs compute) must only queue and
+            # schedule jobs it can actually claim.  Previously every worker
+            # queued ALL definitions, leaving cross-queue jobs permanently
+            # stuck in 'queued' status.  The DAG scheduler then saw those
+            # unclearable jobs as unsatisfied dependencies, blocking the
+            # downstream jobs this worker *could* run.
+            scoped_definitions = {
+                key: defn for key, defn in WORKER_JOB_DEFINITIONS.items()
+                if (str(defn.get("queue_name") or "default") in queue_names
+                    and str(defn.get("workload_class") or "sync") in workload_classes)
+            }
+
+            seed_result = db.queue_due_recurring_jobs(scoped_definitions)
 
             # ── DAG-aware dispatch ────────────────────────────────────
             # 1. Gather current state from the database.
@@ -424,10 +438,20 @@ def main(argv: list[str] | None = None) -> int:
             completed_keys = db.get_recently_completed_job_keys(within_seconds=7200)
             queued_keys = db.get_queued_job_keys()
 
+            # Only consider queued jobs that this worker can claim for the
+            # DAG plan.  Jobs from other queues may sit in 'queued' status
+            # but should not block dependency resolution for our jobs.
+            claimable_queued_keys = {
+                k for k in queued_keys if k in scoped_definitions
+            }
+
             # 2. Compute the scheduling plan — which jobs are ready?
+            #    Use the full registry for graph building (so cross-queue
+            #    dependencies are known) but only treat our claimable jobs
+            #    as "due" for dispatch decisions.
             plan = compute_scheduling_plan(
                 definitions=WORKER_JOB_DEFINITIONS,
-                due_job_keys=queued_keys,
+                due_job_keys=claimable_queued_keys,
                 completed_job_keys=completed_keys,
                 running_job_keys=running_keys,
             )
