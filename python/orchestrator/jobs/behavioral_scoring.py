@@ -2,9 +2,10 @@
 
 Engagement tiers
 ----------------
-  Solo / gank   1–4  participants  → behavioral signals only
-  Small gang    5–9  participants  → behavioral signals + light statistical context
-  Full battle   10+  participants  → covered by Lane 1 (counterintel / suspicion pipeline)
+  Solo / gank   1–4   participants  → behavioral signals only
+  Small gang    5–19  participants  → behavioral signals + light statistical context
+  Full battle   20+   participants  → covered by Lane 1 (counterintel / suspicion pipeline)
+                                      matches MIN_ELIGIBLE_PARTICIPANTS in battle_intelligence.py
 
 For each character we compute 8 behavioral signals from solo/gang activity and
 store them separately from Lane 1 scores.  A blended headline is produced by
@@ -28,9 +29,9 @@ from ..job_utils import finish_job_run, start_job_run
 
 
 # ── Engagement tier thresholds ────────────────────────────────────────────────
-TIER_SOLO_MAX = 4      # 1–4  participants: behavioral only
-TIER_GANG_MAX = 9      # 5–9  participants: behavioral + light statistical
-TIER_BATTLE_MIN = 10   # 10+  participants: full Lane 1 battle model
+TIER_SOLO_MAX = 4      # 1–4   participants: behavioral only
+TIER_GANG_MAX = 19     # 5–19  participants: behavioral + light statistical
+TIER_BATTLE_MIN = 20   # 20+   participants: full Lane 1 battle model (matches MIN_ELIGIBLE_PARTICIPANTS)
 
 # Minimum kill participations to produce a score.
 MIN_KILL_PARTICIPATIONS = 3
