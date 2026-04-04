@@ -307,7 +307,7 @@ $overallPct = $stageCount > 0 ? round($overallPct / $stageCount) : 0;
      ══════════════════════════════════════════════════════════════════════════ -->
 <section class="mt-8 rounded-2xl border border-white/8 bg-gradient-to-br from-slate-900/80 via-slate-950/90 to-slate-900/80 px-6 py-5 shadow-[0_2px_24px_rgba(0,0,0,0.25)]">
     <h2 class="text-sm font-semibold uppercase tracking-wider text-slate-400">Recent Activity</h2>
-    <p class="mt-1 text-xs text-slate-500">Last 15 completed pipeline jobs.</p>
+    <p class="mt-1 text-xs text-slate-500">Last 50 completed pipeline jobs.</p>
 
     <?php if ($recentRuns === []): ?>
         <p class="mt-4 text-sm text-slate-500">No recent job runs recorded.</p>

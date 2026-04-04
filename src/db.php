@@ -18393,13 +18393,13 @@ function db_pipeline_observatory_data(): array
     }
     $jobHealth['total'] = array_sum($jobHealth);
 
-    // ── Recent job activity (last 15 completions) ────────────────────────────
+    // ── Recent job activity (last 50 completions) ────────────────────────────
     $recentRuns = db_select(
         "SELECT job_name, status, duration_ms, rows_processed, rows_written, started_at, finished_at
          FROM job_runs
          WHERE status IN ('success', 'failed', 'skipped')
          ORDER BY finished_at DESC
-         LIMIT 15"
+         LIMIT 50"
     );
 
     // ── Per-stage last-run timestamps ────────────────────────────────────────
