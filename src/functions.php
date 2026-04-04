@@ -24831,6 +24831,7 @@ function supplycore_live_refresh_page_registry(): array
             'version_keys' => ['log_viewer_version'],
             'sections' => [
                 'log-viewer-kpi' => ['version_keys' => ['log_viewer_version']],
+                'log-viewer-backlog' => ['version_keys' => ['log_viewer_version']],
                 'log-viewer-jobs' => ['version_keys' => ['log_viewer_version']],
                 'log-viewer-runs' => ['version_keys' => ['log_viewer_version']],
             ],

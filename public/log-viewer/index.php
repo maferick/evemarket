@@ -147,7 +147,6 @@ $attentionCount = $kpi['total_failed'] + $kpi['total_timeout'] + $kpi['total_ove
     </div>
     <?php endif; ?>
 </section>
-<!-- ui-section:log-viewer-backlog:end -->
 
 <!-- ═══════════════════════════════════════════════════════════════════════════
      External Services — compact inline cards
@@ -248,6 +247,7 @@ $attentionCount = $kpi['total_failed'] + $kpi['total_timeout'] + $kpi['total_ove
     </div>
 </section>
 <?php endif; ?>
+<!-- ui-section:log-viewer-backlog:end -->
 
 <!-- ═══════════════════════════════════════════════════════════════════════════
      Job Status Table
