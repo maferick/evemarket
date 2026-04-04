@@ -565,6 +565,7 @@ def main(argv: list[str] | None = None) -> int:
             logger.info("worker job completed", payload=completed_payload)
             job_log.write_event("worker_pool.job_completed", completed_payload)
             _finalize_job(db, context.job_key, result, logger)
+            db.advance_next_due_at_by_interval(context.job_key)
         except Exception as error:  # noqa: BLE001
             fail_result = JobResult.failed(
                 job_key=context.job_key,
@@ -576,6 +577,7 @@ def main(argv: list[str] | None = None) -> int:
             logger.warning("worker job failed", payload=failed_payload)
             job_log.write_event("worker_pool.job_failed", failed_payload)
             _finalize_job(db, context.job_key, fail_result, logger)
+            db.advance_next_due_at_by_interval(context.job_key)
             if args.once:
                 return 1
         finally:
