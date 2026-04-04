@@ -13,16 +13,37 @@ from ..json_utils import json_dumps_safe
 from ..neo4j import Neo4jClient, Neo4jConfig, Neo4jError
 
 
+_TRIANGLE_BATCH_SIZE = 200
+_TRIANGLE_LIMIT = 500
+
+
 def _detect_triangles(client: Neo4jClient) -> list[dict[str, Any]]:
-    """Detect triangle motifs: 3 characters mutually co-occurring."""
+    """Detect triangle motifs: 3 characters mutually co-occurring.
+
+    Batches the query by character_id ranges to stay within Neo4j's
+    transaction memory budget.
+    """
+    # Get character_id boundaries for nodes that have outgoing CO_OCCURS_WITH.
+    bounds = client.query(
+        """
+        MATCH (a:Character)-[:CO_OCCURS_WITH]->()
+        RETURN min(a.character_id) AS lo, max(a.character_id) AS hi
+        """,
+        timeout_seconds=15,
+    )
+    if not bounds or bounds[0].get("lo") is None:
+        return []
+
+    lo, hi = int(bounds[0]["lo"]), int(bounds[0]["hi"])
+
     # CO_OCCURS_WITH edges are always directed from lower character_id to
     # higher, so we use directed patterns to avoid the combinatorial explosion
     # of undirected cycle matching.  The third edge (a)->(c) is checked as a
     # WHERE-EXISTS filter, which Neo4j can evaluate cheaply.
-    return client.query(
-        """
+    query = """
         MATCH (a:Character)-[:CO_OCCURS_WITH]->(b:Character)-[:CO_OCCURS_WITH]->(c:Character)
-        WHERE a.character_id < b.character_id
+        WHERE a.character_id >= $lo AND a.character_id < $hi
+          AND a.character_id < b.character_id
           AND b.character_id < c.character_id
           AND EXISTS { (a)-[:CO_OCCURS_WITH]->(c) }
         WITH a, b, c
@@ -36,10 +57,22 @@ def _detect_triangles(client: Neo4jClient) -> list[dict[str, Any]]:
             toFloat(
                 (COALESCE(a.suspicion_score, 0) + COALESCE(b.suspicion_score, 0) + COALESCE(c.suspicion_score, 0)) / 3.0
             ) AS suspicion_relevance
-        LIMIT 500
-        """,
-        timeout_seconds=60,
-    )
+        LIMIT $batch_limit
+    """
+
+    all_results: list[dict[str, Any]] = []
+    cursor = lo
+    while cursor <= hi and len(all_results) < _TRIANGLE_LIMIT:
+        remaining = _TRIANGLE_LIMIT - len(all_results)
+        rows = client.query(
+            query,
+            parameters={"lo": cursor, "hi": cursor + _TRIANGLE_BATCH_SIZE, "batch_limit": remaining},
+            timeout_seconds=60,
+        )
+        all_results.extend(rows)
+        cursor += _TRIANGLE_BATCH_SIZE
+
+    return all_results[:_TRIANGLE_LIMIT]
 
 
 def _detect_stars(client: Neo4jClient) -> list[dict[str, Any]]:
