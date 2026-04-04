@@ -1023,6 +1023,30 @@ def _queue_enrichment(db: SupplyCoreDb, actor_rows: list[dict[str, Any]]) -> Non
         )
 
 
+def _queue_enrichment_from_priorities(db: SupplyCoreDb, char_priority: dict[int, float]) -> None:
+    """Queue enrichment from a pre-built character_id -> visibility mapping."""
+    if not char_priority:
+        return
+
+    BATCH = 500
+    items = list(char_priority.items())
+    for offset in range(0, len(items), BATCH):
+        chunk = items[offset:offset + BATCH]
+        placeholders = ",".join(["(%s, 'pending', %s, UTC_TIMESTAMP())"] * len(chunk))
+        params: list[int | float] = []
+        for cid, priority in chunk:
+            params.extend([cid, round(priority, 4)])
+        db.execute(
+            f"""
+            INSERT INTO enrichment_queue (character_id, status, priority, queued_at)
+            VALUES {placeholders}
+            ON DUPLICATE KEY UPDATE
+                priority = GREATEST(priority, VALUES(priority))
+            """,
+            tuple(params),
+        )
+
+
 def run_compute_battle_actor_features(
     db: SupplyCoreDb,
     neo4j_raw: dict[str, Any] | None = None,
@@ -1037,8 +1061,22 @@ def run_compute_battle_actor_features(
     computed_at = _now_sql()
     _battle_log(runtime, "battle_intelligence.job.started", {"job_name": "compute_battle_actor_features", "dry_run": dry_run, "computed_at": computed_at})
     try:
-        rows = db.fetch_all(
+        # Pre-compute max participation per battle in SQL to avoid loading all rows into memory at once.
+        max_participation: dict[str, int] = {}
+        for batch in db.iterate_batches(
             """
+            SELECT bp.battle_id, MAX(bp.participation_count) AS max_part
+            FROM battle_participants bp
+            INNER JOIN battle_rollups br ON br.battle_id = bp.battle_id
+            WHERE br.eligible_for_suspicion = 1
+            GROUP BY bp.battle_id
+            """,
+            batch_size=5000,
+        ):
+            for row in batch:
+                max_participation[str(row.get("battle_id") or "")] = int(row.get("max_part") or 0)
+
+        _ACTOR_SQL = """
             SELECT
                 bp.battle_id,
                 bp.character_id,
@@ -1052,53 +1090,63 @@ def run_compute_battle_actor_features(
             INNER JOIN battle_rollups br ON br.battle_id = bp.battle_id
             LEFT JOIN battle_anomalies ba ON ba.battle_id = bp.battle_id AND ba.side_key = bp.side_key
             WHERE br.eligible_for_suspicion = 1
-            """
-        )
-        rows_processed = len(rows)
+        """
 
-        max_participation: dict[str, int] = defaultdict(int)
-        for row in rows:
-            battle_id = str(row.get("battle_id") or "")
-            max_participation[battle_id] = max(max_participation[battle_id], int(row.get("participation_count") or 0))
+        # Track character priorities for enrichment (character_id -> max visibility).
+        enrichment_priorities: dict[int, float] = {}
 
         if not dry_run:
             with db.transaction() as (_, cursor):
                 cursor.execute("DELETE FROM battle_actor_features")
-                for row in rows:
+
+            for batch in db.iterate_batches(_ACTOR_SQL, batch_size=5000):
+                rows_processed += len(batch)
+                insert_batch: list[tuple[Any, ...]] = []
+                for row in batch:
                     battle_id = str(row.get("battle_id") or "")
+                    character_id = int(row.get("character_id") or 0)
                     participation_count = int(row.get("participation_count") or 0)
                     centrality = _safe_div(float(participation_count), float(max_participation.get(battle_id) or 1), 0.0)
                     role_weight = 0.2 * int(row.get("is_logi") or 0) + 0.2 * int(row.get("is_command") or 0) + 0.3 * int(row.get("is_capital") or 0)
                     visibility = min(1.0, centrality + role_weight)
                     anomaly_class = str(row.get("anomaly_class") or "normal")
-                    cursor.execute(
-                        """
-                        INSERT INTO battle_actor_features (
-                            battle_id, character_id, side_key, participation_count, centrality_score, visibility_score,
-                            is_logi, is_command, is_capital, participated_in_high_sustain, participated_in_low_sustain, computed_at
-                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                        """,
-                        (
-                            battle_id,
-                            int(row.get("character_id") or 0),
-                            str(row.get("side_key") or "unknown"),
-                            participation_count,
-                            float(centrality),
-                            float(visibility),
-                            int(row.get("is_logi") or 0),
-                            int(row.get("is_command") or 0),
-                            int(row.get("is_capital") or 0),
-                            1 if anomaly_class == "high_sustain" else 0,
-                            1 if anomaly_class == "low_sustain" else 0,
-                            computed_at,
-                        ),
-                    )
-        rows_written = len(rows)
+                    insert_batch.append((
+                        battle_id,
+                        character_id,
+                        str(row.get("side_key") or "unknown"),
+                        participation_count,
+                        float(centrality),
+                        float(visibility),
+                        int(row.get("is_logi") or 0),
+                        int(row.get("is_command") or 0),
+                        int(row.get("is_capital") or 0),
+                        1 if anomaly_class == "high_sustain" else 0,
+                        1 if anomaly_class == "low_sustain" else 0,
+                        computed_at,
+                    ))
+                    if character_id > 0:
+                        if character_id not in enrichment_priorities or visibility > enrichment_priorities[character_id]:
+                            enrichment_priorities[character_id] = visibility
+                if insert_batch:
+                    with db.transaction() as (_, cursor):
+                        cursor.executemany(
+                            """
+                            INSERT INTO battle_actor_features (
+                                battle_id, character_id, side_key, participation_count, centrality_score, visibility_score,
+                                is_logi, is_command, is_capital, participated_in_high_sustain, participated_in_low_sustain, computed_at
+                            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                            """,
+                            insert_batch,
+                        )
+        else:
+            for batch in db.iterate_batches(_ACTOR_SQL, batch_size=5000):
+                rows_processed += len(batch)
+        rows_written = rows_processed
 
         # Queue all battle participants for EveWho/ESI enrichment so that
         # cross-alliance history is populated before users view theater pages.
-        if not dry_run and rows:
-            _queue_enrichment(db, rows)
+        if not dry_run and enrichment_priorities:
+            _queue_enrichment_from_priorities(db, enrichment_priorities)
 
         neo_result = {"status": "skipped", "reason": "dry-run"} if dry_run else _neo4j_sync_participation(db, neo4j_raw)
         finish_job_run(
@@ -1144,8 +1192,7 @@ def run_compute_suspicion_scores(db: SupplyCoreDb, runtime: dict[str, Any] | Non
     computed_at = _now_sql()
     _battle_log(runtime, "battle_intelligence.job.started", {"job_name": "compute_suspicion_scores", "dry_run": dry_run, "computed_at": computed_at})
     try:
-        actor_rows = db.fetch_all(
-            """
+        _SUSPICION_SQL = """
             SELECT
                 baf.character_id,
                 baf.battle_id,
@@ -1161,30 +1208,26 @@ def run_compute_suspicion_scores(db: SupplyCoreDb, runtime: dict[str, Any] | Non
             FROM battle_actor_features baf
             INNER JOIN battle_rollups br ON br.battle_id = baf.battle_id
             LEFT JOIN battle_side_metrics bsm ON bsm.battle_id = baf.battle_id AND bsm.side_key = baf.side_key
-            LEFT JOIN character_graph_intelligence cgi ON cgi.character_id = baf.character_id
             WHERE baf.character_id > 0
-            """
-        )
-        rows_processed = len(actor_rows)
+        """
 
+        # Stream rows into indexed dicts without keeping a separate raw list.
         by_character: dict[int, list[dict[str, Any]]] = defaultdict(list)
         battle_side_index: dict[str, list[dict[str, Any]]] = defaultdict(list)
-        for row in actor_rows:
-            character_id = int(row.get("character_id") or 0)
-            if character_id <= 0:
-                continue
-            by_character[character_id].append(row)
-            battle_side_index[str(row.get("battle_id"))].append(row)
-
-        # Pre-compute global eligible z-efficiency totals so each character
-        # can derive "absent enemy" stats in O(1) instead of O(n_characters).
         global_eligible_z_sum = 0.0
         global_eligible_count = 0
-        for row in actor_rows:
-            if int(row.get("eligible_for_suspicion") or 0) == 1:
-                z = float(row.get("z_efficiency_score") or 0.0)
-                global_eligible_z_sum += z
-                global_eligible_count += 1
+
+        for batch in db.iterate_batches(_SUSPICION_SQL, batch_size=5000):
+            rows_processed += len(batch)
+            for row in batch:
+                character_id = int(row.get("character_id") or 0)
+                if character_id <= 0:
+                    continue
+                by_character[character_id].append(row)
+                battle_side_index[str(row.get("battle_id"))].append(row)
+                if int(row.get("eligible_for_suspicion") or 0) == 1:
+                    global_eligible_z_sum += float(row.get("z_efficiency_score") or 0.0)
+                    global_eligible_count += 1
 
         intelligence_rows: list[dict[str, Any]] = []
         score_rows: list[dict[str, Any]] = []
