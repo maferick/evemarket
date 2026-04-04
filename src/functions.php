@@ -15224,9 +15224,13 @@ function esi_required_corp_standings_scopes(): array
 
 function esi_scopes_string(): string
 {
-    $stored = trim((string) get_setting('esi_scopes', ''));
+    // Merge stored scopes with defaults so that newly added required scopes
+    // (e.g. contacts) are always requested even when the DB setting predates
+    // the addition.  Any extra custom scopes from the stored value are kept.
+    $stored = preg_split('/\s+/', trim((string) get_setting('esi_scopes', ''))) ?: [];
+    $merged = array_values(array_unique(array_merge(esi_default_scopes(), array_filter($stored))));
 
-    return $stored !== '' ? $stored : implode(' ', esi_default_scopes());
+    return implode(' ', $merged);
 }
 
 function esi_scope_list(): array
