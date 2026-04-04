@@ -1093,6 +1093,7 @@ class SupplyCoreDb:
         return self.fetch_alliance_structure_sources(limit=max(1, limit))
 
     def fetch_latest_esi_access_token(self) -> str | None:
+        """Return a valid ESI access token, refreshing via stored refresh_token if needed."""
         row = self.fetch_one(
             """SELECT access_token
                 FROM esi_oauth_tokens
@@ -1117,7 +1118,119 @@ class SupplyCoreDb:
         if cached_token != "":
             return cached_token
 
-        return None
+        # No valid token found — try to refresh using the stored refresh_token.
+        return self._try_refresh_esi_token()
+
+    def _try_refresh_esi_token(self) -> str | None:
+        """Attempt to refresh the ESI OAuth token using the stored refresh_token.
+
+        Mirrors the PHP ``esi_refresh_oauth_token`` / ``esi_valid_access_token`` flow.
+        Updates both ``esi_oauth_tokens`` and the ``esi_cache_entries`` cache on success.
+        Returns the new access token, or None if refresh is not possible.
+        """
+        import base64
+        import json as _json
+        import urllib.error
+        import urllib.parse
+        import urllib.request
+        from datetime import UTC, datetime
+
+        token_row = self.fetch_one(
+            """SELECT id, refresh_token, token_type, scopes
+                FROM esi_oauth_tokens
+                ORDER BY updated_at DESC, id DESC
+                LIMIT 1"""
+        )
+        if not token_row:
+            return None
+
+        refresh_token = str(token_row.get("refresh_token") or "").strip()
+        token_id = int(token_row.get("id") or 0)
+        if not refresh_token or token_id <= 0:
+            return None
+
+        client_id = self.fetch_app_setting("esi_client_id", "").strip()
+        client_secret = self.fetch_app_setting("esi_client_secret", "").strip()
+        if not client_id or not client_secret:
+            logger.warning("ESI token refresh skipped: esi_client_id/esi_client_secret not configured in app settings.")
+            return None
+
+        credentials = base64.b64encode(f"{client_id}:{client_secret}".encode()).decode()
+        body = urllib.parse.urlencode({"grant_type": "refresh_token", "refresh_token": refresh_token}).encode()
+        req = urllib.request.Request(
+            "https://login.eveonline.com/v2/oauth/token",
+            data=body,
+            headers={
+                "Authorization": f"Basic {credentials}",
+                "Content-Type": "application/x-www-form-urlencoded",
+                "Accept": "application/json",
+                "Host": "login.eveonline.com",
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                payload = _json.loads(resp.read().decode())
+        except urllib.error.HTTPError as exc:
+            logger.warning("ESI token refresh failed (HTTP %d): %s", exc.code, exc.reason)
+            return None
+        except Exception as exc:
+            logger.warning("ESI token refresh failed: %s", exc)
+            return None
+
+        new_access_token = str(payload.get("access_token") or "").strip()
+        new_refresh_token = str(payload.get("refresh_token") or "").strip()
+        expires_in = int(payload.get("expires_in") or 0)
+        token_type = str(payload.get("token_type") or token_row.get("token_type") or "Bearer").strip() or "Bearer"
+        scopes = str(payload.get("scope") or token_row.get("scopes") or "").strip()
+
+        if not new_access_token or not new_refresh_token:
+            logger.warning("ESI token refresh returned an incomplete payload; skipping update.")
+            return None
+
+        now_utc = datetime.now(UTC)
+        expires_at = (
+            datetime.fromtimestamp(now_utc.timestamp() + expires_in, tz=UTC)
+            if expires_in > 0
+            else now_utc
+        ).strftime("%Y-%m-%d %H:%M:%S")
+
+        self.execute(
+            """UPDATE esi_oauth_tokens
+                SET access_token = %s,
+                    refresh_token = %s,
+                    token_type = %s,
+                    scopes = %s,
+                    expires_at = %s,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = %s
+                LIMIT 1""",
+            [new_access_token, new_refresh_token, token_type, scopes, expires_at, token_id],
+        )
+
+        try:
+            cache_payload = _json.dumps({
+                "access_token": new_access_token,
+                "refresh_token": new_refresh_token,
+                "token_type": token_type,
+                "expires_in": expires_in or None,
+                "scope": scopes,
+            })
+            self.execute(
+                """INSERT INTO esi_cache_entries (namespace_key, cache_key, payload_json, fetched_at, expires_at)
+                    VALUES ('cache.esi.oauth.token', 'latest', %s, UTC_TIMESTAMP(), %s)
+                    ON DUPLICATE KEY UPDATE
+                        payload_json = VALUES(payload_json),
+                        fetched_at = UTC_TIMESTAMP(),
+                        expires_at = VALUES(expires_at),
+                        updated_at = CURRENT_TIMESTAMP""",
+                [cache_payload, expires_at],
+            )
+        except Exception as exc:
+            logger.warning("Failed to update ESI token cache after refresh: %s", exc)
+
+        logger.info("ESI OAuth token refreshed successfully (token_id=%d, expires_at=%s).", token_id, expires_at)
+        return new_access_token
 
     def replace_market_orders_for_source(
         self,
