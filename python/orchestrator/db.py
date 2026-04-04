@@ -890,10 +890,22 @@ class SupplyCoreDb:
                    last_run_at = UTC_TIMESTAMP(),
                    last_finished_at = UTC_TIMESTAMP(),
                    locked_until = NULL,
-                   next_due_at = DATE_ADD(UTC_TIMESTAMP(), INTERVAL interval_seconds SECOND),
                    last_error = CASE WHEN %s = 'success' THEN NULL ELSE last_error END
                WHERE job_key = %s AND execution_mode = 'python'""",
             (status[:20], status[:20], job_key[:120]),
+        )
+
+    def advance_next_due_at_by_interval(self, job_key: str) -> int:
+        """Push next_due_at forward by the job's configured interval_seconds.
+
+        Called by the worker_pool after completing a job so that
+        queue_due_recurring_jobs (and the PHP scheduler) won't re-queue it
+        before the scheduled interval has elapsed.  NOT called by the
+        loop_runner, which manages its own timing independently.
+        """
+        return self.execute(
+            "UPDATE sync_schedules SET next_due_at = DATE_ADD(UTC_TIMESTAMP(), INTERVAL interval_seconds SECOND) WHERE job_key = %s AND execution_mode = 'python'",
+            (job_key[:120],),
         )
 
     def advance_next_due_at(self, job_key: str) -> int:
