@@ -19,5 +19,9 @@ MemoryMax=5G
 StandardOutput=append:/var/www/SupplyCore/storage/logs/worker.log
 StandardError=append:/var/www/SupplyCore/storage/logs/worker.log
 
+# NOTE: Disabled in favour of supplycore-sync-worker + supplycore-compute-worker.
+# The loop-runner runs all ~64 jobs in a single process with thread pools,
+# which causes OOM kills even at MemoryMax=5G.  The worker-pool model runs
+# one job at a time per process with proper memory isolation.
 [Install]
-WantedBy=multi-user.target
+# WantedBy=multi-user.target
