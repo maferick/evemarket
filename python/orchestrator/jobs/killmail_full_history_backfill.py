@@ -155,6 +155,9 @@ def run_killmail_full_history_backfill(context: Any) -> dict[str, Any]:
     # Resume from the same month as last_completed — dedup handles any already-stored kills.
     if last_completed_str:
         last_completed = datetime.strptime(last_completed_str, "%Y-%m-%d").replace(tzinfo=UTC).date()
+        if last_completed >= yesterday:
+            logger.info("Already up to date (last completed: %s, yesterday: %s)", last_completed_str, yesterday)
+            return {"status": "success", "message": "Already up to date.", "last_completed_date": last_completed_str}
         current_year = last_completed.year
         current_month = last_completed.month
         logger.info("Resuming from %04d-%02d (last completed: %s)", current_year, current_month, last_completed_str)
