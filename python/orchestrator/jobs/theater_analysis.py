@@ -110,6 +110,7 @@ def _load_theaters(db: SupplyCoreDb) -> list[dict[str, Any]]:
         """
         SELECT theater_id, start_time, end_time, duration_seconds
         FROM theaters
+        WHERE locked_at IS NULL
         ORDER BY start_time ASC
         """
     )
@@ -1716,12 +1717,42 @@ def run_theater_analysis(
                 "third_party_count": side_resolution.get("total_third_party", 0),
             })
 
+        # Auto-lock theaters whose last battle ended > 1 hour ago.
+        # Locked theaters won't be re-analyzed on subsequent runs, saving
+        # resources.  The view snapshot is generated on first page load.
+        auto_lock_threshold = datetime.now(UTC) - timedelta(hours=1)
+        auto_locked = 0
+        if not dry_run:
+            auto_lock_candidates = db.fetch_all(
+                """
+                SELECT theater_id, end_time
+                FROM theaters
+                WHERE locked_at IS NULL
+                  AND end_time IS NOT NULL
+                  AND end_time < %s
+                """,
+                (auto_lock_threshold.strftime("%Y-%m-%d %H:%M:%S"),),
+            )
+            for candidate in auto_lock_candidates:
+                tid = str(candidate.get("theater_id") or "")
+                if tid:
+                    db.execute(
+                        "UPDATE theaters SET locked_at = NOW() WHERE theater_id = %s AND locked_at IS NULL",
+                        (tid,),
+                    )
+                    auto_locked += 1
+            if auto_locked > 0:
+                _theater_log(runtime, "theater_analysis.auto_locked", {
+                    "count": auto_locked,
+                    "threshold": auto_lock_threshold.isoformat(),
+                })
+
         finish_job_run(
             db, job,
             status="success",
             rows_processed=rows_processed,
             rows_written=rows_written,
-            meta={"computed_at": computed_at, "theaters_analyzed": theaters_analyzed},
+            meta={"computed_at": computed_at, "theaters_analyzed": theaters_analyzed, "auto_locked": auto_locked},
         )
 
         duration_ms = int((datetime.now(UTC) - started_monotonic).total_seconds() * 1000)
