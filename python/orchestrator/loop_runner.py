@@ -321,12 +321,26 @@ def _run_loop(
         },
     )
 
+    # Memory safety: abort threshold slightly below the systemd MemoryMax
+    # so we can exit gracefully instead of being OOM-killed.
+    memory_abort_bytes = 4 * 1024 * 1024 * 1024  # 4 GiB (MemoryMax is 5 GiB)
+
     while not shutdown_event.is_set():
         cycle += 1
         cycle_start = time.monotonic()
+
+        mem = resident_memory_bytes()
+        if mem >= memory_abort_bytes:
+            logger.warning(
+                f"{loop_name}: memory abort threshold reached ({mem / (1024**3):.1f} GiB), exiting for restart",
+                payload={"event": "loop_runner.memory_abort", "loop": loop_name, "memory_bytes": mem},
+            )
+            shutdown_event.set()
+            break
+
         logger.info(
             f"{loop_name}: cycle {cycle} starting",
-            payload={"event": "loop_runner.cycle_start", "loop": loop_name, "cycle": cycle},
+            payload={"event": "loop_runner.cycle_start", "loop": loop_name, "cycle": cycle, "memory_bytes": mem},
         )
 
         total_success = 0
