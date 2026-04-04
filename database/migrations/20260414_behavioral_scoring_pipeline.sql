@@ -9,7 +9,8 @@ CREATE TABLE IF NOT EXISTS character_behavioral_scores (
     percentile_rank DECIMAL(10,6) NOT NULL DEFAULT 0.000000,
     confidence_tier VARCHAR(10) NOT NULL DEFAULT 'low',
     total_kill_count INT UNSIGNED NOT NULL DEFAULT 0,
-    small_kill_count INT UNSIGNED NOT NULL DEFAULT 0,
+    solo_kill_count INT UNSIGNED NOT NULL DEFAULT 0,
+    gang_kill_count INT UNSIGNED NOT NULL DEFAULT 0,
     large_battle_count INT UNSIGNED NOT NULL DEFAULT 0,
     fleet_absence_ratio DECIMAL(12,6) NOT NULL DEFAULT 0.000000,
     post_engagement_continuation_rate DECIMAL(12,6) NOT NULL DEFAULT 0.000000,
@@ -55,12 +56,19 @@ CREATE TABLE IF NOT EXISTS small_engagement_copresence (
     KEY idx_small_copresence_computed (computed_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
--- Register scheduler job (runs hourly, full rebuild of 90-day window)
-INSERT INTO scheduler_jobs (job_key, enabled, interval_minutes, interval_seconds, offset_seconds, priority_order, priority_tier, concurrency_mode, execution_mode, timeout_seconds, created_at, updated_at, current_status, trigger_mode, max_retries, retry_count)
-VALUES ('compute_behavioral_scoring', 1, 60, 3600, 1740, 29, 'normal', 'single', 'python', 1800, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1)
+-- Register scheduler job (runs hourly, full rebuild of 90-day window).
+-- Table is sync_schedules (not scheduler_jobs).
+INSERT INTO sync_schedules (
+    job_key, enabled, interval_minutes, interval_seconds, offset_seconds, offset_minutes,
+    priority, concurrency_policy, execution_mode, timeout_seconds,
+    next_run_at, next_due_at, current_state, tuning_mode,
+    discovered_from_code, explicitly_configured,
+    last_run_at, last_status, last_error, locked_until
+) VALUES (
+    'compute_behavioral_scoring', 1, 60, 3600, 1740, 29,
+    'normal', 'single', 'python', 1800,
+    UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic',
+    1, 1,
+    NULL, NULL, NULL, NULL
+)
 ON DUPLICATE KEY UPDATE enabled = 1, interval_minutes = 60, timeout_seconds = 1800;
-
--- Add tier breakdown columns (solo 1-4, gang 5-9, battle 10+)
-ALTER TABLE character_behavioral_scores
-    CHANGE COLUMN small_kill_count solo_kill_count INT UNSIGNED NOT NULL DEFAULT 0,
-    ADD COLUMN gang_kill_count INT UNSIGNED NOT NULL DEFAULT 0 AFTER solo_kill_count;
