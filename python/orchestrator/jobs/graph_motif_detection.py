@@ -119,8 +119,8 @@ def _detect_stars(client: Neo4jClient) -> list[dict[str, Any]]:
         MATCH (hub:Character)-[:CO_OCCURS_WITH]->(out:Character)
         WITH hub, collect(out) AS out_leaves
         OPTIONAL MATCH (in_leaf:Character)-[:CO_OCCURS_WITH]->(hub)
-        WITH hub, out_leaves + collect(in_leaf) AS all_leaves
-        WITH hub, all_leaves[..30] AS leaves
+        WITH hub, out_leaves, collect(in_leaf) AS in_leaves
+        WITH hub, (out_leaves + in_leaves)[..30] AS leaves
         WHERE size(leaves) >= 4
         UNWIND leaves AS l1
         OPTIONAL MATCH (l1)-[ie:CO_OCCURS_WITH]-(l2)
