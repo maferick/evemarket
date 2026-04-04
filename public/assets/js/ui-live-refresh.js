@@ -245,6 +245,15 @@
         return;
       }
 
+      // Skip the DOM swap entirely when the new HTML is identical to what's
+      // already on screen — avoids jarring flash animations and layout reflows
+      // when nothing actually changed (which is common with frequent SSE events).
+      if (current.innerHTML === replacement.innerHTML) {
+        updateVersionState(payload.current_versions || {});
+        renderDiagnostics();
+        return;
+      }
+
       transitionSwap(current, replacement);
       state.lastSectionRefreshAt[sectionKey] = new Date().toISOString();
       flashSection(sectionKey);
@@ -297,7 +306,7 @@
     const changedVersionKeys = Object.keys(eventPayload.changed_versions || {}).filter((versionKey) => {
       const nextVersion = Number(eventPayload.changed_versions[versionKey]?.version || 0);
       const currentVersion = Number(state.currentVersions[versionKey]?.version || 0);
-      return nextVersion >= currentVersion;
+      return nextVersion > currentVersion;
     });
 
     scheduleRefresh(changedVersionKeys);
