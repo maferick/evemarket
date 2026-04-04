@@ -1886,7 +1886,8 @@ CREATE TABLE IF NOT EXISTS character_suspicion_scores (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- Lane 2: Small-engagement behavioral scoring
-CREATE TABLE IF NOT EXISTS character_behavioral_scores (
+DROP TABLE IF EXISTS character_behavioral_scores;
+CREATE TABLE character_behavioral_scores (
     character_id BIGINT UNSIGNED PRIMARY KEY,
     behavioral_risk_score DECIMAL(12,6) NOT NULL DEFAULT 0.000000,
     percentile_rank DECIMAL(10,6) NOT NULL DEFAULT 0.000000,

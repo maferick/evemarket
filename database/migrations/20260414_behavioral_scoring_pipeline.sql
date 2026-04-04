@@ -3,7 +3,8 @@
 -- not just large battles. Focuses on recurrence, co-presence, target selection,
 -- fleet-absence, geographic concentration, and temporal patterns.
 
-CREATE TABLE IF NOT EXISTS character_behavioral_scores (
+DROP TABLE IF EXISTS character_behavioral_scores;
+CREATE TABLE character_behavioral_scores (
     character_id BIGINT UNSIGNED PRIMARY KEY,
     behavioral_risk_score DECIMAL(12,6) NOT NULL DEFAULT 0.000000,
     percentile_rank DECIMAL(10,6) NOT NULL DEFAULT 0.000000,

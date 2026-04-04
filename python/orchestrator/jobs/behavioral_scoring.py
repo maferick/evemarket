@@ -459,6 +459,24 @@ def run_compute_behavioral_scoring(
         # ── Step 3: Write ─────────────────────────────────────────────────────
         if not dry_run and score_rows:
             with db.transaction() as (_, cursor):
+                # Ensure table has the expected schema (columns may be missing
+                # if the table was created before the full migration ran).
+                _expected_cols = {
+                    "solo_kill_count", "gang_kill_count", "large_battle_count",
+                }
+                cursor.execute(
+                    "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS "
+                    "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'character_behavioral_scores'"
+                )
+                existing_cols = {row["COLUMN_NAME"] for row in cursor.fetchall()}
+                missing = _expected_cols - existing_cols
+                if missing:
+                    for col in sorted(missing):
+                        cursor.execute(
+                            f"ALTER TABLE character_behavioral_scores "
+                            f"ADD COLUMN `{col}` INT UNSIGNED NOT NULL DEFAULT 0"
+                        )
+
                 cursor.execute("DELETE FROM character_behavioral_scores")
                 cursor.execute("DELETE FROM character_behavioral_signals")
                 cursor.execute("DELETE FROM small_engagement_copresence WHERE window_label = %s", (f"{lookback_days}d",))
