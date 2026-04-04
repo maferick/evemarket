@@ -32041,7 +32041,7 @@ function supplycore_theater_map_svg(string $theaterId, array $systemIds, int $ho
         return null;
     }
     $cacheKey = substr(md5($theaterId . ':' . implode(',', $systemIds)), 0, 12);
-    $cacheFile = sprintf('%s/theater-%s-h%d-v4.svg', $cacheDir, $cacheKey, $hops);
+    $cacheFile = sprintf('%s/theater-%s-h%d-v5.svg', $cacheDir, $cacheKey, $hops);
     $cacheTtl = supplycore_threat_corridor_map_cache_minutes() * 60;
     if (is_file($cacheFile) && ((time() - (int) filemtime($cacheFile)) < $cacheTtl)) {
         return '/threat-corridors/svg/' . basename($cacheFile);
@@ -32090,8 +32090,52 @@ function supplycore_theater_map_svg(string $theaterId, array $systemIds, int $ho
         $adjacency[$b][] = $a;
     }
 
-    // Battle-system edges: any edge where both endpoints are battle systems
+    // Layout: battle systems spread horizontally
+    $battleNodeIds = array_values(array_filter($nodeIds, static fn(int $sid): bool => isset($battleSet[$sid])));
+    sort($battleNodeIds);
+
+    // Route edges: find shortest path between every pair of battle systems
+    // so the full route is shown even when battles are separated by
+    // intermediate (non-battle) systems.
     $battleEdges = [];
+    $routeNodeSet = []; // intermediate nodes on the route
+    if (count($battleNodeIds) >= 2) {
+        for ($bi = 0; $bi < count($battleNodeIds) - 1; $bi++) {
+            for ($bj = $bi + 1; $bj < count($battleNodeIds); $bj++) {
+                $src = $battleNodeIds[$bi];
+                $dst = $battleNodeIds[$bj];
+                $bfsQueue = [$src];
+                $bfsPrev  = [$src => -1];
+                $found    = false;
+                while ($bfsQueue !== []) {
+                    $cur = array_shift($bfsQueue);
+                    if ($cur === $dst) {
+                        $found = true;
+                        break;
+                    }
+                    foreach ($adjacency[$cur] as $nb) {
+                        if (!isset($bfsPrev[$nb])) {
+                            $bfsPrev[$nb] = $cur;
+                            $bfsQueue[]   = $nb;
+                        }
+                    }
+                }
+                if ($found) {
+                    $cur = $dst;
+                    while ($bfsPrev[$cur] !== -1) {
+                        $prev = $bfsPrev[$cur];
+                        $key  = min($cur, $prev) . ':' . max($cur, $prev);
+                        $battleEdges[$key] = true;
+                        if (!isset($battleSet[$cur])) {
+                            $routeNodeSet[$cur] = true;
+                        }
+                        $cur = $prev;
+                    }
+                }
+            }
+        }
+    }
+    // Also include direct battle-to-battle edges
     foreach ($edges as $edge) {
         $a = (int) ($edge[0] ?? 0);
         $b = (int) ($edge[1] ?? 0);
@@ -32102,10 +32146,6 @@ function supplycore_theater_map_svg(string $theaterId, array $systemIds, int $ho
             $battleEdges[min($a, $b) . ':' . max($a, $b)] = true;
         }
     }
-
-    // Layout: battle systems spread horizontally
-    $battleNodeIds = array_values(array_filter($nodeIds, static fn(int $sid): bool => isset($battleSet[$sid])));
-    sort($battleNodeIds);
     $battleCount = count($battleNodeIds);
     $positions = [];
     foreach ($battleNodeIds as $idx => $sid) {
@@ -32133,10 +32173,12 @@ function supplycore_theater_map_svg(string $theaterId, array $systemIds, int $ho
         }
     }
 
-    // Mark boundary nodes: beyond the requested hops, used only for stub edges
+    // Mark boundary nodes: beyond the requested hops, used only for stub edges.
+    // Route-intermediate nodes (on the shortest path between battle systems) are
+    // kept as full nodes so the complete route is visible.
     $theaterBoundarySet = [];
     foreach ($nodeIds as $sid) {
-        if (!isset($battleSet[$sid]) && ($distance[$sid] ?? PHP_INT_MAX) > $hops) {
+        if (!isset($battleSet[$sid]) && !isset($routeNodeSet[$sid]) && ($distance[$sid] ?? PHP_INT_MAX) > $hops) {
             $theaterBoundarySet[$sid] = true;
         }
     }
@@ -32234,7 +32276,7 @@ function supplycore_theater_map_svg(string $theaterId, array $systemIds, int $ho
     };
 
     $svg = [];
-    $svg[] = '<svg xmlns="http://www.w3.org/2000/svg" width="' . $width . '" height="' . $height . '" viewBox="0 0 ' . $width . ' ' . $height . '">';
+    $svg[] = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ' . $width . ' ' . $height . '" style="width:100%;height:auto">';
     $svg[] = '<defs>'
         . '<filter id="battle-glow" x="-40%" y="-40%" width="180%" height="180%">'
         . '<feGaussianBlur stdDeviation="3.5" result="blur"/>'

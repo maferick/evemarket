@@ -90,12 +90,7 @@ $systemName = proxy_e((string) ($theater['primary_system_name'] ?? 'Unknown'));
 
         <?php include __DIR__ . '/partials/_header.php'; ?>
         <?php include __DIR__ . '/partials/_location_map.php'; ?>
-        <?php include __DIR__ . '/partials/_battle_report.php'; ?>
-        <?php include __DIR__ . '/partials/_battles.php'; ?>
-        <?php include __DIR__ . '/partials/_timeline.php'; ?>
-        <?php include __DIR__ . '/partials/_alliance_summary.php'; ?>
-        <?php include __DIR__ . '/partials/_participants.php'; ?>
-        <?php include __DIR__ . '/partials/_killmails.php'; ?>
+        <?php include __DIR__ . '/partials/_battle_report_classic_standalone.php'; ?>
 
     </main>
 </div>
