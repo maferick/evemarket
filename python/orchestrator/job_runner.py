@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import os
 import time
 import zipfile
@@ -14,6 +15,7 @@ from .config import load_php_runtime_config, resolve_app_root
 from .db import SupplyCoreDb
 from .job_result import JobResult
 from .json_utils import json_dumps_safe
+from .logging_utils import JsonFormatter
 from .processor_registry import PYTHON_PROCESSOR_JOB_KEYS, audit_enabled_python_jobs, run_registered_processor
 from .worker_runtime import resident_memory_bytes, utc_now_iso
 
@@ -127,6 +129,35 @@ class SyncJobLogWriter:
 _ACTIVE_EMIT_LOG: SyncJobLogWriter | None = None
 
 
+def _configure_job_logging(log_path: Path, *, verbose: bool = False) -> None:
+    """Attach handlers to the ``orchestrator`` logger hierarchy.
+
+    This ensures that any ``logging.getLogger(__name__)`` call inside
+    ``orchestrator.jobs.*`` modules writes structured JSON to both stdout
+    and the per-job log file — previously these messages were silently
+    swallowed because no handler was attached.
+    """
+    root_job_logger = logging.getLogger("orchestrator")
+    root_job_logger.setLevel(logging.DEBUG if verbose else logging.INFO)
+    # Avoid duplicate handlers on repeated calls within the same process.
+    for h in list(root_job_logger.handlers):
+        root_job_logger.removeHandler(h)
+        h.close()
+
+    fmt = JsonFormatter()
+
+    stdout_handler = logging.StreamHandler()
+    stdout_handler.setFormatter(fmt)
+    root_job_logger.addHandler(stdout_handler)
+
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    file_handler = logging.FileHandler(log_path, encoding="utf-8")
+    file_handler.setFormatter(fmt)
+    root_job_logger.addHandler(file_handler)
+
+    root_job_logger.propagate = False
+
+
 def _fetch_claimed_job(db: SupplyCoreDb, schedule_id: int) -> dict[str, Any]:
     job = db.fetch_one(
         "SELECT * FROM sync_schedules WHERE id = %s LIMIT 1",
@@ -212,6 +243,13 @@ def main() -> int:
 
     global _ACTIVE_EMIT_LOG
     _ACTIVE_EMIT_LOG = SyncJobLogWriter(app_root=app_root, job_key=context.job_key)
+
+    # Wire up Python logging so that job modules (e.g. orchestrator.jobs.*)
+    # emit structured JSON to both stdout and the per-job log file.
+    _configure_job_logging(
+        log_path=_ACTIVE_EMIT_LOG._active_log_path,
+        verbose=bool(args.verbose),
+    )
 
     if context.schedule_id <= 0:
         emit("python_worker.error", {"error": "Argument --schedule-id must be a positive integer."})
