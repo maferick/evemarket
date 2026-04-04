@@ -890,6 +890,7 @@ class SupplyCoreDb:
                    last_run_at = UTC_TIMESTAMP(),
                    last_finished_at = UTC_TIMESTAMP(),
                    locked_until = NULL,
+                   next_due_at = DATE_ADD(UTC_TIMESTAMP(), INTERVAL interval_seconds SECOND),
                    last_error = CASE WHEN %s = 'success' THEN NULL ELSE last_error END
                WHERE job_key = %s AND execution_mode = 'python'""",
             (status[:20], status[:20], job_key[:120]),
