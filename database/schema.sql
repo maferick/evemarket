@@ -1885,6 +1885,60 @@ CREATE TABLE IF NOT EXISTS character_suspicion_scores (
     KEY idx_character_suspicion_scores_computed (computed_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+-- Lane 2: Small-engagement behavioral scoring
+CREATE TABLE IF NOT EXISTS character_behavioral_scores (
+    character_id BIGINT UNSIGNED PRIMARY KEY,
+    behavioral_risk_score DECIMAL(12,6) NOT NULL DEFAULT 0.000000,
+    percentile_rank DECIMAL(10,6) NOT NULL DEFAULT 0.000000,
+    confidence_tier VARCHAR(10) NOT NULL DEFAULT 'low',
+    total_kill_count INT UNSIGNED NOT NULL DEFAULT 0,
+    solo_kill_count INT UNSIGNED NOT NULL DEFAULT 0,
+    gang_kill_count INT UNSIGNED NOT NULL DEFAULT 0,
+    large_battle_count INT UNSIGNED NOT NULL DEFAULT 0,
+    fleet_absence_ratio DECIMAL(12,6) NOT NULL DEFAULT 0.000000,
+    post_engagement_continuation_rate DECIMAL(12,6) NOT NULL DEFAULT 0.000000,
+    kill_concentration_score DECIMAL(12,6) NOT NULL DEFAULT 0.000000,
+    geographic_concentration_score DECIMAL(12,6) NOT NULL DEFAULT 0.000000,
+    temporal_regularity_score DECIMAL(12,6) NOT NULL DEFAULT 0.000000,
+    companion_consistency_score DECIMAL(12,6) NOT NULL DEFAULT 0.000000,
+    cross_side_small_rate DECIMAL(12,6) NOT NULL DEFAULT 0.000000,
+    asymmetry_preference DECIMAL(12,6) NOT NULL DEFAULT 0.000000,
+    computed_at DATETIME NOT NULL,
+    KEY idx_behavioral_scores_risk (behavioral_risk_score DESC, percentile_rank),
+    KEY idx_behavioral_scores_computed (computed_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS character_behavioral_signals (
+    character_id BIGINT UNSIGNED NOT NULL,
+    signal_key VARCHAR(80) NOT NULL,
+    window_label VARCHAR(20) NOT NULL DEFAULT 'all_time',
+    signal_value DECIMAL(16,6) DEFAULT NULL,
+    baseline_value DECIMAL(16,6) DEFAULT NULL,
+    deviation DECIMAL(16,6) DEFAULT NULL,
+    confidence_flag VARCHAR(10) NOT NULL DEFAULT 'low',
+    signal_text VARCHAR(500) NOT NULL,
+    signal_payload_json LONGTEXT DEFAULT NULL,
+    computed_at DATETIME NOT NULL,
+    PRIMARY KEY (character_id, signal_key, window_label),
+    KEY idx_behavioral_signals_computed (computed_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS small_engagement_copresence (
+    character_id_a BIGINT UNSIGNED NOT NULL,
+    character_id_b BIGINT UNSIGNED NOT NULL,
+    window_label VARCHAR(10) NOT NULL DEFAULT '30d',
+    co_kill_count INT UNSIGNED NOT NULL DEFAULT 0,
+    unique_victim_count INT UNSIGNED NOT NULL DEFAULT 0,
+    unique_system_count INT UNSIGNED NOT NULL DEFAULT 0,
+    edge_weight DECIMAL(12,6) NOT NULL DEFAULT 0.000000,
+    last_event_at DATETIME NOT NULL,
+    computed_at DATETIME NOT NULL,
+    PRIMARY KEY (character_id_a, character_id_b, window_label),
+    KEY idx_small_copresence_b (character_id_b, window_label),
+    KEY idx_small_copresence_weight (window_label, edge_weight DESC),
+    KEY idx_small_copresence_computed (computed_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 CREATE TABLE IF NOT EXISTS entity_metadata_cache (
     entity_type ENUM('alliance', 'corporation', 'character', 'type', 'system', 'region') NOT NULL,
     entity_id BIGINT UNSIGNED NOT NULL,
@@ -3072,7 +3126,8 @@ INSERT INTO sync_schedules (
     ('compute_suspicion_scores', 1, 10, 600, 1500, 25, 'normal', 'single', 'python', 420, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
     ('compute_character_feature_windows', 1, 30, 1800, 1620, 27, 'normal', 'single', 'python', 900, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
     ('evewho_alliance_member_sync', 0, 30, 1800, 2280, 38, 'normal', 'single', 'python', 3600, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
-    ('temporal_behavior_detection', 1, 30, 1800, 1680, 28, 'normal', 'single', 'python', 600, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL)
+    ('temporal_behavior_detection', 1, 30, 1800, 1680, 28, 'normal', 'single', 'python', 600, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
+    ('compute_behavioral_scoring', 1, 60, 3600, 1740, 29, 'normal', 'single', 'python', 1800, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL)
 ON DUPLICATE KEY UPDATE
     enabled = VALUES(enabled),
     interval_minutes = VALUES(interval_minutes),

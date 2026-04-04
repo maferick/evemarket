@@ -612,6 +612,25 @@ include __DIR__ . '/../../src/views/partials/header.php';
             <!-- ══════════════════════════════════════════════════════════ -->
             <?php if (is_array($ciCharacter)): ?>
             <?php
+                $ciDataSource = (string) ($ciCharacter['data_source'] ?? 'counterintel');
+                if ($ciDataSource === 'suspicion_v2'): ?>
+                    <div class="mt-6 rounded border border-amber-500/30 bg-amber-950/30 px-4 py-2.5 text-sm text-amber-200/90">
+                        <strong>Limited data</strong> &mdash; showing batch suspicion scores. The full counter-intel pipeline has not processed this character yet.
+                        <form method="POST" action="/battle-intelligence/character.php?character_id=<?= $characterId ?>" class="mt-1.5 inline">
+                            <input type="hidden" name="compute_intelligence" value="1">
+                            <button type="submit" class="btn btn-sm btn-accent">Compute full analysis</button>
+                        </form>
+                    </div>
+                <?php elseif ($ciDataSource === 'below_threshold'): ?>
+                    <div class="mt-6 rounded border border-slate-500/30 bg-slate-800/50 px-4 py-2.5 text-sm text-slate-300">
+                        <strong>Insufficient data</strong> &mdash; this character has <?= (int) ($ciCharacter['total_battle_count'] ?? 0) ?> battle(s) (<?= (int) ($ciCharacter['eligible_battle_count'] ?? 0) ?> eligible), below the minimum of 5 required for scoring.
+                        <form method="POST" action="/battle-intelligence/character.php?character_id=<?= $characterId ?>" class="mt-1.5 inline">
+                            <input type="hidden" name="compute_intelligence" value="1">
+                            <button type="submit" class="btn btn-sm btn-accent">Compute now</button>
+                        </form>
+                    </div>
+                <?php endif; ?>
+            <?php
                 $ciRiskLevel = ci_risk_level((float) ($ciCharacter['review_priority_score'] ?? 0));
                 $ciPriorityScore = (float) ($ciCharacter['review_priority_score'] ?? 0);
                 $ciConfidenceScore = (float) ($ciCharacter['confidence_score'] ?? 0);

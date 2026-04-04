@@ -16031,22 +16031,72 @@ function db_battle_intelligence_top_characters(int $limit = 50): array
     }
     $placeholders = implode(',', array_fill(0, count($trackedAllianceIds), '?'));
 
+    // Blended leaderboard: combines Lane 1 (counterintel) and Lane 2 (behavioral).
+    // Characters with only behavioral scores are included — they appear with null
+    // Lane 1 fields, ranked by their behavioral score.
+    // Blending weights mirror db_character_blended_intelligence():
+    //   large_battles >= 10 → 65/35, 5-9 → 50/50, 1-4 → 35/65, 0 → 0/100.
     return db_select(
-        'SELECT ccs.character_id, ccs.review_priority_score, ccs.percentile_rank, ccs.confidence_score, ccs.evidence_count, ccs.computed_at,
-                ccf.anomalous_battle_presence_count, ccf.control_battle_presence_count, ccf.anomalous_battle_denominator, ccf.control_battle_denominator, ccf.anomalous_presence_rate, ccf.control_presence_rate,
-                ccf.enemy_same_hull_survival_lift, ccf.enemy_sustain_lift, ccf.co_presence_anomalous_density, ccf.graph_bridge_score,
-                ccf.corp_hop_frequency_180d, ccf.short_tenure_ratio_180d, ccf.repeatability_score,
-                COALESCE(emc.entity_name, CONCAT("Character #", ccs.character_id)) AS character_name
+        'SELECT
+            COALESCE(ccs.character_id, cbs.character_id) AS character_id,
+            ccs.review_priority_score,
+            ccs.percentile_rank,
+            ccs.confidence_score,
+            ccs.evidence_count,
+            COALESCE(ccs.computed_at, cbs.computed_at) AS computed_at,
+            ccf.anomalous_battle_presence_count, ccf.control_battle_presence_count,
+            ccf.anomalous_battle_denominator, ccf.control_battle_denominator,
+            ccf.anomalous_presence_rate, ccf.control_presence_rate,
+            ccf.enemy_same_hull_survival_lift, ccf.enemy_sustain_lift,
+            ccf.co_presence_anomalous_density, ccf.graph_bridge_score,
+            ccf.corp_hop_frequency_180d, ccf.short_tenure_ratio_180d, ccf.repeatability_score,
+            cbs.behavioral_risk_score,
+            cbs.confidence_tier AS behavioral_confidence_tier,
+            cbs.solo_kill_count, cbs.gang_kill_count, cbs.large_battle_count,
+            COALESCE(emc.entity_name, CONCAT("Character #", COALESCE(ccs.character_id, cbs.character_id))) AS character_name,
+            CASE
+                WHEN ccs.character_id IS NOT NULL AND cbs.character_id IS NOT NULL THEN
+                    CASE
+                        WHEN COALESCE(cbs.large_battle_count, 0) >= 10 THEN 0.65 * ccs.review_priority_score + 0.35 * cbs.behavioral_risk_score
+                        WHEN COALESCE(cbs.large_battle_count, 0) >= 5  THEN 0.50 * ccs.review_priority_score + 0.50 * cbs.behavioral_risk_score
+                        WHEN COALESCE(cbs.large_battle_count, 0) >= 1  THEN 0.35 * ccs.review_priority_score + 0.65 * cbs.behavioral_risk_score
+                        ELSE cbs.behavioral_risk_score
+                    END
+                WHEN ccs.character_id IS NOT NULL THEN ccs.review_priority_score
+                ELSE cbs.behavioral_risk_score
+            END AS blended_score
          FROM character_counterintel_scores ccs
          LEFT JOIN character_counterintel_features ccf ON ccf.character_id = ccs.character_id
+         LEFT JOIN character_behavioral_scores cbs ON cbs.character_id = ccs.character_id
          LEFT JOIN entity_metadata_cache emc ON emc.entity_type = "character" AND emc.entity_id = ccs.character_id
          WHERE ccs.character_id IN (
              SELECT DISTINCT bp.character_id FROM battle_participants bp
              WHERE bp.alliance_id IN (' . $placeholders . ')
          )
-         ORDER BY ccs.review_priority_score DESC, ccs.percentile_rank DESC, ccs.evidence_count DESC
+         UNION
+         SELECT
+            cbs.character_id,
+            NULL AS review_priority_score, NULL AS percentile_rank,
+            NULL AS confidence_score, NULL AS evidence_count,
+            cbs.computed_at,
+            NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+            cbs.behavioral_risk_score,
+            cbs.confidence_tier AS behavioral_confidence_tier,
+            cbs.solo_kill_count, cbs.gang_kill_count, cbs.large_battle_count,
+            COALESCE(emc.entity_name, CONCAT("Character #", cbs.character_id)) AS character_name,
+            cbs.behavioral_risk_score AS blended_score
+         FROM character_behavioral_scores cbs
+         LEFT JOIN entity_metadata_cache emc ON emc.entity_type = "character" AND emc.entity_id = cbs.character_id
+         WHERE cbs.character_id NOT IN (SELECT character_id FROM character_counterintel_scores)
+           AND cbs.character_id IN (
+               SELECT DISTINCT ka.character_id FROM killmail_attackers ka
+               INNER JOIN killmail_events ke ON ke.sequence_id = ka.sequence_id
+               WHERE ke.victim_alliance_id IN (' . $placeholders . ')
+                  OR ka.alliance_id IN (' . $placeholders . ')
+           )
+         ORDER BY blended_score DESC, review_priority_score DESC
          LIMIT ' . $safeLimit,
-        $trackedAllianceIds
+        array_merge($trackedAllianceIds, $trackedAllianceIds, $trackedAllianceIds)
     );
 }
 
@@ -16087,6 +16137,7 @@ function db_battle_intelligence_character(int $characterId): ?array
         return null;
     }
 
+    // Primary: counterintel scores (full-featured pipeline)
     $row = db_select_one(
         'SELECT ccs.character_id, ccs.review_priority_score, ccs.percentile_rank, ccs.confidence_score, ccs.evidence_count, ccs.computed_at,
                 ccf.anomalous_battle_presence_count, ccf.control_battle_presence_count, ccf.anomalous_battle_denominator, ccf.control_battle_denominator, ccf.anomalous_presence_rate, ccf.control_presence_rate,
@@ -16094,7 +16145,8 @@ function db_battle_intelligence_character(int $characterId): ?array
                 ccf.corp_hop_frequency_180d, ccf.short_tenure_ratio_180d, ccf.repeatability_score,
                 coh.source AS org_history_source, coh.current_corporation_id, coh.current_alliance_id, coh.corp_hops_180d, coh.short_tenure_hops_180d,
                 coh.hostile_adjacent_hops_180d, coh.history_json AS org_history_json, coh.fetched_at AS org_history_fetched_at,
-                COALESCE(emc.entity_name, CONCAT("Character #", ccs.character_id)) AS character_name
+                COALESCE(emc.entity_name, CONCAT("Character #", ccs.character_id)) AS character_name,
+                "counterintel" AS data_source
          FROM character_counterintel_scores ccs
          LEFT JOIN character_counterintel_features ccf ON ccf.character_id = ccs.character_id
          LEFT JOIN character_org_history_cache coh ON coh.character_id = ccs.character_id
@@ -16105,6 +16157,65 @@ function db_battle_intelligence_character(int $characterId): ?array
             )
          LEFT JOIN entity_metadata_cache emc ON emc.entity_type = "character" AND emc.entity_id = ccs.character_id
          WHERE ccs.character_id = ?
+         LIMIT 1',
+        [$characterId]
+    );
+
+    if ($row) {
+        return $row;
+    }
+
+    // Fallback: suspicion scores (v2 batch pipeline — fewer features but wider coverage)
+    $row = db_select_one(
+        'SELECT css.character_id, css.suspicion_score AS review_priority_score, css.percentile_rank,
+                0.0 AS confidence_score, css.support_evidence_count AS evidence_count, css.computed_at,
+                0 AS anomalous_battle_presence_count, 0 AS control_battle_presence_count,
+                0 AS anomalous_battle_denominator, 0 AS control_battle_denominator,
+                0.0 AS anomalous_presence_rate, 0.0 AS control_presence_rate,
+                0.0 AS enemy_same_hull_survival_lift,
+                css.high_sustain_frequency AS enemy_sustain_lift,
+                0.0 AS co_presence_anomalous_density, 0.0 AS graph_bridge_score,
+                0.0 AS corp_hop_frequency_180d, 0.0 AS short_tenure_ratio_180d, 0.0 AS repeatability_score,
+                coh.source AS org_history_source, coh.current_corporation_id, coh.current_alliance_id, coh.corp_hops_180d, coh.short_tenure_hops_180d,
+                coh.hostile_adjacent_hops_180d, coh.history_json AS org_history_json, coh.fetched_at AS org_history_fetched_at,
+                COALESCE(emc.entity_name, CONCAT("Character #", css.character_id)) AS character_name,
+                "suspicion_v2" AS data_source
+         FROM character_suspicion_scores css
+         LEFT JOIN character_org_history_cache coh ON coh.character_id = css.character_id
+            AND coh.fetched_at = (
+                SELECT MAX(coh2.fetched_at)
+                FROM character_org_history_cache coh2
+                WHERE coh2.character_id = css.character_id
+            )
+         LEFT JOIN entity_metadata_cache emc ON emc.entity_type = "character" AND emc.entity_id = css.character_id
+         WHERE css.character_id = ?
+         LIMIT 1',
+        [$characterId]
+    );
+
+    if ($row) {
+        return $row;
+    }
+
+    // Minimal fallback: battle intelligence only (character exists in battles but below scoring threshold)
+    $row = db_select_one(
+        'SELECT cbi.character_id, 0.0 AS review_priority_score, 0.0 AS percentile_rank,
+                0.0 AS confidence_score, 0 AS evidence_count, cbi.computed_at,
+                0 AS anomalous_battle_presence_count, 0 AS control_battle_presence_count,
+                0 AS anomalous_battle_denominator, 0 AS control_battle_denominator,
+                0.0 AS anomalous_presence_rate, 0.0 AS control_presence_rate,
+                0.0 AS enemy_same_hull_survival_lift, 0.0 AS enemy_sustain_lift,
+                0.0 AS co_presence_anomalous_density, 0.0 AS graph_bridge_score,
+                0.0 AS corp_hop_frequency_180d, 0.0 AS short_tenure_ratio_180d, 0.0 AS repeatability_score,
+                NULL AS org_history_source, NULL AS current_corporation_id, NULL AS current_alliance_id,
+                NULL AS corp_hops_180d, NULL AS short_tenure_hops_180d, NULL AS hostile_adjacent_hops_180d,
+                NULL AS org_history_json, NULL AS org_history_fetched_at,
+                COALESCE(emc.entity_name, CONCAT("Character #", cbi.character_id)) AS character_name,
+                "below_threshold" AS data_source,
+                cbi.eligible_battle_count, cbi.total_battle_count
+         FROM character_battle_intelligence cbi
+         LEFT JOIN entity_metadata_cache emc ON emc.entity_type = "character" AND emc.entity_id = cbi.character_id
+         WHERE cbi.character_id = ?
          LIMIT 1',
         [$characterId]
     );
@@ -16201,6 +16312,160 @@ function db_battle_intelligence_character_evidence(int $characterId, int $limit 
          ORDER BY COALESCE(ABS(deviation_value), COALESCE(ABS(evidence_value), 0)) DESC, evidence_key ASC, window_label ASC
          LIMIT ' . $safeLimit,
         [$characterId]
+    );
+}
+
+/**
+ * Produce a blended two-lane intelligence summary for a character.
+ *
+ * Lane 1  — battle intelligence  (counterintel / suspicion scores)
+ * Lane 2  — behavioral scoring   (all-engagement behavioral pipeline)
+ *
+ * Blending rules
+ *   large_battles >= 10  → Lane 1 weight 0.65 / Lane 2 weight 0.35
+ *   large_battles  5–9   → Lane 1 weight 0.50 / Lane 2 weight 0.50
+ *   large_battles  1–4   → Lane 1 weight 0.35 / Lane 2 weight 0.65
+ *   large_battles  0     → Lane 2 only (behavioral only)
+ *   no behavioral data   → Lane 1 only
+ *
+ * Returns null only if there is no data at all in either lane.
+ */
+function db_character_blended_intelligence(int $characterId): ?array
+{
+    if ($characterId <= 0) {
+        return null;
+    }
+
+    // Fetch both lanes.
+    $lane1 = db_battle_intelligence_character($characterId);
+    $behavioral = db_character_behavioral_score($characterId);
+
+    if ($lane1 === null && $behavioral === null) {
+        return null;
+    }
+
+    $l1Score     = (float) ($lane1['review_priority_score'] ?? 0.0);
+    $l1Pct       = (float) ($lane1['percentile_rank'] ?? 0.0);
+    $l1Confidence = (float) ($lane1['confidence_score'] ?? 0.0);
+    $l1Source    = (string) ($lane1['data_source'] ?? 'none');
+
+    $l2Score     = (float) ($behavioral['behavioral_risk_score'] ?? 0.0);
+    $l2Pct       = (float) ($behavioral['percentile_rank'] ?? 0.0);
+    $l2Tier      = (string) ($behavioral['confidence_tier'] ?? 'low');
+    $largeBattles = (int) ($behavioral['large_battle_count'] ?? 0);
+    $soloKills   = (int) ($behavioral['solo_kill_count'] ?? 0);
+    $gangKills   = (int) ($behavioral['gang_kill_count'] ?? 0);
+
+    // Determine coverage source and blend weights.
+    $hasLane1 = $lane1 !== null;
+    $hasLane2 = $behavioral !== null;
+
+    if ($hasLane1 && $hasLane2) {
+        if ($largeBattles >= 10) {
+            $w1 = 0.65; $w2 = 0.35;
+            $evidenceSource = 'mixed_battle_dominant';
+        } elseif ($largeBattles >= 5) {
+            $w1 = 0.50; $w2 = 0.50;
+            $evidenceSource = 'mixed_balanced';
+        } elseif ($largeBattles >= 1) {
+            $w1 = 0.35; $w2 = 0.65;
+            $evidenceSource = 'mixed_behavioral_dominant';
+        } else {
+            $w1 = 0.0; $w2 = 1.0;
+            $evidenceSource = 'behavioral_only';
+        }
+    } elseif ($hasLane1) {
+        $w1 = 1.0; $w2 = 0.0;
+        $evidenceSource = 'battle_only';
+    } else {
+        $w1 = 0.0; $w2 = 1.0;
+        $evidenceSource = 'behavioral_only';
+    }
+
+    $blendedScore = round($w1 * $l1Score + $w2 * $l2Score, 6);
+    $blendedPct   = round($w1 * $l1Pct   + $w2 * $l2Pct,   6);
+
+    // Overall confidence: blend confidence scores, capped by data quality.
+    $l2ConfidenceNumeric = match ($l2Tier) { 'high' => 0.9, 'medium' => 0.6, 'low' => 0.3, default => 0.1 };
+    $blendedConfidence = $hasLane1 && $hasLane2
+        ? round(($w1 * $l1Confidence + $w2 * $l2ConfidenceNumeric), 4)
+        : ($hasLane1 ? $l1Confidence : $l2ConfidenceNumeric);
+
+    return [
+        'character_id'       => $characterId,
+        'character_name'     => $lane1['character_name'] ?? $behavioral['character_name'] ?? null,
+        'blended_score'      => $blendedScore,
+        'blended_percentile' => $blendedPct,
+        'blended_confidence' => $blendedConfidence,
+        'evidence_source'    => $evidenceSource,
+        'lane1_score'        => $hasLane1 ? $l1Score : null,
+        'lane1_percentile'   => $hasLane1 ? $l1Pct   : null,
+        'lane1_source'       => $hasLane1 ? $l1Source : null,
+        'lane1_weight'       => $w1,
+        'lane2_score'        => $hasLane2 ? $l2Score : null,
+        'lane2_percentile'   => $hasLane2 ? $l2Pct   : null,
+        'lane2_confidence'   => $hasLane2 ? $l2Tier  : null,
+        'lane2_weight'       => $w2,
+        'solo_kill_count'    => $soloKills,
+        'gang_kill_count'    => $gangKills,
+        'large_battle_count' => $largeBattles,
+        'lane1_raw'          => $lane1,
+        'lane2_raw'          => $behavioral,
+    ];
+}
+
+function db_character_behavioral_score(int $characterId): ?array
+{
+    if ($characterId <= 0) {
+        return null;
+    }
+
+    $row = db_select_one(
+        'SELECT cbs.*, COALESCE(emc.entity_name, CONCAT("Character #", cbs.character_id)) AS character_name
+         FROM character_behavioral_scores cbs
+         LEFT JOIN entity_metadata_cache emc ON emc.entity_type = "character" AND emc.entity_id = cbs.character_id
+         WHERE cbs.character_id = ?
+         LIMIT 1',
+        [$characterId]
+    );
+
+    return $row ?: null;
+}
+
+function db_character_behavioral_signals(int $characterId): array
+{
+    if ($characterId <= 0) {
+        return [];
+    }
+
+    return db_select(
+        'SELECT signal_key, window_label, signal_value, baseline_value, deviation, confidence_flag, signal_text, signal_payload_json, computed_at
+         FROM character_behavioral_signals
+         WHERE character_id = ?
+         ORDER BY signal_value DESC, signal_key ASC',
+        [$characterId]
+    );
+}
+
+function db_character_small_engagement_copresence(int $characterId, int $limit = 15): array
+{
+    if ($characterId <= 0) {
+        return [];
+    }
+
+    $safeLimit = max(1, min(50, $limit));
+
+    return db_select(
+        'SELECT sec.character_id_a, sec.character_id_b, sec.window_label, sec.co_kill_count,
+                sec.unique_victim_count, sec.unique_system_count, sec.edge_weight, sec.last_event_at,
+                COALESCE(emc.entity_name, CONCAT("Character #", CASE WHEN sec.character_id_a = ? THEN sec.character_id_b ELSE sec.character_id_a END)) AS companion_name
+         FROM small_engagement_copresence sec
+         LEFT JOIN entity_metadata_cache emc ON emc.entity_type = "character"
+            AND emc.entity_id = CASE WHEN sec.character_id_a = ? THEN sec.character_id_b ELSE sec.character_id_a END
+         WHERE (sec.character_id_a = ? OR sec.character_id_b = ?)
+         ORDER BY sec.edge_weight DESC
+         LIMIT ' . $safeLimit,
+        [$characterId, $characterId, $characterId, $characterId]
     );
 }
 
@@ -18096,6 +18361,10 @@ function db_pipeline_observatory_data(): array
     $suspicionScoredV2  = (int) (db_select_one("SELECT COUNT(*) AS cnt FROM character_suspicion_scores") ?? [])['cnt'] ?? 0;
     $suspicionScoredCI  = (int) (db_select_one("SELECT COUNT(*) AS cnt FROM character_counterintel_scores") ?? [])['cnt'] ?? 0;
     $suspicionScored    = max($suspicionScoredV2, $suspicionScoredCI);
+    $suspicionBelowThreshold = (int) (db_select_one(
+        "SELECT COUNT(*) AS cnt FROM character_battle_intelligence WHERE eligible_battle_count < 5"
+    ) ?? [])['cnt'] ?? 0;
+    $behavioralScored = (int) (db_select_one("SELECT COUNT(*) AS cnt FROM character_behavioral_scores") ?? [])['cnt'] ?? 0;
     $dossiers          = (int) (db_select_one("SELECT COUNT(*) AS cnt FROM alliance_dossiers") ?? [])['cnt'] ?? 0;
     $threatCorridors   = (int) (db_select_one("SELECT COUNT(*) AS cnt FROM threat_corridors") ?? [])['cnt'] ?? 0;
 
@@ -18138,7 +18407,7 @@ function db_pipeline_observatory_data(): array
         'collection'  => ['market_hub_current_sync', 'esi_character_queue_sync', 'esi_alliance_history_sync', 'evewho_enrichment_sync', 'evewho_alliance_member_sync'],
         'resolution'  => ['entity_metadata_resolve_sync', 'esi_alliance_history_sync'],
         'graph'       => ['compute_graph_sync', 'graph_community_detection_sync', 'graph_motif_detection_sync', 'graph_typed_interactions_sync', 'graph_temporal_metrics_sync', 'graph_evidence_paths_sync', 'compute_copresence_edges', 'compute_graph_sync_killmail_entities', 'compute_graph_sync_killmail_edges'],
-        'intelligence' => ['compute_suspicion_scores_v2', 'compute_alliance_dossiers', 'compute_threat_corridors', 'compute_counterintel_pipeline', 'intelligence_pipeline', 'compute_battle_rollups'],
+        'intelligence' => ['compute_suspicion_scores_v2', 'compute_alliance_dossiers', 'compute_threat_corridors', 'compute_counterintel_pipeline', 'intelligence_pipeline', 'compute_battle_rollups', 'compute_behavioral_scoring'],
         'analytics'   => ['dashboard_summary_sync', 'analytics_bucket_1h_sync', 'analytics_bucket_1d_sync', 'rebuild_ai_briefings', 'forecasting_ai_sync'],
     ];
 
@@ -18205,6 +18474,8 @@ function db_pipeline_observatory_data(): array
             'evidence_paths'    => $evidencePaths,
             'suspicion_scored'  => $suspicionScored,
             'suspicion_coverage' => $suspicionCoverage,
+            'suspicion_below_threshold' => $suspicionBelowThreshold,
+            'behavioral_scored' => $behavioralScored,
             'dossiers'          => $dossiers,
             'dossier_coverage'  => $dossierCoverage,
             'alliances_in_battles' => $alliancesInBattles,
