@@ -107,14 +107,22 @@ def _detect_triangles(client: Neo4jClient) -> list[dict[str, Any]]:
 
 
 def _detect_stars(client: Neo4jClient) -> list[dict[str, Any]]:
-    """Detect star motifs: 1 hub connected to 4+ others who don't connect to each other."""
+    """Detect star motifs: 1 hub connected to 4+ others who don't connect to each other.
+
+    Uses UNWIND + OPTIONAL MATCH instead of a nested list comprehension with
+    pattern matching, which avoids the O(n^2) per-hub cost that caused timeouts.
+    """
     return client.query(
         """
         MATCH (hub:Character)-[:CO_OCCURS_WITH]-(leaf:Character)
         WITH hub, collect(leaf) AS leaves
         WHERE size(leaves) >= 4
-        WITH hub, leaves,
-             [l1 IN leaves WHERE NONE(l2 IN leaves WHERE l1 <> l2 AND (l1)-[:CO_OCCURS_WITH]-(l2))] AS isolated_leaves
+        UNWIND leaves AS l1
+        OPTIONAL MATCH (l1)-[ie:CO_OCCURS_WITH]-(l2)
+        WHERE l2 IN leaves AND l1 <> l2
+        WITH hub, l1, count(ie) AS inter_edges
+        WHERE inter_edges = 0
+        WITH hub, collect(l1) AS isolated_leaves
         WHERE size(isolated_leaves) >= 4
         WITH hub, isolated_leaves[..8] AS top_leaves
         RETURN
@@ -124,7 +132,8 @@ def _detect_stars(client: Neo4jClient) -> list[dict[str, Any]]:
             1 AS occurrence_count,
             toFloat(COALESCE(hub.suspicion_score, 0)) AS suspicion_relevance
         LIMIT 200
-        """
+        """,
+        timeout_seconds=30,
     )
 
 
