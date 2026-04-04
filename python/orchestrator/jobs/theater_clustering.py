@@ -140,7 +140,7 @@ def _load_clustering_settings(db: SupplyCoreDb) -> dict[str, Any]:
 
 
 def _load_battles(db: SupplyCoreDb) -> list[dict[str, Any]]:
-    """Load all eligible battles with system/constellation/region metadata."""
+    """Load eligible battles, excluding those already assigned to locked theaters."""
     return db.fetch_all(
         """
         SELECT
@@ -158,6 +158,12 @@ def _load_battles(db: SupplyCoreDb) -> list[dict[str, Any]]:
         FROM battle_rollups br
         INNER JOIN ref_systems rs ON rs.system_id = br.system_id
         WHERE br.participant_count >= %s
+          AND br.battle_id NOT IN (
+              SELECT tb.battle_id
+              FROM theater_battles tb
+              INNER JOIN theaters t ON t.theater_id = tb.theater_id
+              WHERE t.locked_at IS NOT NULL
+          )
         ORDER BY br.started_at ASC
         """,
         (MIN_THEATER_PARTICIPANTS,),
@@ -442,6 +448,192 @@ def _absorb_sub_threshold_battles(
     return diagnostics
 
 
+# ── Opponent-aware theater splitting ───────────────────────────────────────
+
+def _load_battle_opponent_alliances(
+    db: SupplyCoreDb,
+    battle_ids: set[str],
+    friendly_alliance_ids: set[int],
+    friendly_corporation_ids: set[int],
+) -> dict[str, dict[int, int]]:
+    """Load non-friendly alliance pilot counts per battle from battle_participants.
+
+    Returns {battle_id: {alliance_id: pilot_count}}.
+    Characters from friendly alliances/corporations are excluded so that
+    only hostile or neutral entities remain — these define the opponent
+    composition of each battle.
+    """
+    if not battle_ids:
+        return {}
+
+    result: dict[str, dict[int, int]] = defaultdict(lambda: defaultdict(int))
+    id_list = list(battle_ids)
+
+    for offset in range(0, len(id_list), BATCH_SIZE):
+        chunk = id_list[offset:offset + BATCH_SIZE]
+        placeholders = ",".join(["%s"] * len(chunk))
+        rows = db.fetch_all(
+            f"""
+            SELECT battle_id, alliance_id, corporation_id
+            FROM battle_participants
+            WHERE battle_id IN ({placeholders})
+              AND alliance_id IS NOT NULL
+              AND alliance_id > 0
+            """,
+            tuple(chunk),
+        )
+        for row in rows:
+            bid = str(row.get("battle_id") or "")
+            aid = int(row.get("alliance_id") or 0)
+            cid = int(row.get("corporation_id") or 0)
+            if not bid or aid <= 0:
+                continue
+            # Skip friendly alliances and corporations
+            if aid in friendly_alliance_ids:
+                continue
+            if cid > 0 and cid in friendly_corporation_ids:
+                continue
+            result[bid][aid] += 1
+
+    return {bid: dict(counts) for bid, counts in result.items()}
+
+
+def _load_friendly_ids(db: SupplyCoreDb) -> tuple[set[int], set[int]]:
+    """Load friendly alliance and corporation IDs from corp_contacts + manual tracking tables."""
+    friendly_alliance_ids: set[int] = set()
+    friendly_corporation_ids: set[int] = set()
+
+    # ESI corp contacts (positive standing = friendly)
+    try:
+        rows = db.fetch_all(
+            """SELECT contact_id, contact_type
+               FROM corp_contacts
+               WHERE contact_type IN ('alliance', 'corporation')
+                 AND standing > 0"""
+        )
+        for row in rows:
+            cid = int(row.get("contact_id") or 0)
+            if cid <= 0:
+                continue
+            if row.get("contact_type") == "alliance":
+                friendly_alliance_ids.add(cid)
+            elif row.get("contact_type") == "corporation":
+                friendly_corporation_ids.add(cid)
+    except Exception:
+        pass
+
+    # Manual tracked alliances/corporations
+    try:
+        for row in db.fetch_all("SELECT alliance_id FROM killmail_tracked_alliances WHERE active = 1"):
+            aid = int(row.get("alliance_id") or 0)
+            if aid > 0:
+                friendly_alliance_ids.add(aid)
+    except Exception:
+        pass
+
+    try:
+        for row in db.fetch_all("SELECT corporation_id FROM killmail_tracked_corporations WHERE active = 1"):
+            cid = int(row.get("corporation_id") or 0)
+            if cid > 0:
+                friendly_corporation_ids.add(cid)
+    except Exception:
+        pass
+
+    return friendly_alliance_ids, friendly_corporation_ids
+
+
+# Minimum pilots an opponent alliance must have in a battle to count as a
+# "significant" presence.  Alliances below this threshold in a battle are
+# treated as stragglers and won't bridge two otherwise-disjoint engagements.
+OPPONENT_SPLIT_MIN_PILOTS = 5
+
+
+def _split_by_opponent_composition(
+    theater_groups: dict[str, list[dict[str, Any]]],
+    battle_opponents: dict[str, dict[int, int]],
+) -> dict[str, list[dict[str, Any]]]:
+    """Split theaters whose constituent battles face disjoint opponent groups.
+
+    For each theater with multiple battles, build a union-find where battles
+    sharing a *significant* opponent alliance are merged.  An alliance counts
+    as significant in a battle only when it has >= OPPONENT_SPLIT_MIN_PILOTS
+    pilots — a handful of stragglers lingering from a previous engagement
+    won't prevent a split.
+
+    If the result has multiple connected components, the theater is split
+    into separate theaters — one per component.
+
+    Battles with no significant opponents are attached to the largest
+    component (they're likely small skirmishes related to the main fight).
+    """
+    new_groups: dict[str, list[dict[str, Any]]] = {}
+
+    for root, group_battles in theater_groups.items():
+        if len(group_battles) <= 1:
+            new_groups[root] = group_battles
+            continue
+
+        # Build union-find: battles sharing a significant opponent alliance get merged
+        uf = _UnionFind()
+        battle_ids_in_group = [str(b["battle_id"]) for b in group_battles]
+        for bid in battle_ids_in_group:
+            uf.find(bid)
+
+        # For each battle, determine significant opponent alliances
+        battle_significant: dict[str, set[int]] = {}
+        for bid in battle_ids_in_group:
+            opp = battle_opponents.get(bid, {})
+            battle_significant[bid] = {
+                aid for aid, count in opp.items()
+                if count >= OPPONENT_SPLIT_MIN_PILOTS
+            }
+
+        # Index: significant opponent alliance → list of battle_ids
+        alliance_to_battles: dict[int, list[str]] = defaultdict(list)
+        for bid in battle_ids_in_group:
+            for aid in battle_significant.get(bid, set()):
+                alliance_to_battles[aid].append(bid)
+
+        # Union battles that share a significant opponent alliance
+        for aid, bids in alliance_to_battles.items():
+            for i in range(1, len(bids)):
+                uf.union(bids[0], bids[i])
+
+        components = uf.groups()
+
+        # If only one component, no split needed
+        if len(components) <= 1:
+            new_groups[root] = group_battles
+            continue
+
+        # Separate battles with no significant opponents
+        battle_map = {str(b["battle_id"]): b for b in group_battles}
+        orphan_bids = [bid for bid in battle_ids_in_group if not battle_significant.get(bid)]
+        real_components: dict[str, list[str]] = {
+            comp_root: [bid for bid in members if bid not in orphan_bids]
+            for comp_root, members in components.items()
+        }
+        # Remove empty components (all members were orphans)
+        real_components = {k: v for k, v in real_components.items() if v}
+
+        if len(real_components) <= 1:
+            # After removing orphans, only one real component — no split
+            new_groups[root] = group_battles
+            continue
+
+        # Attach orphans to the largest component
+        largest_root = max(real_components, key=lambda r: len(real_components[r]))
+        real_components[largest_root].extend(orphan_bids)
+
+        # Create new theater groups from components
+        for comp_root, comp_bids in real_components.items():
+            comp_battles = [battle_map[bid] for bid in comp_bids if bid in battle_map]
+            if comp_battles:
+                new_groups[comp_root] = comp_battles
+
+    return new_groups
+
+
 def _compute_theater_id(battle_ids: list[str]) -> str:
     """Deterministic theater ID from sorted constituent battle IDs."""
     canonical = "|".join(sorted(battle_ids))
@@ -543,14 +735,22 @@ def _flush_theaters(
     new_theater_ids = {t["theater_id"] for t in theaters}
 
     with db.transaction() as (_, cursor):
+        # Collect locked theater IDs — these must be preserved even if
+        # they don't appear in the new clustering output (their battles
+        # were excluded from re-clustering).
+        cursor.execute("SELECT theater_id FROM theaters WHERE locked_at IS NOT NULL")
+        locked_ids = {str(r["theater_id"]) for r in cursor.fetchall()}
+        preserve_ids = new_theater_ids | locked_ids
+
         # Remove theaters/battles/systems that no longer exist, but
         # preserve analysis-computed fields (total_kills, total_isk,
         # anomaly_score) for theaters that are being re-clustered.
-        if new_theater_ids:
-            id_placeholders = ",".join(["%s"] * len(new_theater_ids))
-            cursor.execute(f"DELETE FROM theater_systems WHERE theater_id NOT IN ({id_placeholders})", tuple(new_theater_ids))
-            cursor.execute(f"DELETE FROM theater_battles WHERE theater_id NOT IN ({id_placeholders})", tuple(new_theater_ids))
-            cursor.execute(f"DELETE FROM theaters WHERE theater_id NOT IN ({id_placeholders})", tuple(new_theater_ids))
+        # Also preserve locked theaters.
+        if preserve_ids:
+            id_placeholders = ",".join(["%s"] * len(preserve_ids))
+            cursor.execute(f"DELETE FROM theater_systems WHERE theater_id NOT IN ({id_placeholders})", tuple(preserve_ids))
+            cursor.execute(f"DELETE FROM theater_battles WHERE theater_id NOT IN ({id_placeholders})", tuple(preserve_ids))
+            cursor.execute(f"DELETE FROM theaters WHERE theater_id NOT IN ({id_placeholders})", tuple(preserve_ids))
         else:
             cursor.execute("DELETE FROM theater_systems")
             cursor.execute("DELETE FROM theater_battles")
@@ -694,6 +894,26 @@ def run_theater_clustering(
             _theater_log(runtime, "theater_clustering.sub_threshold_absorbed", {
                 "theaters_with_absorptions": len(absorption_diag),
                 "total_battles_absorbed": total_absorbed,
+            })
+
+        # 4c. Opponent-aware splitting: detect theaters whose constituent
+        # battles face disjoint opponent groups and split them so each
+        # engagement gets its own battle report.
+        friendly_aids, friendly_cids = _load_friendly_ids(db)
+        all_theater_battle_ids: set[str] = set()
+        for group_battles in theater_groups.values():
+            for b in group_battles:
+                all_theater_battle_ids.add(str(b["battle_id"]))
+        battle_opponents = _load_battle_opponent_alliances(db, all_theater_battle_ids, friendly_aids, friendly_cids)
+
+        pre_split_count = len(theater_groups)
+        theater_groups = _split_by_opponent_composition(theater_groups, battle_opponents)
+        split_count = len(theater_groups) - pre_split_count
+        if split_count > 0:
+            _theater_log(runtime, "theater_clustering.opponent_split", {
+                "theaters_before": pre_split_count,
+                "theaters_after": len(theater_groups),
+                "new_theaters_from_splits": split_count,
             })
 
         # 5. Build theater rows

@@ -110,6 +110,7 @@ def _load_theaters(db: SupplyCoreDb) -> list[dict[str, Any]]:
         """
         SELECT theater_id, start_time, end_time, duration_seconds
         FROM theaters
+        WHERE locked_at IS NULL
         ORDER BY start_time ASC
         """
     )
@@ -1130,12 +1131,15 @@ def _compute_structure_kills(
       - victim_alliance_id > 0    (player-owned — filters out NPC entities)
       - zkb_npc == 0              (sanity guard: not flagged as an NPC engagement)
     """
-    seen: set[int] = set()
-    result: list[dict[str, Any]] = []
+    # First pass: identify structure killmail IDs and collect final-blow attacker info.
+    # Killmails are expanded per-attacker, so we scan all rows to find the final blow.
+    structure_km_ids: set[int] = set()
+    final_blow_attacker: dict[int, dict[str, int]] = {}  # km_id → {alliance_id, corporation_id}
+    structure_victim_data: dict[int, dict[str, Any]] = {}
 
     for km in killmails:
         km_id = int(km.get("killmail_id") or 0)
-        if km_id <= 0 or km_id in seen:
+        if km_id <= 0:
             continue
 
         victim_char = int(km.get("victim_character_id") or 0)
@@ -1146,26 +1150,45 @@ def _compute_structure_kills(
         if victim_char != 0 or victim_alliance <= 0 or zkb_npc:
             continue
 
-        seen.add(km_id)
+        # Record victim data once per killmail
+        if km_id not in structure_victim_data:
+            structure_km_ids.add(km_id)
+            victim_corp = int(km.get("victim_corporation_id") or 0)
+            side, _ = _classify_alliance(victim_alliance, victim_corp, side_configuration, relationship_graph)
+            km_time = km.get("killmail_time")
+            if isinstance(km_time, datetime):
+                killed_at = km_time.strftime("%Y-%m-%d %H:%M:%S")
+            else:
+                killed_at = str(km_time) if km_time else None
 
-        victim_corp = int(km.get("victim_corporation_id") or 0)
-        side, _ = _classify_alliance(victim_alliance, victim_corp, side_configuration, relationship_graph)
-        isk = float(km.get("total_value") or 0)
-        km_time = km.get("killmail_time")
-        if isinstance(km_time, datetime):
-            killed_at = km_time.strftime("%Y-%m-%d %H:%M:%S")
-        else:
-            killed_at = str(km_time) if km_time else None
+            structure_victim_data[km_id] = {
+                "victim_corporation_id": victim_corp if victim_corp > 0 else None,
+                "victim_alliance_id": victim_alliance,
+                "victim_ship_type_id": int(km.get("victim_ship_type_id") or 0),
+                "isk_lost": float(km.get("total_value") or 0),
+                "side": side,
+                "killed_at": killed_at,
+            }
 
+        # Track final-blow attacker for this structure kill
+        is_final = int(km.get("attacker_final_blow") or 0)
+        if is_final == 1 and km_id not in final_blow_attacker:
+            final_blow_attacker[km_id] = {
+                "alliance_id": int(km.get("attacker_alliance_id") or 0),
+                "corporation_id": int(km.get("attacker_corporation_id") or 0),
+            }
+
+    # Build result rows with killer info attached
+    result: list[dict[str, Any]] = []
+    for km_id in structure_km_ids:
+        victim = structure_victim_data[km_id]
+        killer = final_blow_attacker.get(km_id, {})
         result.append({
             "theater_id": theater_id,
             "killmail_id": km_id,
-            "victim_corporation_id": victim_corp if victim_corp > 0 else None,
-            "victim_alliance_id": victim_alliance,
-            "victim_ship_type_id": int(km.get("victim_ship_type_id") or 0),
-            "isk_lost": isk,
-            "side": side,
-            "killed_at": killed_at,
+            **victim,
+            "killer_alliance_id": killer.get("alliance_id") or None,
+            "killer_corporation_id": killer.get("corporation_id") or None,
         })
 
     return result
@@ -1509,15 +1532,17 @@ def _flush_analysis(
                 """
                 INSERT INTO theater_structure_kills (
                     theater_id, killmail_id, victim_corporation_id, victim_alliance_id,
-                    victim_ship_type_id, isk_lost, side, killed_at
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    victim_ship_type_id, isk_lost, side, killer_alliance_id,
+                    killer_corporation_id, killed_at
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 [
                     (
                         s["theater_id"], s["killmail_id"],
                         s["victim_corporation_id"], s["victim_alliance_id"],
                         s["victim_ship_type_id"], s["isk_lost"],
-                        s["side"], s["killed_at"],
+                        s["side"], s.get("killer_alliance_id"),
+                        s.get("killer_corporation_id"), s["killed_at"],
                     )
                     for s in structure_kill_rows
                 ],
@@ -1692,12 +1717,42 @@ def run_theater_analysis(
                 "third_party_count": side_resolution.get("total_third_party", 0),
             })
 
+        # Auto-lock theaters whose last battle ended > 1 hour ago.
+        # Locked theaters won't be re-analyzed on subsequent runs, saving
+        # resources.  The view snapshot is generated on first page load.
+        auto_lock_threshold = datetime.now(UTC) - timedelta(hours=1)
+        auto_locked = 0
+        if not dry_run:
+            auto_lock_candidates = db.fetch_all(
+                """
+                SELECT theater_id, end_time
+                FROM theaters
+                WHERE locked_at IS NULL
+                  AND end_time IS NOT NULL
+                  AND end_time < %s
+                """,
+                (auto_lock_threshold.strftime("%Y-%m-%d %H:%M:%S"),),
+            )
+            for candidate in auto_lock_candidates:
+                tid = str(candidate.get("theater_id") or "")
+                if tid:
+                    db.execute(
+                        "UPDATE theaters SET locked_at = NOW() WHERE theater_id = %s AND locked_at IS NULL",
+                        (tid,),
+                    )
+                    auto_locked += 1
+            if auto_locked > 0:
+                _theater_log(runtime, "theater_analysis.auto_locked", {
+                    "count": auto_locked,
+                    "threshold": auto_lock_threshold.isoformat(),
+                })
+
         finish_job_run(
             db, job,
             status="success",
             rows_processed=rows_processed,
             rows_written=rows_written,
-            meta={"computed_at": computed_at, "theaters_analyzed": theaters_analyzed},
+            meta={"computed_at": computed_at, "theaters_analyzed": theaters_analyzed, "auto_locked": auto_locked},
         )
 
         duration_ms = int((datetime.now(UTC) - started_monotonic).total_seconds() * 1000)

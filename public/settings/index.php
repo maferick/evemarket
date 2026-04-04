@@ -566,7 +566,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         case 'ai-report-management':
             $unlockTheaterId = trim((string) ($_POST['unlock_theater_id'] ?? ''));
-            if ($unlockTheaterId !== '') {
+            $recalcAllTheaters = (bool) ($_POST['recalculate_all_theaters'] ?? false);
+            if ($recalcAllTheaters) {
+                // Unlock all theaters so clustering and analysis will reprocess them
+                $allLocked = db_theaters_locked();
+                $unlockCount = 0;
+                foreach ($allLocked as $lt) {
+                    $tid = (string) ($lt['theater_id'] ?? '');
+                    if ($tid !== '') {
+                        theater_unlock_report($tid);
+                        $unlockCount++;
+                    }
+                }
+                // Trigger clustering + analysis jobs
+                run_data_sync_now('theater_clustering');
+                $saved = true;
+                $saveMessage = "Unlocked {$unlockCount} theater(s) and triggered recalculation. Theaters will auto-lock again once analysis completes.";
+            } elseif ($unlockTheaterId !== '') {
                 $unlockResult = theater_unlock_report($unlockTheaterId);
                 $saved = (bool) ($unlockResult['ok'] ?? false);
                 $saveMessage = $saved
@@ -1808,8 +1824,17 @@ include __DIR__ . '/../../src/views/partials/header.php';
         <?php elseif ($activeSubsection === 'ai-report-management'): ?>
             <?php $lockedTheaters = db_theaters_locked(); ?>
             <div class="mt-6 space-y-6">
-                <div class="rounded-2xl border border-white/8 bg-white/[0.03] px-4 py-3 text-sm text-muted">
-                    Locked theater reports have their AI briefing frozen. Unlocking a report clears the AI-generated briefing and allows you to regenerate it with the <span class="font-medium text-slate-100">Lock &amp; Generate AI Report</span> button on the theater view page.
+                <div class="rounded-2xl border border-white/8 bg-white/[0.03] px-4 py-3 text-sm text-muted flex items-center justify-between">
+                    <span>Locked theater reports have their AI briefing frozen. Unlocking a report clears the AI-generated briefing and allows you to regenerate it with the <span class="font-medium text-slate-100">Lock &amp; Generate AI Report</span> button on the theater view page.</span>
+                    <form method="POST" class="ml-4 shrink-0" onsubmit="return confirm('This will unlock ALL theaters, re-run clustering and analysis from scratch, then auto-lock them again. Continue?');">
+                        <input type="hidden" name="_token" value="<?= htmlspecialchars(csrf_token(), ENT_QUOTES) ?>">
+                        <input type="hidden" name="section" value="ai-report-management">
+                        <input type="hidden" name="recalculate_all_theaters" value="1">
+                        <button type="submit" class="inline-flex items-center gap-1.5 rounded-lg border border-sky-500/30 bg-sky-500/10 px-3 py-1.5 text-xs font-medium text-sky-200 transition hover:bg-sky-500/20">
+                            <svg class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>
+                            Recalculate All Theaters
+                        </button>
+                    </form>
                 </div>
 
                 <?php if ($lockedTheaters === []): ?>

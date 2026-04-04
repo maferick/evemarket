@@ -208,6 +208,31 @@ if ($viewSnapshot !== null && !$pendingLock) {
             'pilots' => (int) ($a['participant_count'] ?? 0),
         ];
     }
+    // Fold structure kills into side panels (structures have no pilot so they
+    // are excluded from the character ledger; add their ISK as losses on the
+    // victim side and as kills to the final-blow attacker's side).
+    foreach ($structureKills as $sk) {
+        $skSide = (string) ($sk['side'] ?? '');
+        $skIsk = (float) ($sk['isk_lost'] ?? 0);
+        if ($skIsk <= 0 || !isset($sidePanels[$skSide])) continue;
+
+        // Add loss to victim's side
+        $sidePanels[$skSide]['isk_lost'] += $skIsk;
+        $sidePanels[$skSide]['losses'] += 1;
+
+        // Credit kill ISK to the final-blow attacker's side
+        $killerAid = (int) ($sk['killer_alliance_id'] ?? 0);
+        $killerCid = (int) ($sk['killer_corporation_id'] ?? 0);
+        if ($killerAid > 0 || $killerCid > 0) {
+            $killerSide = $classifyAlliance($killerAid, $killerCid);
+            if (isset($sidePanels[$killerSide])) {
+                $sidePanels[$killerSide]['isk_killed'] += $skIsk;
+                $sidePanels[$killerSide]['kills'] += 1;
+            }
+        }
+    }
+    unset($sk, $skSide, $skIsk, $killerAid, $killerCid, $killerSide);
+
     foreach (['friendly', 'opponent', 'third_party'] as $_side) {
         $total = $sidePanels[$_side]['isk_killed'] + $sidePanels[$_side]['isk_lost'];
         $sidePanels[$_side]['efficiency'] = $total > 0
