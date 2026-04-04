@@ -13,15 +13,17 @@ from ..json_utils import json_dumps_safe
 from ..neo4j import Neo4jClient, Neo4jConfig, Neo4jError
 
 
-_TRIANGLE_BATCH_SIZE = 200
+_TRIANGLE_BATCH_SIZE = 100
 _TRIANGLE_LIMIT = 500
+_TRIANGLE_ENRICH_CHUNK = 50
 
 
 def _detect_triangles(client: Neo4jClient) -> list[dict[str, Any]]:
     """Detect triangle motifs: 3 characters mutually co-occurring.
 
-    Batches the query by character_id ranges to stay within Neo4j's
-    transaction memory budget.
+    Splits detection into two phases to avoid cartesian explosion:
+    1. Find triangles (cheap pattern match, no OPTIONAL MATCH)
+    2. Enrich with battle data in a separate query
     """
     # Get character_id boundaries for nodes that have outgoing CO_OCCURS_WITH.
     bounds = client.query(
@@ -36,43 +38,72 @@ def _detect_triangles(client: Neo4jClient) -> list[dict[str, Any]]:
 
     lo, hi = int(bounds[0]["lo"]), int(bounds[0]["hi"])
 
+    # Phase 1: Find triangles.
     # CO_OCCURS_WITH edges are always directed from lower character_id to
     # higher, so we use directed patterns to avoid the combinatorial explosion
     # of undirected cycle matching.  The third edge (a)->(c) is checked as a
     # WHERE-EXISTS filter, which Neo4j can evaluate cheaply.
-    query = """
+    find_query = """
         MATCH (a:Character)-[:CO_OCCURS_WITH]->(b:Character)-[:CO_OCCURS_WITH]->(c:Character)
         WHERE a.character_id >= $lo AND a.character_id < $hi
           AND a.character_id < b.character_id
           AND b.character_id < c.character_id
           AND EXISTS { (a)-[:CO_OCCURS_WITH]->(c) }
-        WITH a, b, c
-        OPTIONAL MATCH (a)-[:ON_SIDE]->(:BattleSide)<-[:HAS_SIDE]-(battle:Battle)
-        WITH a, b, c, collect(DISTINCT battle.battle_id)[..10] AS battle_ids
         RETURN
-            'triangle' AS motif_type,
             [a.character_id, b.character_id, c.character_id] AS member_ids,
-            battle_ids,
-            1 AS occurrence_count,
             toFloat(
                 (COALESCE(a.suspicion_score, 0) + COALESCE(b.suspicion_score, 0) + COALESCE(c.suspicion_score, 0)) / 3.0
             ) AS suspicion_relevance
         LIMIT $batch_limit
     """
 
-    all_results: list[dict[str, Any]] = []
+    raw_triangles: list[dict[str, Any]] = []
     cursor = lo
-    while cursor <= hi and len(all_results) < _TRIANGLE_LIMIT:
-        remaining = _TRIANGLE_LIMIT - len(all_results)
+    while cursor <= hi and len(raw_triangles) < _TRIANGLE_LIMIT:
+        remaining = _TRIANGLE_LIMIT - len(raw_triangles)
         rows = client.query(
-            query,
+            find_query,
             parameters={"lo": cursor, "hi": cursor + _TRIANGLE_BATCH_SIZE, "batch_limit": remaining},
-            timeout_seconds=60,
+            timeout_seconds=30,
         )
-        all_results.extend(rows)
+        raw_triangles.extend(rows)
         cursor += _TRIANGLE_BATCH_SIZE
 
-    return all_results[:_TRIANGLE_LIMIT]
+    raw_triangles = raw_triangles[:_TRIANGLE_LIMIT]
+    if not raw_triangles:
+        return []
+
+    # Phase 2: Enrich with battle data.
+    # Collect the first member of each triangle and look up battles in bulk.
+    enrich_query = """
+        UNWIND $char_ids AS cid
+        MATCH (a:Character {character_id: cid})-[:ON_SIDE]->(:BattleSide)<-[:HAS_SIDE]-(battle:Battle)
+        RETURN cid, collect(DISTINCT battle.battle_id)[..10] AS battle_ids
+    """
+
+    battle_map: dict[int, list] = {}
+    all_first_ids = [t["member_ids"][0] for t in raw_triangles]
+    for chunk_start in range(0, len(all_first_ids), _TRIANGLE_ENRICH_CHUNK):
+        chunk_ids = all_first_ids[chunk_start:chunk_start + _TRIANGLE_ENRICH_CHUNK]
+        rows = client.query(
+            enrich_query,
+            parameters={"char_ids": chunk_ids},
+            timeout_seconds=15,
+        )
+        for row in rows:
+            battle_map[row["cid"]] = row["battle_ids"]
+
+    # Assemble final results.
+    results: list[dict[str, Any]] = []
+    for t in raw_triangles:
+        results.append({
+            "motif_type": "triangle",
+            "member_ids": t["member_ids"],
+            "battle_ids": battle_map.get(t["member_ids"][0], []),
+            "occurrence_count": 1,
+            "suspicion_relevance": t["suspicion_relevance"],
+        })
+    return results
 
 
 def _detect_stars(client: Neo4jClient) -> list[dict[str, Any]]:
