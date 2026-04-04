@@ -78,6 +78,7 @@ from .jobs.pre_op_join_detection import run_pre_op_join_detection
 from .jobs.jump_bridge_sync import run_jump_bridge_sync
 from .jobs.killmail_zkb_repair import run_killmail_zkb_repair
 from .jobs.corp_standings_sync import run_corp_standings_sync
+from .jobs.behavioral_scoring import run_compute_behavioral_scoring
 
 
 def _php_bridge(cfg: dict[str, Any]) -> PhpBridge:
@@ -136,6 +137,7 @@ PYTHON_COMPUTE_PROCESSOR_JOB_KEYS: set[str] = {
     "pre_op_join_detection",
     "jump_bridge_sync",
     "killmail_zkb_repair",
+    "compute_behavioral_scoring",
 }
 
 PYTHON_SYNC_PROCESSOR_JOB_KEYS: set[str] = {
@@ -186,6 +188,7 @@ _PROCESSOR_DISPATCH: dict[str, tuple] = {
     "compute_battle_actor_features": (run_compute_battle_actor_features, lambda db, cfg: (db, neo4j_runtime(cfg), battle_runtime(cfg))),
     "compute_suspicion_scores": (run_compute_suspicion_scores, lambda db, cfg: (db, battle_runtime(cfg))),
     "compute_counterintel_pipeline": (run_compute_counterintel_pipeline, lambda db, cfg: (db, neo4j_runtime(cfg), battle_runtime(cfg))),
+    "compute_behavioral_scoring": (run_compute_behavioral_scoring, lambda db, cfg: (db, battle_runtime(cfg))),
     "evewho_enrichment_sync": (run_evewho_enrichment_sync, lambda db, cfg: (db, neo4j_runtime(cfg), {**battle_runtime(cfg), "evewho_rate_limit_requests": 5})),
     "evewho_alliance_member_sync": (run_evewho_alliance_member_sync, lambda db, cfg: (db, neo4j_runtime(cfg), {**battle_runtime(cfg), "evewho_rate_limit_requests": 5})),
     "tracked_alliance_member_sync": (run_tracked_alliance_member_sync, lambda db, cfg: (db, neo4j_runtime(cfg), {**battle_runtime(cfg), "evewho_rate_limit_requests": 5})),

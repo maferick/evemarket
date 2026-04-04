@@ -30,6 +30,11 @@ $featureHistograms = db_character_feature_histograms($characterId);
 // Neo4j intelligence graph signals (EveWho corp history)
 $neo4jIntel = (bool) config('neo4j.enabled', false) ? db_neo4j_character_intelligence($characterId) : null;
 
+// Lane 2: Behavioral scoring (small-engagement patterns)
+$behavioralScore = db_character_behavioral_score($characterId);
+$behavioralSignals = db_character_behavioral_signals($characterId);
+$smallCopresence = db_character_small_engagement_copresence($characterId, 15);
+
 // Movement footprint data
 $movementFootprints = db_character_movement_footprints($characterId);
 $systemDistribution = db_character_system_distribution($characterId, '30d', 15);
@@ -316,6 +321,110 @@ include __DIR__ . '/../../src/views/partials/header.php';
 <?php endif; ?>
 <?php endif; ?>
 </tbody></table></div>
+
+        <!-- Behavioral scoring (Lane 2: small-engagement patterns) -->
+        <?php if (is_array($behavioralScore)): ?>
+        <?php
+            $behRisk = (float) ($behavioralScore['behavioral_risk_score'] ?? 0);
+            $behPercentile = (float) ($behavioralScore['percentile_rank'] ?? 0);
+            $behConfidence = (string) ($behavioralScore['confidence_tier'] ?? 'low');
+            $behTotalKills = (int) ($behavioralScore['total_kill_count'] ?? 0);
+            $behSmallKills = (int) ($behavioralScore['small_kill_count'] ?? 0);
+            $behLargeBattles = (int) ($behavioralScore['large_battle_count'] ?? 0);
+            $behFleetAbsence = (float) ($behavioralScore['fleet_absence_ratio'] ?? 0);
+            $behContinuation = (float) ($behavioralScore['post_engagement_continuation_rate'] ?? 0);
+            $behCompanion = (float) ($behavioralScore['companion_consistency_score'] ?? 0);
+            $behCrossSide = (float) ($behavioralScore['cross_side_small_rate'] ?? 0);
+            $behAsymmetry = (float) ($behavioralScore['asymmetry_preference'] ?? 0);
+            $behGeo = (float) ($behavioralScore['geographic_concentration_score'] ?? 0);
+            $behTemporal = (float) ($behavioralScore['temporal_regularity_score'] ?? 0);
+        ?>
+        <h2 class="mt-6 text-lg font-semibold text-slate-100">Behavioral patterns <span class="text-xs font-normal text-slate-500">(all engagements incl. small kills)</span></h2>
+        <p class="mt-1 text-xs text-muted">Signals derived from behavior across all killmail activity &mdash; not just large battles. Focuses on intent patterns.</p>
+
+        <div class="mt-3 grid gap-3 md:grid-cols-4">
+            <div class="surface-tertiary">
+                <p class="text-xs text-muted">Behavioral risk</p>
+                <p class="mt-1 text-xl <?= $behRisk >= 0.5 ? 'text-rose-300' : ($behRisk >= 0.25 ? 'text-amber-300' : 'text-emerald-300') ?>"><?= number_format($behRisk * 100, 1) ?>%</p>
+                <?= ci_progress_bar($behRisk, $behRisk >= 0.5 ? 'bg-rose-500' : ($behRisk >= 0.25 ? 'bg-amber-500' : 'bg-emerald-500')) ?>
+                <p class="mt-1 text-[11px] text-muted">Top <?= number_format((1 - $behPercentile) * 100, 1) ?>% &middot; <?= htmlspecialchars($behConfidence) ?> confidence</p>
+            </div>
+            <div class="surface-tertiary">
+                <p class="text-xs text-muted">Fleet absence</p>
+                <p class="mt-1 text-base text-slate-100"><?= number_format($behFleetAbsence * 100, 0) ?>% small-only</p>
+                <p class="mt-0.5 text-xs text-muted"><?= $behSmallKills ?> small kills &middot; <?= $behLargeBattles ?> large battles</p>
+                <p class="mt-1 text-[11px] text-muted">Active in small kills but absent from fleet ops</p>
+            </div>
+            <div class="surface-tertiary">
+                <p class="text-xs text-muted">Companion consistency</p>
+                <p class="mt-1 text-base <?= ci_metric_color($behCompanion, 0.3, 0.7) ?>"><?= number_format($behCompanion * 100, 0) ?>%</p>
+                <p class="mt-1 text-[11px] text-muted">Small kills shared with recurring companions</p>
+            </div>
+            <div class="surface-tertiary">
+                <p class="text-xs text-muted">Continuation rate</p>
+                <p class="mt-1 text-base text-slate-100"><?= number_format($behContinuation * 100, 0) ?>%</p>
+                <p class="mt-1 text-[11px] text-muted"><?= $behContinuation < 0.3 ? 'Low &mdash; appears then disappears' : ($behContinuation > 0.7 ? 'High &mdash; chains engagements' : 'Moderate') ?></p>
+            </div>
+        </div>
+
+        <div class="mt-3 grid gap-3 md:grid-cols-4">
+            <div class="surface-tertiary">
+                <p class="text-xs text-muted">Cross-side (small)</p>
+                <p class="mt-1 text-base <?= $behCrossSide > 0 ? 'text-rose-300' : 'text-slate-100' ?>"><?= number_format($behCrossSide * 100, 1) ?>%</p>
+                <p class="mt-1 text-[11px] text-muted">Kills against own alliance in small fights</p>
+            </div>
+            <div class="surface-tertiary">
+                <p class="text-xs text-muted">Asymmetry preference</p>
+                <p class="mt-1 text-base text-slate-100"><?= number_format($behAsymmetry * 100, 0) ?>%</p>
+                <p class="mt-1 text-[11px] text-muted">Preference for 5:1+ ganks over fair fights</p>
+            </div>
+            <div class="surface-tertiary">
+                <p class="text-xs text-muted">Geographic focus</p>
+                <p class="mt-1 text-base text-slate-100">Gini <?= number_format($behGeo, 2) ?></p>
+                <p class="mt-1 text-[11px] text-muted"><?= $behGeo >= 0.7 ? 'Highly concentrated' : ($behGeo >= 0.4 ? 'Moderately spread' : 'Distributed') ?></p>
+            </div>
+            <div class="surface-tertiary">
+                <p class="text-xs text-muted">Temporal burstiness</p>
+                <p class="mt-1 text-base text-slate-100"><?= number_format($behTemporal * 100, 0) ?>%</p>
+                <p class="mt-1 text-[11px] text-muted"><?= $behTemporal >= 0.7 ? 'Very bursty &mdash; narrow activity windows' : ($behTemporal >= 0.4 ? 'Moderately bursty' : 'Regular cadence') ?></p>
+            </div>
+        </div>
+
+        <?php if ($behavioralSignals): ?>
+        <details class="mt-3">
+            <summary class="cursor-pointer text-sm text-accent">Behavioral signal breakdown</summary>
+            <div class="mt-2 table-shell"><table class="table-ui"><thead><tr class="border-b border-border/70 text-xs text-muted uppercase"><th class="px-3 py-2 text-left">Signal</th><th class="px-3 py-2 text-right">Value</th><th class="px-3 py-2 text-left">Confidence</th><th class="px-3 py-2 text-left">Detail</th></tr></thead><tbody>
+            <?php foreach ($behavioralSignals as $sig): ?>
+                <tr class="border-b border-border/40">
+                    <td class="px-3 py-2 text-sm"><?= htmlspecialchars(ucwords(str_replace('_', ' ', (string) $sig['signal_key'])), ENT_QUOTES) ?></td>
+                    <td class="px-3 py-2 text-right font-mono text-sm"><?= number_format((float) ($sig['signal_value'] ?? 0), 3) ?></td>
+                    <td class="px-3 py-2 text-xs <?= ($sig['confidence_flag'] ?? '') === 'high' ? 'text-emerald-300' : (($sig['confidence_flag'] ?? '') === 'medium' ? 'text-amber-300' : 'text-slate-500') ?>"><?= htmlspecialchars((string) ($sig['confidence_flag'] ?? 'low'), ENT_QUOTES) ?></td>
+                    <td class="px-3 py-2 text-xs text-muted"><?= htmlspecialchars((string) ($sig['signal_text'] ?? ''), ENT_QUOTES) ?></td>
+                </tr>
+            <?php endforeach; ?>
+            </tbody></table></div>
+        </details>
+        <?php endif; ?>
+
+        <?php if ($smallCopresence): ?>
+        <h3 class="mt-4 text-sm font-semibold text-slate-200">Small-engagement companions</h3>
+        <p class="mt-1 text-xs text-muted">Characters who repeatedly appear alongside this pilot in small kills.</p>
+        <div class="mt-2 table-shell"><table class="table-ui"><thead><tr class="border-b border-border/70 text-xs text-muted uppercase"><th class="px-3 py-2 text-left">Companion</th><th class="px-3 py-2 text-right">Co-kills</th><th class="px-3 py-2 text-right">Victims</th><th class="px-3 py-2 text-right">Systems</th><th class="px-3 py-2 text-right">Weight</th><th class="px-3 py-2 text-right">Last seen</th></tr></thead><tbody>
+        <?php foreach ($smallCopresence as $edge):
+            $companionId = (int) $edge['character_id_a'] === $characterId ? (int) $edge['character_id_b'] : (int) $edge['character_id_a'];
+        ?>
+            <tr class="border-b border-border/40">
+                <td class="px-3 py-2 text-sm"><a class="text-accent" href="/battle-intelligence/character.php?character_id=<?= $companionId ?>"><?= htmlspecialchars((string) ($edge['companion_name'] ?? 'Unknown'), ENT_QUOTES) ?></a></td>
+                <td class="px-3 py-2 text-right font-mono text-sm"><?= (int) ($edge['co_kill_count'] ?? 0) ?></td>
+                <td class="px-3 py-2 text-right text-sm"><?= (int) ($edge['unique_victim_count'] ?? 0) ?></td>
+                <td class="px-3 py-2 text-right text-sm"><?= (int) ($edge['unique_system_count'] ?? 0) ?></td>
+                <td class="px-3 py-2 text-right font-mono text-sm"><?= number_format((float) ($edge['edge_weight'] ?? 0), 1) ?></td>
+                <td class="px-3 py-2 text-right text-xs text-muted"><?= htmlspecialchars((string) ($edge['last_event_at'] ?? ''), ENT_QUOTES) ?></td>
+            </tr>
+        <?php endforeach; ?>
+        </tbody></table></div>
+        <?php endif; ?>
+        <?php endif; ?>
 
         <!-- Supporting battles -->
         <h2 class="mt-6 text-lg font-semibold text-slate-100">Supporting battles</h2>

@@ -16265,6 +16265,61 @@ function db_battle_intelligence_character_evidence(int $characterId, int $limit 
     );
 }
 
+function db_character_behavioral_score(int $characterId): ?array
+{
+    if ($characterId <= 0) {
+        return null;
+    }
+
+    $row = db_select_one(
+        'SELECT cbs.*, COALESCE(emc.entity_name, CONCAT("Character #", cbs.character_id)) AS character_name
+         FROM character_behavioral_scores cbs
+         LEFT JOIN entity_metadata_cache emc ON emc.entity_type = "character" AND emc.entity_id = cbs.character_id
+         WHERE cbs.character_id = ?
+         LIMIT 1',
+        [$characterId]
+    );
+
+    return $row ?: null;
+}
+
+function db_character_behavioral_signals(int $characterId): array
+{
+    if ($characterId <= 0) {
+        return [];
+    }
+
+    return db_select(
+        'SELECT signal_key, window_label, signal_value, baseline_value, deviation, confidence_flag, signal_text, signal_payload_json, computed_at
+         FROM character_behavioral_signals
+         WHERE character_id = ?
+         ORDER BY signal_value DESC, signal_key ASC',
+        [$characterId]
+    );
+}
+
+function db_character_small_engagement_copresence(int $characterId, int $limit = 15): array
+{
+    if ($characterId <= 0) {
+        return [];
+    }
+
+    $safeLimit = max(1, min(50, $limit));
+
+    return db_select(
+        'SELECT sec.character_id_a, sec.character_id_b, sec.window_label, sec.co_kill_count,
+                sec.unique_victim_count, sec.unique_system_count, sec.edge_weight, sec.last_event_at,
+                COALESCE(emc.entity_name, CONCAT("Character #", CASE WHEN sec.character_id_a = ? THEN sec.character_id_b ELSE sec.character_id_a END)) AS companion_name
+         FROM small_engagement_copresence sec
+         LEFT JOIN entity_metadata_cache emc ON emc.entity_type = "character"
+            AND emc.entity_id = CASE WHEN sec.character_id_a = ? THEN sec.character_id_b ELSE sec.character_id_a END
+         WHERE (sec.character_id_a = ? OR sec.character_id_b = ?)
+         ORDER BY sec.edge_weight DESC
+         LIMIT ' . $safeLimit,
+        [$characterId, $characterId, $characterId, $characterId]
+    );
+}
+
 function db_battle_intelligence_battle_hull_anomalies(string $battleId, int $limit = 60): array
 {
     $safeBattleId = trim($battleId);
@@ -18160,6 +18215,7 @@ function db_pipeline_observatory_data(): array
     $suspicionBelowThreshold = (int) (db_select_one(
         "SELECT COUNT(*) AS cnt FROM character_battle_intelligence WHERE eligible_battle_count < 5"
     ) ?? [])['cnt'] ?? 0;
+    $behavioralScored = (int) (db_select_one("SELECT COUNT(*) AS cnt FROM character_behavioral_scores") ?? [])['cnt'] ?? 0;
     $dossiers          = (int) (db_select_one("SELECT COUNT(*) AS cnt FROM alliance_dossiers") ?? [])['cnt'] ?? 0;
     $threatCorridors   = (int) (db_select_one("SELECT COUNT(*) AS cnt FROM threat_corridors") ?? [])['cnt'] ?? 0;
 
@@ -18202,7 +18258,7 @@ function db_pipeline_observatory_data(): array
         'collection'  => ['market_hub_current_sync', 'esi_character_queue_sync', 'esi_alliance_history_sync', 'evewho_enrichment_sync', 'evewho_alliance_member_sync'],
         'resolution'  => ['entity_metadata_resolve_sync', 'esi_alliance_history_sync'],
         'graph'       => ['compute_graph_sync', 'graph_community_detection_sync', 'graph_motif_detection_sync', 'graph_typed_interactions_sync', 'graph_temporal_metrics_sync', 'graph_evidence_paths_sync', 'compute_copresence_edges', 'compute_graph_sync_killmail_entities', 'compute_graph_sync_killmail_edges'],
-        'intelligence' => ['compute_suspicion_scores_v2', 'compute_alliance_dossiers', 'compute_threat_corridors', 'compute_counterintel_pipeline', 'intelligence_pipeline', 'compute_battle_rollups'],
+        'intelligence' => ['compute_suspicion_scores_v2', 'compute_alliance_dossiers', 'compute_threat_corridors', 'compute_counterintel_pipeline', 'intelligence_pipeline', 'compute_battle_rollups', 'compute_behavioral_scoring'],
         'analytics'   => ['dashboard_summary_sync', 'analytics_bucket_1h_sync', 'analytics_bucket_1d_sync', 'rebuild_ai_briefings', 'forecasting_ai_sync'],
     ];
 
@@ -18270,6 +18326,7 @@ function db_pipeline_observatory_data(): array
             'suspicion_scored'  => $suspicionScored,
             'suspicion_coverage' => $suspicionCoverage,
             'suspicion_below_threshold' => $suspicionBelowThreshold,
+            'behavioral_scored' => $behavioralScored,
             'dossiers'          => $dossiers,
             'dossier_coverage'  => $dossierCoverage,
             'alliances_in_battles' => $alliancesInBattles,

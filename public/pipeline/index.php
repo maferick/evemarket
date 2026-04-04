@@ -103,6 +103,7 @@ $stages = [
             ['label' => 'Alliance dossiers',  'value' => _po_fmt($kpis['dossiers']) . ' / ' . _po_fmt($kpis['alliances_in_battles'])],
             ['label' => 'Dossier coverage',   'value' => $kpis['dossier_coverage'] . '%'],
             ['label' => 'Threat corridors',   'value' => _po_fmt($kpis['threat_corridors'])],
+            ['label' => 'Behavioral scored (Lane 2)',  'value' => _po_fmt($kpis['behavioral_scored']) . ' characters'],
         ],
     ],
     [
@@ -255,7 +256,7 @@ $overallPct = $stageCount > 0 ? round($overallPct / $stageCount) : 0;
     <h2 class="text-sm font-semibold uppercase tracking-wider text-slate-400">Data Coverage</h2>
     <p class="mt-1 text-xs text-slate-500">How far each entity class has been enriched through the pipeline.</p>
 
-    <div class="mt-4 grid gap-4 sm:grid-cols-3">
+    <div class="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <?php
         $coverageCards = [
             [
@@ -273,6 +274,11 @@ $overallPct = $stageCount > 0 ? round($overallPct / $stageCount) : 0;
                 'label'   => 'Alliance Dossiers',
                 'detail'  => _po_fmt($kpis['dossiers']) . ' of ' . _po_fmt($kpis['alliances_in_battles']) . ' alliances',
                 'pct'     => $kpis['dossier_coverage'],
+            ],
+            [
+                'label'   => 'Behavioral Scoring (Lane 2)',
+                'detail'  => _po_fmt($kpis['behavioral_scored']) . ' of ' . _po_fmt($kpis['unique_characters']) . ' characters',
+                'pct'     => $kpis['unique_characters'] > 0 ? min(100, round($kpis['behavioral_scored'] / $kpis['unique_characters'] * 100, 1)) : 0,
             ],
         ];
         foreach ($coverageCards as $cc):
