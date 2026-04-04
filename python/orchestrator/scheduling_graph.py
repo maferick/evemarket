@@ -61,29 +61,44 @@ class CyclicDependencyError(ValueError):
 # Graph builder
 # ---------------------------------------------------------------------------
 
-def build_graph(definitions: dict[str, dict[str, Any]]) -> dict[str, JobNode]:
+def build_graph(
+    definitions: dict[str, dict[str, Any]],
+    known_external_keys: set[str] | None = None,
+) -> dict[str, JobNode]:
     """Build the full dependency graph from worker job definitions.
 
     Each definition may contain:
       - ``depends_on``: list of job keys that must complete first
       - ``concurrency_group``: resource-level mutual exclusion label
       - ``lock_group``: legacy field, used as fallback concurrency_group
+
+    Args:
+        definitions: job definitions to include in this graph.
+        known_external_keys: job keys that exist in the full registry but are
+            not part of *this* graph (e.g. jobs in another loop).  Dependencies
+            on these keys are silently stripped (they run in a different loop
+            and are assumed fresh).  Dependencies on keys that are neither in
+            ``definitions`` nor in ``known_external_keys`` are logged as
+            warnings — those indicate a real configuration error.
     """
     nodes: dict[str, JobNode] = {}
     all_keys = set(definitions.keys())
+    external = known_external_keys or set()
 
     for key, defn in definitions.items():
         raw_deps = defn.get("depends_on") or []
         if isinstance(raw_deps, str):
             raw_deps = [raw_deps]
-        # Only keep dependencies that actually exist in the registry.
+        # Only keep dependencies that actually exist in this graph.
         deps = tuple(d for d in raw_deps if d in all_keys)
         if len(deps) != len(raw_deps):
-            missing = set(raw_deps) - all_keys
-            logger.warning(
-                "scheduling_graph: job %s depends on unknown jobs: %s (ignored)",
-                key, ", ".join(sorted(missing)),
-            )
+            # Distinguish cross-loop deps (expected) from truly unknown jobs.
+            truly_missing = set(raw_deps) - all_keys - external
+            if truly_missing:
+                logger.warning(
+                    "scheduling_graph: job %s depends on unknown jobs: %s (ignored)",
+                    key, ", ".join(sorted(truly_missing)),
+                )
         # Concurrency group: prefer explicit field, fall back to lock_group.
         cg = str(defn.get("concurrency_group") or defn.get("lock_group") or "")
         nodes[key] = JobNode(
