@@ -500,14 +500,25 @@ if [[ ${CLEAR_CACHE} -eq 1 ]]; then
 fi
 
 # ------- Storage permissions -------
-# Only chown entries that are not already owned by www-data:www-data — avoids
-# touching every inode on large log trees (faster than a blanket chown -R).
+# Ensure required runtime directories exist, then only chown entries that are
+# not already owned by www-data:www-data — avoids touching every inode on
+# large log trees (faster than a blanket chown -R).
 fix_storage_permissions() {
   local storage_dir="${APP_ROOT}/storage"
-  if [[ ! -d "${storage_dir}" ]]; then
-    log "No storage directory found at ${storage_dir}; skipping permission fix."
-    return 0
-  fi
+
+  # Directories the app writes to at runtime — create if missing.
+  local -a required_dirs=(
+    "${storage_dir}/logs/sync-jobs"
+    "${storage_dir}/run"
+    "${storage_dir}/cache"
+  )
+  for dir in "${required_dirs[@]}"; do
+    if [[ ! -d "${dir}" ]]; then
+      log "Creating missing directory: ${dir}"
+      run_cmd mkdir -p "${dir}"
+    fi
+  done
+
   log "Fixing storage ownership (www-data:www-data) for misowned entries"
   run_cmd find "${storage_dir}" \( ! -user www-data -o ! -group www-data \) \
     -exec chown www-data:www-data {} +
