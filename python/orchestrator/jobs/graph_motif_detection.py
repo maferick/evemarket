@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import time
+import traceback
 from datetime import UTC, datetime
 from typing import Any
 
@@ -224,6 +225,14 @@ def run_graph_motif_detection_sync(db: SupplyCoreDb, neo4j_raw: dict[str, Any] |
     job_name = "graph_motif_detection_sync"
     config = Neo4jConfig.from_runtime(neo4j_raw or {})
 
+    logger.info(
+        "Starting %s — neo4j enabled=%s uri=%s database=%s",
+        job_name,
+        config.enabled,
+        getattr(config, "uri", "?"),
+        getattr(config, "database", "?"),
+    )
+
     if not config.enabled:
         return JobResult.skipped(job_key=job_name, reason="neo4j disabled").to_dict()
 
@@ -242,23 +251,58 @@ def run_graph_motif_detection_sync(db: SupplyCoreDb, neo4j_raw: dict[str, Any] |
 
     counts_by_type: dict[str, int] = {}
     failed_detectors: list[str] = []
+    detector_errors: dict[str, str] = {}
     for motif_name, detector_fn in detectors:
+        detector_start = time.perf_counter()
         try:
             results = detector_fn(client)
+            detector_ms = int((time.perf_counter() - detector_start) * 1000)
             all_motifs.extend(results)
             counts_by_type[motif_name] = len(results)
+            logger.info(
+                "Detector %s OK: %d results in %dms",
+                motif_name, len(results), detector_ms,
+            )
         except (Neo4jError, OSError) as exc:
-            logger.error("Motif detector %s failed: %s", motif_name, exc)
+            detector_ms = int((time.perf_counter() - detector_start) * 1000)
+            tb = traceback.format_exc()
+            logger.error(
+                "Detector %s FAILED after %dms: %s\n%s",
+                motif_name, detector_ms, exc, tb,
+            )
             counts_by_type[motif_name] = 0
             failed_detectors.append(motif_name)
+            detector_errors[motif_name] = f"{type(exc).__name__}: {exc}\n{tb}"
+        except Exception as exc:
+            detector_ms = int((time.perf_counter() - detector_start) * 1000)
+            tb = traceback.format_exc()
+            logger.error(
+                "Detector %s UNEXPECTED FAILURE after %dms: %s\n%s",
+                motif_name, detector_ms, exc, tb,
+            )
+            counts_by_type[motif_name] = 0
+            failed_detectors.append(motif_name)
+            detector_errors[motif_name] = f"{type(exc).__name__}: {exc}\n{tb}"
 
     if failed_detectors:
         duration_ms = int((time.perf_counter() - started) * 1000)
+        error_detail = "; ".join(
+            f"{name}: {detector_errors.get(name, '?')[:300]}"
+            for name in failed_detectors
+        )
+        logger.error(
+            "Job %s failing — detectors failed: %s — detail: %s",
+            job_name, ", ".join(failed_detectors), error_detail,
+        )
         return JobResult.failed(
             job_key=job_name,
             error=f"Detectors failed: {', '.join(failed_detectors)}",
             duration_ms=duration_ms,
-            meta={"counts": counts_by_type, "failed": failed_detectors},
+            meta={
+                "counts": counts_by_type,
+                "failed": failed_detectors,
+                "errors": {k: v[:500] for k, v in detector_errors.items()},
+            },
         ).to_dict()
 
     if not all_motifs:
