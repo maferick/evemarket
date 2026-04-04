@@ -16031,22 +16031,72 @@ function db_battle_intelligence_top_characters(int $limit = 50): array
     }
     $placeholders = implode(',', array_fill(0, count($trackedAllianceIds), '?'));
 
+    // Blended leaderboard: combines Lane 1 (counterintel) and Lane 2 (behavioral).
+    // Characters with only behavioral scores are included — they appear with null
+    // Lane 1 fields, ranked by their behavioral score.
+    // Blending weights mirror db_character_blended_intelligence():
+    //   large_battles >= 10 → 65/35, 5-9 → 50/50, 1-4 → 35/65, 0 → 0/100.
     return db_select(
-        'SELECT ccs.character_id, ccs.review_priority_score, ccs.percentile_rank, ccs.confidence_score, ccs.evidence_count, ccs.computed_at,
-                ccf.anomalous_battle_presence_count, ccf.control_battle_presence_count, ccf.anomalous_battle_denominator, ccf.control_battle_denominator, ccf.anomalous_presence_rate, ccf.control_presence_rate,
-                ccf.enemy_same_hull_survival_lift, ccf.enemy_sustain_lift, ccf.co_presence_anomalous_density, ccf.graph_bridge_score,
-                ccf.corp_hop_frequency_180d, ccf.short_tenure_ratio_180d, ccf.repeatability_score,
-                COALESCE(emc.entity_name, CONCAT("Character #", ccs.character_id)) AS character_name
+        'SELECT
+            COALESCE(ccs.character_id, cbs.character_id) AS character_id,
+            ccs.review_priority_score,
+            ccs.percentile_rank,
+            ccs.confidence_score,
+            ccs.evidence_count,
+            COALESCE(ccs.computed_at, cbs.computed_at) AS computed_at,
+            ccf.anomalous_battle_presence_count, ccf.control_battle_presence_count,
+            ccf.anomalous_battle_denominator, ccf.control_battle_denominator,
+            ccf.anomalous_presence_rate, ccf.control_presence_rate,
+            ccf.enemy_same_hull_survival_lift, ccf.enemy_sustain_lift,
+            ccf.co_presence_anomalous_density, ccf.graph_bridge_score,
+            ccf.corp_hop_frequency_180d, ccf.short_tenure_ratio_180d, ccf.repeatability_score,
+            cbs.behavioral_risk_score,
+            cbs.confidence_tier AS behavioral_confidence_tier,
+            cbs.solo_kill_count, cbs.gang_kill_count, cbs.large_battle_count,
+            COALESCE(emc.entity_name, CONCAT("Character #", COALESCE(ccs.character_id, cbs.character_id))) AS character_name,
+            CASE
+                WHEN ccs.character_id IS NOT NULL AND cbs.character_id IS NOT NULL THEN
+                    CASE
+                        WHEN COALESCE(cbs.large_battle_count, 0) >= 10 THEN 0.65 * ccs.review_priority_score + 0.35 * cbs.behavioral_risk_score
+                        WHEN COALESCE(cbs.large_battle_count, 0) >= 5  THEN 0.50 * ccs.review_priority_score + 0.50 * cbs.behavioral_risk_score
+                        WHEN COALESCE(cbs.large_battle_count, 0) >= 1  THEN 0.35 * ccs.review_priority_score + 0.65 * cbs.behavioral_risk_score
+                        ELSE cbs.behavioral_risk_score
+                    END
+                WHEN ccs.character_id IS NOT NULL THEN ccs.review_priority_score
+                ELSE cbs.behavioral_risk_score
+            END AS blended_score
          FROM character_counterintel_scores ccs
          LEFT JOIN character_counterintel_features ccf ON ccf.character_id = ccs.character_id
+         LEFT JOIN character_behavioral_scores cbs ON cbs.character_id = ccs.character_id
          LEFT JOIN entity_metadata_cache emc ON emc.entity_type = "character" AND emc.entity_id = ccs.character_id
          WHERE ccs.character_id IN (
              SELECT DISTINCT bp.character_id FROM battle_participants bp
              WHERE bp.alliance_id IN (' . $placeholders . ')
          )
-         ORDER BY ccs.review_priority_score DESC, ccs.percentile_rank DESC, ccs.evidence_count DESC
+         UNION
+         SELECT
+            cbs.character_id,
+            NULL AS review_priority_score, NULL AS percentile_rank,
+            NULL AS confidence_score, NULL AS evidence_count,
+            cbs.computed_at,
+            NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+            cbs.behavioral_risk_score,
+            cbs.confidence_tier AS behavioral_confidence_tier,
+            cbs.solo_kill_count, cbs.gang_kill_count, cbs.large_battle_count,
+            COALESCE(emc.entity_name, CONCAT("Character #", cbs.character_id)) AS character_name,
+            cbs.behavioral_risk_score AS blended_score
+         FROM character_behavioral_scores cbs
+         LEFT JOIN entity_metadata_cache emc ON emc.entity_type = "character" AND emc.entity_id = cbs.character_id
+         WHERE cbs.character_id NOT IN (SELECT character_id FROM character_counterintel_scores)
+           AND cbs.character_id IN (
+               SELECT DISTINCT ka.character_id FROM killmail_attackers ka
+               INNER JOIN killmail_events ke ON ke.sequence_id = ka.sequence_id
+               WHERE ke.victim_alliance_id IN (' . $placeholders . ')
+                  OR ka.alliance_id IN (' . $placeholders . ')
+           )
+         ORDER BY blended_score DESC, review_priority_score DESC
          LIMIT ' . $safeLimit,
-        $trackedAllianceIds
+        array_merge($trackedAllianceIds, $trackedAllianceIds, $trackedAllianceIds)
     );
 }
 

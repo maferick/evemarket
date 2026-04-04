@@ -30453,9 +30453,9 @@ function battle_intelligence_anomaly_leaderboard_data(): array
     ];
 }
 
-function battle_intelligence_character_data(int $characterId): array
+function battle_intelligence_character_data(int $characterId, ?array $prefetchedCharacter = null): array
 {
-    $character = db_battle_intelligence_character($characterId);
+    $character = $prefetchedCharacter ?? db_battle_intelligence_character($characterId);
     $battles = db_battle_intelligence_character_battles($characterId, 30);
     $evidence = db_battle_intelligence_character_evidence($characterId, 60);
     $orgHistory = [];
@@ -30535,13 +30535,13 @@ function compute_character_intelligence_on_demand(int $characterId): array
            AND bp.battle_id IN (
                SELECT br.battle_id FROM battle_rollups br
                WHERE br.eligible_for_suspicion = 1
-                 AND br.participant_count >= 10
+                 AND br.participant_count >= 20
            )',
         [$characterId]
     );
 
     if ($participations === []) {
-        return ['ok' => false, 'message' => 'No eligible battle participation found for this character. The character must appear in battles with 10+ participants to generate intelligence.'];
+        return ['ok' => false, 'message' => 'No eligible battle participation found for this character. The character must appear in battles with 20+ participants to generate intelligence.'];
     }
 
     $battleIds = array_values(array_unique(array_column($participations, 'battle_id')));
@@ -30737,14 +30737,201 @@ function compute_character_intelligence_on_demand(int $characterId): array
         );
     }
 
+    // 8. Lane 2: compute behavioral signals from killmail activity (last 90 days)
+    $cutoff = gmdate('Y-m-d H:i:s', strtotime('-90 days'));
+    $killRows = db_select(
+        'SELECT ka.damage_done, ka.alliance_id,
+                ke.sequence_id, ke.killmail_time, ke.solar_system_id,
+                ke.victim_alliance_id,
+                COALESCE(br.participant_count, 0) AS participant_count
+         FROM killmail_attackers ka
+         INNER JOIN killmail_events ke ON ke.sequence_id = ka.sequence_id
+         LEFT JOIN battle_rollups br ON br.battle_id = ke.battle_id
+         WHERE ka.character_id = ?
+           AND ke.effective_killmail_at >= ?
+         ORDER BY ke.killmail_time',
+        [$characterId, $cutoff]
+    );
+
+    if ($killRows !== []) {
+        // Count attackers per kill for copresence/asymmetry signals.
+        $seqIds = array_unique(array_column($killRows, 'sequence_id'));
+        $seqPlaceholders = implode(',', array_fill(0, count($seqIds), '?'));
+        $attackerCounts = [];
+        if ($seqIds !== []) {
+            $acRows = db_select(
+                "SELECT sequence_id, COUNT(*) AS cnt FROM killmail_attackers WHERE sequence_id IN ({$seqPlaceholders}) GROUP BY sequence_id",
+                array_values($seqIds)
+            );
+            foreach ($acRows as $ac) {
+                $attackerCounts[(int) $ac['sequence_id']] = (int) $ac['cnt'];
+            }
+        }
+
+        $soloKills = $gangKills = $largeBattleKills = 0;
+        $systemCounts = [];
+        $timestamps = [];
+        $ownAlliances = [];
+        $crossSideKills = 0;
+
+        foreach ($killRows as $k) {
+            $pc = (int) $k['participant_count'];
+            if ($pc <= 4)       $soloKills++;
+            elseif ($pc <= 19)  $gangKills++;
+            else                $largeBattleKills++;
+            $sys = (int) ($k['solar_system_id'] ?? 0);
+            if ($sys > 0) $systemCounts[$sys] = ($systemCounts[$sys] ?? 0) + 1;
+            $t = strtotime((string) ($k['killmail_time'] ?? ''));
+            if ($t) $timestamps[] = $t;
+            $a = (int) ($k['alliance_id'] ?? 0);
+            if ($a > 0) $ownAlliances[$a] = true;
+        }
+        foreach ($killRows as $k) {
+            $va = (int) ($k['victim_alliance_id'] ?? 0);
+            $pc = (int) $k['participant_count'];
+            if ($pc < 20 && $va > 0 && isset($ownAlliances[$va])) $crossSideKills++;
+        }
+
+        $totalKills = count($killRows);
+        $smallKills = $soloKills + $gangKills;
+
+        // Fleet-absence ratio.
+        $largeBattleCount = (int) (db_select_one(
+            'SELECT COUNT(DISTINCT bp.battle_id) AS cnt FROM battle_participants bp
+             INNER JOIN battle_rollups br ON br.battle_id = bp.battle_id
+             WHERE bp.character_id = ? AND br.participant_count >= 20 AND br.started_at >= ?',
+            [$characterId, $cutoff]
+        ) ?? [])['cnt'] ?? 0;
+        $fleetAbsenceRatio = ($smallKills + $largeBattleCount) > 0
+            ? $smallKills / ($smallKills + $largeBattleCount) : 0.0;
+
+        // Continuation rate.
+        sort($timestamps);
+        $contHits = $contEligible = 0;
+        for ($i = 0; $i < count($timestamps) - 1; $i++) {
+            $contEligible++;
+            for ($j = $i + 1; $j < min($i + 10, count($timestamps)); $j++) {
+                if (($timestamps[$j] - $timestamps[$i]) <= 1800) { $contHits++; break; }
+                if (($timestamps[$j] - $timestamps[$i]) > 1800) break;
+            }
+        }
+        $continuationRate = $contEligible > 0 ? $contHits / $contEligible : 0.0;
+
+        // Geographic Gini.
+        $sysValues = array_values($systemCounts);
+        sort($sysValues);
+        $n = count($sysValues); $total = array_sum($sysValues);
+        $geoGini = 0.0;
+        if ($n > 1 && $total > 0) {
+            $cum = 0.0; $area = 0.0;
+            foreach ($sysValues as $i => $v) {
+                $cum += $v; $area += $cum / $total - ($i + 1) / $n;
+            }
+            $geoGini = min(1.0, max(0.0, 2.0 * $area / $n * $n / ($n - 1)));
+        }
+
+        // Temporal burstiness.
+        $temporalReg = 0.0;
+        if (count($timestamps) >= 3) {
+            $intervals = [];
+            for ($i = 0; $i < count($timestamps) - 1; $i++) {
+                $d = $timestamps[$i + 1] - $timestamps[$i];
+                if ($d > 0) $intervals[] = (float) $d;
+            }
+            if (count($intervals) >= 2) {
+                $mu = array_sum($intervals) / count($intervals);
+                $sigma = sqrt(array_sum(array_map(fn($x) => ($x - $mu) ** 2, $intervals)) / count($intervals));
+                $b = ($sigma + $mu) > 0 ? ($sigma - $mu) / ($sigma + $mu) : 0.0;
+                $temporalReg = min(1.0, max(0.0, ($b + 1.0) / 2.0));
+            }
+        }
+
+        // Asymmetry preference (solo tier only).
+        $soloCounts = array_filter(array_map(
+            fn($k) => (int) $k['participant_count'] <= 4 ? ($attackerCounts[(int) $k['sequence_id']] ?? 1) : null,
+            $killRows
+        ));
+        $asymmetry = count($soloCounts) > 0
+            ? count(array_filter($soloCounts, fn($c) => $c >= 5)) / count($soloCounts) : 0.0;
+
+        // Cross-side rate.
+        $crossSideRate = $smallKills > 0 ? $crossSideKills / $smallKills : 0.0;
+
+        // Kill concentration.
+        $asymCounts = array_filter(array_column(
+            array_map(fn($k) => ['pc' => (int) $k['participant_count'], 'seq' => (int) $k['sequence_id']], $killRows),
+            'pc'
+        ), fn($pc) => $pc <= 4);
+        $killConc = $totalKills > 0 ? count(array_filter(
+            array_map(fn($k) => ($attackerCounts[(int) $k['sequence_id']] ?? 1), $killRows),
+            fn($c) => $c >= 5
+        )) / $totalKills : 0.0;
+
+        // Companion consistency (fraction of small kills with a co-attacker seen 2+ times).
+        $companionCounts = [];
+        foreach ($killRows as $k) {
+            if ((int) $k['participant_count'] >= 20) continue;
+            // We don't have per-kill attacker lists here; skip for on-demand.
+        }
+        $companionConsistency = 0.0; // Deferred to batch pipeline for full accuracy.
+
+        $behScore = max(0.0, min(1.0,
+            0.15 * $fleetAbsenceRatio
+            + 0.10 * (1.0 - $continuationRate)
+            + 0.10 * $killConc
+            + 0.10 * $geoGini
+            + 0.10 * $temporalReg
+            + 0.20 * $companionConsistency
+            + 0.15 * $crossSideRate
+            + 0.10 * $asymmetry
+        ));
+        $behConfidence = $totalKills >= 30 ? 'high' : ($totalKills >= 10 ? 'medium' : 'low');
+
+        db_execute(
+            'INSERT INTO character_behavioral_scores (
+                character_id, behavioral_risk_score, percentile_rank, confidence_tier,
+                total_kill_count, solo_kill_count, gang_kill_count, large_battle_count,
+                fleet_absence_ratio, post_engagement_continuation_rate,
+                kill_concentration_score, geographic_concentration_score,
+                temporal_regularity_score, companion_consistency_score,
+                cross_side_small_rate, asymmetry_preference, computed_at
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            ON DUPLICATE KEY UPDATE
+                behavioral_risk_score = VALUES(behavioral_risk_score),
+                confidence_tier = VALUES(confidence_tier),
+                total_kill_count = VALUES(total_kill_count),
+                solo_kill_count = VALUES(solo_kill_count),
+                gang_kill_count = VALUES(gang_kill_count),
+                large_battle_count = VALUES(large_battle_count),
+                fleet_absence_ratio = VALUES(fleet_absence_ratio),
+                post_engagement_continuation_rate = VALUES(post_engagement_continuation_rate),
+                kill_concentration_score = VALUES(kill_concentration_score),
+                geographic_concentration_score = VALUES(geographic_concentration_score),
+                temporal_regularity_score = VALUES(temporal_regularity_score),
+                companion_consistency_score = VALUES(companion_consistency_score),
+                cross_side_small_rate = VALUES(cross_side_small_rate),
+                asymmetry_preference = VALUES(asymmetry_preference),
+                computed_at = VALUES(computed_at)',
+            [
+                $characterId, round($behScore, 6), 0.0, $behConfidence,
+                $totalKills, $soloKills, $gangKills, $largeBattleCount,
+                round($fleetAbsenceRatio, 6), round($continuationRate, 6),
+                round($killConc, 6), round($geoGini, 6),
+                round($temporalReg, 6), 0.0,
+                round($crossSideRate, 6), round($asymmetry, 6), $computedAt,
+            ]
+        );
+    }
+
     return [
         'ok' => true,
         'message' => sprintf(
-            'Intelligence computed: %.2f priority score from %d battles (%d anomalous, %d control).',
+            'Intelligence computed: %.2f priority score from %d battles (%d anomalous, %d control). Behavioral signals updated from %d kills.',
             $reviewScore,
             count($battleIds),
             $anomalyHits,
-            $controlHits
+            $controlHits,
+            count($killRows ?? [])
         ),
     ];
 }

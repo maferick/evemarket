@@ -8,8 +8,10 @@ $characterId = max(0, (int) ($_GET['character_id'] ?? 0));
 $title = 'Character Intelligence';
 
 // Two-lane intelligence: blended summary drives the headline.
+// Pass the already-fetched lane1_raw into battle_intelligence_character_data
+// so we don't query db_battle_intelligence_character() twice.
 $blended   = db_character_blended_intelligence($characterId);
-$data      = battle_intelligence_character_data($characterId);
+$data      = battle_intelligence_character_data($characterId, $blended['lane1_raw'] ?? null);
 $character = $data['character'] ?? null;
 $battles   = (array) ($data['battles'] ?? []);
 $evidence  = (array) ($data['evidence'] ?? []);

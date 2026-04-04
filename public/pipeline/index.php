@@ -273,6 +273,7 @@ $overallPct = $stageCount > 0 ? round($overallPct / $stageCount) : 0;
             [
                 'label'   => 'Alliance Dossiers',
                 'detail'  => _po_fmt($kpis['dossiers']) . ' of ' . _po_fmt($kpis['alliances_in_battles']) . ' alliances',
+                'sub'     => ($kpis['alliances_in_battles'] - $kpis['dossiers']) > 0 ? _po_fmt($kpis['alliances_in_battles'] - $kpis['dossiers']) . ' alliances not yet processed' : null,
                 'pct'     => $kpis['dossier_coverage'],
             ],
             [

@@ -138,9 +138,50 @@ def run_compute_behavioral_scoring(
     cutoff = (datetime.now(UTC) - timedelta(days=lookback_days)).strftime("%Y-%m-%d %H:%M:%S")
 
     try:
-        # ── Step 1: Load all kill participations within the lookback window ──
-        kill_rows = db.fetch_all(
+        # ── Step 1a: Build kill→attacker index for small engagements only ────
+        # Only small-engagement kills are needed for companion/copresence signals.
+        # Using iterate_batches avoids loading the full attacker table into memory.
+        kill_attackers: dict[int, list[int]] = defaultdict(list)
+        for batch in db.iterate_batches(
             """
+            SELECT ka.sequence_id, ka.character_id
+            FROM killmail_attackers ka
+            INNER JOIN killmail_events ke ON ke.sequence_id = ka.sequence_id
+            LEFT JOIN battle_rollups br ON br.battle_id = ke.battle_id
+            WHERE ka.character_id > 0
+              AND ke.effective_killmail_at >= %s
+              AND COALESCE(br.participant_count, 0) <= %s
+            """,
+            (cutoff, TIER_GANG_MAX),
+            batch_size=10_000,
+        ):
+            for row in batch:
+                kill_attackers[int(row["sequence_id"])].append(int(row["character_id"]))
+
+        # ── Step 1b: Lane 1 large-battle counts per character ────────────────
+        # fetch_all is fine here — one aggregated row per character, not raw kills.
+        large_battle_counts: dict[int, int] = {}
+        for row in db.fetch_all(
+            """
+            SELECT bp.character_id, COUNT(DISTINCT bp.battle_id) AS cnt
+            FROM battle_participants bp
+            INNER JOIN battle_rollups br ON br.battle_id = bp.battle_id
+            WHERE br.participant_count >= %s
+              AND br.started_at >= %s
+            GROUP BY bp.character_id
+            """,
+            (TIER_BATTLE_MIN, cutoff),
+        ):
+            large_battle_counts[int(row["character_id"])] = int(row["cnt"])
+
+        # ── Step 2: Per-character behavioral computation (streaming) ─────────
+        # The query is ordered by character_id so we can process each character
+        # as its rows arrive without holding all kill participations in memory.
+        score_rows: list[dict[str, Any]] = []
+        signal_rows: list[dict[str, Any]] = []
+        copresence_map: dict[tuple[int, int], dict[str, Any]] = {}
+
+        _KILL_SQL = """
             SELECT
                 ka.character_id,
                 ka.corporation_id,
@@ -164,44 +205,13 @@ def run_compute_behavioral_scoring(
             WHERE ka.character_id > 0
               AND ke.effective_killmail_at >= %s
             ORDER BY ka.character_id, ke.killmail_time
-            """,
-            (cutoff,),
-        )
-        rows_processed = len(kill_rows)
-
-        # Index by character; also build kill → attacker list for copresence.
-        by_character: dict[int, list[dict[str, Any]]] = defaultdict(list)
-        kill_attackers: dict[int, list[int]] = defaultdict(list)
-        for row in kill_rows:
-            cid = int(row["character_id"])
-            by_character[cid].append(row)
-            kill_attackers[int(row["sequence_id"])].append(cid)
-        del kill_rows
-
-        # ── Step 2: Lane 1 large-battle counts (10+ participants) ────────────
-        large_battle_counts: dict[int, int] = {}
-        for row in db.fetch_all(
             """
-            SELECT bp.character_id, COUNT(DISTINCT bp.battle_id) AS cnt
-            FROM battle_participants bp
-            INNER JOIN battle_rollups br ON br.battle_id = bp.battle_id
-            WHERE br.participant_count >= %s
-              AND br.started_at >= %s
-            GROUP BY bp.character_id
-            """,
-            (TIER_BATTLE_MIN, cutoff),
-        ):
-            large_battle_counts[int(row["character_id"])] = int(row["cnt"])
 
-        # ── Step 3: Per-character behavioral computation ──────────────────────
-        score_rows: list[dict[str, Any]] = []
-        signal_rows: list[dict[str, Any]] = []
-        copresence_map: dict[tuple[int, int], dict[str, Any]] = {}
-
-        for character_id, kills in by_character.items():
+        def _flush_character(character_id: int, kills: list[dict[str, Any]]) -> None:
+            """Score one character and append to score_rows/signal_rows/copresence_map."""
             total_kill_count = len(kills)
             if total_kill_count < MIN_KILL_PARTICIPATIONS:
-                continue
+                return
 
             large_battle_count = large_battle_counts.get(character_id, 0)
 
@@ -426,12 +436,27 @@ def run_compute_behavioral_scoring(
                     }),
                 })
 
-        # ── Step 4: Percentile ranks ──────────────────────────────────────────
+        # ── Stream all kill participations and flush per character ────────────
+        _current_cid: int | None = None
+        _current_kills: list[dict[str, Any]] = []
+        for batch in db.iterate_batches(_KILL_SQL, (cutoff,), batch_size=5_000):
+            for row in batch:
+                rows_processed += 1
+                cid = int(row["character_id"])
+                if cid != _current_cid:
+                    if _current_cid is not None:
+                        _flush_character(_current_cid, _current_kills)
+                    _current_cid = cid
+                    _current_kills = []
+                _current_kills.append(row)
+        if _current_cid is not None:
+            _flush_character(_current_cid, _current_kills)
+
         sorted_scores = sorted(float(r["behavioral_risk_score"]) for r in score_rows)
         for row in score_rows:
             row["percentile_rank"] = round(_percentile(sorted_scores, float(row["behavioral_risk_score"])), 6)
 
-        # ── Step 5: Write ─────────────────────────────────────────────────────
+        # ── Step 3: Write ─────────────────────────────────────────────────────
         if not dry_run and score_rows:
             with db.transaction() as (_, cursor):
                 cursor.execute("DELETE FROM character_behavioral_scores")
