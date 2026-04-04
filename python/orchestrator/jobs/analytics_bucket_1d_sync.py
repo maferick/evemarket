@@ -69,7 +69,7 @@ def _processor(db: SupplyCoreDb) -> dict[str, object]:
     rows_processed = db.fetch_scalar(
         "SELECT COUNT(*) FROM market_orders_history WHERE observed_at >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL 14 DAY)"
     )
-    stock_written = db.execute(
+    db.execute(
         """INSERT INTO market_item_stock_1d (
                 bucket_start, source_type, source_id, type_id, sample_count, stock_units_sum, listing_count_sum, local_stock_units, listing_count
             )
@@ -90,7 +90,10 @@ def _processor(db: SupplyCoreDb) -> dict[str, object]:
                 sample_count = VALUES(sample_count), stock_units_sum = VALUES(stock_units_sum), listing_count_sum = VALUES(listing_count_sum),
                 local_stock_units = VALUES(local_stock_units), listing_count = VALUES(listing_count)"""
     )
-    price_written = db.execute(
+    stock_written = db.fetch_scalar(
+        "SELECT COUNT(*) FROM market_item_stock_1d WHERE bucket_start >= DATE_SUB(UTC_DATE(), INTERVAL 14 DAY)"
+    )
+    db.execute(
         """INSERT INTO market_item_price_1d (
                 bucket_start, source_type, source_id, type_id, sample_count, listing_count_sum, avg_price_sum,
                 weighted_price_numerator, weighted_price_denominator, listing_count, min_price, max_price, avg_price, weighted_price
@@ -119,17 +122,18 @@ def _processor(db: SupplyCoreDb) -> dict[str, object]:
                 listing_count = VALUES(listing_count), min_price = VALUES(min_price), max_price = VALUES(max_price),
                 avg_price = VALUES(avg_price), weighted_price = VALUES(weighted_price)"""
     )
+    price_written = db.fetch_scalar(
+        "SELECT COUNT(*) FROM market_item_price_1d WHERE bucket_start >= DATE_SUB(UTC_DATE(), INTERVAL 14 DAY)"
+    )
 
     # Dual-write to InfluxDB when enabled — reads back the freshly upserted
     # rollup rows so InfluxDB stays in sync without a separate export pass.
     influx_written = 0
     try:
-        bridge = RollupInfluxBridge.from_config(db._config) if hasattr(db, '_config') else None
-        if bridge is None:
-            from ..config import load_php_runtime_config, resolve_app_root
-            from pathlib import Path
-            config = load_php_runtime_config(Path(resolve_app_root(__file__)))
-            bridge = RollupInfluxBridge.from_config(config)
+        from ..config import load_php_runtime_config, resolve_app_root
+        from pathlib import Path
+        config = load_php_runtime_config(Path(resolve_app_root(__file__)))
+        bridge = RollupInfluxBridge.from_config(config)
         if bridge.enabled:
             _dual_write_stock(db, bridge)
             _dual_write_price(db, bridge)
