@@ -10492,13 +10492,19 @@ function killmail_loss_item_groups(array $items, array $resolvedEntities = []): 
         'fitted' => ['label' => killmail_item_role_label('fitted'), 'description' => 'Seen on the fit, but not explicitly marked as dropped or destroyed in the payload.', 'rows' => [], 'total_quantity' => 0],
     ];
 
+    $killmailTypeIds = array_values(array_unique(array_filter(array_map(
+        static fn (mixed $item): int => is_array($item) && isset($item['item_type_id']) ? (int) $item['item_type_id'] : 0,
+        $items
+    ), static fn (int $id): bool => $id > 0)));
+    $killmailMetadata = $killmailTypeIds !== [] ? item_scope_metadata_by_type_ids($killmailTypeIds) : [];
+
     foreach ($items as $item) {
         if (!is_array($item)) {
             continue;
         }
 
         $typeId = isset($item['item_type_id']) ? (int) $item['item_type_id'] : 0;
-        if ($typeId <= 0 || !item_scope_is_type_id_in_scope($typeId)) {
+        if ($typeId <= 0 || !item_scope_is_type_id_in_scope($typeId, null, $killmailMetadata)) {
             continue;
         }
 
@@ -23593,7 +23599,7 @@ function doctrine_operational_snapshot_build(bool $persistSnapshots = false, str
         );
         foreach ($itemsByFitId[$fitId] as $item) {
             $typeId = (int) ($item['type_id'] ?? 0);
-            if ($typeId > 0 && item_scope_is_type_id_in_scope($typeId)) {
+            if ($typeId > 0) {
                 $allTypeIds[] = $typeId;
             }
         }
@@ -23637,17 +23643,21 @@ function doctrine_operational_snapshot_build(bool $persistSnapshots = false, str
         }
     }
 
-    $durableLossTypeIds = array_values(array_filter(array_unique($allTypeIds), static fn (int $typeId): bool => item_scope_type_is_durable_loss_relevant($typeId)));
+    $uniqueAllTypeIds = array_values(array_unique($allTypeIds));
+    $allTypeMetadata = $uniqueAllTypeIds !== [] ? item_scope_metadata_by_type_ids($uniqueAllTypeIds) : [];
+    $durableLossTypeIds = array_values(array_filter($uniqueAllTypeIds, static fn (int $typeId): bool => item_scope_type_is_durable_loss_relevant($typeId, null, $allTypeMetadata)));
     try {
         $itemLossByType = doctrine_item_loss_index(db_killmail_tracked_recent_item_losses($durableLossTypeIds, 24 * 7));
     } catch (Throwable) {
         $itemLossByType = [];
     }
 
-    $hullTypeIds = array_values(array_unique(array_filter(array_map(
+    $rawHullTypeIds = array_values(array_unique(array_filter(array_map(
         static fn (array $fit): int => isset($fit['ship_type_id']) ? (int) $fit['ship_type_id'] : 0,
         $fits
-    ), static fn (int $typeId): bool => $typeId > 0 && item_scope_is_type_id_in_scope($typeId))));
+    ), static fn (int $typeId): bool => $typeId > 0)));
+    $hullMetadataByType = $rawHullTypeIds !== [] ? item_scope_metadata_by_type_ids($rawHullTypeIds) : [];
+    $hullTypeIds = array_values(array_filter($rawHullTypeIds, static fn (int $typeId): bool => item_scope_is_type_id_in_scope($typeId, null, $hullMetadataByType)));
     try {
         $hullLossByType = doctrine_hull_loss_index(db_killmail_tracked_recent_hull_losses($hullTypeIds, 24 * 7));
     } catch (Throwable) {
@@ -29929,10 +29939,16 @@ function activity_priority_summary_build(string $reason = 'manual'): array
     $itemsByFitId = [];
     $doctrineTypeIds = [];
     try {
-        foreach (db_doctrine_fit_items_by_fit_ids($fitIds) as $item) {
+        $rawFitItems = db_doctrine_fit_items_by_fit_ids($fitIds);
+        $fitItemTypeIds = array_values(array_unique(array_filter(array_map(
+            static fn (array $item): int => (int) ($item['type_id'] ?? 0),
+            $rawFitItems
+        ), static fn (int $id): bool => $id > 0)));
+        $fitItemMetadata = $fitItemTypeIds !== [] ? item_scope_metadata_by_type_ids($fitItemTypeIds) : [];
+        foreach ($rawFitItems as $item) {
             $fitId = (int) ($item['doctrine_fit_id'] ?? 0);
             $typeId = (int) ($item['type_id'] ?? 0);
-            if ($fitId <= 0 || $typeId <= 0 || !item_scope_is_type_id_in_scope($typeId)) {
+            if ($fitId <= 0 || $typeId <= 0 || !item_scope_is_type_id_in_scope($typeId, null, $fitItemMetadata)) {
                 continue;
             }
 
