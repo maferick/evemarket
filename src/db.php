@@ -944,6 +944,12 @@ function db_table_has_index(string $table, string $indexName): bool
         return true;
     }
 
+    static $cache = [];
+    $key = $table . '.' . $indexName;
+    if (isset($cache[$key])) {
+        return $cache[$key];
+    }
+
     $row = db_select_one(
         'SELECT 1
          FROM information_schema.statistics
@@ -954,7 +960,10 @@ function db_table_has_index(string $table, string $indexName): bool
         [$table, $indexName]
     );
 
-    return $row !== null;
+    $exists = $row !== null;
+    $cache[$key] = $exists;
+
+    return $exists;
 }
 
 function db_ensure_table_index(string $table, string $indexName, string $definitionSql): void
@@ -1264,6 +1273,12 @@ function db_prune_before_datetime(string $table, string $column, string $cutoff,
 
 function db_table_has_column(string $table, string $columnName): bool
 {
+    static $cache = [];
+    $key = $table . '.' . $columnName;
+    if (isset($cache[$key])) {
+        return $cache[$key];
+    }
+
     $row = db_select_one(
         'SELECT 1
          FROM information_schema.columns
@@ -1274,7 +1289,10 @@ function db_table_has_column(string $table, string $columnName): bool
         [$table, $columnName]
     );
 
-    return $row !== null;
+    $exists = $row !== null;
+    $cache[$key] = $exists;
+
+    return $exists;
 }
 
 function db_ensure_table_column(string $table, string $columnName, string $definitionSql): void
@@ -1293,6 +1311,11 @@ function db_ensure_table_column(string $table, string $columnName, string $defin
 
 function db_table_has_primary_key(string $table): bool
 {
+    static $cache = [];
+    if (isset($cache[$table])) {
+        return $cache[$table];
+    }
+
     $row = db_select_one(
         'SELECT 1
          FROM information_schema.table_constraints
@@ -1303,11 +1326,20 @@ function db_table_has_primary_key(string $table): bool
         [$table]
     );
 
-    return $row !== null;
+    $exists = $row !== null;
+    $cache[$table] = $exists;
+
+    return $exists;
 }
 
 function db_table_column_is_nullable(string $table, string $columnName): ?bool
 {
+    static $cache = [];
+    $key = $table . '.' . $columnName;
+    if (array_key_exists($key, $cache)) {
+        return $cache[$key];
+    }
+
     $row = db_select_one(
         'SELECT is_nullable
          FROM information_schema.columns
@@ -1319,10 +1351,14 @@ function db_table_column_is_nullable(string $table, string $columnName): ?bool
     );
 
     if ($row === null) {
+        $cache[$key] = null;
         return null;
     }
 
-    return strtoupper((string) ($row['is_nullable'] ?? '')) === 'YES';
+    $result = strtoupper((string) ($row['is_nullable'] ?? '')) === 'YES';
+    $cache[$key] = $result;
+
+    return $result;
 }
 
 function db_time_series_nullable_dimension_schema_ensure(
@@ -8672,6 +8708,12 @@ function db_scheduler_daemon_force_reset(string $daemonKey = 'master', string $e
 
 function db_sync_schedule_registry_tables_ensure(): void
 {
+    static $done = false;
+    if ($done) {
+        return;
+    }
+    $done = true;
+
     db_execute('CREATE TABLE IF NOT EXISTS sync_schedules (
         id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
         job_key VARCHAR(190) NOT NULL,
@@ -8713,6 +8755,12 @@ function db_sync_schedule_registry_tables_ensure(): void
 
 function db_sync_schedule_registry_columns_ensure(): void
 {
+    static $done = false;
+    if ($done) {
+        return;
+    }
+    $done = true;
+
     db_sync_schedule_registry_tables_ensure();
 
     db_ensure_table_column('sync_schedules', 'offset_seconds', 'INT UNSIGNED NOT NULL DEFAULT 0');
@@ -10230,6 +10278,12 @@ function db_sync_schedule_next_due_snapshot(): ?array
 
 function db_scheduler_job_current_status_ensure(): void
 {
+    static $done = false;
+    if ($done) {
+        return;
+    }
+    $done = true;
+
     db_execute('CREATE TABLE IF NOT EXISTS scheduler_job_current_status (
         job_key VARCHAR(190) PRIMARY KEY,
         dataset_key VARCHAR(190) DEFAULT NULL,
@@ -10668,6 +10722,12 @@ function db_scheduler_tuning_actions_recent(int $limit = 20): array
 
 function db_scheduler_resource_metrics_ensure(): void
 {
+    static $done = false;
+    if ($done) {
+        return;
+    }
+    $done = true;
+
     db_execute('CREATE TABLE IF NOT EXISTS scheduler_job_resource_metrics (
         id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
         schedule_id INT UNSIGNED DEFAULT NULL,
@@ -13166,12 +13226,20 @@ function db_table_exists(string $tableName): bool
         return true;
     }
 
+    static $cache = [];
+    if (isset($cache[$tableName])) {
+        return $cache[$tableName];
+    }
+
     $row = db_select_one(
         'SELECT 1 FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? LIMIT 1',
         [$tableName]
     );
 
-    return $row !== null;
+    $exists = $row !== null;
+    $cache[$tableName] = $exists;
+
+    return $exists;
 }
 
 function db_column_exists(string $tableName, string $columnName): bool
@@ -13180,12 +13248,21 @@ function db_column_exists(string $tableName, string $columnName): bool
         return true;
     }
 
+    static $cache = [];
+    $key = $tableName . '.' . $columnName;
+    if (isset($cache[$key])) {
+        return $cache[$key];
+    }
+
     $row = db_select_one(
         'SELECT 1 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ? LIMIT 1',
         [$tableName, $columnName]
     );
 
-    return $row !== null;
+    $exists = $row !== null;
+    $cache[$key] = $exists;
+
+    return $exists;
 }
 
 function db_index_exists(string $tableName, string $indexName): bool
@@ -13194,12 +13271,21 @@ function db_index_exists(string $tableName, string $indexName): bool
         return true;
     }
 
+    static $cache = [];
+    $key = $tableName . '.' . $indexName;
+    if (isset($cache[$key])) {
+        return $cache[$key];
+    }
+
     $row = db_select_one(
         'SELECT 1 FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND INDEX_NAME = ? LIMIT 1',
         [$tableName, $indexName]
     );
 
-    return $row !== null;
+    $exists = $row !== null;
+    $cache[$key] = $exists;
+
+    return $exists;
 }
 
 function db_foreign_key_delete_rule(string $constraintName): ?string
