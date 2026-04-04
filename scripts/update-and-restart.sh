@@ -499,6 +499,21 @@ if [[ ${CLEAR_CACHE} -eq 1 ]]; then
   run_cmd rm -rf "${APP_ROOT}/storage/cache/"*
 fi
 
+# ------- Storage permissions -------
+# Only chown entries that are not already owned by www-data:www-data — avoids
+# touching every inode on large log trees (faster than a blanket chown -R).
+fix_storage_permissions() {
+  local storage_dir="${APP_ROOT}/storage"
+  if [[ ! -d "${storage_dir}" ]]; then
+    log "No storage directory found at ${storage_dir}; skipping permission fix."
+    return 0
+  fi
+  log "Fixing storage ownership (www-data:www-data) for misowned entries"
+  run_cmd find "${storage_dir}" \( ! -user www-data -o ! -group www-data \) \
+    -exec chown www-data:www-data {} +
+}
+fix_storage_permissions
+
 # ------- Sync systemd units -------
 if [[ ${SYNC_UNITS} -eq 1 ]]; then
   sync_systemd_units
