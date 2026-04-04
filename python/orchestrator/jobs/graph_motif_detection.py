@@ -15,12 +15,16 @@ from ..neo4j import Neo4jClient, Neo4jConfig, Neo4jError
 
 def _detect_triangles(client: Neo4jClient) -> list[dict[str, Any]]:
     """Detect triangle motifs: 3 characters mutually co-occurring."""
-    # Triangle detection is the most expensive graph query (triple join on
-    # CO_OCCURS_WITH), so it needs a higher timeout than the default.
+    # CO_OCCURS_WITH edges are always directed from lower character_id to
+    # higher, so we use directed patterns to avoid the combinatorial explosion
+    # of undirected cycle matching.  The third edge (a)->(c) is checked as a
+    # WHERE-EXISTS filter, which Neo4j can evaluate cheaply.
     return client.query(
         """
-        MATCH (a:Character)-[:CO_OCCURS_WITH]-(b:Character)-[:CO_OCCURS_WITH]-(c:Character)-[:CO_OCCURS_WITH]-(a)
-        WHERE a.character_id < b.character_id AND b.character_id < c.character_id
+        MATCH (a:Character)-[:CO_OCCURS_WITH]->(b:Character)-[:CO_OCCURS_WITH]->(c:Character)
+        WHERE a.character_id < b.character_id
+          AND b.character_id < c.character_id
+          AND EXISTS { (a)-[:CO_OCCURS_WITH]->(c) }
         WITH a, b, c
         OPTIONAL MATCH (a)-[:ON_SIDE]->(:BattleSide)<-[:HAS_SIDE]-(battle:Battle)
         WITH a, b, c, collect(DISTINCT battle.battle_id)[..10] AS battle_ids
