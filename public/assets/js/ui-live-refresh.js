@@ -26,6 +26,8 @@
     pollingTimer: null,
     autoRefreshTimer: null,
     stream: null,
+    inFlightSections: new Map(),
+    lastSseEventAt: 0,
   };
 
   const diagnostics = {
@@ -208,40 +210,55 @@
   }
 
   async function refreshSection(sectionKey) {
-    const params = new URLSearchParams({
-      section: sectionKey,
-      page_query: window.location.search.replace(/^\?/, ''),
+    // In-flight guard: if a request for this section is already running, return
+    // the existing promise instead of firing a duplicate concurrent request.
+    if (state.inFlightSections.has(sectionKey)) {
+      return state.inFlightSections.get(sectionKey);
+    }
+
+    const promise = (async () => {
+      const params = new URLSearchParams({
+        section: sectionKey,
+        page_query: window.location.search.replace(/^\?/, ''),
+      });
+
+      const response = await fetch(`${config.fragment_url}&${params.toString()}`, {
+        headers: { Accept: 'application/json' },
+        credentials: 'same-origin',
+        cache: 'no-store',
+      });
+
+      if (!response.ok) {
+        throw new Error(`Fragment refresh failed for ${sectionKey}`);
+      }
+
+      const payload = await response.json();
+      const current = document.querySelector(`[data-ui-section="${sectionKey}"]`);
+      if (!current || typeof payload.html !== 'string' || payload.html.trim() === '') {
+        return;
+      }
+
+      const template = document.createElement('template');
+      template.innerHTML = payload.html.trim();
+      const replacement = template.content.firstElementChild;
+      if (!replacement) {
+        return;
+      }
+
+      transitionSwap(current, replacement);
+      state.lastSectionRefreshAt[sectionKey] = new Date().toISOString();
+      flashSection(sectionKey);
+      updateFreshnessBadges(sectionKey);
+      updateVersionState(payload.current_versions || {});
+      renderDiagnostics();
+    })();
+
+    state.inFlightSections.set(sectionKey, promise);
+    promise.finally(() => {
+      state.inFlightSections.delete(sectionKey);
     });
 
-    const response = await fetch(`${config.fragment_url}&${params.toString()}`, {
-      headers: { Accept: 'application/json' },
-      credentials: 'same-origin',
-      cache: 'no-store',
-    });
-
-    if (!response.ok) {
-      throw new Error(`Fragment refresh failed for ${sectionKey}`);
-    }
-
-    const payload = await response.json();
-    const current = document.querySelector(`[data-ui-section="${sectionKey}"]`);
-    if (!current || typeof payload.html !== 'string' || payload.html.trim() === '') {
-      return;
-    }
-
-    const template = document.createElement('template');
-    template.innerHTML = payload.html.trim();
-    const replacement = template.content.firstElementChild;
-    if (!replacement) {
-      return;
-    }
-
-    transitionSwap(current, replacement);
-    state.lastSectionRefreshAt[sectionKey] = new Date().toISOString();
-    flashSection(sectionKey);
-    updateFreshnessBadges(sectionKey);
-    updateVersionState(payload.current_versions || {});
-    renderDiagnostics();
+    return promise;
   }
 
   async function flushPendingRefreshes() {
@@ -349,6 +366,7 @@
       state.stream.addEventListener('ui-refresh', (event) => {
         const payload = JSON.parse(event.data || '{}');
         state.transport = 'sse';
+        state.lastSseEventAt = Date.now();
         applyEvent(payload);
       });
       state.stream.onerror = function () {
@@ -372,6 +390,13 @@
    */
   function refreshAllSections() {
     if (document.hidden) {
+      return;
+    }
+
+    // Skip unconditional auto-refresh when SSE is actively delivering events —
+    // the event-driven refresh already keeps sections current, so a full reload
+    // within 2× the auto-refresh interval is redundant and expensive.
+    if (state.transport === 'sse' && state.lastSseEventAt > 0 && (Date.now() - state.lastSseEventAt) < autoRefreshMs * 2) {
       return;
     }
 

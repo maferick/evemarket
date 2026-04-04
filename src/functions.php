@@ -29124,8 +29124,20 @@ function buy_all_precomputed_empty_payload(array $request, string $reason): arra
 
 function buy_all_planner_data(array $query = []): array
 {
-    // Always compute live — precomputed cache removed per operator request.
-    return buy_all_planner_data_uncached($query);
+    // Short-lived cache-aside (30s) to prevent duplicate concurrent fragment
+    // requests from each running the full ~48s uncached computation. The cache
+    // is keyed on the normalised request parameters so different filter/sort
+    // combinations each get their own entry, and is invalidated whenever the
+    // underlying data domains bump their version counters.
+    $request = buy_all_request($query);
+    $cacheKey = md5(json_encode($request, JSON_THROW_ON_ERROR));
+
+    return supplycore_cache_aside('buyall_planner', [$cacheKey], 30, static function () use ($query): array {
+        return buy_all_planner_data_uncached($query);
+    }, [
+        'dependencies' => ['buyall', 'market_compare', 'doctrine'],
+        'lock_ttl' => 60,
+    ]);
 }
 
 function buy_all_precompute_refresh_defaults(): array
