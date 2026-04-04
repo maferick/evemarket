@@ -89,6 +89,15 @@ def _run_single_job(
         status = str(result.get("status") or "success")
 
         _finalize_job(db, job_key, result, logger)
+        # Keep next_due_at in sync so the PHP scheduler and worker-pool
+        # DAG planner see accurate timing.  Without this, next_due_at
+        # stays permanently in the past, causing the PHP scheduler to
+        # treat every job as perpetually overdue and the worker-pool to
+        # queue stale cross-queue entries that block DAG resolution.
+        try:
+            db.advance_next_due_at_by_interval(job_key)
+        except Exception:
+            pass  # best-effort; row may not exist for sub-pipeline jobs
 
         return JobOutcome(
             job_key=job_key,
@@ -105,6 +114,10 @@ def _run_single_job(
         ).to_dict()
 
         _finalize_job(db, job_key, fail_result, logger)
+        try:
+            db.advance_next_due_at_by_interval(job_key)
+        except Exception:
+            pass
 
         return JobOutcome(
             job_key=job_key,

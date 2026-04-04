@@ -596,13 +596,15 @@ class SupplyCoreDb:
         completed = {str(r["job_key"]) for r in worker_rows if r.get("job_key")}
 
         # Source 2: sync_schedules — jobs completed by the PHP scheduler daemon
-        # background dispatch path.  These update last_finished_at and
-        # last_status in sync_schedules but never create worker_jobs rows.
+        # background dispatch path or the loop_runner.  These update
+        # last_finished_at and last_status in sync_schedules but never
+        # create worker_jobs rows.  Do NOT filter on enabled — a job may
+        # be disabled in the PHP scheduler but still satisfy DAG
+        # dependencies for downstream worker-pool jobs.
         try:
             schedule_rows = self.fetch_all(
                 """SELECT DISTINCT job_key FROM sync_schedules
-                   WHERE enabled = 1
-                     AND last_finished_at IS NOT NULL
+                   WHERE last_finished_at IS NOT NULL
                      AND last_finished_at >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL %s SECOND)
                      AND last_status IN ('success', 'skipped', 'skipped_no_change',
                                          'skipped_within_freshness_window',
