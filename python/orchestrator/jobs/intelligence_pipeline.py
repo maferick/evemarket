@@ -905,8 +905,19 @@ def _export_suspicion_signals(client: Neo4jClient, db: SupplyCoreDb, computed_at
         _intel_cohort_normalize(evidence_rows)
 
         if evidence_rows:
-            for ev in evidence_rows:
-                cursor.execute(
+            evidence_params = [
+                (
+                    ev["character_id"], ev["evidence_key"], ev.get("window_label", "all_time"),
+                    ev["evidence_value"], ev.get("expected_value"), ev.get("deviation_value"),
+                    ev.get("z_score"), ev.get("mad_score"), ev.get("cohort_percentile"),
+                    ev.get("confidence_flag", "low"),
+                    ev["evidence_text"], ev["evidence_payload_json"], computed_at,
+                )
+                for ev in evidence_rows
+            ]
+            for i in range(0, len(evidence_params), BATCH_SIZE):
+                chunk = evidence_params[i:i + BATCH_SIZE]
+                cursor.executemany(
                     """INSERT INTO character_counterintel_evidence (
                         character_id, evidence_key, window_label,
                         evidence_value, expected_value, deviation_value,
@@ -925,13 +936,7 @@ def _export_suspicion_signals(client: Neo4jClient, db: SupplyCoreDb, computed_at
                         evidence_payload_json = VALUES(evidence_payload_json),
                         computed_at = VALUES(computed_at)
                     """,
-                    (
-                        ev["character_id"], ev["evidence_key"], ev.get("window_label", "all_time"),
-                        ev["evidence_value"], ev.get("expected_value"), ev.get("deviation_value"),
-                        ev.get("z_score"), ev.get("mad_score"), ev.get("cohort_percentile"),
-                        ev.get("confidence_flag", "low"),
-                        ev["evidence_text"], ev["evidence_payload_json"], computed_at,
-                    ),
+                    chunk,
                 )
 
     return len(rows)
