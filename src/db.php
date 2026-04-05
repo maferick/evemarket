@@ -19046,7 +19046,7 @@ function db_influx_bucket(): string
  */
 function db_opposition_daily_snapshots(string $date): array
 {
-    $pdo = db_get();
+    $pdo = db();
     $stmt = $pdo->prepare(
         "SELECT * FROM opposition_daily_snapshots WHERE snapshot_date = :d ORDER BY kills DESC, isk_destroyed DESC"
     );
@@ -19069,7 +19069,7 @@ function db_opposition_daily_snapshots(string $date): array
  */
 function db_opposition_daily_snapshot_alliance(int $allianceId, string $endDate, int $days = 7): array
 {
-    $pdo = db_get();
+    $pdo = db();
     $stmt = $pdo->prepare(
         "SELECT * FROM opposition_daily_snapshots
          WHERE alliance_id = :aid AND snapshot_date BETWEEN DATE_SUB(:d, INTERVAL :days DAY) AND :d2
@@ -19094,7 +19094,7 @@ function db_opposition_daily_snapshot_alliance(int $allianceId, string $endDate,
  */
 function db_opposition_daily_briefing(string $date, string $type = 'global', ?int $allianceId = null): ?array
 {
-    $pdo = db_get();
+    $pdo = db();
     if ($type === 'global') {
         $stmt = $pdo->prepare(
             "SELECT * FROM opposition_daily_briefings WHERE briefing_date = :d AND briefing_type = 'global' LIMIT 1"
@@ -19115,7 +19115,7 @@ function db_opposition_daily_briefing(string $date, string $type = 'global', ?in
  */
 function db_opposition_daily_briefings_recent(int $days = 14): array
 {
-    $pdo = db_get();
+    $pdo = db();
     $stmt = $pdo->prepare(
         "SELECT * FROM opposition_daily_briefings
          WHERE briefing_type = 'global' AND briefing_date >= DATE_SUB(CURDATE(), INTERVAL :days DAY)
@@ -19130,7 +19130,7 @@ function db_opposition_daily_briefings_recent(int $days = 14): array
  */
 function db_opposition_alliance_briefings(string $date): array
 {
-    $pdo = db_get();
+    $pdo = db();
     $stmt = $pdo->prepare(
         "SELECT * FROM opposition_daily_briefings
          WHERE briefing_date = :d AND briefing_type = 'alliance'
@@ -19145,7 +19145,7 @@ function db_opposition_alliance_briefings(string $date): array
  */
 function db_opposition_alliance_briefings_history(int $allianceId, int $days = 7): array
 {
-    $pdo = db_get();
+    $pdo = db();
     $stmt = $pdo->prepare(
         "SELECT * FROM opposition_daily_briefings
          WHERE briefing_type = 'alliance' AND alliance_id = :aid
@@ -19161,7 +19161,7 @@ function db_opposition_alliance_briefings_history(int $allianceId, int $days = 7
  */
 function db_opposition_daily_briefing_save(array $briefing): void
 {
-    $pdo = db_get();
+    $pdo = db();
     $stmt = $pdo->prepare(
         "INSERT INTO opposition_daily_briefings (
             briefing_date, briefing_type, alliance_id, alliance_name,
@@ -19205,7 +19205,7 @@ function db_opposition_daily_briefing_save(array $briefing): void
  */
 function db_opposition_intel_is_tracked(int $allianceId): bool
 {
-    $pdo = db_get();
+    $pdo = db();
     $stmt = $pdo->prepare("SELECT 1 FROM opposition_intel_tracked WHERE alliance_id = :aid");
     $stmt->execute(['aid' => $allianceId]);
     return (bool) $stmt->fetchColumn();
@@ -19216,7 +19216,7 @@ function db_opposition_intel_is_tracked(int $allianceId): bool
  */
 function db_opposition_intel_toggle_track(int $allianceId): bool
 {
-    $pdo = db_get();
+    $pdo = db();
     if (db_opposition_intel_is_tracked($allianceId)) {
         $stmt = $pdo->prepare("DELETE FROM opposition_intel_tracked WHERE alliance_id = :aid");
         $stmt->execute(['aid' => $allianceId]);
@@ -19235,7 +19235,7 @@ function db_opposition_intel_toggle_track(int $allianceId): bool
  */
 function db_opposition_intel_tracked_alliances(): array
 {
-    $pdo = db_get();
+    $pdo = db();
     $stmt = $pdo->query(
         "SELECT oit.alliance_id, oit.tracked_at,
                 COALESCE(emc.entity_name, CONCAT('Alliance #', oit.alliance_id)) AS alliance_name
@@ -19252,7 +19252,7 @@ function db_opposition_intel_tracked_alliances(): array
  */
 function db_opposition_latest_snapshot_date(): ?string
 {
-    $pdo = db_get();
+    $pdo = db();
     $stmt = $pdo->query("SELECT MAX(snapshot_date) AS d FROM opposition_daily_snapshots");
     $row = $stmt->fetch(PDO::FETCH_ASSOC);
     return $row['d'] ?? null;
