@@ -1752,26 +1752,17 @@ include __DIR__ . '/../../src/views/partials/header.php';
                     </span>
                 </label>
 
-                <!-- Global provider + capability tier -->
+                <!-- Global default provider -->
                 <div class="rounded-2xl border border-white/8 bg-white/[0.03] p-4">
-                    <p class="text-sm font-medium text-slate-100">Global defaults</p>
-                    <p class="mt-1 text-xs text-muted">Picks which provider handles AI jobs by default. Per-feature routing below can override this on a per-job-type basis.</p>
-                    <div class="mt-3 grid gap-4 md:grid-cols-2">
+                    <p class="text-sm font-medium text-slate-100">Global default provider</p>
+                    <p class="mt-1 text-xs text-muted">Picks which provider handles AI jobs by default. Per-feature routing below can override this on a per-job-type basis. Each provider card has its own capability tier.</p>
+                    <div class="mt-3">
                         <label class="block space-y-2">
                             <span class="text-sm text-muted">Default AI Provider</span>
                             <select name="ollama_provider" class="w-full field-input">
                                 <?php $selectedProvider = (string) ($settingValues['ollama_provider'] ?? ($ollamaConfig['provider'] ?? 'local')); ?>
                                 <?php foreach (ollama_provider_options() as $value => $label): ?>
                                     <option value="<?= htmlspecialchars($value, ENT_QUOTES) ?>" <?= $selectedProvider === $value ? 'selected' : '' ?>><?= htmlspecialchars($label, ENT_QUOTES) ?></option>
-                                <?php endforeach; ?>
-                            </select>
-                        </label>
-                        <label class="block space-y-2">
-                            <span class="text-sm text-muted">Capability Tier</span>
-                            <select name="ollama_capability_tier" class="w-full field-input">
-                                <?php $selectedTier = (string) ($settingValues['ollama_capability_tier'] ?? ($ollamaConfig['capability_override'] ?? 'auto')); ?>
-                                <?php foreach (['auto' => 'Auto-detect from model', 'small' => 'Small', 'medium' => 'Medium', 'large' => 'Large'] as $value => $label): ?>
-                                    <option value="<?= htmlspecialchars($value, ENT_QUOTES) ?>" <?= $selectedTier === $value ? 'selected' : '' ?>><?= htmlspecialchars($label, ENT_QUOTES) ?></option>
                                 <?php endforeach; ?>
                             </select>
                         </label>
@@ -1799,6 +1790,15 @@ include __DIR__ . '/../../src/views/partials/header.php';
                             <label class="block space-y-1.5">
                                 <span class="text-xs uppercase tracking-wider text-muted">Request Timeout (s)</span>
                                 <input type="number" min="1" max="600" step="1" name="ollama_timeout" value="<?= htmlspecialchars($settingValues['ollama_timeout'] ?? (string) ($ollamaConfig['local_ollama_timeout'] ?? 20), ENT_QUOTES) ?>" class="w-full field-input" />
+                            </label>
+                            <label class="block space-y-1.5">
+                                <span class="text-xs uppercase tracking-wider text-muted">Capability Tier</span>
+                                <?php $localTier = (string) ($settingValues['ollama_capability_tier'] ?? ($ollamaConfig['local_ollama_capability_tier'] ?? 'auto')); ?>
+                                <select name="ollama_capability_tier" class="w-full field-input">
+                                    <?php foreach (['auto' => 'Auto-detect', 'small' => 'Small', 'medium' => 'Medium', 'large' => 'Large'] as $v => $l): ?>
+                                        <option value="<?= $v ?>" <?= $localTier === $v ? 'selected' : '' ?>><?= $l ?></option>
+                                    <?php endforeach; ?>
+                                </select>
                             </label>
                         </div>
                     </section>
@@ -1833,6 +1833,15 @@ include __DIR__ . '/../../src/views/partials/header.php';
                                 <input type="number" min="5" max="900" step="1" name="runpod_timeout" value="<?= htmlspecialchars($settingValues['runpod_timeout'] ?? (string) ($ollamaConfig['runpod_timeout'] ?? 120), ENT_QUOTES) ?>" class="w-full field-input" />
                                 <p class="text-xs text-muted">Caps individual /run and /status calls. Total polling budget is controlled by the AI worker's lease (~14 minutes).</p>
                             </label>
+                            <label class="block space-y-1.5">
+                                <span class="text-xs uppercase tracking-wider text-muted">Capability Tier</span>
+                                <?php $runpodTier = (string) ($settingValues['runpod_capability_tier'] ?? ($ollamaConfig['runpod_capability_tier'] ?? 'auto')); ?>
+                                <select name="runpod_capability_tier" class="w-full field-input">
+                                    <?php foreach (['auto' => 'Auto-detect', 'small' => 'Small', 'medium' => 'Medium', 'large' => 'Large'] as $v => $l): ?>
+                                        <option value="<?= $v ?>" <?= $runpodTier === $v ? 'selected' : '' ?>><?= $l ?></option>
+                                    <?php endforeach; ?>
+                                </select>
+                            </label>
                         </div>
                     </section>
 
@@ -1860,6 +1869,15 @@ include __DIR__ . '/../../src/views/partials/header.php';
                                 <span class="text-xs uppercase tracking-wider text-muted">Request Timeout (s)</span>
                                 <input type="number" min="5" max="600" step="1" name="claude_timeout" value="<?= htmlspecialchars($settingValues['claude_timeout'] ?? (string) ($ollamaConfig['claude_timeout'] ?? 60), ENT_QUOTES) ?>" class="w-full field-input" />
                             </label>
+                            <label class="block space-y-1.5">
+                                <span class="text-xs uppercase tracking-wider text-muted">Capability Tier</span>
+                                <?php $claudeTier = (string) ($settingValues['claude_capability_tier'] ?? ($ollamaConfig['claude_capability_tier'] ?? 'large')); ?>
+                                <select name="claude_capability_tier" class="w-full field-input">
+                                    <?php foreach (['auto' => 'Auto-detect', 'small' => 'Small', 'medium' => 'Medium', 'large' => 'Large'] as $v => $l): ?>
+                                        <option value="<?= $v ?>" <?= $claudeTier === $v ? 'selected' : '' ?>><?= $l ?></option>
+                                    <?php endforeach; ?>
+                                </select>
+                            </label>
                         </div>
                     </section>
 
@@ -1886,6 +1904,15 @@ include __DIR__ . '/../../src/views/partials/header.php';
                             <label class="block space-y-1.5">
                                 <span class="text-xs uppercase tracking-wider text-muted">Request Timeout (s)</span>
                                 <input type="number" min="5" max="300" step="1" name="groq_timeout" value="<?= htmlspecialchars($settingValues['groq_timeout'] ?? (string) ($ollamaConfig['groq_timeout'] ?? 30), ENT_QUOTES) ?>" class="w-full field-input" />
+                            </label>
+                            <label class="block space-y-1.5">
+                                <span class="text-xs uppercase tracking-wider text-muted">Capability Tier</span>
+                                <?php $groqTier = (string) ($settingValues['groq_capability_tier'] ?? ($ollamaConfig['groq_capability_tier'] ?? 'auto')); ?>
+                                <select name="groq_capability_tier" class="w-full field-input">
+                                    <?php foreach (['auto' => 'Auto-detect', 'small' => 'Small', 'medium' => 'Medium', 'large' => 'Large'] as $v => $l): ?>
+                                        <option value="<?= $v ?>" <?= $groqTier === $v ? 'selected' : '' ?>><?= $l ?></option>
+                                    <?php endforeach; ?>
+                                </select>
                             </label>
                         </div>
                     </section>
