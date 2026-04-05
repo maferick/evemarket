@@ -84,7 +84,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                     <tr class="border-b border-white/5">
                         <td class="px-3 py-2">
                             <div class="flex items-center gap-2">
-                                <img src="https://images.evetech.net/types/<?= (int) $item['type_id'] ?>/icon?size=24" width="24" height="24" alt="" loading="lazy" class="rounded">
+                                <img src="https://images.evetech.net/types/<?= (int) $item['type_id'] ?>/icon?size=32" width="24" height="24" alt="" loading="lazy" class="rounded">
                                 <span><?= htmlspecialchars((string) $item['type_name']) ?></span>
                             </div>
                         </td>
