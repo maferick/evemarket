@@ -1830,6 +1830,31 @@ include __DIR__ . '/../../src/views/partials/header.php';
                     </label>
                 </div>
 
+                <div class="mt-4 rounded-2xl border border-white/8 bg-white/[0.03] px-4 py-3">
+                    <p class="text-sm font-medium text-slate-100">Per-feature provider routing</p>
+                    <p class="mt-1 text-xs text-muted">Pick which provider handles each AI job feature. Jobs run through the <span class="font-medium text-slate-100">ai_jobs</span> queue drained by <span class="font-medium text-slate-100">supplycore-ai-worker.service</span> — the browser never waits for the model. Leaving a feature on <span class="font-medium text-slate-100">Use global provider</span> falls back to the selection above.</p>
+                    <div class="mt-3 grid gap-4 md:grid-cols-2">
+                        <?php
+                        $featureLabels = [
+                            'ai_provider_theater_lock' => 'Theater battle summaries (lock)',
+                            'ai_provider_opposition_global' => 'Opposition — daily global briefing',
+                            'ai_provider_opposition_alliance' => 'Opposition — per-alliance briefings',
+                        ];
+                        foreach ($featureLabels as $key => $label):
+                            $currentValue = (string) ($settingValues[$key] ?? 'default');
+                        ?>
+                            <label class="block space-y-2">
+                                <span class="text-sm text-muted"><?= htmlspecialchars($label, ENT_QUOTES) ?></span>
+                                <select name="<?= htmlspecialchars($key, ENT_QUOTES) ?>" class="w-full field-input">
+                                    <?php foreach (ai_feature_provider_options() as $value => $optionLabel): ?>
+                                        <option value="<?= htmlspecialchars($value, ENT_QUOTES) ?>" <?= $currentValue === $value ? 'selected' : '' ?>><?= htmlspecialchars($optionLabel, ENT_QUOTES) ?></option>
+                                    <?php endforeach; ?>
+                                </select>
+                            </label>
+                        <?php endforeach; ?>
+                    </div>
+                </div>
+
                 <div class="mt-2">
                     <label class="block space-y-2">
                         <span class="text-sm text-muted">Theater AAR Prompt</span>

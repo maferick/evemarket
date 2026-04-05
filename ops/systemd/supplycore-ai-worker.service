@@ -1,0 +1,24 @@
+[Unit]
+Description=SupplyCore AI briefing worker (drains ai_jobs queue)
+After=network-online.target mariadb.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+WorkingDirectory=/var/www/SupplyCore
+EnvironmentFile=-/etc/default/supplycore-worker
+Environment=SUPPLYCORE_AI_WORKER_LEASE=900
+Environment=SUPPLYCORE_AI_WORKER_POLL=5
+ExecStart=/usr/bin/php /var/www/SupplyCore/bin/ai_briefing_worker.php --drain --worker-id=%H-ai --lease=${SUPPLYCORE_AI_WORKER_LEASE} --poll=${SUPPLYCORE_AI_WORKER_POLL}
+Restart=always
+RestartSec=5
+KillSignal=SIGTERM
+TimeoutStopSec=30
+MemoryMax=512M
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

@@ -122,12 +122,21 @@ if ($flash !== null) {
 }
 ?>
 <?php if ($flash): ?>
-    <?php if (($flash['status'] ?? '') === 'ok'): ?>
-        <section class="surface-primary mt-4 border border-emerald-500/30 bg-emerald-500/10">
-            <p class="text-sm text-emerald-200">
-                <strong>Intel generation complete.</strong>
-                Generated <?= (int) ($flash['generated'] ?? 0) ?> briefing(s) for <?= htmlspecialchars((string) ($flash['date'] ?? ''), ENT_QUOTES) ?>
-                using local Ollama (gemma4:e2b).
+    <?php $flashStatus = (string) ($flash['status'] ?? ''); ?>
+    <?php if ($flashStatus === 'queued'): ?>
+        <section class="surface-primary mt-4 border border-sky-500/30 bg-sky-500/10">
+            <p class="text-sm text-sky-200">
+                <strong>Intel generation queued.</strong>
+                Job #<?= (int) ($flash['job_id'] ?? 0) ?> is running in the background for
+                <?= htmlspecialchars((string) ($flash['date'] ?? ''), ENT_QUOTES) ?>.
+                Refresh this page in a minute to see the result.
+            </p>
+        </section>
+    <?php elseif ($flashStatus === 'disabled'): ?>
+        <section class="surface-primary mt-4 border border-amber-500/30 bg-amber-500/10">
+            <p class="text-sm text-amber-200">
+                <strong>Intel generation disabled.</strong>
+                Enable AI briefings in Settings to queue a job.
             </p>
         </section>
     <?php else: ?>
