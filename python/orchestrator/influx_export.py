@@ -108,84 +108,6 @@ def _killmail_hull_fields(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _killmail_doctrine_tags(row: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "window": row.get("_window"),
-        "doctrine_fit_id": row.get("doctrine_fit_id") or 0,
-        "doctrine_group_id": row.get("doctrine_group_id") or 0,
-        "hull_type_id": row.get("hull_type_id") or 0,
-    }
-
-
-def _killmail_doctrine_fields(row: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "loss_count": row.get("loss_count"),
-        "quantity_lost": row.get("quantity_lost"),
-        "victim_count": row.get("victim_count"),
-        "killmail_count": row.get("killmail_count"),
-    }
-
-
-def _doctrine_fit_activity_tags(row: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "window": row.get("_window"),
-        "fit_id": row.get("fit_id"),
-        "doctrine_group_id": row.get("doctrine_group_id") or 0,
-        "hull_type_id": row.get("hull_type_id") or 0,
-    }
-
-
-def _doctrine_fit_activity_fields(row: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "hull_loss_count": row.get("hull_loss_count"),
-        "doctrine_item_loss_count": row.get("doctrine_item_loss_count"),
-        "complete_fits_available": row.get("complete_fits_available"),
-        "target_fits": row.get("target_fits"),
-        "fit_gap": row.get("fit_gap"),
-        "priority_score": row.get("priority_score"),
-        "readiness_state": row.get("readiness_state"),
-        "resupply_pressure": row.get("resupply_pressure"),
-    }
-
-
-def _doctrine_group_activity_tags(row: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "window": row.get("_window"),
-        "group_id": row.get("group_id"),
-    }
-
-
-def _doctrine_group_activity_fields(row: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "hull_loss_count": row.get("hull_loss_count"),
-        "doctrine_item_loss_count": row.get("doctrine_item_loss_count"),
-        "complete_fits_available": row.get("complete_fits_available"),
-        "target_fits": row.get("target_fits"),
-        "fit_gap": row.get("fit_gap"),
-        "priority_score": row.get("priority_score"),
-        "readiness_state": row.get("readiness_state"),
-        "resupply_pressure": row.get("resupply_pressure"),
-    }
-
-
-def _doctrine_stock_pressure_tags(row: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "window": row.get("_window"),
-        "fit_id": row.get("fit_id"),
-        "doctrine_group_id": row.get("doctrine_group_id") or 0,
-        "bottleneck_type_id": row.get("bottleneck_type_id") or 0,
-    }
-
-
-def _doctrine_stock_pressure_fields(row: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "complete_fits_available": row.get("complete_fits_available"),
-        "target_fits": row.get("target_fits"),
-        "fit_gap": row.get("fit_gap"),
-        "bottleneck_quantity": row.get("bottleneck_quantity"),
-        "readiness_state": row.get("readiness_state"),
-        "resupply_pressure": row.get("resupply_pressure"),
-    }
 
 
 DATASETS: tuple[RollupDataset, ...] = (
@@ -196,10 +118,9 @@ DATASETS: tuple[RollupDataset, ...] = (
     RollupDataset("killmail_item_loss_1h", "killmail_item_loss_1h", "killmail_item_loss", "bucket_start", ("updated_at", "bucket_start", "type_id", "doctrine_fit_key", "doctrine_group_key", "hull_type_key"), _killmail_item_tags, _killmail_item_fields),
     RollupDataset("killmail_item_loss_1d", "killmail_item_loss_1d", "killmail_item_loss", "bucket_start", ("updated_at", "bucket_start", "type_id", "doctrine_fit_key", "doctrine_group_key", "hull_type_key"), _killmail_item_tags, _killmail_item_fields),
     RollupDataset("killmail_hull_loss_1d", "killmail_hull_loss_1d", "killmail_hull_loss", "bucket_start", ("updated_at", "bucket_start", "hull_type_id", "doctrine_fit_key", "doctrine_group_key"), _killmail_hull_tags, _killmail_hull_fields),
-    RollupDataset("killmail_doctrine_activity_1d", "killmail_doctrine_activity_1d", "killmail_doctrine_activity", "bucket_start", ("updated_at", "bucket_start", "doctrine_fit_key", "doctrine_group_key", "hull_type_key"), _killmail_doctrine_tags, _killmail_doctrine_fields),
-    RollupDataset("doctrine_fit_activity_1d", "doctrine_fit_activity_1d", "doctrine_fit_activity", "bucket_start", ("updated_at", "bucket_start", "fit_id"), _doctrine_fit_activity_tags, _doctrine_fit_activity_fields),
-    RollupDataset("doctrine_group_activity_1d", "doctrine_group_activity_1d", "doctrine_group_activity", "bucket_start", ("updated_at", "bucket_start", "group_id"), _doctrine_group_activity_tags, _doctrine_group_activity_fields),
-    RollupDataset("doctrine_fit_stock_pressure_1d", "doctrine_fit_stock_pressure_1d", "doctrine_fit_stock_pressure", "bucket_start", ("updated_at", "bucket_start", "fit_id"), _doctrine_stock_pressure_tags, _doctrine_stock_pressure_fields),
+    # killmail_doctrine_activity_1d, doctrine_fit_activity_1d,
+    # doctrine_group_activity_1d, and doctrine_fit_stock_pressure_1d have
+    # been retired along with the hand-maintained doctrine pipeline.
 )
 DATASET_MAP = {dataset.key: dataset for dataset in DATASETS}
 

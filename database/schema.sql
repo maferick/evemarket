@@ -3062,13 +3062,8 @@ INSERT INTO app_settings (setting_key, setting_value) VALUES
     ('ollama_url', 'http://localhost:11434/api'),
     ('ollama_model', 'qwen2.5:1.5b-instruct'),
     ('ollama_timeout', '20'),
-    ('ollama_capability_tier', 'auto'),
-    ('doctrine.default_group', 'SupplyCore Doctrine')
+    ('ollama_capability_tier', 'auto')
 ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value);
-
-INSERT INTO doctrine_groups (group_name, description) VALUES
-    ('SupplyCore Doctrine', 'Baseline doctrine fits used for gap detection, restock generation, and hauling prep.')
-ON DUPLICATE KEY UPDATE description = VALUES(description);
 
 INSERT INTO sync_schedules (
     job_key,
@@ -3096,11 +3091,8 @@ INSERT INTO sync_schedules (
     ('alliance_current_sync', 0, 4, 240, 120, 2, 'medium', 'single', 'python', 180, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
     ('current_state_refresh_sync', 0, 12, 720, 360, 6, 'medium', 'single', 'python', 120, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
     ('market_hub_local_history_sync', 0, 20, 1200, 840, 14, 'normal', 'background', 'python', 1800, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
-    ('doctrine_intelligence_sync', 0, 15, 900, 480, 8, 'normal', 'single', 'python', 180, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
     ('market_comparison_summary_sync', 0, 15, 900, 540, 9, 'normal', 'single', 'python', 180, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
-    ('loss_demand_summary_sync', 0, 15, 900, 600, 10, 'normal', 'single', 'python', 180, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
     ('dashboard_summary_sync', 0, 15, 900, 660, 11, 'normal', 'single', 'python', 180, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
-    ('rebuild_ai_briefings', 0, 20, 1200, 720, 12, 'normal', 'background', 'python', 300, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
     ('killmail_r2z2_sync', 0, 1, 180, 300, 3, 'highest', 'single', 'python', 180, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
     ('alliance_historical_sync', 0, 360, 21600, 300, 5, 'normal', 'background', 'python', 3600, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
     ('market_hub_historical_sync', 0, 360, 21600, 0, 0, 'normal', 'background', 'python', 3600, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),

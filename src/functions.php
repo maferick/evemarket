@@ -403,14 +403,13 @@ function nav_items(): array
             ],
         ],
         [
-            'label' => 'Doctrine Fits',
-            'path' => '/doctrine',
+            'label' => 'Doctrines',
+            'path' => '/doctrines/',
             'icon' => '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" class="h-4 w-4" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M5 5h14v14H5z"/><path stroke-linecap="round" stroke-linejoin="round" d="M9 9h6M9 13h6M9 17h4"/></svg>',
-            'badge_tooltip' => 'Doctrine management views',
+            'badge_tooltip' => 'Auto-detected doctrines from killmails',
             'children' => [
-                ['label' => 'Doctrine Groups', 'path' => '/doctrine'],
-                ['label' => 'Fit Overview', 'path' => '/doctrine/fits'],
-                ['label' => 'Bulk Import', 'path' => '/doctrine/import'],
+                ['label' => 'Detected Doctrines', 'path' => '/doctrines/'],
+                ['label' => 'Buy-all', 'path' => '/buy-all/'],
             ],
         ],
         [
@@ -22326,12 +22325,127 @@ function activity_priority_refresh_summary_job_result(string $reason = 'manual')
 
 function activity_priority_page_data(): array
 {
-    $snapshot = activity_priority_snapshot_payload();
-    if (!activity_priority_snapshot_has_computed_metrics($snapshot)) {
-        $snapshot = activity_priority_refresh_summary('page-contract-repair');
+    // The legacy snapshot flow populated doctrine_activity_snapshots from
+    // doctrine_fit_activity_1d — both dropped. We now reshape the auto
+    // doctrine list into the key-shape the existing template expects so
+    // the page renders without template changes.
+    $doctrines = function_exists('auto_doctrine_list') ? auto_doctrine_list(['include_hidden' => false]) : [];
+    $settings = function_exists('auto_doctrine_settings') ? auto_doctrine_settings() : [
+        'window_days' => 30,
+        'default_runway_days' => 14,
+    ];
+
+    $active = array_values(array_filter($doctrines, static fn (array $d): bool => (bool) ($d['is_active'] ?? false) || (bool) ($d['is_pinned'] ?? false)));
+    usort($active, static fn (array $a, array $b): int => ((float) ($b['priority_score'] ?? 0.0)) <=> ((float) ($a['priority_score'] ?? 0.0)));
+
+    $activeDoctrines = [];
+    $activeFits = [];
+    foreach ($active as $index => $d) {
+        $lossWindow = (int) ($d['loss_count_window'] ?? 0);
+        $dailyRate = (float) ($d['daily_loss_rate'] ?? 0.0);
+        $targetFits = (int) ($d['target_fits'] ?? 0);
+        $activityScore = (float) ($d['priority_score'] ?? 0.0);
+        $activityLevel = match (true) {
+            $targetFits >= 10 => 'critical',
+            $targetFits >= 3  => 'elevated',
+            default            => 'low',
+        };
+        $readinessLabel = $targetFits > 0 ? 'Critical gap' : 'Market ready';
+        $resupplyPressure = $lossWindow >= 5 ? 'Urgent resupply' : 'Stable';
+
+        $row = [
+            'entity_id'          => (int) ($d['id'] ?? 0),
+            'rank_position'      => $index + 1,
+            'doctrine_name'      => (string) ($d['canonical_name'] ?? ''),
+            'activity_level'     => $activityLevel,
+            'activity_score'     => $activityScore,
+            'score_delta'        => 0.0,
+            'rank_delta'         => 0,
+            'movement_label'     => 'Holding',
+            'explanation'        => sprintf(
+                '%d hull losses in the last %dd · daily rate %.2f · target %d fits over %dd runway',
+                $lossWindow,
+                (int) ($d['window_days'] ?? $settings['window_days']),
+                $dailyRate,
+                $targetFits,
+                (int) ($d['runway_days_effective'] ?? $settings['default_runway_days'])
+            ),
+            'hull_losses_24h'              => 0,
+            'hull_losses_3d'               => 0,
+            'hull_losses_7d'               => $lossWindow,
+            'module_losses_24h'            => 0,
+            'module_losses_3d'             => 0,
+            'module_losses_7d'             => 0,
+            'fit_equivalent_losses_24h'    => 0.0,
+            'fit_equivalent_losses_7d'     => (float) $lossWindow,
+            'readiness_label'              => $readinessLabel,
+            'resupply_pressure'            => $resupplyPressure,
+            'readiness_gap_count'          => $targetFits,
+            'score_components'             => [
+                'Daily loss rate' => number_format($dailyRate, 2),
+                'Target fits'     => (string) $targetFits,
+                'Window losses'   => (string) $lossWindow,
+            ],
+            'top_fits' => [
+                [
+                    'fit_name'       => (string) ($d['canonical_name'] ?? ''),
+                    'activity_level' => $activityLevel,
+                    'activity_score' => $activityScore,
+                ],
+            ],
+        ];
+        $activeDoctrines[] = $row;
+
+        $activeFits[] = [
+            'entity_id'        => (int) ($d['id'] ?? 0),
+            'doctrine_name'    => (string) ($d['canonical_name'] ?? ''),
+            'readiness_label'  => $readinessLabel,
+            'resupply_pressure' => $resupplyPressure,
+            'activity_score'   => $activityScore,
+            'movement_label'   => 'Holding',
+        ];
     }
 
-    return $snapshot;
+    // Summary cards: keep labels stable for any dashboard consumers.
+    $summaryCards = [
+        [
+            'label'   => 'Active Doctrines',
+            'value'   => (string) count($active),
+            'context' => 'Auto-detected doctrines with fit gaps right now',
+        ],
+        [
+            'label'   => 'Highly Active Fits',
+            'value'   => (string) count(array_filter($activeDoctrines, static fn (array $r): bool => (string) $r['activity_level'] === 'critical')),
+            'context' => 'Doctrine fits with urgent resupply pressure',
+        ],
+        [
+            'label'   => 'Total Window Losses',
+            'value'   => (string) array_sum(array_column($active, 'loss_count_window')),
+            'context' => sprintf('Killmail losses over the last %d days', (int) $settings['window_days']),
+        ],
+        [
+            'label'   => 'Runway (days)',
+            'value'   => (string) (int) $settings['default_runway_days'],
+            'context' => 'Default buy-all runway (override per doctrine)',
+        ],
+    ];
+
+    return [
+        'summary_cards'    => $summaryCards,
+        'active_doctrines' => $activeDoctrines,
+        'active_fits'      => array_slice($activeFits, 0, 25),
+        'priority_items'   => [],
+        'trend_movement'   => [
+            'doctrines_moving_up'  => [],
+            'items_newly_elevated' => [],
+            'items_cooling_down'   => [],
+        ],
+        '_freshness'       => [
+            'computed_at'      => gmdate(DATE_ATOM),
+            'freshness_state'  => 'fresh',
+            'freshness_label'  => 'Fresh',
+        ],
+    ];
 }
 
 function activity_priority_snapshot_has_computed_metrics(array $snapshot): bool

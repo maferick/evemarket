@@ -53,7 +53,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                             <div class="flex flex-wrap items-center gap-2">
                                 <?php $doctrineGroupId = (int) ($row['entity_id'] ?? 0); ?>
                                 <?php if ($doctrineGroupId > 0): ?>
-                                    <a href="/doctrine/group?group_id=<?= $doctrineGroupId ?>" class="truncate text-lg font-semibold text-cyan-100 transition hover:text-cyan-50 hover:underline">
+                                    <a href="/doctrines/#doctrine-<?= $doctrineGroupId ?>" class="truncate text-lg font-semibold text-cyan-100 transition hover:text-cyan-50 hover:underline">
                                         <?= htmlspecialchars((string) ($row['doctrine_name'] ?? ''), ENT_QUOTES) ?>
                                     </a>
                                 <?php else: ?>
@@ -142,7 +142,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
             </div>
             <div class="mt-4 space-y-3">
                 <?php foreach ($activeFits as $fit): ?>
-                    <a href="/doctrine/fit?fit_id=<?= (int) ($fit['entity_id'] ?? 0) ?>" class="intelligence-row group">
+                    <a href="/doctrines/#doctrine-<?= (int) ($fit['entity_id'] ?? 0) ?>" class="intelligence-row group">
                         <div class="min-w-0 flex-1">
                             <p class="truncate text-sm font-semibold text-slate-100"><?= htmlspecialchars((string) ($fit['doctrine_name'] ?? ''), ENT_QUOTES) ?></p>
                             <p class="mt-1 text-xs text-slate-500"><?= htmlspecialchars((string) ($fit['readiness_label'] ?? 'Market ready'), ENT_QUOTES) ?> · <?= htmlspecialchars((string) ($fit['resupply_pressure'] ?? 'Stable'), ENT_QUOTES) ?></p>
