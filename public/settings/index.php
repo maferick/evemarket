@@ -578,10 +578,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         $unlockCount++;
                     }
                 }
-                // Trigger clustering + analysis jobs
+                // Trigger clustering first, then analysis — both are needed
+                // for theaters to appear in the overview (which INNER JOINs
+                // theater_alliance_summary, populated by analysis).
                 run_data_sync_now('theater_clustering');
+                run_data_sync_now('theater_analysis');
                 $saved = true;
-                $saveMessage = "Unlocked {$unlockCount} theater(s) and triggered recalculation. Theaters will auto-lock again once analysis completes.";
+                $saveMessage = "Unlocked {$unlockCount} theater(s) and queued clustering + analysis. Allow a minute for jobs to run — theaters will auto-lock again once analysis completes.";
             } elseif ($unlockTheaterId !== '') {
                 $unlockResult = theater_unlock_report($unlockTheaterId);
                 $saved = (bool) ($unlockResult['ok'] ?? false);
