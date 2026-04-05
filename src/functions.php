@@ -521,7 +521,18 @@ function runtime_config_settings_from_request(array $request): array
         if ($type === 'bool') {
             $input = runtime_config_request_has_key($request, $path) ? '1' : '0';
         }
-        $settings[$path] = (string) supplycore_cast_runtime_config_value($input ?? ($spec['default'] ?? ''), $type);
+        $value = (string) supplycore_cast_runtime_config_value($input ?? ($spec['default'] ?? ''), $type);
+
+        // Whitelist enum values: when a field declares ``options``, only
+        // keys from that map are accepted. Anything else (stale form
+        // submission, tampered POST) falls back to the declared default
+        // so we never persist a value the reader can't make sense of.
+        $options = is_array($spec['options'] ?? null) ? $spec['options'] : [];
+        if ($options !== [] && !array_key_exists($value, $options)) {
+            $value = (string) ($spec['default'] ?? '');
+        }
+
+        $settings[$path] = $value;
     }
 
     return $settings;
