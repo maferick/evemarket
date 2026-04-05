@@ -542,36 +542,259 @@ def _load_friendly_ids(db: SupplyCoreDb) -> tuple[set[int], set[int]]:
     return friendly_alliance_ids, friendly_corporation_ids
 
 
-# Minimum absolute pilot count for an opponent alliance to be considered
-# "significant" in a battle.  Smaller presences are treated as stragglers.
+# Minimum absolute pilot count and share for a non-friendly alliance to
+# count as a battle's "primary opponent" for the boundary-change signal.
 OPPONENT_SPLIT_MIN_PILOTS = 5
-
-# Minimum fraction of a battle's opponent pilots an alliance must have to be
-# considered the battle's primary opponent.  Prevents a small opponent with
-# high absolute count from being counted as "the main enemy" when a much
-# larger opponent is also present.
 OPPONENT_SPLIT_PRIMARY_MIN_SHARE = 0.30
 
 
-def _split_by_opponent_composition(
+# ── Boundary-based theater splitting ───────────────────────────────────────
+#
+# Instead of union-find over shared opponents (which fails when the same
+# alliances appear across multiple distinct engagements), we walk the
+# chronologically sorted constituent battles of a theater and score each
+# boundary between adjacent battles.  Boundaries with a high enough score
+# become split points.  The scoring model mirrors how a human reader
+# decides "is this still the same fight, or did the engagement pivot?".
+#
+# Signals (weights are starting values — tune with real data):
+#
+#   Geographic pivot           +3  different system and not directly adjacent
+#   Scale jump to/from mega    +3  one side is "mega" (>=200 pilots) and the
+#                                  other is not — megas are strong anchors
+#   Command roster change      +3  set of is_command pilots changed
+#                                  substantially between the two battles
+#   Friendly overlap drop      +2  Jaccard of friendly character sets < 0.4
+#   Primary opponent change    +2  dominant non-friendly alliance flipped
+#   Time gap                   +1  gap between battles > 5 minutes
+#
+# A boundary with score >= BOUNDARY_SPLIT_THRESHOLD (default 6) becomes a
+# split point.  Hard floor: battles in the same system with <30 min gap
+# never split (keeps in-system grinds together).  Safety valve: same-system
+# battles with >=30 min gap CAN split (catches downtime/reform cases).
+#
+# Threshold 6 is intentionally conservative: it requires either two strong
+# signals (3+3) or a strong signal plus supporting evidence, rather than
+# firing on any two weak signals.  Lower to 5 only if real data shows
+# persistent under-splitting.
+
+BOUNDARY_SPLIT_THRESHOLD = 6
+
+BOUNDARY_WEIGHT_GEO_PIVOT = 3
+BOUNDARY_WEIGHT_SCALE_JUMP = 3
+BOUNDARY_WEIGHT_COMMAND_CHANGE = 3
+BOUNDARY_WEIGHT_FRIENDLY_OVERLAP_DROP = 2
+BOUNDARY_WEIGHT_PRIMARY_OPPONENT_CHANGE = 2
+BOUNDARY_WEIGHT_TIME_GAP = 1
+
+# A "mega" battle for anchor purposes — scale jumps to/from this category
+# fire the scale-jump signal.
+BOUNDARY_MEGA_PILOT_THRESHOLD = 200
+
+# Friendly overlap Jaccard below this fires the overlap-drop signal.
+BOUNDARY_FRIENDLY_OVERLAP_THRESHOLD = 0.40
+
+# Command roster Jaccard below this fires the command-change signal.
+BOUNDARY_COMMAND_OVERLAP_THRESHOLD = 0.50
+
+# Minimum number of command-tagged pilots required in BOTH battles before
+# the command-change signal can fire.  With only 1 command pilot on either
+# side the Jaccard becomes a single-pilot artifact (0 or 1), which is too
+# noisy to be trustworthy — skip the signal in that case.
+BOUNDARY_COMMAND_MIN_PILOTS = 2
+
+# Time gap in seconds that fires the time-gap signal.
+BOUNDARY_TIME_GAP_SECONDS = 5 * 60
+
+# Same-system safety valve: same system with gap >= this can still split.
+BOUNDARY_SAME_SYSTEM_GAP_SECONDS = 30 * 60
+
+
+def _load_battle_friendly_characters(
+    db: SupplyCoreDb,
+    battle_ids: set[str],
+    friendly_alliance_ids: set[int],
+    friendly_corporation_ids: set[int],
+) -> tuple[dict[str, set[int]], dict[str, set[int]]]:
+    """Load friendly character sets and command subset per battle.
+
+    Returns (friendly_chars, command_chars) dicts keyed by battle_id.
+    A character is "friendly" if its alliance_id is in friendly_alliance_ids
+    or its corporation_id is in friendly_corporation_ids.  A character is
+    "command" if its is_command flag is set on that battle.
+    """
+    friendly_chars: dict[str, set[int]] = defaultdict(set)
+    command_chars: dict[str, set[int]] = defaultdict(set)
+
+    if not battle_ids:
+        return {}, {}
+
+    id_list = list(battle_ids)
+    for offset in range(0, len(id_list), BATCH_SIZE):
+        chunk = id_list[offset:offset + BATCH_SIZE]
+        placeholders = ",".join(["%s"] * len(chunk))
+        rows = db.fetch_all(
+            f"""
+            SELECT battle_id, character_id, alliance_id, corporation_id, is_command
+            FROM battle_participants
+            WHERE battle_id IN ({placeholders})
+              AND character_id IS NOT NULL
+              AND character_id > 0
+            """,
+            tuple(chunk),
+        )
+        for row in rows:
+            bid = str(row.get("battle_id") or "")
+            cid = int(row.get("character_id") or 0)
+            if not bid or cid <= 0:
+                continue
+            aid = int(row.get("alliance_id") or 0)
+            corp = int(row.get("corporation_id") or 0)
+            is_friendly = (aid in friendly_alliance_ids) or (corp in friendly_corporation_ids)
+            if not is_friendly:
+                continue
+            friendly_chars[bid].add(cid)
+            if int(row.get("is_command") or 0) == 1:
+                command_chars[bid].add(cid)
+
+    return dict(friendly_chars), dict(command_chars)
+
+
+def _battle_primary_opponent(opp: dict[int, int]) -> int:
+    """Return the alliance_id of the dominant non-friendly opponent, or 0."""
+    if not opp:
+        return 0
+    top_aid, top_count = max(opp.items(), key=lambda kv: kv[1])
+    total = sum(opp.values())
+    if top_count < OPPONENT_SPLIT_MIN_PILOTS:
+        return 0
+    if total > 0 and (top_count / total) < OPPONENT_SPLIT_PRIMARY_MIN_SHARE:
+        return 0
+    return int(top_aid)
+
+
+def _jaccard(a: set[int], b: set[int]) -> float:
+    if not a and not b:
+        return 1.0
+    union = len(a | b)
+    if union == 0:
+        return 1.0
+    return len(a & b) / union
+
+
+def _boundary_score(
+    b_prev: dict[str, Any],
+    b_curr: dict[str, Any],
+    battle_opponents: dict[str, dict[int, int]],
+    friendly_chars: dict[str, set[int]],
+    command_chars: dict[str, set[int]],
+    gate_svc: Any | None,
+) -> tuple[int, list[str]]:
+    """Compute a boundary score between two chronologically adjacent battles.
+
+    Returns (score, reasons) where reasons is a list of which signals fired
+    — useful for logging/diagnostics.
+    """
+    score = 0
+    reasons: list[str] = []
+
+    prev_bid = str(b_prev["battle_id"])
+    curr_bid = str(b_curr["battle_id"])
+    prev_sys = int(b_prev.get("system_id") or 0)
+    curr_sys = int(b_curr.get("system_id") or 0)
+
+    # Parse times (robust against str/datetime input)
+    def _dt(v: Any) -> datetime | None:
+        if isinstance(v, datetime):
+            return v if v.tzinfo else v.replace(tzinfo=UTC)
+        if isinstance(v, str) and v:
+            try:
+                return datetime.strptime(v, "%Y-%m-%d %H:%M:%S").replace(tzinfo=UTC)
+            except ValueError:
+                return None
+        return None
+
+    prev_end = _dt(b_prev.get("ended_at")) or _dt(b_prev.get("started_at"))
+    curr_start = _dt(b_curr.get("started_at")) or _dt(b_curr.get("ended_at"))
+    gap_seconds = 0.0
+    if prev_end and curr_start:
+        gap_seconds = max(0.0, (curr_start - prev_end).total_seconds())
+
+    # Hard floor: same system + short gap → never split
+    same_system = prev_sys > 0 and prev_sys == curr_sys
+    if same_system and gap_seconds < BOUNDARY_SAME_SYSTEM_GAP_SECONDS:
+        return 0, ["same_system_floor"]
+
+    # Geographic pivot: different system, not directly adjacent
+    if not same_system:
+        is_adjacent = False
+        if gate_svc is not None and prev_sys > 0 and curr_sys > 0:
+            try:
+                dist = gate_svc.distance(prev_sys, curr_sys)
+                is_adjacent = dist is not None and dist <= 1
+            except Exception:
+                is_adjacent = False
+        if not is_adjacent:
+            score += BOUNDARY_WEIGHT_GEO_PIVOT
+            reasons.append("geo_pivot")
+
+    # Scale jump to/from mega
+    prev_pilots = int(b_prev.get("participant_count") or 0)
+    curr_pilots = int(b_curr.get("participant_count") or 0)
+    prev_is_mega = prev_pilots >= BOUNDARY_MEGA_PILOT_THRESHOLD
+    curr_is_mega = curr_pilots >= BOUNDARY_MEGA_PILOT_THRESHOLD
+    if prev_is_mega != curr_is_mega:
+        score += BOUNDARY_WEIGHT_SCALE_JUMP
+        reasons.append("scale_jump_mega")
+
+    # Command roster change — only trust the signal when both battles have
+    # enough command-tagged pilots that the Jaccard isn't a single-pilot
+    # statistical artifact.
+    prev_cmd = command_chars.get(prev_bid, set())
+    curr_cmd = command_chars.get(curr_bid, set())
+    if len(prev_cmd) >= BOUNDARY_COMMAND_MIN_PILOTS and len(curr_cmd) >= BOUNDARY_COMMAND_MIN_PILOTS:
+        cmd_jaccard = _jaccard(prev_cmd, curr_cmd)
+        if cmd_jaccard < BOUNDARY_COMMAND_OVERLAP_THRESHOLD:
+            score += BOUNDARY_WEIGHT_COMMAND_CHANGE
+            reasons.append(f"command_change({cmd_jaccard:.2f})")
+
+    # Friendly overlap drop (Jaccard of friendly character sets)
+    prev_friendly = friendly_chars.get(prev_bid, set())
+    curr_friendly = friendly_chars.get(curr_bid, set())
+    if prev_friendly or curr_friendly:
+        friendly_jaccard = _jaccard(prev_friendly, curr_friendly)
+        if friendly_jaccard < BOUNDARY_FRIENDLY_OVERLAP_THRESHOLD:
+            score += BOUNDARY_WEIGHT_FRIENDLY_OVERLAP_DROP
+            reasons.append(f"friendly_overlap_drop({friendly_jaccard:.2f})")
+
+    # Primary opponent change
+    prev_primary = _battle_primary_opponent(battle_opponents.get(prev_bid, {}))
+    curr_primary = _battle_primary_opponent(battle_opponents.get(curr_bid, {}))
+    if prev_primary and curr_primary and prev_primary != curr_primary:
+        score += BOUNDARY_WEIGHT_PRIMARY_OPPONENT_CHANGE
+        reasons.append("primary_opponent_change")
+
+    # Time gap
+    if gap_seconds >= BOUNDARY_TIME_GAP_SECONDS:
+        score += BOUNDARY_WEIGHT_TIME_GAP
+        reasons.append(f"time_gap({int(gap_seconds)}s)")
+
+    return score, reasons
+
+
+def _split_by_boundary_scoring(
     theater_groups: dict[str, list[dict[str, Any]]],
     battle_opponents: dict[str, dict[int, int]],
+    friendly_chars: dict[str, set[int]],
+    command_chars: dict[str, set[int]],
+    gate_svc: Any | None,
+    runtime: dict[str, Any] | None = None,
 ) -> dict[str, list[dict[str, Any]]]:
-    """Split theaters whose constituent battles face different primary opponents.
+    """Walk each theater's chronologically sorted battles and split at
+    boundaries whose multi-signal score exceeds the threshold.
 
-    For each battle, the "primary opponent" is the non-friendly alliance with
-    the most pilots in that battle (provided it meets the minimum pilot count
-    and at least a 30 percent share of the battle's opponent pilots).
-
-    Battles are merged via union-find when they share the same primary
-    opponent.  Battles with different primary opponents form separate
-    components and the theater is split accordingly — this handles the
-    common case of consecutive engagements where the dominant enemy shifts
-    (e.g. first fight vs Goons, then fight vs Init) even though pilots from
-    both alliances may appear in both battles as stragglers or allies.
-
-    Battles with no clear primary opponent (orphans) attach to the largest
-    component — they're likely small skirmishes related to the main fight.
+    The result is phase-like: a theater's battles are partitioned into
+    contiguous time-ordered segments, each becoming its own theater.
     """
     new_groups: dict[str, list[dict[str, Any]]] = {}
 
@@ -580,63 +803,68 @@ def _split_by_opponent_composition(
             new_groups[root] = group_battles
             continue
 
-        uf = _UnionFind()
-        battle_ids_in_group = [str(b["battle_id"]) for b in group_battles]
-        for bid in battle_ids_in_group:
-            uf.find(bid)
+        # Sort chronologically by start time, with battle_id as a tiebreaker
+        def _start(b: dict[str, Any]) -> tuple[datetime, str]:
+            s = b.get("started_at")
+            if isinstance(s, str):
+                try:
+                    s = datetime.strptime(s, "%Y-%m-%d %H:%M:%S").replace(tzinfo=UTC)
+                except ValueError:
+                    s = datetime.min.replace(tzinfo=UTC)
+            elif isinstance(s, datetime):
+                s = s if s.tzinfo else s.replace(tzinfo=UTC)
+            else:
+                s = datetime.min.replace(tzinfo=UTC)
+            return (s, str(b.get("battle_id") or ""))
 
-        # Determine each battle's primary opponent (largest non-friendly
-        # alliance by pilot count, subject to minimum thresholds).
-        battle_primary: dict[str, int] = {}
-        for bid in battle_ids_in_group:
-            opp = battle_opponents.get(bid, {})
-            if not opp:
-                continue
-            total_opp_pilots = sum(opp.values())
-            if total_opp_pilots <= 0:
-                continue
-            top_aid, top_count = max(opp.items(), key=lambda kv: kv[1])
-            if top_count < OPPONENT_SPLIT_MIN_PILOTS:
-                continue
-            if (top_count / total_opp_pilots) < OPPONENT_SPLIT_PRIMARY_MIN_SHARE:
-                continue
-            battle_primary[bid] = top_aid
+        sorted_battles = sorted(group_battles, key=_start)
 
-        # Union battles that share the same primary opponent
-        by_primary: dict[int, list[str]] = defaultdict(list)
-        for bid, aid in battle_primary.items():
-            by_primary[aid].append(bid)
-        for aid, bids in by_primary.items():
-            for i in range(1, len(bids)):
-                uf.union(bids[0], bids[i])
+        # Score each boundary between consecutive battles
+        segment_starts: list[int] = [0]  # indices where a new segment begins
+        boundary_log: list[dict[str, Any]] = []
+        for i in range(1, len(sorted_battles)):
+            score, reasons = _boundary_score(
+                sorted_battles[i - 1],
+                sorted_battles[i],
+                battle_opponents,
+                friendly_chars,
+                command_chars,
+                gate_svc,
+            )
+            if score >= BOUNDARY_SPLIT_THRESHOLD:
+                segment_starts.append(i)
+                boundary_log.append({
+                    "theater_root": root,
+                    "boundary_index": i,
+                    "prev_battle": str(sorted_battles[i - 1]["battle_id"]),
+                    "curr_battle": str(sorted_battles[i]["battle_id"]),
+                    "score": score,
+                    "reasons": reasons,
+                })
 
-        components = uf.groups()
-        if len(components) <= 1:
-            new_groups[root] = group_battles
+        if len(segment_starts) == 1:
+            # No splits
+            new_groups[root] = sorted_battles
             continue
 
-        # Remove orphan battles (no determined primary opponent) from
-        # components — they'll be attached to the largest real component.
-        battle_map = {str(b["battle_id"]): b for b in group_battles}
-        orphan_bids = [bid for bid in battle_ids_in_group if bid not in battle_primary]
-        real_components: dict[str, list[str]] = {
-            comp_root: [bid for bid in members if bid not in orphan_bids]
-            for comp_root, members in components.items()
-        }
-        real_components = {k: v for k, v in real_components.items() if v}
+        # Build segments
+        segment_starts.append(len(sorted_battles))
+        for seg_idx in range(len(segment_starts) - 1):
+            start_i = segment_starts[seg_idx]
+            end_i = segment_starts[seg_idx + 1]
+            segment_battles = sorted_battles[start_i:end_i]
+            if not segment_battles:
+                continue
+            # Use the first battle's ID as the new group key (deterministic)
+            new_key = f"{root}:seg{seg_idx}:{segment_battles[0]['battle_id']}"
+            new_groups[new_key] = segment_battles
 
-        if len(real_components) <= 1:
-            new_groups[root] = group_battles
-            continue
-
-        # Attach orphans to the largest component
-        largest_root = max(real_components, key=lambda r: len(real_components[r]))
-        real_components[largest_root].extend(orphan_bids)
-
-        for comp_root, comp_bids in real_components.items():
-            comp_battles = [battle_map[bid] for bid in comp_bids if bid in battle_map]
-            if comp_battles:
-                new_groups[comp_root] = comp_battles
+        if boundary_log:
+            _theater_log(runtime, "theater_clustering.boundary_split", {
+                "theater_root": root,
+                "segments": len(segment_starts) - 1,
+                "boundaries": boundary_log,
+            })
 
     return new_groups
 
@@ -933,21 +1161,34 @@ def run_theater_clustering(
                 "total_battles_absorbed": total_absorbed,
             })
 
-        # 4c. Opponent-aware splitting: detect theaters whose constituent
-        # battles face disjoint opponent groups and split them so each
-        # engagement gets its own battle report.
+        # 4c. Boundary-based splitting: walk each theater's chronologically
+        # sorted battles and split at phase boundaries (geographic pivot,
+        # scale jump, command roster change, friendly overlap drop,
+        # primary opponent change, time gap).  This handles the common
+        # case of concurrent or sequential engagements against overlapping
+        # opponents that get clustered together by the broad pass above.
         friendly_aids, friendly_cids = _load_friendly_ids(db)
         all_theater_battle_ids: set[str] = set()
         for group_battles in theater_groups.values():
             for b in group_battles:
                 all_theater_battle_ids.add(str(b["battle_id"]))
         battle_opponents = _load_battle_opponent_alliances(db, all_theater_battle_ids, friendly_aids, friendly_cids)
+        friendly_chars, command_chars = _load_battle_friendly_characters(
+            db, all_theater_battle_ids, friendly_aids, friendly_cids,
+        )
 
         pre_split_count = len(theater_groups)
-        theater_groups = _split_by_opponent_composition(theater_groups, battle_opponents)
+        theater_groups = _split_by_boundary_scoring(
+            theater_groups,
+            battle_opponents,
+            friendly_chars,
+            command_chars,
+            gate_svc,
+            runtime,
+        )
         split_count = len(theater_groups) - pre_split_count
         if split_count > 0:
-            _theater_log(runtime, "theater_clustering.opponent_split", {
+            _theater_log(runtime, "theater_clustering.boundary_split_summary", {
                 "theaters_before": pre_split_count,
                 "theaters_after": len(theater_groups),
                 "new_theaters_from_splits": split_count,
