@@ -10,6 +10,7 @@ Phase 4: Write composite economic_warfare_score for each module
 from __future__ import annotations
 
 import logging
+import math
 import time
 from collections import defaultdict
 from datetime import UTC, datetime
@@ -24,9 +25,7 @@ from ._fit_clustering import (
     JACCARD_MERGE_THRESHOLD as _JACCARD_MERGE_THRESHOLD,
     cluster_fit_families,
     confidence as _confidence,
-    fingerprint as _fingerprint,
     flag_category as _flag_category,
-    jaccard as _jaccard,
 )
 
 logger = logging.getLogger("supplycore.economic_warfare")
