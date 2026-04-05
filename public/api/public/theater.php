@@ -496,6 +496,54 @@ if (!isset($classifyAlliance)) {
     };
 }
 
+// ── Inflicted Damage per side (raw attacker damage, separate from ISK) ──
+// Sum killmail_attackers.damage_done directly rather than relying on the
+// character-keyed theater_participants rollup so NPC/structure damage and
+// attackers without a character_id are accounted for in the reconciliation.
+$damageByGroup = db_theater_damage_by_attacker_group($theaterId);
+$sideDamageInflicted = ['friendly' => 0.0, 'opponent' => 0.0, 'third_party' => 0.0];
+$unattributedDamage = 0.0;
+$totalDamage = 0.0;
+foreach ($damageByGroup as $_dmgRow) {
+    $_dmgAid = (int) ($_dmgRow['alliance_id'] ?? 0);
+    $_dmgCid = (int) ($_dmgRow['corporation_id'] ?? 0);
+    $_dmgAmt = (float) ($_dmgRow['total_damage'] ?? 0);
+    $totalDamage += $_dmgAmt;
+    if ($_dmgAid === 0 && $_dmgCid === 0) {
+        $unattributedDamage += $_dmgAmt;
+        continue;
+    }
+    $_dmgSide = $classifyAlliance($_dmgAid, $_dmgCid);
+    if (isset($sideDamageInflicted[$_dmgSide])) {
+        $sideDamageInflicted[$_dmgSide] += $_dmgAmt;
+    }
+}
+unset($_dmgRow, $_dmgAid, $_dmgCid, $_dmgAmt, $_dmgSide);
+foreach (['friendly', 'opponent', 'third_party'] as $_side) {
+    if (!isset($sidePanels[$_side])) continue;
+    $sidePanels[$_side]['damage_inflicted'] = $sideDamageInflicted[$_side];
+}
+unset($_side);
+$attributedDamage = $totalDamage - $unattributedDamage;
+$damageReconciliation = [
+    'total_damage'        => $totalDamage,
+    'attributed_damage'   => $attributedDamage,
+    'unattributed_damage' => $unattributedDamage,
+    'unattributed_pct'    => $totalDamage > 0 ? ($unattributedDamage / $totalDamage) * 100.0 : 0.0,
+    'friendly'            => $sideDamageInflicted['friendly'],
+    'opponent'            => $sideDamageInflicted['opponent'],
+    'third_party'         => $sideDamageInflicted['third_party'],
+];
+if ($totalDamage > 0 && ($unattributedDamage / $totalDamage) >= 0.01) {
+    if (!isset($dataQualityNotes) || !is_array($dataQualityNotes)) $dataQualityNotes = [];
+    $dataQualityNotes[] = sprintf(
+        'Inflicted damage reconciliation: %s HP unattributed (NPC/structure/unknown attackers), %.1f%% of %s total.',
+        number_format($unattributedDamage, 0),
+        $damageReconciliation['unattributed_pct'],
+        number_format($totalDamage, 0)
+    );
+}
+
 // No final-blows correction needed — all stats are derived from the
 // per-character ledger via alliance_summary.
 
@@ -606,6 +654,7 @@ $response = [
     'side_labels'           => $sideLabels,
     'side_alliances_by_pilots' => $sideAlliancesByPilots,
     'side_panels'           => $sidePanels,
+    'damage_reconciliation' => $damageReconciliation,
     'opponent_model'        => $opponentModel,
     'data_quality_notes'    => $dataQualityNotes,
     'tracked_alliance_ids'  => $trackedAllianceIds,

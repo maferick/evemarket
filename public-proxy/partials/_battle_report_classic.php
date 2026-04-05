@@ -133,15 +133,26 @@ $groupedThirdParty = $isThreeColumn ? $_classicGroupParticipants($classicSides['
 
 // Compute summary stats per side
 $classicStats = [];
+// When we collapse the third-party column into opponent (two-column view),
+// the side_panels value for opponent has already been merged server-side.
+// We still add third_party's damage locally for the classic two-column view
+// since _battle_report_classic.php merges participants the same way.
+$mergeThirdPartyIntoOpponent = !$isThreeColumn;
 foreach (['friendly', 'opponent', 'third_party'] as $side) {
-    $pilots = 0; $shipsLost = 0; $dmgInflicted = 0.0;
+    $pilots = 0; $shipsLost = 0;
     foreach ($classicSides[$side] as $p) {
         $pilots++;
         $shipsLost += (int) ($p['deaths'] ?? $p['loss_count'] ?? 0);
-        $dmgInflicted += (float) ($p['damage_done'] ?? 0);
     }
     $totalIskK = (float) ($sidePanels[$side]['isk_killed'] ?? 0);
     $totalIskL = (float) ($sidePanels[$side]['isk_lost'] ?? 0);
+    // Inflicted damage is fed from the server-side raw killmail_attackers
+    // rollup (sidePanels[$side]['damage_inflicted']) so NPC/structure damage
+    // stays accounted for and this metric is independent from ISK values.
+    $dmgInflicted = (float) ($sidePanels[$side]['damage_inflicted'] ?? 0);
+    if ($mergeThirdPartyIntoOpponent && $side === 'opponent') {
+        $dmgInflicted += (float) ($sidePanels['third_party']['damage_inflicted'] ?? 0);
+    }
     $classicStats[$side] = [
         'pilots' => $pilots,
         'isk_destroyed' => $totalIskK,

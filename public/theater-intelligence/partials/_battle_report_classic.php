@@ -138,15 +138,22 @@ $groupedThirdParty = $isThreeColumn ? _classic_group_participants($classicSides[
 
 // Compute summary stats per side
 $classicStats = [];
+$mergeThirdPartyIntoOpponent = !$isThreeColumn;
 foreach (['friendly', 'opponent', 'third_party'] as $side) {
-    $pilots = 0; $shipsLost = 0; $dmgInflicted = 0.0;
+    $pilots = 0; $shipsLost = 0;
     foreach ($classicSides[$side] as $p) {
         $pilots++;
         $shipsLost += (int) ($p['deaths'] ?? 0);
-        $dmgInflicted += (float) ($p['damage_done'] ?? 0);
     }
     $totalIskK = (float) ($sidePanels[$side]['isk_killed'] ?? 0);
     $totalIskL = (float) ($sidePanels[$side]['isk_lost'] ?? 0);
+    // Inflicted damage comes from the server-side raw killmail_attackers
+    // rollup — independent from ISK values and including attackers without
+    // a character_id (NPCs/structures) via the unattributed bucket.
+    $dmgInflicted = (float) ($sidePanels[$side]['damage_inflicted'] ?? 0);
+    if ($mergeThirdPartyIntoOpponent && $side === 'opponent') {
+        $dmgInflicted += (float) ($sidePanels['third_party']['damage_inflicted'] ?? 0);
+    }
     $classicStats[$side] = [
         'pilots' => $pilots,
         'isk_destroyed' => $totalIskK,

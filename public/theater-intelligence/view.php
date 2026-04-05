@@ -872,6 +872,54 @@ if ($viewSnapshot !== null && !$pendingLock) {
 // ledger processes each killmail exactly once, crediting the victim with
 // losses/isk_lost and the final-blow attacker with kills/isk_killed.
 
+// ── Inflicted Damage per side (raw attacker damage, separate from ISK) ──
+// Sum killmail_attackers.damage_done directly rather than rely on the
+// character-keyed theater_participants rollup so NPC/structure damage and
+// attackers without a character_id land in the reconciliation bucket
+// instead of silently disappearing.
+$damageByGroup = db_theater_damage_by_attacker_group($theaterId);
+$sideDamageInflicted = ['friendly' => 0.0, 'opponent' => 0.0, 'third_party' => 0.0];
+$unattributedDamage = 0.0;
+$totalDamage = 0.0;
+foreach ($damageByGroup as $_dmgRow) {
+    $_dmgAid = (int) ($_dmgRow['alliance_id'] ?? 0);
+    $_dmgCid = (int) ($_dmgRow['corporation_id'] ?? 0);
+    $_dmgAmt = (float) ($_dmgRow['total_damage'] ?? 0);
+    $totalDamage += $_dmgAmt;
+    if ($_dmgAid === 0 && $_dmgCid === 0) {
+        $unattributedDamage += $_dmgAmt;
+        continue;
+    }
+    $_dmgSide = $classifyAlliance($_dmgAid, $_dmgCid);
+    if (isset($sideDamageInflicted[$_dmgSide])) {
+        $sideDamageInflicted[$_dmgSide] += $_dmgAmt;
+    }
+}
+unset($_dmgRow, $_dmgAid, $_dmgCid, $_dmgAmt, $_dmgSide);
+foreach (['friendly', 'opponent', 'third_party'] as $_dmgSideKey) {
+    if (!isset($sidePanels[$_dmgSideKey])) continue;
+    $sidePanels[$_dmgSideKey]['damage_inflicted'] = $sideDamageInflicted[$_dmgSideKey];
+}
+unset($_dmgSideKey);
+$damageReconciliation = [
+    'total_damage'        => $totalDamage,
+    'attributed_damage'   => $totalDamage - $unattributedDamage,
+    'unattributed_damage' => $unattributedDamage,
+    'unattributed_pct'    => $totalDamage > 0 ? ($unattributedDamage / $totalDamage) * 100.0 : 0.0,
+    'friendly'            => $sideDamageInflicted['friendly'],
+    'opponent'            => $sideDamageInflicted['opponent'],
+    'third_party'         => $sideDamageInflicted['third_party'],
+];
+if ($totalDamage > 0 && ($unattributedDamage / $totalDamage) >= 0.01) {
+    if (!isset($dataQualityNotes) || !is_array($dataQualityNotes)) $dataQualityNotes = [];
+    $dataQualityNotes[] = sprintf(
+        'Inflicted damage reconciliation: %s HP unattributed (NPC/structure/unknown attackers), %.1f%% of %s total.',
+        number_format($unattributedDamage, 0),
+        $damageReconciliation['unattributed_pct'],
+        number_format($totalDamage, 0)
+    );
+}
+
 // ── Promote third-party to opponent when no opponents are configured ─────────
 // Handles both fresh renders and locked snapshots saved before this logic existed.
 // The sideAlliancesByPilots promotion may have already run in the live path —
