@@ -10823,7 +10823,7 @@ function killmail_ship_class_label(?int $groupId): string
         1527 => 'Logistics Frigate',
         1534 => 'Command Destroyer',
         1972 => 'Flag Cruiser',
-        1973 => 'Force Auxiliary',
+        1538 => 'Force Auxiliary',
     ];
 
     return $groupMap[$groupId ?? 0] ?? 'Ship class unavailable';
