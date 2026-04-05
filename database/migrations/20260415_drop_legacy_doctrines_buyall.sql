@@ -48,6 +48,6 @@ DELETE FROM sync_schedules WHERE job_key IN (
 );
 
 -- ── Retire obsolete settings keys ───────────────────────────────────────
-DELETE FROM settings WHERE setting_key IN (
+DELETE FROM app_settings WHERE setting_key IN (
     'doctrine.default_group'
 );

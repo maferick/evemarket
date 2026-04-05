@@ -45,7 +45,7 @@ _CORE_FREQUENCY_THRESHOLD = 0.80
 
 def _load_settings(db: Any) -> dict[str, Any]:
     rows = db.fetch_all(
-        """SELECT setting_key, setting_value FROM settings
+        """SELECT setting_key, setting_value FROM app_settings
             WHERE setting_key IN (
                 'auto_doctrines.window_days',
                 'auto_doctrines.min_losses_threshold',

@@ -101,7 +101,7 @@ CREATE TABLE IF NOT EXISTS auto_buyall_items (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- ── Settings defaults (tunable at runtime) ──────────────────────────────
-INSERT INTO settings (setting_key, setting_value) VALUES
+INSERT INTO app_settings (setting_key, setting_value) VALUES
     ('auto_doctrines.window_days',           '30'),
     ('auto_doctrines.min_losses_threshold',  '5'),
     ('auto_doctrines.default_runway_days',   '14'),
