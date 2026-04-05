@@ -96,6 +96,40 @@ class RollupInfluxBridge:
         self._pending.append(encode_point("market_item_stock", tags, fields, bucket_start))
         self._maybe_flush()
 
+    def enqueue_killmail_hull_loss(
+        self,
+        bucket_start: date | datetime,
+        hull_type_id: int,
+        window: str,
+        fields: dict[str, Any],
+    ) -> None:
+        if not self.enabled:
+            return
+        tags = {
+            "window": window,
+            "hull_type_id": str(hull_type_id),
+        }
+        self._pending.append(encode_point("killmail_hull_loss", tags, fields, bucket_start))
+        self._maybe_flush()
+
+    def enqueue_killmail_item_loss(
+        self,
+        bucket_start: date | datetime,
+        type_id: int,
+        hull_type_id: int,
+        window: str,
+        fields: dict[str, Any],
+    ) -> None:
+        if not self.enabled:
+            return
+        tags = {
+            "window": window,
+            "type_id": str(type_id),
+            "hull_type_id": str(hull_type_id or 0),
+        }
+        self._pending.append(encode_point("killmail_item_loss", tags, fields, bucket_start))
+        self._maybe_flush()
+
     def _maybe_flush(self) -> None:
         if len(self._pending) >= self.batch_size:
             self.flush()
