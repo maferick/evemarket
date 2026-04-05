@@ -19036,3 +19036,224 @@ function db_influx_bucket(): string
 {
     return (string) config('influxdb.bucket', 'supplycore_rollups');
 }
+
+// ────────────────────────────────────────────────────────────────────────────
+// Opposition Daily Intelligence
+// ────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Fetch all opposition daily snapshots for a given date.
+ */
+function db_opposition_daily_snapshots(string $date): array
+{
+    $pdo = db_get();
+    $stmt = $pdo->prepare(
+        "SELECT * FROM opposition_daily_snapshots WHERE snapshot_date = :d ORDER BY kills DESC, isk_destroyed DESC"
+    );
+    $stmt->execute(['d' => $date]);
+    $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    foreach ($rows as &$row) {
+        foreach (['active_systems_json', 'active_regions_json', 'ship_classes_json', 'ship_types_json',
+                  'allies_json', 'enemies_json', 'theaters_json', 'notable_kills_json',
+                  'threat_corridors_json', 'trend_summary_json'] as $col) {
+            if (isset($row[$col]) && is_string($row[$col])) {
+                $row[$col] = json_decode($row[$col], true);
+            }
+        }
+    }
+    return $rows;
+}
+
+/**
+ * Fetch opposition daily snapshots for a specific alliance over N days.
+ */
+function db_opposition_daily_snapshot_alliance(int $allianceId, string $endDate, int $days = 7): array
+{
+    $pdo = db_get();
+    $stmt = $pdo->prepare(
+        "SELECT * FROM opposition_daily_snapshots
+         WHERE alliance_id = :aid AND snapshot_date BETWEEN DATE_SUB(:d, INTERVAL :days DAY) AND :d2
+         ORDER BY snapshot_date DESC"
+    );
+    $stmt->execute(['aid' => $allianceId, 'd' => $endDate, 'days' => $days, 'd2' => $endDate]);
+    $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    foreach ($rows as &$row) {
+        foreach (['active_systems_json', 'active_regions_json', 'ship_classes_json', 'ship_types_json',
+                  'allies_json', 'enemies_json', 'theaters_json', 'notable_kills_json',
+                  'threat_corridors_json', 'trend_summary_json'] as $col) {
+            if (isset($row[$col]) && is_string($row[$col])) {
+                $row[$col] = json_decode($row[$col], true);
+            }
+        }
+    }
+    return $rows;
+}
+
+/**
+ * Fetch an opposition daily briefing.
+ */
+function db_opposition_daily_briefing(string $date, string $type = 'global', ?int $allianceId = null): ?array
+{
+    $pdo = db_get();
+    if ($type === 'global') {
+        $stmt = $pdo->prepare(
+            "SELECT * FROM opposition_daily_briefings WHERE briefing_date = :d AND briefing_type = 'global' LIMIT 1"
+        );
+        $stmt->execute(['d' => $date]);
+    } else {
+        $stmt = $pdo->prepare(
+            "SELECT * FROM opposition_daily_briefings WHERE briefing_date = :d AND briefing_type = 'alliance' AND alliance_id = :aid LIMIT 1"
+        );
+        $stmt->execute(['d' => $date, 'aid' => $allianceId]);
+    }
+    $row = $stmt->fetch(PDO::FETCH_ASSOC);
+    return $row ?: null;
+}
+
+/**
+ * Fetch recent opposition daily briefings (global).
+ */
+function db_opposition_daily_briefings_recent(int $days = 14): array
+{
+    $pdo = db_get();
+    $stmt = $pdo->prepare(
+        "SELECT * FROM opposition_daily_briefings
+         WHERE briefing_type = 'global' AND briefing_date >= DATE_SUB(CURDATE(), INTERVAL :days DAY)
+         ORDER BY briefing_date DESC"
+    );
+    $stmt->execute(['days' => $days]);
+    return $stmt->fetchAll(PDO::FETCH_ASSOC);
+}
+
+/**
+ * Fetch per-alliance briefings for a specific date.
+ */
+function db_opposition_alliance_briefings(string $date): array
+{
+    $pdo = db_get();
+    $stmt = $pdo->prepare(
+        "SELECT * FROM opposition_daily_briefings
+         WHERE briefing_date = :d AND briefing_type = 'alliance'
+         ORDER BY FIELD(threat_assessment, 'critical', 'high', 'elevated', 'moderate', 'low'), alliance_name ASC"
+    );
+    $stmt->execute(['d' => $date]);
+    return $stmt->fetchAll(PDO::FETCH_ASSOC);
+}
+
+/**
+ * Fetch per-alliance briefings history for a specific alliance.
+ */
+function db_opposition_alliance_briefings_history(int $allianceId, int $days = 7): array
+{
+    $pdo = db_get();
+    $stmt = $pdo->prepare(
+        "SELECT * FROM opposition_daily_briefings
+         WHERE briefing_type = 'alliance' AND alliance_id = :aid
+           AND briefing_date >= DATE_SUB(CURDATE(), INTERVAL :days DAY)
+         ORDER BY briefing_date DESC"
+    );
+    $stmt->execute(['aid' => $allianceId, 'days' => $days]);
+    return $stmt->fetchAll(PDO::FETCH_ASSOC);
+}
+
+/**
+ * Save an opposition daily briefing.
+ */
+function db_opposition_daily_briefing_save(array $briefing): void
+{
+    $pdo = db_get();
+    $stmt = $pdo->prepare(
+        "INSERT INTO opposition_daily_briefings (
+            briefing_date, briefing_type, alliance_id, alliance_name,
+            generation_status, model_name,
+            headline, summary, key_developments, threat_assessment, action_items,
+            source_payload_json, response_json, error_message, computed_at
+        ) VALUES (
+            :briefing_date, :briefing_type, :alliance_id, :alliance_name,
+            :generation_status, :model_name,
+            :headline, :summary, :key_developments, :threat_assessment, :action_items,
+            :source_payload_json, :response_json, :error_message, :computed_at
+        ) ON DUPLICATE KEY UPDATE
+            generation_status = VALUES(generation_status), model_name = VALUES(model_name),
+            headline = VALUES(headline), summary = VALUES(summary),
+            key_developments = VALUES(key_developments), threat_assessment = VALUES(threat_assessment),
+            action_items = VALUES(action_items),
+            source_payload_json = VALUES(source_payload_json), response_json = VALUES(response_json),
+            error_message = VALUES(error_message), computed_at = VALUES(computed_at)"
+    );
+    $stmt->execute([
+        'briefing_date' => $briefing['briefing_date'],
+        'briefing_type' => $briefing['briefing_type'],
+        'alliance_id' => $briefing['alliance_id'] ?? null,
+        'alliance_name' => $briefing['alliance_name'] ?? null,
+        'generation_status' => $briefing['generation_status'] ?? 'ready',
+        'model_name' => $briefing['model_name'] ?? null,
+        'headline' => $briefing['headline'] ?? null,
+        'summary' => $briefing['summary'] ?? null,
+        'key_developments' => $briefing['key_developments'] ?? null,
+        'threat_assessment' => $briefing['threat_assessment'] ?? null,
+        'action_items' => $briefing['action_items'] ?? null,
+        'source_payload_json' => $briefing['source_payload_json'] ?? null,
+        'response_json' => $briefing['response_json'] ?? null,
+        'error_message' => $briefing['error_message'] ?? null,
+        'computed_at' => $briefing['computed_at'] ?? gmdate('Y-m-d H:i:s'),
+    ]);
+}
+
+/**
+ * Check if an alliance is tracked for opposition intel.
+ */
+function db_opposition_intel_is_tracked(int $allianceId): bool
+{
+    $pdo = db_get();
+    $stmt = $pdo->prepare("SELECT 1 FROM opposition_intel_tracked WHERE alliance_id = :aid");
+    $stmt->execute(['aid' => $allianceId]);
+    return (bool) $stmt->fetchColumn();
+}
+
+/**
+ * Toggle opposition intel tracking for an alliance.
+ */
+function db_opposition_intel_toggle_track(int $allianceId): bool
+{
+    $pdo = db_get();
+    if (db_opposition_intel_is_tracked($allianceId)) {
+        $stmt = $pdo->prepare("DELETE FROM opposition_intel_tracked WHERE alliance_id = :aid");
+        $stmt->execute(['aid' => $allianceId]);
+        return false;
+    }
+    $stmt = $pdo->prepare(
+        "INSERT INTO opposition_intel_tracked (alliance_id, tracked_at) VALUES (:aid, UTC_TIMESTAMP())
+         ON DUPLICATE KEY UPDATE tracked_at = UTC_TIMESTAMP()"
+    );
+    $stmt->execute(['aid' => $allianceId]);
+    return true;
+}
+
+/**
+ * Get all alliances tracked for opposition intel.
+ */
+function db_opposition_intel_tracked_alliances(): array
+{
+    $pdo = db_get();
+    $stmt = $pdo->query(
+        "SELECT oit.alliance_id, oit.tracked_at,
+                COALESCE(emc.entity_name, CONCAT('Alliance #', oit.alliance_id)) AS alliance_name
+         FROM opposition_intel_tracked oit
+         LEFT JOIN entity_metadata_cache emc
+              ON emc.entity_type = 'alliance' AND emc.entity_id = oit.alliance_id
+         ORDER BY oit.tracked_at ASC"
+    );
+    return $stmt->fetchAll(PDO::FETCH_ASSOC);
+}
+
+/**
+ * Get the latest snapshot date with data.
+ */
+function db_opposition_latest_snapshot_date(): ?string
+{
+    $pdo = db_get();
+    $stmt = $pdo->query("SELECT MAX(snapshot_date) AS d FROM opposition_daily_snapshots");
+    $row = $stmt->fetch(PDO::FETCH_ASSOC);
+    return $row['d'] ?? null;
+}

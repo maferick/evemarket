@@ -1,0 +1,322 @@
+<?php
+
+declare(strict_types=1);
+require_once __DIR__ . '/../../src/bootstrap.php';
+
+$title = 'Opposition Intelligence — Daily SITREP';
+
+// Date navigation
+$requestedDate = isset($_GET['date']) ? trim((string) $_GET['date']) : null;
+$latestDate = db_opposition_latest_snapshot_date();
+$date = $requestedDate ?: ($latestDate ?: gmdate('Y-m-d'));
+
+// Fetch global briefing
+$globalBriefing = db_opposition_daily_briefing($date, 'global');
+
+// Fetch per-alliance briefings for this date
+$allianceBriefings = db_opposition_alliance_briefings($date);
+
+// Fetch snapshots for the stats grid
+$snapshots = db_opposition_daily_snapshots($date);
+
+// Recent global briefings for date nav
+$recentBriefings = db_opposition_daily_briefings_recent(14);
+
+// Threat assessment color map
+$threatColors = [
+    'critical' => 'bg-red-500/20 text-red-300 border-red-500/30',
+    'high' => 'bg-orange-500/20 text-orange-300 border-orange-500/30',
+    'elevated' => 'bg-amber-500/20 text-amber-300 border-amber-500/30',
+    'moderate' => 'bg-sky-500/20 text-sky-300 border-sky-500/30',
+    'low' => 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30',
+];
+
+// Aggregate stats
+$totalKills = array_sum(array_column($snapshots, 'kills'));
+$totalLosses = array_sum(array_column($snapshots, 'losses'));
+$totalIskDestroyed = array_sum(array_column($snapshots, 'isk_destroyed'));
+$activeAlliances = count(array_filter($snapshots, static fn ($s): bool => ((int) $s['kills'] > 0 || (int) $s['losses'] > 0)));
+
+include __DIR__ . '/../../src/views/partials/header.php';
+?>
+
+<section class="surface-primary">
+    <div class="flex items-center justify-between gap-4">
+        <div>
+            <p class="text-xs uppercase tracking-[0.16em] text-muted">Intelligence Center</p>
+            <h1 class="mt-1 text-2xl font-semibold text-slate-50">Opposition Intelligence</h1>
+            <p class="mt-2 text-sm text-muted">AI-generated daily SITREP briefings on opponent alliance activity, geographic presence, fleet composition, and threat assessment.</p>
+        </div>
+        <div class="flex items-center gap-3">
+            <?php if ($globalBriefing && ($globalBriefing['threat_assessment'] ?? '')): ?>
+                <?php $ta = $globalBriefing['threat_assessment']; ?>
+                <span class="inline-block rounded-md border px-3 py-1.5 text-xs font-semibold uppercase tracking-wider <?= $threatColors[$ta] ?? $threatColors['moderate'] ?>">
+                    Threat: <?= htmlspecialchars(strtoupper($ta)) ?>
+                </span>
+            <?php endif; ?>
+            <a href="/alliance-dossiers" class="btn-secondary">Alliance Dossiers</a>
+            <a href="/theater-intelligence" class="btn-secondary">Theater Intel</a>
+        </div>
+    </div>
+</section>
+
+<!-- Date navigation -->
+<section class="surface-primary mt-4">
+    <div class="flex items-center gap-4">
+        <span class="text-xs uppercase tracking-wider text-muted">Briefing Date:</span>
+        <?php
+        $prevDate = date('Y-m-d', strtotime($date . ' -1 day'));
+        $nextDate = date('Y-m-d', strtotime($date . ' +1 day'));
+        $isToday = $date === gmdate('Y-m-d');
+        ?>
+        <a href="?date=<?= urlencode($prevDate) ?>" class="btn-secondary text-xs px-2 py-1">&larr; Prev</a>
+        <span class="text-sm font-medium text-slate-100"><?= htmlspecialchars($date) ?></span>
+        <?php if (!$isToday): ?>
+            <a href="?date=<?= urlencode($nextDate) ?>" class="btn-secondary text-xs px-2 py-1">Next &rarr;</a>
+            <a href="?date=<?= urlencode(gmdate('Y-m-d')) ?>" class="text-xs text-accent ml-2">Today</a>
+        <?php endif; ?>
+    </div>
+</section>
+
+<!-- KPI Summary Cards -->
+<section class="mt-4 grid grid-cols-2 gap-4 sm:grid-cols-4">
+    <div class="surface-primary text-center">
+        <p class="text-xs uppercase tracking-wider text-muted">Active Alliances</p>
+        <p class="mt-1 text-2xl font-bold text-slate-100"><?= $activeAlliances ?></p>
+    </div>
+    <div class="surface-primary text-center">
+        <p class="text-xs uppercase tracking-wider text-muted">Total Kills</p>
+        <p class="mt-1 text-2xl font-bold text-red-300"><?= number_format($totalKills) ?></p>
+    </div>
+    <div class="surface-primary text-center">
+        <p class="text-xs uppercase tracking-wider text-muted">Total Losses</p>
+        <p class="mt-1 text-2xl font-bold text-emerald-300"><?= number_format($totalLosses) ?></p>
+    </div>
+    <div class="surface-primary text-center">
+        <p class="text-xs uppercase tracking-wider text-muted">ISK Destroyed</p>
+        <p class="mt-1 text-2xl font-bold text-amber-300"><?= number_format($totalIskDestroyed / 1_000_000, 0) ?>M</p>
+    </div>
+</section>
+
+<!-- Global SITREP Briefing -->
+<section class="surface-primary mt-4">
+    <div class="flex items-center justify-between mb-4">
+        <h2 class="text-lg font-semibold text-slate-100">Daily SITREP</h2>
+        <?php if ($globalBriefing): ?>
+            <div class="flex items-center gap-3 text-xs text-muted">
+                <span>Model: <?= htmlspecialchars((string) ($globalBriefing['model_name'] ?? 'N/A')) ?></span>
+                <span>Generated: <?= htmlspecialchars((string) ($globalBriefing['computed_at'] ?? '')) ?></span>
+                <?php if (($globalBriefing['generation_status'] ?? '') === 'fallback'): ?>
+                    <span class="text-amber-400">(Deterministic fallback)</span>
+                <?php endif; ?>
+            </div>
+        <?php endif; ?>
+    </div>
+
+    <?php if ($globalBriefing): ?>
+        <?php if ($globalBriefing['headline'] ?? ''): ?>
+            <p class="text-base font-semibold text-cyan-200 mb-3"><?= htmlspecialchars((string) $globalBriefing['headline']) ?></p>
+        <?php endif; ?>
+
+        <?php if ($globalBriefing['key_developments'] ?? ''): ?>
+            <div class="mb-4">
+                <h3 class="text-xs uppercase tracking-wider text-muted mb-2">Key Developments</h3>
+                <div class="prose prose-invert prose-sm max-w-none text-slate-300">
+                    <?= supplycore_markdown_to_html((string) $globalBriefing['key_developments']) ?>
+                </div>
+            </div>
+        <?php endif; ?>
+
+        <?php if ($globalBriefing['summary'] ?? ''): ?>
+            <div class="mb-4">
+                <h3 class="text-xs uppercase tracking-wider text-muted mb-2">Intelligence Summary</h3>
+                <div class="prose prose-invert prose-sm max-w-none text-slate-300">
+                    <?= supplycore_markdown_to_html((string) $globalBriefing['summary']) ?>
+                </div>
+            </div>
+        <?php endif; ?>
+
+        <?php if ($globalBriefing['action_items'] ?? ''): ?>
+            <div class="mb-2">
+                <h3 class="text-xs uppercase tracking-wider text-muted mb-2">Recommended Actions</h3>
+                <div class="prose prose-invert prose-sm max-w-none text-slate-300">
+                    <?= supplycore_markdown_to_html((string) $globalBriefing['action_items']) ?>
+                </div>
+            </div>
+        <?php endif; ?>
+    <?php else: ?>
+        <p class="text-sm text-muted">No briefing available for this date. Run the opposition daily snapshot job and AI briefing generator to produce a SITREP.</p>
+    <?php endif; ?>
+</section>
+
+<!-- Per-Alliance Activity Grid -->
+<section class="surface-primary mt-4">
+    <h2 class="text-lg font-semibold text-slate-100 mb-4">Opposition Alliance Activity</h2>
+
+    <?php if ($snapshots): ?>
+        <div class="table-shell">
+            <table class="table-ui">
+                <thead>
+                    <tr class="border-b border-border/70 text-xs uppercase tracking-[0.15em] text-muted">
+                        <th class="px-3 py-2 text-left">Alliance</th>
+                        <th class="px-3 py-2 text-left">Posture</th>
+                        <th class="px-3 py-2 text-right">Kills</th>
+                        <th class="px-3 py-2 text-right">Losses</th>
+                        <th class="px-3 py-2 text-right">ISK Destroyed</th>
+                        <th class="px-3 py-2 text-right">ISK Lost</th>
+                        <th class="px-3 py-2 text-right">Pilots</th>
+                        <th class="px-3 py-2 text-left">Top Systems</th>
+                        <th class="px-3 py-2 text-left">Intel</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <?php foreach ($snapshots as $s):
+                        $kills = (int) $s['kills'];
+                        $losses = (int) $s['losses'];
+                        if ($kills === 0 && $losses === 0) continue;
+                        $aid = (int) $s['alliance_id'];
+                        $systems = $s['active_systems_json'] ?? [];
+                        if (is_string($systems)) $systems = json_decode($systems, true) ?: [];
+                        $topSystems = array_slice(array_column($systems, 'system_name'), 0, 3);
+
+                        // Find alliance briefing if any
+                        $allianceBriefing = null;
+                        foreach ($allianceBriefings as $ab) {
+                            if ((int) ($ab['alliance_id'] ?? 0) === $aid) {
+                                $allianceBriefing = $ab;
+                                break;
+                            }
+                        }
+                    ?>
+                        <tr class="border-b border-border/30 hover:bg-slate-800/40 transition-colors">
+                            <td class="px-3 py-2 text-sm">
+                                <a href="/alliance-dossiers/view.php?id=<?= $aid ?>" class="text-cyan-300 hover:text-cyan-100">
+                                    <?= htmlspecialchars((string) $s['alliance_name']) ?>
+                                </a>
+                            </td>
+                            <td class="px-3 py-2 text-xs">
+                                <?php if ($s['posture'] ?? ''): ?>
+                                    <span class="inline-block rounded border px-1.5 py-0.5 text-[10px] uppercase
+                                        <?= match($s['posture']) {
+                                            'aggressive' => 'border-red-500/30 text-red-300',
+                                            'committed' => 'border-orange-500/30 text-orange-300',
+                                            'opportunistic' => 'border-amber-500/30 text-amber-300',
+                                            'balanced' => 'border-sky-500/30 text-sky-300',
+                                            default => 'border-slate-500/30 text-slate-300',
+                                        } ?>">
+                                        <?= htmlspecialchars((string) $s['posture']) ?>
+                                    </span>
+                                <?php endif; ?>
+                            </td>
+                            <td class="px-3 py-2 text-sm text-right font-mono text-red-300"><?= number_format($kills) ?></td>
+                            <td class="px-3 py-2 text-sm text-right font-mono text-emerald-300"><?= number_format($losses) ?></td>
+                            <td class="px-3 py-2 text-sm text-right font-mono"><?= number_format((float) $s['isk_destroyed'] / 1_000_000, 0) ?>M</td>
+                            <td class="px-3 py-2 text-sm text-right font-mono"><?= number_format((float) $s['isk_lost'] / 1_000_000, 0) ?>M</td>
+                            <td class="px-3 py-2 text-sm text-right font-mono"><?= (int) $s['active_pilots'] ?></td>
+                            <td class="px-3 py-2 text-xs text-muted"><?= htmlspecialchars(implode(', ', $topSystems)) ?></td>
+                            <td class="px-3 py-2 text-xs">
+                                <?php if ($allianceBriefing): ?>
+                                    <?php $ta = $allianceBriefing['threat_assessment'] ?? 'moderate'; ?>
+                                    <span class="inline-block rounded border px-1.5 py-0.5 text-[10px] uppercase <?= $threatColors[$ta] ?? $threatColors['moderate'] ?>">
+                                        <?= htmlspecialchars(strtoupper($ta)) ?>
+                                    </span>
+                                <?php else: ?>
+                                    <span class="text-muted">-</span>
+                                <?php endif; ?>
+                            </td>
+                        </tr>
+                    <?php endforeach; ?>
+                </tbody>
+            </table>
+        </div>
+    <?php else: ?>
+        <p class="text-sm text-muted">No snapshot data available for <?= htmlspecialchars($date) ?>.</p>
+    <?php endif; ?>
+</section>
+
+<!-- Tracked Alliance AI Briefings -->
+<?php if ($allianceBriefings): ?>
+<section class="surface-primary mt-4">
+    <h2 class="text-lg font-semibold text-slate-100 mb-4">Tracked Alliance Intelligence Profiles</h2>
+    <div class="grid gap-4 md:grid-cols-2">
+        <?php foreach ($allianceBriefings as $ab): ?>
+            <div class="rounded-lg border border-border/50 bg-slate-800/30 p-4">
+                <div class="flex items-center justify-between mb-2">
+                    <a href="/alliance-dossiers/view.php?id=<?= (int) $ab['alliance_id'] ?>" class="text-sm font-semibold text-cyan-200 hover:text-cyan-100">
+                        <?= htmlspecialchars((string) ($ab['alliance_name'] ?? 'Unknown')) ?>
+                    </a>
+                    <?php $ta = $ab['threat_assessment'] ?? 'moderate'; ?>
+                    <span class="inline-block rounded border px-1.5 py-0.5 text-[10px] uppercase <?= $threatColors[$ta] ?? $threatColors['moderate'] ?>">
+                        <?= htmlspecialchars(strtoupper($ta)) ?>
+                    </span>
+                </div>
+                <?php if ($ab['headline'] ?? ''): ?>
+                    <p class="text-xs font-medium text-slate-200 mb-2"><?= htmlspecialchars((string) $ab['headline']) ?></p>
+                <?php endif; ?>
+                <?php if ($ab['key_developments'] ?? ''): ?>
+                    <div class="prose prose-invert prose-xs max-w-none text-muted">
+                        <?= supplycore_markdown_to_html((string) $ab['key_developments']) ?>
+                    </div>
+                <?php endif; ?>
+                <div class="mt-2 text-[10px] text-muted">
+                    <?= htmlspecialchars((string) ($ab['model_name'] ?? '')) ?>
+                    <?php if (($ab['generation_status'] ?? '') === 'fallback'): ?>
+                        <span class="text-amber-400">(fallback)</span>
+                    <?php endif; ?>
+                </div>
+            </div>
+        <?php endforeach; ?>
+    </div>
+</section>
+<?php endif; ?>
+
+<!-- Briefing History -->
+<?php if ($recentBriefings): ?>
+<section class="surface-primary mt-4">
+    <h2 class="text-lg font-semibold text-slate-100 mb-4">Briefing History</h2>
+    <div class="table-shell">
+        <table class="table-ui">
+            <thead>
+                <tr class="border-b border-border/70 text-xs uppercase tracking-[0.15em] text-muted">
+                    <th class="px-3 py-2 text-left">Date</th>
+                    <th class="px-3 py-2 text-left">Headline</th>
+                    <th class="px-3 py-2 text-left">Threat</th>
+                    <th class="px-3 py-2 text-left">Model</th>
+                    <th class="px-3 py-2 text-left">Status</th>
+                </tr>
+            </thead>
+            <tbody>
+                <?php foreach ($recentBriefings as $rb): ?>
+                    <tr class="border-b border-border/30 hover:bg-slate-800/40 transition-colors <?= ($rb['briefing_date'] ?? '') === $date ? 'bg-slate-800/60' : '' ?>">
+                        <td class="px-3 py-2 text-sm">
+                            <a href="?date=<?= urlencode((string) $rb['briefing_date']) ?>" class="text-cyan-300 hover:text-cyan-100">
+                                <?= htmlspecialchars((string) $rb['briefing_date']) ?>
+                            </a>
+                        </td>
+                        <td class="px-3 py-2 text-sm text-slate-300"><?= htmlspecialchars(mb_substr((string) ($rb['headline'] ?? ''), 0, 100)) ?></td>
+                        <td class="px-3 py-2">
+                            <?php $ta = $rb['threat_assessment'] ?? ''; ?>
+                            <?php if ($ta): ?>
+                                <span class="inline-block rounded border px-1.5 py-0.5 text-[10px] uppercase <?= $threatColors[$ta] ?? $threatColors['moderate'] ?>">
+                                    <?= htmlspecialchars(strtoupper($ta)) ?>
+                                </span>
+                            <?php endif; ?>
+                        </td>
+                        <td class="px-3 py-2 text-xs text-muted"><?= htmlspecialchars((string) ($rb['model_name'] ?? '')) ?></td>
+                        <td class="px-3 py-2 text-xs">
+                            <?= match($rb['generation_status'] ?? '') {
+                                'ready' => '<span class="text-emerald-400">AI</span>',
+                                'fallback' => '<span class="text-amber-400">Fallback</span>',
+                                'failed' => '<span class="text-red-400">Failed</span>',
+                                default => '<span class="text-muted">-</span>',
+                            } ?>
+                        </td>
+                    </tr>
+                <?php endforeach; ?>
+            </tbody>
+        </table>
+    </div>
+</section>
+<?php endif; ?>
+
+<?php include __DIR__ . '/../../src/views/partials/footer.php'; ?>
