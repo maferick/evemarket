@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/db.php';
 require_once __DIR__ . '/cache.php';
+require_once __DIR__ . '/auto_doctrines.php';
 
 date_default_timezone_set(app_timezone());
 
@@ -4455,7 +4456,8 @@ function worker_job_registry_definitions(): array
         'compute_graph_topology_metrics' => ['workload_class' => 'compute', 'execution_mode' => 'python', 'queue_name' => 'compute', 'priority' => 'normal', 'interval_seconds' => 900, 'timeout_seconds' => 420, 'memory_limit_mb' => 768, 'retry_delay_seconds' => 60, 'max_attempts' => 4],
         'compute_behavioral_baselines' => ['workload_class' => 'compute', 'execution_mode' => 'python', 'queue_name' => 'compute', 'priority' => 'normal', 'interval_seconds' => 900, 'timeout_seconds' => 420, 'memory_limit_mb' => 1024, 'retry_delay_seconds' => 90, 'max_attempts' => 4],
         'compute_suspicion_scores_v2' => ['workload_class' => 'compute', 'execution_mode' => 'python', 'queue_name' => 'compute', 'priority' => 'normal', 'interval_seconds' => 900, 'timeout_seconds' => 420, 'memory_limit_mb' => 1024, 'retry_delay_seconds' => 90, 'max_attempts' => 4],
-        'compute_buy_all' => ['workload_class' => 'compute', 'execution_mode' => 'python', 'queue_name' => 'compute', 'priority' => 'normal', 'interval_seconds' => 900, 'timeout_seconds' => 420, 'memory_limit_mb' => 1024, 'retry_delay_seconds' => 60, 'max_attempts' => 4],
+        'compute_auto_doctrines' => ['workload_class' => 'compute', 'execution_mode' => 'python', 'queue_name' => 'compute', 'priority' => 'normal', 'interval_seconds' => 900, 'timeout_seconds' => 600, 'memory_limit_mb' => 768, 'retry_delay_seconds' => 60, 'max_attempts' => 3],
+        'compute_auto_buyall' => ['workload_class' => 'compute', 'execution_mode' => 'python', 'queue_name' => 'compute', 'priority' => 'high', 'interval_seconds' => 3600, 'timeout_seconds' => 420, 'memory_limit_mb' => 768, 'retry_delay_seconds' => 30, 'max_attempts' => 4],
         'compute_signals' => ['workload_class' => 'compute', 'execution_mode' => 'python', 'queue_name' => 'compute', 'priority' => 'normal', 'interval_seconds' => 900, 'timeout_seconds' => 300, 'memory_limit_mb' => 768, 'retry_delay_seconds' => 60, 'max_attempts' => 4],
         'compute_battle_rollups' => ['workload_class' => 'compute', 'execution_mode' => 'python', 'queue_name' => 'compute', 'priority' => 'normal', 'interval_seconds' => 600, 'timeout_seconds' => 420, 'memory_limit_mb' => 1024, 'retry_delay_seconds' => 90, 'max_attempts' => 4],
         'compute_behavioral_scoring' => ['workload_class' => 'compute', 'execution_mode' => 'python', 'queue_name' => 'compute', 'priority' => 'normal', 'interval_seconds' => 3600, 'timeout_seconds' => 1800, 'memory_limit_mb' => 1024, 'retry_delay_seconds' => 90, 'max_attempts' => 4],
@@ -13119,9 +13121,16 @@ function scheduler_job_definitions(): array
             'lock_ttl_seconds' => 180,
             'execution_mode' => 'python',
         ],
-        'doctrine_intelligence_sync' => [
-            'timeout_seconds' => 180,
-            'lock_ttl_seconds' => 300,
+        'compute_auto_doctrines' => [
+            'timeout_seconds' => 600,
+            'lock_ttl_seconds' => 720,
+            'execution' => 'background',
+            'execution_mode' => 'python',
+        ],
+        'compute_auto_buyall' => [
+            'timeout_seconds' => 420,
+            'lock_ttl_seconds' => 480,
+            'execution' => 'background',
             'execution_mode' => 'python',
         ],
         'market_comparison_summary_sync' => [
@@ -13220,12 +13229,6 @@ function scheduler_job_definitions(): array
             'execution' => 'background',
             'execution_mode' => 'python',
         ],
-        'compute_buy_all' => [
-            'timeout_seconds' => 420,
-            'lock_ttl_seconds' => 480,
-            'execution' => 'background',
-            'execution_mode' => 'python',
-        ],
         'compute_signals' => [
             'timeout_seconds' => 300,
             'lock_ttl_seconds' => 360,
@@ -13305,7 +13308,8 @@ function scheduler_job_type(string $jobKey): string
         'compute_graph_topology_metrics' => 'compute.graph_topology_metrics',
         'compute_behavioral_baselines' => 'compute.behavioral_baselines',
         'compute_suspicion_scores_v2' => 'compute.suspicion_scores_v2',
-        'compute_buy_all' => 'compute.buy_all',
+        'compute_auto_doctrines' => 'compute.auto_doctrines',
+        'compute_auto_buyall' => 'compute.auto_buyall',
         'compute_signals' => 'compute.signals',
         'compute_battle_rollups' => 'compute.battle_rollups',
         'compute_battle_target_metrics' => 'compute.battle_target_metrics',

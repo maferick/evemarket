@@ -1,7 +1,8 @@
 from .killmail import run_killmail_r2z2_stream
 from .market_comparison import run_market_comparison_summary
 from .market_hub_local_history import run_market_hub_local_history
-from .compute_buy_all import run_compute_buy_all
+from .compute_auto_buyall import run_compute_auto_buyall
+from .compute_auto_doctrines import run_compute_auto_doctrines
 from .compute_signals import run_compute_signals
 from .compute_graph_sync import run_compute_graph_sync
 from .compute_graph_insights import run_compute_graph_insights
@@ -40,7 +41,6 @@ from .analytics_bucket_1d_sync import run_analytics_bucket_1d_sync
 from .activity_priority_summary_sync import run_activity_priority_summary_sync
 from .dashboard_summary_sync import run_dashboard_summary_sync
 from .loss_demand_summary_sync import run_loss_demand_summary_sync
-from .doctrine_intelligence_sync import run_doctrine_intelligence_sync
 from .deal_alerts_sync import run_deal_alerts_sync
 from .rebuild_ai_briefings import run_rebuild_ai_briefings
 from .forecasting_ai_sync import run_forecasting_ai_sync

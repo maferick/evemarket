@@ -78,13 +78,14 @@ try {
         $input = python_scheduler_bridge_read_stdin_json();
         $reason = trim((string) ($input['reason'] ?? 'python-rebuild'));
         $currentState = supplycore_refresh_current_state_cache($reason . ':current-state');
-        $doctrine = doctrine_refresh_intelligence($reason . ':doctrine');
+        // Doctrine intelligence refresh is now handled by the Python
+        // compute_auto_doctrines job — nothing to do from the PHP side.
         $activity = activity_priority_refresh_summary($reason . ':activity-priority');
         python_scheduler_bridge_output([
             'ok' => true,
             'result' => [
                 'current_state_rows_written' => (int) ($currentState['rows_written'] ?? 0),
-                'doctrine_snapshot_groups' => count((array) ($doctrine['groups'] ?? [])),
+                'doctrine_snapshot_groups' => 0,
                 'activity_rows' => count((array) ($activity['rows'] ?? [])),
             ],
         ]);

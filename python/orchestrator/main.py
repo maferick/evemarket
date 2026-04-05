@@ -11,7 +11,8 @@ from .job_context import battle_runtime, influx_runtime, neo4j_runtime
 from .influx_export import main as run_influx_rollup_export
 from .influx_inspect import inspect_main as run_influx_rollup_inspect
 from .influx_inspect import sample_main as run_influx_rollup_sample
-from .jobs.compute_buy_all import run_compute_buy_all
+from .jobs.compute_auto_buyall import run_compute_auto_buyall
+from .jobs.compute_auto_doctrines import run_compute_auto_doctrines
 from .jobs.compute_graph_insights import run_compute_graph_insights
 from .jobs.compute_graph_sync import run_compute_graph_sync
 from .jobs.graph_pipeline import (
@@ -123,9 +124,13 @@ def parse_args() -> argparse.Namespace:
     influx_validate.add_argument("--days", type=int, default=14, help="Compare the last N days of data.")
     influx_validate.add_argument("--verbose", action="store_true")
 
-    compute_buy_all = subparsers.add_parser("compute-buy-all", help="Materialize Buy All planner data into precomputed MariaDB tables")
-    compute_buy_all.add_argument("--app-root", default=resolve_app_root(__file__))
-    compute_buy_all.add_argument("--verbose", action="store_true")
+    compute_auto_doctrines = subparsers.add_parser("compute-auto-doctrines", help="Detect doctrines automatically from our killmail losses")
+    compute_auto_doctrines.add_argument("--app-root", default=resolve_app_root(__file__))
+    compute_auto_doctrines.add_argument("--verbose", action="store_true")
+
+    compute_auto_buyall = subparsers.add_parser("compute-auto-buyall", help="Materialize the auto buy-all list from active doctrines")
+    compute_auto_buyall.add_argument("--app-root", default=resolve_app_root(__file__))
+    compute_auto_buyall.add_argument("--verbose", action="store_true")
 
     compute_signals = subparsers.add_parser("compute-signals", help="Generate precomputed intelligence signals into MariaDB")
     compute_signals.add_argument("--app-root", default=resolve_app_root(__file__))
@@ -311,13 +316,22 @@ def main() -> int:
             "--days", str(args.days),
             *( ["--verbose"] if args.verbose else [] ),
         ])
-    if command == "compute-buy-all":
+    if command == "compute-auto-doctrines":
         app_root = Path(args.app_root).resolve()
         config = load_php_runtime_config(app_root)
         configure_logging(verbose=args.verbose, log_file=config.log_file)
         from .db import SupplyCoreDb
         db = SupplyCoreDb(config.raw.get("db", {}))
-        result = run_compute_buy_all(db)
+        result = run_compute_auto_doctrines(db)
+        print(result)
+        return 0
+    if command == "compute-auto-buyall":
+        app_root = Path(args.app_root).resolve()
+        config = load_php_runtime_config(app_root)
+        configure_logging(verbose=args.verbose, log_file=config.log_file)
+        from .db import SupplyCoreDb
+        db = SupplyCoreDb(config.raw.get("db", {}))
+        result = run_compute_auto_buyall(db)
         print(result)
         return 0
     if command == "compute-signals":
