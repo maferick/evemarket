@@ -256,122 +256,18 @@ def _snapshot_graph_health(client: Neo4jClient) -> dict[str, Any]:
 
 
 def run_compute_graph_sync_doctrine_dependency(db: SupplyCoreDb, neo4j_raw: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Retired — legacy doctrine_fits / doctrine_fit_items / doctrine_groups tables
+    no longer exist. The auto doctrine pipeline does not yet project into Neo4j,
+    so this job is a no-op and should be removed from the scheduler once all
+    downstream graph consumers migrate off the Doctrine/Fit/Item node labels."""
     started = time.perf_counter()
-    job_name = "compute_graph_sync_doctrine_dependency"
-    config = Neo4jConfig.from_runtime(neo4j_raw or {})
-    if not config.enabled:
-        return _job_payload(job_name, started, "skipped", error_text="neo4j disabled")
-
-    client = Neo4jClient(config)
-    _ensure_constraints_and_indexes(client)
-
-    runtime = neo4j_raw or {}
-    batch_size = _coerce_batch_size(runtime.get("sync_doctrine_batch_size") or runtime.get("batch_size"))
-    max_batches = max(1, int(runtime.get("sync_doctrine_max_batches_per_run") or 6))
-    cursor_row = _sync_state_get(db, GRAPH_BATCH_STATE_KEYS["doctrine_cursor"]) or {}
-    cursor_id = _parse_int_cursor(cursor_row.get("last_cursor"))
-    rows_processed = 0
-    rows_written = 0
-    batch_count = 0
-    latest_checkpoint = cursor_id
-    while batch_count < max_batches:
-        batch_started = time.perf_counter()
-        rows = db.fetch_all(
-            """
-            SELECT
-                dfi.id AS doctrine_item_id,
-                dg.id AS doctrine_id,
-                dg.group_name AS doctrine_name,
-                df.id AS fit_id,
-                df.fit_name,
-                dfi.type_id,
-                COALESCE(rit.type_name, CONCAT('Type #', dfi.type_id)) AS item_name,
-                GREATEST(COALESCE(df.updated_at, '1970-01-01 00:00:00'), COALESCE(dfi.updated_at, '1970-01-01 00:00:00')) AS changed_at
-            FROM doctrine_fit_items dfi
-            INNER JOIN doctrine_fits df ON df.id = dfi.doctrine_fit_id
-            INNER JOIN doctrine_fit_groups dfg ON dfg.doctrine_fit_id = df.id
-            INNER JOIN doctrine_groups dg ON dg.id = dfg.doctrine_group_id
-            LEFT JOIN ref_item_types rit ON rit.type_id = dfi.type_id
-            WHERE dfi.id > %s
-            ORDER BY dfi.id ASC
-            LIMIT %s
-            """,
-            (cursor_id, batch_size),
-        )
-        if not rows:
-            cursor_id = 0
-            break
-
-        client.query(
-            """
-            UNWIND $rows AS row
-            MERGE (d:Doctrine {doctrine_id: toInteger(row.doctrine_id)})
-              SET d.name = row.doctrine_name
-            MERGE (f:Fit {fit_id: toInteger(row.fit_id)})
-              SET f.name = row.fit_name
-            MERGE (i:Item {type_id: toInteger(row.type_id)})
-              SET i.name = row.item_name
-            MERGE (d)-[:USES]->(f)
-            MERGE (f)-[:CONTAINS]->(i)
-            """,
-            {"rows": rows},
-        )
-
-        cursor_id = int(rows[-1].get("doctrine_item_id") or cursor_id)
-        latest_checkpoint = cursor_id
-        batch_count += 1
-        rows_processed += len(rows)
-        rows_written += len(rows)
-        _sync_state_upsert(
-            db,
-            GRAPH_BATCH_STATE_KEYS["doctrine_cursor"],
-            sync_mode="incremental",
-            status="running",
-            last_success_at=None,
-            last_cursor=_format_int_cursor(cursor_id),
-            last_row_count=rows_written,
-            last_error_message=None,
-        )
-        _emit_batch_telemetry(
-            config.log_file,
-            job_name,
-            {
-                "batch_start": batch_count,
-                "batch_end": batch_count,
-                "rows_processed": len(rows),
-                "rows_written": len(rows),
-                "duration_ms": int((time.perf_counter() - batch_started) * 1000),
-                "checkpoint_after": _format_int_cursor(cursor_id),
-                "errors": "",
-            },
-        )
-
-    _sync_state_upsert(
-        db,
-        GRAPH_BATCH_STATE_KEYS["doctrine_cursor"],
-        sync_mode="incremental",
-        status="success",
-        last_success_at=_utc_now_sql(),
-        last_cursor=_format_int_cursor(cursor_id),
-        last_row_count=rows_written,
-        last_error_message=None,
-    )
-
-    result = _job_payload(
-        job_name,
+    return _job_payload(
+        "compute_graph_sync_doctrine_dependency",
         started,
-        "success",
-        rows_processed=rows_processed,
-        rows_written=rows_written,
-        nodes_merged=rows_written * 3,
-        relationships_merged=rows_written * 2,
-        checkpoint_cursor=_format_int_cursor(latest_checkpoint),
-        batch_count=batch_count,
-        batch_size=batch_size,
-        has_more=cursor_id > 0,
+        "skipped",
+        error_text="retired: legacy doctrine tables dropped",
     )
-    _write_graph_log(config.log_file, "graph.sync.doctrine.completed", result)
-    return result
+
 
 
 def run_compute_graph_sync_battle_intelligence(db: SupplyCoreDb, neo4j_raw: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -1009,54 +905,6 @@ def _upsert_table(db: SupplyCoreDb, table_name: str, columns: str, placeholders:
             )
         )
 
-
-def _ensure_doctrine_dependency_depth_schema(db: SupplyCoreDb) -> None:
-    expected_columns: list[tuple[str, str, str]] = [
-        ("doctrine_name", "VARCHAR(191) NOT NULL DEFAULT ''", "doctrine_id"),
-        ("fit_count", "INT UNSIGNED NOT NULL DEFAULT 0", "doctrine_id"),
-        ("item_count", "INT UNSIGNED NOT NULL DEFAULT 0", "fit_count"),
-        ("unique_item_count", "INT UNSIGNED NOT NULL DEFAULT 0", "item_count"),
-        ("dependency_depth_score", "DECIMAL(12,4) NOT NULL DEFAULT 0.0000", "unique_item_count"),
-        ("computed_at", "DATETIME NOT NULL", "dependency_depth_score"),
-    ]
-    for column_name, definition, after_column in expected_columns:
-        row = db.fetch_one(
-            """
-            SELECT COLUMN_NAME
-            FROM INFORMATION_SCHEMA.COLUMNS
-            WHERE TABLE_SCHEMA = DATABASE()
-              AND TABLE_NAME = 'doctrine_dependency_depth'
-              AND COLUMN_NAME = %s
-            LIMIT 1
-            """,
-            (column_name,),
-        )
-        if row:
-            continue
-        db.execute(
-            f"ALTER TABLE doctrine_dependency_depth ADD COLUMN {column_name} {definition} AFTER {after_column}"
-        )
-
-    for index_name, index_cols in (
-        ("idx_doctrine_dependency_depth_score", "dependency_depth_score, computed_at"),
-        ("idx_doctrine_dependency_depth_computed", "computed_at"),
-    ):
-        index_row = db.fetch_one(
-            """
-            SELECT 1
-            FROM INFORMATION_SCHEMA.STATISTICS
-            WHERE TABLE_SCHEMA = DATABASE()
-              AND TABLE_NAME = 'doctrine_dependency_depth'
-              AND INDEX_NAME = %s
-            LIMIT 1
-            """,
-            (index_name,),
-        )
-        if index_row:
-            continue
-        db.execute(
-            f"ALTER TABLE doctrine_dependency_depth ADD KEY {index_name} ({index_cols})"
-        )
 
 
 def _table_has_column(db: SupplyCoreDb, table_name: str, column_name: str) -> bool:
@@ -1751,66 +1599,12 @@ def _run_compute_graph_insights_inner(
     _vlog(f"connected to neo4j ({config.url}), batch_size={batch_size}")
 
     # ── Step 1: Base item dependency scores from Neo4j ──
-    _vlog("step 1/8: querying item dependency scores from Neo4j ...")
-    item_rows = client.query(
-        """
-        MATCH (d:Doctrine)-[:USES]->(f:Fit)-[:CONTAINS]->(i:Item)
-        WITH i, count(DISTINCT d) AS doctrine_count, count(DISTINCT f) AS fit_count
-        RETURN toInteger(i.type_id) AS type_id,
-               toInteger(doctrine_count) AS doctrine_count,
-               toInteger(fit_count) AS fit_count,
-               toFloat((doctrine_count * 10) + fit_count) AS dependency_score
-        ORDER BY dependency_score DESC, type_id ASC
-        """
-    )
-    _vlog(f"step 1/8: got {len(item_rows)} item rows, querying doctrine dependency depth ...")
-
-    doctrine_rows = client.query(
-        """
-        MATCH (d:Doctrine)
-        OPTIONAL MATCH (d)-[:USES]->(f:Fit)
-        OPTIONAL MATCH (f)-[:CONTAINS]->(i:Item)
-        WITH d, count(DISTINCT f) AS fit_count, count(i) AS item_count, count(DISTINCT i) AS unique_item_count
-        RETURN toInteger(d.doctrine_id) AS doctrine_id,
-               toString(COALESCE(d.name, '')) AS doctrine_name,
-               toInteger(fit_count) AS fit_count,
-               toInteger(item_count) AS item_count,
-               toInteger(unique_item_count) AS unique_item_count,
-               toFloat(unique_item_count + (fit_count * 5)) AS dependency_depth_score
-        ORDER BY dependency_depth_score DESC, doctrine_id ASC
-        """
-    )
-
-    _ensure_doctrine_dependency_depth_schema(db)
-
-    _upsert_table(
-        db,
-        "item_dependency_score",
-        "type_id, doctrine_count, fit_count, dependency_score, computed_at",
-        "%s, %s, %s, %s, %s",
-        [(int(r["type_id"]), int(r["doctrine_count"]), int(r["fit_count"]), float(r["dependency_score"]), computed_at) for r in item_rows if int(r.get("type_id") or 0) > 0],
-    )
-    _vlog(f"step 1/8: got {len(doctrine_rows)} doctrine rows, upserting to MariaDB ...")
-
-    doctrine_dependency_rows = [r for r in doctrine_rows if int(r.get("doctrine_id") or 0) > 0]
-    _upsert_table(
-        db,
-        "doctrine_dependency_depth",
-        "doctrine_id, doctrine_name, fit_count, item_count, unique_item_count, dependency_depth_score, computed_at",
-        "%s, %s, %s, %s, %s, %s, %s",
-        [
-            (
-                int(r["doctrine_id"]),
-                str(r.get("doctrine_name") or f"Doctrine #{int(r['doctrine_id'])}"),
-                int(r["fit_count"]),
-                int(r["item_count"]),
-                int(r["unique_item_count"]),
-                float(r["dependency_depth_score"]),
-                computed_at,
-            )
-            for r in doctrine_dependency_rows
-        ],
-    )
+    # Legacy Doctrine nodes no longer exist in Neo4j (the sync job that
+    # produced them has been retired). Skip steps that depend on them so
+    # the rest of the graph-insights pipeline still runs.
+    _vlog("step 1/8: doctrine dependency scoring retired — skipping Doctrine-based rollups")
+    item_rows: list[dict[str, Any]] = []
+    doctrine_rows: list[dict[str, Any]] = []
 
     # ── Step 2: Critical edge ratio from Neo4j ──
     _vlog("step 2/8: querying critical edge ratios from Neo4j ...")

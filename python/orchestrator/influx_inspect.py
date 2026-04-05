@@ -90,10 +90,6 @@ def _normalize_dataset_filters(filters: list[str], available_measurements: list[
         "killmail_item_loss_1h": "killmail_item_loss",
         "killmail_item_loss_1d": "killmail_item_loss",
         "killmail_hull_loss_1d": "killmail_hull_loss",
-        "killmail_doctrine_activity_1d": "killmail_doctrine_activity",
-        "doctrine_fit_activity_1d": "doctrine_fit_activity",
-        "doctrine_group_activity_1d": "doctrine_group_activity",
-        "doctrine_fit_stock_pressure_1d": "doctrine_fit_stock_pressure",
     }
     normalized: list[str] = []
     seen: set[str] = set()

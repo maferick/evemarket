@@ -56,155 +56,24 @@ from(bucket: "{config.bucket}")
 
 
 def run_compute_signals(db: SupplyCoreDb, influx_raw: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Retired — compute_signals originally materialised enriched signal rows
+    out of the old ``buy_all_items`` / ``buy_all_summary`` precompute tables.
+    Those tables have been dropped along with the hand-maintained buy-all
+    pipeline. The auto buy-all job (``compute_auto_buyall``) now materialises
+    its own deterministic list. This function is kept as a no-op so the
+    scheduler keeps its slot without erroring on missing tables."""
     _started_at = datetime.now(UTC)
-    _start_mono = time.monotonic()
-    computed_at = _started_at.strftime("%Y-%m-%d %H:%M:%S")
-    rows = db.fetch_all(
-        """
-        SELECT
-            bai.type_id,
-            MAX(bai.mode_rank_score) AS mode_rank_score,
-            MAX(bai.necessity_score) AS necessity_score,
-            MAX(bai.profit_score) AS profit_score,
-            MAX(CASE WHEN rit.type_name IS NULL OR rit.type_name = '' THEN CONCAT('Type #', bai.type_id) ELSE rit.type_name END) AS type_name,
-            MAX(COALESCE(bai.quantity, 0)) AS planner_qty,
-            MAX(COALESCE(mh.hub_price, 0)) AS hub_price,
-            MAX(COALESCE(asrc.alliance_price, 0)) AS alliance_price,
-            MAX(COALESCE(asrc.total_sell_volume, 0)) AS alliance_volume,
-            MAX(COALESCE(ids.dependency_score, 0.0)) AS dependency_score,
-            MAX(COALESCE(ids.doctrine_count, 0)) AS doctrine_count,
-            MAX(COALESCE(ids.fit_count, 0)) AS dependency_fit_count
-        FROM buy_all_items bai
-        INNER JOIN buy_all_summary bas ON bas.id = bai.summary_id
-        LEFT JOIN ref_item_types rit ON rit.type_id = bai.type_id
-        LEFT JOIN (
-            SELECT type_id,
-                   MAX(COALESCE(best_sell_price, best_buy_price, 0)) AS hub_price
-            FROM market_order_snapshots_summary
-            WHERE source_type = 'market_hub'
-              AND observed_at >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL 24 HOUR)
-            GROUP BY type_id
-        ) mh ON mh.type_id = bai.type_id
-        LEFT JOIN (
-            SELECT type_id,
-                   MAX(COALESCE(best_sell_price, best_buy_price, 0)) AS alliance_price,
-                   MAX(COALESCE(total_sell_volume, 0)) AS total_sell_volume
-            FROM market_order_snapshots_summary
-            WHERE source_type = 'alliance_structure'
-              AND observed_at >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL 24 HOUR)
-            GROUP BY type_id
-        ) asrc ON asrc.type_id = bai.type_id
-        LEFT JOIN item_dependency_score ids ON ids.type_id = bai.type_id
-        WHERE bas.computed_at >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL 24 HOUR)
-        GROUP BY bai.type_id
-        ORDER BY mode_rank_score DESC
-        LIMIT 250
-        """
-    )
-
-    type_ids = [int(row.get("type_id") or 0) for row in rows if int(row.get("type_id") or 0) > 0]
-    historical = _historical_mean_by_type(influx_raw or {}, type_ids)
-
-    created = 0
-    with db.transaction() as (_, cursor):
-        cursor.execute("DELETE FROM signals WHERE computed_at < DATE_SUB(UTC_TIMESTAMP(), INTERVAL 30 DAY)")
-
-        for row in rows:
-            type_id = int(row.get("type_id") or 0)
-            if type_id <= 0:
-                continue
-            title = str(row.get("type_name") or f"Type #{type_id}")
-            hub_price = to_decimal(row.get("hub_price"))
-            alliance_volume = int(row.get("alliance_volume") or 0)
-            necessity = to_decimal(row.get("necessity_score"))
-            dependency_score = to_decimal(row.get("dependency_score"))
-            doctrine_count = int(row.get("doctrine_count") or 0)
-            dependency_fit_count = int(row.get("dependency_fit_count") or 0)
-
-            signal_type = "market_spike"
-            severity = "medium"
-            mode_rank_score = to_decimal(row.get("mode_rank_score"))
-            signal_text = f"Planner rank {mode_rank_score:.1f} with alliance volume {alliance_volume}."
-
-            hist = to_decimal(historical.get(type_id))
-            price_worsening = bool(hist > DECIMAL_ZERO and hub_price > (hist * Decimal("1.10")))
-            low_supply = alliance_volume < 20
-            high_dependency = dependency_score >= Decimal("30") or doctrine_count >= 3
-
-            if high_dependency and low_supply and price_worsening:
-                signal_type = "high_dependency_low_supply"
-                severity = "critical"
-                signal_text = (
-                    f"Dependency score {dependency_score:.1f} across {doctrine_count} doctrines with low alliance volume {alliance_volume}; "
-                    f"hub price {hub_price:.2f} is above 14d mean {hist:.2f}."
-                )
-            elif high_dependency and low_supply:
-                signal_type = "critical_shared_dependency"
-                severity = "critical"
-                signal_text = (
-                    f"Shared dependency risk: score {dependency_score:.1f}, doctrines {doctrine_count}, fits {dependency_fit_count}, "
-                    f"alliance volume {alliance_volume}."
-                )
-            elif high_dependency and necessity >= Decimal("60"):
-                signal_type = "doctrine_bottleneck"
-                severity = "high"
-                signal_text = (
-                    f"Doctrine bottleneck candidate with dependency score {dependency_score:.1f}, necessity {necessity:.1f}, "
-                    f"used by {doctrine_count} doctrines."
-                )
-            elif hist > DECIMAL_ZERO and hub_price > DECIMAL_ZERO and hub_price <= hist * Decimal("0.9"):
-                signal_type = "undervalued_item"
-                severity = "high"
-                signal_text = f"Hub price {hub_price:.2f} is below 14d mean {hist:.2f}."
-            elif alliance_volume < 25 and necessity >= Decimal("55"):
-                signal_type = "supply_shortage"
-                severity = "critical"
-                signal_text = f"Alliance volume {alliance_volume} is low for necessity score {necessity:.1f}."
-            elif necessity >= Decimal("70"):
-                signal_type = "doctrine_blocking_item"
-                severity = "high"
-                signal_text = f"Necessity score {necessity:.1f} indicates doctrine blocking risk."
-
-            payload = {
-                "hub_price": hub_price,
-                "historical_mean": hist if hist > DECIMAL_ZERO else None,
-                "alliance_volume": alliance_volume,
-                "planner_qty": int(row.get("planner_qty") or 0),
-                "mode_rank_score": mode_rank_score,
-                "necessity_score": necessity,
-                "profit_score": to_decimal(row.get("profit_score")),
-                "dependency_score": dependency_score,
-                "doctrine_count": doctrine_count,
-                "dependency_fit_count": dependency_fit_count,
-            }
-            signal_key = f"{signal_type}:{type_id}"
-            cursor.execute(
-                """
-                INSERT INTO signals (signal_key, signal_type, severity, type_id, doctrine_fit_id, signal_title, signal_text, signal_payload_json, computed_at)
-                VALUES (%s, %s, %s, %s, NULL, %s, %s, %s, %s)
-                ON DUPLICATE KEY UPDATE
-                    severity = VALUES(severity),
-                    signal_title = VALUES(signal_title),
-                    signal_text = VALUES(signal_text),
-                    signal_payload_json = VALUES(signal_payload_json),
-                    computed_at = VALUES(computed_at)
-                """,
-                (signal_key, signal_type, severity, type_id, title, signal_text, json.dumps(payload, separators=(",", ":"), ensure_ascii=False, default=_decimal_json_default), computed_at),
-            )
-            created += 1
-
-    _finished_at = datetime.now(UTC)
-    return JobResult.success(
-        job_key="compute_signals",
-        summary=f"Generated {created} intelligence signals from {len(rows)} buy-all items.",
-        rows_processed=len(rows),
-        rows_written=created,
-        started_at=_started_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
-        finished_at=_finished_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
-        duration_ms=int((time.monotonic() - _start_mono) * 1000),
-        meta={"computed_at": computed_at, "signals_created": created},
-    ).to_dict()
-
+    return {
+        "status": "success",
+        "summary": "compute_signals retired — buy_all_items dropped.",
+        "started_at": _started_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "finished_at": _started_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "duration_ms": 0,
+        "rows_seen": 0,
+        "rows_processed": 0,
+        "rows_written": 0,
+        "meta": {"retired": True},
+    }
 
 def _decimal_json_default(value: Any) -> Any:
     if isinstance(value, Decimal):
