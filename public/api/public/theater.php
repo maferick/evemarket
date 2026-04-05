@@ -387,9 +387,31 @@ if ($viewSnapshot !== null) {
         }
     }
     foreach ($sidePanels as $side => $data) {
-        usort($data['ships'], static fn(array $l, array $r): int => $r['pilots'] <=> $l['pilots']);
-        $sidePanels[$side]['ships'] = array_slice($data['ships'], 0, 12);
+        // Aggregate ships by type_id (fleet_composition is grouped per
+        // alliance/corp, so the same hull appears multiple times — one per
+        // alliance fielding it).  Collapse to a single entry per ship type.
+        $_agg = [];
+        foreach ($data['ships'] as $_sh) {
+            $_key = (int) ($_sh['type_id'] ?? 0) > 0
+                ? 't:' . (int) $_sh['type_id']
+                : 'n:' . strtolower(trim((string) ($_sh['name'] ?? '')));
+            if (!isset($_agg[$_key])) {
+                $_agg[$_key] = [
+                    'name' => (string) ($_sh['name'] ?? ''),
+                    'type_id' => (int) ($_sh['type_id'] ?? 0),
+                    'pilots' => 0,
+                ];
+            }
+            $_agg[$_key]['pilots'] += (int) ($_sh['pilots'] ?? 0);
+            if ($_agg[$_key]['name'] === '' && ($_sh['name'] ?? '') !== '') {
+                $_agg[$_key]['name'] = (string) $_sh['name'];
+            }
+        }
+        $_aggList = array_values($_agg);
+        usort($_aggList, static fn(array $l, array $r): int => $r['pilots'] <=> $l['pilots']);
+        $sidePanels[$side]['ships'] = array_slice($_aggList, 0, 12);
     }
+    unset($_agg, $_sh, $_key, $_aggList);
 
     // Resolve ship type names
     $allShipTypeIds = [];
