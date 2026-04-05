@@ -6881,7 +6881,64 @@ function db_market_history_daily_aggregate_by_date_type_source(
         }
     }
 
+    // Final backstop: market_history_daily is only populated by the manual
+    // rebuild_data_model job, so recurring installs often find it empty even
+    // when analytics_bucket_1d_sync is healthy. Fall back to the 1d bucket
+    // rollup tables so Alliance Trends / Module History can still render.
+    if ($mariaRows === []) {
+        return db_market_history_daily_aggregate_from_buckets($sourceType, $sourceId, $startDate, $endDate, $typeIds);
+    }
+
     return $mariaRows;
+}
+
+function db_market_history_daily_aggregate_from_buckets(
+    string $sourceType,
+    int $sourceId,
+    string $startDate,
+    string $endDate,
+    array $typeIds = []
+): array {
+    if ($sourceId <= 0) {
+        return [];
+    }
+
+    $params = [$sourceType, $sourceId, $startDate, $endDate];
+    $typeFilterSql = '';
+
+    if ($typeIds !== []) {
+        $normalizedTypeIds = array_values(array_unique(array_filter(array_map('intval', $typeIds), static fn (int $typeId): bool => $typeId > 0)));
+        if ($normalizedTypeIds === []) {
+            return [];
+        }
+        $typeFilterSql = ' AND p.type_id IN (' . implode(',', array_fill(0, count($normalizedTypeIds), '?')) . ')';
+        $params = array_merge($params, $normalizedTypeIds);
+    }
+
+    return db_select(
+        "SELECT
+            p.bucket_start AS trade_date,
+            p.type_id,
+            rit.type_name,
+            p.source_type,
+            p.source_id,
+            COALESCE(p.weighted_price, p.avg_price) AS avg_close_price,
+            COALESCE(s.local_stock_units, 0) AS total_volume,
+            COALESCE(p.listing_count, s.listing_count, 0) AS total_order_count,
+            p.updated_at AS last_observed_at
+         FROM market_item_price_1d p
+         LEFT JOIN market_item_stock_1d s
+             ON s.source_type = p.source_type
+            AND s.source_id = p.source_id
+            AND s.type_id = p.type_id
+            AND s.bucket_start = p.bucket_start
+         LEFT JOIN ref_item_types rit ON rit.type_id = p.type_id
+         WHERE p.source_type = ?
+           AND p.source_id = ?
+           AND p.bucket_start BETWEEN ? AND ?{$typeFilterSql}
+         ORDER BY p.bucket_start ASC, p.type_id ASC",
+        $params
+    );
 }
 
 function db_market_history_daily_deviation_series(
@@ -6956,7 +7013,67 @@ function db_market_history_daily_deviation_series(
         }
     }
 
+    // Final backstop: derive deviation from the 1d price bucket tables when
+    // market_history_daily is empty (only written by the manual rebuild job).
+    if ($mariaRows === []) {
+        return db_market_history_daily_deviation_from_buckets($allianceStructureId, $hubSourceId, $startDate, $endDate, $typeIds);
+    }
+
     return $mariaRows;
+}
+
+function db_market_history_daily_deviation_from_buckets(
+    int $allianceStructureId,
+    int $hubSourceId,
+    string $startDate,
+    string $endDate,
+    array $typeIds = []
+): array {
+    if ($allianceStructureId <= 0 || $hubSourceId <= 0) {
+        return [];
+    }
+
+    $params = [$hubSourceId, $allianceStructureId, $startDate, $endDate];
+    $typeFilterSql = '';
+
+    if ($typeIds !== []) {
+        $normalizedTypeIds = array_values(array_unique(array_filter(array_map('intval', $typeIds), static fn (int $typeId): bool => $typeId > 0)));
+        if ($normalizedTypeIds === []) {
+            return [];
+        }
+        $typeFilterSql = ' AND a.type_id IN (' . implode(',', array_fill(0, count($normalizedTypeIds), '?')) . ')';
+        $params = array_merge($params, $normalizedTypeIds);
+    }
+
+    return db_select(
+        "SELECT
+            a.bucket_start AS trade_date,
+            a.type_id,
+            rit.type_name,
+            COALESCE(a.weighted_price, a.avg_price) AS alliance_close_price,
+            COALESCE(h.weighted_price, h.avg_price) AS hub_close_price,
+            CASE
+                WHEN COALESCE(h.weighted_price, h.avg_price) > 0
+                    THEN ((COALESCE(a.weighted_price, a.avg_price) - COALESCE(h.weighted_price, h.avg_price)) / COALESCE(h.weighted_price, h.avg_price)) * 100
+                ELSE NULL
+            END AS deviation_percent,
+            NULL AS alliance_volume,
+            NULL AS hub_volume,
+            a.listing_count AS alliance_order_count,
+            h.listing_count AS hub_order_count
+         FROM market_item_price_1d a
+         INNER JOIN market_item_price_1d h
+             ON h.source_type = 'market_hub'
+            AND h.source_id = ?
+            AND h.type_id = a.type_id
+            AND h.bucket_start = a.bucket_start
+         LEFT JOIN ref_item_types rit ON rit.type_id = a.type_id
+         WHERE a.source_type = 'alliance_structure'
+           AND a.source_id = ?
+           AND a.bucket_start BETWEEN ? AND ?{$typeFilterSql}
+         ORDER BY a.bucket_start ASC, a.type_id ASC",
+        $params
+    );
 }
 
 // UI paths that depend on long-lived market history must read from the
