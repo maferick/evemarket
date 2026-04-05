@@ -54,10 +54,10 @@ _UI_REFRESH_JOB_MAP: dict[str, dict[str, list[str]]] = {
         "ui_sections": ["page-freshness", "dashboard-kpis", "dashboard-buyall", "dashboard-doctrine", "dashboard-queues"],
         "version_keys": ["dashboard_summary_version"],
     },
-    "doctrine_intelligence_sync": {
-        "domains": ["doctrine_readiness", "doctrine_details", "fit_availability", "bottlenecks"],
-        "ui_sections": ["dashboard-doctrine", "buyall-overview", "buyall-results", "activity-doctrines", "activity-sidebar", "doctrine-fit-summary", "doctrine-fit-history", "doctrine-fit-items", "doctrine-index-main", "doctrine-group-main"],
-        "version_keys": ["doctrine_readiness_version", "buyall_version"],
+    "compute_auto_doctrines": {
+        "domains": ["auto_doctrines", "fit_availability"],
+        "ui_sections": ["doctrines-list", "dashboard-doctrine", "buyall-overview"],
+        "version_keys": ["auto_doctrines_version", "buyall_version"],
     },
     "market_comparison_summary_sync": {
         "domains": ["market_comparison", "overlap", "pricing_summaries", "buyall", "dashboard"],
@@ -84,9 +84,9 @@ _UI_REFRESH_JOB_MAP: dict[str, dict[str, list[str]]] = {
         "ui_sections": ["dashboard-queues", "deal-alerts-summary", "deal-alerts-status", "deal-alerts-table"],
         "version_keys": ["deal_alerts_version", "dashboard_summary_version"],
     },
-    "compute_buy_all": {
+    "compute_auto_buyall": {
         "domains": ["buyall", "dashboard"],
-        "ui_sections": ["dashboard-buyall", "buyall-overview", "buyall-results"],
+        "ui_sections": ["dashboard-buyall", "buyall-overview", "buyall-table", "buyall-clipboard"],
         "version_keys": ["buyall_version", "dashboard_summary_version"],
     },
 }

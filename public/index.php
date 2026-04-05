@@ -20,10 +20,23 @@ if (function_exists('ob_flush')) { @ob_flush(); }
 
 // --- Heavy data queries (slow) ---
 $dbStatus = db_connection_status();
-$intel = dashboard_intelligence_data();
-$doctrine = $intel['doctrine'] ?? doctrine_groups_overview_data();
+// dashboard_intelligence_data() indirectly reads some of the legacy
+// doctrine/buy-all tables on a cold snapshot bootstrap. During the auto-
+// doctrines migration window we must not let that crash the dashboard,
+// so we trap and fall through to an empty intel payload.
+try {
+    $intel = dashboard_intelligence_data();
+} catch (Throwable $__intel_err) {
+    error_log('dashboard_intelligence_data failed: ' . $__intel_err->getMessage());
+    $intel = [];
+}
+// Legacy doctrine_groups_overview_data() has been retired along with the
+// hand-maintained doctrine system. The auto-doctrine pipeline feeds the
+// dashboard via auto_doctrine_dashboard_overview(), which preserves the
+// legacy key shape the view expects.
+$doctrine = auto_doctrine_dashboard_overview();
 $dashboardFreshness = supplycore_page_freshness_view_model((array) ($intel['_freshness'] ?? []));
-$buyAll = buy_all_dashboard_summary();
+$buyAll = auto_buyall_dashboard_summary();
 ?>
 <?php
 $kpiThemes = [

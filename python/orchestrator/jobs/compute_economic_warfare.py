@@ -9,10 +9,7 @@ Phase 4: Write composite economic_warfare_score for each module
 
 from __future__ import annotations
 
-import hashlib
-import json
 import logging
-import math
 import time
 from collections import defaultdict
 from datetime import UTC, datetime
@@ -21,7 +18,15 @@ from typing import Any
 from ..eve_constants import (
     FITTING_CONSTRAINED_META_GROUPS,
     FITTING_VARIANT_KEYWORDS,
-    ITEM_FLAG_CATEGORY,
+)
+from ._fit_clustering import (
+    CORE_FREQUENCY_THRESHOLD as _CORE_FREQUENCY_THRESHOLD,
+    JACCARD_MERGE_THRESHOLD as _JACCARD_MERGE_THRESHOLD,
+    cluster_fit_families,
+    confidence as _confidence,
+    fingerprint as _fingerprint,
+    flag_category as _flag_category,
+    jaccard as _jaccard,
 )
 
 logger = logging.getLogger("supplycore.economic_warfare")
@@ -35,32 +40,7 @@ _W_SUBSTITUTION_PENALTY = 0.25
 _W_REPLACEMENT_FRICTION = 0.20
 _W_LOSS_PRESSURE = 0.10
 
-_JACCARD_MERGE_THRESHOLD = 0.80
-_CORE_FREQUENCY_THRESHOLD = 0.80
 _DEFAULT_WINDOW_DAYS = 90
-_CONFIDENCE_DECAY = 5.0  # 1 - exp(-count/5)
-
-
-def _fingerprint(modules: list[tuple[int, str]]) -> str:
-    """MD5 of sorted (type_id, flag_category) multiset — preserves duplicates for guns."""
-    canon = sorted(modules)
-    return hashlib.md5(json.dumps(canon, separators=(",", ":")).encode()).hexdigest()
-
-
-def _jaccard(a: set, b: set) -> float:
-    if not a and not b:
-        return 1.0
-    intersection = len(a & b)
-    union = len(a | b)
-    return intersection / union if union > 0 else 0.0
-
-
-def _confidence(observation_count: int) -> float:
-    return 1.0 - math.exp(-observation_count / _CONFIDENCE_DECAY)
-
-
-def _flag_category(item_flag: int) -> str:
-    return ITEM_FLAG_CATEGORY.get(item_flag, "other")
 
 
 def _is_fitting_variant(type_name: str, meta_group_id: int) -> bool:
@@ -105,81 +85,14 @@ def _extract_opponent_fits(db: Any, window_days: int) -> dict[int, dict]:
     return kills
 
 
-# ── Phase 2: Cluster into fit families ───────────────────────────────────────
+# ── Phase 2: Cluster into fit families (uses shared _fit_clustering) ─────────
 
 def _cluster_fit_families(kills: dict[int, dict]) -> list[dict]:
-    """Group kills by hull then fingerprint, with Jaccard fuzzy merge."""
-    # Group by hull
-    by_hull: dict[int, list[dict]] = defaultdict(list)
-    for seq_id, kill in kills.items():
-        if kill["hull_type_id"] <= 0:
-            continue
-        by_hull[kill["hull_type_id"]].append({
-            "sequence_id": seq_id,
-            "alliance_id": kill["alliance_id"],
-            "modules": kill["modules"],
-            "fingerprint": _fingerprint(kill["modules"]),
-            "module_set": set(kill["modules"]),
-        })
-
-    families: list[dict] = []
-
-    for hull_type_id, hull_kills in by_hull.items():
-        # Fast path: exact fingerprint grouping
-        fp_groups: dict[str, list[dict]] = defaultdict(list)
-        for kill in hull_kills:
-            fp_groups[kill["fingerprint"]].append(kill)
-
-        hull_families: list[dict] = []
-        for fp, group in fp_groups.items():
-            alliance_ids = {k["alliance_id"] for k in group if k["alliance_id"] > 0}
-            # Count module frequencies
-            module_counts: dict[tuple[int, str], int] = defaultdict(int)
-            for kill in group:
-                for mod in kill["modules"]:
-                    module_counts[mod] += 1
-            obs = len(group)
-            hull_families.append({
-                "hull_type_id": hull_type_id,
-                "fingerprint": fp,
-                "observation_count": obs,
-                "alliance_ids": alliance_ids,
-                "module_counts": module_counts,
-                "module_set": group[0]["module_set"],
-                "first_seen": None,
-                "last_seen": None,
-            })
-
-        # Fuzzy merge: try to merge small families into larger ones via Jaccard
-        merged = True
-        while merged:
-            merged = False
-            hull_families.sort(key=lambda f: f["observation_count"], reverse=True)
-            i = 0
-            while i < len(hull_families):
-                j = i + 1
-                while j < len(hull_families):
-                    sim = _jaccard(hull_families[i]["module_set"], hull_families[j]["module_set"])
-                    if sim >= _JACCARD_MERGE_THRESHOLD:
-                        # Merge j into i
-                        target = hull_families[i]
-                        source = hull_families[j]
-                        target["observation_count"] += source["observation_count"]
-                        target["alliance_ids"] |= source["alliance_ids"]
-                        for mod, cnt in source["module_counts"].items():
-                            target["module_counts"][mod] += cnt
-                        target["module_set"] |= source["module_set"]
-                        # Recompute fingerprint based on dominant family
-                        hull_families.pop(j)
-                        merged = True
-                    else:
-                        j += 1
-                i += 1
-
-        families.extend(hull_families)
-
+    """Thin wrapper around the shared clustering helper with logging."""
+    families = cluster_fit_families(kills, jaccard_threshold=_JACCARD_MERGE_THRESHOLD)
+    hull_count = len({f["hull_type_id"] for f in families})
     logger.info("Phase 2: clustered into %d fit families across %d hulls",
-                len(families), len(by_hull))
+                len(families), hull_count)
     return families
 
 
