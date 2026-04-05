@@ -21359,8 +21359,8 @@ function supplycore_ai_runpod_poll_budget_seconds(array $config): int
 
     // Async RunPod jobs frequently need more time than a single Ollama request
     // (cold starts alone can exceed a minute). Give the polling loop a floor of
-    // three minutes and let users extend it by raising their configured timeout.
-    return max(180, $configuredTimeout * 6);
+    // five minutes and let users extend it by raising their configured timeout.
+    return max(300, $configuredTimeout * 15);
 }
 
 function supplycore_ai_runpod_poll_until_complete(array $config, array $headers, array $response): array
