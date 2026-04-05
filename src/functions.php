@@ -12404,21 +12404,27 @@ function alliance_trends_data(array $request = []): array
             'filters' => $filters,
             'summary' => [
                 ['label' => 'Status', 'value' => 'Unavailable', 'context' => 'Select an alliance structure in Settings to load trends.'],
+                ['label' => 'Window', 'value' => (string) $filters['days'] . ' days', 'context' => $window['start'] . ' → ' . $window['end']],
+                ['label' => 'Alliance Source', 'value' => $source['alliance_structure_name'], 'context' => 'Configure alliance_station_id in Settings'],
+                ['label' => 'Market Hub', 'value' => $source['hub_name'], 'context' => $source['hub_source_id'] > 0 ? 'Reference hub ready' : 'Configure market_station_id in Settings'],
             ],
             'rows' => [],
+            'empty_message' => 'No alliance structure selected — configure an alliance station in Settings, then re-run the market_history_sync job.',
         ];
     }
 
+    $fetchError = null;
     try {
         $daily = db_market_history_daily_aggregate_by_date_type_source('alliance_structure', $source['alliance_structure_id'], $window['start'], $window['end']);
         $stock = db_market_orders_history_stock_health_series('alliance_structure', $source['alliance_structure_id'], $window['start'], $window['end']);
         $deviation = $source['hub_source_id'] > 0
             ? db_market_history_daily_deviation_series($source['alliance_structure_id'], $source['hub_source_id'], $window['start'], $window['end'])
             : [];
-    } catch (Throwable) {
+    } catch (Throwable $e) {
         $daily = [];
         $stock = [];
         $deviation = [];
+        $fetchError = $e->getMessage();
     }
 
     $byDate = [];
@@ -12490,14 +12496,37 @@ function alliance_trends_data(array $request = []): array
 
     $latestRow = $rows !== [] ? $rows[count($rows) - 1] : null;
 
+    $sourceContext = 'History rows: ' . count($daily)
+        . ' · stock: ' . count($stock)
+        . ' · deviation: ' . count($deviation);
+    if ($source['hub_source_id'] <= 0) {
+        $sourceContext .= ' · hub unset';
+    }
+    if ($fetchError !== null) {
+        $sourceContext .= ' · error: ' . substr($fetchError, 0, 80);
+    }
+
+    if ($rows === []) {
+        if ($fetchError !== null) {
+            $emptyMessage = 'Unable to load alliance history: ' . $fetchError;
+        } elseif ($daily === [] && $stock === [] && $deviation === []) {
+            $emptyMessage = 'No history rows found for the configured alliance structure in this window. Verify market_history_sync has populated market_history_daily for source_type=alliance_structure, source_id=' . (int) $source['alliance_structure_id'] . '.';
+        } else {
+            $emptyMessage = 'History rows were fetched but contained no usable trade_date values.';
+        }
+    } else {
+        $emptyMessage = 'No alliance trend snapshots yet.';
+    }
+
     return [
         'filters' => $filters,
         'summary' => [
             ['label' => 'Window', 'value' => (string) $filters['days'] . ' days', 'context' => $window['start'] . ' → ' . $window['end']],
-            ['label' => 'Alliance Source', 'value' => $source['alliance_structure_name'], 'context' => 'Structure history aggregates'],
+            ['label' => 'Alliance Source', 'value' => $source['alliance_structure_name'], 'context' => $sourceContext],
             ['label' => 'Latest Snapshot', 'value' => $latestRow['date'] ?? 'No data', 'context' => $latestRow !== null ? ('Volume ' . ($latestRow['volume'] ?? '0')) : 'No historical rows yet'],
         ],
         'rows' => array_reverse($rows),
+        'empty_message' => $emptyMessage,
     ];
 }
 
@@ -12510,10 +12539,21 @@ function module_history_data(array $request = []): array
     $source = history_source_context();
 
     $rows = [];
+    $fetchError = null;
+    $seriesFetched = 0;
+    $skipReason = null;
+
+    $requiresHub = in_array($filters['module'], ['deviation_trend', 'missing_items_trend'], true);
+    if ($source['alliance_structure_id'] <= 0) {
+        $skipReason = 'Alliance structure not configured — set alliance_station_id in Settings.';
+    } elseif ($requiresHub && $source['hub_source_id'] <= 0) {
+        $skipReason = 'Market hub not configured — set market_station_id in Settings (required for ' . $selected['label'] . ').';
+    }
 
     try {
         if ($filters['module'] === 'deviation_trend' && $source['alliance_structure_id'] > 0 && $source['hub_source_id'] > 0) {
             $series = db_market_history_daily_deviation_series($source['alliance_structure_id'], $source['hub_source_id'], $window['start'], $window['end']);
+            $seriesFetched = count($series);
             $threshold = market_compare_thresholds()['deviation_percent'];
             $bucket = [];
             foreach ($series as $row) {
@@ -12539,6 +12579,7 @@ function module_history_data(array $request = []): array
 
         if ($filters['module'] === 'stock_health_trend' && $source['alliance_structure_id'] > 0) {
             $series = db_market_orders_history_stock_health_series('alliance_structure', $source['alliance_structure_id'], $window['start'], $window['end']);
+            $seriesFetched = count($series);
             $thresholds = market_compare_thresholds();
             $bucket = [];
             foreach ($series as $row) {
@@ -12567,6 +12608,7 @@ function module_history_data(array $request = []): array
         if ($filters['module'] === 'missing_items_trend' && $source['alliance_structure_id'] > 0 && $source['hub_source_id'] > 0) {
             $alliance = db_market_history_daily_aggregate_by_date_type_source('alliance_structure', $source['alliance_structure_id'], $window['start'], $window['end']);
             $hub = db_market_history_daily_aggregate_by_date_type_source('market_hub', $source['hub_source_id'], $window['start'], $window['end']);
+            $seriesFetched = count($alliance) + count($hub);
 
             $allianceByDateType = [];
             foreach ($alliance as $row) {
@@ -12595,11 +12637,28 @@ function module_history_data(array $request = []): array
                 ];
             }
         }
-    } catch (Throwable) {
+    } catch (Throwable $e) {
         $rows = [];
+        $fetchError = $e->getMessage();
     }
 
     usort($rows, static fn (array $a, array $b): int => strcmp((string) $b['date'], (string) $a['date']));
+
+    if ($skipReason !== null) {
+        $emptyMessage = $skipReason;
+    } elseif ($fetchError !== null) {
+        $emptyMessage = 'Unable to load module history: ' . $fetchError;
+    } elseif ($rows === []) {
+        $emptyMessage = $seriesFetched === 0
+            ? 'No source rows found for ' . $selected['label'] . ' in this window. Verify the relevant sync jobs (market_history_sync / market_orders_sync) have populated data for alliance_structure_id=' . (int) $source['alliance_structure_id'] . '.'
+            : 'Fetched ' . $seriesFetched . ' raw rows but none produced valid dated snapshots.';
+    } else {
+        $emptyMessage = 'No module history records yet.';
+    }
+
+    $snapshotContext = $skipReason !== null
+        ? $skipReason
+        : 'Raw rows fetched: ' . $seriesFetched . ' · Alliance ID: ' . (int) $source['alliance_structure_id'] . ' · Hub ID: ' . (int) $source['hub_source_id'];
 
     return [
         'filters' => $filters,
@@ -12607,9 +12666,10 @@ function module_history_data(array $request = []): array
         'summary' => [
             ['label' => 'Selected Module', 'value' => $selected['label'], 'context' => $selected['description']],
             ['label' => 'Window', 'value' => (string) $filters['days'] . ' days', 'context' => $window['start'] . ' → ' . $window['end']],
-            ['label' => 'Snapshots', 'value' => number_format(count($rows)), 'context' => 'Daily historical points for selected analytics module'],
+            ['label' => 'Snapshots', 'value' => number_format(count($rows)), 'context' => $snapshotContext],
         ],
         'rows' => $rows,
+        'empty_message' => $emptyMessage,
     ];
 }
 

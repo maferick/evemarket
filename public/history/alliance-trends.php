@@ -34,7 +34,7 @@ $tableColumns = [
     'trend' => 'Trend',
 ];
 $tableRows = $data['rows'] ?? [];
-$emptyMessage = 'No alliance trend snapshots yet.';
+$emptyMessage = (string) ($data['empty_message'] ?? 'No alliance trend snapshots yet.');
 
 include __DIR__ . '/../../src/views/partials/header.php';
 include __DIR__ . '/../../src/views/partials/module-page.php';

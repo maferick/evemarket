@@ -25,7 +25,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
         <div>
             <p class="text-xs uppercase tracking-[0.16em] text-muted">Battle Intelligence</p>
             <h1 class="mt-1 text-2xl font-semibold text-slate-50">Threat Corridors</h1>
-            <p class="mt-2 text-sm text-muted">Connected chains of battle-active systems forming hostile movement paths. Corridors are identified via Neo4j graph traversal of stargate connections and scored by battle density, recency, and hostile concentration.</p>
+            <p class="mt-2 text-sm text-muted">Connected chains of battle-active systems forming hostile movement paths over the last 7 days. Corridors are identified via Neo4j graph traversal of stargate connections and scored by battle density, recency, and hostile concentration.</p>
         </div>
         <div class="flex gap-2">
             <a href="/theater-map" class="btn-secondary">Theater Map</a>

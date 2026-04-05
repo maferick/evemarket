@@ -39,7 +39,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
         <div>
             <p class="text-xs uppercase tracking-[0.16em] text-muted">Battle Intelligence</p>
             <h1 class="mt-1 text-2xl font-semibold text-slate-50">Theater Map</h1>
-            <p class="mt-2 text-sm text-muted">Spatial threat overlay showing battle hotspots across known systems. Threat scores are computed from battle density, hostile presence, and recency.</p>
+            <p class="mt-2 text-sm text-muted">Spatial threat overlay showing battle hotspots across known systems over the last 7 days. Threat scores are computed from battle density, hostile presence, and recency.</p>
         </div>
         <div class="flex gap-2">
             <a href="/theater-intelligence" class="btn-secondary">Theater Overview</a>

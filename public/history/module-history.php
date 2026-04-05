@@ -43,7 +43,7 @@ $tableColumns = [
     'context' => 'Context',
 ];
 $tableRows = $data['rows'] ?? [];
-$emptyMessage = 'No module history records yet.';
+$emptyMessage = (string) ($data['empty_message'] ?? 'No module history records yet.');
 
 include __DIR__ . '/../../src/views/partials/header.php';
 include __DIR__ . '/../../src/views/partials/module-page.php';
