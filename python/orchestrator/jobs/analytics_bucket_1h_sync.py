@@ -20,6 +20,9 @@ def _dual_write_stock(db: SupplyCoreDb, bridge: RollupInfluxBridge) -> None:
         "WHERE bucket_start >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL 48 HOUR)"
     )
     for row in rows:
+        # DECIMAL(20,2) columns must be floats in Influx to match the
+        # existing legacy-exporter schema. See the daily job for the
+        # full explanation.
         bridge.enqueue_market_stock(
             bucket_start=row["bucket_start"],
             source_type=row["source_type"],
@@ -28,8 +31,8 @@ def _dual_write_stock(db: SupplyCoreDb, bridge: RollupInfluxBridge) -> None:
             window="1h",
             fields={
                 "sample_count": int(row.get("sample_count") or 0),
-                "stock_units_sum": int(row.get("stock_units_sum") or 0),
-                "listing_count_sum": int(row.get("listing_count_sum") or 0),
+                "stock_units_sum": float(row.get("stock_units_sum") or 0),
+                "listing_count_sum": float(row.get("listing_count_sum") or 0),
                 "local_stock_units": int(row.get("local_stock_units") or 0),
                 "listing_count": int(row.get("listing_count") or 0),
             },
@@ -56,7 +59,7 @@ def _dual_write_price(db: SupplyCoreDb, bridge: RollupInfluxBridge) -> None:
             window="1h",
             fields={
                 "sample_count": int(row.get("sample_count") or 0),
-                "listing_count_sum": int(row.get("listing_count_sum") or 0),
+                "listing_count_sum": float(row.get("listing_count_sum") or 0),
                 "avg_price_sum": float(row.get("avg_price_sum") or 0),
                 "weighted_price_numerator": float(row.get("weighted_price_numerator") or 0),
                 "weighted_price_denominator": float(row.get("weighted_price_denominator") or 0),

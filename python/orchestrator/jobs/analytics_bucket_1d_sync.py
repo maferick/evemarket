@@ -21,6 +21,11 @@ def _dual_write_stock(db: SupplyCoreDb, bridge: RollupInfluxBridge) -> None:
         "WHERE bucket_start >= DATE_SUB(UTC_DATE(), INTERVAL 14 DAY)"
     )
     for row in rows:
+        # ``stock_units_sum`` and ``listing_count_sum`` are DECIMAL(20, 2)
+        # in MariaDB and have already been registered as ``float`` in
+        # Influx by the legacy influx_export.py. Writing them as ``int``
+        # here would trigger a field-type conflict and InfluxDB rejects
+        # the whole batch with HTTP 422. Keep them floats to match.
         bridge.enqueue_market_stock(
             bucket_start=row["bucket_start"],
             source_type=row["source_type"],
@@ -29,8 +34,8 @@ def _dual_write_stock(db: SupplyCoreDb, bridge: RollupInfluxBridge) -> None:
             window="1d",
             fields={
                 "sample_count": int(row.get("sample_count") or 0),
-                "stock_units_sum": int(row.get("stock_units_sum") or 0),
-                "listing_count_sum": int(row.get("listing_count_sum") or 0),
+                "stock_units_sum": float(row.get("stock_units_sum") or 0),
+                "listing_count_sum": float(row.get("listing_count_sum") or 0),
                 "local_stock_units": int(row.get("local_stock_units") or 0),
                 "listing_count": int(row.get("listing_count") or 0),
             },
@@ -57,7 +62,8 @@ def _dual_write_price(db: SupplyCoreDb, bridge: RollupInfluxBridge) -> None:
             window="1d",
             fields={
                 "sample_count": int(row.get("sample_count") or 0),
-                "listing_count_sum": int(row.get("listing_count_sum") or 0),
+                # listing_count_sum is DECIMAL in MariaDB → float in Influx.
+                "listing_count_sum": float(row.get("listing_count_sum") or 0),
                 "avg_price_sum": float(row.get("avg_price_sum") or 0),
                 "weighted_price_numerator": float(row.get("weighted_price_numerator") or 0),
                 "weighted_price_denominator": float(row.get("weighted_price_denominator") or 0),
