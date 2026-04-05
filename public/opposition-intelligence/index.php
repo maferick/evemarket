@@ -5,22 +5,33 @@ require_once __DIR__ . '/../../src/bootstrap.php';
 
 $title = 'Opposition Intelligence — Daily SITREP';
 
-// Date navigation
+// Guarded fetches — tables may not exist yet if the opposition intel migration hasn't run.
+$tablesReadyError = null;
+$latestDate = null;
+$globalBriefing = null;
+$allianceBriefings = [];
+$snapshots = [];
+$recentBriefings = [];
+
+try {
+    $latestDate = db_opposition_latest_snapshot_date();
+} catch (Throwable $e) {
+    $tablesReadyError = $e->getMessage();
+}
+
 $requestedDate = isset($_GET['date']) ? trim((string) $_GET['date']) : null;
-$latestDate = db_opposition_latest_snapshot_date();
 $date = $requestedDate ?: ($latestDate ?: gmdate('Y-m-d'));
 
-// Fetch global briefing
-$globalBriefing = db_opposition_daily_briefing($date, 'global');
-
-// Fetch per-alliance briefings for this date
-$allianceBriefings = db_opposition_alliance_briefings($date);
-
-// Fetch snapshots for the stats grid
-$snapshots = db_opposition_daily_snapshots($date);
-
-// Recent global briefings for date nav
-$recentBriefings = db_opposition_daily_briefings_recent(14);
+if ($tablesReadyError === null) {
+    try {
+        $globalBriefing = db_opposition_daily_briefing($date, 'global');
+        $allianceBriefings = db_opposition_alliance_briefings($date);
+        $snapshots = db_opposition_daily_snapshots($date);
+        $recentBriefings = db_opposition_daily_briefings_recent(14);
+    } catch (Throwable $e) {
+        $tablesReadyError = $e->getMessage();
+    }
+}
 
 // Threat assessment color map
 $threatColors = [
@@ -59,6 +70,13 @@ include __DIR__ . '/../../src/views/partials/header.php';
         </div>
     </div>
 </section>
+
+<?php if ($tablesReadyError !== null): ?>
+<section class="surface-primary mt-4 border border-amber-500/30 bg-amber-500/10">
+    <p class="text-sm text-amber-200"><strong>Opposition Intelligence tables not ready.</strong> Run the migration <code>database/migrations/20260405_opposition_daily_intelligence.sql</code> and then the <code>compute_opposition_daily_snapshots</code> job to populate data.</p>
+    <p class="mt-2 text-xs text-amber-200/70">Error: <?= htmlspecialchars($tablesReadyError, ENT_QUOTES) ?></p>
+</section>
+<?php endif; ?>
 
 <!-- Date navigation -->
 <section class="surface-primary mt-4">

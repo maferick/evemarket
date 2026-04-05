@@ -764,8 +764,15 @@ try {
 echo $sectionDoctrine;
 echo $sectionKpis;
 
-// Opposition Intelligence Card
-$oppBriefing = db_opposition_daily_briefing(gmdate('Y-m-d'), 'global');
+// Opposition Intelligence Card (guarded against missing tables)
+$oppBriefing = null;
+try {
+    if (function_exists('db_opposition_daily_briefing')) {
+        $oppBriefing = db_opposition_daily_briefing(gmdate('Y-m-d'), 'global');
+    }
+} catch (Throwable $e) {
+    $oppBriefing = null;
+}
 if ($oppBriefing !== null): ?>
 <section class="mt-8">
     <article class="surface-secondary">
