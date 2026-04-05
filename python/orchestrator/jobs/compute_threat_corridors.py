@@ -2,7 +2,8 @@
 
 Uses Neo4j system connectivity graph and MariaDB battle data to find
 corridors where hostile alliances repeatedly operate through connected
-systems. Materializes results to ``threat_corridors`` and
+systems over the recent activity window (see ``RECENT_DAYS``).
+Materializes results to ``threat_corridors`` and
 ``threat_corridor_systems`` tables.
 """
 
@@ -30,7 +31,7 @@ else:
     from ..json_utils import json_dumps_safe
     from ..job_utils import finish_job_run, start_job_run
 
-RECENT_DAYS = 30
+RECENT_DAYS = 7
 MIN_CORRIDOR_BATTLES = 3
 MAX_CORRIDOR_LENGTH = 5
 BATCH_SIZE = 500
@@ -55,8 +56,7 @@ def _load_system_battle_activity(db: SupplyCoreDb) -> dict[int, dict[str, Any]]:
                rs.region_id,
                bp.alliance_id,
                COUNT(DISTINCT br.battle_id) AS battle_count,
-               COUNT(DISTINCT CASE WHEN br.started_at >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL %s DAY)
-                     THEN br.battle_id END) AS recent_battle_count,
+               COUNT(DISTINCT br.battle_id) AS recent_battle_count,
                MIN(br.started_at) AS first_activity,
                MAX(br.started_at) AS last_activity,
                SUM(COALESCE(br.participant_count, 0)) AS total_participants
@@ -65,6 +65,7 @@ def _load_system_battle_activity(db: SupplyCoreDb) -> dict[int, dict[str, Any]]:
         LEFT JOIN ref_systems rs ON rs.system_id = br.system_id
         WHERE bp.alliance_id IS NOT NULL AND bp.alliance_id > 0
           AND br.system_id IS NOT NULL AND br.system_id > 0
+          AND br.started_at >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL %s DAY)
         GROUP BY br.system_id, bp.alliance_id
         ORDER BY battle_count DESC
         """,
