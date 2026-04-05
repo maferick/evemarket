@@ -53,6 +53,13 @@ include __DIR__ . '/../../src/views/partials/header.php';
             <p class="text-xs uppercase tracking-[0.16em] text-muted">Alliance Dossier</p>
             <h1 class="mt-1 text-2xl font-semibold text-slate-50"><?= $allianceName ?></h1>
             <div class="mt-2 flex flex-wrap items-center gap-3 text-sm">
+                <?php $isTracked = db_opposition_intel_is_tracked($allianceId); ?>
+                <form method="POST" action="/api/opposition-intel-track.php" class="inline">
+                    <input type="hidden" name="alliance_id" value="<?= $allianceId ?>">
+                    <button type="submit" class="rounded-full px-2.5 py-0.5 text-[10px] uppercase tracking-wider transition-colors <?= $isTracked ? 'bg-cyan-900/60 text-cyan-300 ring-1 ring-cyan-400/30 hover:bg-cyan-800/60' : 'bg-slate-700/60 text-slate-400 ring-1 ring-slate-500/30 hover:bg-slate-600/60' ?>">
+                        <?= $isTracked ? 'Tracking Daily Intel' : 'Track for Daily Intel' ?>
+                    </button>
+                </form>
                 <span class="rounded-full px-2.5 py-0.5 text-[10px] uppercase tracking-wider <?= $postureClass ?>"><?= ucfirst($posture) ?> posture</span>
                 <?php if ($dossier['primary_region_name']): ?>
                     <span class="text-muted">Primary region: <span class="text-slate-300"><?= htmlspecialchars($dossier['primary_region_name'], ENT_QUOTES) ?></span></span>
@@ -438,5 +445,52 @@ include __DIR__ . '/../../src/views/partials/header.php';
         <?php endif; ?>
     </p>
 </section>
+
+<?php
+// Daily Intelligence Section
+$allianceBriefings = db_opposition_alliance_briefings_history($allianceId, 7);
+if ($allianceBriefings !== []):
+    $threatColors = [
+        'critical' => 'bg-red-500/20 text-red-300 border-red-500/30',
+        'high' => 'bg-orange-500/20 text-orange-300 border-orange-500/30',
+        'elevated' => 'bg-amber-500/20 text-amber-300 border-amber-500/30',
+        'moderate' => 'bg-sky-500/20 text-sky-300 border-sky-500/30',
+        'low' => 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30',
+    ];
+?>
+<section class="surface-primary mt-4">
+    <div class="flex items-center justify-between mb-4">
+        <div>
+            <p class="text-xs uppercase tracking-[0.16em] text-muted">AI Intelligence</p>
+            <h2 class="mt-1 text-lg font-semibold text-slate-100">Daily Intelligence Reports</h2>
+        </div>
+        <a href="/opposition-intelligence" class="text-xs text-accent">View Global SITREP</a>
+    </div>
+    <div class="space-y-3">
+        <?php foreach ($allianceBriefings as $ab): ?>
+            <div class="rounded-lg border border-border/50 bg-slate-800/30 p-4">
+                <div class="flex items-center justify-between mb-2">
+                    <span class="text-sm font-medium text-slate-300"><?= htmlspecialchars((string) $ab['briefing_date']) ?></span>
+                    <div class="flex items-center gap-2">
+                        <?php $ta = $ab['threat_assessment'] ?? 'moderate'; ?>
+                        <span class="inline-block rounded border px-1.5 py-0.5 text-[10px] uppercase <?= $threatColors[$ta] ?? $threatColors['moderate'] ?>">
+                            <?= htmlspecialchars(strtoupper($ta)) ?>
+                        </span>
+                        <span class="text-[10px] text-muted"><?= htmlspecialchars((string) ($ab['model_name'] ?? '')) ?></span>
+                    </div>
+                </div>
+                <?php if ($ab['headline'] ?? ''): ?>
+                    <p class="text-sm font-medium text-cyan-200 mb-2"><?= htmlspecialchars((string) $ab['headline']) ?></p>
+                <?php endif; ?>
+                <?php if ($ab['key_developments'] ?? ''): ?>
+                    <div class="prose prose-invert prose-xs max-w-none text-muted">
+                        <?= supplycore_markdown_to_html((string) $ab['key_developments']) ?>
+                    </div>
+                <?php endif; ?>
+            </div>
+        <?php endforeach; ?>
+    </div>
+</section>
+<?php endif; ?>
 
 <?php include __DIR__ . '/../../src/views/partials/footer.php'; ?>

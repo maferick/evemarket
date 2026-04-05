@@ -117,4 +117,13 @@ return [
             'killmail_backfill.full_history_start_date' => ['type' => 'string', 'default' => '', 'editable' => true, 'sensitive' => false, 'env_only' => false, 'database_backed' => true],
         ],
     ],
+    'opposition_intel' => [
+        'title' => 'Opposition Intelligence',
+        'description' => 'AI-powered daily intelligence briefings about opponent alliance activity. Requires AI (Ollama/RunPod/Claude/Groq) to be enabled.',
+        'fields' => [
+            'opposition_intel.enabled' => ['type' => 'bool', 'default' => true, 'editable' => true, 'sensitive' => false, 'env_only' => false, 'database_backed' => true],
+            'opposition_intel.history_days' => ['type' => 'string', 'default' => 'auto', 'editable' => true, 'sensitive' => false, 'env_only' => false, 'database_backed' => true],
+            'opposition_intel.custom_prompt' => ['type' => 'text', 'default' => '', 'editable' => true, 'sensitive' => false, 'env_only' => false, 'database_backed' => true],
+        ],
+    ],
 ];

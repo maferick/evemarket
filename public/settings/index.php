@@ -17,6 +17,7 @@ $sectionChildren = [
     ],
     'ai-alerts' => [
         'ai-briefings' => 'AI Briefings',
+        'opposition-intel' => 'Opposition Intel',
         'ai-report-management' => 'Report Management',
         'deal-alerts' => 'Deal Alerts',
         'killmail-intelligence' => 'Killmail Intelligence',
@@ -562,6 +563,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         case 'ai-briefings':
             $saved = save_settings(ai_briefing_settings_from_request($_POST));
+            break;
+
+        case 'opposition-intel':
+            $saved = save_settings([
+                'opposition_intel_enabled' => ($_POST['opposition_intel_enabled'] ?? '0') === '1' ? '1' : '0',
+                'opposition_intel_history_days' => trim((string) ($_POST['opposition_intel_history_days'] ?? 'auto')),
+                'opposition_intel_custom_prompt' => mb_substr(trim((string) ($_POST['opposition_intel_custom_prompt'] ?? '')), 0, 8000),
+            ]);
+            $saveMessage = $saved ? 'Opposition intelligence settings saved.' : null;
             break;
 
         case 'ai-report-management':
@@ -1821,6 +1831,61 @@ include __DIR__ . '/../../src/views/partials/header.php';
                 }
                 </script>
             </form>
+        <?php elseif ($activeSubsection === 'opposition-intel'): ?>
+            <form method="POST" class="mt-6 space-y-6">
+                <input type="hidden" name="_token" value="<?= htmlspecialchars(csrf_token(), ENT_QUOTES) ?>">
+                <input type="hidden" name="section" value="opposition-intel">
+
+                <div class="rounded-2xl border border-white/8 bg-white/[0.03] px-4 py-3 text-sm text-muted">
+                    Configure AI-powered daily intelligence briefings about opponent alliance activity. Requires the AI provider (Ollama/RunPod/Claude/Groq) to be enabled in the <a href="<?= htmlspecialchars($sectionUrl('ai-alerts', 'ai-briefings'), ENT_QUOTES) ?>" class="font-medium text-slate-100 hover:text-white">AI Briefings</a> section.
+                </div>
+
+                <div class="space-y-4">
+                    <label class="flex items-center gap-3 cursor-pointer">
+                        <input type="hidden" name="opposition_intel_enabled" value="0">
+                        <input type="checkbox" name="opposition_intel_enabled" value="1" <?= ($settingValues['opposition_intel_enabled'] ?? '1') === '1' ? 'checked' : '' ?> class="size-4 rounded border-border bg-black">
+                        <div>
+                            <span class="text-sm text-slate-100">Enable Opposition Intelligence</span>
+                            <p class="text-xs text-muted">When enabled, daily SITREP briefings are generated for all opponent alliances (global) and tracked alliances (individual profiles).</p>
+                        </div>
+                    </label>
+
+                    <label class="block space-y-1">
+                        <span class="text-sm text-muted">History Context Days</span>
+                        <input type="text" name="opposition_intel_history_days" value="<?= htmlspecialchars($settingValues['opposition_intel_history_days'] ?? 'auto', ENT_QUOTES) ?>" class="w-32 field-input" placeholder="auto">
+                        <p class="text-xs text-muted">How many days of prior briefing history to include as context for the AI. Set to "auto" for tier-based (3 days for small/local models, 7 days for larger models). Max: 14.</p>
+                    </label>
+
+                    <label class="block space-y-2">
+                        <span class="text-sm text-muted">Custom Opposition Intel Prompt</span>
+                        <textarea name="opposition_intel_custom_prompt" rows="8" class="w-full field-input font-mono text-xs leading-relaxed" placeholder="Leave blank to use the default SITREP prompt. Custom prompts receive the opposition data JSON appended automatically."><?= htmlspecialchars($settingValues['opposition_intel_custom_prompt'] ?? '', ENT_QUOTES) ?></textarea>
+                        <p class="text-xs text-muted">Optional custom prompt for generating opposition intelligence briefings. The daily snapshot data (alliance activity, geography, fleet composition, relationships) is automatically appended. Leave empty to use the built-in military intelligence SITREP template.</p>
+                    </label>
+                </div>
+
+                <div>
+                    <h3 class="text-sm font-medium text-slate-200 mb-2">Tracked Alliances</h3>
+                    <?php $trackedAlliances = db_opposition_intel_tracked_alliances(); ?>
+                    <?php if ($trackedAlliances): ?>
+                        <div class="space-y-1">
+                            <?php foreach ($trackedAlliances as $ta): ?>
+                                <div class="flex items-center justify-between rounded border border-border/30 bg-slate-800/30 px-3 py-1.5">
+                                    <span class="text-sm text-slate-300">
+                                        <a href="/alliance-dossiers/view.php?alliance_id=<?= (int) $ta['alliance_id'] ?>" class="text-cyan-300 hover:text-cyan-100"><?= htmlspecialchars((string) $ta['alliance_name']) ?></a>
+                                    </span>
+                                    <span class="text-xs text-muted">Since <?= htmlspecialchars((string) $ta['tracked_at']) ?></span>
+                                </div>
+                            <?php endforeach; ?>
+                        </div>
+                        <p class="mt-2 text-xs text-muted">Manage tracked alliances from each alliance's <a href="/alliance-dossiers" class="text-accent">dossier page</a> using the "Track for Daily Intel" button.</p>
+                    <?php else: ?>
+                        <p class="text-sm text-muted">No alliances are currently tracked for individual AI briefings. Visit an <a href="/alliance-dossiers" class="text-accent">alliance dossier</a> and click "Track for Daily Intel" to start tracking.</p>
+                    <?php endif; ?>
+                </div>
+
+                <button class="btn-primary">Save Opposition Intel Settings</button>
+            </form>
+
         <?php elseif ($activeSubsection === 'ai-report-management'): ?>
             <?php $lockedTheaters = db_theaters_locked(); ?>
             <div class="mt-6 space-y-6">

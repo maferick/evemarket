@@ -763,6 +763,56 @@ try {
 // Reordered dashboard: Doctrine first (urgent), then KPIs, then queues/briefings/buy-all/trends
 echo $sectionDoctrine;
 echo $sectionKpis;
+
+// Opposition Intelligence Card
+$oppBriefing = db_opposition_daily_briefing(gmdate('Y-m-d'), 'global');
+if ($oppBriefing !== null): ?>
+<section class="mt-8">
+    <article class="surface-secondary">
+        <div class="section-header border-b border-white/8 pb-4">
+            <div>
+                <p class="eyebrow">Opposition Intelligence</p>
+                <h2 class="mt-2 section-title">Daily SITREP</h2>
+            </div>
+            <div class="flex items-center gap-3">
+                <?php
+                $oppThreat = $oppBriefing['threat_assessment'] ?? 'moderate';
+                $oppThreatColors = [
+                    'critical' => 'border-red-400/20 bg-red-500/10 text-red-100',
+                    'high' => 'border-orange-400/20 bg-orange-500/10 text-orange-100',
+                    'elevated' => 'border-amber-400/20 bg-amber-500/10 text-amber-100',
+                    'moderate' => 'border-sky-400/20 bg-sky-500/10 text-sky-100',
+                    'low' => 'border-emerald-400/20 bg-emerald-500/10 text-emerald-100',
+                ];
+                ?>
+                <span class="status-chip <?= $oppThreatColors[$oppThreat] ?? $oppThreatColors['moderate'] ?>">
+                    <span class="h-2 w-2 rounded-full bg-current opacity-80"></span>
+                    Threat: <?= htmlspecialchars(strtoupper($oppThreat), ENT_QUOTES) ?>
+                </span>
+                <a href="/opposition-intelligence" class="btn-secondary text-xs">Full Briefing</a>
+            </div>
+        </div>
+        <div class="mt-4">
+            <?php if ($oppBriefing['headline'] ?? ''): ?>
+                <p class="text-base font-semibold text-cyan-200"><?= htmlspecialchars((string) $oppBriefing['headline'], ENT_QUOTES) ?></p>
+            <?php endif; ?>
+            <?php if ($oppBriefing['key_developments'] ?? ''): ?>
+                <div class="mt-3 prose prose-invert prose-sm max-w-none text-slate-300">
+                    <?= supplycore_markdown_to_html((string) $oppBriefing['key_developments']) ?>
+                </div>
+            <?php endif; ?>
+            <div class="mt-3 flex items-center gap-4 text-xs text-muted">
+                <span><?= htmlspecialchars((string) ($oppBriefing['briefing_date'] ?? '')) ?></span>
+                <span>Model: <?= htmlspecialchars((string) ($oppBriefing['model_name'] ?? 'N/A')) ?></span>
+                <?php if (($oppBriefing['generation_status'] ?? '') === 'fallback'): ?>
+                    <span class="text-amber-400">(Deterministic fallback)</span>
+                <?php endif; ?>
+            </div>
+        </div>
+    </article>
+</section>
+<?php endif;
+
 echo $sectionRest;
 echo $sectionBuyAll;
 ?>

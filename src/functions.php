@@ -380,6 +380,7 @@ function nav_items(): array
                 ['label' => 'Theater Map', 'path' => '/theater-map'],
                 ['label' => 'Threat Corridors', 'path' => '/threat-corridors'],
                 ['label' => 'Alliance Dossiers', 'path' => '/alliance-dossiers'],
+                ['label' => 'Opposition Intel', 'path' => '/opposition-intelligence'],
                 ['label' => 'Pilot Lookup', 'path' => '/battle-intelligence/pilot-lookup.php'],
                 ['label' => 'Suspicion Leaderboard', 'path' => '/battle-intelligence'],
                 ['label' => 'Battle Anomalies', 'path' => '/battle-intelligence/battles.php'],
@@ -33756,4 +33757,623 @@ function doctrine_csv_role_keywords(): array
         'web', 'torpedo', 'dictor', 'newbro', 'dp', 'arty', 'meta', 'neut',
         't1', 't2', 'lr', 'fast', 'fleet', 'burst',
     ];
+}
+
+
+// ────────────────────────────────────────────────────────────────────────────
+// Opposition Daily Intelligence — AI Briefing System
+// ────────────────────────────────────────────────────────────────────────────
+
+function opposition_ai_system_prompt(): string
+{
+    $config = supplycore_ai_ollama_config();
+    $provider = (string) ($config['provider'] ?? 'local');
+
+    if ($provider === 'claude' || $provider === 'groq') {
+        return "You are a military intelligence analyst producing daily SITREP briefings for an EVE Online alliance command.\n\n"
+             . "INSTRUCTIONS:\n"
+             . "- Analyze opposition force activity using only the provided data.\n"
+             . "- Write in a professional intelligence briefing style. Use terms like 'opposition forces', 'hostile entities', 'enemy formations'.\n"
+             . "- The data represents hostile alliances we are actively monitoring. Write from our perspective as intelligence analysts.\n"
+             . "- Generate a DETAILED, COMPREHENSIVE briefing (800-1500 words in the summary field).\n"
+             . "- Use markdown formatting: ## for section headers, **bold** for emphasis, - for bullet points.\n"
+             . "- Reference specific alliances, systems, regions, ship types, and ISK values from the data.\n"
+             . "- When historical context is provided, identify trends and changes from previous days.\n"
+             . "- Do NOT invent engagements, pilots, systems, or events not present in the data.\n"
+             . "- Return valid JSON matching the required schema.";
+    }
+
+    // Concise prompt for local Ollama (CPU-friendly, e.g. Gemma 4 e4b)
+    return "You are a military intelligence analyst producing daily SITREP briefings for an EVE Online alliance.\n\n"
+         . "INSTRUCTIONS:\n"
+         . "- Write a clear, structured intelligence briefing (300-600 words).\n"
+         . "- Professional military intel style. Use 'opposition forces', 'hostile entities'.\n"
+         . "- Use ## headers, **bold**, and - bullets.\n"
+         . "- Reference alliances, systems, ISK values from the data.\n"
+         . "- Identify trends if historical data is provided.\n"
+         . "- Do not invent data not present in the provided facts.\n"
+         . "- Return valid JSON matching the required schema.";
+}
+
+function opposition_ai_output_schema(): array
+{
+    $config = supplycore_ai_ollama_config();
+    $provider = (string) ($config['provider'] ?? 'local');
+
+    if ($provider === 'claude' || $provider === 'groq') {
+        $summaryDesc = 'Full structured SITREP briefing (800-1500 words). Cover: active opponents, geographic presence, fleet compositions, coalition dynamics, threat level. Use markdown: ## for headers, **bold** for emphasis, - for bullets.';
+    } else {
+        $summaryDesc = 'Structured SITREP briefing (300-600 words). Cover key opposition activity. Use markdown: ## for headers, **bold** for emphasis, - for bullets.';
+    }
+
+    return [
+        'type' => 'object',
+        'required' => ['headline', 'summary', 'key_developments', 'threat_assessment', 'action_items'],
+        'properties' => [
+            'headline' => [
+                'type' => 'string',
+                'description' => 'One-line SITREP summary (max 100 chars). Example: "SITREP: Increased hostile activity in Delve — 3 alliances active"',
+            ],
+            'summary' => [
+                'type' => 'string',
+                'description' => $summaryDesc,
+            ],
+            'key_developments' => [
+                'type' => 'string',
+                'description' => '3-5 bullet points of the most notable changes or events. Markdown bullet list.',
+            ],
+            'threat_assessment' => [
+                'type' => 'string',
+                'enum' => ['low', 'moderate', 'elevated', 'high', 'critical'],
+                'description' => 'Overall threat level based on opposition activity.',
+            ],
+            'action_items' => [
+                'type' => 'string',
+                'description' => '1-3 recommended responses based on the data. Markdown bullet list.',
+            ],
+        ],
+        'additionalProperties' => false,
+    ];
+}
+
+function opposition_ai_history_days(): int
+{
+    $strategy = supplycore_ai_strategy();
+    $tier = (string) ($strategy['tier'] ?? 'small');
+    $configured = trim((string) get_setting('opposition_intel_history_days', 'auto'));
+
+    if ($configured !== '' && $configured !== 'auto' && is_numeric($configured)) {
+        return max(1, min(14, (int) $configured));
+    }
+
+    return match ($tier) {
+        'small' => 3,
+        default => 7,
+    };
+}
+
+function opposition_ai_briefing_history(string $date, int $days): array
+{
+    $strategy = supplycore_ai_strategy();
+    $tier = (string) ($strategy['tier'] ?? 'small');
+
+    $briefings = db_opposition_daily_briefings_recent($days + 1);
+    $history = [];
+    foreach ($briefings as $b) {
+        if (($b['briefing_date'] ?? '') >= $date) {
+            continue;
+        }
+        $entry = ['date' => $b['briefing_date'], 'headline' => $b['headline'] ?? ''];
+        if ($tier !== 'small') {
+            $entry['key_developments'] = $b['key_developments'] ?? '';
+            $entry['threat_assessment'] = $b['threat_assessment'] ?? '';
+        }
+        if ($tier === 'large') {
+            $summary = $b['summary'] ?? '';
+            $entry['summary_excerpt'] = mb_substr($summary, 0, 500);
+        }
+        $history[] = $entry;
+    }
+    return array_slice($history, 0, $days);
+}
+
+function opposition_ai_compute_deltas(array $todaySnapshots, string $date): array
+{
+    $yesterday = date('Y-m-d', strtotime($date . ' -1 day'));
+    $yesterdaySnapshots = db_opposition_daily_snapshots($yesterday);
+
+    $yesterdayMap = [];
+    foreach ($yesterdaySnapshots as $s) {
+        $yesterdayMap[(int) $s['alliance_id']] = $s;
+    }
+
+    $todayMap = [];
+    foreach ($todaySnapshots as $s) {
+        $todayMap[(int) $s['alliance_id']] = $s;
+    }
+
+    $deltas = [
+        'new_alliances' => [],
+        'gone_quiet' => [],
+        'activity_spikes' => [],
+        'posture_changes' => [],
+        'new_systems' => [],
+    ];
+
+    foreach ($todayMap as $aid => $today) {
+        if (!isset($yesterdayMap[$aid])) {
+            if (((int) ($today['kills'] ?? 0)) > 0 || ((int) ($today['losses'] ?? 0)) > 0) {
+                $deltas['new_alliances'][] = $today['alliance_name'] ?? "Alliance #$aid";
+            }
+            continue;
+        }
+        $yest = $yesterdayMap[$aid];
+
+        // Activity spike detection (>2x)
+        $todayKills = (int) ($today['kills'] ?? 0);
+        $yestKills = (int) ($yest['kills'] ?? 0);
+        if ($todayKills > 5 && $yestKills > 0 && $todayKills > $yestKills * 2) {
+            $deltas['activity_spikes'][] = ($today['alliance_name'] ?? "Alliance #$aid") . " ($yestKills → $todayKills kills)";
+        }
+
+        // Posture changes
+        $todayPosture = $today['posture'] ?? '';
+        $yestPosture = $yest['posture'] ?? '';
+        if ($todayPosture !== '' && $yestPosture !== '' && $todayPosture !== $yestPosture) {
+            $deltas['posture_changes'][] = ($today['alliance_name'] ?? "Alliance #$aid") . " ($yestPosture → $todayPosture)";
+        }
+    }
+
+    foreach ($yesterdayMap as $aid => $yest) {
+        if (!isset($todayMap[$aid]) || ((int) ($todayMap[$aid]['kills'] ?? 0)) === 0) {
+            if (((int) ($yest['kills'] ?? 0)) > 3) {
+                $deltas['gone_quiet'][] = $yest['alliance_name'] ?? "Alliance #$aid";
+            }
+        }
+    }
+
+    return $deltas;
+}
+
+function opposition_ai_global_prompt(string $date, array $snapshots, array $history, array $deltas): string
+{
+    $strategy = supplycore_ai_strategy();
+    $tier = (string) ($strategy['tier'] ?? 'small');
+
+    $prompt = ["Generate a daily opposition intelligence SITREP for $date."];
+    $prompt[] = '';
+    $prompt[] = 'CURRENT DAY DATA:';
+    $prompt[] = json_encode($snapshots, ($tier === 'small' ? 0 : JSON_PRETTY_PRINT) | JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE);
+
+    if ($history !== []) {
+        $prompt[] = '';
+        $prompt[] = 'HISTORICAL CONTEXT (previous ' . count($history) . ' days):';
+        $prompt[] = json_encode($history, JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE);
+    }
+
+    $hasDeltas = array_filter($deltas, static fn (array $v): bool => $v !== []);
+    if ($hasDeltas !== []) {
+        $prompt[] = '';
+        $prompt[] = 'CHANGES DETECTED:';
+        $prompt[] = json_encode($deltas, JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE);
+    }
+
+    $prompt[] = '';
+    $prompt[] = 'OUTPUT SECTIONS:';
+    $prompt[] = '1. headline — one-line sitrep (max 100 chars)';
+    $prompt[] = '2. key_developments — 3-5 bullet points of notable changes';
+    $prompt[] = '3. summary — structured briefing covering: active opponents, where they operate, what they fly, coalition dynamics, threat level';
+    $prompt[] = '4. threat_assessment — one of: low, moderate, elevated, high, critical';
+    $prompt[] = '5. action_items — 1-3 recommended responses';
+
+    return implode("\n", $prompt);
+}
+
+function opposition_ai_alliance_prompt(int $allianceId, string $allianceName, string $date, array $todaySnapshot, array $history, array $relationships): string
+{
+    $prompt = ["Generate a daily intelligence profile for $allianceName (ID: $allianceId) on $date."];
+    $prompt[] = '';
+    $prompt[] = "TODAY'S ACTIVITY:";
+    $prompt[] = json_encode($todaySnapshot, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE);
+
+    if ($history !== []) {
+        $prompt[] = '';
+        $prompt[] = 'LAST ' . count($history) . ' DAYS:';
+        $prompt[] = json_encode($history, JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE);
+    }
+
+    if ($relationships !== []) {
+        $prompt[] = '';
+        $prompt[] = 'RELATIONSHIP CONTEXT:';
+        $prompt[] = json_encode($relationships, JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE);
+    }
+
+    $prompt[] = '';
+    $prompt[] = 'OUTPUT: headline, summary, key_developments, threat_assessment, action_items';
+
+    return implode("\n", $prompt);
+}
+
+function opposition_ai_validate_response(array $response): array
+{
+    $headline = mb_substr(trim((string) ($response['headline'] ?? '')), 0, 255);
+    $summary = mb_substr(trim((string) ($response['summary'] ?? '')), 0, 16000);
+    $keyDev = mb_substr(trim((string) ($response['key_developments'] ?? '')), 0, 4000);
+    $threat = trim((string) ($response['threat_assessment'] ?? 'moderate'));
+    $actions = mb_substr(trim((string) ($response['action_items'] ?? '')), 0, 4000);
+
+    if ($summary === '') {
+        throw new RuntimeException('AI response is missing the summary field.');
+    }
+    if ($headline === '') {
+        $headline = mb_substr($summary, 0, 100);
+    }
+    if (!in_array($threat, ['low', 'moderate', 'elevated', 'high', 'critical'], true)) {
+        $threat = 'moderate';
+    }
+
+    return [
+        'headline' => $headline,
+        'summary' => $summary,
+        'key_developments' => $keyDev,
+        'threat_assessment' => $threat,
+        'action_items' => $actions,
+    ];
+}
+
+function opposition_ai_fallback_response(array $snapshots, string $type = 'global', ?string $allianceName = null): array
+{
+    $totalKills = 0;
+    $totalLosses = 0;
+    $totalIsk = 0;
+    $activeAlliances = 0;
+    $allSystems = [];
+
+    foreach ($snapshots as $s) {
+        $kills = (int) ($s['kills'] ?? 0);
+        $losses = (int) ($s['losses'] ?? 0);
+        $totalKills += $kills;
+        $totalLosses += $losses;
+        $totalIsk += (float) ($s['isk_destroyed'] ?? 0);
+        if ($kills > 0 || $losses > 0) {
+            $activeAlliances++;
+        }
+        $systems = $s['active_systems_json'] ?? $s['active_systems'] ?? [];
+        if (is_string($systems)) {
+            $systems = json_decode($systems, true) ?: [];
+        }
+        foreach ($systems as $sys) {
+            $allSystems[] = $sys['system_name'] ?? '';
+        }
+    }
+    $allSystems = array_unique(array_filter($allSystems));
+
+    if ($type === 'alliance') {
+        $s = $snapshots[0] ?? [];
+        $kills = (int) ($s['kills'] ?? 0);
+        $losses = (int) ($s['losses'] ?? 0);
+        $name = $allianceName ?: ($s['alliance_name'] ?? 'Unknown');
+        return [
+            'headline' => "$name: {$kills} kills, {$losses} losses",
+            'summary' => "$name recorded {$kills} kills and {$losses} losses. " . ($kills > $losses ? 'Net positive engagement ratio.' : 'Sustained notable losses.'),
+            'key_developments' => "- {$kills} kills, {$losses} losses recorded\n- Posture: " . ($s['posture'] ?? 'unknown'),
+            'threat_assessment' => $kills > 10 ? 'elevated' : ($kills > 3 ? 'moderate' : 'low'),
+            'action_items' => '- Monitor activity in next reporting period.',
+            '_fallback_reason' => 'AI disabled or unavailable',
+        ];
+    }
+
+    $iskFormatted = number_format($totalIsk / 1_000_000, 0) . 'M';
+    $topSystems = implode(', ', array_slice($allSystems, 0, 3));
+
+    // Determine threat level from activity
+    $threat = 'low';
+    if ($totalKills > 50) {
+        $threat = 'critical';
+    } elseif ($totalKills > 30) {
+        $threat = 'high';
+    } elseif ($totalKills > 15) {
+        $threat = 'elevated';
+    } elseif ($totalKills > 5) {
+        $threat = 'moderate';
+    }
+
+    // Top alliances by kills
+    $sorted = $snapshots;
+    usort($sorted, static fn ($a, $b): int => ((int) ($b['kills'] ?? 0)) - ((int) ($a['kills'] ?? 0)));
+    $topAlliances = array_map(static fn ($s): string => ($s['alliance_name'] ?? 'Unknown') . ' (' . ($s['kills'] ?? 0) . ' kills)', array_slice($sorted, 0, 3));
+
+    return [
+        'headline' => "Opposition Activity: {$totalKills} kills across {$activeAlliances} alliances",
+        'summary' => "Opposition forces recorded {$totalKills} kills and {$totalLosses} losses totalling {$iskFormatted} ISK destroyed across {$activeAlliances} active alliances."
+                    . ($topSystems !== '' ? " Primary areas of operation: {$topSystems}." : ''),
+        'key_developments' => "- " . implode("\n- ", array_filter($topAlliances)),
+        'threat_assessment' => $threat,
+        'action_items' => '- Monitor opposition activity and review operational posture.',
+        '_fallback_reason' => 'AI disabled or unavailable',
+    ];
+}
+
+function opposition_ai_call_provider(string $systemPrompt, string $userPrompt, array $schema): array
+{
+    $config = supplycore_ai_ollama_config();
+    $provider = (string) ($config['provider'] ?? 'local');
+
+    if ($provider === 'claude') {
+        return supplycore_ai_claude_generate_json($config, $systemPrompt, $userPrompt, $schema);
+    }
+    if ($provider === 'groq') {
+        return supplycore_ai_groq_generate_json($config, $systemPrompt, $userPrompt, $schema);
+    }
+    if ($provider === 'runpod') {
+        return supplycore_ai_runpod_generate_json($config, $systemPrompt, $userPrompt, $schema);
+    }
+
+    // Local Ollama
+    $endpoint = $config['url'] . '/generate';
+    $requestPayload = [
+        'model' => $config['model'],
+        'stream' => false,
+        'system' => $systemPrompt,
+        'prompt' => $userPrompt,
+        'format' => $schema,
+        'options' => [
+            'temperature' => 0.3,
+            'num_predict' => 4096,
+            'num_ctx' => 8192,
+        ],
+    ];
+    $response = http_post_json($endpoint, [], $requestPayload, max(300, $config['timeout']));
+    $status = (int) ($response['status'] ?? 0);
+    $json = is_array($response['json'] ?? null) ? $response['json'] : [];
+    if ($status < 200 || $status >= 300) {
+        throw new RuntimeException('Ollama returned HTTP ' . $status);
+    }
+    $rawResponse = trim((string) ($json['response'] ?? ''));
+    if ($rawResponse === '') {
+        throw new RuntimeException('Ollama returned empty response');
+    }
+    $decoded = json_decode($rawResponse, true);
+    if (!is_array($decoded)) {
+        throw new RuntimeException('Ollama returned malformed JSON');
+    }
+    return $decoded;
+}
+
+function opposition_ai_generate_single(string $type, string $date, string $systemPrompt, string $userPrompt, array $schema, ?int $allianceId = null, ?string $allianceName = null): array
+{
+    $config = supplycore_ai_ollama_config();
+    $provider = (string) ($config['provider'] ?? 'local');
+
+    try {
+        $decoded = opposition_ai_call_provider($systemPrompt, $userPrompt, $schema);
+        $validated = opposition_ai_validate_response($decoded);
+
+        $modelLabel = match ($provider) {
+            'claude' => (string) ($config['claude_model'] ?? 'claude-sonnet-4-20250514'),
+            'groq' => (string) ($config['groq_model'] ?? 'llama-4-scout'),
+            default => (string) $config['model'],
+        };
+
+        return [
+            'briefing_date' => $date,
+            'briefing_type' => $type,
+            'alliance_id' => $allianceId,
+            'alliance_name' => $allianceName,
+            'generation_status' => 'ready',
+            'model_name' => $modelLabel,
+            'headline' => $validated['headline'],
+            'summary' => $validated['summary'],
+            'key_developments' => $validated['key_developments'],
+            'threat_assessment' => $validated['threat_assessment'],
+            'action_items' => $validated['action_items'],
+            'source_payload_json' => json_encode(['system_prompt' => $systemPrompt, 'user_prompt' => mb_substr($userPrompt, 0, 4000)], JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE),
+            'response_json' => json_encode($decoded, JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE),
+            'error_message' => null,
+            'computed_at' => gmdate('Y-m-d H:i:s'),
+        ];
+    } catch (Throwable $e) {
+        error_log('[opposition-ai] Failed to generate ' . $type . ' briefing: ' . $e->getMessage());
+        return [
+            'briefing_date' => $date,
+            'briefing_type' => $type,
+            'alliance_id' => $allianceId,
+            'alliance_name' => $allianceName,
+            'generation_status' => 'failed',
+            'model_name' => null,
+            'headline' => null,
+            'summary' => null,
+            'key_developments' => null,
+            'threat_assessment' => null,
+            'action_items' => null,
+            'source_payload_json' => null,
+            'response_json' => null,
+            'error_message' => mb_substr($e->getMessage(), 0, 500),
+            'computed_at' => gmdate('Y-m-d H:i:s'),
+        ];
+    }
+}
+
+function opposition_ai_generate_daily_briefings(?string $date = null): int
+{
+    $date = $date ?: gmdate('Y-m-d');
+    $snapshots = db_opposition_daily_snapshots($date);
+    $generated = 0;
+
+    if ($snapshots === []) {
+        error_log('[opposition-ai] No snapshots found for ' . $date);
+        return 0;
+    }
+
+    $systemPrompt = opposition_ai_system_prompt();
+    $schema = opposition_ai_output_schema();
+    $historyDays = opposition_ai_history_days();
+
+    // Concurrency lock
+    $lockFile = sys_get_temp_dir() . '/supplycore_ai_generation.lock';
+    $lockFp = fopen($lockFile, 'c');
+    if ($lockFp === false || !flock($lockFp, LOCK_EX | LOCK_NB)) {
+        if ($lockFp !== false) {
+            fclose($lockFp);
+        }
+        error_log('[opposition-ai] Another AI generation is running, skipping');
+        return 0;
+    }
+
+    try {
+        $aiEnabled = supplycore_ai_ollama_enabled();
+
+        // 1. Global SITREP
+        if ($aiEnabled) {
+            $history = opposition_ai_briefing_history($date, $historyDays);
+            $deltas = opposition_ai_compute_deltas($snapshots, $date);
+            $userPrompt = opposition_ai_global_prompt($date, $snapshots, $history, $deltas);
+            $briefing = opposition_ai_generate_single('global', $date, $systemPrompt, $userPrompt, $schema);
+        } else {
+            $fallback = opposition_ai_fallback_response($snapshots, 'global');
+            $briefing = [
+                'briefing_date' => $date,
+                'briefing_type' => 'global',
+                'alliance_id' => null,
+                'alliance_name' => null,
+                'generation_status' => 'fallback',
+                'model_name' => 'deterministic-fallback-v1',
+                'headline' => $fallback['headline'],
+                'summary' => $fallback['summary'],
+                'key_developments' => $fallback['key_developments'],
+                'threat_assessment' => $fallback['threat_assessment'],
+                'action_items' => $fallback['action_items'],
+                'source_payload_json' => null,
+                'response_json' => null,
+                'error_message' => null,
+                'computed_at' => gmdate('Y-m-d H:i:s'),
+            ];
+        }
+
+        // If AI failed, use fallback
+        if (($briefing['generation_status'] ?? '') === 'failed') {
+            $fallback = opposition_ai_fallback_response($snapshots, 'global');
+            $briefing['generation_status'] = 'fallback';
+            $briefing['model_name'] = 'deterministic-fallback-v1';
+            $briefing['headline'] = $fallback['headline'];
+            $briefing['summary'] = $fallback['summary'];
+            $briefing['key_developments'] = $fallback['key_developments'];
+            $briefing['threat_assessment'] = $fallback['threat_assessment'];
+            $briefing['action_items'] = $fallback['action_items'];
+        }
+
+        db_opposition_daily_briefing_save($briefing);
+        $generated++;
+
+        // 2. Per-alliance briefings (only for tracked alliances)
+        $trackedAlliances = db_opposition_intel_tracked_alliances();
+        $trackedIds = array_map(static fn ($a): int => (int) $a['alliance_id'], $trackedAlliances);
+        $trackedNames = [];
+        foreach ($trackedAlliances as $a) {
+            $trackedNames[(int) $a['alliance_id']] = (string) $a['alliance_name'];
+        }
+
+        $snapshotMap = [];
+        foreach ($snapshots as $s) {
+            $snapshotMap[(int) $s['alliance_id']] = $s;
+        }
+
+        foreach ($trackedIds as $aid) {
+            if (!isset($snapshotMap[$aid])) {
+                continue;
+            }
+            $allianceName = $trackedNames[$aid] ?? "Alliance #$aid";
+
+            if ($aiEnabled) {
+                $allianceHistory = db_opposition_daily_snapshot_alliance($aid, $date, $historyDays);
+                $relationships = [
+                    'allies' => $snapshotMap[$aid]['allies_json'] ?? [],
+                    'enemies' => $snapshotMap[$aid]['enemies_json'] ?? [],
+                ];
+                $userPrompt = opposition_ai_alliance_prompt($aid, $allianceName, $date, $snapshotMap[$aid], $allianceHistory, $relationships);
+                $allianceBriefing = opposition_ai_generate_single('alliance', $date, $systemPrompt, $userPrompt, $schema, $aid, $allianceName);
+            } else {
+                $fallback = opposition_ai_fallback_response([$snapshotMap[$aid]], 'alliance', $allianceName);
+                $allianceBriefing = [
+                    'briefing_date' => $date,
+                    'briefing_type' => 'alliance',
+                    'alliance_id' => $aid,
+                    'alliance_name' => $allianceName,
+                    'generation_status' => 'fallback',
+                    'model_name' => 'deterministic-fallback-v1',
+                    'headline' => $fallback['headline'],
+                    'summary' => $fallback['summary'],
+                    'key_developments' => $fallback['key_developments'],
+                    'threat_assessment' => $fallback['threat_assessment'],
+                    'action_items' => $fallback['action_items'],
+                    'source_payload_json' => null,
+                    'response_json' => null,
+                    'error_message' => null,
+                    'computed_at' => gmdate('Y-m-d H:i:s'),
+                ];
+            }
+
+            // Fallback on failure
+            if (($allianceBriefing['generation_status'] ?? '') === 'failed') {
+                $fallback = opposition_ai_fallback_response([$snapshotMap[$aid]], 'alliance', $allianceName);
+                $allianceBriefing['generation_status'] = 'fallback';
+                $allianceBriefing['model_name'] = 'deterministic-fallback-v1';
+                $allianceBriefing['headline'] = $fallback['headline'];
+                $allianceBriefing['summary'] = $fallback['summary'];
+                $allianceBriefing['key_developments'] = $fallback['key_developments'];
+                $allianceBriefing['threat_assessment'] = $fallback['threat_assessment'];
+                $allianceBriefing['action_items'] = $fallback['action_items'];
+            }
+
+            db_opposition_daily_briefing_save($allianceBriefing);
+            $generated++;
+        }
+    } finally {
+        flock($lockFp, LOCK_UN);
+        fclose($lockFp);
+    }
+
+    return $generated;
+}
+
+
+function supplycore_markdown_to_html(string $raw): string
+{
+    $rendered = htmlspecialchars($raw, ENT_QUOTES);
+    // Bold and italic
+    $rendered = preg_replace('/\*\*(.+?)\*\*/', '<strong>$1</strong>', $rendered);
+    $rendered = preg_replace('/\*(.+?)\*/', '<em>$1</em>', $rendered);
+    // Markdown headers
+    $rendered = preg_replace('/^###\s+(.+)$/m', '<h4>$1</h4>', $rendered);
+    $rendered = preg_replace('/^##\s+(.+)$/m', '<h3>$1</h3>', $rendered);
+    // Numbered section headers: 1. **Title**
+    $rendered = preg_replace('/^(\d+)\.\s*<strong>(.+?)<\/strong>/m', '<h3>$1. $2</h3>', $rendered);
+    // Bullet lists
+    $rendered = preg_replace_callback('/(?:^- .+$\n?)+/m', static function (array $m): string {
+        $items = preg_split('/\n/', trim($m[0]));
+        $lis = '';
+        foreach ($items as $item) {
+            $text = preg_replace('/^- /', '', $item);
+            if ($text !== '') {
+                $lis .= '<li>' . $text . '</li>';
+            }
+        }
+        return '<ul>' . $lis . '</ul>';
+    }, $rendered);
+    // Numbered lists
+    $rendered = preg_replace_callback('/(?:^\d+\.\s+.+$\n?)+/m', static function (array $m): string {
+        $items = preg_split('/\n/', trim($m[0]));
+        $lis = '';
+        foreach ($items as $item) {
+            $text = preg_replace('/^\d+\.\s+/', '', $item);
+            if ($text !== '') {
+                $lis .= '<li>' . $text . '</li>';
+            }
+        }
+        return '<ol>' . $lis . '</ol>';
+    }, $rendered);
+    // Paragraphs
+    $rendered = preg_replace('/\n{2,}/', '</p><p>', $rendered);
+    $rendered = str_replace("\n", '<br>', $rendered);
+    return '<p>' . $rendered . '</p>';
 }
