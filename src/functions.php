@@ -872,9 +872,13 @@ function ai_briefing_setting_defaults(): array
         // names so existing installs keep working without a data
         // migration. runpod_model and runpod_timeout are new: Runpod and
         // Local Ollama no longer share model/timeout settings.
+        //
+        // Default model is gemma4:26b-a4b-it-q4_K_M — the MoE variant
+        // with 25.2B total / 3.8B active params and a 256K context
+        // window. Sized to the current reference Runpod worker image.
         'ollama_runpod_url' => '',
         'ollama_runpod_api_key' => '',
-        'runpod_model' => '',
+        'runpod_model' => 'gemma4:26b-a4b-it-q4_K_M',
         'runpod_timeout' => '120',
 
         // --- Claude (Anthropic) ---
@@ -21067,6 +21071,58 @@ function supplycore_ai_ollama_config(): array
     ];
 }
 
+/**
+ * Build the Ollama /generate 'options' object sized to the active model
+ * and capability tier. Centralises temperature, num_predict and num_ctx
+ * so the theater and opposition call sites don't drift apart, and so
+ * large-context models (e.g. Gemma 4 26B A4B with a 256K window) get a
+ * context allocation that actually lets their quality show.
+ *
+ * Passing $overrides lets individual callers bump creativity / output
+ * length for their specific prompt (e.g. long AAR summaries).
+ *
+ * NOTE: num_ctx is also the KV-cache size on the Ollama daemon side, so
+ * we deliberately DON'T max out model capability — 32K on a 26B model
+ * already costs several GB of VRAM. Operators on beefier hardware can
+ * pin the tier to 'large' to get the bigger context.
+ */
+function supplycore_ai_ollama_request_options(array $config, array $overrides = []): array
+{
+    $tier = (string) ($config['capability_tier'] ?? 'small');
+
+    // Per-tier defaults:
+    //   small  — tiny models (qwen 1.5B, gemma e4b): compact prompts
+    //   medium — 7-8B dense models: room for one long section
+    //   large  — 13B+ dense, or MoE like gemma4:26b-a4b: deep briefings
+    $defaults = match ($tier) {
+        'large' => [
+            'temperature' => 0.2,
+            'num_predict' => 6144,
+            'num_ctx' => 32768,
+        ],
+        'medium' => [
+            'temperature' => 0.2,
+            'num_predict' => 4096,
+            'num_ctx' => 16384,
+        ],
+        default => [
+            'temperature' => 0.2,
+            'num_predict' => 2048,
+            'num_ctx' => 8192,
+        ],
+    };
+
+    // Allow the configured timeout to pull num_ctx down — tiny request
+    // timeouts on weak hardware shouldn't be promised a 32K context
+    // they can't serve inside the window.
+    $timeoutSeconds = (int) ($config['timeout'] ?? ($config['local_ollama_timeout'] ?? 20));
+    if ($timeoutSeconds > 0 && $timeoutSeconds < 30 && $defaults['num_ctx'] > 8192) {
+        $defaults['num_ctx'] = 8192;
+    }
+
+    return $overrides + $defaults;
+}
+
 function supplycore_mask_secret(string $value): string
 {
     $trimmed = trim($value);
@@ -21733,6 +21789,18 @@ function supplycore_ai_resolve_feature_config(string $feature, ?string $explicit
         default => (int) ($config['local_ollama_timeout'] ?? $config['timeout'] ?? 20),
     });
 
+    // Re-compute the capability tier against the now-resolved model so
+    // features running on a different provider (e.g. local defaults to
+    // a small qwen but a feature routes to Runpod gemma4:26b-a4b) get
+    // the tier/strategy that actually matches their runtime model.
+    $inferredTier = supplycore_ai_infer_model_capability_tier((string) ($config['model'] ?? ''));
+    $effectiveTier = ($config['capability_override'] ?? 'auto') !== 'auto'
+        ? (string) $config['capability_override']
+        : $inferredTier;
+    $config['inferred_tier'] = $inferredTier;
+    $config['capability_tier'] = $effectiveTier;
+    $config['strategy'] = supplycore_ai_capability_strategy($effectiveTier);
+
     return $config;
 }
 
@@ -22275,11 +22343,7 @@ function theater_ai_summary_generate(string $theaterId, bool $forceRegenerate = 
                 'system' => $systemPrompt,
                 'prompt' => $userPrompt,
                 'format' => $schema,
-                'options' => [
-                    'temperature' => 0.2,
-                    'num_predict' => 4096,
-                    'num_ctx' => 8192,
-                ],
+                'options' => supplycore_ai_ollama_request_options($config),
             ];
             $response = http_post_json($endpoint, [], $requestPayload, max(300, $config['timeout']));
             $status = (int) ($response['status'] ?? 0);
@@ -26806,11 +26870,9 @@ function opposition_ai_call_provider(string $systemPrompt, string $userPrompt, a
         'system' => $systemPrompt,
         'prompt' => $userPrompt,
         'format' => $schema,
-        'options' => [
-            'temperature' => 0.3,
-            'num_predict' => 4096,
-            'num_ctx' => 8192,
-        ],
+        // Opposition briefings historically used a slightly higher
+        // temperature (0.3) for more varied phrasing.
+        'options' => supplycore_ai_ollama_request_options($config, ['temperature' => 0.3]),
     ];
     $response = http_post_json($endpoint, [], $requestPayload, max(300, $config['timeout']));
     $status = (int) ($response['status'] ?? 0);

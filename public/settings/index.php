@@ -1825,8 +1825,8 @@ include __DIR__ . '/../../src/views/partials/header.php';
                             </label>
                             <label class="block space-y-1.5">
                                 <span class="text-xs uppercase tracking-wider text-muted">Model</span>
-                                <input name="runpod_model" value="<?= htmlspecialchars($settingValues['runpod_model'] ?? ($ollamaConfig['runpod_model'] ?? ''), ENT_QUOTES) ?>" class="w-full field-input" placeholder="llama3.1:70b (or leave blank if your worker hard-codes the model)" />
-                                <p class="text-xs text-muted">Independent of the Local Ollama model. Leave blank if your Runpod worker image has the model baked in.</p>
+                                <input name="runpod_model" value="<?= htmlspecialchars($settingValues['runpod_model'] ?? ($ollamaConfig['runpod_model'] ?? 'gemma4:26b-a4b-it-q4_K_M'), ENT_QUOTES) ?>" class="w-full field-input" placeholder="gemma4:26b-a4b-it-q4_K_M" />
+                                <p class="text-xs text-muted">Independent of the Local Ollama model. Default is <span class="font-medium text-slate-100">gemma4:26b-a4b-it-q4_K_M</span> — the MoE variant with 25.2B total / 3.8B active params and a 256K context window, which auto-detects as the <span class="font-medium text-slate-100">large</span> capability tier. Leave blank if your Runpod worker image has the model baked in.</p>
                             </label>
                             <label class="block space-y-1.5">
                                 <span class="text-xs uppercase tracking-wider text-muted">Per-HTTP Timeout (s)</span>
