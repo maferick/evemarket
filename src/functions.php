@@ -21528,9 +21528,20 @@ function supplycore_ai_ollama_generate_json(array $sourcePayload): array
 function supplycore_ai_runpod_generate_json(array $config, string $systemPrompt, string $userPrompt, array $schema): array
 {
     $headers = ['Authorization: Bearer ' . (string) ($config['runpod_api_key'] ?? '')];
+
+    // Resolve the model that should actually run on the RunPod worker.
+    $runpodModel = (string) ($config['runpod_model'] ?? '');
+    if ($runpodModel === '') {
+        $runpodModel = (string) ($config['model'] ?? '');
+    }
+
     $requestPayload = [
         'input' => [
             'prompt' => supplycore_ai_runpod_prompt($config, $systemPrompt, $userPrompt, $schema),
+            // Tell the RunPod worker which Ollama model to load. Without
+            // this, the worker defaults to whatever model is baked into
+            // its Docker image (often a tiny model like qwen2.5:1.5b).
+            'model' => $runpodModel,
         ],
     ];
     $response = http_post_json(
@@ -21871,6 +21882,7 @@ function supplycore_ai_jobs_enqueue(
     $config = supplycore_ai_resolve_feature_config($feature, $providerOverride);
     $provider = (string) ($config['provider'] ?? 'local');
     $model = match ($provider) {
+        'runpod' => (string) ($config['runpod_model'] ?? $config['model'] ?? ''),
         'claude' => (string) ($config['claude_model'] ?? ''),
         'groq' => (string) ($config['groq_model'] ?? ''),
         default => (string) ($config['model'] ?? ''),
@@ -22410,6 +22422,7 @@ function theater_ai_summary_generate(string $theaterId, bool $forceRegenerate = 
         }
 
         $modelLabel = match ($provider) {
+            'runpod' => (string) ($config['runpod_model'] ?? $config['model'] ?? ''),
             'claude' => (string) ($config['claude_model'] ?? 'claude-sonnet-4-20250514'),
             'groq' => (string) ($config['groq_model'] ?? 'llama-4-scout'),
             default => (string) $config['model'],
