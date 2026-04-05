@@ -860,23 +860,41 @@ function ai_briefing_setting_defaults(): array
     return [
         'ollama_enabled' => '0',
         'ollama_provider' => 'local',
+
+        // --- Local Ollama ---
         'ollama_url' => 'http://localhost:11434/api',
         'ollama_model' => 'qwen2.5:1.5b-instruct',
         'ollama_timeout' => '20',
         'ollama_capability_tier' => 'auto',
+
+        // --- Runpod Serverless ---
+        // ollama_runpod_url / ollama_runpod_api_key retain their legacy
+        // names so existing installs keep working without a data
+        // migration. runpod_model and runpod_timeout are new: Runpod and
+        // Local Ollama no longer share model/timeout settings.
         'ollama_runpod_url' => '',
         'ollama_runpod_api_key' => '',
+        'runpod_model' => '',
+        'runpod_timeout' => '120',
+
+        // --- Claude (Anthropic) ---
         'claude_api_key' => '',
         'claude_model' => 'claude-sonnet-4-20250514',
+        'claude_timeout' => '60',
+
+        // --- Groq ---
         'groq_api_key' => '',
         'groq_model' => 'meta-llama/llama-4-scout-17b-16e-instruct',
+        'groq_timeout' => '30',
+
+        // --- Prompts ---
         'theater_aar_prompt' => '',
-        // Per-feature provider overrides. Each takes one of:
-        //   'default' — use ollama_provider
-        //   'local' | 'runpod' | 'claude' | 'groq'
-        // This lets operators pick different providers per use case (e.g.
-        // cheap local Ollama for theater summaries, RunPod for opposition
-        // briefings). Resolved by supplycore_ai_resolve_config().
+
+        // --- Per-feature provider routing ---
+        // Each takes: 'default' (inherit ollama_provider) | 'local' |
+        // 'runpod' | 'claude' | 'groq'. Lets operators pick different
+        // providers per use case. Resolved by
+        // supplycore_ai_resolve_feature_config().
         'ai_provider_theater_lock' => 'default',
         'ai_provider_opposition_global' => 'default',
         'ai_provider_opposition_alliance' => 'default',
@@ -1117,22 +1135,64 @@ function sanitize_ollama_runpod_api_key(?string $value): string
     return mb_substr(trim((string) $value), 0, 255);
 }
 
+function sanitize_runpod_model(?string $value): string
+{
+    // Empty string is intentional: some Runpod workers ignore the model
+    // field entirely (it's baked into the worker image). Leaving it
+    // blank tells the prompt builder to fall back to ollama_model.
+    return mb_substr(trim((string) $value), 0, 120);
+}
+
+function sanitize_provider_timeout(mixed $value, int $default, int $max = 900): string
+{
+    $timeout = (int) $value;
+    if ($timeout < 1) {
+        $timeout = $default;
+    }
+    return (string) max(1, min($max, $timeout));
+}
+
+function sanitize_ai_model_name(?string $value, string $default = ''): string
+{
+    $model = trim((string) $value);
+    if ($model === '') {
+        return $default;
+    }
+    return mb_substr($model, 0, 200);
+}
+
 function ai_briefing_settings_from_request(array $request): array
 {
     return [
         'ollama_enabled' => sanitize_enabled_flag($request['ollama_enabled'] ?? null),
         'ollama_provider' => sanitize_ollama_provider($request['ollama_provider'] ?? null),
+
+        // Local Ollama
         'ollama_url' => sanitize_ollama_url($request['ollama_url'] ?? null),
         'ollama_model' => sanitize_ollama_model($request['ollama_model'] ?? null),
         'ollama_timeout' => sanitize_ollama_timeout($request['ollama_timeout'] ?? null),
         'ollama_capability_tier' => sanitize_ollama_capability_tier($request['ollama_capability_tier'] ?? null),
+
+        // Runpod
         'ollama_runpod_url' => sanitize_ollama_runpod_url($request['ollama_runpod_url'] ?? null),
         'ollama_runpod_api_key' => sanitize_ollama_runpod_api_key($request['ollama_runpod_api_key'] ?? null),
+        'runpod_model' => sanitize_runpod_model($request['runpod_model'] ?? null),
+        'runpod_timeout' => sanitize_provider_timeout($request['runpod_timeout'] ?? null, 120, 900),
+
+        // Claude
         'claude_api_key' => trim((string) ($request['claude_api_key'] ?? '')),
-        'claude_model' => trim((string) ($request['claude_model'] ?? 'claude-sonnet-4-20250514')),
+        'claude_model' => sanitize_ai_model_name($request['claude_model'] ?? null, 'claude-sonnet-4-20250514'),
+        'claude_timeout' => sanitize_provider_timeout($request['claude_timeout'] ?? null, 60, 600),
+
+        // Groq
         'groq_api_key' => trim((string) ($request['groq_api_key'] ?? '')),
-        'groq_model' => trim((string) ($request['groq_model'] ?? 'meta-llama/llama-4-scout-17b-16e-instruct')),
+        'groq_model' => sanitize_ai_model_name($request['groq_model'] ?? null, 'meta-llama/llama-4-scout-17b-16e-instruct'),
+        'groq_timeout' => sanitize_provider_timeout($request['groq_timeout'] ?? null, 30, 300),
+
+        // Prompts
         'theater_aar_prompt' => mb_substr(trim((string) ($request['theater_aar_prompt'] ?? '')), 0, 8000),
+
+        // Per-feature provider routing
         'ai_provider_theater_lock' => sanitize_ai_feature_provider($request['ai_provider_theater_lock'] ?? null),
         'ai_provider_opposition_global' => sanitize_ai_feature_provider($request['ai_provider_opposition_global'] ?? null),
         'ai_provider_opposition_alliance' => sanitize_ai_feature_provider($request['ai_provider_opposition_alliance'] ?? null),
@@ -20916,19 +20976,61 @@ function supplycore_ai_ollama_config(): array
     $settings = get_settings(ai_briefing_setting_keys());
     $provider = sanitize_ollama_provider($settings['ollama_provider'] ?? $defaults['ollama_provider']);
 
+    $localModel = sanitize_ollama_model($settings['ollama_model'] ?? $defaults['ollama_model']);
+    $runpodModel = sanitize_runpod_model($settings['runpod_model'] ?? $defaults['runpod_model']);
+    // If no Runpod-specific model is configured, fall back to the local
+    // Ollama model. Pre-split installs stored a single model shared
+    // across both providers; preserving that fallback avoids breaking
+    // existing deployments.
+    if ($runpodModel === '') {
+        $runpodModel = $localModel;
+    }
+
+    $localTimeout = max(1, (int) sanitize_ollama_timeout($settings['ollama_timeout'] ?? $defaults['ollama_timeout']));
+    $runpodTimeout = (int) sanitize_provider_timeout($settings['runpod_timeout'] ?? $defaults['runpod_timeout'], 120, 900);
+    $claudeTimeout = (int) sanitize_provider_timeout($settings['claude_timeout'] ?? $defaults['claude_timeout'], 60, 600);
+    $groqTimeout = (int) sanitize_provider_timeout($settings['groq_timeout'] ?? $defaults['groq_timeout'], 30, 300);
+
+    // `timeout` and `model` resolve to the *active* provider's values
+    // so existing callers that read $config['timeout'] / $config['model']
+    // keep working without branching on provider everywhere.
+    $activeTimeout = match ($provider) {
+        'runpod' => $runpodTimeout,
+        'claude' => $claudeTimeout,
+        'groq' => $groqTimeout,
+        default => $localTimeout,
+    };
+    $activeModel = match ($provider) {
+        'runpod' => $runpodModel,
+        'claude' => trim((string) ($settings['claude_model'] ?? $defaults['claude_model'])),
+        'groq' => trim((string) ($settings['groq_model'] ?? $defaults['groq_model'])),
+        default => $localModel,
+    };
+
     $config = [
         'enabled' => (($settings['ollama_enabled'] ?? $defaults['ollama_enabled']) === '1'),
         'provider' => $provider,
         'url' => sanitize_ollama_url($settings['ollama_url'] ?? $defaults['ollama_url']),
-        'model' => sanitize_ollama_model($settings['ollama_model'] ?? $defaults['ollama_model']),
-        'timeout' => max(1, (int) sanitize_ollama_timeout($settings['ollama_timeout'] ?? $defaults['ollama_timeout'])),
+        'model' => $activeModel,
+        'timeout' => $activeTimeout,
         'capability_override' => sanitize_ollama_capability_tier($settings['ollama_capability_tier'] ?? $defaults['ollama_capability_tier']),
+
+        // Per-provider resolved values. Callers targeting a specific
+        // provider should read these rather than the active 'model' /
+        // 'timeout' fields so they always see the right setting even
+        // when the global provider is different.
+        'local_ollama_model' => $localModel,
+        'local_ollama_timeout' => $localTimeout,
         'runpod_url' => sanitize_ollama_runpod_url($settings['ollama_runpod_url'] ?? $defaults['ollama_runpod_url']),
         'runpod_api_key' => sanitize_ollama_runpod_api_key($settings['ollama_runpod_api_key'] ?? $defaults['ollama_runpod_api_key']),
+        'runpod_model' => $runpodModel,
+        'runpod_timeout' => $runpodTimeout,
         'claude_api_key' => trim((string) ($settings['claude_api_key'] ?? $defaults['claude_api_key'])),
         'claude_model' => trim((string) ($settings['claude_model'] ?? $defaults['claude_model'])),
+        'claude_timeout' => $claudeTimeout,
         'groq_api_key' => trim((string) ($settings['groq_api_key'] ?? $defaults['groq_api_key'])),
         'groq_model' => trim((string) ($settings['groq_model'] ?? $defaults['groq_model'])),
+        'groq_timeout' => $groqTimeout,
     ];
 
     $inferredTier = supplycore_ai_infer_model_capability_tier((string) ($config['model'] ?? ''));
@@ -20944,15 +21046,21 @@ function supplycore_ai_ollama_config(): array
         'model' => (string) ($config['model'] ?? $defaults['ollama_model']),
         'timeout' => max(1, (int) ($config['timeout'] ?? (int) $defaults['ollama_timeout'])),
         'capability_override' => (string) ($config['capability_override'] ?? 'auto'),
+        'local_ollama_model' => (string) ($config['local_ollama_model'] ?? $defaults['ollama_model']),
+        'local_ollama_timeout' => max(1, (int) ($config['local_ollama_timeout'] ?? (int) $defaults['ollama_timeout'])),
         'runpod_url' => (string) ($config['runpod_url'] ?? ''),
         'runpod_api_key' => (string) ($config['runpod_api_key'] ?? ''),
         'runpod_api_key_masked' => supplycore_mask_secret((string) ($config['runpod_api_key'] ?? '')),
+        'runpod_model' => (string) ($config['runpod_model'] ?? ''),
+        'runpod_timeout' => max(1, (int) ($config['runpod_timeout'] ?? (int) $defaults['runpod_timeout'])),
         'claude_api_key' => (string) ($config['claude_api_key'] ?? ''),
         'claude_api_key_masked' => supplycore_mask_secret((string) ($config['claude_api_key'] ?? '')),
         'claude_model' => (string) ($config['claude_model'] ?? 'claude-sonnet-4-20250514'),
+        'claude_timeout' => max(1, (int) ($config['claude_timeout'] ?? (int) $defaults['claude_timeout'])),
         'groq_api_key' => (string) ($config['groq_api_key'] ?? ''),
         'groq_api_key_masked' => supplycore_mask_secret((string) ($config['groq_api_key'] ?? '')),
         'groq_model' => (string) ($config['groq_model'] ?? 'meta-llama/llama-4-scout-17b-16e-instruct'),
+        'groq_timeout' => max(1, (int) ($config['groq_timeout'] ?? (int) $defaults['groq_timeout'])),
         'inferred_tier' => $inferredTier,
         'capability_tier' => $effectiveTier,
         'strategy' => $strategy,
@@ -21357,8 +21465,16 @@ function supplycore_ai_runpod_prompt(array $config, string $systemPrompt, string
         $schemaJson = '{}';
     }
 
+    // Prefer the Runpod-specific model if one is configured, otherwise
+    // fall back to the active/local model name. Pre-split installs only
+    // had a single shared field.
+    $model = (string) ($config['runpod_model'] ?? '');
+    if ($model === '') {
+        $model = (string) ($config['model'] ?? '');
+    }
+
     return trim(implode("\n\n", [
-        'You are using the model "' . (string) ($config['model'] ?? '') . '" through a Runpod serverless endpoint.',
+        'You are using the model "' . $model . '" through a Runpod serverless endpoint.',
         'SYSTEM INSTRUCTIONS',
         $systemPrompt,
         'USER REQUEST',
@@ -21400,9 +21516,13 @@ function supplycore_ai_runpod_status_url(string $url, string $jobId): string
 
 function supplycore_ai_runpod_request_timeout(array $config): int
 {
-    $configuredTimeout = max(1, (int) ($config['timeout'] ?? 20));
+    // Prefer the Runpod-specific per-HTTP-call timeout if configured.
+    // Fall back to the active/local 'timeout' for pre-split installs.
+    $configuredTimeout = max(1, (int) ($config['runpod_timeout'] ?? $config['timeout'] ?? 20));
 
-    return min(15, $configuredTimeout);
+    // Per-HTTP cap — individual /run and /status calls should be quick;
+    // this is NOT the total polling budget.
+    return min(30, $configuredTimeout);
 }
 
 function supplycore_ai_runpod_poll_budget_seconds(array $config): int
@@ -21414,7 +21534,9 @@ function supplycore_ai_runpod_poll_budget_seconds(array $config): int
         return max(30, (int) $config['runpod_poll_budget_seconds']);
     }
 
-    $configuredTimeout = max(1, (int) ($config['timeout'] ?? 20));
+    // Prefer the Runpod-specific timeout if configured. Pre-split
+    // installs fall back to the active 'timeout' field.
+    $configuredTimeout = max(1, (int) ($config['runpod_timeout'] ?? $config['timeout'] ?? 20));
 
     // Floor of 2 minutes as a safety net when called outside the worker
     // (e.g. from bin/ai_briefing_worker.php --once debugging).
@@ -21588,6 +21710,28 @@ function supplycore_ai_resolve_feature_config(string $feature, ?string $explicit
     }
 
     $config['provider'] = $provider;
+
+    // Re-point the active 'model' and 'timeout' at the chosen provider's
+    // fields so generic callers that read $config['timeout'] / ['model']
+    // see the right value for this feature. The per-provider fields
+    // (runpod_model, claude_timeout, …) still carry the full picture for
+    // providers that need them.
+    $runpodModel = (string) ($config['runpod_model'] ?? '');
+    if ($runpodModel === '') {
+        $runpodModel = (string) ($config['local_ollama_model'] ?? $config['model'] ?? '');
+    }
+    $config['model'] = match ($provider) {
+        'runpod' => $runpodModel,
+        'claude' => (string) ($config['claude_model'] ?? ''),
+        'groq' => (string) ($config['groq_model'] ?? ''),
+        default => (string) ($config['local_ollama_model'] ?? $config['model'] ?? ''),
+    };
+    $config['timeout'] = max(1, (int) match ($provider) {
+        'runpod' => (int) ($config['runpod_timeout'] ?? $config['timeout'] ?? 120),
+        'claude' => (int) ($config['claude_timeout'] ?? $config['timeout'] ?? 60),
+        'groq' => (int) ($config['groq_timeout'] ?? $config['timeout'] ?? 30),
+        default => (int) ($config['local_ollama_timeout'] ?? $config['timeout'] ?? 20),
+    });
 
     return $config;
 }
@@ -21958,7 +22102,7 @@ function supplycore_ai_claude_generate_json(array $config, string $systemPrompt,
             'anthropic-version: 2023-06-01',
         ],
         $requestPayload,
-        max(120, (int) ($config['timeout'] ?? 60))
+        max(30, (int) ($config['claude_timeout'] ?? $config['timeout'] ?? 60))
     );
 
     $status = (int) ($response['status'] ?? 0);
@@ -22020,7 +22164,7 @@ function supplycore_ai_groq_generate_json(array $config, string $systemPrompt, s
             'Authorization: Bearer ' . $apiKey,
         ],
         $requestPayload,
-        max(120, (int) ($config['timeout'] ?? 60))
+        max(15, (int) ($config['groq_timeout'] ?? $config['timeout'] ?? 30))
     );
 
     $status = (int) ($response['status'] ?? 0);
