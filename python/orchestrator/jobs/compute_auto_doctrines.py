@@ -428,11 +428,32 @@ def _repopulate_loss_aggregates(db: Any) -> int:
     and compute_auto_buyall only needs a per-doctrine loss rate — which
     we can derive by redistributing hull totals when needed.
     """
-    # Wipe any previous attribution so stale ids don't linger.
-    db.execute("UPDATE killmail_hull_loss_1d SET doctrine_fit_id = NULL")
-    db.execute("UPDATE killmail_item_loss_1d SET doctrine_fit_id = NULL")
+    # The unique keys on killmail_hull_loss_1d / killmail_item_loss_1d
+    # are built on GENERATED columns:
+    #
+    #     UNIQUE (bucket_start, hull_type_id,
+    #             doctrine_fit_key    -- COALESCE(doctrine_fit_id, 0)
+    #             doctrine_group_key) -- COALESCE(doctrine_group_id, 0)
+    #
+    # A naive ``UPDATE ... SET doctrine_fit_id = NULL`` collapses every
+    # stale row for the same ``(bucket_start, hull_type_id)`` into the
+    # same key (0, 0) and fails with a duplicate-key error. Instead we
+    # DELETE the rows that currently hold a non-NULL attribution — the
+    # analytics bucket job re-writes the canonical NULL row every run,
+    # so the delete is safe: we are only removing stale carbon copies,
+    # not historical data.
+    db.execute(
+        "DELETE FROM killmail_hull_loss_1d WHERE doctrine_fit_id IS NOT NULL OR doctrine_group_id IS NOT NULL"
+    )
+    db.execute(
+        "DELETE FROM killmail_item_loss_1d WHERE doctrine_fit_id IS NOT NULL OR doctrine_group_id IS NOT NULL"
+    )
 
     # Match: hulls that currently have exactly one active doctrine.
+    # We can't UPDATE in place for the same reason (flipping the NULL
+    # canonical row to a non-NULL id would produce a new (bucket, hull,
+    # id, 0) tuple that collides with nothing, so that path IS safe,
+    # but only because we just deleted the stale non-NULL rows above).
     rows = db.fetch_all(
         """SELECT hull_type_id, MIN(id) AS doctrine_id, COUNT(*) AS cnt
              FROM auto_doctrines
@@ -445,11 +466,13 @@ def _repopulate_loss_aggregates(db: Any) -> int:
         hull_type_id = int(row["hull_type_id"])
         doctrine_id = int(row["doctrine_id"])
         updated += db.execute(
-            "UPDATE killmail_hull_loss_1d SET doctrine_fit_id = %s WHERE hull_type_id = %s",
+            "UPDATE killmail_hull_loss_1d SET doctrine_fit_id = %s "
+            "WHERE hull_type_id = %s AND doctrine_fit_id IS NULL",
             (doctrine_id, hull_type_id),
         )
         updated += db.execute(
-            "UPDATE killmail_item_loss_1d SET doctrine_fit_id = %s WHERE hull_type_id = %s",
+            "UPDATE killmail_item_loss_1d SET doctrine_fit_id = %s "
+            "WHERE hull_type_id = %s AND doctrine_fit_id IS NULL",
             (doctrine_id, hull_type_id),
         )
     return updated

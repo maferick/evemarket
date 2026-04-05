@@ -4118,6 +4118,8 @@ function orchestrator_runtime_config_export(): array
         'influxdb' => [
             'enabled' => (bool) config('influxdb.enabled', false),
             'read_enabled' => (bool) config('influxdb.read_enabled', false),
+            'read_mode' => (string) config('influxdb.read_mode', 'disabled'),
+            'write_on_rollup' => (bool) config('influxdb.write_on_rollup', false),
             'url' => rtrim((string) config('influxdb.url', 'http://127.0.0.1:8086'), '/'),
             'org' => (string) config('influxdb.org', ''),
             'bucket' => (string) config('influxdb.bucket', 'supplycore_rollups'),
@@ -4125,6 +4127,7 @@ function orchestrator_runtime_config_export(): array
             'timeout_seconds' => max(3, (int) config('influxdb.timeout_seconds', 15)),
             'export_batch_size' => max(100, (int) config('influxdb.export_batch_size', 1000)),
             'export_overlap_seconds' => max(0, (int) config('influxdb.export_overlap_seconds', 21600)),
+            'rollup_write_batch_size' => max(100, (int) config('influxdb.rollup_write_batch_size', 500)),
             'export_log_file' => supplycore_worker_log_path('influx-rollup-export.log', (string) config('influxdb.export_log_file', 'storage/logs/influx-rollup-export.log')),
         ],
         'redis' => [
