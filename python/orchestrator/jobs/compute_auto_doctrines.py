@@ -82,6 +82,12 @@ def _extract_our_losses(db: Any, window_days: int) -> dict[int, dict]:
     (``killmail_persist_r2z2_payload``) and is authoritative for "this is
     one of ours".
     """
+    # The ``item_flag`` slot ranges are authoritative for "fitted module"
+    # on their own — those EVE flags map exclusively to high/mid/low/rig/
+    # subsystem slots. Some ingest classifiers only ever write
+    # ``'destroyed'`` / ``'dropped'`` into ``item_role`` and never tag
+    # anything ``'fitted'``, which previously caused this query to return
+    # zero rows even when thousands of loss killmails were in-window.
     sql = """
         SELECT ke.sequence_id, ke.victim_ship_type_id, ke.victim_alliance_id,
                ki.item_type_id, ki.item_flag
@@ -92,7 +98,6 @@ def _extract_our_losses(db: Any, window_days: int) -> dict[int, dict]:
           AND (ki.item_flag BETWEEN 11 AND 34
                OR ki.item_flag BETWEEN 92 AND 94
                OR ki.item_flag BETWEEN 125 AND 132)
-          AND ki.item_role = 'fitted'
         ORDER BY ke.sequence_id
     """
     # Use _fit_clustering.flag_category via local import to avoid a
