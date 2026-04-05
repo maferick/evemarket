@@ -22422,6 +22422,109 @@ function activity_priority_module_loss_windows(array $hullTypeIds): array
     return $out;
 }
 
+/**
+ * For every active doctrine in ``$doctrineIds`` compute how many
+ * complete fits the current alliance stock can already cover.
+ *
+ * The bottleneck is the minimum across every module in the fit:
+ *     fits_per_module   = floor(alliance_stock[type_id] / per_fit_qty)
+ *     fits_covered      = min(fits_per_module across all modules)
+ *
+ * Returns ``{doctrine_id: {covered, bottleneck_type_id, bottleneck_fits}}``.
+ * Two batched queries regardless of how many doctrines or modules —
+ * one to load all modules, one to load all alliance stock snapshots.
+ *
+ * Doctrines whose core module set is empty return ``covered = 0``
+ * (nothing to stock, so no coverage signal).
+ */
+function activity_priority_stock_coverage(array $doctrineIds): array
+{
+    $doctrineIds = array_values(array_unique(array_filter(array_map('intval', $doctrineIds), static fn (int $id): bool => $id > 0)));
+    if ($doctrineIds === []) {
+        return [];
+    }
+
+    // Step 1: pull every module row for the target doctrines in one go.
+    $placeholders = implode(',', array_fill(0, count($doctrineIds), '?'));
+    $moduleRows = db_select(
+        "SELECT doctrine_id, type_id, quantity
+           FROM auto_doctrine_modules
+          WHERE doctrine_id IN ({$placeholders})",
+        $doctrineIds
+    );
+
+    // Group modules by doctrine and collect every unique type_id.
+    $modulesByDoctrine = [];
+    $typeIdSet = [];
+    foreach ($moduleRows as $row) {
+        $doctrineId = (int) ($row['doctrine_id'] ?? 0);
+        $typeId = (int) ($row['type_id'] ?? 0);
+        $qty = max(1, (int) ($row['quantity'] ?? 1));
+        if ($doctrineId <= 0 || $typeId <= 0) {
+            continue;
+        }
+        $modulesByDoctrine[$doctrineId][] = ['type_id' => $typeId, 'quantity' => $qty];
+        $typeIdSet[$typeId] = true;
+    }
+
+    // Step 2: latest alliance-structure stock snapshot per type_id.
+    $stockByType = [];
+    if ($typeIdSet !== []) {
+        $typeIds = array_keys($typeIdSet);
+        $typePlaceholders = implode(',', array_fill(0, count($typeIds), '?'));
+        $stockRows = db_select(
+            "SELECT mss.type_id,
+                    COALESCE(mss.total_sell_volume, 0) AS stock_qty
+               FROM market_order_snapshots_summary mss
+               JOIN (
+                   SELECT type_id, MAX(observed_at) AS latest_at
+                     FROM market_order_snapshots_summary
+                    WHERE source_type = 'alliance_structure'
+                      AND type_id IN ({$typePlaceholders})
+                    GROUP BY type_id
+               ) latest
+                 ON latest.type_id = mss.type_id
+                AND latest.latest_at = mss.observed_at
+              WHERE mss.source_type = 'alliance_structure'",
+            $typeIds
+        );
+        foreach ($stockRows as $row) {
+            $stockByType[(int) ($row['type_id'] ?? 0)] = (int) ($row['stock_qty'] ?? 0);
+        }
+    }
+
+    // Step 3: compute the bottleneck per doctrine.
+    $out = [];
+    foreach ($doctrineIds as $doctrineId) {
+        $modules = $modulesByDoctrine[$doctrineId] ?? [];
+        if ($modules === []) {
+            $out[$doctrineId] = ['covered' => 0, 'bottleneck_type_id' => 0];
+            continue;
+        }
+        $bottleneckFits = PHP_INT_MAX;
+        $bottleneckTypeId = 0;
+        foreach ($modules as $m) {
+            $typeId = (int) $m['type_id'];
+            $perFitQty = max(1, (int) $m['quantity']);
+            $stock = (int) ($stockByType[$typeId] ?? 0);
+            $fitsForThisModule = intdiv($stock, $perFitQty);
+            if ($fitsForThisModule < $bottleneckFits) {
+                $bottleneckFits = $fitsForThisModule;
+                $bottleneckTypeId = $typeId;
+            }
+        }
+        if ($bottleneckFits === PHP_INT_MAX) {
+            $bottleneckFits = 0;
+        }
+        $out[$doctrineId] = [
+            'covered'             => $bottleneckFits,
+            'bottleneck_type_id'  => $bottleneckTypeId,
+        ];
+    }
+
+    return $out;
+}
+
 function activity_priority_page_data(): array
 {
     // The legacy snapshot flow populated doctrine_activity_snapshots from
@@ -22445,6 +22548,14 @@ function activity_priority_page_data(): array
     $hullTypeIds = array_values(array_unique(array_map(static fn (array $d): int => (int) ($d['hull_type_id'] ?? 0), $active)));
     $hullWindows = activity_priority_hull_loss_windows($hullTypeIds);
     $moduleWindows = activity_priority_module_loss_windows($hullTypeIds);
+
+    // Stock coverage per doctrine: how many complete fits the current
+    // alliance-structure snapshot can cover, bottlenecked by the most
+    // constrained module in each fit. Used to override the readiness
+    // label and resupply pressure tier so "Critical gap · Urgent
+    // resupply" does not fire on doctrines whose stock is fine.
+    $activeDoctrineIds = array_map(static fn (array $d): int => (int) ($d['id'] ?? 0), $active);
+    $stockCoverage = activity_priority_stock_coverage($activeDoctrineIds);
 
     $windowDays = max(1, (int) $settings['window_days']);
     $defaultRunway = max(1, (int) $settings['default_runway_days']);
@@ -22493,19 +22604,38 @@ function activity_priority_page_data(): array
         $runwayDays = $s['runway_days'];
         $activityScore = $s['score'];
 
+        // Stock-aware readiness: subtract how many complete fits the
+        // current alliance-structure stock can already cover from the
+        // per-fingerprint target. ``realGap`` is the number of fits
+        // we STILL need after stock is counted — that's what actually
+        // drives whether operators should be alarmed.
+        $coveredFits = (int) ($stockCoverage[(int) ($d['id'] ?? 0)]['covered'] ?? 0);
+        $realGap = max(0, $targetFits - $coveredFits);
+
+        // Activity level stays loss-driven — it's a signal about how
+        // actively the fit is being burned, independent of stock.
         $activityLevel = match (true) {
             $targetFits >= 10 => 'critical',
             $targetFits >= 3  => 'elevated',
             default            => 'low',
         };
-        $readinessLabel = $targetFits > 0 ? 'Critical gap' : 'Market ready';
-        // Resupply pressure must agree with the readiness gap: no gap
-        // means no urgency regardless of historical loss count.
-        $resupplyPressure = match (true) {
-            $targetFits >= 10 => 'Urgent resupply',
-            $targetFits >= 3  => 'Moderate pressure',
-            default            => 'Stable',
-        };
+
+        // Readiness / resupply tier, on the other hand, only fires
+        // when stock cannot cover the demand. Thresholds are scaled
+        // against target_fits so a proportional shortfall (roughly a
+        // third of the target) still trips the "Critical gap" label
+        // even on low-volume doctrines.
+        $criticalCut = max(3, (int) ceil($targetFits / 3));
+        if ($realGap <= 0) {
+            $readinessLabel = 'Market ready';
+            $resupplyPressure = 'Stable';
+        } elseif ($realGap >= $criticalCut) {
+            $readinessLabel = 'Critical gap';
+            $resupplyPressure = 'Urgent resupply';
+        } else {
+            $readinessLabel = 'Partial gap';
+            $resupplyPressure = 'Moderate pressure';
+        }
 
         $row = [
             'entity_id'          => (int) ($d['id'] ?? 0),
@@ -22523,14 +22653,14 @@ function activity_priority_page_data(): array
             'rank_delta'         => 0,
             'movement_label'     => '—',
             'explanation'        => sprintf(
-                '%d losses for this fit in the last %dd · daily rate %.2f · target %d fits over %dd runway (hull-level: %d in 7d, %d in 24h)',
+                '%d losses for this fit in the last %dd · daily rate %.2f · target %d fits, %d covered by stock, %d still needed (runway %dd)',
                 $windowLosses,
                 $windowDays,
                 $dailyRate,
                 $targetFits,
-                $runwayDays,
-                $hullW['h7d'],
-                $hullW['h24']
+                $coveredFits,
+                $realGap,
+                $runwayDays
             ),
             // "hull_losses_*" are the hull-level windows shared across
             // every fingerprint on the same hull. The template labels
@@ -22545,11 +22675,16 @@ function activity_priority_page_data(): array
             'fit_equivalent_losses_7d'     => (float) $hullW['h7d'],
             'readiness_label'              => $readinessLabel,
             'resupply_pressure'            => $resupplyPressure,
-            'readiness_gap_count'          => $targetFits,
+            // Surface the REAL gap (after subtracting stock) instead
+            // of the raw target_fits so the "X fit gaps" text in the
+            // template agrees with the readiness label.
+            'readiness_gap_count'          => $realGap,
             'score_components'             => [
                 sprintf('Fit losses (%dd)', $windowDays)  => (string) $windowLosses,
                 'Daily rate'                               => number_format($dailyRate, 2),
                 'Target fits'                              => (string) $targetFits,
+                'Covered by stock'                         => (string) $coveredFits,
+                'Real gap (needed)'                        => (string) $realGap,
                 'Runway (days)'                            => (string) $runwayDays,
                 'Hull total (7d)'                          => (string) $hullW['h7d'],
             ],
@@ -22581,9 +22716,9 @@ function activity_priority_page_data(): array
             'context' => 'Auto-detected doctrines with fit gaps right now',
         ],
         [
-            'label'   => 'Highly Active Fits',
-            'value'   => (string) count(array_filter($activeDoctrines, static fn (array $r): bool => (string) $r['activity_level'] === 'critical')),
-            'context' => 'Doctrine fits with urgent resupply pressure',
+            'label'   => 'Fits Needing Stock',
+            'value'   => (string) count(array_filter($activeDoctrines, static fn (array $r): bool => (string) $r['resupply_pressure'] === 'Urgent resupply')),
+            'context' => 'Doctrines where alliance stock cannot cover the target fit count',
         ],
         [
             'label'   => 'Total Window Losses',
