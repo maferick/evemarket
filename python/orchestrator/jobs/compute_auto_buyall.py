@@ -75,18 +75,6 @@ def _doctrine_modules(db: Any, doctrine_id: int) -> list[dict[str, Any]]:
     )
 
 
-def _hull_daily_loss_rate(db: Any, hull_type_id: int, window_days: int) -> float:
-    row = db.fetch_one(
-        """SELECT COALESCE(SUM(loss_count), 0) AS total
-             FROM killmail_hull_loss_1d
-            WHERE hull_type_id = %s
-              AND bucket_start >= DATE_SUB(UTC_DATE(), INTERVAL %s DAY)""",
-        (hull_type_id, window_days),
-    )
-    total = int((row or {}).get("total") or 0)
-    return total / max(1, window_days)
-
-
 def _load_market_snapshot_rows(db: Any, type_ids: list[int]) -> dict[int, dict[str, Any]]:
     """Latest hub + alliance snapshot per type, keyed by type_id.
 
@@ -183,11 +171,20 @@ def run_compute_auto_buyall(db: Any) -> dict[str, Any]:
 
     for doctrine in doctrines:
         doctrine_id = int(doctrine["id"])
-        hull_type_id = int(doctrine["hull_type_id"])
         runway_days = int(doctrine.get("runway_days_override") or default_runway)
         is_pinned = bool(doctrine.get("is_pinned"))
 
-        daily_rate = _hull_daily_loss_rate(db, hull_type_id, window_days)
+        # Use the per-fingerprint loss count stored on auto_doctrines,
+        # computed directly from the clustering pass. Querying
+        # killmail_hull_loss_1d per hull_type_id would produce the
+        # *aggregate* loss rate for the hull and every doctrine sharing
+        # the same hull would inherit the inflated total — e.g. 12
+        # Venture variants × 34 losses/day × 14d runway = 480 target
+        # fits per variant, which then multiplies again across the
+        # variants in the demand aggregation. Trust the per-cluster
+        # count.
+        loss_count = int(doctrine.get("loss_count_window") or 0)
+        daily_rate = loss_count / max(1, window_days)
         target_fits = math.ceil(daily_rate * runway_days)
         if target_fits < 1 and is_pinned:
             target_fits = 1

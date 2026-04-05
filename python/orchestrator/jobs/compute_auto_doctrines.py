@@ -57,6 +57,26 @@ _DEFAULT_JACCARD = 0.65
 # Rorqual / freighters are excluded from the detector entirely so they
 # do not need to appear here.
 _CAPITAL_HULL_GROUPS: frozenset[int] = frozenset({485, 547, 659, 30, 1538})
+
+# Hull groups that must never appear as doctrines. The extractor SQL
+# filters by this list, and ``_purge_excluded_hull_rows`` deletes any
+# stale rows that leaked in from earlier detector runs before the
+# filter was in place. Single source of truth so the two can't drift.
+#
+#     29   Capsule (pods)              31  Shuttle
+#    237   Rookie ship                 28  Industrial
+#    380   Deep Space Transport       513  Freighter
+#    902   Jump Freighter             883  Capital Industrial Ship (Rorqual)
+#    463   Mining Barge               543  Exhumer
+#   1283   Expedition Frigate (Venture et al)
+#    941   Industrial Command Ship (Orca, Porpoise)
+_EXCLUDED_HULL_GROUPS: frozenset[int] = frozenset({
+    29, 31, 237,
+    28, 380, 513, 902,
+    883, 941,
+    463, 543, 1283,
+})
+
 _CORE_FREQUENCY_THRESHOLD = 0.80
 
 
@@ -115,25 +135,10 @@ def _extract_our_losses(db: Any, window_days: int) -> dict[int, dict]:
     # hardpoints (category 8 — ammo, missiles, crystals, scripts) and any
     # stray booster / implant rows do not enter the fingerprint.
     #
-    # Hull-side: exclude non-doctrine hulls. These either don't belong
-    # to any fleet composition (career starter ships, travel hulls,
-    # pods) or are logistics assets tracked separately from combat
-    # doctrines (haulers, mining).
-    #
-    # EVE group IDs excluded:
-    #     29   Capsule (pods)
-    #     31   Shuttle
-    #    237   Rookie ship (Ibis, Reaper, Impairor, Velator)
-    #     28   Industrial (Badger, Iteron, Bestower, Epithal, ...)
-    #    380   Deep Space Transport
-    #    513   Freighter
-    #    902   Jump Freighter (Anshar, Ark, Nomad, Rhea)
-    #    883   Capital Industrial Ship (Rorqual)
-    #    463   Mining Barge (Procurer, Retriever, Covetor)
-    #    543   Exhumer (Skiff, Mackinaw, Hulk)
-    #   1283   Expedition Frigate (Venture, Prospect, Endurance)
-    #    941   Industrial Command Ship (Orca, Porpoise)
-    sql = """
+    # Hull-side: exclude non-doctrine hulls via the ``_EXCLUDED_HULL_GROUPS``
+    # module constant. See the constant's docstring for the full list.
+    excluded_groups_sql = ",".join(str(g) for g in sorted(_EXCLUDED_HULL_GROUPS))
+    sql = f"""
         SELECT ke.sequence_id, ke.victim_ship_type_id, ke.victim_alliance_id,
                ki.item_type_id, ki.item_flag
         FROM killmail_events ke
@@ -146,12 +151,7 @@ def _extract_our_losses(db: Any, window_days: int) -> dict[int, dict]:
                OR ki.item_flag BETWEEN 92 AND 94
                OR ki.item_flag BETWEEN 125 AND 132)
           AND rit.category_id IN (7, 32)
-          AND hull.group_id NOT IN (
-              29, 31, 237,                  -- pods, shuttles, rookies
-              28, 380, 513, 902,            -- haulers, freighters, jump freighters
-              883, 941,                     -- rorquals, orcas
-              463, 543, 1283                -- mining barges, exhumers, ventures
-          )
+          AND hull.group_id NOT IN ({excluded_groups_sql})
         ORDER BY ke.sequence_id
     """
     # Use _fit_clustering.flag_category via local import to avoid a
@@ -414,6 +414,61 @@ def _upsert_doctrines(
     return id_map
 
 
+def _purge_excluded_hull_rows(db: Any) -> int:
+    """Delete ``auto_doctrines`` rows for hulls that are currently in the
+    exclude list.
+
+    The extractor SQL already filters excluded hulls out of every new
+    run's input, but rows inserted by *earlier* runs (before the filter
+    was tightened, or via the original migration that may have raced
+    with a concurrent insert) linger forever otherwise. Running this
+    self-heal at the start of every detector run keeps the table clean
+    against any drift — it's idempotent and the list is small.
+
+    Foreign keys on ``auto_doctrine_modules`` and
+    ``auto_doctrine_fit_demand_1d`` cascade, so a single DELETE sweeps
+    their children too.
+    """
+    if not _EXCLUDED_HULL_GROUPS:
+        return 0
+    placeholders = ",".join(["%s"] * len(_EXCLUDED_HULL_GROUPS))
+    return db.execute(
+        f"""DELETE ad
+              FROM auto_doctrines ad
+              JOIN ref_item_types rit ON rit.type_id = ad.hull_type_id
+             WHERE rit.group_id IN ({placeholders})""",
+        tuple(sorted(_EXCLUDED_HULL_GROUPS)),
+    )
+
+
+def _sweep_is_active(db: Any, min_losses: int, capital_min_losses: int) -> int:
+    """Recompute ``is_active`` for every non-pinned row against the
+    current thresholds.
+
+    Without this sweep a row only gets its ``is_active`` flag updated
+    when the detector's clustering pass touches it — i.e. when a
+    cluster with the same ``(hull_type_id, fingerprint_hash)`` shows
+    up again in the current window. Rows from earlier runs whose
+    fingerprint no longer appears (because the thresholds changed,
+    the fit mutated, or the hull was purged) retain their stale
+    ``is_active`` value forever. The fix is a single bulk UPDATE that
+    re-evaluates every non-pinned row in one shot, tiered by hull
+    class.
+    """
+    cap_list = ",".join(str(g) for g in sorted(_CAPITAL_HULL_GROUPS))
+    return db.execute(
+        f"""UPDATE auto_doctrines ad
+              JOIN ref_item_types rit ON rit.type_id = ad.hull_type_id
+               SET ad.is_active = CASE
+                   WHEN rit.group_id IN ({cap_list})
+                       THEN IF(ad.loss_count_window >= %s, 1, 0)
+                       ELSE IF(ad.loss_count_window >= %s, 1, 0)
+               END
+             WHERE ad.is_pinned = 0""",
+        (capital_min_losses, min_losses),
+    )
+
+
 def _repopulate_loss_aggregates(db: Any) -> int:
     """Null out and repopulate ``doctrine_fit_id`` on loss rollups against the
     current active doctrine space.
@@ -484,11 +539,24 @@ def _upsert_daily_demand(
     default_runway_days: int,
     window_days: int,
 ) -> int:
-    """Write one ``auto_doctrine_fit_demand_1d`` row per active/pinned doctrine."""
+    """Write one ``auto_doctrine_fit_demand_1d`` row per active/pinned doctrine.
+
+    Uses the per-fingerprint ``loss_count_window`` already stored on
+    ``auto_doctrines`` (computed during this run's clustering pass)
+    instead of re-querying ``killmail_hull_loss_1d``. The hull rollup
+    is keyed by hull only, so every doctrine sharing the same hull
+    would otherwise inherit the *total* hull loss rate — e.g. every
+    Muninn variant ends up with the same daily rate regardless of
+    fingerprint, and buy-all multiplies that inflated rate by the
+    number of clusters for the hull. The clustering already produced
+    the correct per-fingerprint count; trust it.
+    """
+    import math
+
     db.execute("DELETE FROM auto_doctrine_fit_demand_1d WHERE bucket_start = %s", (today,))
 
     doctrines = db.fetch_all(
-        """SELECT id, hull_type_id, runway_days_override, is_pinned
+        """SELECT id, hull_type_id, runway_days_override, is_pinned, loss_count_window
              FROM auto_doctrines
             WHERE is_hidden = 0 AND (is_active = 1 OR is_pinned = 1)"""
     )
@@ -496,21 +564,11 @@ def _upsert_daily_demand(
     written = 0
     for d in doctrines:
         doctrine_id = int(d["id"])
-        hull_type_id = int(d["hull_type_id"])
         runway_days = int(d.get("runway_days_override") or default_runway_days)
         is_pinned = bool(d.get("is_pinned"))
+        loss_count = int(d.get("loss_count_window") or 0)
 
-        loss_row = db.fetch_one(
-            """SELECT COALESCE(SUM(loss_count), 0) AS total
-                 FROM killmail_hull_loss_1d
-                WHERE hull_type_id = %s
-                  AND bucket_start >= DATE_SUB(UTC_DATE(), INTERVAL %s DAY)""",
-            (hull_type_id, window_days),
-        )
-        loss_count = int((loss_row or {}).get("total") or 0)
         daily_loss_rate = loss_count / max(1, window_days)
-        # Integer target with pinned floor of 1 even when rate==0.
-        import math
         target_fits = math.ceil(daily_loss_rate * runway_days)
         if target_fits < 1 and is_pinned:
             target_fits = 1
@@ -538,6 +596,13 @@ def run_compute_auto_doctrines(db: Any) -> dict[str, Any]:
 
     settings = _load_settings(db)
 
+    # Self-heal: delete any stale rows for hulls that are now in the
+    # exclude list. Catches rows inserted by earlier detector runs
+    # before the filter was tightened.
+    purged_excluded = _purge_excluded_hull_rows(db)
+    if purged_excluded:
+        logger.info("auto_doctrines: purged %d stale rows for excluded hull groups", purged_excluded)
+
     kills = _extract_our_losses(db, settings["window_days"])
     if not kills:
         return {
@@ -547,7 +612,10 @@ def run_compute_auto_doctrines(db: Any) -> dict[str, Any]:
             "rows_seen": 0,
             "rows_processed": 0,
             "rows_written": 0,
-            "meta": {"window_days": settings["window_days"]},
+            "meta": {
+                "window_days": settings["window_days"],
+                "purged_excluded_hull_rows": purged_excluded,
+            },
         }
 
     families = cluster_fit_families(kills, jaccard_threshold=settings["jaccard_threshold"])
@@ -559,6 +627,18 @@ def run_compute_auto_doctrines(db: Any) -> dict[str, Any]:
         min_losses=settings["min_losses"],
         capital_min_losses=settings["capital_min_losses"],
     )
+
+    # Recompute is_active for every non-pinned row against the current
+    # thresholds. This catches stale ``is_active=1`` flags from earlier
+    # runs where the threshold was different — without it, rows whose
+    # fingerprint no longer appears in the clustering pass retain their
+    # old activation state forever.
+    reactivated = _sweep_is_active(
+        db,
+        min_losses=settings["min_losses"],
+        capital_min_losses=settings["capital_min_losses"],
+    )
+    logger.info("auto_doctrines: is_active sweep touched %d rows", reactivated)
 
     _repopulate_loss_aggregates(db)
 
@@ -583,8 +663,11 @@ def run_compute_auto_doctrines(db: Any) -> dict[str, Any]:
         "meta": {
             "window_days": settings["window_days"],
             "min_losses_threshold": settings["min_losses"],
+            "capital_min_losses_threshold": settings["capital_min_losses"],
             "families_clustered": len(families),
             "doctrines_upserted": len(id_map),
             "demand_rows": demand_rows,
+            "purged_excluded_hull_rows": purged_excluded,
+            "is_active_sweep_rows": reactivated,
         },
     }
