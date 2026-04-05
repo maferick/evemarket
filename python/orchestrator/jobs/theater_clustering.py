@@ -542,29 +542,36 @@ def _load_friendly_ids(db: SupplyCoreDb) -> tuple[set[int], set[int]]:
     return friendly_alliance_ids, friendly_corporation_ids
 
 
-# Minimum pilots an opponent alliance must have in a battle to count as a
-# "significant" presence.  Alliances below this threshold in a battle are
-# treated as stragglers and won't bridge two otherwise-disjoint engagements.
+# Minimum absolute pilot count for an opponent alliance to be considered
+# "significant" in a battle.  Smaller presences are treated as stragglers.
 OPPONENT_SPLIT_MIN_PILOTS = 5
+
+# Minimum fraction of a battle's opponent pilots an alliance must have to be
+# considered the battle's primary opponent.  Prevents a small opponent with
+# high absolute count from being counted as "the main enemy" when a much
+# larger opponent is also present.
+OPPONENT_SPLIT_PRIMARY_MIN_SHARE = 0.30
 
 
 def _split_by_opponent_composition(
     theater_groups: dict[str, list[dict[str, Any]]],
     battle_opponents: dict[str, dict[int, int]],
 ) -> dict[str, list[dict[str, Any]]]:
-    """Split theaters whose constituent battles face disjoint opponent groups.
+    """Split theaters whose constituent battles face different primary opponents.
 
-    For each theater with multiple battles, build a union-find where battles
-    sharing a *significant* opponent alliance are merged.  An alliance counts
-    as significant in a battle only when it has >= OPPONENT_SPLIT_MIN_PILOTS
-    pilots — a handful of stragglers lingering from a previous engagement
-    won't prevent a split.
+    For each battle, the "primary opponent" is the non-friendly alliance with
+    the most pilots in that battle (provided it meets the minimum pilot count
+    and at least a 30 percent share of the battle's opponent pilots).
 
-    If the result has multiple connected components, the theater is split
-    into separate theaters — one per component.
+    Battles are merged via union-find when they share the same primary
+    opponent.  Battles with different primary opponents form separate
+    components and the theater is split accordingly — this handles the
+    common case of consecutive engagements where the dominant enemy shifts
+    (e.g. first fight vs Goons, then fight vs Init) even though pilots from
+    both alliances may appear in both battles as stragglers or allies.
 
-    Battles with no significant opponents are attached to the largest
-    component (they're likely small skirmishes related to the main fight).
+    Battles with no clear primary opponent (orphans) attach to the largest
+    component — they're likely small skirmishes related to the main fight.
     """
     new_groups: dict[str, list[dict[str, Any]]] = {}
 
@@ -573,51 +580,52 @@ def _split_by_opponent_composition(
             new_groups[root] = group_battles
             continue
 
-        # Build union-find: battles sharing a significant opponent alliance get merged
         uf = _UnionFind()
         battle_ids_in_group = [str(b["battle_id"]) for b in group_battles]
         for bid in battle_ids_in_group:
             uf.find(bid)
 
-        # For each battle, determine significant opponent alliances
-        battle_significant: dict[str, set[int]] = {}
+        # Determine each battle's primary opponent (largest non-friendly
+        # alliance by pilot count, subject to minimum thresholds).
+        battle_primary: dict[str, int] = {}
         for bid in battle_ids_in_group:
             opp = battle_opponents.get(bid, {})
-            battle_significant[bid] = {
-                aid for aid, count in opp.items()
-                if count >= OPPONENT_SPLIT_MIN_PILOTS
-            }
+            if not opp:
+                continue
+            total_opp_pilots = sum(opp.values())
+            if total_opp_pilots <= 0:
+                continue
+            top_aid, top_count = max(opp.items(), key=lambda kv: kv[1])
+            if top_count < OPPONENT_SPLIT_MIN_PILOTS:
+                continue
+            if (top_count / total_opp_pilots) < OPPONENT_SPLIT_PRIMARY_MIN_SHARE:
+                continue
+            battle_primary[bid] = top_aid
 
-        # Index: significant opponent alliance → list of battle_ids
-        alliance_to_battles: dict[int, list[str]] = defaultdict(list)
-        for bid in battle_ids_in_group:
-            for aid in battle_significant.get(bid, set()):
-                alliance_to_battles[aid].append(bid)
-
-        # Union battles that share a significant opponent alliance
-        for aid, bids in alliance_to_battles.items():
+        # Union battles that share the same primary opponent
+        by_primary: dict[int, list[str]] = defaultdict(list)
+        for bid, aid in battle_primary.items():
+            by_primary[aid].append(bid)
+        for aid, bids in by_primary.items():
             for i in range(1, len(bids)):
                 uf.union(bids[0], bids[i])
 
         components = uf.groups()
-
-        # If only one component, no split needed
         if len(components) <= 1:
             new_groups[root] = group_battles
             continue
 
-        # Separate battles with no significant opponents
+        # Remove orphan battles (no determined primary opponent) from
+        # components — they'll be attached to the largest real component.
         battle_map = {str(b["battle_id"]): b for b in group_battles}
-        orphan_bids = [bid for bid in battle_ids_in_group if not battle_significant.get(bid)]
+        orphan_bids = [bid for bid in battle_ids_in_group if bid not in battle_primary]
         real_components: dict[str, list[str]] = {
             comp_root: [bid for bid in members if bid not in orphan_bids]
             for comp_root, members in components.items()
         }
-        # Remove empty components (all members were orphans)
         real_components = {k: v for k, v in real_components.items() if v}
 
         if len(real_components) <= 1:
-            # After removing orphans, only one real component — no split
             new_groups[root] = group_battles
             continue
 
@@ -625,7 +633,6 @@ def _split_by_opponent_composition(
         largest_root = max(real_components, key=lambda r: len(real_components[r]))
         real_components[largest_root].extend(orphan_bids)
 
-        # Create new theater groups from components
         for comp_root, comp_bids in real_components.items():
             comp_battles = [battle_map[bid] for bid in comp_bids if bid in battle_map]
             if comp_battles:
