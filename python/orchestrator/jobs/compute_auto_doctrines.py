@@ -39,7 +39,13 @@ logger = logging.getLogger("supplycore.auto_doctrines")
 
 _DEFAULT_WINDOW_DAYS = 30
 _DEFAULT_MIN_LOSSES = 30
-_DEFAULT_JACCARD = 0.80
+# 0.65 merges clusters that share roughly two-thirds of their modules.
+# The original 0.80 value (inherited from the opponent-kill economic
+# warfare clusterer) was too strict for our own losses: incomplete
+# killmails, mid-fight refits, and meta variance were producing huge
+# numbers of single-kill fragments from what were really the same
+# doctrine operationally.
+_DEFAULT_JACCARD = 0.65
 _CORE_FREQUENCY_THRESHOLD = 0.80
 
 
@@ -90,26 +96,46 @@ def _extract_our_losses(db: Any, window_days: int) -> dict[int, dict]:
     # zero rows even when thousands of loss killmails were in-window.
     #
     # We additionally filter to ``ref_item_types.category_id IN (7, 32)``
-    # so that charges loaded into turret / launcher hardpoints
-    # (category 8 — ammo, missiles, crystals, scripts) and any stray
-    # booster / implant rows do not enter the fingerprint. Including
-    # charges fragments clusters heavily because the same Caracal fit
-    # with Scourge Fury vs Mjolnir Fury would otherwise hash to two
-    # different doctrines.
+    # (Module + Subsystem) so that charges loaded into turret / launcher
+    # hardpoints (category 8 — ammo, missiles, crystals, scripts) and any
+    # stray booster / implant rows do not enter the fingerprint.
     #
-    # EVE category IDs: 7 = Module, 32 = Subsystem.
+    # Hull-side: exclude non-doctrine hulls. These either don't belong
+    # to any fleet composition (career starter ships, travel hulls,
+    # pods) or are logistics assets tracked separately from combat
+    # doctrines (haulers, mining).
+    #
+    # EVE group IDs excluded:
+    #     29   Capsule (pods)
+    #     31   Shuttle
+    #    237   Rookie ship (Ibis, Reaper, Impairor, Velator)
+    #     28   Industrial (Badger, Iteron, Bestower, Epithal, ...)
+    #    380   Deep Space Transport
+    #    513   Freighter
+    #   1022   Jump Freighter
+    #    463   Mining Barge (Procurer, Retriever, Covetor)
+    #    543   Exhumer (Skiff, Mackinaw, Hulk)
+    #   1283   Expedition Frigate (Venture, Prospect, Endurance)
+    #    941   Industrial Command Ship (Orca, Porpoise)
+    #    902   Capital Industrial Ship (Rorqual)
     sql = """
         SELECT ke.sequence_id, ke.victim_ship_type_id, ke.victim_alliance_id,
                ki.item_type_id, ki.item_flag
         FROM killmail_events ke
         INNER JOIN killmail_items ki ON ki.sequence_id = ke.sequence_id
         INNER JOIN ref_item_types rit ON rit.type_id = ki.item_type_id
+        INNER JOIN ref_item_types hull ON hull.type_id = ke.victim_ship_type_id
         WHERE ke.mail_type = 'loss'
           AND ke.killmail_time >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL %s DAY)
           AND (ki.item_flag BETWEEN 11 AND 34
                OR ki.item_flag BETWEEN 92 AND 94
                OR ki.item_flag BETWEEN 125 AND 132)
           AND rit.category_id IN (7, 32)
+          AND hull.group_id NOT IN (
+              29, 31, 237,                  -- pods, shuttles, rookies
+              28, 380, 513, 1022,           -- haulers, freighters
+              463, 543, 1283, 941, 902      -- mining barges, exhumers, ventures, orcas, rorquals
+          )
         ORDER BY ke.sequence_id
     """
     # Use _fit_clustering.flag_category via local import to avoid a
@@ -179,15 +205,48 @@ def _hull_name_map(db: Any, hull_ids: set[int]) -> dict[int, str]:
     return {int(r["type_id"]): str(r["type_name"] or "") for r in rows}
 
 
-def _canonical_name(hull_name: str, core: list[tuple[int, str, int, float]]) -> str:
-    """Produce a human-ish label from hull + dominant high-slot module."""
+def _alliance_name_map(db: Any, alliance_ids: set[int]) -> dict[int, str]:
+    """Best-effort alliance id → name lookup via entity_metadata_cache.
+
+    Falls back to ``Alliance #<id>`` for anything not yet resolved by
+    the ESI metadata worker.
+    """
+    if not alliance_ids:
+        return {}
+    placeholders = ",".join(["%s"] * len(alliance_ids))
+    rows = db.fetch_all(
+        f"""SELECT entity_id, entity_name
+              FROM entity_metadata_cache
+             WHERE entity_type = 'alliance'
+               AND entity_id IN ({placeholders})""",
+        tuple(alliance_ids),
+    )
+    return {
+        int(r["entity_id"]): str(r.get("entity_name") or "").strip()
+        for r in rows
+    }
+
+
+def _canonical_name(
+    hull_name: str,
+    core: list[tuple[int, str, int, float]],
+    alliance_label: str | None = None,
+) -> str:
+    """Produce a human-ish label: hull + dominant high-slot module, and
+    the owning alliance's name when the cluster is fielded by exactly
+    one alliance.
+    """
     if not hull_name:
         hull_name = "Unknown hull"
     high_mods = [m for m in core if m[1] in {"high", "high_slot", "turret", "launcher"}]
     if high_mods:
         top = max(high_mods, key=lambda m: (m[2], m[3]))
-        return f"{hull_name} — auto (top: type {top[0]})"[:191]
-    return f"{hull_name} — auto"[:191]
+        base = f"{hull_name} — auto (top: type {top[0]})"
+    else:
+        base = f"{hull_name} — auto"
+    if alliance_label:
+        base = f"{base} — {alliance_label}"
+    return base[:191]
 
 
 def _upsert_doctrines(
@@ -207,6 +266,16 @@ def _upsert_doctrines(
     hull_ids = {int(f["hull_type_id"]) for f in families}
     hull_names = _hull_name_map(db, hull_ids)
 
+    # Collect every alliance id that shows up in any family so we can
+    # resolve names in one round-trip. We only tag clusters with a single
+    # distinct alliance, but the resolution batch includes all of them.
+    single_alliance_candidates: set[int] = set()
+    for family in families:
+        ally_ids = {int(a) for a in family.get("alliance_ids", set()) if int(a) > 0}
+        if len(ally_ids) == 1:
+            single_alliance_candidates.update(ally_ids)
+    alliance_names = _alliance_name_map(db, single_alliance_candidates)
+
     id_map: dict[tuple[int, str], int] = {}
 
     for family in families:
@@ -216,7 +285,19 @@ def _upsert_doctrines(
         canonical_fp = _canonical_fingerprint(core)
         hull_type_id = int(family["hull_type_id"])
         loss_count = int(family["observation_count"])
-        canonical_name = _canonical_name(hull_names.get(hull_type_id, ""), core)
+
+        # Tag the canonical name with the single fielding alliance when
+        # every kill in this cluster came from the same alliance id.
+        family_ally_ids = {int(a) for a in family.get("alliance_ids", set()) if int(a) > 0}
+        alliance_label: str | None = None
+        if len(family_ally_ids) == 1:
+            (only_id,) = family_ally_ids
+            name = alliance_names.get(only_id, "").strip()
+            alliance_label = name or f"Alliance #{only_id}"
+
+        canonical_name = _canonical_name(
+            hull_names.get(hull_type_id, ""), core, alliance_label=alliance_label
+        )
 
         existing = db.fetch_one(
             """SELECT id, loss_count_total, is_pinned
