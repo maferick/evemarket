@@ -35,7 +35,7 @@ _PRUNE_SUMMARIES_OLDER_THAN_DAYS = 7
 
 def _load_settings(db: Any) -> dict[str, int]:
     rows = db.fetch_all(
-        """SELECT setting_key, setting_value FROM settings
+        """SELECT setting_key, setting_value FROM app_settings
             WHERE setting_key IN (
                 'auto_doctrines.default_runway_days',
                 'auto_doctrines.window_days'
