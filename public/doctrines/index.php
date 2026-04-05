@@ -52,7 +52,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 // ─── GET: render the list ──────────────────────────────────────────────────
 $title = 'Doctrines';
 $includeHidden = isset($_GET['include_hidden']) && $_GET['include_hidden'] === '1';
-$doctrines = auto_doctrine_list(['include_hidden' => $includeHidden]);
+$includeInactive = isset($_GET['include_inactive']) && $_GET['include_inactive'] === '1';
+$doctrines = auto_doctrine_list([
+    'include_hidden'   => $includeHidden,
+    'include_inactive' => $includeInactive,
+]);
 $settings = auto_doctrine_settings();
 $flashOk = flash('doctrines_ok');
 $flashErr = flash('doctrines_error');
@@ -92,7 +96,20 @@ include __DIR__ . '/../../src/views/partials/header.php';
             <p class="text-sm text-white/60">Pin critical fits so they always drive buy-all. Hide noisy ones. Adjust runway per doctrine.</p>
         </div>
         <div class="flex items-center gap-3">
-            <a href="/doctrines/?include_hidden=<?= $includeHidden ? '0' : '1' ?>" class="text-sm text-cyan-300 hover:text-cyan-200">
+            <?php
+                $toggleInactiveQuery = http_build_query([
+                    'include_inactive' => $includeInactive ? '0' : '1',
+                    'include_hidden'   => $includeHidden ? '1' : '0',
+                ]);
+                $toggleHiddenQuery = http_build_query([
+                    'include_inactive' => $includeInactive ? '1' : '0',
+                    'include_hidden'   => $includeHidden ? '0' : '1',
+                ]);
+            ?>
+            <a href="/doctrines/?<?= htmlspecialchars($toggleInactiveQuery, ENT_QUOTES) ?>" class="text-sm text-cyan-300 hover:text-cyan-200">
+                <?= $includeInactive ? 'Hide inactive' : 'Show inactive' ?>
+            </a>
+            <a href="/doctrines/?<?= htmlspecialchars($toggleHiddenQuery, ENT_QUOTES) ?>" class="text-sm text-cyan-300 hover:text-cyan-200">
                 <?= $includeHidden ? 'Hide hidden' : 'Show hidden' ?>
             </a>
             <a href="/buy-all/" class="text-sm text-cyan-300 hover:text-cyan-200">Buy-all →</a>

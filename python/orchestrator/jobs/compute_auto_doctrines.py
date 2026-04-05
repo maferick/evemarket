@@ -38,7 +38,7 @@ from ._fit_clustering import (
 logger = logging.getLogger("supplycore.auto_doctrines")
 
 _DEFAULT_WINDOW_DAYS = 30
-_DEFAULT_MIN_LOSSES = 5
+_DEFAULT_MIN_LOSSES = 30
 _DEFAULT_JACCARD = 0.80
 _CORE_FREQUENCY_THRESHOLD = 0.80
 
@@ -88,16 +88,28 @@ def _extract_our_losses(db: Any, window_days: int) -> dict[int, dict]:
     # ``'destroyed'`` / ``'dropped'`` into ``item_role`` and never tag
     # anything ``'fitted'``, which previously caused this query to return
     # zero rows even when thousands of loss killmails were in-window.
+    #
+    # We additionally filter to ``ref_item_types.category_id IN (7, 32)``
+    # so that charges loaded into turret / launcher hardpoints
+    # (category 8 — ammo, missiles, crystals, scripts) and any stray
+    # booster / implant rows do not enter the fingerprint. Including
+    # charges fragments clusters heavily because the same Caracal fit
+    # with Scourge Fury vs Mjolnir Fury would otherwise hash to two
+    # different doctrines.
+    #
+    # EVE category IDs: 7 = Module, 32 = Subsystem.
     sql = """
         SELECT ke.sequence_id, ke.victim_ship_type_id, ke.victim_alliance_id,
                ki.item_type_id, ki.item_flag
         FROM killmail_events ke
         INNER JOIN killmail_items ki ON ki.sequence_id = ke.sequence_id
+        INNER JOIN ref_item_types rit ON rit.type_id = ki.item_type_id
         WHERE ke.mail_type = 'loss'
           AND ke.killmail_time >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL %s DAY)
           AND (ki.item_flag BETWEEN 11 AND 34
                OR ki.item_flag BETWEEN 92 AND 94
                OR ki.item_flag BETWEEN 125 AND 132)
+          AND rit.category_id IN (7, 32)
         ORDER BY ke.sequence_id
     """
     # Use _fit_clustering.flag_category via local import to avoid a

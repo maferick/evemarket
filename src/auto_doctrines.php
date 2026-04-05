@@ -19,11 +19,25 @@ declare(strict_types=1);
 
 // ─── DB layer ──────────────────────────────────────────────────────────────
 
-/** Fetch every auto-doctrine row joined with today's demand rollup. */
-function db_auto_doctrine_fetch_all(bool $includeHidden = false): array
+/** Fetch every auto-doctrine row joined with today's demand rollup.
+ *
+ * By default only active-or-pinned, non-hidden rows are returned so the
+ * /doctrines/ page doesn't drown in single-kill cluster fragments. Pass
+ * ``includeInactive=true`` to pull the long tail (inactive clusters
+ * still live in the table for history) and ``includeHidden=true`` to
+ * also show rows the operator explicitly hid.
+ */
+function db_auto_doctrine_fetch_all(bool $includeHidden = false, bool $includeInactive = false): array
 {
     $pdo = db();
-    $where = $includeHidden ? '1 = 1' : 'ad.is_hidden = 0';
+    $clauses = [];
+    if (!$includeHidden) {
+        $clauses[] = 'ad.is_hidden = 0';
+    }
+    if (!$includeInactive) {
+        $clauses[] = '(ad.is_active = 1 OR ad.is_pinned = 1)';
+    }
+    $where = $clauses === [] ? '1 = 1' : implode(' AND ', $clauses);
     $sql = "SELECT ad.id, ad.hull_type_id, ad.fingerprint_hash, ad.canonical_name,
                    ad.first_seen_at, ad.last_seen_at,
                    ad.loss_count_window, ad.loss_count_total,
@@ -241,7 +255,8 @@ function auto_doctrine_settings(): array
 function auto_doctrine_list(array $opts = []): array
 {
     $includeHidden = (bool) ($opts['include_hidden'] ?? false);
-    $rows = db_auto_doctrine_fetch_all($includeHidden);
+    $includeInactive = (bool) ($opts['include_inactive'] ?? false);
+    $rows = db_auto_doctrine_fetch_all($includeHidden, $includeInactive);
     $settings = auto_doctrine_settings();
     $defaultRunway = (int) $settings['default_runway_days'];
 
