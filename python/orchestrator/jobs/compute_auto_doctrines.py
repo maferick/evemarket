@@ -68,13 +68,29 @@ _CAPITAL_HULL_GROUPS: frozenset[int] = frozenset({485, 547, 659, 30, 1538})
 #    380   Deep Space Transport       513  Freighter
 #    902   Jump Freighter             883  Capital Industrial Ship (Rorqual)
 #    463   Mining Barge               543  Exhumer
-#   1283   Expedition Frigate (Venture et al)
+#   1283   Expedition Frigate (Venture et al — modern SDE)
 #    941   Industrial Command Ship (Orca, Porpoise)
 _EXCLUDED_HULL_GROUPS: frozenset[int] = frozenset({
     29, 31, 237,
     28, 380, 513, 902,
     883, 941,
     463, 543, 1283,
+})
+
+# Individual hull type_ids to exclude regardless of group. Some SDE
+# imports classify the Venture family under group 25 (Frigate) instead
+# of the modern 1283 (Expedition Frigate), so a pure group_id filter
+# misses them on those servers — but we also can't blanket-exclude
+# group 25 because that kills every legit combat frigate doctrine
+# (Atron, Slasher, Condor, Tristan, ...). Hard-coding the known mining
+# frigate type_ids catches them regardless of SDE version.
+#
+#   32880  Venture
+#   33697  Prospect
+#   37135  Endurance
+#   89648  Venture Consortium Issue
+_EXCLUDED_HULL_TYPE_IDS: frozenset[int] = frozenset({
+    32880, 33697, 37135, 89648,
 })
 
 _CORE_FREQUENCY_THRESHOLD = 0.80
@@ -136,8 +152,12 @@ def _extract_our_losses(db: Any, window_days: int) -> dict[int, dict]:
     # stray booster / implant rows do not enter the fingerprint.
     #
     # Hull-side: exclude non-doctrine hulls via the ``_EXCLUDED_HULL_GROUPS``
-    # module constant. See the constant's docstring for the full list.
+    # group filter plus an explicit ``_EXCLUDED_HULL_TYPE_IDS`` override
+    # for hulls whose SDE group_id varies across dumps (e.g. the Venture
+    # family which some imports classify under group 25 Frigate instead
+    # of the modern 1283 Expedition Frigate).
     excluded_groups_sql = ",".join(str(g) for g in sorted(_EXCLUDED_HULL_GROUPS))
+    excluded_type_ids_sql = ",".join(str(t) for t in sorted(_EXCLUDED_HULL_TYPE_IDS))
     sql = f"""
         SELECT ke.sequence_id, ke.victim_ship_type_id, ke.victim_alliance_id,
                ki.item_type_id, ki.item_flag
@@ -152,6 +172,7 @@ def _extract_our_losses(db: Any, window_days: int) -> dict[int, dict]:
                OR ki.item_flag BETWEEN 125 AND 132)
           AND rit.category_id IN (7, 32)
           AND hull.group_id NOT IN ({excluded_groups_sql})
+          AND hull.type_id  NOT IN ({excluded_type_ids_sql})
         ORDER BY ke.sequence_id
     """
     # Use _fit_clustering.flag_category via local import to avoid a
@@ -416,29 +437,37 @@ def _upsert_doctrines(
 
 def _purge_excluded_hull_rows(db: Any) -> int:
     """Delete ``auto_doctrines`` rows for hulls that are currently in the
-    exclude list.
+    exclude list (by group_id) or on the explicit type_id override list.
 
-    The extractor SQL already filters excluded hulls out of every new
-    run's input, but rows inserted by *earlier* runs (before the filter
-    was tightened, or via the original migration that may have raced
-    with a concurrent insert) linger forever otherwise. Running this
+    The extractor SQL already filters both sets out of every new run's
+    input, but rows inserted by *earlier* runs (before the filter was
+    tightened, or via the original migration that may have raced with
+    a concurrent insert) linger forever otherwise. Running this
     self-heal at the start of every detector run keeps the table clean
-    against any drift — it's idempotent and the list is small.
+    against any drift — it's idempotent and the lists are small.
 
     Foreign keys on ``auto_doctrine_modules`` and
     ``auto_doctrine_fit_demand_1d`` cascade, so a single DELETE sweeps
     their children too.
     """
-    if not _EXCLUDED_HULL_GROUPS:
-        return 0
-    placeholders = ",".join(["%s"] * len(_EXCLUDED_HULL_GROUPS))
-    return db.execute(
-        f"""DELETE ad
-              FROM auto_doctrines ad
-              JOIN ref_item_types rit ON rit.type_id = ad.hull_type_id
-             WHERE rit.group_id IN ({placeholders})""",
-        tuple(sorted(_EXCLUDED_HULL_GROUPS)),
-    )
+    purged = 0
+    if _EXCLUDED_HULL_GROUPS:
+        group_placeholders = ",".join(["%s"] * len(_EXCLUDED_HULL_GROUPS))
+        purged += db.execute(
+            f"""DELETE ad
+                  FROM auto_doctrines ad
+                  JOIN ref_item_types rit ON rit.type_id = ad.hull_type_id
+                 WHERE rit.group_id IN ({group_placeholders})""",
+            tuple(sorted(_EXCLUDED_HULL_GROUPS)),
+        )
+    if _EXCLUDED_HULL_TYPE_IDS:
+        type_placeholders = ",".join(["%s"] * len(_EXCLUDED_HULL_TYPE_IDS))
+        purged += db.execute(
+            f"""DELETE FROM auto_doctrines
+                 WHERE hull_type_id IN ({type_placeholders})""",
+            tuple(sorted(_EXCLUDED_HULL_TYPE_IDS)),
+        )
+    return purged
 
 
 def _sweep_is_active(db: Any, min_losses: int, capital_min_losses: int) -> int:
