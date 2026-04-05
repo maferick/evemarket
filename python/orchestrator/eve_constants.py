@@ -156,9 +156,19 @@ ROLE_MULTIPLIER_WEIGHT: dict[str, float] = {
 # ── Economic Warfare: item flag → slot category mapping (ESI standard) ────────
 
 ITEM_FLAG_CATEGORY: dict[int, str] = {
-    **{f: "high" for f in range(11, 19)},       # high slots (11-18)
+    # EVE ``invFlags`` IDs (verified against the SDE):
+    #   LoSlot0..LoSlot7  = 11..18
+    #   MedSlot0..MedSlot7 = 19..26
+    #   HiSlot0..HiSlot7  = 27..34
+    # An earlier version of this map had the 11-18 and 27-34 ranges
+    # swapped — clustering still worked because the labels were
+    # consistently wrong, but the human-readable slot category and the
+    # ``_canonical_name`` heuristic that picks the "dominant high-slot
+    # module" were both inverted. Fixing the labels here re-anchors
+    # every downstream consumer to reality.
+    **{f: "low" for f in range(11, 19)},         # low slots (11-18)
     **{f: "medium" for f in range(19, 27)},      # mid slots (19-26)
-    **{f: "low" for f in range(27, 35)},         # low slots (27-34)
+    **{f: "high" for f in range(27, 35)},        # high slots (27-34)
     **{f: "rig" for f in range(92, 95)},         # rig slots (92-94)
     87: "drone",                                  # drone bay
     **{f: "subsystem" for f in range(125, 133)},  # T3 subsystems (125-132)
