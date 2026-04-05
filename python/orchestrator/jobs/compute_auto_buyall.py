@@ -290,7 +290,18 @@ def run_compute_auto_buyall(db: Any) -> dict[str, Any]:
             json.dumps(payload, separators=(",", ":")),
         ),
     )
-    summary_row = db.fetch_one("SELECT LAST_INSERT_ID() AS id")
+    # ``SupplyCoreDb.execute`` and ``fetch_one`` each open their own
+    # short-lived connection, so ``SELECT LAST_INSERT_ID()`` from a
+    # separate call returns 0 — the session it belonged to has already
+    # been returned to the pool. Look the row up by ``computed_at``
+    # instead; we just wrote it and it is a datetime that we control.
+    summary_row = db.fetch_one(
+        """SELECT id FROM auto_buyall_summary
+            WHERE computed_at = %s
+            ORDER BY id DESC
+            LIMIT 1""",
+        (computed_at,),
+    )
     summary_id = int((summary_row or {}).get("id") or 0)
 
     if summary_id > 0 and items:
