@@ -9618,7 +9618,7 @@ function current_alliance_market_status_data(): array
     $page = max(1, (int) ($_GET['page'] ?? 1));
     $cacheParts = ['current-alliance', $sort, $pageSize, $page, $search];
     $useCache = $search === '' && $page === 1 && $pageSize === 25 && $sort === 'urgency';
-    $resolver = static function () use ($search, $sort, $pageSize, $page): array {
+    $resolver = static function () use ($search, $sort, $pageSize, $page, $allowedPageSizes): array {
         $outcomes = market_comparison_outcomes();
         $thresholds = $outcomes['thresholds'] ?? [];
         $lowStockThreshold = max(1, (int) ($thresholds['min_alliance_sell_volume'] ?? 25));
