@@ -209,6 +209,32 @@ def run_compute_auto_buyall(db: Any) -> dict[str, Any]:
         })
 
     if not demand:
+        # Defensive: if we see zero demand but the active doctrines
+        # clearly have losses in the window, we are almost certainly
+        # reading ``auto_doctrine_modules`` mid-rewrite by the detector
+        # (each doctrine's modules are DELETE+INSERT'd on autocommit,
+        # so a tiny window exists where the table is empty for that
+        # doctrine). Abort without persisting a summary so the page
+        # keeps showing the previous good state. Next run — after the
+        # detector lock is released — will see the real modules and
+        # produce a correct summary.
+        suspected_race = any(
+            int(d.get("loss_count_window") or 0) > 0 for d in doctrines
+        )
+        if suspected_race:
+            return {
+                "status": "skipped",
+                "reason": "detector_transient_state",
+                "summary": (
+                    f"Zero demand across {len(doctrines)} active doctrines "
+                    f"despite non-zero loss counts — detector likely mid-rewrite. "
+                    f"Skipping summary write to preserve previous good state."
+                ),
+                "started_at": started_at,
+                "rows_seen": len(doctrines),
+                "rows_processed": 0,
+                "rows_written": 0,
+            }
         return {
             "status": "success",
             "summary": "Zero demand across active doctrines.",
