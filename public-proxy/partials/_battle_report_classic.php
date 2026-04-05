@@ -133,6 +133,11 @@ $groupedThirdParty = $isThreeColumn ? $_classicGroupParticipants($classicSides['
 
 // Compute summary stats per side
 $classicStats = [];
+// When we collapse the third-party column into opponent (two-column view),
+// the side_panels value for opponent has already been merged server-side.
+// We still add third_party's damage locally for the classic two-column view
+// since _battle_report_classic.php merges participants the same way.
+$mergeThirdPartyIntoOpponent = !$isThreeColumn;
 foreach (['friendly', 'opponent', 'third_party'] as $side) {
     $pilots = 0; $shipsLost = 0;
     foreach ($classicSides[$side] as $p) {
@@ -141,11 +146,19 @@ foreach (['friendly', 'opponent', 'third_party'] as $side) {
     }
     $totalIskK = (float) ($sidePanels[$side]['isk_killed'] ?? 0);
     $totalIskL = (float) ($sidePanels[$side]['isk_lost'] ?? 0);
+    // Inflicted damage is fed from the server-side raw killmail_attackers
+    // rollup (sidePanels[$side]['damage_inflicted']) so NPC/structure damage
+    // stays accounted for and this metric is independent from ISK values.
+    $dmgInflicted = (float) ($sidePanels[$side]['damage_inflicted'] ?? 0);
+    if ($mergeThirdPartyIntoOpponent && $side === 'opponent') {
+        $dmgInflicted += (float) ($sidePanels['third_party']['damage_inflicted'] ?? 0);
+    }
     $classicStats[$side] = [
         'pilots' => $pilots,
         'isk_destroyed' => $totalIskK,
         'isk_lost' => $totalIskL,
         'ships_lost' => $shipsLost,
+        'damage_inflicted' => $dmgInflicted,
         'efficiency' => ($totalIskK + $totalIskL) > 0 ? ($totalIskK / ($totalIskK + $totalIskL)) * 100 : 0,
     ];
 }
@@ -275,7 +288,13 @@ $tpBarPct = $isThreeColumn ? (100 - $friendlyBarPct - $opponentBarPct) : 0;
             </div>
             <div class="br-classic-stats-row">
                 <span class="br-classic-stats-label">Inflicted Damage</span>
-                <span class="br-classic-stats-value"><?= proxy_format_isk($cfg['stats']['isk_destroyed']) ?></span>
+                <span class="br-classic-stats-value"><?php
+                    $_dmg = (float) ($cfg['stats']['damage_inflicted'] ?? 0);
+                    if ($_dmg >= 1e9) echo number_format($_dmg / 1e9, 2) . 'b';
+                    elseif ($_dmg >= 1e6) echo number_format($_dmg / 1e6, 1) . 'M';
+                    elseif ($_dmg >= 1e3) echo number_format($_dmg / 1e3, 1) . 'k';
+                    else echo number_format($_dmg, 0);
+                ?></span>
             </div>
         </div>
 

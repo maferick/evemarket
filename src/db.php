@@ -15403,6 +15403,33 @@ function db_theater_fleet_composition(string $theaterId): array
 }
 
 /**
+ * Sum attacker damage_done per (alliance_id, corporation_id) across every
+ * killmail in a theater.
+ *
+ * Aggregates the raw killmail_attackers rows so the caller can classify each
+ * group to a side using the same closure as other per-side rollups. Rows with
+ * no alliance and no corporation (NPCs, structures) fall into the (0,0) group
+ * and should be reported as "unattributed" rather than silently dropped.
+ *
+ * @return list<array{alliance_id: int, corporation_id: int, total_damage: float}>
+ */
+function db_theater_damage_by_attacker_group(string $theaterId): array
+{
+    return db_select(
+        "SELECT
+            COALESCE(ka.alliance_id, 0) AS alliance_id,
+            COALESCE(ka.corporation_id, 0) AS corporation_id,
+            COALESCE(SUM(ka.damage_done), 0) AS total_damage
+         FROM killmail_attackers ka
+         INNER JOIN killmail_events ke ON ke.sequence_id = ka.sequence_id
+         INNER JOIN theater_battles tb ON tb.battle_id = ke.battle_id
+         WHERE tb.theater_id = ?
+         GROUP BY COALESCE(ka.alliance_id, 0), COALESCE(ka.corporation_id, 0)",
+        [$theaterId]
+    );
+}
+
+/**
  * Count final blows per attacker alliance/corporation for a theater.
  *
  * Returns raw per-group counts so the caller can classify sides consistently
