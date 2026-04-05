@@ -568,12 +568,17 @@ OPPONENT_SPLIT_PRIMARY_MIN_SHARE = 0.30
 #   Primary opponent change    +2  dominant non-friendly alliance flipped
 #   Time gap                   +1  gap between battles > 5 minutes
 #
-# A boundary with score >= BOUNDARY_SPLIT_THRESHOLD (default 5) becomes a
+# A boundary with score >= BOUNDARY_SPLIT_THRESHOLD (default 6) becomes a
 # split point.  Hard floor: battles in the same system with <30 min gap
 # never split (keeps in-system grinds together).  Safety valve: same-system
 # battles with >=30 min gap CAN split (catches downtime/reform cases).
+#
+# Threshold 6 is intentionally conservative: it requires either two strong
+# signals (3+3) or a strong signal plus supporting evidence, rather than
+# firing on any two weak signals.  Lower to 5 only if real data shows
+# persistent under-splitting.
 
-BOUNDARY_SPLIT_THRESHOLD = 5
+BOUNDARY_SPLIT_THRESHOLD = 6
 
 BOUNDARY_WEIGHT_GEO_PIVOT = 3
 BOUNDARY_WEIGHT_SCALE_JUMP = 3
@@ -591,6 +596,12 @@ BOUNDARY_FRIENDLY_OVERLAP_THRESHOLD = 0.40
 
 # Command roster Jaccard below this fires the command-change signal.
 BOUNDARY_COMMAND_OVERLAP_THRESHOLD = 0.50
+
+# Minimum number of command-tagged pilots required in BOTH battles before
+# the command-change signal can fire.  With only 1 command pilot on either
+# side the Jaccard becomes a single-pilot artifact (0 or 1), which is too
+# noisy to be trustworthy — skip the signal in that case.
+BOUNDARY_COMMAND_MIN_PILOTS = 2
 
 # Time gap in seconds that fires the time-gap signal.
 BOUNDARY_TIME_GAP_SECONDS = 5 * 60
@@ -736,10 +747,12 @@ def _boundary_score(
         score += BOUNDARY_WEIGHT_SCALE_JUMP
         reasons.append("scale_jump_mega")
 
-    # Command roster change
+    # Command roster change — only trust the signal when both battles have
+    # enough command-tagged pilots that the Jaccard isn't a single-pilot
+    # statistical artifact.
     prev_cmd = command_chars.get(prev_bid, set())
     curr_cmd = command_chars.get(curr_bid, set())
-    if prev_cmd or curr_cmd:
+    if len(prev_cmd) >= BOUNDARY_COMMAND_MIN_PILOTS and len(curr_cmd) >= BOUNDARY_COMMAND_MIN_PILOTS:
         cmd_jaccard = _jaccard(prev_cmd, curr_cmd)
         if cmd_jaccard < BOUNDARY_COMMAND_OVERLAP_THRESHOLD:
             score += BOUNDARY_WEIGHT_COMMAND_CHANGE
