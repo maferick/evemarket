@@ -559,7 +559,11 @@ OPPONENT_SPLIT_PRIMARY_MIN_SHARE = 0.30
 #
 # Signals (weights are starting values — tune with real data):
 #
-#   Geographic pivot           +3  different system and not directly adjacent
+#   Geographic pivot          0/+2/+3/+5  by gate distance tier:
+#                                   adjacent (<=1) = 0
+#                                   nearby (2)     = +2
+#                                   moderate (3)   = +3 (also unknown)
+#                                   far (>=4)      = +5
 #   Scale jump to/from mega    +3  one side is "mega" (>=200 pilots) and the
 #                                  other is not — megas are strong anchors
 #   Command roster change      +3  set of is_command pilots changed
@@ -580,12 +584,20 @@ OPPONENT_SPLIT_PRIMARY_MIN_SHARE = 0.30
 
 BOUNDARY_SPLIT_THRESHOLD = 6
 
-BOUNDARY_WEIGHT_GEO_PIVOT = 3
 BOUNDARY_WEIGHT_SCALE_JUMP = 3
 BOUNDARY_WEIGHT_COMMAND_CHANGE = 3
 BOUNDARY_WEIGHT_FRIENDLY_OVERLAP_DROP = 2
 BOUNDARY_WEIGHT_PRIMARY_OPPONENT_CHANGE = 2
 BOUNDARY_WEIGHT_TIME_GAP = 1
+
+# Geographic pivot weight tiers.  Gate distance between the two battles'
+# systems picks the weight — further apart is a stronger "different
+# engagement" signal.  A 4+ gate hop alone nearly crosses the threshold,
+# so any additional supporting signal will split.
+BOUNDARY_WEIGHT_GEO_ADJACENT = 0
+BOUNDARY_WEIGHT_GEO_NEARBY = 2
+BOUNDARY_WEIGHT_GEO_MODERATE = 3    # also the fallback when distance is unknown
+BOUNDARY_WEIGHT_GEO_FAR = 5
 
 # A "mega" battle for anchor purposes — scale jumps to/from this category
 # fire the scale-jump signal.
@@ -608,6 +620,29 @@ BOUNDARY_TIME_GAP_SECONDS = 5 * 60
 
 # Same-system safety valve: same system with gap >= this can still split.
 BOUNDARY_SAME_SYSTEM_GAP_SECONDS = 30 * 60
+
+
+def _geo_pivot_weight(prev_sys: int, curr_sys: int, gate_svc: Any | None) -> tuple[int, str]:
+    """Return (weight, reason_label) for the geographic pivot signal.
+
+    Uses gate distance tiers so that 'nearby non-adjacent' and
+    'far apart' systems get different weights.  Falls back to the
+    moderate tier when gate distance data is unavailable
+    (GateDistanceService.distance() already swallows Neo4j errors
+    and returns None on failure).
+    """
+    if prev_sys <= 0 or curr_sys <= 0 or prev_sys == curr_sys:
+        return 0, ""
+    dist = gate_svc.distance(prev_sys, curr_sys) if gate_svc is not None else None
+    if dist is None:
+        return BOUNDARY_WEIGHT_GEO_MODERATE, "geo_pivot(?)"
+    if dist <= 1:
+        return BOUNDARY_WEIGHT_GEO_ADJACENT, ""
+    if dist == 2:
+        return BOUNDARY_WEIGHT_GEO_NEARBY, f"geo_pivot({dist})"
+    if dist == 3:
+        return BOUNDARY_WEIGHT_GEO_MODERATE, f"geo_pivot({dist})"
+    return BOUNDARY_WEIGHT_GEO_FAR, f"geo_pivot({dist})"
 
 
 def _load_battle_friendly_characters(
@@ -725,18 +760,13 @@ def _boundary_score(
     if same_system and gap_seconds < BOUNDARY_SAME_SYSTEM_GAP_SECONDS:
         return 0, ["same_system_floor"]
 
-    # Geographic pivot: different system, not directly adjacent
-    if not same_system:
-        is_adjacent = False
-        if gate_svc is not None and prev_sys > 0 and curr_sys > 0:
-            try:
-                dist = gate_svc.distance(prev_sys, curr_sys)
-                is_adjacent = dist is not None and dist <= 1
-            except Exception:
-                is_adjacent = False
-        if not is_adjacent:
-            score += BOUNDARY_WEIGHT_GEO_PIVOT
-            reasons.append("geo_pivot")
+    # Geographic pivot — distance-tiered so adjacent hops don't fire,
+    # nearby (2 gates) adds a small weight, and far (4+ gates) adds a
+    # large weight that nearly reaches the threshold alone.
+    geo_weight, geo_reason = _geo_pivot_weight(prev_sys, curr_sys, gate_svc)
+    if geo_weight > 0:
+        score += geo_weight
+        reasons.append(geo_reason)
 
     # Scale jump to/from mega
     prev_pilots = int(b_prev.get("participant_count") or 0)
@@ -819,9 +849,11 @@ def _split_by_boundary_scoring(
 
         sorted_battles = sorted(group_battles, key=_start)
 
-        # Score each boundary between consecutive battles
+        # Score each boundary between consecutive battles.  Log every
+        # boundary (not just splits) so we can tune thresholds and weights
+        # against real data.
         segment_starts: list[int] = [0]  # indices where a new segment begins
-        boundary_log: list[dict[str, Any]] = []
+        all_boundaries: list[dict[str, Any]] = []
         for i in range(1, len(sorted_battles)):
             score, reasons = _boundary_score(
                 sorted_battles[i - 1],
@@ -831,16 +863,30 @@ def _split_by_boundary_scoring(
                 command_chars,
                 gate_svc,
             )
-            if score >= BOUNDARY_SPLIT_THRESHOLD:
+            did_split = score >= BOUNDARY_SPLIT_THRESHOLD
+            if did_split:
                 segment_starts.append(i)
-                boundary_log.append({
-                    "theater_root": root,
-                    "boundary_index": i,
-                    "prev_battle": str(sorted_battles[i - 1]["battle_id"]),
-                    "curr_battle": str(sorted_battles[i]["battle_id"]),
-                    "score": score,
-                    "reasons": reasons,
-                })
+            all_boundaries.append({
+                "boundary_index": i,
+                "prev_battle": str(sorted_battles[i - 1]["battle_id"]),
+                "prev_system": int(sorted_battles[i - 1].get("system_id") or 0),
+                "curr_battle": str(sorted_battles[i]["battle_id"]),
+                "curr_system": int(sorted_battles[i].get("system_id") or 0),
+                "score": score,
+                "reasons": reasons,
+                "split": did_split,
+            })
+
+        # Always log the full boundary analysis for theaters with >1 battle,
+        # even when no split occurred — this is our tuning feedback loop.
+        if all_boundaries:
+            _theater_log(runtime, "theater_clustering.boundary_analysis", {
+                "theater_root": root,
+                "battle_count": len(sorted_battles),
+                "segments": len(segment_starts),
+                "split_threshold": BOUNDARY_SPLIT_THRESHOLD,
+                "boundaries": all_boundaries,
+            })
 
         if len(segment_starts) == 1:
             # No splits
@@ -858,13 +904,6 @@ def _split_by_boundary_scoring(
             # Use the first battle's ID as the new group key (deterministic)
             new_key = f"{root}:seg{seg_idx}:{segment_battles[0]['battle_id']}"
             new_groups[new_key] = segment_battles
-
-        if boundary_log:
-            _theater_log(runtime, "theater_clustering.boundary_split", {
-                "theater_root": root,
-                "segments": len(segment_starts) - 1,
-                "boundaries": boundary_log,
-            })
 
     return new_groups
 
