@@ -1752,82 +1752,143 @@ include __DIR__ . '/../../src/views/partials/header.php';
                     </span>
                 </label>
 
+                <!-- Global provider + capability tier -->
+                <div class="rounded-2xl border border-white/8 bg-white/[0.03] p-4">
+                    <p class="text-sm font-medium text-slate-100">Global defaults</p>
+                    <p class="mt-1 text-xs text-muted">Picks which provider handles AI jobs by default. Per-feature routing below can override this on a per-job-type basis.</p>
+                    <div class="mt-3 grid gap-4 md:grid-cols-2">
+                        <label class="block space-y-2">
+                            <span class="text-sm text-muted">Default AI Provider</span>
+                            <select name="ollama_provider" class="w-full field-input">
+                                <?php $selectedProvider = (string) ($settingValues['ollama_provider'] ?? ($ollamaConfig['provider'] ?? 'local')); ?>
+                                <?php foreach (ollama_provider_options() as $value => $label): ?>
+                                    <option value="<?= htmlspecialchars($value, ENT_QUOTES) ?>" <?= $selectedProvider === $value ? 'selected' : '' ?>><?= htmlspecialchars($label, ENT_QUOTES) ?></option>
+                                <?php endforeach; ?>
+                            </select>
+                        </label>
+                        <label class="block space-y-2">
+                            <span class="text-sm text-muted">Capability Tier</span>
+                            <select name="ollama_capability_tier" class="w-full field-input">
+                                <?php $selectedTier = (string) ($settingValues['ollama_capability_tier'] ?? ($ollamaConfig['capability_override'] ?? 'auto')); ?>
+                                <?php foreach (['auto' => 'Auto-detect from model', 'small' => 'Small', 'medium' => 'Medium', 'large' => 'Large'] as $value => $label): ?>
+                                    <option value="<?= htmlspecialchars($value, ENT_QUOTES) ?>" <?= $selectedTier === $value ? 'selected' : '' ?>><?= htmlspecialchars($label, ENT_QUOTES) ?></option>
+                                <?php endforeach; ?>
+                            </select>
+                        </label>
+                    </div>
+                </div>
+
+                <!-- Provider cards: each provider has its own isolated settings. -->
                 <div class="grid gap-4 md:grid-cols-2">
-                    <label class="block space-y-2 md:col-span-2">
-                        <span class="text-sm text-muted">AI Provider</span>
-                        <select name="ollama_provider" class="w-full field-input">
-                            <?php $selectedProvider = (string) ($settingValues['ollama_provider'] ?? ($ollamaConfig['provider'] ?? 'local')); ?>
-                            <?php foreach (ollama_provider_options() as $value => $label): ?>
-                                <option value="<?= htmlspecialchars($value, ENT_QUOTES) ?>" <?= $selectedProvider === $value ? 'selected' : '' ?>><?= htmlspecialchars($label, ENT_QUOTES) ?></option>
-                            <?php endforeach; ?>
-                        </select>
-                        <p class="text-xs text-muted">Use <span class="font-medium text-slate-100">Local Ollama</span> for self-hosted CPU/GPU inference, <span class="font-medium text-slate-100">Runpod Serverless</span> for async GPU jobs, or <span class="font-medium text-slate-100">Claude API</span> for fast hosted inference (requires separate API billing at <span class="font-medium text-slate-100">console.anthropic.com</span>).</p>
-                    </label>
-                    <label class="block space-y-2 md:col-span-2">
-                        <span class="text-sm text-muted">Local Ollama API URL</span>
-                        <input name="ollama_url" value="<?= htmlspecialchars($settingValues['ollama_url'] ?? ($ollamaConfig['url'] ?? 'http://localhost:11434/api'), ENT_QUOTES) ?>" class="w-full field-input" />
-                        <p class="text-xs text-muted">Use the API base URL, for example <span class="font-medium text-slate-100">http://localhost:11434/api</span>.</p>
-                    </label>
-                    <label class="block space-y-2 md:col-span-2">
-                        <span class="text-sm text-muted">Runpod Serverless Endpoint</span>
-                        <input name="ollama_runpod_url" value="<?= htmlspecialchars($settingValues['ollama_runpod_url'] ?? ($ollamaConfig['runpod_url'] ?? ''), ENT_QUOTES) ?>" class="w-full field-input" placeholder="https://api.runpod.ai/v2/.../run" />
-                        <p class="text-xs text-muted">Paste the full Runpod async request URL, for example <span class="font-medium text-slate-100">https://api.runpod.ai/v2/58qz2qbho8h3f1/run</span>. Existing <span class="font-medium text-slate-100">/runsync</span> URLs are converted automatically.</p>
-                    </label>
-                    <label class="block space-y-2 md:col-span-2">
-                        <span class="text-sm text-muted">Runpod API Key</span>
-                        <input name="ollama_runpod_api_key" type="password" value="<?= htmlspecialchars($settingValues['ollama_runpod_api_key'] ?? ($ollamaConfig['runpod_api_key'] ?? ''), ENT_QUOTES) ?>" class="w-full field-input" placeholder="Bearer token for the Runpod endpoint" />
-                        <?php if (($ollamaConfig['runpod_api_key_masked'] ?? '') !== ''): ?>
-                            <p class="text-xs text-muted">Saved key preview: <span class="font-medium text-slate-100"><?= htmlspecialchars((string) $ollamaConfig['runpod_api_key_masked'], ENT_QUOTES) ?></span>.</p>
-                        <?php else: ?>
-                            <p class="text-xs text-muted">Stored only when you save settings. Leave blank if you are staying on the local provider.</p>
-                        <?php endif; ?>
-                    </label>
-                    <label class="block space-y-2 md:col-span-2">
-                        <span class="text-sm text-muted">Claude API Key</span>
-                        <input name="claude_api_key" type="password" value="<?= htmlspecialchars($settingValues['claude_api_key'] ?? ($ollamaConfig['claude_api_key'] ?? ''), ENT_QUOTES) ?>" class="w-full field-input" placeholder="sk-ant-api03-..." />
-                        <?php if (($ollamaConfig['claude_api_key_masked'] ?? '') !== ''): ?>
-                            <p class="text-xs text-muted">Saved key preview: <span class="font-medium text-slate-100"><?= htmlspecialchars((string) $ollamaConfig['claude_api_key_masked'], ENT_QUOTES) ?></span>.</p>
-                        <?php else: ?>
-                            <p class="text-xs text-muted">Get your API key from <span class="font-medium text-slate-100">console.anthropic.com</span>. API usage is billed separately from Claude Pro subscriptions.</p>
-                        <?php endif; ?>
-                    </label>
-                    <label class="block space-y-2 md:col-span-2">
-                        <span class="text-sm text-muted">Claude Model</span>
-                        <input name="claude_model" value="<?= htmlspecialchars($settingValues['claude_model'] ?? ($ollamaConfig['claude_model'] ?? 'claude-sonnet-4-20250514'), ENT_QUOTES) ?>" class="w-full field-input" />
-                        <p class="text-xs text-muted">Recommended: <span class="font-medium text-slate-100">claude-sonnet-4-20250514</span> (fast, cheap) or <span class="font-medium text-slate-100">claude-haiku-4-5-20251001</span> (fastest, cheapest).</p>
-                    </label>
-                    <label class="block space-y-2 md:col-span-2">
-                        <span class="text-sm text-muted">Groq API Key</span>
-                        <input name="groq_api_key" type="password" value="<?= htmlspecialchars($settingValues['groq_api_key'] ?? ($ollamaConfig['groq_api_key'] ?? ''), ENT_QUOTES) ?>" class="w-full field-input" placeholder="gsk_..." />
-                        <?php if (($ollamaConfig['groq_api_key_masked'] ?? '') !== ''): ?>
-                            <p class="text-xs text-muted">Saved key preview: <span class="font-medium text-slate-100"><?= htmlspecialchars((string) $ollamaConfig['groq_api_key_masked'], ENT_QUOTES) ?></span>.</p>
-                        <?php else: ?>
-                            <p class="text-xs text-muted">Free tier at <span class="font-medium text-slate-100">console.groq.com</span>. Fast inference — great for CPU-only machines.</p>
-                        <?php endif; ?>
-                    </label>
-                    <label class="block space-y-2 md:col-span-2">
-                        <span class="text-sm text-muted">Groq Model</span>
-                        <input name="groq_model" value="<?= htmlspecialchars($settingValues['groq_model'] ?? ($ollamaConfig['groq_model'] ?? 'meta-llama/llama-4-scout-17b-16e-instruct'), ENT_QUOTES) ?>" class="w-full field-input" />
-                        <p class="text-xs text-muted">Recommended: <span class="font-medium text-slate-100">meta-llama/llama-4-scout-17b-16e-instruct</span> (500K TPD) or <span class="font-medium text-slate-100">llama-3.3-70b-versatile</span> (best quality, 100K TPD).</p>
-                    </label>
-                    <label class="block space-y-2">
-                        <span class="text-sm text-muted">Model Name (Ollama/Runpod)</span>
-                        <input name="ollama_model" value="<?= htmlspecialchars($settingValues['ollama_model'] ?? ($ollamaConfig['model'] ?? 'qwen2.5:1.5b-instruct'), ENT_QUOTES) ?>" class="w-full field-input" />
-                    </label>
-                    <label class="block space-y-2">
-                        <span class="text-sm text-muted">Request Timeout (seconds)</span>
-                        <input type="number" min="1" max="600" step="1" name="ollama_timeout" value="<?= htmlspecialchars($settingValues['ollama_timeout'] ?? (string) ($ollamaConfig['timeout'] ?? 20), ENT_QUOTES) ?>" class="w-full field-input" />
-                    </label>
-                    <label class="block space-y-2 md:col-span-2">
-                        <span class="text-sm text-muted">Capability Tier</span>
-                        <select name="ollama_capability_tier" class="w-full field-input">
-                            <?php $selectedTier = (string) ($settingValues['ollama_capability_tier'] ?? ($ollamaConfig['capability_override'] ?? 'auto')); ?>
-                            <?php foreach (['auto' => 'Auto-detect from model', 'small' => 'Small', 'medium' => 'Medium', 'large' => 'Large'] as $value => $label): ?>
-                                <option value="<?= htmlspecialchars($value, ENT_QUOTES) ?>" <?= $selectedTier === $value ? 'selected' : '' ?>><?= htmlspecialchars($label, ENT_QUOTES) ?></option>
-                            <?php endforeach; ?>
-                        </select>
-                        <p class="text-xs text-muted">Leave this on auto to infer capability from the configured model name, or pin a tier if the model naming does not include parameter size.</p>
-                    </label>
+                    <!-- Local Ollama -->
+                    <section class="rounded-2xl border border-white/10 bg-white/[0.02] p-4">
+                        <header class="flex items-center justify-between">
+                            <h3 class="text-sm font-semibold text-slate-100">Local Ollama</h3>
+                            <span class="badge border-white/10 bg-white/5 text-xs text-muted">self-hosted</span>
+                        </header>
+                        <p class="mt-1 text-xs text-muted">Self-hosted CPU/GPU inference. Configure the API base URL and model you want to run against your local Ollama daemon.</p>
+                        <div class="mt-3 space-y-3">
+                            <label class="block space-y-1.5">
+                                <span class="text-xs uppercase tracking-wider text-muted">API URL</span>
+                                <input name="ollama_url" value="<?= htmlspecialchars($settingValues['ollama_url'] ?? ($ollamaConfig['url'] ?? 'http://localhost:11434/api'), ENT_QUOTES) ?>" class="w-full field-input" placeholder="http://localhost:11434/api" />
+                            </label>
+                            <label class="block space-y-1.5">
+                                <span class="text-xs uppercase tracking-wider text-muted">Model</span>
+                                <input name="ollama_model" value="<?= htmlspecialchars($settingValues['ollama_model'] ?? ($ollamaConfig['local_ollama_model'] ?? 'qwen2.5:1.5b-instruct'), ENT_QUOTES) ?>" class="w-full field-input" placeholder="qwen2.5:1.5b-instruct" />
+                            </label>
+                            <label class="block space-y-1.5">
+                                <span class="text-xs uppercase tracking-wider text-muted">Request Timeout (s)</span>
+                                <input type="number" min="1" max="600" step="1" name="ollama_timeout" value="<?= htmlspecialchars($settingValues['ollama_timeout'] ?? (string) ($ollamaConfig['local_ollama_timeout'] ?? 20), ENT_QUOTES) ?>" class="w-full field-input" />
+                            </label>
+                        </div>
+                    </section>
+
+                    <!-- Runpod Serverless -->
+                    <section class="rounded-2xl border border-white/10 bg-white/[0.02] p-4">
+                        <header class="flex items-center justify-between">
+                            <h3 class="text-sm font-semibold text-slate-100">Runpod Serverless</h3>
+                            <span class="badge border-sky-400/20 bg-sky-500/10 text-xs text-sky-100">async GPU</span>
+                        </header>
+                        <p class="mt-1 text-xs text-muted">Async GPU inference. Runs through the <span class="font-medium text-slate-100">ai_jobs</span> queue — the browser never waits on a cold start.</p>
+                        <div class="mt-3 space-y-3">
+                            <label class="block space-y-1.5">
+                                <span class="text-xs uppercase tracking-wider text-muted">Endpoint URL</span>
+                                <input name="ollama_runpod_url" value="<?= htmlspecialchars($settingValues['ollama_runpod_url'] ?? ($ollamaConfig['runpod_url'] ?? ''), ENT_QUOTES) ?>" class="w-full field-input" placeholder="https://api.runpod.ai/v2/<id>/run" />
+                                <p class="text-xs text-muted">Accepts either <span class="font-medium text-slate-100">/run</span> or <span class="font-medium text-slate-100">/runsync</span> — the worker normalises it automatically.</p>
+                            </label>
+                            <label class="block space-y-1.5">
+                                <span class="text-xs uppercase tracking-wider text-muted">API Key</span>
+                                <input name="ollama_runpod_api_key" type="password" value="<?= htmlspecialchars($settingValues['ollama_runpod_api_key'] ?? ($ollamaConfig['runpod_api_key'] ?? ''), ENT_QUOTES) ?>" class="w-full field-input" placeholder="Bearer token" />
+                                <?php if (($ollamaConfig['runpod_api_key_masked'] ?? '') !== ''): ?>
+                                    <p class="text-xs text-muted">Saved: <span class="font-medium text-slate-100"><?= htmlspecialchars((string) $ollamaConfig['runpod_api_key_masked'], ENT_QUOTES) ?></span></p>
+                                <?php endif; ?>
+                            </label>
+                            <label class="block space-y-1.5">
+                                <span class="text-xs uppercase tracking-wider text-muted">Model</span>
+                                <input name="runpod_model" value="<?= htmlspecialchars($settingValues['runpod_model'] ?? ($ollamaConfig['runpod_model'] ?? 'gemma4:26b-a4b-it-q4_K_M'), ENT_QUOTES) ?>" class="w-full field-input" placeholder="gemma4:26b-a4b-it-q4_K_M" />
+                                <p class="text-xs text-muted">Independent of the Local Ollama model. Default is <span class="font-medium text-slate-100">gemma4:26b-a4b-it-q4_K_M</span> — the MoE variant with 25.2B total / 3.8B active params and a 256K context window, which auto-detects as the <span class="font-medium text-slate-100">large</span> capability tier. Leave blank if your Runpod worker image has the model baked in.</p>
+                            </label>
+                            <label class="block space-y-1.5">
+                                <span class="text-xs uppercase tracking-wider text-muted">Per-HTTP Timeout (s)</span>
+                                <input type="number" min="5" max="900" step="1" name="runpod_timeout" value="<?= htmlspecialchars($settingValues['runpod_timeout'] ?? (string) ($ollamaConfig['runpod_timeout'] ?? 120), ENT_QUOTES) ?>" class="w-full field-input" />
+                                <p class="text-xs text-muted">Caps individual /run and /status calls. Total polling budget is controlled by the AI worker's lease (~14 minutes).</p>
+                            </label>
+                        </div>
+                    </section>
+
+                    <!-- Claude API -->
+                    <section class="rounded-2xl border border-white/10 bg-white/[0.02] p-4">
+                        <header class="flex items-center justify-between">
+                            <h3 class="text-sm font-semibold text-slate-100">Claude API (Anthropic)</h3>
+                            <span class="badge border-amber-400/20 bg-amber-500/10 text-xs text-amber-100">hosted</span>
+                        </header>
+                        <p class="mt-1 text-xs text-muted">Fast hosted inference billed separately from Claude Pro. Get an API key from <span class="font-medium text-slate-100">console.anthropic.com</span>.</p>
+                        <div class="mt-3 space-y-3">
+                            <label class="block space-y-1.5">
+                                <span class="text-xs uppercase tracking-wider text-muted">API Key</span>
+                                <input name="claude_api_key" type="password" value="<?= htmlspecialchars($settingValues['claude_api_key'] ?? ($ollamaConfig['claude_api_key'] ?? ''), ENT_QUOTES) ?>" class="w-full field-input" placeholder="sk-ant-api03-..." />
+                                <?php if (($ollamaConfig['claude_api_key_masked'] ?? '') !== ''): ?>
+                                    <p class="text-xs text-muted">Saved: <span class="font-medium text-slate-100"><?= htmlspecialchars((string) $ollamaConfig['claude_api_key_masked'], ENT_QUOTES) ?></span></p>
+                                <?php endif; ?>
+                            </label>
+                            <label class="block space-y-1.5">
+                                <span class="text-xs uppercase tracking-wider text-muted">Model</span>
+                                <input name="claude_model" value="<?= htmlspecialchars($settingValues['claude_model'] ?? ($ollamaConfig['claude_model'] ?? 'claude-sonnet-4-20250514'), ENT_QUOTES) ?>" class="w-full field-input" placeholder="claude-sonnet-4-20250514" />
+                                <p class="text-xs text-muted">Recommended: <span class="font-medium text-slate-100">claude-sonnet-4-20250514</span> or <span class="font-medium text-slate-100">claude-haiku-4-5-20251001</span>.</p>
+                            </label>
+                            <label class="block space-y-1.5">
+                                <span class="text-xs uppercase tracking-wider text-muted">Request Timeout (s)</span>
+                                <input type="number" min="5" max="600" step="1" name="claude_timeout" value="<?= htmlspecialchars($settingValues['claude_timeout'] ?? (string) ($ollamaConfig['claude_timeout'] ?? 60), ENT_QUOTES) ?>" class="w-full field-input" />
+                            </label>
+                        </div>
+                    </section>
+
+                    <!-- Groq -->
+                    <section class="rounded-2xl border border-white/10 bg-white/[0.02] p-4">
+                        <header class="flex items-center justify-between">
+                            <h3 class="text-sm font-semibold text-slate-100">Groq</h3>
+                            <span class="badge border-emerald-400/20 bg-emerald-500/10 text-xs text-emerald-100">free tier</span>
+                        </header>
+                        <p class="mt-1 text-xs text-muted">Fast hosted inference with a generous free tier at <span class="font-medium text-slate-100">console.groq.com</span>. Great for CPU-only boxes.</p>
+                        <div class="mt-3 space-y-3">
+                            <label class="block space-y-1.5">
+                                <span class="text-xs uppercase tracking-wider text-muted">API Key</span>
+                                <input name="groq_api_key" type="password" value="<?= htmlspecialchars($settingValues['groq_api_key'] ?? ($ollamaConfig['groq_api_key'] ?? ''), ENT_QUOTES) ?>" class="w-full field-input" placeholder="gsk_..." />
+                                <?php if (($ollamaConfig['groq_api_key_masked'] ?? '') !== ''): ?>
+                                    <p class="text-xs text-muted">Saved: <span class="font-medium text-slate-100"><?= htmlspecialchars((string) $ollamaConfig['groq_api_key_masked'], ENT_QUOTES) ?></span></p>
+                                <?php endif; ?>
+                            </label>
+                            <label class="block space-y-1.5">
+                                <span class="text-xs uppercase tracking-wider text-muted">Model</span>
+                                <input name="groq_model" value="<?= htmlspecialchars($settingValues['groq_model'] ?? ($ollamaConfig['groq_model'] ?? 'meta-llama/llama-4-scout-17b-16e-instruct'), ENT_QUOTES) ?>" class="w-full field-input" placeholder="meta-llama/llama-4-scout-17b-16e-instruct" />
+                                <p class="text-xs text-muted">Recommended: <span class="font-medium text-slate-100">meta-llama/llama-4-scout-17b-16e-instruct</span> (500K TPD) or <span class="font-medium text-slate-100">llama-3.3-70b-versatile</span> (best quality, 100K TPD).</p>
+                            </label>
+                            <label class="block space-y-1.5">
+                                <span class="text-xs uppercase tracking-wider text-muted">Request Timeout (s)</span>
+                                <input type="number" min="5" max="300" step="1" name="groq_timeout" value="<?= htmlspecialchars($settingValues['groq_timeout'] ?? (string) ($ollamaConfig['groq_timeout'] ?? 30), ENT_QUOTES) ?>" class="w-full field-input" />
+                            </label>
+                        </div>
+                    </section>
                 </div>
 
                 <div class="mt-4 rounded-2xl border border-white/8 bg-white/[0.03] px-4 py-3">
