@@ -751,10 +751,39 @@ def _flush_theaters(
             cursor.execute(f"DELETE FROM theater_systems WHERE theater_id NOT IN ({id_placeholders})", tuple(preserve_ids))
             cursor.execute(f"DELETE FROM theater_battles WHERE theater_id NOT IN ({id_placeholders})", tuple(preserve_ids))
             cursor.execute(f"DELETE FROM theaters WHERE theater_id NOT IN ({id_placeholders})", tuple(preserve_ids))
+            # Clean up orphaned analysis rows from tables populated by
+            # theater_analysis.  These tables are keyed by theater_id and
+            # would otherwise leave dangling rows when a theater is split
+            # or its battle composition changes (producing a new theater_id).
+            for tbl in (
+                "theater_alliance_summary",
+                "theater_participants",
+                "theater_timeline",
+                "theater_turning_points",
+                "theater_structure_kills",
+                "theater_side_composition",
+            ):
+                try:
+                    cursor.execute(f"DELETE FROM {tbl} WHERE theater_id NOT IN ({id_placeholders})", tuple(preserve_ids))
+                except Exception:
+                    # Table may not exist on older schemas — skip silently
+                    pass
         else:
             cursor.execute("DELETE FROM theater_systems")
             cursor.execute("DELETE FROM theater_battles")
             cursor.execute("DELETE FROM theaters")
+            for tbl in (
+                "theater_alliance_summary",
+                "theater_participants",
+                "theater_timeline",
+                "theater_turning_points",
+                "theater_structure_kills",
+                "theater_side_composition",
+            ):
+                try:
+                    cursor.execute(f"DELETE FROM {tbl}")
+                except Exception:
+                    pass
 
         # Delete existing battle/system rows for theaters we're re-inserting
         if new_theater_ids:
