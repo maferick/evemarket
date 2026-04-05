@@ -1143,12 +1143,55 @@ include __DIR__ . '/../../src/views/partials/header.php';
                                     <?php if (($field['editable'] ?? false) !== true) {
                                         continue;
                                     } ?>
+                                    <?php
+                                        $fieldType = (string) ($field['type'] ?? 'string');
+                                        $fieldValue = (string) ($field['value'] ?? '');
+                                        $fieldHelp = trim((string) ($field['help'] ?? ''));
+                                        $fieldOptions = is_array($field['options'] ?? null) ? $field['options'] : [];
+                                        $selectedOption = $fieldOptions[$fieldValue] ?? null;
+                                    ?>
                                     <label class="block space-y-2">
-                                        <span class="text-sm text-muted"><?= htmlspecialchars($path, ENT_QUOTES) ?> (<?= htmlspecialchars((string) ($field['type'] ?? 'string'), ENT_QUOTES) ?>)</span>
-                                        <?php if (($field['type'] ?? 'string') === 'bool'): ?>
+                                        <span class="text-sm text-muted">
+                                            <?= htmlspecialchars($path, ENT_QUOTES) ?>
+                                            (<?= htmlspecialchars($fieldType, ENT_QUOTES) ?>)
+                                        </span>
+                                        <?php if ($fieldType === 'bool'): ?>
                                             <input type="checkbox" name="<?= htmlspecialchars($path, ENT_QUOTES) ?>" value="1" <?= !empty($field['value']) ? 'checked' : '' ?>>
+                                        <?php elseif ($fieldOptions !== []): ?>
+                                            <select name="<?= htmlspecialchars($path, ENT_QUOTES) ?>" class="w-full field-input">
+                                                <?php foreach ($fieldOptions as $optionValue => $optionSpec): ?>
+                                                    <?php
+                                                        $optionLabel = is_array($optionSpec) ? (string) ($optionSpec['label'] ?? $optionValue) : (string) $optionSpec;
+                                                    ?>
+                                                    <option value="<?= htmlspecialchars((string) $optionValue, ENT_QUOTES) ?>" <?= $fieldValue === (string) $optionValue ? 'selected' : '' ?>>
+                                                        <?= htmlspecialchars($optionLabel, ENT_QUOTES) ?>
+                                                    </option>
+                                                <?php endforeach; ?>
+                                            </select>
+                                            <?php if (is_array($selectedOption) && ($selectedOption['description'] ?? '') !== ''): ?>
+                                                <p class="mt-1 text-xs leading-relaxed text-slate-400">
+                                                    <?= htmlspecialchars((string) $selectedOption['description'], ENT_QUOTES) ?>
+                                                </p>
+                                            <?php endif; ?>
+                                            <details class="mt-1">
+                                                <summary class="cursor-pointer select-none text-xs text-cyan-300 hover:text-cyan-200">All values explained</summary>
+                                                <ul class="mt-2 space-y-1.5 text-xs text-slate-400">
+                                                    <?php foreach ($fieldOptions as $optionValue => $optionSpec): ?>
+                                                        <?php if (!is_array($optionSpec)) continue; ?>
+                                                        <li>
+                                                            <span class="font-mono text-slate-200"><?= htmlspecialchars((string) $optionValue, ENT_QUOTES) ?></span>
+                                                            <?php if (($optionSpec['description'] ?? '') !== ''): ?>
+                                                                — <?= htmlspecialchars((string) $optionSpec['description'], ENT_QUOTES) ?>
+                                                            <?php endif; ?>
+                                                        </li>
+                                                    <?php endforeach; ?>
+                                                </ul>
+                                            </details>
                                         <?php else: ?>
-                                            <input name="<?= htmlspecialchars($path, ENT_QUOTES) ?>" value="<?= htmlspecialchars((string) ($field['value'] ?? ''), ENT_QUOTES) ?>" class="w-full field-input" />
+                                            <input name="<?= htmlspecialchars($path, ENT_QUOTES) ?>" value="<?= htmlspecialchars($fieldValue, ENT_QUOTES) ?>" class="w-full field-input" />
+                                        <?php endif; ?>
+                                        <?php if ($fieldHelp !== ''): ?>
+                                            <p class="text-xs leading-relaxed text-slate-400"><?= htmlspecialchars($fieldHelp, ENT_QUOTES) ?></p>
                                         <?php endif; ?>
                                     </label>
                                 <?php endforeach; ?>
