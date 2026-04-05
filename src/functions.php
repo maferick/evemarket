@@ -21350,7 +21350,17 @@ function supplycore_ai_runpod_request_timeout(array $config): int
 {
     $configuredTimeout = max(1, (int) ($config['timeout'] ?? 20));
 
-    return min(10, $configuredTimeout);
+    return min(15, $configuredTimeout);
+}
+
+function supplycore_ai_runpod_poll_budget_seconds(array $config): int
+{
+    $configuredTimeout = max(1, (int) ($config['timeout'] ?? 20));
+
+    // Async RunPod jobs frequently need more time than a single Ollama request
+    // (cold starts alone can exceed a minute). Give the polling loop a floor of
+    // three minutes and let users extend it by raising their configured timeout.
+    return max(180, $configuredTimeout * 6);
 }
 
 function supplycore_ai_runpod_poll_until_complete(array $config, array $headers, array $response): array
@@ -21379,13 +21389,15 @@ function supplycore_ai_runpod_poll_until_complete(array $config, array $headers,
         throw new RuntimeException('Runpod did not return a job ID for async polling.');
     }
 
-    $deadline = microtime(true) + max(1, (int) ($config['timeout'] ?? 20));
+    $deadline = microtime(true) + supplycore_ai_runpod_poll_budget_seconds($config);
     $pollDelayMicroseconds = 750000;
+    $maxPollDelayMicroseconds = 5000000;
     $statusUrl = supplycore_ai_runpod_status_url((string) ($config['runpod_url'] ?? ''), $jobId);
     $lastKnownStatus = $jobStatus !== '' ? $jobStatus : 'SUBMITTED';
 
     while (microtime(true) < $deadline) {
         usleep($pollDelayMicroseconds);
+        $pollDelayMicroseconds = (int) min($maxPollDelayMicroseconds, (int) round($pollDelayMicroseconds * 1.25));
 
         $statusResponse = http_get_json($statusUrl, $headers, supplycore_ai_runpod_request_timeout($config));
         $statusCode = (int) ($statusResponse['status'] ?? 0);
