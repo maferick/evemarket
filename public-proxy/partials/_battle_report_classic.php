@@ -134,10 +134,11 @@ $groupedThirdParty = $isThreeColumn ? $_classicGroupParticipants($classicSides['
 // Compute summary stats per side
 $classicStats = [];
 foreach (['friendly', 'opponent', 'third_party'] as $side) {
-    $pilots = 0; $shipsLost = 0;
+    $pilots = 0; $shipsLost = 0; $dmgInflicted = 0.0;
     foreach ($classicSides[$side] as $p) {
         $pilots++;
         $shipsLost += (int) ($p['deaths'] ?? $p['loss_count'] ?? 0);
+        $dmgInflicted += (float) ($p['damage_done'] ?? 0);
     }
     $totalIskK = (float) ($sidePanels[$side]['isk_killed'] ?? 0);
     $totalIskL = (float) ($sidePanels[$side]['isk_lost'] ?? 0);
@@ -146,6 +147,7 @@ foreach (['friendly', 'opponent', 'third_party'] as $side) {
         'isk_destroyed' => $totalIskK,
         'isk_lost' => $totalIskL,
         'ships_lost' => $shipsLost,
+        'damage_inflicted' => $dmgInflicted,
         'efficiency' => ($totalIskK + $totalIskL) > 0 ? ($totalIskK / ($totalIskK + $totalIskL)) * 100 : 0,
     ];
 }
@@ -275,7 +277,13 @@ $tpBarPct = $isThreeColumn ? (100 - $friendlyBarPct - $opponentBarPct) : 0;
             </div>
             <div class="br-classic-stats-row">
                 <span class="br-classic-stats-label">Inflicted Damage</span>
-                <span class="br-classic-stats-value"><?= proxy_format_isk($cfg['stats']['isk_destroyed']) ?></span>
+                <span class="br-classic-stats-value"><?php
+                    $_dmg = (float) ($cfg['stats']['damage_inflicted'] ?? 0);
+                    if ($_dmg >= 1e9) echo number_format($_dmg / 1e9, 2) . 'b';
+                    elseif ($_dmg >= 1e6) echo number_format($_dmg / 1e6, 1) . 'M';
+                    elseif ($_dmg >= 1e3) echo number_format($_dmg / 1e3, 1) . 'k';
+                    else echo number_format($_dmg, 0);
+                ?></span>
             </div>
         </div>
 
