@@ -880,16 +880,19 @@ function ai_briefing_setting_defaults(): array
         'ollama_runpod_api_key' => '',
         'runpod_model' => 'gemma4:26b-a4b-it-q4_K_M',
         'runpod_timeout' => '120',
+        'runpod_capability_tier' => 'auto',
 
         // --- Claude (Anthropic) ---
         'claude_api_key' => '',
         'claude_model' => 'claude-sonnet-4-20250514',
         'claude_timeout' => '60',
+        'claude_capability_tier' => 'large',
 
         // --- Groq ---
         'groq_api_key' => '',
         'groq_model' => 'meta-llama/llama-4-scout-17b-16e-instruct',
         'groq_timeout' => '30',
+        'groq_capability_tier' => 'auto',
 
         // --- Prompts ---
         'theater_aar_prompt' => '',
@@ -1182,16 +1185,19 @@ function ai_briefing_settings_from_request(array $request): array
         'ollama_runpod_api_key' => sanitize_ollama_runpod_api_key($request['ollama_runpod_api_key'] ?? null),
         'runpod_model' => sanitize_runpod_model($request['runpod_model'] ?? null),
         'runpod_timeout' => sanitize_provider_timeout($request['runpod_timeout'] ?? null, 120, 900),
+        'runpod_capability_tier' => sanitize_ollama_capability_tier($request['runpod_capability_tier'] ?? null),
 
         // Claude
         'claude_api_key' => trim((string) ($request['claude_api_key'] ?? '')),
         'claude_model' => sanitize_ai_model_name($request['claude_model'] ?? null, 'claude-sonnet-4-20250514'),
         'claude_timeout' => sanitize_provider_timeout($request['claude_timeout'] ?? null, 60, 600),
+        'claude_capability_tier' => sanitize_ollama_capability_tier($request['claude_capability_tier'] ?? null),
 
         // Groq
         'groq_api_key' => trim((string) ($request['groq_api_key'] ?? '')),
         'groq_model' => sanitize_ai_model_name($request['groq_model'] ?? null, 'meta-llama/llama-4-scout-17b-16e-instruct'),
         'groq_timeout' => sanitize_provider_timeout($request['groq_timeout'] ?? null, 30, 300),
+        'groq_capability_tier' => sanitize_ollama_capability_tier($request['groq_capability_tier'] ?? null),
 
         // Prompts
         'theater_aar_prompt' => mb_substr(trim((string) ($request['theater_aar_prompt'] ?? '')), 0, 8000),
@@ -21011,13 +21017,29 @@ function supplycore_ai_ollama_config(): array
         default => $localModel,
     };
 
+    // Per-provider capability tier overrides. Each provider can have its
+    // own tier pinned so a tiny local model ('small') doesn't drag down
+    // the prompt strategy when the operator also runs a large Runpod
+    // model. 'auto' infers from the provider's model name.
+    $localCapTier = sanitize_ollama_capability_tier($settings['ollama_capability_tier'] ?? $defaults['ollama_capability_tier']);
+    $runpodCapTier = sanitize_ollama_capability_tier($settings['runpod_capability_tier'] ?? $defaults['runpod_capability_tier']);
+    $claudeCapTier = sanitize_ollama_capability_tier($settings['claude_capability_tier'] ?? $defaults['claude_capability_tier']);
+    $groqCapTier = sanitize_ollama_capability_tier($settings['groq_capability_tier'] ?? $defaults['groq_capability_tier']);
+
+    $activeCapTier = match ($provider) {
+        'runpod' => $runpodCapTier,
+        'claude' => $claudeCapTier,
+        'groq' => $groqCapTier,
+        default => $localCapTier,
+    };
+
     $config = [
         'enabled' => (($settings['ollama_enabled'] ?? $defaults['ollama_enabled']) === '1'),
         'provider' => $provider,
         'url' => sanitize_ollama_url($settings['ollama_url'] ?? $defaults['ollama_url']),
         'model' => $activeModel,
         'timeout' => $activeTimeout,
-        'capability_override' => sanitize_ollama_capability_tier($settings['ollama_capability_tier'] ?? $defaults['ollama_capability_tier']),
+        'capability_override' => $activeCapTier,
 
         // Per-provider resolved values. Callers targeting a specific
         // provider should read these rather than the active 'model' /
@@ -21025,21 +21047,25 @@ function supplycore_ai_ollama_config(): array
         // when the global provider is different.
         'local_ollama_model' => $localModel,
         'local_ollama_timeout' => $localTimeout,
+        'local_ollama_capability_tier' => $localCapTier,
         'runpod_url' => sanitize_ollama_runpod_url($settings['ollama_runpod_url'] ?? $defaults['ollama_runpod_url']),
         'runpod_api_key' => sanitize_ollama_runpod_api_key($settings['ollama_runpod_api_key'] ?? $defaults['ollama_runpod_api_key']),
         'runpod_model' => $runpodModel,
         'runpod_timeout' => $runpodTimeout,
+        'runpod_capability_tier' => $runpodCapTier,
         'claude_api_key' => trim((string) ($settings['claude_api_key'] ?? $defaults['claude_api_key'])),
         'claude_model' => trim((string) ($settings['claude_model'] ?? $defaults['claude_model'])),
         'claude_timeout' => $claudeTimeout,
+        'claude_capability_tier' => $claudeCapTier,
         'groq_api_key' => trim((string) ($settings['groq_api_key'] ?? $defaults['groq_api_key'])),
         'groq_model' => trim((string) ($settings['groq_model'] ?? $defaults['groq_model'])),
         'groq_timeout' => $groqTimeout,
+        'groq_capability_tier' => $groqCapTier,
     ];
 
     $inferredTier = supplycore_ai_infer_model_capability_tier((string) ($config['model'] ?? ''));
-    $effectiveTier = ($config['capability_override'] ?? 'auto') !== 'auto'
-        ? (string) $config['capability_override']
+    $effectiveTier = ($activeCapTier !== 'auto')
+        ? $activeCapTier
         : $inferredTier;
     $strategy = supplycore_ai_capability_strategy($effectiveTier);
 
@@ -21049,22 +21075,26 @@ function supplycore_ai_ollama_config(): array
         'url' => (string) ($config['url'] ?? $defaults['ollama_url']),
         'model' => (string) ($config['model'] ?? $defaults['ollama_model']),
         'timeout' => max(1, (int) ($config['timeout'] ?? (int) $defaults['ollama_timeout'])),
-        'capability_override' => (string) ($config['capability_override'] ?? 'auto'),
+        'capability_override' => (string) ($activeCapTier),
         'local_ollama_model' => (string) ($config['local_ollama_model'] ?? $defaults['ollama_model']),
         'local_ollama_timeout' => max(1, (int) ($config['local_ollama_timeout'] ?? (int) $defaults['ollama_timeout'])),
+        'local_ollama_capability_tier' => (string) ($config['local_ollama_capability_tier'] ?? 'auto'),
         'runpod_url' => (string) ($config['runpod_url'] ?? ''),
         'runpod_api_key' => (string) ($config['runpod_api_key'] ?? ''),
         'runpod_api_key_masked' => supplycore_mask_secret((string) ($config['runpod_api_key'] ?? '')),
         'runpod_model' => (string) ($config['runpod_model'] ?? ''),
         'runpod_timeout' => max(1, (int) ($config['runpod_timeout'] ?? (int) $defaults['runpod_timeout'])),
+        'runpod_capability_tier' => (string) ($config['runpod_capability_tier'] ?? 'auto'),
         'claude_api_key' => (string) ($config['claude_api_key'] ?? ''),
         'claude_api_key_masked' => supplycore_mask_secret((string) ($config['claude_api_key'] ?? '')),
         'claude_model' => (string) ($config['claude_model'] ?? 'claude-sonnet-4-20250514'),
         'claude_timeout' => max(1, (int) ($config['claude_timeout'] ?? (int) $defaults['claude_timeout'])),
+        'claude_capability_tier' => (string) ($config['claude_capability_tier'] ?? 'large'),
         'groq_api_key' => (string) ($config['groq_api_key'] ?? ''),
         'groq_api_key_masked' => supplycore_mask_secret((string) ($config['groq_api_key'] ?? '')),
         'groq_model' => (string) ($config['groq_model'] ?? 'meta-llama/llama-4-scout-17b-16e-instruct'),
         'groq_timeout' => max(1, (int) ($config['groq_timeout'] ?? (int) $defaults['groq_timeout'])),
+        'groq_capability_tier' => (string) ($config['groq_capability_tier'] ?? 'auto'),
         'inferred_tier' => $inferredTier,
         'capability_tier' => $effectiveTier,
         'strategy' => $strategy,
@@ -21789,13 +21819,20 @@ function supplycore_ai_resolve_feature_config(string $feature, ?string $explicit
         default => (int) ($config['local_ollama_timeout'] ?? $config['timeout'] ?? 20),
     });
 
-    // Re-compute the capability tier against the now-resolved model so
-    // features running on a different provider (e.g. local defaults to
-    // a small qwen but a feature routes to Runpod gemma4:26b-a4b) get
-    // the tier/strategy that actually matches their runtime model.
+    // Re-compute the capability tier against the now-resolved provider's
+    // model and tier override so features running on a different provider
+    // (e.g. local defaults to a small qwen but a feature routes to
+    // Runpod gemma4:26b-a4b) get the tier/strategy that actually matches.
+    $providerCapTier = match ($provider) {
+        'runpod' => (string) ($config['runpod_capability_tier'] ?? 'auto'),
+        'claude' => (string) ($config['claude_capability_tier'] ?? 'large'),
+        'groq' => (string) ($config['groq_capability_tier'] ?? 'auto'),
+        default => (string) ($config['local_ollama_capability_tier'] ?? $config['capability_override'] ?? 'auto'),
+    };
+    $config['capability_override'] = $providerCapTier;
     $inferredTier = supplycore_ai_infer_model_capability_tier((string) ($config['model'] ?? ''));
-    $effectiveTier = ($config['capability_override'] ?? 'auto') !== 'auto'
-        ? (string) $config['capability_override']
+    $effectiveTier = ($providerCapTier !== 'auto')
+        ? $providerCapTier
         : $inferredTier;
     $config['inferred_tier'] = $inferredTier;
     $config['capability_tier'] = $effectiveTier;

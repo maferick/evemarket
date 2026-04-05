@@ -103,9 +103,16 @@ include __DIR__ . '/../../src/views/partials/header.php';
                   onsubmit="this.querySelector('button').disabled=true;this.querySelector('button').innerText='Generating…';">
                 <input type="hidden" name="_token" value="<?= htmlspecialchars(csrf_token(), ENT_QUOTES) ?>">
                 <input type="hidden" name="date" value="<?= htmlspecialchars($date, ENT_QUOTES) ?>">
+                <?php
+                $oppoProviderLabel = ollama_provider_options()[(string) ($ollamaConfig['provider'] ?? 'local')] ?? 'AI';
+                $oppoFeatureProvider = get_setting('ai_provider_opposition_global', 'default');
+                if ($oppoFeatureProvider !== 'default' && isset(ollama_provider_options()[$oppoFeatureProvider])) {
+                    $oppoProviderLabel = ollama_provider_options()[$oppoFeatureProvider];
+                }
+                ?>
                 <button type="submit" class="btn-primary"
-                        title="Generate a SITREP for this date using local Ollama (gemma4:e2b). May take several minutes.">
-                    Generate Intel (local gemma4:e2b)
+                        title="Queue a SITREP generation job for this date. Runs in the background via the AI worker.">
+                    Generate Intel (<?= htmlspecialchars($oppoProviderLabel, ENT_QUOTES) ?>)
                 </button>
             </form>
         </div>
