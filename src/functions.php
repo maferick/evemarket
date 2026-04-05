@@ -22323,6 +22323,91 @@ function activity_priority_refresh_summary_job_result(string $reason = 'manual')
     ];
 }
 
+/**
+ * Aggregate loss counts per hull_type_id over 1d / 3d / 7d / 30d
+ * windows directly from ``killmail_events`` — the authoritative ingest
+ * table. We intentionally don't use ``killmail_hull_loss_1d`` /
+ * ``killmail_item_loss_1d`` here because the rollup populator is on a
+ * separate schedule and the rollups can lag or stay empty on servers
+ * where the analytics bucket jobs aren't actively running.
+ *
+ * Returns ``{hull_type_id: {h24, h3d, h7d, h30d}}`` for hulls.
+ */
+function activity_priority_hull_loss_windows(array $hullTypeIds): array
+{
+    $hullTypeIds = array_values(array_unique(array_filter(array_map('intval', $hullTypeIds), static fn (int $id): bool => $id > 0)));
+    if ($hullTypeIds === []) {
+        return [];
+    }
+    $placeholders = implode(',', array_fill(0, count($hullTypeIds), '?'));
+    $rows = db_select(
+        "SELECT victim_ship_type_id AS hull_type_id,
+                SUM(CASE WHEN killmail_time >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL 1 DAY)  THEN 1 ELSE 0 END) AS h24,
+                SUM(CASE WHEN killmail_time >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL 3 DAY)  THEN 1 ELSE 0 END) AS h3d,
+                SUM(CASE WHEN killmail_time >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL 7 DAY)  THEN 1 ELSE 0 END) AS h7d,
+                SUM(CASE WHEN killmail_time >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL 30 DAY) THEN 1 ELSE 0 END) AS h30d
+           FROM killmail_events
+          WHERE mail_type = 'loss'
+            AND victim_ship_type_id IN ({$placeholders})
+            AND killmail_time >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL 30 DAY)
+          GROUP BY victim_ship_type_id",
+        $hullTypeIds
+    );
+    $out = [];
+    foreach ($rows as $row) {
+        $out[(int) ($row['hull_type_id'] ?? 0)] = [
+            'h24'  => (int) ($row['h24'] ?? 0),
+            'h3d'  => (int) ($row['h3d'] ?? 0),
+            'h7d'  => (int) ($row['h7d'] ?? 0),
+            'h30d' => (int) ($row['h30d'] ?? 0),
+        ];
+    }
+    return $out;
+}
+
+/**
+ * Aggregate fitted-module losses per hull_type_id over 24h / 3d / 7d
+ * windows. Counts ``killmail_items`` rows from loss killmails joined on
+ * the configured fitted-slot flag ranges, filtered to actual modules
+ * (category 7) and subsystems (category 32) to match the detector's
+ * cluster-input filter.
+ */
+function activity_priority_module_loss_windows(array $hullTypeIds): array
+{
+    $hullTypeIds = array_values(array_unique(array_filter(array_map('intval', $hullTypeIds), static fn (int $id): bool => $id > 0)));
+    if ($hullTypeIds === []) {
+        return [];
+    }
+    $placeholders = implode(',', array_fill(0, count($hullTypeIds), '?'));
+    $rows = db_select(
+        "SELECT ke.victim_ship_type_id AS hull_type_id,
+                SUM(CASE WHEN ke.killmail_time >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL 1 DAY) THEN 1 ELSE 0 END) AS h24,
+                SUM(CASE WHEN ke.killmail_time >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL 3 DAY) THEN 1 ELSE 0 END) AS h3d,
+                SUM(CASE WHEN ke.killmail_time >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL 7 DAY) THEN 1 ELSE 0 END) AS h7d
+           FROM killmail_events ke
+           INNER JOIN killmail_items ki ON ki.sequence_id = ke.sequence_id
+           INNER JOIN ref_item_types rit ON rit.type_id = ki.item_type_id
+          WHERE ke.mail_type = 'loss'
+            AND ke.victim_ship_type_id IN ({$placeholders})
+            AND ke.killmail_time >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL 7 DAY)
+            AND (ki.item_flag BETWEEN 11 AND 34
+                 OR ki.item_flag BETWEEN 92 AND 94
+                 OR ki.item_flag BETWEEN 125 AND 132)
+            AND rit.category_id IN (7, 32)
+          GROUP BY ke.victim_ship_type_id",
+        $hullTypeIds
+    );
+    $out = [];
+    foreach ($rows as $row) {
+        $out[(int) ($row['hull_type_id'] ?? 0)] = [
+            'h24' => (int) ($row['h24'] ?? 0),
+            'h3d' => (int) ($row['h3d'] ?? 0),
+            'h7d' => (int) ($row['h7d'] ?? 0),
+        ];
+    }
+    return $out;
+}
+
 function activity_priority_page_data(): array
 {
     // The legacy snapshot flow populated doctrine_activity_snapshots from
@@ -22338,20 +22423,52 @@ function activity_priority_page_data(): array
     $active = array_values(array_filter($doctrines, static fn (array $d): bool => (bool) ($d['is_active'] ?? false) || (bool) ($d['is_pinned'] ?? false)));
     usort($active, static fn (array $a, array $b): int => ((float) ($b['priority_score'] ?? 0.0)) <=> ((float) ($a['priority_score'] ?? 0.0)));
 
+    // Batch-resolve real 24h / 3d / 7d loss windows keyed by hull so we
+    // don't fake them on the page.
+    $hullTypeIds = array_values(array_unique(array_map(static fn (array $d): int => (int) ($d['hull_type_id'] ?? 0), $active)));
+    $hullWindows = activity_priority_hull_loss_windows($hullTypeIds);
+    $moduleWindows = activity_priority_module_loss_windows($hullTypeIds);
+
+    $windowDays = max(1, (int) $settings['window_days']);
+    $defaultRunway = max(1, (int) $settings['default_runway_days']);
+
     $activeDoctrines = [];
     $activeFits = [];
     foreach ($active as $index => $d) {
-        $lossWindow = (int) ($d['loss_count_window'] ?? 0);
-        $dailyRate = (float) ($d['daily_loss_rate'] ?? 0.0);
-        $targetFits = (int) ($d['target_fits'] ?? 0);
-        $activityScore = (float) ($d['priority_score'] ?? 0.0);
+        $hullTypeId = (int) ($d['hull_type_id'] ?? 0);
+        $hullW = $hullWindows[$hullTypeId] ?? ['h24' => 0, 'h3d' => 0, 'h7d' => 0, 'h30d' => 0];
+        $modW = $moduleWindows[$hullTypeId] ?? ['h24' => 0, 'h3d' => 0, 'h7d' => 0];
+
+        // Recompute everything from the live killmail_events counts so
+        // stale auto_doctrine_fit_demand_1d rows (built from the
+        // killmail_hull_loss_1d rollup, which can lag on servers where
+        // the analytics bucket jobs aren't active) don't produce a
+        // zeroed row on a hull that clearly has losses.
+        $windowLosses = (int) $hullW['h30d'];
+        $dailyRate = $windowLosses / 30.0;
+        $runwayDays = (int) ($d['runway_days_effective'] ?? $defaultRunway);
+        if ($runwayDays <= 0) {
+            $runwayDays = $defaultRunway;
+        }
+        $targetFits = (int) ceil($dailyRate * $runwayDays);
+        if ($targetFits < 1 && (bool) ($d['is_pinned'] ?? false)) {
+            $targetFits = 1;
+        }
+        $activityScore = round($dailyRate * $runwayDays, 2);
+
         $activityLevel = match (true) {
             $targetFits >= 10 => 'critical',
             $targetFits >= 3  => 'elevated',
             default            => 'low',
         };
         $readinessLabel = $targetFits > 0 ? 'Critical gap' : 'Market ready';
-        $resupplyPressure = $lossWindow >= 5 ? 'Urgent resupply' : 'Stable';
+        // Resupply pressure must agree with the readiness gap: no gap
+        // means no urgency regardless of historical loss count.
+        $resupplyPressure = match (true) {
+            $targetFits >= 10 => 'Urgent resupply',
+            $targetFits >= 3  => 'Moderate pressure',
+            default            => 'Stable',
+        };
 
         $row = [
             'entity_id'          => (int) ($d['id'] ?? 0),
@@ -22359,32 +22476,40 @@ function activity_priority_page_data(): array
             'doctrine_name'      => (string) ($d['canonical_name'] ?? ''),
             'activity_level'     => $activityLevel,
             'activity_score'     => $activityScore,
+            // Score / rank deltas would need a persisted previous
+            // snapshot which the auto doctrine pipeline does not keep
+            // yet. Leaving them at 0 with a neutral movement label is
+            // honest — the template renders the values only if they
+            // change, and the label now reads "—" instead of a fake
+            // "Holding" so operators can tell the difference.
             'score_delta'        => 0.0,
             'rank_delta'         => 0,
-            'movement_label'     => 'Holding',
+            'movement_label'     => '—',
             'explanation'        => sprintf(
-                '%d hull losses in the last %dd · daily rate %.2f · target %d fits over %dd runway',
-                $lossWindow,
-                (int) ($d['window_days'] ?? $settings['window_days']),
+                '%d hull losses in the last 30d (%d in 7d, %d in 24h) · daily rate %.2f · target %d fits over %dd runway',
+                $windowLosses,
+                $hullW['h7d'],
+                $hullW['h24'],
                 $dailyRate,
                 $targetFits,
-                (int) ($d['runway_days_effective'] ?? $settings['default_runway_days'])
+                $runwayDays
             ),
-            'hull_losses_24h'              => 0,
-            'hull_losses_3d'               => 0,
-            'hull_losses_7d'               => $lossWindow,
-            'module_losses_24h'            => 0,
-            'module_losses_3d'             => 0,
-            'module_losses_7d'             => 0,
-            'fit_equivalent_losses_24h'    => 0.0,
-            'fit_equivalent_losses_7d'     => (float) $lossWindow,
+            'hull_losses_24h'              => $hullW['h24'],
+            'hull_losses_3d'               => $hullW['h3d'],
+            'hull_losses_7d'               => $hullW['h7d'],
+            'module_losses_24h'            => $modW['h24'],
+            'module_losses_3d'             => $modW['h3d'],
+            'module_losses_7d'             => $modW['h7d'],
+            'fit_equivalent_losses_24h'    => (float) $hullW['h24'],
+            'fit_equivalent_losses_7d'     => (float) $hullW['h7d'],
             'readiness_label'              => $readinessLabel,
             'resupply_pressure'            => $resupplyPressure,
             'readiness_gap_count'          => $targetFits,
             'score_components'             => [
-                'Daily loss rate' => number_format($dailyRate, 2),
-                'Target fits'     => (string) $targetFits,
-                'Window losses'   => (string) $lossWindow,
+                'Daily loss rate (30d)' => number_format($dailyRate, 2),
+                'Target fits'           => (string) $targetFits,
+                'Window losses (30d)'   => (string) $windowLosses,
+                'Runway (days)'         => (string) $runwayDays,
             ],
             'top_fits' => [
                 [
