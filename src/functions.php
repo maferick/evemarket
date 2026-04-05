@@ -22435,10 +22435,13 @@ function activity_priority_page_data(): array
     ];
 
     $active = array_values(array_filter($doctrines, static fn (array $d): bool => (bool) ($d['is_active'] ?? false) || (bool) ($d['is_pinned'] ?? false)));
-    usort($active, static fn (array $a, array $b): int => ((float) ($b['priority_score'] ?? 0.0)) <=> ((float) ($a['priority_score'] ?? 0.0)));
-
-    // Batch-resolve real 24h / 3d / 7d loss windows keyed by hull so we
-    // don't fake them on the page.
+    // Batch-resolve hull-level 24h / 3d / 7d loss windows once. These
+    // are keyed by hull_type_id and shared by every fingerprint on the
+    // same hull, because ``killmail_events`` has no fingerprint column
+    // and we only rollup 30d per-fingerprint counts on the clustering
+    // pass. The 24h/3d/7d breakdown is therefore explicitly labelled
+    // as "hull-level" on the page so operators know it's an aggregate
+    // across every cluster sharing that hull.
     $hullTypeIds = array_values(array_unique(array_map(static fn (array $d): int => (int) ($d['hull_type_id'] ?? 0), $active)));
     $hullWindows = activity_priority_hull_loss_windows($hullTypeIds);
     $moduleWindows = activity_priority_module_loss_windows($hullTypeIds);
@@ -22446,29 +22449,49 @@ function activity_priority_page_data(): array
     $windowDays = max(1, (int) $settings['window_days']);
     $defaultRunway = max(1, (int) $settings['default_runway_days']);
 
-    $activeDoctrines = [];
-    $activeFits = [];
-    foreach ($active as $index => $d) {
-        $hullTypeId = (int) ($d['hull_type_id'] ?? 0);
-        $hullW = $hullWindows[$hullTypeId] ?? ['h24' => 0, 'h3d' => 0, 'h7d' => 0, 'h30d' => 0];
-        $modW = $moduleWindows[$hullTypeId] ?? ['h24' => 0, 'h3d' => 0, 'h7d' => 0];
-
-        // Recompute everything from the live killmail_events counts so
-        // stale auto_doctrine_fit_demand_1d rows (built from the
-        // killmail_hull_loss_1d rollup, which can lag on servers where
-        // the analytics bucket jobs aren't active) don't produce a
-        // zeroed row on a hull that clearly has losses.
-        $windowLosses = (int) $hullW['h30d'];
-        $dailyRate = $windowLosses / 30.0;
+    // Compute per-fingerprint activity scores FIRST so we can sort and
+    // rank against the real per-cluster numbers instead of the
+    // hull-level aggregate.
+    $scored = [];
+    foreach ($active as $d) {
+        $perFingerprintWindowLosses = (int) ($d['loss_count_window'] ?? 0);
         $runwayDays = (int) ($d['runway_days_effective'] ?? $defaultRunway);
         if ($runwayDays <= 0) {
             $runwayDays = $defaultRunway;
         }
-        $targetFits = (int) ceil($dailyRate * $runwayDays);
-        if ($targetFits < 1 && (bool) ($d['is_pinned'] ?? false)) {
-            $targetFits = 1;
+        $perFingerprintDailyRate = $perFingerprintWindowLosses / $windowDays;
+        $perFingerprintTargetFits = (int) ceil($perFingerprintDailyRate * $runwayDays);
+        if ($perFingerprintTargetFits < 1 && (bool) ($d['is_pinned'] ?? false)) {
+            $perFingerprintTargetFits = 1;
         }
-        $activityScore = round($dailyRate * $runwayDays, 2);
+        $scored[] = [
+            'doctrine'    => $d,
+            'win_losses'  => $perFingerprintWindowLosses,
+            'daily_rate'  => $perFingerprintDailyRate,
+            'target_fits' => $perFingerprintTargetFits,
+            'runway_days' => $runwayDays,
+            'score'       => round($perFingerprintDailyRate * $runwayDays, 2),
+        ];
+    }
+    usort(
+        $scored,
+        static fn (array $a, array $b): int => ($b['score'] <=> $a['score'])
+            ?: ($b['win_losses'] <=> $a['win_losses'])
+    );
+
+    $activeDoctrines = [];
+    $activeFits = [];
+    foreach ($scored as $index => $s) {
+        $d = $s['doctrine'];
+        $hullTypeId = (int) ($d['hull_type_id'] ?? 0);
+        $hullW = $hullWindows[$hullTypeId] ?? ['h24' => 0, 'h3d' => 0, 'h7d' => 0, 'h30d' => 0];
+        $modW = $moduleWindows[$hullTypeId] ?? ['h24' => 0, 'h3d' => 0, 'h7d' => 0];
+
+        $windowLosses = $s['win_losses'];
+        $dailyRate = $s['daily_rate'];
+        $targetFits = $s['target_fits'];
+        $runwayDays = $s['runway_days'];
+        $activityScore = $s['score'];
 
         $activityLevel = match (true) {
             $targetFits >= 10 => 'critical',
@@ -22500,14 +22523,18 @@ function activity_priority_page_data(): array
             'rank_delta'         => 0,
             'movement_label'     => '—',
             'explanation'        => sprintf(
-                '%d hull losses in the last 30d (%d in 7d, %d in 24h) · daily rate %.2f · target %d fits over %dd runway',
+                '%d losses for this fit in the last %dd · daily rate %.2f · target %d fits over %dd runway (hull-level: %d in 7d, %d in 24h)',
                 $windowLosses,
-                $hullW['h7d'],
-                $hullW['h24'],
+                $windowDays,
                 $dailyRate,
                 $targetFits,
-                $runwayDays
+                $runwayDays,
+                $hullW['h7d'],
+                $hullW['h24']
             ),
+            // "hull_losses_*" are the hull-level windows shared across
+            // every fingerprint on the same hull. The template labels
+            // them "(hull)" so operators see that they are aggregates.
             'hull_losses_24h'              => $hullW['h24'],
             'hull_losses_3d'               => $hullW['h3d'],
             'hull_losses_7d'               => $hullW['h7d'],
@@ -22520,10 +22547,11 @@ function activity_priority_page_data(): array
             'resupply_pressure'            => $resupplyPressure,
             'readiness_gap_count'          => $targetFits,
             'score_components'             => [
-                'Daily loss rate (30d)' => number_format($dailyRate, 2),
-                'Target fits'           => (string) $targetFits,
-                'Window losses (30d)'   => (string) $windowLosses,
-                'Runway (days)'         => (string) $runwayDays,
+                sprintf('Fit losses (%dd)', $windowDays)  => (string) $windowLosses,
+                'Daily rate'                               => number_format($dailyRate, 2),
+                'Target fits'                              => (string) $targetFits,
+                'Runway (days)'                            => (string) $runwayDays,
+                'Hull total (7d)'                          => (string) $hullW['h7d'],
             ],
             'top_fits' => [
                 [
