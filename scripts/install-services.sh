@@ -383,6 +383,10 @@ INSTALL_INFLUX=false
 if prompt_yes_no "Install the InfluxDB rollup export service and timer?" "N"; then
   INSTALL_INFLUX=true
 fi
+INSTALL_AI_WORKER=false
+if prompt_yes_no "Install the AI briefing worker (drains ai_jobs queue for theater/opposition AI)?" "Y"; then
+  INSTALL_AI_WORKER=true
+fi
 
 # ===========================  Validation  =================================
 
@@ -487,6 +491,9 @@ if [[ ${INSTALL_INFLUX} == true ]]; then
     echo "Wrote InfluxDB env file to ${INFLUX_ENV_FILE}"
   fi
 fi
+if [[ ${INSTALL_AI_WORKER} == true ]]; then
+  render_unit "${REPO_ROOT}/ops/systemd/supplycore-ai-worker.service" "${SYSTEMD_DIR}/supplycore-ai-worker.service"
+fi
 
 # ===========================  Enable and start  ===========================
 
@@ -523,6 +530,10 @@ fi
 if [[ ${INSTALL_INFLUX} == true ]]; then
   services_to_enable+=("supplycore-influx-rollup-export.service")
   services_to_enable+=("supplycore-influx-rollup-export.timer")
+fi
+
+if [[ ${INSTALL_AI_WORKER} == true ]]; then
+  services_to_enable+=("supplycore-ai-worker.service")
 fi
 
 start_services "${services_to_enable[@]}"
@@ -564,6 +575,9 @@ if [[ ${INSTALL_EVEWHO} == true ]]; then
 fi
 if [[ ${INSTALL_INFLUX} == true ]]; then
   echo "  systemctl status supplycore-influx-rollup-export.timer"
+fi
+if [[ ${INSTALL_AI_WORKER} == true ]]; then
+  echo "  systemctl status supplycore-ai-worker.service"
 fi
 echo
 echo "Run any registered job manually:"

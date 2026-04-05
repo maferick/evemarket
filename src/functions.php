@@ -871,6 +871,15 @@ function ai_briefing_setting_defaults(): array
         'groq_api_key' => '',
         'groq_model' => 'meta-llama/llama-4-scout-17b-16e-instruct',
         'theater_aar_prompt' => '',
+        // Per-feature provider overrides. Each takes one of:
+        //   'default' — use ollama_provider
+        //   'local' | 'runpod' | 'claude' | 'groq'
+        // This lets operators pick different providers per use case (e.g.
+        // cheap local Ollama for theater summaries, RunPod for opposition
+        // briefings). Resolved by supplycore_ai_resolve_config().
+        'ai_provider_theater_lock' => 'default',
+        'ai_provider_opposition_global' => 'default',
+        'ai_provider_opposition_alliance' => 'default',
     ];
 }
 
@@ -1015,6 +1024,29 @@ function ollama_provider_options(): array
     ];
 }
 
+function ai_feature_provider_options(): array
+{
+    return ['default' => 'Use global provider'] + ollama_provider_options();
+}
+
+function ai_feature_keys(): array
+{
+    return [
+        'theater_lock',
+        'opposition_global',
+        'opposition_alliance',
+    ];
+}
+
+function sanitize_ai_feature_provider(mixed $value): string
+{
+    $provider = mb_strtolower(trim((string) $value));
+
+    return array_key_exists($provider, ai_feature_provider_options())
+        ? $provider
+        : 'default';
+}
+
 function sanitize_ollama_provider(mixed $value): string
 {
     $provider = mb_strtolower(trim((string) $value));
@@ -1101,6 +1133,9 @@ function ai_briefing_settings_from_request(array $request): array
         'groq_api_key' => trim((string) ($request['groq_api_key'] ?? '')),
         'groq_model' => trim((string) ($request['groq_model'] ?? 'meta-llama/llama-4-scout-17b-16e-instruct')),
         'theater_aar_prompt' => mb_substr(trim((string) ($request['theater_aar_prompt'] ?? '')), 0, 8000),
+        'ai_provider_theater_lock' => sanitize_ai_feature_provider($request['ai_provider_theater_lock'] ?? null),
+        'ai_provider_opposition_global' => sanitize_ai_feature_provider($request['ai_provider_opposition_global'] ?? null),
+        'ai_provider_opposition_alliance' => sanitize_ai_feature_provider($request['ai_provider_opposition_alliance'] ?? null),
     ];
 }
 
@@ -21141,8 +21176,25 @@ function supplycore_ai_test_connection(): array
             $decoded = supplycore_ai_groq_generate_json($config, $systemPrompt, $userPrompt, $schema);
             $model = (string) ($config['groq_model'] ?? '');
         } elseif ($provider === 'runpod') {
-            $decoded = supplycore_ai_runpod_generate_json($config, $systemPrompt, $userPrompt, $schema);
-            $model = (string) ($config['model'] ?? '');
+            // Fast-path: go through /runsync with a trivial payload and a
+            // 10-second cap. The settings test must never block on an
+            // async RunPod cold start — that's what the ai_jobs worker
+            // is for. This check only verifies reachability + auth.
+            $probe = supplycore_ai_runpod_probe($config);
+            if (!($probe['success'] ?? false)) {
+                return [
+                    'success' => false,
+                    'error' => (string) ($probe['error'] ?? 'Runpod probe failed'),
+                    'provider' => $provider,
+                ];
+            }
+            return [
+                'success' => true,
+                'provider' => $provider,
+                'model' => (string) ($config['model'] ?? ''),
+                'response' => 'Runpod endpoint reachable (status: ' . (string) ($probe['job_status'] ?? 'OK') . ').',
+                'elapsed_ms' => (int) ($probe['elapsed_ms'] ?? 0),
+            ];
         } else {
             $response = http_get_json(
                 rtrim((string) $config['url'], '/') . '/tags',
@@ -21350,7 +21402,23 @@ function supplycore_ai_runpod_request_timeout(array $config): int
 {
     $configuredTimeout = max(1, (int) ($config['timeout'] ?? 20));
 
-    return min(10, $configuredTimeout);
+    return min(15, $configuredTimeout);
+}
+
+function supplycore_ai_runpod_poll_budget_seconds(array $config): int
+{
+    // Allow callers (primarily the ai_jobs CLI worker) to pin the polling
+    // budget explicitly — the worker sizes this against its own lease
+    // rather than inheriting the user-facing Ollama timeout.
+    if (isset($config['runpod_poll_budget_seconds'])) {
+        return max(30, (int) $config['runpod_poll_budget_seconds']);
+    }
+
+    $configuredTimeout = max(1, (int) ($config['timeout'] ?? 20));
+
+    // Floor of 2 minutes as a safety net when called outside the worker
+    // (e.g. from bin/ai_briefing_worker.php --once debugging).
+    return max(120, $configuredTimeout * 6);
 }
 
 function supplycore_ai_runpod_poll_until_complete(array $config, array $headers, array $response): array
@@ -21379,13 +21447,15 @@ function supplycore_ai_runpod_poll_until_complete(array $config, array $headers,
         throw new RuntimeException('Runpod did not return a job ID for async polling.');
     }
 
-    $deadline = microtime(true) + max(1, (int) ($config['timeout'] ?? 20));
+    $deadline = microtime(true) + supplycore_ai_runpod_poll_budget_seconds($config);
     $pollDelayMicroseconds = 750000;
+    $maxPollDelayMicroseconds = 5000000;
     $statusUrl = supplycore_ai_runpod_status_url((string) ($config['runpod_url'] ?? ''), $jobId);
     $lastKnownStatus = $jobStatus !== '' ? $jobStatus : 'SUBMITTED';
 
     while (microtime(true) < $deadline) {
         usleep($pollDelayMicroseconds);
+        $pollDelayMicroseconds = (int) min($maxPollDelayMicroseconds, (int) round($pollDelayMicroseconds * 1.25));
 
         $statusResponse = http_get_json($statusUrl, $headers, supplycore_ai_runpod_request_timeout($config));
         $statusCode = (int) ($statusResponse['status'] ?? 0);
@@ -21481,6 +21551,378 @@ function supplycore_ai_decode_json_string(string $value): ?array
     }
 
     return null;
+}
+
+// ---------------------------------------------------------------------------
+// AI job queue (ai_jobs table) + per-feature provider resolution
+// ---------------------------------------------------------------------------
+//
+// The web tier enqueues a row into ai_jobs and returns immediately; the CLI
+// worker (bin/ai_briefing_worker.php, managed by systemd) drains the queue,
+// runs the actual AI call (which may take minutes for a RunPod cold start),
+// and writes the result back. This keeps php-fpm, nginx, and the browser
+// out of the long-running job's critical path.
+
+/**
+ * Resolve the AI config that should be used for a specific feature.
+ *
+ * Per-feature provider overrides let operators pick different providers
+ * per use case (e.g. cheap local Ollama for theater summaries, RunPod for
+ * opposition briefings). If the feature's override is 'default' or not
+ * recognised, falls back to the global provider.
+ */
+function supplycore_ai_resolve_feature_config(string $feature, ?string $explicitProvider = null): array
+{
+    $config = supplycore_ai_ollama_config();
+
+    if ($explicitProvider !== null && $explicitProvider !== '') {
+        $provider = sanitize_ollama_provider($explicitProvider);
+    } else {
+        $settingKey = 'ai_provider_' . $feature;
+        $featureOverride = sanitize_ai_feature_provider(
+            get_setting($settingKey, 'default')
+        );
+        $provider = $featureOverride === 'default'
+            ? (string) ($config['provider'] ?? 'local')
+            : $featureOverride;
+    }
+
+    $config['provider'] = $provider;
+
+    return $config;
+}
+
+function supplycore_ai_jobs_feature_valid(string $feature): bool
+{
+    static $valid = null;
+    if ($valid === null) {
+        $valid = array_flip(['theater_lock', 'opposition_global', 'opposition_alliance']);
+    }
+    return isset($valid[$feature]);
+}
+
+/**
+ * Enqueue an AI job if one isn't already queued/running for the same
+ * (feature, target_key). Returns the job id (new or pre-existing).
+ */
+function supplycore_ai_jobs_enqueue(
+    string $feature,
+    string $targetKey,
+    array $payload,
+    ?string $providerOverride = null,
+    int $priority = 0
+): int {
+    if (!supplycore_ai_jobs_feature_valid($feature)) {
+        throw new InvalidArgumentException('Unknown AI job feature: ' . $feature);
+    }
+    if ($targetKey === '') {
+        throw new InvalidArgumentException('AI job target_key is required.');
+    }
+
+    $config = supplycore_ai_resolve_feature_config($feature, $providerOverride);
+    $provider = (string) ($config['provider'] ?? 'local');
+    $model = match ($provider) {
+        'claude' => (string) ($config['claude_model'] ?? ''),
+        'groq' => (string) ($config['groq_model'] ?? ''),
+        default => (string) ($config['model'] ?? ''),
+    };
+
+    $payloadJson = json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE);
+    if ($payloadJson === false) {
+        throw new RuntimeException('AI job payload could not be JSON-encoded.');
+    }
+
+    return db_transaction(static function () use ($feature, $targetKey, $provider, $model, $payloadJson, $priority): int {
+        $existing = db_select_one(
+            "SELECT id FROM ai_jobs
+             WHERE feature = ? AND target_key = ? AND status IN ('queued','running')
+             ORDER BY id DESC LIMIT 1",
+            [$feature, $targetKey]
+        );
+        if (is_array($existing) && isset($existing['id'])) {
+            return (int) $existing['id'];
+        }
+
+        db_execute(
+            'INSERT INTO ai_jobs (feature, target_key, provider, model, status, priority, payload_json)
+             VALUES (?, ?, ?, ?, \'queued\', ?, ?)',
+            [$feature, $targetKey, $provider, $model, $priority, $payloadJson]
+        );
+
+        return (int) db()->lastInsertId();
+    });
+}
+
+function supplycore_ai_jobs_find_active(string $feature, string $targetKey): ?array
+{
+    return db_select_one(
+        "SELECT * FROM ai_jobs
+         WHERE feature = ? AND target_key = ? AND status IN ('queued','running')
+         ORDER BY id DESC LIMIT 1",
+        [$feature, $targetKey]
+    );
+}
+
+function supplycore_ai_jobs_find_latest(string $feature, string $targetKey): ?array
+{
+    return db_select_one(
+        'SELECT * FROM ai_jobs
+         WHERE feature = ? AND target_key = ?
+         ORDER BY id DESC LIMIT 1',
+        [$feature, $targetKey]
+    );
+}
+
+function supplycore_ai_jobs_get(int $id): ?array
+{
+    return db_select_one('SELECT * FROM ai_jobs WHERE id = ?', [$id]);
+}
+
+/**
+ * Claim the next queued job. Uses FOR UPDATE SKIP LOCKED (MariaDB >= 10.6)
+ * so multiple worker slots never fight over the same row.
+ */
+function supplycore_ai_jobs_claim(string $workerId, int $leaseSeconds = 900): ?array
+{
+    db_query_cache_clear();
+    $pdo = db();
+    $pdo->beginTransaction();
+    try {
+        $stmt = $pdo->prepare(
+            "SELECT id FROM ai_jobs
+             WHERE status = 'queued'
+             ORDER BY priority DESC, id ASC
+             LIMIT 1
+             FOR UPDATE SKIP LOCKED"
+        );
+        $stmt->execute();
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        if (!is_array($row) || !isset($row['id'])) {
+            $pdo->commit();
+            return null;
+        }
+        $id = (int) $row['id'];
+
+        $update = $pdo->prepare(
+            "UPDATE ai_jobs
+             SET status = 'running',
+                 attempts = attempts + 1,
+                 worker_id = ?,
+                 lease_until = DATE_ADD(NOW(), INTERVAL ? SECOND),
+                 started_at = COALESCE(started_at, NOW())
+             WHERE id = ?"
+        );
+        $update->execute([$workerId, max(60, $leaseSeconds), $id]);
+        $pdo->commit();
+    } catch (Throwable $e) {
+        if ($pdo->inTransaction()) {
+            $pdo->rollBack();
+        }
+        throw $e;
+    }
+
+    return supplycore_ai_jobs_get($id);
+}
+
+function supplycore_ai_jobs_complete(int $id, array $result, int $durationMs): void
+{
+    $resultJson = json_encode($result, JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE);
+    if ($resultJson === false) {
+        $resultJson = '{}';
+    }
+    db_execute(
+        "UPDATE ai_jobs
+         SET status = 'done',
+             result_json = ?,
+             duration_ms = ?,
+             completed_at = NOW(),
+             lease_until = NULL,
+             last_error = NULL
+         WHERE id = ?",
+        [$resultJson, max(0, $durationMs), $id]
+    );
+}
+
+/**
+ * Mark a job as failed. If the job still has retries available and the
+ * caller signals the error is transient, it is requeued instead.
+ */
+function supplycore_ai_jobs_fail(int $id, string $error, bool $transient): void
+{
+    $job = supplycore_ai_jobs_get($id);
+    if ($job === null) {
+        return;
+    }
+
+    $attempts = (int) ($job['attempts'] ?? 0);
+    $maxAttempts = (int) ($job['max_attempts'] ?? 1);
+    $shouldRetry = $transient && $attempts < $maxAttempts;
+
+    if ($shouldRetry) {
+        db_execute(
+            "UPDATE ai_jobs
+             SET status = 'queued',
+                 worker_id = NULL,
+                 lease_until = NULL,
+                 last_error = ?
+             WHERE id = ?",
+            [mb_substr($error, 0, 2000), $id]
+        );
+        return;
+    }
+
+    db_execute(
+        "UPDATE ai_jobs
+         SET status = 'failed',
+             last_error = ?,
+             completed_at = NOW(),
+             lease_until = NULL
+         WHERE id = ?",
+        [mb_substr($error, 0, 2000), $id]
+    );
+}
+
+/**
+ * Reclaim rows whose worker lease has expired (crash-safety). Any row in
+ * 'running' state with lease_until < NOW() is pushed back to 'queued' if it
+ * still has retries, or marked 'failed' otherwise.
+ */
+function supplycore_ai_jobs_sweep_expired_leases(): int
+{
+    $rows = db_select(
+        "SELECT id, attempts, max_attempts FROM ai_jobs
+         WHERE status = 'running' AND lease_until IS NOT NULL AND lease_until < NOW()"
+    );
+    foreach ($rows as $row) {
+        $id = (int) ($row['id'] ?? 0);
+        if ($id === 0) {
+            continue;
+        }
+        supplycore_ai_jobs_fail((int) $id, 'Worker lease expired (crash or hang).', true);
+    }
+    return count($rows);
+}
+
+/**
+ * Execute a claimed AI job by dispatching to the feature-specific handler.
+ * Returns the normalized result payload; throws on failure.
+ */
+function supplycore_ai_jobs_execute(array $job): array
+{
+    $feature = (string) ($job['feature'] ?? '');
+    $payload = [];
+    $payloadJson = (string) ($job['payload_json'] ?? '');
+    if ($payloadJson !== '') {
+        $decoded = json_decode($payloadJson, true);
+        if (is_array($decoded)) {
+            $payload = $decoded;
+        }
+    }
+    $providerOverride = (string) ($job['provider'] ?? '');
+    // Force the feature config to use the provider captured at enqueue time
+    // so later settings changes don't silently re-route in-flight jobs.
+    $override = supplycore_ai_resolve_feature_config($feature, $providerOverride);
+    // Give RunPod polling a generous budget tied to the worker lease
+    // rather than the user-facing Ollama timeout. 14 minutes leaves a
+    // small safety margin before a default 15-minute lease expires.
+    $override['runpod_poll_budget_seconds'] = 14 * 60;
+    $GLOBALS['supplycore_ai_ollama_runtime_override'] = $override;
+
+    try {
+        return match ($feature) {
+            'theater_lock' => supplycore_ai_jobs_run_theater_lock($payload),
+            'opposition_global' => supplycore_ai_jobs_run_opposition_global($payload),
+            'opposition_alliance' => supplycore_ai_jobs_run_opposition_alliance($payload),
+            default => throw new RuntimeException('Unknown AI job feature: ' . $feature),
+        };
+    } finally {
+        unset($GLOBALS['supplycore_ai_ollama_runtime_override']);
+    }
+}
+
+function supplycore_ai_jobs_run_theater_lock(array $payload): array
+{
+    $theaterId = trim((string) ($payload['theater_id'] ?? ''));
+    if ($theaterId === '') {
+        throw new RuntimeException('theater_lock payload missing theater_id.');
+    }
+    $result = theater_ai_summary_generate($theaterId, true);
+    if ($result === null) {
+        throw new RuntimeException('theater_ai_summary_generate returned null for ' . $theaterId);
+    }
+    return $result;
+}
+
+function supplycore_ai_jobs_run_opposition_global(array $payload): array
+{
+    $date = trim((string) ($payload['date'] ?? ''));
+    if ($date === '' || preg_match('/^\d{4}-\d{2}-\d{2}$/', $date) !== 1) {
+        throw new RuntimeException('opposition_global payload missing/invalid date.');
+    }
+    $generated = opposition_ai_generate_daily_briefings($date);
+    return ['date' => $date, 'generated' => $generated];
+}
+
+function supplycore_ai_jobs_run_opposition_alliance(array $payload): array
+{
+    // Alliance-level briefings are generated inside
+    // opposition_ai_generate_daily_briefings() today. This hook exists so
+    // future callers can enqueue per-alliance regenerations without
+    // touching the global path.
+    return supplycore_ai_jobs_run_opposition_global($payload);
+}
+
+/**
+ * Fast-path RunPod connectivity probe used by the settings "Test
+ * connection" button. Uses /runsync with a trivial payload and a hard
+ * 10-second cap so the health check never blocks on an async cold start.
+ */
+function supplycore_ai_runpod_probe(array $config): array
+{
+    $url = rtrim(trim((string) ($config['runpod_url'] ?? '')), '/');
+    $apiKey = trim((string) ($config['runpod_api_key'] ?? ''));
+    if ($url === '' || $apiKey === '') {
+        return ['success' => false, 'error' => 'Runpod endpoint or API key not configured.'];
+    }
+
+    // Force /runsync regardless of how the user typed the URL. The probe
+    // must NOT go through the async /run path.
+    $probeUrl = preg_match('#/(?:run|runsync)$#i', $url) === 1
+        ? (string) preg_replace('#/(?:run|runsync)$#i', '/runsync', $url)
+        : $url . '/runsync';
+
+    $headers = ['Authorization: Bearer ' . $apiKey];
+    $payload = ['input' => ['prompt' => 'ping']];
+
+    $startedAt = microtime(true);
+    try {
+        $response = http_post_json($probeUrl, $headers, $payload, 10);
+    } catch (Throwable $e) {
+        return ['success' => false, 'error' => 'Runpod probe failed: ' . $e->getMessage()];
+    }
+    $elapsedMs = (int) round((microtime(true) - $startedAt) * 1000);
+
+    $status = (int) ($response['status'] ?? 0);
+    if ($status === 401 || $status === 403) {
+        return ['success' => false, 'error' => 'Runpod auth rejected (HTTP ' . $status . '). Check API key.'];
+    }
+    if ($status === 404) {
+        return ['success' => false, 'error' => 'Runpod endpoint not found (HTTP 404). Check endpoint URL.'];
+    }
+    if ($status < 200 || $status >= 300) {
+        return ['success' => false, 'error' => 'Runpod probe HTTP ' . $status . '.'];
+    }
+
+    $json = is_array($response['json'] ?? null) ? $response['json'] : [];
+    $jobStatus = strtoupper(trim((string) ($json['status'] ?? '')));
+    // /runsync returns COMPLETED on fast-path; IN_QUEUE/IN_PROGRESS means
+    // the worker is still cold-starting but the endpoint is reachable and
+    // auth worked — that's a healthy probe result.
+    return [
+        'success' => true,
+        'elapsed_ms' => $elapsedMs,
+        'job_status' => $jobStatus !== '' ? $jobStatus : 'OK',
+    ];
 }
 
 // ---------------------------------------------------------------------------
@@ -22165,16 +22607,54 @@ function theater_lock_report(string $theaterId): ?array
         return ['error' => 'Battle report is already locked'];
     }
 
-    // Generate AI summary at lock time
-    $aiResult = null;
-    if (supplycore_ai_ollama_enabled()) {
-        $aiResult = theater_ai_summary_generate($theaterId, true);
-    }
-
-    // Lock the theater regardless of AI success
+    // Lock the theater immediately. AI summary generation is enqueued to
+    // the ai_jobs queue and drained by bin/ai_briefing_worker.php — the web
+    // request no longer waits on the model to respond.
     db_execute('UPDATE theaters SET locked_at = NOW() WHERE theater_id = ?', [$theaterId]);
 
-    return $aiResult;
+    if (!supplycore_ai_ollama_enabled()) {
+        return ['ai_status' => 'disabled'];
+    }
+
+    try {
+        $jobId = supplycore_ai_jobs_enqueue(
+            'theater_lock',
+            $theaterId,
+            ['theater_id' => $theaterId]
+        );
+    } catch (Throwable $e) {
+        error_log('[theater-lock] Failed to enqueue AI job: ' . $e->getMessage());
+        return ['ai_status' => 'error', 'error' => $e->getMessage()];
+    }
+
+    return ['ai_status' => 'queued', 'ai_job_id' => $jobId];
+}
+
+/**
+ * Snapshot the current AI briefing state for a theater. Returns the cached
+ * summary if present, otherwise the active job's status (queued/running/
+ * failed) so the UI can render progress or retry affordances.
+ */
+function theater_ai_status_snapshot(string $theaterId): array
+{
+    $cached = theater_ai_summary_read($theaterId);
+    if ($cached !== null) {
+        return ['status' => 'done', 'summary' => $cached];
+    }
+
+    $job = supplycore_ai_jobs_find_latest('theater_lock', $theaterId);
+    if ($job === null) {
+        return ['status' => 'none'];
+    }
+
+    return [
+        'status' => (string) ($job['status'] ?? 'unknown'),
+        'provider' => (string) ($job['provider'] ?? ''),
+        'model' => (string) ($job['model'] ?? ''),
+        'attempts' => (int) ($job['attempts'] ?? 0),
+        'error' => (string) ($job['last_error'] ?? ''),
+        'updated_at' => (string) ($job['updated_at'] ?? ''),
+    ];
 }
 
 function theater_view_snapshot_save(string $theaterId, array $viewState): void
