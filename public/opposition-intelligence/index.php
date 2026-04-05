@@ -48,6 +48,38 @@ $totalLosses = array_sum(array_column($snapshots, 'losses'));
 $totalIskDestroyed = array_sum(array_column($snapshots, 'isk_destroyed'));
 $activeAlliances = count(array_filter($snapshots, static fn ($s): bool => ((int) $s['kills'] > 0 || (int) $s['losses'] > 0)));
 
+// Human-readable ISK formatter: M (millions), B (billions), T (trillions).
+$formatIsk = static function (float $value): string {
+    if ($value <= 0) return '0';
+    if ($value >= 1_000_000_000_000) return number_format($value / 1_000_000_000_000, 2) . 'T';
+    if ($value >= 1_000_000_000) return number_format($value / 1_000_000_000, 2) . 'B';
+    if ($value >= 1_000_000) return number_format($value / 1_000_000, 1) . 'M';
+    if ($value >= 1_000) return number_format($value / 1_000, 1) . 'K';
+    return number_format($value, 0);
+};
+
+// Resolve solar system names in bulk so the table shows "Jita" instead of "System #30000142".
+$systemIdsToResolve = [];
+foreach ($snapshots as $s) {
+    $systems = $s['active_systems_json'] ?? [];
+    if (is_string($systems)) $systems = json_decode($systems, true) ?: [];
+    foreach ($systems as $sys) {
+        if (isset($sys['system_id'])) {
+            $systemIdsToResolve[(int) $sys['system_id']] = true;
+        }
+    }
+}
+$systemNameMap = [];
+if ($systemIdsToResolve !== []) {
+    try {
+        foreach (db_ref_systems_by_ids(array_keys($systemIdsToResolve)) as $row) {
+            $systemNameMap[(int) $row['system_id']] = (string) $row['system_name'];
+        }
+    } catch (Throwable $e) {
+        // Non-fatal: fall back to whatever name is in the snapshot JSON.
+    }
+}
+
 include __DIR__ . '/../../src/views/partials/header.php';
 ?>
 
@@ -67,9 +99,46 @@ include __DIR__ . '/../../src/views/partials/header.php';
             <?php endif; ?>
             <a href="/alliance-dossiers" class="btn-secondary">Alliance Dossiers</a>
             <a href="/theater-intelligence" class="btn-secondary">Theater Intel</a>
+            <form method="post" action="/opposition-intelligence/generate.php" class="inline"
+                  onsubmit="this.querySelector('button').disabled=true;this.querySelector('button').innerText='Generating…';">
+                <input type="hidden" name="_token" value="<?= htmlspecialchars(csrf_token(), ENT_QUOTES) ?>">
+                <input type="hidden" name="date" value="<?= htmlspecialchars($date, ENT_QUOTES) ?>">
+                <button type="submit" class="btn-primary"
+                        title="Generate a SITREP for this date using local Ollama (gemma4:e2b). May take several minutes.">
+                    Generate Intel (local gemma4:e2b)
+                </button>
+            </form>
         </div>
     </div>
 </section>
+
+<?php
+if (session_status() === PHP_SESSION_NONE) {
+    @session_start();
+}
+$flash = $_SESSION['opposition_intel_flash'] ?? null;
+if ($flash !== null) {
+    unset($_SESSION['opposition_intel_flash']);
+}
+?>
+<?php if ($flash): ?>
+    <?php if (($flash['status'] ?? '') === 'ok'): ?>
+        <section class="surface-primary mt-4 border border-emerald-500/30 bg-emerald-500/10">
+            <p class="text-sm text-emerald-200">
+                <strong>Intel generation complete.</strong>
+                Generated <?= (int) ($flash['generated'] ?? 0) ?> briefing(s) for <?= htmlspecialchars((string) ($flash['date'] ?? ''), ENT_QUOTES) ?>
+                using local Ollama (gemma4:e2b).
+            </p>
+        </section>
+    <?php else: ?>
+        <section class="surface-primary mt-4 border border-red-500/30 bg-red-500/10">
+            <p class="text-sm text-red-200">
+                <strong>Intel generation failed.</strong>
+                <?= htmlspecialchars((string) ($flash['error'] ?? 'Unknown error'), ENT_QUOTES) ?>
+            </p>
+        </section>
+    <?php endif; ?>
+<?php endif; ?>
 
 <?php if ($tablesReadyError !== null): ?>
 <section class="surface-primary mt-4 border border-amber-500/30 bg-amber-500/10">
@@ -112,7 +181,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
     </div>
     <div class="surface-primary text-center">
         <p class="text-xs uppercase tracking-wider text-muted">ISK Destroyed</p>
-        <p class="mt-1 text-2xl font-bold text-amber-300"><?= number_format($totalIskDestroyed / 1_000_000, 0) ?>M</p>
+        <p class="mt-1 text-2xl font-bold text-amber-300"><?= htmlspecialchars($formatIsk((float) $totalIskDestroyed)) ?></p>
     </div>
 </section>
 
@@ -195,7 +264,11 @@ include __DIR__ . '/../../src/views/partials/header.php';
                         $aid = (int) $s['alliance_id'];
                         $systems = $s['active_systems_json'] ?? [];
                         if (is_string($systems)) $systems = json_decode($systems, true) ?: [];
-                        $topSystems = array_slice(array_column($systems, 'system_name'), 0, 3);
+                        $topSystems = [];
+                        foreach (array_slice($systems, 0, 3) as $sys) {
+                            $sid = isset($sys['system_id']) ? (int) $sys['system_id'] : 0;
+                            $topSystems[] = $systemNameMap[$sid] ?? (string) ($sys['system_name'] ?? ('System #' . $sid));
+                        }
 
                         // Find alliance briefing if any
                         $allianceBriefing = null;
@@ -228,8 +301,8 @@ include __DIR__ . '/../../src/views/partials/header.php';
                             </td>
                             <td class="px-3 py-2 text-sm text-right font-mono text-red-300"><?= number_format($kills) ?></td>
                             <td class="px-3 py-2 text-sm text-right font-mono text-emerald-300"><?= number_format($losses) ?></td>
-                            <td class="px-3 py-2 text-sm text-right font-mono"><?= number_format((float) $s['isk_destroyed'] / 1_000_000, 0) ?>M</td>
-                            <td class="px-3 py-2 text-sm text-right font-mono"><?= number_format((float) $s['isk_lost'] / 1_000_000, 0) ?>M</td>
+                            <td class="px-3 py-2 text-sm text-right font-mono"><?= htmlspecialchars($formatIsk((float) $s['isk_destroyed'])) ?></td>
+                            <td class="px-3 py-2 text-sm text-right font-mono"><?= htmlspecialchars($formatIsk((float) $s['isk_lost'])) ?></td>
                             <td class="px-3 py-2 text-sm text-right font-mono"><?= (int) $s['active_pilots'] ?></td>
                             <td class="px-3 py-2 text-xs text-muted"><?= htmlspecialchars(implode(', ', $topSystems)) ?></td>
                             <td class="px-3 py-2 text-xs">

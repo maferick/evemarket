@@ -25968,6 +25968,14 @@ function supplycore_ai_ollama_config(): array
 {
     static $config = null;
 
+    // Runtime override (e.g. "Generate Intel" button forcing local Ollama + model).
+    // Set $GLOBALS['supplycore_ai_ollama_runtime_override'] to an assoc array before
+    // calling into the AI pipeline to force specific config values for this request.
+    $override = $GLOBALS['supplycore_ai_ollama_runtime_override'] ?? null;
+    if (is_array($override) && $override !== []) {
+        return $override;
+    }
+
     if (is_array($config)) {
         return $config;
     }

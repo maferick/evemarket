@@ -129,10 +129,11 @@ def _load_daily_geography_bulk(db: SupplyCoreDb, alliance_ids: list[int], target
     system_rows = db.fetch_all(
         f"""
         SELECT ka.alliance_id, ke.solar_system_id AS system_id,
-               COALESCE(emc.entity_name, CONCAT('System #', ke.solar_system_id)) AS system_name,
+               COALESCE(NULLIF(rs.system_name, ''), emc.entity_name, CONCAT('System #', ke.solar_system_id)) AS system_name,
                COUNT(DISTINCT ka.sequence_id) AS killmail_count
         FROM killmail_attackers ka
         INNER JOIN killmail_events ke ON ke.sequence_id = ka.sequence_id
+        LEFT JOIN ref_systems rs ON rs.system_id = ke.solar_system_id
         LEFT JOIN entity_metadata_cache emc
              ON emc.entity_type = 'solar_system' AND emc.entity_id = ke.solar_system_id
         WHERE ka.alliance_id IN ({placeholders})
