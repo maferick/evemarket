@@ -187,6 +187,17 @@ function db_auto_doctrine_fit_demand_latest(): array
     return $stmt ? $stmt->fetchAll(PDO::FETCH_ASSOC) : [];
 }
 
+// ─── Legacy formatter shim ─────────────────────────────────────────────────
+// ``doctrine_format_quantity`` is still called from several view templates
+// (dashboard, activity-priority). It is a pure formatter with no table
+// dependency, so we keep it alive here to avoid view-level fatals.
+if (!function_exists('doctrine_format_quantity')) {
+    function doctrine_format_quantity(int $value): string
+    {
+        return number_format(max(0, $value));
+    }
+}
+
 // ─── Settings helpers ──────────────────────────────────────────────────────
 
 function auto_doctrine_settings(): array
