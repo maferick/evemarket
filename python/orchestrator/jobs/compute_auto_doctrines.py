@@ -44,6 +44,12 @@ _DEFAULT_MIN_LOSSES = 30
 # titans, and force auxiliaries — tunable via the
 # ``auto_doctrines.capital_min_losses_threshold`` setting.
 _DEFAULT_CAPITAL_MIN_LOSSES = 5
+# Fleet command/boost ships almost always fly in pairs (one shield/info,
+# one armor/skirmish) so even the 5-loss capital floor hides real
+# doctrines early in their adoption curve. 2 losses — i.e. one bad fight
+# — is enough signal that the booster pair is a real doctrine. Tunable
+# via ``auto_doctrines.command_min_losses_threshold``.
+_DEFAULT_COMMAND_MIN_LOSSES = 2
 # 0.65 merges clusters that share roughly two-thirds of their modules.
 # The original 0.80 value (inherited from the opponent-kill economic
 # warfare clusterer) was too strict for our own losses: incomplete
@@ -57,6 +63,15 @@ _DEFAULT_JACCARD = 0.65
 # Rorqual / freighters are excluded from the detector entirely so they
 # do not need to appear here.
 _CAPITAL_HULL_GROUPS: frozenset[int] = frozenset({485, 547, 659, 30, 1538})
+
+# EVE group IDs for fleet-support hulls that die rarely and are always
+# fielded in pairs (one shield/info, one armor/skirmish): Command
+# Ships (Astarte, Sleipnir, Nighthawk, Absolution, Claymore, Damnation,
+# Eos, Vulture — group 540) and Command Destroyers (Bifrost, Stork,
+# Magus, Pontifex — group 1534). These get their own 2-loss floor via
+# ``_DEFAULT_COMMAND_MIN_LOSSES`` — lower than capitals because a
+# single lost pair already signals an active doctrine.
+_COMMAND_HULL_GROUPS: frozenset[int] = frozenset({540, 1534})
 
 # Hull groups that must never appear as doctrines. The extractor SQL
 # filters by this list, and ``_purge_excluded_hull_rows`` deletes any
@@ -103,6 +118,7 @@ def _load_settings(db: Any) -> dict[str, Any]:
                 'auto_doctrines.window_days',
                 'auto_doctrines.min_losses_threshold',
                 'auto_doctrines.capital_min_losses_threshold',
+                'auto_doctrines.command_min_losses_threshold',
                 'auto_doctrines.default_runway_days',
                 'auto_doctrines.jaccard_threshold'
             )"""
@@ -126,6 +142,9 @@ def _load_settings(db: Any) -> dict[str, Any]:
         "min_losses": _int("auto_doctrines.min_losses_threshold", _DEFAULT_MIN_LOSSES),
         "capital_min_losses": _int(
             "auto_doctrines.capital_min_losses_threshold", _DEFAULT_CAPITAL_MIN_LOSSES
+        ),
+        "command_min_losses": _int(
+            "auto_doctrines.command_min_losses_threshold", _DEFAULT_COMMAND_MIN_LOSSES
         ),
         "default_runway_days": _int("auto_doctrines.default_runway_days", 14),
         "jaccard_threshold": _float("auto_doctrines.jaccard_threshold", _DEFAULT_JACCARD),
@@ -300,6 +319,7 @@ def _upsert_doctrines(
     window_days: int,
     min_losses: int,
     capital_min_losses: int,
+    command_min_losses: int,
 ) -> dict[tuple[int, str], int]:
     """Upsert every family whose core set is non-empty. Returns a map
     ``(hull_type_id, canonical_fingerprint) -> doctrine_id``.
@@ -349,13 +369,19 @@ def _upsert_doctrines(
             hull_names.get(hull_type_id, ""), core, alliance_label=alliance_label
         )
 
-        # Tier the activation threshold: capitals use the lower
-        # capital_min_losses floor because they die rarely enough that
-        # the 30-loss subcap default would hide every real cap doctrine.
+        # Tier the activation threshold in three tiers:
+        #   - Command ships / command destroyers: 2-loss floor (they
+        #     fly in pairs and a single lost pair is enough signal).
+        #   - Capitals (dread / carrier / super / titan / FAX): 5-loss
+        #     floor.
+        #   - Everything else: subcap 30-loss floor.
         hull_group_id = int(hull_meta.get(hull_type_id, {}).get("group_id") or 0)
-        effective_min_losses = (
-            capital_min_losses if hull_group_id in _CAPITAL_HULL_GROUPS else min_losses
-        )
+        if hull_group_id in _COMMAND_HULL_GROUPS:
+            effective_min_losses = command_min_losses
+        elif hull_group_id in _CAPITAL_HULL_GROUPS:
+            effective_min_losses = capital_min_losses
+        else:
+            effective_min_losses = min_losses
 
         existing = db.fetch_one(
             """SELECT id, loss_count_total, is_pinned
@@ -470,9 +496,14 @@ def _purge_excluded_hull_rows(db: Any) -> int:
     return purged
 
 
-def _sweep_is_active(db: Any, min_losses: int, capital_min_losses: int) -> int:
+def _sweep_is_active(
+    db: Any,
+    min_losses: int,
+    capital_min_losses: int,
+    command_min_losses: int,
+) -> int:
     """Recompute ``is_active`` for every non-pinned row against the
-    current thresholds.
+    current three-tier thresholds (command < capital < subcap).
 
     Without this sweep a row only gets its ``is_active`` flag updated
     when the detector's clustering pass touches it — i.e. when a
@@ -485,16 +516,19 @@ def _sweep_is_active(db: Any, min_losses: int, capital_min_losses: int) -> int:
     class.
     """
     cap_list = ",".join(str(g) for g in sorted(_CAPITAL_HULL_GROUPS))
+    cmd_list = ",".join(str(g) for g in sorted(_COMMAND_HULL_GROUPS))
     return db.execute(
         f"""UPDATE auto_doctrines ad
               JOIN ref_item_types rit ON rit.type_id = ad.hull_type_id
                SET ad.is_active = CASE
+                   WHEN rit.group_id IN ({cmd_list})
+                       THEN IF(ad.loss_count_window >= %s, 1, 0)
                    WHEN rit.group_id IN ({cap_list})
                        THEN IF(ad.loss_count_window >= %s, 1, 0)
-                       ELSE IF(ad.loss_count_window >= %s, 1, 0)
+                   ELSE IF(ad.loss_count_window >= %s, 1, 0)
                END
              WHERE ad.is_pinned = 0""",
-        (capital_min_losses, min_losses),
+        (command_min_losses, capital_min_losses, min_losses),
     )
 
 
@@ -655,6 +689,7 @@ def run_compute_auto_doctrines(db: Any) -> dict[str, Any]:
         window_days=settings["window_days"],
         min_losses=settings["min_losses"],
         capital_min_losses=settings["capital_min_losses"],
+        command_min_losses=settings["command_min_losses"],
     )
 
     # Recompute is_active for every non-pinned row against the current
@@ -666,6 +701,7 @@ def run_compute_auto_doctrines(db: Any) -> dict[str, Any]:
         db,
         min_losses=settings["min_losses"],
         capital_min_losses=settings["capital_min_losses"],
+        command_min_losses=settings["command_min_losses"],
     )
     logger.info("auto_doctrines: is_active sweep touched %d rows", reactivated)
 
@@ -693,6 +729,7 @@ def run_compute_auto_doctrines(db: Any) -> dict[str, Any]:
             "window_days": settings["window_days"],
             "min_losses_threshold": settings["min_losses"],
             "capital_min_losses_threshold": settings["capital_min_losses"],
+            "command_min_losses_threshold": settings["command_min_losses"],
             "families_clustered": len(families),
             "doctrines_upserted": len(id_map),
             "demand_rows": demand_rows,
