@@ -58,6 +58,21 @@ _DEFAULT_JACCARD = 0.65
 # do not need to appear here.
 _CAPITAL_HULL_GROUPS: frozenset[int] = frozenset({485, 547, 659, 30, 1538})
 
+# EVE group IDs for fleet-support hulls that die rarely but are always
+# in real doctrines: Command Ships (Astarte, Sleipnir, Nighthawk,
+# Absolution, Claymore, Damnation, Eos, Vulture — group 540) and
+# Command Destroyers (Bifrost, Stork, Magus, Pontifex — group 1534).
+# These carry the fleet Command Bursts (shield / armor / info /
+# skirmish links) and almost never fly alone, but at the 30-loss
+# subcap floor they never accumulate enough losses to activate. Share
+# the capital 5-loss floor so they surface as doctrine ships.
+_COMMAND_HULL_GROUPS: frozenset[int] = frozenset({540, 1534})
+
+# Convenience: the union of every hull group that uses the low
+# activation floor. Used by the extractor's threshold tiering and the
+# is_active sweep so the two can't drift.
+_LOW_VOLUME_HULL_GROUPS: frozenset[int] = _CAPITAL_HULL_GROUPS | _COMMAND_HULL_GROUPS
+
 # Hull groups that must never appear as doctrines. The extractor SQL
 # filters by this list, and ``_purge_excluded_hull_rows`` deletes any
 # stale rows that leaked in from earlier detector runs before the
@@ -328,12 +343,14 @@ def _upsert_doctrines(
             hull_names.get(hull_type_id, ""), core, alliance_label=alliance_label
         )
 
-        # Tier the activation threshold: capitals use the lower
+        # Tier the activation threshold: capitals AND command/boost
+        # hulls (Command Ships + Command Destroyers) use the lower
         # capital_min_losses floor because they die rarely enough that
-        # the 30-loss subcap default would hide every real cap doctrine.
+        # the 30-loss subcap default would hide every real doctrine
+        # fit. See ``_LOW_VOLUME_HULL_GROUPS``.
         hull_group_id = int(hull_meta.get(hull_type_id, {}).get("group_id") or 0)
         effective_min_losses = (
-            capital_min_losses if hull_group_id in _CAPITAL_HULL_GROUPS else min_losses
+            capital_min_losses if hull_group_id in _LOW_VOLUME_HULL_GROUPS else min_losses
         )
 
         existing = db.fetch_one(
@@ -455,12 +472,12 @@ def _sweep_is_active(db: Any, min_losses: int, capital_min_losses: int) -> int:
     re-evaluates every non-pinned row in one shot, tiered by hull
     class.
     """
-    cap_list = ",".join(str(g) for g in sorted(_CAPITAL_HULL_GROUPS))
+    low_volume_list = ",".join(str(g) for g in sorted(_LOW_VOLUME_HULL_GROUPS))
     return db.execute(
         f"""UPDATE auto_doctrines ad
               JOIN ref_item_types rit ON rit.type_id = ad.hull_type_id
                SET ad.is_active = CASE
-                   WHEN rit.group_id IN ({cap_list})
+                   WHEN rit.group_id IN ({low_volume_list})
                        THEN IF(ad.loss_count_window >= %s, 1, 0)
                        ELSE IF(ad.loss_count_window >= %s, 1, 0)
                END
