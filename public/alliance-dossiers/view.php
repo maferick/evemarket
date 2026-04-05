@@ -53,13 +53,23 @@ include __DIR__ . '/../../src/views/partials/header.php';
             <p class="text-xs uppercase tracking-[0.16em] text-muted">Alliance Dossier</p>
             <h1 class="mt-1 text-2xl font-semibold text-slate-50"><?= $allianceName ?></h1>
             <div class="mt-2 flex flex-wrap items-center gap-3 text-sm">
-                <?php $isTracked = db_opposition_intel_is_tracked($allianceId); ?>
+                <?php
+                $isTracked = false;
+                try {
+                    $isTracked = db_opposition_intel_is_tracked($allianceId);
+                } catch (Throwable $e) {
+                    // Opposition intel tables may not exist yet (migration pending).
+                    // Silently skip the tracking toggle in that case.
+                }
+                ?>
+                <?php if (function_exists('db_opposition_intel_is_tracked')): ?>
                 <form method="POST" action="/api/opposition-intel-track.php" class="inline">
                     <input type="hidden" name="alliance_id" value="<?= $allianceId ?>">
                     <button type="submit" class="rounded-full px-2.5 py-0.5 text-[10px] uppercase tracking-wider transition-colors <?= $isTracked ? 'bg-cyan-900/60 text-cyan-300 ring-1 ring-cyan-400/30 hover:bg-cyan-800/60' : 'bg-slate-700/60 text-slate-400 ring-1 ring-slate-500/30 hover:bg-slate-600/60' ?>">
                         <?= $isTracked ? 'Tracking Daily Intel' : 'Track for Daily Intel' ?>
                     </button>
                 </form>
+                <?php endif; ?>
                 <span class="rounded-full px-2.5 py-0.5 text-[10px] uppercase tracking-wider <?= $postureClass ?>"><?= ucfirst($posture) ?> posture</span>
                 <?php if ($dossier['primary_region_name']): ?>
                     <span class="text-muted">Primary region: <span class="text-slate-300"><?= htmlspecialchars($dossier['primary_region_name'], ENT_QUOTES) ?></span></span>
@@ -448,7 +458,15 @@ include __DIR__ . '/../../src/views/partials/header.php';
 
 <?php
 // Daily Intelligence Section
-$allianceBriefings = db_opposition_alliance_briefings_history($allianceId, 7);
+// Guarded against missing tables (migration may be pending).
+$allianceBriefings = [];
+try {
+    if (function_exists('db_opposition_alliance_briefings_history')) {
+        $allianceBriefings = db_opposition_alliance_briefings_history($allianceId, 7);
+    }
+} catch (Throwable $e) {
+    $allianceBriefings = [];
+}
 if ($allianceBriefings !== []):
     $threatColors = [
         'critical' => 'bg-red-500/20 text-red-300 border-red-500/30',
