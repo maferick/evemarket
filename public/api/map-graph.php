@@ -45,14 +45,42 @@ switch ($type) {
             $scene = map_build_theater_scene($theaterId, $systemIds, $hops);
         }
         break;
+
+    case 'region':
+        $regionId = max(0, (int) ($_GET['region_id'] ?? 0));
+        if ($regionId > 0) {
+            $scene = map_build_region_scene($regionId);
+        }
+        break;
 }
 
 if ($scene === null) {
     http_response_code(400);
     echo json_encode([
-        'error' => 'Invalid request. Required: type=(system|corridor|theater) with appropriate scope params.',
+        'error' => 'Invalid request. Required: type=(system|corridor|theater|region) with appropriate scope params.',
     ]);
     exit;
+}
+
+// Apply overlays if requested
+$overlayParam = $_GET['overlays'] ?? $_GET['mode'] ?? null;
+if ($overlayParam !== null) {
+    if (is_string($overlayParam)) {
+        // Check if it's a mode preset
+        $presets = map_overlay_mode_presets();
+        if (isset($presets[$overlayParam])) {
+            $overlayNames = $presets[$overlayParam];
+        } else {
+            $overlayNames = array_filter(explode(',', $overlayParam), static fn(string $s): bool => $s !== '');
+        }
+    } elseif (is_array($overlayParam)) {
+        $overlayNames = array_filter($overlayParam, static fn($s): bool => is_string($s) && $s !== '');
+    } else {
+        $overlayNames = [];
+    }
+    if ($overlayNames !== []) {
+        $scene = map_apply_overlays($scene, $overlayNames);
+    }
 }
 
 echo json_encode(map_scene_to_json($scene), JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);

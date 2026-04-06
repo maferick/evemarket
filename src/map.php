@@ -950,3 +950,487 @@ function map_scene_to_json(array $scene): array
         'build_stats'   => $scene['build_stats'] ?? [],
     ];
 }
+
+// ---------------------------------------------------------------------------
+//  Overlay System
+// ---------------------------------------------------------------------------
+
+/**
+ * Overlay precedence order (later wins for fill/outline/glow):
+ * 1. base (security) — always present
+ * 2. intelligence (chokepoint, bridge)
+ * 3. sovereignty (alliance color)
+ * 4. threat (threat level fill)
+ * 5. battles (hotspot glow)
+ * 6. bridges (edge style — additive)
+ * 7. market (hub badge — additive)
+ * 8. route highlight (highest edge priority)
+ *
+ * Badges stack. fill/outline/glow: last wins. label_promote: sticky true.
+ */
+
+function map_overlay_sovereignty(array $systemIds): array
+{
+    if ($systemIds === []) return [];
+    $ph = implode(',', array_fill(0, count($systemIds), '?'));
+    $rows = db_select(
+        "SELECT sm.system_id, sm.alliance_id, sm.faction_id,
+                COALESCE(sm.owner_entity_type, '') AS owner_type
+         FROM sovereignty_map sm
+         WHERE sm.system_id IN ({$ph})",
+        $systemIds
+    );
+    $result = [];
+    foreach ($rows as $r) {
+        $sid = (int) $r['system_id'];
+        $ownerType = (string) $r['owner_type'];
+        $allianceId = (int) ($r['alliance_id'] ?? 0);
+        $factionId = (int) ($r['faction_id'] ?? 0);
+
+        // Simple deterministic color from alliance/faction ID
+        $ownerId = $allianceId > 0 ? $allianceId : $factionId;
+        if ($ownerId <= 0) continue;
+
+        $hue = ($ownerId * 137) % 360; // Golden angle hash for color spread
+        $fill = 'hsl(' . $hue . ', 60%, 15%)';
+        $outline = 'hsl(' . $hue . ', 70%, 45%)';
+
+        $result[$sid] = [
+            'fill'          => $fill,
+            'outline'       => $outline,
+            'glow'          => null,
+            'badge'         => $ownerType === 'faction' ? ['text' => 'FW', 'color' => '#a78bfa'] : null,
+            'label_promote' => false,
+        ];
+    }
+    return $result;
+}
+
+function map_overlay_threat(array $systemIds): array
+{
+    if ($systemIds === []) return [];
+    $ph = implode(',', array_fill(0, count($systemIds), '?'));
+    $rows = db_select(
+        "SELECT system_id, threat_level, hotspot_score
+         FROM system_threat_scores
+         WHERE system_id IN ({$ph}) AND hotspot_score > 0",
+        $systemIds
+    );
+    $result = [];
+    foreach ($rows as $r) {
+        $sid = (int) $r['system_id'];
+        $tl = strtolower((string) ($r['threat_level'] ?? ''));
+        $hs = (float) ($r['hotspot_score'] ?? 0);
+        if ($tl === '' || $tl === 'low') continue;
+
+        $color = map_threat_color($tl);
+        $intensity = min(1.0, $hs / 50.0);
+
+        $result[$sid] = [
+            'fill'          => null,
+            'outline'       => $color,
+            'glow'          => ['color' => $color, 'intensity' => $intensity],
+            'badge'         => $tl === 'critical' ? ['text' => 'CRIT', 'color' => '#ef4444'] : null,
+            'label_promote' => $tl === 'critical' || $tl === 'high',
+        ];
+    }
+    return $result;
+}
+
+function map_overlay_battles(array $systemIds, int $windowDays = 7): array
+{
+    if ($systemIds === []) return [];
+    $ph = implode(',', array_fill(0, count($systemIds), '?'));
+    $rows = db_select(
+        "SELECT system_id, battle_count, recent_battle_count, total_isk_destroyed, last_battle_at
+         FROM system_threat_scores
+         WHERE system_id IN ({$ph}) AND battle_count > 0",
+        $systemIds
+    );
+    $result = [];
+    foreach ($rows as $r) {
+        $sid = (int) $r['system_id'];
+        $bc = (int) ($r['battle_count'] ?? 0);
+        $recent = (int) ($r['recent_battle_count'] ?? 0);
+        if ($bc <= 0) continue;
+
+        $intensity = min(1.0, $recent / 10.0);
+        $result[$sid] = [
+            'fill'          => null,
+            'outline'       => null,
+            'glow'          => ['color' => '#f97316', 'intensity' => $intensity],
+            'badge'         => $bc >= 5 ? ['text' => $bc . ' battles', 'color' => '#f97316'] : null,
+            'label_promote' => $recent >= 3,
+        ];
+    }
+    return $result;
+}
+
+function map_overlay_bridges(array $systemIds): array
+{
+    if ($systemIds === []) return [];
+    $ph = implode(',', array_fill(0, count($systemIds), '?'));
+    $rows = db_select(
+        "SELECT from_system_id, to_system_id, owner_name
+         FROM jump_bridges
+         WHERE is_active = 1 AND (from_system_id IN ({$ph}) OR to_system_id IN ({$ph}))",
+        array_merge($systemIds, $systemIds)
+    );
+    $result = [];
+    foreach ($rows as $r) {
+        $from = (int) $r['from_system_id'];
+        $to = (int) $r['to_system_id'];
+        $owner = (string) ($r['owner_name'] ?? '');
+        // Mark both endpoints
+        foreach ([$from, $to] as $sid) {
+            if (!in_array($sid, $systemIds, true)) continue;
+            $result[$sid] = [
+                'fill'          => null,
+                'outline'       => null,
+                'glow'          => null,
+                'badge'         => ['text' => 'JB', 'color' => '#60a5fa'],
+                'edge_style'    => [$sid === $from ? $to : $from => ['stroke' => '#60a5fa', 'dash' => '6 3', 'width' => 2.0]],
+                'label_promote' => false,
+            ];
+        }
+    }
+    return $result;
+}
+
+function map_overlay_market(array $systemIds): array
+{
+    if ($systemIds === []) return [];
+    // Check for market hub systems (systems with active market orders above threshold)
+    $ph = implode(',', array_fill(0, count($systemIds), '?'));
+    $rows = db_select(
+        "SELECT rs.system_id, rs.system_name
+         FROM ref_systems rs
+         INNER JOIN ref_npc_stations st ON st.system_id = rs.system_id
+         WHERE rs.system_id IN ({$ph})
+         GROUP BY rs.system_id
+         HAVING COUNT(st.station_id) >= 1",
+        $systemIds
+    );
+    $result = [];
+    foreach ($rows as $r) {
+        $sid = (int) $r['system_id'];
+        $result[$sid] = [
+            'fill'          => null,
+            'outline'       => null,
+            'glow'          => null,
+            'badge'         => ['text' => 'MKT', 'color' => '#34d399'],
+            'label_promote' => true,
+        ];
+    }
+    return $result;
+}
+
+/**
+ * Merge overlay results with precedence rules.
+ * Later overlays in the list override fill/outline/glow.
+ * Badges stack. label_promote is sticky true.
+ */
+function map_overlay_merge(array ...$overlayResults): array
+{
+    $merged = [];
+    foreach ($overlayResults as $overlay) {
+        foreach ($overlay as $systemId => $decorations) {
+            if (!isset($merged[$systemId])) {
+                $merged[$systemId] = ['fill' => null, 'outline' => null, 'glow' => null, 'badges' => [], 'edge_styles' => [], 'label_promote' => false];
+            }
+            $m = &$merged[$systemId];
+            if (($decorations['fill'] ?? null) !== null)    $m['fill'] = $decorations['fill'];
+            if (($decorations['outline'] ?? null) !== null) $m['outline'] = $decorations['outline'];
+            if (($decorations['glow'] ?? null) !== null)    $m['glow'] = $decorations['glow'];
+            if (($decorations['badge'] ?? null) !== null)   $m['badges'][] = $decorations['badge'];
+            if (($decorations['label_promote'] ?? false))   $m['label_promote'] = true;
+            foreach ($decorations['edge_style'] ?? [] as $targetSid => $style) {
+                $m['edge_styles'][$targetSid] = $style;
+            }
+            unset($m);
+        }
+    }
+    return $merged;
+}
+
+/**
+ * Mode presets — predefined overlay combinations.
+ */
+function map_overlay_mode_presets(): array
+{
+    return [
+        'logistics' => ['sovereignty', 'market', 'bridges'],
+        'pvp'       => ['sovereignty', 'threat', 'battles'],
+        'strategic' => ['sovereignty', 'threat', 'battles', 'bridges'],
+    ];
+}
+
+/**
+ * Apply overlays to a MapScene, enriching nodes with overlay decorations.
+ */
+function map_apply_overlays(array $scene, array $overlayNames): array
+{
+    $systemIds = array_map('intval', array_keys($scene['nodes'] ?? []));
+    if ($systemIds === []) return $scene;
+
+    $overlayResults = [];
+    foreach ($overlayNames as $name) {
+        $overlayResults[] = match ($name) {
+            'sovereignty' => map_overlay_sovereignty($systemIds),
+            'threat'      => map_overlay_threat($systemIds),
+            'battles'     => map_overlay_battles($systemIds),
+            'bridges'     => map_overlay_bridges($systemIds),
+            'market'      => map_overlay_market($systemIds),
+            default       => [],
+        };
+    }
+
+    $merged = map_overlay_merge(...$overlayResults);
+
+    // Apply to scene nodes
+    foreach ($merged as $sid => $decorations) {
+        if (!isset($scene['nodes'][$sid])) continue;
+        $scene['nodes'][$sid]['overlays'] = $decorations;
+        if ($decorations['label_promote']) {
+            $scene['nodes'][$sid]['label_priority'] = 1.0;
+        }
+    }
+
+    $scene['active_overlays'] = $overlayNames;
+    return $scene;
+}
+
+// ---------------------------------------------------------------------------
+//  Region/Constellation Layout
+// ---------------------------------------------------------------------------
+
+function map_layout_region(array $nodeMap, array $adjacency): array
+{
+    // Group systems by constellation
+    $byConstellation = [];
+    foreach ($nodeMap as $sid => $n) {
+        $cid = (int) ($n['constellation_id'] ?? 0);
+        $byConstellation[$cid][] = $sid;
+    }
+
+    $constIds = array_keys($byConstellation);
+    $constCount = count($constIds);
+    if ($constCount === 0) return [];
+
+    // Arrange constellations in a grid
+    $cols = max(1, (int) ceil(sqrt($constCount)));
+    $rows = max(1, (int) ceil($constCount / $cols));
+    $cellW = 1.0 / $cols;
+    $cellH = 1.0 / $rows;
+
+    $positions = [];
+    foreach ($constIds as $idx => $cid) {
+        $col = $idx % $cols;
+        $row = (int) floor($idx / $cols);
+        $cx = ($col + 0.5) * $cellW;
+        $cy = ($row + 0.5) * $cellH;
+
+        $members = $byConstellation[$cid];
+        $memberCount = count($members);
+        sort($members);
+
+        if ($memberCount === 1) {
+            $positions[$members[0]] = ['x' => $cx, 'y' => $cy];
+        } else {
+            $radius = min($cellW, $cellH) * 0.3;
+            foreach ($members as $mi => $sid) {
+                $angle = (2.0 * M_PI / $memberCount) * $mi - M_PI / 2.0;
+                $positions[$sid] = [
+                    'x' => max(0.02, min(0.98, $cx + cos($angle) * $radius)),
+                    'y' => max(0.02, min(0.98, $cy + sin($angle) * $radius * 0.82)),
+                ];
+            }
+        }
+    }
+
+    return $positions;
+}
+
+/**
+ * Generate convex hulls for constellation clusters.
+ */
+function map_generate_hulls(array $sceneNodes): array
+{
+    // Group positioned nodes by constellation
+    $byConst = [];
+    foreach ($sceneNodes as $sid => $n) {
+        if (($n['role'] ?? '') === 'boundary') continue;
+        $cid = (int) ($n['constellation_id'] ?? 0);
+        if ($cid <= 0) continue;
+        $byConst[$cid][] = ['x' => (float) $n['x'], 'y' => (float) $n['y']];
+    }
+
+    $hulls = [];
+    foreach ($byConst as $cid => $points) {
+        if (count($points) < 3) continue;
+        // Simple convex hull (Graham scan)
+        $hull = _map_convex_hull($points);
+        if (count($hull) >= 3) {
+            $hulls[] = [
+                'constellation_id' => $cid,
+                'points' => $hull,
+            ];
+        }
+    }
+    return $hulls;
+}
+
+function _map_convex_hull(array $points): array
+{
+    usort($points, static fn($a, $b) => $a['x'] <=> $b['x'] ?: $a['y'] <=> $b['y']);
+    $n = count($points);
+    if ($n < 3) return $points;
+
+    $cross = static fn($o, $a, $b) => ($a['x'] - $o['x']) * ($b['y'] - $o['y']) - ($a['y'] - $o['y']) * ($b['x'] - $o['x']);
+
+    // Lower hull
+    $lower = [];
+    foreach ($points as $p) {
+        while (count($lower) >= 2 && $cross($lower[count($lower) - 2], $lower[count($lower) - 1], $p) <= 0) {
+            array_pop($lower);
+        }
+        $lower[] = $p;
+    }
+
+    // Upper hull
+    $upper = [];
+    foreach (array_reverse($points) as $p) {
+        while (count($upper) >= 2 && $cross($upper[count($upper) - 2], $upper[count($upper) - 1], $p) <= 0) {
+            array_pop($upper);
+        }
+        $upper[] = $p;
+    }
+
+    array_pop($lower);
+    array_pop($upper);
+    return array_merge($lower, $upper);
+}
+
+/**
+ * Build a region-level scene with all systems in a region.
+ */
+function map_build_region_scene(int $regionId): ?array
+{
+    $t0 = hrtime(true);
+
+    $systems = db_select(
+        "SELECT rs.system_id, rs.system_name, rs.security, rs.constellation_id, rs.region_id,
+                rc.constellation_name
+         FROM ref_systems rs
+         LEFT JOIN ref_constellations rc ON rc.constellation_id = rs.constellation_id
+         WHERE rs.region_id = ?",
+        [$regionId]
+    );
+    if ($systems === []) return null;
+
+    $systemIds = array_map(static fn($r) => (int) $r['system_id'], $systems);
+
+    // Get stargates for edges within this region
+    $ph = implode(',', array_fill(0, count($systemIds), '?'));
+    $gates = db_select(
+        "SELECT system_id, dest_system_id
+         FROM ref_stargates
+         WHERE system_id IN ({$ph}) AND dest_system_id IN ({$ph})",
+        array_merge($systemIds, $systemIds)
+    );
+
+    $nodeMap = [];
+    foreach ($systems as $s) {
+        $sid = (int) $s['system_id'];
+        $nodeMap[$sid] = [
+            'system_id'        => $sid,
+            'name'             => (string) ($s['system_name'] ?? (string) $sid),
+            'security'         => (float) ($s['security'] ?? 0.0),
+            'constellation_id' => (int) ($s['constellation_id'] ?? 0),
+            'constellation_name' => (string) ($s['constellation_name'] ?? ''),
+        ];
+    }
+
+    $rawEdges = [];
+    $drawn = [];
+    foreach ($gates as $g) {
+        $a = (int) $g['system_id'];
+        $b = (int) $g['dest_system_id'];
+        $key = min($a, $b) . ':' . max($a, $b);
+        if (!isset($drawn[$key])) {
+            $rawEdges[] = [$a, $b];
+            $drawn[$key] = true;
+        }
+    }
+
+    $adjacency = map_build_adjacency($nodeMap, $rawEdges);
+    $dataMs = (hrtime(true) - $t0) / 1e6;
+
+    $t1 = hrtime(true);
+    $positions = map_layout_region($nodeMap, $adjacency);
+    $layoutMs = (hrtime(true) - $t1) / 1e6;
+
+    // Try to load intelligence scores
+    $intel = function_exists('db_map_system_intelligence') ? db_map_system_intelligence($systemIds) : [];
+
+    $sceneNodes = [];
+    foreach ($nodeMap as $sid => $n) {
+        $priority = $intel[$sid]['label_priority'] ?? 0.0;
+        $sceneNodes[$sid] = [
+            'id'                => $sid,
+            'name'              => $n['name'],
+            'security'          => $n['security'],
+            'x'                 => (float) ($positions[$sid]['x'] ?? 0.5),
+            'y'                 => (float) ($positions[$sid]['y'] ?? 0.5),
+            'role'              => 'surrounding',
+            'hop'               => 0,
+            'threat_level'      => '',
+            'constellation_id'  => $n['constellation_id'],
+            'label_priority'    => $priority,
+        ];
+    }
+
+    $sceneEdges = [];
+    foreach ($rawEdges as [$a, $b]) {
+        if (isset($sceneNodes[$a], $sceneNodes[$b])) {
+            $sceneEdges[] = ['from' => $a, 'to' => $b, 'tier' => 'gate'];
+        }
+    }
+
+    $hulls = map_generate_hulls($sceneNodes);
+
+    $totalMs = (hrtime(true) - $t0) / 1e6;
+    return [
+        'version'       => MAP_SCENE_VERSION,
+        'layout'        => 'region-v1',
+        'scope'         => ['type' => 'region', 'region_id' => $regionId],
+        'canvas'        => ['width' => 1200, 'height' => 900, 'pad' => 40],
+        'filter_prefix' => 'reg',
+        'nodes'         => $sceneNodes,
+        'edges'         => $sceneEdges,
+        'hulls'         => $hulls,
+        'build_stats'   => [
+            'data_ms'    => round($dataMs, 1),
+            'layout_ms'  => round($layoutMs, 1),
+            'total_ms'   => round($totalMs, 1),
+            'cache_hit'  => false,
+            'node_count' => count($sceneNodes),
+            'edge_count' => count($sceneEdges),
+            'hull_count' => count($hulls),
+        ],
+    ];
+}
+
+function map_generate_region(int $regionId): ?string
+{
+    if ($regionId <= 0) return null;
+    $cachePath = map_cache_path('region', (string) $regionId, 'region-v1');
+    $cached = map_cache_get($cachePath);
+    if ($cached !== null) return $cached;
+
+    $scene = map_build_region_scene($regionId);
+    if ($scene === null) return null;
+
+    $svg = map_render_svg($scene);
+    return map_cache_put($cachePath, $svg);
+}
