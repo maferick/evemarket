@@ -1,0 +1,24 @@
+[Unit]
+Description=SupplyCore lane: maintenance (cleanup, repair, recalibration)
+After=network.target mariadb.service
+Wants=network.target
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+WorkingDirectory=/var/www/SupplyCore
+EnvironmentFile=-/etc/default/supplycore-worker
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/var/www/SupplyCore/.venv-orchestrator/bin/python /var/www/SupplyCore/bin/python_orchestrator.py loop-runner --app-root /var/www/SupplyCore --lane maintenance --max-parallel 1 --fast-pause 60 --background-pause 120
+Nice=10
+Restart=always
+RestartSec=10
+KillSignal=SIGTERM
+TimeoutStopSec=90
+MemoryMax=512M
+StandardOutput=append:/var/www/SupplyCore/storage/logs/lane-maintenance.log
+StandardError=append:/var/www/SupplyCore/storage/logs/lane-maintenance.log
+
+[Install]
+WantedBy=multi-user.target

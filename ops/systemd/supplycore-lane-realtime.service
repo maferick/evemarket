@@ -1,0 +1,23 @@
+[Unit]
+Description=SupplyCore lane: realtime (latency-sensitive syncs, dashboards, alerts)
+After=network.target mariadb.service
+Wants=network.target
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+WorkingDirectory=/var/www/SupplyCore
+EnvironmentFile=-/etc/default/supplycore-worker
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/var/www/SupplyCore/.venv-orchestrator/bin/python /var/www/SupplyCore/bin/python_orchestrator.py loop-runner --app-root /var/www/SupplyCore --lane realtime --max-parallel 4 --fast-pause 5 --background-pause 15
+Restart=always
+RestartSec=3
+KillSignal=SIGTERM
+TimeoutStopSec=90
+MemoryMax=2G
+StandardOutput=append:/var/www/SupplyCore/storage/logs/lane-realtime.log
+StandardError=append:/var/www/SupplyCore/storage/logs/lane-realtime.log
+
+[Install]
+WantedBy=multi-user.target

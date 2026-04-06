@@ -54,7 +54,7 @@ stop_services() {
     local services
     services=$(systemctl list-units --type=service --state=running --no-legend \
                | awk '{print $1}' \
-               | grep -E '^supplycore-(sync-worker|compute-worker|zkill)' || true)
+               | grep -E '^supplycore-(sync-worker|compute-worker|loop-runner|lane-|zkill|evewho-runner|backfill-runner)' || true)
 
     # Also stop the influx timer to prevent it firing mid-rebuild
     local timers

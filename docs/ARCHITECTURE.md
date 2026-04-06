@@ -169,30 +169,36 @@ EveWho ──────────► Adapters ──────────
 ## Worker Architecture
 
 ```
-systemd
-├── supplycore-sync-worker.service        ─► Sync queue (ESI, market, metadata)
-├── supplycore-sync-worker@N.service      ─► Scaled sync worker instances
-├── supplycore-compute-worker.service     ─► Compute queue (analytics, scoring)
-├── supplycore-compute-worker@N.service   ─► Scaled compute worker instances
+systemd (lane-based execution model)
+├── supplycore-lane-realtime.service      ─► Latency-sensitive syncs, dashboards, alerts (15 jobs)
+├── supplycore-lane-ingestion.service     ─► ESI/EveWho API-bound syncs (7 jobs)
+├── supplycore-lane-compute.service       ─► Heavy graph, battle, theater compute (52 jobs)
+├── supplycore-lane-maintenance.service   ─► Cleanup, repair, recalibration (4 jobs)
 ├── supplycore-zkill.service              ─► Dedicated zKill stream worker
+├── supplycore-evewho-runner.service      ─► Dedicated EveWho alliance lookup runner
 └── supplycore-influx-rollup-export.timer ─► Scheduled InfluxDB export
+
+Fallback: supplycore-loop-runner.service  ─► All jobs in one process (monolithic)
 ```
 
-### Worker Types
+### Execution Lanes
 
-| Worker | Queue | Purpose |
-|--------|-------|---------|
-| **Sync Worker** | `sync` | ESI data fetch, market sync, metadata resolution |
-| **Compute Worker** | `compute` | Analytics, scoring, graph sync, materialization |
-| **zKill Worker** | dedicated | Always-on R2Z2 killmail stream ingestion |
+| Lane | Jobs | Profile |
+|------|------|---------|
+| **realtime** | 15 | Short (<15s), user-facing freshness — market syncs, dashboards, alerts, sovereignty |
+| **ingestion** | 7 | API/ESI-bound, rate-limited — entity resolution, EveWho, corp standings |
+| **compute** | 52 | Heavy DB/graph/battle — rollups, theater, graph pipelines, historical syncs |
+| **maintenance** | 4 | Low-priority cleanup — cache expiry, repair, audit, recalibration |
+| **zKill** | dedicated | Always-on R2Z2 killmail stream ingestion |
 
 ### Job Execution Model
 
-1. Worker pool continuously seeds due recurring jobs into `worker_jobs`
-2. Workers claim next available row by priority with lease-based locking
-3. Worker heartbeats while executing, tracks memory usage
-4. On completion: marks success and logs to `job_runs`
-5. On failure: retries with backoff (state tracked in `worker_jobs`)
+1. Each lane runs as a separate systemd service (`--lane <name>`)
+2. Loop runner computes DAG tiers from job dependencies within the lane
+3. Per cycle: query `sync_schedules.next_due_at` to find due jobs
+4. Dispatch due jobs tier-by-tier, respecting concurrency groups
+5. Cross-lane dependencies are stripped (best-effort temporal separation)
+6. Realtime lane warns when jobs exceed 15s runtime threshold
 
 ---
 

@@ -25,20 +25,28 @@ HEALTH_CHECK_TIMEOUT=30
 # The orchestrator and legacy worker@ are opt-in only (installed via
 # install-services.sh) — they are NOT auto-installed here.
 CORE_UNITS=(
-  supplycore-sync-worker.service
-  supplycore-sync-worker@.service
-  supplycore-compute-worker.service
-  supplycore-compute-worker@.service
+  supplycore-loop-runner.service
+  supplycore-lane-realtime.service
+  supplycore-lane-ingestion.service
+  supplycore-lane-compute.service
+  supplycore-lane-maintenance.service
   supplycore-zkill.service
   supplycore-evewho-runner.service
   supplycore-backfill-runner.service
-  supplycore-loop-runner.service
   supplycore-influx-rollup-export.service
   supplycore-influx-rollup-export.timer
 )
 
 # Units that are opt-in only — update if already installed, but don't install.
-OPTIN_UNITS=()
+# Legacy queue-based workers are kept as opt-in so existing installs still get
+# unit file updates, but new installs won't auto-install them.
+OPTIN_UNITS=(
+  supplycore-sync-worker.service
+  supplycore-sync-worker@.service
+  supplycore-compute-worker.service
+  supplycore-compute-worker@.service
+  supplycore-ai-worker.service
+)
 
 # Known stale units that should be stopped, disabled, and removed.
 STALE_UNITS=(
