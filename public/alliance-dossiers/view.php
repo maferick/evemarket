@@ -511,4 +511,38 @@ if ($allianceBriefings !== []):
 </section>
 <?php endif; ?>
 
+<!-- Sovereignty -->
+<?php $sovStats = db_sovereignty_stats_for_alliance($allianceId); ?>
+<?php if ($sovStats['systems_held'] > 0 || $sovStats['active_campaigns'] > 0): ?>
+<section class="surface-primary mt-4">
+    <p class="text-xs uppercase tracking-[0.16em] text-muted mb-3">Sovereignty</p>
+    <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+        <div>
+            <p class="text-xs text-muted">Systems Held</p>
+            <p class="text-lg font-semibold text-slate-100"><?= number_format($sovStats['systems_held']) ?></p>
+        </div>
+        <div>
+            <p class="text-xs text-muted">Structures</p>
+            <p class="text-lg font-semibold text-slate-100"><?= number_format($sovStats['structures_count']) ?></p>
+        </div>
+        <div>
+            <p class="text-xs text-muted">Avg ADM</p>
+            <p class="text-lg font-semibold <?= ($sovStats['avg_adm'] ?? 0) < 3.0 ? 'text-amber-400' : 'text-green-400' ?>"><?= $sovStats['avg_adm'] !== null ? number_format($sovStats['avg_adm'], 1) : '—' ?></p>
+        </div>
+        <div>
+            <p class="text-xs text-muted">Under Contest</p>
+            <p class="text-lg font-semibold <?= $sovStats['active_campaigns'] > 0 ? 'text-red-400' : 'text-slate-400' ?>"><?= number_format($sovStats['active_campaigns']) ?></p>
+        </div>
+        <div>
+            <p class="text-xs text-muted">Losses (30d)</p>
+            <p class="text-lg font-semibold text-red-400"><?= number_format($sovStats['losses_30d']) ?></p>
+        </div>
+        <div>
+            <p class="text-xs text-muted">Gains (30d)</p>
+            <p class="text-lg font-semibold text-green-400"><?= number_format($sovStats['gains_30d']) ?></p>
+        </div>
+    </div>
+</section>
+<?php endif; ?>
+
 <?php include __DIR__ . '/../../src/views/partials/footer.php'; ?>

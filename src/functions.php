@@ -380,6 +380,7 @@ function nav_items(): array
                 ['label' => 'Theater Overview', 'path' => '/theater-intelligence'],
                 ['label' => 'Theater Map', 'path' => '/theater-map'],
                 ['label' => 'Threat Corridors', 'path' => '/threat-corridors'],
+                ['label' => 'Sovereignty', 'path' => '/sovereignty'],
                 ['label' => 'Alliance Dossiers', 'path' => '/alliance-dossiers'],
                 ['label' => 'Opposition Intel', 'path' => '/opposition-intelligence'],
                 ['label' => 'Pilot Lookup', 'path' => '/battle-intelligence/pilot-lookup.php'],
