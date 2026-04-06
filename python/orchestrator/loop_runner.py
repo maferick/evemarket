@@ -89,13 +89,16 @@ def _run_single_job(
         status = str(result.get("status") or "success")
 
         _finalize_job(db, job_key, result, logger)
-        # Keep next_due_at in sync so the PHP scheduler and worker-pool
-        # DAG planner see accurate timing.  Without this, next_due_at
-        # stays permanently in the past, causing the PHP scheduler to
-        # treat every job as perpetually overdue and the worker-pool to
-        # queue stale cross-queue entries that block DAG resolution.
+
+        # Advance next_due_at so the job isn't re-dispatched before its
+        # configured interval.  If the job signalled has_more (it has
+        # remaining work to drain), set next_due_at to now so it's
+        # picked up on the very next cycle instead of waiting.
         try:
-            db.advance_next_due_at_by_interval(job_key)
+            if result.get("has_more"):
+                db.advance_next_due_at(job_key)
+            else:
+                db.advance_next_due_at_by_interval(job_key)
         except Exception:
             pass  # best-effort; row may not exist for sub-pipeline jobs
 
@@ -347,13 +350,43 @@ def _run_loop(
         total_failed = 0
         total_skipped = 0
 
+        # Query the database once per cycle to find which jobs are actually
+        # due.  This prevents re-running jobs that just finished and still
+        # have time left on their configured interval.
+        all_job_keys = [k for tier in tiers for k in tier]
+        try:
+            due_keys = db.fetch_due_job_keys(all_job_keys)
+        except Exception:
+            # If the query fails (e.g. table missing), fall back to running
+            # everything so the system degrades gracefully.
+            due_keys = set(all_job_keys)
+
+        due_count = len(due_keys)
+        skipped_not_due = len(all_job_keys) - due_count
+        if skipped_not_due:
+            logger.info(
+                f"{loop_name}: {due_count} jobs due, {skipped_not_due} not yet due (skipped)",
+                payload={
+                    "event": "loop_runner.due_check",
+                    "loop": loop_name,
+                    "cycle": cycle,
+                    "due_count": due_count,
+                    "skipped_not_due": skipped_not_due,
+                },
+            )
+
         for tier_idx, tier_jobs in enumerate(tiers):
             if shutdown_event.is_set():
                 break
 
+            # Only dispatch jobs that are actually due this cycle.
+            tier_due = [k for k in tier_jobs if k in due_keys]
+            if not tier_due:
+                continue
+
             outcomes = run_tier(
                 tier_index=tier_idx,
-                tier_jobs=tier_jobs,
+                tier_jobs=tier_due,
                 db=db,
                 raw_config=raw_config,
                 logger=logger,

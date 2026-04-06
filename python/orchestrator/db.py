@@ -918,13 +918,40 @@ class SupplyCoreDb:
             (status[:20], status[:20], job_key[:120]),
         )
 
+    def fetch_due_job_keys(self, job_keys: list[str]) -> set[str]:
+        """Return the subset of *job_keys* whose ``next_due_at`` is in the past (or NULL).
+
+        Jobs that have no ``sync_schedules`` row or whose row is disabled are
+        treated as due so that newly registered jobs aren't silently skipped
+        forever.  This keeps the loop runner from re-running jobs that just
+        finished and still have time left on their interval.
+        """
+        if not job_keys:
+            return set()
+        placeholders = ", ".join(["%s"] * len(job_keys))
+        rows = self.fetch_all(
+            f"""SELECT job_key,
+                       CASE WHEN next_due_at IS NULL THEN 1
+                            WHEN next_due_at <= UTC_TIMESTAMP() THEN 1
+                            ELSE 0
+                       END AS is_due
+                  FROM sync_schedules
+                 WHERE job_key IN ({placeholders})
+                   AND enabled = 1
+                   AND execution_mode = 'python'""",
+            tuple(k[:120] for k in job_keys),
+        )
+        scheduled_keys = {r["job_key"] for r in rows}
+        due_keys = {r["job_key"] for r in rows if r["is_due"]}
+        # Keys with no schedule row are treated as due (new/unregistered jobs).
+        unscheduled = set(job_keys) - scheduled_keys
+        return due_keys | unscheduled
+
     def advance_next_due_at_by_interval(self, job_key: str) -> int:
         """Push next_due_at forward by the job's configured interval_seconds.
 
-        Called by the worker_pool after completing a job so that
-        queue_due_recurring_jobs (and the PHP scheduler) won't re-queue it
-        before the scheduled interval has elapsed.  NOT called by the
-        loop_runner, which manages its own timing independently.
+        Called after completing a job so that the loop runner and worker pool
+        won't re-run it before the scheduled interval has elapsed.
         """
         return self.execute(
             "UPDATE sync_schedules SET next_due_at = DATE_ADD(UTC_TIMESTAMP(), INTERVAL interval_seconds SECOND) WHERE job_key = %s AND execution_mode = 'python'",
