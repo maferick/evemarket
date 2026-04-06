@@ -17,22 +17,26 @@ This runbook reflects the post-migration state where recurring sync/compute exec
 
 ## Services
 
-Expected systemd services (environment-specific names may vary):
+Expected systemd services (lane-based execution model):
 
-- `supplycore-sync-worker.service`
-- `supplycore-compute-worker.service`
-- `supplycore-zkill.service`
-- `supplycore-orchestrator.service`
+- `supplycore-lane-realtime.service` — latency-sensitive syncs, dashboards, alerts (15 jobs)
+- `supplycore-lane-ingestion.service` — ESI/EveWho API-bound syncs (7 jobs)
+- `supplycore-lane-compute.service` — heavy graph, battle, theater compute (52 jobs)
+- `supplycore-lane-maintenance.service` — cleanup, repair, recalibration (4 jobs)
+- `supplycore-zkill.service` — dedicated zKill stream worker
+
+Fallback: `supplycore-loop-runner.service` — all jobs in one process (monolithic)
 
 ## Operator commands
 
 ```bash
 sudo systemctl daemon-reload
-sudo systemctl restart supplycore-sync-worker.service
-sudo systemctl restart supplycore-compute-worker.service
+sudo systemctl restart supplycore-lane-realtime.service
+sudo systemctl restart supplycore-lane-ingestion.service
+sudo systemctl restart supplycore-lane-compute.service
+sudo systemctl restart supplycore-lane-maintenance.service
 sudo systemctl restart supplycore-zkill.service
-sudo systemctl restart supplycore-orchestrator.service
-sudo systemctl status supplycore-sync-worker.service supplycore-compute-worker.service supplycore-zkill.service supplycore-orchestrator.service
+sudo systemctl status supplycore-lane-{realtime,ingestion,compute,maintenance}.service supplycore-zkill.service
 ```
 
 ## Validation helpers
