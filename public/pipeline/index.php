@@ -64,6 +64,8 @@ $stages = [
             ['label' => 'Killmails',       'value' => _po_fmt($kpis['killmails'])],
             ['label' => 'Attacker records', 'value' => _po_fmt($kpis['attacker_records'])],
             ['label' => 'Market orders',    'value' => _po_fmt($kpis['market_orders'])],
+            ['label' => 'Sov systems mapped', 'value' => _po_fmt($kpis['sov_systems'] ?? 0)],
+            ['label' => 'Sov structures',  'value' => _po_fmt($kpis['sov_structures'] ?? 0)],
         ],
     ],
     [
@@ -104,6 +106,8 @@ $stages = [
             ['label' => 'Dossier coverage',   'value' => $kpis['dossier_coverage'] . '%'],
             ['label' => 'Threat corridors',   'value' => _po_fmt($kpis['threat_corridors'])],
             ['label' => 'Behavioral scored (Lane 2)',  'value' => _po_fmt($kpis['behavioral_scored']) . ' characters'],
+            ['label' => 'Sov campaigns active', 'value' => _po_fmt($kpis['sov_campaigns'] ?? 0)],
+            ['label' => 'Sov alerts active', 'value' => _po_fmt($kpis['sov_alerts'] ?? 0)],
         ],
     ],
     [

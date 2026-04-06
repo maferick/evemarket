@@ -16485,6 +16485,20 @@ function db_pipeline_observatory_data(): array
     // ── Stage 5: Analytics ───────────────────────────────────────────────────
     $snapshots = (int) (db_select_one("SELECT COUNT(*) AS cnt FROM intelligence_snapshots") ?? [])['cnt'] ?? 0;
 
+    // ── Sovereignty ──────────────────────────────────────────────────────────
+    $sovSystems     = 0;
+    $sovStructures  = 0;
+    $sovCampaigns   = 0;
+    $sovAlerts      = 0;
+    try {
+        $sovSystems    = (int) (db_select_one("SELECT COUNT(*) AS cnt FROM sovereignty_map WHERE owner_entity_id IS NOT NULL") ?? [])['cnt'] ?? 0;
+        $sovStructures = (int) (db_select_one("SELECT COUNT(*) AS cnt FROM sovereignty_structures") ?? [])['cnt'] ?? 0;
+        $sovCampaigns  = (int) (db_select_one("SELECT COUNT(*) AS cnt FROM sovereignty_campaigns WHERE is_active = 1") ?? [])['cnt'] ?? 0;
+        $sovAlerts     = (int) (db_select_one("SELECT COUNT(*) AS cnt FROM sovereignty_alerts WHERE status = 'active'") ?? [])['cnt'] ?? 0;
+    } catch (Throwable) {
+        // Tables may not exist yet if migration hasn't run.
+    }
+
     // ── Job health summary from scheduler ────────────────────────────────────
     $jobStats = db_select(
         "SELECT latest_status, COUNT(*) AS cnt FROM scheduler_job_current_status GROUP BY latest_status"
@@ -16511,10 +16525,10 @@ function db_pipeline_observatory_data(): array
 
     // ── Per-stage last-run timestamps ────────────────────────────────────────
     $stageJobKeys = [
-        'collection'  => ['market_hub_current_sync', 'esi_character_queue_sync', 'esi_alliance_history_sync', 'evewho_enrichment_sync', 'evewho_alliance_member_sync'],
+        'collection'  => ['market_hub_current_sync', 'esi_character_queue_sync', 'esi_alliance_history_sync', 'evewho_enrichment_sync', 'evewho_alliance_member_sync', 'sovereignty_campaigns_sync', 'sovereignty_structures_sync', 'sovereignty_map_sync'],
         'resolution'  => ['entity_metadata_resolve_sync', 'esi_alliance_history_sync'],
         'graph'       => ['compute_graph_sync', 'graph_community_detection_sync', 'graph_motif_detection_sync', 'graph_typed_interactions_sync', 'graph_temporal_metrics_sync', 'graph_evidence_paths_sync', 'compute_copresence_edges', 'compute_graph_sync_killmail_entities', 'compute_graph_sync_killmail_edges'],
-        'intelligence' => ['compute_suspicion_scores_v2', 'compute_alliance_dossiers', 'compute_threat_corridors', 'compute_counterintel_pipeline', 'intelligence_pipeline', 'compute_battle_rollups', 'compute_behavioral_scoring'],
+        'intelligence' => ['compute_suspicion_scores_v2', 'compute_alliance_dossiers', 'compute_threat_corridors', 'compute_counterintel_pipeline', 'intelligence_pipeline', 'compute_battle_rollups', 'compute_behavioral_scoring', 'compute_sovereignty_alerts'],
         'analytics'   => ['dashboard_summary_sync', 'analytics_bucket_1h_sync', 'analytics_bucket_1d_sync', 'rebuild_ai_briefings', 'forecasting_ai_sync'],
     ];
 
@@ -16588,6 +16602,10 @@ function db_pipeline_observatory_data(): array
             'alliances_in_battles' => $alliancesInBattles,
             'threat_corridors'  => $threatCorridors,
             'snapshots'         => $snapshots,
+            'sov_systems'       => $sovSystems,
+            'sov_structures'    => $sovStructures,
+            'sov_campaigns'     => $sovCampaigns,
+            'sov_alerts'        => $sovAlerts,
         ],
         'job_health'   => $jobHealth,
         'stage_health' => $stageHealth,
