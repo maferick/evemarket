@@ -64,10 +64,15 @@ def configure_logging(
             should_attach_file_handler = True
 
         if should_attach_file_handler:
-            log_file.parent.mkdir(parents=True, exist_ok=True)
-            file_handler = logging.FileHandler(log_file, encoding="utf-8")
-            file_handler.setFormatter(JsonFormatter())
-            logger.addHandler(file_handler)
+            try:
+                log_file.parent.mkdir(parents=True, exist_ok=True)
+                file_handler = logging.FileHandler(log_file, encoding="utf-8")
+                file_handler.setFormatter(JsonFormatter())
+                logger.addHandler(file_handler)
+            except PermissionError:
+                # Fall back gracefully — stdout handler is already attached,
+                # so logs still reach journalctl / systemd output.
+                pass
 
     logger.propagate = False
     return LoggerAdapter(logger, {})
