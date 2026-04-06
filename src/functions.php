@@ -21536,15 +21536,39 @@ function supplycore_ai_runpod_generate_json(array $config, string $systemPrompt,
         $runpodModel = (string) ($config['model'] ?? '');
     }
 
+    $schemaJson = json_encode($schema, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE);
+    if (!is_string($schemaJson)) {
+        $schemaJson = '{}';
+    }
+
+    // Build an OpenAI-compatible messages payload. Most RunPod Ollama
+    // workers route messages-style input through their OpenAI engine
+    // which forwards to Ollama's /v1/chat/completions — including the
+    // model name. Raw prompt-only payloads often lose the model field
+    // because the legacy OllamaEngine path may not forward it.
+    $schemaInstruction = "Return valid JSON only. Do not include markdown fences or any commentary outside the JSON object.\n"
+        . "The JSON object must match this schema exactly:\n" . $schemaJson;
+
     $requestPayload = [
         'input' => [
-            'prompt' => supplycore_ai_runpod_prompt($config, $systemPrompt, $userPrompt, $schema),
-            // Tell the RunPod worker which Ollama model to load. Without
-            // this, the worker defaults to whatever model is baked into
-            // its Docker image (often a tiny model like qwen2.5:1.5b).
+            // OpenAI chat-completions format — picked up by the worker's
+            // OllamaOpenAiEngine and forwarded with the model to
+            // POST localhost:11434/v1/chat/completions
             'model' => $runpodModel,
+            'messages' => [
+                ['role' => 'system', 'content' => $systemPrompt . "\n\n" . $schemaInstruction],
+                ['role' => 'user', 'content' => $userPrompt],
+            ],
+            'temperature' => 0.2,
+            'max_tokens' => 6144,
+            // Also include the flat prompt as a fallback for workers
+            // that only support the legacy OllamaEngine format.
+            'prompt' => supplycore_ai_runpod_prompt($config, $systemPrompt, $userPrompt, $schema),
         ],
     ];
+
+    error_log('[runpod-submit] model=' . $runpodModel . ' url=' . supplycore_ai_runpod_submit_url((string) ($config['runpod_url'] ?? '')));
+
     $response = http_post_json(
         supplycore_ai_runpod_submit_url((string) ($config['runpod_url'] ?? '')),
         $headers,
@@ -21725,10 +21749,17 @@ function supplycore_ai_decode_runpod_response(array $response): array
     }
 
     $candidates = [
+        // OpenAI chat completions format (from OllamaOpenAiEngine):
+        //   {"output": {"choices": [{"message": {"content": "..."}}]}}
+        $json['output']['choices'][0]['message']['content'] ?? null,
+        $json['output']['choices'][0]['text'] ?? null,
+        // Legacy Ollama /api/generate format (from OllamaEngine):
+        //   {"output": {"response": "..."}} or {"output": {"text": "..."}}
         $json['output']['response'] ?? null,
         $json['output']['text'] ?? null,
         $json['output'][0]['response'] ?? null,
         $json['output'][0]['text'] ?? null,
+        // Top-level fallbacks
         $json['response'] ?? null,
         $json['output'] ?? null,
     ];
