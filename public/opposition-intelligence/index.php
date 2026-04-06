@@ -130,10 +130,17 @@ if ($flash !== null) {
 ?>
 <?php if ($flash): ?>
     <?php $flashStatus = (string) ($flash['status'] ?? ''); ?>
-    <?php if ($flashStatus === 'queued'): ?>
+    <?php if ($flashStatus === 'ok'): ?>
+        <section class="surface-primary mt-4 border border-emerald-500/30 bg-emerald-500/10">
+            <p class="text-sm text-emerald-200">
+                <strong>Intel generation complete.</strong>
+                Generated <?= (int) ($flash['generated'] ?? 0) ?> briefing(s) for <?= htmlspecialchars((string) ($flash['date'] ?? ''), ENT_QUOTES) ?>.
+            </p>
+        </section>
+    <?php elseif ($flashStatus === 'queued'): ?>
         <section class="surface-primary mt-4 border border-sky-500/30 bg-sky-500/10">
             <p class="text-sm text-sky-200">
-                <strong>Intel generation queued.</strong>
+                <strong>Intel generation queued (RunPod).</strong>
                 Job #<?= (int) ($flash['job_id'] ?? 0) ?> is running in the background for
                 <?= htmlspecialchars((string) ($flash['date'] ?? ''), ENT_QUOTES) ?>.
                 Refresh this page in a minute to see the result.
@@ -143,10 +150,10 @@ if ($flash !== null) {
         <section class="surface-primary mt-4 border border-amber-500/30 bg-amber-500/10">
             <p class="text-sm text-amber-200">
                 <strong>Intel generation disabled.</strong>
-                Enable AI briefings in Settings to queue a job.
+                Enable AI briefings in Settings to generate.
             </p>
         </section>
-    <?php else: ?>
+    <?php elseif ($flashStatus === 'error'): ?>
         <section class="surface-primary mt-4 border border-red-500/30 bg-red-500/10">
             <p class="text-sm text-red-200">
                 <strong>Intel generation failed.</strong>
