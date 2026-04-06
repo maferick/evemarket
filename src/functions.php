@@ -21747,7 +21747,13 @@ function supplycore_ai_decode_runpod_response(array $response): array
         }
     }
 
-    throw new RuntimeException('Runpod returned an unsupported response payload.');
+    // Dump the raw payload so operators can diagnose what the worker
+    // actually returned (wrong model, markdown-wrapped JSON, empty
+    // output, unexpected structure, etc.).
+    $rawDump = json_encode($json, JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE);
+    error_log('[runpod-decode] Unsupported response payload: ' . mb_substr((string) $rawDump, 0, 4000));
+
+    throw new RuntimeException('Runpod returned an unsupported response payload. Check journalctl for raw output.');
 }
 
 function supplycore_ai_decode_json_string(string $value): ?array
@@ -26945,12 +26951,14 @@ function opposition_ai_generate_single(string $type, string $date, string $syste
 {
     $config = supplycore_ai_ollama_config();
     $provider = (string) ($config['provider'] ?? 'local');
+    $decoded = null;
 
     try {
         $decoded = opposition_ai_call_provider($systemPrompt, $userPrompt, $schema);
         $validated = opposition_ai_validate_response($decoded);
 
         $modelLabel = match ($provider) {
+            'runpod' => (string) ($config['runpod_model'] ?? $config['model'] ?? ''),
             'claude' => (string) ($config['claude_model'] ?? 'claude-sonnet-4-20250514'),
             'groq' => (string) ($config['groq_model'] ?? 'llama-4-scout'),
             default => (string) $config['model'],
@@ -26974,7 +26982,16 @@ function opposition_ai_generate_single(string $type, string $date, string $syste
             'computed_at' => gmdate('Y-m-d H:i:s'),
         ];
     } catch (Throwable $e) {
-        error_log('[opposition-ai] Failed to generate ' . $type . ' briefing: ' . $e->getMessage());
+        // Preserve the raw AI response so operators can see exactly what
+        // came back when validation fails (wrong schema, empty fields,
+        // markdown fences wrapping the JSON, etc.).
+        $rawResponseJson = is_array($decoded)
+            ? json_encode($decoded, JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE)
+            : null;
+
+        error_log('[opposition-ai] Failed to generate ' . $type . ' briefing: ' . $e->getMessage()
+            . ($rawResponseJson !== null ? ' | raw_response=' . mb_substr((string) $rawResponseJson, 0, 2000) : ''));
+
         return [
             'briefing_date' => $date,
             'briefing_type' => $type,
@@ -26987,8 +27004,8 @@ function opposition_ai_generate_single(string $type, string $date, string $syste
             'key_developments' => null,
             'threat_assessment' => null,
             'action_items' => null,
-            'source_payload_json' => null,
-            'response_json' => null,
+            'source_payload_json' => json_encode(['system_prompt' => $systemPrompt, 'user_prompt' => mb_substr($userPrompt, 0, 4000)], JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE),
+            'response_json' => $rawResponseJson,
             'error_message' => mb_substr($e->getMessage(), 0, 500),
             'computed_at' => gmdate('Y-m-d H:i:s'),
         ];
