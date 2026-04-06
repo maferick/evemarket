@@ -17340,8 +17340,9 @@ function db_sovereignty_campaigns_active(): array
          LEFT JOIN ref_constellations rc ON rc.constellation_id = sc.constellation_id
          LEFT JOIN entity_metadata_cache emc
               ON emc.entity_type = 'alliance' AND emc.entity_id = sc.defender_id
-         LEFT JOIN ref_item_types rit ON rit.type_id = sc.structure_id
-         LEFT JOIN ref_sov_structure_roles rsr ON rsr.structure_type_id = sc.structure_id
+         LEFT JOIN sovereignty_structures sst ON sst.structure_id = sc.structure_id
+         LEFT JOIN ref_item_types rit ON rit.type_id = sst.structure_type_id
+         LEFT JOIN ref_sov_structure_roles rsr ON rsr.structure_type_id = sst.structure_type_id
          LEFT JOIN corp_contacts cc
               ON cc.contact_type = 'alliance' AND cc.contact_id = sc.defender_id
          WHERE sc.is_active = 1
@@ -17462,7 +17463,7 @@ function db_sovereignty_map_list(int $limit = 50, int $offset = 0, ?string $sear
               ON cc.contact_type = 'alliance' AND cc.contact_id = sm.alliance_id
          WHERE {$whereClause}
            AND sm.owner_entity_id IS NOT NULL
-         ORDER BY rs.region_name, rs.system_name
+         ORDER BY rr.region_name, rs.system_name
          LIMIT ? OFFSET ?",
         $params
     );
