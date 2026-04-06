@@ -17281,3 +17281,515 @@ function db_opposition_latest_snapshot_date(): ?string
     $row = $stmt->fetch(PDO::FETCH_ASSOC);
     return $row['d'] ?? null;
 }
+
+// ── Sovereignty Monitoring ──────────────────────────────────────────────────
+
+function db_sovereignty_alerts_active(int $limit = 50): array
+{
+    return db_select(
+        "SELECT sa.*,
+                rs.system_name,
+                rs.security AS system_security,
+                rr.region_name,
+                emc.entity_name AS alliance_name
+         FROM sovereignty_alerts sa
+         LEFT JOIN ref_systems rs ON rs.system_id = sa.solar_system_id
+         LEFT JOIN ref_regions rr ON rr.region_id = rs.region_id
+         LEFT JOIN entity_metadata_cache emc
+              ON emc.entity_type = 'alliance' AND emc.entity_id = sa.alliance_id
+         WHERE sa.status = 'active'
+         ORDER BY FIELD(sa.severity, 'critical', 'warning', 'info'),
+                  sa.detected_at DESC
+         LIMIT ?",
+        [max(1, min(200, $limit))]
+    );
+}
+
+function db_sovereignty_alerts_count(): int
+{
+    $rows = db_select(
+        "SELECT COUNT(*) AS cnt FROM sovereignty_alerts
+         WHERE status = 'active' AND severity IN ('critical', 'warning')"
+    );
+    return (int) ($rows[0]['cnt'] ?? 0);
+}
+
+function db_sovereignty_campaigns_active(): array
+{
+    return db_select(
+        "SELECT sc.*,
+                rs.system_name,
+                rs.security AS system_security,
+                rr.region_name,
+                rc.constellation_name,
+                emc.entity_name AS defender_name,
+                rit.type_name AS structure_type_name,
+                rsr.structure_role,
+                rsr.is_sov_structure,
+                cc.standing AS defender_standing,
+                CASE
+                    WHEN sc.event_type LIKE '%defense%' THEN 'Sovereignty Defense'
+                    WHEN rsr.structure_role IN ('sov_hub','legacy_ihub','legacy_tcu') THEN 'Sovereignty Capture'
+                    WHEN sc.event_type LIKE '%freeport%' THEN 'Freeport'
+                    WHEN sc.event_type LIKE '%station%' THEN 'Station Contest'
+                    ELSE 'Unknown'
+                END AS campaign_type_normalized
+         FROM sovereignty_campaigns sc
+         LEFT JOIN ref_systems rs ON rs.system_id = sc.solar_system_id
+         LEFT JOIN ref_regions rr ON rr.region_id = rs.region_id
+         LEFT JOIN ref_constellations rc ON rc.constellation_id = sc.constellation_id
+         LEFT JOIN entity_metadata_cache emc
+              ON emc.entity_type = 'alliance' AND emc.entity_id = sc.defender_id
+         LEFT JOIN ref_item_types rit ON rit.type_id = sc.structure_id
+         LEFT JOIN ref_sov_structure_roles rsr ON rsr.structure_type_id = sc.structure_id
+         LEFT JOIN corp_contacts cc
+              ON cc.contact_type = 'alliance' AND cc.contact_id = sc.defender_id
+         WHERE sc.is_active = 1
+         ORDER BY CASE WHEN cc.standing > 0 THEN 0 WHEN cc.standing < 0 THEN 2 ELSE 1 END,
+                  sc.start_time ASC"
+    );
+}
+
+function db_sovereignty_campaigns_history(int $limit = 50, int $offset = 0): array
+{
+    return db_select(
+        "SELECT sch.*,
+                rs.system_name,
+                rs.security AS system_security,
+                rr.region_name,
+                emc.entity_name AS defender_name,
+                cc.standing AS defender_standing,
+                CASE
+                    WHEN sch.event_type LIKE '%defense%' THEN 'Sovereignty Defense'
+                    WHEN sch.event_type LIKE '%freeport%' THEN 'Freeport'
+                    WHEN sch.event_type LIKE '%station%' THEN 'Station Contest'
+                    ELSE 'Sovereignty Contest'
+                END AS campaign_type_normalized
+         FROM sovereignty_campaigns_history sch
+         LEFT JOIN ref_systems rs ON rs.system_id = sch.solar_system_id
+         LEFT JOIN ref_regions rr ON rr.region_id = rs.region_id
+         LEFT JOIN entity_metadata_cache emc
+              ON emc.entity_type = 'alliance' AND emc.entity_id = sch.defender_id
+         LEFT JOIN corp_contacts cc
+              ON cc.contact_type = 'alliance' AND cc.contact_id = sch.defender_id
+         ORDER BY sch.ended_at DESC
+         LIMIT ? OFFSET ?",
+        [max(1, min(200, $limit)), max(0, $offset)]
+    );
+}
+
+function db_sovereignty_map_list(int $limit = 50, int $offset = 0, ?string $search = null, ?string $filter = null): array
+{
+    $where = ['1=1'];
+    $params = [];
+
+    if ($search !== null && trim($search) !== '') {
+        $term = '%' . trim($search) . '%';
+        $where[] = '(rs.system_name LIKE ? OR rr.region_name LIKE ? OR emc.entity_name LIKE ?)';
+        $params[] = $term;
+        $params[] = $term;
+        $params[] = $term;
+    }
+
+    if ($filter === 'friendly') {
+        $standings = db_corp_contacts_by_standing();
+        $ids = $standings['friendly_alliance_ids'];
+        if ($ids) {
+            $placeholders = implode(',', array_fill(0, count($ids), '?'));
+            $where[] = "sm.alliance_id IN ({$placeholders})";
+            $params = array_merge($params, $ids);
+        } else {
+            $where[] = '0';
+        }
+    } elseif ($filter === 'hostile') {
+        $standings = db_corp_contacts_by_standing();
+        $ids = $standings['hostile_alliance_ids'];
+        if ($ids) {
+            $placeholders = implode(',', array_fill(0, count($ids), '?'));
+            $where[] = "sm.alliance_id IN ({$placeholders})";
+            $params = array_merge($params, $ids);
+        } else {
+            $where[] = '0';
+        }
+    } elseif ($filter === 'neutral') {
+        $standings = db_corp_contacts_by_standing();
+        $allKnown = array_merge($standings['friendly_alliance_ids'], $standings['hostile_alliance_ids']);
+        if ($allKnown) {
+            $placeholders = implode(',', array_fill(0, count($allKnown), '?'));
+            $where[] = "(sm.alliance_id IS NULL OR sm.alliance_id NOT IN ({$placeholders}))";
+            $params = array_merge($params, $allKnown);
+        }
+    }
+
+    $whereClause = implode(' AND ', $where);
+    $params[] = max(1, min(200, $limit));
+    $params[] = max(0, $offset);
+
+    return db_select(
+        "SELECT sm.*,
+                rs.system_name,
+                rs.security AS system_security,
+                rs.constellation_id,
+                rr.region_name,
+                rc.constellation_name,
+                emc.entity_name AS owner_name,
+                ss.structure_role,
+                ss.vulnerability_occupancy_level AS adm,
+                ss.vulnerable_start_time,
+                ss.vulnerable_end_time,
+                CASE
+                    WHEN ss.vulnerability_occupancy_level IS NULL THEN NULL
+                    WHEN ss.vulnerability_occupancy_level < 2.0 THEN 'critical'
+                    WHEN ss.vulnerability_occupancy_level < 3.0 THEN 'weak'
+                    WHEN ss.vulnerability_occupancy_level < 4.5 THEN 'stable'
+                    ELSE 'strong'
+                END AS adm_status,
+                CASE
+                    WHEN ss.vulnerable_start_time <= UTC_TIMESTAMP()
+                         AND ss.vulnerable_end_time >= UTC_TIMESTAMP() THEN 1
+                    ELSE 0
+                END AS is_vulnerable_now,
+                cc.standing AS owner_standing
+         FROM sovereignty_map sm
+         LEFT JOIN ref_systems rs ON rs.system_id = sm.system_id
+         LEFT JOIN ref_regions rr ON rr.region_id = rs.region_id
+         LEFT JOIN ref_constellations rc ON rc.constellation_id = rs.constellation_id
+         LEFT JOIN entity_metadata_cache emc
+              ON emc.entity_type = 'alliance' AND emc.entity_id = sm.owner_entity_id
+         LEFT JOIN sovereignty_structures ss ON ss.solar_system_id = sm.system_id
+              AND ss.structure_role IN ('sov_hub','legacy_ihub')
+         LEFT JOIN corp_contacts cc
+              ON cc.contact_type = 'alliance' AND cc.contact_id = sm.alliance_id
+         WHERE {$whereClause}
+           AND sm.owner_entity_id IS NOT NULL
+         ORDER BY rs.region_name, rs.system_name
+         LIMIT ? OFFSET ?",
+        $params
+    );
+}
+
+function db_sovereignty_map_count(?string $search = null, ?string $filter = null): int
+{
+    $where = ['sm.owner_entity_id IS NOT NULL'];
+    $params = [];
+
+    if ($search !== null && trim($search) !== '') {
+        $term = '%' . trim($search) . '%';
+        $where[] = '(rs.system_name LIKE ? OR rr.region_name LIKE ? OR emc.entity_name LIKE ?)';
+        $params[] = $term;
+        $params[] = $term;
+        $params[] = $term;
+    }
+
+    if ($filter === 'friendly') {
+        $standings = db_corp_contacts_by_standing();
+        $ids = $standings['friendly_alliance_ids'];
+        if ($ids) {
+            $placeholders = implode(',', array_fill(0, count($ids), '?'));
+            $where[] = "sm.alliance_id IN ({$placeholders})";
+            $params = array_merge($params, $ids);
+        } else {
+            $where[] = '0';
+        }
+    } elseif ($filter === 'hostile') {
+        $standings = db_corp_contacts_by_standing();
+        $ids = $standings['hostile_alliance_ids'];
+        if ($ids) {
+            $placeholders = implode(',', array_fill(0, count($ids), '?'));
+            $where[] = "sm.alliance_id IN ({$placeholders})";
+            $params = array_merge($params, $ids);
+        } else {
+            $where[] = '0';
+        }
+    } elseif ($filter === 'neutral') {
+        $standings = db_corp_contacts_by_standing();
+        $allKnown = array_merge($standings['friendly_alliance_ids'], $standings['hostile_alliance_ids']);
+        if ($allKnown) {
+            $placeholders = implode(',', array_fill(0, count($allKnown), '?'));
+            $where[] = "(sm.alliance_id IS NULL OR sm.alliance_id NOT IN ({$placeholders}))";
+            $params = array_merge($params, $allKnown);
+        }
+    }
+
+    $whereClause = implode(' AND ', $where);
+    $rows = db_select(
+        "SELECT COUNT(*) AS cnt
+         FROM sovereignty_map sm
+         LEFT JOIN ref_systems rs ON rs.system_id = sm.system_id
+         LEFT JOIN ref_regions rr ON rr.region_id = rs.region_id
+         LEFT JOIN entity_metadata_cache emc
+              ON emc.entity_type = 'alliance' AND emc.entity_id = sm.owner_entity_id
+         WHERE {$whereClause}",
+        $params
+    );
+    return (int) ($rows[0]['cnt'] ?? 0);
+}
+
+function db_sovereignty_structures_list(int $limit = 50, int $offset = 0, ?string $filter = null): array
+{
+    $where = ['1=1'];
+    $params = [];
+
+    if ($filter === 'friendly' || $filter === 'hostile') {
+        $standings = db_corp_contacts_by_standing();
+        $ids = $filter === 'friendly' ? $standings['friendly_alliance_ids'] : $standings['hostile_alliance_ids'];
+        if ($ids) {
+            $placeholders = implode(',', array_fill(0, count($ids), '?'));
+            $where[] = "ss.alliance_id IN ({$placeholders})";
+            $params = array_merge($params, $ids);
+        } else {
+            $where[] = '0';
+        }
+    }
+
+    $whereClause = implode(' AND ', $where);
+    $params[] = max(1, min(200, $limit));
+    $params[] = max(0, $offset);
+
+    return db_select(
+        "SELECT ss.*,
+                rs.system_name,
+                rs.security AS system_security,
+                rr.region_name,
+                emc.entity_name AS alliance_name,
+                rit.type_name AS structure_type_name,
+                cc.standing AS alliance_standing,
+                CASE
+                    WHEN ss.vulnerability_occupancy_level IS NULL THEN NULL
+                    WHEN ss.vulnerability_occupancy_level < 2.0 THEN 'critical'
+                    WHEN ss.vulnerability_occupancy_level < 3.0 THEN 'weak'
+                    WHEN ss.vulnerability_occupancy_level < 4.5 THEN 'stable'
+                    ELSE 'strong'
+                END AS adm_status,
+                CASE
+                    WHEN ss.vulnerable_start_time <= UTC_TIMESTAMP()
+                         AND ss.vulnerable_end_time >= UTC_TIMESTAMP() THEN 1
+                    ELSE 0
+                END AS is_vulnerable_now,
+                TIMESTAMPDIFF(MINUTE, UTC_TIMESTAMP(), ss.vulnerable_start_time) AS vulnerable_in_minutes,
+                TIMESTAMPDIFF(MINUTE, ss.vulnerable_start_time, ss.vulnerable_end_time) AS vulnerable_duration_minutes
+         FROM sovereignty_structures ss
+         LEFT JOIN ref_systems rs ON rs.system_id = ss.solar_system_id
+         LEFT JOIN ref_regions rr ON rr.region_id = rs.region_id
+         LEFT JOIN entity_metadata_cache emc
+              ON emc.entity_type = 'alliance' AND emc.entity_id = ss.alliance_id
+         LEFT JOIN ref_item_types rit ON rit.type_id = ss.structure_type_id
+         LEFT JOIN corp_contacts cc
+              ON cc.contact_type = 'alliance' AND cc.contact_id = ss.alliance_id
+         WHERE {$whereClause}
+         ORDER BY rr.region_name, rs.system_name
+         LIMIT ? OFFSET ?",
+        $params
+    );
+}
+
+function db_sovereignty_system_detail(int $systemId): array
+{
+    $result = ['owner' => null, 'structures' => [], 'campaigns' => [], 'map_history' => [], 'structure_history' => []];
+
+    $ownerRows = db_select(
+        "SELECT sm.*,
+                rs.system_name, rs.security AS system_security,
+                rs.constellation_id, rr.region_name, rc.constellation_name,
+                emc.entity_name AS owner_name,
+                cc.standing AS owner_standing
+         FROM sovereignty_map sm
+         LEFT JOIN ref_systems rs ON rs.system_id = sm.system_id
+         LEFT JOIN ref_regions rr ON rr.region_id = rs.region_id
+         LEFT JOIN ref_constellations rc ON rc.constellation_id = rs.constellation_id
+         LEFT JOIN entity_metadata_cache emc
+              ON emc.entity_type = 'alliance' AND emc.entity_id = sm.owner_entity_id
+         LEFT JOIN corp_contacts cc
+              ON cc.contact_type = 'alliance' AND cc.contact_id = sm.alliance_id
+         WHERE sm.system_id = ?
+         LIMIT 1",
+        [$systemId]
+    );
+    $result['owner'] = $ownerRows[0] ?? null;
+
+    $result['structures'] = db_select(
+        "SELECT ss.*,
+                emc.entity_name AS alliance_name,
+                rit.type_name AS structure_type_name,
+                CASE
+                    WHEN ss.vulnerability_occupancy_level IS NULL THEN NULL
+                    WHEN ss.vulnerability_occupancy_level < 2.0 THEN 'critical'
+                    WHEN ss.vulnerability_occupancy_level < 3.0 THEN 'weak'
+                    WHEN ss.vulnerability_occupancy_level < 4.5 THEN 'stable'
+                    ELSE 'strong'
+                END AS adm_status,
+                CASE
+                    WHEN ss.vulnerable_start_time <= UTC_TIMESTAMP()
+                         AND ss.vulnerable_end_time >= UTC_TIMESTAMP() THEN 1
+                    ELSE 0
+                END AS is_vulnerable_now,
+                TIMESTAMPDIFF(MINUTE, UTC_TIMESTAMP(), ss.vulnerable_start_time) AS vulnerable_in_minutes,
+                TIMESTAMPDIFF(MINUTE, ss.vulnerable_start_time, ss.vulnerable_end_time) AS vulnerable_duration_minutes
+         FROM sovereignty_structures ss
+         LEFT JOIN entity_metadata_cache emc
+              ON emc.entity_type = 'alliance' AND emc.entity_id = ss.alliance_id
+         LEFT JOIN ref_item_types rit ON rit.type_id = ss.structure_type_id
+         WHERE ss.solar_system_id = ?
+         ORDER BY FIELD(ss.structure_role, 'sov_hub', 'legacy_ihub', 'legacy_tcu', 'other', 'unknown')",
+        [$systemId]
+    );
+
+    $result['campaigns'] = db_select(
+        "SELECT sc.*,
+                emc.entity_name AS defender_name,
+                cc.standing AS defender_standing
+         FROM sovereignty_campaigns sc
+         LEFT JOIN entity_metadata_cache emc
+              ON emc.entity_type = 'alliance' AND emc.entity_id = sc.defender_id
+         LEFT JOIN corp_contacts cc
+              ON cc.contact_type = 'alliance' AND cc.contact_id = sc.defender_id
+         WHERE sc.solar_system_id = ?
+           AND sc.is_active = 1",
+        [$systemId]
+    );
+
+    $result['map_history'] = db_select(
+        "SELECT smh.*,
+                emc_prev.entity_name AS previous_owner_name,
+                emc_new.entity_name AS new_owner_name
+         FROM sovereignty_map_history smh
+         LEFT JOIN entity_metadata_cache emc_prev
+              ON emc_prev.entity_type = 'alliance' AND emc_prev.entity_id = smh.previous_owner_entity_id
+         LEFT JOIN entity_metadata_cache emc_new
+              ON emc_new.entity_type = 'alliance' AND emc_new.entity_id = smh.new_owner_entity_id
+         WHERE smh.system_id = ?
+         ORDER BY smh.changed_at DESC
+         LIMIT 100",
+        [$systemId]
+    );
+
+    $result['structure_history'] = db_select(
+        "SELECT ssh.*,
+                rit.type_name AS structure_type_name,
+                emc.entity_name AS alliance_name
+         FROM sovereignty_structures_history ssh
+         LEFT JOIN ref_item_types rit ON rit.type_id = ssh.structure_type_id
+         LEFT JOIN entity_metadata_cache emc
+              ON emc.entity_type = 'alliance' AND emc.entity_id = ssh.alliance_id
+         WHERE ssh.solar_system_id = ?
+         ORDER BY ssh.recorded_at DESC
+         LIMIT 100",
+        [$systemId]
+    );
+
+    return $result;
+}
+
+function db_sovereignty_stats_for_alliance(int $allianceId): array
+{
+    $rows = db_select(
+        "SELECT
+            (SELECT COUNT(*) FROM sovereignty_map WHERE alliance_id = ?) AS systems_held,
+            (SELECT COUNT(*) FROM sovereignty_structures WHERE alliance_id = ?) AS structures_count,
+            (SELECT AVG(vulnerability_occupancy_level) FROM sovereignty_structures
+             WHERE alliance_id = ? AND vulnerability_occupancy_level IS NOT NULL) AS avg_adm,
+            (SELECT COUNT(*) FROM sovereignty_campaigns
+             WHERE defender_id = ? AND is_active = 1) AS active_campaigns,
+            (SELECT COUNT(*) FROM sovereignty_map_history
+             WHERE previous_alliance_id = ?
+               AND changed_at > DATE_SUB(UTC_TIMESTAMP(), INTERVAL 30 DAY)) AS losses_30d,
+            (SELECT COUNT(*) FROM sovereignty_map_history
+             WHERE new_alliance_id = ?
+               AND changed_at > DATE_SUB(UTC_TIMESTAMP(), INTERVAL 30 DAY)) AS gains_30d",
+        [$allianceId, $allianceId, $allianceId, $allianceId, $allianceId, $allianceId]
+    );
+    $r = $rows[0] ?? [];
+    return [
+        'systems_held' => (int) ($r['systems_held'] ?? 0),
+        'structures_count' => (int) ($r['structures_count'] ?? 0),
+        'avg_adm' => $r['avg_adm'] !== null ? round((float) $r['avg_adm'], 1) : null,
+        'active_campaigns' => (int) ($r['active_campaigns'] ?? 0),
+        'losses_30d' => (int) ($r['losses_30d'] ?? 0),
+        'gains_30d' => (int) ($r['gains_30d'] ?? 0),
+    ];
+}
+
+function db_sovereignty_dashboard_metrics(): array
+{
+    $standings = db_corp_contacts_by_standing();
+    $friendlyIds = $standings['friendly_alliance_ids'];
+    $hostileIds = $standings['hostile_alliance_ids'];
+
+    $metrics = [
+        'friendly_systems_held' => 0,
+        'hostile_systems_held' => 0,
+        'friendly_under_contest' => 0,
+        'avg_friendly_adm' => null,
+        'friendly_vulnerable_now' => 0,
+        'friendly_low_adm_count' => 0,
+        'active_hostile_campaigns' => 0,
+        'ownership_changes_7d' => 0,
+        'ownership_changes_30d' => 0,
+    ];
+
+    if ($friendlyIds) {
+        $ph = implode(',', array_fill(0, count($friendlyIds), '?'));
+        $r = db_select("SELECT COUNT(*) AS cnt FROM sovereignty_map WHERE alliance_id IN ({$ph})", $friendlyIds);
+        $metrics['friendly_systems_held'] = (int) ($r[0]['cnt'] ?? 0);
+
+        $r = db_select(
+            "SELECT AVG(vulnerability_occupancy_level) AS avg_adm FROM sovereignty_structures
+             WHERE alliance_id IN ({$ph}) AND vulnerability_occupancy_level IS NOT NULL",
+            $friendlyIds
+        );
+        $metrics['avg_friendly_adm'] = $r[0]['avg_adm'] !== null ? round((float) $r[0]['avg_adm'], 1) : null;
+
+        $r = db_select(
+            "SELECT COUNT(*) AS cnt FROM sovereignty_structures
+             WHERE alliance_id IN ({$ph})
+               AND vulnerable_start_time <= UTC_TIMESTAMP()
+               AND vulnerable_end_time >= UTC_TIMESTAMP()",
+            $friendlyIds
+        );
+        $metrics['friendly_vulnerable_now'] = (int) ($r[0]['cnt'] ?? 0);
+
+        $r = db_select(
+            "SELECT COUNT(*) AS cnt FROM sovereignty_structures
+             WHERE alliance_id IN ({$ph})
+               AND vulnerability_occupancy_level IS NOT NULL
+               AND vulnerability_occupancy_level < 3.0",
+            $friendlyIds
+        );
+        $metrics['friendly_low_adm_count'] = (int) ($r[0]['cnt'] ?? 0);
+
+        $r = db_select(
+            "SELECT COUNT(*) AS cnt FROM sovereignty_campaigns
+             WHERE defender_id IN ({$ph}) AND is_active = 1",
+            $friendlyIds
+        );
+        $metrics['friendly_under_contest'] = (int) ($r[0]['cnt'] ?? 0);
+    }
+
+    if ($hostileIds) {
+        $ph = implode(',', array_fill(0, count($hostileIds), '?'));
+        $r = db_select("SELECT COUNT(*) AS cnt FROM sovereignty_map WHERE alliance_id IN ({$ph})", $hostileIds);
+        $metrics['hostile_systems_held'] = (int) ($r[0]['cnt'] ?? 0);
+
+        $r = db_select(
+            "SELECT COUNT(*) AS cnt FROM sovereignty_campaigns
+             WHERE defender_id IN ({$ph}) AND is_active = 1",
+            $hostileIds
+        );
+        $metrics['active_hostile_campaigns'] = (int) ($r[0]['cnt'] ?? 0);
+    }
+
+    $r = db_select("SELECT COUNT(*) AS cnt FROM sovereignty_map_history WHERE changed_at > DATE_SUB(UTC_TIMESTAMP(), INTERVAL 7 DAY)");
+    $metrics['ownership_changes_7d'] = (int) ($r[0]['cnt'] ?? 0);
+
+    $r = db_select("SELECT COUNT(*) AS cnt FROM sovereignty_map_history WHERE changed_at > DATE_SUB(UTC_TIMESTAMP(), INTERVAL 30 DAY)");
+    $metrics['ownership_changes_30d'] = (int) ($r[0]['cnt'] ?? 0);
+
+    return $metrics;
+}
+
+function db_sovereignty_alert_resolve(int $alertId): void
+{
+    $pdo = db();
+    $stmt = $pdo->prepare("UPDATE sovereignty_alerts SET status = 'resolved', resolved_at = UTC_TIMESTAMP() WHERE id = ?");
+    $stmt->execute([$alertId]);
+}

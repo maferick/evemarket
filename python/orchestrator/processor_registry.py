@@ -80,6 +80,12 @@ from .jobs.killmail_zkb_repair import run_killmail_zkb_repair
 from .jobs.corp_standings_sync import run_corp_standings_sync
 from .jobs.behavioral_scoring import run_compute_behavioral_scoring
 from .jobs.compute_opposition_daily_snapshots import run_compute_opposition_daily_snapshots
+from .jobs.esi_sovereignty_sync import (
+    run_sovereignty_campaigns_sync,
+    run_sovereignty_structures_sync,
+    run_sovereignty_map_sync,
+)
+from .jobs.compute_sovereignty_alerts import run_compute_sovereignty_alerts
 
 
 def _php_bridge(cfg: dict[str, Any]) -> PhpBridge:
@@ -141,6 +147,7 @@ PYTHON_COMPUTE_PROCESSOR_JOB_KEYS: set[str] = {
     "killmail_zkb_repair",
     "compute_behavioral_scoring",
     "compute_opposition_daily_snapshots",
+    "compute_sovereignty_alerts",
 }
 
 PYTHON_SYNC_PROCESSOR_JOB_KEYS: set[str] = {
@@ -167,6 +174,9 @@ PYTHON_SYNC_PROCESSOR_JOB_KEYS: set[str] = {
     "tracked_alliance_member_sync",
     "cache_expiry_cleanup_sync",
     "corp_standings_sync",
+    "sovereignty_campaigns_sync",
+    "sovereignty_structures_sync",
+    "sovereignty_map_sync",
 }
 PYTHON_PROCESSOR_JOB_KEYS: set[str] = PYTHON_COMPUTE_PROCESSOR_JOB_KEYS | PYTHON_SYNC_PROCESSOR_JOB_KEYS
 
@@ -260,6 +270,11 @@ _PROCESSOR_DISPATCH: dict[str, tuple] = {
     "jump_bridge_sync": (run_jump_bridge_sync, lambda db, cfg: (db, neo4j_runtime(cfg))),
     # Corporation standings sync
     "corp_standings_sync": (run_corp_standings_sync, lambda db, cfg: (db, cfg)),
+    # Sovereignty monitoring
+    "sovereignty_campaigns_sync": (run_sovereignty_campaigns_sync, lambda db, cfg: (db, cfg)),
+    "sovereignty_structures_sync": (run_sovereignty_structures_sync, lambda db, cfg: (db, cfg)),
+    "sovereignty_map_sync": (run_sovereignty_map_sync, lambda db, cfg: (db, cfg)),
+    "compute_sovereignty_alerts": (run_compute_sovereignty_alerts, lambda db, cfg: (db,)),
     # Maintenance
     "cache_expiry_cleanup_sync": (run_cache_expiry_cleanup_sync, lambda db, cfg: (db,)),
     # Killmail repair
