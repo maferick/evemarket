@@ -21858,6 +21858,18 @@ function supplycore_ai_resolve_feature_config(string $feature, ?string $explicit
     return $config;
 }
 
+/**
+ * Whether a provider needs the async ai_jobs queue. Only RunPod has
+ * multi-minute cold starts that would blow past web request timeouts.
+ * Local Ollama, Claude, and Groq respond in seconds and can run
+ * inline on the web request thread.
+ */
+function supplycore_ai_needs_queue(string $feature): bool
+{
+    $config = supplycore_ai_resolve_feature_config($feature);
+    return ((string) ($config['provider'] ?? 'local')) === 'runpod';
+}
+
 function supplycore_ai_jobs_feature_valid(string $feature): bool
 {
     static $valid = null;
@@ -22871,27 +22883,38 @@ function theater_lock_report(string $theaterId): ?array
         return ['error' => 'Battle report is already locked'];
     }
 
-    // Lock the theater immediately. AI summary generation is enqueued to
-    // the ai_jobs queue and drained by bin/ai_briefing_worker.php — the web
-    // request no longer waits on the model to respond.
+    // Lock the theater immediately regardless of AI outcome.
     db_execute('UPDATE theaters SET locked_at = NOW() WHERE theater_id = ?', [$theaterId]);
 
     if (!supplycore_ai_ollama_enabled()) {
         return ['ai_status' => 'disabled'];
     }
 
-    try {
-        $jobId = supplycore_ai_jobs_enqueue(
-            'theater_lock',
-            $theaterId,
-            ['theater_id' => $theaterId]
-        );
-    } catch (Throwable $e) {
-        error_log('[theater-lock] Failed to enqueue AI job: ' . $e->getMessage());
-        return ['ai_status' => 'error', 'error' => $e->getMessage()];
+    // Only RunPod needs the async ai_jobs queue (cold starts can take
+    // minutes). Local Ollama / Claude / Groq respond in seconds and
+    // run inline on the web request thread.
+    if (supplycore_ai_needs_queue('theater_lock')) {
+        try {
+            $jobId = supplycore_ai_jobs_enqueue(
+                'theater_lock',
+                $theaterId,
+                ['theater_id' => $theaterId]
+            );
+        } catch (Throwable $e) {
+            error_log('[theater-lock] Failed to enqueue AI job: ' . $e->getMessage());
+            return ['ai_status' => 'error', 'error' => $e->getMessage()];
+        }
+        return ['ai_status' => 'queued', 'ai_job_id' => $jobId];
     }
 
-    return ['ai_status' => 'queued', 'ai_job_id' => $jobId];
+    // Inline execution for non-RunPod providers.
+    try {
+        $result = theater_ai_summary_generate($theaterId, true);
+        return $result ?? ['ai_status' => 'done'];
+    } catch (Throwable $e) {
+        error_log('[theater-lock] Inline AI generation failed: ' . $e->getMessage());
+        return ['ai_status' => 'error', 'error' => $e->getMessage()];
+    }
 }
 
 /**
