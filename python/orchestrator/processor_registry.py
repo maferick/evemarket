@@ -64,6 +64,7 @@ from .jobs.graph_pipeline import run_compute_graph_sync_killmail_entities, run_c
 from .jobs.compute_alliance_dossiers import run_compute_alliance_dossiers
 from .jobs.compute_alliance_relationships import run_compute_alliance_relationships
 from .jobs.compute_threat_corridors import run_compute_threat_corridors
+from .jobs.compute_map_intelligence import run_compute_map_intelligence
 from .jobs.cache_expiry_cleanup_sync import run_cache_expiry_cleanup_sync
 from .jobs.evewho_alliance_member_sync import run_evewho_alliance_member_sync
 from .jobs.tracked_alliance_member_sync import run_tracked_alliance_member_sync
@@ -134,6 +135,7 @@ PYTHON_COMPUTE_PROCESSOR_JOB_KEYS: set[str] = {
     "compute_alliance_dossiers",
     "compute_alliance_relationships",
     "compute_threat_corridors",
+    "compute_map_intelligence",
     "graph_model_audit",
     "compute_character_feature_windows",
     "compute_copresence_edges",
@@ -253,6 +255,8 @@ _PROCESSOR_DISPATCH: dict[str, tuple] = {
     "compute_alliance_dossiers": (run_compute_alliance_dossiers, lambda db, cfg: (db, None, neo4j_runtime(cfg))),
     "compute_alliance_relationships": (run_compute_alliance_relationships, lambda db, cfg: (db, None, neo4j_runtime(cfg))),
     "compute_threat_corridors": (run_compute_threat_corridors, lambda db, cfg: (db, None, neo4j_runtime(cfg))),
+    # Map intelligence
+    "compute_map_intelligence": (run_compute_map_intelligence, lambda db, cfg: (db, neo4j_runtime(cfg))),
     # Graph audit
     "graph_model_audit": (run_graph_model_audit, lambda db, cfg: (db, neo4j_runtime(cfg))),
     # Character feature windows

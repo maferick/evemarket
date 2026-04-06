@@ -141,6 +141,9 @@ def parse_args() -> argparse.Namespace:
     graph_universe = subparsers.add_parser("graph-universe-sync", help="Sync universe topology (systems, stargates) into Neo4j")
     graph_universe.add_argument("--app-root", default=resolve_app_root(__file__))
     graph_universe.add_argument("--verbose", action="store_true")
+    compute_map_intel = subparsers.add_parser("compute-map-intelligence", help="Precompute graph-derived map intelligence scores")
+    compute_map_intel.add_argument("--app-root", default=resolve_app_root(__file__))
+    compute_map_intel.add_argument("--verbose", action="store_true")
     graph_killmails = subparsers.add_parser("compute-graph-sync-killmail-entities", help="Project killmail events as nodes into Neo4j")
     graph_killmails.add_argument("--app-root", default=resolve_app_root(__file__))
     graph_killmails.add_argument("--verbose", action="store_true")
@@ -361,6 +364,16 @@ def main() -> int:
         db = SupplyCoreDb(config.raw.get("db", {}))
         from .jobs.graph_universe_sync import run_graph_universe_sync
         result = run_graph_universe_sync(db, neo4j_runtime(config.raw))
+        print(result)
+        return 0
+    if command == "compute-map-intelligence":
+        app_root = Path(args.app_root).resolve()
+        config = load_php_runtime_config(app_root)
+        configure_logging(verbose=args.verbose, log_file=config.log_file)
+        from .db import SupplyCoreDb
+        db = SupplyCoreDb(config.raw.get("db", {}))
+        from .jobs.compute_map_intelligence import run_compute_map_intelligence
+        result = run_compute_map_intelligence(db, neo4j_runtime(config.raw))
         print(result)
         return 0
     if command == "compute-graph-sync-killmail-entities":

@@ -17828,3 +17828,71 @@ function db_sovereignty_alert_resolve(int $alertId): void
     $stmt = $pdo->prepare("UPDATE sovereignty_alerts SET status = 'resolved', resolved_at = UTC_TIMESTAMP() WHERE id = ?");
     $stmt->execute([$alertId]);
 }
+
+// ---------------------------------------------------------------------------
+//  Map Intelligence queries
+// ---------------------------------------------------------------------------
+
+/**
+ * Fetch map intelligence scores for a set of systems.
+ * Returns array keyed by system_id with chokepoint_score, connectivity_score, etc.
+ */
+function db_map_system_intelligence(array $systemIds): array
+{
+    $systemIds = array_values(array_filter(array_map('intval', $systemIds), static fn(int $id): bool => $id > 0));
+    if ($systemIds === []) {
+        return [];
+    }
+    $ph = implode(',', array_fill(0, count($systemIds), '?'));
+    $rows = db_select(
+        "SELECT system_id, chokepoint_score, connectivity_score, is_bridge, community_id, label_priority
+         FROM map_system_intelligence
+         WHERE system_id IN ({$ph})",
+        $systemIds
+    );
+    $result = [];
+    foreach ($rows as $r) {
+        $sid = (int) $r['system_id'];
+        $result[$sid] = [
+            'chokepoint_score'   => (float) ($r['chokepoint_score'] ?? 0),
+            'connectivity_score' => (float) ($r['connectivity_score'] ?? 0),
+            'is_bridge'          => (bool) ($r['is_bridge'] ?? false),
+            'community_id'       => $r['community_id'] !== null ? (int) $r['community_id'] : null,
+            'label_priority'     => (float) ($r['label_priority'] ?? 0),
+        ];
+    }
+    return $result;
+}
+
+/**
+ * Fetch map edge intelligence for edges between given systems.
+ * Returns array keyed by "from:to" (normalized min:max) with risk scores.
+ */
+function db_map_edge_intelligence(array $systemIds): array
+{
+    $systemIds = array_values(array_filter(array_map('intval', $systemIds), static fn(int $id): bool => $id > 0));
+    if ($systemIds === []) {
+        return [];
+    }
+    $ph = implode(',', array_fill(0, count($systemIds), '?'));
+    $rows = db_select(
+        "SELECT from_system_id, to_system_id, corridor_count, corridor_score_sum,
+                battle_count, is_bridge_edge, risk_score
+         FROM map_edge_intelligence
+         WHERE from_system_id IN ({$ph}) AND to_system_id IN ({$ph})",
+        array_merge($systemIds, $systemIds)
+    );
+    $result = [];
+    foreach ($rows as $r) {
+        $key = min((int) $r['from_system_id'], (int) $r['to_system_id'])
+             . ':' . max((int) $r['from_system_id'], (int) $r['to_system_id']);
+        $result[$key] = [
+            'corridor_count'     => (int) ($r['corridor_count'] ?? 0),
+            'corridor_score_sum' => (float) ($r['corridor_score_sum'] ?? 0),
+            'battle_count'       => (int) ($r['battle_count'] ?? 0),
+            'is_bridge_edge'     => (bool) ($r['is_bridge_edge'] ?? false),
+            'risk_score'         => (float) ($r['risk_score'] ?? 0),
+        ];
+    }
+    return $result;
+}

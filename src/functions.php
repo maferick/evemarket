@@ -25383,7 +25383,22 @@ function supplycore_threat_corridor_map_cache_minutes(): int
     return max(5, min(240, (int) get_setting('threat_corridor_map_cache_minutes', '20')));
 }
 
+/**
+ * Generate a threat-corridor map SVG.
+ *
+ * @deprecated Use map_generate_threat_corridor() from src/map.php instead.
+ */
 function supplycore_threat_corridor_graph_svg(int $corridorId, array $corridorSystemIds, int $surroundingHops = 1): ?string
+{
+    require_once __DIR__ . '/map.php';
+    return map_generate_threat_corridor($corridorId, $corridorSystemIds, $surroundingHops);
+}
+
+/**
+ * Legacy implementation — kept for reference during migration.
+ * @internal
+ */
+function _supplycore_threat_corridor_graph_svg_legacy(int $corridorId, array $corridorSystemIds, int $surroundingHops = 1): ?string
 {
     $corridorSystemIds = array_values(array_unique(array_map('intval', $corridorSystemIds)));
     $corridorSystemIds = array_values(array_filter($corridorSystemIds, static fn (int $sid): bool => $sid > 0));
@@ -25768,13 +25783,21 @@ function supplycore_threat_corridor_graph_svg(int $corridorId, array $corridorSy
 }
 
 /**
- * Generate a battle-theater map SVG showing all combat systems and their stargate neighbors.
- * Single-system theaters use a radial layout (delegates to supplycore_system_area_svg).
- * Multi-system theaters use a corridor-style horizontal layout with all battle systems
- * highlighted in amber and adjacent systems shown around them.
- * Returns the public URL of the cached SVG, or null on failure.
+ * Generate a battle-theater map SVG.
+ *
+ * @deprecated Use map_generate_theater() from src/map.php instead.
  */
 function supplycore_theater_map_svg(string $theaterId, array $systemIds, int $hops = 1): ?string
+{
+    require_once __DIR__ . '/map.php';
+    return map_generate_theater($theaterId, $systemIds, $hops);
+}
+
+/**
+ * Legacy implementation — kept for reference during migration.
+ * @internal
+ */
+function _supplycore_theater_map_svg_legacy(string $theaterId, array $systemIds, int $hops = 1): ?string
 {
     $systemIds = array_values(array_unique(array_map('intval', $systemIds)));
     $systemIds = array_values(array_filter($systemIds, static fn(int $sid): bool => $sid > 0));
@@ -26292,11 +26315,21 @@ function supplycore_theater_map_svg(string $theaterId, array $systemIds, int $ho
 }
 
 /**
- * Generate a radial neighborhood SVG map centered on a single system.
- * Hop-1 neighbors form an inner ring; hop-2 neighbors an outer ring.
- * Returns the public URL of the cached SVG, or null on failure.
+ * Generate a radial neighborhood SVG map.
+ *
+ * @deprecated Use map_generate_system_neighborhood() from src/map.php instead.
  */
 function supplycore_system_area_svg(int $systemId, int $hops = 2): ?string
+{
+    require_once __DIR__ . '/map.php';
+    return map_generate_system_neighborhood($systemId, $hops);
+}
+
+/**
+ * Legacy implementation — kept for reference during migration.
+ * @internal
+ */
+function _supplycore_system_area_svg_legacy(int $systemId, int $hops = 2): ?string
 {
     if ($systemId <= 0) {
         return null;
