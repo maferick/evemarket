@@ -7,19 +7,21 @@ $title = 'Sovereignty — Battle Intelligence';
 $liveRefreshConfig = supplycore_live_refresh_page_config('sovereignty');
 
 $search = isset($_GET['q']) ? trim((string) $_GET['q']) : null;
-$filter = isset($_GET['filter']) ? trim((string) $_GET['filter']) : null;
-if ($filter !== null && !in_array($filter, ['friendly', 'hostile', 'neutral'], true)) {
-    $filter = null;
+$filter = isset($_GET['filter']) ? trim((string) $_GET['filter']) : 'friendly';
+if (!in_array($filter, ['friendly', 'hostile', 'neutral', 'all'], true)) {
+    $filter = 'friendly';
 }
+$mapFilter = $filter === 'all' ? null : $filter;
+$showAllCampaigns = isset($_GET['show_all_campaigns']);
 $page = max(1, (int) ($_GET['page'] ?? 1));
 $perPage = 50;
 $offset = ($page - 1) * $perPage;
 
 $metrics = db_sovereignty_dashboard_metrics();
 $alerts = db_sovereignty_alerts_active(10);
-$activeCampaigns = db_sovereignty_campaigns_active();
-$mapRows = db_sovereignty_map_list($perPage, $offset, $search, $filter);
-$totalCount = db_sovereignty_map_count($search, $filter);
+$activeCampaigns = db_sovereignty_campaigns_active($showAllCampaigns ? null : 'friendly');
+$mapRows = db_sovereignty_map_list($perPage, $offset, $search, $mapFilter);
+$totalCount = db_sovereignty_map_count($search, $mapFilter);
 $totalPages = max(1, (int) ceil($totalCount / $perPage));
 $recentHistory = db_sovereignty_campaigns_history(15, 0);
 
@@ -95,9 +97,21 @@ include __DIR__ . '/../../src/views/partials/header.php';
 <?php endif; ?>
 
 <!-- Active Campaigns -->
-<?php if ($activeCampaigns): ?>
+<?php if ($activeCampaigns || $showAllCampaigns): ?>
 <section class="surface-primary mt-4">
-    <p class="text-xs uppercase tracking-[0.16em] text-muted mb-3">Active Campaigns</p>
+    <div class="flex items-center justify-between mb-3">
+        <p class="text-xs uppercase tracking-[0.16em] text-muted">Active Campaigns<?php if (!$showAllCampaigns): ?> <span class="text-slate-500">(Friendly only)</span><?php endif; ?></p>
+        <?php
+            $campaignToggleParams = $_GET;
+            if ($showAllCampaigns) {
+                unset($campaignToggleParams['show_all_campaigns']);
+            } else {
+                $campaignToggleParams['show_all_campaigns'] = '1';
+            }
+            $campaignToggleHref = '/sovereignty/?' . http_build_query($campaignToggleParams);
+        ?>
+        <a href="<?= htmlspecialchars($campaignToggleHref) ?>" class="btn-secondary text-xs"><?= $showAllCampaigns ? 'Friendly Only' : 'Show All' ?></a>
+    </div>
     <div class="table-shell">
         <table class="table-ui">
             <thead>
@@ -155,11 +169,12 @@ include __DIR__ . '/../../src/views/partials/header.php';
         <p class="text-xs uppercase tracking-[0.16em] text-muted">Sovereignty Map</p>
         <div class="flex gap-1.5 items-center">
             <?php
-            $filters = [null => 'All', 'friendly' => 'Friendly', 'hostile' => 'Hostile', 'neutral' => 'Neutral'];
+            $filters = ['friendly' => 'Friendly', 'hostile' => 'Hostile', 'neutral' => 'Neutral', 'all' => 'All'];
             foreach ($filters as $fVal => $fLabel):
-                $isActive = ($filter ?? '') === ($fVal ?? '');
+                $isActive = $filter === $fVal;
                 $cls = $isActive ? 'btn-primary text-xs' : 'btn-secondary text-xs';
-                $href = '/sovereignty/?' . http_build_query(array_filter(['filter' => $fVal, 'q' => $search]));
+                $toggleParams = array_filter(['filter' => $fVal, 'q' => $search, 'show_all_campaigns' => $showAllCampaigns ? '1' : null]);
+                $href = '/sovereignty/?' . http_build_query($toggleParams);
             ?>
                 <a href="<?= htmlspecialchars($href) ?>" class="<?= $cls ?>"><?= $fLabel ?></a>
             <?php endforeach; ?>
@@ -175,7 +190,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
         </div>
         <button type="submit" class="btn-secondary h-fit text-sm">Search</button>
         <?php if ($search !== null): ?>
-            <a href="/sovereignty/<?= $filter ? '?filter=' . $filter : '' ?>" class="text-sm text-accent">Clear</a>
+            <a href="/sovereignty/?<?= http_build_query(array_filter(['filter' => $filter, 'show_all_campaigns' => $showAllCampaigns ? '1' : null])) ?>" class="text-sm text-accent">Clear</a>
         <?php endif; ?>
     </form>
 
@@ -240,10 +255,10 @@ include __DIR__ . '/../../src/views/partials/header.php';
             <span>Page <?= $page ?> of <?= $totalPages ?> (<?= number_format($totalCount) ?> systems)</span>
             <div class="flex gap-2">
                 <?php if ($page > 1): ?>
-                    <a href="?<?= http_build_query(array_filter(['page' => $page - 1, 'q' => $search, 'filter' => $filter])) ?>" class="btn-secondary text-xs">Previous</a>
+                    <a href="?<?= http_build_query(array_filter(['page' => $page - 1, 'q' => $search, 'filter' => $filter, 'show_all_campaigns' => $showAllCampaigns ? '1' : null])) ?>" class="btn-secondary text-xs">Previous</a>
                 <?php endif; ?>
                 <?php if ($page < $totalPages): ?>
-                    <a href="?<?= http_build_query(array_filter(['page' => $page + 1, 'q' => $search, 'filter' => $filter])) ?>" class="btn-secondary text-xs">Next</a>
+                    <a href="?<?= http_build_query(array_filter(['page' => $page + 1, 'q' => $search, 'filter' => $filter, 'show_all_campaigns' => $showAllCampaigns ? '1' : null])) ?>" class="btn-secondary text-xs">Next</a>
                 <?php endif; ?>
             </div>
         </div>

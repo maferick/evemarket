@@ -19950,6 +19950,18 @@ function supplycore_ui_refresh_section_version_definitions(): array
                 ];
             },
         ],
+        'sovereignty_version' => [
+            'domains' => ['sovereignty'],
+            'ui_sections' => ['sovereignty-alerts', 'sovereignty-campaigns', 'sovereignty-map'],
+            'resolver' => static function (): array {
+                return supplycore_ui_refresh_version_from_sync_state(
+                    'sovereignty_version',
+                    ['sovereignty.campaigns', 'sovereignty.structures', 'sovereignty.map', 'sovereignty.alerts'],
+                    ['sovereignty'],
+                    ['sovereignty-alerts', 'sovereignty-campaigns', 'sovereignty-map']
+                );
+            },
+        ],
     ];
 }
 
@@ -20005,6 +20017,26 @@ function supplycore_ui_refresh_job_domain_map(): array
             'domains' => ['dashboard', 'deal_alerts'],
             'ui_sections' => ['dashboard-queues', 'deal-alerts-summary', 'deal-alerts-status', 'deal-alerts-table'],
             'version_keys' => ['dashboard_summary_version', 'deal_alerts_version'],
+        ],
+        'sovereignty_campaigns_sync' => [
+            'domains' => ['sovereignty'],
+            'ui_sections' => ['sovereignty-alerts', 'sovereignty-campaigns'],
+            'version_keys' => ['sovereignty_version'],
+        ],
+        'sovereignty_structures_sync' => [
+            'domains' => ['sovereignty'],
+            'ui_sections' => ['sovereignty-map'],
+            'version_keys' => ['sovereignty_version'],
+        ],
+        'sovereignty_map_sync' => [
+            'domains' => ['sovereignty'],
+            'ui_sections' => ['sovereignty-map'],
+            'version_keys' => ['sovereignty_version'],
+        ],
+        'compute_sovereignty_alerts' => [
+            'domains' => ['sovereignty'],
+            'ui_sections' => ['sovereignty-alerts'],
+            'version_keys' => ['sovereignty_version'],
         ],
     ];
 }
@@ -20403,6 +20435,18 @@ function supplycore_live_refresh_page_registry(): array
                 'killmail-overview-summary' => ['version_keys' => ['killmail_overview_version']],
                 'killmail-overview-status' => ['version_keys' => ['killmail_overview_version']],
                 'killmail-overview-table' => ['version_keys' => ['killmail_overview_version']],
+            ],
+        ],
+        'sovereignty' => [
+            'path' => '/sovereignty/index.php',
+            'public_path' => '/sovereignty',
+            'script' => dirname(__DIR__) . '/public/sovereignty/index.php',
+            'domains' => ['sovereignty'],
+            'version_keys' => ['sovereignty_version'],
+            'sections' => [
+                'sovereignty-alerts' => ['version_keys' => ['sovereignty_version']],
+                'sovereignty-campaigns' => ['version_keys' => ['sovereignty_version']],
+                'sovereignty-map' => ['version_keys' => ['sovereignty_version']],
             ],
         ],
         'log_viewer' => [

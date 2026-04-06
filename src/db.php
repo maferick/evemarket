@@ -17332,8 +17332,23 @@ function db_sovereignty_alerts_count(): int
     return (int) ($rows[0]['cnt'] ?? 0);
 }
 
-function db_sovereignty_campaigns_active(): array
+function db_sovereignty_campaigns_active(?string $standingFilter = null): array
 {
+    $where = 'sc.is_active = 1';
+    $params = [];
+
+    if ($standingFilter === 'friendly') {
+        $standings = db_corp_contacts_by_standing();
+        $ids = $standings['friendly_alliance_ids'];
+        if ($ids) {
+            $ph = implode(',', array_fill(0, count($ids), '?'));
+            $where .= " AND sc.defender_id IN ({$ph})";
+            $params = array_merge($params, $ids);
+        } else {
+            $where .= ' AND 0';
+        }
+    }
+
     return db_select(
         "SELECT sc.*,
                 rs.system_name,
@@ -17363,9 +17378,10 @@ function db_sovereignty_campaigns_active(): array
          LEFT JOIN ref_sov_structure_roles rsr ON rsr.structure_type_id = sst.structure_type_id
          LEFT JOIN corp_contacts cc
               ON cc.contact_type = 'alliance' AND cc.contact_id = sc.defender_id
-         WHERE sc.is_active = 1
+         WHERE {$where}
          ORDER BY CASE WHEN cc.standing > 0 THEN 0 WHEN cc.standing < 0 THEN 2 ELSE 1 END,
-                  sc.start_time ASC"
+                  sc.start_time ASC",
+        $params
     );
 }
 
