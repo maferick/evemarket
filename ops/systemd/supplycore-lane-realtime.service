@@ -16,8 +16,8 @@ RestartSec=3
 KillSignal=SIGTERM
 TimeoutStopSec=90
 MemoryMax=2G
-StandardOutput=append:/var/www/SupplyCore/storage/logs/lane-realtime.log
-StandardError=append:/var/www/SupplyCore/storage/logs/lane-realtime.log
+StandardOutput=journal
+StandardError=journal
 
 [Install]
 WantedBy=multi-user.target

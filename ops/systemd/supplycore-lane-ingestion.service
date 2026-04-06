@@ -16,8 +16,8 @@ RestartSec=5
 KillSignal=SIGTERM
 TimeoutStopSec=90
 MemoryMax=1G
-StandardOutput=append:/var/www/SupplyCore/storage/logs/lane-ingestion.log
-StandardError=append:/var/www/SupplyCore/storage/logs/lane-ingestion.log
+StandardOutput=journal
+StandardError=journal
 
 [Install]
 WantedBy=multi-user.target

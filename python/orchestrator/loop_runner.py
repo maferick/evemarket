@@ -476,8 +476,11 @@ def _run_loop(
 # ---------------------------------------------------------------------------
 
 def _write_state_file(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json_dumps_safe(payload, indent=2) + "\n", encoding="utf-8")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json_dumps_safe(payload, indent=2) + "\n", encoding="utf-8")
+    except OSError:
+        pass  # best-effort; don't crash the runner over a heartbeat file
 
 
 # ---------------------------------------------------------------------------
@@ -535,6 +538,11 @@ def main(argv: list[str] | None = None) -> int:
     worker_settings = dict(raw_config.get("workers") or {})
 
     log_file = Path(worker_settings.get("worker_log_file", app_root / "storage/logs/worker.log"))
+    # When running in lane mode, use a per-lane log file so multiple
+    # lane processes don't interleave writes in the same file.
+    lane = args.lane or ""
+    if lane:
+        log_file = log_file.with_name(f"lane-{lane}.log")
     logger = configure_logging(verbose=args.verbose, log_file=log_file)
     worker_id = f"loop-{socket.gethostname()}-{os.getpid()}"
 
@@ -560,12 +568,14 @@ def main(argv: list[str] | None = None) -> int:
             )
         return 1
 
-    lane = args.lane or ""
     if lane and lane not in _VALID_LANES:
         logger.error(f"unknown lane '{lane}', valid lanes: {sorted(_VALID_LANES)}")
         return 1
 
     state_file = Path(worker_settings.get("pool_state_file", app_root / "storage/run/loop-runner-heartbeat.json"))
+    # Per-lane state file so multiple lane processes don't overwrite each other.
+    if lane:
+        state_file = state_file.with_name(f"lane-{lane}-heartbeat.json")
 
     shutdown_event = threading.Event()
 
