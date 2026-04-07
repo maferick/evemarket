@@ -60,4 +60,4 @@ CREATE TABLE IF NOT EXISTS intelligence_calibration_snapshots (
     created_at              TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE INDEX idx_ics_date (snapshot_date),
     INDEX idx_ics_created (created_at DESC)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

@@ -32,7 +32,7 @@ CREATE TABLE IF NOT EXISTS intelligence_compound_definitions (
     created_at          TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at          TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     UNIQUE INDEX idx_icd_type (compound_type)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- 2. Materialized Compound Signals (per-character)
 CREATE TABLE IF NOT EXISTS character_intelligence_compound_signals (
@@ -58,4 +58,4 @@ CREATE TABLE IF NOT EXISTS character_intelligence_compound_signals (
     UNIQUE INDEX idx_cics_char_type (character_id, compound_type),
     INDEX idx_cics_type_score (compound_type, score DESC),
     INDEX idx_cics_detected (first_detected_at DESC)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

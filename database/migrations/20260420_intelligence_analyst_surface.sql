@@ -18,7 +18,7 @@ CREATE TABLE IF NOT EXISTS intelligence_event_notes (
     note            TEXT            NOT NULL,
     created_at      TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
     INDEX idx_ien_event (event_id, created_at DESC)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- 2. Event Digests
 --    Periodic summaries produced by the Python event engine.
@@ -52,4 +52,4 @@ CREATE TABLE IF NOT EXISTS intelligence_event_digests (
     created_at          TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
     INDEX idx_ied_type_period (digest_type, period_end DESC),
     INDEX idx_ied_created (created_at DESC)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

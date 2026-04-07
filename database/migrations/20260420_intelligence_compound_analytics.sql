@@ -41,7 +41,7 @@ CREATE TABLE IF NOT EXISTS compound_analytics_snapshots (
     created_at              TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE INDEX idx_cas_date_type (snapshot_date, compound_type),
     INDEX idx_cas_type (compound_type, snapshot_date DESC)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- 2. Compound Analyst Outcomes
 --    When an analyst resolves or provides feedback on an event/character
@@ -68,4 +68,4 @@ CREATE TABLE IF NOT EXISTS compound_analyst_outcomes (
     INDEX idx_cao_char (character_id, created_at DESC),
     INDEX idx_cao_compound (compound_type, outcome, created_at DESC),
     INDEX idx_cao_outcome (outcome, compound_type)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
