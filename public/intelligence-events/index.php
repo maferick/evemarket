@@ -245,6 +245,14 @@ include __DIR__ . '/../../src/views/partials/header.php';
                                 <?php else: ?>
                                     <span class="text-muted"><?= htmlspecialchars((string) ($ev['entity_type'] ?? ''), ENT_QUOTES) ?> #<?= (int) ($ev['entity_id'] ?? 0) ?></span>
                                 <?php endif; ?>
+                                <?php if (($ev['corporation_name'] ?? '') !== '' || ($ev['alliance_name'] ?? '') !== ''): ?>
+                                    <div class="text-[10px] text-muted mt-0.5"><?php
+                                        $orgParts = [];
+                                        if (($ev['corporation_name'] ?? '') !== '') { $orgParts[] = htmlspecialchars((string) $ev['corporation_name'], ENT_QUOTES); }
+                                        if (($ev['alliance_name'] ?? '') !== '') { $orgParts[] = htmlspecialchars((string) $ev['alliance_name'], ENT_QUOTES); }
+                                        echo implode(' / ', $orgParts);
+                                    ?></div>
+                                <?php endif; ?>
                             </td>
                             <td class="px-3 py-2 text-center">
                                 <span class="inline-flex items-center rounded px-2 py-0.5 text-xs font-medium <?= $sevClasses ?>"><?= strtoupper($sev) ?></span>

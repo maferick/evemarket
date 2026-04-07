@@ -158,6 +158,14 @@ include __DIR__ . '/../../src/views/partials/header.php';
             <?php if (($event['entity_name'] ?? '') !== ''): ?>
                 <p class="mt-1 text-lg text-accent font-medium">
                     <a href="/battle-intelligence/character.php?character_id=<?= urlencode((string) ((int) ($event['entity_id'] ?? 0))) ?>"><?= htmlspecialchars((string) $event['entity_name'], ENT_QUOTES) ?></a>
+                    <?php if (($event['corporation_name'] ?? '') !== '' || ($event['alliance_name'] ?? '') !== ''): ?>
+                        <span class="text-sm text-slate-400 font-normal ml-2"><?php
+                            $orgParts = [];
+                            if (($event['corporation_name'] ?? '') !== '') { $orgParts[] = htmlspecialchars((string) $event['corporation_name'], ENT_QUOTES); }
+                            if (($event['alliance_name'] ?? '') !== '') { $orgParts[] = '[' . htmlspecialchars((string) $event['alliance_name'], ENT_QUOTES) . ']'; }
+                            echo implode(' ', $orgParts);
+                        ?></span>
+                    <?php endif; ?>
                 </p>
             <?php endif; ?>
             <h1 class="mt-1 text-2xl font-semibold text-slate-50"><?= htmlspecialchars((string) ($event['title'] ?? 'Untitled Event'), ENT_QUOTES) ?></h1>
