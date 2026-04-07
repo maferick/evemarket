@@ -18537,10 +18537,20 @@ function db_intelligence_events_queue(
     $sortDir = strtoupper($sortDir) === 'ASC' ? 'ASC' : 'DESC';
 
     $sql = "SELECT ie.*,
-                   emc.entity_name AS entity_name
+                   emc.entity_name AS entity_name,
+                   cohc.current_corporation_id,
+                   cohc.current_alliance_id,
+                   emc_corp.entity_name AS corporation_name,
+                   emc_ally.entity_name AS alliance_name
             FROM intelligence_events ie
             LEFT JOIN entity_metadata_cache emc
                 ON emc.entity_type = ie.entity_type COLLATE utf8mb4_general_ci AND emc.entity_id = ie.entity_id
+            LEFT JOIN character_org_history_cache cohc
+                ON ie.entity_type = 'character' AND cohc.character_id = ie.entity_id AND cohc.source = 'evewho'
+            LEFT JOIN entity_metadata_cache emc_corp
+                ON emc_corp.entity_type = 'corporation' AND emc_corp.entity_id = cohc.current_corporation_id
+            LEFT JOIN entity_metadata_cache emc_ally
+                ON emc_ally.entity_type = 'alliance' AND emc_ally.entity_id = cohc.current_alliance_id
             {$whereClause}
             ORDER BY {$sortBy} {$sortDir}
             LIMIT ? OFFSET ?";
@@ -18655,10 +18665,20 @@ function db_intelligence_event_detail(int $eventId): ?array
     }
     return db_select_one(
         "SELECT ie.*,
-                emc.entity_name AS entity_name
+                emc.entity_name AS entity_name,
+                cohc.current_corporation_id,
+                cohc.current_alliance_id,
+                emc_corp.entity_name AS corporation_name,
+                emc_ally.entity_name AS alliance_name
          FROM intelligence_events ie
          LEFT JOIN entity_metadata_cache emc
              ON emc.entity_type = ie.entity_type COLLATE utf8mb4_general_ci AND emc.entity_id = ie.entity_id
+         LEFT JOIN character_org_history_cache cohc
+             ON ie.entity_type = 'character' AND cohc.character_id = ie.entity_id AND cohc.source = 'evewho'
+         LEFT JOIN entity_metadata_cache emc_corp
+             ON emc_corp.entity_type = 'corporation' AND emc_corp.entity_id = cohc.current_corporation_id
+         LEFT JOIN entity_metadata_cache emc_ally
+             ON emc_ally.entity_type = 'alliance' AND emc_ally.entity_id = cohc.current_alliance_id
          WHERE ie.id = ?",
         [$eventId]
     );
