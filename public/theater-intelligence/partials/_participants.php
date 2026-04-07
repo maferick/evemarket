@@ -490,9 +490,18 @@ function _render_structure_row(array $sk, array $resolvedEntities, array $shipTy
                 <h3 class="text-sm font-semibold <?= $panel['colorClass'] ?>">
                     <?= htmlspecialchars($panel['label'], ENT_QUOTES) ?>
                     <span class="<?= $panel['badgeClass'] ?> text-[10px] rounded px-1.5 py-0.5 ml-1.5"><?= $panel['badgeLabel'] ?></span>
+                    <?php
+                        // Use the real pilot count from alliance summary, not the truncated participant list
+                        $realPilotCount = (int) ($sidePanels[$panel['side']]['pilots'] ?? 0);
+                        $shownCount = count($panel['rows']) + count($panel['structure_kills'] ?? []);
+                        $isTruncated = $shownCount < $realPilotCount;
+                    ?>
                     <span class="text-muted font-normal text-xs ml-1" data-panel-count>
-                        (<?= count($panel['rows']) + count($panel['structure_kills'] ?? []) ?>)
+                        (<?= number_format($realPilotCount) ?>)
                     </span>
+                    <?php if ($isTruncated): ?>
+                        <span class="text-[9px] text-amber-500/70 font-normal ml-0.5" title="Showing top <?= number_format($shownCount) ?> of <?= number_format($realPilotCount) ?> pilots">showing <?= number_format($shownCount) ?></span>
+                    <?php endif; ?>
                 </h3>
             </div>
             <div class="flex items-center gap-1 mb-2 flex-wrap">
