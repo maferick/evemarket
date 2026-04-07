@@ -87,6 +87,7 @@ from .jobs.cip_fusion import run_cip_fusion
 from .jobs.cip_event_engine import run_cip_event_engine
 from .jobs.cip_event_digest import run_cip_event_digest
 from .jobs.cip_compound_evaluator import run_cip_compound_evaluator
+from .jobs.cip_compound_analytics import run_cip_compound_analytics
 from .jobs.esi_sovereignty_sync import (
     run_sovereignty_campaigns_sync,
     run_sovereignty_structures_sync,
@@ -162,6 +163,7 @@ PYTHON_COMPUTE_PROCESSOR_JOB_KEYS: set[str] = {
     "cip_event_engine",
     "cip_event_digest",
     "cip_compound_evaluator",
+    "cip_compound_analytics",
 }
 
 PYTHON_SYNC_PROCESSOR_JOB_KEYS: set[str] = {
@@ -293,6 +295,7 @@ _PROCESSOR_DISPATCH: dict[str, tuple] = {
     "cip_event_engine": (run_cip_event_engine, lambda db, cfg: (db,)),
     "cip_event_digest": (run_cip_event_digest, lambda db, cfg: (db,)),
     "cip_compound_evaluator": (run_cip_compound_evaluator, lambda db, cfg: (db,)),
+    "cip_compound_analytics": (run_cip_compound_analytics, lambda db, cfg: (db,)),
     # Sovereignty monitoring
     "sovereignty_campaigns_sync": (run_sovereignty_campaigns_sync, lambda db, cfg: (db, cfg)),
     "sovereignty_structures_sync": (run_sovereignty_structures_sync, lambda db, cfg: (db, cfg)),

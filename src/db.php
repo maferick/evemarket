@@ -18778,3 +18778,121 @@ function db_intelligence_event_digest_latest(string $digestType = 'daily'): ?arr
         [$digestType]
     );
 }
+
+// ---------------------------------------------------------------------------
+// Compound Signal Analytics (Phase 4.5)
+// ---------------------------------------------------------------------------
+
+/**
+ * Latest compound analytics snapshots (one per compound type).
+ */
+function db_compound_analytics_latest(): array
+{
+    return db_select(
+        "SELECT cas.*
+         FROM compound_analytics_snapshots cas
+         INNER JOIN (
+             SELECT compound_type, MAX(snapshot_date) AS max_date
+             FROM compound_analytics_snapshots
+             GROUP BY compound_type
+         ) latest ON cas.compound_type = latest.compound_type
+                  AND cas.snapshot_date = latest.max_date
+         ORDER BY cas.active_count DESC"
+    );
+}
+
+/**
+ * Compound analytics history for a specific compound (last N days).
+ */
+function db_compound_analytics_history(string $compoundType, int $days = 30): array
+{
+    return db_select(
+        "SELECT * FROM compound_analytics_snapshots
+         WHERE compound_type = ?
+           AND snapshot_date >= DATE_SUB(CURDATE(), INTERVAL ? DAY)
+         ORDER BY snapshot_date DESC",
+        [$compoundType, $days]
+    );
+}
+
+/**
+ * Record an analyst outcome for a character that has active compound signals.
+ * This captures which compounds were present when the analyst made a judgment,
+ * enabling per-compound precision tracking.
+ */
+function db_compound_analyst_outcome_record(
+    int $characterId,
+    string $outcome,
+    string $analyst,
+    ?int $eventId = null,
+    ?string $notes = null
+): int {
+    if ($characterId <= 0 || $outcome === '') {
+        return 0;
+    }
+    $allowed = ['true_positive', 'false_positive', 'inconclusive', 'confirmed_clean'];
+    if (!in_array($outcome, $allowed, true)) {
+        return 0;
+    }
+
+    // Get profile snapshot
+    $profile = db_select_one(
+        "SELECT risk_score, risk_rank FROM character_intelligence_profiles WHERE character_id = ?",
+        [$characterId]
+    );
+
+    // Get all active compounds for this character
+    $compounds = db_select(
+        "SELECT cics.compound_type, cics.score, cics.confidence, icd.compound_type AS def_type
+         FROM character_intelligence_compound_signals cics
+         LEFT JOIN intelligence_compound_definitions icd ON icd.compound_type = cics.compound_type
+         WHERE cics.character_id = ?",
+        [$characterId]
+    );
+
+    $count = 0;
+    foreach ($compounds as $comp) {
+        // Look up family from definitions table or default
+        $family = '';
+        $familyRow = db_select_one(
+            "SELECT compound_family FROM compound_analytics_snapshots WHERE compound_type = ? ORDER BY snapshot_date DESC LIMIT 1",
+            [$comp['compound_type']]
+        );
+        if ($familyRow !== null) {
+            $family = (string) $familyRow['compound_family'];
+        }
+
+        db()->prepare(
+            "INSERT INTO compound_analyst_outcomes
+                (character_id, compound_type, compound_family,
+                 compound_score, compound_confidence,
+                 outcome, event_id, risk_score_at_outcome, risk_rank_at_outcome,
+                 analyst, notes)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+        )->execute([
+            $characterId, $comp['compound_type'], $family,
+            (float) ($comp['score'] ?? 0), (float) ($comp['confidence'] ?? 0),
+            $outcome, $eventId,
+            (float) ($profile['risk_score'] ?? 0),
+            (int) ($profile['risk_rank'] ?? 0),
+            $analyst, $notes,
+        ]);
+        $count++;
+    }
+    return $count;
+}
+
+/**
+ * Per-compound outcome summary for the analytics dashboard.
+ */
+function db_compound_outcome_summary(): array
+{
+    return db_select(
+        "SELECT compound_type, compound_family, outcome,
+                COUNT(*) AS cnt,
+                AVG(compound_score) AS avg_score
+         FROM compound_analyst_outcomes
+         GROUP BY compound_type, compound_family, outcome
+         ORDER BY compound_type, outcome"
+    );
+}

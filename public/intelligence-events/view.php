@@ -47,6 +47,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['add_note'])) {
     exit;
 }
 
+// Handle compound outcome recording
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['compound_outcome'])) {
+    $outcome = (string) ($_POST['compound_outcome'] ?? '');
+    $outcomeNotes = trim((string) ($_POST['outcome_notes'] ?? ''));
+    $characterId = max(0, (int) ($_POST['character_id'] ?? 0));
+    if ($characterId > 0 && $outcome !== '') {
+        $count = db_compound_analyst_outcome_record(
+            $characterId, $outcome, 'analyst', $eventId,
+            $outcomeNotes !== '' ? $outcomeNotes : null
+        );
+    }
+    header('Location: /intelligence-events/view.php?id=' . $eventId . '&action=outcome_recorded');
+    exit;
+}
+
 // Load all data
 $evidence = db_intelligence_event_evidence($eventId);
 $event = $evidence['event'];
@@ -76,11 +91,12 @@ $thresholdInfo = (array) ($detailData['_threshold_info'] ?? []);
 unset($detailData['_impact_decomposition'], $detailData['_threshold_info']);
 
 $actionMessage = match ($_GET['action'] ?? '') {
-    'acknowledged' => 'Event acknowledged.',
-    'resolved'     => 'Event resolved.',
-    'suppressed'   => 'Event suppressed.',
-    'noted'        => 'Note added.',
-    default        => '',
+    'acknowledged'    => 'Event acknowledged.',
+    'resolved'        => 'Event resolved.',
+    'suppressed'      => 'Event suppressed.',
+    'noted'           => 'Note added.',
+    'outcome_recorded' => 'Compound outcome recorded.',
+    default           => '',
 };
 
 $sev = (string) ($event['severity'] ?? 'medium');
@@ -342,31 +358,63 @@ include __DIR__ . '/../../src/views/partials/header.php';
                     <?php
                     $compScore = (float) ($comp['score'] ?? 0);
                     $compConf = (float) ($comp['confidence'] ?? 0);
-                    $compEvidence = json_decode((string) ($comp['evidence_json'] ?? '[]'), true);
+                    $compEvidence = json_decode((string) ($comp['evidence_json'] ?? '{}'), true);
                     if (!is_array($compEvidence)) { $compEvidence = []; }
+                    // Support both new enriched format and legacy array format
+                    $compSignals = isset($compEvidence['signals']) ? (array) $compEvidence['signals'] : $compEvidence;
+                    $confDerivation = (array) ($compEvidence['confidence_derivation'] ?? []);
+                    $compFamily = (string) ($compEvidence['compound_family'] ?? '');
+                    $compScoreMode = (string) ($compEvidence['score_mode'] ?? '');
+                    $profileCondsMet = (array) ($compEvidence['profile_conditions_met'] ?? []);
                     $compScoreClass = $compScore >= 0.5 ? 'text-red-400 font-semibold' : ($compScore >= 0.25 ? 'text-orange-400' : 'text-slate-300');
+                    $familyColors = ['infiltration' => 'text-red-400', 'coordination' => 'text-orange-400', 'prioritization' => 'text-amber-400', 'trust' => 'text-cyan-400'];
                     ?>
                     <div class="surface-tertiary">
                         <div class="flex items-center justify-between">
                             <div>
-                                <p class="text-sm text-slate-100 font-medium"><?= htmlspecialchars((string) ($comp['display_name'] ?? $comp['compound_type']), ENT_QUOTES) ?></p>
+                                <div class="flex items-center gap-2">
+                                    <p class="text-sm text-slate-100 font-medium"><?= htmlspecialchars((string) ($comp['display_name'] ?? $comp['compound_type']), ENT_QUOTES) ?></p>
+                                    <?php if ($compFamily !== ''): ?>
+                                        <span class="rounded-full bg-slate-700 px-2 py-0.5 text-[10px] uppercase tracking-wider <?= $familyColors[$compFamily] ?? 'text-slate-300' ?>"><?= htmlspecialchars($compFamily, ENT_QUOTES) ?></span>
+                                    <?php endif; ?>
+                                </div>
                                 <?php if (($comp['compound_description'] ?? '') !== ''): ?>
                                     <p class="text-xs text-muted mt-0.5"><?= htmlspecialchars((string) $comp['compound_description'], ENT_QUOTES) ?></p>
                                 <?php endif; ?>
                             </div>
                             <div class="text-right">
                                 <p class="text-sm <?= $compScoreClass ?>"><?= number_format($compScore, 4) ?></p>
-                                <p class="text-[10px] text-muted">conf <?= number_format($compConf, 3) ?></p>
+                                <p class="text-[10px] text-muted">conf <?= number_format($compConf, 3) ?><?php if ($compScoreMode !== ''): ?> (<?= $compScoreMode ?>)<?php endif; ?></p>
                             </div>
                         </div>
-                        <?php if ($compEvidence !== []): ?>
+                        <?php if ($compSignals !== []): ?>
                             <div class="mt-2 flex flex-wrap gap-2">
-                                <?php foreach ($compEvidence as $ce): ?>
+                                <?php foreach ($compSignals as $ce): ?>
+                                    <?php if (!is_array($ce)) { continue; } ?>
                                     <span class="inline-flex items-center rounded bg-slate-700 px-2 py-0.5 text-[10px] text-slate-300">
                                         <?= htmlspecialchars((string) ($ce['signal_type'] ?? ''), ENT_QUOTES) ?>: <?= number_format((float) ($ce['value'] ?? 0), 3) ?>
                                         <span class="text-muted ml-1">(min <?= number_format((float) ($ce['min_required'] ?? 0), 2) ?>)</span>
                                     </span>
                                 <?php endforeach; ?>
+                            </div>
+                        <?php endif; ?>
+                        <?php if ($profileCondsMet !== []): ?>
+                            <div class="mt-1 flex flex-wrap gap-2">
+                                <?php foreach ($profileCondsMet as $condCol => $condVal): ?>
+                                    <span class="inline-flex items-center rounded bg-slate-600/50 px-2 py-0.5 text-[10px] text-cyan-300">
+                                        <?= htmlspecialchars(str_replace('_', ' ', (string) $condCol), ENT_QUOTES) ?>: <?= number_format((float) $condVal, 4) ?>
+                                    </span>
+                                <?php endforeach; ?>
+                            </div>
+                        <?php endif; ?>
+                        <!-- Confidence derivation -->
+                        <?php if ($confDerivation !== [] && isset($confDerivation['per_signal'])): ?>
+                            <div class="mt-2 text-[10px] text-muted">
+                                <span>Confidence: <?= htmlspecialchars((string) ($confDerivation['mode'] ?? 'min_signal'), ENT_QUOTES) ?></span>
+                                <?php if (($confDerivation['weakest_signal'] ?? '') !== ''): ?>
+                                    <span class="ml-2">weakest: <span class="text-amber-400"><?= htmlspecialchars((string) $confDerivation['weakest_signal'], ENT_QUOTES) ?></span>
+                                    (<?= number_format((float) ($confDerivation['per_signal'][$confDerivation['weakest_signal']] ?? 0), 3) ?>)</span>
+                                <?php endif; ?>
                             </div>
                         <?php endif; ?>
                         <div class="mt-1 text-[10px] text-muted">First detected: <?= htmlspecialchars((string) ($comp['first_detected_at'] ?? ''), ENT_QUOTES) ?></div>
@@ -469,6 +517,24 @@ include __DIR__ . '/../../src/views/partials/header.php';
                     </div>
                 <?php endforeach; ?>
             </div>
+        </section>
+        <?php endif; ?>
+
+        <!-- Compound outcome capture -->
+        <?php if ($compounds !== [] && ($event['entity_type'] ?? '') === 'character'): ?>
+        <section class="surface-primary">
+            <h2 class="text-lg font-semibold text-slate-100">Rate compound accuracy</h2>
+            <p class="mt-1 text-xs text-muted">Record whether the compound detections on this character were useful. This feedback trains compound validation metrics.</p>
+            <form method="post" class="mt-3 space-y-2">
+                <input type="hidden" name="character_id" value="<?= (int) ($event['entity_id'] ?? 0) ?>">
+                <div class="flex flex-wrap gap-2">
+                    <button type="submit" name="compound_outcome" value="true_positive" class="rounded border border-emerald-700/50 bg-emerald-900/30 px-3 py-1.5 text-xs text-emerald-300 hover:bg-emerald-900/50">True positive</button>
+                    <button type="submit" name="compound_outcome" value="false_positive" class="rounded border border-red-700/50 bg-red-900/30 px-3 py-1.5 text-xs text-red-300 hover:bg-red-900/50">False positive</button>
+                    <button type="submit" name="compound_outcome" value="inconclusive" class="rounded border border-amber-700/50 bg-amber-900/30 px-3 py-1.5 text-xs text-amber-300 hover:bg-amber-900/50">Inconclusive</button>
+                    <button type="submit" name="compound_outcome" value="confirmed_clean" class="rounded border border-slate-600/50 bg-slate-700/30 px-3 py-1.5 text-xs text-slate-300 hover:bg-slate-700/50">Confirmed clean</button>
+                </div>
+                <input type="text" name="outcome_notes" class="w-full rounded border border-border bg-slate-800 px-3 py-1.5 text-xs text-slate-100 placeholder-slate-500" placeholder="Optional: why this verdict?">
+            </form>
         </section>
         <?php endif; ?>
 

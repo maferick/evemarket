@@ -171,7 +171,25 @@ def run_cip_compound_evaluator(db: SupplyCoreDb) -> JobResult:
                 signal_confs = [s["confidence"] for s in matched_signals]
                 score = _compute_compound_score(defn, signal_values)
                 conf = min(signal_confs) if signal_confs else 0.0
-                evidence = json.dumps(matched_signals)
+
+                # Build enriched evidence with confidence derivation
+                evidence_payload = {
+                    "signals": matched_signals,
+                    "compound_family": defn.compound_family,
+                    "score_mode": defn.score_mode,
+                    "confidence_derivation": {
+                        "mode": defn.confidence_mode,
+                        "per_signal": {s["signal_type"]: s["confidence"] for s in matched_signals},
+                        "result": round(conf, 4),
+                        "weakest_signal": min(matched_signals, key=lambda s: s["confidence"])["signal_type"] if matched_signals else None,
+                    },
+                }
+                if defn.profile_conditions:
+                    evidence_payload["profile_conditions_met"] = {
+                        col: round(float(profile.get(col) or 0), 4)
+                        for col in defn.profile_conditions
+                    }
+                evidence = json.dumps(evidence_payload)
                 first_detected = existing_map.get(existing_key, now_str)
 
                 db.execute("""

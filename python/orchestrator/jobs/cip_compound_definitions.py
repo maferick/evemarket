@@ -24,6 +24,12 @@ class CompoundDefinition:
     compound_type: str
     display_name: str
     description: str
+    # Compound family — groups compounds by analyst consumption purpose:
+    #   infiltration:    patterns suggesting an entity was planted
+    #   coordination:    patterns suggesting coordinated hostile activity
+    #   prioritization:  patterns that amplify review urgency (convergent evidence)
+    #   trust:           patterns that validate or challenge profile trust surface
+    compound_family: str
     # Which simple signals must be present AND above their min_value
     # to activate this compound.  {"signal_type": min_value}
     required_signals: dict[str, float]
@@ -39,6 +45,10 @@ class CompoundDefinition:
     # "mean" = mean(signal_values) — balanced
     # "max"  = max(signal_values) — aggressive, driven by strongest signal
     score_mode: str = "mean"
+    # Confidence derivation mode:
+    #   "min_signal"  = minimum confidence across contributing signals
+    #   "weighted"    = confidence weighted by signal weight
+    confidence_mode: str = "min_signal"
     # Metadata
     tactical_eligible: bool = False
     enabled: bool = True
@@ -55,6 +65,7 @@ COMPOUND_DEFINITIONS: list[CompoundDefinition] = [
     # communities is a strong candidate for an intelligence operative.
     CompoundDefinition(
         compound_type="elevated_suspicion_bridge",
+        compound_family="infiltration",
         display_name="Suspicious Bridge Node",
         description=(
             "Character has elevated suspicion score AND high betweenness "
@@ -68,6 +79,7 @@ COMPOUND_DEFINITIONS: list[CompoundDefinition] = [
         base_weight=0.15,
         severity_default="high",
         score_mode="min",
+        confidence_mode="min_signal",
     ),
 
     # ── 2. Pre-op join + hostile overlap increase ─────────────────────
@@ -75,6 +87,7 @@ COMPOUND_DEFINITIONS: list[CompoundDefinition] = [
     # footprint now overlaps with hostile territory.
     CompoundDefinition(
         compound_type="pre_op_infiltration",
+        compound_family="infiltration",
         display_name="Pre-Op Infiltration Pattern",
         description=(
             "Character joined corp/alliance shortly before a significant "
@@ -88,6 +101,7 @@ COMPOUND_DEFINITIONS: list[CompoundDefinition] = [
         base_weight=0.15,
         severity_default="high",
         score_mode="min",
+        confidence_mode="min_signal",
     ),
 
     # ── 3. Multi-domain + top percentile ──────────────────────────────
@@ -95,6 +109,7 @@ COMPOUND_DEFINITIONS: list[CompoundDefinition] = [
     # firing across many domains — convergent evidence from independent sources.
     CompoundDefinition(
         compound_type="multi_domain_top_percentile",
+        compound_family="prioritization",
         display_name="Convergent Multi-Domain Threat",
         description=(
             "Character is in a high risk percentile with active signals "
@@ -113,6 +128,7 @@ COMPOUND_DEFINITIONS: list[CompoundDefinition] = [
         base_weight=0.12,
         severity_default="high",
         score_mode="mean",
+        confidence_mode="min_signal",
     ),
 
     # ── 4. Co-presence anomaly + alliance overlap risk ────────────────
@@ -120,6 +136,7 @@ COMPOUND_DEFINITIONS: list[CompoundDefinition] = [
     # hostile alliances — suggests a coordinated actor.
     CompoundDefinition(
         compound_type="copresence_alliance_risk",
+        compound_family="coordination",
         display_name="Coordinated Hostile Contact",
         description=(
             "Anomalous co-presence patterns deviating from cohort baseline "
@@ -133,6 +150,7 @@ COMPOUND_DEFINITIONS: list[CompoundDefinition] = [
         base_weight=0.10,
         severity_default="medium",
         score_mode="min",
+        confidence_mode="min_signal",
     ),
 
     # ── 5. Behavioral surge + rank jump ───────────────────────────────
@@ -141,6 +159,7 @@ COMPOUND_DEFINITIONS: list[CompoundDefinition] = [
     # driven by behavioral patterns.
     CompoundDefinition(
         compound_type="behavioral_surge_rank_jump",
+        compound_family="prioritization",
         display_name="Behavioral Surge with Rank Jump",
         description=(
             "Behavioral risk score is elevated AND the character recently "
@@ -157,6 +176,7 @@ COMPOUND_DEFINITIONS: list[CompoundDefinition] = [
         base_weight=0.10,
         severity_default="medium",
         score_mode="mean",
+        confidence_mode="min_signal",
     ),
 ]
 
