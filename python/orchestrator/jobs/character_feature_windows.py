@@ -120,6 +120,110 @@ def _fetch_battle_characters(
     )
 
 
+def _fetch_killmail_characters_for_battles(
+    db: SupplyCoreDb,
+    battle_ids: list[str],
+) -> list[dict[str, Any]]:
+    """Return killmail-derived event rows for characters in the given battles.
+
+    This supplements battle participation with raw killmail timestamps so that
+    hour-of-day / day-of-week histograms reflect actual PvP activity, not just
+    coarse battle start times.  Also picks up characters who appear in killmails
+    but were not detected as battle participants.
+    """
+    if not battle_ids:
+        return []
+    placeholders = ",".join(["%s"] * len(battle_ids))
+    # Victim events
+    victim_rows = db.fetch_all(
+        f"""
+        SELECT
+            ke.victim_character_id AS character_id,
+            ke.battle_id,
+            ke.solar_system_id AS system_id,
+            ke.effective_killmail_at AS started_at,
+            HOUR(ke.effective_killmail_at) AS battle_hour,
+            DAYOFWEEK(ke.effective_killmail_at) AS battle_dow
+        FROM killmail_events ke
+        WHERE ke.battle_id IN ({placeholders})
+          AND ke.victim_character_id IS NOT NULL
+          AND ke.victim_character_id > 0
+          AND ke.effective_killmail_at IS NOT NULL
+        """,
+        tuple(battle_ids),
+    )
+    # Attacker events
+    attacker_rows = db.fetch_all(
+        f"""
+        SELECT
+            ka.character_id,
+            ke.battle_id,
+            ke.solar_system_id AS system_id,
+            ke.effective_killmail_at AS started_at,
+            HOUR(ke.effective_killmail_at) AS battle_hour,
+            DAYOFWEEK(ke.effective_killmail_at) AS battle_dow
+        FROM killmail_attackers ka
+        INNER JOIN killmail_events ke ON ke.sequence_id = ka.sequence_id
+        WHERE ke.battle_id IN ({placeholders})
+          AND ka.character_id IS NOT NULL
+          AND ka.character_id > 0
+          AND ke.effective_killmail_at IS NOT NULL
+        """,
+        tuple(battle_ids),
+    )
+    return victim_rows + attacker_rows
+
+
+def _fetch_killmail_characters_unbattled(
+    db: SupplyCoreDb,
+    since_dt: datetime,
+) -> list[dict[str, Any]]:
+    """Return killmail event rows for characters whose killmails are NOT linked to any battle.
+
+    These are pilots with killmail activity but no battle participation — they
+    would otherwise never get histogram data.
+    """
+    since_str = since_dt.strftime("%Y-%m-%d %H:%M:%S")
+    victim_rows = db.fetch_all(
+        """
+        SELECT
+            ke.victim_character_id AS character_id,
+            NULL AS battle_id,
+            ke.solar_system_id AS system_id,
+            ke.effective_killmail_at AS started_at,
+            HOUR(ke.effective_killmail_at) AS battle_hour,
+            DAYOFWEEK(ke.effective_killmail_at) AS battle_dow
+        FROM killmail_events ke
+        WHERE (ke.battle_id IS NULL OR ke.battle_id = '')
+          AND ke.victim_character_id IS NOT NULL
+          AND ke.victim_character_id > 0
+          AND ke.effective_killmail_at IS NOT NULL
+          AND ke.effective_killmail_at >= %s
+        """,
+        (since_str,),
+    )
+    attacker_rows = db.fetch_all(
+        """
+        SELECT
+            ka.character_id,
+            NULL AS battle_id,
+            ke.solar_system_id AS system_id,
+            ke.effective_killmail_at AS started_at,
+            HOUR(ke.effective_killmail_at) AS battle_hour,
+            DAYOFWEEK(ke.effective_killmail_at) AS battle_dow
+        FROM killmail_attackers ka
+        INNER JOIN killmail_events ke ON ke.sequence_id = ka.sequence_id
+        WHERE (ke.battle_id IS NULL OR ke.battle_id = '')
+          AND ka.character_id IS NOT NULL
+          AND ka.character_id > 0
+          AND ke.effective_killmail_at IS NOT NULL
+          AND ke.effective_killmail_at >= %s
+        """,
+        (since_str,),
+    )
+    return victim_rows + attacker_rows
+
+
 def _fetch_org_transitions(
     db: SupplyCoreDb,
     character_ids: list[int],
@@ -353,18 +457,45 @@ def run_compute_character_feature_windows(
 
             # Fetch all participants for these battles
             participations = _fetch_battle_characters(db, battle_ids)
-            rows_processed += len(participations)
-            if not participations:
+
+            # Supplement with killmail-derived events for richer histograms
+            km_events = _fetch_killmail_characters_for_battles(db, battle_ids)
+
+            all_events = participations + km_events
+            rows_processed += len(all_events)
+            if not all_events:
                 _sync_state_upsert(db, DATASET_KEY, last_battle_id, "success", rows_written)
                 continue
 
             # Build per-character participation index
+            # Track battle-participant rows separately for co-presence analysis
             char_participations: dict[int, list[dict[str, Any]]] = defaultdict(list)
             battle_chars: dict[str, set[int]] = defaultdict(set)
             for p in participations:
                 cid = int(p["character_id"])
                 char_participations[cid].append(p)
                 battle_chars[str(p["battle_id"])].add(cid)
+
+            # Merge killmail events into participation index (for histogram/feature computation)
+            # Deduplicate: skip killmail rows if the character already has a battle row
+            # within 60s of the same timestamp to avoid double-counting
+            for km in km_events:
+                cid = int(km["character_id"])
+                km_ts = _ensure_utc(km["started_at"]) if isinstance(km.get("started_at"), datetime) else None
+                if km_ts is None:
+                    continue
+                # Check for duplicate within 60s of existing entries
+                dominated = False
+                for existing in char_participations[cid]:
+                    ex_ts = _ensure_utc(existing["started_at"]) if isinstance(existing.get("started_at"), datetime) else None
+                    if ex_ts and abs((km_ts - ex_ts).total_seconds()) <= 60:
+                        dominated = True
+                        break
+                if not dominated:
+                    char_participations[cid].append(km)
+                    bid = km.get("battle_id")
+                    if bid:
+                        battle_chars[str(bid)].add(cid)
 
             character_ids = list(char_participations.keys())
 
@@ -470,6 +601,58 @@ def run_compute_character_feature_windows(
                             )
 
             _sync_state_upsert(db, DATASET_KEY, last_battle_id, "success", rows_written)
+
+        # ── Pass 2: process characters with killmail activity but no battle participation ──
+        # These pilots only appear in killmail_events / killmail_attackers and would
+        # otherwise never receive histogram data.
+        unbattled_since = now_dt - timedelta(days=90)  # cover the lifetime window via 90d lookback
+        unbattled_events = _fetch_killmail_characters_unbattled(db, unbattled_since)
+        if unbattled_events:
+            unbattled_chars: dict[int, list[dict[str, Any]]] = defaultdict(list)
+            for ev in unbattled_events:
+                cid = int(ev["character_id"])
+                unbattled_chars[cid].append(ev)
+
+            # Only process characters who do NOT already have histogram data
+            existing_ids = set()
+            if unbattled_chars:
+                check_placeholders = ",".join(["%s"] * len(unbattled_chars))
+                existing_rows = db.fetch_all(
+                    f"SELECT DISTINCT character_id FROM character_feature_histograms WHERE character_id IN ({check_placeholders})",
+                    tuple(unbattled_chars.keys()),
+                )
+                existing_ids = {int(r["character_id"]) for r in existing_rows}
+
+            new_unbattled = {cid: evts for cid, evts in unbattled_chars.items() if cid not in existing_ids}
+
+            if new_unbattled and not dry_run:
+                with db.transaction() as (_, cur):
+                    for cid, events in new_unbattled.items():
+                        for wlabel, wdelta in WINDOW_DEFS:
+                            feat, hist = _compute_window_features(events, wlabel, wdelta, now_dt, {}, {})
+                            # Only write histogram (activity profile) — feature windows
+                            # require battle data for meaningful scores
+                            if hist["hour_histogram"] or hist["weekday_histogram"]:
+                                cur.execute(
+                                    """
+                                    INSERT INTO character_feature_histograms (
+                                        character_id, window_label, hour_histogram, weekday_histogram, computed_at
+                                    ) VALUES (%s, %s, %s, %s, %s)
+                                    ON DUPLICATE KEY UPDATE
+                                        hour_histogram = VALUES(hour_histogram),
+                                        weekday_histogram = VALUES(weekday_histogram),
+                                        computed_at = VALUES(computed_at)
+                                    """,
+                                    (
+                                        cid,
+                                        wlabel,
+                                        json.dumps(hist["hour_histogram"]),
+                                        json.dumps(hist["weekday_histogram"]),
+                                        computed_at,
+                                    ),
+                                )
+                                rows_written += 1
+                rows_processed += len(new_unbattled)
 
         # has_more is true when we hit the batch cap without draining the cursor.
         has_more = batch_count == max_batches
