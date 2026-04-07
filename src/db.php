@@ -15913,7 +15913,7 @@ function db_create_manual_theater(array $battles, ?string $label = null): ?strin
     if ($existing !== null) {
         // If it exists but has no analysis data, repopulate summary tables
         if ((int) ($existing['total_kills'] ?? 0) === 0) {
-            db_manual_theater_populate_summaries($theaterId, $battleIds);
+            db_theater_finalize($theaterId, $battleIds);
         }
         return $theaterId;
     }
@@ -16015,22 +16015,47 @@ function db_create_manual_theater(array $battles, ?string $label = null): ?strin
         );
     }
 
-    db_manual_theater_populate_summaries($theaterId, $battleIds);
+    db_theater_finalize($theaterId, $battleIds);
 
     return $theaterId;
 }
 
 /**
- * Populate summary tables (kills, ISK, alliance summary, participants, timeline)
- * for a theater directly from killmail data. Used by manual theater creation
- * so the theater view shows data immediately without waiting for the analysis job.
+ * Deterministic finalize: truncate derived tables and rebuild from the
+ * authoritative constituent battle set in theater_battles.
+ *
+ * Source of truth: theater_battles -> killmail_events/killmail_attackers.
+ * All higher-level tables are derived outputs that get wiped and rebuilt.
+ *
+ * Called on:
+ * - Manual theater creation
+ * - Lock & Generate AI Report (before snapshot)
+ * - Re-creation of existing theater with stale data
  */
-function db_manual_theater_populate_summaries(string $theaterId, array $battleIds): void
+function db_theater_finalize(string $theaterId, ?array $battleIds = null): void
 {
+    // Resolve battle IDs from theater_battles if not provided
+    if ($battleIds === null) {
+        $rows = db_select(
+            'SELECT battle_id FROM theater_battles WHERE theater_id = ?',
+            [$theaterId]
+        );
+        $battleIds = array_map(fn(array $r): string => (string) $r['battle_id'], $rows);
+    }
+
     if ($battleIds === []) {
         return;
     }
     $placeholders = implode(',', array_fill(0, count($battleIds), '?'));
+
+    // ── Truncate all derived tables for this theater ────────────────────
+    db_execute('DELETE FROM theater_alliance_summary WHERE theater_id = ?', [$theaterId]);
+    db_execute('DELETE FROM theater_participants WHERE theater_id = ?', [$theaterId]);
+    db_execute('DELETE FROM theater_timeline WHERE theater_id = ?', [$theaterId]);
+    // theater_systems stays — it was created at theater creation time and
+    // we update it below with actual kill/ISK counts.
+
+    // ── Rebuild from killmail source of truth ───────────────────────────
 
     // 1. Compute total_kills and total_isk from killmail_events
     $killStats = db_select_one(

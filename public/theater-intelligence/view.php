@@ -819,8 +819,34 @@ if ($viewSnapshot !== null && !$pendingLock) {
         unset($_sh);
     }
 
-    // ── Handle pending lock: save full view snapshot ──────────────────────
+    // ── Handle pending lock: finalize + save full view snapshot ─────────
     if ($pendingLock) {
+        // Deterministic finalize: wipe derived tables and rebuild from
+        // the authoritative killmail data before locking. This guarantees
+        // the snapshot contains accurate totals regardless of whether the
+        // async analysis job ever ran.
+        db_theater_finalize($theaterId);
+
+        // Reload view data from the freshly rebuilt tables
+        $battles = db_theater_battles($theaterId);
+        $systems = db_theater_systems($theaterId);
+        $timeline = db_theater_timeline($theaterId);
+        $allianceSummary = db_theater_alliance_summary($theaterId);
+        $fleetComposition = db_theater_fleet_composition($theaterId);
+        $participantsAll = db_theater_participants($theaterId, null, false, 1000);
+        $structureKills = db_theater_structure_kills($theaterId);
+        $theater = db_theater_detail($theaterId);
+
+        // Recompute view variables from fresh data
+        $totalIskDestroyed = (float) ($theater['total_isk'] ?? 0);
+        $reportedKillTotal = (int) ($theater['total_kills'] ?? 0);
+        $timelineKillTotal = 0;
+        foreach ($timeline as $bucket) {
+            $timelineKillTotal += (int) ($bucket['kills'] ?? 0);
+        }
+        $observedKillTotal = $timelineKillTotal;
+        $displayKillTotal = $reportedKillTotal > 0 ? $reportedKillTotal : $observedKillTotal;
+
         $aiSummary = theater_lock_report($theaterId);
         if (is_array($aiSummary) && isset($aiSummary['error'])) {
             $aarError = (string) $aiSummary['error'];
