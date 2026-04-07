@@ -17,6 +17,7 @@ $perPage        = 50;
 $offset         = ($page - 1) * $perPage;
 
 // Data
+$calibration = db_intelligence_calibration_latest();
 $summary = db_intelligence_events_summary();
 $totalCount = db_intelligence_events_count($filterFamily, $filterSeverity, $filterState);
 $events = db_intelligence_events_queue($perPage, $offset, $filterFamily, $filterSeverity, $filterState, '', 0, $sortBy, $sortDir);
@@ -189,6 +190,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                         <a href="<?= ie_filter_url(['sort' => 'impact_score', 'dir' => ($sortBy === 'impact_score' && $sortDir === 'DESC') ? 'ASC' : 'DESC']) ?>" class="hover:text-slate-200">Impact</a>
                     </th>
                     <th class="px-3 py-2 text-center">Family</th>
+                    <th class="px-3 py-2 text-center" title="Priority band from calibrated risk score thresholds">Band</th>
                     <th class="px-3 py-2 text-right">
                         <a href="<?= ie_filter_url(['sort' => 'escalation_count', 'dir' => ($sortBy === 'escalation_count' && $sortDir === 'DESC') ? 'ASC' : 'DESC']) ?>" class="hover:text-slate-200">Esc.</a>
                     </th>
@@ -201,7 +203,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                 </thead>
                 <tbody>
                 <?php if ($events === []): ?>
-                    <tr><td colspan="10" class="px-3 py-6 text-sm text-muted">No events matching filters.</td></tr>
+                    <tr><td colspan="11" class="px-3 py-6 text-sm text-muted">No events matching filters.</td></tr>
                 <?php else: ?>
                     <?php foreach ($events as $ev): ?>
                         <?php
@@ -249,6 +251,18 @@ include __DIR__ . '/../../src/views/partials/header.php';
                                 <span class="<?= $impactClass ?>"><?= number_format($impact, 4) ?></span>
                             </td>
                             <td class="px-3 py-2 text-center text-xs <?= $familyClass ?>"><?= $familyLabel ?></td>
+                            <?php
+                            $riskAtEvent = (float) ($ev['risk_score_at_event'] ?? 0);
+                            $band = intelligence_priority_band($riskAtEvent, $calibration);
+                            $bandClass = match ($band) {
+                                'critical' => 'text-red-400 font-semibold',
+                                'high'     => 'text-orange-400',
+                                'moderate' => 'text-amber-400',
+                                'low'      => 'text-slate-400',
+                                default    => 'text-slate-500',
+                            };
+                            ?>
+                            <td class="px-3 py-2 text-center text-xs <?= $bandClass ?>"><?= $band !== '' ? ucfirst($band) : '—' ?></td>
                             <td class="px-3 py-2 text-right text-sm">
                                 <?php $esc = (int) ($ev['escalation_count'] ?? 1); ?>
                                 <?php if ($esc > 1): ?>

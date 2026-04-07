@@ -74,6 +74,59 @@ def _compute_compound_score(
         return sum(signal_values) / len(signal_values)
 
 
+def _check_temporal_conditions(
+    defn: CompoundDefinition,
+    cid: int,
+    char_signals: dict[str, dict[str, float]],
+    db: SupplyCoreDb,
+    history_cache: dict[int, list[dict]],
+    signal_ages_cache: dict[str, float],
+) -> bool:
+    """Check temporal conditions for a compound definition.
+
+    Returns True if ALL temporal conditions are satisfied.
+    """
+    if not defn.temporal_conditions:
+        return True
+
+    for tc in defn.temporal_conditions:
+        check = tc.get("check", "")
+        params = tc.get("params", {})
+
+        if check == "signal_age_range":
+            sig_type = params.get("signal_type", "")
+            min_days = float(params.get("min_days", 0))
+            max_days = float(params.get("max_days", 9999))
+            cache_key = f"{cid}:{sig_type}"
+            if cache_key not in signal_ages_cache:
+                return False  # Signal age not available
+            age_days = signal_ages_cache[cache_key]
+            if age_days < min_days or age_days > max_days:
+                return False
+
+        elif check == "consecutive_rank_improvement":
+            min_consecutive = int(params.get("min_consecutive", 3))
+            history = history_cache.get(cid, [])
+            if len(history) < min_consecutive + 1:
+                return False
+            # History is ordered by snapshot_date DESC
+            consecutive = 0
+            for i in range(len(history) - 1):
+                current_rank = history[i].get("risk_rank")
+                prev_rank = history[i + 1].get("risk_rank")
+                if current_rank is not None and prev_rank is not None:
+                    if int(current_rank) < int(prev_rank):
+                        consecutive += 1
+                    else:
+                        break
+                else:
+                    break
+            if consecutive < min_consecutive:
+                return False
+
+    return True
+
+
 def run_cip_compound_evaluator(db: SupplyCoreDb) -> JobResult:
     """Evaluate all enabled compound definitions against recent profiles."""
     job = start_job_run(db, "cip_compound_evaluator")
@@ -106,22 +159,49 @@ def run_cip_compound_evaluator(db: SupplyCoreDb) -> JobResult:
     char_ids = [int(p["character_id"]) for p in profiles]
     profiles_by_id = {int(p["character_id"]): p for p in profiles}
 
-    # Load all active signals for these characters
+    # Load all active signals for these characters (including first_seen_at for temporal checks)
     placeholders = ",".join(["%s"] * len(char_ids))
     signal_rows = db.fetch_all(f"""
-        SELECT character_id, signal_type, signal_value, confidence
+        SELECT character_id, signal_type, signal_value, confidence, first_seen_at
         FROM character_intelligence_signals
         WHERE character_id IN ({placeholders})
     """, char_ids)
 
     # Group signals by character: {char_id: {signal_type: {value, confidence}}}
     signals_by_char: dict[int, dict[str, dict[str, float]]] = defaultdict(dict)
+    signal_ages_cache: dict[str, float] = {}  # "char_id:signal_type" -> age in days
+    now_utc = datetime.now(UTC)
     for sr in signal_rows:
         cid = int(sr["character_id"])
         signals_by_char[cid][sr["signal_type"]] = {
             "value": float(sr.get("signal_value") or 0),
             "confidence": float(sr.get("confidence") or 0),
         }
+        # Compute signal age for temporal conditions
+        if sr.get("first_seen_at"):
+            try:
+                fs = sr["first_seen_at"]
+                if isinstance(fs, str):
+                    from datetime import datetime as dt
+                    fs = dt.strptime(fs[:19], "%Y-%m-%d %H:%M:%S")
+                age_days = (now_utc.replace(tzinfo=None) - fs.replace(tzinfo=None) if hasattr(fs, 'replace') else now_utc.replace(tzinfo=None) - fs).total_seconds() / 86400
+                signal_ages_cache[f"{cid}:{sr['signal_type']}"] = max(0.0, age_days)
+            except (ValueError, TypeError, AttributeError):
+                pass
+
+    # Load profile history for temporal checks (last 7 snapshots per character)
+    # Only load if any compound has temporal_conditions
+    has_temporal = any(defn.temporal_conditions for defn in ENABLED_COMPOUNDS)
+    history_cache: dict[int, list[dict]] = defaultdict(list)
+    if has_temporal:
+        history_rows = db.fetch_all(f"""
+            SELECT character_id, snapshot_date, risk_rank
+            FROM character_intelligence_profile_history
+            WHERE character_id IN ({placeholders})
+            ORDER BY character_id, snapshot_date DESC
+        """, char_ids)
+        for hr in history_rows:
+            history_cache[int(hr["character_id"])].append(hr)
 
     # Load existing compound signals for these characters (for first_detected_at preservation)
     existing_rows = db.fetch_all(f"""
@@ -162,6 +242,12 @@ def run_cip_compound_evaluator(db: SupplyCoreDb) -> JobResult:
             # Check profile-level conditions
             if all_met and defn.profile_conditions:
                 all_met = _evaluate_profile_conditions(defn.profile_conditions, profile)
+
+            # Check temporal conditions
+            if all_met and defn.temporal_conditions:
+                all_met = _check_temporal_conditions(
+                    defn, cid, char_signals, db, history_cache, signal_ages_cache,
+                )
 
             existing_key = f"{cid}:{defn.compound_type}"
 

@@ -29,11 +29,12 @@ from .cip_event_definitions import (
     EventTypeDefinition,
     percentile_bucket,
 )
+from .cip_calibration import load_calibrated_thresholds, priority_band
 
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Thresholds — tuneable constants for detection rules
+# Thresholds — fallback constants, overridden by calibration when available
 # ---------------------------------------------------------------------------
 
 # Risk score surge: minimum 24h delta to trigger
@@ -98,14 +99,22 @@ def _compute_impact(defn: EventTypeDefinition, factors: dict[str, float]) -> tup
 # Delta detection — scan profiles for triggerable conditions
 # ---------------------------------------------------------------------------
 
-def _detect_character_events(db: SupplyCoreDb) -> list[dict[str, Any]]:
+def _detect_character_events(db: SupplyCoreDb, cal: dict | None = None) -> list[dict[str, Any]]:
     """Scan character_intelligence_profiles for event-worthy changes.
+
+    Uses calibrated thresholds from `cal` when available, falling back
+    to module-level constants.
 
     Returns a list of candidate event dicts ready for upsert.
     """
     now = _now()
     now_str = _now_sql()
     candidates: list[dict[str, Any]] = []
+
+    # Use calibrated thresholds if available
+    surge_threshold = cal["surge_delta"] if cal else RISK_SURGE_DELTA_THRESHOLD
+    rank_jump_threshold = cal["rank_jump"] if cal else RANK_JUMP_THRESHOLD
+    freshness_threshold = cal["freshness_floor"] if cal else FRESHNESS_DEGRADATION_THRESHOLD
 
     # Load profiles that were recently computed (within last 2 hours)
     profiles = db.fetch_all("""
@@ -257,7 +266,7 @@ def _detect_character_events(db: SupplyCoreDb) -> list[dict[str, Any]]:
                     ))
 
         # ── Detection: Risk score surge ──
-        if delta_24h >= RISK_SURGE_DELTA_THRESHOLD:
+        if delta_24h >= surge_threshold:
             defn = EVENT_TYPE_MAP["risk_score_surge"]
             impact, decomp = _compute_impact(defn, {
                 "delta_magnitude": _clamp(delta_24h / 0.3),
@@ -270,15 +279,15 @@ def _detect_character_events(db: SupplyCoreDb) -> list[dict[str, Any]]:
                 detail={"delta_24h": delta_24h, "new_signals_24h": new_24h, **profile_snapshot},
                 profile=prof, now_str=now_str,
                 impact_decomposition=decomp,
-                threshold_info={"threshold": f"delta_24h >= {RISK_SURGE_DELTA_THRESHOLD}",
+                threshold_info={"threshold": f"delta_24h >= {surge_threshold:.4f} (calibrated)",
                                 "actual": round(delta_24h, 4),
-                                "margin": round(delta_24h - RISK_SURGE_DELTA_THRESHOLD, 4)},
+                                "margin": round(delta_24h - surge_threshold, 4)},
             ))
 
         # ── Detection: Rank jump ──
         if rank is not None and rank_prev is not None:
             rank_improvement = rank_prev - rank  # positive = moved up
-            if rank_improvement >= RANK_JUMP_THRESHOLD:
+            if rank_improvement >= rank_jump_threshold:
                 defn = EVENT_TYPE_MAP["rank_jump"]
                 impact, decomp = _compute_impact(defn, {
                     "rank_jump_magnitude": _clamp(rank_improvement / 100.0),
@@ -292,9 +301,9 @@ def _detect_character_events(db: SupplyCoreDb) -> list[dict[str, Any]]:
                             "jump": rank_improvement, **profile_snapshot},
                     profile=prof, now_str=now_str,
                     impact_decomposition=decomp,
-                    threshold_info={"threshold": f"rank_improvement >= {RANK_JUMP_THRESHOLD}",
+                    threshold_info={"threshold": f"rank_improvement >= {rank_jump_threshold} (calibrated)",
                                     "actual": rank_improvement,
-                                    "margin": rank_improvement - RANK_JUMP_THRESHOLD},
+                                    "margin": rank_improvement - rank_jump_threshold},
                 ))
 
         # ── Detection: New high-weight signal ──
@@ -353,7 +362,7 @@ def _detect_character_events(db: SupplyCoreDb) -> list[dict[str, Any]]:
             ))
 
         # ── Detection: Freshness degradation ──
-        if fresh < FRESHNESS_DEGRADATION_THRESHOLD and sig_count > 3:
+        if fresh < freshness_threshold and sig_count > 3:
             defn = EVENT_TYPE_MAP["freshness_degradation"]
             impact, decomp = _compute_impact(defn, {
                 "freshness_drop": _clamp(1.0 - fresh),
@@ -366,9 +375,9 @@ def _detect_character_events(db: SupplyCoreDb) -> list[dict[str, Any]]:
                 detail={"freshness": fresh, "signal_count": sig_count, **profile_snapshot},
                 profile=prof, now_str=now_str,
                 impact_decomposition=decomp,
-                threshold_info={"threshold": f"freshness < {FRESHNESS_DEGRADATION_THRESHOLD}",
+                threshold_info={"threshold": f"freshness < {freshness_threshold:.2f} (calibrated)",
                                 "actual": round(fresh, 4),
-                                "margin": round(FRESHNESS_DEGRADATION_THRESHOLD - fresh, 4),
+                                "margin": round(freshness_threshold - fresh, 4),
                                 "hysteresis": defn.hysteresis_margin},
             ))
 
@@ -880,9 +889,16 @@ def run_cip_event_engine(db: SupplyCoreDb) -> JobResult:
     job = start_job_run(db, "cip_event_engine")
     t0 = time.monotonic()
 
-    # 1. Delta detection (simple signals)
+    # 0. Load calibrated thresholds (self-leveling from population stats)
+    cal = load_calibrated_thresholds(db)
+    logger.info(
+        "cip_event_engine: calibration loaded — surge=%.4f, rank_jump=%d, freshness=%.2f",
+        cal["surge_delta"], cal["rank_jump"], cal["freshness_floor"],
+    )
+
+    # 1. Delta detection (simple signals) — with calibrated thresholds
     logger.info("cip_event_engine: scanning for events...")
-    candidates = _detect_character_events(db)
+    candidates = _detect_character_events(db, cal)
     logger.info("cip_event_engine: detected %d simple event candidates", len(candidates))
 
     # 1b. Compound signal detection

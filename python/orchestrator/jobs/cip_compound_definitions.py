@@ -49,6 +49,12 @@ class CompoundDefinition:
     #   "min_signal"  = minimum confidence across contributing signals
     #   "weighted"    = confidence weighted by signal weight
     confidence_mode: str = "min_signal"
+    # Temporal conditions: evaluated against profile history snapshots.
+    # Each entry is {"check": "...", "params": {...}}
+    # Supported checks:
+    #   "consecutive_rank_improvement" — rank improved for N consecutive snapshots
+    #   "signal_age_range" — a signal's first_seen_at is within [min_days, max_days]
+    temporal_conditions: list[dict[str, Any]] = field(default_factory=list)
     # Metadata
     tactical_eligible: bool = False
     enabled: bool = True
@@ -177,6 +183,96 @@ COMPOUND_DEFINITIONS: list[CompoundDefinition] = [
         severity_default="medium",
         score_mode="mean",
         confidence_mode="min_signal",
+    ),
+    # ── Phase 5: Temporal compounds ─────────────────────────────────
+
+    # ── 6. Dormancy reactivation + hostile overlap ────────────────────
+    # A character who was dormant, recently reactivated, AND now shows
+    # hostile geographic overlap.  Classic returning infiltrator.
+    CompoundDefinition(
+        compound_type="dormancy_reactivation_hostile",
+        compound_family="infiltration",
+        display_name="Dormancy Reactivation in Hostile Space",
+        description=(
+            "Character reactivated after prolonged dormancy AND shows "
+            "increased geographic overlap with hostile areas. Suggests "
+            "a returning operative being repositioned."
+        ),
+        required_signals={
+            "reactivation_after_dormancy": 0.50,  # binary signal
+            "hostile_overlap_change": 0.15,
+        },
+        base_weight=0.15,
+        severity_default="high",
+        score_mode="min",
+        confidence_mode="min_signal",
+        temporal_conditions=[
+            {"check": "signal_age_range", "params": {
+                "signal_type": "reactivation_after_dormancy",
+                "min_days": 0, "max_days": 14,
+            }},
+        ],
+    ),
+
+    # ── 7. Progressive escalation — steady climber ────────────────────
+    # Rank improved for 3+ consecutive daily snapshots AND character is
+    # now in the top percentile.  Not a spike but a steady trajectory.
+    CompoundDefinition(
+        compound_type="progressive_escalation",
+        compound_family="prioritization",
+        display_name="Progressive Rank Escalation",
+        description=(
+            "Character's risk rank has improved for 3+ consecutive days "
+            "and is now in a high percentile. Indicates a steady upward "
+            "trajectory rather than a one-time spike."
+        ),
+        required_signals={
+            "suspicion_score": 0.15,
+        },
+        profile_conditions={
+            "risk_percentile": {"op": ">=", "value": 0.85},
+        },
+        base_weight=0.10,
+        severity_default="medium",
+        score_mode="mean",
+        confidence_mode="min_signal",
+        temporal_conditions=[
+            {"check": "consecutive_rank_improvement", "params": {
+                "min_consecutive": 3,
+            }},
+        ],
+    ),
+
+    # ── 8. Temporal coordination burst ────────────────────────────────
+    # Active hour shift + copresence anomaly + recent coverage expansion.
+    # Suggests a coordinated timing change with anomalous co-presence —
+    # the kind of pattern you see when a group activates simultaneously.
+    CompoundDefinition(
+        compound_type="temporal_coordination_burst",
+        compound_family="coordination",
+        display_name="Temporal Coordination Burst",
+        description=(
+            "Activity time profile shifted AND anomalous co-presence "
+            "detected AND signal coverage recently expanded. Suggests "
+            "coordinated activation: group behavior pattern change."
+        ),
+        required_signals={
+            "active_hour_shift": 0.20,
+            "copresence_anomaly": 0.20,
+        },
+        profile_conditions={
+            "effective_coverage": {"op": ">=", "value": 0.40},
+        },
+        base_weight=0.12,
+        severity_default="medium",
+        score_mode="mean",
+        confidence_mode="min_signal",
+        temporal_conditions=[
+            {"check": "signal_age_range", "params": {
+                "signal_type": "active_hour_shift",
+                "min_days": 0, "max_days": 7,
+            }},
+        ],
     ),
 ]
 

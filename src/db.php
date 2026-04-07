@@ -18883,6 +18883,38 @@ function db_compound_analyst_outcome_record(
 }
 
 /**
+ * Latest calibration snapshot for priority band display.
+ */
+function db_intelligence_calibration_latest(): ?array
+{
+    return db_select_one(
+        "SELECT * FROM intelligence_calibration_snapshots
+         ORDER BY snapshot_date DESC
+         LIMIT 1"
+    );
+}
+
+/**
+ * Assign a priority band based on calibrated thresholds.
+ */
+function intelligence_priority_band(float $riskScore, ?array $calibration): string
+{
+    if ($calibration === null) {
+        return '';
+    }
+    $critical = (float) ($calibration['band_critical_floor'] ?? 0);
+    $high = (float) ($calibration['band_high_floor'] ?? 0);
+    $moderate = (float) ($calibration['band_moderate_floor'] ?? 0);
+    $low = (float) ($calibration['band_low_floor'] ?? 0);
+
+    if ($critical > 0 && $riskScore >= $critical) { return 'critical'; }
+    if ($high > 0 && $riskScore >= $high) { return 'high'; }
+    if ($moderate > 0 && $riskScore >= $moderate) { return 'moderate'; }
+    if ($low > 0 && $riskScore >= $low) { return 'low'; }
+    return 'noise';
+}
+
+/**
  * Per-compound outcome summary for the analytics dashboard.
  */
 function db_compound_outcome_summary(): array
