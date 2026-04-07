@@ -572,7 +572,11 @@ def _is_stage_stale(freshness: dict[str, Any], stage_col: str, upstream_cols: li
         if s is not None and s > t:
             return True
 
-    # Check upstream stage watermarks (e.g., histogram rebuilt after counterintel)
+    # Check upstream stage watermarks (e.g., histogram rebuilt after counterintel).
+    # If upstream is NULL, it either never ran or had no data.  Either way,
+    # this stage's prior output may still be valid — the stage itself will
+    # self-gate on data availability (e.g., counterintel returns False if
+    # no eligible battles).  Only treat as stale if upstream ran MORE RECENTLY.
     for ucol in (upstream_cols or []):
         upstream_at = freshness.get(ucol)
         if upstream_at is not None:
@@ -697,6 +701,9 @@ def run_character_pipeline_worker(
                         try:
                             if _run_histogram_stage(db, character_id, now_dt, computed_at):
                                 _update_stage_watermark(db, character_id, "histogram", computed_at)
+                                # Update in-memory freshness so downstream stages
+                                # see the new watermark without a DB round-trip.
+                                freshness["histogram_at"] = datetime.strptime(computed_at, "%Y-%m-%d %H:%M:%S").replace(tzinfo=UTC)
                                 stages_completed += 1
                                 ran_any = True
                             else:
@@ -712,6 +719,8 @@ def run_character_pipeline_worker(
 
                     # Stage 2: counterintel — needs eligible battle data.
                     # Also stale if histogram was just rebuilt (upstream dependency).
+                    # Freshness dict is updated in-memory after stage 1, so the
+                    # histogram_at upstream check sees the write from this run.
                     if _is_stage_stale(freshness, "counterintel_at", upstream_cols=["histogram_at"]):
                         try:
                             if _run_counterintel_stage(db, character_id, computed_at):
