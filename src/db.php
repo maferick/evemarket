@@ -15908,9 +15908,13 @@ function db_create_manual_theater(array $battles, ?string $label = null): ?strin
     $theaterId = hash('sha256', implode('|', $battleIds));
 
     // Check if this exact theater already exists
-    $existing = db_select_one('SELECT theater_id FROM theaters WHERE theater_id = ?', [$theaterId]);
+    $existing = db_select_one('SELECT theater_id, total_kills FROM theaters WHERE theater_id = ?', [$theaterId]);
     if ($existing !== null) {
-        return $theaterId; // already exists with same battles
+        // If it exists but has no analysis data, repopulate summary tables
+        if ((int) ($existing['total_kills'] ?? 0) === 0) {
+            db_manual_theater_populate_summaries($theaterId, $battleIds);
+        }
+        return $theaterId;
     }
 
     // Compute aggregates
@@ -16010,7 +16014,269 @@ function db_create_manual_theater(array $battles, ?string $label = null): ?strin
         );
     }
 
+    db_manual_theater_populate_summaries($theaterId, $battleIds);
+
     return $theaterId;
+}
+
+/**
+ * Populate summary tables (kills, ISK, alliance summary, participants, timeline)
+ * for a theater directly from killmail data. Used by manual theater creation
+ * so the theater view shows data immediately without waiting for the analysis job.
+ */
+function db_manual_theater_populate_summaries(string $theaterId, array $battleIds): void
+{
+    if ($battleIds === []) {
+        return;
+    }
+    $placeholders = implode(',', array_fill(0, count($battleIds), '?'));
+
+    // 1. Compute total_kills and total_isk from killmail_events
+    $killStats = db_select_one(
+        "SELECT COUNT(DISTINCT ke.killmail_id) AS total_kills,
+                COALESCE(SUM(ke.zkb_total_value), 0) AS total_isk
+         FROM killmail_events ke
+         WHERE ke.battle_id IN ({$placeholders})",
+        $battleIds
+    );
+    $totalKills = (int) ($killStats['total_kills'] ?? 0);
+    $totalIsk = (float) ($killStats['total_isk'] ?? 0);
+
+    db_execute(
+        'UPDATE theaters SET total_kills = ?, total_isk = ? WHERE theater_id = ?',
+        [$totalKills, $totalIsk, $theaterId]
+    );
+
+    // Update theater_systems with actual kill counts and ISK
+    $systemKills = db_select(
+        "SELECT ke.solar_system_id AS system_id,
+                COUNT(DISTINCT ke.killmail_id) AS kill_count,
+                COALESCE(SUM(ke.zkb_total_value), 0) AS isk_destroyed
+         FROM killmail_events ke
+         WHERE ke.battle_id IN ({$placeholders})
+           AND ke.solar_system_id IS NOT NULL
+         GROUP BY ke.solar_system_id",
+        $battleIds
+    );
+    foreach ($systemKills as $sk) {
+        db_execute(
+            'UPDATE theater_systems SET kill_count = ?, isk_destroyed = ?
+             WHERE theater_id = ? AND system_id = ?',
+            [(int) $sk['kill_count'], (float) $sk['isk_destroyed'], $theaterId, (int) $sk['system_id']]
+        );
+    }
+
+    // 2. Populate theater_alliance_summary from killmail data
+    // Victims: each unique killmail = 1 loss for the victim's alliance
+    $victimSummary = db_select(
+        "SELECT COALESCE(ke.victim_alliance_id, 0) AS alliance_id,
+                COALESCE(ke.victim_corporation_id, 0) AS corporation_id,
+                COUNT(DISTINCT ke.killmail_id) AS losses,
+                COALESCE(SUM(ke.zkb_total_value), 0) AS isk_lost
+         FROM killmail_events ke
+         WHERE ke.battle_id IN ({$placeholders})
+           AND (ke.victim_character_id IS NOT NULL AND ke.victim_character_id > 0)
+         GROUP BY COALESCE(ke.victim_alliance_id, 0), COALESCE(ke.victim_corporation_id, 0)",
+        $battleIds
+    );
+
+    // Attackers: final blow = 1 kill credit for the attacker's alliance
+    $attackerSummary = db_select(
+        "SELECT COALESCE(ka.alliance_id, 0) AS alliance_id,
+                COALESCE(ka.corporation_id, 0) AS corporation_id,
+                COUNT(DISTINCT ke.killmail_id) AS kills,
+                COALESCE(SUM(ke.zkb_total_value), 0) AS isk_killed
+         FROM killmail_events ke
+         INNER JOIN killmail_attackers ka ON ka.sequence_id = ke.sequence_id AND ka.final_blow = 1
+         WHERE ke.battle_id IN ({$placeholders})
+         GROUP BY COALESCE(ka.alliance_id, 0), COALESCE(ka.corporation_id, 0)",
+        $battleIds
+    );
+
+    // Participant counts per alliance from battle_participants
+    $allianceParticipants = db_select(
+        "SELECT COALESCE(bp.alliance_id, 0) AS alliance_id,
+                COALESCE(bp.corporation_id, 0) AS corporation_id,
+                COUNT(DISTINCT bp.character_id) AS participant_count
+         FROM battle_participants bp
+         WHERE bp.battle_id IN ({$placeholders})
+         GROUP BY COALESCE(bp.alliance_id, 0), COALESCE(bp.corporation_id, 0)",
+        $battleIds
+    );
+
+    // Merge into a single summary keyed by alliance_id:corporation_id
+    $allianceMerged = [];
+    $makeKey = static fn(int $aid, int $cid): string => $aid . ':' . $cid;
+    $ensureEntry = static function (string $key, int $aid, int $cid) use (&$allianceMerged): void {
+        if (!isset($allianceMerged[$key])) {
+            $allianceMerged[$key] = [
+                'alliance_id' => $aid, 'corporation_id' => $cid,
+                'participant_count' => 0, 'kills' => 0, 'losses' => 0,
+                'isk_killed' => 0.0, 'isk_lost' => 0.0,
+            ];
+        }
+    };
+
+    foreach ($allianceParticipants as $row) {
+        $key = $makeKey((int) $row['alliance_id'], (int) $row['corporation_id']);
+        $ensureEntry($key, (int) $row['alliance_id'], (int) $row['corporation_id']);
+        $allianceMerged[$key]['participant_count'] = (int) $row['participant_count'];
+    }
+    foreach ($victimSummary as $row) {
+        $key = $makeKey((int) $row['alliance_id'], (int) $row['corporation_id']);
+        $ensureEntry($key, (int) $row['alliance_id'], (int) $row['corporation_id']);
+        $allianceMerged[$key]['losses'] += (int) $row['losses'];
+        $allianceMerged[$key]['isk_lost'] += (float) $row['isk_lost'];
+    }
+    foreach ($attackerSummary as $row) {
+        $key = $makeKey((int) $row['alliance_id'], (int) $row['corporation_id']);
+        $ensureEntry($key, (int) $row['alliance_id'], (int) $row['corporation_id']);
+        $allianceMerged[$key]['kills'] += (int) $row['kills'];
+        $allianceMerged[$key]['isk_killed'] += (float) $row['isk_killed'];
+    }
+
+    // Classify sides using tracked/opponent alliance config
+    $trackedAllianceIds = array_map('intval', array_column(db_killmail_tracked_alliances_active(), 'alliance_id'));
+    $opponentAllianceIds = array_map('intval', array_column(db_killmail_opponent_alliances_active(), 'alliance_id'));
+    $trackedCorpIds = array_map('intval', array_column(db_killmail_tracked_corporations_active(), 'corporation_id'));
+    $opponentCorpIds = array_map('intval', array_column(db_killmail_opponent_corporations_active(), 'corporation_id'));
+
+    $classifySide = static function (int $aid, int $cid) use ($trackedAllianceIds, $opponentAllianceIds, $trackedCorpIds, $opponentCorpIds): string {
+        if ($aid > 0 && in_array($aid, $trackedAllianceIds, true)) return 'friendly';
+        if ($cid > 0 && in_array($cid, $trackedCorpIds, true)) return 'friendly';
+        if ($aid > 0 && in_array($aid, $opponentAllianceIds, true)) return 'opponent';
+        if ($cid > 0 && in_array($cid, $opponentCorpIds, true)) return 'opponent';
+        return 'third_party';
+    };
+
+    foreach ($allianceMerged as $entry) {
+        $aid = (int) $entry['alliance_id'];
+        $cid = (int) $entry['corporation_id'];
+        if ($aid === 0 && $cid === 0) continue;
+        $side = $classifySide($aid, $cid);
+        $totalIskEntry = $entry['isk_killed'] + $entry['isk_lost'];
+        $efficiency = $totalIskEntry > 0 ? $entry['isk_killed'] / $totalIskEntry : 0.0;
+
+        db_execute(
+            'INSERT IGNORE INTO theater_alliance_summary
+                (theater_id, alliance_id, corporation_id, alliance_name, side,
+                 participant_count, total_kills, total_losses, total_damage,
+                 total_isk_killed, total_isk_lost, efficiency)
+             VALUES (?, ?, ?, NULL, ?, ?, ?, ?, 0, ?, ?, ?)',
+            [
+                $theaterId, $aid, $cid, $side,
+                (int) $entry['participant_count'],
+                (int) $entry['kills'],
+                (int) $entry['losses'],
+                $entry['isk_killed'],
+                $entry['isk_lost'],
+                round($efficiency, 4),
+            ]
+        );
+    }
+
+    // 3. Populate theater_participants from battle_participants + killmail ledger
+    $charLedger = db_select(
+        "SELECT bp.character_id,
+                MAX(bp.alliance_id) AS alliance_id,
+                MAX(bp.corporation_id) AS corporation_id,
+                COUNT(DISTINCT bp.battle_id) AS battles_present,
+                COALESCE(final_kills.kill_count, 0) AS final_kills,
+                COALESCE(involvements.involved_count, 0) AS contributed_kills,
+                COALESCE(final_kills.isk_killed, 0) AS isk_killed,
+                COALESCE(losses.loss_count, 0) AS deaths,
+                COALESCE(dmg.damage_done, 0) AS damage_done,
+                COALESCE(losses.isk_lost, 0) AS isk_lost
+         FROM battle_participants bp
+         LEFT JOIN (
+             SELECT ka.character_id,
+                    COUNT(DISTINCT ke.killmail_id) AS kill_count,
+                    COALESCE(SUM(ke.zkb_total_value), 0) AS isk_killed
+             FROM killmail_attackers ka
+             INNER JOIN killmail_events ke ON ke.sequence_id = ka.sequence_id
+             WHERE ke.battle_id IN ({$placeholders})
+               AND ka.character_id IS NOT NULL AND ka.character_id > 0
+               AND ka.final_blow = 1
+             GROUP BY ka.character_id
+         ) final_kills ON final_kills.character_id = bp.character_id
+         LEFT JOIN (
+             SELECT ka.character_id, COUNT(DISTINCT ke.killmail_id) AS involved_count
+             FROM killmail_attackers ka
+             INNER JOIN killmail_events ke ON ke.sequence_id = ka.sequence_id
+             WHERE ke.battle_id IN ({$placeholders})
+               AND ka.character_id IS NOT NULL AND ka.character_id > 0
+             GROUP BY ka.character_id
+         ) involvements ON involvements.character_id = bp.character_id
+         LEFT JOIN (
+             SELECT ke.victim_character_id AS character_id,
+                    COUNT(DISTINCT ke.killmail_id) AS loss_count,
+                    COALESCE(SUM(ke.zkb_total_value), 0) AS isk_lost
+             FROM killmail_events ke
+             WHERE ke.battle_id IN ({$placeholders})
+               AND ke.victim_character_id IS NOT NULL AND ke.victim_character_id > 0
+             GROUP BY ke.victim_character_id
+         ) losses ON losses.character_id = bp.character_id
+         LEFT JOIN (
+             SELECT ka.character_id, COALESCE(SUM(ka.damage_done), 0) AS damage_done
+             FROM killmail_attackers ka
+             INNER JOIN killmail_events ke ON ke.sequence_id = ka.sequence_id
+             WHERE ke.battle_id IN ({$placeholders})
+               AND ka.character_id IS NOT NULL AND ka.character_id > 0
+             GROUP BY ka.character_id
+         ) dmg ON dmg.character_id = bp.character_id
+         WHERE bp.battle_id IN ({$placeholders})
+         GROUP BY bp.character_id",
+        array_merge($battleIds, $battleIds, $battleIds, $battleIds, $battleIds)
+    );
+
+    foreach ($charLedger as $ch) {
+        $chAid = (int) ($ch['alliance_id'] ?? 0);
+        $chCid = (int) ($ch['corporation_id'] ?? 0);
+        $chSide = $classifySide($chAid, $chCid);
+        db_execute(
+            'INSERT IGNORE INTO theater_participants
+                (theater_id, character_id, character_name, alliance_id, corporation_id, side,
+                 kills, final_kills, contributed_kills, isk_killed,
+                 deaths, damage_done, damage_taken, isk_lost, battles_present)
+             VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)',
+            [
+                $theaterId,
+                (int) $ch['character_id'],
+                $chAid,
+                $chCid,
+                $chSide,
+                (int) $ch['final_kills'],
+                (int) $ch['final_kills'],
+                (int) $ch['contributed_kills'],
+                (float) $ch['isk_killed'],
+                (int) $ch['deaths'],
+                (float) $ch['damage_done'],
+                (float) $ch['isk_lost'],
+                (int) $ch['battles_present'],
+            ]
+        );
+    }
+
+    // 4. Populate theater_timeline (15-min buckets matching battle windows)
+    $timelineBuckets = db_select(
+        "SELECT DATE_FORMAT(ke.effective_killmail_at, '%Y-%m-%d %H:%i:00') AS bucket_time,
+                COUNT(DISTINCT ke.killmail_id) AS kills,
+                COALESCE(SUM(ke.zkb_total_value), 0) AS isk_destroyed
+         FROM killmail_events ke
+         WHERE ke.battle_id IN ({$placeholders})
+         GROUP BY DATE_FORMAT(ke.effective_killmail_at, '%Y-%m-%d %H:%i:00')
+         ORDER BY bucket_time ASC",
+        $battleIds
+    );
+    foreach ($timelineBuckets as $tb) {
+        db_execute(
+            'INSERT IGNORE INTO theater_timeline
+                (theater_id, bucket_time, bucket_seconds, kills, isk_destroyed,
+                 side_a_kills, side_b_kills, side_a_isk, side_b_isk, momentum_score)
+             VALUES (?, ?, 60, ?, ?, 0, 0, 0, 0, 0)',
+            [$theaterId, $tb['bucket_time'], (int) $tb['kills'], (float) $tb['isk_destroyed']]
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
