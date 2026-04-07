@@ -18725,10 +18725,22 @@ function db_intelligence_event_evidence(int $eventId): array
         [$characterId]
     );
 
+    // Active compound signals
+    $compounds = db_select(
+        "SELECT cics.*, icd.display_name, icd.description AS compound_description
+         FROM character_intelligence_compound_signals cics
+         LEFT JOIN intelligence_compound_definitions icd
+             ON icd.compound_type = cics.compound_type
+         WHERE cics.character_id = ?
+         ORDER BY cics.score DESC",
+        [$characterId]
+    );
+
     return [
         'event' => $event,
         'profile' => $profile,
         'signals' => $signals,
+        'compounds' => $compounds,
         'history' => $history,
     ];
 }

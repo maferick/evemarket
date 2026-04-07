@@ -79,3 +79,4 @@ from .cip_signal_emitter import run_cip_signal_emitter
 from .cip_fusion import run_cip_fusion
 from .cip_event_engine import run_cip_event_engine
 from .cip_event_digest import run_cip_event_digest
+from .cip_compound_evaluator import run_cip_compound_evaluator

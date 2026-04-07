@@ -194,8 +194,45 @@ CHARACTER_EVENT_TYPES: list[EventTypeDefinition] = [
     ),
 ]
 
+# ---------------------------------------------------------------------------
+# Phase 4: Compound signal event types
+# ---------------------------------------------------------------------------
+
+COMPOUND_EVENT_TYPES: list[EventTypeDefinition] = [
+    EventTypeDefinition(
+        event_type="compound_signal_activated",
+        entity_type="character",
+        event_family="threat",
+        display_name="Compound Signal Activated",
+        description="A compound detection (intersection of multiple simple signals) was newly materialized",
+        base_severity="medium",
+        impact_factors={
+            "compound_score": 0.4,
+            "compound_confidence": 0.3,
+            "risk_score": 0.3,
+        },
+        escalation_thresholds={3: "high", 7: "critical"},
+        auto_resolve=True,
+    ),
+    EventTypeDefinition(
+        event_type="compound_signal_strengthened",
+        entity_type="character",
+        event_family="threat",
+        display_name="Compound Signal Strengthened",
+        description="An existing compound signal's score increased significantly",
+        base_severity="medium",
+        impact_factors={
+            "score_increase": 0.5,
+            "compound_score": 0.3,
+            "risk_score": 0.2,
+        },
+        escalation_thresholds={3: "high"},
+        auto_resolve=True,
+    ),
+]
+
 # Quick lookup
-EVENT_TYPE_MAP: dict[str, EventTypeDefinition] = {e.event_type: e for e in CHARACTER_EVENT_TYPES}
+EVENT_TYPE_MAP: dict[str, EventTypeDefinition] = {e.event_type: e for e in CHARACTER_EVENT_TYPES + COMPOUND_EVENT_TYPES}
 
 # Percentile bucket boundaries (for bucket change detection)
 PERCENTILE_BUCKETS: list[tuple[float, str]] = [

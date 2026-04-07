@@ -12,6 +12,7 @@ condition re-firing updates the existing event rather than creating a duplicate.
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 from collections import defaultdict
@@ -393,6 +394,161 @@ def _detect_character_events(db: SupplyCoreDb) -> list[dict[str, Any]]:
     return candidates
 
 
+def _detect_compound_events(db: SupplyCoreDb) -> list[dict[str, Any]]:
+    """Detect events from newly activated or strengthened compound signals.
+
+    Scans character_intelligence_compound_signals for:
+      1. Newly materialized compounds (first_detected_at within last 24h)
+      2. Significantly strengthened compounds (score increase)
+    """
+    from .cip_compound_definitions import COMPOUND_DEF_MAP
+
+    now_str = _now_sql()
+    candidates: list[dict[str, Any]] = []
+
+    # Load recently evaluated compound signals
+    compounds = db.fetch_all("""
+        SELECT cics.character_id, cics.compound_type, cics.score,
+               cics.confidence, cics.evidence_json, cics.first_detected_at,
+               cics.last_evaluated_at
+        FROM character_intelligence_compound_signals cics
+        WHERE cics.last_evaluated_at >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL 2 HOUR)
+    """)
+
+    if not compounds:
+        return candidates
+
+    # Load profiles for these characters
+    char_ids = list({int(c["character_id"]) for c in compounds})
+    placeholders = ",".join(["%s"] * len(char_ids))
+    profiles = db.fetch_all(f"""
+        SELECT character_id, risk_score, risk_rank, risk_percentile,
+               confidence, freshness, effective_coverage
+        FROM character_intelligence_profiles
+        WHERE character_id IN ({placeholders})
+    """, char_ids)
+    profiles_by_id = {int(p["character_id"]): p for p in profiles}
+
+    # Load existing compound events to detect strengthening
+    existing_compound_events = db.fetch_all("""
+        SELECT dedup_key, impact_score
+        FROM intelligence_events
+        WHERE event_type IN ('compound_signal_activated', 'compound_signal_strengthened')
+          AND state IN ('active', 'acknowledged', 'suppressed')
+    """)
+    existing_impact: dict[str, float] = {
+        r["dedup_key"]: float(r["impact_score"]) for r in existing_compound_events
+    }
+
+    for comp in compounds:
+        cid = int(comp["character_id"])
+        ctype = comp["compound_type"]
+        score = float(comp.get("score") or 0)
+        conf = float(comp.get("confidence") or 0)
+        first_detected = str(comp.get("first_detected_at") or "")
+
+        defn_compound = COMPOUND_DEF_MAP.get(ctype)
+        if defn_compound is None:
+            continue
+
+        prof = profiles_by_id.get(cid)
+        if prof is None:
+            continue
+
+        risk = float(prof.get("risk_score") or 0)
+        profile_snapshot = {
+            "risk_score": risk,
+            "risk_rank": prof.get("risk_rank"),
+            "risk_percentile": float(prof["risk_percentile"]) if prof.get("risk_percentile") is not None else None,
+            "confidence": float(prof.get("confidence") or 0),
+            "freshness": float(prof.get("freshness") or 0),
+            "effective_coverage": float(prof.get("effective_coverage") or 0),
+        }
+
+        # Parse evidence
+        try:
+            evidence_list = json.loads(comp.get("evidence_json") or "[]")
+        except (json.JSONDecodeError, TypeError):
+            evidence_list = []
+
+        # Check if this is a NEW compound (first detected in last 24h)
+        is_new = False
+        if first_detected:
+            from datetime import datetime as dt
+            try:
+                fd = dt.strptime(first_detected[:19], "%Y-%m-%d %H:%M:%S")
+                age_hours = (datetime.now(UTC).replace(tzinfo=None) - fd).total_seconds() / 3600
+                is_new = age_hours <= 24
+            except (ValueError, TypeError):
+                pass
+
+        if is_new:
+            defn = EVENT_TYPE_MAP["compound_signal_activated"]
+            impact, decomp = _compute_impact(defn, {
+                "compound_score": _clamp(score),
+                "compound_confidence": _clamp(conf),
+                "risk_score": risk,
+            })
+            candidates.append(_make_candidate(
+                defn, cid, impact,
+                title=f"Compound: {defn_compound.display_name} (score {score:.3f})",
+                detail={
+                    "compound_type": ctype,
+                    "compound_score": score,
+                    "compound_confidence": conf,
+                    "contributing_signals": evidence_list,
+                    **profile_snapshot,
+                },
+                profile=prof, now_str=now_str,
+                subtype=ctype,
+                impact_decomposition=decomp,
+                threshold_info={
+                    "type": "compound_activation",
+                    "required_signals": dict(defn_compound.required_signals),
+                    "score_mode": defn_compound.score_mode,
+                },
+            ))
+        else:
+            # Check for significant strengthening
+            dedup = _dedup_key("character", cid, "compound_signal_activated", ctype)
+            prev_impact = existing_impact.get(dedup, 0.0)
+
+            # Also check the strengthened dedup key
+            dedup_str = _dedup_key("character", cid, "compound_signal_strengthened", ctype)
+            prev_str_impact = existing_impact.get(dedup_str, 0.0)
+
+            defn = EVENT_TYPE_MAP["compound_signal_strengthened"]
+            impact, decomp = _compute_impact(defn, {
+                "score_increase": _clamp(score * 0.5),  # conservative
+                "compound_score": _clamp(score),
+                "risk_score": risk,
+            })
+
+            # Only fire if impact exceeds previous by meaningful margin
+            if impact > max(prev_impact, prev_str_impact) * 1.1 + 0.05:
+                candidates.append(_make_candidate(
+                    defn, cid, impact,
+                    title=f"Compound strengthened: {defn_compound.display_name} (score {score:.3f})",
+                    detail={
+                        "compound_type": ctype,
+                        "compound_score": score,
+                        "compound_confidence": conf,
+                        "contributing_signals": evidence_list,
+                        **profile_snapshot,
+                    },
+                    profile=prof, now_str=now_str,
+                    subtype=ctype,
+                    impact_decomposition=decomp,
+                    threshold_info={
+                        "type": "compound_strengthening",
+                        "previous_impact": round(max(prev_impact, prev_str_impact), 4),
+                        "current_impact": round(impact, 4),
+                    },
+                ))
+
+    return candidates
+
+
 def _make_candidate(
     defn: EventTypeDefinition,
     entity_id: int,
@@ -724,10 +880,15 @@ def run_cip_event_engine(db: SupplyCoreDb) -> JobResult:
     job = start_job_run(db, "cip_event_engine")
     t0 = time.monotonic()
 
-    # 1. Delta detection
+    # 1. Delta detection (simple signals)
     logger.info("cip_event_engine: scanning for events...")
     candidates = _detect_character_events(db)
-    logger.info("cip_event_engine: detected %d candidate events", len(candidates))
+    logger.info("cip_event_engine: detected %d simple event candidates", len(candidates))
+
+    # 1b. Compound signal detection
+    compound_candidates = _detect_compound_events(db)
+    logger.info("cip_event_engine: detected %d compound event candidates", len(compound_candidates))
+    candidates.extend(compound_candidates)
 
     # 2. Event lifecycle management
     logger.info("cip_event_engine: upserting events...")

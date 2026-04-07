@@ -58,6 +58,7 @@ if ($event === null) {
 
 $profile = $evidence['profile'];
 $signals = $evidence['signals'];
+$compounds = $evidence['compounds'] ?? [];
 $profileHistory = $evidence['history'];
 $stateHistory = db_intelligence_event_history($eventId);
 $notes = db_intelligence_event_notes($eventId);
@@ -331,7 +332,51 @@ include __DIR__ . '/../../src/views/partials/header.php';
         </section>
         <?php endif; ?>
 
-        <!-- 5. Profile trend -->
+        <!-- 5. Compound signals -->
+        <?php if ($compounds !== []): ?>
+        <section class="surface-primary">
+            <h2 class="text-lg font-semibold text-slate-100">Compound detections</h2>
+            <p class="mt-1 text-xs text-muted">Active compound signals — co-occurring patterns across multiple signal types.</p>
+            <div class="mt-3 space-y-3">
+                <?php foreach ($compounds as $comp): ?>
+                    <?php
+                    $compScore = (float) ($comp['score'] ?? 0);
+                    $compConf = (float) ($comp['confidence'] ?? 0);
+                    $compEvidence = json_decode((string) ($comp['evidence_json'] ?? '[]'), true);
+                    if (!is_array($compEvidence)) { $compEvidence = []; }
+                    $compScoreClass = $compScore >= 0.5 ? 'text-red-400 font-semibold' : ($compScore >= 0.25 ? 'text-orange-400' : 'text-slate-300');
+                    ?>
+                    <div class="surface-tertiary">
+                        <div class="flex items-center justify-between">
+                            <div>
+                                <p class="text-sm text-slate-100 font-medium"><?= htmlspecialchars((string) ($comp['display_name'] ?? $comp['compound_type']), ENT_QUOTES) ?></p>
+                                <?php if (($comp['compound_description'] ?? '') !== ''): ?>
+                                    <p class="text-xs text-muted mt-0.5"><?= htmlspecialchars((string) $comp['compound_description'], ENT_QUOTES) ?></p>
+                                <?php endif; ?>
+                            </div>
+                            <div class="text-right">
+                                <p class="text-sm <?= $compScoreClass ?>"><?= number_format($compScore, 4) ?></p>
+                                <p class="text-[10px] text-muted">conf <?= number_format($compConf, 3) ?></p>
+                            </div>
+                        </div>
+                        <?php if ($compEvidence !== []): ?>
+                            <div class="mt-2 flex flex-wrap gap-2">
+                                <?php foreach ($compEvidence as $ce): ?>
+                                    <span class="inline-flex items-center rounded bg-slate-700 px-2 py-0.5 text-[10px] text-slate-300">
+                                        <?= htmlspecialchars((string) ($ce['signal_type'] ?? ''), ENT_QUOTES) ?>: <?= number_format((float) ($ce['value'] ?? 0), 3) ?>
+                                        <span class="text-muted ml-1">(min <?= number_format((float) ($ce['min_required'] ?? 0), 2) ?>)</span>
+                                    </span>
+                                <?php endforeach; ?>
+                            </div>
+                        <?php endif; ?>
+                        <div class="mt-1 text-[10px] text-muted">First detected: <?= htmlspecialchars((string) ($comp['first_detected_at'] ?? ''), ENT_QUOTES) ?></div>
+                    </div>
+                <?php endforeach; ?>
+            </div>
+        </section>
+        <?php endif; ?>
+
+        <!-- 6. Profile trend -->
         <?php if ($profileHistory !== []): ?>
         <section class="surface-primary">
             <h2 class="text-lg font-semibold text-slate-100">Profile trend</h2>
