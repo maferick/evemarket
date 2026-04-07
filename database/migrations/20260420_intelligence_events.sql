@@ -27,7 +27,7 @@ CREATE TABLE IF NOT EXISTS intelligence_events (
         COMMENT 'Optional refinement (e.g. signal_type for new_high_signal events)',
     -- Lifecycle
     state               VARCHAR(20)     NOT NULL DEFAULT 'active'
-        COMMENT 'active, acknowledged, resolved, expired',
+        COMMENT 'active, acknowledged, suppressed, resolved, expired',
     severity            VARCHAR(20)     NOT NULL DEFAULT 'medium'
         COMMENT 'critical, high, medium, low, info',
     -- Impact scoring (how much should an analyst care?)
@@ -50,6 +50,11 @@ CREATE TABLE IF NOT EXISTS intelligence_events (
         COMMENT 'When the event was resolved or expired',
     acknowledged_by     VARCHAR(120)    DEFAULT NULL
         COMMENT 'Analyst who acknowledged',
+    -- Suppression: do not re-surface until this time unless materially worsened
+    suppressed_until    DATETIME        DEFAULT NULL
+        COMMENT 'If state=suppressed, event stays hidden until this datetime',
+    suppressed_by       VARCHAR(120)    DEFAULT NULL
+        COMMENT 'Analyst who suppressed',
     -- Escalation tracking
     escalation_count    INT UNSIGNED    NOT NULL DEFAULT 1
         COMMENT 'How many consecutive detections (severity may increase)',

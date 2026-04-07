@@ -30,6 +30,8 @@ if ($action === '' || ($eventId <= 0 && $eventIds === [])) {
     exit;
 }
 
+$suppressHours = max(1, min(720, (int) ($body['suppress_hours'] ?? 72)));
+
 $result = match ($action) {
     'acknowledge' => $eventId > 0
         ? ['success' => db_intelligence_event_acknowledge($eventId, $analyst, $reason !== '' ? $reason : null), 'event_id' => $eventId]
@@ -37,6 +39,9 @@ $result = match ($action) {
     'resolve' => $eventId > 0
         ? ['success' => db_intelligence_event_resolve($eventId, $analyst, $reason !== '' ? $reason : null), 'event_id' => $eventId]
         : ['success' => false, 'error' => 'Bulk resolve not supported — resolve events individually'],
+    'suppress' => $eventId > 0
+        ? ['success' => db_intelligence_event_suppress($eventId, $analyst, $suppressHours, $reason !== '' ? $reason : null), 'event_id' => $eventId]
+        : ['success' => false, 'error' => 'Bulk suppress not supported — suppress events individually'],
     'add_note' => $eventId > 0
         ? ['success' => db_intelligence_event_note_add($eventId, $analyst, $reason !== '' ? $reason : (string) ($body['note'] ?? '')), 'event_id' => $eventId]
         : ['success' => false, 'error' => 'event_id required for notes'],

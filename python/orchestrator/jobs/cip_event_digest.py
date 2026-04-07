@@ -77,6 +77,18 @@ def run_cip_event_digest(db) -> dict:
     expired_row = cur.fetchone()
     expired_count = int(expired_row["cnt"]) if expired_row else 0
 
+    # ── Still-active unchanged: active events NOT new, NOT escalated in window ─
+    cur.execute(
+        """SELECT COUNT(*) AS cnt
+           FROM intelligence_events
+           WHERE state = 'active'
+             AND first_detected_at < %s
+             AND (last_updated_at < %s OR escalation_count <= 1)""",
+        (period_start, period_start),
+    )
+    unchanged_row = cur.fetchone()
+    unchanged_active_count = int(unchanged_row["cnt"]) if unchanged_row else 0
+
     # ── Active breakdown by family ────────────────────────────────────
     cur.execute(
         """SELECT event_family, severity, COUNT(*) AS cnt

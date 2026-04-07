@@ -18629,6 +18629,42 @@ function db_intelligence_event_resolve(int $eventId, string $analyst, ?string $r
 }
 
 /**
+ * Suppress an event: hide from queue for a duration unless materially worsened.
+ * Semantics: acknowledge + "do not re-surface until the suppress period expires
+ * OR the condition materially worsens."
+ *
+ * @param int $hours Suppression duration in hours (default 72 = 3 days)
+ */
+function db_intelligence_event_suppress(int $eventId, string $analyst, int $hours = 72, ?string $reason = null): bool
+{
+    if ($eventId <= 0) {
+        return false;
+    }
+    $event = db_select_one("SELECT id, state, severity FROM intelligence_events WHERE id = ?", [$eventId]);
+    if ($event === null || !in_array($event['state'], ['active', 'acknowledged'], true)) {
+        return false;
+    }
+
+    db()->prepare(
+        "UPDATE intelligence_events
+         SET state = 'suppressed',
+             suppressed_until = DATE_ADD(NOW(), INTERVAL ? HOUR),
+             suppressed_by = ?,
+             last_updated_at = NOW()
+         WHERE id = ?"
+    )->execute([$hours, $analyst, $eventId]);
+
+    db()->prepare(
+        "INSERT INTO intelligence_event_history
+            (event_id, previous_state, new_state, previous_severity, new_severity, changed_by, reason)
+         VALUES (?, ?, 'suppressed', ?, ?, ?, ?)"
+    )->execute([$eventId, $event['state'], $event['severity'], $event['severity'], $analyst,
+                ($reason !== null ? $reason . ' ' : '') . "(suppressed for {$hours}h)"]);
+
+    return true;
+}
+
+/**
  * Bulk acknowledge: acknowledge multiple events at once.
  * Returns count of events actually updated.
  */

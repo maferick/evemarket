@@ -78,12 +78,19 @@ def _dedup_key(entity_type: str, entity_id: int, event_type: str, subtype: str =
 # Impact score computation
 # ---------------------------------------------------------------------------
 
-def _compute_impact(defn: EventTypeDefinition, factors: dict[str, float]) -> float:
-    """Compute impact score from event definition weights and actual factor values."""
+def _compute_impact(defn: EventTypeDefinition, factors: dict[str, float]) -> tuple[float, dict[str, float]]:
+    """Compute impact score from event definition weights and actual factor values.
+
+    Returns (total_score, decomposition) where decomposition maps factor names
+    to their individual contributions.
+    """
+    decomposition: dict[str, float] = {}
     score = 0.0
     for factor_name, weight in defn.impact_factors.items():
-        score += weight * _clamp(factors.get(factor_name, 0.0))
-    return _clamp(score)
+        contribution = weight * _clamp(factors.get(factor_name, 0.0))
+        decomposition[factor_name] = round(contribution, 4)
+        score += contribution
+    return _clamp(score), decomposition
 
 
 # ---------------------------------------------------------------------------
@@ -186,7 +193,7 @@ def _detect_character_events(db: SupplyCoreDb) -> list[dict[str, Any]]:
         if rank is not None and rank <= TOP_50_RANK:
             if rank_prev is None or rank_prev > TOP_50_RANK:
                 defn = EVENT_TYPE_MAP["risk_rank_entry_top50"]
-                impact = _compute_impact(defn, {
+                impact, decomp = _compute_impact(defn, {
                     "rank_position": _clamp(1.0 - (rank / TOP_50_RANK)),
                     "risk_score": risk,
                     "effective_coverage": eff_cov,
@@ -196,13 +203,16 @@ def _detect_character_events(db: SupplyCoreDb) -> list[dict[str, Any]]:
                     title=f"Entered top {TOP_50_RANK} risk (rank #{rank})",
                     detail={"rank": rank, "previous_rank": rank_prev, **profile_snapshot},
                     profile=prof, now_str=now_str,
+                    impact_decomposition=decomp,
+                    threshold_info={"threshold": f"rank <= {TOP_50_RANK}", "actual": rank,
+                                    "margin": TOP_50_RANK - rank, "hysteresis": defn.hysteresis_margin},
                 ))
 
         # ── Detection: Top 200 rank entry ──
         elif rank is not None and rank <= TOP_200_RANK:
             if rank_prev is None or rank_prev > TOP_200_RANK:
                 defn = EVENT_TYPE_MAP["risk_rank_entry_top200"]
-                impact = _compute_impact(defn, {
+                impact, decomp = _compute_impact(defn, {
                     "rank_position": _clamp(1.0 - (rank / TOP_200_RANK)),
                     "risk_score": risk,
                     "effective_coverage": eff_cov,
@@ -212,6 +222,9 @@ def _detect_character_events(db: SupplyCoreDb) -> list[dict[str, Any]]:
                     title=f"Entered top {TOP_200_RANK} risk (rank #{rank})",
                     detail={"rank": rank, "previous_rank": rank_prev, **profile_snapshot},
                     profile=prof, now_str=now_str,
+                    impact_decomposition=decomp,
+                    threshold_info={"threshold": f"rank <= {TOP_200_RANK}", "actual": rank,
+                                    "margin": TOP_200_RANK - rank, "hysteresis": defn.hysteresis_margin},
                 ))
 
         # ── Detection: Percentile bucket escalation ──
@@ -226,7 +239,7 @@ def _detect_character_events(db: SupplyCoreDb) -> list[dict[str, Any]]:
                 if curr_idx < prev_idx:  # Lower index = higher risk bucket
                     defn = EVENT_TYPE_MAP["percentile_escalation"]
                     jump = (prev_idx - curr_idx) / len(bucket_order)
-                    impact = _compute_impact(defn, {
+                    impact, decomp = _compute_impact(defn, {
                         "percentile_jump": jump,
                         "risk_score": risk,
                         "confidence": conf,
@@ -237,13 +250,16 @@ def _detect_character_events(db: SupplyCoreDb) -> list[dict[str, Any]]:
                         detail={"previous_bucket": prev_bucket, "current_bucket": current_bucket,
                                 "percentile": pct, **profile_snapshot},
                         profile=prof, now_str=now_str,
+                        impact_decomposition=decomp,
+                        threshold_info={"threshold": f"bucket escalation", "previous_bucket": prev_bucket,
+                                        "current_bucket": current_bucket, "hysteresis": defn.hysteresis_margin},
                     ))
 
         # ── Detection: Risk score surge ──
         if delta_24h >= RISK_SURGE_DELTA_THRESHOLD:
             defn = EVENT_TYPE_MAP["risk_score_surge"]
-            impact = _compute_impact(defn, {
-                "delta_magnitude": _clamp(delta_24h / 0.3),  # 0.3 delta = max impact
+            impact, decomp = _compute_impact(defn, {
+                "delta_magnitude": _clamp(delta_24h / 0.3),
                 "risk_score": risk,
                 "new_signals_24h": _clamp(new_24h / 5.0),
             })
@@ -252,6 +268,10 @@ def _detect_character_events(db: SupplyCoreDb) -> list[dict[str, Any]]:
                 title=f"Risk score surged +{delta_24h:.3f} in 24h (now {risk:.3f})",
                 detail={"delta_24h": delta_24h, "new_signals_24h": new_24h, **profile_snapshot},
                 profile=prof, now_str=now_str,
+                impact_decomposition=decomp,
+                threshold_info={"threshold": f"delta_24h >= {RISK_SURGE_DELTA_THRESHOLD}",
+                                "actual": round(delta_24h, 4),
+                                "margin": round(delta_24h - RISK_SURGE_DELTA_THRESHOLD, 4)},
             ))
 
         # ── Detection: Rank jump ──
@@ -259,7 +279,7 @@ def _detect_character_events(db: SupplyCoreDb) -> list[dict[str, Any]]:
             rank_improvement = rank_prev - rank  # positive = moved up
             if rank_improvement >= RANK_JUMP_THRESHOLD:
                 defn = EVENT_TYPE_MAP["rank_jump"]
-                impact = _compute_impact(defn, {
+                impact, decomp = _compute_impact(defn, {
                     "rank_jump_magnitude": _clamp(rank_improvement / 100.0),
                     "risk_score": risk,
                     "effective_coverage": eff_cov,
@@ -270,6 +290,10 @@ def _detect_character_events(db: SupplyCoreDb) -> list[dict[str, Any]]:
                     detail={"rank": rank, "previous_rank": rank_prev,
                             "jump": rank_improvement, **profile_snapshot},
                     profile=prof, now_str=now_str,
+                    impact_decomposition=decomp,
+                    threshold_info={"threshold": f"rank_improvement >= {RANK_JUMP_THRESHOLD}",
+                                    "actual": rank_improvement,
+                                    "margin": rank_improvement - RANK_JUMP_THRESHOLD},
                 ))
 
         # ── Detection: New high-weight signal ──
@@ -288,7 +312,7 @@ def _detect_character_events(db: SupplyCoreDb) -> list[dict[str, Any]]:
                 # Only first-time signals (reinforcement_count = 1 means brand new)
                 if int(sig.get("reinforcement_count") or 1) <= 1:
                     defn = EVENT_TYPE_MAP["new_high_weight_signal"]
-                    impact = _compute_impact(defn, {
+                    impact, decomp = _compute_impact(defn, {
                         "signal_weight": _clamp(sig_defn.weight_default / 0.20),
                         "signal_value": _clamp(float(sig.get("signal_value") or 0)),
                         "risk_score": risk,
@@ -299,15 +323,20 @@ def _detect_character_events(db: SupplyCoreDb) -> list[dict[str, Any]]:
                         detail={"signal_type": sig["signal_type"],
                                 "signal_value": float(sig.get("signal_value") or 0),
                                 "signal_weight": sig_defn.weight_default,
+                                "signal_confidence": sig_confidence,
                                 **profile_snapshot},
                         profile=prof, now_str=now_str,
                         subtype=sig["signal_type"],
+                        impact_decomposition=decomp,
+                        threshold_info={"threshold": f"weight >= {HIGH_WEIGHT_SIGNAL_THRESHOLD}",
+                                        "actual": sig_defn.weight_default,
+                                        "gates": f"confidence >= 0.4 (actual: {sig_confidence:.2f}), freshness >= 0.3 (actual: {fresh:.2f})"},
                     ))
 
         # ── Detection: Multi-domain activation ──
         if domain_count >= MULTI_DOMAIN_THRESHOLD:
             defn = EVENT_TYPE_MAP["multi_domain_activation"]
-            impact = _compute_impact(defn, {
+            impact, decomp = _compute_impact(defn, {
                 "domain_count": _clamp(domain_count / 5.0),
                 "risk_score": risk,
                 "effective_coverage": eff_cov,
@@ -317,12 +346,15 @@ def _detect_character_events(db: SupplyCoreDb) -> list[dict[str, Any]]:
                 title=f"Active across {domain_count} signal domains",
                 detail={"domain_count": domain_count, **profile_snapshot},
                 profile=prof, now_str=now_str,
+                impact_decomposition=decomp,
+                threshold_info={"threshold": f"domains >= {MULTI_DOMAIN_THRESHOLD}",
+                                "actual": domain_count, "margin": domain_count - MULTI_DOMAIN_THRESHOLD},
             ))
 
         # ── Detection: Freshness degradation ──
         if fresh < FRESHNESS_DEGRADATION_THRESHOLD and sig_count > 3:
             defn = EVENT_TYPE_MAP["freshness_degradation"]
-            impact = _compute_impact(defn, {
+            impact, decomp = _compute_impact(defn, {
                 "freshness_drop": _clamp(1.0 - fresh),
                 "risk_score": risk,
                 "signal_count": _clamp(sig_count / 15.0),
@@ -332,12 +364,17 @@ def _detect_character_events(db: SupplyCoreDb) -> list[dict[str, Any]]:
                 title=f"Profile freshness degraded to {fresh:.2f}",
                 detail={"freshness": fresh, "signal_count": sig_count, **profile_snapshot},
                 profile=prof, now_str=now_str,
+                impact_decomposition=decomp,
+                threshold_info={"threshold": f"freshness < {FRESHNESS_DEGRADATION_THRESHOLD}",
+                                "actual": round(fresh, 4),
+                                "margin": round(FRESHNESS_DEGRADATION_THRESHOLD - fresh, 4),
+                                "hysteresis": defn.hysteresis_margin},
             ))
 
         # ── Detection: Coverage expansion ──
         if eff_cov > 0.6 and new_24h >= 2:
             defn = EVENT_TYPE_MAP["coverage_expansion"]
-            impact = _compute_impact(defn, {
+            impact, decomp = _compute_impact(defn, {
                 "coverage_increase": _clamp(eff_cov),
                 "risk_score": risk,
                 "confidence": conf,
@@ -348,6 +385,9 @@ def _detect_character_events(db: SupplyCoreDb) -> list[dict[str, Any]]:
                 detail={"effective_coverage": eff_cov, "new_signals_24h": new_24h,
                         **profile_snapshot},
                 profile=prof, now_str=now_str,
+                impact_decomposition=decomp,
+                threshold_info={"threshold": "coverage > 0.6 AND new_signals >= 2",
+                                "actual_coverage": round(eff_cov, 4), "actual_new_signals": new_24h},
             ))
 
     return candidates
@@ -362,8 +402,15 @@ def _make_candidate(
     profile: dict[str, Any],
     now_str: str,
     subtype: str = "",
+    impact_decomposition: dict[str, float] | None = None,
+    threshold_info: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build an event candidate dict."""
+    # Enrich detail_json with impact decomposition and threshold metadata
+    if impact_decomposition:
+        detail["_impact_decomposition"] = impact_decomposition
+    if threshold_info:
+        detail["_threshold_info"] = threshold_info
     return {
         "entity_type": defn.entity_type,
         "entity_id": entity_id,
@@ -455,8 +502,17 @@ def _upsert_events(db: SupplyCoreDb, candidates: list[dict[str, Any]]) -> tuple[
 
             severity_changed = new_severity != current_severity
 
-            # Re-activate if it was resolved/expired
-            new_state = "active" if existing["state"] in ("resolved", "expired") else existing["state"]
+            # Re-activate if it was resolved/expired.
+            # Suppressed events only reactivate if materially worsened.
+            if existing["state"] == "suppressed":
+                if is_worsening:
+                    new_state = "active"  # Material worsening overrides suppression
+                else:
+                    new_state = "suppressed"  # Stay suppressed
+            elif existing["state"] in ("resolved", "expired"):
+                new_state = "active"
+            else:
+                new_state = existing["state"]
 
             db.execute("""
                 UPDATE intelligence_events
@@ -619,6 +675,19 @@ def _passes_hysteresis(defn: EventTypeDefinition, prof: dict[str, Any]) -> bool:
 # Expire old events (housekeeping)
 # ---------------------------------------------------------------------------
 
+def _unsuppress_expired(db: SupplyCoreDb) -> int:
+    """Reactivate suppressed events whose suppression period has expired."""
+    now_str = _now_sql()
+    result = db.execute("""
+        UPDATE intelligence_events
+        SET state = 'active', suppressed_until = NULL, last_updated_at = %s
+        WHERE state = 'suppressed'
+          AND suppressed_until IS NOT NULL
+          AND suppressed_until <= UTC_TIMESTAMP()
+    """, [now_str])
+    return result if isinstance(result, int) else 0
+
+
 def _expire_stale_events(db: SupplyCoreDb) -> int:
     """Expire events that have been resolved for over 30 days or
     active but not updated for over 14 days.
@@ -665,7 +734,12 @@ def run_cip_event_engine(db: SupplyCoreDb) -> JobResult:
     created, updated, resolved = _upsert_events(db, candidates)
     logger.info("cip_event_engine: created=%d, updated=%d, resolved=%d", created, updated, resolved)
 
-    # 3. Housekeeping
+    # 3. Unsuppress expired suppressions
+    unsuppressed = _unsuppress_expired(db)
+    if unsuppressed:
+        logger.info("cip_event_engine: unsuppressed %d events", unsuppressed)
+
+    # 4. Housekeeping
     expired = _expire_stale_events(db)
     if expired:
         logger.info("cip_event_engine: expired %d stale events", expired)

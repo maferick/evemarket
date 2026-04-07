@@ -52,6 +52,35 @@ function ie_filter_url(array $overrides = []): string
     return '/intelligence-events/?' . http_build_query($params);
 }
 
+/**
+ * Format a datetime string as a relative age (e.g. "3d 5h", "2h 14m", "< 1m").
+ */
+function ie_relative_age(string $datetime): string
+{
+    if ($datetime === '') {
+        return '—';
+    }
+    $ts = strtotime($datetime);
+    if ($ts === false) {
+        return '—';
+    }
+    $diff = time() - $ts;
+    if ($diff < 60) {
+        return '< 1m';
+    }
+    if ($diff < 3600) {
+        return (int) ($diff / 60) . 'm';
+    }
+    if ($diff < 86400) {
+        $h = (int) ($diff / 3600);
+        $m = (int) (($diff % 3600) / 60);
+        return $h . 'h ' . $m . 'm';
+    }
+    $d = (int) ($diff / 86400);
+    $h = (int) (($diff % 86400) / 3600);
+    return $d . 'd ' . $h . 'h';
+}
+
 include __DIR__ . '/../../src/views/partials/header.php';
 ?>
 
@@ -119,7 +148,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
     <!-- Filters -->
     <div class="mt-4 flex flex-wrap items-center gap-2 text-xs">
         <span class="text-muted">State:</span>
-        <?php foreach (['active', 'acknowledged', 'resolved', 'expired', 'all'] as $s): ?>
+        <?php foreach (['active', 'acknowledged', 'suppressed', 'resolved', 'expired', 'all'] as $s): ?>
             <a href="<?= ie_filter_url(['state' => $s, 'page' => '1']) ?>"
                class="rounded px-2 py-1 <?= $filterState === $s ? 'bg-accent/20 text-accent font-semibold' : 'text-slate-400 hover:text-slate-200' ?>"><?= ucfirst($s) ?></a>
         <?php endforeach; ?>
@@ -166,12 +195,13 @@ include __DIR__ . '/../../src/views/partials/header.php';
                     <th class="px-3 py-2 text-right">
                         <a href="<?= ie_filter_url(['sort' => 'first_detected_at', 'dir' => ($sortBy === 'first_detected_at' && $sortDir === 'DESC') ? 'ASC' : 'DESC']) ?>" class="hover:text-slate-200">Detected</a>
                     </th>
+                    <th class="px-3 py-2 text-right" title="How long this event has existed / been in current state">Age</th>
                     <th class="px-3 py-2 text-right">Inspect</th>
                 </tr>
                 </thead>
                 <tbody>
                 <?php if ($events === []): ?>
-                    <tr><td colspan="9" class="px-3 py-6 text-sm text-muted">No events matching filters.</td></tr>
+                    <tr><td colspan="10" class="px-3 py-6 text-sm text-muted">No events matching filters.</td></tr>
                 <?php else: ?>
                     <?php foreach ($events as $ev): ?>
                         <?php
@@ -187,6 +217,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                         $familyClass = ($ev['event_family'] ?? '') === 'threat' ? 'text-red-400' : 'text-cyan-400';
                         $stateIcon = match ($ev['state'] ?? '') {
                             'acknowledged' => '<span class="text-amber-400" title="Acknowledged">&#9679;</span>',
+                            'suppressed'   => '<span class="text-slate-400" title="Suppressed">&#8856;</span>',
                             'resolved'     => '<span class="text-emerald-400" title="Resolved">&#10003;</span>',
                             'expired'      => '<span class="text-slate-500" title="Expired">&#10005;</span>',
                             default        => '',
@@ -227,6 +258,14 @@ include __DIR__ . '/../../src/views/partials/header.php';
                                 <?php endif; ?>
                             </td>
                             <td class="px-3 py-2 text-right text-xs text-muted"><?= htmlspecialchars((string) ($ev['first_detected_at'] ?? ''), ENT_QUOTES) ?></td>
+                            <td class="px-3 py-2 text-right text-xs">
+                                <?php
+                                $age = ie_relative_age((string) ($ev['first_detected_at'] ?? ''));
+                                $ageD = ($ev['first_detected_at'] ?? '') !== '' ? (int) ((time() - strtotime((string) $ev['first_detected_at'])) / 86400) : 0;
+                                $ageClass = $ageD >= 7 ? 'text-orange-400' : ($ageD >= 3 ? 'text-amber-400' : 'text-slate-400');
+                                ?>
+                                <span class="<?= $ageClass ?>"><?= $age ?></span>
+                            </td>
                             <td class="px-3 py-2 text-right"><a class="text-accent" href="/intelligence-events/view.php?id=<?= (int) $ev['id'] ?>">Detail</a></td>
                         </tr>
                     <?php endforeach; ?>
