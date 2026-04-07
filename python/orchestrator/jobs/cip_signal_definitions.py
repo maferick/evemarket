@@ -372,7 +372,7 @@ def run_seed_signal_definitions(db: SupplyCoreDb) -> JobResult:
         return JobResult(
             status="success",
             summary=f"Seeded {rows_written} signal definitions",
-            started_at=job.started_at, finished_at=job.finished_at,
+            started_at="", finished_at="",
             duration_ms=0, rows_seen=len(SIGNAL_DEFINITIONS),
             rows_processed=len(SIGNAL_DEFINITIONS), rows_written=rows_written,
             rows_skipped=0, rows_failed=0, batches_completed=1,

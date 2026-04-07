@@ -468,7 +468,7 @@ def run_cip_fusion(db: SupplyCoreDb) -> JobResult:
         finish_job_run(db, job, status="success", rows_processed=0, rows_written=0)
         return JobResult(
             status="success", summary="No signals to fuse",
-            started_at=job.started_at, finished_at=job.finished_at,
+            started_at="", finished_at="",
             duration_ms=0, rows_seen=0, rows_processed=0, rows_written=0,
             rows_skipped=0, rows_failed=0, batches_completed=0,
             checkpoint_before=None, checkpoint_after=None,
@@ -516,7 +516,7 @@ def run_cip_fusion(db: SupplyCoreDb) -> JobResult:
     return JobResult(
         status="success",
         summary=f"Fused {total_written} profiles from {len(all_signals)} signals across {len(by_character)} characters",
-        started_at=job.started_at, finished_at=job.finished_at,
+        started_at="", finished_at="",
         duration_ms=elapsed, rows_seen=len(all_signals),
         rows_processed=len(all_signals), rows_written=total_written,
         rows_skipped=0, rows_failed=0,

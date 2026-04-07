@@ -475,7 +475,7 @@ def run_cip_signal_emitter(db: SupplyCoreDb) -> JobResult:
     return JobResult(
         status="success",
         summary=f"Emitted {total_written} signals from {len(adapters)} adapters",
-        started_at=job.started_at, finished_at=job.finished_at,
+        started_at="", finished_at="",
         duration_ms=elapsed, rows_seen=total_written,
         rows_processed=total_written, rows_written=total_written,
         rows_skipped=0, rows_failed=0, batches_completed=len(adapters),
