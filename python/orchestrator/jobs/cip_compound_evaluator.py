@@ -149,7 +149,7 @@ def run_cip_compound_evaluator(db: SupplyCoreDb) -> JobResult:
         finish_job_run(db, job, status="success", rows_processed=0, rows_written=0)
         return JobResult(
             status="success", summary="No recent profiles to evaluate",
-            started_at=job.started_at, finished_at=job.finished_at,
+            started_at="", finished_at="",
             duration_ms=0, rows_seen=0, rows_processed=0, rows_written=0,
             rows_skipped=0, rows_failed=0, batches_completed=0,
             checkpoint_before=None, checkpoint_after=None,
@@ -326,7 +326,7 @@ def run_cip_compound_evaluator(db: SupplyCoreDb) -> JobResult:
     return JobResult(
         status="success",
         summary=f"Compounds: {created} created, {updated} updated, {deactivated} deactivated",
-        started_at=job.started_at, finished_at=job.finished_at,
+        started_at="", finished_at="",
         duration_ms=elapsed, rows_seen=len(char_ids),
         rows_processed=len(char_ids), rows_written=total,
         rows_skipped=0, rows_failed=0, batches_completed=1,

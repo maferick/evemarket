@@ -173,7 +173,7 @@ def run_cip_compound_analytics(db: SupplyCoreDb) -> JobResult:
     return JobResult(
         status="success",
         summary=f"Compound analytics: {rows_written} snapshots for {today}",
-        started_at=job.started_at, finished_at=job.finished_at,
+        started_at="", finished_at="",
         duration_ms=elapsed, rows_seen=len(ENABLED_COMPOUNDS),
         rows_processed=len(ENABLED_COMPOUNDS), rows_written=rows_written,
         rows_skipped=0, rows_failed=0, batches_completed=1,

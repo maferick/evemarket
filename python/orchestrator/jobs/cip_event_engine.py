@@ -932,7 +932,7 @@ def run_cip_event_engine(db: SupplyCoreDb) -> JobResult:
     return JobResult(
         status="success",
         summary=f"Events: {created} created, {updated} updated, {resolved} resolved, {expired} expired",
-        started_at=job.started_at, finished_at=job.finished_at,
+        started_at="", finished_at="",
         duration_ms=elapsed, rows_seen=len(candidates),
         rows_processed=len(candidates), rows_written=total_actions,
         rows_skipped=0, rows_failed=0, batches_completed=1,

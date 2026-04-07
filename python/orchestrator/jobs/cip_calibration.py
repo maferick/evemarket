@@ -53,7 +53,7 @@ def run_cip_calibration(db: SupplyCoreDb) -> JobResult:
         elapsed = int((time.monotonic() - t0) * 1000)
         return JobResult(
             status="success", summary="Calibration frozen by admin override",
-            started_at=job.started_at, finished_at=job.finished_at,
+            started_at="", finished_at="",
             duration_ms=elapsed, rows_seen=0, rows_processed=0, rows_written=0,
             rows_skipped=0, rows_failed=0, batches_completed=0,
             checkpoint_before=None, checkpoint_after=None,
@@ -291,7 +291,7 @@ def run_cip_calibration(db: SupplyCoreDb) -> JobResult:
     return JobResult(
         status="success",
         summary=f"Calibration: surge={calibrated_surge:.4f}, rank_jump={calibrated_rank_jump}, freshness={calibrated_freshness:.2f}, noise={noise_ratio:.3f}",
-        started_at=job.started_at, finished_at=job.finished_at,
+        started_at="", finished_at="",
         duration_ms=elapsed, rows_seen=total_profiled,
         rows_processed=total_profiled, rows_written=1,
         rows_skipped=0, rows_failed=0, batches_completed=1,
