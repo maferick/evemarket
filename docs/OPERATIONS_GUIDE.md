@@ -99,17 +99,26 @@ sudo ./scripts/install-services.sh
 
 **Manual installation:**
 ```bash
-sudo cp ops/systemd/supplycore-sync-worker.service /etc/systemd/system/
-sudo cp ops/systemd/supplycore-sync-worker@.service /etc/systemd/system/
-sudo cp ops/systemd/supplycore-compute-worker.service /etc/systemd/system/
-sudo cp ops/systemd/supplycore-compute-worker@.service /etc/systemd/system/
+# Lane-based services (recommended — isolates workloads)
+sudo cp ops/systemd/supplycore-lane-realtime.service /etc/systemd/system/
+sudo cp ops/systemd/supplycore-lane-ingestion.service /etc/systemd/system/
+sudo cp ops/systemd/supplycore-lane-compute.service /etc/systemd/system/
+sudo cp ops/systemd/supplycore-lane-maintenance.service /etc/systemd/system/
 sudo cp ops/systemd/supplycore-zkill.service /etc/systemd/system/
 sudo cp ops/systemd/supplycore-worker.env.example /etc/default/supplycore-worker
 
 sudo systemctl daemon-reload
-sudo systemctl enable --now supplycore-sync-worker.service
-sudo systemctl enable --now supplycore-compute-worker.service
+sudo systemctl enable --now supplycore-lane-realtime.service
+sudo systemctl enable --now supplycore-lane-ingestion.service
+sudo systemctl enable --now supplycore-lane-compute.service
+sudo systemctl enable --now supplycore-lane-maintenance.service
 sudo systemctl enable --now supplycore-zkill.service
+```
+
+Alternatively, use the monolithic loop runner (all jobs in one process):
+```bash
+sudo cp ops/systemd/supplycore-loop-runner.service /etc/systemd/system/
+sudo systemctl enable --now supplycore-loop-runner.service
 ```
 
 **Prepare log directories:**
@@ -341,9 +350,11 @@ bash scripts/test-all-sync-jobs.sh --allow-live --verbose
 # Check all SupplyCore services
 systemctl list-units 'supplycore-*' --no-pager
 
-# Individual service status
-systemctl status supplycore-sync-worker.service --no-pager
-systemctl status supplycore-compute-worker.service --no-pager
+# Individual lane service status
+systemctl status supplycore-lane-realtime.service --no-pager
+systemctl status supplycore-lane-ingestion.service --no-pager
+systemctl status supplycore-lane-compute.service --no-pager
+systemctl status supplycore-lane-maintenance.service --no-pager
 systemctl status supplycore-zkill.service --no-pager
 
 # Scheduler health probe
@@ -491,19 +502,17 @@ ORDER BY next_run_at;
 
 **Symptom:** Workers restarting frequently or `memory_abort_threshold_reached` in logs.
 
-1. Check systemd memory limits:
-   - Compute workers: `MemoryMax=1G` (default)
-   - Sync workers: `MemoryMax=768M` (default)
+1. Check systemd memory limits per lane:
+   - Realtime: `MemoryMax=2G`
+   - Ingestion: `MemoryMax=1G`
+   - Compute: `MemoryMax=3G`
+   - Maintenance: `MemoryMax=512M`
 
 2. Reduce batch sizes in settings:
    - `neo4j.sync_battle_batch_size`
    - `neo4j.sync_battle_max_batches_per_run`
 
-3. Scale horizontally instead:
-   ```bash
-   sudo systemctl enable --now supplycore-compute-worker@2.service
-   sudo systemctl enable --now supplycore-compute-worker@3.service
-   ```
+3. Adjust max-parallel per lane in the systemd unit file
 
 4. Check for unbounded queries:
    ```sql
@@ -519,11 +528,14 @@ ORDER BY next_run_at;
 ### Stop All Workers
 
 ```bash
-sudo systemctl stop supplycore-sync-worker.service
-sudo systemctl stop supplycore-compute-worker.service
+# Lane-based services
+sudo systemctl stop supplycore-lane-realtime.service
+sudo systemctl stop supplycore-lane-ingestion.service
+sudo systemctl stop supplycore-lane-compute.service
+sudo systemctl stop supplycore-lane-maintenance.service
 sudo systemctl stop supplycore-zkill.service
-# Also stop any scaled instances
-sudo systemctl stop 'supplycore-*-worker@*.service'
+# Or stop everything at once
+sudo systemctl stop 'supplycore-lane-*.service' supplycore-zkill.service
 ```
 
 ### Clear All Job State (Nuclear Option)

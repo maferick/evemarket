@@ -58,9 +58,45 @@ python -m orchestrator supervisor [--app-root PATH] [--verbose]
 
 ---
 
-#### `worker-pool`
+#### `loop-runner`
 
-Run the continuous worker pool. This is the primary production execution path.
+Run the tier-by-tier loop runner. This is the primary production execution path.
+Use `--lane` to run a specific execution lane, or omit for all jobs.
+
+```bash
+python -m orchestrator loop-runner [OPTIONS]
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--app-root PATH` | auto | Application root directory |
+| `--max-parallel N` | 6 | Max concurrent jobs per tier |
+| `--fast-pause SEC` | 5.0 | Seconds between fast-loop cycles |
+| `--background-pause SEC` | 30.0 | Seconds between background-loop cycles |
+| `--lane NAME` | all | Only run jobs in this lane (`realtime`/`ingestion`/`compute`/`maintenance`) |
+| `--once` | false | Run one cycle and exit |
+| `--fast-only` | false | Only run the fast loop |
+| `--background-only` | false | Only run the background loop |
+| `--verbose` | false | Enable verbose logging |
+
+**Examples:**
+```bash
+# Run the realtime lane (dashboards, alerts, market syncs)
+python -m orchestrator loop-runner --lane realtime --max-parallel 4
+
+# Run the compute lane (graph, battle, theater)
+python -m orchestrator loop-runner --lane compute --max-parallel 4
+
+# One-shot validation of a single lane
+python -m orchestrator loop-runner --lane realtime --once --verbose
+
+# Monolithic mode (all jobs, no lane filtering)
+python -m orchestrator loop-runner --max-parallel 6
+```
+
+#### `worker-pool` (legacy)
+
+Legacy queue-based worker pool. Replaced by `loop-runner` with lane services.
 
 ```bash
 python -m orchestrator worker-pool [OPTIONS]
@@ -75,18 +111,6 @@ python -m orchestrator worker-pool [OPTIONS]
 | `--execution-modes MODES` | `python,php` | Execution modes |
 | `--once` | false | Execute one job and exit |
 | `--verbose` | false | Enable verbose logging |
-
-**Examples:**
-```bash
-# Production sync worker
-python -m orchestrator worker-pool --queues sync --workload-classes sync --execution-modes python
-
-# Production compute worker
-python -m orchestrator worker-pool --queues compute --workload-classes compute --execution-modes python
-
-# One-shot test run
-python -m orchestrator worker-pool --queues compute --workload-classes compute --once --verbose
-```
 
 ---
 
@@ -887,7 +911,9 @@ SELECT * FROM sync_state ORDER BY updated_at DESC LIMIT 20;
 ```bash
 php bin/scheduler_health.php
 cat storage/run/orchestrator-heartbeat.json
-systemctl status supplycore-compute-worker.service
-systemctl status supplycore-sync-worker.service
+systemctl status supplycore-lane-realtime.service
+systemctl status supplycore-lane-ingestion.service
+systemctl status supplycore-lane-compute.service
+systemctl status supplycore-lane-maintenance.service
 systemctl status supplycore-zkill.service
 ```

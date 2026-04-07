@@ -23,7 +23,7 @@ STALE_UNITS=(
   supplycore-php-compute-worker@.service
   supplycore-orchestrator.service
   supplycore-worker@.service
-  # Legacy queue-based workers — replaced by supplycore-loop-runner.service
+  # Legacy queue-based workers — replaced by loop-runner / lane services
   supplycore-sync-worker.service
   supplycore-sync-worker@.service
   supplycore-compute-worker.service
@@ -355,21 +355,20 @@ if [[ ${CONFIGURE_LOCAL_PHP} == true ]]; then
   DB_PASSWORD=$(prompt_secret "Database password" true)
 fi
 
-INSTALL_LOOP_RUNNER=true
-if ! prompt_yes_no "Install the loop runner (replaces separate sync/compute workers)?" "Y"; then
-  INSTALL_LOOP_RUNNER=false
-fi
-LOOP_RUNNER_MAX_PARALLEL=6
-if [[ ${INSTALL_LOOP_RUNNER} == true ]]; then
-  LOOP_RUNNER_MAX_PARALLEL=$(prompt_number "Max parallel jobs per tier for the loop runner?" "6")
+echo
+echo "Runner mode:"
+echo "  1) Lane runners (recommended) — 4 isolated services by workload type"
+echo "     realtime / ingestion / compute / maintenance"
+echo "  2) Monolithic loop runner — single service running all jobs"
+echo
+RUNNER_MODE="lanes"
+if ! prompt_yes_no "Use lane-based runners (recommended)?" "Y"; then
+  RUNNER_MODE="monolithic"
 fi
 
-# Legacy worker counts — only used if loop runner is NOT installed.
-SYNC_COUNT=0
-COMPUTE_COUNT=0
-if [[ ${INSTALL_LOOP_RUNNER} == false ]]; then
-  SYNC_COUNT=$(prompt_number "How many sync workers should be enabled?" "1")
-  COMPUTE_COUNT=$(prompt_number "How many compute workers should be enabled?" "1")
+LOOP_RUNNER_MAX_PARALLEL=6
+if [[ ${RUNNER_MODE} == "monolithic" ]]; then
+  LOOP_RUNNER_MAX_PARALLEL=$(prompt_number "Max parallel jobs per tier for the loop runner?" "6")
 fi
 INSTALL_ZKILL=false
 if prompt_yes_no "Install and enable the dedicated zKill worker?" "Y"; then
@@ -469,16 +468,16 @@ fi
 
 # ===========================  Render and install units  ====================
 
+# Lane-based services (always render so they're available if user switches later)
+for lane_unit in supplycore-lane-realtime.service supplycore-lane-ingestion.service supplycore-lane-compute.service supplycore-lane-maintenance.service; do
+  render_unit "${REPO_ROOT}/ops/systemd/${lane_unit}" "${SYSTEMD_DIR}/${lane_unit}"
+done
+
+# Monolithic loop runner (always render as fallback)
 render_unit "${REPO_ROOT}/ops/systemd/supplycore-loop-runner.service" "${SYSTEMD_DIR}/supplycore-loop-runner.service"
-# Patch max-parallel if the user chose a non-default value.
-if [[ ${INSTALL_LOOP_RUNNER} == true && ${LOOP_RUNNER_MAX_PARALLEL} -ne 6 ]]; then
+if [[ ${RUNNER_MODE} == "monolithic" && ${LOOP_RUNNER_MAX_PARALLEL} -ne 6 ]]; then
   sed -i "s|--max-parallel 6|--max-parallel ${LOOP_RUNNER_MAX_PARALLEL}|" "${SYSTEMD_DIR}/supplycore-loop-runner.service"
 fi
-
-render_unit "${REPO_ROOT}/ops/systemd/supplycore-sync-worker.service" "${SYSTEMD_DIR}/supplycore-sync-worker.service"
-render_unit "${REPO_ROOT}/ops/systemd/supplycore-compute-worker.service" "${SYSTEMD_DIR}/supplycore-compute-worker.service"
-render_sync_instance_unit "${SYSTEMD_DIR}/supplycore-sync-worker@.service"
-render_compute_instance_unit "${SYSTEMD_DIR}/supplycore-compute-worker@.service"
 render_unit "${REPO_ROOT}/ops/systemd/supplycore-zkill.service" "${SYSTEMD_DIR}/supplycore-zkill.service"
 render_unit "${REPO_ROOT}/ops/systemd/supplycore-evewho-runner.service" "${SYSTEMD_DIR}/supplycore-evewho-runner.service"
 if [[ ${INSTALL_INFLUX} == true ]]; then
@@ -499,24 +498,29 @@ fi
 
 services_to_enable=()
 
-if [[ ${INSTALL_LOOP_RUNNER} == true ]]; then
-  services_to_enable+=("supplycore-loop-runner.service")
+if [[ ${RUNNER_MODE} == "lanes" ]]; then
+  services_to_enable+=(
+    "supplycore-lane-realtime.service"
+    "supplycore-lane-ingestion.service"
+    "supplycore-lane-compute.service"
+    "supplycore-lane-maintenance.service"
+  )
+  # Disable the monolithic runner if it was previously enabled.
+  if systemctl is-enabled supplycore-loop-runner.service >/dev/null 2>&1; then
+    echo "Disabling monolithic loop runner (replaced by lane services)"
+    systemctl stop supplycore-loop-runner.service 2>/dev/null || true
+    systemctl disable supplycore-loop-runner.service 2>/dev/null || true
+  fi
 else
-  if (( SYNC_COUNT == 1 )); then
-    services_to_enable+=("supplycore-sync-worker.service")
-  elif (( SYNC_COUNT > 1 )); then
-    for ((i = 1; i <= SYNC_COUNT; i++)); do
-      services_to_enable+=("supplycore-sync-worker@${i}.service")
-    done
-  fi
-
-  if (( COMPUTE_COUNT == 1 )); then
-    services_to_enable+=("supplycore-compute-worker.service")
-  elif (( COMPUTE_COUNT > 1 )); then
-    for ((i = 1; i <= COMPUTE_COUNT; i++)); do
-      services_to_enable+=("supplycore-compute-worker@${i}.service")
-    done
-  fi
+  services_to_enable+=("supplycore-loop-runner.service")
+  # Disable lane services if they were previously enabled.
+  for lane_svc in supplycore-lane-realtime.service supplycore-lane-ingestion.service supplycore-lane-compute.service supplycore-lane-maintenance.service; do
+    if systemctl is-enabled "${lane_svc}" >/dev/null 2>&1; then
+      echo "Disabling lane service ${lane_svc} (using monolithic runner)"
+      systemctl stop "${lane_svc}" 2>/dev/null || true
+      systemctl disable "${lane_svc}" 2>/dev/null || true
+    fi
+  done
 fi
 
 if [[ ${INSTALL_ZKILL} == true ]]; then
@@ -549,23 +553,13 @@ if [[ -f ${LOCAL_CONFIG_PATH} ]]; then
 fi
 echo
 echo "Active services:"
-if [[ ${INSTALL_LOOP_RUNNER} == true ]]; then
-  echo "  systemctl status supplycore-loop-runner.service"
+if [[ ${RUNNER_MODE} == "lanes" ]]; then
+  echo "  systemctl status supplycore-lane-realtime.service"
+  echo "  systemctl status supplycore-lane-ingestion.service"
+  echo "  systemctl status supplycore-lane-compute.service"
+  echo "  systemctl status supplycore-lane-maintenance.service"
 else
-  if (( SYNC_COUNT == 1 )); then
-    echo "  systemctl status supplycore-sync-worker.service"
-  elif (( SYNC_COUNT > 1 )); then
-    for ((i = 1; i <= SYNC_COUNT; i++)); do
-      echo "  systemctl status supplycore-sync-worker@${i}.service"
-    done
-  fi
-  if (( COMPUTE_COUNT == 1 )); then
-    echo "  systemctl status supplycore-compute-worker.service"
-  elif (( COMPUTE_COUNT > 1 )); then
-    for ((i = 1; i <= COMPUTE_COUNT; i++)); do
-      echo "  systemctl status supplycore-compute-worker@${i}.service"
-    done
-  fi
+  echo "  systemctl status supplycore-loop-runner.service"
 fi
 if [[ ${INSTALL_ZKILL} == true ]]; then
   echo "  systemctl status supplycore-zkill.service"

@@ -1,22 +1,21 @@
-"""Simple tier-by-tier loop runner.
+"""Lane-aware tier-by-tier loop runner.
 
 Replaces the database-queue-backed worker pool with a straightforward approach:
 
   1. Compute execution tiers from the job dependency graph.
-  2. For each tier, run all jobs in parallel (respecting concurrency groups).
+  2. For each tier, run all due jobs in parallel (respecting concurrency groups).
   3. Wait for every job in the tier to finish before starting the next tier.
   4. When all tiers are done, start over immediately.
 
 Two loops run concurrently inside the same process:
 
-  - **Fast loop**: jobs with ``opportunistic_background=False``.  These are the
-    critical, frequent jobs (syncs, dashboards, compute).  A full cycle typically
-    completes in a few minutes.
-  - **Background loop**: jobs with ``opportunistic_background=True``.  These are
-    slow, occasional jobs (historical backfills, forecasting, pruning).  They run
-    independently so they never block the fast loop.
+  - **Fast loop**: jobs with ``opportunistic_background=False``.
+  - **Background loop**: jobs with ``opportunistic_background=True``.
 
-One process, one systemd service, no database queuing.
+When ``--lane`` is specified, only jobs matching that lane are included.
+This allows running multiple lane-specific systemd services for workload
+isolation (realtime, ingestion, compute, maintenance) while keeping a
+single codebase.  Without ``--lane``, all jobs run (backward compatible).
 """
 
 from __future__ import annotations
@@ -27,6 +26,7 @@ import signal
 import socket
 import time
 import threading
+from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed, Future
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -61,12 +61,16 @@ class JobOutcome:
     result: dict[str, Any] = field(default_factory=dict)
 
 
+_REALTIME_WARN_SECONDS = 15.0  # Warn if a realtime job exceeds this runtime.
+
+
 def _run_single_job(
     job_key: str,
     db: SupplyCoreDb,
     raw_config: dict[str, Any],
     logger: LoggerAdapter,
     timeout_seconds: int,
+    lane: str = "",
 ) -> JobOutcome:
     """Execute one job synchronously and return its outcome."""
     started = time.monotonic()
@@ -89,6 +93,18 @@ def _run_single_job(
         status = str(result.get("status") or "success")
 
         _finalize_job(db, job_key, result, logger)
+
+        # Realtime lane governance: warn if a job is drifting heavy.
+        if lane == "realtime" and elapsed > _REALTIME_WARN_SECONDS:
+            logger.warning(
+                f"realtime job {job_key} took {elapsed:.1f}s (>{_REALTIME_WARN_SECONDS}s threshold)",
+                payload={
+                    "event": "loop_runner.realtime_slow",
+                    "job_key": job_key,
+                    "duration_seconds": round(elapsed, 1),
+                    "threshold_seconds": _REALTIME_WARN_SECONDS,
+                },
+            )
 
         # Advance next_due_at so the job isn't re-dispatched before its
         # configured interval.  If the job signalled has_more (it has
@@ -166,6 +182,7 @@ def _run_concurrency_group(
     logger: LoggerAdapter,
     definitions: dict[str, dict[str, Any]],
     shutdown_event: threading.Event,
+    lane: str = "",
 ) -> list[JobOutcome]:
     """Run jobs in a concurrency group sequentially."""
     outcomes: list[JobOutcome] = []
@@ -173,7 +190,7 @@ def _run_concurrency_group(
         if shutdown_event.is_set():
             break
         timeout = int(definitions.get(job_key, {}).get("timeout_seconds", 300))
-        outcome = _run_single_job(job_key, db, raw_config, logger, timeout)
+        outcome = _run_single_job(job_key, db, raw_config, logger, timeout, lane=lane)
         outcomes.append(outcome)
         logger.info(
             f"job finished: {job_key}",
@@ -198,6 +215,7 @@ def run_tier(
     graph_nodes: dict,
     max_parallel: int,
     shutdown_event: threading.Event,
+    lane: str = "",
 ) -> list[JobOutcome]:
     """Run all jobs in a single tier, respecting concurrency groups.
 
@@ -231,7 +249,7 @@ def run_tier(
             if shutdown_event.is_set():
                 break
             timeout = int(definitions.get(job_key, {}).get("timeout_seconds", 300))
-            fut = pool.submit(_run_single_job, job_key, db, raw_config, logger, timeout)
+            fut = pool.submit(_run_single_job, job_key, db, raw_config, logger, timeout, lane)
             fut.job_key = job_key  # type: ignore[attr-defined]
             futures.append(fut)
 
@@ -241,7 +259,7 @@ def run_tier(
                 break
             fut = pool.submit(
                 _run_concurrency_group,
-                group_jobs, db, raw_config, logger, definitions, shutdown_event,
+                group_jobs, db, raw_config, logger, definitions, shutdown_event, lane,
             )
             fut.job_key = f"[group:{group_name}]"  # type: ignore[attr-defined]
             futures.append(fut)
@@ -287,13 +305,24 @@ def run_tier(
 def _select_jobs(
     definitions: dict[str, dict[str, Any]],
     background: bool,
+    lane: str | None = None,
 ) -> dict[str, dict[str, Any]]:
-    """Filter job definitions to either the fast loop or background loop."""
-    return {
+    """Filter job definitions to either the fast loop or background loop.
+
+    When *lane* is specified, only jobs assigned to that lane are included.
+    """
+    filtered = {
         key: defn
         for key, defn in definitions.items()
         if bool(defn.get("opportunistic_background", False)) == background
     }
+    if lane:
+        filtered = {
+            key: defn
+            for key, defn in filtered.items()
+            if defn.get("lane", "compute") == lane
+        }
+    return filtered
 
 
 def _run_loop(
@@ -307,6 +336,7 @@ def _run_loop(
     pause_between_cycles: float,
     run_once: bool = False,
     known_external_keys: set[str] | None = None,
+    lane: str = "",
 ) -> None:
     """Run the tier-by-tier loop continuously (or once)."""
     graph_nodes = build_graph(definitions, known_external_keys=known_external_keys)
@@ -349,6 +379,8 @@ def _run_loop(
         total_success = 0
         total_failed = 0
         total_skipped = 0
+        slowest_key = ""
+        slowest_seconds = 0.0
 
         # Query the database once per cycle to find which jobs are actually
         # due.  This prevents re-running jobs that just finished and still
@@ -394,6 +426,7 @@ def _run_loop(
                 graph_nodes=graph_nodes,
                 max_parallel=max_parallel,
                 shutdown_event=shutdown_event,
+                lane=lane,
             )
 
             for o in outcomes:
@@ -403,6 +436,10 @@ def _run_loop(
                     total_skipped += 1
                 else:
                     total_success += 1
+                # Track slowest job for observability.
+                if o.duration_seconds > slowest_seconds:
+                    slowest_seconds = o.duration_seconds
+                    slowest_key = o.job_key
 
         cycle_elapsed = time.monotonic() - cycle_start
         logger.info(
@@ -411,11 +448,18 @@ def _run_loop(
             payload={
                 "event": "loop_runner.cycle_end",
                 "loop": loop_name,
+                "lane": lane or "all",
                 "cycle": cycle,
+                "jobs_considered": len(all_job_keys),
+                "jobs_due": due_count,
+                "jobs_dispatched": total_success + total_failed,
+                "jobs_skipped_not_due": skipped_not_due,
                 "duration_seconds": round(cycle_elapsed, 1),
                 "success": total_success,
                 "failed": total_failed,
                 "skipped": total_skipped,
+                "slowest_job_key": slowest_key,
+                "slowest_job_seconds": round(slowest_seconds, 1),
             },
         )
 
@@ -432,8 +476,11 @@ def _run_loop(
 # ---------------------------------------------------------------------------
 
 def _write_state_file(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json_dumps_safe(payload, indent=2) + "\n", encoding="utf-8")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json_dumps_safe(payload, indent=2) + "\n", encoding="utf-8")
+    except OSError:
+        pass  # best-effort; don't crash the runner over a heartbeat file
 
 
 # ---------------------------------------------------------------------------
@@ -455,8 +502,33 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                         help="Only run the fast loop (skip background jobs)")
     parser.add_argument("--background-only", action="store_true",
                         help="Only run the background loop (skip fast jobs)")
+    parser.add_argument("--lane", default=None,
+                        help="Only run jobs in this lane (realtime/ingestion/compute/maintenance)")
     parser.add_argument("--verbose", action="store_true")
     return parser.parse_args(argv)
+
+
+_VALID_LANES = {"realtime", "ingestion", "compute", "maintenance"}
+
+
+def _validate_lane_assignments(definitions: dict[str, dict[str, Any]]) -> list[str]:
+    """Validate lane configuration at startup.  Returns list of issues (empty = ok)."""
+    issues: list[str] = []
+    for key, defn in definitions.items():
+        if "lane" not in defn:
+            issues.append(f"{key}: missing lane assignment")
+        elif defn["lane"] not in _VALID_LANES:
+            issues.append(f"{key}: unknown lane '{defn['lane']}'")
+    # No concurrency group may span multiple lanes.
+    group_lanes: dict[str, set[str]] = defaultdict(set)
+    for key, defn in definitions.items():
+        cg = defn.get("concurrency_group", "")
+        if cg:
+            group_lanes[cg].add(defn.get("lane", ""))
+    for group, lanes in group_lanes.items():
+        if len(lanes) > 1:
+            issues.append(f"concurrency group '{group}' spans lanes: {sorted(lanes)}")
+    return issues
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -466,6 +538,11 @@ def main(argv: list[str] | None = None) -> int:
     worker_settings = dict(raw_config.get("workers") or {})
 
     log_file = Path(worker_settings.get("worker_log_file", app_root / "storage/logs/worker.log"))
+    # When running in lane mode, use a per-lane log file so multiple
+    # lane processes don't interleave writes in the same file.
+    lane = args.lane or ""
+    if lane:
+        log_file = log_file.with_name(f"lane-{lane}.log")
     logger = configure_logging(verbose=args.verbose, log_file=log_file)
     worker_id = f"loop-{socket.gethostname()}-{os.getpid()}"
 
@@ -481,7 +558,24 @@ def main(argv: list[str] | None = None) -> int:
             )
         return 1
 
+    # Validate lane assignments before starting.
+    lane_issues = _validate_lane_assignments(WORKER_JOB_DEFINITIONS)
+    if lane_issues:
+        for issue in lane_issues:
+            logger.error(
+                "lane assignment validation failure",
+                payload={"event": "loop_runner.lane_audit.failed", "issue": issue},
+            )
+        return 1
+
+    if lane and lane not in _VALID_LANES:
+        logger.error(f"unknown lane '{lane}', valid lanes: {sorted(_VALID_LANES)}")
+        return 1
+
     state_file = Path(worker_settings.get("pool_state_file", app_root / "storage/run/loop-runner-heartbeat.json"))
+    # Per-lane state file so multiple lane processes don't overwrite each other.
+    if lane:
+        state_file = state_file.with_name(f"lane-{lane}-heartbeat.json")
 
     shutdown_event = threading.Event()
 
@@ -497,10 +591,11 @@ def main(argv: list[str] | None = None) -> int:
     signal.signal(signal.SIGINT, _handle_signal)
 
     logger.info(
-        f"loop runner starting (worker_id={worker_id}, max_parallel={args.max_parallel})",
+        f"loop runner starting (worker_id={worker_id}, lane={lane or 'all'}, max_parallel={args.max_parallel})",
         payload={
             "event": "loop_runner.start",
             "worker_id": worker_id,
+            "lane": lane or "all",
             "max_parallel": args.max_parallel,
             "fast_pause": args.fast_pause,
             "background_pause": args.background_pause,
@@ -513,16 +608,19 @@ def main(argv: list[str] | None = None) -> int:
         "ts": utc_now_iso(),
         "worker_id": worker_id,
         "status": "starting",
+        "lane": lane or "all",
         "max_parallel": args.max_parallel,
     })
 
-    fast_defs = _select_jobs(WORKER_JOB_DEFINITIONS, background=False)
-    bg_defs = _select_jobs(WORKER_JOB_DEFINITIONS, background=True)
+    fast_defs = _select_jobs(WORKER_JOB_DEFINITIONS, background=False, lane=lane or None)
+    bg_defs = _select_jobs(WORKER_JOB_DEFINITIONS, background=True, lane=lane or None)
 
     logger.info(
-        f"job split: {len(fast_defs)} fast-loop jobs, {len(bg_defs)} background jobs",
+        f"job split: {len(fast_defs)} fast-loop jobs, {len(bg_defs)} background jobs"
+        + (f" (lane={lane})" if lane else ""),
         payload={
             "event": "loop_runner.job_split",
+            "lane": lane or "all",
             "fast_jobs": sorted(fast_defs.keys()),
             "background_jobs": sorted(bg_defs.keys()),
         },
@@ -530,9 +628,12 @@ def main(argv: list[str] | None = None) -> int:
 
     threads: list[threading.Thread] = []
 
-    # Each loop needs to know about the other loop's job keys so that
-    # cross-loop dependencies are silently stripped instead of logged as
-    # "unknown jobs" warnings.
+    # Each loop needs to know about the other loop's job keys AND all keys
+    # from other lanes so that cross-loop/cross-lane dependencies are
+    # silently stripped instead of logged as "unknown jobs" warnings.
+    all_keys = set(WORKER_JOB_DEFINITIONS.keys())
+    lane_keys = set(fast_defs.keys()) | set(bg_defs.keys())
+    external_lane_keys = all_keys - lane_keys
     fast_keys = set(fast_defs.keys())
     bg_keys = set(bg_defs.keys())
 
@@ -541,7 +642,7 @@ def main(argv: list[str] | None = None) -> int:
             target=_run_loop,
             args=("fast", fast_defs, db, raw_config, logger,
                   args.max_parallel, shutdown_event, args.fast_pause, args.once),
-            kwargs={"known_external_keys": bg_keys},
+            kwargs={"known_external_keys": bg_keys | external_lane_keys, "lane": lane},
             name="fast-loop",
             daemon=True,
         )
@@ -552,7 +653,7 @@ def main(argv: list[str] | None = None) -> int:
             target=_run_loop,
             args=("background", bg_defs, db, raw_config, logger,
                   args.max_parallel, shutdown_event, args.background_pause, args.once),
-            kwargs={"known_external_keys": fast_keys},
+            kwargs={"known_external_keys": fast_keys | external_lane_keys, "lane": lane},
             name="background-loop",
             daemon=True,
         )
@@ -568,6 +669,7 @@ def main(argv: list[str] | None = None) -> int:
                 "ts": utc_now_iso(),
                 "worker_id": worker_id,
                 "status": "running",
+                "lane": lane or "all",
                 "max_parallel": args.max_parallel,
                 "memory_usage_bytes": resident_memory_bytes(),
                 "threads": [t.name for t in threads if t.is_alive()],

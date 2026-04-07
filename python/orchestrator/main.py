@@ -69,6 +69,7 @@ def parse_args() -> argparse.Namespace:
     loop_runner.add_argument("--once", action="store_true", help="Run one cycle and exit")
     loop_runner.add_argument("--fast-only", action="store_true", help="Only run fast loop")
     loop_runner.add_argument("--background-only", action="store_true", help="Only run background loop")
+    loop_runner.add_argument("--lane", default=None, help="Only run jobs in this lane (realtime/ingestion/compute/maintenance)")
     loop_runner.add_argument("--verbose", action="store_true")
 
     zkill = subparsers.add_parser("zkill-worker", help="Run the dedicated zKill continuous worker")
@@ -256,6 +257,7 @@ def main() -> int:
             *( ["--once"] if args.once else [] ),
             *( ["--fast-only"] if args.fast_only else [] ),
             *( ["--background-only"] if args.background_only else [] ),
+            *( ["--lane", args.lane] if args.lane else [] ),
             *( ["--verbose"] if args.verbose else [] ),
         ])
     if command == "zkill-worker":
