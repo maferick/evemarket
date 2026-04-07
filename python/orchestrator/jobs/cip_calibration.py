@@ -42,6 +42,24 @@ def run_cip_calibration(db: SupplyCoreDb) -> JobResult:
     t0 = time.monotonic()
     today = datetime.now(UTC).strftime("%Y-%m-%d")
 
+    # Check if calibration is frozen via admin override
+    frozen_row = db.fetch_one(
+        "SELECT setting_value FROM app_settings WHERE setting_key = 'cip_calibration_frozen'"
+    )
+    if frozen_row and frozen_row["setting_value"] == "1":
+        logger.info("cip_calibration: FROZEN by admin override, skipping")
+        finish_job_run(db, job, status="success", rows_processed=0, rows_written=0,
+                       meta={"frozen": True})
+        elapsed = int((time.monotonic() - t0) * 1000)
+        return JobResult(
+            status="success", summary="Calibration frozen by admin override",
+            started_at=job.started_at, finished_at=job.finished_at,
+            duration_ms=elapsed, rows_seen=0, rows_processed=0, rows_written=0,
+            rows_skipped=0, rows_failed=0, batches_completed=0,
+            checkpoint_before=None, checkpoint_after=None,
+            has_more=False, error_text=None, warnings=["Calibration frozen by admin"], meta={"frozen": True},
+        )
+
     # ── Population stats ─────────────────────────────────────────────
     pop = db.fetch_one("""
         SELECT COUNT(*) AS total,
@@ -165,6 +183,28 @@ def run_cip_calibration(db: SupplyCoreDb) -> JobResult:
     calibrated_surge = max(0.02, min(0.30, calibrated_surge))
     calibrated_rank_jump = max(5, min(100, calibrated_rank_jump))
     calibrated_freshness = max(0.15, min(0.70, fresh_p10))
+
+    # ── Apply admin overrides (if set) ────────────────────────────────
+    overrides = db.fetch_all(
+        "SELECT setting_key, setting_value FROM app_settings "
+        "WHERE setting_key IN ('cip_override_surge_delta', 'cip_override_rank_jump', 'cip_override_freshness_floor')"
+    )
+    for ov in overrides:
+        val = (ov.get("setting_value") or "").strip()
+        if val == "" or val.lower() == "auto":
+            continue
+        try:
+            if ov["setting_key"] == "cip_override_surge_delta":
+                calibrated_surge = max(0.01, min(0.50, float(val)))
+                logger.info("cip_calibration: surge_delta overridden to %.4f", calibrated_surge)
+            elif ov["setting_key"] == "cip_override_rank_jump":
+                calibrated_rank_jump = max(3, min(200, int(float(val))))
+                logger.info("cip_calibration: rank_jump overridden to %d", calibrated_rank_jump)
+            elif ov["setting_key"] == "cip_override_freshness_floor":
+                calibrated_freshness = max(0.05, min(0.90, float(val)))
+                logger.info("cip_calibration: freshness_floor overridden to %.2f", calibrated_freshness)
+        except (ValueError, TypeError):
+            pass
 
     # ── Priority bands ────────────────────────────────────────────────
     band_critical = risk_pcts["p99"]

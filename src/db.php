@@ -18928,3 +18928,157 @@ function db_compound_outcome_summary(): array
          ORDER BY compound_type, outcome"
     );
 }
+
+// ---------------------------------------------------------------------------
+// CIP Admin & Operational Health (Phase 5 hardening)
+// ---------------------------------------------------------------------------
+
+/**
+ * Toggle a compound definition's enabled state.
+ */
+function db_compound_toggle_enabled(string $compoundType, bool $enabled): bool
+{
+    if ($compoundType === '') {
+        return false;
+    }
+    db()->prepare(
+        "UPDATE intelligence_compound_definitions
+         SET enabled = ?
+         WHERE compound_type = ?"
+    )->execute([$enabled ? 1 : 0, $compoundType]);
+    return true;
+}
+
+/**
+ * Get all compound definitions with their enabled state.
+ */
+function db_compound_definitions_all(): array
+{
+    return db_select(
+        "SELECT compound_type, display_name, enabled, version,
+                base_weight, severity_default, score_mode
+         FROM intelligence_compound_definitions
+         ORDER BY compound_type"
+    );
+}
+
+/**
+ * Calibration history (last N snapshots).
+ */
+function db_calibration_history(int $limit = 14): array
+{
+    return db_select(
+        "SELECT * FROM intelligence_calibration_snapshots
+         ORDER BY snapshot_date DESC
+         LIMIT ?",
+        [$limit]
+    );
+}
+
+/**
+ * Override a specific calibration threshold.
+ * Stores the override in app_settings so it persists across calibration runs.
+ * The calibration job reads these overrides and respects them.
+ *
+ * Keys: cip_override_surge_delta, cip_override_rank_jump, cip_override_freshness_floor
+ * Value "auto" or empty = use calibrated value.
+ */
+function db_calibration_override_set(string $key, string $value): bool
+{
+    $allowed = ['cip_override_surge_delta', 'cip_override_rank_jump', 'cip_override_freshness_floor', 'cip_calibration_frozen'];
+    if (!in_array($key, $allowed, true)) {
+        return false;
+    }
+    db()->prepare(
+        "INSERT INTO app_settings (setting_key, setting_value)
+         VALUES (?, ?)
+         ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)"
+    )->execute([$key, $value]);
+    return true;
+}
+
+/**
+ * Get all CIP override settings.
+ */
+function db_calibration_overrides_get(): array
+{
+    $keys = ['cip_override_surge_delta', 'cip_override_rank_jump', 'cip_override_freshness_floor', 'cip_calibration_frozen'];
+    $placeholders = implode(',', array_fill(0, count($keys), '?'));
+    $rows = db_select(
+        "SELECT setting_key, setting_value FROM app_settings WHERE setting_key IN ({$placeholders})",
+        $keys
+    );
+    $result = [];
+    foreach ($rows as $r) {
+        $result[$r['setting_key']] = $r['setting_value'];
+    }
+    return $result;
+}
+
+/**
+ * Operational health metrics for the CIP system.
+ */
+function db_cip_operational_health(): array
+{
+    // Event volume by state
+    $eventsByState = db_select(
+        "SELECT state, COUNT(*) AS cnt FROM intelligence_events GROUP BY state"
+    );
+
+    // Event creation rate (last 7 days, per day)
+    $dailyCreation = db_select(
+        "SELECT DATE(first_detected_at) AS event_date, COUNT(*) AS cnt
+         FROM intelligence_events
+         WHERE first_detected_at >= DATE_SUB(CURDATE(), INTERVAL 7 DAY)
+         GROUP BY DATE(first_detected_at)
+         ORDER BY event_date DESC"
+    );
+
+    // Compound activation summary
+    $compoundCounts = db_select(
+        "SELECT compound_type, COUNT(*) AS active_count,
+                AVG(score) AS avg_score, AVG(confidence) AS avg_conf
+         FROM character_intelligence_compound_signals
+         GROUP BY compound_type
+         ORDER BY active_count DESC"
+    );
+
+    // Profile coverage
+    $profileStats = db_select_one(
+        "SELECT COUNT(*) AS total_profiles,
+                AVG(risk_score) AS avg_risk,
+                AVG(confidence) AS avg_confidence,
+                AVG(freshness) AS avg_freshness,
+                AVG(effective_coverage) AS avg_coverage,
+                AVG(signal_count) AS avg_signals
+         FROM character_intelligence_profiles
+         WHERE signal_count > 0"
+    );
+
+    // Event engine last run
+    $lastRun = db_select_one(
+        "SELECT finished_at, rows_processed, rows_written, meta_json
+         FROM scheduler_job_runs
+         WHERE job_key = 'cip_event_engine'
+         ORDER BY finished_at DESC
+         LIMIT 1"
+    );
+
+    // Suppression stats
+    $suppressStats = db_select_one(
+        "SELECT COUNT(*) AS total_suppressed,
+                COUNT(CASE WHEN suppressed_until > NOW() THEN 1 END) AS still_suppressed,
+                COUNT(CASE WHEN suppressed_until <= NOW() THEN 1 END) AS expired_suppressions
+         FROM intelligence_events
+         WHERE state = 'suppressed' OR suppressed_until IS NOT NULL"
+    );
+
+    return [
+        'events_by_state' => $eventsByState,
+        'daily_creation' => $dailyCreation,
+        'compound_counts' => $compoundCounts,
+        'profile_stats' => $profileStats,
+        'last_run' => $lastRun,
+        'suppress_stats' => $suppressStats,
+    ];
+}

@@ -384,6 +384,7 @@ function nav_items(): array
                 ['label' => 'Alliance Dossiers', 'path' => '/alliance-dossiers'],
                 ['label' => 'Opposition Intel', 'path' => '/opposition-intelligence'],
                 ['label' => 'Intelligence Events', 'path' => '/intelligence-events'],
+                ['label' => 'CIP Admin', 'path' => '/intelligence-events/admin.php'],
                 ['label' => 'Pilot Lookup', 'path' => '/battle-intelligence/pilot-lookup.php'],
                 ['label' => 'Suspicion Leaderboard', 'path' => '/battle-intelligence'],
                 ['label' => 'Battle Anomalies', 'path' => '/battle-intelligence/battles.php'],
