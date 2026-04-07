@@ -32,6 +32,66 @@ class SignalDefinition:
     tactical_eligible: bool
     current_version: str
     weight_default: float
+    # Normalization: how raw source values become fusion-ready [0,1] values
+    normalization: str          # bounded_0_1, binary, percentile, zscore_capped, piecewise
+    norm_params: dict[str, float] | None = None  # e.g. {"cap": 3.0} for zscore_capped
+
+
+# ---------------------------------------------------------------------------
+# Confidence rubric — shared contract for all adapters
+# ---------------------------------------------------------------------------
+# Every adapter must compute confidence against this rubric.  The four axes
+# are evaluated independently and the minimum is taken as the final confidence.
+#
+# 1. Sample sufficiency  — enough underlying observations?
+#      <3 events → 0.2,  3-5 → 0.5,  6-10 → 0.75,  >10 → 0.9
+# 2. Recency             — how fresh is the source data?
+#      <7d → 1.0,  7-30d → 0.8,  30-60d → 0.5,  >60d → 0.3
+# 3. Cohort grounding    — was the value compared against a peer group?
+#      yes → 1.0,  partial → 0.7,  no → 0.5
+# 4. Source completeness — did the pipeline have all its inputs?
+#      full → 1.0,  degraded → 0.6
+#
+# Adapters use the helper below to standardize confidence computation.
+
+def compute_signal_confidence(
+    sample_count: int,
+    age_days: float = 0.0,
+    cohort_grounded: bool = True,
+    source_complete: bool = True,
+) -> float:
+    """Compute confidence per the shared CIP rubric.
+
+    Returns a value in [0, 1] representing how much the fused score should
+    trust this signal measurement.
+    """
+    # Sample sufficiency
+    if sample_count < 3:
+        sample_conf = 0.20
+    elif sample_count <= 5:
+        sample_conf = 0.50
+    elif sample_count <= 10:
+        sample_conf = 0.75
+    else:
+        sample_conf = 0.90
+
+    # Recency
+    if age_days < 7:
+        recency_conf = 1.0
+    elif age_days < 30:
+        recency_conf = 0.8
+    elif age_days < 60:
+        recency_conf = 0.5
+    else:
+        recency_conf = 0.3
+
+    # Cohort grounding
+    cohort_conf = 1.0 if cohort_grounded else 0.5
+
+    # Source completeness
+    completeness_conf = 1.0 if source_complete else 0.6
+
+    return min(sample_conf, recency_conf, cohort_conf, completeness_conf)
 
 
 # ---------------------------------------------------------------------------
@@ -48,6 +108,7 @@ SIGNAL_DEFINITIONS: list[SignalDefinition] = [
         decay_type="exponential", half_life_days=30,
         cost_class="high", tactical_eligible=False,
         current_version="v2", weight_default=0.20,
+        normalization="bounded_0_1", norm_params=None,
     ),
     SignalDefinition(
         signal_type="high_sustain_frequency",
@@ -57,6 +118,7 @@ SIGNAL_DEFINITIONS: list[SignalDefinition] = [
         decay_type="exponential", half_life_days=30,
         cost_class="high", tactical_eligible=False,
         current_version="v2", weight_default=0.12,
+        normalization="bounded_0_1", norm_params=None,
     ),
     SignalDefinition(
         signal_type="cross_side_rate",
@@ -66,6 +128,7 @@ SIGNAL_DEFINITIONS: list[SignalDefinition] = [
         decay_type="exponential", half_life_days=30,
         cost_class="high", tactical_eligible=False,
         current_version="v2", weight_default=0.10,
+        normalization="bounded_0_1", norm_params=None,
     ),
     SignalDefinition(
         signal_type="enemy_efficiency_uplift",
@@ -75,6 +138,7 @@ SIGNAL_DEFINITIONS: list[SignalDefinition] = [
         decay_type="exponential", half_life_days=30,
         cost_class="high", tactical_eligible=False,
         current_version="v2", weight_default=0.15,
+        normalization="zscore_capped", norm_params={"cap": 3.0},
     ),
     SignalDefinition(
         signal_type="behavioral_risk_score",
@@ -84,6 +148,7 @@ SIGNAL_DEFINITIONS: list[SignalDefinition] = [
         decay_type="exponential", half_life_days=21,
         cost_class="high", tactical_eligible=False,
         current_version="v1", weight_default=0.12,
+        normalization="bounded_0_1", norm_params=None,
     ),
     SignalDefinition(
         signal_type="engagement_avoidance",
@@ -93,6 +158,7 @@ SIGNAL_DEFINITIONS: list[SignalDefinition] = [
         decay_type="exponential", half_life_days=30,
         cost_class="high", tactical_eligible=False,
         current_version="v1", weight_default=0.08,
+        normalization="bounded_0_1", norm_params=None,
     ),
 
     # ── Graph domain (from graph_community_detection, graph_intelligence) ──
@@ -104,6 +170,7 @@ SIGNAL_DEFINITIONS: list[SignalDefinition] = [
         decay_type="exponential", half_life_days=14,
         cost_class="very_high", tactical_eligible=False,
         current_version="v1", weight_default=0.06,
+        normalization="percentile", norm_params=None,
     ),
     SignalDefinition(
         signal_type="bridge_score",
@@ -113,6 +180,7 @@ SIGNAL_DEFINITIONS: list[SignalDefinition] = [
         decay_type="exponential", half_life_days=14,
         cost_class="very_high", tactical_eligible=False,
         current_version="v1", weight_default=0.10,
+        normalization="piecewise", norm_params={"low": 0.0, "mid": 2.0, "high": 10.0},
     ),
     SignalDefinition(
         signal_type="co_occurrence_density",
@@ -122,6 +190,7 @@ SIGNAL_DEFINITIONS: list[SignalDefinition] = [
         decay_type="exponential", half_life_days=14,
         cost_class="high", tactical_eligible=False,
         current_version="v1", weight_default=0.08,
+        normalization="zscore_capped", norm_params={"cap": 3.0},
     ),
     SignalDefinition(
         signal_type="cross_side_cluster_score",
@@ -131,6 +200,7 @@ SIGNAL_DEFINITIONS: list[SignalDefinition] = [
         decay_type="exponential", half_life_days=14,
         cost_class="high", tactical_eligible=False,
         current_version="v1", weight_default=0.06,
+        normalization="bounded_0_1", norm_params=None,
     ),
     SignalDefinition(
         signal_type="neighbor_anomaly_score",
@@ -140,6 +210,7 @@ SIGNAL_DEFINITIONS: list[SignalDefinition] = [
         decay_type="exponential", half_life_days=14,
         cost_class="high", tactical_eligible=False,
         current_version="v1", weight_default=0.05,
+        normalization="bounded_0_1", norm_params=None,
     ),
 
     # ── Temporal domain (from temporal_behavior_detection) ──
@@ -151,6 +222,7 @@ SIGNAL_DEFINITIONS: list[SignalDefinition] = [
         decay_type="exponential", half_life_days=14,
         cost_class="medium", tactical_eligible=True,
         current_version="v1", weight_default=0.06,
+        normalization="bounded_0_1", norm_params=None,
     ),
     SignalDefinition(
         signal_type="weekday_profile_shift",
@@ -160,6 +232,7 @@ SIGNAL_DEFINITIONS: list[SignalDefinition] = [
         decay_type="exponential", half_life_days=14,
         cost_class="medium", tactical_eligible=True,
         current_version="v1", weight_default=0.04,
+        normalization="bounded_0_1", norm_params=None,
     ),
     SignalDefinition(
         signal_type="cadence_burstiness",
@@ -169,6 +242,7 @@ SIGNAL_DEFINITIONS: list[SignalDefinition] = [
         decay_type="exponential", half_life_days=14,
         cost_class="medium", tactical_eligible=True,
         current_version="v1", weight_default=0.04,
+        normalization="bounded_0_1", norm_params=None,
     ),
     SignalDefinition(
         signal_type="reactivation_after_dormancy",
@@ -178,6 +252,7 @@ SIGNAL_DEFINITIONS: list[SignalDefinition] = [
         decay_type="step", half_life_days=30,
         cost_class="medium", tactical_eligible=True,
         current_version="v1", weight_default=0.06,
+        normalization="binary", norm_params=None,
     ),
 
     # ── Movement domain (from character_movement_footprints) ──
@@ -189,6 +264,7 @@ SIGNAL_DEFINITIONS: list[SignalDefinition] = [
         decay_type="exponential", half_life_days=14,
         cost_class="medium", tactical_eligible=True,
         current_version="v1", weight_default=0.05,
+        normalization="bounded_0_1", norm_params=None,
     ),
     SignalDefinition(
         signal_type="hostile_overlap_change",
@@ -198,6 +274,7 @@ SIGNAL_DEFINITIONS: list[SignalDefinition] = [
         decay_type="exponential", half_life_days=14,
         cost_class="medium", tactical_eligible=True,
         current_version="v1", weight_default=0.06,
+        normalization="bounded_0_1", norm_params=None,
     ),
     SignalDefinition(
         signal_type="new_area_entry",
@@ -207,6 +284,7 @@ SIGNAL_DEFINITIONS: list[SignalDefinition] = [
         decay_type="exponential", half_life_days=14,
         cost_class="medium", tactical_eligible=True,
         current_version="v1", weight_default=0.04,
+        normalization="bounded_0_1", norm_params=None,
     ),
 
     # ── Relational domain (from copresence_edges, pre_op_join, etc.) ──
@@ -218,6 +296,7 @@ SIGNAL_DEFINITIONS: list[SignalDefinition] = [
         decay_type="exponential", half_life_days=21,
         cost_class="high", tactical_eligible=False,
         current_version="v1", weight_default=0.08,
+        normalization="percentile", norm_params=None,
     ),
     SignalDefinition(
         signal_type="pre_op_join",
@@ -227,6 +306,7 @@ SIGNAL_DEFINITIONS: list[SignalDefinition] = [
         decay_type="step", half_life_days=30,
         cost_class="low", tactical_eligible=True,
         current_version="v1", weight_default=0.10,
+        normalization="binary", norm_params=None,
     ),
     SignalDefinition(
         signal_type="alliance_overlap_risk",
@@ -236,6 +316,7 @@ SIGNAL_DEFINITIONS: list[SignalDefinition] = [
         decay_type="linear", half_life_days=90,
         cost_class="medium", tactical_eligible=False,
         current_version="v1", weight_default=0.05,
+        normalization="bounded_0_1", norm_params=None,
     ),
 ]
 
@@ -258,26 +339,32 @@ def run_seed_signal_definitions(db: SupplyCoreDb) -> JobResult:
             INSERT INTO intelligence_signal_definitions (
                 signal_type, signal_domain, display_name, description,
                 decay_type, half_life_days, cost_class, tactical_eligible,
-                current_version, weight_default
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                current_version, weight_default,
+                normalization_type, normalization_params_json
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON DUPLICATE KEY UPDATE
-                signal_domain     = VALUES(signal_domain),
-                display_name      = VALUES(display_name),
-                description       = VALUES(description),
-                decay_type        = VALUES(decay_type),
-                half_life_days    = VALUES(half_life_days),
-                cost_class        = VALUES(cost_class),
-                tactical_eligible = VALUES(tactical_eligible),
-                current_version   = VALUES(current_version),
-                weight_default    = VALUES(weight_default)
+                signal_domain              = VALUES(signal_domain),
+                display_name               = VALUES(display_name),
+                description                = VALUES(description),
+                decay_type                 = VALUES(decay_type),
+                half_life_days             = VALUES(half_life_days),
+                cost_class                 = VALUES(cost_class),
+                tactical_eligible          = VALUES(tactical_eligible),
+                current_version            = VALUES(current_version),
+                weight_default             = VALUES(weight_default),
+                normalization_type         = VALUES(normalization_type),
+                normalization_params_json  = VALUES(normalization_params_json)
         """
         rows_written = 0
         for defn in SIGNAL_DEFINITIONS:
+            import json as _json
+            norm_json = _json.dumps(defn.norm_params) if defn.norm_params else None
             db.execute(sql, [
                 defn.signal_type, defn.signal_domain, defn.display_name,
                 defn.description, defn.decay_type, defn.half_life_days,
                 defn.cost_class, 1 if defn.tactical_eligible else 0,
                 defn.current_version, defn.weight_default,
+                defn.normalization, norm_json,
             ])
             rows_written += 1
 

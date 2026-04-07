@@ -25,7 +25,7 @@ from ..db import SupplyCoreDb
 from ..job_result import JobResult
 from ..job_utils import finish_job_run, start_job_run
 from ..json_utils import json_dumps_safe
-from .cip_signal_definitions import SIGNAL_DEF_MAP
+from .cip_signal_definitions import SIGNAL_DEF_MAP, compute_signal_confidence
 
 logger = logging.getLogger(__name__)
 
@@ -110,8 +110,14 @@ def _emit_suspicion_signals(db: SupplyCoreDb) -> int:
         cid = row["character_id"]
         computed = row["computed_at"]
         battle_count = int(row.get("supporting_battle_count") or 0)
-        # Confidence scales with battle evidence (saturates at 10 battles)
-        base_confidence = _clamp(battle_count / 10.0)
+        # Use standardized confidence rubric
+        computed_dt = computed if isinstance(computed, datetime) else datetime.fromisoformat(str(computed))
+        age_days = max(0.0, (datetime.now(UTC) - computed_dt.replace(tzinfo=UTC)).total_seconds() / 86400.0) if computed_dt.tzinfo is None else max(0.0, (datetime.now(UTC) - computed_dt).total_seconds() / 86400.0)
+        has_cohort = row.get("cohort_z_score") is not None
+        base_confidence = compute_signal_confidence(
+            sample_count=battle_count, age_days=age_days,
+            cohort_grounded=has_cohort, source_complete=True,
+        )
 
         signals.append({
             "character_id": cid,
@@ -183,8 +189,14 @@ def _emit_graph_signals(db: SupplyCoreDb) -> int:
     for row in rows:
         cid = row["character_id"]
         computed = row["computed_at"]
-        # Graph signals are always high confidence when present
-        conf = 0.9
+        # Graph signals: high sample sufficiency (graph covers all characters),
+        # always cohort-grounded (relative to graph population)
+        computed_dt = computed if isinstance(computed, datetime) else datetime.fromisoformat(str(computed))
+        age_days = max(0.0, (datetime.now(UTC) - (computed_dt.replace(tzinfo=UTC) if computed_dt.tzinfo is None else computed_dt)).total_seconds() / 86400.0)
+        conf = compute_signal_confidence(
+            sample_count=20, age_days=age_days,
+            cohort_grounded=True, source_complete=True,
+        )
 
         mapping = [
             ("pagerank_score", "pagerank_score"),
@@ -230,12 +242,17 @@ def _emit_behavioral_scoring_signals(db: SupplyCoreDb) -> int:
     if not rows:
         return 0
 
-    confidence_map = {"high": 0.95, "medium": 0.7, "low": 0.4}
     signals: list[dict[str, Any]] = []
     for row in rows:
         cid = row["character_id"]
         computed = row["computed_at"]
-        conf = confidence_map.get(row.get("confidence_tier", "low"), 0.4)
+        kill_count = int(row.get("total_kill_count") or 0)
+        computed_dt = computed if isinstance(computed, datetime) else datetime.fromisoformat(str(computed))
+        age_days = max(0.0, (datetime.now(UTC) - (computed_dt.replace(tzinfo=UTC) if computed_dt.tzinfo is None else computed_dt)).total_seconds() / 86400.0)
+        conf = compute_signal_confidence(
+            sample_count=kill_count, age_days=age_days,
+            cohort_grounded=False, source_complete=True,
+        )
 
         signals.append({
             "character_id": cid,
@@ -272,14 +289,6 @@ _EVIDENCE_TO_SIGNAL: dict[str, str] = {
     "historical_alliance_overlap": "alliance_overlap_risk",
 }
 
-_CONFIDENCE_MAP = {
-    "high": 0.95,
-    "medium": 0.7,
-    "low": 0.4,
-    "insufficient": 0.15,
-}
-
-
 def _emit_counterintel_signals(db: SupplyCoreDb) -> int:
     """Emit temporal and relational signals from character_counterintel_evidence."""
     evidence_keys = list(_EVIDENCE_TO_SIGNAL.keys())
@@ -303,7 +312,15 @@ def _emit_counterintel_signals(db: SupplyCoreDb) -> int:
         if not signal_type:
             continue
 
-        conf = _CONFIDENCE_MAP.get(row.get("confidence_flag", "low"), 0.4)
+        computed_dt = row["computed_at"] if isinstance(row["computed_at"], datetime) else datetime.fromisoformat(str(row["computed_at"]))
+        age_days = max(0.0, (datetime.now(UTC) - (computed_dt.replace(tzinfo=UTC) if computed_dt.tzinfo is None else computed_dt)).total_seconds() / 86400.0)
+        has_cohort = row.get("cohort_percentile") is not None and float(row.get("cohort_percentile") or 0) > 0
+        # Evidence rows don't carry explicit sample count; use cohort percentile
+        # presence as a proxy for sufficient grounding
+        conf = compute_signal_confidence(
+            sample_count=8, age_days=age_days,
+            cohort_grounded=has_cohort, source_complete=True,
+        )
         signals.append({
             "character_id": row["character_id"],
             "signal_type": signal_type,

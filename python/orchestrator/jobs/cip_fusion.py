@@ -29,6 +29,7 @@ from ..json_utils import json_dumps_safe
 from .cip_signal_definitions import (
     ALL_SIGNAL_DOMAINS,
     SIGNAL_DEF_MAP,
+    SIGNAL_DEFINITIONS,
     SignalDefinition,
 )
 
@@ -73,6 +74,54 @@ def _compute_decay(defn: SignalDefinition, age_days: float) -> float:
         return 1.0 if age_days <= hl else 0.0
     # Fallback: exponential
     return math.pow(0.5, age_days / hl)
+
+
+# ---------------------------------------------------------------------------
+# Normalization — convert raw source values to fusion-ready [0,1]
+# ---------------------------------------------------------------------------
+
+def _normalize_value(raw: float, defn: SignalDefinition) -> float:
+    """Normalize a raw signal value to [0,1] based on its definition.
+
+    Normalization types:
+      - bounded_0_1:  clamp to [0, 1] (source already in range)
+      - binary:       1.0 if raw > 0 else 0.0
+      - percentile:   treat raw as a [0,1] percentile (clamp)
+      - zscore_capped: raw is a z-score; map to [0,1] via cap
+                       normalized = clamp(abs(raw) / cap)
+      - piecewise:    three-point piecewise linear (low→0, mid→0.5, high→1.0)
+    """
+    norm = defn.normalization
+    params = defn.norm_params or {}
+
+    if norm == "binary":
+        return 1.0 if raw > 0 else 0.0
+
+    if norm == "bounded_0_1" or norm == "percentile":
+        return _clamp(raw)
+
+    if norm == "zscore_capped":
+        cap = params.get("cap", 3.0)
+        return _clamp(abs(raw) / cap) if cap > 0 else _clamp(abs(raw))
+
+    if norm == "piecewise":
+        low = params.get("low", 0.0)
+        mid = params.get("mid", 1.0)
+        high = params.get("high", 5.0)
+        if raw <= low:
+            return 0.0
+        if raw >= high:
+            return 1.0
+        if raw <= mid:
+            return 0.5 * (raw - low) / (mid - low) if mid > low else 0.5
+        return 0.5 + 0.5 * (raw - mid) / (high - mid) if high > mid else 1.0
+
+    # Fallback: clamp
+    return _clamp(raw)
+
+
+# Total expected weight: sum of all defined signal weights (for effective coverage)
+_TOTAL_EXPECTED_WEIGHT: float = sum(d.weight_default for d in SIGNAL_DEFINITIONS)
 
 
 # ---------------------------------------------------------------------------
@@ -126,11 +175,12 @@ def _fuse_character(
             continue
 
         raw_value = float(sig.get("signal_value") or 0)
+        normalized_value = _normalize_value(raw_value, defn)
         signal_confidence = float(sig.get("confidence") or 1.0)
         weight = defn.weight_default
 
-        # Effective contribution: value × decay × confidence × weight
-        effective_value = _clamp(raw_value) * decay * signal_confidence
+        # Effective contribution: normalized_value × decay × confidence × weight
+        effective_value = normalized_value * decay * signal_confidence
         weighted_contribution = effective_value * weight
 
         domain = defn.signal_domain
@@ -151,6 +201,7 @@ def _fuse_character(
             "signal_type": signal_type,
             "domain": domain,
             "raw_value": round(raw_value, 6),
+            "normalized_value": round(normalized_value, 6),
             "decay": round(decay, 4),
             "confidence": round(signal_confidence, 4),
             "weight": round(weight, 4),
@@ -167,6 +218,8 @@ def _fuse_character(
     confidence = _clamp(total_confidence_weighted / total_weight) if total_weight > 0 else 0.0
     freshness = _clamp(total_freshness_weighted / total_weight) if total_weight > 0 else 0.0
     coverage = len(domains_with_data) / len(ALL_SIGNAL_DOMAINS)
+    # Effective coverage: how much of the total expected signal weight is active
+    effective_coverage = _clamp(total_weight / _TOTAL_EXPECTED_WEIGHT) if _TOTAL_EXPECTED_WEIGHT > 0 else 0.0
 
     # Domain sub-scores (normalized per domain)
     def _domain_score(d: str) -> float:
@@ -203,6 +256,7 @@ def _fuse_character(
         "confidence": round(confidence, 6),
         "freshness": round(freshness, 6),
         "signal_coverage": round(coverage, 6),
+        "effective_coverage": round(effective_coverage, 6),
         "signal_count": active_signal_count,
         "behavioral_score": round(_domain_score("behavioral"), 6),
         "graph_score": round(_domain_score("graph"), 6),
@@ -220,37 +274,40 @@ def _fuse_character(
 
 _UPSERT_SQL = """
     INSERT INTO character_intelligence_profiles (
-        character_id, risk_score, risk_score_previous,
-        confidence, freshness, signal_coverage, signal_count,
+        character_id, risk_score,
+        risk_score_24h_ago, risk_score_7d_ago,
+        confidence, freshness, signal_coverage, effective_coverage, signal_count,
         behavioral_score, graph_score, temporal_score,
         movement_score, relational_score,
-        risk_delta_24h, risk_delta_7d, new_signals_24h,
+        risk_score_previous_run, risk_delta_24h, risk_delta_7d, new_signals_24h,
         top_signals_json, domain_detail_json,
         computed_at, previous_computed_at
     ) VALUES (
-        %s, %s, 0,
-        %s, %s, %s, %s,
+        %s, %s,
+        0, 0,
         %s, %s, %s, %s, %s,
-        0, 0, 0,
+        %s, %s, %s, %s, %s,
+        0, 0, 0, 0,
         %s, %s,
         %s, NULL
     )
     ON DUPLICATE KEY UPDATE
-        risk_score_previous  = risk_score,
-        risk_score           = VALUES(risk_score),
-        confidence           = VALUES(confidence),
-        freshness            = VALUES(freshness),
-        signal_coverage      = VALUES(signal_coverage),
-        signal_count         = VALUES(signal_count),
-        behavioral_score     = VALUES(behavioral_score),
-        graph_score          = VALUES(graph_score),
-        temporal_score       = VALUES(temporal_score),
-        movement_score       = VALUES(movement_score),
-        relational_score     = VALUES(relational_score),
-        top_signals_json     = VALUES(top_signals_json),
-        domain_detail_json   = VALUES(domain_detail_json),
-        previous_computed_at = computed_at,
-        computed_at          = VALUES(computed_at)
+        risk_score_previous_run = risk_score,
+        risk_score              = VALUES(risk_score),
+        confidence              = VALUES(confidence),
+        freshness               = VALUES(freshness),
+        signal_coverage         = VALUES(signal_coverage),
+        effective_coverage      = VALUES(effective_coverage),
+        signal_count            = VALUES(signal_count),
+        behavioral_score        = VALUES(behavioral_score),
+        graph_score             = VALUES(graph_score),
+        temporal_score          = VALUES(temporal_score),
+        movement_score          = VALUES(movement_score),
+        relational_score        = VALUES(relational_score),
+        top_signals_json        = VALUES(top_signals_json),
+        domain_detail_json      = VALUES(domain_detail_json),
+        previous_computed_at    = computed_at,
+        computed_at             = VALUES(computed_at)
 """
 
 
@@ -261,7 +318,7 @@ def _upsert_profiles(db: SupplyCoreDb, profiles: list[dict[str, Any]], now_str: 
         db.execute(_UPSERT_SQL, [
             prof["character_id"], prof["risk_score"],
             prof["confidence"], prof["freshness"],
-            prof["signal_coverage"], prof["signal_count"],
+            prof["signal_coverage"], prof["effective_coverage"], prof["signal_count"],
             prof["behavioral_score"], prof["graph_score"],
             prof["temporal_score"], prof["movement_score"],
             prof["relational_score"],
@@ -277,21 +334,30 @@ def _upsert_profiles(db: SupplyCoreDb, profiles: list[dict[str, Any]], now_str: 
 # ---------------------------------------------------------------------------
 
 def _compute_deltas(db: SupplyCoreDb) -> None:
-    """Update delta fields by comparing current vs previous scores."""
-    # risk_delta_24h: difference from previous computation
+    """Update delta fields from history snapshots (not from previous run).
+
+    This ensures risk_delta_24h and risk_delta_7d have precise, stable
+    semantics regardless of how many times fusion runs per day.
+    """
+    # Populate risk_score_24h_ago from the closest history snapshot (~1 day ago)
     db.execute("""
-        UPDATE character_intelligence_profiles
-        SET risk_delta_24h = risk_score - risk_score_previous
-        WHERE computed_at >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL 2 HOUR)
+        UPDATE character_intelligence_profiles cip
+        INNER JOIN character_intelligence_profile_history h
+            ON h.character_id = cip.character_id
+            AND h.snapshot_date = DATE(DATE_SUB(UTC_TIMESTAMP(), INTERVAL 1 DAY))
+        SET cip.risk_score_24h_ago = h.risk_score,
+            cip.risk_delta_24h    = cip.risk_score - h.risk_score
+        WHERE cip.computed_at >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL 2 HOUR)
     """)
 
-    # risk_delta_7d: compare against history from 7 days ago
+    # Populate risk_score_7d_ago from history snapshot ~7 days ago
     db.execute("""
         UPDATE character_intelligence_profiles cip
         INNER JOIN character_intelligence_profile_history h
             ON h.character_id = cip.character_id
             AND h.snapshot_date = DATE(DATE_SUB(UTC_TIMESTAMP(), INTERVAL 7 DAY))
-        SET cip.risk_delta_7d = cip.risk_score - h.risk_score
+        SET cip.risk_score_7d_ago = h.risk_score,
+            cip.risk_delta_7d    = cip.risk_score - h.risk_score
         WHERE cip.computed_at >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL 2 HOUR)
     """)
 
@@ -314,7 +380,7 @@ def _compute_deltas(db: SupplyCoreDb) -> None:
 # ---------------------------------------------------------------------------
 
 def _compute_ranks(db: SupplyCoreDb) -> None:
-    """Assign ordinal risk ranks (1 = highest risk)."""
+    """Assign ordinal risk ranks and percentiles (1 = highest risk)."""
     # Save previous ranks
     db.execute("""
         UPDATE character_intelligence_profiles
@@ -322,16 +388,18 @@ def _compute_ranks(db: SupplyCoreDb) -> None:
         WHERE risk_rank IS NOT NULL
     """)
 
-    # Assign new ranks using a variable-based approach (MariaDB compatible)
+    # Assign new ranks and percentiles (MariaDB window functions)
     db.execute("""
         UPDATE character_intelligence_profiles cip
         INNER JOIN (
             SELECT character_id,
-                   RANK() OVER (ORDER BY risk_score DESC) AS new_rank
+                   RANK() OVER (ORDER BY risk_score DESC) AS new_rank,
+                   PERCENT_RANK() OVER (ORDER BY risk_score ASC) AS new_percentile
             FROM character_intelligence_profiles
             WHERE signal_count > 0
         ) ranked ON ranked.character_id = cip.character_id
-        SET cip.risk_rank = ranked.new_rank
+        SET cip.risk_rank       = ranked.new_rank,
+            cip.risk_percentile = ranked.new_percentile
     """)
 
 
@@ -346,13 +414,13 @@ def _snapshot_history(db: SupplyCoreDb) -> int:
         INSERT INTO character_intelligence_profile_history (
             character_id, snapshot_date,
             risk_score, confidence, freshness, signal_coverage, signal_count,
-            risk_rank,
+            risk_rank, risk_percentile,
             behavioral_score, graph_score, temporal_score,
             movement_score, relational_score
         )
         SELECT character_id, %s,
                risk_score, confidence, freshness, signal_coverage, signal_count,
-               risk_rank,
+               risk_rank, risk_percentile,
                behavioral_score, graph_score, temporal_score,
                movement_score, relational_score
         FROM character_intelligence_profiles
@@ -364,6 +432,7 @@ def _snapshot_history(db: SupplyCoreDb) -> int:
             signal_coverage  = VALUES(signal_coverage),
             signal_count     = VALUES(signal_count),
             risk_rank        = VALUES(risk_rank),
+            risk_percentile  = VALUES(risk_percentile),
             behavioral_score = VALUES(behavioral_score),
             graph_score      = VALUES(graph_score),
             temporal_score   = VALUES(temporal_score),

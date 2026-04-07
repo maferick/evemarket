@@ -27,6 +27,10 @@ CREATE TABLE IF NOT EXISTS intelligence_signal_definitions (
     current_version     VARCHAR(20)     NOT NULL DEFAULT 'v1',
     weight_default      DECIMAL(8,4)    NOT NULL DEFAULT 1.0000
         COMMENT 'Default fusion weight (overridable by recalibration)',
+    normalization_type  VARCHAR(40)     NOT NULL DEFAULT 'bounded_0_1'
+        COMMENT 'bounded_0_1, binary, percentile, zscore_capped, piecewise',
+    normalization_params_json LONGTEXT  DEFAULT NULL
+        COMMENT 'Parameters for normalization (e.g. {"cap":3.0} for zscore_capped)',
     created_at          TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at          TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
@@ -68,19 +72,25 @@ CREATE TABLE IF NOT EXISTS character_intelligence_profiles (
     -- Fused risk score
     risk_score          DECIMAL(10,6)   NOT NULL DEFAULT 0.000000
         COMMENT 'Fused risk score [0,1] across all signal domains',
-    risk_score_previous DECIMAL(10,6)   NOT NULL DEFAULT 0.000000
-        COMMENT 'Previous risk_score for delta computation',
+    risk_score_24h_ago  DECIMAL(10,6)   NOT NULL DEFAULT 0.000000
+        COMMENT 'Risk score from history snapshot ~24h ago (for precise delta)',
+    risk_score_7d_ago   DECIMAL(10,6)   NOT NULL DEFAULT 0.000000
+        COMMENT 'Risk score from history snapshot ~7d ago',
     risk_rank           INT UNSIGNED    DEFAULT NULL
         COMMENT 'Ordinal rank among all profiled characters (1 = highest risk)',
     risk_rank_previous  INT UNSIGNED    DEFAULT NULL
         COMMENT 'Previous rank for positional delta',
+    risk_percentile     DECIMAL(8,6)    DEFAULT NULL
+        COMMENT 'Percentile position [0,1] where 1.0 = highest risk',
     -- Trust surface
     confidence          DECIMAL(8,6)    NOT NULL DEFAULT 0.000000
         COMMENT 'Weighted average of signal confidences',
     freshness           DECIMAL(8,6)    NOT NULL DEFAULT 0.000000
         COMMENT 'Weighted average freshness across signals (1=all fresh, 0=all stale)',
     signal_coverage     DECIMAL(8,6)    NOT NULL DEFAULT 0.000000
-        COMMENT 'Fraction of signal domains with fresh data',
+        COMMENT 'Simple domain coverage: domains with data / total domains',
+    effective_coverage  DECIMAL(8,6)    NOT NULL DEFAULT 0.000000
+        COMMENT 'Weighted coverage: sum of active signal weights / sum of all expected weights',
     signal_count        SMALLINT UNSIGNED NOT NULL DEFAULT 0
         COMMENT 'Number of active (non-decayed) signals in this profile',
     -- Domain sub-scores (each [0,1])
@@ -89,9 +99,13 @@ CREATE TABLE IF NOT EXISTS character_intelligence_profiles (
     temporal_score      DECIMAL(10,6)   NOT NULL DEFAULT 0.000000,
     movement_score      DECIMAL(10,6)   NOT NULL DEFAULT 0.000000,
     relational_score    DECIMAL(10,6)   NOT NULL DEFAULT 0.000000,
-    -- Delta tracking
-    risk_delta_24h      DECIMAL(10,6)   NOT NULL DEFAULT 0.000000,
-    risk_delta_7d       DECIMAL(10,6)   NOT NULL DEFAULT 0.000000,
+    -- Delta tracking (all deltas computed from history snapshots, not previous run)
+    risk_score_previous_run DECIMAL(10,6) NOT NULL DEFAULT 0.000000
+        COMMENT 'Score from the immediately preceding fusion run',
+    risk_delta_24h      DECIMAL(10,6)   NOT NULL DEFAULT 0.000000
+        COMMENT 'risk_score minus score from history snapshot ~24h ago',
+    risk_delta_7d       DECIMAL(10,6)   NOT NULL DEFAULT 0.000000
+        COMMENT 'risk_score minus score from history snapshot ~7d ago',
     new_signals_24h     SMALLINT UNSIGNED NOT NULL DEFAULT 0,
     -- Top contributing signals (for quick explanation)
     top_signals_json    LONGTEXT        DEFAULT NULL
@@ -105,6 +119,7 @@ CREATE TABLE IF NOT EXISTS character_intelligence_profiles (
     updated_at          TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     INDEX idx_cip_risk (risk_score DESC),
     INDEX idx_cip_risk_rank (risk_rank),
+    INDEX idx_cip_percentile (risk_percentile DESC),
     INDEX idx_cip_delta (risk_delta_24h DESC),
     INDEX idx_cip_computed (computed_at),
     INDEX idx_cip_behavioral (behavioral_score DESC),
@@ -140,6 +155,7 @@ CREATE TABLE IF NOT EXISTS character_intelligence_profile_history (
     signal_coverage     DECIMAL(8,6)    NOT NULL,
     signal_count        SMALLINT UNSIGNED NOT NULL DEFAULT 0,
     risk_rank           INT UNSIGNED    DEFAULT NULL,
+    risk_percentile     DECIMAL(8,6)    DEFAULT NULL,
     behavioral_score    DECIMAL(10,6)   NOT NULL DEFAULT 0.000000,
     graph_score         DECIMAL(10,6)   NOT NULL DEFAULT 0.000000,
     temporal_score      DECIMAL(10,6)   NOT NULL DEFAULT 0.000000,
