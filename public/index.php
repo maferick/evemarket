@@ -9,7 +9,7 @@ $title = 'Command Dashboard';
 $liveRefreshConfig = supplycore_live_refresh_page_config('dashboard');
 $liveRefreshSummary = supplycore_live_refresh_summary($liveRefreshConfig);
 $pageHeaderBadge = 'Alliance logistics intelligence';
-$pageHeaderSummary = 'Focus this page on what changed, what needs action, and where alliance logistics can make or save ISK.';
+$pageHeaderSummary = '';
 $pageFreshness = [];
 
 include __DIR__ . '/../src/views/partials/header.php';
@@ -37,6 +37,31 @@ try {
 $doctrine = auto_doctrine_dashboard_overview();
 $dashboardFreshness = supplycore_page_freshness_view_model((array) ($intel['_freshness'] ?? []));
 $buyAll = auto_buyall_dashboard_summary();
+
+// --- Situational awareness: sov, theater, killmail counts ---
+$sitAwareness = [];
+try {
+    $sovMetrics = db_sovereignty_dashboard_metrics();
+    $sitAwareness['sov'] = $sovMetrics;
+} catch (Throwable) {
+    $sitAwareness['sov'] = null;
+}
+try {
+    $sitAwareness['theater_count'] = (int) (db_select_one('SELECT COUNT(*) AS cnt FROM theaters WHERE dismissed_at IS NULL AND start_time > DATE_SUB(NOW(), INTERVAL 7 DAY)') ?? [])['cnt'] ?? 0;
+} catch (Throwable) {
+    $sitAwareness['theater_count'] = 0;
+}
+try {
+    $sitAwareness['killmail_24h'] = (int) (db_select_one('SELECT COUNT(*) AS cnt FROM killmail_events WHERE killmail_time > DATE_SUB(NOW(), INTERVAL 24 HOUR)') ?? [])['cnt'] ?? 0;
+} catch (Throwable) {
+    $sitAwareness['killmail_24h'] = 0;
+}
+try {
+    $sovAlertCount = (int) (db_select_one('SELECT COUNT(*) AS cnt FROM sovereignty_alerts WHERE resolved_at IS NULL') ?? [])['cnt'] ?? 0;
+    $sitAwareness['sov_alerts'] = $sovAlertCount;
+} catch (Throwable) {
+    $sitAwareness['sov_alerts'] = 0;
+}
 ?>
 <?php
 $kpiThemes = [
@@ -119,22 +144,22 @@ if ($kpiCards === []) {
         [
             'label' => 'Top Opportunities',
             'value' => '—',
-            'context' => 'Computing intelligence... KPI data will appear after the first snapshot completes.',
+            'context' => 'Enable market sync in Settings → Automation & Sync to populate.',
         ],
         [
             'label' => 'Top Risks',
             'value' => '—',
-            'context' => 'Awaiting first risk analysis snapshot.',
+            'context' => 'Enable market sync in Settings → Automation & Sync to populate.',
         ],
         [
             'label' => 'Missing Seed Targets',
             'value' => '—',
-            'context' => 'Awaiting market coverage data.',
+            'context' => 'Run ESI market orders sync to populate coverage data.',
         ],
         [
             'label' => 'Overlap Coverage',
             'value' => '—',
-            'context' => 'Coverage will show once market orders sync.',
+            'context' => 'Configure trading destinations in Settings → Market & Scope.',
         ],
     ];
 }
@@ -272,7 +297,7 @@ try {
             <div>
                 <p class="eyebrow">Front-page action</p>
                 <h2 class="mt-2 section-title">Buy All</h2>
-                <p class="mt-2 section-copy">Build the next buy run around shortages, profit, and hauling impact.</p>
+                <p class="mt-2 section-copy">Shortages, profit, and hauling volume for the next run.</p>
             </div>
             <a href="<?= htmlspecialchars((string) ($buyAll['planner_href'] ?? '/buy-all?mode=blended&page=1'), ENT_QUOTES) ?>" class="btn-primary">Open Buy All Planner</a>
         </div>
@@ -326,7 +351,7 @@ try {
             <div>
                 <p class="eyebrow">Doctrine readiness</p>
                 <h2 class="mt-2 section-title">Doctrine Supply Risk</h2>
-                <p class="mt-2 section-copy">First-class doctrine signals that separate fieldable readiness from replenishment pressure.</p>
+                <p class="mt-2 section-copy">Fits blocked by local stock gaps and groups under pressure.</p>
             </div>
             <span class="badge border-rose-400/20 bg-rose-500/10 text-rose-200"><?= doctrine_format_quantity(count((array) ($doctrine['not_ready_fits'] ?? []))) ?> fits blocked</span>
         </div>
@@ -480,7 +505,7 @@ try {
             <div>
                 <p class="eyebrow">AI-assisted briefings</p>
                 <h2 class="mt-2 section-title">Operational Briefings</h2>
-                <p class="mt-2 section-copy">Secondary summaries for operators who want extra narrative context.</p>
+                <p class="mt-2 section-copy">Narrative intelligence from AI analysis.</p>
             </div>
             <span class="badge border-violet-400/20 bg-violet-500/10 text-violet-100">Background only</span>
         </div>
@@ -523,7 +548,7 @@ try {
             <div>
                 <p class="eyebrow">Main intelligence</p>
                 <h2 class="mt-2 section-title">Supply Intelligence</h2>
-                <p class="mt-2 section-copy">Alliance logistics intelligence for coverage, risk, and market readiness.</p>
+                <p class="mt-2 section-copy">Priority signals ranked by urgency.</p>
             </div>
             <span class="badge border-cyan-400/18 bg-cyan-500/10 text-cyan-100">Decision support</span>
         </div>
@@ -686,7 +711,7 @@ try {
         <div>
             <p class="eyebrow">Trend intelligence</p>
             <h2 class="mt-2 section-title">Trend Intelligence Brief</h2>
-            <p class="mt-2 section-copy">Short-period pricing and volume movement for executive review.</p>
+            <p class="mt-2 section-copy">Short-period pricing and volume movement.</p>
         </div>
         <span class="badge border-cyan-400/18 bg-cyan-500/10 text-cyan-100">Daily movement</span>
     </div>
@@ -773,7 +798,46 @@ try {
 <?php $sectionRest = ob_get_clean(); ?>
 
 <?php
-// Reordered dashboard: Doctrine first (urgent), then KPIs, then queues/briefings/buy-all/trends
+// --- Situational awareness strip (sov, theater, killmails) ---
+$hasSitData = ($sitAwareness['sov'] !== null) || $sitAwareness['theater_count'] > 0 || $sitAwareness['killmail_24h'] > 0;
+if ($hasSitData): ?>
+<!-- ui-section:dashboard-sit-awareness:start -->
+<section class="grid gap-3 sm:grid-cols-2 xl:grid-cols-4" data-ui-section="dashboard-sit-awareness">
+    <?php if ($sitAwareness['sov'] !== null): ?>
+        <a href="/sovereignty" class="surface-secondary transition hover:bg-white/[0.04]">
+            <p class="text-xs uppercase tracking-[0.16em] text-muted">Sovereignty</p>
+            <p class="mt-2 text-2xl font-semibold text-cyan-400"><?= number_format($sitAwareness['sov']['friendly_systems_held']) ?> friendly</p>
+            <p class="mt-1 text-sm text-slate-300"><?= number_format($sitAwareness['sov']['hostile_systems_held']) ?> hostile · <?= number_format($sitAwareness['sov']['friendly_under_contest']) ?> contested</p>
+        </a>
+    <?php endif; ?>
+    <?php if ($sitAwareness['sov_alerts'] > 0): ?>
+        <a href="/sovereignty" class="surface-secondary border-amber-500/20 transition hover:bg-white/[0.04]">
+            <p class="text-xs uppercase tracking-[0.16em] text-muted">Sov Alerts</p>
+            <p class="mt-2 text-2xl font-semibold text-amber-400"><?= number_format($sitAwareness['sov_alerts']) ?> active</p>
+            <p class="mt-1 text-sm text-slate-300">Unresolved sovereignty alerts</p>
+        </a>
+    <?php endif; ?>
+    <?php if ($sitAwareness['theater_count'] > 0): ?>
+        <a href="/theater-intelligence" class="surface-secondary transition hover:bg-white/[0.04]">
+            <p class="text-xs uppercase tracking-[0.16em] text-muted">Active Theaters (7d)</p>
+            <p class="mt-2 text-2xl font-semibold text-rose-400"><?= number_format($sitAwareness['theater_count']) ?> battles</p>
+            <p class="mt-1 text-sm text-slate-300">Theater engagements this week</p>
+        </a>
+    <?php endif; ?>
+    <?php if ($sitAwareness['killmail_24h'] > 0): ?>
+        <a href="/killmail-intelligence" class="surface-secondary transition hover:bg-white/[0.04]">
+            <p class="text-xs uppercase tracking-[0.16em] text-muted">Killmails (24h)</p>
+            <p class="mt-2 text-2xl font-semibold text-orange-400"><?= number_format($sitAwareness['killmail_24h']) ?> losses</p>
+            <p class="mt-1 text-sm text-slate-300">Tracked alliance losses today</p>
+        </a>
+    <?php endif; ?>
+</section>
+<!-- ui-section:dashboard-sit-awareness:end -->
+<?php endif; ?>
+
+<?php
+// Reordered dashboard: Buy-all first (primary action), then doctrine, KPIs, rest
+echo $sectionBuyAll;
 echo $sectionDoctrine;
 echo $sectionKpis;
 
@@ -834,6 +898,5 @@ if ($oppBriefing !== null): ?>
 <?php endif;
 
 echo $sectionRest;
-echo $sectionBuyAll;
 ?>
 <?php include __DIR__ . '/../src/views/partials/footer.php'; ?>

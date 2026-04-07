@@ -316,6 +316,22 @@ $overallPct = $stageCount > 0 ? round($overallPct / $stageCount) : 0;
     <?php if ($recentRuns === []): ?>
         <p class="mt-4 text-sm text-slate-500">No recent job runs recorded.</p>
     <?php else: ?>
+        <?php
+        // Group consecutive runs of the same job, showing only the latest + a count
+        $groupedRuns = [];
+        $prevJobName = null;
+        foreach ($recentRuns as $run) {
+            $jobName = (string) ($run['job_name'] ?? '');
+            if ($jobName === $prevJobName && $groupedRuns !== []) {
+                $lastIdx = count($groupedRuns) - 1;
+                $groupedRuns[$lastIdx]['_repeat_count'] = ($groupedRuns[$lastIdx]['_repeat_count'] ?? 1) + 1;
+            } else {
+                $run['_repeat_count'] = 1;
+                $groupedRuns[] = $run;
+            }
+            $prevJobName = $jobName;
+        }
+        ?>
         <div class="mt-4 overflow-x-auto">
             <table class="w-full text-xs">
                 <thead>
@@ -328,7 +344,7 @@ $overallPct = $stageCount > 0 ? round($overallPct / $stageCount) : 0;
                     </tr>
                 </thead>
                 <tbody class="divide-y divide-white/4">
-                    <?php foreach ($recentRuns as $run):
+                    <?php foreach ($groupedRuns as $run):
                         $status = (string) ($run['status'] ?? 'unknown');
                         $statusTone = match ($status) {
                             'success' => 'text-emerald-300',
@@ -337,9 +353,15 @@ $overallPct = $stageCount > 0 ? round($overallPct / $stageCount) : 0;
                             default   => 'text-slate-500',
                         };
                         $durationSec = round(((int) ($run['duration_ms'] ?? 0)) / 1000, 1);
+                        $repeatCount = (int) ($run['_repeat_count'] ?? 1);
                     ?>
                         <tr class="text-slate-300">
-                            <td class="py-2 pr-4 font-medium text-white"><?= htmlspecialchars((string) ($run['job_name'] ?? ''), ENT_QUOTES) ?></td>
+                            <td class="py-2 pr-4 font-medium text-white">
+                                <?= htmlspecialchars((string) ($run['job_name'] ?? ''), ENT_QUOTES) ?>
+                                <?php if ($repeatCount > 1): ?>
+                                    <span class="ml-1.5 rounded-full border border-slate-500/30 bg-slate-500/10 px-1.5 py-0.5 text-[10px] text-slate-400"><?= $repeatCount ?>x</span>
+                                <?php endif; ?>
+                            </td>
                             <td class="py-2 pr-4 <?= $statusTone ?>"><?= htmlspecialchars($status, ENT_QUOTES) ?></td>
                             <td class="py-2 pr-4 text-right tabular-nums"><?= $durationSec ?>s</td>
                             <td class="py-2 pr-4 text-right tabular-nums"><?= _po_fmt((int) ($run['rows_written'] ?? 0)) ?></td>
