@@ -5,6 +5,24 @@ require_once __DIR__ . '/../../src/bootstrap.php';
 
 $title = 'Battle Intelligence — Theater Overview';
 
+// Manual/composed theaters — always shown at the top regardless of filters
+$manualTheaters = db_select(
+    'SELECT t.theater_id, t.label, t.primary_system_id, t.region_id,
+            t.start_time, t.end_time, t.duration_seconds,
+            t.battle_count, t.system_count, t.total_kills, t.total_isk,
+            t.participant_count, t.anomaly_score, t.locked_at,
+            t.ai_headline, t.ai_verdict,
+            rs.system_name AS primary_system_name, rr.region_name
+     FROM theaters t
+     LEFT JOIN ref_systems rs ON rs.system_id = t.primary_system_id
+     LEFT JOIN ref_regions rr ON rr.region_id = t.region_id
+     WHERE t.clustering_method = ?
+     ORDER BY t.start_time DESC',
+    ['manual']
+);
+$manualTheaterIds = array_column($manualTheaters, 'theater_id');
+$manualSideLabelsMap = $manualTheaterIds !== [] ? db_theater_side_labels($manualTheaterIds) : [];
+
 // Filters
 $regionFilter = isset($_GET['region_id']) ? (string) $_GET['region_id'] : null;
 $minAnomaly = isset($_GET['min_anomaly']) ? (float) $_GET['min_anomaly'] : null;
@@ -56,6 +74,92 @@ include __DIR__ . '/../../src/views/partials/header.php';
         </div>
     </div>
 </section>
+
+<?php if ($manualTheaters !== []): ?>
+<section class="surface-primary mt-4">
+    <h2 class="text-lg font-semibold text-slate-50">Composed Theaters</h2>
+    <p class="text-xs text-muted mt-1">Manually composed battle reports — extended fights stitched across multiple time windows.</p>
+    <div class="mt-3 grid gap-3 <?= count($manualTheaters) > 1 ? 'sm:grid-cols-2' : '' ?>">
+        <?php foreach ($manualTheaters as $mt): ?>
+            <?php
+                $mtDuration = max(1, (int) ($mt['duration_seconds'] ?? 0));
+                $mtDurationLabel = $mtDuration >= 3600 ? number_format($mtDuration / 3600, 1) . 'h' : number_format($mtDuration / 60, 0) . 'm';
+                $mtBattles = (int) ($mt['battle_count'] ?? 0);
+                $mtPilots = (int) ($mt['participant_count'] ?? 0);
+                $mtKills = (int) ($mt['total_kills'] ?? 0);
+                $mtIsk = (float) ($mt['total_isk'] ?? 0);
+                $mtTid = (string) ($mt['theater_id'] ?? '');
+                $mtSides = $manualSideLabelsMap[$mtTid] ?? [];
+                $mtFriendly = $mtSides['friendly'] ?? null;
+                $mtHostile = $mtSides['hostile'] ?? null;
+                $mtOurLabel = $mtFriendly !== null
+                    ? $mtFriendly['top_name'] . ($mtFriendly['count'] > 1 ? ' +' . ($mtFriendly['count'] - 1) : '')
+                    : 'Friendlies';
+                $mtEnemyLabel = $mtHostile !== null
+                    ? $mtHostile['top_name'] . ($mtHostile['count'] > 0 ? ' +' . ($mtHostile['count'] - 1) : '')
+                    : 'Unclassified Hostiles';
+                $mtVerdict = (string) ($mt['ai_verdict'] ?? '');
+                $mtHeadline = (string) ($mt['ai_headline'] ?? '');
+                $mtLabel = trim((string) ($mt['label'] ?? ''));
+            ?>
+            <a href="/theater-intelligence/view.php?theater_id=<?= urlencode($mtTid) ?>"
+               class="block rounded-xl border border-amber-500/30 bg-amber-950/15 p-4 hover:bg-amber-950/25 transition">
+                <div class="flex items-start justify-between gap-3">
+                    <div class="min-w-0">
+                        <?php if ($mtLabel !== ''): ?>
+                            <p class="text-sm font-semibold text-amber-200 truncate"><?= htmlspecialchars($mtLabel, ENT_QUOTES) ?></p>
+                        <?php endif; ?>
+                        <p class="text-sm font-medium mt-0.5">
+                            <span class="text-blue-300"><?= htmlspecialchars($mtOurLabel, ENT_QUOTES) ?></span>
+                            <span class="text-slate-500 mx-1">vs</span>
+                            <span class="text-red-300"><?= htmlspecialchars($mtEnemyLabel, ENT_QUOTES) ?></span>
+                        </p>
+                        <?php if ($mtHeadline !== ''): ?>
+                            <p class="text-[11px] text-slate-400 mt-1 leading-tight"><?= htmlspecialchars($mtHeadline, ENT_QUOTES) ?></p>
+                        <?php endif; ?>
+                        <p class="text-xs text-slate-400 mt-2">
+                            <?= htmlspecialchars((string) ($mt['primary_system_name'] ?? '-'), ENT_QUOTES) ?>
+                            <?php if ((int) ($mt['system_count'] ?? 0) > 1): ?>
+                                <span class="text-slate-500">+<?= (int) ($mt['system_count'] ?? 0) - 1 ?> systems</span>
+                            <?php endif; ?>
+                            <span class="text-slate-600 mx-1">&middot;</span>
+                            <?= htmlspecialchars((string) ($mt['region_name'] ?? ''), ENT_QUOTES) ?>
+                        </p>
+                    </div>
+                    <div class="text-right shrink-0">
+                        <?php if ($mtVerdict !== ''): ?>
+                            <span class="inline-block rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider <?= theater_ai_verdict_color_class($mtVerdict) ?> <?= str_contains($mtVerdict, 'victory') ? 'bg-green-900/40' : (str_contains($mtVerdict, 'defeat') ? 'bg-red-900/40' : 'bg-slate-700') ?>">
+                                <?= htmlspecialchars(theater_ai_verdict_label($mtVerdict), ENT_QUOTES) ?>
+                            </span>
+                        <?php else: ?>
+                            <span class="inline-block rounded-full px-2 py-0.5 text-[9px] uppercase tracking-wider bg-amber-900/40 text-amber-300 border border-amber-500/30">Manual</span>
+                        <?php endif; ?>
+                    </div>
+                </div>
+                <div class="mt-3 grid grid-cols-4 gap-2 text-center">
+                    <div>
+                        <p class="text-[10px] uppercase tracking-wider text-muted">Duration</p>
+                        <p class="text-sm font-semibold text-slate-100"><?= $mtDurationLabel ?></p>
+                    </div>
+                    <div>
+                        <p class="text-[10px] uppercase tracking-wider text-muted">Pilots</p>
+                        <p class="text-sm font-semibold text-slate-100"><?= number_format($mtPilots) ?></p>
+                    </div>
+                    <div>
+                        <p class="text-[10px] uppercase tracking-wider text-muted">Kills</p>
+                        <p class="text-sm font-semibold text-slate-100"><?= number_format($mtKills) ?></p>
+                    </div>
+                    <div>
+                        <p class="text-[10px] uppercase tracking-wider text-muted">ISK</p>
+                        <p class="text-sm font-semibold text-slate-100"><?= supplycore_format_isk($mtIsk) ?></p>
+                    </div>
+                </div>
+                <p class="text-[10px] text-slate-500 mt-2"><?= $mtBattles ?> battles &middot; <?= htmlspecialchars((string) ($mt['start_time'] ?? ''), ENT_QUOTES) ?></p>
+            </a>
+        <?php endforeach; ?>
+    </div>
+</section>
+<?php endif; ?>
 
 <section class="surface-primary mt-4">
     <form method="GET" class="flex gap-3 items-end flex-wrap">
