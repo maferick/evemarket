@@ -33,6 +33,9 @@
                 <?php if ($battles === []): ?>
                     <tr><td colspan="8" class="px-3 py-6 text-sm text-muted">No battles linked.</td></tr>
                 <?php else: ?>
+                    <?php
+                        $primarySystemId = (int) ($theater['primary_system_id'] ?? 0);
+                    ?>
                     <?php foreach ($battles as $b): ?>
                         <?php
                             $participants = (int) ($b['participant_count'] ?? 0);
@@ -42,9 +45,15 @@
                             $sizeClass = $sizeClasses[$battleSize] ?? $sizeClasses['MICRO'];
                             $startAt = (string) ($b['started_at'] ?? '');
                             $endAt = (string) ($b['ended_at'] ?? '');
+                            $isOverflow = $primarySystemId > 0 && (int) ($b['system_id'] ?? 0) !== $primarySystemId;
                         ?>
-                        <tr class="border-b border-border/50">
-                            <td class="px-3 py-2 text-slate-100" data-val="<?= htmlspecialchars((string) ($b['system_name'] ?? '-'), ENT_QUOTES) ?>"><?= htmlspecialchars((string) ($b['system_name'] ?? '-'), ENT_QUOTES) ?></td>
+                        <tr class="border-b border-border/50<?= $isOverflow ? ' border-l-2 border-l-amber-500/50 bg-amber-950/10' : '' ?>">
+                            <td class="px-3 py-2 <?= $isOverflow ? 'text-amber-200/80' : 'text-slate-100' ?>" data-val="<?= htmlspecialchars((string) ($b['system_name'] ?? '-'), ENT_QUOTES) ?>">
+                                <?= htmlspecialchars((string) ($b['system_name'] ?? '-'), ENT_QUOTES) ?>
+                                <?php if ($isOverflow): ?>
+                                    <span class="text-[9px] uppercase tracking-wider text-amber-400/60 ml-1">overflow</span>
+                                <?php endif; ?>
+                            </td>
                             <td class="px-3 py-2 text-right" data-val="<?= $killCount ?>"><?= number_format($killCount) ?></td>
                             <td class="px-3 py-2 text-right" data-val="<?= $participants ?>">
                                 <div class="flex items-center justify-end gap-2">
