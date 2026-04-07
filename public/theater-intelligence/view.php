@@ -837,15 +837,25 @@ if ($viewSnapshot !== null && !$pendingLock) {
         $structureKills = db_theater_structure_kills($theaterId);
         $theater = db_theater_detail($theaterId);
 
-        // Recompute view variables from fresh data
-        $totalIskDestroyed = (float) ($theater['total_isk'] ?? 0);
-        $reportedKillTotal = (int) ($theater['total_kills'] ?? 0);
-        $timelineKillTotal = 0;
-        foreach ($timeline as $bucket) {
-            $timelineKillTotal += (int) ($bucket['kills'] ?? 0);
-        }
-        $observedKillTotal = $timelineKillTotal;
-        $displayKillTotal = $reportedKillTotal > 0 ? $reportedKillTotal : $observedKillTotal;
+        // Recompute ALL derived view variables from the fresh post-finalize data.
+        // This eliminates any pre-finalize/post-finalize state mismatch in the
+        // snapshot that gets persisted.
+        $derived = theater_compute_derived_view(
+            $theater, $battles, $timeline, $allianceSummary,
+            $participantsAll, $resolvedEntities, $structureKills, $classifyAlliance
+        );
+        $sideLabels = $derived['side_labels'];
+        $sideAlliancesByPilots = $derived['side_alliances_by_pilots'];
+        $opponentModel = $derived['opponent_model'];
+        $sidePanels = $derived['side_panels'];
+        $durationLabel = $derived['duration_label'];
+        $totalIskDestroyed = $derived['total_isk_destroyed'];
+        $theaterStartActual = $derived['theater_start_actual'];
+        $theaterEndActual = $derived['theater_end_actual'];
+        $displayKillTotal = $derived['display_kill_total'];
+        $reportedKillTotal = $derived['reported_kill_total'];
+        $observedKillTotal = $derived['observed_kill_total'];
+        $dataQualityNotes = $derived['data_quality_notes'];
 
         $aiSummary = theater_lock_report($theaterId);
         if (is_array($aiSummary) && isset($aiSummary['error'])) {
