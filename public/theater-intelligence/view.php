@@ -819,8 +819,44 @@ if ($viewSnapshot !== null && !$pendingLock) {
         unset($_sh);
     }
 
-    // ── Handle pending lock: save full view snapshot ──────────────────────
+    // ── Handle pending lock: finalize + save full view snapshot ─────────
     if ($pendingLock) {
+        // Deterministic finalize: wipe derived tables and rebuild from
+        // the authoritative killmail data before locking. This guarantees
+        // the snapshot contains accurate totals regardless of whether the
+        // async analysis job ever ran.
+        db_theater_finalize_manual($theaterId);
+
+        // Reload view data from the freshly rebuilt tables
+        $battles = db_theater_battles($theaterId);
+        $systems = db_theater_systems($theaterId);
+        $timeline = db_theater_timeline($theaterId);
+        $allianceSummary = db_theater_alliance_summary($theaterId);
+        $fleetComposition = db_theater_fleet_composition($theaterId);
+        $participantsAll = db_theater_participants($theaterId, null, false, 1000);
+        $structureKills = db_theater_structure_kills($theaterId);
+        $theater = db_theater_detail($theaterId);
+
+        // Recompute ALL derived view variables from the fresh post-finalize data.
+        // This eliminates any pre-finalize/post-finalize state mismatch in the
+        // snapshot that gets persisted.
+        $derived = theater_compute_derived_view(
+            $theater, $battles, $timeline, $allianceSummary,
+            $participantsAll, $resolvedEntities, $structureKills, $classifyAlliance
+        );
+        $sideLabels = $derived['side_labels'];
+        $sideAlliancesByPilots = $derived['side_alliances_by_pilots'];
+        $opponentModel = $derived['opponent_model'];
+        $sidePanels = $derived['side_panels'];
+        $durationLabel = $derived['duration_label'];
+        $totalIskDestroyed = $derived['total_isk_destroyed'];
+        $theaterStartActual = $derived['theater_start_actual'];
+        $theaterEndActual = $derived['theater_end_actual'];
+        $displayKillTotal = $derived['display_kill_total'];
+        $reportedKillTotal = $derived['reported_kill_total'];
+        $observedKillTotal = $derived['observed_kill_total'];
+        $dataQualityNotes = $derived['data_quality_notes'];
+
         $aiSummary = theater_lock_report($theaterId);
         if (is_array($aiSummary) && isset($aiSummary['error'])) {
             $aarError = (string) $aiSummary['error'];
