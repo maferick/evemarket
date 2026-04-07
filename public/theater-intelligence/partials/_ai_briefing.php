@@ -86,13 +86,193 @@
             <h2 class="text-lg font-semibold text-slate-50">AI Briefing</h2>
             <p class="text-sm text-muted mt-1">Lock this battle report to generate a one-time AI briefing. Once locked, the report cannot be regenerated.</p>
         </div>
-        <form method="POST" class="inline" onsubmit="return confirm('Lock this battle report and generate the AI briefing? This action cannot be undone.');">
-            <input type="hidden" name="lock_report" value="1">
-            <button type="submit" class="inline-flex items-center gap-2 rounded-lg bg-amber-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-amber-500 transition-colors" onclick="this.disabled=true;this.innerHTML='<svg class=\'animate-spin h-4 w-4\' viewBox=\'0 0 24 24\'><circle class=\'opacity-25\' cx=\'12\' cy=\'12\' r=\'10\' stroke=\'currentColor\' stroke-width=\'4\' fill=\'none\'></circle><path class=\'opacity-75\' fill=\'currentColor\' d=\'M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z\'></path></svg> Locking &amp; Generating…';this.form.submit();">
-                <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" /></svg>
-                Lock &amp; Generate AI Report
-            </button>
-        </form>
+        <button type="button" id="lock-theater-btn"
+                class="inline-flex items-center gap-2 rounded-lg bg-amber-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-amber-500 transition-colors"
+                onclick="theaterLockStart('<?= htmlspecialchars($theaterId, ENT_QUOTES) ?>')">
+            <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" /></svg>
+            Lock &amp; Generate AI Report
+        </button>
     </div>
 </section>
+
+<!-- Lock processing overlay -->
+<div id="lock-overlay" class="fixed inset-0 z-50 hidden">
+    <div class="absolute inset-0 bg-black/90 backdrop-blur-sm"></div>
+    <div class="relative flex flex-col items-center justify-center h-full px-6">
+        <!-- Spinner -->
+        <div class="relative mb-8">
+            <div class="w-20 h-20 rounded-full border-2 border-amber-500/20"></div>
+            <div class="absolute inset-0 w-20 h-20 rounded-full border-2 border-transparent border-t-amber-500 animate-spin"></div>
+            <div class="absolute inset-2 w-16 h-16 rounded-full border-2 border-transparent border-b-blue-500/70 animate-spin" style="animation-duration: 1.5s; animation-direction: reverse;"></div>
+            <svg class="absolute inset-0 m-auto h-8 w-8 text-amber-500/80" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+            </svg>
+        </div>
+
+        <h2 class="text-xl font-semibold text-slate-100 mb-2">Generating Battle Report</h2>
+        <p class="text-sm text-slate-400 mb-1" id="lock-status-text">Materializing theater data...</p>
+        <p class="text-xs text-slate-600 mb-10" id="lock-elapsed">0s</p>
+
+        <!-- Lore quote -->
+        <div class="max-w-lg text-center">
+            <p class="text-sm text-slate-300/80 italic leading-relaxed" id="lock-lore-text"></p>
+            <p class="text-[10px] text-slate-500 mt-2" id="lock-lore-source"></p>
+        </div>
+    </div>
+</div>
+
+<script>
+(() => {
+    const LORE = [
+        { text: "In the beginning there was the Void, and the Void was without form, and darkness was upon it.", source: "The Book of Emptiness, Amarr Scriptures" },
+        { text: "Among all the stargates that litter the New Eden cluster, there are a few that serve as chokepoints, controlling access to entire regions of space.", source: "Interstellar Navigation Primer" },
+        { text: "The capsuleer does not fear death. The capsuleer fears irrelevance.", source: "Caldari Naval Academy" },
+        { text: "War is not about destroying your enemy. War is about destroying your enemy's will to fight.", source: "Attributed to Jamyl Sarum I" },
+        { text: "Every gate camp, every bubble, every lost ship — these are the threads that weave the tapestry of null-sec sovereignty.", source: "Alliance Tournament Commentary" },
+        { text: "The Minmatar do not seek freedom because they lack chains. They seek freedom because they remember them.", source: "A History of the Minmatar People" },
+        { text: "There is no such thing as an unfair fight. There is only the prepared and the unprepared.", source: "Guristas Tactical Manual" },
+        { text: "To fly a Titan is to carry the weight of an empire on your capacitor.", source: "Capital Warfare Doctrine, CONCORD Archives" },
+        { text: "You haven't truly lived in null-sec until you've watched a Keepstar die.", source: "Common capsuleer saying" },
+        { text: "The overview doesn't lie. But it does sometimes lag.", source: "Fleet Commander proverb" },
+        { text: "Space is cold and empty, but local chat is colder and emptier.", source: "Wormhole Survival Guide" },
+        { text: "The greatest fleet commander is the one whose pilots log in.", source: "Old coalition wisdom" },
+        { text: "Trust, but verify. Then verify again. Then check d-scan.", source: "Pandemic Horde Newbro Manual" },
+        { text: "A single cyno can change the course of history.", source: "B-R5RB After Action Report" },
+        { text: "In nullsec, your allies are the friends you haven't reset yet.", source: "Diplomatic Relations 101" },
+        { text: "Every structure timer is someone's alarm clock.", source: "Sovereignty warfare handbook" },
+        { text: "The Jove gazed upon the empires below and saw only children playing with fire.", source: "The Jovian Decline, Chapter VII" },
+        { text: "Warp drive active.", source: "Aura" },
+        { text: "The capacitor is empty.", source: "Every pilot's last words" },
+        { text: "Somewhere in New Eden, right now, a Venture pilot is mining in a war zone, completely unbothered.", source: "r/Eve" },
+        { text: "FC, can I bring my Drake?", source: "The eternal question" },
+        { text: "Gate is red. Gate is always red.", source: "Scout wisdom" },
+        { text: "Your clone is your most valuable asset. Everything else is ammunition.", source: "Society of Conscious Thought" },
+    ];
+
+    let pollInterval = null;
+    let elapsedInterval = null;
+    let startTime = 0;
+    let loreIndex = 0;
+
+    function shuffleArray(arr) {
+        for (let i = arr.length - 1; i > 0; i--) {
+            const j = Math.floor(Math.random() * (i + 1));
+            [arr[i], arr[j]] = [arr[j], arr[i]];
+        }
+        return arr;
+    }
+
+    const shuffledLore = shuffleArray([...LORE]);
+
+    function showLore() {
+        const lore = shuffledLore[loreIndex % shuffledLore.length];
+        const textEl = document.getElementById('lock-lore-text');
+        const sourceEl = document.getElementById('lock-lore-source');
+        textEl.style.opacity = '0';
+        sourceEl.style.opacity = '0';
+        setTimeout(() => {
+            textEl.textContent = '"' + lore.text + '"';
+            sourceEl.textContent = '— ' + lore.source;
+            textEl.style.opacity = '1';
+            sourceEl.style.opacity = '1';
+        }, 400);
+        loreIndex++;
+    }
+
+    function updateElapsed() {
+        const sec = Math.floor((Date.now() - startTime) / 1000);
+        const el = document.getElementById('lock-elapsed');
+        if (el) el.textContent = sec + 's';
+    }
+
+    function setStatus(text) {
+        const el = document.getElementById('lock-status-text');
+        if (el) el.textContent = text;
+    }
+
+    window.theaterLockStart = function(theaterId) {
+        if (!confirm('Lock this battle report and generate the AI briefing? This action cannot be undone.')) {
+            return;
+        }
+
+        // Show overlay
+        const overlay = document.getElementById('lock-overlay');
+        overlay.classList.remove('hidden');
+        document.body.style.overflow = 'hidden';
+
+        // Add transitions for lore
+        const textEl = document.getElementById('lock-lore-text');
+        const sourceEl = document.getElementById('lock-lore-source');
+        textEl.style.transition = 'opacity 0.4s ease';
+        sourceEl.style.transition = 'opacity 0.4s ease';
+
+        startTime = Date.now();
+        elapsedInterval = setInterval(updateElapsed, 1000);
+        showLore();
+        setInterval(showLore, 8000);
+
+        // Disable the button
+        const btn = document.getElementById('lock-theater-btn');
+        if (btn) btn.disabled = true;
+
+        // Fire the async lock request
+        const formData = new FormData();
+        formData.append('theater_id', theaterId);
+
+        fetch('/theater-intelligence/lock.php', {
+            method: 'POST',
+            body: formData,
+        }).catch(() => {
+            // Connection might close — that's OK, we poll
+        });
+
+        // Start polling
+        setStatus('Materializing theater data...');
+        const statusMessages = [
+            { after: 5, text: 'Rebuilding alliance summaries...' },
+            { after: 15, text: 'Computing participant statistics...' },
+            { after: 30, text: 'Generating AI briefing...' },
+            { after: 60, text: 'Still generating — large battle report...' },
+            { after: 120, text: 'Almost there — finalizing report...' },
+            { after: 180, text: 'This is a big one — hang tight...' },
+        ];
+
+        pollInterval = setInterval(() => {
+            const elapsed = (Date.now() - startTime) / 1000;
+
+            // Update status message based on elapsed time
+            for (let i = statusMessages.length - 1; i >= 0; i--) {
+                if (elapsed >= statusMessages[i].after) {
+                    setStatus(statusMessages[i].text);
+                    break;
+                }
+            }
+
+            fetch('/theater-intelligence/lock-status.php?theater_id=' + encodeURIComponent(theaterId))
+                .then(r => r.json())
+                .then(data => {
+                    if (data.status === 'complete') {
+                        clearInterval(pollInterval);
+                        clearInterval(elapsedInterval);
+                        setStatus('Report complete! Redirecting...');
+                        setTimeout(() => {
+                            window.location.href = '/theater-intelligence/view.php?theater_id=' + encodeURIComponent(theaterId);
+                        }, 1000);
+                    } else if (data.status === 'unlocked') {
+                        // Lock was rolled back — error occurred
+                        clearInterval(pollInterval);
+                        clearInterval(elapsedInterval);
+                        overlay.classList.add('hidden');
+                        document.body.style.overflow = '';
+                        if (btn) btn.disabled = false;
+                        alert('Lock failed — please check the server logs and try again.');
+                    }
+                })
+                .catch(() => {
+                    // Network error — keep polling
+                });
+        }, 2000);
+    };
+})();
+</script>
 <?php endif; ?>
