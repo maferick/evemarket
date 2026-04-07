@@ -268,8 +268,6 @@ def run_cip_calibration(db: SupplyCoreDb) -> JobResult:
         round(noise_ratio, 4), round(suppression_rate, 4),
         band_critical, band_high, band_moderate, band_low,
     ])
-    db.commit()
-
     elapsed = int((time.monotonic() - t0) * 1000)
     logger.info(
         "cip_calibration: pop=%d, events=%d created, noise=%.3f | "

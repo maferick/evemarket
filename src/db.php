@@ -18756,7 +18756,7 @@ function db_intelligence_event_evidence(int $eventId): array
          FROM character_intelligence_signals cis
          JOIN intelligence_signal_definitions isd ON isd.signal_type = cis.signal_type
          WHERE cis.character_id = ?
-         ORDER BY (cis.value * cis.confidence * isd.weight_default) DESC
+         ORDER BY (cis.signal_value * cis.confidence * isd.weight_default) DESC
          LIMIT 20",
         [$characterId]
     );
@@ -18764,7 +18764,7 @@ function db_intelligence_event_evidence(int $eventId): array
     // Profile history (last 7 snapshots for trend)
     $history = db_select(
         "SELECT snapshot_date, risk_score, risk_rank, risk_percentile,
-                confidence, freshness, effective_coverage
+                confidence, freshness, signal_coverage
          FROM character_intelligence_profile_history
          WHERE character_id = ?
          ORDER BY snapshot_date DESC

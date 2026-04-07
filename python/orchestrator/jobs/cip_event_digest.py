@@ -13,35 +13,40 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timedelta
+import time
+from datetime import datetime, timedelta, UTC
+
+from ..db import SupplyCoreDb
+from ..job_result import JobResult
+from ..job_utils import finish_job_run, start_job_run
 
 logger = logging.getLogger(__name__)
 
 
-def run_cip_event_digest(db) -> dict:
+def run_cip_event_digest(db: SupplyCoreDb) -> JobResult:
     """Generate a daily event digest covering the last 24 hours."""
-    now = datetime.utcnow()
-    period_end = now
-    period_start = now - timedelta(hours=24)
+    job = start_job_run(db, "cip_event_digest")
+    t0 = time.monotonic()
+
+    now = datetime.now(UTC)
+    period_end = now.strftime("%Y-%m-%d %H:%M:%S")
+    period_start = (now - timedelta(hours=24)).strftime("%Y-%m-%d %H:%M:%S")
 
     logger.info("Generating event digest for %s — %s", period_start, period_end)
 
-    cur = db.cursor()
-
     # ── New events (created in this window) ─────────────────────────
-    cur.execute(
+    new_events = db.fetch_all(
         """SELECT id, event_type, event_family, severity, impact_score,
                   title, entity_type, entity_id
            FROM intelligence_events
            WHERE first_detected_at >= %s AND first_detected_at < %s
            ORDER BY impact_score DESC""",
-        (period_start, period_end),
+        [period_start, period_end],
     )
-    new_events = cur.fetchall()
     new_count = len(new_events)
 
     # ── Escalated events (escalation_count increased in this window) ─
-    cur.execute(
+    escalated_events = db.fetch_all(
         """SELECT id, event_type, event_family, severity, previous_severity,
                   impact_score, title, escalation_count, entity_type, entity_id
            FROM intelligence_events
@@ -49,54 +54,49 @@ def run_cip_event_digest(db) -> dict:
              AND escalation_count > 1
              AND state = 'active'
            ORDER BY impact_score DESC""",
-        (period_start, period_end),
+        [period_start, period_end],
     )
-    escalated_events = cur.fetchall()
     escalated_count = len(escalated_events)
 
     # ── Resolved events ──────────────────────────────────────────────
-    cur.execute(
+    resolved_events = db.fetch_all(
         """SELECT id, event_type, event_family, severity, impact_score,
                   title, entity_type, entity_id
            FROM intelligence_events
            WHERE resolved_at >= %s AND resolved_at < %s
            ORDER BY impact_score DESC""",
-        (period_start, period_end),
+        [period_start, period_end],
     )
-    resolved_events = cur.fetchall()
     resolved_count = len(resolved_events)
 
     # ── Expired events ───────────────────────────────────────────────
-    cur.execute(
+    expired_row = db.fetch_one(
         """SELECT COUNT(*) AS cnt
            FROM intelligence_event_history
            WHERE new_state = 'expired'
              AND created_at >= %s AND created_at < %s""",
-        (period_start, period_end),
+        [period_start, period_end],
     )
-    expired_row = cur.fetchone()
     expired_count = int(expired_row["cnt"]) if expired_row else 0
 
     # ── Still-active unchanged: active events NOT new, NOT escalated in window ─
-    cur.execute(
+    unchanged_row = db.fetch_one(
         """SELECT COUNT(*) AS cnt
            FROM intelligence_events
            WHERE state = 'active'
              AND first_detected_at < %s
              AND (last_updated_at < %s OR escalation_count <= 1)""",
-        (period_start, period_start),
+        [period_start, period_start],
     )
-    unchanged_row = cur.fetchone()
     unchanged_active_count = int(unchanged_row["cnt"]) if unchanged_row else 0
 
     # ── Active breakdown by family ────────────────────────────────────
-    cur.execute(
+    breakdown_rows = db.fetch_all(
         """SELECT event_family, severity, COUNT(*) AS cnt
            FROM intelligence_events
            WHERE state = 'active'
            GROUP BY event_family, severity"""
     )
-    breakdown_rows = cur.fetchall()
 
     threat_active = 0
     threat_critical = 0
@@ -129,7 +129,7 @@ def run_cip_event_digest(db) -> dict:
     top_resolved = [_event_summary(e) for e in resolved_events[:top_n]]
 
     # ── Insert digest ─────────────────────────────────────────────────
-    cur.execute(
+    db.execute(
         """INSERT INTO intelligence_event_digests
                (digest_type, period_start, period_end,
                 new_events, escalated_events, resolved_events, expired_events,
@@ -141,16 +141,17 @@ def run_cip_event_digest(db) -> dict:
                    %s, %s, %s,
                    %s, %s, %s,
                    'cip_event_digest')""",
-        (
+        [
             period_start, period_end,
             new_count, escalated_count, resolved_count, expired_count,
             threat_active, threat_critical, quality_active,
             json.dumps(top_new) if top_new else None,
             json.dumps(top_escalated) if top_escalated else None,
             json.dumps(top_resolved) if top_resolved else None,
-        ),
+        ],
     )
-    db.commit()
+
+    elapsed = int((time.monotonic() - t0) * 1000)
 
     logger.info(
         "Digest generated: %d new, %d escalated, %d resolved, %d expired | "
@@ -159,12 +160,24 @@ def run_cip_event_digest(db) -> dict:
         threat_active, threat_critical, quality_active,
     )
 
-    return {
-        "new": new_count,
-        "escalated": escalated_count,
-        "resolved": resolved_count,
-        "expired": expired_count,
-        "threat_active": threat_active,
-        "threat_critical": threat_critical,
-        "quality_active": quality_active,
-    }
+    finish_job_run(db, job, status="success",
+                   rows_processed=new_count + escalated_count + resolved_count,
+                   rows_written=1,
+                   meta={"new": new_count, "escalated": escalated_count,
+                         "resolved": resolved_count, "expired": expired_count})
+
+    return JobResult(
+        status="success",
+        summary=f"Digest: {new_count} new, {escalated_count} escalated, {resolved_count} resolved, {expired_count} expired",
+        started_at="", finished_at="",
+        duration_ms=elapsed,
+        rows_seen=new_count + escalated_count + resolved_count,
+        rows_processed=new_count + escalated_count + resolved_count,
+        rows_written=1,
+        rows_skipped=0, rows_failed=0, batches_completed=1,
+        checkpoint_before=None, checkpoint_after=None,
+        has_more=False, error_text=None, warnings=[],
+        meta={"new": new_count, "escalated": escalated_count,
+              "resolved": resolved_count, "expired": expired_count,
+              "unchanged_active": unchanged_active_count},
+    )

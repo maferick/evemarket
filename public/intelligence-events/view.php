@@ -328,7 +328,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                     <tbody>
                     <?php foreach ($signals as $sig): ?>
                         <?php
-                        $sigVal = (float) ($sig['value'] ?? 0);
+                        $sigVal = (float) ($sig['signal_value'] ?? 0);
                         $sigConf = (float) ($sig['confidence'] ?? 0);
                         $sigWeight = (float) ($sig['weight_default'] ?? 0);
                         $contribution = $sigVal * $sigConf * $sigWeight;
@@ -451,7 +451,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                             <td class="px-3 py-2 text-right text-sm"><?= number_format((float) ($snap['risk_percentile'] ?? 0) * 100, 2) ?>%</td>
                             <td class="px-3 py-2 text-right text-sm"><?= number_format((float) ($snap['confidence'] ?? 0), 3) ?></td>
                             <td class="px-3 py-2 text-right text-sm"><?= number_format((float) ($snap['freshness'] ?? 0), 3) ?></td>
-                            <td class="px-3 py-2 text-right text-sm"><?= number_format((float) ($snap['effective_coverage'] ?? 0), 3) ?></td>
+                            <td class="px-3 py-2 text-right text-sm"><?= number_format((float) ($snap['signal_coverage'] ?? 0), 3) ?></td>
                         </tr>
                     <?php endforeach; ?>
                     </tbody>
