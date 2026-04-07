@@ -76,7 +76,7 @@ CREATE TABLE IF NOT EXISTS intelligence_events (
     INDEX idx_ie_active_impact (state, impact_score DESC),
     INDEX idx_ie_detected (first_detected_at DESC),
     INDEX idx_ie_updated (last_updated_at DESC)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- 2. Event State Transition History
 --    Audit log of all state changes for accountability and debugging.
@@ -93,4 +93,4 @@ CREATE TABLE IF NOT EXISTS intelligence_event_history (
     created_at          TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
     INDEX idx_ieh_event (event_id, created_at),
     INDEX idx_ieh_created (created_at)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

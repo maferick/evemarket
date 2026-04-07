@@ -33,7 +33,7 @@ CREATE TABLE IF NOT EXISTS intelligence_signal_definitions (
         COMMENT 'Parameters for normalization (e.g. {"cap":3.0} for zscore_capped)',
     created_at          TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at          TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- 2. Character Intelligence Signals
 --    The canonical signal store.  Every pipeline emits typed signals here
@@ -63,7 +63,7 @@ CREATE TABLE IF NOT EXISTS character_intelligence_signals (
     INDEX idx_cis_computed (computed_at),
     INDEX idx_cis_reinforced (last_reinforced_at),
     INDEX idx_cis_character (character_id, computed_at)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- 3. Character Intelligence Profiles
 --    The fused, canonical profile per character.  Single source of truth.
@@ -124,7 +124,7 @@ CREATE TABLE IF NOT EXISTS character_intelligence_profiles (
     INDEX idx_cip_computed (computed_at),
     INDEX idx_cip_behavioral (behavioral_score DESC),
     INDEX idx_cip_graph (graph_score DESC)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- 4. Character Intelligence Labels
 --    Analyst feedback capture.  Collected from day one, processed later.
@@ -143,7 +143,7 @@ CREATE TABLE IF NOT EXISTS character_intelligence_labels (
     created_at          TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
     INDEX idx_cil_character (character_id, created_at),
     INDEX idx_cil_label (label, created_at)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- 5. CIP History (lightweight daily snapshots for trend analysis)
 CREATE TABLE IF NOT EXISTS character_intelligence_profile_history (
@@ -163,4 +163,4 @@ CREATE TABLE IF NOT EXISTS character_intelligence_profile_history (
     relational_score    DECIMAL(10,6)   NOT NULL DEFAULT 0.000000,
     PRIMARY KEY (character_id, snapshot_date),
     INDEX idx_ciph_date (snapshot_date, risk_score DESC)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

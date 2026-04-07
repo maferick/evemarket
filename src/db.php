@@ -18446,7 +18446,7 @@ function db_intelligence_events_queue(
                    emc.entity_name AS entity_name
             FROM intelligence_events ie
             LEFT JOIN entity_metadata_cache emc
-                ON emc.entity_type = ie.entity_type AND emc.entity_id = ie.entity_id
+                ON emc.entity_type = ie.entity_type COLLATE utf8mb4_general_ci AND emc.entity_id = ie.entity_id
             {$whereClause}
             ORDER BY {$sortBy} {$sortDir}
             LIMIT ? OFFSET ?";
@@ -18564,7 +18564,7 @@ function db_intelligence_event_detail(int $eventId): ?array
                 emc.entity_name AS entity_name
          FROM intelligence_events ie
          LEFT JOIN entity_metadata_cache emc
-             ON emc.entity_type = ie.entity_type AND emc.entity_id = ie.entity_id
+             ON emc.entity_type = ie.entity_type COLLATE utf8mb4_general_ci AND emc.entity_id = ie.entity_id
          WHERE ie.id = ?",
         [$eventId]
     );
@@ -19104,11 +19104,9 @@ function db_cip_operational_health(): array
 
     // Event engine last run
     $lastRun = db_select_one(
-        "SELECT finished_at, rows_processed, rows_written, meta_json
-         FROM scheduler_job_runs
-         WHERE job_key = 'cip_event_engine'
-         ORDER BY finished_at DESC
-         LIMIT 1"
+        "SELECT last_finished_at AS finished_at, latest_status, latest_event_type
+         FROM scheduler_job_current_status
+         WHERE job_key = 'cip_event_engine'"
     );
 
     // Suppression stats
