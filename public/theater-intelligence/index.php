@@ -50,6 +50,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
             <p class="mt-2 text-sm text-muted">Battles grouped into strategic theaters by system proximity, time window, and participant overlap. Each theater shows the primary matchup and outcome assessment.</p>
         </div>
         <div class="flex gap-2">
+            <a href="/theater-intelligence/create.php" class="btn-primary">Create Manual Theater</a>
             <a href="/battle-intelligence" class="btn-secondary">Suspicion Board</a>
             <a href="/battle-intelligence/battles.php" class="btn-secondary">Battle Anomalies</a>
         </div>

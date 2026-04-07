@@ -15835,6 +15835,185 @@ function db_theater_map_regions(): array
 }
 
 // ---------------------------------------------------------------------------
+// Manual Theater Creation
+// ---------------------------------------------------------------------------
+
+/**
+ * Search ref_systems by name (exact or LIKE).
+ */
+function db_ref_system_search(string $query, int $limit = 20): array
+{
+    return db_select(
+        'SELECT rs.system_id, rs.system_name, rs.constellation_id, rs.region_id,
+                rr.region_name, rc.constellation_name
+         FROM ref_systems rs
+         LEFT JOIN ref_regions rr ON rr.region_id = rs.region_id
+         LEFT JOIN ref_constellations rc ON rc.constellation_id = rs.constellation_id
+         WHERE rs.system_name LIKE ?
+         ORDER BY
+            CASE WHEN rs.system_name = ? THEN 0 ELSE 1 END,
+            rs.system_name ASC
+         LIMIT ?',
+        ['%' . $query . '%', $query, $limit]
+    );
+}
+
+/**
+ * Find battles in a system (or all systems in the same constellation) within a time range.
+ */
+function db_battles_in_range(int $systemId, string $startTime, string $endTime, bool $includeConstellation = false): array
+{
+    if ($includeConstellation) {
+        return db_select(
+            'SELECT br.battle_id, br.system_id, br.started_at, br.ended_at,
+                    br.participant_count, br.battle_size_class,
+                    rs.system_name, rs.region_id
+             FROM battle_rollups br
+             INNER JOIN ref_systems rs ON rs.system_id = br.system_id
+             WHERE rs.constellation_id = (SELECT constellation_id FROM ref_systems WHERE system_id = ? LIMIT 1)
+               AND br.started_at <= ?
+               AND br.ended_at   >= ?
+             ORDER BY br.started_at ASC',
+            [$systemId, $endTime, $startTime]
+        );
+    }
+
+    return db_select(
+        'SELECT br.battle_id, br.system_id, br.started_at, br.ended_at,
+                br.participant_count, br.battle_size_class,
+                rs.system_name, rs.region_id
+         FROM battle_rollups br
+         INNER JOIN ref_systems rs ON rs.system_id = br.system_id
+         WHERE br.system_id = ?
+           AND br.started_at <= ?
+           AND br.ended_at   >= ?
+         ORDER BY br.started_at ASC',
+        [$systemId, $endTime, $startTime]
+    );
+}
+
+/**
+ * Create a manual theater from a set of battles.
+ * Returns the theater_id on success, null on failure.
+ */
+function db_create_manual_theater(array $battles, ?string $label = null): ?string
+{
+    if ($battles === []) {
+        return null;
+    }
+
+    // Deterministic theater_id from sorted battle IDs (mirrors Python _compute_theater_id)
+    $battleIds = array_map(fn(array $b): string => (string) $b['battle_id'], $battles);
+    sort($battleIds);
+    $theaterId = hash('sha256', implode('|', $battleIds));
+
+    // Check if this exact theater already exists
+    $existing = db_select_one('SELECT theater_id FROM theaters WHERE theater_id = ?', [$theaterId]);
+    if ($existing !== null) {
+        return $theaterId; // already exists with same battles
+    }
+
+    // Compute aggregates
+    $startTimes = array_map(fn(array $b): string => (string) $b['started_at'], $battles);
+    $endTimes = array_map(fn(array $b): string => (string) $b['ended_at'], $battles);
+    sort($startTimes);
+    rsort($endTimes);
+    $startTime = $startTimes[0];
+    $endTime = $endTimes[0];
+    $durationSeconds = max(1, (int) (strtotime($endTime) - strtotime($startTime)));
+
+    // Systems
+    $systems = [];
+    foreach ($battles as $b) {
+        $sid = (int) $b['system_id'];
+        if (!isset($systems[$sid])) {
+            $systems[$sid] = [
+                'system_id' => $sid,
+                'system_name' => (string) ($b['system_name'] ?? ''),
+                'kill_count' => 0,
+                'participant_count' => 0,
+            ];
+        }
+        $systems[$sid]['kill_count'] += (int) ($b['participant_count'] ?? 0);
+        $systems[$sid]['participant_count'] += (int) ($b['participant_count'] ?? 0);
+    }
+
+    // Primary system = most participants
+    $primarySystem = null;
+    $primaryRegionId = null;
+    foreach ($systems as $s) {
+        if ($primarySystem === null || $s['participant_count'] > $primarySystem['participant_count']) {
+            $primarySystem = $s;
+        }
+    }
+    if ($primarySystem !== null) {
+        // Get region from the first battle matching primary system
+        foreach ($battles as $b) {
+            if ((int) $b['system_id'] === $primarySystem['system_id'] && !empty($b['region_id'])) {
+                $primaryRegionId = (int) $b['region_id'];
+                break;
+            }
+        }
+    }
+
+    // Count unique participants across all battles
+    $participantRows = db_select(
+        'SELECT COUNT(DISTINCT character_id) AS cnt
+         FROM battle_participants
+         WHERE battle_id IN (' . implode(',', array_fill(0, count($battleIds), '?')) . ')',
+        $battleIds
+    );
+    $participantCount = (int) ($participantRows[0]['cnt'] ?? 0);
+
+    $now = date('Y-m-d H:i:s');
+
+    // Insert theater
+    db_execute(
+        'INSERT INTO theaters (
+            theater_id, label, primary_system_id, region_id,
+            start_time, end_time, duration_seconds,
+            battle_count, system_count, total_kills, total_isk,
+            participant_count, anomaly_score,
+            clustering_method, computed_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, 0, ?, ?)',
+        [
+            $theaterId,
+            $label,
+            $primarySystem['system_id'] ?? null,
+            $primaryRegionId,
+            $startTime,
+            $endTime,
+            $durationSeconds,
+            count($battles),
+            count($systems),
+            $participantCount,
+            'manual',
+            $now,
+        ]
+    );
+
+    // Insert theater_battles
+    foreach ($battles as $b) {
+        db_execute(
+            'INSERT IGNORE INTO theater_battles (theater_id, battle_id, system_id, weight, phase)
+             VALUES (?, ?, ?, 1.0000, NULL)',
+            [$theaterId, (string) $b['battle_id'], (int) $b['system_id']]
+        );
+    }
+
+    // Insert theater_systems
+    foreach ($systems as $s) {
+        db_execute(
+            'INSERT IGNORE INTO theater_systems (theater_id, system_id, system_name, kill_count, isk_destroyed, participant_count, weight, phase)
+             VALUES (?, ?, ?, ?, 0, ?, 1.0000, NULL)',
+            [$theaterId, $s['system_id'], $s['system_name'], $s['kill_count'], $s['participant_count']]
+        );
+    }
+
+    return $theaterId;
+}
+
+// ---------------------------------------------------------------------------
 // Threat Corridors
 // ---------------------------------------------------------------------------
 
