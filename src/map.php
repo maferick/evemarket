@@ -177,7 +177,7 @@ function map_layout_radial(array $nodeMap, array $adjacency, int $focalSystemId,
         }
     }
 
-    return $positions;
+    return map_resolve_collisions($positions);
 }
 
 // ---------------------------------------------------------------------------
@@ -278,9 +278,50 @@ function map_layout_corridor(array $nodeMap, array $adjacency, array $anchorIds,
         }
     }
 
-    return $positions;
+    return map_resolve_collisions($positions);
 }
 
+
+// ---------------------------------------------------------------------------
+//  Collision resolution
+// ---------------------------------------------------------------------------
+
+/**
+ * Iterative repulsion pass to push overlapping nodes apart.
+ * Works in normalized 0..1 coordinate space.
+ */
+function map_resolve_collisions(array $positions, float $minDistance = 0.06, int $iterations = 3): array
+{
+    $ids = array_keys($positions);
+    $n = count($ids);
+    if ($n < 2) return $positions;
+
+    for ($iter = 0; $iter < $iterations; $iter++) {
+        $moved = false;
+        for ($i = 0; $i < $n - 1; $i++) {
+            for ($j = $i + 1; $j < $n; $j++) {
+                $a = $ids[$i];
+                $b = $ids[$j];
+                $dx = (float) $positions[$b]['x'] - (float) $positions[$a]['x'];
+                $dy = (float) $positions[$b]['y'] - (float) $positions[$a]['y'];
+                $dist = sqrt($dx * $dx + $dy * $dy);
+                if ($dist >= $minDistance || $dist < 0.001) continue;
+
+                $overlap = ($minDistance - $dist) / 2.0;
+                $nx = $dist > 0 ? $dx / $dist : 0.5;
+                $ny = $dist > 0 ? $dy / $dist : 0.5;
+
+                $positions[$a]['x'] = max(0.02, min(0.98, (float) $positions[$a]['x'] - $nx * $overlap));
+                $positions[$a]['y'] = max(0.02, min(0.98, (float) $positions[$a]['y'] - $ny * $overlap));
+                $positions[$b]['x'] = max(0.02, min(0.98, (float) $positions[$b]['x'] + $nx * $overlap));
+                $positions[$b]['y'] = max(0.02, min(0.98, (float) $positions[$b]['y'] + $ny * $overlap));
+                $moved = true;
+            }
+        }
+        if (!$moved) break;
+    }
+    return $positions;
+}
 
 // ---------------------------------------------------------------------------
 //  Cache layer
@@ -406,8 +447,13 @@ function map_render_svg(array $scene): string
         $svg[] = '<line x1="' . $x1 . '" y1="' . $y1 . '" x2="' . $x2 . '" y2="' . $y2 . '" stroke="#fbbf24" stroke-opacity="0.88" stroke-width="2.6" stroke-linecap="round" filter="url(#' . $prefix . '-rglow)"/>';
     }
 
-    // Pass 3: nodes
-    foreach ($nodes as $sid => $node) {
+    // Pass 3: nodes — sorted so important nodes render on top (last in SVG = topmost)
+    $roleOrder = ['surrounding' => 0, 'route' => 1, 'anchor' => 2, 'focal' => 3];
+    $sortedNodes = $nodes;
+    uasort($sortedNodes, static function (array $a, array $b) use ($roleOrder): int {
+        return ($roleOrder[$a['role'] ?? 'surrounding'] ?? 0) <=> ($roleOrder[$b['role'] ?? 'surrounding'] ?? 0);
+    });
+    foreach ($sortedNodes as $sid => $node) {
         $role = (string) ($node['role'] ?? 'surrounding');
         if ($role === 'boundary') continue;
 
@@ -1248,7 +1294,7 @@ function map_layout_region(array $nodeMap, array $adjacency): array
         }
     }
 
-    return $positions;
+    return map_resolve_collisions($positions, 0.04, 2);
 }
 
 /**
