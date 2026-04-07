@@ -59,7 +59,9 @@ if (($isPreview || $isCreate) && $_SERVER['REQUEST_METHOD'] === 'POST') {
         } elseif ($isCreate) {
             $theaterId = db_create_manual_theater($previewBattles, $formLabel !== '' ? $formLabel : null);
             if ($theaterId !== null) {
-                flash('success', 'Manual theater created with ' . count($previewBattles) . ' battles.');
+                // Queue theater_analysis to populate summaries immediately
+                db_worker_job_force_available_by_job_keys(['theater_analysis']);
+                flash('success', 'Manual theater created with ' . count($previewBattles) . ' battles. Analysis job queued — data will populate shortly.');
                 header('Location: /theater-intelligence/view.php?theater_id=' . urlencode($theaterId));
                 exit;
             }
