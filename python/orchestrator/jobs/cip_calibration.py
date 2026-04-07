@@ -145,36 +145,26 @@ def run_cip_calibration(db: SupplyCoreDb) -> JobResult:
     # ── Rank volatility (for rank jump threshold) ─────────────────────
     calibrated_rank_jump = DEFAULT_RANK_JUMP
     if total_profiled >= MIN_POPULATION_FOR_CALIBRATION:
-        rank_vol = db.fetch_one("""
-            SELECT
-                COALESCE(PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY ABS(CAST(risk_rank AS SIGNED) - CAST(risk_rank_previous AS SIGNED))), 20) AS p90_jump
+        # Approximate p90 of rank improvement via LIMIT/OFFSET
+        movers = db.fetch_one("""
+            SELECT COUNT(*) AS cnt
             FROM character_intelligence_profiles
             WHERE risk_rank IS NOT NULL AND risk_rank_previous IS NOT NULL
-              AND risk_rank != risk_rank_previous
+              AND risk_rank < risk_rank_previous
         """)
-        if rank_vol and rank_vol.get("p90_jump") is not None:
-            calibrated_rank_jump = max(5, int(float(rank_vol["p90_jump"])))
-        else:
-            # Fallback: simple percentile via LIMIT/OFFSET
-            movers = db.fetch_one("""
-                SELECT COUNT(*) AS cnt
-                FROM character_intelligence_profiles
-                WHERE risk_rank IS NOT NULL AND risk_rank_previous IS NOT NULL
-                  AND risk_rank < risk_rank_previous
-            """)
-            mover_count = int(movers["cnt"] or 0) if movers else 0
-            if mover_count >= 20:
-                offset = max(0, int(mover_count * 0.90) - 1)
-                row = db.fetch_one("""
-                    SELECT (risk_rank_previous - risk_rank) AS jump
+        mover_count = int(movers["cnt"] or 0) if movers else 0
+        if mover_count >= 20:
+            offset = max(0, int(mover_count * 0.90) - 1)
+            row = db.fetch_one("""
+                SELECT (risk_rank_previous - risk_rank) AS jump
                     FROM character_intelligence_profiles
                     WHERE risk_rank IS NOT NULL AND risk_rank_previous IS NOT NULL
                       AND risk_rank < risk_rank_previous
                     ORDER BY (risk_rank_previous - risk_rank) ASC
                     LIMIT 1 OFFSET %s
                 """, [offset])
-                if row:
-                    calibrated_rank_jump = max(5, int(float(row["jump"])))
+            if row:
+                calibrated_rank_jump = max(5, int(float(row["jump"])))
 
     # ── Compute calibrated thresholds ─────────────────────────────────
     calibrated_surge = delta_pcts["p90"] if delta_pcts["p90"] > 0.01 else DEFAULT_SURGE_DELTA
