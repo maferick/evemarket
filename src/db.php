@@ -14928,6 +14928,100 @@ function db_character_temporal_behavior_signals(int $characterId): array
     );
 }
 
+function db_character_pipeline_enqueue(array $characterIds, string $reason = 'new_data', float $priority = 0.0): int
+{
+    $characterIds = array_values(array_unique(array_filter(array_map('intval', $characterIds), static fn(int $id): bool => $id > 0)));
+    if ($characterIds === []) {
+        return 0;
+    }
+    $affected = 0;
+    foreach (array_chunk($characterIds, 500) as $chunk) {
+        $placeholders = implode(',', array_fill(0, count($chunk), '(?, ?, ?, "pending", UTC_TIMESTAMP())'));
+        $params = [];
+        foreach ($chunk as $cid) {
+            $params[] = $cid;
+            $params[] = $reason;
+            $params[] = round($priority, 4);
+        }
+        $affected += (int) db_execute(
+            'INSERT INTO character_processing_queue (character_id, reason, priority, status, created_at)
+             VALUES ' . $placeholders . '
+             ON DUPLICATE KEY UPDATE
+                 status = IF(status IN ("done","failed"), "pending", status),
+                 priority = GREATEST(priority, VALUES(priority)),
+                 reason = VALUES(reason),
+                 attempts = IF(status IN ("done","failed"), 0, attempts),
+                 last_error = IF(status IN ("done","failed"), NULL, last_error),
+                 updated_at = CURRENT_TIMESTAMP',
+            $params
+        );
+    }
+    return $affected;
+}
+
+function db_character_pipeline_status(int $characterId): ?array
+{
+    if ($characterId <= 0) {
+        return null;
+    }
+    $row = db_select_one(
+        'SELECT character_id, last_source_event_at, histogram_at, temporal_at,
+                counterintel_at, org_history_at, last_fully_processed_at,
+                histogram_error, counterintel_error
+         FROM character_pipeline_status
+         WHERE character_id = ?',
+        [$characterId]
+    );
+    if ($row === null) {
+        return null;
+    }
+    // Derive per-stage freshness: stale if source is newer than stage output
+    $sourceAt = $row['last_source_event_at'];
+    $row['histogram_fresh'] = $row['histogram_at'] !== null && ($sourceAt === null || $row['histogram_at'] >= $sourceAt);
+    $row['counterintel_fresh'] = $row['counterintel_at'] !== null && ($sourceAt === null || $row['counterintel_at'] >= $sourceAt);
+    $row['temporal_fresh'] = $row['temporal_at'] !== null && ($sourceAt === null || $row['temporal_at'] >= $sourceAt);
+    $row['fully_fresh'] = $row['histogram_fresh'] && $row['counterintel_fresh'] && $row['temporal_fresh'];
+    return $row;
+}
+
+function db_character_pipeline_health(): array
+{
+    $queue = db_select_one(
+        'SELECT
+            SUM(status = "pending") AS pending_count,
+            SUM(status = "processing") AS processing_count,
+            SUM(status = "failed") AS failed_count,
+            SUM(status = "done") AS done_count,
+            MIN(CASE WHEN status = "pending" THEN created_at END) AS oldest_pending_at,
+            TIMESTAMPDIFF(SECOND, MIN(CASE WHEN status = "pending" THEN created_at END), UTC_TIMESTAMP()) AS oldest_pending_age_seconds,
+            SUM(status = "processing" AND locked_at < DATE_SUB(UTC_TIMESTAMP(), INTERVAL 180 SECOND)) AS stale_locked_count
+         FROM character_processing_queue'
+    );
+    $stages = db_select_one(
+        'SELECT
+            SUM(last_source_event_at > histogram_at OR histogram_at IS NULL) AS histogram_stale_count,
+            SUM(histogram_at > counterintel_at OR counterintel_at IS NULL) AS counterintel_stale_from_histogram,
+            SUM(last_source_event_at > counterintel_at OR counterintel_at IS NULL) AS counterintel_stale_from_source,
+            SUM(histogram_error IS NOT NULL) AS histogram_error_count,
+            SUM(counterintel_error IS NOT NULL) AS counterintel_error_count,
+            COUNT(*) AS total_tracked
+         FROM character_pipeline_status
+         WHERE last_source_event_at IS NOT NULL'
+    );
+    $recentErrors = db_select(
+        'SELECT character_id, last_error, attempts, updated_at
+         FROM character_processing_queue
+         WHERE status = "failed" AND last_error IS NOT NULL
+         ORDER BY updated_at DESC
+         LIMIT 10'
+    );
+    return [
+        'queue' => $queue ?: [],
+        'stages' => $stages ?: [],
+        'recent_errors' => $recentErrors,
+    ];
+}
+
 function db_analyst_recalibration_log(int $limit = 20): array
 {
     $safeLimit = max(1, min(100, $limit));

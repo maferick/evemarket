@@ -19218,6 +19218,22 @@ function killmail_persist_r2z2_payload(
         db_killmail_items_replace($sequenceId, $transformed['items']);
     });
 
+    // Enqueue all involved characters for background pipeline processing
+    $pipelineCharIds = [];
+    $victimId = (int) ($transformed['event']['victim_character_id'] ?? 0);
+    if ($victimId > 0) {
+        $pipelineCharIds[] = $victimId;
+    }
+    foreach ($transformed['attackers'] as $attacker) {
+        $attackerId = (int) ($attacker['character_id'] ?? 0);
+        if ($attackerId > 0) {
+            $pipelineCharIds[] = $attackerId;
+        }
+    }
+    if ($pipelineCharIds !== []) {
+        db_character_pipeline_enqueue($pipelineCharIds, 'killmail_activity');
+    }
+
     return [
         'status' => $mailType === 'untracked' ? 'written_untracked' : 'written',
         'sequence_id' => $sequenceId,
@@ -24084,7 +24100,45 @@ function battle_intelligence_character_data(int $characterId, ?array $prefetched
     if (is_array($character)) {
         $decodedOrgHistory = json_decode((string) ($character['org_history_json'] ?? '[]'), true);
         if (is_array($decodedOrgHistory)) {
-            $orgHistory = $decodedOrgHistory;
+            // The raw EveWho payload stores corporation_history at the top level,
+            // but the rendering code expects a {'history': [...], 'info': {...}} structure.
+            if (isset($decodedOrgHistory['corporation_history']) && is_array($decodedOrgHistory['corporation_history'])) {
+                $rawHistory = $decodedOrgHistory['corporation_history'];
+                // Sort by start_date ascending so we can compute end_date from the next entry
+                usort($rawHistory, static function (array $a, array $b): int {
+                    return strcmp((string) ($a['start_date'] ?? ''), (string) ($b['start_date'] ?? ''));
+                });
+                $history = [];
+                $count = count($rawHistory);
+                for ($i = 0; $i < $count; $i++) {
+                    $entry = $rawHistory[$i];
+                    $startDate = (string) ($entry['start_date'] ?? '');
+                    // end_date is the start_date of the next entry, or null if current
+                    $endDate = ($i + 1 < $count) ? (string) ($rawHistory[$i + 1]['start_date'] ?? '') : null;
+                    // Normalize ISO dates to Y-m-d format
+                    if ($startDate !== '') {
+                        $startDate = substr($startDate, 0, 10);
+                    }
+                    if ($endDate !== null && $endDate !== '') {
+                        $endDate = substr($endDate, 0, 10);
+                    }
+                    $history[] = [
+                        'corporation_id' => (int) ($entry['corporation_id'] ?? 0),
+                        'start_date' => $startDate,
+                        'end_date' => $endDate,
+                    ];
+                }
+                $orgHistory = [
+                    'history' => $history,
+                    'info' => [
+                        'corporation_id' => (int) ($decodedOrgHistory['corporation_id'] ?? 0),
+                        'alliance_id' => (int) ($decodedOrgHistory['alliance_id'] ?? 0),
+                    ],
+                ];
+            } elseif (isset($decodedOrgHistory['history'])) {
+                // Already in the expected format
+                $orgHistory = $decodedOrgHistory;
+            }
         }
     }
 

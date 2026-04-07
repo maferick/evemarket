@@ -33,6 +33,7 @@ $ciNeo4jIntel = null;
 $ciMovementFootprints = [];
 $ciSystemDistribution = [];
 $ciNeo4jMovement = null;
+$ciPipelineStatus = null;
 $ciOrgCorpNames = [];
 $ciPathNodeNames = [];
 
@@ -44,12 +45,18 @@ if ($characterId > 0) {
         $copresenceSignals = db_character_copresence_signals($characterId);
         $copresenceEdges   = db_character_copresence_top_edges_preferred($characterId, '30d', 15);
 
-        // Load full character intelligence data
+        // Load full character intelligence data (read-only — pipeline processes in background)
         $ciData = battle_intelligence_character_data($characterId);
         $ciCharacter = $ciData['character'] ?? null;
         $ciBattles = (array) ($ciData['battles'] ?? []);
         $ciEvidence = (array) ($ciData['evidence'] ?? []);
         $ciOrgHistory = (array) ($ciData['org_history'] ?? []);
+        $ciPipelineStatus = db_character_pipeline_status($characterId);
+
+        // Ensure this character is in the processing queue.
+        // Priority 5.0 = elevated for viewed characters but capped below max (ingestion=0, view=5).
+        // UPSERT uses GREATEST so repeated page loads are idempotent, not escalating.
+        db_character_pipeline_enqueue([$characterId], 'pilot_lookup', 5.0);
 
         $ciTypedInteractions = db_character_typed_interactions($characterId, 30);
         $ciCommunityInfo = db_graph_community_assignments($characterId);
@@ -613,21 +620,40 @@ include __DIR__ . '/../../src/views/partials/header.php';
             <?php if (is_array($ciCharacter)): ?>
             <?php
                 $ciDataSource = (string) ($ciCharacter['data_source'] ?? 'counterintel');
-                if ($ciDataSource === 'suspicion_v2'): ?>
+                $psFresh = is_array($ciPipelineStatus) && !empty($ciPipelineStatus['fully_fresh']);
+                $psExists = is_array($ciPipelineStatus);
+                $psHasError = $psExists && (($ciPipelineStatus['histogram_error'] ?? null) !== null || ($ciPipelineStatus['counterintel_error'] ?? null) !== null);
+
+                if ($ciDataSource === 'counterintel' && $psFresh): ?>
+                    <?php /* Full analysis ready — no banner needed */ ?>
+                <?php elseif ($ciDataSource === 'counterintel' && $psExists && !$psFresh): ?>
+                    <div class="mt-6 rounded border border-blue-500/30 bg-blue-950/30 px-4 py-2.5 text-sm text-blue-200/90">
+                        <strong>Partial analysis available</strong> &mdash; new source data detected. Background pipeline will refresh stale stages automatically.
+                        <span class="text-xs text-blue-300/50 ml-2"><?php
+                            $stageLabels = [];
+                            if (!empty($ciPipelineStatus['histogram_fresh'])) { $stageLabels[] = '<span class="text-green-400">histogram</span>'; } else { $stageLabels[] = '<span class="text-amber-400">histogram</span>'; }
+                            if (!empty($ciPipelineStatus['counterintel_fresh'])) { $stageLabels[] = '<span class="text-green-400">counterintel</span>'; } else { $stageLabels[] = '<span class="text-amber-400">counterintel</span>'; }
+                            if (!empty($ciPipelineStatus['temporal_fresh'])) { $stageLabels[] = '<span class="text-green-400">temporal</span>'; } else { $stageLabels[] = '<span class="text-amber-400">temporal</span>'; }
+                            echo implode(' &middot; ', $stageLabels);
+                        ?></span>
+                    </div>
+                <?php elseif ($psHasError): ?>
+                    <div class="mt-6 rounded border border-red-500/30 bg-red-950/30 px-4 py-2.5 text-sm text-red-200/90">
+                        <strong>Processing error</strong> &mdash; retry pending.
+                        <?php if (($ciPipelineStatus['histogram_error'] ?? null) !== null): ?>
+                            <span class="text-xs text-red-300/60 block mt-1">Histogram: <?= htmlspecialchars(mb_substr((string) $ciPipelineStatus['histogram_error'], 0, 120), ENT_QUOTES) ?></span>
+                        <?php endif; ?>
+                        <?php if (($ciPipelineStatus['counterintel_error'] ?? null) !== null): ?>
+                            <span class="text-xs text-red-300/60 block mt-1">Counterintel: <?= htmlspecialchars(mb_substr((string) $ciPipelineStatus['counterintel_error'], 0, 120), ENT_QUOTES) ?></span>
+                        <?php endif; ?>
+                    </div>
+                <?php elseif ($ciDataSource === 'suspicion_v2'): ?>
                     <div class="mt-6 rounded border border-amber-500/30 bg-amber-950/30 px-4 py-2.5 text-sm text-amber-200/90">
-                        <strong>Limited data</strong> &mdash; showing batch suspicion scores. The full counter-intel pipeline has not processed this character yet.
-                        <form method="POST" action="/battle-intelligence/character.php?character_id=<?= $characterId ?>" class="mt-1.5 inline">
-                            <input type="hidden" name="compute_intelligence" value="1">
-                            <button type="submit" class="btn btn-sm btn-accent">Compute full analysis</button>
-                        </form>
+                        <strong>Processing queued</strong> &mdash; showing batch suspicion scores. Full analysis will run automatically in the background.
                     </div>
                 <?php elseif ($ciDataSource === 'below_threshold'): ?>
                     <div class="mt-6 rounded border border-slate-500/30 bg-slate-800/50 px-4 py-2.5 text-sm text-slate-300">
-                        <strong>Insufficient data</strong> &mdash; this character has <?= (int) ($ciCharacter['total_battle_count'] ?? 0) ?> battle(s) (<?= (int) ($ciCharacter['eligible_battle_count'] ?? 0) ?> eligible), below the minimum of 5 required for scoring.
-                        <form method="POST" action="/battle-intelligence/character.php?character_id=<?= $characterId ?>" class="mt-1.5 inline">
-                            <input type="hidden" name="compute_intelligence" value="1">
-                            <button type="submit" class="btn btn-sm btn-accent">Compute now</button>
-                        </form>
+                        <strong>Insufficient source data</strong> &mdash; <?= (int) ($ciCharacter['total_battle_count'] ?? 0) ?> battle(s) detected. Analysis will run when more activity data is available.
                     </div>
                 <?php endif; ?>
             <?php
