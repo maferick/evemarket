@@ -307,8 +307,6 @@ def run_cip_compound_evaluator(db: SupplyCoreDb) -> JobResult:
                     """, [cid, defn.compound_type])
                     deactivated += 1
 
-    db.commit()
-
     elapsed = int((time.monotonic() - t0) * 1000)
     total = created + updated + deactivated
 

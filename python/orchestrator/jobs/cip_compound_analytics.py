@@ -162,8 +162,6 @@ def run_cip_compound_analytics(db: SupplyCoreDb) -> JobResult:
         ])
         rows_written += 1
 
-    db.commit()
-
     elapsed = int((time.monotonic() - t0) * 1000)
     logger.info("cip_compound_analytics: wrote %d compound snapshots for %s", rows_written, today)
 
