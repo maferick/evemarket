@@ -101,28 +101,34 @@ include __DIR__ . '/../../src/views/partials/header.php';
     <!-- Summary counters -->
     <div class="mt-5 grid gap-3 sm:grid-cols-2 md:grid-cols-4 lg:grid-cols-6">
         <div class="surface-tertiary">
-            <p class="text-xs text-muted">Active</p>
+            <p class="text-xs text-muted">Active events</p>
             <p class="mt-1 text-2xl font-semibold text-slate-100"><?= number_format($summary['total_active']) ?></p>
+            <p class="text-[10px] text-muted mt-1">Open events awaiting triage or action</p>
         </div>
         <div class="surface-tertiary">
-            <p class="text-xs text-muted">Critical</p>
+            <p class="text-xs text-muted">Critical severity</p>
             <p class="mt-1 text-2xl font-semibold <?= $summary['active_critical'] > 0 ? 'text-red-400' : 'text-slate-500' ?>"><?= number_format($summary['active_critical']) ?></p>
+            <p class="text-[10px] text-muted mt-1">Highest urgency, escalated threats</p>
         </div>
         <div class="surface-tertiary">
-            <p class="text-xs text-muted">High</p>
+            <p class="text-xs text-muted">High severity</p>
             <p class="mt-1 text-2xl font-semibold <?= $summary['active_high'] > 0 ? 'text-orange-400' : 'text-slate-500' ?>"><?= number_format($summary['active_high']) ?></p>
+            <p class="text-[10px] text-muted mt-1">Rank entries, multi-domain, compounds</p>
         </div>
         <div class="surface-tertiary">
             <p class="text-xs text-muted">Threat events</p>
             <p class="mt-1 text-2xl font-semibold text-slate-100"><?= number_format($summary['active_threat']) ?></p>
+            <p class="text-[10px] text-muted mt-1">Who needs attention?</p>
         </div>
         <div class="surface-tertiary">
             <p class="text-xs text-muted">Profile quality</p>
             <p class="mt-1 text-2xl font-semibold text-slate-100"><?= number_format($summary['active_quality']) ?></p>
+            <p class="text-[10px] text-muted mt-1">How much should we trust the picture?</p>
         </div>
         <div class="surface-tertiary">
             <p class="text-xs text-muted">Resolved (24h)</p>
             <p class="mt-1 text-2xl font-semibold text-emerald-400"><?= number_format($summary['resolved_24h']) ?></p>
+            <p class="text-[10px] text-muted mt-1">Events cleared in the last day</p>
         </div>
     </div>
 

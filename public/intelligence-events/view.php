@@ -155,7 +155,31 @@ include __DIR__ . '/../../src/views/partials/header.php';
     <div class="mt-4 flex flex-wrap items-start justify-between gap-4">
         <div>
             <p class="text-xs uppercase tracking-[0.16em] text-muted"><?= htmlspecialchars((string) ($event['event_type'] ?? ''), ENT_QUOTES) ?></p>
+            <?php if (($event['entity_name'] ?? '') !== ''): ?>
+                <p class="mt-1 text-lg text-accent font-medium">
+                    <a href="/battle-intelligence/character.php?character_id=<?= urlencode((string) ((int) ($event['entity_id'] ?? 0))) ?>"><?= htmlspecialchars((string) $event['entity_name'], ENT_QUOTES) ?></a>
+                </p>
+            <?php endif; ?>
             <h1 class="mt-1 text-2xl font-semibold text-slate-50"><?= htmlspecialchars((string) ($event['title'] ?? 'Untitled Event'), ENT_QUOTES) ?></h1>
+            <?php
+            $eventExplanation = match ($event['event_type'] ?? '') {
+                'risk_rank_entry_top50'      => 'This character entered the top 50 risk-ranked profiles. They are now among the most suspicious characters being tracked.',
+                'risk_rank_entry_top200'     => 'This character entered the top 200 risk-ranked profiles, indicating elevated suspicion across multiple signal domains.',
+                'percentile_escalation'      => 'This character moved into a higher risk percentile bucket, indicating a worsening intelligence picture.',
+                'risk_score_surge'           => 'The fused risk score for this character increased significantly in the last 24 hours.',
+                'rank_jump'                  => 'This character jumped significantly in the overall risk rankings in a single computation cycle.',
+                'new_high_weight_signal'     => 'A new signal with high confidence and significant weight appeared for this character.',
+                'multi_domain_activation'    => 'This character now has active signals across 4+ independent domains (behavioral, graph, temporal, movement, relational) — convergent evidence from different analysis methods.',
+                'freshness_degradation'      => 'The signals backing this character\'s profile are going stale. The trust surface freshness dropped below the operational threshold.',
+                'coverage_expansion'         => 'Signal coverage for this character materially expanded — more signal domains are now contributing to their profile.',
+                'compound_signal_activated'  => 'A compound detection was triggered — multiple independent signals co-occurred in a pattern that indicates a specific operational concern.',
+                'compound_signal_strengthened' => 'An existing compound detection strengthened — the pattern became more pronounced.',
+                default                      => '',
+            };
+            ?>
+            <?php if ($eventExplanation !== ''): ?>
+                <p class="mt-2 text-sm text-slate-400"><?= $eventExplanation ?></p>
+            <?php endif; ?>
             <div class="mt-2 flex flex-wrap items-center gap-2">
                 <span class="inline-flex items-center rounded px-2 py-0.5 text-xs font-medium <?= $sevClasses ?>"><?= strtoupper($sev) ?></span>
                 <span class="inline-flex items-center rounded px-2 py-0.5 text-xs font-medium <?= $stateClasses ?>"><?= strtoupper((string) ($event['state'] ?? '')) ?></span>
@@ -188,9 +212,10 @@ include __DIR__ . '/../../src/views/partials/header.php';
 
             <?php
             // Extract the most important trigger fields from detail data
-            // (exclude profile snapshot fields which are shown separately)
+            // (exclude profile snapshot fields and compound evidence which are shown separately)
             $profileFields = ['risk_score', 'risk_rank', 'risk_percentile', 'confidence', 'freshness', 'effective_coverage'];
-            $triggerFields = array_diff_key($detailData, array_flip($profileFields));
+            $compoundFields = ['contributing_signals', 'compound_family', 'score_mode', 'confidence_derivation', 'profile_conditions_met'];
+            $triggerFields = array_diff_key($detailData, array_flip(array_merge($profileFields, $compoundFields)));
             ?>
             <?php if ($triggerFields !== []): ?>
                 <div class="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
@@ -203,7 +228,17 @@ include __DIR__ . '/../../src/views/partials/header.php';
                                 <?php elseif (is_bool($val)): ?>
                                     <?= $val ? 'Yes' : 'No' ?>
                                 <?php elseif (is_array($val)): ?>
-                                    <?= htmlspecialchars(json_encode($val), ENT_QUOTES) ?>
+                                    <?php if (isset($val[0]) && is_array($val[0])): ?>
+                                        <?php // Array of objects — show count ?>
+                                        <span class="text-slate-400"><?= count($val) ?> item<?= count($val) !== 1 ? 's' : '' ?></span>
+                                    <?php elseif (array_keys($val) !== range(0, count($val) - 1)): ?>
+                                        <?php // Associative array — show key: value pairs ?>
+                                        <?php foreach ($val as $k => $v): ?>
+                                            <span class="inline-block mr-2 text-xs"><?= htmlspecialchars((string) $k, ENT_QUOTES) ?>: <?= is_numeric($v) ? number_format((float) $v, 2) : htmlspecialchars((string) $v, ENT_QUOTES) ?></span>
+                                        <?php endforeach; ?>
+                                    <?php else: ?>
+                                        <?= htmlspecialchars(implode(', ', array_map('strval', $val)), ENT_QUOTES) ?>
+                                    <?php endif; ?>
                                 <?php else: ?>
                                     <?= htmlspecialchars((string) $val, ENT_QUOTES) ?>
                                 <?php endif; ?>
@@ -221,7 +256,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                     <p class="text-xs text-muted font-medium">Threshold check</p>
                     <div class="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-xs">
                         <?php foreach ($thresholdInfo as $tKey => $tVal): ?>
-                            <span><span class="text-muted"><?= htmlspecialchars(str_replace('_', ' ', (string) $tKey), ENT_QUOTES) ?>:</span> <span class="text-slate-200"><?php if (is_numeric($tVal)): ?><?= number_format((float) $tVal, 4) ?><?php else: ?><?= htmlspecialchars((string) $tVal, ENT_QUOTES) ?><?php endif; ?></span></span>
+                            <span><span class="text-muted"><?= htmlspecialchars(str_replace('_', ' ', (string) $tKey), ENT_QUOTES) ?>:</span> <span class="text-slate-200"><?php if (is_numeric($tVal)): ?><?= number_format((float) $tVal, 4) ?><?php elseif (is_array($tVal)): ?><?php foreach ($tVal as $ak => $av): ?><span class="mr-1"><?= htmlspecialchars((string) $ak, ENT_QUOTES) ?>:<?= is_numeric($av) ? number_format((float) $av, 2) : htmlspecialchars((string) $av, ENT_QUOTES) ?></span><?php endforeach; ?><?php else: ?><?= htmlspecialchars((string) $tVal, ENT_QUOTES) ?><?php endif; ?></span></span>
                         <?php endforeach; ?>
                     </div>
                 </div>
