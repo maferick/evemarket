@@ -864,6 +864,42 @@ if ($viewSnapshot !== null && !$pendingLock) {
         ]);
     } else {
         $aiSummary = theater_ai_summary_read($theaterId);
+
+        // Auto-locked theaters (locked by the analysis job) never got a snapshot.
+        // Cache it now on first view so subsequent loads are instant.
+        if ($isLocked && ($theater['snapshot_data'] ?? null) === null) {
+            theater_view_snapshot_save($theaterId, [
+                'battles' => $battles,
+                'systems' => $systems,
+                'timeline' => $timeline,
+                'alliance_summary' => $allianceSummary,
+                'fleet_composition' => $fleetComposition,
+                'suspicion' => $suspicion,
+                'graph_summary' => $graphSummary,
+                'turning_points' => $turningPoints,
+                'participants' => $participantsAll,
+                'graph_participants' => $graphParticipants,
+                'structure_kills' => $structureKills,
+                'resolved_entities' => $resolvedEntities,
+                'ship_type_names' => $shipTypeNames,
+                'tracked_alliance_ids' => $trackedAllianceIds,
+                'opponent_alliance_ids' => $opponentAllianceIds,
+                'tracked_corporation_ids' => $trackedCorporationIds,
+                'opponent_corporation_ids' => $opponentCorporationIds,
+                'side_labels' => $sideLabels,
+                'side_alliances_by_pilots' => $sideAlliancesByPilots,
+                'opponent_model' => $opponentModel,
+                'side_panels' => $sidePanels,
+                'data_quality_notes' => $dataQualityNotes,
+                'duration_label' => $durationLabel,
+                'total_isk_destroyed' => $totalIskDestroyed,
+                'theater_start_actual' => $theaterStartActual,
+                'theater_end_actual' => $theaterEndActual,
+                'display_kill_total' => $displayKillTotal,
+                'reported_kill_total' => $reportedKillTotal,
+                'observed_kill_total' => $observedKillTotal,
+            ]);
+        }
     }
 }
 
