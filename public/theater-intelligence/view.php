@@ -3,6 +3,9 @@
 declare(strict_types=1);
 require_once __DIR__ . '/../../src/bootstrap.php';
 
+// Allow long-running computation for large theaters
+set_time_limit(300);
+
 $theaterId = trim((string) ($_GET['theater_id'] ?? ''));
 if ($theaterId === '') {
     header('Location: /theater-intelligence');
@@ -381,6 +384,26 @@ if ($viewSnapshot !== null && !$pendingLock) {
 
 } else {
     // ── Slow path: compute everything from scratch ──────────────────────
+
+    // Flush the page header + loading skeleton to the browser immediately.
+    // This keeps the nginx proxy alive (it sees bytes flowing) and gives
+    // the user visual feedback while the heavy queries run.
+    $title = htmlspecialchars((string) ($theater['primary_system_name'] ?? 'Theater'), ENT_QUOTES) . ' Theater';
+    include __DIR__ . '/../../src/views/partials/header.php';
+    echo '<div id="theater-loading-skeleton" class="surface-primary mt-4">';
+    echo '  <div class="flex flex-col items-center justify-center py-16 gap-4">';
+    echo '    <div class="relative">';
+    echo '      <div class="w-12 h-12 rounded-full border-2 border-amber-500/20"></div>';
+    echo '      <div class="absolute inset-0 w-12 h-12 rounded-full border-2 border-transparent border-t-amber-500 animate-spin"></div>';
+    echo '    </div>';
+    echo '    <p class="text-sm text-slate-400">Loading theater data for ' . number_format((int) ($theater['battle_count'] ?? 0)) . ' battles...</p>';
+    echo '  </div>';
+    echo '</div>';
+    // Flush to browser — this is what prevents the 504
+    if (ob_get_level()) ob_end_flush();
+    flush();
+
+    $_headerAlreadyFlushed = true;
 
     // Load raw data
     $battles = db_theater_battles($theaterId);
@@ -1025,7 +1048,12 @@ if (($sideAlliancesByPilots['opponent'] ?? []) !== [] && ($sideAlliancesByPilots
     ];
 }
 
-include __DIR__ . '/../../src/views/partials/header.php';
+if (empty($_headerAlreadyFlushed)) {
+    include __DIR__ . '/../../src/views/partials/header.php';
+} else {
+    // Hide the loading skeleton now that real content is ready
+    echo '<script>document.getElementById("theater-loading-skeleton")?.remove();</script>';
+}
 
 // ── Render partials ────────────────────────────────────────────────────
 include __DIR__ . '/partials/_header.php';
