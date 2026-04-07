@@ -328,6 +328,10 @@ def run_registered_processor(job_key: str, db: Any, raw_config: dict[str, Any], 
         raw_result = processor_fn(*arg_factory(db, raw_config), verbose=verbose)
     else:
         raw_result = processor_fn(*arg_factory(db, raw_config))
+    # Normalize: if the processor returned a JobResult object instead of a dict,
+    # convert it so from_raw() can process it.
+    if isinstance(raw_result, JobResult):
+        raw_result = raw_result.to_dict()
     return JobResult.from_raw(raw_result, job_key=job_key).to_dict()
 
 
