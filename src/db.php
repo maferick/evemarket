@@ -14984,6 +14984,44 @@ function db_character_pipeline_status(int $characterId): ?array
     return $row;
 }
 
+function db_character_pipeline_health(): array
+{
+    $queue = db_select_one(
+        'SELECT
+            SUM(status = "pending") AS pending_count,
+            SUM(status = "processing") AS processing_count,
+            SUM(status = "failed") AS failed_count,
+            SUM(status = "done") AS done_count,
+            MIN(CASE WHEN status = "pending" THEN created_at END) AS oldest_pending_at,
+            TIMESTAMPDIFF(SECOND, MIN(CASE WHEN status = "pending" THEN created_at END), UTC_TIMESTAMP()) AS oldest_pending_age_seconds,
+            SUM(status = "processing" AND locked_at < DATE_SUB(UTC_TIMESTAMP(), INTERVAL 180 SECOND)) AS stale_locked_count
+         FROM character_processing_queue'
+    );
+    $stages = db_select_one(
+        'SELECT
+            SUM(last_source_event_at > histogram_at OR histogram_at IS NULL) AS histogram_stale_count,
+            SUM(histogram_at > counterintel_at OR counterintel_at IS NULL) AS counterintel_stale_from_histogram,
+            SUM(last_source_event_at > counterintel_at OR counterintel_at IS NULL) AS counterintel_stale_from_source,
+            SUM(histogram_error IS NOT NULL) AS histogram_error_count,
+            SUM(counterintel_error IS NOT NULL) AS counterintel_error_count,
+            COUNT(*) AS total_tracked
+         FROM character_pipeline_status
+         WHERE last_source_event_at IS NOT NULL'
+    );
+    $recentErrors = db_select(
+        'SELECT character_id, last_error, attempts, updated_at
+         FROM character_processing_queue
+         WHERE status = "failed" AND last_error IS NOT NULL
+         ORDER BY updated_at DESC
+         LIMIT 10'
+    );
+    return [
+        'queue' => $queue ?: [],
+        'stages' => $stages ?: [],
+        'recent_errors' => $recentErrors,
+    ];
+}
+
 function db_analyst_recalibration_log(int $limit = 20): array
 {
     $safeLimit = max(1, min(100, $limit));

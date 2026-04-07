@@ -188,4 +188,66 @@ include __DIR__ . '/../../src/views/partials/header.php';
 </section>
 <?php endif; ?>
 
+<!-- Pipeline health -->
+<?php $pipelineHealth = db_character_pipeline_health(); $pq = (array) ($pipelineHealth['queue'] ?? []); $ps = (array) ($pipelineHealth['stages'] ?? []); ?>
+<section class="surface-primary mt-6">
+    <h2 class="text-lg font-semibold text-slate-100">Character pipeline health</h2>
+    <p class="mt-1 text-xs text-muted">Background processing queue status and stage freshness.</p>
+    <div class="mt-3 grid gap-3 md:grid-cols-4">
+        <div class="surface-tertiary">
+            <p class="text-xs text-muted">Pending</p>
+            <p class="text-xl font-semibold text-slate-100"><?= number_format((int) ($pq['pending_count'] ?? 0)) ?></p>
+            <?php if (($pq['oldest_pending_age_seconds'] ?? 0) > 0): ?>
+                <p class="text-[10px] text-muted mt-1">Oldest: <?= number_format((int) ($pq['oldest_pending_age_seconds'] ?? 0)) ?>s ago</p>
+            <?php endif; ?>
+        </div>
+        <div class="surface-tertiary">
+            <p class="text-xs text-muted">Processing</p>
+            <p class="text-xl font-semibold text-slate-100"><?= number_format((int) ($pq['processing_count'] ?? 0)) ?></p>
+            <?php if (((int) ($pq['stale_locked_count'] ?? 0)) > 0): ?>
+                <p class="text-[10px] text-red-400 mt-1"><?= (int) $pq['stale_locked_count'] ?> stale-locked</p>
+            <?php endif; ?>
+        </div>
+        <div class="surface-tertiary">
+            <p class="text-xs text-muted">Failed</p>
+            <p class="text-xl font-semibold <?= ((int) ($pq['failed_count'] ?? 0)) > 0 ? 'text-red-400' : 'text-slate-100' ?>"><?= number_format((int) ($pq['failed_count'] ?? 0)) ?></p>
+        </div>
+        <div class="surface-tertiary">
+            <p class="text-xs text-muted">Done</p>
+            <p class="text-xl font-semibold text-green-400"><?= number_format((int) ($pq['done_count'] ?? 0)) ?></p>
+        </div>
+    </div>
+    <?php if ($ps): ?>
+    <div class="mt-3 grid gap-3 md:grid-cols-3">
+        <div class="surface-tertiary">
+            <p class="text-xs text-muted">Histogram stale</p>
+            <p class="text-lg font-semibold text-amber-400"><?= number_format((int) ($ps['histogram_stale_count'] ?? 0)) ?></p>
+            <?php if (((int) ($ps['histogram_error_count'] ?? 0)) > 0): ?>
+                <p class="text-[10px] text-red-400 mt-1"><?= (int) $ps['histogram_error_count'] ?> errors</p>
+            <?php endif; ?>
+        </div>
+        <div class="surface-tertiary">
+            <p class="text-xs text-muted">Counterintel stale (source)</p>
+            <p class="text-lg font-semibold text-amber-400"><?= number_format((int) ($ps['counterintel_stale_from_source'] ?? 0)) ?></p>
+            <?php if (((int) ($ps['counterintel_error_count'] ?? 0)) > 0): ?>
+                <p class="text-[10px] text-red-400 mt-1"><?= (int) $ps['counterintel_error_count'] ?> errors</p>
+            <?php endif; ?>
+        </div>
+        <div class="surface-tertiary">
+            <p class="text-xs text-muted">Counterintel stale (upstream)</p>
+            <p class="text-lg font-semibold text-amber-400"><?= number_format((int) ($ps['counterintel_stale_from_histogram'] ?? 0)) ?></p>
+            <p class="text-[10px] text-muted mt-1">of <?= number_format((int) ($ps['total_tracked'] ?? 0)) ?> tracked</p>
+        </div>
+    </div>
+    <?php endif; ?>
+    <?php $recentErrors = (array) ($pipelineHealth['recent_errors'] ?? []); if ($recentErrors !== []): ?>
+    <details class="mt-3"><summary class="text-xs text-muted cursor-pointer">Recent failures (<?= count($recentErrors) ?>)</summary>
+    <div class="mt-2 table-shell"><table class="table-ui text-xs"><thead><tr class="border-b border-border/70 text-muted"><th class="px-2 py-1">Character</th><th class="px-2 py-1">Attempts</th><th class="px-2 py-1">Error</th><th class="px-2 py-1">When</th></tr></thead><tbody>
+    <?php foreach ($recentErrors as $err): ?>
+    <tr class="border-b border-border/40"><td class="px-2 py-1"><a href="?character_id=<?= (int) $err['character_id'] ?>" class="text-accent"><?= (int) $err['character_id'] ?></a></td><td class="px-2 py-1"><?= (int) $err['attempts'] ?></td><td class="px-2 py-1 text-red-300"><?= htmlspecialchars(mb_substr((string) ($err['last_error'] ?? ''), 0, 100), ENT_QUOTES) ?></td><td class="px-2 py-1 text-muted"><?= htmlspecialchars((string) ($err['updated_at'] ?? ''), ENT_QUOTES) ?></td></tr>
+    <?php endforeach; ?>
+    </tbody></table></div></details>
+    <?php endif; ?>
+</section>
+
 <?php include __DIR__ . '/../../src/views/partials/footer.php'; ?>

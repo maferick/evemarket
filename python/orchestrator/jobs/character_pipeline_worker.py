@@ -547,19 +547,40 @@ def _get_stage_freshness(db: SupplyCoreDb, character_id: int) -> dict[str, Any]:
     return dict(row) if row else {}
 
 
-def _is_stage_stale(freshness: dict[str, Any], stage_col: str) -> bool:
-    """A stage is stale if source is newer than stage output, or stage never ran."""
+def _is_stage_stale(freshness: dict[str, Any], stage_col: str, upstream_cols: list[str] | None = None) -> bool:
+    """A stage is stale if source or any upstream stage is newer than stage output.
+
+    Staleness rules:
+      - Stage never ran (stage_at is NULL) → stale
+      - last_source_event_at > stage_at → stale (new input data)
+      - Any upstream_col > stage_at → stale (upstream rebuilt after this stage)
+      - No source data and no upstream changes → not stale
+    """
     stage_at = freshness.get(stage_col)
     source_at = freshness.get("last_source_event_at")
+
     if stage_at is None:
         return True  # never ran
-    if source_at is None:
-        return False  # no source data known — nothing to recompute
-    s = _ensure_utc(source_at) if isinstance(source_at, datetime) else None
+
     t = _ensure_utc(stage_at) if isinstance(stage_at, datetime) else None
-    if s is None or t is None:
+    if t is None:
         return True
-    return s > t
+
+    # Check source watermark
+    if source_at is not None:
+        s = _ensure_utc(source_at) if isinstance(source_at, datetime) else None
+        if s is not None and s > t:
+            return True
+
+    # Check upstream stage watermarks (e.g., histogram rebuilt after counterintel)
+    for ucol in (upstream_cols or []):
+        upstream_at = freshness.get(ucol)
+        if upstream_at is not None:
+            u = _ensure_utc(upstream_at) if isinstance(upstream_at, datetime) else None
+            if u is not None and u > t:
+                return True
+
+    return False
 
 
 def _update_stage_watermark(db: SupplyCoreDb, character_id: int, stage: str, computed_at: str) -> None:
@@ -679,27 +700,32 @@ def run_character_pipeline_worker(
                                 stages_completed += 1
                                 ran_any = True
                             else:
-                                stages_skipped += 1  # no event data at all
+                                # No event data — nothing to compute, but don't
+                                # mark fresh.  Leave histogram_at as NULL so it
+                                # retries when data arrives.
+                                stages_skipped += 1
                         except Exception as stage_exc:
                             _update_stage_error(db, character_id, "histogram", str(stage_exc))
                             raise
                     else:
                         stages_skipped += 1
 
-                    # Stage 2: counterintel — needs battle_anomalies data
-                    # Can run independently of histograms
-                    if _is_stage_stale(freshness, "counterintel_at"):
+                    # Stage 2: counterintel — needs eligible battle data.
+                    # Also stale if histogram was just rebuilt (upstream dependency).
+                    if _is_stage_stale(freshness, "counterintel_at", upstream_cols=["histogram_at"]):
                         try:
                             if _run_counterintel_stage(db, character_id, computed_at):
                                 _update_stage_watermark(db, character_id, "counterintel", computed_at)
                                 stages_completed += 1
                                 ran_any = True
                             else:
-                                stages_skipped += 1  # no eligible battles
+                                # No eligible battles — do NOT advance watermark.
+                                # Character stays stale for counterintel so it
+                                # reruns when qualifying battles arrive later.
+                                stages_skipped += 1
                         except Exception as stage_exc:
                             _update_stage_error(db, character_id, "counterintel", str(stage_exc))
                             raise
-
                     else:
                         stages_skipped += 1
 
@@ -707,6 +733,8 @@ def run_character_pipeline_worker(
                     # (temporal_behavior_detection.py) over all characters — we
                     # ensure histogram data is ready for it, but don't run it here.
 
+                    # Only mark fully processed if all runnable stages completed.
+                    # If a stage returned False (no data), don't claim completion.
                     if ran_any:
                         _mark_fully_processed(db, character_id, computed_at)
                         characters_processed += 1
@@ -768,6 +796,12 @@ def backfill_enqueue_all(db: SupplyCoreDb, chunk_size: int = 5000) -> dict[str, 
 
     Idempotent and chunked — safe to call repeatedly on large datasets.
     Characters already pending/processing are not disrupted (priority may bump).
+
+    Source watermark is set to UTC_TIMESTAMP() which forces all stages to
+    recompute.  This is intentional for backfill: we don't know which stages
+    are stale without per-character queries, and the goal is full coverage.
+    Once the worker processes them, watermarks will reflect actual completion
+    and subsequent runs will be incremental.
     """
     sources = {
         "battle_participants": "SELECT DISTINCT character_id FROM battle_participants WHERE character_id > 0",

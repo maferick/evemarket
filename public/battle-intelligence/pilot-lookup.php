@@ -53,8 +53,10 @@ if ($characterId > 0) {
         $ciOrgHistory = (array) ($ciData['org_history'] ?? []);
         $ciPipelineStatus = db_character_pipeline_status($characterId);
 
-        // Ensure this character is in the processing queue (high priority for viewed characters)
-        db_character_pipeline_enqueue([$characterId], 'pilot_lookup', 10.0);
+        // Ensure this character is in the processing queue.
+        // Priority 5.0 = elevated for viewed characters but capped below max (ingestion=0, view=5).
+        // UPSERT uses GREATEST so repeated page loads are idempotent, not escalating.
+        db_character_pipeline_enqueue([$characterId], 'pilot_lookup', 5.0);
 
         $ciTypedInteractions = db_character_typed_interactions($characterId, 30);
         $ciCommunityInfo = db_graph_community_assignments($characterId);
