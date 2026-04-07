@@ -19218,6 +19218,22 @@ function killmail_persist_r2z2_payload(
         db_killmail_items_replace($sequenceId, $transformed['items']);
     });
 
+    // Enqueue all involved characters for background pipeline processing
+    $pipelineCharIds = [];
+    $victimId = (int) ($transformed['event']['victim_character_id'] ?? 0);
+    if ($victimId > 0) {
+        $pipelineCharIds[] = $victimId;
+    }
+    foreach ($transformed['attackers'] as $attacker) {
+        $attackerId = (int) ($attacker['character_id'] ?? 0);
+        if ($attackerId > 0) {
+            $pipelineCharIds[] = $attackerId;
+        }
+    }
+    if ($pipelineCharIds !== []) {
+        db_character_pipeline_enqueue($pipelineCharIds, 'killmail_activity');
+    }
+
     return [
         'status' => $mailType === 'untracked' ? 'written_untracked' : 'written',
         'sequence_id' => $sequenceId,

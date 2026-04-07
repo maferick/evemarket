@@ -536,6 +536,11 @@ def run_compute_counterintel_pipeline(
 
             org_written = _enrich_org_history_cache(db, list(by_character.keys()), user_agent, org_cache_ttl_hours, org_max_fetches, org_fetch_batch_size)
 
+            # Enqueue characters for pipeline processing after org history refresh
+            if org_written > 0:
+                from .character_pipeline_worker import enqueue_characters as _enqueue_pipeline
+                _enqueue_pipeline(db, list(by_character.keys()), reason="org_history_refresh")
+
             org_rows = db.fetch_all(
                 "SELECT character_id, corp_hops_180d, short_tenure_hops_180d, history_json, source_endpoint FROM character_org_history_cache WHERE source = 'evewho' AND (expires_at IS NULL OR expires_at > UTC_TIMESTAMP()) AND character_id IN ("
                 + ",".join(["%s"] * len(by_character))

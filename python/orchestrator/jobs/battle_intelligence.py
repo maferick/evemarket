@@ -1148,6 +1148,10 @@ def run_compute_battle_actor_features(
         if not dry_run and enrichment_priorities:
             _queue_enrichment_from_priorities(db, enrichment_priorities)
 
+            # Also queue for full pipeline processing (histograms, counterintel, temporal)
+            from .character_pipeline_worker import enqueue_characters as _enqueue_pipeline
+            _enqueue_pipeline(db, list(enrichment_priorities.keys()), reason="battle_participation")
+
         neo_result = {"status": "skipped", "reason": "dry-run"} if dry_run else _neo4j_sync_participation(db, neo4j_raw)
         finish_job_run(
             db,

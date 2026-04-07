@@ -33,6 +33,7 @@ $ciNeo4jIntel = null;
 $ciMovementFootprints = [];
 $ciSystemDistribution = [];
 $ciNeo4jMovement = null;
+$ciPipelineStatus = null;
 $ciOrgCorpNames = [];
 $ciPathNodeNames = [];
 
@@ -44,19 +45,16 @@ if ($characterId > 0) {
         $copresenceSignals = db_character_copresence_signals($characterId);
         $copresenceEdges   = db_character_copresence_top_edges_preferred($characterId, '30d', 15);
 
-        // Load full character intelligence data — auto-compute if not yet processed
+        // Load full character intelligence data (read-only — pipeline processes in background)
         $ciData = battle_intelligence_character_data($characterId);
         $ciCharacter = $ciData['character'] ?? null;
-        $ciAutoComputeSource = is_array($ciCharacter) ? (string) ($ciCharacter['data_source'] ?? '') : '';
-        if ($ciAutoComputeSource === 'suspicion_v2' || $ciAutoComputeSource === 'below_threshold' || $ciCharacter === null) {
-            compute_character_intelligence_on_demand($characterId);
-            // Reload after computation
-            $ciData = battle_intelligence_character_data($characterId);
-            $ciCharacter = $ciData['character'] ?? null;
-        }
         $ciBattles = (array) ($ciData['battles'] ?? []);
         $ciEvidence = (array) ($ciData['evidence'] ?? []);
         $ciOrgHistory = (array) ($ciData['org_history'] ?? []);
+        $ciPipelineStatus = db_character_pipeline_status($characterId);
+
+        // Ensure this character is in the processing queue (high priority for viewed characters)
+        db_character_pipeline_enqueue([$characterId], 'pilot_lookup', 10.0);
 
         $ciTypedInteractions = db_character_typed_interactions($characterId, 30);
         $ciCommunityInfo = db_graph_community_assignments($characterId);
@@ -620,13 +618,21 @@ include __DIR__ . '/../../src/views/partials/header.php';
             <?php if (is_array($ciCharacter)): ?>
             <?php
                 $ciDataSource = (string) ($ciCharacter['data_source'] ?? 'counterintel');
-                if ($ciDataSource === 'suspicion_v2'): ?>
+                $pipelineFullyProcessed = is_array($ciPipelineStatus) && $ciPipelineStatus['last_fully_processed_at'] !== null;
+                if ($ciDataSource === 'suspicion_v2' && !$pipelineFullyProcessed): ?>
                     <div class="mt-6 rounded border border-amber-500/30 bg-amber-950/30 px-4 py-2.5 text-sm text-amber-200/90">
-                        <strong>Limited data</strong> &mdash; showing batch suspicion scores. The full counter-intel pipeline has not processed this character yet.
+                        <strong>Processing queued</strong> &mdash; showing batch suspicion scores. The background pipeline will process this character automatically.
+                        <?php if (is_array($ciPipelineStatus)): ?>
+                            <span class="text-xs text-amber-300/60 ml-2">Stages:
+                                histogram=<?= $ciPipelineStatus['histogram_status'] ?>,
+                                counterintel=<?= $ciPipelineStatus['counterintel_status'] ?>,
+                                temporal=<?= $ciPipelineStatus['temporal_status'] ?>
+                            </span>
+                        <?php endif; ?>
                     </div>
-                <?php elseif ($ciDataSource === 'below_threshold'): ?>
+                <?php elseif ($ciDataSource === 'below_threshold' && !$pipelineFullyProcessed): ?>
                     <div class="mt-6 rounded border border-slate-500/30 bg-slate-800/50 px-4 py-2.5 text-sm text-slate-300">
-                        <strong>Insufficient data</strong> &mdash; this character has <?= (int) ($ciCharacter['total_battle_count'] ?? 0) ?> battle(s) (<?= (int) ($ciCharacter['eligible_battle_count'] ?? 0) ?> eligible), below the minimum of 5 required for scoring.
+                        <strong>Awaiting pipeline</strong> &mdash; this character has <?= (int) ($ciCharacter['total_battle_count'] ?? 0) ?> battle(s) (<?= (int) ($ciCharacter['eligible_battle_count'] ?? 0) ?> eligible). Full analysis will run automatically when data is available.
                     </div>
                 <?php endif; ?>
             <?php

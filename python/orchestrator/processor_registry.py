@@ -69,6 +69,7 @@ from .jobs.cache_expiry_cleanup_sync import run_cache_expiry_cleanup_sync
 from .jobs.evewho_alliance_member_sync import run_evewho_alliance_member_sync
 from .jobs.tracked_alliance_member_sync import run_tracked_alliance_member_sync
 from .jobs.character_feature_windows import run_compute_character_feature_windows
+from .jobs.character_pipeline_worker import run_character_pipeline_worker
 from .jobs.copresence_edges import run_compute_copresence_edges
 from .jobs.temporal_behavior_detection import run_temporal_behavior_detection
 from .jobs.battle_type_classification import run_battle_type_classification
@@ -147,6 +148,7 @@ PYTHON_COMPUTE_PROCESSOR_JOB_KEYS: set[str] = {
     "compute_map_intelligence",
     "graph_model_audit",
     "compute_character_feature_windows",
+    "character_pipeline_worker",
     "compute_copresence_edges",
     "temporal_behavior_detection",
     "battle_type_classification",
@@ -278,6 +280,8 @@ _PROCESSOR_DISPATCH: dict[str, tuple] = {
     "graph_model_audit": (run_graph_model_audit, lambda db, cfg: (db, neo4j_runtime(cfg))),
     # Character feature windows
     "compute_character_feature_windows": (run_compute_character_feature_windows, lambda db, cfg: (db,)),
+    # Character pipeline worker — drains character_processing_queue
+    "character_pipeline_worker": (run_character_pipeline_worker, lambda db, cfg: (db,)),
     # Co-presence edges (generalized)
     "compute_copresence_edges": (run_compute_copresence_edges, lambda db, cfg: (db, neo4j_runtime(cfg))),
     # Temporal behavior detection

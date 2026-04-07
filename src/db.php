@@ -14928,6 +14928,52 @@ function db_character_temporal_behavior_signals(int $characterId): array
     );
 }
 
+function db_character_pipeline_enqueue(array $characterIds, string $reason = 'new_data', float $priority = 0.0): int
+{
+    $characterIds = array_values(array_unique(array_filter(array_map('intval', $characterIds), static fn(int $id): bool => $id > 0)));
+    if ($characterIds === []) {
+        return 0;
+    }
+    $affected = 0;
+    foreach (array_chunk($characterIds, 500) as $chunk) {
+        $placeholders = implode(',', array_fill(0, count($chunk), '(?, ?, ?, "pending", UTC_TIMESTAMP())'));
+        $params = [];
+        foreach ($chunk as $cid) {
+            $params[] = $cid;
+            $params[] = $reason;
+            $params[] = round($priority, 4);
+        }
+        $affected += (int) db_execute(
+            'INSERT INTO character_processing_queue (character_id, reason, priority, status, created_at)
+             VALUES ' . $placeholders . '
+             ON DUPLICATE KEY UPDATE
+                 status = IF(status IN ("done","failed"), "pending", status),
+                 priority = GREATEST(priority, VALUES(priority)),
+                 reason = VALUES(reason),
+                 attempts = IF(status IN ("done","failed"), 0, attempts),
+                 last_error = IF(status IN ("done","failed"), NULL, last_error),
+                 updated_at = CURRENT_TIMESTAMP',
+            $params
+        );
+    }
+    return $affected;
+}
+
+function db_character_pipeline_status(int $characterId): ?array
+{
+    if ($characterId <= 0) {
+        return null;
+    }
+    return db_select_one(
+        'SELECT character_id, histogram_status, histogram_at, temporal_status, temporal_at,
+                counterintel_status, counterintel_at, org_history_status, org_history_at,
+                last_source_event_at, last_fully_processed_at
+         FROM character_pipeline_status
+         WHERE character_id = ?',
+        [$characterId]
+    );
+}
+
 function db_analyst_recalibration_log(int $limit = 20): array
 {
     $safeLimit = max(1, min(100, $limit));
