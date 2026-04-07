@@ -15078,7 +15078,7 @@ function db_theaters_list(int $limit = 50, int $offset = 0, ?string $regionFilte
                 AND tas.participant_count >= 2
             LEFT JOIN ref_systems rs ON rs.system_id = t.primary_system_id
             LEFT JOIN ref_regions rr ON rr.region_id = t.region_id
-            WHERE (tas.theater_id IS NOT NULL OR t.clustering_method = \'manual\')';
+            WHERE (tas.theater_id IS NOT NULL OR (t.clustering_method = \'manual\' AND t.dismissed_at IS NULL))';
     $params = $trackedAllianceIds;
     $conditions = [];
     if ($regionFilter !== null) {
@@ -15913,7 +15913,7 @@ function db_create_manual_theater(array $battles, ?string $label = null): ?strin
     if ($existing !== null) {
         // If it exists but has no analysis data, repopulate summary tables
         if ((int) ($existing['total_kills'] ?? 0) === 0) {
-            db_theater_finalize($theaterId, $battleIds);
+            db_theater_finalize_manual($theaterId, $battleIds);
         }
         return $theaterId;
     }
@@ -16015,7 +16015,7 @@ function db_create_manual_theater(array $battles, ?string $label = null): ?strin
         );
     }
 
-    db_theater_finalize($theaterId, $battleIds);
+    db_theater_finalize_manual($theaterId, $battleIds);
 
     return $theaterId;
 }
@@ -16032,7 +16032,7 @@ function db_create_manual_theater(array $battles, ?string $label = null): ?strin
  * - Lock & Generate AI Report (before snapshot)
  * - Re-creation of existing theater with stale data
  */
-function db_theater_finalize(string $theaterId, ?array $battleIds = null): void
+function db_theater_finalize_manual(string $theaterId, ?array $battleIds = null): void
 {
     // Resolve battle IDs from theater_battles if not provided
     if ($battleIds === null) {
@@ -16052,8 +16052,21 @@ function db_theater_finalize(string $theaterId, ?array $battleIds = null): void
     db_execute('DELETE FROM theater_alliance_summary WHERE theater_id = ?', [$theaterId]);
     db_execute('DELETE FROM theater_participants WHERE theater_id = ?', [$theaterId]);
     db_execute('DELETE FROM theater_timeline WHERE theater_id = ?', [$theaterId]);
-    // theater_systems stays — it was created at theater creation time and
-    // we update it below with actual kill/ISK counts.
+    db_execute('DELETE FROM theater_side_composition WHERE theater_id = ?', [$theaterId]);
+    db_execute('DELETE FROM theater_suspicion_summary WHERE theater_id = ?', [$theaterId]);
+    db_execute('DELETE FROM theater_graph_summary WHERE theater_id = ?', [$theaterId]);
+    db_execute('DELETE FROM theater_graph_participants WHERE theater_id = ?', [$theaterId]);
+    db_execute('DELETE FROM theater_structure_kills WHERE theater_id = ?', [$theaterId]);
+    // theater_battles + theater_systems stay — they define the battle set
+    // and are updated below with actual kill/ISK counts.
+
+    // Clear stale snapshot and AI cache so they don't survive the rebuild
+    db_execute(
+        'UPDATE theaters SET snapshot_data = NULL, ai_summary = NULL, ai_headline = NULL,
+                ai_verdict = NULL, ai_summary_model = NULL, ai_summary_at = NULL
+         WHERE theater_id = ?',
+        [$theaterId]
+    );
 
     // ── Rebuild from killmail source of truth ───────────────────────────
 
@@ -16068,9 +16081,18 @@ function db_theater_finalize(string $theaterId, ?array $battleIds = null): void
     $totalKills = (int) ($killStats['total_kills'] ?? 0);
     $totalIsk = (float) ($killStats['total_isk'] ?? 0);
 
+    // Recount unique participants from battle_participants (authoritative)
+    $participantStats = db_select_one(
+        "SELECT COUNT(DISTINCT character_id) AS cnt
+         FROM battle_participants
+         WHERE battle_id IN ({$placeholders})",
+        $battleIds
+    );
+    $participantCount = (int) ($participantStats['cnt'] ?? 0);
+
     db_execute(
-        'UPDATE theaters SET total_kills = ?, total_isk = ? WHERE theater_id = ?',
-        [$totalKills, $totalIsk, $theaterId]
+        'UPDATE theaters SET total_kills = ?, total_isk = ?, participant_count = ? WHERE theater_id = ?',
+        [$totalKills, $totalIsk, $participantCount, $theaterId]
     );
 
     // Update theater_systems with actual kill counts and ISK

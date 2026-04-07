@@ -825,7 +825,7 @@ if ($viewSnapshot !== null && !$pendingLock) {
         // the authoritative killmail data before locking. This guarantees
         // the snapshot contains accurate totals regardless of whether the
         // async analysis job ever ran.
-        db_theater_finalize($theaterId);
+        db_theater_finalize_manual($theaterId);
 
         // Reload view data from the freshly rebuilt tables
         $battles = db_theater_battles($theaterId);
