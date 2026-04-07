@@ -81,6 +81,14 @@ from .jobs.killmail_zkb_repair import run_killmail_zkb_repair
 from .jobs.corp_standings_sync import run_corp_standings_sync
 from .jobs.behavioral_scoring import run_compute_behavioral_scoring
 from .jobs.compute_opposition_daily_snapshots import run_compute_opposition_daily_snapshots
+from .jobs.cip_signal_definitions import run_seed_signal_definitions
+from .jobs.cip_signal_emitter import run_cip_signal_emitter
+from .jobs.cip_fusion import run_cip_fusion
+from .jobs.cip_event_engine import run_cip_event_engine
+from .jobs.cip_event_digest import run_cip_event_digest
+from .jobs.cip_compound_evaluator import run_cip_compound_evaluator
+from .jobs.cip_compound_analytics import run_cip_compound_analytics
+from .jobs.cip_calibration import run_cip_calibration
 from .jobs.esi_sovereignty_sync import (
     run_sovereignty_campaigns_sync,
     run_sovereignty_structures_sync,
@@ -150,6 +158,14 @@ PYTHON_COMPUTE_PROCESSOR_JOB_KEYS: set[str] = {
     "compute_behavioral_scoring",
     "compute_opposition_daily_snapshots",
     "compute_sovereignty_alerts",
+    "seed_signal_definitions",
+    "cip_signal_emitter",
+    "cip_fusion",
+    "cip_event_engine",
+    "cip_event_digest",
+    "cip_compound_evaluator",
+    "cip_compound_analytics",
+    "cip_calibration",
 }
 
 PYTHON_SYNC_PROCESSOR_JOB_KEYS: set[str] = {
@@ -274,6 +290,15 @@ _PROCESSOR_DISPATCH: dict[str, tuple] = {
     "jump_bridge_sync": (run_jump_bridge_sync, lambda db, cfg: (db, neo4j_runtime(cfg))),
     # Corporation standings sync
     "corp_standings_sync": (run_corp_standings_sync, lambda db, cfg: (db, cfg)),
+    # Character Intelligence Profiles (CIP) — fusion engine
+    "seed_signal_definitions": (run_seed_signal_definitions, lambda db, cfg: (db,)),
+    "cip_signal_emitter": (run_cip_signal_emitter, lambda db, cfg: (db,)),
+    "cip_fusion": (run_cip_fusion, lambda db, cfg: (db,)),
+    "cip_event_engine": (run_cip_event_engine, lambda db, cfg: (db,)),
+    "cip_event_digest": (run_cip_event_digest, lambda db, cfg: (db,)),
+    "cip_compound_evaluator": (run_cip_compound_evaluator, lambda db, cfg: (db,)),
+    "cip_compound_analytics": (run_cip_compound_analytics, lambda db, cfg: (db,)),
+    "cip_calibration": (run_cip_calibration, lambda db, cfg: (db,)),
     # Sovereignty monitoring
     "sovereignty_campaigns_sync": (run_sovereignty_campaigns_sync, lambda db, cfg: (db, cfg)),
     "sovereignty_structures_sync": (run_sovereignty_structures_sync, lambda db, cfg: (db, cfg)),
