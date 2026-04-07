@@ -52,3 +52,21 @@ CREATE TABLE IF NOT EXISTS character_pipeline_status (
     updated_at               TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     INDEX idx_cps_stale (last_source_event_at, last_fully_processed_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Register the background worker in the scheduler.
+-- Runs every 60 seconds, high priority, 120s timeout (matches worker_registry).
+-- Worker is time-budgeted to 55s internally, leaving headroom.
+INSERT INTO sync_schedules (
+    job_key, enabled, interval_minutes, interval_seconds, offset_seconds, offset_minutes,
+    priority, concurrency_policy, execution_mode, timeout_seconds,
+    next_run_at, next_due_at, current_state, tuning_mode,
+    discovered_from_code, explicitly_configured,
+    last_run_at, last_status, last_error, locked_until
+) VALUES (
+    'character_pipeline_worker', 1, 1, 60, 0, 0,
+    'high', 'single', 'python', 120,
+    UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic',
+    1, 1,
+    NULL, NULL, NULL, NULL
+)
+ON DUPLICATE KEY UPDATE enabled = 1, interval_minutes = 1, interval_seconds = 60, timeout_seconds = 120;
