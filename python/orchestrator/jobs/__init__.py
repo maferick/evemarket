@@ -77,3 +77,4 @@ from .corp_standings_sync import run_corp_standings_sync
 from .cip_signal_definitions import run_seed_signal_definitions
 from .cip_signal_emitter import run_cip_signal_emitter
 from .cip_fusion import run_cip_fusion
+from .cip_event_engine import run_cip_event_engine
