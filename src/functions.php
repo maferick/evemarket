@@ -383,6 +383,7 @@ function nav_items(): array
                 ['label' => 'Sovereignty', 'path' => '/sovereignty'],
                 ['label' => 'Alliance Dossiers', 'path' => '/alliance-dossiers'],
                 ['label' => 'Opposition Intel', 'path' => '/opposition-intelligence'],
+                ['label' => 'Intelligence Events', 'path' => '/intelligence-events'],
                 ['label' => 'Pilot Lookup', 'path' => '/battle-intelligence/pilot-lookup.php'],
                 ['label' => 'Suspicion Leaderboard', 'path' => '/battle-intelligence'],
                 ['label' => 'Battle Anomalies', 'path' => '/battle-intelligence/battles.php'],

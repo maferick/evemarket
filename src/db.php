@@ -18342,3 +18342,391 @@ function db_map_edge_intelligence(array $systemIds): array
     }
     return $result;
 }
+
+// ---------------------------------------------------------------------------
+// Intelligence Events — Analyst Consumption Surface (Phase 3)
+// ---------------------------------------------------------------------------
+
+/**
+ * Active event queue: paginated list of events for analyst triage.
+ * Supports filtering by family, severity, state, and entity.
+ */
+function db_intelligence_events_queue(
+    int $limit = 50,
+    int $offset = 0,
+    string $family = '',
+    string $severity = '',
+    string $state = 'active',
+    string $entityType = '',
+    int $entityId = 0,
+    string $sortBy = 'impact_score',
+    string $sortDir = 'DESC'
+): array {
+    $where = [];
+    $params = [];
+
+    if ($state !== '' && $state !== 'all') {
+        $where[] = 'ie.state = ?';
+        $params[] = $state;
+    }
+    if ($family !== '') {
+        $where[] = 'ie.event_family = ?';
+        $params[] = $family;
+    }
+    if ($severity !== '') {
+        $where[] = 'ie.severity = ?';
+        $params[] = $severity;
+    }
+    if ($entityType !== '') {
+        $where[] = 'ie.entity_type = ?';
+        $params[] = $entityType;
+    }
+    if ($entityId > 0) {
+        $where[] = 'ie.entity_id = ?';
+        $params[] = $entityId;
+    }
+
+    $whereClause = $where !== [] ? 'WHERE ' . implode(' AND ', $where) : '';
+
+    // Whitelist sort columns
+    $allowedSort = ['impact_score', 'severity', 'first_detected_at', 'last_updated_at', 'escalation_count'];
+    if (!in_array($sortBy, $allowedSort, true)) {
+        $sortBy = 'impact_score';
+    }
+    $sortDir = strtoupper($sortDir) === 'ASC' ? 'ASC' : 'DESC';
+
+    $sql = "SELECT ie.*,
+                   emc.entity_name AS entity_name
+            FROM intelligence_events ie
+            LEFT JOIN entity_metadata_cache emc
+                ON emc.entity_type = ie.entity_type AND emc.entity_id = ie.entity_id
+            {$whereClause}
+            ORDER BY {$sortBy} {$sortDir}
+            LIMIT ? OFFSET ?";
+    $params[] = $limit;
+    $params[] = $offset;
+
+    return db_select($sql, $params);
+}
+
+/**
+ * Count events matching the same filters (for pagination).
+ */
+function db_intelligence_events_count(
+    string $family = '',
+    string $severity = '',
+    string $state = 'active',
+    string $entityType = '',
+    int $entityId = 0
+): int {
+    $where = [];
+    $params = [];
+
+    if ($state !== '' && $state !== 'all') {
+        $where[] = 'state = ?';
+        $params[] = $state;
+    }
+    if ($family !== '') {
+        $where[] = 'event_family = ?';
+        $params[] = $family;
+    }
+    if ($severity !== '') {
+        $where[] = 'severity = ?';
+        $params[] = $severity;
+    }
+    if ($entityType !== '') {
+        $where[] = 'entity_type = ?';
+        $params[] = $entityType;
+    }
+    if ($entityId > 0) {
+        $where[] = 'entity_id = ?';
+        $params[] = $entityId;
+    }
+
+    $whereClause = $where !== [] ? 'WHERE ' . implode(' AND ', $where) : '';
+
+    $row = db_select_one("SELECT COUNT(*) AS cnt FROM intelligence_events {$whereClause}", $params);
+    return (int) ($row['cnt'] ?? 0);
+}
+
+/**
+ * Summary counts for the event queue dashboard header.
+ */
+function db_intelligence_events_summary(): array
+{
+    $rows = db_select(
+        "SELECT state,
+                severity,
+                event_family,
+                COUNT(*) AS cnt
+         FROM intelligence_events
+         GROUP BY state, severity, event_family"
+    );
+
+    $summary = [
+        'total_active' => 0,
+        'active_critical' => 0,
+        'active_high' => 0,
+        'active_medium' => 0,
+        'active_low' => 0,
+        'active_info' => 0,
+        'active_threat' => 0,
+        'active_quality' => 0,
+        'acknowledged' => 0,
+        'resolved_24h' => 0,
+    ];
+
+    foreach ($rows as $r) {
+        $cnt = (int) $r['cnt'];
+        if ($r['state'] === 'active') {
+            $summary['total_active'] += $cnt;
+            $key = 'active_' . $r['severity'];
+            if (isset($summary[$key])) {
+                $summary[$key] += $cnt;
+            }
+            if ($r['event_family'] === 'threat') {
+                $summary['active_threat'] += $cnt;
+            } elseif ($r['event_family'] === 'profile_quality') {
+                $summary['active_quality'] += $cnt;
+            }
+        } elseif ($r['state'] === 'acknowledged') {
+            $summary['acknowledged'] += $cnt;
+        }
+    }
+
+    // Recently resolved (last 24h)
+    $resolved = db_select_one(
+        "SELECT COUNT(*) AS cnt FROM intelligence_events
+         WHERE state = 'resolved' AND resolved_at >= DATE_SUB(NOW(), INTERVAL 24 HOUR)"
+    );
+    $summary['resolved_24h'] = (int) ($resolved['cnt'] ?? 0);
+
+    return $summary;
+}
+
+/**
+ * Single event detail with entity name resolution.
+ */
+function db_intelligence_event_detail(int $eventId): ?array
+{
+    if ($eventId <= 0) {
+        return null;
+    }
+    return db_select_one(
+        "SELECT ie.*,
+                emc.entity_name AS entity_name
+         FROM intelligence_events ie
+         LEFT JOIN entity_metadata_cache emc
+             ON emc.entity_type = ie.entity_type AND emc.entity_id = ie.entity_id
+         WHERE ie.id = ?",
+        [$eventId]
+    );
+}
+
+/**
+ * State transition history for an event (audit log).
+ */
+function db_intelligence_event_history(int $eventId): array
+{
+    if ($eventId <= 0) {
+        return [];
+    }
+    return db_select(
+        "SELECT * FROM intelligence_event_history
+         WHERE event_id = ?
+         ORDER BY created_at DESC",
+        [$eventId]
+    );
+}
+
+/**
+ * Notes for an event.
+ */
+function db_intelligence_event_notes(int $eventId): array
+{
+    if ($eventId <= 0) {
+        return [];
+    }
+    return db_select(
+        "SELECT * FROM intelligence_event_notes
+         WHERE event_id = ?
+         ORDER BY created_at DESC",
+        [$eventId]
+    );
+}
+
+/**
+ * Add a note to an event.
+ */
+function db_intelligence_event_note_add(int $eventId, string $analyst, string $note): bool
+{
+    if ($eventId <= 0 || $analyst === '' || $note === '') {
+        return false;
+    }
+    db()->prepare(
+        'INSERT INTO intelligence_event_notes (event_id, analyst, note)
+         VALUES (?, ?, ?)'
+    )->execute([$eventId, $analyst, $note]);
+    return true;
+}
+
+/**
+ * Acknowledge an event: set state to 'acknowledged', record who did it.
+ * Returns true if the event was actually updated.
+ */
+function db_intelligence_event_acknowledge(int $eventId, string $analyst, ?string $reason = null): bool
+{
+    if ($eventId <= 0) {
+        return false;
+    }
+    $event = db_select_one("SELECT id, state, severity FROM intelligence_events WHERE id = ?", [$eventId]);
+    if ($event === null || $event['state'] !== 'active') {
+        return false;
+    }
+
+    db()->prepare(
+        "UPDATE intelligence_events
+         SET state = 'acknowledged', acknowledged_by = ?, last_updated_at = NOW()
+         WHERE id = ? AND state = 'active'"
+    )->execute([$analyst, $eventId]);
+
+    // Audit trail
+    db()->prepare(
+        "INSERT INTO intelligence_event_history
+            (event_id, previous_state, new_state, previous_severity, new_severity, changed_by, reason)
+         VALUES (?, 'active', 'acknowledged', ?, ?, ?, ?)"
+    )->execute([$eventId, $event['severity'], $event['severity'], $analyst, $reason]);
+
+    return true;
+}
+
+/**
+ * Resolve an event manually (analyst-driven resolution).
+ */
+function db_intelligence_event_resolve(int $eventId, string $analyst, ?string $reason = null): bool
+{
+    if ($eventId <= 0) {
+        return false;
+    }
+    $event = db_select_one("SELECT id, state, severity FROM intelligence_events WHERE id = ?", [$eventId]);
+    if ($event === null || !in_array($event['state'], ['active', 'acknowledged'], true)) {
+        return false;
+    }
+
+    db()->prepare(
+        "UPDATE intelligence_events
+         SET state = 'resolved', resolved_at = NOW(), last_updated_at = NOW()
+         WHERE id = ?"
+    )->execute([$eventId]);
+
+    db()->prepare(
+        "INSERT INTO intelligence_event_history
+            (event_id, previous_state, new_state, previous_severity, new_severity, changed_by, reason)
+         VALUES (?, ?, 'resolved', ?, ?, ?, ?)"
+    )->execute([$eventId, $event['state'], $event['severity'], $event['severity'], $analyst, $reason]);
+
+    return true;
+}
+
+/**
+ * Bulk acknowledge: acknowledge multiple events at once.
+ * Returns count of events actually updated.
+ */
+function db_intelligence_events_bulk_acknowledge(array $eventIds, string $analyst, ?string $reason = null): int
+{
+    $eventIds = array_filter(array_map('intval', $eventIds), static fn(int $id): bool => $id > 0);
+    if ($eventIds === [] || $analyst === '') {
+        return 0;
+    }
+
+    $count = 0;
+    foreach ($eventIds as $id) {
+        if (db_intelligence_event_acknowledge($id, $analyst, $reason)) {
+            $count++;
+        }
+    }
+    return $count;
+}
+
+/**
+ * "Why this fired" evidence: get CIP profile snapshot and active signals
+ * for the entity at the time of event detection.
+ */
+function db_intelligence_event_evidence(int $eventId): array
+{
+    $event = db_intelligence_event_detail($eventId);
+    if ($event === null || $event['entity_type'] !== 'character') {
+        return ['event' => $event, 'profile' => null, 'signals' => [], 'history' => []];
+    }
+
+    $characterId = (int) $event['entity_id'];
+
+    // Current profile
+    $profile = db_select_one(
+        "SELECT * FROM character_intelligence_profiles WHERE character_id = ?",
+        [$characterId]
+    );
+
+    // Active signals (ordered by contribution weight)
+    $signals = db_select(
+        "SELECT cis.*, isd.display_name, isd.signal_domain, isd.weight_default
+         FROM character_intelligence_signals cis
+         JOIN intelligence_signal_definitions isd ON isd.signal_type = cis.signal_type
+         WHERE cis.character_id = ?
+         ORDER BY (cis.value * cis.confidence * isd.weight_default) DESC
+         LIMIT 20",
+        [$characterId]
+    );
+
+    // Profile history (last 7 snapshots for trend)
+    $history = db_select(
+        "SELECT snapshot_date, risk_score, risk_rank, risk_percentile,
+                confidence, freshness, effective_coverage
+         FROM character_intelligence_profile_history
+         WHERE character_id = ?
+         ORDER BY snapshot_date DESC
+         LIMIT 7",
+        [$characterId]
+    );
+
+    return [
+        'event' => $event,
+        'profile' => $profile,
+        'signals' => $signals,
+        'history' => $history,
+    ];
+}
+
+/**
+ * Related events: other events for the same entity.
+ */
+function db_intelligence_event_related(int $eventId, int $limit = 10): array
+{
+    $event = db_select_one("SELECT entity_type, entity_id FROM intelligence_events WHERE id = ?", [$eventId]);
+    if ($event === null) {
+        return [];
+    }
+    return db_select(
+        "SELECT id, event_type, event_family, state, severity, impact_score,
+                title, first_detected_at, last_updated_at
+         FROM intelligence_events
+         WHERE entity_type = ? AND entity_id = ? AND id != ?
+         ORDER BY last_updated_at DESC
+         LIMIT ?",
+        [$event['entity_type'], $event['entity_id'], $eventId, $limit]
+    );
+}
+
+/**
+ * Latest digest for the dashboard.
+ */
+function db_intelligence_event_digest_latest(string $digestType = 'daily'): ?array
+{
+    return db_select_one(
+        "SELECT * FROM intelligence_event_digests
+         WHERE digest_type = ?
+         ORDER BY period_end DESC
+         LIMIT 1",
+        [$digestType]
+    );
+}
