@@ -74,3 +74,6 @@ from .jump_bridge_sync import run_jump_bridge_sync
 from .killmail_untracked_retention import run_killmail_untracked_retention
 from .compute_alliance_relationships import run_compute_alliance_relationships
 from .corp_standings_sync import run_corp_standings_sync
+from .cip_signal_definitions import run_seed_signal_definitions
+from .cip_signal_emitter import run_cip_signal_emitter
+from .cip_fusion import run_cip_fusion
