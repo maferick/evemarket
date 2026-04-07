@@ -1,8 +1,11 @@
 -- Character pipeline processing queue and stage status tracking.
 --
--- Replaces the implicit "open character page to compute" workflow with a
--- proper background processing model where ingestion jobs enqueue characters
--- and a background worker drains the backlog through all pipeline stages.
+-- Ownership boundary:
+--   enrichment_queue    → owns ESI/EveWho data FETCHING into Neo4j (raw source ingestion)
+--   character_processing_queue → owns downstream COMPUTE (histograms, counterintel, temporal)
+--
+-- These are sequential lifecycle stages, not overlapping responsibilities.
+-- enrichment_queue feeds character_org_history_cache; this queue consumes it.
 
 CREATE TABLE IF NOT EXISTS character_processing_queue (
     character_id    BIGINT UNSIGNED NOT NULL,
@@ -22,19 +25,30 @@ CREATE TABLE IF NOT EXISTS character_processing_queue (
     INDEX idx_cpq_locked (status, locked_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+-- Per-character stage freshness tracking.
+--
+-- Readiness is determined by comparing watermarks, not boolean flags:
+--   if last_source_event_at > histogram_at → histogram stage is stale
+--   if histogram_at > counterintel_at     → counterintel stage is stale
+--   if all stages >= last_source_event_at → character is fully fresh
+--
+-- This prevents false "done" states when new source data arrives after processing.
+
 CREATE TABLE IF NOT EXISTS character_pipeline_status (
     character_id             BIGINT UNSIGNED NOT NULL PRIMARY KEY,
-    histogram_status         ENUM('pending','done') NOT NULL DEFAULT 'pending',
-    histogram_at             DATETIME DEFAULT NULL,
-    temporal_status          ENUM('pending','done') NOT NULL DEFAULT 'pending',
-    temporal_at              DATETIME DEFAULT NULL,
-    counterintel_status      ENUM('pending','done') NOT NULL DEFAULT 'pending',
-    counterintel_at          DATETIME DEFAULT NULL,
-    org_history_status       ENUM('pending','done') NOT NULL DEFAULT 'pending',
-    org_history_at           DATETIME DEFAULT NULL,
+    -- Source watermark: latest timestamp of any input event for this character
     last_source_event_at     DATETIME DEFAULT NULL,
+    -- Stage watermarks: when each stage last completed successfully
+    histogram_at             DATETIME DEFAULT NULL,
+    temporal_at              DATETIME DEFAULT NULL,
+    counterintel_at          DATETIME DEFAULT NULL,
+    org_history_at           DATETIME DEFAULT NULL,
+    -- Overall completion watermark
     last_fully_processed_at  DATETIME DEFAULT NULL,
+    -- Error tracking per stage (NULL = no error)
+    histogram_error          VARCHAR(500) DEFAULT NULL,
+    counterintel_error       VARCHAR(500) DEFAULT NULL,
     created_at               TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at               TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    INDEX idx_cps_incomplete (last_fully_processed_at, last_source_event_at)
+    INDEX idx_cps_stale (last_source_event_at, last_fully_processed_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

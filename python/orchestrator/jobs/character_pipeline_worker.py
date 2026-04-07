@@ -1,19 +1,23 @@
 """Background worker that drains the character_processing_queue.
 
-Picks characters from the queue and runs all pipeline stages that are missing
-or stale for each character:
+Picks characters from the queue and runs only the pipeline stages that are
+stale for each character:
 
-  1. Histograms (character_feature_histograms)
+  1. Histograms (character_feature_histograms) — from battles + killmails
   2. Counterintel scoring (character_counterintel_scores + evidence)
-  3. Temporal behavior detection signals
-  4. Org history enrichment (EveWho)
 
-Stage readiness is tracked in ``character_pipeline_status``.  Each stage is
-idempotent — re-running a stage overwrites previous results.
+Stage freshness is tracked via watermarks in ``character_pipeline_status``:
+  - ``last_source_event_at`` — latest input timestamp for this character
+  - ``histogram_at``, ``counterintel_at`` — when each stage last completed
 
-The worker is time-budgeted: it processes as many characters as it can within
-a configurable wall-clock limit, then exits cleanly so the scheduler can
-re-invoke it on the next cycle.
+A stage is stale when ``last_source_event_at > stage_at`` (or stage_at is NULL).
+Fresh stages are skipped entirely to reduce compute waste.
+
+Queue ownership boundary:
+  - ``enrichment_queue`` → ESI/EveWho data FETCHING (raw source ingestion)
+  - ``character_processing_queue`` → downstream COMPUTE (this worker)
+
+The worker is time-budgeted and includes stale-lock recovery for crashed runs.
 """
 
 from __future__ import annotations
@@ -35,7 +39,7 @@ from ..json_utils import json_dumps_safe
 
 DEFAULT_BATCH_SIZE = 50
 DEFAULT_TIME_BUDGET_SECONDS = 55  # leave headroom within a 60s schedule slot
-LOCK_DURATION_SECONDS = 120
+STALE_LOCK_SECONDS = 180  # recover rows locked longer than this
 MIN_COUNTERINTEL_BATTLES = 1  # minimum eligible battles to attempt scoring
 
 WINDOW_DEFS: list[tuple[str, timedelta | None]] = [
@@ -65,6 +69,10 @@ def _ensure_utc(dt: datetime | None) -> datetime | None:
 def enqueue_characters(db: SupplyCoreDb, character_ids: list[int], reason: str = "new_data", priority: float = 0.0) -> int:
     """Insert or update characters into the processing queue.
 
+    Idempotent: re-enqueuing a done/failed character resets it to pending.
+    Re-enqueuing a pending/processing character only bumps priority.
+    Also updates the source watermark so stage freshness is tracked.
+
     Returns the number of rows affected.
     """
     if not character_ids:
@@ -75,17 +83,20 @@ def enqueue_characters(db: SupplyCoreDb, character_ids: list[int], reason: str =
 
     BATCH = 500
     affected = 0
+    now = _now_sql()
     for offset in range(0, len(deduped), BATCH):
         chunk = deduped[offset:offset + BATCH]
-        placeholders = ",".join(["(%s, %s, %s, 'pending', UTC_TIMESTAMP())"] * len(chunk))
-        params: list[Any] = []
+
+        # 1. Upsert into processing queue
+        q_placeholders = ",".join(["(%s, %s, %s, 'pending', UTC_TIMESTAMP())"] * len(chunk))
+        q_params: list[Any] = []
         for cid in chunk:
-            params.extend([cid, reason, round(priority, 4)])
+            q_params.extend([cid, reason, round(priority, 4)])
         affected += db.execute(
             f"""
             INSERT INTO character_processing_queue
                 (character_id, reason, priority, status, created_at)
-            VALUES {placeholders}
+            VALUES {q_placeholders}
             ON DUPLICATE KEY UPDATE
                 status = IF(status IN ('done','failed'), 'pending', status),
                 priority = GREATEST(priority, VALUES(priority)),
@@ -94,9 +105,46 @@ def enqueue_characters(db: SupplyCoreDb, character_ids: list[int], reason: str =
                 last_error = IF(status IN ('done','failed'), NULL, last_error),
                 updated_at = CURRENT_TIMESTAMP
             """,
-            tuple(params),
+            tuple(q_params),
         )
+
+        # 2. Update source watermark so stage freshness is deterministic
+        s_placeholders = ",".join(["(%s, %s)"] * len(chunk))
+        s_params: list[Any] = []
+        for cid in chunk:
+            s_params.extend([cid, now])
+        db.execute(
+            f"""
+            INSERT INTO character_pipeline_status (character_id, last_source_event_at)
+            VALUES {s_placeholders}
+            ON DUPLICATE KEY UPDATE
+                last_source_event_at = GREATEST(last_source_event_at, VALUES(last_source_event_at)),
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            tuple(s_params),
+        )
+
     return affected
+
+
+def _recover_stale_locks(db: SupplyCoreDb) -> int:
+    """Reset rows stuck in 'processing' past the stale-lock threshold.
+
+    This handles workers that crashed mid-flight and left rows locked.
+    """
+    cutoff = (datetime.now(UTC) - timedelta(seconds=STALE_LOCK_SECONDS)).strftime("%Y-%m-%d %H:%M:%S")
+    return db.execute(
+        """
+        UPDATE character_processing_queue
+        SET status = IF(attempts >= max_attempts, 'failed', 'pending'),
+            locked_at = NULL,
+            last_error = CONCAT(COALESCE(last_error, ''), ' [stale-lock recovered]')
+        WHERE status = 'processing'
+          AND locked_at IS NOT NULL
+          AND locked_at < %s
+        """,
+        (cutoff,),
+    )
 
 
 def _claim_batch(db: SupplyCoreDb, batch_size: int) -> list[dict[str, Any]]:
@@ -479,23 +527,86 @@ def _run_counterintel_stage(db: SupplyCoreDb, character_id: int, computed_at: st
 
 
 # ---------------------------------------------------------------------------
-# Pipeline status tracking
+# Pipeline status / freshness tracking
 # ---------------------------------------------------------------------------
 
-def _update_stage(db: SupplyCoreDb, character_id: int, stage: str, computed_at: str) -> None:
-    """Mark a pipeline stage as done for a character."""
-    status_col = f"{stage}_status"
+def _get_stage_freshness(db: SupplyCoreDb, character_id: int) -> dict[str, Any]:
+    """Load the pipeline status row for a character.
+
+    Returns a dict with watermark datetimes.  Missing row = everything stale.
+    """
+    row = db.fetch_one(
+        """
+        SELECT last_source_event_at, histogram_at, counterintel_at,
+               temporal_at, org_history_at, last_fully_processed_at
+        FROM character_pipeline_status
+        WHERE character_id = %s
+        """,
+        (character_id,),
+    )
+    return dict(row) if row else {}
+
+
+def _is_stage_stale(freshness: dict[str, Any], stage_col: str) -> bool:
+    """A stage is stale if source is newer than stage output, or stage never ran."""
+    stage_at = freshness.get(stage_col)
+    source_at = freshness.get("last_source_event_at")
+    if stage_at is None:
+        return True  # never ran
+    if source_at is None:
+        return False  # no source data known — nothing to recompute
+    s = _ensure_utc(source_at) if isinstance(source_at, datetime) else None
+    t = _ensure_utc(stage_at) if isinstance(stage_at, datetime) else None
+    if s is None or t is None:
+        return True
+    return s > t
+
+
+def _update_stage_watermark(db: SupplyCoreDb, character_id: int, stage: str, computed_at: str) -> None:
+    """Update the watermark for a completed stage."""
     at_col = f"{stage}_at"
+    error_col = f"{stage}_error"
+    # Only set error column if it exists in the table
+    has_error = stage in ("histogram", "counterintel")
+    if has_error:
+        db.execute(
+            f"""
+            INSERT INTO character_pipeline_status (character_id, {at_col}, {error_col})
+            VALUES (%s, %s, NULL)
+            ON DUPLICATE KEY UPDATE
+                {at_col} = VALUES({at_col}),
+                {error_col} = NULL,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (character_id, computed_at),
+        )
+    else:
+        db.execute(
+            f"""
+            INSERT INTO character_pipeline_status (character_id, {at_col})
+            VALUES (%s, %s)
+            ON DUPLICATE KEY UPDATE
+                {at_col} = VALUES({at_col}),
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (character_id, computed_at),
+        )
+
+
+def _update_stage_error(db: SupplyCoreDb, character_id: int, stage: str, error: str) -> None:
+    """Record a stage error without overwriting the watermark."""
+    error_col = f"{stage}_error"
+    if stage not in ("histogram", "counterintel"):
+        return
     db.execute(
         f"""
-        INSERT INTO character_pipeline_status (character_id, {status_col}, {at_col})
-        VALUES (%s, 'done', %s)
+        INSERT INTO character_pipeline_status (character_id, {error_col})
+        VALUES (%s, %s)
         ON DUPLICATE KEY UPDATE
-            {status_col} = 'done',
-            {at_col} = VALUES({at_col}),
+            {error_col} = VALUES({error_col}),
             updated_at = CURRENT_TIMESTAMP
         """,
-        (character_id, computed_at),
+        (character_id, error[:500]),
     )
 
 
@@ -520,13 +631,22 @@ def run_character_pipeline_worker(
     *,
     dry_run: bool = False,
 ) -> dict[str, Any]:
-    """Drain the character_processing_queue through all pipeline stages."""
+    """Drain the character_processing_queue through all pipeline stages.
+
+    Stage-aware: only reruns stages whose watermark is older than the source
+    watermark.  Fresh stages are skipped to reduce compute waste.
+
+    Includes stale-lock recovery for workers that crashed mid-flight.
+    """
     lock_key = "character_pipeline_worker"
     job = start_job_run(db, lock_key)
     started = time.perf_counter()
     characters_processed = 0
+    characters_skipped = 0
     characters_failed = 0
     stages_completed = 0
+    stages_skipped = 0
+    stale_recovered = 0
     runtime = runtime or {}
     batch_size = max(5, min(200, int(runtime.get("pipeline_worker_batch_size") or DEFAULT_BATCH_SIZE)))
     time_budget = max(10, int(runtime.get("pipeline_worker_time_budget_seconds") or DEFAULT_TIME_BUDGET_SECONDS))
@@ -534,6 +654,9 @@ def run_character_pipeline_worker(
     now_dt = datetime.now(UTC)
 
     try:
+        # Recover rows stuck in processing from crashed workers
+        stale_recovered = _recover_stale_locks(db)
+
         while (time.perf_counter() - started) < time_budget:
             batch = _claim_batch(db, batch_size)
             if not batch:
@@ -545,23 +668,52 @@ def run_character_pipeline_worker(
 
                 character_id = int(row["character_id"])
                 try:
-                    # Stage 1: histograms
-                    if _run_histogram_stage(db, character_id, now_dt, computed_at):
-                        _update_stage(db, character_id, "histogram", computed_at)
-                        stages_completed += 1
+                    freshness = _get_stage_freshness(db, character_id)
+                    ran_any = False
 
-                    # Stage 2: counterintel scoring
-                    if _run_counterintel_stage(db, character_id, computed_at):
-                        _update_stage(db, character_id, "counterintel", computed_at)
-                        stages_completed += 1
+                    # Stage 1: histograms — independent, only needs event data
+                    if _is_stage_stale(freshness, "histogram_at"):
+                        try:
+                            if _run_histogram_stage(db, character_id, now_dt, computed_at):
+                                _update_stage_watermark(db, character_id, "histogram", computed_at)
+                                stages_completed += 1
+                                ran_any = True
+                            else:
+                                stages_skipped += 1  # no event data at all
+                        except Exception as stage_exc:
+                            _update_stage_error(db, character_id, "histogram", str(stage_exc))
+                            raise
+                    else:
+                        stages_skipped += 1
 
-                    # Stage 3: mark temporal as pending (temporal_behavior_detection
-                    # runs as a separate batch job over all characters — we just ensure
-                    # histogram data is ready for it)
+                    # Stage 2: counterintel — needs battle_anomalies data
+                    # Can run independently of histograms
+                    if _is_stage_stale(freshness, "counterintel_at"):
+                        try:
+                            if _run_counterintel_stage(db, character_id, computed_at):
+                                _update_stage_watermark(db, character_id, "counterintel", computed_at)
+                                stages_completed += 1
+                                ran_any = True
+                            else:
+                                stages_skipped += 1  # no eligible battles
+                        except Exception as stage_exc:
+                            _update_stage_error(db, character_id, "counterintel", str(stage_exc))
+                            raise
 
-                    _mark_fully_processed(db, character_id, computed_at)
+                    else:
+                        stages_skipped += 1
+
+                    # Temporal behavior detection runs as a separate batch job
+                    # (temporal_behavior_detection.py) over all characters — we
+                    # ensure histogram data is ready for it, but don't run it here.
+
+                    if ran_any:
+                        _mark_fully_processed(db, character_id, computed_at)
+                        characters_processed += 1
+                    else:
+                        characters_skipped += 1
+
                     _mark_done(db, character_id)
-                    characters_processed += 1
 
                 except Exception as exc:
                     _mark_failed(db, character_id, str(exc))
@@ -577,18 +729,22 @@ def run_character_pipeline_worker(
         result = JobResult.success(
             job_key=lock_key,
             summary=(
-                f"Processed {characters_processed} characters "
-                f"({stages_completed} stages, {characters_failed} failed). "
+                f"Processed {characters_processed}, skipped {characters_skipped} fresh, "
+                f"{characters_failed} failed, {stale_recovered} stale-locks recovered. "
+                f"Stages: {stages_completed} ran, {stages_skipped} fresh. "
                 f"Backlog: {backlog}."
             ),
-            rows_processed=characters_processed,
+            rows_processed=characters_processed + characters_skipped,
             rows_written=stages_completed,
             duration_ms=duration_ms,
             has_more=backlog > 0,
             meta={
                 "characters_processed": characters_processed,
+                "characters_skipped_fresh": characters_skipped,
                 "characters_failed": characters_failed,
+                "stale_locks_recovered": stale_recovered,
                 "stages_completed": stages_completed,
+                "stages_skipped_fresh": stages_skipped,
                 "backlog_remaining": backlog,
                 "time_budget_seconds": time_budget,
                 "computed_at": computed_at,
@@ -604,14 +760,14 @@ def run_character_pipeline_worker(
 
 
 # ---------------------------------------------------------------------------
-# Backfill: enqueue all known characters
+# Backfill: enqueue all known characters (idempotent, chunked)
 # ---------------------------------------------------------------------------
 
-def backfill_enqueue_all(db: SupplyCoreDb) -> dict[str, int]:
+def backfill_enqueue_all(db: SupplyCoreDb, chunk_size: int = 5000) -> dict[str, int]:
     """Enqueue every character seen in battles, killmails, or org history cache.
 
-    Intended to be run once after deploying the queue model to catch up on
-    all existing characters.
+    Idempotent and chunked — safe to call repeatedly on large datasets.
+    Characters already pending/processing are not disrupted (priority may bump).
     """
     sources = {
         "battle_participants": "SELECT DISTINCT character_id FROM battle_participants WHERE character_id > 0",
@@ -627,7 +783,13 @@ def backfill_enqueue_all(db: SupplyCoreDb) -> dict[str, int]:
         counts[source_name] = len(ids)
         all_ids.update(ids)
 
-    enqueued = enqueue_characters(db, list(all_ids), reason="backfill", priority=0.0)
+    # Enqueue in chunks to avoid pathological single-transaction size
+    total_enqueued = 0
+    id_list = list(all_ids)
+    for offset in range(0, len(id_list), chunk_size):
+        chunk = id_list[offset:offset + chunk_size]
+        total_enqueued += enqueue_characters(db, chunk, reason="backfill", priority=0.0)
+
     counts["total_unique"] = len(all_ids)
-    counts["enqueued"] = enqueued
+    counts["enqueued"] = total_enqueued
     return counts

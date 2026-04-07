@@ -14964,14 +14964,24 @@ function db_character_pipeline_status(int $characterId): ?array
     if ($characterId <= 0) {
         return null;
     }
-    return db_select_one(
-        'SELECT character_id, histogram_status, histogram_at, temporal_status, temporal_at,
-                counterintel_status, counterintel_at, org_history_status, org_history_at,
-                last_source_event_at, last_fully_processed_at
+    $row = db_select_one(
+        'SELECT character_id, last_source_event_at, histogram_at, temporal_at,
+                counterintel_at, org_history_at, last_fully_processed_at,
+                histogram_error, counterintel_error
          FROM character_pipeline_status
          WHERE character_id = ?',
         [$characterId]
     );
+    if ($row === null) {
+        return null;
+    }
+    // Derive per-stage freshness: stale if source is newer than stage output
+    $sourceAt = $row['last_source_event_at'];
+    $row['histogram_fresh'] = $row['histogram_at'] !== null && ($sourceAt === null || $row['histogram_at'] >= $sourceAt);
+    $row['counterintel_fresh'] = $row['counterintel_at'] !== null && ($sourceAt === null || $row['counterintel_at'] >= $sourceAt);
+    $row['temporal_fresh'] = $row['temporal_at'] !== null && ($sourceAt === null || $row['temporal_at'] >= $sourceAt);
+    $row['fully_fresh'] = $row['histogram_fresh'] && $row['counterintel_fresh'] && $row['temporal_fresh'];
+    return $row;
 }
 
 function db_analyst_recalibration_log(int $limit = 20): array

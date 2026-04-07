@@ -618,21 +618,40 @@ include __DIR__ . '/../../src/views/partials/header.php';
             <?php if (is_array($ciCharacter)): ?>
             <?php
                 $ciDataSource = (string) ($ciCharacter['data_source'] ?? 'counterintel');
-                $pipelineFullyProcessed = is_array($ciPipelineStatus) && $ciPipelineStatus['last_fully_processed_at'] !== null;
-                if ($ciDataSource === 'suspicion_v2' && !$pipelineFullyProcessed): ?>
-                    <div class="mt-6 rounded border border-amber-500/30 bg-amber-950/30 px-4 py-2.5 text-sm text-amber-200/90">
-                        <strong>Processing queued</strong> &mdash; showing batch suspicion scores. The background pipeline will process this character automatically.
-                        <?php if (is_array($ciPipelineStatus)): ?>
-                            <span class="text-xs text-amber-300/60 ml-2">Stages:
-                                histogram=<?= $ciPipelineStatus['histogram_status'] ?>,
-                                counterintel=<?= $ciPipelineStatus['counterintel_status'] ?>,
-                                temporal=<?= $ciPipelineStatus['temporal_status'] ?>
-                            </span>
+                $psFresh = is_array($ciPipelineStatus) && !empty($ciPipelineStatus['fully_fresh']);
+                $psExists = is_array($ciPipelineStatus);
+                $psHasError = $psExists && (($ciPipelineStatus['histogram_error'] ?? null) !== null || ($ciPipelineStatus['counterintel_error'] ?? null) !== null);
+
+                if ($ciDataSource === 'counterintel' && $psFresh): ?>
+                    <?php /* Full analysis ready — no banner needed */ ?>
+                <?php elseif ($ciDataSource === 'counterintel' && $psExists && !$psFresh): ?>
+                    <div class="mt-6 rounded border border-blue-500/30 bg-blue-950/30 px-4 py-2.5 text-sm text-blue-200/90">
+                        <strong>Partial analysis available</strong> &mdash; new source data detected. Background pipeline will refresh stale stages automatically.
+                        <span class="text-xs text-blue-300/50 ml-2"><?php
+                            $stageLabels = [];
+                            if (!empty($ciPipelineStatus['histogram_fresh'])) { $stageLabels[] = '<span class="text-green-400">histogram</span>'; } else { $stageLabels[] = '<span class="text-amber-400">histogram</span>'; }
+                            if (!empty($ciPipelineStatus['counterintel_fresh'])) { $stageLabels[] = '<span class="text-green-400">counterintel</span>'; } else { $stageLabels[] = '<span class="text-amber-400">counterintel</span>'; }
+                            if (!empty($ciPipelineStatus['temporal_fresh'])) { $stageLabels[] = '<span class="text-green-400">temporal</span>'; } else { $stageLabels[] = '<span class="text-amber-400">temporal</span>'; }
+                            echo implode(' &middot; ', $stageLabels);
+                        ?></span>
+                    </div>
+                <?php elseif ($psHasError): ?>
+                    <div class="mt-6 rounded border border-red-500/30 bg-red-950/30 px-4 py-2.5 text-sm text-red-200/90">
+                        <strong>Processing error</strong> &mdash; retry pending.
+                        <?php if (($ciPipelineStatus['histogram_error'] ?? null) !== null): ?>
+                            <span class="text-xs text-red-300/60 block mt-1">Histogram: <?= htmlspecialchars(mb_substr((string) $ciPipelineStatus['histogram_error'], 0, 120), ENT_QUOTES) ?></span>
+                        <?php endif; ?>
+                        <?php if (($ciPipelineStatus['counterintel_error'] ?? null) !== null): ?>
+                            <span class="text-xs text-red-300/60 block mt-1">Counterintel: <?= htmlspecialchars(mb_substr((string) $ciPipelineStatus['counterintel_error'], 0, 120), ENT_QUOTES) ?></span>
                         <?php endif; ?>
                     </div>
-                <?php elseif ($ciDataSource === 'below_threshold' && !$pipelineFullyProcessed): ?>
+                <?php elseif ($ciDataSource === 'suspicion_v2'): ?>
+                    <div class="mt-6 rounded border border-amber-500/30 bg-amber-950/30 px-4 py-2.5 text-sm text-amber-200/90">
+                        <strong>Processing queued</strong> &mdash; showing batch suspicion scores. Full analysis will run automatically in the background.
+                    </div>
+                <?php elseif ($ciDataSource === 'below_threshold'): ?>
                     <div class="mt-6 rounded border border-slate-500/30 bg-slate-800/50 px-4 py-2.5 text-sm text-slate-300">
-                        <strong>Awaiting pipeline</strong> &mdash; this character has <?= (int) ($ciCharacter['total_battle_count'] ?? 0) ?> battle(s) (<?= (int) ($ciCharacter['eligible_battle_count'] ?? 0) ?> eligible). Full analysis will run automatically when data is available.
+                        <strong>Insufficient source data</strong> &mdash; <?= (int) ($ciCharacter['total_battle_count'] ?? 0) ?> battle(s) detected. Analysis will run when more activity data is available.
                     </div>
                 <?php endif; ?>
             <?php
