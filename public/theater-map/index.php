@@ -99,6 +99,21 @@ include __DIR__ . '/../../src/views/partials/header.php';
     </form>
 </section>
 
+<?php if ($regionId > 0): ?>
+<section class="surface-primary mt-4">
+    <div id="theater-map-visual"
+         data-map-type="region"
+         data-map-region-id="<?= $regionId ?>"
+         data-map-mode="pvp"
+         class="rounded-lg border border-border/50 bg-slate-950 overflow-hidden min-h-[400px]">
+        <p class="text-muted py-6 text-center">Loading theater map...</p>
+    </div>
+    <div class="mt-2 flex items-center gap-x-4 text-[10px] text-slate-600">
+        <span>Scroll to zoom</span><span>Drag to pan</span><span>Click system to navigate</span>
+    </div>
+</section>
+<?php endif; ?>
+
 <section class="surface-primary mt-4">
     <div class="table-shell">
         <table class="table-ui">
@@ -156,4 +171,20 @@ include __DIR__ . '/../../src/views/partials/header.php';
     </div>
 </section>
 
+<script src="/assets/js/map-renderer.js"></script>
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    var container = document.getElementById('theater-map-visual');
+    if (!container) return;
+    var regionId = container.dataset.mapRegionId;
+    if (!regionId || regionId === '0') return;
+    fetch('/api/map-graph.php?type=region&region_id=' + regionId + '&mode=pvp')
+        .then(function(r) { return r.json(); })
+        .then(function(scene) {
+            if (scene.error) { container.innerHTML = '<p class="text-muted text-center py-6">Map unavailable.</p>'; return; }
+            window.SupplyCoreMap.renderScene(scene, container);
+        })
+        .catch(function() { container.innerHTML = '<p class="text-muted text-center py-6">Failed to load map.</p>'; });
+});
+</script>
 <?php include __DIR__ . '/../../src/views/partials/footer.php'; ?>

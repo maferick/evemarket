@@ -61,28 +61,29 @@ include __DIR__ . '/../../src/views/partials/header.php';
 </section>
 
 <section class="surface-primary mt-4">
-    <?php if (is_string($mapPath) && $mapPath !== ''): ?>
-        <?php $dialogId = 'system-map-dialog-' . $systemId; ?>
-        <div class="rounded-lg border border-border/50 bg-slate-950 overflow-hidden">
-            <div class="flex items-center justify-between gap-2 px-3 py-2 border-b border-border/30 bg-slate-900/60">
-                <p class="text-[10px] uppercase tracking-[0.15em] text-slate-500">
-                    <?= htmlspecialchars($systemName, ENT_QUOTES) ?> &mdash; <?= $hops ?>-jump neighbourhood
-                </p>
-                <button type="button"
-                        data-dialog-open="<?= htmlspecialchars($dialogId, ENT_QUOTES) ?>"
-                        class="flex items-center gap-1 text-[10px] text-slate-400 hover:text-slate-100 transition-colors">
-                    <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
-                        <path d="M1 9L9 1M9 1H5M9 1V5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
-                    </svg>
-                    Expand
-                </button>
-            </div>
+    <!-- Interactive map (JS) with static SVG fallback -->
+    <div id="system-map-interactive"
+         data-map-type="system"
+         data-map-system-id="<?= $systemId ?>"
+         data-map-hops="<?= $hops ?>"
+         class="rounded-lg border border-border/50 bg-slate-950 overflow-hidden min-h-[400px]">
+        <?php if (is_string($mapPath) && $mapPath !== ''): ?>
+            <!-- Static SVG fallback (shown until JS renders) -->
+            <noscript>
+                <img src="<?= htmlspecialchars($mapPath, ENT_QUOTES) ?>"
+                     alt="Neighbourhood map for <?= htmlspecialchars($systemName, ENT_QUOTES) ?>"
+                     class="w-full" loading="lazy">
+            </noscript>
             <img src="<?= htmlspecialchars($mapPath, ENT_QUOTES) ?>"
                  alt="Neighbourhood map for <?= htmlspecialchars($systemName, ENT_QUOTES) ?>"
-                 class="w-full cursor-zoom-in"
-                 data-dialog-open="<?= htmlspecialchars($dialogId, ENT_QUOTES) ?>"
-                 loading="lazy">
-        </div>
+                 class="w-full js-map-fallback" loading="lazy">
+        <?php else: ?>
+            <p class="text-muted py-8 text-center">Loading map...</p>
+        <?php endif; ?>
+    </div>
+
+    <?php if (is_string($mapPath) && $mapPath !== ''): ?>
+        <?php $dialogId = 'system-map-dialog-' . $systemId; ?>
 
         <div class="mt-3 flex flex-wrap items-center gap-x-5 gap-y-1 text-[10px] text-slate-500">
             <span class="flex items-center gap-1.5">
@@ -142,4 +143,21 @@ include __DIR__ . '/../../src/views/partials/header.php';
     <?php endif; ?>
 </section>
 
+<script src="/assets/js/map-renderer.js"></script>
+<script>
+// Hide static fallback once interactive map loads
+document.addEventListener('DOMContentLoaded', function() {
+    var fallback = document.querySelector('.js-map-fallback');
+    var container = document.getElementById('system-map-interactive');
+    if (fallback && container) {
+        var observer = new MutationObserver(function(mutations) {
+            if (container.querySelector('svg')) {
+                fallback.style.display = 'none';
+                observer.disconnect();
+            }
+        });
+        observer.observe(container, { childList: true });
+    }
+});
+</script>
 <?php include __DIR__ . '/../../src/views/partials/footer.php'; ?>
