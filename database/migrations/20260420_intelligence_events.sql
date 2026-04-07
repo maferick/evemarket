@@ -21,6 +21,8 @@ CREATE TABLE IF NOT EXISTS intelligence_events (
         COMMENT 'character_id, alliance_id, theater_id, etc.',
     event_type          VARCHAR(80)     NOT NULL
         COMMENT 'e.g. risk_rank_entry, percentile_escalation, new_high_signal, ...',
+    event_family        VARCHAR(40)     NOT NULL DEFAULT 'threat'
+        COMMENT 'threat or profile_quality — determines analyst queue routing',
     event_subtype       VARCHAR(80)     NOT NULL DEFAULT ''
         COMMENT 'Optional refinement (e.g. signal_type for new_high_signal events)',
     -- Lifecycle
@@ -65,6 +67,7 @@ CREATE TABLE IF NOT EXISTS intelligence_events (
     INDEX idx_ie_entity (entity_type, entity_id, state),
     INDEX idx_ie_state_severity (state, severity, impact_score DESC),
     INDEX idx_ie_type (event_type, state),
+    INDEX idx_ie_family (event_family, state, impact_score DESC),
     INDEX idx_ie_active_impact (state, impact_score DESC),
     INDEX idx_ie_detected (first_detected_at DESC),
     INDEX idx_ie_updated (last_updated_at DESC)

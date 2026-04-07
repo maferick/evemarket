@@ -273,11 +273,18 @@ def _detect_character_events(db: SupplyCoreDb) -> list[dict[str, Any]]:
                 ))
 
         # ── Detection: New high-weight signal ──
+        # Gated: signal must also have minimum confidence and the profile
+        # must have reasonable freshness.  This prevents noisy events from
+        # low-confidence signals or stale profiles.
         char_new_signals = new_signals_by_char.get(cid, [])
         for sig in char_new_signals:
             from .cip_signal_definitions import SIGNAL_DEF_MAP
             sig_defn = SIGNAL_DEF_MAP.get(sig["signal_type"])
             if sig_defn and sig_defn.weight_default >= HIGH_WEIGHT_SIGNAL_THRESHOLD:
+                sig_confidence = float(sig.get("confidence") or 0)
+                # Gates: minimum signal confidence + minimum profile freshness
+                if sig_confidence < 0.4 or fresh < 0.3:
+                    continue
                 # Only first-time signals (reinforcement_count = 1 means brand new)
                 if int(sig.get("reinforcement_count") or 1) <= 1:
                     defn = EVENT_TYPE_MAP["new_high_weight_signal"]
@@ -361,6 +368,7 @@ def _make_candidate(
         "entity_type": defn.entity_type,
         "entity_id": entity_id,
         "event_type": defn.event_type,
+        "event_family": defn.event_family,
         "event_subtype": subtype,
         "severity": defn.base_severity,
         "impact_score": round(impact, 4),
@@ -395,7 +403,7 @@ def _upsert_events(db: SupplyCoreDb, candidates: list[dict[str, Any]]) -> tuple[
     dedup_keys = [c["dedup_key"] for c in candidates]
     placeholders = ",".join(["%s"] * len(dedup_keys))
     existing_rows = db.fetch_all(f"""
-        SELECT id, dedup_key, state, severity, escalation_count
+        SELECT id, dedup_key, state, severity, escalation_count, impact_score
         FROM intelligence_events
         WHERE dedup_key IN ({placeholders})
     """, dedup_keys)
@@ -409,16 +417,16 @@ def _upsert_events(db: SupplyCoreDb, candidates: list[dict[str, Any]]) -> tuple[
             # New event — insert
             db.execute("""
                 INSERT INTO intelligence_events (
-                    entity_type, entity_id, event_type, event_subtype,
+                    entity_type, entity_id, event_type, event_family, event_subtype,
                     state, severity, impact_score,
                     title, detail_json, dedup_key,
                     first_detected_at, last_updated_at,
                     escalation_count,
                     risk_score_at_event, risk_rank_at_event, risk_percentile_at_event
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 1, %s, %s, %s)
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 1, %s, %s, %s)
             """, [
                 cand["entity_type"], cand["entity_id"],
-                cand["event_type"], cand["event_subtype"],
+                cand["event_type"], cand.get("event_family", "threat"), cand["event_subtype"],
                 "active", cand["severity"], cand["impact_score"],
                 cand["title"], cand["detail_json"], dk,
                 cand["now_str"], cand["now_str"],
@@ -427,16 +435,23 @@ def _upsert_events(db: SupplyCoreDb, candidates: list[dict[str, Any]]) -> tuple[
             ])
             created += 1
         else:
-            # Existing event — update with escalation logic
+            # Existing event — update with escalation logic.
+            # Escalation requires WORSENING, not just persistence.
+            # We check if the current impact_score exceeds the previous one,
+            # indicating the situation is getting worse, not merely continuing.
             new_count = int(existing["escalation_count"] or 0) + 1
             current_severity = existing["severity"]
             new_severity = current_severity
 
-            # Check escalation thresholds
+            # Only escalate if impact is increasing (worsening condition)
+            prev_impact = float(existing.get("impact_score") or 0)
+            is_worsening = cand["impact_score"] > prev_impact
+
             thresholds = cand.get("escalation_thresholds", {})
-            for threshold_count, upgraded_severity in sorted(thresholds.items()):
-                if new_count >= threshold_count:
-                    new_severity = upgraded_severity
+            if is_worsening:
+                for threshold_count, upgraded_severity in sorted(thresholds.items()):
+                    if new_count >= threshold_count:
+                        new_severity = upgraded_severity
 
             severity_changed = new_severity != current_severity
 
@@ -491,11 +506,18 @@ def _upsert_events(db: SupplyCoreDb, candidates: list[dict[str, Any]]) -> tuple[
     return created, updated, resolved
 
 
-def _auto_resolve_events(db: SupplyCoreDb, current_candidates: list[dict[str, Any]]) -> int:
+def _auto_resolve_events(
+    db: SupplyCoreDb,
+    current_candidates: list[dict[str, Any]],
+) -> int:
     """Resolve active events whose conditions are no longer true.
 
     An auto-resolvable event is resolved if it was NOT re-detected in the
     current scan (i.e., its dedup_key is not in the candidate set).
+
+    For events with hysteresis_margin > 0, the character must be *past* the
+    boundary + margin before we resolve.  This prevents create→resolve→create
+    churn when a character oscillates near a threshold.
     """
     now_str = _now_sql()
     active_dedup_keys = {c["dedup_key"] for c in current_candidates}
@@ -507,33 +529,90 @@ def _auto_resolve_events(db: SupplyCoreDb, current_candidates: list[dict[str, An
 
     placeholders = ",".join(["%s"] * len(auto_resolve_types))
     active_events = db.fetch_all(f"""
-        SELECT id, dedup_key, state, severity, event_type
-        FROM intelligence_events
-        WHERE state = 'active'
-          AND event_type IN ({placeholders})
-          AND last_updated_at < DATE_SUB(UTC_TIMESTAMP(), INTERVAL 1 HOUR)
+        SELECT ie.id, ie.dedup_key, ie.state, ie.severity, ie.event_type,
+               ie.entity_id, ie.entity_type
+        FROM intelligence_events ie
+        WHERE ie.state = 'active'
+          AND ie.event_type IN ({placeholders})
+          AND ie.last_updated_at < DATE_SUB(UTC_TIMESTAMP(), INTERVAL 1 HOUR)
     """, auto_resolve_types)
+
+    # Pre-load profiles for hysteresis checks
+    char_ids = [int(e["entity_id"]) for e in active_events if e["entity_type"] == "character"]
+    profiles_by_id: dict[int, dict] = {}
+    if char_ids:
+        char_placeholders = ",".join(["%s"] * len(char_ids))
+        prof_rows = db.fetch_all(f"""
+            SELECT character_id, risk_rank, risk_percentile, freshness
+            FROM character_intelligence_profiles
+            WHERE character_id IN ({char_placeholders})
+        """, char_ids)
+        for pr in prof_rows:
+            profiles_by_id[int(pr["character_id"])] = pr
 
     resolved = 0
     for evt in active_events:
-        if evt["dedup_key"] not in active_dedup_keys:
-            db.execute("""
-                UPDATE intelligence_events
-                SET state = 'resolved', resolved_at = %s, last_updated_at = %s
-                WHERE id = %s AND state = 'active'
-            """, [now_str, now_str, evt["id"]])
+        if evt["dedup_key"] in active_dedup_keys:
+            continue  # Still detected, don't resolve
 
-            db.execute("""
-                INSERT INTO intelligence_event_history (
-                    event_id, previous_state, new_state,
-                    previous_severity, new_severity,
-                    changed_by, reason
-                ) VALUES (%s, 'active', 'resolved', %s, %s, 'cip_event_engine', 'Condition no longer detected')
-            """, [evt["id"], evt["severity"], evt["severity"]])
+        # Check hysteresis
+        defn = EVENT_TYPE_MAP.get(evt["event_type"])
+        if defn and defn.hysteresis_margin > 0 and evt["entity_type"] == "character":
+            prof = profiles_by_id.get(int(evt["entity_id"]))
+            if prof and not _passes_hysteresis(defn, prof):
+                continue  # Too close to threshold, skip resolution
 
-            resolved += 1
+        db.execute("""
+            UPDATE intelligence_events
+            SET state = 'resolved', resolved_at = %s, last_updated_at = %s
+            WHERE id = %s AND state = 'active'
+        """, [now_str, now_str, evt["id"]])
+
+        db.execute("""
+            INSERT INTO intelligence_event_history (
+                event_id, previous_state, new_state,
+                previous_severity, new_severity,
+                changed_by, reason
+            ) VALUES (%s, 'active', 'resolved', %s, %s, 'cip_event_engine', 'Condition no longer detected')
+        """, [evt["id"], evt["severity"], evt["severity"]])
+
+        resolved += 1
 
     return resolved
+
+
+def _passes_hysteresis(defn: EventTypeDefinition, prof: dict[str, Any]) -> bool:
+    """Check if a character has moved far enough past a threshold to resolve.
+
+    Returns True if the event SHOULD be resolved (past hysteresis margin).
+    Returns False if the character is still too close to the boundary.
+    """
+    margin = defn.hysteresis_margin
+    et = defn.event_type
+
+    if et in ("risk_rank_entry_top50", "risk_rank_entry_top200"):
+        # Rank-based: hysteresis_margin is absolute rank positions
+        rank = prof.get("risk_rank")
+        if rank is None:
+            return True  # No rank = not in list = safe to resolve
+        threshold = TOP_50_RANK if et == "risk_rank_entry_top50" else TOP_200_RANK
+        return rank > (threshold + margin)
+
+    if et == "percentile_escalation":
+        # Percentile: margin is fractional (e.g. 0.02)
+        pct = float(prof["risk_percentile"]) if prof.get("risk_percentile") is not None else 0.0
+        # Event fired when pct was high; resolve when it drops below bucket - margin
+        # Since we don't know which bucket triggered, just check if pct dropped
+        # meaningfully (below 90th percentile - margin as a safe proxy)
+        return pct < (0.90 - margin)
+
+    if et == "freshness_degradation":
+        # Freshness: margin means must recover to threshold + margin
+        fresh = float(prof.get("freshness") or 0)
+        return fresh >= (FRESHNESS_DEGRADATION_THRESHOLD + margin)
+
+    # Default: no hysteresis check, safe to resolve
+    return True
 
 
 # ---------------------------------------------------------------------------

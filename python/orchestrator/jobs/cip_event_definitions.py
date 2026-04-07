@@ -22,16 +22,23 @@ from typing import Any
 class EventTypeDefinition:
     event_type: str
     entity_type: str            # character, alliance, theater
+    event_family: str           # threat, profile_quality
     display_name: str
     description: str
     base_severity: str          # critical, high, medium, low, info
     # Impact scoring weights (how the impact_score is computed)
     # impact = sum(factor_weight * factor_value) clamped to [0,1]
     impact_factors: dict[str, float]
-    # Escalation: severity upgrades after N consecutive detections
+    # Escalation: severity upgrades after N consecutive detections.
+    # Escalation only fires when the condition is *worsening*, not merely
+    # persisting — the engine checks for rank/score deterioration.
     escalation_thresholds: dict[int, str]  # count → new severity
-    # Auto-resolve: event is resolved when condition is no longer true
+    # Auto-resolve: event is resolved when condition is no longer true.
+    # hysteresis_margin: for boundary-sensitive events (rank/percentile),
+    # require the condition to be this far past the boundary before
+    # resolving, to prevent create→resolve→create churn.
     auto_resolve: bool
+    hysteresis_margin: float = 0.0  # e.g. 0.1 means 10% past threshold to resolve
 
 
 # ---------------------------------------------------------------------------
@@ -39,10 +46,11 @@ class EventTypeDefinition:
 # ---------------------------------------------------------------------------
 
 CHARACTER_EVENT_TYPES: list[EventTypeDefinition] = [
-    # ── Risk rank / percentile events ──────────────────────────────────
+    # ── Threat events: rank / percentile ───────────────────────────────
     EventTypeDefinition(
         event_type="risk_rank_entry_top50",
         entity_type="character",
+        event_family="threat",
         display_name="Entered Top 50 Risk",
         description="Character entered the top 50 risk-ranked profiles",
         base_severity="high",
@@ -53,10 +61,12 @@ CHARACTER_EVENT_TYPES: list[EventTypeDefinition] = [
         },
         escalation_thresholds={3: "critical"},
         auto_resolve=True,
+        hysteresis_margin=10,   # must drop past rank 60 to auto-resolve
     ),
     EventTypeDefinition(
         event_type="risk_rank_entry_top200",
         entity_type="character",
+        event_family="threat",
         display_name="Entered Top 200 Risk",
         description="Character entered the top 200 risk-ranked profiles",
         base_severity="medium",
@@ -67,10 +77,12 @@ CHARACTER_EVENT_TYPES: list[EventTypeDefinition] = [
         },
         escalation_thresholds={5: "high"},
         auto_resolve=True,
+        hysteresis_margin=30,   # must drop past rank 230 to auto-resolve
     ),
     EventTypeDefinition(
         event_type="percentile_escalation",
         entity_type="character",
+        event_family="threat",
         display_name="Risk Percentile Escalation",
         description="Character crossed into a higher risk percentile bucket (e.g. top 5% → top 1%)",
         base_severity="high",
@@ -81,12 +93,14 @@ CHARACTER_EVENT_TYPES: list[EventTypeDefinition] = [
         },
         escalation_thresholds={3: "critical"},
         auto_resolve=True,
+        hysteresis_margin=0.02, # must drop 2% below bucket boundary
     ),
 
-    # ── Score movement events ──────────────────────────────────────────
+    # ── Threat events: score movement ──────────────────────────────────
     EventTypeDefinition(
         event_type="risk_score_surge",
         entity_type="character",
+        event_family="threat",
         display_name="Risk Score Surge",
         description="Risk score increased significantly in 24 hours",
         base_severity="medium",
@@ -101,6 +115,7 @@ CHARACTER_EVENT_TYPES: list[EventTypeDefinition] = [
     EventTypeDefinition(
         event_type="rank_jump",
         entity_type="character",
+        event_family="threat",
         display_name="Significant Rank Jump",
         description="Character jumped significantly in risk rankings",
         base_severity="medium",
@@ -113,12 +128,13 @@ CHARACTER_EVENT_TYPES: list[EventTypeDefinition] = [
         auto_resolve=True,
     ),
 
-    # ── Signal events ──────────────────────────────────────────────────
+    # ── Threat events: signal activation ───────────────────────────────
     EventTypeDefinition(
         event_type="new_high_weight_signal",
         entity_type="character",
+        event_family="threat",
         display_name="New High-Weight Signal",
-        description="A new signal with significant weight appeared for this character",
+        description="A new, high-confidence signal with significant weight appeared",
         base_severity="medium",
         impact_factors={
             "signal_weight": 0.4,
@@ -131,6 +147,7 @@ CHARACTER_EVENT_TYPES: list[EventTypeDefinition] = [
     EventTypeDefinition(
         event_type="multi_domain_activation",
         entity_type="character",
+        event_family="threat",
         display_name="Multi-Domain Activation",
         description="Character now has active signals across 4+ domains simultaneously",
         base_severity="high",
@@ -143,10 +160,11 @@ CHARACTER_EVENT_TYPES: list[EventTypeDefinition] = [
         auto_resolve=True,
     ),
 
-    # ── Trust surface events ───────────────────────────────────────────
+    # ── Profile quality events ─────────────────────────────────────────
     EventTypeDefinition(
         event_type="freshness_degradation",
         entity_type="character",
+        event_family="profile_quality",
         display_name="Profile Freshness Degradation",
         description="Profile freshness dropped below trust threshold — signals are going stale",
         base_severity="info",
@@ -157,10 +175,12 @@ CHARACTER_EVENT_TYPES: list[EventTypeDefinition] = [
         },
         escalation_thresholds={},
         auto_resolve=True,
+        hysteresis_margin=0.10, # must recover to 0.50 freshness to resolve
     ),
     EventTypeDefinition(
         event_type="coverage_expansion",
         entity_type="character",
+        event_family="profile_quality",
         display_name="Coverage Expansion",
         description="Effective coverage materially increased — more signal domains contributing",
         base_severity="info",
