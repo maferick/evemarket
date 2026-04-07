@@ -18977,6 +18977,48 @@ function db_compound_outcome_summary(): array
 }
 
 // ---------------------------------------------------------------------------
+// CIP Incident Log
+// ---------------------------------------------------------------------------
+
+/**
+ * Recent CIP incidents (unresolved first, then recent).
+ */
+function db_cip_incidents_recent(int $limit = 20): array
+{
+    return db_select(
+        "SELECT * FROM cip_incident_log
+         ORDER BY resolved ASC, created_at DESC
+         LIMIT ?",
+        [$limit]
+    );
+}
+
+/**
+ * Mark an incident as resolved.
+ */
+function db_cip_incident_resolve(int $incidentId, string $analyst): bool
+{
+    if ($incidentId <= 0) {
+        return false;
+    }
+    db()->prepare(
+        "UPDATE cip_incident_log
+         SET resolved = 1, resolved_by = ?, resolved_at = NOW()
+         WHERE id = ? AND resolved = 0"
+    )->execute([$analyst, $incidentId]);
+    return true;
+}
+
+/**
+ * Count of unresolved incidents.
+ */
+function db_cip_incidents_unresolved_count(): int
+{
+    $row = db_select_one("SELECT COUNT(*) AS cnt FROM cip_incident_log WHERE resolved = 0");
+    return (int) ($row['cnt'] ?? 0);
+}
+
+// ---------------------------------------------------------------------------
 // CIP Admin & Operational Health (Phase 5 hardening)
 // ---------------------------------------------------------------------------
 

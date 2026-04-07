@@ -11,6 +11,14 @@ $title = 'CIP Admin & Operations';
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $action = (string) ($_POST['action'] ?? '');
 
+    // Resolve incident
+    if ($action === 'resolve_incident') {
+        $incidentId = (int) ($_POST['incident_id'] ?? 0);
+        db_cip_incident_resolve($incidentId, 'analyst');
+        header('Location: /intelligence-events/admin.php?msg=incident_resolved');
+        exit;
+    }
+
     // Toggle compound enabled/disabled
     if ($action === 'toggle_compound') {
         $compoundType = (string) ($_POST['compound_type'] ?? '');
@@ -43,6 +51,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
 // ── Load data ────────────────────────────────────────────────────────────
 
+$incidents = db_cip_incidents_recent(15);
+$unresolvedCount = db_cip_incidents_unresolved_count();
 $calibration = db_intelligence_calibration_latest();
 $calibrationHistory = db_calibration_history(7);
 $overrides = db_calibration_overrides_get();
@@ -58,6 +68,7 @@ $msg = match ($_GET['msg'] ?? '') {
     'overrides_saved'  => 'Calibration overrides saved. Takes effect on next calibration run.',
     'freeze_on'        => 'Calibration frozen. Thresholds will not change until unfrozen.',
     'freeze_off'       => 'Calibration unfrozen. Normal self-leveling resumed.',
+    'incident_resolved' => 'Incident marked as resolved.',
     default            => '',
 };
 
@@ -92,6 +103,60 @@ include __DIR__ . '/../../src/views/partials/header.php';
         <div class="mt-3 rounded bg-emerald-900/40 border border-emerald-700/50 px-4 py-2 text-sm text-emerald-300"><?= htmlspecialchars($msg, ENT_QUOTES) ?></div>
     <?php endif; ?>
 </section>
+
+<!-- Incidents -->
+<?php if ($unresolvedCount > 0 || $incidents !== []): ?>
+<section class="surface-primary mt-4">
+    <div class="flex items-center justify-between">
+        <h2 class="text-lg font-semibold text-slate-100">CIP Incidents</h2>
+        <?php if ($unresolvedCount > 0): ?>
+            <span class="inline-flex items-center rounded-full bg-red-900/60 text-red-300 border border-red-800/50 px-2.5 py-1 text-xs font-semibold"><?= $unresolvedCount ?> unresolved</span>
+        <?php endif; ?>
+    </div>
+    <p class="mt-1 text-xs text-muted">Structured failure records from CIP jobs. Copy the error details to diagnose issues.</p>
+    <div class="mt-3 space-y-2">
+        <?php foreach ($incidents as $inc): ?>
+            <?php $isResolved = ((int) ($inc['resolved'] ?? 0)) === 1; ?>
+            <div class="surface-tertiary <?= $isResolved ? 'opacity-60' : '' ?>">
+                <div class="flex items-start justify-between gap-3">
+                    <div class="flex-1 min-w-0">
+                        <div class="flex items-center gap-2">
+                            <span class="text-sm font-medium <?= $isResolved ? 'text-slate-400' : 'text-red-400' ?>"><?= htmlspecialchars((string) ($inc['job_key'] ?? ''), ENT_QUOTES) ?></span>
+                            <span class="rounded bg-slate-700 px-1.5 py-0.5 text-[10px] text-slate-300"><?= htmlspecialchars((string) ($inc['error_type'] ?? ''), ENT_QUOTES) ?></span>
+                            <span class="text-[10px] text-muted"><?= htmlspecialchars((string) ($inc['created_at'] ?? ''), ENT_QUOTES) ?></span>
+                            <?php if (($inc['git_sha'] ?? '') !== ''): ?>
+                                <span class="text-[10px] text-muted">@ <?= htmlspecialchars((string) $inc['git_sha'], ENT_QUOTES) ?></span>
+                            <?php endif; ?>
+                        </div>
+                        <p class="mt-1 text-xs text-slate-200 break-all"><?= htmlspecialchars(mb_substr((string) ($inc['error_message'] ?? ''), 0, 300), ENT_QUOTES) ?></p>
+                        <?php if (($inc['traceback'] ?? '') !== ''): ?>
+                            <details class="mt-1">
+                                <summary class="text-[10px] text-accent cursor-pointer">Full traceback</summary>
+                                <pre class="mt-1 text-[10px] text-slate-400 overflow-x-auto max-h-40 whitespace-pre-wrap"><?= htmlspecialchars((string) $inc['traceback'], ENT_QUOTES) ?></pre>
+                            </details>
+                        <?php endif; ?>
+                        <?php if (($inc['sql_query'] ?? '') !== ''): ?>
+                            <details class="mt-1">
+                                <summary class="text-[10px] text-cyan-400 cursor-pointer">SQL context</summary>
+                                <pre class="mt-1 text-[10px] text-slate-400 overflow-x-auto max-h-20 whitespace-pre-wrap"><?= htmlspecialchars((string) $inc['sql_query'], ENT_QUOTES) ?></pre>
+                            </details>
+                        <?php endif; ?>
+                    </div>
+                    <?php if (!$isResolved): ?>
+                        <form method="post" class="shrink-0">
+                            <input type="hidden" name="action" value="resolve_incident">
+                            <input type="hidden" name="incident_id" value="<?= (int) $inc['id'] ?>">
+                            <button type="submit" class="rounded border border-emerald-700/50 bg-emerald-900/30 px-2 py-1 text-[10px] text-emerald-300 hover:bg-emerald-900/50">Resolve</button>
+                        </form>
+                    <?php else: ?>
+                        <span class="text-[10px] text-emerald-400">Resolved</span>
+                    <?php endif; ?>
+                </div>
+            </div>
+        <?php endforeach; ?>
+    </div>
+</section>
+<?php endif; ?>
 
 <!-- Operational Health -->
 <section class="surface-primary mt-4">
