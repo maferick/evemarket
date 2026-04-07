@@ -71,6 +71,11 @@ if ($event === null) {
     exit;
 }
 
+// Set page title to character name for browser tab
+$title = ($event['entity_name'] ?? '') !== ''
+    ? htmlspecialchars((string) $event['entity_name'], ENT_QUOTES) . ' — Event Detail'
+    : 'Event Detail';
+
 $profile = $evidence['profile'];
 $signals = $evidence['signals'];
 $compounds = $evidence['compounds'] ?? [];
@@ -152,59 +157,79 @@ include __DIR__ . '/../../src/views/partials/header.php';
     <?php endif; ?>
 
     <!-- Event header -->
-    <div class="mt-4 flex flex-wrap items-start justify-between gap-4">
-        <div>
-            <p class="text-xs uppercase tracking-[0.16em] text-muted"><?= htmlspecialchars((string) ($event['event_type'] ?? ''), ENT_QUOTES) ?></p>
-            <?php if (($event['entity_name'] ?? '') !== ''): ?>
-                <p class="mt-1 text-lg text-accent font-medium">
-                    <a href="/battle-intelligence/character.php?character_id=<?= urlencode((string) ((int) ($event['entity_id'] ?? 0))) ?>"><?= htmlspecialchars((string) $event['entity_name'], ENT_QUOTES) ?></a>
-                    <?php if (($event['corporation_name'] ?? '') !== '' || ($event['alliance_name'] ?? '') !== ''): ?>
-                        <span class="text-sm text-slate-400 font-normal ml-2"><?php
-                            $orgParts = [];
-                            if (($event['corporation_name'] ?? '') !== '') { $orgParts[] = htmlspecialchars((string) $event['corporation_name'], ENT_QUOTES); }
-                            if (($event['alliance_name'] ?? '') !== '') { $orgParts[] = '[' . htmlspecialchars((string) $event['alliance_name'], ENT_QUOTES) . ']'; }
-                            echo implode(' ', $orgParts);
-                        ?></span>
-                    <?php endif; ?>
-                </p>
-            <?php endif; ?>
-            <h1 class="mt-1 text-2xl font-semibold text-slate-50"><?= htmlspecialchars((string) ($event['title'] ?? 'Untitled Event'), ENT_QUOTES) ?></h1>
-            <?php
-            $eventExplanation = match ($event['event_type'] ?? '') {
-                'risk_rank_entry_top50'      => 'This character entered the top 50 risk-ranked profiles. They are now among the most suspicious characters being tracked.',
-                'risk_rank_entry_top200'     => 'This character entered the top 200 risk-ranked profiles, indicating elevated suspicion across multiple signal domains.',
-                'percentile_escalation'      => 'This character moved into a higher risk percentile bucket, indicating a worsening intelligence picture.',
-                'risk_score_surge'           => 'The fused risk score for this character increased significantly in the last 24 hours.',
-                'rank_jump'                  => 'This character jumped significantly in the overall risk rankings in a single computation cycle.',
-                'new_high_weight_signal'     => 'A new signal with high confidence and significant weight appeared for this character.',
-                'multi_domain_activation'    => 'This character now has active signals across 4+ independent domains (behavioral, graph, temporal, movement, relational) — convergent evidence from different analysis methods.',
-                'freshness_degradation'      => 'The signals backing this character\'s profile are going stale. The trust surface freshness dropped below the operational threshold.',
-                'coverage_expansion'         => 'Signal coverage for this character materially expanded — more signal domains are now contributing to their profile.',
-                'compound_signal_activated'  => 'A compound detection was triggered — multiple independent signals co-occurred in a pattern that indicates a specific operational concern.',
-                'compound_signal_strengthened' => 'An existing compound detection strengthened — the pattern became more pronounced.',
-                default                      => '',
-            };
-            ?>
-            <?php if ($eventExplanation !== ''): ?>
-                <p class="mt-2 text-sm text-slate-400"><?= $eventExplanation ?></p>
-            <?php endif; ?>
-            <div class="mt-2 flex flex-wrap items-center gap-2">
+    <?php
+    // Human-readable event type labels
+    $eventTypeLabel = match ($event['event_type'] ?? '') {
+        'risk_rank_entry_top50'        => 'Top 50 Risk Entry',
+        'risk_rank_entry_top200'       => 'Top 200 Risk Entry',
+        'percentile_escalation'        => 'Percentile Escalation',
+        'risk_score_surge'             => 'Risk Score Surge',
+        'rank_jump'                    => 'Significant Rank Jump',
+        'new_high_weight_signal'       => 'New High-Weight Signal',
+        'multi_domain_activation'      => 'Multi-Domain Activation',
+        'freshness_degradation'        => 'Profile Freshness Degradation',
+        'coverage_expansion'           => 'Coverage Expansion',
+        'compound_signal_activated'    => 'Compound Signal Activated',
+        'compound_signal_strengthened' => 'Compound Signal Strengthened',
+        default                        => htmlspecialchars((string) ($event['event_type'] ?? ''), ENT_QUOTES),
+    };
+    $eventExplanation = match ($event['event_type'] ?? '') {
+        'risk_rank_entry_top50'        => 'This character entered the top 50 risk-ranked profiles. They are now among the most suspicious characters being tracked.',
+        'risk_rank_entry_top200'       => 'This character entered the top 200 risk-ranked profiles, indicating elevated suspicion across multiple signal domains.',
+        'percentile_escalation'        => 'This character moved into a higher risk percentile bucket, indicating a worsening intelligence picture.',
+        'risk_score_surge'             => 'The fused risk score for this character increased significantly in the last 24 hours.',
+        'rank_jump'                    => 'This character jumped significantly in the overall risk rankings in a single computation cycle.',
+        'new_high_weight_signal'       => 'A new signal with high confidence and significant weight appeared for this character.',
+        'multi_domain_activation'      => 'This character now has active signals across 4+ independent domains (behavioral, graph, temporal, movement, relational) — convergent evidence from different analysis methods.',
+        'freshness_degradation'        => 'The signals backing this character\'s profile are going stale. The trust surface freshness dropped below the operational threshold.',
+        'coverage_expansion'           => 'Signal coverage for this character materially expanded — more signal domains are now contributing to their profile.',
+        'compound_signal_activated'    => 'A compound detection was triggered — multiple independent signals co-occurred in a pattern that indicates a specific operational concern.',
+        'compound_signal_strengthened' => 'An existing compound detection strengthened — the pattern became more pronounced.',
+        default                        => '',
+    };
+    ?>
+
+    <div class="mt-4">
+        <!-- Character identity — biggest, most visible element -->
+        <?php if (($event['entity_name'] ?? '') !== ''): ?>
+            <div class="flex items-baseline gap-3">
+                <a href="/battle-intelligence/character.php?character_id=<?= urlencode((string) ((int) ($event['entity_id'] ?? 0))) ?>" class="text-2xl text-accent font-semibold hover:underline"><?= htmlspecialchars((string) $event['entity_name'], ENT_QUOTES) ?></a>
+                <?php if (($event['corporation_name'] ?? '') !== '' || ($event['alliance_name'] ?? '') !== ''): ?>
+                    <span class="text-base text-slate-400"><?php
+                        $orgParts = [];
+                        if (($event['corporation_name'] ?? '') !== '') { $orgParts[] = htmlspecialchars((string) $event['corporation_name'], ENT_QUOTES); }
+                        if (($event['alliance_name'] ?? '') !== '') { $orgParts[] = '[' . htmlspecialchars((string) $event['alliance_name'], ENT_QUOTES) . ']'; }
+                        echo implode(' ', $orgParts);
+                    ?></span>
+                <?php endif; ?>
+            </div>
+        <?php endif; ?>
+
+        <!-- Event title and type -->
+        <p class="mt-2 text-xs uppercase tracking-[0.16em] text-muted"><?= $eventTypeLabel ?></p>
+        <h1 class="mt-1 text-xl font-semibold text-slate-50"><?= htmlspecialchars((string) ($event['title'] ?? 'Untitled Event'), ENT_QUOTES) ?></h1>
+        <?php if ($eventExplanation !== ''): ?>
+            <p class="mt-2 text-sm text-slate-400"><?= $eventExplanation ?></p>
+        <?php endif; ?>
+
+        <!-- Status badges + metadata row -->
+        <div class="mt-3 flex flex-wrap items-center justify-between gap-4">
+            <div class="flex flex-wrap items-center gap-2">
                 <span class="inline-flex items-center rounded px-2 py-0.5 text-xs font-medium <?= $sevClasses ?>"><?= strtoupper($sev) ?></span>
                 <span class="inline-flex items-center rounded px-2 py-0.5 text-xs font-medium <?= $stateClasses ?>"><?= strtoupper((string) ($event['state'] ?? '')) ?></span>
                 <span class="text-xs <?= ($event['event_family'] ?? '') === 'threat' ? 'text-red-400' : 'text-cyan-400' ?>"><?= ($event['event_family'] ?? '') === 'threat' ? 'Threat' : 'Profile Quality' ?></span>
                 <?php if (((int) ($event['escalation_count'] ?? 1)) > 1): ?>
                     <span class="text-xs text-orange-400 font-medium">Escalated <?= (int) $event['escalation_count'] ?>x</span>
                 <?php endif; ?>
+                <?php if (($event['state'] ?? '') === 'suppressed' && ($event['suppressed_until'] ?? '') !== ''): ?>
+                    <span class="text-xs text-slate-400">Suppressed until <?= htmlspecialchars((string) $event['suppressed_until'], ENT_QUOTES) ?></span>
+                <?php endif; ?>
             </div>
-        </div>
-        <div class="text-right text-xs text-muted space-y-0.5">
-            <p>Entity: <?php if (($event['entity_name'] ?? '') !== ''): ?><a class="text-accent" href="/battle-intelligence/character.php?character_id=<?= urlencode((string) ((int) ($event['entity_id'] ?? 0))) ?>"><?= htmlspecialchars((string) $event['entity_name'], ENT_QUOTES) ?></a><?php else: ?><?= htmlspecialchars((string) ($event['entity_type'] ?? ''), ENT_QUOTES) ?> #<?= (int) ($event['entity_id'] ?? 0) ?><?php endif; ?></p>
-            <p>First detected: <?= htmlspecialchars($firstDetected, ENT_QUOTES) ?> <span class="text-slate-400">(<?= $eventAge ?> ago)</span></p>
-            <p>Last updated: <?= htmlspecialchars($lastUpdated, ENT_QUOTES) ?> <span class="text-slate-400">(<?= $timeInState ?> in state)</span></p>
-            <p>Impact: <span class="text-slate-200 font-medium"><?= number_format((float) ($event['impact_score'] ?? 0), 4) ?></span></p>
-            <?php if (($event['state'] ?? '') === 'suppressed' && ($event['suppressed_until'] ?? '') !== ''): ?>
-                <p>Suppressed until: <span class="text-slate-300"><?= htmlspecialchars((string) $event['suppressed_until'], ENT_QUOTES) ?></span></p>
-            <?php endif; ?>
+            <div class="flex flex-wrap items-center gap-4 text-xs text-muted">
+                <span>Detected <?= $eventAge ?> ago</span>
+                <span>In state <?= $timeInState ?></span>
+                <span>Impact <span class="text-slate-200 font-medium"><?= number_format((float) ($event['impact_score'] ?? 0), 4) ?></span></span>
+            </div>
         </div>
     </div>
 </section>
@@ -224,12 +249,32 @@ include __DIR__ . '/../../src/views/partials/header.php';
             $profileFields = ['risk_score', 'risk_rank', 'risk_percentile', 'confidence', 'freshness', 'effective_coverage'];
             $compoundFields = ['contributing_signals', 'compound_family', 'score_mode', 'confidence_derivation', 'profile_conditions_met'];
             $triggerFields = array_diff_key($detailData, array_flip(array_merge($profileFields, $compoundFields)));
+
+            // Human-readable labels for common trigger field names
+            $fieldLabels = [
+                'compound_type' => 'Detection pattern',
+                'compound_score' => 'Pattern strength',
+                'compound_confidence' => 'Pattern confidence',
+                'signal_type' => 'Signal',
+                'signal_value' => 'Signal strength',
+                'signal_weight' => 'Signal weight',
+                'signal_confidence' => 'Signal confidence',
+                'delta_24h' => '24-hour change',
+                'new_signals_24h' => 'New signals (24h)',
+                'rank' => 'Current rank',
+                'previous_rank' => 'Previous rank',
+                'jump' => 'Positions jumped',
+                'domain_count' => 'Active domains',
+                'previous_bucket' => 'Previous percentile bucket',
+                'current_bucket' => 'Current percentile bucket',
+                'percentile' => 'Exact percentile',
+            ];
             ?>
             <?php if ($triggerFields !== []): ?>
                 <div class="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
                     <?php foreach ($triggerFields as $key => $val): ?>
                         <div class="surface-tertiary">
-                            <p class="text-xs text-muted"><?= htmlspecialchars(str_replace('_', ' ', (string) $key), ENT_QUOTES) ?></p>
+                            <p class="text-xs text-muted"><?= htmlspecialchars($fieldLabels[$key] ?? ucfirst(str_replace('_', ' ', (string) $key)), ENT_QUOTES) ?></p>
                             <p class="mt-1 text-sm text-slate-200">
                                 <?php if (is_numeric($val)): ?>
                                     <?= number_format((float) $val, 4) ?>
