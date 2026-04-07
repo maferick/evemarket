@@ -15072,12 +15072,13 @@ function db_theaters_list(int $limit = 50, int $offset = 0, ?string $regionFilte
                    t.created_at, t.updated_at,
                    rs.system_name AS primary_system_name, rr.region_name
             FROM theaters t
-            INNER JOIN theater_alliance_summary tas
+            LEFT JOIN theater_alliance_summary tas
                 ON tas.theater_id = t.theater_id
                 AND tas.alliance_id IN (' . $placeholders . ')
                 AND tas.participant_count >= 2
             LEFT JOIN ref_systems rs ON rs.system_id = t.primary_system_id
-            LEFT JOIN ref_regions rr ON rr.region_id = t.region_id';
+            LEFT JOIN ref_regions rr ON rr.region_id = t.region_id
+            WHERE (tas.theater_id IS NOT NULL OR t.clustering_method = \'manual\')';
     $params = $trackedAllianceIds;
     $conditions = [];
     if ($regionFilter !== null) {
@@ -15089,7 +15090,7 @@ function db_theaters_list(int $limit = 50, int $offset = 0, ?string $regionFilte
         $params[] = $minAnomaly;
     }
     if ($conditions !== []) {
-        $sql .= ' WHERE ' . implode(' AND ', $conditions);
+        $sql .= ' AND ' . implode(' AND ', $conditions);
     }
     $sql .= ' GROUP BY t.theater_id ORDER BY t.start_time DESC LIMIT ' . max(1, min(200, (int)$limit)) . ' OFFSET ' . max(0, (int)$offset);
     return db_select($sql, $params);
