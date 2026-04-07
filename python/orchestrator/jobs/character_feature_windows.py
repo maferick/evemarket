@@ -329,7 +329,7 @@ def _compute_window_features(
     else:
         rows = participations
 
-    battles = {str(r["battle_id"]) for r in rows}
+    battles = {str(r["battle_id"]) for r in rows if r.get("battle_id")}
     systems = {int(r["system_id"]) for r in rows if r.get("system_id")}
 
     # Co-presence: other characters seen in the same battles
