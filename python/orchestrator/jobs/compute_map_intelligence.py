@@ -395,7 +395,10 @@ def _compute_edge_intelligence(db: SupplyCoreDb) -> list[dict[str, Any]]:
         cid = int(row["corridor_id"])
         sid = int(row["system_id"])
         pos = int(row["position_in_corridor"])
-        score = float(row.get("corridor_score", 0))
+        raw_score = row.get("corridor_score") or 0
+        score = float(raw_score) if raw_score is not None else 0.0
+        if not math.isfinite(score):
+            score = 0.0
         by_corridor[cid].append((pos, sid, score))
 
     # Build edge metrics
@@ -444,6 +447,12 @@ def _compute_edge_intelligence(db: SupplyCoreDb) -> list[dict[str, Any]]:
 #  Label priority composite score
 # ---------------------------------------------------------------------------
 
+def _safe_finite_max(values, fallback: float = 1.0) -> float:
+    """Return the max of *values* ignoring NaN/Inf, or *fallback* if empty."""
+    finite = [v for v in values if math.isfinite(v)]
+    return max(finite) if finite else fallback
+
+
 def _compute_label_priority(
     betweenness: dict[int, float],
     degree: dict[int, float],
@@ -454,12 +463,12 @@ def _compute_label_priority(
 
     Weights: betweenness 0.4, degree 0.3, battle activity 0.3
     """
-    # Normalize betweenness
-    max_b = max(betweenness.values()) if betweenness else 1.0
+    # Normalize betweenness (NaN-safe: filter non-finite before max)
+    max_b = _safe_finite_max(betweenness.values()) if betweenness else 1.0
     max_b = max(max_b, 1e-9)
 
     # Normalize degree
-    max_d = max(degree.values()) if degree else 1.0
+    max_d = _safe_finite_max(degree.values()) if degree else 1.0
     max_d = max(max_d, 1e-9)
 
     # Normalize battles
@@ -468,10 +477,13 @@ def _compute_label_priority(
 
     priorities = {}
     for sid in system_ids:
-        b_norm = betweenness.get(sid, 0) / max_b
-        d_norm = degree.get(sid, 0) / max_d
+        b_val = betweenness.get(sid, 0)
+        d_val = degree.get(sid, 0)
+        b_norm = (b_val / max_b) if math.isfinite(b_val) else 0.0
+        d_norm = (d_val / max_d) if math.isfinite(d_val) else 0.0
         bc_norm = battle_counts.get(sid, 0) / max_bc
-        priorities[sid] = round(b_norm * 0.4 + d_norm * 0.3 + bc_norm * 0.3, 6)
+        score = b_norm * 0.4 + d_norm * 0.3 + bc_norm * 0.3
+        priorities[sid] = round(score if math.isfinite(score) else 0.0, 6)
 
     return priorities
 
