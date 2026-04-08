@@ -7503,6 +7503,119 @@ function automation_runtime_job_group(string $jobKey): string
     return $map[$jobKey] ?? 'Other';
 }
 
+/**
+ * Pipeline tier for a job — determines execution dependency order.
+ *
+ * Tier 1: Data ingestion (ESI, market, killmails) — everything else depends on this.
+ * Tier 2: Resolution & enrichment — entity metadata, alliance history.
+ * Tier 3: Graph & computation — graph builds, community detection, motifs.
+ * Tier 4: Intelligence — suspicion scoring, dossiers, counterintel, battles.
+ * Tier 5: Analytics & output — dashboards, summaries, AI briefings, Discord.
+ * Tier 6: Maintenance — cleanup, repair.
+ *
+ * @return array{tier: int, label: string}
+ */
+function automation_runtime_job_tier(string $jobKey): array
+{
+    static $tiers = [
+        // ── Tier 1: Data Ingestion ──────────────────────────────────────
+        'market_hub_current_sync' => 1,
+        'market_hub_historical_sync' => 1,
+        'market_hub_local_history_sync' => 1,
+        'alliance_current_sync' => 1,
+        'alliance_historical_sync' => 1,
+        'current_state_refresh_sync' => 1,
+        'esi_character_queue_sync' => 1,
+        'evewho_enrichment_sync' => 1,
+        'evewho_alliance_member_sync' => 1,
+        'tracked_alliance_member_sync' => 1,
+        'corp_standings_sync' => 1,
+        'sovereignty_campaigns_sync' => 1,
+        'sovereignty_structures_sync' => 1,
+        'sovereignty_map_sync' => 1,
+        'jump_bridge_sync' => 1,
+
+        // ── Tier 2: Resolution & Enrichment ─────────────────────────────
+        'entity_metadata_resolve_sync' => 2,
+        'esi_alliance_history_sync' => 2,
+        'compute_signals' => 2,
+        'deal_alerts_sync' => 2,
+
+        // ── Tier 3: Graph & Computation ─────────────────────────────────
+        'compute_graph_sync' => 3,
+        'compute_graph_insights' => 3,
+        'compute_graph_derived_relationships' => 3,
+        'compute_graph_sync_killmail_entities' => 3,
+        'compute_graph_sync_killmail_edges' => 3,
+        'compute_graph_sync_doctrine_dependency' => 3,
+        'compute_graph_sync_battle_intelligence' => 3,
+        'compute_graph_prune' => 3,
+        'compute_graph_topology_metrics' => 3,
+        'graph_data_quality_check' => 3,
+        'graph_temporal_metrics_sync' => 3,
+        'graph_typed_interactions_sync' => 3,
+        'graph_community_detection_sync' => 3,
+        'graph_motif_detection_sync' => 3,
+        'graph_evidence_paths_sync' => 3,
+        'graph_analyst_recalibration' => 3,
+        'graph_model_audit' => 3,
+        'graph_query_plan_validation' => 3,
+        'neo4j_ml_exploration' => 3,
+        'graph_universe_sync' => 3,
+        'compute_copresence_edges' => 3,
+
+        // ── Tier 4: Intelligence ────────────────────────────────────────
+        'compute_suspicion_scores_v2' => 4,
+        'compute_alliance_dossiers' => 4,
+        'compute_threat_corridors' => 4,
+        'compute_counterintel_pipeline' => 4,
+        'intelligence_pipeline' => 4,
+        'compute_battle_rollups' => 4,
+        'compute_behavioral_scoring' => 4,
+        'compute_sovereignty_alerts' => 4,
+        'compute_alliance_relationships' => 4,
+        'staging_system_detection' => 4,
+        'theater_clustering' => 4,
+        'theater_analysis' => 4,
+        'theater_graph_integration' => 4,
+        'theater_suspicion' => 4,
+        'temporal_behavior_detection' => 4,
+        'compute_character_feature_windows' => 4,
+        'shell_corp_detection' => 4,
+        'pre_op_join_detection' => 4,
+        'compute_cohort_baselines' => 4,
+
+        // ── Tier 5: Analytics & Output ──────────────────────────────────
+        'dashboard_summary_sync' => 5,
+        'activity_priority_summary_sync' => 5,
+        'analytics_bucket_1h_sync' => 5,
+        'analytics_bucket_1d_sync' => 5,
+        'rebuild_ai_briefings' => 5,
+        'forecasting_ai_sync' => 5,
+        'market_comparison_summary_sync' => 5,
+        'loss_demand_summary_sync' => 5,
+        'compute_economic_warfare' => 5,
+        'discord_webhook_filter' => 5,
+
+        // ── Tier 6: Maintenance ─────────────────────────────────────────
+        'cache_expiry_cleanup_sync' => 6,
+        'killmail_zkb_repair' => 6,
+        'log_to_issues' => 6,
+    ];
+
+    static $labels = [
+        1 => 'Tier 1 — Data Ingestion',
+        2 => 'Tier 2 — Resolution',
+        3 => 'Tier 3 — Graph',
+        4 => 'Tier 4 — Intelligence',
+        5 => 'Tier 5 — Analytics',
+        6 => 'Tier 6 — Maintenance',
+    ];
+
+    $tier = $tiers[$jobKey] ?? 5;
+    return ['tier' => $tier, 'label' => $labels[$tier] ?? "Tier {$tier}"];
+}
+
 function automation_runtime_jobs_overview(): array
 {
     scheduler_registry_bootstrap();
@@ -25425,6 +25538,7 @@ function log_viewer_page_data(): array
             }
         }
 
+        $tierInfo = automation_runtime_job_tier($key);
         $jobs[] = [
             'job_key' => $key,
             'label' => $label,
@@ -25450,6 +25564,8 @@ function log_viewer_page_data(): array
             'last_planner_reason' => $s['last_planner_reason_text'] ?? null,
             'last_run_summary' => $s['last_run_summary'] ?? null,
             'timeout_seconds' => $meta['timeout_seconds'] ?? $defaultTimeout,
+            'tier' => $tierInfo['tier'],
+            'tier_label' => $tierInfo['label'],
         ];
     }
 
@@ -25468,6 +25584,7 @@ function log_viewer_page_data(): array
         if (!empty($regMeta['parent_job_key'])) {
             continue;
         }
+        $regTierInfo = automation_runtime_job_tier($regKey);
         $jobs[] = [
             'job_key' => $regKey,
             'label' => $regMeta['label'] ?? $regKey,
@@ -25493,6 +25610,8 @@ function log_viewer_page_data(): array
             'last_planner_reason' => 'No schedule row — job exists in registry but has not been provisioned into sync_schedules yet.',
             'last_run_summary' => null,
             'timeout_seconds' => $regMeta['timeout_seconds'] ?? $defaultTimeout,
+            'tier' => $regTierInfo['tier'],
+            'tier_label' => $regTierInfo['label'],
         ];
     }
 
