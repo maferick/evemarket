@@ -128,10 +128,27 @@ include __DIR__ . '/../../src/views/partials/header.php';
             No doctrines detected yet. Once your alliance accumulates at least
             <?= (int) $settings['min_losses_threshold'] ?> similar losses per fit within the last
             <?= (int) $settings['window_days'] ?> days, they'll show up here automatically.
+            <a href="/settings?section=automation-sync" class="ml-1 text-cyan-300 hover:text-cyan-200">Check pipeline settings</a>
         </div>
     <?php else: ?>
+        <div class="mt-4 mb-3">
+            <input type="search" id="doctrine-search" placeholder="Filter by hull name, doctrine name, or priority..."
+                   class="w-full max-w-md rounded border border-white/10 bg-black/40 px-3 py-2 text-sm text-white placeholder-white/40 focus:border-cyan-400/40 focus:outline-none">
+        </div>
+        <script>
+            document.getElementById('doctrine-search').addEventListener('input', function () {
+                const q = this.value.toLowerCase();
+                document.querySelectorAll('#doctrine-table tbody tr[id^="doctrine-"]').forEach(function (row) {
+                    const text = row.textContent.toLowerCase();
+                    const matches = q === '' || text.includes(q);
+                    row.style.display = matches ? '' : 'none';
+                    const next = row.nextElementSibling;
+                    if (next && !next.id) next.style.display = matches ? '' : 'none';
+                });
+            });
+        </script>
         <div class="mt-4 overflow-x-auto">
-            <table class="w-full text-sm">
+            <table id="doctrine-table" class="w-full text-sm">
                 <thead class="text-white/60">
                     <tr class="border-b border-white/8">
                         <th class="px-3 py-2 text-left">Hull / Doctrine</th>

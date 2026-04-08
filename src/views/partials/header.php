@@ -2,8 +2,8 @@
 $notice = flash('success');
 $dealAlertPopupRows = deal_alert_popup_view_model();
 $dealAlertDismissMinutes = (int) (deal_alert_settings()['deal_alert_popup_dismiss_minutes'] ?? 120);
-$pageHeaderSummary = trim((string) ($pageHeaderSummary ?? brand_tagline()));
-$pageHeaderBadge = trim((string) ($pageHeaderBadge ?? 'Operations aligned'));
+$pageHeaderSummary = trim((string) ($pageHeaderSummary ?? ''));
+$pageHeaderBadge = trim((string) ($pageHeaderBadge ?? ''));
 $pageHeaderBadgeTone = trim((string) ($pageHeaderBadgeTone ?? 'border-cyan/20 bg-cyan/10 text-cyan-100'));
 $liveRefreshSummary = supplycore_live_refresh_summary($liveRefreshConfig ?? null);
 $pageFreshness = is_array($pageFreshness ?? null) ? $pageFreshness : [];
@@ -100,6 +100,7 @@ $pageFreshnessLine = $pageFreshness !== []
                         </div>
                         <div class="flex items-center gap-2">
                             <a href="/deal-alerts" class="rounded-full border border-rose-200/20 bg-white/8 px-3 py-1 text-xs font-medium text-white hover:bg-white/12">View all</a>
+                            <button type="button" class="rounded-full border border-rose-200/20 bg-white/8 px-3 py-1 text-xs font-medium text-white hover:bg-white/12" data-alert-dismiss-all>Dismiss all</button>
                             <button type="button" class="rounded-full border border-white/20 bg-black/20 px-2.5 py-1 text-xs font-semibold uppercase tracking-[0.14em] text-white hover:bg-black/35" data-alert-drawer-close>Close</button>
                         </div>
                     </div>
@@ -170,6 +171,21 @@ $pageFreshnessLine = $pageFreshness !== []
                     if (backdrop) backdrop.addEventListener('click', closeDrawer);
                     if (closeBtn) closeBtn.addEventListener('click', closeDrawer);
                     document.addEventListener('keydown', e => { if (e.key === 'Escape') closeDrawer(); });
+
+                    const dismissAllBtn = drawer.querySelector('[data-alert-dismiss-all]');
+                    if (dismissAllBtn) {
+                        dismissAllBtn.addEventListener('click', () => {
+                            const ttl = <?= $dealAlertDismissMinutes ?> * 60 * 1000;
+                            drawer.querySelectorAll('[data-alert-item]').forEach(item => {
+                                const id = item.getAttribute('data-alert-id');
+                                try { localStorage.setItem('dismissed_alert_' + id, String(Date.now() + ttl)); } catch (e) {}
+                                item.remove();
+                            });
+                            updateCount(0);
+                            closeDrawer();
+                            bell.classList.add('hidden');
+                        });
+                    }
 
                     drawer.querySelectorAll('[data-alert-dismiss]').forEach(btn => {
                         btn.addEventListener('click', () => {

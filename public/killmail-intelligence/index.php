@@ -296,27 +296,42 @@ if (function_exists('ob_flush')) { @ob_flush(); }
                             </div>
                         </td>
                         <td class="px-3 py-3 align-top">
-                            <p class="font-medium text-slate-50"><?= htmlspecialchars((string) ($row['killmail_flags_display'] ?? 'No special flags'), ENT_QUOTES) ?></p>
-                            <div class="flex max-w-xs flex-wrap gap-2">
-                                <span class="rounded-full border px-2 py-0.5 text-[11px] uppercase tracking-[0.08em] <?= ($row['matched_tracked'] ?? false) ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-200' : 'border-slate-500/40 bg-slate-500/10 text-slate-300' ?>">
-                                    <?= ($row['matched_tracked'] ?? false) ? 'Tracked entity' : 'Recorded loss' ?>
-                                </span>
-                                <span class="rounded-full border px-2 py-0.5 text-[11px] uppercase tracking-[0.08em] <?= htmlspecialchars((string) (($row['signal_strength']['tone'] ?? 'border-slate-500/40 bg-slate-500/10 text-slate-300')), ENT_QUOTES) ?>">
-                                    <?= htmlspecialchars((string) (($row['signal_strength']['label'] ?? 'Signal')), ENT_QUOTES) ?>
-                                </span>
-                                <span class="rounded-full border px-2 py-0.5 text-[11px] uppercase tracking-[0.08em] <?= htmlspecialchars((string) (($row['supply_impact']['tone'] ?? 'border-slate-500/40 bg-slate-500/10 text-slate-300')), ENT_QUOTES) ?>">
-                                    <?= htmlspecialchars((string) (($row['supply_impact']['label'] ?? 'Impact')), ENT_QUOTES) ?>
-                                </span>
+                            <div class="flex max-w-[10rem] flex-wrap gap-1.5">
+                                <?php
+                                    $flagsDisplay = trim((string) ($row['killmail_flags_display'] ?? ''));
+                                    $isDefaultFlags = $flagsDisplay === '' || $flagsDisplay === 'No special flags';
+                                    $signalLabel = trim((string) ($row['signal_strength']['label'] ?? 'Light signal'));
+                                    $impactLabel = trim((string) ($row['supply_impact']['label'] ?? 'Low supply impact'));
+                                    $isDefaultSignal = in_array($signalLabel, ['Light signal', 'Signal'], true);
+                                    $isDefaultImpact = in_array($impactLabel, ['Low supply impact', 'Impact'], true);
+                                ?>
+                                <?php if ($row['matched_tracked'] ?? false): ?>
+                                    <span class="rounded-full border px-2 py-0.5 text-[11px] uppercase tracking-[0.08em] border-emerald-500/40 bg-emerald-500/10 text-emerald-200" title="Tracked entity">Tracked</span>
+                                <?php endif; ?>
+                                <?php if (!$isDefaultSignal): ?>
+                                    <span class="rounded-full border px-2 py-0.5 text-[11px] uppercase tracking-[0.08em] <?= htmlspecialchars((string) ($row['signal_strength']['tone'] ?? 'border-slate-500/40 bg-slate-500/10 text-slate-300'), ENT_QUOTES) ?>">
+                                        <?= htmlspecialchars($signalLabel, ENT_QUOTES) ?>
+                                    </span>
+                                <?php endif; ?>
+                                <?php if (!$isDefaultImpact): ?>
+                                    <span class="rounded-full border px-2 py-0.5 text-[11px] uppercase tracking-[0.08em] <?= htmlspecialchars((string) ($row['supply_impact']['tone'] ?? 'border-slate-500/40 bg-slate-500/10 text-slate-300'), ENT_QUOTES) ?>">
+                                        <?= htmlspecialchars($impactLabel, ENT_QUOTES) ?>
+                                    </span>
+                                <?php endif; ?>
+                                <?php if (!$isDefaultFlags): ?>
+                                    <span class="rounded-full border px-2 py-0.5 text-[11px] uppercase tracking-[0.08em] border-amber-500/40 bg-amber-500/10 text-amber-200"><?= htmlspecialchars($flagsDisplay, ENT_QUOTES) ?></span>
+                                <?php endif; ?>
+                                <?php if ($isDefaultFlags && $isDefaultSignal && $isDefaultImpact && !($row['matched_tracked'] ?? false)): ?>
+                                    <span class="text-xs text-muted">Routine loss</span>
+                                <?php endif; ?>
                             </div>
-                            <p class="mt-2 max-w-xs text-xs text-muted"><?= htmlspecialchars((string) ($row['match_context'] ?? ''), ENT_QUOTES) ?></p>
                         </td>
                         <td class="px-3 py-3 align-top">
                             <p class="font-medium text-slate-50"><?= htmlspecialchars((string) ($row['estimated_value_display'] ?? 'Value unavailable'), ENT_QUOTES) ?></p>
                             <?php if ((string) ($row['final_blow_weapon'] ?? '') !== '' && (string) ($row['final_blow_weapon'] ?? '') !== 'Weapon unavailable'): ?>
                                 <p class="mt-1 text-xs text-slate-300"><?= htmlspecialchars((string) ($row['final_blow_weapon'] ?? '—'), ENT_QUOTES) ?></p>
                             <?php endif; ?>
-                            <p class="mt-2 text-xs text-muted"><?= htmlspecialchars((string) ($row['created_at_display'] ?? '—'), ENT_QUOTES) ?></p>
-                            <p class="mt-1 text-xs text-muted">Uploaded <?= htmlspecialchars((string) ($row['uploaded_at_display'] ?? '—'), ENT_QUOTES) ?></p>
+                            <p class="mt-2 text-xs text-muted"><?= supplycore_datetime_html($row['killmail_time'] ?? null) ?></p>
                         </td>
                         <td class="px-3 py-3 align-top">
                             <a href="<?= htmlspecialchars((string) ($row['inspect_url'] ?? '#'), ENT_QUOTES) ?>" class="inline-flex items-center btn-primary px-3 py-2">Inspect loss</a>

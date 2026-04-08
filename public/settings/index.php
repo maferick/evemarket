@@ -1131,14 +1131,23 @@ include __DIR__ . '/../../src/views/partials/header.php';
                 <form method="post" class="space-y-6">
                     <input type="hidden" name="_token" value="<?= htmlspecialchars(csrf_token(), ENT_QUOTES) ?>">
                     <input type="hidden" name="section" value="runtime-config">
+                    <?php
+                    $advancedSections = ['scheduler', 'workers', 'orchestrator', 'battle_intelligence', 'killmail_backfill', 'opposition_intelligence'];
+                    ?>
                     <?php foreach ($runtimeConfigSections as $registrySectionKey => $registrySection): ?>
                         <?php if ($registrySectionKey === 'db') {
                             continue;
                         } ?>
-                        <section class="rounded-2xl border border-border bg-black/20 p-4">
-                            <p class="text-sm font-semibold text-slate-100"><?= htmlspecialchars((string) ($registrySection['title'] ?? $registrySectionKey), ENT_QUOTES) ?></p>
-                            <p class="mt-1 text-xs text-muted"><?= htmlspecialchars((string) ($registrySection['description'] ?? ''), ENT_QUOTES) ?></p>
-                            <div class="mt-4 grid gap-4 md:grid-cols-2">
+                        <?php $isAdvanced = in_array($registrySectionKey, $advancedSections, true); ?>
+                        <details class="group rounded-2xl border border-border bg-black/20" <?= $isAdvanced ? '' : 'open' ?>>
+                            <summary class="cursor-pointer select-none p-4">
+                                <span class="text-sm font-semibold text-slate-100"><?= htmlspecialchars((string) ($registrySection['title'] ?? $registrySectionKey), ENT_QUOTES) ?></span>
+                                <?php if ($isAdvanced): ?>
+                                    <span class="ml-2 text-xs text-slate-500">Advanced</span>
+                                <?php endif; ?>
+                                <p class="mt-1 text-xs text-muted"><?= htmlspecialchars((string) ($registrySection['description'] ?? ''), ENT_QUOTES) ?></p>
+                            </summary>
+                            <div class="px-4 pb-4 grid gap-4 md:grid-cols-2">
                                 <?php foreach ((array) ($registrySection['fields'] ?? []) as $path => $field): ?>
                                     <?php if (($field['editable'] ?? false) !== true) {
                                         continue;
@@ -1188,7 +1197,11 @@ include __DIR__ . '/../../src/views/partials/header.php';
                                                 </ul>
                                             </details>
                                         <?php else: ?>
-                                            <input name="<?= htmlspecialchars($path, ENT_QUOTES) ?>" value="<?= htmlspecialchars($fieldValue, ENT_QUOTES) ?>" class="w-full field-input" />
+                                            <?php $isSensitive = !empty($field['sensitive']); ?>
+                                            <input name="<?= htmlspecialchars($path, ENT_QUOTES) ?>" value="<?= htmlspecialchars($fieldValue, ENT_QUOTES) ?>" class="w-full field-input" <?= $isSensitive ? 'type="password" autocomplete="off"' : '' ?> />
+                                            <?php if ($isSensitive && $fieldValue !== ''): ?>
+                                                <p class="text-xs text-slate-500">Current value: <?= htmlspecialchars('****' . substr($fieldValue, -4), ENT_QUOTES) ?></p>
+                                            <?php endif; ?>
                                         <?php endif; ?>
                                         <?php if ($fieldHelp !== ''): ?>
                                             <p class="text-xs leading-relaxed text-slate-400"><?= htmlspecialchars($fieldHelp, ENT_QUOTES) ?></p>
@@ -1196,7 +1209,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                                     </label>
                                 <?php endforeach; ?>
                             </div>
-                        </section>
+                        </details>
                     <?php endforeach; ?>
                     <button class="btn-primary">Save runtime settings</button>
                 </form>
@@ -3158,9 +3171,16 @@ include __DIR__ . '/../../src/views/partials/header.php';
                     }
                     ?>
                     <?php foreach ($jobsByGroup as $groupName => $groupJobs): ?>
+                        <?php $groupId = 'job-group-' . preg_replace('/[^a-z0-9]+/', '-', strtolower($groupName)); ?>
                         <div class="space-y-2">
-                            <p class="text-xs font-semibold uppercase tracking-[0.14em] text-slate-400"><?= htmlspecialchars($groupName, ENT_QUOTES) ?></p>
-                            <div class="grid gap-3 md:grid-cols-2">
+                            <div class="flex items-center gap-3">
+                                <p class="text-xs font-semibold uppercase tracking-[0.14em] text-slate-400"><?= htmlspecialchars($groupName, ENT_QUOTES) ?></p>
+                                <label class="flex items-center gap-1.5 text-xs text-cyan-300 cursor-pointer hover:text-cyan-200">
+                                    <input type="checkbox" class="size-3.5 rounded border-border bg-black" data-select-group="<?= htmlspecialchars($groupId, ENT_QUOTES) ?>" onchange="document.querySelectorAll('[data-job-group=\'<?= htmlspecialchars($groupId, ENT_QUOTES) ?>\'] input[name=\'managed_job_keys[]\']').forEach(c => c.checked = this.checked)">
+                                    Select all
+                                </label>
+                            </div>
+                            <div class="grid gap-3 md:grid-cols-2" data-job-group="<?= htmlspecialchars($groupId, ENT_QUOTES) ?>">
                                 <?php foreach ($groupJobs as $job): ?>
                                     <label class="rounded-lg border border-border bg-black/30 p-3">
                                         <span class="flex items-start justify-between gap-2">

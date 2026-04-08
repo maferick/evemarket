@@ -58,39 +58,47 @@ include __DIR__ . '/../../src/views/partials/header.php';
     </article>
     <article class="kpi-card xl:col-span-2">
         <p class="eyebrow">Detection model</p>
-        <h2 class="mt-3 text-lg font-semibold text-white">Historical median + weighted average baseline</h2>
-        <p class="mt-2 text-sm text-slate-300">SupplyCore compares the current cheapest sell listing against its own recent history, then ranks anomalies by percent-of-normal, severity tier, quantity, and history depth.</p>
-        <p class="mt-3 text-xs text-slate-400">Last seen <?= htmlspecialchars((string) ($summary['last_seen_relative'] ?? 'Never'), ENT_QUOTES) ?> · <?= htmlspecialchars((string) ($summary['last_seen_label'] ?? 'Unavailable'), ENT_QUOTES) ?></p>
+        <p class="mt-3 text-sm text-slate-300">Historical median + weighted average baseline</p>
+        <p class="mt-2 text-xs text-slate-400">Last seen <?= htmlspecialchars((string) ($summary['last_seen_relative'] ?? 'Never'), ENT_QUOTES) ?> · <?= htmlspecialchars((string) ($summary['last_seen_label'] ?? 'Unavailable'), ENT_QUOTES) ?></p>
+        <details class="mt-3">
+            <summary class="cursor-pointer text-xs text-cyan-300 hover:text-cyan-200">How detection works</summary>
+            <p class="mt-2 text-sm text-slate-300">SupplyCore compares the current cheapest sell listing against its own recent history, then ranks anomalies by percent-of-normal, severity tier, quantity, and history depth.</p>
+        </details>
     </article>
 </section>
 
-<section class="mt-6 rounded-[1.35rem] border p-4 <?= htmlspecialchars((string) ($status['tone'] ?? 'border-slate-400/20 bg-slate-500/10 text-slate-100'), ENT_QUOTES) ?>">
-    <div class="flex flex-wrap items-start justify-between gap-4">
-        <div>
-            <p class="text-xs font-semibold uppercase tracking-[0.16em] text-current/70">Deal Alerts status</p>
-            <h2 class="mt-2 text-lg font-semibold text-white"><?= htmlspecialchars((string) ($status['label'] ?? 'Never ran'), ENT_QUOTES) ?></h2>
-            <p class="mt-2 text-sm text-slate-200"><?= htmlspecialchars((string) ($status['detail'] ?? 'No materialized status has been recorded yet.'), ENT_QUOTES) ?></p>
-        </div>
-        <div class="grid gap-3 text-sm text-slate-200 sm:grid-cols-2 xl:grid-cols-4">
-            <div class="rounded-lg border border-white/10 bg-black/20 p-3">
-                <p class="text-xs uppercase tracking-[0.16em] text-slate-400">Last materialized</p>
-                <p class="mt-2 font-semibold text-white"><?= htmlspecialchars(supplycore_format_datetime(isset($materialization['last_materialized_at']) ? (string) $materialization['last_materialized_at'] : null), ENT_QUOTES) ?></p>
+<details class="mt-6">
+    <summary class="cursor-pointer rounded-[1.35rem] border p-4 text-sm font-medium text-slate-100 <?= htmlspecialchars((string) ($status['tone'] ?? 'border-slate-400/20 bg-slate-500/10 text-slate-100'), ENT_QUOTES) ?>">
+        Pipeline diagnostics · <?= htmlspecialchars((string) ($status['label'] ?? 'Never ran'), ENT_QUOTES) ?>
+    </summary>
+    <div class="mt-2 rounded-[1.35rem] border p-4 <?= htmlspecialchars((string) ($status['tone'] ?? 'border-slate-400/20 bg-slate-500/10 text-slate-100'), ENT_QUOTES) ?>">
+        <div class="flex flex-wrap items-start justify-between gap-4">
+            <div>
+                <p class="text-xs font-semibold uppercase tracking-[0.16em] text-current/70">Deal Alerts status</p>
+                <h2 class="mt-2 text-lg font-semibold text-white"><?= htmlspecialchars((string) ($status['label'] ?? 'Never ran'), ENT_QUOTES) ?></h2>
+                <p class="mt-2 text-sm text-slate-200"><?= htmlspecialchars((string) ($status['detail'] ?? 'No materialized status has been recorded yet.'), ENT_QUOTES) ?></p>
             </div>
-            <div class="rounded-lg border border-white/10 bg-black/20 p-3">
-                <p class="text-xs uppercase tracking-[0.16em] text-slate-400">Scheduler deferrals</p>
-                <p class="mt-2 font-semibold text-white"><?= (int) ($scheduler['consecutive_deferrals'] ?? 0) ?></p>
-            </div>
-            <div class="rounded-lg border border-white/10 bg-black/20 p-3">
-                <p class="text-xs uppercase tracking-[0.16em] text-slate-400">Last duration</p>
-                <p class="mt-2 font-semibold text-white"><?= htmlspecialchars(isset($materialization['last_duration_ms']) ? number_format(((int) $materialization['last_duration_ms']) / 1000, 2) . 's' : 'Unavailable', ENT_QUOTES) ?></p>
-            </div>
-            <div class="rounded-lg border border-white/10 bg-black/20 p-3">
-                <p class="text-xs uppercase tracking-[0.16em] text-slate-400">Page source</p>
-                <p class="mt-2 font-semibold text-white"><?= !empty($sourceVerification['page_source_mismatch']) ? 'Mismatch detected' : 'Materialized source OK' ?></p>
+            <div class="grid gap-3 text-sm text-slate-200 sm:grid-cols-2 xl:grid-cols-4">
+                <div class="rounded-lg border border-white/10 bg-black/20 p-3">
+                    <p class="text-xs uppercase tracking-[0.16em] text-slate-400">Last materialized</p>
+                    <p class="mt-2 font-semibold text-white"><?= htmlspecialchars(supplycore_format_datetime(isset($materialization['last_materialized_at']) ? (string) $materialization['last_materialized_at'] : null), ENT_QUOTES) ?></p>
+                </div>
+                <div class="rounded-lg border border-white/10 bg-black/20 p-3">
+                    <p class="text-xs uppercase tracking-[0.16em] text-slate-400">Scheduler deferrals</p>
+                    <p class="mt-2 font-semibold text-white"><?= (int) ($scheduler['consecutive_deferrals'] ?? 0) ?></p>
+                </div>
+                <div class="rounded-lg border border-white/10 bg-black/20 p-3">
+                    <p class="text-xs uppercase tracking-[0.16em] text-slate-400">Last duration</p>
+                    <p class="mt-2 font-semibold text-white"><?= htmlspecialchars(isset($materialization['last_duration_ms']) ? number_format(((int) $materialization['last_duration_ms']) / 1000, 2) . 's' : 'Unavailable', ENT_QUOTES) ?></p>
+                </div>
+                <div class="rounded-lg border border-white/10 bg-black/20 p-3">
+                    <p class="text-xs uppercase tracking-[0.16em] text-slate-400">Page source</p>
+                    <p class="mt-2 font-semibold text-white"><?= !empty($sourceVerification['page_source_mismatch']) ? 'Mismatch detected' : 'Materialized source OK' ?></p>
+                </div>
             </div>
         </div>
     </div>
-</section>
+</details>
 
 <section class="surface-primary mt-8">
     <div class="section-header border-b border-white/8 pb-4">

@@ -321,117 +321,184 @@ function current_path(): string
 
 function nav_items(): array
 {
+    $flat = [];
+    foreach (nav_groups() as $group) {
+        foreach ($group['items'] as $item) {
+            $flat[] = $item;
+        }
+    }
+
+    return $flat;
+}
+
+function nav_groups(): array
+{
     return [
         [
-            'label' => 'Dashboard',
-            'path' => '/',
-            'icon' => '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" class="h-4 w-4" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M4 19V5"/><path stroke-linecap="round" stroke-linejoin="round" d="M8 15l3-3 3 2 6-6"/></svg>',
-            'children' => [],
-        ],
-        [
-            'label' => 'Buy All Planner',
-            'path' => '/buy-all',
-            'icon' => '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" class="h-4 w-4" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M4 7h16M4 12h16M4 17h10"/><path stroke-linecap="round" stroke-linejoin="round" d="m15 15 2 2 4-4"/></svg>',
-            'children' => [],
-        ],
-        [
-            'label' => 'Market Status',
-            'path' => '/market-status',
-            'icon' => '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" class="h-4 w-4" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M3 6h18"/><path stroke-linecap="round" stroke-linejoin="round" d="M7 12h10"/><path stroke-linecap="round" stroke-linejoin="round" d="M10 18h4"/></svg>',
-            'badge_tooltip' => 'Market analysis views',
-            'children' => [
-                ['label' => 'Current Alliance Structure', 'path' => '/market-status/current-alliance'],
-                ['label' => 'Reference Hub Comparison', 'path' => '/market-status/reference-comparison'],
-                ['label' => 'Missing Items', 'path' => '/market-status/missing-items'],
-                ['label' => 'Price Deviations', 'path' => '/market-status/price-deviations'],
+            'heading' => 'Supply Operations',
+            'items' => [
+                [
+                    'label' => 'Dashboard',
+                    'path' => '/',
+                    'icon' => '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" class="h-4 w-4" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M4 19V5"/><path stroke-linecap="round" stroke-linejoin="round" d="M8 15l3-3 3 2 6-6"/></svg>',
+                    'children' => [],
+                ],
+                [
+                    'label' => 'Buy All Planner',
+                    'path' => '/buy-all',
+                    'icon' => '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" class="h-4 w-4" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M4 7h16M4 12h16M4 17h10"/><path stroke-linecap="round" stroke-linejoin="round" d="m15 15 2 2 4-4"/></svg>',
+                    'children' => [],
+                ],
+                [
+                    'label' => 'Market Status',
+                    'path' => '/market-status',
+                    'icon' => '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" class="h-4 w-4" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M3 6h18"/><path stroke-linecap="round" stroke-linejoin="round" d="M7 12h10"/><path stroke-linecap="round" stroke-linejoin="round" d="M10 18h4"/></svg>',
+                    'children' => [
+                        ['label' => 'Current Alliance Structure', 'path' => '/market-status/current-alliance'],
+                        ['label' => 'Reference Hub Comparison', 'path' => '/market-status/reference-comparison'],
+                        ['label' => 'Missing Items', 'path' => '/market-status/missing-items'],
+                        ['label' => 'Price Deviations', 'path' => '/market-status/price-deviations'],
+                    ],
+                ],
+                [
+                    'label' => 'Deal Alerts',
+                    'path' => '/deal-alerts',
+                    'icon' => '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" class="h-4 w-4" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M12 3 3 8.5V15.5L12 21l9-5.5V8.5L12 3Z"/><path stroke-linecap="round" stroke-linejoin="round" d="M12 8v5"/><path stroke-linecap="round" stroke-linejoin="round" d="M12 16h.01"/></svg>',
+                    'children' => [],
+                ],
+                [
+                    'label' => 'Doctrines',
+                    'path' => '/doctrines/',
+                    'icon' => '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" class="h-4 w-4" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M5 5h14v14H5z"/><path stroke-linecap="round" stroke-linejoin="round" d="M9 9h6M9 13h6M9 17h4"/></svg>',
+                    'children' => [],
+                ],
+                [
+                    'label' => 'Economic Warfare',
+                    'path' => '/economic-warfare',
+                    'icon' => '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" class="h-4 w-4" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M12 2v4m0 12v4M4.93 4.93l2.83 2.83m8.48 8.48 2.83 2.83M2 12h4m12 0h4M4.93 19.07l2.83-2.83m8.48-8.48 2.83-2.83"/><circle cx="12" cy="12" r="4"/></svg>',
+                    'children' => [],
+                ],
+                [
+                    'label' => 'History',
+                    'path' => '/history',
+                    'icon' => '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" class="h-4 w-4" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M12 8v5l3 2"/><path stroke-linecap="round" stroke-linejoin="round" d="M21 12a9 9 0 1 1-3.3-6.95"/></svg>',
+                    'children' => [
+                        ['label' => 'Alliance Structure Trends', 'path' => '/history/alliance-trends'],
+                        ['label' => 'Module History', 'path' => '/history/module-history'],
+                    ],
+                ],
             ],
         ],
         [
-            'label' => 'Deal Alerts',
-            'path' => '/deal-alerts',
-            'icon' => '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" class="h-4 w-4" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M12 3 3 8.5V15.5L12 21l9-5.5V8.5L12 3Z"/><path stroke-linecap="round" stroke-linejoin="round" d="M12 8v5"/><path stroke-linecap="round" stroke-linejoin="round" d="M12 16h.01"/></svg>',
-            'children' => [],
-        ],
-        [
-            'label' => 'History',
-            'path' => '/history',
-            'icon' => '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" class="h-4 w-4" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M12 8v5l3 2"/><path stroke-linecap="round" stroke-linejoin="round" d="M21 12a9 9 0 1 1-3.3-6.95"/></svg>',
-            'badge_tooltip' => 'Trend windows with data',
-            'children' => [
-                ['label' => 'Alliance Structure Trends', 'path' => '/history/alliance-trends'],
-                ['label' => 'Module History', 'path' => '/history/module-history'],
+            'heading' => 'Intelligence',
+            'items' => [
+                [
+                    'label' => 'Theater Overview',
+                    'path' => '/theater-intelligence',
+                    'icon' => '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" class="h-4 w-4" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path stroke-linecap="round" d="M12 3v4m0 10v4M3 12h4m10 0h4"/></svg>',
+                    'children' => [],
+                ],
+                [
+                    'label' => 'Theater Map',
+                    'path' => '/theater-map',
+                    'icon' => '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" class="h-4 w-4" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="m9 4 6 2.5V20l-6-2.5V4Zm0 0L3 6.5V20l6-2.5M15 6.5 21 4v16l-6-2.5"/></svg>',
+                    'children' => [],
+                ],
+                [
+                    'label' => 'Killmail Intelligence',
+                    'path' => '/killmail-intelligence',
+                    'icon' => '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" class="h-4 w-4" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M13 3 4 14h6l-1 7 9-11h-6l1-7Z"/></svg>',
+                    'children' => [],
+                ],
+                [
+                    'label' => 'Sovereignty',
+                    'path' => '/sovereignty',
+                    'icon' => '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" class="h-4 w-4" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M12 3 4 7v5c0 5 3.5 8.5 8 10 4.5-1.5 8-5 8-10V7l-8-4Z"/></svg>',
+                    'children' => [],
+                ],
+                [
+                    'label' => 'Alliance Dossiers',
+                    'path' => '/alliance-dossiers',
+                    'icon' => '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" class="h-4 w-4" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M19 20H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2Z"/><circle cx="12" cy="10" r="2.5"/><path stroke-linecap="round" d="M8 18c0-2.2 1.8-4 4-4s4 1.8 4 4"/></svg>',
+                    'children' => [],
+                ],
+                [
+                    'label' => 'Opposition Intel',
+                    'path' => '/opposition-intelligence',
+                    'icon' => '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" class="h-4 w-4" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg>',
+                    'children' => [],
+                ],
             ],
         ],
         [
-            'label' => 'Killmail Intelligence',
-            'path' => '/killmail-intelligence',
-            'icon' => '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" class="h-4 w-4" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M13 3 4 14h6l-1 7 9-11h-6l1-7Z"/></svg>',
-            'badge_tooltip' => 'Intelligence feeds',
-            'children' => [
-                ['label' => 'Recent Killmails', 'path' => '/killmail-intelligence'],
+            'heading' => 'Counterintel',
+            'items' => [
+                [
+                    'label' => 'Suspicion Leaderboard',
+                    'path' => '/battle-intelligence',
+                    'icon' => '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" class="h-4 w-4" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M4 18V9m5 9V5m5 13v-4m5 4v-7"/></svg>',
+                    'children' => [],
+                ],
+                [
+                    'label' => 'Pilot Lookup',
+                    'path' => '/battle-intelligence/pilot-lookup.php',
+                    'icon' => '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" class="h-4 w-4" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path stroke-linecap="round" d="m21 21-5-5"/></svg>',
+                    'children' => [],
+                ],
+                [
+                    'label' => 'Threat Corridors',
+                    'path' => '/threat-corridors',
+                    'icon' => '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" class="h-4 w-4" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M13 4H7a2 2 0 0 0-2 2v4m6 10h6a2 2 0 0 0 2-2v-4"/><path stroke-linecap="round" stroke-linejoin="round" d="m15 2 3 3-3 3m-6 6-3 3 3 3"/></svg>',
+                    'children' => [],
+                ],
+                [
+                    'label' => 'Intelligence Events',
+                    'path' => '/intelligence-events',
+                    'icon' => '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" class="h-4 w-4" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path stroke-linecap="round" stroke-linejoin="round" d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>',
+                    'children' => [],
+                ],
+                [
+                    'label' => 'Battle Anomalies',
+                    'path' => '/battle-intelligence/battles.php',
+                    'icon' => '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" class="h-4 w-4" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v4m0 4h.01M10.3 3.84 1.82 18a2 2 0 0 0 1.72 3h16.92a2 2 0 0 0 1.72-3L13.7 3.84a2 2 0 0 0-3.4 0Z"/></svg>',
+                    'children' => [],
+                ],
             ],
         ],
         [
-            'label' => 'Battle Intelligence',
-            'path' => '/battle-intelligence',
-            'icon' => '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" class="h-4 w-4" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M4 6h16"/><path stroke-linecap="round" stroke-linejoin="round" d="M4 12h16"/><path stroke-linecap="round" stroke-linejoin="round" d="M4 18h16"/><path stroke-linecap="round" stroke-linejoin="round" d="m9 9 3 3 3-3"/></svg>',
-            'badge_tooltip' => 'Battle analysis tools',
-            'children' => [
-                ['label' => 'Theater Overview', 'path' => '/theater-intelligence'],
-                ['label' => 'Theater Map', 'path' => '/theater-map'],
-                ['label' => 'Threat Corridors', 'path' => '/threat-corridors'],
-                ['label' => 'Sovereignty', 'path' => '/sovereignty'],
-                ['label' => 'Alliance Dossiers', 'path' => '/alliance-dossiers'],
-                ['label' => 'Opposition Intel', 'path' => '/opposition-intelligence'],
-                ['label' => 'Intelligence Events', 'path' => '/intelligence-events'],
-                ['label' => 'CIP Admin', 'path' => '/intelligence-events/admin.php'],
-                ['label' => 'Pilot Lookup', 'path' => '/battle-intelligence/pilot-lookup.php'],
-                ['label' => 'Suspicion Leaderboard', 'path' => '/battle-intelligence'],
-                ['label' => 'Battle Anomalies', 'path' => '/battle-intelligence/battles.php'],
+            'heading' => 'System',
+            'items' => [
+                [
+                    'label' => 'Pipeline Observatory',
+                    'path' => '/pipeline',
+                    'icon' => '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" class="h-4 w-4" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M4 4v16h16"/><path stroke-linecap="round" stroke-linejoin="round" d="m8 16 3-6 4 4 5-10"/></svg>',
+                    'children' => [],
+                ],
+                [
+                    'label' => 'Activity Priority',
+                    'path' => '/activity-priority',
+                    'icon' => '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" class="h-4 w-4" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M4 7h16"/><path stroke-linecap="round" stroke-linejoin="round" d="M6 12h12"/><path stroke-linecap="round" stroke-linejoin="round" d="M9 17h6"/><path stroke-linecap="round" stroke-linejoin="round" d="m15 5 4 4-4 4"/></svg>',
+                    'children' => [],
+                ],
+                [
+                    'label' => 'Log Viewer',
+                    'path' => '/log-viewer',
+                    'icon' => '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" class="h-4 w-4" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M9 5H7a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2"/><path stroke-linecap="round" stroke-linejoin="round" d="M9 5a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v0a2 2 0 0 1-2 2h-2a2 2 0 0 1-2-2Z"/><path stroke-linecap="round" stroke-linejoin="round" d="M9 12h6M9 16h6"/></svg>',
+                    'children' => [],
+                ],
+                [
+                    'label' => 'CIP Admin',
+                    'path' => '/intelligence-events/admin.php',
+                    'icon' => '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" class="h-4 w-4" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M10.5 6h9.75M10.5 6a1.5 1.5 0 1 1-3 0m3 0a1.5 1.5 0 1 0-3 0M3.75 6H7.5m3 12h9.75M10.5 18a1.5 1.5 0 1 1-3 0m3 0a1.5 1.5 0 1 0-3 0m-3.75 0H7.5m9-6h3.75m-3.75 0a1.5 1.5 0 1 1-3 0m3 0a1.5 1.5 0 1 0-3 0m-9.75 0h9.75"/></svg>',
+                    'children' => [],
+                ],
+                [
+                    'label' => 'Settings',
+                    'path' => '/settings',
+                    'icon' => '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" class="h-4 w-4" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M12 15.5A3.5 3.5 0 1 0 12 8.5a3.5 3.5 0 0 0 0 7Z"/><path stroke-linecap="round" stroke-linejoin="round" d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06A1.65 1.65 0 0 0 15 19.4a1.65 1.65 0 0 0-1 .6 1.65 1.65 0 0 0-.33 1V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-.33-1 1.65 1.65 0 0 0-1-.6 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-.6-1 1.65 1.65 0 0 0-1-.33H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1-.33 1.65 1.65 0 0 0 .6-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-.6 1.65 1.65 0 0 0 .33-1V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 .33 1 1.65 1.65 0 0 0 1 .6 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9c.3.3.5.68.6 1 .23.1.66.1 1 .1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1 .33c-.44.25-.79.6-1.01 1.07Z"/></svg>',
+                    'children' => [],
+                ],
             ],
-        ],
-        [
-            'label' => 'Economic Warfare',
-            'path' => '/economic-warfare',
-            'icon' => '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" class="h-4 w-4" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M12 2v4m0 12v4M4.93 4.93l2.83 2.83m8.48 8.48 2.83 2.83M2 12h4m12 0h4M4.93 19.07l2.83-2.83m8.48-8.48 2.83-2.83"/><circle cx="12" cy="12" r="4"/></svg>',
-            'children' => [],
-        ],
-        [
-            'label' => 'Activity Priority',
-            'path' => '/activity-priority',
-            'icon' => '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" class="h-4 w-4" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M4 7h16"/><path stroke-linecap="round" stroke-linejoin="round" d="M6 12h12"/><path stroke-linecap="round" stroke-linejoin="round" d="M9 17h6"/><path stroke-linecap="round" stroke-linejoin="round" d="m15 5 4 4-4 4"/></svg>',
-            'badge_tooltip' => 'Items needing action',
-            'children' => [
-                ['label' => 'Doctrine Activity Board', 'path' => '/activity-priority'],
-            ],
-        ],
-        [
-            'label' => 'Doctrines',
-            'path' => '/doctrines/',
-            'icon' => '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" class="h-4 w-4" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M5 5h14v14H5z"/><path stroke-linecap="round" stroke-linejoin="round" d="M9 9h6M9 13h6M9 17h4"/></svg>',
-            'badge_tooltip' => 'Auto-detected doctrines from killmails',
-            'children' => [
-                ['label' => 'Detected Doctrines', 'path' => '/doctrines/'],
-                ['label' => 'Buy-all', 'path' => '/buy-all/'],
-            ],
-        ],
-        [
-            'label' => 'Log Viewer',
-            'path' => '/log-viewer',
-            'icon' => '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" class="h-4 w-4" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M9 5H7a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2"/><path stroke-linecap="round" stroke-linejoin="round" d="M9 5a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v0a2 2 0 0 1-2 2h-2a2 2 0 0 1-2-2Z"/><path stroke-linecap="round" stroke-linejoin="round" d="M9 12h6M9 16h6"/></svg>',
-            'children' => [],
-        ],
-        [
-            'label' => 'Pipeline Observatory',
-            'path' => '/pipeline',
-            'icon' => '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" class="h-4 w-4" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M4 4v16h16"/><path stroke-linecap="round" stroke-linejoin="round" d="m8 16 3-6 4 4 5-10"/></svg>',
-            'children' => [],
-        ],
-        [
-            'label' => 'Settings',
-            'path' => '/settings',
-            'icon' => '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" class="h-4 w-4" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M12 15.5A3.5 3.5 0 1 0 12 8.5a3.5 3.5 0 0 0 0 7Z"/><path stroke-linecap="round" stroke-linejoin="round" d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06A1.65 1.65 0 0 0 15 19.4a1.65 1.65 0 0 0-1 .6 1.65 1.65 0 0 0-.33 1V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-.33-1 1.65 1.65 0 0 0-1-.6 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-.6-1 1.65 1.65 0 0 0-1-.33H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1-.33 1.65 1.65 0 0 0 .6-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-.6 1.65 1.65 0 0 0 .33-1V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 .33 1 1.65 1.65 0 0 0 1 .6 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9c.3.3.5.68.6 1 .23.1.66.1 1 .1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1 .33c-.44.25-.79.6-1.01 1.07Z"/></svg>',
-            'children' => [],
         ],
     ];
 }
@@ -2811,7 +2878,19 @@ function flash(string $key, ?string $message = null): ?string
 
 function base_url(string $path = ''): string
 {
-    return rtrim((string) config('app.base_url', ''), '/') . $path;
+    $configured = rtrim((string) config('app.base_url', ''), '/');
+
+    // Upgrade http to https when the current request was served over TLS
+    if ($configured !== '' && str_starts_with($configured, 'http://')) {
+        $isHttps = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off')
+            || ((int) ($_SERVER['SERVER_PORT'] ?? 0) === 443)
+            || (($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '') === 'https');
+        if ($isHttps) {
+            $configured = 'https://' . substr($configured, 7);
+        }
+    }
+
+    return $configured . $path;
 }
 
 function incremental_strategy_options(): array
@@ -20616,6 +20695,27 @@ function supplycore_format_datetime(?string $value): string
     }
 
     return gmdate('Y-m-d H:i:s \U\T\C', $timestamp);
+}
+
+/**
+ * Renders a datetime as relative text with a full UTC tooltip on hover.
+ * Standard display pattern: "3m ago" with title="2026-04-07 23:08:00 UTC".
+ */
+function supplycore_datetime_html(?string $value): string
+{
+    if ($value === null) {
+        return '<span class="text-slate-500">Never</span>';
+    }
+
+    $timestamp = strtotime($value);
+    if ($timestamp === false) {
+        return '<span class="text-slate-500">Unknown</span>';
+    }
+
+    $full = gmdate('Y-m-d H:i:s \U\T\C', $timestamp);
+    $relative = supplycore_relative_datetime($value);
+
+    return '<span title="' . htmlspecialchars($full, ENT_QUOTES) . '">' . htmlspecialchars($relative, ENT_QUOTES) . '</span>';
 }
 
 function supplycore_relative_datetime(?string $value): string

@@ -120,8 +120,8 @@ include __DIR__ . '/../../src/views/partials/header.php';
                     <th class="px-3 py-2 text-left">Region</th>
                     <th class="px-3 py-2 text-left">Type</th>
                     <th class="px-3 py-2 text-left">Defender</th>
-                    <th class="px-3 py-2 text-center">Attacker</th>
-                    <th class="px-3 py-2 text-center">Defender</th>
+                    <th class="px-3 py-2 text-center">Attacker Score</th>
+                    <th class="px-3 py-2 text-center">Defender Score</th>
                     <th class="px-3 py-2 text-left">Started</th>
                     <th class="px-3 py-2 text-center">Standing</th>
                 </tr>
@@ -153,7 +153,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                             </div>
                             <span class="text-xs text-muted ml-1"><?= $defPct ?>%</span>
                         </td>
-                        <td class="px-3 py-2 text-sm text-muted"><?= htmlspecialchars(substr($c['start_time'], 0, 16)) ?></td>
+                        <td class="px-3 py-2 text-sm text-muted"><?= supplycore_datetime_html($c['start_time'] ?? null) ?></td>
                         <td class="px-3 py-2 text-center"><span class="text-xs font-medium <?= $standingClass ?>"><?= $standingLabel ?></span></td>
                     </tr>
                 <?php endforeach; ?>
