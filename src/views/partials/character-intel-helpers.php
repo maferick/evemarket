@@ -7,6 +7,12 @@ declare(strict_types=1);
  * Used by both character.php and pilot-lookup.php.
  */
 
+/** Check whether a name is an unresolved placeholder (e.g. "Character #12345"). */
+function ci_is_placeholder_name(string $name): bool
+{
+    return str_starts_with($name, 'Character #') || str_starts_with($name, 'Alliance #') || str_starts_with($name, 'Corp #');
+}
+
 /** Return a risk-level label and Tailwind color classes based on review priority score. */
 function ci_risk_level(float $score): array
 {

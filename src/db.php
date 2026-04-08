@@ -14071,6 +14071,7 @@ function db_pilot_profile(int $characterId): ?array
         'SELECT tp2.character_id AS assoc_character_id,
                 COALESCE(emc.entity_name, CONCAT("Character #", tp2.character_id)) AS assoc_name,
                 COALESCE(emc_a.entity_name, "") AS assoc_alliance,
+                tp2.alliance_id AS assoc_alliance_id,
                 COUNT(DISTINCT tp2.theater_id) AS shared_theaters,
                 tp2.role_proxy AS assoc_role
          FROM theater_participants tp1
@@ -14083,7 +14084,7 @@ function db_pilot_profile(int $characterId): ?array
          WHERE tp1.character_id = ?
          GROUP BY tp2.character_id
          ORDER BY shared_theaters DESC
-         LIMIT 20',
+         LIMIT 30',
         [$characterId]
     );
 
@@ -14662,16 +14663,21 @@ function db_character_copresence_top_edges(int $characterId, string $windowLabel
         'SELECT cce.character_id_a, cce.character_id_b, cce.event_type,
                 cce.edge_weight, cce.event_count, cce.last_event_at, cce.system_id,
                 CASE WHEN cce.character_id_a = ? THEN cce.character_id_b ELSE cce.character_id_a END AS other_character_id,
-                COALESCE(emc.entity_name, CONCAT("Character #", CASE WHEN cce.character_id_a = ? THEN cce.character_id_b ELSE cce.character_id_a END)) AS other_character_name
+                COALESCE(emc.entity_name, CONCAT("Character #", CASE WHEN cce.character_id_a = ? THEN cce.character_id_b ELSE cce.character_id_a END)) AS other_character_name,
+                (SELECT tp.alliance_id FROM theater_participants tp
+                 INNER JOIN theaters t ON t.theater_id = tp.theater_id
+                 WHERE tp.character_id = CASE WHEN cce.character_id_a = ? THEN cce.character_id_b ELSE cce.character_id_a END
+                 ORDER BY t.start_time DESC LIMIT 1) AS other_alliance_id
          FROM character_copresence_edges cce
          LEFT JOIN entity_metadata_cache emc
              ON emc.entity_type = "character"
              AND emc.entity_id = CASE WHEN cce.character_id_a = ? THEN cce.character_id_b ELSE cce.character_id_a END
          WHERE (cce.character_id_a = ? OR cce.character_id_b = ?)
            AND cce.window_label = ?
+           AND cce.event_count >= 3
          ORDER BY cce.edge_weight DESC
          LIMIT ' . $safeLimit,
-        [$characterId, $characterId, $characterId, $characterId, $characterId, $windowLabel]
+        [$characterId, $characterId, $characterId, $characterId, $characterId, $characterId, $windowLabel]
     );
 }
 
@@ -17347,7 +17353,7 @@ function db_character_copresence_top_edges_neo4j(int $characterId, string $windo
 
     return neo4j_query(
         'MATCH (c:Character {character_id: $charId})-[r:CO_OCCURS_WITH]-(other:Character)
-         WHERE r.recent_weight IS NOT NULL
+         WHERE r.recent_weight IS NOT NULL AND r.occurrence_count >= 3
          RETURN other.character_id AS other_character_id,
                 COALESCE(other.name, "Character #" + toString(other.character_id)) AS other_character_name,
                 r.occurrence_count AS event_count,
@@ -17356,7 +17362,8 @@ function db_character_copresence_top_edges_neo4j(int $characterId, string $windo
                     WHEN "90d" THEN COALESCE(r.all_time_weight, 0.0)
                     ELSE COALESCE(r.weight, 0.0)
                 END AS edge_weight,
-                r.last_seen AS last_event_at
+                r.last_seen AS last_event_at,
+                other.alliance_id AS other_alliance_id
          ORDER BY edge_weight DESC
          LIMIT $lim',
         ['charId' => $characterId, 'window' => $windowLabel, 'lim' => $safeLimit]
