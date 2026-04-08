@@ -91,6 +91,13 @@ class Neo4jClient:
             try:
                 with ipv4_opener.open(request, timeout=effective_timeout) as response:
                     body = json.loads(response.read().decode("utf-8"))
+            except json.JSONDecodeError as error:
+                if attempt < _TRANSIENT_RETRY_LIMIT:
+                    time.sleep(_TRANSIENT_BASE_SLEEP * (2 ** attempt))
+                    continue
+                raise Neo4jError(
+                    f"Neo4j response was not valid JSON (truncated/corrupt at char {error.pos})"
+                ) from error
             except urllib.error.HTTPError as error:
                 details = error.read().decode("utf-8", errors="replace")
                 raise Neo4jError(f"Neo4j query failed ({error.code}): {details}") from error

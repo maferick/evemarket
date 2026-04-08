@@ -1,11 +1,35 @@
 from __future__ import annotations
 
+import logging
+
 from ..db import SupplyCoreDb
 from ..json_utils import json_dumps_safe
 from .sync_runtime import run_sync_phase_job
 
+logger = logging.getLogger(__name__)
+
+_STALE_RUN_GRACE_SECONDS = 900  # 15 minutes — generous for streaming jobs
+
+
+def _reap_stale_sync_runs(db: SupplyCoreDb) -> int:
+    """Mark orphaned 'running' sync_runs as failed so they stop appearing as stuck."""
+    return db.execute(
+        """UPDATE sync_runs
+           SET run_status = 'failed',
+               finished_at = UTC_TIMESTAMP(),
+               error_message = 'Reaped: run exceeded timeout while still marked as running (worker likely crashed).',
+               updated_at = CURRENT_TIMESTAMP
+           WHERE run_status = 'running'
+             AND started_at < DATE_SUB(UTC_TIMESTAMP(), INTERVAL %s SECOND)""",
+        (_STALE_RUN_GRACE_SECONDS,),
+    )
+
 
 def _processor(db: SupplyCoreDb) -> dict[str, object]:
+    reaped = _reap_stale_sync_runs(db)
+    if reaped > 0:
+        logger.info("Reaped %d stale sync_runs row(s).", reaped)
+
     rows_processed = db.fetch_scalar("SELECT COUNT(*) FROM sync_schedules")
     rows_written = db.execute(
         """INSERT INTO scheduler_job_current_status (
@@ -38,19 +62,22 @@ def _processor(db: SupplyCoreDb) -> dict[str, object]:
                 current_pressure_state = VALUES(current_pressure_state),
                 last_event_at = VALUES(last_event_at)"""
     )
-    payload = {"rows_processed": rows_processed, "rows_written": rows_written}
+    payload = {"rows_processed": rows_processed, "rows_written": rows_written, "reaped_stale_runs": reaped}
     db.upsert_intelligence_snapshot(
         snapshot_key="scheduler_current_state",
         payload_json=json_dumps_safe(payload),
         metadata_json=json_dumps_safe({"source": "sync_schedules"}),
         expires_seconds=600,
     )
+    summary = f"Refreshed scheduler current-state rows for {rows_written} jobs."
+    if reaped > 0:
+        summary += f" Reaped {reaped} stale sync_runs."
     return {
         "rows_processed": rows_processed,
         "rows_written": rows_written,
         "warnings": [],
-        "summary": f"Refreshed scheduler current-state rows for {rows_written} jobs.",
-        "meta": {"snapshot_key": "scheduler_current_state"},
+        "summary": summary,
+        "meta": {"snapshot_key": "scheduler_current_state", "reaped_stale_runs": reaped},
     }
 
 
