@@ -955,7 +955,6 @@ $settingValues = get_settings([
 
 $dataSyncSettingValues = data_sync_pipeline_settings_view($settingValues);
 $dealAlertSettingValues = deal_alert_settings_view($settingValues);
-$runtimeConfigSections = runtime_config_sections_for_ui();
 $bootstrapDbConfig = (array) (supplycore_base_config()['db'] ?? []);
 
 $dbStatus = db_connection_status();
@@ -963,7 +962,12 @@ $latestEsiToken = null;
 $requiredStructureScopes = esi_required_market_structure_scopes();
 $missingStructureScopes = [];
 $syncStatusCards = [];
-$syncDashboard = sync_schedule_settings_view_model();
+
+// Defer heavy data loading to the sections that need it.
+// runtime_config_sections_for_ui(), sync_schedule_settings_view_model(),
+// and automation_runtime_jobs_overview() each hit the DB significantly.
+$runtimeConfigSections = ($section === 'runtime-diagnostics') ? runtime_config_sections_for_ui() : [];
+$syncDashboard = ($section === 'automation-sync') ? sync_schedule_settings_view_model() : [];
 $configuredSyncJobs = array_values((array) ($syncDashboard['configured_jobs'] ?? []));
 $discoveredSyncJobs = array_values((array) ($syncDashboard['discovered_jobs'] ?? []));
 $internalSyncJobs = array_values((array) ($syncDashboard['internal_jobs'] ?? []));
@@ -977,9 +981,11 @@ $runNowJobOptions = [];
 $staticDataState = null;
 $settingsPipelineHealth = array_values((array) ($syncDashboard['pipeline_health'] ?? []));
 $settingsSystemStatus = (array) ($syncDashboard['system_status'] ?? []);
-$rebuildStatus = supplycore_rebuild_status_read();
-$runtimeDatasetCards = array_values((array) ($syncDashboard['runtime_dataset_cards'] ?? []));
-$automationJobs = automation_runtime_jobs_overview();
+$rebuildStatus = ($section === 'automation-sync') ? supplycore_rebuild_status_read() : null;
+$runtimeDatasetCards = ($section === 'automation-sync')
+    ? array_values((array) ($syncDashboard['runtime_dataset_cards'] ?? []))
+    : (($section === 'workspace' && $dbStatus['ok']) ? supplycore_settings_runtime_dataset_cards() : []);
+$automationJobs = ($section === 'automation-sync') ? automation_runtime_jobs_overview() : [];
 $automationEnabledCount = count(array_filter($automationJobs, static fn (array $job): bool => !empty($job['enabled'])));
 if ($dbStatus['ok']) {
     $latestEsiToken = db_latest_esi_oauth_token();
@@ -989,20 +995,23 @@ if ($dbStatus['ok']) {
 
     $staticDataState = db_static_data_import_state_get(static_data_source_key());
 
-    $syncStatusCards = [
-        [
-            'label' => 'Alliance Orders',
-            'status' => sync_status_from_prefix('alliance.structure.', 6),
-        ],
-        [
-            'label' => 'Hub History',
-            'status' => sync_status_from_prefix('market.hub.', 4),
-        ],
-        [
-            'label' => 'Maintenance',
-            'status' => sync_status_from_prefix('maintenance.', 3),
-        ],
-    ];
+    $syncStatusCards = [];
+    if ($section === 'workspace' || $section === 'automation-sync') {
+        $syncStatusCards = [
+            [
+                'label' => 'Alliance Orders',
+                'status' => sync_status_from_prefix('alliance.structure.', 6),
+            ],
+            [
+                'label' => 'Hub History',
+                'status' => sync_status_from_prefix('market.hub.', 4),
+            ],
+            [
+                'label' => 'Maintenance',
+                'status' => sync_status_from_prefix('maintenance.', 3),
+            ],
+        ];
+    }
 
 }
 
@@ -1012,15 +1021,17 @@ $trackedCorporations = [];
 $killmailStatus = null;
 $killmailWorkerStatus = [];
 $killmailStatusSummary = [];
-$itemScope = item_scope_view_model();
-$ollamaConfig = supplycore_ai_ollama_config();
-$ollamaStatus = supplycore_ai_status_summary();
+$itemScope = ($section === 'market-scope') ? item_scope_view_model() : [];
+$ollamaConfig = ($section === 'ai-alerts') ? supplycore_ai_ollama_config() : [];
+$ollamaStatus = ($section === 'ai-alerts') ? supplycore_ai_status_summary() : [];
 if ($dbStatus['ok']) {
     try {
-        $trackedAlliances = db_killmail_tracked_alliances_active();
-        $trackedCorporations = db_killmail_tracked_corporations_active();
-        $killmailStatus = db_killmail_ingestion_status();
-        $killmailWorkerStatus = zkill_worker_runtime_status();
+        if ($section === 'ai-alerts') {
+            $trackedAlliances = db_killmail_tracked_alliances_active();
+            $trackedCorporations = db_killmail_tracked_corporations_active();
+            $killmailStatus = db_killmail_ingestion_status();
+            $killmailWorkerStatus = zkill_worker_runtime_status();
+        }
     } catch (Throwable) {
         $trackedAlliances = [];
         $trackedCorporations = [];
