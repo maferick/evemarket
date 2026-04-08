@@ -14,6 +14,7 @@ If GDS is unavailable, fall back to Cypher queries or Python-side algorithms.
 
 from __future__ import annotations
 
+import math
 import sys
 import time
 from collections import defaultdict, deque
@@ -132,7 +133,10 @@ def _gds_betweenness(client: Neo4jClient) -> dict[int, float]:
         """,
         timeout_seconds=300,
     )
-    return {int(r["system_id"]): float(r["score"]) for r in rows if r.get("system_id")}
+    return {
+        int(r["system_id"]): (0.0 if math.isnan(s := float(r["score"])) else s)
+        for r in rows if r.get("system_id")
+    }
 
 
 def _gds_degree(client: Neo4jClient) -> dict[int, float]:
@@ -146,7 +150,10 @@ def _gds_degree(client: Neo4jClient) -> dict[int, float]:
         """,
         timeout_seconds=120,
     )
-    return {int(r["system_id"]): float(r["score"]) for r in rows if r.get("system_id")}
+    return {
+        int(r["system_id"]): (0.0 if math.isnan(s := float(r["score"])) else s)
+        for r in rows if r.get("system_id")
+    }
 
 
 def _gds_louvain(client: Neo4jClient) -> dict[int, int]:
@@ -546,13 +553,16 @@ def run_compute_map_intelligence(
         params: list[Any] = []
         for sid in chunk:
             values.append("(%s, %s, %s, %s, %s, %s, %s)")
+            b_score = betweenness.get(sid, 0)
+            d_score = degree.get(sid, 0)
+            lp_score = label_priority.get(sid, 0)
             params.extend([
                 sid,
-                round(betweenness.get(sid, 0), 6),
-                round(degree.get(sid, 0), 2),
+                round(0.0 if math.isnan(b_score) else b_score, 6),
+                round(0.0 if math.isnan(d_score) else d_score, 2),
                 1 if sid in bridge_nodes else 0,
                 communities.get(sid),
-                label_priority.get(sid, 0),
+                round(0.0 if math.isnan(lp_score) else lp_score, 6),
                 now_sql,
             ])
         if values:
@@ -584,14 +594,16 @@ def run_compute_map_intelligence(
         params_e: list[Any] = []
         for ei in chunk:
             values.append("(%s, %s, %s, %s, %s, %s, %s, %s)")
+            cs = ei["corridor_score_sum"]
+            rs = ei["risk_score"]
             params_e.extend([
                 ei["from_system_id"],
                 ei["to_system_id"],
                 ei["corridor_count"],
-                ei["corridor_score_sum"],
+                0.0 if isinstance(cs, float) and math.isnan(cs) else cs,
                 ei["battle_count"],
                 ei["is_bridge_edge"],
-                ei["risk_score"],
+                0.0 if isinstance(rs, float) and math.isnan(rs) else rs,
                 now_sql,
             ])
         if values:
