@@ -763,6 +763,7 @@ These can be run via `python -m orchestrator run-job --job-key <KEY>`:
 | `graph_analyst_recalibration` | Analyst recalibration |
 | `graph_model_audit` | Graph model audit |
 | `graph_query_plan_validation` | Cypher query plan validation |
+| `neo4j_ml_exploration` | GDS ML pipeline (PageRank, embeddings, link prediction) |
 | `theater_clustering` | Theater cluster detection |
 | `theater_analysis` | Theater composition analysis |
 | `theater_graph_integration` | Theater → graph integration |
@@ -864,21 +865,22 @@ Phase 5: Graph Analysis
  23. graph_motif_detection_sync
  24. graph_evidence_paths_sync
  25. graph_data_quality_check
+ 26. neo4j_ml_exploration
 
 Phase 6: Intelligence Products
- 26. intelligence_pipeline
- 27. compute_counterintel_pipeline
- 28. compute_alliance_dossiers
- 29. compute_threat_corridors
+ 27. intelligence_pipeline
+ 28. compute_counterintel_pipeline
+ 29. compute_alliance_dossiers
+ 30. compute_threat_corridors
 
 Phase 7: Cleanup & Economics
- 30. compute_graph_prune
- 31. graph_analyst_recalibration
- 32. graph_model_audit
- 33. graph_query_plan_validation
- 34. compute_buy_all
- 35. compute_signals
- 36. compute_economic_warfare
+ 31. compute_graph_prune
+ 32. graph_analyst_recalibration
+ 33. graph_model_audit
+ 34. graph_query_plan_validation
+ 35. compute_buy_all
+ 36. compute_signals
+ 37. compute_economic_warfare
 ```
 
 ---

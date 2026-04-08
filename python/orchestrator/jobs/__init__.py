@@ -1,3 +1,21 @@
+# ── Job Wiring Checklist ─────────────────────────────────────────────────────
+# When adding a new Python job, register it in ALL of the following locations:
+#
+#   1. python/orchestrator/jobs/<job_name>.py        — implementation
+#   2. python/orchestrator/jobs/__init__.py           — export (this file)
+#   3. python/orchestrator/processor_registry.py      — import + PYTHON_COMPUTE_PROCESSOR_JOB_KEYS + dispatch dict
+#   4. python/orchestrator/worker_registry.py         — WORKER_JOB_DEFINITIONS (scheduling, deps, resources)
+#   5. src/functions.php  supplycore_authoritative_job_registry()  — PHP job metadata
+#   6. src/functions.php  dashboard group mapping      — UI category
+#   7. src/db.php         $stageJobKeys array          — stage grouping
+#   8. database/migrations/                            — sync_schedules INSERT + any new tables
+#   9. scripts/reset_and_rebuild.sh                    — rebuild sequence
+#  10. docs/AUTHORITATIVE_JOB_MATRIX.md                — job matrix row
+#  11. docs/CLI_MANUAL.md                              — CLI reference table + numbered list
+#
+# See also: docs/schedule.md for the full wiring reference.
+# ─────────────────────────────────────────────────────────────────────────────
+
 from .killmail import run_killmail_r2z2_stream
 from .market_comparison import run_market_comparison_summary
 from .market_hub_local_history import run_market_hub_local_history

@@ -1,3 +1,8 @@
+# ── Job Wiring Checklist ─────────────────────────────────────────────────────
+# New Python job?  See python/orchestrator/jobs/__init__.py for the full
+# checklist (11 registration points).  In THIS file you need:
+#   - Add entry to WORKER_JOB_DEFINITIONS with scheduling, deps, resources
+# ─────────────────────────────────────────────────────────────────────────────
 from __future__ import annotations
 
 from typing import Any
@@ -49,6 +54,7 @@ WORKER_JOB_DEFINITIONS: dict[str, dict[str, Any]] = {
     "graph_motif_detection_sync":               {"workload_class": "compute", "execution_mode": "python", "queue_name": "compute", "priority": "normal", "freshness_sensitivity": "background", "cooldown_seconds": 60,  "runtime_class": "graph_heavy",  "resource_cost": "high",   "concurrency_group": "",                  "depends_on": ["compute_graph_derived_relationships"],                                  "opportunistic_background": True,  "timeout_seconds": 900,  "memory_limit_mb": 1024, "retry_delay_seconds": 120, "max_attempts": 3, "lane": "compute"},
     "graph_evidence_paths_sync":                {"workload_class": "compute", "execution_mode": "python", "queue_name": "compute", "priority": "normal", "freshness_sensitivity": "background", "cooldown_seconds": 60,  "runtime_class": "graph_heavy",  "resource_cost": "high",   "concurrency_group": "",                  "depends_on": ["compute_graph_derived_relationships"],                                  "opportunistic_background": True,  "timeout_seconds": 600,  "memory_limit_mb": 768,  "retry_delay_seconds": 120, "max_attempts": 3, "lane": "compute"},
     "graph_query_plan_validation":              {"workload_class": "compute", "execution_mode": "python", "queue_name": "compute", "priority": "low",    "freshness_sensitivity": "background", "cooldown_seconds": 300, "runtime_class": "graph_heavy",  "resource_cost": "low",    "concurrency_group": "",                  "depends_on": ["compute_graph_derived_relationships"],                                  "opportunistic_background": True,  "timeout_seconds": 300,  "memory_limit_mb": 512,  "retry_delay_seconds": 120, "max_attempts": 2, "lane": "compute"},
+    "neo4j_ml_exploration":                     {"workload_class": "compute", "execution_mode": "python", "queue_name": "compute", "priority": "normal", "freshness_sensitivity": "background", "cooldown_seconds": 60,  "runtime_class": "graph_heavy",  "resource_cost": "high",   "concurrency_group": "",                  "depends_on": ["compute_graph_derived_relationships", "graph_community_detection_sync"], "opportunistic_background": True,  "timeout_seconds": 900,  "memory_limit_mb": 1024, "retry_delay_seconds": 120, "max_attempts": 3, "lane": "compute"},
     # Tier 3: intelligence pipeline reads from insights
     "intelligence_pipeline":                    {"workload_class": "compute", "execution_mode": "python", "queue_name": "compute", "priority": "normal", "freshness_sensitivity": "background", "cooldown_seconds": 60,  "runtime_class": "graph_heavy",  "resource_cost": "high",   "concurrency_group": "",                  "depends_on": ["compute_graph_insights"],                                               "opportunistic_background": True,  "timeout_seconds": 900,  "memory_limit_mb": 1024, "retry_delay_seconds": 120, "max_attempts": 3, "lane": "compute"},
 

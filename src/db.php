@@ -17117,10 +17117,12 @@ function db_pipeline_observatory_data(): array
     );
 
     // ── Per-stage last-run timestamps ────────────────────────────────────────
+    // New Python job?  Add it to the appropriate stage below.
+    // Full wiring checklist: see python/orchestrator/jobs/__init__.py (11 points).
     $stageJobKeys = [
         'collection'  => ['market_hub_current_sync', 'esi_character_queue_sync', 'esi_alliance_history_sync', 'evewho_enrichment_sync', 'evewho_alliance_member_sync', 'sovereignty_campaigns_sync', 'sovereignty_structures_sync', 'sovereignty_map_sync'],
         'resolution'  => ['entity_metadata_resolve_sync', 'esi_alliance_history_sync'],
-        'graph'       => ['compute_graph_sync', 'graph_community_detection_sync', 'graph_motif_detection_sync', 'graph_typed_interactions_sync', 'graph_temporal_metrics_sync', 'graph_evidence_paths_sync', 'compute_copresence_edges', 'compute_graph_sync_killmail_entities', 'compute_graph_sync_killmail_edges'],
+        'graph'       => ['compute_graph_sync', 'graph_community_detection_sync', 'graph_motif_detection_sync', 'graph_typed_interactions_sync', 'graph_temporal_metrics_sync', 'graph_evidence_paths_sync', 'compute_copresence_edges', 'compute_graph_sync_killmail_entities', 'compute_graph_sync_killmail_edges', 'neo4j_ml_exploration'],
         'intelligence' => ['compute_suspicion_scores_v2', 'compute_alliance_dossiers', 'compute_threat_corridors', 'compute_counterintel_pipeline', 'intelligence_pipeline', 'compute_battle_rollups', 'compute_behavioral_scoring', 'compute_sovereignty_alerts'],
         'analytics'   => ['dashboard_summary_sync', 'analytics_bucket_1h_sync', 'analytics_bucket_1d_sync', 'rebuild_ai_briefings', 'forecasting_ai_sync'],
     ];

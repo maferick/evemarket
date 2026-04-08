@@ -4507,6 +4507,12 @@ function supplycore_worker_log_path(string $defaultFilename, string $configuredP
     return str_starts_with($candidate, '/') ? $candidate : $appRoot . '/' . ltrim($candidate, '/');
 }
 
+// ── Job Wiring Checklist ─────────────────────────────────────────────────────
+// New Python job?  See python/orchestrator/jobs/__init__.py for the full
+// checklist (11 registration points).  In THIS file you need:
+//   1. Add entry to supplycore_authoritative_job_registry() below
+//   2. Add entry to the dashboard group mapping (search: "'=> 'Intelligence Graph'")
+// ─────────────────────────────────────────────────────────────────────────────
 function supplycore_authoritative_job_registry(): array
 {
     return [
