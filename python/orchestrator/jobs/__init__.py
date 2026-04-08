@@ -53,6 +53,7 @@ from .graph_data_quality import run_graph_data_quality_check
 from .graph_temporal_metrics import run_graph_temporal_metrics_sync
 from .graph_typed_interactions import run_graph_typed_interactions_sync
 from .graph_community_detection import run_graph_community_detection_sync
+from .graph_query_plan_validation import run_graph_query_plan_validation
 from .graph_motif_detection import run_graph_motif_detection_sync
 from .graph_evidence_paths import run_graph_evidence_paths_sync
 from .graph_analyst_recalibration import run_graph_analyst_recalibration

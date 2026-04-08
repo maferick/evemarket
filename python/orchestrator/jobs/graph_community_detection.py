@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import time
 from datetime import UTC, datetime
 from typing import Any
@@ -9,23 +10,123 @@ from ..job_result import JobResult
 from ..json_utils import json_dumps_safe
 from ..neo4j import Neo4jClient, Neo4jConfig
 
+logger = logging.getLogger(__name__)
+
 LABEL_PROPAGATION_ROUNDS = 8
 PAGERANK_ITERATIONS = 3
 BETWEENNESS_SAMPLE_RATE = 0.01
 BETWEENNESS_MAX_PATH_LENGTH = 5
 BRIDGE_COMMUNITY_THRESHOLD = 2
 
+GDS_GRAPH_NAME = "character_community"
+_COMMUNITY_REL_TYPES = ["CO_OCCURS_WITH", "DIRECT_COMBAT", "ASSISTED_KILL", "SAME_FLEET"]
+_COMMUNITY_REL_CYPHER = "CO_OCCURS_WITH|DIRECT_COMBAT|ASSISTED_KILL|SAME_FLEET"
+
+
+# ---------------------------------------------------------------------------
+#  GDS availability + projection
+# ---------------------------------------------------------------------------
+
+def _has_gds(client: Neo4jClient) -> bool:
+    """Check if the Neo4j Graph Data Science plugin is available."""
+    try:
+        result = client.query("RETURN gds.version() AS v")
+        return len(result) > 0
+    except Exception:
+        return False
+
+
+def _ensure_gds_projection(client: Neo4jClient) -> bool:
+    """Create the GDS in-memory graph projection for character community analysis."""
+    try:
+        try:
+            client.query(f"CALL gds.graph.drop('{GDS_GRAPH_NAME}', false)")
+        except Exception:
+            pass
+
+        rel_projection = ", ".join(
+            f"{rt}: {{orientation: 'UNDIRECTED'}}" for rt in _COMMUNITY_REL_TYPES
+        )
+        client.query(
+            f"""
+            CALL gds.graph.project(
+                '{GDS_GRAPH_NAME}',
+                'Character',
+                {{{rel_projection}}}
+            )
+            """,
+            timeout_seconds=120,
+        )
+        return True
+    except Exception as exc:
+        logger.warning("GDS projection failed for community detection: %s", exc)
+        return False
+
+
+def _drop_gds_projection(client: Neo4jClient) -> None:
+    """Drop the GDS projection if it exists."""
+    try:
+        client.query(f"CALL gds.graph.drop('{GDS_GRAPH_NAME}', false)")
+    except Exception:
+        pass
+
+
+# ---------------------------------------------------------------------------
+#  GDS-based algorithms
+# ---------------------------------------------------------------------------
+
+def _gds_label_propagation(client: Neo4jClient) -> None:
+    """Run GDS label propagation and write community_label back to nodes."""
+    client.query(
+        f"""
+        CALL gds.labelPropagation.write('{GDS_GRAPH_NAME}', {{
+            writeProperty: 'community_label',
+            maxIterations: {LABEL_PROPAGATION_ROUNDS}
+        }})
+        """,
+        timeout_seconds=120,
+    )
+
+
+def _gds_pagerank(client: Neo4jClient) -> None:
+    """Run GDS PageRank and write pr score back to nodes."""
+    client.query(
+        f"""
+        CALL gds.pageRank.write('{GDS_GRAPH_NAME}', {{
+            writeProperty: 'pr',
+            maxIterations: {PAGERANK_ITERATIONS},
+            dampingFactor: 0.85
+        }})
+        """,
+        timeout_seconds=120,
+    )
+
+
+def _gds_betweenness(client: Neo4jClient) -> None:
+    """Run GDS betweenness centrality and write score back to nodes."""
+    client.query(
+        f"""
+        CALL gds.betweenness.write('{GDS_GRAPH_NAME}', {{
+            writeProperty: 'betweenness_approx',
+            samplingSize: 200
+        }})
+        """,
+        timeout_seconds=300,
+    )
+
+
+# ---------------------------------------------------------------------------
+#  Cypher-native fallback algorithms (used when GDS is unavailable)
+# ---------------------------------------------------------------------------
 
 def _run_label_propagation(client: Neo4jClient, rounds: int) -> None:
     """Cypher-native label propagation community detection."""
-    # Initialize: each character is its own community
     client.query("MATCH (c:Character) SET c.community_label = c.character_id")
 
-    # Iterate: adopt the most common neighbor label weighted by edge count
     for _ in range(rounds):
         client.query(
-            """
-            MATCH (c:Character)-[r:CO_OCCURS_WITH|DIRECT_COMBAT|ASSISTED_KILL|SAME_FLEET]-(n:Character)
+            f"""
+            MATCH (c:Character)-[r:{_COMMUNITY_REL_CYPHER}]-(n:Character)
             WHERE n.community_label IS NOT NULL
             WITH c, n.community_label AS neighbor_label,
                  count(*) + sum(COALESCE(r.weight, COALESCE(r.count, 1))) AS weight
@@ -37,21 +138,24 @@ def _run_label_propagation(client: Neo4jClient, rounds: int) -> None:
 
 
 def _run_pagerank_approximation(client: Neo4jClient, iterations: int) -> None:
-    """3-iteration power-method PageRank approximation in Cypher."""
-    # Initialize all nodes to 1.0
+    """3-iteration power-method PageRank approximation in Cypher.
+
+    Uses COUNT {{ }} subquery syntax (Cypher 5.0+) instead of deprecated
+    size([(pattern)]) for neighbor degree computation.
+    """
     client.query("MATCH (c:Character) SET c.pr = 1.0")
 
     for _ in range(iterations):
         client.query(
-            """
+            f"""
             MATCH (c:Character)
-            OPTIONAL MATCH (c)-[:CO_OCCURS_WITH|DIRECT_COMBAT|ASSISTED_KILL|SAME_FLEET]-(n:Character)
+            OPTIONAL MATCH (c)-[:{_COMMUNITY_REL_CYPHER}]-(n:Character)
             WITH c, collect(n) AS neighbors
             WITH c, neighbors,
                  CASE WHEN size(neighbors) > 0
                       THEN reduce(s = 0.0, n IN neighbors |
-                          s + COALESCE(n.pr, 1.0) / CASE WHEN size([(n)-[:CO_OCCURS_WITH|DIRECT_COMBAT|ASSISTED_KILL|SAME_FLEET]-() | 1]) > 0
-                                                         THEN size([(n)-[:CO_OCCURS_WITH|DIRECT_COMBAT|ASSISTED_KILL|SAME_FLEET]-() | 1])
+                          s + COALESCE(n.pr, 1.0) / CASE WHEN COUNT {{ (n)-[:{_COMMUNITY_REL_CYPHER}]-() }} > 0
+                                                         THEN COUNT {{ (n)-[:{_COMMUNITY_REL_CYPHER}]-() }}
                                                          ELSE 1 END)
                       ELSE 0.0 END AS incoming
             SET c.pr = 0.15 + 0.85 * incoming
@@ -61,16 +165,14 @@ def _run_pagerank_approximation(client: Neo4jClient, iterations: int) -> None:
 
 def _compute_betweenness_approximation(client: Neo4jClient) -> None:
     """Approximate betweenness centrality via shortest-path sampling."""
-    # Initialize
     client.query("MATCH (c:Character) SET c.betweenness_approx = 0")
 
-    # Sample random pairs and count path traversals
     client.query(
-        """
+        f"""
         MATCH (a:Character), (b:Character)
         WHERE rand() < $sample_rate AND a.character_id <> b.character_id
         WITH a, b LIMIT 200
-        MATCH p = shortestPath((a)-[:CO_OCCURS_WITH|DIRECT_COMBAT|ASSISTED_KILL|SAME_FLEET*..5]-(b))
+        MATCH p = shortestPath((a)-[:{_COMMUNITY_REL_CYPHER}*..5]-(b))
         UNWIND nodes(p) AS intermediate
         WITH intermediate WHERE intermediate:Character
         WITH intermediate, count(*) AS path_count
@@ -176,10 +278,26 @@ def run_graph_community_detection_sync(db: SupplyCoreDb, neo4j_raw: dict[str, An
     client = Neo4jClient(config)
     computed_at = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
 
-    # Run algorithms in Neo4j
-    _run_label_propagation(client, LABEL_PROPAGATION_ROUNDS)
-    _run_pagerank_approximation(client, PAGERANK_ITERATIONS)
-    _compute_betweenness_approximation(client)
+    # Prefer GDS algorithms when available — faster and more memory-predictable
+    # than Cypher-native iterative loops.
+    use_gds = _has_gds(client)
+    analytics_path = "cypher_fallback"
+
+    if use_gds:
+        use_gds = _ensure_gds_projection(client)
+
+    if use_gds:
+        analytics_path = "gds"
+        logger.info("Community detection: using GDS algorithms")
+        _gds_label_propagation(client)
+        _gds_pagerank(client)
+        _gds_betweenness(client)
+        _drop_gds_projection(client)
+    else:
+        logger.info("Community detection: falling back to Cypher-native algorithms")
+        _run_label_propagation(client, LABEL_PROPAGATION_ROUNDS)
+        _run_pagerank_approximation(client, PAGERANK_ITERATIONS)
+        _compute_betweenness_approximation(client)
 
     # Export to MariaDB
     rows_written = _export_community_assignments(client, db, computed_at)
@@ -199,6 +317,7 @@ def run_graph_community_detection_sync(db: SupplyCoreDb, neo4j_raw: dict[str, An
         "bridge_characters": int(bridge_count or 0),
         "label_propagation_rounds": LABEL_PROPAGATION_ROUNDS,
         "pagerank_iterations": PAGERANK_ITERATIONS,
+        "analytics_path": analytics_path,
     }
     db.upsert_intelligence_snapshot(
         snapshot_key="graph_community_detection_state",
@@ -210,7 +329,7 @@ def run_graph_community_detection_sync(db: SupplyCoreDb, neo4j_raw: dict[str, An
     duration_ms = int((time.perf_counter() - started) * 1000)
     return JobResult.success(
         job_key=job_name,
-        summary=f"Community detection: {rows_written} characters assigned to {community_count_row or 0} communities, {bridge_count or 0} bridges.",
+        summary=f"Community detection ({analytics_path}): {rows_written} characters assigned to {community_count_row or 0} communities, {bridge_count or 0} bridges.",
         rows_processed=rows_written,
         rows_written=rows_written,
         rows_seen=rows_written,
@@ -218,5 +337,6 @@ def run_graph_community_detection_sync(db: SupplyCoreDb, neo4j_raw: dict[str, An
         meta={
             "communities": int(community_count_row or 0),
             "bridges": int(bridge_count or 0),
+            "analytics_path": analytics_path,
         },
     ).to_dict()
