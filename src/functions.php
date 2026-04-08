@@ -8225,10 +8225,13 @@ function market_score_data_freshness(string $allianceObservedAt, string $referen
 
 function market_signal_severity(int $score): string
 {
-    if ($score >= 75) {
+    if ($score >= 85) {
+        return 'Critical';
+    }
+    if ($score >= 65) {
         return 'High';
     }
-    if ($score >= 45) {
+    if ($score >= 40) {
         return 'Medium';
     }
 
@@ -11921,14 +11924,17 @@ function missing_items_data(): array
         ],
         'freshness' => $outcomes['_freshness'] ?? supplycore_snapshot_freshness(market_comparison_snapshot_key()),
         'rows' => array_map(static function (array $row): array {
+            // Blend opportunity_score with volume_score for better differentiation among missing items
+            $opp = (int) ($row['opportunity_score'] ?? 0);
+            $vol = (int) ($row['volume_score'] ?? 0);
+            $blended = (int) round($opp * 0.5 + $vol * 0.5);
             return [
                 'module' => $row['type_name'] !== '' ? $row['type_name'] : ('Type #' . $row['type_id']),
                 'reference_price' => market_format_isk($row['reference_best_sell_price']),
                 'daily_volume' => (string) ($row['reference_total_sell_volume'] ?? 0),
-                'price_delta' => sprintf('%+.1f%%', (float) ($row['deviation_percent'] ?? 0.0)),
-                'score' => (string) ((int) ($row['opportunity_score'] ?? 0)),
-                'priority' => (string) ($row['opportunity_tier'] ?? 'Low'),
-                'row_tone' => (int) ($row['opportunity_score'] ?? 0) >= 75 ? 'opp_high' : ((int) ($row['opportunity_score'] ?? 0) >= 45 ? 'opp_medium' : 'opp_low'),
+                'score' => (string) $blended,
+                'priority' => market_signal_severity($blended),
+                'row_tone' => $blended >= 75 ? 'opp_high' : ($blended >= 45 ? 'opp_medium' : 'opp_low'),
             ];
         }, array_slice($missingRows, 0, 30)),
         ];
@@ -12327,7 +12333,7 @@ function module_history_data(array $request = []): array
 
     $snapshotContext = $skipReason !== null
         ? $skipReason
-        : 'Raw rows fetched: ' . $seriesFetched . ' · Alliance ID: ' . (int) $source['alliance_structure_id'] . ' · Hub ID: ' . (int) $source['hub_source_id'];
+        : $selected['description'];
 
     return [
         'filters' => $filters,
@@ -23952,13 +23958,13 @@ function activity_priority_snapshot_has_computed_metrics(array $snapshot): bool
 
 function activity_priority_level_from_score(float $score): string
 {
-    if ($score >= 78.0) {
+    if ($score >= 200.0) {
         return 'highly active';
     }
-    if ($score >= 56.0) {
+    if ($score >= 80.0) {
         return 'active';
     }
-    if ($score >= 32.0) {
+    if ($score >= 30.0) {
         return 'moderate';
     }
 
@@ -23967,13 +23973,13 @@ function activity_priority_level_from_score(float $score): string
 
 function activity_priority_item_band(float $score): string
 {
-    if ($score >= 82.0) {
+    if ($score >= 200.0) {
         return 'critical';
     }
-    if ($score >= 66.0) {
+    if ($score >= 80.0) {
         return 'high';
     }
-    if ($score >= 44.0) {
+    if ($score >= 30.0) {
         return 'elevated';
     }
 

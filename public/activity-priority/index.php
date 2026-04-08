@@ -45,84 +45,96 @@ include __DIR__ . '/../../src/views/partials/header.php';
         </div>
 
         <div class="mt-5 space-y-4">
-            <?php foreach ($activeDoctrines as $row): ?>
+            <?php foreach ($activeDoctrines as $idx => $row): ?>
                 <?php $tone = activity_priority_level_tone((string) ($row['activity_level'] ?? 'low')); ?>
-                <article class="surface-tertiary">
-                    <div class="flex flex-wrap items-start justify-between gap-3">
-                        <div class="min-w-0 flex-1">
-                            <div class="flex flex-wrap items-center gap-2">
-                                <?php $doctrineGroupId = (int) ($row['entity_id'] ?? 0); ?>
-                                <?php if ($doctrineGroupId > 0): ?>
-                                    <a href="/doctrines/#doctrine-<?= $doctrineGroupId ?>" class="truncate text-lg font-semibold text-cyan-100 transition hover:text-cyan-50 hover:underline">
-                                        <?= htmlspecialchars((string) ($row['doctrine_name'] ?? ''), ENT_QUOTES) ?>
-                                    </a>
-                                <?php else: ?>
-                                    <h3 class="truncate text-lg font-semibold text-white"><?= htmlspecialchars((string) ($row['doctrine_name'] ?? ''), ENT_QUOTES) ?></h3>
-                                <?php endif; ?>
-                                <span class="badge <?= htmlspecialchars($tone, ENT_QUOTES) ?>"><?= htmlspecialchars(ucfirst((string) ($row['activity_level'] ?? 'low')), ENT_QUOTES) ?></span>
-                                <span class="badge border-white/10 bg-white/5 text-slate-200">#<?= (int) ($row['rank_position'] ?? 0) ?></span>
-                                <span class="badge border-white/10 bg-white/5 text-slate-300"><?= htmlspecialchars((string) ($row['movement_label'] ?? 'Holding'), ENT_QUOTES) ?></span>
-                            </div>
-                            <p class="mt-2 text-sm text-slate-300"><?= htmlspecialchars((string) ($row['explanation'] ?? ''), ENT_QUOTES) ?></p>
+                <?php
+                    $scoreDelta = (float) ($row['score_delta'] ?? 0.0);
+                    $rankDelta = (int) ($row['rank_delta'] ?? 0);
+                    $hasDelta = abs($scoreDelta) >= 0.05 || $rankDelta !== 0;
+                ?>
+                <details class="group surface-tertiary"<?= $idx < 5 ? ' open' : '' ?>>
+                    <summary class="flex cursor-pointer flex-wrap items-center justify-between gap-3 list-none [&::-webkit-details-marker]:hidden">
+                        <div class="min-w-0 flex-1 flex flex-wrap items-center gap-2">
+                            <?php $doctrineGroupId = (int) ($row['entity_id'] ?? 0); ?>
+                            <?php if ($doctrineGroupId > 0): ?>
+                                <a href="/doctrines/#doctrine-<?= $doctrineGroupId ?>" class="truncate text-lg font-semibold text-cyan-100 transition hover:text-cyan-50 hover:underline" onclick="event.stopPropagation()">
+                                    <?= htmlspecialchars((string) ($row['doctrine_name'] ?? ''), ENT_QUOTES) ?>
+                                </a>
+                            <?php else: ?>
+                                <h3 class="truncate text-lg font-semibold text-white"><?= htmlspecialchars((string) ($row['doctrine_name'] ?? ''), ENT_QUOTES) ?></h3>
+                            <?php endif; ?>
+                            <span class="badge <?= htmlspecialchars($tone, ENT_QUOTES) ?>"><?= htmlspecialchars(ucfirst((string) ($row['activity_level'] ?? 'low')), ENT_QUOTES) ?></span>
+                            <span class="badge border-white/10 bg-white/5 text-slate-200">#<?= (int) ($row['rank_position'] ?? 0) ?></span>
+                            <span class="text-sm text-slate-400"><?= htmlspecialchars((string) ($row['readiness_label'] ?? 'Market ready'), ENT_QUOTES) ?></span>
+                            <span class="badge border-white/10 bg-white/5 text-slate-300"><?= doctrine_format_quantity((int) ($row['readiness_gap_count'] ?? 0)) ?> fit gaps</span>
                         </div>
-                        <div class="text-right">
-                            <p class="text-xs uppercase tracking-[0.16em] text-slate-500">Activity score</p>
-                            <p class="mt-2 text-2xl font-semibold text-white"><?= htmlspecialchars(number_format((float) ($row['activity_score'] ?? 0.0), 1), ENT_QUOTES) ?></p>
-                            <p class="mt-1 text-xs text-slate-500">Δ <?= htmlspecialchars(number_format((float) ($row['score_delta'] ?? 0.0), 1), ENT_QUOTES) ?> · rank <?= (int) ($row['rank_delta'] ?? 0) >= 0 ? '+' : '' ?><?= (int) ($row['rank_delta'] ?? 0) ?></p>
+                        <div class="flex items-center gap-4">
+                            <p class="text-2xl font-semibold text-white"><?= htmlspecialchars(number_format((float) ($row['activity_score'] ?? 0.0), 1), ENT_QUOTES) ?></p>
+                            <svg class="h-4 w-4 text-slate-500 transition-transform group-open:rotate-180" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
                         </div>
-                    </div>
+                    </summary>
 
-                    <div class="mt-4 grid gap-3 md:grid-cols-4">
-                        <div class="rounded-2xl border border-white/8 bg-slate-950/50 px-3 py-3">
-                            <p class="text-xs uppercase tracking-[0.14em] text-slate-500">Hull losses</p>
-                            <p class="mt-2 text-lg font-semibold text-slate-50"><?= doctrine_format_quantity((int) ($row['hull_losses_24h'] ?? 0)) ?> / <?= doctrine_format_quantity((int) ($row['hull_losses_3d'] ?? 0)) ?> / <?= doctrine_format_quantity((int) ($row['hull_losses_7d'] ?? 0)) ?></p>
-                            <p class="mt-1 text-xs text-slate-500">24h · 3d · 7d</p>
-                        </div>
-                        <div class="rounded-2xl border border-white/8 bg-slate-950/50 px-3 py-3">
-                            <p class="text-xs uppercase tracking-[0.14em] text-slate-500">Module losses</p>
-                            <p class="mt-2 text-lg font-semibold text-slate-50"><?= doctrine_format_quantity((int) ($row['module_losses_24h'] ?? 0)) ?> / <?= doctrine_format_quantity((int) ($row['module_losses_3d'] ?? 0)) ?> / <?= doctrine_format_quantity((int) ($row['module_losses_7d'] ?? 0)) ?></p>
-                            <p class="mt-1 text-xs text-slate-500">Doctrine-linked modules in tracked losses</p>
-                        </div>
-                        <div class="rounded-2xl border border-white/8 bg-slate-950/50 px-3 py-3">
-                            <p class="text-xs uppercase tracking-[0.14em] text-slate-500">Fit-equivalent pressure</p>
-                            <p class="mt-2 text-lg font-semibold text-slate-50"><?= htmlspecialchars(number_format((float) ($row['fit_equivalent_losses_24h'] ?? 0.0), 1), ENT_QUOTES) ?> / <?= htmlspecialchars(number_format((float) ($row['fit_equivalent_losses_7d'] ?? 0.0), 1), ENT_QUOTES) ?></p>
-                            <p class="mt-1 text-xs text-slate-500">24h / 7d fit-equivalent module losses</p>
-                        </div>
-                        <div class="rounded-2xl border border-white/8 bg-slate-950/50 px-3 py-3">
-                            <p class="text-xs uppercase tracking-[0.14em] text-slate-500">Readiness state</p>
-                            <p class="mt-2 text-lg font-semibold text-slate-50"><?= htmlspecialchars((string) ($row['readiness_label'] ?? 'Market ready'), ENT_QUOTES) ?></p>
-                            <p class="mt-1 text-xs text-slate-500"><?= htmlspecialchars((string) ($row['resupply_pressure'] ?? 'Stable'), ENT_QUOTES) ?> · <?= doctrine_format_quantity((int) ($row['readiness_gap_count'] ?? 0)) ?> fit gaps</p>
-                        </div>
-                    </div>
+                    <div class="mt-4 border-t border-white/8 pt-4">
+                        <p class="text-sm text-slate-300"><?= htmlspecialchars((string) ($row['explanation'] ?? ''), ENT_QUOTES) ?></p>
+                        <?php if ($hasDelta): ?>
+                            <p class="mt-1 text-xs text-slate-500">Δ <?= htmlspecialchars(number_format($scoreDelta, 1), ENT_QUOTES) ?> · rank <?= $rankDelta >= 0 ? '+' : '' ?><?= $rankDelta ?></p>
+                        <?php endif; ?>
 
-                    <div class="mt-4 grid gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(280px,0.9fr)]">
-                        <div class="rounded-2xl border border-white/8 bg-slate-950/50 px-3 py-3">
-                            <p class="text-xs uppercase tracking-[0.14em] text-slate-500">Explainable score components</p>
-                            <div class="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
-                                <?php foreach ((array) ($row['score_components'] ?? []) as $label => $value): ?>
-                                    <div class="rounded-xl border border-white/8 bg-black/20 px-3 py-2">
-                                        <p class="text-[11px] uppercase tracking-[0.12em] text-slate-500"><?= htmlspecialchars(str_replace('_', ' ', (string) $label), ENT_QUOTES) ?></p>
-                                        <p class="mt-1 text-sm font-semibold text-slate-100"><?= htmlspecialchars(number_format((float) $value, 1), ENT_QUOTES) ?></p>
-                                    </div>
-                                <?php endforeach; ?>
+                        <div class="mt-4 grid gap-3 md:grid-cols-4">
+                            <div class="rounded-2xl border border-white/8 bg-slate-950/50 px-3 py-3">
+                                <p class="text-xs uppercase tracking-[0.14em] text-slate-500">Hull losses</p>
+                                <p class="mt-2 text-lg font-semibold text-slate-50"><?= doctrine_format_quantity((int) ($row['hull_losses_24h'] ?? 0)) ?> / <?= doctrine_format_quantity((int) ($row['hull_losses_3d'] ?? 0)) ?> / <?= doctrine_format_quantity((int) ($row['hull_losses_7d'] ?? 0)) ?></p>
+                                <p class="mt-1 text-xs text-slate-500">24h · 3d · 7d</p>
+                            </div>
+                            <div class="rounded-2xl border border-white/8 bg-slate-950/50 px-3 py-3">
+                                <p class="text-xs uppercase tracking-[0.14em] text-slate-500">Module losses</p>
+                                <p class="mt-2 text-lg font-semibold text-slate-50"><?= doctrine_format_quantity((int) ($row['module_losses_24h'] ?? 0)) ?> / <?= doctrine_format_quantity((int) ($row['module_losses_3d'] ?? 0)) ?> / <?= doctrine_format_quantity((int) ($row['module_losses_7d'] ?? 0)) ?></p>
+                                <p class="mt-1 text-xs text-slate-500">Doctrine-linked modules in tracked losses</p>
+                            </div>
+                            <div class="rounded-2xl border border-white/8 bg-slate-950/50 px-3 py-3">
+                                <p class="text-xs uppercase tracking-[0.14em] text-slate-500">Fit-equivalent pressure</p>
+                                <p class="mt-2 text-lg font-semibold text-slate-50"><?= htmlspecialchars(number_format((float) ($row['fit_equivalent_losses_24h'] ?? 0.0), 1), ENT_QUOTES) ?> / <?= htmlspecialchars(number_format((float) ($row['fit_equivalent_losses_7d'] ?? 0.0), 1), ENT_QUOTES) ?></p>
+                                <p class="mt-1 text-xs text-slate-500">24h / 7d fit-equivalent module losses</p>
+                            </div>
+                            <div class="rounded-2xl border border-white/8 bg-slate-950/50 px-3 py-3">
+                                <p class="text-xs uppercase tracking-[0.14em] text-slate-500">Readiness state</p>
+                                <p class="mt-2 text-lg font-semibold text-slate-50"><?= htmlspecialchars((string) ($row['readiness_label'] ?? 'Market ready'), ENT_QUOTES) ?></p>
+                                <p class="mt-1 text-xs text-slate-500"><?= htmlspecialchars((string) ($row['resupply_pressure'] ?? 'Stable'), ENT_QUOTES) ?> · <?= doctrine_format_quantity((int) ($row['readiness_gap_count'] ?? 0)) ?> fit gaps</p>
                             </div>
                         </div>
-                        <div class="rounded-2xl border border-white/8 bg-slate-950/50 px-3 py-3">
-                            <p class="text-xs uppercase tracking-[0.14em] text-slate-500">Most active fits in this group</p>
-                            <div class="mt-3 space-y-2">
-                                <?php foreach ((array) ($row['top_fits'] ?? []) as $fit): ?>
-                                    <div class="intelligence-row">
-                                        <div class="min-w-0 flex-1">
-                                            <p class="truncate text-sm font-semibold text-slate-100"><?= htmlspecialchars((string) ($fit['fit_name'] ?? ''), ENT_QUOTES) ?></p>
-                                            <p class="mt-1 text-xs text-slate-500"><?= htmlspecialchars(ucfirst((string) ($fit['activity_level'] ?? 'low')), ENT_QUOTES) ?></p>
-                                        </div>
-                                        <p class="text-sm font-semibold text-cyan-100"><?= htmlspecialchars(number_format((float) ($fit['activity_score'] ?? 0.0), 1), ENT_QUOTES) ?></p>
+
+                        <details class="mt-4">
+                            <summary class="cursor-pointer text-xs text-slate-500 hover:text-slate-300">Explainable score components &amp; active fits</summary>
+                            <div class="mt-3 grid gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(280px,0.9fr)]">
+                                <div class="rounded-2xl border border-white/8 bg-slate-950/50 px-3 py-3">
+                                    <p class="text-xs uppercase tracking-[0.14em] text-slate-500">Explainable score components</p>
+                                    <div class="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+                                        <?php foreach ((array) ($row['score_components'] ?? []) as $label => $value): ?>
+                                            <div class="rounded-xl border border-white/8 bg-black/20 px-3 py-2">
+                                                <p class="text-[11px] uppercase tracking-[0.12em] text-slate-500"><?= htmlspecialchars(str_replace('_', ' ', (string) $label), ENT_QUOTES) ?></p>
+                                                <p class="mt-1 text-sm font-semibold text-slate-100"><?= htmlspecialchars(number_format((float) $value, 1), ENT_QUOTES) ?></p>
+                                            </div>
+                                        <?php endforeach; ?>
                                     </div>
-                                <?php endforeach; ?>
+                                </div>
+                                <div class="rounded-2xl border border-white/8 bg-slate-950/50 px-3 py-3">
+                                    <p class="text-xs uppercase tracking-[0.14em] text-slate-500">Most active fits in this group</p>
+                                    <div class="mt-3 space-y-2">
+                                        <?php foreach ((array) ($row['top_fits'] ?? []) as $fit): ?>
+                                            <div class="intelligence-row">
+                                                <div class="min-w-0 flex-1">
+                                                    <p class="truncate text-sm font-semibold text-slate-100"><?= htmlspecialchars((string) ($fit['fit_name'] ?? ''), ENT_QUOTES) ?></p>
+                                                    <p class="mt-1 text-xs text-slate-500"><?= htmlspecialchars(ucfirst((string) ($fit['activity_level'] ?? 'low')), ENT_QUOTES) ?></p>
+                                                </div>
+                                                <p class="text-sm font-semibold text-cyan-100"><?= htmlspecialchars(number_format((float) ($fit['activity_score'] ?? 0.0), 1), ENT_QUOTES) ?></p>
+                                            </div>
+                                        <?php endforeach; ?>
+                                    </div>
+                                </div>
                             </div>
-                        </div>
+                        </details>
                     </div>
-                </article>
+                </details>
             <?php endforeach; ?>
             <?php if ($activeDoctrines === []): ?>
                 <div class="surface-tertiary text-sm text-slate-400">No doctrine activity snapshot has been materialized yet. Wait for the next background recompute.</div>
@@ -214,81 +226,92 @@ include __DIR__ . '/../../src/views/partials/header.php';
     </div>
 
     <div class="mt-5 space-y-4">
-        <?php foreach ($priorityItems as $row): ?>
+        <?php foreach ($priorityItems as $pIdx => $row): ?>
             <?php $tone = activity_priority_level_tone((string) ($row['priority_band'] ?? 'watch')); ?>
-            <article class="surface-tertiary">
-                <div class="flex flex-wrap items-start justify-between gap-3">
-                    <div class="min-w-0 flex-1">
-                        <div class="flex flex-wrap items-center gap-2">
-                            <h3 class="truncate text-lg font-semibold text-white"><?= htmlspecialchars((string) ($row['item_name'] ?? ''), ENT_QUOTES) ?></h3>
-                            <span class="badge <?= htmlspecialchars($tone, ENT_QUOTES) ?>"><?= htmlspecialchars(ucfirst((string) ($row['priority_band'] ?? 'watch')), ENT_QUOTES) ?></span>
-                            <?php if (!empty($row['is_doctrine_linked'])): ?>
-                                <span class="badge border-cyan-400/20 bg-cyan-500/10 text-cyan-100">Doctrine-linked</span>
-                            <?php endif; ?>
-                            <span class="badge border-white/10 bg-white/5 text-slate-300">#<?= (int) ($row['rank_position'] ?? 0) ?></span>
+            <?php
+                $pScoreDelta = (float) ($row['score_delta'] ?? 0.0);
+                $pRankDelta = (int) ($row['rank_delta'] ?? 0);
+                $pHasDelta = abs($pScoreDelta) >= 0.05 || $pRankDelta !== 0;
+            ?>
+            <details class="group surface-tertiary"<?= $pIdx < 10 ? ' open' : '' ?>>
+                <summary class="flex cursor-pointer flex-wrap items-center justify-between gap-3 list-none [&::-webkit-details-marker]:hidden">
+                    <div class="min-w-0 flex-1 flex flex-wrap items-center gap-2">
+                        <h3 class="truncate text-lg font-semibold text-white"><?= htmlspecialchars((string) ($row['item_name'] ?? ''), ENT_QUOTES) ?></h3>
+                        <span class="badge <?= htmlspecialchars($tone, ENT_QUOTES) ?>"><?= htmlspecialchars(ucfirst((string) ($row['priority_band'] ?? 'watch')), ENT_QUOTES) ?></span>
+                        <?php if (!empty($row['is_doctrine_linked'])): ?>
+                            <span class="badge border-cyan-400/20 bg-cyan-500/10 text-cyan-100">Doctrine-linked</span>
+                        <?php endif; ?>
+                        <span class="badge border-white/10 bg-white/5 text-slate-300">#<?= (int) ($row['rank_position'] ?? 0) ?></span>
+                    </div>
+                    <div class="flex items-center gap-4">
+                        <p class="text-2xl font-semibold text-white"><?= htmlspecialchars(number_format((float) ($row['priority_score'] ?? 0.0), 1), ENT_QUOTES) ?></p>
+                        <svg class="h-4 w-4 text-slate-500 transition-transform group-open:rotate-180" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+                    </div>
+                </summary>
+
+                <div class="mt-4 border-t border-white/8 pt-4">
+                    <p class="text-sm text-slate-300"><?= htmlspecialchars((string) ($row['explanation'] ?? ''), ENT_QUOTES) ?></p>
+                    <?php if ($pHasDelta): ?>
+                        <p class="mt-1 text-xs text-slate-500">Δ <?= htmlspecialchars(number_format($pScoreDelta, 1), ENT_QUOTES) ?> · rank <?= $pRankDelta >= 0 ? '+' : '' ?><?= $pRankDelta ?></p>
+                    <?php endif; ?>
+
+                    <div class="mt-4 grid gap-3 md:grid-cols-5">
+                        <div class="rounded-2xl border border-white/8 bg-slate-950/50 px-3 py-3">
+                            <p class="text-xs uppercase tracking-[0.14em] text-slate-500">Linked doctrines</p>
+                            <p class="mt-2 text-lg font-semibold text-slate-50"><?= doctrine_format_quantity((int) ($row['linked_doctrine_count'] ?? 0)) ?></p>
+                            <p class="mt-1 text-xs text-slate-500"><?= doctrine_format_quantity((int) ($row['linked_active_doctrine_count'] ?? 0)) ?> active now</p>
                         </div>
-                        <p class="mt-2 text-sm text-slate-300"><?= htmlspecialchars((string) ($row['explanation'] ?? ''), ENT_QUOTES) ?></p>
+                        <div class="rounded-2xl border border-white/8 bg-slate-950/50 px-3 py-3">
+                            <p class="text-xs uppercase tracking-[0.14em] text-slate-500">Recent losses</p>
+                            <p class="mt-2 text-lg font-semibold text-slate-50"><?= doctrine_format_quantity((int) ($row['recent_loss_qty_24h'] ?? 0)) ?> / <?= doctrine_format_quantity((int) ($row['recent_loss_qty_7d'] ?? 0)) ?></p>
+                            <p class="mt-1 text-xs text-slate-500">24h / 7d tracked victim-side quantity</p>
+                        </div>
+                        <div class="rounded-2xl border border-white/8 bg-slate-950/50 px-3 py-3">
+                            <p class="text-xs uppercase tracking-[0.14em] text-slate-500">Local stock</p>
+                            <p class="mt-2 text-lg font-semibold text-slate-50"><?= doctrine_format_quantity((int) ($row['local_sell_volume'] ?? 0)) ?></p>
+                            <p class="mt-1 text-xs text-slate-500"><?= doctrine_format_quantity((int) ($row['local_sell_orders'] ?? 0)) ?> sell orders</p>
+                        </div>
+                        <div class="rounded-2xl border border-white/8 bg-slate-950/50 px-3 py-3">
+                            <p class="text-xs uppercase tracking-[0.14em] text-slate-500">Readiness impact</p>
+                            <p class="mt-2 text-lg font-semibold text-slate-50"><?= doctrine_format_quantity((int) ($row['readiness_gap_fit_count'] ?? 0)) ?></p>
+                            <p class="mt-1 text-xs text-slate-500">fits with open target gaps</p>
+                        </div>
+                        <div class="rounded-2xl border border-white/8 bg-slate-950/50 px-3 py-3">
+                            <p class="text-xs uppercase tracking-[0.14em] text-slate-500">Bottleneck status</p>
+                            <p class="mt-2 text-lg font-semibold text-slate-50"><?= doctrine_format_quantity((int) ($row['bottleneck_fit_count'] ?? 0)) ?></p>
+                            <p class="mt-1 text-xs text-slate-500"><?= htmlspecialchars(ucfirst((string) ($row['depletion_state'] ?? 'stable')), ENT_QUOTES) ?> depletion</p>
+                        </div>
                     </div>
-                    <div class="text-right">
-                        <p class="text-xs uppercase tracking-[0.16em] text-slate-500">Priority score</p>
-                        <p class="mt-2 text-2xl font-semibold text-white"><?= htmlspecialchars(number_format((float) ($row['priority_score'] ?? 0.0), 1), ENT_QUOTES) ?></p>
-                        <p class="mt-1 text-xs text-slate-500">Δ <?= htmlspecialchars(number_format((float) ($row['score_delta'] ?? 0.0), 1), ENT_QUOTES) ?> · rank <?= (int) ($row['rank_delta'] ?? 0) >= 0 ? '+' : '' ?><?= (int) ($row['rank_delta'] ?? 0) ?></p>
-                    </div>
-                </div>
 
-                <div class="mt-4 grid gap-3 md:grid-cols-5">
-                    <div class="rounded-2xl border border-white/8 bg-slate-950/50 px-3 py-3">
-                        <p class="text-xs uppercase tracking-[0.14em] text-slate-500">Linked doctrines</p>
-                        <p class="mt-2 text-lg font-semibold text-slate-50"><?= doctrine_format_quantity((int) ($row['linked_doctrine_count'] ?? 0)) ?></p>
-                        <p class="mt-1 text-xs text-slate-500"><?= doctrine_format_quantity((int) ($row['linked_active_doctrine_count'] ?? 0)) ?> active now</p>
-                    </div>
-                    <div class="rounded-2xl border border-white/8 bg-slate-950/50 px-3 py-3">
-                        <p class="text-xs uppercase tracking-[0.14em] text-slate-500">Recent losses</p>
-                        <p class="mt-2 text-lg font-semibold text-slate-50"><?= doctrine_format_quantity((int) ($row['recent_loss_qty_24h'] ?? 0)) ?> / <?= doctrine_format_quantity((int) ($row['recent_loss_qty_7d'] ?? 0)) ?></p>
-                        <p class="mt-1 text-xs text-slate-500">24h / 7d tracked victim-side quantity</p>
-                    </div>
-                    <div class="rounded-2xl border border-white/8 bg-slate-950/50 px-3 py-3">
-                        <p class="text-xs uppercase tracking-[0.14em] text-slate-500">Local stock</p>
-                        <p class="mt-2 text-lg font-semibold text-slate-50"><?= doctrine_format_quantity((int) ($row['local_sell_volume'] ?? 0)) ?></p>
-                        <p class="mt-1 text-xs text-slate-500"><?= doctrine_format_quantity((int) ($row['local_sell_orders'] ?? 0)) ?> sell orders</p>
-                    </div>
-                    <div class="rounded-2xl border border-white/8 bg-slate-950/50 px-3 py-3">
-                        <p class="text-xs uppercase tracking-[0.14em] text-slate-500">Readiness impact</p>
-                        <p class="mt-2 text-lg font-semibold text-slate-50"><?= doctrine_format_quantity((int) ($row['readiness_gap_fit_count'] ?? 0)) ?></p>
-                        <p class="mt-1 text-xs text-slate-500">fits with open target gaps</p>
-                    </div>
-                    <div class="rounded-2xl border border-white/8 bg-slate-950/50 px-3 py-3">
-                        <p class="text-xs uppercase tracking-[0.14em] text-slate-500">Bottleneck status</p>
-                        <p class="mt-2 text-lg font-semibold text-slate-50"><?= doctrine_format_quantity((int) ($row['bottleneck_fit_count'] ?? 0)) ?></p>
-                        <p class="mt-1 text-xs text-slate-500"><?= htmlspecialchars(ucfirst((string) ($row['depletion_state'] ?? 'stable')), ENT_QUOTES) ?> depletion</p>
-                    </div>
-                </div>
-
-                <div class="mt-4 grid gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(320px,0.9fr)]">
-                    <div class="rounded-2xl border border-white/8 bg-slate-950/50 px-3 py-3">
-                        <p class="text-xs uppercase tracking-[0.14em] text-slate-500">Explainable score components</p>
-                        <div class="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
-                            <?php foreach ((array) ($row['score_components'] ?? []) as $label => $value): ?>
-                                <div class="rounded-xl border border-white/8 bg-black/20 px-3 py-2">
-                                    <p class="text-[11px] uppercase tracking-[0.12em] text-slate-500"><?= htmlspecialchars(str_replace('_', ' ', (string) $label), ENT_QUOTES) ?></p>
-                                    <p class="mt-1 text-sm font-semibold text-slate-100"><?= htmlspecialchars(number_format((float) $value, 1), ENT_QUOTES) ?></p>
+                    <details class="mt-4">
+                        <summary class="cursor-pointer text-xs text-slate-500 hover:text-slate-300">Explainable score components &amp; linked doctrines</summary>
+                        <div class="mt-3 grid gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(320px,0.9fr)]">
+                            <div class="rounded-2xl border border-white/8 bg-slate-950/50 px-3 py-3">
+                                <p class="text-xs uppercase tracking-[0.14em] text-slate-500">Explainable score components</p>
+                                <div class="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+                                    <?php foreach ((array) ($row['score_components'] ?? []) as $label => $value): ?>
+                                        <div class="rounded-xl border border-white/8 bg-black/20 px-3 py-2">
+                                            <p class="text-[11px] uppercase tracking-[0.12em] text-slate-500"><?= htmlspecialchars(str_replace('_', ' ', (string) $label), ENT_QUOTES) ?></p>
+                                            <p class="mt-1 text-sm font-semibold text-slate-100"><?= htmlspecialchars(number_format((float) $value, 1), ENT_QUOTES) ?></p>
+                                        </div>
+                                    <?php endforeach; ?>
                                 </div>
-                            <?php endforeach; ?>
+                            </div>
+                            <div class="rounded-2xl border border-white/8 bg-slate-950/50 px-3 py-3">
+                                <p class="text-xs uppercase tracking-[0.14em] text-slate-500">Linked doctrine groups</p>
+                                <div class="mt-3 flex flex-wrap gap-2">
+                                    <?php foreach ((array) ($row['linked_doctrine_names'] ?? []) as $name): ?>
+                                        <span class="badge border-white/10 bg-white/5 text-slate-200"><?= htmlspecialchars((string) $name, ENT_QUOTES) ?></span>
+                                    <?php endforeach; ?>
+                                    <?php if ((array) ($row['linked_doctrine_names'] ?? []) === []): ?>
+                                        <span class="text-sm text-slate-500">No doctrine link recorded.</span>
+                                    <?php endif; ?>
+                                </div>
+                            </div>
                         </div>
-                    </div>
-                    <div class="rounded-2xl border border-white/8 bg-slate-950/50 px-3 py-3">
-                        <p class="text-xs uppercase tracking-[0.14em] text-slate-500">Linked doctrine groups</p>
-                        <div class="mt-3 flex flex-wrap gap-2">
-                            <?php foreach ((array) ($row['linked_doctrine_names'] ?? []) as $name): ?>
-                                <span class="badge border-white/10 bg-white/5 text-slate-200"><?= htmlspecialchars((string) $name, ENT_QUOTES) ?></span>
-                            <?php endforeach; ?>
-                            <?php if ((array) ($row['linked_doctrine_names'] ?? []) === []): ?>
-                                <span class="text-sm text-slate-500">No doctrine link recorded.</span>
-                            <?php endif; ?>
-                        </div>
-                    </div>
+                    </details>
                 </div>
-            </article>
+            </details>
         <?php endforeach; ?>
         <?php if ($priorityItems === []): ?>
             <div class="surface-tertiary text-sm text-slate-400">No item-priority snapshot has been materialized yet.</div>

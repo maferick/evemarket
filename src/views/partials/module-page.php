@@ -207,7 +207,12 @@ $buildPageUrl = static function (int $targetPage) use ($queryParams): string {
                                 <?php elseif ($key === 'severity' || $key === 'priority'): ?>
                                     <?php
                                     $sev = strtolower($value);
-                                    $sevTone = $sev === 'high' ? 'text-rose-300 bg-rose-500/10 border-rose-500/40' : ($sev === 'medium' ? 'text-amber-300 bg-amber-500/10 border-amber-500/40' : 'text-slate-300 bg-slate-500/10 border-slate-500/40');
+                                    $sevTone = match (true) {
+                                        $sev === 'critical' => 'text-rose-200 bg-rose-500/20 border-rose-400/50',
+                                        $sev === 'high' => 'text-rose-300 bg-rose-500/10 border-rose-500/40',
+                                        $sev === 'medium' => 'text-amber-300 bg-amber-500/10 border-amber-500/40',
+                                        default => 'text-slate-300 bg-slate-500/10 border-slate-500/40',
+                                    };
                                     ?>
                                     <span class="rounded-full border px-2 py-0.5 text-[11px] uppercase tracking-[0.08em] <?= $sevTone ?>"><?= htmlspecialchars($value, ENT_QUOTES) ?></span>
                                 <?php elseif ($key === 'updated_at'): ?>

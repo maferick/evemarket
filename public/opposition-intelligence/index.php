@@ -255,7 +255,7 @@ if ($flash !== null) {
             </div>
         <?php endif; ?>
     <?php else: ?>
-        <p class="text-sm text-muted">No briefing available for this date. Run the opposition daily snapshot job and AI briefing generator to produce a SITREP.</p>
+        <p class="text-sm text-muted">No briefing available for this date. Click <strong>Generate Intel</strong> above to create one, or wait for the next scheduled run.</p>
     <?php endif; ?>
 </section>
 
@@ -276,7 +276,6 @@ if ($flash !== null) {
                         <th class="px-3 py-2 text-right">ISK Lost</th>
                         <th class="px-3 py-2 text-right">Pilots</th>
                         <th class="px-3 py-2 text-left">Top Systems</th>
-                        <th class="px-3 py-2 text-left">Intel</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -328,16 +327,6 @@ if ($flash !== null) {
                             <td class="px-3 py-2 text-sm text-right font-mono"><?= htmlspecialchars($formatIsk((float) $s['isk_lost'])) ?></td>
                             <td class="px-3 py-2 text-sm text-right font-mono"><?= (int) $s['active_pilots'] ?></td>
                             <td class="px-3 py-2 text-xs text-muted"><?= htmlspecialchars(implode(', ', $topSystems)) ?></td>
-                            <td class="px-3 py-2 text-xs">
-                                <?php if ($allianceBriefing): ?>
-                                    <?php $ta = $allianceBriefing['threat_assessment'] ?? 'moderate'; ?>
-                                    <span class="inline-block rounded border px-1.5 py-0.5 text-[10px] uppercase <?= $threatColors[$ta] ?? $threatColors['moderate'] ?>">
-                                        <?= htmlspecialchars(strtoupper($ta)) ?>
-                                    </span>
-                                <?php else: ?>
-                                    <span class="text-muted">-</span>
-                                <?php endif; ?>
-                            </td>
                         </tr>
                     <?php endforeach; ?>
                 </tbody>

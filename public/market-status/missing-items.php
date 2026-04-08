@@ -11,7 +11,6 @@ $tableColumns = [
     'module' => 'Module',
     'reference_price' => market_hub_reference_name() . ' Price',
     'daily_volume' => 'Daily Volume',
-    'price_delta' => 'Price Delta',
     'score' => 'Score',
     'priority' => 'Priority',
 ];

@@ -402,12 +402,16 @@ def _load_behavior_metrics_bulk(db: SupplyCoreDb, alliance_ids: list[int]) -> di
 
         if kills_per_week >= 50 and avg_gang_size >= 10:
             posture = "aggressive"
-        elif kills_per_week >= 10 and avg_gang_size < 8:
+        elif kills_per_week >= 20 and avg_gang_size >= 8:
+            posture = "committed"
+        elif kills_per_week >= 10:
+            posture = "balanced"
+        elif kills_per_week >= 3:
             posture = "opportunistic"
         elif total_kills < 10:
             posture = "infrequent"
         else:
-            posture = "balanced"
+            posture = "opportunistic"
 
         result[aid] = {
             "kills_per_week": kills_per_week, "avg_gang_size": avg_gang_size,

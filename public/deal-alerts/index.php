@@ -128,25 +128,28 @@ include __DIR__ . '/../../src/views/partials/header.php';
         <a href="/settings?section=deal-alerts" class="rounded-full border border-white/10 bg-white/5 px-4 py-2 text-sm font-medium text-slate-100 hover:bg-white/10">Tune thresholds</a>
     </div>
 
-    <div class="mt-5 grid gap-3 rounded-[1.35rem] border border-white/8 bg-black/20 p-4 text-sm text-slate-300 lg:grid-cols-2">
-        <div>
-            <p class="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">Materialization diagnostics</p>
-            <ul class="mt-3 space-y-2">
-                <li>History rows loaded: <span class="font-semibold text-white"><?= number_format((int) ($materialization['history_row_count'] ?? 0)) ?></span></li>
-                <li>Sources scanned: <span class="font-semibold text-white"><?= number_format((int) ($materialization['sources_scanned'] ?? 0)) ?></span></li>
-                <li>Inactive rows marked: <span class="font-semibold text-white"><?= number_format((int) ($materialization['inactive_row_count'] ?? 0)) ?></span></li>
-                <li>Latest success: <span class="font-semibold text-white"><?= htmlspecialchars(supplycore_format_datetime(isset($materialization['last_success_at']) ? (string) $materialization['last_success_at'] : null), ENT_QUOTES) ?></span></li>
-            </ul>
+    <details class="mt-5">
+        <summary class="cursor-pointer rounded-[1.35rem] border border-white/8 bg-black/20 px-4 py-3 text-sm font-medium text-slate-300 hover:bg-black/30">Materialization diagnostics</summary>
+        <div class="mt-2 grid gap-3 rounded-[1.35rem] border border-white/8 bg-black/20 p-4 text-sm text-slate-300 lg:grid-cols-2">
+            <div>
+                <p class="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">Materialization detail</p>
+                <ul class="mt-3 space-y-2">
+                    <li>History rows loaded: <span class="font-semibold text-white"><?= number_format((int) ($materialization['history_row_count'] ?? 0)) ?></span></li>
+                    <li>Sources scanned: <span class="font-semibold text-white"><?= number_format((int) ($materialization['sources_scanned'] ?? 0)) ?></span></li>
+                    <li>Inactive rows marked: <span class="font-semibold text-white"><?= number_format((int) ($materialization['inactive_row_count'] ?? 0)) ?></span></li>
+                    <li>Latest success: <span class="font-semibold text-white"><?= htmlspecialchars(supplycore_format_datetime(isset($materialization['last_success_at']) ? (string) $materialization['last_success_at'] : null), ENT_QUOTES) ?></span></li>
+                </ul>
+            </div>
+            <div>
+                <p class="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">Zero-output / failure detail</p>
+                <p class="mt-3 text-sm text-slate-300"><?= htmlspecialchars((string) ($materialization['last_reason_zero_output'] ?? $materialization['last_failure_reason'] ?? 'No zero-output or failure reason recorded.'), ENT_QUOTES) ?></p>
+                <p class="mt-3 text-xs text-slate-500">
+                    Freshness source: <?= htmlspecialchars((string) ($sourceVerification['freshness_timestamp_source'] ?? 'Unavailable'), ENT_QUOTES) ?>
+                    · Rows source: <?= htmlspecialchars((string) ($sourceVerification['table_row_source'] ?? 'Unavailable'), ENT_QUOTES) ?>
+                </p>
+            </div>
         </div>
-        <div>
-            <p class="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">Zero-output / failure detail</p>
-            <p class="mt-3 text-sm text-slate-300"><?= htmlspecialchars((string) ($materialization['last_reason_zero_output'] ?? $materialization['last_failure_reason'] ?? 'No zero-output or failure reason recorded.'), ENT_QUOTES) ?></p>
-            <p class="mt-3 text-xs text-slate-500">
-                Freshness source: <?= htmlspecialchars((string) ($sourceVerification['freshness_timestamp_source'] ?? 'Unavailable'), ENT_QUOTES) ?>
-                · Rows source: <?= htmlspecialchars((string) ($sourceVerification['table_row_source'] ?? 'Unavailable'), ENT_QUOTES) ?>
-            </p>
-        </div>
-    </div>
+    </details>
 
     <form method="get" class="mt-5 grid gap-3 rounded-[1.35rem] border border-white/8 bg-black/20 p-4 lg:grid-cols-[minmax(0,1.2fr)_repeat(4,minmax(0,0.5fr))]">
         <label class="block space-y-2">

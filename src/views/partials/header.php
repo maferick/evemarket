@@ -34,10 +34,12 @@ $pageFreshnessLine = $pageFreshness !== []
                     <p class="eyebrow text-cyan/80"><?= htmlspecialchars(brand_console_label(), ENT_QUOTES) ?></p>
                     <div class="mt-3 flex flex-wrap items-center gap-3">
                         <h1 class="text-3xl font-semibold tracking-tight text-white sm:text-[2.1rem]"><?= htmlspecialchars($title ?? 'Dashboard', ENT_QUOTES) ?></h1>
-                        <span class="status-chip <?= htmlspecialchars($pageHeaderBadgeTone, ENT_QUOTES) ?>">
-                            <span class="h-2 w-2 rounded-full bg-cyan shadow-[0_0_12px_rgba(34,211,238,0.65)]"></span>
-                            <?= htmlspecialchars($pageHeaderBadge, ENT_QUOTES) ?>
-                        </span>
+                        <?php if ($pageHeaderBadge !== ''): ?>
+                            <span class="status-chip <?= htmlspecialchars($pageHeaderBadgeTone, ENT_QUOTES) ?>">
+                                <span class="h-2 w-2 rounded-full bg-cyan shadow-[0_0_12px_rgba(34,211,238,0.65)]"></span>
+                                <?= htmlspecialchars($pageHeaderBadge, ENT_QUOTES) ?>
+                            </span>
+                        <?php endif; ?>
                     </div>
                     <?php if ($pageHeaderSummary !== ''): ?>
                         <p class="mt-3 max-w-2xl text-sm leading-6 text-slate-300/88"><?= htmlspecialchars($pageHeaderSummary, ENT_QUOTES) ?></p>
