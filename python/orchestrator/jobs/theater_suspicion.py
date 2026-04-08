@@ -192,22 +192,28 @@ def run_theater_suspicion(
 
                     update_batch.append((score, is_suspicious, theater_id, cid))
 
-                with db.transaction_with_retry() as (_, cursor):
-                    # Batch UPDATE all participants at once
-                    if update_batch:
+                avg_score = (total_score / scored_count) if scored_count > 0 else 0.0
+                _update_batch = update_batch  # capture for closure
+                _theater_id = theater_id
+                _suspicious_count = suspicious_count
+                _tracked_suspicious_count = tracked_suspicious_count
+                _max_score = max_score
+                _avg_score = avg_score
+
+                def _do_suspicion_write(connection, cursor):
+                    written = 0
+                    if _update_batch:
                         cursor.executemany(
                             """
                             UPDATE theater_participants
                             SET suspicion_score = %s, is_suspicious = %s
                             WHERE theater_id = %s AND character_id = %s
                             """,
-                            update_batch,
+                            _update_batch,
                         )
-                        rows_written += len(update_batch)
+                        written += len(_update_batch)
 
-                    # Upsert theater_suspicion_summary
-                    avg_score = (total_score / scored_count) if scored_count > 0 else 0.0
-                    cursor.execute("DELETE FROM theater_suspicion_summary WHERE theater_id = %s", (theater_id,))
+                    cursor.execute("DELETE FROM theater_suspicion_summary WHERE theater_id = %s", (_theater_id,))
                     cursor.execute(
                         """
                         INSERT INTO theater_suspicion_summary (
@@ -218,14 +224,17 @@ def run_theater_suspicion(
                         ) VALUES (%s, %s, %s, %s, %s, %s, %s)
                         """,
                         (
-                            theater_id, suspicious_count,
-                            tracked_suspicious_count,
-                            round(max_score, 4), round(avg_score, 4),
-                            None,  # anomaly_flags_json — future use
+                            _theater_id, _suspicious_count,
+                            _tracked_suspicious_count,
+                            round(_max_score, 4), round(_avg_score, 4),
+                            None,
                             computed_at,
                         ),
                     )
-                    rows_written += 1
+                    written += 1
+                    return written
+
+                rows_written += db.run_in_transaction(_do_suspicion_write, max_retries=3)
             else:
                 # Dry run — just count
                 for p in participants:
