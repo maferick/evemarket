@@ -8,11 +8,25 @@ import re
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from ..db import SupplyCoreDb
 
 logger = logging.getLogger(__name__)
+
+# Log files to scan for errors.  Keys are human-readable source names,
+# values are paths relative to app_root.
+_LOG_FILE_PATHS: dict[str, str] = {
+    "worker":               "storage/logs/worker.log",
+    "compute":              "storage/logs/compute.log",
+    "zkill":                "storage/logs/zkill.log",
+    "graph-sync":           "storage/logs/graph-sync.log",
+    "battle-intelligence":  "storage/logs/battle-intelligence.log",
+    "influx-rollup-export": "storage/logs/influx-rollup-export.log",
+    "orchestrator":         "storage/logs/orchestrator.log",
+    "log-to-issues":        "storage/logs/log-to-issues.log",
+}
 
 # ── Error normalization ──────────────────────────────────────────────
 # Strip volatile fragments so the same root-cause maps to one fingerprint.
@@ -92,12 +106,33 @@ def _format_issue_body(
     error_text: str,
     occurrences: list[dict[str, Any]],
 ) -> str:
+    source = occurrences[0].get("_source", "job_runs")
     recent = occurrences[:5]
-    occurrence_lines = "\n".join(
-        f"| {r['id']} | {r['started_at']} | {r['duration_ms']}ms | `{(r.get('error_text') or '')[:80]}` |"
-        for r in recent
-    )
-    return f"""## Auto-detected job failure: `{job_name}`
+
+    if source == "log_file":
+        occurrence_lines = "\n".join(
+            f"| {r.get('_log_source', '?')} | {r['started_at']} | `{(r.get('error_text') or '')[:80]}` |"
+            for r in recent
+        )
+        table_header = "| Log File | Timestamp | Message (truncated) |\n|----------|-----------|---------------------|"
+    elif source == "sync_runs":
+        occurrence_lines = "\n".join(
+            f"| {r['id']} | {r['started_at']} | {r['duration_ms']}ms | `{(r.get('error_text') or '')[:80]}` |"
+            for r in recent
+        )
+        table_header = "| Run ID | Started At | Duration | Error (truncated) |\n|--------|-----------|----------|-------------------|"
+    else:
+        occurrence_lines = "\n".join(
+            f"| {r['id']} | {r['started_at']} | {r['duration_ms']}ms | `{(r.get('error_text') or '')[:80]}` |"
+            for r in recent
+        )
+        table_header = "| Run ID | Started At | Duration | Error (truncated) |\n|--------|-----------|----------|-------------------|"
+
+    source_label = {"job_runs": "job_runs table", "sync_runs": "sync_runs table", "log_file": "log file"}.get(source, source)
+
+    return f"""## Auto-detected failure: `{job_name}`
+
+**Source:** `{source_label}`
 
 **Error pattern:**
 ```
@@ -108,8 +143,7 @@ def _format_issue_body(
 
 ### Recent failures
 
-| Run ID | Started At | Duration | Error (truncated) |
-|--------|-----------|----------|-------------------|
+{table_header}
 {occurrence_lines}
 
 ---
@@ -142,6 +176,104 @@ CREATE TABLE IF NOT EXISTS log_issue_tracker (
 """
 
 
+# ── Additional data source collectors ────────────────────────────────
+
+def _collect_sync_run_failures(
+    db: SupplyCoreDb,
+    lookback_hours: int,
+) -> list[dict[str, Any]]:
+    """Fetch failed sync_runs and normalize to the same shape as job_runs rows."""
+    rows = db.fetch_all(
+        "SELECT id, dataset_key, error_message, started_at, finished_at "
+        "FROM sync_runs "
+        "WHERE run_status = 'failed' "
+        "  AND started_at >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL %s HOUR) "
+        "ORDER BY started_at DESC",
+        (lookback_hours,),
+    )
+    normalized: list[dict[str, Any]] = []
+    for r in rows:
+        duration_ms = 0
+        if r.get("started_at") and r.get("finished_at"):
+            delta = r["finished_at"] - r["started_at"]
+            duration_ms = int(delta.total_seconds() * 1000)
+        normalized.append({
+            "id": r["id"],
+            "job_name": str(r["dataset_key"]),
+            "error_text": str(r.get("error_message") or "unknown error"),
+            "started_at": r["started_at"],
+            "finished_at": r.get("finished_at"),
+            "duration_ms": duration_ms,
+            "meta_json": None,
+            "_source": "sync_runs",
+        })
+    return normalized
+
+
+def _collect_log_file_errors(
+    app_root: Path,
+    lookback_hours: int,
+) -> list[dict[str, Any]]:
+    """Parse structured JSON log files for error/critical entries."""
+    from datetime import timedelta
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=lookback_hours)
+    results: list[dict[str, Any]] = []
+
+    for source_name, rel_path in _LOG_FILE_PATHS.items():
+        log_path = app_root / rel_path
+        if not log_path.is_file():
+            continue
+        try:
+            # Read only the tail — log files can be large.  Read last 2MB max.
+            file_size = log_path.stat().st_size
+            read_offset = max(0, file_size - 2 * 1024 * 1024)
+            with open(log_path, "r", encoding="utf-8", errors="replace") as fh:
+                if read_offset > 0:
+                    fh.seek(read_offset)
+                    fh.readline()  # skip partial first line
+                for line in fh:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        entry = json.loads(line)
+                    except (json.JSONDecodeError, ValueError):
+                        continue
+                    level = str(entry.get("level", "")).lower()
+                    if level not in ("error", "critical"):
+                        continue
+                    # Parse timestamp
+                    ts_raw = entry.get("ts", "")
+                    try:
+                        ts = datetime.fromisoformat(ts_raw)
+                        if ts.tzinfo is None:
+                            ts = ts.replace(tzinfo=timezone.utc)
+                    except (ValueError, TypeError):
+                        continue
+                    if ts < cutoff:
+                        continue
+                    message = str(entry.get("message", ""))
+                    exception = entry.get("exception")
+                    error_text = message
+                    if exception:
+                        error_text = f"{message}\n{exception}"
+                    logger_name = str(entry.get("logger", source_name))
+                    results.append({
+                        "id": f"log:{source_name}:{ts.isoformat()}",
+                        "job_name": logger_name,
+                        "error_text": error_text,
+                        "started_at": ts,
+                        "finished_at": None,
+                        "duration_ms": 0,
+                        "meta_json": None,
+                        "_source": "log_file",
+                        "_log_source": source_name,
+                    })
+        except OSError as exc:
+            logger.warning("Failed to read log file %s: %s", log_path, exc)
+    return results
+
+
 # ── Core worker logic ────────────────────────────────────────────────
 
 def run_log_to_issues(
@@ -150,8 +282,9 @@ def run_log_to_issues(
     lookback_hours: int = 24,
     dry_run: bool = False,
     auto_close: bool = True,
+    app_root: Path | None = None,
 ) -> dict[str, object]:
-    """Scan job_runs for failures and create/update GitHub issues.
+    """Scan job_runs, sync_runs, and log files for failures and create/update GitHub issues.
 
     Returns a standard job result dict.
     """
@@ -170,8 +303,9 @@ def run_log_to_issues(
     # Ensure tracker table exists (idempotent).
     db.execute(_ENSURE_TABLE_SQL)
 
-    # ── 1. Fetch recent failures ─────────────────────────────────────
-    failures = db.fetch_all(
+    # ── 1. Collect failures from all sources ────────────────────────
+    # 1a. job_runs
+    job_run_failures = db.fetch_all(
         "SELECT id, job_name, error_text, started_at, finished_at, duration_ms, meta_json "
         "FROM job_runs "
         "WHERE status = 'failed' "
@@ -180,15 +314,37 @@ def run_log_to_issues(
         "ORDER BY started_at DESC",
         (lookback_hours,),
     )
+    for r in job_run_failures:
+        r["_source"] = "job_runs"
+
+    # 1b. sync_runs
+    sync_run_failures = _collect_sync_run_failures(db, lookback_hours)
+
+    # 1c. Log files
+    log_file_errors: list[dict[str, Any]] = []
+    if app_root is not None:
+        log_file_errors = _collect_log_file_errors(app_root, lookback_hours)
+
+    failures = job_run_failures + sync_run_failures + log_file_errors
+
+    source_counts = {
+        "job_runs": len(job_run_failures),
+        "sync_runs": len(sync_run_failures),
+        "log_files": len(log_file_errors),
+    }
+    logger.info(
+        "Collected failures: job_runs=%d, sync_runs=%d, log_files=%d",
+        source_counts["job_runs"], source_counts["sync_runs"], source_counts["log_files"],
+    )
 
     if not failures:
-        logger.info("No failed job_runs in the last %d hours.", lookback_hours)
         return {
             "status": "success",
             "rows_processed": 0,
             "rows_written": 0,
             "summary": f"No failures in the last {lookback_hours}h.",
             "warnings": [],
+            "meta": {"source_counts": source_counts},
         }
 
     # ── 2. Group by fingerprint ──────────────────────────────────────
@@ -346,7 +502,7 @@ def run_log_to_issues(
                 warnings.append(f"Failed to auto-close #{row['github_issue_number']}: {exc}")
 
     summary_parts = [
-        f"Scanned {len(failures)} failure(s)",
+        f"Scanned {len(failures)} failure(s) (job_runs={source_counts['job_runs']}, sync_runs={source_counts['sync_runs']}, logs={source_counts['log_files']})",
         f"created {issues_created} issue(s)",
         f"updated {issues_updated}",
         f"skipped {issues_skipped}",
@@ -369,5 +525,6 @@ def run_log_to_issues(
             "auto_closed": auto_closed,
             "failures_scanned": len(failures),
             "unique_patterns": len(grouped),
+            "source_counts": source_counts,
         },
     }
