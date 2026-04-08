@@ -234,7 +234,7 @@ def _processor(db: SupplyCoreDb) -> dict[str, object]:
         return {
             "status": "skipped", "rows_processed": 0, "rows_written": 0,
             "warnings": [f"No snapshot data found in last {window_days} day(s) for source {source_id}."],
-            "summary": f"Market hub local history skipped: no snapshots in window.",
+            "summary": "Market hub local history skipped: no snapshots in window.",
         }
 
     # Rebuild daily OHLCV candles

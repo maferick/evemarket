@@ -313,9 +313,10 @@ _UPSERT_SQL = """
 
 def _upsert_profiles(db: SupplyCoreDb, profiles: list[dict[str, Any]], now_str: str) -> int:
     """Batch-upsert fused profiles."""
-    written = 0
-    for prof in profiles:
-        db.execute(_UPSERT_SQL, [
+    if not profiles:
+        return 0
+    params = [
+        [
             prof["character_id"], prof["risk_score"],
             prof["confidence"], prof["freshness"],
             prof["signal_coverage"], prof["effective_coverage"], prof["signal_count"],
@@ -324,9 +325,11 @@ def _upsert_profiles(db: SupplyCoreDb, profiles: list[dict[str, Any]], now_str: 
             prof["relational_score"],
             prof["top_signals_json"], prof["domain_detail_json"],
             now_str,
-        ])
-        written += 1
-    return written
+        ]
+        for prof in profiles
+    ]
+    db.execute_many(_UPSERT_SQL, params)
+    return len(profiles)
 
 
 # ---------------------------------------------------------------------------
@@ -520,7 +523,7 @@ def run_cip_fusion(db: SupplyCoreDb) -> JobResult:
         duration_ms=elapsed, rows_seen=len(all_signals),
         rows_processed=len(all_signals), rows_written=total_written,
         rows_skipped=0, rows_failed=0,
-        batches_completed=(len(profiles) // BATCH_SIZE) + 1,
+        batches_completed=(len(profiles) + BATCH_SIZE - 1) // BATCH_SIZE if profiles else 0,
         checkpoint_before=None, checkpoint_after=None,
         has_more=False, error_text=None, warnings=[],
         meta={"characters_fused": len(profiles), "history_snapshots": history_count},

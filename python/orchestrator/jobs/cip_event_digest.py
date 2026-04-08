@@ -35,39 +35,65 @@ def run_cip_event_digest(db: SupplyCoreDb) -> JobResult:
     logger.info("Generating event digest for %s — %s", period_start, period_end)
 
     # ── New events (created in this window) ─────────────────────────
-    new_events = db.fetch_all(
+    new_count_row = db.fetch_one(
+        """SELECT COUNT(*) AS cnt
+           FROM intelligence_events
+           WHERE first_detected_at >= %s AND first_detected_at < %s""",
+        [period_start, period_end],
+    )
+    new_count = int(new_count_row["cnt"]) if new_count_row else 0
+
+    top_new_rows = db.fetch_all(
         """SELECT id, event_type, event_family, severity, impact_score,
                   title, entity_type, entity_id
            FROM intelligence_events
            WHERE first_detected_at >= %s AND first_detected_at < %s
-           ORDER BY impact_score DESC""",
+           ORDER BY impact_score DESC
+           LIMIT 5""",
         [period_start, period_end],
     )
-    new_count = len(new_events)
 
     # ── Escalated events (escalation_count increased in this window) ─
-    escalated_events = db.fetch_all(
+    escalated_count_row = db.fetch_one(
+        """SELECT COUNT(*) AS cnt
+           FROM intelligence_events
+           WHERE last_updated_at >= %s AND last_updated_at < %s
+             AND escalation_count > 1
+             AND state = 'active'""",
+        [period_start, period_end],
+    )
+    escalated_count = int(escalated_count_row["cnt"]) if escalated_count_row else 0
+
+    top_escalated_rows = db.fetch_all(
         """SELECT id, event_type, event_family, severity, previous_severity,
                   impact_score, title, escalation_count, entity_type, entity_id
            FROM intelligence_events
            WHERE last_updated_at >= %s AND last_updated_at < %s
              AND escalation_count > 1
              AND state = 'active'
-           ORDER BY impact_score DESC""",
+           ORDER BY impact_score DESC
+           LIMIT 5""",
         [period_start, period_end],
     )
-    escalated_count = len(escalated_events)
 
     # ── Resolved events ──────────────────────────────────────────────
-    resolved_events = db.fetch_all(
+    resolved_count_row = db.fetch_one(
+        """SELECT COUNT(*) AS cnt
+           FROM intelligence_events
+           WHERE resolved_at >= %s AND resolved_at < %s""",
+        [period_start, period_end],
+    )
+    resolved_count = int(resolved_count_row["cnt"]) if resolved_count_row else 0
+
+    top_resolved_rows = db.fetch_all(
         """SELECT id, event_type, event_family, severity, impact_score,
                   title, entity_type, entity_id
            FROM intelligence_events
            WHERE resolved_at >= %s AND resolved_at < %s
-           ORDER BY impact_score DESC""",
+           ORDER BY impact_score DESC
+           LIMIT 5""",
         [period_start, period_end],
     )
-    resolved_count = len(resolved_events)
 
     # ── Expired events ───────────────────────────────────────────────
     expired_row = db.fetch_one(
@@ -78,17 +104,6 @@ def run_cip_event_digest(db: SupplyCoreDb) -> JobResult:
         [period_start, period_end],
     )
     expired_count = int(expired_row["cnt"]) if expired_row else 0
-
-    # ── Still-active unchanged: active events NOT new, NOT escalated in window ─
-    unchanged_row = db.fetch_one(
-        """SELECT COUNT(*) AS cnt
-           FROM intelligence_events
-           WHERE state = 'active'
-             AND first_detected_at < %s
-             AND (last_updated_at < %s OR escalation_count <= 1)""",
-        [period_start, period_start],
-    )
-    unchanged_active_count = int(unchanged_row["cnt"]) if unchanged_row else 0
 
     # ── Active breakdown by family ────────────────────────────────────
     breakdown_rows = db.fetch_all(
@@ -111,7 +126,6 @@ def run_cip_event_digest(db: SupplyCoreDb) -> JobResult:
             quality_active += cnt
 
     # ── Build top-N JSON summaries ────────────────────────────────────
-    top_n = 5
 
     def _event_summary(ev: dict) -> dict:
         return {
@@ -124,9 +138,9 @@ def run_cip_event_digest(db: SupplyCoreDb) -> JobResult:
             "entity_id": int(ev.get("entity_id", 0)),
         }
 
-    top_new = [_event_summary(e) for e in new_events[:top_n]]
-    top_escalated = [_event_summary(e) for e in escalated_events[:top_n]]
-    top_resolved = [_event_summary(e) for e in resolved_events[:top_n]]
+    top_new = [_event_summary(e) for e in top_new_rows]
+    top_escalated = [_event_summary(e) for e in top_escalated_rows]
+    top_resolved = [_event_summary(e) for e in top_resolved_rows]
 
     # ── Insert digest ─────────────────────────────────────────────────
     db.execute(
@@ -178,6 +192,5 @@ def run_cip_event_digest(db: SupplyCoreDb) -> JobResult:
         checkpoint_before=None, checkpoint_after=None,
         has_more=False, error_text=None, warnings=[],
         meta={"new": new_count, "escalated": escalated_count,
-              "resolved": resolved_count, "expired": expired_count,
-              "unchanged_active": unchanged_active_count},
+              "resolved": resolved_count, "expired": expired_count},
     )
