@@ -6,12 +6,12 @@ import traceback
 from datetime import UTC, datetime
 from typing import Any
 
-logger = logging.getLogger(__name__)
-
 from ..db import SupplyCoreDb
 from ..job_result import JobResult
 from ..json_utils import json_dumps_safe
 from ..neo4j import Neo4jClient, Neo4jConfig, Neo4jError
+
+logger = logging.getLogger(__name__)
 
 
 _TRIANGLE_BATCH_SIZE = 100

@@ -460,6 +460,7 @@ def run_cip_signal_emitter(db: SupplyCoreDb) -> JobResult:
         ("copresence_signals", _emit_copresence_signals),
     ]
 
+    failed_adapters = 0
     for name, adapter_fn in adapters:
         try:
             count = adapter_fn(db)
@@ -469,17 +470,20 @@ def run_cip_signal_emitter(db: SupplyCoreDb) -> JobResult:
             msg = f"Adapter {name} failed: {exc}"
             logger.warning(msg, exc_info=True)
             warnings.append(msg)
+            failed_adapters += 1
 
     elapsed = int((time.monotonic() - t0) * 1000)
-    finish_job_run(db, job, status="success", rows_processed=total_written, rows_written=total_written)
+    status = "success" if failed_adapters == 0 else "partial_success"
+    finish_job_run(db, job, status=status, rows_processed=total_written, rows_written=total_written)
 
     return JobResult(
-        status="success",
+        status=status,
         summary=f"Emitted {total_written} signals from {len(adapters)} adapters",
         started_at="", finished_at="",
         duration_ms=elapsed, rows_seen=total_written,
         rows_processed=total_written, rows_written=total_written,
-        rows_skipped=0, rows_failed=0, batches_completed=len(adapters),
+        rows_skipped=0, rows_failed=0, batches_completed=len(adapters) - failed_adapters,
         checkpoint_before=None, checkpoint_after=None,
-        has_more=False, error_text=None, warnings=warnings, meta={},
+        has_more=False, error_text=None, warnings=warnings,
+        meta={"failed_adapters": failed_adapters},
     )
