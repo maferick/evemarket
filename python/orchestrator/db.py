@@ -22,6 +22,13 @@ _ERR_CANT_CONNECT = 2003
 
 _RETRYABLE_ERRORS = {_ERR_DEADLOCK, _ERR_LOCK_WAIT_TIMEOUT, _ERR_SERVER_GONE, _ERR_LOST_CONNECTION, _ERR_CANT_CONNECT}
 
+# Connection-level errors worth retrying on simple (non-transactional) operations.
+# Excludes deadlock/lock-wait since those imply a transaction conflict that a
+# simple auto-commit re-execution can safely retry.
+_CONNLOSS_ERRORS = {_ERR_SERVER_GONE, _ERR_LOST_CONNECTION, _ERR_CANT_CONNECT, _ERR_DEADLOCK, _ERR_LOCK_WAIT_TIMEOUT}
+_SIMPLE_MAX_RETRIES = 2
+_SIMPLE_BASE_DELAY = 0.3
+
 
 def _priority_rank(priority: str) -> int:
     normalized = priority.strip().lower()
@@ -66,43 +73,85 @@ class SupplyCoreDb:
         finally:
             connection.close()
 
+    def _is_retryable(self, exc: pymysql.err.OperationalError) -> bool:
+        return (exc.args[0] if exc.args else 0) in _CONNLOSS_ERRORS
+
     def fetch_one(self, sql: str, params: Sequence[Any] | None = None) -> dict[str, Any] | None:
-        with self.cursor() as (_, cursor):
-            if params is None:
-                cursor.execute(sql)
-            else:
-                cursor.execute(sql, params)
-            row = cursor.fetchone()
-            return dict(row) if row else None
+        for attempt in range(_SIMPLE_MAX_RETRIES + 1):
+            try:
+                with self.cursor() as (_, cursor):
+                    cursor.execute(sql, params)
+                    row = cursor.fetchone()
+                    return dict(row) if row else None
+            except pymysql.err.OperationalError as exc:
+                if attempt < _SIMPLE_MAX_RETRIES and self._is_retryable(exc):
+                    logger.warning("Retryable MariaDB error %d in fetch_one (attempt %d/%d): %s",
+                                   exc.args[0] if exc.args else 0, attempt + 1, _SIMPLE_MAX_RETRIES + 1, exc)
+                    time.sleep(_SIMPLE_BASE_DELAY * (2 ** attempt))
+                    continue
+                raise
+        return None  # unreachable, satisfies type checker
 
     def fetch_all(self, sql: str, params: Sequence[Any] | None = None) -> list[dict[str, Any]]:
-        with self.cursor() as (_, cursor):
-            if params is None:
-                cursor.execute(sql)
-            else:
-                cursor.execute(sql, params)
-            return [dict(row) for row in cursor.fetchall()]
+        for attempt in range(_SIMPLE_MAX_RETRIES + 1):
+            try:
+                with self.cursor() as (_, cursor):
+                    cursor.execute(sql, params)
+                    return [dict(row) for row in cursor.fetchall()]
+            except pymysql.err.OperationalError as exc:
+                if attempt < _SIMPLE_MAX_RETRIES and self._is_retryable(exc):
+                    logger.warning("Retryable MariaDB error %d in fetch_all (attempt %d/%d): %s",
+                                   exc.args[0] if exc.args else 0, attempt + 1, _SIMPLE_MAX_RETRIES + 1, exc)
+                    time.sleep(_SIMPLE_BASE_DELAY * (2 ** attempt))
+                    continue
+                raise
+        return []  # unreachable
 
     def execute(self, sql: str, params: Sequence[Any] | None = None) -> int:
-        with self.cursor() as (_, cursor):
-            if params is None:
-                return int(cursor.execute(sql))
-            return int(cursor.execute(sql, params))
+        for attempt in range(_SIMPLE_MAX_RETRIES + 1):
+            try:
+                with self.cursor() as (_, cursor):
+                    return int(cursor.execute(sql, params) if params is not None else cursor.execute(sql))
+            except pymysql.err.OperationalError as exc:
+                if attempt < _SIMPLE_MAX_RETRIES and self._is_retryable(exc):
+                    logger.warning("Retryable MariaDB error %d in execute (attempt %d/%d): %s",
+                                   exc.args[0] if exc.args else 0, attempt + 1, _SIMPLE_MAX_RETRIES + 1, exc)
+                    time.sleep(_SIMPLE_BASE_DELAY * (2 ** attempt))
+                    continue
+                raise
+        return 0  # unreachable
 
     def execute_many(self, sql: str, params_seq: Sequence[Sequence[Any]]) -> int:
-        with self.cursor() as (connection, cursor):
-            cursor.executemany(sql, params_seq)
-            connection.commit()
-            return int(cursor.rowcount)
+        for attempt in range(_SIMPLE_MAX_RETRIES + 1):
+            try:
+                with self.cursor() as (connection, cursor):
+                    cursor.executemany(sql, params_seq)
+                    connection.commit()
+                    return int(cursor.rowcount)
+            except pymysql.err.OperationalError as exc:
+                if attempt < _SIMPLE_MAX_RETRIES and self._is_retryable(exc):
+                    logger.warning("Retryable MariaDB error %d in execute_many (attempt %d/%d): %s",
+                                   exc.args[0] if exc.args else 0, attempt + 1, _SIMPLE_MAX_RETRIES + 1, exc)
+                    time.sleep(_SIMPLE_BASE_DELAY * (2 ** attempt))
+                    continue
+                raise
+        return 0  # unreachable
 
     def insert(self, sql: str, params: Sequence[Any] | None = None) -> int:
-        with self.cursor() as (connection, cursor):
-            if params is None:
-                cursor.execute(sql)
-            else:
-                cursor.execute(sql, params)
-            connection.commit()
-            return int(cursor.lastrowid or 0)
+        for attempt in range(_SIMPLE_MAX_RETRIES + 1):
+            try:
+                with self.cursor() as (connection, cursor):
+                    cursor.execute(sql, params)
+                    connection.commit()
+                    return int(cursor.lastrowid or 0)
+            except pymysql.err.OperationalError as exc:
+                if attempt < _SIMPLE_MAX_RETRIES and self._is_retryable(exc):
+                    logger.warning("Retryable MariaDB error %d in insert (attempt %d/%d): %s",
+                                   exc.args[0] if exc.args else 0, attempt + 1, _SIMPLE_MAX_RETRIES + 1, exc)
+                    time.sleep(_SIMPLE_BASE_DELAY * (2 ** attempt))
+                    continue
+                raise
+        return 0  # unreachable
 
     def iterate_batches(self, sql: str, params: Sequence[Any] | None = None, *, batch_size: int = 1000) -> Generator[list[dict[str, Any]], None, None]:
         with self.cursor(stream=True) as (_, cursor):

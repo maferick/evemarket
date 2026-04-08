@@ -214,6 +214,7 @@ def run_shell_corp_detection(
 
             # Turnover ratio: unique members seen / current members
             turnover = unique_members / max(member_count, 1) if unique_members > 0 else 0.0
+            turnover = min(turnover, 99999999.9999)  # clamp to DECIMAL(12,4) ceiling
 
             shell_s, flags = _shell_score(
                 age_days=age_days,
