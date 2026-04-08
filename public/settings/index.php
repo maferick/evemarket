@@ -982,7 +982,9 @@ $staticDataState = null;
 $settingsPipelineHealth = array_values((array) ($syncDashboard['pipeline_health'] ?? []));
 $settingsSystemStatus = (array) ($syncDashboard['system_status'] ?? []);
 $rebuildStatus = ($section === 'automation-sync') ? supplycore_rebuild_status_read() : null;
-$runtimeDatasetCards = array_values((array) ($syncDashboard['runtime_dataset_cards'] ?? []));
+$runtimeDatasetCards = ($section === 'automation-sync')
+    ? array_values((array) ($syncDashboard['runtime_dataset_cards'] ?? []))
+    : (($section === 'workspace' && $dbStatus['ok']) ? supplycore_settings_runtime_dataset_cards() : []);
 $automationJobs = ($section === 'automation-sync') ? automation_runtime_jobs_overview() : [];
 $automationEnabledCount = count(array_filter($automationJobs, static fn (array $job): bool => !empty($job['enabled'])));
 if ($dbStatus['ok']) {
@@ -1019,15 +1021,17 @@ $trackedCorporations = [];
 $killmailStatus = null;
 $killmailWorkerStatus = [];
 $killmailStatusSummary = [];
-$itemScope = item_scope_view_model();
-$ollamaConfig = supplycore_ai_ollama_config();
-$ollamaStatus = supplycore_ai_status_summary();
+$itemScope = ($section === 'market-scope') ? item_scope_view_model() : [];
+$ollamaConfig = ($section === 'ai-alerts') ? supplycore_ai_ollama_config() : [];
+$ollamaStatus = ($section === 'ai-alerts') ? supplycore_ai_status_summary() : [];
 if ($dbStatus['ok']) {
     try {
-        $trackedAlliances = db_killmail_tracked_alliances_active();
-        $trackedCorporations = db_killmail_tracked_corporations_active();
-        $killmailStatus = db_killmail_ingestion_status();
-        $killmailWorkerStatus = zkill_worker_runtime_status();
+        if ($section === 'ai-alerts') {
+            $trackedAlliances = db_killmail_tracked_alliances_active();
+            $trackedCorporations = db_killmail_tracked_corporations_active();
+            $killmailStatus = db_killmail_ingestion_status();
+            $killmailWorkerStatus = zkill_worker_runtime_status();
+        }
     } catch (Throwable) {
         $trackedAlliances = [];
         $trackedCorporations = [];
