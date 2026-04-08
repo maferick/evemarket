@@ -532,6 +532,7 @@ def main() -> int:
             lookback_hours=args.lookback_hours,
             dry_run=args.dry_run,
             auto_close=args.auto_close,
+            app_root=app_root,
         )
         _print_cli_result(command, started_at, result)
         return 0 if str(result.get("status") or "success") != "failed" else 1
