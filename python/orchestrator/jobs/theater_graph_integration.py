@@ -34,6 +34,7 @@ else:
 BATCH_SIZE = 500
 BRIDGE_SCORE_THRESHOLD = 0.3
 SUSPICIOUS_CLUSTER_MIN_SUSPICIOUS = 2
+_DECIMAL_8_4_MAX = 9999.9999
 
 
 def _now_sql() -> str:
@@ -204,8 +205,8 @@ def _flush_graph_data(
                         theater_id,
                         int(gp["character_id"]),
                         int(gp.get("cluster_id") or 0),
-                        round(float(gp.get("bridge_score") or 0), 4),
-                        round(float(gp.get("co_occurrence_density") or 0), 4),
+                        min(round(float(gp.get("bridge_score") or 0), 4), _DECIMAL_8_4_MAX),
+                        min(round(float(gp.get("co_occurrence_density") or 0), 4), _DECIMAL_8_4_MAX),
                         int(gp.get("suspicious_cluster_flag") or 0),
                     )
                     for gp in chunk
