@@ -220,21 +220,23 @@ Edit `src/functions.php`, function `supplycore_authoritative_job_registry()`:
 ],
 ```
 
-Also add a matching entry to `dedicated_worker_job_overrides()` in the same file:
+If your job key starts with `compute_` and is a schedulable Python job, also add an entry to `worker_job_registry_definitions()` in the same file:
 
 ```php
-'my_new_sync' => [
-    'workload_class' => 'sync',
+'compute_my_new_thing' => [
+    'workload_class' => 'compute',
     'execution_mode' => 'python',
-    'queue_name' => 'sync',
+    'queue_name' => 'compute',
     'priority' => 'normal',
-    'interval_seconds' => 600,
-    'timeout_seconds' => 180,
-    'memory_limit_mb' => 384,
-    'retry_delay_seconds' => 30,
+    'interval_seconds' => 900,
+    'timeout_seconds' => 300,
+    'memory_limit_mb' => 768,
+    'retry_delay_seconds' => 60,
     'max_attempts' => 4,
 ],
 ```
+
+> **Note:** This is only required for `compute_*` Python jobs. Sync jobs (e.g., `my_new_sync`) do not need an entry here. An audit function (`scheduler_enabled_python_worker_binding_audit`) will flag missing entries for enabled compute jobs.
 
 ### Field reference
 
@@ -292,7 +294,18 @@ Add a `run_job` call in the correct phase:
 run_job "my_new_sync" "My New Sync"
 ```
 
-### d) Documentation
+### d) Test harness (`scripts/test-all-sync-jobs.sh`)
+
+If the job is a sync job, add it to the `SYNC_JOBS` array so it's included in the smoke-test sweep:
+
+```bash
+SYNC_JOBS=(
+  ...
+  my_new_sync
+)
+```
+
+### e) Documentation
 
 - `docs/AUTHORITATIVE_JOB_MATRIX.md` — add a row to the job matrix table
 - `docs/CLI_MANUAL.md` — add to the job reference table AND the numbered rebuild list
@@ -309,16 +322,18 @@ Before merging, verify **all eleven** registration points:
 - [ ] `python/orchestrator/processor_registry.py` — import + job-key set + dispatch map
 - [ ] `python/orchestrator/worker_registry.py` — in `WORKER_JOB_DEFINITIONS`
 
-**PHP (2 files, 3 entries):**
+**PHP (2 files, 3–4 entries):**
 - [ ] `src/functions.php` — in `supplycore_authoritative_job_registry()`
+- [ ] `src/functions.php` — in `worker_job_registry_definitions()` *(only for `compute_*` Python jobs)*
 - [ ] `src/functions.php` — in dashboard group mapping
 - [ ] `src/db.php` — in `$stageJobKeys` array
 
 **Database (1 file):**
 - [ ] `database/migrations/` — schedule row INSERT + any new tables
 
-**Ops & Docs (3 files):**
+**Ops & Docs (4 files):**
 - [ ] `scripts/reset_and_rebuild.sh` — in rebuild sequence
+- [ ] `scripts/test-all-sync-jobs.sh` — in `SYNC_JOBS` array *(sync jobs only)*
 - [ ] `docs/AUTHORITATIVE_JOB_MATRIX.md` — row in job matrix
 - [ ] `docs/CLI_MANUAL.md` — in reference table + numbered rebuild list
 
