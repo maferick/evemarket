@@ -32,6 +32,7 @@ $sectionChildren = [
     ],
     'integrations' => [
         'public-api' => 'Public API',
+        'discord' => 'Discord',
     ],
     'runtime-diagnostics' => [
         'runtime-config' => 'Runtime Config',
@@ -899,6 +900,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
             $saved = false;
             $saveMessage = 'Unknown API action.';
+            break;
+
+        case 'discord':
+            $webhookUrl = trim((string) ($_POST['discord_webhook_url'] ?? ''));
+            if ($webhookUrl !== '' && !str_starts_with($webhookUrl, 'https://discord.com/api/webhooks/')) {
+                $saved = false;
+                $saveMessage = 'Invalid Discord webhook URL. It should start with https://discord.com/api/webhooks/';
+                break;
+            }
+            $saved = save_settings(['discord_webhook_url' => $webhookUrl]);
             break;
     }
 
@@ -3521,6 +3532,59 @@ include __DIR__ . '/../../src/views/partials/header.php';
                     <?php endif; ?>
                 </section>
             </div>
+
+        <?php elseif ($activeSubsection === 'discord'): ?>
+            <?php $discordWebhookUrl = get_setting('discord_webhook_url', ''); ?>
+            <div class="mt-6 space-y-6">
+                <section class="rounded-2xl border border-border bg-black/20 p-4 space-y-4">
+                    <div>
+                        <p class="text-sm font-semibold text-slate-100">Discord Webhook</p>
+                        <p class="mt-1 text-xs text-muted">Configure a Discord webhook URL to receive curated notifications about job failures, market deal alerts, high-value battles, and sovereignty changes.</p>
+                    </div>
+
+                    <form method="post" class="space-y-4">
+                        <input type="hidden" name="_token" value="<?= htmlspecialchars(csrf_token(), ENT_QUOTES) ?>">
+                        <input type="hidden" name="section" value="discord">
+
+                        <label class="block space-y-2">
+                            <span class="text-sm text-muted">Webhook URL</span>
+                            <input type="url" name="discord_webhook_url"
+                                   value="<?= htmlspecialchars($discordWebhookUrl, ENT_QUOTES) ?>"
+                                   placeholder="https://discord.com/api/webhooks/..."
+                                   class="w-full field-input font-mono text-xs">
+                            <span class="text-xs text-muted">Create a webhook in your Discord server: Server Settings &rarr; Integrations &rarr; Webhooks &rarr; New Webhook. Copy the URL and paste it here.</span>
+                        </label>
+
+                        <button class="btn-primary">Save Webhook URL</button>
+                    </form>
+
+                    <?php if ($discordWebhookUrl !== ''): ?>
+                        <div class="rounded-xl border border-emerald-500/40 bg-emerald-500/10 p-3 text-xs text-emerald-200">
+                            <strong>Active.</strong> The <code>discord_webhook_filter</code> job will send notifications when enabled in Automation settings.
+                        </div>
+                    <?php else: ?>
+                        <div class="rounded-xl border border-amber-400/30 bg-amber-500/10 p-3 text-xs text-amber-100">
+                            <strong>Not configured.</strong> Set a webhook URL above, then enable the <code>discord_webhook_filter</code> job in Automation settings.
+                        </div>
+                    <?php endif; ?>
+                </section>
+
+                <section class="rounded-2xl border border-border bg-black/20 p-4 space-y-3">
+                    <p class="text-sm font-semibold text-slate-100">What gets sent</p>
+                    <div class="space-y-2 text-xs text-muted">
+                        <p>The worker scans for high-priority events and sends them as rich embeds. Each event is fingerprinted to prevent duplicates.</p>
+                        <ul class="list-disc pl-5 space-y-1">
+                            <li><span class="text-rose-300">Job Failures</span> &mdash; Failed sync_runs and job_runs from the last 4 hours</li>
+                            <li><span class="text-emerald-300">Deal Alerts</span> &mdash; Critical and very strong market deal opportunities</li>
+                            <li><span class="text-amber-300">Battle Reports</span> &mdash; Engagements with &gt;1B ISK destroyed</li>
+                            <li><span class="text-purple-300">Sovereignty Alerts</span> &mdash; Critical and high-severity sovereignty changes</li>
+                            <li><span class="text-sky-300">System Health</span> &mdash; Alerts when job failure rate exceeds 20%</li>
+                        </ul>
+                        <p>The job runs every 10 minutes by default and respects Discord's rate limits (max 8 messages per run, 1.5s between sends).</p>
+                    </div>
+                </section>
+            </div>
+
         <?php else: ?>
             <form class="mt-6 space-y-4" method="post">
                 <input type="hidden" name="_token" value="<?= htmlspecialchars(csrf_token(), ENT_QUOTES) ?>">

@@ -764,6 +764,7 @@ These can be run via `python -m orchestrator run-job --job-key <KEY>`:
 | `graph_model_audit` | Graph model audit |
 | `graph_query_plan_validation` | Cypher query plan validation |
 | `neo4j_ml_exploration` | GDS ML pipeline (PageRank, embeddings, link prediction) |
+| `discord_webhook_filter` | Curated Discord webhook notifications |
 | `theater_clustering` | Theater cluster detection |
 | `theater_analysis` | Theater composition analysis |
 | `theater_graph_integration` | Theater → graph integration |
@@ -881,6 +882,7 @@ Phase 7: Cleanup & Economics
  35. compute_buy_all
  36. compute_signals
  37. compute_economic_warfare
+ 38. discord_webhook_filter
 ```
 
 ---

@@ -103,3 +103,4 @@ from .cip_compound_evaluator import run_cip_compound_evaluator
 from .cip_compound_analytics import run_cip_compound_analytics
 from .cip_calibration import run_cip_calibration
 from .neo4j_ml_exploration import run_neo4j_ml_exploration
+from .discord_webhook_filter import run_discord_webhook_filter

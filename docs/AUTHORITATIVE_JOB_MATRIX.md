@@ -49,6 +49,7 @@ Source of truth: `supplycore_authoritative_job_registry()` in `src/functions.php
 | graph_model_audit | real_schedulable | yes | yes | yes | yes | yes | yes |  | Neo4j schema audit. |
 | graph_query_plan_validation | real_schedulable | yes | yes | yes | yes | yes | yes |  | PROFILE/EXPLAIN pass on hot Cypher queries for plan anti-pattern detection. |
 | neo4j_ml_exploration | real_schedulable | yes | yes | yes | yes | yes | yes |  | GDS ML pipeline: PageRank, Leiden, HITS, K-Core, FastRP embeddings, link prediction, role classification. |
+| discord_webhook_filter | real_schedulable | yes | yes | yes | yes | yes | yes |  | Curated Discord webhook notifications for job failures, deal alerts, battles, and sovereignty events. |
 | theater_clustering | real_schedulable | yes | yes | yes | yes | yes | yes |  | Spatial/temporal battle clustering into theaters. |
 | theater_analysis | real_schedulable | yes | yes | yes | yes | yes | yes |  | Theater-level metrics and composition. |
 | theater_graph_integration | real_schedulable | yes | yes | yes | yes | yes | yes |  | Project theaters into Neo4j. |

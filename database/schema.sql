@@ -3279,7 +3279,8 @@ INSERT INTO app_settings (setting_key, setting_value) VALUES
     ('ollama_url', 'http://localhost:11434/api'),
     ('ollama_model', 'qwen2.5:1.5b-instruct'),
     ('ollama_timeout', '20'),
-    ('ollama_capability_tier', 'auto')
+    ('ollama_capability_tier', 'auto'),
+    ('discord_webhook_url', '')
 ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value);
 
 INSERT INTO sync_schedules (
@@ -3337,7 +3338,8 @@ INSERT INTO sync_schedules (
     ('compute_character_feature_windows', 1, 30, 1800, 1620, 27, 'normal', 'single', 'python', 900, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
     ('evewho_alliance_member_sync', 0, 30, 1800, 2280, 38, 'normal', 'single', 'python', 3600, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
     ('temporal_behavior_detection', 1, 30, 1800, 1680, 28, 'normal', 'single', 'python', 600, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
-    ('compute_behavioral_scoring', 1, 60, 3600, 1740, 29, 'normal', 'single', 'python', 1800, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL)
+    ('compute_behavioral_scoring', 1, 60, 3600, 1740, 29, 'normal', 'single', 'python', 1800, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL),
+    ('discord_webhook_filter', 0, 10, 600, 3360, 56, 'low', 'single', 'python', 120, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 'waiting', 'automatic', 1, 1, NULL, NULL, NULL, NULL)
 ON DUPLICATE KEY UPDATE
     enabled = VALUES(enabled),
     interval_minutes = VALUES(interval_minutes),
@@ -3432,4 +3434,16 @@ CREATE TABLE IF NOT EXISTS log_issue_tracker (
     UNIQUE KEY uniq_fingerprint (fingerprint),
     KEY idx_log_issue_job (job_name),
     KEY idx_log_issue_resolved (resolved_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS discord_webhook_sent (
+    id              BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    fingerprint     CHAR(64)       NOT NULL,
+    event_type      VARCHAR(60)    NOT NULL,
+    event_summary   VARCHAR(500)   NOT NULL,
+    sent_at         DATETIME       NOT NULL,
+    created_at      TIMESTAMP      DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY uniq_fingerprint (fingerprint),
+    KEY idx_dws_event_type (event_type, sent_at),
+    KEY idx_dws_sent_at (sent_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
