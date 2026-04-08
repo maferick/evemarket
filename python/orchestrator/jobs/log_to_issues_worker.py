@@ -210,7 +210,7 @@ def run_log_to_issues(
         )
 
         if existing:
-            # Already tracked — bump count and update last_seen.
+            # Always bump count and update last_seen.
             db.execute(
                 "UPDATE log_issue_tracker "
                 "SET occurrence_count = occurrence_count + %s, "
@@ -219,23 +219,28 @@ def run_log_to_issues(
                 (len(occurrences), last_ts, existing["id"]),
             )
 
-            # If it was previously resolved but now reoccurring, reopen.
-            if existing.get("resolved_at") and existing.get("github_issue_number"):
-                db.execute(
-                    "UPDATE log_issue_tracker SET resolved_at = NULL WHERE id = %s",
-                    (existing["id"],),
-                )
-                if not dry_run and github_token:
-                    try:
-                        _comment_github_issue(
-                            github_token, github_repo,
-                            int(existing["github_issue_number"]),
-                            f"This failure has reoccurred ({len(occurrences)} new occurrence(s) since last resolution). Reopening for triage.",
-                        )
-                    except Exception as exc:
-                        warnings.append(f"Failed to comment on #{existing['github_issue_number']}: {exc}")
-            issues_updated += 1
-            continue
+            if existing.get("github_issue_number"):
+                # Issue already filed — just update count.
+                # If it was previously resolved but now reoccurring, reopen.
+                if existing.get("resolved_at"):
+                    db.execute(
+                        "UPDATE log_issue_tracker SET resolved_at = NULL WHERE id = %s",
+                        (existing["id"],),
+                    )
+                    if not dry_run and github_token:
+                        try:
+                            _comment_github_issue(
+                                github_token, github_repo,
+                                int(existing["github_issue_number"]),
+                                f"This failure has reoccurred ({len(occurrences)} new occurrence(s) since last resolution). Reopening for triage.",
+                            )
+                        except Exception as exc:
+                            warnings.append(f"Failed to comment on #{existing['github_issue_number']}: {exc}")
+                issues_updated += 1
+                continue
+
+            # Tracked but never filed (previous run had no token) — fall
+            # through to issue-creation below so the GitHub issue gets made.
 
         # ── New failure pattern — create issue ───────────────────────
         error_short = norm_error[:80]
@@ -285,7 +290,8 @@ def run_log_to_issues(
             " github_issue_url, occurrence_count, first_seen_at, last_seen_at) "
             "VALUES (%s, %s, %s, %s, %s, %s, %s, %s) "
             "ON DUPLICATE KEY UPDATE "
-            "  occurrence_count = occurrence_count + VALUES(occurrence_count), "
+            "  github_issue_number = COALESCE(VALUES(github_issue_number), github_issue_number), "
+            "  github_issue_url = COALESCE(VALUES(github_issue_url), github_issue_url), "
             "  last_seen_at = VALUES(last_seen_at)",
             (fp, job_name, norm_error[:500], issue_number, issue_url,
              len(occurrences), first_ts, last_ts),
