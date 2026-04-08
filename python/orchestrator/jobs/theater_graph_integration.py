@@ -167,9 +167,8 @@ def _flush_graph_data(
     graph_participants: list[dict[str, Any]],
     computed_at: str,
 ) -> int:
-    rows_written = 0
-
-    with db.transaction_with_retry() as (_, cursor):
+    def _do_flush(connection, cursor):
+        written = 0
         cursor.execute("DELETE FROM theater_graph_participants WHERE theater_id = %s", (theater_id,))
         cursor.execute("DELETE FROM theater_graph_summary WHERE theater_id = %s", (theater_id,))
 
@@ -188,7 +187,7 @@ def _flush_graph_data(
                 summary["avg_co_occurrence_density"], computed_at,
             ),
         )
-        rows_written += 1
+        written += 1
 
         # Per-character
         for chunk_start in range(0, len(graph_participants), BATCH_SIZE):
@@ -212,9 +211,10 @@ def _flush_graph_data(
                     for gp in chunk
                 ],
             )
-            rows_written += len(chunk)
+            written += len(chunk)
+        return written
 
-    return rows_written
+    return db.run_in_transaction(_do_flush, max_retries=3)
 
 
 # ── Entry point ─────────────────────────────────────────────────────────────
