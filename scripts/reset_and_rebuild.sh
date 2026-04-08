@@ -380,6 +380,10 @@ run_job "compute_signals" "Signals"
 run_job "compute_economic_warfare" "Economic Warfare"
 run_job "discord_webhook_filter" "Discord Webhook Filter"
 
+echo ""
+echo "  ── Phase 8: Maintenance ──"
+run_job "log_to_issues" "Log-to-Issues"
+
 # ── Step 5: Summary ─────────────────────────────────────────────────────────
 echo ""
 echo "[5/6] Verifying results..."
