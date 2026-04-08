@@ -769,6 +769,7 @@ These can be run via `python -m orchestrator run-job --job-key <KEY>`:
 | `theater_analysis` | Theater composition analysis |
 | `theater_graph_integration` | Theater → graph integration |
 | `theater_suspicion` | Theater-level suspicion |
+| `log_to_issues` | Scan failures and create GitHub issues |
 
 ### All Sync Jobs
 
@@ -883,6 +884,9 @@ Phase 7: Cleanup & Economics
  36. compute_signals
  37. compute_economic_warfare
  38. discord_webhook_filter
+
+Phase 8: Maintenance
+ 39. log_to_issues
 ```
 
 ---
