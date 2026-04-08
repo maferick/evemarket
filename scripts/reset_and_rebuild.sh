@@ -378,6 +378,7 @@ run_job "graph_query_plan_validation" "Graph Query Plan Validation"
 run_job "compute_buy_all" "Buy All"
 run_job "compute_signals" "Signals"
 run_job "compute_economic_warfare" "Economic Warfare"
+run_job "discord_webhook_filter" "Discord Webhook Filter"
 
 # ── Step 5: Summary ─────────────────────────────────────────────────────────
 echo ""

@@ -4584,6 +4584,9 @@ function supplycore_authoritative_job_registry(): array
         'compute_cohort_baselines' => ['label' => 'Cohort Baselines', 'description' => 'Normalize suspicion scores against cohort baselines for percentile ranking and outlier detection.', 'category' => 'real_schedulable', 'enabled_by_default' => true, 'schedulable' => true, 'settings_visible' => true, 'user_visible' => true, 'execution_mode' => 'python', 'default_interval_minutes' => 30, 'default_offset_minutes' => 51, 'priority' => 'normal', 'timeout_seconds' => 420, 'concurrency_policy' => 'single', 'explicitly_configured' => true, 'python_implementation_exists' => true, 'worker_safe' => true],
         'compute_copresence_edges' => ['label' => 'Co-Presence Edges', 'description' => 'Compute generalized co-presence edges between characters from battle participation and feature windows.', 'category' => 'real_schedulable', 'enabled_by_default' => true, 'schedulable' => true, 'settings_visible' => true, 'user_visible' => true, 'execution_mode' => 'python', 'default_interval_minutes' => 60, 'default_offset_minutes' => 52, 'priority' => 'normal', 'timeout_seconds' => 900, 'concurrency_policy' => 'single', 'explicitly_configured' => true, 'python_implementation_exists' => true, 'worker_safe' => true],
 
+        // Discord & Webhooks.
+        'discord_webhook_filter' => ['label' => 'Discord Webhook Filter', 'description' => 'Scan for interesting events (job failures, deal alerts, battles, sovereignty changes) and send curated notifications to a Discord webhook with rich embeds.', 'category' => 'real_schedulable', 'enabled_by_default' => false, 'schedulable' => true, 'settings_visible' => true, 'user_visible' => true, 'execution_mode' => 'python', 'default_interval_minutes' => 10, 'default_offset_minutes' => 56, 'priority' => 'low', 'timeout_seconds' => 120, 'concurrency_policy' => 'single', 'explicitly_configured' => true, 'python_implementation_exists' => true, 'worker_safe' => true],
+
         // Sync support jobs.
         'tracked_alliance_member_sync' => ['label' => 'Tracked Alliance Member Sync', 'description' => 'Sync tracked alliance membership rosters via EveWho for org-chart intelligence and shell-corp detection.', 'category' => 'real_schedulable', 'enabled_by_default' => false, 'schedulable' => true, 'settings_visible' => true, 'user_visible' => true, 'execution_mode' => 'python', 'default_interval_minutes' => 30, 'default_offset_minutes' => 53, 'priority' => 'normal', 'timeout_seconds' => 3600, 'concurrency_policy' => 'single', 'explicitly_configured' => true, 'python_implementation_exists' => true, 'worker_safe' => true],
         'killmail_zkb_repair' => ['label' => 'Killmail zKB Repair', 'description' => 'Backfill missing zKillboard metadata (ISK values, points, labels) for killmails ingested without full data.', 'category' => 'real_schedulable', 'enabled_by_default' => false, 'schedulable' => true, 'settings_visible' => true, 'user_visible' => true, 'execution_mode' => 'python', 'default_interval_minutes' => 60, 'default_offset_minutes' => 54, 'priority' => 'low', 'timeout_seconds' => 600, 'concurrency_policy' => 'single', 'explicitly_configured' => true, 'python_implementation_exists' => true, 'worker_safe' => true],
@@ -7488,6 +7491,9 @@ function automation_runtime_job_group(string $jobKey): string
         // System Maintenance
         'cache_expiry_cleanup_sync' => 'System Maintenance',
         'killmail_zkb_repair' => 'System Maintenance',
+
+        // Discord & Webhooks
+        'discord_webhook_filter' => 'Discord & Webhooks',
     ];
 
     return $map[$jobKey] ?? 'Other';

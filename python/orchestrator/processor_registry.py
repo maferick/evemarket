@@ -107,6 +107,7 @@ from .jobs.esi_sovereignty_sync import (
 from .jobs.compute_sovereignty_alerts import run_compute_sovereignty_alerts
 from .jobs.neo4j_ml_exploration import run_neo4j_ml_exploration
 from .jobs.log_to_issues_worker import run_log_to_issues
+from .jobs.discord_webhook_filter import run_discord_webhook_filter
 
 
 def _php_bridge(cfg: dict[str, Any]) -> PhpBridge:
@@ -182,6 +183,7 @@ PYTHON_COMPUTE_PROCESSOR_JOB_KEYS: set[str] = {
     "cip_calibration",
     "neo4j_ml_exploration",
     "log_to_issues",
+    "discord_webhook_filter",
 }
 
 PYTHON_SYNC_PROCESSOR_JOB_KEYS: set[str] = {
@@ -332,6 +334,8 @@ _PROCESSOR_DISPATCH: dict[str, tuple] = {
     "killmail_zkb_repair": (run_killmail_zkb_repair, lambda db, cfg: (db, cfg)),
     # Log-to-issues — scans job_runs failures and files GitHub issues
     "log_to_issues": (run_log_to_issues, lambda db, cfg: (db,)),
+    # Discord webhook — curated event notifications
+    "discord_webhook_filter": (run_discord_webhook_filter, lambda db, cfg: (db,)),
 }
 
 
