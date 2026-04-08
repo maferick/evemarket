@@ -61,11 +61,29 @@ def _gds_projection_exists(client: Neo4jClient) -> bool:
         return False
 
 
+def _relationship_types_present(client: Neo4jClient) -> list[str]:
+    """Return which of the expected relationship types actually exist in Neo4j."""
+    present = []
+    for rel_type in ("CONNECTS_TO", "JUMP_BRIDGE"):
+        try:
+            rows = client.query(
+                f"MATCH ()-[r:{rel_type}]->() RETURN r LIMIT 1"
+            )
+            if rows:
+                present.append(rel_type)
+        except Exception:
+            pass
+    return present
+
+
 def _ensure_gds_projection(client: Neo4jClient, *, force_recreate: bool = False) -> bool:
     """Create the GDS graph projection for universe topology.
 
     If the projection already exists and *force_recreate* is False, reuse it to
     avoid the overhead of dropping and reprojecting the full graph every run.
+
+    Only includes relationship types that actually exist in the database to
+    avoid GDS ``IllegalArgumentException`` when e.g. no jump bridges are configured.
     """
     try:
         if not force_recreate and _gds_projection_exists(client):
@@ -77,19 +95,19 @@ def _ensure_gds_projection(client: Neo4jClient, *, force_recreate: bool = False)
         except Exception:
             pass
 
+        rel_types = _relationship_types_present(client)
+        if not rel_types:
+            return False
+
+        rel_projection = ", ".join(
+            f"{rt}: {{orientation: 'UNDIRECTED'}}" for rt in rel_types
+        )
         client.query(
             f"""
             CALL gds.graph.project(
                 '{GDS_GRAPH_NAME}',
                 'System',
-                {{
-                    CONNECTS_TO: {{
-                        orientation: 'UNDIRECTED'
-                    }},
-                    JUMP_BRIDGE: {{
-                        orientation: 'UNDIRECTED'
-                    }}
-                }}
+                {{{rel_projection}}}
             )
             """,
             timeout_seconds=120,

@@ -37,15 +37,33 @@ def _has_gds(client: Neo4jClient) -> bool:
 
 
 def _ensure_gds_projection(client: Neo4jClient) -> bool:
-    """Create the GDS in-memory graph projection for character community analysis."""
+    """Create the GDS in-memory graph projection for character community analysis.
+
+    Only includes relationship types that actually exist in the database to
+    avoid GDS ``IllegalArgumentException`` when some types are absent.
+    """
     try:
         try:
             client.query(f"CALL gds.graph.drop('{GDS_GRAPH_NAME}', false)")
         except Exception:
             pass
 
+        # Filter to relationship types that exist in the database
+        present_types = []
+        for rt in _COMMUNITY_REL_TYPES:
+            try:
+                rows = client.query(f"MATCH ()-[r:{rt}]->() RETURN r LIMIT 1")
+                if rows:
+                    present_types.append(rt)
+            except Exception:
+                pass
+
+        if not present_types:
+            logger.warning("GDS projection skipped: no community relationship types exist")
+            return False
+
         rel_projection = ", ".join(
-            f"{rt}: {{orientation: 'UNDIRECTED'}}" for rt in _COMMUNITY_REL_TYPES
+            f"{rt}: {{orientation: 'UNDIRECTED'}}" for rt in present_types
         )
         client.query(
             f"""
