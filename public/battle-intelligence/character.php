@@ -28,6 +28,16 @@ $analystFeedback = db_analyst_feedback_for_character($characterId);
 $copresenceSignals = db_character_copresence_signals($characterId);
 $copresenceEdges = db_character_copresence_top_edges_preferred($characterId, '30d', 15);
 
+// Resolve the viewed character's alliance for display badges
+$viewedAllianceRow = $characterId > 0 ? db_select_one(
+    'SELECT tp.alliance_id FROM theater_participants tp
+     INNER JOIN theaters t ON t.theater_id = tp.theater_id
+     WHERE tp.character_id = ? ORDER BY t.start_time DESC LIMIT 1',
+    [$characterId]
+) : null;
+$viewedAllianceId = (int) ($viewedAllianceRow['alliance_id'] ?? 0);
+$trackedAllianceIds = array_map('intval', array_column(db_killmail_tracked_alliances_active(), 'alliance_id'));
+
 // Temporal behavior detection signals
 $temporalBehaviorSignals = db_character_temporal_behavior_signals($characterId);
 $featureHistograms = db_character_feature_histograms($characterId);
@@ -748,27 +758,43 @@ include __DIR__ . '/../../src/views/partials/header.php';
         <h2 class="mt-6 text-lg font-semibold text-slate-100">Top co-presence edges (30d)</h2>
         <p class="mt-1 text-xs text-muted">Strongest pairwise connections by event type. Higher weight = more frequent co-appearance.</p>
         <div class="mt-3 table-shell"><table class="table-ui"><thead><tr class="border-b border-border/70 text-xs text-muted uppercase"><th class="px-3 py-2 text-left">Character</th><th class="px-3 py-2 text-left">Event type</th><th class="px-3 py-2 text-right">Weight</th><th class="px-3 py-2 text-right">Count</th><th class="px-3 py-2 text-right">Last seen</th></tr></thead><tbody>
-        <?php foreach ($copresenceEdges as $ce): ?>
-            <?php
-                $ceType = (string) ($ce['event_type'] ?? '');
-                $ceTypeLabel = ucwords(str_replace('_', ' ', $ceType));
-                $ceTypeBg = match ($ceType) {
-                    'same_battle' => 'bg-red-900/60 text-red-300',
-                    'same_side' => 'bg-blue-900/60 text-blue-300',
-                    'same_system_time_window' => 'bg-purple-900/60 text-purple-300',
-                    'related_engagement' => 'bg-orange-900/60 text-orange-300',
-                    'same_operational_area' => 'bg-green-900/60 text-green-300',
-                    default => 'bg-slate-700 text-slate-300',
-                };
-            ?>
+        <?php
+        $ceSuppressedCount = 0;
+        foreach ($copresenceEdges as $ce):
+            $ceRawName = (string) ($ce['other_character_name'] ?? 'Unknown');
+            if (ci_is_placeholder_name($ceRawName)) { $ceSuppressedCount++; continue; }
+            $ceType = (string) ($ce['event_type'] ?? '');
+            $ceTypeLabel = ucwords(str_replace('_', ' ', $ceType));
+            $ceTypeBg = match ($ceType) {
+                'same_battle' => 'bg-red-900/60 text-red-300',
+                'same_side' => 'bg-blue-900/60 text-blue-300',
+                'same_system_time_window' => 'bg-purple-900/60 text-purple-300',
+                'related_engagement' => 'bg-orange-900/60 text-orange-300',
+                'same_operational_area' => 'bg-green-900/60 text-green-300',
+                default => 'bg-slate-700 text-slate-300',
+            };
+            $ceOtherAlliance = (int) ($ce['other_alliance_id'] ?? 0);
+            $ceIsSameAlliance = $viewedAllianceId > 0 && $ceOtherAlliance === $viewedAllianceId;
+            $ceIsTracked = $ceOtherAlliance > 0 && in_array($ceOtherAlliance, $trackedAllianceIds, true);
+        ?>
             <tr class="border-b border-border/40">
-                <td class="px-3 py-2"><a class="text-accent" href="?character_id=<?= (int) ($ce['other_character_id'] ?? 0) ?>"><?= htmlspecialchars((string) ($ce['other_character_name'] ?? 'Unknown'), ENT_QUOTES) ?></a></td>
+                <td class="px-3 py-2">
+                    <a class="text-accent" href="?character_id=<?= (int) ($ce['other_character_id'] ?? 0) ?>"><?= htmlspecialchars($ceRawName, ENT_QUOTES) ?></a>
+                    <?php if ($ceIsSameAlliance): ?>
+                        <span class="ml-1 inline-block rounded-full px-1.5 py-0.5 text-[9px] uppercase tracking-wider bg-cyan-900/60 text-cyan-300">ally</span>
+                    <?php elseif ($ceIsTracked): ?>
+                        <span class="ml-1 inline-block rounded-full px-1.5 py-0.5 text-[9px] uppercase tracking-wider bg-emerald-900/60 text-emerald-300">coalition</span>
+                    <?php endif; ?>
+                </td>
                 <td class="px-3 py-2"><span class="inline-block rounded-full px-2 py-0.5 text-[10px] uppercase tracking-wider <?= $ceTypeBg ?>"><?= htmlspecialchars($ceTypeLabel, ENT_QUOTES) ?></span></td>
                 <td class="px-3 py-2 text-right font-mono text-sm"><?= number_format((float) ($ce['edge_weight'] ?? 0), 1) ?></td>
                 <td class="px-3 py-2 text-right"><?= (int) ($ce['event_count'] ?? 0) ?></td>
                 <td class="px-3 py-2 text-right text-xs text-muted"><?= htmlspecialchars((string) ($ce['last_event_at'] ?? ''), ENT_QUOTES) ?></td>
             </tr>
         <?php endforeach; ?>
+        <?php if ($ceSuppressedCount > 0): ?>
+            <tr class="border-b border-border/40"><td colspan="5" class="px-3 py-2 text-xs text-muted italic"><?= $ceSuppressedCount ?> unresolved character<?= $ceSuppressedCount !== 1 ? 's' : '' ?> suppressed</td></tr>
+        <?php endif; ?>
         </tbody></table></div>
         <?php endif; ?>
 
@@ -940,11 +966,13 @@ include __DIR__ . '/../../src/views/partials/header.php';
             <p class="text-xs text-muted mb-2">Community members (top <?= count($communityMembers) ?> of <?= $communitySize ?>)</p>
             <div class="flex flex-wrap gap-2">
                 <?php foreach ($communityMembers as $cm):
+                    $cmName = (string) ($cm['character_name'] ?? 'Unknown');
+                    if (ci_is_placeholder_name($cmName)) { continue; }
                     $isCurrentChar = ((int) ($cm['character_id'] ?? 0)) === $characterId;
                     $memberBridge = (bool) ((int) ($cm['is_bridge'] ?? 0));
                 ?>
                     <a href="?character_id=<?= (int) ($cm['character_id'] ?? 0) ?>" class="inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs <?= $isCurrentChar ? 'bg-cyan-900/60 text-cyan-300 font-semibold' : 'bg-slate-700/60 text-slate-300 hover:bg-slate-600/60' ?>">
-                        <?= htmlspecialchars((string) ($cm['character_name'] ?? 'Unknown'), ENT_QUOTES) ?>
+                        <?= htmlspecialchars($cmName, ENT_QUOTES) ?>
                         <?php if ($memberBridge): ?>
                             <span class="text-yellow-400" title="Bridge node">&#9670;</span>
                         <?php endif; ?>
@@ -968,9 +996,12 @@ include __DIR__ . '/../../src/views/partials/header.php';
                     <th class="px-3 py-2 text-right">Last seen</th>
                 </tr></thead>
                 <tbody>
-                <?php foreach ($typedInteractions as $ti): ?>
+                <?php foreach ($typedInteractions as $ti):
+                    $tiName = (string) ($ti['other_character_name'] ?? 'Unknown');
+                    if (ci_is_placeholder_name($tiName)) { continue; }
+                ?>
                     <tr class="border-b border-border/40">
-                        <td class="px-3 py-2"><a class="text-accent" href="?character_id=<?= (int) ($ti['other_character_id'] ?? 0) ?>"><?= htmlspecialchars((string) ($ti['other_character_name'] ?? 'Unknown'), ENT_QUOTES) ?></a></td>
+                        <td class="px-3 py-2"><a class="text-accent" href="?character_id=<?= (int) ($ti['other_character_id'] ?? 0) ?>"><?= htmlspecialchars($tiName, ENT_QUOTES) ?></a></td>
                         <td class="px-3 py-2"><span class="inline-block rounded-full px-2 py-0.5 text-[10px] uppercase tracking-wider <?php
                             $type = (string) ($ti['interaction_type'] ?? '');
                             echo match($type) {

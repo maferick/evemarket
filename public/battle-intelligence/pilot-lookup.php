@@ -450,13 +450,29 @@ include __DIR__ . '/../../src/views/partials/header.php';
                         </tr>
                     </thead>
                     <tbody>
-                    <?php foreach ($copresenceEdges as $edge):
-                        $otherName = htmlspecialchars((string) ($edge['other_character_name'] ?? '?'), ENT_QUOTES);
+                    <?php
+                    $viewedAllianceId = (int) ($profile['alliance_id'] ?? 0);
+                    $trackedAllianceIds = array_map('intval', array_column(db_killmail_tracked_alliances_active(), 'alliance_id'));
+                    $edgeSuppressedCount = 0;
+                    foreach ($copresenceEdges as $edge):
+                        $otherRawName = (string) ($edge['other_character_name'] ?? '?');
+                        if (ci_is_placeholder_name($otherRawName)) { $edgeSuppressedCount++; continue; }
+                        $otherName = htmlspecialchars($otherRawName, ENT_QUOTES);
                         $otherId   = (int) ($edge['other_character_id'] ?? 0);
                         $lastAt    = (string) ($edge['last_event_at'] ?? '');
+                        $otherAllianceId = (int) ($edge['other_alliance_id'] ?? 0);
+                        $isSameAlliance = $viewedAllianceId > 0 && $otherAllianceId === $viewedAllianceId;
+                        $isTrackedAlliance = $otherAllianceId > 0 && in_array($otherAllianceId, $trackedAllianceIds, true);
                     ?>
                         <tr class="border-b border-border/40 hover:bg-slate-800/50">
-                            <td class="px-3 py-2 font-medium text-slate-100"><?= $otherName ?></td>
+                            <td class="px-3 py-2 font-medium text-slate-100">
+                                <?= $otherName ?>
+                                <?php if ($isSameAlliance): ?>
+                                    <span class="ml-1 inline-block rounded-full px-1.5 py-0.5 text-[9px] uppercase tracking-wider bg-cyan-900/60 text-cyan-300">ally</span>
+                                <?php elseif ($isTrackedAlliance): ?>
+                                    <span class="ml-1 inline-block rounded-full px-1.5 py-0.5 text-[9px] uppercase tracking-wider bg-emerald-900/60 text-emerald-300">coalition</span>
+                                <?php endif; ?>
+                            </td>
                             <td class="px-3 py-2 text-xs text-muted capitalize"><?= htmlspecialchars(str_replace('_', ' ', (string) ($edge['event_type'] ?? '')), ENT_QUOTES) ?></td>
                             <td class="px-3 py-2 text-right"><?= number_format((int) ($edge['event_count'] ?? 0)) ?></td>
                             <td class="px-3 py-2 text-right font-semibold text-slate-200"><?= number_format((float) ($edge['edge_weight'] ?? 0), 2) ?></td>
@@ -468,6 +484,9 @@ include __DIR__ . '/../../src/views/partials/header.php';
                             </td>
                         </tr>
                     <?php endforeach; ?>
+                    <?php if ($edgeSuppressedCount > 0): ?>
+                        <tr class="border-b border-border/40"><td colspan="6" class="px-3 py-2 text-xs text-muted italic"><?= $edgeSuppressedCount ?> unresolved character<?= $edgeSuppressedCount !== 1 ? 's' : '' ?> suppressed</td></tr>
+                    <?php endif; ?>
                     </tbody>
                 </table>
             </div>
@@ -574,10 +593,28 @@ include __DIR__ . '/../../src/views/partials/header.php';
             </div>
             <?php endif; ?>
 
-            <!-- ── Frequent fleetmates ────────────────────────────── -->
-            <?php if ($associates !== []): ?>
-            <h3 class="mt-8 text-base font-semibold text-slate-100">Frequent Fleetmates <span class="text-muted font-normal text-xs ml-1">shared theaters</span></h3>
-            <p class="text-xs text-muted mt-0.5">Pilots that appear on the same side most often across tracked theaters.</p>
+            <!-- ── Associates (split: internal fleetmates vs external) ── -->
+            <?php if ($associates !== []):
+                $internalAssociates = [];
+                $externalAssociates = [];
+                $assocSuppressedCount = 0;
+                foreach ($associates as $a) {
+                    $aName = (string) ($a['assoc_name'] ?? '?');
+                    if (ci_is_placeholder_name($aName)) { $assocSuppressedCount++; continue; }
+                    $aAllianceId = (int) ($a['assoc_alliance_id'] ?? 0);
+                    $isInternal = ($viewedAllianceId > 0 && $aAllianceId === $viewedAllianceId)
+                                  || ($aAllianceId > 0 && in_array($aAllianceId, $trackedAllianceIds, true));
+                    if ($isInternal) {
+                        $internalAssociates[] = $a;
+                    } else {
+                        $externalAssociates[] = $a;
+                    }
+                }
+            ?>
+
+            <?php if ($internalAssociates !== []): ?>
+            <h3 class="mt-8 text-base font-semibold text-slate-100">Frequent Fleetmates <span class="text-muted font-normal text-xs ml-1">alliance &amp; coalition</span></h3>
+            <p class="text-xs text-muted mt-0.5">Same-side associates from your alliance or coalition across tracked theaters.</p>
             <div class="mt-3 table-shell">
                 <table class="table-ui">
                     <thead>
@@ -590,7 +627,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                         </tr>
                     </thead>
                     <tbody>
-                    <?php foreach ($associates as $a): ?>
+                    <?php foreach ($internalAssociates as $a): ?>
                         <tr class="border-b border-border/40 hover:bg-slate-800/50">
                             <td class="px-3 py-2 font-medium text-slate-100"><?= htmlspecialchars((string) ($a['assoc_name'] ?? '?'), ENT_QUOTES) ?></td>
                             <td class="px-3 py-2 text-sm"><?= htmlspecialchars((string) ($a['assoc_alliance'] ?? '—'), ENT_QUOTES) ?></td>
@@ -612,6 +649,51 @@ include __DIR__ . '/../../src/views/partials/header.php';
                     </tbody>
                 </table>
             </div>
+            <?php endif; ?>
+
+            <?php if ($externalAssociates !== []): ?>
+            <h3 class="mt-8 text-base font-semibold text-slate-100">Notable External Associations <span class="text-muted font-normal text-xs ml-1">non-coalition same-side</span></h3>
+            <p class="text-xs text-muted mt-0.5">Same-side associates outside your alliance and coalition. May indicate cross-boundary relationships worth investigating.</p>
+            <div class="mt-3 table-shell">
+                <table class="table-ui">
+                    <thead>
+                        <tr class="border-b border-border/70 text-xs text-muted uppercase">
+                            <th class="px-3 py-2 text-left">Pilot</th>
+                            <th class="px-3 py-2 text-left">Alliance</th>
+                            <th class="px-3 py-2 text-left">Role</th>
+                            <th class="px-3 py-2 text-right">Shared Theaters</th>
+                            <th class="px-3 py-2 text-right"></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                    <?php foreach ($externalAssociates as $a): ?>
+                        <tr class="border-b border-border/40 hover:bg-slate-800/50">
+                            <td class="px-3 py-2 font-medium text-slate-100"><?= htmlspecialchars((string) ($a['assoc_name'] ?? '?'), ENT_QUOTES) ?></td>
+                            <td class="px-3 py-2 text-sm"><?= htmlspecialchars((string) ($a['assoc_alliance'] ?? '—'), ENT_QUOTES) ?></td>
+                            <td class="px-3 py-2">
+                                <?php $aRole = (string) ($a['assoc_role'] ?? ''); ?>
+                                <?php if ($aRole !== ''): ?>
+                                    <span class="inline-block rounded-full px-2 py-0.5 text-[10px] uppercase tracking-wider <?= fleet_function_color_class($aRole) ?>">
+                                        <?= htmlspecialchars(fleet_function_label($aRole), ENT_QUOTES) ?>
+                                    </span>
+                                <?php endif; ?>
+                            </td>
+                            <td class="px-3 py-2 text-right font-semibold"><?= number_format((int) ($a['shared_theaters'] ?? 0)) ?></td>
+                            <td class="px-3 py-2 text-right">
+                                <a href="?character_id=<?= (int) ($a['assoc_character_id'] ?? 0) ?>"
+                                   class="text-accent text-sm">View</a>
+                            </td>
+                        </tr>
+                    <?php endforeach; ?>
+                    </tbody>
+                </table>
+            </div>
+            <?php endif; ?>
+
+            <?php if ($assocSuppressedCount > 0): ?>
+                <p class="mt-2 text-xs text-muted italic"><?= $assocSuppressedCount ?> unresolved character<?= $assocSuppressedCount !== 1 ? 's' : '' ?> suppressed from associate lists</p>
+            <?php endif; ?>
+
             <?php endif; ?>
 
             <!-- ══════════════════════════════════════════════════════════ -->
@@ -1044,27 +1126,43 @@ include __DIR__ . '/../../src/views/partials/header.php';
                 <h3 class="mt-6 text-base font-semibold text-slate-100">Top co-presence edges (30d)</h3>
                 <p class="mt-1 text-xs text-muted">Strongest pairwise connections by event type. Higher weight = more frequent co-appearance.</p>
                 <div class="mt-3 table-shell"><table class="table-ui"><thead><tr class="border-b border-border/70 text-xs text-muted uppercase"><th class="px-3 py-2 text-left">Character</th><th class="px-3 py-2 text-left">Event type</th><th class="px-3 py-2 text-right">Weight</th><th class="px-3 py-2 text-right">Count</th><th class="px-3 py-2 text-right">Last seen</th></tr></thead><tbody>
-                <?php foreach ($copresenceEdges as $ce): ?>
-                    <?php
-                        $ceType = (string) ($ce['event_type'] ?? '');
-                        $ceTypeLabel = ucwords(str_replace('_', ' ', $ceType));
-                        $ceTypeBg = match ($ceType) {
-                            'same_battle' => 'bg-red-900/60 text-red-300',
-                            'same_side' => 'bg-blue-900/60 text-blue-300',
-                            'same_system_time_window' => 'bg-purple-900/60 text-purple-300',
-                            'related_engagement' => 'bg-orange-900/60 text-orange-300',
-                            'same_operational_area' => 'bg-green-900/60 text-green-300',
-                            default => 'bg-slate-700 text-slate-300',
-                        };
-                    ?>
+                <?php
+                $dossierCeSuppressed = 0;
+                foreach ($copresenceEdges as $ce):
+                    $ceRawName = (string) ($ce['other_character_name'] ?? 'Unknown');
+                    if (ci_is_placeholder_name($ceRawName)) { $dossierCeSuppressed++; continue; }
+                    $ceType = (string) ($ce['event_type'] ?? '');
+                    $ceTypeLabel = ucwords(str_replace('_', ' ', $ceType));
+                    $ceTypeBg = match ($ceType) {
+                        'same_battle' => 'bg-red-900/60 text-red-300',
+                        'same_side' => 'bg-blue-900/60 text-blue-300',
+                        'same_system_time_window' => 'bg-purple-900/60 text-purple-300',
+                        'related_engagement' => 'bg-orange-900/60 text-orange-300',
+                        'same_operational_area' => 'bg-green-900/60 text-green-300',
+                        default => 'bg-slate-700 text-slate-300',
+                    };
+                    $ceOtherAlliance = (int) ($ce['other_alliance_id'] ?? 0);
+                    $ceIsSameAlliance = $viewedAllianceId > 0 && $ceOtherAlliance === $viewedAllianceId;
+                    $ceIsTracked = $ceOtherAlliance > 0 && in_array($ceOtherAlliance, $trackedAllianceIds, true);
+                ?>
                     <tr class="border-b border-border/40">
-                        <td class="px-3 py-2"><a class="text-accent" href="?character_id=<?= (int) ($ce['other_character_id'] ?? 0) ?>"><?= htmlspecialchars((string) ($ce['other_character_name'] ?? 'Unknown'), ENT_QUOTES) ?></a></td>
+                        <td class="px-3 py-2">
+                            <a class="text-accent" href="?character_id=<?= (int) ($ce['other_character_id'] ?? 0) ?>"><?= htmlspecialchars($ceRawName, ENT_QUOTES) ?></a>
+                            <?php if ($ceIsSameAlliance): ?>
+                                <span class="ml-1 inline-block rounded-full px-1.5 py-0.5 text-[9px] uppercase tracking-wider bg-cyan-900/60 text-cyan-300">ally</span>
+                            <?php elseif ($ceIsTracked): ?>
+                                <span class="ml-1 inline-block rounded-full px-1.5 py-0.5 text-[9px] uppercase tracking-wider bg-emerald-900/60 text-emerald-300">coalition</span>
+                            <?php endif; ?>
+                        </td>
                         <td class="px-3 py-2"><span class="inline-block rounded-full px-2 py-0.5 text-[10px] uppercase tracking-wider <?= $ceTypeBg ?>"><?= htmlspecialchars($ceTypeLabel, ENT_QUOTES) ?></span></td>
                         <td class="px-3 py-2 text-right font-mono text-sm"><?= number_format((float) ($ce['edge_weight'] ?? 0), 1) ?></td>
                         <td class="px-3 py-2 text-right"><?= (int) ($ce['event_count'] ?? 0) ?></td>
                         <td class="px-3 py-2 text-right text-xs text-muted"><?= htmlspecialchars((string) ($ce['last_event_at'] ?? ''), ENT_QUOTES) ?></td>
                     </tr>
                 <?php endforeach; ?>
+                <?php if ($dossierCeSuppressed > 0): ?>
+                    <tr class="border-b border-border/40"><td colspan="5" class="px-3 py-2 text-xs text-muted italic"><?= $dossierCeSuppressed ?> unresolved character<?= $dossierCeSuppressed !== 1 ? 's' : '' ?> suppressed</td></tr>
+                <?php endif; ?>
                 </tbody></table></div>
                 <?php endif; ?>
 
@@ -1231,11 +1329,13 @@ include __DIR__ . '/../../src/views/partials/header.php';
                     <p class="text-xs text-muted mb-2">Community members (top <?= count($ciCommunityMembers) ?> of <?= $communitySize ?>)</p>
                     <div class="flex flex-wrap gap-2">
                         <?php foreach ($ciCommunityMembers as $cm):
+                            $cmName = (string) ($cm['character_name'] ?? 'Unknown');
+                            if (ci_is_placeholder_name($cmName)) { continue; }
                             $isCurrentChar = ((int) ($cm['character_id'] ?? 0)) === $characterId;
                             $memberBridge = (bool) ((int) ($cm['is_bridge'] ?? 0));
                         ?>
                             <a href="?character_id=<?= (int) ($cm['character_id'] ?? 0) ?>" class="inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs <?= $isCurrentChar ? 'bg-cyan-900/60 text-cyan-300 font-semibold' : 'bg-slate-700/60 text-slate-300 hover:bg-slate-600/60' ?>">
-                                <?= htmlspecialchars((string) ($cm['character_name'] ?? 'Unknown'), ENT_QUOTES) ?>
+                                <?= htmlspecialchars($cmName, ENT_QUOTES) ?>
                                 <?php if ($memberBridge): ?>
                                     <span class="text-yellow-400" title="Bridge node">&#9670;</span>
                                 <?php endif; ?>
