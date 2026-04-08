@@ -678,6 +678,10 @@ function migrate_local_config_to_app_settings(string $localConfigPath): array
 function active_section(): string
 {
     $section = (string) ($_GET['section'] ?? 'workspace');
+    // Strip stray ?suffix when users append ?debug=perf with ? instead of &
+    if (str_contains($section, '?')) {
+        $section = strstr($section, '?', true);
+    }
     $aliases = setting_section_aliases();
     if (array_key_exists($section, $aliases)) {
         $section = (string) $aliases[$section];
