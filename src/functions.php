@@ -25355,7 +25355,7 @@ function log_viewer_page_data(): array
         // Determine health bucket
         if (!$s['enabled']) {
             $health = 'disabled';
-            $healthTone = 'border-slate-400/20 bg-slate-500/10 text-slate-300';
+            $healthTone = 'border-red-400/25 bg-red-500/15 text-red-300';
             $healthLabel = 'Disabled';
         } elseif ($s['last_run_at'] === null) {
             $health = 'never_ran';

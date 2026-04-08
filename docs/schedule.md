@@ -220,21 +220,23 @@ Edit `src/functions.php`, function `supplycore_authoritative_job_registry()`:
 ],
 ```
 
-Also add a matching entry to `dedicated_worker_job_overrides()` in the same file:
+If your job key starts with `compute_` and is a schedulable Python job, also add an entry to `worker_job_registry_definitions()` in the same file:
 
 ```php
-'my_new_sync' => [
-    'workload_class' => 'sync',
+'compute_my_new_thing' => [
+    'workload_class' => 'compute',
     'execution_mode' => 'python',
-    'queue_name' => 'sync',
+    'queue_name' => 'compute',
     'priority' => 'normal',
-    'interval_seconds' => 600,
-    'timeout_seconds' => 180,
-    'memory_limit_mb' => 384,
-    'retry_delay_seconds' => 30,
+    'interval_seconds' => 900,
+    'timeout_seconds' => 300,
+    'memory_limit_mb' => 768,
+    'retry_delay_seconds' => 60,
     'max_attempts' => 4,
 ],
 ```
+
+> **Note:** This is only required for `compute_*` Python jobs. Sync jobs (e.g., `my_new_sync`) do not need an entry here. An audit function (`scheduler_enabled_python_worker_binding_audit`) will flag missing entries for enabled compute jobs.
 
 ### Field reference
 
@@ -309,8 +311,9 @@ Before merging, verify **all eleven** registration points:
 - [ ] `python/orchestrator/processor_registry.py` — import + job-key set + dispatch map
 - [ ] `python/orchestrator/worker_registry.py` — in `WORKER_JOB_DEFINITIONS`
 
-**PHP (2 files, 3 entries):**
+**PHP (2 files, 3–4 entries):**
 - [ ] `src/functions.php` — in `supplycore_authoritative_job_registry()`
+- [ ] `src/functions.php` — in `worker_job_registry_definitions()` *(only for `compute_*` Python jobs)*
 - [ ] `src/functions.php` — in dashboard group mapping
 - [ ] `src/db.php` — in `$stageJobKeys` array
 
