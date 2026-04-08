@@ -83,3 +83,4 @@ from .cip_event_digest import run_cip_event_digest
 from .cip_compound_evaluator import run_cip_compound_evaluator
 from .cip_compound_analytics import run_cip_compound_analytics
 from .cip_calibration import run_cip_calibration
+from .neo4j_ml_exploration import run_neo4j_ml_exploration

@@ -97,6 +97,7 @@ from .jobs.esi_sovereignty_sync import (
     run_sovereignty_map_sync,
 )
 from .jobs.compute_sovereignty_alerts import run_compute_sovereignty_alerts
+from .jobs.neo4j_ml_exploration import run_neo4j_ml_exploration
 
 
 def _php_bridge(cfg: dict[str, Any]) -> PhpBridge:
@@ -169,6 +170,7 @@ PYTHON_COMPUTE_PROCESSOR_JOB_KEYS: set[str] = {
     "cip_compound_evaluator",
     "cip_compound_analytics",
     "cip_calibration",
+    "neo4j_ml_exploration",
 }
 
 PYTHON_SYNC_PROCESSOR_JOB_KEYS: set[str] = {
@@ -305,6 +307,8 @@ _PROCESSOR_DISPATCH: dict[str, tuple] = {
     "cip_compound_evaluator": (wrap_cip_job("cip_compound_evaluator", run_cip_compound_evaluator), lambda db, cfg: (db,)),
     "cip_compound_analytics": (wrap_cip_job("cip_compound_analytics", run_cip_compound_analytics), lambda db, cfg: (db,)),
     "cip_calibration": (wrap_cip_job("cip_calibration", run_cip_calibration), lambda db, cfg: (db,)),
+    # Neo4j GDS ML exploration (Phase 1: core modernization)
+    "neo4j_ml_exploration": (run_neo4j_ml_exploration, lambda db, cfg: (db, neo4j_runtime(cfg))),
     # Sovereignty monitoring
     "sovereignty_campaigns_sync": (run_sovereignty_campaigns_sync, lambda db, cfg: (db, cfg)),
     "sovereignty_structures_sync": (run_sovereignty_structures_sync, lambda db, cfg: (db, cfg)),
