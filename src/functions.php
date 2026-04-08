@@ -133,7 +133,11 @@ supplycore_request_perf_init();
 
 function supplycore_perf_debug_enabled(): bool
 {
-    return isset($_GET['debug']) && $_GET['debug'] === 'perf';
+    if (isset($_GET['debug']) && $_GET['debug'] === 'perf') {
+        return true;
+    }
+    // Also match when ?debug=perf is appended with a second ? instead of &
+    return str_contains((string) ($_SERVER['REQUEST_URI'] ?? ''), 'debug=perf');
 }
 
 function supplycore_perf_debug_footer(): string
