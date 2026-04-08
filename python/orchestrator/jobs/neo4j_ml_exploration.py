@@ -101,11 +101,30 @@ def _projection_name(window_key: str) -> str:
     return f"character_combat_{window_key}"
 
 
-def _create_projection(client: Neo4jClient, window: dict[str, Any]) -> bool:
+def _projection_node_and_rel_counts(client: Neo4jClient, name: str) -> tuple[int, int]:
+    """Return (nodeCount, relationshipCount) for a named GDS projection."""
+    try:
+        rows = client.query(
+            f"CALL gds.graph.list('{name}') YIELD nodeCount, relationshipCount "
+            "RETURN nodeCount, relationshipCount",
+        )
+        if rows:
+            return int(rows[0]["nodeCount"]), int(rows[0]["relationshipCount"])
+    except Exception:
+        pass
+    return 0, 0
+
+
+def _create_projection(client: Neo4jClient, window: dict[str, Any]) -> tuple[bool, int, int]:
     """Create a GDS in-memory projection for a given time window.
 
     Filters relationships by last_seen/updated_at/last_at within the window.
     Lifetime window includes all relationships (no date filter).
+
+    Returns (success, node_count, relationship_count).  When the projection
+    is created but contains zero relationships the caller can decide to fall
+    back to Cypher-only algorithms instead of letting GDS stream calls fail
+    with ``GraphNotFoundException``.
     """
     name = _projection_name(window["key"])
     _drop_projection(client, name)
@@ -140,7 +159,16 @@ def _create_projection(client: Neo4jClient, window: dict[str, Any]) -> bool:
         timeout_seconds=180,
     )
 
-    return True
+    node_count, rel_count = _projection_node_and_rel_counts(client, name)
+
+    # If the projection has nodes but no relationships, GDS streaming
+    # algorithms will throw GraphNotFoundException.  Drop the empty
+    # projection and signal the caller to fall back.
+    if rel_count == 0:
+        _drop_projection(client, name)
+        return False, node_count, 0
+
+    return True, node_count, rel_count
 
 
 # ---------------------------------------------------------------------------
@@ -375,8 +403,12 @@ def _run_window(
     # --- Create projection ---
     if use_gds:
         try:
-            _create_projection(client, window)
-            algo_report["projection"] = "ok"
+            proj_ok, proj_nodes, proj_rels = _create_projection(client, window)
+            if proj_ok:
+                algo_report["projection"] = f"ok ({proj_nodes} nodes, {proj_rels} rels)"
+            else:
+                algo_report["projection"] = f"empty ({proj_nodes} nodes, 0 rels) — falling back"
+                use_gds = False  # fall back for this window
         except Exception as exc:
             algo_report["projection"] = f"failed: {exc}"
             use_gds = False  # fall back for this window
@@ -660,9 +692,10 @@ def run_neo4j_ml_exploration(
                     embeddings = p2["_embeddings"]
                 elif p2.get("status") == "ok" and use_gds:
                     try:
-                        _create_projection(client, window)
-                        embeddings = _gds_fastrp(client, _projection_name(wkey))
-                        _drop_projection(client, _projection_name(wkey))
+                        re_ok, _, _ = _create_projection(client, window)
+                        if re_ok:
+                            embeddings = _gds_fastrp(client, _projection_name(wkey))
+                            _drop_projection(client, _projection_name(wkey))
                     except Exception:
                         pass
             except Exception as exc:
@@ -787,10 +820,18 @@ FASTRP_ITERATION_WEIGHTS = [0.0, 1.0, 1.0, 0.8, 0.4]  # 4 iterations
 TOP_SIMILAR_PAIRS = 500  # max link predictions per window
 
 
+def _is_zero_vector(vec: list[float]) -> bool:
+    """True when every component is exactly 0.0 (FastRP zero-vector sentinel)."""
+    return all(x == 0.0 for x in vec)
+
+
 def _gds_fastrp(client: Neo4jClient, proj: str) -> dict[int, list[float]] | None:
     """FastRP node embeddings — fast, deterministic, good baseline.
 
     Returns {character_id: [float, ...]} for each node in the projection.
+    Filters out all-zero vectors which FastRP emits for disconnected nodes
+    (nodes with no edges in the projection).  Returning these would poison
+    downstream centroid and similarity computations.
     """
     try:
         rows = client.query(
@@ -806,10 +847,22 @@ def _gds_fastrp(client: Neo4jClient, proj: str) -> dict[int, list[float]] | None
             """,
             timeout_seconds=300,
         )
-        return {
-            int(r["character_id"]): [float(x) for x in r["embedding"]]
-            for r in rows if r.get("character_id") and r.get("embedding")
-        }
+        result: dict[int, list[float]] = {}
+        zero_count = 0
+        for r in rows:
+            if not r.get("character_id") or not r.get("embedding"):
+                continue
+            vec = [float(x) for x in r["embedding"]]
+            if _is_zero_vector(vec):
+                zero_count += 1
+                continue
+            result[int(r["character_id"])] = vec
+        # If every single embedding is zero the graph is too sparse for
+        # FastRP to produce meaningful output — return None so callers
+        # skip embedding-dependent logic rather than operating on garbage.
+        if not result and zero_count > 0:
+            return None
+        return result if result else None
     except Exception:
         return None
 
@@ -877,16 +930,24 @@ def _run_phase2_embeddings(
 
     # Need projection to still exist — recreate it
     try:
-        _create_projection(client, window)
+        proj_ok, _pn, proj_rels = _create_projection(client, window)
+        if not proj_ok:
+            return {
+                "window": wkey, "phase": 2,
+                "status": f"skipped (projection empty, 0 rels)",
+            }
     except Exception as exc:
         return {"window": wkey, "phase": 2, "status": f"projection failed: {exc}"}
 
-    # Run FastRP
+    # Run FastRP — zero-vector embeddings are filtered out inside _gds_fastrp
     embeddings = _gds_fastrp(client, proj)
     _drop_projection(client, proj)
 
     if not embeddings:
-        return {"window": wkey, "phase": 2, "status": "fastrp unavailable"}
+        return {
+            "window": wkey, "phase": 2,
+            "status": f"fastrp produced no usable embeddings ({proj_rels} rels in projection)",
+        }
 
     # Get alliance memberships for centroid computation
     char_alliances = _get_character_alliances(client)
@@ -1090,20 +1151,32 @@ def _run_phase3_link_prediction(
         pref_att = float(row.get("pref_attachment", 0))
         jaccard = float(row.get("jaccard", 0))
 
-        # Composite confidence: weighted blend of topological signals
+        # Composite confidence: weighted blend of topological signals.
+        # When embeddings are unavailable, redistribute the embedding weight
+        # to the topological signals so the max achievable confidence stays
+        # at 1.0 instead of being capped at 0.75.
         emb_sim = pair_sims.get((a, b), 0.0)
         emb_pct = _percentile(emb_sim)
 
         # Normalized scores (soft cap to 0-1 range)
         cn_norm = min(cn / 10.0, 1.0)
         pa_norm = min(pref_att / 1000.0, 1.0)
-        emb_weight = emb_sim if embeddings else 0.0
+        copresence_norm = min(copresence.get((a, b), 0) / 20.0, 1.0)
 
-        confidence = round(
-            cn_norm * 0.30 + jaccard * 0.25 + pa_norm * 0.10 +
-            emb_weight * 0.25 + min(copresence.get((a, b), 0) / 20.0, 1.0) * 0.10,
-            4,
-        )
+        if embeddings:
+            # Full formula with embedding signal
+            confidence = round(
+                cn_norm * 0.30 + jaccard * 0.25 + pa_norm * 0.10 +
+                emb_sim * 0.25 + copresence_norm * 0.10,
+                4,
+            )
+        else:
+            # No embeddings — redistribute: cn 0.40, jaccard 0.30, pa 0.15, copresence 0.15
+            confidence = round(
+                cn_norm * 0.40 + jaccard * 0.30 + pa_norm * 0.15 +
+                copresence_norm * 0.15,
+                4,
+            )
 
         if confidence < LINK_PRED_MIN_CONFIDENCE:
             continue
@@ -1171,6 +1244,8 @@ def _run_phase3_link_prediction(
         "status": "ok",
         "candidate_pairs": len(topo_rows),
         "links_written": links_written,
+        "embeddings_available": embeddings is not None,
+        "embedding_pairs_scored": len(pair_sims),
     }
 
 
@@ -1248,6 +1323,23 @@ def _run_phase4_role_signals(
     between_pcts = _pct_ranks(between_vals)
     anomaly_pcts = _pct_ranks(anomaly_vals)
 
+    # Detect degenerate data: when a metric has no variance (all values
+    # identical, typically all zeros) percentile ranks are meaningless —
+    # every value gets rank 0.0 and threshold checks never fire, causing
+    # the entire population to fall through to "periphery".
+    def _has_variance(vals: list[float]) -> bool:
+        if not vals:
+            return False
+        first = vals[0]
+        return any(v != first for v in vals)
+
+    hub_useful = _has_variance(hub_vals)
+    auth_useful = _has_variance(auth_vals)
+    between_useful = _has_variance(between_vals)
+    anomaly_useful = _has_variance(anomaly_vals)
+    # If none of the key metrics have variance, classification is unreliable
+    metrics_degenerate = not (hub_useful or auth_useful or between_useful)
+
     # Classify each character
     role_counts: dict[str, int] = {}
     updates: list[tuple[Any, ...]] = []
@@ -1258,31 +1350,46 @@ def _run_phase4_role_signals(
         degree = int(r.get("degree_centrality", 0))
         is_artic = int(r.get("is_articulation_point", 0))
 
-        # Determine primary role (first match wins, ordered by priority)
-        role = "unclassified"
-        confidence = 0.0
-
-        if hub_pcts[i] >= 0.90:
-            role = "fc_coordinator"
-            confidence = hub_pcts[i]
-        elif is_artic and kcore >= 2:
-            role = "structural_keystone"
-            confidence = between_pcts[i]
-        elif between_pcts[i] >= 0.90:
-            role = "bridge_liaison"
-            confidence = between_pcts[i]
-        elif anomaly_pcts[i] >= 0.90:
-            role = "anomalous_outsider"
-            confidence = anomaly_pcts[i]
-        elif auth_pcts[i] >= 0.80 and kcore >= 3:
-            role = "core_line"
-            confidence = auth_pcts[i]
-        elif kcore <= 1 and degree <= 3:
-            role = "periphery"
-            confidence = 1.0 - (kcore / 10.0)
+        # When all graph metrics are degenerate (zero variance), the only
+        # reliable signals are degree and kcore which come from simple
+        # edge counting.  Skip percentile-based rules and use degree/kcore
+        # directly to avoid false-classifying the entire population.
+        if metrics_degenerate:
+            if degree == 0 and kcore == 0:
+                role = "periphery"
+                confidence = 0.3
+            elif degree >= 10 or kcore >= 3:
+                role = "regular"
+                confidence = 0.4
+            else:
+                role = "periphery"
+                confidence = 0.3
         else:
-            role = "regular"
-            confidence = 0.5
+            # Determine primary role (first match wins, ordered by priority)
+            role = "unclassified"
+            confidence = 0.0
+
+            if hub_useful and hub_pcts[i] >= 0.90:
+                role = "fc_coordinator"
+                confidence = hub_pcts[i]
+            elif is_artic and kcore >= 2:
+                role = "structural_keystone"
+                confidence = between_pcts[i]
+            elif between_useful and between_pcts[i] >= 0.90:
+                role = "bridge_liaison"
+                confidence = between_pcts[i]
+            elif anomaly_useful and anomaly_pcts[i] >= 0.90:
+                role = "anomalous_outsider"
+                confidence = anomaly_pcts[i]
+            elif auth_useful and auth_pcts[i] >= 0.80 and kcore >= 3:
+                role = "core_line"
+                confidence = auth_pcts[i]
+            elif kcore <= 1 and degree <= 3:
+                role = "periphery"
+                confidence = 1.0 - (kcore / 10.0)
+            else:
+                role = "regular"
+                confidence = 0.5
 
         role_counts[role] = role_counts.get(role, 0) + 1
         updates.append((role, round(confidence, 4), cid, window_key, FEATURE_VERSION))
@@ -1315,4 +1422,11 @@ def _run_phase4_role_signals(
         "characters_classified": len(rows),
         "role_distribution": role_counts,
         "payload_size": len(role_payload),
+        "metrics_degenerate": metrics_degenerate,
+        "metric_variance": {
+            "hub": hub_useful,
+            "auth": auth_useful,
+            "betweenness": between_useful,
+            "anomaly": anomaly_useful,
+        },
     }
