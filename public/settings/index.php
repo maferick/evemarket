@@ -41,7 +41,13 @@ $sectionChildren = [
     ],
 ];
 $requestedSection = (string) ($_GET['section'] ?? 'workspace');
+if (str_contains($requestedSection, '?')) {
+    $requestedSection = strstr($requestedSection, '?', true);
+}
 $requestedSubsection = trim((string) ($_GET['subsection'] ?? ''));
+if (str_contains($requestedSubsection, '?')) {
+    $requestedSubsection = strstr($requestedSubsection, '?', true);
+}
 $knownChildren = $sectionChildren[$section] ?? [];
 $activeSubsection = array_key_first($knownChildren) ?? 'general';
 if (array_key_exists($requestedSubsection, $knownChildren)) {
