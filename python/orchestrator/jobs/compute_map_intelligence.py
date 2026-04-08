@@ -134,7 +134,7 @@ def _gds_betweenness(client: Neo4jClient) -> dict[int, float]:
         timeout_seconds=300,
     )
     return {
-        int(r["system_id"]): (0.0 if math.isnan(s := float(r["score"])) else s)
+        int(r["system_id"]): (s if math.isfinite(s := float(r["score"])) else 0.0)
         for r in rows if r.get("system_id")
     }
 
@@ -151,7 +151,7 @@ def _gds_degree(client: Neo4jClient) -> dict[int, float]:
         timeout_seconds=120,
     )
     return {
-        int(r["system_id"]): (0.0 if math.isnan(s := float(r["score"])) else s)
+        int(r["system_id"]): (s if math.isfinite(s := float(r["score"])) else 0.0)
         for r in rows if r.get("system_id")
     }
 
@@ -558,11 +558,11 @@ def run_compute_map_intelligence(
             lp_score = label_priority.get(sid, 0)
             params.extend([
                 sid,
-                round(0.0 if math.isnan(b_score) else b_score, 6),
-                round(0.0 if math.isnan(d_score) else d_score, 2),
+                round(b_score if math.isfinite(b_score) else 0.0, 6),
+                round(d_score if math.isfinite(d_score) else 0.0, 2),
                 1 if sid in bridge_nodes else 0,
                 communities.get(sid),
-                round(0.0 if math.isnan(lp_score) else lp_score, 6),
+                round(lp_score if math.isfinite(lp_score) else 0.0, 6),
                 now_sql,
             ])
         if values:
@@ -600,10 +600,10 @@ def run_compute_map_intelligence(
                 ei["from_system_id"],
                 ei["to_system_id"],
                 ei["corridor_count"],
-                0.0 if isinstance(cs, float) and math.isnan(cs) else cs,
+                cs if not isinstance(cs, float) or math.isfinite(cs) else 0.0,
                 ei["battle_count"],
                 ei["is_bridge_edge"],
-                0.0 if isinstance(rs, float) and math.isnan(rs) else rs,
+                rs if not isinstance(rs, float) or math.isfinite(rs) else 0.0,
                 now_sql,
             ])
         if values:
