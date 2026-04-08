@@ -17745,12 +17745,19 @@ function db_opposition_daily_briefing(string $date, string $type = 'global', ?in
 function db_opposition_daily_briefings_recent(int $days = 14): array
 {
     $pdo = db();
+    // Return only the latest briefing per date (dedup multiple runs per day)
     $stmt = $pdo->prepare(
-        "SELECT * FROM opposition_daily_briefings
-         WHERE briefing_type = 'global' AND briefing_date >= DATE_SUB(CURDATE(), INTERVAL :days DAY)
-         ORDER BY briefing_date DESC"
+        "SELECT b.*
+         FROM opposition_daily_briefings b
+         INNER JOIN (
+             SELECT briefing_date, MAX(id) AS max_id
+             FROM opposition_daily_briefings
+             WHERE briefing_type = 'global' AND briefing_date >= DATE_SUB(CURDATE(), INTERVAL :days1 DAY)
+             GROUP BY briefing_date
+         ) latest ON b.id = latest.max_id
+         ORDER BY b.briefing_date DESC"
     );
-    $stmt->execute(['days' => $days]);
+    $stmt->execute(['days1' => $days]);
     return $stmt->fetchAll(PDO::FETCH_ASSOC);
 }
 
