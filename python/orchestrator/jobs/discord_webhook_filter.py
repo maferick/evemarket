@@ -365,6 +365,93 @@ def _collect_system_health(db: SupplyCoreDb) -> list[dict[str, Any]]:
     }]
 
 
+def _collect_fishy_users(db: SupplyCoreDb) -> list[dict[str, Any]]:
+    """Top 3 suspicious characters from friendly alliances, once per day."""
+    # Day-bucket fingerprint so we only report once per calendar day (UTC).
+    day_key = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    fp = _fingerprint("fishy_users", day_key)
+
+    if _already_sent(db, fp):
+        return []
+
+    # Friendly alliance IDs: corp_contacts where standing > 0 and contact_type = 'alliance'
+    try:
+        rows = db.fetch_all(
+            "SELECT cip.character_id, cip.risk_score, cip.risk_percentile, "
+            "       cip.confidence, cip.behavioral_score, cip.graph_score, "
+            "       cip.temporal_score, cip.risk_delta_24h, cip.signal_count, "
+            "       cip.top_signals_json, "
+            "       css.alliance_id, "
+            "       COALESCE(emc_c.entity_name, CONCAT('Character #', cip.character_id)) AS char_name, "
+            "       COALESCE(emc_a.entity_name, CONCAT('Alliance #', css.alliance_id)) AS alliance_name "
+            "FROM character_intelligence_profiles cip "
+            "JOIN character_suspicion_signals css ON css.character_id = cip.character_id "
+            "JOIN corp_contacts cc ON cc.contact_id = css.alliance_id "
+            "     AND cc.contact_type = 'alliance' AND cc.standing > 0 "
+            "LEFT JOIN entity_metadata_cache emc_c "
+            "     ON emc_c.entity_type = 'character' AND emc_c.entity_id = cip.character_id "
+            "LEFT JOIN entity_metadata_cache emc_a "
+            "     ON emc_a.entity_type = 'alliance' AND emc_a.entity_id = css.alliance_id "
+            "WHERE cip.risk_score > 0 AND cip.confidence > 0.1 "
+            "ORDER BY cip.risk_score DESC "
+            "LIMIT 3",
+        )
+    except Exception:
+        return []
+
+    if not rows:
+        return []
+
+    # Build embed fields for each character
+    fields: list[dict[str, Any]] = []
+    for i, r in enumerate(rows, 1):
+        char_name = str(r.get("char_name") or "Unknown")
+        alliance_name = str(r.get("alliance_name") or "Unknown")
+        risk = float(r.get("risk_score") or 0)
+        pctl = float(r.get("risk_percentile") or 0) * 100
+        confidence = float(r.get("confidence") or 0)
+        delta_24h = float(r.get("risk_delta_24h") or 0)
+        signals = int(r.get("signal_count") or 0)
+        behavioral = float(r.get("behavioral_score") or 0)
+        graph = float(r.get("graph_score") or 0)
+        temporal = float(r.get("temporal_score") or 0)
+
+        # Trend arrow
+        if delta_24h > 0.01:
+            trend = f" (+{delta_24h:.2f})"
+        elif delta_24h < -0.01:
+            trend = f" ({delta_24h:.2f})"
+        else:
+            trend = ""
+
+        fields.append({
+            "name": f"#{i} — {char_name}",
+            "value": (
+                f"**Alliance:** {alliance_name}\n"
+                f"**Risk:** {risk:.3f} (P{pctl:.0f}){trend}\n"
+                f"**Confidence:** {confidence:.2f} | **Signals:** {signals}\n"
+                f"Behavioral `{behavioral:.2f}` · Graph `{graph:.2f}` · Temporal `{temporal:.2f}`"
+            ),
+            "inline": False,
+        })
+
+    return [{
+        "type": "fishy_users",
+        "fingerprint": fp,
+        "summary": f"Top {len(rows)} fishy users for {day_key}",
+        "embed": {
+            "title": f"\U0001f440 Daily Fishy Users — {day_key}",
+            "description": (
+                f"Top {len(rows)} highest-risk characters in friendly alliances. "
+                "Review these for potential counterintel concerns."
+            ),
+            "color": _CLR_AMBER,
+            "fields": fields,
+            "footer": {"text": "SupplyCore · Counterintelligence · Daily Digest"},
+        },
+    }]
+
+
 # ── Main worker ─────────────────────────────────────────────────────
 
 def run_discord_webhook_filter(db: SupplyCoreDb) -> dict[str, object]:
@@ -397,6 +484,7 @@ def run_discord_webhook_filter(db: SupplyCoreDb) -> dict[str, object]:
         ("sov_alerts", lambda: _collect_sovereignty_alerts(db)),
         ("battles", lambda: _collect_high_value_battles(db)),
         ("health", lambda: _collect_system_health(db)),
+        ("fishy_users", lambda: _collect_fishy_users(db)),
     ]
 
     for name, collector in collectors:
@@ -438,7 +526,7 @@ def run_discord_webhook_filter(db: SupplyCoreDb) -> dict[str, object]:
         }
 
     # ── Prioritize: failures > sov > battles > deals > health ────────
-    priority_order = ["health_summary", "job_failure", "sov_alert", "battle", "deal_alert"]
+    priority_order = ["health_summary", "job_failure", "sov_alert", "battle", "fishy_users", "deal_alert"]
     unsent.sort(key=lambda e: priority_order.index(e["type"]) if e["type"] in priority_order else 99)
 
     # ── Batch embeds (up to 10 per message, max _MAX_MESSAGES_PER_RUN)

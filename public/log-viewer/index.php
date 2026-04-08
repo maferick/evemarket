@@ -250,7 +250,7 @@ $attentionCount = $kpi['total_failed'] + $kpi['total_timeout'] + $kpi['total_ove
 <!-- ui-section:log-viewer-backlog:end -->
 
 <!-- ═══════════════════════════════════════════════════════════════════════════
-     Job Status Table
+     Job Status Table — grouped by pipeline tier
      ══════════════════════════════════════════════════════════════════════════ -->
 <!-- ui-section:log-viewer-jobs:start -->
 <section class="mt-8" data-ui-section="log-viewer-jobs">
@@ -276,6 +276,25 @@ $attentionCount = $kpi['total_failed'] + $kpi['total_timeout'] + $kpi['total_ove
         </div>
     </div>
 
+    <?php
+    // Group filtered jobs by tier, sorted by tier number
+    $jobsByTier = [];
+    foreach ($filteredJobs as $job) {
+        $tier = $job['tier'] ?? 5;
+        $jobsByTier[$tier][] = $job;
+    }
+    ksort($jobsByTier);
+
+    $tierTones = [
+        1 => 'border-sky-400/30 text-sky-200',
+        2 => 'border-teal-400/30 text-teal-200',
+        3 => 'border-indigo-400/30 text-indigo-200',
+        4 => 'border-purple-400/30 text-purple-200',
+        5 => 'border-amber-400/30 text-amber-200',
+        6 => 'border-slate-400/30 text-slate-300',
+    ];
+    ?>
+
     <div class="rounded-2xl border border-white/8 bg-white/[0.02] p-1">
         <div class="table-shell overflow-x-auto">
             <table class="table-ui w-full">
@@ -294,7 +313,23 @@ $attentionCount = $kpi['total_failed'] + $kpi['total_timeout'] + $kpi['total_ove
                     <?php if ($filteredJobs === []): ?>
                         <tr><td colspan="7" class="py-8 text-center text-slate-400">No jobs match this filter.</td></tr>
                     <?php endif; ?>
-                    <?php foreach ($filteredJobs as $job): ?>
+                    <?php foreach ($jobsByTier as $tierNum => $tierJobs):
+                        $tierLabel = $tierJobs[0]['tier_label'] ?? "Tier {$tierNum}";
+                        $tierTone = $tierTones[$tierNum] ?? $tierTones[6];
+                        $tierHealthy = count(array_filter($tierJobs, fn ($j) => $j['health'] === 'healthy'));
+                        $tierTotal = count($tierJobs);
+                        $tierFailed = count(array_filter($tierJobs, fn ($j) => $j['health'] === 'failed' || $j['health'] === 'stuck'));
+                    ?>
+                        <tr class="bg-white/[0.03]">
+                            <td colspan="7" class="py-2.5 px-4">
+                                <div class="flex items-center gap-3">
+                                    <span class="inline-flex items-center rounded-md border px-2 py-0.5 text-xs font-bold <?= $tierTone ?>">T<?= $tierNum ?></span>
+                                    <span class="font-semibold text-white text-sm"><?= htmlspecialchars($tierLabel, ENT_QUOTES) ?></span>
+                                    <span class="text-xs text-slate-400"><?= $tierHealthy ?>/<?= $tierTotal ?> healthy<?php if ($tierFailed > 0): ?> · <span class="text-rose-300"><?= $tierFailed ?> failed</span><?php endif; ?></span>
+                                </div>
+                            </td>
+                        </tr>
+                        <?php foreach ($tierJobs as $job): ?>
                         <tr class="<?= $job['overdue'] ? 'bg-amber-500/5' : '' ?>">
                             <td>
                                 <p class="font-medium text-white"><?= htmlspecialchars($job['label'], ENT_QUOTES) ?></p>
@@ -337,6 +372,7 @@ $attentionCount = $kpi['total_failed'] + $kpi['total_timeout'] + $kpi['total_ove
                                 <?php endif; ?>
                             </td>
                         </tr>
+                        <?php endforeach; ?>
                     <?php endforeach; ?>
                 </tbody>
             </table>
