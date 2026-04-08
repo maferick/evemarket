@@ -535,6 +535,41 @@ def _run_window(
 
 
 # ---------------------------------------------------------------------------
+#  Phase feature flags — read from settings or default enabled.
+#  To disable a phase at runtime, INSERT into intelligence_snapshots:
+#    snapshot_key = 'gds_ml_phase_flags'
+#    payload_json = '{"phase1":true,"phase2":true,"phase3":false,"phase4":true}'
+#  Any missing key defaults to enabled.
+# ---------------------------------------------------------------------------
+
+DEFAULT_PHASE_FLAGS: dict[str, bool] = {
+    "phase1": True,   # core algorithms — always safe
+    "phase2": True,   # embeddings — requires GDS
+    "phase3": True,   # link prediction — most expensive
+    "phase4": True,   # role classification — SQL only, cheap
+}
+
+
+def _load_phase_flags(db: SupplyCoreDb) -> dict[str, bool]:
+    """Load per-phase enable/disable flags from intelligence_snapshots."""
+    import json as _json
+    flags = dict(DEFAULT_PHASE_FLAGS)
+    try:
+        row = db.fetch_all(
+            "SELECT payload_json FROM intelligence_snapshots "
+            "WHERE snapshot_key = 'gds_ml_phase_flags' LIMIT 1"
+        )
+        if row and row[0].get("payload_json"):
+            overrides = _json.loads(row[0]["payload_json"])
+            for k in flags:
+                if k in overrides:
+                    flags[k] = bool(overrides[k])
+    except Exception:
+        pass
+    return flags
+
+
+# ---------------------------------------------------------------------------
 #  Main entry point
 # ---------------------------------------------------------------------------
 
@@ -548,6 +583,12 @@ def run_neo4j_ml_exploration(
     Phase 2: FastRP embeddings + alliance centroid anomaly scoring
     Phase 3: Topological link prediction with explainability
     Phase 4: Role classification signals from Phase 1+2 features
+
+    Each phase can be independently disabled via intelligence_snapshots
+    (snapshot_key='gds_ml_phase_flags'). A phase failure is isolated and
+    does NOT block subsequent phases unless there is a hard data dependency
+    (only Phase 1 failure skips the rest for that window, since P2-P4
+    depend on P1 feature rows existing).
     """
     started = time.perf_counter()
     job_name = "neo4j_ml_exploration"
@@ -562,6 +603,10 @@ def run_neo4j_ml_exploration(
     use_gds = _has_gds(client)
     analytics_path = "gds" if use_gds else "fallback"
 
+    # Load per-phase flags
+    phase_flags = _load_phase_flags(db)
+    active_phases = [k for k, v in phase_flags.items() if v]
+
     # Log run start
     db.execute(
         "INSERT INTO graph_ml_run_log "
@@ -570,8 +615,11 @@ def run_neo4j_ml_exploration(
         "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
         (run_id, computed_at, "running", "all", FEATURE_VERSION,
          1 if use_gds else 0, analytics_path,
-         json_dumps_safe({"time_windows": [w["key"] for w in TIME_WINDOWS],
-                          "phases": [1, 2, 3, 4]})),
+         json_dumps_safe({
+             "time_windows": [w["key"] for w in TIME_WINDOWS],
+             "phase_flags": phase_flags,
+             "active_phases": active_phases,
+         })),
     )
 
     total_features = 0
@@ -580,65 +628,97 @@ def run_neo4j_ml_exploration(
     phase_results: dict[str, list[dict[str, Any]]] = {
         "phase1": [], "phase2": [], "phase3": [], "phase4": [],
     }
+    phase_timings: dict[str, float] = {}
     errors: list[str] = []
 
     for window in TIME_WINDOWS:
         wkey = window["key"]
 
         # ── Phase 1: Core algorithms + feature writeback ──
-        try:
-            p1 = _run_window(client, db, window, run_id, computed_at, use_gds)
-            phase_results["phase1"].append(p1)
-            total_features += p1["rows_written"]
-            total_characters = max(total_characters, p1["characters"])
-        except Exception as exc:
-            errors.append(f"P1/{wkey}: {exc}")
-            phase_results["phase1"].append({"window": wkey, "error": str(exc)})
-            continue  # skip P2-P4 for this window if P1 failed
+        p1: dict[str, Any] | None = None
+        if phase_flags["phase1"]:
+            t0 = time.perf_counter()
+            try:
+                p1 = _run_window(client, db, window, run_id, computed_at, use_gds)
+                phase_results["phase1"].append(p1)
+                total_features += p1["rows_written"]
+                total_characters = max(total_characters, p1["characters"])
+            except Exception as exc:
+                errors.append(f"P1/{wkey}: {exc}")
+                phase_results["phase1"].append({"window": wkey, "error": str(exc)})
+            phase_timings[f"phase1/{wkey}"] = round(time.perf_counter() - t0, 2)
+        else:
+            phase_results["phase1"].append({"window": wkey, "status": "disabled"})
+
+        # P1 is the foundation — if it failed or was disabled, skip P2-P4
+        # for this window since they depend on feature rows existing.
+        if p1 is None or "error" in (p1 or {}):
+            for pk in ("phase2", "phase3", "phase4"):
+                if phase_flags.get(pk):
+                    phase_results[pk].append({"window": wkey, "status": "skipped (phase1 prerequisite)"})
+            continue
 
         # ── Phase 2: FastRP embeddings + anomaly scoring ──
         embeddings: dict[int, list[float]] | None = None
-        try:
-            p2 = _run_phase2_embeddings(client, db, window, run_id, computed_at, use_gds)
-            phase_results["phase2"].append(p2)
-            # Cache embeddings for Phase 3 reuse (avoid re-projecting)
-            if p2.get("status") == "ok" and p2.get("_embeddings"):
-                embeddings = p2["_embeddings"]
-            elif p2.get("status") == "ok" and use_gds:
-                try:
-                    _create_projection(client, window)
-                    embeddings = _gds_fastrp(client, _projection_name(wkey))
-                    _drop_projection(client, _projection_name(wkey))
-                except Exception:
-                    pass
-        except Exception as exc:
-            errors.append(f"P2/{wkey}: {exc}")
-            phase_results["phase2"].append({"window": wkey, "error": str(exc)})
+        if phase_flags["phase2"]:
+            t0 = time.perf_counter()
+            try:
+                p2 = _run_phase2_embeddings(client, db, window, run_id, computed_at, use_gds)
+                phase_results["phase2"].append(p2)
+                # Cache embeddings for Phase 3 reuse
+                if p2.get("status") == "ok" and p2.get("_embeddings"):
+                    embeddings = p2["_embeddings"]
+                elif p2.get("status") == "ok" and use_gds:
+                    try:
+                        _create_projection(client, window)
+                        embeddings = _gds_fastrp(client, _projection_name(wkey))
+                        _drop_projection(client, _projection_name(wkey))
+                    except Exception:
+                        pass
+            except Exception as exc:
+                errors.append(f"P2/{wkey}: {exc}")
+                phase_results["phase2"].append({"window": wkey, "error": str(exc)})
+            phase_timings[f"phase2/{wkey}"] = round(time.perf_counter() - t0, 2)
+        else:
+            phase_results["phase2"].append({"window": wkey, "status": "disabled"})
 
         # ── Phase 3: Link prediction with explainability ──
-        communities = p1.get("_communities")
-        try:
-            p3 = _run_phase3_link_prediction(
-                client, db, window, run_id, computed_at, use_gds,
-                embeddings=embeddings,
-                communities=communities,
-            )
-            phase_results["phase3"].append(p3)
-            total_links += p3.get("links_written", 0)
-        except Exception as exc:
-            errors.append(f"P3/{wkey}: {exc}")
-            phase_results["phase3"].append({"window": wkey, "error": str(exc)})
+        # P3 degrades gracefully without P2 (just no embedding similarity)
+        if phase_flags["phase3"]:
+            t0 = time.perf_counter()
+            communities = p1.get("_communities") if p1 else None
+            try:
+                p3 = _run_phase3_link_prediction(
+                    client, db, window, run_id, computed_at, use_gds,
+                    embeddings=embeddings,
+                    communities=communities,
+                )
+                phase_results["phase3"].append(p3)
+                total_links += p3.get("links_written", 0)
+            except Exception as exc:
+                errors.append(f"P3/{wkey}: {exc}")
+                phase_results["phase3"].append({"window": wkey, "error": str(exc)})
+            phase_timings[f"phase3/{wkey}"] = round(time.perf_counter() - t0, 2)
+        else:
+            phase_results["phase3"].append({"window": wkey, "status": "disabled"})
 
-        # ── Phase 4: Role classification signals ──
-        try:
-            p4 = _run_phase4_role_signals(db, wkey)
-            phase_results["phase4"].append(p4)
-        except Exception as exc:
-            errors.append(f"P4/{wkey}: {exc}")
-            phase_results["phase4"].append({"window": wkey, "error": str(exc)})
+        # ── Phase 4: Role classification (SQL only, no Neo4j) ──
+        # P4 reads from graph_ml_features written by P1 — always safe after P1
+        if phase_flags["phase4"]:
+            t0 = time.perf_counter()
+            try:
+                p4 = _run_phase4_role_signals(db, wkey)
+                phase_results["phase4"].append(p4)
+            except Exception as exc:
+                errors.append(f"P4/{wkey}: {exc}")
+                phase_results["phase4"].append({"window": wkey, "error": str(exc)})
+            phase_timings[f"phase4/{wkey}"] = round(time.perf_counter() - t0, 2)
+        else:
+            phase_results["phase4"].append({"window": wkey, "status": "disabled"})
 
     # ── Finalize ──
     finished_at = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
+    # Only "failed" if a non-skipped phase actually errored
     status = "success" if not errors else "failed"
     db.execute(
         "UPDATE graph_ml_run_log SET finished_at = %s, status = %s, "
@@ -650,7 +730,6 @@ def run_neo4j_ml_exploration(
     )
 
     # Intelligence snapshot — single dashboard-queryable payload
-    # Include role distributions from Phase 4
     role_summary: dict[str, Any] = {}
     for p4r in phase_results["phase4"]:
         if p4r.get("role_distribution"):
@@ -661,17 +740,19 @@ def run_neo4j_ml_exploration(
         payload_json=json_dumps_safe({
             "run_id": run_id,
             "analytics_path": analytics_path,
+            "phase_flags": phase_flags,
             "total_characters": total_characters,
             "total_features": total_features,
             "total_links_predicted": total_links,
             "role_summary": role_summary,
+            "phase_timings_seconds": phase_timings,
             "phases": phase_results,
             "errors": errors,
         }),
         metadata_json=json_dumps_safe({
             "source": "neo4j+graph_ml_features+graph_ml_link_predictions",
             "reason": "scheduler:python",
-            "phases": "1+2+3+4",
+            "phases": "+".join(str(i) for i, p in enumerate(active_phases, 1)),
         }),
         expires_seconds=7200,
     )
@@ -682,6 +763,7 @@ def run_neo4j_ml_exploration(
         f"GDS ML pipeline: {total_characters} chars,",
         f"{total_features} features, {total_links} link predictions",
         f"across {len(TIME_WINDOWS)} windows. Path: {analytics_path}.",
+        f"Phases: {','.join(active_phases)}.",
     ]
     if errors:
         summary_parts.append(f"Errors: {len(errors)}.")
@@ -696,6 +778,8 @@ def run_neo4j_ml_exploration(
             "run_id": run_id,
             "analytics_path": analytics_path,
             "feature_version": FEATURE_VERSION,
+            "phase_flags": phase_flags,
+            "phase_timings_seconds": phase_timings,
             "total_links": total_links,
             "role_summary": role_summary,
             "phases": phase_results,
