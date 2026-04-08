@@ -47,6 +47,7 @@ Source of truth: `supplycore_authoritative_job_registry()` in `src/functions.php
 | graph_analyst_recalibration | real_schedulable | yes | yes | yes | yes | yes | yes |  | Recalibrate suspicion weights from analyst feedback. |
 | compute_graph_sync_killmail_edges | real_schedulable | yes | yes | yes | yes | yes | yes |  | ATTACKED_ON/VICTIM_OF edges in Neo4j. |
 | graph_model_audit | real_schedulable | yes | yes | yes | yes | yes | yes |  | Neo4j schema audit. |
+| graph_query_plan_validation | real_schedulable | yes | yes | yes | yes | yes | yes |  | PROFILE/EXPLAIN pass on hot Cypher queries for plan anti-pattern detection. |
 | theater_clustering | real_schedulable | yes | yes | yes | yes | yes | yes |  | Spatial/temporal battle clustering into theaters. |
 | theater_analysis | real_schedulable | yes | yes | yes | yes | yes | yes |  | Theater-level metrics and composition. |
 | theater_graph_integration | real_schedulable | yes | yes | yes | yes | yes | yes |  | Project theaters into Neo4j. |

@@ -51,6 +51,7 @@ from .jobs.graph_data_quality import run_graph_data_quality_check
 from .jobs.graph_temporal_metrics import run_graph_temporal_metrics_sync
 from .jobs.graph_typed_interactions import run_graph_typed_interactions_sync
 from .jobs.graph_community_detection import run_graph_community_detection_sync
+from .jobs.graph_query_plan_validation import run_graph_query_plan_validation
 from .jobs.graph_motif_detection import run_graph_motif_detection_sync
 from .jobs.graph_evidence_paths import run_graph_evidence_paths_sync
 from .jobs.graph_analyst_recalibration import run_graph_analyst_recalibration
@@ -131,6 +132,7 @@ PYTHON_COMPUTE_PROCESSOR_JOB_KEYS: set[str] = {
     "graph_temporal_metrics_sync",
     "graph_typed_interactions_sync",
     "graph_community_detection_sync",
+    "graph_query_plan_validation",
     "graph_motif_detection_sync",
     "graph_evidence_paths_sync",
     "graph_analyst_recalibration",
@@ -258,6 +260,7 @@ _PROCESSOR_DISPATCH: dict[str, tuple] = {
     "graph_temporal_metrics_sync": (run_graph_temporal_metrics_sync, lambda db, cfg: (db, neo4j_runtime(cfg))),
     "graph_typed_interactions_sync": (run_graph_typed_interactions_sync, lambda db, cfg: (db, neo4j_runtime(cfg))),
     "graph_community_detection_sync": (run_graph_community_detection_sync, lambda db, cfg: (db, neo4j_runtime(cfg))),
+    "graph_query_plan_validation": (run_graph_query_plan_validation, lambda db, cfg: (db, neo4j_runtime(cfg))),
     "graph_motif_detection_sync": (run_graph_motif_detection_sync, lambda db, cfg: (db, neo4j_runtime(cfg))),
     "graph_evidence_paths_sync": (run_graph_evidence_paths_sync, lambda db, cfg: (db, neo4j_runtime(cfg))),
     "graph_analyst_recalibration": (run_graph_analyst_recalibration, lambda db, cfg: (db,)),

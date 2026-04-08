@@ -50,9 +50,27 @@ def _has_gds(client: Neo4jClient) -> bool:
         return False
 
 
-def _ensure_gds_projection(client: Neo4jClient) -> bool:
-    """Create or replace the GDS graph projection for universe topology."""
+def _gds_projection_exists(client: Neo4jClient) -> bool:
+    """Check if the GDS projection already exists in memory."""
     try:
+        rows = client.query(
+            f"CALL gds.graph.exists('{GDS_GRAPH_NAME}') YIELD exists RETURN exists"
+        )
+        return bool(rows and rows[0].get("exists"))
+    except Exception:
+        return False
+
+
+def _ensure_gds_projection(client: Neo4jClient, *, force_recreate: bool = False) -> bool:
+    """Create the GDS graph projection for universe topology.
+
+    If the projection already exists and *force_recreate* is False, reuse it to
+    avoid the overhead of dropping and reprojecting the full graph every run.
+    """
+    try:
+        if not force_recreate and _gds_projection_exists(client):
+            return True
+
         # Drop existing projection if present
         try:
             client.query(f"CALL gds.graph.drop('{GDS_GRAPH_NAME}', false)")
