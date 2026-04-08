@@ -294,7 +294,18 @@ Add a `run_job` call in the correct phase:
 run_job "my_new_sync" "My New Sync"
 ```
 
-### d) Documentation
+### d) Test harness (`scripts/test-all-sync-jobs.sh`)
+
+If the job is a sync job, add it to the `SYNC_JOBS` array so it's included in the smoke-test sweep:
+
+```bash
+SYNC_JOBS=(
+  ...
+  my_new_sync
+)
+```
+
+### e) Documentation
 
 - `docs/AUTHORITATIVE_JOB_MATRIX.md` — add a row to the job matrix table
 - `docs/CLI_MANUAL.md` — add to the job reference table AND the numbered rebuild list
@@ -320,8 +331,9 @@ Before merging, verify **all eleven** registration points:
 **Database (1 file):**
 - [ ] `database/migrations/` — schedule row INSERT + any new tables
 
-**Ops & Docs (3 files):**
+**Ops & Docs (4 files):**
 - [ ] `scripts/reset_and_rebuild.sh` — in rebuild sequence
+- [ ] `scripts/test-all-sync-jobs.sh` — in `SYNC_JOBS` array *(sync jobs only)*
 - [ ] `docs/AUTHORITATIVE_JOB_MATRIX.md` — row in job matrix
 - [ ] `docs/CLI_MANUAL.md` — in reference table + numbered rebuild list
 
