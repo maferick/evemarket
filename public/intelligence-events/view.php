@@ -203,6 +203,10 @@ include __DIR__ . '/../../src/views/partials/header.php';
                     ?></span>
                 <?php endif; ?>
             </div>
+        <?php else: ?>
+            <div class="flex items-baseline gap-3">
+                <a href="/battle-intelligence/character.php?character_id=<?= urlencode((string) ((int) ($event['entity_id'] ?? 0))) ?>" class="text-2xl text-accent font-semibold hover:underline"><?= htmlspecialchars((string) ($event['entity_type'] ?? 'entity'), ENT_QUOTES) ?> #<?= (int) ($event['entity_id'] ?? 0) ?></a>
+            </div>
         <?php endif; ?>
 
         <!-- Event title and type -->
