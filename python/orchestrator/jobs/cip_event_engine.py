@@ -59,6 +59,9 @@ COVERAGE_EXPANSION_THRESHOLD = 0.15
 # Multi-domain: minimum domains with active signals
 MULTI_DOMAIN_THRESHOLD = 4
 
+# Precomputed bucket label → index map (lower index = higher risk)
+_BUCKET_INDEX: dict[str, int] = {label: idx for idx, (_, label) in enumerate(PERCENTILE_BUCKETS)}
+
 
 def _now() -> datetime:
     return datetime.now(UTC)
@@ -107,9 +110,10 @@ def _detect_character_events(db: SupplyCoreDb, cal: dict | None = None) -> list[
 
     Returns a list of candidate event dicts ready for upsert.
     """
-    now = _now()
     now_str = _now_sql()
     candidates: list[dict[str, Any]] = []
+
+    from .cip_signal_definitions import SIGNAL_DEF_MAP as signal_def_map
 
     # Use calibrated thresholds if available
     surge_threshold = cal["surge_delta"] if cal else RISK_SURGE_DELTA_THRESHOLD
@@ -144,20 +148,6 @@ def _detect_character_events(db: SupplyCoreDb, cal: dict | None = None) -> list[
         yesterday_buckets[int(hr["character_id"])] = percentile_bucket(
             float(hr["risk_percentile"]) if hr.get("risk_percentile") is not None else None
         )
-
-    # Load yesterday's effective_coverage for coverage expansion detection
-    yesterday_coverage: dict[int, float] = {}
-    coverage_rows = db.fetch_all("""
-        SELECT cip.character_id, cip.risk_score_previous_run
-        FROM character_intelligence_profiles cip
-        WHERE cip.computed_at >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL 2 HOUR)
-    """)
-    # We need yesterday's coverage from history — but history doesn't store it yet.
-    # Use risk_score_previous_run as a proxy for "something changed".
-    # For coverage, we compare current effective_coverage against the profile's
-    # previous state.  Since we don't have yesterday's coverage in history,
-    # we detect coverage expansion when effective_coverage > 0.6 and signal_count
-    # increased recently (new_signals_24h > 0).
 
     # Load recent high-weight signals (emitted in last 24h)
     recent_signals = db.fetch_all("""
@@ -243,12 +233,11 @@ def _detect_character_events(db: SupplyCoreDb, cal: dict | None = None) -> list[
             prev_bucket = yesterday_buckets.get(cid, "unknown")
             if prev_bucket != "unknown" and current_bucket != prev_bucket:
                 # Check if it's actually an escalation (moved to a higher bucket)
-                bucket_order = [b[1] for b in PERCENTILE_BUCKETS]
-                curr_idx = bucket_order.index(current_bucket) if current_bucket in bucket_order else 99
-                prev_idx = bucket_order.index(prev_bucket) if prev_bucket in bucket_order else 99
+                curr_idx = _BUCKET_INDEX.get(current_bucket, 99)
+                prev_idx = _BUCKET_INDEX.get(prev_bucket, 99)
                 if curr_idx < prev_idx:  # Lower index = higher risk bucket
                     defn = EVENT_TYPE_MAP["percentile_escalation"]
-                    jump = (prev_idx - curr_idx) / len(bucket_order)
+                    jump = (prev_idx - curr_idx) / len(_BUCKET_INDEX)
                     impact, decomp = _compute_impact(defn, {
                         "percentile_jump": jump,
                         "risk_score": risk,
@@ -312,8 +301,7 @@ def _detect_character_events(db: SupplyCoreDb, cal: dict | None = None) -> list[
         # low-confidence signals or stale profiles.
         char_new_signals = new_signals_by_char.get(cid, [])
         for sig in char_new_signals:
-            from .cip_signal_definitions import SIGNAL_DEF_MAP
-            sig_defn = SIGNAL_DEF_MAP.get(sig["signal_type"])
+            sig_defn = signal_def_map.get(sig["signal_type"])
             if sig_defn and sig_defn.weight_default >= HIGH_WEIGHT_SIGNAL_THRESHOLD:
                 sig_confidence = float(sig.get("confidence") or 0)
                 # Gates: minimum signal confidence + minimum profile freshness
@@ -438,16 +426,28 @@ def _detect_compound_events(db: SupplyCoreDb) -> list[dict[str, Any]]:
     """, char_ids)
     profiles_by_id = {int(p["character_id"]): p for p in profiles}
 
-    # Load existing compound events to detect strengthening
-    existing_compound_events = db.fetch_all("""
-        SELECT dedup_key, impact_score
-        FROM intelligence_events
-        WHERE event_type IN ('compound_signal_activated', 'compound_signal_strengthened')
-          AND state IN ('active', 'acknowledged', 'suppressed')
-    """)
-    existing_impact: dict[str, float] = {
-        r["dedup_key"]: float(r["impact_score"]) for r in existing_compound_events
-    }
+    # Build candidate dedup keys to restrict the existing-event lookup
+    candidate_dedup_keys: list[str] = []
+    for comp in compounds:
+        cid = int(comp["character_id"])
+        ctype = comp["compound_type"]
+        candidate_dedup_keys.append(_dedup_key("character", cid, "compound_signal_activated", ctype))
+        candidate_dedup_keys.append(_dedup_key("character", cid, "compound_signal_strengthened", ctype))
+
+    # Load existing compound events only for these candidates
+    existing_impact: dict[str, float] = {}
+    if candidate_dedup_keys:
+        dk_placeholders = ",".join(["%s"] * len(candidate_dedup_keys))
+        existing_compound_events = db.fetch_all(f"""
+            SELECT dedup_key, impact_score
+            FROM intelligence_events
+            WHERE dedup_key IN ({dk_placeholders})
+              AND event_type IN ('compound_signal_activated', 'compound_signal_strengthened')
+              AND state IN ('active', 'acknowledged', 'suppressed')
+        """, candidate_dedup_keys)
+        existing_impact = {
+            r["dedup_key"]: float(r["impact_score"]) for r in existing_compound_events
+        }
 
     for comp in compounds:
         cid = int(comp["character_id"])
@@ -600,7 +600,7 @@ def _make_candidate(
 # Event lifecycle management
 # ---------------------------------------------------------------------------
 
-def _upsert_events(db: SupplyCoreDb, candidates: list[dict[str, Any]]) -> tuple[int, int, int]:
+def _upsert_events(db: SupplyCoreDb, candidates: list[dict[str, Any]], cal: dict | None = None) -> tuple[int, int, int]:
     """Upsert detected events with deduplication and escalation.
 
     Returns (created, updated, resolved) counts.
@@ -621,22 +621,15 @@ def _upsert_events(db: SupplyCoreDb, candidates: list[dict[str, Any]]) -> tuple[
     """, dedup_keys)
     existing_map: dict[str, dict] = {r["dedup_key"]: r for r in existing_rows}
 
+    # Separate new vs existing for batched inserts
+    new_event_params: list[list] = []
+    update_candidates: list[tuple[dict, dict]] = []
+
     for cand in candidates:
         dk = cand["dedup_key"]
         existing = existing_map.get(dk)
-
         if existing is None:
-            # New event — insert
-            db.execute("""
-                INSERT INTO intelligence_events (
-                    entity_type, entity_id, event_type, event_family, event_subtype,
-                    state, severity, impact_score,
-                    title, detail_json, dedup_key,
-                    first_detected_at, last_updated_at,
-                    escalation_count,
-                    risk_score_at_event, risk_rank_at_event, risk_percentile_at_event
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 1, %s, %s, %s)
-            """, [
+            new_event_params.append([
                 cand["entity_type"], cand["entity_id"],
                 cand["event_type"], cand.get("event_family", "threat"), cand["event_subtype"],
                 "active", cand["severity"], cand["impact_score"],
@@ -645,84 +638,98 @@ def _upsert_events(db: SupplyCoreDb, candidates: list[dict[str, Any]]) -> tuple[
                 cand["risk_score_at_event"], cand["risk_rank_at_event"],
                 cand["risk_percentile_at_event"],
             ])
-            created += 1
         else:
-            # Existing event — update with escalation logic.
-            # Escalation requires WORSENING, not just persistence.
-            # We check if the current impact_score exceeds the previous one,
-            # indicating the situation is getting worse, not merely continuing.
-            new_count = int(existing["escalation_count"] or 0) + 1
-            current_severity = existing["severity"]
-            new_severity = current_severity
+            update_candidates.append((cand, existing))
 
-            # Only escalate if impact is increasing (worsening condition)
-            prev_impact = float(existing.get("impact_score") or 0)
-            is_worsening = cand["impact_score"] > prev_impact
+    # Batch-insert all new events
+    if new_event_params:
+        db.execute_many("""
+            INSERT INTO intelligence_events (
+                entity_type, entity_id, event_type, event_family, event_subtype,
+                state, severity, impact_score,
+                title, detail_json, dedup_key,
+                first_detected_at, last_updated_at,
+                escalation_count,
+                risk_score_at_event, risk_rank_at_event, risk_percentile_at_event
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 1, %s, %s, %s)
+        """, new_event_params)
+    created = len(new_event_params)
 
-            thresholds = cand.get("escalation_thresholds", {})
+    for cand, existing in update_candidates:
+        # Existing event — update with escalation logic.
+        # Escalation requires WORSENING, not just persistence.
+        new_count = int(existing["escalation_count"] or 0) + 1
+        current_severity = existing["severity"]
+        new_severity = current_severity
+
+        # Only escalate if impact is increasing (worsening condition)
+        prev_impact = float(existing.get("impact_score") or 0)
+        is_worsening = cand["impact_score"] > prev_impact
+
+        thresholds = cand.get("escalation_thresholds", {})
+        if is_worsening:
+            for threshold_count, upgraded_severity in sorted(thresholds.items()):
+                if new_count >= threshold_count:
+                    new_severity = upgraded_severity
+
+        severity_changed = new_severity != current_severity
+
+        # Re-activate if it was resolved/expired.
+        # Suppressed events only reactivate if materially worsened.
+        if existing["state"] == "suppressed":
             if is_worsening:
-                for threshold_count, upgraded_severity in sorted(thresholds.items()):
-                    if new_count >= threshold_count:
-                        new_severity = upgraded_severity
-
-            severity_changed = new_severity != current_severity
-
-            # Re-activate if it was resolved/expired.
-            # Suppressed events only reactivate if materially worsened.
-            if existing["state"] == "suppressed":
-                if is_worsening:
-                    new_state = "active"  # Material worsening overrides suppression
-                else:
-                    new_state = "suppressed"  # Stay suppressed
-            elif existing["state"] in ("resolved", "expired"):
-                new_state = "active"
+                new_state = "active"  # Material worsening overrides suppression
             else:
-                new_state = existing["state"]
+                new_state = "suppressed"  # Stay suppressed
+        elif existing["state"] in ("resolved", "expired"):
+            new_state = "active"
+        else:
+            new_state = existing["state"]
 
+        db.execute("""
+            UPDATE intelligence_events
+            SET state            = %s,
+                severity         = %s,
+                previous_severity = CASE WHEN %s != severity THEN severity ELSE previous_severity END,
+                impact_score     = %s,
+                title            = %s,
+                detail_json      = %s,
+                last_updated_at  = %s,
+                escalation_count = %s,
+                risk_score_at_event     = %s,
+                risk_rank_at_event      = %s,
+                risk_percentile_at_event = %s,
+                resolved_at      = NULL
+            WHERE id = %s
+        """, [
+            new_state, new_severity, new_severity,
+            cand["impact_score"], cand["title"], cand["detail_json"],
+            cand["now_str"], new_count,
+            cand["risk_score_at_event"], cand["risk_rank_at_event"],
+            cand["risk_percentile_at_event"],
+            existing["id"],
+        ])
+
+        # Log state/severity transitions
+        if severity_changed or new_state != existing["state"]:
             db.execute("""
-                UPDATE intelligence_events
-                SET state            = %s,
-                    severity         = %s,
-                    previous_severity = CASE WHEN %s != severity THEN severity ELSE previous_severity END,
-                    impact_score     = %s,
-                    title            = %s,
-                    detail_json      = %s,
-                    last_updated_at  = %s,
-                    escalation_count = %s,
-                    risk_score_at_event     = %s,
-                    risk_rank_at_event      = %s,
-                    risk_percentile_at_event = %s,
-                    resolved_at      = NULL
-                WHERE id = %s
+                INSERT INTO intelligence_event_history (
+                    event_id, previous_state, new_state,
+                    previous_severity, new_severity,
+                    changed_by, reason
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s)
             """, [
-                new_state, new_severity, new_severity,
-                cand["impact_score"], cand["title"], cand["detail_json"],
-                cand["now_str"], new_count,
-                cand["risk_score_at_event"], cand["risk_rank_at_event"],
-                cand["risk_percentile_at_event"],
                 existing["id"],
+                existing["state"], new_state,
+                current_severity, new_severity,
+                "cip_event_engine",
+                f"Re-detected (count={new_count})" + (f", escalated to {new_severity}" if severity_changed else ""),
             ])
 
-            # Log state/severity transitions
-            if severity_changed or new_state != existing["state"]:
-                db.execute("""
-                    INSERT INTO intelligence_event_history (
-                        event_id, previous_state, new_state,
-                        previous_severity, new_severity,
-                        changed_by, reason
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s)
-                """, [
-                    existing["id"],
-                    existing["state"], new_state,
-                    current_severity, new_severity,
-                    "cip_event_engine",
-                    f"Re-detected (count={new_count})" + (f", escalated to {new_severity}" if severity_changed else ""),
-                ])
-
-            updated += 1
+        updated += 1
 
     # Auto-resolve: find active events whose conditions are no longer met
-    resolved = _auto_resolve_events(db, candidates)
+    resolved = _auto_resolve_events(db, candidates, cal)
 
     return created, updated, resolved
 
@@ -730,6 +737,7 @@ def _upsert_events(db: SupplyCoreDb, candidates: list[dict[str, Any]]) -> tuple[
 def _auto_resolve_events(
     db: SupplyCoreDb,
     current_candidates: list[dict[str, Any]],
+    cal: dict | None = None,
 ) -> int:
     """Resolve active events whose conditions are no longer true.
 
@@ -758,8 +766,8 @@ def _auto_resolve_events(
           AND ie.last_updated_at < DATE_SUB(UTC_TIMESTAMP(), INTERVAL 1 HOUR)
     """, auto_resolve_types)
 
-    # Pre-load profiles for hysteresis checks
-    char_ids = [int(e["entity_id"]) for e in active_events if e["entity_type"] == "character"]
+    # Pre-load profiles for hysteresis checks (deduplicated)
+    char_ids = list({int(e["entity_id"]) for e in active_events if e["entity_type"] == "character"})
     profiles_by_id: dict[int, dict] = {}
     if char_ids:
         char_placeholders = ",".join(["%s"] * len(char_ids))
@@ -771,7 +779,8 @@ def _auto_resolve_events(
         for pr in prof_rows:
             profiles_by_id[int(pr["character_id"])] = pr
 
-    resolved = 0
+    # Collect events to resolve, then batch the writes
+    to_resolve: list[dict] = []
     for evt in active_events:
         if evt["dedup_key"] in active_dedup_keys:
             continue  # Still detected, don't resolve
@@ -780,29 +789,30 @@ def _auto_resolve_events(
         defn = EVENT_TYPE_MAP.get(evt["event_type"])
         if defn and defn.hysteresis_margin > 0 and evt["entity_type"] == "character":
             prof = profiles_by_id.get(int(evt["entity_id"]))
-            if prof and not _passes_hysteresis(defn, prof):
+            if prof and not _passes_hysteresis(defn, prof, cal):
                 continue  # Too close to threshold, skip resolution
 
-        db.execute("""
+        to_resolve.append(evt)
+
+    if to_resolve:
+        db.execute_many("""
             UPDATE intelligence_events
             SET state = 'resolved', resolved_at = %s, last_updated_at = %s
             WHERE id = %s AND state = 'active'
-        """, [now_str, now_str, evt["id"]])
+        """, [[now_str, now_str, evt["id"]] for evt in to_resolve])
 
-        db.execute("""
+        db.execute_many("""
             INSERT INTO intelligence_event_history (
                 event_id, previous_state, new_state,
                 previous_severity, new_severity,
                 changed_by, reason
             ) VALUES (%s, 'active', 'resolved', %s, %s, 'cip_event_engine', 'Condition no longer detected')
-        """, [evt["id"], evt["severity"], evt["severity"]])
+        """, [[evt["id"], evt["severity"], evt["severity"]] for evt in to_resolve])
 
-        resolved += 1
-
-    return resolved
+    return len(to_resolve)
 
 
-def _passes_hysteresis(defn: EventTypeDefinition, prof: dict[str, Any]) -> bool:
+def _passes_hysteresis(defn: EventTypeDefinition, prof: dict[str, Any], cal: dict | None = None) -> bool:
     """Check if a character has moved far enough past a threshold to resolve.
 
     Returns True if the event SHOULD be resolved (past hysteresis margin).
@@ -822,15 +832,13 @@ def _passes_hysteresis(defn: EventTypeDefinition, prof: dict[str, Any]) -> bool:
     if et == "percentile_escalation":
         # Percentile: margin is fractional (e.g. 0.02)
         pct = float(prof["risk_percentile"]) if prof.get("risk_percentile") is not None else 0.0
-        # Event fired when pct was high; resolve when it drops below bucket - margin
-        # Since we don't know which bucket triggered, just check if pct dropped
-        # meaningfully (below 90th percentile - margin as a safe proxy)
         return pct < (0.90 - margin)
 
     if et == "freshness_degradation":
-        # Freshness: margin means must recover to threshold + margin
+        # Use calibrated freshness floor when available, matching detection
+        freshness_threshold = cal["freshness_floor"] if cal else FRESHNESS_DEGRADATION_THRESHOLD
         fresh = float(prof.get("freshness") or 0)
-        return fresh >= (FRESHNESS_DEGRADATION_THRESHOLD + margin)
+        return fresh >= (freshness_threshold + margin)
 
     # Default: no hysteresis check, safe to resolve
     return True
@@ -908,7 +916,7 @@ def run_cip_event_engine(db: SupplyCoreDb) -> JobResult:
 
     # 2. Event lifecycle management
     logger.info("cip_event_engine: upserting events...")
-    created, updated, resolved = _upsert_events(db, candidates)
+    created, updated, resolved = _upsert_events(db, candidates, cal)
     logger.info("cip_event_engine: created=%d, updated=%d, resolved=%d", created, updated, resolved)
 
     # 3. Unsuppress expired suppressions
