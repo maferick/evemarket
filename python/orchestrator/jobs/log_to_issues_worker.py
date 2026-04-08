@@ -69,6 +69,14 @@ def _close_github_issue(token: str, repo: str, issue_number: int) -> None:
         resp.read()
 
 
+def _reopen_github_issue(token: str, repo: str, issue_number: int) -> None:
+    url = f"https://api.github.com/repos/{repo}/issues/{issue_number}"
+    payload = json.dumps({"state": "open"}).encode()
+    req = urllib.request.Request(url, data=payload, headers=_github_headers(token), method="PATCH")
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        resp.read()
+
+
 def _comment_github_issue(token: str, repo: str, issue_number: int, body: str) -> None:
     url = f"https://api.github.com/repos/{repo}/issues/{issue_number}/comments"
     payload = json.dumps({"body": body}).encode()
@@ -200,17 +208,26 @@ def run_log_to_issues(
     for fp, occurrences in grouped.items():
         job_name = str(occurrences[0]["job_name"])
         norm_error = str(occurrences[0]["_normalized"])
-        first_ts = min(r["started_at"] for r in occurrences)
-        last_ts = max(r["started_at"] for r in occurrences)
 
         existing = db.fetch_one(
-            "SELECT id, github_issue_number, occurrence_count, resolved_at "
+            "SELECT id, github_issue_number, occurrence_count, resolved_at, last_seen_at "
             "FROM log_issue_tracker WHERE fingerprint = %s",
             (fp,),
         )
 
         if existing:
-            # Always bump count and update last_seen.
+            # Only count occurrences newer than last scan to avoid double-counting.
+            prev_last_seen = existing.get("last_seen_at")
+            if prev_last_seen:
+                occurrences = [r for r in occurrences if r["started_at"] > prev_last_seen]
+            if not occurrences:
+                continue
+
+        first_ts = min(r["started_at"] for r in occurrences)
+        last_ts = max(r["started_at"] for r in occurrences)
+
+        if existing:
+            # Bump count and update last_seen with only new occurrences.
             db.execute(
                 "UPDATE log_issue_tracker "
                 "SET occurrence_count = occurrence_count + %s, "
@@ -234,8 +251,12 @@ def run_log_to_issues(
                                 int(existing["github_issue_number"]),
                                 f"This failure has reoccurred ({len(occurrences)} new occurrence(s) since last resolution). Reopening for triage.",
                             )
+                            _reopen_github_issue(
+                                github_token, github_repo,
+                                int(existing["github_issue_number"]),
+                            )
                         except Exception as exc:
-                            warnings.append(f"Failed to comment on #{existing['github_issue_number']}: {exc}")
+                            warnings.append(f"Failed to reopen #{existing['github_issue_number']}: {exc}")
                 issues_updated += 1
                 continue
 
