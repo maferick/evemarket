@@ -26,8 +26,8 @@ _RETRYABLE_ERRORS = {_ERR_DEADLOCK, _ERR_LOCK_WAIT_TIMEOUT, _ERR_SERVER_GONE, _E
 # Excludes deadlock/lock-wait since those imply a transaction conflict that a
 # simple auto-commit re-execution can safely retry.
 _CONNLOSS_ERRORS = {_ERR_SERVER_GONE, _ERR_LOST_CONNECTION, _ERR_CANT_CONNECT, _ERR_DEADLOCK, _ERR_LOCK_WAIT_TIMEOUT}
-_SIMPLE_MAX_RETRIES = 2
-_SIMPLE_BASE_DELAY = 0.3
+_SIMPLE_MAX_RETRIES = 3
+_SIMPLE_BASE_DELAY = 1.0
 
 
 def _priority_rank(priority: str) -> int:
