@@ -762,6 +762,7 @@ These can be run via `python -m orchestrator run-job --job-key <KEY>`:
 | `graph_evidence_paths_sync` | Evidence path discovery |
 | `graph_analyst_recalibration` | Analyst recalibration |
 | `graph_model_audit` | Graph model audit |
+| `graph_query_plan_validation` | Cypher query plan validation |
 | `theater_clustering` | Theater cluster detection |
 | `theater_analysis` | Theater composition analysis |
 | `theater_graph_integration` | Theater → graph integration |
@@ -874,9 +875,10 @@ Phase 7: Cleanup & Economics
  30. compute_graph_prune
  31. graph_analyst_recalibration
  32. graph_model_audit
- 33. compute_buy_all
- 34. compute_signals
- 35. compute_economic_warfare
+ 33. graph_query_plan_validation
+ 34. compute_buy_all
+ 35. compute_signals
+ 36. compute_economic_warfare
 ```
 
 ---
