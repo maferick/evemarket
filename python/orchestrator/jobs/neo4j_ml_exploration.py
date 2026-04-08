@@ -115,53 +115,30 @@ def _create_projection(client: Neo4jClient, window: dict[str, Any]) -> bool:
     if days is not None:
         # Time-filtered projection via Cypher projection
         # Filter on the most common timestamp properties across rel types
-        client.query(
-            f"""
-            CALL gds.graph.project.cypher(
-                '{name}',
-                'MATCH (c:Character) RETURN id(c) AS id',
-                'MATCH (a:Character)-[r:{CHARACTER_REL_TYPES_STR}]-(b:Character)
-                 WHERE COALESCE(r.last_seen, COALESCE(r.last_at, COALESCE(r.updated_at, datetime())))
-                       >= datetime() - duration({{days: {days}}})
-                 RETURN id(a) AS source, id(b) AS target,
-                        COALESCE(r.weight, COALESCE(r.count, 1.0)) AS weight'
-            )
-            """,
-            timeout_seconds=180,
+        date_filter = (
+            f"WHERE COALESCE(r.last_seen, COALESCE(r.last_at, COALESCE(r.updated_at, datetime())))"
+            f" >= datetime() - duration({{days: {days}}})"
         )
     else:
-        # Lifetime: native projection, all relationships, undirected
-        # Only include relationship types that exist in the database
-        present_types = []
-        for rt in CHARACTER_REL_TYPES:
-            try:
-                rows = client.query(f"MATCH ()-[r:{rt}]->() RETURN r LIMIT 1")
-                if rows:
-                    present_types.append(rt)
-            except Exception:
-                pass
+        # Lifetime: no date filter — include all relationships
+        date_filter = ""
 
-        if not present_types:
-            return False
-
-        rel_config_parts = []
-        for rt in present_types:
-            rel_config_parts.append(
-                f"{rt}: {{orientation: 'UNDIRECTED', properties: 'weight'}}"
-            )
-        rel_config = "{" + ", ".join(rel_config_parts) + "}"
-
-        client.query(
-            f"""
-            CALL gds.graph.project(
-                '{name}',
-                'Character',
-                {rel_config},
-                {{relationshipProperties: 'weight'}}
-            )
-            """,
-            timeout_seconds=180,
+    # Always use Cypher projection — it handles missing relationship types
+    # gracefully (returns zero rows) instead of failing hard like native
+    # projection which validates all specified types exist upfront.
+    client.query(
+        f"""
+        CALL gds.graph.project.cypher(
+            '{name}',
+            'MATCH (c:Character) RETURN id(c) AS id',
+            'MATCH (a:Character)-[r:{CHARACTER_REL_TYPES_STR}]-(b:Character)
+             {date_filter}
+             RETURN id(a) AS source, id(b) AS target,
+                    COALESCE(r.weight, COALESCE(r.count, 1.0)) AS weight'
         )
+        """,
+        timeout_seconds=180,
+    )
 
     return True
 

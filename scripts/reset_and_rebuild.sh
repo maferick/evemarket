@@ -359,6 +359,7 @@ run_job "graph_typed_interactions_sync" "Graph Typed Interactions"
 run_job "graph_community_detection_sync" "Graph Community Detection"
 run_job "graph_motif_detection_sync" "Graph Motif Detection"
 run_job "graph_evidence_paths_sync" "Graph Evidence Paths"
+run_job "neo4j_ml_exploration" "GDS ML Exploration"
 run_job "graph_data_quality_check" "Graph Data Quality"
 
 echo ""

@@ -2,7 +2,7 @@
 
 This guide explains how to register a new Python job so that it runs on a recurring schedule, appears in the settings and log-viewer UI, and integrates with the worker pool.
 
-A fully registered job touches **six files**. Skip any and the job will either not run, not display, or silently fail.
+A fully registered job touches **eleven registration points** across 8 files. Skip any and the job will either not run, not display, or silently fail.
 
 ---
 
@@ -264,15 +264,62 @@ If the job needs its own tables, create a separate migration for the schema.
 
 ---
 
+## 7. Additional registration points
+
+These are easy to miss but important for full integration.
+
+### a) Dashboard group mapping (`src/functions.php`)
+
+Search for `=> 'Intelligence Graph'` (or the appropriate group) and add your job:
+
+```php
+'my_new_sync' => 'Intelligence Graph',
+```
+
+### b) Stage array (`src/db.php`)
+
+Search for `$stageJobKeys` and add the job to the correct stage:
+
+```php
+'graph' => [..., 'my_new_sync'],
+```
+
+### c) Reset & rebuild script (`scripts/reset_and_rebuild.sh`)
+
+Add a `run_job` call in the correct phase:
+
+```bash
+run_job "my_new_sync" "My New Sync"
+```
+
+### d) Documentation
+
+- `docs/AUTHORITATIVE_JOB_MATRIX.md` — add a row to the job matrix table
+- `docs/CLI_MANUAL.md` — add to the job reference table AND the numbered rebuild list
+
+---
+
 ## Checklist
 
-Before merging, verify all six registration points:
+Before merging, verify **all eleven** registration points:
 
+**Python (4 files):**
 - [ ] `python/orchestrator/jobs/<job_key>.py` — processor exists and returns correct result shape
 - [ ] `python/orchestrator/jobs/__init__.py` — function is exported
-- [ ] `python/orchestrator/processor_registry.py` — in job-key set AND dispatch map
+- [ ] `python/orchestrator/processor_registry.py` — import + job-key set + dispatch map
 - [ ] `python/orchestrator/worker_registry.py` — in `WORKER_JOB_DEFINITIONS`
-- [ ] `src/functions.php` — in `supplycore_authoritative_job_registry()` AND `dedicated_worker_job_overrides()`
-- [ ] `database/migrations/` — schedule row migration exists
+
+**PHP (2 files, 3 entries):**
+- [ ] `src/functions.php` — in `supplycore_authoritative_job_registry()`
+- [ ] `src/functions.php` — in dashboard group mapping
+- [ ] `src/db.php` — in `$stageJobKeys` array
+
+**Database (1 file):**
+- [ ] `database/migrations/` — schedule row INSERT + any new tables
+
+**Ops & Docs (3 files):**
+- [ ] `scripts/reset_and_rebuild.sh` — in rebuild sequence
+- [ ] `docs/AUTHORITATIVE_JOB_MATRIX.md` — row in job matrix
+- [ ] `docs/CLI_MANUAL.md` — in reference table + numbered rebuild list
 
 Missing any one of these will cause the job to either not run, not display in the UI, or fail silently at runtime.

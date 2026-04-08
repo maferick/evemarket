@@ -1,3 +1,10 @@
+# ── Job Wiring Checklist ─────────────────────────────────────────────────────
+# New Python job?  See python/orchestrator/jobs/__init__.py for the full
+# checklist (11 registration points).  In THIS file you need:
+#   1. Import at the top
+#   2. Add key to PYTHON_COMPUTE_PROCESSOR_JOB_KEYS
+#   3. Add entry to the dispatch dict (job_key → (fn, arg_factory))
+# ─────────────────────────────────────────────────────────────────────────────
 from __future__ import annotations
 
 from pathlib import Path
