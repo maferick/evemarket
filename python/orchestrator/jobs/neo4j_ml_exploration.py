@@ -131,8 +131,21 @@ def _create_projection(client: Neo4jClient, window: dict[str, Any]) -> bool:
         )
     else:
         # Lifetime: native projection, all relationships, undirected
-        rel_config_parts = []
+        # Only include relationship types that exist in the database
+        present_types = []
         for rt in CHARACTER_REL_TYPES:
+            try:
+                rows = client.query(f"MATCH ()-[r:{rt}]->() RETURN r LIMIT 1")
+                if rows:
+                    present_types.append(rt)
+            except Exception:
+                pass
+
+        if not present_types:
+            return False
+
+        rel_config_parts = []
+        for rt in present_types:
             rel_config_parts.append(
                 f"{rt}: {{orientation: 'UNDIRECTED', properties: 'weight'}}"
             )
