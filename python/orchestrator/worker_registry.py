@@ -199,6 +199,7 @@ WORKER_JOB_DEFINITIONS: dict[str, dict[str, Any]] = {
 
     # ── Maintenance (independent, no upstream deps) ──────────────────────
     "cache_expiry_cleanup_sync":                {"workload_class": "sync",    "execution_mode": "python", "queue_name": "sync",    "priority": "low",    "freshness_sensitivity": "background", "cooldown_seconds": 60,  "runtime_class": "sync_light",   "resource_cost": "low",    "concurrency_group": "",               "depends_on": [],                                                                          "opportunistic_background": True,  "timeout_seconds": 180,  "memory_limit_mb": 384,  "retry_delay_seconds": 60, "max_attempts": 3, "lane": "maintenance"},
+    "log_to_issues":                           {"workload_class": "compute", "execution_mode": "python", "queue_name": "compute", "priority": "low",    "freshness_sensitivity": "background", "cooldown_seconds": 3600, "runtime_class": "sync_light",  "resource_cost": "low",    "concurrency_group": "",               "depends_on": [],                                                                          "opportunistic_background": True,  "timeout_seconds": 120,  "memory_limit_mb": 256,  "retry_delay_seconds": 300, "max_attempts": 2, "lane": "maintenance"},
 }
 
 # Explicitly retired from recurring execution — no Python-native processor exists.

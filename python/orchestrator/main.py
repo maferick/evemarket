@@ -183,6 +183,13 @@ def parse_args() -> argparse.Namespace:
     run_job.add_argument("--job-key", required=True)
     run_job.add_argument("--verbose", action="store_true", help="Print step-by-step progress to stderr")
 
+    log_issues = subparsers.add_parser("log-to-issues", help="Scan job_runs for failures and create GitHub issues")
+    log_issues.add_argument("--app-root", default=resolve_app_root(__file__))
+    log_issues.add_argument("--lookback-hours", type=int, default=24, help="Hours of failure history to scan (default: 24)")
+    log_issues.add_argument("--dry-run", action="store_true", help="Scan and log without creating GitHub issues")
+    log_issues.add_argument("--no-auto-close", dest="auto_close", action="store_false", default=True, help="Disable auto-closing stale issues")
+    log_issues.add_argument("--verbose", action="store_true")
+
     backfill = subparsers.add_parser("killmail-backfill", help="Backfill killmails from R2Z2 history API")
     backfill.add_argument("--app-root", default=resolve_app_root(__file__))
     backfill.add_argument("--verbose", action="store_true")
@@ -510,6 +517,24 @@ def main() -> int:
         result = run_killmail_full_history_backfill(ctx)
         print(json.dumps(result, default=str))
         return 0 if result.get("status") == "success" else 1
+
+    if command == "log-to-issues":
+        app_root = Path(args.app_root).resolve()
+        config = load_php_runtime_config(app_root)
+        log_file = app_root / "storage/logs/log-to-issues.log"
+        configure_logging(verbose=args.verbose, log_file=log_file)
+        from .db import SupplyCoreDb
+        from .jobs.log_to_issues_worker import run_log_to_issues
+        db = SupplyCoreDb(config.raw.get("db", {}))
+        started_at = time.monotonic()
+        result = run_log_to_issues(
+            db,
+            lookback_hours=args.lookback_hours,
+            dry_run=args.dry_run,
+            auto_close=args.auto_close,
+        )
+        _print_cli_result(command, started_at, result)
+        return 0 if str(result.get("status") or "success") != "failed" else 1
 
     if command == "run-job":
         app_root = Path(args.app_root).resolve()

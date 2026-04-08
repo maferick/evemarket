@@ -3195,3 +3195,24 @@ INSERT INTO esi_cache_namespaces (namespace_key, source_system, description) VAL
     ('cache.esi.planetResources', 'esi', 'ESI cache namespace mapped to planetResources.jsonl'),
     ('cache.esi.structures.search', 'esi', 'Cached ESI alliance-structure search results')
 ON DUPLICATE KEY UPDATE description = VALUES(description), source_system = VALUES(source_system);
+
+-- ── Log-to-Issues tracker ────────────────────────────────────────────
+-- Tracks which job failures have been filed as GitHub issues so the
+-- log-to-issues worker never creates duplicates.
+CREATE TABLE IF NOT EXISTS log_issue_tracker (
+    id              BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    fingerprint     VARCHAR(64)    NOT NULL,
+    job_name        VARCHAR(120)   NOT NULL,
+    error_pattern   VARCHAR(500)   NOT NULL,
+    github_issue_number INT UNSIGNED DEFAULT NULL,
+    github_issue_url    VARCHAR(500)  DEFAULT NULL,
+    occurrence_count    INT UNSIGNED NOT NULL DEFAULT 1,
+    first_seen_at   DATETIME       NOT NULL,
+    last_seen_at    DATETIME       NOT NULL,
+    resolved_at     DATETIME       DEFAULT NULL,
+    created_at      TIMESTAMP      DEFAULT CURRENT_TIMESTAMP,
+    updated_at      TIMESTAMP      DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uniq_fingerprint (fingerprint),
+    KEY idx_log_issue_job (job_name),
+    KEY idx_log_issue_resolved (resolved_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

@@ -99,6 +99,7 @@ from .jobs.esi_sovereignty_sync import (
 )
 from .jobs.compute_sovereignty_alerts import run_compute_sovereignty_alerts
 from .jobs.neo4j_ml_exploration import run_neo4j_ml_exploration
+from .jobs.log_to_issues_worker import run_log_to_issues
 
 
 def _php_bridge(cfg: dict[str, Any]) -> PhpBridge:
@@ -173,6 +174,7 @@ PYTHON_COMPUTE_PROCESSOR_JOB_KEYS: set[str] = {
     "cip_compound_analytics",
     "cip_calibration",
     "neo4j_ml_exploration",
+    "log_to_issues",
 }
 
 PYTHON_SYNC_PROCESSOR_JOB_KEYS: set[str] = {
@@ -321,6 +323,8 @@ _PROCESSOR_DISPATCH: dict[str, tuple] = {
     "cache_expiry_cleanup_sync": (run_cache_expiry_cleanup_sync, lambda db, cfg: (db,)),
     # Killmail repair
     "killmail_zkb_repair": (run_killmail_zkb_repair, lambda db, cfg: (db, cfg)),
+    # Log-to-issues — scans job_runs failures and files GitHub issues
+    "log_to_issues": (run_log_to_issues, lambda db, cfg: (db,)),
 }
 
 
