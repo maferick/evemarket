@@ -6,6 +6,7 @@ $pageHeaderSummary = trim((string) ($pageHeaderSummary ?? ''));
 $pageHeaderBadge = trim((string) ($pageHeaderBadge ?? ''));
 $pageHeaderBadgeTone = trim((string) ($pageHeaderBadgeTone ?? 'border-cyan/20 bg-cyan/10 text-cyan-100'));
 $liveRefreshSummary = supplycore_live_refresh_summary($liveRefreshConfig ?? null);
+$pageHeaderMeta = is_array($pageHeaderMeta ?? null) ? $pageHeaderMeta : [];
 $pageFreshness = is_array($pageFreshness ?? null) ? $pageFreshness : [];
 $pageFreshnessLine = $pageFreshness !== []
     ? trim((string) (($pageFreshness['label'] ?? 'Freshness') . ' · ' . ($pageFreshness['computed_relative'] ?? 'Unknown') . ' · ' . ($pageFreshness['computed_at'] ?? 'Unavailable')))
@@ -46,6 +47,28 @@ $pageFreshnessLine = $pageFreshness !== []
                     <?php endif; ?>
                     <?php if ($pageFreshness === [] && $pageFreshnessLine !== ''): ?>
                         <p class="mt-3 text-sm text-slate-300" data-ui-freshness-target="page-freshness"><?= htmlspecialchars($pageFreshnessLine, ENT_QUOTES) ?></p>
+                    <?php endif; ?>
+                    <?php if ($pageHeaderMeta !== []): ?>
+                        <div class="mt-4 flex flex-wrap gap-3">
+                            <?php foreach ($pageHeaderMeta as $meta): ?>
+                                <?php
+                                $metaLabel   = trim((string) ($meta['label'] ?? ''));
+                                $metaValue   = trim((string) ($meta['value'] ?? ''));
+                                $metaCaption = trim((string) ($meta['caption'] ?? ''));
+                                ?>
+                                <?php if ($metaValue !== ''): ?>
+                                    <div class="rounded-xl border border-white/8 bg-white/[0.03] px-4 py-2.5">
+                                        <?php if ($metaLabel !== ''): ?>
+                                            <p class="eyebrow"><?= htmlspecialchars($metaLabel, ENT_QUOTES) ?></p>
+                                        <?php endif; ?>
+                                        <p class="mt-1 text-lg font-semibold tracking-tight text-white"><?= htmlspecialchars($metaValue, ENT_QUOTES) ?></p>
+                                        <?php if ($metaCaption !== ''): ?>
+                                            <p class="mt-0.5 text-xs text-slate-400"><?= htmlspecialchars($metaCaption, ENT_QUOTES) ?></p>
+                                        <?php endif; ?>
+                                    </div>
+                                <?php endif; ?>
+                            <?php endforeach; ?>
+                        </div>
                     <?php endif; ?>
                 </div>
                 <div class="flex flex-wrap items-start justify-end gap-2">
