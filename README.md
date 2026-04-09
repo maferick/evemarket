@@ -14,7 +14,7 @@
 
 A production-grade dual-runtime data intelligence platform for EVE Online market analysis, battle intelligence, doctrine management, and counterintelligence — built with a **PHP control plane** and a **Python execution engine**.
 
-[Architecture](docs/ARCHITECTURE.md) | [CLI Manual](docs/CLI_MANUAL.md) | [Operations Guide](docs/OPERATIONS_GUIDE.md) | [Battle Runbook](docs/BATTLE_INTELLIGENCE_RUNBOOK.md)
+[Architecture](docs/ARCHITECTURE.md) | [CLI Manual](docs/CLI_MANUAL.md) | [Operations Guide](docs/OPERATIONS_GUIDE.md) | [Airflow DAG Assessment](docs/AIRFLOW_DAG_ADOPTION_ASSESSMENT.md) | [Battle Runbook](docs/BATTLE_INTELLIGENCE_RUNBOOK.md)
 
 </div>
 
@@ -916,5 +916,6 @@ Do **not** use static data as a source for token-scoped character data, alliance
 | [Authoritative Job Matrix](docs/AUTHORITATIVE_JOB_MATRIX.md) | Job registry source of truth |
 | [Batching Defaults](docs/BATCHING_DEFAULTS.md) | Rules for batched, resumable jobs |
 | [Python-Only Workers](docs/PYTHON_ONLY_WORKERS.md) | Python-native worker architecture runbook |
+| [Airflow DAG Adoption Assessment](docs/AIRFLOW_DAG_ADOPTION_ASSESSMENT.md) | Feasibility, gaps, and migration plan for adopting Apache Airflow DAG orchestration |
 | [Sync Unification Matrix](docs/SYNC_UNIFICATION_MATRIX.md) | Python sync job standardization tracking |
 | [Database Optimization](database/OPTIMIZATION_AUDIT.md) | Database architecture audit and optimization notes |
