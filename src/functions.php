@@ -4531,8 +4531,10 @@ function supplycore_authoritative_job_registry(): array
         'graph_universe_sync' => ['label' => 'Graph Universe', 'description' => 'Sync EVE universe topology (systems, constellations, regions, stargates) into Neo4j.', 'category' => 'real_schedulable', 'enabled_by_default' => true, 'schedulable' => true, 'settings_visible' => true, 'user_visible' => true, 'execution_mode' => 'python', 'default_interval_minutes' => 360, 'default_offset_minutes' => 0, 'priority' => 'normal', 'timeout_seconds' => 600, 'concurrency_policy' => 'single', 'explicitly_configured' => true, 'python_implementation_exists' => true, 'worker_safe' => true],
         'compute_graph_sync_killmail_entities' => ['label' => 'Graph Killmail Entities', 'description' => 'Project killmail events into Neo4j as Killmail nodes with system and battle relationships.', 'category' => 'real_schedulable', 'enabled_by_default' => true, 'schedulable' => true, 'settings_visible' => true, 'user_visible' => true, 'execution_mode' => 'python', 'default_interval_minutes' => 10, 'default_offset_minutes' => 0, 'priority' => 'normal', 'timeout_seconds' => 420, 'concurrency_policy' => 'single', 'explicitly_configured' => true, 'python_implementation_exists' => true, 'worker_safe' => true],
         'entity_metadata_resolve_sync' => ['label' => 'Entity Metadata Resolve', 'description' => 'Resolve pending entity metadata (characters, corps, alliances) via ESI.', 'category' => 'real_schedulable', 'enabled_by_default' => true, 'schedulable' => true, 'settings_visible' => true, 'user_visible' => true, 'execution_mode' => 'python', 'default_interval_minutes' => 5, 'default_offset_minutes' => 0, 'priority' => 'normal', 'timeout_seconds' => 180, 'concurrency_policy' => 'single', 'explicitly_configured' => true, 'python_implementation_exists' => true, 'worker_safe' => true],
-        'esi_character_queue_sync' => ['label' => 'ESI Character Queue', 'description' => 'Populate ESI character queue from loss killmail attackers.', 'category' => 'real_schedulable', 'enabled_by_default' => false, 'schedulable' => true, 'settings_visible' => true, 'user_visible' => true, 'execution_mode' => 'python', 'default_interval_minutes' => 1, 'default_offset_minutes' => 0, 'priority' => 'normal', 'timeout_seconds' => 180, 'concurrency_policy' => 'single', 'explicitly_configured' => true, 'python_implementation_exists' => true, 'worker_safe' => true],
-        'esi_alliance_history_sync' => ['label' => 'ESI Alliance History', 'description' => 'Fetch ESI corporation history and derive alliance membership periods.', 'category' => 'real_schedulable', 'enabled_by_default' => false, 'schedulable' => true, 'settings_visible' => true, 'user_visible' => true, 'execution_mode' => 'python', 'default_interval_minutes' => 1, 'default_offset_minutes' => 0, 'priority' => 'normal', 'timeout_seconds' => 600, 'concurrency_policy' => 'single', 'explicitly_configured' => true, 'python_implementation_exists' => true, 'worker_safe' => true],
+        'esi_character_queue_sync' => ['label' => 'ESI Character Queue', 'description' => 'Populate ESI character queue from all killmail participants (attackers and victims).', 'category' => 'real_schedulable', 'enabled_by_default' => false, 'schedulable' => true, 'settings_visible' => true, 'user_visible' => true, 'execution_mode' => 'python', 'default_interval_minutes' => 1, 'default_offset_minutes' => 0, 'priority' => 'normal', 'timeout_seconds' => 180, 'concurrency_policy' => 'single', 'explicitly_configured' => true, 'python_implementation_exists' => true, 'worker_safe' => true],
+        'esi_affiliation_sync' => ['label' => 'ESI Affiliation Sync', 'description' => 'Bulk-fetch current corporation/alliance affiliation for all known characters via ESI POST /v2/characters/affiliation/. Computes refresh tiers (hot/warm/cold) and flags alliance changes for history re-fetch.', 'category' => 'real_schedulable', 'enabled_by_default' => true, 'schedulable' => true, 'settings_visible' => true, 'user_visible' => true, 'execution_mode' => 'python', 'default_interval_minutes' => 1, 'default_offset_minutes' => 0, 'priority' => 'normal', 'timeout_seconds' => 300, 'concurrency_policy' => 'single', 'explicitly_configured' => true, 'python_implementation_exists' => true, 'worker_safe' => true],
+        'esi_alliance_history_sync' => ['label' => 'ESI Alliance History', 'description' => 'Fetch ESI corporation history, store raw corp history records, and derive alliance membership periods with concurrent fetching.', 'category' => 'real_schedulable', 'enabled_by_default' => false, 'schedulable' => true, 'settings_visible' => true, 'user_visible' => true, 'execution_mode' => 'python', 'default_interval_minutes' => 1, 'default_offset_minutes' => 0, 'priority' => 'normal', 'timeout_seconds' => 600, 'concurrency_policy' => 'single', 'explicitly_configured' => true, 'python_implementation_exists' => true, 'worker_safe' => true],
+        'character_killmail_sync' => ['label' => 'Character Killmail Sync', 'description' => 'Per-character killmail fetch from zKillboard API with incremental and backfill modes. Processes characters from character_killmail_queue ordered by priority.', 'category' => 'real_schedulable', 'enabled_by_default' => true, 'schedulable' => true, 'settings_visible' => true, 'user_visible' => true, 'execution_mode' => 'python', 'default_interval_minutes' => 2, 'default_offset_minutes' => 0, 'priority' => 'normal', 'timeout_seconds' => 1800, 'concurrency_policy' => 'single', 'explicitly_configured' => true, 'python_implementation_exists' => true, 'worker_safe' => true],
         'corp_standings_sync' => ['label' => 'Corp Standings', 'description' => 'Sync corporation NPC standings and player diplomatic contacts from ESI.', 'category' => 'real_schedulable', 'enabled_by_default' => true, 'schedulable' => true, 'settings_visible' => true, 'user_visible' => true, 'execution_mode' => 'python', 'default_interval_minutes' => 60, 'default_offset_minutes' => 34, 'priority' => 'normal', 'timeout_seconds' => 300, 'concurrency_policy' => 'single', 'explicitly_configured' => true, 'python_implementation_exists' => true, 'worker_safe' => true],
         'sovereignty_campaigns_sync' => ['label' => 'Sovereignty Campaigns', 'description' => 'Sync active entosis campaigns from ESI sovereignty API.', 'category' => 'real_schedulable', 'enabled_by_default' => true, 'schedulable' => true, 'settings_visible' => true, 'user_visible' => true, 'execution_mode' => 'python', 'default_interval_minutes' => 1, 'default_offset_minutes' => 35, 'priority' => 'normal', 'timeout_seconds' => 120, 'concurrency_policy' => 'single', 'explicitly_configured' => true, 'python_implementation_exists' => true, 'worker_safe' => true],
         'sovereignty_structures_sync' => ['label' => 'Sovereignty Structures', 'description' => 'Sync sovereignty structures (IHUBs, TCUs, Sov Hubs) with ADM and vulnerability windows from ESI.', 'category' => 'real_schedulable', 'enabled_by_default' => true, 'schedulable' => true, 'settings_visible' => true, 'user_visible' => true, 'execution_mode' => 'python', 'default_interval_minutes' => 3, 'default_offset_minutes' => 36, 'priority' => 'normal', 'timeout_seconds' => 180, 'concurrency_policy' => 'single', 'explicitly_configured' => true, 'python_implementation_exists' => true, 'worker_safe' => true],
@@ -7471,7 +7473,9 @@ function automation_runtime_job_group(string $jobKey): string
 
         // Data Ingestion & ESI
         'esi_character_queue_sync' => 'Data Ingestion & ESI',
+        'esi_affiliation_sync' => 'Data Ingestion & ESI',
         'esi_alliance_history_sync' => 'Data Ingestion & ESI',
+        'character_killmail_sync' => 'Data Ingestion & ESI',
         'entity_metadata_resolve_sync' => 'Data Ingestion & ESI',
         'evewho_enrichment_sync' => 'Data Ingestion & ESI',
         'evewho_alliance_member_sync' => 'Data Ingestion & ESI',
@@ -7521,6 +7525,8 @@ function automation_runtime_job_tier(string $jobKey): array
         'alliance_historical_sync' => 1,
         'current_state_refresh_sync' => 1,
         'esi_character_queue_sync' => 1,
+        'esi_affiliation_sync' => 1,
+        'character_killmail_sync' => 1,
         'evewho_enrichment_sync' => 1,
         'evewho_alliance_member_sync' => 1,
         'tracked_alliance_member_sync' => 1,
@@ -15883,6 +15889,82 @@ function python_bridge_process_killmail_batch(array $payloads, bool $skipEntityF
         }
     }
 
+    // ── Inline participant queueing (primary discovery path) ─────────────
+    // Queue every character seen in these killmails for ESI enrichment.
+    // This runs regardless of whether killmails were written, duplicated, or
+    // filtered — we want every participant in the corpus.
+    $participantCharacterIds = [];
+    $killmailTimes = [];
+    foreach ($payloads as $payload) {
+        $esi = $payload['esi'] ?? [];
+        $killmailTime = (string) ($esi['killmail_time'] ?? '');
+
+        // Victim
+        $victimCharId = (int) (($esi['victim'] ?? [])['character_id'] ?? 0);
+        if ($victimCharId > 0) {
+            $participantCharacterIds[$victimCharId] = 'killmail_victim';
+            if ($killmailTime !== '') {
+                $killmailTimes[$victimCharId] = $killmailTime;
+            }
+        }
+
+        // Attackers
+        foreach (($esi['attackers'] ?? []) as $attacker) {
+            $attackerCharId = (int) ($attacker['character_id'] ?? 0);
+            if ($attackerCharId > 0) {
+                // Don't overwrite 'killmail_victim' reason if already set
+                if (!isset($participantCharacterIds[$attackerCharId])) {
+                    $participantCharacterIds[$attackerCharId] = 'killmail_attacker';
+                }
+                if ($killmailTime !== '' && !isset($killmailTimes[$attackerCharId])) {
+                    $killmailTimes[$attackerCharId] = $killmailTime;
+                }
+            }
+        }
+    }
+
+    if ($participantCharacterIds !== []) {
+        // Batch queue into esi_character_queue (INSERT IGNORE preserves first_queue_reason)
+        foreach (array_chunk($participantCharacterIds, 500, true) as $chunk) {
+            $values = [];
+            $params = [];
+            foreach ($chunk as $charId => $reason) {
+                $values[] = '(?, ?, ?)';
+                $params[] = $charId;
+                $params[] = $reason;
+                $params[] = $reason;
+            }
+            if ($values !== []) {
+                $valuesSql = implode(', ', $values);
+                db_execute(
+                    "INSERT IGNORE INTO esi_character_queue (character_id, first_queue_reason, last_queue_reason) VALUES {$valuesSql}",
+                    $params
+                );
+            }
+        }
+
+        // Update last_killmail_at on character_current_affiliation for refresh tiering.
+        // Uses INSERT ... ON DUPLICATE KEY UPDATE so it works even for brand-new characters.
+        foreach (array_chunk($killmailTimes, 500, true) as $chunk) {
+            $values = [];
+            $params = [];
+            foreach ($chunk as $charId => $kmTime) {
+                $values[] = '(?, 0, ?)';
+                $params[] = $charId;
+                $params[] = $kmTime;
+            }
+            if ($values !== []) {
+                $valuesSql = implode(', ', $values);
+                db_execute(
+                    "INSERT INTO character_current_affiliation (character_id, corporation_id, last_killmail_at)
+                     VALUES {$valuesSql}
+                     ON DUPLICATE KEY UPDATE last_killmail_at = GREATEST(COALESCE(last_killmail_at, '1970-01-01'), VALUES(last_killmail_at))",
+                    $params
+                );
+            }
+        }
+    }
+
     return [
         'rows_seen' => $rowsSeen,
         'rows_matched' => $rowsMatched,
@@ -15911,6 +15993,7 @@ function python_bridge_process_killmail_batch(array $payloads, bool $skipEntityF
             'rows_failed' => $rowsFailed,
             'reason_for_zero_write' => $reasonForZeroWrite,
             'failure_reason' => $failureReason,
+            'participants_queued' => count($participantCharacterIds),
         ],
     ];
 }
