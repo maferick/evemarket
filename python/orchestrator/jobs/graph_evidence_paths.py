@@ -82,45 +82,51 @@ def run_graph_evidence_paths_sync(db: SupplyCoreDb, neo4j_raw: dict[str, Any] | 
 
     all_paths: list[tuple[Any, ...]] = []
 
-    for char_row in flagged:
-        char_id = int(char_row.get("character_id") or 0)
-        if char_id <= 0:
-            continue
+    # Batch flagged characters into chunks for UNWIND processing
+    # instead of one Neo4j round-trip per character.
+    _EVIDENCE_BATCH_SIZE = 25
+    flagged_ids = [int(r.get("character_id") or 0) for r in flagged if int(r.get("character_id") or 0) > 0]
 
-        # Find shortest paths to other suspicious or notable entities
-        # Use explicit relationship types and shortestPath to avoid
-        # unbounded variable-length expansion that causes timeouts.
+    for batch_start in range(0, len(flagged_ids), _EVIDENCE_BATCH_SIZE):
+        batch_ids = flagged_ids[batch_start:batch_start + _EVIDENCE_BATCH_SIZE]
+
+        # UNWIND batch of characters; CALL {} subquery gives per-character
+        # path limit so we get top_n paths per character in one round-trip.
         path_rows = client.query(
             """
-            MATCH (c:Character {character_id: $char_id})
-            MATCH p = shortestPath(
-                (c)-[:SHARED_ALLIANCE_WITH|CO_OCCURS_WITH|DIRECT_COMBAT|ASSISTED_KILL|SAME_FLEET|CROSSED_SIDES|ASSOCIATED_WITH_ANOMALY|ON_SIDE|ATTACKED_ON|VICTIM_OF*1..4]-(target)
-            )
-            WHERE (target:Character OR target:Alliance OR target:Battle)
-              AND target <> c
-              AND (target:Alliance OR target:Battle OR COALESCE(target.suspicion_score, 0) > 0.3)
-            WITH c, p, target,
-                 relationships(p) AS rels,
-                 nodes(p) AS path_nodes,
-                 length(p) AS path_length
-            WITH c, p, target, rels, path_nodes, path_length,
-                 reduce(score = 1.0, r IN rels |
-                     score * CASE type(r)
-                         WHEN 'SHARED_ALLIANCE_WITH' THEN 0.90
-                         WHEN 'CO_OCCURS_WITH' THEN 0.80
-                         WHEN 'DIRECT_COMBAT' THEN 0.70
-                         WHEN 'ASSISTED_KILL' THEN 0.75
-                         WHEN 'SAME_FLEET' THEN 0.85
-                         WHEN 'CROSSED_SIDES' THEN 0.60
-                         WHEN 'ASSOCIATED_WITH_ANOMALY' THEN 0.65
-                         WHEN 'ON_SIDE' THEN 0.95
-                         WHEN 'ATTACKED_ON' THEN 0.70
-                         WHEN 'VICTIM_OF' THEN 0.70
-                         ELSE 0.90 END
-                 ) AS path_score
-            ORDER BY path_score ASC
-            LIMIT $top_n
+            UNWIND $char_ids AS cid
+            MATCH (c:Character {character_id: cid})
+            CALL {
+                WITH c
+                MATCH p = shortestPath(
+                    (c)-[:SHARED_ALLIANCE_WITH|CO_OCCURS_WITH|DIRECT_COMBAT|ASSISTED_KILL|SAME_FLEET|CROSSED_SIDES|ASSOCIATED_WITH_ANOMALY|ON_SIDE|ATTACKED_ON|VICTIM_OF*1..4]-(target)
+                )
+                WHERE (target:Character OR target:Alliance OR target:Battle)
+                  AND target <> c
+                  AND (target:Alliance OR target:Battle OR COALESCE(target.suspicion_score, 0) > 0.3)
+                WITH p, target,
+                     relationships(p) AS rels,
+                     nodes(p) AS path_nodes,
+                     reduce(score = 1.0, r IN relationships(p) |
+                         score * CASE type(r)
+                             WHEN 'SHARED_ALLIANCE_WITH' THEN 0.90
+                             WHEN 'CO_OCCURS_WITH' THEN 0.80
+                             WHEN 'DIRECT_COMBAT' THEN 0.70
+                             WHEN 'ASSISTED_KILL' THEN 0.75
+                             WHEN 'SAME_FLEET' THEN 0.85
+                             WHEN 'CROSSED_SIDES' THEN 0.60
+                             WHEN 'ASSOCIATED_WITH_ANOMALY' THEN 0.65
+                             WHEN 'ON_SIDE' THEN 0.95
+                             WHEN 'ATTACKED_ON' THEN 0.70
+                             WHEN 'VICTIM_OF' THEN 0.70
+                             ELSE 0.90 END
+                     ) AS path_score
+                ORDER BY path_score ASC
+                LIMIT $top_n
+                RETURN path_nodes, rels, path_score
+            }
             RETURN
+                c.character_id AS source_character_id,
                 [n IN path_nodes | {
                     type: CASE
                         WHEN n:Character THEN 'Character'
@@ -138,10 +144,19 @@ def run_graph_evidence_paths_sync(db: SupplyCoreDb, neo4j_raw: dict[str, Any] | 
                 }] AS path_edges_data,
                 toFloat(path_score) AS path_score
             """,
-            {"char_id": char_id, "top_n": TOP_PATHS_PER_CHARACTER},
+            {"char_ids": batch_ids, "top_n": TOP_PATHS_PER_CHARACTER},
+            timeout_seconds=60,
         )
 
-        for rank, pr in enumerate(path_rows, start=1):
+        # Assign ranks per character within the batch results
+        char_rank_counter: dict[int, int] = {}
+        for pr in path_rows:
+            char_id = int(pr.get("source_character_id") or 0)
+            if char_id <= 0:
+                continue
+            char_rank_counter[char_id] = char_rank_counter.get(char_id, 0) + 1
+            rank = char_rank_counter[char_id]
+
             nodes_data = pr.get("path_nodes_data") or []
             edges_data = pr.get("path_edges_data") or []
             path_score = float(pr.get("path_score") or 0.0)

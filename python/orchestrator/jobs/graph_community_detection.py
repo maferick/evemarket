@@ -201,47 +201,48 @@ def _compute_betweenness_approximation(client: Neo4jClient) -> None:
 
 
 def _export_community_assignments(client: Neo4jClient, db: SupplyCoreDb, computed_at: str) -> int:
-    """Export community assignments, centrality scores to MariaDB."""
+    """Export community assignments, centrality scores to MariaDB.
+
+    Uses a single Cypher query that computes community_size and bridge
+    status server-side, eliminating Python-side dict aggregation and an
+    extra Neo4j round-trip for bridge detection.
+    """
     rows = client.query(
         """
         MATCH (c:Character)
         WHERE c.community_label IS NOT NULL
-        OPTIONAL MATCH (c)-[r:CO_OCCURS_WITH|DIRECT_COMBAT|ASSISTED_KILL|SAME_FLEET]-(:Character)
-        WITH c, count(r) AS degree
+        WITH c.community_label AS comm_label,
+             collect(c) AS members,
+             count(*) AS comm_size
+        UNWIND members AS c
+        CALL {
+            WITH c
+            OPTIONAL MATCH (c)-[r:CO_OCCURS_WITH|DIRECT_COMBAT|ASSISTED_KILL|SAME_FLEET]-(:Character)
+            RETURN count(r) AS degree
+        }
+        CALL {
+            WITH c
+            OPTIONAL MATCH (c)-[:CO_OCCURS_WITH|DIRECT_COMBAT|ASSISTED_KILL|SAME_FLEET]-(n:Character)
+            WHERE n.community_label IS NOT NULL
+            RETURN count(DISTINCT n.community_label) AS neighbor_communities
+        }
         RETURN
             c.character_id AS character_id,
-            toInteger(c.community_label) AS community_id,
+            toInteger(comm_label) AS community_id,
+            toInteger(comm_size) AS community_size,
             toFloat(COALESCE(c.pr, 0.0)) AS pagerank_score,
             toFloat(COALESCE(c.betweenness_approx, 0.0)) AS betweenness_centrality,
-            toInteger(degree) AS degree_centrality
-        """
+            toInteger(degree) AS degree_centrality,
+            CASE WHEN neighbor_communities >= $bridge_threshold THEN 1 ELSE 0 END AS is_bridge
+        """,
+        {"bridge_threshold": BRIDGE_COMMUNITY_THRESHOLD},
+        timeout_seconds=180,
     )
 
     if not rows:
         return 0
 
-    # Compute community sizes
-    community_sizes: dict[int, int] = {}
-    for r in rows:
-        cid = int(r.get("community_id") or 0)
-        community_sizes[cid] = community_sizes.get(cid, 0) + 1
-
-    # Detect bridge nodes: characters whose neighbors span multiple communities
-    bridge_set: set[int] = set()
-    bridge_rows = client.query(
-        """
-        MATCH (c:Character)-[:CO_OCCURS_WITH|DIRECT_COMBAT|ASSISTED_KILL|SAME_FLEET]-(n:Character)
-        WHERE c.community_label IS NOT NULL AND n.community_label IS NOT NULL
-        WITH c, collect(DISTINCT n.community_label) AS neighbor_communities
-        WHERE size(neighbor_communities) >= $threshold
-        RETURN c.character_id AS character_id
-        """,
-        {"threshold": BRIDGE_COMMUNITY_THRESHOLD},
-    )
-    for br in bridge_rows:
-        cid = int(br.get("character_id") or 0)
-        if cid > 0:
-            bridge_set.add(cid)
+    total_characters = len(rows)
 
     # Truncate and insert
     db.execute("DELETE FROM graph_community_assignments")
@@ -257,9 +258,9 @@ def _export_community_assignments(client: Neo4jClient, db: SupplyCoreDb, compute
             comm_id = int(r.get("community_id") or 0)
             if char_id <= 0:
                 continue
-            comm_size = community_sizes.get(comm_id, 0)
-            membership = min(1.0, comm_size / max(1, len(rows))) if comm_size > 1 else 1.0
-            is_bridge = 1 if char_id in bridge_set else 0
+            comm_size = int(r.get("community_size") or 0)
+            membership = min(1.0, comm_size / max(1, total_characters)) if comm_size > 1 else 1.0
+            is_bridge = int(r.get("is_bridge") or 0)
             values.append("(%s, %s, %s, %s, %s, %s, %s, %s, %s)")
             params.extend([
                 char_id,
