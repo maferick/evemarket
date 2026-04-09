@@ -46,6 +46,7 @@ DORMANCY_THRESHOLD_DAYS = 30  # gap ≥ this triggers dormancy check
 CUSUM_THRESHOLD = 4.0         # cumulative sum alarm threshold
 NEO4J_BATCH_SIZE = 500
 MARIADB_BATCH_SIZE = 500      # rows per transaction for evidence writes
+LOOKBACK_DAYS = 365           # bound timestamp queries to avoid full-table scans
 
 
 def _now_sql() -> str:
@@ -238,13 +239,19 @@ def _ensure_utc(dt: datetime) -> datetime:
 # Data fetch helpers
 # ---------------------------------------------------------------------------
 
-def _fetch_histograms(db: SupplyCoreDb) -> dict[int, dict[str, dict[str, Any]]]:
-    """Load all character_feature_histograms rows keyed by character_id → window_label."""
+def _fetch_histograms(db: SupplyCoreDb, lookback_days: int = LOOKBACK_DAYS) -> dict[int, dict[str, dict[str, Any]]]:
+    """Load character_feature_histograms rows keyed by character_id → window_label.
+
+    Only fetches histograms computed within *lookback_days* to avoid loading
+    stale data for characters that are no longer active.
+    """
     rows = db.fetch_all(
         """
         SELECT character_id, window_label, hour_histogram, weekday_histogram
         FROM character_feature_histograms
-        """
+        WHERE computed_at >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL %s DAY)
+        """,
+        (lookback_days,),
     )
     result: dict[int, dict[str, dict[str, Any]]] = defaultdict(dict)
     for r in rows:
@@ -258,10 +265,12 @@ def _fetch_histograms(db: SupplyCoreDb) -> dict[int, dict[str, dict[str, Any]]]:
     return dict(result)
 
 
-def _fetch_killmail_timestamps(db: SupplyCoreDb) -> dict[int, list[datetime]]:
+def _fetch_killmail_timestamps(db: SupplyCoreDb, lookback_days: int = LOOKBACK_DAYS) -> dict[int, list[datetime]]:
     """Fetch per-character sorted killmail timestamps from killmail_events + killmail_attackers.
 
-    Includes both victim events and attacker participation.
+    Includes both victim events and attacker participation.  Results are bounded
+    to the last *lookback_days* to avoid loading the entire killmail history into
+    memory (which caused OOM / read-timeout failures on large datasets).
     """
     # Victim timestamps
     victim_rows = db.fetch_all(
@@ -271,7 +280,9 @@ def _fetch_killmail_timestamps(db: SupplyCoreDb) -> dict[int, list[datetime]]:
         WHERE victim_character_id IS NOT NULL
           AND victim_character_id > 0
           AND effective_killmail_at IS NOT NULL
-        """
+          AND effective_killmail_at >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL %s DAY)
+        """,
+        (lookback_days,),
     )
 
     # Attacker timestamps (join back to killmail_events for the timestamp)
@@ -283,7 +294,9 @@ def _fetch_killmail_timestamps(db: SupplyCoreDb) -> dict[int, list[datetime]]:
         WHERE ka.character_id IS NOT NULL
           AND ka.character_id > 0
           AND ke.effective_killmail_at IS NOT NULL
-        """
+          AND ke.effective_killmail_at >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL %s DAY)
+        """,
+        (lookback_days,),
     )
 
     result: dict[int, list[datetime]] = defaultdict(list)
@@ -305,8 +318,11 @@ def _fetch_killmail_timestamps(db: SupplyCoreDb) -> dict[int, list[datetime]]:
     return dict(result)
 
 
-def _fetch_battle_timestamps(db: SupplyCoreDb) -> dict[int, list[datetime]]:
-    """Fetch per-character battle participation timestamps from battle_participants."""
+def _fetch_battle_timestamps(db: SupplyCoreDb, lookback_days: int = LOOKBACK_DAYS) -> dict[int, list[datetime]]:
+    """Fetch per-character battle participation timestamps from battle_participants.
+
+    Bounded to the last *lookback_days* to avoid full-table scans.
+    """
     rows = db.fetch_all(
         """
         SELECT bp.character_id, br.started_at AS ts
@@ -314,7 +330,9 @@ def _fetch_battle_timestamps(db: SupplyCoreDb) -> dict[int, list[datetime]]:
         INNER JOIN battle_rollups br ON br.battle_id = bp.battle_id
         WHERE bp.character_id > 0
           AND br.started_at IS NOT NULL
-        """
+          AND br.started_at >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL %s DAY)
+        """,
+        (lookback_days,),
     )
     result: dict[int, list[datetime]] = defaultdict(list)
     for r in rows:
