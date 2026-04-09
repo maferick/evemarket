@@ -400,13 +400,11 @@ function nav_groups(): array
                     'label' => 'Theater Overview',
                     'path' => '/theater-intelligence',
                     'icon' => '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" class="h-4 w-4" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path stroke-linecap="round" d="M12 3v4m0 10v4M3 12h4m10 0h4"/></svg>',
-                    'children' => [],
-                ],
-                [
-                    'label' => 'Theater Map',
-                    'path' => '/theater-map',
-                    'icon' => '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" class="h-4 w-4" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="m9 4 6 2.5V20l-6-2.5V4Zm0 0L3 6.5V20l6-2.5M15 6.5 21 4v16l-6-2.5"/></svg>',
-                    'children' => [],
+                    'children' => [
+                        ['label' => 'Theater Map', 'path' => '/theater-map'],
+                        ['label' => 'Region Map', 'path' => '/region-map'],
+                        ['label' => 'System Map', 'path' => '/system-map'],
+                    ],
                 ],
                 [
                     'label' => 'Killmail Intelligence',
@@ -441,13 +439,11 @@ function nav_groups(): array
                     'label' => 'Suspicion Leaderboard',
                     'path' => '/battle-intelligence',
                     'icon' => '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" class="h-4 w-4" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M4 18V9m5 9V5m5 13v-4m5 4v-7"/></svg>',
-                    'children' => [],
-                ],
-                [
-                    'label' => 'Pilot Lookup',
-                    'path' => '/battle-intelligence/pilot-lookup.php',
-                    'icon' => '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" class="h-4 w-4" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path stroke-linecap="round" d="m21 21-5-5"/></svg>',
-                    'children' => [],
+                    'children' => [
+                        ['label' => 'Pilot Lookup', 'path' => '/battle-intelligence/pilot-lookup.php'],
+                        ['label' => 'Battle Anomalies', 'path' => '/battle-intelligence/battles.php'],
+                        ['label' => 'Query Presets', 'path' => '/battle-intelligence/query-presets.php'],
+                    ],
                 ],
                 [
                     'label' => 'Threat Corridors',
@@ -459,13 +455,9 @@ function nav_groups(): array
                     'label' => 'Intelligence Events',
                     'path' => '/intelligence-events',
                     'icon' => '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" class="h-4 w-4" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path stroke-linecap="round" stroke-linejoin="round" d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>',
-                    'children' => [],
-                ],
-                [
-                    'label' => 'Battle Anomalies',
-                    'path' => '/battle-intelligence/battles.php',
-                    'icon' => '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" class="h-4 w-4" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v4m0 4h.01M10.3 3.84 1.82 18a2 2 0 0 0 1.72 3h16.92a2 2 0 0 0 1.72-3L13.7 3.84a2 2 0 0 0-3.4 0Z"/></svg>',
-                    'children' => [],
+                    'children' => [
+                        ['label' => 'CIP Admin', 'path' => '/intelligence-events/admin.php'],
+                    ],
                 ],
             ],
         ],
@@ -488,12 +480,6 @@ function nav_groups(): array
                     'label' => 'Log Viewer',
                     'path' => '/log-viewer',
                     'icon' => '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" class="h-4 w-4" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M9 5H7a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2"/><path stroke-linecap="round" stroke-linejoin="round" d="M9 5a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v0a2 2 0 0 1-2 2h-2a2 2 0 0 1-2-2Z"/><path stroke-linecap="round" stroke-linejoin="round" d="M9 12h6M9 16h6"/></svg>',
-                    'children' => [],
-                ],
-                [
-                    'label' => 'CIP Admin',
-                    'path' => '/intelligence-events/admin.php',
-                    'icon' => '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" class="h-4 w-4" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M10.5 6h9.75M10.5 6a1.5 1.5 0 1 1-3 0m3 0a1.5 1.5 0 1 0-3 0M3.75 6H7.5m3 12h9.75M10.5 18a1.5 1.5 0 1 1-3 0m3 0a1.5 1.5 0 1 0-3 0m-3.75 0H7.5m9-6h3.75m-3.75 0a1.5 1.5 0 1 1-3 0m3 0a1.5 1.5 0 1 0-3 0m-9.75 0h9.75"/></svg>',
                     'children' => [],
                 ],
                 [
