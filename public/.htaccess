@@ -24,12 +24,6 @@ RewriteRule ^history/module-history/?$ history/module-history.php [L,QSA]
 RewriteRule ^killmail-intelligence/?$ killmail-intelligence/index.php [L,QSA]
 RewriteRule ^killmail-intelligence/view/?$ killmail-intelligence/view.php [L,QSA]
 
-RewriteRule ^doctrine/?$ doctrine/index.php [L,QSA]
-RewriteRule ^doctrine/fits/?$ doctrine/fits.php [L,QSA]
-RewriteRule ^doctrine/group/?$ doctrine/group.php [L,QSA]
-RewriteRule ^doctrine/fit/?$ doctrine/fit.php [L,QSA]
-RewriteRule ^doctrine/import/?$ doctrine/import.php [L,QSA]
-
 RewriteRule ^log-viewer/?$ log-viewer/index.php [L,QSA]
 
 RewriteRule ^$ index.php [L,QSA]

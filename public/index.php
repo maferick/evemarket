@@ -366,7 +366,7 @@ try {
                 </div>
                 <div class="mt-4 space-y-3">
                     <?php foreach (array_slice((array) ($doctrine['not_ready_fits'] ?? []), 0, 5) as $fit): ?>
-                        <a href="/doctrine/fit?fit_id=<?= (int) ($fit['id'] ?? 0) ?>" class="intelligence-row group">
+                        <a href="/doctrines/#doctrine-<?= (int) ($fit['id'] ?? 0) ?>" class="intelligence-row group">
                             <div class="min-w-0 flex-1">
                                 <p class="truncate text-sm font-semibold text-slate-100"><?= htmlspecialchars((string) ($fit['fit_name'] ?? ''), ENT_QUOTES) ?></p>
                                 <p class="mt-1 text-xs text-slate-500"><?= htmlspecialchars(implode(', ', (array) ($fit['group_names'] ?? [])) ?: (string) ($fit['ship_name'] ?? ''), ENT_QUOTES) ?><?= !empty($fit['supply']['externally_managed']) ? ' · Externally managed hull' : '' ?></p>
@@ -392,7 +392,7 @@ try {
                 </div>
                 <div class="mt-4 space-y-3">
                     <?php foreach (array_slice(array_values(array_filter((array) ($doctrine['groups'] ?? []), static fn (array $group): bool => (int) ($group['gap_fit_count'] ?? 0) > 0)), 0, 5) as $group): ?>
-                        <a href="/doctrine/group?group_id=<?= (int) ($group['id'] ?? 0) ?>" class="intelligence-row group">
+                        <a href="/doctrines/#doctrine-<?= (int) ($group['id'] ?? 0) ?>" class="intelligence-row group">
                             <div class="min-w-0 flex-1">
                                 <p class="truncate text-sm font-semibold text-slate-100"><?= htmlspecialchars((string) ($group['group_name'] ?? ''), ENT_QUOTES) ?></p>
                                 <p class="mt-1 text-xs text-slate-500"><?= doctrine_format_quantity((int) ($group['gap_fit_count'] ?? 0)) ?> fits with supply gaps</p>
