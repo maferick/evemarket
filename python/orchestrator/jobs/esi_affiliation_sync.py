@@ -133,7 +133,7 @@ def _compute_refresh_tier(db: SupplyCoreDb, character_id: int) -> str:
     """
     last_km = db.fetch_scalar(
         """SELECT MAX(ke.killmail_time) FROM killmail_events ke
-           LEFT JOIN killmail_attackers ka ON ka.killmail_id = ke.killmail_id
+           LEFT JOIN killmail_attackers ka ON ka.sequence_id = ke.sequence_id
            WHERE ke.victim_character_id = %s OR ka.character_id = %s""",
         (character_id, character_id),
     )
@@ -189,7 +189,7 @@ def _bulk_compute_refresh_tiers(db: SupplyCoreDb, character_ids: list[int]) -> d
                         UNION ALL
                         SELECT ka.character_id, ke2.killmail_time AS km_time
                         FROM killmail_attackers ka
-                        JOIN killmail_events ke2 ON ke2.killmail_id = ka.killmail_id
+                        JOIN killmail_events ke2 ON ke2.sequence_id = ka.sequence_id
                         WHERE ka.character_id IN ({placeholders})
                     ) AS combined
                     GROUP BY character_id
