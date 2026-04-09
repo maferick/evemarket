@@ -229,3 +229,282 @@ function ci_verdict_summary(array $char): string
 
     return implode(' ', $parts);
 }
+
+/**
+ * Generate a complete pilot assessment for the executive summary.
+ * Returns: ['summary' => string, 'action' => string, 'concerns' => string[], 'mitigating' => string[],
+ *           'activity_level' => string, 'fleet_pattern' => string, 'risk_label' => string]
+ */
+function ci_pilot_assessment(
+    array $profile,
+    ?array $blended,
+    ?array $behavStats,
+    array $temporalMetrics,
+    ?array $ciCharacter
+): array {
+    $stats = $profile['stats'] ?? [];
+    $theaterBattles = (int) ($stats['total_battles'] ?? 0);
+    $totalTheaters  = (int) ($stats['theater_count'] ?? 0);
+
+    $bldScore = $blended !== null ? (float) ($blended['blended_score'] ?? 0) : null;
+    $bldConf  = $blended !== null ? (float) ($blended['blended_confidence'] ?? 0) : null;
+
+    $bsRisk = (float) ($behavStats['behavioral_risk_score'] ?? 0);
+    $bsFleetAbsence = (float) ($behavStats['fleet_absence_ratio'] ?? 0);
+    $bsCompanion = (float) ($behavStats['companion_consistency_score'] ?? 0);
+    $bsCrossSide = (float) ($behavStats['cross_side_small_rate'] ?? 0);
+    $bsContinuation = (float) ($behavStats['post_engagement_continuation_rate'] ?? 0);
+    $bsAsymmetry = (float) ($behavStats['asymmetry_preference'] ?? 0);
+    $bsGeoConc = (float) ($behavStats['geographic_concentration_score'] ?? 0);
+    $bsTempReg = (float) ($behavStats['temporal_regularity_score'] ?? 0);
+    $kmTotal = (int) ($behavStats['total_kill_count'] ?? 0);
+    $kmSolo  = (int) ($behavStats['solo_kill_count'] ?? 0);
+    $kmGang  = (int) ($behavStats['gang_kill_count'] ?? 0);
+    $kmLarge = (int) ($behavStats['large_battle_count'] ?? 0);
+
+    $ciLift    = (float) ($ciCharacter['enemy_sustain_lift'] ?? 0);
+    $ciHops    = (float) ($ciCharacter['corp_hop_frequency_180d'] ?? 0);
+    $ciBridge  = (float) ($ciCharacter['graph_bridge_score'] ?? 0);
+    $ciRepeat  = (float) ($ciCharacter['repeatability_score'] ?? 0);
+
+    // Determine the effective risk score
+    $riskScore = $bldScore ?? $bsRisk;
+
+    // Temporal analysis
+    $recent7d = null;
+    $recent90d = null;
+    foreach ($temporalMetrics as $tm) {
+        if (($tm['window_label'] ?? '') === '7d') $recent7d = $tm;
+        if (($tm['window_label'] ?? '') === '90d') $recent90d = $tm;
+    }
+    $battles7d  = (int) ($recent7d['battles_present'] ?? 0);
+    $battles90d = (int) ($recent90d['battles_present'] ?? 0);
+
+    // ── Activity level ──────────────────────────────────
+    $activityLevel = 'Unknown';
+    if ($battles7d >= 10) $activityLevel = 'Very active';
+    elseif ($battles7d >= 3) $activityLevel = 'Active';
+    elseif ($battles7d >= 1) $activityLevel = 'Low activity';
+    elseif ($battles90d >= 1) $activityLevel = 'Recently active';
+    elseif ($theaterBattles > 0 || $kmTotal > 0) $activityLevel = 'Dormant';
+    else $activityLevel = 'No tracked activity';
+
+    // ── Fleet pattern ───────────────────────────────────
+    $fleetPattern = 'Unknown';
+    if ($kmTotal === 0 && $theaterBattles === 0) {
+        $fleetPattern = 'No combat data';
+    } elseif ($bsFleetAbsence >= 0.9 && $kmTotal > 0) {
+        $fleetPattern = 'Small-gang only';
+    } elseif ($bsFleetAbsence >= 0.6) {
+        $fleetPattern = 'Mostly small-gang';
+    } elseif ($kmLarge >= 10) {
+        $fleetPattern = 'Heavy fleet participant';
+    } elseif ($kmLarge >= 3) {
+        $fleetPattern = 'Mixed fleet / small-gang';
+    } elseif ($totalTheaters > 0) {
+        $fleetPattern = 'Regular fleet participant';
+    } else {
+        $fleetPattern = 'Light engagement';
+    }
+
+    // ── Risk label ──────────────────────────────────────
+    if ($riskScore >= 0.75) {
+        $riskLabel = 'High concern';
+    } elseif ($riskScore >= 0.45) {
+        $riskLabel = 'Elevated';
+    } elseif ($riskScore >= 0.20) {
+        $riskLabel = 'Low concern';
+    } else {
+        $riskLabel = 'No concern';
+    }
+
+    // ── Concerns ────────────────────────────────────────
+    $concerns = [];
+    $mitigating = [];
+
+    // Dormancy reactivation
+    $suspicion = $profile['suspicion'] ?? null;
+    if (is_array($ciCharacter) && $battles7d > 0 && $battles90d <= 2) {
+        $concerns[] = 'Returned after a long inactive period';
+    }
+
+    // Cross-side activity
+    if ($bsCrossSide >= 0.3) {
+        $concerns[] = 'Significant cross-side kills in small engagements (' . number_format($bsCrossSide * 100, 0) . '%)';
+    } elseif ($bsCrossSide >= 0.1) {
+        $concerns[] = 'Some cross-side activity detected';
+    }
+
+    // Enemy uplift
+    if ($ciLift >= 1.3) {
+        $concerns[] = 'Enemies survive significantly more when present (+' . number_format(($ciLift - 1) * 100, 0) . '%)';
+    } elseif ($ciLift >= 1.15) {
+        $concerns[] = 'Mild enemy survival uplift detected';
+    }
+
+    // Corp hopping
+    if ($ciHops >= 3) {
+        $concerns[] = 'Frequent corp changes (' . number_format($ciHops, 0) . ' in 180 days)';
+    }
+
+    // High burstiness
+    if ($bsTempReg >= 0.8) {
+        $concerns[] = 'Very bursty activity pattern';
+    }
+
+    // Low continuation
+    if ($bsContinuation > 0 && $bsContinuation <= 0.15) {
+        $concerns[] = 'Appears briefly then disappears';
+    }
+
+    // High bridge score
+    if ($ciBridge >= 20) {
+        $concerns[] = 'Acts as a connector between separate groups';
+    }
+
+    // Pattern repeatability
+    if ($ciRepeat >= 0.5) {
+        $concerns[] = 'Suspicious patterns repeat across time windows';
+    }
+
+    // ── Mitigating ──────────────────────────────────────
+    if ($bsCrossSide < 0.05) {
+        $mitigating[] = 'No meaningful cross-side activity';
+    }
+    if ($ciLift > 0 && $ciLift < 1.1) {
+        $mitigating[] = 'No enemy over-performance pattern';
+    }
+    if ($ciHops < 1) {
+        $mitigating[] = 'Stable corp history';
+    }
+    if ($bsCompanion >= 0.5) {
+        $mitigating[] = 'Strong same-group fleet alignment';
+    }
+    if ($kmLarge >= 5) {
+        $mitigating[] = 'Regular large-fleet participation';
+    }
+    if ($bsFleetAbsence < 0.3 && $kmTotal > 0) {
+        $mitigating[] = 'Healthy mix of fleet and small-gang activity';
+    }
+
+    // ── Summary sentence ────────────────────────────────
+    $charName = htmlspecialchars((string) ($profile['character']['character_name'] ?? 'This pilot'), ENT_QUOTES);
+    $fleetFunc = (string) ($profile['fleet_function'] ?? '');
+
+    if ($riskScore >= 0.75) {
+        $summary = 'High-priority review. Multiple hostile-behavior indicators detected that warrant manual investigation.';
+    } elseif ($riskScore >= 0.45) {
+        $summary = 'Elevated signals detected. Some behavioral indicators warrant a closer look, but no definitive hostile pattern confirmed.';
+    } elseif ($riskScore >= 0.20) {
+        $summary = 'Low current risk. ' . ($totalTheaters > 0 ? 'Regular fleet participation with ' : '') . ($bsCompanion >= 0.5 ? 'a stable same-group network. ' : 'moderate network consistency. ') . ($concerns !== [] ? ucfirst($concerns[0]) . '.' : 'No significant hostile-performance anomalies detected.');
+    } else {
+        $summary = 'No concern. ' . ($totalTheaters > 5 ? 'Highly regular fleet participation' : ($kmTotal > 0 ? 'Normal engagement patterns' : 'Limited tracked activity')) . ' with no hostile-performance anomalies detected.';
+    }
+
+    // ── Action ──────────────────────────────────────────
+    if ($riskScore >= 0.75) {
+        $action = 'Escalate for manual review. Cross-reference with operational intelligence.';
+    } elseif ($riskScore >= 0.45) {
+        $action = 'Monitor closely. Re-evaluate if cross-side activity or enemy-performance anomalies increase.';
+    } elseif ($riskScore >= 0.20) {
+        $action = 'Monitor only. No escalation needed unless cross-side activity or enemy-performance anomalies increase.';
+    } else {
+        $action = 'No action required. Routine monitoring.';
+    }
+
+    return [
+        'summary' => $summary,
+        'action' => $action,
+        'concerns' => $concerns,
+        'mitigating' => $mitigating,
+        'activity_level' => $activityLevel,
+        'fleet_pattern' => $fleetPattern,
+        'risk_label' => $riskLabel,
+    ];
+}
+
+/**
+ * Human-friendly evidence label (operator language, not model language).
+ * Falls back to the original ci_evidence_label() for unknown keys.
+ */
+function ci_evidence_label_human(string $key): string
+{
+    $map = [
+        'anomalous_battle_presence_count' => 'Suspicious battle appearances',
+        'enemy_same_hull_survival_lift_detail' => 'Enemies survive more (same hull)',
+        'enemy_sustain_lift' => 'Enemies survive more when present',
+        'graph_copresence_cluster_proximity' => 'Network connections',
+        'repeatability_across_battles_windows' => 'Pattern consistency',
+        'anomalous_presence_rate' => 'Presence in flagged battles',
+        'presence_rate_delta' => 'Presence pattern change',
+        'org_history_movement_180d' => 'Corp loyalty (180 days)',
+        'neo4j_cross_side_overlap' => 'Shared corp history with enemies',
+        'neo4j_recent_defector' => 'Recent defector',
+        'neo4j_hostile_adjacency' => 'Hostile pilots in same corp',
+        'footprint_expansion' => 'Operating in more areas',
+        'footprint_contraction' => 'Operating in fewer areas',
+        'new_area_entry' => 'Entered new regions',
+        'hostile_overlap_change' => 'More overlap with hostile areas',
+        'active_hour_shift' => 'Changed active hours',
+        'weekday_profile_shift' => 'Changed active days',
+        'cadence_burstiness' => 'Activity irregularity',
+        'reactivation_after_dormancy' => 'Returned after long inactivity',
+    ];
+    // Handle "bv2_" prefixed keys
+    if (str_starts_with($key, 'bv2_') || str_starts_with($key, 'Bv2 ')) {
+        $clean = preg_replace('/^(bv2_|Bv2 )/i', '', $key);
+        $clean = str_replace('_', ' ', $clean);
+        return ucfirst(trim($clean));
+    }
+    return $map[$key] ?? ucwords(str_replace('_', ' ', $key));
+}
+
+/** Map a risk score to a human-readable risk band label. */
+function ci_risk_band(float $score): string
+{
+    if ($score >= 0.75) return 'Critical';
+    if ($score >= 0.45) return 'Watchlist';
+    if ($score >= 0.20) return 'Normal range';
+    return 'Clear';
+}
+
+/** Format a confidence value for display, handling the 0% edge case. */
+function ci_confidence_display(float $confidence, int $evidenceCount = 0): string
+{
+    if ($confidence < 0.05 && $evidenceCount < 3) {
+        return 'Insufficient data';
+    }
+    if ($confidence < 0.2) {
+        return 'Low confidence';
+    }
+    if ($confidence < 0.5) {
+        return 'Moderate confidence';
+    }
+    if ($confidence < 0.8) {
+        return 'Good confidence';
+    }
+    return 'High confidence';
+}
+
+/** Format enemy boost for display, replacing confusing "-100%" with plain English. */
+function ci_enemy_boost_display(float $overperf): string
+{
+    if ($overperf <= 0 || abs($overperf) < 0.01) {
+        return 'None detected';
+    }
+    if ($overperf < 0.9) {
+        return 'Enemies under-performed';
+    }
+    if ($overperf < 1.1) {
+        return 'Normal range';
+    }
+    $pct = number_format(($overperf - 1) * 100, 0);
+    return '+' . $pct . '% above expected';
+}
+
+/** Format engagement rate for display, replacing confusing >100% values. */
+function ci_engagement_display(float $rate): string
+{
+    if ($rate < 0.01) return 'None';
+    return number_format($rate, 1) . ' kills/battle';
+}
