@@ -1,5 +1,5 @@
 [Unit]
-Description=SupplyCore lane: compute fast loop (graph, battle, theater, heavy aggregation)
+Description=SupplyCore lane: compute background loop (backfills, forecasting, CIP pipeline)
 After=network.target mariadb.service
 Wants=network.target
 
@@ -10,13 +10,13 @@ Group=www-data
 WorkingDirectory=/var/www/SupplyCore
 EnvironmentFile=-/etc/default/supplycore-worker
 Environment=PYTHONUNBUFFERED=1
-ExecStart=/var/www/SupplyCore/.venv-orchestrator/bin/python /var/www/SupplyCore/bin/python_orchestrator.py loop-runner --app-root /var/www/SupplyCore --lane compute --max-parallel 4 --fast-pause 15 --fast-only --memory-max-gb 1.5
-Nice=5
+ExecStart=/var/www/SupplyCore/.venv-orchestrator/bin/python /var/www/SupplyCore/bin/python_orchestrator.py loop-runner --app-root /var/www/SupplyCore --lane compute --max-parallel 3 --background-pause 30 --background-only --memory-max-gb 2.5 --no-tier-barriers
+Nice=10
 Restart=always
 RestartSec=5
 KillSignal=SIGTERM
 TimeoutStopSec=90
-MemoryMax=2G
+MemoryMax=3G
 StandardOutput=journal
 StandardError=journal
 

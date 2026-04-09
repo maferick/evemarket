@@ -27,7 +27,7 @@ import socket
 import time
 import threading
 from collections import defaultdict
-from concurrent.futures import ThreadPoolExecutor, as_completed, Future
+from concurrent.futures import ThreadPoolExecutor, as_completed, wait, FIRST_COMPLETED, Future
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -363,6 +363,125 @@ def run_tier(
 
 
 # ---------------------------------------------------------------------------
+# Dependency-aware cycle (no tier barriers)
+# ---------------------------------------------------------------------------
+
+def _run_cycle_dependency_aware(
+    loop_name: str,
+    due_keys: set[str],
+    db: SupplyCoreDb,
+    raw_config: dict[str, Any],
+    logger: LoggerAdapter,
+    definitions: dict[str, dict[str, Any]],
+    graph_nodes: dict[str, Any],
+    max_parallel: int,
+    shutdown_event: threading.Event,
+    lane: str = "",
+) -> list[JobOutcome]:
+    """Run all due jobs respecting dependencies but without tier barriers.
+
+    Instead of waiting for an entire tier to complete, each job starts as
+    soon as *its own* dependencies have finished.  This dramatically
+    reduces idle time when a tier contains a mix of fast and slow jobs.
+
+    Concurrency groups are respected via per-group locks so that jobs
+    sharing a physical resource still serialise.
+    """
+    all_outcomes: list[JobOutcome] = []
+    if not due_keys or shutdown_event.is_set():
+        return all_outcomes
+
+    # Build per-job dependency sets (only deps within this cycle's due jobs).
+    deps: dict[str, set[str]] = {}
+    for key in due_keys:
+        node = graph_nodes.get(key)
+        if node:
+            deps[key] = set(node.depends_on) & due_keys
+        else:
+            deps[key] = set()
+
+    completed: set[str] = set()
+    remaining: set[str] = set(due_keys)
+    in_flight: dict[Future, str] = {}
+
+    # Per-concurrency-group locks to prevent overlapping execution.
+    group_locks: dict[str, threading.Lock] = defaultdict(threading.Lock)
+
+    def _run_with_group_lock(job_key: str) -> JobOutcome:
+        cg = definitions.get(job_key, {}).get("concurrency_group") or ""
+        timeout = int(definitions.get(job_key, {}).get("timeout_seconds", 300))
+        if cg:
+            with group_locks[cg]:
+                return _run_single_job(job_key, db, raw_config, logger, timeout)
+        return _run_single_job(job_key, db, raw_config, logger, timeout)
+
+    pool = ThreadPoolExecutor(max_workers=max_parallel)
+    try:
+        while (remaining or in_flight) and not shutdown_event.is_set():
+            # Find jobs whose deps are all satisfied.
+            ready = [k for k in remaining if deps[k] <= completed]
+
+            for key in ready:
+                remaining.discard(key)
+                fut = pool.submit(_run_with_group_lock, key)
+                fut.job_key = key  # type: ignore[attr-defined]
+                in_flight[fut] = key
+
+            if not in_flight:
+                # Nothing running and nothing ready — remaining jobs have
+                # unsatisfied deps (likely failed upstream).  Skip them.
+                if remaining:
+                    logger.warning(
+                        f"{loop_name}: {len(remaining)} jobs blocked by unsatisfied deps, skipping",
+                        payload={
+                            "event": "loop_runner.deps_blocked",
+                            "loop": loop_name,
+                            "blocked_jobs": sorted(remaining),
+                        },
+                    )
+                break
+
+            # Wait for at least one future to complete.
+            done, _ = wait(in_flight.keys(), return_when=FIRST_COMPLETED, timeout=60)
+
+            if not done:
+                # Timeout on wait — just loop back to check shutdown_event.
+                continue
+
+            for fut in done:
+                key = in_flight.pop(fut)
+                try:
+                    outcome = fut.result()
+                    all_outcomes.append(outcome)
+                    logger.info(
+                        f"job finished: {key}",
+                        payload={
+                            "event": "loop_runner.job_finished",
+                            "job_key": key,
+                            "status": outcome.status,
+                            "duration_seconds": round(outcome.duration_seconds, 1),
+                            "error": outcome.error,
+                        },
+                    )
+                except Exception as exc:
+                    all_outcomes.append(JobOutcome(
+                        job_key=key, status="failed",
+                        duration_seconds=0, error=str(exc),
+                    ))
+                    logger.warning(
+                        f"unexpected error running {key}: {exc}",
+                        payload={"event": "loop_runner.job_error", "job_key": key, "error": str(exc)},
+                    )
+                # Mark completed regardless of success/failure so dependents
+                # can proceed (they check their own data freshness).
+                completed.add(key)
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
+
+    return all_outcomes
+
+
+# ---------------------------------------------------------------------------
 # Main loops
 # ---------------------------------------------------------------------------
 
@@ -401,8 +520,10 @@ def _run_loop(
     run_once: bool = False,
     known_external_keys: set[str] | None = None,
     lane: str = "",
+    memory_abort_bytes: int | None = None,
+    use_tier_barriers: bool = True,
 ) -> None:
-    """Run the tier-by-tier loop continuously (or once)."""
+    """Run the loop continuously (or once)."""
     graph_nodes = build_graph(definitions, known_external_keys=known_external_keys)
     tiers, _tier_map = _topological_tiers(graph_nodes)
     cycle = 0
@@ -420,7 +541,8 @@ def _run_loop(
 
     # Memory safety: abort threshold slightly below the systemd MemoryMax
     # so we can exit gracefully instead of being OOM-killed.
-    memory_abort_bytes = int(2.5 * 1024 * 1024 * 1024)  # 2.5 GiB (below systemd MemoryMax=3G)
+    if memory_abort_bytes is None:
+        memory_abort_bytes = int(2.5 * 1024 * 1024 * 1024)  # 2.5 GiB default
 
     while not shutdown_event.is_set():
         cycle += 1
@@ -471,18 +593,47 @@ def _run_loop(
                 },
             )
 
-        for tier_idx, tier_jobs in enumerate(tiers):
-            if shutdown_event.is_set():
-                break
+        if use_tier_barriers:
+            # Classic mode: run tiers sequentially, wait for each tier to
+            # complete before starting the next.
+            for tier_idx, tier_jobs in enumerate(tiers):
+                if shutdown_event.is_set():
+                    break
 
-            # Only dispatch jobs that are actually due this cycle.
-            tier_due = [k for k in tier_jobs if k in due_keys]
-            if not tier_due:
-                continue
+                # Only dispatch jobs that are actually due this cycle.
+                tier_due = [k for k in tier_jobs if k in due_keys]
+                if not tier_due:
+                    continue
 
-            outcomes = run_tier(
-                tier_index=tier_idx,
-                tier_jobs=tier_due,
+                outcomes = run_tier(
+                    tier_index=tier_idx,
+                    tier_jobs=tier_due,
+                    db=db,
+                    raw_config=raw_config,
+                    logger=logger,
+                    definitions=definitions,
+                    graph_nodes=graph_nodes,
+                    max_parallel=max_parallel,
+                    shutdown_event=shutdown_event,
+                    lane=lane,
+                )
+
+                for o in outcomes:
+                    if o.status == "failed":
+                        total_failed += 1
+                    elif o.status == "skipped":
+                        total_skipped += 1
+                    else:
+                        total_success += 1
+                    if o.duration_seconds > slowest_seconds:
+                        slowest_seconds = o.duration_seconds
+                        slowest_key = o.job_key
+        else:
+            # Dependency-aware mode: each job starts as soon as its own
+            # deps finish — no artificial tier barriers.
+            outcomes = _run_cycle_dependency_aware(
+                loop_name=loop_name,
+                due_keys=due_keys,
                 db=db,
                 raw_config=raw_config,
                 logger=logger,
@@ -492,7 +643,6 @@ def _run_loop(
                 shutdown_event=shutdown_event,
                 lane=lane,
             )
-
             for o in outcomes:
                 if o.status == "failed":
                     total_failed += 1
@@ -500,7 +650,6 @@ def _run_loop(
                     total_skipped += 1
                 else:
                     total_success += 1
-                # Track slowest job for observability.
                 if o.duration_seconds > slowest_seconds:
                     slowest_seconds = o.duration_seconds
                     slowest_key = o.job_key
@@ -566,6 +715,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                         help="Only run the fast loop (skip background jobs)")
     parser.add_argument("--background-only", action="store_true",
                         help="Only run the background loop (skip fast jobs)")
+    parser.add_argument("--memory-max-gb", type=float, default=None,
+                        help="Memory abort threshold in GiB (default: auto-detect from systemd or 2.5)")
+    parser.add_argument("--no-tier-barriers", action="store_true",
+                        help="Use dependency-aware dispatch instead of tier barriers (better for background loops)")
     parser.add_argument("--lane", default=None,
                         help="Only run jobs in this lane (realtime/ingestion/compute/maintenance)")
     parser.add_argument("--verbose", action="store_true")
@@ -690,6 +843,12 @@ def main(argv: list[str] | None = None) -> int:
         },
     )
 
+    # Compute memory abort threshold from --memory-max-gb or auto-detect.
+    if args.memory_max_gb is not None:
+        mem_abort = int(args.memory_max_gb * 1024 * 1024 * 1024)
+    else:
+        mem_abort = int(2.5 * 1024 * 1024 * 1024)  # 2.5 GiB default
+
     threads: list[threading.Thread] = []
 
     # Each loop needs to know about the other loop's job keys AND all keys
@@ -701,12 +860,16 @@ def main(argv: list[str] | None = None) -> int:
     fast_keys = set(fast_defs.keys())
     bg_keys = set(bg_defs.keys())
 
+    no_tier_barriers = args.no_tier_barriers
+
     if not args.background_only and fast_defs:
         fast_thread = threading.Thread(
             target=_run_loop,
             args=("fast", fast_defs, db, raw_config, logger,
                   args.max_parallel, shutdown_event, args.fast_pause, args.once),
-            kwargs={"known_external_keys": bg_keys | external_lane_keys, "lane": lane},
+            kwargs={"known_external_keys": bg_keys | external_lane_keys, "lane": lane,
+                    "memory_abort_bytes": mem_abort,
+                    "use_tier_barriers": not no_tier_barriers},
             name="fast-loop",
             daemon=True,
         )
@@ -717,7 +880,9 @@ def main(argv: list[str] | None = None) -> int:
             target=_run_loop,
             args=("background", bg_defs, db, raw_config, logger,
                   args.max_parallel, shutdown_event, args.background_pause, args.once),
-            kwargs={"known_external_keys": fast_keys | external_lane_keys, "lane": lane},
+            kwargs={"known_external_keys": fast_keys | external_lane_keys, "lane": lane,
+                    "memory_abort_bytes": mem_abort,
+                    "use_tier_barriers": not no_tier_barriers},
             name="background-loop",
             daemon=True,
         )
