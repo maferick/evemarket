@@ -107,11 +107,19 @@ def _find_connected_corridors_neo4j(
     active_system_ids: list[int],
     max_length: int = MAX_CORRIDOR_LENGTH,
 ) -> list[list[int]]:
-    """Use Neo4j to find connected chains of active battle systems."""
+    """Use Neo4j to find connected chains of active battle systems.
+
+    Returns corridors as lists of system_ids using stargate and jump bridge
+    connectivity.  Filters to paths where every intermediate system is also
+    active (has recent battles).
+    """
     if neo4j_client is None or not active_system_ids:
         return []
 
     try:
+        # Pass active_system_ids as a set parameter for efficient IN checks.
+        # The UNWIND + directed path pattern avoids duplicate corridors by
+        # requiring s1.system_id < s2.system_id.
         rows = neo4j_client.query(
             """
             UNWIND $system_ids AS start_id
@@ -128,7 +136,7 @@ def _find_connected_corridors_neo4j(
             LIMIT 500
             """,
             {"system_ids": active_system_ids, "max_len": max_length},
-            timeout_seconds=90,
+            timeout_seconds=120,
         )
         return [list(r["corridor_systems"]) for r in rows]
     except Exception:

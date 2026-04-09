@@ -23,11 +23,15 @@ from collections import defaultdict
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+import logging
+
 from ..db import SupplyCoreDb
 from ..job_result import JobResult
 from ..job_utils import finish_job_run, start_job_run
 from ..json_utils import json_dumps_safe
 from ..neo4j import Neo4jClient, Neo4jConfig
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -206,7 +210,7 @@ def _fetch_previous_signals(
 
 
 # ---------------------------------------------------------------------------
-# Edge generation per event type
+# Neo4j-native edge generation — replaces O(n²) Python pair loops
 # ---------------------------------------------------------------------------
 
 # Edge accumulator type: (char_a, char_b, window, event_type) -> {count, weight, last_event_at, system_id}
@@ -216,6 +220,153 @@ EdgeData = dict[str, Any]
 
 def _ordered_pair(a: int, b: int) -> tuple[int, int]:
     return (a, b) if a < b else (b, a)
+
+
+def _generate_battle_edges_neo4j(
+    neo4j: Neo4jClient,
+    battle_ids: list[str],
+    window_defs: list[tuple[str, timedelta]],
+    now_dt: datetime,
+) -> tuple[dict[EdgeKey, EdgeData], set[int]]:
+    """Generate same_battle and same_side edges via Neo4j pattern matching.
+
+    Uses the battle participation graph already synced by
+    ``compute_graph_sync_battle_intelligence`` to find character pairs who
+    shared a battle or battle-side, replacing the O(n²) Python loop with
+    a Cypher aggregation query.
+
+    Returns (edges_dict, character_ids_seen).
+    """
+    edges: dict[EdgeKey, EdgeData] = defaultdict(
+        lambda: {"count": 0, "weight": 0.0, "last_event_at": None, "system_id": None}
+    )
+    char_ids_seen: set[int] = set()
+
+    # Build cutoff strings for conditional window aggregation
+    cutoffs = {wl: (now_dt - wd).strftime("%Y-%m-%d %H:%M:%S") for wl, wd in window_defs}
+
+    # --- same_battle: character pairs participating in the same battle ---
+    battle_rows = neo4j.query(
+        """
+        UNWIND $battle_ids AS bid
+        MATCH (b:Battle {battle_id: bid})
+        MATCH (a:Character)-[:ON_SIDE]->(:BattleSide)<-[:HAS_SIDE]-(b)
+              -[:HAS_SIDE]->(:BattleSide)<-[:ON_SIDE]-(c:Character)
+        WHERE a.character_id < c.character_id
+        WITH a.character_id AS char_a, c.character_id AS char_b,
+             b.started_at AS battle_time,
+             b.system_id AS system_id
+        RETURN char_a, char_b,
+               count(*) AS event_count,
+               max(toString(battle_time)) AS last_event_at,
+               max(system_id) AS system_id
+        """,
+        {"battle_ids": battle_ids},
+        timeout_seconds=90,
+    )
+
+    for r in battle_rows:
+        a, b = int(r["char_a"]), int(r["char_b"])
+        char_ids_seen.update((a, b))
+        last_event = r.get("last_event_at") or ""
+        cnt = int(r.get("event_count") or 0)
+        sys_id = r.get("system_id")
+        if sys_id is not None:
+            sys_id = int(sys_id)
+
+        for wl, _wd in window_defs:
+            if last_event >= cutoffs[wl]:
+                key: EdgeKey = (a, b, wl, "same_battle")
+                edges[key]["count"] += cnt
+                edges[key]["weight"] += cnt * EVENT_WEIGHTS["same_battle"]
+                edges[key]["last_event_at"] = last_event
+                edges[key]["system_id"] = sys_id
+
+    # --- same_side: character pairs on the same BattleSide ---
+    side_rows = neo4j.query(
+        """
+        UNWIND $battle_ids AS bid
+        MATCH (b:Battle {battle_id: bid})-[:HAS_SIDE]->(side:BattleSide)
+        MATCH (a:Character)-[:ON_SIDE]->(side)<-[:ON_SIDE]-(c:Character)
+        WHERE a.character_id < c.character_id
+        WITH a.character_id AS char_a, c.character_id AS char_b,
+             b.started_at AS battle_time,
+             b.system_id AS system_id
+        RETURN char_a, char_b,
+               count(*) AS event_count,
+               max(toString(battle_time)) AS last_event_at,
+               max(system_id) AS system_id
+        """,
+        {"battle_ids": battle_ids},
+        timeout_seconds=90,
+    )
+
+    for r in side_rows:
+        a, b = int(r["char_a"]), int(r["char_b"])
+        char_ids_seen.update((a, b))
+        last_event = r.get("last_event_at") or ""
+        cnt = int(r.get("event_count") or 0)
+        sys_id = r.get("system_id")
+        if sys_id is not None:
+            sys_id = int(sys_id)
+
+        for wl, _wd in window_defs:
+            if last_event >= cutoffs[wl]:
+                key = (a, b, wl, "same_side")
+                edges[key]["count"] += cnt
+                edges[key]["weight"] += cnt * EVENT_WEIGHTS["same_side"]
+                edges[key]["last_event_at"] = last_event
+                edges[key]["system_id"] = sys_id
+
+    # --- same_system_time_window: different battles, same system, within proximity ---
+    proximity_rows = neo4j.query(
+        """
+        UNWIND $battle_ids AS bid
+        MATCH (b1:Battle {battle_id: bid})-[:IN_SYSTEM]->(s:System)
+        MATCH (b2:Battle)-[:IN_SYSTEM]->(s)
+        WHERE b1 <> b2
+          AND abs(duration.inSeconds(b1.started_at, b2.started_at).seconds) <= $proximity_secs
+        MATCH (a:Character)-[:ON_SIDE]->(:BattleSide)<-[:HAS_SIDE]-(b1)
+        MATCH (c:Character)-[:ON_SIDE]->(:BattleSide)<-[:HAS_SIDE]-(b2)
+        WHERE a.character_id < c.character_id
+        WITH DISTINCT a.character_id AS char_a, c.character_id AS char_b,
+             max(toString(b1.started_at)) AS last_event_at,
+             s.system_id AS system_id
+        RETURN char_a, char_b,
+               count(*) AS event_count,
+               max(last_event_at) AS last_event_at,
+               system_id
+        """,
+        {
+            "battle_ids": battle_ids,
+            "proximity_secs": SYSTEM_TIME_PROXIMITY_HOURS * 3600,
+        },
+        timeout_seconds=90,
+    )
+
+    for r in proximity_rows:
+        a, b = int(r["char_a"]), int(r["char_b"])
+        char_ids_seen.update((a, b))
+        last_event = r.get("last_event_at") or ""
+        cnt = int(r.get("event_count") or 0)
+        sys_id = r.get("system_id")
+        if sys_id is not None:
+            sys_id = int(sys_id)
+
+        for wl, _wd in window_defs:
+            if last_event >= cutoffs[wl]:
+                key = (a, b, wl, "same_system_time_window")
+                edges[key]["count"] += cnt
+                edges[key]["weight"] += cnt * EVENT_WEIGHTS["same_system_time_window"]
+                edges[key]["last_event_at"] = last_event
+                edges[key]["system_id"] = sys_id
+
+    return edges, char_ids_seen
+
+
+# ---------------------------------------------------------------------------
+# Python-fallback edge generation (used when Neo4j is disabled)
+# ---------------------------------------------------------------------------
 
 
 def _generate_battle_edges(
@@ -581,38 +732,56 @@ def run_compute_copresence_edges(
             last_battle_id = battle_ids[-1]
             batch_count += 1
 
-            participations = _fetch_battle_participants(db, battle_ids)
-            rows_processed += len(participations)
-            if not participations:
-                _sync_state_upsert(db, DATASET_KEY, last_battle_id, "success", rows_written)
-                continue
+            # When Neo4j is available, compute pairwise edges via Cypher
+            # pattern matching instead of Python O(n²) loops.  This offloads
+            # same_battle, same_side, and same_system_time_window to Neo4j.
+            if neo4j_client is not None:
+                neo4j_edges, neo4j_chars = _generate_battle_edges_neo4j(
+                    neo4j_client, battle_ids, WINDOW_DEFS, now_dt,
+                )
+                for k, v in neo4j_edges.items():
+                    all_edges[k]["count"] += v["count"]
+                    all_edges[k]["weight"] += v["weight"]
+                    if v["last_event_at"]:
+                        existing = all_edges[k]["last_event_at"]
+                        if existing is None or v["last_event_at"] > existing:
+                            all_edges[k]["last_event_at"] = v["last_event_at"]
+                    if v["system_id"]:
+                        all_edges[k]["system_id"] = v["system_id"]
+                all_character_ids.update(neo4j_chars)
+                rows_processed += len(neo4j_chars)
+            else:
+                # Fallback: Python pair generation when Neo4j is disabled
+                participations = _fetch_battle_participants(db, battle_ids)
+                rows_processed += len(participations)
+                if not participations:
+                    _sync_state_upsert(db, DATASET_KEY, last_battle_id, "success", rows_written)
+                    continue
 
-            char_ids_in_batch = list({int(p["character_id"]) for p in participations})
-            all_character_ids.update(char_ids_in_batch)
+                char_ids_in_batch = list({int(p["character_id"]) for p in participations})
+                all_character_ids.update(char_ids_in_batch)
 
-            # Generate battle-based edges (same_battle + same_side)
-            battle_edges = _generate_battle_edges(participations, WINDOW_DEFS, now_dt)
-            for k, v in battle_edges.items():
-                all_edges[k]["count"] += v["count"]
-                all_edges[k]["weight"] += v["weight"]
-                if v["last_event_at"]:
-                    existing = all_edges[k]["last_event_at"]
-                    if existing is None or v["last_event_at"] > existing:
-                        all_edges[k]["last_event_at"] = v["last_event_at"]
-                if v["system_id"]:
-                    all_edges[k]["system_id"] = v["system_id"]
+                battle_edges = _generate_battle_edges(participations, WINDOW_DEFS, now_dt)
+                for k, v in battle_edges.items():
+                    all_edges[k]["count"] += v["count"]
+                    all_edges[k]["weight"] += v["weight"]
+                    if v["last_event_at"]:
+                        existing = all_edges[k]["last_event_at"]
+                        if existing is None or v["last_event_at"] > existing:
+                            all_edges[k]["last_event_at"] = v["last_event_at"]
+                    if v["system_id"]:
+                        all_edges[k]["system_id"] = v["system_id"]
 
-            # Generate system-time proximity edges
-            sys_edges = _generate_system_time_edges(participations, WINDOW_DEFS, now_dt)
-            for k, v in sys_edges.items():
-                all_edges[k]["count"] += v["count"]
-                all_edges[k]["weight"] += v["weight"]
-                if v["last_event_at"]:
-                    existing = all_edges[k]["last_event_at"]
-                    if existing is None or v["last_event_at"] > existing:
-                        all_edges[k]["last_event_at"] = v["last_event_at"]
-                if v["system_id"]:
-                    all_edges[k]["system_id"] = v["system_id"]
+                sys_edges = _generate_system_time_edges(participations, WINDOW_DEFS, now_dt)
+                for k, v in sys_edges.items():
+                    all_edges[k]["count"] += v["count"]
+                    all_edges[k]["weight"] += v["weight"]
+                    if v["last_event_at"]:
+                        existing = all_edges[k]["last_event_at"]
+                        if existing is None or v["last_event_at"] > existing:
+                            all_edges[k]["last_event_at"] = v["last_event_at"]
+                    if v["system_id"]:
+                        all_edges[k]["system_id"] = v["system_id"]
 
             _sync_state_upsert(db, DATASET_KEY, last_battle_id, "success", rows_written)
 
@@ -658,7 +827,13 @@ def run_compute_copresence_edges(
             for (a, b, wlabel, etype), data in all_edges.items():
                 if data["count"] <= 0:
                     continue
-                last_event_str = data["last_event_at"].strftime("%Y-%m-%d %H:%M:%S") if data["last_event_at"] else None
+                raw_event = data["last_event_at"]
+                if raw_event is None:
+                    last_event_str = None
+                elif isinstance(raw_event, str):
+                    last_event_str = raw_event  # Neo4j path returns strings
+                else:
+                    last_event_str = raw_event.strftime("%Y-%m-%d %H:%M:%S")
                 edge_values.append("(%s, %s, %s, %s, %s, %s, %s, %s, %s)")
                 edge_params.extend([
                     a, b, wlabel, etype,
