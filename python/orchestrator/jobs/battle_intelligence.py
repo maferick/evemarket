@@ -868,61 +868,68 @@ def run_compute_battle_anomalies(db: SupplyCoreDb, runtime: dict[str, Any] | Non
             stats[size_class] = (mean, stddev)
 
         if not dry_run:
-            with db.transaction() as (_, cursor):
+            # Prepare batches outside the transaction to minimise lock hold time.
+            efficiency_sorted = sorted((float(item["efficiency_score"]) for item in shaped))
+            metrics_batch: list[tuple[Any, ...]] = []
+            anomalies_batch: list[tuple[Any, ...]] = []
+            for item in shaped:
+                mean, stddev = stats.get(str(item["battle_size_class"]), (0.0, 0.0))
+                z = _safe_div(float(item["efficiency_score"]) - mean, stddev, 0.0) if stddev > 0 else 0.0
+                percentile_rank = _percentile(efficiency_sorted, float(item["efficiency_score"]))
+                anomaly_class = "normal"
+                if z > 2.0:
+                    anomaly_class = "high_sustain"
+                elif z < -1.0:
+                    anomaly_class = "low_sustain"
+
+                metrics_batch.append(
+                    (
+                        str(item["battle_id"]),
+                        str(item["side_key"]),
+                        int(item["participant_count"]),
+                        int(item["logi_count"]),
+                        int(item["command_count"]),
+                        int(item["capital_count"]),
+                        int(item["total_kills"]),
+                        float(item["kill_rate_per_minute"]),
+                        float(item["median_sustain_factor"]),
+                        float(item["average_sustain_factor"]),
+                        float(item["switch_pressure"]),
+                        float(item["efficiency_score"]),
+                        float(z),
+                        computed_at,
+                    ),
+                )
+                explanation = {
+                    "efficiency_formula": "median_sustain_factor / log(1 + kill_rate_per_minute + epsilon)",
+                    "median_sustain_factor": item["median_sustain_factor"],
+                    "kill_rate_per_minute": item["kill_rate_per_minute"],
+                    "efficiency_score": item["efficiency_score"],
+                    "z_efficiency_score": z,
+                    "peer_group": item["battle_size_class"],
+                }
+                anomalies_batch.append(
+                    (
+                        str(item["battle_id"]),
+                        str(item["side_key"]),
+                        anomaly_class,
+                        float(z),
+                        float(percentile_rank),
+                        json_dumps_safe(explanation),
+                        computed_at,
+                    ),
+                )
+
+            # Sort by primary key for consistent lock ordering across concurrent jobs.
+            metrics_batch.sort(key=lambda r: (r[0], r[1]))
+            anomalies_batch.sort(key=lambda r: (r[0], r[1]))
+
+            _BATCH_CHUNK = 500
+
+            def _write_anomalies(_conn, cursor):
                 cursor.execute("DELETE FROM battle_anomalies")
                 cursor.execute("DELETE FROM battle_side_metrics")
-
-                efficiency_sorted = sorted((float(item["efficiency_score"]) for item in shaped))
-                metrics_batch: list[tuple[Any, ...]] = []
-                anomalies_batch: list[tuple[Any, ...]] = []
-                for item in shaped:
-                    mean, stddev = stats.get(str(item["battle_size_class"]), (0.0, 0.0))
-                    z = _safe_div(float(item["efficiency_score"]) - mean, stddev, 0.0) if stddev > 0 else 0.0
-                    percentile_rank = _percentile(efficiency_sorted, float(item["efficiency_score"]))
-                    anomaly_class = "normal"
-                    if z > 2.0:
-                        anomaly_class = "high_sustain"
-                    elif z < -1.0:
-                        anomaly_class = "low_sustain"
-
-                    metrics_batch.append(
-                        (
-                            str(item["battle_id"]),
-                            str(item["side_key"]),
-                            int(item["participant_count"]),
-                            int(item["logi_count"]),
-                            int(item["command_count"]),
-                            int(item["capital_count"]),
-                            int(item["total_kills"]),
-                            float(item["kill_rate_per_minute"]),
-                            float(item["median_sustain_factor"]),
-                            float(item["average_sustain_factor"]),
-                            float(item["switch_pressure"]),
-                            float(item["efficiency_score"]),
-                            float(z),
-                            computed_at,
-                        ),
-                    )
-                    explanation = {
-                        "efficiency_formula": "median_sustain_factor / log(1 + kill_rate_per_minute + epsilon)",
-                        "median_sustain_factor": item["median_sustain_factor"],
-                        "kill_rate_per_minute": item["kill_rate_per_minute"],
-                        "efficiency_score": item["efficiency_score"],
-                        "z_efficiency_score": z,
-                        "peer_group": item["battle_size_class"],
-                    }
-                    anomalies_batch.append(
-                        (
-                            str(item["battle_id"]),
-                            str(item["side_key"]),
-                            anomaly_class,
-                            float(z),
-                            float(percentile_rank),
-                            json_dumps_safe(explanation),
-                            computed_at,
-                        ),
-                    )
-                if metrics_batch:
+                for offset in range(0, len(metrics_batch), _BATCH_CHUNK):
                     cursor.executemany(
                         """
                         INSERT INTO battle_side_metrics (
@@ -931,17 +938,20 @@ def run_compute_battle_anomalies(db: SupplyCoreDb, runtime: dict[str, Any] | Non
                             switch_pressure, efficiency_score, z_efficiency_score, computed_at
                         ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                         """,
-                        metrics_batch,
+                        metrics_batch[offset:offset + _BATCH_CHUNK],
                     )
-                if anomalies_batch:
+                for offset in range(0, len(anomalies_batch), _BATCH_CHUNK):
                     cursor.executemany(
                         """
                         INSERT INTO battle_anomalies (
                             battle_id, side_key, anomaly_class, z_efficiency_score, percentile_rank, explanation_json, computed_at
                         ) VALUES (%s, %s, %s, %s, %s, %s, %s)
                         """,
-                        anomalies_batch,
+                        anomalies_batch[offset:offset + _BATCH_CHUNK],
                     )
+
+            # run_in_transaction auto-retries on deadlock (1213) and lock-wait timeout (1205).
+            db.run_in_transaction(_write_anomalies)
         rows_written = len(shaped) * 2
 
         finish_job_run(
