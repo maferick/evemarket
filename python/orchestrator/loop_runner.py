@@ -401,6 +401,7 @@ def _run_loop(
     run_once: bool = False,
     known_external_keys: set[str] | None = None,
     lane: str = "",
+    memory_abort_bytes: int | None = None,
 ) -> None:
     """Run the tier-by-tier loop continuously (or once)."""
     graph_nodes = build_graph(definitions, known_external_keys=known_external_keys)
@@ -420,7 +421,8 @@ def _run_loop(
 
     # Memory safety: abort threshold slightly below the systemd MemoryMax
     # so we can exit gracefully instead of being OOM-killed.
-    memory_abort_bytes = int(2.5 * 1024 * 1024 * 1024)  # 2.5 GiB (below systemd MemoryMax=3G)
+    if memory_abort_bytes is None:
+        memory_abort_bytes = int(2.5 * 1024 * 1024 * 1024)  # 2.5 GiB default
 
     while not shutdown_event.is_set():
         cycle += 1
@@ -566,6 +568,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                         help="Only run the fast loop (skip background jobs)")
     parser.add_argument("--background-only", action="store_true",
                         help="Only run the background loop (skip fast jobs)")
+    parser.add_argument("--memory-max-gb", type=float, default=None,
+                        help="Memory abort threshold in GiB (default: auto-detect from systemd or 2.5)")
     parser.add_argument("--lane", default=None,
                         help="Only run jobs in this lane (realtime/ingestion/compute/maintenance)")
     parser.add_argument("--verbose", action="store_true")
@@ -690,6 +694,12 @@ def main(argv: list[str] | None = None) -> int:
         },
     )
 
+    # Compute memory abort threshold from --memory-max-gb or auto-detect.
+    if args.memory_max_gb is not None:
+        mem_abort = int(args.memory_max_gb * 1024 * 1024 * 1024)
+    else:
+        mem_abort = int(2.5 * 1024 * 1024 * 1024)  # 2.5 GiB default
+
     threads: list[threading.Thread] = []
 
     # Each loop needs to know about the other loop's job keys AND all keys
@@ -706,7 +716,8 @@ def main(argv: list[str] | None = None) -> int:
             target=_run_loop,
             args=("fast", fast_defs, db, raw_config, logger,
                   args.max_parallel, shutdown_event, args.fast_pause, args.once),
-            kwargs={"known_external_keys": bg_keys | external_lane_keys, "lane": lane},
+            kwargs={"known_external_keys": bg_keys | external_lane_keys, "lane": lane,
+                    "memory_abort_bytes": mem_abort},
             name="fast-loop",
             daemon=True,
         )
@@ -717,7 +728,8 @@ def main(argv: list[str] | None = None) -> int:
             target=_run_loop,
             args=("background", bg_defs, db, raw_config, logger,
                   args.max_parallel, shutdown_event, args.background_pause, args.once),
-            kwargs={"known_external_keys": fast_keys | external_lane_keys, "lane": lane},
+            kwargs={"known_external_keys": fast_keys | external_lane_keys, "lane": lane,
+                    "memory_abort_bytes": mem_abort},
             name="background-loop",
             daemon=True,
         )

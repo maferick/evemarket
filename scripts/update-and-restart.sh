@@ -29,6 +29,7 @@ CORE_UNITS=(
   supplycore-lane-realtime.service
   supplycore-lane-ingestion.service
   supplycore-lane-compute.service
+  supplycore-lane-compute-bg.service
   supplycore-lane-maintenance.service
   supplycore-zkill.service
   supplycore-evewho-runner.service

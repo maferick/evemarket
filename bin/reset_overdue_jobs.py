@@ -115,8 +115,9 @@ def main() -> int:
         print(f"Reaped {reaped_running} stale running + {reaped_queued} stale queued worker_jobs rows.")
 
     print("\nDone. Restart the lane services to pick up the reset schedules:")
-    print("  systemctl restart supplycore-lane-compute supplycore-lane-realtime \\")
-    print("                    supplycore-lane-ingestion supplycore-lane-maintenance")
+    print("  systemctl restart supplycore-lane-compute supplycore-lane-compute-bg \\")
+    print("                    supplycore-lane-realtime supplycore-lane-ingestion \\")
+    print("                    supplycore-lane-maintenance")
     return 0
 
 
