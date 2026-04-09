@@ -205,6 +205,30 @@ def _run_concurrency_group(
     return outcomes
 
 
+def _tier_timeout_seconds(
+    tier_jobs: list[str],
+    definitions: dict[str, dict[str, Any]],
+    groups: dict[str, list[str]],
+) -> int:
+    """Compute the maximum wall-clock time a tier should be allowed to run.
+
+    For concurrency groups (sequential execution) we sum their members'
+    timeouts.  The tier timeout is the max across all parallel units, plus a
+    generous buffer.
+    """
+    independent_max = max(
+        (int(definitions.get(jk, {}).get("timeout_seconds", 300)) for jk in tier_jobs if not any(jk in g for g in groups.values())),
+        default=300,
+    )
+    group_totals = [
+        sum(int(definitions.get(jk, {}).get("timeout_seconds", 300)) for jk in gj)
+        for gj in groups.values()
+    ]
+    longest = max([independent_max] + group_totals)
+    # Add 2-minute buffer for thread startup, DB connection overhead, etc.
+    return longest + 120
+
+
 def run_tier(
     tier_index: int,
     tier_jobs: list[str],
@@ -222,28 +246,38 @@ def run_tier(
     Independent jobs run in parallel.  Jobs sharing a concurrency group run
     sequentially within that group, but different groups run in parallel with
     each other and with independent jobs.
+
+    A tier-level timeout prevents a single hung job from blocking all
+    downstream tiers indefinitely.  Timed-out threads continue running in
+    the background but the scheduler advances to the next tier.
     """
     if not tier_jobs or shutdown_event.is_set():
         return []
 
     independent, groups = _split_tier_by_concurrency(tier_jobs, graph_nodes)
+    tier_timeout = _tier_timeout_seconds(tier_jobs, definitions, groups)
 
     logger.info(
         f"tier {tier_index}: {len(tier_jobs)} jobs "
-        f"({len(independent)} independent, {len(groups)} concurrency groups)",
+        f"({len(independent)} independent, {len(groups)} concurrency groups, "
+        f"timeout {tier_timeout}s)",
         payload={
             "event": "loop_runner.tier_start",
             "tier": tier_index,
             "total_jobs": len(tier_jobs),
             "independent_count": len(independent),
             "concurrency_groups": {k: v for k, v in groups.items()},
+            "tier_timeout_seconds": tier_timeout,
         },
     )
 
     all_outcomes: list[JobOutcome] = []
     futures: list[Future] = []
 
-    with ThreadPoolExecutor(max_workers=max_parallel) as pool:
+    # Use explicit pool management instead of context manager so we can
+    # abandon timed-out threads without blocking on shutdown(wait=True).
+    pool = ThreadPoolExecutor(max_workers=max_parallel)
+    try:
         # Submit each independent job as its own task.
         for job_key in independent:
             if shutdown_event.is_set():
@@ -264,36 +298,66 @@ def run_tier(
             fut.job_key = f"[group:{group_name}]"  # type: ignore[attr-defined]
             futures.append(fut)
 
-        # Wait for everything in this tier.
-        for fut in as_completed(futures):
-            try:
-                result = fut.result()
-                if isinstance(result, list):
-                    # Concurrency group returned a list of outcomes
-                    all_outcomes.extend(result)
-                elif isinstance(result, JobOutcome):
-                    all_outcomes.append(result)
-                    logger.info(
-                        f"job finished: {result.job_key}",
+        # Wait for everything in this tier — but with a hard timeout so a
+        # single hung job cannot block all downstream tiers forever.
+        completed_futures: set[Future] = set()
+        try:
+            for fut in as_completed(futures, timeout=tier_timeout):
+                completed_futures.add(fut)
+                try:
+                    result = fut.result()
+                    if isinstance(result, list):
+                        all_outcomes.extend(result)
+                    elif isinstance(result, JobOutcome):
+                        all_outcomes.append(result)
+                        logger.info(
+                            f"job finished: {result.job_key}",
+                            payload={
+                                "event": "loop_runner.job_finished",
+                                "job_key": result.job_key,
+                                "status": result.status,
+                                "duration_seconds": round(result.duration_seconds, 1),
+                                "error": result.error,
+                            },
+                        )
+                except Exception as exc:
+                    job_label = getattr(fut, "job_key", "unknown")
+                    logger.warning(
+                        f"unexpected error in tier {tier_index}",
                         payload={
-                            "event": "loop_runner.job_finished",
-                            "job_key": result.job_key,
-                            "status": result.status,
-                            "duration_seconds": round(result.duration_seconds, 1),
-                            "error": result.error,
+                            "event": "loop_runner.tier_error",
+                            "tier": tier_index,
+                            "job": job_label,
+                            "error": str(exc),
                         },
                     )
-            except Exception as exc:
-                job_label = getattr(fut, "job_key", "unknown")
-                logger.warning(
-                    f"unexpected error in tier {tier_index}",
-                    payload={
-                        "event": "loop_runner.tier_error",
-                        "tier": tier_index,
-                        "job": job_label,
-                        "error": str(exc),
-                    },
-                )
+        except TimeoutError:
+            # Identify which jobs are still running and record them as
+            # timed-out so the tier can advance.
+            for fut in futures:
+                if fut not in completed_futures and not fut.done():
+                    job_label = getattr(fut, "job_key", "unknown")
+                    logger.error(
+                        f"tier {tier_index}: job {job_label} exceeded tier timeout "
+                        f"({tier_timeout}s) — advancing to next tier",
+                        payload={
+                            "event": "loop_runner.tier_timeout",
+                            "tier": tier_index,
+                            "job": job_label,
+                            "tier_timeout_seconds": tier_timeout,
+                        },
+                    )
+                    all_outcomes.append(JobOutcome(
+                        job_key=job_label,
+                        status="failed",
+                        duration_seconds=float(tier_timeout),
+                        error=f"Exceeded tier timeout of {tier_timeout}s",
+                    ))
+    finally:
+        # Shut down the pool without waiting for stuck threads.  Running
+        # threads will continue in the background but the scheduler is
+        # free to proceed with the next tier.
+        pool.shutdown(wait=False, cancel_futures=True)
 
     return all_outcomes
 

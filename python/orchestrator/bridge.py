@@ -14,16 +14,35 @@ class PhpBridge:
         self.script_path = app_root / "bin" / "python_scheduler_bridge.php"
         self.app_root = app_root
 
-    def call(self, action: str, *, args: list[str] | None = None, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    #: Default subprocess timeout (seconds).  Generous enough for any normal
+    #: bridge action but prevents indefinite hangs when the PHP process blocks
+    #: on a database lock or external call.
+    DEFAULT_TIMEOUT_SECONDS = 120
+
+    def call(
+        self,
+        action: str,
+        *,
+        args: list[str] | None = None,
+        payload: dict[str, Any] | None = None,
+        timeout: int | None = None,
+    ) -> dict[str, Any]:
+        effective_timeout = timeout if timeout is not None else self.DEFAULT_TIMEOUT_SECONDS
         command = [self.php_binary, str(self.script_path), f"--action={action}", *(args or [])]
-        completed = subprocess.run(
-            command,
-            cwd=str(self.app_root),
-            input=(json.dumps(make_json_safe(payload)) if payload is not None else None),
-            capture_output=True,
-            text=True,
-            check=False,
-        )
+        try:
+            completed = subprocess.run(
+                command,
+                cwd=str(self.app_root),
+                input=(json.dumps(make_json_safe(payload)) if payload is not None else None),
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=effective_timeout,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError(
+                f"PHP bridge action '{action}' timed out after {effective_timeout}s"
+            ) from exc
         if completed.returncode != 0:
             detail = completed.stderr.strip() or completed.stdout.strip() or "PHP bridge failed without output."
             raise RuntimeError(detail)
