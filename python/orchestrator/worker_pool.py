@@ -490,7 +490,14 @@ def _advance_schedule_with_policy(
 
     interval = max(1, int(row.get("interval_seconds") or 1))
     runtime = float(row.get("runtime_seconds") or 0)
-    ratio = runtime / interval if interval > 0 else 0.0
+    # Use whichever signal is larger:
+    # - historical runtime estimate from sync_schedules telemetry
+    # - actual duration of the just-finished run
+    #
+    # This lets cadence adaptation react immediately after a single slow run
+    # instead of waiting for schedule aggregates to catch up.
+    runtime_for_ratio = max(runtime, duration_s)
+    ratio = runtime_for_ratio / interval if interval > 0 else 0.0
 
     if ratio <= 1.2:
         # Normal cadence — advance by configured interval.
@@ -516,12 +523,15 @@ def _advance_schedule_with_policy(
         pressure_state="healthy",
         reason_text=(
             f"Fixed-delay mode: utilization_ratio={ratio:.2f} "
-            f"(runtime={runtime:.1f}s, interval={interval}s). "
+            f"(runtime_for_ratio={runtime_for_ratio:.1f}s, historical_runtime={runtime:.1f}s, "
+            f"last_run={duration_s:.1f}s, interval={interval}s). "
             f"Next run in {delay}s instead of {interval}s."
         ),
         decision_json={
             "utilization_ratio": round(ratio, 2),
+            "runtime_for_ratio_seconds": round(runtime_for_ratio, 1),
             "runtime_seconds": round(runtime, 1),
+            "last_run_duration_seconds": round(duration_s, 1),
             "interval_seconds": interval,
             "delay_seconds": delay,
         },
@@ -532,7 +542,9 @@ def _advance_schedule_with_policy(
             "event": "worker_pool.cadence_violation_delay",
             "job_key": job_key,
             "utilization_ratio": round(ratio, 2),
+            "runtime_for_ratio_seconds": round(runtime_for_ratio, 1),
             "runtime_seconds": round(runtime, 1),
+            "last_run_duration_seconds": round(duration_s, 1),
             "interval_seconds": interval,
             "delay_seconds": delay,
         },
