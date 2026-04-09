@@ -45,6 +45,9 @@ _TIME_BUDGET_SECONDS = 55  # leave headroom within a 60s schedule slot
 _MAX_BACKFILL_PAGES_PER_CHARACTER = 10
 _MAX_ERROR_RETRIES = 3
 _BATCH_PROCESS_SIZE = 100
+# Backfill cutoff — don't walk history earlier than this date.
+# Incremental mode (pages 1-2) is unaffected and always captures new kills.
+_BACKFILL_CUTOFF_DATE = "2024-01-01"
 
 
 # ---------------------------------------------------------------------------
@@ -376,6 +379,36 @@ def _sync_backfill(
                 latest_km_id = km_id
                 latest_km_at = km_at
 
+        # Check if we've walked past the backfill cutoff date.
+        # zKB returns newest-first, so the oldest entry on the page is the
+        # last one.  If it's before the cutoff, filter out old entries and
+        # mark backfill as complete after processing what remains.
+        oldest_time = min(
+            (str(e.get("killmail_time") or "9999") for e in entries),
+            default="9999",
+        )
+        past_cutoff = oldest_time[:10] < _BACKFILL_CUTOFF_DATE
+        if past_cutoff:
+            # Keep only entries at or after the cutoff.
+            entries = [
+                e for e in entries
+                if str(e.get("killmail_time") or "")[:10] >= _BACKFILL_CUTOFF_DATE
+            ]
+            if not entries:
+                logger.info(
+                    "Character %d backfill: entire page before %s cutoff, "
+                    "marking backfill complete at page %d",
+                    character_id, _BACKFILL_CUTOFF_DATE, page,
+                )
+                backfill_complete = True
+                last_page_completed = page
+                break
+            logger.info(
+                "Character %d backfill: page %d partially before %s cutoff, "
+                "processing %d remaining entries then stopping",
+                character_id, page, _BACKFILL_CUTOFF_DATE, len(entries),
+            )
+
         # Deduplicate.
         all_ids = [
             int(e.get("killmail_id") or 0)
@@ -396,6 +429,11 @@ def _sync_backfill(
             total_written += written
 
         last_page_completed = page
+
+        # If this page crossed the cutoff, we're done regardless.
+        if past_cutoff:
+            backfill_complete = True
+            break
 
         # Track consecutive all-known pages.
         if not new_entries:
