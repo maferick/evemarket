@@ -1617,6 +1617,23 @@ PREPARE killmail_attackers_damage_done_stmt FROM @killmail_attackers_damage_done
 EXECUTE killmail_attackers_damage_done_stmt;
 DEALLOCATE PREPARE killmail_attackers_damage_done_stmt;
 
+-- Index on character_id for temporal_behavior_detection lookups
+SET @ka_char_idx_exists := (
+    SELECT COUNT(*)
+    FROM INFORMATION_SCHEMA.STATISTICS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'killmail_attackers'
+      AND INDEX_NAME = 'idx_attacker_character'
+);
+SET @ka_char_idx_sql := IF(
+    @ka_char_idx_exists = 0,
+    'ALTER TABLE killmail_attackers ADD KEY idx_attacker_character (character_id)',
+    'SELECT 1'
+);
+PREPARE ka_char_idx_stmt FROM @ka_char_idx_sql;
+EXECUTE ka_char_idx_stmt;
+DEALLOCATE PREPARE ka_char_idx_stmt;
+
 CREATE TABLE IF NOT EXISTS killmail_items (
     id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
     sequence_id BIGINT UNSIGNED NOT NULL,
