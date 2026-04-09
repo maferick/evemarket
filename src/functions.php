@@ -15897,7 +15897,8 @@ function python_bridge_process_killmail_batch(array $payloads, bool $skipEntityF
     $killmailTimes = [];
     foreach ($payloads as $payload) {
         $esi = $payload['esi'] ?? [];
-        $killmailTime = (string) ($esi['killmail_time'] ?? '');
+        $killmailTimeRaw = (string) ($esi['killmail_time'] ?? '');
+        $killmailTime = $killmailTimeRaw !== '' ? gmdate('Y-m-d H:i:s', strtotime($killmailTimeRaw)) : '';
 
         // Victim
         $victimCharId = (int) (($esi['victim'] ?? [])['character_id'] ?? 0);
