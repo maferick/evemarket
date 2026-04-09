@@ -24,12 +24,26 @@ $events = db_intelligence_events_queue($perPage, $offset, $filterFamily, $filter
 $totalPages = max(1, (int) ceil($totalCount / $perPage));
 $digest = db_intelligence_event_digest_latest();
 
-// Handle bulk acknowledge
+// Handle bulk acknowledge (selected)
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['bulk_acknowledge'])) {
+    $postState = (string) ($_POST['state'] ?? 'active');
+    $postFamily = (string) ($_POST['family'] ?? '');
+    $postSeverity = (string) ($_POST['severity'] ?? '');
     $ids = array_map('intval', (array) ($_POST['event_ids'] ?? []));
     $analyst = 'analyst'; // placeholder — would come from session in production
     $count = db_intelligence_events_bulk_acknowledge($ids, $analyst, 'Bulk acknowledged from queue');
-    header('Location: /intelligence-events/?state=' . urlencode($filterState) . '&family=' . urlencode($filterFamily) . '&ack=' . $count);
+    header('Location: /intelligence-events/?state=' . urlencode($postState) . '&family=' . urlencode($postFamily) . '&severity=' . urlencode($postSeverity) . '&ack=' . $count);
+    exit;
+}
+
+// Handle bulk acknowledge ALL matching current filters
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['bulk_acknowledge_all'])) {
+    $postState = (string) ($_POST['state'] ?? 'active');
+    $postFamily = (string) ($_POST['family'] ?? '');
+    $postSeverity = (string) ($_POST['severity'] ?? '');
+    $analyst = 'analyst'; // placeholder — would come from session in production
+    $count = db_intelligence_events_bulk_acknowledge_all($postFamily, $postSeverity, $analyst, 'Bulk acknowledge all from queue');
+    header('Location: /intelligence-events/?state=' . urlencode($postState) . '&family=' . urlencode($postFamily) . '&severity=' . urlencode($postSeverity) . '&ack=' . $count);
     exit;
 }
 
@@ -181,6 +195,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
     <form method="post" action="/intelligence-events/">
         <input type="hidden" name="state" value="<?= htmlspecialchars($filterState, ENT_QUOTES) ?>">
         <input type="hidden" name="family" value="<?= htmlspecialchars($filterFamily, ENT_QUOTES) ?>">
+        <input type="hidden" name="severity" value="<?= htmlspecialchars($filterSeverity, ENT_QUOTES) ?>">
 
         <div class="mt-4 table-shell">
             <table class="table-ui">
@@ -305,7 +320,11 @@ include __DIR__ . '/../../src/views/partials/header.php';
         <?php if ($filterState === 'active' && $events !== []): ?>
         <div class="mt-3 flex items-center gap-3">
             <button type="submit" name="bulk_acknowledge" value="1" class="btn-secondary text-xs">Acknowledge selected</button>
-            <span class="text-[10px] text-muted">Select events above, then click to acknowledge.</span>
+            <button type="submit" name="bulk_acknowledge_all" value="1" class="btn-secondary text-xs"
+                    onclick="return confirm('Acknowledge all <?= number_format($totalCount) ?> active event(s)<?= $filterFamily !== '' ? ' in family \'' . htmlspecialchars($filterFamily, ENT_QUOTES) . '\'' : '' ?><?= $filterSeverity !== '' ? ' with severity \'' . htmlspecialchars($filterSeverity, ENT_QUOTES) . '\'' : '' ?>?')">
+                Acknowledge all (<?= number_format($totalCount) ?>)
+            </button>
+            <span class="text-[10px] text-muted">Select events above, or acknowledge all matching the current filters.</span>
         </div>
         <?php endif; ?>
     </form>

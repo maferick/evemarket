@@ -18863,6 +18863,54 @@ function db_intelligence_events_bulk_acknowledge(array $eventIds, string $analys
 }
 
 /**
+ * Acknowledge ALL active events matching the given filters in a single bulk operation.
+ * Much faster than iterating one-by-one for large event queues.
+ */
+function db_intelligence_events_bulk_acknowledge_all(string $family, string $severity, string $analyst, ?string $reason = null): int
+{
+    if ($analyst === '') {
+        return 0;
+    }
+
+    $where = ['ie.state = ?'];
+    $params = ['active'];
+
+    if ($family !== '') {
+        $where[] = 'ie.event_family = ?';
+        $params[] = $family;
+    }
+    if ($severity !== '') {
+        $where[] = 'ie.severity = ?';
+        $params[] = $severity;
+    }
+
+    $whereClause = implode(' AND ', $where);
+
+    return db_transaction(static function (PDO $pdo) use ($whereClause, $params, $analyst, $reason): int {
+        // Insert audit trail rows before updating state
+        $historyParams = array_merge([$analyst, $reason ?? 'Bulk acknowledge all'], $params);
+        $pdo->prepare(
+            "INSERT INTO intelligence_event_history
+                (event_id, previous_state, new_state, previous_severity, new_severity, changed_by, reason)
+             SELECT ie.id, 'active', 'acknowledged', ie.severity, ie.severity, ?, ?
+             FROM intelligence_events ie
+             WHERE {$whereClause}"
+        )->execute($historyParams);
+
+        // Bulk update all matching events
+        $updateParams = array_merge([$analyst], $params);
+        $stmt = $pdo->prepare(
+            "UPDATE intelligence_events ie
+             SET ie.state = 'acknowledged', ie.acknowledged_by = ?, ie.last_updated_at = NOW()
+             WHERE {$whereClause}"
+        );
+        $stmt->execute($updateParams);
+
+        return $stmt->rowCount();
+    });
+}
+
+/**
  * "Why this fired" evidence: get CIP profile snapshot and active signals
  * for the entity at the time of event detection.
  */
