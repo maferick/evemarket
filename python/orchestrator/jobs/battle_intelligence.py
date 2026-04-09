@@ -1061,87 +1061,72 @@ def run_compute_battle_actor_features(
     computed_at = _now_sql()
     _battle_log(runtime, "battle_intelligence.job.started", {"job_name": "compute_battle_actor_features", "dry_run": dry_run, "computed_at": computed_at})
     try:
-        # Pre-compute max participation per battle in SQL to avoid loading all rows into memory at once.
-        max_participation: dict[str, int] = {}
-        for batch in db.iterate_batches(
-            """
-            SELECT bp.battle_id, MAX(bp.participation_count) AS max_part
-            FROM battle_participants bp
-            INNER JOIN battle_rollups br ON br.battle_id = bp.battle_id
-            WHERE br.eligible_for_suspicion = 1
-            GROUP BY bp.battle_id
-            """,
-            batch_size=5000,
-        ):
-            for row in batch:
-                max_participation[str(row.get("battle_id") or "")] = int(row.get("max_part") or 0)
-
-        _ACTOR_SQL = """
-            SELECT
-                bp.battle_id,
-                bp.character_id,
-                bp.side_key,
-                bp.participation_count,
-                bp.is_logi,
-                bp.is_command,
-                bp.is_capital,
-                COALESCE(ba.anomaly_class, 'normal') AS anomaly_class
-            FROM battle_participants bp
-            INNER JOIN battle_rollups br ON br.battle_id = bp.battle_id
-            LEFT JOIN battle_anomalies ba ON ba.battle_id = bp.battle_id AND ba.side_key = bp.side_key
-            WHERE br.eligible_for_suspicion = 1
-        """
-
         # Track character priorities for enrichment (character_id -> max visibility).
         enrichment_priorities: dict[int, float] = {}
 
         if not dry_run:
+            # Single INSERT...SELECT with window functions computes centrality
+            # and visibility server-side, eliminating the max_participation
+            # pre-load and per-row Python computation.
             with db.transaction() as (_, cursor):
                 cursor.execute("DELETE FROM battle_actor_features")
+                rows_written = cursor.execute(
+                    """
+                    INSERT INTO battle_actor_features (
+                        battle_id, character_id, side_key, participation_count,
+                        centrality_score, visibility_score,
+                        is_logi, is_command, is_capital,
+                        participated_in_high_sustain, participated_in_low_sustain,
+                        computed_at
+                    )
+                    SELECT
+                        bp.battle_id,
+                        bp.character_id,
+                        bp.side_key,
+                        bp.participation_count,
+                        bp.participation_count / GREATEST(
+                            MAX(bp.participation_count) OVER (PARTITION BY bp.battle_id), 1
+                        ) AS centrality_score,
+                        LEAST(1.0,
+                            bp.participation_count / GREATEST(
+                                MAX(bp.participation_count) OVER (PARTITION BY bp.battle_id), 1
+                            )
+                            + 0.2 * COALESCE(bp.is_logi, 0)
+                            + 0.2 * COALESCE(bp.is_command, 0)
+                            + 0.3 * COALESCE(bp.is_capital, 0)
+                        ) AS visibility_score,
+                        COALESCE(bp.is_logi, 0),
+                        COALESCE(bp.is_command, 0),
+                        COALESCE(bp.is_capital, 0),
+                        CASE WHEN COALESCE(ba.anomaly_class, 'normal') = 'high_sustain' THEN 1 ELSE 0 END,
+                        CASE WHEN COALESCE(ba.anomaly_class, 'normal') = 'low_sustain' THEN 1 ELSE 0 END,
+                        %s
+                    FROM battle_participants bp
+                    INNER JOIN battle_rollups br ON br.battle_id = bp.battle_id
+                    LEFT JOIN battle_anomalies ba
+                        ON ba.battle_id = bp.battle_id AND ba.side_key = bp.side_key
+                    WHERE br.eligible_for_suspicion = 1
+                    """,
+                    (computed_at,),
+                )
+            rows_processed = rows_written
 
-            for batch in db.iterate_batches(_ACTOR_SQL, batch_size=5000):
-                rows_processed += len(batch)
-                insert_batch: list[tuple[Any, ...]] = []
+            # Derive enrichment priorities from the just-written rows instead
+            # of tracking per-row in Python.
+            for batch in db.iterate_batches(
+                "SELECT character_id, MAX(visibility_score) AS max_vis "
+                "FROM battle_actor_features WHERE character_id > 0 "
+                "GROUP BY character_id",
+                batch_size=5000,
+            ):
                 for row in batch:
-                    battle_id = str(row.get("battle_id") or "")
-                    character_id = int(row.get("character_id") or 0)
-                    participation_count = int(row.get("participation_count") or 0)
-                    centrality = _safe_div(float(participation_count), float(max_participation.get(battle_id) or 1), 0.0)
-                    role_weight = 0.2 * int(row.get("is_logi") or 0) + 0.2 * int(row.get("is_command") or 0) + 0.3 * int(row.get("is_capital") or 0)
-                    visibility = min(1.0, centrality + role_weight)
-                    anomaly_class = str(row.get("anomaly_class") or "normal")
-                    insert_batch.append((
-                        battle_id,
-                        character_id,
-                        str(row.get("side_key") or "unknown"),
-                        participation_count,
-                        float(centrality),
-                        float(visibility),
-                        int(row.get("is_logi") or 0),
-                        int(row.get("is_command") or 0),
-                        int(row.get("is_capital") or 0),
-                        1 if anomaly_class == "high_sustain" else 0,
-                        1 if anomaly_class == "low_sustain" else 0,
-                        computed_at,
-                    ))
-                    if character_id > 0:
-                        if character_id not in enrichment_priorities or visibility > enrichment_priorities[character_id]:
-                            enrichment_priorities[character_id] = visibility
-                if insert_batch:
-                    with db.transaction() as (_, cursor):
-                        cursor.executemany(
-                            """
-                            INSERT INTO battle_actor_features (
-                                battle_id, character_id, side_key, participation_count, centrality_score, visibility_score,
-                                is_logi, is_command, is_capital, participated_in_high_sustain, participated_in_low_sustain, computed_at
-                            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                            """,
-                            insert_batch,
-                        )
+                    enrichment_priorities[int(row["character_id"])] = float(row["max_vis"])
         else:
-            for batch in db.iterate_batches(_ACTOR_SQL, batch_size=5000):
-                rows_processed += len(batch)
-        rows_written = rows_processed
+            rows_processed = db.fetch_scalar(
+                "SELECT COUNT(*) FROM battle_participants bp "
+                "INNER JOIN battle_rollups br ON br.battle_id = bp.battle_id "
+                "WHERE br.eligible_for_suspicion = 1"
+            ) or 0
 
         # Queue all battle participants for EveWho/ESI enrichment so that
         # cross-alliance history is populated before users view theater pages.
