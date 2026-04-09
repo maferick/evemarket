@@ -359,6 +359,24 @@ class SupplyCoreDb:
                 decision_logged += 1
                 continue
 
+            # Circuit breaker check — skip jobs that are tripped.
+            breaker = self.check_circuit_breaker(job_key)
+            if breaker:
+                skipped += 1
+                self.insert_scheduler_planner_decision(
+                    schedule_id=None,
+                    job_key=job_key,
+                    decision_type="circuit_breaker_skip",
+                    pressure_state="healthy",
+                    reason_text=(
+                        f"Circuit breaker active: {breaker['reason']} "
+                        f"(cooldown {breaker['cooldown_seconds']}s, expires {breaker['until']})"
+                    ),
+                    decision_json=breaker,
+                )
+                decision_logged += 1
+                continue
+
             cooldown_seconds = max(0, int(definition.get("cooldown_seconds") or 0))
             opportunistic_background = bool(definition.get("opportunistic_background", False))
             freshness_sensitivity = str(definition.get("freshness_sensitivity") or "background")
@@ -694,6 +712,312 @@ class SupplyCoreDb:
         )
         return {str(r["job_key"]) for r in rows if r.get("job_key")}
 
+    # ------------------------------------------------------------------
+    # Duration-aware scheduling helpers
+    # ------------------------------------------------------------------
+
+    def get_job_duration_estimates(self, job_keys: set[str], definitions: dict[str, dict[str, Any]] | None = None) -> dict[str, dict[str, Any]]:
+        """Return estimated runtime for each job, with confidence/source tracking.
+
+        Hierarchy: p95 (if >=3 samples) → average → last → bounded timeout fallback.
+        Returns ``{job_key: {estimate_seconds, source, sample_count}}``.
+        """
+        if not job_keys:
+            return {}
+        safe_keys = [k[:120] for k in job_keys]
+        placeholders = ", ".join(["%s"] * len(safe_keys))
+        rows = self.fetch_all(
+            f"""SELECT
+                    ss.job_key,
+                    ss.p95_duration_seconds,
+                    ss.average_duration_seconds,
+                    ss.last_duration_seconds,
+                    (SELECT COUNT(*) FROM scheduler_job_events sje
+                     WHERE sje.job_key = ss.job_key
+                       AND sje.created_at >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL 24 HOUR)
+                    ) AS recent_sample_count
+                FROM sync_schedules ss
+                WHERE ss.job_key IN ({placeholders})
+                  AND ss.enabled = 1""",
+            tuple(safe_keys),
+        )
+        result: dict[str, dict[str, Any]] = {}
+        row_map = {str(r["job_key"]): r for r in rows}
+        defs = definitions or {}
+
+        for key in job_keys:
+            r = row_map.get(key)
+            sample_count = int(r["recent_sample_count"]) if r else 0
+
+            if r and r.get("p95_duration_seconds") and sample_count >= 3:
+                est = max(1.0, float(r["p95_duration_seconds"]))
+                source = "p95"
+            elif r and r.get("average_duration_seconds"):
+                est = max(1.0, float(r["average_duration_seconds"]))
+                source = "avg"
+            elif r and r.get("last_duration_seconds"):
+                est = max(1.0, float(r["last_duration_seconds"]))
+                source = "last"
+            else:
+                timeout = int(defs.get(key, {}).get("timeout_seconds") or 300)
+                est = min(max(5.0, timeout * 0.25), 60.0)
+                source = "timeout_fallback"
+
+            result[key] = {
+                "estimate_seconds": round(est, 2),
+                "source": source,
+                "sample_count": sample_count,
+            }
+        return result
+
+    def get_job_staleness_info(self, job_keys: set[str]) -> dict[str, dict[str, Any]]:
+        """Return staleness and dispatch urgency for each job.
+
+        Returns ``{job_key: {staleness_seconds, interval_seconds, staleness_ratio,
+        dispatch_urgency, urgency_band}}``.
+
+        ``dispatch_urgency`` uses a hybrid formula:
+        ``max(staleness_ratio, staleness_seconds / 300)`` so that even
+        long-interval jobs gain urgency after 5 minutes overdue.
+
+        Urgency bands: ``"critical"`` (>10), ``"urgent"`` (>6),
+        ``"elevated"`` (>3), ``"normal"``.
+        """
+        if not job_keys:
+            return {}
+        safe_keys = [k[:120] for k in job_keys]
+        placeholders = ", ".join(["%s"] * len(safe_keys))
+        rows = self.fetch_all(
+            f"""SELECT
+                    job_key,
+                    GREATEST(0, TIMESTAMPDIFF(SECOND, next_due_at, UTC_TIMESTAMP())) AS staleness_seconds,
+                    GREATEST(1, interval_seconds) AS interval_seconds
+                FROM sync_schedules
+                WHERE job_key IN ({placeholders})
+                  AND enabled = 1""",
+            tuple(safe_keys),
+        )
+        result: dict[str, dict[str, Any]] = {}
+        for r in rows:
+            key = str(r["job_key"])
+            staleness = max(0, int(r.get("staleness_seconds") or 0))
+            interval = max(1, int(r.get("interval_seconds") or 1))
+            ratio = staleness / interval
+            urgency = max(ratio, staleness / 300.0)
+
+            if urgency > 10:
+                band = "critical"
+            elif urgency > 6:
+                band = "urgent"
+            elif urgency > 3:
+                band = "elevated"
+            else:
+                band = "normal"
+
+            result[key] = {
+                "staleness_seconds": staleness,
+                "interval_seconds": interval,
+                "staleness_ratio": round(ratio, 2),
+                "dispatch_urgency": round(urgency, 2),
+                "urgency_band": band,
+            }
+
+        # Jobs not in sync_schedules get neutral defaults.
+        for key in job_keys:
+            if key not in result:
+                result[key] = {
+                    "staleness_seconds": 0,
+                    "interval_seconds": 1,
+                    "staleness_ratio": 0.0,
+                    "dispatch_urgency": 0.0,
+                    "urgency_band": "normal",
+                }
+        return result
+
+    def compute_pool_load_score(
+        self,
+        *,
+        queue_names: list[str],
+        workload_classes: list[str],
+    ) -> dict[str, Any]:
+        """Compute aggregate utilization score for a worker pool.
+
+        Returns ``{load_score, job_count, overloaded,
+        cadence_violators: [{job_key, utilization_ratio, runtime_seconds,
+        interval_seconds, recommended_interval_seconds}]}``.
+
+        ``load_score = SUM(runtime_estimate / interval)`` for all enabled jobs
+        in the pool.  Values above 1.0 mean the pool is mathematically
+        overloaded — there isn't enough wall-clock time to run every job at
+        its configured cadence even if nothing else goes wrong.
+        """
+        if not queue_names or not workload_classes:
+            return {"load_score": 0.0, "job_count": 0, "overloaded": False, "cadence_violators": []}
+        q_ph = ", ".join(["%s"] * len(queue_names))
+        w_ph = ", ".join(["%s"] * len(workload_classes))
+        rows = self.fetch_all(
+            f"""SELECT
+                    job_key,
+                    COALESCE(p95_duration_seconds, average_duration_seconds,
+                             last_duration_seconds, 0) AS runtime_seconds,
+                    GREATEST(1, interval_seconds) AS interval_seconds,
+                    p95_duration_seconds
+                FROM sync_schedules
+                WHERE enabled = 1
+                  AND execution_mode = 'python'
+                  AND queue_name IN ({q_ph})
+                  AND workload_class IN ({w_ph})""",
+            tuple(queue_names) + tuple(workload_classes),
+        )
+        total_load = 0.0
+        violators: list[dict[str, Any]] = []
+        for r in rows:
+            runtime = float(r.get("runtime_seconds") or 0)
+            interval = max(1, int(r.get("interval_seconds") or 1))
+            ratio = runtime / interval if interval > 0 else 0.0
+            total_load += ratio
+            if ratio > 1.0:
+                p95 = r.get("p95_duration_seconds")
+                recommended = int(float(p95) * 2.0) if p95 else None
+                violators.append({
+                    "job_key": str(r["job_key"]),
+                    "utilization_ratio": round(ratio, 2),
+                    "runtime_seconds": round(runtime, 2),
+                    "interval_seconds": interval,
+                    "recommended_interval_seconds": recommended,
+                })
+        violators.sort(key=lambda v: v["utilization_ratio"], reverse=True)
+        return {
+            "load_score": round(total_load, 3),
+            "job_count": len(rows),
+            "overloaded": total_load > 1.1,
+            "cadence_violators": violators,
+        }
+
+    # ------------------------------------------------------------------
+    # Circuit breaker
+    # ------------------------------------------------------------------
+
+    def check_circuit_breaker(self, job_key: str) -> dict[str, Any] | None:
+        """Return active circuit breaker state if the breaker is tripped and not yet expired.
+
+        Returns ``None`` if no breaker is active (job may run).
+        """
+        row = self.fetch_one(
+            """SELECT circuit_breaker_until, circuit_breaker_reason, circuit_breaker_cooldown_seconds
+               FROM sync_schedules
+               WHERE job_key = %s
+                 AND circuit_breaker_until IS NOT NULL
+                 AND circuit_breaker_until > UTC_TIMESTAMP()
+               LIMIT 1""",
+            (job_key[:120],),
+        )
+        if not row:
+            return None
+        return {
+            "until": str(row["circuit_breaker_until"]),
+            "reason": str(row.get("circuit_breaker_reason") or ""),
+            "cooldown_seconds": int(row.get("circuit_breaker_cooldown_seconds") or 0),
+        }
+
+    def get_circuit_breaker_history(self, job_key: str) -> dict[str, Any] | None:
+        """Return persisted breaker state even if expired.
+
+        Needed for probe-mode cooldown doubling — the previous cooldown
+        must survive expiry so exponential backoff doesn't reset.
+        """
+        row = self.fetch_one(
+            """SELECT circuit_breaker_until, circuit_breaker_reason, circuit_breaker_cooldown_seconds
+               FROM sync_schedules
+               WHERE job_key = %s
+                 AND circuit_breaker_cooldown_seconds > 0
+               LIMIT 1""",
+            (job_key[:120],),
+        )
+        if not row:
+            return None
+        return {
+            "until": str(row.get("circuit_breaker_until") or ""),
+            "reason": str(row.get("circuit_breaker_reason") or ""),
+            "cooldown_seconds": int(row.get("circuit_breaker_cooldown_seconds") or 0),
+        }
+
+    def trip_circuit_breaker(self, job_key: str, reason: str, cooldown_seconds: int) -> None:
+        """Activate the circuit breaker for a job."""
+        safe_cooldown = max(60, min(7200, cooldown_seconds))
+        self.execute(
+            """UPDATE sync_schedules
+               SET circuit_breaker_until = DATE_ADD(UTC_TIMESTAMP(), INTERVAL %s SECOND),
+                   circuit_breaker_reason = %s,
+                   circuit_breaker_cooldown_seconds = %s
+               WHERE job_key = %s""",
+            (safe_cooldown, reason[:255], safe_cooldown, job_key[:120]),
+        )
+
+    def reset_circuit_breaker(self, job_key: str) -> None:
+        """Clear circuit breaker state and reset empty-run counter."""
+        self.execute(
+            """UPDATE sync_schedules
+               SET circuit_breaker_until = NULL,
+                   circuit_breaker_reason = NULL,
+                   circuit_breaker_cooldown_seconds = 0,
+                   consecutive_empty_runs = 0
+               WHERE job_key = %s""",
+            (job_key[:120],),
+        )
+
+    def get_recent_job_failure_info(self, job_key: str) -> dict[str, Any]:
+        """Return recent failure statistics for circuit breaker decisions.
+
+        Examines the last 5 runs from ``scheduler_job_events`` to determine:
+        - ``consecutive_failures``: unbroken streak of failures from most recent
+        - ``failure_rate``: fraction of last 5 that failed
+        """
+        rows = self.fetch_all(
+            """SELECT event_type
+               FROM scheduler_job_events
+               WHERE job_key = %s
+               ORDER BY created_at DESC
+               LIMIT 5""",
+            (job_key[:120],),
+        )
+        if not rows:
+            return {"total_recent": 0, "failed_recent": 0, "consecutive_failures": 0, "failure_rate": 0.0}
+
+        total = len(rows)
+        failed = sum(1 for r in rows if str(r.get("event_type") or "") == "failure")
+        consecutive = 0
+        for r in rows:
+            if str(r.get("event_type") or "") == "failure":
+                consecutive += 1
+            else:
+                break
+        return {
+            "total_recent": total,
+            "failed_recent": failed,
+            "consecutive_failures": consecutive,
+            "failure_rate": round(failed / total, 2) if total > 0 else 0.0,
+        }
+
+    def increment_consecutive_empty_runs(self, job_key: str) -> int:
+        """Increment the consecutive empty-run counter and return the new value."""
+        self.execute(
+            "UPDATE sync_schedules SET consecutive_empty_runs = COALESCE(consecutive_empty_runs, 0) + 1 WHERE job_key = %s",
+            (job_key[:120],),
+        )
+        row = self.fetch_one(
+            "SELECT consecutive_empty_runs FROM sync_schedules WHERE job_key = %s LIMIT 1",
+            (job_key[:120],),
+        )
+        return int(row.get("consecutive_empty_runs") or 0) if row else 0
+
+    def reset_consecutive_empty_runs(self, job_key: str) -> None:
+        """Reset the consecutive empty-run counter to zero."""
+        self.execute(
+            "UPDATE sync_schedules SET consecutive_empty_runs = 0 WHERE job_key = %s",
+            (job_key[:120],),
+        )
+
     def worker_claim_diagnostics(self, *, queues: list[str], workload_classes: list[str]) -> dict[str, Any]:
         clauses = ["execution_mode='python'"]
         params: list[Any] = []
@@ -955,16 +1279,17 @@ class SupplyCoreDb:
             ),
         )
 
-    def update_sync_schedule_status(self, *, job_key: str, status: str, snapshot_json: str) -> int:
+    def update_sync_schedule_status(self, *, job_key: str, status: str, snapshot_json: str, duration_seconds: float | None = None) -> int:
         return self.execute(
             """UPDATE sync_schedules
                SET last_status = %s,
                    last_run_at = UTC_TIMESTAMP(),
                    last_finished_at = UTC_TIMESTAMP(),
                    locked_until = NULL,
-                   last_error = CASE WHEN %s = 'success' THEN NULL ELSE last_error END
+                   last_error = CASE WHEN %s = 'success' THEN NULL ELSE last_error END,
+                   last_duration_seconds = COALESCE(%s, last_duration_seconds)
                WHERE job_key = %s AND execution_mode = 'python'""",
-            (status[:20], status[:20], job_key[:120]),
+            (status[:20], status[:20], duration_seconds, job_key[:120]),
         )
 
     def fetch_due_job_keys(self, job_keys: list[str]) -> set[str]:
