@@ -28,6 +28,12 @@ _LOG_FILE_PATHS: dict[str, str] = {
     "log-to-issues":        "storage/logs/log-to-issues.log",
 }
 
+# Directories containing per-job log files (*.log).  Each file is scanned
+# the same way as the individual paths above; the stem is used as source name.
+_LOG_DIR_PATHS: list[str] = [
+    "storage/logs/sync-jobs",
+]
+
 # ── Error normalization ──────────────────────────────────────────────
 # Strip volatile fragments so the same root-cause maps to one fingerprint.
 
@@ -219,8 +225,18 @@ def _collect_log_file_errors(
     cutoff = datetime.now(timezone.utc) - timedelta(hours=lookback_hours)
     results: list[dict[str, Any]] = []
 
+    # Build a combined list of (source_name, path) from individual files + directories.
+    log_files: list[tuple[str, Path]] = []
     for source_name, rel_path in _LOG_FILE_PATHS.items():
-        log_path = app_root / rel_path
+        log_files.append((source_name, app_root / rel_path))
+    for rel_dir in _LOG_DIR_PATHS:
+        dir_path = app_root / rel_dir
+        if dir_path.is_dir():
+            for log_file in sorted(dir_path.glob("*.log")):
+                source_name = f"sync-jobs/{log_file.stem}"
+                log_files.append((source_name, log_file))
+
+    for source_name, log_path in log_files:
         if not log_path.is_file():
             continue
         try:
