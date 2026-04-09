@@ -533,72 +533,82 @@ def run_compute_character_feature_windows(
 
             # Upsert to MariaDB
             if not dry_run:
-                with db.transaction() as (_, cur):
-                    for cid, windows in character_features.items():
-                        for wlabel, feat in windows.items():
-                            cur.execute(
-                                """
-                                INSERT INTO character_feature_windows (
-                                    character_id, window_label, battles_total, unique_systems,
-                                    recurring_associates, co_presence_count,
-                                    corp_transitions, alliance_transitions,
-                                    dominant_region_id, dominant_region_ratio,
-                                    graph_pagerank, graph_bridge_score, graph_community_id,
-                                    computed_at
-                                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                                ON DUPLICATE KEY UPDATE
-                                    battles_total = VALUES(battles_total),
-                                    unique_systems = VALUES(unique_systems),
-                                    recurring_associates = VALUES(recurring_associates),
-                                    co_presence_count = VALUES(co_presence_count),
-                                    corp_transitions = VALUES(corp_transitions),
-                                    alliance_transitions = VALUES(alliance_transitions),
-                                    dominant_region_id = VALUES(dominant_region_id),
-                                    dominant_region_ratio = VALUES(dominant_region_ratio),
-                                    graph_pagerank = VALUES(graph_pagerank),
-                                    graph_bridge_score = VALUES(graph_bridge_score),
-                                    graph_community_id = VALUES(graph_community_id),
-                                    computed_at = VALUES(computed_at)
-                                """,
-                                (
-                                    cid,
-                                    wlabel,
-                                    feat["battles_total"],
-                                    feat["unique_systems"],
-                                    feat["recurring_associates"],
-                                    feat["co_presence_count"],
-                                    feat["corp_transitions"],
-                                    feat["alliance_transitions"],
-                                    feat["dominant_region_id"],
-                                    feat["dominant_region_ratio"],
-                                    feat["graph_pagerank"],
-                                    feat["graph_bridge_score"],
-                                    feat["graph_community_id"],
-                                    computed_at,
-                                ),
-                            )
-                            rows_written += 1
+                _FEAT_CHAR_BATCH = 50
+                feat_char_ids = list(character_features.keys())
+                for char_batch_start in range(0, len(feat_char_ids), _FEAT_CHAR_BATCH):
+                    char_batch = feat_char_ids[char_batch_start:char_batch_start + _FEAT_CHAR_BATCH]
+                    with db.transaction() as (_, cur):
+                        for cid in char_batch:
+                            windows = character_features[cid]
+                            for wlabel, feat in windows.items():
+                                cur.execute(
+                                    """
+                                    INSERT INTO character_feature_windows (
+                                        character_id, window_label, battles_total, unique_systems,
+                                        recurring_associates, co_presence_count,
+                                        corp_transitions, alliance_transitions,
+                                        dominant_region_id, dominant_region_ratio,
+                                        graph_pagerank, graph_bridge_score, graph_community_id,
+                                        computed_at
+                                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                    ON DUPLICATE KEY UPDATE
+                                        battles_total = VALUES(battles_total),
+                                        unique_systems = VALUES(unique_systems),
+                                        recurring_associates = VALUES(recurring_associates),
+                                        co_presence_count = VALUES(co_presence_count),
+                                        corp_transitions = VALUES(corp_transitions),
+                                        alliance_transitions = VALUES(alliance_transitions),
+                                        dominant_region_id = VALUES(dominant_region_id),
+                                        dominant_region_ratio = VALUES(dominant_region_ratio),
+                                        graph_pagerank = VALUES(graph_pagerank),
+                                        graph_bridge_score = VALUES(graph_bridge_score),
+                                        graph_community_id = VALUES(graph_community_id),
+                                        computed_at = VALUES(computed_at)
+                                    """,
+                                    (
+                                        cid,
+                                        wlabel,
+                                        feat["battles_total"],
+                                        feat["unique_systems"],
+                                        feat["recurring_associates"],
+                                        feat["co_presence_count"],
+                                        feat["corp_transitions"],
+                                        feat["alliance_transitions"],
+                                        feat["dominant_region_id"],
+                                        feat["dominant_region_ratio"],
+                                        feat["graph_pagerank"],
+                                        feat["graph_bridge_score"],
+                                        feat["graph_community_id"],
+                                        computed_at,
+                                    ),
+                                )
+                                rows_written += 1
 
-                    for cid, windows in character_histograms.items():
-                        for wlabel, hist in windows.items():
-                            cur.execute(
-                                """
-                                INSERT INTO character_feature_histograms (
-                                    character_id, window_label, hour_histogram, weekday_histogram, computed_at
-                                ) VALUES (%s, %s, %s, %s, %s)
-                                ON DUPLICATE KEY UPDATE
-                                    hour_histogram = VALUES(hour_histogram),
-                                    weekday_histogram = VALUES(weekday_histogram),
-                                    computed_at = VALUES(computed_at)
-                                """,
-                                (
-                                    cid,
-                                    wlabel,
-                                    json.dumps(hist["hour_histogram"]),
-                                    json.dumps(hist["weekday_histogram"]),
-                                    computed_at,
-                                ),
-                            )
+                hist_char_ids = list(character_histograms.keys())
+                for char_batch_start in range(0, len(hist_char_ids), _FEAT_CHAR_BATCH):
+                    char_batch = hist_char_ids[char_batch_start:char_batch_start + _FEAT_CHAR_BATCH]
+                    with db.transaction() as (_, cur):
+                        for cid in char_batch:
+                            windows = character_histograms[cid]
+                            for wlabel, hist in windows.items():
+                                cur.execute(
+                                    """
+                                    INSERT INTO character_feature_histograms (
+                                        character_id, window_label, hour_histogram, weekday_histogram, computed_at
+                                    ) VALUES (%s, %s, %s, %s, %s)
+                                    ON DUPLICATE KEY UPDATE
+                                        hour_histogram = VALUES(hour_histogram),
+                                        weekday_histogram = VALUES(weekday_histogram),
+                                        computed_at = VALUES(computed_at)
+                                    """,
+                                    (
+                                        cid,
+                                        wlabel,
+                                        json.dumps(hist["hour_histogram"]),
+                                        json.dumps(hist["weekday_histogram"]),
+                                        computed_at,
+                                    ),
+                                )
 
             _sync_state_upsert(db, DATASET_KEY, last_battle_id, "success", rows_written)
 
@@ -626,32 +636,37 @@ def run_compute_character_feature_windows(
             new_unbattled = {cid: evts for cid, evts in unbattled_chars.items() if cid not in existing_ids}
 
             if new_unbattled and not dry_run:
-                with db.transaction() as (_, cur):
-                    for cid, events in new_unbattled.items():
-                        for wlabel, wdelta in WINDOW_DEFS:
-                            feat, hist = _compute_window_features(events, wlabel, wdelta, now_dt, {}, {})
-                            # Only write histogram (activity profile) — feature windows
-                            # require battle data for meaningful scores
-                            if hist["hour_histogram"] or hist["weekday_histogram"]:
-                                cur.execute(
-                                    """
-                                    INSERT INTO character_feature_histograms (
-                                        character_id, window_label, hour_histogram, weekday_histogram, computed_at
-                                    ) VALUES (%s, %s, %s, %s, %s)
-                                    ON DUPLICATE KEY UPDATE
-                                        hour_histogram = VALUES(hour_histogram),
-                                        weekday_histogram = VALUES(weekday_histogram),
-                                        computed_at = VALUES(computed_at)
-                                    """,
-                                    (
-                                        cid,
-                                        wlabel,
-                                        json.dumps(hist["hour_histogram"]),
-                                        json.dumps(hist["weekday_histogram"]),
-                                        computed_at,
-                                    ),
-                                )
-                                rows_written += 1
+                _UNBATTLED_BATCH = 50
+                unbattled_ids = list(new_unbattled.keys())
+                for ub_start in range(0, len(unbattled_ids), _UNBATTLED_BATCH):
+                    ub_batch = unbattled_ids[ub_start:ub_start + _UNBATTLED_BATCH]
+                    with db.transaction() as (_, cur):
+                        for cid in ub_batch:
+                            events = new_unbattled[cid]
+                            for wlabel, wdelta in WINDOW_DEFS:
+                                feat, hist = _compute_window_features(events, wlabel, wdelta, now_dt, {}, {})
+                                # Only write histogram (activity profile) — feature windows
+                                # require battle data for meaningful scores
+                                if hist["hour_histogram"] or hist["weekday_histogram"]:
+                                    cur.execute(
+                                        """
+                                        INSERT INTO character_feature_histograms (
+                                            character_id, window_label, hour_histogram, weekday_histogram, computed_at
+                                        ) VALUES (%s, %s, %s, %s, %s)
+                                        ON DUPLICATE KEY UPDATE
+                                            hour_histogram = VALUES(hour_histogram),
+                                            weekday_histogram = VALUES(weekday_histogram),
+                                            computed_at = VALUES(computed_at)
+                                        """,
+                                        (
+                                            cid,
+                                            wlabel,
+                                            json.dumps(hist["hour_histogram"]),
+                                            json.dumps(hist["weekday_histogram"]),
+                                            computed_at,
+                                        ),
+                                    )
+                                    rows_written += 1
                 rows_processed += len(new_unbattled)
 
         # has_more is true when we hit the batch cap without draining the cursor.

@@ -281,53 +281,59 @@ def _flush_corridors(db: SupplyCoreDb, corridors: list[dict[str, Any]], computed
         return 0
 
     rows_written = 0
+    _CORRIDOR_BATCH_SIZE = 50
+
+    # Clear old data in its own short transaction
     with db.transaction() as (_, cursor):
-        # Clear old data
         cursor.execute("DELETE FROM threat_corridor_systems")
         cursor.execute("DELETE FROM threat_corridors")
 
-        for c in corridors:
-            chash = _corridor_hash(c["system_ids"])
-            cursor.execute(
-                """
-                INSERT INTO threat_corridors (
-                    corridor_hash, system_ids_json, system_names_json, region_id,
-                    corridor_length, hostile_alliance_ids_json, battle_count,
-                    recent_battle_count, total_isk_destroyed, corridor_score,
-                    first_activity_at, last_activity_at, is_active, computed_at
-                ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                """,
-                (
-                    chash,
-                    json_dumps_safe(c["system_ids"]),
-                    json_dumps_safe(c["system_names"]),
-                    c["region_id"],
-                    c["corridor_length"],
-                    json_dumps_safe(c["hostile_alliance_ids"]),
-                    c["total_battles"],
-                    c["recent_battles"],
-                    c["total_isk"],
-                    c["corridor_score"],
-                    c["first_activity"],
-                    c["last_activity"],
-                    1 if c["recent_battles"] > 0 else 0,
-                    computed_at,
-                ),
-            )
-            corridor_id = cursor.lastrowid
-            rows_written += 1
-
-            choke_set = set(c.get("choke_systems", []))
-            for pos, sid in enumerate(c["system_ids"]):
+    # Insert new corridors in batches to avoid prolonged row locks
+    for batch_start in range(0, len(corridors), _CORRIDOR_BATCH_SIZE):
+        batch = corridors[batch_start:batch_start + _CORRIDOR_BATCH_SIZE]
+        with db.transaction() as (_, cursor):
+            for c in batch:
+                chash = _corridor_hash(c["system_ids"])
                 cursor.execute(
                     """
-                    INSERT INTO threat_corridor_systems (corridor_id, system_id, position_in_corridor,
-                           system_battle_count, is_choke_point)
-                    VALUES (%s, %s, %s, %s, %s)
+                    INSERT INTO threat_corridors (
+                        corridor_hash, system_ids_json, system_names_json, region_id,
+                        corridor_length, hostile_alliance_ids_json, battle_count,
+                        recent_battle_count, total_isk_destroyed, corridor_score,
+                        first_activity_at, last_activity_at, is_active, computed_at
+                    ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                     """,
-                    (corridor_id, sid, pos, c["system_battle_counts"].get(sid, 0), 1 if sid in choke_set else 0),
+                    (
+                        chash,
+                        json_dumps_safe(c["system_ids"]),
+                        json_dumps_safe(c["system_names"]),
+                        c["region_id"],
+                        c["corridor_length"],
+                        json_dumps_safe(c["hostile_alliance_ids"]),
+                        c["total_battles"],
+                        c["recent_battles"],
+                        c["total_isk"],
+                        c["corridor_score"],
+                        c["first_activity"],
+                        c["last_activity"],
+                        1 if c["recent_battles"] > 0 else 0,
+                        computed_at,
+                    ),
                 )
+                corridor_id = cursor.lastrowid
                 rows_written += 1
+
+                choke_set = set(c.get("choke_systems", []))
+                for pos, sid in enumerate(c["system_ids"]):
+                    cursor.execute(
+                        """
+                        INSERT INTO threat_corridor_systems (corridor_id, system_id, position_in_corridor,
+                               system_battle_count, is_choke_point)
+                        VALUES (%s, %s, %s, %s, %s)
+                        """,
+                        (corridor_id, sid, pos, c["system_battle_counts"].get(sid, 0), 1 if sid in choke_set else 0),
+                    )
+                    rows_written += 1
 
     return rows_written
 
@@ -336,47 +342,55 @@ def _flush_system_threat_scores(db: SupplyCoreDb, system_data: dict[int, dict[st
                                  tracked_alliance_ids: set[int], computed_at: str) -> int:
     """Compute and write system threat scores."""
     rows_written = 0
+    _THREAT_SCORE_BATCH_SIZE = 200
+
+    # Clear old data in its own short transaction
     with db.transaction() as (_, cursor):
         cursor.execute("DELETE FROM system_threat_scores")
 
-        for sid, sdata in system_data.items():
-            hostile_alliances = {
-                aid: adata["battle_count"]
-                for aid, adata in sdata["alliances"].items()
-                if aid not in tracked_alliance_ids
-            }
-            unique_hostile = len(hostile_alliances)
-            dominant = max(hostile_alliances.items(), key=lambda x: x[1]) if hostile_alliances else (None, 0)
+    # Insert new scores in batches to avoid prolonged row locks
+    system_items = list(system_data.items())
+    for batch_start in range(0, len(system_items), _THREAT_SCORE_BATCH_SIZE):
+        batch = system_items[batch_start:batch_start + _THREAT_SCORE_BATCH_SIZE]
+        with db.transaction() as (_, cursor):
+            for sid, sdata in batch:
+                hostile_alliances = {
+                    aid: adata["battle_count"]
+                    for aid, adata in sdata["alliances"].items()
+                    if aid not in tracked_alliance_ids
+                }
+                unique_hostile = len(hostile_alliances)
+                dominant = max(hostile_alliances.items(), key=lambda x: x[1]) if hostile_alliances else (None, 0)
 
-            # Hotspot score: battles * recency * hostile diversity
-            recency = 1.0 + (sdata["recent_battles"] / max(1, sdata["total_battles"])) * 2.0
-            hotspot = round(sdata["total_battles"] * recency * (1 + unique_hostile * 0.2), 4)
+                # Hotspot score: battles * recency * hostile diversity
+                recency = 1.0 + (sdata["recent_battles"] / max(1, sdata["total_battles"])) * 2.0
+                hotspot = round(sdata["total_battles"] * recency * (1 + unique_hostile * 0.2), 4)
 
-            if hotspot >= 20:
-                level = "critical"
-            elif hotspot >= 10:
-                level = "high"
-            elif hotspot >= 4:
-                level = "medium"
-            else:
-                level = "low"
+                if hotspot >= 20:
+                    level = "critical"
+                elif hotspot >= 10:
+                    level = "high"
+                elif hotspot >= 4:
+                    level = "medium"
+                else:
+                    level = "low"
 
-            cursor.execute(
-                """
-                INSERT INTO system_threat_scores (
-                    system_id, battle_count, recent_battle_count, total_kills,
-                    total_isk_destroyed, unique_hostile_alliances, avg_anomaly_score,
-                    threat_level, hotspot_score, dominant_hostile_alliance_id,
-                    dominant_hostile_name, last_battle_at, computed_at
-                ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                """,
-                (
-                    sid, sdata["total_battles"], sdata["recent_battles"], 0, 0,
-                    unique_hostile, None, level, hotspot,
-                    dominant[0], None, sdata.get("last_activity"), computed_at,
-                ),
-            )
-            rows_written += 1
+                cursor.execute(
+                    """
+                    INSERT INTO system_threat_scores (
+                        system_id, battle_count, recent_battle_count, total_kills,
+                        total_isk_destroyed, unique_hostile_alliances, avg_anomaly_score,
+                        threat_level, hotspot_score, dominant_hostile_alliance_id,
+                        dominant_hostile_name, last_battle_at, computed_at
+                    ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                    """,
+                    (
+                        sid, sdata["total_battles"], sdata["recent_battles"], 0, 0,
+                        unique_hostile, None, level, hotspot,
+                        dominant[0], None, sdata.get("last_activity"), computed_at,
+                    ),
+                )
+                rows_written += 1
 
     return rows_written
 
