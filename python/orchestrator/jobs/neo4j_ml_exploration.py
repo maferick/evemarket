@@ -147,7 +147,7 @@ def _create_projection(client: Neo4jClient, window: dict[str, Any]) -> tuple[boo
     # projection which validates all specified types exist upfront.
     client.query(
         f"""
-        CALL gds.graph.project.cypher(
+        CALL gds.graph.project(
             '{name}',
             'MATCH (c:Character) RETURN id(c) AS id',
             'MATCH (a:Character)-[r:{CHARACTER_REL_TYPES_STR}]-(b:Character)
