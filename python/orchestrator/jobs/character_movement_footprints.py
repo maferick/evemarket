@@ -582,172 +582,181 @@ def run_compute_character_movement_footprints(
             prior_distributions = _fetch_prior_distributions(db, character_ids)
 
             if not dry_run:
-                with db.transaction() as (_, cur):
-                    for cid, parts in char_participations.items():
-                        for wlabel, wdelta in WINDOW_DEFS:
-                            prior_fp = prior_footprints.get((cid, wlabel))
-                            prior_dist = prior_distributions.get((cid, wlabel))
-                            hostile_sys = hostile_by_window[wlabel]
+                _CHAR_BATCH_SIZE = 50
+                char_ids_list = list(char_participations.keys())
+                for char_batch_start in range(0, len(char_ids_list), _CHAR_BATCH_SIZE):
+                    char_batch = char_ids_list[char_batch_start:char_batch_start + _CHAR_BATCH_SIZE]
 
-                            footprint, dist_rows, evidence_rows = _compute_footprint(
-                                parts, wlabel, wdelta, now_dt,
-                                hostile_sys, prior_fp, prior_dist, computed_at,
-                            )
+                    with db.transaction() as (_, cur):
+                        for cid in char_batch:
+                            parts = char_participations[cid]
+                            for wlabel, wdelta in WINDOW_DEFS:
+                                prior_fp = prior_footprints.get((cid, wlabel))
+                                prior_dist = prior_distributions.get((cid, wlabel))
+                                hostile_sys = hostile_by_window[wlabel]
 
-                            # Upsert footprint
-                            cur.execute(
-                                """
-                                INSERT INTO character_movement_footprints (
-                                    character_id, window_label,
-                                    unique_systems_count, unique_regions_count, unique_constellations_count,
-                                    battles_in_window,
-                                    top_systems_json, top_regions_json,
-                                    system_entropy, system_hhi, region_entropy, region_hhi,
-                                    dominant_system_id, dominant_system_ratio,
-                                    dominant_region_id, dominant_region_ratio,
-                                    js_divergence_systems, cosine_distance_systems,
-                                    js_divergence_regions, cosine_distance_regions,
-                                    hostile_system_overlap_count, hostile_system_overlap_ratio,
-                                    hostile_region_overlap_count, hostile_region_overlap_ratio,
-                                    footprint_expansion_score, footprint_contraction_score,
-                                    new_area_entry_score, hostile_overlap_change_score,
-                                    computed_at, prev_computed_at
-                                ) VALUES (
-                                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                                    %s, %s, %s, %s, %s, %s
+                                footprint, dist_rows, evidence_rows = _compute_footprint(
+                                    parts, wlabel, wdelta, now_dt,
+                                    hostile_sys, prior_fp, prior_dist, computed_at,
                                 )
-                                ON DUPLICATE KEY UPDATE
-                                    unique_systems_count = VALUES(unique_systems_count),
-                                    unique_regions_count = VALUES(unique_regions_count),
-                                    unique_constellations_count = VALUES(unique_constellations_count),
-                                    battles_in_window = VALUES(battles_in_window),
-                                    top_systems_json = VALUES(top_systems_json),
-                                    top_regions_json = VALUES(top_regions_json),
-                                    system_entropy = VALUES(system_entropy),
-                                    system_hhi = VALUES(system_hhi),
-                                    region_entropy = VALUES(region_entropy),
-                                    region_hhi = VALUES(region_hhi),
-                                    dominant_system_id = VALUES(dominant_system_id),
-                                    dominant_system_ratio = VALUES(dominant_system_ratio),
-                                    dominant_region_id = VALUES(dominant_region_id),
-                                    dominant_region_ratio = VALUES(dominant_region_ratio),
-                                    js_divergence_systems = VALUES(js_divergence_systems),
-                                    cosine_distance_systems = VALUES(cosine_distance_systems),
-                                    js_divergence_regions = VALUES(js_divergence_regions),
-                                    cosine_distance_regions = VALUES(cosine_distance_regions),
-                                    hostile_system_overlap_count = VALUES(hostile_system_overlap_count),
-                                    hostile_system_overlap_ratio = VALUES(hostile_system_overlap_ratio),
-                                    hostile_region_overlap_count = VALUES(hostile_region_overlap_count),
-                                    hostile_region_overlap_ratio = VALUES(hostile_region_overlap_ratio),
-                                    footprint_expansion_score = VALUES(footprint_expansion_score),
-                                    footprint_contraction_score = VALUES(footprint_contraction_score),
-                                    new_area_entry_score = VALUES(new_area_entry_score),
-                                    hostile_overlap_change_score = VALUES(hostile_overlap_change_score),
-                                    computed_at = VALUES(computed_at),
-                                    prev_computed_at = VALUES(prev_computed_at)
-                                """,
-                                (
-                                    cid,
-                                    footprint["window_label"],
-                                    footprint["unique_systems_count"],
-                                    footprint["unique_regions_count"],
-                                    footprint["unique_constellations_count"],
-                                    footprint["battles_in_window"],
-                                    footprint["top_systems_json"],
-                                    footprint["top_regions_json"],
-                                    footprint["system_entropy"],
-                                    footprint["system_hhi"],
-                                    footprint["region_entropy"],
-                                    footprint["region_hhi"],
-                                    footprint["dominant_system_id"],
-                                    footprint["dominant_system_ratio"],
-                                    footprint["dominant_region_id"],
-                                    footprint["dominant_region_ratio"],
-                                    footprint["js_divergence_systems"],
-                                    footprint["cosine_distance_systems"],
-                                    footprint["js_divergence_regions"],
-                                    footprint["cosine_distance_regions"],
-                                    footprint["hostile_system_overlap_count"],
-                                    footprint["hostile_system_overlap_ratio"],
-                                    footprint["hostile_region_overlap_count"],
-                                    footprint["hostile_region_overlap_ratio"],
-                                    footprint["footprint_expansion_score"],
-                                    footprint["footprint_contraction_score"],
-                                    footprint["new_area_entry_score"],
-                                    footprint["hostile_overlap_change_score"],
-                                    footprint["computed_at"],
-                                    footprint["prev_computed_at"],
-                                ),
-                            )
-                            rows_written += 1
 
-                            # Upsert distribution rows
-                            for dr in dist_rows:
+                                # Upsert footprint
                                 cur.execute(
                                     """
-                                    INSERT INTO character_system_distribution (
-                                        character_id, window_label, system_id, region_id,
-                                        battle_count, ratio, computed_at
-                                    ) VALUES (%s, %s, %s, %s, %s, %s, %s)
+                                    INSERT INTO character_movement_footprints (
+                                        character_id, window_label,
+                                        unique_systems_count, unique_regions_count, unique_constellations_count,
+                                        battles_in_window,
+                                        top_systems_json, top_regions_json,
+                                        system_entropy, system_hhi, region_entropy, region_hhi,
+                                        dominant_system_id, dominant_system_ratio,
+                                        dominant_region_id, dominant_region_ratio,
+                                        js_divergence_systems, cosine_distance_systems,
+                                        js_divergence_regions, cosine_distance_regions,
+                                        hostile_system_overlap_count, hostile_system_overlap_ratio,
+                                        hostile_region_overlap_count, hostile_region_overlap_ratio,
+                                        footprint_expansion_score, footprint_contraction_score,
+                                        new_area_entry_score, hostile_overlap_change_score,
+                                        computed_at, prev_computed_at
+                                    ) VALUES (
+                                        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                                        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                                        %s, %s, %s, %s, %s, %s
+                                    )
                                     ON DUPLICATE KEY UPDATE
-                                        region_id = VALUES(region_id),
-                                        battle_count = VALUES(battle_count),
-                                        ratio = VALUES(ratio),
-                                        computed_at = VALUES(computed_at)
+                                        unique_systems_count = VALUES(unique_systems_count),
+                                        unique_regions_count = VALUES(unique_regions_count),
+                                        unique_constellations_count = VALUES(unique_constellations_count),
+                                        battles_in_window = VALUES(battles_in_window),
+                                        top_systems_json = VALUES(top_systems_json),
+                                        top_regions_json = VALUES(top_regions_json),
+                                        system_entropy = VALUES(system_entropy),
+                                        system_hhi = VALUES(system_hhi),
+                                        region_entropy = VALUES(region_entropy),
+                                        region_hhi = VALUES(region_hhi),
+                                        dominant_system_id = VALUES(dominant_system_id),
+                                        dominant_system_ratio = VALUES(dominant_system_ratio),
+                                        dominant_region_id = VALUES(dominant_region_id),
+                                        dominant_region_ratio = VALUES(dominant_region_ratio),
+                                        js_divergence_systems = VALUES(js_divergence_systems),
+                                        cosine_distance_systems = VALUES(cosine_distance_systems),
+                                        js_divergence_regions = VALUES(js_divergence_regions),
+                                        cosine_distance_regions = VALUES(cosine_distance_regions),
+                                        hostile_system_overlap_count = VALUES(hostile_system_overlap_count),
+                                        hostile_system_overlap_ratio = VALUES(hostile_system_overlap_ratio),
+                                        hostile_region_overlap_count = VALUES(hostile_region_overlap_count),
+                                        hostile_region_overlap_ratio = VALUES(hostile_region_overlap_ratio),
+                                        footprint_expansion_score = VALUES(footprint_expansion_score),
+                                        footprint_contraction_score = VALUES(footprint_contraction_score),
+                                        new_area_entry_score = VALUES(new_area_entry_score),
+                                        hostile_overlap_change_score = VALUES(hostile_overlap_change_score),
+                                        computed_at = VALUES(computed_at),
+                                        prev_computed_at = VALUES(prev_computed_at)
                                     """,
-                                    (cid, wlabel, dr["system_id"], dr["region_id"],
-                                     dr["battle_count"], dr["ratio"], computed_at),
+                                    (
+                                        cid,
+                                        footprint["window_label"],
+                                        footprint["unique_systems_count"],
+                                        footprint["unique_regions_count"],
+                                        footprint["unique_constellations_count"],
+                                        footprint["battles_in_window"],
+                                        footprint["top_systems_json"],
+                                        footprint["top_regions_json"],
+                                        footprint["system_entropy"],
+                                        footprint["system_hhi"],
+                                        footprint["region_entropy"],
+                                        footprint["region_hhi"],
+                                        footprint["dominant_system_id"],
+                                        footprint["dominant_system_ratio"],
+                                        footprint["dominant_region_id"],
+                                        footprint["dominant_region_ratio"],
+                                        footprint["js_divergence_systems"],
+                                        footprint["cosine_distance_systems"],
+                                        footprint["js_divergence_regions"],
+                                        footprint["cosine_distance_regions"],
+                                        footprint["hostile_system_overlap_count"],
+                                        footprint["hostile_system_overlap_ratio"],
+                                        footprint["hostile_region_overlap_count"],
+                                        footprint["hostile_region_overlap_ratio"],
+                                        footprint["footprint_expansion_score"],
+                                        footprint["footprint_contraction_score"],
+                                        footprint["new_area_entry_score"],
+                                        footprint["hostile_overlap_change_score"],
+                                        footprint["computed_at"],
+                                        footprint["prev_computed_at"],
+                                    ),
                                 )
+                                rows_written += 1
 
-                            # Collect evidence for cohort normalization
-                            for ev in evidence_rows:
-                                ev["character_id"] = cid
-                                all_evidence.append(ev)
+                                # Upsert distribution rows
+                                for dr in dist_rows:
+                                    cur.execute(
+                                        """
+                                        INSERT INTO character_system_distribution (
+                                            character_id, window_label, system_id, region_id,
+                                            battle_count, ratio, computed_at
+                                        ) VALUES (%s, %s, %s, %s, %s, %s, %s)
+                                        ON DUPLICATE KEY UPDATE
+                                            region_id = VALUES(region_id),
+                                            battle_count = VALUES(battle_count),
+                                            ratio = VALUES(ratio),
+                                            computed_at = VALUES(computed_at)
+                                        """,
+                                        (cid, wlabel, dr["system_id"], dr["region_id"],
+                                         dr["battle_count"], dr["ratio"], computed_at),
+                                    )
+
+                                # Collect evidence for cohort normalization
+                                for ev in evidence_rows:
+                                    ev["character_id"] = cid
+                                    all_evidence.append(ev)
 
             _sync_state_upsert(db, DATASET_KEY, last_battle_id, "success", rows_written)
 
         # Cohort-normalize all evidence and write
         if all_evidence and not dry_run:
             _cohort_normalize(all_evidence)
-            with db.transaction() as (_, cur):
-                for ev in all_evidence:
-                    cur.execute(
-                        """
-                        INSERT INTO character_counterintel_evidence (
-                            character_id, evidence_key, window_label,
-                            evidence_value, expected_value, deviation_value,
-                            z_score, mad_score, cohort_percentile, confidence_flag,
-                            evidence_text, evidence_payload_json, computed_at
-                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                        ON DUPLICATE KEY UPDATE
-                            evidence_value = VALUES(evidence_value),
-                            expected_value = VALUES(expected_value),
-                            deviation_value = VALUES(deviation_value),
-                            z_score = VALUES(z_score),
-                            mad_score = VALUES(mad_score),
-                            cohort_percentile = VALUES(cohort_percentile),
-                            confidence_flag = VALUES(confidence_flag),
-                            evidence_text = VALUES(evidence_text),
-                            evidence_payload_json = VALUES(evidence_payload_json),
-                            computed_at = VALUES(computed_at)
-                        """,
-                        (
-                            ev["character_id"],
-                            ev["evidence_key"],
-                            ev["window_label"],
-                            ev.get("evidence_value"),
-                            ev.get("expected_value"),
-                            ev.get("deviation_value"),
-                            ev.get("z_score"),
-                            ev.get("mad_score"),
-                            ev.get("cohort_percentile"),
-                            ev.get("confidence_flag", "low"),
-                            ev["evidence_text"],
-                            ev.get("evidence_payload_json"),
-                            computed_at,
-                        ),
-                    )
+            _EVIDENCE_BATCH_SIZE = 200
+            for ev_start in range(0, len(all_evidence), _EVIDENCE_BATCH_SIZE):
+                ev_batch = all_evidence[ev_start:ev_start + _EVIDENCE_BATCH_SIZE]
+                with db.transaction() as (_, cur):
+                    for ev in ev_batch:
+                        cur.execute(
+                            """
+                            INSERT INTO character_counterintel_evidence (
+                                character_id, evidence_key, window_label,
+                                evidence_value, expected_value, deviation_value,
+                                z_score, mad_score, cohort_percentile, confidence_flag,
+                                evidence_text, evidence_payload_json, computed_at
+                            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                            ON DUPLICATE KEY UPDATE
+                                evidence_value = VALUES(evidence_value),
+                                expected_value = VALUES(expected_value),
+                                deviation_value = VALUES(deviation_value),
+                                z_score = VALUES(z_score),
+                                mad_score = VALUES(mad_score),
+                                cohort_percentile = VALUES(cohort_percentile),
+                                confidence_flag = VALUES(confidence_flag),
+                                evidence_text = VALUES(evidence_text),
+                                evidence_payload_json = VALUES(evidence_payload_json),
+                                computed_at = VALUES(computed_at)
+                            """,
+                            (
+                                ev["character_id"],
+                                ev["evidence_key"],
+                                ev["window_label"],
+                                ev.get("evidence_value"),
+                                ev.get("expected_value"),
+                                ev.get("deviation_value"),
+                                ev.get("z_score"),
+                                ev.get("mad_score"),
+                                ev.get("cohort_percentile"),
+                                ev.get("confidence_flag", "low"),
+                                ev["evidence_text"],
+                                ev.get("evidence_payload_json"),
+                                computed_at,
+                            ),
+                        )
 
             # Also update cohort z-scores on the footprint rows
             _update_cohort_scores(db, all_evidence)
@@ -803,23 +812,27 @@ def _update_cohort_scores(db: SupplyCoreDb, evidence_rows: list[dict[str, Any]])
     if not updates:
         return
 
-    with db.transaction() as (_, cur):
-        for (cid, wlabel), scores in updates.items():
-            cur.execute(
-                """
-                UPDATE character_movement_footprints
-                SET cohort_z_footprint_size = %s,
-                    cohort_z_entropy = %s,
-                    cohort_z_hostile_overlap = %s,
-                    cohort_percentile_footprint = %s
-                WHERE character_id = %s AND window_label = %s
-                """,
-                (
-                    scores.get("cohort_z_footprint_size"),
-                    scores.get("cohort_z_entropy"),
-                    scores.get("cohort_z_hostile_overlap"),
-                    scores.get("cohort_percentile_footprint"),
-                    cid,
-                    wlabel,
-                ),
-            )
+    _COHORT_BATCH_SIZE = 200
+    update_items = list(updates.items())
+    for batch_start in range(0, len(update_items), _COHORT_BATCH_SIZE):
+        batch = update_items[batch_start:batch_start + _COHORT_BATCH_SIZE]
+        with db.transaction() as (_, cur):
+            for (cid, wlabel), scores in batch:
+                cur.execute(
+                    """
+                    UPDATE character_movement_footprints
+                    SET cohort_z_footprint_size = %s,
+                        cohort_z_entropy = %s,
+                        cohort_z_hostile_overlap = %s,
+                        cohort_percentile_footprint = %s
+                    WHERE character_id = %s AND window_label = %s
+                    """,
+                    (
+                        scores.get("cohort_z_footprint_size"),
+                        scores.get("cohort_z_entropy"),
+                        scores.get("cohort_z_hostile_overlap"),
+                        scores.get("cohort_percentile_footprint"),
+                        cid,
+                        wlabel,
+                    ),
+                )

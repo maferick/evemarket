@@ -700,49 +700,52 @@ def run_compute_battle_target_metrics(db: SupplyCoreDb, runtime: dict[str, Any] 
 
             batch_written = 0
             if not dry_run:
-                with db.transaction() as (_, cursor):
-                    for target in prepared:
-                        baseline_ttd = max(1.0, expected_ttd.get((int(target["victim_ship_type_id"]), str(target["dps_bucket"])), float(target["time_to_die_seconds"])))
-                        sustain_factor = max(0.05, min(8.0, _safe_div(float(target["time_to_die_seconds"]), baseline_ttd, 1.0)))
-                        cursor.execute(
-                            """
-                            INSERT INTO battle_target_metrics (
-                                battle_id, killmail_id, victim_character_id, victim_ship_type_id, side_key,
-                                first_damage_ts, last_damage_ts, time_to_die_seconds, total_damage_taken,
-                                estimated_incoming_dps, dps_bucket, expected_time_to_die_seconds, sustain_factor, computed_at
-                            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                            ON DUPLICATE KEY UPDATE
-                                victim_character_id = VALUES(victim_character_id),
-                                victim_ship_type_id = VALUES(victim_ship_type_id),
-                                side_key = VALUES(side_key),
-                                first_damage_ts = VALUES(first_damage_ts),
-                                last_damage_ts = VALUES(last_damage_ts),
-                                time_to_die_seconds = VALUES(time_to_die_seconds),
-                                total_damage_taken = VALUES(total_damage_taken),
-                                estimated_incoming_dps = VALUES(estimated_incoming_dps),
-                                dps_bucket = VALUES(dps_bucket),
-                                expected_time_to_die_seconds = VALUES(expected_time_to_die_seconds),
-                                sustain_factor = VALUES(sustain_factor),
-                                computed_at = VALUES(computed_at)
-                            """,
-                            (
-                                str(target["battle_id"]),
-                                int(target["killmail_id"]),
-                                target["victim_character_id"],
-                                int(target["victim_ship_type_id"]),
-                                str(target["side_key"]),
-                                str(target["first_damage_ts"]),
-                                str(target["last_damage_ts"]),
-                                float(target["time_to_die_seconds"]),
-                                float(target["total_damage_taken"]),
-                                float(target["estimated_incoming_dps"]),
-                                str(target["dps_bucket"]),
-                                float(baseline_ttd),
-                                float(sustain_factor),
-                                computed_at,
-                            ),
-                        )
-                        batch_written += max(0, int(cursor.rowcount or 0))
+                _TARGET_BATCH_SIZE = 200
+                for tgt_start in range(0, len(prepared), _TARGET_BATCH_SIZE):
+                    tgt_batch = prepared[tgt_start:tgt_start + _TARGET_BATCH_SIZE]
+                    with db.transaction() as (_, cursor):
+                        for target in tgt_batch:
+                            baseline_ttd = max(1.0, expected_ttd.get((int(target["victim_ship_type_id"]), str(target["dps_bucket"])), float(target["time_to_die_seconds"])))
+                            sustain_factor = max(0.05, min(8.0, _safe_div(float(target["time_to_die_seconds"]), baseline_ttd, 1.0)))
+                            cursor.execute(
+                                """
+                                INSERT INTO battle_target_metrics (
+                                    battle_id, killmail_id, victim_character_id, victim_ship_type_id, side_key,
+                                    first_damage_ts, last_damage_ts, time_to_die_seconds, total_damage_taken,
+                                    estimated_incoming_dps, dps_bucket, expected_time_to_die_seconds, sustain_factor, computed_at
+                                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                ON DUPLICATE KEY UPDATE
+                                    victim_character_id = VALUES(victim_character_id),
+                                    victim_ship_type_id = VALUES(victim_ship_type_id),
+                                    side_key = VALUES(side_key),
+                                    first_damage_ts = VALUES(first_damage_ts),
+                                    last_damage_ts = VALUES(last_damage_ts),
+                                    time_to_die_seconds = VALUES(time_to_die_seconds),
+                                    total_damage_taken = VALUES(total_damage_taken),
+                                    estimated_incoming_dps = VALUES(estimated_incoming_dps),
+                                    dps_bucket = VALUES(dps_bucket),
+                                    expected_time_to_die_seconds = VALUES(expected_time_to_die_seconds),
+                                    sustain_factor = VALUES(sustain_factor),
+                                    computed_at = VALUES(computed_at)
+                                """,
+                                (
+                                    str(target["battle_id"]),
+                                    int(target["killmail_id"]),
+                                    target["victim_character_id"],
+                                    int(target["victim_ship_type_id"]),
+                                    str(target["side_key"]),
+                                    str(target["first_damage_ts"]),
+                                    str(target["last_damage_ts"]),
+                                    float(target["time_to_die_seconds"]),
+                                    float(target["total_damage_taken"]),
+                                    float(target["estimated_incoming_dps"]),
+                                    str(target["dps_bucket"]),
+                                    float(baseline_ttd),
+                                    float(sustain_factor),
+                                    computed_at,
+                                ),
+                            )
+                            batch_written += max(0, int(cursor.rowcount or 0))
             cursor_end = max_sequence_id
             rows_written += batch_written
             _sync_state_cursor_upsert(
