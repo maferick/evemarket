@@ -115,12 +115,12 @@ def _format_issue_body(
     source = occurrences[0].get("_source", "job_runs")
     recent = occurrences[:5]
 
-    if source == "log_file":
+    if source in ("log_file", "systemd_journal"):
         occurrence_lines = "\n".join(
             f"| {r.get('_log_source', '?')} | {r['started_at']} | `{(r.get('error_text') or '')[:80]}` |"
             for r in recent
         )
-        table_header = "| Log File | Timestamp | Message (truncated) |\n|----------|-----------|---------------------|"
+        table_header = "| Source | Timestamp | Message (truncated) |\n|--------|-----------|---------------------|"
     elif source == "sync_runs":
         occurrence_lines = "\n".join(
             f"| {r['id']} | {r['started_at']} | {r['duration_ms']}ms | `{(r.get('error_text') or '')[:80]}` |"
@@ -134,7 +134,10 @@ def _format_issue_body(
         )
         table_header = "| Run ID | Started At | Duration | Error (truncated) |\n|--------|-----------|----------|-------------------|"
 
-    source_label = {"job_runs": "job_runs table", "sync_runs": "sync_runs table", "log_file": "log file"}.get(source, source)
+    source_label = {
+        "job_runs": "job_runs table", "sync_runs": "sync_runs table",
+        "log_file": "log file", "systemd_journal": "systemd journal",
+    }.get(source, source)
 
     return f"""## Auto-detected failure: `{job_name}`
 
@@ -290,6 +293,97 @@ def _collect_log_file_errors(
     return results
 
 
+# ── Systemd journal collector ────────────────────────────────────────
+
+# Systemd unit prefixes to scan via journalctl.
+_SYSTEMD_UNIT_PREFIX = "supplycore-"
+
+# Patterns in journal messages that indicate actionable failures.
+_JOURNAL_ERROR_PATTERNS: list[re.Pattern[str]] = [
+    re.compile(r"oom-kill", re.IGNORECASE),
+    re.compile(r"out of memory", re.IGNORECASE),
+    re.compile(r"Failed with result", re.IGNORECASE),
+    re.compile(r"Main process exited, code=killed", re.IGNORECASE),
+    re.compile(r"memory\.max", re.IGNORECASE),
+]
+
+
+def _collect_systemd_journal_errors(
+    lookback_hours: int,
+) -> list[dict[str, Any]]:
+    """Query journalctl for OOM-kills and critical failures of supplycore services."""
+    import subprocess as _sp
+
+    results: list[dict[str, Any]] = []
+    since = f"{lookback_hours} hours ago"
+
+    try:
+        completed = _sp.run(
+            [
+                "journalctl",
+                f"--unit={_SYSTEMD_UNIT_PREFIX}*",
+                f"--since={since}",
+                "--output=json",
+                "--no-pager",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+        )
+        if completed.returncode != 0:
+            logger.warning("journalctl exited with %d: %s", completed.returncode, completed.stderr[:200])
+            return results
+    except FileNotFoundError:
+        logger.debug("journalctl not found — skipping systemd journal scan")
+        return results
+    except _sp.TimeoutExpired:
+        logger.warning("journalctl timed out after 30s")
+        return results
+
+    for line in completed.stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            entry = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            continue
+
+        message = entry.get("MESSAGE", "")
+        if not isinstance(message, str):
+            continue
+
+        # Only keep lines that match actionable error patterns.
+        if not any(p.search(message) for p in _JOURNAL_ERROR_PATTERNS):
+            continue
+
+        # Parse timestamp (journalctl __REALTIME_TIMESTAMP is in microseconds).
+        ts_us = entry.get("__REALTIME_TIMESTAMP")
+        try:
+            ts = datetime.fromtimestamp(int(ts_us) / 1_000_000, tz=timezone.utc)
+        except (TypeError, ValueError, OSError):
+            continue
+
+        unit = entry.get("_SYSTEMD_UNIT", entry.get("UNIT", "unknown"))
+        # Strip .service suffix for cleaner names.
+        source_name = str(unit).removesuffix(".service")
+
+        results.append({
+            "id": f"journal:{source_name}:{ts.isoformat()}",
+            "job_name": source_name,
+            "error_text": message,
+            "started_at": ts,
+            "finished_at": None,
+            "duration_ms": 0,
+            "meta_json": None,
+            "_source": "systemd_journal",
+            "_log_source": source_name,
+        })
+
+    return results
+
+
 # ── Core worker logic ────────────────────────────────────────────────
 
 def run_log_to_issues(
@@ -341,16 +435,21 @@ def run_log_to_issues(
     if app_root is not None:
         log_file_errors = _collect_log_file_errors(app_root, lookback_hours)
 
-    failures = job_run_failures + sync_run_failures + log_file_errors
+    # 1d. Systemd journal (OOM-kills, service crashes)
+    journal_errors = _collect_systemd_journal_errors(lookback_hours)
+
+    failures = job_run_failures + sync_run_failures + log_file_errors + journal_errors
 
     source_counts = {
         "job_runs": len(job_run_failures),
         "sync_runs": len(sync_run_failures),
         "log_files": len(log_file_errors),
+        "systemd_journal": len(journal_errors),
     }
     logger.info(
-        "Collected failures: job_runs=%d, sync_runs=%d, log_files=%d",
-        source_counts["job_runs"], source_counts["sync_runs"], source_counts["log_files"],
+        "Collected failures: job_runs=%d, sync_runs=%d, log_files=%d, journal=%d",
+        source_counts["job_runs"], source_counts["sync_runs"],
+        source_counts["log_files"], source_counts["systemd_journal"],
     )
 
     if not failures:
@@ -518,7 +617,7 @@ def run_log_to_issues(
                 warnings.append(f"Failed to auto-close #{row['github_issue_number']}: {exc}")
 
     summary_parts = [
-        f"Scanned {len(failures)} failure(s) (job_runs={source_counts['job_runs']}, sync_runs={source_counts['sync_runs']}, logs={source_counts['log_files']})",
+        f"Scanned {len(failures)} failure(s) (job_runs={source_counts['job_runs']}, sync_runs={source_counts['sync_runs']}, logs={source_counts['log_files']}, journal={source_counts['systemd_journal']})",
         f"created {issues_created} issue(s)",
         f"updated {issues_updated}",
         f"skipped {issues_skipped}",
