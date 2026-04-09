@@ -284,96 +284,116 @@ def _score_modules(
 
 # ── Phase 4: Write results ───────────────────────────────────────────────────
 
+_FAMILY_BATCH_SIZE = 50
+
+
 def _write_families(db: Any, families: list[dict]) -> int:
-    """UPSERT hostile_fit_families and hostile_fit_family_modules."""
+    """UPSERT hostile_fit_families and hostile_fit_family_modules.
+
+    Writes in batches of _FAMILY_BATCH_SIZE families per transaction to avoid
+    holding row locks for long periods and blocking concurrent queries.
+    """
     now_str = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
     rows_written = 0
 
-    with db.transaction_with_retry() as (_, cursor):
-        for fam in families:
-            hull = fam["hull_type_id"]
-            fp = fam["fingerprint"]
-            obs = fam["observation_count"]
-            conf = round(_confidence(obs), 4)
-            alliance_json = json.dumps(sorted(fam["alliance_ids"]))
-            module_set_json = json.dumps([
-                {"type_id": tid, "flag_category": fc, "count": cnt}
-                for (tid, fc), cnt in sorted(fam["module_counts"].items())
-            ])
+    for batch_start in range(0, len(families), _FAMILY_BATCH_SIZE):
+        batch = families[batch_start:batch_start + _FAMILY_BATCH_SIZE]
 
-            cursor.execute(
-                """INSERT INTO hostile_fit_families
-                   (hull_type_id, family_fingerprint, module_set_json, observation_count,
-                    confidence, first_seen, last_seen, alliance_ids_json, computed_at)
-                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-                   ON DUPLICATE KEY UPDATE
-                       module_set_json = VALUES(module_set_json),
-                       observation_count = VALUES(observation_count),
-                       confidence = VALUES(confidence),
-                       last_seen = VALUES(last_seen),
-                       alliance_ids_json = VALUES(alliance_ids_json),
-                       computed_at = VALUES(computed_at)""",
-                (hull, fp, module_set_json, obs, conf, now_str, now_str, alliance_json, now_str),
-            )
-            rows_written += 1
+        with db.transaction_with_retry() as (_, cursor):
+            for fam in batch:
+                hull = fam["hull_type_id"]
+                fp = fam["fingerprint"]
+                obs = fam["observation_count"]
+                conf = round(_confidence(obs), 4)
+                alliance_json = json.dumps(sorted(fam["alliance_ids"]))
+                module_set_json = json.dumps([
+                    {"type_id": tid, "flag_category": fc, "count": cnt}
+                    for (tid, fc), cnt in sorted(fam["module_counts"].items())
+                ])
 
-            # Get family ID for module rows
-            cursor.execute(
-                "SELECT id FROM hostile_fit_families WHERE hull_type_id = %s AND family_fingerprint = %s LIMIT 1",
-                (hull, fp),
-            )
-            fam_row = cursor.fetchone()
-            if not fam_row:
-                continue
-            family_id = int(fam_row["id"])
-
-            # Write per-module membership
-            for (type_id, flag_cat), cnt in fam["module_counts"].items():
-                freq = min(round(cnt / obs, 4), 99.9999) if obs > 0 else 1.0
-                is_core = 1 if freq >= _CORE_FREQUENCY_THRESHOLD else 0
                 cursor.execute(
-                    """INSERT INTO hostile_fit_family_modules
-                       (family_id, item_type_id, flag_category, frequency, is_core)
-                       VALUES (%s, %s, %s, %s, %s)
+                    """INSERT INTO hostile_fit_families
+                       (hull_type_id, family_fingerprint, module_set_json, observation_count,
+                        confidence, first_seen, last_seen, alliance_ids_json, computed_at)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                        ON DUPLICATE KEY UPDATE
-                           frequency = VALUES(frequency),
-                           is_core = VALUES(is_core)""",
-                    (family_id, type_id, flag_cat, freq, is_core),
+                           module_set_json = VALUES(module_set_json),
+                           observation_count = VALUES(observation_count),
+                           confidence = VALUES(confidence),
+                           last_seen = VALUES(last_seen),
+                           alliance_ids_json = VALUES(alliance_ids_json),
+                           computed_at = VALUES(computed_at)""",
+                    (hull, fp, module_set_json, obs, conf, now_str, now_str, alliance_json, now_str),
                 )
                 rows_written += 1
+
+                # Get family ID for module rows
+                cursor.execute(
+                    "SELECT id FROM hostile_fit_families WHERE hull_type_id = %s AND family_fingerprint = %s LIMIT 1",
+                    (hull, fp),
+                )
+                fam_row = cursor.fetchone()
+                if not fam_row:
+                    continue
+                family_id = int(fam_row["id"])
+
+                # Write per-module membership
+                for (type_id, flag_cat), cnt in fam["module_counts"].items():
+                    freq = min(round(cnt / obs, 4), 99.9999) if obs > 0 else 1.0
+                    is_core = 1 if freq >= _CORE_FREQUENCY_THRESHOLD else 0
+                    cursor.execute(
+                        """INSERT INTO hostile_fit_family_modules
+                           (family_id, item_type_id, flag_category, frequency, is_core)
+                           VALUES (%s, %s, %s, %s, %s)
+                           ON DUPLICATE KEY UPDATE
+                               frequency = VALUES(frequency),
+                               is_core = VALUES(is_core)""",
+                        (family_id, type_id, flag_cat, freq, is_core),
+                    )
+                    rows_written += 1
 
     return rows_written
 
 
+_SCORE_BATCH_SIZE = 200
+
+
 def _write_scores(db: Any, scored: list[dict]) -> int:
-    """REPLACE INTO economic_warfare_scores."""
+    """REPLACE INTO economic_warfare_scores.
+
+    Writes in batches of _SCORE_BATCH_SIZE rows per transaction to avoid
+    holding row locks for long periods and blocking concurrent queries.
+    """
     if not scored:
         return 0
 
     rows_written = 0
-    with db.transaction_with_retry() as (_, cursor):
-        for s in scored:
-            cursor.execute(
-                """REPLACE INTO economic_warfare_scores
-                   (type_id, type_name, group_id, meta_group_id,
-                    doctrine_penetration_score, fit_constraint_score,
-                    substitution_penalty_score, replacement_friction_score,
-                    loss_pressure_score, economic_warfare_score,
-                    hostile_family_count, hostile_alliance_count,
-                    total_destroyed_30d, cross_fit_persistence,
-                    is_fitting_variant, substitute_count, computed_at)
-                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
-                (
-                    s["type_id"], s["type_name"], s["group_id"], s["meta_group_id"],
-                    s["doctrine_penetration_score"], s["fit_constraint_score"],
-                    s["substitution_penalty_score"], s["replacement_friction_score"],
-                    s["loss_pressure_score"], s["economic_warfare_score"],
-                    s["hostile_family_count"], s["hostile_alliance_count"],
-                    s["total_destroyed_30d"], s["cross_fit_persistence"],
-                    s["is_fitting_variant"], s["substitute_count"], s["computed_at"],
-                ),
-            )
-            rows_written += 1
+    for batch_start in range(0, len(scored), _SCORE_BATCH_SIZE):
+        batch = scored[batch_start:batch_start + _SCORE_BATCH_SIZE]
+
+        with db.transaction_with_retry() as (_, cursor):
+            for s in batch:
+                cursor.execute(
+                    """REPLACE INTO economic_warfare_scores
+                       (type_id, type_name, group_id, meta_group_id,
+                        doctrine_penetration_score, fit_constraint_score,
+                        substitution_penalty_score, replacement_friction_score,
+                        loss_pressure_score, economic_warfare_score,
+                        hostile_family_count, hostile_alliance_count,
+                        total_destroyed_30d, cross_fit_persistence,
+                        is_fitting_variant, substitute_count, computed_at)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                    (
+                        s["type_id"], s["type_name"], s["group_id"], s["meta_group_id"],
+                        s["doctrine_penetration_score"], s["fit_constraint_score"],
+                        s["substitution_penalty_score"], s["replacement_friction_score"],
+                        s["loss_pressure_score"], s["economic_warfare_score"],
+                        s["hostile_family_count"], s["hostile_alliance_count"],
+                        s["total_destroyed_30d"], s["cross_fit_persistence"],
+                        s["is_fitting_variant"], s["substitute_count"], s["computed_at"],
+                    ),
+                )
+                rows_written += 1
 
     return rows_written
 
