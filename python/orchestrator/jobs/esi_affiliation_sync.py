@@ -127,47 +127,19 @@ def _post_affiliation_batch(character_ids: list[int]) -> list[dict[str, Any]] | 
     return None
 
 
-def _compute_refresh_tier(db: SupplyCoreDb, character_id: int) -> str:
-    """Determine the refresh tier based on last killmail activity.
-
-    - hot:  killmail within the last 7 days
-    - warm: killmail within the last 30 days
-    - cold: everything else (or no killmail data)
-    """
-    last_km = db.fetch_scalar(
-        """SELECT MAX(ke.killmail_time) FROM killmail_events ke
-           LEFT JOIN killmail_attackers ka ON ka.sequence_id = ke.sequence_id
-           WHERE ke.victim_character_id = %s OR ka.character_id = %s""",
-        (character_id, character_id),
-    )
-    if last_km is None:
-        return "cold"
-
-    is_hot = db.fetch_scalar(
-        "SELECT %s >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL 7 DAY)", (last_km,)
-    )
-    if is_hot:
-        return "hot"
-
-    is_warm = db.fetch_scalar(
-        "SELECT %s >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL 30 DAY)", (last_km,)
-    )
-    if is_warm:
-        return "warm"
-
-    return "cold"
-
-
-def _bulk_compute_refresh_tiers(db: SupplyCoreDb, character_ids: list[int]) -> dict[int, str]:
+def _bulk_compute_refresh_tiers(db: SupplyCoreDb, character_ids: list[int]) -> dict[int, int]:
     """Compute refresh tiers for a set of character IDs in bulk.
 
     Queries the most recent killmail timestamp for each character and
     classifies into hot (<=7d), warm (<=30d), or cold (>30d / none).
+
+    Returns integer tier values matching the DB column (TINYINT):
+    1 = hot, 2 = warm, 3 = cold.
     """
     if not character_ids:
         return {}
 
-    tiers: dict[int, str] = {}
+    tiers: dict[int, int] = {}
 
     # Process in sub-batches to keep IN-clause size reasonable.
     for i in range(0, len(character_ids), 500):
@@ -175,13 +147,14 @@ def _bulk_compute_refresh_tiers(db: SupplyCoreDb, character_ids: list[int]) -> d
         placeholders = ",".join(["%s"] * len(sub_batch))
 
         # Find the most recent killmail time per character across both
-        # victim and attacker roles.
+        # victim and attacker roles.  Returns the integer tier directly
+        # (1=hot, 2=warm, 3=cold) to match the TINYINT DB column.
         rows = db.fetch_all(
             f"""SELECT character_id,
                        CASE
-                           WHEN last_km >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL 7 DAY) THEN 'hot'
-                           WHEN last_km >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL 30 DAY) THEN 'warm'
-                           ELSE 'cold'
+                           WHEN last_km >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL 7 DAY) THEN 1
+                           WHEN last_km >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL 30 DAY) THEN 2
+                           ELSE 3
                        END AS tier
                 FROM (
                     SELECT character_id, MAX(km_time) AS last_km
@@ -200,12 +173,12 @@ def _bulk_compute_refresh_tiers(db: SupplyCoreDb, character_ids: list[int]) -> d
             tuple(sub_batch) + tuple(sub_batch),
         )
         for row in rows:
-            tiers[int(row["character_id"])] = row["tier"]
+            tiers[int(row["character_id"])] = int(row["tier"])
 
-    # Default to cold for any IDs not found in killmail data.
+    # Default to cold (3) for any IDs not found in killmail data.
     for cid in character_ids:
         if cid not in tiers:
-            tiers[cid] = "cold"
+            tiers[cid] = _TIER_TO_INT["cold"]
 
     return tiers
 
@@ -234,7 +207,7 @@ def _upsert_affiliations(
         corporation_id = int(entry.get("corporation_id") or 0) or None
         alliance_id = int(entry.get("alliance_id") or 0) or None
         faction_id = int(entry.get("faction_id") or 0) or None
-        refresh_tier = _TIER_TO_INT[tiers.get(character_id, "cold")]
+        refresh_tier = tiers.get(character_id, _TIER_TO_INT["cold"])
 
         # Fetch previous affiliation for change detection.
         prev = db.fetch_one(
