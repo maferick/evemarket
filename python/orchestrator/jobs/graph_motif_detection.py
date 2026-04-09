@@ -267,25 +267,32 @@ def run_graph_motif_detection_sync(db: SupplyCoreDb, neo4j_raw: dict[str, Any] |
             detector_errors[motif_name] = f"{type(exc).__name__}: {exc}\n{tb}"
 
     if failed_detectors:
-        duration_ms = int((time.perf_counter() - started) * 1000)
         error_detail = "; ".join(
             f"{name}: {detector_errors.get(name, '?')[:300]}"
             for name in failed_detectors
         )
-        logger.error(
-            "Job %s failing — detectors failed: %s — detail: %s",
-            job_name, ", ".join(failed_detectors), error_detail,
+        if len(failed_detectors) == len(detectors):
+            # ALL detectors failed — nothing to persist
+            duration_ms = int((time.perf_counter() - started) * 1000)
+            logger.error(
+                "Job %s failing — ALL detectors failed: %s — detail: %s",
+                job_name, ", ".join(failed_detectors), error_detail,
+            )
+            return JobResult.failed(
+                job_key=job_name,
+                error=f"All detectors failed: {', '.join(failed_detectors)}",
+                duration_ms=duration_ms,
+                meta={
+                    "counts": counts_by_type,
+                    "failed": failed_detectors,
+                    "errors": {k: v[:500] for k, v in detector_errors.items()},
+                },
+            ).to_dict()
+        # Some detectors failed but others succeeded — persist what we have
+        logger.warning(
+            "Job %s partial failure — detectors failed: %s (continuing with %d results) — detail: %s",
+            job_name, ", ".join(failed_detectors), len(all_motifs), error_detail,
         )
-        return JobResult.failed(
-            job_key=job_name,
-            error=f"Detectors failed: {', '.join(failed_detectors)}",
-            duration_ms=duration_ms,
-            meta={
-                "counts": counts_by_type,
-                "failed": failed_detectors,
-                "errors": {k: v[:500] for k, v in detector_errors.items()},
-            },
-        ).to_dict()
 
     if not all_motifs:
         duration_ms = int((time.perf_counter() - started) * 1000)
@@ -344,12 +351,18 @@ def run_graph_motif_detection_sync(db: SupplyCoreDb, neo4j_raw: dict[str, Any] |
     )
 
     duration_ms = int((time.perf_counter() - started) * 1000)
+    summary = f"Motif detection: {total_written} motifs found ({', '.join(f'{k}={v}' for k, v in counts_by_type.items())})."
+    meta: dict[str, Any] = {"counts": counts_by_type}
+    if failed_detectors:
+        summary += f" Partial failure: {', '.join(failed_detectors)} skipped."
+        meta["failed"] = failed_detectors
+        meta["errors"] = {k: v[:500] for k, v in detector_errors.items()}
     return JobResult.success(
         job_key=job_name,
-        summary=f"Motif detection: {total_written} motifs found ({', '.join(f'{k}={v}' for k, v in counts_by_type.items())}).",
+        summary=summary,
         rows_processed=total_written,
         rows_written=total_written,
         rows_seen=total_written,
         duration_ms=duration_ms,
-        meta={"counts": counts_by_type},
+        meta=meta,
     ).to_dict()
