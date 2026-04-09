@@ -173,52 +173,66 @@ def _emit_suspicion_signals(db: SupplyCoreDb) -> int:
 # ---------------------------------------------------------------------------
 
 def _emit_graph_signals(db: SupplyCoreDb) -> int:
-    """Emit graph signals from character_graph_intelligence."""
-    rows = db.fetch_all("""
-        SELECT character_id, pagerank_score, bridge_score,
-               co_occurrence_density, anomalous_co_occurrence_density,
-               cross_side_cluster_score, neighbor_anomaly_score,
-               engagement_avoidance_score, computed_at
-        FROM character_graph_intelligence
-        WHERE computed_at >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL 90 DAY)
-    """)
-    if not rows:
-        return 0
+    """Emit graph signals from character_graph_intelligence.
 
-    now_utc = datetime.now(UTC)
-    signals: list[dict[str, Any]] = []
-    for row in rows:
-        cid = row["character_id"]
-        computed = row["computed_at"]
-        computed_dt = computed if isinstance(computed, datetime) else datetime.fromisoformat(str(computed))
-        age_days = max(0.0, (now_utc - (computed_dt.replace(tzinfo=UTC) if computed_dt.tzinfo is None else computed_dt)).total_seconds() / 86400.0)
-        conf = compute_signal_confidence(
-            sample_count=20, age_days=age_days,
-            cohort_grounded=True, source_complete=True,
+    Uses INSERT...SELECT with UNION ALL to emit 6 signal types in a single
+    SQL statement.  Confidence is purely recency-based (sample_count=20
+    fixed, cohort_grounded=True, source_complete=True → confidence =
+    min(0.9, recency)).
+    """
+    # Confidence for graph signals: min(sample=0.9, recency, cohort=1.0, complete=1.0)
+    # Since sample/cohort/complete are fixed, confidence = min(0.9, recency_conf)
+    _GRAPH_CONF = (
+        "CASE "
+        "WHEN TIMESTAMPDIFF(SECOND, computed_at, UTC_TIMESTAMP()) / 86400.0 < 7 THEN 0.9 "
+        "WHEN TIMESTAMPDIFF(SECOND, computed_at, UTC_TIMESTAMP()) / 86400.0 < 30 THEN 0.8 "
+        "WHEN TIMESTAMPDIFF(SECOND, computed_at, UTC_TIMESTAMP()) / 86400.0 < 60 THEN 0.5 "
+        "ELSE 0.3 END"
+    )
+    _GRAPH_WHERE = "computed_at >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL 90 DAY)"
+    _GRAPH_COLS = (
+        "character_id, signal_type, 'all_time', "
+        "signal_value, confidence, 'v1', 'graph_community_detection_sync', "
+        "computed_at, computed_at, computed_at, 1, NULL"
+    )
+
+    # Each row in the UNION ALL selects one signal type from non-null columns
+    signal_selects = []
+    for signal_type, col in [
+        ("pagerank_score", "pagerank_score"),
+        ("bridge_score", "bridge_score"),
+        ("co_occurrence_density", "co_occurrence_density"),
+        ("cross_side_cluster_score", "cross_side_cluster_score"),
+        ("neighbor_anomaly_score", "neighbor_anomaly_score"),
+        ("engagement_avoidance", "engagement_avoidance_score"),
+    ]:
+        signal_selects.append(
+            f"SELECT character_id, '{signal_type}' AS signal_type, 'all_time', "
+            f"{col} AS signal_value, {_GRAPH_CONF} AS confidence, 'v1', "
+            f"'graph_community_detection_sync', "
+            f"computed_at, computed_at, computed_at, 1, NULL "
+            f"FROM character_graph_intelligence "
+            f"WHERE {_GRAPH_WHERE} AND {col} IS NOT NULL"
         )
 
-        mapping = [
-            ("pagerank_score", "pagerank_score"),
-            ("bridge_score", "bridge_score"),
-            ("co_occurrence_density", "co_occurrence_density"),
-            ("cross_side_cluster_score", "cross_side_cluster_score"),
-            ("neighbor_anomaly_score", "neighbor_anomaly_score"),
-            ("engagement_avoidance", "engagement_avoidance_score"),
-        ]
-        for signal_type, col in mapping:
-            val = row.get(col)
-            if val is not None:
-                signals.append({
-                    "character_id": cid,
-                    "signal_type": signal_type,
-                    "signal_value": float(val),
-                    "confidence": conf,
-                    "signal_version": "v1",
-                    "source_pipeline": "graph_community_detection_sync",
-                    "computed_at": computed,
-                })
-
-    return _upsert_signals(db, signals)
+    result = db.execute(
+        "INSERT INTO character_intelligence_signals ("
+        "character_id, signal_type, window_label, "
+        "signal_value, confidence, signal_version, source_pipeline, "
+        "computed_at, first_seen_at, last_reinforced_at, reinforcement_count, "
+        "detail_json) "
+        + " UNION ALL ".join(signal_selects)
+        + " ON DUPLICATE KEY UPDATE"
+        " signal_value        = VALUES(signal_value),"
+        " confidence          = VALUES(confidence),"
+        " signal_version      = VALUES(signal_version),"
+        " source_pipeline     = VALUES(source_pipeline),"
+        " computed_at         = VALUES(computed_at),"
+        " last_reinforced_at  = VALUES(last_reinforced_at),"
+        " reinforcement_count = reinforcement_count + 1,"
+        " detail_json         = VALUES(detail_json)"
+    )
+    return result if isinstance(result, int) else 0
 
 
 # ---------------------------------------------------------------------------
@@ -346,52 +360,61 @@ def _emit_counterintel_signals(db: SupplyCoreDb) -> int:
 # ---------------------------------------------------------------------------
 
 def _emit_movement_signals(db: SupplyCoreDb) -> int:
-    """Emit movement signals from character_movement_footprints."""
-    rows = db.fetch_all("""
-        SELECT character_id, window_label,
-               footprint_expansion_score, footprint_contraction_score,
-               new_area_entry_score, hostile_overlap_change_score,
-               cohort_z_footprint_size, cohort_z_hostile_overlap,
-               cohort_percentile_footprint,
-               computed_at
+    """Emit movement signals from character_movement_footprints.
+
+    Uses INSERT...SELECT with UNION ALL to emit 3 signal types in a single
+    SQL statement — no Python row iteration needed.
+    """
+    _MOVEMENT_DETAIL = (
+        "JSON_OBJECT("
+        "'cohort_z_footprint_size', COALESCE(cohort_z_footprint_size, 0), "
+        "'cohort_z_hostile_overlap', COALESCE(cohort_z_hostile_overlap, 0))"
+    )
+    _MOVEMENT_CONF = (
+        "CASE WHEN cohort_percentile_footprint IS NOT NULL THEN 0.8 ELSE 0.5 END"
+    )
+    _MOVEMENT_WHERE = (
+        "computed_at >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL 90 DAY) "
+        "AND window_label = '30d'"
+    )
+    result = db.execute(f"""
+        INSERT INTO character_intelligence_signals (
+            character_id, signal_type, window_label,
+            signal_value, confidence, signal_version, source_pipeline,
+            computed_at, first_seen_at, last_reinforced_at, reinforcement_count,
+            detail_json
+        )
+        SELECT character_id, 'footprint_expansion', '30d',
+               footprint_expansion_score, {_MOVEMENT_CONF}, 'v1',
+               'character_movement_footprints',
+               computed_at, computed_at, computed_at, 1, {_MOVEMENT_DETAIL}
         FROM character_movement_footprints
-        WHERE computed_at >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL 90 DAY)
-          AND window_label = '30d'
+        WHERE {_MOVEMENT_WHERE} AND footprint_expansion_score IS NOT NULL AND footprint_expansion_score > 0
+        UNION ALL
+        SELECT character_id, 'hostile_overlap_change', '30d',
+               hostile_overlap_change_score, {_MOVEMENT_CONF}, 'v1',
+               'character_movement_footprints',
+               computed_at, computed_at, computed_at, 1, {_MOVEMENT_DETAIL}
+        FROM character_movement_footprints
+        WHERE {_MOVEMENT_WHERE} AND hostile_overlap_change_score IS NOT NULL AND hostile_overlap_change_score > 0
+        UNION ALL
+        SELECT character_id, 'new_area_entry', '30d',
+               new_area_entry_score, {_MOVEMENT_CONF}, 'v1',
+               'character_movement_footprints',
+               computed_at, computed_at, computed_at, 1, {_MOVEMENT_DETAIL}
+        FROM character_movement_footprints
+        WHERE {_MOVEMENT_WHERE} AND new_area_entry_score IS NOT NULL AND new_area_entry_score > 0
+        ON DUPLICATE KEY UPDATE
+            signal_value        = VALUES(signal_value),
+            confidence          = VALUES(confidence),
+            signal_version      = VALUES(signal_version),
+            source_pipeline     = VALUES(source_pipeline),
+            computed_at         = VALUES(computed_at),
+            last_reinforced_at  = VALUES(last_reinforced_at),
+            reinforcement_count = reinforcement_count + 1,
+            detail_json         = VALUES(detail_json)
     """)
-    if not rows:
-        return 0
-
-    signals: list[dict[str, Any]] = []
-    for row in rows:
-        cid = row["character_id"]
-        computed = row["computed_at"]
-        # Confidence from cohort percentile availability
-        conf = 0.8 if row.get("cohort_percentile_footprint") is not None else 0.5
-
-        mapping = [
-            ("footprint_expansion", "footprint_expansion_score"),
-            ("hostile_overlap_change", "hostile_overlap_change_score"),
-            ("new_area_entry", "new_area_entry_score"),
-        ]
-        for signal_type, col in mapping:
-            val = row.get(col)
-            if val is not None and float(val) > 0.0:
-                signals.append({
-                    "character_id": cid,
-                    "signal_type": signal_type,
-                    "window_label": "30d",
-                    "signal_value": float(val),
-                    "confidence": conf,
-                    "signal_version": "v1",
-                    "source_pipeline": "character_movement_footprints",
-                    "computed_at": computed,
-                    "detail_json": json_dumps_safe({
-                        "cohort_z_footprint_size": float(row.get("cohort_z_footprint_size") or 0),
-                        "cohort_z_hostile_overlap": float(row.get("cohort_z_hostile_overlap") or 0),
-                    }),
-                })
-
-    return _upsert_signals(db, signals)
+    return result if isinstance(result, int) else 0
 
 
 # ---------------------------------------------------------------------------
@@ -399,45 +422,47 @@ def _emit_movement_signals(db: SupplyCoreDb) -> int:
 # ---------------------------------------------------------------------------
 
 def _emit_copresence_signals(db: SupplyCoreDb) -> int:
-    """Emit relational signals from character_copresence_signals."""
-    rows = db.fetch_all("""
-        SELECT character_id, window_label,
-               out_of_cluster_ratio, out_of_cluster_ratio_delta,
-               pair_frequency_delta, cohort_percentile,
-               total_edge_weight, unique_associates,
-               computed_at
+    """Emit relational signals from character_copresence_signals.
+
+    Uses INSERT...SELECT to push filtering, confidence computation, and JSON
+    serialization entirely to SQL — no Python row iteration needed.
+    """
+    result = db.execute("""
+        INSERT INTO character_intelligence_signals (
+            character_id, signal_type, window_label,
+            signal_value, confidence, signal_version, source_pipeline,
+            computed_at, first_seen_at, last_reinforced_at, reinforcement_count,
+            detail_json
+        )
+        SELECT
+            character_id,
+            'copresence_anomaly',
+            '30d',
+            cohort_percentile,
+            LEAST(1.0, GREATEST(0.0, cohort_percentile)),
+            'v1',
+            'compute_copresence_edges',
+            computed_at, computed_at, computed_at, 1,
+            JSON_OBJECT(
+                'out_of_cluster_ratio', COALESCE(out_of_cluster_ratio, 0),
+                'pair_frequency_delta', COALESCE(pair_frequency_delta, 0),
+                'unique_associates', COALESCE(unique_associates, 0)
+            )
         FROM character_copresence_signals
         WHERE computed_at >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL 90 DAY)
           AND window_label = '30d'
+          AND cohort_percentile >= 0.7
+        ON DUPLICATE KEY UPDATE
+            signal_value        = VALUES(signal_value),
+            confidence          = VALUES(confidence),
+            signal_version      = VALUES(signal_version),
+            source_pipeline     = VALUES(source_pipeline),
+            computed_at         = VALUES(computed_at),
+            last_reinforced_at  = VALUES(last_reinforced_at),
+            reinforcement_count = reinforcement_count + 1,
+            detail_json         = VALUES(detail_json)
     """)
-    if not rows:
-        return 0
-
-    signals: list[dict[str, Any]] = []
-    for row in rows:
-        cid = row["character_id"]
-        computed = row["computed_at"]
-        pct = float(row.get("cohort_percentile") or 0)
-        # High cohort percentile → anomalous co-presence
-        if pct >= 0.7:
-            conf = _clamp(pct)
-            signals.append({
-                "character_id": cid,
-                "signal_type": "copresence_anomaly",
-                "window_label": "30d",
-                "signal_value": pct,
-                "confidence": conf,
-                "signal_version": "v1",
-                "source_pipeline": "compute_copresence_edges",
-                "computed_at": computed,
-                "detail_json": json_dumps_safe({
-                    "out_of_cluster_ratio": float(row.get("out_of_cluster_ratio") or 0),
-                    "pair_frequency_delta": float(row.get("pair_frequency_delta") or 0),
-                    "unique_associates": int(row.get("unique_associates") or 0),
-                }),
-            })
-
-    return _upsert_signals(db, signals)
+    return result if isinstance(result, int) else 0
 
 
 # ---------------------------------------------------------------------------

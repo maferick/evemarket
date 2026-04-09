@@ -964,19 +964,39 @@ def _run_phase2_embeddings(
         else:
             anomaly_scores[cid] = 0.0
 
-    # Update existing feature rows with embedding data
+    # Batch-update existing feature rows with embedding data instead of
+    # one UPDATE per character.  Uses CASE expressions to map each
+    # character_id to its embedding+anomaly in a single statement.
+    _EMB_UPDATE_BATCH = 500
     updated = 0
-    for cid, emb in embeddings.items():
-        anomaly = anomaly_scores.get(cid, 0.0)
-        emb_json = json_dumps_safe(emb)
-        db.execute(
-            "UPDATE graph_ml_features SET "
-            "fastrp_embedding = %s, embedding_dimension = %s, "
-            "embedding_anomaly_score = %s "
-            "WHERE character_id = %s AND time_window = %s AND feature_version = %s",
-            (emb_json, FASTRP_DIMENSION, anomaly, cid, wkey, FEATURE_VERSION),
-        )
-        updated += 1
+    emb_items = list(embeddings.items())
+    for offset in range(0, len(emb_items), _EMB_UPDATE_BATCH):
+        chunk = emb_items[offset:offset + _EMB_UPDATE_BATCH]
+        # Build CASE WHEN character_id = %s THEN %s ... END for each column
+        emb_cases: list[str] = []
+        anomaly_cases: list[str] = []
+        emb_params: list[Any] = []
+        anomaly_params: list[Any] = []
+        id_list: list[Any] = []
+        for cid, emb in chunk:
+            anomaly = anomaly_scores.get(cid, 0.0)
+            emb_cases.append("WHEN %s THEN %s")
+            emb_params.extend([cid, json_dumps_safe(emb)])
+            anomaly_cases.append("WHEN %s THEN %s")
+            anomaly_params.extend([cid, anomaly])
+            id_list.append(cid)
+        if id_list:
+            id_placeholders = ", ".join(["%s"] * len(id_list))
+            db.execute(
+                "UPDATE graph_ml_features SET "
+                "fastrp_embedding = CASE character_id " + " ".join(emb_cases) + " END, "
+                "embedding_dimension = %s, "
+                "embedding_anomaly_score = CASE character_id " + " ".join(anomaly_cases) + " END "
+                "WHERE character_id IN (" + id_placeholders + ") "
+                "AND time_window = %s AND feature_version = %s",
+                tuple(emb_params) + (FASTRP_DIMENSION,) + tuple(anomaly_params) + tuple(id_list) + (wkey, FEATURE_VERSION),
+            )
+            updated += len(chunk)
 
     return {
         "window": wkey,
@@ -1142,36 +1162,29 @@ def _run_phase3_link_prediction(
         (wkey, FEATURE_VERSION),
     )
 
-    links_written = 0
+    # Build all link prediction rows in memory, then bulk-INSERT in batches
+    # instead of one INSERT per candidate pair.
+    all_link_rows: list[tuple[Any, ...]] = []
     for row in topo_rows:
         a, b = int(row["char_a"]), int(row["char_b"])
         cn = int(row.get("common_neighbors", 0))
-        deg_a = int(row.get("deg_a", 0))
-        deg_b = int(row.get("deg_b", 0))
         pref_att = float(row.get("pref_attachment", 0))
         jaccard = float(row.get("jaccard", 0))
 
-        # Composite confidence: weighted blend of topological signals.
-        # When embeddings are unavailable, redistribute the embedding weight
-        # to the topological signals so the max achievable confidence stays
-        # at 1.0 instead of being capped at 0.75.
         emb_sim = pair_sims.get((a, b), 0.0)
         emb_pct = _percentile(emb_sim)
 
-        # Normalized scores (soft cap to 0-1 range)
         cn_norm = min(cn / 10.0, 1.0)
         pa_norm = min(pref_att / 1000.0, 1.0)
         copresence_norm = min(copresence.get((a, b), 0) / 20.0, 1.0)
 
         if embeddings:
-            # Full formula with embedding signal
             confidence = round(
                 cn_norm * 0.30 + jaccard * 0.25 + pa_norm * 0.10 +
                 emb_sim * 0.25 + copresence_norm * 0.10,
                 4,
             )
         else:
-            # No embeddings — redistribute: cn 0.40, jaccard 0.30, pa 0.15, copresence 0.15
             confidence = round(
                 cn_norm * 0.40 + jaccard * 0.30 + pa_norm * 0.15 +
                 copresence_norm * 0.15,
@@ -1181,21 +1194,18 @@ def _run_phase3_link_prediction(
         if confidence < LINK_PRED_MIN_CONFIDENCE:
             continue
 
-        # Side history for explainability
         same_count, cross_count = side_history.get((a, b), (0, 0))
         total_sides = same_count + cross_count
         same_side_ratio = round(same_count / max(total_sides, 1), 4)
 
-        # Shared communities
-        shared_comms = []
+        shared_comms: list[int] = []
         if communities:
             comm_a = communities.get(a)
             comm_b = communities.get(b)
             if comm_a is not None and comm_a == comm_b:
                 shared_comms = [comm_a]
 
-        # Human-readable explanation
-        explanation_parts = []
+        explanation_parts: list[str] = []
         if cn >= 5:
             explanation_parts.append(f"{cn} common neighbors (strong)")
         elif cn >= 2:
@@ -1215,28 +1225,42 @@ def _run_phase3_link_prediction(
 
         explanation = "; ".join(explanation_parts) if explanation_parts else None
 
-        db.execute(
-            "INSERT INTO graph_ml_link_predictions "
-            "(character_id_a, character_id_b, time_window, feature_version, "
-            "prediction_type, confidence, "
-            "common_neighbors_score, pref_attachment_score, "
-            "same_community, "
-            "shared_community_ids, copresence_count, "
-            "embedding_similarity, embedding_sim_percentile, "
-            "same_side_ratio, cross_side_count, "
-            "explanation_summary, computed_at, run_id) "
-            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
-            (a, b, wkey, FEATURE_VERSION,
-             "association", confidence,
-             cn, pref_att,
-             1 if shared_comms else 0,
-             json_dumps_safe(shared_comms) if shared_comms else None,
-             copresence.get((a, b), 0),
-             round(emb_sim, 6), emb_pct,
-             same_side_ratio, cross_count,
-             explanation, computed_at, run_id),
-        )
-        links_written += 1
+        all_link_rows.append((
+            a, b, wkey, FEATURE_VERSION,
+            "association", confidence,
+            cn, pref_att,
+            1 if shared_comms else 0,
+            json_dumps_safe(shared_comms) if shared_comms else None,
+            copresence.get((a, b), 0),
+            round(emb_sim, 6), emb_pct,
+            same_side_ratio, cross_count,
+            explanation, computed_at, run_id,
+        ))
+
+    # Bulk-INSERT in chunks of 500 instead of per-row round-trips.
+    _LINK_INSERT_BATCH = 500
+    links_written = 0
+    for offset in range(0, len(all_link_rows), _LINK_INSERT_BATCH):
+        chunk = all_link_rows[offset:offset + _LINK_INSERT_BATCH]
+        placeholders = ", ".join(["(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)"] * len(chunk))
+        flat_params: list[Any] = []
+        for link_row in chunk:
+            flat_params.extend(link_row)
+        if flat_params:
+            db.execute(
+                "INSERT INTO graph_ml_link_predictions "
+                "(character_id_a, character_id_b, time_window, feature_version, "
+                "prediction_type, confidence, "
+                "common_neighbors_score, pref_attachment_score, "
+                "same_community, "
+                "shared_community_ids, copresence_count, "
+                "embedding_similarity, embedding_sim_percentile, "
+                "same_side_ratio, cross_side_count, "
+                "explanation_summary, computed_at, run_id) "
+                "VALUES " + placeholders,
+                tuple(flat_params),
+            )
+            links_written += len(chunk)
 
     return {
         "window": wkey,

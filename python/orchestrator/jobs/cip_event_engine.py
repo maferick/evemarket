@@ -655,14 +655,17 @@ def _upsert_events(db: SupplyCoreDb, candidates: list[dict[str, Any]], cal: dict
         """, new_event_params)
     created = len(new_event_params)
 
+    # Compute escalation logic per event in Python (requires per-event state
+    # comparison), then batch all UPDATEs and history INSERTs instead of
+    # issuing individual SQL statements per event.
+    update_params: list[list] = []
+    history_params: list[list] = []
+
     for cand, existing in update_candidates:
-        # Existing event — update with escalation logic.
-        # Escalation requires WORSENING, not just persistence.
         new_count = int(existing["escalation_count"] or 0) + 1
         current_severity = existing["severity"]
         new_severity = current_severity
 
-        # Only escalate if impact is increasing (worsening condition)
         prev_impact = float(existing.get("impact_score") or 0)
         is_worsening = cand["impact_score"] > prev_impact
 
@@ -674,19 +677,33 @@ def _upsert_events(db: SupplyCoreDb, candidates: list[dict[str, Any]], cal: dict
 
         severity_changed = new_severity != current_severity
 
-        # Re-activate if it was resolved/expired.
-        # Suppressed events only reactivate if materially worsened.
         if existing["state"] == "suppressed":
-            if is_worsening:
-                new_state = "active"  # Material worsening overrides suppression
-            else:
-                new_state = "suppressed"  # Stay suppressed
+            new_state = "active" if is_worsening else "suppressed"
         elif existing["state"] in ("resolved", "expired"):
             new_state = "active"
         else:
             new_state = existing["state"]
 
-        db.execute("""
+        update_params.append([
+            new_state, new_severity, new_severity,
+            cand["impact_score"], cand["title"], cand["detail_json"],
+            cand["now_str"], new_count,
+            cand["risk_score_at_event"], cand["risk_rank_at_event"],
+            cand["risk_percentile_at_event"],
+            existing["id"],
+        ])
+
+        if severity_changed or new_state != existing["state"]:
+            history_params.append([
+                existing["id"],
+                existing["state"], new_state,
+                current_severity, new_severity,
+                "cip_event_engine",
+                f"Re-detected (count={new_count})" + (f", escalated to {new_severity}" if severity_changed else ""),
+            ])
+
+    if update_params:
+        db.execute_many("""
             UPDATE intelligence_events
             SET state            = %s,
                 severity         = %s,
@@ -701,32 +718,18 @@ def _upsert_events(db: SupplyCoreDb, candidates: list[dict[str, Any]], cal: dict
                 risk_percentile_at_event = %s,
                 resolved_at      = NULL
             WHERE id = %s
-        """, [
-            new_state, new_severity, new_severity,
-            cand["impact_score"], cand["title"], cand["detail_json"],
-            cand["now_str"], new_count,
-            cand["risk_score_at_event"], cand["risk_rank_at_event"],
-            cand["risk_percentile_at_event"],
-            existing["id"],
-        ])
+        """, update_params)
 
-        # Log state/severity transitions
-        if severity_changed or new_state != existing["state"]:
-            db.execute("""
-                INSERT INTO intelligence_event_history (
-                    event_id, previous_state, new_state,
-                    previous_severity, new_severity,
-                    changed_by, reason
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s)
-            """, [
-                existing["id"],
-                existing["state"], new_state,
-                current_severity, new_severity,
-                "cip_event_engine",
-                f"Re-detected (count={new_count})" + (f", escalated to {new_severity}" if severity_changed else ""),
-            ])
+    if history_params:
+        db.execute_many("""
+            INSERT INTO intelligence_event_history (
+                event_id, previous_state, new_state,
+                previous_severity, new_severity,
+                changed_by, reason
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s)
+        """, history_params)
 
-        updated += 1
+    updated = len(update_params)
 
     # Auto-resolve: find active events whose conditions are no longer met
     resolved = _auto_resolve_events(db, candidates, cal)
