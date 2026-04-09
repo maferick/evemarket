@@ -51,7 +51,9 @@ from .jobs import (
 )
 from .jobs.market_comparison_summary_sync import run_market_comparison_summary_sync
 from .jobs.esi_character_queue_sync import run_esi_character_queue_sync
+from .jobs.esi_affiliation_sync import run_esi_affiliation_sync
 from .jobs.esi_alliance_history_sync import run_esi_alliance_history_sync
+from .jobs.character_killmail_sync import run_character_killmail_sync
 from .jobs.entity_metadata_resolve_sync import run_entity_metadata_resolve_sync
 from .jobs.intelligence_pipeline import run_intelligence_pipeline
 from .jobs.graph_data_quality import run_graph_data_quality_check
@@ -203,8 +205,10 @@ PYTHON_SYNC_PROCESSOR_JOB_KEYS: set[str] = {
     "market_comparison_summary_sync",
     "market_hub_local_history_sync",
     "esi_character_queue_sync",
+    "esi_affiliation_sync",
     "esi_alliance_history_sync",
     "entity_metadata_resolve_sync",
+    "character_killmail_sync",
     "evewho_enrichment_sync",
     "evewho_alliance_member_sync",
     "tracked_alliance_member_sync",
@@ -265,7 +269,9 @@ _PROCESSOR_DISPATCH: dict[str, tuple] = {
     "market_hub_local_history_sync": (run_market_hub_local_history_sync, lambda db, cfg: (db,)),
     # Intelligence pipeline
     "esi_character_queue_sync": (run_esi_character_queue_sync, lambda db, cfg: (db,)),
+    "esi_affiliation_sync": (run_esi_affiliation_sync, lambda db, cfg: (db,)),
     "esi_alliance_history_sync": (run_esi_alliance_history_sync, lambda db, cfg: (db, cfg)),
+    "character_killmail_sync": (run_character_killmail_sync, lambda db, cfg: (db, cfg)),
     "entity_metadata_resolve_sync": (run_entity_metadata_resolve_sync, lambda db, cfg: (db, cfg)),
     "intelligence_pipeline": (run_intelligence_pipeline, lambda db, cfg: (db, neo4j_runtime(cfg))),
     # Enhanced intelligence platform (KGv2)

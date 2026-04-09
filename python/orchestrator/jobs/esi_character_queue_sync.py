@@ -1,8 +1,12 @@
-"""Populate the ESI character queue from killmail attacker data.
+"""Populate the ESI character queue from all killmail participants.
 
-Every attacker on every lossmail of a tracked member is a character of interest
-for the historical alliance overlap feature.  Their character IDs are staged in
-``esi_character_queue`` for subsequent ESI lookup.
+Every character seen in any killmail (attacker or victim, all mail types) is a
+character of interest for the intelligence corpus.  Their character IDs are
+staged in ``esi_character_queue`` for subsequent ESI lookup (affiliation,
+corporation history, alliance history).
+
+This job is the **repair/backfill path**.  The primary discovery path is inline
+queueing at killmail ingest time (see ``python_bridge_process_killmail_batch``).
 """
 from __future__ import annotations
 
@@ -11,17 +15,23 @@ from .sync_runtime import run_sync_phase_job
 
 
 def _processor(db: SupplyCoreDb) -> dict[str, object]:
-    # Insert distinct attacker character IDs from loss killmails that are not
-    # already queued or fetched.
-    rows_written = db.execute(
-        """INSERT IGNORE INTO esi_character_queue (character_id)
-           SELECT DISTINCT ka.character_id
+    # Insert all distinct character IDs from killmails — both attackers and
+    # victims, across all mail types.  INSERT IGNORE skips already-queued IDs.
+    attackers_written = db.execute(
+        """INSERT IGNORE INTO esi_character_queue (character_id, first_queue_reason, last_queue_reason)
+           SELECT DISTINCT ka.character_id, 'periodic_sync', 'periodic_sync'
            FROM killmail_attackers ka
-           INNER JOIN killmail_events ke ON ke.sequence_id = ka.sequence_id
-           WHERE ke.mail_type = 'loss'
-             AND ka.character_id IS NOT NULL
+           WHERE ka.character_id IS NOT NULL
              AND ka.character_id > 0"""
     )
+    victims_written = db.execute(
+        """INSERT IGNORE INTO esi_character_queue (character_id, first_queue_reason, last_queue_reason)
+           SELECT DISTINCT ke.victim_character_id, 'periodic_sync', 'periodic_sync'
+           FROM killmail_events ke
+           WHERE ke.victim_character_id IS NOT NULL
+             AND ke.victim_character_id > 0"""
+    )
+    rows_written = attackers_written + victims_written
     total_pending = db.fetch_scalar(
         "SELECT COUNT(*) FROM esi_character_queue WHERE fetch_status = 'pending'"
     )
@@ -32,8 +42,8 @@ def _processor(db: SupplyCoreDb) -> dict[str, object]:
         "rows_processed": total_pending + total_done,
         "rows_written": rows_written,
         "warnings": [],
-        "summary": f"Queued {rows_written} new attacker character IDs for ESI lookup ({total_pending} pending, {total_done} done).",
-        "meta": {"pending": total_pending, "done": total_done},
+        "summary": f"Queued {rows_written} new character IDs ({attackers_written} attackers, {victims_written} victims) for ESI lookup ({total_pending} pending, {total_done} done).",
+        "meta": {"pending": total_pending, "done": total_done, "attackers_written": attackers_written, "victims_written": victims_written},
     }
 
 

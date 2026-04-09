@@ -65,7 +65,9 @@ from .forecasting_ai_sync import run_forecasting_ai_sync
 from .market_hub_local_history_sync import run_market_hub_local_history_sync
 from .esi_character_queue_sync import run_esi_character_queue_sync
 from .entity_metadata_resolve_sync import run_entity_metadata_resolve_sync
+from .esi_affiliation_sync import run_esi_affiliation_sync
 from .esi_alliance_history_sync import run_esi_alliance_history_sync
+from .character_killmail_sync import run_character_killmail_sync
 from .intelligence_pipeline import run_intelligence_pipeline
 from .graph_data_quality import run_graph_data_quality_check
 from .graph_temporal_metrics import run_graph_temporal_metrics_sync
