@@ -534,6 +534,30 @@ if [[ ${ANALYZE_TABLES} -eq 1 ]]; then
   run_analyze_tables
 fi
 
+# ------- Reset overdue job schedules -------
+# After code update + migrations, reset any overdue next_due_at values so
+# the loop runner picks them up immediately when services restart.
+reset_overdue_jobs() {
+  local python_bin=""
+  if [[ -x "${APP_ROOT}/.venv-orchestrator/bin/python" ]]; then
+    python_bin="${APP_ROOT}/.venv-orchestrator/bin/python"
+  elif command -v python3 >/dev/null 2>&1; then
+    python_bin="python3"
+  fi
+  if [[ -z "${python_bin}" ]]; then
+    log_warn "No python3 found; skipping overdue job reset."
+    return 0
+  fi
+  local reset_script="${APP_ROOT}/bin/reset_overdue_jobs.py"
+  if [[ ! -f "${reset_script}" ]]; then
+    log "No reset_overdue_jobs.py found; skipping."
+    return 0
+  fi
+  log "Resetting overdue job schedules"
+  run_cmd "${python_bin}" "${reset_script}" --app-root "${APP_ROOT}"
+}
+reset_overdue_jobs
+
 # ------- Service discovery and restart -------
 run_cmd systemctl daemon-reload
 
