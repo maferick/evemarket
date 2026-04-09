@@ -597,39 +597,46 @@ def run_temporal_behavior_detection(
 
         # ── 6. Write to MariaDB (batched to avoid lock-wait timeouts) ──
         if not dry_run and evidence_rows:
-            for batch_start in range(0, len(evidence_rows), MARIADB_BATCH_SIZE):
-                batch = evidence_rows[batch_start:batch_start + MARIADB_BATCH_SIZE]
-                with db.transaction() as (_, cursor_db):
-                    for row in batch:
-                        cursor_db.execute(
-                            """
-                            INSERT INTO character_counterintel_evidence (
-                                character_id, evidence_key, window_label,
-                                evidence_value, expected_value, deviation_value,
-                                z_score, mad_score, cohort_percentile, confidence_flag,
-                                evidence_text, evidence_payload_json, computed_at
-                            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                            ON DUPLICATE KEY UPDATE
-                                evidence_value = VALUES(evidence_value),
-                                expected_value = VALUES(expected_value),
-                                deviation_value = VALUES(deviation_value),
-                                z_score = VALUES(z_score),
-                                mad_score = VALUES(mad_score),
-                                cohort_percentile = VALUES(cohort_percentile),
-                                confidence_flag = VALUES(confidence_flag),
-                                evidence_text = VALUES(evidence_text),
-                                evidence_payload_json = VALUES(evidence_payload_json),
-                                computed_at = VALUES(computed_at)
-                            """,
-                            (
-                                row["character_id"], row["evidence_key"], row.get("window_label", "all_time"),
-                                row["evidence_value"], row.get("expected_value"), row.get("deviation_value"),
-                                row.get("z_score"), row.get("mad_score"), row.get("cohort_percentile"),
-                                row.get("confidence_flag", "low"),
-                                row["evidence_text"], row["evidence_payload_json"], computed_at,
-                            ),
-                        )
-                        rows_written += 1
+            # Build parameter tuples outside the transaction to minimise lock time.
+            evidence_params = [
+                (
+                    row["character_id"], row["evidence_key"], row.get("window_label", "all_time"),
+                    row["evidence_value"], row.get("expected_value"), row.get("deviation_value"),
+                    row.get("z_score"), row.get("mad_score"), row.get("cohort_percentile"),
+                    row.get("confidence_flag", "low"),
+                    row["evidence_text"], row["evidence_payload_json"], computed_at,
+                )
+                for row in evidence_rows
+            ]
+            _EVIDENCE_SQL = """
+                INSERT INTO character_counterintel_evidence (
+                    character_id, evidence_key, window_label,
+                    evidence_value, expected_value, deviation_value,
+                    z_score, mad_score, cohort_percentile, confidence_flag,
+                    evidence_text, evidence_payload_json, computed_at
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON DUPLICATE KEY UPDATE
+                    evidence_value = VALUES(evidence_value),
+                    expected_value = VALUES(expected_value),
+                    deviation_value = VALUES(deviation_value),
+                    z_score = VALUES(z_score),
+                    mad_score = VALUES(mad_score),
+                    cohort_percentile = VALUES(cohort_percentile),
+                    confidence_flag = VALUES(confidence_flag),
+                    evidence_text = VALUES(evidence_text),
+                    evidence_payload_json = VALUES(evidence_payload_json),
+                    computed_at = VALUES(computed_at)
+            """
+
+            # Write in batches with automatic retry on deadlock / lock-wait timeout.
+            for batch_offset in range(0, len(evidence_params), MARIADB_BATCH_SIZE):
+                chunk = evidence_params[batch_offset:batch_offset + MARIADB_BATCH_SIZE]
+
+                def _write_chunk(_conn, cursor, _chunk=chunk):
+                    cursor.executemany(_EVIDENCE_SQL, _chunk)
+
+                db.run_in_transaction(_write_chunk)
+                rows_written += len(chunk)
 
         # ── 7. Neo4j tagging (optional) ──
         neo4j_tagged = 0
