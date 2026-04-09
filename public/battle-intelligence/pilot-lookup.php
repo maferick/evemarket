@@ -37,6 +37,12 @@ $ciPipelineStatus = null;
 $ciOrgCorpNames = [];
 $ciPathNodeNames = [];
 
+// Blended intelligence (two-lane score)
+$blended = null;
+$behavioralScore = null;
+$behavioralSignals = [];
+$smallCopresence = [];
+
 if ($characterId > 0) {
     $profile = db_pilot_profile($characterId);
     if ($profile !== null) {
@@ -44,6 +50,12 @@ if ($characterId > 0) {
         $temporalMetrics   = db_character_temporal_metrics($characterId);
         $copresenceSignals = db_character_copresence_signals($characterId);
         $copresenceEdges   = db_character_copresence_top_edges_preferred($characterId, '30d', 15);
+
+        // Blended intelligence & behavioral signals for universal overview
+        $blended = db_character_blended_intelligence($characterId);
+        $behavioralScore = db_character_behavioral_score($characterId);
+        $behavioralSignals = db_character_behavioral_signals($characterId);
+        $smallCopresence = db_character_small_engagement_copresence($characterId, 15);
 
         // Load full character intelligence data (read-only — pipeline processes in background)
         $ciData = battle_intelligence_character_data($characterId);
@@ -191,6 +203,8 @@ include __DIR__ . '/../../src/views/partials/header.php';
     <?php if ($profile !== null):
         $char = $profile['character'];
         $stats = $profile['stats'];
+        $behavStats = $profile['behavioral_stats'];
+        $kmLifetime = $profile['killmail_lifetime'];
         $ships = $profile['ships'];
         $suspicion = $profile['suspicion'];
         $theaterHistory = $profile['theater_history'];
@@ -202,13 +216,33 @@ include __DIR__ . '/../../src/views/partials/header.php';
         $allianceName = (string) ($profile['alliance_name'] ?? '');
         $fleetFunc    = (string) ($profile['fleet_function'] ?? '');
 
-        $totalKills   = (int) ($stats['total_kills'] ?? 0);
-        $totalDeaths  = (int) ($stats['total_deaths'] ?? 0);
-        $totalBattles = (int) ($stats['total_battles'] ?? 0);
-        $totalTheaters = (int) ($stats['theater_count'] ?? 0);
-        $totalDamageDone  = (float) ($stats['total_damage_done'] ?? 0);
-        $totalDamageTaken = (float) ($stats['total_damage_taken'] ?? 0);
+        // Theater-based stats
+        $theaterKills   = (int) ($stats['total_kills'] ?? 0);
+        $theaterDeaths  = (int) ($stats['total_deaths'] ?? 0);
+        $theaterBattles = (int) ($stats['total_battles'] ?? 0);
+        $totalTheaters  = (int) ($stats['theater_count'] ?? 0);
+        $theaterDamageDone  = (float) ($stats['total_damage_done'] ?? 0);
+        $theaterDamageTaken = (float) ($stats['total_damage_taken'] ?? 0);
+
+        // Killmail-based stats (from behavioral scoring + temporal metrics)
+        $kmKills   = (int) ($behavStats['total_kill_count'] ?? 0);
+        $kmSolo    = (int) ($behavStats['solo_kill_count'] ?? 0);
+        $kmGang    = (int) ($behavStats['gang_kill_count'] ?? 0);
+        $kmLarge   = (int) ($behavStats['large_battle_count'] ?? 0);
+        $kmDeaths  = (int) ($kmLifetime['km_losses'] ?? 0);
+        $kmDamage  = (float) ($kmLifetime['km_damage'] ?? 0);
+        $kmBattles = (int) ($kmLifetime['km_battles'] ?? 0);
+
+        // Best available: use theater stats when they have data, else fall back to killmail pipeline
+        $hasTheaterData = $theaterBattles > 0 || $theaterKills > 0;
+        $hasKillmailData = $kmKills > 0 || $kmDeaths > 0 || $kmBattles > 0;
+        $totalKills   = $hasTheaterData ? $theaterKills   : $kmKills;
+        $totalDeaths  = $hasTheaterData ? $theaterDeaths  : $kmDeaths;
+        $totalBattles = $hasTheaterData ? $theaterBattles : $kmBattles;
+        $totalDamageDone  = $hasTheaterData ? $theaterDamageDone  : $kmDamage;
+        $totalDamageTaken = $hasTheaterData ? $theaterDamageTaken : 0;
         $kd = $totalDeaths > 0 ? round($totalKills / $totalDeaths, 2) : (float) $totalKills;
+        $statsSource = $hasTheaterData ? 'theater' : ($hasKillmailData ? 'killmail' : 'none');
 
         $suspScore    = (float) ($suspicion['suspicion_score'] ?? 0);
         $combinedRisk = (float) ($suspicion['combined_risk_score'] ?? 0);
@@ -222,6 +256,13 @@ include __DIR__ . '/../../src/views/partials/header.php';
             default              => ['label' => 'NOT ASSESSED',   'tone' => 'text-slate-400',  'bg' => 'bg-slate-800/40 border-slate-700/40'],
         };
 
+        // Blended intelligence values for universal overview
+        $bldScore = $blended !== null ? (float) ($blended['blended_score'] ?? 0) : null;
+        $bldPct   = $blended !== null ? (float) ($blended['blended_percentile'] ?? 0) : null;
+        $bldConf  = $blended !== null ? (float) ($blended['blended_confidence'] ?? 0) : null;
+        $bldSource = (string) ($blended['evidence_source'] ?? '');
+        $bldRiskLevel = $bldScore !== null ? ci_risk_level($bldScore) : null;
+
         $temporalByWindow = [];
         foreach ($temporalMetrics as $tm) {
             $temporalByWindow[(string) ($tm['window_label'] ?? '')] = $tm;
@@ -231,7 +272,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
             $copresenceByWindow[(string) ($cs['window_label'] ?? '')] = $cs;
         }
     ?>
-        <!-- Pilot profile -->
+        <!-- Pilot profile — Universal overview -->
         <div class="mt-6">
             <a href="?q=<?= urlencode($searchQuery) ?>" class="text-sm text-accent">&larr; Back to search</a>
 
@@ -242,9 +283,16 @@ include __DIR__ . '/../../src/views/partials/header.php';
                 <div class="flex-1 min-w-0">
                     <div class="flex flex-wrap items-center gap-3">
                         <h2 class="text-2xl font-semibold text-slate-50"><?= htmlspecialchars($charName, ENT_QUOTES) ?></h2>
+                        <?php if ($fleetFunc !== ''): ?>
                         <span class="inline-block rounded-full px-2.5 py-0.5 text-[10px] uppercase tracking-wider <?= fleet_function_color_class($fleetFunc) ?>">
                             <?= htmlspecialchars(fleet_function_label($fleetFunc), ENT_QUOTES) ?>
                         </span>
+                        <?php endif; ?>
+                        <?php if ($bldRiskLevel !== null): ?>
+                        <span class="inline-block rounded-full px-2.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider <?= $bldRiskLevel['bg'] ?> <?= $bldRiskLevel['text'] ?>">
+                            <?= $bldRiskLevel['label'] ?> risk
+                        </span>
+                        <?php endif; ?>
                     </div>
                     <p class="mt-1 text-sm text-slate-300">
                         <?= htmlspecialchars($corpName ?: '—', ENT_QUOTES) ?>
@@ -252,17 +300,58 @@ include __DIR__ . '/../../src/views/partials/header.php';
                             <span class="text-muted mx-1">&middot;</span><?= htmlspecialchars($allianceName, ENT_QUOTES) ?>
                         <?php endif; ?>
                     </p>
-                    <?php if (is_array($suspicion) && (int) ($suspicion['character_id'] ?? 0) > 0): ?>
-                    <div class="mt-2 text-xs">
+                    <div class="mt-2 flex flex-wrap items-center gap-3 text-xs">
                         <a href="/battle-intelligence/character.php?character_id=<?= $charId ?>"
                            class="text-accent hover:underline">Full CI Dossier &rarr;</a>
+                        <?php if ($statsSource === 'killmail'): ?>
+                            <span class="text-slate-500">Stats from killmail pipeline</span>
+                        <?php elseif ($statsSource === 'theater'): ?>
+                            <span class="text-slate-500">Stats from theater participation</span>
+                        <?php endif; ?>
                     </div>
-                    <?php endif; ?>
                 </div>
             </div>
 
-            <!-- ── Risk summary banner ───────────────────────────── -->
-            <?php if (is_array($suspicion)): ?>
+            <!-- ══════════════════════════════════════════════════════ -->
+            <!-- ── UNIVERSAL OVERVIEW ────────────────────────────── -->
+            <!-- ══════════════════════════════════════════════════════ -->
+
+            <!-- ── Blended intelligence banner ──────────────────── -->
+            <?php if ($blended !== null && $bldScore !== null): ?>
+            <?php
+                $bldScorePct = $bldScore * 100;
+                $bldConfPct  = ($bldConf ?? 0) * 100;
+                $bldPctRank  = (1 - ($bldPct ?? 0)) * 100;
+            ?>
+            <div class="mt-5 rounded-xl border px-5 py-4 <?= $bldRiskLevel['bg'] ?> border-white/10">
+                <div class="flex flex-wrap items-center gap-6">
+                    <div>
+                        <p class="text-[10px] uppercase tracking-widest text-muted">Blended risk score</p>
+                        <p class="text-2xl font-bold <?= $bldRiskLevel['text'] ?>"><?= number_format($bldScorePct, 1) ?>%</p>
+                        <?= ci_progress_bar($bldScore, $bldRiskLevel['bar']) ?>
+                    </div>
+                    <div class="h-12 w-px bg-white/10 hidden sm:block"></div>
+                    <div>
+                        <p class="text-[10px] uppercase tracking-widest text-muted">Percentile</p>
+                        <p class="text-lg font-semibold text-slate-100">Top <?= number_format($bldPctRank, 1) ?>%</p>
+                    </div>
+                    <div class="h-12 w-px bg-white/10 hidden sm:block"></div>
+                    <div>
+                        <p class="text-[10px] uppercase tracking-widest text-muted">Confidence</p>
+                        <p class="text-lg font-semibold text-slate-100"><?= number_format($bldConfPct, 0) ?>%</p>
+                    </div>
+                    <div class="h-12 w-px bg-white/10 hidden sm:block"></div>
+                    <div>
+                        <p class="text-[10px] uppercase tracking-widest text-muted">Evidence source</p>
+                        <p class="text-sm text-slate-300"><?= htmlspecialchars(str_replace('_', ' ', ucfirst($bldSource)), ENT_QUOTES) ?></p>
+                        <?php if ($blended['lane1_score'] !== null): ?>
+                            <p class="text-[10px] text-muted">L1 <?= number_format(((float) $blended['lane1_weight']) * 100, 0) ?>% &middot; L2 <?= number_format(((float) $blended['lane2_weight']) * 100, 0) ?>%</p>
+                        <?php endif; ?>
+                    </div>
+                </div>
+            </div>
+            <?php elseif (is_array($suspicion) && $combinedRisk > 0): ?>
+            <!-- Fallback: old-style risk banner when blended intelligence unavailable -->
             <div class="mt-5 rounded-xl border px-4 py-3 flex flex-wrap items-center gap-4 <?= $riskLevel['bg'] ?>">
                 <div>
                     <p class="text-[10px] uppercase tracking-widest text-muted">Overall Risk</p>
@@ -282,30 +371,17 @@ include __DIR__ . '/../../src/views/partials/header.php';
                         <?= number_format($suspScore, 4) ?>
                     </p>
                 </div>
-                <div class="h-10 w-px bg-white/10 hidden sm:block"></div>
-                <div>
-                    <p class="text-[10px] uppercase tracking-widest text-muted">Overlap Score</p>
-                    <p class="text-lg font-semibold text-slate-200"><?= number_format($overlapScore, 4) ?></p>
-                </div>
-                <?php if ($flags !== []): ?>
-                <div class="h-10 w-px bg-white/10 hidden sm:block"></div>
-                <div class="flex flex-wrap gap-1">
-                    <?php foreach ($flags as $flag): ?>
-                        <span class="inline-block rounded-full px-2.5 py-0.5 text-[10px] uppercase tracking-wider bg-red-900/50 text-red-300 border border-red-700/40">
-                            <?= htmlspecialchars(str_replace('_', ' ', (string) $flag), ENT_QUOTES) ?>
-                        </span>
-                    <?php endforeach; ?>
-                </div>
-                <?php endif; ?>
             </div>
             <?php endif; ?>
 
             <!-- ── Core metrics ──────────────────────────────────── -->
-            <div class="mt-5 grid gap-3 sm:grid-cols-4 xl:grid-cols-7">
+            <div class="mt-5 grid gap-3 sm:grid-cols-4 xl:grid-cols-8">
+                <?php if ($totalTheaters > 0): ?>
                 <div class="surface-tertiary">
                     <p class="text-xs text-muted">Theaters</p>
                     <p class="text-xl font-semibold text-slate-50"><?= number_format($totalTheaters) ?></p>
                 </div>
+                <?php endif; ?>
                 <div class="surface-tertiary">
                     <p class="text-xs text-muted">Battles</p>
                     <p class="text-xl font-semibold text-slate-50"><?= number_format($totalBattles) ?></p>
@@ -324,15 +400,143 @@ include __DIR__ . '/../../src/views/partials/header.php';
                         <?= number_format($kd, 2) ?>
                     </p>
                 </div>
+                <?php if ($totalDamageDone > 0): ?>
                 <div class="surface-tertiary">
                     <p class="text-xs text-muted">Damage Done</p>
                     <p class="text-xl font-semibold text-slate-50"><?= number_format($totalDamageDone, 0) ?></p>
                 </div>
+                <?php endif; ?>
+                <?php if ($totalDamageTaken > 0): ?>
                 <div class="surface-tertiary">
                     <p class="text-xs text-muted">Damage Taken</p>
                     <p class="text-xl font-semibold text-slate-50"><?= number_format($totalDamageTaken, 0) ?></p>
                 </div>
+                <?php endif; ?>
+                <?php if ($kmKills > 0 && $hasKillmailData): ?>
+                <div class="surface-tertiary">
+                    <p class="text-xs text-muted">Kill breakdown</p>
+                    <p class="text-sm font-semibold text-slate-50">
+                        <span class="text-slate-300"><?= $kmSolo ?></span> <span class="text-[10px] text-muted">solo</span>
+                        <span class="text-slate-300 ml-1"><?= $kmGang ?></span> <span class="text-[10px] text-muted">gang</span>
+                        <span class="text-slate-300 ml-1"><?= $kmLarge ?></span> <span class="text-[10px] text-muted">fleet</span>
+                    </p>
+                </div>
+                <?php endif; ?>
             </div>
+
+            <!-- ── Behavioral quick-glance (when behavioral data exists) ── -->
+            <?php if (is_array($behavStats)): ?>
+            <?php
+                $bsRisk = (float) ($behavStats['behavioral_risk_score'] ?? 0);
+                $bsFleetAbsence = (float) ($behavStats['fleet_absence_ratio'] ?? 0);
+                $bsCompanion = (float) ($behavStats['companion_consistency_score'] ?? 0);
+                $bsCrossSide = (float) ($behavStats['cross_side_small_rate'] ?? 0);
+                $bsAsymmetry = (float) ($behavStats['asymmetry_preference'] ?? 0);
+                $bsGeoConc = (float) ($behavStats['geographic_concentration_score'] ?? 0);
+                $bsTempReg = (float) ($behavStats['temporal_regularity_score'] ?? 0);
+                $bsContinuation = (float) ($behavStats['post_engagement_continuation_rate'] ?? 0);
+                $bsConfTier = (string) ($behavStats['confidence_tier'] ?? 'low');
+            ?>
+            <div class="mt-5 rounded-xl border border-border/40 bg-slate-800/30 px-5 py-4">
+                <div class="flex items-center gap-3 mb-3">
+                    <h3 class="text-base font-semibold text-slate-100">Behavioral profile</h3>
+                    <span class="text-xs text-muted"><?= $kmKills ?> kills analyzed &middot; <?= $bsConfTier ?> confidence</span>
+                </div>
+                <div class="grid gap-3 sm:grid-cols-3 lg:grid-cols-4">
+                    <div class="surface-tertiary">
+                        <p class="text-xs text-muted">Behavioral risk</p>
+                        <p class="text-lg font-semibold <?= ci_metric_color($bsRisk, 0.3, 0.6) ?>"><?= number_format($bsRisk * 100, 1) ?>%</p>
+                        <?= ci_progress_bar($bsRisk, $bsRisk >= 0.6 ? 'bg-red-500' : ($bsRisk >= 0.3 ? 'bg-yellow-500' : 'bg-cyan-500')) ?>
+                    </div>
+                    <div class="surface-tertiary">
+                        <p class="text-xs text-muted">Fleet absence</p>
+                        <p class="text-lg font-semibold <?= $bsFleetAbsence >= 0.8 ? 'text-yellow-400' : 'text-slate-100' ?>">
+                            <?= number_format($bsFleetAbsence * 100, 0) ?>% <span class="text-xs text-muted">small-only</span>
+                        </p>
+                        <p class="mt-0.5 text-[10px] text-muted"><?= $kmSolo ?> solo &middot; <?= $kmGang ?> gang &middot; <?= $kmLarge ?> fleet</p>
+                    </div>
+                    <div class="surface-tertiary">
+                        <p class="text-xs text-muted">Companion consistency</p>
+                        <p class="text-lg font-semibold text-slate-100"><?= number_format($bsCompanion * 100, 0) ?>%</p>
+                        <p class="mt-0.5 text-[10px] text-muted">Recurring partners in small kills</p>
+                    </div>
+                    <div class="surface-tertiary">
+                        <p class="text-xs text-muted">Continuation rate</p>
+                        <p class="text-lg font-semibold <?= $bsContinuation <= 0.2 ? 'text-yellow-400' : 'text-slate-100' ?>">
+                            <?= number_format($bsContinuation * 100, 0) ?>%
+                        </p>
+                        <p class="mt-0.5 text-[10px] text-muted"><?= $bsContinuation <= 0.2 ? 'Low — appears then disappears' : ($bsContinuation >= 0.6 ? 'High — persistent activity' : 'Moderate') ?></p>
+                    </div>
+                    <?php if ($bsCrossSide > 0): ?>
+                    <div class="surface-tertiary">
+                        <p class="text-xs text-muted">Cross-side (small)</p>
+                        <p class="text-lg font-semibold <?= $bsCrossSide >= 0.5 ? 'text-red-400' : ($bsCrossSide >= 0.2 ? 'text-yellow-400' : 'text-slate-100') ?>">
+                            <?= number_format($bsCrossSide * 100, 1) ?>%
+                        </p>
+                        <p class="mt-0.5 text-[10px] text-muted">Kills against own alliance in small fights</p>
+                    </div>
+                    <?php endif; ?>
+                    <div class="surface-tertiary">
+                        <p class="text-xs text-muted">Asymmetry preference</p>
+                        <p class="text-lg font-semibold text-slate-100"><?= number_format($bsAsymmetry * 100, 0) ?>%</p>
+                        <p class="mt-0.5 text-[10px] text-muted">Preference for 5:1+ ganks</p>
+                    </div>
+                    <div class="surface-tertiary">
+                        <p class="text-xs text-muted">Geographic focus</p>
+                        <p class="text-lg font-semibold text-slate-100">Gini <?= number_format($bsGeoConc, 2) ?></p>
+                        <p class="mt-0.5 text-[10px] text-muted"><?= $bsGeoConc >= 0.7 ? 'Concentrated' : ($bsGeoConc >= 0.3 ? 'Moderate spread' : 'Distributed') ?></p>
+                    </div>
+                    <div class="surface-tertiary">
+                        <p class="text-xs text-muted">Temporal burstiness</p>
+                        <p class="text-lg font-semibold text-slate-100"><?= number_format($bsTempReg * 100, 0) ?>%</p>
+                        <p class="mt-0.5 text-[10px] text-muted"><?= $bsTempReg >= 0.7 ? 'Highly bursty' : ($bsTempReg >= 0.4 ? 'Moderately bursty' : 'Regular cadence') ?></p>
+                    </div>
+                </div>
+            </div>
+            <?php endif; ?>
+
+            <!-- ── Small-engagement companions ───────────────────── -->
+            <?php if ($smallCopresence !== []): ?>
+            <h3 class="mt-6 text-base font-semibold text-slate-100">Small-engagement companions</h3>
+            <p class="text-xs text-muted mt-0.5">Characters who repeatedly appear alongside this pilot in small kills.</p>
+            <div class="mt-3 table-shell">
+                <table class="table-ui">
+                    <thead>
+                        <tr class="border-b border-border/70 text-xs text-muted uppercase">
+                            <th class="px-3 py-2 text-left">Companion</th>
+                            <th class="px-3 py-2 text-right">Co-kills</th>
+                            <th class="px-3 py-2 text-right">Victims</th>
+                            <th class="px-3 py-2 text-right">Systems</th>
+                            <th class="px-3 py-2 text-right">Weight</th>
+                            <th class="px-3 py-2 text-right">Last seen</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                    <?php foreach ($smallCopresence as $sc):
+                        $scName = (string) ($sc['companion_name'] ?? '?');
+                        if (ci_is_placeholder_name($scName)) continue;
+                        $scIdA = (int) ($sc['character_id_a'] ?? 0);
+                        $scIdB = (int) ($sc['character_id_b'] ?? 0);
+                        $scId = $scIdA === $charId ? $scIdB : $scIdA;
+                    ?>
+                        <tr class="border-b border-border/40 hover:bg-slate-800/50">
+                            <td class="px-3 py-2 font-medium text-slate-100">
+                                <?= htmlspecialchars($scName, ENT_QUOTES) ?>
+                                <?php if ($scId > 0): ?>
+                                    <a href="?character_id=<?= $scId ?>" class="ml-1 text-accent text-xs">view</a>
+                                <?php endif; ?>
+                            </td>
+                            <td class="px-3 py-2 text-right"><?= (int) ($sc['co_kill_count'] ?? 0) ?></td>
+                            <td class="px-3 py-2 text-right"><?= (int) ($sc['unique_victim_count'] ?? 0) ?></td>
+                            <td class="px-3 py-2 text-right"><?= (int) ($sc['unique_system_count'] ?? 0) ?></td>
+                            <td class="px-3 py-2 text-right font-semibold text-slate-200"><?= number_format((float) ($sc['edge_weight'] ?? 0), 1) ?></td>
+                            <td class="px-3 py-2 text-right text-xs text-muted"><?= htmlspecialchars((string) ($sc['last_event_at'] ?? ''), ENT_QUOTES) ?></td>
+                        </tr>
+                    <?php endforeach; ?>
+                    </tbody>
+                </table>
+            </div>
+            <?php endif; ?>
 
             <!-- ── Temporal windows ──────────────────────────────── -->
             <?php if ($temporalMetrics !== []): ?>

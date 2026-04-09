@@ -13994,6 +13994,38 @@ function db_pilot_profile(int $characterId): ?array
         [$characterId]
     );
 
+    // Fallback: resolve alliance/corp from battle_participants if no theater data
+    if ($recentParticipation === null) {
+        $recentParticipation = db_select_one(
+            'SELECT bp.alliance_id, bp.corporation_id, NULL AS role_proxy,
+                    COALESCE(emc_a.entity_name, CONCAT("Alliance #", bp.alliance_id)) AS alliance_name,
+                    COALESCE(emc_c.entity_name, CONCAT("Corp #", bp.corporation_id)) AS corporation_name
+             FROM battle_participants bp
+             LEFT JOIN entity_metadata_cache emc_a ON emc_a.entity_type = "alliance" AND emc_a.entity_id = bp.alliance_id
+             LEFT JOIN entity_metadata_cache emc_c ON emc_c.entity_type = "corporation" AND emc_c.entity_id = bp.corporation_id
+             WHERE bp.character_id = ?
+             ORDER BY bp.computed_at DESC
+             LIMIT 1',
+            [$characterId]
+        );
+    }
+
+    // Final fallback: resolve from killmail_attackers
+    if ($recentParticipation === null) {
+        $recentParticipation = db_select_one(
+            'SELECT ka.alliance_id, ka.corporation_id, NULL AS role_proxy,
+                    COALESCE(emc_a.entity_name, "") AS alliance_name,
+                    COALESCE(emc_c.entity_name, "") AS corporation_name
+             FROM killmail_attackers ka
+             LEFT JOIN entity_metadata_cache emc_a ON emc_a.entity_type = "alliance" AND emc_a.entity_id = ka.alliance_id
+             LEFT JOIN entity_metadata_cache emc_c ON emc_c.entity_type = "corporation" AND emc_c.entity_id = ka.corporation_id
+             WHERE ka.character_id = ?
+             ORDER BY ka.id DESC
+             LIMIT 1',
+            [$characterId]
+        );
+    }
+
     // Ship types flown (from theater_participants ship_type_ids JSON)
     $shipRows = db_select(
         'SELECT tp.ship_type_ids, tp.role_proxy, tp.theater_id
@@ -14066,6 +14098,28 @@ function db_pilot_profile(int $characterId): ?array
         [$characterId]
     );
 
+    // Killmail-based stats from behavioral scoring pipeline (covers all kills, not just theater)
+    $behavioralStats = db_select_one(
+        'SELECT total_kill_count, solo_kill_count, gang_kill_count, large_battle_count,
+                behavioral_risk_score, percentile_rank, confidence_tier,
+                fleet_absence_ratio, companion_consistency_score,
+                cross_side_small_rate, asymmetry_preference,
+                geographic_concentration_score, temporal_regularity_score,
+                post_engagement_continuation_rate, kill_concentration_score
+         FROM character_behavioral_scores
+         WHERE character_id = ?',
+        [$characterId]
+    );
+
+    // Killmail-sourced death count and damage from temporal metrics (most complete non-theater source)
+    $killmailLifetime = db_select_one(
+        'SELECT SUM(kills_total) AS km_kills, SUM(losses_total) AS km_losses,
+                SUM(damage_total) AS km_damage, SUM(battles_present) AS km_battles
+         FROM character_temporal_metrics
+         WHERE character_id = ?',
+        [$characterId]
+    );
+
     // Associates — characters who appear in the same theaters most often
     $associates = db_select(
         'SELECT tp2.character_id AS assoc_character_id,
@@ -14096,6 +14150,8 @@ function db_pilot_profile(int $characterId): ?array
         'corporation_id' => (int) ($recentParticipation['corporation_id'] ?? 0),
         'fleet_function' => (string) ($recentParticipation['role_proxy'] ?? 'mainline_dps'),
         'stats' => $theaterStats,
+        'behavioral_stats' => $behavioralStats,
+        'killmail_lifetime' => $killmailLifetime,
         'ships' => $shipHistory,
         'suspicion' => $suspicion,
         'theater_history' => $theaterHistory,
