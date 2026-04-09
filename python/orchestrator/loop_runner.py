@@ -420,7 +420,7 @@ def _run_loop(
 
     # Memory safety: abort threshold slightly below the systemd MemoryMax
     # so we can exit gracefully instead of being OOM-killed.
-    memory_abort_bytes = 4 * 1024 * 1024 * 1024  # 4 GiB (MemoryMax is 5 GiB)
+    memory_abort_bytes = int(2.5 * 1024 * 1024 * 1024)  # 2.5 GiB (below systemd MemoryMax=3G)
 
     while not shutdown_event.is_set():
         cycle += 1
