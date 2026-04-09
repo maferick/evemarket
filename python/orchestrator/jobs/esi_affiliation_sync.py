@@ -38,6 +38,9 @@ _TIER_THRESHOLDS_HOURS = {
     "cold": 24,
 }
 
+# Map tier names to the integer values stored in the DB column (TINYINT).
+_TIER_TO_INT = {"hot": 1, "warm": 2, "cold": 3}
+
 # Module-level EsiClient — shared across all calls within this job.
 _esi_client = EsiClient(
     user_agent=ESI_USER_AGENT,
@@ -59,11 +62,11 @@ def _fetch_stale_character_ids(db: SupplyCoreDb) -> list[int]:
            LEFT JOIN character_current_affiliation a
                ON a.character_id = q.character_id
            WHERE a.character_id IS NULL
-              OR (a.refresh_tier = 'hot'  AND a.fetched_at < DATE_SUB(UTC_TIMESTAMP(), INTERVAL %(hot)s HOUR))
-              OR (a.refresh_tier = 'warm' AND a.fetched_at < DATE_SUB(UTC_TIMESTAMP(), INTERVAL %(warm)s HOUR))
-              OR (a.refresh_tier = 'cold' AND a.fetched_at < DATE_SUB(UTC_TIMESTAMP(), INTERVAL %(cold)s HOUR))
+              OR (a.refresh_tier = 1 AND a.fetched_at < DATE_SUB(UTC_TIMESTAMP(), INTERVAL %(hot)s HOUR))
+              OR (a.refresh_tier = 2 AND a.fetched_at < DATE_SUB(UTC_TIMESTAMP(), INTERVAL %(warm)s HOUR))
+              OR (a.refresh_tier = 3 AND a.fetched_at < DATE_SUB(UTC_TIMESTAMP(), INTERVAL %(cold)s HOUR))
            ORDER BY
-               FIELD(COALESCE(a.refresh_tier, 'hot'), 'hot', 'warm', 'cold') ASC,
+               COALESCE(a.refresh_tier, 1) ASC,
                a.fetched_at ASC
            LIMIT %(limit)s""",
         {
@@ -231,7 +234,7 @@ def _upsert_affiliations(
         corporation_id = int(entry.get("corporation_id") or 0) or None
         alliance_id = int(entry.get("alliance_id") or 0) or None
         faction_id = int(entry.get("faction_id") or 0) or None
-        refresh_tier = tiers.get(character_id, "cold")
+        refresh_tier = _TIER_TO_INT[tiers.get(character_id, "cold")]
 
         # Fetch previous affiliation for change detection.
         prev = db.fetch_one(
