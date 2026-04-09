@@ -563,6 +563,71 @@ WHERE interval_minutes IS NULL
    OR offset_minutes IS NULL
    OR next_due_at IS NULL;
 
+-- Circuit breaker columns for auto-skip of persistently failing or empty-output jobs.
+SET @sync_schedules_circuit_breaker_until_exists := (
+    SELECT COUNT(*)
+    FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'sync_schedules'
+      AND COLUMN_NAME = 'circuit_breaker_until'
+);
+SET @sync_schedules_circuit_breaker_until_sql := IF(
+    @sync_schedules_circuit_breaker_until_exists = 0,
+    'ALTER TABLE sync_schedules ADD COLUMN circuit_breaker_until DATETIME DEFAULT NULL',
+    'SELECT 1'
+);
+PREPARE sync_schedules_circuit_breaker_until_stmt FROM @sync_schedules_circuit_breaker_until_sql;
+EXECUTE sync_schedules_circuit_breaker_until_stmt;
+DEALLOCATE PREPARE sync_schedules_circuit_breaker_until_stmt;
+
+SET @sync_schedules_circuit_breaker_reason_exists := (
+    SELECT COUNT(*)
+    FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'sync_schedules'
+      AND COLUMN_NAME = 'circuit_breaker_reason'
+);
+SET @sync_schedules_circuit_breaker_reason_sql := IF(
+    @sync_schedules_circuit_breaker_reason_exists = 0,
+    'ALTER TABLE sync_schedules ADD COLUMN circuit_breaker_reason VARCHAR(255) DEFAULT NULL',
+    'SELECT 1'
+);
+PREPARE sync_schedules_circuit_breaker_reason_stmt FROM @sync_schedules_circuit_breaker_reason_sql;
+EXECUTE sync_schedules_circuit_breaker_reason_stmt;
+DEALLOCATE PREPARE sync_schedules_circuit_breaker_reason_stmt;
+
+SET @sync_schedules_circuit_breaker_cooldown_seconds_exists := (
+    SELECT COUNT(*)
+    FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'sync_schedules'
+      AND COLUMN_NAME = 'circuit_breaker_cooldown_seconds'
+);
+SET @sync_schedules_circuit_breaker_cooldown_seconds_sql := IF(
+    @sync_schedules_circuit_breaker_cooldown_seconds_exists = 0,
+    'ALTER TABLE sync_schedules ADD COLUMN circuit_breaker_cooldown_seconds INT UNSIGNED DEFAULT 0',
+    'SELECT 1'
+);
+PREPARE sync_schedules_circuit_breaker_cooldown_seconds_stmt FROM @sync_schedules_circuit_breaker_cooldown_seconds_sql;
+EXECUTE sync_schedules_circuit_breaker_cooldown_seconds_stmt;
+DEALLOCATE PREPARE sync_schedules_circuit_breaker_cooldown_seconds_stmt;
+
+SET @sync_schedules_consecutive_empty_runs_exists := (
+    SELECT COUNT(*)
+    FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'sync_schedules'
+      AND COLUMN_NAME = 'consecutive_empty_runs'
+);
+SET @sync_schedules_consecutive_empty_runs_sql := IF(
+    @sync_schedules_consecutive_empty_runs_exists = 0,
+    'ALTER TABLE sync_schedules ADD COLUMN consecutive_empty_runs INT UNSIGNED DEFAULT 0',
+    'SELECT 1'
+);
+PREPARE sync_schedules_consecutive_empty_runs_stmt FROM @sync_schedules_consecutive_empty_runs_sql;
+EXECUTE sync_schedules_consecutive_empty_runs_stmt;
+DEALLOCATE PREPARE sync_schedules_consecutive_empty_runs_stmt;
+
 CREATE TABLE IF NOT EXISTS scheduler_daemon_state (
     daemon_key VARCHAR(64) NOT NULL PRIMARY KEY,
     owner_token VARCHAR(190) DEFAULT NULL,

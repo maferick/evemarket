@@ -307,6 +307,82 @@ def filter_by_concurrency_groups(
 
 
 # ---------------------------------------------------------------------------
+# Duration-aware dispatch reordering
+# ---------------------------------------------------------------------------
+
+_PRIORITY_RANK = {"highest": 0, "high": 1, "normal": 2, "low": 3}
+_URGENCY_BAND_RANK = {"critical": 0, "urgent": 1, "elevated": 2, "normal": 3}
+
+
+def reorder_dispatchable_by_duration(
+    dispatchable: list[str],
+    duration_estimates: dict[str, dict[str, Any]],
+    staleness_info: dict[str, dict[str, Any]],
+    job_tiers: dict[str, int],
+    nodes: dict[str, JobNode],
+    congested: bool,
+) -> tuple[list[str], list[str]]:
+    """Reorder dispatchable jobs for optimal throughput.
+
+    Reordering is **only** among already-valid candidates — it never
+    influences DAG correctness or concurrency-group exclusion.
+
+    Ordering within each tier (tier ordering is non-negotiable):
+
+    1. Critical starvation band (dispatch_urgency > 10) — front of tier
+    2. Urgent starvation band (dispatch_urgency > 6) — high boost
+    3. Elevated starvation band (dispatch_urgency > 3) — moderate boost
+    4. Effective priority (highest/high/normal/low)
+    5. Duration estimate ascending — **only when congested**
+    6. Stable tie-breaker (job_key alphabetical)
+
+    Returns ``(reordered_list, explanation_lines)``.
+    """
+    if len(dispatchable) <= 1:
+        return list(dispatchable), []
+
+    explanations: list[str] = []
+
+    def _sort_key(job_key: str) -> tuple:
+        tier = job_tiers.get(job_key, 999)
+        node = nodes.get(job_key)
+        priority = _PRIORITY_RANK.get(node.priority if node else "normal", 2)
+
+        si = staleness_info.get(job_key, {})
+        band = si.get("urgency_band", "normal")
+        band_rank = _URGENCY_BAND_RANK.get(band, 3)
+        urgency = si.get("dispatch_urgency", 0.0)
+
+        de = duration_estimates.get(job_key, {})
+        est_seconds = de.get("estimate_seconds", 60.0)
+
+        # Duration only used as sort component when congested.
+        duration_component = est_seconds if congested else 0.0
+
+        return (tier, band_rank, priority, duration_component, job_key)
+
+    reordered = sorted(dispatchable, key=_sort_key)
+
+    # Build explanations for jobs that were meaningfully reordered.
+    for job_key in reordered:
+        si = staleness_info.get(job_key, {})
+        de = duration_estimates.get(job_key, {})
+        band = si.get("urgency_band", "normal")
+        node = nodes.get(job_key)
+        if band != "normal" or congested:
+            explanations.append(
+                f"{job_key}: tier={job_tiers.get(job_key, '?')}"
+                f" urgency_band={band}"
+                f" priority={node.priority if node else 'normal'}"
+                f" est={de.get('estimate_seconds', '?')}s"
+                f" source={de.get('source', '?')}"
+                f" staleness={si.get('staleness_seconds', 0)}s"
+            )
+
+    return reordered, explanations
+
+
+# ---------------------------------------------------------------------------
 # Human-readable graph summary (for CLI / logs)
 # ---------------------------------------------------------------------------
 

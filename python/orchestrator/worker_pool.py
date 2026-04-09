@@ -26,6 +26,7 @@ from .scheduling_graph import (
     build_graph,
     compute_scheduling_plan,
     filter_by_concurrency_groups,
+    reorder_dispatchable_by_duration,
 )
 from .worker_registry import WORKER_JOB_DEFINITIONS
 from .worker_runtime import resident_memory_bytes, utc_now_iso
@@ -225,6 +226,7 @@ def _finalize_job(db: SupplyCoreDb, job_key: str, result: dict[str, Any], logger
                 "rows_written": rows_written,
                 "execution_mode": "python",
             }),
+            duration_seconds=round(duration_ms / 1000.0, 2),
         )
     except Exception as exc:
         logger.warning("sync_schedule status update failed", payload={"event": "worker_pool.finalize.schedule_error", "job_key": job_key, "error": str(exc)})
@@ -297,6 +299,52 @@ def _finalize_job(db: SupplyCoreDb, job_key: str, result: dict[str, Any], logger
     except Exception as exc:
         logger.warning("log_viewer ui_refresh publish failed", payload={"event": "worker_pool.finalize.log_viewer_refresh_error", "job_key": job_key, "error": str(exc)})
 
+    # ── Circuit breaker tracking ─────────────────────────────────────
+    try:
+        if status == "success":
+            # Clean success: reset any active or historical breaker state.
+            db.reset_circuit_breaker(job_key)
+            # Empty-output tracking (Phase 3 — only for opted-in jobs).
+            if rows_written > 0:
+                db.reset_consecutive_empty_runs(job_key)
+            elif rows_seen > 0:
+                defn = WORKER_JOB_DEFINITIONS.get(job_key, {})
+                if defn.get("empty_output_is_suspicious"):
+                    empty_count = db.increment_consecutive_empty_runs(job_key)
+                    if empty_count >= 5:
+                        db.trip_circuit_breaker(job_key, "consecutive_empty_output", 1800)
+                        logger.warning(
+                            "circuit breaker tripped",
+                            payload={
+                                "event": "circuit_breaker.tripped",
+                                "job_key": job_key,
+                                "reason": "consecutive_empty_output",
+                                "consecutive_empty_runs": empty_count,
+                                "cooldown_seconds": 1800,
+                            },
+                        )
+        else:
+            # Non-success: check if we should trip the failure breaker.
+            failure_info = db.get_recent_job_failure_info(job_key)
+            if failure_info["consecutive_failures"] >= 3 or failure_info["failure_rate"] >= 0.6:
+                prior = db.get_circuit_breaker_history(job_key)
+                prev_cooldown = prior["cooldown_seconds"] if prior else 0
+                new_cooldown = min(7200, max(600, prev_cooldown * 2 if prev_cooldown else 600))
+                db.trip_circuit_breaker(job_key, "consecutive_failures", new_cooldown)
+                logger.warning(
+                    "circuit breaker tripped",
+                    payload={
+                        "event": "circuit_breaker.tripped",
+                        "job_key": job_key,
+                        "reason": "consecutive_failures",
+                        "failure_rate": failure_info["failure_rate"],
+                        "consecutive_failures": failure_info["consecutive_failures"],
+                        "cooldown_seconds": new_cooldown,
+                    },
+                )
+    except Exception as exc:
+        logger.warning("circuit breaker tracking failed", payload={"event": "worker_pool.finalize.circuit_breaker_error", "job_key": job_key, "error": str(exc)})
+
 
 @dataclass(slots=True)
 class WorkerPoolContext:
@@ -357,9 +405,138 @@ def _parse_csv(raw: str) -> list[str]:
 
 
 
+def _detect_congestion(
+    *,
+    dispatchable_count: int,
+    running_count: int,
+    queued_count: int,
+    duration_estimates: dict[str, dict[str, Any]],
+    staleness_info: dict[str, dict[str, Any]],
+) -> tuple[bool, dict[str, Any]]:
+    """Detect whether the worker pool is congested.
+
+    Returns ``(is_congested, diagnostics)`` where diagnostics contains
+    the reason and supporting metrics for logging.
+    """
+    if dispatchable_count <= 1:
+        return False, {"reason": "single_job"}
+
+    total_queue_seconds = sum(
+        de.get("estimate_seconds", 0.0) for de in duration_estimates.values()
+    )
+    oldest_staleness = max(
+        (si.get("staleness_seconds", 0) for si in staleness_info.values()),
+        default=0,
+    )
+
+    reason = None
+    if queued_count > running_count + 2:
+        reason = "queue_depth"
+    elif total_queue_seconds > 120.0:
+        reason = "queue_weight"
+    elif oldest_staleness > 60:
+        reason = "staleness"
+
+    congested = reason is not None
+    return congested, {
+        "reason": reason,
+        "total_queue_seconds": round(total_queue_seconds, 1),
+        "oldest_staleness_seconds": oldest_staleness,
+        "queued_count": queued_count,
+        "dispatchable_count": dispatchable_count,
+    }
+
+
 def _write_state_file(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json_dumps_safe(payload, indent=2) + "\n", encoding="utf-8")
+
+
+def _advance_schedule_with_policy(
+    db: SupplyCoreDb,
+    job_key: str,
+    duration_ms: int,
+    logger: LoggerAdapter,
+) -> None:
+    """Advance the job's next_due_at using cadence-aware policy.
+
+    Normal jobs: advance by configured ``interval_seconds`` (standard).
+    Chronic cadence violators (``utilization_ratio > 1.2``): use fixed-delay
+    mode where ``next_due_at = now + spacing`` to prevent backlog accumulation
+    from an impossible cadence.
+
+    The core primitive ``advance_next_due_at_by_interval()`` is kept pure —
+    all adaptive cadence logic lives here.
+    """
+    duration_s = max(0.0, duration_ms / 1000.0)
+    try:
+        row = db.fetch_one(
+            """SELECT interval_seconds,
+                      COALESCE(p95_duration_seconds, average_duration_seconds,
+                               last_duration_seconds, 0) AS runtime_seconds
+               FROM sync_schedules
+               WHERE job_key = %s AND enabled = 1 AND execution_mode = 'python'
+               LIMIT 1""",
+            (job_key[:120],),
+        )
+    except Exception:
+        # Fallback: just advance normally if we can't read the schedule.
+        db.advance_next_due_at_by_interval(job_key)
+        return
+
+    if not row:
+        db.advance_next_due_at_by_interval(job_key)
+        return
+
+    interval = max(1, int(row.get("interval_seconds") or 1))
+    runtime = float(row.get("runtime_seconds") or 0)
+    ratio = runtime / interval if interval > 0 else 0.0
+
+    if ratio <= 1.2:
+        # Normal cadence — advance by configured interval.
+        db.advance_next_due_at_by_interval(job_key)
+        return
+
+    # Chronic cadence violator: use fixed-delay mode.
+    # Space the next run by at least the cooldown or half the actual runtime,
+    # whichever is larger, to avoid perpetual backlog.
+    cooldown = int((db.fetch_one(
+        "SELECT cooldown_seconds FROM sync_schedules WHERE job_key = %s LIMIT 1",
+        (job_key[:120],),
+    ) or {}).get("cooldown_seconds") or 30)
+    delay = max(cooldown, int(duration_s * 0.5))
+    db.execute(
+        "UPDATE sync_schedules SET next_due_at = DATE_ADD(UTC_TIMESTAMP(), INTERVAL %s SECOND) WHERE job_key = %s AND execution_mode = 'python'",
+        (delay, job_key[:120]),
+    )
+    db.insert_scheduler_planner_decision(
+        schedule_id=None,
+        job_key=job_key,
+        decision_type="cadence_violation_delay",
+        pressure_state="healthy",
+        reason_text=(
+            f"Fixed-delay mode: utilization_ratio={ratio:.2f} "
+            f"(runtime={runtime:.1f}s, interval={interval}s). "
+            f"Next run in {delay}s instead of {interval}s."
+        ),
+        decision_json={
+            "utilization_ratio": round(ratio, 2),
+            "runtime_seconds": round(runtime, 1),
+            "interval_seconds": interval,
+            "delay_seconds": delay,
+        },
+    )
+    logger.info(
+        "cadence violation: fixed-delay mode",
+        payload={
+            "event": "worker_pool.cadence_violation_delay",
+            "job_key": job_key,
+            "utilization_ratio": round(ratio, 2),
+            "runtime_seconds": round(runtime, 1),
+            "interval_seconds": interval,
+            "delay_seconds": delay,
+        },
+    )
 
 
 def _process_job(context: WorkerPoolContext) -> dict[str, Any]:
@@ -404,7 +581,59 @@ def main(argv: list[str] | None = None) -> int:
     pause_threshold = max(128 * 1024 * 1024, int(worker_settings.get("memory_pause_threshold_bytes", 384 * 1024 * 1024)))
     abort_threshold = max(pause_threshold, int(worker_settings.get("memory_abort_threshold_bytes", 512 * 1024 * 1024)))
     retry_backoff = max(5, int(worker_settings.get("retry_backoff_seconds", 30)))
+
+    # ── Pool load assessment on startup ──────────────────────────────
+    _pool_load_iteration = 0
+    try:
+        pool_load = db.compute_pool_load_score(
+            queue_names=queue_names, workload_classes=workload_classes,
+        )
+        logger.info("pool load assessment", payload={
+            "event": "worker_pool.pool_load",
+            "worker_id": worker_id,
+            "load_score": pool_load["load_score"],
+            "job_count": pool_load["job_count"],
+            "overloaded": pool_load["overloaded"],
+            "cadence_violators": pool_load["cadence_violators"][:10],
+        })
+        if pool_load["overloaded"]:
+            logger.warning("pool mathematically overloaded", payload={
+                "event": "worker_pool.pool_overloaded",
+                "worker_id": worker_id,
+                "load_score": pool_load["load_score"],
+                "cadence_violators": pool_load["cadence_violators"],
+            })
+    except Exception as exc:
+        logger.warning("pool load assessment failed", payload={
+            "event": "worker_pool.pool_load_error", "error": str(exc),
+        })
+
     while True:
+        _pool_load_iteration += 1
+        # Periodic pool load assessment (every 100 iterations).
+        if _pool_load_iteration % 100 == 0:
+            try:
+                pool_load = db.compute_pool_load_score(
+                    queue_names=queue_names, workload_classes=workload_classes,
+                )
+                logger.info("pool load assessment", payload={
+                    "event": "worker_pool.pool_load",
+                    "worker_id": worker_id,
+                    "load_score": pool_load["load_score"],
+                    "job_count": pool_load["job_count"],
+                    "overloaded": pool_load["overloaded"],
+                    "cadence_violators": pool_load["cadence_violators"][:10],
+                })
+                if pool_load["overloaded"]:
+                    logger.warning("pool mathematically overloaded", payload={
+                        "event": "worker_pool.pool_overloaded",
+                        "worker_id": worker_id,
+                        "load_score": pool_load["load_score"],
+                        "cadence_violators": pool_load["cadence_violators"],
+                    })
+            except Exception:
+                pass  # Non-critical; will retry next cycle.
+
         memory_usage = resident_memory_bytes()
         if memory_usage >= abort_threshold:
             logger.warning("memory abort threshold reached", payload={"event": "worker_pool.memory_abort", "worker_id": worker_id, "memory_usage_bytes": memory_usage})
@@ -481,6 +710,42 @@ def main(argv: list[str] | None = None) -> int:
                         "running": sorted(running_keys)[:15],
                     },
                 )
+
+            # ── Duration-aware dispatch reordering ───────────────────
+            # Fetch duration + staleness data for dispatchable jobs and
+            # reorder to optimise throughput under congestion while
+            # preventing starvation of long-waiting jobs.
+            if dispatchable:
+                duration_estimates = db.get_job_duration_estimates(
+                    set(dispatchable), definitions=WORKER_JOB_DEFINITIONS,
+                )
+                staleness_info = db.get_job_staleness_info(set(dispatchable))
+                is_congested, congestion_diag = _detect_congestion(
+                    dispatchable_count=len(dispatchable),
+                    running_count=len(running_keys),
+                    queued_count=len(claimable_queued_keys),
+                    duration_estimates=duration_estimates,
+                    staleness_info=staleness_info,
+                )
+
+                dispatchable, reorder_explanations = reorder_dispatchable_by_duration(
+                    dispatchable, duration_estimates, staleness_info,
+                    plan.job_tiers, graph_nodes, is_congested,
+                )
+
+                if reorder_explanations:
+                    logger.info(
+                        "dispatch reordering applied",
+                        payload={
+                            "event": "worker_pool.dispatch_reorder",
+                            "worker_id": worker_id,
+                            "congested": is_congested,
+                            "congestion_reason": congestion_diag.get("reason") if is_congested else None,
+                            "total_queue_seconds": congestion_diag.get("total_queue_seconds"),
+                            "dispatchable_count": len(dispatchable),
+                            "explanations": reorder_explanations[:10],
+                        },
+                    )
 
             # 4. Claim one job from the dispatchable set.
             job = db.claim_next_worker_job(
@@ -592,7 +857,7 @@ def main(argv: list[str] | None = None) -> int:
             logger.info("worker job completed", payload=completed_payload)
             job_log.write_event("worker_pool.job_completed", completed_payload)
             _finalize_job(db, context.job_key, result, logger)
-            db.advance_next_due_at_by_interval(context.job_key)
+            _advance_schedule_with_policy(db, context.job_key, int(result.get("duration_ms") or 0), logger)
         except Exception as error:  # noqa: BLE001
             fail_result = JobResult.failed(
                 job_key=context.job_key,
@@ -604,7 +869,7 @@ def main(argv: list[str] | None = None) -> int:
             logger.warning("worker job failed", payload=failed_payload)
             job_log.write_event("worker_pool.job_failed", failed_payload)
             _finalize_job(db, context.job_key, fail_result, logger)
-            db.advance_next_due_at_by_interval(context.job_key)
+            _advance_schedule_with_policy(db, context.job_key, int(fail_result.get("duration_ms") or 0), logger)
             if args.once:
                 return 1
         finally:
