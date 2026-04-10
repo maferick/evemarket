@@ -120,12 +120,11 @@ include __DIR__ . '/../../src/views/partials/header.php';
 </section>
 
 <?php
-if (session_status() === PHP_SESSION_NONE) {
-    @session_start();
-}
 $flash = $_SESSION['opposition_intel_flash'] ?? null;
 if ($flash !== null) {
-    unset($_SESSION['opposition_intel_flash']);
+    supplycore_session_write(function (): void {
+        unset($_SESSION['opposition_intel_flash']);
+    });
 }
 ?>
 <?php if ($flash): ?>

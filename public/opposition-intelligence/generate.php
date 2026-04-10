@@ -65,10 +65,9 @@ $flash = [
     'error' => $error,
     'date' => $date,
 ];
-if (session_status() === PHP_SESSION_NONE) {
-    @session_start();
-}
-$_SESSION['opposition_intel_flash'] = $flash;
+supplycore_session_write(function () use ($flash): void {
+    $_SESSION['opposition_intel_flash'] = $flash;
+});
 
 header('Location: /opposition-intelligence/?date=' . urlencode($date));
 exit;

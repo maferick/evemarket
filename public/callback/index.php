@@ -10,7 +10,9 @@ if (($_GET['state'] ?? '') !== ($_SESSION['esi_oauth_state'] ?? null)) {
     exit;
 }
 
-unset($_SESSION['esi_oauth_state']);
+supplycore_session_write(function (): void {
+    unset($_SESSION['esi_oauth_state']);
+});
 
 if (isset($_GET['error'])) {
     $error = (string) ($_GET['error'] ?? 'unknown_error');

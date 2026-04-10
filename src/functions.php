@@ -2851,10 +2851,42 @@ function grouped_station_options(): array
     return $grouped;
 }
 
+/**
+ * Re-open the session just long enough to run a mutation, then release the
+ * file lock again.
+ *
+ * bootstrap.php closes the session immediately after start so concurrent tabs
+ * on the same browser aren't serialised by PHP's default flock()-based files
+ * handler. Any code that needs to persist a change to $_SESSION must route
+ * through this helper so the write actually hits disk without re-introducing
+ * request-wide lock contention.
+ */
+function supplycore_session_write(callable $mutator): void
+{
+    $wasActive = session_status() === PHP_SESSION_ACTIVE;
+    if (!$wasActive) {
+        @session_start();
+    }
+    try {
+        $mutator();
+    } finally {
+        if (!$wasActive) {
+            session_write_close();
+        }
+    }
+}
+
 function csrf_token(): string
 {
+    // The token is normally initialised in bootstrap.php before the session
+    // lock is released. This lazy fallback covers entry points that somehow
+    // skipped that (e.g. hand-written scripts) and keeps the API total.
     if (!isset($_SESSION['csrf_token'])) {
-        $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
+        supplycore_session_write(function (): void {
+            if (!isset($_SESSION['csrf_token'])) {
+                $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
+            }
+        });
     }
 
     return $_SESSION['csrf_token'];
@@ -2868,13 +2900,19 @@ function validate_csrf(?string $token): bool
 function flash(string $key, ?string $message = null): ?string
 {
     if ($message !== null) {
-        $_SESSION['flash'][$key] = $message;
+        supplycore_session_write(function () use ($key, $message): void {
+            $_SESSION['flash'][$key] = $message;
+        });
 
         return null;
     }
 
     $value = $_SESSION['flash'][$key] ?? null;
-    unset($_SESSION['flash'][$key]);
+    if (isset($_SESSION['flash'][$key])) {
+        supplycore_session_write(function () use ($key): void {
+            unset($_SESSION['flash'][$key]);
+        });
+    }
 
     return $value;
 }
@@ -15204,7 +15242,9 @@ function esi_missing_scopes(array $token, array $requiredScopes): array
 function esi_sso_authorize_url(): string
 {
     $state = bin2hex(random_bytes(24));
-    $_SESSION['esi_oauth_state'] = $state;
+    supplycore_session_write(function () use ($state): void {
+        $_SESSION['esi_oauth_state'] = $state;
+    });
 
     $query = http_build_query([
         'response_type' => 'code',
