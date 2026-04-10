@@ -16,6 +16,12 @@ if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
     from orchestrator.config import resolve_app_root  # noqa: F401
     from orchestrator.db import SupplyCoreDb
+    from orchestrator.horizon import (
+        HorizonState,
+        horizon_state_get,
+        should_use_incremental_only,
+        update_watermark_and_stall,
+    )
     from orchestrator.job_result import JobResult
     from orchestrator.json_utils import json_dumps_safe
     from orchestrator.job_utils import finish_job_run, start_job_run
@@ -23,6 +29,12 @@ if __package__ in (None, ""):
 else:
     from ..config import resolve_app_root  # noqa: F401
     from ..db import SupplyCoreDb
+    from ..horizon import (
+        HorizonState,
+        horizon_state_get,
+        should_use_incremental_only,
+        update_watermark_and_stall,
+    )
     from ..job_result import JobResult
     from ..json_utils import json_dumps_safe
     from ..job_utils import finish_job_run, start_job_run
@@ -165,6 +177,67 @@ def _validate_killmail_cursor(db: SupplyCoreDb, cursor: int) -> int:
     return cursor
 
 
+def _horizon_apply_repair_window(
+    db: SupplyCoreDb,
+    state: HorizonState | None,
+    cursor: int,
+) -> tuple[int, dict[str, Any]]:
+    """Apply the horizon rolling-repair-window to a killmail sequence cursor.
+
+    When the dataset is gated into incremental-only horizon mode, drop
+    the read-from sequence id to the smallest killmail recorded within
+    the last ``repair_window_seconds`` window. That lets late-arriving
+    killmails (inside the window) flow through on every run -- the
+    existing ``battle_id IS NULL`` filter on the rollup query keeps it
+    idempotent, so re-reading the tail costs nothing correctness-wise.
+
+    Returns the (possibly lowered) cursor and a meta dict describing
+    what happened for observability.
+
+    When horizon mode is off (the default), returns the cursor unchanged
+    and meta = ``{"applied": False, ...}``.
+    """
+    meta: dict[str, Any] = {
+        "applied": False,
+        "reason": "gate_off",
+        "repair_window_seconds": None,
+        "rewound_to": None,
+    }
+    if not should_use_incremental_only(state):
+        return cursor, meta
+
+    assert state is not None  # for type-checkers
+    repair_window = max(0, state.repair_window_seconds)
+    meta["repair_window_seconds"] = repair_window
+    if repair_window == 0:
+        meta["reason"] = "zero_window"
+        return cursor, meta
+
+    row = db.fetch_one(
+        """
+        SELECT MIN(sequence_id) AS min_seq
+          FROM killmail_events
+         WHERE effective_killmail_at >= (UTC_TIMESTAMP() - INTERVAL %s SECOND)
+        """,
+        (repair_window,),
+    ) or {}
+    min_seq = row.get("min_seq")
+    if min_seq is None:
+        meta["reason"] = "no_killmails_in_window"
+        return cursor, meta
+
+    window_start = max(0, int(min_seq) - 1)
+    if window_start >= cursor:
+        meta["reason"] = "window_start_not_lower"
+        return cursor, meta
+
+    meta["applied"] = True
+    meta["reason"] = "window_applied"
+    meta["rewound_to"] = window_start
+    meta["rewound_from"] = cursor
+    return window_start, meta
+
+
 def _sync_state_cursor_upsert(
     db: SupplyCoreDb,
     dataset_key: str,
@@ -267,12 +340,24 @@ def run_compute_battle_rollups(db: SupplyCoreDb, runtime: dict[str, Any] | None 
     rows_processed = 0
     rows_written = 0
     computed_at = _now_sql()
-    cursor_start = _sync_state_cursor_get(db, SYNC_STATE_KEY_BATTLE_ROLLUPS_CURSOR)
-    cursor_start = _validate_killmail_cursor(db, cursor_start)
+    raw_cursor = _sync_state_cursor_get(db, SYNC_STATE_KEY_BATTLE_ROLLUPS_CURSOR)
+    raw_cursor = _validate_killmail_cursor(db, raw_cursor)
+    horizon_state = horizon_state_get(db, SYNC_STATE_KEY_BATTLE_ROLLUPS_CURSOR)
+    cursor_start, horizon_meta = _horizon_apply_repair_window(db, horizon_state, raw_cursor)
     cursor_end = cursor_start
+    watermark_event_time: str | None = None
     batch_count = 0
     _sync_state_cursor_upsert(db, SYNC_STATE_KEY_BATTLE_ROLLUPS_CURSOR, status="running", last_cursor=cursor_start, last_row_count=0)
-    _battle_log(runtime, "battle_intelligence.job.started", {"job_name": "compute_battle_rollups", "dry_run": dry_run, "computed_at": computed_at})
+    _battle_log(
+        runtime,
+        "battle_intelligence.job.started",
+        {
+            "job_name": "compute_battle_rollups",
+            "dry_run": dry_run,
+            "computed_at": computed_at,
+            "horizon": horizon_meta,
+        },
+    )
     try:
         role_rows = db.fetch_all(
             """
@@ -354,6 +439,10 @@ def run_compute_battle_rollups(db: SupplyCoreDb, runtime: dict[str, Any] | None 
                 killmail_time = str(row.get("killmail_time") or "")
                 if system_id <= 0 or killmail_id <= 0 or killmail_time == "":
                     continue
+                # Track the latest source event time for the horizon
+                # watermark (used by the freshness report + SLA checks).
+                if watermark_event_time is None or killmail_time > watermark_event_time:
+                    watermark_event_time = killmail_time
 
                 bucket_unix = int(datetime.strptime(killmail_time, "%Y-%m-%d %H:%M:%S").replace(tzinfo=UTC).timestamp() // WINDOW_SECONDS * WINDOW_SECONDS)
                 battle_id = f"{system_id}:{bucket_unix}"
@@ -566,6 +655,17 @@ def run_compute_battle_rollups(db: SupplyCoreDb, runtime: dict[str, Any] | None 
                 status="success",
                 last_cursor=cursor_end,
                 last_row_count=len(killmails),
+            )
+            # Horizon watermark update runs after the cursor upsert so the
+            # freshness report reflects the newest source event time we
+            # actually rolled up this batch.  compute_battle_rollups uses a
+            # plain integer sequence_id cursor, so we pass the stringified
+            # cursor for equality-only stall detection.
+            update_watermark_and_stall(
+                db,
+                SYNC_STATE_KEY_BATTLE_ROLLUPS_CURSOR,
+                new_cursor=str(cursor_end),
+                event_time=watermark_event_time,
             )
             _battle_log(
                 runtime,
