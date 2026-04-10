@@ -222,12 +222,31 @@ if (function_exists('ob_flush')) { @ob_flush(); }
                 <?php if ((string) ($status['worker_no_write_reason'] ?? '') !== ''): ?>
                     <p class="sm:col-span-2"><span class="text-slate-500">Zero-write reason</span><br><span class="mt-1 inline-block text-slate-100"><?= htmlspecialchars((string) ($status['worker_no_write_reason'] ?? ''), ENT_QUOTES) ?></span></p>
                 <?php endif; ?>
-                <p><span class="text-slate-500">Participant characters</span><br><span class="mt-1 inline-block text-slate-100"><?= number_format((int) ($coverage['participant_characters'] ?? 0)) ?></span><br><span class="text-xs text-muted">Distinct victim + attacker IDs on losses since <?= htmlspecialchars((string) ($coverage['start_date'] ?? '2024-01-01'), ENT_QUOTES) ?>.</span></p>
-                <p><span class="text-slate-500">ESI queue coverage</span><br><span class="mt-1 inline-block text-slate-100"><?= number_format((int) ($coverage['queued_in_esi_character_queue'] ?? 0)) ?> / <?= number_format((int) ($coverage['participant_characters'] ?? 0)) ?></span><br><span class="text-xs text-muted">pending <?= number_format((int) ($coverage['esi_queue_pending'] ?? 0)) ?> · done <?= number_format((int) ($coverage['esi_queue_done'] ?? 0)) ?> · error <?= number_format((int) ($coverage['esi_queue_error'] ?? 0)) ?></span></p>
-                <p><span class="text-slate-500">Current affiliation coverage</span><br><span class="mt-1 inline-block text-slate-100"><?= number_format((int) ($coverage['with_current_affiliation'] ?? 0)) ?> / <?= number_format((int) ($coverage['participant_characters'] ?? 0)) ?></span><br><span class="text-xs text-muted">Participants with ESI current corp/alliance rows.</span></p>
-                <p><span class="text-slate-500">History sync processed</span><br><span class="mt-1 inline-block text-slate-100"><?= number_format((int) ($coverage['history_refresh_completed'] ?? 0)) ?> / <?= number_format((int) ($coverage['participant_characters'] ?? 0)) ?></span><br><span class="text-xs text-muted">Participants whose alliance-history sync has run at least once (<code>last_history_refresh_at</code> set).</span></p>
-                <p><span class="text-slate-500">Alliance history rows</span><br><span class="mt-1 inline-block text-slate-100"><?= number_format((int) ($coverage['with_alliance_history_row'] ?? $coverage['with_alliance_history'] ?? 0)) ?> / <?= number_format((int) ($coverage['participant_characters'] ?? 0)) ?></span><br><span class="text-xs text-muted">Participants with at least one historical alliance period. Lower than "history sync processed" is expected: characters who were never in an alliance produce zero rows.</span></p>
-                <p class="sm:col-span-2"><span class="text-slate-500">Per-character killmail backfill</span><br><span class="mt-1 inline-block text-slate-100"><?= number_format((int) ($coverage['enrolled_for_killmail_backfill'] ?? 0)) ?> / <?= number_format((int) ($coverage['participant_characters'] ?? 0)) ?> enrolled</span><br><span class="text-xs text-muted">queue: pending <?= number_format((int) ($coverage['killmail_backfill_pending'] ?? 0)) ?> · processing <?= number_format((int) ($coverage['killmail_backfill_processing'] ?? 0)) ?> · done <?= number_format((int) ($coverage['killmail_backfill_done'] ?? 0)) ?> · error <?= number_format((int) ($coverage['killmail_backfill_error'] ?? 0)) ?> · backfill_complete <?= number_format((int) ($coverage['killmail_backfill_complete_flag'] ?? 0)) ?>. Passive R2Z2 ingest alone does not guarantee historical coverage — participants must be enrolled in <code>character_killmail_queue</code> for per-character zKB backfill.</span></p>
+                <!--
+                    ESI coverage panel — lazy-loaded via
+                    /api/killmail-intelligence/esi-coverage.php to keep the main
+                    page render off the ~200s snapshot query. The initial paint
+                    comes from whatever is in page_cache (warm = real numbers,
+                    empty = zeros) and the JS fetch in the inline <script> at
+                    the bottom of this file overwrites with fresh values. Each
+                    number carries a data-esi-coverage-field attribute so the
+                    JS can target it without rebuilding the markup.
+                -->
+                <p class="sm:col-span-2" data-esi-coverage-header>
+                    <span class="flex flex-wrap items-center justify-between gap-2">
+                        <span class="text-slate-500">ESI coverage</span>
+                        <span class="flex items-center gap-2">
+                            <span data-esi-coverage-status class="text-xs text-muted">Loading…</span>
+                            <button type="button" data-esi-coverage-refresh class="rounded border border-white/10 px-2 py-0.5 text-xs text-slate-200 hover:bg-white/5 disabled:opacity-40" aria-label="Refresh ESI coverage">↻ Refresh</button>
+                        </span>
+                    </span>
+                </p>
+                <p><span class="text-slate-500">Participant characters</span><br><span class="mt-1 inline-block text-slate-100" data-esi-coverage-field="participant_characters"><?= number_format((int) ($coverage['participant_characters'] ?? 0)) ?></span><br><span class="text-xs text-muted">Distinct victim + attacker IDs on losses since <?= htmlspecialchars((string) ($coverage['start_date'] ?? '2024-01-01'), ENT_QUOTES) ?>.</span></p>
+                <p><span class="text-slate-500">ESI queue coverage</span><br><span class="mt-1 inline-block text-slate-100"><span data-esi-coverage-field="queued_in_esi_character_queue"><?= number_format((int) ($coverage['queued_in_esi_character_queue'] ?? 0)) ?></span> / <span data-esi-coverage-field="participant_characters"><?= number_format((int) ($coverage['participant_characters'] ?? 0)) ?></span></span><br><span class="text-xs text-muted">pending <span data-esi-coverage-field="esi_queue_pending"><?= number_format((int) ($coverage['esi_queue_pending'] ?? 0)) ?></span> · done <span data-esi-coverage-field="esi_queue_done"><?= number_format((int) ($coverage['esi_queue_done'] ?? 0)) ?></span> · error <span data-esi-coverage-field="esi_queue_error"><?= number_format((int) ($coverage['esi_queue_error'] ?? 0)) ?></span></span></p>
+                <p><span class="text-slate-500">Current affiliation coverage</span><br><span class="mt-1 inline-block text-slate-100"><span data-esi-coverage-field="with_current_affiliation"><?= number_format((int) ($coverage['with_current_affiliation'] ?? 0)) ?></span> / <span data-esi-coverage-field="participant_characters"><?= number_format((int) ($coverage['participant_characters'] ?? 0)) ?></span></span><br><span class="text-xs text-muted">Participants with ESI current corp/alliance rows.</span></p>
+                <p><span class="text-slate-500">History sync processed</span><br><span class="mt-1 inline-block text-slate-100"><span data-esi-coverage-field="history_refresh_completed"><?= number_format((int) ($coverage['history_refresh_completed'] ?? 0)) ?></span> / <span data-esi-coverage-field="participant_characters"><?= number_format((int) ($coverage['participant_characters'] ?? 0)) ?></span></span><br><span class="text-xs text-muted">Participants whose alliance-history sync has run at least once (<code>last_history_refresh_at</code> set).</span></p>
+                <p><span class="text-slate-500">Alliance history rows</span><br><span class="mt-1 inline-block text-slate-100"><span data-esi-coverage-field="with_alliance_history_row"><?= number_format((int) ($coverage['with_alliance_history_row'] ?? $coverage['with_alliance_history'] ?? 0)) ?></span> / <span data-esi-coverage-field="participant_characters"><?= number_format((int) ($coverage['participant_characters'] ?? 0)) ?></span></span><br><span class="text-xs text-muted">Participants with at least one historical alliance period. Lower than "history sync processed" is expected: characters who were never in an alliance produce zero rows.</span></p>
+                <p class="sm:col-span-2"><span class="text-slate-500">Per-character killmail backfill</span><br><span class="mt-1 inline-block text-slate-100"><span data-esi-coverage-field="enrolled_for_killmail_backfill"><?= number_format((int) ($coverage['enrolled_for_killmail_backfill'] ?? 0)) ?></span> / <span data-esi-coverage-field="participant_characters"><?= number_format((int) ($coverage['participant_characters'] ?? 0)) ?></span> enrolled</span><br><span class="text-xs text-muted">queue: pending <span data-esi-coverage-field="killmail_backfill_pending"><?= number_format((int) ($coverage['killmail_backfill_pending'] ?? 0)) ?></span> · processing <span data-esi-coverage-field="killmail_backfill_processing"><?= number_format((int) ($coverage['killmail_backfill_processing'] ?? 0)) ?></span> · done <span data-esi-coverage-field="killmail_backfill_done"><?= number_format((int) ($coverage['killmail_backfill_done'] ?? 0)) ?></span> · error <span data-esi-coverage-field="killmail_backfill_error"><?= number_format((int) ($coverage['killmail_backfill_error'] ?? 0)) ?></span> · backfill_complete <span data-esi-coverage-field="killmail_backfill_complete_flag"><?= number_format((int) ($coverage['killmail_backfill_complete_flag'] ?? 0)) ?></span>. Passive R2Z2 ingest alone does not guarantee historical coverage — participants must be enrolled in <code>character_killmail_queue</code> for per-character zKB backfill.</span></p>
             </div>
         </details>
     </article>
@@ -498,6 +517,130 @@ if (function_exists('ob_flush')) { @ob_flush(); }
             }
         });
     });
+
+    // -----------------------------------------------------------------------
+    // ESI coverage panel — lazy loader
+    //
+    // Keeps the main page off the ~200s ESI coverage snapshot query.
+    // Fetches /api/killmail-intelligence/esi-coverage.php on load, populates
+    // every [data-esi-coverage-field] span, and surfaces cache age + a
+    // refresh button. Handles HTTP 202 (single-flight in progress) by
+    // polling until the refresh completes.
+    // -----------------------------------------------------------------------
+    const coverageEndpoint = '/api/killmail-intelligence/esi-coverage.php';
+    const coverageStatusEl = document.querySelector('[data-esi-coverage-status]');
+    const coverageRefreshBtn = document.querySelector('[data-esi-coverage-refresh]');
+    const coverageFieldEls = document.querySelectorAll('[data-esi-coverage-field]');
+    let coveragePollTimer = null;
+    let coverageInFlight = false;
+
+    function formatCoverageNumber(value) {
+        const n = typeof value === 'number' ? value : parseInt(value, 10);
+        return Number.isFinite(n) ? n.toLocaleString() : '—';
+    }
+
+    function formatCoverageAge(seconds) {
+        if (seconds == null) return 'never';
+        if (seconds < 60) return seconds + 's ago';
+        if (seconds < 3600) return Math.floor(seconds / 60) + 'm ago';
+        if (seconds < 86400) return Math.floor(seconds / 3600) + 'h ago';
+        return Math.floor(seconds / 86400) + 'd ago';
+    }
+
+    function setCoverageStatus(text, tone) {
+        if (!coverageStatusEl) return;
+        coverageStatusEl.textContent = text;
+        coverageStatusEl.className = 'text-xs ' + (tone === 'error' ? 'text-amber-300' : (tone === 'fresh' ? 'text-emerald-300' : 'text-muted'));
+    }
+
+    function applyCoverageData(coverage) {
+        if (!coverage || typeof coverage !== 'object') return;
+        coverageFieldEls.forEach(el => {
+            const key = el.getAttribute('data-esi-coverage-field');
+            if (key && Object.prototype.hasOwnProperty.call(coverage, key)) {
+                el.textContent = formatCoverageNumber(coverage[key]);
+            }
+        });
+    }
+
+    function applyCoverageStatusFromResponse(coverage, refreshing) {
+        const status = coverage && coverage.cache_status;
+        const age = coverage && coverage.cache_age_seconds;
+        if (refreshing) {
+            setCoverageStatus('Refreshing… (last updated ' + formatCoverageAge(age) + ')', 'muted');
+            return;
+        }
+        if (status === 'empty') {
+            setCoverageStatus('No data yet — click ↻ Refresh', 'muted');
+            return;
+        }
+        if (status === 'warm') {
+            setCoverageStatus('Updated ' + formatCoverageAge(age), 'fresh');
+            return;
+        }
+        if (status === 'stale') {
+            setCoverageStatus('Updated ' + formatCoverageAge(age) + ' (stale)', 'muted');
+            return;
+        }
+        setCoverageStatus('Updated ' + formatCoverageAge(age), 'muted');
+    }
+
+    function scheduleCoveragePoll(seconds) {
+        if (coveragePollTimer) clearTimeout(coveragePollTimer);
+        coveragePollTimer = setTimeout(() => loadCoverage(false), Math.max(1, seconds) * 1000);
+    }
+
+    async function loadCoverage(force) {
+        if (coverageInFlight) return;
+        if (!coverageFieldEls.length) return;
+        coverageInFlight = true;
+        if (coverageRefreshBtn) coverageRefreshBtn.disabled = true;
+        setCoverageStatus(force ? 'Forcing refresh…' : 'Loading…', 'muted');
+
+        try {
+            const url = coverageEndpoint + (force ? '?force=1' : '');
+            const response = await fetch(url, { headers: { 'Accept': 'application/json' } });
+            const data = await response.json().catch(() => null);
+
+            if (response.status === 202 && data && data.ok) {
+                applyCoverageData(data.coverage);
+                applyCoverageStatusFromResponse(data.coverage, true);
+                scheduleCoveragePoll(data.retry_after_seconds || 15);
+                return;
+            }
+            if (!response.ok || !data || !data.ok) {
+                setCoverageStatus('Load failed — retry with ↻', 'error');
+                return;
+            }
+
+            applyCoverageData(data.coverage);
+            applyCoverageStatusFromResponse(data.coverage, false);
+        } catch (err) {
+            setCoverageStatus('Load failed — retry with ↻', 'error');
+        } finally {
+            coverageInFlight = false;
+            if (coverageRefreshBtn) coverageRefreshBtn.disabled = false;
+        }
+    }
+
+    if (coverageRefreshBtn) {
+        coverageRefreshBtn.addEventListener('click', () => {
+            if (coveragePollTimer) {
+                clearTimeout(coveragePollTimer);
+                coveragePollTimer = null;
+            }
+            loadCoverage(true);
+        });
+    }
+
+    if (coverageFieldEls.length) {
+        // Kick off the initial fetch after the main page has rendered.
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', () => loadCoverage(false));
+        } else {
+            loadCoverage(false);
+        }
+    }
 })();
 </script>
 <?php include __DIR__ . '/../../src/views/partials/footer.php'; ?>
