@@ -129,7 +129,7 @@ while :; do
 
   OUTPUT=$(
     cd "${APP_ROOT}/python"
-    "${PYTHON_BIN}" -m orchestrator.main run-job \
+    "${PYTHON_BIN}" -m orchestrator run-job \
       --app-root "${APP_ROOT}" \
       --job-key "${JOB_KEY}" 2>&1
   ) || {
