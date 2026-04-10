@@ -12449,7 +12449,7 @@ function db_killmail_filtered_recent(int $limit = 50): array
     );
 }
 
-function db_killmail_overview_summary(int $recentHours = 24): array
+function db_killmail_overview_summary(int $recentHours = 24, string $startDate = '2024-01-01 00:00:00'): array
 {
     $safeRecentHours = max(1, min(24 * 30, $recentHours));
     $trackedMatchesSql = db_killmail_tracked_matches_sql();
@@ -12462,19 +12462,25 @@ function db_killmail_overview_summary(int $recentHours = 24): array
             MAX(e.created_at) AS last_ingested_at,
             MAX(e.uploaded_at) AS latest_uploaded_at
          FROM {$latestSequencesSql} latest
-         INNER JOIN killmail_events e ON e.sequence_id = latest.sequence_id"
+         INNER JOIN killmail_events e ON e.sequence_id = latest.sequence_id
+         WHERE e.effective_killmail_at >= ?",
+        [$startDate]
     ) ?? [];
     $trackedCountRow = db_select_one(
         "SELECT COUNT(*) AS tracked_match_count
          FROM {$trackedMatchesSql} tracked
-         INNER JOIN {$latestSequencesSql} latest ON latest.sequence_id = tracked.sequence_id"
+         INNER JOIN {$latestSequencesSql} latest ON latest.sequence_id = tracked.sequence_id
+         INNER JOIN killmail_events e ON e.sequence_id = tracked.sequence_id
+         WHERE e.effective_killmail_at >= ?",
+        [$startDate]
     ) ?? [];
     $summary['tracked_match_count'] = (int) ($trackedCountRow['tracked_match_count'] ?? 0);
+    $summary['start_date'] = $startDate;
 
     return $summary;
 }
 
-function db_killmail_overview_filter_options(): array
+function db_killmail_overview_filter_options(string $startDate = '2024-01-01 00:00:00'): array
 {
     $latestSequencesSql = db_killmail_latest_sequences_sql();
     $alliances = db_select(
@@ -12487,8 +12493,10 @@ function db_killmail_overview_filter_options(): array
            ON emc.entity_type = 'alliance' AND emc.entity_id = e.victim_alliance_id
          WHERE e.victim_alliance_id IS NOT NULL
            AND e.victim_alliance_id > 0
+           AND e.effective_killmail_at >= ?
          ORDER BY entity_label ASC
-         LIMIT 200"
+         LIMIT 200",
+        [$startDate]
     );
 
     $corporations = db_select(
@@ -12501,13 +12509,127 @@ function db_killmail_overview_filter_options(): array
            ON emc.entity_type = 'corporation' AND emc.entity_id = e.victim_corporation_id
          WHERE e.victim_corporation_id IS NOT NULL
            AND e.victim_corporation_id > 0
+           AND e.effective_killmail_at >= ?
          ORDER BY entity_label ASC
-         LIMIT 200"
+         LIMIT 200",
+        [$startDate]
     );
 
     return [
         'alliances' => $alliances,
         'corporations' => $corporations,
+    ];
+}
+
+function db_killmail_overview_monthly_histogram(string $startDate = '2024-01-01'): array
+{
+    $latestSequencesSql = db_killmail_latest_sequences_sql();
+    return db_select(
+        "SELECT DATE_FORMAT(e.effective_killmail_at, '%Y-%m') AS bucket_month,
+                COUNT(*) AS loss_count
+         FROM {$latestSequencesSql} latest
+         INNER JOIN killmail_events e ON e.sequence_id = latest.sequence_id
+         WHERE e.mail_type = 'loss'
+           AND e.effective_killmail_at >= ?
+         GROUP BY DATE_FORMAT(e.effective_killmail_at, '%Y-%m')
+         ORDER BY bucket_month ASC",
+        [$startDate . ' 00:00:00']
+    );
+}
+
+function db_killmail_esi_coverage_snapshot(string $startDate = '2024-01-01'): array
+{
+    $startAt = $startDate . ' 00:00:00';
+    $participantCount = (int) db_fetch_single_value(
+        "SELECT COUNT(DISTINCT participant.character_id)
+         FROM (
+             SELECT ke.victim_character_id AS character_id
+             FROM killmail_events ke
+             WHERE ke.victim_character_id IS NOT NULL
+               AND ke.victim_character_id > 0
+               AND ke.effective_killmail_at >= ?
+             UNION
+             SELECT ka.character_id AS character_id
+             FROM killmail_attackers ka
+             INNER JOIN killmail_events ke ON ke.sequence_id = ka.sequence_id
+             WHERE ka.character_id IS NOT NULL
+               AND ka.character_id > 0
+               AND ke.effective_killmail_at >= ?
+         ) participant",
+        [$startAt, $startAt]
+    );
+
+    $queuedCount = (int) db_fetch_single_value(
+        "SELECT COUNT(*)
+         FROM esi_character_queue q
+         INNER JOIN (
+             SELECT ke.victim_character_id AS character_id
+             FROM killmail_events ke
+             WHERE ke.victim_character_id IS NOT NULL
+               AND ke.victim_character_id > 0
+               AND ke.effective_killmail_at >= ?
+             UNION
+             SELECT ka.character_id AS character_id
+             FROM killmail_attackers ka
+             INNER JOIN killmail_events ke ON ke.sequence_id = ka.sequence_id
+             WHERE ka.character_id IS NOT NULL
+               AND ka.character_id > 0
+               AND ke.effective_killmail_at >= ?
+         ) participant ON participant.character_id = q.character_id",
+        [$startAt, $startAt]
+    );
+
+    $affiliationCount = (int) db_fetch_single_value(
+        "SELECT COUNT(*)
+         FROM character_current_affiliation a
+         INNER JOIN (
+             SELECT ke.victim_character_id AS character_id
+             FROM killmail_events ke
+             WHERE ke.victim_character_id IS NOT NULL
+               AND ke.victim_character_id > 0
+               AND ke.effective_killmail_at >= ?
+             UNION
+             SELECT ka.character_id AS character_id
+             FROM killmail_attackers ka
+             INNER JOIN killmail_events ke ON ke.sequence_id = ka.sequence_id
+             WHERE ka.character_id IS NOT NULL
+               AND ka.character_id > 0
+               AND ke.effective_killmail_at >= ?
+         ) participant ON participant.character_id = a.character_id",
+        [$startAt, $startAt]
+    );
+
+    $allianceHistoryCount = (int) db_fetch_single_value(
+        "SELECT COUNT(DISTINCT h.character_id)
+         FROM character_alliance_history h
+         INNER JOIN (
+             SELECT ke.victim_character_id AS character_id
+             FROM killmail_events ke
+             WHERE ke.victim_character_id IS NOT NULL
+               AND ke.victim_character_id > 0
+               AND ke.effective_killmail_at >= ?
+             UNION
+             SELECT ka.character_id AS character_id
+             FROM killmail_attackers ka
+             INNER JOIN killmail_events ke ON ke.sequence_id = ka.sequence_id
+             WHERE ka.character_id IS NOT NULL
+               AND ka.character_id > 0
+               AND ke.effective_killmail_at >= ?
+         ) participant ON participant.character_id = h.character_id",
+        [$startAt, $startAt]
+    );
+
+    $missingAffiliation = max(0, $participantCount - $affiliationCount);
+    $missingAllianceHistory = max(0, $participantCount - $allianceHistoryCount);
+
+    return [
+        'start_date' => $startDate,
+        'participant_characters' => $participantCount,
+        'queued_in_esi_character_queue' => $queuedCount,
+        'with_current_affiliation' => $affiliationCount,
+        'with_alliance_history' => $allianceHistoryCount,
+        'missing_current_affiliation' => $missingAffiliation,
+        'missing_alliance_history' => $missingAllianceHistory,
     ];
 }
 
@@ -12656,6 +12778,7 @@ function db_killmail_overview_page(array $filters = []): array
     $trackedOnly = (bool) ($filters['tracked_only'] ?? false);
     $mailType = in_array((string) ($filters['mail_type'] ?? 'loss'), ['kill', 'loss', ''], true) ? (string) ($filters['mail_type'] ?? 'loss') : 'loss';
     $search = trim((string) ($filters['search'] ?? ''));
+    $startDate = trim((string) ($filters['start_date'] ?? '2024-01-01 00:00:00'));
     $trackedMatchesSql = db_killmail_tracked_matches_sql();
     $latestSequencesSql = db_killmail_latest_sequences_sql();
     $trackedJoinType = $trackedOnly ? 'INNER JOIN' : 'LEFT JOIN';
@@ -12708,6 +12831,8 @@ function db_killmail_overview_page(array $filters = []): array
         $conditions[] = 'e.mail_type = ?';
         $params[] = $mailType;
     }
+    $conditions[] = 'e.effective_killmail_at >= ?';
+    $params[] = $startDate;
 
     if ($search !== '') {
         $needle = '%' . $search . '%';

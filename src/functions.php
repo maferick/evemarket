@@ -11576,6 +11576,8 @@ function killmail_detail_data(): array
 function killmail_overview_data(): array
 {
     $recentHours = 24;
+    $overviewStartDate = '2024-01-01';
+    $overviewStartDateTime = $overviewStartDate . ' 00:00:00';
     $allowedPageSizes = [25, 50, 100];
     $pageSize = (int) ($_GET['page_size'] ?? 25);
     if (!in_array($pageSize, $allowedPageSizes, true)) {
@@ -11597,13 +11599,15 @@ function killmail_overview_data(): array
     // own 120-second cache entry and is busted together on the next killmail sync.
     $useCache = $filters['search'] === '';
 
-    $resolver = static function () use ($recentHours, $filters, $allowedPageSizes, $pageSize): array {
+    $resolver = static function () use ($recentHours, $filters, $allowedPageSizes, $pageSize, $overviewStartDate, $overviewStartDateTime): array {
         try {
-            $summaryRow = db_killmail_overview_summary($recentHours);
+            $summaryRow = db_killmail_overview_summary($recentHours, $overviewStartDateTime);
             $status = db_killmail_ingestion_status();
             $workerStatus = zkill_worker_runtime_status();
-            $options = db_killmail_overview_filter_options();
-            $listing = db_killmail_overview_page($filters);
+            $options = db_killmail_overview_filter_options($overviewStartDateTime);
+            $listing = db_killmail_overview_page($filters + ['start_date' => $overviewStartDateTime]);
+            $histogramRows = db_killmail_overview_monthly_histogram($overviewStartDate);
+            $esiCoverage = db_killmail_esi_coverage_snapshot($overviewStartDate);
             $storageDuplicateRows = db_killmail_duplicate_identities(50);
         } catch (Throwable $exception) {
             return [
@@ -11618,10 +11622,12 @@ function killmail_overview_data(): array
                     'result_duplicate_identity_count' => 0,
                 ],
                 'rows' => [],
+                'histogram' => [],
                 'filters' => $filters + [
                     'page_size_options' => $allowedPageSizes,
                     'alliance_options' => ['0' => 'All alliances'],
                     'corporation_options' => ['0' => 'All corporations'],
+                    'start_date' => $overviewStartDate,
                 ],
                 'pagination' => [
                     'page' => 1,
@@ -11631,6 +11637,15 @@ function killmail_overview_data(): array
                     'total_items' => 0,
                     'showing_from' => 0,
                     'showing_to' => 0,
+                ],
+                'coverage' => [
+                    'start_date' => $overviewStartDate,
+                    'participant_characters' => 0,
+                    'queued_in_esi_character_queue' => 0,
+                    'with_current_affiliation' => 0,
+                    'with_alliance_history' => 0,
+                    'missing_current_affiliation' => 0,
+                    'missing_alliance_history' => 0,
                 ],
                 'empty_message' => 'Killmail overview is unavailable because the database query failed.',
             ];
@@ -11909,22 +11924,40 @@ function killmail_overview_data(): array
             'result_duplicate_identities' => [],
         ];
         $statusView['health'] = killmail_ingestion_health_summary($statusView, $workerStatus);
+        $maxHistogramCount = 0;
+        foreach ($histogramRows as $histogramRow) {
+            $maxHistogramCount = max($maxHistogramCount, (int) ($histogramRow['loss_count'] ?? 0));
+        }
+        $histogram = array_map(static function (array $histogramRow) use ($maxHistogramCount): array {
+            $count = (int) ($histogramRow['loss_count'] ?? 0);
+            $monthKey = trim((string) ($histogramRow['bucket_month'] ?? ''));
+            $monthLabel = $monthKey !== '' ? gmdate('M Y', strtotime($monthKey . '-01')) : 'Unknown';
+            return [
+                'month' => $monthKey,
+                'label' => $monthLabel,
+                'count' => $count,
+                'percent' => $maxHistogramCount > 0 ? max(2, (int) round(($count / $maxHistogramCount) * 100)) : 0,
+            ];
+        }, $histogramRows);
 
         return [
             'error' => null,
             'summary' => [
-                ['label' => 'Total Ingested', 'value' => number_format($totalCount), 'context' => 'Killmails stored locally'],
+                ['label' => 'Total Ingested', 'value' => number_format($totalCount), 'context' => 'Killmails stored locally since ' . $overviewStartDate],
                 ['label' => 'Recent Ingestion', 'value' => number_format($recentCount), 'context' => 'Stored in the last ' . $recentHours . ' hours'],
-                ['label' => 'Tracked Entity Killmails', 'value' => number_format($trackedMatchCount), 'context' => 'Stored killmails where a tracked alliance or corporation appears on the victim side'],
+                ['label' => 'Tracked Entity Killmails', 'value' => number_format($trackedMatchCount), 'context' => 'Stored killmails since ' . $overviewStartDate . ' where a tracked alliance or corporation appears on the victim side'],
                 ['label' => 'Last Processed Sequence', 'value' => $maxSequenceId > 0 ? number_format($maxSequenceId) : '—', 'context' => $cursor !== '' ? ('Cursor ' . $cursor) : 'Cursor not recorded yet'],
                 ['label' => 'Sync Freshness', 'value' => killmail_relative_datetime($lastSuccessAt), 'context' => $lastSuccessAt !== null ? ('Last success ' . killmail_format_datetime($lastSuccessAt)) : 'No successful sync recorded'],
             ],
             'status' => $statusView,
             'rows' => $rows,
+            'histogram' => $histogram,
+            'coverage' => $esiCoverage,
             'filters' => $filters + [
                 'page_size_options' => $allowedPageSizes,
                 'alliance_options' => $allianceOptions,
                 'corporation_options' => $corporationOptions,
+                'start_date' => $overviewStartDate,
             ],
             'pagination' => [
                 'page' => (int) ($listing['page'] ?? 1),
