@@ -11616,6 +11616,125 @@ function killmail_detail_data(): array
     ]);
 }
 
+/**
+ * ESI coverage snapshot caching layer.
+ *
+ * db_killmail_esi_coverage_snapshot() runs 7+ queries that UNION over
+ * killmail_events + killmail_attackers for every victim/attacker character
+ * in the window. On a multi-million-row killmail_events it takes ~2 minutes
+ * per invocation, which made /killmail-intelligence time out on every
+ * request. The numbers change slowly (minutes), so we materialize them into
+ * the page_cache table and let the overview page read from there.
+ *
+ * Refresh strategy: a standalone CLI (bin/refresh_killmail_esi_coverage.php)
+ * computes and writes the snapshot. Operators hook it into whatever cron or
+ * scheduler they run (suggested: every 5 minutes). Until the first refresh
+ * succeeds the page renders with a zero-valued stub and a "refresh pending"
+ * note rather than blocking.
+ */
+function killmail_esi_coverage_cache_key(string $startDate): string
+{
+    return 'killmail_esi_coverage:' . trim($startDate);
+}
+
+/**
+ * Zero-valued snapshot with the exact shape db_killmail_esi_coverage_snapshot()
+ * returns, plus cache metadata the UI can surface. Used on cache miss so the
+ * consumer code path never has to special-case a missing snapshot.
+ */
+function killmail_esi_coverage_empty_snapshot(string $startDate): array
+{
+    return [
+        'start_date' => $startDate,
+        'participant_characters' => 0,
+        'queued_in_esi_character_queue' => 0,
+        'esi_queue_pending' => 0,
+        'esi_queue_done' => 0,
+        'esi_queue_error' => 0,
+        'with_current_affiliation' => 0,
+        'with_alliance_history_row' => 0,
+        'with_alliance_history' => 0,
+        'history_refresh_completed' => 0,
+        'enrolled_for_killmail_backfill' => 0,
+        'killmail_backfill_pending' => 0,
+        'killmail_backfill_processing' => 0,
+        'killmail_backfill_done' => 0,
+        'killmail_backfill_error' => 0,
+        'killmail_backfill_complete_flag' => 0,
+        'missing_current_affiliation' => 0,
+        'missing_alliance_history' => 0,
+        'missing_history_refresh' => 0,
+        'missing_killmail_backfill_enrollment' => 0,
+        'cache_status' => 'empty',
+        'cache_computed_at' => null,
+        'cache_age_seconds' => null,
+    ];
+}
+
+/**
+ * Read a cached snapshot from page_cache. Returns the zero stub when no
+ * cache entry exists — the page still renders. The cache entry itself has
+ * no expiry (we treat "stale" as a soft state surfaced via cache_age_seconds
+ * instead of deleting the row), because a several-hours-old snapshot is
+ * still better than zero while the refresh job is down.
+ */
+function killmail_esi_coverage_cache_read(string $startDate): array
+{
+    $row = db_select_one(
+        "SELECT cache_value, computed_at FROM page_cache WHERE cache_key = ?",
+        [killmail_esi_coverage_cache_key($startDate)]
+    );
+    if ($row === null) {
+        return killmail_esi_coverage_empty_snapshot($startDate);
+    }
+
+    $decoded = json_decode((string) ($row['cache_value'] ?? ''), true);
+    if (!is_array($decoded)) {
+        return killmail_esi_coverage_empty_snapshot($startDate);
+    }
+
+    $computedAt = isset($row['computed_at']) ? (string) $row['computed_at'] : null;
+    $ageSeconds = null;
+    if ($computedAt !== null && $computedAt !== '') {
+        $computedTs = strtotime($computedAt);
+        if ($computedTs !== false) {
+            $ageSeconds = max(0, time() - $computedTs);
+        }
+    }
+
+    $decoded['cache_status'] = ($ageSeconds !== null && $ageSeconds > 900) ? 'stale' : 'warm';
+    $decoded['cache_computed_at'] = $computedAt;
+    $decoded['cache_age_seconds'] = $ageSeconds;
+
+    return $decoded;
+}
+
+/**
+ * Compute a fresh snapshot and write it to page_cache. Called by the CLI
+ * refresh entry point; not called inline from the page. Returns the fresh
+ * snapshot (with cache metadata) so the CLI can log what it wrote.
+ *
+ * TTL on the page_cache row is long (24h) — the row is effectively
+ * overwritten on every refresh, and the expires_at is just a safety net
+ * to let page_cache_flush_expired() sweep if the refresh stops running
+ * entirely.
+ */
+function killmail_esi_coverage_cache_refresh(string $startDate): array
+{
+    $snapshot = db_killmail_esi_coverage_snapshot($startDate);
+    page_cache_set(
+        killmail_esi_coverage_cache_key($startDate),
+        $snapshot,
+        86400
+    );
+
+    $snapshot['cache_status'] = 'warm';
+    $snapshot['cache_computed_at'] = gmdate('Y-m-d H:i:s');
+    $snapshot['cache_age_seconds'] = 0;
+
+    return $snapshot;
+}
+
 function killmail_overview_data(): array
 {
     $recentHours = 24;
@@ -11650,7 +11769,11 @@ function killmail_overview_data(): array
             $options = db_killmail_overview_filter_options($overviewStartDateTime);
             $listing = db_killmail_overview_page($filters + ['start_date' => $overviewStartDateTime]);
             $histogramRows = db_killmail_overview_monthly_histogram($overviewStartDate);
-            $esiCoverage = db_killmail_esi_coverage_snapshot($overviewStartDate);
+            // ESI coverage snapshot is read from page_cache (materialized by
+            // bin/refresh_killmail_esi_coverage.php). On cache miss we serve
+            // a zero stub rather than running the 2-minute UNION query inline.
+            // See killmail_esi_coverage_cache_read() for the full rationale.
+            $esiCoverage = killmail_esi_coverage_cache_read($overviewStartDate);
             $storageDuplicateRows = db_killmail_duplicate_identities(50);
         } catch (Throwable $exception) {
             return [
