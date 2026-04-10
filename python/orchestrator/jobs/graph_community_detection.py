@@ -200,57 +200,112 @@ def _compute_betweenness_approximation(client: Neo4jClient) -> None:
     )
 
 
+NEO4J_EXPORT_CHUNK = 2000
+
+
 def _export_community_assignments(client: Neo4jClient, db: SupplyCoreDb, computed_at: str) -> int:
     """Export community assignments, centrality scores to MariaDB.
 
-    Uses a single Cypher query that computes community_size and bridge
-    status server-side, eliminating Python-side dict aggregation and an
-    extra Neo4j round-trip for bridge detection.
+    Previously this function issued a single Cypher statement that did:
+
+        MATCH (c:Character) WHERE c.community_label IS NOT NULL
+        WITH c.community_label AS comm_label, collect(c) AS members, ...
+        UNWIND members AS c
+        CALL { ... degree ... }
+        CALL { ... neighbor_communities ... }
+        RETURN ...
+
+    The ``collect(c)`` materialized every character node into Neo4j's
+    transaction memory at once, and the per-character subqueries on top of
+    that regularly blew the page-cache / transaction memory pool, producing
+    the ``MemoryPoolOutOfMemoryError`` tracked in issue #900.
+
+    This rewrite streams the export in three memory-bounded phases:
+
+    1. Aggregate community sizes with a pure ``count()`` query — the result
+       is one row per community, which is tiny even for large graphs.
+    2. Page character centrality / neighbor_communities in chunks of
+       ``NEO4J_EXPORT_CHUNK`` rows, ordered by ``character_id``.
+       Each page is a short-lived query whose output fits easily in memory.
+    3. Merge community_size / membership in Python and bulk-insert into
+       MariaDB in small batches.
     """
-    rows = client.query(
+    # Phase 1 — community sizes (tiny aggregation result, no node collection).
+    community_rows = client.query(
         """
         MATCH (c:Character)
         WHERE c.community_label IS NOT NULL
-        WITH c.community_label AS comm_label,
-             collect(c) AS members,
-             count(*) AS comm_size
-        UNWIND members AS c
-        CALL {
-            WITH c
-            OPTIONAL MATCH (c)-[r:CO_OCCURS_WITH|DIRECT_COMBAT|ASSISTED_KILL|SAME_FLEET]-(:Character)
-            RETURN count(r) AS degree
-        }
-        CALL {
-            WITH c
-            OPTIONAL MATCH (c)-[:CO_OCCURS_WITH|DIRECT_COMBAT|ASSISTED_KILL|SAME_FLEET]-(n:Character)
-            WHERE n.community_label IS NOT NULL
-            RETURN count(DISTINCT n.community_label) AS neighbor_communities
-        }
-        RETURN
-            c.character_id AS character_id,
-            toInteger(comm_label) AS community_id,
-            toInteger(comm_size) AS community_size,
-            toFloat(COALESCE(c.pr, 0.0)) AS pagerank_score,
-            toFloat(COALESCE(c.betweenness_approx, 0.0)) AS betweenness_centrality,
-            toInteger(degree) AS degree_centrality,
-            CASE WHEN neighbor_communities >= $bridge_threshold THEN 1 ELSE 0 END AS is_bridge
+        RETURN toInteger(c.community_label) AS community_id,
+               count(*) AS community_size
         """,
-        {"bridge_threshold": BRIDGE_COMMUNITY_THRESHOLD},
-        timeout_seconds=180,
+        timeout_seconds=120,
     )
-
-    if not rows:
+    if not community_rows:
         return 0
 
-    total_characters = len(rows)
+    community_sizes: dict[int, int] = {
+        int(r.get("community_id") or 0): int(r.get("community_size") or 0)
+        for r in community_rows
+    }
+    total_characters = sum(community_sizes.values())
+    if total_characters <= 0:
+        return 0
 
-    # Truncate and insert
+    # Phase 2 — stream character data paginated by character_id.  Each page
+    # returns at most ``NEO4J_EXPORT_CHUNK`` characters with their degree
+    # and neighbor_community count.  SKIP/LIMIT keeps the working set
+    # bounded regardless of total graph size.
+    character_rows: list[dict[str, Any]] = []
+    skip = 0
+    while True:
+        page = client.query(
+            """
+            MATCH (c:Character)
+            WHERE c.community_label IS NOT NULL
+            WITH c ORDER BY c.character_id ASC SKIP $skip LIMIT $limit
+            CALL {
+                WITH c
+                OPTIONAL MATCH (c)-[r:CO_OCCURS_WITH|DIRECT_COMBAT|ASSISTED_KILL|SAME_FLEET]-(:Character)
+                RETURN count(r) AS degree
+            }
+            CALL {
+                WITH c
+                OPTIONAL MATCH (c)-[:CO_OCCURS_WITH|DIRECT_COMBAT|ASSISTED_KILL|SAME_FLEET]-(n:Character)
+                WHERE n.community_label IS NOT NULL
+                RETURN count(DISTINCT n.community_label) AS neighbor_communities
+            }
+            RETURN
+                c.character_id AS character_id,
+                toInteger(c.community_label) AS community_id,
+                toFloat(COALESCE(c.pr, 0.0)) AS pagerank_score,
+                toFloat(COALESCE(c.betweenness_approx, 0.0)) AS betweenness_centrality,
+                toInteger(degree) AS degree_centrality,
+                CASE WHEN neighbor_communities >= $bridge_threshold THEN 1 ELSE 0 END AS is_bridge
+            """,
+            {
+                "skip": skip,
+                "limit": NEO4J_EXPORT_CHUNK,
+                "bridge_threshold": BRIDGE_COMMUNITY_THRESHOLD,
+            },
+            timeout_seconds=180,
+        )
+        if not page:
+            break
+        character_rows.extend(page)
+        if len(page) < NEO4J_EXPORT_CHUNK:
+            break
+        skip += NEO4J_EXPORT_CHUNK
+
+    if not character_rows:
+        return 0
+
+    # Phase 3 — bulk-insert into MariaDB.
     db.execute("DELETE FROM graph_community_assignments")
 
     batch_size = 500
     total_written = 0
-    for offset in range(0, len(rows), batch_size):
-        chunk = rows[offset:offset + batch_size]
+    for offset in range(0, len(character_rows), batch_size):
+        chunk = character_rows[offset:offset + batch_size]
         values = []
         params: list[Any] = []
         for r in chunk:
@@ -258,7 +313,7 @@ def _export_community_assignments(client: Neo4jClient, db: SupplyCoreDb, compute
             comm_id = int(r.get("community_id") or 0)
             if char_id <= 0:
                 continue
-            comm_size = int(r.get("community_size") or 0)
+            comm_size = community_sizes.get(comm_id, 0)
             membership = min(1.0, comm_size / max(1, total_characters)) if comm_size > 1 else 1.0
             is_bridge = int(r.get("is_bridge") or 0)
             values.append("(%s, %s, %s, %s, %s, %s, %s, %s, %s)")
