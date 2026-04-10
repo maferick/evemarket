@@ -1,0 +1,28 @@
+[Unit]
+Description=SupplyCore Claude triage — tag @claude on the next open auto-log issue
+Documentation=file:///var/www/SupplyCore/scripts/claude-triage.sh
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# Runs as root to match the hourly-loop service. The script itself only
+# makes GitHub API calls and writes to storage/logs/hourly-loop/, so it
+# does not require privileged operations — but keeping root matches the
+# file-ownership expectations of the rest of the automation chain.
+User=root
+Group=root
+WorkingDirectory=/var/www/SupplyCore
+Environment=APP_ROOT=/var/www/SupplyCore
+# Optional overrides (MAX_CLAUDE_INVOCATIONS_PER_RUN, CLAUDE_TRIAGE_LABEL)
+# can be set in /etc/default/supplycore-claude-triage.
+EnvironmentFile=-/etc/default/supplycore-claude-triage
+ExecStart=/var/www/SupplyCore/scripts/claude-triage.sh
+StandardOutput=append:/var/www/SupplyCore/storage/logs/hourly-loop/claude-triage.systemd.log
+StandardError=append:/var/www/SupplyCore/storage/logs/hourly-loop/claude-triage.systemd.log
+TimeoutStartSec=300
+Nice=10
+IOSchedulingClass=best-effort
+
+[Install]
+WantedBy=multi-user.target

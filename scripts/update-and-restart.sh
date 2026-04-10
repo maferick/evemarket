@@ -40,6 +40,7 @@ HEALTH_CHECK_TIMEOUT=30
 # The hourly-loop unit files are synced here too, but the timer is NOT
 # enabled automatically. Operators enable it with:
 #   sudo systemctl enable --now supplycore-hourly-loop.timer
+#   sudo systemctl enable --now supplycore-claude-triage.timer
 # after reviewing one manual run.
 CORE_UNITS=(
   supplycore-loop-runner.service
@@ -55,6 +56,8 @@ CORE_UNITS=(
   supplycore-influx-rollup-export.timer
   supplycore-hourly-loop.service
   supplycore-hourly-loop.timer
+  supplycore-claude-triage.service
+  supplycore-claude-triage.timer
 )
 
 # Units that are opt-in only — update if already installed, but don't install.
