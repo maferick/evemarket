@@ -343,6 +343,55 @@ def rewind_cursor(db: SupplyCoreDb, dataset_key: str, cursor: str) -> None:
     )
 
 
+def update_watermark_and_stall(
+    db: SupplyCoreDb,
+    dataset_key: str,
+    *,
+    new_cursor: str,
+    event_time: str | datetime | None,
+) -> None:
+    """Update ``watermark_event_time`` and stall tracking alongside an
+    externally-managed ``last_cursor`` write.
+
+    Unlike :func:`advance_cursor_with_stall_detection`, this helper does
+    NOT touch ``last_cursor`` itself -- that's expected to be written by
+    the calling job's existing upsert (e.g. battle intelligence uses its
+    own integer-sequence-id upsert). The helper only compares cursors
+    for equality to detect stalls (equal -> increment, different -> reset),
+    so it works for any cursor format including plain integers.
+
+    Call this on successful runs only. Failed runs should leave stall
+    tracking alone so the next retry doesn't inherit a bumped counter.
+    """
+    row = db.fetch_one(
+        "SELECT last_cursor, stall_cursor FROM sync_state WHERE dataset_key = %s LIMIT 1",
+        (dataset_key,),
+    ) or {}
+    existing_stall_cursor = _coerce_str(row.get("stall_cursor")) or _coerce_str(row.get("last_cursor")) or ""
+
+    advanced = str(new_cursor) != existing_stall_cursor
+    if advanced:
+        stall_cursor: str | None = new_cursor
+        stall_count_expr = "0"
+    else:
+        stall_cursor = existing_stall_cursor or None
+        stall_count_expr = "(stall_count + 1)"
+
+    event_time_str = _coerce_event_time(event_time, new_cursor) if event_time is not None else None
+
+    db.execute(
+        f"""
+        UPDATE sync_state
+           SET watermark_event_time = COALESCE(%s, watermark_event_time),
+               stall_cursor = %s,
+               stall_count = {stall_count_expr},
+               updated_at = CURRENT_TIMESTAMP
+         WHERE dataset_key = %s
+        """,
+        (event_time_str, stall_cursor, dataset_key),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Backfill-complete gate helpers.
 # ---------------------------------------------------------------------------

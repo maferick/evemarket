@@ -27,6 +27,7 @@ from orchestrator.horizon import (  # noqa: E402
     read_from_cursor,
     rewind_cursor,
     should_use_incremental_only,
+    update_watermark_and_stall,
 )
 
 
@@ -77,6 +78,24 @@ class FakeDb:
             new_cursor, event_time, stall_cursor, _dataset_key = params_tuple
             row["last_cursor"] = new_cursor
             row["watermark_event_time"] = event_time
+            row["stall_cursor"] = stall_cursor
+            if "STALL_COUNT = 0" in upper:
+                row["stall_count"] = 0
+            else:
+                row["stall_count"] = int(row.get("stall_count") or 0) + 1
+            return 1
+
+        # Watermark-and-stall-only update: does not touch last_cursor.
+        # Shape: SET watermark_event_time = COALESCE(%s, ...), stall_cursor = %s,
+        #        stall_count = (0 | stall_count + 1) WHERE dataset_key = %s
+        if (
+            "WATERMARK_EVENT_TIME = COALESCE" in upper
+            and "STALL_CURSOR = %S" in upper
+            and "LAST_CURSOR" not in upper
+        ):
+            event_time, stall_cursor, _dataset_key = params_tuple
+            if event_time is not None:
+                row["watermark_event_time"] = event_time
             row["stall_cursor"] = stall_cursor
             if "STALL_COUNT = 0" in upper:
                 row["stall_count"] = 0
@@ -262,6 +281,96 @@ class AdvanceCursorTests(unittest.TestCase):
         self.assertEqual(updated["watermark_event_time"], "2026-04-05 00:00:00")
         self.assertEqual(updated["stall_count"], 0)
         self.assertIsNone(updated["stall_cursor"])
+
+
+class UpdateWatermarkAndStallTests(unittest.TestCase):
+    """Covers the helper used by jobs that manage last_cursor themselves
+    (e.g. compute_battle_rollups uses a plain integer sequence_id cursor
+    so it must keep its own upsert for ordering, while still getting
+    horizon watermark + stall tracking)."""
+
+    def test_advance_updates_watermark_and_resets_stall(self) -> None:
+        db = FakeDb({"test.dataset": _make_row(
+            last_cursor="12345",
+            stall_cursor="12340",
+            stall_count=2,
+            watermark_event_time=None,
+        )})
+        update_watermark_and_stall(
+            db,
+            "test.dataset",
+            new_cursor="12345",
+            event_time="2026-04-10 11:00:00",
+        )
+
+        updated = db.rows["test.dataset"]
+        # last_cursor must not be touched by this helper.
+        self.assertEqual(updated["last_cursor"], "12345")
+        self.assertEqual(updated["stall_cursor"], "12345")
+        self.assertEqual(updated["stall_count"], 0)
+        self.assertEqual(updated["watermark_event_time"], "2026-04-10 11:00:00")
+
+    def test_no_advance_increments_stall_counter(self) -> None:
+        db = FakeDb({"test.dataset": _make_row(
+            last_cursor="12345",
+            stall_cursor="12345",
+            stall_count=1,
+        )})
+        update_watermark_and_stall(
+            db,
+            "test.dataset",
+            new_cursor="12345",
+            event_time="2026-04-10 10:30:00",
+        )
+
+        updated = db.rows["test.dataset"]
+        self.assertEqual(updated["last_cursor"], "12345")
+        self.assertEqual(updated["stall_cursor"], "12345")
+        self.assertEqual(updated["stall_count"], 2)
+
+    def test_none_event_time_preserves_existing_watermark(self) -> None:
+        existing_watermark = datetime(2026, 4, 10, 9, 0, 0)
+        db = FakeDb({"test.dataset": _make_row(
+            last_cursor="12345",
+            stall_cursor="12340",
+            stall_count=0,
+            watermark_event_time=existing_watermark,
+        )})
+        update_watermark_and_stall(
+            db,
+            "test.dataset",
+            new_cursor="12345",
+            event_time=None,
+        )
+
+        # COALESCE(NULL, existing) -> existing; FakeDb models this by
+        # only overwriting when event_time is not None.
+        updated = db.rows["test.dataset"]
+        self.assertEqual(updated["watermark_event_time"], existing_watermark)
+        # Stall tracking still updates.
+        self.assertEqual(updated["stall_cursor"], "12345")
+        self.assertEqual(updated["stall_count"], 0)
+
+    def test_does_not_touch_last_cursor_on_any_path(self) -> None:
+        db = FakeDb({"test.dataset": _make_row(
+            last_cursor="99999",
+            stall_cursor="99999",
+            stall_count=0,
+        )})
+        # "Rewind" attempt: caller passes a lower cursor. The helper
+        # must still not touch last_cursor and must reset stall tracking
+        # because the cursor differs from the latched stall_cursor.
+        update_watermark_and_stall(
+            db,
+            "test.dataset",
+            new_cursor="500",
+            event_time="2026-04-05 00:00:00",
+        )
+
+        updated = db.rows["test.dataset"]
+        self.assertEqual(updated["last_cursor"], "99999")
+        self.assertEqual(updated["stall_cursor"], "500")
+        self.assertEqual(updated["stall_count"], 0)
 
 
 class FreshnessStatusTests(unittest.TestCase):
