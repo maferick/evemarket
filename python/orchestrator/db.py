@@ -1703,30 +1703,58 @@ class SupplyCoreDb:
                 deduped_orders.append(row_tuple)
         safe_orders = deduped_orders
 
-        with self.transaction() as (_, cursor):
+        # Sort by order_id for consistent lock acquisition order across
+        # concurrent sync workers — prevents deadlocks on the history table
+        # where many sources INSERT ... ON DUPLICATE KEY UPDATE on overlapping
+        # order_ids (issue #901).
+        safe_orders.sort(key=lambda r: int(r[3]))
+
+        insert_current_sql = (
+            "INSERT INTO market_orders_current ("
+            "    source_type, source_id, type_id, order_id, is_buy_order, price, volume_remain, volume_total,"
+            "    min_volume, `range`, duration, issued, expires, observed_at"
+            ") VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
+        )
+        insert_history_sql = (
+            "INSERT INTO market_orders_history ("
+            "    source_type, source_id, type_id, order_id, is_buy_order, price, volume_remain, volume_total,"
+            "    min_volume, `range`, duration, issued, expires, observed_at"
+            ") VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
+            " ON DUPLICATE KEY UPDATE"
+            "    price = VALUES(price),"
+            "    volume_remain = VALUES(volume_remain),"
+            "    volume_total = VALUES(volume_total)"
+        )
+
+        # The live snapshot (market_orders_current) MUST be rewritten
+        # atomically or readers would briefly see missing rows.  The history
+        # table is eventually consistent and can be written in its own
+        # short, retryable batches outside the snapshot transaction.
+        def _replace_current(_conn, cursor):
             cursor.execute(
                 "DELETE FROM market_orders_current WHERE source_type = %s AND source_id = %s",
                 (source_type, max(0, source_id)),
             )
             if safe_orders:
-                cursor.executemany(
-                    """INSERT INTO market_orders_current (
-                            source_type, source_id, type_id, order_id, is_buy_order, price, volume_remain, volume_total,
-                            min_volume, `range`, duration, issued, expires, observed_at
-                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
-                    safe_orders,
-                )
-                cursor.executemany(
-                    """INSERT INTO market_orders_history (
-                            source_type, source_id, type_id, order_id, is_buy_order, price, volume_remain, volume_total,
-                            min_volume, `range`, duration, issued, expires, observed_at
-                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                        ON DUPLICATE KEY UPDATE
-                            price = VALUES(price),
-                            volume_remain = VALUES(volume_remain),
-                            volume_total = VALUES(volume_total)""",
-                    safe_orders,
-                )
+                cursor.executemany(insert_current_sql, safe_orders)
+
+        self.run_in_transaction(_replace_current)
+
+        # Write the history rows in small, retryable batches.
+        # MarketOrders_history is the deadlock hotspot: every market source
+        # inserts into it and ON DUPLICATE KEY UPDATE takes X locks on any
+        # existing rows for overlapping order_ids.  Short batches shrink the
+        # lock hold time window and the retry loop handles any residual
+        # deadlocks (error 1213) or lock-wait timeouts (1205).
+        HISTORY_BATCH = 500
+        for i in range(0, len(safe_orders), HISTORY_BATCH):
+            batch = safe_orders[i : i + HISTORY_BATCH]
+
+            def _write_history(_conn, cursor, batch=batch):
+                cursor.executemany(insert_history_sql, batch)
+
+            self.run_in_transaction(_write_history)
+
         return {"rows_processed": len(orders), "rows_written": len(safe_orders)}
 
 
