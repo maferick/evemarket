@@ -113,6 +113,7 @@ class HorizonState:
     repair_window_seconds: int
     stall_cursor: str | None
     stall_count: int
+    auto_approve_blocked: bool = False
 
     @classmethod
     def from_row(cls, row: dict[str, Any]) -> "HorizonState":
@@ -133,6 +134,7 @@ class HorizonState:
             ),
             stall_cursor=_coerce_str(row.get("stall_cursor")),
             stall_count=int(row.get("stall_count") or 0),
+            auto_approve_blocked=bool(int(row.get("auto_approve_blocked") or 0)),
         )
 
 
@@ -187,7 +189,8 @@ def horizon_state_get(db: SupplyCoreDb, dataset_key: str) -> HorizonState | None
                incremental_horizon_seconds,
                repair_window_seconds,
                stall_cursor,
-               stall_count
+               stall_count,
+               auto_approve_blocked
           FROM sync_state
          WHERE dataset_key = %s
          LIMIT 1
@@ -464,6 +467,44 @@ def reset_backfill_complete(db: SupplyCoreDb, dataset_key: str) -> None:
     )
 
 
+def block_auto_approve(db: SupplyCoreDb, dataset_key: str) -> None:
+    """Opt a dataset out of the detect_backfill_complete auto-approval loop.
+
+    When set, detect_backfill_complete will still *propose* the dataset
+    for backfill_complete (so it still shows up in the admin review
+    queue) but will never auto-flip the gate regardless of how long the
+    proposal has been soaking. Use for datasets that need a human eye
+    on the cutover.
+    """
+    db.execute(
+        """
+        UPDATE sync_state
+           SET auto_approve_blocked = 1,
+               updated_at = CURRENT_TIMESTAMP
+         WHERE dataset_key = %s
+        """,
+        (dataset_key,),
+    )
+
+
+def unblock_auto_approve(db: SupplyCoreDb, dataset_key: str) -> None:
+    """Clear a previously-set auto-approval block.
+
+    The dataset becomes eligible for auto-approval again on the next
+    detect_backfill_complete run (subject to the usual soak and health
+    criteria).
+    """
+    db.execute(
+        """
+        UPDATE sync_state
+           SET auto_approve_blocked = 0,
+               updated_at = CURRENT_TIMESTAMP
+         WHERE dataset_key = %s
+        """,
+        (dataset_key,),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Freshness / reporting.
 # ---------------------------------------------------------------------------
@@ -556,6 +597,7 @@ def freshness_report(
                ss.repair_window_seconds,
                ss.stall_cursor,
                ss.stall_count,
+               ss.auto_approve_blocked,
                latest.run_status   AS last_run_status,
                latest.source_rows  AS last_run_source_rows,
                latest.written_rows AS last_run_written_rows,
@@ -589,6 +631,7 @@ def freshness_report(
                 "incremental_horizon_seconds": state.incremental_horizon_seconds,
                 "repair_window_seconds": state.repair_window_seconds,
                 "stall_count": state.stall_count,
+                "auto_approve_blocked": state.auto_approve_blocked,
                 **derived,
             }
         )
@@ -606,7 +649,8 @@ def list_pending_proposals(db: SupplyCoreDb) -> list[dict[str, Any]]:
                last_success_at,
                watermark_event_time,
                last_cursor,
-               stall_count
+               stall_count,
+               auto_approve_blocked
           FROM sync_state
          WHERE backfill_complete = 0
            AND backfill_proposed_at IS NOT NULL

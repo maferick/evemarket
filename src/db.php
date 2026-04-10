@@ -2581,6 +2581,7 @@ function db_sync_state_horizon_columns_ensure(): void
     db_ensure_table_column('sync_state', 'repair_window_seconds', 'INT UNSIGNED NOT NULL DEFAULT 86400 AFTER incremental_horizon_seconds');
     db_ensure_table_column('sync_state', 'stall_cursor', 'VARCHAR(190) DEFAULT NULL AFTER repair_window_seconds');
     db_ensure_table_column('sync_state', 'stall_count', 'INT UNSIGNED NOT NULL DEFAULT 0 AFTER stall_cursor');
+    db_ensure_table_column('sync_state', 'auto_approve_blocked', 'TINYINT(1) NOT NULL DEFAULT 0 AFTER stall_count');
 }
 
 /**
@@ -2605,6 +2606,7 @@ function db_horizon_state_get(string $datasetKey): ?array
                 repair_window_seconds,
                 stall_cursor,
                 stall_count,
+                auto_approve_blocked,
                 updated_at
          FROM sync_state
          WHERE dataset_key = ?
@@ -2620,6 +2622,7 @@ function db_horizon_state_get(string $datasetKey): ?array
     $row['incremental_horizon_seconds'] = (int) $row['incremental_horizon_seconds'];
     $row['repair_window_seconds'] = (int) $row['repair_window_seconds'];
     $row['stall_count'] = (int) $row['stall_count'];
+    $row['auto_approve_blocked'] = (int) $row['auto_approve_blocked'] === 1;
 
     return $row;
 }
@@ -2808,6 +2811,45 @@ function db_horizon_reset_backfill_complete(string $datasetKey): bool
 }
 
 /**
+ * Opt a dataset out of the detect_backfill_complete auto-approval loop.
+ *
+ * When set, detect_backfill_complete will still *propose* the dataset for
+ * backfill_complete (so it shows up in the admin review queue) but will
+ * never auto-flip the gate regardless of how long the proposal has been
+ * soaking. Useful for datasets that need a human eye on the cutover.
+ */
+function db_horizon_block_auto_approve(string $datasetKey): bool
+{
+    db_sync_state_horizon_columns_ensure();
+
+    return db_execute(
+        'UPDATE sync_state
+            SET auto_approve_blocked = 1,
+                updated_at = CURRENT_TIMESTAMP
+          WHERE dataset_key = ?',
+        [$datasetKey]
+    );
+}
+
+/**
+ * Clear a previously-set auto-approval block. The dataset becomes eligible
+ * for auto-approval again on the next detect_backfill_complete run (subject
+ * to the usual soak and health criteria).
+ */
+function db_horizon_unblock_auto_approve(string $datasetKey): bool
+{
+    db_sync_state_horizon_columns_ensure();
+
+    return db_execute(
+        'UPDATE sync_state
+            SET auto_approve_blocked = 0,
+                updated_at = CURRENT_TIMESTAMP
+          WHERE dataset_key = ?',
+        [$datasetKey]
+    );
+}
+
+/**
  * Manually rewind a dataset's forward cursor. Used when out-of-window late
  * data lands (bigger than repair_window_seconds) and we need to re-process
  * a range of source events. Bypasses the monotonic guard.
@@ -2868,6 +2910,7 @@ function db_calculation_freshness_report(?string $datasetPrefix = null): array
             ss.incremental_horizon_seconds,
             ss.repair_window_seconds,
             ss.stall_count,
+            ss.auto_approve_blocked,
             CASE
                 WHEN ss.watermark_event_time IS NULL THEN NULL
                 ELSE TIMESTAMPDIFF(SECOND, ss.watermark_event_time, UTC_TIMESTAMP())
@@ -2899,6 +2942,7 @@ function db_calculation_freshness_report(?string $datasetPrefix = null): array
         $row['incremental_horizon_seconds'] = (int) $row['incremental_horizon_seconds'];
         $row['repair_window_seconds'] = (int) $row['repair_window_seconds'];
         $row['stall_count'] = (int) $row['stall_count'];
+        $row['auto_approve_blocked'] = (int) $row['auto_approve_blocked'] === 1;
         $row['freshness_lag_seconds'] = $row['freshness_lag_seconds'] === null
             ? null
             : (int) $row['freshness_lag_seconds'];
@@ -2933,7 +2977,7 @@ function db_horizon_list_pending_proposals(): array
 {
     db_sync_state_horizon_columns_ensure();
 
-    return db_select(
+    $rows = db_select(
         'SELECT dataset_key,
                 sync_mode,
                 backfill_proposed_at,
@@ -2941,12 +2985,21 @@ function db_horizon_list_pending_proposals(): array
                 last_success_at,
                 watermark_event_time,
                 last_cursor,
-                stall_count
+                stall_count,
+                auto_approve_blocked
          FROM sync_state
          WHERE backfill_complete = 0
            AND backfill_proposed_at IS NOT NULL
          ORDER BY backfill_proposed_at ASC'
     );
+
+    foreach ($rows as &$row) {
+        $row['stall_count'] = (int) $row['stall_count'];
+        $row['auto_approve_blocked'] = (int) $row['auto_approve_blocked'] === 1;
+    }
+    unset($row);
+
+    return $rows;
 }
 
 function db_market_orders_history_legacy_table(): string

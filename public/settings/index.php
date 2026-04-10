@@ -857,6 +857,40 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 exit;
             }
 
+            if ($dataSyncAction === 'horizon-block') {
+                $horizonDataset = trim((string) ($_POST['horizon_dataset_key'] ?? ''));
+                if ($horizonDataset === '') {
+                    flash('success', 'Horizon auto-approve block skipped: no dataset selected.');
+                } else {
+                    $ok = db_horizon_block_auto_approve($horizonDataset);
+                    flash(
+                        'success',
+                        $ok
+                            ? sprintf("Blocked auto-approval for '%s'. Proposal will stay pending until a human approves.", $horizonDataset)
+                            : sprintf("Failed to block auto-approval for '%s'.", $horizonDataset)
+                    );
+                }
+                header('Location: /settings?section=' . urlencode($submittedSection) . '&subsection=data-sync');
+                exit;
+            }
+
+            if ($dataSyncAction === 'horizon-unblock') {
+                $horizonDataset = trim((string) ($_POST['horizon_dataset_key'] ?? ''));
+                if ($horizonDataset === '') {
+                    flash('success', 'Horizon auto-approve unblock skipped: no dataset selected.');
+                } else {
+                    $ok = db_horizon_unblock_auto_approve($horizonDataset);
+                    flash(
+                        'success',
+                        $ok
+                            ? sprintf("Unblocked auto-approval for '%s'. Next detector run may auto-approve.", $horizonDataset)
+                            : sprintf("Failed to unblock auto-approval for '%s'.", $horizonDataset)
+                    );
+                }
+                header('Location: /settings?section=' . urlencode($submittedSection) . '&subsection=data-sync');
+                exit;
+            }
+
             $dataSyncSave = save_data_sync_settings($_POST);
             $saved = (bool) ($dataSyncSave['ok'] ?? false);
             $saveMessage = (string) ($dataSyncSave['message'] ?? 'Settings saved successfully.');
@@ -3827,7 +3861,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                         <div class="flex items-start justify-between gap-3">
                             <div>
                                 <p class="text-sm font-semibold text-slate-100">Incremental horizon mode</p>
-                                <p class="mt-1 text-xs text-muted">Datasets that are backfill-complete may switch to incremental-only reads with a rolling repair window. Proposals come from the <code class="text-slate-300">detect_backfill_complete</code> job and require explicit admin approval before the job-side policy flips. CLI equivalents: <code class="text-slate-300">bin/horizon-approve.php</code>, <code class="text-slate-300">bin/horizon-reject.php</code>, <code class="text-slate-300">bin/horizon-reset.php</code>, <code class="text-slate-300">bin/horizon-rewind.php</code>.</p>
+                                <p class="mt-1 text-xs text-muted">Datasets that are backfill-complete may switch to incremental-only reads with a rolling repair window. Proposals come from the <code class="text-slate-300">detect_backfill_complete</code> job; proposals soak for 48h and auto-approve if they still pass the health check. Use <strong>Block auto</strong> to keep a proposal pending indefinitely for manual review. CLI equivalents: <code class="text-slate-300">bin/horizon-approve.php</code>, <code class="text-slate-300">bin/horizon-reject.php</code>, <code class="text-slate-300">bin/horizon-reset.php</code>, <code class="text-slate-300">bin/horizon-rewind.php</code>, <code class="text-slate-300">bin/horizon-block.php</code>, <code class="text-slate-300">bin/horizon-unblock.php</code>.</p>
                             </div>
                             <span class="inline-flex items-center rounded-full border border-cyan-400/30 bg-cyan-500/10 px-3 py-1 text-xs font-medium uppercase tracking-[0.16em] text-cyan-100"><?= count($horizonProposals) ?> pending</span>
                         </div>
@@ -3839,19 +3873,32 @@ include __DIR__ . '/../../src/views/partials/header.php';
                             <?php else: ?>
                                 <div class="mt-2 space-y-2">
                                     <?php foreach ($horizonProposals as $proposal): ?>
-                                        <?php $proposalKey = (string) ($proposal['dataset_key'] ?? ''); ?>
+                                        <?php
+                                            $proposalKey = (string) ($proposal['dataset_key'] ?? '');
+                                            $autoBlocked = !empty($proposal['auto_approve_blocked']);
+                                        ?>
                                         <div class="rounded-lg border border-amber-400/30 bg-amber-500/5 p-3 text-xs text-amber-100">
                                             <div class="flex flex-wrap items-start justify-between gap-3">
                                                 <div>
-                                                    <p class="font-semibold text-slate-100"><?= htmlspecialchars($proposalKey, ENT_QUOTES) ?></p>
+                                                    <p class="font-semibold text-slate-100">
+                                                        <?= htmlspecialchars($proposalKey, ENT_QUOTES) ?>
+                                                        <?php if ($autoBlocked): ?>
+                                                            <span class="ml-2 inline-flex items-center rounded-full border border-rose-400/40 bg-rose-500/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.14em] text-rose-100">auto-approve blocked</span>
+                                                        <?php endif; ?>
+                                                    </p>
                                                     <p class="mt-1 text-muted">Proposed at <?= htmlspecialchars((string) ($proposal['backfill_proposed_at'] ?? '-'), ENT_QUOTES) ?></p>
                                                     <?php if (!empty($proposal['backfill_proposed_reason'])): ?>
                                                         <p class="mt-1"><span class="text-amber-200/80 uppercase tracking-[0.14em] mr-1">reason</span><?= htmlspecialchars((string) $proposal['backfill_proposed_reason'], ENT_QUOTES) ?></p>
                                                     <?php endif; ?>
                                                 </div>
-                                                <div class="flex gap-2">
+                                                <div class="flex flex-wrap gap-2">
                                                     <button type="submit" name="data_sync_action" value="horizon-approve" class="inline-flex items-center rounded-full border border-emerald-400/40 bg-emerald-500/10 px-3 py-1 font-medium uppercase tracking-[0.14em] text-emerald-100 hover:bg-emerald-500/20" onclick="document.getElementById('horizon_dataset_key_input').value='<?= htmlspecialchars($proposalKey, ENT_QUOTES) ?>';">Approve</button>
                                                     <button type="submit" name="data_sync_action" value="horizon-reject" class="inline-flex items-center rounded-full border border-rose-400/40 bg-rose-500/10 px-3 py-1 font-medium uppercase tracking-[0.14em] text-rose-100 hover:bg-rose-500/20" onclick="document.getElementById('horizon_dataset_key_input').value='<?= htmlspecialchars($proposalKey, ENT_QUOTES) ?>';">Reject</button>
+                                                    <?php if ($autoBlocked): ?>
+                                                        <button type="submit" name="data_sync_action" value="horizon-unblock" class="inline-flex items-center rounded-full border border-slate-400/40 bg-slate-500/10 px-3 py-1 font-medium uppercase tracking-[0.14em] text-slate-100 hover:bg-slate-500/20" onclick="document.getElementById('horizon_dataset_key_input').value='<?= htmlspecialchars($proposalKey, ENT_QUOTES) ?>';">Unblock auto</button>
+                                                    <?php else: ?>
+                                                        <button type="submit" name="data_sync_action" value="horizon-block" class="inline-flex items-center rounded-full border border-slate-400/40 bg-slate-500/10 px-3 py-1 font-medium uppercase tracking-[0.14em] text-slate-100 hover:bg-slate-500/20" onclick="document.getElementById('horizon_dataset_key_input').value='<?= htmlspecialchars($proposalKey, ENT_QUOTES) ?>';">Block auto</button>
+                                                    <?php endif; ?>
                                                 </div>
                                             </div>
                                         </div>

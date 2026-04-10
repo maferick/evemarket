@@ -1,0 +1,40 @@
+-- Auto-approval for the incremental-horizon backfill gate.
+--
+-- Extends the per-dataset horizon model (see
+-- database/migrations/20260426_incremental_horizon.sql) with a single
+-- opt-out column so that detect_backfill_complete can close the loop
+-- between proposing a dataset and flipping backfill_complete without a
+-- human in the middle for boring cases.
+--
+-- Column:
+--   auto_approve_blocked          When 1, detect_backfill_complete will
+--                                 still *propose* the dataset (so it
+--                                 shows up in the admin review queue)
+--                                 but will never auto-flip
+--                                 backfill_complete regardless of how
+--                                 long the proposal has been sitting.
+--                                 Default 0 -- auto-approval is opt-out,
+--                                 not opt-in.
+--
+-- Timeline for a well-behaved dataset once backfill finishes:
+--
+--   T+0         Backfill completes.
+--   T+24h       detect_backfill_complete runs, dataset meets the
+--               "propose" criteria, stamps backfill_proposed_at.
+--   T+24h..T+72h  Proposal sits. Freshness report shows it as a
+--               pending candidate. Operator can approve faster via
+--               bin/horizon-approve.php, block forever via
+--               bin/horizon-block.php, or just wait.
+--   T+72h       detect_backfill_complete runs again, proposal is >48h
+--               old, dataset still passes all health criteria, and
+--               auto_approve_blocked = 0 -> auto-approve. Next run
+--               uses incremental-only horizon mode.
+--
+-- The proposal re-check at auto-approval time is the critical safety
+-- layer: if the dataset has regressed (stall, failed run, lag outside
+-- the SLA) between proposal and auto-approval, the auto-approver
+-- leaves the proposal pending and the dashboard reflects the
+-- regression.
+
+ALTER TABLE sync_state
+    ADD COLUMN auto_approve_blocked TINYINT(1) NOT NULL DEFAULT 0 AFTER stall_count;
