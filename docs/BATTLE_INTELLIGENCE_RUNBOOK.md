@@ -215,6 +215,42 @@ Check:
 Action:
 - enable/fix Neo4j config, rerun `compute-battle-actor-features`.
 
+### I) `compute_battle_anomalies` fails with `Out of range value for column 'participant_count'`
+
+```
+DataError: (1264, "Out of range value for column 'participant_count' at row N")
+```
+
+Possible cause:
+- Historical drift on `battle_participants.participation_count` from when
+  `compute_battle_rollups` re-counted killmails after a cursor rewind. The
+  per-side `SUM(participation_count)` then exceeded the old `INT UNSIGNED`
+  ceiling (4 294 967 295) when written into `battle_side_metrics`.
+
+Fixed in:
+- Migration `database/migrations/20260410_widen_participation_count.sql`
+  widens both columns to `BIGINT UNSIGNED` so the SUM can no longer overflow.
+- `compute_battle_rollups` now skips killmails with a non-NULL `battle_id`
+  so reprocessing after a cursor rewind never double-counts.
+
+Check:
+```sql
+SELECT MAX(participation_count) FROM battle_participants;
+-- A healthy max is in the low thousands. Anything > 1e9 indicates drift.
+```
+
+Action:
+- Apply the schema migration (`bin/run-migrations.php`) on the affected database.
+- If historical drift is severe, run the cleanup script to rebuild the counts
+  from `killmail_events`/`killmail_attackers`:
+
+```bash
+python bin/recompute_battle_participation_counts.py --dry-run
+python bin/recompute_battle_participation_counts.py --threshold 1000000
+```
+
+- Re-run `compute-battle-anomalies` to refresh `battle_side_metrics`.
+
 ## 10) Validation SQL
 
 Use: `docs/BATTLE_INTELLIGENCE_VALIDATION.md`.
