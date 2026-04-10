@@ -968,6 +968,7 @@ $settingValues = get_settings([
     'static_data_source_url',
     'redis_cache_enabled',
     'redis_locking_enabled',
+    'redis_session_enabled',
     'redis_host',
     'redis_port',
     'redis_database',
@@ -4256,6 +4257,11 @@ include __DIR__ . '/../../src/views/partials/header.php';
                         <input type="hidden" name="redis_locking_enabled" value="0">
                         <input type="checkbox" name="redis_locking_enabled" value="1" <?= ($dataSyncSettingValues['redis_locking_enabled'] ?? (config('redis.lock_enabled', true) ? '1' : '0')) === '1' ? 'checked' : '' ?> class="size-4 rounded border-border bg-black">
                         <span class="text-sm">Prefer Redis distributed locks for schedulers and expensive recomputes</span>
+                    </label>
+                    <label class="flex items-center gap-3">
+                        <input type="hidden" name="redis_session_enabled" value="0">
+                        <input type="checkbox" name="redis_session_enabled" value="1" <?= ($dataSyncSettingValues['redis_session_enabled'] ?? (config('redis.session_enabled', true) ? '1' : '0')) === '1' ? 'checked' : '' ?> class="size-4 rounded border-border bg-black">
+                        <span class="text-sm">Store PHP sessions in Redis (avoids files-handler flock serialisation across concurrent tabs)</span>
                     </label>
                     <div class="grid gap-3 md:grid-cols-2">
                         <label class="block space-y-2">

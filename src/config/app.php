@@ -28,6 +28,7 @@ return [
         'connect_timeout' => 1.5,
         'read_timeout' => 1.5,
         'lock_enabled' => true,
+        'session_enabled' => true,
     ],
     'neo4j' => [
         'enabled' => false,

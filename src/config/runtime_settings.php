@@ -28,6 +28,7 @@ return [
         'description' => 'Cache and lock settings.',
         'fields' => [
             'redis.enabled' => ['type' => 'bool', 'default' => false, 'editable' => true, 'sensitive' => false, 'env_only' => false, 'database_backed' => true],
+            'redis.session_enabled' => ['type' => 'bool', 'default' => true, 'editable' => true, 'sensitive' => false, 'env_only' => false, 'database_backed' => true],
             'redis.host' => ['type' => 'string', 'default' => '127.0.0.1', 'editable' => true, 'sensitive' => false, 'env_only' => false, 'database_backed' => true],
             'redis.port' => ['type' => 'int', 'default' => 6379, 'editable' => true, 'sensitive' => false, 'env_only' => false, 'database_backed' => true],
             'redis.database' => ['type' => 'int', 'default' => 0, 'editable' => true, 'sensitive' => false, 'env_only' => false, 'database_backed' => true],
