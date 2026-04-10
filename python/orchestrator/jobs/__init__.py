@@ -83,6 +83,7 @@ from .theater_graph_integration import run_theater_graph_integration
 from .theater_suspicion import run_theater_suspicion
 from .compute_economic_warfare import run_compute_economic_warfare
 from .cache_expiry_cleanup_sync import run_cache_expiry_cleanup_sync
+from .detect_backfill_complete import run_detect_backfill_complete
 from .character_feature_windows import run_compute_character_feature_windows
 from .character_pipeline_worker import run_character_pipeline_worker
 from .character_movement_footprints import run_compute_character_movement_footprints

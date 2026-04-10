@@ -806,6 +806,57 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 exit;
             }
 
+            if ($dataSyncAction === 'horizon-approve') {
+                $horizonDataset = trim((string) ($_POST['horizon_dataset_key'] ?? ''));
+                if ($horizonDataset === '') {
+                    flash('success', 'Horizon approval skipped: no dataset selected.');
+                } else {
+                    $ok = db_horizon_approve_backfill_complete($horizonDataset);
+                    flash(
+                        'success',
+                        $ok
+                            ? sprintf("Approved horizon mode for '%s'. Next run may use incremental-only.", $horizonDataset)
+                            : sprintf("Failed to approve horizon mode for '%s'.", $horizonDataset)
+                    );
+                }
+                header('Location: /settings?section=' . urlencode($submittedSection) . '&subsection=data-sync');
+                exit;
+            }
+
+            if ($dataSyncAction === 'horizon-reject') {
+                $horizonDataset = trim((string) ($_POST['horizon_dataset_key'] ?? ''));
+                if ($horizonDataset === '') {
+                    flash('success', 'Horizon rejection skipped: no dataset selected.');
+                } else {
+                    $ok = db_horizon_reject_backfill_complete($horizonDataset);
+                    flash(
+                        'success',
+                        $ok
+                            ? sprintf("Rejected pending proposal for '%s'. backfill_complete unchanged.", $horizonDataset)
+                            : sprintf("Failed to reject proposal for '%s'.", $horizonDataset)
+                    );
+                }
+                header('Location: /settings?section=' . urlencode($submittedSection) . '&subsection=data-sync');
+                exit;
+            }
+
+            if ($dataSyncAction === 'horizon-reset') {
+                $horizonDataset = trim((string) ($_POST['horizon_dataset_key'] ?? ''));
+                if ($horizonDataset === '') {
+                    flash('success', 'Horizon reset skipped: no dataset selected.');
+                } else {
+                    $ok = db_horizon_reset_backfill_complete($horizonDataset);
+                    flash(
+                        'success',
+                        $ok
+                            ? sprintf("Reset '%s' to full/backfill + incremental mode.", $horizonDataset)
+                            : sprintf("Failed to reset '%s'.", $horizonDataset)
+                    );
+                }
+                header('Location: /settings?section=' . urlencode($submittedSection) . '&subsection=data-sync');
+                exit;
+            }
+
             $dataSyncSave = save_data_sync_settings($_POST);
             $saved = (bool) ($dataSyncSave['ok'] ?? false);
             $saveMessage = (string) ($dataSyncSave['message'] ?? 'Settings saved successfully.');
@@ -3743,6 +3794,108 @@ include __DIR__ . '/../../src/views/partials/header.php';
                                 </div>
                             </details>
                         <?php endif; ?>
+                    </div>
+
+                    <?php
+                        // --- Horizon (incremental-only) admin panel ---------------------
+                        // Lists pending detect_backfill_complete proposals, lets admins
+                        // approve/reject them, and shows current horizon-mode datasets
+                        // with a reset button. See docs/OPERATIONS_GUIDE.md (horizon).
+                        $horizonProposals = [];
+                        $horizonFreshness = [];
+                        try {
+                            $horizonProposals = db_horizon_list_pending_proposals();
+                            $horizonFreshness = db_calculation_freshness_report();
+                        } catch (Throwable) {
+                            // Fail-open: if sync_state lookups fail, just hide the panel data.
+                            $horizonProposals = [];
+                            $horizonFreshness = [];
+                        }
+                        $horizonApprovedDatasets = array_values(array_filter(
+                            $horizonFreshness,
+                            static fn (array $row): bool => !empty($row['backfill_complete'])
+                        ));
+                        $horizonStatusToneMap = [
+                            'caught_up' => 'border-emerald-400/30 bg-emerald-500/10 text-emerald-100',
+                            'catching_up' => 'border-amber-400/30 bg-amber-500/10 text-amber-100',
+                            'backfilling' => 'border-sky-400/30 bg-sky-500/10 text-sky-100',
+                            'stalled' => 'border-rose-400/30 bg-rose-500/10 text-rose-100',
+                            'stopped' => 'border-rose-400/30 bg-rose-500/10 text-rose-100',
+                        ];
+                    ?>
+                    <div class="rounded-xl border border-border bg-black/20 p-4 space-y-4">
+                        <div class="flex items-start justify-between gap-3">
+                            <div>
+                                <p class="text-sm font-semibold text-slate-100">Incremental horizon mode</p>
+                                <p class="mt-1 text-xs text-muted">Datasets that are backfill-complete may switch to incremental-only reads with a rolling repair window. Proposals come from the <code class="text-slate-300">detect_backfill_complete</code> job and require explicit admin approval before the job-side policy flips. CLI equivalents: <code class="text-slate-300">bin/horizon-approve.php</code>, <code class="text-slate-300">bin/horizon-reject.php</code>, <code class="text-slate-300">bin/horizon-reset.php</code>, <code class="text-slate-300">bin/horizon-rewind.php</code>.</p>
+                            </div>
+                            <span class="inline-flex items-center rounded-full border border-cyan-400/30 bg-cyan-500/10 px-3 py-1 text-xs font-medium uppercase tracking-[0.16em] text-cyan-100"><?= count($horizonProposals) ?> pending</span>
+                        </div>
+
+                        <div>
+                            <p class="text-xs uppercase tracking-[0.14em] text-muted">Pending proposals</p>
+                            <?php if ($horizonProposals === []): ?>
+                                <p class="mt-2 text-xs text-muted">No proposals waiting for review.</p>
+                            <?php else: ?>
+                                <div class="mt-2 space-y-2">
+                                    <?php foreach ($horizonProposals as $proposal): ?>
+                                        <?php $proposalKey = (string) ($proposal['dataset_key'] ?? ''); ?>
+                                        <div class="rounded-lg border border-amber-400/30 bg-amber-500/5 p-3 text-xs text-amber-100">
+                                            <div class="flex flex-wrap items-start justify-between gap-3">
+                                                <div>
+                                                    <p class="font-semibold text-slate-100"><?= htmlspecialchars($proposalKey, ENT_QUOTES) ?></p>
+                                                    <p class="mt-1 text-muted">Proposed at <?= htmlspecialchars((string) ($proposal['backfill_proposed_at'] ?? '-'), ENT_QUOTES) ?></p>
+                                                    <?php if (!empty($proposal['backfill_proposed_reason'])): ?>
+                                                        <p class="mt-1"><span class="text-amber-200/80 uppercase tracking-[0.14em] mr-1">reason</span><?= htmlspecialchars((string) $proposal['backfill_proposed_reason'], ENT_QUOTES) ?></p>
+                                                    <?php endif; ?>
+                                                </div>
+                                                <div class="flex gap-2">
+                                                    <button type="submit" name="data_sync_action" value="horizon-approve" class="inline-flex items-center rounded-full border border-emerald-400/40 bg-emerald-500/10 px-3 py-1 font-medium uppercase tracking-[0.14em] text-emerald-100 hover:bg-emerald-500/20" onclick="document.getElementById('horizon_dataset_key_input').value='<?= htmlspecialchars($proposalKey, ENT_QUOTES) ?>';">Approve</button>
+                                                    <button type="submit" name="data_sync_action" value="horizon-reject" class="inline-flex items-center rounded-full border border-rose-400/40 bg-rose-500/10 px-3 py-1 font-medium uppercase tracking-[0.14em] text-rose-100 hover:bg-rose-500/20" onclick="document.getElementById('horizon_dataset_key_input').value='<?= htmlspecialchars($proposalKey, ENT_QUOTES) ?>';">Reject</button>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    <?php endforeach; ?>
+                                </div>
+                            <?php endif; ?>
+                        </div>
+
+                        <div>
+                            <p class="text-xs uppercase tracking-[0.14em] text-muted">Datasets in horizon mode</p>
+                            <?php if ($horizonApprovedDatasets === []): ?>
+                                <p class="mt-2 text-xs text-muted">No datasets are running in incremental-only mode yet.</p>
+                            <?php else: ?>
+                                <div class="mt-2 space-y-2">
+                                    <?php foreach ($horizonApprovedDatasets as $horizonRow): ?>
+                                        <?php
+                                            $horizonKey = (string) ($horizonRow['dataset_key'] ?? '');
+                                            $horizonStatus = (string) ($horizonRow['horizon_status'] ?? 'catching_up');
+                                            $horizonTone = $horizonStatusToneMap[$horizonStatus] ?? 'border-border bg-black/30 text-muted';
+                                            $lag = $horizonRow['freshness_lag_seconds'] ?? null;
+                                            $lagLabel = $lag === null ? '—' : sprintf('%dh %dm', intdiv((int) $lag, 3600), intdiv(((int) $lag) % 3600, 60));
+                                        ?>
+                                        <div class="rounded-lg border <?= htmlspecialchars($horizonTone, ENT_QUOTES) ?> p-3 text-xs">
+                                            <div class="flex flex-wrap items-start justify-between gap-3">
+                                                <div>
+                                                    <p class="font-semibold text-slate-100"><?= htmlspecialchars($horizonKey, ENT_QUOTES) ?></p>
+                                                    <p class="mt-1 text-muted">
+                                                        Status: <span class="uppercase tracking-[0.14em]"><?= htmlspecialchars($horizonStatus, ENT_QUOTES) ?></span>
+                                                        · Lag: <?= htmlspecialchars($lagLabel, ENT_QUOTES) ?>
+                                                        · Stall: <?= (int) ($horizonRow['stall_count'] ?? 0) ?>
+                                                    </p>
+                                                    <p class="mt-1 text-muted">Watermark: <?= htmlspecialchars((string) ($horizonRow['watermark_event_time'] ?? '—'), ENT_QUOTES) ?></p>
+                                                </div>
+                                                <div>
+                                                    <button type="submit" name="data_sync_action" value="horizon-reset" class="inline-flex items-center rounded-full border border-rose-400/40 bg-rose-500/10 px-3 py-1 font-medium uppercase tracking-[0.14em] text-rose-100 hover:bg-rose-500/20" onclick="document.getElementById('horizon_dataset_key_input').value='<?= htmlspecialchars($horizonKey, ENT_QUOTES) ?>'; return confirm('Reset horizon mode for <?= htmlspecialchars($horizonKey, ENT_QUOTES) ?>? The next run will resume full/backfill + incremental mode.');">Reset</button>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    <?php endforeach; ?>
+                                </div>
+                            <?php endif; ?>
+                        </div>
+
+                        <input type="hidden" id="horizon_dataset_key_input" name="horizon_dataset_key" value="">
                     </div>
 
                     <?php if ($showSyncDiagnostics): ?>
