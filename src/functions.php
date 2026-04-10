@@ -8571,9 +8571,7 @@ function deal_alert_baseline_from_rows(array $rows): ?array
         return null;
     }
 
-    $prices = [];
-    $weightedNumerator = 0.0;
-    $weightedDenominator = 0.0;
+    $entries = [];
     $origins = [];
 
     foreach ($rows as $row) {
@@ -8582,11 +8580,59 @@ function deal_alert_baseline_from_rows(array $rows): ?array
             continue;
         }
 
-        $prices[] = $price;
-        $weight = max(1, (int) ($row['weight'] ?? 1));
-        $weightedNumerator += ($price * $weight);
-        $weightedDenominator += $weight;
+        $entries[] = [
+            'price' => $price,
+            'weight' => max(1, (int) ($row['weight'] ?? 1)),
+        ];
         $origins[(string) ($row['origin'] ?? 'history')] = true;
+    }
+
+    if ($entries === []) {
+        return null;
+    }
+
+    // Compute a preliminary median across every valid price to anchor an
+    // outlier-rejection window. The median is robust, but the original
+    // weighted-average blend was not: a single fat-finger "trap" listing or
+    // manipulation trade leaking into history (e.g. an 800M ISK Plagioclase
+    // sell order) could dominate the weighted component and push the normal
+    // price into the hundreds of thousands of ISK for an item that actually
+    // trades at ~40 ISK.
+    $allPrices = array_map(static fn (array $entry): float => $entry['price'], $entries);
+    sort($allPrices, SORT_NUMERIC);
+    $allCount = count($allPrices);
+    $allMidpoint = intdiv($allCount, 2);
+    $prelimMedian = $allCount % 2 === 1
+        ? $allPrices[$allMidpoint]
+        : (($allPrices[$allMidpoint - 1] + $allPrices[$allMidpoint]) / 2.0);
+
+    if ($prelimMedian <= 0.0) {
+        return null;
+    }
+
+    $outlierCap = 4.0;
+    $lowerBound = $prelimMedian / $outlierCap;
+    $upperBound = $prelimMedian * $outlierCap;
+
+    $filtered = array_values(array_filter(
+        $entries,
+        static fn (array $entry): bool => $entry['price'] >= $lowerBound && $entry['price'] <= $upperBound
+    ));
+
+    // If more than half of the points are rejected the prelim median itself is
+    // likely unreliable (very noisy or non-stationary market). Fall back to the
+    // raw entries; the weighted-average clamp below still bounds the blend.
+    if (count($filtered) < max(1, (int) floor($allCount * 0.5))) {
+        $filtered = $entries;
+    }
+
+    $prices = [];
+    $weightedNumerator = 0.0;
+    $weightedDenominator = 0.0;
+    foreach ($filtered as $entry) {
+        $prices[] = $entry['price'];
+        $weightedNumerator += ($entry['price'] * $entry['weight']);
+        $weightedDenominator += $entry['weight'];
     }
 
     if ($prices === [] || $weightedDenominator <= 0.0) {
@@ -8600,6 +8646,12 @@ function deal_alert_baseline_from_rows(array $rows): ?array
         ? $prices[$midpoint]
         : (($prices[$midpoint - 1] + $prices[$midpoint]) / 2.0);
     $weightedAverage = $weightedNumerator / $weightedDenominator;
+
+    // Clamp the weighted average into a symmetrical band around the filtered
+    // median so the blend cannot explode even when the fallback path above is
+    // taken or a surviving outlier still drags the mean upward.
+    $weightedAverage = max($median / $outlierCap, min($median * $outlierCap, $weightedAverage));
+
     $normalPrice = ($median * 0.7) + ($weightedAverage * 0.3);
 
     return [
