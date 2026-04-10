@@ -11645,10 +11645,23 @@ function killmail_overview_data(): array
                     'start_date' => $overviewStartDate,
                     'participant_characters' => 0,
                     'queued_in_esi_character_queue' => 0,
+                    'esi_queue_pending' => 0,
+                    'esi_queue_done' => 0,
+                    'esi_queue_error' => 0,
                     'with_current_affiliation' => 0,
+                    'with_alliance_history_row' => 0,
                     'with_alliance_history' => 0,
+                    'history_refresh_completed' => 0,
+                    'enrolled_for_killmail_backfill' => 0,
+                    'killmail_backfill_pending' => 0,
+                    'killmail_backfill_processing' => 0,
+                    'killmail_backfill_done' => 0,
+                    'killmail_backfill_error' => 0,
+                    'killmail_backfill_complete_flag' => 0,
                     'missing_current_affiliation' => 0,
                     'missing_alliance_history' => 0,
+                    'missing_history_refresh' => 0,
+                    'missing_killmail_backfill_enrollment' => 0,
                 ],
                 'empty_message' => 'Killmail overview is unavailable because the database query failed.',
             ];
@@ -15975,6 +15988,31 @@ function python_bridge_process_killmail_batch(array $payloads, bool $skipEntityF
                 $valuesSql = implode(', ', $values);
                 db_execute(
                     "INSERT IGNORE INTO esi_character_queue (character_id, first_queue_reason, last_queue_reason) VALUES {$valuesSql}",
+                    $params
+                );
+            }
+        }
+
+        // Enroll every participant into character_killmail_queue so their full
+        // historical killmail list gets backfilled via zKillboard API (not just
+        // whatever the passive R2Z2 stream happened to catch).  INSERT IGNORE
+        // preserves any existing checkpoint state (last_page_fetched, etc.)
+        // for characters already being backfilled.
+        foreach (array_chunk(array_keys($participantCharacterIds), 500) as $chunk) {
+            $values = [];
+            $params = [];
+            foreach ($chunk as $charId) {
+                $values[] = '(?, 1.0000, ?, ?)';
+                $params[] = $charId;
+                $params[] = 'killmail_participant';
+                $params[] = 'backfill';
+            }
+            if ($values !== []) {
+                $valuesSql = implode(', ', $values);
+                db_execute(
+                    "INSERT IGNORE INTO character_killmail_queue
+                        (character_id, priority, priority_reason, mode)
+                     VALUES {$valuesSql}",
                     $params
                 );
             }

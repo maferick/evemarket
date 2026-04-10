@@ -32,18 +32,58 @@ def _processor(db: SupplyCoreDb) -> dict[str, object]:
              AND ke.victim_character_id > 0"""
     )
     rows_written = attackers_written + victims_written
+
+    # Seed character_killmail_queue from the same participant set so the
+    # per-character zKillboard backfill job can pick them up.  This closes
+    # the historical gap: prior to this, inline ingest only wrote to
+    # esi_character_queue and participants were never enrolled for backfill.
+    km_attackers = db.execute(
+        """INSERT IGNORE INTO character_killmail_queue
+               (character_id, priority, priority_reason, mode)
+           SELECT DISTINCT ka.character_id, 1.0000, 'repair_backfill', 'backfill'
+           FROM killmail_attackers ka
+           WHERE ka.character_id IS NOT NULL
+             AND ka.character_id > 0"""
+    )
+    km_victims = db.execute(
+        """INSERT IGNORE INTO character_killmail_queue
+               (character_id, priority, priority_reason, mode)
+           SELECT DISTINCT ke.victim_character_id, 1.0000, 'repair_backfill', 'backfill'
+           FROM killmail_events ke
+           WHERE ke.victim_character_id IS NOT NULL
+             AND ke.victim_character_id > 0"""
+    )
+    km_queue_written = km_attackers + km_victims
+
     total_pending = db.fetch_scalar(
         "SELECT COUNT(*) FROM esi_character_queue WHERE fetch_status = 'pending'"
     )
     total_done = db.fetch_scalar(
         "SELECT COUNT(*) FROM esi_character_queue WHERE fetch_status = 'done'"
     )
+    km_queue_total = db.fetch_scalar(
+        "SELECT COUNT(*) FROM character_killmail_queue"
+    )
     return {
         "rows_processed": total_pending + total_done,
-        "rows_written": rows_written,
+        "rows_written": rows_written + km_queue_written,
         "warnings": [],
-        "summary": f"Queued {rows_written} new character IDs ({attackers_written} attackers, {victims_written} victims) for ESI lookup ({total_pending} pending, {total_done} done).",
-        "meta": {"pending": total_pending, "done": total_done, "attackers_written": attackers_written, "victims_written": victims_written},
+        "summary": (
+            f"Queued {rows_written} new ESI character IDs "
+            f"({attackers_written} attackers, {victims_written} victims); "
+            f"enrolled {km_queue_written} new participants for per-character killmail backfill. "
+            f"ESI queue: {total_pending} pending, {total_done} done. "
+            f"Killmail queue: {km_queue_total} total."
+        ),
+        "meta": {
+            "pending": total_pending,
+            "done": total_done,
+            "attackers_written": attackers_written,
+            "victims_written": victims_written,
+            "killmail_queue_attackers_written": km_attackers,
+            "killmail_queue_victims_written": km_victims,
+            "killmail_queue_total": km_queue_total,
+        },
     }
 
 
