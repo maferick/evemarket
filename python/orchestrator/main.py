@@ -42,6 +42,7 @@ from .killmail_backfill_runner import main as run_killmail_backfill_runner
 from .processor_registry import run_registered_processor, PYTHON_PROCESSOR_JOB_KEYS
 from .jobs.killmail_history_backfill import run_killmail_history_backfill
 from .jobs.killmail_full_history_backfill import run_killmail_full_history_backfill
+from .jobs.killmail_everef_backfill import run_killmail_everef_backfill
 
 
 def parse_args() -> argparse.Namespace:
@@ -199,6 +200,18 @@ def parse_args() -> argparse.Namespace:
     full_backfill = subparsers.add_parser("killmail-full-history-backfill", help="Backfill ALL killmails day-by-day from R2Z2 daily history dumps")
     full_backfill.add_argument("--app-root", default=resolve_app_root(__file__))
     full_backfill.add_argument("--verbose", action="store_true")
+
+    everef_backfill = subparsers.add_parser(
+        "killmail-everef-backfill",
+        help="Backfill ALL killmails day-by-day from EveRef daily tarballs (no ESI calls, store everything)",
+    )
+    everef_backfill.add_argument("--app-root", default=resolve_app_root(__file__))
+    everef_backfill.add_argument("--start-date", required=True, help="First day to backfill (YYYY-MM-DD, inclusive)")
+    everef_backfill.add_argument("--end-date", default=None, help="Last day to backfill (YYYY-MM-DD, inclusive). Defaults to yesterday UTC.")
+    everef_backfill.add_argument("--stage-dir", default="/tmp/supplycore_everef", help="Where to stage downloaded tarballs (default: /tmp/supplycore_everef)")
+    everef_backfill.add_argument("--batch-size", type=int, default=100, help="process-killmail-batch payload size (default: 100)")
+    everef_backfill.add_argument("--user-agent", default="SupplyCore killmail-everef-backfill/1.0", help="HTTP User-Agent for EveRef downloads")
+    everef_backfill.add_argument("--verbose", action="store_true")
 
     for command, help_text in [
         ("compute-battle-rollups", "Cluster killmails into deterministic battle rollups and participants"),
@@ -519,6 +532,29 @@ def main() -> int:
         configure_logging(verbose=args.verbose, log_file=config.log_file)
         ctx = FullBackfillContext(app_root=app_root, php_binary=config.php_binary)
         result = run_killmail_full_history_backfill(ctx)
+        print(json.dumps(result, default=str))
+        return 0 if result.get("status") == "success" else 1
+
+    if command == "killmail-everef-backfill":
+        from dataclasses import dataclass
+
+        @dataclass
+        class EverefBackfillContext:
+            app_root: Path
+            php_binary: str
+
+        app_root = Path(args.app_root).resolve()
+        config = load_php_runtime_config(app_root)
+        configure_logging(verbose=args.verbose, log_file=config.log_file)
+        ctx = EverefBackfillContext(app_root=app_root, php_binary=config.php_binary)
+        result = run_killmail_everef_backfill(
+            ctx,
+            start_date=args.start_date,
+            end_date=args.end_date,
+            stage_dir=args.stage_dir,
+            batch_size=args.batch_size,
+            user_agent=args.user_agent,
+        )
         print(json.dumps(result, default=str))
         return 0 if result.get("status") == "success" else 1
 
