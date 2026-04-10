@@ -17660,6 +17660,55 @@ function db_alliance_relationship_graph_neo4j(array $allianceIds, int $limit = 5
     ];
 }
 
+/**
+ * Bloom Operational Intelligence — read-side projection for the dashboard.
+ *
+ * Reads pre-ranked rows from `bloom_entry_points_materialized`, which is
+ * maintained by the `compute_bloom_entry_points` job. The job writes the
+ * same top-N that the Neo4j tier labels (:HotBattle, :HighRiskPilot,
+ * :StrategicSystem, :HotAlliance) represent, so the PHP dashboard can
+ * render the four tiers with one cheap indexed SQL read per panel — no
+ * Neo4j HTTP round-trip on the request path.
+ *
+ * The `detail_json` column is decoded into `detail` for the caller; keys
+ * inside it are tier-specific (e.g. started_at/participant_count for
+ * HotBattle, region_name for StrategicSystem).
+ */
+function db_bloom_entry_points_by_tier(string $tier, int $limit = 10): array
+{
+    $tier = trim($tier);
+    if ($tier === '') {
+        return [];
+    }
+
+    $safeLimit = max(1, min(50, $limit));
+
+    $rows = db_select(
+        'SELECT tier, rank_in_tier, entity_ref_type, entity_ref_id,
+                entity_name, score, detail_json, refreshed_at
+           FROM bloom_entry_points_materialized
+          WHERE tier = :tier
+          ORDER BY rank_in_tier ASC
+          LIMIT ' . (int) $safeLimit,
+        ['tier' => $tier]
+    );
+
+    foreach ($rows as &$row) {
+        $detail = [];
+        if (!empty($row['detail_json']) && is_string($row['detail_json'])) {
+            $decoded = json_decode($row['detail_json'], true);
+            if (is_array($decoded)) {
+                $detail = $decoded;
+            }
+        }
+        $row['detail'] = $detail;
+        unset($row['detail_json']);
+    }
+    unset($row);
+
+    return $rows;
+}
+
 // ===========================================================================
 // Wrappers: Neo4j-preferred with MariaDB fallback
 // ===========================================================================

@@ -34,10 +34,12 @@ from __future__ import annotations
 
 import logging
 import time
+from datetime import datetime, timezone
 from typing import Any
 
 from ..db import SupplyCoreDb
 from ..job_result import JobResult
+from ..json_utils import json_dumps_safe
 from ..neo4j import Neo4jClient, Neo4jConfig, Neo4jError
 
 logger = logging.getLogger(__name__)
@@ -58,6 +60,11 @@ DEFAULT_HOT_ALLIANCE_MIN_ENGAGEMENTS = 15
 
 # Hard cap per label to protect Bloom from run-away result sets.
 DEFAULT_MAX_TAGS_PER_LABEL = 500
+
+# How many rows per tier to surface in the PHP dashboard.
+# (The Neo4j labels themselves still honour max_tags_per_label — this
+# only bounds the dashboard read-side projection in MariaDB.)
+DASHBOARD_TOP_N = 10
 
 # Per-query timeout — these are all small aggregations so 60s is ample.
 _QUERY_TIMEOUT_SECONDS = 60
@@ -278,21 +285,220 @@ def _refresh_hot_alliances(
     return {"added": added, "removed": removed}
 
 
+# ── Dashboard read-side projection ───────────────────────────────────────
+#
+# Neo4j Community Edition has no Bloom UI, so operators need the four
+# tiers surfaced in the PHP dashboard instead.  After the labels have
+# been refreshed in Neo4j, we re-query the top DASHBOARD_TOP_N of each
+# tier and write them to the `bloom_entry_points_materialized` MariaDB
+# table so `public/index.php` can render them with a single SQL read.
+
+
+def _query_top_hot_battles(client: Neo4jClient, *, top_n: int) -> list[dict[str, Any]]:
+    rows = client.query(
+        """
+        MATCH (b:HotBattle)
+        OPTIONAL MATCH (b)-[:IN_SYSTEM|LOCATED_IN]->(s:System)
+        WITH b, s
+        ORDER BY COALESCE(b.bloom_hot_score, b.participant_count, 0) DESC
+        LIMIT $top_n
+        RETURN b.battle_id          AS battle_id,
+               toString(b.started_at) AS started_at,
+               b.participant_count  AS participant_count,
+               b.bloom_hot_score    AS bloom_hot_score,
+               s.system_id          AS system_id,
+               s.name               AS system_name
+        """,
+        parameters={"top_n": top_n},
+        timeout_seconds=_QUERY_TIMEOUT_SECONDS,
+    )
+    output: list[dict[str, Any]] = []
+    for row in rows:
+        battle_id = row.get("battle_id")
+        if battle_id is None:
+            continue
+        system_name = row.get("system_name") or ""
+        started_at = row.get("started_at") or ""
+        if system_name and started_at:
+            display_name = f"{system_name} @ {started_at}"
+        elif system_name:
+            display_name = system_name
+        else:
+            display_name = f"Battle {battle_id}"
+        output.append({
+            "entity_ref_type": "battle_id",
+            "entity_ref_id": int(battle_id),
+            "entity_name": display_name,
+            "score": float(row.get("bloom_hot_score") or row.get("participant_count") or 0),
+            "detail": {
+                "started_at": started_at,
+                "participant_count": row.get("participant_count"),
+                "system_id": row.get("system_id"),
+                "system_name": system_name or None,
+            },
+        })
+    return output
+
+
+def _query_top_high_risk_pilots(client: Neo4jClient, *, top_n: int) -> list[dict[str, Any]]:
+    rows = client.query(
+        """
+        MATCH (p:HighRiskPilot)
+        OPTIONAL MATCH (p)-[:MEMBER_OF_ALLIANCE]->(a:Alliance)
+        WITH p, a,
+             COALESCE(p.suspicion_score_recent, p.suspicion_score, 0) AS score
+        ORDER BY score DESC
+        LIMIT $top_n
+        RETURN p.character_id           AS character_id,
+               p.name                   AS character_name,
+               score                    AS score,
+               p.suspicion_score        AS suspicion_score,
+               p.suspicion_score_recent AS suspicion_score_recent,
+               a.alliance_id            AS alliance_id,
+               a.name                   AS alliance_name
+        """,
+        parameters={"top_n": top_n},
+        timeout_seconds=_QUERY_TIMEOUT_SECONDS,
+    )
+    output: list[dict[str, Any]] = []
+    for row in rows:
+        character_id = row.get("character_id")
+        if character_id is None:
+            continue
+        output.append({
+            "entity_ref_type": "character_id",
+            "entity_ref_id": int(character_id),
+            "entity_name": row.get("character_name") or f"Pilot {character_id}",
+            "score": float(row.get("score") or 0),
+            "detail": {
+                "suspicion_score": row.get("suspicion_score"),
+                "suspicion_score_recent": row.get("suspicion_score_recent"),
+                "alliance_id": row.get("alliance_id"),
+                "alliance_name": row.get("alliance_name"),
+            },
+        })
+    return output
+
+
+def _query_top_strategic_systems(client: Neo4jClient, *, top_n: int) -> list[dict[str, Any]]:
+    rows = client.query(
+        """
+        MATCH (s:StrategicSystem)
+        OPTIONAL MATCH (s)-[:IN_CONSTELLATION]->(:Constellation)-[:IN_REGION]->(r:Region)
+        WITH s, r
+        ORDER BY COALESCE(s.bloom_recent_battle_count, 0) DESC
+        LIMIT $top_n
+        RETURN s.system_id                  AS system_id,
+               s.name                       AS system_name,
+               s.security                   AS security,
+               s.bloom_recent_battle_count  AS recent_battle_count,
+               r.region_id                  AS region_id,
+               r.name                       AS region_name
+        """,
+        parameters={"top_n": top_n},
+        timeout_seconds=_QUERY_TIMEOUT_SECONDS,
+    )
+    output: list[dict[str, Any]] = []
+    for row in rows:
+        system_id = row.get("system_id")
+        if system_id is None:
+            continue
+        output.append({
+            "entity_ref_type": "system_id",
+            "entity_ref_id": int(system_id),
+            "entity_name": row.get("system_name") or f"System {system_id}",
+            "score": float(row.get("recent_battle_count") or 0),
+            "detail": {
+                "security": row.get("security"),
+                "recent_battle_count": row.get("recent_battle_count"),
+                "region_id": row.get("region_id"),
+                "region_name": row.get("region_name"),
+            },
+        })
+    return output
+
+
+def _query_top_hot_alliances(client: Neo4jClient, *, top_n: int) -> list[dict[str, Any]]:
+    rows = client.query(
+        """
+        MATCH (a:HotAlliance)
+        WITH a
+        ORDER BY COALESCE(a.bloom_recent_engagement_count, 0) DESC
+        LIMIT $top_n
+        RETURN a.alliance_id                   AS alliance_id,
+               a.name                          AS alliance_name,
+               a.bloom_recent_engagement_count AS recent_engagement_count
+        """,
+        parameters={"top_n": top_n},
+        timeout_seconds=_QUERY_TIMEOUT_SECONDS,
+    )
+    output: list[dict[str, Any]] = []
+    for row in rows:
+        alliance_id = row.get("alliance_id")
+        if alliance_id is None:
+            continue
+        output.append({
+            "entity_ref_type": "alliance_id",
+            "entity_ref_id": int(alliance_id),
+            "entity_name": row.get("alliance_name") or f"Alliance {alliance_id}",
+            "score": float(row.get("recent_engagement_count") or 0),
+            "detail": {
+                "recent_engagement_count": row.get("recent_engagement_count"),
+            },
+        })
+    return output
+
+
+def _materialize_tier(
+    db: SupplyCoreDb,
+    *,
+    tier: str,
+    rows: list[dict[str, Any]],
+    refreshed_at: str,
+) -> int:
+    """Atomically replace a tier's rows in `bloom_entry_points_materialized`."""
+    with db.transaction() as (_, cursor):
+        cursor.execute(
+            "DELETE FROM bloom_entry_points_materialized WHERE tier = %s",
+            (tier,),
+        )
+        for rank, row in enumerate(rows, start=1):
+            cursor.execute(
+                """
+                INSERT INTO bloom_entry_points_materialized (
+                    tier, rank_in_tier, entity_ref_type, entity_ref_id,
+                    entity_name, score, detail_json, refreshed_at
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    tier,
+                    rank,
+                    row["entity_ref_type"],
+                    row["entity_ref_id"],
+                    row.get("entity_name"),
+                    row.get("score"),
+                    json_dumps_safe(row.get("detail") or {}),
+                    refreshed_at,
+                ),
+            )
+    return len(rows)
+
+
 def run_compute_bloom_entry_points(
     db: SupplyCoreDb,
     neo4j_raw: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Refresh Bloom smart entry-point labels on the Neo4j graph.
+    """Refresh Bloom smart entry-point labels on the Neo4j graph and
+    materialize the top-N of each tier into MariaDB for the dashboard.
 
     Parameters
     ----------
     db
-        SupplyCore DB handle.  Unused today but kept in the signature for
-        parity with other graph jobs and for future MariaDB snapshotting.
+        SupplyCore DB handle, used for writing the read-side projection
+        to `bloom_entry_points_materialized`.
     neo4j_raw
         Raw Neo4j runtime config section.
     """
-    del db  # reserved for future freshness snapshots
     started = time.perf_counter()
     runtime = neo4j_raw or {}
     config = Neo4jConfig.from_runtime(runtime)
@@ -351,6 +557,14 @@ def run_compute_bloom_entry_points(
             min_engagements=hot_alliance_min_engagements,
             max_tags=max_tags_per_label,
         )
+
+        # Dashboard read-side projection — pull top-N of each tier and
+        # write them to MariaDB so the PHP dashboard can render the
+        # tiers with a single fast SQL read.
+        top_hot_battles = _query_top_hot_battles(client, top_n=DASHBOARD_TOP_N)
+        top_high_risk_pilots = _query_top_high_risk_pilots(client, top_n=DASHBOARD_TOP_N)
+        top_strategic_systems = _query_top_strategic_systems(client, top_n=DASHBOARD_TOP_N)
+        top_hot_alliances = _query_top_hot_alliances(client, top_n=DASHBOARD_TOP_N)
     except Neo4jError as error:
         duration_ms = int((time.perf_counter() - started) * 1000)
         logger.warning("compute_bloom_entry_points failed: %s", error)
@@ -359,6 +573,15 @@ def run_compute_bloom_entry_points(
             error=error,
             duration_ms=duration_ms,
         ).to_dict()
+
+    refreshed_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    materialized_counts = {
+        "HotBattle": _materialize_tier(db, tier="HotBattle", rows=top_hot_battles, refreshed_at=refreshed_at),
+        "HighRiskPilot": _materialize_tier(db, tier="HighRiskPilot", rows=top_high_risk_pilots, refreshed_at=refreshed_at),
+        "StrategicSystem": _materialize_tier(db, tier="StrategicSystem", rows=top_strategic_systems, refreshed_at=refreshed_at),
+        "HotAlliance": _materialize_tier(db, tier="HotAlliance", rows=top_hot_alliances, refreshed_at=refreshed_at),
+    }
+    materialized_total = sum(materialized_counts.values())
 
     duration_ms = int((time.perf_counter() - started) * 1000)
 
@@ -380,14 +603,15 @@ def run_compute_bloom_entry_points(
         f"(HotBattle +{hot_battles['added']}/-{hot_battles['removed']}, "
         f"HighRiskPilot +{high_risk_pilots['added']}/-{high_risk_pilots['removed']}, "
         f"StrategicSystem +{strategic_systems['added']}/-{strategic_systems['removed']}, "
-        f"HotAlliance +{hot_alliances['added']}/-{hot_alliances['removed']})."
+        f"HotAlliance +{hot_alliances['added']}/-{hot_alliances['removed']}); "
+        f"dashboard top-{DASHBOARD_TOP_N} materialized: {materialized_total} rows."
     )
 
     return JobResult.success(
         job_key=JOB_KEY,
         summary=summary,
         rows_processed=added_total + removed_total,
-        rows_written=added_total,
+        rows_written=added_total + materialized_total,
         duration_ms=duration_ms,
         meta={
             "execution_mode": "python",
@@ -400,10 +624,12 @@ def run_compute_bloom_entry_points(
                 "hot_alliance_window_days": hot_alliance_window,
                 "hot_alliance_min_engagements": hot_alliance_min_engagements,
                 "max_tags_per_label": max_tags_per_label,
+                "dashboard_top_n": DASHBOARD_TOP_N,
             },
             "hot_battles": hot_battles,
             "high_risk_pilots": high_risk_pilots,
             "strategic_systems": strategic_systems,
             "hot_alliances": hot_alliances,
+            "materialized_counts": materialized_counts,
         },
     ).to_dict()
