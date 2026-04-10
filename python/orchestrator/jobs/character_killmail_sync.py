@@ -156,15 +156,20 @@ def _fetch_esi_killmail(
     killmail_hash: str,
     esi_client: EsiClient,
     gateway: Any = None,
-) -> dict[str, Any] | None:
+) -> tuple[dict[str, Any] | None, bool]:
     """Fetch a single killmail body from ESI.
 
-    Returns the parsed ESI body dict (with victim, attackers, items,
-    solar_system_id, killmail_time) or None on failure.
+    Returns ``(body, from_cache)`` where *body* is the parsed ESI
+    killmail dict (with victim, attackers, items, solar_system_id,
+    killmail_time) or ``None`` on failure, and *from_cache* is ``True``
+    when the body was served from the gateway's Redis/MariaDB cache
+    (or via a 304 Not Modified) rather than a fresh ESI round-trip.
 
-    When *gateway* is provided, the request goes through the ESI compliance
-    gateway for Expires-gating, conditional request handling, and
-    distributed rate-limit coordination.
+    When *gateway* is provided, the request goes through the ESI
+    compliance gateway for Expires-gating, conditional request
+    handling, cross-process cache reuse, and distributed rate-limit
+    coordination.  Otherwise the direct :class:`EsiClient` is used,
+    which still honours the process-wide :class:`EsiRateLimiter`.
     """
     path = f"/latest/killmails/{killmail_id}/{killmail_hash}/"
     if gateway is not None:
@@ -174,23 +179,24 @@ def _fetch_esi_killmail(
                 route_template="/latest/killmails/{killmail_id}/{killmail_hash}/",
             )
         except Exception:
-            return None
-        if resp.from_cache or resp.not_modified:
+            return None, False
+        from_cache = bool(resp.from_cache or resp.not_modified)
+        if from_cache:
             if isinstance(resp.body, dict):
-                return resp.body
-            return None
+                return resp.body, True
+            return None, False
         if not (200 <= resp.status_code < 300) or not isinstance(resp.body, dict):
-            return None
-        return resp.body
+            return None, False
+        return resp.body, False
 
     resp = esi_client.get(path)
     if resp.status_code in (404, 422):
-        return None
+        return None, False
     if resp.is_rate_limited or resp.is_error_limited or resp.status_code == 503:
-        return None
+        return None, False
     if not resp.ok or not isinstance(resp.body, dict):
-        return None
-    return resp.body
+        return None, False
+    return resp.body, False
 
 
 # ---------------------------------------------------------------------------
@@ -343,32 +349,19 @@ def _process_entries(
     total_written = 0
     latest_km_time: str | None = None
 
-    # Fetch ESI bodies in parallel through the gateway (cached) or the
-    # direct client.  Each future returns (km_id, km_hash, zkb,
-    # esi_body, from_cache).
+    # Fetch ESI bodies in parallel through the shared
+    # ``_fetch_esi_killmail`` helper, which handles both the gateway
+    # path (Redis/MariaDB cache, conditional requests, distributed
+    # rate-limit coordination) and the direct-client path (still rate
+    # limited via the process-wide ``shared_limiter``).  Each future
+    # returns ``(km_id, km_hash, zkb, esi_body, from_cache)``.
     def _fetch_one(
         item: tuple[int, str, dict[str, Any]],
     ) -> tuple[int, str, dict[str, Any], dict[str, Any] | None, bool]:
         km_id_local, km_hash_local, zkb_local = item
-        body: dict[str, Any] | None = None
-        from_cache = False
-        if gateway is not None:
-            path = f"/latest/killmails/{km_id_local}/{km_hash_local}/"
-            try:
-                resp = gateway.get(
-                    path,
-                    route_template="/latest/killmails/{killmail_id}/{killmail_hash}/",
-                )
-            except Exception:
-                resp = None
-            if resp is not None:
-                if (resp.from_cache or resp.not_modified) and isinstance(resp.body, dict):
-                    body = resp.body
-                    from_cache = True
-                elif 200 <= resp.status_code < 300 and isinstance(resp.body, dict):
-                    body = resp.body
-        else:
-            body = _fetch_esi_killmail(km_id_local, km_hash_local, esi_client, None)
+        body, from_cache = _fetch_esi_killmail(
+            km_id_local, km_hash_local, esi_client, gateway,
+        )
         return km_id_local, km_hash_local, zkb_local, body, from_cache
 
     # Chunk the work into time-budget-aware batches so we can stop
