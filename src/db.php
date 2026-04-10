@@ -12550,96 +12550,136 @@ function db_killmail_overview_monthly_histogram(string $startDate = '2024-01-01'
 function db_killmail_esi_coverage_snapshot(string $startDate = '2024-01-01'): array
 {
     $startAt = $startDate . ' 00:00:00';
+
+    // Reusable participant subquery (victim + attacker character IDs from
+    // killmails effective on or after the start date).  Every coverage metric
+    // joins against this so all numbers share the same denominator.
+    $participantSubquery = "(
+        SELECT ke.victim_character_id AS character_id
+        FROM killmail_events ke
+        WHERE ke.victim_character_id IS NOT NULL
+          AND ke.victim_character_id > 0
+          AND ke.effective_killmail_at >= ?
+        UNION
+        SELECT ka.character_id AS character_id
+        FROM killmail_attackers ka
+        INNER JOIN killmail_events ke ON ke.sequence_id = ka.sequence_id
+        WHERE ka.character_id IS NOT NULL
+          AND ka.character_id > 0
+          AND ke.effective_killmail_at >= ?
+    ) participant";
+
     $participantCount = (int) db_fetch_single_value(
-        "SELECT COUNT(DISTINCT participant.character_id)
-         FROM (
-             SELECT ke.victim_character_id AS character_id
-             FROM killmail_events ke
-             WHERE ke.victim_character_id IS NOT NULL
-               AND ke.victim_character_id > 0
-               AND ke.effective_killmail_at >= ?
-             UNION
-             SELECT ka.character_id AS character_id
-             FROM killmail_attackers ka
-             INNER JOIN killmail_events ke ON ke.sequence_id = ka.sequence_id
-             WHERE ka.character_id IS NOT NULL
-               AND ka.character_id > 0
-               AND ke.effective_killmail_at >= ?
-         ) participant",
+        "SELECT COUNT(DISTINCT participant.character_id) FROM {$participantSubquery}",
         [$startAt, $startAt]
     );
 
-    $queuedCount = (int) db_fetch_single_value(
-        "SELECT COUNT(*)
+    // esi_character_queue coverage with fetch_status breakdown.
+    $queueStatusRows = db_select(
+        "SELECT q.fetch_status, COUNT(*) AS n
          FROM esi_character_queue q
-         INNER JOIN (
-             SELECT ke.victim_character_id AS character_id
-             FROM killmail_events ke
-             WHERE ke.victim_character_id IS NOT NULL
-               AND ke.victim_character_id > 0
-               AND ke.effective_killmail_at >= ?
-             UNION
-             SELECT ka.character_id AS character_id
-             FROM killmail_attackers ka
-             INNER JOIN killmail_events ke ON ke.sequence_id = ka.sequence_id
-             WHERE ka.character_id IS NOT NULL
-               AND ka.character_id > 0
-               AND ke.effective_killmail_at >= ?
-         ) participant ON participant.character_id = q.character_id",
+         INNER JOIN {$participantSubquery} ON participant.character_id = q.character_id
+         GROUP BY q.fetch_status",
         [$startAt, $startAt]
     );
+    $queueStatusCounts = ['pending' => 0, 'done' => 0, 'error' => 0];
+    foreach ($queueStatusRows as $row) {
+        $status = (string) ($row['fetch_status'] ?? '');
+        if (isset($queueStatusCounts[$status])) {
+            $queueStatusCounts[$status] = (int) $row['n'];
+        }
+    }
+    $queuedCount = array_sum($queueStatusCounts);
 
     $affiliationCount = (int) db_fetch_single_value(
         "SELECT COUNT(*)
          FROM character_current_affiliation a
-         INNER JOIN (
-             SELECT ke.victim_character_id AS character_id
-             FROM killmail_events ke
-             WHERE ke.victim_character_id IS NOT NULL
-               AND ke.victim_character_id > 0
-               AND ke.effective_killmail_at >= ?
-             UNION
-             SELECT ka.character_id AS character_id
-             FROM killmail_attackers ka
-             INNER JOIN killmail_events ke ON ke.sequence_id = ka.sequence_id
-             WHERE ka.character_id IS NOT NULL
-               AND ka.character_id > 0
-               AND ke.effective_killmail_at >= ?
-         ) participant ON participant.character_id = a.character_id",
+         INNER JOIN {$participantSubquery} ON participant.character_id = a.character_id",
         [$startAt, $startAt]
     );
 
+    // "History processed" = sync job actually ran for this character, even if
+    // they had zero alliance periods to store.  This is the real indicator of
+    // pipeline health, distinct from the row-count-based metric below.
+    $historyRefreshDoneCount = (int) db_fetch_single_value(
+        "SELECT COUNT(*)
+         FROM character_current_affiliation a
+         INNER JOIN {$participantSubquery} ON participant.character_id = a.character_id
+         WHERE a.last_history_refresh_at IS NOT NULL",
+        [$startAt, $startAt]
+    );
+
+    // "Has at least one alliance history row" — naturally lower than the
+    // refresh count because many characters have never joined an alliance.
     $allianceHistoryCount = (int) db_fetch_single_value(
         "SELECT COUNT(DISTINCT h.character_id)
          FROM character_alliance_history h
-         INNER JOIN (
-             SELECT ke.victim_character_id AS character_id
-             FROM killmail_events ke
-             WHERE ke.victim_character_id IS NOT NULL
-               AND ke.victim_character_id > 0
-               AND ke.effective_killmail_at >= ?
-             UNION
-             SELECT ka.character_id AS character_id
-             FROM killmail_attackers ka
-             INNER JOIN killmail_events ke ON ke.sequence_id = ka.sequence_id
-             WHERE ka.character_id IS NOT NULL
-               AND ka.character_id > 0
-               AND ke.effective_killmail_at >= ?
-         ) participant ON participant.character_id = h.character_id",
+         INNER JOIN {$participantSubquery} ON participant.character_id = h.character_id",
+        [$startAt, $startAt]
+    );
+
+    // Per-character killmail backfill queue: do participants have an entry,
+    // and how many have actually been drained to completion?
+    $killmailQueueTotal = (int) db_fetch_single_value(
+        "SELECT COUNT(*)
+         FROM character_killmail_queue ckq
+         INNER JOIN {$participantSubquery} ON participant.character_id = ckq.character_id",
+        [$startAt, $startAt]
+    );
+
+    $killmailQueueStatusRows = db_select(
+        "SELECT ckq.status, COUNT(*) AS n
+         FROM character_killmail_queue ckq
+         INNER JOIN {$participantSubquery} ON participant.character_id = ckq.character_id
+         GROUP BY ckq.status",
+        [$startAt, $startAt]
+    );
+    $killmailQueueStatusCounts = ['pending' => 0, 'processing' => 0, 'done' => 0, 'error' => 0];
+    foreach ($killmailQueueStatusRows as $row) {
+        $status = (string) ($row['status'] ?? '');
+        if (isset($killmailQueueStatusCounts[$status])) {
+            $killmailQueueStatusCounts[$status] = (int) $row['n'];
+        }
+    }
+
+    $killmailBackfillCompleteCount = (int) db_fetch_single_value(
+        "SELECT COUNT(*)
+         FROM character_killmail_queue ckq
+         INNER JOIN {$participantSubquery} ON participant.character_id = ckq.character_id
+         WHERE ckq.backfill_complete = 1",
         [$startAt, $startAt]
     );
 
     $missingAffiliation = max(0, $participantCount - $affiliationCount);
     $missingAllianceHistory = max(0, $participantCount - $allianceHistoryCount);
+    $missingHistoryRefresh = max(0, $participantCount - $historyRefreshDoneCount);
+    $missingKillmailQueue = max(0, $participantCount - $killmailQueueTotal);
 
     return [
         'start_date' => $startDate,
         'participant_characters' => $participantCount,
+        // ESI queue coverage
         'queued_in_esi_character_queue' => $queuedCount,
+        'esi_queue_pending' => $queueStatusCounts['pending'],
+        'esi_queue_done' => $queueStatusCounts['done'],
+        'esi_queue_error' => $queueStatusCounts['error'],
+        // Affiliation + alliance history
         'with_current_affiliation' => $affiliationCount,
-        'with_alliance_history' => $allianceHistoryCount,
+        'with_alliance_history_row' => $allianceHistoryCount,
+        'with_alliance_history' => $allianceHistoryCount, // legacy alias
+        'history_refresh_completed' => $historyRefreshDoneCount,
+        // Per-character killmail backfill queue
+        'enrolled_for_killmail_backfill' => $killmailQueueTotal,
+        'killmail_backfill_pending' => $killmailQueueStatusCounts['pending'],
+        'killmail_backfill_processing' => $killmailQueueStatusCounts['processing'],
+        'killmail_backfill_done' => $killmailQueueStatusCounts['done'],
+        'killmail_backfill_error' => $killmailQueueStatusCounts['error'],
+        'killmail_backfill_complete_flag' => $killmailBackfillCompleteCount,
+        // Gap metrics
         'missing_current_affiliation' => $missingAffiliation,
         'missing_alliance_history' => $missingAllianceHistory,
+        'missing_history_refresh' => $missingHistoryRefresh,
+        'missing_killmail_backfill_enrollment' => $missingKillmailQueue,
     ];
 }
 
