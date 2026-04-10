@@ -1,12 +1,24 @@
-"""Per-character killmail sync from zKillboard API.
+"""Per-character killmail sync from zKillboard + ESI.
 
 Fetches killmails for individual characters queued in
 ``character_killmail_queue``, supporting both incremental (recent pages) and
-full backfill (walking all pages) modes.  Killmails are processed through the
-existing PHP bridge for deduplication and storage.
+full backfill (walking all pages) modes.
+
+Data flow per killmail:
+  1. zKillboard character API returns only ``killmail_id`` + a ``zkb``
+     envelope (hash, totalValue, points, ...).  It does NOT return victim,
+     attackers, solar_system_id, or killmail_time.
+  2. For each new killmail we fetch the full body from ESI
+     (``/latest/killmails/{id}/{hash}/``) which gives us the complete
+     victim/attackers/items/system/time block.
+  3. The combined {esi body + zkb metadata} payload is sent to the PHP
+     bridge for deduplication and storage.
 
 zKillboard character API:
   https://zkillboard.com/api/characterID/{id}/page/{page}/
+
+ESI killmail detail:
+  https://esi.evetech.net/latest/killmails/{id}/{hash}/
 
 Queue table: ``character_killmail_queue``
   Columns: character_id, priority, priority_reason, status, mode,
@@ -20,16 +32,19 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
 import urllib.error
 import urllib.request
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Any
 
 from pathlib import Path
 
 from ..bridge import PhpBridge
 from ..db import SupplyCoreDb
+from ..esi_client import EsiClient
+from ..esi_rate_limiter import shared_limiter
 from ..http_client import ipv4_opener
 from ..worker_runtime import utc_now_iso
 
@@ -120,22 +135,70 @@ def _fetch_character_page(
 
 
 # ---------------------------------------------------------------------------
-# Payload conversion (adapted from killmail_full_history_backfill)
+# ESI killmail fetch (full body with victim/attackers/items)
 # ---------------------------------------------------------------------------
 
-def _entry_to_payload(entry: dict[str, Any]) -> dict[str, Any] | None:
-    """Convert a zKillboard API entry to the bridge payload format.
+def _fetch_esi_killmail(
+    killmail_id: int,
+    killmail_hash: str,
+    esi_client: EsiClient,
+    gateway: Any = None,
+) -> dict[str, Any] | None:
+    """Fetch a single killmail body from ESI.
+
+    Returns the parsed ESI body dict (with victim, attackers, items,
+    solar_system_id, killmail_time) or None on failure.
+
+    When *gateway* is provided, the request goes through the ESI compliance
+    gateway for Expires-gating, conditional request handling, and
+    distributed rate-limit coordination.
+    """
+    path = f"/latest/killmails/{killmail_id}/{killmail_hash}/"
+    if gateway is not None:
+        try:
+            resp = gateway.get(
+                path,
+                route_template="/latest/killmails/{killmail_id}/{killmail_hash}/",
+            )
+        except Exception:
+            return None
+        if resp.from_cache or resp.not_modified:
+            if isinstance(resp.body, dict):
+                return resp.body
+            return None
+        if not (200 <= resp.status_code < 300) or not isinstance(resp.body, dict):
+            return None
+        return resp.body
+
+    resp = esi_client.get(path)
+    if resp.status_code in (404, 422):
+        return None
+    if resp.is_rate_limited or resp.is_error_limited or resp.status_code == 503:
+        return None
+    if not resp.ok or not isinstance(resp.body, dict):
+        return None
+    return resp.body
+
+
+# ---------------------------------------------------------------------------
+# Payload construction
+# ---------------------------------------------------------------------------
+
+def _build_payload(
+    killmail_id: int,
+    killmail_hash: str,
+    zkb: dict[str, Any],
+    esi_body: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Combine an ESI killmail body with zKB metadata into a bridge payload.
 
     Sets uploaded_at to the actual killmail time so backfilled kills show
     their real date rather than the date of the sync run.
     """
-    km_id = int(entry.get("killmail_id") or 0)
-    zkb = entry.get("zkb") or {}
-    km_hash = str(zkb.get("hash") or "")
-    if not km_id or not km_hash:
+    if not killmail_id or not killmail_hash:
         return None
 
-    killmail_time_str = str(entry.get("killmail_time") or "")
+    killmail_time_str = str(esi_body.get("killmail_time") or "")
     try:
         uploaded_at = int(
             datetime.fromisoformat(
@@ -145,24 +208,13 @@ def _entry_to_payload(entry: dict[str, Any]) -> dict[str, Any] | None:
     except (ValueError, AttributeError):
         uploaded_at = int(time.time())
 
-    # Reconstruct ESI-compatible body from top-level zKillboard fields.
-    esi_body: dict[str, Any] = {
-        "killmail_id": km_id,
-        "killmail_time": killmail_time_str,
-        "solar_system_id": entry.get("solar_system_id"),
-        "victim": entry.get("victim") or {},
-        "attackers": entry.get("attackers") or [],
-    }
-    if "war_id" in entry:
-        esi_body["war_id"] = entry["war_id"]
-
     return {
-        "killmail_id": km_id,
-        "hash": km_hash,
+        "killmail_id": killmail_id,
+        "hash": killmail_hash,
         "esi": esi_body,
         "zkb": zkb,
-        "sequence_id": km_id,
-        "requested_sequence_id": km_id,
+        "sequence_id": killmail_id,
+        "requested_sequence_id": killmail_id,
         "uploaded_at": uploaded_at,
     }
 
@@ -199,22 +251,61 @@ def _check_existing_ids(
 # ---------------------------------------------------------------------------
 
 def _process_entries(
-    bridge: PhpBridge, entries: list[dict[str, Any]]
-) -> tuple[int, int, int]:
-    """Convert entries to payloads and write via bridge.
+    bridge: PhpBridge,
+    entries: list[dict[str, Any]],
+    esi_client: EsiClient,
+    gateway: Any = None,
+) -> tuple[int, int, int, int, str | None]:
+    """Fetch ESI bodies for entries and write via bridge.
 
-    Returns (written, filtered, duplicates).
+    zKillboard's character endpoint returns only ``killmail_id`` + ``zkb``
+    envelope; we must fetch each killmail's full body from ESI to get
+    victim/attackers/items/system/time.
+
+    Returns (written, esi_fetched, esi_failed, esi_skipped_as_dupe,
+    latest_km_time_seen) where latest_km_time_seen is the ISO timestamp
+    of the most recent killmail whose ESI body was successfully fetched
+    (used by callers to update checkpoints), or None if nothing was
+    fetched.
     """
-    payloads = [
-        p for e in entries if (p := _entry_to_payload(e)) is not None
-    ]
+    if not entries:
+        return 0, 0, 0, 0, None
+
+    # Fetch ESI bodies for each entry and assemble payloads.
+    payloads: list[dict[str, Any]] = []
+    esi_fetched = 0
+    esi_failed = 0
+    latest_km_time: str | None = None
+
+    for entry in entries:
+        km_id = int(entry.get("killmail_id") or 0)
+        zkb = entry.get("zkb") or {}
+        km_hash = str(zkb.get("hash") or "")
+        if not km_id or not km_hash:
+            esi_failed += 1
+            continue
+
+        esi_body = _fetch_esi_killmail(km_id, km_hash, esi_client, gateway)
+        if esi_body is None:
+            esi_failed += 1
+            continue
+
+        payload = _build_payload(km_id, km_hash, zkb, esi_body)
+        if payload is None:
+            esi_failed += 1
+            continue
+
+        payloads.append(payload)
+        esi_fetched += 1
+
+        km_time = str(esi_body.get("killmail_time") or "")
+        if km_time and (latest_km_time is None or km_time > latest_km_time):
+            latest_km_time = km_time
+
     if not payloads:
-        return 0, 0, 0
+        return 0, esi_fetched, esi_failed, 0, latest_km_time
 
     total_written = 0
-    total_filtered = 0
-    total_duplicates = 0
-
     for batch_start in range(0, len(payloads), _BATCH_PROCESS_SIZE):
         batch = payloads[batch_start : batch_start + _BATCH_PROCESS_SIZE]
         try:
@@ -224,15 +315,13 @@ def _process_entries(
             )
             batch_result = result.get("result") or {}
             total_written += int(batch_result.get("rows_written") or 0)
-            total_filtered += int(batch_result.get("filtered") or 0)
-            total_duplicates += int(batch_result.get("duplicates") or 0)
         except Exception:
             logger.exception(
                 "Bridge call process-killmail-batch failed for batch at offset %d",
                 batch_start,
             )
 
-    return total_written, total_filtered, total_duplicates
+    return total_written, esi_fetched, esi_failed, 0, latest_km_time
 
 
 # ---------------------------------------------------------------------------
@@ -244,6 +333,8 @@ def _sync_incremental(
     character_id: int,
     user_agent: str,
     run_start: float,
+    esi_client: EsiClient,
+    gateway: Any = None,
 ) -> dict[str, Any]:
     """Fetch page 1 (and maybe page 2) for a character.
 
@@ -253,6 +344,8 @@ def _sync_incremental(
     total_found = 0
     total_new = 0
     total_written = 0
+    total_esi_fetched = 0
+    total_esi_failed = 0
     latest_km_id: int | None = None
     latest_km_at: str | None = None
 
@@ -272,11 +365,12 @@ def _sync_incremental(
 
         total_found += len(entries)
 
-        # Track the most recent killmail seen (page 1 is newest first).
+        # Track the highest killmail_id seen on page 1 (newest first).
         if page == 1 and entries:
             first = entries[0]
-            latest_km_id = int(first.get("killmail_id") or 0) or None
-            latest_km_at = str(first.get("killmail_time") or "") or None
+            first_id = int(first.get("killmail_id") or 0)
+            if first_id > 0:
+                latest_km_id = first_id
 
         # Deduplicate against DB.
         all_ids = [
@@ -292,10 +386,16 @@ def _sync_incremental(
         ]
         total_new += len(new_entries)
 
-        # Process new killmails.
+        # Process new killmails: fetch ESI bodies and persist.
         if new_entries:
-            written, _, _ = _process_entries(bridge, new_entries)
+            written, fetched, failed, _, km_time = _process_entries(
+                bridge, new_entries, esi_client, gateway,
+            )
             total_written += written
+            total_esi_fetched += fetched
+            total_esi_failed += failed
+            if km_time and (latest_km_at is None or km_time > latest_km_at):
+                latest_km_at = km_time
 
         # If every killmail on this page already existed, stop.
         if not new_entries:
@@ -309,6 +409,8 @@ def _sync_incremental(
         "killmails_found_delta": total_found,
         "new_killmails": total_new,
         "written": total_written,
+        "esi_fetched": total_esi_fetched,
+        "esi_failed": total_esi_failed,
         "latest_km_id": latest_km_id,
         "latest_km_at": latest_km_at,
     }
@@ -324,6 +426,8 @@ def _sync_backfill(
     user_agent: str,
     last_page_fetched: int,
     run_start: float,
+    esi_client: EsiClient,
+    gateway: Any = None,
 ) -> dict[str, Any]:
     """Walk pages starting from last_page_fetched + 1.
 
@@ -331,13 +435,19 @@ def _sync_backfill(
       - 2 consecutive pages are all already-known killmails
       - max pages per character per run reached
       - empty page (no more data)
+      - killmail times on a page cross the backfill cutoff date
       - time budget exceeded
     Returns a checkpoint dict.
+
+    Note: the cutoff-date check now happens AFTER ESI bodies are fetched,
+    since zKillboard's character endpoint does not return killmail_time.
     """
     start_page = max(1, last_page_fetched + 1)
     total_found = 0
     total_new = 0
     total_written = 0
+    total_esi_fetched = 0
+    total_esi_failed = 0
     consecutive_all_known = 0
     last_page_completed = last_page_fetched
     latest_km_id: int | None = None
@@ -371,45 +481,13 @@ def _sync_backfill(
 
         total_found += len(entries)
 
-        # Track latest killmail from this batch.
+        # Track the highest killmail_id seen so far (approximates "latest").
         for e in entries:
             km_id = int(e.get("killmail_id") or 0)
-            km_at = str(e.get("killmail_time") or "")
             if km_id and (latest_km_id is None or km_id > latest_km_id):
                 latest_km_id = km_id
-                latest_km_at = km_at
 
-        # Check if we've walked past the backfill cutoff date.
-        # zKB returns newest-first, so the oldest entry on the page is the
-        # last one.  If it's before the cutoff, filter out old entries and
-        # mark backfill as complete after processing what remains.
-        oldest_time = min(
-            (str(e.get("killmail_time") or "9999") for e in entries),
-            default="9999",
-        )
-        past_cutoff = oldest_time[:10] < _BACKFILL_CUTOFF_DATE
-        if past_cutoff:
-            # Keep only entries at or after the cutoff.
-            entries = [
-                e for e in entries
-                if str(e.get("killmail_time") or "")[:10] >= _BACKFILL_CUTOFF_DATE
-            ]
-            if not entries:
-                logger.info(
-                    "Character %d backfill: entire page before %s cutoff, "
-                    "marking backfill complete at page %d",
-                    character_id, _BACKFILL_CUTOFF_DATE, page,
-                )
-                backfill_complete = True
-                last_page_completed = page
-                break
-            logger.info(
-                "Character %d backfill: page %d partially before %s cutoff, "
-                "processing %d remaining entries then stopping",
-                character_id, page, _BACKFILL_CUTOFF_DATE, len(entries),
-            )
-
-        # Deduplicate.
+        # Deduplicate by killmail_id before burning ESI calls.
         all_ids = [
             int(e.get("killmail_id") or 0)
             for e in entries
@@ -423,15 +501,31 @@ def _sync_backfill(
         ]
         total_new += len(new_entries)
 
-        # Process new killmails.
+        # Process new killmails: fetch ESI bodies and persist.
+        page_km_time_max: str | None = None
         if new_entries:
-            written, _, _ = _process_entries(bridge, new_entries)
+            written, fetched, failed, _, latest_km_time = _process_entries(
+                bridge, new_entries, esi_client, gateway,
+            )
             total_written += written
+            total_esi_fetched += fetched
+            total_esi_failed += failed
+            if latest_km_time:
+                page_km_time_max = latest_km_time
+                if latest_km_at is None or latest_km_time > latest_km_at:
+                    latest_km_at = latest_km_time
 
         last_page_completed = page
 
-        # If this page crossed the cutoff, we're done regardless.
-        if past_cutoff:
+        # Cutoff detection: if the most recent killmail time we
+        # successfully fetched on this page is already before the
+        # cutoff, everything older is too — stop the backfill.
+        if page_km_time_max and page_km_time_max[:10] < _BACKFILL_CUTOFF_DATE:
+            logger.info(
+                "Character %d backfill: page %d entirely before %s cutoff "
+                "(latest_time=%s), marking backfill complete",
+                character_id, page, _BACKFILL_CUTOFF_DATE, page_km_time_max,
+            )
             backfill_complete = True
             break
 
@@ -453,6 +547,8 @@ def _sync_backfill(
         "killmails_found_delta": total_found,
         "new_killmails": total_new,
         "written": total_written,
+        "esi_fetched": total_esi_fetched,
+        "esi_failed": total_esi_failed,
         "last_page_fetched": last_page_completed,
         "latest_km_id": latest_km_id,
         "latest_km_at": latest_km_at,
@@ -562,6 +658,37 @@ def run_character_killmail_sync(db: SupplyCoreDb, raw_config: dict[str, Any] | N
     except Exception:
         logger.info("No custom sync context available, using default user agent")
 
+    # Build the shared ESI client for full killmail body fetches. Rate
+    # limiting is handled centrally via the process-wide shared limiter.
+    esi_client = EsiClient(
+        user_agent=user_agent,
+        timeout_seconds=15,
+        limiter=shared_limiter,
+    )
+
+    # Opt-in ESI compliance gateway (Redis-backed cache + conditional
+    # requests + distributed rate limit).  Falls back to direct client
+    # calls when Redis is disabled or unavailable.
+    esi_gateway = None
+    try:
+        if os.getenv("REDIS_ENABLED", "0") == "1":
+            from ..esi_gateway import build_gateway
+            esi_gateway = build_gateway(
+                redis_config={
+                    "enabled": True,
+                    "host": os.getenv("REDIS_HOST", "127.0.0.1"),
+                    "port": int(os.getenv("REDIS_PORT", "6379")),
+                    "database": int(os.getenv("REDIS_DB", "0")),
+                    "password": os.getenv("REDIS_PASSWORD", ""),
+                    "prefix": os.getenv("REDIS_PREFIX", "supplycore"),
+                },
+                user_agent=user_agent,
+                timeout_seconds=15,
+            )
+    except Exception:
+        logger.exception("ESI gateway unavailable, falling back to direct client")
+        esi_gateway = None
+
     # Fetch characters to process.
     queue_rows = _fetch_queue(bridge)
     if not queue_rows:
@@ -612,6 +739,7 @@ def run_character_killmail_sync(db: SupplyCoreDb, raw_config: dict[str, Any] | N
                 result = _sync_backfill(
                     bridge, character_id, user_agent,
                     last_page_fetched, run_start,
+                    esi_client, esi_gateway,
                 )
                 new_status = "pending"  # keep going unless done
                 if result["backfill_complete"]:
@@ -637,6 +765,7 @@ def run_character_killmail_sync(db: SupplyCoreDb, raw_config: dict[str, Any] | N
                 # Incremental: fetch recent pages only.
                 result = _sync_incremental(
                     bridge, character_id, user_agent, run_start,
+                    esi_client, esi_gateway,
                 )
 
                 # Determine final status.
