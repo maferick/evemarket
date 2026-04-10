@@ -14,17 +14,31 @@ from ..neo4j import Neo4jClient, Neo4jConfig, Neo4jError
 logger = logging.getLogger(__name__)
 
 
-_TRIANGLE_BATCH_SIZE = 100
+_TRIANGLE_BATCH_SIZE = 50
 _TRIANGLE_LIMIT = 500
 _TRIANGLE_ENRICH_CHUNK = 50
+# Skip characters with very high CO_OCCURS_WITH degree when enumerating
+# triangles — their fan-out is quadratic in neighbors and will blow query
+# memory / runtime on Neo4j (issue #902).  Super-hub characters will still
+# appear in triangles via their lower-degree neighbours.
+_TRIANGLE_MAX_A_DEGREE = 100
+_TRIANGLE_QUERY_TIMEOUT = 60
+# Skip hubs with extreme CO_OCCURS_WITH degree in the star detector — the
+# original query did ``collect(out) + collect(in)`` which materialized every
+# neighbour in memory, OOM-ing on super-hubs.
+_STAR_MAX_HUB_DEGREE = 150
+_STAR_QUERY_TIMEOUT = 60
 
 
 def _detect_triangles(client: Neo4jClient) -> list[dict[str, Any]]:
     """Detect triangle motifs: 3 characters mutually co-occurring.
 
-    Uses a single Cypher query with a CALL {} subquery to find triangles
-    and enrich with battle data in one pass, eliminating the separate
-    enrichment loop and its per-chunk Neo4j round-trips.
+    Streams triangles in small character_id windows so the planner never
+    has to hold more than ``_TRIANGLE_BATCH_SIZE`` source characters'
+    worth of path expansions in memory at once.  Super-hub source
+    characters (degree > ``_TRIANGLE_MAX_A_DEGREE``) are skipped to bound
+    the per-batch work — they would otherwise produce O(degree^2) path
+    expansions and time out (issue #902).
     """
     # Get character_id boundaries for nodes that have outgoing CO_OCCURS_WITH.
     bounds = client.query(
@@ -41,13 +55,22 @@ def _detect_triangles(client: Neo4jClient) -> list[dict[str, Any]]:
 
     # Combined find + enrich query: uses CALL {} subquery to look up
     # battles for the first triangle member inline, avoiding a separate
-    # enrichment pass with chunked Neo4j round-trips.
+    # enrichment pass with chunked Neo4j round-trips.  The ``degree``
+    # subquery pre-filters super-hubs whose expansion would be quadratic.
     find_query = """
-        MATCH (a:Character)-[:CO_OCCURS_WITH]->(b:Character)-[:CO_OCCURS_WITH]->(c:Character)
+        MATCH (a:Character)
         WHERE a.character_id >= $lo AND a.character_id < $hi
-          AND a.character_id < b.character_id
+        CALL {
+            WITH a
+            MATCH (a)-[r:CO_OCCURS_WITH]->(:Character)
+            RETURN count(r) AS deg
+        }
+        WITH a WHERE deg > 0 AND deg <= $max_degree
+        MATCH (a)-[:CO_OCCURS_WITH]->(b:Character)-[:CO_OCCURS_WITH]->(c:Character)
+        WHERE a.character_id < b.character_id
           AND b.character_id < c.character_id
           AND EXISTS { (a)-[:CO_OCCURS_WITH]->(c) }
+        WITH a, b, c LIMIT $batch_limit
         CALL {
             WITH a
             OPTIONAL MATCH (a)-[:ON_SIDE]->(:BattleSide)<-[:HAS_SIDE]-(battle:Battle)
@@ -60,19 +83,31 @@ def _detect_triangles(client: Neo4jClient) -> list[dict[str, Any]]:
             toFloat(
                 (COALESCE(a.suspicion_score, 0) + COALESCE(b.suspicion_score, 0) + COALESCE(c.suspicion_score, 0)) / 3.0
             ) AS suspicion_relevance
-        LIMIT $batch_limit
     """
 
     raw_triangles: list[dict[str, Any]] = []
     cursor = lo
     while cursor <= hi and len(raw_triangles) < _TRIANGLE_LIMIT:
         remaining = _TRIANGLE_LIMIT - len(raw_triangles)
-        rows = client.query(
-            find_query,
-            parameters={"lo": cursor, "hi": cursor + _TRIANGLE_BATCH_SIZE, "batch_limit": remaining},
-            timeout_seconds=30,
-        )
-        raw_triangles.extend(rows)
+        try:
+            rows = client.query(
+                find_query,
+                parameters={
+                    "lo": cursor,
+                    "hi": cursor + _TRIANGLE_BATCH_SIZE,
+                    "batch_limit": remaining,
+                    "max_degree": _TRIANGLE_MAX_A_DEGREE,
+                },
+                timeout_seconds=_TRIANGLE_QUERY_TIMEOUT,
+            )
+            raw_triangles.extend(rows)
+        except Neo4jError as exc:
+            # A single slow window should not kill the whole detector — log
+            # and advance the cursor so the remaining windows still run.
+            logger.warning(
+                "Triangle window [%d, %d) failed, skipping: %s",
+                cursor, cursor + _TRIANGLE_BATCH_SIZE, exc,
+            )
         cursor += _TRIANGLE_BATCH_SIZE
 
     raw_triangles = raw_triangles[:_TRIANGLE_LIMIT]
@@ -92,18 +127,24 @@ def _detect_triangles(client: Neo4jClient) -> list[dict[str, Any]]:
 def _detect_stars(client: Neo4jClient) -> list[dict[str, Any]]:
     """Detect star motifs: 1 hub connected to 4+ others who don't connect to each other.
 
-    Uses directed CO_OCCURS_WITH (always low->high character_id) to halve
-    intermediate results.  Caps leaf collection at 30 per hub to bound the
-    UNWIND fan-out, and uses OPTIONAL MATCH + count instead of nested list
-    comprehension pattern matching.
+    Filters out super-hubs (degree > ``_STAR_MAX_HUB_DEGREE``) **before**
+    materialising neighbour collections, which previously blew the query
+    memory pool for pop characters with thousands of co-occurrences (issue
+    #902).  Only examines bidirectional neighbours inline and caps the
+    leaf list to 30 to keep UNWIND fan-out bounded.
     """
     return client.query(
         """
-        MATCH (hub:Character)-[:CO_OCCURS_WITH]->(out:Character)
-        WITH hub, collect(out) AS out_leaves
-        OPTIONAL MATCH (in_leaf:Character)-[:CO_OCCURS_WITH]->(hub)
-        WITH hub, out_leaves, collect(in_leaf) AS in_leaves
-        WITH hub, (out_leaves + in_leaves)[..30] AS leaves
+        MATCH (hub:Character)
+        CALL {
+            WITH hub
+            MATCH (hub)-[r:CO_OCCURS_WITH]-(:Character)
+            RETURN count(r) AS hub_degree
+        }
+        WITH hub, hub_degree
+        WHERE hub_degree >= 4 AND hub_degree <= $max_hub_degree
+        MATCH (hub)-[:CO_OCCURS_WITH]-(leaf:Character)
+        WITH hub, collect(DISTINCT leaf)[..30] AS leaves
         WHERE size(leaves) >= 4
         UNWIND leaves AS l1
         OPTIONAL MATCH (l1)-[ie:CO_OCCURS_WITH]-(l2)
@@ -121,7 +162,8 @@ def _detect_stars(client: Neo4jClient) -> list[dict[str, Any]]:
             toFloat(COALESCE(hub.suspicion_score, 0)) AS suspicion_relevance
         LIMIT 200
         """,
-        timeout_seconds=30,
+        parameters={"max_hub_degree": _STAR_MAX_HUB_DEGREE},
+        timeout_seconds=_STAR_QUERY_TIMEOUT,
     )
 
 
