@@ -10,6 +10,7 @@ import logging
 
 from ..db import SupplyCoreDb
 from ..eve_constants import FLEET_FUNCTION_BY_GROUP, SHIP_SIZE_BY_GROUP
+from ..horizon import update_watermark_and_stall
 from ..influx import InfluxClient, InfluxConfig, InfluxQueryError
 from ..job_result import JobResult
 from ..json_utils import json_dumps_safe
@@ -289,6 +290,11 @@ def run_compute_graph_sync_battle_intelligence(db: SupplyCoreDb, neo4j_raw: dict
     rows_processed = 0
     rows_written = 0
     batch_count = 0
+    # Horizon watermark: newest battle start time we've actually merged
+    # into the graph.  Neo4j MERGE makes the write idempotent, but we
+    # only need the watermark for the freshness report -- not a
+    # rewind-safe read path.
+    watermark_event_time: str | None = None
     latest_checkpoint = _format_int_cursor(cursor_id) if participant_has_id else _format_battle_participant_cursor(cursor_battle_id, cursor_character_id)
     while batch_count < max_batches:
         batch_started = time.perf_counter()
@@ -426,6 +432,13 @@ def run_compute_graph_sync_battle_intelligence(db: SupplyCoreDb, neo4j_raw: dict
             cursor_battle_id = str(rows[-1].get("battle_id") or cursor_battle_id)
             cursor_character_id = int(rows[-1].get("character_id") or cursor_character_id)
             latest_checkpoint = _format_battle_participant_cursor(cursor_battle_id, cursor_character_id)
+        # Track the newest battle start time in this batch for the
+        # horizon watermark.  battle_rollups.started_at is the source
+        # event time once a battle has been sealed.
+        for row in rows:
+            started_at = str(row.get("started_at") or "")
+            if started_at and (watermark_event_time is None or started_at > watermark_event_time):
+                watermark_event_time = started_at
         batch_count += 1
         rows_processed += len(rows)
         rows_written += len(rows)
@@ -462,6 +475,17 @@ def run_compute_graph_sync_battle_intelligence(db: SupplyCoreDb, neo4j_raw: dict
         last_cursor=latest_checkpoint,
         last_row_count=rows_written,
         last_error_message=None,
+    )
+    # Horizon watermark + stall tracking on top of the graph sync
+    # cursor.  The cursor itself is either an integer participant id or
+    # a "battle_id|character_id" composite, so the generic timestamp|id
+    # advance helper doesn't apply -- update_watermark_and_stall only
+    # compares cursors for equality, which is safe for any format.
+    update_watermark_and_stall(
+        db,
+        GRAPH_BATCH_STATE_KEYS["battle_cursor"],
+        new_cursor=latest_checkpoint,
+        event_time=watermark_event_time,
     )
     result = _job_payload(
         job_name,
