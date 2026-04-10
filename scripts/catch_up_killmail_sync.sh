@@ -144,30 +144,31 @@ while :; do
   RUN_DURATION=$(($(date +%s) - RUN_STARTED))
 
   STATUS=$(parse_result "${OUTPUT}" "status")
-  NEW=$(parse_result "${OUTPUT}" "result.new_killmails")
-  WRITTEN=$(parse_result "${OUTPUT}" "result.written")
-  FETCHED=$(parse_result "${OUTPUT}" "result.esi_fetched")
-  CACHE_HITS=$(parse_result "${OUTPUT}" "result.esi_cache_hits")
-  CHARS=$(parse_result "${OUTPUT}" "result.characters_processed")
-  MSG=$(parse_result "${OUTPUT}" "result.message")
+  NEW=$(parse_result "${OUTPUT}" "result.meta.new_killmails")
+  WRITTEN=$(parse_result "${OUTPUT}" "result.meta.written")
+  FETCHED=$(parse_result "${OUTPUT}" "result.meta.esi_fetched")
+  CACHE_HITS=$(parse_result "${OUTPUT}" "result.meta.esi_cache_hits")
+  CHARS=$(parse_result "${OUTPUT}" "result.meta.characters_processed")
+  QUEUED=$(parse_result "${OUTPUT}" "result.meta.characters_queued")
 
   NEW=${NEW:-0}
   WRITTEN=${WRITTEN:-0}
   FETCHED=${FETCHED:-0}
   CACHE_HITS=${CACHE_HITS:-0}
   CHARS=${CHARS:-0}
+  QUEUED=${QUEUED:-0}
 
   TOTAL_NEW=$((TOTAL_NEW + NEW))
   TOTAL_WRITTEN=$((TOTAL_WRITTEN + WRITTEN))
   TOTAL_FETCHED=$((TOTAL_FETCHED + FETCHED))
 
-  printf '[run %4d] %-7s  chars=%s  new=%s  written=%s  esi_fetched=%s  cache=%s  (%ds)\n' \
-    "${RUN}" "${STATUS:-unknown}" "${CHARS}" "${NEW}" "${WRITTEN}" \
+  printf '[run %4d] %-7s  queued=%s  chars=%s  new=%s  written=%s  esi_fetched=%s  cache=%s  (%ds)\n' \
+    "${RUN}" "${STATUS:-unknown}" "${QUEUED}" "${CHARS}" "${NEW}" "${WRITTEN}" \
     "${FETCHED}" "${CACHE_HITS}" "${RUN_DURATION}"
 
-  # Stop condition 1: queue drained.
-  if [[ -n "${MSG}" && "${MSG}" == *"No characters pending"* ]]; then
-    printf '[stop] queue drained ("%s") after %d runs\n' "${MSG}" "${RUN}"
+  # Stop condition 1: queue drained (no characters queued for sync).
+  if [[ "${QUEUED}" == "0" && "${CHARS}" == "0" ]]; then
+    printf '[stop] queue drained (characters_queued=0) after %d runs\n' "${RUN}"
     break
   fi
 
