@@ -15881,7 +15881,7 @@ function python_bridge_process_killmail_batch(array $payloads, bool $skipEntityF
         $rowsSeen++;
         $requestedSequenceId = (int) ($payload['requested_sequence_id'] ?? $payload['sequence_id'] ?? 0);
         try {
-            $result = killmail_persist_r2z2_payload($payload, $trackedAllianceIds, $trackedCorporationIds, false, $requestedSequenceId > 0 ? $requestedSequenceId : null, $opponentAllianceIds, $opponentCorporationIds, $skipEntityFilter);
+            $result = killmail_persist_r2z2_payload($payload, $trackedAllianceIds, $trackedCorporationIds, false, $requestedSequenceId > 0 ? $requestedSequenceId : null, $opponentAllianceIds, $opponentCorporationIds, $skipEntityFilter, $skipEntityFilter);
         } catch (Throwable $exception) {
             $rowsFailed++;
             $failureReason = trim($exception->getMessage()) !== '' ? scheduler_normalize_error_message($exception->getMessage()) : 'Killmail write failed.';
@@ -16036,6 +16036,81 @@ function python_bridge_process_killmail_batch(array $payloads, bool $skipEntityF
                      ON DUPLICATE KEY UPDATE last_killmail_at = GREATEST(COALESCE(last_killmail_at, '1970-01-01'), VALUES(last_killmail_at))",
                     $params
                 );
+            }
+        }
+    }
+
+    // When entity priming was skipped (backfill path), seed the metadata
+    // cache with pending rows for every alliance/corporation/character we
+    // just saw. INSERT IGNORE leaves already-resolved rows untouched so we
+    // never downgrade a resolved entity. The background resolver job
+    // (`resolve-pending-entities`) then picks these up asynchronously.
+    if ($skipEntityFilter) {
+        $pendingAllianceIds = [];
+        $pendingCorporationIds = [];
+        $pendingCharacterIds = [];
+        foreach ($payloads as $payload) {
+            $esi = $payload['esi'] ?? [];
+            $victim = is_array($esi['victim'] ?? null) ? $esi['victim'] : [];
+            $victimAlly = (int) ($victim['alliance_id'] ?? 0);
+            $victimCorp = (int) ($victim['corporation_id'] ?? 0);
+            $victimChar = (int) ($victim['character_id'] ?? 0);
+            if ($victimAlly > 0) {
+                $pendingAllianceIds[$victimAlly] = true;
+            }
+            if ($victimCorp > 0) {
+                $pendingCorporationIds[$victimCorp] = true;
+            }
+            if ($victimChar > 0) {
+                $pendingCharacterIds[$victimChar] = true;
+            }
+            foreach ((array) ($esi['attackers'] ?? []) as $attacker) {
+                if (!is_array($attacker)) {
+                    continue;
+                }
+                $aAlly = (int) ($attacker['alliance_id'] ?? 0);
+                $aCorp = (int) ($attacker['corporation_id'] ?? 0);
+                $aChar = (int) ($attacker['character_id'] ?? 0);
+                if ($aAlly > 0) {
+                    $pendingAllianceIds[$aAlly] = true;
+                }
+                if ($aCorp > 0) {
+                    $pendingCorporationIds[$aCorp] = true;
+                }
+                if ($aChar > 0) {
+                    $pendingCharacterIds[$aChar] = true;
+                }
+            }
+        }
+
+        $entityPendingSpecs = [
+            ['alliance', array_keys($pendingAllianceIds)],
+            ['corporation', array_keys($pendingCorporationIds)],
+            ['character', array_keys($pendingCharacterIds)],
+        ];
+        foreach ($entityPendingSpecs as [$entityType, $entityIds]) {
+            if ($entityIds === []) {
+                continue;
+            }
+            foreach (array_chunk($entityIds, 500) as $chunk) {
+                $values = [];
+                $params = [];
+                foreach ($chunk as $entityId) {
+                    $values[] = '(?, ?, ?, ?)';
+                    $params[] = $entityType;
+                    $params[] = (int) $entityId;
+                    $params[] = 'pending';
+                    $params[] = 'killmail_backfill';
+                }
+                if ($values !== []) {
+                    $valuesSql = implode(', ', $values);
+                    db_execute(
+                        "INSERT IGNORE INTO entity_metadata_cache
+                            (entity_type, entity_id, resolution_status, source_system)
+                         VALUES {$valuesSql}",
+                        $params
+                    );
+                }
             }
         }
     }
@@ -19517,6 +19592,7 @@ function killmail_persist_r2z2_payload(
     array $opponentAllianceIds = [],
     array $opponentCorporationIds = [],
     bool $skipEntityFilter = false,
+    bool $skipEntityPrime = false,
 ): array {
     $transformed = killmail_transform_r2z2_payload($payload);
     $event = (array) ($transformed['event'] ?? []);
@@ -19585,11 +19661,20 @@ function killmail_persist_r2z2_payload(
     }
     $transformed['event']['mail_type'] = $mailType;
 
-    killmail_prime_entity_metadata(killmail_entity_resolution_requests(
-        $event,
-        (array) ($transformed['attackers'] ?? []),
-        (array) ($transformed['items'] ?? [])
-    ));
+    // Entity metadata priming triggers synchronous ESI /universe/names/
+    // calls for unresolved alliances/corporations/characters. For backfill
+    // workloads this is the single biggest hot-path bottleneck because
+    // every historical killmail has uncached entities.  Callers performing
+    // bulk backfills pass $skipEntityPrime=true and seed the metadata
+    // cache in bulk via a separate cheap INSERT IGNORE path, letting the
+    // background resolver job fill in names asynchronously.
+    if (!$skipEntityPrime) {
+        killmail_prime_entity_metadata(killmail_entity_resolution_requests(
+            $event,
+            (array) ($transformed['attackers'] ?? []),
+            (array) ($transformed['items'] ?? [])
+        ));
+    }
 
     db_transaction(static function () use ($transformed, $sequenceId): void {
         db_killmail_event_upsert($transformed['event']);
