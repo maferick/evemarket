@@ -198,6 +198,7 @@ class EsiEntityResolver:
             },
             access_token=access_token,
             route_template="/latest/characters/{character_id}/search/",
+            identity=f"char:{character_id}",
         )
         if resp.from_cache or resp.not_modified:
             return resp.body if isinstance(resp.body, dict) else {}

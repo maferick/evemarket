@@ -70,6 +70,7 @@ class EsiMarketAdapter:
                 params={"datasource": "tranquility"},
                 access_token=access_token,
                 route_template="/latest/universe/structures/{structure_id}/",
+                identity=f"structure:{structure_id}",
             )
             if resp.from_cache or resp.not_modified:
                 return {}
@@ -94,6 +95,7 @@ class EsiMarketAdapter:
             f"/latest/markets/{region_id}/orders/",
             params={"order_type": order_type},
             route_template="/latest/markets/{region_id}/orders/",
+            identity=f"region:{region_id}",
             max_pages=20,
         )
         all_orders: list[dict[str, Any]] = []
@@ -115,6 +117,7 @@ class EsiMarketAdapter:
             params={"datasource": "tranquility"},
             access_token=access_token,
             route_template="/latest/markets/structures/{structure_id}/",
+            identity=f"structure:{structure_id}",
             max_pages=20,
         )
         all_orders: list[dict[str, Any]] = []
