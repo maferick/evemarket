@@ -62,6 +62,35 @@ try {
 } catch (Throwable) {
     $sitAwareness['sov_alerts'] = 0;
 }
+
+// --- Bloom Operational Intelligence: four-tier graph entry points ---
+// Read from `bloom_entry_points_materialized`, which is refreshed by the
+// compute_bloom_entry_points job (same run that maintains the Neo4j
+// :HotBattle / :HighRiskPilot / :StrategicSystem / :HotAlliance labels).
+// Neo4j Community Edition has no Bloom UI, so this panel is the operator-
+// facing projection of the four tiers. Guarded so a missing table (before
+// the migration runs) doesn't break the dashboard.
+$bloomTiers = [
+    'HotBattle'       => [],
+    'HighRiskPilot'   => [],
+    'StrategicSystem' => [],
+    'HotAlliance'     => [],
+];
+$bloomRefreshedAt = null;
+try {
+    if (function_exists('db_bloom_entry_points_by_tier')) {
+        foreach (array_keys($bloomTiers) as $tierKey) {
+            $rows = db_bloom_entry_points_by_tier($tierKey, 10);
+            $bloomTiers[$tierKey] = $rows;
+            if ($bloomRefreshedAt === null && !empty($rows)) {
+                $bloomRefreshedAt = (string) ($rows[0]['refreshed_at'] ?? '');
+            }
+        }
+    }
+} catch (Throwable) {
+    // Swallow: table may not exist yet on installs that haven't run the
+    // 20260425_bloom_entry_points_materialized migration.
+}
 ?>
 <?php
 $kpiThemes = [
@@ -288,6 +317,197 @@ try {
 </section>
 <!-- ui-section:dashboard-kpis:end -->
 <?php $sectionKpis = ob_get_clean(); ?>
+
+<?php ob_start(); // capture Bloom Operational Intelligence section ?>
+<?php
+$bloomHasAny = false;
+foreach ($bloomTiers as $__tierRows) {
+    if (!empty($__tierRows)) { $bloomHasAny = true; break; }
+}
+unset($__tierRows);
+$bloomTierMeta = [
+    'HotBattle' => [
+        'eyebrow' => 'Hot engagements',
+        'title'   => 'Hot Battles',
+        'subtitle' => 'Active fights ranked by heat score.',
+        'badgeClass' => 'border-rose-400/20 bg-rose-500/10 text-rose-200',
+        'badgeLabel' => 'Top 10 battles',
+        'valueClass' => 'text-rose-200',
+        'emptyLabel' => 'No battles tagged as hot right now.',
+    ],
+    'HighRiskPilot' => [
+        'eyebrow' => 'Threat actors',
+        'title'   => 'High-Risk Pilots',
+        'subtitle' => 'Suspicion-weighted watchlist.',
+        'badgeClass' => 'border-amber-400/20 bg-amber-500/10 text-amber-100',
+        'badgeLabel' => 'Top 10 pilots',
+        'valueClass' => 'text-amber-200',
+        'emptyLabel' => 'No pilots currently flagged as high risk.',
+    ],
+    'StrategicSystem' => [
+        'eyebrow' => 'Contested space',
+        'title'   => 'Strategic Systems',
+        'subtitle' => 'Systems with dense recent battle activity.',
+        'badgeClass' => 'border-cyan-400/20 bg-cyan-500/10 text-cyan-100',
+        'badgeLabel' => 'Top 10 systems',
+        'valueClass' => 'text-cyan-200',
+        'emptyLabel' => 'No systems currently flagged as strategic.',
+    ],
+    'HotAlliance' => [
+        'eyebrow' => 'Active blocs',
+        'title'   => 'Hot Alliances',
+        'subtitle' => 'Alliances engaged in the most recent fighting.',
+        'badgeClass' => 'border-fuchsia-400/20 bg-fuchsia-500/10 text-fuchsia-200',
+        'badgeLabel' => 'Top 10 alliances',
+        'valueClass' => 'text-fuchsia-200',
+        'emptyLabel' => 'No alliances currently flagged as hot.',
+    ],
+];
+?>
+<!-- ui-section:dashboard-bloom-entry-points:start -->
+<section class="mt-8" data-ui-section="dashboard-bloom-entry-points">
+    <article class="surface-primary">
+        <div class="section-header border-b border-white/8 pb-4">
+            <div>
+                <p class="eyebrow">Intelligence anchors</p>
+                <h2 class="mt-2 section-title">Bloom Entry Points</h2>
+                <p class="mt-2 section-copy">The four graph tiers maintained by <code class="font-mono text-xs text-slate-300">compute_bloom_entry_points</code>. Start any investigation here and pivot into the Neo4j Browser or the canonical PHP views.</p>
+            </div>
+            <div class="flex items-center gap-3">
+                <?php if ($bloomRefreshedAt !== null && $bloomRefreshedAt !== ''): ?>
+                    <span class="badge border-slate-500/20 bg-slate-500/10 text-slate-300">Refreshed <?= htmlspecialchars($bloomRefreshedAt, ENT_QUOTES) ?> UTC</span>
+                <?php endif; ?>
+                <a href="/docs/BLOOM_CYPHER_CHEATSHEET.md" class="btn-secondary text-xs">Cypher cheat-sheet</a>
+            </div>
+        </div>
+
+        <?php if (!$bloomHasAny): ?>
+            <div class="mt-5 rounded-[1.2rem] border border-white/6 bg-white/[0.02] px-4 py-4 text-sm text-slate-400">
+                No Bloom entry points have been materialized yet. Run the job with:
+                <code class="ml-1 rounded bg-slate-900/60 px-2 py-0.5 font-mono text-xs text-slate-200">python -m orchestrator run-job --app-root /var/www/SupplyCore --job-key compute_bloom_entry_points</code>
+            </div>
+        <?php else: ?>
+            <div class="mt-5 grid gap-5 lg:grid-cols-2 xl:grid-cols-4">
+                <?php foreach ($bloomTierMeta as $tierKey => $meta): ?>
+                    <?php $tierRows = (array) ($bloomTiers[$tierKey] ?? []); ?>
+                    <div class="surface-tertiary">
+                        <div class="flex items-start justify-between gap-3">
+                            <div>
+                                <p class="eyebrow"><?= htmlspecialchars($meta['eyebrow'], ENT_QUOTES) ?></p>
+                                <h3 class="mt-1 text-lg font-semibold text-white"><?= htmlspecialchars($meta['title'], ENT_QUOTES) ?></h3>
+                                <p class="mt-1 text-sm text-slate-400"><?= htmlspecialchars($meta['subtitle'], ENT_QUOTES) ?></p>
+                            </div>
+                            <span class="badge <?= htmlspecialchars($meta['badgeClass'], ENT_QUOTES) ?>"><?= htmlspecialchars($meta['badgeLabel'], ENT_QUOTES) ?></span>
+                        </div>
+                        <div class="mt-4 space-y-2.5">
+                            <?php if ($tierRows === []): ?>
+                                <div class="rounded-[1.2rem] border border-white/6 bg-white/[0.02] px-4 py-3 text-sm text-slate-400"><?= htmlspecialchars($meta['emptyLabel'], ENT_QUOTES) ?></div>
+                            <?php else: ?>
+                                <?php foreach (array_slice($tierRows, 0, 5) as $row): ?>
+                                    <?php
+                                    $refType = (string) ($row['entity_ref_type'] ?? '');
+                                    $refId   = (int) ($row['entity_ref_id'] ?? 0);
+                                    $name    = (string) ($row['entity_name'] ?? '');
+                                    $score   = $row['score'] ?? null;
+                                    $detail  = (array) ($row['detail'] ?? []);
+
+                                    $href = '#';
+                                    $secondary = '';
+                                    switch ($refType) {
+                                        case 'battle_id':
+                                            $href = '/theater-intelligence#battle-' . $refId;
+                                            $parts = [];
+                                            if (!empty($detail['started_at'])) {
+                                                $parts[] = (string) $detail['started_at'];
+                                            }
+                                            if (isset($detail['participant_count'])) {
+                                                $parts[] = (int) $detail['participant_count'] . ' pilots';
+                                            }
+                                            if (!empty($detail['system_name'])) {
+                                                $parts[] = (string) $detail['system_name'];
+                                            }
+                                            $secondary = implode(' · ', $parts);
+                                            if ($name === '') {
+                                                $name = 'Battle #' . $refId;
+                                            }
+                                            break;
+                                        case 'character_id':
+                                            $href = '/character.php?id=' . $refId;
+                                            $parts = [];
+                                            if (!empty($detail['alliance_name'])) {
+                                                $parts[] = (string) $detail['alliance_name'];
+                                            }
+                                            if (isset($detail['recent_battle_count'])) {
+                                                $parts[] = (int) $detail['recent_battle_count'] . ' recent battles';
+                                            }
+                                            $secondary = implode(' · ', $parts);
+                                            if ($name === '') {
+                                                $name = 'Character #' . $refId;
+                                            }
+                                            break;
+                                        case 'system_id':
+                                            $href = '/system.php?id=' . $refId;
+                                            $parts = [];
+                                            if (!empty($detail['region_name'])) {
+                                                $parts[] = (string) $detail['region_name'];
+                                            }
+                                            if (isset($detail['recent_battle_count'])) {
+                                                $parts[] = (int) $detail['recent_battle_count'] . ' recent battles';
+                                            }
+                                            $secondary = implode(' · ', $parts);
+                                            if ($name === '') {
+                                                $name = 'System #' . $refId;
+                                            }
+                                            break;
+                                        case 'alliance_id':
+                                            $href = '/alliance.php?id=' . $refId;
+                                            $parts = [];
+                                            if (isset($detail['recent_engagement_count'])) {
+                                                $parts[] = (int) $detail['recent_engagement_count'] . ' engagements';
+                                            }
+                                            if (isset($detail['recent_pilot_count'])) {
+                                                $parts[] = (int) $detail['recent_pilot_count'] . ' pilots';
+                                            }
+                                            $secondary = implode(' · ', $parts);
+                                            if ($name === '') {
+                                                $name = 'Alliance #' . $refId;
+                                            }
+                                            break;
+                                    }
+
+                                    $scoreLabel = '';
+                                    if (is_numeric($score)) {
+                                        $scoreLabel = number_format((float) $score, ((float) $score) >= 100 ? 0 : 1);
+                                    }
+                                    ?>
+                                    <a href="<?= htmlspecialchars($href, ENT_QUOTES) ?>" class="intelligence-row group">
+                                        <div class="min-w-0 flex-1">
+                                            <p class="truncate text-sm font-semibold text-slate-100"><?= htmlspecialchars($name, ENT_QUOTES) ?></p>
+                                            <?php if ($secondary !== ''): ?>
+                                                <p class="mt-1 truncate text-xs text-slate-500"><?= htmlspecialchars($secondary, ENT_QUOTES) ?></p>
+                                            <?php endif; ?>
+                                        </div>
+                                        <?php if ($scoreLabel !== ''): ?>
+                                            <div class="text-right">
+                                                <p class="text-sm font-semibold <?= htmlspecialchars($meta['valueClass'], ENT_QUOTES) ?>"><?= htmlspecialchars($scoreLabel, ENT_QUOTES) ?></p>
+                                                <p class="text-xs text-slate-500">score</p>
+                                            </div>
+                                        <?php endif; ?>
+                                    </a>
+                                <?php endforeach; ?>
+                                <?php if (count($tierRows) > 5): ?>
+                                    <p class="text-xs text-slate-500">+ <?= (int) (count($tierRows) - 5) ?> more in the materialized top-10.</p>
+                                <?php endif; ?>
+                            <?php endif; ?>
+                        </div>
+                    </div>
+                <?php endforeach; ?>
+            </div>
+        <?php endif; ?>
+    </article>
+</section>
+<!-- ui-section:dashboard-bloom-entry-points:end -->
+<?php $sectionBloom = ob_get_clean(); ?>
 
 <?php ob_start(); // capture Buy All section ?>
 <!-- ui-section:dashboard-buyall:start -->
@@ -836,10 +1056,12 @@ if ($hasSitData): ?>
 <?php endif; ?>
 
 <?php
-// Reordered dashboard: Buy-all first (primary action), then doctrine, KPIs, rest
+// Reordered dashboard: Buy-all first (primary action), then doctrine, KPIs,
+// Bloom graph entry points, then the rest.
 echo $sectionBuyAll;
 echo $sectionDoctrine;
 echo $sectionKpis;
+echo $sectionBloom;
 
 // Opposition Intelligence Card (guarded against missing tables)
 $oppBriefing = null;
