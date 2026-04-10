@@ -3,6 +3,7 @@
 declare(strict_types=1);
 
 require_once __DIR__ . '/lib/api-client.php';
+require_once __DIR__ . '/lib/session.php';
 
 $sequenceId = max(0, (int) ($_GET['sequence_id'] ?? 0));
 if ($sequenceId <= 0) {
@@ -36,6 +37,7 @@ $victimName = proxy_e((string) ($data['victim']['character_name'] ?? 'Unknown'))
 </head>
 <body>
 <div class="proxy-shell">
+    <?php include __DIR__ . '/partials/_nav.php'; ?>
     <main class="proxy-main">
         <section class="surface-primary">
             <!-- Victim & Ship -->

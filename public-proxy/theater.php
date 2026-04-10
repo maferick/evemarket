@@ -3,6 +3,7 @@
 declare(strict_types=1);
 
 require_once __DIR__ . '/lib/api-client.php';
+require_once __DIR__ . '/lib/session.php';
 
 $theaterId = trim((string) ($_GET['theater_id'] ?? ''));
 if ($theaterId === '') {
@@ -86,6 +87,7 @@ $systemName = proxy_e((string) ($theater['primary_system_name'] ?? 'Unknown'));
 </head>
 <body>
 <div class="proxy-shell">
+    <?php include __DIR__ . '/partials/_nav.php'; ?>
     <main class="proxy-main">
 
         <?php include __DIR__ . '/partials/_header.php'; ?>

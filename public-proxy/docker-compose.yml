@@ -5,17 +5,37 @@ services:
     restart: unless-stopped
     ports:
       - "8080:80"
+    volumes:
+      # Persist the SQLite session database across container rebuilds so
+      # logged-in users stay logged in and IP-hash history is retained.
+      - proxy-storage:/var/www/html/storage
     environment:
       # ── Required ──────────────────────────────────────────
-      # Base URL of your SupplyCore instance (no trailing slash)
       - SUPPLYCORE_URL=${SUPPLYCORE_URL}
-      # API key ID (starts with pk_)
       - API_KEY_ID=${API_KEY_ID}
-      # API shared secret (64-char hex string)
       - API_SECRET=${API_SECRET}
 
-      # ── Optional ──────────────────────────────────────────
-      # Request timeout in seconds (default: 15)
+      # ── Branding ──────────────────────────────────────────
       - TIMEOUT=${TIMEOUT:-15}
-      # Site branding shown in the proxy header (default: Battle Reports)
       - SITE_NAME=${SITE_NAME:-Battle Reports}
+
+      # ── ESI SSO login (optional) ──────────────────────────
+      # Register a new app at https://developers.eveonline.com/applications
+      # Scope: publicData. Callback: https://<proxy-domain>/callback
+      - ESI_CLIENT_ID=${ESI_CLIENT_ID:-}
+      - ESI_CLIENT_SECRET=${ESI_CLIENT_SECRET:-}
+      - ESI_CALLBACK_URL=${ESI_CALLBACK_URL:-}
+
+      # ── Privacy / IP hashing ──────────────────────────────
+      # Required if ESI login is enabled. Generate with:
+      #   php -r "echo bin2hex(random_bytes(32));"
+      - IP_HASH_SALT=${IP_HASH_SALT:-}
+
+      # ── Reverse-proxy awareness ───────────────────────────
+      - TRUST_FORWARDED_FOR=${TRUST_FORWARDED_FOR:-}
+
+      # ── Privacy page contact line ─────────────────────────
+      - PRIVACY_CONTACT=${PRIVACY_CONTACT:-}
+
+volumes:
+  proxy-storage:

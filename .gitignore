@@ -11,4 +11,8 @@ __pycache__/
 .venv*/
 public-proxy/.config.vault
 public-proxy/config.php
+public-proxy/storage/*.sqlite
+public-proxy/storage/*.sqlite-journal
+public-proxy/storage/*.sqlite-wal
+public-proxy/storage/*.sqlite-shm
 /logs/
