@@ -16,3 +16,4 @@ public-proxy/storage/*.sqlite-journal
 public-proxy/storage/*.sqlite-wal
 public-proxy/storage/*.sqlite-shm
 /logs/
+storage/logs/hourly-loop/
