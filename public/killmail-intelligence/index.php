@@ -93,14 +93,25 @@ if (function_exists('ob_flush')) { @ob_flush(); }
     <?php if ($histogram === []): ?>
         <p class="mt-4 text-sm text-muted">No loss histogram buckets available yet.</p>
     <?php else: ?>
-        <div class="mt-4 grid gap-2">
-            <?php foreach ($histogram as $bucket): ?>
-                <div class="grid grid-cols-[88px_minmax(0,1fr)_56px] items-center gap-3 text-xs text-slate-300">
-                    <span class="text-muted"><?= htmlspecialchars((string) ($bucket['label'] ?? ''), ENT_QUOTES) ?></span>
-                    <div class="h-2 rounded-full bg-white/10">
-                        <div class="h-2 rounded-full bg-indigo-400/80" style="width: <?= max(0, min(100, (int) ($bucket['percent'] ?? 0))) ?>%"></div>
+        <div class="mt-4 flex items-stretch gap-2 overflow-x-auto pb-1">
+            <?php foreach ($histogram as $bucket):
+                $pct = max(0, min(100, (int) ($bucket['percent'] ?? 0)));
+                $count = (int) ($bucket['count'] ?? 0);
+                $label = (string) ($bucket['label'] ?? '');
+            ?>
+                <div class="flex min-w-[44px] flex-1 flex-col items-center gap-1 text-xs text-slate-300">
+                    <div
+                        class="flex w-full flex-col justify-end rounded-t bg-white/5"
+                        style="height: 160px;"
+                        title="<?= htmlspecialchars($label . ': ' . number_format($count), ENT_QUOTES) ?>"
+                    >
+                        <div
+                            class="w-full rounded-t bg-indigo-400/80"
+                            style="height: <?= $pct ?>%;"
+                        ></div>
                     </div>
-                    <span class="text-right text-slate-100"><?= number_format((int) ($bucket['count'] ?? 0)) ?></span>
+                    <span class="text-[10px] text-slate-100"><?= number_format($count) ?></span>
+                    <span class="whitespace-nowrap text-[10px] text-muted"><?= htmlspecialchars($label, ENT_QUOTES) ?></span>
                 </div>
             <?php endforeach; ?>
         </div>
