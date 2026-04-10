@@ -232,14 +232,16 @@ def _refresh_hot_alliances(
     max_tags: int,
 ) -> dict[str, int]:
     """Tag alliances with recent engagement volume."""
+    # COUNT { } subqueries on this Neo4j version only accept a single
+    # pattern + WHERE, not nested MATCH clauses.  Use an OPTIONAL MATCH
+    # aggregation instead — this also matches the tag path semantics,
+    # which counts DISTINCT recent battles rather than path rows.
     untagged = client.query(
         """
         MATCH (a:HotAlliance)
-        WITH a, COUNT {
-            (p:Character)-[:MEMBER_OF_ALLIANCE]->(a)
-            MATCH (p)-[:PARTICIPATED_IN]->(b:Battle)
-            WHERE b.started_at >= toString(datetime() - duration({days: $window}))
-        } AS recent_count
+        OPTIONAL MATCH (a)<-[:MEMBER_OF_ALLIANCE]-(:Character)-[:PARTICIPATED_IN]->(b:Battle)
+        WHERE b.started_at >= toString(datetime() - duration({days: $window}))
+        WITH a, count(DISTINCT b) AS recent_count
         WHERE recent_count < $min_engagements
         WITH a LIMIT $cap
         REMOVE a:HotAlliance
