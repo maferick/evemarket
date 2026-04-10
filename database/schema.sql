@@ -1353,7 +1353,8 @@ CREATE TABLE IF NOT EXISTS killmail_events (
     KEY idx_killmail_events_battle (battle_id, effective_killmail_at),
     KEY idx_killmail_effective_ship (effective_killmail_at, victim_ship_type_id),
     KEY idx_killmail_ship_effective (victim_ship_type_id, effective_killmail_at),
-    KEY idx_system_region (solar_system_id, region_id)
+    KEY idx_system_region (solar_system_id, region_id),
+    KEY idx_killmail_mailtype_effective_seq (mail_type, effective_killmail_at, sequence_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS killmail_event_payloads (
@@ -1582,6 +1583,26 @@ WHERE e.zkb_total_value IS NULL
   AND e.zkb_solo IS NULL
   AND e.zkb_awox IS NULL
   AND (p.sequence_id IS NOT NULL OR NULLIF(e.zkb_json, '') IS NOT NULL);
+
+-- Composite index matching the killmail-intelligence overview filter/order path
+-- (mail_type + effective_killmail_at ORDER BY sequence_id). Without this, the
+-- overview listing falls back to a full scan + filesort which times out at
+-- backload volumes. See db_killmail_overview_page() in src/db.php.
+SET @killmail_events_mailtype_effective_seq_idx_exists := (
+    SELECT COUNT(*)
+    FROM INFORMATION_SCHEMA.STATISTICS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'killmail_events'
+      AND INDEX_NAME = 'idx_killmail_mailtype_effective_seq'
+);
+SET @killmail_events_mailtype_effective_seq_idx_sql := IF(
+    @killmail_events_mailtype_effective_seq_idx_exists = 0,
+    'ALTER TABLE killmail_events ADD KEY idx_killmail_mailtype_effective_seq (mail_type, effective_killmail_at, sequence_id)',
+    'SELECT 1'
+);
+PREPARE killmail_events_mailtype_effective_seq_idx_stmt FROM @killmail_events_mailtype_effective_seq_idx_sql;
+EXECUTE killmail_events_mailtype_effective_seq_idx_stmt;
+DEALLOCATE PREPARE killmail_events_mailtype_effective_seq_idx_stmt;
 
 CREATE TABLE IF NOT EXISTS killmail_attackers (
     id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
