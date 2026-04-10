@@ -794,8 +794,13 @@ SupplyCore now includes a first-pass killmail intelligence ingestion foundation 
   - treat feed as an ordered stream (not query API)
   - resume from last processed sequence cursor
   - iterate forward until 404 (no new sequence yet)
-  - store killmails when a tracked alliance or corporation appears on the victim or attacker side
-  - keep victim-side tracked matches available for loss-demand analytics
+  - store every stream killmail, classifying them into `mail_type` buckets:
+    - `loss` — tracked alliance/corp on the victim side
+    - `kill` — tracked alliance/corp on the attacker side
+    - `opponent_loss` / `opponent_kill` — opponent alliance/corp on victim / attacker side
+    - `third_party` — per-character backfill kill with no tracked/opponent entity
+    - `untracked` — R2Z2 stream kill with no tracked/opponent entity; pruned after 90 days by `killmail_untracked_retention`
+  - tracked-victim matches stay available for loss-demand analytics via a dedicated subset counter
 - Local persistence tables:
   - `killmail_events`
   - `killmail_attackers`

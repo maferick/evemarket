@@ -3126,7 +3126,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                     </div>
                 <?php endif; ?>
 
-                <p class="text-sm text-muted">Ingestion consumes R2Z2 as an ordered stream and keeps killmails only when a tracked alliance or corporation appears on the victim side. That keeps the board focused on tracked losses while leaving attacker details available only inside each stored loss.</p>
+                <p class="text-sm text-muted">Ingestion consumes R2Z2 as an ordered stream and stores every killmail. Kills involving a tracked or opponent entity are retained indefinitely as <code>loss</code>/<code>kill</code>/<code>opponent_loss</code>/<code>opponent_kill</code>; every other stream killmail is stored as <code>untracked</code> to power the alliance relationship graph and is pruned after 90 days. Per-character backfills also store all involved kills (as <code>third_party</code> when no tracked or opponent entity is present) back to 2024-01-01.</p>
                 <button class="btn-primary">Save Killmail Intelligence Settings</button>
             </form>
         <?php elseif ($activeSubsection === 'automation-control'): ?>

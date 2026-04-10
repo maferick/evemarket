@@ -12487,6 +12487,35 @@ function db_killmail_overview_summary(int $recentHours = 24, string $startDate =
     $summary['tracked_match_count'] = (int) ($trackedCountRow['tracked_match_count'] ?? 0);
     $summary['start_date'] = $startDate;
 
+    // Breakdown by mail_type so the UI can show what we're actually
+    // storing (tracked losses/kills vs. opponent vs. third_party vs.
+    // untracked).  Untracked rows are pruned after 90 days by the
+    // killmail_untracked_retention job, so their count reflects the
+    // rolling window not the all-time total.
+    $mailTypeRows = db_select(
+        "SELECT e.mail_type, COUNT(*) AS mail_count
+         FROM {$latestSequencesSql} latest
+         INNER JOIN killmail_events e ON e.sequence_id = latest.sequence_id
+         WHERE e.effective_killmail_at >= ?
+         GROUP BY e.mail_type",
+        [$startDate]
+    ) ?? [];
+    $mailTypeCounts = [
+        'loss' => 0,
+        'kill' => 0,
+        'opponent_loss' => 0,
+        'opponent_kill' => 0,
+        'third_party' => 0,
+        'untracked' => 0,
+    ];
+    foreach ($mailTypeRows as $mailTypeRow) {
+        $type = (string) ($mailTypeRow['mail_type'] ?? '');
+        if ($type !== '' && array_key_exists($type, $mailTypeCounts)) {
+            $mailTypeCounts[$type] = (int) ($mailTypeRow['mail_count'] ?? 0);
+        }
+    }
+    $summary['mail_type_counts'] = $mailTypeCounts;
+
     return $summary;
 }
 

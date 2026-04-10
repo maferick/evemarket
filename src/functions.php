@@ -11670,6 +11670,9 @@ function killmail_overview_data(): array
         $totalCount = (int) ($summaryRow['total_count'] ?? 0);
         $recentCount = (int) ($summaryRow['recent_count'] ?? 0);
         $trackedMatchCount = (int) ($summaryRow['tracked_match_count'] ?? 0);
+        $mailTypeCounts = is_array($summaryRow['mail_type_counts'] ?? null)
+            ? $summaryRow['mail_type_counts']
+            : [];
         $maxSequenceId = (int) ($summaryRow['max_sequence_id'] ?? ($status['max_sequence_id'] ?? 0));
         $state = is_array($status['state'] ?? null) ? $status['state'] : [];
         $latestRun = is_array($status['latest_run'] ?? null) ? $status['latest_run'] : null;
@@ -11956,15 +11959,61 @@ function killmail_overview_data(): array
             ];
         }, $histogramRows);
 
+        $mailTypeBreakdown = [
+            [
+                'key' => 'loss',
+                'label' => 'Losses',
+                'count' => (int) ($mailTypeCounts['loss'] ?? 0),
+                'tone' => 'border-rose-400/40 bg-rose-500/10 text-rose-100',
+                'description' => 'Tracked alliance or corporation on the victim side.',
+            ],
+            [
+                'key' => 'kill',
+                'label' => 'Kills',
+                'count' => (int) ($mailTypeCounts['kill'] ?? 0),
+                'tone' => 'border-emerald-400/40 bg-emerald-500/10 text-emerald-100',
+                'description' => 'Tracked alliance or corporation on the attacker side.',
+            ],
+            [
+                'key' => 'opponent_loss',
+                'label' => 'Opponent losses',
+                'count' => (int) ($mailTypeCounts['opponent_loss'] ?? 0),
+                'tone' => 'border-amber-400/40 bg-amber-500/10 text-amber-100',
+                'description' => 'Opponent alliance or corporation on the victim side.',
+            ],
+            [
+                'key' => 'opponent_kill',
+                'label' => 'Opponent kills',
+                'count' => (int) ($mailTypeCounts['opponent_kill'] ?? 0),
+                'tone' => 'border-orange-400/40 bg-orange-500/10 text-orange-100',
+                'description' => 'Opponent alliance or corporation on the attacker side.',
+            ],
+            [
+                'key' => 'third_party',
+                'label' => 'Third-party',
+                'count' => (int) ($mailTypeCounts['third_party'] ?? 0),
+                'tone' => 'border-sky-400/40 bg-sky-500/10 text-sky-100',
+                'description' => 'Per-character backfill kill with no tracked or opponent entity involved.',
+            ],
+            [
+                'key' => 'untracked',
+                'label' => 'Untracked (90d)',
+                'count' => (int) ($mailTypeCounts['untracked'] ?? 0),
+                'tone' => 'border-slate-400/40 bg-slate-500/10 text-slate-100',
+                'description' => 'R2Z2 stream kill with no tracked or opponent entity. Pruned after 90 days by killmail_untracked_retention.',
+            ],
+        ];
+
         return [
             'error' => null,
             'summary' => [
-                ['label' => 'Total Ingested', 'value' => number_format($totalCount), 'context' => 'Killmails stored locally since ' . $overviewStartDate],
+                ['label' => 'Total Ingested', 'value' => number_format($totalCount), 'context' => 'All killmails stored locally since ' . $overviewStartDate . ' — see the breakdown below for the split by mail_type'],
                 ['label' => 'Recent Ingestion', 'value' => number_format($recentCount), 'context' => 'Stored in the last ' . $recentHours . ' hours'],
-                ['label' => 'Tracked Entity Killmails', 'value' => number_format($trackedMatchCount), 'context' => 'Stored killmails since ' . $overviewStartDate . ' where a tracked alliance or corporation appears on the victim side'],
+                ['label' => 'Tracked Losses (victim-side)', 'value' => number_format($trackedMatchCount), 'context' => 'Subset counter: killmails since ' . $overviewStartDate . ' where a tracked alliance or corporation is on the victim side. This is a display filter — the full stored dataset is under Total Ingested.'],
                 ['label' => 'Last Processed Sequence', 'value' => $maxSequenceId > 0 ? number_format($maxSequenceId) : '—', 'context' => $cursor !== '' ? ('Cursor ' . $cursor) : 'Cursor not recorded yet'],
                 ['label' => 'Sync Freshness', 'value' => killmail_relative_datetime($lastSuccessAt), 'context' => $lastSuccessAt !== null ? ('Last success ' . killmail_format_datetime($lastSuccessAt)) : 'No successful sync recorded'],
             ],
+            'mail_type_breakdown' => $mailTypeBreakdown,
             'status' => $statusView,
             'rows' => $rows,
             'histogram' => $histogram,
