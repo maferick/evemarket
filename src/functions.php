@@ -11668,6 +11668,159 @@ function killmail_detail_data(): array
     ]);
 }
 
+/**
+ * ESI coverage snapshot — cache + single-flight.
+ *
+ * db_killmail_esi_coverage_snapshot() runs 7+ queries that UNION over
+ * killmail_events + killmail_attackers for every participant in the window.
+ * On the live dataset it takes ~200 seconds per invocation, which made
+ * /killmail-intelligence stall on every cold render.
+ *
+ * Fix: the main page render no longer blocks on this. The coverage panel
+ * is lazy-loaded by the browser via /api/killmail-intelligence/esi-coverage.php,
+ * which reads a cached snapshot from the page_cache table. The endpoint uses
+ * a MySQL advisory lock (GET_LOCK) as a single-flight so that only one PHP
+ * request at a time recomputes the snapshot — everyone else returns the
+ * existing cached value (even if stale) with a status=refreshing hint so the
+ * browser JS can poll and pick up the fresh data when it lands.
+ */
+function killmail_esi_coverage_cache_key(string $startDate): string
+{
+    return 'killmail_esi_coverage:' . trim($startDate);
+}
+
+function killmail_esi_coverage_singleflight_lock_name(): string
+{
+    return 'supplycore:killmail_esi_coverage_refresh';
+}
+
+/**
+ * Zero-valued snapshot with the shape db_killmail_esi_coverage_snapshot()
+ * returns, plus cache metadata fields the UI can surface. Used as the
+ * fallback whenever the cache is empty and nothing else is available.
+ */
+function killmail_esi_coverage_empty_snapshot(string $startDate): array
+{
+    return [
+        'start_date' => $startDate,
+        'participant_characters' => 0,
+        'queued_in_esi_character_queue' => 0,
+        'esi_queue_pending' => 0,
+        'esi_queue_done' => 0,
+        'esi_queue_error' => 0,
+        'with_current_affiliation' => 0,
+        'with_alliance_history_row' => 0,
+        'with_alliance_history' => 0,
+        'history_refresh_completed' => 0,
+        'enrolled_for_killmail_backfill' => 0,
+        'killmail_backfill_pending' => 0,
+        'killmail_backfill_processing' => 0,
+        'killmail_backfill_done' => 0,
+        'killmail_backfill_error' => 0,
+        'killmail_backfill_complete_flag' => 0,
+        'missing_current_affiliation' => 0,
+        'missing_alliance_history' => 0,
+        'missing_history_refresh' => 0,
+        'missing_killmail_backfill_enrollment' => 0,
+        'cache_status' => 'empty',
+        'cache_computed_at' => null,
+        'cache_age_seconds' => null,
+        'cache_duration_ms' => null,
+    ];
+}
+
+/**
+ * Read the cached ESI coverage snapshot from page_cache, decorated with
+ * cache metadata. Returns a zero-valued stub on miss — the UI shows
+ * "Loading…" and the JS fetch will populate real values.
+ *
+ * cache_status values:
+ *   'warm'       — computed within the last 2 minutes
+ *   'stale'      — older than 2 minutes, still rendered so the operator
+ *                  always has *something* to look at
+ *   'empty'      — no cache entry at all (first load after deploy)
+ *   'refreshing' — set by the endpoint when a single-flight refresh is
+ *                  already in progress elsewhere
+ */
+function killmail_esi_coverage_cache_read(string $startDate): array
+{
+    $row = db_select_one(
+        "SELECT cache_value, computed_at FROM page_cache WHERE cache_key = ?",
+        [killmail_esi_coverage_cache_key($startDate)]
+    );
+    if ($row === null) {
+        return killmail_esi_coverage_empty_snapshot($startDate);
+    }
+
+    $decoded = json_decode((string) ($row['cache_value'] ?? ''), true);
+    if (!is_array($decoded)) {
+        return killmail_esi_coverage_empty_snapshot($startDate);
+    }
+
+    $computedAt = isset($row['computed_at']) ? (string) $row['computed_at'] : null;
+    $ageSeconds = null;
+    if ($computedAt !== null && $computedAt !== '') {
+        $computedTs = strtotime($computedAt);
+        if ($computedTs !== false) {
+            $ageSeconds = max(0, time() - $computedTs);
+        }
+    }
+
+    $decoded['cache_computed_at'] = $computedAt;
+    $decoded['cache_age_seconds'] = $ageSeconds;
+    $decoded['cache_status'] = ($ageSeconds !== null && $ageSeconds <= 120) ? 'warm' : 'stale';
+
+    return $decoded;
+}
+
+/**
+ * Single-flight refresh: acquire a MySQL advisory lock (non-blocking),
+ * compute a fresh snapshot, write it to page_cache, release the lock.
+ *
+ * Returns the fresh snapshot on success, or null if another session is
+ * already holding the lock. Callers should treat null as "someone else is
+ * computing it, return whatever cached value you have" rather than as an
+ * error — GET_LOCK with a 0-second timeout is explicitly non-blocking.
+ *
+ * Uses GET_LOCK/RELEASE_LOCK (always available on MariaDB/MySQL 5.5+)
+ * rather than Redis locking so we don't depend on Redis being enabled in
+ * every deploy environment.
+ */
+function killmail_esi_coverage_refresh_with_singleflight(string $startDate): ?array
+{
+    $lockName = killmail_esi_coverage_singleflight_lock_name();
+    $acquired = (int) db_fetch_single_value('SELECT GET_LOCK(?, 0)', [$lockName]);
+    if ($acquired !== 1) {
+        return null;
+    }
+
+    try {
+        // The underlying snapshot query can take several minutes on a cold
+        // backload. Bump PHP's execution limit so the refresh isn't aborted
+        // mid-query. @-prefix because some hosting setups disallow this.
+        @set_time_limit(600);
+
+        $startedAt = microtime(true);
+        $snapshot = db_killmail_esi_coverage_snapshot($startDate);
+        $durationMs = (int) round((microtime(true) - $startedAt) * 1000);
+        $snapshot['cache_duration_ms'] = $durationMs;
+
+        page_cache_set(
+            killmail_esi_coverage_cache_key($startDate),
+            $snapshot,
+            86400 // 24h safety net — overwritten on every refresh
+        );
+
+        $snapshot['cache_status'] = 'warm';
+        $snapshot['cache_computed_at'] = gmdate('Y-m-d H:i:s');
+        $snapshot['cache_age_seconds'] = 0;
+
+        return $snapshot;
+    } finally {
+        db_fetch_single_value('SELECT RELEASE_LOCK(?)', [$lockName]);
+    }
+}
+
 function killmail_overview_data(): array
 {
     $recentHours = 24;
@@ -11702,7 +11855,13 @@ function killmail_overview_data(): array
             $options = db_killmail_overview_filter_options($overviewStartDateTime);
             $listing = db_killmail_overview_page($filters + ['start_date' => $overviewStartDateTime]);
             $histogramRows = db_killmail_overview_monthly_histogram($overviewStartDate);
-            $esiCoverage = db_killmail_esi_coverage_snapshot($overviewStartDate);
+            // ESI coverage is lazy-loaded by the browser via the AJAX endpoint
+            // /api/killmail-intelligence/esi-coverage.php, so the page render
+            // never blocks on the ~200s snapshot query. We serve whatever is
+            // already in page_cache as the initial paint (warm = real numbers
+            // immediately, empty = zeros until JS fetch populates), then JS
+            // overwrites the panel with the freshest data on load.
+            $esiCoverage = killmail_esi_coverage_cache_read($overviewStartDate);
             $storageDuplicateRows = db_killmail_duplicate_identities(50);
         } catch (Throwable $exception) {
             return [
