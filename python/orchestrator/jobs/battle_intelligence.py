@@ -728,12 +728,24 @@ def run_compute_battle_target_metrics(db: SupplyCoreDb, runtime: dict[str, Any] 
     rows_written = 0
     computed_at = _now_sql()
     unscored_targets = 0
-    cursor_start = _sync_state_cursor_get(db, SYNC_STATE_KEY_BATTLE_TARGET_CURSOR)
-    cursor_start = _validate_killmail_cursor(db, cursor_start)
+    raw_cursor = _sync_state_cursor_get(db, SYNC_STATE_KEY_BATTLE_TARGET_CURSOR)
+    raw_cursor = _validate_killmail_cursor(db, raw_cursor)
+    horizon_state = horizon_state_get(db, SYNC_STATE_KEY_BATTLE_TARGET_CURSOR)
+    cursor_start, horizon_meta = _horizon_apply_repair_window(db, horizon_state, raw_cursor)
     cursor_end = cursor_start
+    watermark_event_time: str | None = None
     batch_count = 0
     _sync_state_cursor_upsert(db, SYNC_STATE_KEY_BATTLE_TARGET_CURSOR, status="running", last_cursor=cursor_start, last_row_count=0)
-    _battle_log(runtime, "battle_intelligence.job.started", {"job_name": "compute_battle_target_metrics", "dry_run": dry_run, "computed_at": computed_at})
+    _battle_log(
+        runtime,
+        "battle_intelligence.job.started",
+        {
+            "job_name": "compute_battle_target_metrics",
+            "dry_run": dry_run,
+            "computed_at": computed_at,
+            "horizon": horizon_meta,
+        },
+    )
     try:
         while True:
             batch_started = datetime.now(UTC)
@@ -776,6 +788,11 @@ def run_compute_battle_target_metrics(db: SupplyCoreDb, runtime: dict[str, Any] 
                 damage = max(0.0, float(damage_value or 0.0))
                 started_at = datetime.strptime(str(row.get("started_at")), "%Y-%m-%d %H:%M:%S")
                 killmail_time = datetime.strptime(str(row.get("killmail_time")), "%Y-%m-%d %H:%M:%S")
+                # Track the newest source event time for the horizon
+                # watermark (used by the freshness report + SLA checks).
+                killmail_time_str = killmail_time.strftime("%Y-%m-%d %H:%M:%S")
+                if watermark_event_time is None or killmail_time_str > watermark_event_time:
+                    watermark_event_time = killmail_time_str
                 ttd = max(1.0, (killmail_time - started_at).total_seconds())
                 dps = _safe_div(damage, ttd, 0.0)
                 ship_type_id = int(row.get("victim_ship_type_id") or 0)
@@ -863,6 +880,18 @@ def run_compute_battle_target_metrics(db: SupplyCoreDb, runtime: dict[str, Any] 
                 status="success",
                 last_cursor=cursor_end,
                 last_row_count=len(rows),
+            )
+            # Horizon watermark update runs after the cursor upsert so
+            # the freshness report reflects the newest source event
+            # time actually scored by this batch.  This job uses the
+            # same killmail sequence_id cursor as compute_battle_rollups
+            # so we pass the stringified cursor for equality-only stall
+            # detection.
+            update_watermark_and_stall(
+                db,
+                SYNC_STATE_KEY_BATTLE_TARGET_CURSOR,
+                new_cursor=str(cursor_end),
+                event_time=watermark_event_time,
             )
             _battle_log(
                 runtime,
