@@ -36,6 +36,7 @@ import os
 import time
 import urllib.error
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from typing import Any
 
@@ -59,12 +60,18 @@ _MAX_CHARACTERS_PER_RUN = 50
 _TIME_BUDGET_SECONDS = 55  # leave headroom within a 60s schedule slot
 _MAX_BACKFILL_PAGES_PER_CHARACTER = 10
 _MAX_ERROR_RETRIES = 3
-# Smaller batches so the PHP bridge call completes well under its
-# subprocess timeout even when killmails have many attackers/items
-# (each kill triggers several DB writes + entity metadata priming).
-_BATCH_PROCESS_SIZE = 25
-# Per-batch bridge timeout.  Leave headroom over a worst-case batch of
-# 25 kills (observed ~1s/kill on PHP side with items + entity priming).
+# Number of concurrent ESI fetches.  Killmail bodies are fetched one
+# at a time from /latest/killmails/{id}/{hash}/; parallelising them
+# through a small thread pool eliminates the network round-trip
+# bottleneck.  The shared EsiRateLimiter is thread-safe so rate
+# budgets are still honoured across workers.
+_ESI_FETCH_WORKERS = 8
+# Persist killmails via the PHP bridge in this many per batch.  The
+# PHP persist path no longer performs synchronous ESI entity priming
+# during backfill (see PR #932) so the hot path is fast and we can
+# afford larger batches.
+_BATCH_PROCESS_SIZE = 50
+# Per-batch bridge timeout.
 _BATCH_BRIDGE_TIMEOUT_SECONDS = 90
 # Backfill cutoff — don't walk history earlier than this date.
 # Incremental mode (pages 1-2) is unaffected and always captures new kills.
@@ -149,15 +156,20 @@ def _fetch_esi_killmail(
     killmail_hash: str,
     esi_client: EsiClient,
     gateway: Any = None,
-) -> dict[str, Any] | None:
+) -> tuple[dict[str, Any] | None, bool]:
     """Fetch a single killmail body from ESI.
 
-    Returns the parsed ESI body dict (with victim, attackers, items,
-    solar_system_id, killmail_time) or None on failure.
+    Returns ``(body, from_cache)`` where *body* is the parsed ESI
+    killmail dict (with victim, attackers, items, solar_system_id,
+    killmail_time) or ``None`` on failure, and *from_cache* is ``True``
+    when the body was served from the gateway's Redis/MariaDB cache
+    (or via a 304 Not Modified) rather than a fresh ESI round-trip.
 
-    When *gateway* is provided, the request goes through the ESI compliance
-    gateway for Expires-gating, conditional request handling, and
-    distributed rate-limit coordination.
+    When *gateway* is provided, the request goes through the ESI
+    compliance gateway for Expires-gating, conditional request
+    handling, cross-process cache reuse, and distributed rate-limit
+    coordination.  Otherwise the direct :class:`EsiClient` is used,
+    which still honours the process-wide :class:`EsiRateLimiter`.
     """
     path = f"/latest/killmails/{killmail_id}/{killmail_hash}/"
     if gateway is not None:
@@ -167,23 +179,24 @@ def _fetch_esi_killmail(
                 route_template="/latest/killmails/{killmail_id}/{killmail_hash}/",
             )
         except Exception:
-            return None
-        if resp.from_cache or resp.not_modified:
+            return None, False
+        from_cache = bool(resp.from_cache or resp.not_modified)
+        if from_cache:
             if isinstance(resp.body, dict):
-                return resp.body
-            return None
+                return resp.body, True
+            return None, False
         if not (200 <= resp.status_code < 300) or not isinstance(resp.body, dict):
-            return None
-        return resp.body
+            return None, False
+        return resp.body, False
 
     resp = esi_client.get(path)
     if resp.status_code in (404, 422):
-        return None
+        return None, False
     if resp.is_rate_limited or resp.is_error_limited or resp.status_code == 503:
-        return None
+        return None, False
     if not resp.ok or not isinstance(resp.body, dict):
-        return None
-    return resp.body
+        return None, False
+    return resp.body, False
 
 
 # ---------------------------------------------------------------------------
@@ -263,23 +276,33 @@ def _process_entries(
     gateway: Any = None,
     run_start: float | None = None,
 ) -> tuple[int, int, int, int, str | None]:
-    """Fetch ESI bodies for entries and write via bridge.
+    """Fetch ESI bodies for entries (in parallel) and write via bridge.
 
     zKillboard's character endpoint returns only ``killmail_id`` + ``zkb``
     envelope; we must fetch each killmail's full body from ESI to get
     victim/attackers/items/system/time.
 
-    When *run_start* is provided the function respects the global
-    ``_TIME_BUDGET_SECONDS`` budget: it stops fetching ESI bodies and
-    stops submitting new batches once the budget is reached, returning
-    whatever progress it made so far.  The caller is responsible for
-    updating checkpoint state from the returned tuple.
+    ESI fetches run through a small ThreadPoolExecutor so the network
+    round-trip per killmail is no longer serialised.  The
+    :class:`EsiRateLimiter` underlying both the direct client and the
+    gateway is thread-safe and shared, so rate budgets are honoured
+    across workers.
 
-    Returns (written, esi_fetched, esi_failed, esi_skipped_as_dupe,
-    latest_km_time_seen) where latest_km_time_seen is the ISO timestamp
-    of the most recent killmail whose ESI body was successfully fetched
-    (used by callers to update checkpoints), or None if nothing was
-    fetched.
+    When a *gateway* is supplied its MariaDB- and (optional) Redis-
+    backed cache is used; repeat fetches of the same ``killmail_id``
+    (which can happen when the same kill appears across multiple
+    characters' zKB pages) are served from cache.
+
+    When *run_start* is provided the function respects the global
+    ``_TIME_BUDGET_SECONDS`` budget: it stops scheduling new ESI
+    fetches and stops submitting new batches once the budget is
+    reached, returning whatever progress it made so far.
+
+    Returns (written, esi_fetched, esi_failed, esi_cache_hits,
+    latest_km_time_seen) where ``esi_cache_hits`` counts bodies served
+    from the gateway cache (always 0 when no gateway is provided), and
+    ``latest_km_time_seen`` is the ISO timestamp of the most recent
+    killmail whose ESI body was successfully fetched.
     """
     if not entries:
         return 0, 0, 0, 0, None
@@ -288,15 +311,6 @@ def _process_entries(
         if run_start is None:
             return False
         return (time.perf_counter() - run_start) >= _TIME_BUDGET_SECONDS
-
-    # Fetch ESI bodies for each entry and flush to the bridge in small
-    # batches so a slow PHP-side write doesn't consume the whole budget
-    # or hit the bridge subprocess timeout.
-    payloads: list[dict[str, Any]] = []
-    esi_fetched = 0
-    esi_failed = 0
-    total_written = 0
-    latest_km_time: str | None = None
 
     def _flush(batch: list[dict[str, Any]]) -> int:
         if not batch:
@@ -316,55 +330,92 @@ def _process_entries(
             )
             return 0
 
+    # Pre-filter entries that can't produce a payload.
+    work: list[tuple[int, str, dict[str, Any]]] = []
+    prefilter_failed = 0
     for entry in entries:
-        if _over_budget():
-            logger.info(
-                "Character batch: time budget reached during ESI fetch "
-                "(%d/%d entries processed)",
-                esi_fetched + esi_failed, len(entries),
-            )
-            break
-
         km_id = int(entry.get("killmail_id") or 0)
         zkb = entry.get("zkb") or {}
         km_hash = str(zkb.get("hash") or "")
         if not km_id or not km_hash:
-            esi_failed += 1
+            prefilter_failed += 1
             continue
+        work.append((km_id, km_hash, zkb))
 
-        esi_body = _fetch_esi_killmail(km_id, km_hash, esi_client, gateway)
-        if esi_body is None:
-            esi_failed += 1
-            continue
+    payloads: list[dict[str, Any]] = []
+    esi_fetched = 0
+    esi_failed = prefilter_failed
+    esi_cache_hits = 0
+    total_written = 0
+    latest_km_time: str | None = None
 
-        payload = _build_payload(km_id, km_hash, zkb, esi_body)
-        if payload is None:
-            esi_failed += 1
-            continue
+    # Fetch ESI bodies in parallel through the shared
+    # ``_fetch_esi_killmail`` helper, which handles both the gateway
+    # path (Redis/MariaDB cache, conditional requests, distributed
+    # rate-limit coordination) and the direct-client path (still rate
+    # limited via the process-wide ``shared_limiter``).  Each future
+    # returns ``(km_id, km_hash, zkb, esi_body, from_cache)``.
+    def _fetch_one(
+        item: tuple[int, str, dict[str, Any]],
+    ) -> tuple[int, str, dict[str, Any], dict[str, Any] | None, bool]:
+        km_id_local, km_hash_local, zkb_local = item
+        body, from_cache = _fetch_esi_killmail(
+            km_id_local, km_hash_local, esi_client, gateway,
+        )
+        return km_id_local, km_hash_local, zkb_local, body, from_cache
 
-        payloads.append(payload)
-        esi_fetched += 1
+    # Chunk the work into time-budget-aware batches so we can stop
+    # scheduling new fetches once the budget is reached.
+    idx = 0
+    total = len(work)
+    while idx < total:
+        if _over_budget():
+            logger.info(
+                "Character batch: time budget reached during ESI fetch "
+                "(%d/%d entries processed)",
+                esi_fetched + esi_failed, total,
+            )
+            break
 
-        km_time = str(esi_body.get("killmail_time") or "")
-        if km_time and (latest_km_time is None or km_time > latest_km_time):
-            latest_km_time = km_time
+        # Schedule up to one _BATCH_PROCESS_SIZE-worth of fetches in
+        # parallel, then flush.  This caps memory usage and ensures we
+        # write to MariaDB frequently enough to stay responsive.
+        chunk = work[idx : idx + _BATCH_PROCESS_SIZE]
+        idx += len(chunk)
 
-        # Flush once we've accumulated a full batch.
-        if len(payloads) >= _BATCH_PROCESS_SIZE:
+        with ThreadPoolExecutor(
+            max_workers=min(_ESI_FETCH_WORKERS, len(chunk))
+        ) as pool:
+            results = list(pool.map(_fetch_one, chunk))
+
+        for km_id, km_hash, zkb, esi_body, from_cache in results:
+            if esi_body is None:
+                esi_failed += 1
+                continue
+            payload = _build_payload(km_id, km_hash, zkb, esi_body)
+            if payload is None:
+                esi_failed += 1
+                continue
+            payloads.append(payload)
+            esi_fetched += 1
+            if from_cache:
+                esi_cache_hits += 1
+            km_time = str(esi_body.get("killmail_time") or "")
+            if km_time and (latest_km_time is None or km_time > latest_km_time):
+                latest_km_time = km_time
+
+        # Flush this chunk's payloads to the bridge.
+        if payloads:
             total_written += _flush(payloads)
             payloads = []
-            if _over_budget():
-                logger.info(
-                    "Character batch: time budget reached after flushing batch"
-                )
-                break
 
-    # Flush any remaining payloads (last partial batch).
-    if payloads and not _over_budget():
-        total_written += _flush(payloads)
-        payloads = []
+        if _over_budget():
+            logger.info(
+                "Character batch: time budget reached after flushing batch"
+            )
+            break
 
-    return total_written, esi_fetched, esi_failed, 0, latest_km_time
+    return total_written, esi_fetched, esi_failed, esi_cache_hits, latest_km_time
 
 
 # ---------------------------------------------------------------------------
@@ -389,6 +440,7 @@ def _sync_incremental(
     total_written = 0
     total_esi_fetched = 0
     total_esi_failed = 0
+    total_esi_cache_hits = 0
     latest_km_id: int | None = None
     latest_km_at: str | None = None
 
@@ -431,13 +483,14 @@ def _sync_incremental(
 
         # Process new killmails: fetch ESI bodies and persist.
         if new_entries:
-            written, fetched, failed, _, km_time = _process_entries(
+            written, fetched, failed, cache_hits, km_time = _process_entries(
                 bridge, new_entries, esi_client, gateway,
                 run_start=run_start,
             )
             total_written += written
             total_esi_fetched += fetched
             total_esi_failed += failed
+            total_esi_cache_hits += cache_hits
             if km_time and (latest_km_at is None or km_time > latest_km_at):
                 latest_km_at = km_time
 
@@ -455,6 +508,7 @@ def _sync_incremental(
         "written": total_written,
         "esi_fetched": total_esi_fetched,
         "esi_failed": total_esi_failed,
+        "esi_cache_hits": total_esi_cache_hits,
         "latest_km_id": latest_km_id,
         "latest_km_at": latest_km_at,
     }
@@ -492,6 +546,7 @@ def _sync_backfill(
     total_written = 0
     total_esi_fetched = 0
     total_esi_failed = 0
+    total_esi_cache_hits = 0
     consecutive_all_known = 0
     last_page_completed = last_page_fetched
     latest_km_id: int | None = None
@@ -548,13 +603,14 @@ def _sync_backfill(
         # Process new killmails: fetch ESI bodies and persist.
         page_km_time_max: str | None = None
         if new_entries:
-            written, fetched, failed, _, latest_km_time = _process_entries(
+            written, fetched, failed, cache_hits, latest_km_time = _process_entries(
                 bridge, new_entries, esi_client, gateway,
                 run_start=run_start,
             )
             total_written += written
             total_esi_fetched += fetched
             total_esi_failed += failed
+            total_esi_cache_hits += cache_hits
             if latest_km_time:
                 page_km_time_max = latest_km_time
                 if latest_km_at is None or latest_km_time > latest_km_at:
@@ -594,6 +650,7 @@ def _sync_backfill(
         "written": total_written,
         "esi_fetched": total_esi_fetched,
         "esi_failed": total_esi_failed,
+        "esi_cache_hits": total_esi_cache_hits,
         "last_page_fetched": last_page_completed,
         "latest_km_id": latest_km_id,
         "latest_km_at": latest_km_at,
@@ -711,25 +768,39 @@ def run_character_killmail_sync(db: SupplyCoreDb, raw_config: dict[str, Any] | N
         limiter=shared_limiter,
     )
 
-    # Opt-in ESI compliance gateway (Redis-backed cache + conditional
-    # requests + distributed rate limit).  Falls back to direct client
-    # calls when Redis is disabled or unavailable.
+    # Build the ESI compliance gateway unconditionally with the
+    # MariaDB-backed cache.  The gateway caches response bodies in
+    # ``esi_cache_entries`` and endpoint metadata (ETag / Last-Modified
+    # / Expires) in ``esi_endpoint_state`` — all without requiring
+    # Redis.  When ``REDIS_ENABLED=1`` is set the same gateway also
+    # layers Redis on top for cross-process coordination.  Killmails
+    # are immutable, so cached bodies can be reused indefinitely (the
+    # gateway respects the Expires header returned by ESI, which for
+    # killmails is very long).
     esi_gateway = None
     try:
+        from ..esi_gateway import build_gateway
+        redis_config: dict[str, Any] | None = None
         if os.getenv("REDIS_ENABLED", "0") == "1":
-            from ..esi_gateway import build_gateway
-            esi_gateway = build_gateway(
-                redis_config={
-                    "enabled": True,
-                    "host": os.getenv("REDIS_HOST", "127.0.0.1"),
-                    "port": int(os.getenv("REDIS_PORT", "6379")),
-                    "database": int(os.getenv("REDIS_DB", "0")),
-                    "password": os.getenv("REDIS_PASSWORD", ""),
-                    "prefix": os.getenv("REDIS_PREFIX", "supplycore"),
-                },
-                user_agent=user_agent,
-                timeout_seconds=15,
-            )
+            redis_config = {
+                "enabled": True,
+                "host": os.getenv("REDIS_HOST", "127.0.0.1"),
+                "port": int(os.getenv("REDIS_PORT", "6379")),
+                "database": int(os.getenv("REDIS_DB", "0")),
+                "password": os.getenv("REDIS_PASSWORD", ""),
+                "prefix": os.getenv("REDIS_PREFIX", "supplycore"),
+            }
+        esi_gateway = build_gateway(
+            db,
+            redis_config=redis_config,
+            user_agent=user_agent,
+            timeout_seconds=15,
+        )
+        logger.info(
+            "ESI gateway built (redis=%s, db_cache=%s)",
+            "enabled" if redis_config else "disabled",
+            "enabled" if db is not None else "disabled",
+        )
     except Exception:
         logger.exception("ESI gateway unavailable, falling back to direct client")
         esi_gateway = None
@@ -757,6 +828,9 @@ def run_character_killmail_sync(db: SupplyCoreDb, raw_config: dict[str, Any] | N
     total_killmails_found = 0
     total_new_killmails = 0
     total_written = 0
+    total_esi_fetched = 0
+    total_esi_failed = 0
+    total_esi_cache_hits = 0
 
     for row in queue_rows:
         if (time.perf_counter() - run_start) >= _TIME_BUDGET_SECONDS:
@@ -838,6 +912,9 @@ def run_character_killmail_sync(db: SupplyCoreDb, raw_config: dict[str, Any] | N
             total_killmails_found += result["killmails_found_delta"]
             total_new_killmails += result["new_killmails"]
             total_written += result["written"]
+            total_esi_fetched += int(result.get("esi_fetched") or 0)
+            total_esi_failed += int(result.get("esi_failed") or 0)
+            total_esi_cache_hits += int(result.get("esi_cache_hits") or 0)
             characters_succeeded += 1
 
         except Exception as exc:
@@ -856,12 +933,19 @@ def run_character_killmail_sync(db: SupplyCoreDb, raw_config: dict[str, Any] | N
     finished_at = utc_now_iso()
     duration_ms = int((time.perf_counter() - run_start) * 1000)
 
+    cache_hit_pct = (
+        (total_esi_cache_hits / total_esi_fetched * 100.0)
+        if total_esi_fetched > 0
+        else 0.0
+    )
     logger.info(
         "Run complete: %d processed, %d succeeded, %d failed, %d completed. "
-        "Killmails: %d found, %d new, %d written. Duration: %dms",
+        "Killmails: %d found, %d new, %d written. "
+        "ESI: %d fetched, %d failed, %d cache hits (%.1f%%). Duration: %dms",
         characters_processed, characters_succeeded, characters_failed,
         characters_completed, total_killmails_found, total_new_killmails,
-        total_written, duration_ms,
+        total_written, total_esi_fetched, total_esi_failed,
+        total_esi_cache_hits, cache_hit_pct, duration_ms,
     )
 
     return {
@@ -877,4 +961,7 @@ def run_character_killmail_sync(db: SupplyCoreDb, raw_config: dict[str, Any] | N
         "killmails_found": total_killmails_found,
         "new_killmails": total_new_killmails,
         "written": total_written,
+        "esi_fetched": total_esi_fetched,
+        "esi_failed": total_esi_failed,
+        "esi_cache_hits": total_esi_cache_hits,
     }
