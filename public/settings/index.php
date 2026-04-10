@@ -225,7 +225,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
 
             $allPassed = array_reduce($testResults, fn(bool $carry, array $r) => $carry && $r['ok'], true);
-            $_SESSION['redis_test_results'] = $testResults;
+            supplycore_session_write(function () use ($testResults): void {
+                $_SESSION['redis_test_results'] = $testResults;
+            });
             flash('success', $allPassed ? 'All Redis tests passed.' : 'Some Redis tests failed – see results below.');
             header('Location: /settings?section=runtime-diagnostics&subsection=redis-test');
             exit;
@@ -359,7 +361,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
 
             $allPassed = array_reduce($testResults, fn(bool $carry, array $r) => $carry && $r['ok'], true);
-            $_SESSION['neo4j_test_results'] = $testResults;
+            supplycore_session_write(function () use ($testResults): void {
+                $_SESSION['neo4j_test_results'] = $testResults;
+            });
             flash('success', $allPassed ? 'All Neo4j tests passed.' : 'Some Neo4j tests failed – see results below.');
             header('Location: /settings?section=runtime-diagnostics&subsection=neo4j-test');
             exit;
@@ -528,7 +532,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
 
             $allPassed = array_reduce($testResults, fn(bool $carry, array $r) => $carry && $r['ok'], true);
-            $_SESSION['influxdb_test_results'] = $testResults;
+            supplycore_session_write(function () use ($testResults): void {
+                $_SESSION['influxdb_test_results'] = $testResults;
+            });
             flash('success', $allPassed ? 'All InfluxDB tests passed.' : 'Some InfluxDB tests failed – see results below.');
             header('Location: /settings?section=runtime-diagnostics&subsection=influxdb-test');
             exit;
@@ -962,6 +968,7 @@ $settingValues = get_settings([
     'static_data_source_url',
     'redis_cache_enabled',
     'redis_locking_enabled',
+    'redis_session_enabled',
     'redis_host',
     'redis_port',
     'redis_database',
@@ -1250,7 +1257,11 @@ include __DIR__ . '/../../src/views/partials/header.php';
             $redisTestDatabase = (int) config('redis.database', 0);
             $redisTestPassword = (string) config('redis.password', '');
             $redisTestResults = $_SESSION['redis_test_results'] ?? null;
-            unset($_SESSION['redis_test_results']);
+            if (isset($_SESSION['redis_test_results'])) {
+                supplycore_session_write(function (): void {
+                    unset($_SESSION['redis_test_results']);
+                });
+            }
             ?>
             <div class="mt-6 space-y-6">
                 <section class="rounded-2xl border border-border bg-black/20 p-4">
@@ -1306,7 +1317,11 @@ include __DIR__ . '/../../src/views/partials/header.php';
             $neo4jTestPassword = (string) config('neo4j.password', '');
             $neo4jTestDatabase = (string) config('neo4j.database', 'neo4j');
             $neo4jTestResults = $_SESSION['neo4j_test_results'] ?? null;
-            unset($_SESSION['neo4j_test_results']);
+            if (isset($_SESSION['neo4j_test_results'])) {
+                supplycore_session_write(function (): void {
+                    unset($_SESSION['neo4j_test_results']);
+                });
+            }
             ?>
             <div class="mt-6 space-y-6">
                 <section class="rounded-2xl border border-border bg-black/20 p-4">
@@ -1362,7 +1377,11 @@ include __DIR__ . '/../../src/views/partials/header.php';
             $influxTestCurrentBucket = trim((string) config('influxdb.bucket', 'supplycore_rollups'));
             $influxTestCurrentToken = trim((string) config('influxdb.token', ''));
             $influxTestResults = $_SESSION['influxdb_test_results'] ?? null;
-            unset($_SESSION['influxdb_test_results']);
+            if (isset($_SESSION['influxdb_test_results'])) {
+                supplycore_session_write(function (): void {
+                    unset($_SESSION['influxdb_test_results']);
+                });
+            }
             ?>
             <div class="mt-6 space-y-6">
                 <section class="rounded-2xl border border-border bg-black/20 p-4">
@@ -4238,6 +4257,11 @@ include __DIR__ . '/../../src/views/partials/header.php';
                         <input type="hidden" name="redis_locking_enabled" value="0">
                         <input type="checkbox" name="redis_locking_enabled" value="1" <?= ($dataSyncSettingValues['redis_locking_enabled'] ?? (config('redis.lock_enabled', true) ? '1' : '0')) === '1' ? 'checked' : '' ?> class="size-4 rounded border-border bg-black">
                         <span class="text-sm">Prefer Redis distributed locks for schedulers and expensive recomputes</span>
+                    </label>
+                    <label class="flex items-center gap-3">
+                        <input type="hidden" name="redis_session_enabled" value="0">
+                        <input type="checkbox" name="redis_session_enabled" value="1" <?= ($dataSyncSettingValues['redis_session_enabled'] ?? (config('redis.session_enabled', true) ? '1' : '0')) === '1' ? 'checked' : '' ?> class="size-4 rounded border-border bg-black">
+                        <span class="text-sm">Store PHP sessions in Redis (avoids files-handler flock serialisation across concurrent tabs)</span>
                     </label>
                     <div class="grid gap-3 md:grid-cols-2">
                         <label class="block space-y-2">
