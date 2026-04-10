@@ -1,0 +1,3 @@
+# Deny all HTTP access to the proxy storage directory.
+# The SQLite database (session.sqlite) lives here.
+Require all denied
