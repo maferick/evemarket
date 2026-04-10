@@ -59,7 +59,13 @@ _MAX_CHARACTERS_PER_RUN = 50
 _TIME_BUDGET_SECONDS = 55  # leave headroom within a 60s schedule slot
 _MAX_BACKFILL_PAGES_PER_CHARACTER = 10
 _MAX_ERROR_RETRIES = 3
-_BATCH_PROCESS_SIZE = 100
+# Smaller batches so the PHP bridge call completes well under its
+# subprocess timeout even when killmails have many attackers/items
+# (each kill triggers several DB writes + entity metadata priming).
+_BATCH_PROCESS_SIZE = 25
+# Per-batch bridge timeout.  Leave headroom over a worst-case batch of
+# 25 kills (observed ~1s/kill on PHP side with items + entity priming).
+_BATCH_BRIDGE_TIMEOUT_SECONDS = 90
 # Backfill cutoff — don't walk history earlier than this date.
 # Incremental mode (pages 1-2) is unaffected and always captures new kills.
 _BACKFILL_CUTOFF_DATE = "2024-01-01"
@@ -255,12 +261,19 @@ def _process_entries(
     entries: list[dict[str, Any]],
     esi_client: EsiClient,
     gateway: Any = None,
+    run_start: float | None = None,
 ) -> tuple[int, int, int, int, str | None]:
     """Fetch ESI bodies for entries and write via bridge.
 
     zKillboard's character endpoint returns only ``killmail_id`` + ``zkb``
     envelope; we must fetch each killmail's full body from ESI to get
     victim/attackers/items/system/time.
+
+    When *run_start* is provided the function respects the global
+    ``_TIME_BUDGET_SECONDS`` budget: it stops fetching ESI bodies and
+    stops submitting new batches once the budget is reached, returning
+    whatever progress it made so far.  The caller is responsible for
+    updating checkpoint state from the returned tuple.
 
     Returns (written, esi_fetched, esi_failed, esi_skipped_as_dupe,
     latest_km_time_seen) where latest_km_time_seen is the ISO timestamp
@@ -271,13 +284,47 @@ def _process_entries(
     if not entries:
         return 0, 0, 0, 0, None
 
-    # Fetch ESI bodies for each entry and assemble payloads.
+    def _over_budget() -> bool:
+        if run_start is None:
+            return False
+        return (time.perf_counter() - run_start) >= _TIME_BUDGET_SECONDS
+
+    # Fetch ESI bodies for each entry and flush to the bridge in small
+    # batches so a slow PHP-side write doesn't consume the whole budget
+    # or hit the bridge subprocess timeout.
     payloads: list[dict[str, Any]] = []
     esi_fetched = 0
     esi_failed = 0
+    total_written = 0
     latest_km_time: str | None = None
 
+    def _flush(batch: list[dict[str, Any]]) -> int:
+        if not batch:
+            return 0
+        try:
+            result = bridge.call(
+                "process-killmail-batch",
+                payload={"payloads": batch, "skip_entity_filter": True},
+                timeout=_BATCH_BRIDGE_TIMEOUT_SECONDS,
+            )
+            batch_result = result.get("result") or {}
+            return int(batch_result.get("rows_written") or 0)
+        except Exception:
+            logger.exception(
+                "Bridge call process-killmail-batch failed for batch of %d",
+                len(batch),
+            )
+            return 0
+
     for entry in entries:
+        if _over_budget():
+            logger.info(
+                "Character batch: time budget reached during ESI fetch "
+                "(%d/%d entries processed)",
+                esi_fetched + esi_failed, len(entries),
+            )
+            break
+
         km_id = int(entry.get("killmail_id") or 0)
         zkb = entry.get("zkb") or {}
         km_hash = str(zkb.get("hash") or "")
@@ -302,24 +349,20 @@ def _process_entries(
         if km_time and (latest_km_time is None or km_time > latest_km_time):
             latest_km_time = km_time
 
-    if not payloads:
-        return 0, esi_fetched, esi_failed, 0, latest_km_time
+        # Flush once we've accumulated a full batch.
+        if len(payloads) >= _BATCH_PROCESS_SIZE:
+            total_written += _flush(payloads)
+            payloads = []
+            if _over_budget():
+                logger.info(
+                    "Character batch: time budget reached after flushing batch"
+                )
+                break
 
-    total_written = 0
-    for batch_start in range(0, len(payloads), _BATCH_PROCESS_SIZE):
-        batch = payloads[batch_start : batch_start + _BATCH_PROCESS_SIZE]
-        try:
-            result = bridge.call(
-                "process-killmail-batch",
-                payload={"payloads": batch, "skip_entity_filter": True},
-            )
-            batch_result = result.get("result") or {}
-            total_written += int(batch_result.get("rows_written") or 0)
-        except Exception:
-            logger.exception(
-                "Bridge call process-killmail-batch failed for batch at offset %d",
-                batch_start,
-            )
+    # Flush any remaining payloads (last partial batch).
+    if payloads and not _over_budget():
+        total_written += _flush(payloads)
+        payloads = []
 
     return total_written, esi_fetched, esi_failed, 0, latest_km_time
 
@@ -390,6 +433,7 @@ def _sync_incremental(
         if new_entries:
             written, fetched, failed, _, km_time = _process_entries(
                 bridge, new_entries, esi_client, gateway,
+                run_start=run_start,
             )
             total_written += written
             total_esi_fetched += fetched
@@ -506,6 +550,7 @@ def _sync_backfill(
         if new_entries:
             written, fetched, failed, _, latest_km_time = _process_entries(
                 bridge, new_entries, esi_client, gateway,
+                run_start=run_start,
             )
             total_written += written
             total_esi_fetched += fetched
