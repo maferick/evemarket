@@ -108,6 +108,7 @@ from .jobs.esi_sovereignty_sync import (
 )
 from .jobs.compute_sovereignty_alerts import run_compute_sovereignty_alerts
 from .jobs.neo4j_ml_exploration import run_neo4j_ml_exploration
+from .jobs.compute_bloom_entry_points import run_compute_bloom_entry_points
 from .jobs.log_to_issues_worker import run_log_to_issues
 from .jobs.discord_webhook_filter import run_discord_webhook_filter
 
@@ -184,6 +185,7 @@ PYTHON_COMPUTE_PROCESSOR_JOB_KEYS: set[str] = {
     "cip_compound_analytics",
     "cip_calibration",
     "neo4j_ml_exploration",
+    "compute_bloom_entry_points",
     "log_to_issues",
     "discord_webhook_filter",
 }
@@ -329,6 +331,8 @@ _PROCESSOR_DISPATCH: dict[str, tuple] = {
     "cip_calibration": (wrap_cip_job("cip_calibration", run_cip_calibration), lambda db, cfg: (db,)),
     # Neo4j GDS ML exploration (Phase 1: core modernization)
     "neo4j_ml_exploration": (run_neo4j_ml_exploration, lambda db, cfg: (db, neo4j_runtime(cfg))),
+    # Bloom operational intelligence — smart entry-point labels
+    "compute_bloom_entry_points": (run_compute_bloom_entry_points, lambda db, cfg: (db, neo4j_runtime(cfg))),
     # Sovereignty monitoring
     "sovereignty_campaigns_sync": (run_sovereignty_campaigns_sync, lambda db, cfg: (db, cfg)),
     "sovereignty_structures_sync": (run_sovereignty_structures_sync, lambda db, cfg: (db, cfg)),
