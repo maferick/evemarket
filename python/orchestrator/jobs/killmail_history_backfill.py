@@ -62,7 +62,11 @@ def _fetch_esi_killmail(killmail_id: int, killmail_hash: str, esi_client: EsiCli
     """
     path = f"/latest/killmails/{killmail_id}/{killmail_hash}/"
     if gateway is not None:
-        resp = gateway.get(path, route_template="/latest/killmails/{killmail_id}/{killmail_hash}/")
+        resp = gateway.get(
+            path,
+            route_template="/latest/killmails/{killmail_id}/{killmail_hash}/",
+            identity=f"km:{killmail_id}",
+        )
         if resp.from_cache or resp.not_modified:
             if isinstance(resp.body, dict):
                 pass  # Use cached payload — fall through to body extraction

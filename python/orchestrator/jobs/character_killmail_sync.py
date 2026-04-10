@@ -172,6 +172,7 @@ def _fetch_esi_killmail(
             resp = gateway.get(
                 path,
                 route_template="/latest/killmails/{killmail_id}/{killmail_hash}/",
+                identity=f"km:{killmail_id}",
             )
         except Exception:
             return None
