@@ -135,6 +135,121 @@ try {
         python_scheduler_bridge_output(['ok' => true, 'result' => $result]);
     }
 
+    if ($action === 'character-killmail-sync-context') {
+        $appName = trim((string) get_setting('app_name', 'SupplyCore'));
+        if ($appName === '') {
+            $appName = 'SupplyCore';
+        }
+        $userAgent = $appName . ' character-killmail-sync/1.0 (+https://github.com/cvweiss/supplycore)';
+        python_scheduler_bridge_output([
+            'ok' => true,
+            'context' => ['user_agent' => $userAgent],
+        ]);
+    }
+
+    if ($action === 'character-killmail-queue-pending') {
+        $input = python_scheduler_bridge_read_stdin_json();
+        $limit = max(1, min(500, (int) ($input['limit'] ?? 50)));
+        $rows = db_select(
+            "SELECT character_id, priority, priority_reason, status, mode,
+                    last_page_fetched, last_killmail_id_seen, last_killmail_at_seen,
+                    killmails_found, backfill_complete, queued_at, last_success_at,
+                    last_incremental_at, last_full_backfill_at
+             FROM character_killmail_queue
+             WHERE status IN ('pending', 'error')
+             ORDER BY priority DESC, queued_at ASC
+             LIMIT ?",
+            [$limit]
+        );
+        // Mark these rows as 'processing' so concurrent runs don't grab them.
+        if ($rows) {
+            $ids = array_map(static fn (array $row): int => (int) $row['character_id'], $rows);
+            $placeholders = implode(',', array_fill(0, count($ids), '?'));
+            db_execute(
+                "UPDATE character_killmail_queue
+                 SET status = 'processing'
+                 WHERE character_id IN ({$placeholders})",
+                $ids
+            );
+        }
+        python_scheduler_bridge_output(['ok' => true, 'rows' => $rows]);
+    }
+
+    if ($action === 'character-killmail-queue-update') {
+        $input = python_scheduler_bridge_read_stdin_json();
+        $characterId = (int) ($input['character_id'] ?? 0);
+        if ($characterId <= 0) {
+            throw new InvalidArgumentException('character_id is required for character-killmail-queue-update.');
+        }
+
+        $sets = [];
+        $params = [];
+
+        $status = (string) ($input['status'] ?? '');
+        if ($status !== '' && in_array($status, ['pending', 'processing', 'done', 'error'], true)) {
+            $sets[] = 'status = ?';
+            $params[] = $status;
+            if ($status === 'done') {
+                $sets[] = 'last_success_at = UTC_TIMESTAMP()';
+                $sets[] = 'processed_at = UTC_TIMESTAMP()';
+            } elseif ($status === 'error') {
+                $sets[] = 'processed_at = UTC_TIMESTAMP()';
+            }
+        }
+        if (array_key_exists('last_page_fetched', $input)) {
+            $sets[] = 'last_page_fetched = ?';
+            $params[] = max(0, (int) $input['last_page_fetched']);
+        }
+        if (array_key_exists('last_killmail_id_seen', $input) && $input['last_killmail_id_seen'] !== null) {
+            $sets[] = 'last_killmail_id_seen = ?';
+            $params[] = (int) $input['last_killmail_id_seen'];
+        }
+        if (array_key_exists('last_killmail_at_seen', $input) && $input['last_killmail_at_seen'] !== null) {
+            $seenRaw = (string) $input['last_killmail_at_seen'];
+            $seenTs = $seenRaw !== '' ? strtotime($seenRaw) : false;
+            if ($seenTs !== false) {
+                $sets[] = 'last_killmail_at_seen = ?';
+                $params[] = gmdate('Y-m-d H:i:s', $seenTs);
+            }
+        }
+        if (array_key_exists('killmails_found_delta', $input)) {
+            $delta = max(0, (int) $input['killmails_found_delta']);
+            if ($delta > 0) {
+                $sets[] = 'killmails_found = killmails_found + ?';
+                $params[] = $delta;
+            }
+        }
+        if (array_key_exists('backfill_complete', $input)) {
+            $sets[] = 'backfill_complete = ?';
+            $params[] = ((bool) $input['backfill_complete']) ? 1 : 0;
+            if ((bool) $input['backfill_complete']) {
+                $sets[] = 'last_full_backfill_at = UTC_TIMESTAMP()';
+            }
+        }
+        if (array_key_exists('mode', $input) && in_array($input['mode'], ['incremental', 'backfill'], true)) {
+            $sets[] = 'mode = ?';
+            $params[] = (string) $input['mode'];
+            if ($input['mode'] === 'incremental') {
+                $sets[] = 'last_incremental_at = UTC_TIMESTAMP()';
+            }
+        }
+        if (array_key_exists('last_error', $input) && $input['last_error'] !== null) {
+            $sets[] = 'last_error = ?';
+            $params[] = substr((string) $input['last_error'], 0, 500);
+        } elseif ($status === 'done') {
+            $sets[] = 'last_error = NULL';
+        }
+
+        if ($sets === []) {
+            python_scheduler_bridge_output(['ok' => true, 'updated' => 0]);
+        } else {
+            $params[] = $characterId;
+            $sql = 'UPDATE character_killmail_queue SET ' . implode(', ', $sets) . ' WHERE character_id = ?';
+            $updated = db_execute($sql, $params);
+            python_scheduler_bridge_output(['ok' => true, 'updated' => (int) $updated]);
+        }
+    }
+
     if ($action === 'repair-killmail-zkb') {
         $input = python_scheduler_bridge_read_stdin_json();
         $updates = (array) ($input['updates'] ?? []);
