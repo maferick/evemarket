@@ -145,16 +145,33 @@ def _create_projection(client: Neo4jClient, window: dict[str, Any]) -> tuple[boo
     # Always use Cypher projection — it handles missing relationship types
     # gracefully (returns zero rows) instead of failing hard like native
     # projection which validates all specified types exist upfront.
+    #
+    # GDS 2.4+ removed the ``gds.graph.project.cypher`` procedure and
+    # replaced it with a Cypher projection *function* that must be invoked
+    # inside a ``MATCH ... WITH gds.graph.project(...)`` pipeline (passing
+    # node/relationship *values*, not query strings).  Calling the old
+    # procedure form with query strings raises ``IllegalArgumentException:
+    # Invalid node projection, one or more labels not found`` because GDS
+    # falls back to the native factory and tries to parse the string as a
+    # node label.  A directional match combined with the
+    # ``undirectedRelationshipTypes`` option yields an undirected graph
+    # without double-counting edges from a symmetric Cypher pattern.
     client.query(
         f"""
-        CALL gds.graph.project(
+        MATCH (source:Character)-[r:{CHARACTER_REL_TYPES_STR}]->(target:Character)
+        {date_filter}
+        WITH gds.graph.project(
             '{name}',
-            'MATCH (c:Character) RETURN id(c) AS id',
-            'MATCH (a:Character)-[r:{CHARACTER_REL_TYPES_STR}]-(b:Character)
-             {date_filter}
-             RETURN id(a) AS source, id(b) AS target,
-                    COALESCE(r.weight, COALESCE(r.count, 1.0)) AS weight'
-        )
+            source,
+            target,
+            {{
+                relationshipProperties: {{
+                    weight: COALESCE(r.weight, COALESCE(r.count, 1.0))
+                }}
+            }},
+            {{ undirectedRelationshipTypes: ['*'] }}
+        ) AS g
+        RETURN g.graphName AS graphName
         """,
         timeout_seconds=180,
     )
