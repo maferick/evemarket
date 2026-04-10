@@ -8,9 +8,10 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from dataclasses import dataclass
 from typing import Any
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 from urllib.request import Request
 
 from .esi_rate_limiter import EsiRateLimiter, shared_limiter, token_cost_for_status
@@ -21,6 +22,13 @@ logger = logging.getLogger("supplycore.esi_client")
 ESI_BASE = "https://esi.evetech.net"
 ESI_COMPATIBILITY_DATE = "2025-12-16"
 DEFAULT_USER_AGENT = "SupplyCore-Orchestrator/1.0"
+
+# Transient network errors (ConnectionResetError, BrokenPipeError, timeouts,
+# URLError wrapping socket errors) get retried before we give up and return
+# ``status_code=0``.  Without this, a single dropped keepalive terminates
+# long-running graph-crawl jobs like `evewho_alliance_member_sync`.
+_NETWORK_MAX_RETRIES = 2
+_NETWORK_RETRY_BASE_SLEEP = 1.0
 
 
 @dataclass(slots=True)
@@ -104,41 +112,80 @@ class EsiClient:
         if extra_headers:
             headers.update(extra_headers)
 
-        # Wait for rate-limit budget before sending.
-        self._limiter.acquire(group)
-
         request = Request(url, headers=headers, method="GET")
-        try:
-            with ipv4_opener.open(request, timeout=self._timeout) as response:
-                raw_body = response.read()
-                # Handle gzip
-                if response.headers.get("Content-Encoding") == "gzip":
-                    import gzip
-                    raw_body = gzip.decompress(raw_body)
-                body_str = raw_body.decode("utf-8", errors="replace") if isinstance(raw_body, bytes) else raw_body
-                resp_headers = {k: v for k, v in response.headers.items()} if hasattr(response.headers, 'items') else {}
-                status = int(response.status)
+        for attempt in range(_NETWORK_MAX_RETRIES + 1):
+            # Wait for rate-limit budget before every attempt.
+            self._limiter.acquire(group)
+            try:
+                with ipv4_opener.open(request, timeout=self._timeout) as response:
+                    raw_body = response.read()
+                    # Handle gzip
+                    if response.headers.get("Content-Encoding") == "gzip":
+                        import gzip
+                        raw_body = gzip.decompress(raw_body)
+                    body_str = raw_body.decode("utf-8", errors="replace") if isinstance(raw_body, bytes) else raw_body
+                    resp_headers = {k: v for k, v in response.headers.items()} if hasattr(response.headers, 'items') else {}
+                    status = int(response.status)
 
-                parsed = self._parse_json(body_str)
-                esi_response = EsiResponse(status_code=status, body=parsed, headers=resp_headers)
-                self._limiter.update_from_response(status, resp_headers)
-                return esi_response
+                    parsed = self._parse_json(body_str)
+                    esi_response = EsiResponse(status_code=status, body=parsed, headers=resp_headers)
+                    self._limiter.update_from_response(status, resp_headers)
+                    return esi_response
 
-        except HTTPError as exc:
-            exc_headers = {}
-            if hasattr(exc, "headers") and exc.headers:
-                exc_headers = {k: v for k, v in exc.headers.items()} if hasattr(exc.headers, 'items') else {}
-            status = int(exc.code)
-            self._limiter.update_from_response(status, exc_headers)
+            except HTTPError as exc:
+                exc_headers = {}
+                if hasattr(exc, "headers") and exc.headers:
+                    exc_headers = {k: v for k, v in exc.headers.items()} if hasattr(exc.headers, 'items') else {}
+                status = int(exc.code)
+                self._limiter.update_from_response(status, exc_headers)
 
-            if status == 304:
-                return EsiResponse(status_code=304, body=None, headers=exc_headers)
+                if status == 304:
+                    return EsiResponse(status_code=304, body=None, headers=exc_headers)
 
-            return EsiResponse(status_code=status, body=None, headers=exc_headers)
+                return EsiResponse(status_code=status, body=None, headers=exc_headers)
 
-        except (OSError, TimeoutError) as exc:
-            logger.warning("ESI request failed for %s: %s", url, exc)
-            return EsiResponse(status_code=0, body=None, headers={})
+            except URLError as exc:
+                # URLError wraps socket-level problems during connect.  Retry
+                # transient failures before surrendering.
+                if attempt < _NETWORK_MAX_RETRIES:
+                    logger.warning(
+                        "ESI request transient URLError for %s (attempt %d/%d): %s",
+                        url, attempt + 1, _NETWORK_MAX_RETRIES + 1, exc,
+                    )
+                    time.sleep(_NETWORK_RETRY_BASE_SLEEP * (2 ** attempt))
+                    continue
+                logger.warning("ESI request failed for %s: %s", url, exc)
+                return EsiResponse(status_code=0, body=None, headers={})
+
+            except (ConnectionResetError, BrokenPipeError, TimeoutError) as exc:
+                # The peer dropped the TCP connection mid-read, or the
+                # handshake/read timed out.  Retry with exponential backoff.
+                if attempt < _NETWORK_MAX_RETRIES:
+                    logger.warning(
+                        "ESI request connection dropped for %s (attempt %d/%d): %s",
+                        url, attempt + 1, _NETWORK_MAX_RETRIES + 1, exc,
+                    )
+                    time.sleep(_NETWORK_RETRY_BASE_SLEEP * (2 ** attempt))
+                    continue
+                logger.warning("ESI request failed for %s: %s", url, exc)
+                return EsiResponse(status_code=0, body=None, headers={})
+
+            except OSError as exc:
+                # Any other socket-level error bubbling up as a bare OSError
+                # (Errno 104/32/111/…).  Retry on the same schedule.
+                if attempt < _NETWORK_MAX_RETRIES:
+                    logger.warning(
+                        "ESI request OSError for %s (attempt %d/%d): %s",
+                        url, attempt + 1, _NETWORK_MAX_RETRIES + 1, exc,
+                    )
+                    time.sleep(_NETWORK_RETRY_BASE_SLEEP * (2 ** attempt))
+                    continue
+                logger.warning("ESI request failed for %s: %s", url, exc)
+                return EsiResponse(status_code=0, body=None, headers={})
+
+        # All retries exhausted — should be unreachable because the last
+        # attempt in the loop already returns inside its `except`.
+        return EsiResponse(status_code=0, body=None, headers={})
 
     def post(
         self,
@@ -162,36 +209,67 @@ class EsiClient:
         if extra_headers:
             headers.update(extra_headers)
 
-        self._limiter.acquire(group)
-
         encoded_body = json.dumps(body).encode("utf-8") if body is not None else None
         request = Request(url, data=encoded_body, headers=headers, method="POST")
-        try:
-            with ipv4_opener.open(request, timeout=self._timeout) as response:
-                raw_body = response.read()
-                if response.headers.get("Content-Encoding") == "gzip":
-                    import gzip
-                    raw_body = gzip.decompress(raw_body)
-                body_str = raw_body.decode("utf-8", errors="replace") if isinstance(raw_body, bytes) else raw_body
-                resp_headers = {k: v for k, v in response.headers.items()} if hasattr(response.headers, 'items') else {}
-                status = int(response.status)
+        for attempt in range(_NETWORK_MAX_RETRIES + 1):
+            self._limiter.acquire(group)
+            try:
+                with ipv4_opener.open(request, timeout=self._timeout) as response:
+                    raw_body = response.read()
+                    if response.headers.get("Content-Encoding") == "gzip":
+                        import gzip
+                        raw_body = gzip.decompress(raw_body)
+                    body_str = raw_body.decode("utf-8", errors="replace") if isinstance(raw_body, bytes) else raw_body
+                    resp_headers = {k: v for k, v in response.headers.items()} if hasattr(response.headers, 'items') else {}
+                    status = int(response.status)
 
-                parsed = self._parse_json(body_str)
-                esi_response = EsiResponse(status_code=status, body=parsed, headers=resp_headers)
-                self._limiter.update_from_response(status, resp_headers)
-                return esi_response
+                    parsed = self._parse_json(body_str)
+                    esi_response = EsiResponse(status_code=status, body=parsed, headers=resp_headers)
+                    self._limiter.update_from_response(status, resp_headers)
+                    return esi_response
 
-        except HTTPError as exc:
-            exc_headers = {}
-            if hasattr(exc, "headers") and exc.headers:
-                exc_headers = {k: v for k, v in exc.headers.items()} if hasattr(exc.headers, 'items') else {}
-            status = int(exc.code)
-            self._limiter.update_from_response(status, exc_headers)
-            return EsiResponse(status_code=status, body=None, headers=exc_headers)
+            except HTTPError as exc:
+                exc_headers = {}
+                if hasattr(exc, "headers") and exc.headers:
+                    exc_headers = {k: v for k, v in exc.headers.items()} if hasattr(exc.headers, 'items') else {}
+                status = int(exc.code)
+                self._limiter.update_from_response(status, exc_headers)
+                return EsiResponse(status_code=status, body=None, headers=exc_headers)
 
-        except (OSError, TimeoutError) as exc:
-            logger.warning("ESI POST request failed for %s: %s", url, exc)
-            return EsiResponse(status_code=0, body=None, headers={})
+            except URLError as exc:
+                if attempt < _NETWORK_MAX_RETRIES:
+                    logger.warning(
+                        "ESI POST transient URLError for %s (attempt %d/%d): %s",
+                        url, attempt + 1, _NETWORK_MAX_RETRIES + 1, exc,
+                    )
+                    time.sleep(_NETWORK_RETRY_BASE_SLEEP * (2 ** attempt))
+                    continue
+                logger.warning("ESI POST request failed for %s: %s", url, exc)
+                return EsiResponse(status_code=0, body=None, headers={})
+
+            except (ConnectionResetError, BrokenPipeError, TimeoutError) as exc:
+                if attempt < _NETWORK_MAX_RETRIES:
+                    logger.warning(
+                        "ESI POST connection dropped for %s (attempt %d/%d): %s",
+                        url, attempt + 1, _NETWORK_MAX_RETRIES + 1, exc,
+                    )
+                    time.sleep(_NETWORK_RETRY_BASE_SLEEP * (2 ** attempt))
+                    continue
+                logger.warning("ESI POST request failed for %s: %s", url, exc)
+                return EsiResponse(status_code=0, body=None, headers={})
+
+            except OSError as exc:
+                if attempt < _NETWORK_MAX_RETRIES:
+                    logger.warning(
+                        "ESI POST OSError for %s (attempt %d/%d): %s",
+                        url, attempt + 1, _NETWORK_MAX_RETRIES + 1, exc,
+                    )
+                    time.sleep(_NETWORK_RETRY_BASE_SLEEP * (2 ** attempt))
+                    continue
+                logger.warning("ESI POST request failed for %s: %s", url, exc)
+                return EsiResponse(status_code=0, body=None, headers={})
+
+        return EsiResponse(status_code=0, body=None, headers={})
 
     def _build_url(self, path: str, params: dict[str, str | int] | None) -> str:
         url = f"{ESI_BASE}{path}"

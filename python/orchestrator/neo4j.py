@@ -153,7 +153,32 @@ class Neo4jClient:
                 details = error.read().decode("utf-8", errors="replace")
                 raise Neo4jError(f"Neo4j query failed ({error.code}): {details}") from error
             except urllib.error.URLError as error:
+                # URLError wraps socket errors raised during connect()/handshake
+                # (connection refused, DNS failure, timeouts, etc).  Retry
+                # transient network problems before giving up — Neo4j restarts
+                # and brief network hiccups should not fail an entire compute
+                # job.
+                if attempt < _TRANSIENT_RETRY_LIMIT:
+                    time.sleep(_TRANSIENT_BASE_SLEEP * (2 ** attempt))
+                    continue
                 raise Neo4jError(f"Neo4j query failed: {error.reason}") from error
+            except (ConnectionResetError, BrokenPipeError, TimeoutError) as error:
+                # Raised directly (not wrapped in URLError) when the peer
+                # drops the TCP connection mid-read — e.g. a Neo4j restart
+                # between `open()` and `read()`, or an idle keepalive that
+                # the OS reaped.  Retry with backoff on the same schedule
+                # as other transient errors.
+                if attempt < _TRANSIENT_RETRY_LIMIT:
+                    time.sleep(_TRANSIENT_BASE_SLEEP * (2 ** attempt))
+                    continue
+                raise Neo4jError(f"Neo4j query failed: {error}") from error
+            except OSError as error:
+                # Catch-all for any other socket-level error that bubbles up
+                # as a bare OSError (Errno 111/104/32/…).  Retry with backoff.
+                if attempt < _TRANSIENT_RETRY_LIMIT:
+                    time.sleep(_TRANSIENT_BASE_SLEEP * (2 ** attempt))
+                    continue
+                raise Neo4jError(f"Neo4j query failed: {error}") from error
 
             errors = body.get("errors") or []
             if errors:

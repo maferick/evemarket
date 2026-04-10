@@ -69,7 +69,14 @@ def _extract_opponent_fits(db: Any, window_days: int) -> dict[int, dict]:
         ORDER BY ke.sequence_id
     """
     kills: dict[int, dict] = {}
-    for batch in db.iterate_batches(sql, (window_days,), batch_size=5000):
+    # Opt into restart_on_conn_drop: the consumer is keyed by sequence_id and
+    # re-seeing already-processed rows just overwrites existing entries with
+    # identical data.  Without this, a mid-stream InterfaceError(0, '') (e.g.
+    # a wait_timeout or MariaDB restart) aborts the whole compute job.
+    seen_modules: set[tuple[int, int, int]] = set()
+    for batch in db.iterate_batches(
+        sql, (window_days,), batch_size=5000, restart_on_conn_drop=True
+    ):
         for row in batch:
             seq_id = int(row["sequence_id"])
             if seq_id not in kills:
@@ -78,8 +85,16 @@ def _extract_opponent_fits(db: Any, window_days: int) -> dict[int, dict]:
                     "alliance_id": int(row["victim_alliance_id"] or 0),
                     "modules": [],
                 }
+            type_id = int(row["item_type_id"])
             flag_cat = _flag_category(int(row["item_flag"] or 0))
-            kills[seq_id]["modules"].append((int(row["item_type_id"]), flag_cat))
+            # Dedupe on retry: without this, a stream restart would add
+            # duplicate (type_id, flag_cat) entries to the same kill's
+            # module list and skew downstream clustering scores.
+            dedupe_key = (seq_id, type_id, flag_cat)
+            if dedupe_key in seen_modules:
+                continue
+            seen_modules.add(dedupe_key)
+            kills[seq_id]["modules"].append((type_id, flag_cat))
 
     logger.info("Phase 1: extracted %d opponent kills with fitted modules", len(kills))
     return kills
