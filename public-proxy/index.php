@@ -37,11 +37,34 @@ if (!$hasError && $page === 1) {
     <?php include __DIR__ . '/partials/_nav.php'; ?>
     <main class="proxy-main">
 
-        <section class="surface-primary">
-            <div class="text-center">
+        <section class="surface-primary proxy-hero">
+            <div class="proxy-hero-glow proxy-hero-glow-left" aria-hidden="true"></div>
+            <div class="proxy-hero-glow proxy-hero-glow-right" aria-hidden="true"></div>
+            <div class="proxy-hero-content">
                 <p class="text-xs uppercase tracking-widest text-muted">Battle Reports</p>
                 <h1 class="mt-1 text-2xl font-semibold text-slate-50"><?= $siteName ?></h1>
-                <p class="mt-2 text-sm text-muted">Select a battle to view the full report, or browse <a class="text-accent" href="recent.php">recent kills</a> and the <a class="text-accent" href="leaderboard.php">leaderboard</a>.</p>
+                <p class="mt-2 text-sm text-slate-300">The fastest way to track wars, compare outcomes, and share polished battle reports.</p>
+                <div class="proxy-hero-actions">
+                    <a class="proxy-cta-primary" href="leaderboard.php"><span class="icon" aria-hidden="true">🏆</span> View Leaderboard</a>
+                    <a class="proxy-cta-secondary" href="recent.php"><span class="icon" aria-hidden="true">⚡</span> Recent Kills</a>
+                </div>
+            </div>
+            <div class="proxy-value-grid">
+                <article class="proxy-value-card">
+                    <p class="proxy-value-icon" aria-hidden="true">🛰️</p>
+                    <h2>Live Theater Tracking</h2>
+                    <p>Monitor active conflict zones with instant updates and clean summaries.</p>
+                </article>
+                <article class="proxy-value-card">
+                    <p class="proxy-value-icon" aria-hidden="true">📊</p>
+                    <h2>Evidence-Driven Reports</h2>
+                    <p>Share objective battle impact with ISK, kill volume, and duration insights.</p>
+                </article>
+                <article class="proxy-value-card">
+                    <p class="proxy-value-icon" aria-hidden="true">🛡️</p>
+                    <h2>Built for FCs & Intel Teams</h2>
+                    <p>Quick navigation from theater overview to the details that matter in doctrine planning.</p>
+                </article>
             </div>
         </section>
 
