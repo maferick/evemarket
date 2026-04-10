@@ -153,17 +153,73 @@ class SupplyCoreDb:
                 raise
         return 0  # unreachable
 
-    def iterate_batches(self, sql: str, params: Sequence[Any] | None = None, *, batch_size: int = 1000) -> Generator[list[dict[str, Any]], None, None]:
-        with self.cursor(stream=True) as (_, cursor):
-            if params is None:
-                cursor.execute(sql)
-            else:
-                cursor.execute(sql, params)
-            while True:
-                rows = cursor.fetchmany(batch_size)
-                if not rows:
-                    break
-                yield [dict(row) for row in rows]
+    def iterate_batches(
+        self,
+        sql: str,
+        params: Sequence[Any] | None = None,
+        *,
+        batch_size: int = 1000,
+        restart_on_conn_drop: bool = False,
+    ) -> Generator[list[dict[str, Any]], None, None]:
+        """Stream a large result set in chunks.
+
+        The server-side cursor used by the streaming path holds a single
+        network connection open for the duration of the iteration.  When
+        that connection drops mid-stream — e.g. ``wait_timeout`` fires or
+        the DB restarts — pymysql raises ``InterfaceError(0, '')`` on the
+        next ``fetchmany`` call.
+
+        ``restart_on_conn_drop`` (default ``False``) keeps the legacy
+        fail-fast behaviour for callers whose consumers are not idempotent
+        (bulk inserts without ON DUPLICATE KEY UPDATE, counters, etc).
+        Set it to ``True`` when the consumer is keyed by a primary key or
+        is otherwise safe to re-see already-yielded rows: on a drop the
+        stream is restarted from scratch, duplicate batches and all.
+        """
+        if not restart_on_conn_drop:
+            with self.cursor(stream=True) as (_, cursor):
+                if params is None:
+                    cursor.execute(sql)
+                else:
+                    cursor.execute(sql, params)
+                while True:
+                    rows = cursor.fetchmany(batch_size)
+                    if not rows:
+                        return
+                    yield [dict(row) for row in rows]
+            return
+
+        for attempt in range(_SIMPLE_MAX_RETRIES + 1):
+            seen_offset = 0
+            try:
+                with self.cursor(stream=True) as (_, cursor):
+                    if params is None:
+                        cursor.execute(sql)
+                    else:
+                        cursor.execute(sql, params)
+                    while True:
+                        rows = cursor.fetchmany(batch_size)
+                        if not rows:
+                            return
+                        seen_offset += len(rows)
+                        yield [dict(row) for row in rows]
+                return
+            except (pymysql.err.OperationalError, pymysql.err.InterfaceError) as exc:
+                # InterfaceError(0, '') → the underlying connection is
+                # already closed. OperationalError → server gone / lost
+                # connection.  Both are retryable for a streaming read.
+                code = exc.args[0] if exc.args else 0
+                is_interface_error = isinstance(exc, pymysql.err.InterfaceError)
+                is_retryable = is_interface_error or code in _CONNLOSS_ERRORS
+                if attempt >= _SIMPLE_MAX_RETRIES or not is_retryable:
+                    raise
+                logger.warning(
+                    "Retryable MariaDB error in iterate_batches after %d rows "
+                    "(attempt %d/%d, code=%s): %s — restarting stream",
+                    seen_offset, attempt + 1, _SIMPLE_MAX_RETRIES + 1, code, exc,
+                )
+                time.sleep(_SIMPLE_BASE_DELAY * (2 ** attempt))
+                continue
 
     @contextmanager
     def transaction(self):
