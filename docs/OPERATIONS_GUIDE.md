@@ -489,6 +489,11 @@ ORDER BY next_run_at;
 3. Check Neo4j memory:
    - Graph jobs process in batches (default 800 rows) to stay within memory limits
    - If OOM occurs, reduce `neo4j.sync_battle_batch_size` in settings
+   - For heap / page-cache / GDS sizing on the 128 GB shared host, see
+     [`NEO4J_MEMORY_SIZING.md`](NEO4J_MEMORY_SIZING.md) and the companion
+     [`setup/neo4j_memory.conf`](../setup/neo4j_memory.conf). GDS projections
+     live on the JVM heap, **not** the page cache — enlarging the page cache
+     will not fix GDS OOMs.
 
 4. Reset graph state for full rebuild:
    ```sql
