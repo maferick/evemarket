@@ -696,6 +696,16 @@ function db_select_one(string $sql, array $params = []): ?array
     return $result === false ? null : $result;
 }
 
+function db_fetch_single_value(string $sql, array $params = []): mixed
+{
+    $row = db_select_one($sql, $params);
+    if (!is_array($row) || $row === []) {
+        return null;
+    }
+
+    return reset($row);
+}
+
 function db_execute(string $sql, array $params = []): bool
 {
     db_query_cache_clear();
