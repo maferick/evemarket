@@ -632,96 +632,160 @@ def run_compute_suspicion_scores_v2(
     # ── Cohort-normalize the behavioral evidence rows ────────────
     _bv2_cohort_normalize(bv2_evidence_rows)
 
-    BATCH_SIZE = 500
-    suspicion_ids: set[int] = set()
-    with db.transaction() as (_, cursor):
-        for i in range(0, len(insert_tuples), BATCH_SIZE):
-            batch = insert_tuples[i : i + BATCH_SIZE]
-            cursor.executemany(
-                """
-                INSERT INTO character_suspicion_scores (
-                    character_id,
-                    suspicion_score_recent,
-                    suspicion_score_all_time,
-                    suspicion_momentum,
-                    suspicion_score,
-                    percentile_rank,
-                    high_sustain_frequency,
-                    low_sustain_frequency,
-                    cross_side_rate,
-                    enemy_efficiency_uplift,
-                    role_weight,
-                    supporting_battle_count,
-                    support_evidence_count,
-                    community_id,
-                    top_supporting_battles_json,
-                    top_graph_neighbors_json,
-                    explanation_json,
-                    computed_at
-                ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                ON DUPLICATE KEY UPDATE
-                    suspicion_score_recent = VALUES(suspicion_score_recent),
-                    suspicion_score_all_time = VALUES(suspicion_score_all_time),
-                    suspicion_momentum = VALUES(suspicion_momentum),
-                    suspicion_score = VALUES(suspicion_score),
-                    percentile_rank = VALUES(percentile_rank),
-                    high_sustain_frequency = VALUES(high_sustain_frequency),
-                    low_sustain_frequency = VALUES(low_sustain_frequency),
-                    cross_side_rate = VALUES(cross_side_rate),
-                    enemy_efficiency_uplift = VALUES(enemy_efficiency_uplift),
-                    role_weight = VALUES(role_weight),
-                    supporting_battle_count = VALUES(supporting_battle_count),
-                    support_evidence_count = VALUES(support_evidence_count),
-                    community_id = VALUES(community_id),
-                    top_supporting_battles_json = VALUES(top_supporting_battles_json),
-                    top_graph_neighbors_json = VALUES(top_graph_neighbors_json),
-                    explanation_json = VALUES(explanation_json),
-                    computed_at = VALUES(computed_at)
-                """,
-                batch,
-            )
-            for row in batch:
-                suspicion_ids.add(int(row[0]))
+    # ── Persist in short, retryable transactions ──────────────────
+    # Previously this whole block ran inside one long ``db.transaction()``
+    # that held row locks across hundreds of thousands of INSERT/UPDATE
+    # statements (and a giant ``NOT IN`` DELETE) — that regularly tripped
+    # the MariaDB 50s lock-wait timeout (issue #898).
+    #
+    # We now split the writes into short batches, each in its own
+    # ``run_in_transaction`` call which automatically retries on deadlock
+    # (1213) and lock-wait timeout (1205). Batches are sorted by their
+    # primary key so concurrent runs always acquire locks in the same
+    # order, eliminating cross-job deadlocks.
 
-        # Remove stale suspicion scores not in the current computation.
-        if suspicion_ids:
-            placeholders = ",".join(["%s"] * len(suspicion_ids))
-            cursor.execute(
-                f"DELETE FROM character_suspicion_scores WHERE character_id NOT IN ({placeholders})",
-                tuple(suspicion_ids),
-            )
-        elif not insert_tuples:
+    BATCH_SIZE = 500
+
+    # Sort by character_id for consistent lock acquisition order across runs.
+    insert_tuples.sort(key=lambda r: int(r[0]))
+    suspicion_ids: set[int] = {int(row[0]) for row in insert_tuples}
+
+    insert_sql = """
+        INSERT INTO character_suspicion_scores (
+            character_id,
+            suspicion_score_recent,
+            suspicion_score_all_time,
+            suspicion_momentum,
+            suspicion_score,
+            percentile_rank,
+            high_sustain_frequency,
+            low_sustain_frequency,
+            cross_side_rate,
+            enemy_efficiency_uplift,
+            role_weight,
+            supporting_battle_count,
+            support_evidence_count,
+            community_id,
+            top_supporting_battles_json,
+            top_graph_neighbors_json,
+            explanation_json,
+            computed_at
+        ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+        ON DUPLICATE KEY UPDATE
+            suspicion_score_recent = VALUES(suspicion_score_recent),
+            suspicion_score_all_time = VALUES(suspicion_score_all_time),
+            suspicion_momentum = VALUES(suspicion_momentum),
+            suspicion_score = VALUES(suspicion_score),
+            percentile_rank = VALUES(percentile_rank),
+            high_sustain_frequency = VALUES(high_sustain_frequency),
+            low_sustain_frequency = VALUES(low_sustain_frequency),
+            cross_side_rate = VALUES(cross_side_rate),
+            enemy_efficiency_uplift = VALUES(enemy_efficiency_uplift),
+            role_weight = VALUES(role_weight),
+            supporting_battle_count = VALUES(supporting_battle_count),
+            support_evidence_count = VALUES(support_evidence_count),
+            community_id = VALUES(community_id),
+            top_supporting_battles_json = VALUES(top_supporting_battles_json),
+            top_graph_neighbors_json = VALUES(top_graph_neighbors_json),
+            explanation_json = VALUES(explanation_json),
+            computed_at = VALUES(computed_at)
+        """
+
+    for i in range(0, len(insert_tuples), BATCH_SIZE):
+        batch = insert_tuples[i : i + BATCH_SIZE]
+
+        def _write_scores(_conn, cursor, batch=batch):
+            cursor.executemany(insert_sql, batch)
+
+        db.run_in_transaction(_write_scores)
+
+    # Remove stale suspicion scores not in the current computation.
+    # We avoid a single giant ``NOT IN`` DELETE (which can touch tens of
+    # thousands of rows in one statement and hold locks for too long).
+    # Instead we look up the stale ids in a read-only query, then delete
+    # them in small batches, each in its own short retryable transaction.
+    if not insert_tuples:
+        def _wipe_scores(_conn, cursor):
             cursor.execute("DELETE FROM character_suspicion_scores")
-        if bv2_evidence_rows:
-            for ev in bv2_evidence_rows:
+
+        db.run_in_transaction(_wipe_scores)
+    elif suspicion_ids:
+        existing_rows = db.fetch_all(
+            "SELECT character_id FROM character_suspicion_scores"
+        )
+        stale_ids = sorted(
+            int(r["character_id"]) for r in existing_rows
+            if int(r["character_id"]) not in suspicion_ids
+        )
+        DELETE_BATCH = 500
+        for i in range(0, len(stale_ids), DELETE_BATCH):
+            stale_batch = stale_ids[i : i + DELETE_BATCH]
+
+            def _delete_stale(_conn, cursor, stale_batch=stale_batch):
+                placeholders = ",".join(["%s"] * len(stale_batch))
                 cursor.execute(
-                    """
-                    INSERT INTO character_counterintel_evidence (
-                        character_id, evidence_key, window_label,
-                        evidence_value, expected_value, deviation_value,
-                        z_score, mad_score, cohort_percentile, confidence_flag,
-                        evidence_text, evidence_payload_json, computed_at
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                    ON DUPLICATE KEY UPDATE
-                        evidence_value = VALUES(evidence_value),
-                        expected_value = VALUES(expected_value),
-                        deviation_value = VALUES(deviation_value),
-                        z_score = VALUES(z_score),
-                        mad_score = VALUES(mad_score),
-                        cohort_percentile = VALUES(cohort_percentile),
-                        confidence_flag = VALUES(confidence_flag),
-                        evidence_text = VALUES(evidence_text),
-                        evidence_payload_json = VALUES(evidence_payload_json),
-                        computed_at = VALUES(computed_at)
-                    """,
-                    (
-                        ev["character_id"], ev["evidence_key"], ev.get("window_label", "all_time"),
-                        ev["evidence_value"], ev.get("expected_value"), ev.get("deviation_value"),
-                        ev.get("z_score"), ev.get("mad_score"), ev.get("cohort_percentile"),
-                        ev.get("confidence_flag", "low"),
-                        ev["evidence_text"], ev["evidence_payload_json"], computed_at,
-                    ),
+                    f"DELETE FROM character_suspicion_scores WHERE character_id IN ({placeholders})",
+                    tuple(stale_batch),
                 )
+
+            db.run_in_transaction(_delete_stale)
+
+    # ── Persist behavioral evidence rows in batched executemany calls ──
+    # Previously this loop ran row-by-row ``cursor.execute`` inside the
+    # same long transaction as the scores above — 10-20k individual
+    # statements was the worst offender for lock hold time.
+    if bv2_evidence_rows:
+        evidence_sql = """
+            INSERT INTO character_counterintel_evidence (
+                character_id, evidence_key, window_label,
+                evidence_value, expected_value, deviation_value,
+                z_score, mad_score, cohort_percentile, confidence_flag,
+                evidence_text, evidence_payload_json, computed_at
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON DUPLICATE KEY UPDATE
+                evidence_value = VALUES(evidence_value),
+                expected_value = VALUES(expected_value),
+                deviation_value = VALUES(deviation_value),
+                z_score = VALUES(z_score),
+                mad_score = VALUES(mad_score),
+                cohort_percentile = VALUES(cohort_percentile),
+                confidence_flag = VALUES(confidence_flag),
+                evidence_text = VALUES(evidence_text),
+                evidence_payload_json = VALUES(evidence_payload_json),
+                computed_at = VALUES(computed_at)
+            """
+
+        evidence_tuples = [
+            (
+                int(ev["character_id"]),
+                str(ev["evidence_key"]),
+                str(ev.get("window_label", "all_time")),
+                ev["evidence_value"],
+                ev.get("expected_value"),
+                ev.get("deviation_value"),
+                ev.get("z_score"),
+                ev.get("mad_score"),
+                ev.get("cohort_percentile"),
+                ev.get("confidence_flag", "low"),
+                ev["evidence_text"],
+                ev["evidence_payload_json"],
+                computed_at,
+            )
+            for ev in bv2_evidence_rows
+        ]
+
+        # Sort by (character_id, evidence_key, window_label) — the composite
+        # PK of character_counterintel_evidence — to ensure consistent lock
+        # ordering across concurrent workers.
+        evidence_tuples.sort(key=lambda r: (r[0], r[1], r[2]))
+
+        for i in range(0, len(evidence_tuples), BATCH_SIZE):
+            batch = evidence_tuples[i : i + BATCH_SIZE]
+
+            def _write_evidence(_conn, cursor, batch=batch):
+                cursor.executemany(evidence_sql, batch)
+
+            db.run_in_transaction(_write_evidence)
 
     return JobResult.success(
         job_key="compute_suspicion_scores_v2",
