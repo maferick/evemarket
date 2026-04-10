@@ -1,0 +1,18 @@
+[Unit]
+Description=Run the SupplyCore Claude triage script every hour
+
+[Timer]
+# Fire at :30 past every hour. This is intentionally offset from
+# supplycore-hourly-loop.timer (which fires at :00) so the two
+# automations never hit the GitHub API at the same second — and so the
+# triage run sees any freshly-filed auto-log issues from the log-to-issues
+# sweep that just finished 30 minutes earlier.
+OnCalendar=*-*-* *:30:00
+AccuracySec=1m
+RandomizedDelaySec=60
+# If the box was off when a run was due, fire once on boot to catch up.
+Persistent=true
+Unit=supplycore-claude-triage.service
+
+[Install]
+WantedBy=timers.target
