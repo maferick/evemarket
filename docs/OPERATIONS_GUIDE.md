@@ -32,6 +32,12 @@ Procedures for deployment, reset, rebuild, maintenance, and troubleshooting.
   - [Job Stuck or Failing](#job-stuck-or-failing)
   - [Neo4j Issues](#neo4j-issues)
   - [Worker Memory Issues](#worker-memory-issues)
+- [Incremental Horizon Mode](#incremental-horizon-mode)
+  - [How It Works](#horizon-how-it-works)
+  - [Freshness Report](#horizon-freshness-report)
+  - [Approving a Dataset](#horizon-approving-a-dataset)
+  - [Out-of-Window Late Data](#horizon-out-of-window-late-data)
+  - [Rollback](#horizon-rollback)
 
 ---
 
@@ -575,3 +581,106 @@ Set `scheduler.supervisor_mode` back to `php` in settings, then:
 sudo systemctl enable --now supplycore-scheduler.service
 php bin/scheduler_health.php
 ```
+
+---
+
+## Incremental Horizon Mode
+
+Most SupplyCore compute jobs recompute their full window each run. Once a
+dataset is demonstrably backfill-complete, it can switch to
+**incremental-only mode with a rolling repair window**: each run reads
+from `(last_cursor - repair_window_seconds)` so late-arriving source
+data is absorbed automatically by idempotent UPSERTs, while the cursor
+itself advances monotonically forward.
+
+This is opt-in, gated, and fully reversible. Nothing ships enabled.
+
+### <a id="horizon-how-it-works"></a>How It Works
+
+The `sync_state` table carries per-dataset progress and policy:
+
+| Column | Meaning |
+|---|---|
+| `watermark_event_time` | Source event-time the job has processed up to (derived from `last_cursor`) |
+| `backfill_complete` | Explicit gate. `0` = full/backfill + incremental (current behavior). `1` = incremental-only allowed |
+| `backfill_proposed_at` / `backfill_proposed_reason` | Set by `detect_backfill_complete`; cleared on approve/reject |
+| `incremental_horizon_seconds` | SLA for "caught up" (default 86400 / 24h) |
+| `repair_window_seconds` | How far back to rewind the read cursor each run (default 86400 / 24h) |
+| `stall_cursor` / `stall_count` | Consecutive runs where the cursor did not advance |
+
+Derived status (from `db_calculation_freshness_report()`):
+
+- `caught_up` — gate on, watermark inside horizon
+- `catching_up` — gate on, watermark beyond horizon
+- `backfilling` — gate off (pre-horizon path still in use)
+- `stalled` — `stall_count >= 3`
+- `stopped` — last run `failed`
+
+### <a id="horizon-freshness-report"></a>Freshness Report
+
+Query freshness and horizon status for all datasets:
+
+```php
+$rows = db_calculation_freshness_report();            // all datasets
+$rows = db_calculation_freshness_report('compute_');  // filter by prefix
+```
+
+The settings UI also surfaces this under **Automation & Sync → Sync
+Operations → Incremental horizon mode**.
+
+### <a id="horizon-approving-a-dataset"></a>Approving a Dataset
+
+Proposals come from the `detect_backfill_complete` job (invokable via
+the scheduler like any other python job) which inspects each dataset
+and stamps `backfill_proposed_at` when heuristics pass:
+
+- `last_success_at` older than the soak period (24h)
+- At least 5 consecutive successful `sync_runs`
+- Cursor advancing (`stall_count < 2`)
+- Watermark already inside the configured horizon
+
+An admin then approves via CLI or UI. Approval flips
+`backfill_complete = 1` and clears the pending proposal; the next run
+of that job is eligible for the incremental-only read path.
+
+```bash
+# Approve a proposal
+php bin/horizon-approve.php compute_battle_rollups
+
+# Reject a proposal (leaves backfill_complete unchanged)
+php bin/horizon-reject.php compute_battle_rollups
+```
+
+Or use the settings page: **Sync Operations → Incremental horizon
+mode → Pending proposals → Approve/Reject**.
+
+### <a id="horizon-out-of-window-late-data"></a>Out-of-Window Late Data
+
+The rolling repair window absorbs late-arriving source rows up to
+`repair_window_seconds` in the past without any intervention. For
+rarer late arrivals *outside* that window (manual reimports, big ESI
+corrections), rewind the cursor to force a re-read of the affected
+range:
+
+```bash
+# Rewind compute_battle_rollups to 2026-04-01 00:00:00
+php bin/horizon-rewind.php compute_battle_rollups "2026-04-01 00:00:00|0"
+```
+
+The rewind bypasses the monotonic guard on cursor advancement and
+clears stall tracking. The next run re-reads from the given cursor and
+idempotent UPSERTs refresh the affected downstream rows.
+
+### <a id="horizon-rollback"></a>Rollback
+
+To revert a dataset to its original full/backfill + incremental
+behavior:
+
+```bash
+php bin/horizon-reset.php compute_battle_rollups
+```
+
+Or from the settings UI: **Sync Operations → Incremental horizon mode
+→ Datasets in horizon mode → Reset**. This flips
+`backfill_complete = 0`, clears any pending proposal, and the next run
+resumes the pre-horizon path. Safe to run at any time.

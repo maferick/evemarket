@@ -2511,6 +2511,412 @@ function db_sync_run_with_state(
     });
 }
 
+// ---------------------------------------------------------------------------
+// Incremental horizon / rolling repair window.
+//
+// These helpers implement the per-dataset progress model documented in
+// docs/OPERATIONS_GUIDE.md (see "Incremental horizon"). The core idea is:
+//
+//   1. Each dataset gets an explicit backfill_complete gate (flipped by
+//      admin, never inferred).
+//   2. Once backfill_complete = 1, refresh jobs may switch from
+//      full/backfill + incremental mode to incremental-only, reading
+//      from (last_cursor - repair_window_seconds) on every pass so
+//      late-arriving source rows are absorbed without widening the
+//      scan window.
+//   3. A derived watermark_event_time plus stall tracking lets the
+//      freshness report answer "which datasets are caught up to 24h
+//      and which are behind / stalled?" cheaply.
+//
+// Columns live on sync_state; this block just provides the typed
+// accessors used by both PHP callers and the Python orchestrator
+// (which mirrors these helpers in python/orchestrator/horizon.py).
+// ---------------------------------------------------------------------------
+
+function db_sync_state_horizon_columns_ensure(): void
+{
+    static $done = false;
+    if ($done) {
+        return;
+    }
+    $done = true;
+
+    db_ensure_table_column('sync_state', 'watermark_event_time', 'DATETIME DEFAULT NULL AFTER last_cursor');
+    db_ensure_table_column('sync_state', 'backfill_complete', 'TINYINT(1) NOT NULL DEFAULT 0 AFTER watermark_event_time');
+    db_ensure_table_column('sync_state', 'backfill_proposed_at', 'DATETIME DEFAULT NULL AFTER backfill_complete');
+    db_ensure_table_column('sync_state', 'backfill_proposed_reason', 'VARCHAR(190) DEFAULT NULL AFTER backfill_proposed_at');
+    db_ensure_table_column('sync_state', 'incremental_horizon_seconds', 'INT UNSIGNED NOT NULL DEFAULT 86400 AFTER backfill_proposed_reason');
+    db_ensure_table_column('sync_state', 'repair_window_seconds', 'INT UNSIGNED NOT NULL DEFAULT 86400 AFTER incremental_horizon_seconds');
+    db_ensure_table_column('sync_state', 'stall_cursor', 'VARCHAR(190) DEFAULT NULL AFTER repair_window_seconds');
+    db_ensure_table_column('sync_state', 'stall_count', 'INT UNSIGNED NOT NULL DEFAULT 0 AFTER stall_cursor');
+}
+
+/**
+ * Fetch the full horizon state for a dataset. Returns null only if the
+ * dataset_key has no sync_state row at all.
+ */
+function db_horizon_state_get(string $datasetKey): ?array
+{
+    db_sync_state_horizon_columns_ensure();
+
+    $row = db_select_one(
+        'SELECT dataset_key,
+                sync_mode,
+                status,
+                last_success_at,
+                last_cursor,
+                watermark_event_time,
+                backfill_complete,
+                backfill_proposed_at,
+                backfill_proposed_reason,
+                incremental_horizon_seconds,
+                repair_window_seconds,
+                stall_cursor,
+                stall_count,
+                updated_at
+         FROM sync_state
+         WHERE dataset_key = ?
+         LIMIT 1',
+        [$datasetKey]
+    );
+
+    if ($row === null) {
+        return null;
+    }
+
+    $row['backfill_complete'] = (int) $row['backfill_complete'] === 1;
+    $row['incremental_horizon_seconds'] = (int) $row['incremental_horizon_seconds'];
+    $row['repair_window_seconds'] = (int) $row['repair_window_seconds'];
+    $row['stall_count'] = (int) $row['stall_count'];
+
+    return $row;
+}
+
+/**
+ * Return true when a dataset is allowed to run in incremental-only mode
+ * (backfill_complete gate is set and the dataset has successfully run at
+ * least once).
+ */
+function db_horizon_should_use_incremental_only(string $datasetKey): bool
+{
+    $state = db_horizon_state_get($datasetKey);
+    if ($state === null) {
+        return false;
+    }
+    if (empty($state['backfill_complete'])) {
+        return false;
+    }
+    if (($state['last_success_at'] ?? null) === null) {
+        return false;
+    }
+
+    return true;
+}
+
+/**
+ * Compute the "timestamp|id" cursor a refresh run should read from, given
+ * the dataset's current forward cursor and configured repair window.
+ *
+ * When backfill is incomplete or no repair window is configured, returns
+ * the raw cursor unchanged (preserves current behavior).
+ */
+function db_horizon_read_from_cursor(string $datasetKey, ?string $cursor): string
+{
+    $safeCursor = (string) ($cursor ?? '');
+    if ($safeCursor === '') {
+        return '1970-01-01 00:00:00|0';
+    }
+
+    $state = db_horizon_state_get($datasetKey);
+    if ($state === null || empty($state['backfill_complete'])) {
+        return $safeCursor;
+    }
+
+    $repairWindow = (int) ($state['repair_window_seconds'] ?? 0);
+    if ($repairWindow <= 0) {
+        return $safeCursor;
+    }
+
+    $parsed = db_time_series_parse_cursor($safeCursor);
+    $timestamp = (string) ($parsed['timestamp'] ?? '');
+    if ($timestamp === '') {
+        return $safeCursor;
+    }
+
+    $baseEpoch = strtotime($timestamp . ' UTC');
+    if ($baseEpoch === false) {
+        return $safeCursor;
+    }
+
+    $offsetTimestamp = gmdate('Y-m-d H:i:s', max(0, $baseEpoch - $repairWindow));
+
+    return db_time_series_cursor_value($offsetTimestamp, 0);
+}
+
+/**
+ * Advance the forward cursor with monotonic guarantees and stall detection.
+ *
+ * $newCursor   "timestamp|id" string emitted by the refresh run.
+ * $eventTime   Optional override for watermark_event_time. If null, it is
+ *              derived from $newCursor.
+ *
+ * Behavior:
+ *   - Never moves last_cursor backward (explicit rewinds go through
+ *     db_horizon_rewind_cursor()).
+ *   - Updates watermark_event_time in lockstep.
+ *   - If the cursor failed to advance (equal to previous value), increments
+ *     stall_count; otherwise resets stall_count and latches stall_cursor
+ *     to the new value.
+ */
+function db_horizon_advance_cursor(string $datasetKey, string $newCursor, ?string $eventTime = null): void
+{
+    db_sync_state_horizon_columns_ensure();
+
+    $state = db_horizon_state_get($datasetKey);
+    $existingCursor = (string) ($state['last_cursor'] ?? '');
+    $existingStallCursor = (string) ($state['stall_cursor'] ?? '');
+
+    if ($existingCursor !== '' && strcmp($newCursor, $existingCursor) < 0) {
+        return;
+    }
+
+    if ($eventTime === null) {
+        $parsed = db_time_series_parse_cursor($newCursor);
+        $eventTime = $parsed['timestamp'] !== '' ? (string) $parsed['timestamp'] : null;
+    }
+
+    $advanced = $newCursor !== $existingCursor;
+    $stallCursor = $advanced ? $newCursor : ($existingStallCursor !== '' ? $existingStallCursor : $existingCursor);
+    $stallCountExpr = $advanced ? '0' : '(stall_count + 1)';
+
+    db_execute(
+        'UPDATE sync_state
+            SET last_cursor = ?,
+                watermark_event_time = ?,
+                stall_cursor = ?,
+                stall_count = ' . $stallCountExpr . ',
+                updated_at = CURRENT_TIMESTAMP
+          WHERE dataset_key = ?',
+        [$newCursor, $eventTime, $stallCursor, $datasetKey]
+    );
+}
+
+/**
+ * Mark a dataset as a backfill-complete candidate. Does NOT flip
+ * backfill_complete itself — requires admin approval via
+ * db_horizon_approve_backfill_complete().
+ */
+function db_horizon_propose_backfill_complete(string $datasetKey, string $reason): bool
+{
+    db_sync_state_horizon_columns_ensure();
+
+    return db_execute(
+        'UPDATE sync_state
+            SET backfill_proposed_at = IFNULL(backfill_proposed_at, UTC_TIMESTAMP()),
+                backfill_proposed_reason = ?,
+                updated_at = CURRENT_TIMESTAMP
+          WHERE dataset_key = ?
+            AND backfill_complete = 0',
+        [mb_substr($reason, 0, 190), $datasetKey]
+    );
+}
+
+/**
+ * Flip backfill_complete = 1 (admin approval). Clears the pending proposal.
+ */
+function db_horizon_approve_backfill_complete(string $datasetKey): bool
+{
+    db_sync_state_horizon_columns_ensure();
+
+    return db_execute(
+        'UPDATE sync_state
+            SET backfill_complete = 1,
+                backfill_proposed_at = NULL,
+                backfill_proposed_reason = NULL,
+                updated_at = CURRENT_TIMESTAMP
+          WHERE dataset_key = ?',
+        [$datasetKey]
+    );
+}
+
+/**
+ * Clear a pending proposal without approving it.
+ */
+function db_horizon_reject_backfill_complete(string $datasetKey): bool
+{
+    db_sync_state_horizon_columns_ensure();
+
+    return db_execute(
+        'UPDATE sync_state
+            SET backfill_proposed_at = NULL,
+                backfill_proposed_reason = NULL,
+                updated_at = CURRENT_TIMESTAMP
+          WHERE dataset_key = ?',
+        [$datasetKey]
+    );
+}
+
+/**
+ * Revert a dataset to full-history mode (backfill_complete = 0). The next
+ * refresh run resumes its original full/backfill + incremental behavior.
+ */
+function db_horizon_reset_backfill_complete(string $datasetKey): bool
+{
+    db_sync_state_horizon_columns_ensure();
+
+    return db_execute(
+        'UPDATE sync_state
+            SET backfill_complete = 0,
+                backfill_proposed_at = NULL,
+                backfill_proposed_reason = NULL,
+                updated_at = CURRENT_TIMESTAMP
+          WHERE dataset_key = ?',
+        [$datasetKey]
+    );
+}
+
+/**
+ * Manually rewind a dataset's forward cursor. Used when out-of-window late
+ * data lands (bigger than repair_window_seconds) and we need to re-process
+ * a range of source events. Bypasses the monotonic guard.
+ */
+function db_horizon_rewind_cursor(string $datasetKey, string $cursor): bool
+{
+    db_sync_state_horizon_columns_ensure();
+
+    $parsed = db_time_series_parse_cursor($cursor);
+    $eventTime = $parsed['timestamp'] !== '' ? (string) $parsed['timestamp'] : null;
+
+    return db_execute(
+        'UPDATE sync_state
+            SET last_cursor = ?,
+                watermark_event_time = ?,
+                stall_cursor = NULL,
+                stall_count = 0,
+                updated_at = CURRENT_TIMESTAMP
+          WHERE dataset_key = ?',
+        [$cursor, $eventTime, $datasetKey]
+    );
+}
+
+/**
+ * Report per-dataset freshness and horizon status, joined with the latest
+ * sync_runs row for each dataset.
+ *
+ * Returns rows with keys: dataset_key, sync_mode, status, backfill_complete,
+ * backfill_proposed_at, backfill_proposed_reason, last_success_at,
+ * watermark_event_time, last_cursor, incremental_horizon_seconds,
+ * repair_window_seconds, stall_count, freshness_lag_seconds,
+ * is_caught_up_24h, is_stalled, last_run_*, horizon_status.
+ *
+ * horizon_status ∈ { caught_up, catching_up, backfilling, stopped, stalled }.
+ */
+function db_calculation_freshness_report(?string $datasetPrefix = null): array
+{
+    db_sync_state_horizon_columns_ensure();
+
+    $params = [];
+    $prefixClause = '';
+    if ($datasetPrefix !== null && $datasetPrefix !== '') {
+        $prefixClause = ' WHERE ss.dataset_key LIKE ?';
+        $params[] = $datasetPrefix . '%';
+    }
+
+    $sql = "
+        SELECT
+            ss.dataset_key,
+            ss.sync_mode,
+            ss.status,
+            ss.backfill_complete,
+            ss.backfill_proposed_at,
+            ss.backfill_proposed_reason,
+            ss.last_success_at,
+            ss.watermark_event_time,
+            ss.last_cursor,
+            ss.incremental_horizon_seconds,
+            ss.repair_window_seconds,
+            ss.stall_count,
+            CASE
+                WHEN ss.watermark_event_time IS NULL THEN NULL
+                ELSE TIMESTAMPDIFF(SECOND, ss.watermark_event_time, UTC_TIMESTAMP())
+            END AS freshness_lag_seconds,
+            latest.run_status AS last_run_status,
+            latest.source_rows AS last_run_source_rows,
+            latest.written_rows AS last_run_written_rows,
+            latest.started_at AS last_run_started_at,
+            latest.finished_at AS last_run_finished_at
+        FROM sync_state ss
+        LEFT JOIN (
+            SELECT sr.dataset_key, sr.run_status, sr.source_rows, sr.written_rows,
+                   sr.started_at, sr.finished_at
+            FROM sync_runs sr
+            INNER JOIN (
+                SELECT dataset_key, MAX(id) AS max_id
+                FROM sync_runs
+                GROUP BY dataset_key
+            ) latest_id ON latest_id.dataset_key = sr.dataset_key AND latest_id.max_id = sr.id
+        ) latest ON latest.dataset_key = ss.dataset_key
+        {$prefixClause}
+        ORDER BY ss.dataset_key ASC
+    ";
+
+    $rows = db_select($sql, $params);
+
+    foreach ($rows as &$row) {
+        $row['backfill_complete'] = (int) $row['backfill_complete'] === 1;
+        $row['incremental_horizon_seconds'] = (int) $row['incremental_horizon_seconds'];
+        $row['repair_window_seconds'] = (int) $row['repair_window_seconds'];
+        $row['stall_count'] = (int) $row['stall_count'];
+        $row['freshness_lag_seconds'] = $row['freshness_lag_seconds'] === null
+            ? null
+            : (int) $row['freshness_lag_seconds'];
+
+        $lag = $row['freshness_lag_seconds'];
+        $horizonSeconds = $row['incremental_horizon_seconds'];
+        $row['is_caught_up_24h'] = $lag !== null && $lag <= $horizonSeconds;
+        $row['is_stalled'] = $row['stall_count'] >= 3;
+
+        if ((string) $row['status'] === 'failed') {
+            $row['horizon_status'] = 'stopped';
+        } elseif ($row['is_stalled']) {
+            $row['horizon_status'] = 'stalled';
+        } elseif (!$row['backfill_complete']) {
+            $row['horizon_status'] = 'backfilling';
+        } elseif ($row['is_caught_up_24h']) {
+            $row['horizon_status'] = 'caught_up';
+        } else {
+            $row['horizon_status'] = 'catching_up';
+        }
+    }
+    unset($row);
+
+    return $rows;
+}
+
+/**
+ * List all datasets with a pending backfill_complete proposal awaiting
+ * admin review.
+ */
+function db_horizon_list_pending_proposals(): array
+{
+    db_sync_state_horizon_columns_ensure();
+
+    return db_select(
+        'SELECT dataset_key,
+                sync_mode,
+                backfill_proposed_at,
+                backfill_proposed_reason,
+                last_success_at,
+                watermark_event_time,
+                last_cursor,
+                stall_count
+         FROM sync_state
+         WHERE backfill_complete = 0
+           AND backfill_proposed_at IS NOT NULL
+         ORDER BY backfill_proposed_at ASC'
+    );
+}
+
 function db_market_orders_history_legacy_table(): string
 {
     return 'market_orders_history';

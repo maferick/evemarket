@@ -76,6 +76,7 @@ from .jobs.compute_alliance_relationships import run_compute_alliance_relationsh
 from .jobs.compute_threat_corridors import run_compute_threat_corridors
 from .jobs.compute_map_intelligence import run_compute_map_intelligence
 from .jobs.cache_expiry_cleanup_sync import run_cache_expiry_cleanup_sync
+from .jobs.detect_backfill_complete import run_detect_backfill_complete
 from .jobs.evewho_alliance_member_sync import run_evewho_alliance_member_sync
 from .jobs.tracked_alliance_member_sync import run_tracked_alliance_member_sync
 from .jobs.character_feature_windows import run_compute_character_feature_windows
@@ -215,6 +216,7 @@ PYTHON_SYNC_PROCESSOR_JOB_KEYS: set[str] = {
     "evewho_alliance_member_sync",
     "tracked_alliance_member_sync",
     "cache_expiry_cleanup_sync",
+    "detect_backfill_complete",
     "corp_standings_sync",
     "sovereignty_campaigns_sync",
     "sovereignty_structures_sync",
@@ -340,6 +342,8 @@ _PROCESSOR_DISPATCH: dict[str, tuple] = {
     "compute_sovereignty_alerts": (run_compute_sovereignty_alerts, lambda db, cfg: (db,)),
     # Maintenance
     "cache_expiry_cleanup_sync": (run_cache_expiry_cleanup_sync, lambda db, cfg: (db,)),
+    # Horizon detector — proposes backfill_complete candidates for admin review
+    "detect_backfill_complete": (run_detect_backfill_complete, lambda db, cfg: (db,)),
     # Killmail repair
     "killmail_zkb_repair": (run_killmail_zkb_repair, lambda db, cfg: (db, cfg)),
     # Log-to-issues — scans job_runs failures and files GitHub issues

@@ -314,6 +314,14 @@ CREATE TABLE IF NOT EXISTS sync_state (
     status ENUM('idle', 'running', 'success', 'failed') NOT NULL DEFAULT 'idle',
     last_success_at DATETIME DEFAULT NULL,
     last_cursor VARCHAR(190) DEFAULT NULL,
+    watermark_event_time DATETIME DEFAULT NULL,
+    backfill_complete TINYINT(1) NOT NULL DEFAULT 0,
+    backfill_proposed_at DATETIME DEFAULT NULL,
+    backfill_proposed_reason VARCHAR(190) DEFAULT NULL,
+    incremental_horizon_seconds INT UNSIGNED NOT NULL DEFAULT 86400,
+    repair_window_seconds INT UNSIGNED NOT NULL DEFAULT 86400,
+    stall_cursor VARCHAR(190) DEFAULT NULL,
+    stall_count INT UNSIGNED NOT NULL DEFAULT 0,
     last_row_count INT UNSIGNED NOT NULL DEFAULT 0,
     last_checksum CHAR(64) DEFAULT NULL,
     last_error_message VARCHAR(500) DEFAULT NULL,
@@ -321,7 +329,9 @@ CREATE TABLE IF NOT EXISTS sync_state (
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     UNIQUE KEY unique_dataset_key (dataset_key),
     KEY idx_status (status),
-    KEY idx_last_success_at (last_success_at)
+    KEY idx_last_success_at (last_success_at),
+    KEY idx_sync_state_horizon (backfill_complete, watermark_event_time),
+    KEY idx_sync_state_backfill_proposed (backfill_proposed_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS sync_runs (
