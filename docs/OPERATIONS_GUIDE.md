@@ -36,6 +36,7 @@ Procedures for deployment, reset, rebuild, maintenance, and troubleshooting.
   - [How It Works](#horizon-how-it-works)
   - [Freshness Report](#horizon-freshness-report)
   - [Approving a Dataset](#horizon-approving-a-dataset)
+  - [Auto-Approval](#horizon-auto-approval)
   - [Out-of-Window Late Data](#horizon-out-of-window-late-data)
   - [Rollback](#horizon-rollback)
 
@@ -607,6 +608,7 @@ The `sync_state` table carries per-dataset progress and policy:
 | `incremental_horizon_seconds` | SLA for "caught up" (default 86400 / 24h) |
 | `repair_window_seconds` | How far back to rewind the read cursor each run (default 86400 / 24h) |
 | `stall_cursor` / `stall_count` | Consecutive runs where the cursor did not advance |
+| `auto_approve_blocked` | Opt-out flag. `1` = `detect_backfill_complete` will still propose but will never auto-approve this dataset (see [Auto-Approval](#horizon-auto-approval)) |
 
 Derived status (from `db_calculation_freshness_report()`):
 
@@ -653,6 +655,50 @@ php bin/horizon-reject.php compute_battle_rollups
 
 Or use the settings page: **Sync Operations → Incremental horizon
 mode → Pending proposals → Approve/Reject**.
+
+### <a id="horizon-auto-approval"></a>Auto-Approval
+
+`detect_backfill_complete` also runs a second pass on every invocation
+that auto-flips `backfill_complete` for proposals that have soaked long
+enough *and* still satisfy the health check at approval time. The
+full timeline for a well-behaved dataset is:
+
+| Time | Event |
+|---|---|
+| T+0 | Backfill completes; job starts running cleanly in full/backfill + incremental mode |
+| T+24h | First `detect_backfill_complete` pass proposes the dataset (stamps `backfill_proposed_at`); appears in the admin review queue |
+| T+24h..T+72h | Proposal soaks. An admin can approve early via `bin/horizon-approve.php`, block forever via `bin/horizon-block.php`, reject via `bin/horizon-reject.php`, or just wait |
+| T+72h | Second `detect_backfill_complete` pass confirms the dataset is still healthy and the proposal is ≥ 48h old; auto-flips `backfill_complete = 1`. Next run uses incremental-only horizon mode |
+
+The re-check at approval time is the critical safety layer: if the
+dataset regressed (stall, failed run, lag outside SLA) between proposal
+and auto-approval, the auto-approver leaves the proposal pending and
+the freshness dashboard reflects the regression. Auto-approval skips
+with a `recheck_failed:...` reason in the job meta.
+
+To opt a dataset out of auto-approval entirely (e.g. a new compute job
+whose correctness hasn't been validated against a shadow run yet):
+
+```bash
+# Block auto-approval -- detector still proposes but never auto-flips
+php bin/horizon-block.php compute_battle_target_metrics
+
+# Re-enable auto-approval once validation is done
+php bin/horizon-unblock.php compute_battle_target_metrics
+```
+
+Or from the settings UI: the pending-proposal card has **Block auto**
+and **Unblock auto** buttons next to Approve/Reject. Blocked proposals
+get a visible `auto-approve blocked` badge in the review queue.
+
+Tunables live at the top of
+`python/orchestrator/jobs/detect_backfill_complete.py`:
+
+- `_SOAK_SECONDS` (24h) — minimum clean-run soak before proposing
+- `_AUTO_APPROVE_SOAK_SECONDS` (48h) — minimum proposal age before
+  auto-flipping
+- `_MIN_CLEAN_RUNS` (5) — consecutive successful `sync_runs` required
+- `_MAX_STALL` (2) — stall-counter ceiling for candidacy
 
 ### <a id="horizon-out-of-window-late-data"></a>Out-of-Window Late Data
 

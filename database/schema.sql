@@ -322,6 +322,7 @@ CREATE TABLE IF NOT EXISTS sync_state (
     repair_window_seconds INT UNSIGNED NOT NULL DEFAULT 86400,
     stall_cursor VARCHAR(190) DEFAULT NULL,
     stall_count INT UNSIGNED NOT NULL DEFAULT 0,
+    auto_approve_blocked TINYINT(1) NOT NULL DEFAULT 0,
     last_row_count INT UNSIGNED NOT NULL DEFAULT 0,
     last_checksum CHAR(64) DEFAULT NULL,
     last_error_message VARCHAR(500) DEFAULT NULL,
