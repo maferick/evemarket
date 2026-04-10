@@ -1823,6 +1823,12 @@ function db_time_series_refresh_killmail_item_loss(string $resolution = '1h', in
     $batch = db_time_series_source_batch('killmail_events', 'effective_killmail_at', 'sequence_id', $cursorStart, $safeLimit);
 
     if ($batch === []) {
+        // Empty batch still feeds the horizon stall counter: if the cursor
+        // never advances we want operators to see it flagged in the
+        // freshness report.  The helper is a no-op when sync_state has no
+        // row yet, so first-ever runs are safe.
+        db_horizon_advance_cursor($datasetKey, $cursorStart);
+
         return [
             'rows_seen' => 0,
             'rows_written' => 0,
@@ -1938,6 +1944,17 @@ function db_time_series_refresh_killmail_item_loss(string $resolution = '1h', in
         ];
     });
 
+    // Advance the horizon watermark and stall tracking alongside the
+    // forward cursor.  Note: we do NOT apply db_horizon_read_from_cursor
+    // here because the INSERT ... ON DUPLICATE KEY UPDATE above uses
+    // accumulative expressions (loss_count = loss_count + VALUES(...))
+    // that would double-count on re-read.  Late-arriving killmails are
+    // already handled correctly by the existing design: new rows get
+    // new sequence_ids above the cursor and bucket_start derives from
+    // effective_killmail_at (event time), so they naturally accumulate
+    // into the correct historical bucket.
+    db_horizon_advance_cursor($datasetKey, (string) ($result['cursor_end'] ?? $cursorStart));
+
     return $result + [
         'has_more' => count($batch) >= $safeLimit,
     ];
@@ -1957,6 +1974,10 @@ function db_time_series_refresh_market_aggregates(string $resolution = '1h', int
     $batch = db_time_series_source_batch($summaryTable, 'observed_at', 'id', $cursorStart, $safeLimit);
 
     if ($batch === []) {
+        // Empty batch still feeds the horizon stall counter so operators
+        // can see stalled market aggregates in the freshness report.
+        db_horizon_advance_cursor($datasetKey, $cursorStart);
+
         return [
             'rows_seen' => 0,
             'rows_written' => 0,
@@ -2104,6 +2125,17 @@ function db_time_series_refresh_market_aggregates(string $resolution = '1h', int
             'duration_ms' => (int) round((microtime(true) - $startedAt) * 1000),
         ];
     });
+
+    // Advance the horizon watermark and stall tracking.  As with
+    // killmail_item_loss above, we deliberately do NOT apply the
+    // rolling repair window here: the market stock / price UPSERTs
+    // are accumulative (sample_count = sample_count + VALUES(...),
+    // weighted_price_numerator = weighted_price_numerator + VALUES(...))
+    // so re-reading the tail would double-count the averages and
+    // weighted prices.  Late market observations still land in the
+    // correct bucket via their new sequence id and event-time bucket
+    // expression.
+    db_horizon_advance_cursor($datasetKey, (string) ($result['cursor_end'] ?? $cursorStart));
 
     return $result + [
         'has_more' => count($batch) >= $safeLimit,
