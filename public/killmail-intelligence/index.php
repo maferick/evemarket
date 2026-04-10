@@ -11,6 +11,8 @@ $status = $data['status'] ?? [];
 $rows = $data['rows'] ?? [];
 $filters = $data['filters'] ?? [];
 $pagination = $data['pagination'] ?? [];
+$histogram = $data['histogram'] ?? [];
+$coverage = $data['coverage'] ?? [];
 $error = $data['error'] ?? null;
 $emptyMessage = (string) ($data['empty_message'] ?? 'No killmails available yet.');
 try {
@@ -80,6 +82,30 @@ if (function_exists('ob_flush')) { @ob_flush(); }
     <?php endforeach; ?>
 </section>
 <!-- ui-section:killmail-overview-summary:end -->
+
+<section class="mt-6 surface-secondary">
+    <div class="flex flex-wrap items-start justify-between gap-3">
+        <div>
+            <h2 class="text-base font-medium text-slate-50">Loss histogram</h2>
+            <p class="mt-1 text-sm text-muted">Monthly loss counts from <?= htmlspecialchars((string) ($coverage['start_date'] ?? '2024-01-01'), ENT_QUOTES) ?> onward.</p>
+        </div>
+    </div>
+    <?php if ($histogram === []): ?>
+        <p class="mt-4 text-sm text-muted">No loss histogram buckets available yet.</p>
+    <?php else: ?>
+        <div class="mt-4 grid gap-2">
+            <?php foreach ($histogram as $bucket): ?>
+                <div class="grid grid-cols-[88px_minmax(0,1fr)_56px] items-center gap-3 text-xs text-slate-300">
+                    <span class="text-muted"><?= htmlspecialchars((string) ($bucket['label'] ?? ''), ENT_QUOTES) ?></span>
+                    <div class="h-2 rounded-full bg-white/10">
+                        <div class="h-2 rounded-full bg-indigo-400/80" style="width: <?= max(0, min(100, (int) ($bucket['percent'] ?? 0))) ?>%"></div>
+                    </div>
+                    <span class="text-right text-slate-100"><?= number_format((int) ($bucket['count'] ?? 0)) ?></span>
+                </div>
+            <?php endforeach; ?>
+        </div>
+    <?php endif; ?>
+</section>
 
 <?php if (!empty($runtimeCard['show_latest_failure'])): ?>
     <section class="mt-6 rounded-2xl border px-4 py-4 text-sm <?= htmlspecialchars((string) ($health['tone'] ?? 'border-amber-500/40 bg-amber-500/10 text-amber-100'), ENT_QUOTES) ?>">
@@ -155,6 +181,10 @@ if (function_exists('ob_flush')) { @ob_flush(); }
                 <?php if ((string) ($status['worker_no_write_reason'] ?? '') !== ''): ?>
                     <p class="sm:col-span-2"><span class="text-slate-500">Zero-write reason</span><br><span class="mt-1 inline-block text-slate-100"><?= htmlspecialchars((string) ($status['worker_no_write_reason'] ?? ''), ENT_QUOTES) ?></span></p>
                 <?php endif; ?>
+                <p><span class="text-slate-500">Participant characters</span><br><span class="mt-1 inline-block text-slate-100"><?= number_format((int) ($coverage['participant_characters'] ?? 0)) ?></span><br><span class="text-xs text-muted">Distinct victim + attacker IDs on losses since <?= htmlspecialchars((string) ($coverage['start_date'] ?? '2024-01-01'), ENT_QUOTES) ?>.</span></p>
+                <p><span class="text-slate-500">ESI queue coverage</span><br><span class="mt-1 inline-block text-slate-100"><?= number_format((int) ($coverage['queued_in_esi_character_queue'] ?? 0)) ?> / <?= number_format((int) ($coverage['participant_characters'] ?? 0)) ?></span><br><span class="text-xs text-muted">Participants present in <code>esi_character_queue</code>.</span></p>
+                <p><span class="text-slate-500">Current affiliation coverage</span><br><span class="mt-1 inline-block text-slate-100"><?= number_format((int) ($coverage['with_current_affiliation'] ?? 0)) ?> / <?= number_format((int) ($coverage['participant_characters'] ?? 0)) ?></span><br><span class="text-xs text-muted">Participants with ESI current corp/alliance rows.</span></p>
+                <p><span class="text-slate-500">Alliance history coverage</span><br><span class="mt-1 inline-block text-slate-100"><?= number_format((int) ($coverage['with_alliance_history'] ?? 0)) ?> / <?= number_format((int) ($coverage['participant_characters'] ?? 0)) ?></span><br><span class="text-xs text-muted">Participants with at least one historical alliance period.</span></p>
             </div>
         </details>
     </article>
