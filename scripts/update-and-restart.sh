@@ -15,8 +15,20 @@ BUILD_ASSETS=0
 ANALYZE_TABLES=0
 GRACEFUL_STOP=0
 HEALTH_CHECK=1
+SMART_MODE=0
 BRANCH=""
 EXPLICIT_SERVICES=()
+
+# Smart-mode bookkeeping (tracked across phases, consumed at end for
+# the HOURLY_LOOP_SUMMARY emission so scripts/hourly-loop.sh can adapt).
+GIT_SHA_BEFORE=""
+GIT_SHA_AFTER=""
+GIT_CHANGED=0
+UNITS_CHANGED=0
+SMART_SKIP_RESTART=0
+RESTART_SERVICES=()
+FAILED_SERVICES=()
+UNHEALTHY_SERVICES=()
 
 # Timeout (seconds) to wait for a service to become active after restart.
 HEALTH_CHECK_TIMEOUT=30
@@ -24,6 +36,11 @@ HEALTH_CHECK_TIMEOUT=30
 # Services that should always be installed if not already present.
 # The orchestrator and legacy worker@ are opt-in only (installed via
 # install-services.sh) — they are NOT auto-installed here.
+#
+# The hourly-loop unit files are synced here too, but the timer is NOT
+# enabled automatically. Operators enable it with:
+#   sudo systemctl enable --now supplycore-hourly-loop.timer
+# after reviewing one manual run.
 CORE_UNITS=(
   supplycore-loop-runner.service
   supplycore-lane-realtime.service
@@ -36,6 +53,8 @@ CORE_UNITS=(
   supplycore-backfill-runner.service
   supplycore-influx-rollup-export.service
   supplycore-influx-rollup-export.timer
+  supplycore-hourly-loop.service
+  supplycore-hourly-loop.timer
 )
 
 # Units that are opt-in only — update if already installed, but don't install.
@@ -73,6 +92,11 @@ Options:
   --no-migrations        Skip running database migrations
   --no-sync-units        Skip syncing systemd unit files from ops/systemd/
   --no-health-check      Skip post-restart health verification
+  --smart                Smart mode: if neither the git HEAD SHA nor any
+                         systemd unit file changed during this run, skip
+                         migrations, daemon-reload, and service restarts.
+                         Used by scripts/hourly-loop.sh to avoid hourly
+                         restart churn when there is nothing to deploy.
   --dry-run              Print actions without executing mutating commands
   --verbose              Print each command before executing
   -h, --help             Show this help
@@ -158,6 +182,10 @@ parse_args() {
         HEALTH_CHECK=0
         shift
         ;;
+      --smart)
+        SMART_MODE=1
+        shift
+        ;;
       --dry-run)
         DRY_RUN=1
         shift
@@ -199,6 +227,8 @@ preflight_checks() {
 git_update() {
   cd "${APP_ROOT}"
 
+  GIT_SHA_BEFORE=$(git rev-parse HEAD 2>/dev/null || echo "")
+
   # Stash any uncommitted changes before pull to avoid failures
   local stashed=0
   if [[ -n "$(git status --porcelain 2>/dev/null)" ]]; then
@@ -213,16 +243,32 @@ git_update() {
 
   run_cmd git fetch --all --prune
 
-  # Try fast-forward first; if that fails (diverged), let the user know
-  if ! run_cmd git pull --ff-only 2>/dev/null; then
-    log_warn "Fast-forward pull failed (branch may have diverged). Attempting merge pull."
-    run_cmd git pull --no-edit
+  # Only attempt to pull if the current branch has an upstream configured.
+  # Local-only branches (common during dev) have no tracking ref and would
+  # fail both ff-only and merge pulls — skip cleanly instead.
+  local current_branch
+  current_branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
+  if git rev-parse --abbrev-ref "@{u}" >/dev/null 2>&1; then
+    if ! run_cmd git pull --ff-only 2>/dev/null; then
+      log_warn "Fast-forward pull failed (branch may have diverged). Attempting merge pull."
+      run_cmd git pull --no-edit
+    fi
+  else
+    log_warn "Current branch '${current_branch}' has no upstream; skipping git pull."
   fi
 
   # Restore stashed changes
   if [[ ${stashed} -eq 1 ]]; then
     log "Restoring stashed local changes"
     run_cmd git stash pop || log_warn "Could not restore stash cleanly. Check 'git stash list'."
+  fi
+
+  GIT_SHA_AFTER=$(git rev-parse HEAD 2>/dev/null || echo "")
+  if [[ -n "${GIT_SHA_BEFORE}" && -n "${GIT_SHA_AFTER}" && "${GIT_SHA_BEFORE}" != "${GIT_SHA_AFTER}" ]]; then
+    GIT_CHANGED=1
+    log "Git HEAD changed: ${GIT_SHA_BEFORE:0:8} -> ${GIT_SHA_AFTER:0:8}"
+  else
+    log "Git HEAD unchanged at ${GIT_SHA_AFTER:0:8}"
   fi
 }
 
@@ -247,6 +293,7 @@ sync_systemd_units() {
     fi
     log "Installing ${unit}"
     run_cmd cp "${src}" "${dest}"
+    UNITS_CHANGED=1
   done
 
   # Update opt-in units only if already installed
@@ -264,6 +311,7 @@ sync_systemd_units() {
     fi
     log "Updating opt-in unit ${unit}"
     run_cmd cp "${src}" "${dest}"
+    UNITS_CHANGED=1
   done
 
   # Remove known stale units
@@ -276,6 +324,7 @@ sync_systemd_units() {
     run_cmd systemctl stop "${unit}" 2>/dev/null || true
     run_cmd systemctl disable "${unit}" 2>/dev/null || true
     run_cmd rm -f "${dest}"
+    UNITS_CHANGED=1
   done
 
   # Also clean up any stale templated instances of stale units
@@ -525,112 +574,135 @@ if [[ ${SYNC_UNITS} -eq 1 ]]; then
   sync_systemd_units
 fi
 
-# ------- Database migrations -------
-if [[ ${RUN_MIGRATIONS} -eq 1 ]]; then
-  run_migrations
+# ------- Smart mode: decide whether to skip migrations + restart -------
+if [[ ${SMART_MODE} -eq 1 && ${GIT_CHANGED} -eq 0 && ${UNITS_CHANGED} -eq 0 ]]; then
+  SMART_SKIP_RESTART=1
+  log "Smart mode: git HEAD unchanged and no systemd unit file updates — skipping migrations, daemon-reload, and service restarts."
 fi
 
-# ------- ANALYZE TABLE (optional) -------
-if [[ ${ANALYZE_TABLES} -eq 1 ]]; then
-  run_analyze_tables
-fi
-
-# ------- Reset overdue job schedules -------
-# After code update + migrations, reset any overdue next_due_at values so
-# the loop runner picks them up immediately when services restart.
-reset_overdue_jobs() {
-  local python_bin=""
-  if [[ -x "${APP_ROOT}/.venv-orchestrator/bin/python" ]]; then
-    python_bin="${APP_ROOT}/.venv-orchestrator/bin/python"
-  elif command -v python3 >/dev/null 2>&1; then
-    python_bin="python3"
+if [[ ${SMART_SKIP_RESTART} -eq 0 ]]; then
+  # ------- Database migrations -------
+  if [[ ${RUN_MIGRATIONS} -eq 1 ]]; then
+    run_migrations
   fi
-  if [[ -z "${python_bin}" ]]; then
-    log_warn "No python3 found; skipping overdue job reset."
-    return 0
+
+  # ------- ANALYZE TABLE (optional) -------
+  if [[ ${ANALYZE_TABLES} -eq 1 ]]; then
+    run_analyze_tables
   fi
-  local reset_script="${APP_ROOT}/bin/reset_overdue_jobs.py"
-  if [[ ! -f "${reset_script}" ]]; then
-    log "No reset_overdue_jobs.py found; skipping."
-    return 0
+
+  # ------- Reset overdue job schedules -------
+  # After code update + migrations, reset any overdue next_due_at values so
+  # the loop runner picks them up immediately when services restart.
+  reset_overdue_jobs() {
+    local python_bin=""
+    if [[ -x "${APP_ROOT}/.venv-orchestrator/bin/python" ]]; then
+      python_bin="${APP_ROOT}/.venv-orchestrator/bin/python"
+    elif command -v python3 >/dev/null 2>&1; then
+      python_bin="python3"
+    fi
+    if [[ -z "${python_bin}" ]]; then
+      log_warn "No python3 found; skipping overdue job reset."
+      return 0
+    fi
+    local reset_script="${APP_ROOT}/bin/reset_overdue_jobs.py"
+    if [[ ! -f "${reset_script}" ]]; then
+      log "No reset_overdue_jobs.py found; skipping."
+      return 0
+    fi
+    log "Resetting overdue job schedules"
+    run_cmd "${python_bin}" "${reset_script}" --app-root "${APP_ROOT}"
+  }
+  reset_overdue_jobs
+
+  # ------- Service discovery and restart -------
+  run_cmd systemctl daemon-reload
+
+  if [[ ${#EXPLICIT_SERVICES[@]} -gt 0 ]]; then
+    RESTART_SERVICES=("${EXPLICIT_SERVICES[@]}")
+    log "Using ${#RESTART_SERVICES[@]} explicitly specified service(s)"
+  else
+    while IFS= read -r svc; do
+      [[ -n "${svc}" ]] && RESTART_SERVICES+=("${svc}")
+    done < <(discover_services)
+    log "Auto-discovered ${#RESTART_SERVICES[@]} supplycore service(s)"
   fi
-  log "Resetting overdue job schedules"
-  run_cmd "${python_bin}" "${reset_script}" --app-root "${APP_ROOT}"
-}
-reset_overdue_jobs
 
-# ------- Service discovery and restart -------
-run_cmd systemctl daemon-reload
-
-RESTART_SERVICES=()
-if [[ ${#EXPLICIT_SERVICES[@]} -gt 0 ]]; then
-  RESTART_SERVICES=("${EXPLICIT_SERVICES[@]}")
-  log "Using ${#RESTART_SERVICES[@]} explicitly specified service(s)"
-else
-  while IFS= read -r svc; do
-    [[ -n "${svc}" ]] && RESTART_SERVICES+=("${svc}")
-  done < <(discover_services)
-  log "Auto-discovered ${#RESTART_SERVICES[@]} supplycore service(s)"
-fi
-
-if [[ ${#RESTART_SERVICES[@]} -eq 0 ]]; then
-  log "No services found to restart."
-fi
-
-FAILED_SERVICES=()
-for svc in "${RESTART_SERVICES[@]}"; do
-  log "Restarting ${svc}"
-  if ! run_cmd systemctl restart "${svc}"; then
-    log_warn "Failed to restart ${svc}"
-    FAILED_SERVICES+=("${svc}")
+  if [[ ${#RESTART_SERVICES[@]} -eq 0 ]]; then
+    log "No services found to restart."
   fi
-done
-
-# ------- Health verification -------
-UNHEALTHY_SERVICES=()
-if [[ ${HEALTH_CHECK} -eq 1 && ${#RESTART_SERVICES[@]} -gt 0 && ${DRY_RUN} -eq 0 ]]; then
-  log "Verifying service health (timeout: ${HEALTH_CHECK_TIMEOUT}s per service)"
-  # Short initial settle time
-  sleep 2
 
   for svc in "${RESTART_SERVICES[@]}"; do
-    # Skip already-failed services
-    skip=false
-    for failed in "${FAILED_SERVICES[@]+"${FAILED_SERVICES[@]}"}"; do
-      if [[ "${failed}" == "${svc}" ]]; then
-        skip=true
-        break
-      fi
-    done
-    [[ ${skip} == true ]] && continue
-
-    if verify_service_health "${svc}"; then
-      log "  OK: ${svc}"
-    else
-      log_warn "  UNHEALTHY: ${svc}"
-      UNHEALTHY_SERVICES+=("${svc}")
+    log "Restarting ${svc}"
+    if ! run_cmd systemctl restart "${svc}"; then
+      log_warn "Failed to restart ${svc}"
+      FAILED_SERVICES+=("${svc}")
     fi
   done
 
-  if [[ ${#UNHEALTHY_SERVICES[@]} -gt 0 || ${#FAILED_SERVICES[@]} -gt 0 ]]; then
-    log_warn "Some services are unhealthy after restart:"
-    for svc in "${FAILED_SERVICES[@]+"${FAILED_SERVICES[@]}"}"; do
-      log_warn "  FAILED:    ${svc}"
+  # ------- Health verification -------
+  if [[ ${HEALTH_CHECK} -eq 1 && ${#RESTART_SERVICES[@]} -gt 0 && ${DRY_RUN} -eq 0 ]]; then
+    log "Verifying service health (timeout: ${HEALTH_CHECK_TIMEOUT}s per service)"
+    # Short initial settle time
+    sleep 2
+
+    for svc in "${RESTART_SERVICES[@]}"; do
+      # Skip already-failed services
+      skip=false
+      for failed in "${FAILED_SERVICES[@]+"${FAILED_SERVICES[@]}"}"; do
+        if [[ "${failed}" == "${svc}" ]]; then
+          skip=true
+          break
+        fi
+      done
+      [[ ${skip} == true ]] && continue
+
+      if verify_service_health "${svc}"; then
+        log "  OK: ${svc}"
+      else
+        log_warn "  UNHEALTHY: ${svc}"
+        UNHEALTHY_SERVICES+=("${svc}")
+      fi
     done
-    for svc in "${UNHEALTHY_SERVICES[@]+"${UNHEALTHY_SERVICES[@]}"}"; do
-      log_warn "  UNHEALTHY: ${svc}"
-      # Print the last few journal lines to aid debugging
-      journalctl -u "${svc}" --no-pager -n 10 --since "-2 min" 2>/dev/null || true
+
+    if [[ ${#UNHEALTHY_SERVICES[@]} -gt 0 || ${#FAILED_SERVICES[@]} -gt 0 ]]; then
+      log_warn "Some services are unhealthy after restart:"
+      for svc in "${FAILED_SERVICES[@]+"${FAILED_SERVICES[@]}"}"; do
+        log_warn "  FAILED:    ${svc}"
+      done
+      for svc in "${UNHEALTHY_SERVICES[@]+"${UNHEALTHY_SERVICES[@]}"}"; do
+        log_warn "  UNHEALTHY: ${svc}"
+        # Print the last few journal lines to aid debugging
+        journalctl -u "${svc}" --no-pager -n 10 --since "-2 min" 2>/dev/null || true
+      done
+    fi
+  else
+    # Fallback: dump status for manual review
+    for svc in "${RESTART_SERVICES[@]}"; do
+      run_cmd systemctl --no-pager --full status "${svc}" || true
     done
   fi
-else
-  # Fallback: dump status for manual review
-  for svc in "${RESTART_SERVICES[@]}"; do
-    run_cmd systemctl --no-pager --full status "${svc}" || true
-  done
 fi
 
 TOTAL_FAILED=$(( ${#FAILED_SERVICES[@]} + ${#UNHEALTHY_SERVICES[@]} ))
+
+# ------- Machine-readable summary for scripts/hourly-loop.sh -------
+# Emitted unconditionally so the hourly wrapper can extract it with a grep.
+# Format: HOURLY_LOOP_SUMMARY: {JSON}
+_bool_json() { [[ ${1} -eq 1 ]] && printf true || printf false; }
+printf 'HOURLY_LOOP_SUMMARY: {"git_sha_before":"%s","git_sha_after":"%s","git_changed":%s,"units_changed":%s,"smart_mode":%s,"smart_skip_restart":%s,"services_restarted":%d,"services_failed":%d,"services_unhealthy":%d,"total_failed":%d,"branch":"%s"}\n' \
+  "${GIT_SHA_BEFORE:0:40}" \
+  "${GIT_SHA_AFTER:0:40}" \
+  "$(_bool_json ${GIT_CHANGED})" \
+  "$(_bool_json ${UNITS_CHANGED})" \
+  "$(_bool_json ${SMART_MODE})" \
+  "$(_bool_json ${SMART_SKIP_RESTART})" \
+  "${#RESTART_SERVICES[@]}" \
+  "${#FAILED_SERVICES[@]}" \
+  "${#UNHEALTHY_SERVICES[@]}" \
+  "${TOTAL_FAILED}" \
+  "${BRANCH}"
+
 if [[ ${TOTAL_FAILED} -gt 0 ]]; then
   log_warn "Completed update-and-restart with ${TOTAL_FAILED} issue(s)"
   exit 1

@@ -1,0 +1,29 @@
+[Unit]
+Description=SupplyCore hourly autonomous update + issue-triage loop
+Documentation=file:///var/www/SupplyCore/scripts/hourly-loop.sh
+After=network-online.target mariadb.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# This unit invokes scripts/update-and-restart.sh which manages systemd
+# units and restarts other services — it therefore requires root.
+User=root
+Group=root
+WorkingDirectory=/var/www/SupplyCore
+Environment=APP_ROOT=/var/www/SupplyCore
+# Pick up GITHUB_TOKEN / GITHUB_REPO from .env; the script also sources
+# .env itself, but this keeps systemd-unit-level overrides possible.
+EnvironmentFile=-/etc/default/supplycore-hourly-loop
+ExecStart=/var/www/SupplyCore/scripts/hourly-loop.sh
+# The script manages its own per-run logs under storage/logs/hourly-loop/.
+# systemd stdout/stderr is appended for journalctl-level visibility.
+StandardOutput=append:/var/www/SupplyCore/storage/logs/hourly-loop/systemd.log
+StandardError=append:/var/www/SupplyCore/storage/logs/hourly-loop/systemd.log
+# Give the update/migration/restart phase headroom but don't hang forever.
+TimeoutStartSec=1800
+Nice=10
+IOSchedulingClass=best-effort
+
+[Install]
+WantedBy=multi-user.target
