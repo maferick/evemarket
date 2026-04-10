@@ -12868,8 +12868,12 @@ function db_killmail_filtered_recent(int $limit = 50): array
 function db_killmail_overview_summary(int $recentHours = 24, string $startDate = '2024-01-01 00:00:00'): array
 {
     $safeRecentHours = max(1, min(24 * 30, $recentHours));
-    $trackedMatchesSql = db_killmail_tracked_matches_sql();
-    $latestSequencesSql = db_killmail_latest_sequences_sql();
+
+    // The uniq_killmail_identity (killmail_id, killmail_hash) unique key is
+    // enforced on write by db_killmail_event_upsert() via ON DUPLICATE KEY
+    // UPDATE, so there is never more than one row per identity. Scanning
+    // killmail_events directly is safe and orders of magnitude faster than
+    // wrapping it in a GROUP BY derived table (db_killmail_latest_sequences_sql).
     $summary = db_select_one(
         "SELECT
             COUNT(*) AS total_count,
@@ -12877,17 +12881,28 @@ function db_killmail_overview_summary(int $recentHours = 24, string $startDate =
             MAX(e.sequence_id) AS max_sequence_id,
             MAX(e.created_at) AS last_ingested_at,
             MAX(e.uploaded_at) AS latest_uploaded_at
-         FROM {$latestSequencesSql} latest
-         INNER JOIN killmail_events e ON e.sequence_id = latest.sequence_id
+         FROM killmail_events e
          WHERE e.effective_killmail_at >= ?",
         [$startDate]
     ) ?? [];
+
+    // Tracked match count: killmails whose victim is in corp_contacts with
+    // standing > 0. Semi-join against the tiny corp_contacts table instead
+    // of the expensive UNION+GROUP BY derived table.
     $trackedCountRow = db_select_one(
         "SELECT COUNT(*) AS tracked_match_count
-         FROM {$trackedMatchesSql} tracked
-         INNER JOIN {$latestSequencesSql} latest ON latest.sequence_id = tracked.sequence_id
-         INNER JOIN killmail_events e ON e.sequence_id = tracked.sequence_id
-         WHERE e.effective_killmail_at >= ?",
+         FROM killmail_events e
+         WHERE e.effective_killmail_at >= ?
+           AND (
+             e.victim_alliance_id IN (
+                 SELECT contact_id FROM corp_contacts
+                 WHERE contact_type = 'alliance' AND standing > 0
+             )
+             OR e.victim_corporation_id IN (
+                 SELECT contact_id FROM corp_contacts
+                 WHERE contact_type = 'corporation' AND standing > 0
+             )
+           )",
         [$startDate]
     ) ?? [];
     $summary['tracked_match_count'] = (int) ($trackedCountRow['tracked_match_count'] ?? 0);
@@ -12900,8 +12915,7 @@ function db_killmail_overview_summary(int $recentHours = 24, string $startDate =
     // rolling window not the all-time total.
     $mailTypeRows = db_select(
         "SELECT e.mail_type, COUNT(*) AS mail_count
-         FROM {$latestSequencesSql} latest
-         INNER JOIN killmail_events e ON e.sequence_id = latest.sequence_id
+         FROM killmail_events e
          WHERE e.effective_killmail_at >= ?
          GROUP BY e.mail_type",
         [$startDate]
@@ -12927,13 +12941,13 @@ function db_killmail_overview_summary(int $recentHours = 24, string $startDate =
 
 function db_killmail_overview_filter_options(string $startDate = '2024-01-01 00:00:00'): array
 {
-    $latestSequencesSql = db_killmail_latest_sequences_sql();
+    // See db_killmail_overview_summary() for why we scan killmail_events
+    // directly instead of wrapping it in a latest-sequences derived table.
     $alliances = db_select(
         "SELECT DISTINCT
             e.victim_alliance_id AS entity_id,
             COALESCE(emc.entity_name, CONCAT('Alliance #', e.victim_alliance_id)) AS entity_label
-         FROM {$latestSequencesSql} latest
-         INNER JOIN killmail_events e ON e.sequence_id = latest.sequence_id
+         FROM killmail_events e
          LEFT JOIN entity_metadata_cache emc
            ON emc.entity_type = 'alliance' AND emc.entity_id = e.victim_alliance_id
          WHERE e.victim_alliance_id IS NOT NULL
@@ -12948,8 +12962,7 @@ function db_killmail_overview_filter_options(string $startDate = '2024-01-01 00:
         "SELECT DISTINCT
             e.victim_corporation_id AS entity_id,
             COALESCE(emc.entity_name, CONCAT('Corporation #', e.victim_corporation_id)) AS entity_label
-         FROM {$latestSequencesSql} latest
-         INNER JOIN killmail_events e ON e.sequence_id = latest.sequence_id
+         FROM killmail_events e
          LEFT JOIN entity_metadata_cache emc
            ON emc.entity_type = 'corporation' AND emc.entity_id = e.victim_corporation_id
          WHERE e.victim_corporation_id IS NOT NULL
@@ -12968,12 +12981,13 @@ function db_killmail_overview_filter_options(string $startDate = '2024-01-01 00:
 
 function db_killmail_overview_monthly_histogram(string $startDate = '2024-01-01'): array
 {
-    $latestSequencesSql = db_killmail_latest_sequences_sql();
+    // See db_killmail_overview_summary() for why we scan killmail_events
+    // directly. With idx_killmail_mailtype_effective_seq this becomes a
+    // range scan that is covered end-to-end by the index.
     return db_select(
         "SELECT DATE_FORMAT(e.effective_killmail_at, '%Y-%m') AS bucket_month,
                 COUNT(*) AS loss_count
-         FROM {$latestSequencesSql} latest
-         INNER JOIN killmail_events e ON e.sequence_id = latest.sequence_id
+         FROM killmail_events e
          WHERE e.mail_type = 'loss'
            AND e.effective_killmail_at >= ?
          GROUP BY DATE_FORMAT(e.effective_killmail_at, '%Y-%m')
@@ -13264,15 +13278,54 @@ function db_killmail_overview_page(array $filters = []): array
     $mailType = in_array((string) ($filters['mail_type'] ?? 'loss'), ['kill', 'loss', ''], true) ? (string) ($filters['mail_type'] ?? 'loss') : 'loss';
     $search = trim((string) ($filters['search'] ?? ''));
     $startDate = trim((string) ($filters['start_date'] ?? '2024-01-01 00:00:00'));
-    $trackedMatchesSql = db_killmail_tracked_matches_sql();
-    $latestSequencesSql = db_killmail_latest_sequences_sql();
-    $trackedJoinType = $trackedOnly ? 'INNER JOIN' : 'LEFT JOIN';
 
-    $fromSql = " FROM {$latestSequencesSql} latest
-        INNER JOIN killmail_events e
-          ON e.sequence_id = latest.sequence_id
-        {$trackedJoinType} {$trackedMatchesSql} tracked
-          ON tracked.sequence_id = e.sequence_id
+    // --- Base predicates (apply to both COUNT and row fetch) ---
+    //
+    // This function used to wrap killmail_events in a GROUP BY derived table
+    // (db_killmail_latest_sequences_sql) and also build a UNION+GROUP BY
+    // derived table for tracked-match lookup (db_killmail_tracked_matches_sql)
+    // as a side join. Both were full-table operations that got built on every
+    // query even when they could not help the result. With the
+    // uniq_killmail_identity unique key enforced at ingest, the latest-
+    // sequence dedupe is redundant; and tracked-match state can be computed
+    // per-row with EXISTS against the tiny corp_contacts table.
+    $baseConditions = [];
+    $baseParams = [];
+
+    if ($allianceId > 0) {
+        $baseConditions[] = 'e.victim_alliance_id = ?';
+        $baseParams[] = $allianceId;
+    }
+    if ($corporationId > 0) {
+        $baseConditions[] = 'e.victim_corporation_id = ?';
+        $baseParams[] = $corporationId;
+    }
+    if ($mailType !== '') {
+        $baseConditions[] = 'e.mail_type = ?';
+        $baseParams[] = $mailType;
+    }
+    $baseConditions[] = 'e.effective_killmail_at >= ?';
+    $baseParams[] = $startDate;
+
+    if ($trackedOnly) {
+        // Semi-join against corp_contacts instead of joining the big
+        // UNION+GROUP BY derived table. corp_contacts is small and indexed
+        // on (contact_type, contact_id), so the optimizer can hash it.
+        $baseConditions[] = '(
+            e.victim_alliance_id IN (
+                SELECT contact_id FROM corp_contacts
+                WHERE contact_type = \'alliance\' AND standing > 0
+            )
+            OR e.victim_corporation_id IN (
+                SELECT contact_id FROM corp_contacts
+                WHERE contact_type = \'corporation\' AND standing > 0
+            )
+        )';
+    }
+
+    // Display-side joins needed only when the row SELECT references them,
+    // or when the search filter needs to reach into their columns.
+    $displayJoinsSql = "
         LEFT JOIN killmail_attackers final_blow_attacker
           ON final_blow_attacker.sequence_id = e.sequence_id
          AND final_blow_attacker.attacker_index = (
@@ -13284,41 +13337,17 @@ function db_killmail_overview_page(array $filters = []): array
         LEFT JOIN ref_item_types ship ON ship.type_id = e.victim_ship_type_id
         LEFT JOIN ref_systems system_ref ON system_ref.system_id = e.solar_system_id
         LEFT JOIN ref_regions region_ref ON region_ref.region_id = e.region_id
-        LEFT JOIN corp_contacts victim_ta
-          ON victim_ta.contact_id = e.victim_alliance_id
-         AND victim_ta.contact_type = 'alliance' AND victim_ta.standing > 0
-        LEFT JOIN corp_contacts victim_tc
-          ON victim_tc.contact_id = e.victim_corporation_id
-         AND victim_tc.contact_type = 'corporation' AND victim_tc.standing > 0
         LEFT JOIN entity_metadata_cache emc_va
           ON emc_va.entity_type = 'alliance' AND emc_va.entity_id = e.victim_alliance_id
         LEFT JOIN entity_metadata_cache emc_vc
           ON emc_vc.entity_type = 'corporation' AND emc_vc.entity_id = e.victim_corporation_id";
 
-    $conditions = [];
-    $params = [];
-
-    if ($allianceId > 0) {
-        $conditions[] = 'e.victim_alliance_id = ?';
-        $params[] = $allianceId;
-    }
-
-    if ($corporationId > 0) {
-        $conditions[] = 'e.victim_corporation_id = ?';
-        $params[] = $corporationId;
-    }
-
-    if ($trackedOnly) {
-        $conditions[] = 'tracked.sequence_id IS NOT NULL';
-    }
-
-    if ($mailType !== '') {
-        $conditions[] = 'e.mail_type = ?';
-        $params[] = $mailType;
-    }
-    $conditions[] = 'e.effective_killmail_at >= ?';
-    $params[] = $startDate;
-
+    // Search predicates reference the display joins (entity names, ship/
+    // system/region labels), so their presence forces those joins into the
+    // COUNT path too. When there is no search term the count query can be
+    // a plain range scan on idx_killmail_mailtype_effective_seq.
+    $searchConditions = [];
+    $searchParams = [];
     if ($search !== '') {
         $needle = '%' . $search . '%';
         $numericSearch = preg_replace('/[^0-9]/', '', $search);
@@ -13326,7 +13355,7 @@ function db_killmail_overview_page(array $filters = []): array
             // Sargable numeric range for sequence_id/killmail_id instead of CAST(...AS CHAR) LIKE
             $lowerBound = (int) $numericSearch;
             $upperBound = (int) ($numericSearch . str_repeat('9', max(0, 15 - strlen($numericSearch))));
-            $conditions[] = '(
+            $searchConditions[] = '(
                 e.sequence_id BETWEEN ? AND ?
                 OR e.killmail_id BETWEEN ? AND ?
                 OR COALESCE(emc_va.entity_name, \'\') LIKE ?
@@ -13335,29 +13364,53 @@ function db_killmail_overview_page(array $filters = []): array
                 OR COALESCE(system_ref.system_name, \'\') LIKE ?
                 OR COALESCE(region_ref.region_name, \'\') LIKE ?
             )';
-            array_push($params, $lowerBound, $upperBound, $lowerBound, $upperBound, $needle, $needle, $needle, $needle, $needle);
+            array_push($searchParams, $lowerBound, $upperBound, $lowerBound, $upperBound, $needle, $needle, $needle, $needle, $needle);
         } else {
-            $conditions[] = '(
+            $searchConditions[] = '(
                 COALESCE(emc_va.entity_name, \'\') LIKE ?
                 OR COALESCE(emc_vc.entity_name, \'\') LIKE ?
                 OR COALESCE(ship.type_name, \'\') LIKE ?
                 OR COALESCE(system_ref.system_name, \'\') LIKE ?
                 OR COALESCE(region_ref.region_name, \'\') LIKE ?
             )';
-            array_push($params, $needle, $needle, $needle, $needle, $needle);
+            array_push($searchParams, $needle, $needle, $needle, $needle, $needle);
         }
     }
 
-    $whereSql = $conditions === [] ? '' : (' WHERE ' . implode(' AND ', $conditions));
-
-    $countRow = db_select_one(
-        'SELECT COUNT(*) AS total_items' . $fromSql . $whereSql,
-        $params
-    );
+    // --- COUNT query ---
+    // Common path (no search): count straight off killmail_events. With
+    // idx_killmail_mailtype_effective_seq this is a pure range scan with no
+    // joins, no temp tables and no filesort. This is the change that fixes
+    // the killmail-intelligence page timing out during backload.
+    if ($searchConditions === []) {
+        $countWhereSql = ' WHERE ' . implode(' AND ', $baseConditions);
+        $countRow = db_select_one(
+            'SELECT COUNT(*) AS total_items FROM killmail_events e' . $countWhereSql,
+            $baseParams
+        );
+    } else {
+        $countConditions = array_merge($baseConditions, $searchConditions);
+        $countWhereSql = ' WHERE ' . implode(' AND ', $countConditions);
+        $countRow = db_select_one(
+            'SELECT COUNT(*) AS total_items FROM killmail_events e' . $displayJoinsSql . $countWhereSql,
+            array_merge($baseParams, $searchParams)
+        );
+    }
     $totalItems = (int) ($countRow['total_items'] ?? 0);
     $totalPages = max(1, (int) ceil($totalItems / $pageSize));
     $page = min($page, $totalPages);
     $offset = ($page - 1) * $pageSize;
+
+    // --- Row fetch ---
+    // Needs the display joins (the SELECT references their columns) but the
+    // expensive tracked-match derived table is replaced with per-row EXISTS
+    // subqueries. These only run for the ~25 rows actually returned, so the
+    // extra per-row cost is negligible. matches_attacker_* are always 0 in
+    // this view: the old UNION-derived tracked table declared them but never
+    // populated them (it only covered the victim side).
+    $rowConditions = array_merge($baseConditions, $searchConditions);
+    $rowWhereSql = ' WHERE ' . implode(' AND ', $rowConditions);
+    $rowParams = array_merge($baseParams, $searchParams);
 
     $rows = db_select(
         "SELECT
@@ -13390,16 +13443,33 @@ function db_killmail_overview_page(array $filters = []): array
             COALESCE(NULLIF(ship.type_name, ''), CONCAT('Type #', e.victim_ship_type_id)) AS ship_type_name,
             COALESCE(NULLIF(system_ref.system_name, ''), CONCAT('System #', e.solar_system_id)) AS system_name,
             COALESCE(NULLIF(region_ref.region_name, ''), CONCAT('Region #', e.region_id)) AS region_name,
-            COALESCE(tracked.matches_victim_alliance, 0) AS matches_victim_alliance,
-            COALESCE(tracked.matches_victim_corporation, 0) AS matches_victim_corporation,
-            COALESCE(tracked.matches_attacker_alliance, 0) AS matches_attacker_alliance,
-            COALESCE(tracked.matches_attacker_corporation, 0) AS matches_attacker_corporation,
-            CASE WHEN tracked.sequence_id IS NULL THEN 0 ELSE 1 END AS matched_tracked
-            {$fromSql}
-            {$whereSql}
+            CASE WHEN EXISTS (
+                SELECT 1 FROM corp_contacts cc
+                 WHERE cc.contact_type = 'alliance' AND cc.standing > 0
+                   AND cc.contact_id = e.victim_alliance_id
+            ) THEN 1 ELSE 0 END AS matches_victim_alliance,
+            CASE WHEN EXISTS (
+                SELECT 1 FROM corp_contacts cc
+                 WHERE cc.contact_type = 'corporation' AND cc.standing > 0
+                   AND cc.contact_id = e.victim_corporation_id
+            ) THEN 1 ELSE 0 END AS matches_victim_corporation,
+            0 AS matches_attacker_alliance,
+            0 AS matches_attacker_corporation,
+            CASE WHEN EXISTS (
+                SELECT 1 FROM corp_contacts cc
+                 WHERE cc.contact_type = 'alliance' AND cc.standing > 0
+                   AND cc.contact_id = e.victim_alliance_id
+            ) OR EXISTS (
+                SELECT 1 FROM corp_contacts cc
+                 WHERE cc.contact_type = 'corporation' AND cc.standing > 0
+                   AND cc.contact_id = e.victim_corporation_id
+            ) THEN 1 ELSE 0 END AS matched_tracked
+         FROM killmail_events e
+         {$displayJoinsSql}
+         {$rowWhereSql}
          ORDER BY e.effective_killmail_at DESC, e.sequence_id DESC, e.killmail_id DESC
          LIMIT {$pageSize} OFFSET {$offset}",
-        $params
+        $rowParams
     );
 
     return [
