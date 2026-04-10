@@ -150,6 +150,20 @@ try {
     if ($action === 'character-killmail-queue-pending') {
         $input = python_scheduler_bridge_read_stdin_json();
         $limit = max(1, min(500, (int) ($input['limit'] ?? 50)));
+
+        // Reap any rows stuck in 'processing' for more than 15 minutes. These
+        // are characters a previous run claimed but never finished (time budget
+        // expired mid-batch, job crashed, etc.). Without this, orphaned
+        // 'processing' rows accumulate indefinitely and effectively drain the
+        // queue without doing any real work.
+        db_execute(
+            "UPDATE character_killmail_queue
+             SET status = 'pending'
+             WHERE status = 'processing'
+               AND (processed_at IS NULL
+                    OR processed_at < DATE_SUB(UTC_TIMESTAMP(), INTERVAL 15 MINUTE))"
+        );
+
         $rows = db_select(
             "SELECT character_id, priority, priority_reason, status, mode,
                     last_page_fetched, last_killmail_id_seen, last_killmail_at_seen,
@@ -161,13 +175,14 @@ try {
              LIMIT ?",
             [$limit]
         );
-        // Mark these rows as 'processing' so concurrent runs don't grab them.
+        // Mark these rows as 'processing' and stamp processed_at so the reap
+        // logic above can recover them if the worker never comes back.
         if ($rows) {
             $ids = array_map(static fn (array $row): int => (int) $row['character_id'], $rows);
             $placeholders = implode(',', array_fill(0, count($ids), '?'));
             db_execute(
                 "UPDATE character_killmail_queue
-                 SET status = 'processing'
+                 SET status = 'processing', processed_at = UTC_TIMESTAMP()
                  WHERE character_id IN ({$placeholders})",
                 $ids
             );
