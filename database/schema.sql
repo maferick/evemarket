@@ -1828,7 +1828,7 @@ CREATE TABLE IF NOT EXISTS battle_participants (
     is_logi TINYINT(1) NOT NULL DEFAULT 0,
     is_command TINYINT(1) NOT NULL DEFAULT 0,
     is_capital TINYINT(1) NOT NULL DEFAULT 0,
-    participation_count INT UNSIGNED NOT NULL DEFAULT 0,
+    participation_count BIGINT UNSIGNED NOT NULL DEFAULT 0,
     computed_at DATETIME NOT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -1864,7 +1864,7 @@ CREATE TABLE IF NOT EXISTS battle_target_metrics (
 CREATE TABLE IF NOT EXISTS battle_side_metrics (
     battle_id CHAR(64) NOT NULL,
     side_key VARCHAR(80) NOT NULL,
-    participant_count INT UNSIGNED NOT NULL DEFAULT 0,
+    participant_count BIGINT UNSIGNED NOT NULL DEFAULT 0,
     logi_count INT UNSIGNED NOT NULL DEFAULT 0,
     command_count INT UNSIGNED NOT NULL DEFAULT 0,
     capital_count INT UNSIGNED NOT NULL DEFAULT 0,

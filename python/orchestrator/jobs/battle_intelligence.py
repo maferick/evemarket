@@ -300,6 +300,14 @@ def run_compute_battle_rollups(db: SupplyCoreDb, runtime: dict[str, Any] | None 
 
         while True:
             batch_started = datetime.now(UTC)
+            # The `battle_id IS NULL` filter is critical for idempotency: when
+            # `_validate_killmail_cursor` rewinds the cursor (because the live
+            # R2Z2 stream interleaves with backfilled history), we must skip
+            # killmails that have already been rolled up.  Without this guard,
+            # `participation_count` accumulates across runs via the
+            # `ON DUPLICATE KEY UPDATE participation_count = participation_count + …`
+            # clause below and eventually overflows the SUM in
+            # `compute_battle_anomalies`.
             killmails = db.fetch_all(
                 """
                 SELECT
@@ -319,6 +327,7 @@ def run_compute_battle_rollups(db: SupplyCoreDb, runtime: dict[str, Any] | None 
                 LEFT JOIN killmail_attackers ka ON ka.sequence_id = ke.sequence_id
                 WHERE ke.sequence_id > %s
                   AND ke.solar_system_id IS NOT NULL
+                  AND ke.battle_id IS NULL
                 ORDER BY ke.sequence_id ASC
                 LIMIT %s
                 """,
