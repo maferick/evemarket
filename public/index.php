@@ -144,7 +144,17 @@ $kpiThemes = [
 $kpiCards = [];
 $knownKpiLabels = array_keys($kpiThemes);
 $seenKpiLabels = [];
-foreach ((array) ($intel['kpis'] ?? []) as $rawCard) {
+// `$intel['kpis']` is expected to be a list of {label, value, context} cards
+// (built by dashboard_intelligence_data_build() in PHP or by the
+// dashboard_summary_sync Python job). Detect and log regressions where a
+// caller accidentally writes a dict-of-scalars shape, which would otherwise
+// silently fall through to the "Enable market sync…" placeholder text.
+$rawKpis = $intel['kpis'] ?? [];
+if (is_array($rawKpis) && $rawKpis !== [] && !is_array(reset($rawKpis))) {
+    error_log('dashboard KPI payload has unexpected shape (expected list of cards): ' . json_encode(array_keys($rawKpis)));
+    $rawKpis = [];
+}
+foreach ((array) $rawKpis as $rawCard) {
     if (!is_array($rawCard)) {
         continue;
     }

@@ -17775,6 +17775,67 @@ function db_bloom_entry_points_by_tier(string $tier, int $limit = 10): array
     }
     unset($row);
 
+    // Enrich entity names from entity_metadata_cache for ref types that have
+    // canonical names there (alliance, character, corporation, system, type,
+    // region). The compute_bloom_entry_points job materializes names as read
+    // from Neo4j, which can be empty or out of date — resulting in placeholder
+    // labels like "Alliance 99003581" rendering on the dashboard. The cache is
+    // the authoritative source for display names, so we prefer it whenever we
+    // have a resolved row.
+    $idsByType = [];
+    foreach ($rows as $i => $row) {
+        $refType = (string) ($row['entity_ref_type'] ?? '');
+        $refId = (int) ($row['entity_ref_id'] ?? 0);
+        if ($refId <= 0) {
+            continue;
+        }
+        $cacheType = match ($refType) {
+            'alliance_id' => 'alliance',
+            'character_id' => 'character',
+            'corporation_id' => 'corporation',
+            'system_id' => 'system',
+            'type_id' => 'type',
+            'region_id' => 'region',
+            default => null,
+        };
+        if ($cacheType === null) {
+            continue;
+        }
+        $idsByType[$cacheType][$refId][] = $i;
+    }
+
+    foreach ($idsByType as $cacheType => $idIndex) {
+        $ids = array_keys($idIndex);
+        if ($ids === []) {
+            continue;
+        }
+        $placeholders = implode(',', array_fill(0, count($ids), '?'));
+        try {
+            $cached = db_select(
+                'SELECT entity_id, entity_name
+                   FROM entity_metadata_cache
+                  WHERE entity_type = ?
+                    AND entity_id IN (' . $placeholders . ')',
+                array_merge([$cacheType], array_map('intval', $ids))
+            );
+        } catch (Throwable) {
+            continue;
+        }
+        foreach ($cached as $cacheRow) {
+            $name = trim((string) ($cacheRow['entity_name'] ?? ''));
+            if ($name === '') {
+                continue;
+            }
+            $cid = (int) ($cacheRow['entity_id'] ?? 0);
+            if (!isset($idIndex[$cid])) {
+                continue;
+            }
+            foreach ($idIndex[$cid] as $rowIdx) {
+                $rows[$rowIdx]['entity_name'] = $name;
+            }
+        }
+    }
+
     return $rows;
 }
 
