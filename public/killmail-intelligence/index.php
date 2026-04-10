@@ -7,6 +7,7 @@ require_once __DIR__ . '/../../src/bootstrap.php';
 $title = 'Killmail Loss Overview';
 $data = killmail_overview_data();
 $summary = $data['summary'] ?? [];
+$mailTypeBreakdown = $data['mail_type_breakdown'] ?? [];
 $status = $data['status'] ?? [];
 $rows = $data['rows'] ?? [];
 $filters = $data['filters'] ?? [];
@@ -82,6 +83,35 @@ if (function_exists('ob_flush')) { @ob_flush(); }
     <?php endforeach; ?>
 </section>
 <!-- ui-section:killmail-overview-summary:end -->
+
+<?php if ($mailTypeBreakdown !== []): ?>
+    <!-- ui-section:killmail-overview-mail-types:start -->
+    <section class="mt-6 surface-secondary" data-ui-section="killmail-overview-mail-types">
+        <div class="flex flex-wrap items-start justify-between gap-3">
+            <div>
+                <h2 class="text-base font-medium text-slate-50">Storage breakdown by mail_type</h2>
+                <p class="mt-1 text-sm text-muted">
+                    Every R2Z2 stream killmail and every per-character backfill killmail is stored, classified into one of these buckets.
+                    <span class="text-slate-100">Tracked and opponent rows are retained indefinitely; <code>untracked</code> rows are pruned after 90 days</span>
+                    by the <code>killmail_untracked_retention</code> job, so their count reflects the rolling window not the all-time total.
+                </p>
+            </div>
+        </div>
+        <div class="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+            <?php foreach ($mailTypeBreakdown as $bucket): ?>
+                <article class="rounded-lg border px-3 py-3 <?= htmlspecialchars((string) ($bucket['tone'] ?? 'border-border bg-black/20 text-slate-200'), ENT_QUOTES) ?>">
+                    <div class="flex items-baseline justify-between gap-3">
+                        <p class="text-xs uppercase tracking-[0.2em]"><?= htmlspecialchars((string) ($bucket['label'] ?? ''), ENT_QUOTES) ?></p>
+                        <p class="text-xl font-semibold"><?= number_format((int) ($bucket['count'] ?? 0)) ?></p>
+                    </div>
+                    <p class="mt-1 text-xs opacity-80"><?= htmlspecialchars((string) ($bucket['description'] ?? ''), ENT_QUOTES) ?></p>
+                    <p class="mt-1 font-mono text-[10px] uppercase tracking-[0.2em] opacity-60">mail_type = <?= htmlspecialchars((string) ($bucket['key'] ?? ''), ENT_QUOTES) ?></p>
+                </article>
+            <?php endforeach; ?>
+        </div>
+    </section>
+    <!-- ui-section:killmail-overview-mail-types:end -->
+<?php endif; ?>
 
 <section class="mt-6 surface-secondary">
     <div class="flex flex-wrap items-start justify-between gap-3">
