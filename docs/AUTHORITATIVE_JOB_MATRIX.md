@@ -61,6 +61,7 @@ Source of truth: `supplycore_authoritative_job_registry()` in `src/functions.php
 | killmail_zkb_repair | real_schedulable | yes | yes | no | yes | yes | yes |  | Backfill missing zKB metadata. |
 | cache_expiry_cleanup_sync | real_schedulable | yes | yes | yes | yes | yes | yes |  | Purge expired cache entries. |
 | log_to_issues | real_schedulable | yes | yes | no | yes | yes | yes |  | Scan failures and create/update GitHub issues. |
+| compute_bloom_entry_points | real_schedulable | yes | yes | yes | yes | yes | yes |  | Refresh Bloom smart entry-point labels (HotBattle, HighRiskPilot, StrategicSystem, HotAlliance). |
 | killmail_r2z2_sync | external_integrated | yes | no | yes | yes | yes | yes |  | Managed through zKill adapter boundary. |
 
 ## Internal/helper/non-schedulable entries

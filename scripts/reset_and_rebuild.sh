@@ -368,6 +368,7 @@ run_job "intelligence_pipeline" "Intelligence Pipeline"
 run_job "compute_counterintel_pipeline" "Counterintel Pipeline"
 run_job "compute_alliance_dossiers" "Alliance Dossiers"
 run_job "compute_threat_corridors" "Threat Corridors"
+run_job "compute_bloom_entry_points" "Bloom Entry Points"
 
 echo ""
 echo "  ── Phase 7: Cleanup, Audit & Economics ──"

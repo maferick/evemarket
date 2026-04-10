@@ -1,0 +1,463 @@
+{
+  "$schema": "https://neo4j.com/docs/bloom-user-guide/current/bloom-perspectives/perspective-structure/",
+  "name": "SupplyCore Operational Intelligence",
+  "description": "Business-facing intelligence perspective for the SupplyCore knowledge graph. Renames raw labels to domain language, curates visible properties, constrains exploration to signal-rich edges, and ships a library of natural-language search phrases that translate to bounded Cypher traversals. Import via Bloom → Perspectives → Import.",
+  "version": "1.0.0",
+  "createdAt": "2026-04-10T00:00:00Z",
+  "categories": [
+    {
+      "id": "pilot",
+      "label": "Character",
+      "displayName": "Pilot",
+      "color": "#4C9AFF",
+      "size": 60,
+      "icon": "user",
+      "captionKeys": ["name", "character_id"],
+      "propertiesVisible": [
+        "name",
+        "character_id",
+        "alliance_id",
+        "corporation_id",
+        "tracked",
+        "suspicion_score",
+        "suspicion_score_recent",
+        "community_id",
+        "pr",
+        "computed_at"
+      ],
+      "propertiesHidden": [
+        "betweenness_approx",
+        "community_label",
+        "org_synced_at"
+      ]
+    },
+    {
+      "id": "alliance",
+      "label": "Alliance",
+      "displayName": "Alliance",
+      "color": "#FF5630",
+      "size": 70,
+      "icon": "shield",
+      "captionKeys": ["name", "alliance_id"],
+      "propertiesVisible": ["name", "alliance_id"]
+    },
+    {
+      "id": "corp",
+      "label": "Corporation",
+      "displayName": "Corp",
+      "color": "#FF8B00",
+      "size": 55,
+      "icon": "briefcase",
+      "captionKeys": ["name", "corporation_id"],
+      "propertiesVisible": ["name", "corporation_id", "is_npc"]
+    },
+    {
+      "id": "battle",
+      "label": "Battle",
+      "displayName": "Engagement",
+      "color": "#6554C0",
+      "size": 65,
+      "icon": "crosshairs",
+      "captionKeys": ["battle_id", "started_at"],
+      "propertiesVisible": [
+        "battle_id",
+        "started_at",
+        "ended_at",
+        "system_id",
+        "region_id",
+        "participant_count",
+        "duration_seconds",
+        "battle_size_class"
+      ]
+    },
+    {
+      "id": "system",
+      "label": "System",
+      "displayName": "Solar System",
+      "color": "#36B37E",
+      "size": 50,
+      "icon": "globe",
+      "captionKeys": ["name", "system_id"],
+      "propertiesVisible": ["name", "system_id", "security", "constellation_id"]
+    },
+    {
+      "id": "constellation",
+      "label": "Constellation",
+      "displayName": "Constellation",
+      "color": "#57D9A3",
+      "size": 45,
+      "icon": "hexagon",
+      "captionKeys": ["name", "constellation_id"],
+      "propertiesVisible": ["name", "constellation_id", "region_id"]
+    },
+    {
+      "id": "region",
+      "label": "Region",
+      "displayName": "Region",
+      "color": "#79F2C0",
+      "size": 50,
+      "icon": "map",
+      "captionKeys": ["name", "region_id"],
+      "propertiesVisible": ["name", "region_id"]
+    },
+    {
+      "id": "ship_type",
+      "label": "ShipType",
+      "displayName": "Ship",
+      "color": "#00B8D9",
+      "size": 45,
+      "icon": "rocket",
+      "captionKeys": ["name", "type_id"],
+      "propertiesVisible": ["name", "type_id"]
+    },
+    {
+      "id": "doctrine",
+      "label": "Doctrine",
+      "displayName": "Doctrine",
+      "color": "#998DD9",
+      "size": 55,
+      "icon": "layers",
+      "captionKeys": ["name", "doctrine_id"],
+      "propertiesVisible": ["name", "doctrine_id"]
+    },
+    {
+      "id": "fit",
+      "label": "Fit",
+      "displayName": "Fit",
+      "color": "#B3BAC5",
+      "size": 40,
+      "icon": "package",
+      "captionKeys": ["fit_id"],
+      "propertiesVisible": ["fit_id"]
+    },
+    {
+      "id": "killmail",
+      "label": "Killmail",
+      "displayName": "Killmail",
+      "color": "#DE350B",
+      "size": 35,
+      "icon": "x-circle",
+      "captionKeys": ["killmail_id", "killed_at"],
+      "propertiesVisible": [
+        "killmail_id",
+        "battle_id",
+        "killed_at",
+        "total_value",
+        "victim_ship_type_id"
+      ]
+    },
+    {
+      "id": "hot_battle",
+      "label": "HotBattle",
+      "displayName": "Hot Engagement",
+      "description": "Recent, high-intensity battle tagged by the Bloom entry-point job.",
+      "color": "#BF2600",
+      "size": 75,
+      "icon": "flame",
+      "captionKeys": ["battle_id", "started_at"],
+      "propertiesVisible": [
+        "battle_id",
+        "started_at",
+        "participant_count",
+        "bloom_hot_score",
+        "bloom_tagged_at"
+      ]
+    },
+    {
+      "id": "high_risk_pilot",
+      "label": "HighRiskPilot",
+      "displayName": "High-Risk Pilot",
+      "description": "Pilot above suspicion threshold tagged by the Bloom entry-point job.",
+      "color": "#FF0000",
+      "size": 70,
+      "icon": "alert-triangle",
+      "captionKeys": ["name", "character_id"],
+      "propertiesVisible": [
+        "name",
+        "character_id",
+        "suspicion_score",
+        "suspicion_score_recent",
+        "community_id",
+        "bloom_tagged_at"
+      ]
+    },
+    {
+      "id": "strategic_system",
+      "label": "StrategicSystem",
+      "displayName": "Strategic System",
+      "description": "System with sustained recent battle density tagged by the Bloom entry-point job.",
+      "color": "#00875A",
+      "size": 65,
+      "icon": "target",
+      "captionKeys": ["name", "system_id"],
+      "propertiesVisible": [
+        "name",
+        "system_id",
+        "security",
+        "bloom_recent_battle_count",
+        "bloom_tagged_at"
+      ]
+    },
+    {
+      "id": "hot_alliance",
+      "label": "HotAlliance",
+      "displayName": "Active Alliance",
+      "description": "Alliance with recent engagement volume tagged by the Bloom entry-point job.",
+      "color": "#DE350B",
+      "size": 80,
+      "icon": "shield",
+      "captionKeys": ["name", "alliance_id"],
+      "propertiesVisible": [
+        "name",
+        "alliance_id",
+        "bloom_recent_engagement_count",
+        "bloom_tagged_at"
+      ]
+    }
+  ],
+  "relationshipTypes": [
+    {
+      "type": "PARTICIPATED_IN",
+      "displayName": "participated in",
+      "color": "#6554C0",
+      "width": 2,
+      "captionKeys": ["side_key"]
+    },
+    {
+      "type": "CO_OCCURS_WITH",
+      "displayName": "flew with",
+      "color": "#4C9AFF",
+      "width": 1,
+      "captionKeys": ["weight", "recent_weight", "occurrence_count"]
+    },
+    {
+      "type": "MEMBER_OF_ALLIANCE",
+      "displayName": "belongs to alliance",
+      "color": "#FF5630",
+      "width": 2
+    },
+    {
+      "type": "MEMBER_OF_CORPORATION",
+      "displayName": "belongs to corp",
+      "color": "#FF8B00",
+      "width": 2
+    },
+    {
+      "type": "PART_OF",
+      "displayName": "part of alliance",
+      "color": "#FF5630",
+      "width": 2
+    },
+    {
+      "type": "IN_SYSTEM",
+      "displayName": "fought in",
+      "color": "#36B37E",
+      "width": 2
+    },
+    {
+      "type": "IN_CONSTELLATION",
+      "displayName": "in constellation",
+      "color": "#57D9A3",
+      "width": 1
+    },
+    {
+      "type": "IN_REGION",
+      "displayName": "in region",
+      "color": "#79F2C0",
+      "width": 1
+    },
+    {
+      "type": "CONNECTS_TO",
+      "displayName": "gate-connects to",
+      "color": "#B3BAC5",
+      "width": 1
+    },
+    {
+      "type": "ATTACKED_ON",
+      "displayName": "attacked on",
+      "color": "#DE350B",
+      "width": 2,
+      "captionKeys": ["damage", "final_blow"]
+    },
+    {
+      "type": "VICTIM_OF",
+      "displayName": "victim of",
+      "color": "#BF2600",
+      "width": 2,
+      "captionKeys": ["ship_type_id"]
+    },
+    {
+      "type": "DIRECT_COMBAT",
+      "displayName": "fought directly",
+      "color": "#FF7452",
+      "width": 2,
+      "captionKeys": ["count", "last_at"]
+    },
+    {
+      "type": "SAME_FLEET",
+      "displayName": "shared fleet",
+      "color": "#4C9AFF",
+      "width": 1,
+      "captionKeys": ["count"]
+    },
+    {
+      "type": "USED_SHIP",
+      "displayName": "flew",
+      "color": "#00B8D9",
+      "width": 1
+    },
+    {
+      "type": "USES",
+      "displayName": "uses fit",
+      "color": "#998DD9",
+      "width": 2
+    },
+    {
+      "type": "CONTAINS",
+      "displayName": "contains",
+      "color": "#B3BAC5",
+      "width": 1
+    },
+    {
+      "type": "ALLIED_WITH",
+      "displayName": "allied with",
+      "color": "#36B37E",
+      "width": 2,
+      "captionKeys": ["weight_30d", "shared_killmails"]
+    },
+    {
+      "type": "HOSTILE_TO",
+      "displayName": "hostile to",
+      "color": "#DE350B",
+      "width": 2,
+      "captionKeys": ["weight_30d", "engagements"]
+    },
+    {
+      "type": "CROSSED_SIDES",
+      "displayName": "crossed sides with",
+      "color": "#FF5630",
+      "width": 2,
+      "captionKeys": ["side_transition_count"]
+    },
+    {
+      "type": "ASSOCIATED_WITH_ANOMALY",
+      "displayName": "associated with anomaly",
+      "color": "#FF8B00",
+      "width": 2,
+      "captionKeys": ["avg_z_score", "occurrence_count"]
+    }
+  ],
+  "hiddenRelationshipTypes": [
+    "HAS_SIDE",
+    "BELONGS_TO",
+    "ON_SIDE",
+    "REPRESENTED_BY_ALLIANCE",
+    "REPRESENTED_BY_CORPORATION",
+    "CO_PRESENT_CLUSTER",
+    "BELONGS_TO_COHORT"
+  ],
+  "hiddenLabels": [
+    "BattleSide",
+    "Cohort",
+    "ComputeCheckpoint",
+    "Item"
+  ],
+  "explorationLimits": {
+    "maxNeighbourCount": 250,
+    "maxExpandDepth": 2,
+    "maxPathsPerQuery": 500,
+    "notes": "Dense edges (CO_OCCURS_WITH, SAME_FLEET) must be filtered by weight or time window to stay performant. See search phrases for safe templates."
+  },
+  "searchPhrases": [
+    {
+      "name": "Find pilot",
+      "description": "Locate a pilot by name fragment.",
+      "phrase": "Find pilot $name",
+      "cypher": "MATCH (p:Character) WHERE toLower(p.name) CONTAINS toLower($name) RETURN p ORDER BY COALESCE(p.suspicion_score, 0) DESC LIMIT 50"
+    },
+    {
+      "name": "Find alliance",
+      "description": "Locate an alliance by name fragment.",
+      "phrase": "Find alliance $name",
+      "cypher": "MATCH (a:Alliance) WHERE toLower(a.name) CONTAINS toLower($name) RETURN a LIMIT 50"
+    },
+    {
+      "name": "Show hot engagements",
+      "description": "Display recent high-intensity battles tagged by the entry-point job.",
+      "phrase": "Show hot engagements",
+      "cypher": "MATCH (b:HotBattle) WITH b ORDER BY b.bloom_hot_score DESC LIMIT 50 OPTIONAL MATCH (b)-[:IN_SYSTEM|LOCATED_IN]->(s:System) RETURN b, s"
+    },
+    {
+      "name": "Show high-risk pilots",
+      "description": "Display pilots currently above the suspicion threshold.",
+      "phrase": "Show high-risk pilots",
+      "cypher": "MATCH (p:HighRiskPilot) WITH p ORDER BY COALESCE(p.suspicion_score_recent, p.suspicion_score, 0) DESC LIMIT 50 OPTIONAL MATCH (p)-[:MEMBER_OF_ALLIANCE]->(a:Alliance) RETURN p, a"
+    },
+    {
+      "name": "Show strategic systems",
+      "description": "Display systems with sustained recent engagement density.",
+      "phrase": "Show strategic systems",
+      "cypher": "MATCH (s:StrategicSystem) WITH s ORDER BY s.bloom_recent_battle_count DESC LIMIT 50 RETURN s"
+    },
+    {
+      "name": "Battles in system",
+      "description": "Find battles that occurred in a specific solar system within the last 30 days.",
+      "phrase": "Show battles in $system",
+      "cypher": "MATCH (s:System) WHERE toLower(s.name) CONTAINS toLower($system) WITH s MATCH (b:Battle)-[:IN_SYSTEM|LOCATED_IN]->(s) WHERE b.started_at >= apoc.date.format(datetime() - duration('P30D'), 'ms', 'yyyy-MM-dd\\'T\\'HH:mm:ss\\'Z\\'') RETURN b, s ORDER BY b.started_at DESC LIMIT 100"
+    },
+    {
+      "name": "Battles in region",
+      "description": "Find battles that occurred anywhere in a specific region within the last 14 days.",
+      "phrase": "Show battles in region $region",
+      "cypher": "MATCH (r:Region) WHERE toLower(r.name) CONTAINS toLower($region) WITH r MATCH (b:Battle)-[:IN_SYSTEM|LOCATED_IN]->(:System)-[:IN_CONSTELLATION]->(:Constellation)-[:IN_REGION]->(r) WHERE b.started_at >= apoc.date.format(datetime() - duration('P14D'), 'ms', 'yyyy-MM-dd\\'T\\'HH:mm:ss\\'Z\\'') RETURN b, r ORDER BY b.started_at DESC LIMIT 100"
+    },
+    {
+      "name": "Alliances active in system",
+      "description": "List alliances that participated in battles in a given system within the last 30 days.",
+      "phrase": "Find alliances active in $system",
+      "cypher": "MATCH (s:System) WHERE toLower(s.name) CONTAINS toLower($system) WITH s MATCH (b:Battle)-[:IN_SYSTEM|LOCATED_IN]->(s) WHERE b.started_at >= apoc.date.format(datetime() - duration('P30D'), 'ms', 'yyyy-MM-dd\\'T\\'HH:mm:ss\\'Z\\'') MATCH (p:Character)-[:PARTICIPATED_IN]->(b) MATCH (p)-[:MEMBER_OF_ALLIANCE]->(a:Alliance) RETURN DISTINCT a, count(DISTINCT b) AS battles ORDER BY battles DESC LIMIT 50"
+    },
+    {
+      "name": "Pilots who flew with",
+      "description": "Show pilots frequently co-occurring with a target pilot (top 25 by recent weight).",
+      "phrase": "Show pilots who flew with $name",
+      "cypher": "MATCH (p:Character) WHERE toLower(p.name) CONTAINS toLower($name) WITH p LIMIT 1 MATCH (p)-[r:CO_OCCURS_WITH]-(other:Character) WHERE COALESCE(r.recent_weight, r.weight, 0) > 0 RETURN p, r, other ORDER BY COALESCE(r.recent_weight, r.weight, 0) DESC LIMIT 25"
+    },
+    {
+      "name": "Co-occurrence with hostile alliance",
+      "description": "Find pilots who flew alongside members of a hostile alliance.",
+      "phrase": "Find pilots who flew with alliance $alliance",
+      "cypher": "MATCH (a:Alliance) WHERE toLower(a.name) CONTAINS toLower($alliance) WITH a LIMIT 1 MATCH (p:Character)-[:CO_OCCURS_WITH]-(hostile:Character)-[:MEMBER_OF_ALLIANCE]->(a) WITH p, count(DISTINCT hostile) AS overlap ORDER BY overlap DESC LIMIT 50 RETURN p, overlap"
+    },
+    {
+      "name": "Doctrine usage",
+      "description": "Expand a doctrine to its fits and the pilots who flew them.",
+      "phrase": "Show doctrine $name usage",
+      "cypher": "MATCH (d:Doctrine) WHERE toLower(d.name) CONTAINS toLower($name) WITH d LIMIT 1 MATCH (d)-[:USES]->(f:Fit) OPTIONAL MATCH (f)-[:CONTAINS]->(i:Item) RETURN d, f, i LIMIT 250"
+    },
+    {
+      "name": "Alliance relationships",
+      "description": "Show the allied/hostile graph around a specific alliance.",
+      "phrase": "Show relationships for alliance $name",
+      "cypher": "MATCH (a:Alliance) WHERE toLower(a.name) CONTAINS toLower($name) WITH a LIMIT 1 OPTIONAL MATCH (a)-[r1:ALLIED_WITH]-(ally:Alliance) OPTIONAL MATCH (a)-[r2:HOSTILE_TO]-(enemy:Alliance) RETURN a, r1, ally, r2, enemy LIMIT 100"
+    },
+    {
+      "name": "Threat corridor",
+      "description": "Walk the gate graph between two systems (≤ 10 jumps).",
+      "phrase": "Find route from $from to $to",
+      "cypher": "MATCH (a:System), (b:System) WHERE toLower(a.name) = toLower($from) AND toLower(b.name) = toLower($to) MATCH path = shortestPath((a)-[:CONNECTS_TO*..10]-(b)) RETURN path LIMIT 1"
+    },
+    {
+      "name": "Explain suspicion",
+      "description": "Starting from a suspect, pull co-occurrence, anomaly associations and side-crossings to justify the score.",
+      "phrase": "Explain suspicion for $name",
+      "cypher": "MATCH (p:Character) WHERE toLower(p.name) CONTAINS toLower($name) WITH p LIMIT 1 OPTIONAL MATCH (p)-[r1:CO_OCCURS_WITH]-(peer:Character) WITH p, r1, peer ORDER BY COALESCE(r1.recent_weight, 0) DESC LIMIT 15 OPTIONAL MATCH (p)-[r2:ASSOCIATED_WITH_ANOMALY]->(b:Battle) OPTIONAL MATCH (p)-[r3:CROSSED_SIDES]-(other:Character) RETURN p, r1, peer, r2, b, r3, other"
+    }
+  ],
+  "notes": [
+    "This perspective is an operator-facing projection — it hides BattleSide / Cohort / ComputeCheckpoint plumbing nodes so analysts see a clean domain model.",
+    "Entry-point labels (HotBattle, HighRiskPilot, StrategicSystem, HotAlliance) are maintained by the compute_bloom_entry_points job. If they are missing, the 'Show ...' phrases will return nothing until the job runs.",
+    "Search phrases referencing apoc.date.format require APOC to be available in Neo4j. If APOC is disabled, rewrite those phrases with literal timestamps from your session.",
+    "Exploration limits reflect dense-edge reality (CO_OCCURS_WITH, SAME_FLEET). Do NOT raise maxExpandDepth above 2 without filtering by weight or time window first."
+  ]
+}

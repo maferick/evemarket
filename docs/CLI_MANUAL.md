@@ -769,6 +769,7 @@ These can be run via `python -m orchestrator run-job --job-key <KEY>`:
 | `theater_analysis` | Theater composition analysis |
 | `theater_graph_integration` | Theater → graph integration |
 | `theater_suspicion` | Theater-level suspicion |
+| `compute_bloom_entry_points` | Refresh Bloom entry-point labels (HotBattle, HighRiskPilot, StrategicSystem, HotAlliance) |
 | `log_to_issues` | Scan failures and create GitHub issues |
 
 ### All Sync Jobs
@@ -874,19 +875,20 @@ Phase 6: Intelligence Products
  28. compute_counterintel_pipeline
  29. compute_alliance_dossiers
  30. compute_threat_corridors
+ 31. compute_bloom_entry_points
 
 Phase 7: Cleanup & Economics
- 31. compute_graph_prune
- 32. graph_analyst_recalibration
- 33. graph_model_audit
- 34. graph_query_plan_validation
- 35. compute_buy_all
- 36. compute_signals
- 37. compute_economic_warfare
- 38. discord_webhook_filter
+ 32. compute_graph_prune
+ 33. graph_analyst_recalibration
+ 34. graph_model_audit
+ 35. graph_query_plan_validation
+ 36. compute_buy_all
+ 37. compute_signals
+ 38. compute_economic_warfare
+ 39. discord_webhook_filter
 
 Phase 8: Maintenance
- 39. log_to_issues
+ 40. log_to_issues
 ```
 
 ---
