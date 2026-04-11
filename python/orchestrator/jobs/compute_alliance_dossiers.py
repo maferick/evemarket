@@ -89,6 +89,28 @@ BATCH_SIZE = 200
 RECENT_DAYS = 30
 TOP_K = 10
 
+# Upper bound for DECIMAL(14,4) columns (alliance_dossiers.avg_engagement_rate,
+# avg_token_participation, avg_overperformance). Values derived from raw
+# killmail aggregation (kills_per_week, kill/loss ratio) can spike for very
+# active alliances; clamping here is a defensive guard so a single outlier
+# never aborts the entire batch with MariaDB error 1264.
+_DECIMAL_14_4_MAX = 9_999_999_999.9999
+
+
+def _clamp_decimal(value: Any) -> float | None:
+    """Clamp a numeric value to the DECIMAL(14,4) representable range."""
+    if value is None:
+        return None
+    try:
+        num = float(value)
+    except (TypeError, ValueError):
+        return None
+    if num > _DECIMAL_14_4_MAX:
+        return _DECIMAL_14_4_MAX
+    if num < -_DECIMAL_14_4_MAX:
+        return -_DECIMAL_14_4_MAX
+    return num
+
 
 def _dossier_log(runtime: dict[str, Any] | None, event: str, payload: dict[str, Any]) -> None:
     log_path = str(((runtime or {}).get("log_file") or "")).strip()
@@ -703,6 +725,37 @@ def _resolve_alliance_names(db: SupplyCoreDb, alliance_ids: list[int]) -> dict[i
     return {int(r["entity_id"]): str(r["entity_name"]) for r in rows if r.get("entity_name")}
 
 
+def _queue_pending_alliance_names(db: SupplyCoreDb, alliance_ids: list[int]) -> int:
+    """Enqueue alliance IDs as 'pending' in entity_metadata_cache.
+
+    Alliance IDs that surface via Neo4j / relationship-graph lookups but
+    have never been seen in killmail ingestion won't exist in
+    ``entity_metadata_cache`` yet, so name resolution falls back to the
+    ``Alliance #<id>`` placeholder. Inserting a ``pending`` row ensures
+    the next ``entity_metadata_resolve_sync`` run picks them up via ESI,
+    so subsequent dossier runs produce real names without manual
+    intervention.
+    """
+    ids = sorted({int(aid) for aid in alliance_ids if int(aid) > 0})
+    if not ids:
+        return 0
+    now = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
+    queued = 0
+    for eid in ids:
+        try:
+            db.execute(
+                """INSERT INTO entity_metadata_cache
+                   (entity_type, entity_id, source_system, resolution_status, last_requested_at)
+                   VALUES ('alliance', %s, 'queue', 'pending', %s)
+                   ON DUPLICATE KEY UPDATE last_requested_at = VALUES(last_requested_at)""",
+                (eid, now),
+            )
+            queued += 1
+        except Exception as exc:
+            logger.warning("Failed to queue alliance %d for name resolution: %s", eid, exc)
+    return queued
+
+
 def _flush_dossiers(db: SupplyCoreDb, dossiers: list[dict[str, Any]]) -> int:
     """Write dossier rows to MariaDB using batched executemany."""
     if not dossiers:
@@ -879,9 +932,9 @@ def run_compute_alliance_dossiers(
                 "last_seen_at": a.get("last_seen_at"),
                 "primary_region_id": geo["primary_region_id"],
                 "primary_system_id": geo["primary_system_id"],
-                "avg_engagement_rate": behavior.get("kills_per_week", 0),
-                "avg_token_participation": behavior.get("solo_ratio", 0),
-                "avg_overperformance": behavior.get("kill_loss_ratio"),
+                "avg_engagement_rate": _clamp_decimal(behavior.get("kills_per_week", 0)),
+                "avg_token_participation": _clamp_decimal(behavior.get("solo_ratio", 0)),
+                "avg_overperformance": _clamp_decimal(behavior.get("kill_loss_ratio")),
                 "posture": behavior["posture"],
                 "top_co_present_json": json_dumps_safe(co_present),
                 "top_enemies_json": json_dumps_safe(enemies),
@@ -916,10 +969,12 @@ def run_compute_alliance_dossiers(
 
         if unresolved_ids:
             unique_unresolved = sorted(set(unresolved_ids))
+            queued = _queue_pending_alliance_names(db, unique_unresolved)
             logger.warning(
                 "Could not resolve names for %d alliance IDs (first 10: %s). "
-                "These will display as 'Alliance #ID'. Check entity_metadata_cache population.",
-                len(unique_unresolved), unique_unresolved[:10],
+                "These will display as 'Alliance #ID'. Queued %d for background "
+                "ESI resolution via entity_metadata_resolve_sync.",
+                len(unique_unresolved), unique_unresolved[:10], queued,
             )
 
         if not dry_run:
