@@ -24,7 +24,12 @@ if __package__ in (None, ""):
     )
     from orchestrator.job_result import JobResult
     from orchestrator.json_utils import json_dumps_safe
-    from orchestrator.job_utils import finish_job_run, start_job_run
+    from orchestrator.job_utils import (
+        acquire_job_lock,
+        finish_job_run,
+        release_job_lock,
+        start_job_run,
+    )
     from orchestrator.neo4j import Neo4jClient, Neo4jConfig
 else:
     from ..config import resolve_app_root  # noqa: F401
@@ -37,7 +42,12 @@ else:
     )
     from ..job_result import JobResult
     from ..json_utils import json_dumps_safe
-    from ..job_utils import finish_job_run, start_job_run
+    from ..job_utils import (
+        acquire_job_lock,
+        finish_job_run,
+        release_job_lock,
+        start_job_run,
+    )
     from ..neo4j import Neo4jClient, Neo4jConfig
 
 WINDOW_SECONDS = 15 * 60
@@ -945,6 +955,42 @@ def run_compute_battle_target_metrics(db: SupplyCoreDb, runtime: dict[str, Any] 
 
 
 def run_compute_battle_anomalies(db: SupplyCoreDb, runtime: dict[str, Any] | None = None, *, dry_run: bool = False) -> dict[str, Any]:
+    # Serialize concurrent runs via a compute_job_locks lease.
+    #
+    # The write phase below wipes `battle_anomalies` and `battle_side_metrics`
+    # in a single transaction before bulk-inserting the recomputed rows.  If
+    # two instances of this job run at the same time (e.g. a recurring
+    # worker-pool dispatch overlapping with a manual CLI run, or a zombie
+    # worker whose DB connection has not yet released its locks), their
+    # DELETE statements collide on row locks and fail with
+    # `(1205, 'Lock wait timeout exceeded; try restarting transaction')` even
+    # though `run_in_transaction` already retries 3 times — see issue #967.
+    #
+    # `acquire_job_lock` uses the shared `compute_job_locks` table and
+    # transparently reclaims leases whose TTL has expired, so a crashed
+    # worker will not block future runs for longer than the TTL.  The TTL
+    # here is a little over 2× the worker-pool `timeout_seconds` (420s) to
+    # cover the occasional slow run without permanently jamming the job.
+    _ANOMALIES_LOCK_KEY = "compute_battle_anomalies"
+    _ANOMALIES_LOCK_TTL_SECONDS = 900
+    lock_owner = acquire_job_lock(db, _ANOMALIES_LOCK_KEY, ttl_seconds=_ANOMALIES_LOCK_TTL_SECONDS)
+    if lock_owner is None:
+        _battle_log(
+            runtime,
+            "battle_intelligence.job.skipped",
+            {
+                "job_name": "compute_battle_anomalies",
+                "reason": "another instance already holds the compute_job_locks lease",
+                "lock_key": _ANOMALIES_LOCK_KEY,
+                "dry_run": dry_run,
+            },
+        )
+        return JobResult.skipped(
+            job_key="compute_battle_anomalies",
+            reason="Another run already holds the compute_job_locks lease for compute_battle_anomalies.",
+            meta={"lock_key": _ANOMALIES_LOCK_KEY},
+        ).to_dict()
+
     job = start_job_run(db, "compute_battle_anomalies")
     started_monotonic = datetime.now(UTC)
     rows_processed = 0
@@ -1132,6 +1178,22 @@ def run_compute_battle_anomalies(db: SupplyCoreDb, runtime: dict[str, Any] | Non
         finish_job_run(db, job, status="failed", rows_processed=rows_processed, rows_written=rows_written, error_text=str(exc))
         _battle_log(runtime, "battle_intelligence.job.failed", {"job_name": "compute_battle_anomalies", "status": "failed", "error_text": str(exc), "rows_processed": rows_processed, "rows_written": rows_written, "dry_run": dry_run})
         raise
+    finally:
+        # Always release the compute_job_locks lease, even if the work raised.
+        # The helper is idempotent — if the row has already been reaped by
+        # another process (TTL expired) it will simply be a no-op DELETE.
+        try:
+            release_job_lock(db, _ANOMALIES_LOCK_KEY, lock_owner)
+        except Exception as release_exc:  # pragma: no cover — best-effort cleanup
+            _battle_log(
+                runtime,
+                "battle_intelligence.job.lock_release_failed",
+                {
+                    "job_name": "compute_battle_anomalies",
+                    "lock_key": _ANOMALIES_LOCK_KEY,
+                    "error_text": str(release_exc),
+                },
+            )
 
 
 def _queue_enrichment(db: SupplyCoreDb, actor_rows: list[dict[str, Any]]) -> None:
