@@ -377,6 +377,7 @@ def _run_cycle_dependency_aware(
     max_parallel: int,
     shutdown_event: threading.Event,
     lane: str = "",
+    memory_abort_bytes: int | None = None,
 ) -> list[JobOutcome]:
     """Run all due jobs respecting dependencies but without tier barriers.
 
@@ -416,10 +417,38 @@ def _run_cycle_dependency_aware(
         return _run_single_job(job_key, db, raw_config, logger, timeout)
 
     pool = ThreadPoolExecutor(max_workers=max_parallel)
+    memory_aborted = False
     try:
         while (remaining or in_flight) and not shutdown_event.is_set():
-            # Find jobs whose deps are all satisfied.
-            ready = [k for k in remaining if deps[k] <= completed]
+            # Memory gate: with --no-tier-barriers the dispatcher will keep
+            # feeding new jobs into the pool as soon as deps are satisfied,
+            # so a single cycle can push RSS past the systemd MemoryMax
+            # before the next cycle-start check runs.  Re-check here and,
+            # if we've crossed the abort threshold, stop dispatching new
+            # work and drain what's in flight so we exit cleanly instead
+            # of being OOM-killed mid-cycle.
+            if not memory_aborted and memory_abort_bytes is not None:
+                mem = resident_memory_bytes()
+                if mem >= memory_abort_bytes:
+                    memory_aborted = True
+                    logger.warning(
+                        f"{loop_name}: memory abort threshold reached mid-cycle "
+                        f"({mem / (1024**3):.1f} GiB), draining {len(in_flight)} "
+                        f"in-flight job(s) before shutdown",
+                        payload={
+                            "event": "loop_runner.memory_abort_midcycle",
+                            "loop": loop_name,
+                            "memory_bytes": mem,
+                            "in_flight": len(in_flight),
+                            "remaining": len(remaining),
+                        },
+                    )
+
+            # Find jobs whose deps are all satisfied — but don't dispatch
+            # any more once we've tripped the memory gate.
+            ready: list[str] = [] if memory_aborted else [
+                k for k in remaining if deps[k] <= completed
+            ]
 
             for key in ready:
                 remaining.discard(key)
@@ -428,9 +457,13 @@ def _run_cycle_dependency_aware(
                 in_flight[fut] = key
 
             if not in_flight:
-                # Nothing running and nothing ready — remaining jobs have
-                # unsatisfied deps (likely failed upstream).  Skip them.
-                if remaining:
+                if memory_aborted:
+                    # In-flight drained after tripping the memory gate —
+                    # request a graceful shutdown so systemd can restart us.
+                    shutdown_event.set()
+                elif remaining:
+                    # Nothing running and nothing ready — remaining jobs have
+                    # unsatisfied deps (likely failed upstream).  Skip them.
                     logger.warning(
                         f"{loop_name}: {len(remaining)} jobs blocked by unsatisfied deps, skipping",
                         payload={
@@ -642,6 +675,7 @@ def _run_loop(
                 max_parallel=max_parallel,
                 shutdown_event=shutdown_event,
                 lane=lane,
+                memory_abort_bytes=memory_abort_bytes,
             )
             for o in outcomes:
                 if o.status == "failed":
