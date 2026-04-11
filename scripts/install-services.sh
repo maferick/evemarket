@@ -469,7 +469,7 @@ fi
 # ===========================  Render and install units  ====================
 
 # Lane-based services (always render so they're available if user switches later)
-for lane_unit in supplycore-lane-realtime.service supplycore-lane-ingestion.service supplycore-lane-compute.service supplycore-lane-maintenance.service; do
+for lane_unit in supplycore-lane-realtime.service supplycore-lane-ingestion.service supplycore-lane-compute.service supplycore-lane-compute-bg.service supplycore-lane-maintenance.service; do
   render_unit "${REPO_ROOT}/ops/systemd/${lane_unit}" "${SYSTEMD_DIR}/${lane_unit}"
 done
 
@@ -503,6 +503,7 @@ if [[ ${RUNNER_MODE} == "lanes" ]]; then
     "supplycore-lane-realtime.service"
     "supplycore-lane-ingestion.service"
     "supplycore-lane-compute.service"
+    "supplycore-lane-compute-bg.service"
     "supplycore-lane-maintenance.service"
   )
   # Disable the monolithic runner if it was previously enabled.
@@ -514,7 +515,7 @@ if [[ ${RUNNER_MODE} == "lanes" ]]; then
 else
   services_to_enable+=("supplycore-loop-runner.service")
   # Disable lane services if they were previously enabled.
-  for lane_svc in supplycore-lane-realtime.service supplycore-lane-ingestion.service supplycore-lane-compute.service supplycore-lane-maintenance.service; do
+  for lane_svc in supplycore-lane-realtime.service supplycore-lane-ingestion.service supplycore-lane-compute.service supplycore-lane-compute-bg.service supplycore-lane-maintenance.service; do
     if systemctl is-enabled "${lane_svc}" >/dev/null 2>&1; then
       echo "Disabling lane service ${lane_svc} (using monolithic runner)"
       systemctl stop "${lane_svc}" 2>/dev/null || true
@@ -557,6 +558,7 @@ if [[ ${RUNNER_MODE} == "lanes" ]]; then
   echo "  systemctl status supplycore-lane-realtime.service"
   echo "  systemctl status supplycore-lane-ingestion.service"
   echo "  systemctl status supplycore-lane-compute.service"
+  echo "  systemctl status supplycore-lane-compute-bg.service"
   echo "  systemctl status supplycore-lane-maintenance.service"
 else
   echo "  systemctl status supplycore-loop-runner.service"
