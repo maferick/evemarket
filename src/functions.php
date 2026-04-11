@@ -26189,15 +26189,37 @@ function log_viewer_page_data(): array
         usort($logFiles, fn (array $a, array $b) => ($b['size_bytes'] ?? 0) <=> ($a['size_bytes'] ?? 0));
     }
 
-    // ── Worker job queue depth (backlog) ─────────────────────────────────
+    // ── Backlog depth ────────────────────────────────────────────────────
+    // Two execution paths feed the backlog and they use different tables:
+    //
+    //   1. `worker_jobs` — legacy Python worker-pool path. Rows are created
+    //      when a job is enqueued and updated as workers claim/complete
+    //      them. Status values: 'queued', 'running', 'retry', plus terminal
+    //      'completed'/'failed'/'dead'. This is the ONLY source the widget
+    //      used to read, which is why deployments running primarily through
+    //      the loop-runner / PHP scheduler path saw a permanently-empty
+    //      backlog — nothing writes here in that configuration.
+    //
+    //   2. `sync_schedules` — the primary path for loop_runner (lane-*)
+    //      services and the PHP scheduler daemon. Both claim jobs by
+    //      setting `locked_until` + `current_state='running'` + `last_started_at`
+    //      and release them by setting `locked_until=NULL` + `last_finished_at`.
+    //      "Ready to pick up" = due and not locked; "Running" = currently
+    //      locked; "Retry" = last run failed and the planner has scheduled
+    //      a future retry via `next_due_at`.
+    //
+    // We read both tables and sum them so mixed deployments are still
+    // accurate, and single-path deployments (the common case today) no
+    // longer show a misleading all-zeroes backlog.
+    $backlogQueue = ['queued' => 0, 'running' => 0, 'retry' => 0, 'total' => 0];
+    $backlogByQueue = [];
+
     $workerQueueRaw = db_select(
         "SELECT status, queue_name, COUNT(*) AS cnt
          FROM worker_jobs
          WHERE status IN ('queued', 'running', 'retry')
          GROUP BY status, queue_name"
     );
-    $backlogQueue = ['queued' => 0, 'running' => 0, 'retry' => 0, 'total' => 0];
-    $backlogByQueue = [];
     foreach ($workerQueueRaw as $row) {
         $s = $row['status'];
         $q = $row['queue_name'] ?? 'default';
@@ -26205,6 +26227,57 @@ function log_viewer_page_data(): array
         $backlogQueue[$s] = ($backlogQueue[$s] ?? 0) + $cnt;
         $backlogQueue['total'] += $cnt;
         $backlogByQueue[$q][$s] = $cnt;
+    }
+
+    // Loop-runner / PHP-scheduler backlog from sync_schedules. The single
+    // aggregate query below buckets every enabled schedule row into one of
+    // running / retry / ready / (none) based on claim state and last_status.
+    // Order of the WHEN clauses matters: running wins over retry wins over
+    // ready, so a single row is never double-counted.
+    $schedQueueRow = db_select(
+        "SELECT
+            SUM(CASE
+                WHEN (locked_until IS NOT NULL AND locked_until > UTC_TIMESTAMP())
+                  OR (current_state = 'running'
+                      AND last_started_at IS NOT NULL
+                      AND (last_finished_at IS NULL OR last_finished_at < last_started_at)
+                      AND last_started_at >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL 3 HOUR))
+                THEN 1 ELSE 0
+            END) AS running_count,
+            SUM(CASE
+                WHEN (locked_until IS NULL OR locked_until <= UTC_TIMESTAMP())
+                 AND (current_state IS NULL OR current_state <> 'running')
+                 AND last_status IN ('failed', 'error')
+                 AND next_due_at IS NOT NULL
+                 AND next_due_at > UTC_TIMESTAMP()
+                THEN 1 ELSE 0
+            END) AS retry_count,
+            SUM(CASE
+                WHEN (locked_until IS NULL OR locked_until <= UTC_TIMESTAMP())
+                 AND (current_state IS NULL OR current_state <> 'running')
+                 AND next_due_at IS NOT NULL
+                 AND next_due_at <= UTC_TIMESTAMP()
+                 AND (last_status IS NULL OR last_status NOT IN ('failed', 'error'))
+                THEN 1 ELSE 0
+            END) AS ready_count
+         FROM sync_schedules
+         WHERE enabled = 1"
+    );
+    $schedCounts = $schedQueueRow[0] ?? [];
+    $schedReady = (int) ($schedCounts['ready_count'] ?? 0);
+    $schedRunning = (int) ($schedCounts['running_count'] ?? 0);
+    $schedRetry = (int) ($schedCounts['retry_count'] ?? 0);
+
+    if (($schedReady + $schedRunning + $schedRetry) > 0) {
+        $backlogQueue['queued'] += $schedReady;
+        $backlogQueue['running'] += $schedRunning;
+        $backlogQueue['retry'] += $schedRetry;
+        $backlogQueue['total'] += $schedReady + $schedRunning + $schedRetry;
+        $backlogByQueue['loop_runner'] = [
+            'queued' => $schedReady,
+            'running' => $schedRunning,
+            'retry' => $schedRetry,
+        ];
     }
 
     // ── Overdue job details ───────────────────────────────────────────

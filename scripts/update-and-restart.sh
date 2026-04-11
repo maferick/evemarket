@@ -364,11 +364,38 @@ discover_services() {
     | awk '/^supplycore-/ {print $1}' \
     || true)
 
+  # Identify the service we're currently running under (if any) so we
+  # never try to restart our own invoking unit. systemd sets INVOCATION_ID
+  # for any process launched from a unit, and `systemctl status $PID`
+  # resolves that PID back to the owning unit name.
+  local self_unit=""
+  if [[ -n "${INVOCATION_ID:-}" ]]; then
+    self_unit=$(systemctl status "$$" --no-pager 2>/dev/null \
+      | awk 'NR==1 && /\.service/ {for (i=1; i<=NF; i++) if ($i ~ /\.service$/) {print $i; exit}}' \
+      || true)
+  fi
+
   while read -r unit load_state _rest; do
     [[ -z "${unit}" ]] && continue
     [[ "${unit}" == *'@.service' ]] && continue
     [[ "${load_state}" == "not-found" ]] && continue
     [[ "${load_state}" == "masked" ]] && continue
+    # Skip oneshot services — they are run-to-completion by design and
+    # are typically driven by a timer. Restarting a oneshot while it is
+    # still activating causes systemd to fail the job (classic case:
+    # the hourly-loop service restarting itself from within its own
+    # ExecStart). The timer entry is still restarted below, which is
+    # the correct handle for rescheduling oneshots.
+    local svc_type
+    svc_type=$(systemctl show -p Type --value "${unit}" 2>/dev/null || true)
+    if [[ "${svc_type}" == "oneshot" ]]; then
+      continue
+    fi
+    # Belt-and-suspenders: never restart the unit that is currently
+    # running this script (applies to non-oneshot self-invocations too).
+    if [[ -n "${self_unit}" && "${unit}" == "${self_unit}" ]]; then
+      continue
+    fi
     # Skip services that are triggered by timers — we restart the timer instead
     local is_timer_triggered=false
     for tt in "${timer_triggered[@]+"${timer_triggered[@]}"}"; do
